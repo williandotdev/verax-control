@@ -3,6 +3,7 @@ import { METHOD_METADATA, PATH_METADATA, ROUTE_ARGS_METADATA } from '@nestjs/com
 import { RouteParamtypes } from '@nestjs/common/internal';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { z } from 'zod';
+import { IS_PUBLIC_KEY, SELF_MANAGED_KEY } from '../../auth/decorators.js';
 
 interface RouteArgument {
   index: number;
@@ -124,4 +125,38 @@ export function findRouteContractViolations(app: INestApplication): RouteContrac
     }
   }
   return violations;
+}
+
+export interface RoutePolicy {
+  route: string;
+  isPublic: boolean;
+  selfManaged: boolean;
+}
+
+/** Lista cada rota com as marcações que relaxam a negação por padrão (`@Public`, `@SelfManaged`). */
+export function listRoutePolicies(app: INestApplication): RoutePolicy[] {
+  const discovery = app.get(DiscoveryService);
+  const scanner = app.get(MetadataScanner);
+  const policies: RoutePolicy[] = [];
+
+  for (const wrapper of discovery.getControllers()) {
+    const instance: unknown = wrapper.instance;
+    const metatype = wrapper.metatype;
+    if (typeof instance !== 'object' || instance === null || !metatype) continue;
+    const prototype = Object.getPrototypeOf(instance) as object;
+
+    for (const methodName of scanner.getAllMethodNames(prototype)) {
+      const handler = (prototype as Record<string, unknown>)[methodName];
+      if (typeof handler !== 'function' || Reflect.getMetadata(METHOD_METADATA, handler) === undefined)
+        continue;
+      const read = (key: string): unknown =>
+        Reflect.getMetadata(key, handler) ?? Reflect.getMetadata(key, metatype);
+      policies.push({
+        route: `${metatype.name}.${methodName}`,
+        isPublic: read(IS_PUBLIC_KEY) === true,
+        selfManaged: read(SELF_MANAGED_KEY) !== undefined,
+      });
+    }
+  }
+  return policies;
 }

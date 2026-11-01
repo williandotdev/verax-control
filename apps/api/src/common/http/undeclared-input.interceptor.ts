@@ -1,8 +1,10 @@
 import { type CallHandler, type ExecutionContext, Injectable, type NestInterceptor } from '@nestjs/common';
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants.js';
 import { RouteParamtypes } from '@nestjs/common/internal';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import type { Observable } from 'rxjs';
+import { isSelfManaged } from '../../auth/decorators.js';
 import { ValidationException } from './api-error.js';
 
 function declaredInputs(context: ExecutionContext): Set<number> {
@@ -23,8 +25,10 @@ function hasBody(body: unknown): boolean {
  */
 @Injectable()
 export class UndeclaredInputInterceptor implements NestInterceptor {
+  constructor(private readonly reflector: Reflector) {}
+
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    if (context.getType() !== 'http') return next.handle();
+    if (context.getType() !== 'http' || isSelfManaged(this.reflector, context)) return next.handle();
 
     const request = context.switchToHttp().getRequest<Request>();
     const inputs = declaredInputs(context);

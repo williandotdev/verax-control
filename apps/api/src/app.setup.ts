@@ -4,9 +4,10 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { z } from 'zod';
 import type { AppConfig } from './common/config/config.module.js';
+import { API_PREFIX } from './common/http/api-prefix.js';
 import { setupOpenApi } from './common/http/openapi.js';
 
-export const API_PREFIX = 'v1';
+export { API_PREFIX };
 export const JSON_BODY_LIMIT = '100kb';
 
 /**

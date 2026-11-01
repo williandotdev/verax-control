@@ -53,3 +53,102 @@ model AuditLog {
   @@index([resourceType, resourceId])
   @@index([requestId])
 }
+
+/// Papéis do painel (T2.4). `admin_verax` é da Verax e não pertence a cliente; os demais pertencem a um.
+enum UserRole {
+  admin_verax
+  admin_cliente
+  analista_cliente
+  leitura
+}
+
+/// Usuário só entra por convite (T2.6): nasce `invited`, vira `active` ao definir a senha.
+enum UserStatus {
+  invited
+  active
+  disabled
+}
+
+enum TenantStatus {
+  active
+  inactive
+}
+
+/// Cliente da Verax. Os demais campos do cadastro entram na T3.1.
+model Tenant {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  name      String       @db.VarChar(120)
+  status    TenantStatus @default(active)
+  createdAt DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
+  users     User[]
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Tabelas do Better Auth (T2.1). Nomes e campos seguem o que a biblioteca espera; `role`, `tenantId` e
+// `status` são campos adicionais que o usuário não consegue alterar pela API de autenticação.
+// ---------------------------------------------------------------------------------------------------
+
+model User {
+  id            String     @id
+  name          String     @db.VarChar(120)
+  email         String     @unique @db.VarChar(254)
+  emailVerified Boolean    @default(false)
+  image         String?
+  role          UserRole
+  tenantId      String?    @db.Uuid
+  tenant        Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status        UserStatus @default(invited)
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+  sessions      Session[]
+  accounts      Account[]
+
+  @@index([tenantId])
+}
+
+model Session {
+  id        String   @id
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @db.Timestamptz(3)
+  ipAddress String?  @db.VarChar(64)
+  userAgent String?  @db.VarChar(512)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(3)
+  scope                 String?
+  /// Hash da senha (scrypt, gerado pelo Better Auth). Nunca a senha em si.
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+/// Tokens de convite e de redefinição de senha, guardados com hash (`storeIdentifier: "hashed"`).
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([identifier])
+}

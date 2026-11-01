@@ -4,6 +4,8 @@ import { ConfigValidationError, loadConfig } from './load-config.js';
 const validEnv = {
   NODE_ENV: 'development',
   WEB_ORIGIN: 'http://localhost:5173',
+  API_ORIGIN: 'http://localhost:3000',
+  BETTER_AUTH_SECRET: 'x'.repeat(43),
   DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
 };
 
@@ -11,6 +13,7 @@ const validProductionEnv = {
   ...validEnv,
   NODE_ENV: 'production',
   WEB_ORIGIN: 'https://painel.example.com',
+  API_ORIGIN: 'https://api.example.com',
   DATABASE_URL: 'postgresql://verax:secret@db.internal:5432/verax?sslmode=verify-full',
 };
 
@@ -32,6 +35,19 @@ describe('loadConfig', () => {
     expect(Object.isFrozen(config)).toBe(true);
   });
 
+  it('recusa segredo de autenticação curto sem mostrar o valor', () => {
+    const shortValue = 'curto'.repeat(3);
+    const problems = problemsOf({ ...validEnv, BETTER_AUTH_SECRET: shortValue });
+    expect(problems).toContain('BETTER_AUTH_SECRET: deve ter pelo menos 32 caracteres');
+    expect(problems.join(' ')).not.toContain(shortValue);
+  });
+
+  it('exige https na origem da API em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, API_ORIGIN: 'http://api.example.com' })).toContain(
+      'API_ORIGIN: deve usar https em produção',
+    );
+  });
+
   it('converte PORT para número', () => {
     expect(loadConfig({ ...validEnv, PORT: '8080' }).PORT).toBe(8080);
   });
@@ -43,6 +59,8 @@ describe('loadConfig', () => {
         'NODE_ENV: obrigatória e não definida',
         'WEB_ORIGIN: obrigatória e não definida',
         'DATABASE_URL: obrigatória e não definida',
+        'API_ORIGIN: obrigatória e não definida',
+        'BETTER_AUTH_SECRET: obrigatória e não definida',
       ]),
     );
   });

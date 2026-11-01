@@ -24,13 +24,20 @@ export const envSchema = z
     // na auditoria e no limite de tentativas: com 0, o X-Forwarded-For é ignorado e não pode ser forjado.
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     WEB_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
+    API_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
+    // Assina os cookies de sessão e cifra o segredo do TOTP. Gerado por `pnpm setup:env` (256 bits).
+    BETTER_AUTH_SECRET: z
+      .string({ error: 'obrigatória' })
+      .min(32, { error: 'deve ter pelo menos 32 caracteres' }),
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
   })
   .superRefine((env, ctx) => {
-    if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN.startsWith('https://')) {
-      ctx.addIssue({ code: 'custom', path: ['WEB_ORIGIN'], message: 'deve usar https em produção' });
+    for (const key of ['WEB_ORIGIN', 'API_ORIGIN'] as const) {
+      if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
+      }
     }
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({

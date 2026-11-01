@@ -1,11 +1,15 @@
+import type { UserRole } from '../../generated/prisma/client.js';
+
 /**
- * Identidade autenticada da requisição. Preenchida pela autenticação (E2) a partir da sessão; até lá,
- * toda requisição é anônima. O `tenantId` vem sempre da sessão, nunca do corpo ou da URL (regra 4).
+ * Identidade autenticada da requisição, montada pelo `SessionGuard` a partir da sessão. O `tenantId` vem
+ * sempre da sessão, nunca do corpo ou da URL (regra 4).
  */
 export interface RequestAuth {
+  sessionId: string;
   userId: string;
+  email: string;
+  role: UserRole;
   tenantId: string | null;
-  role: string;
 }
 
 declare module 'express' {

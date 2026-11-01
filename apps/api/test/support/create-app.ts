@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { randomBytes } from 'node:crypto';
 import type { ModuleMetadata } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
@@ -8,6 +9,11 @@ import { APP_CREATE_OPTIONS, configureApp } from '../../src/app.setup.js';
 import type { AppConfig } from '../../src/common/config/config.module.js';
 import { loadConfig } from '../../src/common/config/load-config.js';
 import { LogCapture } from './log-capture.js';
+
+/** Origem do painel nos testes: requisições de autenticação mandam este Origin. */
+export const TEST_WEB_ORIGIN = 'http://localhost:5173';
+// Só para testes; gerado na hora, nunca é um segredo real.
+const TEST_AUTH_SECRET = randomBytes(32).toString('base64url');
 
 export interface CreateAppOptions {
   databaseUrl?: string;
@@ -25,7 +31,9 @@ export interface CreateAppOptions {
 export async function createApp(options: CreateAppOptions = {}): Promise<NestExpressApplication> {
   const config = loadConfig({
     NODE_ENV: options.nodeEnv ?? 'test',
-    WEB_ORIGIN: 'http://localhost:5173',
+    WEB_ORIGIN: TEST_WEB_ORIGIN,
+    API_ORIGIN: 'http://localhost:3000',
+    BETTER_AUTH_SECRET: TEST_AUTH_SECRET,
     // Por padrão, o banco de teste: toda escrita abre transação e grava auditoria de verdade.
     DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),

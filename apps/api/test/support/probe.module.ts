@@ -10,6 +10,7 @@ import {
   Post,
   Query,
 } from '@nestjs/common';
+import { Public } from '../../src/auth/decorators.js';
 import { type Paginated, type PaginationQuery, paginationQuerySchema } from '@verax/shared';
 import { z } from 'zod';
 import { ApiError } from '../../src/common/http/api-error.js';
@@ -24,6 +25,7 @@ const ITEMS = Array.from({ length: 30 }, (_, i) => ({ id: `item-${i + 1}` }));
 
 /** Rotas-sonda que exercitam os padrões da API (T1.2). Só existem nos testes. */
 @Controller('probe')
+@Public()
 export class ProbeController {
   @Post()
   @HttpCode(HttpStatus.CREATED)

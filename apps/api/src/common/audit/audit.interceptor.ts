@@ -1,8 +1,10 @@
 import { type CallHandler, type ExecutionContext, Injectable, type NestInterceptor } from '@nestjs/common';
 import { HTTP_CODE_METADATA } from '@nestjs/common/constants.js';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { from, lastValueFrom, type Observable } from 'rxjs';
+import { isSelfManaged } from '../../auth/decorators.js';
 import { type AuditDetails, requestContext } from '../context/request-context.js';
 import { toErrorResponse } from '../http/all-exceptions.filter.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -45,6 +47,7 @@ export class AuditInterceptor implements NestInterceptor {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly reflector: Reflector,
     @InjectPinoLogger(AuditInterceptor.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -52,6 +55,7 @@ export class AuditInterceptor implements NestInterceptor {
     if (context.getType() !== 'http') return next.handle();
     const request = context.switchToHttp().getRequest<Request & { id?: unknown }>();
     if (!WRITE_METHODS.has(request.method)) return next.handle();
+    if (isSelfManaged(this.reflector, context)) return next.handle();
 
     const entry: RequestEntry = {
       actor: resolveActor(request),

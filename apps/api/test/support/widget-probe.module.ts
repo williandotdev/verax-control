@@ -11,6 +11,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { Public } from '../../src/auth/decorators.js';
 import { z } from 'zod';
 import { AuditContext } from '../../src/common/audit/audit-context.service.js';
 import { PrismaService } from '../../src/common/prisma/prisma.service.js';
@@ -69,6 +70,7 @@ class WidgetProbeService {
 }
 
 @Controller('widgets-probe')
+@Public()
 class WidgetProbeController {
   constructor(private readonly widgets: WidgetProbeService) {}
 

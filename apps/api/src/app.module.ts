@@ -1,6 +1,7 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
+import { AuthModule } from './auth/auth.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
 import { AuditModule } from './common/audit/audit.module.js';
 import { type AppConfig, ConfigModule } from './common/config/config.module.js';
@@ -27,6 +28,7 @@ export class AppModule {
         DiscoveryModule,
         PrismaModule,
         AuditModule,
+        AuthModule,
         HealthModule,
       ],
       providers: [
