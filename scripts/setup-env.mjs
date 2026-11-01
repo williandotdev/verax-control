@@ -2,8 +2,8 @@
 // Se o .env já existe, nunca altera o que está nele: só acrescenta as variáveis novas do .env.example.
 // Nenhum valor é impresso, só os nomes das variáveis.
 //
-// O arquivo é criado em modo exclusivo ("wx") e, se já existir, lido e completado pelo mesmo descritor:
-// não há janela entre checar e escrever (sem condição de corrida).
+// O arquivo é aberto uma única vez ("a+": cria se não existir, lê e acrescenta pelo mesmo descritor). Não
+// há checagem separada da escrita, então não há janela para condição de corrida.
 import { randomBytes } from 'node:crypto';
 import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, writeSync } from 'node:fs';
 
@@ -57,29 +57,16 @@ function completeExisting(fd) {
     console.log('.env já está completo; nada foi alterado.');
     return;
   }
-  writeSync(fd, `\n# Acrescentado por pnpm setup:env\n${additions.join('\n')}\n`, fstatSync(fd).size);
-  fchmodSync(fd, 0o600);
+  // Modo "a+": a escrita vai sempre para o fim do arquivo.
+  writeSync(fd, `\n# Acrescentado por pnpm setup:env\n${additions.join('\n')}\n`);
   console.log(`.env existente mantido; variáveis acrescentadas: ${added.join(', ')}`);
 }
 
-let fd;
+const fd = openSync(target, 'a+', 0o600);
 try {
-  fd = openSync(target, 'wx', 0o600);
-} catch (error) {
-  if (error.code !== 'EEXIST') throw error;
-}
-
-if (fd !== undefined) {
-  try {
-    createNew(fd);
-  } finally {
-    closeSync(fd);
-  }
-} else {
-  const existing = openSync(target, 'r+');
-  try {
-    completeExisting(existing);
-  } finally {
-    closeSync(existing);
-  }
+  if (fstatSync(fd).size === 0) createNew(fd);
+  else completeExisting(fd);
+  fchmodSync(fd, 0o600);
+} finally {
+  closeSync(fd);
 }
