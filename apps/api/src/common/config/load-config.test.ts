@@ -7,6 +7,13 @@ const validEnv = {
   DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
 };
 
+const validProductionEnv = {
+  ...validEnv,
+  NODE_ENV: 'production',
+  WEB_ORIGIN: 'https://painel.example.com',
+  DATABASE_URL: 'postgresql://verax:secret@db.internal:5432/verax?sslmode=verify-full',
+};
+
 function problemsOf(env: NodeJS.ProcessEnv): readonly string[] {
   try {
     loadConfig(env);
@@ -54,9 +61,18 @@ describe('loadConfig', () => {
     expect(problemsOf({ ...validEnv, NODE_ENV: 'production' })).toContain(
       'WEB_ORIGIN: deve usar https em produção',
     );
-    expect(() =>
-      loadConfig({ ...validEnv, NODE_ENV: 'production', WEB_ORIGIN: 'https://painel.example.com' }),
-    ).not.toThrow();
+    expect(() => loadConfig(validProductionEnv)).not.toThrow();
+  });
+
+  it('exige TLS com certificado conferido até o banco em produção', () => {
+    for (const sslmode of ['', '?sslmode=disable', '?sslmode=require', '?sslmode=no-verify']) {
+      expect(
+        problemsOf({
+          ...validProductionEnv,
+          DATABASE_URL: `postgresql://verax:x@db.internal:5432/verax${sslmode}`,
+        }),
+      ).toContain('DATABASE_URL: deve usar sslmode=verify-full em produção (TLS com certificado conferido)');
+    }
   });
 
   it('nunca inclui o valor recebido na mensagem de erro', () => {

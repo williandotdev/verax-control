@@ -14,6 +14,11 @@ updates:
       default-days: 7
     open-pull-requests-limit: 10
     versioning-strategy: increase
+    ignore:
+      # Os tipos do Node acompanham a major do runtime (Node 24, ver .nvmrc). A troca de major é feita junto
+      # com a do runtime, não sozinha.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
     groups:
       dev-dependencies:
         dependency-type: development

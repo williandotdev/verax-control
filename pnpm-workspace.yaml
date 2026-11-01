@@ -13,15 +13,27 @@ trustPolicy: no-downgrade
 # sequestrados costumam ser detectados. Releases antigos de manutenção (ex.: semver@6.3.1, backport de
 # correção publicado depois das 7.x com provenance) geram falso positivo e já passaram por escrutínio.
 trustPolicyIgnoreAfter: 43200
+# Exceções por versão exata, aprovadas pelo responsável e com causa verificada (docs/STATUS.md, desvios).
+# Remover assim que o pacote voltar a ser publicado com provenance.
+trustPolicyExclude:
+  # Desde prisma/orm#30035 (ago/2026) o CLI `prisma` é publicado com o token do prismabot, sem OIDC; os
+  # pacotes @prisma/* da mesma release mantêm provenance. Issue aberta: prisma/orm#30850.
+  - prisma@7.10.1
 # Subdependências só podem vir do registry (sem git ou tarball remoto).
 blockExoticSubdeps: true
 # Scripts de instalação só rodam para pacotes listados em allowBuilds com true.
 strictDepBuilds: true
 allowBuilds:
+  # O Schema Engine (migrations) é baixado pelo próprio CLI na primeira execução, com checksum conferido.
+  '@prisma/engines': false
+  # Telemetria de instalação trazida pelo swagger-ui-dist; nada a ganhar em rodar.
+  '@scarf/scarf': false
   # O binário nativo do SWC já vem pelas optionalDependencies; o postinstall é só um fallback.
   '@swc/core': false
   # Os hooks do git são instalados pelo script "prepare" do projeto, não pelo postinstall do pacote.
   lefthook: false
+  # O preinstall só confere a versão do Node, o que o engineStrict já faz.
+  prisma: false
 saveExact: true
 engineStrict: true
 
