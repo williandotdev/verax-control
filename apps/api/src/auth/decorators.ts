@@ -3,9 +3,17 @@ import type { Reflector } from '@nestjs/core';
 
 export const IS_PUBLIC_KEY = 'verax:public';
 export const SELF_MANAGED_KEY = 'verax:self-managed';
+export const ALLOW_WITHOUT_MFA_KEY = 'verax:allow-without-mfa';
 
 /** Rota acessível sem sessão. Toda rota sem este decorator exige login (negação por padrão). */
 export const Public = (): MethodDecorator & ClassDecorator => SetMetadata(IS_PUBLIC_KEY, true);
+
+/**
+ * Rota acessível por sessão que ainda não cadastrou o MFA (só a identidade, para o painel conduzir o
+ * cadastro). Todas as outras exigem MFA ativo.
+ */
+export const AllowWithoutMfa = (): MethodDecorator & ClassDecorator =>
+  SetMetadata(ALLOW_WITHOUT_MFA_KEY, true);
 
 /**
  * Rota que valida a própria entrada e grava a própria auditoria (hoje, só o handler do Better Auth). Fica

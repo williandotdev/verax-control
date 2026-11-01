@@ -10,6 +10,8 @@ export interface RequestAuth {
   email: string;
   role: UserRole;
   tenantId: string | null;
+  /** MFA cadastrado e confirmado. Sem ele, só as rotas `@AllowWithoutMfa` respondem. */
+  mfaEnabled: boolean;
 }
 
 declare module 'express' {

@@ -7,6 +7,7 @@ export interface ErrorResponseBody {
   statusCode: number;
   error: string;
   message: string;
+  code?: string;
   issues?: readonly ValidationIssue[];
   requestId?: string;
 }
@@ -63,10 +64,15 @@ export function toErrorResponse(exception: unknown): ErrorResponseBody {
     return { statusCode: status, error: statusName(status), message };
   }
 
-  const message =
-    exception instanceof ApiError
-      ? exception.message
-      : (GENERIC_MESSAGES[status] ?? GENERIC_MESSAGES[400] ?? INTERNAL_ERROR_MESSAGE);
+  if (exception instanceof ApiError) {
+    return {
+      statusCode: status,
+      error: statusName(status),
+      message: exception.message,
+      ...(exception.code === undefined ? {} : { code: exception.code }),
+    };
+  }
+  const message = GENERIC_MESSAGES[status] ?? GENERIC_MESSAGES[400] ?? INTERNAL_ERROR_MESSAGE;
   return { statusCode: status, error: statusName(status), message };
 }
 

@@ -1,6 +1,7 @@
 import {
   type CanActivate,
   type ExecutionContext,
+  HttpStatus,
   Inject,
   Injectable,
   UnauthorizedException,
@@ -9,11 +10,12 @@ import { Reflector } from '@nestjs/core';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { UserRole } from '../generated/prisma/enums.js';
-import { AUTH, SESSION_ABSOLUTE_MAX_MS } from './auth.constants.js';
+import { AUTH, MFA_REQUIRED_CODE, SESSION_ABSOLUTE_MAX_MS } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
-import { IS_PUBLIC_KEY } from './decorators.js';
+import { ALLOW_WITHOUT_MFA_KEY, IS_PUBLIC_KEY } from './decorators.js';
 
 const ROLES = new Set<string>(Object.values(UserRole));
 
@@ -21,7 +23,7 @@ const ROLES = new Set<string>(Object.values(UserRole));
  * Guard global: toda rota exige sessão válida, exceto as marcadas com `@Public()`.
  *
  * Além da validação do Better Auth (assinatura do cookie, expiração por inatividade), confere a duração
- * máxima de 12 h e o status do usuário a cada requisição, e repassa o cookie renovado.
+ * máxima de 12 h, o status do usuário e o MFA a cada requisição, e repassa o cookie renovado.
  */
 @Injectable()
 export class SessionGuard implements CanActivate {
@@ -67,8 +69,22 @@ export class SessionGuard implements CanActivate {
       email: user.email,
       role: user.role as UserRole,
       tenantId: user.tenantId ?? null,
+      mfaEnabled: user.twoFactorEnabled === true,
     };
     request.auth = auth;
+
+    // MFA obrigatório (T2.2): sem ele, a sessão só alcança as rotas marcadas para o cadastro do MFA.
+    const allowWithoutMfa = this.reflector.getAllAndOverride<boolean | undefined>(ALLOW_WITHOUT_MFA_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (!auth.mfaEnabled && !allowWithoutMfa) {
+      throw new ApiError(
+        HttpStatus.FORBIDDEN,
+        'Cadastre a verificação em duas etapas para continuar',
+        MFA_REQUIRED_CODE,
+      );
+    }
     return true;
   }
 }

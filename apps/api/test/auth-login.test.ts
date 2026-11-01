@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import {
   cookieHeader,
+  hasSessionCookie,
   createTenant,
   createUser,
   signIn,
@@ -48,7 +49,13 @@ describe('login com Better Auth (T2.1)', () => {
       const cookie = await signIn(app, user.email, user.password);
 
       const me = await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookie).expect(200);
-      expect(me.body).toEqual({ userId: user.id, email: user.email, role: 'analista_cliente', tenantId });
+      expect(me.body).toEqual({
+        userId: user.id,
+        email: user.email,
+        role: 'analista_cliente',
+        tenantId,
+        mfaEnabled: false,
+      });
 
       await request(app.getHttpServer()).get('/v1/me').expect(401);
       await request(app.getHttpServer())
@@ -90,7 +97,7 @@ describe('login com Better Auth (T2.1)', () => {
       const user = await createUser(app, { status });
       const response = await signInRequest(app, user.email, user.password);
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(cookieHeader(response.headers['set-cookie'])).not.toContain('session_token=');
+      expect(hasSessionCookie(cookieHeader(response.headers['set-cookie']))).toBe(false);
     });
 
     it('usuário de cliente inativo não recebe sessão', async () => {
@@ -100,7 +107,7 @@ describe('login com Better Auth (T2.1)', () => {
 
       const response = await signInRequest(app, user.email, user.password);
       expect(response.status).toBeGreaterThanOrEqual(400);
-      expect(cookieHeader(response.headers['set-cookie'])).not.toContain('session_token=');
+      expect(hasSessionCookie(cookieHeader(response.headers['set-cookie']))).toBe(false);
     });
   });
 

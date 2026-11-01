@@ -12,7 +12,12 @@ export interface ValidationIssue {
  * genérica do status, e qualquer 5xx sai como "Erro interno": a mensagem precisa ser opt-in.
  */
 export class ApiError extends HttpException {
-  constructor(status: HttpStatus, publicMessage: string) {
+  constructor(
+    status: HttpStatus,
+    publicMessage: string,
+    /** Código estável para o painel decidir o que fazer (ex.: `MFA_REQUIRED`). */
+    readonly code?: string,
+  ) {
     super(publicMessage, status);
   }
 }

@@ -90,19 +90,22 @@ model Tenant {
 // ---------------------------------------------------------------------------------------------------
 
 model User {
-  id            String     @id
-  name          String     @db.VarChar(120)
-  email         String     @unique @db.VarChar(254)
-  emailVerified Boolean    @default(false)
-  image         String?
-  role          UserRole
-  tenantId      String?    @db.Uuid
-  tenant        Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  status        UserStatus @default(invited)
-  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
-  sessions      Session[]
-  accounts      Account[]
+  id               String      @id
+  name             String      @db.VarChar(120)
+  email            String      @unique @db.VarChar(254)
+  emailVerified    Boolean     @default(false)
+  image            String?
+  role             UserRole
+  tenantId         String?     @db.Uuid
+  tenant           Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status           UserStatus  @default(invited)
+  /// MFA (T2.2): sem ele, a sessão só alcança o cadastro do próprio MFA.
+  twoFactorEnabled Boolean     @default(false)
+  createdAt        DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime    @updatedAt @db.Timestamptz(3)
+  sessions         Session[]
+  accounts         Account[]
+  twoFactors       TwoFactor[]
 
   @@index([tenantId])
 }
@@ -151,4 +154,19 @@ model Verification {
   updatedAt  DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([identifier])
+}
+
+/// TOTP e códigos de recuperação (T2.2). O segredo e os códigos ficam cifrados com a chave do Better Auth.
+model TwoFactor {
+  id                      String    @id
+  secret                  String
+  backupCodes             String
+  userId                  String
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verified                Boolean   @default(true)
+  failedVerificationCount Int       @default(0)
+  lockedUntil             DateTime? @db.Timestamptz(3)
+
+  @@index([secret])
+  @@index([userId])
 }

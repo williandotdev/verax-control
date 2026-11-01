@@ -20,3 +20,13 @@ export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
 /** Links de convite e de redefinição de senha: uso único, 60 min. */
 export const PASSWORD_LINK_TTL_SECONDS = 60 * 60;
+
+/** MFA (T2.2): falhas seguidas de TOTP/código de recuperação antes do bloqueio, e duração do bloqueio. */
+export const MFA_MAX_FAILED_ATTEMPTS = 5;
+export const MFA_LOCKOUT_SECONDS = 15 * 60;
+/** Tempo para digitar o código depois da senha. */
+export const MFA_CHALLENGE_SECONDS = 5 * 60;
+export const BACKUP_CODES_AMOUNT = 10;
+
+/** Código de erro devolvido quando a sessão ainda não cadastrou o MFA. */
+export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';

@@ -7,6 +7,7 @@ import type { Auth } from '../../src/auth/auth.factory.js';
 import { type NewUser, provisionUser } from '../../src/auth/user-provisioning.js';
 import { PrismaService } from '../../src/common/prisma/prisma.service.js';
 import { TEST_WEB_ORIGIN } from './create-app.js';
+import { secretFromUri, totp } from './totp.js';
 
 /** Senha válida para usuários de teste (só existe no banco de teste). */
 export const TEST_PASSWORD = 'senha-de-teste-longa-1';
@@ -59,4 +60,81 @@ export async function signIn(app: NestExpressApplication, email: string, passwor
 export function cookieHeader(setCookie: string | string[] | undefined): string {
   const cookies = Array.isArray(setCookie) ? setCookie : setCookie ? [setCookie] : [];
   return cookies.map((cookie) => cookie.split(';', 1)[0]).join('; ');
+}
+
+export function authPost(app: NestExpressApplication, path: string, cookie: string, body: object = {}) {
+  return request(app.getHttpServer())
+    .post(`/v1/auth${path}`)
+    .set('Origin', TEST_WEB_ORIGIN)
+    .set('Cookie', cookie)
+    .send(body);
+}
+
+/** Junta cookies novos aos atuais (o Better Auth troca o cookie de sessão em alguns passos). */
+export function mergeCookies(current: string, setCookie: string | string[] | undefined): string {
+  const jar = new Map(
+    current
+      .split('; ')
+      .filter(Boolean)
+      .map((pair) => [pair.split('=', 1)[0] ?? '', pair] as const),
+  );
+  for (const pair of cookieHeader(setCookie).split('; ').filter(Boolean)) {
+    jar.set(pair.split('=', 1)[0] ?? '', pair);
+  }
+  return [...jar.values()].join('; ');
+}
+
+export interface MfaEnrollment {
+  secret: string;
+  backupCodes: string[];
+  cookie: string;
+}
+
+/** Cadastra o MFA de uma sessão recém-aberta: gera o segredo e confirma com o primeiro código. */
+export async function enrollMfa(
+  app: NestExpressApplication,
+  cookie: string,
+  password: string,
+): Promise<MfaEnrollment> {
+  const enable = await authPost(app, '/two-factor/enable', cookie, { password }).expect(200);
+  const { totpURI, backupCodes } = enable.body as { totpURI: string; backupCodes: string[] };
+  const secret = secretFromUri(totpURI);
+  const withEnableCookies = mergeCookies(cookie, enable.headers['set-cookie']);
+  const verify = await authPost(app, '/two-factor/verify-totp', withEnableCookies, {
+    code: totp(secret),
+  }).expect(200);
+  return { secret, backupCodes, cookie: mergeCookies(withEnableCookies, verify.headers['set-cookie']) };
+}
+
+/** Login completo de quem já tem MFA: senha, depois o código. Devolve o cookie da sessão. */
+export async function signInWithMfa(
+  app: NestExpressApplication,
+  email: string,
+  password: string,
+  secret: string,
+): Promise<string> {
+  const first = await signInRequest(app, email, password).expect(200);
+  expect(first.body).toMatchObject({ twoFactorRedirect: true });
+  const challenge = cookieHeader(first.headers['set-cookie']);
+  // Código da próxima janela de 30 s: o da janela atual pode já ter sido usado no cadastro.
+  const verify = await authPost(app, '/two-factor/verify-totp', challenge, {
+    code: totp(secret, Date.now() + 30_000),
+  }).expect(200);
+  return mergeCookies(challenge, verify.headers['set-cookie']);
+}
+
+/** Usuário ativo com MFA cadastrado e sessão aberta: o ponto de partida dos testes de permissão. */
+export async function createSignedInUser(
+  app: NestExpressApplication,
+  overrides: Partial<NewUser> = {},
+): Promise<{ id: string; email: string; password: string; secret: string; cookie: string }> {
+  const user = await createUser(app, overrides);
+  const firstSession = await signIn(app, user.email, user.password);
+  const { secret, cookie } = await enrollMfa(app, firstSession, user.password);
+  return { ...user, secret, cookie };
+}
+
+/** Há um cookie de sessão com valor (cookie vazio é só a ordem de apagar). */
+export function hasSessionCookie(cookies: string): boolean {
+  return /session_token=[^;\s]+/.test(cookies);
 }

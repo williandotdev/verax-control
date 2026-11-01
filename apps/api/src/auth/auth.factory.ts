@@ -1,12 +1,17 @@
 import { PRODUCT_NAME } from '@verax/shared';
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
+import { twoFactor } from 'better-auth/plugins/two-factor';
 import type { PinoLogger } from 'nestjs-pino';
 import type { AppConfig } from '../common/config/config.module.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import {
   AUTH_BASE_PATH,
+  BACKUP_CODES_AMOUNT,
   CLIENT_IP_HEADER,
+  MFA_CHALLENGE_SECONDS,
+  MFA_LOCKOUT_SECONDS,
+  MFA_MAX_FAILED_ATTEMPTS,
   PASSWORD_LINK_TTL_SECONDS,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
@@ -82,6 +87,23 @@ export function createAuth({ config, prisma, logger }: AuthDependencies) {
         },
       },
     },
+
+    plugins: [
+      // MFA obrigatório (T2.2): TOTP de 6 dígitos e 10 códigos de recuperação. Segredo e códigos são
+      // cifrados com a chave do Better Auth antes de ir para o banco.
+      twoFactor({
+        issuer: PRODUCT_NAME,
+        totpOptions: { digits: 6, period: 30 },
+        backupCodeOptions: { amount: BACKUP_CODES_AMOUNT, length: 10, storeBackupCodes: 'encrypted' },
+        skipVerificationOnEnable: false,
+        twoFactorCookieMaxAge: MFA_CHALLENGE_SECONDS,
+        accountLockout: {
+          enabled: true,
+          maxFailedAttempts: MFA_MAX_FAILED_ATTEMPTS,
+          durationSeconds: MFA_LOCKOUT_SECONDS,
+        },
+      }),
+    ],
 
     advanced: {
       useSecureCookies: true,
