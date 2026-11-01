@@ -17,6 +17,7 @@
     "build": "pnpm --recursive build",
     "test": "pnpm --recursive test && pnpm test:lint-rules",
     "test:lint-rules": "node scripts/verify-lint-rules.mjs",
+    "prelint": "pnpm --filter @verax/shared build",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

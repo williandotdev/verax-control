@@ -1,0 +1,55 @@
+# Regras próprias do Verax Control. Espelham as regras de segurança do CLAUDE.md.
+# Testadas por `semgrep --test .semgrep` contra .semgrep/rules.ts.
+rules:
+  - id: verax-prisma-raw-unsafe
+    message: Proibido $queryRawUnsafe/$executeRawUnsafe. Use $queryRaw como tagged template (regra 1).
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: $DB.$queryRawUnsafe(...)
+      - pattern: $DB.$executeRawUnsafe(...)
+
+  - id: verax-tls-reject-unauthorized-false
+    message: Proibido desligar a validação de TLS (regra 5).
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: '{..., rejectUnauthorized: false, ...}'
+      - pattern: $X.rejectUnauthorized = false
+
+  - id: verax-node-tls-env
+    message: Proibido mexer em NODE_TLS_REJECT_UNAUTHORIZED (regra 5).
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = $V
+      - pattern: process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = $V
+
+  - id: verax-cors-wildcard
+    message: Proibido CORS com origem * (regra 5).
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: '{..., origin: "*", ...}'
+      - pattern: $APP.enableCors()
+
+  - id: verax-opensearch-query-string
+    message: Consultas ao OpenSearch devem usar query DSL estruturado, nunca query_string (regra 1).
+    severity: ERROR
+    languages: [typescript, javascript]
+    pattern-either:
+      - pattern: '{..., query_string: $Q, ...}'
+      - pattern: '{..., simple_query_string: $Q, ...}'
+
+  - id: verax-log-sensitive-header
+    message: Proibido registrar Authorization ou Cookie em log (regra 7).
+    severity: ERROR
+    languages: [typescript, javascript]
+    patterns:
+      - pattern-either:
+          - pattern: $LOG.$M(..., $REQ.headers.authorization, ...)
+          - pattern: $LOG.$M(..., $REQ.headers.cookie, ...)
+          - pattern: $LOG.$M(..., $REQ.headers, ...)
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(log|info|warn|error|debug|trace|fatal|verbose)$
