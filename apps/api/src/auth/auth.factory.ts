@@ -1,12 +1,15 @@
 import { PRODUCT_NAME } from '@verax/shared';
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
+import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api';
 import { twoFactor } from 'better-auth/plugins/two-factor';
 import type { PinoLogger } from 'nestjs-pino';
 import type { AppConfig } from '../common/config/config.module.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import { AUTH_AUDIT_ACTIONS, type AuthAuditSink, requestMetadata } from './auth-audit.js';
 import {
   AUTH_BASE_PATH,
+  AUTH_RATE_LIMIT_RULES,
   BACKUP_CODES_AMOUNT,
   CLIENT_IP_HEADER,
   MFA_CHALLENGE_SECONDS,
@@ -18,18 +21,33 @@ import {
   SESSION_IDLE_TIMEOUT_SECONDS,
   SESSION_REFRESH_AFTER_SECONDS,
 } from './auth.constants.js';
+import { clearLoginFailures, isLoginLocked, normalizeEmail, registerLoginFailure } from './login-attempts.js';
 
 export interface AuthDependencies {
   config: AppConfig;
   prisma: PrismaService;
   logger: Pick<PinoLogger, 'warn' | 'error'>;
+  /** Onde gravar os eventos de autenticação (a trilha de auditoria, na aplicação). */
+  audit: AuthAuditSink;
 }
+
+const SIGN_IN_PATH = '/sign-in/email';
+const ACCOUNT_LOCKED_MESSAGE = 'Muitas tentativas. Tente novamente em alguns minutos.';
 
 /**
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
  * Cada opção abaixo tem um motivo de segurança; mudar qualquer uma pede revisão.
  */
-export function createAuth({ config, prisma, logger }: AuthDependencies) {
+export function createAuth({ config, prisma, logger, audit }: AuthDependencies) {
+  /** A auditoria nunca derruba o login; uma falha ao gravar vai para o log. */
+  const record: AuthAuditSink = async (entry) => {
+    try {
+      await audit(entry);
+    } catch {
+      logger.error({ audit: { action: entry.action, outcome: entry.outcome } }, 'falha ao gravar auditoria');
+    }
+  };
+
   return betterAuth({
     appName: PRODUCT_NAME,
     baseURL: config.API_ORIGIN,
@@ -86,6 +104,63 @@ export function createAuth({ config, prisma, logger }: AuthDependencies) {
           },
         },
       },
+    },
+
+    // Limite por IP (T2.3). O IP vem do header interno que o AuthController preenche.
+    rateLimit: {
+      enabled: config.AUTH_RATE_LIMIT_ENABLED,
+      storage: 'database',
+      window: AUTH_RATE_LIMIT_RULES.default.window,
+      max: AUTH_RATE_LIMIT_RULES.default.max,
+      customRules: Object.fromEntries(
+        Object.entries(AUTH_RATE_LIMIT_RULES).filter(([path]) => path !== 'default'),
+      ),
+    },
+
+    hooks: {
+      // Bloqueio por conta (T2.3): e-mail bloqueado nem chega a conferir a senha.
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== SIGN_IN_PATH) return;
+        const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
+        if (email === undefined || !(await isLoginLocked(prisma, email))) return;
+        await record({
+          actor: { type: 'anonymous' },
+          action: AUTH_AUDIT_ACTIONS[SIGN_IN_PATH] ?? SIGN_IN_PATH,
+          resourceType: 'login',
+          resourceId: email,
+          outcome: 'denied',
+          statusCode: 429,
+          ...requestMetadata(ctx.headers),
+        });
+        throw new APIError('TOO_MANY_REQUESTS', { message: ACCOUNT_LOCKED_MESSAGE, code: 'ACCOUNT_LOCKED' });
+      }),
+      // Eventos de login, MFA, senha e sessão na trilha de auditoria (T2.3).
+      after: createAuthMiddleware(async (ctx) => {
+        const action = AUTH_AUDIT_ACTIONS[ctx.path];
+        if (action === undefined) return;
+        const returned = ctx.context.returned;
+        const statusCode = isAPIError(returned) ? returned.statusCode : 200;
+        const user = ctx.context.newSession?.user ?? ctx.context.session?.user;
+        const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
+
+        if (ctx.path === SIGN_IN_PATH && email !== undefined) {
+          if (statusCode === 401) await registerLoginFailure(prisma, email);
+          else if (statusCode < 400) await clearLoginFailures(prisma, email);
+        }
+
+        await record({
+          actor: user
+            ? { type: 'user', id: user.id, tenantId: (user as { tenantId?: string | null }).tenantId ?? null }
+            : { type: 'anonymous' },
+          action,
+          resourceType: ctx.path === SIGN_IN_PATH ? 'login' : undefined,
+          resourceId: ctx.path === SIGN_IN_PATH ? email : undefined,
+          outcome:
+            statusCode < 400 ? 'success' : statusCode === 401 || statusCode === 403 ? 'denied' : 'failure',
+          statusCode,
+          ...requestMetadata(ctx.headers),
+        });
+      }),
     },
 
     plugins: [

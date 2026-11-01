@@ -9,6 +9,8 @@ export const AUTH_BASE_PATH = `/${API_PREFIX}/auth`;
  * sobrescrito, então ele não consegue forjar o próprio IP.
  */
 export const CLIENT_IP_HEADER = 'x-verax-client-ip';
+/** Header interno com o request id, para a auditoria de login ligar o evento ao log. Também sobrescrito. */
+export const REQUEST_ID_INTERNAL_HEADER = 'x-verax-request-id';
 
 /** Sessão expira após 30 min sem uso (renovada a cada minuto de atividade). */
 export const SESSION_IDLE_TIMEOUT_SECONDS = 30 * 60;
@@ -30,3 +32,17 @@ export const BACKUP_CODES_AMOUNT = 10;
 
 /** Código de erro devolvido quando a sessão ainda não cadastrou o MFA. */
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
+
+/**
+ * Limite por IP nas rotas de autenticação (T2.3), em janelas de segundos. Guardado no banco para valer
+ * entre instâncias da API.
+ */
+export const AUTH_RATE_LIMIT_RULES = {
+  default: { window: 60, max: 100 },
+  '/sign-in/email': { window: 5 * 60, max: 20 },
+  '/two-factor/verify-totp': { window: 60, max: 5 },
+  '/two-factor/verify-backup-code': { window: 60, max: 5 },
+  '/request-password-reset': { window: 15 * 60, max: 5 },
+  '/reset-password': { window: 15 * 60, max: 10 },
+  '/change-password': { window: 15 * 60, max: 10 },
+} as const;

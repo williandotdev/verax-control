@@ -4,6 +4,7 @@ import { createAuth } from '../auth/auth.factory.js';
 import { provisionUser } from '../auth/user-provisioning.js';
 import { loadEnvFileForLocalDevelopment } from '../common/config/load-env-file.js';
 import { loadConfig } from '../common/config/load-config.js';
+import { AuditService } from '../common/audit/audit.service.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 
 /** Clientes fictícios para desenvolvimento. Nenhum nome de cliente real entra no repositório. */
@@ -33,7 +34,13 @@ async function seed(): Promise<void> {
 
   const prisma = new PrismaService(config);
   try {
-    const auth = createAuth({ config, prisma, logger: console });
+    const auditService = new AuditService();
+    const auth = createAuth({
+      config,
+      prisma,
+      logger: console,
+      audit: (entry) => auditService.write(prisma, entry),
+    });
 
     for (const name of DEMO_TENANTS) {
       const existing = await prisma.tenant.findFirst({ where: { name }, select: { id: true } });

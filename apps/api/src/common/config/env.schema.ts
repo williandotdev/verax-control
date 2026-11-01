@@ -29,6 +29,13 @@ export const envSchema = z
     BETTER_AUTH_SECRET: z
       .string({ error: 'obrigatória' })
       .min(32, { error: 'deve ter pelo menos 32 caracteres' }),
+    // Chave HMAC dos tokens CSRF (T2.3), separada da chave de sessão.
+    CSRF_SECRET: z.string({ error: 'obrigatória' }).min(32, { error: 'deve ter pelo menos 32 caracteres' }),
+    // Limite de tentativas por IP nas rotas de autenticação. Só os testes desligam; produção exige ligado.
+    AUTH_RATE_LIMIT_ENABLED: z
+      .enum(['true', 'false'], { error: 'deve ser true ou false' })
+      .default('true')
+      .transform((value) => value === 'true'),
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
@@ -38,6 +45,13 @@ export const envSchema = z
       if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
       }
+    }
+    if (env.NODE_ENV === 'production' && !env.AUTH_RATE_LIMIT_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTH_RATE_LIMIT_ENABLED'],
+        message: 'deve ficar ligado em produção',
+      });
     }
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({

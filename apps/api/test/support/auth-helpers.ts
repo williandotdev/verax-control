@@ -138,3 +138,15 @@ export async function createSignedInUser(
 export function hasSessionCookie(cookies: string): boolean {
   return /session_token=[^;\s]+/.test(cookies);
 }
+
+/** Busca o token CSRF da sessão; devolve o cookie atualizado (com o cookie do token) e o token. */
+export async function withCsrf(
+  app: NestExpressApplication,
+  cookie: string,
+): Promise<{ cookie: string; token: string }> {
+  const response = await request(app.getHttpServer()).get('/v1/csrf-token').set('Cookie', cookie).expect(200);
+  return {
+    cookie: mergeCookies(cookie, response.headers['set-cookie']),
+    token: (response.body as { token: string }).token,
+  };
+}

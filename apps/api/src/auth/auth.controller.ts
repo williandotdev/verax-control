@@ -12,7 +12,7 @@ import {
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import type { Request, Response } from 'express';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
-import { AUTH, AUTH_BASE_PATH, CLIENT_IP_HEADER } from './auth.constants.js';
+import { AUTH, AUTH_BASE_PATH, CLIENT_IP_HEADER, REQUEST_ID_INTERNAL_HEADER } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
 import { Public, SelfManaged } from './decorators.js';
 
@@ -55,7 +55,7 @@ export class AuthController {
   }
 
   @All('*path')
-  async handle(@Req() request: Request, @Res() response: Response): Promise<void> {
+  async handle(@Req() request: Request & { id?: unknown }, @Res() response: Response): Promise<void> {
     const route = `${request.method} ${request.path.slice(AUTH_BASE_PATH.length)}`;
     if (!ALLOWED_AUTH_ROUTES.has(route)) throw new NotFoundException();
 
@@ -79,8 +79,10 @@ export class AuthController {
       throw new ForbiddenException();
     }
 
-    // Chave constante do módulo; o valor é o IP calculado pelo Express, não um dado do cliente.
+    // Headers internos para o Better Auth (limite por IP e auditoria). Chaves constantes do módulo; os valores
+    // vêm do Express e do gerador de request id, e qualquer valor mandado pelo cliente é sobrescrito.
     request.headers[CLIENT_IP_HEADER] = request.ip; // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
+    request.headers[REQUEST_ID_INTERNAL_HEADER] = typeof request.id === 'string' ? request.id : undefined; // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
     await this.handler(request, response);
   }
 

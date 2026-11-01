@@ -14,11 +14,14 @@ import { LogCapture } from './log-capture.js';
 export const TEST_WEB_ORIGIN = 'http://localhost:5173';
 // Só para testes; gerado na hora, nunca é um segredo real.
 const TEST_AUTH_SECRET = randomBytes(32).toString('base64url');
+const TEST_CSRF_SECRET = randomBytes(32).toString('base64url');
 
 export interface CreateAppOptions {
   databaseUrl?: string;
   nodeEnv?: AppConfig['NODE_ENV'];
   trustProxyHops?: number;
+  /** Limite de tentativas por IP: desligado por padrão nos testes, que fazem muitos logins do mesmo IP. */
+  authRateLimit?: boolean;
   capture?: LogCapture;
   /** Módulos extras só de teste (ex.: controllers-sonda). */
   imports?: ModuleMetadata['imports'];
@@ -34,6 +37,8 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     WEB_ORIGIN: TEST_WEB_ORIGIN,
     API_ORIGIN: 'http://localhost:3000',
     BETTER_AUTH_SECRET: TEST_AUTH_SECRET,
+    CSRF_SECRET: TEST_CSRF_SECRET,
+    AUTH_RATE_LIMIT_ENABLED: String(options.authRateLimit ?? false),
     // Por padrão, o banco de teste: toda escrita abre transação e grava auditoria de verdade.
     DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),

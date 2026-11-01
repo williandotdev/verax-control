@@ -6,6 +6,7 @@ const validEnv = {
   WEB_ORIGIN: 'http://localhost:5173',
   API_ORIGIN: 'http://localhost:3000',
   BETTER_AUTH_SECRET: 'x'.repeat(43),
+  CSRF_SECRET: 'y'.repeat(43),
   DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
 };
 
@@ -40,6 +41,13 @@ describe('loadConfig', () => {
     const problems = problemsOf({ ...validEnv, BETTER_AUTH_SECRET: shortValue });
     expect(problems).toContain('BETTER_AUTH_SECRET: deve ter pelo menos 32 caracteres');
     expect(problems.join(' ')).not.toContain(shortValue);
+  });
+
+  it('não aceita desligar o limite de tentativas em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, AUTH_RATE_LIMIT_ENABLED: 'false' })).toContain(
+      'AUTH_RATE_LIMIT_ENABLED: deve ficar ligado em produção',
+    );
+    expect(loadConfig(validEnv).AUTH_RATE_LIMIT_ENABLED).toBe(true);
   });
 
   it('exige https na origem da API em produção', () => {

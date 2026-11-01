@@ -1,11 +1,13 @@
 import { type NestApplicationOptions, RequestMethod } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { z } from 'zod';
 import type { AppConfig } from './common/config/config.module.js';
 import { API_PREFIX } from './common/http/api-prefix.js';
 import { setupOpenApi } from './common/http/openapi.js';
+import { CSRF_HEADER } from './auth/csrf.js';
 
 export { API_PREFIX };
 export const JSON_BODY_LIMIT = '100kb';
@@ -42,6 +44,20 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
   app.set('trust proxy', config.TRUST_PROXY_HOPS);
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.use(helmet(API_HELMET_OPTIONS));
+  // CORS só para o painel, com cookies (T2.3). Qualquer outra origem não recebe os headers de permissão.
+  app.enableCors({
+    // Função em vez de texto: outra origem não recebe nem o header com o endereço do painel.
+    origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
+      callback(null, origin === config.WEB_ORIGIN);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allowedHeaders: ['Content-Type', CSRF_HEADER],
+    exposedHeaders: ['X-Request-Id'],
+    maxAge: 600,
+  });
+  // Só para ler o cookie do token CSRF; o Better Auth lê os próprios cookies.
+  app.use(cookieParser());
   app.setGlobalPrefix(API_PREFIX, {
     // Health check do ALB fica fora do prefixo versionado.
     exclude: [

@@ -170,3 +170,19 @@ model TwoFactor {
   @@index([secret])
   @@index([userId])
 }
+
+/// Limite de requisições por IP das rotas de autenticação (T2.3), no banco para valer entre instâncias.
+model RateLimit {
+  id          String @id
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+}
+
+/// Falhas de senha por e-mail (T2.3). Vale também para e-mail inexistente, para não revelar quem existe.
+model LoginAttempt {
+  email          String    @id @db.VarChar(254)
+  failures       Int
+  firstFailureAt DateTime  @db.Timestamptz(3)
+  lockedUntil    DateTime? @db.Timestamptz(3)
+}
