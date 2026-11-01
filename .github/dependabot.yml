@@ -8,11 +8,10 @@ updates:
       day: monday
       time: '06:00'
       timezone: America/Sao_Paulo
-    # Espera alguns dias antes de propor versão nova (defesa contra pacote sequestrado);
-    # precisa ser maior que o minimumReleaseAge do pnpm (24h), senão o install do PR falha.
+    # Espera 7 dias antes de propor versão nova de rotina (defesa contra pacote sequestrado).
+    # Precisa ser maior que o minimumReleaseAge do pnpm (24h), senão o install do PR falha.
     cooldown:
-      default-days: 3
-      semver-major-days: 7
+      default-days: 7
     open-pull-requests-limit: 10
     versioning-strategy: increase
     groups:
