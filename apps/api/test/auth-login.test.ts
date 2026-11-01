@@ -49,7 +49,7 @@ describe('login com Better Auth (T2.1)', () => {
       const cookie = await signIn(app, user.email, user.password);
 
       const me = await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookie).expect(200);
-      expect(me.body).toEqual({
+      expect(me.body).toMatchObject({
         userId: user.id,
         email: user.email,
         role: 'analista_cliente',

@@ -1,5 +1,6 @@
 import { type ExecutionContext, SetMetadata } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
+import type { Permission } from '@verax/shared';
 
 export const IS_PUBLIC_KEY = 'verax:public';
 export const SELF_MANAGED_KEY = 'verax:self-managed';
@@ -30,3 +31,17 @@ export function isSelfManaged(reflector: Reflector, context: ExecutionContext): 
   ]);
   return reason !== undefined;
 }
+
+export const PERMISSIONS_KEY = 'verax:permissions';
+export const AUTHENTICATED_KEY = 'verax:authenticated';
+
+/**
+ * Permissões exigidas pela rota (todas). Toda rota que exige sessão precisa declarar `@RequirePermission`
+ * ou `@Authenticated`; sem declaração, a rota é negada (T2.4).
+ */
+export const RequirePermission = (
+  ...permissions: [Permission, ...Permission[]]
+): MethodDecorator & ClassDecorator => SetMetadata(PERMISSIONS_KEY, permissions);
+
+/** Rota liberada para qualquer usuário logado (ex.: a própria identidade), declarada explicitamente. */
+export const Authenticated = (): MethodDecorator & ClassDecorator => SetMetadata(AUTHENTICATED_KEY, true);

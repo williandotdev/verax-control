@@ -3,6 +3,7 @@ import { Controller, Get, Module } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Authenticated } from '../src/auth/decorators.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import {
   authPost,
@@ -21,6 +22,7 @@ import { secretFromUri, totp } from './support/totp.js';
 
 /** Rota comum, protegida: só responde a sessão com MFA. */
 @Controller('mfa-probe')
+@Authenticated()
 class MfaProbeController {
   @Get()
   ok(): { ok: true } {

@@ -14,7 +14,7 @@ import { doubleCsrf } from 'csrf-csrf';
 import type { Request, Response } from 'express';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
-import { AllowWithoutMfa, isSelfManaged } from './decorators.js';
+import { AllowWithoutMfa, Authenticated, isSelfManaged } from './decorators.js';
 
 export const CSRF_HEADER = 'x-csrf-token';
 export const CSRF_COOKIE = '__Host-verax.csrf';
@@ -47,6 +47,7 @@ export class CsrfController {
   constructor(@Inject(CSRF_UTILITIES) private readonly csrf: CsrfUtilities) {}
 
   @Get()
+  @Authenticated()
   @AllowWithoutMfa()
   token(@Req() request: Request, @Res({ passthrough: true }) response: Response): { token: string } {
     return { token: this.csrf.generateCsrfToken(request, response, { overwrite: true }) };

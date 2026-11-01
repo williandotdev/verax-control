@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { Authenticated } from '../src/auth/decorators.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import {
   authPost,
@@ -19,6 +20,7 @@ import { totp } from './support/totp.js';
 
 /** Escrita comum, protegida por sessão + MFA + CSRF. */
 @Controller('csrf-probe')
+@Authenticated()
 class CsrfProbeController {
   @Post()
   create(@Body({ schema: z.strictObject({ name: z.string() }) }) body: { name: string }): { name: string } {

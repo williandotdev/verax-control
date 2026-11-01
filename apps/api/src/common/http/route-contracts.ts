@@ -3,7 +3,12 @@ import { METHOD_METADATA, PATH_METADATA, ROUTE_ARGS_METADATA } from '@nestjs/com
 import { RouteParamtypes } from '@nestjs/common/internal';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { z } from 'zod';
-import { IS_PUBLIC_KEY, SELF_MANAGED_KEY } from '../../auth/decorators.js';
+import {
+  AUTHENTICATED_KEY,
+  IS_PUBLIC_KEY,
+  PERMISSIONS_KEY,
+  SELF_MANAGED_KEY,
+} from '../../auth/decorators.js';
 
 interface RouteArgument {
   index: number;
@@ -131,6 +136,8 @@ export interface RoutePolicy {
   route: string;
   isPublic: boolean;
   selfManaged: boolean;
+  permissions: string[];
+  authenticated: boolean;
 }
 
 /** Lista cada rota com as marcações que relaxam a negação por padrão (`@Public`, `@SelfManaged`). */
@@ -155,6 +162,8 @@ export function listRoutePolicies(app: INestApplication): RoutePolicy[] {
         route: `${metatype.name}.${methodName}`,
         isPublic: read(IS_PUBLIC_KEY) === true,
         selfManaged: read(SELF_MANAGED_KEY) !== undefined,
+        permissions: (read(PERMISSIONS_KEY) as string[] | undefined) ?? [],
+        authenticated: read(AUTHENTICATED_KEY) === true,
       });
     }
   }

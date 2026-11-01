@@ -86,6 +86,14 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
     ]);
   });
 
+  it('toda rota que exige sessão declara permissão ou @Authenticated (negação por padrão)', () => {
+    const undeclared = listRoutePolicies(app)
+      .filter((policy) => !policy.isPublic)
+      .filter((policy) => policy.permissions.length === 0 && !policy.authenticated)
+      .map((policy) => policy.route);
+    expect(undeclared).toEqual([]);
+  });
+
   it('detecta cada tipo de violação', () => {
     const broken = findRouteContractViolations(app).filter((violation) =>
       violation.route.startsWith(BrokenController.name),
