@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import pg from 'pg';
 import type { TestProject } from 'vitest/node';
 import { loadEnvFileForLocalDevelopment } from '../../src/common/config/load-env-file.js';
 import { scrubString } from '../../src/common/logger/sanitize.js';
@@ -20,11 +21,41 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
+/** Recria o schema do banco de teste do zero, para cada execução começar limpa e com as migrations atuais. */
+async function resetTestDatabase(url: string): Promise<void> {
+  const client = new pg.Client({ connectionString: url });
+  try {
+    await client.connect();
+    await client.query('DROP SCHEMA IF EXISTS public CASCADE');
+    await client.query('CREATE SCHEMA public');
+  } catch (error) {
+    fail(`Não foi possível preparar o banco de teste: ${scrubString(String((error as Error).message))}`);
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
 /**
- * Antes da suíte: aplica as migrations no banco de teste e entrega a URL aos testes via `inject`.
+ * Tabelas que só existem no banco de teste, usadas pelas rotas-sonda. Criadas aqui, uma vez, porque os
+ * arquivos de teste rodam em paralelo.
+ */
+async function createTestOnlyTables(url: string): Promise<void> {
+  const client = new pg.Client({ connectionString: url });
+  try {
+    await client.connect();
+    await client.query(
+      'CREATE TABLE widget_probe (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL)',
+    );
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+/**
+ * Antes da suíte: recria e aplica as migrations no banco de teste e entrega a URL aos testes via `inject`.
  * Recusa qualquer banco cujo nome não termine em `_test`, para nunca rodar contra dados reais.
  */
-export default function setup(project: TestProject): void {
+export default async function setup(project: TestProject): Promise<void> {
   loadEnvFileForLocalDevelopment(apiDir);
 
   const url = process.env['TEST_DATABASE_URL'];
@@ -35,6 +66,8 @@ export default function setup(project: TestProject): void {
   if (!databaseName.endsWith('_test')) {
     fail('TEST_DATABASE_URL precisa apontar para um banco cujo nome termina em "_test".');
   }
+
+  await resetTestDatabase(url);
 
   try {
     execFileSync(process.execPath, [prismaCli, 'migrate', 'deploy'], {
@@ -50,5 +83,6 @@ export default function setup(project: TestProject): void {
     fail(`Falha ao aplicar as migrations no banco de teste:\n${scrubString(output)}`);
   }
 
+  await createTestOnlyTables(url);
   project.provide('testDatabaseUrl', url);
 }

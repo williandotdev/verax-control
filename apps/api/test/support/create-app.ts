@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import type { ModuleMetadata } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
+import { inject } from 'vitest';
 import { AppModule } from '../../src/app.module.js';
 import { APP_CREATE_OPTIONS, configureApp } from '../../src/app.setup.js';
 import type { AppConfig } from '../../src/common/config/config.module.js';
@@ -11,6 +12,7 @@ import { LogCapture } from './log-capture.js';
 export interface CreateAppOptions {
   databaseUrl?: string;
   nodeEnv?: AppConfig['NODE_ENV'];
+  trustProxyHops?: number;
   capture?: LogCapture;
   /** Módulos extras só de teste (ex.: controllers-sonda). */
   imports?: ModuleMetadata['imports'];
@@ -24,7 +26,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
   const config = loadConfig({
     NODE_ENV: options.nodeEnv ?? 'test',
     WEB_ORIGIN: 'http://localhost:5173',
-    DATABASE_URL: options.databaseUrl ?? 'postgresql://verax:unused@localhost:5432/verax_test',
+    // Por padrão, o banco de teste: toda escrita abre transação e grava auditoria de verdade.
+    DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
+    TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),
   });
   const moduleRef = await Test.createTestingModule({
     imports: [

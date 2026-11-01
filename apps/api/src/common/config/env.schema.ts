@@ -20,6 +20,9 @@ export const envSchema = z
     NODE_ENV: z.enum(['development', 'test', 'production']),
     LOG_LEVEL: z.enum(logLevels).default('info'),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    // Quantos proxies confiáveis ficam na frente da API (o ALB conta 1). Define de onde sai o IP do cliente
+    // na auditoria e no limite de tentativas: com 0, o X-Forwarded-For é ignorado e não pode ser forjado.
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     WEB_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
     DATABASE_URL: z
       .string({ error: 'obrigatória' })

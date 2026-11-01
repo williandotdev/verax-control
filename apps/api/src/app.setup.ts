@@ -38,6 +38,7 @@ const API_HELMET_OPTIONS = {
 export function configureApp(app: NestExpressApplication, config: AppConfig): void {
   z.config(z.locales.ptBR());
   app.useLogger(app.get(Logger));
+  app.set('trust proxy', config.TRUST_PROXY_HOPS);
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.use(helmet(API_HELMET_OPTIONS));
   app.setGlobalPrefix(API_PREFIX, {

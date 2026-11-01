@@ -13,3 +13,43 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+/// Quem executou a ação registrada na auditoria.
+enum AuditActorType {
+  user
+  system
+  anonymous
+}
+
+/// Resultado da operação auditada.
+enum AuditOutcome {
+  success
+  failure
+  denied
+}
+
+/// Trilha de auditoria imutável (T1.3): só INSERT. Um trigger no banco bloqueia UPDATE, DELETE e TRUNCATE.
+/// Os IDs de ator e cliente não têm chave estrangeira de propósito: o registro sobrevive à exclusão do
+/// usuário ou do cliente.
+model AuditLog {
+  id           String         @id @default(uuid(7)) @db.Uuid
+  occurredAt   DateTime       @default(now()) @db.Timestamptz(3)
+  actorType    AuditActorType
+  actorId      String?
+  tenantId     String?
+  action       String         @db.VarChar(200)
+  resourceType String?        @db.VarChar(100)
+  resourceId   String?        @db.VarChar(200)
+  outcome      AuditOutcome
+  statusCode   Int?           @db.SmallInt
+  before       Json?
+  after        Json?
+  ip           String?        @db.VarChar(64)
+  userAgent    String?        @db.VarChar(256)
+  requestId    String?        @db.VarChar(64)
+
+  @@index([tenantId, occurredAt(sort: Desc)])
+  @@index([actorId, occurredAt(sort: Desc)])
+  @@index([resourceType, resourceId])
+  @@index([requestId])
+}
