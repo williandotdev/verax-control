@@ -16,6 +16,8 @@ concurrency:
 
 env:
   CI: 'true'
+  # Sem telemetria nem checagem de atualização do CLI do Prisma.
+  CHECKPOINT_DISABLE: '1'
 
 jobs:
   lint:

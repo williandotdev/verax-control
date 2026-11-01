@@ -1,15 +1,45 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { PrismaService } from '../common/prisma/prisma.service.js';
+
+/** Tempo máximo da consulta de prontidão, abaixo do timeout do health check do ALB. */
+export const READINESS_TIMEOUT_MS = 2_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`sem resposta em ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Health check do ALB e do ECS. Fica fora do prefixo /v1 e não exige sessão.
  *
- * `/health` responde se o processo está vivo e não consulta dependências: se o banco cair, as tasks não
- * entram em ciclo de reinício. A prontidão com o banco fica em `/health/ready`.
+ * - `/health` responde se o processo está vivo e não consulta dependências: se o banco cair, as tasks não
+ *   entram em ciclo de reinício.
+ * - `/health/ready` confere o banco. A resposta nunca traz detalhe do erro; o detalhe vai só para o log.
  */
 @Controller('health')
 export class HealthController {
+  constructor(
+    private readonly prisma: PrismaService,
+    @InjectPinoLogger(HealthController.name) private readonly logger: PinoLogger,
+  ) {}
+
   @Get()
   live(): { status: 'ok' } {
     return { status: 'ok' };
+  }
+
+  @Get('ready')
+  async ready(): Promise<{ status: 'ok' }> {
+    try {
+      await withTimeout(this.prisma.$queryRaw`SELECT 1`, READINESS_TIMEOUT_MS);
+      return { status: 'ok' };
+    } catch (error) {
+      this.logger.warn({ err: error }, 'banco indisponível no health check');
+      throw new ServiceUnavailableException({ status: 'unavailable' });
+    }
   }
 }

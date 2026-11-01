@@ -13,5 +13,7 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
     environment: 'node',
+    // Aplica as migrations no banco de teste (TEST_DATABASE_URL) antes de qualquer teste.
+    globalSetup: ['test/support/global-setup.ts'],
   },
 });

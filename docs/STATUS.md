@@ -5,11 +5,12 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 ## Desvios em relação ao plano
 
-| Item             | Desvio                                | Motivo                                                |
-| ---------------- | ------------------------------------- | ----------------------------------------------------- |
-| nestjs-zod       | Removido; `ZodValidationPipe` próprio | A versão 5.5.0 não suporta NestJS 12 (peer pede ≤ 11) |
-| pino-http 11.0.0 | Adicionado                            | Peer obrigatório do nestjs-pino 5.3.1                 |
-| Versões          | Algumas um patch abaixo da última     | Quarentena de 24h (`minimumReleaseAge`)               |
+| Item                | Desvio                                                                                        | Motivo                                                                                                                                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| nestjs-zod          | Removido; `ZodValidationPipe` próprio                                                         | A versão 5.5.0 não suporta NestJS 12 (peer pede ≤ 11)                                                                                                                                                                           |
+| pino-http 11.0.0    | Adicionado                                                                                    | Peer obrigatório do nestjs-pino 5.3.1                                                                                                                                                                                           |
+| Versões             | Algumas um patch abaixo da última                                                             | Quarentena de 24h (`minimumReleaseAge`)                                                                                                                                                                                         |
+| prisma 7.10.1 (CLI) | Exceção em `trustPolicyExclude`, só para essa versão; aprovada pelo responsável em 01/11/2026 | O Prisma publica o CLI com token do bot desde prisma/orm#30035 (issue prisma/orm#30850). A 7.9.x teria advisories em mysql2 e deepmerge-ts e não teria a correção de transação aninhada. Remover quando voltar a ter provenance |
 
 ---
 
@@ -80,7 +81,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Teste manual:** `git push origin main` com um commit local deve ser rejeitado pelo GitHub
 - **Ajuste pós-teste:** o GitHub ativa por padrão `require_extra_approval_for_unattributed_changes`, que exige aprovação de outra pessoa para commits sem assinatura; com um único mantenedor, isso travava todo merge. O parâmetro foi desligado e os commits passaram a ser **assinados com chave SSH** (chave dedicada, registrada como signing key na conta, configuração local deste repositório). A regra "commits assinados" do ruleset continua ativa.
 
-## T1.1 Prisma, health check e logger (em andamento)
+## T1.1 Prisma, health check e logger
 
 ### Parte 1: logger com redaction e `/health`
 
@@ -95,6 +96,17 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Testes:** 68 na API (eram 12). Prova da redaction: valores marcados em header, cookie, query string, corpo, credenciais AWS, erro com causa e child logger não aparecem em nenhuma linha. **Teste de mutação:** desligando a redaction, 3 testes falham.
 - **Teste manual:** API compilada sobe com saída legível; `GET /health` → 200 `{"status":"ok"}` com `x-request-id`; uma requisição com `Authorization: Bearer ...` e `?token=...` aparece no log só como `GET /nao-existe` com status 404.
 
-### Parte 2: Prisma (aguardando decisão)
+### Parte 2: Prisma e prontidão do banco
 
-O CLI `prisma@7.10.1` foi publicado sem provenance (prisma/orm#30035 passou a publicar esse pacote com token do bot; issue prisma/orm#30850 aberta) e o `trustPolicy: no-downgrade` bloqueia a instalação. Decisão pendente do responsável.
+- **Arquivos:** `apps/api/prisma/schema.prisma`, `apps/api/prisma.config.ts`, `apps/api/prisma/migrations/20261101000000_baseline/`, `apps/api/src/common/prisma/*`, `apps/api/src/health/health.controller.ts` (+ teste), `apps/api/src/common/config/env.schema.ts` (+ teste), `apps/api/test/{database,health,health-unavailable}.test.ts`, `apps/api/test/support/{global-setup,create-app}.ts`, `apps/api/vitest.config.ts`, `apps/api/package.json` e `package.json` (scripts `db:*`), `.github/workflows/ci.yml` (`CHECKPOINT_DISABLE`), `pnpm-workspace.yaml`, `README.md`
+- **Dependências:** @prisma/client 7.10.1, @prisma/adapter-pg 7.10.1, pg 8.23.1; dev: prisma 7.10.1 (CLI, ver desvios), @types/pg 8.23.1
+- **Prisma 7:** generator `prisma-client` (ESM, gerado em `src/generated/prisma`, fora do git e gerado antes de build, teste, typecheck e lint), driver `pg` via adapter, URL só do ambiente (`prisma.config.ts` lê o `.env` da raiz fora de produção). Telemetria e checagem de atualização do CLI desligadas. Nenhum script de instalação do Prisma roda: o Schema Engine é baixado pelo CLI na primeira migration.
+- **Primeira migration (linha de base):** revoga de PUBLIC o CREATE no schema `public` e o CONNECT/TEMP no banco. Só o dono do banco conecta; papéis futuros recebem GRANT explícito.
+- **Prontidão:** `GET /health/ready` roda `SELECT 1` com limite de 2 s. Banco fora → 503 `{"status":"unavailable"}`, sem detalhe; o erro vai para o log já limpo. `/health` continua 200.
+- **Produção:** a API não sobe se a `DATABASE_URL` não tiver `sslmode=verify-full` (TLS com certificado e hostname conferidos).
+- **Testes:** 79 na API. Antes da suíte, o `globalSetup` aplica as migrations no banco de teste e **recusa qualquer banco cujo nome não termine em `_test`**; erro de conexão sai sem a senha.
+  - Conexão pelo Prisma com PostgreSQL 18, migration aplicada, ACLs de PUBLIC conferidas no banco e no schema
+  - `/health/ready` 200 com banco; 503 genérico com banco recusando conexão (sem senha no corpo nem no log); timeout quando o banco aceita a conexão e não responde
+  - `sslmode` ausente, `disable`, `require` ou `no-verify` rejeitados em produção
+- **Definição de pronto:** critérios de aceite ✔ (Prisma conectado com a primeira migration, `GET /health`, logger com redaction, teste da redaction) · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ (com a exceção abaixo, aprovada) · regras de segurança ✔
+- **Teste manual:** API compilada contra o banco local: `/health` 200 e `/health/ready` 200; com `docker compose stop postgres`, `/health/ready` 503 e `/health` 200; com o banco de volta, 200 de novo.

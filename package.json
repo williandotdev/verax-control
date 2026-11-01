@@ -17,13 +17,15 @@
     "build": "pnpm --recursive build",
     "test": "pnpm --recursive test && pnpm test:lint-rules",
     "test:lint-rules": "node scripts/verify-lint-rules.mjs",
-    "prelint": "pnpm --filter @verax/shared build",
+    "prelint": "pnpm --filter @verax/shared build && pnpm --filter @verax/api db:generate",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "pretypecheck": "pnpm --filter @verax/shared build",
     "typecheck": "pnpm --recursive typecheck",
-    "setup:env": "node scripts/setup-env.mjs"
+    "setup:env": "node scripts/setup-env.mjs",
+    "db:migrate": "pnpm --filter @verax/api db:migrate",
+    "db:deploy": "pnpm --filter @verax/api db:deploy"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

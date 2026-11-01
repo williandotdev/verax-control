@@ -2,6 +2,7 @@ import { type DynamicModule, Module } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
 import { type AppConfig, ConfigModule } from './common/config/config.module.js';
 import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/logger.options.js';
+import { PrismaModule } from './common/prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
 
 export interface AppModuleOptions {
@@ -16,6 +17,7 @@ export class AppModule {
       imports: [
         ConfigModule.forRoot(config),
         LoggerModule.forRoot(buildLoggerParams(config, options.logger)),
+        PrismaModule,
         HealthModule,
       ],
     };

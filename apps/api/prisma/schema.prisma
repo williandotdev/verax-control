@@ -1,0 +1,15 @@
+// Schema do banco da API (PostgreSQL 18).
+// A URL de conexão fica em prisma.config.ts (Prisma 7) e vem sempre do ambiente, nunca do código.
+// Modelos com dado de cliente terão `tenantId` e entram na extensão de isolamento (T2.5).
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+  runtime             = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}

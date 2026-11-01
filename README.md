@@ -24,6 +24,7 @@ docs/            PLANO.md (backlog) e STATUS.md (execução)
 pnpm install          # instala dependências e os hooks do git
 pnpm setup:env        # cria o .env com segredos aleatórios (nunca versionado)
 docker compose up -d  # PostgreSQL 18 local, só em 127.0.0.1
+pnpm db:deploy        # aplica as migrations no banco de desenvolvimento
 ```
 
 ## Comandos
@@ -31,9 +32,10 @@ docker compose up -d  # PostgreSQL 18 local, só em 127.0.0.1
 ```bash
 pnpm dev        # API + front em modo desenvolvimento
 pnpm build
-pnpm test
+pnpm test       # inclui testes de integração com o banco verax_test (precisa do docker compose)
 pnpm lint
 pnpm typecheck
+pnpm db:migrate # cria uma migration nova a partir do schema.prisma (desenvolvimento)
 ```
 
 ## Segurança
