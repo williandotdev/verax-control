@@ -25,7 +25,7 @@
     "@nestjs/testing": "12.3.2",
     "@swc/core": "1.16.20",
     "@types/express": "5.0.6",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.5",
     "@types/supertest": "7.2.1",
     "supertest": "7.3.1",
     "typescript": "6.0.3",
