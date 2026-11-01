@@ -1,0 +1,39 @@
+# Dependências e builds
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.vite/
+apps/api/src/generated/
+
+# Segredos e ambiente local (nunca versionar)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+.dev-mailbox/
+gha-creds-*.json
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+*.auto.tfvars
+terraform.tfvars
+
+# Testes e2e
+playwright-report/
+test-results/
+blob-report/
+
+# Sistema e editor
+.DS_Store
+Thumbs.db
+*.log
+.idea/

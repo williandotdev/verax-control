@@ -1,0 +1,26 @@
+{
+  "name": "verax-control",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Verax Control: painel de segurança para empresas com operação em nuvem",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@11.1.2",
+  "engines": {
+    "node": ">=24.11.0 <25",
+    "pnpm": ">=11.1.0"
+  },
+  "scripts": {
+    "predev": "pnpm --filter @verax/shared build",
+    "dev": "pnpm --recursive --parallel --stream dev",
+    "build": "pnpm --recursive build",
+    "test": "pnpm --recursive test",
+    "lint": "pnpm --recursive --if-present lint",
+    "pretypecheck": "pnpm --filter @verax/shared build",
+    "typecheck": "pnpm --recursive typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

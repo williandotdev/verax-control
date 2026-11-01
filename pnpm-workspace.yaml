@@ -1,0 +1,18 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Endurecimento da cadeia de suprimentos (supply chain).
+# Quarentena de 24h: versões recém-publicadas não são instaladas, defesa contra pacotes sequestrados.
+minimumReleaseAge: 1440
+# Falha se a prova de origem (provenance) de um pacote piorar em relação a versões anteriores.
+trustPolicy: no-downgrade
+# Subdependências só podem vir do registry (sem git ou tarball remoto).
+blockExoticSubdeps: true
+# Scripts de instalação só rodam para pacotes listados em allowBuilds com true.
+strictDepBuilds: true
+allowBuilds:
+  # O binário nativo do SWC já vem pelas optionalDependencies; o postinstall é só um fallback.
+  '@swc/core': false
+saveExact: true
+engineStrict: true
