@@ -56,9 +56,15 @@ function sanitizeLogObject(object: Record<string, unknown>): Record<string, unkn
   return result;
 }
 
+function isValidRequestId(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 64) return false;
+  // Classe de caracteres única, ancorada e com tamanho limitado: tempo linear, sem backtracking.
+  return REQUEST_ID_PATTERN.test(value); // nosemgrep: ajinabraham.njsscan.dos.regex_dos.regex_dos
+}
+
 function genReqId(req: IncomingMessage, res: ServerResponse): string {
   const incoming = req.headers[REQUEST_ID_HEADER];
-  const id = typeof incoming === 'string' && REQUEST_ID_PATTERN.test(incoming) ? incoming : randomUUID();
+  const id = isValidRequestId(incoming) ? incoming : randomUUID();
   res.setHeader(REQUEST_ID_HEADER, id);
   return id;
 }
