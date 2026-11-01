@@ -73,6 +73,10 @@ export function createAuth({ config, prisma, logger, audit }: AuthDependencies) 
       updateAge: SESSION_REFRESH_AFTER_SECONDS,
       // Sem cache em cookie: toda requisição consulta o banco, então revogar uma sessão vale na hora.
       cookieCache: { enabled: false },
+      additionalFields: {
+        // Cliente selecionado por admin_verax (T2.5); só a API altera, nunca o cliente HTTP.
+        activeTenantId: { type: 'string', required: false, input: false },
+      },
     },
 
     user: {

@@ -76,12 +76,14 @@ enum TenantStatus {
 
 /// Cliente da Verax. Os demais campos do cadastro entram na T3.1.
 model Tenant {
-  id        String       @id @default(uuid(7)) @db.Uuid
-  name      String       @db.VarChar(120)
-  status    TenantStatus @default(active)
-  createdAt DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime     @updatedAt @db.Timestamptz(3)
-  users     User[]
+  id             String       @id @default(uuid(7)) @db.Uuid
+  name           String       @db.VarChar(120)
+  status         TenantStatus @default(active)
+  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+  users          User[]
+  /// Sessões de admin_verax com este cliente selecionado (T2.5).
+  activeSessions Session[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -111,15 +113,18 @@ model User {
 }
 
 model Session {
-  id        String   @id
-  token     String   @unique
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt DateTime @db.Timestamptz(3)
-  ipAddress String?  @db.VarChar(64)
-  userAgent String?  @db.VarChar(512)
-  createdAt DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  id             String   @id
+  token          String   @unique
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt      DateTime @db.Timestamptz(3)
+  ipAddress      String?  @db.VarChar(64)
+  userAgent      String?  @db.VarChar(512)
+  /// Cliente selecionado por um admin_verax (T2.5). Só muda por POST /v1/session/tenant, auditado.
+  activeTenantId String?  @db.Uuid
+  activeTenant   Tenant?  @relation(fields: [activeTenantId], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
 
   @@index([userId])
 }

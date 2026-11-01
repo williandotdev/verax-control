@@ -63,12 +63,18 @@ export class SessionGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
+    const role = user.role as UserRole;
+    const tenantId = user.tenantId ?? null;
+    const activeTenantId = role === 'admin_verax' ? (session.activeTenantId ?? null) : null;
     const auth: RequestAuth = {
       sessionId: session.id,
       userId: user.id,
       email: user.email,
-      role: user.role as UserRole,
-      tenantId: user.tenantId ?? null,
+      role,
+      tenantId,
+      activeTenantId,
+      // Regra 4: o cliente do escopo vem sempre da sessão, nunca do corpo, da query ou da URL.
+      scopeTenantId: role === 'admin_verax' ? activeTenantId : tenantId,
       mfaEnabled: user.twoFactorEnabled === true,
     };
     request.auth = auth;

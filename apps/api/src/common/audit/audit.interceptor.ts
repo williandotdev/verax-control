@@ -19,8 +19,9 @@ const TRANSACTION_TIMEOUT_MS = 15_000;
 type RequestEntry = Omit<AuditEntry, 'outcome' | 'statusCode'>;
 
 function resolveActor(request: Request): AuditActor {
+  // O cliente registrado é o do escopo da operação: para admin_verax, o cliente selecionado na sessão.
   return request.auth
-    ? { type: 'user', id: request.auth.userId, tenantId: request.auth.tenantId }
+    ? { type: 'user', id: request.auth.userId, tenantId: request.auth.scopeTenantId }
     : { type: 'anonymous' };
 }
 
@@ -73,8 +74,9 @@ export class AuditInterceptor implements NestInterceptor {
     try {
       return await this.prisma.$transaction(
         async (tx) => {
-          const result: unknown = await requestContext.run({ tx, audit: details }, () =>
-            lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
+          const result: unknown = await requestContext.run(
+            { ...requestContext.getStore(), tx, audit: details },
+            () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
           );
           await this.auditService.write(tx, { ...entry, ...details, outcome: 'success', statusCode });
           return result;

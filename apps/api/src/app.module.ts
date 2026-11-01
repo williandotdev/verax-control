@@ -3,6 +3,7 @@ import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/
 import { LoggerModule } from 'nestjs-pino';
 import { AuthModule } from './auth/auth.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
+import { RequestContextInterceptor } from './common/context/request-context.interceptor.js';
 import { AuditModule } from './common/audit/audit.module.js';
 import { type AppConfig, ConfigModule } from './common/config/config.module.js';
 import { AllExceptionsFilter } from './common/http/all-exceptions.filter.js';
@@ -33,7 +34,9 @@ export class AppModule {
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },
-        // A ordem importa: a auditoria envolve tudo, inclusive as rejeições do interceptor seguinte.
+        // A ordem importa: o contexto da requisição primeiro; a auditoria envolve tudo o que vem depois,
+        // inclusive as rejeições do interceptor de entrada não declarada.
+        { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
         { provide: APP_INTERCEPTOR, useExisting: AuditInterceptor },
         { provide: APP_INTERCEPTOR, useClass: UndeclaredInputInterceptor },
         { provide: APP_FILTER, useClass: AllExceptionsFilter },

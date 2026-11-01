@@ -1,6 +1,8 @@
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpStatus } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { Prisma } from '../../generated/prisma/client.js';
+import { TenantScopeViolation } from '../prisma/tenant-scope.js';
 import { ApiError, ValidationException, type ValidationIssue } from './api-error.js';
 
 export interface ErrorResponseBody {
@@ -51,13 +53,27 @@ function clientErrorStatus(exception: unknown): number | undefined {
   return typeof status === 'number' && status >= 400 && status < 500 && expose === true ? status : undefined;
 }
 
+/**
+ * Erros do banco que têm significado para o cliente HTTP. Registro inexistente (inclusive fora do cliente da
+ * sessão) vira 404, sem distinguir os dois casos; violação de unicidade vira 409.
+ */
+function databaseErrorStatus(exception: unknown): number | undefined {
+  if (exception instanceof TenantScopeViolation) return 403;
+  if (!(exception instanceof Prisma.PrismaClientKnownRequestError)) return undefined;
+  if (exception.code === 'P2025') return 404;
+  if (exception.code === 'P2002') return 409;
+  return undefined;
+}
+
 export function toErrorResponse(exception: unknown): ErrorResponseBody {
   if (exception instanceof ValidationException) {
     return { statusCode: 400, error: statusName(400), message: exception.message, issues: exception.issues };
   }
 
   const status =
-    exception instanceof HttpException ? exception.getStatus() : (clientErrorStatus(exception) ?? 500);
+    exception instanceof HttpException
+      ? exception.getStatus()
+      : (databaseErrorStatus(exception) ?? clientErrorStatus(exception) ?? 500);
 
   if (status >= 500) {
     const message = status === 503 ? UNAVAILABLE_MESSAGE : INTERNAL_ERROR_MESSAGE;
@@ -92,7 +108,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = http.getResponse<Response>();
     const body = toErrorResponse(exception);
 
-    if (!(exception instanceof HttpException) && body.statusCode >= 500) {
+    if (exception instanceof TenantScopeViolation) {
+      // Tentativa de sair do cliente da sessão: bug ou ataque. Sempre investigar.
+      this.logger.error({ err: exception }, 'violação do escopo do cliente');
+    } else if (!(exception instanceof HttpException) && body.statusCode >= 500) {
       this.logger.error({ err: exception }, 'erro não tratado');
     } else if (body.statusCode >= 500) {
       // Exceção HTTP lançada de propósito (ex.: banco fora no health check); quem lançou já registrou o motivo.

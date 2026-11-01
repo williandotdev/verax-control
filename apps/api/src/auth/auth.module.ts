@@ -10,11 +10,12 @@ import { createAuth } from './auth.factory.js';
 import { CSRF_UTILITIES, CsrfController, CsrfGuard, createCsrfUtilities } from './csrf.js';
 import { MeController } from './me.controller.js';
 import { PermissionsGuard } from './permissions.guard.js';
+import { SessionTenantController } from './session-tenant.controller.js';
 import { SessionGuard } from './session.guard.js';
 
 @Global()
 @Module({
-  controllers: [AuthController, MeController, CsrfController],
+  controllers: [AuthController, MeController, CsrfController, SessionTenantController],
   providers: [
     {
       provide: AUTH,
