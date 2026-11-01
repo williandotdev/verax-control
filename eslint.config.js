@@ -55,6 +55,7 @@ export default tseslint.config(
       '**/playwright-report/**',
       '**/test-results/**',
       'docs/**',
+      '.semgrep/**',
       'infra/**/.terraform/**',
     ],
   },

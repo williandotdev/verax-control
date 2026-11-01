@@ -4,7 +4,9 @@ packages:
 
 # Endurecimento da cadeia de suprimentos (supply chain).
 # Quarentena de 24h: versões recém-publicadas não são instaladas, defesa contra pacotes sequestrados.
-minimumReleaseAge: 1440
+# O Semgrep recomenda 7 dias; 24h foi a decisão aprovada para equilibrar segurança e versões recentes
+# (docs/STATUS.md, desvios). Mudar para 10080 é uma linha.
+minimumReleaseAge: 1440 # nosemgrep: package_managers.pnpm.pnpm-missing-minimum-release-age.pnpm-minimum-release-age
 # Falha se a prova de origem (provenance) de um pacote piorar em relação a versões anteriores.
 trustPolicy: no-downgrade
 # A checagem de confiança vale para versões publicadas nos últimos 30 dias, janela em que pacotes
@@ -22,3 +24,8 @@ allowBuilds:
   lefthook: false
 saveExact: true
 engineStrict: true
+
+# Correções de segurança em dependências transitivas (remover quando os pacotes pais atualizarem).
+overrides:
+  # GHSA-g3hv-75wg-m249 (DoS em globparts). Entra via ESLint, typescript-eslint e Nest CLI.
+  'minimatch@<11.0.1': 11.0.1
