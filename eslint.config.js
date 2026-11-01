@@ -97,6 +97,13 @@ export default tseslint.config(
     },
   },
   {
+    // Testes criam arquivos em diretórios temporários gerados pelo próprio teste.
+    files: ['**/*.test.{ts,tsx}', 'apps/api/test/**/*.ts', 'apps/web/e2e/**/*.ts'],
+    rules: {
+      'security/detect-non-literal-fs-filename': 'off',
+    },
+  },
+  {
     files: ['apps/web/src/**/*.{ts,tsx}'],
     languageOptions: { globals: { ...globals.browser } },
     plugins: { 'react-hooks': reactHooks, 'react-refresh': reactRefresh },

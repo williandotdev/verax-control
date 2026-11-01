@@ -21,7 +21,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "pretypecheck": "pnpm --filter @verax/shared build",
-    "typecheck": "pnpm --recursive typecheck"
+    "typecheck": "pnpm --recursive typecheck",
+    "setup:env": "node scripts/setup-env.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

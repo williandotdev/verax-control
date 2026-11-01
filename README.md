@@ -18,10 +18,17 @@ docs/            PLANO.md (backlog) e STATUS.md (execução)
 - pnpm 11
 - Docker (PostgreSQL local)
 
+## Primeira execução
+
+```bash
+pnpm install          # instala dependências e os hooks do git
+pnpm setup:env        # cria o .env com segredos aleatórios (nunca versionado)
+docker compose up -d  # PostgreSQL 18 local, só em 127.0.0.1
+```
+
 ## Comandos
 
 ```bash
-pnpm install
 pnpm dev        # API + front em modo desenvolvimento
 pnpm build
 pnpm test
