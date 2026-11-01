@@ -1,0 +1,49 @@
+{
+  "name": "Proteção da main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "include": ["~DEFAULT_BRANCH"],
+      "exclude": []
+    }
+  },
+  "bypass_actors": [],
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "required_linear_history" },
+    { "type": "required_signatures" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "Lint, formatação e tipos", "integration_id": 15368 },
+          { "context": "Testes", "integration_id": 15368 },
+          { "context": "Build", "integration_id": 15368 },
+          { "context": "Semgrep (SAST)", "integration_id": 15368 },
+          { "context": "Gitleaks (segredos no histórico)", "integration_id": 15368 },
+          { "context": "Trivy (dependências, segredos e configuração)", "integration_id": 15368 },
+          { "context": "OSV-Scanner (vulnerabilidades em dependências)", "integration_id": 15368 },
+          { "context": "CodeQL (javascript-typescript)", "integration_id": 15368 },
+          { "context": "CodeQL (actions)", "integration_id": 15368 },
+          { "context": "Dependency Review", "integration_id": 15368 },
+          { "context": "Workflows (actionlint + zizmor)", "integration_id": 15368 }
+        ]
+      }
+    }
+  ]
+}
