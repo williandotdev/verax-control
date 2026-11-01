@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 import { APP_CONFIG, type AppConfig } from '../src/common/config/config.module.js';
 import { loadConfig } from '../src/common/config/load-config.js';
+import { LogCapture } from './support/log-capture.js';
 
 const testConfig: AppConfig = loadConfig({
   NODE_ENV: 'test',
@@ -18,7 +19,9 @@ describe('AppModule', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(testConfig)] }).compile();
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule.register(testConfig, { logger: { destination: new LogCapture() } })],
+    }).compile();
     app = moduleRef.createNestApplication();
     await app.init();
   });
@@ -35,5 +38,12 @@ describe('AppModule', () => {
     await request(app.getHttpServer() as Server)
       .get('/')
       .expect(404);
+  });
+
+  it('responde ao health check sem sessão e devolve o request id', async () => {
+    const response = await request(app.getHttpServer() as Server)
+      .get('/health')
+      .expect(200, { status: 'ok' });
+    expect(response.headers['x-request-id']).toBeTypeOf('string');
   });
 });

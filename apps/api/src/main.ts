@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module.js';
 import { ConfigValidationError, loadConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
@@ -19,7 +20,10 @@ async function bootstrap(): Promise<void> {
     throw error;
   }
 
-  const app = await NestFactory.create(AppModule.register(config));
+  // Os logs do boot ficam retidos até o pino assumir, para que tudo saia pelo logger com redaction.
+  const app = await NestFactory.create(AppModule.register(config), { bufferLogs: true });
+  app.useLogger(app.get(Logger));
+  app.enableShutdownHooks();
   await app.listen(config.PORT);
 }
 
