@@ -18,8 +18,8 @@ class BrokenController {
   }
 
   @Get('field')
-  field(@Query('page', { schema: z.string() }) page: string): string {
-    return page;
+  field(@Query('page', { schema: z.string() }) page: string): { page: string } {
+    return { page };
   }
 
   @Post('loose')
@@ -36,8 +36,8 @@ class BrokenController {
   }
 
   @Get(':id')
-  param(@Param('id') id: string): string {
-    return id;
+  param(@Param('id') id: string): { id: string } {
+    return { id };
   }
 }
 
