@@ -6,6 +6,7 @@ import { twoFactor } from 'better-auth/plugins/two-factor';
 import type { PinoLogger } from 'nestjs-pino';
 import type { AppConfig } from '../common/config/config.module.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import type { MailTransport } from '../mail/mail.types.js';
 import { AUTH_AUDIT_ACTIONS, type AuthAuditSink, requestMetadata } from './auth-audit.js';
 import {
   AUTH_BASE_PATH,
@@ -22,6 +23,7 @@ import {
   SESSION_REFRESH_AFTER_SECONDS,
 } from './auth.constants.js';
 import { clearLoginFailures, isLoginLocked, normalizeEmail, registerLoginFailure } from './login-attempts.js';
+import { passwordLinkMail } from './password-links.js';
 
 export interface AuthDependencies {
   config: AppConfig;
@@ -29,6 +31,8 @@ export interface AuthDependencies {
   logger: Pick<PinoLogger, 'warn' | 'error'>;
   /** Onde gravar os eventos de autenticação (a trilha de auditoria, na aplicação). */
   audit: AuthAuditSink;
+  /** Envio dos e-mails de convite e de redefinição de senha (T2.6). */
+  mail: MailTransport;
 }
 
 const SIGN_IN_PATH = '/sign-in/email';
@@ -38,7 +42,7 @@ const ACCOUNT_LOCKED_MESSAGE = 'Muitas tentativas. Tente novamente em alguns min
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
  * Cada opção abaixo tem um motivo de segurança; mudar qualquer uma pede revisão.
  */
-export function createAuth({ config, prisma, logger, audit }: AuthDependencies) {
+export function createAuth({ config, prisma, logger, audit, mail }: AuthDependencies) {
   /** A auditoria nunca derruba o login; uma falha ao gravar vai para o log. */
   const record: AuthAuditSink = async (entry) => {
     try {
@@ -66,6 +70,18 @@ export function createAuth({ config, prisma, logger, audit }: AuthDependencies) 
       maxPasswordLength: PASSWORD_MAX_LENGTH,
       resetPasswordTokenExpiresIn: PASSWORD_LINK_TTL_SECONDS,
       revokeSessionsOnPasswordReset: true,
+      // Convite e redefinição (T2.6). Usuário desativado não recebe nada, e a resposta da API é a mesma.
+      sendResetPassword: async ({ user, token }) => {
+        const message = passwordLinkMail(config.WEB_ORIGIN, user, token);
+        if (message) await mail.send(message);
+      },
+      // Definir a senha pelo link do convite ativa a conta.
+      onPasswordReset: async ({ user }) => {
+        await prisma.user.updateMany({
+          where: { id: user.id, status: 'invited' },
+          data: { status: 'active' },
+        });
+      },
     },
 
     session: {
@@ -189,6 +205,13 @@ export function createAuth({ config, prisma, logger, audit }: AuthDependencies) 
       cookiePrefix: 'verax',
       defaultCookieAttributes: { httpOnly: true, secure: true, sameSite: 'strict', path: '/' },
       ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
+      // O e-mail sai em segundo plano: a resposta do pedido de redefinição leva o mesmo tempo para e-mail
+      // existente e inexistente (sem enumeração por tempo de resposta).
+      backgroundTasks: {
+        handler: (promise) => {
+          promise.catch(() => logger.error({ source: 'better-auth' }, 'falha numa tarefa em segundo plano'));
+        },
+      },
     },
     logger: {
       level: 'warn',

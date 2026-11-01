@@ -10,6 +10,7 @@ const prisma = new PrismaService(
     API_ORIGIN: 'http://localhost:3000',
     BETTER_AUTH_SECRET: 's'.repeat(43),
     CSRF_SECRET: 'c'.repeat(43),
+    MAIL_FROM: 'nao-responda@verax.example',
     DATABASE_URL: inject('testDatabaseUrl'),
   }),
 );

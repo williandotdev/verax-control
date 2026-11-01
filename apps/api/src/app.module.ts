@@ -12,6 +12,7 @@ import { AppValidationPipe } from './common/http/validation.pipe.js';
 import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/logger.options.js';
 import { PrismaModule } from './common/prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
+import { MailModule } from './mail/mail.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
@@ -29,6 +30,7 @@ export class AppModule {
         DiscoveryModule,
         PrismaModule,
         AuditModule,
+        MailModule,
         AuthModule,
         HealthModule,
       ],

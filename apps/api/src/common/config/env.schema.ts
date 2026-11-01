@@ -36,6 +36,15 @@ export const envSchema = z
       .enum(['true', 'false'], { error: 'deve ser true ou false' })
       .default('true')
       .transform((value) => value === 'true'),
+    // E-mail (T2.6): SES em produção; caixa local em desenvolvimento (links de convite nunca vão para o log).
+    MAIL_TRANSPORT: z.enum(['ses', 'dev-mailbox']).default('dev-mailbox'),
+    MAIL_FROM: z.email({ error: 'deve ser um e-mail válido' }),
+    AWS_REGION: z
+      .string()
+      .regex(/^[a-z]{2}-[a-z]+-[0-9]$/, { error: 'região AWS inválida' })
+      .default('sa-east-1'),
+    // Pasta da caixa local. Vazio: `.dev-mailbox` na raiz do monorepo.
+    DEV_MAILBOX_DIR: z.string().optional(),
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
@@ -45,6 +54,9 @@ export const envSchema = z
       if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
       }
+    }
+    if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT !== 'ses') {
+      ctx.addIssue({ code: 'custom', path: ['MAIL_TRANSPORT'], message: 'deve ser ses em produção' });
     }
     if (env.NODE_ENV === 'production' && !env.AUTH_RATE_LIMIT_ENABLED) {
       ctx.addIssue({

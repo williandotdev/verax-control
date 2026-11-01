@@ -10,18 +10,21 @@ import { dirname, join } from 'node:path';
  */
 export function loadEnvFileForLocalDevelopment(startDir: string = process.cwd()): void {
   if (process.env.NODE_ENV === 'production') return;
+  const root = findWorkspaceRoot(startDir);
+  if (root === undefined) return;
+  const envPath = join(root, '.env');
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho derivado do cwd
+  if (existsSync(envPath)) process.loadEnvFile(envPath);
+}
 
+/** Raiz do monorepo (onde está o `pnpm-workspace.yaml`), subindo a partir de `startDir`. */
+export function findWorkspaceRoot(startDir: string = process.cwd()): string | undefined {
   let dir = startDir;
   for (;;) {
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho derivado do cwd
-    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) {
-      const envPath = join(dir, '.env');
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho derivado do cwd
-      if (existsSync(envPath)) process.loadEnvFile(envPath);
-      return;
-    }
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
     const parent = dirname(dir);
-    if (parent === dir) return;
+    if (parent === dir) return undefined;
     dir = parent;
   }
 }

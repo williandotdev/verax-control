@@ -21,6 +21,7 @@
     "db:seed": "nest build && node dist/cli/seed.js"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "3.1161.0",
     "@nestjs/common": "12.3.2",
     "@nestjs/core": "12.3.2",
     "@nestjs/platform-express": "12.3.2",

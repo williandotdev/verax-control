@@ -7,6 +7,7 @@ const validEnv = {
   API_ORIGIN: 'http://localhost:3000',
   BETTER_AUTH_SECRET: 'x'.repeat(43),
   CSRF_SECRET: 'y'.repeat(43),
+  MAIL_FROM: 'nao-responda@verax.example',
   DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
 };
 
@@ -16,6 +17,7 @@ const validProductionEnv = {
   WEB_ORIGIN: 'https://painel.example.com',
   API_ORIGIN: 'https://api.example.com',
   DATABASE_URL: 'postgresql://verax:secret@db.internal:5432/verax?sslmode=verify-full',
+  MAIL_TRANSPORT: 'ses',
 };
 
 function problemsOf(env: NodeJS.ProcessEnv): readonly string[] {
@@ -41,6 +43,19 @@ describe('loadConfig', () => {
     const problems = problemsOf({ ...validEnv, BETTER_AUTH_SECRET: shortValue });
     expect(problems).toContain('BETTER_AUTH_SECRET: deve ter pelo menos 32 caracteres');
     expect(problems.join(' ')).not.toContain(shortValue);
+  });
+
+  it('valida a região AWS', () => {
+    expect(loadConfig(validEnv).AWS_REGION).toBe('sa-east-1');
+    expect(loadConfig({ ...validEnv, AWS_REGION: 'us-east-1' }).AWS_REGION).toBe('us-east-1');
+    expect(problemsOf({ ...validEnv, AWS_REGION: 'sa-east' })).toContain('AWS_REGION: região AWS inválida');
+  });
+
+  it('exige SES em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, MAIL_TRANSPORT: 'dev-mailbox' })).toContain(
+      'MAIL_TRANSPORT: deve ser ses em produção',
+    );
+    expect(loadConfig({ ...validProductionEnv, MAIL_TRANSPORT: 'ses' }).MAIL_TRANSPORT).toBe('ses');
   });
 
   it('não aceita desligar o limite de tentativas em produção', () => {

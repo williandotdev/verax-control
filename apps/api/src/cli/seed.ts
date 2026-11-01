@@ -39,6 +39,8 @@ async function seed(): Promise<void> {
       config,
       prisma,
       logger: console,
+      // O seed cria o admin já com senha; nenhum e-mail sai daqui.
+      mail: { send: () => Promise.resolve() },
       audit: (entry) => auditService.write(prisma, entry),
     });
 
