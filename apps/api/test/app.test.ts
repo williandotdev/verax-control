@@ -1,8 +1,9 @@
 import 'reflect-metadata';
+import type { Server } from 'node:http';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, it } from 'vitest';
 import { AppModule } from '../src/app.module.js';
 
 describe('AppModule', () => {
@@ -19,6 +20,8 @@ describe('AppModule', () => {
   });
 
   it('sobe a aplicação vazia e responde 404 para rota inexistente', async () => {
-    await request(app.getHttpServer()).get('/').expect(404);
+    await request(app.getHttpServer() as Server)
+      .get('/')
+      .expect(404);
   });
 });

@@ -1,0 +1,12 @@
+# Configuração do Gitleaks: regras padrão + allowlist mínima para fixtures fictícias.
+title = "verax-control"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Valores fictícios documentados pela AWS e usados só em testes"
+regexes = [
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+]

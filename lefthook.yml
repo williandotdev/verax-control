@@ -1,0 +1,20 @@
+# Hooks do git. Instalados por `pnpm install` (script prepare).
+# O Gitleaks precisa estar instalado na máquina: https://github.com/gitleaks/gitleaks#installing
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks git --pre-commit --staged --redact --no-banner --verbose
+    lint:
+      glob: '*.{ts,tsx,js,mjs}'
+      run: pnpm exec eslint --max-warnings=0 --no-warn-ignored {staged_files}
+    format:
+      glob: '*.{ts,tsx,js,mjs,json,md,yml,yaml,css,html}'
+      run: pnpm exec prettier --check --ignore-unknown {staged_files}
+
+pre-push:
+  commands:
+    typecheck:
+      run: pnpm typecheck
+    test:
+      run: pnpm test

@@ -1,0 +1,8 @@
+pnpm-lock.yaml
+**/dist/
+**/coverage/
+**/generated/
+**/playwright-report/
+**/test-results/
+docs/PLANO.md
+verax-control-plano-mvp.md

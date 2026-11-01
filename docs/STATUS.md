@@ -5,11 +5,11 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 ## Desvios em relação ao plano
 
-| Item | Desvio | Motivo |
-| --- | --- | --- |
-| nestjs-zod | Removido; `ZodValidationPipe` próprio | A versão 5.5.0 não suporta NestJS 12 (peer pede ≤ 11) |
-| pino-http 11.0.0 | Adicionado | Peer obrigatório do nestjs-pino 5.3.1 |
-| Versões | Algumas um patch abaixo da última | Quarentena de 24h (`minimumReleaseAge`) |
+| Item             | Desvio                                | Motivo                                                |
+| ---------------- | ------------------------------------- | ----------------------------------------------------- |
+| nestjs-zod       | Removido; `ZodValidationPipe` próprio | A versão 5.5.0 não suporta NestJS 12 (peer pede ≤ 11) |
+| pino-http 11.0.0 | Adicionado                            | Peer obrigatório do nestjs-pino 5.3.1                 |
+| Versões          | Algumas um patch abaixo da última     | Quarentena de 24h (`minimumReleaseAge`)               |
 
 ---
 
@@ -30,3 +30,15 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Definição de pronto:** critérios de aceite ✔ · testes ✔ · tipos ✔ · dependências n/a · regras de segurança ✔
 - **Teste manual:** abrir uma sessão nova do Claude Code na pasta e pedir "execute a T3.1"; o agente deve responder com o plano em 5 linhas e esperar o OK
 - **Notas:** além da Parte 1 do plano, entraram a regra 10 (confidencialidade, porque o repo é público) e o bloqueio de leitura de `.env`, chaves, state do Terraform e caixa de e-mail local pelo agente
+
+## T0.3 Lint, formatação e pre-commit
+
+- **Arquivos:** `eslint.config.js`, `.prettierrc.json`, `.prettierignore`, `lefthook.yml`, `.gitleaks.toml`, `scripts/install-hooks.mjs`, `scripts/verify-lint-rules.mjs`, `package.json` (scripts), `pnpm-workspace.yaml`, `apps/web/tsconfig.json` (renomeado de `tsconfig.app.json`)
+- **Dependências:** eslint 10.14.0, @eslint/js 10.0.1, typescript-eslint 8.72.1 (lint com informação de tipo), eslint-plugin-security 4.2.1, eslint-plugin-react-hooks 7.1.1, eslint-plugin-react-refresh 0.5.7, globals 17.13.0, prettier 3.9.10, lefthook 2.2.1 (ver desvios)
+- **Testes:**
+  - `pnpm test:lint-rules`: 10 sondas provam que as regras disparam para `$queryRawUnsafe`, `$executeRawUnsafe`, `eval`, `new Function`, `rejectUnauthorized: false` (com e sem aspas), `NODE_TLS_REJECT_UNAUTHORIZED`, CORS `*`, `query_string` do OpenSearch e `dangerouslySetInnerHTML`. Roda dentro de `pnpm test`.
+  - `pnpm lint`, `pnpm format:check`, `pnpm typecheck` e `pnpm test` verdes
+  - Pre-commit testado com um token falso do GitHub: commit bloqueado pelo Gitleaks (`leaks found: 1`) e pelo lint
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
+- **Teste manual:** instalar o Gitleaks (`winget install Gitleaks.Gitleaks`), rodar `pnpm install` e tentar commitar um arquivo com um token falso
+- **Notas:** o pre-push roda typecheck e testes. Os hooks são instalados pelo script `prepare`, e não pelo postinstall do pacote (negado em `allowBuilds`). Quem não tiver o Gitleaks instalado não consegue commitar, por desenho: o hook falha fechado.

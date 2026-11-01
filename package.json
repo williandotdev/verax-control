@@ -11,16 +11,29 @@
     "pnpm": ">=11.1.0"
   },
   "scripts": {
+    "prepare": "node scripts/install-hooks.mjs",
     "predev": "pnpm --filter @verax/shared build",
     "dev": "pnpm --recursive --parallel --stream dev",
     "build": "pnpm --recursive build",
-    "test": "pnpm --recursive test",
-    "lint": "pnpm --recursive --if-present lint",
+    "test": "pnpm --recursive test && pnpm test:lint-rules",
+    "test:lint-rules": "node scripts/verify-lint-rules.mjs",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "pretypecheck": "pnpm --filter @verax/shared build",
     "typecheck": "pnpm --recursive typecheck"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@types/node": "24.19.2",
-    "typescript": "6.0.3"
+    "eslint": "10.14.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "eslint-plugin-security": "4.2.1",
+    "globals": "17.13.0",
+    "lefthook": "2.2.1",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
   }
 }

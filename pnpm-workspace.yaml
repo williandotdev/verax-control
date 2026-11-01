@@ -7,6 +7,10 @@ packages:
 minimumReleaseAge: 1440
 # Falha se a prova de origem (provenance) de um pacote piorar em relação a versões anteriores.
 trustPolicy: no-downgrade
+# A checagem de confiança vale para versões publicadas nos últimos 30 dias, janela em que pacotes
+# sequestrados costumam ser detectados. Releases antigos de manutenção (ex.: semver@6.3.1, backport de
+# correção publicado depois das 7.x com provenance) geram falso positivo e já passaram por escrutínio.
+trustPolicyIgnoreAfter: 43200
 # Subdependências só podem vir do registry (sem git ou tarball remoto).
 blockExoticSubdeps: true
 # Scripts de instalação só rodam para pacotes listados em allowBuilds com true.
@@ -14,5 +18,7 @@ strictDepBuilds: true
 allowBuilds:
   # O binário nativo do SWC já vem pelas optionalDependencies; o postinstall é só um fallback.
   '@swc/core': false
+  # Os hooks do git são instalados pelo script "prepare" do projeto, não pelo postinstall do pacote.
+  lefthook: false
 saveExact: true
 engineStrict: true
