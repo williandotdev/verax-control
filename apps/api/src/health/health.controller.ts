@@ -18,7 +18,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  *
  * - `/health` responde se o processo está vivo e não consulta dependências: se o banco cair, as tasks não
  *   entram em ciclo de reinício.
- * - `/health/ready` confere o banco. A resposta nunca traz detalhe do erro; o detalhe vai só para o log.
+ * - `/health/ready` confere o banco. Se falhar, 503 no formato padrão de erro, sem detalhe; o detalhe vai
+ *   só para o log.
  */
 @Controller('health')
 export class HealthController {
@@ -39,7 +40,7 @@ export class HealthController {
       return { status: 'ok' };
     } catch (error) {
       this.logger.warn({ err: error }, 'banco indisponível no health check');
-      throw new ServiceUnavailableException({ status: 'unavailable' });
+      throw new ServiceUnavailableException();
     }
   }
 }

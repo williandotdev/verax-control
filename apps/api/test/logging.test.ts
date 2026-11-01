@@ -1,12 +1,11 @@
 import 'reflect-metadata';
-import type { Server } from 'node:http';
-import { Body, Controller, type INestApplication, Module, Post } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
-import { InjectPinoLogger, Logger, PinoLogger } from 'nestjs-pino';
+import { Body, Controller, Module, Post, Query } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { AppModule } from '../src/app.module.js';
-import { loadConfig } from '../src/common/config/load-config.js';
+import { z } from 'zod';
+import { createApp } from './support/create-app.js';
 import { LogCapture } from './support/log-capture.js';
 
 const LEAKS = {
@@ -22,7 +21,11 @@ class LoggingProbeController {
   constructor(@InjectPinoLogger(LoggingProbeController.name) private readonly logger: PinoLogger) {}
 
   @Post()
-  probe(@Body() body: unknown): { ok: true } {
+  probe(
+    @Body({ schema: z.strictObject({ email: z.string().optional(), password: z.string().optional() }) })
+    body: unknown,
+    @Query({ schema: z.strictObject({ token: z.string().optional() }) }) _query: unknown,
+  ): { ok: true } {
     // Simula um descuido: logar o corpo inteiro e credenciais AWS.
     this.logger.info({ body, aws: { SecretAccessKey: LEAKS.awsCredential } }, 'recebido');
     return { ok: true };
@@ -34,21 +37,10 @@ class LoggingProbeModule {}
 
 describe('logs HTTP da API (T1.1)', () => {
   const capture = new LogCapture();
-  let app: INestApplication;
+  let app: NestExpressApplication;
 
   beforeAll(async () => {
-    const config = loadConfig({
-      NODE_ENV: 'test',
-      LOG_LEVEL: 'info',
-      WEB_ORIGIN: 'http://localhost:5173',
-      DATABASE_URL: 'postgresql://verax:unused@localhost:5432/verax_test',
-    });
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule.register(config, { logger: { destination: capture } }), LoggingProbeModule],
-    }).compile();
-    app = moduleRef.createNestApplication({ bufferLogs: true });
-    app.useLogger(app.get(Logger));
-    await app.init();
+    app = await createApp({ capture, imports: [LoggingProbeModule] });
   });
 
   afterAll(async () => {
@@ -56,8 +48,8 @@ describe('logs HTTP da API (T1.1)', () => {
   });
 
   it('não registra header Authorization, cookie, query string nem campos sensíveis do corpo', async () => {
-    const response = await request(app.getHttpServer() as Server)
-      .post(`/test-log?token=${LEAKS.queryToken}`)
+    const response = await request(app.getHttpServer())
+      .post(`/v1/test-log?token=${LEAKS.queryToken}`)
       .set('Authorization', `Bearer ${LEAKS.bearer}`)
       .set('Cookie', `verax.session=${LEAKS.cookie}`)
       .send({ email: 'analista@cliente.example', password: LEAKS.password })
@@ -72,15 +64,15 @@ describe('logs HTTP da API (T1.1)', () => {
     const requestId = response.headers['x-request-id'] as string;
     const completed = capture.entries().find((entry) => entry['msg'] === 'request completed');
     expect(completed).toMatchObject({
-      req: { id: requestId, method: 'POST', url: '/test-log' },
+      req: { id: requestId, method: 'POST', url: '/v1/test-log' },
       res: { statusCode: 201 },
     });
     expect(completed?.['req']).not.toHaveProperty('headers');
   });
 
   it('gera um request id próprio quando o recebido não tem formato válido', async () => {
-    const response = await request(app.getHttpServer() as Server)
-      .post('/test-log')
+    const response = await request(app.getHttpServer())
+      .post('/v1/test-log')
       .set('x-request-id', '<script>alert(1)</script>')
       .send({})
       .expect(201);
@@ -89,8 +81,8 @@ describe('logs HTTP da API (T1.1)', () => {
   });
 
   it('reaproveita um request id válido vindo do proxy', async () => {
-    const response = await request(app.getHttpServer() as Server)
-      .post('/test-log')
+    const response = await request(app.getHttpServer())
+      .post('/v1/test-log')
       .set('x-request-id', 'alb-trace-12345678')
       .send({})
       .expect(201);
@@ -100,14 +92,9 @@ describe('logs HTTP da API (T1.1)', () => {
 
   it('não gera log por requisição para o health check', async () => {
     const before = capture.lines.length;
-    await request(app.getHttpServer() as Server)
-      .get('/health')
-      .expect(200, { status: 'ok' });
+    await request(app.getHttpServer()).get('/health').expect(200, { status: 'ok' });
     // Uma requisição de controle depois garante que o log do health, se existisse, já teria sido escrito.
-    await request(app.getHttpServer() as Server)
-      .post('/test-log')
-      .send({})
-      .expect(201);
+    await request(app.getHttpServer()).post('/v1/test-log').send({}).expect(201);
     const newEntries = (): Record<string, unknown>[] => capture.entries().slice(before);
     await vi.waitFor(() =>
       expect(newEntries().some((entry) => entry['msg'] === 'request completed')).toBe(true),

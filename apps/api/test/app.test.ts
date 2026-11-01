@@ -1,29 +1,15 @@
 import 'reflect-metadata';
-import type { Server } from 'node:http';
-import type { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { AppModule } from '../src/app.module.js';
 import { APP_CONFIG, type AppConfig } from '../src/common/config/config.module.js';
-import { loadConfig } from '../src/common/config/load-config.js';
-import { LogCapture } from './support/log-capture.js';
-
-const testConfig: AppConfig = loadConfig({
-  NODE_ENV: 'test',
-  WEB_ORIGIN: 'http://localhost:5173',
-  DATABASE_URL: 'postgresql://verax:unused@localhost:5432/verax_test',
-});
+import { createApp } from './support/create-app.js';
 
 describe('AppModule', () => {
-  let app: INestApplication;
+  let app: NestExpressApplication;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule.register(testConfig, { logger: { destination: new LogCapture() } })],
-    }).compile();
-    app = moduleRef.createNestApplication();
-    await app.init();
+    app = await createApp();
   });
 
   afterAll(async () => {
@@ -31,19 +17,18 @@ describe('AppModule', () => {
   });
 
   it('expõe a configuração validada por injeção de dependência', () => {
-    expect(app.get(APP_CONFIG)).toBe(testConfig);
+    expect(app.get<AppConfig>(APP_CONFIG).NODE_ENV).toBe('test');
   });
 
-  it('responde 404 para rota inexistente', async () => {
-    await request(app.getHttpServer() as Server)
-      .get('/')
-      .expect(404);
+  it('responde 404 genérico para rota inexistente, sem repetir o caminho pedido', async () => {
+    const response = await request(app.getHttpServer()).get('/v1/<script>alert(1)</script>').expect(404);
+    expect(response.body).toMatchObject({ statusCode: 404, message: 'Recurso não encontrado' });
+    expect(JSON.stringify(response.body)).not.toContain('script');
   });
 
-  it('responde ao health check sem sessão e devolve o request id', async () => {
-    const response = await request(app.getHttpServer() as Server)
-      .get('/health')
-      .expect(200, { status: 'ok' });
+  it('responde ao health check sem sessão, fora do prefixo /v1, e devolve o request id', async () => {
+    const response = await request(app.getHttpServer()).get('/health').expect(200, { status: 'ok' });
     expect(response.headers['x-request-id']).toBeTypeOf('string');
+    await request(app.getHttpServer()).get('/v1/health').expect(404);
   });
 });

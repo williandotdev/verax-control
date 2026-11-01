@@ -1,7 +1,8 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { Logger } from 'nestjs-pino';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
+import { APP_CREATE_OPTIONS, configureApp } from './app.setup.js';
 import { ConfigValidationError, loadConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 
@@ -21,8 +22,11 @@ async function bootstrap(): Promise<void> {
   }
 
   // Os logs do boot ficam retidos até o pino assumir, para que tudo saia pelo logger com redaction.
-  const app = await NestFactory.create(AppModule.register(config), { bufferLogs: true });
-  app.useLogger(app.get(Logger));
+  const app = await NestFactory.create<NestExpressApplication>(
+    AppModule.register(config),
+    APP_CREATE_OPTIONS,
+  );
+  configureApp(app, config);
   app.enableShutdownHooks();
   await app.listen(config.PORT);
 }

@@ -26,6 +26,8 @@ strictDepBuilds: true
 allowBuilds:
   # O Schema Engine (migrations) é baixado pelo próprio CLI na primeira execução, com checksum conferido.
   '@prisma/engines': false
+  # Telemetria de instalação trazida pelo swagger-ui-dist; nada a ganhar em rodar.
+  '@scarf/scarf': false
   # O binário nativo do SWC já vem pelas optionalDependencies; o postinstall é só um fallback.
   '@swc/core': false
   # Os hooks do git são instalados pelo script "prepare" do projeto, não pelo postinstall do pacote.
