@@ -253,6 +253,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Como ficou:** plugin `haveIBeenPwned` do Better Auth na redefinição de senha (que é também o aceite de convite) e na troca de senha. Só os 5 primeiros caracteres do SHA-1 saem da API, com padding; senha encontrada é recusada com "Esta senha aparece em vazamentos conhecidos. Escolha outra."; se o serviço não responder, a senha **não** é aceita (falha fechada). `PASSWORD_BREACH_CHECK_ENABLED` só é desligado nos testes; a API não sobe em produção sem ele. O provisionamento interno (seed e testes) usa o hasher padrão da biblioteca.
 - **Testes:** 278 na API (+4). Serviço simulado só para o domínio do HIBP: senha vazada recusada no convite e na troca, senha limpa aceita, só o prefixo do hash sai, e serviço fora do ar faz a troca falhar sem gravar a senha.
 - **Pendente para o E8:** a API precisa de saída HTTPS para `api.pwnedpasswords.com` (liberar no egress da VPC).
+
 ## T6.1 Setup do front
 
 - **Arquivos:** `apps/web/vite.config.ts`, `apps/web/src/build-guards.ts` (+ teste), `apps/web/src/lib/{env,api-client,api,query-client,errors}.ts` (+ testes), `apps/web/src/routes/router.tsx`, `apps/web/src/pages/{login,forbidden,not-found}-page.tsx`, `apps/web/src/{App,main}.tsx`, `apps/web/src/index.css`, `apps/web/tsconfig*.json`, `apps/web/package.json`, `scripts/scan-bundle.mjs`
