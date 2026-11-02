@@ -11,6 +11,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { Public } from '../../src/auth/decorators.js';
 import { z } from 'zod';
 import { AuditContext } from '../../src/common/audit/audit-context.service.js';
 import { PrismaService } from '../../src/common/prisma/prisma.service.js';
@@ -41,7 +42,7 @@ class WidgetProbeService {
   ) {}
 
   async create(input: z.infer<typeof createWidgetSchema>): Promise<Widget> {
-    const [widget] = await this.prisma.db.$queryRaw<Widget[]>`
+    const [widget] = await this.prisma.db().$queryRaw<Widget[]>`
       INSERT INTO widget_probe (name) VALUES (${input.name}) RETURNING id::text AS id, name`;
     if (!widget) throw new Error('insert sem retorno');
 
@@ -58,9 +59,9 @@ class WidgetProbeService {
   }
 
   async rename(id: string, name: string): Promise<Widget> {
-    const [before] = await this.prisma.db.$queryRaw<Widget[]>`
+    const [before] = await this.prisma.db().$queryRaw<Widget[]>`
       SELECT id::text AS id, name FROM widget_probe WHERE id = ${id}::uuid`;
-    const [after] = await this.prisma.db.$queryRaw<Widget[]>`
+    const [after] = await this.prisma.db().$queryRaw<Widget[]>`
       UPDATE widget_probe SET name = ${name} WHERE id = ${id}::uuid RETURNING id::text AS id, name`;
     if (!after) throw new Error('widget inexistente');
     this.audit.describe({ action: 'widget.rename', resourceType: 'widget', resourceId: id, before, after });
@@ -69,6 +70,7 @@ class WidgetProbeService {
 }
 
 @Controller('widgets-probe')
+@Public()
 class WidgetProbeController {
   constructor(private readonly widgets: WidgetProbeService) {}
 

@@ -1,16 +1,18 @@
 import 'reflect-metadata';
 import { Body, Controller, Get, Module, Param, Post, Query } from '@nestjs/common';
+import { Public } from '../src/auth/decorators.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { findRouteContractViolations } from '../src/common/http/route-contracts.js';
+import { findRouteContractViolations, listRoutePolicies } from '../src/common/http/route-contracts.js';
 import type { ErrorResponseBody } from '../src/common/http/all-exceptions.filter.js';
 import { createApp } from './support/create-app.js';
 import { ProbeController, ProbeModule } from './support/probe.module.js';
 
 /** Controller com cada violação possível, para provar que o meta-teste as encontra. */
 @Controller('broken')
+@Public()
 class BrokenController {
   @Post('no-schema')
   noSchema(@Body() body: unknown): unknown {
@@ -67,6 +69,36 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
       violation.route.startsWith(ProbeController.name),
     );
     expect(probeViolations).toEqual([]);
+  });
+
+  it('só o health check e a autenticação são públicos; o resto exige sessão', () => {
+    const isTestProbe = (route: string): boolean => /^(Broken|Probe)Controller./.test(route);
+    const policies = listRoutePolicies(app).filter((policy) => !isTestProbe(policy.route));
+
+    expect(
+      policies
+        .filter((policy) => policy.isPublic)
+        .map((policy) => policy.route)
+        .sort(),
+    ).toEqual(['AuthController.handle', 'HealthController.live', 'HealthController.ready']);
+    expect(policies.filter((policy) => policy.selfManaged).map((policy) => policy.route)).toEqual([
+      'AuthController.handle',
+    ]);
+    // Antes do MFA, a sessão só alcança a identidade e o token CSRF (o cadastro do MFA é do Better Auth).
+    expect(
+      policies
+        .filter((policy) => policy.allowWithoutMfa)
+        .map((policy) => policy.route)
+        .sort(),
+    ).toEqual(['CsrfController.token', 'MeController.me']);
+  });
+
+  it('toda rota que exige sessão declara permissão ou @Authenticated (negação por padrão)', () => {
+    const undeclared = listRoutePolicies(app)
+      .filter((policy) => !policy.isPublic)
+      .filter((policy) => policy.permissions.length === 0 && !policy.authenticated)
+      .map((policy) => policy.route);
+    expect(undeclared).toEqual([]);
   });
 
   it('detecta cada tipo de violação', () => {

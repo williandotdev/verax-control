@@ -1,0 +1,239 @@
+# Wazuh single-node do Verax Control (T4.2). Baseado no single-node oficial do wazuh-docker v4.14.9
+# (commit 56ece955b1107b7b62823afae5b7057e1dab9d98), endurecido:
+# - imagens fixadas por digest; o Dependabot propõe as atualizações;
+# - certificados emitidos por script próprio (scripts/init-certs.sh), e não pelo gerador oficial, que baixa e
+#   executa um script sem checksum;
+# - nenhuma senha padrão: as três senhas vêm do ambiente (Secrets Manager no EC2) e a compose não sobe sem elas;
+# - usuários e mapeamentos de demonstração do indexer removidos; a API lê com o usuário verax_api_read, que só
+#   lê os alertas (scripts/init-security.sh, T4.8);
+# - nenhuma porta do manager publicada (não há agentes); indexer e dashboard só em 127.0.0.1 do host. O dashboard
+#   é acessado por port forwarding do SSM; o indexer é liberado para a rede da API na T4.8, por security group;
+# - cada contêiner monta só os próprios certificados e nenhum ganha privilégio novo (no-new-privileges);
+# - contas AWS dos clientes (T4.4 a T4.6): o ossec.conf e os profiles da AWS são gerados a cada deploy pelo
+#   manager-config, e só o manager (IP fixo) alcança a credencial da instância (filtro no bootstrap-host.sh).
+# Não rode direto: use scripts/deploy.sh, que valida as senhas e aplica a segurança do indexer.
+name: verax-wazuh
+
+services:
+  certs-init:
+    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    entrypoint: ['/bin/bash', '/verax/init-certs.sh']
+    user: root
+    network_mode: none
+    restart: 'no'
+    environment:
+      INDEXER_EXTRA_SANS: ${INDEXER_EXTRA_SANS:-}
+    volumes:
+      - ./scripts/init-certs.sh:/verax/init-certs.sh:ro
+      - certs-indexer:/out/indexer
+      - certs-manager:/out/manager
+      - certs-dashboard:/out/dashboard
+      - certs-public:/out/public
+
+  security-init:
+    image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
+    entrypoint: ['/bin/bash', '/verax/init-security.sh']
+    # Root só para gravar no volume e entregá-lo ao uid 1000 do indexer; sem rede e sem ganho de privilégio.
+    user: root
+    network_mode: none
+    restart: 'no'
+    security_opt: ['no-new-privileges:true']
+    environment:
+      INDEXER_ADMIN_PASSWORD: ${INDEXER_ADMIN_PASSWORD:?use scripts/deploy.sh}
+      INDEXER_DASHBOARD_PASSWORD: ${INDEXER_DASHBOARD_PASSWORD:?use scripts/deploy.sh}
+      INDEXER_API_READ_PASSWORD: ${INDEXER_API_READ_PASSWORD:?use scripts/deploy.sh}
+    volumes:
+      - ./scripts/init-security.sh:/verax/init-security.sh:ro
+      - ./config/indexer/internal_users.yml.tmpl:/verax/internal_users.yml.tmpl:ro
+      - ./config/indexer/roles-verax.yml:/verax/roles-verax.yml:ro
+      - ./config/indexer/roles_mapping.yml:/verax/roles_mapping.yml:ro
+      # Fora do caminho de configuração da imagem, para o script sempre partir dos arquivos originais dela.
+      - indexer-security:/out/security
+      - indexer-snapshots:/out/snapshots
+
+  manager-config:
+    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    # Python do próprio Wazuh; a lista de contas chega pela entrada padrão (scripts/deploy.sh).
+    entrypoint:
+      - /var/ossec/framework/python/bin/python3
+      - /verax/render-manager-config.py
+      - /verax/ossec.conf
+      - /out/config
+      - /out/aws
+      - /verax/rules
+    user: root
+    network_mode: none
+    restart: 'no'
+    stdin_open: true
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - ./scripts/render-manager-config.py:/verax/render-manager-config.py:ro
+      - ./config/manager/ossec.conf:/verax/ossec.conf:ro
+      - ./config/manager/rules:/verax/rules:ro
+      - manager-config:/out/config
+      - manager-aws:/out/aws
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
+    hostname: wazuh.indexer
+    restart: always
+    depends_on:
+      certs-init:
+        condition: service_completed_successfully
+      security-init:
+        condition: service_completed_successfully
+    ports:
+      - '${INDEXER_PUBLISH_ADDRESS:-127.0.0.1}:9200:9200'
+    environment:
+      OPENSEARCH_JAVA_OPTS: '-Xms${INDEXER_HEAP:-1g} -Xmx${INDEXER_HEAP:-1g}'
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - indexer-data:/var/lib/wazuh-indexer
+      - indexer-snapshots:/mnt/snapshots
+      - certs-indexer:/usr/share/wazuh-indexer/config/certs:ro
+      - indexer-security:/usr/share/wazuh-indexer/config/opensearch-security
+      - ./config/indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+    healthcheck:
+      # Sem credencial, o indexer saudável responde 401 por HTTPS com o certificado da CA própria.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -s -o /dev/null -w '%{http_code}'
+          --cacert /usr/share/wazuh-indexer/config/certs/root-ca.pem https://wazuh.indexer:9200
+          | grep -q 401
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    hostname: wazuh.manager
+    restart: always
+    depends_on:
+      manager-config:
+        condition: service_completed_successfully
+      wazuh.indexer:
+        condition: service_healthy
+    # Muda quando o ossec.conf ou a lista de contas muda, para a compose recriar o manager (scripts/deploy.sh).
+    labels:
+      verax.config-hash: ${WAZUH_MANAGER_CONFIG_HASH:-}
+    # IP fixo: é o único autorizado a alcançar a credencial da instância (bootstrap-host.sh).
+    networks:
+      default:
+        ipv4_address: 172.30.250.10
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    security_opt: ['no-new-privileges:true']
+    environment:
+      # As aspas fazem parte do valor: o init da imagem monta `hosts: [$INDEXER_URL]` no filebeat.yml.
+      INDEXER_URL: '"https://wazuh.indexer:9200"'
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${INDEXER_ADMIN_PASSWORD:?use scripts/deploy.sh}
+      FILEBEAT_SSL_VERIFICATION_MODE: full
+      SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/verax/root-ca.pem
+      SSL_CERTIFICATE: /etc/ssl/verax/wazuh.manager.pem
+      SSL_KEY: /etc/ssl/verax/wazuh.manager-key.pem
+      API_USERNAME: wazuh-wui
+      API_PASSWORD: ${WAZUH_API_PASSWORD:?use scripts/deploy.sh}
+    volumes:
+      - manager-api-configuration:/var/ossec/api/configuration
+      - manager-etc:/var/ossec/etc
+      - manager-logs:/var/ossec/logs
+      - manager-queue:/var/ossec/queue
+      - manager-var-multigroups:/var/ossec/var/multigroups
+      - manager-integrations:/var/ossec/integrations
+      - manager-active-response:/var/ossec/active-response/bin
+      - manager-agentless:/var/ossec/agentless
+      - manager-wodles:/var/ossec/wodles
+      - filebeat-etc:/etc/filebeat
+      - filebeat-var:/var/lib/filebeat
+      - certs-manager:/etc/ssl/verax:ro
+      # O init da imagem copia /wazuh-config-mount para /var/ossec a cada partida (etc/ossec.conf gerado).
+      - manager-config:/wazuh-config-mount:ro
+      - manager-aws:/root/.aws:ro
+    healthcheck:
+      test: ['CMD-SHELL', "/var/ossec/bin/wazuh-control status | grep -q 'wazuh-apid is running'"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 60s
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.14.9@sha256:e8e2340265feb6f61711d2ba460d04d2dea875ee46de26cd1832da2a3558a341
+    hostname: wazuh.dashboard
+    restart: always
+    depends_on:
+      wazuh.indexer:
+        condition: service_healthy
+      wazuh.manager:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:${DASHBOARD_PORT:-8443}:5601'
+    security_opt: ['no-new-privileges:true']
+    environment:
+      WAZUH_API_URL: https://wazuh.manager
+      DASHBOARD_USERNAME: kibanaserver
+      DASHBOARD_PASSWORD: ${INDEXER_DASHBOARD_PASSWORD:?use scripts/deploy.sh}
+      API_USERNAME: wazuh-wui
+      API_PASSWORD: ${WAZUH_API_PASSWORD:?use scripts/deploy.sh}
+    # Sem volume para data/wazuh/config: o wazuh.yml (que guarda a senha da API) é recriado do ambiente a cada
+    # contêiner novo, e assim acompanha a rotação de senha.
+    volumes:
+      - certs-dashboard:/usr/share/wazuh-dashboard/certs:ro
+      - ./config/dashboard/opensearch_dashboards.yml:/usr/share/wazuh-dashboard/config/opensearch_dashboards.yml:ro
+      - dashboard-custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          curl -s -o /dev/null -w '%{http_code}'
+          --cacert /usr/share/wazuh-dashboard/certs/root-ca.pem https://wazuh.dashboard:5601/api/status
+          | grep -qE '^(200|401)$'
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 60s
+
+networks:
+  default:
+    ipam:
+      config:
+        # Endereços dinâmicos só na metade de cima, para ninguém pegar o IP fixo do manager.
+        - subnet: 172.30.250.0/24
+          ip_range: 172.30.250.128/25
+
+volumes:
+  certs-indexer:
+  certs-manager:
+  certs-dashboard:
+  certs-public:
+  indexer-security:
+  indexer-data:
+  indexer-snapshots:
+  manager-api-configuration:
+  manager-etc:
+  manager-logs:
+  manager-queue:
+  manager-var-multigroups:
+  manager-integrations:
+  manager-active-response:
+  manager-agentless:
+  manager-wodles:
+  manager-config:
+  manager-aws:
+  filebeat-etc:
+  filebeat-var:
+  dashboard-custom:

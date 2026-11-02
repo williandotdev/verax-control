@@ -22,15 +22,69 @@ export const envSchema = z
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     // Quantos proxies confiáveis ficam na frente da API (o ALB conta 1). Define de onde sai o IP do cliente
     // na auditoria e no limite de tentativas: com 0, o X-Forwarded-For é ignorado e não pode ser forjado.
+    // Em produção, atrás do ALB, precisa ser pelo menos 1 (com 0, todo mundo teria o IP do ALB e dividiria o
+    // mesmo limite de tentativas). Mais que o número real de proxies deixaria o cliente forjar o próprio IP.
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     WEB_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
+    API_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
+    // Assina os cookies de sessão e cifra o segredo do TOTP. Gerado por `pnpm setup:env` (256 bits).
+    BETTER_AUTH_SECRET: z
+      .string({ error: 'obrigatória' })
+      .min(32, { error: 'deve ter pelo menos 32 caracteres' }),
+    // Chave HMAC dos tokens CSRF (T2.3), separada da chave de sessão.
+    CSRF_SECRET: z.string({ error: 'obrigatória' }).min(32, { error: 'deve ter pelo menos 32 caracteres' }),
+    // Limite de tentativas por IP nas rotas de autenticação. Só os testes desligam; produção exige ligado.
+    AUTH_RATE_LIMIT_ENABLED: z
+      .enum(['true', 'false'], { error: 'deve ser true ou false' })
+      .default('true')
+      .transform((value) => value === 'true'),
+    // Checagem de senha vazada no Have I Been Pwned (k-anonimato). Só os testes desligam; produção exige.
+    PASSWORD_BREACH_CHECK_ENABLED: z
+      .enum(['true', 'false'], { error: 'deve ser true ou false' })
+      .default('true')
+      .transform((value) => value === 'true'),
+    // E-mail (T2.6): SES em produção; caixa local em desenvolvimento (links de convite nunca vão para o log).
+    MAIL_TRANSPORT: z.enum(['ses', 'dev-mailbox']).default('dev-mailbox'),
+    MAIL_FROM: z.email({ error: 'deve ser um e-mail válido' }),
+    AWS_REGION: z
+      .string()
+      .regex(/^[a-z]{2}-[a-z]+-[0-9]$/, { error: 'região AWS inválida' })
+      .default('sa-east-1'),
+    // Pasta da caixa local. Vazio: `.dev-mailbox` na raiz do monorepo.
+    DEV_MAILBOX_DIR: z.string().optional(),
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
   })
   .superRefine((env, ctx) => {
-    if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN.startsWith('https://')) {
-      ctx.addIssue({ code: 'custom', path: ['WEB_ORIGIN'], message: 'deve usar https em produção' });
+    for (const key of ['WEB_ORIGIN', 'API_ORIGIN'] as const) {
+      if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
+      }
+    }
+    if (env.NODE_ENV === 'production' && !env.PASSWORD_BREACH_CHECK_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PASSWORD_BREACH_CHECK_ENABLED'],
+        message: 'deve ficar ligado em produção',
+      });
+    }
+    if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT !== 'ses') {
+      ctx.addIssue({ code: 'custom', path: ['MAIL_TRANSPORT'], message: 'deve ser ses em produção' });
+    }
+    if (env.NODE_ENV === 'production' && env.TRUST_PROXY_HOPS === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TRUST_PROXY_HOPS'],
+        message: 'deve contar o ALB (1) em produção',
+      });
+    }
+    if (env.NODE_ENV === 'production' && !env.AUTH_RATE_LIMIT_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTH_RATE_LIMIT_ENABLED'],
+        message: 'deve ficar ligado em produção',
+      });
     }
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({
