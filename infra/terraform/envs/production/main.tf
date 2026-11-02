@@ -54,6 +54,19 @@ module "network" {
   log_retention_days = 365
 }
 
+module "database" {
+  source             = "../../modules/database"
+  name               = local.name
+  vpc_id             = module.network.vpc_id
+  private_subnet_ids = module.network.private_subnet_ids
+  data_kms_key_arn   = module.kms.data_key_arn
+  logs_kms_key_arn   = module.kms.logs_key_arn
+  # Explícitos (iguais ao padrão do módulo) para que qualquer mudança apareça na revisão.
+  multi_az              = true
+  deletion_protection   = true
+  backup_retention_days = 14
+}
+
 module "wazuh" {
   source            = "../../modules/wazuh"
   name              = local.name

@@ -273,3 +273,17 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Definição de pronto:** critérios de aceite ✔ (política que apaga alertas após o prazo, snapshot diário do indexer em S3, teste de restauração documentado e automatizado) · testes ✔ · lint ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
 - **Desvios:** o snapshot é feito em disco e copiado para o S3 pelo host, em vez de um repositório S3 nativo, para manter a imagem oficial do indexer sem plugin adicional.
 - **Riscos:** a cópia para o S3 acontece uma hora depois do snapshot: um snapshot que demore mais que isso só vai para o S3 no dia seguinte (o repositório local guarda 14 dias). A observabilidade da T8.6 deve alarmar falha do timer.
+
+## T8.1 Banco em produção
+
+- **Arquivos:** `infra/terraform/modules/database/main.tf`, `infra/terraform/envs/{staging,production}/main.tf`
+- **Dependências:** nenhuma nova. PostgreSQL 18 no RDS (última minor: 18.6), a mesma major do ambiente local e do CI.
+- **Como funciona:**
+  - RDS PostgreSQL 18 em subnets privadas, `publicly_accessible = false`, security group **sem regra de saída** e entrada na 5432 só dos security groups autorizados (API, worker e migrations, ligados na T8.2).
+  - Disco gp3 cifrado com a chave de dados, crescimento automático até 200 GB, Performance Insights cifrado e monitoramento avançado.
+  - Senha mestra gerada e guardada pelo próprio RDS no Secrets Manager, cifrada com a chave de dados: não passa pelo state nem pelo código. A aplicação não usa essa conta: os papéis de banco dela nascem no bootstrap (T8.2).
+  - Grupo de parâmetros com TLS obrigatório (`rds.force_ssl`, mínimo TLS 1.2), SCRAM-SHA-256 e log de conexões. **Sem log de consultas**, porque ele gravaria os valores dos parâmetros (dados pessoais ou tokens); as consultas lentas ficam no Performance Insights, normalizadas e sem valores.
+  - Backups automáticos com restauração para qualquer ponto no tempo (14 dias em produção, 7 no staging), snapshot final, backups preservados ao apagar e logs exportados para grupos criados antes do banco, com KMS e 365 dias de retenção. Atualização automática de minor, nunca de major.
+  - **Produção:** Multi-AZ e proteção contra exclusão, explícitos no ambiente. **Staging:** `db.t4g.micro`, uma zona, sem proteção contra exclusão (só dados fictícios, pendência 7).
+- **Testes:** `terraform validate` nos dois ambientes; tflint (inclui a validação das classes de instância); checkov sem falhas, com duas exceções justificadas no código (Multi-AZ e proteção contra exclusão são variáveis: ligadas em produção, desligadas no staging); Trivy limpo.
+- **Definição de pronto:** critérios de aceite ✔ (RDS em subnet privada, criptografado, com backups automáticos; sem acesso público; credencial no Secrets Manager) · lint ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
