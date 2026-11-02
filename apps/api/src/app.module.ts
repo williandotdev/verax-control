@@ -1,7 +1,9 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
+import { AlertExceptionsModule } from './alert-exceptions/alert-exceptions.module.js';
 import { AuthModule } from './auth/auth.module.js';
+import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
 import { RequestContextInterceptor } from './common/context/request-context.interceptor.js';
 import { AuditModule } from './common/audit/audit.module.js';
@@ -13,6 +15,9 @@ import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/log
 import { PrismaModule } from './common/prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
 import { MailModule } from './mail/mail.module.js';
+import { ProtectedResourcesModule } from './protected-resources/protected-resources.module.js';
+import { TenantsModule } from './tenants/tenants.module.js';
+import { UsersModule } from './users/users.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
@@ -33,6 +38,11 @@ export class AppModule {
         MailModule,
         AuthModule,
         HealthModule,
+        TenantsModule,
+        UsersModule,
+        CloudAccountsModule,
+        ProtectedResourcesModule,
+        AlertExceptionsModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },
