@@ -14,6 +14,7 @@ import { PrismaModule } from './common/prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { TenantsModule } from './tenants/tenants.module.js';
+import { UsersModule } from './users/users.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
@@ -35,6 +36,7 @@ export class AppModule {
         AuthModule,
         HealthModule,
         TenantsModule,
+        UsersModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },
