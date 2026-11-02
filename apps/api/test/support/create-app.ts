@@ -24,6 +24,8 @@ export interface CreateAppOptions {
   trustProxyHops?: number;
   /** Limite de tentativas por IP: desligado por padrão nos testes, que fazem muitos logins do mesmo IP. */
   authRateLimit?: boolean;
+  /** Checagem no Have I Been Pwned: desligada por padrão (os testes não acessam a internet). */
+  passwordBreachCheck?: boolean;
   capture?: LogCapture;
   /** Caixa de e-mail em memória no lugar do transporte configurado. */
   mailbox?: MailTransport;
@@ -44,6 +46,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     CSRF_SECRET: TEST_CSRF_SECRET,
     MAIL_FROM: 'nao-responda@verax.example',
     AUTH_RATE_LIMIT_ENABLED: String(options.authRateLimit ?? false),
+    PASSWORD_BREACH_CHECK_ENABLED: String(options.passwordBreachCheck ?? false),
     // Por padrão, o banco de teste: toda escrita abre transação e grava auditoria de verdade.
     DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),

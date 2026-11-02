@@ -51,6 +51,12 @@ describe('loadConfig', () => {
     expect(problemsOf({ ...validEnv, AWS_REGION: 'sa-east' })).toContain('AWS_REGION: região AWS inválida');
   });
 
+  it('não aceita desligar a checagem de senha vazada em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, PASSWORD_BREACH_CHECK_ENABLED: 'false' })).toContain(
+      'PASSWORD_BREACH_CHECK_ENABLED: deve ficar ligado em produção',
+    );
+  });
+
   it('exige SES em produção', () => {
     expect(problemsOf({ ...validProductionEnv, MAIL_TRANSPORT: 'dev-mailbox' })).toContain(
       'MAIL_TRANSPORT: deve ser ses em produção',

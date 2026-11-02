@@ -2,6 +2,7 @@ import { PRODUCT_NAME } from '@verax/shared';
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api';
+import { haveIBeenPwned } from 'better-auth/plugins/haveibeenpwned';
 import { twoFactor } from 'better-auth/plugins/two-factor';
 import type { PinoLogger } from 'nestjs-pino';
 import type { AppConfig } from '../common/config/config.module.js';
@@ -184,6 +185,14 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
     },
 
     plugins: [
+      // Senha nova (redefinição, convite e troca) não pode estar em vazamentos conhecidos. Só os 5 primeiros
+      // caracteres do SHA-1 vão ao Have I Been Pwned (k-anonimato, com padding). Se o serviço não responder,
+      // a troca falha: a senha não é aceita sem a checagem.
+      haveIBeenPwned({
+        enabled: config.PASSWORD_BREACH_CHECK_ENABLED,
+        paths: ['/change-password', '/reset-password'],
+        customPasswordCompromisedMessage: 'Esta senha aparece em vazamentos conhecidos. Escolha outra.',
+      }),
       // MFA obrigatório (T2.2): TOTP de 6 dígitos e 10 códigos de recuperação. Segredo e códigos são
       // cifrados com a chave do Better Auth antes de ir para o banco.
       twoFactor({

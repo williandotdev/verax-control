@@ -1,3 +1,4 @@
+import { hashPassword } from 'better-auth/crypto';
 import type { UserRole, UserStatus } from '../generated/prisma/enums.js';
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
@@ -40,7 +41,9 @@ export async function provisionUser(auth: Auth, input: NewUser): Promise<{ id: s
       userId: user.id,
       providerId: 'credential',
       accountId: user.id,
-      password: await context.password.hash(input.password),
+      // Hasher padrão da biblioteca (scrypt), o mesmo do login. A checagem de senha vazada vale nos caminhos em
+      // que o próprio usuário escolhe a senha (convite, redefinição e troca); aqui só entram o seed e os testes.
+      password: await hashPassword(input.password),
     });
   }
   return { id: user.id };

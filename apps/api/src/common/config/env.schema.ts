@@ -36,6 +36,11 @@ export const envSchema = z
       .enum(['true', 'false'], { error: 'deve ser true ou false' })
       .default('true')
       .transform((value) => value === 'true'),
+    // Checagem de senha vazada no Have I Been Pwned (k-anonimato). Só os testes desligam; produção exige.
+    PASSWORD_BREACH_CHECK_ENABLED: z
+      .enum(['true', 'false'], { error: 'deve ser true ou false' })
+      .default('true')
+      .transform((value) => value === 'true'),
     // E-mail (T2.6): SES em produção; caixa local em desenvolvimento (links de convite nunca vão para o log).
     MAIL_TRANSPORT: z.enum(['ses', 'dev-mailbox']).default('dev-mailbox'),
     MAIL_FROM: z.email({ error: 'deve ser um e-mail válido' }),
@@ -54,6 +59,13 @@ export const envSchema = z
       if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
       }
+    }
+    if (env.NODE_ENV === 'production' && !env.PASSWORD_BREACH_CHECK_ENABLED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['PASSWORD_BREACH_CHECK_ENABLED'],
+        message: 'deve ficar ligado em produção',
+      });
     }
     if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT !== 'ses') {
       ctx.addIssue({ code: 'custom', path: ['MAIL_TRANSPORT'], message: 'deve ser ses em produção' });
