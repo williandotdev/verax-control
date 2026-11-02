@@ -60,7 +60,6 @@ const ACCOUNT_ID = /^\d{12}$/;
 const ACCESS_KEY_ID = /^(AKIA|ASIA|AROA|AIDA)[A-Z0-9]{12,124}$/;
 const BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const REGION = /^[a-z]{2}(-gov)?-[a-z]+-\d$/;
-const CONTROL = /\p{Cc}/u;
 
 /** O Wazuh grava o fuso sem dois-pontos (`+0000`), que o validador ISO recusa; o resto da API usa UTC. */
 export function normalizeTimestamp(value: string): string | null {
@@ -89,25 +88,42 @@ const envelopeSchema = z.object({
     .optional(),
 });
 
-/** Lê um caminho no evento. Numa lista, segue o primeiro item (o wodle transforma listas de um item em objeto). */
+/**
+ * Lê um caminho no evento. Numa lista, segue o primeiro item (o wodle transforma listas de um item em objeto). Só
+ * lê: cada passo pega a propriedade própria pelo descritor, sem passar pelo protótipo nem chamar getter.
+ */
 function at(value: unknown, ...path: string[]): unknown {
   let current = value;
   for (const key of path) {
     if (Array.isArray(current)) current = current[0];
-    if (current === null || typeof current !== 'object' || !Object.hasOwn(current, key)) return undefined;
-    current = (current as Record<string, unknown>)[key];
+    if (current === null || typeof current !== 'object') return undefined;
+    current = Object.getOwnPropertyDescriptor(current, key)?.value;
   }
   return current;
 }
 
+/** Caractere de controle (categoria Cc do Unicode: U+0000 a U+001F e U+007F a U+009F). */
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return true;
+  }
+  return false;
+}
+
 /** Texto curto e sem caractere de controle; qualquer outra coisa vira ausente. */
 function text(value: unknown, max = 256): string | undefined {
-  return typeof value === 'string' && value.length > 0 && value.length <= max && !CONTROL.test(value)
+  return typeof value === 'string' && value.length > 0 && value.length <= max && !hasControlCharacter(value)
     ? value
     : undefined;
 }
 
+/**
+ * Texto curto que bate com um dos padrões deste arquivo. Os padrões são lineares (ancorados, com classes de
+ * caracteres e quantificadores limitados, sem aninhamento), e o texto já chega com no máximo `max` caracteres.
+ */
 function matching(value: unknown, pattern: RegExp, max = 256): string | undefined {
+  // nosemgrep: ajinabraham.njsscan.dos.regex_dos.regex_dos
   const found = text(value, max);
   return found !== undefined && pattern.test(found) ? found : undefined;
 }

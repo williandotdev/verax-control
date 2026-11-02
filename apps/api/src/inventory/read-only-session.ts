@@ -73,22 +73,22 @@ export async function assumeReadOnlyRole(
   target: { accountId: string; externalId: string },
   sts: Pick<STSClient, 'send'>,
 ): Promise<TemporaryCredentials> {
-  if (!ACCOUNT_ID.test(target.accountId)) throw new InventoryError('conta fora do formato');
-  if (!EXTERNAL_ID.test(target.externalId)) throw new InventoryError('ExternalId fora do formato');
+  const { accountId, externalId } = target;
+  if (!ACCOUNT_ID.test(accountId)) throw new InventoryError('conta fora do formato');
+  if (!EXTERNAL_ID.test(externalId)) throw new InventoryError('ExternalId fora do formato');
 
+  const command = new AssumeRoleCommand({
+    RoleArn: `arn:aws:iam::${accountId}:role/${READ_ONLY_ROLE}`,
+    RoleSessionName: SESSION_NAME,
+    ExternalId: externalId,
+    DurationSeconds: SESSION_SECONDS,
+  });
   let response;
   try {
-    response = await sts.send(
-      new AssumeRoleCommand({
-        RoleArn: `arn:aws:iam::${target.accountId}:role/${READ_ONLY_ROLE}`,
-        RoleSessionName: SESSION_NAME,
-        ExternalId: target.externalId,
-        DurationSeconds: SESSION_SECONDS,
-      }),
-    );
+    response = await sts.send(command);
   } catch (error) {
     throw new InventoryError(
-      `não foi possível assumir o papel de leitura na conta ${target.accountId} (${awsErrorCode(error)})`,
+      `não foi possível assumir o papel de leitura na conta ${accountId} (${awsErrorCode(error)})`,
     );
   }
 
@@ -98,7 +98,7 @@ export async function assumeReadOnlyRole(
     credentials.SecretAccessKey === undefined ||
     credentials.SessionToken === undefined
   ) {
-    throw new InventoryError(`a AWS não devolveu credenciais para a conta ${target.accountId}`);
+    throw new InventoryError(`a AWS não devolveu credenciais para a conta ${accountId}`);
   }
   return new TemporaryCredentials({
     accessKeyId: credentials.AccessKeyId,
