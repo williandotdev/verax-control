@@ -263,3 +263,37 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 - **Premissa a confirmar:** achado baixo não abre incidente sozinho, para a Torre não virar uma lista de achados.
 - **Pendente (depois do E3):** models `Incident` e `IncidentFinding`, a lista de proteção (T3.4), gravação dentro do sync com lock e os endpoints da T5.7.
+
+## T5.8 Postura a partir do Prowler: núcleo (job e endpoints depois do E3)
+
+- **Arquivos:** `apps/api/src/posture/prowler-report.ts`, `apps/api/test/posture/prowler-report.test.ts`
+- **Dependências:** nenhuma nova.
+- **Conferido no código do Prowler 5.47.0, direto da imagem:**
+  - estrutura do JSON-OCSF (`ocsf.py`);
+  - nomes dos enums de severidade e status do py-ocsf-models;
+  - `status_code` também pode ser **MUTED**: a lista de exceções troca o status original por MUTED (`mutelist.py`). Um parser só com PASS/FAIL/MANUAL recusaria esses itens e, acima de 1%, o relatório inteiro.
+- **Como funciona:**
+  - **Caminho no bucket** (`parseReportKey`): `<tenantId>/<conta>/<AAAA-MM-DD>/prowler-<horário>.ocsf.json`, como a tarefa da T4.7 grava. Data e horário precisam existir no calendário e ser do mesmo dia; fora disso, o arquivo é ignorado.
+  - **Relatório** (`parseProwlerReport`): lê só os campos usados (checagem, resultado, severidade, título, região, recurso, detalhe, risco, correção e referências). Os metadados do recurso (`resources[].data`) não são lidos.
+    - **Um resultado de outra conta recusa o relatório inteiro:** a pasta é da conta, e um resultado alheio ali não vira postura de ninguém.
+    - Itens fora do formato são contados, e acima de 1% o relatório é recusado (sinal de formato novo).
+    - Limite de 100 mil resultados; resultado repetido conta uma vez.
+  - **Nota de postura** (`summarizePosture`, premissa aprovada): aprovação ponderada pela severidade (crítica 10, alta 5, média 2, baixa 1; informativa não pesa).
+    - Manuais e silenciadas ficam fora.
+    - Sem peso, a nota é `null`, e não zero.
+    - Também conta aprovadas, reprovadas por severidade, manuais e silenciadas, para o histórico por data.
+- **Testes:** 11, com resultados na estrutura exata do Prowler 5.47.0:
+  - caminho válido e seis inválidos (inclusive `..` e data inexistente);
+  - campos lidos sem os metadados do recurso;
+  - **relatório com resultado de outra conta recusado**;
+  - limite de itens inválidos e de tamanho;
+  - MUTED;
+  - repetição;
+  - nota nas regras e do relatório até a nota.
+
+  **Mutação:** tirar a checagem da conta, contar as silenciadas, ignorar o limite de inválidos ou aceitar a pasta de outro dia é pego pelos testes.
+
+- **Pendente (depois do E3):**
+  - o job que lista a pasta de cada conta cadastrada (`<tenantId>/<conta>/`, montada pelo cadastro, nunca pelo conteúdo do bucket) e lê o relatório mais novo, com limite de tamanho do objeto;
+  - os models de postura e histórico;
+  - os endpoints de nota e de achados de postura.
