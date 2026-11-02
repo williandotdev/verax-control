@@ -6,7 +6,8 @@
 # 2. rotação das quatro senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
 # 3. filebeat do manager gravando no indexer com TLS verificado; dashboard com a senha atual da API;
 # 4. contas AWS: módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da conta, profiles só para
-#    o root, ExternalId fora do ossec.conf e do ambiente do contêiner, manager no IP fixo;
+#    o root, ExternalId fora do ossec.conf e do ambiente do contêiner, manager no IP fixo, correlações da AWS por
+#    conta instaladas (o efeito delas é testado no scripts/test-rules.sh);
 # 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente;
 # 6. acesso como a API faz (T4.8): pelo nome DNS do indexer, validando o certificado contra a CA do Wazuh;
 # 7. retenção e backup (T4.9): política de 90 dias ligada aos índices novos, snapshot diário configurado, e o
@@ -132,6 +133,11 @@ expect "conta A: 3 buckets com o profile dela" 3 \
   "$(manager_file_count 'Executing Bucket Analysis.*Profile: verax-111122223333\)' /var/ossec/logs/ossec.log)"
 expect "conta B: 1 bucket com o profile dela" 1 \
   "$(manager_file_count 'Executing Bucket Analysis.*Profile: verax-444455556666\)' /var/ossec/logs/ossec.log)"
+# O efeito das regras (correlação só dentro da mesma conta) é testado no scripts/test-rules.sh; aqui, a instalação.
+expect "correlações por conta instaladas como no repositório" "$(sha256sum <config/manager/rules/verax_aws_rules.xml | cut -c1-64)" \
+  "$(docker exec "$manager" sha256sum /var/ossec/etc/rules/verax_aws_rules.xml | cut -c1-64)"
+expect "analysisd carregou as regras" 0 "$(manager_file_count 'Error loading the rules' /var/ossec/logs/ossec.log)"
+expect "analysisd rodando como wazuh" wazuh "$(docker exec "$manager" ps -o user= -C wazuh-analysisd | head -n 1 | tr -d ' ')"
 
 echo "== Retenção e backup"
 # shellcheck source=SCRIPTDIR/lib-indexer.sh

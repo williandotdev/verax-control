@@ -1,0 +1,45 @@
+<!--
+  Verax Control: correlações da AWS separadas por conta.
+
+  Um Wazuh atende todos os clientes. As regras de frequência abaixo, do Wazuh 4.14.9 (0350-amazon_rules.xml),
+  contam eventos de qualquer conta: três logins com falha num cliente e três noutro disparavam a 80255, atribuída
+  ao cliente do último evento. Aqui cada uma passa a contar só eventos da mesma conta: no CloudTrail, a conta da
+  pasta AWSLogs/<conta> que o módulo leu (aws.aws_account_id); no WAF, a Web ACL (o ARN dela traz a conta).
+
+  O resto de cada regra é o original. O overwrite mantém os if_matched_sid originais, que estão aqui só para
+  leitura. scripts/test-rules.sh confere o efeito e falha se uma versão nova do Wazuh trouxer outra correlação
+  da AWS sem esta separação.
+-->
+<group name="amazon,aws,">
+
+  <rule id="80252" level="10" frequency="22" timeframe="600" overwrite="yes">
+    <if_matched_sid>80251</if_matched_sid>
+    <same_field>aws.aws_account_id</same_field>
+    <options>no_full_log</options>
+    <description>AWS Cloudtrail: $(aws.eventSource) - $(aws.eventName) - high number of deleted objects.</description>
+    <mitre>
+      <id>T1485</id>
+    </mitre>
+    <group>aws_cloudtrail,gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_AU.6,pci_dss_10.6.1,tsc_CC7.2,tsc_CC7.3,</group>
+  </rule>
+
+  <rule id="80255" level="10" frequency="6" timeframe="360" overwrite="yes">
+    <if_matched_sid>80254</if_matched_sid>
+    <same_field>aws.aws_account_id</same_field>
+    <options>no_full_log</options>
+    <description>AWS Cloudtrail: $(aws.eventSource) - $(aws.eventName) - Possible break in attempt (high number of login attempts).</description>
+    <mitre>
+      <id>T1110</id>
+    </mitre>
+    <group>authentication_failures,aws_cloudtrail,gdpr_IV_32.2,gdpr_IV_35.7.d,hipaa_164.312.b,nist_800_53_AC.7,nist_800_53_AU.14,nist_800_53_SI.4,pci_dss_10.2.4,pci_dss_10.2.5,pci_dss_11.4,tsc_CC6.1,tsc_CC6.8,tsc_CC7.2,tsc_CC7.3,</group>
+  </rule>
+
+  <rule id="80443" level="10" frequency="8" timeframe="120" ignore="60" overwrite="yes">
+    <if_matched_sid>80442</if_matched_sid>
+    <same_field>aws.webaclId</same_field>
+    <same_field>aws.httpRequest.clientIp</same_field>
+    <options>no_full_log</options>
+    <description>AWS WAF - Multiple blocked requests.</description>
+  </rule>
+
+</group>

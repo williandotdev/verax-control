@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "render-manager-config.py"
+RULES_DIR = pathlib.Path(__file__).resolve().parents[1] / "config" / "manager" / "rules"
 spec = importlib.util.spec_from_file_location("render_manager_config", SCRIPT)
 render = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(render)
@@ -62,7 +63,7 @@ class Run:
         self.config_dir, self.aws_dir = root / "config", root / "aws"
         with mock.patch("sys.stdin", io.StringIO(self.raw)):
             with mock.patch("sys.stderr") as stderr:
-                self.code = render.main(str(self.base), str(self.config_dir), str(self.aws_dir))
+                self.code = render.main(str(self.base), str(self.config_dir), str(self.aws_dir), str(RULES_DIR))
         self.stderr = "".join(call.args[0] for call in stderr.write.call_args_list)
         return self
 
@@ -111,6 +112,24 @@ class ValidSourcesTest(unittest.TestCase):
         with Run([account_a()]) as run:
             self.assertEqual(stat.S_IMODE((run.aws_dir / "config").stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE((run.config_dir / "etc" / "ossec.conf").stat().st_mode), 0o640)
+
+    def test_local_rules_go_with_the_config_even_without_accounts(self):
+        for sources in ([account_a()], []):
+            with self.subTest(accounts=len(sources)), Run(sources) as run:
+                installed = run.config_dir / "etc" / "rules" / "verax_aws_rules.xml"
+                original = RULES_DIR / "verax_aws_rules.xml"
+                self.assertEqual(installed.read_text(encoding="utf-8"), original.read_text(encoding="utf-8"))
+                if os.name != "nt":
+                    # O init da imagem copia como root sem preservar o dono; o analysisd lê como wazuh.
+                    self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o644)
+
+    def test_correlations_are_split_by_account(self):
+        rules = (RULES_DIR / "verax_aws_rules.xml").read_text(encoding="utf-8")
+        for rule_id, field in (("80252", "aws.aws_account_id"), ("80255", "aws.aws_account_id"), ("80443", "aws.webaclId")):
+            with self.subTest(rule=rule_id):
+                block = rules.split(f'<rule id="{rule_id}"', 1)[1].split("</rule>", 1)[0]
+                self.assertIn('overwrite="yes"', block)
+                self.assertIn(f"<same_field>{field}</same_field>", block)
 
     def test_no_accounts_means_no_wodle_and_no_profiles(self):
         for raw in ("[]", ""):
