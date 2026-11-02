@@ -88,7 +88,7 @@ export function authErrorMessage(error: unknown, step: AuthStep): string {
         : 'Não foi possível iniciar o cadastro.';
     case 'set-password':
       if (error.code === 'INVALID_TOKEN') return 'Este link é inválido ou expirou. Peça um novo.';
-      if (/vazamentos/i.test(error.message))
+      if (error.code === 'PASSWORD_COMPROMISED')
         return 'Esta senha aparece em vazamentos conhecidos. Escolha outra.';
       if (error.code === 'PASSWORD_TOO_SHORT')
         return `A senha precisa ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres.`;

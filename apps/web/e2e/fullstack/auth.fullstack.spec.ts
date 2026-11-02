@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import {
@@ -75,7 +76,7 @@ test.describe('autenticação contra a API real', () => {
     await expect(page.getByRole('heading', { name: 'Defina uma nova senha' })).toBeVisible();
     expect(new URL(page.url()).hash).toBe('');
 
-    const newPassword = 'senha-nova-do-teste-e2e';
+    const newPassword = `nova-${randomUUID()}`;
     await page.getByLabel('Nova senha').fill(newPassword);
     await page.getByLabel('Confirme a senha').fill(newPassword);
     await page.getByRole('button', { name: 'Salvar senha' }).click();

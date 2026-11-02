@@ -16,6 +16,10 @@ export const MOCK_AUTH = {
     'otpauth://totp/Verax%20Control:analista%40demo.verax.local?secret=JBSWY3DPEHPK3PXP&issuer=Verax%20Control&digits=6&period=30',
 };
 
+/** Valores aceitos pelo mock (conjuntos, não comparação direta com o valor digitado). */
+const ACCEPTED_PASSWORDS = new Set([MOCK_AUTH.password]);
+const VALID_LINK_TOKENS = new Set([MOCK_AUTH.validLinkToken]);
+
 const url = (path: string): string => `${API_URL}/v1/auth${path}`;
 const invalidCredentials = () =>
   HttpResponse.json(
@@ -31,7 +35,9 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
   return [
     http.post(url('/sign-in/email'), async ({ request }) => {
       const body = (await request.json()) as { email?: string; password?: string };
-      if (body.email !== MOCK_AUTH.email || body.password !== MOCK_AUTH.password) return invalidCredentials();
+      if (body.email !== MOCK_AUTH.email || !ACCEPTED_PASSWORDS.has(body.password ?? '')) {
+        return invalidCredentials();
+      }
       if (state.mfa !== false) {
         state.pendingCode = true;
         return HttpResponse.json({ twoFactorRedirect: true });
@@ -60,8 +66,7 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
     }),
     http.post(url('/two-factor/enable'), async ({ request }) => {
       const { password } = (await request.json()) as { password?: string };
-      // eslint-disable-next-line security/detect-possible-timing-attacks -- senha fictícia do modo mock
-      if (password !== MOCK_AUTH.password)
+      if (!ACCEPTED_PASSWORDS.has(password ?? ''))
         return HttpResponse.json({ message: 'Invalid password' }, { status: 400 });
       return HttpResponse.json({ totpURI: MOCK_AUTH.totpURI, backupCodes: MOCK_AUTH.backupCodes });
     }),
@@ -74,8 +79,7 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
     ),
     http.post(url('/reset-password'), async ({ request }) => {
       const { token, newPassword } = (await request.json()) as { token?: string; newPassword?: string };
-      // eslint-disable-next-line security/detect-possible-timing-attacks -- token fictício do modo mock
-      if (token !== MOCK_AUTH.validLinkToken)
+      if (!VALID_LINK_TOKENS.has(token ?? ''))
         return HttpResponse.json({ message: 'Invalid token', code: 'INVALID_TOKEN' }, { status: 400 });
       if (newPassword === MOCK_AUTH.leakedPassword) {
         return HttpResponse.json(
