@@ -59,6 +59,27 @@ Conta(s) monitorada(s) — pilha do conector: papel VeraxControlReadOnly
 - **Disponibilidade:** uma VM só, sem alta disponibilidade. Se ela parar, os logs continuam onde estão e o Wazuh
   retoma de onde parou. Tem backup diário do banco e snapshot do disco.
 
+## Painel e destinos
+
+O painel é estático, no Firebase Hosting do projeto `verax-control-prod` (GCP), um site por destino. Roteiro em
+`docs/runbooks/painel.md`.
+
+- `control.veraxsistemas.com.br`: **demonstração comercial**, com dados fictícios simulados no navegador, sem API e
+  com aviso em toda tela.
+- `verax.control.veraxsistemas.com.br`: **SOC da própria Verax**. Monitora a infraestrutura da Verax na GCP e no
+  Cloudflare.
+- `<cliente>.control.veraxsistemas.com.br`: um por cliente.
+
+## SOC da própria Verax (fontes da GCP)
+
+A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
+
+- **Cloud Logging:** auditoria (Admin Activity e acesso a dados, onde estiver ligado), requisições das APIs (Cloud
+  Run e balanceador) e, se existir, o WAF (Cloud Armor). A entrega é feita por um _sink_ de log para um tópico do
+  Pub/Sub, só com o filtro de segurança. O nó lê a assinatura com uma identidade sem chave: a conta da VM, se o nó
+  rodar na GCP, ou federação de identidade, se rodar fora. Nenhuma chave JSON de conta de serviço é criada.
+- **Cloudflare:** como na seção abaixo.
+
 ## Logs do Cloudflare
 
 Para clientes que usam o Cloudflare (WAF, DNS, proxy), o nó também recebe os eventos dele no Wazuh, com decoders e

@@ -1,6 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { useState } from 'react';
 import { RouterProvider } from 'react-router/dom';
+import { DemoBanner } from '@/components/demo-banner';
 import { bindApiNavigation } from '@/lib/api';
 import { createQueryClient } from '@/lib/query-client';
 import { createAppRouter } from '@/routes/router';
@@ -21,6 +22,7 @@ export function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <DemoBanner />
       <RouterProvider router={router} />
     </QueryClientProvider>
   );
