@@ -297,3 +297,32 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o job que lista a pasta de cada conta cadastrada (`<tenantId>/<conta>/`, montada pelo cadastro, nunca pelo conteúdo do bucket) e lê o relatório mais novo, com limite de tamanho do objeto;
   - os models de postura e histórico;
   - os endpoints de nota e de achados de postura.
+
+## T5.10 Resumo da Torre: núcleo (endpoint depois do E3)
+
+- **Arquivos:** `apps/api/src/tower/tower-rules.ts`, `apps/api/test/tower/tower-rules.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Semáforo** (pendência 9, aprovada; regra escrita no código):
+    - vermelho com incidente crítico aberto;
+    - amarelo com incidente alto aberto ou postura abaixo de 70;
+    - verde nos demais casos.
+
+    Sem nota de postura, a postura não pesa. Os motivos voltam junto com a cor, para a tela explicar o porquê, e o corte de postura fica em configuração.
+
+  - **Cobertura:** contas conectadas, o evento mais recente e as contas silenciosas (sem evento há mais de 24 horas, configurável, ou que nunca mandaram nada).
+  - **Decisões pendentes** (premissa aprovada), só as que existem e em ordem de prioridade:
+    - incidente aberto sem responsável;
+    - achado alto ou crítico em "novo" fora de incidente;
+    - só para `admin_verax`, alertas sem dono.
+- **Testes:** 8:
+  - as três cores e a precedência do vermelho;
+  - incidente médio ou baixo não muda a cor;
+  - 70 já é verde;
+  - sem nota não pesa;
+  - corte configurável;
+  - cobertura com conta silenciosa e conta que nunca mandou evento;
+  - decisões com e sem `admin_verax`.
+- **Pendente (depois do E3):**
+  - o endpoint `GET /v1/tower`, com as contagens por cliente via `db.tenant()`;
+  - o horário do último evento por conta, que precisa de uma consulta própria ao indexer com agregação por conta, porque o sync só lê alertas de nível 5 ou mais e uma conta tranquila pareceria silenciosa.
