@@ -1,12 +1,13 @@
 import 'reflect-metadata';
-import { Controller, Get, Module } from '@nestjs/common';
+import { Controller, Get, Module, Post } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { type Role, ROLES } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Authenticated, RequirePermission } from '../src/auth/decorators.js';
+import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { createSignedInUser, createTenant } from './support/auth-helpers.js';
-import { createApp } from './support/create-app.js';
+import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { LogCapture } from './support/log-capture.js';
 
 @Controller('permissions-probe')
@@ -43,6 +44,12 @@ class PermissionsProbeController {
 
   @Get('undeclared')
   undeclared(): { ok: true } {
+    return { ok: true };
+  }
+
+  @Post('tenants-write')
+  @RequirePermission('tenants:write')
+  createTenant(): { ok: true } {
     return { ok: true };
   }
 }
@@ -102,6 +109,31 @@ describe('papéis e permissões (T2.4)', () => {
     for (const route of Object.keys(MATRIX)) {
       await request(app.getHttpServer()).get(`/v1/permissions-probe/${route}`).expect(401);
     }
+  });
+
+  it('escrita negada por permissão vai para a auditoria; sem sessão, só para o log', async () => {
+    const prisma = app.get(PrismaService);
+    const denied = await request(app.getHttpServer())
+      .post('/v1/permissions-probe/tenants-write')
+      .set('Cookie', cookies.get('leitura') ?? '')
+      .set('Origin', TEST_WEB_ORIGIN)
+      .expect(403);
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { requestId: denied.headers['x-request-id'] },
+    });
+    expect(entry).toMatchObject({
+      action: 'POST /v1/permissions-probe/tenants-write',
+      outcome: 'denied',
+      statusCode: 403,
+      actorType: 'user',
+    });
+    expect(entry.actorId).not.toBeNull();
+
+    const anonymous = await request(app.getHttpServer())
+      .post('/v1/permissions-probe/tenants-write')
+      .set('Origin', TEST_WEB_ORIGIN)
+      .expect(401);
+    expect(await prisma.auditLog.count({ where: { requestId: anonymous.headers['x-request-id'] } })).toBe(0);
   });
 
   it('/v1/me devolve as permissões do papel para o painel', async () => {

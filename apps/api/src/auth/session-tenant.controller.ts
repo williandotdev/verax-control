@@ -39,11 +39,12 @@ export class SessionTenantController {
       where: { id: auth.sessionId },
       data: { activeTenantId: tenant.id },
     });
+    // Na trilha do cliente escolhido (ele vê que a Verax entrou), sem citar o cliente anterior.
     this.audit.describe({
       action: 'session.switch_tenant',
       resourceType: 'tenant',
       resourceId: tenant.id,
-      before: { activeTenantId: auth.activeTenantId },
+      tenantId: tenant.id,
       after: { activeTenantId: tenant.id },
     });
     return { activeTenantId: tenant.id };
@@ -54,10 +55,12 @@ export class SessionTenantController {
   async clear(@Req() request: Request): Promise<void> {
     const auth = request.auth as RequestAuth;
     await this.prisma.db().session.update({ where: { id: auth.sessionId }, data: { activeTenantId: null } });
+    // Na trilha do cliente que a Verax deixou.
     this.audit.describe({
       action: 'session.clear_tenant',
       resourceType: 'tenant',
       resourceId: auth.activeTenantId ?? undefined,
+      tenantId: auth.activeTenantId,
       before: { activeTenantId: auth.activeTenantId },
       after: { activeTenantId: null },
     });

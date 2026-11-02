@@ -3,18 +3,30 @@ import {
   BadRequestException,
   Controller,
   ForbiddenException,
+  HttpStatus,
   Inject,
   NotFoundException,
   Req,
   Res,
+  UnauthorizedException,
   UnsupportedMediaTypeException,
 } from '@nestjs/common';
 import { fromNodeHeaders, toNodeHandler } from 'better-auth/node';
 import type { Request, Response } from 'express';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
-import { AUTH, AUTH_BASE_PATH, CLIENT_IP_HEADER, REQUEST_ID_INTERNAL_HEADER } from './auth.constants.js';
+import { ApiError } from '../common/http/api-error.js';
+import { PrismaService } from '../common/prisma/prisma.service.js';
+import {
+  AUTH,
+  AUTH_BASE_PATH,
+  CLIENT_IP_HEADER,
+  MFA_REQUIRED_CODE,
+  MFA_REQUIRED_MESSAGE,
+  REQUEST_ID_INTERNAL_HEADER,
+} from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
 import { Public, SelfManaged } from './decorators.js';
+import { resolveSession } from './session-validation.js';
 
 /**
  * Rotas do Better Auth expostas pela API. Lista fechada: qualquer outra rota da biblioteca (cadastro,
@@ -31,15 +43,42 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   'GET /list-sessions',
   'POST /revoke-session',
   'POST /revoke-other-sessions',
-  // MFA (T2.2). Não há rota para desligar: o MFA é obrigatório.
+  // MFA (T2.2). Não há rota para desligar: o MFA é obrigatório. Nem para reler o segredo depois do cadastro
+  // (`get-totp-uri`): o QR sai só na resposta do `enable`.
   'POST /two-factor/enable',
-  'POST /two-factor/get-totp-uri',
   'POST /two-factor/verify-totp',
   'POST /two-factor/verify-backup-code',
   'POST /two-factor/generate-backup-codes',
 ]);
 
-const MFA_VERIFY_ROUTES = new Set(['POST /two-factor/verify-totp', 'POST /two-factor/verify-backup-code']);
+/** Rotas que não usam a sessão atual: entrar, pedir e definir senha pelo link, e sair (que só reduz acesso). */
+const SESSIONLESS_ROUTES = new Set([
+  'POST /sign-in/email',
+  'POST /request-password-reset',
+  'POST /reset-password',
+  'POST /sign-out',
+]);
+
+/** Rotas que uma sessão ainda sem MFA alcança: o próprio cadastro do MFA. */
+const ROUTES_WITHOUT_MFA = new Set([
+  'GET /get-session',
+  'POST /two-factor/enable',
+  'POST /two-factor/verify-totp',
+]);
+
+/**
+ * Campos do Better Auth recusados aqui, por rota:
+ * - `trustDevice`: "confiar neste dispositivo" pularia o código nos próximos logins;
+ * - `rememberMe`: com `false`, a sessão teria 24 h sem renovação, fora do limite de 30 min de inatividade;
+ * - `revokeOtherSessions`: criaria uma sessão nova, zerando o limite de 12 h. As outras sessões caem
+ *   sempre que a senha muda, pelo hook da autenticação.
+ */
+const REFUSED_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  'POST /sign-in/email': ['rememberMe'],
+  'POST /two-factor/verify-totp': ['trustDevice'],
+  'POST /two-factor/verify-backup-code': ['trustDevice'],
+  'POST /change-password': ['revokeOtherSessions'],
+};
 
 @Controller('auth')
 @Public()
@@ -50,6 +89,7 @@ export class AuthController {
   constructor(
     @Inject(AUTH) private readonly auth: Auth,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly prisma: PrismaService,
   ) {
     this.handler = toNodeHandler(auth);
   }
@@ -67,17 +107,11 @@ export class AuthController {
       if (request.is('application/json') === false) throw new UnsupportedMediaTypeException();
     }
 
-    // O código é pedido em todo login: "confiar neste dispositivo" não existe.
-    if (
-      MFA_VERIFY_ROUTES.has(route) &&
-      (request.body as { trustDevice?: unknown } | undefined)?.trustDevice
-    ) {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if ((REFUSED_FIELDS[route] ?? []).some((field) => Object.hasOwn(body, field))) {
       throw new BadRequestException();
     }
-    // Quem já tem MFA não recadastra por aqui: trocar o autenticador é ação de administrador (T3.2).
-    if (route === 'POST /two-factor/enable' && (await this.hasMfaEnabled(request))) {
-      throw new ForbiddenException();
-    }
+    if (!SESSIONLESS_ROUTES.has(route)) await this.checkSession(request, route);
 
     // Headers internos para o Better Auth (limite por IP e auditoria). Chaves constantes do módulo; os valores
     // vêm do Express e do gerador de request id, e qualquer valor mandado pelo cliente é sobrescrito.
@@ -86,8 +120,24 @@ export class AuthController {
     await this.handler(request, response);
   }
 
-  private async hasMfaEnabled(request: Request): Promise<boolean> {
-    const session = await this.auth.api.getSession({ headers: fromNodeHeaders(request.headers) });
-    return session?.user.twoFactorEnabled === true;
+  /**
+   * As rotas de sessão do Better Auth (ler e listar sessões, trocar senha, códigos de recuperação) só checam
+   * se a sessão existe. Aqui valem as mesmas regras das rotas da API: 12 h, usuário e cliente ativos, e MFA.
+   * Sem sessão, segue: o Better Auth responde 401, ou usa o desafio do MFA no login.
+   */
+  private async checkSession(request: Request, route: string): Promise<void> {
+    const data = await this.auth.api.getSession({
+      headers: fromNodeHeaders(request.headers),
+      // Só a checagem: quem renova a sessão (e devolve o cookie) é a própria rota.
+      query: { disableRefresh: true },
+    });
+    if (!data) return;
+    const auth = await resolveSession(this.prisma, data);
+    if (!auth) throw new UnauthorizedException();
+    if (!auth.mfaEnabled && !ROUTES_WITHOUT_MFA.has(route)) {
+      throw new ApiError(HttpStatus.FORBIDDEN, MFA_REQUIRED_MESSAGE, MFA_REQUIRED_CODE);
+    }
+    // Quem já tem MFA não recadastra por aqui: trocar o autenticador é ação de administrador (T3.2).
+    if (auth.mfaEnabled && route === 'POST /two-factor/enable') throw new ForbiddenException();
   }
 }

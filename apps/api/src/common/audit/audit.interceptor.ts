@@ -8,27 +8,12 @@ import { isSelfManaged } from '../../auth/decorators.js';
 import { type AuditDetails, requestContext } from '../context/request-context.js';
 import { toErrorResponse } from '../http/all-exceptions.filter.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { type AuditActor, type AuditEntry, AuditService } from './audit.service.js';
-
-const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+import { type RequestEntry, requestEntry, withDetails, WRITE_METHODS } from './audit-request.js';
+import { AuditService } from './audit.service.js';
 
 /** Limites da transação de uma requisição de escrita. */
 const TRANSACTION_MAX_WAIT_MS = 5_000;
 const TRANSACTION_TIMEOUT_MS = 15_000;
-
-type RequestEntry = Omit<AuditEntry, 'outcome' | 'statusCode'>;
-
-function resolveActor(request: Request): AuditActor {
-  // O cliente registrado é o do escopo da operação: para admin_verax, o cliente selecionado na sessão.
-  return request.auth
-    ? { type: 'user', id: request.auth.userId, tenantId: request.auth.scopeTenantId }
-    : { type: 'anonymous' };
-}
-
-function routeOf(request: Request): string {
-  const route = (request.route as { path?: unknown } | undefined)?.path;
-  return typeof route === 'string' ? route : request.path;
-}
 
 function successStatus(context: ExecutionContext, method: string): number {
   const declared = Reflect.getMetadata(HTTP_CODE_METADATA, context.getHandler()) as number | undefined;
@@ -40,8 +25,9 @@ function successStatus(context: ExecutionContext, method: string): number {
  *
  * O handler roda dentro de uma transação, exposta aos services por `PrismaService.db`. No sucesso, o
  * registro de auditoria entra na mesma transação: ou a alteração e a auditoria são gravadas juntas, ou
- * nada é gravado. Na falha (validação, permissão, erro), a transação é desfeita e a tentativa é registrada
- * à parte com o status do erro.
+ * nada é gravado. Na falha (validação, escopo do cliente, erro), a transação é desfeita e a tentativa é
+ * registrada à parte com o status do erro. Recusas dos guards (permissão, CSRF, MFA) não chegam aqui: quem
+ * as grava é o `DenialAudit`.
  */
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
@@ -58,15 +44,7 @@ export class AuditInterceptor implements NestInterceptor {
     if (!WRITE_METHODS.has(request.method)) return next.handle();
     if (isSelfManaged(this.reflector, context)) return next.handle();
 
-    const entry: RequestEntry = {
-      actor: resolveActor(request),
-      action: `${request.method} ${routeOf(request)}`,
-      resourceId: typeof request.params['id'] === 'string' ? request.params['id'] : undefined,
-      ip: request.ip,
-      userAgent: request.get('user-agent'),
-      requestId: typeof request.id === 'string' ? request.id : undefined,
-    };
-    return from(this.runAudited(entry, successStatus(context, request.method), next));
+    return from(this.runAudited(requestEntry(request), successStatus(context, request.method), next));
   }
 
   private async runAudited(entry: RequestEntry, statusCode: number, next: CallHandler): Promise<unknown> {
@@ -78,7 +56,11 @@ export class AuditInterceptor implements NestInterceptor {
             { ...requestContext.getStore(), tx, audit: details },
             () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
           );
-          await this.auditService.write(tx, { ...entry, ...details, outcome: 'success', statusCode });
+          await this.auditService.write(tx, {
+            ...withDetails(entry, details),
+            outcome: 'success',
+            statusCode,
+          });
           return result;
         },
         { maxWait: TRANSACTION_MAX_WAIT_MS, timeout: TRANSACTION_TIMEOUT_MS },
@@ -95,6 +77,7 @@ export class AuditInterceptor implements NestInterceptor {
       // A alteração foi desfeita: registra-se a tentativa, sem estado anterior nem novo.
       await this.auditService.write(this.prisma, {
         ...entry,
+        actor: withDetails(entry, details).actor,
         action: details.action ?? entry.action,
         resourceType: details.resourceType,
         resourceId: details.resourceId ?? entry.resourceId,

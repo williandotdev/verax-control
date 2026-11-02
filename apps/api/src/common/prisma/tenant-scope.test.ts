@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Prisma } from '../../generated/prisma/client.js';
-import { scopeArgs, scopeToTenant, TenantScopeViolation } from './tenant-scope.js';
+import { scopeArgs, scopeTenantRootArgs, scopeToTenant, TenantScopeViolation } from './tenant-scope.js';
 
 const A = '018f0000-0000-7000-8000-00000000000a';
 const B = '018f0000-0000-7000-8000-00000000000b';
@@ -70,6 +70,31 @@ describe('scopeArgs', () => {
   });
 });
 
+describe('scopeTenantRootArgs', () => {
+  it('o cadastro do cliente só alcança o próprio, sem trocar o id pedido', () => {
+    expect(scopeTenantRootArgs('findUnique', { where: { id: B } }, A)).toEqual({
+      where: { id: B, AND: [{ id: A }] },
+    });
+    expect(scopeTenantRootArgs('findMany', { where: { AND: { name: 'x' } } }, A)).toEqual({
+      where: { AND: [{ name: 'x' }, { id: A }] },
+    });
+    expect(scopeTenantRootArgs('update', { where: { id: A }, data: { name: 'y' } }, A)).toEqual({
+      where: { id: A, AND: [{ id: A }] },
+      data: { name: 'y' },
+    });
+  });
+
+  it.each(['create', 'createMany', 'createManyAndReturn', 'upsert'])('recusa %s', (operation) => {
+    expect(() => scopeTenantRootArgs(operation, { data: { name: 'x' } }, A)).toThrow(TenantScopeViolation);
+  });
+
+  it('recusa trocar o id do cliente', () => {
+    expect(() => scopeTenantRootArgs('update', { where: { id: A }, data: { id: B } }, A)).toThrow(
+      TenantScopeViolation,
+    );
+  });
+});
+
 describe('scopeToTenant', () => {
   function fakeDb() {
     const findMany = vi.fn((args: unknown) => Promise.resolve(args));
@@ -77,8 +102,12 @@ describe('scopeToTenant', () => {
     const db = {
       user: { findMany },
       tenant: { findUnique: tenantFindUnique },
+      session: { findMany: vi.fn() },
+      verification: { findMany: vi.fn() },
       $queryRaw: vi.fn(),
       $executeRaw: vi.fn(),
+      $transaction: vi.fn(),
+      $extends: vi.fn(),
     };
     return { db: db as unknown as Prisma.TransactionClient, findMany, tenantFindUnique };
   }
@@ -89,18 +118,28 @@ describe('scopeToTenant', () => {
     expect(findMany).toHaveBeenCalledWith({ where: { name: 'x', tenantId: A } });
   });
 
-  it('models sem dado de cliente passam sem filtro', async () => {
+  it('o model tenant fica restrito ao próprio cliente', async () => {
     const { db, tenantFindUnique } = fakeDb();
-    await scopeToTenant(db, A).tenant.findUnique({ where: { id: A } });
-    expect(tenantFindUnique).toHaveBeenCalledWith({ where: { id: A } });
+    await scopeToTenant(db, A).tenant.findUnique({ where: { id: B } });
+    expect(tenantFindUnique).toHaveBeenCalledWith({ where: { id: B, AND: [{ id: A }] } });
   });
 
-  it('SQL cru não existe no escopo do cliente', () => {
+  it.each(['session', 'verification'])('model sem dado de cliente (%s) não existe no escopo', (model) => {
     const { db } = fakeDb();
-    const scoped = scopeToTenant(db, A);
-    expect(() => scoped.$queryRaw).toThrow(TenantScopeViolation);
-    expect(() => scoped.$executeRaw).toThrow(TenantScopeViolation);
+    expect(() => (scopeToTenant(db, A) as unknown as Record<string, unknown>)[model]).toThrow(
+      TenantScopeViolation,
+    );
   });
+
+  it.each(['$queryRaw', '$executeRaw', '$transaction', '$extends'])(
+    '%s não existe no escopo do cliente (escaparia do filtro)',
+    (method) => {
+      const { db } = fakeDb();
+      expect(() => (scopeToTenant(db, A) as unknown as Record<string, unknown>)[method]).toThrow(
+        TenantScopeViolation,
+      );
+    },
+  );
 
   it('não aceita escopo vazio', () => {
     const { db } = fakeDb();

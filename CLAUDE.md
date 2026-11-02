@@ -98,8 +98,8 @@ verax-control/
 - **Módulos da API:** cada módulo tem `*.controller.ts`, `*.service.ts`, `*.module.ts` e testes. O schema de entrada e saída de cada recurso é definido uma vez em `packages/shared` (zod) e usado pela API e pelo front.
 - **ESM:** a API é ESM puro; imports relativos levam a extensão `.js`.
 - **Testes:** unitários ao lado do código (`*.test.ts`); integração com banco real em `apps/api/test/`; e2e com Playwright em `apps/web/e2e/`.
-- **Dados de cliente:** acesse sempre pelo client do Prisma com escopo de tenant. O client sem escopo é reservado a jobs de sistema.
-- **Auditoria:** toda operação de escrita gera registro em `AuditLog` com estado anterior e novo.
+- **Dados de cliente:** acesse sempre por `prisma.scoped()` (cliente da sessão) ou `prisma.forTenant(id)` (jobs). O escopo só alcança os models com `tenantId` e a linha do próprio cliente; qualquer outro model e os métodos `$` lançam erro. O client sem escopo (`db()`) é reservado a jobs de sistema e a operações globais da Verax.
+- **Auditoria:** toda operação de escrita gera registro em `AuditLog` com estado anterior e novo; escritas recusadas pelos guards também. O registro entra na trilha do cliente cujos dados foram tocados (`scoped()` marca isso). Operação global da Verax fica fora da trilha de qualquer cliente; quando o cliente certo não é o do escopo, o service informa `tenantId` no `AuditContext.describe`.
 - **Commits:** um commit por task, com o ID da task na mensagem (`feat(api): T3.1 tenants CRUD`).
 
 ## Comandos

@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { UserRole } from '../generated/prisma/enums.js';
 import { AUTH } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
+import { invitationRequest } from './password-links.js';
 import { provisionUser } from './user-provisioning.js';
 
 export interface Invitation {
@@ -28,8 +29,13 @@ export class InvitationService {
     return user;
   }
 
-  /** Reenvia o link (o anterior continua valendo até expirar ou ser usado). */
+  /**
+   * Envia (ou reenvia) o link de convite a um usuário que ainda não ativou a conta. O anterior continua
+   * valendo até expirar ou ser usado. Para usuário ativo ou desativado, não envia nada.
+   */
   async sendLink(email: string): Promise<void> {
-    await this.auth.api.requestPasswordReset({ body: { email: email.trim().toLowerCase() } });
+    await invitationRequest.run(true, () =>
+      this.auth.api.requestPasswordReset({ body: { email: email.trim().toLowerCase() } }),
+    );
   }
 }

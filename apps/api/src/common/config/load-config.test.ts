@@ -18,6 +18,7 @@ const validProductionEnv = {
   API_ORIGIN: 'https://api.example.com',
   DATABASE_URL: 'postgresql://verax:secret@db.internal:5432/verax?sslmode=verify-full',
   MAIL_TRANSPORT: 'ses',
+  TRUST_PROXY_HOPS: '1',
 };
 
 function problemsOf(env: NodeJS.ProcessEnv): readonly string[] {
@@ -69,6 +70,13 @@ describe('loadConfig', () => {
       'AUTH_RATE_LIMIT_ENABLED: deve ficar ligado em produção',
     );
     expect(loadConfig(validEnv).AUTH_RATE_LIMIT_ENABLED).toBe(true);
+  });
+
+  it('exige o ALB contado em TRUST_PROXY_HOPS em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, TRUST_PROXY_HOPS: '0' })).toContain(
+      'TRUST_PROXY_HOPS: deve contar o ALB (1) em produção',
+    );
+    expect(loadConfig(validProductionEnv).TRUST_PROXY_HOPS).toBe(1);
   });
 
   it('exige https na origem da API em produção', () => {

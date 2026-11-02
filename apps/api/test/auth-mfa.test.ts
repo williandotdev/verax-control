@@ -17,7 +17,7 @@ import {
   signInRequest,
   signInWithMfa,
 } from './support/auth-helpers.js';
-import { createApp } from './support/create-app.js';
+import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { secretFromUri, totp } from './support/totp.js';
 
 /** Rota comum, protegida: só responde a sessão com MFA. */
@@ -157,19 +157,58 @@ describe('MFA obrigatório (T2.2)', () => {
       }).expect(400);
     });
 
-    it('depois de 5 códigos errados, nem o código certo entra (bloqueio da conta)', async () => {
+    it('depois de 5 códigos errados, nem o código certo entra, nem num login novo (bloqueio da conta)', async () => {
       const user = await createSignedInUser(app);
       const first = await signInRequest(app, user.email, user.password).expect(200);
       const challenge = cookieHeader(first.headers['set-cookie']);
-
       for (let i = 0; i < 5; i += 1) {
-        await authPost(app, '/two-factor/verify-totp', challenge, { code: '000000' });
+        await authPost(app, '/two-factor/verify-totp', challenge, { code: '000000' }).expect(401);
       }
-      const blocked = await authPost(app, '/two-factor/verify-totp', challenge, {
-        code: totp(user.secret, Date.now() + 30_000),
-      });
-      expect(blocked.status).toBeGreaterThanOrEqual(400);
+
+      // Desafio novo (o limite por desafio não vale aqui): o bloqueio é da conta.
+      const second = await signInRequest(app, user.email, user.password).expect(200);
+      const blocked = await authPost(
+        app,
+        '/two-factor/verify-totp',
+        cookieHeader(second.headers['set-cookie']),
+        {
+          code: totp(user.secret, Date.now() + 30_000),
+        },
+      ).expect(429);
+      expect(blocked.body).toMatchObject({ code: 'ACCOUNT_TEMPORARILY_LOCKED' });
       expect(hasSessionCookie(cookieHeader(blocked.headers['set-cookie']))).toBe(false);
+    });
+
+    it('o mesmo código TOTP não abre uma segunda sessão', async () => {
+      const user = await createSignedInUser(app);
+      const code = totp(user.secret, Date.now() + 30_000);
+      const login = async () => {
+        const first = await signInRequest(app, user.email, user.password).expect(200);
+        return authPost(app, '/two-factor/verify-totp', cookieHeader(first.headers['set-cookie']), { code });
+      };
+
+      const firstUse = await login();
+      expect(firstUse.status).toBe(200);
+      const replay = await login();
+      expect(replay.status).toBe(401);
+      expect(replay.body).toMatchObject({ code: 'INVALID_CODE' });
+      expect(hasSessionCookie(cookieHeader(replay.headers['set-cookie']))).toBe(false);
+    });
+
+    it('dois logins simultâneos com o mesmo código: só um abre sessão', async () => {
+      const user = await createSignedInUser(app);
+      const code = totp(user.secret, Date.now() + 30_000);
+      const challenges = await Promise.all(
+        [1, 2].map(async () =>
+          cookieHeader(
+            (await signInRequest(app, user.email, user.password).expect(200)).headers['set-cookie'],
+          ),
+        ),
+      );
+      const results = await Promise.all(
+        challenges.map((challenge) => authPost(app, '/two-factor/verify-totp', challenge, { code })),
+      );
+      expect(results.map((result) => result.status).sort()).toEqual([200, 401]);
     });
   });
 
@@ -187,6 +226,32 @@ describe('MFA obrigatório (T2.2)', () => {
     it('rotas de OTP por e-mail não existem', async () => {
       const user = await createSignedInUser(app);
       await authPost(app, '/two-factor/send-otp', user.cookie).expect(404);
+    });
+
+    it('o segredo do TOTP não pode ser relido depois do cadastro, nem com a senha', async () => {
+      const user = await createSignedInUser(app);
+      await authPost(app, '/two-factor/get-totp-uri', user.cookie, { password: user.password }).expect(404);
+    });
+  });
+
+  it('escrita recusada por falta de MFA vai para a auditoria', async () => {
+    const user = await createUser(app);
+    const cookie = await signIn(app, user.email, user.password);
+    const response = await request(app.getHttpServer())
+      .post('/v1/session/tenant')
+      .set('Cookie', cookie)
+      .set('Origin', TEST_WEB_ORIGIN)
+      .send({ tenantId: '018f0000-0000-7000-8000-0000000000ff' })
+      .expect(403);
+    expect(response.body).toMatchObject({ code: 'MFA_REQUIRED' });
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { requestId: response.headers['x-request-id'] },
+    });
+    expect(entry).toMatchObject({
+      action: 'POST /v1/session/tenant',
+      actorId: user.id,
+      outcome: 'denied',
+      statusCode: 403,
     });
   });
 });
