@@ -93,9 +93,11 @@ updates:
     commit-message:
       prefix: deps
 
-  # Imagem base do Prowler agendado (infra/prowler/Dockerfile, fixada por digest).
+  # Imagens base fixadas por digest: API (apps/api/Dockerfile) e Prowler agendado (infra/prowler/Dockerfile).
   - package-ecosystem: docker
-    directory: /infra/prowler
+    directories:
+      - /apps/api
+      - /infra/prowler
     schedule:
       interval: weekly
       day: monday
