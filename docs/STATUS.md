@@ -289,3 +289,12 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - Mutação: sem o arquivo, 6 verificações falham.
   - `ci-test.sh` confere que o manager instalado tem o mesmo arquivo do repositório, que o analysisd carregou as regras e que roda como `wazuh`. Os testes do gerador cobrem a cópia (inclusive sem contas) e o modo 0644.
 - **Defesa na API (T5.2):** além disso, a API atribui o alerta pelo bucket de origem cadastrado e não guarda `previous_output` nem `full_log`.
+
+## Correção na T4.1: papel dos flow logs da VPC
+
+- **Achado** (revisor automático do PR #6, conferido na documentação da AWS em "IAM role for publishing flow logs to CloudWatch Logs"): a política mínima do papel inclui `logs:DescribeLogGroups`, que faltava. Sem ela a entrega dos flow logs pode falhar mesmo com o Terraform aplicando sem erro.
+- **Arquivo:** `infra/terraform/modules/network/main.tf`
+- **Como funciona:**
+  - `logs:DescribeLogGroups` entra num bloco separado com recurso `*`, porque a ação não aceita restrição por recurso. Criar, escrever e listar streams continua restrito ao log group dos flow logs.
+  - A relação de confiança passa a exigir `aws:SourceAccount` igual à própria conta e `aws:SourceArn` de um flow log desta conta e região. É a proteção contra "confused deputy" que a mesma página recomenda.
+- **Testes:** `fmt -check` e `terraform validate` válidos em staging e produção · checkov no módulo: 51 aprovados, 0 falhas (a ação sem recurso é reconhecida como não restringível) · tflint no CI.

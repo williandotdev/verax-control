@@ -54,6 +54,10 @@ variable "log_retention_days" {
 
 data "aws_region" "current" {}
 
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
+
 locals {
   public_cidrs  = [for index in range(2) : cidrsubnet(var.cidr_block, 8, index)]
   private_cidrs = [for index in range(2) : cidrsubnet(var.cidr_block, 4, index + 1)]
@@ -150,12 +154,23 @@ resource "aws_cloudwatch_log_group" "flow_logs" {
   kms_key_id        = var.logs_kms_key_arn
 }
 
+# Só flow logs desta conta e região assumem o papel (proteção contra "confused deputy" recomendada pela AWS).
 data "aws_iam_policy_document" "flow_logs_assume" {
   statement {
     actions = ["sts:AssumeRole"]
     principals {
       type        = "Service"
       identifiers = ["vpc-flow-logs.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:vpc-flow-log/*"]
     }
   }
 }
@@ -169,6 +184,11 @@ data "aws_iam_policy_document" "flow_logs_write" {
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
     resources = ["${aws_cloudwatch_log_group.flow_logs.arn}:*"]
+  }
+  # Permissão mínima exigida pela AWS para publicar flow logs; a ação não aceita restrição por recurso.
+  statement {
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
   }
 }
 
