@@ -33,6 +33,7 @@ let received: Received[] = [];
 let acceptedPassword = OLD_PASSWORD;
 let delayMs = 0;
 let failWith: number | null = null;
+let partial: 'timeout' | 'shard' | null = null;
 
 beforeAll(async () => {
   openssl(
@@ -118,6 +119,13 @@ beforeAll(async () => {
           if (req.headers.authorization !== expected) return respond(401, { error: 'unauthorized' });
           if (failWith !== null) return respond(failWith, { error: { type: 'interno' } });
           respond(200, {
+            timed_out: partial === 'timeout',
+            _shards: {
+              total: 2,
+              successful: partial === 'shard' ? 1 : 2,
+              skipped: 0,
+              failed: partial === 'shard' ? 1 : 0,
+            },
             hits: {
               hits: [
                 {
@@ -147,6 +155,7 @@ beforeEach(() => {
   acceptedPassword = OLD_PASSWORD;
   delayMs = 0;
   failWith = null;
+  partial = null;
 });
 
 function parseBody(raw: string): unknown {
@@ -202,7 +211,7 @@ describe('cliente do indexer (T5.1)', () => {
     ]);
     expect(received).toHaveLength(1);
     expect(received[0]?.method).toBe('POST');
-    expect(received[0]?.path).toBe(`/${ALERTS_INDEX}/_search`);
+    expect(received[0]?.path).toBe(`/${ALERTS_INDEX}/_search?allow_partial_search_results=false`);
     expect(received[0]?.body).toEqual(search.body);
   });
 
@@ -240,6 +249,15 @@ describe('cliente do indexer (T5.1)', () => {
     expect(serialized).not.toContain('Basic ');
     expect(error).not.toHaveProperty('meta');
   });
+
+  it.each(['timeout', 'shard'] as const)(
+    'resposta incompleta (%s) é recusada: o cursor não avança sobre alertas que faltaram',
+    async (kind) => {
+      partial = kind;
+      const { indexer } = client();
+      await expect(indexer.search(alertsAfter({ cursor: null }))).rejects.toThrow(/incompleta/);
+    },
+  );
 
   it('não envia nada fora do padrão de alertas nem com consulta interpretável', async () => {
     const { indexer } = client();

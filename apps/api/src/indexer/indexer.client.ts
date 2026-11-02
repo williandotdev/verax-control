@@ -12,6 +12,8 @@ export interface AlertHit {
 }
 
 const searchResponseSchema = z.object({
+  timed_out: z.boolean(),
+  _shards: z.object({ failed: z.number().int().min(0) }),
   hits: z.object({
     hits: z.array(
       z.object({
@@ -74,12 +76,21 @@ export class IndexerClient {
     }
     assertStructuredQuery(request.body);
     const body = await this.withRenewal(async (client) => {
-      const response = await client.search({ index: request.index, body: request.body });
+      const response = await client.search({
+        index: request.index,
+        body: request.body,
+        // Por padrão o OpenSearch responde 200 com o que conseguiu quando um shard falha ou o tempo estoura. Na
+        // leitura incremental, avançar o cursor sobre uma página incompleta perderia alertas para sempre.
+        allow_partial_search_results: false,
+      });
       return response.body as unknown;
     });
     const parsed = searchResponseSchema.safeParse(body);
     if (!parsed.success) {
       throw new IndexerError('resposta do indexer fora do formato esperado');
+    }
+    if (parsed.data.timed_out || parsed.data._shards.failed > 0) {
+      throw new IndexerError('o indexer devolveu uma resposta incompleta');
     }
     return parsed.data.hits.hits.map((hit) => ({
       index: hit._index,
