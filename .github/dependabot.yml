@@ -55,3 +55,22 @@ updates:
       default-days: 7
     commit-message:
       prefix: deps
+
+  # Provider AWS de cada raiz do Terraform. O PR atualiza o .terraform.lock.hcl; o iac.yml valida.
+  - package-ecosystem: terraform
+    directories:
+      - /infra/terraform/bootstrap
+      - /infra/terraform/envs/staging
+      - /infra/terraform/envs/production
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Sao_Paulo
+    cooldown:
+      default-days: 7
+    groups:
+      terraform-providers:
+        patterns: ['*']
+    commit-message:
+      prefix: deps

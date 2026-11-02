@@ -1,0 +1,4 @@
+# Copie para backend.hcl (fora do git) e preencha com as saídas do bootstrap.
+bucket     = "verax-control-tfstate-SUFIXO"
+region     = "sa-east-1"
+kms_key_id = "arn:aws:kms:sa-east-1:CONTA_VERAX:key/ID_DA_CHAVE"

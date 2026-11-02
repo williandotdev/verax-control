@@ -1,0 +1,86 @@
+name: Infraestrutura como código
+
+# Valida o Terraform sem tocar na AWS: nenhum job tem credencial, `init` roda com `-backend=false` e nada de
+# plan/apply acontece aqui (o deploy é o deploy.yml, desligado até a conta ser configurada).
+# Sem filtro de caminho de propósito: estes checks são obrigatórios no ruleset e um filtro deixaria PRs que não
+# mexem em infra esperando para sempre. O workflow inteiro leva menos de 2 minutos.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iac-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Ferramentas por binário/imagem com SHA-256 fixado (mesmo motivo do security.yml).
+env:
+  TERRAFORM_VERSION: 1.17.1
+  TERRAFORM_SHA256: 4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061
+  TFLINT_VERSION: 0.65.0
+  TFLINT_SHA256: d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61
+  CHECKOV_IMAGE: bridgecrew/checkov:3.4.0@sha256:ece5efac4443084ca273072909985dce988a81e8cc94faa305aeda0df27c68f9
+  TF_IN_AUTOMATION: '1'
+  TF_INPUT: '0'
+
+jobs:
+  terraform:
+    name: Terraform (formatação, validação e lint)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar terraform e tflint (checksum fixado)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          echo "${TERRAFORM_SHA256}  terraform.zip" | sha256sum --check --strict
+          unzip -q -o terraform.zip terraform -d "$RUNNER_TEMP/bin" && rm terraform.zip
+          curl -fsSLo tflint.zip "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip"
+          echo "${TFLINT_SHA256}  tflint.zip" | sha256sum --check --strict
+          unzip -q -o tflint.zip tflint -d "$RUNNER_TEMP/bin" && rm tflint.zip
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Formatação
+        run: terraform fmt -check -recursive -diff infra/terraform
+      - name: Validação (sem backend e sem credenciais)
+        # O lock de cada raiz fixa os hashes do provider; um provider diferente do travado falha aqui.
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production; do
+            echo "::group::${root}"
+            terraform -chdir="$root" init -backend=false -lockfile=readonly
+            terraform -chdir="$root" validate
+            echo "::endgroup::"
+          done
+      - name: tflint
+        # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: infra/terraform
+        run: |
+          tflint --init --config "$PWD/.tflint.hcl"
+          tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+
+  checkov:
+    name: Checkov (políticas de segurança da infra)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Varredura
+        # Cada exceção fica no próprio código, com o motivo (`#checkov:skip=ID:motivo`).
+        run: >-
+          docker run --rm -v "$PWD:/src" -w /src "$CHECKOV_IMAGE"
+          --directory infra --framework terraform
+          --skip-download --compact --quiet
