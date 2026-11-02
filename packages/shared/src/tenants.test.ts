@@ -38,6 +38,15 @@ describe('cadastro de cliente', () => {
     expect(tenantCreateSchema.safeParse({ ...valid, id: 'x' }).success).toBe(false);
   });
 
+  it('telefone cabe na coluna do banco (até 20 caracteres)', () => {
+    const contact = (phone: string) => ({
+      ...valid,
+      escalationContact: { ...valid.escalationContact, phone },
+    });
+    expect(tenantCreateSchema.safeParse(contact(`+${'1'.repeat(19)}`)).success).toBe(true);
+    expect(tenantCreateSchema.safeParse(contact(`+${'1'.repeat(20)}`)).success).toBe(false);
+  });
+
   it('plano tem no máximo 60 caracteres', () => {
     expect(tenantCreateSchema.safeParse({ ...valid, plan: 'x'.repeat(61) }).success).toBe(false);
   });

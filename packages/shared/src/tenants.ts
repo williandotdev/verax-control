@@ -37,9 +37,11 @@ export const cnpjSchema = z
 const escalationContactSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   email: z.email().max(254),
+  // No máximo 20 caracteres, o tamanho da coluna no banco.
   phone: z
     .string()
     .trim()
+    .max(20)
     .regex(/^\+?[0-9][0-9 ()-]{7,19}$/, { error: 'telefone inválido' })
     .nullable()
     .optional(),

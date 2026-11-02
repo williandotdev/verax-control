@@ -140,6 +140,16 @@ describe('contas cloud (T3.3)', () => {
         .expect(409);
     });
 
+    it('o mesmo bucket em outra fonte, em outro cliente, também é recusado', async () => {
+      const name = bucket('multiuso');
+      await call(adminA)
+        .post('/v1/cloud-accounts', newAccount({ buckets: { cloudtrail: name } }))
+        .expect(201);
+      await call(adminB)
+        .post('/v1/cloud-accounts', newAccount({ buckets: { guardduty: name } }))
+        .expect(409);
+    });
+
     it('dois clientes registrando o mesmo bucket ao mesmo tempo: só um consegue', async () => {
       const contested = bucket('disputado');
       const results = await Promise.all([

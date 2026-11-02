@@ -189,25 +189,29 @@ export class CloudAccountsService {
   }
 
   /**
-   * Um bucket de log não pode ser de dois clientes: o alerta lido dele seria atribuído a qualquer um. A
-   * checagem roda sob um lock transacional por bucket, para dois cadastros simultâneos não passarem juntos.
-   * Responde só "já cadastrado", sem dizer de quem.
+   * Um bucket de log não pode ser de dois clientes: o alerta lido dele seria atribuído a qualquer um. Como o
+   * nome de bucket é único no S3, vale para qualquer fonte: o mesmo bucket como CloudTrail de um cliente e
+   * GuardDuty de outro também é ambíguo. A checagem roda sob um lock transacional por nome de bucket, para dois
+   * cadastros simultâneos não passarem juntos. Responde só "já cadastrado", sem dizer de quem.
    */
   private async assertBucketsFree(auth: RequestAuth, buckets: CloudAccountCreate['buckets']): Promise<void> {
     const tenantId = auth.scopeTenantId as string;
-    const requested = LOG_SOURCES.flatMap((source) => {
-      const name = buckets?.[source];
-      return typeof name === 'string' ? [{ source, name }] : [];
-    }).sort((a, b) => `${a.source}:${a.name}`.localeCompare(`${b.source}:${b.name}`));
+    const names = [
+      ...new Set(LOG_SOURCES.map((source) => buckets?.[source]).filter((name) => typeof name === 'string')),
+    ].sort();
     const db = this.prisma.db();
-    for (const { source, name } of requested) {
-      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:bucket:${source}:${name}`}))`;
+    for (const name of names) {
+      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:bucket:${name}`}))`;
       const taken = await db.cloudAccount.findFirst({
-        where: { tenantId: { not: tenantId }, [BUCKET_COLUMN[source]]: name },
+        where: {
+          tenantId: { not: tenantId },
+          OR: LOG_SOURCES.map((source) => ({ [BUCKET_COLUMN[source]]: name })),
+        },
         select: { id: true },
       });
-      if (taken)
+      if (taken) {
         throw new ApiError(HttpStatus.CONFLICT, `O bucket ${name} já está cadastrado em outro cliente`);
+      }
     }
   }
 }

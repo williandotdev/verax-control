@@ -447,6 +447,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - No banco, CNPJ, plano e contato ficam opcionais só por causa dos clientes criados antes do cadastro completo; a API exige todos. O seed passou a criar os clientes de demonstração com cadastro completo e CNPJs fictícios válidos.
 - **Testes:** 17 de integração. Cobrem os três papéis de cliente recebendo 403 em todas as rotas sem alterar nada; criação com CNPJ normalizado e auditoria na trilha do novo cliente; CNPJ repetido com 409; recusa de CNPJ inválido, `status` ou campo desconhecido no corpo, contato ausente e plano longo; listagem no contrato estrito do seletor; filtro por status; 404 e 400; alteração parcial auditada; alteração vazia recusada; desativação com sessões derrubadas, seleção limpa e reativação auditada; troca para CNPJ já usado. No pacote compartilhado, 17 testes do CNPJ e do schema. Mutação: sem derrubar as sessões, 1 falha; com permissão errada na listagem, 3 falham.
 - **Definição de pronto:** critérios de aceite ✔ (campos, só `admin_verax` cria, edita e desativa, exclusão lógica, testes de permissão) · lint e tipos ✔ · dependências n/a · regras de segurança ✔
+- **Correção (revisor automático do PR #10):** o telefone aceitava 21 caracteres, e a coluna tem 20, o que daria erro 500 em vez de 400. O schema agora limita a 20; teste novo.
 
 ## T3.2 Usuários do cliente
 
@@ -478,6 +479,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Testes:** 21 de integração. Cobrem a suíte negativa A→B; ExternalId gerado, papel derivado e auditoria sem o ExternalId; recusa de ExternalId, chave de acesso, papel escolhido, cliente, ID curto, região inválida ou repetida e bucket inválido; ID de conta em dois clientes; bucket dividido no mesmo cliente e recusado em outro; dois clientes registrando o mesmo bucket ao mesmo tempo (só um consegue); `leitura` vendo a conta sem o ExternalId e sem poder alterar; alteração com `null`; ID imutável; desativação auditada. No pacote compartilhado, 17 testes de região, papel e bucket. Mutação: sem a trava de bucket, 2 falham; mostrando o ExternalId a todos, 1 falha.
 - **Definição de pronto:** critérios de aceite ✔ (campos, ExternalId gerado pelo sistema e nunca aceito do request, nenhuma chave de acesso armazenada, ID de conta único entre clientes) · lint e tipos ✔ · regras de segurança ✔
 - **Para o E5:** a lista de alvos do Prowler no SSM (T4.7) passa a ser mantida a partir destas contas, por um job, na integração da T5.8.
+- **Correção (revisor automático do PR #10):** a trava de bucket conferia só a mesma fonte, então o mesmo bucket podia ser CloudTrail de um cliente e GuardDuty de outro. Como o nome de bucket é único no S3, a checagem e o lock passam a valer para o nome em qualquer fonte. Teste novo; mutação: conferindo uma coluna só, ele falha.
 
 ## T3.4 Lista de proteção
 
