@@ -233,3 +233,33 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - `lastEventAt` por conta;
   - as métricas do worker para os alarmes da T8.6.
 - **Riscos:** um alerta indexado mais de 10 minutos depois do horário dele (filebeat parado, por exemplo) fica de fora. O alarme de sync parado da T8.6 cobre o caso do filebeat, e a sobreposição pode subir em configuração.
+
+## T5.6 Agrupamento em incidentes: núcleo (gravação depois do E3)
+
+- **Arquivos:** `apps/api/src/incidents/correlation.ts`, `apps/api/test/incidents/correlation.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona** (regra v1 do plano):
+  - **Chaves de correlação:** usuário, chave de acesso, IP e recurso do achado.
+  - **`planIncident`:** o achado entra no incidente aberto **do mesmo cliente** que tenha uma chave em comum e cujo período, alargado pela janela (60 minutos, configurável), contenha o horário do achado. Havendo vários, entra no de atividade mais recente.
+    - Incidente de outro cliente nunca é candidato, nem com o mesmo IP.
+    - Sem incidente para entrar, achado médio ou mais grave abre um novo, e achado baixo fica só como achado.
+  - **Nota de risco** (premissa aprovada):
+    - base pela severidade mais alta (70, 50, 30, 10);
+    - +15 com item da lista de proteção do cliente;
+    - +10 com identidade root ou "admin" no nome;
+    - +3 por achado além do primeiro, até +15;
+    - teto 100.
+  - **`summarizeIncident`:** severidade, nota, período, chaves, contas, recursos e táticas/técnicas MITRE sem repetição, para a lista e o detalhe da T5.7. Recusa achados de clientes diferentes no mesmo incidente.
+- **Testes:** 12:
+  - janela nas duas pontas, inclusive o achado atrasado;
+  - isolamento por cliente;
+  - desempate;
+  - abertura por severidade;
+  - nota nas faixas e no teto;
+  - identidade privilegiada (sem pegar "badminton");
+  - resumo completo.
+
+  **Mutação:** tirar o filtro de cliente, tirar a guarda do resumo, contar o primeiro achado na nota ou ignorar o fim da janela é pego pelos testes.
+
+- **Premissa a confirmar:** achado baixo não abre incidente sozinho, para a Torre não virar uma lista de achados.
+- **Pendente (depois do E3):** models `Incident` e `IncidentFinding`, a lista de proteção (T3.4), gravação dentro do sync com lock e os endpoints da T5.7.
