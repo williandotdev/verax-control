@@ -1,0 +1,11 @@
+# --- Acrescentado pelo Verax Control (scripts/init-security.sh, T4.8) ---
+# A API lê os alertas e nada mais: sem permissão de cluster, sem escrita, sem outros índices.
+verax_api_read:
+  reserved: true
+  description: 'API do Verax Control: só leitura dos alertas do Wazuh'
+  cluster_permissions: []
+  index_permissions:
+    - index_patterns:
+        - 'wazuh-alerts-*'
+      allowed_actions:
+        - 'read'

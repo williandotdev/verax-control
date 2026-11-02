@@ -1,0 +1,17 @@
+#!/bin/bash
+# Gerado pelo Terraform (modules/wazuh). Mesmo script no user_data (primeira subida) e no documento SSM de
+# reaplicação: baixa o bundle do bucket privado, confere os checksums e roda o bootstrap.
+set -euo pipefail
+umask 077
+bundle=/opt/verax-wazuh
+install -d -m 0700 "$bundle"
+aws s3 sync --only-show-errors --delete --region '${region}' 's3://${bucket}/${prefix}/' "$bundle/"
+cd "$bundle"
+sha256sum --check --strict --quiet SHA256SUMS
+export WAZUH_SECRET_ARN='${secret_arn}' WAZUH_API_READ_SECRET_ARN='${api_read_arn}'
+export WAZUH_AWS_SOURCES_SECRET_ARN='${sources_arn}' INDEXER_CA_PARAMETER='${ca_parameter}'
+export DATA_VOLUME_ID='${data_volume_id}' AWS_REGION='${region}'
+export CONTAINER_LOG_GROUP='${log_group}' INDEXER_HEAP='${indexer_heap}'
+export INDEXER_EXTRA_SANS='${extra_sans}' INDEXER_PUBLISH_ADDRESS='${publish_address}'
+export BACKUP_BUCKET='${backup_bucket}' ALERT_RETENTION_DAYS='${retention_days}'
+bash scripts/bootstrap-host.sh
