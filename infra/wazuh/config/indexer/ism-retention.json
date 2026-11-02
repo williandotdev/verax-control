@@ -1,0 +1,24 @@
+{
+  "policy": {
+    "description": "Verax Control (T4.9): apaga os índices diários do Wazuh depois do prazo de retenção (pendência 6).",
+    "default_state": "ativo",
+    "states": [
+      {
+        "name": "ativo",
+        "actions": [],
+        "transitions": [{ "state_name": "apagar", "conditions": { "min_index_age": "__RETENTION_DAYS__d" } }]
+      },
+      {
+        "name": "apagar",
+        "actions": [{ "delete": {} }],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["wazuh-alerts-*", "wazuh-monitoring-*", "wazuh-statistics-*"],
+        "priority": 100
+      }
+    ]
+  }
+}

@@ -10,6 +10,7 @@ import {
   Module,
   Param,
   Patch,
+  Post,
   Query,
 } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -62,6 +63,12 @@ class IsolationProbeController {
   async disable(@Param('id', { schema: userId }) id: string): Promise<void> {
     await this.prisma.scoped().user.update({ where: { id }, data: { status: 'disabled' } });
   }
+
+  /** Escrita global da Verax, sem dado de cliente (ex.: cadastro de clientes, T3.1). */
+  @Post('global')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermission('tenants:write')
+  global(): void {}
 }
 
 @Module({ controllers: [IsolationProbeController] })
@@ -72,7 +79,7 @@ describe('isolamento por cliente (T2.5)', () => {
   let prisma: PrismaService;
   let tenantA: string;
   let tenantB: string;
-  let sessionA: TestSession;
+  let sessionA: TestSession & { user: { id: string } };
   let sessionB: TestSession;
 
   async function sessionFor(tenantId: string | null, role: 'admin_cliente' | 'admin_verax' | 'leitura') {
@@ -174,10 +181,57 @@ describe('isolamento por cliente (T2.5)', () => {
       expect(audit).toMatchObject({
         action: 'session.switch_tenant',
         actorId: admin.user.id,
+        tenantId: tenantB,
         resourceId: tenantB,
-        before: { activeTenantId: null },
+        before: null,
         after: { activeTenantId: tenantB },
         outcome: 'success',
+      });
+    });
+
+    describe('trilha de auditoria de quem a Verax atendeu', () => {
+      async function adminIn(tenantId: string) {
+        const admin = await sessionFor(null, 'admin_verax');
+        const write = (method: 'post' | 'patch' | 'delete', path: string) => {
+          const server = request(app.getHttpServer());
+          return server[method](path)
+            .set('Cookie', admin.cookie)
+            .set('Origin', TEST_WEB_ORIGIN)
+            .set('X-CSRF-Token', admin.csrfToken);
+        };
+        await write('post', '/v1/session/tenant').send({ tenantId }).expect(200);
+        return { admin, write };
+      }
+      const entryOf = (response: request.Response) =>
+        prisma.auditLog.findFirstOrThrow({ where: { requestId: response.headers['x-request-id'] } });
+
+      it('trocar de A para B entra só na trilha de B, sem citar A', async () => {
+        const { write } = await adminIn(tenantA);
+        const switched = await write('post', '/v1/session/tenant').send({ tenantId: tenantB }).expect(200);
+        const entry = await entryOf(switched);
+        expect(entry.tenantId).toBe(tenantB);
+        expect(JSON.stringify(entry)).not.toContain(tenantA);
+      });
+
+      it('limpar a seleção entra na trilha do cliente deixado', async () => {
+        const { write } = await adminIn(tenantA);
+        const cleared = await write('delete', '/v1/session/tenant').expect(204);
+        expect(await entryOf(cleared)).toMatchObject({ action: 'session.clear_tenant', tenantId: tenantA });
+      });
+
+      it('alterar dado do cliente selecionado entra na trilha dele', async () => {
+        const { write } = await adminIn(tenantB);
+        const target = await createUser(app, { role: 'leitura', tenantId: tenantB });
+        const renamed = await write('patch', `/v1/isolation-probe/users/${target.id}`)
+          .send({ name: 'Renomeado pela Verax' })
+          .expect(200);
+        expect(await entryOf(renamed)).toMatchObject({ tenantId: tenantB, outcome: 'success' });
+      });
+
+      it('operação global com um cliente selecionado não entra na trilha dele', async () => {
+        const { write } = await adminIn(tenantB);
+        const global = await write('post', '/v1/isolation-probe/users/global').expect(204);
+        expect(await entryOf(global)).toMatchObject({ tenantId: null, outcome: 'success' });
       });
     });
 
@@ -243,14 +297,44 @@ describe('isolamento por cliente (T2.5)', () => {
         .expect(404);
     });
 
-    it('usuário de cliente não troca de cliente', async () => {
-      await request(app.getHttpServer())
+    it('usuário de cliente não troca de cliente, e a tentativa fica na auditoria', async () => {
+      const denied = await request(app.getHttpServer())
         .post('/v1/session/tenant')
         .set('Cookie', sessionA.cookie)
         .set('Origin', TEST_WEB_ORIGIN)
         .set('X-CSRF-Token', sessionA.csrfToken)
         .send({ tenantId: tenantB })
         .expect(403);
+      const entry = await prisma.auditLog.findFirstOrThrow({
+        where: { requestId: denied.headers['x-request-id'] },
+      });
+      expect(entry).toMatchObject({
+        action: 'POST /v1/session/tenant',
+        actorId: sessionA.user.id,
+        tenantId: tenantA,
+        outcome: 'denied',
+        statusCode: 403,
+      });
+    });
+
+    it('cliente selecionado que é desativado deixa de valer na sessão do admin_verax', async () => {
+      const tenant = await createTenant(app, 'Cliente desativado depois');
+      const admin = await sessionFor(null, 'admin_verax');
+      await request(app.getHttpServer())
+        .post('/v1/session/tenant')
+        .set('Cookie', admin.cookie)
+        .set('Origin', TEST_WEB_ORIGIN)
+        .set('X-CSRF-Token', admin.csrfToken)
+        .send({ tenantId: tenant })
+        .expect(200);
+      await prisma.tenant.update({ where: { id: tenant }, data: { status: 'inactive' } });
+
+      const me = await request(app.getHttpServer()).get('/v1/me').set('Cookie', admin.cookie).expect(200);
+      expect(me.body).toMatchObject({ activeTenantId: null, scopeTenantId: null });
+      await request(app.getHttpServer())
+        .get('/v1/isolation-probe/users')
+        .set('Cookie', admin.cookie)
+        .expect(409);
     });
 
     it('um activeTenantId gravado na sessão de um usuário de cliente é ignorado', async () => {
@@ -262,6 +346,17 @@ describe('isolamento por cliente (T2.5)', () => {
       const me = await request(app.getHttpServer()).get('/v1/me').set('Cookie', reader.cookie).expect(200);
       expect(me.body).toMatchObject({ scopeTenantId: tenantA, activeTenantId: null });
     });
+  });
+
+  it('desativar o cliente derruba as sessões abertas dos usuários dele', async () => {
+    const tenant = await createTenant(app, 'Cliente a desativar');
+    const member = await sessionFor(tenant, 'leitura');
+    await request(app.getHttpServer()).get('/v1/me').set('Cookie', member.cookie).expect(200);
+
+    await prisma.tenant.update({ where: { id: tenant }, data: { status: 'inactive' } });
+
+    await request(app.getHttpServer()).get('/v1/me').set('Cookie', member.cookie).expect(401);
+    expect(await prisma.session.count({ where: { userId: member.user.id } })).toBe(0);
   });
 
   it('todo model com tenantId no schema está na lista protegida pelo escopo', () => {

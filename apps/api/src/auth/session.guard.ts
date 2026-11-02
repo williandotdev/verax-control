@@ -9,21 +9,20 @@ import {
 import { Reflector } from '@nestjs/core';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
-import type { RequestAuth } from '../common/auth/request-auth.js';
+import { DenialAudit } from '../common/audit/denial-audit.service.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
-import { UserRole } from '../generated/prisma/enums.js';
-import { AUTH, MFA_REQUIRED_CODE, SESSION_ABSOLUTE_MAX_MS } from './auth.constants.js';
+import { AUTH, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
 import { ALLOW_WITHOUT_MFA_KEY, IS_PUBLIC_KEY } from './decorators.js';
-
-const ROLES = new Set<string>(Object.values(UserRole));
+import { resolveSession } from './session-validation.js';
 
 /**
  * Guard global: toda rota exige sessão válida, exceto as marcadas com `@Public()`.
  *
- * Além da validação do Better Auth (assinatura do cookie, expiração por inatividade), confere a duração
- * máxima de 12 h, o status do usuário e o MFA a cada requisição, e repassa o cookie renovado.
+ * Além da validação do Better Auth (assinatura do cookie, expiração por inatividade), aplica as regras de
+ * `resolveSession` (12 h, usuário e cliente ativos) e o MFA a cada requisição, e repassa o cookie renovado.
+ * Desativar um usuário ou um cliente derruba as sessões abertas na requisição seguinte.
  */
 @Injectable()
 export class SessionGuard implements CanActivate {
@@ -31,6 +30,7 @@ export class SessionGuard implements CanActivate {
     @Inject(AUTH) private readonly auth: Auth,
     private readonly reflector: Reflector,
     private readonly prisma: PrismaService,
+    private readonly denials: DenialAudit,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -54,29 +54,8 @@ export class SessionGuard implements CanActivate {
 
     const data = result.response;
     if (!data) throw new UnauthorizedException();
-
-    const { session, user } = data;
-    const tooOld = Date.now() - new Date(session.createdAt).getTime() > SESSION_ABSOLUTE_MAX_MS;
-    const inactive = user.status !== 'active' || !ROLES.has(user.role);
-    if (tooOld || inactive) {
-      await this.prisma.session.deleteMany({ where: { id: session.id } });
-      throw new UnauthorizedException();
-    }
-
-    const role = user.role as UserRole;
-    const tenantId = user.tenantId ?? null;
-    const activeTenantId = role === 'admin_verax' ? (session.activeTenantId ?? null) : null;
-    const auth: RequestAuth = {
-      sessionId: session.id,
-      userId: user.id,
-      email: user.email,
-      role,
-      tenantId,
-      activeTenantId,
-      // Regra 4: o cliente do escopo vem sempre da sessão, nunca do corpo, da query ou da URL.
-      scopeTenantId: role === 'admin_verax' ? activeTenantId : tenantId,
-      mfaEnabled: user.twoFactorEnabled === true,
-    };
+    const auth = await resolveSession(this.prisma, data);
+    if (!auth) throw new UnauthorizedException();
     request.auth = auth;
 
     // MFA obrigatório (T2.2): sem ele, a sessão só alcança as rotas marcadas para o cadastro do MFA.
@@ -85,11 +64,8 @@ export class SessionGuard implements CanActivate {
       context.getClass(),
     ]);
     if (!auth.mfaEnabled && !allowWithoutMfa) {
-      throw new ApiError(
-        HttpStatus.FORBIDDEN,
-        'Cadastre a verificação em duas etapas para continuar',
-        MFA_REQUIRED_CODE,
-      );
+      await this.denials.record(request, HttpStatus.FORBIDDEN);
+      throw new ApiError(HttpStatus.FORBIDDEN, MFA_REQUIRED_MESSAGE, MFA_REQUIRED_CODE);
     }
     return true;
   }

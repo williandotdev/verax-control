@@ -30,8 +30,12 @@ export const MFA_LOCKOUT_SECONDS = 15 * 60;
 export const MFA_CHALLENGE_SECONDS = 5 * 60;
 export const BACKUP_CODES_AMOUNT = 10;
 
-/** Código de erro devolvido quando a sessão ainda não cadastrou o MFA. */
+/** Código e mensagem de erro devolvidos quando a sessão ainda não cadastrou o MFA. */
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
+export const MFA_REQUIRED_MESSAGE = 'Cadastre a verificação em duas etapas para continuar';
+
+/** Um código TOTP aceito no login não vale de novo por este tempo (cobre a janela de ±1 passo de 30 s). */
+export const TOTP_REPLAY_WINDOW_SECONDS = 2 * 60;
 
 /**
  * Limite por IP nas rotas de autenticação (T2.3), em janelas de segundos. Guardado no banco para valer

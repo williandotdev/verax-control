@@ -12,6 +12,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { doubleCsrf } from 'csrf-csrf';
 import type { Request, Response } from 'express';
+import { DenialAudit } from '../common/audit/denial-audit.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { AllowWithoutMfa, Authenticated, isSelfManaged } from './decorators.js';
@@ -56,7 +57,8 @@ export class CsrfController {
 
 /**
  * Proteção CSRF (T2.3) em toda escrita autenticada: origem do painel e token válido para a sessão. Roda
- * depois do `SessionGuard`. A autenticação (`@SelfManaged`) tem a própria checagem de origem.
+ * depois do `SessionGuard`. A autenticação (`@SelfManaged`) tem a própria checagem de origem. A recusa vai
+ * para a trilha de auditoria.
  */
 @Injectable()
 export class CsrfGuard implements CanActivate {
@@ -64,14 +66,16 @@ export class CsrfGuard implements CanActivate {
     @Inject(CSRF_UTILITIES) private readonly csrf: CsrfUtilities,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly reflector: Reflector,
+    private readonly denials: DenialAudit,
   ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     if (context.getType() !== 'http' || isSelfManaged(this.reflector, context)) return true;
     const request = context.switchToHttp().getRequest<Request>();
     if (SAFE_METHODS.has(request.method) || request.auth === undefined) return true;
 
     if (request.get('origin') !== this.config.WEB_ORIGIN || !this.csrf.validateRequest(request)) {
+      await this.denials.record(request, HttpStatus.FORBIDDEN);
       throw new ApiError(HttpStatus.FORBIDDEN, 'Requisição recusada pela proteção CSRF', 'CSRF_INVALID');
     }
     return true;

@@ -4,7 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { InvitationService } from '../src/auth/invitation.service.js';
-import { authPost, createUser, signIn, signInRequest } from './support/auth-helpers.js';
+import { authPost, createSignedInUser, signInRequest } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { MemoryMailTransport } from './support/memory-mail.js';
 
@@ -84,8 +84,7 @@ describe('senha vazada (Have I Been Pwned, k-anonimato)', () => {
 
   it('recusa senha vazada na troca de senha', async () => {
     mockPwnedPasswords();
-    const user = await createUser(app);
-    const cookie = await signIn(app, user.email, user.password);
+    const { cookie, ...user } = await createSignedInUser(app);
 
     await authPost(app, '/change-password', cookie, {
       currentPassword: user.password,

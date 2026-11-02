@@ -4,7 +4,9 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import {
+  authPost,
   cookieHeader,
+  createSignedInUser,
   hasSessionCookie,
   createTenant,
   createUser,
@@ -39,8 +41,22 @@ describe('login com Better Auth (T2.1)', () => {
       expect(sessionCookie).toMatch(/;\s*Secure/i);
       expect(sessionCookie).toMatch(/;\s*SameSite=Strict/i);
       expect(sessionCookie).toMatch(/;\s*Path=\//i);
-      // A resposta não devolve o token no corpo nem dados sensíveis.
+      // Sem dados sensíveis no corpo. O Better Auth devolve o token da sessão, mas sozinho ele não abre sessão:
+      // o cookie leva o token assinado com a chave do servidor.
       expect(JSON.stringify(response.body)).not.toMatch(/password|hash/i);
+      const { token } = response.body as { token: string };
+      await request(app.getHttpServer())
+        .get('/v1/me')
+        .set('Cookie', `__Secure-verax.session_token=${token}`)
+        .expect(401);
+      await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookieHeader(sessionCookie)).expect(200);
+    });
+
+    it('"lembrar de mim" é recusado: toda sessão tem o limite de inatividade', async () => {
+      const user = await createUser(app);
+      await signInRequest(app, user.email, user.password)
+        .send({ email: user.email, password: user.password, rememberMe: false })
+        .expect(400);
     });
 
     it('a sessão dá acesso à identidade; sem sessão, 401', async () => {
@@ -90,23 +106,29 @@ describe('login com Better Auth (T2.1)', () => {
       expect(wrongPassword.headers['set-cookie']).toBeUndefined();
     });
 
+    /** Resposta de senha errada, para comparar: conta bloqueada não pode revelar que a senha bateu. */
+    async function wrongPasswordBody(): Promise<unknown> {
+      const other = await createUser(app);
+      return (await signInRequest(app, other.email, 'senha-errada-mas-longa').expect(401)).body;
+    }
+
     it.each([
       ['desativado', 'disabled'],
       ['convidado que ainda não definiu senha', 'invited'],
-    ] as const)('usuário %s não recebe sessão', async (_label, status) => {
+    ] as const)('usuário %s não recebe sessão, com a resposta da senha errada', async (_label, status) => {
       const user = await createUser(app, { status });
-      const response = await signInRequest(app, user.email, user.password);
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      const response = await signInRequest(app, user.email, user.password).expect(401);
+      expect(response.body).toEqual(await wrongPasswordBody());
       expect(hasSessionCookie(cookieHeader(response.headers['set-cookie']))).toBe(false);
     });
 
-    it('usuário de cliente inativo não recebe sessão', async () => {
+    it('usuário de cliente inativo não recebe sessão, com a resposta da senha errada', async () => {
       const tenantId = await createTenant(app);
       await prisma.tenant.update({ where: { id: tenantId }, data: { status: 'inactive' } });
       const user = await createUser(app, { role: 'admin_cliente', tenantId });
 
-      const response = await signInRequest(app, user.email, user.password);
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      const response = await signInRequest(app, user.email, user.password).expect(401);
+      expect(response.body).toEqual(await wrongPasswordBody());
       expect(hasSessionCookie(cookieHeader(response.headers['set-cookie']))).toBe(false);
     });
   });
@@ -190,6 +212,73 @@ describe('login com Better Auth (T2.1)', () => {
       const cookie = await signIn(app, user.email, user.password);
       await prisma.user.update({ where: { id: user.id }, data: { status: 'disabled' } });
       await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookie).expect(401);
+    });
+
+    it('sessão com validade além do limite de inatividade é recusada', async () => {
+      const user = await createUser(app);
+      const cookie = await signIn(app, user.email, user.password);
+      await prisma.session.updateMany({
+        where: { userId: user.id },
+        data: { expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+      });
+      await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookie).expect(401);
+    });
+  });
+
+  describe('rotas de sessão do Better Auth seguem as regras da API', () => {
+    const authGet = (path: string, cookie: string) =>
+      request(app.getHttpServer()).get(`/v1/auth${path}`).set('Cookie', cookie);
+
+    it('usuário desativado não lê, lista nem renova a sessão aberta', async () => {
+      const user = await createSignedInUser(app);
+      await authGet('/get-session', user.cookie).expect(200);
+      await prisma.user.update({ where: { id: user.id }, data: { status: 'disabled' } });
+
+      await authGet('/get-session', user.cookie).expect(401);
+      await authGet('/list-sessions', user.cookie).expect(401);
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+    });
+
+    it('sessão com mais de 12 h não é renovada nem troca a senha', async () => {
+      const user = await createSignedInUser(app);
+      await prisma.session.updateMany({
+        where: { userId: user.id },
+        data: { createdAt: new Date(Date.now() - 12 * 60 * 60 * 1000 - 60_000) },
+      });
+      // Sem sessão, o /get-session do Better Auth responde 200 com null; por isso ele vem primeiro.
+      await authGet('/get-session', user.cookie).expect(401);
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+      await authPost(app, '/change-password', user.cookie, {
+        currentPassword: user.password,
+        newPassword: 'senha-nova-bem-longa-2',
+      }).expect(401);
+    });
+
+    it('sessão velha também não troca a senha', async () => {
+      const user = await createSignedInUser(app);
+      await prisma.session.updateMany({
+        where: { userId: user.id },
+        data: { createdAt: new Date(Date.now() - 12 * 60 * 60 * 1000 - 60_000) },
+      });
+      await authPost(app, '/change-password', user.cookie, {
+        currentPassword: user.password,
+        newPassword: 'senha-nova-bem-longa-2',
+      }).expect(401);
+      expect(await prisma.session.count({ where: { userId: user.id } })).toBe(0);
+    });
+
+    it('sessão sem MFA só alcança o cadastro do MFA', async () => {
+      const user = await createUser(app);
+      const cookie = await signIn(app, user.email, user.password);
+
+      await authGet('/get-session', cookie).expect(200);
+      const list = await authGet('/list-sessions', cookie).expect(403);
+      expect(list.body).toMatchObject({ code: 'MFA_REQUIRED' });
+      await authPost(app, '/change-password', cookie, {
+        currentPassword: user.password,
+        newPassword: 'senha-nova-bem-longa-2',
+      }).expect(403);
+      await authPost(app, '/two-factor/enable', cookie, { password: user.password }).expect(200);
     });
   });
 

@@ -9,6 +9,9 @@ export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
 const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
 
+/** O próprio cliente: no escopo, o model `tenant` só alcança a linha do cliente da sessão, sem criar. */
+const TENANT_ROOT_MODEL = 'tenant';
+
 /** Operações que filtram por `where`. */
 const WHERE_OPERATIONS = new Set([
   'findUnique',
@@ -27,16 +30,6 @@ const WHERE_OPERATIONS = new Set([
 ]);
 const CREATE_OPERATIONS = new Set(['create', 'createMany', 'createManyAndReturn']);
 const KNOWN_OPERATIONS = new Set([...WHERE_OPERATIONS, ...CREATE_OPERATIONS, 'upsert']);
-
-/** SQL cru escapa do filtro; dentro do escopo do cliente ele não existe. */
-const BLOCKED_CLIENT_METHODS = new Set([
-  '$queryRaw',
-  '$queryRawUnsafe',
-  '$executeRaw',
-  '$executeRawUnsafe',
-  '$queryRawTyped',
-  '$runCommandRaw',
-]);
 
 export class TenantScopeViolation extends Error {}
 
@@ -80,38 +73,63 @@ export function scopeArgs(operation: string, args: Args | undefined, tenantId: s
   return scoped;
 }
 
-function scopeDelegate(delegate: object, tenantId: string): object {
+/**
+ * Restringe o model `tenant` ao cliente da sessão. O filtro entra num `AND`, sem trocar o `id` pedido: pedir
+ * outro cliente dá "não encontrado", nunca o próprio no lugar dele.
+ */
+export function scopeTenantRootArgs(operation: string, args: Args | undefined, tenantId: string): Args {
+  if (!WHERE_OPERATIONS.has(operation)) {
+    throw new TenantScopeViolation(`operação ${operation} não permitida no cadastro do cliente`);
+  }
+  const scoped: Args = { ...(args ?? {}) };
+  const where = (scoped['where'] ?? {}) as Args;
+  const and = where['AND'] === undefined ? [] : Array.isArray(where['AND']) ? where['AND'] : [where['AND']];
+  scoped['where'] = { ...where, AND: [...(and as unknown[]), { id: tenantId }] };
+  const data = scoped['data'];
+  if (typeof data === 'object' && data !== null && 'id' in data) {
+    throw new TenantScopeViolation('o id do cliente não muda');
+  }
+  return scoped;
+}
+
+type Scoper = (operation: string, args: Args | undefined) => Args;
+
+function scopeDelegate(delegate: object, scope: Scoper): object {
   return new Proxy(delegate, {
     get(target, property, receiver) {
       const value: unknown = Reflect.get(target, property, receiver);
       if (typeof value !== 'function' || typeof property !== 'string') return value;
-      return (args?: Args) =>
-        (value as (args: Args) => unknown).call(target, scopeArgs(property, args, tenantId));
+      return (args?: Args) => (value as (args: Args) => unknown).call(target, scope(property, args));
     },
   });
 }
 
 /**
  * Cliente do banco restrito a um cliente da Verax (T2.5, regra 4). Funciona sobre o cliente base ou sobre a
- * transação da requisição. Models fora de `TENANT_SCOPED_MODELS` passam sem filtro (ex.: `tenant`).
+ * transação da requisição. Só existem nele:
+ * - os models de `TENANT_SCOPED_MODELS`, filtrados por `tenantId`;
+ * - o model `tenant`, restrito à linha do próprio cliente.
+ *
+ * Os demais models (sessões, contas, tokens) e os métodos `$` (SQL cru, transações, extensões) escapariam do
+ * filtro: no escopo do cliente, acessá-los lança `TenantScopeViolation`. Quem precisa deles usa `db()`.
  */
 export function scopeToTenant(db: Prisma.TransactionClient, tenantId: string): Prisma.TransactionClient {
   if (!tenantId) throw new TenantScopeViolation('escopo sem cliente');
   return new Proxy(db, {
     get(target, property, receiver) {
-      if (typeof property === 'string' && BLOCKED_CLIENT_METHODS.has(property)) {
+      if (typeof property !== 'string') return Reflect.get(target, property, receiver) as unknown;
+      if (property.startsWith('$')) {
         throw new TenantScopeViolation(`${property} não é permitido no escopo do cliente`);
       }
       const value: unknown = Reflect.get(target, property, receiver);
-      if (
-        typeof property === 'string' &&
-        SCOPED.has(property) &&
-        typeof value === 'object' &&
-        value !== null
-      ) {
-        return scopeDelegate(value, tenantId);
+      if (typeof value !== 'object' || value === null) return value;
+      if (SCOPED.has(property)) {
+        return scopeDelegate(value, (operation, args) => scopeArgs(operation, args, tenantId));
       }
-      return value;
+      if (property === TENANT_ROOT_MODEL) {
+        return scopeDelegate(value, (operation, args) => scopeTenantRootArgs(operation, args, tenantId));
+      }
+      throw new TenantScopeViolation(`${property} não existe no escopo do cliente`);
     },
   });
 }

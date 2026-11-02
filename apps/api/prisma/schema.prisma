@@ -108,6 +108,7 @@ model User {
   sessions         Session[]
   accounts         Account[]
   twoFactors       TwoFactor[]
+  usedTotpCodes    UsedTotpCode[]
 
   @@index([tenantId])
 }
@@ -184,10 +185,21 @@ model RateLimit {
   lastRequest BigInt
 }
 
-/// Falhas de senha por e-mail (T2.3). Vale também para e-mail inexistente, para não revelar quem existe.
+/// Tentativas de login por e-mail que ainda não terminaram numa sessão completa (T2.3). Vale também para
+/// e-mail inexistente, para não revelar quem existe.
 model LoginAttempt {
   email          String    @id @db.VarChar(254)
   failures       Int
   firstFailureAt DateTime  @db.Timestamptz(3)
   lockedUntil    DateTime? @db.Timestamptz(3)
+}
+
+/// Códigos TOTP aceitos em login nos últimos minutos (T2.2): o mesmo código não abre uma segunda sessão.
+model UsedTotpCode {
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  code   String   @db.VarChar(16)
+  usedAt DateTime @db.Timestamptz(3)
+
+  @@id([userId, code])
 }

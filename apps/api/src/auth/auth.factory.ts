@@ -23,8 +23,8 @@ import {
   SESSION_IDLE_TIMEOUT_SECONDS,
   SESSION_REFRESH_AFTER_SECONDS,
 } from './auth.constants.js';
-import { clearLoginFailures, isLoginLocked, normalizeEmail, registerLoginFailure } from './login-attempts.js';
-import { passwordLinkMail } from './password-links.js';
+import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
+import { invitationRequest, passwordLinkMail } from './password-links.js';
 
 export interface AuthDependencies {
   config: AppConfig;
@@ -37,7 +37,12 @@ export interface AuthDependencies {
 }
 
 const SIGN_IN_PATH = '/sign-in/email';
+const VERIFY_TOTP_PATH = '/two-factor/verify-totp';
+const VERIFY_BACKUP_CODE_PATH = '/two-factor/verify-backup-code';
 const ACCOUNT_LOCKED_MESSAGE = 'Muitas tentativas. Tente novamente em alguns minutos.';
+/** Mesmo erro do Better Auth para senha errada (o teste de login compara as duas respostas). */
+const INVALID_CREDENTIALS = { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' };
+const INVALID_CODE = { code: 'INVALID_CODE', message: 'Invalid code' };
 
 /**
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
@@ -71,9 +76,12 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
       maxPasswordLength: PASSWORD_MAX_LENGTH,
       resetPasswordTokenExpiresIn: PASSWORD_LINK_TTL_SECONDS,
       revokeSessionsOnPasswordReset: true,
-      // Convite e redefinição (T2.6). Usuário desativado não recebe nada, e a resposta da API é a mesma.
+      // Convite e redefinição (T2.6). Usuário desativado, ou convidado pedindo pela rota pública, não recebe
+      // nada, e a resposta da API é a mesma.
       sendResetPassword: async ({ user, token }) => {
-        const message = passwordLinkMail(config.WEB_ORIGIN, user, token);
+        const message = passwordLinkMail(config.WEB_ORIGIN, user, token, {
+          invitation: invitationRequest.getStore() === true,
+        });
         if (message) await mail.send(message);
       },
       // Definir a senha pelo link do convite ativa a conta.
@@ -113,14 +121,25 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
     databaseHooks: {
       session: {
         create: {
-          // Só usuário ativo, de cliente ativo, recebe sessão (convidado sem senha definida ou desativado não).
-          before: async (session) => {
+          before: async (session, ctx) => {
+            // Só usuário ativo, de cliente ativo, recebe sessão (convidado sem senha definida ou desativado não).
             const user = await prisma.user.findUnique({
               where: { id: session.userId },
               select: { status: true, tenant: { select: { status: true } } },
             });
-            if (user?.status !== 'active') return false;
-            if (user.tenant && user.tenant.status !== 'active') return false;
+            const allowed = user?.status === 'active' && (!user.tenant || user.tenant.status === 'active');
+            if (!allowed) {
+              // No login, a mesma resposta da senha errada: não revela que a conta existe nem que a senha bateu.
+              if (ctx?.path === SIGN_IN_PATH) throw new APIError('UNAUTHORIZED', INVALID_CREDENTIALS);
+              return false;
+            }
+            // Código TOTP vale uma vez (NIST SP 800-63B): um segundo login com o mesmo código é recusado.
+            if (ctx?.path === VERIFY_TOTP_PATH) {
+              const code = (ctx.body as { code?: unknown } | undefined)?.code;
+              if (typeof code !== 'string' || !(await claimTotpCode(prisma, session.userId, code))) {
+                throw new APIError('UNAUTHORIZED', INVALID_CODE);
+              }
+            }
             return undefined;
           },
         },
@@ -139,11 +158,12 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
     },
 
     hooks: {
-      // Bloqueio por conta (T2.3): e-mail bloqueado nem chega a conferir a senha.
+      // Bloqueio por conta (T2.3): cada tentativa é reservada antes de a senha ser conferida; e-mail bloqueado
+      // nem chega à senha.
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
-        if (email === undefined || !(await isLoginLocked(prisma, email))) return;
+        if (email === undefined || (await reserveLoginAttempt(prisma, email))) return;
         await record({
           actor: { type: 'anonymous' },
           action: AUTH_AUDIT_ACTIONS[SIGN_IN_PATH] ?? SIGN_IN_PATH,
@@ -164,9 +184,22 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
         const user = ctx.context.newSession?.user ?? ctx.context.session?.user;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
 
-        if (ctx.path === SIGN_IN_PATH && email !== undefined) {
-          if (statusCode === 401) await registerLoginFailure(prisma, email);
-          else if (statusCode < 400) await clearLoginFailures(prisma, email);
+        // O contador de tentativas zera só com a sessão completa: no login de quem tem MFA, isso acontece na
+        // verificação do código (este hook roda antes do plugin do MFA trocar a sessão pelo desafio).
+        const newSession = statusCode < 400 ? ctx.context.newSession : null;
+        if (newSession) {
+          const completed =
+            ctx.path === VERIFY_TOTP_PATH ||
+            ctx.path === VERIFY_BACKUP_CODE_PATH ||
+            (ctx.path === SIGN_IN_PATH && newSession.user.twoFactorEnabled !== true);
+          if (completed) await clearLoginAttempts(prisma, newSession.user.email);
+        }
+        // Senha trocada: as outras sessões caem; a atual continua, com a mesma idade (limite de 12 h).
+        const current = ctx.context.session;
+        if (ctx.path === '/change-password' && statusCode < 400 && current) {
+          await prisma.session.deleteMany({
+            where: { userId: current.user.id, id: { not: current.session.id } },
+          });
         }
 
         await record({

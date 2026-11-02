@@ -84,6 +84,13 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
     expect(policies.filter((policy) => policy.selfManaged).map((policy) => policy.route)).toEqual([
       'AuthController.handle',
     ]);
+    // Antes do MFA, a sessão só alcança a identidade e o token CSRF (o cadastro do MFA é do Better Auth).
+    expect(
+      policies
+        .filter((policy) => policy.allowWithoutMfa)
+        .map((policy) => policy.route)
+        .sort(),
+    ).toEqual(['CsrfController.token', 'MeController.me']);
   });
 
   it('toda rota que exige sessão declara permissão ou @Authenticated (negação por padrão)', () => {

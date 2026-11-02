@@ -9,7 +9,15 @@ import { InvitationService } from '../src/auth/invitation.service.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { DevMailboxTransport } from '../src/mail/dev-mailbox.transport.js';
 import { invitationMail } from '../src/mail/templates.js';
-import { authPost, createTenant, createUser, signIn, signInRequest } from './support/auth-helpers.js';
+import {
+  authPost,
+  createSignedInUser,
+  createTenant,
+  createUser,
+  signIn,
+  signInRequest,
+  signInWithMfa,
+} from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { LogCapture } from './support/log-capture.js';
 import { MemoryMailTransport } from './support/memory-mail.js';
@@ -176,8 +184,7 @@ describe('convite e redefinição de senha (T2.6)', () => {
     });
 
     it('troca de senha logado exige a senha atual', async () => {
-      const user = await createUser(app);
-      const cookie = await signIn(app, user.email, user.password);
+      const { cookie, ...user } = await createSignedInUser(app);
       await authPost(app, '/change-password', cookie, {
         currentPassword: 'senha-errada-longa',
         newPassword: NEW_PASSWORD,
@@ -186,6 +193,60 @@ describe('convite e redefinição de senha (T2.6)', () => {
         currentPassword: user.password,
         newPassword: NEW_PASSWORD,
       }).expect(200);
+    });
+
+    it('trocar a senha derruba as outras sessões; a atual continua, com a mesma idade', async () => {
+      const user = await createSignedInUser(app);
+      const other = await signInWithMfa(app, user.email, user.password, user.secret);
+      const before = await prisma.session.findMany({
+        where: { userId: user.id },
+        orderBy: { createdAt: 'asc' },
+      });
+      expect(before).toHaveLength(2);
+
+      const changed = await authPost(app, '/change-password', user.cookie, {
+        currentPassword: user.password,
+        newPassword: NEW_PASSWORD,
+      }).expect(200);
+      expect(changed.headers['set-cookie']).toBeUndefined();
+
+      await request(app.getHttpServer()).get('/v1/me').set('Cookie', other).expect(401);
+      await request(app.getHttpServer()).get('/v1/me').set('Cookie', user.cookie).expect(200);
+      const after = await prisma.session.findMany({ where: { userId: user.id } });
+      expect(after).toHaveLength(1);
+      expect(after[0]?.createdAt).toEqual(before[0]?.createdAt);
+    });
+
+    it('revokeOtherSessions é recusado (criaria sessão nova, zerando o limite de 12 h)', async () => {
+      const { cookie, ...user } = await createSignedInUser(app);
+      await authPost(app, '/change-password', cookie, {
+        currentPassword: user.password,
+        newPassword: NEW_PASSWORD,
+        revokeOtherSessions: true,
+      }).expect(400);
+    });
+
+    it('pela rota pública, convidado não recebe link novo: o convite expira de fato', async () => {
+      const email = 'convidado-sem-reenvio@cliente.example';
+      await invitations.invite({ email, name: 'Eva', role: 'admin_verax', tenantId: null });
+      await tokenFor(email);
+      const active = await createUser(app);
+
+      await Promise.all([requestReset(email).expect(200), requestReset(active.email).expect(200)]);
+      await tokenFor(active.email);
+      expect(mailbox.to(email)).toHaveLength(1);
+    });
+
+    it('o reenvio pelo administrador serve só a convidados', async () => {
+      const active = await createUser(app);
+      const email = 'convidado-reenvio@cliente.example';
+      await invitations.invite({ email, name: 'Fábio', role: 'admin_verax', tenantId: null });
+      await tokenFor(email);
+
+      await invitations.sendLink(active.email);
+      await invitations.sendLink(email);
+      await vi.waitFor(() => expect(mailbox.to(email)).toHaveLength(2));
+      expect(mailbox.to(active.email)).toHaveLength(0);
     });
   });
 

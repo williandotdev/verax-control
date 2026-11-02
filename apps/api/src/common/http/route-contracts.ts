@@ -4,6 +4,7 @@ import { RouteParamtypes } from '@nestjs/common/internal';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { z } from 'zod';
 import {
+  ALLOW_WITHOUT_MFA_KEY,
   AUTHENTICATED_KEY,
   IS_PUBLIC_KEY,
   PERMISSIONS_KEY,
@@ -138,9 +139,13 @@ export interface RoutePolicy {
   selfManaged: boolean;
   permissions: string[];
   authenticated: boolean;
+  allowWithoutMfa: boolean;
 }
 
-/** Lista cada rota com as marcações que relaxam a negação por padrão (`@Public`, `@SelfManaged`). */
+/**
+ * Lista cada rota com as marcações que relaxam a negação por padrão (`@Public`, `@SelfManaged`,
+ * `@AllowWithoutMfa`).
+ */
 export function listRoutePolicies(app: INestApplication): RoutePolicy[] {
   const discovery = app.get(DiscoveryService);
   const scanner = app.get(MetadataScanner);
@@ -164,6 +169,7 @@ export function listRoutePolicies(app: INestApplication): RoutePolicy[] {
         selfManaged: read(SELF_MANAGED_KEY) !== undefined,
         permissions: (read(PERMISSIONS_KEY) as string[] | undefined) ?? [],
         authenticated: read(AUTHENTICATED_KEY) === true,
+        allowWithoutMfa: read(ALLOW_WITHOUT_MFA_KEY) === true,
       });
     }
   }

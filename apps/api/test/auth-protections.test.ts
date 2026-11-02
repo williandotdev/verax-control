@@ -50,6 +50,25 @@ describe('proteções de login e sessão (T2.3)', () => {
   });
 
   describe('bloqueio por conta', () => {
+    it('tentativas simultâneas não furam o limite: das 10, só 5 chegam à senha', async () => {
+      const user = await createUser(app);
+      const responses = await Promise.all(
+        Array.from({ length: 10 }, () => signInRequest(app, user.email, 'senha-errada-longa')),
+      );
+      const statuses = responses.map((response) => response.status);
+      expect(statuses.filter((status) => status === 401)).toHaveLength(5);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(5);
+    });
+
+    it('senha certa sem o código do MFA também conta (desafios de MFA não ficam ilimitados)', async () => {
+      const user = await createSignedInUser(app);
+      for (let i = 0; i < 5; i += 1) {
+        const challenge = await signInRequest(app, user.email, user.password).expect(200);
+        expect(challenge.body).toMatchObject({ twoFactorRedirect: true });
+      }
+      await signInRequest(app, user.email, user.password).expect(429);
+    });
+
     it('5 senhas erradas bloqueiam a conta: nem a senha certa entra', async () => {
       const user = await createUser(app);
       for (let i = 0; i < 5; i += 1) await signInRequest(app, user.email, 'senha-errada-longa').expect(401);
@@ -164,6 +183,15 @@ describe('proteções de login e sessão (T2.3)', () => {
 
       const noToken = await post(user.cookie).send({ name: 'x' }).expect(403);
       expect(noToken.body).toMatchObject({ code: 'CSRF_INVALID' });
+      const denied = await prisma.auditLog.findFirstOrThrow({
+        where: { requestId: noToken.headers['x-request-id'] },
+      });
+      expect(denied).toMatchObject({
+        action: 'POST /v1/csrf-probe',
+        actorId: user.id,
+        outcome: 'denied',
+        statusCode: 403,
+      });
 
       const { cookie, token } = await withCsrf(app, user.cookie);
       await post(cookie).set('X-CSRF-Token', token).send({ name: 'x' }).expect(201, { name: 'x' });
