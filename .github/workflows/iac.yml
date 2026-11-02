@@ -169,6 +169,8 @@ jobs:
         run: '"$RUNNER_TEMP/cfn/bin/cfn-lint" infra/cloudformation/*.yaml'
       - name: Testes de segurança do template
         run: '"$RUNNER_TEMP/cfn/bin/python" -m unittest discover -s infra/cloudformation/tests -v'
+      - name: Testes do diagnóstico somente leitura
+        run: python3 -m unittest discover -b -s infra/diagnostico/tests -v
 
   checkov:
     name: Checkov (políticas de segurança da infra)
