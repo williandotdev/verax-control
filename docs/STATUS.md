@@ -434,6 +434,79 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - A relação de confiança passa a exigir `aws:SourceAccount` igual à própria conta e `aws:SourceArn` de um flow log desta conta e região. É a proteção contra "confused deputy" que a mesma página recomenda.
 - **Testes:** `fmt -check` e `terraform validate` válidos em staging e produção · checkov no módulo: 51 aprovados, 0 falhas (a ação sem recurso é reconhecida como não restringível) · tflint no CI.
 
+## T3.1 Cadastro de clientes
+
+- **Arquivos:** `packages/shared/src/tenants.ts` (+ teste), `apps/api/src/tenants/{tenants.controller,tenants.service,tenants.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102174939_tenant_registration/`, `apps/api/src/cli/seed.ts`, `apps/api/test/tenants.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** nome, CNPJ, plano (texto livre, até 60 caracteres, premissa aprovada), contato de escalonamento (nome, e-mail e telefone opcional) e status.
+  - **CNPJ:** valida o formato alfanumérico que a Receita emite desde julho de 2026, que inclui o numérico antigo: 12 caracteres de A a Z ou 0 a 9, mais dois dígitos verificadores pelo módulo 11, com cada caractere valendo o código ASCII menos 48. Aceita com ou sem máscara, guarda só os 14 caracteres em maiúsculas, e é único (409 se repetido).
+  - **Rotas** (só `admin_verax`, permissões `tenants:read` e `tenants:write`): `GET /v1/tenants` (resumo `id`, `name`, `status`, no contrato que o seletor do painel já valida, com filtro por status), `GET /v1/tenants/:id` (cadastro completo), `POST`, `PATCH` (parcial, com reativação por `status`) e `DELETE`, que é exclusão lógica.
+  - **Desativar** derruba na hora as sessões dos usuários do cliente e limpa a seleção de `admin_verax` que estavam nele.
+  - **Auditoria:** criação, alteração, desativação e reativação entram na trilha do próprio cliente, com estado anterior e novo.
+  - No banco, CNPJ, plano e contato ficam opcionais só por causa dos clientes criados antes do cadastro completo; a API exige todos. O seed passou a criar os clientes de demonstração com cadastro completo e CNPJs fictícios válidos.
+- **Testes:** 17 de integração. Cobrem os três papéis de cliente recebendo 403 em todas as rotas sem alterar nada; criação com CNPJ normalizado e auditoria na trilha do novo cliente; CNPJ repetido com 409; recusa de CNPJ inválido, `status` ou campo desconhecido no corpo, contato ausente e plano longo; listagem no contrato estrito do seletor; filtro por status; 404 e 400; alteração parcial auditada; alteração vazia recusada; desativação com sessões derrubadas, seleção limpa e reativação auditada; troca para CNPJ já usado. No pacote compartilhado, 17 testes do CNPJ e do schema. Mutação: sem derrubar as sessões, 1 falha; com permissão errada na listagem, 3 falham.
+- **Definição de pronto:** critérios de aceite ✔ (campos, só `admin_verax` cria, edita e desativa, exclusão lógica, testes de permissão) · lint e tipos ✔ · dependências n/a · regras de segurança ✔
+- **Correção (revisor automático do PR #10):** o telefone aceitava 21 caracteres, e a coluna tem 20, o que daria erro 500 em vez de 400. O schema agora limita a 20; teste novo.
+
+## T3.2 Usuários do cliente
+
+- **Arquivos:** `packages/shared/src/users.ts`, `apps/api/src/users/{users.controller,users.service,users.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/test/users.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - Tudo pelo escopo da sessão: `admin_cliente` gerencia o próprio cliente; `admin_verax`, o cliente selecionado (sem seleção, 409 `TENANT_REQUIRED`). `analista_cliente` e `leitura` não têm acesso (`users:*` é só de administradores).
+  - **Rotas:** `GET /v1/users` (com filtro por status) e `GET /v1/users/:id`; `POST /v1/users` convida pelo `InvitationService` da T2.6, com o cliente vindo da sessão; `PATCH /v1/users/:id` troca o papel e (re)ativa; `DELETE` desativa (exclusão lógica); `POST /:id/invitation` reenvia o convite; `POST /:id/mfa-reset` redefine o MFA.
+  - Só papéis de cliente são atribuíveis (`admin_verax` é recusado no schema). **Ninguém altera o próprio papel, status ou MFA** (403). Convidado não vira ativo por aqui: só ao definir a senha pelo link.
+  - Desativar, e também redefinir o MFA, derruba as sessões do usuário na hora (pendência da revisão do E2).
+  - **Redefinir o MFA** (a ação do administrador para quem perdeu o autenticador, que estava em aberto) apaga o TOTP e os códigos de recuperação. No próximo login, com a senha, o usuário só alcança o cadastro de um autenticador novo.
+  - Auditoria de convite, reenvio, troca de papel, desativação e redefinição de MFA, na trilha do cliente.
+  - E-mail já cadastrado responde 409. O e-mail é único na plataforma, então um administrador de cliente consegue saber que um endereço já tem conta (sem saber em qual cliente). É o custo do e-mail único; a alternativa seria aceitar o convite em silêncio e não entregá-lo.
+- **Testes:** 20 de integração. Cobrem a suíte negativa A→B completa; os papéis sem acesso; `admin_verax` com e sem cliente selecionado; a listagem só do próprio cliente e no contrato do pacote compartilhado; convite com cliente da sessão, link enviado e auditoria; recusa de papel `admin_verax`, `tenantId` e `status` no corpo; e-mail repetido; reenvio só para convidado; troca de papel auditada; nenhuma alteração do próprio acesso; desativação com sessões derrubadas e reativação; convidado não ativado à força; e a redefinição de MFA com sessões derrubadas e novo login exigindo o cadastro. Mutação: sem a trava do próprio acesso, 4 falham; sem derrubar as sessões, 1; sem apagar o TOTP, 1.
+- **Definição de pronto:** critérios de aceite ✔ (listar, convidar, alterar papel e desativar; `admin_cliente` só no próprio cliente; ninguém altera o próprio papel; teste negativo entre clientes) · lint e tipos ✔ · regras de segurança ✔
+- **Risco:** o convite cria o usuário pelo Better Auth, fora da transação da requisição. Se a gravação da auditoria falhar depois, o convidado continua criado e a tentativa fica registrada como falha.
+
+## T3.3 Contas cloud
+
+- **Arquivos:** `packages/shared/src/cloud-accounts.ts` (+ teste), `apps/api/src/cloud-accounts/{cloud-accounts.controller,cloud-accounts.service,cloud-accounts.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/common/prisma/tenant-scope.ts` (`cloudAccount` na lista protegida), `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102180302_cloud_accounts/`, `apps/api/test/cloud-accounts.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** provedor (`aws`), ID da conta (12 dígitos), regiões, status e os buckets de log por fonte (CloudTrail, GuardDuty e WAF), que a T5.2 usa para vincular cada alerta ao cliente.
+  - **Papel de leitura:** o ARN é derivado do ID (`arn:aws:iam::<conta>:role/VeraxControlReadOnly`), porque o template do conector (T4.3) cria sempre esse papel e o inventário (T5.9) assume isso. O cadastro não escolhe papel; é o desvio em relação ao campo "ARN do papel" do plano.
+  - **ExternalId:** 256 bits do CSPRNG em base64url, gerado na criação. Nunca é aceito do request (o schema é estrito e recusa `externalId`, chaves de acesso, `roleArn` e `tenantId`). Só quem configura o conector (`cloud_accounts:write`) o vê nas respostas, e ele não vai para a auditoria.
+  - **Unicidade:** um ID de conta não pertence a dois clientes (índice único, 409). Um bucket de log também é de um cliente só; contas do mesmo cliente podem dividir um bucket. A checagem de bucket roda sob um lock transacional por bucket (`pg_advisory_xact_lock`), então dois cadastros simultâneos não passam juntos, e a resposta não diz de quem é o bucket.
+  - **Validação:** regiões no formato da AWS (inclusive GovCloud e ISO), sem repetição, conferidas por partes, sem regex aninhada; nomes de bucket pelas regras do S3; o bucket do WAF precisa do prefixo `aws-waf-logs-` (exigência da AWS).
+  - **Rotas:** `GET` (todos os papéis), `POST`, `PATCH` (regiões, buckets e status; `null` apaga um bucket; o ID da conta não muda) e `DELETE` (exclusão lógica), pelo escopo da sessão e com auditoria.
+- **Testes:** 21 de integração. Cobrem a suíte negativa A→B; ExternalId gerado, papel derivado e auditoria sem o ExternalId; recusa de ExternalId, chave de acesso, papel escolhido, cliente, ID curto, região inválida ou repetida e bucket inválido; ID de conta em dois clientes; bucket dividido no mesmo cliente e recusado em outro; dois clientes registrando o mesmo bucket ao mesmo tempo (só um consegue); `leitura` vendo a conta sem o ExternalId e sem poder alterar; alteração com `null`; ID imutável; desativação auditada. No pacote compartilhado, 17 testes de região, papel e bucket. Mutação: sem a trava de bucket, 2 falham; mostrando o ExternalId a todos, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (campos, ExternalId gerado pelo sistema e nunca aceito do request, nenhuma chave de acesso armazenada, ID de conta único entre clientes) · lint e tipos ✔ · regras de segurança ✔
+- **Para o E5:** a lista de alvos do Prowler no SSM (T4.7) passa a ser mantida a partir destas contas, por um job, na integração da T5.8.
+- **Correção (revisor automático do PR #10):** a trava de bucket conferia só a mesma fonte, então o mesmo bucket podia ser CloudTrail de um cliente e GuardDuty de outro. Como o nome de bucket é único no S3, a checagem e o lock passam a valer para o nome em qualquer fonte. Teste novo; mutação: conferindo uma coluna só, ele falha.
+
+## T3.4 Lista de proteção
+
+- **Arquivos:** `packages/shared/src/protected-resources.ts`, `apps/api/src/protected-resources/{protected-resources.controller,protected-resources.service,protected-resources.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/common/prisma/tenant-scope.ts`, `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102181028_protection_and_exceptions/` (junto com a T3.5), `apps/api/test/protected-resources.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Itens:** tipo, identificador, motivo e quem incluiu. O autor vem sempre da sessão.
+  - **Tipos:** conta AWS, usuário e papel de IAM (nome ou ARN do tipo certo), chave de acesso, instância EC2, bucket S3, security group e IP ou faixa CIDR. Cada identificador é conferido no formato da AWS, para a comparação com os achados (T5.6, +15 na nota de risco) ser exata.
+  - Um item não se repete no mesmo cliente (409). Só o motivo muda; outro identificador é outro item.
+  - **Rotas:** `GET`, `GET :id`, `POST`, `PATCH` e `DELETE`, pelo escopo da sessão. Todos leem; administradores alteram. Toda alteração é auditada, e a remoção guarda o item inteiro como estado anterior.
+- **Testes:** 21 de integração. Cobrem a suíte negativa A→B; inclusão com o autor da sessão, auditada; item repetido; recusa de formato errado por tipo, de autor no corpo e de caractere de controle no motivo; aceite de cada tipo no formato da AWS; alteração e remoção auditadas; identificador imutável; analista sem permissão de escrita. Mutação: sem a conferência do formato, 4 falham.
+- **Definição de pronto:** critérios de aceite ✔ (tipo, identificador, motivo e quem incluiu; escopo por cliente; todas as alterações auditadas) · lint e tipos ✔ · Semgrep sem achados nos arquivos novos
+
+## T3.5 Exceções de alerta
+
+- **Arquivos:** `packages/shared/src/alert-exceptions.ts`, `apps/api/src/alert-exceptions/{alert-exceptions.controller,alert-exceptions.service,alert-exceptions.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/common/prisma/tenant-scope.ts`, `apps/api/prisma/schema.prisma`, migration da T3.4, `apps/api/test/alert-exceptions.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** regra do Wazuh (até 6 dígitos), condição (usuário, IP ou faixa CIDR, ou recurso, com o valor), motivo e validade opcional. O autor vem da sessão.
+  - **Validade:** precisa estar no futuro e, no máximo, a um ano. Sem ela, a exceção vale até ser removida.
+  - **Uso pelo sync (T5.3):** `matchedCount` e `lastMatchedAt` são atualizados pelo sync quando a exceção marca um achado como esperado. Os dois nunca vêm do request.
+  - Vencida, a exceção para de valer, mas continua listada como inativa, com filtro `active`. Uma mesma combinação de regra, campo e valor não se repete no cliente.
+  - **Rotas:** `GET`, `GET :id`, `POST`, `PATCH` (motivo e validade; regra, campo e valor definem a exceção) e `DELETE`. Todos leem; operadores (administradores e analistas) alteram. Tudo auditado.
+- **Testes:** 14 de integração. Cobrem a suíte negativa A→B; criação pelo analista com o autor da sessão, auditada; exceção repetida; recusa de regra não numérica, IP inválido, validade no passado ou acima de um ano, contagem e autor no corpo; exceção vencida listada como inativa e filtro; alteração e remoção auditadas; leitura sem permissão de escrita. Mutação: com "ativa" sempre verdadeiro, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (campos, escopo por cliente, todas as alterações auditadas; uso pelo sync na integração da T5.3) · lint e tipos ✔ · Semgrep sem achados nos arquivos novos
+- **Desvio:** as tabelas da T3.4 e da T3.5 entraram numa migration só, e as duas tasks foram para o mesmo commit.
+
 ## T5.1 Módulo do indexer
 
 - **Arquivos:** `apps/api/src/indexer/{indexer.config,indexer-secrets,alert-queries,indexer.client}.ts`, `apps/api/test/indexer/{alert-queries,indexer-config,indexer-client}.test.ts`, `apps/api/package.json`, `pnpm-lock.yaml`

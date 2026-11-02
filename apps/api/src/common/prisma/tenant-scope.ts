@@ -4,7 +4,13 @@ import type { Prisma } from '../../generated/prisma/client.js';
  * Models com dado de cliente (coluna `tenantId`). Todo acesso a eles numa requisição de usuário passa pelo
  * escopo do cliente. O meta-teste lê o `schema.prisma` e falha se um model com `tenantId` ficar fora daqui.
  */
-export const TENANT_SCOPED_MODELS = ['user', 'auditLog'] as const;
+export const TENANT_SCOPED_MODELS = [
+  'user',
+  'auditLog',
+  'cloudAccount',
+  'protectedResource',
+  'alertException',
+] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
 const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);

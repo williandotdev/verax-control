@@ -19,12 +19,4 @@ export const meSchema = z.strictObject({
 });
 export type Me = z.infer<typeof meSchema>;
 
-/** Resumo de cliente para seletores e cabeçalho. O cadastro completo entra na T3.1. */
-export const tenantSummarySchema = z.strictObject({
-  id: z.uuid(),
-  name: z.string().min(1).max(120),
-  status: z.enum(['active', 'inactive']),
-});
-export type TenantSummary = z.infer<typeof tenantSummarySchema>;
-
 export const switchTenantResponseSchema = z.strictObject({ activeTenantId: z.uuid() });
