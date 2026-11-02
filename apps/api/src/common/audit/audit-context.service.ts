@@ -6,8 +6,8 @@ import { type AuditDetails, requestContext } from '../context/request-context.js
  * novo. O `AuditInterceptor` grava tudo no fim da requisição, na mesma transação.
  *
  * ```ts
- * const before = await this.prisma.db.tenant.findUniqueOrThrow({ where: { id } });
- * const after = await this.prisma.db.tenant.update({ where: { id }, data });
+ * const before = await this.prisma.db().tenant.findUniqueOrThrow({ where: { id } });
+ * const after = await this.prisma.db().tenant.update({ where: { id }, data });
  * this.audit.describe({ action: 'tenant.update', resourceType: 'tenant', resourceId: id, before, after });
  * ```
  */
@@ -15,7 +15,7 @@ import { type AuditDetails, requestContext } from '../context/request-context.js
 export class AuditContext {
   describe(details: AuditDetails): void {
     const store = requestContext.getStore();
-    if (!store) {
+    if (!store?.audit) {
       throw new Error('AuditContext.describe chamado fora de uma requisição de escrita auditada');
     }
     Object.assign(store.audit, details);

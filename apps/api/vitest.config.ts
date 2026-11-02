@@ -13,6 +13,9 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'test/**/*.test.ts'],
     environment: 'node',
+    // Login faz hash de senha (scrypt) de propósito lento; com a suíte em paralelo, 5 s não bastam.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // Aplica as migrations no banco de teste (TEST_DATABASE_URL) antes de qualquer teste.
     globalSetup: ['test/support/global-setup.ts'],
   },
