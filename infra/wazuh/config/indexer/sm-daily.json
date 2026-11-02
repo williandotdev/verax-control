@@ -1,0 +1,21 @@
+{
+  "description": "Verax Control (T4.9): snapshot diário dos índices do Wazuh, mantido por 14 dias no repositório local.",
+  "creation": {
+    "schedule": { "cron": { "expression": "0 2 * * *", "timezone": "America/Sao_Paulo" } },
+    "time_limit": "1h"
+  },
+  "deletion": {
+    "schedule": { "cron": { "expression": "30 4 * * *", "timezone": "America/Sao_Paulo" } },
+    "condition": { "max_age": "14d", "min_count": 3 },
+    "time_limit": "1h"
+  },
+  "snapshot_config": {
+    "repository": "verax-snapshots",
+    "indices": "wazuh-*",
+    "date_format": "yyyy-MM-dd-HH-mm",
+    "timezone": "America/Sao_Paulo",
+    "include_global_state": "false",
+    "ignore_unavailable": "true",
+    "partial": "false"
+  }
+}

@@ -24,8 +24,9 @@ gha-creds-*.json
 *.tfstate.*
 *.tfplan
 crash.log
-*.auto.tfvars
-terraform.tfvars
+*.tfvars
+# Bucket, chave e ID da conta real do state: cada um copia o backend.hcl.example localmente.
+backend.hcl
 
 # Testes e2e
 playwright-report/
