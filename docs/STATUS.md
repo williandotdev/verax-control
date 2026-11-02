@@ -936,3 +936,27 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Só leitura por construção:** `ReadOnlyClient` recusa qualquer operação que não comece com `get_`, `list_`, `describe_` ou `batch_get_` (inclusive paginadores do boto3, que escapariam do controle). No máximo 4 chamadas por segundo, e nenhum conteúdo de log é lido.
   - O resumo aponta o que não pode ser alterado: Web ACL que já envia log, GuardDuty que já exporta e grupos já no limite de subscription filters.
 - **Testes:** 8, sem boto3 (clientes falsos): todas as chamadas de um diagnóstico completo são de leitura; escrita e paginador recusados sem chegar ao cliente da AWS; intervalo mínimo; paginação; falha de permissão vira registro; avisos e resumo. Os nomes de parâmetros de entrada foram conferidos contra os esqueletos do AWS CLI. No CI, no job do CloudFormation.
+
+## Diagnóstico replicável para qualquer cliente
+
+- **Motivo:** o diagnóstico precisa ser enviado e lido para qualquer cliente sem depender de quem o criou.
+- **Arquivos:** `infra/diagnostico/{diagnostico_aws.py,GUIA-CLIENTE.md,README.md,tests/test_diagnostico.py}`, `.github/workflows/diagnostico-release.yml`, `docs/runbooks/onboarding-cliente.md`, `docs/ARQUITETURA.md` (logs do Cloudflare)
+- **Como funciona:**
+  - **Relatório legível:** o script gera também `diagnostico-verax-<conta>.md`, com visão geral, fontes sugeridas, pontos de atenção (o que não pode ser alterado), limites de leitura e próximos passos.
+  - **Fontes sugeridas:** o JSON ganha `fontes_sugeridas`, que a configuração do nó vai usar. A classificação é `sim`, `avaliar` ou `não`:
+    - `sim`: CloudTrail, WAF, findings exportados do GuardDuty e Inspector;
+    - `avaliar`: VPC Flow Logs, banco, DNS, Security Hub e logs de aplicação;
+    - `não`: métricas de desempenho.
+  - Cada fonte traz o volume estimado por dia (armazenado dividido pela retenção).
+  - Leituras novas: o destino de exportação do GuardDuty e os logs de consulta DNS do Route 53.
+  - **Versão e distribuição:** a constante `VERSION` aparece no relatório e em `--versao`. A tag `diagnostico-vX.Y.Z` dispara o workflow, que roda os testes, confere que a tag bate com a versão e publica a release. A release leva o script, o guia do cliente (com a versão já nos comandos), o `SHA256SUMS` e o atestado de procedência. O cliente confere o checksum no próprio CloudShell.
+  - **Roteiro interno** de onboarding: enviar o guia, receber e guardar os arquivos fora do git, ler o relatório, reunião de definição (fontes, região, quem hospeda, escalonamento e baseline de rede) e as próximas etapas.
+- **Testes:** 17 (8 novos):
+  - classificação das fontes;
+  - cada grupo aparece uma vez;
+  - volume pela retenção;
+  - relatório em Markdown;
+  - célula que não quebra a tabela;
+  - avisos sem duplicata.
+
+  Também conferi a compatibilidade das f-strings com o Python 3.9 do CloudShell e passei o actionlint no workflow.

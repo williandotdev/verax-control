@@ -76,19 +76,38 @@ RESPONSES = {
         "list_detectors": {"DetectorIds": ["d1"]},
         "get_detector": {"Status": "ENABLED"},
         "list_publishing_destinations": {"Destinations": [{"DestinationId": "x", "DestinationType": "S3", "Status": "PUBLISHING"}]},
+        "describe_publishing_destination": {"DestinationProperties": {"DestinationArn": "arn:aws:s3:::achados/guardduty"}},
+    },
+    "route53": {
+        "list_query_logging_configs": {
+            "QueryLoggingConfigs": [
+                {"HostedZoneId": "Z1", "CloudWatchLogsLogGroupArn": "arn:aws:logs:us-east-1:111122223333:log-group:/aws/route53/zona:*"}
+            ]
+        }
     },
     "securityhub": {"describe_hub": {"HubArn": "hub"}},
     "inspector2": {"batch_get_account_status": AwsError("AccessDeniedException")},
     "accessanalyzer": {"list_analyzers": {"analyzers": [{"name": "conta", "type": "ACCOUNT"}]}},
     "wafv2": {
         "list_web_acls": {"WebACLs": [{"Name": "api", "ARN": ACL}]},
-        "get_logging_configuration": {"LoggingConfiguration": {"LogDestinationConfigs": ["arn:aws:logs:...:aws-waf-logs-api"]}},
+        "get_logging_configuration": {
+            "LoggingConfiguration": {"LogDestinationConfigs": ["arn:aws:logs:us-east-1:111122223333:log-group:aws-waf-logs-api"]}
+        },
     },
     "logs": {
         # Duas páginas: a paginação manual precisa juntar as duas.
         "describe_log_groups": [
             {"logGroups": [{"logGroupName": "trilha", "storedBytes": 2 * 1024**3}], "nextToken": "p2"},
-            {"logGroups": [{"logGroupName": "aplicacao", "retentionInDays": 30}]},
+            {
+                "logGroups": [
+                    {"logGroupName": "aplicacao", "retentionInDays": 30, "storedBytes": 3 * 1024**3},
+                    {"logGroupName": "aws-waf-logs-api", "retentionInDays": 7, "storedBytes": 7 * 1024**2},
+                    {"logGroupName": "RDSOSMetrics"},
+                    {"logGroupName": "/aws/rds/cluster/banco/audit"},
+                    {"logGroupName": "/aws/route53/zona"},
+                    {"logGroupName": "fluxo"},
+                ]
+            },
         ],
         "describe_subscription_filters": {"subscriptionFilters": [{}, {}]},
     },
@@ -160,7 +179,9 @@ class ReportTest(unittest.TestCase):
         self.region = self.report["regioes"]["us-east-1"]
 
     def test_paginacao_junta_as_paginas(self):
-        self.assertEqual([group["nome"] for group in self.region["log_groups"]], ["trilha", "aplicacao"])
+        names = [group["nome"] for group in self.region["log_groups"]]
+        self.assertEqual(names[:2], ["trilha", "aplicacao"])
+        self.assertEqual(len(names), 7)
 
     def test_falha_vira_registro_sem_interromper(self):
         self.assertEqual(self.region["inspector"], {"erro": "AccessDeniedException"})
@@ -206,7 +227,50 @@ class ReportTest(unittest.TestCase):
     def test_resumo(self):
         text = diag.summary(self.report)
         self.assertIn("Conta 111122223333", text)
-        self.assertIn("us-east-1: 2 log group(s), 2.0 GB", text)
+        self.assertIn("us-east-1: 7 log group(s), 5.0 GB", text)
+
+
+class SourcesTest(unittest.TestCase):
+    def setUp(self):
+        _diagnostico, self.report = run_report()
+        self.sources = {(item["fonte"], item["local"]): item for item in diag.suggest_sources(self.report)}
+
+    def test_fontes_de_seguranca_conhecidas_sao_recomendadas(self):
+        self.assertEqual(self.sources[("CloudTrail", "trilha")]["coletar"], "sim")
+        self.assertEqual(self.sources[("WAF", "aws-waf-logs-api")]["coletar"], "sim")
+        self.assertEqual(self.sources[("GuardDuty", "achados/guardduty")]["tipo"], "s3")
+
+    def test_alto_volume_e_aplicacao_ficam_para_decidir_com_o_cliente(self):
+        self.assertEqual(self.sources[("VPC Flow Logs", "fluxo")]["coletar"], "avaliar")
+        self.assertEqual(self.sources[("DNS (Route 53)", "/aws/route53/zona")]["coletar"], "avaliar")
+        self.assertEqual(self.sources[("Banco de dados (RDS)", "/aws/rds/cluster/banco/audit")]["coletar"], "avaliar")
+        self.assertEqual(self.sources[("Aplicação ou outro", "aplicacao")]["coletar"], "avaliar")
+        self.assertEqual(self.sources[("Security Hub", "findings do Security Hub")]["coletar"], "avaliar")
+
+    def test_metricas_nao_sao_recomendadas(self):
+        self.assertEqual(self.sources[("Métricas de desempenho", "RDSOSMetrics")]["coletar"], "não")
+
+    def test_cada_grupo_aparece_uma_vez(self):
+        groups = [item["local"] for item in diag.suggest_sources(self.report) if item["tipo"] == "cloudwatch_logs"]
+        self.assertEqual(len(groups), len(set(groups)))
+        self.assertEqual(len(groups), 7)
+
+    def test_volume_por_dia_pela_retencao(self):
+        self.assertEqual(self.sources[("Aplicação ou outro", "aplicacao")]["volume_dia_mb"], 102.4)
+        self.assertEqual(self.sources[("WAF", "aws-waf-logs-api")]["volume_dia_mb"], 1.0)
+        self.assertIsNone(self.sources[("CloudTrail", "trilha")]["volume_dia_mb"])
+
+    def test_relatorio_em_markdown(self):
+        text = diag.render_markdown(self.report)
+        self.assertIn("# Diagnóstico de fontes de log — conta 111122223333", text)
+        self.assertIn(f"v{diag.VERSION}", text)
+        self.assertIn("| sim | CloudTrail | cloudwatch_logs: trilha |", text)
+        self.assertIn("## Pontos de atenção", text)
+        self.assertIn("WAF api: já envia log", text)
+        self.assertIn("GetLogEvents throttle limit in transactions per second = 25.0", text)
+
+    def test_celula_nao_quebra_a_tabela(self):
+        self.assertEqual(diag.cell("a|b\nc"), "a\\|b c")
 
 
 def _diagnostico_calls():

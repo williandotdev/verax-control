@@ -27,6 +27,8 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+# Versão publicada na release `diagnostico-v<VERSION>` (o workflow confere que a tag e esta constante batem).
+VERSION = "1.0.0"
 READ_ONLY_PREFIXES = ("get_", "list_", "describe_", "batch_get_")
 MIN_INTERVAL_SECONDS = 0.25
 # Teto de segurança: 1.000 páginas (50 mil log groups). Se ainda houver página, a seção vira erro explícito.
@@ -198,6 +200,16 @@ class Diagnostico:
             for detector_id in client.list_detectors().get("DetectorIds", []):
                 detector = safely(lambda: client.get_detector(DetectorId=detector_id))
                 destinations = safely(lambda: client.list_publishing_destinations(DetectorId=detector_id))
+                arns = []
+                for item in destinations.get("Destinations", []):
+                    found = safely(
+                        lambda item=item: client.describe_publishing_destination(
+                            DetectorId=detector_id, DestinationId=item["DestinationId"]
+                        )
+                    )
+                    arn = found.get("DestinationProperties", {}).get("DestinationArn") if "erro" not in found else None
+                    if arn:
+                        arns.append(arn)
                 detectors.append(
                     {
                         "status": detector.get("Status") if isinstance(detector, dict) else None,
@@ -207,11 +219,22 @@ class Diagnostico:
                         ]
                         if "erro" not in destinations
                         else destinations,
-                        "destino_ids": [item.get("DestinationId") for item in destinations.get("Destinations", [])],
+                        "destinos_arn": arns,
                         "detector": detector_id,
                     }
                 )
             return detectors
+
+        return safely(read)
+
+    def route53_query_logs(self, home: str) -> Any:
+        """Logs de consulta DNS das zonas públicas (o Route 53 só entrega em grupos de `us-east-1`)."""
+
+        def read() -> List[Dict[str, Any]]:
+            configs = paginate(
+                self.client("route53", home).list_query_logging_configs, "QueryLoggingConfigs", "NextToken", "NextToken"
+            )
+            return [{"zona": item.get("HostedZoneId"), "log_group": item.get("CloudWatchLogsLogGroupArn")} for item in configs]
 
         return safely(read)
 
@@ -312,11 +335,13 @@ class Diagnostico:
         selected = regions or self.enabled_regions(home)
         trails = self.cloudtrail(selected)
         result: Dict[str, Any] = {
+            "versao": VERSION,
             "gerado_em": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "conta": self.identity(),
             "organizacao": self.organization(),
             "cloudtrail": trails,
             "waf_cloudfront": self.waf("us-east-1", "CLOUDFRONT"),
+            "route53_query_logs": self.route53_query_logs(home),
             "regioes": {},
         }
         for region in selected:
@@ -364,12 +389,221 @@ def warnings(report: Dict[str, Any]) -> List[str]:
         ]
         if full:
             found.append(f"{name}: {len(full)} log group(s) já com 2 subscription filters (o máximo da AWS).")
-    return found
+    # A mesma Web ACL pode aparecer por mais de um caminho; cada aviso sai uma vez.
+    return list(dict.fromkeys(found))
 
 
 def as_list(value: Any) -> List[Any]:
     """Seções que falharam viram `{"erro": ...}`; para os avisos, só listas interessam."""
     return list(value) if isinstance(value, list) else []
+
+
+# Grupos de métricas de desempenho: não são eventos de segurança.
+METRIC_PREFIXES = ("/aws/ecs/containerinsights", "/aws/containerinsights", "/aws/lambda-insights", "RDSOSMetrics")
+# Categoria pelo prefixo do nome do grupo (padrões da própria AWS).
+CATEGORIES = (
+    ("/aws/rds/", "Banco de dados (RDS)"),
+    ("/aws/apigateway/", "API Gateway"),
+    ("API-Gateway-Execution-Logs", "API Gateway"),
+    ("/aws/route53/", "DNS (Route 53)"),
+    ("/aws/lambda/", "Lambda"),
+    ("/aws/eks/", "Kubernetes (EKS)"),
+    ("/aws/amplify/", "Amplify"),
+    ("aws-waf-logs-", "WAF"),
+)
+
+
+def log_group_from_arn(arn: Optional[str]) -> Optional[str]:
+    marker = ":log-group:"
+    if not arn or marker not in arn:
+        return None
+    name = arn.split(marker, 1)[1]
+    return name[:-2] if name.endswith(":*") else name
+
+
+def region_from_arn(arn: Optional[str]) -> Optional[str]:
+    parts = (arn or "").split(":")
+    return parts[3] or None if len(parts) > 3 else None
+
+
+def daily_volume_mb(group: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Volume médio por dia: o que está armazenado dividido pela retenção. Sem retenção, não há como estimar."""
+    if not group or not group.get("retencao_dias") or group.get("bytes_armazenados") is None:
+        return None
+    return round(group["bytes_armazenados"] / group["retencao_dias"] / 1024**2, 1)
+
+
+def suggest_sources(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Fontes de log para a coleta. `sim`: recomendada; `avaliar`: decidir com o cliente; `não`: não recomendada."""
+    regions = report.get("regioes", {})
+    groups = {
+        region: {group["nome"]: group for group in as_list(data.get("log_groups")) if isinstance(group, dict)}
+        for region, data in regions.items()
+    }
+    sources: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add(fonte: str, tipo: str, regiao: Optional[str], local: Optional[str], coletar: str, motivo: str) -> None:
+        key = (tipo, regiao, local)
+        if not local or key in seen:
+            return
+        seen.add(key)
+        group = groups.get(regiao or "", {}).get(local) if tipo == "cloudwatch_logs" else None
+        sources.append(
+            {
+                "fonte": fonte,
+                "tipo": tipo,
+                "regiao": regiao,
+                "local": local,
+                "coletar": coletar,
+                "motivo": motivo,
+                "volume_dia_mb": daily_volume_mb(group),
+            }
+        )
+
+    for trail in as_list(report.get("cloudtrail")):
+        group = log_group_from_arn(trail.get("log_group"))
+        if group:
+            add("CloudTrail", "cloudwatch_logs", region_from_arn(trail["log_group"]), group, "sim", f"trilha {trail.get('nome')}")
+        elif trail.get("bucket"):
+            path = f"{trail['bucket']}/{trail['prefixo']}" if trail.get("prefixo") else trail["bucket"]
+            add("CloudTrail", "s3", trail.get("regiao_principal"), path, "sim", f"trilha {trail.get('nome')}")
+
+    acls = as_list(report.get("waf_cloudfront"))
+    for data in regions.values():
+        acls += as_list(data.get("waf_regional"))
+    for acl in acls:
+        for destination in as_list(acl.get("logs_vao_para")):
+            label = f"Web ACL {acl.get('nome')}"
+            if ":log-group:" in destination:
+                add("WAF", "cloudwatch_logs", region_from_arn(destination), log_group_from_arn(destination), "sim", label)
+            elif destination.startswith("arn:aws:s3:::"):
+                add("WAF", "s3", None, destination[len("arn:aws:s3:::"):], "sim", label)
+            else:
+                add("WAF", "firehose", region_from_arn(destination), destination, "avaliar", f"{label}: entregue por Firehose, ver o destino final")
+
+    for config in as_list(report.get("route53_query_logs")):
+        group = log_group_from_arn(config.get("log_group"))
+        add("DNS (Route 53)", "cloudwatch_logs", region_from_arn(config.get("log_group")), group, "avaliar", f"consultas da zona {config.get('zona')}")
+
+    for region, data in regions.items():
+        for flow in as_list(data.get("vpc_flow_logs")):
+            reason = f"rede {flow.get('recurso')}: alto volume, coletar só o relevante (ex.: tráfego de fora da VPC)"
+            if flow.get("destino_tipo") == "cloud-watch-logs":
+                add("VPC Flow Logs", "cloudwatch_logs", region, flow.get("destino"), "avaliar", reason)
+            elif flow.get("destino_tipo") == "s3":
+                add("VPC Flow Logs", "s3", region, (flow.get("destino") or "").replace("arn:aws:s3:::", ""), "avaliar", reason)
+        for detector in as_list(data.get("guardduty")):
+            for arn in as_list(detector.get("destinos_arn")):
+                add("GuardDuty", "s3", region, arn.replace("arn:aws:s3:::", ""), "sim", "findings exportados")
+        inspector = data.get("inspector")
+        if isinstance(inspector, dict) and inspector.get("status") == "ENABLED":
+            add("Inspector", "api", region, "API do Inspector", "sim", "vulnerabilidades encontradas pelo Inspector")
+        hub = data.get("security_hub")
+        if isinstance(hub, dict) and hub.get("ativo"):
+            add("Security Hub", "api", region, "findings do Security Hub", "avaliar", "ler de uma exportação para S3, se já existir")
+
+    for region, by_name in groups.items():
+        for name in sorted(by_name):
+            if ("cloudwatch_logs", region, name) in seen:
+                continue
+            if name.startswith(METRIC_PREFIXES):
+                add("Métricas de desempenho", "cloudwatch_logs", region, name, "não", "métrica, não evento de segurança")
+                continue
+            category = next((label for prefix, label in CATEGORIES if prefix in name), "Aplicação ou outro")
+            add(category, "cloudwatch_logs", region, name, "avaliar", "definir com o cliente")
+    order = {"sim": 0, "avaliar": 1, "não": 2}
+    return sorted(sources, key=lambda item: (order[item["coletar"]], item["fonte"], item["local"] or ""))
+
+
+def cell(value: Any) -> str:
+    text = "—" if value is None or value == "" else str(value)
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def status_text(value: Any) -> str:
+    if isinstance(value, dict) and "erro" in value:
+        return f"não verificado ({value['erro']})"
+    return ""
+
+
+def render_markdown(report: Dict[str, Any]) -> str:
+    """Relatório legível do diagnóstico, para a Verax e para o cliente."""
+    account = report.get("conta", {})
+    regions = report.get("regioes", {})
+    lines = [
+        f"# Diagnóstico de fontes de log — conta {account.get('conta')}",
+        "",
+        f"Gerado em {report.get('gerado_em')} pelo diagnóstico do Verax Control v{report.get('versao')}, somente "
+        f"leitura ({report.get('chamadas_feitas')} chamadas). Regiões analisadas: {', '.join(regions) or '—'}.",
+        "",
+        "## Visão geral",
+        "",
+        "| Item | Situação |",
+        "| --- | --- |",
+    ]
+    org = report.get("organizacao", {})
+    lines.append(
+        "| Organização | "
+        + (status_text(org) or ("sim, conta de gestão " + str(org.get("conta_de_gestao")) if org.get("em_organizacao") else "não"))
+        + " |"
+    )
+    trails = report.get("cloudtrail")
+    trail_text = status_text(trails) or "; ".join(
+        f"{trail.get('nome')} ({'gravando' if trail.get('gravando') else 'parada'})" for trail in as_list(trails)
+    )
+    lines.append(f"| CloudTrail | {cell(trail_text or 'nenhuma trilha')} |")
+    for region, data in regions.items():
+        detectors = data.get("guardduty")
+        guard = status_text(detectors) or (
+            ", ".join(f"{item.get('status')}" + (" e exporta" if item.get("exporta_para") else "") for item in as_list(detectors))
+            or "desligado"
+        )
+        hub = data.get("security_hub")
+        inspector = data.get("inspector")
+        groups = as_list(data.get("log_groups"))
+        stored = sum(group.get("bytes_armazenados") or 0 for group in groups) / 1024**3
+        lines += [
+            f"| GuardDuty ({region}) | {cell(guard)} |",
+            f"| Security Hub ({region}) | {cell(status_text(hub) or ('ativo' if hub.get('ativo') else 'desligado'))} |",
+            f"| Inspector ({region}) | {cell(status_text(inspector) or inspector.get('status') or 'desligado')} |",
+            f"| CloudWatch Logs ({region}) | {cell(status_text(data.get('log_groups')) or f'{len(groups)} grupo(s), {stored:.1f} GB armazenados')} |",
+        ]
+    lines += [
+        "",
+        "## Fontes sugeridas para a coleta",
+        "",
+        "`sim`: recomendada. `avaliar`: decidir com o cliente. `não`: não recomendada. O volume por dia é estimado pelo "
+        "armazenado dividido pela retenção (sem retenção definida, não há estimativa).",
+        "",
+        "| Coletar | Fonte | Onde | Região | Volume/dia (MB) | Observação |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for source in suggest_sources(report):
+        lines.append(
+            f"| {source['coletar']} | {cell(source['fonte'])} | {cell(source['tipo'] + ': ' + str(source['local']))} | "
+            f"{cell(source['regiao'])} | {cell(source['volume_dia_mb'])} | {cell(source['motivo'])} |"
+        )
+    notes = warnings(report)
+    lines += ["", "## Pontos de atenção (nada disto é alterado pela Verax)", ""]
+    lines += [f"- {note}" for note in notes] or ["- Nenhum."]
+    lines += ["", "## Limites de leitura do CloudWatch Logs", "", "Compartilhados com qualquer ferramenta que já leia os mesmos logs.", ""]
+    for region, data in regions.items():
+        quotas = data.get("limites_cloudwatch_logs")
+        if isinstance(quotas, dict) and "erro" not in quotas:
+            lines += [f"- {region}: {name} = {value}" for name, value in sorted(quotas.items())]
+        else:
+            lines.append(f"- {region}: {status_text(quotas) or 'sem dados'}")
+    lines += [
+        "",
+        "## Próximos passos",
+        "",
+        "1. Revisar com o cliente as fontes marcadas como `avaliar` e confirmar a lista final.",
+        "2. O cliente cria o conector, com papel somente leitura (`infra/cloudformation/README.md`).",
+        "3. A Verax configura o nó com as fontes aprovadas (`docs/ARQUITETURA.md`).",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def summary(report: Dict[str, Any]) -> str:
@@ -394,7 +628,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--regioes", help="Regiões separadas por vírgula (padrão: todas as habilitadas).")
     parser.add_argument("--regiao-principal", default="us-east-1", help="Região usada nas chamadas globais.")
     parser.add_argument("--sem-detalhes-de-logs", action="store_true", help="Não conta subscription filters por grupo.")
-    parser.add_argument("--saida", help="Arquivo JSON de saída.")
+    parser.add_argument("--saida", help="Nome base dos arquivos de saída (sem extensão).")
+    parser.add_argument("--versao", action="version", version=f"diagnóstico Verax Control {VERSION}")
     args = parser.parse_args(argv)
 
     import boto3  # importado aqui: os testes rodam sem boto3
@@ -403,11 +638,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     diagnostico = Diagnostico(lambda service, region: session.client(service, region_name=region or args.regiao_principal))
     regions = [item.strip() for item in args.regioes.split(",")] if args.regioes else None
     report = diagnostico.run(args.regiao_principal, regions, not args.sem_detalhes_de_logs)
-    output = args.saida or f"diagnostico-verax-{report['conta'].get('conta')}.json"
-    with open(output, "w", encoding="utf-8") as handle:
+    report["fontes_sugeridas"] = suggest_sources(report)
+    base = args.saida or f"diagnostico-verax-{report['conta'].get('conta')}"
+    with open(f"{base}.json", "w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2, default=str)
+    with open(f"{base}.md", "w", encoding="utf-8") as handle:
+        handle.write(render_markdown(report))
     print(summary(report))
-    print(f"\nRelatório completo em {output}. Compartilhe só por canal privado.")
+    print(f"\nRelatórios em {base}.md (leitura) e {base}.json (dados). Compartilhe só por canal privado.")
     return 0
 
 

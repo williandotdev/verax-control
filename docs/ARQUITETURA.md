@@ -59,6 +59,21 @@ Conta(s) monitorada(s) — pilha do conector: papel VeraxControlReadOnly
 - **Disponibilidade:** uma VM só, sem alta disponibilidade. Se ela parar, os logs continuam onde estão e o Wazuh
   retoma de onde parou. Tem backup diário do banco e snapshot do disco.
 
+## Logs do Cloudflare
+
+Para clientes que usam o Cloudflare (WAF, DNS, proxy), o nó também recebe os eventos dele no Wazuh, com decoders e
+regras próprios. A forma depende do que a conta do cliente oferece:
+
+1. **Logpush (preferida).** Segundo a documentação atual do Cloudflare, está disponível em todos os planos, e os
+   eventos de firewall podem ser configurados uma vez para a conta inteira. O destino é o bucket do próprio nó (S3),
+   nunca um recurso do cliente. O Wazuh lê esse bucket como os outros. Não precisa de porta de entrada.
+2. **API GraphQL de analytics (alternativa).** Um coletor no nó consulta os eventos de segurança
+   (`firewallEventsAdaptive`) em intervalos, com um token **somente leitura**, e grava num arquivo que o Wazuh lê. O
+   Cloudflare guarda pelo menos 31 dias desses eventos, então uma parada do nó não perde dados.
+
+O token do Cloudflare fica no nó (Secrets Manager da conta que hospeda), nunca no repositório. O diagnóstico e a
+configuração do Cloudflare entram numa próxima etapa.
+
 ## Custo estimado por nó
 
 Estimativa, a conferir na calculadora da AWS:
@@ -74,7 +89,8 @@ A leitura de logs pela API não gera transferência entre regiões quando o nó 
 
 ## Ordem de execução
 
-1. Diagnóstico somente leitura da conta monitorada (`infra/diagnostico/`). **Feito.**
+1. Diagnóstico somente leitura da conta monitorada (`infra/diagnostico/`), publicado por release e com roteiro de
+   onboarding (`docs/runbooks/onboarding-cliente.md`). **Feito.**
 2. Conector revisado:
    - leitura do CloudWatch Logs, Inspector e Access Analyzer;
    - negação explícita de escrita;
