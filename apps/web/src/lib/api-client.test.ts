@@ -78,6 +78,13 @@ describe('ApiClient', () => {
     expect(onUnauthorized).toHaveBeenCalledOnce();
   });
 
+  it('401 de rota de autenticação (senha errada) não é tratado como sessão expirada', async () => {
+    const onUnauthorized = vi.fn();
+    const { client } = setup([json(401, { message: 'Invalid' })], { onUnauthorized });
+    await expect(client.post('/v1/auth/sign-in/email', {})).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
   it('403 MFA_REQUIRED leva ao cadastro do MFA', async () => {
     const onMfaRequired = vi.fn();
     const { client } = setup([json(403, { code: 'MFA_REQUIRED', message: 'x' })], { onMfaRequired });

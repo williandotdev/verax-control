@@ -2,9 +2,13 @@ import { createBrowserRouter, type RouteObject } from 'react-router';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { ForbiddenPage } from '@/pages/forbidden-page';
+import { ForgotPasswordPage } from '@/pages/forgot-password-page';
 import { LoginPage } from '@/pages/login-page';
+import { MfaEnrollPage } from '@/pages/mfa-enroll-page';
+import { MfaVerifyPage } from '@/pages/mfa-verify-page';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
+import { SetPasswordPage } from '@/pages/set-password-page';
 import { RequirePermission, RequireSession } from './guards';
 
 /** Catálogo do design system: só no build de desenvolvimento (o Vite remove este ramo do build final). */
@@ -33,7 +37,11 @@ const appPages: RouteObject[] = NAVIGATION.flatMap((group) => group.items).map((
 export const routes: RouteObject[] = [
   ...devRoutes,
   { path: '/login', element: <LoginPage /> },
-  { path: '/mfa/cadastro', element: <PlaceholderPage title="Cadastro da verificação em duas etapas" /> },
+  { path: '/login/codigo', element: <MfaVerifyPage /> },
+  { path: '/mfa/cadastro', element: <MfaEnrollPage /> },
+  { path: '/esqueci-senha', element: <ForgotPasswordPage /> },
+  { path: '/redefinir-senha', element: <SetPasswordPage mode="reset" /> },
+  { path: '/convite', element: <SetPasswordPage mode="invite" /> },
   { path: '/sem-permissao', element: <ForbiddenPage /> },
   {
     element: <RequireSession />,

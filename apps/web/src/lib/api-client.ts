@@ -102,8 +102,10 @@ export class ApiClient {
         this.resetCsrf();
         return this.request(path, options, true);
       }
-      if (error.status === 401) this.hooks.onUnauthorized?.();
-      if (error.code === 'MFA_REQUIRED') this.hooks.onMfaRequired?.();
+      // Nas rotas de autenticação, 401 é resposta do próprio fluxo (senha ou código errados), não sessão expirada.
+      const authRoute = path.startsWith('/v1/auth/');
+      if (error.status === 401 && !authRoute) this.hooks.onUnauthorized?.();
+      if (error.code === 'MFA_REQUIRED' && !authRoute) this.hooks.onMfaRequired?.();
       throw error;
     }
 

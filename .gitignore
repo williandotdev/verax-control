@@ -29,6 +29,7 @@ terraform.tfvars
 
 # Testes e2e
 playwright-report/
+playwright-report-fullstack/
 test-results/
 blob-report/
 

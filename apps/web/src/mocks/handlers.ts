@@ -1,11 +1,15 @@
 import { type Me, type Role, ROLES } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
+import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe } from './fixtures';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
   me: Me | null;
+  /** Login com MFA: devolve só o desafio do código (padrão). */
+  mfa?: boolean;
+  pendingCode?: boolean;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -21,6 +25,7 @@ function roleFromStorage(): Role {
  */
 export function createHandlers(state: MockState = { me: demoMe(roleFromStorage()) }) {
   return [
+    ...createAuthHandlers(state),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
