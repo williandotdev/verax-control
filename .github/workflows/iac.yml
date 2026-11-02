@@ -1,6 +1,6 @@
 name: Infraestrutura como código
 
-# Valida o Terraform sem tocar na AWS: nenhum job tem credencial, `init` roda com `-backend=false` e nada de
+# Valida o Terraform e o CloudFormation sem tocar na AWS: nenhum job tem credencial, `init` roda com `-backend=false` e nada de
 # plan/apply acontece aqui (o deploy é o deploy.yml, desligado até a conta ser configurada).
 # Sem filtro de caminho de propósito: estes checks são obrigatórios no ruleset e um filtro deixaria PRs que não
 # mexem em infra esperando para sempre. O workflow inteiro leva menos de 2 minutos.
@@ -107,6 +107,24 @@ jobs:
           sudo sysctl -w vm.max_map_count=262144
           bash scripts/ci-test.sh
 
+  cloudformation:
+    name: CloudFormation (cfn-lint e testes do conector)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar cfn-lint (hashes fixados)
+        # O fechamento inteiro está fixado no arquivo; --no-deps impede que o pip traga qualquer outra coisa.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cfn"
+          "$RUNNER_TEMP/cfn/bin/pip" install --disable-pip-version-check --require-hashes --no-deps             -r infra/cloudformation/requirements-lint.txt
+      - name: cfn-lint
+        run: '"$RUNNER_TEMP/cfn/bin/cfn-lint" infra/cloudformation/*.yaml'
+      - name: Testes de segurança do template
+        run: '"$RUNNER_TEMP/cfn/bin/python" -m unittest discover -s infra/cloudformation/tests -v'
+
   checkov:
     name: Checkov (políticas de segurança da infra)
     runs-on: ubuntu-24.04
@@ -119,5 +137,5 @@ jobs:
         # Cada exceção fica no próprio código, com o motivo (`#checkov:skip=ID:motivo`).
         run: >-
           docker run --rm -v "$PWD:/src" -w /src "$CHECKOV_IMAGE"
-          --directory infra --framework terraform
+          --directory infra --framework terraform cloudformation
           --skip-download --compact --quiet

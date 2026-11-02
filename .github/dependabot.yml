@@ -76,3 +76,19 @@ updates:
         patterns: ['*']
     commit-message:
       prefix: deps
+
+  # cfn-lint do CI. O arquivo tem o hash de cada pacote; o Dependabot atualiza versão e hashes juntos.
+  - package-ecosystem: pip
+    directory: /infra/cloudformation
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Sao_Paulo
+    cooldown:
+      default-days: 7
+    groups:
+      cfn-lint:
+        patterns: ['*']
+    commit-message:
+      prefix: deps

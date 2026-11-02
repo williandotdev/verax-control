@@ -1,0 +1,700 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Verax Control - conector da conta do cliente (T4.3). Cria o papel somente leitura VeraxControlReadOnly, que só a
+  Verax pode assumir (com ExternalId), e os destinos de log que o painel lê: CloudTrail multi-região, exportação de
+  findings do GuardDuty e logs do AWS WAF, todos em S3 privado, versionado e cifrado com uma chave KMS própria.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Acesso da Verax }
+        Parameters: [VeraxAccountId, VeraxRolePrefix, ExternalId]
+      - Label: { default: CloudTrail }
+        Parameters: [CreateCloudTrail, ExistingCloudTrailBucket, ExistingCloudTrailKmsKeyArn]
+      - Label: { default: GuardDuty }
+        Parameters: [EnableGuardDutyExport, GuardDutyDetectorId]
+      - Label: { default: AWS WAF }
+        Parameters: [EnableWafLogs, RegionalWebAclArn]
+      - Label: { default: Retenção }
+        Parameters: [LogRetentionDays]
+    ParameterLabels:
+      VeraxAccountId: { default: ID da conta AWS da Verax }
+      VeraxRolePrefix: { default: Prefixo dos papéis da Verax autorizados }
+      ExternalId: { default: ExternalId informado pela Verax }
+      CreateCloudTrail: { default: Criar trilha do CloudTrail }
+      ExistingCloudTrailBucket: { default: Bucket de uma trilha existente (se não criar) }
+      ExistingCloudTrailKmsKeyArn: { default: Chave KMS da trilha existente (se houver) }
+      EnableGuardDutyExport: { default: Exportar findings do GuardDuty }
+      GuardDutyDetectorId: { default: ID do detector do GuardDuty já ativo }
+      EnableWafLogs: { default: Criar bucket de logs do WAF }
+      RegionalWebAclArn: { default: Web ACL regional para ligar o log }
+      LogRetentionDays: { default: Dias de retenção dos logs }
+
+Parameters:
+  VeraxAccountId:
+    Type: String
+    Description: Conta AWS da Verax (12 dígitos), informada no painel.
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: 12 dígitos.
+  VeraxRolePrefix:
+    Type: String
+    Description: Só papéis da conta Verax com este prefixo podem assumir o papel de leitura.
+    Default: verax-control-production-
+    AllowedPattern: '^[A-Za-z0-9+=,.@_-]{1,48}$'
+  ExternalId:
+    Type: String
+    Description: Segredo compartilhado gerado pelo painel da Verax para esta conta. Não é exibido depois.
+    NoEcho: true
+    MinLength: 32
+    MaxLength: 128
+    AllowedPattern: '^[A-Za-z0-9+=,.@:/_-]+$'
+  CreateCloudTrail:
+    Type: String
+    Description: >-
+      true cria uma trilha multi-região com validação de integridade. Use false se a conta já tiver uma trilha
+      multi-região gravando em S3 desta conta, e informe o bucket dela.
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+  ExistingCloudTrailBucket:
+    Type: String
+    Description: Só com CreateCloudTrail=false. Bucket (nesta conta) onde a trilha existente grava.
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+  ExistingCloudTrailKmsKeyArn:
+    Type: String
+    Description: Só com CreateCloudTrail=false. ARN da chave KMS que cifra a trilha existente, se ela usar SSE-KMS.
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36}$'
+  EnableGuardDutyExport:
+    Type: String
+    Description: true exporta os findings do GuardDuty desta região para S3.
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+  GuardDutyDetectorId:
+    Type: String
+    Description: >-
+      ID do detector se o GuardDuty já estiver ativo nesta região. Vazio cria o detector, o que ativa o GuardDuty
+      (serviço cobrado pela AWS).
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9]{32}$'
+  EnableWafLogs:
+    Type: String
+    Description: true cria o bucket aws-waf-logs-* que recebe os logs do AWS WAF.
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+  RegionalWebAclArn:
+    Type: String
+    Description: >-
+      Opcional. Web ACL regional (desta região) que passa a gravar no bucket. Web ACLs do CloudFront e outras
+      regiões são ligadas pelo comando do README.
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-z-]*:wafv2:[a-z0-9-]+:[0-9]{12}:regional/webacl/.+$'
+  LogRetentionDays:
+    Type: Number
+    Description: Por quantos dias os logs ficam nos buckets desta conta.
+    Default: 365
+    MinValue: 90
+    MaxValue: 3650
+
+Conditions:
+  CreateTrail: !Equals [!Ref CreateCloudTrail, 'true']
+  ReadExistingTrail: !And
+    - !Not [!Condition CreateTrail]
+    - !Not [!Equals [!Ref ExistingCloudTrailBucket, '']]
+  DecryptExistingTrail: !And
+    - !Condition ReadExistingTrail
+    - !Not [!Equals [!Ref ExistingCloudTrailKmsKeyArn, '']]
+  ExportGuardDuty: !Equals [!Ref EnableGuardDutyExport, 'true']
+  CreateDetector: !And
+    - !Condition ExportGuardDuty
+    - !Equals [!Ref GuardDutyDetectorId, '']
+  CreateWafBucket: !Equals [!Ref EnableWafLogs, 'true']
+  LogRegionalWebAcl: !And
+    - !Condition CreateWafBucket
+    - !Not [!Equals [!Ref RegionalWebAclArn, '']]
+  CreateAnyLogBucket: !Or
+    - !Condition CreateTrail
+    - !Condition ExportGuardDuty
+    - !Condition CreateWafBucket
+
+Resources:
+  # --- Papel de leitura ---
+
+  VeraxReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: VeraxControlReadOnly
+      Description: Leitura de configuração e de logs de segurança pelo Verax Control.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SoPapeisDaVeraxComExternalId
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${VeraxAccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+              ArnLike:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${VeraxAccountId}:role/${VeraxRolePrefix}*'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/SecurityAudit'
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/job-function/ViewOnlyAccess'
+      Policies:
+        # Complemento de leitura do Prowler 5.47.0 (permissions/prowler-additions-policy.json), sem as ações que vão
+        # além de ler configuração: securityhub:BatchImportFindings (escrita), ecr:BatchGetImage e
+        # ecr:GetDownloadUrlForLayer (baixam imagens) e logs:FilterLogEvents (lê o conteúdo dos logs de aplicação).
+        - PolicyName: ProwlerLeituraComplementar
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LeituraComplementar
+                Effect: Allow
+                Resource: '*'
+                Action:
+                  - account:Get*
+                  - amplify:ListApps
+                  - amplify:ListBranches
+                  - appstream:Describe*
+                  - appstream:List*
+                  - backup:Get*
+                  - backup:List*
+                  - bedrock:Get*
+                  - bedrock:List*
+                  - cloudtrail:GetInsightSelectors
+                  - codeartifact:List*
+                  - codebuild:BatchGet*
+                  - codebuild:ListReportGroups
+                  - cognito-idp:GetUserPoolMfaConfig
+                  - datapipeline:DescribePipelines
+                  - datapipeline:GetPipelineDefinition
+                  - datapipeline:ListPipelines
+                  - dlm:Get*
+                  - drs:Describe*
+                  - ds:Describe*
+                  - ds:Get*
+                  - ds:List*
+                  - dynamodb:GetResourcePolicy
+                  - ec2:GetEbsEncryptionByDefault
+                  - ec2:GetInstanceMetadataDefaults
+                  - ec2:GetSnapshotBlockPublicAccessState
+                  - ecr:Describe*
+                  - ecr:GetRegistryScanningConfiguration
+                  - elasticfilesystem:DescribeBackupPolicy
+                  - glue:GetConnections
+                  - glue:GetMLTransforms
+                  - glue:GetSecurityConfiguration*
+                  - glue:SearchTables
+                  - inspector2:BatchGetFindingDetails
+                  - lambda:GetFunction*
+                  - lambda:GetLayerVersion
+                  - lightsail:GetRelationalDatabases
+                  - macie2:GetAutomatedDiscoveryConfiguration
+                  - macie2:GetMacieSession
+                  - rolesanywhere:ListProfiles
+                  - rolesanywhere:ListTagsForResource
+                  - rolesanywhere:ListTrustAnchors
+                  - s3:GetAccountPublicAccessBlock
+                  - s3:GetObjectAcl
+                  - s3:ListBucket
+                  - securityhub:GetFindings
+                  - servicecatalog:Describe*
+                  - servicecatalog:List*
+                  - shield:DescribeProtection
+                  - shield:GetSubscriptionState
+                  - ssm-incidents:List*
+                  - ssm:GetDocument
+                  - states:ListTagsForResource
+                  - support:Describe*
+                  - tag:GetTagKeys
+                  - wellarchitected:List*
+              - Sid: LeituraApiGateway
+                Effect: Allow
+                Action: apigateway:GET
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:apigateway:*::/restapis/*'
+                  - !Sub 'arn:${AWS::Partition}:apigateway:*::/apis/*'
+                  - !Sub 'arn:${AWS::Partition}:apigateway:*::/domainnames'
+                  - !Sub 'arn:${AWS::Partition}:apigateway:*::/domainnames/*'
+        - PolicyName: LerLogsDeSeguranca
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListarBuckets
+                Effect: Allow
+                Action: [s3:ListBucket, s3:GetBucketLocation]
+                Resource:
+                  - !If [CreateTrail, !GetAtt CloudTrailBucket.Arn, !Ref AWS::NoValue]
+                  - !If [
+                      ReadExistingTrail,
+                      !Sub 'arn:${AWS::Partition}:s3:::${ExistingCloudTrailBucket}',
+                      !Ref AWS::NoValue,
+                    ]
+                  - !If [ExportGuardDuty, !GetAtt GuardDutyBucket.Arn, !Ref AWS::NoValue]
+                  - !If [CreateWafBucket, !GetAtt WafLogsBucket.Arn, !Ref AWS::NoValue]
+              - Sid: LerObjetos
+                Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !If [CreateTrail, !Sub '${CloudTrailBucket.Arn}/*', !Ref AWS::NoValue]
+                  - !If [
+                      ReadExistingTrail,
+                      !Sub 'arn:${AWS::Partition}:s3:::${ExistingCloudTrailBucket}/*',
+                      !Ref AWS::NoValue,
+                    ]
+                  - !If [ExportGuardDuty, !Sub '${GuardDutyBucket.Arn}/*', !Ref AWS::NoValue]
+                  - !If [CreateWafBucket, !Sub '${WafLogsBucket.Arn}/*', !Ref AWS::NoValue]
+              - Sid: DecifrarLogs
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource:
+                  - !GetAtt LogsKey.Arn
+                  - !If [DecryptExistingTrail, !Ref ExistingCloudTrailKmsKeyArn, !Ref AWS::NoValue]
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 's3.${AWS::Region}.amazonaws.com'
+
+  # --- Chave KMS dos logs ---
+
+  LogsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Verax Control - cifra os logs de CloudTrail, GuardDuty e WAF lidos pelo painel
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AdministracaoPelaConta
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: CloudTrailCifra
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              StringLike:
+                kms:EncryptionContext:aws:cloudtrail:arn: !Sub 'arn:${AWS::Partition}:cloudtrail:*:${AWS::AccountId}:trail/*'
+          - Sid: CloudTrailDescreveChave
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: GuardDutyCifra
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: kms:GenerateDataKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*'
+          - Sid: WafLogsCifra
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  LogsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/verax-control-logs
+      TargetKeyId: !Ref LogsKey
+
+  # --- Log de acesso dos buckets de log (CIS: acesso ao bucket do CloudTrail registrado) ---
+
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateAnyLogBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: É o próprio destino dos logs de acesso; registrar o acesso a ele criaria um ciclo.
+    Properties:
+      BucketName: !Sub 'verax-control-access-logs-${AWS::AccountId}-${AWS::Region}'
+      # O log de acesso do S3 só é entregue em bucket com SSE-S3 (não aceita SSE-KMS).
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateAnyLogBucket
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt AccessLogsBucket.Arn, !Sub '${AccessLogsBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: LogDeAcessoDosBucketsDoConector
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn:
+                  - !Sub 'arn:${AWS::Partition}:s3:::verax-control-*-${AWS::AccountId}-${AWS::Region}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::aws-waf-logs-verax-control-${AWS::AccountId}-${AWS::Region}'
+
+  # --- CloudTrail ---
+
+  CloudTrailBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateTrail
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'verax-control-cloudtrail-${AWS::AccountId}-${AWS::Region}'
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: cloudtrail/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LogsKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateTrail
+    Properties:
+      Bucket: !Ref CloudTrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt CloudTrailBucket.Arn, !Sub '${CloudTrailBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: CloudTrailConfereAcl
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt CloudTrailBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/verax-control'
+          - Sid: CloudTrailGrava
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${CloudTrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/verax-control'
+
+  # Falso positivo do Trivy (AWS-0015): o adaptador dele lê `KmsKeyId`, mas o esquema do CloudFormation exige
+  # `KMSKeyId`, que está definido abaixo com a chave do conector (conferido em tests/test_connector.py).
+  # trivy:ignore:AWS-0015
+  Trail:
+    Type: AWS::CloudTrail::Trail
+    Condition: CreateTrail
+    DependsOn: CloudTrailBucketPolicy
+    Properties:
+      TrailName: verax-control
+      S3BucketName: !Ref CloudTrailBucket
+      KMSKeyId: !GetAtt LogsKey.Arn
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+
+  # --- GuardDuty ---
+
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Condition: CreateDetector
+    Properties:
+      Enable: true
+      FindingPublishingFrequency: FIFTEEN_MINUTES
+
+  GuardDutyBucket:
+    Type: AWS::S3::Bucket
+    Condition: ExportGuardDuty
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'verax-control-guardduty-${AWS::AccountId}-${AWS::Region}'
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: guardduty/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LogsKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  GuardDutyBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ExportGuardDuty
+    Properties:
+      Bucket: !Ref GuardDutyBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt GuardDutyBucket.Arn, !Sub '${GuardDutyBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: GuardDutyLocalizaBucket
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:GetBucketLocation
+            Resource: !GetAtt GuardDutyBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*'
+          - Sid: GuardDutyGrava
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*'
+          - Sid: GuardDutySoComAChaveDoConector
+            Effect: Deny
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt LogsKey.Arn
+
+  GuardDutyExport:
+    Type: AWS::GuardDuty::PublishingDestination
+    Condition: ExportGuardDuty
+    DependsOn: GuardDutyBucketPolicy
+    Metadata:
+      cfn-lint:
+        config:
+          # Falso positivo: o cfn-lint resolve o Ref pelo padrão vazio, mas esse ramo do !If só é usado quando o ID
+          # foi informado (sem ID, CreateDetector cria o detector).
+          ignore_checks: [W1030]
+    Properties:
+      DetectorId: !If [CreateDetector, !Ref GuardDutyDetector, !Ref GuardDutyDetectorId]
+      DestinationType: S3
+      DestinationProperties:
+        DestinationArn: !GetAtt GuardDutyBucket.Arn
+        KmsKeyArn: !GetAtt LogsKey.Arn
+
+  # --- AWS WAF ---
+
+  WafLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateWafBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      # O WAF só grava em buckets com o prefixo aws-waf-logs-.
+      BucketName: !Sub 'aws-waf-logs-verax-control-${AWS::AccountId}-${AWS::Region}'
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: waf/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LogsKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  WafLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreateWafBucket
+    Properties:
+      Bucket: !Ref WafLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt WafLogsBucket.Arn, !Sub '${WafLogsBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          # Qualquer região desta conta, para servir também às web ACLs do CloudFront (us-east-1).
+          - Sid: EntregaDeLogsGrava
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${WafLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:*'
+          - Sid: EntregaDeLogsConfereAcl
+            Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: [s3:GetBucketAcl, s3:ListBucket]
+            Resource: !GetAtt WafLogsBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:logs:*:${AWS::AccountId}:*'
+
+  RegionalWebAclLogging:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Condition: LogRegionalWebAcl
+    DependsOn: WafLogsBucketPolicy
+    Properties:
+      ResourceArn: !Ref RegionalWebAclArn
+      LogDestinationConfigs:
+        - !GetAtt WafLogsBucket.Arn
+
+Outputs:
+  RoleArn:
+    Description: Papel que o painel da Verax assume (informe no cadastro da conta).
+    Value: !GetAtt VeraxReadOnlyRole.Arn
+  CloudTrailBucket:
+    Description: Bucket do CloudTrail lido pelo painel.
+    Value: !If [CreateTrail, !Ref CloudTrailBucket, !Ref ExistingCloudTrailBucket]
+  GuardDutyBucket:
+    Condition: ExportGuardDuty
+    Description: Bucket dos findings do GuardDuty.
+    Value: !Ref GuardDutyBucket
+  WafLogsBucket:
+    Condition: CreateWafBucket
+    Description: Bucket dos logs do AWS WAF.
+    Value: !Ref WafLogsBucket
+  LogsKeyArn:
+    Description: Chave KMS que cifra os logs.
+    Value: !GetAtt LogsKey.Arn
