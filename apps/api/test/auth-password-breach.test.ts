@@ -74,6 +74,8 @@ describe('senha vazada (Have I Been Pwned, k-anonimato)', () => {
 
     const response = await reset(token, LEAKED).expect(400);
     expect(JSON.stringify(response.body)).toContain('vazamentos conhecidos');
+    // O painel decide a mensagem por este código estável, não pelo texto.
+    expect(response.body).toMatchObject({ code: 'PASSWORD_COMPROMISED' });
     expect(calls).toEqual([`https://api.pwnedpasswords.com/range/${sha1(LEAKED).slice(0, 5)}`]);
     expect(calls.join(' ')).not.toContain(sha1(LEAKED).slice(5));
 
