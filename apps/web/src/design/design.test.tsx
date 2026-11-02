@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -44,8 +44,9 @@ describe('tema', () => {
 describe('catálogo', () => {
   it('mostra as cores de severidade com rótulo, os tokens de base, a tipografia e o espaçamento', () => {
     render(<CatalogPage />);
+    const colors = screen.getByRole('region', { name: 'Cores de severidade' });
     for (const severity of SEVERITIES) {
-      expect(screen.getByText(SEVERITY_STYLES[severity].label)).toBeInTheDocument();
+      expect(within(colors).getByText(SEVERITY_STYLES[severity].label)).toBeInTheDocument();
     }
     expect(screen.getByRole('heading', { name: 'Cores de base' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Tipografia' })).toBeInTheDocument();

@@ -291,3 +291,23 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Testes:** 27 no front. Ícone e rótulo distintos por severidade, ordenação, tema seguindo o sistema e escolha manual persistida, conteúdo do catálogo.
 - **Definição de pronto:** critérios de aceite ✔ (cores semânticas, modos claro e escuro, tipografia e espaçamento padronizados, catálogo) · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔
 - **Teste manual:** build de produção sem o catálogo (sem a rota e sem o texto no JavaScript final); inspeção visual dos dois modos fica com o Playwright na T6.3.
+
+## T6.3 Componentes de segurança
+
+- **Arquivos:** `apps/web/src/components/security/{semaphore,severity-badge,score-meter,decision-card,timeline}.tsx`, `apps/web/src/components/{data-table,states}.tsx`, `apps/web/src/design/score.ts`, `apps/web/src/lib/format.ts`, `apps/web/src/pages/catalog/{components-showcase,catalog-section}.tsx`, testes `apps/web/src/components/components.test.tsx` e `apps/web/e2e/catalog.spec.ts`, `apps/web/playwright.config.ts`, `apps/web/e2e/tsconfig.json`
+- **Dependências:** @playwright/test 1.64.1 e @axe-core/playwright 4.14.0 (dev, aprovadas)
+- **Componentes:**
+  - **Semáforo:** a posição da luz acesa (em cima, no meio, embaixo), o ícone e o rótulo (Crítico, Atenção, Normal) dizem o estado; nome acessível com o motivo.
+  - **Selo de severidade:** ícone de forma própria + rótulo, tinta neutra.
+  - **Medidor de nota 0–100:** pelo guia de visualização, "um valor contra um limite" é um **medidor em barra**, não um gauge circular (desvio do nome "ScoreGauge" do plano). O preenchimento carrega a severidade (atenção abaixo de 70, crítico abaixo de 40, limites configuráveis) e o trilho é um tom mais claro da mesma cor; número grande com rótulo e ícone; `role="meter"` com o estado por extenso.
+  - **Card de decisão:** severidade, título, descrição, contexto, ação principal e secundária; desabilitado enquanto a ação roda.
+  - **Tabela:** paginação e filtros feitos na API (a tabela só mostra a página recebida e avisa as mudanças), faixa "11–20 de 35", navegação desabilitada nas pontas, legenda acessível, números tabulares, estados vazio/carregando/erro embutidos.
+  - **Linha do tempo:** data/hora em pt-BR, título, descrição, origem, e a severidade também em texto para leitor de tela.
+  - **Estados:** vazio (com motivo e ação), carregando (esqueleto anunciado), erro (mensagem sem detalhe técnico, código para o suporte e "tentar de novo").
+  - Todos no catálogo, com dados fictícios.
+- **Testes:** 46 no front e 2 de navegador. O **axe** (WCAG 2.2 AA) roda o catálogo inteiro nos dois temas com zero violações, e uma captura de cada tema foi inspecionada a olho (sem sobreposição de rótulos, luz acesa do semáforo destacada nos dois modos, trilho do medidor visível).
+- **Achados corrigidos durante os testes:**
+  - O `id` das seções do catálogo tinha espaços, e o `aria-labelledby` quebrava (seção sem nome acessível); agora usa `useId()`.
+  - O token de texto discreto (#898781) dava 3,49:1 no tema claro (o axe acusou 8 casos); passou para #6e6c66 (≥ 4,98:1 em todas as superfícies claras) e, no escuro, para #9a9890 (≥ 5,52:1).
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
+- **Pendente:** o job de testes de navegador no CI entra junto com os fluxos de ponta a ponta da T6.5.

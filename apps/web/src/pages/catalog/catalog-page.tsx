@@ -1,9 +1,10 @@
-import type { ReactNode } from 'react';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { SEVERITIES, SEVERITY_STYLES } from '@/design/severity';
 import { cn } from '@/lib/cn';
+import { CatalogSection } from './catalog-section';
+import { ComponentsShowcase } from './components-showcase';
 
 /**
  * Catálogo interno do design system (T6.2/T6.3). Só existe no build de desenvolvimento: a rota nem é
@@ -41,29 +42,7 @@ const TYPE_SCALE = [
 
 const SPACING = [1, 2, 3, 4, 6, 8, 12] as const;
 
-export function CatalogSection({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="space-y-3" aria-labelledby={`catalog-${title}`}>
-      <div>
-        <h2 id={`catalog-${title}`} className="text-xl font-semibold">
-          {title}
-        </h2>
-        {description && <p className="text-sm text-muted-foreground">{description}</p>}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-export function CatalogPage({ extra }: { extra?: ReactNode }) {
+export function CatalogPage() {
   return (
     <main className="mx-auto max-w-6xl space-y-10 p-8">
       <header className="flex items-center justify-between gap-4">
@@ -150,7 +129,7 @@ export function CatalogPage({ extra }: { extra?: ReactNode }) {
         </Card>
       </CatalogSection>
 
-      {extra}
+      <ComponentsShowcase />
     </main>
   );
 }

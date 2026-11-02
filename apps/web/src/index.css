@@ -19,7 +19,8 @@
   --surface-raised: #ffffff;
   --foreground: #0b0b0b;
   --muted-foreground: #52514e;
-  --subtle-foreground: #898781;
+  /* Texto discreto (metadados, legendas): >= 4,5:1 sobre todas as superfícies do tema. */
+  --subtle-foreground: #6e6c66;
   --border: rgb(11 11 11 / 0.1);
   --border-strong: #c3c2b7;
   --gridline: #e1e0d9;
@@ -41,7 +42,7 @@
   --surface-raised: #222220;
   --foreground: #f0efec;
   --muted-foreground: #c3c2b7;
-  --subtle-foreground: #898781;
+  --subtle-foreground: #9a9890;
   --border: rgb(255 255 255 / 0.1);
   --border-strong: #383835;
   --gridline: #2c2c2a;

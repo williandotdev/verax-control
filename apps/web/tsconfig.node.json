@@ -4,7 +4,8 @@
     "types": ["node"],
     "noEmit": true,
     "module": "ESNext",
-    "moduleResolution": "Bundler"
+    "moduleResolution": "Bundler",
+    "lib": ["ES2024", "DOM"]
   },
-  "include": ["vite.config.ts", "src/build-guards.ts"]
+  "include": ["vite.config.ts", "src/build-guards.ts", "playwright.config.ts", "e2e/**/*.ts"]
 }
