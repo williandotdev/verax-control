@@ -434,6 +434,236 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - A relação de confiança passa a exigir `aws:SourceAccount` igual à própria conta e `aws:SourceArn` de um flow log desta conta e região. É a proteção contra "confused deputy" que a mesma página recomenda.
 - **Testes:** `fmt -check` e `terraform validate` válidos em staging e produção · checkov no módulo: 51 aprovados, 0 falhas (a ação sem recurso é reconhecida como não restringível) · tflint no CI.
 
+## T5.1 Módulo do indexer
+
+- **Arquivos:** `apps/api/src/indexer/{indexer.config,indexer-secrets,alert-queries,indexer.client}.ts`, `apps/api/test/indexer/{alert-queries,indexer-config,indexer-client}.test.ts`, `apps/api/package.json`, `pnpm-lock.yaml`
+- **Dependências:** `@opensearch-project/opensearch` 3.9.0, `@aws-sdk/client-secrets-manager` 3.1161.0 e `@aws-sdk/client-ssm` 3.1161.0, todas da lista aprovada, nas versões mais recentes, fora da quarentena e com a política de confiança do workspace respeitada.
+- **Como funciona:**
+  - **Credencial e CA:** em produção, o usuário só leitura vem do Secrets Manager (segredo `wazuh-api-read`, T4.8), com cache de 5 minutos, e a CA do Wazuh vem do SSM Parameter Store, conferida como PEM. A configuração **recusa credencial no ambiente em produção** e exige `https`. Em desenvolvimento e teste, credencial no ambiente e CA num arquivo. As mensagens de erro de configuração citam só os nomes das variáveis.
+  - **Cliente:** só busca, só em `wazuh-alerts-*`, sem método de escrita. TLS validado contra a CA do Wazuh (`rejectUnauthorized`), timeout de 10 s (de 1 a 30 s), uma nova tentativa, sem sniffing. Se o indexer recusar a credencial (401), renova uma vez, para acompanhar a rotação de senha. A resposta é validada com zod. **Os erros não carregam a requisição:** os erros do driver trazem o cabeçalho de autenticação, então o cliente devolve só o status ou o tipo de falha.
+  - **Consultas** só pelos construtores tipados (`alertsAfter`, `alertById`): campos de filtro numa lista fechada, conferida também em execução; valores só como `term`, `terms` e `range`, curtos e sem caractere de controle; leitura incremental por cursor (`search_after` com timestamp e id, sem pular nem repetir); página de até 1.000. Uma guarda percorre toda consulta antes do envio e recusa `query_string`, `wildcard`, `regexp`, `script` e outras construções que interpretam texto ou executam código.
+- **Testes:** 23. Consultas: DSL exato, cursor, filtros, **texto malicioso vira valor literal de term**, campo fora da lista recusado mesmo com tipo forçado, valores inválidos, guarda em qualquer nível. Configuração e segredos: produção só com AWS, sem vazar valores, cache e renovação, segredo malformado, CA em PEM. Cliente contra um indexer HTTPS local com CA descartável: busca com TLS e credencial; **servidor de outra CA recusado sem enviar nada**; tempo limite; renovação depois de rotação; erro sem credencial nem requisição; nada enviado fora do padrão de alertas ou com consulta interpretável. Suíte da API completa: 162. ESLint e Semgrep limpos (a validação do PEM deixou de usar regex, apontada como risco de ReDoS).
+- **Definição de pronto:** credencial do Secrets Manager, TLS validado e timeout ✔ · query DSL estruturado, nunca texto do usuário ✔ · somente leitura ✔
+- **Desvio:** a configuração do indexer tem schema próprio até o módulo ser registrado na API (T5.3, depois do merge do E2, que reescreve o `env.schema.ts`). Aí os campos passam para o schema principal e para o `.env.example`.
+- **Correção (revisor automático do PR #8):** por padrão, o OpenSearch responde 200 com o que conseguiu quando um shard falha ou o tempo estoura (`allow_partial_search_results`). Na leitura incremental, o cursor avançaria sobre a página incompleta e os alertas que faltaram nunca seriam lidos. Agora a busca pede `allow_partial_search_results=false`, e qualquer resposta com `timed_out` ou `_shards.failed > 0` é recusada como erro: o sync tenta de novo a partir do mesmo cursor. Testes: resposta parcial por tempo e por shard recusada, parâmetro presente na requisição. Mutação: sem a checagem, 2 testes falham; sem o parâmetro, 1 falha.
+
+## T5.2 Vínculo entre alerta e cliente: núcleo (persistência depois do E3)
+
+- **Arquivos:** `apps/api/src/alerts/{wazuh-alert,alert-owner}.ts`, `apps/api/test/alerts/{fixtures,wazuh-alert.test,alert-owner.test}.ts`
+- **Dependências:** nenhuma nova.
+- **Conferido antes de escrever** (código do wodle aws-s3 e ruleset do Wazuh 4.14.9, direto da imagem):
+  - só o CloudTrail grava a conta no alerta (`aws_account_id`, da pasta `AWSLogs/<conta>`, que o gerador fixa por conta);
+  - no GuardDuty e no WAF, a conta vem do próprio evento (`accountId` e `arn`; ARN do `webaclId`), que **o cliente controla**, porque o bucket é dele;
+  - listas de um item viram objeto;
+  - o horário vem com fuso sem dois-pontos (`+0000`), que o validador ISO do zod recusa.
+
+  A leitura também revelou as correlações entre contas, corrigidas no E4 (seção "Correção nas T4.4 a T4.6", no PR do E4).
+
+- **Como funciona:**
+  - **`parseWazuhAlert`:** valida o envelope (id, horário, regra, MITRE) e extrai do evento da AWS só o que a API usa: fonte, bucket de origem, contas citadas, região, nome do evento, severidade da AWS, identidade, chave de acesso, IP e recurso. Cada campo é conferido no formato (IP real, ARN, chave, bucket, sem caractere de controle). O resto, inclusive `full_log`, `previous_output` e cabeçalhos HTTP, não é guardado.
+  - **`resolveAlertOwner`:** a única função que decide de quem é um alerta. Ele só é do cliente quando **duas origens independentes concordam**:
+    1. o bucket de onde o Wazuh leu está cadastrado para aquela fonte, e só por esse cliente;
+    2. o evento cita uma única conta, cadastrada para o mesmo cliente. No CloudTrail, essa conta também precisa ser uma das que cadastraram o bucket.
+
+    Um cliente que forje no próprio bucket um evento com a conta de outro cai na fila sem dono, assim como bucket não cadastrado, bucket ou conta em dois clientes, contas divergentes no evento, evento sem conta e campo de conta fora do formato (este invalida o alerta, em vez de sobrar outro campo). O motivo vai junto, para o `admin_verax`.
+
+  - **Casos legítimos cobertos:** trilha da organização (contas do mesmo cliente com o mesmo bucket) e GuardDuty com administrador delegado (achado de outra conta do mesmo cliente).
+- **Testes:** 20, com alertas no formato real das três fontes e contas de dois clientes:
+  - atribuição certa por fonte;
+  - eventos forjados com a conta de outro cliente (GuardDuty, WAF e CloudTrail);
+  - todos os motivos de "sem dono";
+  - trilha da organização e administrador delegado;
+  - horário do Wazuh;
+  - extração e saneamento campo a campo;
+  - nada além do necessário serializado.
+
+  **Mutação:** seis alterações nas regras de dono (não cruzar bucket e conta, aceitar bucket ou conta de dois clientes, pular campo inválido, usar a primeira de contas divergentes, não exigir a conta do bucket no CloudTrail) são todas pegas pelos testes.
+
+- **Pendente (depois do E2/E3):**
+  - montar o `AccountDirectory` a partir do cadastro de contas da T3.3, que precisa guardar os buckets de cada fonte e recusar a mesma conta em dois clientes;
+  - a tabela `UnownedAlert` com o motivo;
+  - o teste de isolamento ponta a ponta no sync (T5.3).
+- **Definição de pronto (parcial):** função única que descobre o cliente pela conta do alerta ✔ · alerta de conta não cadastrada para a fila sem dono ✔ (decisão; a gravação vem com a T5.3) · testes com alertas de duas contas de clientes diferentes ✔
+
+## T5.3 Sync de alertas para achados: núcleo (job e gravação depois do E3)
+
+- **Arquivos:** `apps/api/src/alerts/{finding-draft,sync-query,raw-alert}.ts`, `apps/api/src/indexer/alert-queries.ts` (filtro `data.integration`), `apps/api/test/alerts/finding-draft.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Achado** (`toFindingDraft`): leva o cliente e a conta decididos pela T5.2, o id do alerta como chave de idempotência (`source` + `sourceEventId`), horário em UTC, regra, fonte, evento, região, recurso, identidade, chave, IP e táticas/técnicas MITRE.
+  - **Severidade:**
+    - GuardDuty: a da própria AWS, nas faixas do GuardDuty (9+ crítica, 7+ alta, 4+ média), porque as regras do Wazuh juntam 7 a 9 num nível só;
+    - demais fontes: pelo nível da regra (12+ crítica, 10+ alta, 7+ média, abaixo baixa). Assim, a força bruta no console e a rajada de bloqueios do WAF (nível 10) ficam altas, e um login com falha isolado (5) fica baixo.
+  - **Leitura incremental** (`syncWindowStart`, `syncPage`, `cursorFromSort`):
+    - cada execução relê 10 minutos antes do último alerta processado (o alerta pode chegar ao indexer fora de ordem), e a gravação idempotente evita duplicata;
+    - dentro da execução, as páginas seguem pelo cursor de horário e id;
+    - o cursor vem dos valores de ordenação devolvidos pelo indexer, para um alerta inválido também ser pulado;
+    - a consulta pega só alertas do módulo aws-s3, das três fontes coletadas, com nível 5 ou mais. Abaixo disso ficam os eventos de auditoria do CloudTrail (nível 3), que viram contexto e não achado.
+  - **Evento bruto do detalhe** (`sanitizeRawAlert`, para a T5.4):
+    - tira `full_log` e `previous_output` em qualquer nível;
+    - troca o valor de cabeçalhos de credencial (`authorization`, `cookie`, `x-api-key`...);
+    - descarta chaves de protótipo e limita a profundidade.
+- **Testes:** 30 nos alertas, 53 contando o indexer.
+  - Faixas de severidade nas duas regras, achado completo e campos ausentes como `null`.
+  - Saneamento: log bruto, cabeçalhos sem diferenciar maiúsculas, `__proto__` sem contaminar e profundidade.
+  - Janela, página em DSL estruturado e cursor.
+  - **Conferido também contra o indexer real** (wazuh-indexer 4.14.9 com o template oficial do Wazuh, num contêiner local): o `search_after` com a data ISO e o id pagina sem pular nem repetir, inclusive com empate de horário na virada de página. Os filtros excluem nível baixo, alerta do manager, fonte não coletada e o que é anterior à janela, e `+0000` e `-0300` caem no mesmo instante.
+- **Premissas a confirmar:**
+  - nível mínimo 5 para virar achado;
+  - sobreposição de 10 minutos;
+  - na primeira execução, as últimas 24 horas.
+
+  Os três ficam em configuração.
+
+- **Pendente (depois do E2/E3):**
+  - o job (`worker` com advisory lock);
+  - o model `Finding` com `@@unique([source, sourceEventId])`, o `UnownedAlert` e o estado do sync;
+  - as exceções da T3.5;
+  - `lastEventAt` por conta;
+  - as métricas do worker para os alarmes da T8.6.
+- **Riscos:** um alerta indexado mais de 10 minutos depois do horário dele (filebeat parado, por exemplo) fica de fora. O alarme de sync parado da T8.6 cobre o caso do filebeat, e a sobreposição pode subir em configuração.
+
+## T5.6 Agrupamento em incidentes: núcleo (gravação depois do E3)
+
+- **Arquivos:** `apps/api/src/incidents/correlation.ts`, `apps/api/test/incidents/correlation.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona** (regra v1 do plano):
+  - **Chaves de correlação:** usuário, chave de acesso, IP e recurso do achado.
+  - **`planIncident`:** o achado entra no incidente aberto **do mesmo cliente** que tenha uma chave em comum e cujo período, alargado pela janela (60 minutos, configurável), contenha o horário do achado. Havendo vários, entra no de atividade mais recente.
+    - Incidente de outro cliente nunca é candidato, nem com o mesmo IP.
+    - Sem incidente para entrar, achado médio ou mais grave abre um novo, e achado baixo fica só como achado.
+  - **Nota de risco** (premissa aprovada):
+    - base pela severidade mais alta (70, 50, 30, 10);
+    - +15 com item da lista de proteção do cliente;
+    - +10 com identidade root ou "admin" no nome;
+    - +3 por achado além do primeiro, até +15;
+    - teto 100.
+  - **`summarizeIncident`:** severidade, nota, período, chaves, contas, recursos e táticas/técnicas MITRE sem repetição, para a lista e o detalhe da T5.7. Recusa achados de clientes diferentes no mesmo incidente.
+- **Testes:** 12:
+  - janela nas duas pontas, inclusive o achado atrasado;
+  - isolamento por cliente;
+  - desempate;
+  - abertura por severidade;
+  - nota nas faixas e no teto;
+  - identidade privilegiada (sem pegar "badminton");
+  - resumo completo.
+
+  **Mutação:** tirar o filtro de cliente, tirar a guarda do resumo, contar o primeiro achado na nota ou ignorar o fim da janela é pego pelos testes.
+
+- **Premissa a confirmar:** achado baixo não abre incidente sozinho, para a Torre não virar uma lista de achados.
+- **Pendente (depois do E3):** models `Incident` e `IncidentFinding`, a lista de proteção (T3.4), gravação dentro do sync com lock e os endpoints da T5.7.
+
+## T5.8 Postura a partir do Prowler: núcleo (job e endpoints depois do E3)
+
+- **Arquivos:** `apps/api/src/posture/prowler-report.ts`, `apps/api/test/posture/prowler-report.test.ts`
+- **Dependências:** nenhuma nova.
+- **Conferido no código do Prowler 5.47.0, direto da imagem:**
+  - estrutura do JSON-OCSF (`ocsf.py`);
+  - nomes dos enums de severidade e status do py-ocsf-models;
+  - `status_code` também pode ser **MUTED**: a lista de exceções troca o status original por MUTED (`mutelist.py`). Um parser só com PASS/FAIL/MANUAL recusaria esses itens e, acima de 1%, o relatório inteiro.
+- **Como funciona:**
+  - **Caminho no bucket** (`parseReportKey`): `<tenantId>/<conta>/<AAAA-MM-DD>/prowler-<horário>.ocsf.json`, como a tarefa da T4.7 grava. Data e horário precisam existir no calendário e ser do mesmo dia; fora disso, o arquivo é ignorado.
+  - **Relatório** (`parseProwlerReport`): lê só os campos usados (checagem, resultado, severidade, título, região, recurso, detalhe, risco, correção e referências). Os metadados do recurso (`resources[].data`) não são lidos.
+    - **Um resultado de outra conta recusa o relatório inteiro:** a pasta é da conta, e um resultado alheio ali não vira postura de ninguém.
+    - Itens fora do formato são contados, e acima de 1% o relatório é recusado (sinal de formato novo).
+    - Limite de 100 mil resultados; resultado repetido conta uma vez.
+  - **Nota de postura** (`summarizePosture`, premissa aprovada): aprovação ponderada pela severidade (crítica 10, alta 5, média 2, baixa 1; informativa não pesa).
+    - Manuais e silenciadas ficam fora.
+    - Sem peso, a nota é `null`, e não zero.
+    - Também conta aprovadas, reprovadas por severidade, manuais e silenciadas, para o histórico por data.
+- **Testes:** 11, com resultados na estrutura exata do Prowler 5.47.0:
+  - caminho válido e seis inválidos (inclusive `..` e data inexistente);
+  - campos lidos sem os metadados do recurso;
+  - **relatório com resultado de outra conta recusado**;
+  - limite de itens inválidos e de tamanho;
+  - MUTED;
+  - repetição;
+  - nota nas regras e do relatório até a nota.
+
+  **Mutação:** tirar a checagem da conta, contar as silenciadas, ignorar o limite de inválidos ou aceitar a pasta de outro dia é pego pelos testes.
+
+- **Pendente (depois do E3):**
+  - o job que lista a pasta de cada conta cadastrada (`<tenantId>/<conta>/`, montada pelo cadastro, nunca pelo conteúdo do bucket) e lê o relatório mais novo, com limite de tamanho do objeto;
+  - os models de postura e histórico;
+  - os endpoints de nota e de achados de postura.
+
+## T5.10 Resumo da Torre: núcleo (endpoint depois do E3)
+
+- **Arquivos:** `apps/api/src/tower/tower-rules.ts`, `apps/api/test/tower/tower-rules.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Semáforo** (pendência 9, aprovada; regra escrita no código):
+    - vermelho com incidente crítico aberto;
+    - amarelo com incidente alto aberto ou postura abaixo de 70;
+    - verde nos demais casos.
+
+    Sem nota de postura, a postura não pesa. Os motivos voltam junto com a cor, para a tela explicar o porquê, e o corte de postura fica em configuração.
+
+  - **Cobertura:** contas conectadas, o evento mais recente e as contas silenciosas (sem evento há mais de 24 horas, configurável, ou que nunca mandaram nada).
+  - **Decisões pendentes** (premissa aprovada), só as que existem e em ordem de prioridade:
+    - incidente aberto sem responsável;
+    - achado alto ou crítico em "novo" fora de incidente;
+    - só para `admin_verax`, alertas sem dono.
+- **Testes:** 8:
+  - as três cores e a precedência do vermelho;
+  - incidente médio ou baixo não muda a cor;
+  - 70 já é verde;
+  - sem nota não pesa;
+  - corte configurável;
+  - cobertura com conta silenciosa e conta que nunca mandou evento;
+  - decisões com e sem `admin_verax`.
+- **Pendente (depois do E3):**
+  - o endpoint `GET /v1/tower`, com as contagens por cliente via `db.tenant()`;
+  - o horário do último evento por conta, que precisa de uma consulta própria ao indexer com agregação por conta, porque o sync só lê alertas de nível 5 ou mais e uma conta tranquila pareceria silenciosa.
+
+## T5.9 Inventário de ativos e identidades: núcleo (job e endpoints depois do E3)
+
+- **Arquivos:**
+  - `apps/api/src/inventory/{read-only-session,collectors,risk-rules,inventory}.ts`;
+  - `apps/api/test/inventory/{fake-aws,read-only-session.test,inventory.test,risk-rules.test}.ts`;
+  - `apps/api/package.json`, `pnpm-lock.yaml`.
+- **Dependências:** `@aws-sdk/client-sts`, `@aws-sdk/client-iam`, `@aws-sdk/client-ec2` e `@aws-sdk/client-s3` 3.1161.0, da lista aprovada. É a última versão, de 30/10, fora da quarentena, e a mesma dos clientes que já estavam no projeto. Entraram só 7 pacotes novos (o resto é compartilhado), e a política de confiança do workspace aceitou todos.
+- **Como funciona:**
+  - **Sessão** (`assumeReadOnlyRole`): papel `arn:aws:iam::<conta>:role/VeraxControlReadOnly`, derivado do ID (o cadastro não escolhe papel). Usa o ExternalId da conta, sessão de 15 minutos e nome fixo.
+    - Conta e ExternalId fora do formato são recusados antes de chamar a AWS.
+    - **As credenciais temporárias ficam num campo privado**, e o objeto se apresenta como `[credenciais temporárias]` no JSON, no texto e no log.
+    - Os erros citam só a conta e o código da AWS (a mensagem da AWS traz ARNs e detalhes).
+  - **Coleta**, só com leituras cobertas pelo papel (SecurityAudit + ViewOnlyAccess):
+    - root (MFA e chaves);
+    - usuários IAM (console, MFA, chaves com idade e último uso);
+    - instâncias EC2 (estado, IP público, IMDSv2) e security groups (regras abertas para 0.0.0.0/0 ou ::/0), nas regiões habilitadas ou nas do cadastro;
+    - buckets (política pública, ACL pública e bloqueio de acesso público).
+
+    Paginação completa, teto de 1.000 itens por tipo (com aviso de corte) e no máximo 4 chamadas simultâneas. Políticas, tags e conteúdo não são lidos. Uma parte que falha (permissão, região desligada) fica em `errors` com o código e não derruba as outras. "Sem perfil de console" só vale para o erro `NoSuchEntity`: outro erro sobe, para não virar "sem console" por engano.
+
+  - **Risco por ativo** (regras v1, com motivo para a tela):
+    - root sem MFA ou com chave: crítico;
+    - console sem MFA: alto;
+    - chave ativa com mais de 90 dias: médio;
+    - chave parada há 90 dias (contando da criação, se nunca usada): baixo;
+    - security group: tudo aberto, 22 ou 3389 é crítico; porta de banco é alto; outra porta é médio; só 80/443 ou ICMP é baixo;
+    - instância: IMDSv1 com IP público é médio, sem IP público é baixo;
+    - bucket com política ou ACL pública que o bloqueio do bucket não impede: alto;
+    - bucket sem bloqueio ou com leitura recusada: baixo.
+- **Testes:** 18, com clientes falsos da AWS que registram cada chamada e nada de rede:
+  - parâmetros exatos do AssumeRole;
+  - credenciais escondidas em JSON, texto e `inspect`;
+  - entrada inválida sem chamada;
+  - erro sem ExternalId nem mensagem da AWS;
+  - IAM em duas páginas e no teto;
+  - S3 com cada caso de leitura;
+  - conta inteira com uma região sem permissão e com regiões do cadastro;
+  - papel recusado sem coleta;
+  - todas as regras de risco.
+
+  **Mutação:** tirar a validação do ExternalId, pôr a mensagem da AWS no erro, tratar qualquer erro como "sem console", ignorar o bloqueio do bucket, contar a chave nova como parada ou remover uma das camadas que escondem a credencial é pego pelos testes.
+
+- **Desvio:** o bloqueio de acesso público **no nível da conta** não é lido, porque exigiria o `@aws-sdk/client-s3-control`, fora da lista aprovada. Por isso o bucket público fica "alto", e não "crítico". A postura do Prowler (T5.8) confere esse caso por completo. Se quiser, aprove o pacote e eu completo.
+- **Pendente (depois do E3):**
+  - o job, por conta cadastrada, com o ExternalId do cadastro e o papel IAM próprio do worker (T8.4);
+  - os models do inventário;
+  - os endpoints de listagem com o risco.
+
 ## T6.1 Setup do front
 
 - **Arquivos:** `apps/web/vite.config.ts`, `apps/web/src/build-guards.ts` (+ teste), `apps/web/src/lib/{env,api-client,api,query-client,errors}.ts` (+ testes), `apps/web/src/routes/router.tsx`, `apps/web/src/pages/{login,forbidden,not-found}-page.tsx`, `apps/web/src/{App,main}.tsx`, `apps/web/src/index.css`, `apps/web/tsconfig*.json`, `apps/web/package.json`, `scripts/scan-bundle.mjs`
