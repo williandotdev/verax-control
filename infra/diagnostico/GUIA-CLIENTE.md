@@ -22,13 +22,13 @@ diagnóstico levanta isso em cerca de 5 minutos, **somente lendo configurações
 
    ```sh
    base=https://github.com/williandotdev/verax-control/releases/download/diagnostico-v{{VERSAO}}
-   curl -fsSLO "$base/diagnostico_aws.py" && curl -fsSLO "$base/SHA256SUMS"
-   sha256sum -c --ignore-missing SHA256SUMS
-   python3 diagnostico_aws.py --regioes us-east-1
+   curl -fsSLO "$base/diagnostico_aws.py" && curl -fsSLO "$base/SHA256SUMS" &&
+     sha256sum -c --ignore-missing SHA256SUMS &&
+     python3 diagnostico_aws.py --regioes us-east-1
    ```
 
-   A linha do `sha256sum` precisa mostrar `diagnostico_aws.py: OK`. Isso confirma que o arquivo é o publicado pela
-   Verax.
+   O script só roda se o download e a conferência derem certo: o `sha256sum` mostra `diagnostico_aws.py: OK`,
+   confirmando que o arquivo é o publicado pela Verax. Se aparecer `FAILED`, nada é executado; avise a Verax.
 
 5. O resumo aparece na tela. Baixe os dois arquivos gerados pelo menu **Actions → Download file** do CloudShell:
    - `diagnostico-verax-<sua conta>.md`: relatório para leitura;

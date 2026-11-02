@@ -467,7 +467,10 @@ def suggest_sources(report: Dict[str, Any]) -> List[Dict[str, Any]]:
             add("CloudTrail", "cloudwatch_logs", region_from_arn(trail["log_group"]), group, "sim", f"trilha {trail.get('nome')}")
         elif trail.get("bucket"):
             path = f"{trail['bucket']}/{trail['prefixo']}" if trail.get("prefixo") else trail["bucket"]
-            add("CloudTrail", "s3", trail.get("regiao_principal"), path, "sim", f"trilha {trail.get('nome')}")
+            # A região que importa é a do bucket (pode ser outra que a da trilha); sem leitura, fica desconhecida.
+            location = (report.get("buckets_de_log") or {}).get(trail["bucket"], {}).get("regiao")
+            region = location if isinstance(location, str) else None
+            add("CloudTrail", "s3", region, path, "sim", f"trilha {trail.get('nome')}")
 
     acls = as_list(report.get("waf_cloudfront"))
     for data in regions.values():

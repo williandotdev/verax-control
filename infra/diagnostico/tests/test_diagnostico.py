@@ -247,6 +247,16 @@ class SourcesTest(unittest.TestCase):
         self.assertEqual(self.sources[("Aplicação ou outro", "aplicacao")]["coletar"], "avaliar")
         self.assertEqual(self.sources[("Security Hub", "findings do Security Hub")]["coletar"], "avaliar")
 
+    def test_fonte_s3_do_cloudtrail_usa_a_regiao_do_bucket(self):
+        trail = {"Name": "s3", "TrailARN": "arn:aws:cloudtrail:us-east-1:111122223333:trail/s3", "HomeRegion": "us-east-1", "S3BucketName": "longe"}
+        overrides = {
+            ("cloudtrail", "us-east-1"): {"describe_trails": {"trailList": [trail]}, "get_trail_status": {"IsLogging": True}},
+            ("s3", None): dict(RESPONSES["s3"], get_bucket_location={"LocationConstraint": "eu-west-1"}),
+        }
+        _diagnostico, report = run_report(overrides=overrides)
+        sources = {(item["fonte"], item["local"]): item for item in diag.suggest_sources(report)}
+        self.assertEqual(sources[("CloudTrail", "longe")]["regiao"], "eu-west-1")
+
     def test_metricas_nao_sao_recomendadas(self):
         self.assertEqual(self.sources[("Métricas de desempenho", "RDSOSMetrics")]["coletar"], "não")
 
@@ -276,6 +286,16 @@ class SourcesTest(unittest.TestCase):
 def _diagnostico_calls():
     diagnostico, _report = run_report()
     return diagnostico.calls
+
+
+
+class GuideTest(unittest.TestCase):
+    def test_guia_so_executa_depois_da_conferencia_do_checksum(self):
+        guide = (SCRIPT.parent / "GUIA-CLIENTE.md").read_text(encoding="utf-8")
+        block = guide.split("```sh", 1)[1].split("```", 1)[0]
+        commands = [line.strip() for line in block.strip().splitlines()][1:]
+        chained = " ".join(commands)
+        self.assertRegex(chained, r"curl .*&& curl .*&&\s*sha256sum -c .*&&\s*python3 diagnostico_aws\.py")
 
 
 if __name__ == "__main__":
