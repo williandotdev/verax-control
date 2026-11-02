@@ -54,6 +54,10 @@
             "integration_id": 15368
           },
           {
+            "context": "Testes de navegador",
+            "integration_id": 15368
+          },
+          {
             "context": "Semgrep (SAST)",
             "integration_id": 15368
           },
