@@ -5,6 +5,8 @@
 # - Senhas geradas aqui e gravadas no Secrets Manager por argumento write-only: não passam pelo state.
 # - Configuração vinda do bundle versionado em infra/wazuh, entregue por um bucket privado com checksums.
 # - Reaplicar (configuração nova ou rotação de senha): documento SSM `<nome>-wazuh-apply` (README do bundle).
+# - Contas dos clientes (T4.4 a T4.6): a API mantém a lista num segredo; o manager assume o VeraxControlReadOnly de
+#   cada conta com o ExternalId dela, usando a credencial da instância.
 
 terraform {
   required_version = ">= 1.11.0"
@@ -133,6 +135,7 @@ locals {
     bucket         = module.bundle_bucket.id
     prefix         = local.bundle_prefix
     secret_arn     = aws_secretsmanager_secret.wazuh.arn
+    sources_arn    = aws_secretsmanager_secret.aws_sources.arn
     data_volume_id = aws_ebs_volume.data.id
     log_group      = aws_cloudwatch_log_group.containers.name
     indexer_heap   = var.indexer_heap
@@ -171,6 +174,22 @@ resource "aws_secretsmanager_secret" "wazuh" {
   description             = "Senhas do Wazuh: admin e kibanaserver do indexer, wazuh-wui da API do manager"
   kms_key_id              = var.data_kms_key_arn
   recovery_window_in_days = 30
+}
+
+# Contas AWS conectadas (lista JSON com conta, ExternalId, região e buckets), mantida pela API a partir do cadastro.
+# O Terraform só grava a lista vazia na criação (write-only, versão fixa): nunca sobrescreve o que a API gravar.
+resource "aws_secretsmanager_secret" "aws_sources" {
+  #checkov:skip=CKV2_AWS_57:Não é credencial: é a lista de contas. Os ExternalIds são trocados pela API, conta a conta.
+  name                    = "${var.name}/wazuh-aws-sources"
+  description             = "Contas AWS conectadas que o Wazuh lê (com os ExternalIds); mantida pela API"
+  kms_key_id              = var.data_kms_key_arn
+  recovery_window_in_days = 30
+}
+
+resource "aws_secretsmanager_secret_version" "aws_sources" {
+  secret_id                = aws_secretsmanager_secret.aws_sources.id
+  secret_string_wo         = "[]"
+  secret_string_wo_version = 1
 }
 
 # Geradas pela própria AWS a cada plan/apply, sem ir para o state; só são gravadas quando password_version muda.
@@ -263,9 +282,16 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
 
 data "aws_iam_policy_document" "wazuh" {
   statement {
-    sid       = "LerSenhas"
+    sid       = "LerSenhasEContas"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.wazuh.arn]
+    resources = [aws_secretsmanager_secret.wazuh.arn, aws_secretsmanager_secret.aws_sources.arn]
+  }
+
+  # Só o papel do conector (T4.3), em qualquer conta; a confiança dele exige o ExternalId da conta.
+  statement {
+    sid       = "AssumirPapelDosClientes"
+    actions   = ["sts:AssumeRole"]
+    resources = ["arn:${data.aws_partition.current.partition}:iam::*:role/VeraxControlReadOnly"]
   }
 
   statement {
@@ -350,11 +376,13 @@ resource "aws_instance" "wazuh" {
   user_data                   = local.apply_script
   user_data_replace_on_change = false
 
-  # IMDSv2 obrigatório; com hop limit 1, nenhum contêiner alcança as credenciais da instância.
+  # IMDSv2 obrigatório. Hop limit 2 para o manager (em contêiner) assumir os papéis dos clientes; o bootstrap
+  # bloqueia o IMDS para todos os outros contêineres (filtro no DOCKER-USER, conferido a cada deploy).
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
-    http_put_response_hop_limit = 1
+    http_put_response_hop_limit = 2
+    http_protocol_ipv6          = "disabled"
     instance_metadata_tags      = "disabled"
   }
 
@@ -430,6 +458,11 @@ output "instance_id" {
 
 output "security_group_id" {
   value = aws_security_group.wazuh.id
+}
+
+output "aws_sources_secret_arn" {
+  description = "Segredo da lista de contas que a API atualiza (depois, rodar o documento de reaplicação)."
+  value       = aws_secretsmanager_secret.aws_sources.arn
 }
 
 output "secret_arn" {

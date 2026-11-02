@@ -202,6 +202,11 @@ class ConnectorTemplateTest(unittest.TestCase):
             {"s3:x-amz-server-side-encryption-aws-kms-key-id": LOGS_KEY_ARN},
         )
 
+    def test_waf_logging_redacts_credential_headers(self):
+        redacted = self.resources["RegionalWebAclLogging"]["Properties"]["RedactedFields"]
+        names = {field["SingleHeader"]["Name"] for field in redacted}
+        self.assertEqual(names, {"authorization", "cookie", "proxy-authorization"})
+
     def test_waf_bucket_uses_the_required_prefix(self):
         name = self.resources["WafLogsBucket"]["Properties"]["BucketName"]["Fn::Sub"]
         self.assertTrue(name.startswith("aws-waf-logs-"))

@@ -64,6 +64,29 @@ fica no histórico do Run Command.
 2. Rode o documento de reaplicação (seção anterior). O deploy aplica as senhas novas no indexer, recria o manager
    e o dashboard e confere que as antigas deixaram de funcionar. O Wazuh fica indisponível por 2 a 3 minutos.
 
+## Contas AWS dos clientes (CloudTrail, GuardDuty e WAF)
+
+A lista das contas conectadas fica no segredo `<nome>/wazuh-aws-sources` (saída `aws_sources_secret_arn` do
+Terraform), mantida pela API a partir do cadastro. Cada item traz a conta, o `ExternalId`, a região, a data de
+início (`onlyLogsAfter`, no formato `2026-NOV-01`) e os buckets que saem do stack do conector
+(`infra/cloudformation`). Um exemplo, com contas fictícias, está em `tests/fixtures/aws-sources.example.json`.
+
+A cada deploy, o `scripts/render-manager-config.py` valida a lista inteira (qualquer valor fora do formato derruba o
+deploy) e gera:
+
+- o `ossec.conf` do manager, com o módulo `aws-s3` e um bucket por fonte de cada conta;
+- o `/root/.aws/config` do manager, com um profile por conta que assume
+  `arn:aws:iam::<conta>:role/VeraxControlReadOnly` com o `ExternalId` dela, usando a credencial da instância. O ARN
+  do papel é derivado do ID da conta, para a lista não conseguir apontar para outro papel.
+
+A lista chega ao gerador pela entrada padrão, a partir de um arquivo em tmpfs que o bootstrap apaga no fim: ela não
+passa por variável de ambiente, argumento nem configuração de contêiner. Depois de atualizar a lista, rode o
+documento de reaplicação.
+
+**Credencial da instância.** O manager precisa do IMDS (por isso o hop limit 2). O serviço `verax-imds-guard`
+libera o IMDS só para o IP fixo do manager (`172.30.250.10`); indexer e dashboard ficam bloqueados. O bootstrap
+confere as duas coisas no fim de todo deploy e falha se o filtro não estiver valendo.
+
 ## Diagnóstico na instância
 
 A compose exige as senhas até para `ps` e `logs` (é a trava que impede subir sem elas). Para olhar o estado,

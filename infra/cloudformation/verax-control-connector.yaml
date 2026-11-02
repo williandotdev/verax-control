@@ -679,6 +679,12 @@ Resources:
       ResourceArn: !Ref RegionalWebAclArn
       LogDestinationConfigs:
         - !GetAtt WafLogsBucket.Arn
+      # Credenciais dos usuários da aplicação nunca saem da conta: o WAF grava REDACTED no lugar desses valores
+      # (o leitor do Wazuh manteria esses cabeçalhos).
+      RedactedFields:
+        - SingleHeader: { Name: authorization }
+        - SingleHeader: { Name: cookie }
+        - SingleHeader: { Name: proxy-authorization }
 
 Outputs:
   RoleArn:

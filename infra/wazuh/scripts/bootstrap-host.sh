@@ -3,13 +3,15 @@
 # /opt/verax-wazuh. Chamado pelo user_data na primeira subida e pelo documento SSM `<nome>-wazuh-apply` nas
 # seguintes (infra/terraform/modules/wazuh). Idempotente.
 #
-# Entradas (ambiente): WAZUH_SECRET_ARN, DATA_VOLUME_ID, AWS_REGION, CONTAINER_LOG_GROUP e INDEXER_HEAP.
-# Nada aqui imprime senha; o log vai para /var/log/cloud-init-output.log ou para o histórico do SSM.
+# Entradas (ambiente): WAZUH_SECRET_ARN, WAZUH_AWS_SOURCES_SECRET_ARN, DATA_VOLUME_ID, AWS_REGION,
+# CONTAINER_LOG_GROUP e INDEXER_HEAP.
+# Nada aqui imprime senha nem ExternalId; o log vai para /var/log/cloud-init-output.log ou para o histórico do SSM.
 set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 
-: "${WAZUH_SECRET_ARN:?}" "${DATA_VOLUME_ID:?}" "${AWS_REGION:?}" "${CONTAINER_LOG_GROUP:?}"
+: "${WAZUH_SECRET_ARN:?}" "${WAZUH_AWS_SOURCES_SECRET_ARN:?}" "${DATA_VOLUME_ID:?}" "${AWS_REGION:?}"
+: "${CONTAINER_LOG_GROUP:?}"
 
 readonly compose_version=v5.6.1
 readonly compose_sha256=47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0
@@ -71,6 +73,47 @@ else
 fi
 systemctl enable -q --now docker
 
+log "Credencial da instância só para o manager"
+# Com hop limit 2 (necessário para o manager assumir os papéis dos clientes), qualquer contêiner alcançaria o
+# IMDS. Este filtro libera só o IP fixo do manager (docker-compose.yml) e é reaplicado a cada partida do Docker.
+cat >/usr/local/sbin/verax-imds-guard <<'EOF'
+#!/bin/bash
+set -euo pipefail
+imds=169.254.169.254/32
+manager=172.30.250.10/32
+iptables -C DOCKER-USER -d "$imds" -j DROP 2>/dev/null || iptables -I DOCKER-USER 1 -d "$imds" -j DROP
+iptables -C DOCKER-USER -s "$manager" -d "$imds" -j RETURN 2>/dev/null ||
+  iptables -I DOCKER-USER 1 -s "$manager" -d "$imds" -j RETURN
+EOF
+chmod 0755 /usr/local/sbin/verax-imds-guard
+cat >/etc/systemd/system/verax-imds-guard.service <<'EOF'
+[Unit]
+Description=Verax Control: só o manager do Wazuh alcança o IMDS
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/verax-imds-guard
+
+[Install]
+WantedBy=docker.service
+EOF
+chmod 0644 /etc/systemd/system/verax-imds-guard.service
+systemctl daemon-reload
+systemctl enable -q verax-imds-guard
+systemctl restart verax-imds-guard
+
+log "Contas AWS conectadas (Secrets Manager)"
+# Em tmpfs, só para o root, e apagado ao sair: a lista tem os ExternalIds.
+sources_dir=$(mktemp -d /run/verax-wazuh.XXXXXX)
+trap 'rm -rf "$sources_dir"' EXIT
+aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$WAZUH_AWS_SOURCES_SECRET_ARN" \
+  --query SecretString --output text >"$sources_dir/aws-sources.json"
+export WAZUH_AWS_SOURCES_FILE=$sources_dir/aws-sources.json
+
 log "Senhas (Secrets Manager)"
 # Direto para o ambiente deste processo: nunca em arquivo nem em argumento de comando.
 secret=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$WAZUH_SECRET_ARN" \
@@ -84,4 +127,18 @@ export INDEXER_HEAP=${INDEXER_HEAP:-4g}
 
 log "Deploy"
 bash scripts/deploy.sh
+
+log "Conferindo o filtro do IMDS"
+imds_status() {
+  docker exec "$1" curl -s -m 3 -o /dev/null -w '%{http_code}' -X PUT \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token || true
+}
+if [[ $(imds_status verax-wazuh-wazuh.indexer-1) != 000 || $(imds_status verax-wazuh-wazuh.dashboard-1) != 000 ]]; then
+  log "ERRO: indexer ou dashboard alcançam o IMDS"
+  exit 1
+fi
+if [[ $(imds_status verax-wazuh-wazuh.manager-1) != 200 ]]; then
+  log "ERRO: o manager não alcança o IMDS (sem ele, não lê as contas dos clientes)"
+  exit 1
+fi
 log "Concluído"

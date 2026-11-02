@@ -81,6 +81,8 @@ jobs:
           persist-credentials: false
       - name: shellcheck
         run: shellcheck -x -S style infra/wazuh/scripts/*.sh
+      - name: Testes do gerador de configuração do manager
+        run: python3 -m unittest discover -b -s infra/wazuh/tests -v
       - name: Compose válida (com senhas fictícias, só para interpolar)
         working-directory: infra/wazuh
         env:

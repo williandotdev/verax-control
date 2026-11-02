@@ -78,13 +78,25 @@ Depois, informe no painel as **saídas** do stack: `RoleArn` e os nomes dos buck
 
 ## Logs do AWS WAF
 
-- **Web ACL regional desta região:** informe o ARN em `RegionalWebAclArn` e o template liga o log.
+- **Web ACL regional desta região:** informe o ARN em `RegionalWebAclArn` e o template liga o log, já omitindo os
+  cabeçalhos de credencial (`authorization`, `cookie` e `proxy-authorization`), para que tokens e cookies dos
+  usuários da sua aplicação não saiam da conta.
 - **Web ACL do CloudFront ou de outra região:** ligue o log apontando para o bucket criado (o bucket aceita
-  entregas de qualquer região desta conta):
+  entregas de qualquer região desta conta), com a mesma omissão:
 
   ```sh
-  aws wafv2 put-logging-configuration --region us-east-1 \
-    --logging-configuration ResourceArn=<ARN da web ACL>,LogDestinationConfigs=arn:aws:s3:::<saída WafLogsBucket>
+  cat > waf-logging.json <<'EOF'
+  {
+    "ResourceArn": "<ARN da web ACL>",
+    "LogDestinationConfigs": ["arn:aws:s3:::<saída WafLogsBucket>"],
+    "RedactedFields": [
+      { "SingleHeader": { "Name": "authorization" } },
+      { "SingleHeader": { "Name": "cookie" } },
+      { "SingleHeader": { "Name": "proxy-authorization" } }
+    ]
+  }
+  EOF
+  aws wafv2 put-logging-configuration --region us-east-1 --logging-configuration file://waf-logging.json
   ```
 
 ## GuardDuty em outras regiões
