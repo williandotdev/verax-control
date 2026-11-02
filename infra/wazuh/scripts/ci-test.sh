@@ -148,7 +148,12 @@ test_index=wazuh-alerts-4.x-verax-teste
 for n in 1 2 3; do
   indexer_admin PUT "/$test_index/_doc/$n?refresh=true" <<<"{\"rule\":{\"level\":3},\"teste\":$n}"
 done
-indexer_admin GET "/_plugins/_ism/explain/$test_index" </dev/null
+# O ISM liga o índice à política de forma assíncrona, logo depois da criação: espera até 2 minutos.
+for _ in {1..24}; do
+  indexer_admin GET "/_plugins/_ism/explain/$test_index" </dev/null
+  [[ -n $(match_count '"policy_id":"verax-retencao"') ]] && break
+  sleep 5
+done
 expect "índice novo de alertas segue a retenção" '"policy_id":"verax-retencao"' "$(match_count '"policy_id":"[^"]*"')"
 indexer_admin PUT '/_snapshot/verax-snapshots/teste-ci?wait_for_completion=true' \
   <<<"{\"indices\":\"$test_index\",\"include_global_state\":false}"
