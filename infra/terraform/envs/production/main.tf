@@ -24,8 +24,37 @@ variable "prowler_image_digest" {
   default     = null
 }
 
+variable "panel_domain" {
+  description = "Domínio do painel (pendência 4)."
+  type        = string
+}
+
+variable "api_domain" {
+  description = "Domínio da API (pendência 4)."
+  type        = string
+}
+
+variable "dns_zone_id" {
+  description = "Zona pública do Route53 dos domínios. Nula: validação e apontamento à mão no DNS."
+  type        = string
+  default     = null
+}
+
 provider "aws" {
   region = var.aws_region
+  default_tags {
+    tags = {
+      Project     = "verax-control"
+      Environment = "production"
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+# Recursos globais do CloudFront (certificado, WAF e logs) só existem em us-east-1.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
   default_tags {
     tags = {
       Project     = "verax-control"
@@ -89,6 +118,18 @@ module "prowler" {
   image_digest       = var.prowler_image_digest
 }
 
+module "frontend" {
+  source = "../../modules/frontend"
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+  name         = local.name
+  panel_domain = var.panel_domain
+  api_domain   = var.api_domain
+  dns_zone_id  = var.dns_zone_id
+}
+
 output "vpc_id" {
   value = module.network.vpc_id
 }
@@ -103,4 +144,16 @@ output "wazuh_apply_document" {
 
 output "prowler_repository_url" {
   value = module.prowler.repository_url
+}
+
+output "panel_bucket" {
+  value = module.frontend.bucket
+}
+
+output "panel_distribution_domain" {
+  value = module.frontend.distribution_domain
+}
+
+output "panel_certificate_validation_records" {
+  value = module.frontend.certificate_validation_records
 }

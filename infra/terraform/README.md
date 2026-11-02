@@ -13,6 +13,9 @@ Infraestrutura da conta AWS da Verax. Tudo aqui é escrito e validado no CI (`.g
 | `modules/kms/`            | Chaves do ambiente: `data` (buckets, discos, segredos) e `logs` (CloudWatch Logs). Rotação automática.                              |
 | `modules/network/`        | VPC em 2 zonas, subnets públicas e privadas, NAT, flow logs cifrados, SG padrão sem regras, endpoints privados.                     |
 | `modules/wazuh/`          | EC2 do Wazuh (só produção): subnet privada, acesso só por SSM, discos cifrados, senhas no Secrets Manager, bundle de `infra/wazuh`. |
+| `modules/prowler/`        | Prowler agendado (só produção): ECR, tarefa Fargate, EventBridge Scheduler, bucket de resultados.                                   |
+| `modules/database/`       | RDS PostgreSQL 18 privado, cifrado, TLS obrigatório, backups; senha mestra gerenciada pelo RDS.                                     |
+| `modules/frontend/`       | Painel: bucket privado servido pelo CloudFront (OAC), cabeçalhos de segurança, certificado e WAF em us-east-1.                      |
 | `envs/staging/`           | Staging pequeno: 1 NAT, sem Wazuh e só com dados fictícios. Dado real de cliente nunca chega aqui.                                  |
 | `envs/production/`        | Produção: 1 NAT por zona e, a partir da T4.2, o Wazuh.                                                                              |
 
@@ -85,7 +88,21 @@ Pré-requisito: acesso administrativo à conta Verax por SSO, com MFA. Nunca use
 3. **Backend dos ambientes:** em `envs/staging` e `envs/production`, copie `backend.hcl.example` para
    `backend.hcl` e preencha bucket, região e ARN da chave com as saídas do passo 1.
 
-4. **Ambientes:**
+4. **Domínios (pendência 4):** em cada ambiente, crie um `terraform.tfvars` local (fora do git) com:
+
+   ```hcl
+   panel_domain = "painel.exemplo.com.br"
+   api_domain   = "api.painel.exemplo.com.br"
+   dns_zone_id  = "Z0123456789ABCDEFGHIJ" # zona pública no Route53; omita se o DNS estiver em outro provedor
+   ```
+
+   Com a zona no Route53, o Terraform valida os certificados e cria os registros. Com o DNS em outro provedor:
+   1. `terraform apply -target=module.frontend.aws_acm_certificate.panel` cria só o certificado;
+   2. `terraform output panel_certificate_validation_records` mostra os CNAMEs de validação: crie-os no DNS;
+   3. `terraform apply` completo, que espera a validação;
+   4. aponte o domínio do painel (CNAME) para `terraform output panel_distribution_domain`.
+
+5. **Ambientes:**
 
    ```sh
    cd infra/terraform/envs/staging
