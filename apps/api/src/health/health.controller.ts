@@ -1,5 +1,6 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { Public } from '../auth/decorators.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 
 /** Tempo máximo da consulta de prontidão, abaixo do timeout do health check do ALB. */
@@ -22,6 +23,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  *   só para o log.
  */
 @Controller('health')
+@Public()
 export class HealthController {
   constructor(
     private readonly prisma: PrismaService,

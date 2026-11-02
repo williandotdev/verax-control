@@ -105,11 +105,17 @@ as_app() { # <SQL>: roda como o papel da aplicação, dentro do contêiner do ba
 expect "aplicação não cria tabelas" '.*permission denied.*' "$(as_app 'create table invasora (id int)')"
 expect "aplicação não apaga a auditoria" '.*permission denied.*' "$(as_app 'delete from "AuditLog"')"
 
+# Segredos da autenticação (E2) só deste teste; em produção vêm do Secrets Manager.
+auth_secret=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
+csrf_secret=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
+
 run_api() { # <nome> <arquivo da CA>
   docker run -d --name "$1" --network "$network" \
     --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL --security-opt no-new-privileges:true \
     -v "$certs:/certs:ro" \
     -e NODE_ENV=production -e WEB_ORIGIN=https://painel.exemplo.com.br -e TRUST_PROXY_HOPS=1 \
+    -e API_ORIGIN=https://api.exemplo.com.br -e BETTER_AUTH_SECRET="$auth_secret" -e CSRF_SECRET="$csrf_secret" \
+    -e MAIL_TRANSPORT=ses -e MAIL_FROM=nao-responda@exemplo.com.br -e AWS_REGION=sa-east-1 \
     -e DATABASE_URL="$(database_url verax_app "$app_password" "$2")" \
     "$image" >/dev/null
 }

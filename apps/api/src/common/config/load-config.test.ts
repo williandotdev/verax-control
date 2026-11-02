@@ -4,6 +4,10 @@ import { ConfigValidationError, loadConfig } from './load-config.js';
 const validEnv = {
   NODE_ENV: 'development',
   WEB_ORIGIN: 'http://localhost:5173',
+  API_ORIGIN: 'http://localhost:3000',
+  BETTER_AUTH_SECRET: 'x'.repeat(43),
+  CSRF_SECRET: 'y'.repeat(43),
+  MAIL_FROM: 'nao-responda@verax.example',
   DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
 };
 
@@ -11,7 +15,10 @@ const validProductionEnv = {
   ...validEnv,
   NODE_ENV: 'production',
   WEB_ORIGIN: 'https://painel.example.com',
+  API_ORIGIN: 'https://api.example.com',
   DATABASE_URL: 'postgresql://verax:secret@db.internal:5432/verax?sslmode=verify-full',
+  MAIL_TRANSPORT: 'ses',
+  TRUST_PROXY_HOPS: '1',
 };
 
 function problemsOf(env: NodeJS.ProcessEnv): readonly string[] {
@@ -32,6 +39,52 @@ describe('loadConfig', () => {
     expect(Object.isFrozen(config)).toBe(true);
   });
 
+  it('recusa segredo de autenticação curto sem mostrar o valor', () => {
+    const shortValue = 'curto'.repeat(3);
+    const problems = problemsOf({ ...validEnv, BETTER_AUTH_SECRET: shortValue });
+    expect(problems).toContain('BETTER_AUTH_SECRET: deve ter pelo menos 32 caracteres');
+    expect(problems.join(' ')).not.toContain(shortValue);
+  });
+
+  it('valida a região AWS', () => {
+    expect(loadConfig(validEnv).AWS_REGION).toBe('sa-east-1');
+    expect(loadConfig({ ...validEnv, AWS_REGION: 'us-east-1' }).AWS_REGION).toBe('us-east-1');
+    expect(problemsOf({ ...validEnv, AWS_REGION: 'sa-east' })).toContain('AWS_REGION: região AWS inválida');
+  });
+
+  it('não aceita desligar a checagem de senha vazada em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, PASSWORD_BREACH_CHECK_ENABLED: 'false' })).toContain(
+      'PASSWORD_BREACH_CHECK_ENABLED: deve ficar ligado em produção',
+    );
+  });
+
+  it('exige SES em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, MAIL_TRANSPORT: 'dev-mailbox' })).toContain(
+      'MAIL_TRANSPORT: deve ser ses em produção',
+    );
+    expect(loadConfig({ ...validProductionEnv, MAIL_TRANSPORT: 'ses' }).MAIL_TRANSPORT).toBe('ses');
+  });
+
+  it('não aceita desligar o limite de tentativas em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, AUTH_RATE_LIMIT_ENABLED: 'false' })).toContain(
+      'AUTH_RATE_LIMIT_ENABLED: deve ficar ligado em produção',
+    );
+    expect(loadConfig(validEnv).AUTH_RATE_LIMIT_ENABLED).toBe(true);
+  });
+
+  it('exige o ALB contado em TRUST_PROXY_HOPS em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, TRUST_PROXY_HOPS: '0' })).toContain(
+      'TRUST_PROXY_HOPS: deve contar o ALB (1) em produção',
+    );
+    expect(loadConfig(validProductionEnv).TRUST_PROXY_HOPS).toBe(1);
+  });
+
+  it('exige https na origem da API em produção', () => {
+    expect(problemsOf({ ...validProductionEnv, API_ORIGIN: 'http://api.example.com' })).toContain(
+      'API_ORIGIN: deve usar https em produção',
+    );
+  });
+
   it('converte PORT para número', () => {
     expect(loadConfig({ ...validEnv, PORT: '8080' }).PORT).toBe(8080);
   });
@@ -43,6 +96,8 @@ describe('loadConfig', () => {
         'NODE_ENV: obrigatória e não definida',
         'WEB_ORIGIN: obrigatória e não definida',
         'DATABASE_URL: obrigatória e não definida',
+        'API_ORIGIN: obrigatória e não definida',
+        'BETTER_AUTH_SECRET: obrigatória e não definida',
       ]),
     );
   });

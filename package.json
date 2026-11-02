@@ -25,7 +25,8 @@
     "typecheck": "pnpm --recursive typecheck",
     "setup:env": "node scripts/setup-env.mjs",
     "db:migrate": "pnpm --filter @verax/api db:migrate",
-    "db:deploy": "pnpm --filter @verax/api db:deploy"
+    "db:deploy": "pnpm --filter @verax/api db:deploy",
+    "db:seed": "pnpm --filter @verax/api db:seed"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
