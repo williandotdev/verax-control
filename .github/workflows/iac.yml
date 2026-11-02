@@ -109,6 +109,44 @@ jobs:
           sudo sysctl -w vm.max_map_count=262144
           bash scripts/ci-test.sh
 
+  prowler:
+    name: Prowler (entrypoint e imagem)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Testes do entrypoint
+        run: python3 -m unittest discover -b -s infra/prowler/tests -v
+      - name: O PR mexe no Prowler?
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ $EVENT_NAME != pull_request ]] || ! git diff --quiet "$BASE_SHA" HEAD -- infra/prowler .github/workflows/iac.yml; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Imagem (build e execução com raiz só leitura, como na tarefa Fargate)
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/prowler
+        run: |
+          docker build -t verax-prowler:ci .
+          # Testes com o Python da imagem.
+          docker run --rm --read-only --tmpfs /tmp -v "$PWD:/src:ro" -w /src \
+            --entrypoint /home/prowler/.venv/bin/python verax-prowler:ci -m unittest discover -b -s tests
+          # O Prowler inicia com a raiz só leitura.
+          docker run --rm --read-only --tmpfs /tmp --entrypoint /home/prowler/.venv/bin/prowler \
+            verax-prowler:ci aws --list-checks --no-banner > /dev/null
+          # Sem configuração, o entrypoint recusa com código 2.
+          code=0
+          docker run --rm --read-only --tmpfs /tmp verax-prowler:ci || code=$?
+          test "$code" -eq 2
+
   cloudformation:
     name: CloudFormation (cfn-lint e testes do conector)
     runs-on: ubuntu-24.04

@@ -92,3 +92,16 @@ updates:
         patterns: ['*']
     commit-message:
       prefix: deps
+
+  # Imagem base do Prowler agendado (infra/prowler/Dockerfile, fixada por digest).
+  - package-ecosystem: docker
+    directory: /infra/prowler
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: America/Sao_Paulo
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: deps

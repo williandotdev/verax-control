@@ -18,6 +18,12 @@ variable "vpc_cidr" {
   default     = "10.50.0.0/16"
 }
 
+variable "prowler_image_digest" {
+  description = "Digest da imagem do Prowler no ECR, informado pelo deploy (E8). Nulo: sem tarefa agendada."
+  type        = string
+  default     = null
+}
+
 provider "aws" {
   region = var.aws_region
   default_tags {
@@ -58,6 +64,16 @@ module "wazuh" {
   bundle_dir       = "${path.root}/../../../wazuh"
 }
 
+module "prowler" {
+  source             = "../../modules/prowler"
+  name               = local.name
+  vpc_id             = module.network.vpc_id
+  private_subnet_ids = module.network.private_subnet_ids
+  data_kms_key_arn   = module.kms.data_key_arn
+  logs_kms_key_arn   = module.kms.logs_key_arn
+  image_digest       = var.prowler_image_digest
+}
+
 output "vpc_id" {
   value = module.network.vpc_id
 }
@@ -68,4 +84,8 @@ output "wazuh_instance_id" {
 
 output "wazuh_apply_document" {
   value = module.wazuh.apply_document_name
+}
+
+output "prowler_repository_url" {
+  value = module.prowler.repository_url
 }
