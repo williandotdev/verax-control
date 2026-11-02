@@ -427,6 +427,18 @@ data "aws_iam_policy_document" "wazuh" {
     resources = ["${module.backup_bucket.arn}/indexer-snapshots/*"]
   }
 
+  # Agente do CloudWatch: uso dos discos para o alarme da T8.6, só no namespace do Wazuh.
+  statement {
+    sid       = "MetricasDoDisco"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = ["VeraxControl/Wazuh"]
+    }
+  }
+
   statement {
     sid       = "LogsDosConteineres"
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]

@@ -1,0 +1,8 @@
+# Configuração do zizmor (job "Workflows" do security.yml).
+rules:
+  # O zizmor sugere a sintaxe nova `$/` para chamar workflows do próprio repositório, que o actionlint ainda recusa.
+  # Os dois rodam no CI: fica a forma documentada `./.github/workflows/...` (mesmo efeito: o workflow da mesma
+  # versão do repositório), só no deploy.yml, onde ela é usada.
+  self-repository:
+    ignore:
+      - deploy.yml
