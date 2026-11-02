@@ -23,27 +23,26 @@ antes de qualquer coleta do Verax Control. **Ele não altera nada e não lê con
 - Nenhum conteúdo de log, segredo ou chave é lido. O resultado tem o número da conta e nomes de recursos:
   **compartilhe só por canal privado**.
 
-## Como rodar (no AWS CloudShell, sem instalar nada)
+## Para enviar a um cliente
 
-1. Entre no console da AWS com um usuário que tenha a política `ReadOnlyAccess` ou `SecurityAudit` (não precisa de
-   administrador).
-2. Escolha a região onde ficam os logs (ex.: `us-east-1`) e abra o **CloudShell** (ícone `>_` no topo).
-3. Baixe o script fixado num commit (troque `COMMIT` pelo hash informado pela Verax):
+Use a release publicada, não este arquivo do repositório. O roteiro completo está em
+`docs/runbooks/onboarding-cliente.md`.
 
-   ```sh
-   curl -fsSLO https://raw.githubusercontent.com/williandotdev/verax-control/COMMIT/infra/diagnostico/diagnostico_aws.py
-   ```
+- Cada versão sai como release `diagnostico-vX.Y.Z` (workflow `Publicar diagnóstico`), com o script, o
+  `GUIA-CLIENTE.md` (passo a passo para o cliente, já com a versão nos comandos), o `SHA256SUMS` e o atestado de
+  procedência do GitHub.
+- O cliente roda no AWS CloudShell e devolve dois arquivos:
+  - `diagnostico-verax-<conta>.md`: relatório para leitura, com visão geral, fontes sugeridas (`sim`, `avaliar` ou
+    `não`, com o volume estimado por dia), pontos de atenção e limites de leitura;
+  - `diagnostico-verax-<conta>.json`: os mesmos dados, mais a lista `fontes_sugeridas`, que a configuração do nó vai
+    usar.
 
-   Ou envie o arquivo pelo menu **Actions → Upload file** do CloudShell.
+## Rodar a partir do repositório (desenvolvimento)
 
-4. Rode (uma ou mais regiões separadas por vírgula; sem `--regioes`, todas as habilitadas):
-
-   ```sh
-   python3 diagnostico_aws.py --regioes us-east-1
-   ```
-
-5. O resumo aparece na tela. Baixe o JSON completo em **Actions → Download file**
-   (`/home/cloudshell-user/diagnostico-verax-<conta>.json`) e envie à Verax por canal privado.
+```sh
+python3 infra/diagnostico/diagnostico_aws.py --regioes us-east-1   # precisa de boto3 e credenciais de leitura
+python3 -m unittest discover -s infra/diagnostico/tests -v          # testes, sem boto3
+```
 
 Para contas com muitos log groups, `--sem-detalhes-de-logs` pula a contagem de subscription filters (uma chamada por
 grupo).
