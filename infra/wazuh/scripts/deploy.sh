@@ -47,8 +47,10 @@ compose run --rm --no-deps certs-init
 compose run --rm --no-deps security-init
 # A lista de contas (com os ExternalIds) vai pela entrada padrão, nunca por variável ou argumento.
 compose run --rm --no-deps -T manager-config <"$sources_file"
-# Hash da configuração do manager como rótulo: se ela mudou, a compose recria o contêiner, que relê o ossec.conf.
-WAZUH_MANAGER_CONFIG_HASH=$(cat config/manager/ossec.conf scripts/render-manager-config.py "$sources_file" |
+# Hash da configuração do manager como rótulo: se ela mudou, a compose recria o contêiner, que relê o ossec.conf
+# e as regras locais.
+WAZUH_MANAGER_CONFIG_HASH=$(cat config/manager/ossec.conf config/manager/rules/*.xml scripts/render-manager-config.py \
+  "$sources_file" |
   sha256sum | cut -c1-16)
 export WAZUH_MANAGER_CONFIG_HASH
 

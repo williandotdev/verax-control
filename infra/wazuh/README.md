@@ -101,6 +101,13 @@ A lista chega ao gerador pela entrada padrão, a partir de um arquivo em tmpfs q
 passa por variável de ambiente, argumento nem configuração de contêiner. Depois de atualizar a lista, rode o
 documento de reaplicação.
 
+**Correlações por conta.** Um Wazuh atende todos os clientes, e as regras de frequência da AWS no Wazuh contam
+eventos de qualquer conta: três logins com falha num cliente e três noutro disparavam "Possible break in attempt"
+(80255) no segundo. O `config/manager/rules/verax_aws_rules.xml` sobrescreve essas regras (80252, 80255 e 80443)
+para contarem só eventos da mesma conta (no WAF, da mesma Web ACL). O gerador instala o arquivo junto com o
+`ossec.conf`. O `scripts/test-rules.sh` confere o efeito no `wazuh-logtest` e falha se uma versão nova do Wazuh
+trouxer outra correlação da AWS que ainda não foi avaliada.
+
 **Credencial da instância.** O manager precisa do IMDS (por isso o hop limit 2). O serviço `verax-imds-guard`
 libera o IMDS só para o IP fixo do manager (`172.30.250.10`); indexer e dashboard ficam bloqueados. O bootstrap
 confere as duas coisas no fim de todo deploy e falha se o filtro não estiver valendo.
@@ -182,7 +189,8 @@ Com Docker e uns 6 GB livres:
 cd infra/wazuh && bash scripts/ci-test.sh
 ```
 
-O teste apaga a instalação local `verax-wazuh` no começo e no fim. No Git Bash do Windows, rode antes
+O teste apaga a instalação local `verax-wazuh` no começo e no fim. As correlações por conta têm um teste próprio,
+mais leve (só um manager avulso): `bash scripts/test-rules.sh`. No Git Bash do Windows, rode antes
 `export MSYS_NO_PATHCONV=1`.
 
 ## Riscos conhecidos

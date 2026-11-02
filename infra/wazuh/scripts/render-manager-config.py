@@ -7,6 +7,8 @@ variáveis passam pelo limite do execve e ficam gravadas na configuração do co
 da imagem, e os ExternalIds não podem ir junto):
 
 - <config>/etc/ossec.conf: o ossec.conf base do bundle mais o módulo aws-s3, com um bucket por fonte de cada conta;
+- <config>/etc/rules/*.xml: as regras locais do bundle (correlações da AWS separadas por conta), legíveis pelo
+  usuário wazuh: o init da imagem as copia como root sem preservar o dono;
 - <aws>/config: um profile por conta, que assume o papel VeraxControlReadOnly com o ExternalId dela usando a
   credencial da instância. É o único jeito de o wodle usar ExternalId com buckets (o --external_id da linha de
   comando dele só vale para o Security Lake).
@@ -26,6 +28,7 @@ ACCOUNT_ID = re.compile(r"^[0-9]{12}$")
 EXTERNAL_ID = re.compile(r"^[A-Za-z0-9+=,.@:/_-]{32,128}$")
 REGION = re.compile(r"^[a-z]{2}(-gov)?-[a-z]+-[0-9]$")
 BUCKET = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+RULE_FILE = re.compile(r"^[a-z0-9_]+\.xml$")
 WAZUH_DATE = re.compile(r"^[0-9]{4}-(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)-[0-3][0-9]$")
 
 REQUIRED = {"accountId", "externalId", "region", "onlyLogsAfter"}
@@ -152,7 +155,17 @@ def write_atomically(path, content, mode):
         raise
 
 
-def main(base_config, config_dir, aws_dir):
+def copy_local_rules(rules_dir, config_dir):
+    names = sorted(name for name in os.listdir(rules_dir) if RULE_FILE.match(name))
+    for name in names:
+        with open(os.path.join(rules_dir, name), encoding="utf-8") as file:
+            content = file.read()
+        # Regras não são segredo (estão no repositório), e o analysisd as lê como o usuário wazuh.
+        write_atomically(os.path.join(config_dir, "etc", "rules", name), content, 0o644)
+    return names
+
+
+def main(base_config, config_dir, aws_dir, rules_dir=None):
     try:
         sources = validate(sys.stdin.read().strip() or "[]")
     except InvalidSources as error:
@@ -162,6 +175,8 @@ def main(base_config, config_dir, aws_dir):
         base = file.read()
     ossec_conf = base.rstrip("\n") + "\n" + render_wodle(sources)
     write_atomically(os.path.join(config_dir, "etc", "ossec.conf"), ossec_conf, 0o640)
+    if rules_dir:
+        copy_local_rules(rules_dir, config_dir)
     write_atomically(os.path.join(aws_dir, "config"), render_aws_config(sources), 0o600)
     # A raiz do volume nasce 0755; fechada, para só o root listar o diretório. Num diretório, o bit x é o de
     # entrar nele: 0700 (só o dono) é o mais restrito que funciona, ao contrário do que a regra supõe para arquivos.
@@ -171,4 +186,4 @@ def main(base_config, config_dir, aws_dir):
 
 
 if __name__ == "__main__":
-    sys.exit(main(*sys.argv[1:4]))
+    sys.exit(main(*sys.argv[1:5]))

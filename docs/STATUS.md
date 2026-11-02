@@ -210,7 +210,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Conferido no código do wodle 4.14.9 antes de escrever:**
   - para buckets, o `ExternalId` só entra pelo profile da AWS (`role_arn` + `external_id` + `credential_source`); o `--external_id` da linha de comando vale só para o Security Lake;
   - o GuardDuty é lido no formato nativo da exportação para S3 (`AWSLogs/.../GuardDuty/`, `.jsonl.gz`);
-  - no WAF e no GuardDuty, a conta de cada alerta vem do `sts:GetCallerIdentity` com o papel assumido, ou seja, a conta do cliente (o que a T5.2 usa para atribuir o alerta);
+  - só no CloudTrail o wodle grava a conta no alerta (`aws.aws_account_id`, tirada da pasta `AWSLogs/<conta>` lida). No WAF e no GuardDuty, o `sts:GetCallerIdentity` com o papel assumido só controla o que já foi lido; a conta do alerta vem do próprio evento (`accountId` e `arn` no GuardDuty, ARN do `webaclId` no WAF), que o cliente controla. Por isso a T5.2 cruza essa conta com o bucket de origem (`aws.log_info.s3bucket`) cadastrado (correção feita durante a T5.2, ao reler o código);
   - o leitor do WAF **mantém** os cabeçalhos `authorization`, `cookie` e `proxy-authorization`.
 - **Como funciona:**
   - **Lista de contas** num segredo do Secrets Manager (`<nome>/wazuh-aws-sources`), mantida pela API a partir do cadastro (E3/E5). O Terraform só grava `[]` na criação, por argumento write-only, e nunca sobrescreve a lista. Segredo, e não SSM Parameter Store, porque um SecureString comporta 4 a 8 KB (umas 20 contas) e o segredo, 64 KB (limite de 100 contas no gerador).
@@ -273,3 +273,19 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Definição de pronto:** critérios de aceite ✔ (política que apaga alertas após o prazo, snapshot diário do indexer em S3, teste de restauração documentado e automatizado) · testes ✔ · lint ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
 - **Desvios:** o snapshot é feito em disco e copiado para o S3 pelo host, em vez de um repositório S3 nativo, para manter a imagem oficial do indexer sem plugin adicional.
 - **Riscos:** a cópia para o S3 acontece uma hora depois do snapshot: um snapshot que demore mais que isso só vai para o S3 no dia seguinte (o repositório local guarda 14 dias). A observabilidade da T8.6 deve alarmar falha do timer.
+
+## Correção nas T4.4 a T4.6: correlações da AWS separadas por conta
+
+- **Achado** (ao preparar a T5.2): um Wazuh atende todos os clientes, e três regras de frequência da AWS no Wazuh 4.14.9 contam eventos de qualquer conta. Confirmado no `wazuh-logtest`: três logins com falha no console numa conta e três noutra disparam a 80255 ("Possible break in attempt"), atribuída à conta do último evento, que sozinha tinha três. Do mesmo jeito, quatro bloqueios do WAF de um IP numa Web ACL e quatro noutra disparam a 80443. Era alerta falso para um cliente, causado por eventos de outro.
+- **Arquivos:** `infra/wazuh/config/manager/rules/verax_aws_rules.xml`, `infra/wazuh/scripts/{test-rules,ci-test,deploy}.sh`, `infra/wazuh/scripts/render-manager-config.py`, `infra/wazuh/tests/test_render_manager_config.py`, `infra/wazuh/{docker-compose.yml,README.md}`, `.github/workflows/iac.yml`
+- **Dependências:** nenhuma nova.
+- **Como funciona:** regras locais com `overwrite="yes"` mantêm as originais e acrescentam `same_field`: `aws.aws_account_id` na 80252 (objetos apagados) e na 80255 (logins com falha), e `aws.webaclId` na 80443 (bloqueios do WAF, cujo ARN traz a conta). O gerador instala o arquivo em `etc/rules/` junto com o `ossec.conf`, em modo 0644, porque o init da imagem copia como root sem preservar o dono e o analysisd lê como `wazuh`. O hash que recria o manager passa a incluir as regras.
+- **Verificado no ruleset:**
+  - a 80251/80252 está inativa no 4.14.9, porque o `DeleteObjects` não está na lista `aws-eventnames` que a 80202 exige; a sobrescrita vale quando entrar;
+  - as correlações genéricas de autenticação (40111 e 40112, por `same_source_ip`) não pegam eventos da AWS, porque o decoder JSON não preenche `srcip`;
+  - 80369, 80371 (logs de acesso do S3) e 99021, 99027 (Security Lake) são de fontes que a Verax não coleta.
+- **Testes:**
+  - `test-rules.sh` (novo, no job do Wazuh do `iac.yml`) sobe um manager avulso e usa o `wazuh-logtest`. Confere que 3 + 3 logins e 4 + 4 bloqueios em contas diferentes não correlacionam, que completar o limite numa conta só dispara com a conta certa e que a 40111 não pega eventos da AWS. Também tem uma guarda de versão: falha se os arquivos da AWS do Wazuh tiverem uma correlação que não está na lista avaliada (para uma atualização do Wazuh pelo Dependabot não reabrir o problema calada).
+  - Mutação: sem o arquivo, 6 verificações falham.
+  - `ci-test.sh` confere que o manager instalado tem o mesmo arquivo do repositório, que o analysisd carregou as regras e que roda como `wazuh`. Os testes do gerador cobrem a cópia (inclusive sem contas) e o modo 0644.
+- **Defesa na API (T5.2):** além disso, a API atribui o alerta pelo bucket de origem cadastrado e não guarda `previous_output` nem `full_log`.

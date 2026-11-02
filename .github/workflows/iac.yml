@@ -103,6 +103,10 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Nada mudou em infra/wazuh; o teste de ponta a ponta fica para o push na main."
           fi
+      - name: Correlações da AWS separadas por conta (wazuh-logtest)
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-rules.sh
       - name: Subida, rotação de senha e verificações
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh

@@ -60,6 +60,7 @@ services:
       - /verax/ossec.conf
       - /out/config
       - /out/aws
+      - /verax/rules
     user: root
     network_mode: none
     restart: 'no'
@@ -68,6 +69,7 @@ services:
     volumes:
       - ./scripts/render-manager-config.py:/verax/render-manager-config.py:ro
       - ./config/manager/ossec.conf:/verax/ossec.conf:ro
+      - ./config/manager/rules:/verax/rules:ro
       - manager-config:/out/config
       - manager-aws:/out/aws
 
