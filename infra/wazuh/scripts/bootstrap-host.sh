@@ -49,6 +49,25 @@ grep -q '^LABEL=wazuh-data ' /etc/fstab ||
 install -d -m 0711 "$data_dir"
 mountpoint -q "$data_dir" || mount "$data_dir"
 
+log "Agente do CloudWatch (uso dos discos, alarme da T8.6)"
+dnf -y -q install amazon-cloudwatch-agent
+cwagent=/opt/aws/amazon-cloudwatch-agent
+# ${aws:InstanceId} é preenchido pelo próprio agente.
+cat >"$cwagent/etc/verax.json" <<'EOF'
+{
+  "agent": { "metrics_collection_interval": 60, "run_as_user": "cwagent" },
+  "metrics": {
+    "namespace": "VeraxControl/Wazuh",
+    "append_dimensions": { "InstanceId": "${aws:InstanceId}" },
+    "metrics_collected": {
+      "disk": { "measurement": ["used_percent"], "resources": ["/data", "/"], "drop_device": true }
+    }
+  }
+}
+EOF
+chmod 0644 "$cwagent/etc/verax.json"
+"$cwagent/bin/amazon-cloudwatch-agent-ctl" -a fetch-config -m ec2 -s -c "file:$cwagent/etc/verax.json" >/dev/null
+
 log "Kernel e Docker"
 echo 'vm.max_map_count = 262144' >/etc/sysctl.d/90-wazuh.conf
 sysctl -q -p /etc/sysctl.d/90-wazuh.conf

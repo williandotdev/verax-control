@@ -354,3 +354,18 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Como funciona:** baseline passivo do OWASP ZAP com **bloqueio por risco alto**, lido do relatório JSON (o baseline sozinho não tem esse critério). Médios e baixos aparecem no relatório, guardado como artefato. Roda contra a stack local em todo CI, na rede isolada do teste da imagem, e contra o painel e a API publicados no staging, antes de liberar a produção.
 - **Testes:** rodado localmente contra a API em produção (TLS verificado com o banco): 0 alto, 1 médio, 0 baixo.
 - **Pendente:** o achado médio 10055 ("CSP: diretiva sem fallback") aparece nas respostas 404 de `/`, `/robots.txt` e `/sitemap.xml`, apesar de a CSP da API definir `frame-ancestors` e `form-action`. A investigar com o código do E2 na `main`, porque o E2 também mexe na configuração HTTP.
+
+## T8.6 Monitoramento e alarmes
+
+- **Arquivos:** `infra/terraform/modules/monitoring/main.tf`, `infra/terraform/modules/{api,database,prowler,wazuh}/main.tf` (saídas; permissão de métrica do Wazuh), `infra/wazuh/scripts/bootstrap-host.sh` (agente do CloudWatch), `infra/terraform/envs/{staging,production}/main.tf`
+- **Dependências:** nenhuma nova (agente do CloudWatch do repositório do Amazon Linux 2023).
+- **Como funciona:**
+  - **Logs centralizados com redaction:** todos os logs (API, tarefas, Wazuh, Prowler, WAF, CloudFront, banco, flow logs) vão para o CloudWatch, cifrados com KMS e com retenção. A aplicação remove segredos antes de registrar (redaction do logger, T1.1); WAF e conector omitem os cabeçalhos de credencial.
+  - **Alarmes** num tópico SNS cifrado com chave própria (a política aceita só CloudWatch e EventBridge da conta), com assinatura por e-mail configurável (`alarm_email` no `terraform.tfvars` local, fora do git):
+    - API: 5xx da aplicação e do load balancer, alvos reprovando no health check e tarefas abaixo do desejado;
+    - banco: CPU acima de 80% e menos de 5 GB livres;
+    - Wazuh: **disco de dados acima de 80%** (o indexer fica só leitura a 95%), pela métrica do agente do CloudWatch instalado pelo bootstrap (permissão só no namespace `VeraxControl/Wazuh`), e falha de status da instância;
+    - tarefas avulsas que terminam com erro (Prowler, bootstrap e migrations), por evento do ECS;
+    - **sincronização parada** e **conta sem evento há horas**: alarmes prontos sobre o contrato de métricas que o worker do E5 vai publicar (namespace `VeraxControl/Sync`, `SyncRuns` e `SilentAccounts`), desligados até o worker existir (`sync_alarms_enabled`).
+- **Testes:** `terraform validate` nos dois ambientes; tflint e shellcheck limpos; checkov (711 aprovados em Terraform, 0 falhas) e Trivy limpos.
+- **Definição de pronto:** logs centralizados no CloudWatch com redaction ✔ · alarmes de 5xx da API ✔ e de disco do Wazuh ✔ · alarmes de sync parado e conta sem evento ✔ (prontos; ligam com o worker do E5) · **nada aplicado na AWS** (portão)

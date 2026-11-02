@@ -51,6 +51,12 @@ variable "migrate_image_digest" {
   default     = null
 }
 
+variable "alarm_email" {
+  description = "E-mail que recebe os alarmes (fica no terraform.tfvars local, fora do git)."
+  type        = string
+  default     = null
+}
+
 variable "dns_zone_id" {
   description = "Zona pública do Route53 dos domínios. Nula: validação e apontamento à mão no DNS."
   type        = string
@@ -206,6 +212,19 @@ module "deploy" {
   }
 }
 
+module "monitoring" {
+  source                  = "../../modules/monitoring"
+  name                    = local.name
+  alarm_email             = var.alarm_email
+  alb_arn_suffix          = module.api.alb_arn_suffix
+  target_group_arn_suffix = module.api.target_group_arn_suffix
+  api_cluster_name        = module.api.cluster_name
+  api_desired_count       = 2
+  database_identifier     = module.database.identifier
+  wazuh_instance_id       = module.wazuh.instance_id
+  watched_cluster_arns    = [module.api.cluster_arn, module.prowler.cluster_arn]
+}
+
 output "vpc_id" {
   value = module.network.vpc_id
 }
@@ -253,4 +272,8 @@ output "ses_dkim_records" {
 output "deploy_role_arn" {
   description = "Valor da variável AWS_DEPLOY_ROLE_ARN do environment no GitHub."
   value       = module.deploy.role_arn
+}
+
+output "alarm_topic_arn" {
+  value = module.monitoring.alarm_topic_arn
 }
