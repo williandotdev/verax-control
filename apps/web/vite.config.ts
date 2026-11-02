@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { msw } from 'msw/vite';
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import { assertOnlyAllowedPublicEnv, securityHeaders } from './src/build-guards';
@@ -11,7 +12,8 @@ export default defineConfig(({ mode }) => {
   const apiUrl = env['VITE_API_URL'] ?? 'http://localhost:3000';
 
   return {
-    plugins: [react(), tailwindcss()],
+    // O Mock Service Worker só existe no modo `dev:mock`; nos outros modos o plugin nem é carregado.
+    plugins: [react(), tailwindcss(), ...(mode === 'mock' ? [msw()] : [])],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),

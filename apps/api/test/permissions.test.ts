@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { Controller, Get, Module } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { type Role, ROLES } from '@verax/shared';
+import { meSchema, type Role, ROLES } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Authenticated, RequirePermission } from '../src/auth/decorators.js';
@@ -102,6 +102,14 @@ describe('papéis e permissões (T2.4)', () => {
     for (const route of Object.keys(MATRIX)) {
       await request(app.getHttpServer()).get(`/v1/permissions-probe/${route}`).expect(401);
     }
+  });
+
+  it.each(ROLES)('/v1/me de %s segue o contrato compartilhado com o painel', async (role) => {
+    const response = await request(app.getHttpServer())
+      .get('/v1/me')
+      .set('Cookie', cookies.get(role) ?? '')
+      .expect(200);
+    expect(meSchema.safeParse(response.body).success).toBe(true);
   });
 
   it('/v1/me devolve as permissões do papel para o painel', async () => {

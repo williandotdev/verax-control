@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && vite build && node ../../scripts/scan-bundle.mjs dist",
     "dev": "vite",
+    "dev:mock": "vite --mode mock",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
