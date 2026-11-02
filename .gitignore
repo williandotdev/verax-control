@@ -39,3 +39,5 @@ blob-report/
 Thumbs.db
 *.log
 .idea/
+# Configuração do Firebase Hosting gerada no build do painel
+apps/web/dist-hosting.json

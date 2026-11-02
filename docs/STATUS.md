@@ -960,3 +960,23 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - avisos sem duplicata.
 
   Também conferi a compatibilidade das f-strings com o Python 3.9 do CloudShell e passei o actionlint no workflow.
+
+## Publicação do painel no Firebase Hosting ⚠️ altera `.github/`
+
+- **Decisões (02/11/2026):**
+  - projeto novo na GCP, `verax-control-prod`, na organização da Verax, isolado do Verax OS;
+  - destinos:
+    - `control.veraxsistemas.com.br`: demonstração comercial;
+    - `verax.control.veraxsistemas.com.br`: SOC da própria Verax, com fontes da GCP e do Cloudflare;
+    - `<cliente>.control.veraxsistemas.com.br`: um por cliente.
+  - subdomínio com o nome do cliente: o responsável aceitou que a relação fique pública nos certificados.
+- **Arquivos:** `apps/web/src/hosting.ts` (+ teste), `apps/web/src/components/demo-banner.tsx` (+ teste), `apps/web/src/App.tsx`, `apps/web/vite.config.ts`, `apps/web/package.json` (`build:demo`), `scripts/firebase-hosting-deploy.mjs`, `.github/workflows/painel.yml`, `docs/runbooks/painel.md`, `docs/ARQUITETURA.md`, `.gitignore`
+- **Dependências:** nenhuma npm nova. Action `google-github-actions/auth` v3.0.0, fixada pelo commit `7c6bc770` (sem alertas de segurança publicados).
+- **Como funciona:**
+  - **Publicação sem `firebase-tools`:** pela API REST do Firebase Hosting (versão, hashes, envio só do que mudou, finalização e release).
+  - **Configuração do site:** os cabeçalhos (CSP, HSTS, anti-iframe, Permissions-Policy, COOP) e o cache vêm de `firebaseHostingConfig`, que usa os mesmos `securityHeaders` do preview dos testes e2e. O build grava `dist-hosting.json`, fora do `dist`.
+  - **Demonstração:** é o build no modo `mock`. O MSW simula a API no navegador, com a "API" na própria origem do site, então a CSP só permite essa origem. Uma faixa avisa, em toda tela, que os dados são fictícios. Os builds normais não levam o MSW (conferido).
+  - **Login na GCP:** sem chave. A conta `painel-deployer` só aceita o subject `repo:williandotdev/verax-control:environment:painel` e só tem `firebasehosting.admin` no projeto novo.
+  - **Lista de sites:** fica em variável do environment, fora do código. Sem ela, o job não roda.
+- **Testes:** 6 do web (configuração do Hosting e faixa da demo). Builds de demo e normal conferidos (CSP e presença do MSW). actionlint limpo.
+- **Pendente:** ativar o Firebase no projeto exige aceitar os termos do Firebase pela conta Google do responsável. A API responde 403 até isso ser feito. Depois disso: criar os sites, configurar o environment, publicar e conectar os domínios no Cloudflare.

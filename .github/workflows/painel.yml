@@ -1,0 +1,96 @@
+name: Painel
+
+# Publica o painel no Firebase Hosting (projeto da Verax na GCP), um site por destino: a demonstração comercial
+# (dados fictícios no navegador), o SOC da própria Verax e cada cliente. A lista de sites fica na variável
+# PAINEL_SITES do environment `painel`, fora do código (ver docs/runbooks/painel.md). Login na GCP sem chave
+# (Workload Identity Federation): só jobs deste repositório no environment `painel`, que só aceita a `main`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'packages/shared/**'
+      - 'pnpm-lock.yaml'
+      - 'scripts/firebase-hosting-deploy.mjs'
+      - 'scripts/scan-bundle.mjs'
+      - '.github/workflows/painel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: painel
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    name: Publicar o painel (Firebase Hosting)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: painel
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # As variáveis do environment só existem dentro do job: a checagem de configuração fica num passo. Sem a lista
+      # de sites, não há o que publicar e os demais passos não rodam.
+      - name: Conferir a configuração
+        id: config
+        env:
+          SITES: ${{ vars.PAINEL_SITES }}
+        run: |
+          if [ -z "$SITES" ]; then
+            echo "::notice::PAINEL_SITES não configurada no environment painel; nada a publicar."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.config.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - if: steps.config.outputs.ready == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - if: steps.config.outputs.ready == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - if: steps.config.outputs.ready == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Login na GCP (sem chave)
+        if: steps.config.outputs.ready == 'true'
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          token_format: access_token
+          access_token_lifetime: 900s
+      - name: Publicar cada site
+        if: steps.config.outputs.ready == 'true'
+        env:
+          SITES: ${{ vars.PAINEL_SITES }}
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array" and length > 0' <<<"$SITES" >/dev/null
+          mapfile -t entries < <(jq -c '.[]' <<<"$SITES")
+          for entry in "${entries[@]}"; do
+            site=$(jq -er .site <<<"$entry")
+            domain=$(jq -er .dominio <<<"$entry")
+            if [ "$(jq -r '.modo // "producao"' <<<"$entry")" = "demo" ]; then
+              # Demonstração: a "API" é simulada no navegador, na própria origem do site.
+              VITE_API_URL="https://${domain}" pnpm --filter @verax/web build:demo
+            else
+              VITE_API_URL="$(jq -er .api <<<"$entry")" pnpm --filter @verax/web build
+            fi
+            node scripts/firebase-hosting-deploy.mjs "$site" apps/web/dist apps/web/dist-hosting.json
+            # Conferência no endereço padrão do Firebase (o domínio próprio pode ainda não estar no DNS).
+            headers=$(curl -fsSI --retry 5 --retry-all-errors "https://${site}.web.app/")
+            grep -qi '^content-security-policy:' <<<"$headers"
+            grep -qi '^strict-transport-security:' <<<"$headers"
+            echo "${site}: publicado e com os cabeçalhos de segurança"
+          done
