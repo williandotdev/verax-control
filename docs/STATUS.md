@@ -267,3 +267,27 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Testes:** 22 no front. Cliente HTTP (cookie, validação da resposta, CSRF buscado uma vez e renovado uma vez, rotas de auth sem CSRF, 401, `MFA_REQUIRED`, erros com status/código/requestId/problemas, 204), mensagens de erro, trava de `VITE_*`, CSP e rotas.
 - **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
 - **Teste manual:** `vite build` com `VITE_SECRET=x` falha citando só o nome; o build normal passa na varredura; um bundle falso com URL com senha e chave AWS falha a varredura; `vite preview` serve a CSP e os demais headers.
+
+## T6.2 Tema e tokens visuais
+
+- **Arquivos:** `apps/web/src/index.css`, `apps/web/public/theme-init.js`, `apps/web/index.html`, `apps/web/src/design/{theme,severity}.ts` (+ teste), `apps/web/src/components/{theme-toggle,ui/button,ui/button-variants,ui/card}.tsx`, `apps/web/src/lib/cn.ts`, `apps/web/src/pages/catalog/catalog-page.tsx`, `apps/web/src/routes/router.tsx`, `apps/web/src/test/setup.ts`, `eslint.config.js`
+- **Dependências:** nenhuma nova
+- **Cores de severidade** (validadas com o script da skill de visualização, não no olho):
+
+  | Severidade | Claro     | Escuro    | Ícone           |
+  | ---------- | --------- | --------- | --------------- |
+  | Crítico    | `#b42318` | `#d32f2f` | octógono        |
+  | Alto       | `#e8743b` | `#fb9b4f` | triângulo       |
+  | Médio      | `#f7c948` | `#ffe07a` | círculo com `!` |
+  | Baixo      | `#2a78d6` | `#3987e5` | círculo com `i` |
+  | Ok         | `#0e9f8e` | `#0e9f8e` | círculo com ✓   |
+  - A paleta de status de referência falhou no par **alto × médio** (ΔE 13,6, abaixo do piso de 15 até para visão normal) e no par **ok × vermelho/laranja para daltonismo** (ΔE 4,2–5,7). A escolhida separa crítico, alto e médio também por claro/escuro (mais grave, mais escuro) e desloca o "ok" para verde-azulado: em todos os pares e nos dois modos, separação para daltonismo ≥ 10,6 e para visão normal ≥ 16,3; no escuro, contraste ≥ 3:1.
+  - Fica abaixo de 3:1 contra o fundo claro: alto e médio. Por isso severidade **nunca aparece só como cor**: sempre com ícone de forma própria e rótulo, e o texto usa a tinta neutra (nunca a cor da severidade). A checagem de "faixa de luminosidade" do script é para paletas categóricas; em severidade, a variação de claro/escuro é intencional.
+  - A ação principal usa tinta neutra, não azul, para não competir com "baixo".
+
+- **Tema:** tokens por papel (fundo, superfície, tintas, borda, grade, foco), modos claro e escuro escolhidos à mão; padrão segue o sistema, com escolha manual guardada no navegador. O tema é aplicado antes da primeira pintura por um script externo (a CSP não aceita script inline). Foco visível em todo elemento interativo e respeito a `prefers-reduced-motion`.
+- **Catálogo** (`/catalogo`): severidade, tokens de base, escala tipográfica (fonte do sistema), espaçamento e botões. Só existe no build de desenvolvimento: a rota é removida do build de produção (conferido no `dist/`).
+- **Componentes base** no padrão shadcn/ui (`Button` com variações, `Card`), escritos no repositório sobre `radix-ui`.
+- **Testes:** 27 no front. Ícone e rótulo distintos por severidade, ordenação, tema seguindo o sistema e escolha manual persistida, conteúdo do catálogo.
+- **Definição de pronto:** critérios de aceite ✔ (cores semânticas, modos claro e escuro, tipografia e espaçamento padronizados, catálogo) · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔
+- **Teste manual:** build de produção sem o catálogo (sem a rota e sem o texto no JavaScript final); inspeção visual dos dois modos fica com o Playwright na T6.3.

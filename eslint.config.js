@@ -122,4 +122,14 @@ export default tseslint.config(
       globals: { ...globals.node },
     },
   },
+  {
+    // Scripts estáticos do painel (ex.: aplicação do tema antes da primeira pintura): navegador, sem tipos.
+    files: ['apps/web/public/**/*.js'],
+    ...tseslint.configs.disableTypeChecked,
+    languageOptions: {
+      ...tseslint.configs.disableTypeChecked.languageOptions,
+      sourceType: 'script',
+      globals: { ...globals.browser },
+    },
+  },
 );
