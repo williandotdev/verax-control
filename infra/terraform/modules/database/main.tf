@@ -138,9 +138,11 @@ resource "aws_db_parameter_group" "this" {
     value = "scram-sha-256"
   }
 
+  # No PostgreSQL 18 o parâmetro virou lista, e o RDS recusa o antigo "1" na família postgres18. Segundo as notas do
+  # RDS, "1" equivale a estas três fases: chegada, autenticação e autorização da conexão.
   parameter {
     name  = "log_connections"
-    value = "1"
+    value = "receipt,authentication,authorization"
   }
 
   parameter {

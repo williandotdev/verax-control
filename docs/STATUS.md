@@ -287,6 +287,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Produção:** Multi-AZ e proteção contra exclusão, explícitos no ambiente. **Staging:** `db.t4g.micro`, uma zona, sem proteção contra exclusão (só dados fictícios, pendência 7).
 - **Testes:** `terraform validate` nos dois ambientes; tflint (inclui a validação das classes de instância); checkov sem falhas, com duas exceções justificadas no código (Multi-AZ e proteção contra exclusão são variáveis: ligadas em produção, desligadas no staging); Trivy limpo.
 - **Definição de pronto:** critérios de aceite ✔ (RDS em subnet privada, criptografado, com backups automáticos; sem acesso público; credencial no Secrets Manager) · lint ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
+- **Correção (revisor automático do PR #7):** no PostgreSQL 18, `log_connections` virou lista, e o RDS recusa o antigo `"1"` na família `postgres18` (o apply falharia ao criar o grupo de parâmetros). Agora o valor é `receipt,authentication,authorization`, que as notas do RDS para o PostgreSQL 18 dão como equivalente ao antigo `1`. `terraform validate` nos dois ambientes.
 
 ## T8.3 Front no S3 + CloudFront
 
