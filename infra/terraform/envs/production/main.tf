@@ -48,6 +48,24 @@ module "network" {
   log_retention_days = 365
 }
 
+module "wazuh" {
+  source           = "../../modules/wazuh"
+  name             = local.name
+  vpc_id           = module.network.vpc_id
+  subnet_id        = module.network.private_subnet_ids[0]
+  data_kms_key_arn = module.kms.data_key_arn
+  logs_kms_key_arn = module.kms.logs_key_arn
+  bundle_dir       = "${path.root}/../../../wazuh"
+}
+
 output "vpc_id" {
   value = module.network.vpc_id
+}
+
+output "wazuh_instance_id" {
+  value = module.wazuh.instance_id
+}
+
+output "wazuh_apply_document" {
+  value = module.wazuh.apply_document_name
 }

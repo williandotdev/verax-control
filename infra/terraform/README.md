@@ -6,14 +6,15 @@ Infraestrutura da conta AWS da Verax. Tudo aqui é escrito e validado no CI (`.g
 
 ## Estrutura
 
-| Pasta                     | O que é                                                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `bootstrap/`              | Bucket do state remoto e a chave KMS que o cifra. Roda uma vez por conta.                                       |
-| `modules/private-bucket/` | Todo bucket S3 da conta: sem acesso público, dono único, SSE-KMS, versionamento, só TLS ≥ 1.2, ciclo de vida.   |
-| `modules/kms/`            | Chaves do ambiente: `data` (buckets, discos, segredos) e `logs` (CloudWatch Logs). Rotação automática.          |
-| `modules/network/`        | VPC em 2 zonas, subnets públicas e privadas, NAT, flow logs cifrados, SG padrão sem regras, endpoints privados. |
-| `envs/staging/`           | Staging pequeno: 1 NAT, sem Wazuh e só com dados fictícios. Dado real de cliente nunca chega aqui.              |
-| `envs/production/`        | Produção: 1 NAT por zona e, a partir da T4.2, o Wazuh.                                                          |
+| Pasta                     | O que é                                                                                                                             |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `bootstrap/`              | Bucket do state remoto e a chave KMS que o cifra. Roda uma vez por conta.                                                           |
+| `modules/private-bucket/` | Todo bucket S3 da conta: sem acesso público, dono único, SSE-KMS, versionamento, só TLS ≥ 1.2, ciclo de vida.                       |
+| `modules/kms/`            | Chaves do ambiente: `data` (buckets, discos, segredos) e `logs` (CloudWatch Logs). Rotação automática.                              |
+| `modules/network/`        | VPC em 2 zonas, subnets públicas e privadas, NAT, flow logs cifrados, SG padrão sem regras, endpoints privados.                     |
+| `modules/wazuh/`          | EC2 do Wazuh (só produção): subnet privada, acesso só por SSM, discos cifrados, senhas no Secrets Manager, bundle de `infra/wazuh`. |
+| `envs/staging/`           | Staging pequeno: 1 NAT, sem Wazuh e só com dados fictícios. Dado real de cliente nunca chega aqui.                                  |
+| `envs/production/`        | Produção: 1 NAT por zona e, a partir da T4.2, o Wazuh.                                                                              |
 
 ## Regras
 

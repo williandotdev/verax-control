@@ -1,0 +1,18 @@
+---
+# Usuários internos do indexer (T4.2). Os hashes são preenchidos pelo scripts/init-security.sh a partir das
+# senhas do Secrets Manager; este modelo nunca tem senha nem hash real.
+_meta:
+  type: 'internalusers'
+  config_version: 2
+
+admin:
+  hash: '__ADMIN_HASH__'
+  reserved: true
+  backend_roles:
+    - 'admin'
+  description: 'Administração do indexer e acesso ao dashboard'
+
+kibanaserver:
+  hash: '__DASHBOARD_HASH__'
+  reserved: true
+  description: 'Usuário de serviço do dashboard'

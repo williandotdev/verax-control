@@ -70,6 +70,43 @@ jobs:
           tflint --init --config "$PWD/.tflint.hcl"
           tflint --recursive --config "$PWD/.tflint.hcl" --format compact
 
+  wazuh:
+    name: Wazuh (scripts, compose e teste de ponta a ponta)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck -x -S style infra/wazuh/scripts/*.sh
+      - name: Compose válida (com senhas fictícias, só para interpolar)
+        working-directory: infra/wazuh
+        env:
+          INDEXER_ADMIN_PASSWORD: ficticia
+          INDEXER_DASHBOARD_PASSWORD: ficticia
+          WAZUH_API_PASSWORD: ficticia
+        run: docker compose config --quiet
+      - name: O PR mexe no Wazuh?
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ $EVENT_NAME != pull_request ]] || ! git diff --quiet "$BASE_SHA" HEAD -- infra/wazuh .github/workflows/iac.yml; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Nada mudou em infra/wazuh; o teste de ponta a ponta fica para o push na main."
+          fi
+      - name: Subida, rotação de senha e verificações
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          bash scripts/ci-test.sh
+
   checkov:
     name: Checkov (políticas de segurança da infra)
     runs-on: ubuntu-24.04

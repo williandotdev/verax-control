@@ -45,7 +45,9 @@ updates:
       prefix: ci
 
   - package-ecosystem: docker-compose
-    directory: /
+    directories:
+      - /
+      - /infra/wazuh
     schedule:
       interval: weekly
       day: monday
