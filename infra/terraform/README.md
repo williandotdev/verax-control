@@ -97,11 +97,9 @@ Pré-requisito: acesso administrativo à conta Verax por SSO, com MFA. Nunca use
    dns_zone_id  = "Z0123456789ABCDEFGHIJ" # zona pública no Route53; omita se o DNS estiver em outro provedor
    ```
 
-   Com a zona no Route53, o Terraform valida os certificados e cria os registros. Com o DNS em outro provedor:
-   1. `terraform apply -target=module.frontend.aws_acm_certificate.panel` cria só o certificado;
-   2. `terraform output panel_certificate_validation_records` mostra os CNAMEs de validação: crie-os no DNS;
-   3. `terraform apply` completo, que espera a validação;
-   4. aponte o domínio do painel (CNAME) para `terraform output panel_distribution_domain`.
+   Com a zona no Route53, o Terraform valida os certificados e cria os registros. Com o DNS em outro provedor
+   (é o caso da Verax: Cloudflare), siga a seção "DNS no Cloudflare" abaixo. Os valores da Verax estão em
+   `terraform.tfvars.example` de cada ambiente.
 
 5. **Ambientes:**
 
@@ -113,6 +111,64 @@ Pré-requisito: acesso administrativo à conta Verax por SSO, com MFA. Nunca use
 
    Revise o plano antes de qualquer `apply`. A partir do E8, staging e produção são aplicados pelo
    `deploy.yml`, com OIDC e aprovação manual para produção.
+
+## DNS no Cloudflare
+
+O DNS de `veraxsistemas.com.br` fica no Cloudflare. Painel e API rodam na AWS (CloudFront e ALB, com certificados do
+ACM); o Cloudflare só aponta os nomes.
+
+| Ambiente | Painel                                 | API                                        | Remetente dos e-mails                               |
+| -------- | -------------------------------------- | ------------------------------------------ | --------------------------------------------------- |
+| Produção | `control.veraxsistemas.com.br`         | `api.control.veraxsistemas.com.br`         | `nao-responda@control.veraxsistemas.com.br`         |
+| Staging  | `staging.control.veraxsistemas.com.br` | `api.staging.control.veraxsistemas.com.br` | `nao-responda@staging.control.veraxsistemas.com.br` |
+
+**Todo registro abaixo fica com proxy desligado ("DNS only", nuvem cinza).** Com o proxy do Cloudflare na frente:
+
+- a API veria o IP do Cloudflare em vez do IP do usuário, e o limite de tentativas de login e a auditoria
+  passariam a misturar todo mundo;
+- o WAF da AWS deixaria de enxergar quem ataca;
+- o painel teria dois CDNs, com cache e cabeçalhos de segurança em conflito.
+
+TLS, WAF e cabeçalhos ficam na AWS.
+
+Antes de começar: se a zona tiver algum registro CAA, acrescente `0 issue "amazon.com"` (sem nenhum CAA, nada a
+fazer). No Cloudflare, o campo "Name" recebe o nome sem `.veraxsistemas.com.br` (ex.: `api.control`).
+
+Em cada ambiente (`envs/staging`, depois `envs/production`), com `terraform.tfvars` copiado do exemplo:
+
+1. **Certificados.** Crie só os dois certificados:
+
+   ```sh
+   terraform apply -target=module.frontend.aws_acm_certificate.panel -target=module.api.aws_acm_certificate.api
+   terraform output panel_certificate_validation_records
+   terraform output api_certificate_validation_records
+   ```
+
+   No Cloudflare, crie um **CNAME** para cada registro de validação (nome `_xxxx.control` → valor
+   `_yyyy.acm-validations.aws`). Eles ficam permanentes: o ACM os usa para renovar os certificados sozinho.
+
+2. **Ambiente completo.** `terraform apply` (espera a validação dos certificados, alguns minutos depois do DNS).
+
+3. **Nomes do painel e da API.** No Cloudflare:
+   - **CNAME** `control` (staging: `staging.control`) → valor de `terraform output panel_distribution_domain`
+     (`dxxxx.cloudfront.net`);
+   - **CNAME** `api.control` (staging: `api.staging.control`) → valor de `terraform output api_alb_dns_name`
+     (`...sa-east-1.elb.amazonaws.com`).
+
+4. **E-mail (SES).**
+   - **DKIM:** `terraform output ses_dkim_records` lista três registros. Para cada um, crie um **CNAME**
+     (`<token>._domainkey.control` → `<token>.dkim.amazonses.com`).
+   - **DMARC:** um **TXT** em `_dmarc.control` com `v=DMARC1; p=quarantine; adkim=s`. O SES assina com o
+     domínio do remetente (DKIM alinhado), então a política pode ser estrita desde o início.
+   - **Saída do sandbox:** no console do SES (`sa-east-1`), peça acesso de produção. Enquanto a conta estiver no
+     sandbox, o SES só entrega para endereços verificados, e os convites não chegam aos clientes.
+
+5. **Conferir.**
+
+   ```sh
+   curl -sI https://control.veraxsistemas.com.br/ | grep -i strict-transport-security
+   curl -s https://api.control.veraxsistemas.com.br/health
+   ```
 
 ## Ligar o deploy (T8.5)
 

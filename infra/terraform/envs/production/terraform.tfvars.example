@@ -1,0 +1,8 @@
+# Copie para terraform.tfvars (fora do git) e preencha o e-mail que recebe os alarmes.
+# O DNS de veraxsistemas.com.br fica no Cloudflare: sem dns_zone_id, os registros são criados à mão
+# (roteiro na seção "DNS no Cloudflare" do README do Terraform).
+panel_domain = "control.veraxsistemas.com.br"
+api_domain   = "api.control.veraxsistemas.com.br"
+# Subdomínio próprio para os e-mails do painel: a reputação de envio fica separada do domínio principal.
+mail_from = "nao-responda@control.veraxsistemas.com.br"
+# alarm_email = "e-mail que recebe os alarmes"

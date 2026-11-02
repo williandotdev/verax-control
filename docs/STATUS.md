@@ -925,3 +925,16 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **CI:** novo job "Testes de navegador" (Playwright + Chromium) roda o catálogo, o modo mock e o e2e de ponta a ponta com PostgreSQL. Ele entra como check obrigatório no `.github/rulesets/main.json`; o ruleset vivo só será atualizado depois do merge deste épico, senão o PR do E2 ficaria esperando um check que ele não tem.
 - **Definição de pronto:** critérios de aceite ✔ (login, cadastro e verificação de MFA, códigos de recuperação, redefinição e aceite de convite, mensagens que não revelam se o e-mail existe) · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
 - **Observação de ambiente:** no Windows, com a suíte da API em paralelo e logo depois de várias rodadas do Playwright, um processo do Vitest caiu uma vez com encerramento forçado nativo (0xC0000409). Não é falha de teste: o mesmo arquivo passa isolado 6 em 6 vezes, a suíte inteira passa 3 em 3, e no CI (Linux) nunca ocorreu. A limitação a 4 workers continua.
+
+## Domínio do painel (pendência 4) ⚠️ altera `.github/`
+
+- **Arquivos:** `infra/terraform/envs/{production,staging}/terraform.tfvars.example`, `infra/terraform/README.md` (seção "DNS no Cloudflare"), `.github/workflows/release.yml`
+- **Como fica:**
+  - **Produção:** painel em `control.veraxsistemas.com.br`, API em `api.control.veraxsistemas.com.br`, e-mails de `nao-responda@control.veraxsistemas.com.br`.
+  - **Staging:** os mesmos nomes sob `staging.control.veraxsistemas.com.br`.
+  - Painel e API continuam na AWS (CloudFront e ALB, com certificados do ACM). O Cloudflare, onde está o DNS de `veraxsistemas.com.br`, só aponta os nomes, com o proxy desligado: com ele, a API veria o IP do Cloudflare (limite de login e auditoria misturariam todos os usuários) e o WAF da AWS ficaria cego.
+  - Painel e API sob o mesmo domínio registrável: o cookie de sessão `SameSite=Strict` funciona entre os dois.
+  - E-mail num subdomínio próprio, com DKIM do SES e DMARC estrito, sem tocar no e-mail do domínio principal.
+  - O `release.yml` mostra o endereço do painel em cada implantação do GitHub, lido da configuração que o Terraform grava (sem repetir o domínio no workflow).
+  - O GitHub não precisa do domínio. Para ligar o deploy, faltam `AWS_DEPLOY_ROLE_ARN` em cada environment e `AWS_DEPLOY_ENABLED=true`, que dependem da conta AWS aplicada.
+- **Testes:** os domínios passam na validação das variáveis dos módulos; `terraform fmt` dos exemplos; actionlint 1.7.12 em todos os workflows sem achados.

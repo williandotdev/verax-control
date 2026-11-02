@@ -21,7 +21,11 @@ jobs:
     name: Publicar em ${{ inputs.environment }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      # Endereço do painel publicado, lido da configuração que o Terraform grava (control.veraxsistemas.com.br em
+      # produção). Aparece na página de implantações do GitHub.
+      url: ${{ steps.config.outputs.panel_url }}
     permissions:
       contents: read
       id-token: write
@@ -46,11 +50,14 @@ jobs:
           role-session-name: verax-deploy-${{ inputs.environment }}
           aws-region: sa-east-1
       - name: Build do painel com a API deste ambiente
+        id: config
         env:
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          api_domain=$(aws ssm get-parameter --name "/verax-control/verax-control-${ENVIRONMENT}/release/config" \
-            --query Parameter.Value --output text | jq -er .api_domain)
+          config=$(aws ssm get-parameter --name "/verax-control/verax-control-${ENVIRONMENT}/release/config" \
+            --query Parameter.Value --output text)
+          api_domain=$(jq -er .api_domain <<<"$config")
+          echo "panel_url=https://$(jq -er .panel_domain <<<"$config")" >> "$GITHUB_OUTPUT"
           pnpm install --frozen-lockfile
           VITE_API_URL="https://${api_domain}" pnpm --filter @verax/web build
       - name: Publicar
