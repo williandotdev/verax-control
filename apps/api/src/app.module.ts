@@ -13,6 +13,7 @@ import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/log
 import { PrismaModule } from './common/prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
 import { MailModule } from './mail/mail.module.js';
+import { TenantsModule } from './tenants/tenants.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
@@ -33,6 +34,7 @@ export class AppModule {
         MailModule,
         AuthModule,
         HealthModule,
+        TenantsModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },

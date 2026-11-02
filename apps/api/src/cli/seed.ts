@@ -7,8 +7,11 @@ import { loadConfig } from '../common/config/load-config.js';
 import { AuditService } from '../common/audit/audit.service.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 
-/** Clientes fictícios para desenvolvimento. Nenhum nome de cliente real entra no repositório. */
-const DEMO_TENANTS = ['Cliente Demo Alfa', 'Cliente Demo Beta'] as const;
+/** Clientes fictícios para desenvolvimento. Nenhum dado de cliente real entra no repositório. */
+const DEMO_TENANTS = [
+  { name: 'Cliente Demo Alfa', cnpj: '11222333000181' },
+  { name: 'Cliente Demo Beta', cnpj: '12ABC34501DE35' },
+] as const;
 
 const seedEnvSchema = z.object({
   SEED_ADMIN_EMAIL: z.email(),
@@ -44,9 +47,18 @@ async function seed(): Promise<void> {
       audit: (entry) => auditService.write(prisma, entry),
     });
 
-    for (const name of DEMO_TENANTS) {
+    for (const { name, cnpj } of DEMO_TENANTS) {
       const existing = await prisma.tenant.findFirst({ where: { name }, select: { id: true } });
-      if (!existing) await prisma.tenant.create({ data: { name } });
+      if (existing) continue;
+      await prisma.tenant.create({
+        data: {
+          name,
+          cnpj,
+          plan: 'Demonstração',
+          escalationName: 'Contato de demonstração',
+          escalationEmail: 'contato@cliente-demo.example',
+        },
+      });
     }
 
     const email = env.data.SEED_ADMIN_EMAIL.toLowerCase();
@@ -63,7 +75,7 @@ async function seed(): Promise<void> {
       });
       console.log(`Admin ${email} criado. A senha está em SEED_ADMIN_PASSWORD no seu .env.`);
     }
-    console.log(`Clientes de demonstração: ${DEMO_TENANTS.join(', ')}.`);
+    console.log(`Clientes de demonstração: ${DEMO_TENANTS.map(({ name }) => name).join(', ')}.`);
   } finally {
     await prisma.$disconnect();
   }

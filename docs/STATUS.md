@@ -432,3 +432,17 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - `logs:DescribeLogGroups` entra num bloco separado com recurso `*`, porque a ação não aceita restrição por recurso. Criar, escrever e listar streams continua restrito ao log group dos flow logs.
   - A relação de confiança passa a exigir `aws:SourceAccount` igual à própria conta e `aws:SourceArn` de um flow log desta conta e região. É a proteção contra "confused deputy" que a mesma página recomenda.
 - **Testes:** `fmt -check` e `terraform validate` válidos em staging e produção · checkov no módulo: 51 aprovados, 0 falhas (a ação sem recurso é reconhecida como não restringível) · tflint no CI.
+
+## T3.1 Cadastro de clientes
+
+- **Arquivos:** `packages/shared/src/tenants.ts` (+ teste), `apps/api/src/tenants/{tenants.controller,tenants.service,tenants.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102174939_tenant_registration/`, `apps/api/src/cli/seed.ts`, `apps/api/test/tenants.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** nome, CNPJ, plano (texto livre, até 60 caracteres, premissa aprovada), contato de escalonamento (nome, e-mail e telefone opcional) e status.
+  - **CNPJ:** valida o formato alfanumérico que a Receita emite desde julho de 2026, que inclui o numérico antigo: 12 caracteres de A a Z ou 0 a 9, mais dois dígitos verificadores pelo módulo 11, com cada caractere valendo o código ASCII menos 48. Aceita com ou sem máscara, guarda só os 14 caracteres em maiúsculas, e é único (409 se repetido).
+  - **Rotas** (só `admin_verax`, permissões `tenants:read` e `tenants:write`): `GET /v1/tenants` (resumo `id`, `name`, `status`, no contrato que o seletor do painel já valida, com filtro por status), `GET /v1/tenants/:id` (cadastro completo), `POST`, `PATCH` (parcial, com reativação por `status`) e `DELETE`, que é exclusão lógica.
+  - **Desativar** derruba na hora as sessões dos usuários do cliente e limpa a seleção de `admin_verax` que estavam nele.
+  - **Auditoria:** criação, alteração, desativação e reativação entram na trilha do próprio cliente, com estado anterior e novo.
+  - No banco, CNPJ, plano e contato ficam opcionais só por causa dos clientes criados antes do cadastro completo; a API exige todos. O seed passou a criar os clientes de demonstração com cadastro completo e CNPJs fictícios válidos.
+- **Testes:** 17 de integração. Cobrem os três papéis de cliente recebendo 403 em todas as rotas sem alterar nada; criação com CNPJ normalizado e auditoria na trilha do novo cliente; CNPJ repetido com 409; recusa de CNPJ inválido, `status` ou campo desconhecido no corpo, contato ausente e plano longo; listagem no contrato estrito do seletor; filtro por status; 404 e 400; alteração parcial auditada; alteração vazia recusada; desativação com sessões derrubadas, seleção limpa e reativação auditada; troca para CNPJ já usado. No pacote compartilhado, 17 testes do CNPJ e do schema. Mutação: sem derrubar as sessões, 1 falha; com permissão errada na listagem, 3 falham.
+- **Definição de pronto:** critérios de aceite ✔ (campos, só `admin_verax` cria, edita e desativa, exclusão lógica, testes de permissão) · lint e tipos ✔ · dependências n/a · regras de segurança ✔

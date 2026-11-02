@@ -74,16 +74,23 @@ enum TenantStatus {
   inactive
 }
 
-/// Cliente da Verax. Os demais campos do cadastro entram na T3.1.
+/// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
+/// causa dos clientes criados antes do cadastro completo.
 model Tenant {
-  id             String       @id @default(uuid(7)) @db.Uuid
-  name           String       @db.VarChar(120)
-  status         TenantStatus @default(active)
-  createdAt      DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
-  users          User[]
+  id              String       @id @default(uuid(7)) @db.Uuid
+  name            String       @db.VarChar(120)
+  /// 14 caracteres, sem máscara (numérico ou alfanumérico).
+  cnpj            String?      @unique @db.VarChar(14)
+  plan            String?      @db.VarChar(60)
+  escalationName  String?      @db.VarChar(120)
+  escalationEmail String?      @db.VarChar(254)
+  escalationPhone String?      @db.VarChar(20)
+  status          TenantStatus @default(active)
+  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @db.Timestamptz(3)
+  users           User[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
-  activeSessions Session[]
+  activeSessions  Session[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -92,19 +99,19 @@ model Tenant {
 // ---------------------------------------------------------------------------------------------------
 
 model User {
-  id               String      @id
-  name             String      @db.VarChar(120)
-  email            String      @unique @db.VarChar(254)
-  emailVerified    Boolean     @default(false)
+  id               String         @id
+  name             String         @db.VarChar(120)
+  email            String         @unique @db.VarChar(254)
+  emailVerified    Boolean        @default(false)
   image            String?
   role             UserRole
-  tenantId         String?     @db.Uuid
-  tenant           Tenant?     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  status           UserStatus  @default(invited)
+  tenantId         String?        @db.Uuid
+  tenant           Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status           UserStatus     @default(invited)
   /// MFA (T2.2): sem ele, a sessão só alcança o cadastro do próprio MFA.
-  twoFactorEnabled Boolean     @default(false)
-  createdAt        DateTime    @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime    @updatedAt @db.Timestamptz(3)
+  twoFactorEnabled Boolean        @default(false)
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(3)
   sessions         Session[]
   accounts         Account[]
   twoFactors       TwoFactor[]
