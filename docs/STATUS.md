@@ -326,3 +326,51 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Pendente (depois do E3):**
   - o endpoint `GET /v1/tower`, com as contagens por cliente via `db.tenant()`;
   - o horário do último evento por conta, que precisa de uma consulta própria ao indexer com agregação por conta, porque o sync só lê alertas de nível 5 ou mais e uma conta tranquila pareceria silenciosa.
+
+## T5.9 Inventário de ativos e identidades: núcleo (job e endpoints depois do E3)
+
+- **Arquivos:**
+  - `apps/api/src/inventory/{read-only-session,collectors,risk-rules,inventory}.ts`;
+  - `apps/api/test/inventory/{fake-aws,read-only-session.test,inventory.test,risk-rules.test}.ts`;
+  - `apps/api/package.json`, `pnpm-lock.yaml`.
+- **Dependências:** `@aws-sdk/client-sts`, `@aws-sdk/client-iam`, `@aws-sdk/client-ec2` e `@aws-sdk/client-s3` 3.1161.0, da lista aprovada. É a última versão, de 30/10, fora da quarentena, e a mesma dos clientes que já estavam no projeto. Entraram só 7 pacotes novos (o resto é compartilhado), e a política de confiança do workspace aceitou todos.
+- **Como funciona:**
+  - **Sessão** (`assumeReadOnlyRole`): papel `arn:aws:iam::<conta>:role/VeraxControlReadOnly`, derivado do ID (o cadastro não escolhe papel). Usa o ExternalId da conta, sessão de 15 minutos e nome fixo.
+    - Conta e ExternalId fora do formato são recusados antes de chamar a AWS.
+    - **As credenciais temporárias ficam num campo privado**, e o objeto se apresenta como `[credenciais temporárias]` no JSON, no texto e no log.
+    - Os erros citam só a conta e o código da AWS (a mensagem da AWS traz ARNs e detalhes).
+  - **Coleta**, só com leituras cobertas pelo papel (SecurityAudit + ViewOnlyAccess):
+    - root (MFA e chaves);
+    - usuários IAM (console, MFA, chaves com idade e último uso);
+    - instâncias EC2 (estado, IP público, IMDSv2) e security groups (regras abertas para 0.0.0.0/0 ou ::/0), nas regiões habilitadas ou nas do cadastro;
+    - buckets (política pública, ACL pública e bloqueio de acesso público).
+
+    Paginação completa, teto de 1.000 itens por tipo (com aviso de corte) e no máximo 4 chamadas simultâneas. Políticas, tags e conteúdo não são lidos. Uma parte que falha (permissão, região desligada) fica em `errors` com o código e não derruba as outras. "Sem perfil de console" só vale para o erro `NoSuchEntity`: outro erro sobe, para não virar "sem console" por engano.
+
+  - **Risco por ativo** (regras v1, com motivo para a tela):
+    - root sem MFA ou com chave: crítico;
+    - console sem MFA: alto;
+    - chave ativa com mais de 90 dias: médio;
+    - chave parada há 90 dias (contando da criação, se nunca usada): baixo;
+    - security group: tudo aberto, 22 ou 3389 é crítico; porta de banco é alto; outra porta é médio; só 80/443 ou ICMP é baixo;
+    - instância: IMDSv1 com IP público é médio, sem IP público é baixo;
+    - bucket com política ou ACL pública que o bloqueio do bucket não impede: alto;
+    - bucket sem bloqueio ou com leitura recusada: baixo.
+- **Testes:** 18, com clientes falsos da AWS que registram cada chamada e nada de rede:
+  - parâmetros exatos do AssumeRole;
+  - credenciais escondidas em JSON, texto e `inspect`;
+  - entrada inválida sem chamada;
+  - erro sem ExternalId nem mensagem da AWS;
+  - IAM em duas páginas e no teto;
+  - S3 com cada caso de leitura;
+  - conta inteira com uma região sem permissão e com regiões do cadastro;
+  - papel recusado sem coleta;
+  - todas as regras de risco.
+
+  **Mutação:** tirar a validação do ExternalId, pôr a mensagem da AWS no erro, tratar qualquer erro como "sem console", ignorar o bloqueio do bucket, contar a chave nova como parada ou remover uma das camadas que escondem a credencial é pego pelos testes.
+
+- **Desvio:** o bloqueio de acesso público **no nível da conta** não é lido, porque exigiria o `@aws-sdk/client-s3-control`, fora da lista aprovada. Por isso o bucket público fica "alto", e não "crítico". A postura do Prowler (T5.8) confere esse caso por completo. Se quiser, aprove o pacote e eu completo.
+- **Pendente (depois do E3):**
+  - o job, por conta cadastrada, com o ExternalId do cadastro e o papel IAM próprio do worker (T8.4);
+  - os models do inventário;
+  - os endpoints de listagem com o risco.

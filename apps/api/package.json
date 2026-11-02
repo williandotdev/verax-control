@@ -20,8 +20,12 @@
     "db:status": "prisma migrate status"
   },
   "dependencies": {
+    "@aws-sdk/client-ec2": "3.1161.0",
+    "@aws-sdk/client-iam": "3.1161.0",
+    "@aws-sdk/client-s3": "3.1161.0",
     "@aws-sdk/client-secrets-manager": "3.1161.0",
     "@aws-sdk/client-ssm": "3.1161.0",
+    "@aws-sdk/client-sts": "3.1161.0",
     "@nestjs/common": "12.3.2",
     "@nestjs/core": "12.3.2",
     "@nestjs/platform-express": "12.3.2",
