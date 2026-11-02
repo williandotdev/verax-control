@@ -3,7 +3,8 @@
 // hash de cada arquivo comprimido, envia só os que o Firebase ainda não tem, finaliza a versão e a publica.
 //
 // Uso: node scripts/firebase-hosting-deploy.mjs <site> <pasta> <config.json>
-// Credenciais: GOOGLE_ACCESS_TOKEN (token OAuth da conta de deploy) e GCP_PROJECT (projeto de cobrança da cota).
+// Credencial: GOOGLE_ACCESS_TOKEN (token OAuth da conta de deploy). GCP_QUOTA_PROJECT é opcional e só serve para
+// execução manual com credencial de usuário (a conta de deploy usa o próprio projeto e não precisa dele).
 // O token nunca é impresso.
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -15,10 +16,10 @@ const MAX_FILES = 1000;
 
 const [site, dir, configFile] = process.argv.slice(2);
 const token = process.env.GOOGLE_ACCESS_TOKEN;
-const project = process.env.GCP_PROJECT;
-if (!site || !dir || !configFile || !token || !project) {
+const quotaProject = process.env.GCP_QUOTA_PROJECT;
+if (!site || !dir || !configFile || !token) {
   console.error(
-    'Uso: GOOGLE_ACCESS_TOKEN=... GCP_PROJECT=... node scripts/firebase-hosting-deploy.mjs <site> <pasta> <config.json>',
+    'Uso: GOOGLE_ACCESS_TOKEN=... node scripts/firebase-hosting-deploy.mjs <site> <pasta> <config.json>',
   );
   process.exit(2);
 }
@@ -42,7 +43,7 @@ async function call(method, url, body) {
     method,
     headers: {
       Authorization: `Bearer ${token}`,
-      'x-goog-user-project': project,
+      ...(quotaProject ? { 'x-goog-user-project': quotaProject } : {}),
       'Content-Type': 'application/json',
     },
     body: body === undefined ? undefined : JSON.stringify(body),

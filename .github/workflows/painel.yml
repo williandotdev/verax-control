@@ -27,8 +27,6 @@ concurrency:
 jobs:
   publicar:
     name: Publicar o painel (Firebase Hosting)
-    # Sem a lista de sites configurada, não há o que publicar.
-    if: vars.PAINEL_SITES != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: painel
@@ -36,16 +34,34 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # As variáveis do environment só existem dentro do job: a checagem de configuração fica num passo. Sem a lista
+      # de sites, não há o que publicar e os demais passos não rodam.
+      - name: Conferir a configuração
+        id: config
+        env:
+          SITES: ${{ vars.PAINEL_SITES }}
+        run: |
+          if [ -z "$SITES" ]; then
+            echo "::notice::PAINEL_SITES não configurada no environment painel; nada a publicar."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.config.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - if: steps.config.outputs.ready == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - if: steps.config.outputs.ready == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - if: steps.config.outputs.ready == 'true'
+        run: pnpm install --frozen-lockfile
       - name: Login na GCP (sem chave)
+        if: steps.config.outputs.ready == 'true'
         id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -54,9 +70,9 @@ jobs:
           token_format: access_token
           access_token_lifetime: 900s
       - name: Publicar cada site
+        if: steps.config.outputs.ready == 'true'
         env:
           SITES: ${{ vars.PAINEL_SITES }}
-          GCP_PROJECT: ${{ vars.GCP_PROJECT }}
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: |
           set -euo pipefail

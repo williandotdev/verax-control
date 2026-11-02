@@ -27,7 +27,6 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
 
 | Variável           | Valor                                                                        |
 | ------------------ | ---------------------------------------------------------------------------- |
-| `GCP_PROJECT`      | `verax-control-prod`                                                         |
 | `GCP_DEPLOY_SA`    | `painel-deployer@verax-control-prod.iam.gserviceaccount.com`                 |
 | `GCP_WIF_PROVIDER` | provedor `github-provider` do pool `github-pool` (projeto `verax-os-shared`) |
 | `PAINEL_SITES`     | lista JSON dos sites (abaixo)                                                |
