@@ -8,7 +8,9 @@ install -d -m 0700 "$bundle"
 aws s3 sync --only-show-errors --delete --region '${region}' 's3://${bucket}/${prefix}/' "$bundle/"
 cd "$bundle"
 sha256sum --check --strict --quiet SHA256SUMS
-export WAZUH_SECRET_ARN='${secret_arn}' WAZUH_AWS_SOURCES_SECRET_ARN='${sources_arn}'
+export WAZUH_SECRET_ARN='${secret_arn}' WAZUH_API_READ_SECRET_ARN='${api_read_arn}'
+export WAZUH_AWS_SOURCES_SECRET_ARN='${sources_arn}' INDEXER_CA_PARAMETER='${ca_parameter}'
 export DATA_VOLUME_ID='${data_volume_id}' AWS_REGION='${region}'
 export CONTAINER_LOG_GROUP='${log_group}' INDEXER_HEAP='${indexer_heap}'
+export INDEXER_EXTRA_SANS='${extra_sans}' INDEXER_PUBLISH_ADDRESS='${publish_address}'
 bash scripts/bootstrap-host.sh

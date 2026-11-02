@@ -89,6 +89,7 @@ jobs:
           INDEXER_ADMIN_PASSWORD: ficticia
           INDEXER_DASHBOARD_PASSWORD: ficticia
           WAZUH_API_PASSWORD: ficticia
+          INDEXER_API_READ_PASSWORD: ficticia
         run: docker compose config --quiet
       - name: O PR mexe no Wazuh?
         id: changes

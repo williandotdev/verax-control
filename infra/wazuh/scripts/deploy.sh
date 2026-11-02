@@ -6,6 +6,7 @@
 #   INDEXER_ADMIN_PASSWORD      usuário `admin` do indexer (também o login do dashboard)
 #   INDEXER_DASHBOARD_PASSWORD  usuário de serviço `kibanaserver`
 #   WAZUH_API_PASSWORD          usuário `wazuh-wui` da API do manager
+#   INDEXER_API_READ_PASSWORD   usuário `verax_api_read` do indexer, que a API do Verax Control usa (T4.8)
 # No EC2 quem as define é o bootstrap-host.sh, a partir do Secrets Manager.
 # WAZUH_AWS_SOURCES_FILE: arquivo com a lista JSON das contas AWS conectadas (T4.4 a T4.6); sem ele, nenhuma.
 # Opcionais: INDEXER_HEAP (padrão 1g), INDEXER_PUBLISH_ADDRESS (padrão 127.0.0.1), INDEXER_EXTRA_SANS,
@@ -28,10 +29,11 @@ check_password() {
 check_password INDEXER_ADMIN_PASSWORD
 check_password INDEXER_DASHBOARD_PASSWORD
 check_password WAZUH_API_PASSWORD
-if [[ $INDEXER_ADMIN_PASSWORD == "$INDEXER_DASHBOARD_PASSWORD" ||
-  $INDEXER_ADMIN_PASSWORD == "$WAZUH_API_PASSWORD" ||
-  $INDEXER_DASHBOARD_PASSWORD == "$WAZUH_API_PASSWORD" ]]; then
-  echo "ERRO: as três senhas devem ser diferentes." >&2
+check_password INDEXER_API_READ_PASSWORD
+distinct=$(printf '%s\n' "$INDEXER_ADMIN_PASSWORD" "$INDEXER_DASHBOARD_PASSWORD" "$WAZUH_API_PASSWORD" \
+  "$INDEXER_API_READ_PASSWORD" | sort -u | wc -l)
+if ((distinct != 4)); then
+  echo "ERRO: as quatro senhas devem ser diferentes." >&2
   exit 1
 fi
 
@@ -39,7 +41,7 @@ compose() { docker compose --progress quiet "$@"; }
 
 sources_file=${WAZUH_AWS_SOURCES_FILE:-/dev/null}
 
-echo "1/4 Certificados, usuários internos do indexer e configuração do manager"
+echo "1/4 Certificados, segurança do indexer e configuração do manager"
 # `run --rm`: os jobs de init não ficam parados guardando as senhas no ambiente do contêiner.
 compose run --rm --no-deps certs-init
 compose run --rm --no-deps security-init
@@ -53,14 +55,15 @@ export WAZUH_MANAGER_CONFIG_HASH
 echo "2/4 Indexer"
 compose up -d --wait --wait-timeout 600 --no-deps wazuh.indexer
 
-echo "3/4 Usuários internos aplicados no índice de segurança"
-# Na primeira subida o índice já nasce do internal_users.yml; nas seguintes, é aqui que a senha nova entra.
+echo "3/4 Configuração de segurança aplicada no indexer"
+# Na primeira subida o índice de segurança já nasce dos arquivos; nas seguintes, é aqui que senhas, papéis e
+# mapeamentos novos entram. A configuração inteira é reaplicada: os arquivos são a única fonte.
 # shellcheck disable=SC2016 # expandido pelo bash do contêiner
 if ! output=$(compose exec -T wazuh.indexer bash -c '
   export JAVA_HOME=/usr/share/wazuh-indexer/jdk
   certs=/usr/share/wazuh-indexer/config/certs
   bash /usr/share/wazuh-indexer/plugins/opensearch-security/tools/securityadmin.sh \
-    -f /usr/share/wazuh-indexer/config/opensearch-security/internal_users.yml -t internalusers \
+    -cd /usr/share/wazuh-indexer/config/opensearch-security/ \
     -icl -h wazuh.indexer -p 9200 \
     -cacert "$certs/root-ca.pem" -cert "$certs/admin.pem" -key "$certs/admin-key.pem"' 2>&1); then
   echo "$output" >&2

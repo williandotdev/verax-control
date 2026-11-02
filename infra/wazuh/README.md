@@ -26,8 +26,11 @@ confere os checksums e roda `scripts/bootstrap-host.sh`.
   monta só o próprio par de chaves.
 - **TLS sempre ligado:** HTTPS no indexer (só TLS 1.2 com cifras ECDHE-GCM), no dashboard e entre os componentes,
   com verificação completa do certificado (filebeat e dashboard).
-- **Nada exposto.** O manager não publica nenhuma porta (não há agentes). Indexer e dashboard publicam só em
-  `127.0.0.1` do host. A instância não tem regra de entrada no security group.
+- **Nada exposto.** O manager não publica nenhuma porta (não há agentes). O dashboard publica só em `127.0.0.1` do
+  host, e o indexer também, até um security group da API ser autorizado (seção "Acesso da API").
+- **Mapeamento de papéis mínimo.** Os mapeamentos de demonstração do indexer ficam de fora, inclusive o
+  `own_index` para todos os usuários, que daria a qualquer usuário escrita num índice com o nome dele. A
+  configuração de segurança é gerada inteira a cada deploy (padrões da imagem + o bundle) e aplicada inteira.
 - **Contêineres sem ganho de privilégio** (`no-new-privileges`) e logs no CloudWatch, cifrados.
 
 ## Acessar o dashboard
@@ -59,10 +62,25 @@ fica no histórico do Run Command.
 
 ## Trocar as senhas
 
-1. Aumente `password_version` no módulo `wazuh` e rode `terraform apply`. A AWS gera três senhas novas, gravadas
-   direto no Secrets Manager, sem passar pelo state.
+1. Aumente `password_version` no módulo `wazuh` e rode `terraform apply`. A AWS gera quatro senhas novas (as três
+   do Wazuh e a do `verax_api_read`), gravadas direto no Secrets Manager, sem passar pelo state. Depois da
+   reaplicação, a API precisa reler o segredo `<nome>/wazuh-api-read`.
 2. Rode o documento de reaplicação (seção anterior). O deploy aplica as senhas novas no indexer, recria o manager
    e o dashboard e confere que as antigas deixaram de funcionar. O Wazuh fica indisponível por 2 a 3 minutos.
+
+## Acesso da API (usuário só leitura)
+
+A API do Verax Control lê os alertas com o usuário `verax_api_read` (T4.8):
+
+- **Permissão:** `read` só em `wazuh-alerts-*`. Sem escrita, sem outros índices (estado de vulnerabilidades,
+  segurança) e sem permissão de cluster. O smoke test confere cada uma dessas recusas em todo deploy.
+- **Senha:** no segredo `<nome>/wazuh-api-read` (`username` e `password`), separado das senhas de administração.
+  O papel da API recebe leitura só desse segredo.
+- **Rede:** o indexer atende em `wazuh-indexer.<zona privada>:9200` (saída `indexer_endpoint` do Terraform). A
+  porta só é publicada fora de `127.0.0.1` quando há security group autorizado em `indexer_client_security_groups`,
+  e a regra de entrada aceita só esses grupos.
+- **TLS:** o certificado do indexer é emitido para esse nome, e o certificado público da CA é publicado no parâmetro
+  `indexer_ca_parameter` a cada deploy. A API valida a cadeia e o nome; não existe opção de pular a validação.
 
 ## Contas AWS dos clientes (CloudTrail, GuardDuty e WAF)
 

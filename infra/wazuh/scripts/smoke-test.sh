@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Confere a instalação do Wazuh (T4.2): TLS obrigatório, senhas novas aceitas, senhas padrão e usuários de
-# demonstração recusados, e nenhuma porta publicada além do previsto. Roda no fim do deploy.sh e pode ser
+# Confere a instalação do Wazuh (T4.2 e T4.8): TLS obrigatório, senhas novas aceitas, senhas padrão e usuários de
+# demonstração recusados, usuário da API só com leitura dos alertas, e nenhuma porta publicada além do previsto. Roda no fim do deploy.sh e pode ser
 # chamado sozinho, com as mesmas variáveis de senha.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${INDEXER_ADMIN_PASSWORD:?}" "${INDEXER_DASHBOARD_PASSWORD:?}" "${WAZUH_API_PASSWORD:?}"
+: "${INDEXER_API_READ_PASSWORD:?}"
 
 failures=0
 expect() { # <descrição> <esperado (regex)> <obtido>
@@ -46,11 +47,30 @@ top_level_keys() {
 }
 users=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
   "$indexer_url/_plugins/_security/api/internalusers" | top_level_keys)
-expect "só admin e kibanaserver existem" 'admin kibanaserver ' "$users"
+expect "só admin, kibanaserver e verax_api_read existem" 'admin kibanaserver verax_api_read ' "$users"
+mappings=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
+  "$indexer_url/_plugins/_security/api/rolesmapping" | top_level_keys)
+expect "só os mapeamentos de papel necessários (sem own_index para todos)" \
+  'all_access kibana_server manage_wazuh_index verax_api_read ' "$mappings"
 expect "HTTP sem TLS recusado" 000 "$(in_service wazuh.indexer curl -s -o /dev/null -w '%{http_code}' \
   http://wazuh.indexer:9200 || true)"
 expect "TLS 1.1 recusado" 000 "$(in_service wazuh.indexer curl -s -o /dev/null -w '%{http_code}' --tls-max 1.1 \
   --cacert "$indexer_ca" "$indexer_url" || true)"
+
+echo "Usuário da API do Verax Control (verax_api_read)"
+read_code() { # <método> <caminho> [corpo]
+  local body=()
+  if [[ -n ${3:-} ]]; then body=(--data "$3"); fi
+  curl_as wazuh.indexer verax_api_read "$INDEXER_API_READ_PASSWORD" -o /dev/null -w '%{http_code}' \
+    --cacert "$indexer_ca" -X "$1" -H 'Content-Type: application/json' "${body[@]}" "$indexer_url$2"
+}
+expect "busca nos alertas" 200 "$(read_code GET '/wazuh-alerts-*/_search?size=0')"
+expect "escrita nos alertas recusada" 403 "$(read_code POST /wazuh-alerts-4.x-verax-teste/_doc '{"teste":1}')"
+expect "índice com o próprio nome recusado" 403 "$(read_code PUT /verax_api_read)"
+expect "outros índices do Wazuh recusados" 403 "$(read_code GET '/wazuh-states-*/_search?size=0')"
+expect "índice de segurança recusado" 403 "$(read_code GET '/.opendistro_security/_search?size=0')"
+expect "informações do cluster recusadas" 403 "$(read_code GET /_cat/indices)"
+expect "configuração de segurança recusada" 403 "$(read_code GET /_plugins/_security/api/internalusers)"
 
 echo "API do manager"
 api_code() {

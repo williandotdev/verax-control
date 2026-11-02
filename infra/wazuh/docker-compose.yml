@@ -4,7 +4,8 @@
 # - certificados emitidos por script próprio (scripts/init-certs.sh), e não pelo gerador oficial, que baixa e
 #   executa um script sem checksum;
 # - nenhuma senha padrão: as três senhas vêm do ambiente (Secrets Manager no EC2) e a compose não sobe sem elas;
-# - usuários de demonstração do indexer removidos (scripts/init-security.sh);
+# - usuários e mapeamentos de demonstração do indexer removidos; a API lê com o usuário verax_api_read, que só
+#   lê os alertas (scripts/init-security.sh, T4.8);
 # - nenhuma porta do manager publicada (não há agentes); indexer e dashboard só em 127.0.0.1 do host. O dashboard
 #   é acessado por port forwarding do SSM; o indexer é liberado para a rede da API na T4.8, por security group;
 # - cada contêiner monta só os próprios certificados e nenhum ganha privilégio novo (no-new-privileges);
@@ -32,16 +33,22 @@ services:
   security-init:
     image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
     entrypoint: ['/bin/bash', '/verax/init-security.sh']
+    # Root só para gravar no volume e entregá-lo ao uid 1000 do indexer; sem rede e sem ganho de privilégio.
+    user: root
     network_mode: none
     restart: 'no'
     security_opt: ['no-new-privileges:true']
     environment:
       INDEXER_ADMIN_PASSWORD: ${INDEXER_ADMIN_PASSWORD:?use scripts/deploy.sh}
       INDEXER_DASHBOARD_PASSWORD: ${INDEXER_DASHBOARD_PASSWORD:?use scripts/deploy.sh}
+      INDEXER_API_READ_PASSWORD: ${INDEXER_API_READ_PASSWORD:?use scripts/deploy.sh}
     volumes:
       - ./scripts/init-security.sh:/verax/init-security.sh:ro
       - ./config/indexer/internal_users.yml.tmpl:/verax/internal_users.yml.tmpl:ro
-      - indexer-security:/usr/share/wazuh-indexer/config/opensearch-security
+      - ./config/indexer/roles-verax.yml:/verax/roles-verax.yml:ro
+      - ./config/indexer/roles_mapping.yml:/verax/roles_mapping.yml:ro
+      # Fora do caminho de configuração da imagem, para o script sempre partir dos arquivos originais dela.
+      - indexer-security:/out/security
 
   manager-config:
     image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b

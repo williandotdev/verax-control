@@ -55,13 +55,15 @@ module "network" {
 }
 
 module "wazuh" {
-  source           = "../../modules/wazuh"
-  name             = local.name
-  vpc_id           = module.network.vpc_id
-  subnet_id        = module.network.private_subnet_ids[0]
-  data_kms_key_arn = module.kms.data_key_arn
-  logs_kms_key_arn = module.kms.logs_key_arn
-  bundle_dir       = "${path.root}/../../../wazuh"
+  source            = "../../modules/wazuh"
+  name              = local.name
+  vpc_id            = module.network.vpc_id
+  subnet_id         = module.network.private_subnet_ids[0]
+  private_zone_id   = module.network.private_zone_id
+  private_zone_name = module.network.private_zone_name
+  data_kms_key_arn  = module.kms.data_key_arn
+  logs_kms_key_arn  = module.kms.logs_key_arn
+  bundle_dir        = "${path.root}/../../../wazuh"
 }
 
 module "prowler" {

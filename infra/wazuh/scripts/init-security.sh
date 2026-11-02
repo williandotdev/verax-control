@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# Gera o internal_users.yml do indexer (T4.2). Roda no serviço `security-init` da compose, com a imagem do
-# indexer e sem rede, a cada `deploy.sh`.
+# Gera a configuração de segurança do indexer (T4.2 e T4.8). Roda no serviço `security-init` da compose, com a
+# imagem do indexer, sem rede, a cada deploy.
 #
-# Ficam só `admin` e `kibanaserver`, com hash bcrypt das senhas recebidas por variável de ambiente. Os usuários
-# de demonstração da imagem (kibanaro, logstash, readall, snapshotrestore), de senha pública, deixam de existir.
+# Parte sempre dos arquivos originais da imagem (nunca do que já está no volume), para o resultado depender só da
+# imagem, do bundle e das senhas:
+# - internal_users.yml: só `admin`, `kibanaserver` e `verax_api_read`, com hash bcrypt das senhas recebidas por
+#   variável de ambiente. Os usuários de demonstração da imagem, de senha pública, deixam de existir;
+# - roles.yml: os papéis da imagem mais o `verax_api_read` (só leitura em wazuh-alerts-*);
+# - roles_mapping.yml: o mapeamento mínimo do bundle, sem os mapeamentos de demonstração.
 set -euo pipefail
 umask 077
 
-security_dir=/usr/share/wazuh-indexer/config/opensearch-security
+image_dir=/usr/share/wazuh-indexer/config/opensearch-security
+out=/out/security
 hash_tool=/usr/share/wazuh-indexer/plugins/opensearch-security/tools/hash.sh
 export JAVA_HOME=/usr/share/wazuh-indexer/jdk
 
@@ -29,8 +34,17 @@ bcrypt() {
 
 admin_hash=$(bcrypt INDEXER_ADMIN_PASSWORD)
 dashboard_hash=$(bcrypt INDEXER_DASHBOARD_PASSWORD)
+api_read_hash=$(bcrypt INDEXER_API_READ_PASSWORD)
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cp "$image_dir"/*.yml "$work/"
 sed -e "s|__ADMIN_HASH__|$admin_hash|" -e "s|__DASHBOARD_HASH__|$dashboard_hash|" \
-  /verax/internal_users.yml.tmpl >"$security_dir/internal_users.yml.new"
-mv "$security_dir/internal_users.yml.new" "$security_dir/internal_users.yml"
-echo "internal_users.yml gerado (admin e kibanaserver)."
+  -e "s|__API_READ_HASH__|$api_read_hash|" /verax/internal_users.yml.tmpl >"$work/internal_users.yml"
+cat /verax/roles-verax.yml >>"$work/roles.yml"
+cp /verax/roles_mapping.yml "$work/roles_mapping.yml"
+
+# O indexer roda como uid 1000: só ele lê a configuração.
+install -d -m 0700 -o 1000 -g 1000 "$out"
+install -m 0600 -o 1000 -g 1000 "$work"/*.yml "$out/"
+echo "Configuração de segurança do indexer gerada (admin, kibanaserver e verax_api_read)."

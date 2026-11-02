@@ -228,8 +228,30 @@ resource "aws_vpc_endpoint" "s3" {
   tags              = { Name = "${var.name}-s3" }
 }
 
+# --- DNS privado ---
+
+# Nomes internos do ambiente (ex.: o indexer do Wazuh), resolvidos só dentro da VPC. O certificado do indexer é
+# emitido para esse nome, e a API valida o TLS por ele.
+resource "aws_route53_zone" "private" {
+  #checkov:skip=CKV2_AWS_38:DNSSEC só se aplica a zonas públicas; esta é privada, resolvida só na VPC.
+  #checkov:skip=CKV2_AWS_39:Zona privada: o log de consultas é o do Resolver da VPC, que entra com a observabilidade (T8.6).
+  name    = "${var.name}.internal"
+  comment = "Nomes internos de ${var.name}"
+  vpc {
+    vpc_id = aws_vpc.this.id
+  }
+}
+
 output "vpc_id" {
   value = aws_vpc.this.id
+}
+
+output "private_zone_id" {
+  value = aws_route53_zone.private.zone_id
+}
+
+output "private_zone_name" {
+  value = aws_route53_zone.private.name
 }
 
 output "vpc_cidr" {

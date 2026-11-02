@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Teste de ponta a ponta do bundle do Wazuh (T4.2), usado no CI (iac.yml) e localmente. Precisa de Docker e
+# Teste de ponta a ponta do bundle do Wazuh (T4.2 a T4.8), usado no CI (iac.yml) e localmente. Precisa de Docker e
 # de ~6 GB livres. Apaga a instalação local `verax-wazuh` (volumes inclusive) no começo e no fim.
 #
-# 1. instalação nova com senhas aleatórias e sem contas AWS → smoke test;
-# 2. rotação das três senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
+# 1. instalação nova com senhas aleatórias e sem contas AWS → smoke test (inclui o usuário só leitura da API);
+# 2. rotação das quatro senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
 # 3. filebeat do manager gravando no indexer com TLS verificado; dashboard com a senha atual da API;
 # 4. contas AWS: módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da conta, profiles só para
 #    o root, ExternalId fora do ossec.conf e do ambiente do contêiner, manager no IP fixo;
-# 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente.
+# 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente;
+# 6. acesso como a API faz (T4.8): pelo nome DNS do indexer, validando o certificado contra a CA do Wazuh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -26,8 +27,12 @@ new_passwords() {
   INDEXER_ADMIN_PASSWORD=$(random_password)
   INDEXER_DASHBOARD_PASSWORD=$(random_password)
   WAZUH_API_PASSWORD=$(random_password)
-  export INDEXER_ADMIN_PASSWORD INDEXER_DASHBOARD_PASSWORD WAZUH_API_PASSWORD
+  INDEXER_API_READ_PASSWORD=$(random_password)
+  export INDEXER_ADMIN_PASSWORD INDEXER_DASHBOARD_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
 }
+
+# Nome pelo qual a API alcança o indexer (no EC2, o registro DNS privado criado pelo Terraform).
+export INDEXER_EXTRA_SANS=DNS:wazuh-indexer.exemplo.internal
 
 cleanup() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; }
 
@@ -63,10 +68,11 @@ bash scripts/deploy.sh
 expect "sem contas, sem módulo aws-s3" 0 "$(manager_file_count '<wodle name="aws-s3">' /var/ossec/etc/ossec.conf)"
 
 old_admin=$INDEXER_ADMIN_PASSWORD old_dashboard=$INDEXER_DASHBOARD_PASSWORD old_api=$WAZUH_API_PASSWORD
+old_api_read=$INDEXER_API_READ_PASSWORD
 new_passwords
 export WAZUH_AWS_SOURCES_FILE=tests/fixtures/aws-sources.example.json
 
-echo "== Rotação das três senhas, com duas contas AWS"
+echo "== Rotação das quatro senhas, com duas contas AWS"
 bash scripts/deploy.sh
 
 echo "== Depois da rotação"
@@ -75,6 +81,8 @@ expect "admin antigo recusado" 401 \
   "$(code_as wazuh.indexer admin "$old_admin" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
 expect "kibanaserver antigo recusado" 401 \
   "$(code_as wazuh.indexer kibanaserver "$old_dashboard" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
+expect "verax_api_read antigo recusado" 401 \
+  "$(code_as wazuh.indexer verax_api_read "$old_api_read" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
 expect "wazuh-wui antigo recusado" 401 \
   "$(code_as wazuh.manager wazuh-wui "$old_api" -X POST --cacert /var/ossec/api/configuration/ssl/server.crt \
     https://localhost:55000/security/user/authenticate)"
@@ -89,6 +97,16 @@ expect "filebeat autentica no indexer" 1 "$(grep -c 'talk to server... OK' <<<"$
 expect "dashboard com a senha atual da API" match "$(docker exec "$(container wazuh.dashboard)" bash -c '
   f=/usr/share/wazuh-dashboard/data/wazuh/config/wazuh.yml
   [[ $(grep -c "^ *password:" "$f") == 1 ]] && grep -qx "      password: $API_PASSWORD" "$f" && echo match')"
+
+echo "== Acesso como a API (nome DNS e CA do Wazuh)"
+indexer_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container wazuh.indexer)")
+# Do manager, que tem a CA no próprio volume: mesmo caminho de validação que a API vai usar.
+as_api() { # <nome DNS>
+  code_as wazuh.manager verax_api_read "$INDEXER_API_READ_PASSWORD" --cacert /etc/ssl/verax/root-ca.pem \
+    --resolve "$1:9200:$indexer_ip" "https://$1:9200/wazuh-alerts-*/_search?size=0"
+}
+expect "pelo nome do certificado, com a CA do Wazuh" 200 "$(as_api wazuh-indexer.exemplo.internal)"
+expect "por outro nome, o TLS recusa" 000 "$(as_api outro-nome.exemplo.internal)"
 
 echo "== Contas AWS"
 manager=$(container wazuh.manager)

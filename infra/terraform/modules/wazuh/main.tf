@@ -83,9 +83,19 @@ variable "log_retention_days" {
 }
 
 variable "indexer_client_security_groups" {
-  description = "Security groups liberados no indexer (9200), por nome lógico. Vazio até a T4.8."
+  description = "Security groups liberados no indexer (9200), por nome lógico (a API, no E8). Vazio: porta só local."
   type        = map(string)
   default     = {}
+}
+
+variable "private_zone_id" {
+  description = "Zona DNS privada do ambiente (módulo network)."
+  type        = string
+}
+
+variable "private_zone_name" {
+  description = "Nome da zona DNS privada (ex.: verax-control-production.internal)."
+  type        = string
 }
 
 variable "termination_protection" {
@@ -130,15 +140,22 @@ locals {
   ))
   sha256sums = join("", [for file in local.bundle_files : "${filesha256("${var.bundle_dir}/${file}")}  ${file}\n"])
 
+  # Nome pelo qual a API alcança o indexer: está no certificado, e a API valida o TLS por ele (T4.8).
+  indexer_hostname = "wazuh-indexer.${trimsuffix(var.private_zone_name, ".")}"
+
   apply_script = templatefile("${path.module}/apply.sh.tftpl", {
-    region         = local.region
-    bucket         = module.bundle_bucket.id
-    prefix         = local.bundle_prefix
-    secret_arn     = aws_secretsmanager_secret.wazuh.arn
-    sources_arn    = aws_secretsmanager_secret.aws_sources.arn
-    data_volume_id = aws_ebs_volume.data.id
-    log_group      = aws_cloudwatch_log_group.containers.name
-    indexer_heap   = var.indexer_heap
+    region          = local.region
+    bucket          = module.bundle_bucket.id
+    prefix          = local.bundle_prefix
+    secret_arn      = aws_secretsmanager_secret.wazuh.arn
+    api_read_arn    = aws_secretsmanager_secret.api_read.arn
+    sources_arn     = aws_secretsmanager_secret.aws_sources.arn
+    ca_parameter    = aws_ssm_parameter.indexer_ca.name
+    data_volume_id  = aws_ebs_volume.data.id
+    log_group       = aws_cloudwatch_log_group.containers.name
+    indexer_heap    = var.indexer_heap
+    extra_sans      = "DNS:${local.indexer_hostname}"
+    publish_address = length(var.indexer_client_security_groups) > 0 ? "0.0.0.0" : "127.0.0.1"
   })
 }
 
@@ -226,6 +243,45 @@ resource "aws_secretsmanager_secret_version" "wazuh" {
   secret_string_wo_version = var.password_version
 }
 
+# Usuário só leitura da API (T4.8), em segredo próprio: o papel da API lê só este, nunca as senhas acima.
+resource "aws_secretsmanager_secret" "api_read" {
+  #checkov:skip=CKV2_AWS_57:Rotação manual e versionada (password_version + documento SSM de reaplicação), como as demais senhas do Wazuh.
+  name                    = "${var.name}/wazuh-api-read"
+  description             = "Usuário verax_api_read do indexer do Wazuh (só leitura dos alertas), usado pela API"
+  kms_key_id              = var.data_kms_key_arn
+  recovery_window_in_days = 30
+}
+
+ephemeral "aws_secretsmanager_random_password" "api_read" {
+  password_length            = 40
+  exclude_punctuation        = true
+  include_space              = false
+  require_each_included_type = true
+}
+
+resource "aws_secretsmanager_secret_version" "api_read" {
+  secret_id = aws_secretsmanager_secret.api_read.id
+  secret_string_wo = jsonencode({
+    username = "verax_api_read"
+    password = "Vc-${ephemeral.aws_secretsmanager_random_password.api_read.random_password}"
+  })
+  secret_string_wo_version = var.password_version
+}
+
+# Certificado público da CA do Wazuh, publicado pelo bootstrap (a CA nasce na instância). A API valida o TLS do
+# indexer contra ele. Não é segredo: só o certificado, nunca a chave.
+resource "aws_ssm_parameter" "indexer_ca" {
+  #checkov:skip=CKV2_AWS_34:Certificado público de CA, não é segredo; SecureString só dificultaria a leitura pela API.
+  name        = "/verax-control/${var.name}/wazuh/indexer-ca"
+  description = "Certificado da CA do Wazuh, para a API validar o TLS do indexer"
+  type        = "String"
+  value       = "pendente: publicado pelo bootstrap do Wazuh"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # --- Rede ---
 
 resource "aws_security_group" "wazuh" {
@@ -282,9 +338,19 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
 
 data "aws_iam_policy_document" "wazuh" {
   statement {
-    sid       = "LerSenhasEContas"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_secretsmanager_secret.wazuh.arn, aws_secretsmanager_secret.aws_sources.arn]
+    sid     = "LerSenhasEContas"
+    actions = ["secretsmanager:GetSecretValue"]
+    resources = [
+      aws_secretsmanager_secret.wazuh.arn,
+      aws_secretsmanager_secret.api_read.arn,
+      aws_secretsmanager_secret.aws_sources.arn,
+    ]
+  }
+
+  statement {
+    sid       = "PublicarCertificadoDaCA"
+    actions   = ["ssm:PutParameter"]
+    resources = [aws_ssm_parameter.indexer_ca.arn]
   }
 
   # Só o papel do conector (T4.3), em qualquer conta; a confiança dele exige o ExternalId da conta.
@@ -410,6 +476,14 @@ resource "aws_instance" "wazuh" {
   ]
 }
 
+resource "aws_route53_record" "indexer" {
+  zone_id = var.private_zone_id
+  name    = local.indexer_hostname
+  type    = "A"
+  ttl     = 300
+  records = [aws_instance.wazuh.private_ip]
+}
+
 resource "aws_volume_attachment" "data" {
   device_name                    = "/dev/sdf"
   volume_id                      = aws_ebs_volume.data.id
@@ -458,6 +532,20 @@ output "instance_id" {
 
 output "security_group_id" {
   value = aws_security_group.wazuh.id
+}
+
+output "indexer_endpoint" {
+  description = "Endereço que a API usa para ler os alertas (TLS validado com a CA de indexer_ca_parameter)."
+  value       = "https://${local.indexer_hostname}:9200"
+}
+
+output "indexer_ca_parameter" {
+  value = aws_ssm_parameter.indexer_ca.name
+}
+
+output "api_read_secret_arn" {
+  description = "Segredo do usuário verax_api_read, o único que a API lê."
+  value       = aws_secretsmanager_secret.api_read.arn
 }
 
 output "aws_sources_secret_arn" {

@@ -3,15 +3,16 @@
 # /opt/verax-wazuh. Chamado pelo user_data na primeira subida e pelo documento SSM `<nome>-wazuh-apply` nas
 # seguintes (infra/terraform/modules/wazuh). Idempotente.
 #
-# Entradas (ambiente): WAZUH_SECRET_ARN, WAZUH_AWS_SOURCES_SECRET_ARN, DATA_VOLUME_ID, AWS_REGION,
-# CONTAINER_LOG_GROUP e INDEXER_HEAP.
+# Entradas (ambiente): WAZUH_SECRET_ARN, WAZUH_API_READ_SECRET_ARN, WAZUH_AWS_SOURCES_SECRET_ARN,
+# INDEXER_CA_PARAMETER, DATA_VOLUME_ID, AWS_REGION, CONTAINER_LOG_GROUP, INDEXER_HEAP, INDEXER_EXTRA_SANS e
+# INDEXER_PUBLISH_ADDRESS.
 # Nada aqui imprime senha nem ExternalId; o log vai para /var/log/cloud-init-output.log ou para o histórico do SSM.
 set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 
-: "${WAZUH_SECRET_ARN:?}" "${WAZUH_AWS_SOURCES_SECRET_ARN:?}" "${DATA_VOLUME_ID:?}" "${AWS_REGION:?}"
-: "${CONTAINER_LOG_GROUP:?}"
+: "${WAZUH_SECRET_ARN:?}" "${WAZUH_API_READ_SECRET_ARN:?}" "${WAZUH_AWS_SOURCES_SECRET_ARN:?}"
+: "${INDEXER_CA_PARAMETER:?}" "${DATA_VOLUME_ID:?}" "${AWS_REGION:?}" "${CONTAINER_LOG_GROUP:?}"
 
 readonly compose_version=v5.6.1
 readonly compose_sha256=47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0
@@ -121,9 +122,16 @@ secret=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id 
 INDEXER_ADMIN_PASSWORD=$(jq -er .indexer_admin <<<"$secret")
 INDEXER_DASHBOARD_PASSWORD=$(jq -er .indexer_dashboard <<<"$secret")
 WAZUH_API_PASSWORD=$(jq -er .wazuh_api <<<"$secret")
+# O usuário de leitura da API tem segredo próprio: a API lê só esse, nunca as senhas de administração.
+secret=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$WAZUH_API_READ_SECRET_ARN" \
+  --query SecretString --output text)
+INDEXER_API_READ_PASSWORD=$(jq -er .password <<<"$secret")
 unset secret
-export INDEXER_ADMIN_PASSWORD INDEXER_DASHBOARD_PASSWORD WAZUH_API_PASSWORD
+export INDEXER_ADMIN_PASSWORD INDEXER_DASHBOARD_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
 export INDEXER_HEAP=${INDEXER_HEAP:-4g}
+# Nome DNS privado do indexer no certificado e publicação da porta 9200 (só no endereço liberado pelo Terraform:
+# 127.0.0.1 enquanto nenhum security group da API estiver autorizado).
+export INDEXER_EXTRA_SANS=${INDEXER_EXTRA_SANS:-} INDEXER_PUBLISH_ADDRESS=${INDEXER_PUBLISH_ADDRESS:-127.0.0.1}
 
 log "Deploy"
 bash scripts/deploy.sh
@@ -141,4 +149,10 @@ if [[ $(imds_status verax-wazuh-wazuh.manager-1) != 200 ]]; then
   log "ERRO: o manager não alcança o IMDS (sem ele, não lê as contas dos clientes)"
   exit 1
 fi
+
+log "Publicando o certificado da CA do Wazuh"
+# Público (só o certificado, nunca a chave): a API valida o TLS do indexer contra ele.
+ca=$(docker exec verax-wazuh-wazuh.indexer-1 cat /usr/share/wazuh-indexer/config/certs/root-ca.pem)
+aws ssm put-parameter --region "$AWS_REGION" --name "$INDEXER_CA_PARAMETER" --type String --overwrite \
+  --value "$ca" >/dev/null
 log "Concluído"
