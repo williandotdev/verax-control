@@ -1,9 +1,27 @@
-import { PRODUCT_NAME } from '@verax/shared';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { useState } from 'react';
+import { RouterProvider } from 'react-router/dom';
+import { bindApiNavigation } from '@/lib/api';
+import { createQueryClient } from '@/lib/query-client';
+import { createAppRouter } from '@/routes/router';
 
 export function App() {
+  const [queryClient] = useState(createQueryClient);
+  const [router] = useState(() => {
+    const appRouter = createAppRouter();
+    bindApiNavigation({
+      onUnauthorized: () => {
+        queryClient.clear();
+        void appRouter.navigate('/login', { replace: true });
+      },
+      onMfaRequired: () => void appRouter.navigate('/mfa/cadastro', { replace: true }),
+    });
+    return appRouter;
+  });
+
   return (
-    <main>
-      <h1>{PRODUCT_NAME}</h1>
-    </main>
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
   );
 }

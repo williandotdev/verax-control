@@ -1,0 +1,109 @@
+@import 'tailwindcss';
+
+/*
+ * Tema do Verax Control (T6.2). Os tokens têm nome de papel (fundo, tinta, severidade), nunca de cor, e os
+ * dois modos são escolhidos à mão a partir das mesmas famílias, não invertidos automaticamente.
+ *
+ * Severidade: validada com o script da skill de visualização (separação para daltonismo e visão normal em
+ * todos os pares, nos dois modos). Crítico, alto e médio se separam também por claro/escuro (mais grave, mais
+ * escuro). No modo claro, alto e médio ficam abaixo de 3:1 contra o fundo: por isso severidade nunca aparece
+ * só como cor; vem sempre com ícone de forma própria e rótulo, e o texto usa a tinta neutra.
+ */
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root {
+  color-scheme: light;
+  --background: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-raised: #ffffff;
+  --foreground: #0b0b0b;
+  --muted-foreground: #52514e;
+  /* Texto discreto (metadados, legendas): >= 4,5:1 sobre todas as superfícies do tema. */
+  --subtle-foreground: #6e6c66;
+  --border: rgb(11 11 11 / 0.1);
+  --border-strong: #c3c2b7;
+  --gridline: #e1e0d9;
+  --primary: #0b0b0b;
+  --primary-foreground: #fcfcfb;
+  --ring: #2a78d6;
+
+  --severity-critical: #b42318;
+  --severity-high: #e8743b;
+  --severity-medium: #f7c948;
+  --severity-low: #2a78d6;
+  --severity-ok: #0e9f8e;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --background: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-raised: #222220;
+  --foreground: #f0efec;
+  --muted-foreground: #c3c2b7;
+  --subtle-foreground: #9a9890;
+  --border: rgb(255 255 255 / 0.1);
+  --border-strong: #383835;
+  --gridline: #2c2c2a;
+  --primary: #f0efec;
+  --primary-foreground: #1a1a19;
+  --ring: #3987e5;
+
+  --severity-critical: #d32f2f;
+  --severity-high: #fb9b4f;
+  --severity-medium: #ffe07a;
+  --severity-low: #3987e5;
+  --severity-ok: #0e9f8e;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-gridline: var(--gridline);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+
+  --color-critical: var(--severity-critical);
+  --color-high: var(--severity-high);
+  --color-medium: var(--severity-medium);
+  --color-low: var(--severity-low);
+  --color-ok: var(--severity-ok);
+
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
