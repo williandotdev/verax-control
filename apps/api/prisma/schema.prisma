@@ -53,3 +53,245 @@ model AuditLog {
   @@index([resourceType, resourceId])
   @@index([requestId])
 }
+
+/// Papéis do painel (T2.4). `admin_verax` é da Verax e não pertence a cliente; os demais pertencem a um.
+enum UserRole {
+  admin_verax
+  admin_cliente
+  analista_cliente
+  leitura
+}
+
+/// Usuário só entra por convite (T2.6): nasce `invited`, vira `active` ao definir a senha.
+enum UserStatus {
+  invited
+  active
+  disabled
+}
+
+enum TenantStatus {
+  active
+  inactive
+}
+
+/// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
+/// causa dos clientes criados antes do cadastro completo.
+model Tenant {
+  id                 String              @id @default(uuid(7)) @db.Uuid
+  name               String              @db.VarChar(120)
+  /// 14 caracteres, sem máscara (numérico ou alfanumérico).
+  cnpj               String?             @unique @db.VarChar(14)
+  plan               String?             @db.VarChar(60)
+  escalationName     String?             @db.VarChar(120)
+  escalationEmail    String?             @db.VarChar(254)
+  escalationPhone    String?             @db.VarChar(20)
+  status             TenantStatus        @default(active)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+  users              User[]
+  cloudAccounts      CloudAccount[]
+  protectedResources ProtectedResource[]
+  alertExceptions    AlertException[]
+  /// Sessões de admin_verax com este cliente selecionado (T2.5).
+  activeSessions     Session[]
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Tabelas do Better Auth (T2.1). Nomes e campos seguem o que a biblioteca espera; `role`, `tenantId` e
+// `status` são campos adicionais que o usuário não consegue alterar pela API de autenticação.
+// ---------------------------------------------------------------------------------------------------
+
+model User {
+  id                 String              @id
+  name               String              @db.VarChar(120)
+  email              String              @unique @db.VarChar(254)
+  emailVerified      Boolean             @default(false)
+  image              String?
+  role               UserRole
+  tenantId           String?             @db.Uuid
+  tenant             Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status             UserStatus          @default(invited)
+  /// MFA (T2.2): sem ele, a sessão só alcança o cadastro do próprio MFA.
+  twoFactorEnabled   Boolean             @default(false)
+  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+  sessions           Session[]
+  accounts           Account[]
+  twoFactors         TwoFactor[]
+  usedTotpCodes      UsedTotpCode[]
+  protectedResources ProtectedResource[]
+  alertExceptions    AlertException[]
+
+  @@index([tenantId])
+}
+
+model Session {
+  id             String   @id
+  token          String   @unique
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt      DateTime @db.Timestamptz(3)
+  ipAddress      String?  @db.VarChar(64)
+  userAgent      String?  @db.VarChar(512)
+  /// Cliente selecionado por um admin_verax (T2.5). Só muda por POST /v1/session/tenant, auditado.
+  activeTenantId String?  @db.Uuid
+  activeTenant   Tenant?  @relation(fields: [activeTenantId], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(3)
+  scope                 String?
+  /// Hash da senha (scrypt, gerado pelo Better Auth). Nunca a senha em si.
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@index([userId])
+}
+
+/// Tokens de convite e de redefinição de senha, guardados com hash (`storeIdentifier: "hashed"`).
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([identifier])
+}
+
+/// TOTP e códigos de recuperação (T2.2). O segredo e os códigos ficam cifrados com a chave do Better Auth.
+model TwoFactor {
+  id                      String    @id
+  secret                  String
+  backupCodes             String
+  userId                  String
+  user                    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  verified                Boolean   @default(true)
+  failedVerificationCount Int       @default(0)
+  lockedUntil             DateTime? @db.Timestamptz(3)
+
+  @@index([secret])
+  @@index([userId])
+}
+
+/// Limite de requisições por IP das rotas de autenticação (T2.3), no banco para valer entre instâncias.
+model RateLimit {
+  id          String @id
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+}
+
+/// Tentativas de login por e-mail que ainda não terminaram numa sessão completa (T2.3). Vale também para
+/// e-mail inexistente, para não revelar quem existe.
+model LoginAttempt {
+  email          String    @id @db.VarChar(254)
+  failures       Int
+  firstFailureAt DateTime  @db.Timestamptz(3)
+  lockedUntil    DateTime? @db.Timestamptz(3)
+}
+
+/// Códigos TOTP aceitos em login nos últimos minutos (T2.2): o mesmo código não abre uma segunda sessão.
+model UsedTotpCode {
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  code   String   @db.VarChar(16)
+  usedAt DateTime @db.Timestamptz(3)
+
+  @@id([userId, code])
+}
+
+enum CloudAccountStatus {
+  active
+  inactive
+}
+
+/// Conta AWS de um cliente (T3.3). Nenhuma credencial é guardada: a Verax assume o papel de leitura
+/// `VeraxControlReadOnly` com o ExternalId, gerado aqui. Cada conta pertence a um só cliente.
+model CloudAccount {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  tenantId         String             @db.Uuid
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider         String             @default("aws") @db.VarChar(16)
+  accountId        String             @unique @db.VarChar(12)
+  regions          String[]
+  externalId       String             @db.VarChar(128)
+  /// Buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
+  cloudtrailBucket String?            @db.VarChar(63)
+  guarddutyBucket  String?            @db.VarChar(63)
+  wafBucket        String?            @db.VarChar(63)
+  status           CloudAccountStatus @default(active)
+  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+
+  @@index([tenantId])
+}
+
+enum ProtectedResourceType {
+  aws_account
+  iam_user
+  iam_role
+  access_key
+  ec2_instance
+  s3_bucket
+  security_group
+  ip_address
+}
+
+/// Lista de proteção (T3.4): recursos e identidades que nunca recebem ação automática.
+model ProtectedResource {
+  id          String                @id @default(uuid(7)) @db.Uuid
+  tenantId    String                @db.Uuid
+  tenant      Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  type        ProtectedResourceType
+  identifier  String                @db.VarChar(600)
+  reason      String                @db.VarChar(500)
+  createdById String
+  createdBy   User                  @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime              @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, type, identifier])
+}
+
+enum AlertExceptionField {
+  user
+  ip
+  resource
+}
+
+/// Exceção de alerta (T3.5): o sync marca como esperado o achado da regra cujo campo bate com o valor.
+model AlertException {
+  id            String              @id @default(uuid(7)) @db.Uuid
+  tenantId      String              @db.Uuid
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  ruleId        String              @db.VarChar(6)
+  field         AlertExceptionField
+  value         String              @db.VarChar(256)
+  reason        String              @db.VarChar(500)
+  expiresAt     DateTime?           @db.Timestamptz(3)
+  /// Quantas vezes a exceção marcou um achado como esperado (atualizado pelo sync, T5.3).
+  matchedCount  Int                 @default(0)
+  lastMatchedAt DateTime?           @db.Timestamptz(3)
+  createdById   String
+  createdBy     User                @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt     DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, ruleId, field, value])
+}

@@ -14,6 +14,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 | Trivy AWS-0104 (Wazuh)    | Exceção inline (`#trivy:ignore`) na saída HTTPS para `0.0.0.0/0` do security group do Wazuh                       | O host baixa imagens do Docker Hub e o feed de vulnerabilidades do Wazuh, ambos com IPs dinâmicos. Saída limitada à porta 443, pelo NAT e com flow logs. A alternativa mais restrita (filtro por domínio) é o AWS Network Firewall, com custo próprio |
 | Trivy AWS-0015 (conector) | Exceção inline na trilha do CloudTrail do template do conector                                                    | Falso positivo: o adaptador de CloudFormation do Trivy lê `KmsKeyId`, mas o esquema exige `KMSKeyId`, que está definido com a chave do conector. O teste `test_trail_is_multi_region_validated_and_encrypted` garante a chave                         |
 | Política extra do Prowler | Sem `securityhub:BatchImportFindings`, `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer` e `logs:FilterLogEvents` | Escrita, download de imagens e leitura do conteúdo de logs de aplicação (LGPD) vão além de ler configuração. As checagens do Prowler que dependem delas não rodam                                                                                     |
+| shadcn/ui                 | Componentes no padrão shadcn/ui escritos no repositório sobre `radix-ui`, sem rodar o CLI                         | O `init` do CLI instala pacotes fora da lista aprovada e baixa código da internet direto para o repo; os componentes são os mesmos padrões, revisados linha a linha                                                                                   |
 
 ---
 
@@ -149,6 +150,140 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Teste manual:** `pnpm db:deploy` e, no `psql` do banco de desenvolvimento, INSERT aceito e UPDATE, DELETE e TRUNCATE recusados com "AuditLog é somente inserção".
 - **Pendente para o E8:** em produção a aplicação deve rodar com um papel de banco sem privilégio de dono (só as migrations usam o dono), para que nem a própria aplicação consiga remover o trigger.
 
+## T2.1 Login com Better Auth ⚠️ épico de autenticação (revisão linha a linha no fim do E2)
+
+- **Arquivos:** `apps/api/src/auth/{auth.constants,auth.factory,auth.controller,auth.module,session.guard,me.controller,decorators,user-provisioning}.ts`, `apps/api/src/cli/seed.ts`, `apps/api/prisma/schema.prisma` (Tenant mínimo, User, Session, Account, Verification), `apps/api/prisma/migrations/20261101214647_auth_core/`, `apps/api/src/common/auth/request-auth.ts`, `apps/api/src/common/config/env.schema.ts`, `apps/api/src/common/http/route-contracts.ts`, interceptors de auditoria e de entrada (`@SelfManaged`), `scripts/setup-env.mjs`, `.env.example`, testes `apps/api/test/auth-login.test.ts` e `test/support/auth-helpers.ts`
+- **Dependências:** better-auth 1.7.14 (aprovada)
+- **Como ficou:**
+  - Better Auth montado em `/v1/auth/*` por um controller Nest (herda request id, logs com redaction, helmet e filtro de erro). **Lista fechada de 9 rotas** (login, logout, sessão, redefinição e troca de senha, listar/revogar sessões); cadastro, alteração de usuário, exclusão de conta, troca de e-mail e login social respondem 404 sem chegar à biblioteca.
+  - Todo POST de autenticação exige `Origin` do painel e corpo JSON. O Better Auth só confere a origem quando já há cookie; a checagem extra impede login CSRF.
+  - Sessão em cookie `__Secure-verax.session_token`, `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`. Sem cache em cookie: revogar vale na hora.
+  - Expira após 30 min sem uso (renovada a cada minuto de atividade) e dura no máximo 12 h, conferido pelo `SessionGuard` a cada requisição. Usuário desativado perde o acesso na hora.
+  - Hash de senha pelo Better Auth (scrypt); senha de 12 a 128 caracteres. Tokens de redefinição guardados com hash. Telemetria desligada.
+  - `role`, `tenantId` e `status` com `input: false`: nenhum endpoint de autenticação aceita esses campos do cliente. Só usuário `active` de cliente `active` recebe sessão.
+  - O IP repassado ao Better Auth vem do Express (respeitando `TRUST_PROXY_HOPS`); qualquer valor mandado pelo cliente no header interno é sobrescrito.
+  - **Guard global:** toda rota exige sessão, exceto `@Public()`. O meta-teste mantém a lista de rotas públicas fechada (health check e autenticação) e a de rotas `@SelfManaged` (só a autenticação).
+  - Banco: CHECK garante que `admin_verax` não tem cliente e os outros papéis sempre têm; CHECK garante e-mail normalizado.
+  - `GET /v1/me` devolve a identidade da sessão.
+  - Seed de desenvolvimento (`pnpm db:seed`): um `admin_verax` (credenciais em `SEED_ADMIN_*` no `.env` local) e dois clientes fictícios. Idempotente; recusa produção.
+  - `pnpm setup:env` passou a completar um `.env` existente com as variáveis novas, sem alterar as que já estão lá e sem imprimir valores.
+- **Testes:** 163 na API (+24). Cobrem atributos do cookie, `/v1/me` com e sem sessão e com cookie forjado, logout revogando no servidor, senha errada e e-mail inexistente com resposta idêntica, usuário desativado, convidado e de cliente inativo sem sessão, hash no banco, 6 rotas da biblioteca fora da lista (404), login por formulário (415), login de outra origem (403), expiração por inatividade e por 12 h, desativação com sessão aberta, IP forjado ignorado e os CHECKs do banco.
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔ · Semgrep 0 achados, Gitleaks limpo
+- **Teste manual:** API compilada com o admin do seed (script que lê a senha do `.env` sem exibi-la): login 200 com cookie `HttpOnly`/`Secure`/`SameSite`; `/v1/me` 200; logout 200; `/v1/me` depois do logout 401; senha errada 401; nenhum segredo no log.
+
+## T2.2 MFA obrigatório ⚠️ épico de autenticação
+
+- **Arquivos:** `apps/api/src/auth/{auth.factory,auth.controller,auth.constants,decorators,session.guard,me.controller}.ts`, `apps/api/src/common/http/{api-error,all-exceptions.filter}.ts` (código estável opcional no `ApiError`), `apps/api/src/common/auth/request-auth.ts`, `apps/api/prisma/schema.prisma` (`User.twoFactorEnabled`, `TwoFactor`), `apps/api/prisma/migrations/20261101220927_two_factor/`, testes `apps/api/test/auth-mfa.test.ts` e `test/support/{auth-helpers,totp}.ts`
+- **Dependências:** nenhuma nova (plugin `twoFactor` do próprio Better Auth)
+- **Como ficou:**
+  - TOTP de 6 dígitos (30 s) e 10 códigos de recuperação de uso único. Segredo e códigos são cifrados pelo Better Auth antes de ir para o banco.
+  - **Primeiro login:** a sessão só alcança `GET /v1/me` (com `mfaEnabled: false`) e as rotas de cadastro do MFA. Qualquer outra rota responde 403 com `code: MFA_REQUIRED`. O cadastro exige a senha e só ativa depois do primeiro código válido.
+  - **Logins seguintes:** a senha devolve só um desafio (`twoFactorRedirect`, sem cookie de sessão); a sessão só nasce com o código TOTP ou um código de recuperação.
+  - 5 códigos errados bloqueiam a conta por 15 min (bloqueio por conta do plugin); o desafio vale 5 min.
+  - "Confiar neste dispositivo" é recusado (400): o código é pedido em todo login.
+  - O MFA não pode ser desligado (a rota não existe na lista) nem recadastrado por quem já o tem, para não trocar o autenticador sem o código atual. A troca de autenticador perdido será uma ação de administrador (T3.2).
+  - Rotas de OTP por e-mail do plugin ficam fora da lista (404).
+- **Testes:** 175 na API (+12). Os códigos TOTP dos testes vêm de um gerador RFC 6238 próprio dos testes, independente da biblioteca. Cobrem bloqueio sem MFA, cadastro com senha errada e certa, MFA inativo até o primeiro código, cifragem no banco, senha sozinha sem sessão, código errado, código de recuperação de uso único, `trustDevice` recusado, bloqueio após 5 erros, rota de desligar inexistente, recadastro recusado e OTP por e-mail inexistente. **Testes de mutação:** sem o portão de MFA no guard, 2 testes falham; liberando a rota de desligar, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (TOTP no primeiro login e em todo login, códigos de recuperação, sem MFA só a tela de cadastro) · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔ · Semgrep 0, Gitleaks limpo
+- **Teste manual:** coberto pelos testes de ponta a ponta da API; o fluxo pela tela entra na T6.5 (QR gerado localmente no navegador).
+
+## T2.3 Proteções de login e sessão ⚠️ épico de autenticação
+
+- **Arquivos:** `apps/api/src/auth/{login-attempts,auth-audit,csrf}.ts`, `apps/api/src/auth/{auth.factory,auth.controller,auth.module,auth.constants}.ts`, `apps/api/src/app.setup.ts` (CORS, cookie-parser), `apps/api/src/common/config/env.schema.ts` (`CSRF_SECRET`, `AUTH_RATE_LIMIT_ENABLED`), `apps/api/src/cli/seed.ts`, `apps/api/prisma/schema.prisma` (`RateLimit`, `LoginAttempt`), `apps/api/prisma/migrations/20261101222623_login_protection/`, `apps/api/vitest.config.ts`, `.env.example`, testes `apps/api/test/{auth-protections,auth-rate-limit}.test.ts`
+- **Dependências:** csrf-csrf 4.0.3 e cookie-parser 1.4.7 (aprovadas), @types/cookie-parser (dev)
+- **Como ficou:**
+  - **Por IP:** limite do Better Auth guardado no banco (vale entre instâncias): login 20 a cada 5 min, código MFA 5 por minuto, pedido de redefinição 5 a cada 15 min, redefinição e troca de senha 10 a cada 15 min, demais rotas 100 por minuto. O IP é o calculado pelo Express (`TRUST_PROXY_HOPS`). Só os testes desligam o limite (`AUTH_RATE_LIMIT_ENABLED`); a API não sobe em produção com ele desligado.
+  - **Por conta:** 5 senhas erradas em 15 min bloqueiam o e-mail por 15 min (429 `ACCOUNT_LOCKED`), inclusive para e-mail inexistente, para não revelar quem existe. Contagem atômica numa única instrução SQL; login certo zera. O MFA tem bloqueio próprio (T2.2).
+  - **CSRF:** toda escrita autenticada exige `Origin` do painel e o token de `GET /v1/csrf-token` no header `X-CSRF-Token`. O token é ligado à sessão atual (csrf-csrf, HMAC com `CSRF_SECRET`), e o cookie `__Host-verax.csrf` é `HttpOnly`, `Secure` e `SameSite=Strict`, sem `Domain`. As rotas de autenticação têm a checagem de origem própria (T2.1).
+  - **CORS:** só a origem do painel, com cookies; métodos e headers restritos. Outra origem não recebe header de permissão nenhum.
+  - **Expiração por inatividade:** 30 min, desde a T2.1.
+  - **Auditoria:** login (sucesso, falha e conta bloqueada), logout, cadastro e verificação de MFA, uso e regeneração de código de recuperação, pedido de redefinição, redefinição e troca de senha e revogação de sessões vão para a trilha `AuditLog` com ator, e-mail tentado, IP, user agent e request id. A senha tentada nunca é gravada. Uma falha ao gravar a auditoria vai para o log e não derruba o login.
+- **Testes:** 191 na API (+16). Cobrem bloqueio após 5 erros (até com a senha certa), e-mail inexistente bloqueado igual, contagem zerada pelo login certo, expiração do bloqueio, eventos de login com sucesso/falha/bloqueio/MFA/logout na auditoria, CSRF (sem token, token de outra sessão, origem errada, leitura sem token, atributos do cookie), CORS liberado só para o painel, limite por IP no login (outro IP segue livre) e no código MFA. **Testes de mutação:** sem o `CsrfGuard`, 3 testes falham; sem o bloqueio por conta, 3 falham.
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔ · Semgrep 0, Gitleaks limpo
+- **Teste manual:** coberto pelos testes de ponta a ponta da API contra o PostgreSQL; o fluxo pela tela entra na T6.5.
+
+## T2.4 Papéis e permissões ⚠️ épico de autenticação
+
+- **Arquivos:** `packages/shared/src/permissions.ts` (+ teste), `apps/api/src/auth/{permissions.guard,decorators,auth.module,me.controller,csrf}.ts`, `apps/api/src/common/http/route-contracts.ts`, testes `apps/api/test/{permissions,route-contracts}.test.ts`
+- **Dependências:** nenhuma nova
+- **Como ficou:**
+  - Papéis `admin_verax`, `admin_cliente`, `analista_cliente` e `leitura`, e uma matriz `recurso:ação` → papéis em `packages/shared` (fonte única da API e do painel). `admin_verax` tem tudo; `leitura` só tem permissões `:read`; cadastrar clientes, trocar de cliente e ver alertas sem dono são exclusivos da Verax; gerenciar usuários e ver auditoria são de administradores.
+  - Rotas declaram `@RequirePermission('recurso:ação')` (todas exigidas) ou `@Authenticated()` (qualquer logado, explícito). **Rota sem declaração é negada até para `admin_verax`** e o descuido vai para o log.
+  - Ordem dos guards globais: sessão (+ MFA) → permissão → CSRF.
+  - `GET /v1/me` devolve as permissões do papel, para o painel esconder o que não cabe (a API continua decidindo).
+  - Meta-teste: toda rota que exige sessão declara permissão ou `@Authenticated`.
+- **Testes:** 219 na API e 21 no shared. Matriz completa de 6 rotas × 4 papéis, rota sem declaração negada para todos (com log), 401 sem sessão, permissões em `/v1/me`, invariantes da matriz no shared. **Teste de mutação:** sem o guard de permissão, 11 testes falham.
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔ · Semgrep 0, Gitleaks limpo
+- **Ajuste à parte:** o CodeQL do PR #4 apontou condição de corrida (checar e depois escrever) no `scripts/setup-env.mjs`; o `.env` agora é criado em modo exclusivo e completado pelo mesmo descritor de arquivo.
+
+## T2.5 Isolamento por cliente ⚠️ épico de autenticação
+
+- **Arquivos:** `apps/api/src/common/prisma/{tenant-scope,prisma.service}.ts` (+ teste), `apps/api/src/common/context/{request-context,request-context.interceptor}.ts`, `apps/api/src/auth/{session-tenant.controller,session.guard,auth.factory,auth.module}.ts`, `apps/api/src/common/auth/request-auth.ts`, `apps/api/src/common/audit/{audit.interceptor,audit-context.service}.ts`, `apps/api/src/common/http/all-exceptions.filter.ts`, `apps/api/src/app.module.ts`, `apps/api/prisma/schema.prisma` (`Session.activeTenantId`), `apps/api/prisma/migrations/20261101225811_session_active_tenant/`, testes `apps/api/test/tenant-isolation.test.ts` e `test/support/tenant-isolation.ts`
+- **Dependências:** nenhuma nova
+- **Como ficou:**
+  - O cliente do escopo (`scopeTenantId`) sai **sempre da sessão**: o próprio cliente para papéis de cliente; o cliente selecionado para `admin_verax`. Um `activeTenantId` gravado na sessão de um usuário de cliente é ignorado.
+  - `prisma.scoped()` devolve o cliente do banco restrito ao cliente da sessão, inclusive dentro da transação da escrita. Em todo model com dado de cliente (`TENANT_SCOPED_MODELS`), toda leitura, contagem, alteração e exclusão recebe `tenantId` no filtro (sobrescrevendo qualquer valor da chamada), toda criação grava o `tenantId` da sessão, e mover um registro para outro cliente ou ligá-lo pela relação é recusado. SQL cru não existe no escopo, e operação desconhecida do Prisma é recusada até ser revisada.
+  - `prisma.forTenant(id)` é o escopo explícito para jobs sem sessão (sync, Prowler), nunca com valor vindo do usuário.
+  - Registro fora do cliente responde 404, igual a registro inexistente (não confirma que existe). Violação do escopo responde 403 e vai para o log como erro.
+  - `admin_verax` sem cliente selecionado recebe 409 `TENANT_REQUIRED` nas rotas de dado de cliente. `POST /v1/session/tenant` (só `admin_verax`, com CSRF) seleciona um cliente ativo para **aquela sessão** e grava a troca na auditoria com o estado anterior e o novo; `DELETE` limpa a seleção.
+  - O contexto da requisição (AsyncLocalStorage) agora vale para toda requisição, não só para escritas. Na auditoria, o cliente registrado é o do escopo da operação.
+  - **Suíte negativa reutilizável** (`describeTenantIsolation`): A não lista, não lê, não altera e não apaga dado de B, e B continua vendo o próprio. Todo módulo do E3 em diante usa esta suíte.
+  - Meta-teste: todo model com coluna `tenantId` no `schema.prisma` precisa estar em `TENANT_SCOPED_MODELS`.
+- **Correção encontrada no caminho:** `PrismaService.db` era getter. O `PrismaClient` do Prisma 7 é um Proxy, e getters de subclasse rodam sobre o objeto interno, sem os models; fora de transação, `db.user` era `undefined`. Virou o método `db()`, e o teste de isolamento cobre o caso.
+- **Testes:** 259 na API (+40). Escopo unitário (cada operação, sobrescrita de `tenantId`, `OR` preservado, criação, tentativas de mudar de cliente, upsert, operação desconhecida, SQL cru bloqueado) e integração (suíte A→B completa, `tenantId` na query e no corpo recusados, listagem só do próprio cliente, troca de cliente com auditoria, seleção por sessão, limpeza, cliente inexistente/inválido/inativo, usuário de cliente sem troca, `activeTenantId` forjado ignorado, meta-teste do schema). **Testes de mutação:** sem o filtro no `where`, 6 testes falham; aceitando `activeTenantId` de qualquer papel, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (`tenantId` sempre da sessão, extensão que filtra toda consulta de dado de cliente, só `admin_verax` troca de cliente e a troca é auditada, teste negativo A→B) · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔ · Semgrep 0, Gitleaks limpo
+
+## T2.6 Convite e redefinição de senha ⚠️ épico de autenticação
+
+- **Arquivos:** `apps/api/src/mail/{mail.types,ses.transport,dev-mailbox.transport,templates,mail.module}.ts`, `apps/api/src/auth/{invitation.service,password-links,auth.factory,auth.module}.ts`, `apps/api/src/common/config/{env.schema,load-env-file}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/cli/seed.ts`, `.env.example`, testes `apps/api/test/auth-invitation.test.ts` e `test/support/{memory-mail,create-app}.ts`
+- **Dependências:** @aws-sdk/client-sesv2 3.1161.0 (aprovada)
+- **Como ficou:**
+  - **Convite:** `InvitationService.invite` cria o usuário `invited`, sem senha, e manda um link de uso único que vale 60 min. Definir a senha pelo link ativa a conta; no primeiro login, o usuário cadastra o MFA (T2.2). As rotas de gestão de usuários (T3.2) usam este serviço.
+  - **Redefinição:** mesmo mecanismo (token aleatório do Better Auth, guardado só com hash, uso único, 60 min). Redefinir derruba todas as sessões abertas; o MFA continua exigido.
+  - **Sem enumeração:** resposta idêntica para e-mail existente, inexistente e de usuário desativado (que não recebe nada). O e-mail sai em segundo plano, então o tempo de resposta também não denuncia quem existe (medido: mediana de 27 ms contra 25 ms).
+  - O token vai no **fragmento** do link (`/convite#token=…`, `/redefinir-senha#token=…`): o navegador nunca o envia a servidor nenhum, nem no `Referer`, e ele não aparece em log de CDN, de proxy ou da API.
+  - E-mail: SES em produção (credenciais do papel IAM da task, sem chave na configuração; a API não sobe em produção com outro transporte); em desenvolvimento, caixa local `.dev-mailbox/` na raiz (fora do git, arquivos com permissão 600 e pasta bloqueada para o agente); nos testes, memória. Modelos em português com o nome escapado no HTML.
+  - Pedido de redefinição, redefinição e troca de senha (que exige a senha atual) vão para a auditoria, sem token nem senha.
+- **Testes:** 274 na API (+15). Cobrem convite (usuário sem senha, e-mail com o link no fragmento), ativação pela senha, link de uso único, expiração, token só com hash no banco, senha curta recusada sem queimar o link, resposta idêntica nos três casos, nenhum e-mail para inexistente e desativado, sessões derrubadas na redefinição, auditoria sem token nem senha, troca de senha com a atual, nenhum token no log, caixa local com arquivo `0600`, HTML escapado e validação da região AWS. **Testes de mutação:** sem a ativação no convite, 1 teste falha; mandando link a usuário desativado, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (convite com link de uso único e validade curta, redefinição no mesmo padrão, resposta idêntica para e-mail existente ou não) · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔ · Semgrep 0, Gitleaks limpo
+- **Teste manual:** API compilada com `MAIL_TRANSPORT=dev-mailbox`: pedido de redefinição para o admin do seed e para um e-mail inexistente devolveu o mesmo corpo; só uma mensagem chegou à caixa local (a do admin); nenhum token no log; `.dev-mailbox/` ignorada pelo git.
+- **Achado durante o teste manual:** a regex da região AWS tinha perdido o `\d` numa edição, e nenhum teste cobria a região; corrigida e coberta por teste.
+
+### Complemento da T2.6: senha vazada (Have I Been Pwned)
+
+- **Motivo:** premissa aprovada no plano ("senha com no mínimo 12 caracteres e checagem no Have I Been Pwned") que tinha ficado de fora do E2; encontrada ao revisar as premissas antes das telas de autenticação.
+- **Arquivos:** `apps/api/src/auth/{auth.factory,user-provisioning}.ts`, `apps/api/src/common/config/env.schema.ts` (+ teste), `.env.example`, `apps/api/test/auth-password-breach.test.ts`, `apps/api/test/support/create-app.ts`
+- **Como ficou:** plugin `haveIBeenPwned` do Better Auth na redefinição de senha (que é também o aceite de convite) e na troca de senha. Só os 5 primeiros caracteres do SHA-1 saem da API, com padding; senha encontrada é recusada com "Esta senha aparece em vazamentos conhecidos. Escolha outra."; se o serviço não responder, a senha **não** é aceita (falha fechada). `PASSWORD_BREACH_CHECK_ENABLED` só é desligado nos testes; a API não sobe em produção sem ele. O provisionamento interno (seed e testes) usa o hasher padrão da biblioteca.
+- **Testes:** 278 na API (+4). Serviço simulado só para o domínio do HIBP: senha vazada recusada no convite e na troca, senha limpa aceita, só o prefixo do hash sai, e serviço fora do ar faz a troca falhar sem gravar a senha.
+- **Pendente para o E8:** a API precisa de saída HTTPS para `api.pwnedpasswords.com` (liberar no egress da VPC).
+
+## Revisão linha a linha do E2 (portão)
+
+- **Como foi feita:** leitura de todo o código de produção do E2 (autenticação, guards, escopo por cliente, auditoria, e-mail, seed, schema e migrations), conferindo cada comportamento do Better Auth no código-fonte da versão instalada (1.7.14). Em paralelo, uma segunda leitura independente, que recebeu só o código e o objetivo, sem as conclusões da primeira. Também entraram os dois apontamentos do revisor automático do PR.
+- **Achados corrigidos:**
+  - **Cliente desativado não derrubava sessões abertas** (revisor automático): o status do cliente só era conferido no login. Agora vale a cada requisição. Para `admin_verax`, um cliente selecionado que é desativado deixa de valer na sessão.
+  - **Escrita negada por permissão, CSRF ou MFA não ia para a auditoria** (revisor automático): no Nest, guard que recusa encerra a requisição antes do interceptor. O novo `DenialAudit` grava essas recusas. Recusa sem sessão fica só no log, para ninguém de fora encher a tabela de auditoria, que não aceita exclusão.
+  - **Rotas de sessão do Better Auth ignoravam as regras da API:** `get-session`, `list-sessions`, `change-password` e códigos de recuperação só checam se a sessão existe. Com isso, usuário desativado, sessão com mais de 12 h e sessão sem MFA continuavam alcançando essas rotas. As regras (`resolveSession`) agora valem nelas também. Sessão sem MFA alcança só o cadastro do MFA.
+  - **`rememberMe: false` furava o limite de inatividade:** o Better Auth criava a sessão com 24 h e sem renovação. O campo é recusado no login, e nenhuma sessão vale com mais de 30 min de validade à frente.
+  - **Troca de senha podia renovar a sessão para sempre:** com `revokeOtherSessions`, o Better Auth cria uma sessão nova e zera a idade. O campo é recusado. Na troca, as outras sessões caem sempre e a atual continua, com a mesma idade.
+  - **Bloqueio por conta podia ser furado com requisições simultâneas:** a checagem e a contagem eram separadas. Agora cada tentativa é reservada numa única instrução SQL antes de conferir a senha, e o contador só zera com a sessão completa (senha e código do MFA). Por isso quem tem a senha também não abre desafios de MFA sem limite: são no máximo 5 desafios de até 5 códigos por 15 min.
+  - **Código TOTP reaproveitável por até 90 s** (o Better Auth aceita ±1 passo e não guarda o último usado): o código aceito num login fica registrado por 2 min (`UsedTotpCode`, migration nova), e um segundo login com ele é recusado, inclusive em requisições simultâneas.
+  - **Login de conta desativada (ou de cliente inativo) com a senha certa respondia diferente da senha errada:** agora a resposta é idêntica, comparada no teste.
+  - **Escopo por cliente liberava por padrão:** models sem `tenantId` (sessões, contas, tokens) e o `tenant` passavam sem filtro, e `$transaction` e `$extends` devolviam um client sem escopo. Agora vale uma lista de permitidos: models com `tenantId`; o `tenant` restrito à própria linha e sem criação; o resto lança `TenantScopeViolation`.
+  - **Trilha de auditoria vazava entre clientes:** a escrita de um `admin_verax` caía na trilha do cliente selecionado, mesmo sem tocar dados dele. Uma troca de A para B, por exemplo, ficava visível ao admin de A, com o ID de B. Agora o registro entra na trilha do cliente cujos dados foram tocados (`scoped()` marca isso). A troca entra na trilha do cliente escolhido, sem citar o anterior. Operação global da Verax fica fora de qualquer trilha de cliente.
+  - **Convite sem validade real:** pela rota pública, um convidado recebia link novo a qualquer momento. Agora só o `InvitationService` (convite e reenvio pelo administrador) manda link de convite; a rota pública atende só usuários ativos.
+  - **Segredo do TOTP relido depois do cadastro:** `get-totp-uri` saiu da lista de rotas. O QR sai só na resposta do `enable`, e o front não usa a rota.
+  - **`TRUST_PROXY_HOPS` sem trava de produção:** com 0 atrás do ALB, todos dividiriam o mesmo limite de tentativas. A API não sobe em produção com 0. O E8 já usa 1.
+  - **Meta-teste de rotas:** passa a fixar a lista de rotas liberadas sem MFA (`MeController.me`, `CsrfController.token`).
+- **Testes que não provavam o que diziam, corrigidos:**
+  - "o token não vai no corpo": o Better Auth devolve o token, sim. O teste agora prova a propriedade que importa: o token sozinho, sem a assinatura do cookie, não abre sessão.
+  - "bloqueio da conta no MFA": o teste caía no limite por desafio. Agora usa um desafio novo depois de 5 erros e confere `ACCOUNT_TEMPORARILY_LOCKED`.
+- **Testes:** 316 na API (+38 desde a T2.6), todos passando. **Testes de mutação:** cada correção foi desfeita, uma por vez, e pelo menos um teste falhou em todas as 25. A única que sobreviveu na primeira rodada foi a checagem de requisição anônima no `DenialAudit`, que nenhum caminho alcança hoje. Ela ganhou teste unitário próprio e passou a ser pega.
+- **Riscos que ficam:**
+  - Bloqueio por conta: quem sabe o e-mail de alguém consegue bloqueá-lo por 15 min com 6 tentativas. É o custo da premissa aprovada (bloqueio por conta), e o limite por IP reduz o abuso.
+  - O Better Auth checa o bloqueio do MFA e só depois conta a falha. A reserva de tentativas no login limita o efeito, mas não o elimina dentro de um mesmo lote.
+- **Para o E3 (T3.2):** desativar um usuário deve também apagar as sessões dele. O guard já recusa a sessão na requisição seguinte; apagar na hora tira a sessão também das listagens.
+
 ## T4.1 Base do Terraform ⚠️ altera `.github/`
 
 - **Arquivos:** `infra/terraform/{bootstrap,modules/private-bucket,modules/kms,modules/network,envs/staging,envs/production}/*`, `.terraform.lock.hcl` de cada raiz, `infra/terraform/.tflint.hcl`, `infra/terraform/README.md`, `.github/workflows/iac.yml`, `.github/dependabot.yml` (ecossistema terraform), `.gitignore` (`*.tfvars`, `backend.hcl`)
@@ -274,6 +409,103 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Desvios:** o snapshot é feito em disco e copiado para o S3 pelo host, em vez de um repositório S3 nativo, para manter a imagem oficial do indexer sem plugin adicional.
 - **Riscos:** a cópia para o S3 acontece uma hora depois do snapshot: um snapshot que demore mais que isso só vai para o S3 no dia seguinte (o repositório local guarda 14 dias). A observabilidade da T8.6 deve alarmar falha do timer.
 
+## T8.1 Banco em produção
+
+- **Arquivos:** `infra/terraform/modules/database/main.tf`, `infra/terraform/envs/{staging,production}/main.tf`
+- **Dependências:** nenhuma nova. PostgreSQL 18 no RDS (última minor: 18.6), a mesma major do ambiente local e do CI.
+- **Como funciona:**
+  - RDS PostgreSQL 18 em subnets privadas, `publicly_accessible = false`, security group **sem regra de saída** e entrada na 5432 só dos security groups autorizados (API, worker e migrations, ligados na T8.2).
+  - Disco gp3 cifrado com a chave de dados, crescimento automático até 200 GB, Performance Insights cifrado e monitoramento avançado.
+  - Senha mestra gerada e guardada pelo próprio RDS no Secrets Manager, cifrada com a chave de dados: não passa pelo state nem pelo código. A aplicação não usa essa conta: os papéis de banco dela nascem no bootstrap (T8.2).
+  - Grupo de parâmetros com TLS obrigatório (`rds.force_ssl`, mínimo TLS 1.2), SCRAM-SHA-256 e log de conexões. **Sem log de consultas**, porque ele gravaria os valores dos parâmetros (dados pessoais ou tokens); as consultas lentas ficam no Performance Insights, normalizadas e sem valores.
+  - Backups automáticos com restauração para qualquer ponto no tempo (14 dias em produção, 7 no staging), snapshot final, backups preservados ao apagar e logs exportados para grupos criados antes do banco, com KMS e 365 dias de retenção. Atualização automática de minor, nunca de major.
+  - **Produção:** Multi-AZ e proteção contra exclusão, explícitos no ambiente. **Staging:** `db.t4g.micro`, uma zona, sem proteção contra exclusão (só dados fictícios, pendência 7).
+- **Testes:** `terraform validate` nos dois ambientes; tflint (inclui a validação das classes de instância); checkov sem falhas, com duas exceções justificadas no código (Multi-AZ e proteção contra exclusão são variáveis: ligadas em produção, desligadas no staging); Trivy limpo.
+- **Definição de pronto:** critérios de aceite ✔ (RDS em subnet privada, criptografado, com backups automáticos; sem acesso público; credencial no Secrets Manager) · lint ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
+- **Correção (revisor automático do PR #7):** no PostgreSQL 18, `log_connections` virou lista, e o RDS recusa o antigo `"1"` na família `postgres18` (o apply falharia ao criar o grupo de parâmetros). Agora o valor é `receipt,authentication,authorization`, que as notas do RDS para o PostgreSQL 18 dão como equivalente ao antigo `1`. `terraform validate` nos dois ambientes.
+
+## T8.3 Front no S3 + CloudFront
+
+- **Arquivos:** `infra/terraform/modules/frontend/main.tf`, `infra/terraform/modules/private-bucket/main.tf` (declarações extras na bucket policy e saída `regional_domain_name`), `infra/terraform/envs/{staging,production}/main.tf` (provider de us-east-1, domínios como variáveis), `infra/terraform/README.md`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Bucket privado** (`private-bucket`) com chave KMS própria. A bucket policy e a política da chave liberam leitura e decifração **só para esta distribuição** do CloudFront (`AWS:SourceArn`), por Origin Access Control com assinatura sigv4. O bucket não tem nenhum acesso público.
+  - **Cabeçalhos de segurança** numa response headers policy, iguais aos do `vite preview` (`apps/web/src/build-guards.ts`): CSP estrita com `connect-src` só para o domínio da API, HSTS de 2 anos com subdomínios e preload, `X-Frame-Options: DENY`, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`, `Permissions-Policy` e COOP.
+  - **Domínio com TLS:** certificado ACM (us-east-1) no `panel_domain`, só SNI e mínimo TLS 1.2 (`TLSv1.2_2021`), HTTP/2 e HTTP/3, redirecionamento para HTTPS. Com zona no Route53, validação e registros A/AAAA automáticos; sem ela, roteiro manual no README (pendência 4).
+  - **SPA:** função do CloudFront que manda as rotas do React Router (sem extensão) para o `index.html`, sem transformar 403/404 do bucket em página.
+  - **WAF** (escopo CloudFront): reputação de IP, regras comuns e entradas maliciosas conhecidas (inclui Log4Shell) da AWS, mais limite de 2.000 requisições por IP a cada 5 minutos. O log do WAF omite `authorization` e `cookie`.
+  - **Logs** do CloudFront (entrega versão 2) e do WAF no CloudWatch em us-east-1, com chave KMS própria (a chave de logs do ambiente está em sa-east-1) e 365 dias de retenção.
+- **Testes:** `terraform validate` nos dois ambientes; tflint limpo; checkov sem falhas (486 aprovados), com exceções justificadas no código (log v2 que o checkov não reconhece, origem única sem failover, sem restrição geográfica e a ligação ao WAF que o grafo do checkov não atravessa entre providers); Trivy limpo.
+- **Definição de pronto:** critérios de aceite ✔ (bucket privado servido só pelo CloudFront; CSP, HSTS, `X-Frame-Options` e `Referrer-Policy`; domínio do painel com TLS) · lint ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
+- **Pendente:** teste de paridade entre a CSP do CloudFront e a do `build-guards.ts`, quando E6 e E8 estiverem juntos na `main`. O upload do build (com `Cache-Control` sem cache para o `index.html`) e a invalidação ficam no pipeline (T8.5).
+
+## T8.2 API no ECS — parte 1: imagem, papéis de banco e pnpm corrigido ⚠️ altera `.github/`
+
+- **Arquivos:** `apps/api/Dockerfile`, `.dockerignore`, `apps/api/src/cli/db-bootstrap.ts`, `apps/api/test/db-bootstrap.test.ts`, `scripts/test-api-image.sh`, `apps/api/package.json` (`prisma` passa a dependência de produção), `package.json` (pnpm 11.28.10), `pnpm-lock.yaml`, `.github/workflows/ci.yml` (job da imagem), `.github/dependabot.yml` (imagem base da API)
+- **Dependências:** nenhuma nova. O `prisma` (mesma versão) vira dependência de produção: a tarefa de migrations roda em produção, e ele já entrava como peer do `@prisma/client`. **pnpm de 11.1.2 para 11.28.10** (última 11.x, 62 h de publicada): a 11.1.2 tem quatro vulnerabilidades altas de instalação (GHSA-vx52-2968-3vc6, GHSA-qrv3-253h-g69c, CVE-2026-82392 e CVE-2026-82393: escrita de arquivo arbitrária e path traversal), achadas pelo Trivy na imagem de build. O lockfile só mudou na linha do `prisma`.
+- **Como funciona:**
+  - **Imagem** em múltiplos estágios, com contexto controlado por um `.dockerignore` em lista de permissão (`.env`, chaves e `node_modules` locais nunca entram). A instalação respeita a quarentena e a política de confiança do workspace. Base `node:24-alpine` e bundle de CAs do RDS fixados por SHA-256. Alvo `api`: só dependências de produção, usuário `node`, arquivos do root, sem `npm` nem `corepack`, health check. Alvo `migrate`: a mesma imagem mais o schema e o Schema Engine baixado no build, então a migration não depende de internet.
+  - **Papéis de banco** (`db-bootstrap`, tarefa avulsa): com a conta mestra do RDS, cria e mantém `verax_migrator` (dono do schema, só para as migrations) e `verax_app` (só SELECT, INSERT, UPDATE e DELETE; sem criar ou alterar objetos, sem ler `_prisma_migrations`, sem UPDATE, DELETE ou TRUNCATE na `AuditLog`). Também revoga `CONNECT` e o acesso ao schema de `PUBLIC`. Senhas vindas das URLs que o Terraform grava; nomes de papel validados (`verax_[a-z0-9_]`) e escapados pelo driver; tudo numa transação; idempotente. O deploy roda o bootstrap antes e depois das migrations. Fecha a pendência do E1 (aplicação sem privilégio de dono).
+- **Testes:**
+  - `db-bootstrap.test.ts`: 7 testes contra o Postgres de teste, com papéis reais e únicos por execução. A aplicação lê e grava; não cria, altera nem apaga tabelas; não altera nem apaga a auditoria; não lê a tabela de migrations. O papel de migrations cria tabelas, que a aplicação passa a usar. A rotação de senha funciona e a antiga deixa de valer; nome de papel com SQL é recusado. A suíte da API passa inteira (146).
+  - `scripts/test-api-image.sh` (local e no CI, job novo "Imagem da API"): numa rede Docker **sem internet**, Postgres 18 com TLS e CA descartável. Sequência do deploy: bootstrap, migrations pelo papel das migrations, bootstrap de novo; as tabelas pertencem ao papel das migrations, e a aplicação não cria tabelas nem apaga a auditoria. A API em produção roda com raiz só leitura, sem capabilities, sem root e com `sslmode=verify-full`: `/health` e `/health/ready` respondem 200; com outra CA, ela não fica pronta. Em produção, a configuração recusa subir sem `verify-full`.
+  - Trivy nas duas imagens: nenhuma vulnerabilidade alta ou crítica com correção disponível. Semgrep, ESLint, Prettier, actionlint e zizmor limpos.
+- **Pendente nesta task:** a infra do ECS (ALB com TLS, WAF, serviço, tarefas de bootstrap e migrations, segredos) na parte 2.
+
+## T8.2 API no ECS — parte 2: infraestrutura · T8.4 Segredos e permissões
+
+- **Arquivos:** `infra/terraform/modules/api/main.tf`, `infra/terraform/envs/{staging,production}/main.tf`, `infra/terraform/README.md`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Entrada:** ALB público **só HTTPS** (política TLS 1.3/1.2 restrita, `drop_invalid_header_fields`, mitigação de desync no modo mais rígido, proteção contra exclusão), certificado ACM do `api_domain` e nenhuma porta 80, porque o painel sempre chama por HTTPS. Log de acesso num bucket privado, versionado e só TLS; o ALB só entrega em SSE-S3, então este bucket é a exceção documentada ao KMS.
+  - **WAF regional** associado ao ALB: reputação de IP, regras comuns (o limite de 8 kB de corpo só conta, porque a API valida 100 kB), entradas maliciosas conhecidas (inclui Log4Shell), SQL injection, **limite de 100 requisições por IP a cada 5 minutos em `/v1/auth/`** (além do limite e do bloqueio por conta da própria API) e limite geral de 1.000. O log omite `authorization` e `cookie`.
+  - **Serviço Fargate** em subnet privada, entrada só do ALB, ECS Exec desligado, rollback automático de deploy e health check no contêiner e no target group (`/health`). O contêiner roda com uid 1000, raiz só leitura, `/tmp` como único volume gravável e todas as capabilities removidas. As variáveis de produção satisfazem o schema de configuração do E2: origens `https`, rate limit e verificação de senha vazada ligados, SES e `TRUST_PROXY_HOPS=1`.
+  - **Tarefas do deploy:** `db-bootstrap` (imagem da API, conta mestra) e `migrate` (imagem de migrations, papel das migrations), num security group sem internet, só com o banco e os endpoints privados da AWS. O deploy roda bootstrap, migrations e bootstrap de novo (T8.5).
+  - **Segredos** (T8.4): `db-url-app`, `db-url-migrator` e `api-auth` (chaves de sessão e de CSRF de 64 caracteres) gerados por recurso efêmero e gravados por write-only, sem passar pelo state; rotação por `secret_version`. Cada um é injetado em tempo de execução só na tarefa que precisa: **um papel de execução por tarefa**, e cada um lê só os próprios segredos (o bootstrap é o único que lê a senha mestra do RDS).
+  - **Papéis** (T8.4): a API tem papel próprio (`<nome>-api`), que só envia e-mail pela identidade SES do domínio e assume `*/VeraxControlReadOnly`. Bootstrap e migrations não têm papel de tarefa (não chamam a AWS). Quem assume os papéis dos clientes: a API, o Prowler (T4.7) e o manager do Wazuh (T4.4), todos com nome dentro do prefixo aceito pelo conector. O worker de sincronização (E5) ganha papel próprio quando existir.
+  - **Rede cruzada:** o banco aceita conexão só da API e das tarefas do deploy; em produção, o indexer do Wazuh aceita só a API (o que libera a publicação da porta 9200 fora do `127.0.0.1`, T4.8).
+  - **E-mail:** identidade SES do domínio do remetente com DKIM de 2048 bits, registros no Route53 ou na saída `ses_dkim_records`.
+  - Serviço e tarefas só existem quando o deploy informa os digests das imagens publicadas no ECR (repositórios com tags imutáveis, varredura na publicação e KMS).
+- **Testes:** `terraform validate` nos dois ambientes; tflint limpo; checkov com 649 aprovados e 0 falhas, também com as imagens publicadas; Trivy limpo. As exceções estão justificadas no código: ALB público, entrada HTTPS da internet, saída HTTPS da API, SSE-S3 no log do ALB e as ligações que o checkov não acompanha (SG das tarefas no run-task, WAF associado).
+- **Definição de pronto (T8.2):** ECS Fargate atrás de load balancer com TLS ✔ · WAF com regras gerenciadas ✔ · migrations no deploy ✔ (tarefas prontas; a orquestração é a T8.5) · health check ✔ · **nada aplicado na AWS** (portão)
+- **Definição de pronto (T8.4):** papel próprio por serviço com permissão mínima ✔ (o worker entra com o E5) · só a API e os jobs assumem os papéis dos clientes ✔ · segredos lidos do Secrets Manager em tempo de execução ✔
+
+## T8.5 Pipeline de deploy ⚠️ altera `.github/`
+
+- **Arquivos:** `.github/workflows/{deploy,release}.yml`, `scripts/release.sh`, `infra/terraform/modules/deploy-role/main.tf`, `infra/terraform/bootstrap/main.tf` (provedor OIDC), `infra/terraform/envs/{staging,production}/main.tf`, `infra/terraform/modules/{api,frontend}/main.tf` (saídas; serviço ignora a revisão em uso), `infra/terraform/README.md` ("Ligar o deploy"), `.github/zizmor.yml`, `.github/workflows/security.yml` (versão do zizmor fixada)
+- **Dependências:** actions fixadas por SHA e conferidas na release oficial e no GitHub Advisory Database: `aws-actions/configure-aws-credentials` v6.3.0, `actions/attest-build-provenance` v4.2.2, `actions/upload-artifact` v7.0.2 e `actions/download-artifact` v8.0.2 (o alerta conhecido vale só abaixo de 4.1.3). syft 1.55.0 por binário com checksum. O login no ECR é feito pelo AWS CLI do runner, sem action de terceiro.
+- **Como funciona:**
+  - **Sem chave fixa:** provedor OIDC do GitHub no bootstrap. Cada ambiente tem um papel de deploy que só o environment do GitHub de mesmo nome, neste repositório, assume (`sub` = `repo:…:environment:<ambiente>`), com sessão de 1 hora.
+  - **Permissão mínima do deploy:** enviar imagens aos dois repositórios do ambiente; registrar revisões; rodar só as tarefas de bootstrap e migrations neste cluster; atualizar só o serviço da API; passar só os papéis das tarefas para o ECS; ler só os logs das tarefas do deploy; ler a configuração e gravar o registro das imagens publicadas; publicar no bucket do painel (KMS via S3); invalidar só esta distribuição. **Não altera IAM, rede, banco nem segredos**: infraestrutura é Terraform, aplicado por quem administra a conta. Por isso o pipeline não roda o Terraform.
+  - **Fluxo** (`deploy.yml`, só com `AWS_DEPLOY_ENABLED=true`): CI, Segurança e IaC de novo como gates; build único das imagens; Trivy (alta com correção bloqueia); SBOM SPDX (artefato por 90 dias); staging; produção depois da aprovação manual do environment. Cada ambiente (`release.yml` + `release.sh`) publica as imagens com tag imutável; registra revisões **clonando a mais recente e trocando só a imagem** (o endurecimento continua o do Terraform); roda bootstrap, migrations e bootstrap, mostrando o log se falhar; atualiza o serviço e confere que não houve rollback; registra os digests; publica o painel (`assets/` com cache imutável, `index.html` sem cache) e invalida o CloudFront; faz o smoke test (`/health` e cabeçalhos de segurança do painel); gera a **attestation de origem** das duas imagens publicadas.
+  - **Primeira publicação:** o deploy publica as imagens e para com a instrução de aplicar o Terraform com os digests (as tarefas nascem lá). Ao reaplicar o Terraform depois, usam-se os digests da última versão, registrados no SSM.
+- **Testes:** actionlint (com shellcheck) e zizmor 1.31.1 sem achados (a sugestão nova de sintaxe `$/` conflita com o actionlint e fica ignorada só no `deploy.yml`, com motivo); shellcheck do `release.sh`; o filtro que clona a revisão foi testado com uma definição real (descarta os campos que a AWS não aceita de volta, mantém o endurecimento e troca só a imagem). Terraform válido nos três roots; checkov (679 aprovados, 0 falhas) e Trivy limpos. O fluxo na AWS só roda quando o deploy for ligado.
+- **Definição de pronto:** deploy com OIDC, sem chave fixa ✔ · aprovação manual para produção ✔ (environment) · SBOM e attestation de origem ✔ · **nada aplicado nem publicado na AWS** (portão)
+- **Achado no caminho:** a `zizmor-action` baixava sempre a versão mais recente do zizmor (a action estava fixada, a ferramenta não). Agora a versão é fixa.
+
+## T8.7 Varredura DAST ⚠️ altera `.github/`
+
+- **Arquivos:** `scripts/zap-baseline.sh`, `scripts/test-api-image.sh` (`RUN_ZAP=1`), `.github/workflows/ci.yml` (job da imagem), `.github/workflows/release.yml` (staging)
+- **Dependências:** imagem `zaproxy/zap-stable` (ZAP 2.17.0) fixada por digest.
+- **Como funciona:** baseline passivo do OWASP ZAP com **bloqueio por risco alto**, lido do relatório JSON (o baseline sozinho não tem esse critério). Médios e baixos aparecem no relatório, guardado como artefato. Roda contra a stack local em todo CI, na rede isolada do teste da imagem, e contra o painel e a API publicados no staging, antes de liberar a produção.
+- **Testes:** rodado localmente contra a API em produção (TLS verificado com o banco): 0 alto, 1 médio, 0 baixo.
+- **Pendente:** o achado médio 10055 ("CSP: diretiva sem fallback") aparece nas respostas 404 de `/`, `/robots.txt` e `/sitemap.xml`, apesar de a CSP da API definir `frame-ancestors` e `form-action`. A investigar com o código do E2 na `main`, porque o E2 também mexe na configuração HTTP.
+
+## T8.6 Monitoramento e alarmes
+
+- **Arquivos:** `infra/terraform/modules/monitoring/main.tf`, `infra/terraform/modules/{api,database,prowler,wazuh}/main.tf` (saídas; permissão de métrica do Wazuh), `infra/wazuh/scripts/bootstrap-host.sh` (agente do CloudWatch), `infra/terraform/envs/{staging,production}/main.tf`
+- **Dependências:** nenhuma nova (agente do CloudWatch do repositório do Amazon Linux 2023).
+- **Como funciona:**
+  - **Logs centralizados com redaction:** todos os logs (API, tarefas, Wazuh, Prowler, WAF, CloudFront, banco, flow logs) vão para o CloudWatch, cifrados com KMS e com retenção. A aplicação remove segredos antes de registrar (redaction do logger, T1.1); WAF e conector omitem os cabeçalhos de credencial.
+  - **Alarmes** num tópico SNS cifrado com chave própria (a política aceita só CloudWatch e EventBridge da conta), com assinatura por e-mail configurável (`alarm_email` no `terraform.tfvars` local, fora do git):
+    - API: 5xx da aplicação e do load balancer, alvos reprovando no health check e tarefas abaixo do desejado;
+    - banco: CPU acima de 80% e menos de 5 GB livres;
+    - Wazuh: **disco de dados acima de 80%** (o indexer fica só leitura a 95%), pela métrica do agente do CloudWatch instalado pelo bootstrap (permissão só no namespace `VeraxControl/Wazuh`), e falha de status da instância;
+    - tarefas avulsas que terminam com erro (Prowler, bootstrap e migrations), por evento do ECS;
+    - **sincronização parada** e **conta sem evento há horas**: alarmes prontos sobre o contrato de métricas que o worker do E5 vai publicar (namespace `VeraxControl/Sync`, `SyncRuns` e `SilentAccounts`), desligados até o worker existir (`sync_alarms_enabled`).
+- **Testes:** `terraform validate` nos dois ambientes; tflint e shellcheck limpos; checkov (711 aprovados em Terraform, 0 falhas) e Trivy limpos.
+- **Definição de pronto:** logs centralizados no CloudWatch com redaction ✔ · alarmes de 5xx da API ✔ e de disco do Wazuh ✔ · alarmes de sync parado e conta sem evento ✔ (prontos; ligam com o worker do E5) · **nada aplicado na AWS** (portão)
+
 ## Correção nas T4.4 a T4.6: correlações da AWS separadas por conta
 
 - **Achado** (ao preparar a T5.2): um Wazuh atende todos os clientes, e três regras de frequência da AWS no Wazuh 4.14.9 contam eventos de qualquer conta. Confirmado no `wazuh-logtest`: três logins com falha no console numa conta e três noutra disparam a 80255 ("Possible break in attempt"), atribuída à conta do último evento, que sozinha tinha três. Do mesmo jeito, quatro bloqueios do WAF de um IP numa Web ACL e quatro noutra disparam a 80443. Era alerta falso para um cliente, causado por eventos de outro.
@@ -298,3 +530,398 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - `logs:DescribeLogGroups` entra num bloco separado com recurso `*`, porque a ação não aceita restrição por recurso. Criar, escrever e listar streams continua restrito ao log group dos flow logs.
   - A relação de confiança passa a exigir `aws:SourceAccount` igual à própria conta e `aws:SourceArn` de um flow log desta conta e região. É a proteção contra "confused deputy" que a mesma página recomenda.
 - **Testes:** `fmt -check` e `terraform validate` válidos em staging e produção · checkov no módulo: 51 aprovados, 0 falhas (a ação sem recurso é reconhecida como não restringível) · tflint no CI.
+
+## T3.1 Cadastro de clientes
+
+- **Arquivos:** `packages/shared/src/tenants.ts` (+ teste), `apps/api/src/tenants/{tenants.controller,tenants.service,tenants.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102174939_tenant_registration/`, `apps/api/src/cli/seed.ts`, `apps/api/test/tenants.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** nome, CNPJ, plano (texto livre, até 60 caracteres, premissa aprovada), contato de escalonamento (nome, e-mail e telefone opcional) e status.
+  - **CNPJ:** valida o formato alfanumérico que a Receita emite desde julho de 2026, que inclui o numérico antigo: 12 caracteres de A a Z ou 0 a 9, mais dois dígitos verificadores pelo módulo 11, com cada caractere valendo o código ASCII menos 48. Aceita com ou sem máscara, guarda só os 14 caracteres em maiúsculas, e é único (409 se repetido).
+  - **Rotas** (só `admin_verax`, permissões `tenants:read` e `tenants:write`): `GET /v1/tenants` (resumo `id`, `name`, `status`, no contrato que o seletor do painel já valida, com filtro por status), `GET /v1/tenants/:id` (cadastro completo), `POST`, `PATCH` (parcial, com reativação por `status`) e `DELETE`, que é exclusão lógica.
+  - **Desativar** derruba na hora as sessões dos usuários do cliente e limpa a seleção de `admin_verax` que estavam nele.
+  - **Auditoria:** criação, alteração, desativação e reativação entram na trilha do próprio cliente, com estado anterior e novo.
+  - No banco, CNPJ, plano e contato ficam opcionais só por causa dos clientes criados antes do cadastro completo; a API exige todos. O seed passou a criar os clientes de demonstração com cadastro completo e CNPJs fictícios válidos.
+- **Testes:** 17 de integração. Cobrem os três papéis de cliente recebendo 403 em todas as rotas sem alterar nada; criação com CNPJ normalizado e auditoria na trilha do novo cliente; CNPJ repetido com 409; recusa de CNPJ inválido, `status` ou campo desconhecido no corpo, contato ausente e plano longo; listagem no contrato estrito do seletor; filtro por status; 404 e 400; alteração parcial auditada; alteração vazia recusada; desativação com sessões derrubadas, seleção limpa e reativação auditada; troca para CNPJ já usado. No pacote compartilhado, 17 testes do CNPJ e do schema. Mutação: sem derrubar as sessões, 1 falha; com permissão errada na listagem, 3 falham.
+- **Definição de pronto:** critérios de aceite ✔ (campos, só `admin_verax` cria, edita e desativa, exclusão lógica, testes de permissão) · lint e tipos ✔ · dependências n/a · regras de segurança ✔
+- **Correção (revisor automático do PR #10):** o telefone aceitava 21 caracteres, e a coluna tem 20, o que daria erro 500 em vez de 400. O schema agora limita a 20; teste novo.
+
+## T3.2 Usuários do cliente
+
+- **Arquivos:** `packages/shared/src/users.ts`, `apps/api/src/users/{users.controller,users.service,users.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/test/users.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - Tudo pelo escopo da sessão: `admin_cliente` gerencia o próprio cliente; `admin_verax`, o cliente selecionado (sem seleção, 409 `TENANT_REQUIRED`). `analista_cliente` e `leitura` não têm acesso (`users:*` é só de administradores).
+  - **Rotas:** `GET /v1/users` (com filtro por status) e `GET /v1/users/:id`; `POST /v1/users` convida pelo `InvitationService` da T2.6, com o cliente vindo da sessão; `PATCH /v1/users/:id` troca o papel e (re)ativa; `DELETE` desativa (exclusão lógica); `POST /:id/invitation` reenvia o convite; `POST /:id/mfa-reset` redefine o MFA.
+  - Só papéis de cliente são atribuíveis (`admin_verax` é recusado no schema). **Ninguém altera o próprio papel, status ou MFA** (403). Convidado não vira ativo por aqui: só ao definir a senha pelo link.
+  - Desativar, e também redefinir o MFA, derruba as sessões do usuário na hora (pendência da revisão do E2).
+  - **Redefinir o MFA** (a ação do administrador para quem perdeu o autenticador, que estava em aberto) apaga o TOTP e os códigos de recuperação. No próximo login, com a senha, o usuário só alcança o cadastro de um autenticador novo.
+  - Auditoria de convite, reenvio, troca de papel, desativação e redefinição de MFA, na trilha do cliente.
+  - E-mail já cadastrado responde 409. O e-mail é único na plataforma, então um administrador de cliente consegue saber que um endereço já tem conta (sem saber em qual cliente). É o custo do e-mail único; a alternativa seria aceitar o convite em silêncio e não entregá-lo.
+- **Testes:** 20 de integração. Cobrem a suíte negativa A→B completa; os papéis sem acesso; `admin_verax` com e sem cliente selecionado; a listagem só do próprio cliente e no contrato do pacote compartilhado; convite com cliente da sessão, link enviado e auditoria; recusa de papel `admin_verax`, `tenantId` e `status` no corpo; e-mail repetido; reenvio só para convidado; troca de papel auditada; nenhuma alteração do próprio acesso; desativação com sessões derrubadas e reativação; convidado não ativado à força; e a redefinição de MFA com sessões derrubadas e novo login exigindo o cadastro. Mutação: sem a trava do próprio acesso, 4 falham; sem derrubar as sessões, 1; sem apagar o TOTP, 1.
+- **Definição de pronto:** critérios de aceite ✔ (listar, convidar, alterar papel e desativar; `admin_cliente` só no próprio cliente; ninguém altera o próprio papel; teste negativo entre clientes) · lint e tipos ✔ · regras de segurança ✔
+- **Risco:** o convite cria o usuário pelo Better Auth, fora da transação da requisição. Se a gravação da auditoria falhar depois, o convidado continua criado e a tentativa fica registrada como falha.
+
+## T3.3 Contas cloud
+
+- **Arquivos:** `packages/shared/src/cloud-accounts.ts` (+ teste), `apps/api/src/cloud-accounts/{cloud-accounts.controller,cloud-accounts.service,cloud-accounts.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/common/prisma/tenant-scope.ts` (`cloudAccount` na lista protegida), `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102180302_cloud_accounts/`, `apps/api/test/cloud-accounts.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** provedor (`aws`), ID da conta (12 dígitos), regiões, status e os buckets de log por fonte (CloudTrail, GuardDuty e WAF), que a T5.2 usa para vincular cada alerta ao cliente.
+  - **Papel de leitura:** o ARN é derivado do ID (`arn:aws:iam::<conta>:role/VeraxControlReadOnly`), porque o template do conector (T4.3) cria sempre esse papel e o inventário (T5.9) assume isso. O cadastro não escolhe papel; é o desvio em relação ao campo "ARN do papel" do plano.
+  - **ExternalId:** 256 bits do CSPRNG em base64url, gerado na criação. Nunca é aceito do request (o schema é estrito e recusa `externalId`, chaves de acesso, `roleArn` e `tenantId`). Só quem configura o conector (`cloud_accounts:write`) o vê nas respostas, e ele não vai para a auditoria.
+  - **Unicidade:** um ID de conta não pertence a dois clientes (índice único, 409). Um bucket de log também é de um cliente só; contas do mesmo cliente podem dividir um bucket. A checagem de bucket roda sob um lock transacional por bucket (`pg_advisory_xact_lock`), então dois cadastros simultâneos não passam juntos, e a resposta não diz de quem é o bucket.
+  - **Validação:** regiões no formato da AWS (inclusive GovCloud e ISO), sem repetição, conferidas por partes, sem regex aninhada; nomes de bucket pelas regras do S3; o bucket do WAF precisa do prefixo `aws-waf-logs-` (exigência da AWS).
+  - **Rotas:** `GET` (todos os papéis), `POST`, `PATCH` (regiões, buckets e status; `null` apaga um bucket; o ID da conta não muda) e `DELETE` (exclusão lógica), pelo escopo da sessão e com auditoria.
+- **Testes:** 21 de integração. Cobrem a suíte negativa A→B; ExternalId gerado, papel derivado e auditoria sem o ExternalId; recusa de ExternalId, chave de acesso, papel escolhido, cliente, ID curto, região inválida ou repetida e bucket inválido; ID de conta em dois clientes; bucket dividido no mesmo cliente e recusado em outro; dois clientes registrando o mesmo bucket ao mesmo tempo (só um consegue); `leitura` vendo a conta sem o ExternalId e sem poder alterar; alteração com `null`; ID imutável; desativação auditada. No pacote compartilhado, 17 testes de região, papel e bucket. Mutação: sem a trava de bucket, 2 falham; mostrando o ExternalId a todos, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (campos, ExternalId gerado pelo sistema e nunca aceito do request, nenhuma chave de acesso armazenada, ID de conta único entre clientes) · lint e tipos ✔ · regras de segurança ✔
+- **Para o E5:** a lista de alvos do Prowler no SSM (T4.7) passa a ser mantida a partir destas contas, por um job, na integração da T5.8.
+- **Correção (revisor automático do PR #10):** a trava de bucket conferia só a mesma fonte, então o mesmo bucket podia ser CloudTrail de um cliente e GuardDuty de outro. Como o nome de bucket é único no S3, a checagem e o lock passam a valer para o nome em qualquer fonte. Teste novo; mutação: conferindo uma coluna só, ele falha.
+
+## T3.4 Lista de proteção
+
+- **Arquivos:** `packages/shared/src/protected-resources.ts`, `apps/api/src/protected-resources/{protected-resources.controller,protected-resources.service,protected-resources.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/common/prisma/tenant-scope.ts`, `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/20261102181028_protection_and_exceptions/` (junto com a T3.5), `apps/api/test/protected-resources.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Itens:** tipo, identificador, motivo e quem incluiu. O autor vem sempre da sessão.
+  - **Tipos:** conta AWS, usuário e papel de IAM (nome ou ARN do tipo certo), chave de acesso, instância EC2, bucket S3, security group e IP ou faixa CIDR. Cada identificador é conferido no formato da AWS, para a comparação com os achados (T5.6, +15 na nota de risco) ser exata.
+  - Um item não se repete no mesmo cliente (409). Só o motivo muda; outro identificador é outro item.
+  - **Rotas:** `GET`, `GET :id`, `POST`, `PATCH` e `DELETE`, pelo escopo da sessão. Todos leem; administradores alteram. Toda alteração é auditada, e a remoção guarda o item inteiro como estado anterior.
+- **Testes:** 21 de integração. Cobrem a suíte negativa A→B; inclusão com o autor da sessão, auditada; item repetido; recusa de formato errado por tipo, de autor no corpo e de caractere de controle no motivo; aceite de cada tipo no formato da AWS; alteração e remoção auditadas; identificador imutável; analista sem permissão de escrita. Mutação: sem a conferência do formato, 4 falham.
+- **Definição de pronto:** critérios de aceite ✔ (tipo, identificador, motivo e quem incluiu; escopo por cliente; todas as alterações auditadas) · lint e tipos ✔ · Semgrep sem achados nos arquivos novos
+
+## T3.5 Exceções de alerta
+
+- **Arquivos:** `packages/shared/src/alert-exceptions.ts`, `apps/api/src/alert-exceptions/{alert-exceptions.controller,alert-exceptions.service,alert-exceptions.module}.ts`, `apps/api/src/app.module.ts`, `apps/api/src/common/prisma/tenant-scope.ts`, `apps/api/prisma/schema.prisma`, migration da T3.4, `apps/api/test/alert-exceptions.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Campos:** regra do Wazuh (até 6 dígitos), condição (usuário, IP ou faixa CIDR, ou recurso, com o valor), motivo e validade opcional. O autor vem da sessão.
+  - **Validade:** precisa estar no futuro e, no máximo, a um ano. Sem ela, a exceção vale até ser removida.
+  - **Uso pelo sync (T5.3):** `matchedCount` e `lastMatchedAt` são atualizados pelo sync quando a exceção marca um achado como esperado. Os dois nunca vêm do request.
+  - Vencida, a exceção para de valer, mas continua listada como inativa, com filtro `active`. Uma mesma combinação de regra, campo e valor não se repete no cliente.
+  - **Rotas:** `GET`, `GET :id`, `POST`, `PATCH` (motivo e validade; regra, campo e valor definem a exceção) e `DELETE`. Todos leem; operadores (administradores e analistas) alteram. Tudo auditado.
+- **Testes:** 14 de integração. Cobrem a suíte negativa A→B; criação pelo analista com o autor da sessão, auditada; exceção repetida; recusa de regra não numérica, IP inválido, validade no passado ou acima de um ano, contagem e autor no corpo; exceção vencida listada como inativa e filtro; alteração e remoção auditadas; leitura sem permissão de escrita. Mutação: com "ativa" sempre verdadeiro, 1 falha.
+- **Definição de pronto:** critérios de aceite ✔ (campos, escopo por cliente, todas as alterações auditadas; uso pelo sync na integração da T5.3) · lint e tipos ✔ · Semgrep sem achados nos arquivos novos
+- **Desvio:** as tabelas da T3.4 e da T3.5 entraram numa migration só, e as duas tasks foram para o mesmo commit.
+
+## T5.1 Módulo do indexer
+
+- **Arquivos:** `apps/api/src/indexer/{indexer.config,indexer-secrets,alert-queries,indexer.client}.ts`, `apps/api/test/indexer/{alert-queries,indexer-config,indexer-client}.test.ts`, `apps/api/package.json`, `pnpm-lock.yaml`
+- **Dependências:** `@opensearch-project/opensearch` 3.9.0, `@aws-sdk/client-secrets-manager` 3.1161.0 e `@aws-sdk/client-ssm` 3.1161.0, todas da lista aprovada, nas versões mais recentes, fora da quarentena e com a política de confiança do workspace respeitada.
+- **Como funciona:**
+  - **Credencial e CA:** em produção, o usuário só leitura vem do Secrets Manager (segredo `wazuh-api-read`, T4.8), com cache de 5 minutos, e a CA do Wazuh vem do SSM Parameter Store, conferida como PEM. A configuração **recusa credencial no ambiente em produção** e exige `https`. Em desenvolvimento e teste, credencial no ambiente e CA num arquivo. As mensagens de erro de configuração citam só os nomes das variáveis.
+  - **Cliente:** só busca, só em `wazuh-alerts-*`, sem método de escrita. TLS validado contra a CA do Wazuh (`rejectUnauthorized`), timeout de 10 s (de 1 a 30 s), uma nova tentativa, sem sniffing. Se o indexer recusar a credencial (401), renova uma vez, para acompanhar a rotação de senha. A resposta é validada com zod. **Os erros não carregam a requisição:** os erros do driver trazem o cabeçalho de autenticação, então o cliente devolve só o status ou o tipo de falha.
+  - **Consultas** só pelos construtores tipados (`alertsAfter`, `alertById`): campos de filtro numa lista fechada, conferida também em execução; valores só como `term`, `terms` e `range`, curtos e sem caractere de controle; leitura incremental por cursor (`search_after` com timestamp e id, sem pular nem repetir); página de até 1.000. Uma guarda percorre toda consulta antes do envio e recusa `query_string`, `wildcard`, `regexp`, `script` e outras construções que interpretam texto ou executam código.
+- **Testes:** 23. Consultas: DSL exato, cursor, filtros, **texto malicioso vira valor literal de term**, campo fora da lista recusado mesmo com tipo forçado, valores inválidos, guarda em qualquer nível. Configuração e segredos: produção só com AWS, sem vazar valores, cache e renovação, segredo malformado, CA em PEM. Cliente contra um indexer HTTPS local com CA descartável: busca com TLS e credencial; **servidor de outra CA recusado sem enviar nada**; tempo limite; renovação depois de rotação; erro sem credencial nem requisição; nada enviado fora do padrão de alertas ou com consulta interpretável. Suíte da API completa: 162. ESLint e Semgrep limpos (a validação do PEM deixou de usar regex, apontada como risco de ReDoS).
+- **Definição de pronto:** credencial do Secrets Manager, TLS validado e timeout ✔ · query DSL estruturado, nunca texto do usuário ✔ · somente leitura ✔
+- **Desvio:** a configuração do indexer tem schema próprio até o módulo ser registrado na API (T5.3, depois do merge do E2, que reescreve o `env.schema.ts`). Aí os campos passam para o schema principal e para o `.env.example`.
+- **Correção (revisor automático do PR #8):** por padrão, o OpenSearch responde 200 com o que conseguiu quando um shard falha ou o tempo estoura (`allow_partial_search_results`). Na leitura incremental, o cursor avançaria sobre a página incompleta e os alertas que faltaram nunca seriam lidos. Agora a busca pede `allow_partial_search_results=false`, e qualquer resposta com `timed_out` ou `_shards.failed > 0` é recusada como erro: o sync tenta de novo a partir do mesmo cursor. Testes: resposta parcial por tempo e por shard recusada, parâmetro presente na requisição. Mutação: sem a checagem, 2 testes falham; sem o parâmetro, 1 falha.
+
+## T5.2 Vínculo entre alerta e cliente: núcleo (persistência depois do E3)
+
+- **Arquivos:** `apps/api/src/alerts/{wazuh-alert,alert-owner}.ts`, `apps/api/test/alerts/{fixtures,wazuh-alert.test,alert-owner.test}.ts`
+- **Dependências:** nenhuma nova.
+- **Conferido antes de escrever** (código do wodle aws-s3 e ruleset do Wazuh 4.14.9, direto da imagem):
+  - só o CloudTrail grava a conta no alerta (`aws_account_id`, da pasta `AWSLogs/<conta>`, que o gerador fixa por conta);
+  - no GuardDuty e no WAF, a conta vem do próprio evento (`accountId` e `arn`; ARN do `webaclId`), que **o cliente controla**, porque o bucket é dele;
+  - listas de um item viram objeto;
+  - o horário vem com fuso sem dois-pontos (`+0000`), que o validador ISO do zod recusa.
+
+  A leitura também revelou as correlações entre contas, corrigidas no E4 (seção "Correção nas T4.4 a T4.6", no PR do E4).
+
+- **Como funciona:**
+  - **`parseWazuhAlert`:** valida o envelope (id, horário, regra, MITRE) e extrai do evento da AWS só o que a API usa: fonte, bucket de origem, contas citadas, região, nome do evento, severidade da AWS, identidade, chave de acesso, IP e recurso. Cada campo é conferido no formato (IP real, ARN, chave, bucket, sem caractere de controle). O resto, inclusive `full_log`, `previous_output` e cabeçalhos HTTP, não é guardado.
+  - **`resolveAlertOwner`:** a única função que decide de quem é um alerta. Ele só é do cliente quando **duas origens independentes concordam**:
+    1. o bucket de onde o Wazuh leu está cadastrado para aquela fonte, e só por esse cliente;
+    2. o evento cita uma única conta, cadastrada para o mesmo cliente. No CloudTrail, essa conta também precisa ser uma das que cadastraram o bucket.
+
+    Um cliente que forje no próprio bucket um evento com a conta de outro cai na fila sem dono, assim como bucket não cadastrado, bucket ou conta em dois clientes, contas divergentes no evento, evento sem conta e campo de conta fora do formato (este invalida o alerta, em vez de sobrar outro campo). O motivo vai junto, para o `admin_verax`.
+
+  - **Casos legítimos cobertos:** trilha da organização (contas do mesmo cliente com o mesmo bucket) e GuardDuty com administrador delegado (achado de outra conta do mesmo cliente).
+- **Testes:** 20, com alertas no formato real das três fontes e contas de dois clientes:
+  - atribuição certa por fonte;
+  - eventos forjados com a conta de outro cliente (GuardDuty, WAF e CloudTrail);
+  - todos os motivos de "sem dono";
+  - trilha da organização e administrador delegado;
+  - horário do Wazuh;
+  - extração e saneamento campo a campo;
+  - nada além do necessário serializado.
+
+  **Mutação:** seis alterações nas regras de dono (não cruzar bucket e conta, aceitar bucket ou conta de dois clientes, pular campo inválido, usar a primeira de contas divergentes, não exigir a conta do bucket no CloudTrail) são todas pegas pelos testes.
+
+- **Pendente (depois do E2/E3):**
+  - montar o `AccountDirectory` a partir do cadastro de contas da T3.3, que precisa guardar os buckets de cada fonte e recusar a mesma conta em dois clientes;
+  - a tabela `UnownedAlert` com o motivo;
+  - o teste de isolamento ponta a ponta no sync (T5.3).
+- **Definição de pronto (parcial):** função única que descobre o cliente pela conta do alerta ✔ · alerta de conta não cadastrada para a fila sem dono ✔ (decisão; a gravação vem com a T5.3) · testes com alertas de duas contas de clientes diferentes ✔
+
+## T5.3 Sync de alertas para achados: núcleo (job e gravação depois do E3)
+
+- **Arquivos:** `apps/api/src/alerts/{finding-draft,sync-query,raw-alert}.ts`, `apps/api/src/indexer/alert-queries.ts` (filtro `data.integration`), `apps/api/test/alerts/finding-draft.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Achado** (`toFindingDraft`): leva o cliente e a conta decididos pela T5.2, o id do alerta como chave de idempotência (`source` + `sourceEventId`), horário em UTC, regra, fonte, evento, região, recurso, identidade, chave, IP e táticas/técnicas MITRE.
+  - **Severidade:**
+    - GuardDuty: a da própria AWS, nas faixas do GuardDuty (9+ crítica, 7+ alta, 4+ média), porque as regras do Wazuh juntam 7 a 9 num nível só;
+    - demais fontes: pelo nível da regra (12+ crítica, 10+ alta, 7+ média, abaixo baixa). Assim, a força bruta no console e a rajada de bloqueios do WAF (nível 10) ficam altas, e um login com falha isolado (5) fica baixo.
+  - **Leitura incremental** (`syncWindowStart`, `syncPage`, `cursorFromSort`):
+    - cada execução relê 10 minutos antes do último alerta processado (o alerta pode chegar ao indexer fora de ordem), e a gravação idempotente evita duplicata;
+    - dentro da execução, as páginas seguem pelo cursor de horário e id;
+    - o cursor vem dos valores de ordenação devolvidos pelo indexer, para um alerta inválido também ser pulado;
+    - a consulta pega só alertas do módulo aws-s3, das três fontes coletadas, com nível 5 ou mais. Abaixo disso ficam os eventos de auditoria do CloudTrail (nível 3), que viram contexto e não achado.
+  - **Evento bruto do detalhe** (`sanitizeRawAlert`, para a T5.4):
+    - tira `full_log` e `previous_output` em qualquer nível;
+    - troca o valor de cabeçalhos de credencial (`authorization`, `cookie`, `x-api-key`...);
+    - descarta chaves de protótipo e limita a profundidade.
+- **Testes:** 30 nos alertas, 53 contando o indexer.
+  - Faixas de severidade nas duas regras, achado completo e campos ausentes como `null`.
+  - Saneamento: log bruto, cabeçalhos sem diferenciar maiúsculas, `__proto__` sem contaminar e profundidade.
+  - Janela, página em DSL estruturado e cursor.
+  - **Conferido também contra o indexer real** (wazuh-indexer 4.14.9 com o template oficial do Wazuh, num contêiner local): o `search_after` com a data ISO e o id pagina sem pular nem repetir, inclusive com empate de horário na virada de página. Os filtros excluem nível baixo, alerta do manager, fonte não coletada e o que é anterior à janela, e `+0000` e `-0300` caem no mesmo instante.
+- **Premissas a confirmar:**
+  - nível mínimo 5 para virar achado;
+  - sobreposição de 10 minutos;
+  - na primeira execução, as últimas 24 horas.
+
+  Os três ficam em configuração.
+
+- **Pendente (depois do E2/E3):**
+  - o job (`worker` com advisory lock);
+  - o model `Finding` com `@@unique([source, sourceEventId])`, o `UnownedAlert` e o estado do sync;
+  - as exceções da T3.5;
+  - `lastEventAt` por conta;
+  - as métricas do worker para os alarmes da T8.6.
+- **Riscos:** um alerta indexado mais de 10 minutos depois do horário dele (filebeat parado, por exemplo) fica de fora. O alarme de sync parado da T8.6 cobre o caso do filebeat, e a sobreposição pode subir em configuração.
+
+## T5.6 Agrupamento em incidentes: núcleo (gravação depois do E3)
+
+- **Arquivos:** `apps/api/src/incidents/correlation.ts`, `apps/api/test/incidents/correlation.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona** (regra v1 do plano):
+  - **Chaves de correlação:** usuário, chave de acesso, IP e recurso do achado.
+  - **`planIncident`:** o achado entra no incidente aberto **do mesmo cliente** que tenha uma chave em comum e cujo período, alargado pela janela (60 minutos, configurável), contenha o horário do achado. Havendo vários, entra no de atividade mais recente.
+    - Incidente de outro cliente nunca é candidato, nem com o mesmo IP.
+    - Sem incidente para entrar, achado médio ou mais grave abre um novo, e achado baixo fica só como achado.
+  - **Nota de risco** (premissa aprovada):
+    - base pela severidade mais alta (70, 50, 30, 10);
+    - +15 com item da lista de proteção do cliente;
+    - +10 com identidade root ou "admin" no nome;
+    - +3 por achado além do primeiro, até +15;
+    - teto 100.
+  - **`summarizeIncident`:** severidade, nota, período, chaves, contas, recursos e táticas/técnicas MITRE sem repetição, para a lista e o detalhe da T5.7. Recusa achados de clientes diferentes no mesmo incidente.
+- **Testes:** 12:
+  - janela nas duas pontas, inclusive o achado atrasado;
+  - isolamento por cliente;
+  - desempate;
+  - abertura por severidade;
+  - nota nas faixas e no teto;
+  - identidade privilegiada (sem pegar "badminton");
+  - resumo completo.
+
+  **Mutação:** tirar o filtro de cliente, tirar a guarda do resumo, contar o primeiro achado na nota ou ignorar o fim da janela é pego pelos testes.
+
+- **Premissa a confirmar:** achado baixo não abre incidente sozinho, para a Torre não virar uma lista de achados.
+- **Pendente (depois do E3):** models `Incident` e `IncidentFinding`, a lista de proteção (T3.4), gravação dentro do sync com lock e os endpoints da T5.7.
+
+## T5.8 Postura a partir do Prowler: núcleo (job e endpoints depois do E3)
+
+- **Arquivos:** `apps/api/src/posture/prowler-report.ts`, `apps/api/test/posture/prowler-report.test.ts`
+- **Dependências:** nenhuma nova.
+- **Conferido no código do Prowler 5.47.0, direto da imagem:**
+  - estrutura do JSON-OCSF (`ocsf.py`);
+  - nomes dos enums de severidade e status do py-ocsf-models;
+  - `status_code` também pode ser **MUTED**: a lista de exceções troca o status original por MUTED (`mutelist.py`). Um parser só com PASS/FAIL/MANUAL recusaria esses itens e, acima de 1%, o relatório inteiro.
+- **Como funciona:**
+  - **Caminho no bucket** (`parseReportKey`): `<tenantId>/<conta>/<AAAA-MM-DD>/prowler-<horário>.ocsf.json`, como a tarefa da T4.7 grava. Data e horário precisam existir no calendário e ser do mesmo dia; fora disso, o arquivo é ignorado.
+  - **Relatório** (`parseProwlerReport`): lê só os campos usados (checagem, resultado, severidade, título, região, recurso, detalhe, risco, correção e referências). Os metadados do recurso (`resources[].data`) não são lidos.
+    - **Um resultado de outra conta recusa o relatório inteiro:** a pasta é da conta, e um resultado alheio ali não vira postura de ninguém.
+    - Itens fora do formato são contados, e acima de 1% o relatório é recusado (sinal de formato novo).
+    - Limite de 100 mil resultados; resultado repetido conta uma vez.
+  - **Nota de postura** (`summarizePosture`, premissa aprovada): aprovação ponderada pela severidade (crítica 10, alta 5, média 2, baixa 1; informativa não pesa).
+    - Manuais e silenciadas ficam fora.
+    - Sem peso, a nota é `null`, e não zero.
+    - Também conta aprovadas, reprovadas por severidade, manuais e silenciadas, para o histórico por data.
+- **Testes:** 11, com resultados na estrutura exata do Prowler 5.47.0:
+  - caminho válido e seis inválidos (inclusive `..` e data inexistente);
+  - campos lidos sem os metadados do recurso;
+  - **relatório com resultado de outra conta recusado**;
+  - limite de itens inválidos e de tamanho;
+  - MUTED;
+  - repetição;
+  - nota nas regras e do relatório até a nota.
+
+  **Mutação:** tirar a checagem da conta, contar as silenciadas, ignorar o limite de inválidos ou aceitar a pasta de outro dia é pego pelos testes.
+
+- **Pendente (depois do E3):**
+  - o job que lista a pasta de cada conta cadastrada (`<tenantId>/<conta>/`, montada pelo cadastro, nunca pelo conteúdo do bucket) e lê o relatório mais novo, com limite de tamanho do objeto;
+  - os models de postura e histórico;
+  - os endpoints de nota e de achados de postura.
+
+## T5.10 Resumo da Torre: núcleo (endpoint depois do E3)
+
+- **Arquivos:** `apps/api/src/tower/tower-rules.ts`, `apps/api/test/tower/tower-rules.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Semáforo** (pendência 9, aprovada; regra escrita no código):
+    - vermelho com incidente crítico aberto;
+    - amarelo com incidente alto aberto ou postura abaixo de 70;
+    - verde nos demais casos.
+
+    Sem nota de postura, a postura não pesa. Os motivos voltam junto com a cor, para a tela explicar o porquê, e o corte de postura fica em configuração.
+
+  - **Cobertura:** contas conectadas, o evento mais recente e as contas silenciosas (sem evento há mais de 24 horas, configurável, ou que nunca mandaram nada).
+  - **Decisões pendentes** (premissa aprovada), só as que existem e em ordem de prioridade:
+    - incidente aberto sem responsável;
+    - achado alto ou crítico em "novo" fora de incidente;
+    - só para `admin_verax`, alertas sem dono.
+- **Testes:** 8:
+  - as três cores e a precedência do vermelho;
+  - incidente médio ou baixo não muda a cor;
+  - 70 já é verde;
+  - sem nota não pesa;
+  - corte configurável;
+  - cobertura com conta silenciosa e conta que nunca mandou evento;
+  - decisões com e sem `admin_verax`.
+- **Pendente (depois do E3):**
+  - o endpoint `GET /v1/tower`, com as contagens por cliente via `db.tenant()`;
+  - o horário do último evento por conta, que precisa de uma consulta própria ao indexer com agregação por conta, porque o sync só lê alertas de nível 5 ou mais e uma conta tranquila pareceria silenciosa.
+
+## T5.9 Inventário de ativos e identidades: núcleo (job e endpoints depois do E3)
+
+- **Arquivos:**
+  - `apps/api/src/inventory/{read-only-session,collectors,risk-rules,inventory}.ts`;
+  - `apps/api/test/inventory/{fake-aws,read-only-session.test,inventory.test,risk-rules.test}.ts`;
+  - `apps/api/package.json`, `pnpm-lock.yaml`.
+- **Dependências:** `@aws-sdk/client-sts`, `@aws-sdk/client-iam`, `@aws-sdk/client-ec2` e `@aws-sdk/client-s3` 3.1161.0, da lista aprovada. É a última versão, de 30/10, fora da quarentena, e a mesma dos clientes que já estavam no projeto. Entraram só 7 pacotes novos (o resto é compartilhado), e a política de confiança do workspace aceitou todos.
+- **Como funciona:**
+  - **Sessão** (`assumeReadOnlyRole`): papel `arn:aws:iam::<conta>:role/VeraxControlReadOnly`, derivado do ID (o cadastro não escolhe papel). Usa o ExternalId da conta, sessão de 15 minutos e nome fixo.
+    - Conta e ExternalId fora do formato são recusados antes de chamar a AWS.
+    - **As credenciais temporárias ficam num campo privado**, e o objeto se apresenta como `[credenciais temporárias]` no JSON, no texto e no log.
+    - Os erros citam só a conta e o código da AWS (a mensagem da AWS traz ARNs e detalhes).
+  - **Coleta**, só com leituras cobertas pelo papel (SecurityAudit + ViewOnlyAccess):
+    - root (MFA e chaves);
+    - usuários IAM (console, MFA, chaves com idade e último uso);
+    - instâncias EC2 (estado, IP público, IMDSv2) e security groups (regras abertas para 0.0.0.0/0 ou ::/0), nas regiões habilitadas ou nas do cadastro;
+    - buckets (política pública, ACL pública e bloqueio de acesso público).
+
+    Paginação completa, teto de 1.000 itens por tipo (com aviso de corte) e no máximo 4 chamadas simultâneas. Políticas, tags e conteúdo não são lidos. Uma parte que falha (permissão, região desligada) fica em `errors` com o código e não derruba as outras. "Sem perfil de console" só vale para o erro `NoSuchEntity`: outro erro sobe, para não virar "sem console" por engano.
+
+  - **Risco por ativo** (regras v1, com motivo para a tela):
+    - root sem MFA ou com chave: crítico;
+    - console sem MFA: alto;
+    - chave ativa com mais de 90 dias: médio;
+    - chave parada há 90 dias (contando da criação, se nunca usada): baixo;
+    - security group: tudo aberto, 22 ou 3389 é crítico; porta de banco é alto; outra porta é médio; só 80/443 ou ICMP é baixo;
+    - instância: IMDSv1 com IP público é médio, sem IP público é baixo;
+    - bucket com política ou ACL pública que o bloqueio do bucket não impede: alto;
+    - bucket sem bloqueio ou com leitura recusada: baixo.
+- **Testes:** 18, com clientes falsos da AWS que registram cada chamada e nada de rede:
+  - parâmetros exatos do AssumeRole;
+  - credenciais escondidas em JSON, texto e `inspect`;
+  - entrada inválida sem chamada;
+  - erro sem ExternalId nem mensagem da AWS;
+  - IAM em duas páginas e no teto;
+  - S3 com cada caso de leitura;
+  - conta inteira com uma região sem permissão e com regiões do cadastro;
+  - papel recusado sem coleta;
+  - todas as regras de risco.
+
+  **Mutação:** tirar a validação do ExternalId, pôr a mensagem da AWS no erro, tratar qualquer erro como "sem console", ignorar o bloqueio do bucket, contar a chave nova como parada ou remover uma das camadas que escondem a credencial é pego pelos testes.
+
+- **Desvio:** o bloqueio de acesso público **no nível da conta** não é lido, porque exigiria o `@aws-sdk/client-s3-control`, fora da lista aprovada. Por isso o bucket público fica "alto", e não "crítico". A postura do Prowler (T5.8) confere esse caso por completo. Se quiser, aprove o pacote e eu completo.
+- **Pendente (depois do E3):**
+  - o job, por conta cadastrada, com o ExternalId do cadastro e o papel IAM próprio do worker (T8.4);
+  - os models do inventário;
+  - os endpoints de listagem com o risco.
+
+## T6.1 Setup do front
+
+- **Arquivos:** `apps/web/vite.config.ts`, `apps/web/src/build-guards.ts` (+ teste), `apps/web/src/lib/{env,api-client,api,query-client,errors}.ts` (+ testes), `apps/web/src/routes/router.tsx`, `apps/web/src/pages/{login,forbidden,not-found}-page.tsx`, `apps/web/src/{App,main}.tsx`, `apps/web/src/index.css`, `apps/web/tsconfig*.json`, `apps/web/package.json`, `scripts/scan-bundle.mjs`
+- **Dependências:** react-router 8.5.1, @tanstack/react-query 5.105.0, radix-ui 1.8.1, class-variance-authority 0.7.1, clsx 2.1.1, tailwind-merge 3.7.0, lucide-react 1.66.0, zod 4.6.7; dev: tailwindcss e @tailwindcss/vite 4.3.3, msw 3.0.3, @testing-library/user-event 14.6.8 (todas aprovadas)
+- **Como ficou:**
+  - Tailwind 4 pelo plugin do Vite, React Router no modo data, TanStack Query (sem nova tentativa em erro 4xx).
+  - Cliente HTTP: sempre `credentials: 'include'`; em toda escrita (exceto as rotas de autenticação, que têm checagem de origem própria) busca o token CSRF da sessão uma vez, manda em `X-CSRF-Token` e renova uma vez se a API recusar. Toda resposta com corpo é validada por schema zod antes de chegar à tela. 401 leva ao login (limpando o cache), 403 `MFA_REQUIRED` leva ao cadastro do MFA, e os demais erros chegam como mensagem em português (sem detalhe técnico) com o `requestId` para o suporte.
+  - **Única variável de ambiente:** `VITE_API_URL`. O build falha se existir qualquer outra `VITE_*` (que iria para o JavaScript público), sem mostrar o valor.
+  - **Varredura do bundle:** todo build do painel (inclusive no CI) procura no `dist/` IDs de chave AWS, chave privada, URL com senha, tokens do GitHub/Slack e nomes de variáveis secretas; acha, falha.
+  - CSP estrita sem `unsafe-inline`/`unsafe-eval` (`script-src` e `style-src` só `self`, `connect-src` só a API, `frame-ancestors none`), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` (os links de convite também não vazam por `Referer`), `Permissions-Policy` e COOP. A mesma política no `vite preview` (testes e2e) e no CloudFront (E8). Sem sourcemap público.
+  - Rotas iniciais: login (a tela completa entra na T6.5), sem permissão e página não encontrada.
+- **Testes:** 22 no front. Cliente HTTP (cookie, validação da resposta, CSRF buscado uma vez e renovado uma vez, rotas de auth sem CSRF, 401, `MFA_REQUIRED`, erros com status/código/requestId/problemas, 204), mensagens de erro, trava de `VITE_*`, CSP e rotas.
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
+- **Teste manual:** `vite build` com `VITE_SECRET=x` falha citando só o nome; o build normal passa na varredura; um bundle falso com URL com senha e chave AWS falha a varredura; `vite preview` serve a CSP e os demais headers.
+
+## T6.2 Tema e tokens visuais
+
+- **Arquivos:** `apps/web/src/index.css`, `apps/web/public/theme-init.js`, `apps/web/index.html`, `apps/web/src/design/{theme,severity}.ts` (+ teste), `apps/web/src/components/{theme-toggle,ui/button,ui/button-variants,ui/card}.tsx`, `apps/web/src/lib/cn.ts`, `apps/web/src/pages/catalog/catalog-page.tsx`, `apps/web/src/routes/router.tsx`, `apps/web/src/test/setup.ts`, `eslint.config.js`
+- **Dependências:** nenhuma nova
+- **Cores de severidade** (validadas com o script da skill de visualização, não no olho):
+
+  | Severidade | Claro     | Escuro    | Ícone           |
+  | ---------- | --------- | --------- | --------------- |
+  | Crítico    | `#b42318` | `#d32f2f` | octógono        |
+  | Alto       | `#e8743b` | `#fb9b4f` | triângulo       |
+  | Médio      | `#f7c948` | `#ffe07a` | círculo com `!` |
+  | Baixo      | `#2a78d6` | `#3987e5` | círculo com `i` |
+  | Ok         | `#0e9f8e` | `#0e9f8e` | círculo com ✓   |
+  - A paleta de status de referência falhou no par **alto × médio** (ΔE 13,6, abaixo do piso de 15 até para visão normal) e no par **ok × vermelho/laranja para daltonismo** (ΔE 4,2–5,7). A escolhida separa crítico, alto e médio também por claro/escuro (mais grave, mais escuro) e desloca o "ok" para verde-azulado: em todos os pares e nos dois modos, separação para daltonismo ≥ 10,6 e para visão normal ≥ 16,3; no escuro, contraste ≥ 3:1.
+  - Fica abaixo de 3:1 contra o fundo claro: alto e médio. Por isso severidade **nunca aparece só como cor**: sempre com ícone de forma própria e rótulo, e o texto usa a tinta neutra (nunca a cor da severidade). A checagem de "faixa de luminosidade" do script é para paletas categóricas; em severidade, a variação de claro/escuro é intencional.
+  - A ação principal usa tinta neutra, não azul, para não competir com "baixo".
+
+- **Tema:** tokens por papel (fundo, superfície, tintas, borda, grade, foco), modos claro e escuro escolhidos à mão; padrão segue o sistema, com escolha manual guardada no navegador. O tema é aplicado antes da primeira pintura por um script externo (a CSP não aceita script inline). Foco visível em todo elemento interativo e respeito a `prefers-reduced-motion`.
+- **Catálogo** (`/catalogo`): severidade, tokens de base, escala tipográfica (fonte do sistema), espaçamento e botões. Só existe no build de desenvolvimento: a rota é removida do build de produção (conferido no `dist/`).
+- **Componentes base** no padrão shadcn/ui (`Button` com variações, `Card`), escritos no repositório sobre `radix-ui`.
+- **Testes:** 27 no front. Ícone e rótulo distintos por severidade, ordenação, tema seguindo o sistema e escolha manual persistida, conteúdo do catálogo.
+- **Definição de pronto:** critérios de aceite ✔ (cores semânticas, modos claro e escuro, tipografia e espaçamento padronizados, catálogo) · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔
+- **Teste manual:** build de produção sem o catálogo (sem a rota e sem o texto no JavaScript final); inspeção visual dos dois modos fica com o Playwright na T6.3.
+
+## T6.3 Componentes de segurança
+
+- **Arquivos:** `apps/web/src/components/security/{semaphore,severity-badge,score-meter,decision-card,timeline}.tsx`, `apps/web/src/components/{data-table,states}.tsx`, `apps/web/src/design/score.ts`, `apps/web/src/lib/format.ts`, `apps/web/src/pages/catalog/{components-showcase,catalog-section}.tsx`, testes `apps/web/src/components/components.test.tsx` e `apps/web/e2e/catalog.spec.ts`, `apps/web/playwright.config.ts`, `apps/web/e2e/tsconfig.json`
+- **Dependências:** @playwright/test 1.64.1 e @axe-core/playwright 4.14.0 (dev, aprovadas)
+- **Componentes:**
+  - **Semáforo:** a posição da luz acesa (em cima, no meio, embaixo), o ícone e o rótulo (Crítico, Atenção, Normal) dizem o estado; nome acessível com o motivo.
+  - **Selo de severidade:** ícone de forma própria + rótulo, tinta neutra.
+  - **Medidor de nota 0–100:** pelo guia de visualização, "um valor contra um limite" é um **medidor em barra**, não um gauge circular (desvio do nome "ScoreGauge" do plano). O preenchimento carrega a severidade (atenção abaixo de 70, crítico abaixo de 40, limites configuráveis) e o trilho é um tom mais claro da mesma cor; número grande com rótulo e ícone; `role="meter"` com o estado por extenso.
+  - **Card de decisão:** severidade, título, descrição, contexto, ação principal e secundária; desabilitado enquanto a ação roda.
+  - **Tabela:** paginação e filtros feitos na API (a tabela só mostra a página recebida e avisa as mudanças), faixa "11–20 de 35", navegação desabilitada nas pontas, legenda acessível, números tabulares, estados vazio/carregando/erro embutidos.
+  - **Linha do tempo:** data/hora em pt-BR, título, descrição, origem, e a severidade também em texto para leitor de tela.
+  - **Estados:** vazio (com motivo e ação), carregando (esqueleto anunciado), erro (mensagem sem detalhe técnico, código para o suporte e "tentar de novo").
+  - Todos no catálogo, com dados fictícios.
+- **Testes:** 46 no front e 2 de navegador. O **axe** (WCAG 2.2 AA) roda o catálogo inteiro nos dois temas com zero violações, e uma captura de cada tema foi inspecionada a olho (sem sobreposição de rótulos, luz acesa do semáforo destacada nos dois modos, trilho do medidor visível).
+- **Achados corrigidos durante os testes:**
+  - O `id` das seções do catálogo tinha espaços, e o `aria-labelledby` quebrava (seção sem nome acessível); agora usa `useId()`.
+  - O token de texto discreto (#898781) dava 3,49:1 no tema claro (o axe acusou 8 casos); passou para #6e6c66 (≥ 4,98:1 em todas as superfícies claras) e, no escuro, para #9a9890 (≥ 5,52:1).
+- **Definição de pronto:** critérios de aceite ✔ · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
+- **Pendente:** o job de testes de navegador no CI entra junto com os fluxos de ponta a ponta da T6.5.
+
+## T6.4 Estrutura e navegação
+
+- **Arquivos:** `packages/shared/src/session.ts` (contrato de `/v1/me` e do resumo de cliente), `apps/web/src/features/session/session.ts`, `apps/web/src/layout/{app-layout,navigation,tenant-switcher}.tsx`, `apps/web/src/routes/{router,guards}.tsx`, `apps/web/src/pages/placeholder-page.tsx`, `apps/web/src/mocks/{fixtures,handlers,enable}.ts`, `apps/web/src/main.tsx`, `apps/web/vite.config.ts`, `apps/web/playwright.config.ts`, testes `apps/web/src/layout/layout.test.tsx`, `apps/web/e2e/layout.mock.spec.ts` e o teste de contrato em `apps/api/test/permissions.test.ts`, `README.md`
+- **Dependências:** nenhuma nova (msw já aprovado)
+- **Como ficou:**
+  - Layout com menu lateral (Operação: Torre, Incidentes, Achados, Postura, Ativos; Administração: Clientes, Usuários, Auditoria) e cabeçalho com usuário, papel, tema e "Sair".
+  - Cada item do menu e cada rota declaram a permissão que a API exige para os dados; sem ela, o item some e a rota leva a "Sem permissão". É só experiência de uso: a API decide sempre.
+  - Sem sessão, qualquer rota interna leva ao login; sessão sem MFA vai para o cadastro do MFA (tela na T6.5).
+  - **Seletor de cliente só para `admin_verax`:** lista só clientes ativos, troca pela API (`POST /v1/session/tenant`, com token CSRF), vale só para a sessão e descarta todo o cache (os dados passam a ser de outro cliente).
+  - **Contrato compartilhado:** `meSchema` e `tenantSummarySchema` em `packages/shared`. Um teste novo na API confere que o `/v1/me` real segue o contrato nos 4 papéis.
+  - **Modo `dev:mock`:** o painel roda sem a API, com o Mock Service Worker servindo os mesmos endpoints com dados fictícios validados pelos schemas do `shared` (nenhum cliente real). O papel do usuário fictício sai de `localStorage['verax.mock.role']`. O plugin e o worker só existem nesse modo: o build de produção não tem nada do MSW (conferido no `dist/`).
+- **Testes:** 57 no front e 4 de navegador. Unidade (sobre `msw/node`): login sem sessão, MFA pendente, rota sem permissão, menu exato por papel, cabeçalho, seletor só para `admin_verax`, troca de cliente com CSRF e lista só de ativos, "Sair". Navegador (modo mock): menu e troca de cliente do `admin_verax`, menu e bloqueio do `leitura`, axe sem violações no layout. Captura de tela inspecionada.
+- **Definição de pronto:** critérios de aceite ✔ (layout com menu e cabeçalho com cliente e usuário, seletor só para `admin_verax`, rotas por papel só como UX, dados fictícios tipados do `shared`) · testes ✔ · lint e tipos ✔ · dependências n/a · regras de segurança ✔
+- **Observação:** a lista de clientes do seletor usa `GET /v1/tenants`, que nasce na T3.1 (no modo mock, já existe com o contrato combinado).
+
+## T6.5 Telas de autenticação
+
+- **Arquivos:** `apps/web/src/pages/{login,mfa-verify,mfa-enroll,forgot-password,set-password}-page.tsx`, `apps/web/src/features/auth/{auth-api,auth-shell}.ts(x)`, `apps/web/src/components/ui/field.tsx`, `apps/web/src/lib/api-client.ts`, `apps/web/src/routes/router.tsx`, `apps/web/src/mocks/auth-handlers.ts`, testes `apps/web/src/pages/auth-pages.test.tsx`, e2e `apps/web/e2e/fullstack/*` com `apps/web/playwright.fullstack.config.ts`, `apps/api/src/cli/e2e-fixtures.ts`, `.github/workflows/ci.yml` (job "Testes de navegador"), `.github/rulesets/main.json`, `.gitignore`
+- **Dependências:** react-qr-code 2.2.0 (aprovada; QR gerado no navegador). O plano previa otplib para os códigos TOTP do e2e; usei o gerador RFC 6238 que já existia nos testes da API, sem dependência nova.
+- **Telas:**
+  - **Login:** e-mail e senha; com MFA, vai para o código; sem MFA cadastrado, vai para o cadastro. Senha errada, e-mail inexistente e usuário desativado recebem a mesma mensagem ("E-mail ou senha incorretos."); conta bloqueada recebe "Muitas tentativas…", sem confirmar que a conta existe. O destino depois do login aceita só caminho interno (sem redirecionamento aberto).
+  - **Código:** 6 dígitos do aplicativo ou um código de recuperação.
+  - **Cadastro do MFA:** senha, QR gerado no navegador (o segredo nunca passa por serviço externo), chave para digitação manual, 10 códigos de recuperação com copiar e baixar, confirmação "guardei os códigos" e o primeiro código.
+  - **Esqueci a senha:** mesma mensagem para qualquer e-mail (inclusive quando a API recusa por outro motivo que não limite ou falha).
+  - **Redefinição e convite:** o token sai do fragmento da URL, é apagado da barra de endereço na hora, nunca vai para servidor; checa tamanho mínimo e confirmação antes de enviar; mensagens para link inválido/expirado e senha vazada.
+- **Cliente HTTP:** 401 nas rotas de autenticação (senha ou código errados) não é tratado como sessão expirada.
+- **Testes:**
+  - 77 no front (19 novos das telas, sobre os mesmos handlers do modo mock).
+  - **E2E de ponta a ponta (novo):** o painel compilado, servido com a CSP de produção, contra a API compilada e o PostgreSQL de teste. Os dados vêm de um script da API que se recusa a rodar fora de um banco `_test`. Cobre: primeiro acesso com cadastro de MFA obrigatório, logout que invalida a sessão, login com senha + código, axe sem violações no login, mesma mensagem para e-mail desconhecido e senha errada, bloqueio após 5 erros, redefinição pelo link do e-mail (token fora da barra de endereço, senha antiga recusada, senha nova aceita) e papel `leitura` bloqueado na tela e na API. Nenhuma violação de CSP no console.
+  - **CI:** novo job "Testes de navegador" (Playwright + Chromium) roda o catálogo, o modo mock e o e2e de ponta a ponta com PostgreSQL. Ele entra como check obrigatório no `.github/rulesets/main.json`; o ruleset vivo só será atualizado depois do merge deste épico, senão o PR do E2 ficaria esperando um check que ele não tem.
+- **Definição de pronto:** critérios de aceite ✔ (login, cadastro e verificação de MFA, códigos de recuperação, redefinição e aceite de convite, mensagens que não revelam se o e-mail existe) · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
+- **Observação de ambiente:** no Windows, com a suíte da API em paralelo e logo depois de várias rodadas do Playwright, um processo do Vitest caiu uma vez com encerramento forçado nativo (0xC0000409). Não é falha de teste: o mesmo arquivo passa isolado 6 em 6 vezes, a suíte inteira passa 3 em 3, e no CI (Linux) nunca ocorreu. A limitação a 4 workers continua.

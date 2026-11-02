@@ -35,6 +35,15 @@ describe('toErrorResponse', () => {
     expect(toErrorResponse(new ApiError(HttpStatus.CONFLICT, 'Já existe')).message).toBe('Já existe');
   });
 
+  it('ApiError pode levar um código estável para o painel', () => {
+    expect(toErrorResponse(new ApiError(HttpStatus.FORBIDDEN, 'Cadastre o MFA', 'MFA_REQUIRED'))).toEqual({
+      statusCode: 403,
+      error: 'Forbidden',
+      message: 'Cadastre o MFA',
+      code: 'MFA_REQUIRED',
+    });
+  });
+
   it('ApiError com status 5xx continua genérico', () => {
     expect(toErrorResponse(new ApiError(HttpStatus.BAD_GATEWAY, 'AWS respondeu X')).message).toBe(
       'Erro interno',

@@ -39,6 +39,12 @@ variable "access_log_bucket" {
   default     = ""
 }
 
+variable "extra_policy_json" {
+  description = "Declarações extras da bucket policy (JSON de política), somadas à negação de acesso sem TLS."
+  type        = string
+  default     = null
+}
+
 variable "force_destroy" {
   description = "Permite apagar o bucket com objetos (só em ambiente descartável)."
   type        = bool
@@ -118,6 +124,8 @@ resource "aws_s3_bucket_logging" "this" {
 }
 
 data "aws_iam_policy_document" "tls_only" {
+  source_policy_documents = var.extra_policy_json == null ? [] : [var.extra_policy_json]
+
   statement {
     sid     = "SomenteTLS"
     effect  = "Deny"
@@ -169,4 +177,8 @@ output "id" {
 
 output "arn" {
   value = aws_s3_bucket.this.arn
+}
+
+output "regional_domain_name" {
+  value = aws_s3_bucket.this.bucket_regional_domain_name
 }

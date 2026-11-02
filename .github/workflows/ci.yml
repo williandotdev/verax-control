@@ -86,3 +86,90 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+
+  api-image:
+    name: Imagem da API (build, Trivy e teste como em produção)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Mesmo binário e checksum do security.yml.
+      TRIVY_VERSION: 0.76.1
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build (API e migrations)
+        run: |
+          docker build -f apps/api/Dockerfile -t verax-api:teste .
+          docker build -f apps/api/Dockerfile --target migrate -t verax-api-migrate:teste .
+      - name: Instalar trivy (checksum fixado)
+        run: |
+          curl -fsSLo trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf trivy.tar.gz trivy && rm trivy.tar.gz
+      - name: Trivy nas imagens
+        # --ignore-unfixed: só bloqueia o que tem correção disponível, para o gate ser acionável.
+        run: |
+          for image in verax-api:teste verax-api-migrate:teste; do
+            ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$image"
+          done
+      - name: Sequência do deploy, execução como no ECS e OWASP ZAP (T8.7)
+        env:
+          RUN_ZAP: '1'
+        run: ZAP_REPORT_DIR="$RUNNER_TEMP/zap" bash scripts/test-api-image.sh verax-api:teste verax-api-migrate:teste
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: zap-api-local
+          path: ${{ runner.temp }}/zap/
+          retention-days: 30
+
+  e2e:
+    name: Testes de navegador
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+        env:
+          POSTGRES_USER: verax
+          # Banco efêmero, existe só durante o job e só na rede do runner. Não é um segredo.
+          POSTGRES_PASSWORD: ci-ephemeral-db
+          POSTGRES_DB: verax_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U verax -d verax_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://verax:ci-ephemeral-db@localhost:5432/verax_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Instalar o Chromium do Playwright
+        run: pnpm --filter @verax/web exec playwright install --with-deps chromium
+      # Catálogo e estrutura (servidor de desenvolvimento e modo mock), com axe.
+      - run: pnpm --filter @verax/web test:e2e
+      # Painel compilado, com a CSP de produção, contra a API real e o PostgreSQL de teste.
+      - run: pnpm --filter @verax/web test:e2e:fullstack
+      - name: Guardar relatórios e traces em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-relatorios
+          path: |
+            apps/web/playwright-report
+            apps/web/playwright-report-fullstack
+            apps/web/test-results
+          retention-days: 7

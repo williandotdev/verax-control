@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { Body, Controller, Module, Post, Query } from '@nestjs/common';
+import { Public } from '../src/auth/decorators.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import request from 'supertest';
@@ -17,6 +18,7 @@ const LEAKS = {
 };
 
 @Controller('test-log')
+@Public()
 class LoggingProbeController {
   constructor(@InjectPinoLogger(LoggingProbeController.name) private readonly logger: PinoLogger) {}
 
