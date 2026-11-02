@@ -77,18 +77,19 @@ enum TenantStatus {
 /// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
 /// causa dos clientes criados antes do cadastro completo.
 model Tenant {
-  id              String       @id @default(uuid(7)) @db.Uuid
-  name            String       @db.VarChar(120)
+  id              String         @id @default(uuid(7)) @db.Uuid
+  name            String         @db.VarChar(120)
   /// 14 caracteres, sem máscara (numérico ou alfanumérico).
-  cnpj            String?      @unique @db.VarChar(14)
-  plan            String?      @db.VarChar(60)
-  escalationName  String?      @db.VarChar(120)
-  escalationEmail String?      @db.VarChar(254)
-  escalationPhone String?      @db.VarChar(20)
-  status          TenantStatus @default(active)
-  createdAt       DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime     @updatedAt @db.Timestamptz(3)
+  cnpj            String?        @unique @db.VarChar(14)
+  plan            String?        @db.VarChar(60)
+  escalationName  String?        @db.VarChar(120)
+  escalationEmail String?        @db.VarChar(254)
+  escalationPhone String?        @db.VarChar(20)
+  status          TenantStatus   @default(active)
+  createdAt       DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime       @updatedAt @db.Timestamptz(3)
   users           User[]
+  cloudAccounts   CloudAccount[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions  Session[]
 }
@@ -209,4 +210,30 @@ model UsedTotpCode {
   usedAt DateTime @db.Timestamptz(3)
 
   @@id([userId, code])
+}
+
+enum CloudAccountStatus {
+  active
+  inactive
+}
+
+/// Conta AWS de um cliente (T3.3). Nenhuma credencial é guardada: a Verax assume o papel de leitura
+/// `VeraxControlReadOnly` com o ExternalId, gerado aqui. Cada conta pertence a um só cliente.
+model CloudAccount {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  tenantId         String             @db.Uuid
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider         String             @default("aws") @db.VarChar(16)
+  accountId        String             @unique @db.VarChar(12)
+  regions          String[]
+  externalId       String             @db.VarChar(128)
+  /// Buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
+  cloudtrailBucket String?            @db.VarChar(63)
+  guarddutyBucket  String?            @db.VarChar(63)
+  wafBucket        String?            @db.VarChar(63)
+  status           CloudAccountStatus @default(active)
+  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+
+  @@index([tenantId])
 }

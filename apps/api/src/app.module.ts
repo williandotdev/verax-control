@@ -2,6 +2,7 @@ import { type DynamicModule, Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import { AuthModule } from './auth/auth.module.js';
+import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
 import { RequestContextInterceptor } from './common/context/request-context.interceptor.js';
 import { AuditModule } from './common/audit/audit.module.js';
@@ -37,6 +38,7 @@ export class AppModule {
         HealthModule,
         TenantsModule,
         UsersModule,
+        CloudAccountsModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },
