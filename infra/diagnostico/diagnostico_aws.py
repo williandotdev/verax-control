@@ -29,11 +29,18 @@ from typing import Any, Callable, Dict, List, Optional
 
 READ_ONLY_PREFIXES = ("get_", "list_", "describe_", "batch_get_")
 MIN_INTERVAL_SECONDS = 0.25
-MAX_PAGES = 100
+# Teto de segurança: 1.000 páginas (50 mil log groups). Se ainda houver página, a seção vira erro explícito.
+MAX_PAGES = 1000
 
 
 class ReadOnlyViolation(Exception):
     """Tentativa de chamada que não é de leitura."""
+
+
+class IncompletePagination(Exception):
+    """A listagem passou do teto de páginas: o resultado seria parcial e por isso não é usado."""
+
+    response = {"Error": {"Code": "PaginacaoIncompleta"}}
 
 
 class Pacer:
@@ -102,8 +109,8 @@ def paginate(call: Callable[..., Dict[str, Any]], items: str, token_in: str, tok
         results.extend(page.get(items, []))
         token = page.get(token_out)
         if not token:
-            break
-    return results
+            return results
+    raise IncompletePagination()
 
 
 class Diagnostico:
@@ -136,11 +143,18 @@ class Diagnostico:
 
     # --- Fontes globais ---
 
-    def cloudtrail(self, home: str) -> Any:
+    def cloudtrail(self, regions: List[str]) -> Any:
+        """Trilhas de todas as regiões selecionadas: o DescribeTrails só vê as da região consultada (as
+        multirregionais aparecem em todas e são contadas uma vez)."""
+
         def read() -> List[Dict[str, Any]]:
-            trails = self.client("cloudtrail", home).describe_trails(includeShadowTrails=True).get("trailList", [])
+            trails: Dict[str, Dict[str, Any]] = {}
+            for region in regions:
+                found = self.client("cloudtrail", region).describe_trails(includeShadowTrails=True)
+                for trail in found.get("trailList", []):
+                    trails.setdefault(trail["TrailARN"], trail)
             result = []
-            for trail in trails:
+            for trail in trails.values():
                 status = safely(
                     lambda trail=trail: self.client("cloudtrail", trail.get("HomeRegion")).get_trail_status(
                         Name=trail["TrailARN"]
@@ -296,7 +310,7 @@ class Diagnostico:
 
     def run(self, home: str, regions: Optional[List[str]], log_details: bool) -> Dict[str, Any]:
         selected = regions or self.enabled_regions(home)
-        trails = self.cloudtrail(home)
+        trails = self.cloudtrail(selected)
         result: Dict[str, Any] = {
             "gerado_em": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "conta": self.identity(),

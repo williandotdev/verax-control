@@ -108,15 +108,17 @@ class NoWait(diag.Pacer):
         super().__init__(interval=0, clock=lambda: 0.0, sleep=lambda _seconds: None)
 
 
-def run_report():
+def run_report(regions=("us-east-1",), overrides=None):
     clients = {}
+    overrides = overrides or {}
 
     def factory(service, region):
-        clients.setdefault((service, region), FakeClient(RESPONSES[service]))
+        responses = overrides.get((service, region), RESPONSES[service])
+        clients.setdefault((service, region), FakeClient(responses))
         return clients[(service, region)]
 
     diagnostico = diag.Diagnostico(factory, NoWait())
-    return diagnostico, diagnostico.run("us-east-1", ["us-east-1"], log_details=True)
+    return diagnostico, diagnostico.run("us-east-1", list(regions), log_details=True)
 
 
 class ReadOnlyTest(unittest.TestCase):
@@ -176,6 +178,30 @@ class ReportTest(unittest.TestCase):
         self.assertIn("WAF api: já envia log", notes)
         self.assertIn("GuardDuty (us-east-1): já exporta", notes)
         self.assertIn("2 subscription filters", notes)
+
+    def test_trilha_de_regiao_unica_fora_da_principal_aparece(self):
+        regional = {
+            "describe_trails": {
+                "trailList": [
+                    {"Name": "so-sp", "TrailARN": "arn:aws:cloudtrail:sa-east-1:111122223333:trail/so-sp", "HomeRegion": "sa-east-1"},
+                    # A multirregional aparece em todas as regiões e deve contar uma vez.
+                    RESPONSES["cloudtrail"]["describe_trails"]["trailList"][0],
+                ]
+            },
+            "get_trail_status": {"IsLogging": True},
+        }
+        _diagnostico, report = run_report(("us-east-1", "sa-east-1"), {("cloudtrail", "sa-east-1"): regional})
+        self.assertEqual(sorted(trail["nome"] for trail in report["cloudtrail"]), ["principal", "so-sp"])
+
+    def test_paginacao_alem_do_teto_vira_erro_explicito(self):
+        endless = {"describe_log_groups": {"logGroups": [{"logGroupName": "g"}], "nextToken": "mais"}}
+        original = diag.MAX_PAGES
+        diag.MAX_PAGES = 3
+        try:
+            _diagnostico, report = run_report(overrides={("logs", "us-east-1"): endless})
+        finally:
+            diag.MAX_PAGES = original
+        self.assertEqual(report["regioes"]["us-east-1"]["log_groups"], {"erro": "PaginacaoIncompleta"})
 
     def test_resumo(self):
         text = diag.summary(self.report)
