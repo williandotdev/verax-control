@@ -114,5 +114,13 @@ jobs:
           for image in verax-api:teste verax-api-migrate:teste; do
             ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress "$image"
           done
-      - name: Sequência do deploy e execução como no ECS
-        run: bash scripts/test-api-image.sh verax-api:teste verax-api-migrate:teste
+      - name: Sequência do deploy, execução como no ECS e OWASP ZAP (T8.7)
+        env:
+          RUN_ZAP: '1'
+        run: ZAP_REPORT_DIR="$RUNNER_TEMP/zap" bash scripts/test-api-image.sh verax-api:teste verax-api-migrate:teste
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: zap-api-local
+          path: ${{ runner.temp }}/zap/
+          retention-days: 30

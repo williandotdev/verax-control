@@ -1014,6 +1014,12 @@ resource "aws_ecs_service" "api" {
     rollback = true
   }
 
+  # A revisão em uso é trocada pelo deploy (T8.5), que clona a revisão mais recente trocando só a imagem. O Terraform
+  # não volta o serviço para uma imagem antiga; uma mudança de endurecimento aqui entra na próxima versão publicada.
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_lb_listener.https]
 }
 
@@ -1066,4 +1072,25 @@ output "ses_dkim_records" {
     type  = "CNAME"
     value = "${token}.dkim.amazonses.com"
   }]
+}
+
+output "repository_arns" {
+  value = [for repo in aws_ecr_repository.this : repo.arn]
+}
+
+output "deploy_pass_role_arns" {
+  description = "Papéis que as revisões das tarefas usam (o deploy só pode passar estes)."
+  value       = concat([for role in aws_iam_role.execution : role.arn], [aws_iam_role.api_task.arn])
+}
+
+output "job_log_groups" {
+  value = { for key in ["db-bootstrap", "migrate"] : key => aws_cloudwatch_log_group.this[key].name }
+}
+
+output "job_log_group_arns" {
+  value = [for key in ["db-bootstrap", "migrate"] : aws_cloudwatch_log_group.this[key].arn]
+}
+
+output "cluster_name" {
+  value = aws_ecs_cluster.this.name
 }

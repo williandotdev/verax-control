@@ -536,3 +536,7 @@ output "certificate_validation_records" {
     value = option.resource_record_value
   }]
 }
+
+output "bucket_arn" {
+  value = module.assets_bucket.arn
+}

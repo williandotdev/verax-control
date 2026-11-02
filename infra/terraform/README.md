@@ -113,3 +113,25 @@ Pré-requisito: acesso administrativo à conta Verax por SSO, com MFA. Nunca use
 
    Revise o plano antes de qualquer `apply`. A partir do E8, staging e produção são aplicados pelo
    `deploy.yml`, com OIDC e aprovação manual para produção.
+
+## Ligar o deploy (T8.5)
+
+O pipeline (`.github/workflows/deploy.yml`) publica versões da aplicação; ele não muda infraestrutura. Cada ambiente
+tem um papel de deploy assumido por OIDC, só pelo environment do GitHub de mesmo nome.
+
+1. **Bootstrap** com o provedor OIDC do GitHub (`terraform apply` em `bootstrap/`, uma vez por conta).
+2. **Ambiente** (`terraform apply` em `envs/staging` e depois em `envs/production`), ainda sem digests: cria
+   repositórios, papéis, banco, ALB, CloudFront e a configuração lida pelo deploy.
+3. **GitHub:** nos environments `staging` e `production` (este com aprovação obrigatória e só a partir da `main`),
+   crie a variável `AWS_DEPLOY_ROLE_ARN` com a saída `deploy_role_arn` do ambiente. No repositório, crie a variável
+   `AWS_DEPLOY_ENABLED=true`.
+4. **Primeira publicação:** o deploy envia as imagens ao ECR e para, avisando que as tarefas ainda não existem. Aplique
+   o Terraform do ambiente com os digests que ele mostrou
+   (`-var api_image_digest=sha256:... -var migrate_image_digest=sha256:...`) e rode o deploy de novo.
+5. **Daí em diante,** cada push na `main` repete CI, Segurança e IaC; constrói as imagens uma vez (Trivy e SBOM);
+   publica no staging (bootstrap dos papéis de banco, migrations, serviço, painel, attestation de origem e ZAP) e,
+   depois da aprovação, em produção.
+
+Ao reaplicar o Terraform de um ambiente já publicado, use os digests da última versão para não voltar a uma imagem
+antiga: `aws ssm get-parameter --name /verax-control/<nome>/release/images`. O serviço da API ignora a revisão em
+uso (quem troca é o deploy); uma mudança de endurecimento nas tarefas entra na próxima versão publicada.

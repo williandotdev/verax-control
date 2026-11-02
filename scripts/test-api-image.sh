@@ -130,6 +130,15 @@ expect "/health/ready (banco por TLS verificado)" 200 "$(probe "$api" /health/re
 expect "processo sem root" 1000 "$(docker exec "$api" id -u)"
 expect "raiz só leitura" 1 "$(docker exec "$api" sh -c 'touch /app/x 2>/dev/null && echo 0 || echo 1')"
 
+if [[ ${RUN_ZAP:-0} == 1 ]]; then
+  echo "== OWASP ZAP baseline na API (T8.7; risco alto reprova)"
+  if bash "$(dirname "$0")/zap-baseline.sh" "http://$api:3000" "$network"; then
+    expect "ZAP sem achado de risco alto" 0 0
+  else
+    expect "ZAP sem achado de risco alto" 0 1
+  fi
+fi
+
 echo "== API com outra CA (certificado do banco não confere)"
 run_api "$api-errada" other-ca.pem
 sleep 15

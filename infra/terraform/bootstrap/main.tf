@@ -72,6 +72,17 @@ module "state_bucket" {
   noncurrent_expiration_days = 365
 }
 
+# Provedor OIDC do GitHub Actions (um por conta, T8.5): o deploy assume papéis de curta duração, sem chave fixa. Os
+# papéis de cada ambiente ficam em envs/*, presos ao environment do GitHub.
+resource "aws_iam_openid_connect_provider" "github" {
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
+}
+
+output "github_oidc_provider_arn" {
+  value = aws_iam_openid_connect_provider.github.arn
+}
+
 output "state_bucket" {
   value = module.state_bucket.id
 }

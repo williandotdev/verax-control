@@ -147,6 +147,37 @@ module "frontend" {
   dns_zone_id  = var.dns_zone_id
 }
 
+module "deploy" {
+  source             = "../../modules/deploy-role"
+  name               = local.name
+  environment        = "staging"
+  cluster_arn        = module.api.cluster_arn
+  repository_arns    = module.api.repository_arns
+  pass_role_arns     = module.api.deploy_pass_role_arns
+  job_log_group_arns = module.api.job_log_group_arns
+  panel_bucket_arn   = module.frontend.bucket_arn
+  panel_kms_key_arn  = module.frontend.assets_kms_key_arn
+  distribution_arn   = module.frontend.distribution_arn
+  release_config = {
+    region                   = var.aws_region
+    cluster                  = module.api.cluster_name
+    service                  = "api"
+    api_repository           = module.api.repository_urls["api"]
+    migrate_repository       = module.api.repository_urls["api-migrate"]
+    task_family_api          = "${local.name}-api"
+    task_family_migrate      = "${local.name}-migrate"
+    task_family_db_bootstrap = "${local.name}-db-bootstrap"
+    subnets                  = join(",", module.api.private_subnet_ids)
+    jobs_security_group      = module.api.jobs_security_group_id
+    log_group_db_bootstrap   = module.api.job_log_groups["db-bootstrap"]
+    log_group_migrate        = module.api.job_log_groups["migrate"]
+    panel_bucket             = module.frontend.bucket
+    distribution_id          = module.frontend.distribution_id
+    api_domain               = var.api_domain
+    panel_domain             = var.panel_domain
+  }
+}
+
 output "vpc_id" {
   value = module.network.vpc_id
 }
@@ -177,4 +208,9 @@ output "api_alb_dns_name" {
 
 output "ses_dkim_records" {
   value = module.api.ses_dkim_records
+}
+
+output "deploy_role_arn" {
+  description = "Valor da variável AWS_DEPLOY_ROLE_ARN do environment no GitHub."
+  value       = module.deploy.role_arn
 }
