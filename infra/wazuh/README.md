@@ -105,6 +105,48 @@ documento de reaplicação.
 libera o IMDS só para o IP fixo do manager (`172.30.250.10`); indexer e dashboard ficam bloqueados. O bootstrap
 confere as duas coisas no fim de todo deploy e falha se o filtro não estiver valendo.
 
+## Retenção e backup
+
+- **Retenção (pendência 6):** a política ISM `verax-retencao` apaga os índices diários do Wazuh (`wazuh-alerts-*`,
+  `wazuh-monitoring-*` e `wazuh-statistics-*`) com 90 dias (`alert_retention_days` no Terraform). Ela vale para os
+  índices novos, pelo `ism_template`, e é ligada aos que já existiam no deploy.
+- **Snapshot diário:** a política de Snapshot Management `verax-diario` faz o snapshot dos índices `wazuh-*` às
+  02:00 de Brasília no repositório em disco `verax-snapshots` e mantém 14 dias (mínimo de 3 snapshots).
+- **Cópia no S3:** às 03:00 de Brasília o timer `verax-snapshot-sync` espelha o repositório no bucket de backup
+  (saída `backup_bucket`), privado, cifrado com KMS e versionado: o que sai do repositório ainda fica 30 dias no
+  bucket. A imagem oficial do indexer não traz o plugin `repository-s3`, por isso a cópia é feita pelo host.
+
+Tudo isso é aplicado a cada deploy por `scripts/configure-indexer.sh`, de forma idempotente, usando o certificado
+admin do indexer (sem senha).
+
+### Restaurar o backup
+
+Roteiro testado em todo `ci-test.sh` (snapshot, índice apagado, restauração com e sem renomear, mesma contagem).
+Na instância, como root, em `/opt/verax-wazuh`:
+
+1. **Escolha o que restaurar.** Para conferir o que existe:
+   `source scripts/lib-indexer.sh && indexer_admin GET '/_cat/snapshots/verax-snapshots?v' </dev/null && echo "$response_body"`.
+2. **Instância nova ou disco perdido:** suba o Wazuh pelo documento de reaplicação e traga o repositório do S3 junto
+   com a restauração, usando `--from-s3`.
+3. **Restaure:**
+   - para conferir dados antigos sem mexer nos atuais (recomendado), use `--rename`. Os índices voltam como
+     `restaurado-<nome>`, fora da política de retenção (índices com mais de 90 dias seriam apagados pela política se
+     voltassem com o nome original):
+
+     ```sh
+     bash scripts/restore-snapshot.sh --rename latest 'wazuh-alerts-4.x-2026.11.*'
+     ```
+
+   - para recompor os índices originais (perda de dados), os de mesmo nome não podem estar abertos. O script não
+     apaga nem fecha nada, para não perder dado por engano:
+
+     ```sh
+     bash scripts/restore-snapshot.sh --from-s3 latest 'wazuh-alerts-*'
+     ```
+
+4. **Confira** a contagem: `indexer_admin GET '/<índice>/_count' </dev/null`. Quando terminar a análise, apague os
+   índices `restaurado-*`.
+
 ## Diagnóstico na instância
 
 A compose exige as senhas até para `ps` e `logs` (é a trava que impede subir sem elas). Para olhar o estado,

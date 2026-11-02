@@ -110,6 +110,16 @@ variable "password_version" {
   default     = 1
 }
 
+variable "alert_retention_days" {
+  description = "Dias de retenção dos alertas no indexer (pendência 6: 90)."
+  type        = number
+  default     = 90
+  validation {
+    condition     = var.alert_retention_days >= 1 && var.alert_retention_days <= 9999 && floor(var.alert_retention_days) == var.alert_retention_days
+    error_message = "Use um número inteiro de dias entre 1 e 9999."
+  }
+}
+
 variable "patch_schedule" {
   description = "Janela semanal de patches do sistema (UTC)."
   type        = string
@@ -156,10 +166,20 @@ locals {
     indexer_heap    = var.indexer_heap
     extra_sans      = "DNS:${local.indexer_hostname}"
     publish_address = length(var.indexer_client_security_groups) > 0 ? "0.0.0.0" : "127.0.0.1"
+    backup_bucket   = module.backup_bucket.id
+    retention_days  = var.alert_retention_days
   })
 }
 
 # --- Bundle ---
+
+# Espelho diário do repositório de snapshots do indexer (T4.9). Sem expiração própria: o indexer mantém 14 dias de
+# snapshots e o sync apaga o que saiu de lá; versões antigas ficam 30 dias.
+module "backup_bucket" {
+  source      = "../private-bucket"
+  name        = "${var.name}-wazuh-backup-${data.aws_caller_identity.current.account_id}"
+  kms_key_arn = var.data_kms_key_arn
+}
 
 module "bundle_bucket" {
   source      = "../private-bucket"
@@ -361,8 +381,8 @@ data "aws_iam_policy_document" "wazuh" {
   }
 
   statement {
-    sid       = "DecifrarSenhasEBundle"
-    actions   = ["kms:Decrypt"]
+    sid       = "ChaveDeDadosViaSecretsEBuckets"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
     resources = [var.data_kms_key_arn]
     condition {
       test     = "StringEquals"
@@ -386,6 +406,25 @@ data "aws_iam_policy_document" "wazuh" {
     sid       = "LerBundle"
     actions   = ["s3:GetObject"]
     resources = ["${module.bundle_bucket.arn}/${local.bundle_prefix}/*"]
+  }
+
+  # Espelho do repositório de snapshots (T4.9): sync com --delete e restauração. O versionamento do bucket guarda o
+  # que for apagado por 30 dias.
+  statement {
+    sid       = "ListarBackup"
+    actions   = ["s3:ListBucket"]
+    resources = [module.backup_bucket.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["indexer-snapshots/*"]
+    }
+  }
+
+  statement {
+    sid       = "GravarELerBackup"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${module.backup_bucket.arn}/indexer-snapshots/*"]
   }
 
   statement {
@@ -532,6 +571,11 @@ output "instance_id" {
 
 output "security_group_id" {
   value = aws_security_group.wazuh.id
+}
+
+output "backup_bucket" {
+  description = "Espelho do repositório de snapshots do indexer (restauração: README do bundle)."
+  value       = module.backup_bucket.id
 }
 
 output "indexer_endpoint" {

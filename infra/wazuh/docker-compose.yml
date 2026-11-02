@@ -49,6 +49,7 @@ services:
       - ./config/indexer/roles_mapping.yml:/verax/roles_mapping.yml:ro
       # Fora do caminho de configuração da imagem, para o script sempre partir dos arquivos originais dela.
       - indexer-security:/out/security
+      - indexer-snapshots:/out/snapshots
 
   manager-config:
     image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
@@ -93,6 +94,7 @@ services:
     security_opt: ['no-new-privileges:true']
     volumes:
       - indexer-data:/var/lib/wazuh-indexer
+      - indexer-snapshots:/mnt/snapshots
       - certs-indexer:/usr/share/wazuh-indexer/config/certs:ro
       - indexer-security:/usr/share/wazuh-indexer/config/opensearch-security
       - ./config/indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
@@ -218,6 +220,7 @@ volumes:
   certs-public:
   indexer-security:
   indexer-data:
+  indexer-snapshots:
   manager-api-configuration:
   manager-etc:
   manager-logs:

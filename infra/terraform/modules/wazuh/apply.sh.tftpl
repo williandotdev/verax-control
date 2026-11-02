@@ -13,4 +13,5 @@ export WAZUH_AWS_SOURCES_SECRET_ARN='${sources_arn}' INDEXER_CA_PARAMETER='${ca_
 export DATA_VOLUME_ID='${data_volume_id}' AWS_REGION='${region}'
 export CONTAINER_LOG_GROUP='${log_group}' INDEXER_HEAP='${indexer_heap}'
 export INDEXER_EXTRA_SANS='${extra_sans}' INDEXER_PUBLISH_ADDRESS='${publish_address}'
+export BACKUP_BUCKET='${backup_bucket}' ALERT_RETENTION_DAYS='${retention_days}'
 bash scripts/bootstrap-host.sh

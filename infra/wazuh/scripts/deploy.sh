@@ -10,7 +10,7 @@
 # No EC2 quem as define é o bootstrap-host.sh, a partir do Secrets Manager.
 # WAZUH_AWS_SOURCES_FILE: arquivo com a lista JSON das contas AWS conectadas (T4.4 a T4.6); sem ele, nenhuma.
 # Opcionais: INDEXER_HEAP (padrão 1g), INDEXER_PUBLISH_ADDRESS (padrão 127.0.0.1), INDEXER_EXTRA_SANS,
-# DASHBOARD_PORT (padrão 8443).
+# DASHBOARD_PORT (padrão 8443) e ALERT_RETENTION_DAYS (padrão 90).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -69,6 +69,9 @@ if ! output=$(compose exec -T wazuh.indexer bash -c '
   echo "$output" >&2
   exit 1
 fi
+
+echo "   Retenção e snapshots"
+bash scripts/configure-indexer.sh
 
 echo "4/4 Manager e dashboard"
 compose up -d --wait --wait-timeout 900 --no-deps --remove-orphans wazuh.manager wazuh.dashboard

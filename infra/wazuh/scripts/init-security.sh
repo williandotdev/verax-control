@@ -41,10 +41,16 @@ trap 'rm -rf "$work"' EXIT
 cp "$image_dir"/*.yml "$work/"
 sed -e "s|__ADMIN_HASH__|$admin_hash|" -e "s|__DASHBOARD_HASH__|$dashboard_hash|" \
   -e "s|__API_READ_HASH__|$api_read_hash|" /verax/internal_users.yml.tmpl >"$work/internal_users.yml"
-cat /verax/roles-verax.yml >>"$work/roles.yml"
+# Quebra de linha antes: o arquivo da imagem pode não terminar com uma.
+{
+  echo
+  cat /verax/roles-verax.yml
+} >>"$work/roles.yml"
 cp /verax/roles_mapping.yml "$work/roles_mapping.yml"
 
 # O indexer roda como uid 1000: só ele lê a configuração.
 install -d -m 0700 -o 1000 -g 1000 "$out"
 install -m 0600 -o 1000 -g 1000 "$work"/*.yml "$out/"
+# Repositório de snapshots (T4.9): também só do indexer.
+install -d -m 0700 -o 1000 -g 1000 /out/snapshots
 echo "Configuração de segurança do indexer gerada (admin, kibanaserver e verax_api_read)."

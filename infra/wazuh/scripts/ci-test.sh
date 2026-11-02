@@ -8,7 +8,9 @@
 # 4. contas AWS: módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da conta, profiles só para
 #    o root, ExternalId fora do ossec.conf e do ambiente do contêiner, manager no IP fixo;
 # 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente;
-# 6. acesso como a API faz (T4.8): pelo nome DNS do indexer, validando o certificado contra a CA do Wazuh.
+# 6. acesso como a API faz (T4.8): pelo nome DNS do indexer, validando o certificado contra a CA do Wazuh;
+# 7. retenção e backup (T4.9): política de 90 dias ligada aos índices novos, snapshot diário configurado, e o
+#    teste de restauração (snapshot, índice apagado, restauração com e sem renomear, mesma contagem).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -130,6 +132,37 @@ expect "conta A: 3 buckets com o profile dela" 3 \
   "$(manager_file_count 'Executing Bucket Analysis.*Profile: verax-111122223333\)' /var/ossec/logs/ossec.log)"
 expect "conta B: 1 bucket com o profile dela" 1 \
   "$(manager_file_count 'Executing Bucket Analysis.*Profile: verax-444455556666\)' /var/ossec/logs/ossec.log)"
+
+echo "== Retenção e backup"
+# shellcheck source=SCRIPTDIR/lib-indexer.sh
+source scripts/lib-indexer.sh
+match_count() { grep -oE "$1" <<<"$response_body" | head -n 1 || true; }
+indexer_admin GET /_plugins/_ism/policies/verax-retencao </dev/null
+expect "política de retenção apaga com 90 dias" '"min_index_age":"90d"' "$(match_count '"min_index_age":"[^"]*"')"
+indexer_admin GET /_plugins/_sm/policies/verax-diario </dev/null
+expect "snapshot diário no repositório verax-snapshots" '"repository":"verax-snapshots"' \
+  "$(match_count '"repository":"[^"]*"')"
+expect "repositório de snapshots só do indexer" '1000:700' \
+  "$(docker exec "$(container wazuh.indexer)" stat -c '%u:%a' /mnt/snapshots)"
+test_index=wazuh-alerts-4.x-verax-teste
+for n in 1 2 3; do
+  indexer_admin PUT "/$test_index/_doc/$n?refresh=true" <<<"{\"rule\":{\"level\":3},\"teste\":$n}"
+done
+indexer_admin GET "/_plugins/_ism/explain/$test_index" </dev/null
+expect "índice novo de alertas segue a retenção" '"policy_id":"verax-retencao"' "$(match_count '"policy_id":"[^"]*"')"
+indexer_admin PUT '/_snapshot/verax-snapshots/teste-ci?wait_for_completion=true' \
+  <<<"{\"indices\":\"$test_index\",\"include_global_state\":false}"
+expect "snapshot criado" 200 "$response_code"
+indexer_admin DELETE "/$test_index" </dev/null
+expect "índice apagado" 200 "$response_code"
+bash scripts/restore-snapshot.sh teste-ci "$test_index" >/dev/null
+indexer_admin GET "/$test_index/_count" </dev/null
+expect "restaurado com as 3 mensagens" '"count":3' "$(match_count '"count":[0-9]+')"
+bash scripts/restore-snapshot.sh --rename latest "$test_index" >/dev/null
+indexer_admin GET "/restaurado-$test_index/_count" </dev/null
+expect "restauração renomeada a partir do último snapshot" '"count":3' "$(match_count '"count":[0-9]+')"
+expect "restauração recusa índice aberto de mesmo nome" 1 \
+  "$(bash scripts/restore-snapshot.sh teste-ci "$test_index" >/dev/null 2>&1 && echo 0 || echo 1)"
 
 echo "== Certificados"
 # Pelo serviço certs-init, que monta os quatro volumes em /out (mesma imagem da compose).

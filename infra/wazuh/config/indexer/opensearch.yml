@@ -57,3 +57,7 @@ plugins.security.system_indices.indices:
 plugins.security.allow_default_init_securityindex: true
 
 cluster.routing.allocation.disk.threshold_enabled: true
+
+# Repositório de snapshots em disco (T4.9). O snapshot diário é do Snapshot Management do próprio indexer, e o
+# host copia o repositório para o S3 (scripts/bootstrap-host.sh). A imagem oficial não traz o plugin repository-s3.
+path.repo: ['/mnt/snapshots']

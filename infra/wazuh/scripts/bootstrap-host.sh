@@ -4,15 +4,15 @@
 # seguintes (infra/terraform/modules/wazuh). Idempotente.
 #
 # Entradas (ambiente): WAZUH_SECRET_ARN, WAZUH_API_READ_SECRET_ARN, WAZUH_AWS_SOURCES_SECRET_ARN,
-# INDEXER_CA_PARAMETER, DATA_VOLUME_ID, AWS_REGION, CONTAINER_LOG_GROUP, INDEXER_HEAP, INDEXER_EXTRA_SANS e
-# INDEXER_PUBLISH_ADDRESS.
+# INDEXER_CA_PARAMETER, BACKUP_BUCKET, DATA_VOLUME_ID, AWS_REGION, CONTAINER_LOG_GROUP, INDEXER_HEAP,
+# INDEXER_EXTRA_SANS, INDEXER_PUBLISH_ADDRESS e ALERT_RETENTION_DAYS.
 # Nada aqui imprime senha nem ExternalId; o log vai para /var/log/cloud-init-output.log ou para o histórico do SSM.
 set -euo pipefail
 umask 077
 cd "$(dirname "$0")/.."
 
 : "${WAZUH_SECRET_ARN:?}" "${WAZUH_API_READ_SECRET_ARN:?}" "${WAZUH_AWS_SOURCES_SECRET_ARN:?}"
-: "${INDEXER_CA_PARAMETER:?}" "${DATA_VOLUME_ID:?}" "${AWS_REGION:?}" "${CONTAINER_LOG_GROUP:?}"
+: "${INDEXER_CA_PARAMETER:?}" "${BACKUP_BUCKET:?}" "${DATA_VOLUME_ID:?}" "${AWS_REGION:?}" "${CONTAINER_LOG_GROUP:?}"
 
 readonly compose_version=v5.6.1
 readonly compose_sha256=47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0
@@ -106,6 +106,43 @@ chmod 0644 /etc/systemd/system/verax-imds-guard.service
 systemctl daemon-reload
 systemctl enable -q verax-imds-guard
 systemctl restart verax-imds-guard
+
+log "Cópia diária dos snapshots para o S3"
+# O indexer faz o snapshot às 02:00 de Brasília no repositório em disco (scripts/configure-indexer.sh); às 03:00 o
+# host espelha o repositório no bucket de backup (cifrado e versionado: o que some aqui fica 30 dias lá).
+install -d -m 0700 /etc/verax-wazuh
+printf 'BACKUP_BUCKET=%q\nAWS_REGION=%q\n' "$BACKUP_BUCKET" "$AWS_REGION" >/etc/verax-wazuh/backup.env
+cat >/usr/local/sbin/verax-snapshot-sync <<'EOF'
+#!/bin/bash
+set -euo pipefail
+source /etc/verax-wazuh/backup.env
+aws s3 sync --only-show-errors --delete --region "$AWS_REGION" \
+  /data/docker/volumes/verax-wazuh_indexer-snapshots/_data/ "s3://$BACKUP_BUCKET/indexer-snapshots/"
+EOF
+chmod 0700 /usr/local/sbin/verax-snapshot-sync
+cat >/etc/systemd/system/verax-snapshot-sync.service <<'EOF'
+[Unit]
+Description=Verax Control: copia os snapshots do indexer para o S3
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/verax-snapshot-sync
+EOF
+cat >/etc/systemd/system/verax-snapshot-sync.timer <<'EOF'
+[Unit]
+Description=Verax Control: cópia diária dos snapshots do indexer
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+chmod 0644 /etc/systemd/system/verax-snapshot-sync.service /etc/systemd/system/verax-snapshot-sync.timer
+systemctl daemon-reload
+systemctl enable -q --now verax-snapshot-sync.timer
 
 log "Contas AWS conectadas (Secrets Manager)"
 # Em tmpfs, só para o root, e apagado ao sair: a lista tem os ExternalIds.
