@@ -14,6 +14,7 @@ export const FILTER_FIELDS = [
   'rule.id',
   'rule.level',
   'rule.groups',
+  'data.integration',
   'data.aws.aws_account_id',
   'data.aws.source',
   'agent.id',

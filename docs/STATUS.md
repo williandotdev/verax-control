@@ -195,3 +195,41 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - a tabela `UnownedAlert` com o motivo;
   - o teste de isolamento ponta a ponta no sync (T5.3).
 - **Definição de pronto (parcial):** função única que descobre o cliente pela conta do alerta ✔ · alerta de conta não cadastrada para a fila sem dono ✔ (decisão; a gravação vem com a T5.3) · testes com alertas de duas contas de clientes diferentes ✔
+
+## T5.3 Sync de alertas para achados: núcleo (job e gravação depois do E3)
+
+- **Arquivos:** `apps/api/src/alerts/{finding-draft,sync-query,raw-alert}.ts`, `apps/api/src/indexer/alert-queries.ts` (filtro `data.integration`), `apps/api/test/alerts/finding-draft.test.ts`
+- **Dependências:** nenhuma nova.
+- **Como funciona:**
+  - **Achado** (`toFindingDraft`): leva o cliente e a conta decididos pela T5.2, o id do alerta como chave de idempotência (`source` + `sourceEventId`), horário em UTC, regra, fonte, evento, região, recurso, identidade, chave, IP e táticas/técnicas MITRE.
+  - **Severidade:**
+    - GuardDuty: a da própria AWS, nas faixas do GuardDuty (9+ crítica, 7+ alta, 4+ média), porque as regras do Wazuh juntam 7 a 9 num nível só;
+    - demais fontes: pelo nível da regra (12+ crítica, 10+ alta, 7+ média, abaixo baixa). Assim, a força bruta no console e a rajada de bloqueios do WAF (nível 10) ficam altas, e um login com falha isolado (5) fica baixo.
+  - **Leitura incremental** (`syncWindowStart`, `syncPage`, `cursorFromSort`):
+    - cada execução relê 10 minutos antes do último alerta processado (o alerta pode chegar ao indexer fora de ordem), e a gravação idempotente evita duplicata;
+    - dentro da execução, as páginas seguem pelo cursor de horário e id;
+    - o cursor vem dos valores de ordenação devolvidos pelo indexer, para um alerta inválido também ser pulado;
+    - a consulta pega só alertas do módulo aws-s3, das três fontes coletadas, com nível 5 ou mais. Abaixo disso ficam os eventos de auditoria do CloudTrail (nível 3), que viram contexto e não achado.
+  - **Evento bruto do detalhe** (`sanitizeRawAlert`, para a T5.4):
+    - tira `full_log` e `previous_output` em qualquer nível;
+    - troca o valor de cabeçalhos de credencial (`authorization`, `cookie`, `x-api-key`...);
+    - descarta chaves de protótipo e limita a profundidade.
+- **Testes:** 30 nos alertas, 53 contando o indexer.
+  - Faixas de severidade nas duas regras, achado completo e campos ausentes como `null`.
+  - Saneamento: log bruto, cabeçalhos sem diferenciar maiúsculas, `__proto__` sem contaminar e profundidade.
+  - Janela, página em DSL estruturado e cursor.
+  - **Conferido também contra o indexer real** (wazuh-indexer 4.14.9 com o template oficial do Wazuh, num contêiner local): o `search_after` com a data ISO e o id pagina sem pular nem repetir, inclusive com empate de horário na virada de página. Os filtros excluem nível baixo, alerta do manager, fonte não coletada e o que é anterior à janela, e `+0000` e `-0300` caem no mesmo instante.
+- **Premissas a confirmar:**
+  - nível mínimo 5 para virar achado;
+  - sobreposição de 10 minutos;
+  - na primeira execução, as últimas 24 horas.
+
+  Os três ficam em configuração.
+
+- **Pendente (depois do E2/E3):**
+  - o job (`worker` com advisory lock);
+  - o model `Finding` com `@@unique([source, sourceEventId])`, o `UnownedAlert` e o estado do sync;
+  - as exceções da T3.5;
+  - `lastEventAt` por conta;
+  - as métricas do worker para os alarmes da T8.6.
+- **Riscos:** um alerta indexado mais de 10 minutos depois do horário dele (filebeat parado, por exemplo) fica de fora. O alarme de sync parado da T8.6 cobre o caso do filebeat, e a sobreposição pode subir em configuração.
