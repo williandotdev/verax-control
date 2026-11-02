@@ -29,6 +29,23 @@ variable "api_domain" {
   type        = string
 }
 
+variable "mail_from" {
+  description = "Remetente dos e-mails do painel (ex.: nao-responda@exemplo.com.br); o domínio é verificado no SES."
+  type        = string
+}
+
+variable "api_image_digest" {
+  description = "Digest da imagem da API no ECR, informado pelo deploy (T8.5). Nulo: sem serviço."
+  type        = string
+  default     = null
+}
+
+variable "migrate_image_digest" {
+  description = "Digest da imagem de migrations no ECR, informado pelo deploy (T8.5)."
+  type        = string
+  default     = null
+}
+
 variable "dns_zone_id" {
   description = "Zona pública do Route53 dos domínios. Nula: validação e apontamento à mão no DNS."
   type        = string
@@ -90,6 +107,32 @@ module "database" {
   backup_retention_days = 7
   # Staging só tem dados fictícios e pode ser recriado.
   deletion_protection = false
+  client_security_groups = {
+    api  = module.api.api_security_group_id
+    jobs = module.api.jobs_security_group_id
+  }
+}
+
+module "api" {
+  source                     = "../../modules/api"
+  name                       = local.name
+  vpc_id                     = module.network.vpc_id
+  vpc_cidr                   = module.network.vpc_cidr
+  public_subnet_ids          = module.network.public_subnet_ids
+  private_subnet_ids         = module.network.private_subnet_ids
+  data_kms_key_arn           = module.kms.data_key_arn
+  logs_kms_key_arn           = module.kms.logs_key_arn
+  api_domain                 = var.api_domain
+  panel_domain               = var.panel_domain
+  dns_zone_id                = var.dns_zone_id
+  mail_from                  = var.mail_from
+  database_endpoint          = module.database.endpoint
+  database_security_group_id = module.database.security_group_id
+  database_master_secret_arn = module.database.master_secret_arn
+  api_image_digest           = var.api_image_digest
+  migrate_image_digest       = var.migrate_image_digest
+  desired_count              = 1
+  deletion_protection        = false
 }
 
 module "frontend" {
@@ -118,4 +161,20 @@ output "panel_distribution_domain" {
 
 output "panel_certificate_validation_records" {
   value = module.frontend.certificate_validation_records
+}
+
+output "api_repository_urls" {
+  value = module.api.repository_urls
+}
+
+output "api_certificate_validation_records" {
+  value = module.api.certificate_validation_records
+}
+
+output "api_alb_dns_name" {
+  value = module.api.alb_dns_name
+}
+
+output "ses_dkim_records" {
+  value = module.api.ses_dkim_records
 }

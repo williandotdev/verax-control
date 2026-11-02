@@ -16,6 +16,7 @@ Infraestrutura da conta AWS da Verax. Tudo aqui é escrito e validado no CI (`.g
 | `modules/prowler/`        | Prowler agendado (só produção): ECR, tarefa Fargate, EventBridge Scheduler, bucket de resultados.                                   |
 | `modules/database/`       | RDS PostgreSQL 18 privado, cifrado, TLS obrigatório, backups; senha mestra gerenciada pelo RDS.                                     |
 | `modules/frontend/`       | Painel: bucket privado servido pelo CloudFront (OAC), cabeçalhos de segurança, certificado e WAF em us-east-1.                      |
+| `modules/api/`            | API: ECR, ALB só HTTPS com WAF, ECS Fargate, tarefas de bootstrap e migrations, segredos por write-only, SES.                       |
 | `envs/staging/`           | Staging pequeno: 1 NAT, sem Wazuh e só com dados fictícios. Dado real de cliente nunca chega aqui.                                  |
 | `envs/production/`        | Produção: 1 NAT por zona e, a partir da T4.2, o Wazuh.                                                                              |
 
