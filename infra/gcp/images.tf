@@ -52,7 +52,7 @@ resource "google_artifact_registry_repository_iam_member" "publisher" {
 resource "google_service_account_iam_member" "publisher_wif" {
   service_account_id = google_service_account.images_publisher.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/projects/${data.google_project.node.number}/locations/global/workloadIdentityPools/${var.github_wif_pool}/subject/repo:${var.github_repository}:environment:imagens"
+  member             = "principal://iam.googleapis.com/projects/${data.google_project.node.number}/locations/global/workloadIdentityPools/${var.github_wif_pool}/subject/repo:${var.github_oidc_repository}:environment:imagens"
 }
 
 # A VM do nó só baixa.
