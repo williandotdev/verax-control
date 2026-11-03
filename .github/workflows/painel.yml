@@ -1,9 +1,10 @@
 name: Painel
 
 # Publica o painel no Firebase Hosting (projeto da Verax na GCP), um site por destino: a demonstração comercial
-# (dados fictícios no navegador), o SOC da própria Verax e cada cliente. A lista de sites fica na variável
-# PAINEL_SITES do environment `painel`, fora do código (ver docs/runbooks/painel.md). Login na GCP sem chave
-# (Workload Identity Federation): só jobs deste repositório no environment `painel`, que só aceita a `main`.
+# (dados fictícios no navegador), o SOC da própria Verax e cada cliente. A lista de sites fica no secret
+# PAINEL_SITES do environment `painel`, fora do código e fora do log público (ver docs/runbooks/painel.md). Login na
+# GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `painel`, que só aceita a
+# `main`.
 
 on:
   push:
@@ -39,7 +40,7 @@ jobs:
       - name: Conferir a configuração
         id: config
         env:
-          SITES: ${{ vars.PAINEL_SITES }}
+          SITES: ${{ secrets.PAINEL_SITES }}
         run: |
           if [ -z "$SITES" ]; then
             echo "::notice::PAINEL_SITES não configurada no environment painel; nada a publicar."
@@ -72,12 +73,20 @@ jobs:
       - name: Publicar cada site
         if: steps.config.outputs.ready == 'true'
         env:
-          SITES: ${{ vars.PAINEL_SITES }}
+          SITES: ${{ secrets.PAINEL_SITES }}
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: |
           set -euo pipefail
           jq -e 'type == "array" and length > 0' <<<"$SITES" >/dev/null
           mapfile -t entries < <(jq -c '.[]' <<<"$SITES")
+          # O log deste workflow é público (repositório público): site, domínio e API de cada cliente saem
+          # mascarados, para a lista de clientes não aparecer em lugar nenhum.
+          for entry in "${entries[@]}"; do
+            for value in $(jq -r '[.site, .dominio, (.api // empty)] | .[]' <<<"$entry"); do
+              echo "::add-mask::${value}"
+              echo "::add-mask::${value#https://}"
+            done
+          done
           for entry in "${entries[@]}"; do
             site=$(jq -er .site <<<"$entry")
             domain=$(jq -er .dominio <<<"$entry")

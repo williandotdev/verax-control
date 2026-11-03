@@ -26,13 +26,13 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
 - **Demonstração.** O build `demo` não conecta em nenhuma API: a CSP só permite a própria origem, e uma faixa avisa,
   em toda tela, que os dados são fictícios.
 
-## Configuração (variáveis do environment `painel` no GitHub)
+## Configuração (environment `painel` no GitHub)
 
-| Variável           | Valor                                                                        |
-| ------------------ | ---------------------------------------------------------------------------- |
-| `GCP_DEPLOY_SA`    | `painel-deployer@verax-control-prod.iam.gserviceaccount.com`                 |
-| `GCP_WIF_PROVIDER` | provedor `github-provider` do pool `github-pool` (projeto `verax-os-shared`) |
-| `PAINEL_SITES`     | lista JSON dos sites (abaixo)                                                |
+| Nome               | Tipo     | Valor                                                                        |
+| ------------------ | -------- | ---------------------------------------------------------------------------- |
+| `GCP_DEPLOY_SA`    | variável | `painel-deployer@verax-control-prod.iam.gserviceaccount.com`                 |
+| `GCP_WIF_PROVIDER` | variável | provedor `github-provider` do pool `github-pool` (projeto `verax-os-shared`) |
+| `PAINEL_SITES`     | secret   | lista JSON dos sites (abaixo)                                                |
 
 ```json
 [
@@ -45,8 +45,10 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
 ]
 ```
 
-A lista fica fora do código porque os nomes de cliente não entram no repositório. Os logs do Actions deste repositório
-são públicos e mostram os sites publicados; o domínio já é público de qualquer forma (DNS e certificados).
+A lista fica fora do código porque os nomes de cliente não entram no repositório. Ela é um secret, e não uma variável,
+porque os logs do Actions deste repositório são públicos: variável aparece por extenso no cabeçalho de cada passo, e
+secret não. O workflow também mascara site, domínio e API de cada entrada antes de usá-los. O domínio próprio continua
+público pelo DNS e pelos registros de certificados: para não expor o nome de um cliente, use um subdomínio neutro.
 
 ## Acrescentar um site (novo cliente)
 
