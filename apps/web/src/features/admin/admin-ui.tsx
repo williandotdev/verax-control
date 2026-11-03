@@ -76,7 +76,7 @@ export function SelectInput({
         ))}
       </select>
       {error && (
-        <p id={`${id}-erro`} className="text-xs text-critical">
+        <p id={`${id}-erro`} className="text-xs text-critical-text">
           {error}
         </p>
       )}
@@ -112,7 +112,7 @@ export function TextAreaField({
         </p>
       )}
       {error && (
-        <p id={`${id}-erro`} className="text-xs text-critical">
+        <p id={`${id}-erro`} className="text-xs text-critical-text">
           {error}
         </p>
       )}
@@ -182,7 +182,7 @@ export function ConfirmButton({
 export function FormError({ error }: { error: unknown }) {
   if (!error) return null;
   return (
-    <p role="alert" className="text-sm text-critical">
+    <p role="alert" className="text-sm text-critical-text">
       {errorMessage(error)}
     </p>
   );

@@ -104,7 +104,7 @@ export function ExceptionsPage() {
         ) : row.active ? (
           `até ${dayFormat.format(new Date(row.expiresAt))}`
         ) : (
-          <span className="font-medium text-critical">
+          <span className="font-medium text-critical-text">
             Vencida em {dayFormat.format(new Date(row.expiresAt))}
           </span>
         ),

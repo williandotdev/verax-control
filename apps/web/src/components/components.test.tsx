@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/lib/api-client';
+import { BrandLockup, VeraxSymbol, VeraxWordmark } from './brand/logo';
 import { CatalogPage } from '@/pages/catalog/catalog-page';
 import { DataTable } from './data-table';
 import { DecisionCard } from './security/decision-card';
@@ -11,6 +12,28 @@ import { Semaphore } from './security/semaphore';
 import { SeverityBadge } from './security/severity-badge';
 import { Timeline } from './security/timeline';
 import { EmptyState, ErrorState, LoadingState } from './states';
+
+describe('marca', () => {
+  it('a marca do painel é uma imagem só, com o nome do produto', () => {
+    render(<BrandLockup />);
+    const brand = screen.getByRole('img', { name: 'Verax Control' });
+    expect(brand).toHaveTextContent('CONTROL');
+    // A logo dentro dela não se anuncia de novo.
+    expect(brand.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  it('a logo segue a cor do texto e só tem nome acessível quando pedido', () => {
+    const { container } = render(
+      <>
+        <VeraxWordmark label="Verax" />
+        <VeraxSymbol />
+      </>,
+    );
+    expect(screen.getByRole('img', { name: 'Verax' })).toHaveAttribute('fill', 'currentColor');
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+    expect(container.querySelectorAll('svg[aria-hidden="true"]')).toHaveLength(1);
+  });
+});
 
 describe('Semaphore', () => {
   it.each([

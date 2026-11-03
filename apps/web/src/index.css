@@ -4,57 +4,92 @@
  * Tema do Verax Control (T6.2). Os tokens têm nome de papel (fundo, tinta, severidade), nunca de cor, e os
  * dois modos são escolhidos à mão a partir das mesmas famílias, não invertidos automaticamente.
  *
+ * Identidade visual: as cores de base vêm do site da Verax (papel #f5f7fb, linha #dfe5ee, tinta #13233c, texto
+ * discreto #637087, navy #09152c e #101f3b, azul #426dff e #86a7ff, links #315add), e a fonte é a mesma pilha
+ * (Inter quando instalada; o painel não baixa fonte, a CSP só aceita `font-src 'self'`).
+ * - Claro: fundo papel, superfícies brancas, tinta navy. A ação principal é o azul dos links do site: o #426dff
+ *   com texto branco dá 4,3:1 (abaixo do AA), o #315add dá 5,8:1 (e o tom do hover, 7,8:1).
+ * - Escuro: fundo navy, superfícies navy2 e um tom acima, tinta papel. A ação principal é o azul claro com texto
+ *   navy (7,8:1). O tom acima (#142543) é o mais claro que ainda deixa o crítico em 3:1.
+ * - Marca (`.brand-surface`): a barra lateral e o fundo das telas de entrada ficam no navy do site nos dois modos,
+ *   como o cabeçalho dele, com os tokens do modo escuro. No modo escuro, um navy mais fundo (o do rodapé do site).
+ * - Texto discreto: >= 4,5:1 sobre todas as superfícies de cada modo.
+ *
  * Severidade: validada com o script da skill de visualização (separação para daltonismo e visão normal em
  * todos os pares, nos dois modos). Crítico, alto e médio se separam também por claro/escuro (mais grave, mais
  * escuro). No modo claro, alto e médio ficam abaixo de 3:1 contra o fundo: por isso severidade nunca aparece
- * só como cor; vem sempre com ícone de forma própria e rótulo, e o texto usa a tinta neutra.
+ * só como cor; vem sempre com ícone de forma própria e rótulo, e o texto usa a tinta neutra. Conferida de novo
+ * com as superfícies do site: a separação não muda, e o contraste contra o fundo fica no mesmo patamar (no claro,
+ * alto 2,8:1 no papel e 3:1 no branco; no escuro, todas >= 3:1 em todas as superfícies).
+ * O azul do "baixo" e o da ação principal são próximos no claro: a ação principal nunca indica severidade, e as
+ * intensidades sem severidade (mapa do MITRE) usam a tinta neutra.
+ *
+ * Texto em vermelho (erro de formulário, valor de risco): `--critical-text`, nunca a cor da severidade. No escuro, o
+ * vermelho da severidade fica em ~3,1-3,6:1 sobre as superfícies; o do texto passa de 5,5:1 em todas (no claro, é o
+ * mesmo da severidade, >= 6,1:1).
  */
 
-@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *, .brand-surface, .brand-surface *));
 
 :root {
   color-scheme: light;
-  --background: #f9f9f7;
-  --surface: #fcfcfb;
+  --background: #f5f7fb;
+  --surface: #ffffff;
   --surface-raised: #ffffff;
-  --foreground: #0b0b0b;
-  --muted-foreground: #52514e;
+  --foreground: #13233c;
+  --muted-foreground: #4a5b77;
   /* Texto discreto (metadados, legendas): >= 4,5:1 sobre todas as superfícies do tema. */
-  --subtle-foreground: #6e6c66;
-  --border: rgb(11 11 11 / 0.1);
-  --border-strong: #c3c2b7;
-  --gridline: #e1e0d9;
-  --primary: #0b0b0b;
-  --primary-foreground: #fcfcfb;
-  --ring: #2a78d6;
+  --subtle-foreground: #637087;
+  --border: #dfe5ee;
+  --border-strong: #b9c3d4;
+  --gridline: #e6ebf2;
+  --primary: #315add;
+  --primary-hover: #2848b8;
+  --primary-foreground: #ffffff;
+  --ring: #426dff;
+  --brand: #09152c;
 
   --severity-critical: #b42318;
+  --critical-text: #b42318;
   --severity-high: #e8743b;
   --severity-medium: #f7c948;
   --severity-low: #2a78d6;
   --severity-ok: #0e9f8e;
 }
 
-[data-theme='dark'] {
+/* A faixa da marca usa os tokens do modo escuro em qualquer tema (o `--brand` fica de fora: é o fundo dela). */
+[data-theme='dark'],
+.brand-surface {
   color-scheme: dark;
-  --background: #0d0d0d;
-  --surface: #1a1a19;
-  --surface-raised: #222220;
-  --foreground: #f0efec;
-  --muted-foreground: #c3c2b7;
-  --subtle-foreground: #9a9890;
-  --border: rgb(255 255 255 / 0.1);
-  --border-strong: #383835;
-  --gridline: #2c2c2a;
-  --primary: #f0efec;
-  --primary-foreground: #1a1a19;
-  --ring: #3987e5;
+  --background: #09152c;
+  --surface: #101f3b;
+  --surface-raised: #142543;
+  --foreground: #f5f7fb;
+  --muted-foreground: #bfcbdf;
+  --subtle-foreground: #99a9c3;
+  --border: rgb(255 255 255 / 0.12);
+  --border-strong: #3a4e74;
+  --gridline: #1d2e4f;
+  --primary: #86a7ff;
+  --primary-hover: #a9c2ff;
+  --primary-foreground: #09152c;
+  --ring: #86a7ff;
 
   --severity-critical: #d32f2f;
+  --critical-text: #f87171;
   --severity-high: #fb9b4f;
   --severity-medium: #ffe07a;
   --severity-low: #3987e5;
   --severity-ok: #0e9f8e;
+}
+
+[data-theme='dark'] {
+  --brand: #071126;
+}
+
+.brand-surface {
+  background-color: var(--brand);
+  color: var(--foreground);
 }
 
 @theme inline {
@@ -68,22 +103,30 @@
   --color-border-strong: var(--border-strong);
   --color-gridline: var(--gridline);
   --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
   --color-primary-foreground: var(--primary-foreground);
   --color-ring: var(--ring);
+  --color-brand: var(--brand);
 
   --color-critical: var(--severity-critical);
+  --color-critical-text: var(--critical-text);
   --color-high: var(--severity-high);
   --color-medium: var(--severity-medium);
   --color-low: var(--severity-low);
   --color-ok: var(--severity-ok);
 
-  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* O raio dos painéis grandes do site (--radius). Com moderação: tabelas, selos e campos ficam como estão. */
+  --radius-panel: 20px;
+
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, monospace;
 }
 
 @layer base {
+  /* Borda e foco leem os tokens direto (e não os `--color-*`, resolvidos uma vez na raiz): assim valem também
+     dentro da faixa da marca, que troca os tokens só no trecho dela. */
   * {
-    border-color: var(--color-border);
+    border-color: var(--border);
   }
 
   html {
@@ -94,7 +137,7 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--color-ring);
+    outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
 
