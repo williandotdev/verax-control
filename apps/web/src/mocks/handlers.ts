@@ -1,6 +1,7 @@
 import { type Me, type Role, ROLES } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
+import { createAdminHandlers, demoAdminStore } from './admin';
 import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
@@ -40,6 +41,7 @@ function defaultMe(): Me {
 export function createHandlers(state: MockState = { me: defaultMe() }) {
   // Achados, incidentes e Torre compartilham o mesmo estado: a triagem aparece em todas as telas.
   const findings = demoFindings();
+  const admin = demoAdminStore();
   const incidents = initialIncidents();
   const towerCounts = (tenantId: string) => {
     const open = incidentSummaries(tenantId, findings, incidents).filter(
@@ -60,6 +62,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
   };
   return [
     ...createAuthHandlers(state),
+    ...createAdminHandlers(state, admin),
     ...createFindingHandlers(state, findings),
     ...createIncidentHandlers(state, findings, incidents),
     ...createPostureHandlers(state),
@@ -86,11 +89,6 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
         }),
       );
     }),
-    http.get(url('/v1/tenants'), () => {
-      if (state.me?.role !== 'admin_verax')
-        return HttpResponse.json({ statusCode: 403, message: 'Sem permissão' }, { status: 403 });
-      return HttpResponse.json({ items: DEMO_TENANTS, page: 1, pageSize: 100, total: DEMO_TENANTS.length });
-    }),
     http.post(url('/v1/session/tenant'), async ({ request }) => {
       if (!state.me || state.me.role !== 'admin_verax')
         return HttpResponse.json({ statusCode: 403, message: 'Sem permissão' }, { status: 403 });
@@ -98,7 +96,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
         return HttpResponse.json({ statusCode: 403, code: 'CSRF_INVALID', message: 'CSRF' }, { status: 403 });
       }
       const body = (await request.json()) as { tenantId?: string };
-      const tenant = DEMO_TENANTS.find(
+      const tenant = admin.tenants.find(
         (candidate) => candidate.id === body.tenantId && candidate.status === 'active',
       );
       if (!tenant)

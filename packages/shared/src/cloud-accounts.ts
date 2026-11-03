@@ -3,6 +3,8 @@ import { withPagination } from './pagination.js';
 
 export const CLOUD_PROVIDERS = ['aws'] as const;
 export const CLOUD_ACCOUNT_STATUSES = ['active', 'inactive'] as const;
+export const CLOUD_ACCOUNT_CONNECTIONS = ['ok', 'error', 'pending'] as const;
+export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
 /** Fontes de log que o Wazuh lê de buckets S3 da conta do cliente (T4.4 a T4.6). */
 export const LOG_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
 export type LogSource = (typeof LOG_SOURCES)[number];
@@ -89,6 +91,13 @@ export const cloudAccountSchema = z.strictObject({
     waf: z.string().nullable(),
   }),
   status: z.enum(CLOUD_ACCOUNT_STATUSES),
+  /**
+   * Situação da conexão (T7.3): `ok` quando o papel de leitura foi assumido na última tentativa, `error` quando
+   * falhou, `pending` antes da primeira. Opcional até a persistência do E5 gravar.
+   */
+  connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS).optional(),
+  /** Horário do último alerta recebido desta conta (T5.3); null se nunca chegou nada. */
+  lastEventAt: z.iso.datetime().nullable().optional(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

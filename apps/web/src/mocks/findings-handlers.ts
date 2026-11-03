@@ -1,8 +1,4 @@
 import {
-  alertExceptionCreateSchema,
-  alertExceptionSchema,
-  type CloudAccount,
-  cloudAccountSchema,
   type Finding,
   type FindingDetail,
   findingCommentCreateSchema,
@@ -10,11 +6,9 @@ import {
   findingListQuerySchema,
   findingStatusUpdateSchema,
   type Permission,
-  readOnlyRoleArn,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
-import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import type { MockState } from './handlers';
 
@@ -27,34 +21,6 @@ const problem = (status: number, message: string, code?: string) =>
 let sequence = 0;
 const newId = (): string =>
   `018f2c1e-0000-7000-8000-${(0xf00000 + (sequence += 1)).toString(16).padStart(12, '0')}`;
-
-/** Contas AWS fictícias de cada cliente (o filtro dos achados e, na T7.3, a tela de contas). */
-export function demoCloudAccounts(now: Date = new Date()): Map<string, CloudAccount[]> {
-  const [alfa, beta] = DEMO_TENANTS.map((tenant) => tenant.id);
-  const account = (index: number, accountId: string, regions: string[]): CloudAccount =>
-    cloudAccountSchema.parse({
-      id: `018f2c1e-0000-7000-8000-0000000c${index.toString(16).padStart(4, '0')}`,
-      provider: 'aws',
-      accountId,
-      regions,
-      roleArn: readOnlyRoleArn(accountId),
-      externalId: null,
-      buckets: { cloudtrail: null, guardduty: null, waf: null },
-      status: 'active',
-      createdAt: new Date(now.getTime() - 40 * 86_400_000).toISOString(),
-      updatedAt: new Date(now.getTime() - 10 * 86_400_000).toISOString(),
-    });
-  return new Map([
-    [
-      alfa ?? '',
-      [
-        account(1, DEMO_ACCOUNTS.alfaProducao, ['sa-east-1', 'us-east-1']),
-        account(2, DEMO_ACCOUNTS.alfaHomologacao, ['sa-east-1']),
-      ],
-    ],
-    [beta ?? '', [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'])]],
-  ]);
-}
 
 function summary(detail: FindingDetail): Finding {
   const {
@@ -69,23 +35,18 @@ function summary(detail: FindingDetail): Finding {
 }
 
 /**
- * Achados, contas e exceções do modo mock, com o mesmo contrato da API: filtros e paginação na lista, escopo do
+ * Achados do modo mock, com o mesmo contrato da API: filtros e paginação na lista, escopo do
  * cliente da sessão, permissão e CSRF nas escritas. O estado fica em memória, então a demonstração é interativa.
  */
 export function createFindingHandlers(
   state: MockState,
   store: Map<string, FindingDetail[]> = demoFindings(),
-  accounts: Map<string, CloudAccount[]> = demoCloudAccounts(),
 ) {
   const scoped = () => {
     if (!state.me) return { error: problem(401, 'Não autenticado') } as const;
     const tenantId = state.me.scopeTenantId;
     if (!tenantId) return { error: problem(400, 'Escolha um cliente', 'TENANT_REQUIRED') } as const;
-    return {
-      me: state.me,
-      findings: store.get(tenantId) ?? [],
-      accounts: accounts.get(tenantId) ?? [],
-    } as const;
+    return { me: state.me, findings: store.get(tenantId) ?? [] } as const;
   };
   const writeDenied = (request: Request, permission: Permission) => {
     if (!state.me?.permissions.includes(permission)) return problem(403, 'Sem permissão');
@@ -94,17 +55,6 @@ export function createFindingHandlers(
   };
 
   return [
-    http.get(url('/v1/cloud-accounts'), () => {
-      const scope = scoped();
-      if ('error' in scope) return scope.error;
-      return HttpResponse.json({
-        items: scope.accounts,
-        page: 1,
-        pageSize: 100,
-        total: scope.accounts.length,
-      });
-    }),
-
     http.get(url('/v1/findings'), ({ request }) => {
       const scope = scoped();
       if ('error' in scope) return scope.error;
@@ -177,30 +127,6 @@ export function createFindingHandlers(
       finding.comments.push(comment);
       finding.commentCount = finding.comments.length;
       return HttpResponse.json(comment, { status: 201 });
-    }),
-
-    http.post(url('/v1/alert-exceptions'), async ({ request }) => {
-      const scope = scoped();
-      if ('error' in scope) return scope.error;
-      const denied = writeDenied(request, 'alert_exceptions:write');
-      if (denied) return denied;
-      const body = alertExceptionCreateSchema.safeParse(await request.json());
-      if (!body.success) return problem(400, 'Dados inválidos');
-      const now = new Date().toISOString();
-      return HttpResponse.json(
-        alertExceptionSchema.parse({
-          id: newId(),
-          ...body.data,
-          expiresAt: body.data.expiresAt ?? null,
-          active: true,
-          matchedCount: 0,
-          lastMatchedAt: null,
-          createdBy: { id: scope.me.userId, name: scope.me.email },
-          createdAt: now,
-          updatedAt: now,
-        }),
-        { status: 201 },
-      );
     }),
   ];
 }

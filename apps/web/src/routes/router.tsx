@@ -2,6 +2,11 @@ import { type ComponentType, createElement } from 'react';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
+import { CloudAccountsPage } from '@/pages/admin/cloud-accounts-page';
+import { ExceptionsPage } from '@/pages/admin/exceptions-page';
+import { ProtectedResourcesPage } from '@/pages/admin/protected-resources-page';
+import { TenantsPage } from '@/pages/admin/tenants-page';
+import { UsersPage } from '@/pages/admin/users-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
@@ -38,6 +43,11 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/incidentes': IncidentsPage,
   '/postura': PosturePage,
   '/ativos': AssetsPage,
+  '/cadastros/clientes': TenantsPage,
+  '/cadastros/usuarios': UsersPage,
+  '/cadastros/contas': CloudAccountsPage,
+  '/cadastros/protecao': ProtectedResourcesPage,
+  '/cadastros/excecoes': ExceptionsPage,
 };
 
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */

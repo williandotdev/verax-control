@@ -1238,3 +1238,44 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   Conferido visualmente no desktop e no celular.
 
 - **Definição de pronto:** critérios de aceite ✔ (abas para usuários IAM, chaves, instâncias, buckets e security groups; destaque para chave antiga, bucket público e porta aberta) · testes ✔ · lint ✔ · dependências ✔
+
+## T7.1 a T7.5 Cadastros (clientes, usuários, contas cloud, lista de proteção e exceções)
+
+- **Arquivos:** `apps/web/src/pages/admin/*` (+ teste), `apps/web/src/features/admin/*`, `apps/web/src/mocks/{admin,handlers,findings-handlers}.ts`, `apps/web/src/layout/navigation.ts` (+ teste), `apps/web/src/routes/router.tsx`, `packages/shared/src/cloud-accounts.ts` (+ teste)
+- **Dependências:** nenhuma. O `react-hook-form` está na lista aprovada, mas os formulários seguem o padrão das telas de autenticação (estado simples e validação pelos schemas compartilhados).
+- **Como funciona:** as cinco telas usam os endpoints que a API já tem (E3), então também funcionam fora da demonstração.
+  - **Clientes (T7.1, só admin_verax):** listar, cadastrar, editar e desativar ou reativar. A lista vem do resumo e o painel carrega o cadastro completo, como na API.
+  - **Usuários (T7.2):**
+    - convidar (link de uso único por e-mail), trocar o papel, desativar ou reativar o acesso e reenviar o convite pendente;
+    - ninguém altera o próprio acesso;
+    - a lista mostra se o MFA já foi cadastrado.
+  - **Contas cloud (T7.3):**
+    - o cadastro gera o ExternalId, mostrado com botão de copiar e com os links do template e do passo a passo do conector (repositório público);
+    - a lista mostra a conexão ("Conectada", "Falha ao assumir o papel", "Aguardando o conector") e o último evento;
+    - esses dois campos entraram como opcionais no contrato, porque o banco ainda não os tem: chegam com a persistência do E5. Sem eles, a tela mostra "aguardando o conector";
+    - o ExternalId só aparece para quem configura o conector.
+  - **Lista de proteção (T7.4):** incluir com motivo obrigatório (o identificador é conferido pelo formato do tipo), editar o motivo e remover com confirmação em dois passos, sem janela do navegador.
+  - **Exceções (T7.5):**
+    - criar (regra, campo, valor, motivo e validade de até um ano), editar motivo e validade, e remover;
+    - a lista mostra quantos achados cada uma já marcou, o último, e a validade, com a vencida em destaque.
+  - **Formulários:** a validação usa os mesmos schemas da API, com as mensagens em português. O erro de cada campo fica ligado a ele por `aria-describedby`, e os erros da API são anunciados.
+  - **Menu:** Contas cloud, Lista de proteção e Exceções entraram em Administração. Pela matriz de permissões, a leitura é liberada para todos; a escrita, conforme o papel.
+  - **Demonstração:** um só estado de cadastros, compartilhado com as outras telas:
+    - a exceção criada ao marcar um achado como legítimo aparece em Exceções;
+    - as contas viram o filtro dos achados;
+    - a troca de cliente da sessão consulta o mesmo cadastro.
+- **Testes:** 10 nas telas:
+  - cadastro de cliente com validação;
+  - edição e desativação;
+  - convite com validação;
+  - papel, acesso e reenvio do convite;
+  - conta com ExternalId e conector;
+  - conta repetida recusada;
+  - lista de proteção com identificador inválido, inclusão e remoção;
+  - exceções com contagem, criação, validação de IP e edição;
+  - exceção vinda de um achado;
+  - papel de leitura sem os botões.
+
+  Também 1 no contrato e as expectativas do menu por papel. Os testes de formulário têm 15 s de prazo, porque são preenchidos letra por letra e a suíte inteira roda em paralelo. Conferido visualmente.
+
+- **Definição de pronto:** critérios de aceite ✔ (T7.1 a T7.5) · testes ✔ · lint ✔ · dependências ✔
