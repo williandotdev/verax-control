@@ -87,8 +87,32 @@ test.describe('revisão de UX (modo mock)', () => {
     const overflowing: string[] = [];
     for (const [path, heading] of PAGES) {
       await open(page, path, heading);
-      const extra = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      if (extra > 1) overflowing.push(`${path}: ${extra}px`);
+      // A falha diz qual elemento passa da tela (fora dos quadros que rolam por dentro): as fontes do Linux do CI
+      // são mais largas que as de outras máquinas, e só o nome do elemento permite corrigir sem adivinhar.
+      const problem = await page.evaluate(() => {
+        const extra = document.documentElement.scrollWidth - window.innerWidth;
+        if (extra <= 1) return null;
+        const scrollsInside = (element: Element) => {
+          for (
+            let parent = element.parentElement;
+            parent && parent !== document.body;
+            parent = parent.parentElement
+          ) {
+            if (['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(parent).overflowX))
+              return true;
+          }
+          return false;
+        };
+        const culprits = Array.from(document.body.querySelectorAll('*'))
+          .filter((element) => element.getBoundingClientRect().right > window.innerWidth + 1)
+          .filter((element) => !scrollsInside(element))
+          .slice(-3)
+          .map(
+            (element) => `<${element.tagName.toLowerCase()} class="${element.getAttribute('class') ?? ''}">`,
+          );
+        return `${extra}px (${culprits.join(', ')})`;
+      });
+      if (problem) overflowing.push(`${path}: ${problem}`);
     }
     expect(overflowing).toEqual([]);
   });
