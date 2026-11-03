@@ -59,20 +59,21 @@ test.describe('revisão de UX (modo mock)', () => {
     });
   }
 
-  test('painéis de detalhe sem violação de acessibilidade', async ({ page }) => {
-    // Aberto pela URL: com o painel modal, o resto da página fica fora da árvore de acessibilidade.
-    await page.goto(`/achados?achado=${FINDING}`);
-    await expect(
-      page.getByRole('dialog', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
-    ).toBeVisible();
-    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-    expect(await violations(page)).toEqual([]);
+  // Um teste por painel: cada análise de acessibilidade leva alguns segundos, e juntos passavam do tempo de um teste.
+  // Abertos pela URL: com o painel modal, o resto da página fica fora da árvore de acessibilidade.
+  for (const [path, dialog] of [
+    [`/achados?achado=${FINDING}`, 'Tentativa de desligar a trilha do CloudTrail'],
+    [`/auditoria?registro=${AUDIT_ENTRY}`, 'Comentou achado'],
+  ] as const) {
+    test(`painel de detalhe ${path}: sem violação de acessibilidade`, async ({ page }) => {
+      await page.goto(path);
+      await expect(page.getByRole('dialog', { name: dialog })).toBeVisible();
+      await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+      expect(await violations(page)).toEqual([]);
+    });
+  }
 
-    await page.goto(`/auditoria?registro=${AUDIT_ENTRY}`);
-    await expect(page.getByRole('dialog', { name: 'Comentou achado' })).toBeVisible();
-    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-    expect(await violations(page)).toEqual([]);
-
+  test('painel de detalhe da postura: sem violação de acessibilidade', async ({ page }) => {
     await open(page, '/postura?severidade=critical', 'Postura cloud');
     await page.getByRole('button', { name: /Usuário root sem MFA/ }).click();
     await expect(page.getByRole('dialog')).toBeVisible();
@@ -94,6 +95,8 @@ test.describe('revisão de UX (modo mock)', () => {
   });
 
   test('celular: nenhuma tela rola na horizontal', async ({ page }) => {
+    // Percorre todas as telas num teste só: o tempo cresce com a lista (cerca de 2 s por tela).
+    test.setTimeout(PAGES.length * 5_000);
     await page.setViewportSize({ width: 360, height: 800 });
     const overflowing: string[] = [];
     for (const [path, heading] of PAGES) {

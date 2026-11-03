@@ -24,14 +24,39 @@ function hostingConfig(apiUrl: string): Plugin {
   };
 }
 
+/**
+ * Fora do modo `mock`, `virtual:msw` não existe, mas o `src/mocks/enable.ts` o importa (só carregado no modo `mock`).
+ * Sem resolver o nome, a varredura de dependências do servidor de desenvolvimento falha, o Vite pula a otimização e
+ * recarrega a página quando descobre as dependências no meio do uso (o que derrubava os testes de navegador). O módulo
+ * vazio só existe no servidor de desenvolvimento: no build, o ramo do modo `mock` é removido antes de chegar aqui.
+ */
+function mswOutsideMockMode(): Plugin {
+  const id = '\0verax-msw-desligado';
+  return {
+    name: 'verax-msw-desligado',
+    apply: 'serve',
+    resolveId: (source) => (source === 'virtual:msw' ? id : null),
+    load: (loaded) => (loaded === id ? 'export {};' : null),
+  };
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
   assertOnlyAllowedPublicEnv({ ...env, ...process.env });
   const apiUrl = env['VITE_API_URL'] ?? 'http://localhost:3000';
 
   return {
+    // Cache de dependências por modo. O e2e sobe o servidor normal e o de demonstração ao mesmo tempo, e o modo mock
+    // tem dependências a mais (o MSW): com uma pasta só, um servidor invalidava o cache do outro, o otimizador rodava
+    // de novo e a página recarregava no meio do teste (visto no trace: dois hashes de dependência na mesma carga).
+    cacheDir: mode === 'mock' ? 'node_modules/.vite-mock' : 'node_modules/.vite',
     // O Mock Service Worker só existe no modo `dev:mock`; nos outros modos o plugin nem é carregado.
-    plugins: [react(), tailwindcss(), hostingConfig(apiUrl), ...(mode === 'mock' ? [msw()] : [])],
+    plugins: [
+      react(),
+      tailwindcss(),
+      hostingConfig(apiUrl),
+      ...(mode === 'mock' ? [msw()] : [mswOutsideMockMode()]),
+    ],
     resolve: {
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -41,6 +66,14 @@ export default defineConfig(({ mode }) => {
     build: {
       // Sem sourcemap público: o código-fonte não fica exposto no CDN.
       sourcemap: false,
+    },
+    // `msw/browser` só é importado de dentro do módulo virtual do plugin do MSW, que a varredura de dependências não
+    // enxerga: sem esta linha, o Vite o descobria na primeira página aberta, otimizava de novo e recarregava a página.
+    ...(mode === 'mock' && { optimizeDeps: { include: ['msw/browser'] } }),
+    server: {
+      // Transforma o app (a entrada e tudo o que ela importa) assim que o servidor de desenvolvimento sobe, em vez de
+      // esperar o primeiro navegador pedir: os testes de navegador abrem 6 páginas ao mesmo tempo logo no início.
+      warmup: { clientFiles: ['./src/main.tsx'] },
     },
     preview: {
       headers: securityHeaders(apiUrl),
