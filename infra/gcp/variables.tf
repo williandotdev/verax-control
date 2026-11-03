@@ -88,10 +88,10 @@ variable "monthly_budget" {
   default     = 50
 }
 
-variable "github_repository" {
-  description = "Repositório do GitHub que publica as imagens do nó (dono/nome)."
+variable "github_oidc_repository" {
+  description = "Repositório do GitHub que publica as imagens do nó, como aparece no `sub` do token OIDC do GitHub: dono e repositório com os IDs fixos (dono@id/repo@id). Os IDs não mudam se o repositório for renomeado, e um repositório recriado com o mesmo nome não herda o acesso."
   type        = string
-  default     = "williandotdev/verax-control"
+  default     = "williandotdev@92734416/verax-control@1441377752"
 }
 
 variable "github_wif_pool" {
