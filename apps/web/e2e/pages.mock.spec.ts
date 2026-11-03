@@ -83,7 +83,7 @@ test.describe('revisão de UX (modo mock)', () => {
   });
 
   test('celular: nenhuma tela rola na horizontal', async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
+    await page.setViewportSize({ width: 360, height: 800 });
     const overflowing: string[] = [];
     for (const [path, heading] of PAGES) {
       await open(page, path, heading);

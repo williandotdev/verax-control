@@ -19,7 +19,8 @@ export interface TimelineEvent {
 /** Linha do tempo de um incidente ou recurso, na ordem recebida (o chamador ordena). */
 export function Timeline({ events, className }: { events: TimelineEvent[]; className?: string }) {
   return (
-    <ol className={cn('relative space-y-4 border-l border-border-strong pl-5', className)}>
+    // wrap-anywhere: tipos do GuardDuty e ARNs são tokens longos sem espaço e, no celular, alargariam a página.
+    <ol className={cn('relative space-y-4 border-l border-border-strong pl-5 wrap-anywhere', className)}>
       {events.map((event) => {
         const style = event.severity ? SEVERITY_STYLES[event.severity] : undefined;
         const Icon = style?.icon;
