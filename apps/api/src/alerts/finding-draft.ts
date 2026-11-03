@@ -1,3 +1,4 @@
+import type { FindingSeverity } from '@verax/shared';
 import type { AlertOwner } from './alert-owner.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
@@ -6,8 +7,8 @@ import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
  * A gravação usa `(source, sourceEventId)` como chave única, então ler o mesmo alerta de novo não duplica.
  */
 
-export const FINDING_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
-export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
+// Severidades do contrato compartilhado com o painel.
+export { FINDING_SEVERITIES, type FindingSeverity } from '@verax/shared';
 
 export interface FindingDraft {
   tenantId: string;

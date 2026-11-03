@@ -1,3 +1,4 @@
+import { type ComponentType, createElement } from 'react';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
@@ -9,6 +10,7 @@ import { MfaVerifyPage } from '@/pages/mfa-verify-page';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
+import { TowerPage } from '@/pages/tower-page';
 import { RequirePermission, RequireSession } from './guards';
 
 /** Catálogo do design system: só no build de desenvolvimento (o Vite remove este ramo do build final). */
@@ -24,11 +26,17 @@ const devRoutes: RouteObject[] = import.meta.env.DEV
     ]
   : [];
 
+/** Telas do E7 já construídas, por caminho do menu; as demais mostram o aviso de construção. */
+const pageByPath: Partial<Record<string, ComponentType>> = {
+  '/': TowerPage,
+};
+
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */
 const appPages: RouteObject[] = NAVIGATION.flatMap((group) => group.items).map((item) => {
+  const page = pageByPath[item.to];
   const element = (
     <RequirePermission permission={item.permission}>
-      <PlaceholderPage title={item.label} />
+      {page ? createElement(page) : <PlaceholderPage title={item.label} />}
     </RequirePermission>
   );
   return item.to === '/' ? { index: true, element } : { path: item.to.slice(1), element };

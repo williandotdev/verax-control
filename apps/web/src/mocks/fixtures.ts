@@ -5,6 +5,8 @@ import {
   type Role,
   type TenantSummary,
   tenantSummarySchema,
+  type TowerSummary,
+  towerSummarySchema,
 } from '@verax/shared';
 
 /**
@@ -32,5 +34,57 @@ export function demoMe(role: Role, overrides: Partial<Me> = {}): Me {
     mfaEnabled: true,
     permissions: permissionsOf(role),
     ...overrides,
+  });
+}
+
+/** Contas AWS fictícias (os IDs de exemplo da documentação da AWS). */
+export const DEMO_ACCOUNTS = {
+  alfaProducao: '111122223333',
+  alfaHomologacao: '444455556666',
+  beta: '777788889999',
+} as const;
+
+const minutesAgo = (now: Date, minutes: number): string =>
+  new Date(now.getTime() - minutes * 60_000).toISOString();
+
+/**
+ * Torre de cada cliente fictício. A Alfa tem o que mostrar numa apresentação (incidente crítico, decisões
+ * pendentes, postura baixa e uma conta silenciosa); a Beta está tranquila, para comparar.
+ */
+export function demoTower(tenantId: string, options: { includeUnowned: boolean; now?: Date }): TowerSummary {
+  const now = options.now ?? new Date();
+  if (tenantId !== ALFA) {
+    return towerSummarySchema.parse({
+      light: 'green',
+      reasons: [],
+      pendingDecisions: options.includeUnowned ? [{ kind: 'unowned_alert', count: 3 }] : [],
+      openIncidents: { critical: 0, high: 0, medium: 1, low: 2 },
+      posture: { score: 91, scannedAt: minutesAgo(now, 7 * 60), warningBelow: 70 },
+      coverage: {
+        connectedAccounts: 1,
+        lastEventAt: minutesAgo(now, 1),
+        silentAccounts: [],
+        silentAfterHours: 24,
+      },
+      generatedAt: now.toISOString(),
+    });
+  }
+  return towerSummarySchema.parse({
+    light: 'red',
+    reasons: ['critical_incident', 'high_incident', 'low_posture'],
+    pendingDecisions: [
+      { kind: 'unassigned_incident', count: 2 },
+      { kind: 'untriaged_finding', count: 5 },
+      ...(options.includeUnowned ? [{ kind: 'unowned_alert', count: 3 }] : []),
+    ],
+    openIncidents: { critical: 1, high: 2, medium: 3, low: 1 },
+    posture: { score: 64, scannedAt: minutesAgo(now, 6 * 60), warningBelow: 70 },
+    coverage: {
+      connectedAccounts: 2,
+      lastEventAt: minutesAgo(now, 3),
+      silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao],
+      silentAfterHours: 24,
+    },
+    generatedAt: now.toISOString(),
   });
 }
