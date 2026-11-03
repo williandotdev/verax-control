@@ -1,0 +1,121 @@
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  type AlertExceptionCreate,
+  alertExceptionSchema,
+  type AlertExceptionUpdate,
+  type CloudAccountCreate,
+  cloudAccountSchema,
+  type CloudAccountUpdate,
+  paginatedSchema,
+  type ProtectedResourceCreate,
+  protectedResourceSchema,
+  type ProtectedResourceUpdate,
+  type TenantCreate,
+  tenantSchema,
+  tenantSummarySchema,
+  type TenantUpdate,
+  type UserInvite,
+  userSchema,
+  type UserUpdate,
+} from '@verax/shared';
+import type { z } from 'zod';
+import { api } from '@/lib/api';
+
+/**
+ * Cadastros (E3) para as telas da T7.1 à T7.5. Cada lista tem a sua chave de cache; as escritas a invalidam, e a
+ * troca de cliente da sessão já descarta o cache inteiro.
+ */
+
+const PAGE_SIZE = 20;
+
+function useList<T>(key: string, path: string, schema: z.ZodType<T>, page: number, enabled: boolean) {
+  const list = paginatedSchema(schema);
+  return useQuery({
+    queryKey: [key, page],
+    queryFn: () => api.get(`${path}?page=${page}&pageSize=${PAGE_SIZE}`, list),
+    enabled,
+    placeholderData: keepPreviousData,
+  });
+}
+
+function useWrite<TInput, TOutput>(keys: string[], write: (input: TInput) => Promise<TOutput>) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: write,
+    onSuccess: () => {
+      for (const key of keys) void queryClient.invalidateQueries({ queryKey: [key] });
+    },
+  });
+}
+
+export const ADMIN_PAGE_SIZE = PAGE_SIZE;
+
+// --- Clientes (T3.1, só admin_verax) ---
+export const useTenantList = (page: number, enabled: boolean) =>
+  useList('admin-tenants', '/v1/tenants', tenantSummarySchema, page, enabled);
+export const useTenant = (id: string | null) =>
+  useQuery({
+    queryKey: ['admin-tenant', id],
+    queryFn: () => api.get(`/v1/tenants/${encodeURIComponent(id ?? '')}`, tenantSchema),
+    enabled: id !== null,
+  });
+export const useCreateTenant = () =>
+  useWrite(['admin-tenants', 'tenants'], (input: TenantCreate) =>
+    api.post('/v1/tenants', input, tenantSchema),
+  );
+export const useUpdateTenant = (id: string) =>
+  useWrite(['admin-tenants', 'admin-tenant', 'tenants'], (input: TenantUpdate) =>
+    api.patch(`/v1/tenants/${encodeURIComponent(id)}`, input, tenantSchema),
+  );
+
+// --- Usuários do cliente (T3.2) ---
+export const useUserList = (page: number, enabled: boolean) =>
+  useList('admin-users', '/v1/users', userSchema, page, enabled);
+export const useInviteUser = () =>
+  useWrite(['admin-users'], (input: UserInvite) => api.post('/v1/users', input, userSchema));
+export const useUpdateUser = (id: string) =>
+  useWrite(['admin-users'], (input: UserUpdate) =>
+    api.patch(`/v1/users/${encodeURIComponent(id)}`, input, userSchema),
+  );
+export const useResendInvite = (id: string) =>
+  useWrite(['admin-users'], () => api.post(`/v1/users/${encodeURIComponent(id)}/invitation`));
+
+// --- Contas cloud (T3.3) ---
+export const useCloudAccountList = (page: number, enabled: boolean) =>
+  useList('admin-cloud-accounts', '/v1/cloud-accounts', cloudAccountSchema, page, enabled);
+export const useCreateCloudAccount = () =>
+  useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountCreate) =>
+    api.post('/v1/cloud-accounts', input, cloudAccountSchema),
+  );
+export const useUpdateCloudAccount = (id: string) =>
+  useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountUpdate) =>
+    api.patch(`/v1/cloud-accounts/${encodeURIComponent(id)}`, input, cloudAccountSchema),
+  );
+
+// --- Lista de proteção (T3.4) ---
+export const useProtectedList = (page: number, enabled: boolean) =>
+  useList('admin-protected', '/v1/protected-resources', protectedResourceSchema, page, enabled);
+export const useCreateProtected = () =>
+  useWrite(['admin-protected'], (input: ProtectedResourceCreate) =>
+    api.post('/v1/protected-resources', input, protectedResourceSchema),
+  );
+export const useUpdateProtected = (id: string) =>
+  useWrite(['admin-protected'], (input: ProtectedResourceUpdate) =>
+    api.patch(`/v1/protected-resources/${encodeURIComponent(id)}`, input, protectedResourceSchema),
+  );
+export const useDeleteProtected = (id: string) =>
+  useWrite(['admin-protected'], () => api.delete(`/v1/protected-resources/${encodeURIComponent(id)}`));
+
+// --- Exceções (T3.5) ---
+export const useExceptionList = (page: number, enabled: boolean) =>
+  useList('admin-exceptions', '/v1/alert-exceptions', alertExceptionSchema, page, enabled);
+export const useCreateException = () =>
+  useWrite(['admin-exceptions'], (input: AlertExceptionCreate) =>
+    api.post('/v1/alert-exceptions', input, alertExceptionSchema),
+  );
+export const useUpdateException = (id: string) =>
+  useWrite(['admin-exceptions'], (input: AlertExceptionUpdate) =>
+    api.patch(`/v1/alert-exceptions/${encodeURIComponent(id)}`, input, alertExceptionSchema),
+  );
+export const useDeleteException = (id: string) =>
+  useWrite(['admin-exceptions'], () => api.delete(`/v1/alert-exceptions/${encodeURIComponent(id)}`));
