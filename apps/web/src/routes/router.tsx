@@ -11,6 +11,7 @@ import { LoginPage } from '@/pages/login-page';
 import { MfaEnrollPage } from '@/pages/mfa-enroll-page';
 import { MfaVerifyPage } from '@/pages/mfa-verify-page';
 import { NotFoundPage } from '@/pages/not-found-page';
+import { PosturePage } from '@/pages/posture-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
 import { TowerPage } from '@/pages/tower-page';
@@ -34,6 +35,7 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/': TowerPage,
   '/achados': FindingsPage,
   '/incidentes': IncidentsPage,
+  '/postura': PosturePage,
 };
 
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */
