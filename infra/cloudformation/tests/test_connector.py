@@ -1,10 +1,12 @@
-"""Testes de segurança do template do conector (T4.3).
+"""Testes de segurança do template do conector.
 
 Leem o template com o parser do cfn-lint (mesmo venv do CI, sem dependência nova) e conferem as propriedades que o
-cliente aceita ao rodar o stack: quem pode assumir o papel, que o papel só lê, e que todo destino de log é privado,
-cifrado, versionado, só TLS e preservado se o stack for apagado.
+cliente aceita ao rodar o stack: o conector só cria o papel; só o papel do nó, com o ExternalId, pode assumi-lo; o
+papel só lê, e só os logs que o cliente escolheu; e as ações que apagariam, desligariam ou desviariam logs ficam
+negadas explicitamente.
 """
 
+import fnmatch
 import pathlib
 import re
 import unittest
@@ -13,7 +15,7 @@ from cfnlint.decode import cfn_yaml
 
 TEMPLATE = pathlib.Path(__file__).resolve().parents[1] / "verax-control-connector.yaml"
 
-# Verbos de leitura aceitos nas políticas do papel. Qualquer outro verbo faz o teste falhar.
+# Verbos de leitura aceitos nas permissões do papel. Qualquer outro verbo faz o teste falhar.
 READ_ACTION = re.compile(r"^[a-z0-9-]+:(Get|List|Describe|BatchGet|Search|GET)[A-Za-z0-9*]*$")
 # Ações da política extra do Prowler que ficaram de fora de propósito (README).
 EXCLUDED_ACTIONS = {
@@ -22,12 +24,92 @@ EXCLUDED_ACTIONS = {
     "ecr:GetDownloadUrlForLayer",
     "logs:FilterLogEvents",
 }
-LOGS_KEY_ARN = {"Fn::GetAtt": ["LogsKey", "Arn"]}
-ACCOUNT_ID = {"Ref": "AWS::AccountId"}
+# Chamadas que o coletor da AWS do Wazuh 4.14 faz (wodles/aws: cloudwatchlogs, inspector e buckets S3).
+WAZUH_CALLS = {
+    "logs:DescribeLogStreams",
+    "logs:GetLogEvents",
+    "inspector2:ListFindings",
+    "s3:ListBucket",
+    "s3:GetObject",
+}
+# Ações que apagariam, desligariam ou desviariam logs, ou ampliariam o acesso do papel. Todas precisam estar negadas.
+MUST_DENY = {
+    "logs:DeleteLogGroup",
+    "logs:DeleteLogStream",
+    "logs:DeleteRetentionPolicy",
+    "logs:PutRetentionPolicy",
+    "logs:PutSubscriptionFilter",
+    "logs:DeleteSubscriptionFilter",
+    "logs:CreateExportTask",
+    "logs:PutDataProtectionPolicy",
+    "logs:Unmask",
+    "s3:DeleteObject",
+    "s3:DeleteObjectVersion",
+    "s3:PutObject",
+    "s3:PutLifecycleConfiguration",
+    "s3:PutBucketPolicy",
+    "s3:DeleteBucket",
+    "s3:PutReplicationConfiguration",
+    "cloudtrail:StopLogging",
+    "cloudtrail:DeleteTrail",
+    "cloudtrail:UpdateTrail",
+    "cloudtrail:PutEventSelectors",
+    "wafv2:PutLoggingConfiguration",
+    "wafv2:DeleteLoggingConfiguration",
+    "guardduty:DeletePublishingDestination",
+    "guardduty:UpdatePublishingDestination",
+    "guardduty:ArchiveFindings",
+    "guardduty:DeleteDetector",
+    "securityhub:BatchUpdateFindings",
+    "securityhub:DisableSecurityHub",
+    "inspector2:Disable",
+    "kms:ScheduleKeyDeletion",
+    "kms:DisableKey",
+    "kms:PutKeyPolicy",
+    "iam:PassRole",
+    "iam:AttachRolePolicy",
+    "iam:PutRolePolicy",
+    "iam:UpdateAssumeRolePolicy",
+    "sts:AssumeRole",
+}
 
 
 def as_list(value):
     return value if isinstance(value, list) else [value]
+
+
+def matches(action, patterns):
+    # Ações do IAM não diferenciam maiúsculas de minúsculas.
+    return any(fnmatch.fnmatchcase(action.lower(), pattern.lower()) for pattern in patterns)
+
+
+def statements(policy):
+    """Declarações da política, com as condicionais (Fn::If) no ramo em que existem."""
+    for item in policy["PolicyDocument"]["Statement"]:
+        if "Fn::If" in item:
+            _, when_true, when_false = item["Fn::If"]
+            assert when_false == {"Ref": "AWS::NoValue"}, "o ramo falso de uma declaração deve ser NoValue"
+            yield when_true
+        else:
+            yield item
+
+
+def evaluate(expression, parameters):
+    """Avalia Ref, Fn::Join e Fn::Split como o CloudFormation, para conferir os ARNs derivados das listas."""
+    if isinstance(expression, str):
+        return expression
+    if isinstance(expression, list):
+        return [evaluate(item, parameters) for item in expression]
+    (function, argument), = expression.items()
+    if function == "Ref":
+        return parameters[argument]
+    if function == "Fn::Join":
+        delimiter, values = argument
+        return delimiter.join(evaluate(values, parameters))
+    if function == "Fn::Split":
+        delimiter, value = argument
+        return evaluate(value, parameters).split(delimiter)
+    raise AssertionError(f"função não suportada: {function}")
 
 
 class ConnectorTemplateTest(unittest.TestCase):
@@ -35,48 +117,87 @@ class ConnectorTemplateTest(unittest.TestCase):
     def setUpClass(cls):
         cls.template = cfn_yaml.load(str(TEMPLATE))
         cls.resources = cls.template["Resources"]
-
-    def of_type(self, resource_type):
-        return {name: res for name, res in self.resources.items() if res["Type"] == resource_type}
+        cls.parameters = cls.template["Parameters"]
 
     def role(self):
         return self.resources["VeraxReadOnlyRole"]["Properties"]
 
-    def bucket_policy_for(self, bucket):
-        for res in self.of_type("AWS::S3::BucketPolicy").values():
-            if res["Properties"]["Bucket"] == {"Ref": bucket}:
-                return res["Properties"]["PolicyDocument"]["Statement"]
-        self.fail(f"{bucket} sem bucket policy")
+    def all_statements(self):
+        return [statement for policy in self.role()["Policies"] for statement in statements(policy)]
 
-    # --- Papel ---
+    def allowed_actions(self):
+        return {
+            action
+            for statement in self.all_statements()
+            if statement["Effect"] == "Allow"
+            for action in as_list(statement["Action"])
+        }
 
-    def test_only_verax_roles_with_external_id_can_assume(self):
-        statements = self.role()["AssumeRolePolicyDocument"]["Statement"]
-        self.assertEqual(len(statements), 1)
-        statement = statements[0]
+    def denied_patterns(self):
+        return {
+            action
+            for statement in self.all_statements()
+            if statement["Effect"] == "Deny"
+            for action in as_list(statement["Action"])
+        }
+
+    def statement(self, sid):
+        found = [s for s in self.all_statements() if s.get("Sid") == sid]
+        self.assertEqual(len(found), 1, sid)
+        return found[0]
+
+    def assert_list_pattern(self, parameter, valid, invalid):
+        pattern = re.compile(self.parameters[parameter]["AllowedPattern"])
+        for value in ["", *valid]:
+            self.assertTrue(pattern.fullmatch(value), f"{parameter} deveria aceitar {value!r}")
+        for value in invalid:
+            self.assertFalse(pattern.fullmatch(value), f"{parameter} deveria recusar {value!r}")
+
+    # --- Nada além do papel ---
+
+    def test_creates_only_the_read_role(self):
+        self.assertEqual(set(self.resources), {"VeraxReadOnlyRole"})
+        self.assertEqual(self.resources["VeraxReadOnlyRole"]["Type"], "AWS::IAM::Role")
+
+    # --- Quem assume ---
+
+    def test_only_the_node_role_with_external_id_can_assume(self):
+        trust = self.role()["AssumeRolePolicyDocument"]["Statement"]
+        self.assertEqual(len(trust), 1)
+        statement = trust[0]
         self.assertEqual(statement["Effect"], "Allow")
         self.assertEqual(statement["Action"], "sts:AssumeRole")
         self.assertEqual(
-            statement["Principal"], {"AWS": {"Fn::Sub": "arn:${AWS::Partition}:iam::${VeraxAccountId}:root"}}
+            statement["Principal"], {"AWS": {"Fn::Sub": "arn:${AWS::Partition}:iam::${NodeAccountId}:root"}}
         )
         self.assertEqual(statement["Condition"]["StringEquals"], {"sts:ExternalId": {"Ref": "ExternalId"}})
+        # O papel exato, sem curinga.
         self.assertEqual(
-            statement["Condition"]["ArnLike"],
-            {"aws:PrincipalArn": {"Fn::Sub": "arn:${AWS::Partition}:iam::${VeraxAccountId}:role/${VeraxRolePrefix}*"}},
+            statement["Condition"]["ArnEquals"],
+            {"aws:PrincipalArn": {"Fn::Sub": "arn:${AWS::Partition}:iam::${NodeAccountId}:role/${NodeRoleName}"}},
         )
 
     def test_external_id_is_hidden_and_long(self):
-        parameter = self.template["Parameters"]["ExternalId"]
+        parameter = self.parameters["ExternalId"]
         self.assertTrue(parameter["NoEcho"])
         self.assertGreaterEqual(parameter["MinLength"], 32)
         self.assertNotIn("Default", parameter)
 
-    def test_verax_account_is_a_12_digit_id(self):
-        self.assertEqual(self.template["Parameters"]["VeraxAccountId"]["AllowedPattern"], "^[0-9]{12}$")
+    def test_node_account_and_role_are_strict(self):
+        self.assertEqual(self.parameters["NodeAccountId"]["AllowedPattern"], "^[0-9]{12}$")
+        self.assertNotIn("Default", self.parameters["NodeAccountId"])
+        role = re.compile(self.parameters["NodeRoleName"]["AllowedPattern"])
+        self.assertTrue(role.fullmatch("verax-control-node"))
+        self.assertTrue(role.fullmatch("verax-control-node-cliente"))
+        for value in ["", "*", "verax-control-*", "admin", "verax-control-node*", "verax-control-node/x"]:
+            self.assertFalse(role.fullmatch(value), value)
+        self.assertLessEqual(len("verax-control-node") + 46, 64)
 
     def test_role_has_fixed_name_and_short_sessions(self):
         self.assertEqual(self.role()["RoleName"], "VeraxControlReadOnly")
         self.assertLessEqual(self.role()["MaxSessionDuration"], 3600)
+
+    # --- O que lê ---
 
     def test_managed_policies_are_read_only(self):
         self.assertEqual(
@@ -87,129 +208,133 @@ class ConnectorTemplateTest(unittest.TestCase):
             ],
         )
 
-    def test_inline_policies_only_read(self):
-        for policy in self.role()["Policies"]:
-            for statement in policy["PolicyDocument"]["Statement"]:
-                with self.subTest(policy=policy["PolicyName"], sid=statement["Sid"]):
-                    self.assertEqual(statement["Effect"], "Allow")
-                    for action in as_list(statement["Action"]):
-                        self.assertNotIn(action, EXCLUDED_ACTIONS)
-                        if action == "kms:Decrypt":
-                            # Só para ler os logs pelo S3.
-                            self.assertEqual(
-                                statement["Condition"]["StringEquals"]["kms:ViaService"],
-                                {"Fn::Sub": "s3.${AWS::Region}.amazonaws.com"},
-                            )
-                        else:
-                            self.assertRegex(action, READ_ACTION)
+    def test_allow_statements_only_read(self):
+        for statement in self.all_statements():
+            if statement["Effect"] != "Allow":
+                continue
+            with self.subTest(sid=statement["Sid"]):
+                for action in as_list(statement["Action"]):
+                    self.assertNotIn(action, EXCLUDED_ACTIONS)
+                    if action == "kms:Decrypt":
+                        # Só para ler os logs pelo S3, e só com as chaves informadas.
+                        self.assertEqual(statement["Resource"], {"Ref": "LogKmsKeyArns"})
+                        self.assertEqual(
+                            statement["Condition"], {"StringLike": {"kms:ViaService": "s3.*.amazonaws.com"}}
+                        )
+                    else:
+                        self.assertRegex(action, READ_ACTION)
 
-    # --- Destinos de log ---
-
-    def test_buckets_are_private_encrypted_versioned_and_retained(self):
-        buckets = self.of_type("AWS::S3::Bucket")
+    def test_log_content_only_from_the_chosen_sources(self):
+        self.assertEqual(self.statement("ListarStreamsDosGruposDeLog")["Resource"], {"Ref": "LogGroupArns"})
         self.assertEqual(
-            set(buckets), {"AccessLogsBucket", "CloudTrailBucket", "GuardDutyBucket", "WafLogsBucket"}
+            self.statement("LerGruposDeLog")["Resource"],
+            {"Fn::Split": [",", {"Fn::Join": ["", [{"Fn::Join": [":*,", {"Ref": "LogGroupArns"}]}, ":*"]]}]},
         )
-        for name, bucket in buckets.items():
-            with self.subTest(bucket=name):
-                props = bucket["Properties"]
-                self.assertEqual(bucket["DeletionPolicy"], "Retain")
-                self.assertEqual(bucket["UpdateReplacePolicy"], "Retain")
-                self.assertEqual(
-                    props["PublicAccessBlockConfiguration"],
-                    {
-                        "BlockPublicAcls": True,
-                        "BlockPublicPolicy": True,
-                        "IgnorePublicAcls": True,
-                        "RestrictPublicBuckets": True,
-                    },
-                )
-                self.assertEqual(props["OwnershipControls"]["Rules"], [{"ObjectOwnership": "BucketOwnerEnforced"}])
-                self.assertEqual(props["VersioningConfiguration"], {"Status": "Enabled"})
-                rule = props["LifecycleConfiguration"]["Rules"][0]
-                self.assertEqual(rule["ExpirationInDays"], {"Ref": "LogRetentionDays"})
-                encryption = props["BucketEncryption"]["ServerSideEncryptionConfiguration"][0]
-                if name == "AccessLogsBucket":
-                    # O log de acesso do S3 só é entregue com SSE-S3.
-                    self.assertEqual(encryption["ServerSideEncryptionByDefault"], {"SSEAlgorithm": "AES256"})
-                else:
-                    self.assertEqual(
-                        encryption["ServerSideEncryptionByDefault"],
-                        {"SSEAlgorithm": "aws:kms", "KMSMasterKeyID": LOGS_KEY_ARN},
-                    )
-                    self.assertEqual(props["LoggingConfiguration"]["DestinationBucketName"], {"Ref": "AccessLogsBucket"})
+        self.assertEqual(self.statement("ListarBucketsDeLog")["Resource"], {"Ref": "LogBucketArns"})
+        self.assertEqual(
+            self.statement("LerObjetosDeLog")["Resource"],
+            {"Fn::Split": [",", {"Fn::Join": ["", [{"Fn::Join": ["/*,", {"Ref": "LogBucketArns"}]}, "/*"]]}]},
+        )
+        # Nenhuma outra declaração lê conteúdo de log ou de objeto.
+        content = {"logs:GetLogEvents", "logs:DescribeLogStreams", "s3:GetObject", "kms:Decrypt"}
+        for statement in self.all_statements():
+            if statement["Effect"] == "Allow" and statement["Sid"] not in {
+                "ListarStreamsDosGruposDeLog",
+                "LerGruposDeLog",
+                "LerObjetosDeLog",
+                "DecifrarLogsPeloS3",
+            }:
+                with self.subTest(sid=statement["Sid"]):
+                    self.assertFalse(content & set(as_list(statement["Action"])))
 
-    def test_buckets_deny_plain_http(self):
-        for name in self.of_type("AWS::S3::Bucket"):
-            with self.subTest(bucket=name):
-                denies = [
-                    s
-                    for s in self.bucket_policy_for(name)
-                    if s["Effect"] == "Deny"
-                    and s["Principal"] == "*"
-                    and s.get("Condition", {}).get("Bool") == {"aws:SecureTransport": "false"}
-                ]
-                self.assertEqual(len(denies), 1)
-
-    def test_service_writes_are_limited_to_this_account(self):
-        policies = {name: self.bucket_policy_for(name) for name in self.of_type("AWS::S3::Bucket")}
-        policies["LogsKey"] = self.resources["LogsKey"]["Properties"]["KeyPolicy"]["Statement"]
-        for owner, statements in policies.items():
-            for statement in statements:
-                principal = statement.get("Principal")
-                if statement["Effect"] != "Allow" or not isinstance(principal, dict) or "Service" not in principal:
-                    continue
-                with self.subTest(owner=owner, sid=statement["Sid"]):
-                    conditions = statement["Condition"]
-                    source_account = conditions.get("StringEquals", {}).get("aws:SourceAccount")
-                    source_arn = conditions.get("StringEquals", {}).get("aws:SourceArn") or conditions.get(
-                        "ArnLike", {}
-                    ).get("aws:SourceArn")
-                    scoped_by_arn = any(
-                        "${AWS::AccountId}" in arn.get("Fn::Sub", "") for arn in as_list(source_arn or [])
-                    )
-                    self.assertTrue(source_account == ACCOUNT_ID or scoped_by_arn)
-
-    def test_key_rotates_and_is_retained(self):
-        key = self.resources["LogsKey"]
-        self.assertTrue(key["Properties"]["EnableKeyRotation"])
-        self.assertEqual(key["DeletionPolicy"], "Retain")
-
-    def test_trail_is_multi_region_validated_and_encrypted(self):
-        trail = self.resources["Trail"]["Properties"]
-        self.assertTrue(trail["IsMultiRegionTrail"])
-        self.assertTrue(trail["IncludeGlobalServiceEvents"])
-        self.assertTrue(trail["EnableLogFileValidation"])
-        self.assertTrue(trail["IsLogging"])
-        self.assertEqual(trail["KMSKeyId"], LOGS_KEY_ARN)
-        # O nome usado no aws:SourceArn da bucket policy precisa ser o da trilha.
-        for statement in self.bucket_policy_for("CloudTrailBucket"):
-            if statement.get("Principal") == {"Service": "cloudtrail.amazonaws.com"}:
-                arn = statement["Condition"]["StringEquals"]["aws:SourceArn"]["Fn::Sub"]
-                self.assertTrue(arn.endswith(f":trail/{trail['TrailName']}"))
-
-    def test_guardduty_exports_only_with_the_connector_key(self):
-        export = self.resources["GuardDutyExport"]["Properties"]
-        self.assertEqual(export["DestinationType"], "S3")
-        self.assertEqual(export["DestinationProperties"]["KmsKeyArn"], LOGS_KEY_ARN)
-        denies = [
-            s
-            for s in self.bucket_policy_for("GuardDutyBucket")
-            if s["Effect"] == "Deny" and s.get("Principal") == {"Service": "guardduty.amazonaws.com"}
+    def test_derived_arns_cover_exactly_the_informed_sources(self):
+        groups = [
+            "arn:aws:logs:us-east-1:111122223333:log-group:aws-cloudtrail-logs",
+            "arn:aws:logs:us-east-1:111122223333:log-group:/aws/vpc/flow-logs",
         ]
+        buckets = ["arn:aws:s3:::empresa-cloudtrail", "arn:aws:s3:::empresa-findings"]
+        for count in (1, 2):
+            with self.subTest(count=count):
+                parameters = {"LogGroupArns": groups[:count], "LogBucketArns": buckets[:count]}
+                self.assertEqual(
+                    evaluate(self.statement("LerGruposDeLog")["Resource"], parameters),
+                    [f"{arn}:*" for arn in groups[:count]],
+                )
+                self.assertEqual(
+                    evaluate(self.statement("LerObjetosDeLog")["Resource"], parameters),
+                    [f"{arn}/*" for arn in buckets[:count]],
+                )
+
+    def test_source_statements_exist_only_when_informed(self):
+        conditions = {}
+        for policy in self.role()["Policies"]:
+            for item in policy["PolicyDocument"]["Statement"]:
+                if "Fn::If" in item:
+                    conditions[item["Fn::If"][1]["Sid"]] = item["Fn::If"][0]
         self.assertEqual(
-            denies[0]["Condition"]["StringNotEquals"],
-            {"s3:x-amz-server-side-encryption-aws-kms-key-id": LOGS_KEY_ARN},
+            conditions,
+            {
+                "ListarStreamsDosGruposDeLog": "ReadLogGroups",
+                "LerGruposDeLog": "ReadLogGroups",
+                "ListarBucketsDeLog": "ReadLogBuckets",
+                "LerObjetosDeLog": "ReadLogBuckets",
+                "DecifrarLogsPeloS3": "DecryptLogBuckets",
+            },
+        )
+        for parameter in ("LogGroupArns", "LogBucketArns", "LogKmsKeyArns"):
+            with self.subTest(parameter=parameter):
+                self.assertEqual(self.parameters[parameter]["Type"], "CommaDelimitedList")
+                self.assertEqual(self.parameters[parameter]["Default"], "")
+
+    def test_source_parameters_accept_only_exact_arns(self):
+        self.assert_list_pattern(
+            "LogGroupArns",
+            valid=[
+                "arn:aws:logs:us-east-1:111122223333:log-group:aws-cloudtrail-logs-111122223333-abc",
+                "arn:aws:logs:sa-east-1:111122223333:log-group:/aws/vpc/flow-logs",
+                "arn:aws:logs:us-east-1:111122223333:log-group:aws-waf-logs-app",
+            ],
+            invalid=[
+                "*",
+                "arn:aws:logs:us-east-1:111122223333:log-group:*",
+                "arn:aws:logs:us-east-1:111122223333:log-group:app:*",
+                "arn:aws:logs:*:111122223333:log-group:app",
+                "arn:aws:logs:us-east-1:*:log-group:app",
+                "arn:aws:logs:us-east-1:111122223333:log-group:app*",
+                "arn:aws:logs:us-east-1:111122223333:log-group:app:log-stream:x",
+            ],
+        )
+        self.assert_list_pattern(
+            "LogBucketArns",
+            valid=["arn:aws:s3:::empresa-cloudtrail-logs", "arn:aws:s3:::findings.guardduty-1"],
+            invalid=["*", "arn:aws:s3:::*", "arn:aws:s3:::bucket/*", "empresa-cloudtrail-logs", "arn:aws:s3:::a*"],
+        )
+        self.assert_list_pattern(
+            "LogKmsKeyArns",
+            valid=["arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"],
+            invalid=["*", "arn:aws:kms:us-east-1:111122223333:key/*", "arn:aws:kms:us-east-1:111122223333:alias/x"],
         )
 
-    def test_waf_logging_redacts_credential_headers(self):
-        redacted = self.resources["RegionalWebAclLogging"]["Properties"]["RedactedFields"]
-        names = {field["SingleHeader"]["Name"] for field in redacted}
-        self.assertEqual(names, {"authorization", "cookie", "proxy-authorization"})
+    def test_wazuh_collector_calls_are_allowed(self):
+        allowed = self.allowed_actions()
+        self.assertTrue(WAZUH_CALLS <= allowed, WAZUH_CALLS - allowed)
 
-    def test_waf_bucket_uses_the_required_prefix(self):
-        name = self.resources["WafLogsBucket"]["Properties"]["BucketName"]["Fn::Sub"]
-        self.assertTrue(name.startswith("aws-waf-logs-"))
+    # --- O que nunca faz ---
+
+    def test_log_destruction_and_escalation_are_explicitly_denied(self):
+        denied = self.denied_patterns()
+        missing = {action for action in MUST_DENY if not matches(action, denied)}
+        self.assertFalse(missing, f"ações sem negação explícita: {sorted(missing)}")
+        for statement in self.all_statements():
+            if statement["Effect"] == "Deny":
+                with self.subTest(sid=statement["Sid"]):
+                    self.assertEqual(statement["Resource"], "*")
+                    self.assertNotIn("Condition", statement)
+
+    def test_no_allowed_action_is_cancelled_by_the_deny(self):
+        denied = self.denied_patterns()
+        clashes = {action for action in self.allowed_actions() if matches(action, denied)}
+        self.assertFalse(clashes, f"ações liberadas e negadas ao mesmo tempo: {sorted(clashes)}")
 
 
 if __name__ == "__main__":

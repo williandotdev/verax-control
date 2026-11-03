@@ -16,7 +16,8 @@ estágio atual. O código da aplicação (API, painel, autenticação, isolament
    existente é modificado.
 4. **Nenhum log é apagado ou sobrescrito.** Em três camadas:
    - o papel de leitura não tem nenhuma ação de escrita ou exclusão, e o teste do conector falha se alguma
-     aparecer;
+     aparecer. Além disso, nega explicitamente as ações que apagariam, desligariam ou desviariam logs, o que vale
+     mesmo que a AWS amplie as políticas gerenciadas;
    - o Wazuh fica com `remove_from_bucket` e `remove_log_streams` desligados explicitamente. A segunda, se ligada,
      apagaria os log streams do CloudWatch depois de lidos;
    - o WAF aceita um só destino de log por Web ACL: o Verax lê de onde o log já está e nunca troca o destino.
@@ -112,10 +113,9 @@ A leitura de logs pela API não gera transferência entre regiões quando o nó 
 
 1. Diagnóstico somente leitura da conta monitorada (`infra/diagnostico/`), publicado por release e com roteiro de
    onboarding (`docs/runbooks/onboarding-cliente.md`). **Feito.**
-2. Conector revisado:
-   - leitura do CloudWatch Logs, Inspector e Access Analyzer;
-   - negação explícita de escrita;
-   - sem a opção de ligar o log do WAF.
+2. Conector revisado: só o papel de leitura, que só o papel do nó assume, com leitura do CloudWatch Logs, dos buckets
+   e das chaves informados, findings do Inspector e do Access Analyzer e negação explícita de escrita. Sem trilha,
+   bucket ou log do WAF criados pelo conector. **Feito.**
 3. Pilha do nó (VPC isolada, VM, bucket, papéis com negação explícita, snapshots e alarme de custo).
 4. Docker Compose do nó: instalação, atualização por versão fixada e backup.
 5. Painel no Firebase Hosting, com os cabeçalhos de segurança, e publicação pelo GitHub Actions.

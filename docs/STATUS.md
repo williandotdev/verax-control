@@ -983,3 +983,42 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Correção depois da primeira publicação:** a raiz e as rotas da aplicação saíam com o cache padrão do Firebase (1 hora), porque a regra `no-cache` só casava com `/index.html`. Agora tudo é `no-cache` e só `/assets/` tem cache longo. O workflow confere as duas regras no site publicado.
 - **Ruleset:** o vivo passou a exigir os 18 checks do `.github/rulesets/main.json`. Antes, exigia só 11: faltavam "Testes de navegador", "Imagem da API" e os 5 jobs de infraestrutura. Todos rodam em qualquer PR, sem filtro de caminho, então nenhum PR fica esperando um check que não roda.
 - **Pendente:** os domínios próprios. Os registros de DNS (CNAME e TXT `_acme-challenge` de cada domínio, com o proxy desligado) ainda precisam ser criados no Cloudflare.
+
+## Nova arquitetura, passo 2: conector só com o papel de leitura
+
+- **Decisão (02/11/2026, `docs/ARQUITETURA.md`):** o conector só cria o papel de leitura. Nenhuma trilha, destino de log, bucket ou assinatura é criado ou alterado na conta do cliente: o Verax Control lê de onde o log já está.
+- **Arquivos:** `infra/cloudformation/{verax-control-connector.yaml,README.md}`, `infra/cloudformation/tests/test_connector.py`, `docs/runbooks/onboarding-cliente.md`, `docs/ARQUITETURA.md`
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Um recurso só:** o papel `VeraxControlReadOnly`. Saíram a trilha do CloudTrail, a exportação do GuardDuty, o bucket e o log do WAF, o bucket de log de acesso e a chave KMS (de 706 para cerca de 300 linhas).
+  - **Quem assume:** só o papel do nó (`NodeRoleName`, padrão `verax-control-node`, por `ArnEquals` no `aws:PrincipalArn`), na conta onde o nó roda (`NodeAccountId`), com o `ExternalId`. O principal é a conta, e não o ARN do papel, para o conector poder ser criado antes do nó. O nó pode rodar na conta do cliente ou na da Verax sem mudar nada.
+  - **O que lê:**
+    - configuração, como antes (`SecurityAudit`, `ViewOnlyAccess` e a leitura extra do Prowler, sem as quatro ações excluídas);
+    - findings do GuardDuty, do Security Hub, do Inspector2 e do Access Analyzer;
+    - o conteúdo de logs, só dos grupos (`LogGroupArns`), buckets (`LogBucketArns`) e chaves (`LogKmsKeyArns`) informados pelo cliente, com `kms:Decrypt` só via S3. Com as listas vazias, o papel não lê nenhum conteúdo de log.
+  - **Permissões conferidas no código do Wazuh 4.14.9:** o coletor do CloudWatch Logs só chama `DescribeLogStreams` e `GetLogEvents` (e `DeleteLogStream`, se `remove_log_streams` estiver ligado, o que nunca fazemos). O do Inspector usa o `inspector2:ListFindings`. Pela documentação da AWS, `DescribeLogStreams` autoriza no ARN do grupo e `GetLogEvents` nos streams (`<arn>:*`). O template deriva a segunda lista da primeira (`Fn::Join`/`Fn::Split`), e o cliente informa cada grupo uma vez só.
+  - **Negação explícita**, que vale mesmo se a AWS ampliar as políticas gerenciadas:
+    - apagar, alterar, assinar ou exportar no CloudWatch Logs, inclusive `Unmask`;
+    - apagar, gravar ou replicar no S3;
+    - parar ou alterar trilhas;
+    - mudar o log do WAF;
+    - arquivar findings ou desligar GuardDuty, Security Hub, Inspector e Access Analyzer;
+    - desativar ou apagar chaves KMS;
+    - escrita no IAM, `PassRole` e assumir outros papéis.
+- **Testes:** 14, todos lendo o template:
+  - só o papel é criado;
+  - confiança exata com `ExternalId`;
+  - padrões dos parâmetros (só ARNs exatos, sem curinga);
+  - verbos só de leitura;
+  - conteúdo de log só das fontes informadas;
+  - avaliação das expressões `Join`/`Split` com 1 e 2 valores;
+  - chamadas do Wazuh liberadas;
+  - 37 ações destrutivas negadas;
+  - nenhuma ação liberada cortada pela negação.
+
+  cfn-lint sem achados e checkov sem falhas. **Testes de mutação:** 16 de 16 pegos (sem `ExternalId`; papel do nó com curinga; `s3:PutObject` liberado; `logs:FilterLogEvents` de volta; `GetLogEvents` ou `GetObject` em qualquer recurso; `Decrypt` fora do S3; sem negar `logs:Delete*`, `wafv2:Put*`, `cloudtrail:Stop*` ou `sts:AssumeRole`; negação que corta a leitura; curinga aceito no grupo de log; papel do nó com qualquer nome; recurso extra; sessão longa).
+
+- **Definição de pronto:** testes ✔ · lint ✔ · dependências ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
+- **Riscos:**
+  - os módulos Terraform do E4/E8 (`infra/terraform/modules/{api,wazuh,prowler}`) assumiam o papel a partir de papéis `verax-control-production-*` e deixam de ser aceitos. Eles saem no passo 6.
+  - o gerador de configuração do Wazuh (`infra/wazuh/scripts/render-manager-config.py`) ainda só conhece buckets. O CloudWatch Logs e o Inspector entram no passo 4, com o Docker Compose do nó.

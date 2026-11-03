@@ -36,7 +36,14 @@ arquitetura (`docs/ARQUITETURA.md`).
 
 ## 4. Conector, nó e painel _(em construção)_
 
-1. O cliente cria a pilha do conector (papel somente leitura com ExternalId) na conta monitorada.
+1. O cliente cria a pilha do conector na conta monitorada (`infra/cloudformation/README.md`). Ela cria só o papel
+   somente leitura, que só o papel do nó pode assumir, com o ExternalId. Passe ao cliente:
+   - a conta onde o nó vai rodar;
+   - o ExternalId gerado pelo painel;
+   - os ARNs das fontes aprovadas no passo 3: grupos do CloudWatch Logs, buckets e as chaves KMS deles.
+
+   O papel só lê o conteúdo desses logs e tem negação explícita para apagar, alterar ou desviar logs.
+
 2. Crie a pilha do nó na conta escolhida, com as fontes aprovadas.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente, a conta e os usuários no painel. O convite chega por e-mail.
