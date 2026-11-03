@@ -7,8 +7,8 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
 | Destino                | Domínio                                  | Modo                                                            |
 | ---------------------- | ---------------------------------------- | --------------------------------------------------------------- |
 | Demonstração comercial | `control.veraxsistemas.com.br`           | `demo`: dados fictícios simulados no navegador, sem nenhuma API |
-| SOC da própria Verax   | `verax.control.veraxsistemas.com.br`     | produção, API em `api.verax.control.veraxsistemas.com.br`       |
-| Cada cliente           | `<cliente>.control.veraxsistemas.com.br` | produção, API em `api.<cliente>.control.veraxsistemas.com.br`   |
+| SOC da própria Verax   | `verax.control.veraxsistemas.com.br`     | produção, API em `api-verax.veraxsistemas.com.br`               |
+| Cada cliente           | `<cliente>.control.veraxsistemas.com.br` | produção, API em `api-<cliente>.veraxsistemas.com.br`           |
 
 ## Segurança
 
@@ -40,7 +40,7 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
   {
     "site": "verax-control-verax",
     "dominio": "verax.control.veraxsistemas.com.br",
-    "api": "https://api.verax.control.veraxsistemas.com.br"
+    "api": "https://api-verax.veraxsistemas.com.br"
   }
 ]
 ```
@@ -57,3 +57,6 @@ são públicos e mostram os sites publicados; o domínio já é público de qual
    Cloudflare, crie esses registros com o proxy **desligado** ("DNS only"): o Firebase emite e renova o certificado.
 4. Confira: `curl -sI https://<cliente>.control.veraxsistemas.com.br/` deve mostrar `content-security-policy` com a
    API do cliente.
+
+A API do cliente fica em `api-<cliente>.veraxsistemas.com.br`, um nível só abaixo do domínio, para caber no
+certificado gratuito do Cloudflare (`docs/ARQUITETURA.md`).
