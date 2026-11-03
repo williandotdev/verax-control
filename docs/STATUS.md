@@ -1057,3 +1057,8 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 - **Definição de pronto:** testes ✔ · lint ✔ · dependências ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
 - **Pendente:** o pacote do nó (`install-node.sh`, Docker Compose, agente do CloudWatch e release `node-v*`) é o passo 4.
+- **Correções da revisão do PR (Codex), com testes novos:**
+  - a confiança dos papéis da VM e dos snapshots ficou sem `aws:SourceAccount`. O EC2 não envia essa chave ao assumir o papel do perfil de instância, e a condição deixaria a VM sem credencial, logo sem Session Manager e sem instalação. Só quem tem `iam:PassRole` na conta entrega esses papéis aos serviços;
+  - a AMI ficou fixa (`AmiId`, tipo `AWS::EC2::Image::Id`), e a AMI e o tipo saíram do modelo de lançamento e foram para a instância. Antes, o parâmetro do SSM era relido a cada atualização do stack e trocava a VM sempre que saía uma imagem nova. A troca falharia, porque o disco de dados ainda estaria preso à VM antiga. Agora trocar o tipo só para e religa a VM, e o sistema é atualizado no lugar pelo pacote do nó;
+  - os snapshots usam uma etiqueta-alvo só, exclusiva do disco de dados de cada nó. O DLM escolhe volumes com qualquer uma das etiquetas-alvo, e as duas anteriores pegavam também o disco raiz e os discos de outros nós;
+  - exceções do Trivy com motivo: saída 443/7844, tópico SNS sem chave própria, bucket com SSE-S3 e o falso positivo do disco raiz, cifrado no modelo de lançamento. Conferido com o Trivy 0.76.1 do CI: a versão anterior falha com os 6 achados e esta passa.

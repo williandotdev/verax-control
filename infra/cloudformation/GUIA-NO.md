@@ -49,6 +49,8 @@ trilha ou log que já exista na conta.
 - Use um usuário ou papel com permissão de administrador na conta que vai hospedar o nó. O stack cria papéis com nome
   fixo, então o CloudFormation pede a confirmação `CAPABILITY_NAMED_IAM`.
 - Escolha a **região dos logs monitorados**: a leitura pela API não paga transferência entre regiões.
+- Pegue a **AMI do Amazon Linux 2023** da região, para o parâmetro `AmiId`:
+  `aws ssm get-parameter --name /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 --query Parameter.Value --output text`.
 - Tenha em mãos, da Verax: a **versão** do Verax Control e o **SHA-256** do pacote (arquivo `SHA256SUMS` da release
   `node-v<versão>` no GitHub). Sem versão, o stack cria só a infraestrutura, e a versão pode ser informada depois.
 - Para o alerta de custo contar só o nó, ative a etiqueta `verax-control-node` como **etiqueta de alocação de custo**
@@ -64,7 +66,7 @@ trilha ou log que já exista na conta.
 ```sh
 aws cloudformation create-stack --stack-name verax-control-node \
   --template-body file://verax-control-node.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --parameters ParameterKey=AlertEmail,ParameterValue=<e-mail> \
+  --parameters ParameterKey=AlertEmail,ParameterValue=<e-mail> ParameterKey=AmiId,ParameterValue=<AMI> \
     ParameterKey=BundleVersion,ParameterValue=<versão> ParameterKey=BundleSha256,ParameterValue=<sha-256>
 aws cloudformation wait stack-create-complete --stack-name verax-control-node
 aws cloudformation describe-stacks --stack-name verax-control-node --query 'Stacks[0].Outputs'
@@ -91,8 +93,10 @@ Atualize o stack (_Update stack_ → _Use current template_) com os novos `Bundl
 associação do State Manager roda de novo e instala a versão nova. O andamento aparece em Systems Manager → _State
 Manager_.
 
-Uma atualização do stack com uma imagem nova do Amazon Linux (o parâmetro `LatestAmiId` é relido a cada atualização)
-troca a VM. O disco de dados é mantido e a instalação roda de novo na VM nova.
+O sistema operacional é atualizado no lugar pelo pacote do nó (atualizações de segurança do Amazon Linux), e a AMI
+informada na criação fica fixa. Trocar a AMI troca a VM, o que exige soltar antes o disco de dados: não faça isso por
+uma atualização do stack sem falar com a Verax. Se acontecer por engano, o CloudFormation não consegue prender o disco
+na VM nova e desfaz a atualização, sem perder nada. Trocar o tipo da VM (`InstanceType`) só para e religa a VM.
 
 ## Acesso à VM
 

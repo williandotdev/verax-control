@@ -170,12 +170,38 @@ class NodeTemplateTest(unittest.TestCase):
         self.assertEqual(volume["DeletionPolicy"], "Snapshot")
         self.assertEqual(volume["UpdateReplacePolicy"], "Snapshot")
 
-    def test_daily_snapshots_target_the_data_volume(self):
+    def test_daily_snapshots_target_only_this_data_volume(self):
         details = self.resources["DailySnapshots"]["Properties"]["PolicyDetails"]
+        # O DLM escolhe os volumes com qualquer uma das etiquetas-alvo (OU): uma só, exclusiva do disco de dados.
+        self.assertEqual(len(details["TargetTags"]), 1)
+        target = details["TargetTags"][0]
+        self.assertEqual(
+            target,
+            {
+                "Key": "verax-control-backup",
+                "Value": {
+                    "Fn::If": ["HasName", {"Fn::Sub": "verax-control-node-${NodeName}-dados"}, "verax-control-node-dados"]
+                },
+            },
+        )
         volume_tags = {t["Key"]: t["Value"] for t in self.resources["DataVolume"]["Properties"]["Tags"]}
-        for tag in details["TargetTags"]:
-            self.assertEqual(volume_tags[tag["Key"]], tag["Value"])
+        self.assertEqual(volume_tags[target["Key"]], target["Value"])
+        # O disco raiz (etiquetas do modelo de lançamento) não leva a etiqueta de backup.
+        for spec in self.launch_data()["TagSpecifications"]:
+            self.assertNotIn(target["Key"], {t["Key"] for t in spec["Tags"]})
         self.assertGreaterEqual(details["Schedules"][0]["RetainRule"]["Count"], 7)
+
+    def test_common_updates_do_not_replace_the_vm(self):
+        # A troca da VM falharia (o disco de dados ainda estaria preso à antiga): a AMI é fixa, e não relida do SSM a
+        # cada atualização, e AMI e tipo ficam na instância, fora do modelo de lançamento.
+        self.assertEqual(self.parameters["AmiId"]["Type"], "AWS::EC2::Image::Id")
+        self.assertNotIn("Default", self.parameters["AmiId"])
+        self.assertFalse(any("SSM::Parameter" in p["Type"] for p in self.parameters.values()))
+        instance = self.resources["Instance"]["Properties"]
+        self.assertEqual(instance["ImageId"], {"Ref": "AmiId"})
+        self.assertEqual(instance["InstanceType"], {"Ref": "InstanceType"})
+        self.assertNotIn("ImageId", self.launch_data())
+        self.assertNotIn("InstanceType", self.launch_data())
 
     # --- Bucket ---
 
@@ -201,11 +227,16 @@ class NodeTemplateTest(unittest.TestCase):
 
     # --- Papel ---
 
-    def test_only_ec2_of_this_account_assumes_the_role(self):
-        trust = self.role()["AssumeRolePolicyDocument"]["Statement"]
-        self.assertEqual(len(trust), 1)
-        self.assertEqual(trust[0]["Principal"], {"Service": "ec2.amazonaws.com"})
-        self.assertEqual(trust[0]["Condition"]["StringEquals"]["aws:SourceAccount"], {"Ref": "AWS::AccountId"})
+    def test_only_the_services_assume_the_roles(self):
+        # Sem aws:SourceAccount: o EC2 e o DLM não o enviam ao assumir o papel, e a condição impediria a VM de ter
+        # credencial. Só quem tem iam:PassRole nesta conta entrega estes papéis aos serviços.
+        for role, service in (("NodeRole", "ec2.amazonaws.com"), ("SnapshotRole", "dlm.amazonaws.com")):
+            with self.subTest(role=role):
+                trust = self.resources[role]["Properties"]["AssumeRolePolicyDocument"]["Statement"]
+                self.assertEqual(
+                    [{k: v for k, v in statement.items() if k != "Sid"} for statement in trust],
+                    [{"Effect": "Allow", "Principal": {"Service": service}, "Action": "sts:AssumeRole"}],
+                )
         self.assertEqual(self.role()["RoleName"], NODE_ID)
         self.assertEqual(
             self.role()["ManagedPolicyArns"],

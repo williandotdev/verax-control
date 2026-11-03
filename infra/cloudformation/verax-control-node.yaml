@@ -8,7 +8,7 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label: { default: Nó }
-        Parameters: [NodeName, InstanceType, DataVolumeSize, LatestAmiId]
+        Parameters: [NodeName, InstanceType, DataVolumeSize, AmiId]
       - Label: { default: Versão instalada }
         Parameters: [BundleVersion, BundleSha256]
       - Label: { default: Alertas e custo }
@@ -17,7 +17,7 @@ Metadata:
       NodeName: { default: Nome do nó (vazio quando é o único da conta) }
       InstanceType: { default: Tipo da VM }
       DataVolumeSize: { default: Disco de dados (GiB) }
-      LatestAmiId: { default: Imagem do sistema (parâmetro público da AWS) }
+      AmiId: { default: AMI do Amazon Linux 2023 }
       BundleVersion: { default: Versão do Verax Control }
       BundleSha256: { default: SHA-256 do pacote da versão }
       AlertEmail: { default: E-mail dos alertas }
@@ -43,11 +43,11 @@ Parameters:
     Default: 200
     MinValue: 100
     MaxValue: 4000
-  LatestAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+  AmiId:
+    Type: AWS::EC2::Image::Id
     Description: >-
-      Amazon Linux 2023 mais recente. Uma atualização do stack com imagem nova troca a VM; o disco de dados é mantido.
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+      AMI do Amazon Linux 2023 nesta região (o comando está no guia). Fica fixa: o sistema é atualizado no lugar pelo
+      pacote do nó. Trocar a AMI troca a VM e não é feito por atualização do stack (guia).
   BundleVersion:
     Type: String
     Description: >-
@@ -299,9 +299,6 @@ Resources:
             Effect: Allow
             Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
       ManagedPolicyArns:
         # Operação pelo Session Manager (sem SSH) e instalação pelo State Manager.
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
@@ -453,8 +450,6 @@ Resources:
               de segurança não tem nenhuma regra de entrada; o teste do template garante isso.
     Properties:
       LaunchTemplateData:
-        ImageId: !Ref LatestAmiId
-        InstanceType: !Ref InstanceType
         IamInstanceProfile: { Arn: !GetAtt NodeInstanceProfile.Arn }
         # Proteção contra encerramento por engano. Para apagar o stack, desligue-a antes (README).
         DisableApiTermination: true
@@ -489,9 +484,13 @@ Resources:
   # Exceção à regra AWS-0131 do Trivy (falso positivo): o disco raiz é cifrado no modelo de lançamento
   # (BlockDeviceMappings acima), que o Trivy não resolve. O teste do template confere a cifra.
   #trivy:ignore:AWS-0131
+  # A AMI e o tipo ficam na instância, e não no modelo de lançamento: trocar o tipo só para e religa a VM, e o modelo
+  # não muda numa atualização comum. Trocar a instância exigiria soltar antes o disco de dados (guia).
   Instance:
     Type: AWS::EC2::Instance
     Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
@@ -515,7 +514,8 @@ Resources:
             Key: verax-control-node,
             Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
           }
-        - { Key: verax-control-backup, Value: diario }
+        - Key: verax-control-backup
+          Value: !If [HasName, !Sub 'verax-control-node-${NodeName}-dados', verax-control-node-dados]
 
   DataVolumeAttachment:
     Type: AWS::EC2::VolumeAttachment
@@ -533,9 +533,6 @@ Resources:
           - Effect: Allow
             Principal: { Service: dlm.amazonaws.com }
             Action: sts:AssumeRole
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
       ManagedPolicyArns:
         - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole'
 
@@ -553,12 +550,11 @@ Resources:
       PolicyDetails:
         PolicyType: EBS_SNAPSHOT_MANAGEMENT
         ResourceTypes: [VOLUME]
+        # Uma etiqueta só: o DLM escolhe os volumes que tenham qualquer uma das etiquetas-alvo. Esta existe só no disco
+        # de dados deste nó.
         TargetTags:
-          - {
-              Key: verax-control-node,
-              Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
-            }
-          - { Key: verax-control-backup, Value: diario }
+          - Key: verax-control-backup
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}-dados', verax-control-node-dados]
         Schedules:
           - Name: Diario
             CreateRule: { Interval: 24, IntervalUnit: HOURS, Times: ['07:00'] }
