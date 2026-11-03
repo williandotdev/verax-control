@@ -1,32 +1,37 @@
 # Conector do Verax Control para a sua conta AWS
 
-O template `verax-control-connector.yaml` prepara a sua conta para o monitoramento do Verax Control. Ele cria um
-papel **somente leitura** que só a Verax consegue assumir e os destinos de log de segurança que o painel lê. Nada
-no template dá à Verax permissão para alterar recursos da sua conta.
+O template `verax-control-connector.yaml` cria **um único recurso** na sua conta: o papel **somente leitura**
+`VeraxControlReadOnly`. Só o nó do Verax Control consegue assumi-lo. O template não cria nem altera trilhas,
+destinos de log, buckets, assinaturas ou políticas existentes. O Verax Control lê os logs de onde eles já estão,
+pela API da AWS, como qualquer ferramenta externa.
 
-## O que é criado
+## O que o papel pode fazer
 
-| Recurso                                          | Para quê                                                                                      |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Papel `VeraxControlReadOnly`                     | Leitura de configuração (políticas AWS `SecurityAudit` e `ViewOnlyAccess`) e dos logs abaixo. |
-| Trilha `verax-control` do CloudTrail (opcional)  | Registro de atividade de todas as regiões, com validação de integridade dos arquivos.         |
-| Exportação de findings do GuardDuty (opcional)   | Findings desta região gravados em S3. Ativa o GuardDuty se ele ainda não estiver ativo.       |
-| Bucket `aws-waf-logs-verax-control-*` (opcional) | Destino dos logs do AWS WAF.                                                                  |
-| Bucket de log de acesso                          | Registra quem acessou os buckets acima (recomendação do CIS Benchmark).                       |
-| Chave KMS `alias/verax-control-logs`             | Cifra os logs. Rotação anual automática.                                                      |
+| Permissão                                                                                        | Alcance                                         |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
+| Ler configuração (políticas AWS `SecurityAudit` e `ViewOnlyAccess`, mais as leituras do Prowler) | Toda a conta, sem acesso a dados                |
+| Ler findings (GuardDuty, Security Hub, Inspector e IAM Access Analyzer)                          | Toda a conta                                    |
+| Ler o conteúdo de logs do CloudWatch Logs                                                        | **Só** os grupos informados em `LogGroupArns`   |
+| Ler objetos em buckets S3 de log                                                                 | **Só** os buckets informados em `LogBucketArns` |
+| Decifrar esses objetos (SSE-KMS), e só pelo S3                                                   | **Só** as chaves informadas em `LogKmsKeyArns`  |
 
-Todos os buckets são privados (bloqueio de acesso público e sem ACL), cifrados, versionados, aceitam só HTTPS e
-apagam os logs depois de `LogRetentionDays` (padrão 365 dias). Buckets e chave **ficam na sua conta** mesmo que o
-stack seja removido, porque guardam registros de auditoria.
+Com os três últimos parâmetros vazios, o papel não lê o conteúdo de nenhum log.
 
-## Como a Verax acessa
+### O que o papel nunca faz
 
-- O papel só pode ser assumido por papéis da conta da Verax cujo nome começa com `verax-control-production-`
-  (parâmetro `VeraxRolePrefix`) **e** que informem o `ExternalId` exclusivo da sua conta. O `ExternalId` é gerado
-  pelo painel, impede que outro cliente da Verax use o mesmo caminho para chegar à sua conta e não aparece de novo
-  depois de criado o stack.
-- As sessões duram no máximo 1 hora.
-- Toda chamada da Verax fica registrada no seu CloudTrail, com o nome da sessão.
+Além de não receber nenhuma permissão de escrita, o papel tem uma **negação explícita**. Ela prevalece sobre qualquer
+permissão, inclusive se a AWS ampliar as políticas gerenciadas no futuro, e cobre as ações que poderiam apagar,
+desligar ou desviar logs e findings:
+
+- apagar ou alterar grupos, streams, retenção, assinaturas e exportações do CloudWatch Logs;
+- apagar, gravar ou replicar objetos e alterar políticas e ciclo de vida de buckets;
+- parar, apagar ou alterar trilhas do CloudTrail;
+- alterar o destino de log do AWS WAF;
+- arquivar ou apagar findings, e desligar o GuardDuty, o Security Hub, o Inspector ou o Access Analyzer;
+- desativar ou apagar chaves KMS.
+
+Também ficam negadas as ações que ampliariam o próprio acesso: criar ou alterar papéis e políticas do IAM, `PassRole`
+e assumir outros papéis.
 
 ### O que a Verax não lê
 
@@ -39,18 +44,29 @@ recomenda, **menos** estas:
 | `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer` | Baixam suas imagens de contêiner inteiras.                         | As checagens que inspecionam o conteúdo das imagens não rodam. |
 | `logs:FilterLogEvents`                            | Lê o conteúdo dos logs das suas aplicações (dados pessoais, LGPD). | A busca por segredos dentro de logs do CloudWatch não roda.    |
 
+## Quem assume o papel
+
+- Só o **papel do nó** do Verax Control (`NodeRoleName`, padrão `verax-control-node`), na conta onde o nó roda
+  (`NodeAccountId`), **e** só informando o `ExternalId` exclusivo da sua conta.
+- O nó pode rodar na sua própria conta ou numa conta da Verax. Nos dois casos ele só chega aos dados por este papel:
+  a conta que hospeda o nó não ganha nenhum outro acesso.
+- O `ExternalId` é gerado pelo painel, impede que outro cliente da Verax use o mesmo caminho para chegar à sua conta e
+  não aparece de novo depois de criado o stack.
+- As sessões duram no máximo 1 hora. Toda chamada fica registrada no seu CloudTrail, com o nome da sessão.
+
 ## Antes de começar
 
 - Use um usuário ou papel com permissão de administrador na conta. O stack cria um papel com nome fixo, então o
   CloudFormation pede a confirmação `CAPABILITY_NAMED_IAM`.
-- Tenha em mãos, do painel da Verax: o **ID da conta da Verax** e o **ExternalId** desta conta.
-- Rode na região principal da conta (por exemplo, `sa-east-1`).
-- Se a conta já tiver:
-  - **uma trilha multi-região** gravando em um bucket desta conta: use `CreateCloudTrail=false` e informe o bucket
-    em `ExistingCloudTrailBucket` (e a chave KMS em `ExistingCloudTrailKmsKeyArn`, se a trilha for cifrada). Trilhas
-    de organização que gravam em outra conta precisam de liberação na conta de logs: fale com a Verax;
-  - **GuardDuty ativo** nesta região: informe o ID do detector em `GuardDutyDetectorId`
-    (`aws guardduty list-detectors`). Com o campo vazio, o template ativa o GuardDuty, que é cobrado pela AWS.
+- Tenha em mãos, da Verax: a **conta do nó**, o **nome do papel do nó** (se não for o padrão) e o **ExternalId**.
+- Escolha os logs que o Verax Control vai ler. O relatório do diagnóstico somente leitura (`infra/diagnostico/`)
+  lista as fontes que existem na conta. Para cada fonte:
+  - **CloudWatch Logs:** o ARN do grupo, sem `:*` no fim (campo `logGroupArn` de
+    `aws logs describe-log-groups`). Exemplo: `arn:aws:logs:us-east-1:111122223333:log-group:aws-cloudtrail-logs`;
+  - **bucket S3:** o ARN do bucket. Exemplo: `arn:aws:s3:::empresa-cloudtrail-logs`. Se o bucket usar SSE-KMS,
+    informe também a chave em `LogKmsKeyArns` (`aws s3api get-bucket-encryption --bucket <nome>`).
+
+  Vários valores vão separados por vírgula.
 
 ## Como rodar
 
@@ -63,8 +79,10 @@ seguida:
 ```sh
 cat > parametros.json <<'EOF'
 [
-  { "ParameterKey": "VeraxAccountId", "ParameterValue": "<ID da conta da Verax>" },
-  { "ParameterKey": "ExternalId", "ParameterValue": "<ExternalId do painel>" }
+  { "ParameterKey": "NodeAccountId", "ParameterValue": "<conta do nó>" },
+  { "ParameterKey": "ExternalId", "ParameterValue": "<ExternalId da Verax>" },
+  { "ParameterKey": "LogGroupArns", "ParameterValue": "<ARN do grupo 1>,<ARN do grupo 2>" },
+  { "ParameterKey": "LogBucketArns", "ParameterValue": "<ARN do bucket>" }
 ]
 EOF
 aws cloudformation create-stack --stack-name verax-control-connector \
@@ -74,48 +92,26 @@ aws cloudformation wait stack-create-complete --stack-name verax-control-connect
 rm parametros.json
 ```
 
-Depois, informe no painel as **saídas** do stack: `RoleArn` e os nomes dos buckets.
+Depois, informe à Verax a **saída** `RoleArn` do stack.
 
-## Logs do AWS WAF
+**Para incluir ou tirar um log depois:** atualize o stack com os novos valores de `LogGroupArns`, `LogBucketArns` e
+`LogKmsKeyArns` (_Update stack_ → _Use current template_). Só o papel muda.
 
-- **Web ACL regional desta região:** informe o ARN em `RegionalWebAclArn` e o template liga o log, já omitindo os
-  cabeçalhos de credencial (`authorization`, `cookie` e `proxy-authorization`), para que tokens e cookies dos
-  usuários da sua aplicação não saiam da conta.
-- **Web ACL do CloudFront ou de outra região:** ligue o log apontando para o bucket criado (o bucket aceita
-  entregas de qualquer região desta conta), com a mesma omissão:
+## Limites de leitura
 
-  ```sh
-  cat > waf-logging.json <<'EOF'
-  {
-    "ResourceArn": "<ARN da web ACL>",
-    "LogDestinationConfigs": ["arn:aws:s3:::<saída WafLogsBucket>"],
-    "RedactedFields": [
-      { "SingleHeader": { "Name": "authorization" } },
-      { "SingleHeader": { "Name": "cookie" } },
-      { "SingleHeader": { "Name": "proxy-authorization" } }
-    ]
-  }
-  EOF
-  aws wafv2 put-logging-configuration --region us-east-1 --logging-configuration file://waf-logging.json
-  ```
-
-## GuardDuty em outras regiões
-
-A exportação de findings é por região. Para cada outra região em que o GuardDuty estiver ativo, configure a
-exportação para o mesmo bucket e a mesma chave (GuardDuty → _Settings_ → _Findings export options_). As políticas do
-bucket e da chave já aceitam os detectores de qualquer região desta conta.
+O CloudWatch Logs limita as chamadas de leitura por segundo de cada conta e região, e esse limite é dividido com
+qualquer outra ferramenta que já leia os mesmos logs. O Verax Control lê em intervalos conservadores. Se outra
+ferramenta da sua equipe começar a receber erros de limite (`ThrottlingException`), avise a Verax para espaçar a
+coleta.
 
 ## Custos na sua conta
 
-- CloudTrail: a primeira trilha de eventos de gerenciamento não é cobrada; paga-se o armazenamento em S3.
-- GuardDuty: cobrado pela AWS conforme o volume analisado, se for ativado pelo template.
-- KMS: cerca de US$ 1 por mês pela chave, mais as requisições.
-- S3: armazenamento dos logs pelo período de retenção.
+O papel não tem custo. A leitura dos logs pela API gera requisições do CloudWatch Logs e do S3, cobradas pela AWS
+conforme o volume. Não há transferência entre regiões quando o nó fica na mesma região dos logs.
 
 ## Como remover
 
-Apague o stack `verax-control-connector`. A Verax perde o acesso na hora. Os buckets de log e a chave KMS
-continuam na conta, com os registros, e podem ser apagados manualmente quando não forem mais necessários.
+Apague o stack `verax-control-connector`. A Verax perde o acesso na hora. Nenhum log ou recurso seu é afetado.
 
 ## Para quem mantém este template (Verax)
 
