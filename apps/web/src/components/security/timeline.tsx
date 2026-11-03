@@ -1,3 +1,4 @@
+import { Link } from 'react-router';
 import type { Severity } from '@/design/severity';
 import { SEVERITY_STYLES } from '@/design/severity';
 import { cn } from '@/lib/cn';
@@ -11,6 +12,8 @@ export interface TimelineEvent {
   severity?: Severity;
   /** Quem fez ou de onde veio (usuário, IP, regra). */
   source?: string;
+  /** Leva ao detalhe do evento (por exemplo, o achado). */
+  href?: string;
 }
 
 /** Linha do tempo de um incidente ou recurso, na ordem recebida (o chamador ordena). */
@@ -32,7 +35,13 @@ export function Timeline({ events, className }: { events: TimelineEvent[]; class
               {formatTimestamp(event.at)}
             </time>
             <p className="text-sm font-medium">
-              {event.title}
+              {event.href ? (
+                <Link to={event.href} className="hover:underline">
+                  {event.title}
+                </Link>
+              ) : (
+                event.title
+              )}
               {style && <span className="sr-only"> (severidade {style.label})</span>}
             </p>
             {event.description && <p className="text-sm text-muted-foreground">{event.description}</p>}

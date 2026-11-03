@@ -5,6 +5,7 @@ import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
+import { createIncidentHandlers, incidentSummaries, initialIncidents } from './incidents-handlers';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -35,18 +36,30 @@ function defaultMe(): Me {
  * fictício sai de `localStorage['verax.mock.role']` (padrão: admin_verax).
  */
 export function createHandlers(state: MockState = { me: defaultMe() }) {
-  // Achados, Torre (e, depois, incidentes) compartilham o mesmo estado: a triagem aparece em todas as telas.
+  // Achados, incidentes e Torre compartilham o mesmo estado: a triagem aparece em todas as telas.
   const findings = demoFindings();
-  const untriaged = (tenantId: string) =>
-    (findings.get(tenantId) ?? []).filter(
-      (finding) =>
-        (finding.severity === 'critical' || finding.severity === 'high') &&
-        finding.status === 'new' &&
-        finding.incidentId === null,
-    ).length;
+  const incidents = initialIncidents();
+  const towerCounts = (tenantId: string) => {
+    const open = incidentSummaries(tenantId, findings, incidents).filter(
+      (incident) => incident.status !== 'resolved',
+    );
+    const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const incident of open) bySeverity[incident.severity] += 1;
+    return {
+      openIncidents: bySeverity,
+      unassignedIncidents: open.filter((incident) => incident.assignee === null).length,
+      untriagedFindings: (findings.get(tenantId) ?? []).filter(
+        (finding) =>
+          (finding.severity === 'critical' || finding.severity === 'high') &&
+          finding.status === 'new' &&
+          finding.incidentId === null,
+      ).length,
+    };
+  };
   return [
     ...createAuthHandlers(state),
     ...createFindingHandlers(state, findings),
+    ...createIncidentHandlers(state, findings, incidents),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
@@ -65,7 +78,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
       return HttpResponse.json(
         demoTower(state.me.scopeTenantId, {
           includeUnowned: state.me.role === 'admin_verax',
-          untriagedFindings: untriaged(state.me.scopeTenantId),
+          ...towerCounts(state.me.scopeTenantId),
         }),
       );
     }),

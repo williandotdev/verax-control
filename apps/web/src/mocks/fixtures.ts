@@ -49,50 +49,50 @@ const minutesAgo = (now: Date, minutes: number): string =>
 
 /**
  * Torre de cada cliente fictício. A Alfa tem o que mostrar numa apresentação (incidente crítico, decisões
- * pendentes, postura baixa e uma conta silenciosa); a Beta está tranquila, para comparar. A contagem de achados sem
- * triagem vem do estado do mock, para a Torre acompanhar a triagem feita na tela de Achados.
+ * pendentes, postura baixa e uma conta silenciosa); a Beta está tranquila, para comparar. As contagens de achados e
+ * incidentes vêm do estado do mock, para a Torre acompanhar a triagem feita nas outras telas; o semáforo segue a
+ * regra da T5.10 (vermelho com incidente crítico aberto; amarelo com alto aberto ou postura abaixo de 70).
  */
 export function demoTower(
   tenantId: string,
-  options: { includeUnowned: boolean; untriagedFindings?: number; now?: Date },
+  options: {
+    includeUnowned: boolean;
+    untriagedFindings?: number;
+    openIncidents?: TowerSummary['openIncidents'];
+    unassignedIncidents?: number;
+    now?: Date;
+  },
 ): TowerSummary {
   const now = options.now ?? new Date();
-  const untriaged = options.untriagedFindings ?? (tenantId === ALFA ? 5 : 0);
-  if (tenantId !== ALFA) {
-    return towerSummarySchema.parse({
-      light: 'green',
-      reasons: [],
-      pendingDecisions: [
-        { kind: 'untriaged_finding', count: untriaged },
-        { kind: 'unowned_alert', count: options.includeUnowned ? 3 : 0 },
-      ].filter((decision) => decision.count > 0),
-      openIncidents: { critical: 0, high: 0, medium: 1, low: 2 },
-      posture: { score: 91, scannedAt: minutesAgo(now, 7 * 60), warningBelow: 70 },
-      coverage: {
-        connectedAccounts: 1,
-        lastEventAt: minutesAgo(now, 1),
-        silentAccounts: [],
-        silentAfterHours: 24,
-      },
-      generatedAt: now.toISOString(),
-    });
-  }
+  const alfa = tenantId === ALFA;
+  const open =
+    options.openIncidents ??
+    (alfa ? { critical: 1, high: 2, medium: 3, low: 0 } : { critical: 0, high: 0, medium: 1, low: 0 });
+  const score = alfa ? 64 : 91;
+  const warningBelow = 70;
+  const reasons = [
+    ...(open.critical > 0 ? ['critical_incident' as const] : []),
+    ...(open.high > 0 ? ['high_incident' as const] : []),
+    ...(score < warningBelow ? ['low_posture' as const] : []),
+  ];
   return towerSummarySchema.parse({
-    light: 'red',
-    reasons: ['critical_incident', 'high_incident', 'low_posture'],
+    light: reasons.includes('critical_incident') ? 'red' : reasons.length > 0 ? 'yellow' : 'green',
+    reasons,
     pendingDecisions: [
-      { kind: 'unassigned_incident', count: 2 },
-      { kind: 'untriaged_finding', count: untriaged },
+      { kind: 'unassigned_incident', count: options.unassignedIncidents ?? (alfa ? 2 : 0) },
+      { kind: 'untriaged_finding', count: options.untriagedFindings ?? (alfa ? 5 : 0) },
       { kind: 'unowned_alert', count: options.includeUnowned ? 3 : 0 },
     ].filter((decision) => decision.count > 0),
-    openIncidents: { critical: 1, high: 2, medium: 3, low: 1 },
-    posture: { score: 64, scannedAt: minutesAgo(now, 6 * 60), warningBelow: 70 },
-    coverage: {
-      connectedAccounts: 2,
-      lastEventAt: minutesAgo(now, 3),
-      silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao],
-      silentAfterHours: 24,
-    },
+    openIncidents: open,
+    posture: { score, scannedAt: minutesAgo(now, alfa ? 6 * 60 : 7 * 60), warningBelow },
+    coverage: alfa
+      ? {
+          connectedAccounts: 2,
+          lastEventAt: minutesAgo(now, 3),
+          silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao],
+          silentAfterHours: 24,
+        }
+      : { connectedAccounts: 1, lastEventAt: minutesAgo(now, 1), silentAccounts: [], silentAfterHours: 24 },
     generatedAt: now.toISOString(),
   });
 }

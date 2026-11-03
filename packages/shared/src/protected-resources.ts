@@ -70,6 +70,7 @@ export type ProtectedResourceListQuery = z.infer<typeof protectedResourceListQue
 
 /** Quem incluiu ou criou um item, como aparece para o cliente. */
 export const authorSchema = z.strictObject({ id: z.string(), name: z.string() });
+export type Author = z.infer<typeof authorSchema>;
 
 export const protectedResourceSchema = z.strictObject({
   id: z.uuid(),
