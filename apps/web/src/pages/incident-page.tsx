@@ -77,7 +77,7 @@ function IncidentView({ incident, canWrite }: { incident: IncidentDetail; canWri
   return (
     <>
       <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">{incidentTitle(incident)}</h1>
+        <h1 className="text-2xl font-semibold wrap-anywhere">{incidentTitle(incident)}</h1>
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
           <SeverityBadge severity={incident.severity} />
           <IncidentStatusBadge status={incident.status} />
@@ -90,7 +90,7 @@ function IncidentView({ incident, canWrite }: { incident: IncidentDetail; canWri
       </header>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
           <Card aria-labelledby="incidente-resumo">
             <CardHeader>
               <CardTitle id="incidente-resumo">Resumo</CardTitle>
@@ -123,7 +123,7 @@ function IncidentView({ incident, canWrite }: { incident: IncidentDetail; canWri
           </Card>
         </div>
 
-        <div className="space-y-4">
+        <div className="min-w-0 space-y-4">
           <StatusAndAssignee incident={incident} canWrite={canWrite} />
 
           <Card aria-labelledby="incidente-ativos">

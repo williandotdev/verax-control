@@ -1,11 +1,12 @@
 import { X } from 'lucide-react';
 import { Dialog } from 'radix-ui';
-import type { ReactNode } from 'react';
+import { type ReactNode, useRef } from 'react';
 import { Button } from './button';
 
 /**
  * Painel lateral para o detalhe de um item da lista. É um diálogo acessível: o foco fica preso no painel, Esc ou o
- * botão fecham, e o foco volta para quem abriu.
+ * botão fecham, e o foco volta para quem abriu. O painel abre pela URL (sem gatilho do Radix), então ele mesmo guarda
+ * o elemento em foco ao abrir e o devolve ao fechar.
  */
 export function Sheet({
   open,
@@ -20,12 +21,21 @@ export function Sheet({
   description?: ReactNode;
   children: ReactNode;
 }) {
+  const opener = useRef<HTMLElement | null>(null);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-foreground/30" />
         <Dialog.Content
           {...(description ? {} : { 'aria-describedby': undefined })}
+          onOpenAutoFocus={() => {
+            opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            if (opener.current?.isConnected) opener.current.focus();
+            opener.current = null;
+          }}
           className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l bg-surface shadow-lg focus:outline-none"
         >
           <header className="flex items-start justify-between gap-3 border-b px-5 py-4">

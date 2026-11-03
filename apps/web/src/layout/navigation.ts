@@ -7,7 +7,6 @@ import {
   Cloud,
   FileSearch,
   type LucideIcon,
-  ScrollText,
   ShieldAlert,
   ShieldCheck,
   ShieldPlus,
@@ -27,7 +26,10 @@ export interface NavGroup {
   items: NavItem[];
 }
 
-/** Menu lateral. Cada página do E7 entra aqui com a permissão que a API exige para os seus dados. */
+/**
+ * Menu lateral. Cada página do E7 entra aqui com a permissão que a API exige para os seus dados. A auditoria volta
+ * ao menu quando a API tiver o endpoint de listagem (a trilha já é gravada desde a T1.3).
+ */
 export const NAVIGATION: NavGroup[] = [
   {
     label: 'Operação',
@@ -52,7 +54,6 @@ export const NAVIGATION: NavGroup[] = [
         permission: 'protected_resources:read',
       },
       { to: '/cadastros/excecoes', label: 'Exceções', icon: BellOff, permission: 'alert_exceptions:read' },
-      { to: '/auditoria', label: 'Auditoria', icon: ScrollText, permission: 'audit:read' },
     ],
   },
 ];

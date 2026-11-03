@@ -8,6 +8,7 @@ import { authErrorMessage, safeRedirect, signIn } from '@/features/auth/auth-api
 import { AuthShell, FormError, FormNotice } from '@/features/auth/auth-shell';
 import { ME_QUERY_KEY } from '@/features/session/session';
 import { api } from '@/lib/api';
+import { DemoLoginHint } from '@/components/demo-banner';
 
 interface LoginState {
   from?: unknown;
@@ -75,6 +76,7 @@ export function LoginPage() {
         <Link to="/esqueci-senha" className="block text-center text-sm underline">
           Esqueci a senha
         </Link>
+        <DemoLoginHint />
       </form>
     </AuthShell>
   );

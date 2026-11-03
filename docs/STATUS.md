@@ -1288,3 +1288,29 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - a varredura continua igual;
   - o job de build do CI agora também compila a demonstração (`build:demo`), com a mesma varredura, para que o erro apareça no PR.
 - **Testes:** os testes de Ativos, Achados e Incidentes conferem os novos IDs. O `build:demo` local passa na varredura.
+
+## T7.12 Revisão de UX
+
+- **Arquivos:** `apps/web/e2e/pages.mock.spec.ts`, `apps/web/e2e/layout.mock.spec.ts`, `apps/web/e2e/fullstack/auth.fullstack.spec.ts`, `apps/web/src/components/ui/sheet.tsx`, `apps/web/src/components/demo-banner.tsx` (+ teste), `apps/web/src/pages/login-page.tsx`, `apps/web/src/layout/navigation.ts` (+ teste)
+- **Dependências:** nenhuma (axe e Playwright já estavam no projeto).
+- **Como funciona:**
+  - **Acessibilidade conferida no navegador:** o axe roda em todas as 12 telas e nos painéis de detalhe (achado e checagem), com as regras WCAG 2.2 AA, inclusive contraste. Nenhuma violação.
+  - **Celular:** nenhuma tela rola na horizontal a 360 px; as tabelas rolam dentro do próprio quadro.
+    - O CI (fontes do Linux, mais largas) pegou o detalhe do incidente passando 8 px. A causa era um tipo de achado do GuardDuty, um token longo sem espaço, que alargava a grade.
+    - A linha do tempo e o título agora quebram esses tokens quando não cabem, e as colunas da grade aceitam encolher.
+    - Em 360 px, a Postura passava 13 px: a tabela do gráfico, só para leitor de tela, tinha o `sr-only` no próprio `<table>`. Tabela ignora a largura de 1 px e crescia com o texto. O `sr-only` foi para um `div` em volta.
+    - O teste agora aponta o elemento que passa da tela, e não só os pixels.
+  - **Teclado:**
+    - o painel de detalhe abre com Enter, prende o foco e fecha com Esc;
+    - o foco volta para quem abriu. Isso estava quebrado: o painel abre pela URL, sem gatilho do Radix, e o foco ia para o corpo da página, de modo que quem navega por teclado perdia o lugar na lista. Agora o próprio painel guarda o elemento em foco ao abrir e o devolve ao fechar.
+  - **Estados:** todas as telas e painéis têm carregando, vazio e erro (com "Tentar de novo" e o código para o suporte).
+  - **Auditoria fora do menu:** a trilha é gravada desde a T1.3, mas a API não tem o endpoint de listagem. Uma tela "Em construção" no menu atrapalha a apresentação. Volta junto com o endpoint.
+  - **Demonstração:** a tela de login mostra o acesso de exemplo, para quem sair durante uma apresentação conseguir voltar. As credenciais só funcionam no mock; o teste confere que são as mesmas que o mock aceita.
+- **Testes:**
+  - 15 novos no navegador: 12 telas, painéis, teclado e celular;
+  - 3 unitários do acesso de demonstração.
+
+  Os testes de permissão que usavam a rota da auditoria agora usam a tela de clientes.
+
+- **Definição de pronto:** critérios de aceite ✔ (estados vazio, carregando e erro; textos em português; uso no celular; contraste e teclado) · testes ✔ · lint ✔ · dependências ✔
+- **Pendente:** a tela de auditoria (endpoint de listagem na API e tela).

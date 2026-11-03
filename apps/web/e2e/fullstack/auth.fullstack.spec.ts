@@ -94,7 +94,7 @@ test.describe('autenticação contra a API real', () => {
     const { email } = fixtures().users.leituraA;
     await firstLoginWithMfaEnrollment(page, email);
 
-    await page.goto('/auditoria');
+    await page.goto('/cadastros/clientes');
     await expect(page.getByRole('heading', { name: 'Sem permissão' })).toBeVisible();
 
     // Mesmo chamando a API direto do navegador, com sessão e token CSRF válidos, a ação é negada.

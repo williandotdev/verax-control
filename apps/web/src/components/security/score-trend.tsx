@@ -171,23 +171,27 @@ export function ScoreTrend({
           {dateLabel(shown.date)} · nota <strong>{shown.score}</strong>
         </div>
       )}
-      <table id={tableId} className="sr-only">
-        <caption>{label}</caption>
-        <thead>
-          <tr>
-            <th scope="col">Data</th>
-            <th scope="col">Nota</th>
-          </tr>
-        </thead>
-        <tbody>
-          {points.map((point) => (
-            <tr key={point.date}>
-              <td>{dateLabel(point.date)}</td>
-              <td>{point.score}</td>
+      {/* O sr-only fica num div: uma tabela ignora a largura de 1 px e, com as fontes mais largas, passava da
+          tela no celular. */}
+      <div className="sr-only">
+        <table id={tableId}>
+          <caption>{label}</caption>
+          <thead>
+            <tr>
+              <th scope="col">Data</th>
+              <th scope="col">Nota</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {points.map((point) => (
+              <tr key={point.date}>
+                <td>{dateLabel(point.date)}</td>
+                <td>{point.score}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </figure>
   );
 }
