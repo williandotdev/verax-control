@@ -430,6 +430,10 @@ model SyncState {
   name            String    @id @db.VarChar(32)
   /// Horário do alerta mais recente já processado; a próxima execução relê a partir dele, menos a sobreposição.
   lastProcessedAt DateTime? @db.Timestamptz(3)
+  /// Continuação: quando uma execução bate o limite de páginas, a próxima segue deste cursor (horário e id), em vez
+  /// de reler a sobreposição, que sozinha poderia ocupar todo o limite e travar a leitura.
+  cursorTimestamp DateTime? @db.Timestamptz(3)
+  cursorId        String?   @db.VarChar(128)
   lastRunAt       DateTime? @db.Timestamptz(3)
   lastSuccessAt   DateTime? @db.Timestamptz(3)
   /// Tipo do último erro, sem mensagem (que poderia carregar dado do indexer).

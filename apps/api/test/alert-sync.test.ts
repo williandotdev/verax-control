@@ -25,12 +25,17 @@ function wazuhTime(at: Date): string {
 class FakeIndexer implements AlertSearchClient {
   requests: AlertSearch[] = [];
   failWith: Error | null = null;
+  /** Falha só a partir desta chamada (1 é a primeira): simula o indexer caindo no meio de uma execução. */
+  failFromCall: number | null = null;
 
   constructor(private readonly documents: Record<string, unknown>[]) {}
 
   search(request: AlertSearch): Promise<AlertHit[]> {
     this.requests.push(request);
     if (this.failWith) return Promise.reject(this.failWith);
+    if (this.failFromCall !== null && this.requests.length >= this.failFromCall) {
+      return Promise.reject(new Error('indexer caiu no meio'));
+    }
     const body = request.body as {
       size: number;
       search_after?: [string, string];
@@ -287,11 +292,58 @@ describe('sync de alertas para achados (T5.3)', () => {
     expect(indexer.requests).toHaveLength(2);
 
     const second = await sync.runOnce();
-    // Sem sobreposição, a janela começa no último processado (inclusive): ele volta como duplicado.
-    expect(second).toMatchObject({ created: 1, duplicates: 1 });
+    // A execução anterior bateu o limite: esta segue do cursor dela, sem reler o que já foi lido.
+    expect(second).toMatchObject({ read: 1, created: 1, duplicates: 0 });
     expect(
       await prisma.finding.count({ where: { sourceEventId: { in: docs.map((doc) => String(doc['id'])) } } }),
     ).toBe(5);
+  });
+
+  it('sobreposição maior que o limite de páginas não trava a leitura: a continuação avança', async () => {
+    // Seis alertas em dez minutos, páginas de dois e limite de duas páginas, com a sobreposição padrão (dez
+    // minutos): sem a continuação, toda execução relia os mesmos quatro e parava no quarto.
+    const docs = [9, 8, 7, 6, 5, 4].map((minutesAgo) => trailAlertA(minutesAgo));
+    const settings = { ...DEFAULT_SYNC_SETTINGS, pageSize: 2 };
+    const sync = syncFor(new FakeIndexer(docs), { settings, maxPages: 2 });
+    const ids = docs.map((doc) => String(doc['id']));
+
+    expect(await sync.runOnce()).toMatchObject({ created: 4 });
+    expect(await sync.runOnce()).toMatchObject({ created: 2 });
+    expect(await prisma.finding.count({ where: { sourceEventId: { in: ids } } })).toBe(6);
+    // Com a leitura em dia, a execução seguinte volta a reler a sobreposição, sem duplicar.
+    expect(await sync.runOnce()).toMatchObject({ created: 0 });
+  });
+
+  it('depois de uma falha no meio, a nova tentativa grava o último evento da conta', async () => {
+    const tenant = await createTenant(app, 'Cliente com falha no meio');
+    const account = String(randomInt(100_000_000_000, 999_999_999_999));
+    const bucket = `trilha-falha-${randomInt(1e6, 9e6)}`;
+    await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenant,
+        accountId: account,
+        regions: ['sa-east-1'],
+        externalId: 'w'.repeat(43),
+        cloudtrailBucket: bucket,
+      },
+    });
+    const alert = cloudTrailAlert({ account, bucket });
+    const at = new Date(Date.now() - 3 * MINUTE);
+    const doc = { ...alert, id: `falha.${randomInt(1e6, 9e6)}`, timestamp: wazuhTime(at) };
+    const settings = { ...DEFAULT_SYNC_SETTINGS, pageSize: 1 };
+    const name = `teste-${randomUUID().slice(0, 8)}`;
+
+    // A primeira página grava o achado; a segunda falha, e a execução não chega a gravar o último evento.
+    const broken = new FakeIndexer([doc]);
+    broken.failFromCall = 2;
+    await expect(new AlertSync(prisma, broken, { name, settings }).runOnce()).rejects.toThrow();
+    const stored = () => prisma.cloudAccount.findFirstOrThrow({ where: { accountId: account } });
+    expect((await stored()).lastEventAt).toBeNull();
+
+    // Na nova tentativa, o achado volta como duplicado, e o último evento é gravado mesmo assim.
+    const report = await new AlertSync(prisma, new FakeIndexer([doc]), { name, settings }).runOnce();
+    expect(report).toMatchObject({ created: 0, duplicates: 1 });
+    expect((await stored()).lastEventAt?.toISOString()).toBe(at.toISOString());
   });
 
   it('outro worker com a concessão em vigor: a execução não lê nada', async () => {

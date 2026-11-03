@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { UnownedReason as DbUnownedReason } from '../generated/prisma/client.js';
-import type { AlertSearch } from '../indexer/alert-queries.js';
+import type { AlertCursor, AlertSearch } from '../indexer/alert-queries.js';
 import type { AlertHit } from '../indexer/indexer.client.js';
 import { AccountDirectory, type RegisteredAwsAccount, resolveAlertOwner } from './alert-owner.js';
 import { type ActiveException, matchingException } from './exception-match.js';
@@ -128,9 +128,16 @@ export class AlertSync {
       const exceptions = await this.activeExceptions(now);
       const lastEvents = new Map<string, { tenantId: string; accountId: string; at: Date }>();
       let lastProcessedAt = state.lastProcessedAt;
-      const windowStart = syncWindowStart(lastProcessedAt?.toISOString() ?? null, now, this.settings);
+      // Uma execução anterior que bateu o limite de páginas deixou a continuação: segue dela. Sem isso, reler a
+      // sobreposição poderia ocupar todo o limite a cada execução, e a leitura não avançaria.
+      let cursor: AlertCursor | null =
+        state.cursorTimestamp && state.cursorId
+          ? { timestamp: state.cursorTimestamp.toISOString(), id: state.cursorId }
+          : null;
+      const windowStart =
+        cursor?.timestamp ?? syncWindowStart(lastProcessedAt?.toISOString() ?? null, now, this.settings);
 
-      let cursor = null;
+      let capped = true;
       for (let page = 0; page < this.maxPages; page += 1) {
         const hits = await this.indexer.search(syncPage(windowStart, cursor, this.settings));
         for (const hit of hits) {
@@ -143,9 +150,13 @@ export class AlertSync {
           const at = new Date(cursor.timestamp);
           if (lastProcessedAt === null || at > lastProcessedAt) lastProcessedAt = at;
         }
-        if (hits.length < this.settings.pageSize) break;
+        if (hits.length < this.settings.pageSize) {
+          capped = false;
+          break;
+        }
         await this.renewLease();
       }
+      const continuation = capped ? cursor : null;
 
       for (const { tenantId, accountId, at } of lastEvents.values()) {
         await this.prisma.forTenant(tenantId).cloudAccount.updateMany({
@@ -155,7 +166,14 @@ export class AlertSync {
       }
       await this.prisma.syncState.update({
         where: { name: this.name },
-        data: { lastProcessedAt, lastRunAt: now, lastSuccessAt: new Date(), lastError: null },
+        data: {
+          lastProcessedAt,
+          cursorTimestamp: continuation ? new Date(continuation.timestamp) : null,
+          cursorId: continuation?.id ?? null,
+          lastRunAt: now,
+          lastSuccessAt: new Date(),
+          lastError: null,
+        },
       });
       report.lastProcessedAt = lastProcessedAt?.toISOString() ?? null;
       return report;
@@ -195,6 +213,16 @@ export class AlertSync {
 
     const draft = toFindingDraft(alert, owner);
     const exception = matchingException(draft, exceptions.get(owner.tenantId) ?? [], now);
+
+    // O último evento da conta conta também os duplicados: depois de uma execução que falhou no meio, os achados já
+    // gravados voltam como duplicados, e é aqui que o `lastEventAt` deles é gravado.
+    const key = `${owner.tenantId}:${owner.accountId}`;
+    const at = new Date(draft.occurredAt);
+    const known = lastEvents.get(key);
+    if (!known || at > known.at) {
+      lastEvents.set(key, { tenantId: owner.tenantId, accountId: owner.accountId, at });
+    }
+
     const db = this.prisma.forTenant(owner.tenantId);
     const { count } = await db.finding.createMany({
       data: [findingRow(draft, exception)],
@@ -212,11 +240,6 @@ export class AlertSync {
         data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
       });
     }
-    const key = `${owner.tenantId}:${owner.accountId}`;
-    const at = new Date(draft.occurredAt);
-    const known = lastEvents.get(key);
-    if (!known || at > known.at)
-      lastEvents.set(key, { tenantId: owner.tenantId, accountId: owner.accountId, at });
   }
 
   /** Na dúvida, o alerta não é de ninguém (T5.2): a fila guarda o motivo e o mínimo para a triagem. */
