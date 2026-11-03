@@ -92,6 +92,8 @@ model Tenant {
   cloudAccounts      CloudAccount[]
   protectedResources ProtectedResource[]
   alertExceptions    AlertException[]
+  findings           Finding[]
+  findingComments    FindingComment[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -121,6 +123,7 @@ model User {
   usedTotpCodes      UsedTotpCode[]
   protectedResources ProtectedResource[]
   alertExceptions    AlertException[]
+  findingComments    FindingComment[]
 
   @@index([tenantId])
 }
@@ -310,4 +313,76 @@ model AlertException {
   updatedAt     DateTime            @updatedAt @db.Timestamptz(3)
 
   @@unique([tenantId, ruleId, field, value])
+}
+
+enum FindingSeverity {
+  critical
+  high
+  medium
+  low
+}
+
+enum FindingStatus {
+  new
+  investigating
+  legitimate
+  resolved
+}
+
+/// Achado (T5.3 a T5.5): alerta do Wazuh já vinculado a um cliente pela T5.2. Aqui ficam os campos que o painel
+/// mostra e os estados humanos (status e comentários); o evento bruto continua no indexer e só vem no detalhe.
+/// `(source, sourceEventId)` é único: o sync relê uma janela de sobreposição sem duplicar achados.
+model Finding {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  tenantId        String           @db.Uuid
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// Conta do provedor de onde veio o evento (12 dígitos, ID do projeto ou ID do Cloudflare).
+  accountId       String           @db.VarChar(32)
+  /// Sistema de origem do alerta (`wazuh`).
+  source          String           @db.VarChar(16)
+  /// ID do alerta no sistema de origem.
+  sourceEventId   String           @db.VarChar(128)
+  /// Fonte de log: `cloudtrail`, `guardduty`, `waf`.
+  logSource       String           @db.VarChar(32)
+  occurredAt      DateTime         @db.Timestamptz(3)
+  severity        FindingSeverity
+  status          FindingStatus    @default(new)
+  ruleId          String           @db.VarChar(6)
+  ruleLevel       Int              @db.SmallInt
+  /// Descrição da regra do Wazuh.
+  title           String           @db.VarChar(500)
+  eventName       String?          @db.VarChar(256)
+  region          String?          @db.VarChar(64)
+  resource        String?          @db.VarChar(2048)
+  actorUser       String?          @db.VarChar(512)
+  actorType       String?          @db.VarChar(64)
+  accessKeyId     String?          @db.VarChar(128)
+  sourceIp        String?          @db.VarChar(64)
+  mitreTactics    String[]
+  mitreTechniques String[]
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+  comments        FindingComment[]
+
+  @@unique([source, sourceEventId])
+  /// Alvo da chave composta dos comentários: o comentário só aponta para achado do mesmo cliente.
+  @@unique([id, tenantId])
+  @@index([tenantId, occurredAt(sort: Desc)])
+  @@index([tenantId, status])
+}
+
+/// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da
+/// decisão. A chave estrangeira inclui o cliente, então um comentário nunca aponta para achado de outro cliente.
+model FindingComment {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  tenantId  String   @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  findingId String   @db.Uuid
+  finding   Finding  @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  body      String   @db.VarChar(2000)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([findingId, createdAt])
 }

@@ -31,6 +31,8 @@ export interface CreateAppOptions {
   mailbox?: MailTransport;
   /** Módulos extras só de teste (ex.: controllers-sonda). */
   imports?: ModuleMetadata['imports'];
+  /** Providers trocados por dublês (ex.: o leitor de evento bruto do indexer). */
+  overrideProviders?: { provide: unknown; useValue: unknown }[];
 }
 
 /**
@@ -51,15 +53,18 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),
   });
-  const moduleRef = await Test.createTestingModule({
+  const builder = Test.createTestingModule({
     imports: [
       AppModule.register(config, { logger: { destination: options.capture ?? new LogCapture() } }),
       ...(options.imports ?? []),
     ],
   })
     .overrideProvider(MAIL_TRANSPORT)
-    .useValue(options.mailbox ?? new MemoryMailTransport())
-    .compile();
+    .useValue(options.mailbox ?? new MemoryMailTransport());
+  for (const { provide, useValue } of options.overrideProviders ?? []) {
+    builder.overrideProvider(provide).useValue(useValue);
+  }
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>(APP_CREATE_OPTIONS);
   configureApp(app, config);
   await app.init();
