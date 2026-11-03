@@ -57,7 +57,8 @@ bucket de backups (`verax-backup.timer`).
 
 ## Instalar ou atualizar
 
-Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados. O arquivo `node.conf` segue
+Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados e o Docker instalado (o `gh` lê a
+imagem no registro com as credenciais dele). O arquivo `node.conf` segue
 `infra/node/node.conf.example`, com os valores reais. Ele não é segredo, mas fica fora do repositório.
 
 ```bash
@@ -67,8 +68,8 @@ infra/node/bin/deploy.sh COMMIT caminho/para/node.conf
 `COMMIT` é o commit da `main` cujas imagens você quer rodar; ele aparece no resumo do workflow `Imagens do nó`. Para
 atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
 
-1. **Confere as imagens.** Na API do GitHub, verifica a atestação de origem de cada imagem: ela precisa ter sido
-   gerada pelo workflow `Imagens do nó` deste repositório, na `main`, a partir desse commit.
+1. **Confere as imagens.** Com `gh attestation verify`, confere a assinatura da atestação de origem de cada imagem e
+   quem a assinou: o workflow `Imagens do nó` deste repositório, na `main`, nesse commit, num executor do GitHub.
 2. **Copia o pacote para a VM** pelo IAP, sem porta aberta.
 3. **Instala pelo digest conferido.** A VM nunca confia em tag do registro.
 

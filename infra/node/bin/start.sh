@@ -46,9 +46,21 @@ database_url() { # <papel> <senha>
   printf 'postgresql://%s:%s@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt' "$1" "$2"
 }
 
-write_env() { # <arquivo> <linhas...>
-  printf '%s\n' "${@:2}" >"$run/$1"
-  chmod 0600 "$run/$1"
+# Cada linha vira CHAVE='valor': entre aspas simples, o Compose lê o valor literalmente, sem interpretar `$` (uma senha
+# com `$TOKEN` no meio chegaria trocada). Valor com aspa simples ou quebra de linha não cabe nesse formato: recusa.
+write_env() { # <arquivo> <CHAVE=valor...>
+  local file=$run/$1 line key value
+  : >"$file"
+  chmod 0600 "$file"
+  for line in "${@:2}"; do
+    key=${line%%=*}
+    value=${line#*=}
+    if [[ $value == *"'"* || $value == *$'\n'* || $value == *$'\r'* ]]; then
+      echo "Valor de $key com aspa simples ou quebra de linha: não cabe no arquivo de ambiente." >&2
+      return 1
+    fi
+    printf "%s='%s'\n" "$key" "$value" >>"$file"
+  done
 }
 
 render() {

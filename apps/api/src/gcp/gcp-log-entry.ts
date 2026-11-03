@@ -3,10 +3,14 @@ import { z } from 'zod';
 
 /**
  * Entrada do Cloud Logging como chega pelo Pub/Sub (o sink copia a `LogEntry` inteira, em JSON). Só os campos que as
- * regras usam são validados, cada texto com tamanho máximo: o resto é descartado, e nada do evento bruto é gravado.
+ * regras usam são lidos: o resto é descartado, e nada do evento bruto é gravado.
+ *
+ * Texto grande demais é cortado, não recusado: senão bastaria a quem ataca um User-Agent enorme ou centenas de chaves
+ * de metadados para o evento inteiro virar "inválido" e escapar das regras. O tamanho total já é limitado pelo próprio
+ * Cloud Logging (256 KB por entrada).
  */
 
-const text = (max: number) => z.string().max(max);
+const text = (max: number) => z.string().transform((value) => value.slice(0, max));
 
 const bindingDeltaSchema = z.object({
   action: text(32).optional(),
@@ -25,9 +29,9 @@ const auditConfigDeltaSchema = z.object({
  * os nomes das chaves aparecem aqui (`protoPayload.metadata.*MetadataDelta`).
  */
 const metadataDeltaSchema = z.object({
-  addedMetadataKeys: z.array(text(256)).max(200).optional(),
-  modifiedMetadataKeys: z.array(text(256)).max(200).optional(),
-  deletedMetadataKeys: z.array(text(256)).max(200).optional(),
+  addedMetadataKeys: z.array(text(256)).optional(),
+  modifiedMetadataKeys: z.array(text(256)).optional(),
+  deletedMetadataKeys: z.array(text(256)).optional(),
 });
 
 const auditLogSchema = z.object({
@@ -59,8 +63,8 @@ const auditLogSchema = z.object({
     .object({
       policyDelta: z
         .object({
-          bindingDeltas: z.array(bindingDeltaSchema).max(1000).optional(),
-          auditConfigDeltas: z.array(auditConfigDeltaSchema).max(200).optional(),
+          bindingDeltas: z.array(bindingDeltaSchema).optional(),
+          auditConfigDeltas: z.array(auditConfigDeltaSchema).optional(),
         })
         .optional(),
     })
@@ -68,7 +72,10 @@ const auditLogSchema = z.object({
 });
 
 export const logEntrySchema = z.object({
-  insertId: text(256).min(1),
+  insertId: z
+    .string()
+    .min(1)
+    .transform((value) => value.slice(0, 256)),
   logName: text(512),
   timestamp: z.iso.datetime({ offset: true }),
   severity: text(32).optional(),
@@ -84,7 +91,8 @@ export const logEntrySchema = z.object({
    */
   operation: z
     .object({
-      id: text(256).optional(),
+      id: text(4096).optional(),
+      producer: text(512).optional(),
       first: z.boolean().optional(),
       last: z.boolean().optional(),
     })

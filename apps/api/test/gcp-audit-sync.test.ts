@@ -318,7 +318,9 @@ describe('sync da auditoria da GCP para achados', () => {
     );
     expect(await syncFor(pubsub).runOnce()).toMatchObject({ created: 1, duplicates: 1 });
     expect(
-      await prisma.finding.count({ where: { sourceEventId: `${projectA}/operacao:${operation}` } }),
+      await prisma.finding.count({
+        where: { accountId: projectA, sourceEventId: { startsWith: `${projectA}/operacao:` } },
+      }),
     ).toBe(1);
   });
 

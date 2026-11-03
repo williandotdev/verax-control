@@ -57,6 +57,8 @@ if [[ -n $config ]]; then
   install -m 0640 "$config" /etc/verax/node.conf
 fi
 [[ -f /etc/verax/node.conf ]] || { echo 'Falta a configuração: rode com --config <node.conf>.' >&2; exit 2; }
+# Um node.conf salvo no Windows chega com CRLF; o \r grudaria em cada valor.
+sed -i 's/\r$//' /etc/verax/node.conf
 # shellcheck source=/dev/null
 source /etc/verax/node.conf
 for key in VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SMTP_HOST SMTP_PORT \

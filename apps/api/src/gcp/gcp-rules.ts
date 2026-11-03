@@ -92,7 +92,12 @@ interface FirewallRequest {
   sourceRanges?: unknown;
   alloweds?: unknown;
   allowed?: unknown;
+  denieds?: unknown;
+  denied?: unknown;
+  disabled?: unknown;
 }
+
+const nonEmpty = (value: unknown) => Array.isArray(value) && value.length > 0;
 
 function firewallRequest(log: AuditLog): FirewallRequest {
   return log.request ?? {};
@@ -102,7 +107,12 @@ function firewallRequest(log: AuditLog): FirewallRequest {
 function opensToInternet(log: AuditLog): boolean {
   if (!succeeded(log) || !/compute\.firewalls\.(insert|patch|update)$/.test(method(log))) return false;
   const request = firewallRequest(log);
-  if (request.direction === 'EGRESS') return false;
+  if (request.direction === 'EGRESS' || request.disabled === true) return false;
+  // Só regra de liberação expõe: uma de bloqueio (DENY) com origem 0.0.0.0/0 protege. Numa alteração (patch) que
+  // só troca a origem, a lista de liberação não vem no request, e a regra conta enquanto não for de bloqueio.
+  const allows = nonEmpty(request.alloweds ?? request.allowed);
+  const denies = nonEmpty(request.denieds ?? request.denied);
+  if (denies || (!allows && method(log).endsWith('.insert'))) return false;
   const ranges = Array.isArray(request.sourceRanges) ? request.sourceRanges : [];
   return ranges.some((range) => typeof range === 'string' && OPEN_TO_INTERNET.has(range));
 }
@@ -142,9 +152,13 @@ function changesSshAccess(log: AuditLog): boolean {
       [...(delta?.addedMetadataKeys ?? []), ...(delta?.modifiedMetadataKeys ?? [])].some((key) =>
         SSH_KEYS.has(key),
       ) ||
-      [...(delta?.modifiedMetadataKeys ?? []), ...(delta?.deletedMetadataKeys ?? [])].some((key) =>
-        SSH_GUARDS.has(key),
-      ),
+      // A proteção conta em qualquer mudança, inclusive incluída: `enable-oslogin=FALSE` posto numa VM desliga o OS
+      // Login dela mesmo com o projeto ligado, e o valor vem redigido (não dá para saber se é TRUE ou FALSE).
+      [
+        ...(delta?.addedMetadataKeys ?? []),
+        ...(delta?.modifiedMetadataKeys ?? []),
+        ...(delta?.deletedMetadataKeys ?? []),
+      ].some((key) => SSH_GUARDS.has(key)),
   );
 }
 
@@ -387,13 +401,22 @@ export function gcpEventIdFor(entry: LogEntry, project: string, rule: GcpRule): 
       .map((binding) => `${binding.role}=${binding.member}`)
       .sort()
       .join(',');
+    // O dia (UTC) entra na chave: reenviar a mesma política no mesmo dia não duplica, mas a mesma concessão feita de
+    // novo depois de revogada, em outro dia, volta a ser um achado.
+    const day = new Date(entry.timestamp).toISOString().slice(0, 10);
     const digest = createHash('sha256')
-      .update(`${rule.id}|${log.resourceName ?? ''}|${granted}`)
+      .update(`${rule.id}|${log.resourceName ?? ''}|${granted}|${day}`)
       .digest('hex');
     return `${project}/politica:${digest.slice(0, 40)}`;
   }
   const operation = entry.operation?.id;
-  if (operation) return `${project}/operacao:${operation}`.slice(0, MAX_EVENT_ID);
+  if (operation) {
+    // Só ID e produtor juntos são únicos; a regra entra para início e fim que casem regras diferentes não se anularem.
+    const digest = createHash('sha256')
+      .update(`${entry.operation?.producer ?? ''}|${operation}|${rule.id}`)
+      .digest('hex');
+    return `${project}/operacao:${digest.slice(0, 40)}`;
+  }
   return gcpEventId(project, entry.insertId);
 }
 

@@ -1652,3 +1652,15 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Postgres:** healthcheck por TCP, com tempo de partida.
   - **Imagens conferidas:** o `deploy.sh` confere no GitHub a atestação de cada imagem (workflow, `main` e commit) e instala pelo digest; a VM não confia em tag.
   - **Roteiro:** o primeiro acesso roda dentro da sessão SSH, e a cópia antiga é apagada antes da nova.
+
+  Depois da verificação das correções e do Codex:
+  - **Entrada da GCP:** texto grande demais é cortado, não recusado, e as listas não têm limite de quantidade (o Cloud Logging limita a entrada a 256 KB). Assim, um User-Agent enorme ou centenas de chaves de metadados não escondem o evento.
+  - **`enable-oslogin` incluído na VM** também conta.
+  - **Firewall:** só regra de liberação ativa expõe. Bloqueio (DENY) ou regra desativada, não.
+  - **Política sem delta:** o ID estável inclui o dia (UTC), para uma concessão refeita depois de revogada voltar a ser achado.
+  - **Operação longa:** o ID é o hash de produtor, ID da operação e regra (sem corte que junte operações diferentes).
+  - **Arquivos de ambiente:** valores entre aspas simples (o Compose não interpreta `$`).
+  - **`deploy.sh`:**
+    - confere a atestação com `gh attestation verify`: assinatura e identidade do workflow, `main`, commit e executor do GitHub;
+    - copia com caminho relativo (o pscp do Windows não expande `~`);
+    - aceita `node.conf` com CRLF.

@@ -142,6 +142,27 @@ describe('regras da auditoria da GCP', () => {
       null,
     ],
     [
+      'regra de bloqueio (DENY) vinda da internet protege, não expõe',
+      {
+        methodName: 'v1.compute.firewalls.insert',
+        request: { sourceRanges: ['0.0.0.0/0'], denieds: [{ IPProtocol: 'all' }] },
+      },
+      null,
+    ],
+    [
+      'regra aberta criada desativada não expõe',
+      {
+        methodName: 'v1.compute.firewalls.insert',
+        request: { sourceRanges: ['0.0.0.0/0'], alloweds: [{ IPProtocol: 'all' }], disabled: true },
+      },
+      null,
+    ],
+    [
+      'alteração que só abre a origem de uma regra existente expõe',
+      { methodName: 'v1.compute.firewalls.patch', request: { sourceRanges: ['0.0.0.0/0'] } },
+      '990109',
+    ],
+    [
       'firewall interno não conta',
       {
         methodName: 'v1.compute.firewalls.insert',
@@ -164,6 +185,26 @@ describe('regras da auditoria da GCP', () => {
       {
         methodName: 'v1.compute.instances.setMetadata',
         metadata: { instanceMetadataDelta: { addedMetadataKeys: ['ssh-keys'] } },
+      },
+      '990111',
+    ],
+    [
+      'OS Login posto na VM (enable-oslogin=FALSE na VM desliga o do projeto; o valor vem redigido)',
+      {
+        methodName: 'v1.compute.instances.setMetadata',
+        metadata: { instanceMetadataDelta: { addedMetadataKeys: ['enable-oslogin'] } },
+      },
+      '990111',
+    ],
+    [
+      'chave SSH escondida no meio de centenas de chaves de metadados',
+      {
+        methodName: 'v1.compute.projects.setCommonInstanceMetadata',
+        metadata: {
+          projectMetadataDelta: {
+            addedMetadataKeys: [...Array.from({ length: 300 }, (_, index) => `lixo-${index}`), 'ssh-keys'],
+          },
+        },
       },
       '990111',
     ],
@@ -257,9 +298,16 @@ describe('leitura da mensagem do Pub/Sub', () => {
     expect(parseLogMessage(encode({ insertId: 'abc', logName: 1 }))).toEqual({ ok: false, insertId: 'abc' });
   });
 
-  it('texto grande demais é recusado (entrada externa com limite)', () => {
-    const entry = auditEntry({ methodName: 'x'.repeat(300) });
-    expect(parseLogMessage(encode(entry)).ok).toBe(false);
+  it('texto grande demais é cortado, não recusado: um User-Agent enorme não esconde o evento das regras', () => {
+    const entry = auditEntry({ methodName: 'google.iam.admin.v1.CreateServiceAccountKey' }) as {
+      protoPayload: { requestMetadata: { callerSuppliedUserAgent: string } };
+    };
+    entry.protoPayload.requestMetadata.callerSuppliedUserAgent = 'x'.repeat(50_000);
+    const parsed = parseLogMessage(encode(entry));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.entry.protoPayload?.requestMetadata?.callerSuppliedUserAgent).toHaveLength(4096);
+    expect(detect(parsed.entry.protoPayload)?.id).toBe('990106');
   });
 });
 
@@ -279,8 +327,38 @@ describe('um acontecimento, um achado', () => {
       methodName: 'v1.compute.firewalls.delete',
       operation: { id: 'operation-123', last: true },
     });
-    expect(start).toBe('projeto-alfa/operacao:operation-123');
+    expect(start?.startsWith('projeto-alfa/operacao:')).toBe(true);
+    expect(start).toHaveLength('projeto-alfa/operacao:'.length + 40);
     expect(end).toBe(start);
+  });
+
+  it('operação: IDs longos não se confundem pelo corte, e outra operação é outro achado', () => {
+    const prefix = `projects/123456789012/locations/global/workloadIdentityPools/github/providers/github-actions/operations/`;
+    const create = idOf({
+      methodName: 'google.iam.v1.WorkloadIdentityPools.CreateWorkloadIdentityPoolProvider',
+      operation: { id: `${prefix}aaaaaaaa` },
+    });
+    const update = idOf({
+      methodName: 'google.iam.v1.WorkloadIdentityPools.UpdateWorkloadIdentityPoolProvider',
+      operation: { id: `${prefix}bbbbbbbb` },
+    });
+    expect(create).not.toBe(update);
+    expect(
+      idOf({ methodName: 'v1.compute.firewalls.delete', operation: { id: 'x'.repeat(5000) } }),
+    ).toBeDefined();
+  });
+
+  it('operação: início e fim que casam regras diferentes não se anulam', () => {
+    const insert = idOf({
+      methodName: 'v1.compute.instances.insert',
+      operation: { id: 'op-1', first: true },
+    });
+    const denied = idOf({
+      methodName: 'v1.compute.instances.insert',
+      statusCode: 7,
+      operation: { id: 'op-1', last: true },
+    });
+    expect(insert).not.toBe(denied);
   });
 
   it('política de IAM sem delta: a mesma política reenviada dá o mesmo achado; outra, outro', () => {
@@ -297,6 +375,8 @@ describe('um acontecimento, um achado', () => {
     expect(
       idOf({ ...publicPolicy, resourceName: 'projects/projeto-alfa/locations/us-east1/services/outro' }),
     ).not.toBe(first);
+    // Concedido de novo em outro dia (depois de revogado, por exemplo): é outro achado.
+    expect(idOf({ ...publicPolicy, timestamp: '2026-11-05T09:00:00.000Z' })).not.toBe(first);
   });
 
   it('com delta, cada concessão é um achado (o evento é a própria mudança)', () => {
