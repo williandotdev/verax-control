@@ -1713,3 +1713,11 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Conta nasce sem acesso:** o usuário (e o primeiro admin) é criado como `invited` e só fica ativo junto com a senha, na mesma transação. Se ela falhar, sobra uma conta que não entra.
   - **Duas gerações simultâneas:** a linha do usuário é travada primeiro, sem duas contas de senha para a mesma pessoa.
   - **Fora:** a redefinição pelo link (só com e-mail ligado) não confere se a senha nova repete a temporária. O link chega só ao dono da conta, e a biblioteca não expõe a senha nesse ponto.
+
+## Correção: segredo ausente no nó e partida sem o túnel
+
+- **Problema (desde o pacote do nó):** com `set -e`, um `$(...)` usado como argumento de outro comando não interrompe o script quando falha. Os segredos lidos assim (senhas da sessão e do CSRF, senha do e-mail e token do túnel) saíam vazios no arquivo de ambiente, sem erro. Com o cofre do túnel vazio, o `cloudflared` subia com o token vazio e ficava reiniciando, ao contrário do que o roteiro dizia.
+- **Correção:**
+  - cada segredo é lido numa atribuição própria, e uma falha para a partida;
+  - sem o token do túnel, o nó sobe sem o `cloudflared`, com um aviso no journal. Banco, API e coleta rodam, e o primeiro acesso (bootstrap) já pode ser feito. Com o token gravado, `systemctl restart verax-node` liga o túnel.
+- **Testes:** shellcheck limpo; o comportamento do `set -e` foi conferido no bash (antes: seguia com o valor vazio e saía com 0; agora: sai com 1).

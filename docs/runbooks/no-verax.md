@@ -150,5 +150,8 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   - O remetente (`MAIL_FROM`) precisa ser a caixa autenticada ou um alias dela.
 - **A API não sobe por causa de um segredo.** `systemctl status verax-node` diz qual cofre está vazio. Grave o valor
   e reinicie.
+- **Sem o token do túnel.** O nó sobe sem o `cloudflared`: banco, API e coleta rodam, e o primeiro acesso (bootstrap)
+  já pode ser feito, mas o painel não alcança a API. O aviso aparece em `journalctl -u verax-node`. Grave o token e
+  rode `sudo systemctl restart verax-node`.
 - **IP de quem acessou, na auditoria.** A API confia em um proxy na frente, o Cloudflare (`TRUST_PROXY_HOPS=1`).
   Depois do primeiro login, confira na tela de Auditoria se aparece o seu IP, e não um do Cloudflare.

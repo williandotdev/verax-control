@@ -66,10 +66,14 @@ write_env() { # <arquivo> <CHAVE=valor...>
 render() {
   mkdir -p "$run"
   chmod 0700 "$run"
-  local master migrator app
+  # Cada segredo numa atribuição própria. Lido direto num argumento (`write_env x "K=$(...)"`), uma falha passaria pelo
+  # `set -e` sem parar nada, e o arquivo sairia com o valor vazio.
+  local master migrator app session_key csrf_key
   master=$(internal_secret postgres-master)
   migrator=$(internal_secret postgres-migrator)
   app=$(internal_secret postgres-app)
+  session_key=$(internal_secret better-auth-secret)
+  csrf_key=$(internal_secret csrf-secret)
 
   write_env postgres.env POSTGRES_USER=verax "POSTGRES_PASSWORD=$master" POSTGRES_DB=verax
   write_env db-bootstrap.env \
@@ -79,25 +83,35 @@ render() {
   write_env migrate.env NODE_ENV=production "DATABASE_URL=$(database_url verax_migrator "$migrator")"
   # E-mail opcional: contas novas nascem com senha temporária. Só com MAIL_TRANSPORT=smtp a senha da caixa de envio
   # é lida do cofre (e passa a ser obrigatória).
-  local mail=(MAIL_TRANSPORT=none "MAIL_FROM=$MAIL_FROM")
+  local mail=(MAIL_TRANSPORT=none "MAIL_FROM=$MAIL_FROM") smtp_password
   if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then
+    smtp_password=$(external_secret smtp-password)
     mail=(MAIL_TRANSPORT=smtp "MAIL_FROM=$MAIL_FROM" "SMTP_HOST=$SMTP_HOST" "SMTP_PORT=$SMTP_PORT"
-      "SMTP_USER=$SMTP_USER" "SMTP_PASSWORD=$(external_secret smtp-password)")
+      "SMTP_USER=$SMTP_USER" "SMTP_PASSWORD=$smtp_password")
   fi
   # TRUST_PROXY_HOPS=1: um proxy confiável na frente da API, o Cloudflare (o cloudflared só repassa).
   write_env api.env \
     NODE_ENV=production LOG_LEVEL=info PORT=3000 \
     "WEB_ORIGIN=$WEB_ORIGIN" "API_ORIGIN=$API_ORIGIN" \
     TRUST_PROXY_HOPS=1 \
-    "BETTER_AUTH_SECRET=$(internal_secret better-auth-secret)" \
-    "CSRF_SECRET=$(internal_secret csrf-secret)" \
+    "BETTER_AUTH_SECRET=$session_key" \
+    "CSRF_SECRET=$csrf_key" \
     "${mail[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "DATABASE_URL=$(database_url verax_app "$app")"
-  write_env cloudflared.env "TUNNEL_TOKEN=$(external_secret cloudflare-tunnel-token)"
+  # Túnel: sem o token, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa. Com o token gravado,
+  # `sudo systemctl restart verax-node` liga o túnel. O arquivo existe sempre (vazio sem o token): o Compose o exige.
+  local tunnel
+  if tunnel=$(external_secret cloudflare-tunnel-token); then
+    write_env cloudflared.env "TUNNEL_TOKEN=$tunnel"
+  else
+    write_env cloudflared.env
+    echo "AVISO: sem o token do túnel, o nó sobe sem o cloudflared e o painel não alcança a API. Grave o token" \
+      "(docs/runbooks/no-verax.md) e reinicie: sudo systemctl restart verax-node" >&2
+  fi
 }
 
 # Só o worker fala com o servidor de metadados da GCP, que entrega o token da VM (leitura das assinaturas, dos
@@ -125,7 +139,12 @@ up() {
   compose --profile setup run --rm migrate
   compose --profile setup run --rm db-bootstrap
   compose up --detach --wait api
-  compose up --detach worker cloudflared
+  compose up --detach worker
+  if [[ -s $run/cloudflared.env ]]; then
+    compose up --detach cloudflared
+  else
+    compose rm --stop --force cloudflared >/dev/null 2>&1 || true
+  fi
 }
 
 bootstrap() {
