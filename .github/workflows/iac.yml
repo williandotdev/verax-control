@@ -48,14 +48,14 @@ jobs:
           unzip -q -o tflint.zip tflint -d "$RUNNER_TEMP/bin" && rm tflint.zip
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Formatação
-        run: terraform fmt -check -recursive -diff infra/terraform
+        run: terraform fmt -check -recursive -diff infra/terraform infra/gcp
       - name: Validação (sem backend e sem credenciais)
         # O lock de cada raiz fixa os hashes do provider; um provider diferente do travado falha aqui.
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production; do
+          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production infra/gcp; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
@@ -69,6 +69,11 @@ jobs:
         run: |
           tflint --init --config "$PWD/.tflint.hcl"
           tflint --recursive --config "$PWD/.tflint.hcl" --format compact
+      - name: tflint (GCP)
+        working-directory: infra/gcp
+        run: |
+          tflint --init --config "$PWD/.tflint.hcl"
+          tflint --config "$PWD/.tflint.hcl" --format compact
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)

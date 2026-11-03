@@ -92,6 +92,9 @@ permite atribuir cada alerta ao cliente certo.
 
 ## SOC da própria Verax (fontes da GCP)
 
+A base do nó da Verax na GCP (rede sem IP público, VM, disco de dados com snapshot, conta de serviço sem chave,
+sink → Pub/Sub, segredos e bucket de backups) está em `infra/gcp/`, com o passo a passo em `infra/gcp/GUIA.md`.
+
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
 - **Cloud Logging:** auditoria (Admin Activity e acesso a dados, onde estiver ligado), requisições das APIs (Cloud

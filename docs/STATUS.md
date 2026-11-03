@@ -1431,3 +1431,28 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - a tela da fila sem dono para `admin_verax`;
   - o worker no pacote do nó;
   - as variáveis do worker (`SYNC_INTERVAL_SECONDS` e `INDEXER_*`) no `.env.example`, que o agente não lê por regra do projeto.
+
+## Base do nó da Verax na GCP (Terraform) e guia para subir
+
+- **Pedido:** o SOC da própria Verax roda na GCP. O usuário sobe a infraestrutura com Terraform, guiado passo a passo, para praticar; o agente escreve o código e não aplica nada.
+- **Arquivos:**
+  - `infra/gcp/*.tf`, `startup.sh`, `terraform.tfvars.example`, `.terraform.lock.hcl` e `.tflint.hcl`;
+  - `infra/gcp/GUIA.md`;
+  - `.github/workflows/iac.yml` (fmt, validate e tflint também em `infra/gcp`) e `.github/dependabot.yml`.
+- **Dependências:** provider `hashicorp/google` 8.9.0, versão exata, publicado em 27/10, fora da quarentena. O lock tem os hashes de Linux, Windows e macOS. Atende ao pedido do usuário de Terraform para a GCP.
+- **O que cria** (35 recursos, todos com o prefixo `verax-node`; nada existente muda):
+  - **Rede:** VPC própria, sub-rede com flow logs e acesso privado ao Google, e Cloud NAT. Uma regra de firewall libera só o SSH pelo IAP, para a conta de serviço do nó; outra recusa e registra todo o resto.
+  - **VM:** e2-standard-4 com Debian 12, sem IP público, com Shielded VM, OS Login, chaves de projeto bloqueadas, console serial desligado e proteção contra exclusão. O script de boot só formata (na primeira vez) e monta o disco de dados.
+  - **Disco de dados:** separado do sistema, com `prevent_destroy` e snapshot diário guardado por 14 dias.
+  - **Identidade:** conta de serviço sem chave, com só `logging.logWriter` e `monitoring.metricWriter` no projeto. Lê a assinatura e os próprios segredos por permissão no recurso. Quem opera recebe acesso só nesta VM.
+  - **Logs:** sink com auditoria e bloqueios do Cloud Armor para um tópico do Pub/Sub, com assinatura que nunca expira e 7 dias de retenção. As leituras do próprio nó no Pub/Sub ficam de fora, para não virar laço. É só cópia: nenhum log ou sink existente muda.
+  - **Segredos:** dois cofres vazios, a chave do Resend e o token do túnel do Cloudflare. O valor é gravado pelo usuário com o gcloud e nunca passa pelo estado.
+  - **Backups:** bucket privado e versionado, com acesso uniforme, exclusão recuperável por 7 dias e ciclo de vida de 90 dias. O nó cria e lê, mas não apaga nem sobrescreve.
+  - **Orçamento:** opcional, com avisos em 50%, 90% e 100% e na previsão de 100%.
+  - **APIs:** continuam ligadas ao desfazer, porque outras coisas do projeto podem depender delas.
+- **Verificação local:** `terraform validate`, `tflint` e shellcheck limpos. Trivy 0.76.1 só com achados baixos (chave própria nos discos e no bucket), e o CI barra só alta e crítica. Checkov 3.4.0 sem falhas, com 4 exceções justificadas no código (CMEK/CSEK e log de acesso legado do bucket). Ele também apontou `roles/viewer` no projeto, que foi removido; a leitura da configuração entra com a postura.
+- **Pendente:**
+  - o usuário aplicar, pelo guia;
+  - o pacote do nó (instalação na VM);
+  - os papéis de leitura para a postura;
+  - a leitura da assinatura pelo nó (o módulo de Pub/Sub do Wazuh pede arquivo de credencial; o plano é ler pela identidade da VM, sem chave).

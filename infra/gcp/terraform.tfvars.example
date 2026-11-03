@@ -1,0 +1,15 @@
+# Copie para `terraform.tfvars` (que o git ignora) e preencha. Nada daqui vai para o repositório.
+
+# ID do projeto da GCP da Verax (aparece no seletor de projetos do console).
+project_id = "meu-projeto-123"
+
+# Região e zona do nó. São Paulo por padrão.
+# region = "southamerica-east1"
+# zone   = "southamerica-east1-a"
+
+# Quem pode entrar na VM por SSH, além do dono do projeto.
+# operators = ["user:voce@exemplo.com"]
+
+# Alerta de orçamento (opcional): conta de faturamento e valor mensal, na moeda dela.
+# billing_account_id = "000000-000000-000000"
+# monthly_budget     = 1000
