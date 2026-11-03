@@ -1,18 +1,18 @@
 #!/bin/bash
-# Roda a cada boot da VM do nó. Só prepara o disco de dados em /var/lib/verax: formata se ele ainda não tiver
-# sistema de arquivos (primeira vez) e monta. Reiniciar a VM nunca apaga dado.
+# Roda a cada boot da VM do nó. Só prepara a VM: a pasta dos dados do nó e 2 GB de memória de troca, porque a
+# e2-micro tem 1 GB de RAM. Não apaga nem reinstala nada: cada passo confere se já foi feito.
 set -euo pipefail
 
-DEVICE=/dev/disk/by-id/google-verax-data
-MOUNT_POINT=/var/lib/verax
+mkdir -p /var/lib/verax
+chmod 0750 /var/lib/verax
 
-# blkid devolve 2 quando o disco não tem sistema de arquivos: só nesse caso ele é formatado.
-if ! blkid "$DEVICE" >/dev/null 2>&1; then
-  mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard -L verax-data "$DEVICE"
+SWAPFILE=/swapfile
+if [ ! -f "$SWAPFILE" ]; then
+  fallocate -l 2G "$SWAPFILE"
+  chmod 0600 "$SWAPFILE"
+  mkswap "$SWAPFILE"
 fi
-
-mkdir -p "$MOUNT_POINT"
-if ! grep -q "LABEL=verax-data" /etc/fstab; then
-  echo "LABEL=verax-data $MOUNT_POINT ext4 discard,defaults,nofail 0 2" >>/etc/fstab
+if ! grep -q "^$SWAPFILE " /etc/fstab; then
+  echo "$SWAPFILE none swap sw 0 0" >>/etc/fstab
 fi
-mountpoint -q "$MOUNT_POINT" || mount "$MOUNT_POINT"
+swapon --show=NAME --noheadings | grep -qx "$SWAPFILE" || swapon "$SWAPFILE"

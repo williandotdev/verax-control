@@ -13,6 +13,11 @@ output "node_service_account" {
   value       = google_service_account.node.email
 }
 
+output "monitored_projects" {
+  description = "Projetos com o coletor de logs de segurança apontando para o nó."
+  value       = keys(google_logging_project_sink.security)
+}
+
 output "pubsub_subscription" {
   description = "Assinatura dos logs de segurança: é o valor do campo \"Assinatura do Pub/Sub\" ao cadastrar o projeto no painel."
   value       = google_pubsub_subscription.security_logs.id

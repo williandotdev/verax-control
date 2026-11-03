@@ -92,8 +92,10 @@ permite atribuir cada alerta ao cliente certo.
 
 ## SOC da própria Verax (fontes da GCP)
 
-A base do nó da Verax na GCP (rede sem IP público, VM, disco de dados com snapshot, conta de serviço sem chave,
-sink → Pub/Sub, segredos e bucket de backups) está em `infra/gcp/`, com o passo a passo em `infra/gcp/GUIA.md`.
+A base do nó da Verax na GCP está em `infra/gcp/`, com o passo a passo em `infra/gcp/GUIA.md`, e foi aplicada em
+03/11/2026. É um **nó enxuto**: como ele monitora só a GCP e o Cloudflare, não usa o Wazuh. A API lê os logs direto
+do Pub/Sub e aplica regras próprias. Tudo roda numa e2-micro do nível gratuito em us-east1, com custo de R$ 5 a 15
+por mês. Os nós que monitoram contas AWS de clientes continuam com o Wazuh.
 
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 

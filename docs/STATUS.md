@@ -1432,27 +1432,46 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o worker no pacote do nó;
   - as variáveis do worker (`SYNC_INTERVAL_SECONDS` e `INDEXER_*`) no `.env.example`, que o agente não lê por regra do projeto.
 
-## Base do nó da Verax na GCP (Terraform) e guia para subir
+## Base do nó da Verax na GCP (Terraform), aplicada
 
-- **Pedido:** o SOC da própria Verax roda na GCP. O usuário sobe a infraestrutura com Terraform, guiado passo a passo, para praticar; o agente escreve o código e não aplica nada.
+- **Pedido:**
+  - o SOC da própria Verax roda na GCP. O código e o guia ficam em `infra/gcp/`;
+  - o usuário autorizou o agente a aplicar;
+  - o custo do primeiro desenho (e2-standard-4 para o Wazuh, cerca de R$ 1.000 por mês) foi recusado, com o pedido de enxugar.
+- **Desenho enxuto:**
+  - o nó da Verax monitora só a GCP e o Cloudflare, então não precisa do Wazuh: a API vai ler o Pub/Sub direto e aplicar regras próprias;
+  - a VM é uma e2-micro com 30 GB de disco padrão em us-east1, no nível gratuito, com 2 GB de memória de troca;
+  - custo-alvo de R$ 5 a 15 por mês (Cloud NAT e snapshot);
+  - orçamento de R$ 50 por mês com avisos.
 - **Arquivos:**
-  - `infra/gcp/*.tf`, `startup.sh`, `terraform.tfvars.example`, `.terraform.lock.hcl` e `.tflint.hcl`;
-  - `infra/gcp/GUIA.md`;
+  - `infra/gcp/*.tf`, `startup.sh`, `terraform.tfvars.example`, `.terraform.lock.hcl`, `.tflint.hcl` e `GUIA.md`;
   - `.github/workflows/iac.yml` (fmt, validate e tflint também em `infra/gcp`) e `.github/dependabot.yml`.
-- **Dependências:** provider `hashicorp/google` 8.9.0, versão exata, publicado em 27/10, fora da quarentena. O lock tem os hashes de Linux, Windows e macOS. Atende ao pedido do usuário de Terraform para a GCP.
-- **O que cria** (35 recursos, todos com o prefixo `verax-node`; nada existente muda):
-  - **Rede:** VPC própria, sub-rede com flow logs e acesso privado ao Google, e Cloud NAT. Uma regra de firewall libera só o SSH pelo IAP, para a conta de serviço do nó; outra recusa e registra todo o resto.
-  - **VM:** e2-standard-4 com Debian 12, sem IP público, com Shielded VM, OS Login, chaves de projeto bloqueadas, console serial desligado e proteção contra exclusão. O script de boot só formata (na primeira vez) e monta o disco de dados.
-  - **Disco de dados:** separado do sistema, com `prevent_destroy` e snapshot diário guardado por 14 dias.
-  - **Identidade:** conta de serviço sem chave, com só `logging.logWriter` e `monitoring.metricWriter` no projeto. Lê a assinatura e os próprios segredos por permissão no recurso. Quem opera recebe acesso só nesta VM.
-  - **Logs:** sink com auditoria e bloqueios do Cloud Armor para um tópico do Pub/Sub, com assinatura que nunca expira e 7 dias de retenção. As leituras do próprio nó no Pub/Sub ficam de fora, para não virar laço. É só cópia: nenhum log ou sink existente muda.
-  - **Segredos:** dois cofres vazios, a chave do Resend e o token do túnel do Cloudflare. O valor é gravado pelo usuário com o gcloud e nunca passa pelo estado.
-  - **Backups:** bucket privado e versionado, com acesso uniforme, exclusão recuperável por 7 dias e ciclo de vida de 90 dias. O nó cria e lê, mas não apaga nem sobrescreve.
-  - **Orçamento:** opcional, com avisos em 50%, 90% e 100% e na previsão de 100%.
-  - **APIs:** continuam ligadas ao desfazer, porque outras coisas do projeto podem depender delas.
-- **Verificação local:** `terraform validate`, `tflint` e shellcheck limpos. Trivy 0.76.1 só com achados baixos (chave própria nos discos e no bucket), e o CI barra só alta e crítica. Checkov 3.4.0 sem falhas, com 4 exceções justificadas no código (CMEK/CSEK e log de acesso legado do bucket). Ele também apontou `roles/viewer` no projeto, que foi removido; a leitura da configuração entra com a postura.
+- **Dependências:** provider `hashicorp/google` 8.9.0, versão exata, publicado em 27/10. O lock tem os hashes de Linux, Windows e macOS.
+- **O que existe** (38 recursos com o prefixo `verax-node`; nada existente mudou):
+  - **Rede:** VPC própria, flow logs com amostra de 10% e Cloud NAT. SSH só pelo IAP; o resto é recusado e registrado.
+  - **VM:** sem IP público, com Shielded VM, OS Login, chaves de projeto bloqueadas, console serial desligado e proteção contra exclusão.
+  - **Disco:** recurso próprio com `prevent_destroy` (fica se a VM for apagada) e snapshot semanal guardado por 4 semanas.
+  - **Identidade:** conta de serviço sem chave, com só `logging.logWriter` e `monitoring.metricWriter` no projeto. Lê a assinatura e os próprios segredos por permissão no recurso.
+  - **Logs:** um sink em cada projeto monitorado (dois, por decisão do usuário) leva auditoria e bloqueios do Cloud Armor ao tópico do nó. A assinatura nunca expira e guarda as mensagens por 7 dias.
+  - **Segredos:** dois cofres ainda vazios, a chave do Resend e o token do túnel do Cloudflare.
+  - **Backups:** bucket privado e versionado; o nó cria e lê, mas não apaga.
+  - **Orçamento:** R$ 50 por mês.
+
+  Os IDs dos projetos da Verax ficam fora do repositório público.
+
+- **Como foi aplicado:**
+  - estado num bucket próprio e versionado, criado com o `gcloud`;
+  - autenticação por token temporário do `gcloud`, só durante cada comando;
+  - variáveis por `-var`, sem arquivo de variáveis;
+  - no primeiro `apply`, a API do Compute ainda não tinha propagado, e a política de snapshot não dependia dela; acrescentei a dependência. O segundo `plan` mostrou só os 2 recursos que faltavam;
+  - o `plan` final não mostra nenhuma diferença.
+- **Conferido na nuvem:**
+  - SSH pelo IAP, com 30 GB de disco e 2 GB de memória de troca;
+  - saída para a internet pelo NAT (HTTP 200);
+  - script de boot sem erro;
+  - um evento de auditoria de um projeto monitorado chegou à assinatura em cerca de um minuto.
+- **Verificação local:** `validate`, `tflint` e shellcheck limpos. Trivy só com achados baixos. Checkov sem falhas, com 4 exceções justificadas no código.
 - **Pendente:**
-  - o usuário aplicar, pelo guia;
-  - o pacote do nó (instalação na VM);
-  - os papéis de leitura para a postura;
-  - a leitura da assinatura pelo nó (o módulo de Pub/Sub do Wazuh pede arquivo de credencial; o plano é ler pela identidade da VM, sem chave).
+  - os valores dos dois segredos;
+  - o pacote do nó (API com a leitura do Pub/Sub e as regras de detecção da GCP, banco e túnel);
+  - os papéis de leitura para a postura.

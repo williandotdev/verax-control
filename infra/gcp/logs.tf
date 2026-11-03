@@ -1,6 +1,6 @@
-# Caminho dos logs de segurança do projeto até o nó: o Cloud Logging copia (sink) só os eventos de segurança para
-# um tópico do Pub/Sub, e o nó lê a assinatura. Os logs originais continuam onde estão; nenhum sink, bucket de log
-# ou retenção que já existe é alterado.
+# Caminho dos logs de segurança até o nó: em cada projeto monitorado, o Cloud Logging copia (sink) só os eventos
+# de segurança para um tópico do Pub/Sub do projeto do nó, e o nó lê a assinatura. Os logs originais continuam
+# onde estão; nenhum sink, bucket de log ou retenção que já existe é alterado.
 
 locals {
   # Auditoria (quem fez o quê) e bloqueios do Cloud Armor. As leituras que o próprio nó faz no Pub/Sub ficam de
@@ -45,6 +45,9 @@ resource "google_pubsub_subscription" "security_logs" {
 }
 
 resource "google_logging_project_sink" "security" {
+  for_each = toset(var.monitored_projects)
+
+  project     = each.key
   name        = "${var.name_prefix}-security"
   description = "Eventos de segurança para o nó do Verax Control (só cópia; os logs originais não mudam)."
   destination = "pubsub.googleapis.com/${google_pubsub_topic.security_logs.id}"
@@ -53,11 +56,13 @@ resource "google_logging_project_sink" "security" {
   unique_writer_identity = true
 }
 
-# O sink escreve no tópico com uma identidade própria, criada pela GCP.
+# Cada sink escreve no tópico com uma identidade própria, criada pela GCP, e só ela pode publicar.
 resource "google_pubsub_topic_iam_member" "sink_publisher" {
+  for_each = google_logging_project_sink.security
+
   topic  = google_pubsub_topic.security_logs.id
   role   = "roles/pubsub.publisher"
-  member = google_logging_project_sink.security.writer_identity
+  member = each.value.writer_identity
 }
 
 # O nó só lê esta assinatura; não publica nem mexe no tópico.

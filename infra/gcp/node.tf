@@ -1,4 +1,6 @@
-# A VM do nó: Wazuh, API, worker, banco e o túnel do Cloudflare rodam nela (o pacote vem no próximo passo).
+# A VM do nó: API (com a leitura dos logs e as regras de detecção), banco e o túnel do Cloudflare rodam nela, em
+# contêineres (o pacote vem no próximo passo). Sem Wazuh: para monitorar a GCP e o Cloudflare, a API lê os logs
+# direto do Pub/Sub, e tudo cabe numa e2-micro do nível gratuito.
 
 # Identidade da VM. Sem chave: a VM pega credenciais temporárias pelo servidor de metadados, e nenhuma chave JSON
 # de conta de serviço é criada.
@@ -29,36 +31,43 @@ resource "google_project_iam_member" "node" {
   member  = local.node_member
 }
 
-# Disco de dados separado do disco do sistema: dá para trocar a VM sem perder os dados. Protegido contra
-# `terraform destroy` (veja "Mudar ou desfazer" no guia).
-resource "google_compute_disk" "data" {
+# Disco único da VM (sistema, banco e dados do nó), criado à parte da VM: se a VM for apagada, o disco fica.
+# Disco padrão de 30 GB, dentro do nível gratuito. Protegido contra `terraform destroy` (veja o guia).
+resource "google_compute_disk" "node" {
   #checkov:skip=CKV_GCP_37:Cifrado pelo Google (AES-256). Chave própria (CMEK/CSEK) não muda o risco que importa aqui: quem domina a VM lê o disco montado.
-  name = "${var.name_prefix}-data"
-  type = "pd-balanced"
-  size = var.data_disk_gb
-  zone = var.zone
+  name  = var.name_prefix
+  type  = "pd-standard"
+  size  = var.disk_gb
+  zone  = var.zone
+  image = "debian-cloud/debian-12"
 
   depends_on = [google_project_service.apis]
 
   lifecycle {
     prevent_destroy = true
+    # Uma imagem nova do Debian não recria o disco; as atualizações são feitas dentro da VM.
+    ignore_changes = [image]
   }
 }
 
-# Snapshot diário do disco de dados, guardado por 14 dias na mesma região.
-resource "google_compute_resource_policy" "daily_snapshot" {
-  name   = "${var.name_prefix}-daily-snapshot"
+# Snapshot semanal do disco, guardado por 4 semanas na mesma região. O backup diário do banco vai para o bucket.
+resource "google_compute_resource_policy" "weekly_snapshot" {
+  name   = "${var.name_prefix}-weekly-snapshot"
   region = var.region
+
+  depends_on = [google_project_service.apis]
 
   snapshot_schedule_policy {
     schedule {
-      daily_schedule {
-        days_in_cycle = 1
-        start_time    = "06:00"
+      weekly_schedule {
+        day_of_weeks {
+          day        = "SUNDAY"
+          start_time = "06:00"
+        }
       }
     }
     retention_policy {
-      max_retention_days    = 14
+      max_retention_days    = 28
       on_source_disk_delete = "KEEP_AUTO_SNAPSHOTS"
     }
     snapshot_properties {
@@ -67,14 +76,14 @@ resource "google_compute_resource_policy" "daily_snapshot" {
   }
 }
 
-resource "google_compute_disk_resource_policy_attachment" "data" {
-  name = google_compute_resource_policy.daily_snapshot.name
-  disk = google_compute_disk.data.name
+resource "google_compute_disk_resource_policy_attachment" "node" {
+  name = google_compute_resource_policy.weekly_snapshot.name
+  disk = google_compute_disk.node.name
   zone = var.zone
 }
 
 resource "google_compute_instance" "node" {
-  #checkov:skip=CKV_GCP_38:Disco do sistema cifrado pelo Google (AES-256); mesmo motivo do disco de dados.
+  #checkov:skip=CKV_GCP_38:O disco é cifrado pelo Google (AES-256); mesmo motivo do recurso do disco.
   name         = var.name_prefix
   machine_type = var.machine_type
   zone         = var.zone
@@ -84,17 +93,8 @@ resource "google_compute_instance" "node" {
   allow_stopping_for_update = true
 
   boot_disk {
-    auto_delete = true
-    initialize_params {
-      image = "debian-cloud/debian-12"
-      size  = 30
-      type  = "pd-balanced"
-    }
-  }
-
-  attached_disk {
-    source      = google_compute_disk.data.id
-    device_name = "verax-data"
+    source      = google_compute_disk.node.self_link
+    auto_delete = false
   }
 
   # Sem `access_config`: a VM não tem IP público.
@@ -121,15 +121,10 @@ resource "google_compute_instance" "node" {
     serial-port-enable     = "FALSE"
   }
 
-  # Só prepara o disco de dados; não instala nada ainda.
+  # Só prepara a VM (pasta dos dados e memória de troca); não instala nada ainda.
   metadata_startup_script = file("${path.module}/startup.sh")
 
   depends_on = [google_compute_router_nat.node]
-
-  lifecycle {
-    # Uma imagem nova do Debian não recria a VM; as atualizações são feitas dentro dela.
-    ignore_changes = [boot_disk[0].initialize_params[0].image]
-  }
 }
 
 # Acesso de quem opera o nó: túnel do IAP e login de administrador só nesta VM, nada no resto do projeto.

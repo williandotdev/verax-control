@@ -16,10 +16,11 @@ resource "google_compute_subnetwork" "node" {
   ip_cidr_range            = var.subnet_cidr
   private_ip_google_access = true
 
-  # Registro do tráfego da rede (flow logs), para investigar um incidente no próprio nó.
+  # Registro do tráfego da rede (flow logs), para investigar um incidente no próprio nó. Amostra de 10% em janelas
+  # de 15 minutos: o bastante para ver com quem a VM falou, com custo desprezível.
   log_config {
-    aggregation_interval = "INTERVAL_5_MIN"
-    flow_sampling        = 0.5
+    aggregation_interval = "INTERVAL_15_MIN"
+    flow_sampling        = 0.1
     metadata             = "INCLUDE_ALL_METADATA"
   }
 }

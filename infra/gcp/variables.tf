@@ -9,15 +9,15 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "Região do nó. São Paulo por padrão; outras regiões podem sair mais baratas."
+  description = "Região do nó. us-east1 tem a e2-micro e o disco do nível gratuito da GCP."
   type        = string
-  default     = "southamerica-east1"
+  default     = "us-east1"
 }
 
 variable "zone" {
-  description = "Zona da VM e do disco de dados (dentro da região)."
+  description = "Zona da VM (dentro da região)."
   type        = string
-  default     = "southamerica-east1-a"
+  default     = "us-east1-b"
 }
 
 variable "name_prefix" {
@@ -32,19 +32,30 @@ variable "name_prefix" {
 }
 
 variable "machine_type" {
-  description = "Tamanho da VM. O Wazuh pede 4 vCPU e 16 GB."
+  description = "Tamanho da VM. A e2-micro (1 GB) é gratuita em us-east1, us-central1 e us-west1, uma por conta de faturamento."
   type        = string
-  default     = "e2-standard-4"
+  default     = "e2-micro"
 }
 
-variable "data_disk_gb" {
-  description = "Tamanho do disco de dados (Wazuh, banco e backups locais), em GB."
+variable "disk_gb" {
+  description = "Disco da VM (sistema, banco e dados do nó), em GB. Até 30 GB de disco padrão entram no nível gratuito."
   type        = number
-  default     = 100
+  default     = 30
 
   validation {
-    condition     = var.data_disk_gb >= 50 && var.data_disk_gb <= 2000
-    error_message = "O disco de dados precisa ter de 50 a 2000 GB."
+    condition     = var.disk_gb >= 20 && var.disk_gb <= 500
+    error_message = "O disco precisa ter de 20 a 500 GB."
+  }
+}
+
+variable "monitored_projects" {
+  description = "Projetos cujos logs de segurança vão para o nó. Em cada um, um coletor (sink) só copia; nada existente muda."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for project in var.monitored_projects : can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", project))])
+    error_message = "Cada item precisa ser um ID de projeto da GCP."
   }
 }
 
@@ -74,5 +85,5 @@ variable "billing_account_id" {
 variable "monthly_budget" {
   description = "Orçamento mensal do projeto, na moeda da conta de faturamento. Avisos em 50%, 90% e 100%."
   type        = number
-  default     = 1000
+  default     = 50
 }
