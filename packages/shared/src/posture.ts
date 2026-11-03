@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { awsAccountIdSchema } from './cloud-accounts.js';
+import { cloudAccountRefSchema } from './cloud-accounts.js';
 import { withPagination } from './pagination.js';
 
 /**
@@ -14,7 +14,7 @@ const count = z.number().int().min(0);
 const score = z.number().int().min(0).max(100);
 
 export const postureAccountSchema = z.strictObject({
-  accountId: awsAccountIdSchema,
+  accountId: cloudAccountRefSchema,
   /** Nota da última varredura; null antes da primeira. */
   score: score.nullable(),
   scannedAt: z.iso.datetime().nullable(),
@@ -42,7 +42,7 @@ export const postureOverviewSchema = z.strictObject({
 export type PostureOverview = z.infer<typeof postureOverviewSchema>;
 
 export const postureCheckListQuerySchema = withPagination({
-  accountId: awsAccountIdSchema.optional(),
+  accountId: cloudAccountRefSchema.optional(),
   severity: z.enum(POSTURE_SEVERITIES).optional(),
 });
 export type PostureCheckListQuery = z.infer<typeof postureCheckListQuerySchema>;
@@ -55,7 +55,7 @@ export const postureCheckSchema = z.strictObject({
   checkId: z.string().regex(/^[a-z0-9_]{1,160}$/),
   title: z.string().max(500),
   severity: z.enum(POSTURE_SEVERITIES),
-  accountId: awsAccountIdSchema,
+  accountId: cloudAccountRefSchema,
   region: z.string().max(40),
   resource: nullableText,
   resourceType: nullableText,

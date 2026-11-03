@@ -77,6 +77,19 @@ Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.v
 custaria cerca de US$ 10 por mês (decisão de 02/11/2026). Os painéis não têm esse limite: ficam com o proxy desligado
 e o certificado é do Firebase.
 
+## Contas monitoradas por provedor
+
+O cadastro de contas (Contas cloud) aceita três provedores. Nenhum guarda credencial:
+
+| Provedor   | Identificador                            | Origem dos logs                      | Como o nó lê                                   |
+| ---------- | ---------------------------------------- | ------------------------------------ | ---------------------------------------------- |
+| AWS        | ID da conta (12 dígitos)                 | Buckets e CloudWatch Logs            | Papel `VeraxControlReadOnly` com ExternalId    |
+| GCP        | ID do projeto                            | Assinatura do Pub/Sub ligada ao sink | Identidade da VM do nó, sem chave              |
+| Cloudflare | ID da conta (32 caracteres hexadecimais) | Zonas (domínios) monitoradas         | Token só de leitura no cofre de segredos do nó |
+
+Cada origem de log (bucket, assinatura ou zona) pertence a um só cliente, como já valia para os buckets: é o que
+permite atribuir cada alerta ao cliente certo.
+
 ## SOC da própria Verax (fontes da GCP)
 
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:

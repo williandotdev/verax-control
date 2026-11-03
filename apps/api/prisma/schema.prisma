@@ -221,24 +221,40 @@ enum CloudAccountStatus {
   inactive
 }
 
-/// Conta AWS de um cliente (T3.3). Nenhuma credencial é guardada: a Verax assume o papel de leitura
-/// `VeraxControlReadOnly` com o ExternalId, gerado aqui. Cada conta pertence a um só cliente.
-model CloudAccount {
-  id               String             @id @default(uuid(7)) @db.Uuid
-  tenantId         String             @db.Uuid
-  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  provider         String             @default("aws") @db.VarChar(16)
-  accountId        String             @unique @db.VarChar(12)
-  regions          String[]
-  externalId       String             @db.VarChar(128)
-  /// Buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
-  cloudtrailBucket String?            @db.VarChar(63)
-  guarddutyBucket  String?            @db.VarChar(63)
-  wafBucket        String?            @db.VarChar(63)
-  status           CloudAccountStatus @default(active)
-  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+enum CloudProvider {
+  aws
+  gcp
+  cloudflare
+}
 
+/// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial é
+/// guardada: na AWS, a Verax assume o papel de leitura `VeraxControlReadOnly` com o ExternalId, gerado aqui; na
+/// GCP, o nó lê com a identidade dele, sem chave; o token do Cloudflare fica no cofre de segredos do nó. Cada
+/// conta pertence a um só cliente. A migration garante, por CHECK, que toda conta AWS tem ExternalId.
+model CloudAccount {
+  id                 String             @id @default(uuid(7)) @db.Uuid
+  tenantId           String             @db.Uuid
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider           CloudProvider      @default(aws)
+  /// 12 dígitos (AWS), ID do projeto (GCP, até 30) ou 32 hexadecimais (Cloudflare).
+  accountId          String             @db.VarChar(32)
+  /// AWS: regiões monitoradas.
+  regions            String[]
+  /// AWS: ExternalId do papel de leitura.
+  externalId         String?            @db.VarChar(128)
+  /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
+  cloudtrailBucket   String?            @db.VarChar(63)
+  guarddutyBucket    String?            @db.VarChar(63)
+  wafBucket          String?            @db.VarChar(63)
+  /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
+  pubsubSubscription String?            @db.VarChar(320)
+  /// Cloudflare: zonas (domínios) monitoradas.
+  zones              String[]           @default([])
+  status             CloudAccountStatus @default(active)
+  createdAt          DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
+
+  @@unique([provider, accountId])
   @@index([tenantId])
 }
 

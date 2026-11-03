@@ -1314,3 +1314,42 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 - **Definição de pronto:** critérios de aceite ✔ (estados vazio, carregando e erro; textos em português; uso no celular; contraste e teclado) · testes ✔ · lint ✔ · dependências ✔
 - **Pendente:** a tela de auditoria (endpoint de listagem na API e tela).
+
+## Contas cloud da GCP e do Cloudflare
+
+- **Pedido:** o cadastro de contas só aceitava AWS. O SOC da própria Verax monitora a GCP, e o Cloudflare entra para quem usa o WAF e o DNS dele.
+- **Arquivos:**
+  - `packages/shared/src/cloud-accounts.ts` (+ teste), mais as referências de conta em `findings.ts`, `incidents.ts`, `posture.ts`, `tower.ts` e `inventory.ts`;
+  - `apps/api/prisma/schema.prisma` e a migration `20261103060000_cloud_providers`;
+  - `apps/api/src/cloud-accounts/cloud-accounts.service.ts` e `apps/api/test/cloud-accounts.test.ts`;
+  - `apps/web/src/pages/admin/cloud-accounts-page.tsx`, `apps/web/src/features/admin/labels.ts`, `apps/web/src/mocks/{admin,fixtures}.ts` e `apps/web/src/pages/admin/admin-pages.test.tsx`;
+  - `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Provedores:** o cadastro é uma união por provedor, e cada um tem o próprio formato de ID e os próprios campos:
+    - **AWS:** 12 dígitos, regiões, buckets e ExternalId;
+    - **GCP:** ID do projeto (6 a 30 caracteres, começa com letra) e a assinatura do Pub/Sub, opcional no cadastro. A assinatura é guardada pelo nome completo (`projects/<projeto>/subscriptions/<id>`), porque o ID só é único dentro do projeto dono. A tela aceita só o ID e completa com o projeto da conta;
+    - **Cloudflare:** 32 caracteres hexadecimais e as zonas (domínios).
+
+    Os três formatos não se sobrepõem, e achados, incidentes, postura e Torre aceitam qualquer um deles como referência de conta.
+
+  - **Sem credencial em nenhum provedor:** o schema estrito recusa token do Cloudflare, chave JSON da GCP e qualquer campo de outro provedor. O token e a identidade ficam no nó.
+  - **Alteração:** cada campo só vale para o provedor da conta. Mandar regiões para um projeto da GCP, por exemplo, dá 400 com o nome do campo, em vez de ser ignorado em silêncio.
+  - **Isolamento:**
+    - o ID é único por provedor;
+    - como já valia para os buckets, a assinatura do Pub/Sub e a zona do Cloudflare não podem ser de dois clientes (lock transacional por origem, em ordem fixa). Vários projetos do mesmo cliente podem dividir uma assinatura, como num coletor agregado.
+  - **Banco:**
+    - o provedor virou enum por conversão da coluna, sem perder valor;
+    - um `CHECK` exige ExternalId em toda conta AWS, mesmo fora da API.
+  - **Tela:**
+    - o formulário mostra os campos do provedor escolhido;
+    - a tabela mostra o que cada conta monitora (regiões, assinatura ou zonas);
+    - o detalhe explica a configuração de cada provedor e permite informar depois a assinatura (GCP) ou as zonas (Cloudflare);
+    - a demonstração ganhou um projeto da GCP e uma conta do Cloudflare fictícios.
+- **Testes:**
+  - 32 no contrato: formatos, campos de outro provedor, credenciais recusadas, domínios, referência de conta e campos fora do provedor;
+  - 15 na API: cadastro de GCP e Cloudflare, credenciais recusadas, projeto, assinatura e zona disputados por dois clientes, o mesmo ID de assinatura em projetos diferentes (apontado pelo revisor automático), alteração com campo de outro provedor e o `CHECK` do banco;
+  - 2 na tela: projeto da GCP com validação e passos, e zonas do Cloudflare editadas no detalhe.
+- **Pendente:**
+  - a leitura de fato (o Wazuh lendo a assinatura do Pub/Sub e o coletor do Cloudflare), com o nó na GCP;
+  - o vínculo do alerta ao cliente para essas fontes (T5.2 para GCP e Cloudflare).

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { awsAccountIdSchema } from './cloud-accounts.js';
+import { cloudAccountRefSchema } from './cloud-accounts.js';
 
 /**
  * Resumo da Torre (T5.10): a resposta de `GET /v1/tower`, do cliente da sessão. A regra do semáforo está em
@@ -38,7 +38,7 @@ export const towerSummarySchema = z.strictObject({
     connectedAccounts: count,
     lastEventAt: z.iso.datetime().nullable(),
     /** Contas sem evento há mais de `silentAfterHours` horas (ou que nunca mandaram nada). */
-    silentAccounts: z.array(awsAccountIdSchema).max(500),
+    silentAccounts: z.array(cloudAccountRefSchema).max(500),
     silentAfterHours: z.number().int().positive(),
   }),
   generatedAt: z.iso.datetime(),

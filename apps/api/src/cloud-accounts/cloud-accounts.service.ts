@@ -5,6 +5,7 @@ import {
   type CloudAccountCreate,
   type CloudAccountListQuery,
   type CloudAccountUpdate,
+  fieldsOutsideProvider,
   hasPermission,
   LOG_SOURCES,
   type LogSource,
@@ -28,6 +29,8 @@ const accountSelect = {
   cloudtrailBucket: true,
   guarddutyBucket: true,
   wafBucket: true,
+  pubsubSubscription: true,
+  zones: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -47,14 +50,17 @@ function newExternalId(): string {
 }
 
 function toAccount(row: AccountRow, revealExternalId: boolean): CloudAccount {
+  const aws = row.provider === 'aws';
   return {
     id: row.id,
-    provider: 'aws',
+    provider: row.provider,
     accountId: row.accountId,
-    regions: row.regions,
-    roleArn: readOnlyRoleArn(row.accountId),
-    externalId: revealExternalId ? row.externalId : null,
+    regions: aws ? row.regions : [],
+    roleArn: aws ? readOnlyRoleArn(row.accountId) : null,
+    externalId: aws && revealExternalId ? row.externalId : null,
     buckets: { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket },
+    pubsubSubscription: row.pubsubSubscription,
+    zones: row.zones,
     status: row.status,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -64,7 +70,9 @@ function toAccount(row: AccountRow, revealExternalId: boolean): CloudAccount {
 /** Colunas de bucket a gravar: só as fontes informadas; `null` apaga. */
 type BucketColumn = (typeof BUCKET_COLUMN)[LogSource];
 
-function bucketData(buckets: CloudAccountCreate['buckets']): Partial<Record<BucketColumn, string | null>> {
+type AwsBuckets = Extract<CloudAccountCreate, { provider: 'aws' }>['buckets'];
+
+function bucketData(buckets: AwsBuckets): Partial<Record<BucketColumn, string | null>> {
   const data: Partial<Record<BucketColumn, string | null>> = {};
   for (const source of LOG_SOURCES) {
     const value = buckets?.[source];
@@ -79,12 +87,35 @@ function isUniqueViolation(error: unknown): boolean {
 
 const NOT_FOUND = 'Conta não encontrada';
 
+/** Dados próprios de cada provedor no cadastro. Os campos dos outros provedores ficam vazios. */
+function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCreateInput {
+  const base = {
+    provider: input.provider,
+    accountId: input.accountId,
+  } as Prisma.CloudAccountUncheckedCreateInput;
+  switch (input.provider) {
+    case 'aws':
+      return { ...base, regions: input.regions, externalId: newExternalId(), ...bucketData(input.buckets) };
+    case 'gcp':
+      return { ...base, regions: [], pubsubSubscription: input.pubsubSubscription ?? null };
+    case 'cloudflare':
+      return { ...base, regions: [], zones: input.zones ?? [] };
+  }
+}
+
+/** Origens de log que identificam o cliente de um alerta: nenhuma pode ser de dois clientes. */
+interface LogOrigins {
+  buckets?: AwsBuckets;
+  pubsubSubscription?: string | null;
+  zones?: string[];
+}
+
 /**
- * Contas AWS dos clientes (T3.3), pelo escopo da sessão. Nenhuma credencial entra: o schema é estrito, e a
- * Verax só assume o papel de leitura com o ExternalId gerado aqui.
+ * Contas cloud dos clientes (T3.3): AWS, GCP e Cloudflare, pelo escopo da sessão. Nenhuma credencial entra: o
+ * schema é estrito; na AWS, a Verax só assume o papel de leitura com o ExternalId gerado aqui.
  *
- * Duas garantias que vinculam os alertas ao cliente certo (T5.2): o ID da conta é único na plataforma, e
- * cada bucket de log pertence a um só cliente.
+ * Duas garantias que vinculam os alertas ao cliente certo (T5.2): o ID da conta é único por provedor, e cada
+ * origem de log (bucket, assinatura do Pub/Sub, zona do Cloudflare) pertence a um só cliente.
  */
 @Injectable()
 export class CloudAccountsService {
@@ -118,22 +149,13 @@ export class CloudAccountsService {
 
   async create(auth: RequestAuth, input: CloudAccountCreate): Promise<CloudAccount> {
     const db = this.prisma.scoped();
-    await this.assertBucketsFree(auth, input.buckets);
+    await this.assertOriginsFree(auth, input);
     let row: AccountRow;
     try {
-      row = await db.cloudAccount.create({
-        data: {
-          provider: input.provider,
-          accountId: input.accountId,
-          regions: input.regions,
-          externalId: newExternalId(),
-          ...bucketData(input.buckets),
-        } as Prisma.CloudAccountUncheckedCreateInput,
-        select: accountSelect,
-      });
+      row = await db.cloudAccount.create({ data: providerData(input), select: accountSelect });
     } catch (error) {
       if (isUniqueViolation(error)) {
-        throw new ApiError(HttpStatus.CONFLICT, 'Esta conta AWS já está cadastrada');
+        throw new ApiError(HttpStatus.CONFLICT, 'Esta conta já está cadastrada');
       }
       throw error;
     }
@@ -150,10 +172,21 @@ export class CloudAccountsService {
 
   async update(auth: RequestAuth, id: string, input: CloudAccountUpdate): Promise<CloudAccount> {
     const beforeRow = await this.find(id);
-    await this.assertBucketsFree(auth, input.buckets);
+    // Cada campo só existe num provedor: recusar, em vez de ignorar, evita achar que algo foi gravado.
+    const foreign = fieldsOutsideProvider(beforeRow.provider, input);
+    if (foreign.length > 0) {
+      throw new ApiError(HttpStatus.BAD_REQUEST, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
+    }
+    await this.assertOriginsFree(auth, input);
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
-      data: { regions: input.regions, status: input.status, ...bucketData(input.buckets) },
+      data: {
+        regions: input.regions,
+        status: input.status,
+        pubsubSubscription: input.pubsubSubscription,
+        zones: input.zones,
+        ...bucketData(input.buckets),
+      },
       select: accountSelect,
     });
     const after = toAccount(row, true);
@@ -189,28 +222,54 @@ export class CloudAccountsService {
   }
 
   /**
-   * Um bucket de log não pode ser de dois clientes: o alerta lido dele seria atribuído a qualquer um. Como o
-   * nome de bucket é único no S3, vale para qualquer fonte: o mesmo bucket como CloudTrail de um cliente e
-   * GuardDuty de outro também é ambíguo. A checagem roda sob um lock transacional por nome de bucket, para dois
-   * cadastros simultâneos não passarem juntos. Responde só "já cadastrado", sem dizer de quem.
+   * Uma origem de log não pode ser de dois clientes: o alerta lido dela seria atribuído a qualquer um.
+   * - Bucket: o nome é único no S3, então vale para qualquer fonte (o mesmo bucket como CloudTrail de um cliente e
+   *   GuardDuty de outro também é ambíguo).
+   * - Assinatura do Pub/Sub: um coletor agregado pode servir vários projetos do mesmo cliente, nunca de dois.
+   * - Zona do Cloudflare: o domínio identifica o cliente nos eventos do WAF.
+   *
+   * A checagem roda sob um lock transacional por origem, para dois cadastros simultâneos não passarem juntos.
+   * Responde só "já cadastrado", sem dizer de quem.
    */
-  private async assertBucketsFree(auth: RequestAuth, buckets: CloudAccountCreate['buckets']): Promise<void> {
+  private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins): Promise<void> {
     const tenantId = auth.scopeTenantId as string;
-    const names = [
-      ...new Set(LOG_SOURCES.map((source) => buckets?.[source]).filter((name) => typeof name === 'string')),
-    ].sort();
+    const checks: { key: string; label: string; where: Prisma.CloudAccountWhereInput }[] = [];
+    const buckets = new Set(
+      LOG_SOURCES.map((source) => origins.buckets?.[source]).filter((name) => typeof name === 'string'),
+    );
+    for (const name of buckets) {
+      checks.push({
+        key: `verax:bucket:${name}`,
+        label: `O bucket ${name} já está cadastrado`,
+        where: { OR: LOG_SOURCES.map((source) => ({ [BUCKET_COLUMN[source]]: name })) },
+      });
+    }
+    if (origins.pubsubSubscription) {
+      const name = origins.pubsubSubscription;
+      checks.push({
+        key: `verax:pubsub:${name}`,
+        label: `A assinatura ${name} já está cadastrada`,
+        where: { pubsubSubscription: name },
+      });
+    }
+    for (const zone of origins.zones ?? []) {
+      checks.push({
+        key: `verax:zone:${zone}`,
+        label: `A zona ${zone} já está cadastrada`,
+        where: { zones: { has: zone } },
+      });
+    }
+    // Ordem fixa dos locks: dois cadastros com as mesmas origens não se travam um ao outro.
+    checks.sort((a, b) => a.key.localeCompare(b.key));
     const db = this.prisma.db();
-    for (const name of names) {
-      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:bucket:${name}`}))`;
+    for (const check of checks) {
+      await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${check.key}))`;
       const taken = await db.cloudAccount.findFirst({
-        where: {
-          tenantId: { not: tenantId },
-          OR: LOG_SOURCES.map((source) => ({ [BUCKET_COLUMN[source]]: name })),
-        },
+        where: { tenantId: { not: tenantId }, ...check.where },
         select: { id: true },
       });
       if (taken) {
-        throw new ApiError(HttpStatus.CONFLICT, `O bucket ${name} já está cadastrado em outro cliente`);
+        throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outro cliente`);
       }
     }
   }

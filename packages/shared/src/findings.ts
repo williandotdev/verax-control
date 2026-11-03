@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { awsAccountIdSchema } from './cloud-accounts.js';
+import { cloudAccountRefSchema } from './cloud-accounts.js';
 import { withPagination } from './pagination.js';
 import { authorSchema } from './protected-resources.js';
 
@@ -27,7 +27,7 @@ export type FindingPeriod = (typeof FINDING_PERIODS)[number];
 export const findingListQuerySchema = withPagination({
   severity: z.enum(FINDING_SEVERITIES).optional(),
   status: z.enum(FINDING_STATUSES).optional(),
-  accountId: awsAccountIdSchema.optional(),
+  accountId: cloudAccountRefSchema.optional(),
   period: z.enum(FINDING_PERIODS).optional(),
 });
 export type FindingListQuery = z.infer<typeof findingListQuerySchema>;
@@ -36,7 +36,7 @@ const nullableText = z.string().max(2048).nullable();
 
 export const findingSchema = z.strictObject({
   id: z.uuid(),
-  accountId: awsAccountIdSchema,
+  accountId: cloudAccountRefSchema,
   occurredAt: z.iso.datetime(),
   severity: z.enum(FINDING_SEVERITIES),
   status: z.enum(FINDING_STATUSES),

@@ -37,11 +37,13 @@ export function demoMe(role: Role, overrides: Partial<Me> = {}): Me {
   });
 }
 
-/** Contas AWS fictícias (os IDs de exemplo da documentação da AWS). */
+/** Contas fictícias: AWS (os IDs de exemplo da documentação da AWS), um projeto da GCP e uma conta do Cloudflare. */
 export const DEMO_ACCOUNTS = {
   alfaProducao: '111122223333',
   alfaHomologacao: '444455556666',
   beta: '777788889999',
+  alfaGcp: 'loja-alfa-demo',
+  alfaCloudflare: 'd0e0000000000000000000000000a1fa',
 } as const;
 
 const minutesAgo = (now: Date, minutes: number): string =>

@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { randomInt } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { cloudAccountSchema } from '@verax/shared';
 import request from 'supertest';
@@ -12,6 +12,12 @@ import { describeTenantIsolation, type TestSession } from './support/tenant-isol
 /** IDs de conta fictícios (12 dígitos), diferentes a cada chamada. */
 const accountId = () => String(randomInt(100_000_000_000, 999_999_999_999));
 const bucket = (prefix = 'trilha') => `${prefix}-${randomInt(1_000_000, 9_999_999)}`;
+/** Projeto da GCP, conta do Cloudflare, assinatura e zona fictícios, diferentes a cada chamada. */
+const gcpProject = () => `vx-${randomInt(1_000_000, 9_999_999)}-proj`;
+const cloudflareAccount = () => randomBytes(16).toString('hex');
+const subscription = (project = gcpProject(), id = `verax-logs-${randomInt(1_000_000, 9_999_999)}`) =>
+  `projects/${project}/subscriptions/${id}`;
+const zone = () => `z${randomInt(1_000_000, 9_999_999)}.example.com`;
 
 describe('contas cloud (T3.3)', () => {
   let app: NestExpressApplication;
@@ -123,7 +129,7 @@ describe('contas cloud (T3.3)', () => {
       const conflict = await call(adminB)
         .post('/v1/cloud-accounts', newAccount({ accountId: id }))
         .expect(409);
-      expect(conflict.body).toMatchObject({ message: 'Esta conta AWS já está cadastrada' });
+      expect(conflict.body).toMatchObject({ message: 'Esta conta já está cadastrada' });
       expect(await prisma.cloudAccount.count({ where: { accountId: id } })).toBe(1);
     });
 
@@ -157,6 +163,178 @@ describe('contas cloud (T3.3)', () => {
         call(adminB).post('/v1/cloud-accounts', newAccount({ buckets: { guardduty: contested } })),
       ]);
       expect(results.map((result) => result.status).sort()).toEqual([201, 409]);
+    });
+  });
+
+  describe('GCP e Cloudflare', () => {
+    it('projeto da GCP: sem papel nem ExternalId; a assinatura do Pub/Sub fica gravada', async () => {
+      const name = subscription();
+      const created = await call(adminA)
+        .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject(), pubsubSubscription: name })
+        .expect(201);
+      const account = cloudAccountSchema.parse(created.body);
+      expect(account).toMatchObject({
+        provider: 'gcp',
+        roleArn: null,
+        externalId: null,
+        regions: [],
+        pubsubSubscription: name,
+        zones: [],
+      });
+      expect(
+        (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: account.id } })).externalId,
+      ).toBeNull();
+      expect(await entryOf(created)).toMatchObject({ action: 'cloud_account.create', tenantId: tenantA });
+    });
+
+    it('conta do Cloudflare: zonas gravadas, sem token', async () => {
+      const zones = [zone(), zone()];
+      const created = await call(adminA)
+        .post('/v1/cloud-accounts', { provider: 'cloudflare', accountId: cloudflareAccount(), zones })
+        .expect(201);
+      expect(cloudAccountSchema.parse(created.body)).toMatchObject({
+        provider: 'cloudflare',
+        roleArn: null,
+        externalId: null,
+        zones,
+        pubsubSubscription: null,
+      });
+    });
+
+    it.each([
+      [
+        'token do Cloudflare',
+        { provider: 'cloudflare', accountId: cloudflareAccount(), apiToken: 'x'.repeat(40) },
+      ],
+      [
+        'chave de conta de serviço da GCP',
+        { provider: 'gcp', accountId: gcpProject(), credentialsJson: '{}' },
+      ],
+      ['regiões num projeto da GCP', { provider: 'gcp', accountId: gcpProject(), regions: ['sa-east-1'] }],
+      ['ID de conta AWS como projeto', { provider: 'gcp', accountId: accountId() }],
+      [
+        'zona com protocolo',
+        { provider: 'cloudflare', accountId: cloudflareAccount(), zones: ['https://x.com'] },
+      ],
+      ['provedor desconhecido', { provider: 'azure', accountId: gcpProject() }],
+    ])('recusa %s (400)', async (_label, body) => {
+      await call(adminA).post('/v1/cloud-accounts', body).expect(400);
+    });
+
+    it('um projeto não pertence a dois clientes', async () => {
+      const project = gcpProject();
+      await call(adminA).post('/v1/cloud-accounts', { provider: 'gcp', accountId: project }).expect(201);
+      await call(adminB).post('/v1/cloud-accounts', { provider: 'gcp', accountId: project }).expect(409);
+    });
+
+    it('o mesmo ID de assinatura em projetos diferentes não conflita: vale o nome completo', async () => {
+      const id = `verax-logs-${randomInt(1_000_000, 9_999_999)}`;
+      await call(adminA)
+        .post('/v1/cloud-accounts', {
+          provider: 'gcp',
+          accountId: gcpProject(),
+          pubsubSubscription: subscription(gcpProject(), id),
+        })
+        .expect(201);
+      await call(adminB)
+        .post('/v1/cloud-accounts', {
+          provider: 'gcp',
+          accountId: gcpProject(),
+          pubsubSubscription: subscription(gcpProject(), id),
+        })
+        .expect(201);
+    });
+
+    it('só o ID da assinatura, sem o projeto, é recusado', async () => {
+      await call(adminA)
+        .post('/v1/cloud-accounts', {
+          provider: 'gcp',
+          accountId: gcpProject(),
+          pubsubSubscription: 'verax-logs',
+        })
+        .expect(400);
+    });
+
+    it('a assinatura serve vários projetos do mesmo cliente, nunca de outro', async () => {
+      const name = subscription();
+      for (const session of [adminA, adminA]) {
+        await call(session)
+          .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject(), pubsubSubscription: name })
+          .expect(201);
+      }
+      const conflict = await call(adminB)
+        .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject(), pubsubSubscription: name })
+        .expect(409);
+      expect(conflict.body).toMatchObject({
+        message: `A assinatura ${name} já está cadastrada em outro cliente`,
+      });
+    });
+
+    it('uma zona do Cloudflare é de um cliente só, inclusive ao alterar', async () => {
+      const taken = zone();
+      await call(adminA)
+        .post('/v1/cloud-accounts', {
+          provider: 'cloudflare',
+          accountId: cloudflareAccount(),
+          zones: [taken],
+        })
+        .expect(201);
+      await call(adminB)
+        .post('/v1/cloud-accounts', {
+          provider: 'cloudflare',
+          accountId: cloudflareAccount(),
+          zones: [taken],
+        })
+        .expect(409);
+      const other = cloudAccountSchema.parse(
+        (
+          await call(adminB)
+            .post('/v1/cloud-accounts', { provider: 'cloudflare', accountId: cloudflareAccount() })
+            .expect(201)
+        ).body,
+      );
+      await call(adminB)
+        .patch(`/v1/cloud-accounts/${other.id}`, { zones: [zone(), taken] })
+        .expect(409);
+    });
+
+    it('a alteração só aceita os campos do provedor da conta', async () => {
+      const gcp = cloudAccountSchema.parse(
+        (
+          await call(adminA)
+            .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject() })
+            .expect(201)
+        ).body,
+      );
+      const refused = await call(adminA)
+        .patch(`/v1/cloud-accounts/${gcp.id}`, { regions: ['sa-east-1'], zones: [zone()] })
+        .expect(400);
+      expect(refused.body).toMatchObject({ message: 'Campo que não existe nesta conta: regions, zones' });
+      const name = subscription();
+      const updated = await call(adminA)
+        .patch(`/v1/cloud-accounts/${gcp.id}`, { pubsubSubscription: name })
+        .expect(200);
+      expect(updated.body).toMatchObject({ pubsubSubscription: name, regions: [] });
+
+      const aws = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      await call(adminA)
+        .patch(`/v1/cloud-accounts/${aws.id}`, { pubsubSubscription: subscription() })
+        .expect(400);
+    });
+
+    it('o banco recusa conta AWS sem ExternalId, mesmo fora da API', async () => {
+      await expect(
+        prisma.cloudAccount.create({
+          data: { tenantId: tenantA, provider: 'aws', accountId: accountId(), regions: [] },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.cloudAccount.create({
+          data: { tenantId: tenantA, provider: 'gcp', accountId: gcpProject(), regions: [] },
+        }),
+      ).resolves.toMatchObject({ externalId: null });
     });
   });
 

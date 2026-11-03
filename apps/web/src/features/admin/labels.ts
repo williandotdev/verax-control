@@ -1,6 +1,7 @@
 import type {
   AlertExceptionField,
   CloudAccountConnection,
+  CloudProvider,
   ProtectedResourceType,
   TenantStatus,
   UserStatus,
@@ -17,11 +18,26 @@ export const USER_STATUS_LABELS: Readonly<Record<UserStatus, string>> = {
   disabled: 'Desativado',
 };
 
-export const CONNECTION_LABELS: Readonly<Record<CloudAccountConnection, string>> = {
-  ok: 'Conectada',
-  error: 'Falha ao assumir o papel',
-  pending: 'Aguardando o conector',
+export const PROVIDER_LABELS: Readonly<Record<CloudProvider, string>> = {
+  aws: 'AWS',
+  gcp: 'Google Cloud',
+  cloudflare: 'Cloudflare',
 };
+
+/** Como cada provedor chama a conta, com a concordância do "cadastrado". */
+export const ACCOUNT_NOUNS: Readonly<Record<CloudProvider, { noun: string; registered: string }>> = {
+  aws: { noun: 'Conta AWS', registered: 'cadastrada' },
+  gcp: { noun: 'Projeto da GCP', registered: 'cadastrado' },
+  cloudflare: { noun: 'Conta do Cloudflare', registered: 'cadastrada' },
+};
+
+/** Na AWS, a conexão é o papel do conector; na GCP e no Cloudflare, a leitura configurada no nó. */
+export function connectionLabel(provider: CloudProvider, connection: CloudAccountConnection): string {
+  if (connection === 'ok') return 'Conectada';
+  if (provider === 'aws')
+    return connection === 'error' ? 'Falha ao assumir o papel' : 'Aguardando o conector';
+  return connection === 'error' ? 'Falha na leitura' : 'Aguardando a configuração';
+}
 
 export const PROTECTED_TYPE_LABELS: Readonly<Record<ProtectedResourceType, string>> = {
   aws_account: 'Conta AWS',
