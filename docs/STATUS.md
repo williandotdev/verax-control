@@ -1022,3 +1022,43 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Riscos:**
   - os módulos Terraform do E4/E8 (`infra/terraform/modules/{api,wazuh,prowler}`) assumiam o papel a partir de papéis `verax-control-production-*` e deixam de ser aceitos. Eles saem no passo 6.
   - o gerador de configuração do Wazuh (`infra/wazuh/scripts/render-manager-config.py`) ainda só conhece buckets. O CloudWatch Logs e o Inspector entram no passo 4, com o Docker Compose do nó.
+
+## Nova arquitetura, passo 3: pilha do nó
+
+- **Arquivos:** `infra/cloudformation/{verax-control-node.yaml,GUIA-NO.md}`, `infra/cloudformation/tests/test_node.py`, `docs/ARQUITETURA.md`, `docs/runbooks/onboarding-cliente.md`
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Só recursos novos**, com a etiqueta `verax-control-node`: VPC `10.250.0.0/24` própria com uma sub-rede e saída para a internet, flow logs (todo o tráfego) no bucket do nó.
+  - **Rede:** grupo de segurança sem nenhuma regra de entrada. A saída vai só para 443/TCP e para 7844 TCP e UDP: o túnel do Cloudflare exige os dois protocolos (QUIC e HTTP/2), conforme a documentação dele. O IP público só serve para a saída; o NAT somaria cerca de US$ 33 por mês, e a exceção do checkov tem esse motivo.
+  - **VM:** Amazon Linux 2023 pelo parâmetro público da AWS, sem chave SSH e sem user data. IMDSv2 obrigatório, com hop limit 2 para o manager do Wazuh, que roda em contêiner; o host bloqueia o IMDS para os outros contêineres, como no bundle do E4. Proteção contra encerramento e disco raiz cifrado.
+  - **Disco de dados:** separado e cifrado, com `DeletionPolicy: Snapshot` e snapshots diários (DLM, 7 dias).
+  - **Bucket do nó:** privado, versionado, só TLS e retido. Versões anteriores ficam 30 dias e os flow logs, 90.
+  - **Papel da VM** (`verax-control-node[-<nome>]`, aceito pelo padrão do conector):
+    - libera assumir só o `VeraxControlReadOnly`, o bucket do nó (3 pastas), os parâmetros do nó e métricas no próprio namespace;
+    - nega explicitamente IAM, Organizations, CloudFormation, Lambda, escrita no EC2, alteração de logs e findings, desativação de chaves, `SendCommand`/`StartSession`/`PutParameter`, outros papéis e outros buckets;
+    - nega a leitura de parâmetros do SSM fora do nó: a `AmazonSSMManagedInstanceCore` libera ler todos, o que, na conta do cliente, exporia os parâmetros dele.
+  - **Instalação e atualização:** documento do State Manager com os parâmetros validados pelo SSM e de novo no bash (`[[ =~ ]]`, onde o `$` não aceita a quebra de linha no fim). Ele baixa a release `node-v<versão>` só por HTTPS, confere o SHA-256 antes de extrair qualquer coisa e só depois roda o `install-node.sh` do pacote. A associação só existe com versão e SHA-256: uma regra do template exige os dois juntos. Trocar a versão numa atualização do stack instala a nova.
+  - **Alertas:** recuperação automática em falha do host, reinício em falha da VM, disco de dados acima de 80% (métrica do agente que o pacote instala) e orçamento mensal filtrado pela etiqueta do nó, com e-mail.
+- **Testes:** 19 no template, com 33 no total junto aos do conector. Eles cobrem:
+  - só recursos novos, todos com a etiqueta;
+  - nenhuma entrada e a saída exata;
+  - flow logs;
+  - IMDSv2, sem SSH e sem user data;
+  - discos cifrados e preservados, e snapshots no disco certo;
+  - bucket privado, versionado, retido e só TLS;
+  - confiança só do EC2 da conta e nome do papel compatível com o conector;
+  - permissões exatas do papel;
+  - negações (24 ações conferidas);
+  - nenhuma ação da `AmazonSSMManagedInstanceCore` cortada pela negação;
+  - ordem download → SHA-256 → extração → execução;
+  - padrões dos parâmetros e revalidação no shell.
+
+  A revalidação também rodou de verdade no bash, com 9 tentativas barradas (quebra de linha no fim de cada parâmetro, `$(id)`, espaço e outro papel). cfn-lint sem achados e checkov sem falhas, com 3 exceções com motivo. **Testes de mutação:** 18 de 18 pegos (porta de entrada; saída para tudo; IMDSv1; chave SSH; disco de dados apagado ou sem cifra; sem conferir o SHA-256 ou extraindo antes; parâmetro direto no shell; sem negar IAM ou `ec2:Terminate*`; assumir qualquer papel; ler parâmetros do cliente; negar o que o SSM precisa; bucket sem TLS ou apagado com o stack; instalar sem checksum; papel com outro nome).
+
+- **Definição de pronto:** testes ✔ · lint ✔ · dependências ✔ · regras de segurança ✔ · **nada aplicado na AWS** (portão)
+- **Pendente:** o pacote do nó (`install-node.sh`, Docker Compose, agente do CloudWatch e release `node-v*`) é o passo 4.
+- **Correções da revisão do PR (Codex), com testes novos:**
+  - a confiança dos papéis da VM e dos snapshots ficou sem `aws:SourceAccount`. O EC2 não envia essa chave ao assumir o papel do perfil de instância, e a condição deixaria a VM sem credencial, logo sem Session Manager e sem instalação. Só quem tem `iam:PassRole` na conta entrega esses papéis aos serviços;
+  - a AMI ficou fixa (`AmiId`, tipo `AWS::EC2::Image::Id`), e a AMI e o tipo saíram do modelo de lançamento e foram para a instância. Antes, o parâmetro do SSM era relido a cada atualização do stack e trocava a VM sempre que saía uma imagem nova. A troca falharia, porque o disco de dados ainda estaria preso à VM antiga. Agora trocar o tipo só para e religa a VM, e o sistema é atualizado no lugar pelo pacote do nó;
+  - os snapshots usam uma etiqueta-alvo só, exclusiva do disco de dados de cada nó. O DLM escolhe volumes com qualquer uma das etiquetas-alvo, e as duas anteriores pegavam também o disco raiz e os discos de outros nós;
+  - exceções do Trivy com motivo: saída 443/7844, tópico SNS sem chave própria, bucket com SSE-S3 e o falso positivo do disco raiz, cifrado no modelo de lançamento. Conferido com o Trivy 0.76.1 do CI: a versão anterior falha com os 6 achados e esta passa.

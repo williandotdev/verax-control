@@ -44,7 +44,8 @@ arquitetura (`docs/ARQUITETURA.md`).
 
    O papel só lê o conteúdo desses logs e tem negação explícita para apagar, alterar ou desviar logs.
 
-2. Crie a pilha do nó na conta escolhida, com as fontes aprovadas.
+2. Crie a pilha do nó na conta escolhida e na região dos logs (`infra/cloudformation/GUIA-NO.md`), grave o token do
+   túnel no parâmetro indicado e passe ao conector as saídas `NodeAccountId` e `NodeRoleName`.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente, a conta e os usuários no painel. O convite chega por e-mail.
 

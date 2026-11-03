@@ -1,0 +1,748 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Verax Control - nó. Uma VM com Docker (Wazuh, API, banco e túnel do Cloudflare) numa rede própria e isolada, sem
+  nenhuma porta de entrada. Só cria recursos novos: não altera nada que já exista na conta. Os dados monitorados são
+  lidos pelo papel VeraxControlReadOnly do conector, nunca por este papel.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Nó }
+        Parameters: [NodeName, InstanceType, DataVolumeSize, AmiId]
+      - Label: { default: Versão instalada }
+        Parameters: [BundleVersion, BundleSha256]
+      - Label: { default: Alertas e custo }
+        Parameters: [AlertEmail, MonthlyBudgetUsd]
+    ParameterLabels:
+      NodeName: { default: Nome do nó (vazio quando é o único da conta) }
+      InstanceType: { default: Tipo da VM }
+      DataVolumeSize: { default: Disco de dados (GiB) }
+      AmiId: { default: AMI do Amazon Linux 2023 }
+      BundleVersion: { default: Versão do Verax Control }
+      BundleSha256: { default: SHA-256 do pacote da versão }
+      AlertEmail: { default: E-mail dos alertas }
+      MonthlyBudgetUsd: { default: Orçamento mensal (USD) }
+
+Parameters:
+  NodeName:
+    Type: String
+    Description: >-
+      Sufixo do nó. Vazio gera o papel verax-control-node (o padrão do conector); preenchido, verax-control-node-<nome>,
+      para mais de um nó na mesma conta (por exemplo, na conta da Verax).
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9-]{0,24}[a-z0-9]$'
+    ConstraintDescription: letras minúsculas, números e hífen, até 26 caracteres.
+  InstanceType:
+    Type: String
+    Description: 4 vCPU e 16 GB de memória atendem o Wazuh de um cliente.
+    Default: t3a.xlarge
+    AllowedValues: [t3a.xlarge, t3.xlarge, m7a.xlarge, m6a.xlarge, m6i.xlarge, t3a.2xlarge, m7a.2xlarge]
+  DataVolumeSize:
+    Type: Number
+    Description: Disco dos alertas, do banco e dos snapshots locais. Pode crescer depois, nunca diminuir.
+    Default: 200
+    MinValue: 100
+    MaxValue: 4000
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: >-
+      AMI do Amazon Linux 2023 nesta região (o comando está no guia). Fica fixa: o sistema é atualizado no lugar pelo
+      pacote do nó. Trocar a AMI troca a VM e não é feito por atualização do stack (guia).
+  BundleVersion:
+    Type: String
+    Description: >-
+      Versão publicada do pacote do nó (release node-v<versão> no GitHub). Vazio cria só a infraestrutura. Trocar a
+      versão numa atualização do stack instala a nova.
+    Default: ''
+    AllowedPattern: '^$|^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'
+  BundleSha256:
+    Type: String
+    Description: SHA-256 do pacote, do arquivo SHA256SUMS da release. Sem ele, nada é instalado.
+    Default: ''
+    AllowedPattern: '^$|^[a-f0-9]{64}$'
+  AlertEmail:
+    Type: String
+    Description: Recebe os alertas da VM (disco cheio, falha de hardware) e do orçamento. Precisa confirmar a inscrição.
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    ConstraintDescription: um endereço de e-mail.
+  MonthlyBudgetUsd:
+    Type: Number
+    Description: >-
+      Alerta quando o custo do nó passar de 80% deste valor. Conta só os recursos com a etiqueta verax-control-node,
+      que precisa estar ativada como etiqueta de alocação de custo no Billing. 0 desliga.
+    Default: 250
+    MinValue: 0
+
+Rules:
+  VersaoComChecksum:
+    RuleCondition: !Not [!Equals [!Ref BundleVersion, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref BundleSha256, '']]
+        AssertDescription: Informe o SHA-256 do pacote junto com a versão.
+
+Conditions:
+  HasName: !Not [!Equals [!Ref NodeName, '']]
+  HasBundle: !Not [!Equals [!Ref BundleVersion, '']]
+  HasBudget: !Not [!Equals [!Ref MonthlyBudgetUsd, 0]]
+
+Resources:
+  # --- Rede própria: uma sub-rede pública sem nenhuma porta de entrada ---
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.250.0.0/24
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Name, Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node] }
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.250.0.0/26
+      AvailabilityZone: !Select [0, !GetAZs '']
+      # O IP público vem só na interface da VM (modelo de lançamento), não por padrão na sub-rede.
+      MapPublicIpOnLaunch: false
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # Nenhuma regra de entrada: o painel e a API saem pelo túnel do Cloudflare (conexão de saída) e a operação é pelo
+  # SSM. Saída só para HTTPS (APIs da AWS, imagens e o pacote do nó) e para o túnel (7844, TCP e UDP).
+  NodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Verax Control - no sem portas de entrada
+      VpcId: !Ref Vpc
+      # Exceção à regra AWS-0104 do Trivy: o nó fala com as APIs da AWS (as dele e as das contas dos clientes), com
+      # os registros de imagens, com o GitHub (pacote do nó) e com o Cloudflare, sem CIDR fixo. Só estas três portas,
+      # com flow logs.
+      SecurityGroupEgress:
+        #trivy:ignore:AWS-0104
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+        #trivy:ignore:AWS-0104
+        - IpProtocol: tcp
+          FromPort: 7844
+          ToPort: 7844
+          CidrIp: 0.0.0.0/0
+          Description: Tunel Cloudflare (http2)
+        #trivy:ignore:AWS-0104
+        - IpProtocol: udp
+          FromPort: 7844
+          ToPort: 7844
+          CidrIp: 0.0.0.0/0
+          Description: Tunel Cloudflare (quic)
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    DependsOn: BackupBucketPolicy
+    Properties:
+      ResourceId: !Ref Vpc
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: s3
+      LogDestination: !Sub '${BackupBucket.Arn}/flow-logs/'
+      MaxAggregationInterval: 600
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  # --- Bucket do nó: backup do banco, snapshots do indexer, relatórios do Prowler e flow logs ---
+
+  # Exceção à regra AWS-0132 do Trivy: cifra do S3 (SSE-S3) em vez de chave própria do KMS, que custaria mais uma
+  # chave por nó e exigiria liberar a entrega dos flow logs na política dela. O bucket é privado e só do nó.
+  #trivy:ignore:AWS-0132
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Bucket de um só usuário (o próprio nó); o acesso já fica no CloudTrail da conta.
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerEnforced }]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # O que o nó apaga ou sobrescreve fica 30 dias como versão anterior.
+          - Id: VersoesAnteriores
+            Status: Enabled
+            NoncurrentVersionExpiration: { NoncurrentDays: 30 }
+            AbortIncompleteMultipartUpload: { DaysAfterInitiation: 7 }
+          - Id: FlowLogs
+            Status: Enabled
+            Prefix: flow-logs/
+            ExpirationInDays: 90
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SoTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt BackupBucket.Arn, !Sub '${BackupBucket.Arn}/*']
+            Condition:
+              Bool: { aws:SecureTransport: 'false' }
+          - Sid: EntregaDosFlowLogs
+            Effect: Allow
+            Principal: { Service: delivery.logs.amazonaws.com }
+            Action: s3:PutObject
+            Resource: !Sub '${BackupBucket.Arn}/flow-logs/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+                s3:x-amz-acl: bucket-owner-full-control
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+          - Sid: EntregaDosFlowLogsLeitura
+            Effect: Allow
+            Principal: { Service: delivery.logs.amazonaws.com }
+            Action: [s3:GetBucketAcl, s3:ListBucket]
+            Resource: !GetAtt BackupBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+  # --- Papel da VM ---
+
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
+      Description: VM do Verax Control. Lê os clientes só pelo papel VeraxControlReadOnly de cada conector.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SoAVmDoNo
+            Effect: Allow
+            Principal: { Service: ec2.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Operação pelo Session Manager (sem SSH) e instalação pelo State Manager.
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: FuncoesDoNo
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # A confiança do papel de cada conector exige o ExternalId daquela conta e este papel exato.
+              - Sid: AssumirConectores
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::*:role/VeraxControlReadOnly'
+              - Sid: ListarOBucketDoNo
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt BackupBucket.Arn
+              - Sid: BackupsNoBucketDoNo
+                Effect: Allow
+                Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+                Resource:
+                  - !Sub '${BackupBucket.Arn}/db/*'
+                  - !Sub '${BackupBucket.Arn}/indexer-snapshots/*'
+                  - !Sub '${BackupBucket.Arn}/prowler/*'
+              # Token do túnel do Cloudflare, gravado pela Verax como SecureString depois de criado o stack.
+              - Sid: ParametrosDoNo
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub
+                  - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Id}/*'
+                  - Id: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
+              - Sid: MetricasDoNo
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: VeraxControl/Node
+        # Defesa extra, para o caso de a VM ser comprometida ou de alguém anexar outra política a este papel: o nó
+        # nunca altera nada da conta que o hospeda, nem lê dados dela fora do que é seu.
+        - PolicyName: NegarAlteracoes
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: NuncaAlterarAConta
+                Effect: Deny
+                Resource: '*'
+                Action:
+                  - access-analyzer:Delete*
+                  - access-analyzer:Update*
+                  - account:*
+                  - cloudformation:*
+                  - cloudtrail:Create*
+                  - cloudtrail:Delete*
+                  - cloudtrail:Put*
+                  - cloudtrail:Stop*
+                  - cloudtrail:Update*
+                  - ec2:Associate*
+                  - ec2:Attach*
+                  - ec2:Authorize*
+                  - ec2:Create*
+                  - ec2:Delete*
+                  - ec2:Detach*
+                  - ec2:Disassociate*
+                  - ec2:Modify*
+                  - ec2:Replace*
+                  - ec2:Revoke*
+                  - ec2:Run*
+                  - ec2:Start*
+                  - ec2:Stop*
+                  - ec2:Terminate*
+                  - guardduty:Archive*
+                  - guardduty:Create*
+                  - guardduty:Delete*
+                  - guardduty:Disable*
+                  - guardduty:Disassociate*
+                  - guardduty:Update*
+                  - iam:*
+                  - inspector2:Delete*
+                  - inspector2:Disable*
+                  - inspector2:Update*
+                  - kms:Delete*
+                  - kms:Disable*
+                  - kms:Put*
+                  - kms:ScheduleKeyDeletion
+                  - kms:Update*
+                  - lambda:*
+                  - logs:Associate*
+                  - logs:CreateExportTask
+                  - logs:Delete*
+                  - logs:Disassociate*
+                  - logs:PutDataProtectionPolicy
+                  - logs:PutResourcePolicy
+                  - logs:PutRetentionPolicy
+                  - logs:PutSubscriptionFilter
+                  - logs:Unmask
+                  - organizations:*
+                  - securityhub:BatchImport*
+                  - securityhub:BatchUpdate*
+                  - securityhub:Delete*
+                  - securityhub:Disable*
+                  - securityhub:Update*
+                  - ssm:CreateDocument
+                  - ssm:DeleteParameter*
+                  - ssm:PutParameter
+                  - ssm:SendCommand
+                  - ssm:StartAutomationExecution
+                  - ssm:StartSession
+                  - wafv2:Delete*
+                  - wafv2:Put*
+                  - wafv2:Update*
+              - Sid: SoOPapelDosConectores
+                Effect: Deny
+                Action: [sts:AssumeRole, sts:AssumeRoleWithSAML, sts:AssumeRoleWithWebIdentity]
+                NotResource: !Sub 'arn:${AWS::Partition}:iam::*:role/VeraxControlReadOnly'
+              - Sid: SoEscreverNoBucketDoNo
+                Effect: Deny
+                Action: [s3:Bypass*, s3:Create*, s3:Delete*, s3:Put*, s3:Replicate*, s3:Restore*]
+                NotResource: [!GetAtt BackupBucket.Arn, !Sub '${BackupBucket.Arn}/*']
+              # A política do SSM libera ler qualquer parâmetro; o nó só lê os seus.
+              - Sid: SoOsParametrosDoNo
+                Effect: Deny
+                Action:
+                  [ssm:GetParameter, ssm:GetParameters, ssm:GetParametersByPath, ssm:GetParameterHistory]
+                NotResource: !Sub
+                  - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Id}/*'
+                  - Id: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  NodeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref NodeRole]
+
+  # --- VM e disco de dados ---
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_88
+            comment: >-
+              IP público só para a saída (decisão de custo: um NAT somaria cerca de US$ 33 por mês ao nó). O grupo
+              de segurança não tem nenhuma regra de entrada; o teste do template garante isso.
+    Properties:
+      LaunchTemplateData:
+        IamInstanceProfile: { Arn: !GetAtt NodeInstanceProfile.Arn }
+        # Proteção contra encerramento por engano. Para apagar o stack, desligue-a antes (README).
+        DisableApiTermination: true
+        EbsOptimized: true
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+          # 2 para o manager do Wazuh (num contêiner) assumir os conectores; o host bloqueia os outros contêineres.
+          HttpPutResponseHopLimit: 2
+          InstanceMetadataTags: disabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs: { VolumeType: gp3, VolumeSize: 30, Encrypted: true, DeleteOnTermination: true }
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            SubnetId: !Ref Subnet
+            Groups: [!Ref NodeSecurityGroup]
+            # Só para sair para a internet: o grupo de segurança não aceita nenhuma conexão de entrada.
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - { Key: Name, Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node] }
+              - Key: verax-control-node
+                Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
+          - ResourceType: volume
+            Tags:
+              - Key: verax-control-node
+                Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
+
+  # Exceção à regra AWS-0131 do Trivy (falso positivo): o disco raiz é cifrado no modelo de lançamento
+  # (BlockDeviceMappings acima), que o Trivy não resolve. O teste do template confere a cifra.
+  # A AMI e o tipo ficam na instância, e não no modelo de lançamento: trocar o tipo só para e religa a VM, e o modelo
+  # não muda numa atualização comum. Trocar a instância exigiria soltar antes o disco de dados (guia).
+  #trivy:ignore:AWS-0131
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+
+  # Separado da VM: sobrevive à troca dela, tem snapshot diário e vira snapshot se o stack for apagado.
+  DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      AvailabilityZone: !GetAtt Subnet.AvailabilityZone
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - {
+            Key: Name,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}-dados', verax-control-node-dados],
+          }
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+        - Key: verax-control-backup
+          Value: !If [HasName, !Sub 'verax-control-node-${NodeName}-dados', verax-control-node-dados]
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref Instance
+      VolumeId: !Ref DataVolume
+      Device: /dev/sdf
+
+  SnapshotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: dlm.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSDataLifecycleManagerServiceRole'
+
+  DailySnapshots:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description:
+        !If [
+          HasName,
+          !Sub 'verax-control-node-${NodeName} - disco de dados',
+          verax-control-node - disco de dados,
+        ]
+      State: ENABLED
+      ExecutionRoleArn: !GetAtt SnapshotRole.Arn
+      PolicyDetails:
+        PolicyType: EBS_SNAPSHOT_MANAGEMENT
+        ResourceTypes: [VOLUME]
+        # Uma etiqueta só: o DLM escolhe os volumes que tenham qualquer uma das etiquetas-alvo. Esta existe só no disco
+        # de dados deste nó.
+        TargetTags:
+          - Key: verax-control-backup
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}-dados', verax-control-node-dados]
+        Schedules:
+          - Name: Diario
+            CreateRule: { Interval: 24, IntervalUnit: HOURS, Times: ['07:00'] }
+            RetainRule: { Count: 7 }
+            CopyTags: true
+
+  # --- Instalação e atualização (State Manager, sem SSH e sem segredo no stack) ---
+
+  ApplyDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Command
+      UpdateMethod: NewVersion
+      Content:
+        schemaVersion: '2.2'
+        description: Instala uma versão do pacote do nó do Verax Control, conferida pelo SHA-256.
+        parameters:
+          Version: { type: String, allowedPattern: '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' }
+          Sha256: { type: String, allowedPattern: '^[a-f0-9]{64}$' }
+          NodeId: { type: String, allowedPattern: '^verax-control-node(-[a-z0-9][a-z0-9-]{0,24}[a-z0-9])?$' }
+          DataVolumeId: { type: String, allowedPattern: '^vol-[a-f0-9]{8,17}$' }
+          BackupBucket: { type: String, allowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$' }
+        mainSteps:
+          - action: aws:runShellScript
+            name: instalar
+            inputs:
+              timeoutSeconds: '3600'
+              # O SSM roda os comandos com o sh do Amazon Linux 2023, que é o bash.
+              runCommand:
+                - set -euo pipefail
+                - umask 077
+                - version='{{Version}}'
+                - sha256='{{Sha256}}'
+                - node_id='{{NodeId}}'
+                - volume_id='{{DataVolumeId}}'
+                - bucket='{{BackupBucket}}'
+                # O SSM já valida os parâmetros; a conferência se repete aqui, onde o $ não aceita quebra de linha.
+                - if ! [[ $version =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ && $sha256 =~ ^[a-f0-9]{64}$ && $node_id =~ ^verax-control-node(-[a-z0-9][a-z0-9-]{0,24}[a-z0-9])?$ && $volume_id =~ ^vol-[a-f0-9]{8,17}$ && $bucket =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then echo 'parâmetros fora do formato' >&2; exit 1; fi
+                - name="verax-control-node-${version}.tar.gz"
+                - url="https://github.com/williandotdev/verax-control/releases/download/node-v${version}/${name}"
+                - work=$(mktemp -d)
+                - trap 'rm -rf "$work"' EXIT
+                - curl -fsSL --proto '=https' --tlsv1.2 --retry 5 -o "$work/$name" "$url"
+                # Nada do pacote é extraído nem executado antes de o SHA-256 conferir.
+                - echo "$sha256  $work/$name" | sha256sum --check --strict --quiet
+                - release=/opt/verax-control/releases/$version
+                - rm -rf "$release.tmp" && install -d -m 0755 "$release.tmp"
+                - tar -xzf "$work/$name" -C "$release.tmp" --no-same-owner --no-same-permissions
+                - rm -rf "$release" && mv "$release.tmp" "$release"
+                - ln -sfn "$release" /opt/verax-control/current.tmp && mv -T /opt/verax-control/current.tmp /opt/verax-control/current
+                - install -d -m 0700 /etc/verax-control
+                - printf 'NODE_ID=%s\nDATA_VOLUME_ID=%s\nBACKUP_BUCKET=%s\nNODE_VERSION=%s\n' "$node_id" "$volume_id" "$bucket" "$version" >/etc/verax-control/node.env
+                - rm -rf "$work" && trap - EXIT
+                - exec /opt/verax-control/current/bin/install-node.sh
+
+  ApplyAssociation:
+    Type: AWS::SSM::Association
+    Condition: HasBundle
+    DependsOn: DataVolumeAttachment
+    Properties:
+      Name: !Ref ApplyDocument
+      Targets:
+        - Key: InstanceIds
+          Values: [!Ref Instance]
+      Parameters:
+        Version: [!Ref BundleVersion]
+        Sha256: [!Ref BundleSha256]
+        NodeId: [!If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]]
+        DataVolumeId: [!Ref DataVolume]
+        BackupBucket: [!Ref BackupBucket]
+
+  # --- Alertas e custo ---
+
+  # Exceção à regra AWS-0095 do Trivy: mesmo motivo da exceção do checkov abaixo.
+  #trivy:ignore:AWS-0095
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_26
+            comment: >-
+              O CloudWatch não publica em tópico cifrado com a chave gerenciada aws/sns; os alertas não têm dado
+              sensível (nome do alarme e estado).
+    Properties:
+      Subscription:
+        - { Protocol: email, Endpoint: !Ref AlertEmail }
+      Tags:
+        - {
+            Key: verax-control-node,
+            Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node],
+          }
+
+  # Falha do hardware da AWS: a VM é recuperada em outro host, com o mesmo disco e o mesmo IP privado.
+  RecoverAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Verax Control - falha do host da AWS; recuperação automática da VM.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Dimensions: [{ Name: InstanceId, Value: !Ref Instance }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Sub 'arn:${AWS::Partition}:automate:${AWS::Region}:ec2:recover'
+        - !Ref AlertTopic
+
+  InstanceCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Verax Control - a VM não responde (sistema operacional); reinício automático.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_Instance
+      Dimensions: [{ Name: InstanceId, Value: !Ref Instance }]
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Sub 'arn:${AWS::Partition}:swf:${AWS::Region}:${AWS::AccountId}:action/actions/AWS_EC2.InstanceId.Reboot/1.0'
+        - !Ref AlertTopic
+
+  # Métrica publicada pelo agente do CloudWatch que o pacote do nó instala.
+  DataDiskAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Verax Control - disco de dados acima de 80%.
+      Namespace: VeraxControl/Node
+      MetricName: disk_used_percent
+      Dimensions:
+        - { Name: InstanceId, Value: !Ref Instance }
+        - { Name: path, Value: /data }
+        - { Name: fstype, Value: xfs }
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: missing
+      AlarmActions: [!Ref AlertTopic]
+      OKActions: [!Ref AlertTopic]
+
+  Budget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudget
+    Properties:
+      Budget:
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref MonthlyBudgetUsd, Unit: USD }
+        CostFilters:
+          TagKeyValue:
+            - !Sub
+              - 'user:verax-control-node$${Id}'
+              - Id: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail }]
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref AlertEmail }]
+
+Outputs:
+  NodeRoleName:
+    Description: Informe no conector de cada conta monitorada (parâmetro NodeRoleName).
+    Value: !Ref NodeRole
+  NodeAccountId:
+    Description: Informe no conector de cada conta monitorada (parâmetro NodeAccountId).
+    Value: !Ref AWS::AccountId
+  InstanceId:
+    Description: VM do nó. Acesso só pelo Session Manager.
+    Value: !Ref Instance
+  BackupBucketName:
+    Description: Bucket do nó (backups, snapshots do indexer, relatórios do Prowler e flow logs).
+    Value: !Ref BackupBucket
+  TunnelTokenParameter:
+    Description: Grave aqui o token do túnel do Cloudflare, como SecureString (README).
+    Value: !Sub
+      - '/${Id}/cloudflare-tunnel-token'
+      - Id: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]

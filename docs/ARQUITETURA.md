@@ -27,7 +27,7 @@ estágio atual. O código da aplicação (API, painel, autenticação, isolament
 ```
 Navegador
  ├─ <cliente>.control.veraxsistemas.com.br ──► GCP (Firebase Hosting, projeto da Verax): só o painel estático
- └─ api.<cliente>.control.veraxsistemas.com.br ──► Cloudflare ──► túnel (conexão de saída do nó; nenhuma porta aberta)
+ └─ api-<cliente>.veraxsistemas.com.br ──► Cloudflare ──► túnel (conexão de saída do nó; nenhuma porta aberta)
                                                                      │
 Conta AWS que hospeda o nó (do cliente ou da Verax) — pilha "verax-control-node"
   rede própria (VPC isolada), na mesma região dos logs monitorados
@@ -70,6 +70,12 @@ O painel é estático, no Firebase Hosting do projeto `verax-control-prod` (GCP)
 - `verax.control.veraxsistemas.com.br`: **SOC da própria Verax**. Monitora a infraestrutura da Verax na GCP e no
   Cloudflare.
 - `<cliente>.control.veraxsistemas.com.br`: um por cliente.
+
+A API de cada destino fica em `api-<cliente>.veraxsistemas.com.br` (a da Verax, em `api-verax`), e não em
+`api.<cliente>.control...`. Ela passa pelo túnel do Cloudflare, que exige o proxy ligado e, portanto, o certificado do
+Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.veraxsistemas.com.br`), e o de mais níveis
+custaria cerca de US$ 10 por mês (decisão de 02/11/2026). Os painéis não têm esse limite: ficam com o proxy desligado
+e o certificado é do Firebase.
 
 ## SOC da própria Verax (fontes da GCP)
 
@@ -116,7 +122,9 @@ A leitura de logs pela API não gera transferência entre regiões quando o nó 
 2. Conector revisado: só o papel de leitura, que só o papel do nó assume, com leitura do CloudWatch Logs, dos buckets
    e das chaves informados, findings do Inspector e do Access Analyzer e negação explícita de escrita. Sem trilha,
    bucket ou log do WAF criados pelo conector. **Feito.**
-3. Pilha do nó (VPC isolada, VM, bucket, papéis com negação explícita, snapshots e alarme de custo).
+3. Pilha do nó (`infra/cloudformation/verax-control-node.yaml`): VPC isolada sem porta de entrada, VM, disco de dados,
+   bucket, papel com negação explícita, snapshots, alarmes, orçamento e instalação pelo State Manager conferida por
+   SHA-256. **Feito** (a instalação espera o pacote do passo 4).
 4. Docker Compose do nó: instalação, atualização por versão fixada e backup.
 5. Painel no Firebase Hosting, com os cabeçalhos de segurança, e publicação pelo GitHub Actions.
 6. Remoção do que deixou de ser usado (E8 e a rede do E4).
