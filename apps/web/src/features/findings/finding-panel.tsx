@@ -165,7 +165,7 @@ function StatusActions({
   };
 
   return (
-    <section aria-labelledby={`${commentId}-titulo`} className="space-y-2">
+    <section data-tour="achado-triagem" aria-labelledby={`${commentId}-titulo`} className="space-y-2">
       <h3 id={`${commentId}-titulo`} className="text-sm font-semibold">
         Mudar status
       </h3>

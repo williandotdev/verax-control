@@ -1,5 +1,6 @@
 import { type ComponentType, createElement } from 'react';
 import { createBrowserRouter, type RouteObject } from 'react-router';
+import { DemoTourMount } from '@/features/tour/entry';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { CloudAccountsPage } from '@/pages/admin/cloud-accounts-page';
@@ -91,7 +92,19 @@ export const routes: RouteObject[] = [
   { path: '/sem-permissao', element: <ForbiddenPage /> },
   {
     element: <RequireSession />,
-    children: [{ path: '/', element: <AppLayout />, children: [...appPages, ...detailPages] }],
+    children: [
+      {
+        path: '/',
+        // O tour guiado da demonstração fica ao lado do painel; fora do modo `mock`, `DemoTourMount` não renderiza nada.
+        element: (
+          <>
+            <AppLayout />
+            <DemoTourMount />
+          </>
+        ),
+        children: [...appPages, ...detailPages],
+      },
+    ],
   },
   { path: '*', element: <NotFoundPage /> },
 ];

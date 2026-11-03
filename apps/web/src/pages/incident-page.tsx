@@ -91,7 +91,7 @@ function IncidentView({ incident, canWrite }: { incident: IncidentDetail; canWri
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="min-w-0 space-y-4 lg:col-span-2">
-          <Card aria-labelledby="incidente-resumo">
+          <Card data-tour="incidente-resumo" aria-labelledby="incidente-resumo">
             <CardHeader>
               <CardTitle id="incidente-resumo">Resumo</CardTitle>
             </CardHeader>

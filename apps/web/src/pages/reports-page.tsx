@@ -68,7 +68,11 @@ export function ReportsPage() {
           value={tab?.slug ?? 'resumo'}
           onValueChange={(value) => update({ aba: value === 'resumo' ? null : value })}
         >
-          <Tabs.List aria-label="Relatório" className="flex flex-wrap gap-1 border-b">
+          <Tabs.List
+            data-tour="relatorios-abas"
+            aria-label="Relatório"
+            className="flex flex-wrap gap-1 border-b"
+          >
             {REPORT_TABS.map((item) => (
               <Tabs.Trigger
                 key={item.slug}
