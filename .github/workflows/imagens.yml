@@ -1,7 +1,8 @@
 name: Imagens do nó
 
 # Publica as imagens da API e das migrations no Artifact Registry do nó (projeto da Verax na GCP), uma versão por
-# commit da main, com a atestação de origem. O nó roda sempre pelo digest (infra/node/bin/install.sh --tag <commit>).
+# commit da main, com a atestação de origem. O nó roda sempre pelo digest conferido contra essa atestação
+# (infra/node/bin/deploy.sh <commit> <node.conf>).
 # Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `imagens`, que só
 # aceita a `main`. A imagem é a mesma que o CI testa a cada PR (job "Imagem da API").
 
@@ -105,5 +106,5 @@ jobs:
             echo "- API: \`$API_DIGEST\`"
             echo "- Migrations: \`$MIGRATE_DIGEST\`"
             echo
-            echo "No nó: \`install.sh --tag $GITHUB_SHA\` (docs/runbooks/no-verax.md)."
+            echo "No nó: \`infra/node/bin/deploy.sh $GITHUB_SHA <node.conf>\` (docs/runbooks/no-verax.md)."
           } >> "$GITHUB_STEP_SUMMARY"

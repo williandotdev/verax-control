@@ -52,11 +52,14 @@ services:
       - /var/lib/verax/tls/server.crt:/etc/verax/tls/server.crt:ro
       - /var/lib/verax/tls/server.key:/etc/verax/tls/server.key:ro
       - /opt/verax/pg_hba.conf:/etc/verax/pg_hba.conf:ro
+    # Por TCP: na primeira partida, o servidor temporário do initdb só escuta no socket; o pronto é o definitivo.
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d verax']
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -p 5432 -U "$$POSTGRES_USER" -d verax']
       interval: 10s
       timeout: 5s
       retries: 12
+      start_period: 180s
+      start_interval: 2s
     security_opt: ['no-new-privileges:true']
     shm_size: 64m
     mem_limit: 256m
@@ -114,6 +117,11 @@ services:
     <<: *hardened
     image: ${API_IMAGE:?}
     command: ['node', 'dist/worker.js']
+    # IP fixo: é o único contêiner liberado para o servidor de metadados da GCP (token da VM), pela regra que o
+    # start.sh aplica no DOCKER-USER. Mesmo valor de WORKER_IP no start.sh.
+    networks:
+      verax:
+        ipv4_address: 172.30.53.10
     env_file: /run/verax/worker.env
     environment:
       NODE_OPTIONS: --max-old-space-size=160
@@ -139,3 +147,7 @@ services:
 networks:
   verax:
     driver: bridge
+    # Faixa fixa (a mesma de NODE_SUBNET no start.sh), longe da rede da VPC e da padrão do Docker.
+    ipam:
+      config:
+        - subnet: 172.30.53.0/24

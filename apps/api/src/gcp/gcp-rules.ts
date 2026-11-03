@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { FindingSeverity } from '@verax/shared';
 import type { FindingDraft } from '../alerts/finding-draft.js';
 import {
@@ -33,11 +34,23 @@ function field(value: unknown, key: string): unknown {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 }
 
-/** Vínculos de IAM adicionados: pelo delta da política (o normal) ou, sem delta, pela política enviada. */
+/**
+ * O serviço registrou o que mudou na política (`serviceData`). Nesse caso só o delta vale: sem `bindingDeltas`, nada
+ * foi concedido (o JSON omite a lista vazia, e reenviar a mesma política, como faz cada deploy do Cloud Run com
+ * `--allow-unauthenticated`, não é uma concessão nova).
+ */
+export function hasPolicyDelta(log: AuditLog): boolean {
+  return log.serviceData !== undefined;
+}
+
+/**
+ * Vínculos de IAM adicionados: pelo delta da política (o normal) ou, só para serviço que não registra o delta, pela
+ * política enviada inteira. Nesse último caso, o achado ganha um ID estável (ver `gcpEventIdFor`), para a mesma
+ * política reenviada não virar outro achado.
+ */
 function addedBindings(log: AuditLog): { role: string; member: string }[] {
-  const deltas = log.serviceData?.policyDelta?.bindingDeltas;
-  if (deltas) {
-    return deltas.flatMap((delta) =>
+  if (hasPolicyDelta(log)) {
+    return (log.serviceData?.policyDelta?.bindingDeltas ?? []).flatMap((delta) =>
       delta.action === 'ADD' && delta.role && delta.member
         ? [{ role: delta.role, member: delta.member }]
         : [],
@@ -112,6 +125,27 @@ function opensAdminPorts(log: AuditLog): boolean {
       );
     });
   });
+}
+
+/** Chaves de metadados que dão acesso SSH ou o protegem. */
+const SSH_KEYS = new Set(['ssh-keys', 'sshKeys']);
+const SSH_GUARDS = new Set(['enable-oslogin', 'block-project-ssh-keys']);
+
+/**
+ * Chave SSH incluída ou alterada, ou proteção de SSH (OS Login, bloqueio das chaves do projeto) alterada ou apagada,
+ * pelos nomes das chaves no delta de metadados (o Compute redige os valores no `request`).
+ */
+function changesSshAccess(log: AuditLog): boolean {
+  const deltas = [log.metadata?.instanceMetadataDelta, log.metadata?.projectMetadataDelta];
+  return deltas.some(
+    (delta) =>
+      [...(delta?.addedMetadataKeys ?? []), ...(delta?.modifiedMetadataKeys ?? [])].some((key) =>
+        SSH_KEYS.has(key),
+      ) ||
+      [...(delta?.modifiedMetadataKeys ?? []), ...(delta?.deletedMetadataKeys ?? [])].some((key) =>
+        SSH_GUARDS.has(key),
+      ),
+  );
 }
 
 const requestMentions = (log: AuditLog, ...needles: string[]) => {
@@ -212,13 +246,13 @@ export const GCP_RULES: readonly GcpRule[] = [
   {
     id: '990111',
     level: 10,
-    title: 'Chave SSH incluída nos metadados de VM ou do projeto',
+    title: 'Chave SSH incluída nos metadados, ou proteção de SSH (OS Login) alterada',
     tactics: ['Persistence'],
     techniques: ['T1098.004'],
     matches: (log) =>
       succeeded(log) &&
       /compute\.(projects\.setCommonInstanceMetadata|instances\.setMetadata)$/.test(method(log)) &&
-      requestMentions(log, 'ssh-keys', 'sshKeys'),
+      changesSshAccess(log),
   },
   {
     id: '990112',
@@ -331,6 +365,38 @@ export function gcpEventId(project: string | null, insertId: string): string {
   return `${project ?? '-'}/${insertId}`.slice(0, MAX_EVENT_ID);
 }
 
+/** Regras que leem a política de IAM (acesso público, dono, papel privilegiado). */
+const POLICY_RULES = new Set(['990103', '990104', '990105']);
+
+/**
+ * O ID do achado. Em geral, o do evento. Duas exceções, para um acontecimento virar um achado só:
+ * - operação longa (o Compute grava o início e o fim): o ID da operação;
+ * - política de IAM de serviço que não registra o delta: o recurso e os vínculos que contaram. A mesma política
+ *   reenviada (cada deploy que reaplica o mesmo acesso público, por exemplo) cai na mesma chave e não duplica.
+ */
+export function gcpEventIdFor(entry: LogEntry, project: string, rule: GcpRule): string {
+  const log = entry.protoPayload;
+  if (log && POLICY_RULES.has(rule.id) && !hasPolicyDelta(log)) {
+    const granted = addedBindings(log)
+      .filter(
+        (binding) =>
+          PUBLIC_MEMBERS.has(binding.member) ||
+          binding.role === 'roles/owner' ||
+          PRIVILEGED_ROLES.has(binding.role),
+      )
+      .map((binding) => `${binding.role}=${binding.member}`)
+      .sort()
+      .join(',');
+    const digest = createHash('sha256')
+      .update(`${rule.id}|${log.resourceName ?? ''}|${granted}`)
+      .digest('hex');
+    return `${project}/politica:${digest.slice(0, 40)}`;
+  }
+  const operation = entry.operation?.id;
+  if (operation) return `${project}/operacao:${operation}`.slice(0, MAX_EVENT_ID);
+  return gcpEventId(project, entry.insertId);
+}
+
 /** De entrada da auditoria da GCP a achado, já com o cliente decidido pela assinatura e conferido pelo projeto. */
 export function toGcpFindingDraft(
   entry: LogEntry,
@@ -343,7 +409,7 @@ export function toGcpFindingDraft(
     tenantId: owner.tenantId,
     accountId: owner.project,
     source: 'gcp',
-    sourceEventId: gcpEventId(owner.project, entry.insertId),
+    sourceEventId: gcpEventIdFor(entry, owner.project, rule),
     occurredAt: new Date(entry.timestamp).toISOString(),
     severity: severityOfLevel(rule.level),
     ruleId: rule.id,

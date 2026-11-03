@@ -16,6 +16,9 @@ source /etc/verax/node.conf
 
 secrets=/var/lib/verax/secrets
 run=/run/verax
+# Rede dos contêineres e o IP do worker: os mesmos do compose.yaml.
+NODE_SUBNET=172.30.53.0/24
+WORKER_IP=172.30.53.10
 compose() {
   docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml --env-file /etc/verax/images.env "$@"
 }
@@ -80,7 +83,23 @@ render() {
   write_env cloudflared.env "TUNNEL_TOKEN=$(external_secret cloudflare-tunnel-token)"
 }
 
+# Só o worker fala com o servidor de metadados da GCP, que entrega o token da VM (leitura das assinaturas, dos
+# segredos e dos backups). A API (exposta pelo túnel), o cloudflared e o banco ficam sem acesso: uma falha num deles não
+# vira o token da VM. O DNS da GCE usa o mesmo IP, na porta 53, e segue liberado para todos. Reaplicado a cada partida
+# (as regras não sobrevivem a um reboot).
+guard_metadata() {
+  local chain=VERAX-METADATA
+  iptables -N "$chain" 2>/dev/null || iptables -F "$chain"
+  iptables -A "$chain" -s "$WORKER_IP" -j RETURN
+  iptables -A "$chain" -p udp --dport 53 -j RETURN
+  iptables -A "$chain" -p tcp --dport 53 -j RETURN
+  iptables -A "$chain" -j DROP
+  iptables -C DOCKER-USER -s "$NODE_SUBNET" -d 169.254.169.254 -j "$chain" 2>/dev/null ||
+    iptables -I DOCKER-USER -s "$NODE_SUBNET" -d 169.254.169.254 -j "$chain"
+}
+
 up() {
+  guard_metadata
   render
   compose pull --quiet
   compose up --detach --wait postgres

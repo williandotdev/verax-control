@@ -20,6 +20,16 @@ const auditConfigDeltaSchema = z.object({
   logType: text(64).optional(),
 });
 
+/**
+ * Chaves de metadados alteradas numa VM ou no projeto (Compute Engine). O Compute redige os valores no `request`; só
+ * os nomes das chaves aparecem aqui (`protoPayload.metadata.*MetadataDelta`).
+ */
+const metadataDeltaSchema = z.object({
+  addedMetadataKeys: z.array(text(256)).max(200).optional(),
+  modifiedMetadataKeys: z.array(text(256)).max(200).optional(),
+  deletedMetadataKeys: z.array(text(256)).max(200).optional(),
+});
+
 const auditLogSchema = z.object({
   serviceName: text(256).optional(),
   methodName: text(256).optional(),
@@ -39,6 +49,12 @@ const auditLogSchema = z.object({
     .optional(),
   request: z.record(z.string(), z.unknown()).optional(),
   response: z.record(z.string(), z.unknown()).optional(),
+  metadata: z
+    .object({
+      instanceMetadataDelta: metadataDeltaSchema.optional(),
+      projectMetadataDelta: metadataDeltaSchema.optional(),
+    })
+    .optional(),
   serviceData: z
     .object({
       policyDelta: z
@@ -60,6 +76,17 @@ export const logEntrySchema = z.object({
     .object({
       type: text(128),
       labels: z.record(z.string(), text(512)).optional(),
+    })
+    .optional(),
+  /**
+   * Operação longa (Compute, por exemplo): a GCP grava dois registros, o do início e o do fim, com `insertId`s
+   * diferentes e o mesmo `id`. É ele que junta os dois num achado só.
+   */
+  operation: z
+    .object({
+      id: text(256).optional(),
+      first: z.boolean().optional(),
+      last: z.boolean().optional(),
     })
     .optional(),
   protoPayload: auditLogSchema.optional(),

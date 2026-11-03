@@ -18,7 +18,9 @@ repositório.
 | `worker`                  | Lê a auditoria da GCP das assinaturas do Pub/Sub e transforma o que é suspeito em achados.           |
 | `cloudflared`             | Túnel do Cloudflare: conexão de saída da VM até o Cloudflare.                                        |
 
-Todos rodam com a raiz só leitura, sem capabilities e com limite de memória. O backup do banco sai todo dia para o
+Todos rodam com a raiz só leitura, sem capabilities e com limite de memória. Só o worker alcança o servidor de
+metadados da GCP, que entrega o token da VM: uma regra no `DOCKER-USER`, aplicada a cada partida, bloqueia os outros
+contêineres. O backup do banco sai todo dia para o
 bucket de backups (`verax-backup.timer`).
 
 ## Antes de instalar (uma vez)
@@ -55,33 +57,37 @@ bucket de backups (`verax-backup.timer`).
 
 ## Instalar ou atualizar
 
-Do seu computador, na raiz do repositório, com o `gcloud` logado. O arquivo `node.conf` segue
-`infra/node/node.conf.example`, com os valores reais; ele não é segredo, mas fica fora do repositório.
+Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados. O arquivo `node.conf` segue
+`infra/node/node.conf.example`, com os valores reais. Ele não é segredo, mas fica fora do repositório.
 
 ```bash
-gcloud compute scp --recurse infra/node verax-node:~/verax-node --zone us-east1-b --tunnel-through-iap
-gcloud compute scp node.conf verax-node:~/verax-node/node.conf --zone us-east1-b --tunnel-through-iap
-gcloud compute ssh verax-node --zone us-east1-b --tunnel-through-iap -- \
-  sudo bash verax-node/bin/install.sh --tag COMMIT --config verax-node/node.conf
+infra/node/bin/deploy.sh COMMIT caminho/para/node.conf
 ```
 
-`COMMIT` é o commit da `main` cujas imagens você quer rodar. Para atualizar, repita com o commit novo. O
-`--config` só é necessário na primeira vez: depois a configuração fica em `/etc/verax/node.conf`.
+`COMMIT` é o commit da `main` cujas imagens você quer rodar; ele aparece no resumo do workflow `Imagens do nó`. Para
+atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
+
+1. **Confere as imagens.** Na API do GitHub, verifica a atestação de origem de cada imagem: ela precisa ter sido
+   gerada pelo workflow `Imagens do nó` deste repositório, na `main`, a partir desse commit.
+2. **Copia o pacote para a VM** pelo IAP, sem porta aberta.
+3. **Instala pelo digest conferido.** A VM nunca confia em tag do registro.
 
 A instalação instala o Docker pelo repositório oficial, com a chave conferida. Na primeira vez, também gera a CA e o
-certificado do banco e as senhas internas. Em todas as vezes, fixa as imagens pelo digest e (re)inicia o serviço.
+certificado do banco e as senhas internas. Em todas as vezes, (re)inicia o serviço.
 
 ## Primeiro acesso: administrador e cliente Verax
 
-Uma vez, depois da primeira instalação (pode repetir sem duplicar nada):
+Uma vez, depois da primeira instalação. Pode repetir sem duplicar nada. Entre na VM e rode o comando lá dentro, para
+as aspas chegarem inteiras:
 
 ```bash
-gcloud compute ssh verax-node --zone us-east1-b --tunnel-through-iap -- sudo \
-  BOOTSTRAP_ADMIN_EMAIL=SEU_EMAIL \
-  BOOTSTRAP_ADMIN_NAME="Seu nome" \
-  BOOTSTRAP_TENANT_NAME="Verax Sistemas" \
-  BOOTSTRAP_GCP_ACCOUNTS="PROJETO_A=projects/PROJETO_DO_NO/subscriptions/verax-node-security-PROJETO_A,PROJETO_B=projects/PROJETO_DO_NO/subscriptions/verax-node-security-PROJETO_B" \
-  /opt/verax/bin/start.sh bootstrap
+gcloud compute ssh verax-node --zone us-east1-b --tunnel-through-iap
+```
+
+Já na VM:
+
+```bash
+sudo BOOTSTRAP_ADMIN_EMAIL='SEU_EMAIL'   BOOTSTRAP_ADMIN_NAME='Seu nome'   BOOTSTRAP_TENANT_NAME='Verax Sistemas'   BOOTSTRAP_GCP_ACCOUNTS='PROJETO_A=projects/PROJETO_DO_NO/subscriptions/verax-node-security-PROJETO_A,PROJETO_B=projects/PROJETO_DO_NO/subscriptions/verax-node-security-PROJETO_B'   /opt/verax/bin/start.sh bootstrap
 ```
 
 O que esse comando faz:

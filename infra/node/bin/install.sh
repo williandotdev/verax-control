@@ -1,23 +1,31 @@
 #!/bin/bash
 # Instala ou atualiza o nó do Verax Control numa VM Debian 12. Roda como root, de dentro da pasta do pacote
-# (infra/node copiada para a VM). Pode rodar de novo: o que já existe (dados, certificados, senhas) fica como está.
-#   install.sh --tag <commit> [--config <node.conf>]
-# --tag     versão das imagens (o commit da main publicado pelo workflow Imagens); fixada pelo digest
+# (infra/node copiada para a VM pelo deploy.sh). Pode rodar de novo: o que já existe (dados, certificados, senhas)
+# fica como está.
+#   install.sh --version <commit> --api-digest <sha256:...> --migrate-digest <sha256:...> [--config <node.conf>]
+# Os digests chegam já conferidos pelo deploy.sh (atestação de origem do workflow Imagens do nó, na main): a VM não
+# confia em tag do registro, só no conteúdo exato (o digest é o hash da imagem).
 # --config  configuração do nó (só na primeira vez; depois fica em /etc/verax/node.conf)
 set -euo pipefail
 umask 077
 
 here=$(cd "$(dirname "$0")/.." && pwd)
-tag=''
+version=''
+api_digest=''
+migrate_digest=''
 config=''
 while (($#)); do
   case $1 in
-    --tag) tag=$2; shift 2 ;;
+    --version) version=$2; shift 2 ;;
+    --api-digest) api_digest=$2; shift 2 ;;
+    --migrate-digest) migrate_digest=$2; shift 2 ;;
     --config) config=$2; shift 2 ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
 done
-[[ $tag =~ ^[0-9a-f]{40}$ ]] || { echo 'Informe --tag com o commit (40 caracteres hexadecimais).' >&2; exit 2; }
+[[ $version =~ ^[0-9a-f]{40}$ ]] || { echo 'Informe --version com o commit (40 caracteres hexadecimais).' >&2; exit 2; }
+[[ $api_digest =~ ^sha256:[0-9a-f]{64}$ && $migrate_digest =~ ^sha256:[0-9a-f]{64}$ ]] ||
+  { echo 'Informe --api-digest e --migrate-digest (sha256:...), conferidos pelo deploy.sh.' >&2; exit 2; }
 [[ $(id -u) == 0 ]] || { echo 'Rode como root.' >&2; exit 2; }
 
 echo '== Docker Engine (repositório oficial, chave conferida)'
@@ -95,20 +103,13 @@ generate postgres-app 40
 generate better-auth-secret 48
 generate csrf-secret 48
 
-echo '== Imagens (fixadas pelo digest)'
-registry=${IMAGES_REPOSITORY%%/*}
-gcloud auth configure-docker "$registry" --quiet >/dev/null 2>&1
-digest() {
-  gcloud artifacts docker images describe "$IMAGES_REPOSITORY/$1:$tag" --format='value(image_summary.digest)'
-}
-api_digest=$(digest api)
-migrate_digest=$(digest migrate)
-[[ $api_digest =~ ^sha256:[0-9a-f]{64}$ && $migrate_digest =~ ^sha256:[0-9a-f]{64}$ ]] ||
-  { echo "Imagens da versão $tag não encontradas em $IMAGES_REPOSITORY." >&2; exit 1; }
+echo '== Imagens (pelo digest conferido)'
+# O Docker baixa do registro com a identidade da VM (só leitura).
+gcloud auth configure-docker "${IMAGES_REPOSITORY%%/*}" --quiet >/dev/null 2>&1
 {
   echo "API_IMAGE=$IMAGES_REPOSITORY/api@$api_digest"
   echo "MIGRATE_IMAGE=$IMAGES_REPOSITORY/migrate@$migrate_digest"
-  echo "NODE_VERSION=$tag"
+  echo "NODE_VERSION=$version"
 } >/etc/verax/images.env
 chmod 0640 /etc/verax/images.env
 
@@ -118,4 +119,4 @@ systemctl enable verax-node.service verax-backup.timer >/dev/null
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
 systemctl --no-pager --lines=0 status verax-node.service || true
-echo "Nó na versão $tag."
+echo "Nó na versão $version."

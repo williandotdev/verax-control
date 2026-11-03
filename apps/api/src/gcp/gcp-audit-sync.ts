@@ -38,10 +38,15 @@ export interface GcpSyncReport {
   incidentsJoined: number;
 }
 
-interface GcpAccount {
-  tenantId: string;
-  accountId: string;
-  pubsubSubscription: string;
+/**
+ * Uma assinatura e as contas (projetos) que a usam. O cadastro aceita a mesma assinatura em vários projetos de um
+ * mesmo cliente (coletor agregado): ela é lida uma vez só, e cada evento vai para a conta do projeto dele.
+ */
+interface SubscriptionGroup {
+  subscription: string;
+  /** Projeto → cliente. Mais de um cliente na mesma assinatura é cadastro inconsistente: nenhum evento é atribuído. */
+  projects: Map<string, string>;
+  ambiguous: boolean;
 }
 
 interface RunContext {
@@ -138,10 +143,10 @@ export class GcpAuditSync {
         report,
         newest: state.lastProcessedAt,
       };
-      for (const account of await this.accounts()) {
+      for (const group of await this.subscriptions()) {
         report.subscriptions += 1;
         try {
-          await this.readSubscription(account, context);
+          await this.readSubscription(group, context);
         } catch (error) {
           // Uma assinatura com problema (permissão, rede) não para as outras.
           report.failedSubscriptions += 1;
@@ -171,28 +176,40 @@ export class GcpAuditSync {
     }
   }
 
-  /** Contas GCP ativas com assinatura: o cadastro que decide o dono de cada evento. */
-  private async accounts(): Promise<GcpAccount[]> {
+  /** Contas GCP ativas, agrupadas pela assinatura: o cadastro que decide o dono de cada evento. */
+  private async subscriptions(): Promise<SubscriptionGroup[]> {
     const rows = await this.prisma.cloudAccount.findMany({
       where: { provider: 'gcp', status: 'active', pubsubSubscription: { not: null } },
       select: { tenantId: true, accountId: true, pubsubSubscription: true },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
-    return rows.flatMap((row) =>
-      row.pubsubSubscription ? [{ ...row, pubsubSubscription: row.pubsubSubscription }] : [],
-    );
+    const groups = new Map<string, SubscriptionGroup & { tenants: Set<string> }>();
+    for (const row of rows) {
+      if (!row.pubsubSubscription) continue;
+      const group = groups.get(row.pubsubSubscription) ?? {
+        subscription: row.pubsubSubscription,
+        projects: new Map<string, string>(),
+        ambiguous: false,
+        tenants: new Set<string>(),
+      };
+      group.projects.set(row.accountId, row.tenantId);
+      group.tenants.add(row.tenantId);
+      group.ambiguous = group.tenants.size > 1;
+      groups.set(row.pubsubSubscription, group);
+    }
+    return [...groups.values()];
   }
 
-  private async readSubscription(account: GcpAccount, context: RunContext): Promise<void> {
+  private async readSubscription(group: SubscriptionGroup, context: RunContext): Promise<void> {
     for (let pull = 0; pull < this.maxPulls; pull += 1) {
-      const messages = await this.reader.pull(account.pubsubSubscription, this.pullSize);
+      const messages = await this.reader.pull(group.subscription, this.pullSize);
       for (const message of messages) {
         context.report.read += 1;
-        await this.process(message, account, context);
+        await this.process(message, group, context);
       }
       // Confirma só o que já foi gravado.
       await this.reader.acknowledge(
-        account.pubsubSubscription,
+        group.subscription,
         messages.map((message) => message.ackId),
       );
       await this.lease.renew();
@@ -200,7 +217,11 @@ export class GcpAuditSync {
     }
   }
 
-  private async process(message: PubsubMessage, account: GcpAccount, context: RunContext): Promise<void> {
+  private async process(
+    message: PubsubMessage,
+    group: SubscriptionGroup,
+    context: RunContext,
+  ): Promise<void> {
     const { report } = context;
     const parsed = parseLogMessage(message.data);
     if (!parsed.ok) {
@@ -213,12 +234,16 @@ export class GcpAuditSync {
     const occurredAt = new Date(entry.timestamp);
     const rule = detect(entry.protoPayload);
     const method = entry.protoPayload?.methodName ?? null;
-    if (project === null || project !== account.accountId) {
-      // Log de organização (sem projeto) ou de outro projeto chegando por esta assinatura: não é desta conta.
+    const tenantId = project === null || group.ambiguous ? undefined : group.projects.get(project);
+    if (project === null || tenantId === undefined) {
+      // Log de organização (sem projeto), de projeto que não usa esta assinatura ou assinatura cadastrada em mais de
+      // um cliente: na dúvida, o evento não é de ninguém.
+      const reason =
+        project === null ? 'no_account' : group.ambiguous ? 'ambiguous_source' : 'source_mismatch';
       await this.store.recordUnowned(
         unownedRecord(
           gcpEventId(project, entry.insertId),
-          project === null ? 'no_account' : 'source_mismatch',
+          reason,
           project === null ? [] : [project],
           occurredAt,
           rule,
@@ -229,19 +254,19 @@ export class GcpAuditSync {
       return;
     }
 
-    context.lastEvents.see(account.tenantId, project, occurredAt);
+    context.lastEvents.see(tenantId, project, occurredAt);
     if (context.newest === null || occurredAt > context.newest) context.newest = occurredAt;
     if (!rule) {
       report.ignored += 1;
       return;
     }
 
-    const draft = toGcpFindingDraft(entry, { tenantId: account.tenantId, project }, rule);
-    const exception = matchingException(draft, context.exceptions.get(account.tenantId) ?? [], context.now);
+    const draft = toGcpFindingDraft(entry, { tenantId, project }, rule);
+    const exception = matchingException(draft, context.exceptions.get(tenantId) ?? [], context.now);
     const outcome = await this.store.persist(
       draft,
       exception,
-      context.protectedItems.get(account.tenantId) ?? new Set(),
+      context.protectedItems.get(tenantId) ?? new Set(),
       context.now,
     );
     if (outcome === 'duplicate') {

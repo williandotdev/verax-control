@@ -1642,3 +1642,13 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - API: SMTP (4), configuração (2), regras e leitura da GCP (41), cliente do Pub/Sub contra um servidor falso (7), sync com o banco (6), bootstrap com o fluxo completo do convite (8);
   - sync do Wazuh, rascunho do achado e incidentes seguem verdes depois da extração.
 - **Roteiro:** `docs/runbooks/no-verax.md` (instalação, primeiro acesso, conferência, backup e restauração, problemas comuns).
+
+  Depois da revisão independente (11 achados confirmados, 8 problemas distintos, todos corrigidos):
+  - **Chave SSH:** a regra lê os nomes das chaves no delta de metadados do Compute (`protoPayload.metadata`), porque o `request` vem redigido. Também pega OS Login alterado ou apagado.
+  - **Assinatura compartilhada por vários projetos do mesmo cliente:** é lida uma vez, e cada evento vai para a conta do projeto dele. Assinatura em clientes diferentes vira origem ambígua.
+  - **IAM:** com `serviceData`, só o delta conta (política reenviada sem mudança não é concessão). Sem `serviceData`, o achado tem ID estável por recurso e vínculos.
+  - **Operação longa:** o início e o fim viram um achado só (ID da operação).
+  - **Token da VM:** só o worker alcança o servidor de metadados (regra no `DOCKER-USER`, IP fixo).
+  - **Postgres:** healthcheck por TCP, com tempo de partida.
+  - **Imagens conferidas:** o `deploy.sh` confere no GitHub a atestação de cada imagem (workflow, `main` e commit) e instala pelo digest; a VM não confia em tag.
+  - **Roteiro:** o primeiro acesso roda dentro da sessão SSH, e a cópia antiga é apagada antes da nova.

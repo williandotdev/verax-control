@@ -21,6 +21,12 @@ export interface AuditEntryOptions {
   auditConfigDeltas?: { action: string; service: string; logType: string }[];
   resource?: { type: string; labels: Record<string, string> };
   serviceAccountKeyName?: string;
+  /** `protoPayload.metadata` (ex.: o delta de metadados do Compute). */
+  metadata?: Record<string, unknown>;
+  /** `serviceData` sem delta de vínculos (o serviço registrou, mas nada foi concedido). */
+  emptyServiceData?: boolean;
+  /** Operação longa: o mesmo `id` no registro do início e no do fim. */
+  operation?: { id: string; first?: boolean; last?: boolean };
 }
 
 export const randomProject = (): string => `projeto-${randomBytes(6).toString('hex')}`;
@@ -34,6 +40,7 @@ export function auditEntry(options: AuditEntryOptions = {}): Record<string, unkn
     receiveTimestamp: '2026-11-03T10:00:01.000000000Z',
     severity: 'NOTICE',
     resource: options.resource ?? { type: 'project', labels: { project_id: project } },
+    ...(options.operation && { operation: { producer: 'compute.googleapis.com', ...options.operation } }),
     protoPayload: {
       '@type': 'type.googleapis.com/google.cloud.audit.AuditLog',
       serviceName: options.serviceName ?? 'cloudresourcemanager.googleapis.com',
@@ -49,6 +56,10 @@ export function auditEntry(options: AuditEntryOptions = {}): Record<string, unkn
         callerSuppliedUserAgent: 'google-cloud-sdk',
       },
       ...(options.request && { request: options.request }),
+      ...(options.metadata && { metadata: options.metadata }),
+      ...(options.emptyServiceData && {
+        serviceData: { '@type': 'type.googleapis.com/google.iam.v1.logging.AuditData' },
+      }),
       ...((options.bindingDeltas || options.auditConfigDeltas) && {
         serviceData: {
           '@type': 'type.googleapis.com/google.iam.v1.logging.AuditData',

@@ -96,6 +96,12 @@ jobs:
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
           } >images.env
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
+      - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e no start.sh)
+        run: |
+          grep -q 'subnet: 172.30.53.0/24' infra/node/compose.yaml
+          grep -q 'ipv4_address: 172.30.53.10' infra/node/compose.yaml
+          grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/start.sh
+          grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/start.sh
       - name: Nenhuma porta publicada e todo contêiner da aplicação endurecido
         run: |
           config=$(docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --format json)

@@ -242,6 +242,86 @@ describe('sync da auditoria da GCP para achados', () => {
     ).toBe(1);
   });
 
+  it('assinatura de vários projetos do mesmo cliente (coletor agregado): cada evento vai para a conta do projeto dele', async () => {
+    const [first, second] = [randomProject(), randomProject()];
+    const shared = `projects/projeto-no/subscriptions/agregada-${first}`;
+    for (const project of [first, second]) {
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: shared,
+        },
+      });
+    }
+    const pubsub = new FakePubsub();
+    pubsub.publish(
+      shared,
+      pubsubMessage(auditEntry({ project: first, insertId: `um-${first}`, methodName: 'DeleteProject' })),
+      pubsubMessage(auditEntry({ project: second, insertId: `dois-${second}`, methodName: 'DeleteProject' })),
+    );
+    expect(await syncFor(pubsub).runOnce()).toMatchObject({ created: 2, unowned: 0 });
+    const findings = await prisma.finding.findMany({
+      where: { sourceEventId: { in: [`${first}/um-${first}`, `${second}/dois-${second}`] } },
+      orderBy: { accountId: 'asc' },
+    });
+    expect(findings.map((finding) => [finding.tenantId, finding.accountId]).sort()).toEqual(
+      [
+        [tenantA, first],
+        [tenantA, second],
+      ].sort(),
+    );
+  });
+
+  it('assinatura cadastrada em clientes diferentes: nenhum evento é atribuído (origem ambígua)', async () => {
+    const [ofA, ofB] = [randomProject(), randomProject()];
+    const shared = `projects/projeto-no/subscriptions/ambigua-${ofA}`;
+    await prisma.cloudAccount.create({
+      data: { tenantId: tenantA, provider: 'gcp', accountId: ofA, regions: [], pubsubSubscription: shared },
+    });
+    await prisma.cloudAccount.create({
+      data: { tenantId: tenantB, provider: 'gcp', accountId: ofB, regions: [], pubsubSubscription: shared },
+    });
+    const pubsub = new FakePubsub();
+    pubsub.publish(
+      shared,
+      pubsubMessage(auditEntry({ project: ofA, insertId: `amb-${ofA}`, methodName: 'DeleteProject' })),
+    );
+    expect(await syncFor(pubsub).runOnce()).toMatchObject({ created: 0, unowned: 1 });
+    const queued = await prisma.unownedAlert.findUniqueOrThrow({
+      where: { source_sourceEventId: { source: 'gcp', sourceEventId: `${ofA}/amb-${ofA}` } },
+    });
+    expect(queued.reason).toBe('ambiguous_source');
+  });
+
+  it('operação longa: o registro do início e o do fim viram um achado só', async () => {
+    const pubsub = new FakePubsub();
+    const operation = `operation-${projectA}`;
+    pubsub.publish(
+      subscriptionOf(projectA),
+      pubsubMessage(
+        auditEntry({
+          project: projectA,
+          methodName: 'v1.compute.firewalls.delete',
+          operation: { id: operation, first: true },
+        }),
+      ),
+      pubsubMessage(
+        auditEntry({
+          project: projectA,
+          methodName: 'v1.compute.firewalls.delete',
+          operation: { id: operation, last: true },
+        }),
+      ),
+    );
+    expect(await syncFor(pubsub).runOnce()).toMatchObject({ created: 1, duplicates: 1 });
+    expect(
+      await prisma.finding.count({ where: { sourceEventId: `${projectA}/operacao:${operation}` } }),
+    ).toBe(1);
+  });
+
   it('dois workers ao mesmo tempo: só um lê', async () => {
     const pubsub = new FakePubsub();
     const name = `gcp-lease-${projectA.slice(-12)}`;

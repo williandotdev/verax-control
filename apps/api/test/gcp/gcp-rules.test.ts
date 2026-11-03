@@ -3,6 +3,7 @@ import { logEntrySchema, parseLogMessage, projectOf } from '../../src/gcp/gcp-lo
 import {
   detect,
   gcpEventId,
+  gcpEventIdFor,
   GCP_RULES,
   severityOfLevel,
   toGcpFindingDraft,
@@ -78,6 +79,21 @@ describe('regras da auditoria da GCP', () => {
       '990105',
     ],
     [
+      'política reenviada sem mudança: o serviço registra o delta, mas sem vínculo novo',
+      {
+        serviceName: 'run.googleapis.com',
+        methodName: 'google.cloud.run.v1.Services.SetIamPolicy',
+        emptyServiceData: true,
+        request: { policy: { bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } },
+      },
+      null,
+    ],
+    [
+      'só a auditoria mudou: nenhum vínculo concedido',
+      { auditConfigDeltas: [{ action: 'ADD', service: 'allServices', logType: 'DATA_READ' }] },
+      null,
+    ],
+    [
       'papel removido não é suspeito',
       { bindingDeltas: [{ action: 'REMOVE', role: 'roles/owner', member: 'user:x@exemplo.com' }] },
       null,
@@ -135,10 +151,27 @@ describe('regras da auditoria da GCP', () => {
     ],
     ['firewall apagado', { methodName: 'v1.compute.firewalls.delete' }, '990110'],
     [
-      'chave SSH nos metadados do projeto',
+      'chave SSH incluída nos metadados do projeto (o Compute redige o request; a chave vem no delta)',
       {
         methodName: 'v1.compute.projects.setCommonInstanceMetadata',
-        request: { items: [{ key: 'ssh-keys' }] },
+        request: { '@type': 'type.googleapis.com/compute.projects.setCommonInstanceMetadata' },
+        metadata: { projectMetadataDelta: { modifiedMetadataKeys: ['ssh-keys'] } },
+      },
+      '990111',
+    ],
+    [
+      'chave SSH incluída numa VM',
+      {
+        methodName: 'v1.compute.instances.setMetadata',
+        metadata: { instanceMetadataDelta: { addedMetadataKeys: ['ssh-keys'] } },
+      },
+      '990111',
+    ],
+    [
+      'OS Login desligado (proteção de SSH apagada)',
+      {
+        methodName: 'v1.compute.projects.setCommonInstanceMetadata',
+        metadata: { projectMetadataDelta: { deletedMetadataKeys: ['enable-oslogin'] } },
       },
       '990111',
     ],
@@ -146,7 +179,7 @@ describe('regras da auditoria da GCP', () => {
       'metadados sem chave SSH não contam',
       {
         methodName: 'v1.compute.projects.setCommonInstanceMetadata',
-        request: { items: [{ key: 'startup-script' }] },
+        metadata: { projectMetadataDelta: { addedMetadataKeys: ['startup-script'] } },
       },
       null,
     ],
@@ -227,6 +260,49 @@ describe('leitura da mensagem do Pub/Sub', () => {
   it('texto grande demais é recusado (entrada externa com limite)', () => {
     const entry = auditEntry({ methodName: 'x'.repeat(300) });
     expect(parseLogMessage(encode(entry)).ok).toBe(false);
+  });
+});
+
+describe('um acontecimento, um achado', () => {
+  const idOf = (options: AuditEntryOptions) => {
+    const entry = logEntrySchema.parse(auditEntry({ project: 'projeto-alfa', ...options }));
+    const rule = detect(entry.protoPayload);
+    return rule === null ? null : gcpEventIdFor(entry, 'projeto-alfa', rule);
+  };
+
+  it('operação longa: o registro do início e o do fim dão o mesmo achado', () => {
+    const start = idOf({
+      methodName: 'v1.compute.firewalls.delete',
+      operation: { id: 'operation-123', first: true },
+    });
+    const end = idOf({
+      methodName: 'v1.compute.firewalls.delete',
+      operation: { id: 'operation-123', last: true },
+    });
+    expect(start).toBe('projeto-alfa/operacao:operation-123');
+    expect(end).toBe(start);
+  });
+
+  it('política de IAM sem delta: a mesma política reenviada dá o mesmo achado; outra, outro', () => {
+    const publicPolicy = {
+      serviceName: 'run.googleapis.com',
+      methodName: 'google.cloud.run.v2.Services.SetIamPolicy',
+      resourceName: 'projects/projeto-alfa/locations/us-east1/services/site',
+      request: { policy: { bindings: [{ role: 'roles/run.invoker', members: ['allUsers'] }] } },
+    };
+    const first = idOf({ ...publicPolicy, insertId: 'a' });
+    expect(first?.startsWith('projeto-alfa/politica:')).toBe(true);
+    expect(first).toHaveLength('projeto-alfa/politica:'.length + 40);
+    expect(idOf({ ...publicPolicy, insertId: 'b' })).toBe(first);
+    expect(
+      idOf({ ...publicPolicy, resourceName: 'projects/projeto-alfa/locations/us-east1/services/outro' }),
+    ).not.toBe(first);
+  });
+
+  it('com delta, cada concessão é um achado (o evento é a própria mudança)', () => {
+    const grant = { bindingDeltas: [{ action: 'ADD', role: 'roles/owner', member: 'user:x@exemplo.com' }] };
+    expect(idOf({ ...grant, insertId: 'a' })).toBe('projeto-alfa/a');
+    expect(idOf({ ...grant, insertId: 'b' })).toBe('projeto-alfa/b');
   });
 });
 
