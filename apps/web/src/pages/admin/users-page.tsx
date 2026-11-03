@@ -190,9 +190,19 @@ function UserAccess({ user, isSelf, canWrite }: { user: User; isSelf: boolean; c
           </Button>
         )}
         {user.status === 'invited' && (
-          <Button variant="secondary" disabled={resend.isPending} onClick={() => resend.mutate(undefined)}>
-            Reenviar convite
-          </Button>
+          <>
+            <Button variant="secondary" disabled={resend.isPending} onClick={() => resend.mutate(undefined)}>
+              Reenviar convite
+            </Button>
+            {/* Convite para a pessoa errada: cancelar antes do aceite (o link deixa de valer). */}
+            <Button
+              variant="secondary"
+              disabled={update.isPending}
+              onClick={() => update.mutate({ status: 'disabled' })}
+            >
+              Cancelar convite
+            </Button>
+          </>
         )}
       </div>
       {resend.isSuccess && (

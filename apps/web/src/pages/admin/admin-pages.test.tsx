@@ -102,6 +102,9 @@ describe('Usuários (T7.2)', { timeout: FORM_TIMEOUT }, () => {
     sheet = await screen.findByRole('dialog', { name: 'Carlos Dev' });
     await userEvent.click(within(sheet).getByRole('button', { name: 'Reenviar convite' }));
     expect(await within(sheet).findByRole('status')).toHaveTextContent('Convite reenviado');
+    // Convite para a pessoa errada: cancelar antes do aceite.
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Cancelar convite' }));
+    expect(await within(sheet).findByRole('button', { name: 'Reativar acesso' })).toBeInTheDocument();
   });
 });
 
@@ -186,6 +189,18 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     await userEvent.type(within(sheet).getByLabelText(/^Valor/), '198.51.100.0/24');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Criar exceção' }));
     await waitFor(async () => expect(await rowsOf('Exceções de alerta do cliente')).toHaveLength(4));
+
+    // Exceção vencida: mudar só o motivo salva, sem reenviar a validade no passado.
+    await userEvent.click(screen.getByRole('button', { name: '80250' }));
+    const expired = await screen.findByRole('dialog', { name: 'Exceção da regra 80250' });
+    await userEvent.clear(within(expired).getByLabelText('Motivo'));
+    await userEvent.type(within(expired).getByLabelText('Motivo'), 'Troca de senha concluída.');
+    await userEvent.click(within(expired).getByRole('button', { name: 'Salvar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const expiredRow = (await rowsOf('Exceções de alerta do cliente')).find((row) =>
+      row.textContent?.includes('Troca de senha concluída.'),
+    ) as HTMLElement;
+    expect(expiredRow).toHaveTextContent('Vencida em');
 
     await userEvent.click(screen.getByRole('button', { name: '80202' }));
     const edit = await screen.findByRole('dialog', { name: 'Exceção da regra 80202' });

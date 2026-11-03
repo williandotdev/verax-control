@@ -260,7 +260,13 @@ function EditException({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const input = alertExceptionUpdateSchema.safeParse({ reason, expiresAt: endOfDay(expires) });
+    // Só manda a validade se ela mudou: reenviar a de antes bloquearia a exceção vencida (data no passado) e
+    // estenderia até o fim do dia uma validade precisa definida pela API.
+    const expiryChanged = expires !== toDateInput(exception.expiresAt);
+    const input = alertExceptionUpdateSchema.safeParse({
+      reason,
+      ...(expiryChanged ? { expiresAt: endOfDay(expires) } : {}),
+    });
     if (!input.success) {
       setErrors(fieldErrors(input.error));
       return;
