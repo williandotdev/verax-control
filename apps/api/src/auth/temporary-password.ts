@@ -65,6 +65,12 @@ export async function setTemporaryPassword(
   const expiresAt = temporaryPasswordExpiry(now);
 
   const apply = async (db: Prisma.TransactionClient): Promise<void> => {
+    // Primeiro a linha do usuário: a trava serializa duas gerações simultâneas para a mesma conta, e a segunda já
+    // encontra a conta de senha criada pela primeira (sem duas contas `credential`).
+    await db.user.update({
+      where: { id: user.id },
+      data: { mustChangePassword: true, temporaryPasswordExpiresAt: expiresAt },
+    });
     // Conta de senha (provider `credential`): troca o hash, ou cria a conta se ainda não houver (antigo convite).
     const updated = await db.account.updateMany({
       where: { userId: user.id, providerId: 'credential' },
@@ -81,10 +87,6 @@ export async function setTemporaryPassword(
         },
       });
     }
-    await db.user.update({
-      where: { id: user.id },
-      data: { mustChangePassword: true, temporaryPasswordExpiresAt: expiresAt },
-    });
     await db.user.updateMany({ where: { id: user.id, status: 'invited' }, data: { status: 'active' } });
     await db.session.deleteMany({ where: { userId: user.id } });
     await db.loginAttempt.deleteMany({ where: { email: user.email } });

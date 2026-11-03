@@ -52,7 +52,11 @@ const EXPIRY_LINE_MARKER = 'VERAX_SENHA_TEMPORARIA_VALE_ATE=';
 export const bootstrapEnvSchema = z.object({
   BOOTSTRAP_ADMIN_EMAIL: z.email({ error: 'e-mail do primeiro administrador inválido' }),
   BOOTSTRAP_ADMIN_NAME: z.string().min(1).max(120).default('Administrador Verax'),
-  BOOTSTRAP_TENANT_NAME: z.string().min(1).max(120).optional(),
+  // O start.sh sempre escreve a linha; vazia, vale como ausente (só o admin, como na saída de emergência).
+  BOOTSTRAP_TENANT_NAME: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().min(1).max(120).optional(),
+  ),
   BOOTSTRAP_GCP_ACCOUNTS: gcpAccountsSchema,
   BOOTSTRAP_RENEW_ADMIN_PASSWORD: z
     .enum(['true', 'false'], { error: 'use true ou false' })
@@ -97,12 +101,13 @@ export async function bootstrapNode(
   let admin: BootstrapResult['admin'];
   let temporaryPassword: BootstrapResult['temporaryPassword'];
   if (!existing) {
+    // Sem acesso até a senha temporária ser gravada: se o processo cair no meio, a próxima execução a gera.
     const { id } = await provisionUser(auth, {
       email,
       name: input.BOOTSTRAP_ADMIN_NAME,
       role: 'admin_verax',
       tenantId: null,
-      status: 'active',
+      status: 'invited',
     });
     temporaryPassword = await setTemporaryPassword(auth, prisma, { id, email });
     await audit.write(prisma, {

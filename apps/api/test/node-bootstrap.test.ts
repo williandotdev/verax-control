@@ -127,6 +127,17 @@ describe('bootstrap do nó: primeiro admin, cliente e contas da GCP', () => {
     expect(audit.after).toMatchObject({ mustChangePassword: true });
   });
 
+  it('aceita o que o start.sh escreve na saída de emergência (sem cliente: linha vazia)', () => {
+    const parsed = bootstrapEnvSchema.parse({
+      BOOTSTRAP_ADMIN_EMAIL: 'admin@verax.example',
+      BOOTSTRAP_ADMIN_NAME: 'Administrador Verax',
+      BOOTSTRAP_TENANT_NAME: '',
+      BOOTSTRAP_GCP_ACCOUNTS: '',
+      BOOTSTRAP_RENEW_ADMIN_PASSWORD: 'true',
+    });
+    expect(parsed).toMatchObject({ BOOTSTRAP_TENANT_NAME: undefined, BOOTSTRAP_RENEW_ADMIN_PASSWORD: true });
+  });
+
   it('admin desativado: a saída de emergência recusa; sem ela, o bootstrap segue sem mexer no admin', async () => {
     const env = input();
     const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();

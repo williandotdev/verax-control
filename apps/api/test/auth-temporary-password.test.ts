@@ -205,6 +205,24 @@ describe('senha temporária: criada pelo administrador, troca obrigatória e dep
     });
     const blocked = await get(cookie, '/v1/findings').expect(403);
     expect(blocked.body).toMatchObject({ code: CREDENTIAL_CHANGE_REQUIRED_CODE });
+
+    // A mesma senha em caracteres de largura total vira o mesmo hash (NFKC): também é recusada.
+    const fullWidth = [...created.temporaryPassword]
+      .map((char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0))
+      .join('');
+    expect(fullWidth.normalize('NFKC')).toBe(created.temporaryPassword);
+    const disguised = await authPost(app, '/change-password', cookie, {
+      currentPassword: created.temporaryPassword,
+      newPassword: fullWidth,
+    }).expect(400);
+    expect(disguised.body).toMatchObject({ code: 'PASSWORD_UNCHANGED' });
+
+    // A recusa entra na trilha (o hook que audita a troca não roda quando a checagem recusa antes).
+    const audits = await prisma.auditLog.findMany({
+      where: { action: 'auth.password_change', actorId: created.user.id },
+    });
+    expect(audits).toHaveLength(2);
+    expect(audits.every((entry) => entry.outcome === 'failure' && entry.statusCode === 400)).toBe(true);
   });
 
   it('dentro de uma transação que falha, nada muda: a senha anterior e as sessões continuam', async () => {

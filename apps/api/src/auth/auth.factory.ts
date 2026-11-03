@@ -1,7 +1,7 @@
 import { PRODUCT_NAME } from '@verax/shared';
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api';
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
 import { haveIBeenPwned } from 'better-auth/plugins/haveibeenpwned';
 import { twoFactor } from 'better-auth/plugins/two-factor';
 import type { PinoLogger } from 'nestjs-pino';
@@ -184,11 +184,29 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
       // nem chega à senha.
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path === '/change-password') {
+          // Comparadas como a biblioteca guarda (NFKC): a senha em caracteres de largura total vira o mesmo hash.
           const body = ctx.body as { currentPassword?: unknown; newPassword?: unknown } | undefined;
-          if (typeof body?.newPassword === 'string' && body.newPassword === body.currentPassword) {
-            throw new APIError('BAD_REQUEST', SAME_AS_CURRENT);
-          }
-          return;
+          const same =
+            typeof body?.newPassword === 'string' &&
+            typeof body.currentPassword === 'string' &&
+            body.newPassword.normalize('NFKC') === body.currentPassword.normalize('NFKC');
+          if (!same) return;
+          // Sem sessão, o próprio endpoint responde 401 (e o hook `after` registra).
+          const current = await getSessionFromCtx(ctx);
+          if (!current) return;
+          // O hook `after` não roda quando este lança: a recusa entra na trilha daqui, como o bloqueio do login.
+          await record({
+            actor: {
+              type: 'user',
+              id: current.user.id,
+              tenantId: (current.user as { tenantId?: string | null }).tenantId ?? null,
+            },
+            action: AUTH_AUDIT_ACTIONS['/change-password'] ?? '/change-password',
+            outcome: 'failure',
+            statusCode: 400,
+            ...requestMetadata(ctx.headers),
+          });
+          throw new APIError('BAD_REQUEST', SAME_AS_CURRENT);
         }
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);

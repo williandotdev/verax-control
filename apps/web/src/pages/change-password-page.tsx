@@ -50,7 +50,8 @@ export function ChangePasswordPage() {
   }
 
   const tooShort = password.length > 0 && password.length < PASSWORD_MIN_LENGTH;
-  const sameAsTemporary = password.length > 0 && password === temporary;
+  // Comparadas como a API compara (NFKC): a mesma senha em caracteres de largura total também é recusada.
+  const sameAsTemporary = password.length > 0 && password.normalize('NFKC') === temporary.normalize('NFKC');
   const mismatch = confirmation.length > 0 && confirmation !== password;
   const invalid = !temporary || !password || !confirmation || tooShort || sameAsTemporary || mismatch;
 

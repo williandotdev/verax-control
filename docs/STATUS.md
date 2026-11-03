@@ -1706,4 +1706,10 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
     - saída de emergência `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true` para o admin que esqueceu a senha num nó sem e-mail. Só como root na VM; o MFA continua;
     - admin desativado: a saída de emergência recusa;
     - as linhas da senha nunca vão para a tela, mesmo se o bootstrap falhar no meio.
+      Depois da verificação das correções (5 confirmados, 1 de gravidade média, todos corrigidos):
+  - **Saída de emergência:** sem cliente, o `start.sh` escreve a linha `BOOTSTRAP_TENANT_NAME` vazia, e o bootstrap a recusava. Vazia agora vale como ausente, com teste do que o `start.sh` escreve.
+  - **Senha nova igual:** comparada como a biblioteca guarda (NFKC), na API e na tela. A mesma senha em caracteres de largura total vira o mesmo hash e também é recusada.
+  - **Recusa auditada:** a recusa `PASSWORD_UNCHANGED` acontece antes do hook que audita a troca, então ela mesma registra a falha.
+  - **Conta nasce sem acesso:** o usuário (e o primeiro admin) é criado como `invited` e só fica ativo junto com a senha, na mesma transação. Se ela falhar, sobra uma conta que não entra.
+  - **Duas gerações simultâneas:** a linha do usuário é travada primeiro, sem duas contas de senha para a mesma pessoa.
   - **Fora:** a redefinição pelo link (só com e-mail ligado) não confere se a senha nova repete a temporária. O link chega só ao dono da conta, e a biblioteca não expõe a senha nesse ponto.

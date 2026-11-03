@@ -198,6 +198,15 @@ describe('troca da senha temporária', { timeout: FORM_TIMEOUT }, () => {
     expect(screen.getByLabelText('Nova senha')).toHaveAccessibleDescription(
       /A senha nova precisa ser diferente da temporária\./,
     );
+    // A mesma senha em caracteres de largura total vira o mesmo hash na API (NFKC): também é igual.
+    const fullWidth = [...MOCK_AUTH.temporaryPassword]
+      .map((char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0))
+      .join('');
+    await userEvent.clear(screen.getByLabelText('Nova senha'));
+    await userEvent.type(screen.getByLabelText('Nova senha'), fullWidth);
+    expect(screen.getByLabelText('Nova senha')).toHaveAccessibleDescription(
+      /A senha nova precisa ser diferente da temporária\./,
+    );
     await userEvent.clear(screen.getByLabelText('Nova senha'));
     await userEvent.type(screen.getByLabelText('Nova senha'), 'uma-senha-bem-longa');
     await userEvent.type(screen.getByLabelText('Confirme a nova senha'), 'outra-senha-longa');

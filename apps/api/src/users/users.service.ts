@@ -91,12 +91,14 @@ export class UsersService {
     if (await this.prisma.db().user.findUnique({ where: { email }, select: { id: true } })) {
       throw new ApiError(HttpStatus.CONFLICT, 'Já existe um usuário com este e-mail');
     }
+    // Nasce sem acesso (`invited`) e só fica ativa junto com a senha temporária, na transação da requisição: se ela
+    // falhar, sobra uma conta que não entra e para a qual o painel pede gerar a senha.
     const { id } = await provisionUser(this.auth, {
       email,
       name: input.name,
       role: input.role,
       tenantId,
-      status: 'active',
+      status: 'invited',
     });
     const temporary = await setTemporaryPassword(this.auth, this.prisma, { id, email });
     const user = await this.get(id);
