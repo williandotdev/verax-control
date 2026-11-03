@@ -1,6 +1,7 @@
 # Backups do banco do nó (o pacote do nó grava aqui todo dia). Privado, versionado e só com acesso pelas
 # permissões do projeto (sem lista de acesso por objeto). Objetos com mais de 90 dias são apagados.
 
+# nosemgrep: terraform.gcp.security.gcp-cloud-storage-logging.gcp-cloud-storage-logging -- mesmo motivo do checkov abaixo.
 resource "google_storage_bucket" "backups" {
   #checkov:skip=CKV_GCP_62:O log de acesso legado precisaria de outro bucket só para ele; quem cria e lê objetos fica nos logs de auditoria do Cloud Storage.
   # O nome de bucket é único no mundo: o ID do projeto entra para não colidir.

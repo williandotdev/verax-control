@@ -146,6 +146,27 @@ resource "google_compute_instance_iam_member" "operators" {
   member        = each.key
 }
 
+# O `gcloud compute ssh` lê o projeto antes de conectar (`compute.projects.get`), e o OS Login concedido só na VM
+# não cobre isso. Um papel próprio, só com essa permissão, evita dar leitura do Compute inteiro a quem opera.
+resource "google_project_iam_custom_role" "operator_lookup" {
+  count = length(var.operators) > 0 ? 1 : 0
+
+  role_id     = replace("${var.name_prefix}_operator_lookup", "-", "_")
+  title       = "Operador do nó: ler o projeto para o SSH"
+  description = "Só compute.projects.get, que o gcloud compute ssh exige antes de conectar pelo IAP."
+  permissions = ["compute.projects.get"]
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_project_iam_member" "operator_lookup" {
+  for_each = toset(var.operators)
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.operator_lookup[0].id
+  member  = each.key
+}
+
 # Entrar numa VM que tem conta de serviço exige poder "usar" essa conta.
 resource "google_service_account_iam_member" "operators" {
   for_each = toset(var.operators)

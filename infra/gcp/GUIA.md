@@ -178,6 +178,9 @@ a mensagem: ela volta para a fila e o nó vai lê-la depois.
 
 - **Mudar algo** (incluir um projeto monitorado, dar acesso a alguém): edite o `terraform.tfvars` e repita os
   passos 5 e 6. O `plan` mostra só a diferença.
+- **Aumentar o disco:** mude `disk_gb` e repita os passos 5 e 6. A GCP aumenta o disco com a VM ligada; reinicie a
+  VM (`sudo reboot` dentro dela) e o serviço `google-disk-expand` da imagem do Debian estende a partição e o sistema
+  de arquivos no boot. Confira com `df -h /`. Disco não diminui: para menos espaço, só criando outro.
 - **Desfazer tudo:** existe atrito de propósito, para nada sumir por engano.
   1. A VM tem proteção contra exclusão: em `node.tf`, troque `deletion_protection = true` por `false` e faça o
      `apply`.
