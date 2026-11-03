@@ -1,6 +1,10 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach, vi } from 'vitest';
+
+// As telas esperam a sessão e os dados antes de desenhar. Com as suítes da API e do painel rodando juntas (pre-push e
+// CI), 1 s de espera padrão às vezes não basta; 3 s cobre a carga sem esconder uma tela que nunca chega.
+configure({ asyncUtilTimeout: 3_000 });
 
 // O jsdom não implementa matchMedia; os testes de tema controlam a resposta por esta variável.
 let prefersDark = false;

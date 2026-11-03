@@ -1170,3 +1170,39 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   Conferido visualmente na lista e no detalhe, no desktop e no celular.
 
 - **Definição de pronto:** critérios de aceite ✔ (lista ordenada por nota com severidade, ativos e tempo aberto, filtros por status; resumo em português, linha do tempo, ativos, MITRE, status e responsável) · testes ✔ · lint ✔ · dependências ✔
+
+## T7.10 Postura cloud
+
+- **Arquivos:** `packages/shared/src/posture.ts` (+ teste), `apps/web/src/pages/posture-page.tsx` (+ teste), `apps/web/src/features/posture/*`, `apps/web/src/components/security/score-trend.tsx`, `apps/web/src/mocks/{posture,handlers}.ts`, `apps/web/src/pages/auth-pages.test.tsx` (prazo de um teste)
+- **Dependências:** nenhuma. O Recharts está na lista aprovada, mas não foi preciso: o gráfico de uma série por conta é um SVG próprio.
+- **Como funciona:**
+  - **Contrato compartilhado** da T5.8:
+    - nota do cliente e de cada conta, com aprovadas, reprovadas por gravidade e até 90 dias de histórico;
+    - checagens reprovadas com risco, correção e referências, só HTTPS (`javascript:` e `http:` recusados);
+    - filtros por conta e gravidade.
+  - **Tela (T7.10):**
+    - um cartão por conta, com a nota, a evolução no tempo, as reprovadas por gravidade e o atalho "Ver o que corrigir nesta conta";
+    - a tabela "O que corrigir, do mais grave ao menos grave";
+    - o painel "Como corrigir" mostra por que importa, o passo de correção (os comandos `aws` em fonte monoespaçada) e as referências, que abrem em outra aba com `noopener noreferrer`.
+
+    Os estados de sem varredura, sem cliente e erro estão cobertos.
+
+  - **Gráfico de evolução**, conforme o guia de visualização:
+    - uma série, sem legenda: o título do cartão a nomeia;
+    - linha de 2 px, grade discreta e o limite de atenção tracejado, com o rótulo numa margem própria, para não encostar na linha;
+    - dica com a data e a nota ao passar o mouse, ou pelas setas com o gráfico em foco;
+    - os mesmos números numa tabela para leitor de tela.
+  - **Demonstração:** checagens reais do Prowler (os IDs), com título, risco e correção em português. A conta de produção da Alfa tem nota 61 e a de homologação, 72, com 30 dias de evolução; a Beta tem 91.
+  - **Teste instável:** o teste de login que preenche o formulário duas vezes passava perto dos 5 s padrão com a suíte inteira em paralelo na máquina local. Ganhou 15 s de prazo, com o motivo no código.
+- **Testes:** 6 no contrato e 7 na tela:
+  - nota e evolução por conta;
+  - ordem por gravidade;
+  - atalho da conta;
+  - filtro por gravidade;
+  - painel com a referência em outra aba;
+  - gráfico pelo teclado e a tabela de dados;
+  - sem varredura e sem cliente.
+
+  Conferido visualmente no tema claro, no escuro e no celular.
+
+- **Definição de pronto:** critérios de aceite ✔ (nota por conta com evolução; achados de configuração priorizados por gravidade, com o passo de correção) · testes ✔ · lint ✔ · dependências ✔

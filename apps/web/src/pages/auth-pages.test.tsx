@@ -42,7 +42,8 @@ async function fillLogin(email: string, password: string) {
 }
 
 describe('login', () => {
-  it('senha errada e e-mail desconhecido têm a mesma mensagem', async () => {
+  // Preenche o formulário duas vezes, letra por letra: com a suíte inteira em paralelo, passa perto dos 5 s padrão.
+  it('senha errada e e-mail desconhecido têm a mesma mensagem', { timeout: 15_000 }, async () => {
     renderAt('/login');
     await fillLogin(MOCK_AUTH.email, 'senha-errada-qualquer');
     expect(await screen.findByRole('alert')).toHaveTextContent('E-mail ou senha incorretos.');

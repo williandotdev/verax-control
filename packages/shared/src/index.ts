@@ -6,6 +6,7 @@ export * from './findings.js';
 export * from './incidents.js';
 export * from './pagination.js';
 export * from './permissions.js';
+export * from './posture.js';
 export * from './protected-resources.js';
 export * from './session.js';
 export * from './tenants.js';
