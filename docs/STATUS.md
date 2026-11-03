@@ -1206,3 +1206,35 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   Conferido visualmente no tema claro, no escuro e no celular.
 
 - **Definição de pronto:** critérios de aceite ✔ (nota por conta com evolução; achados de configuração priorizados por gravidade, com o passo de correção) · testes ✔ · lint ✔ · dependências ✔
+
+## T7.11 Ativos e identidades
+
+- **Arquivos:** `packages/shared/src/inventory.ts` (+ teste), `apps/web/src/pages/assets-page.tsx` (+ teste), `apps/web/src/features/inventory/*`, `apps/web/src/mocks/{inventory,handlers}.ts`
+- **Dependências:** nenhuma; as abas usam o Tabs do `radix-ui`, já instalado.
+- **Como funciona:**
+  - **Contrato compartilhado** da T5.9:
+    - os motivos de risco são os mesmos das regras do núcleo (`risk-rules.ts`);
+    - um schema por tipo de ativo: usuários IAM, chaves de acesso, instâncias EC2, buckets S3 e security groups;
+    - a visão geral traz a conta root de cada conta e, por tipo, o total e quantos têm risco;
+    - filtros por conta e "só os com risco".
+  - **Tela (T7.11):**
+    - um alerta para a conta root com risco ("root sem MFA: corrija antes de tudo");
+    - uma aba por tipo, com o total e quantos têm risco. As abas são acessíveis e funcionam com as setas do teclado; a aba escolhida fica na URL;
+    - cada tabela vem do maior risco ao menor, com os motivos em português;
+    - destaque, conforme o critério de aceite, para chave antiga (idade acima de 90 dias), bucket público, porta aberta para a internet (como "TCP 22" ou "Todo o tráfego"), MFA desligado com console e IMDSv1.
+  - **Demonstração:** o inventário é coerente com as outras telas:
+    - a chave `AKIAIOSFODNN7EXAMPLE` do incidente tem 240 dias;
+    - o bucket de relatórios está público;
+    - o grupo `sg-0123…` libera a porta 22;
+    - o root da produção não tem MFA, como na Postura.
+- **Revisão do PR da Postura (Codex), aplicada lá:**
+  - uma varredura só com checagens informativas, manuais ou silenciadas não gera nota e era tratada como "sem varredura". Agora a existência da varredura vem da data, e os resultados continuam na tela;
+  - o teste do link de referência usava expressão regular sem âncora (alerta do CodeQL).
+- **Testes:**
+  - 4 no contrato;
+  - 6 na tela: alerta do root com as abas e a ordem pelo risco; chave antiga; bucket público com o filtro; portas abertas; abas pelo teclado; sem cliente;
+  - 4 na descrição das regras.
+
+  Conferido visualmente no desktop e no celular.
+
+- **Definição de pronto:** critérios de aceite ✔ (abas para usuários IAM, chaves, instâncias, buckets e security groups; destaque para chave antiga, bucket público e porta aberta) · testes ✔ · lint ✔ · dependências ✔
