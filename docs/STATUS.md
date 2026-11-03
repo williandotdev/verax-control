@@ -1298,6 +1298,8 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Celular:** nenhuma tela rola na horizontal a 360 px; as tabelas rolam dentro do próprio quadro.
     - O CI (fontes do Linux, mais largas) pegou o detalhe do incidente passando 8 px. A causa era um tipo de achado do GuardDuty, um token longo sem espaço, que alargava a grade.
     - A linha do tempo e o título agora quebram esses tokens quando não cabem, e as colunas da grade aceitam encolher.
+    - Em 360 px, a Postura passava 13 px: a tabela do gráfico, só para leitor de tela, tinha o `sr-only` no próprio `<table>`. Tabela ignora a largura de 1 px e crescia com o texto. O `sr-only` foi para um `div` em volta.
+    - O teste agora aponta o elemento que passa da tela, e não só os pixels.
   - **Teclado:**
     - o painel de detalhe abre com Enter, prende o foco e fecha com Esc;
     - o foco volta para quem abriu. Isso estava quebrado: o painel abre pela URL, sem gatilho do Radix, e o foco ia para o corpo da página, de modo que quem navega por teclado perdia o lugar na lista. Agora o próprio painel guarda o elemento em foco ao abrir e o devolve ao fechar.
