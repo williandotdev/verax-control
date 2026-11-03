@@ -78,8 +78,13 @@ export const summaryReportSchema = z.strictObject({
   /** Tempo médio do achado até a primeira triagem e do incidente até a resolução, em minutos. */
   meanTimeToTriageMinutes: minutes,
   meanTimeToResolveMinutes: minutes,
-  /** Achados por dia e severidade, do mais antigo ao mais recente. */
-  daily: z.array(z.strictObject({ date: z.iso.date(), ...severityCounts.shape })).max(90),
+  /**
+   * Achados por dia (UTC) e severidade, do mais antigo ao mais recente: todo dia que o período toca, com as duas
+   * pontas, então 90 dias têm 91 linhas.
+   */
+  daily: z
+    .array(z.strictObject({ date: z.iso.date(), ...severityCounts.shape }))
+    .max(REPORT_PERIOD_DAYS['90d'] + 1),
 });
 export type SummaryReport = z.infer<typeof summaryReportSchema>;
 
@@ -246,12 +251,14 @@ export function reportWindow(period: ReportPeriod, now: Date): ReportWindow {
   return { period, from: from.toISOString(), to: now.toISOString() };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 const inWindow = (at: string, window: ReportWindow) => at >= window.from && at <= window.to;
 const zeroSeverities = () => ({ critical: 0, high: 0, medium: 0, low: 0 });
 const mean = (values: readonly number[]) =>
   values.length === 0 ? null : Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
 const minutesBetween = (start: string, end: string) =>
   Math.max(0, (Date.parse(end) - Date.parse(start)) / 60_000);
+const increment = (counts: Map<string, number>, key: string) => counts.set(key, (counts.get(key) ?? 0) + 1);
 const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { critical: 3, high: 2, medium: 1, low: 0 };
 
 /** Ranking de valores por contagem (desc), com o valor como desempate, até `limit`. */
@@ -259,166 +266,253 @@ function topCounts<T>(entries: Iterable<[string, T]>, score: (value: T) => numbe
   return [...entries].sort((a, b) => score(b[1]) - score(a[1]) || a[0].localeCompare(b[0])).slice(0, limit);
 }
 
-/** Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados (a Torre e o relatório usam). */
-export function mitreTactics(
-  findings: readonly Pick<ReportFinding, 'mitreTactics' | 'mitreTechniques'>[],
-  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
-): MitreTactic[] {
-  return MITRE_TACTICS.map(({ id, name }) => {
-    const matched = findings.filter((finding) => finding.mitreTactics.includes(name));
-    const techniques = new Map<string, number>();
-    for (const finding of matched) {
-      for (const technique of new Set(finding.mitreTechniques)) {
-        techniques.set(technique, (techniques.get(technique) ?? 0) + 1);
-      }
-    }
-    return {
-      id,
-      name,
-      findings: matched.length,
-      incidents: incidents.filter((incident) => incident.mitreTactics.includes(name)).length,
-      techniques: topCounts(techniques, (value) => value, 10).map(([technique, total]) => ({
-        id: technique,
-        findings: total,
-      })),
-    };
-  });
+/**
+ * Um relatório calculado achado por achado. A API passa os achados do período em lotes, sem teto e sem guardar todos
+ * na memória; o modo de demonstração e os testes passam a lista inteira pelas funções `*Report`. Cada `add` ignora o
+ * que está fora do período.
+ */
+export interface FindingsFold<R, F = ReportFinding> {
+  add(finding: F): void;
+  result(): R;
 }
 
-/** Achados e incidentes que contam no período: achados e incidentes começados nele. */
-function scoped(
-  findings: readonly ReportFinding[],
-  incidents: readonly ReportIncident[],
-  window: ReportWindow,
-) {
+export function foldFindings<R, F>(fold: FindingsFold<R, F>, findings: Iterable<F>): R {
+  for (const finding of findings) fold.add(finding);
+  return fold.result();
+}
+
+type MitreFinding = Pick<ReportFinding, 'mitreTactics' | 'mitreTechniques'>;
+
+/** Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados, sem olhar o período. */
+export function mitreTacticsFold(
+  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
+): FindingsFold<MitreTactic[], MitreFinding> {
+  const tallies = MITRE_TACTICS.map(({ id, name }) => ({
+    id,
+    name,
+    findings: 0,
+    techniques: new Map<string, number>(),
+  }));
+  const byName = new Map<string, (typeof tallies)[number]>(tallies.map((tally) => [tally.name, tally]));
   return {
-    findings: findings.filter((finding) => inWindow(finding.occurredAt, window)),
-    incidents: incidents.filter((incident) => inWindow(incident.firstSeenAt, window)),
+    add(finding) {
+      for (const name of new Set(finding.mitreTactics)) {
+        const tally = byName.get(name);
+        if (!tally) continue;
+        tally.findings += 1;
+        for (const technique of new Set(finding.mitreTechniques)) increment(tally.techniques, technique);
+      }
+    },
+    result: () =>
+      tallies.map(({ id, name, findings, techniques }) => ({
+        id,
+        name,
+        findings,
+        incidents: incidents.filter((incident) => incident.mitreTactics.includes(name)).length,
+        techniques: topCounts(techniques, (value) => value, 10).map(([technique, total]) => ({
+          id: technique,
+          findings: total,
+        })),
+      })),
+  };
+}
+
+/** Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados (a Torre e o relatório usam). */
+export function mitreTactics(
+  findings: Iterable<MitreFinding>,
+  incidents: readonly Pick<ReportIncident, 'mitreTactics'>[],
+): MitreTactic[] {
+  return foldFindings(mitreTacticsFold(incidents), findings);
+}
+
+/** Todo dia de calendário (UTC) que o período toca, com as duas pontas: um período de 90 dias toca 91 datas. */
+function dailyBuckets(window: ReportWindow) {
+  const daily = new Map<string, ReturnType<typeof zeroSeverities>>();
+  const last = Date.parse(window.to.slice(0, 10));
+  for (let day = Date.parse(window.from.slice(0, 10)); day <= last; day += DAY_MS) {
+    daily.set(new Date(day).toISOString().slice(0, 10), zeroSeverities());
+  }
+  return daily;
+}
+
+/**
+ * Resumo do período. Contam os achados e incidentes começados nele; os incidentes vêm todos os que importam (os
+ * começados, os resolvidos no período e os ainda abertos).
+ */
+export function summaryFold(
+  allIncidents: readonly ReportIncident[],
+  window: ReportWindow,
+): FindingsFold<SummaryReport> {
+  let total = 0;
+  const bySeverity = zeroSeverities();
+  const byStatus = Object.fromEntries(FINDING_STATUSES.map((status) => [status, 0])) as Record<
+    FindingStatus,
+    number
+  >;
+  const bySource = new Map<string, number>();
+  const daily = dailyBuckets(window);
+  const triage = { minutes: 0, count: 0 };
+  return {
+    add(finding) {
+      if (!inWindow(finding.occurredAt, window)) return;
+      total += 1;
+      bySeverity[finding.severity] += 1;
+      byStatus[finding.status] += 1;
+      increment(bySource, finding.source);
+      const bucket = daily.get(finding.occurredAt.slice(0, 10));
+      if (bucket) bucket[finding.severity] += 1;
+      if (finding.triagedAt !== null) {
+        triage.minutes += minutesBetween(finding.createdAt, finding.triagedAt);
+        triage.count += 1;
+      }
+    },
+    result() {
+      const incidents = allIncidents.filter((incident) => inWindow(incident.firstSeenAt, window));
+      const incidentSeverity = zeroSeverities();
+      for (const incident of incidents) incidentSeverity[incident.severity] += 1;
+      const resolvedInWindow = allIncidents.filter(
+        (incident) => incident.resolvedAt !== null && inWindow(incident.resolvedAt, window),
+      );
+      return {
+        ...window,
+        findings: {
+          total,
+          bySeverity: { ...bySeverity },
+          byStatus: { ...byStatus },
+          bySource: topCounts(bySource, (value) => value, 20).map(([source, count]) => ({ source, count })),
+        },
+        incidents: {
+          opened: incidents.length,
+          resolved: resolvedInWindow.length,
+          open: allIncidents.filter((incident) => incident.status !== 'resolved').length,
+          bySeverity: incidentSeverity,
+        },
+        meanTimeToTriageMinutes: triage.count === 0 ? null : Math.round(triage.minutes / triage.count),
+        meanTimeToResolveMinutes: mean(
+          resolvedInWindow.map((incident) =>
+            minutesBetween(incident.createdAt, incident.resolvedAt as string),
+          ),
+        ),
+        daily: [...daily].map(([date, counts]) => ({ date, ...counts })),
+      };
+    },
   };
 }
 
 export function summaryReport(
-  allFindings: readonly ReportFinding[],
-  allIncidents: readonly ReportIncident[],
+  findings: Iterable<ReportFinding>,
+  incidents: readonly ReportIncident[],
   window: ReportWindow,
 ): SummaryReport {
-  const { findings, incidents } = scoped(allFindings, allIncidents, window);
-  const bySeverity = zeroSeverities();
-  const byStatus: Record<FindingStatus, number> = Object.fromEntries(
-    FINDING_STATUSES.map((s) => [s, 0]),
-  ) as Record<FindingStatus, number>;
-  const bySource = new Map<string, number>();
-  const daily = new Map<string, ReturnType<typeof zeroSeverities>>();
-  for (let day = Date.parse(window.from); day <= Date.parse(window.to); day += 24 * 60 * 60 * 1000) {
-    daily.set(new Date(day).toISOString().slice(0, 10), zeroSeverities());
-  }
-  for (const finding of findings) {
-    bySeverity[finding.severity] += 1;
-    byStatus[finding.status] += 1;
-    bySource.set(finding.source, (bySource.get(finding.source) ?? 0) + 1);
-    const bucket = daily.get(finding.occurredAt.slice(0, 10));
-    if (bucket) bucket[finding.severity] += 1;
-  }
-  const incidentSeverity = zeroSeverities();
-  for (const incident of incidents) incidentSeverity[incident.severity] += 1;
-  const resolvedInWindow = allIncidents.filter(
-    (incident) => incident.resolvedAt !== null && inWindow(incident.resolvedAt, window),
-  );
+  return foldFindings(summaryFold(incidents, window), findings);
+}
+
+/** MITRE ATT&CK do período: achados e incidentes começados nele. */
+export function mitreFold(
+  incidents: readonly ReportIncident[],
+  window: ReportWindow,
+): FindingsFold<MitreReport> {
+  const tactics = mitreTacticsFold(incidents.filter((incident) => inWindow(incident.firstSeenAt, window)));
   return {
-    ...window,
-    findings: {
-      total: findings.length,
-      bySeverity,
-      byStatus,
-      bySource: topCounts(bySource, (value) => value, 20).map(([source, total]) => ({
-        source,
-        count: total,
-      })),
+    add(finding) {
+      if (inWindow(finding.occurredAt, window)) tactics.add(finding);
     },
-    incidents: {
-      opened: incidents.length,
-      resolved: resolvedInWindow.length,
-      open: allIncidents.filter((incident) => incident.status !== 'resolved').length,
-      bySeverity: incidentSeverity,
-    },
-    meanTimeToTriageMinutes: mean(
-      findings.flatMap((finding) =>
-        finding.triagedAt === null ? [] : [minutesBetween(finding.createdAt, finding.triagedAt)],
-      ),
-    ),
-    meanTimeToResolveMinutes: mean(
-      resolvedInWindow.map((incident) => minutesBetween(incident.createdAt, incident.resolvedAt as string)),
-    ),
-    daily: [...daily].map(([date, counts]) => ({ date, ...counts })).slice(-90),
+    result: () => ({ ...window, tactics: tactics.result() }),
   };
 }
 
 export function mitreReport(
-  findings: readonly ReportFinding[],
+  findings: Iterable<ReportFinding>,
   incidents: readonly ReportIncident[],
   window: ReportWindow,
 ): MitreReport {
-  const inPeriod = scoped(findings, incidents, window);
-  return { ...window, tactics: mitreTactics(inPeriod.findings, inPeriod.incidents) };
+  return foldFindings(mitreFold(incidents, window), findings);
 }
 
-export function rulesReport(allFindings: readonly ReportFinding[], window: ReportWindow): RulesReport {
+export function rulesFold(window: ReportWindow): FindingsFold<RulesReport> {
   const rules = new Map<
     string,
     { title: string; severity: FindingSeverity; findings: number; accounts: Set<string>; lastSeenAt: string }
   >();
-  for (const finding of allFindings.filter((item) => inWindow(item.occurredAt, window))) {
-    const rule = rules.get(finding.ruleId) ?? {
-      title: finding.title,
-      severity: finding.severity,
-      findings: 0,
-      accounts: new Set<string>(),
-      lastSeenAt: finding.occurredAt,
-    };
-    rule.findings += 1;
-    rule.accounts.add(finding.accountId);
-    if (SEVERITY_RANK[finding.severity] > SEVERITY_RANK[rule.severity]) rule.severity = finding.severity;
-    if (finding.occurredAt > rule.lastSeenAt) rule.lastSeenAt = finding.occurredAt;
-    rules.set(finding.ruleId, rule);
-  }
   return {
-    ...window,
-    items: topCounts(rules, (rule) => rule.findings, 100).map(([ruleId, rule]) => ({
-      ruleId,
-      title: rule.title.slice(0, 500),
-      severity: rule.severity,
-      findings: rule.findings,
-      accounts: rule.accounts.size,
-      lastSeenAt: rule.lastSeenAt,
-    })),
+    add(finding) {
+      if (!inWindow(finding.occurredAt, window)) return;
+      const rule = rules.get(finding.ruleId) ?? {
+        title: finding.title,
+        severity: finding.severity,
+        findings: 0,
+        accounts: new Set<string>(),
+        lastSeenAt: finding.occurredAt,
+      };
+      rule.findings += 1;
+      rule.accounts.add(finding.accountId);
+      if (SEVERITY_RANK[finding.severity] > SEVERITY_RANK[rule.severity]) rule.severity = finding.severity;
+      if (finding.occurredAt > rule.lastSeenAt) rule.lastSeenAt = finding.occurredAt;
+      rules.set(finding.ruleId, rule);
+    },
+    result: () => ({
+      ...window,
+      items: topCounts(rules, (rule) => rule.findings, 100).map(([ruleId, rule]) => ({
+        ruleId,
+        title: rule.title.slice(0, 500),
+        severity: rule.severity,
+        findings: rule.findings,
+        accounts: rule.accounts.size,
+        lastSeenAt: rule.lastSeenAt,
+      })),
+    }),
   };
 }
 
-export function entitiesReport(allFindings: readonly ReportFinding[], window: ReportWindow): EntitiesReport {
-  const findings = allFindings.filter((item) => inWindow(item.occurredAt, window));
-  const rank = (pick: (finding: ReportFinding) => string | null) => {
-    const entities = new Map<string, { findings: number; incidents: Set<string> }>();
-    for (const finding of findings) {
-      const value = pick(finding);
-      if (value === null) continue;
-      const entity = entities.get(value) ?? { findings: 0, incidents: new Set<string>() };
-      entity.findings += 1;
-      if (finding.incidentId) entity.incidents.add(finding.incidentId);
-      entities.set(value, entity);
-    }
-    return topCounts(entities, (entity) => entity.findings, 20).map(([value, entity]) => ({
-      value: value.slice(0, 2048),
-      findings: entity.findings,
-      incidents: entity.incidents.size,
-    }));
-  };
+export function rulesReport(findings: Iterable<ReportFinding>, window: ReportWindow): RulesReport {
+  return foldFindings(rulesFold(window), findings);
+}
+
+type EntityTally = Map<string, { findings: number; incidents: Set<string> }>;
+
+/** Cada lista do relatório de entidades e o campo do achado de onde ela sai. */
+const ENTITY_FIELDS = [
+  ['users', 'actorUser'],
+  ['ips', 'sourceIp'],
+  ['keys', 'accessKeyId'],
+  ['resources', 'resource'],
+] as const;
+
+function rankEntities(entities: EntityTally) {
+  return topCounts(entities, (entity) => entity.findings, 20).map(([value, entity]) => ({
+    value: value.slice(0, 2048),
+    findings: entity.findings,
+    incidents: entity.incidents.size,
+  }));
+}
+
+export function entitiesFold(window: ReportWindow): FindingsFold<EntitiesReport> {
+  const tally = (): EntityTally => new Map();
+  const tallies = { users: tally(), ips: tally(), keys: tally(), resources: tally() };
   return {
-    ...window,
-    users: rank((finding) => finding.actorUser),
-    ips: rank((finding) => finding.sourceIp),
-    keys: rank((finding) => finding.accessKeyId),
-    resources: rank((finding) => finding.resource),
+    add(finding) {
+      if (!inWindow(finding.occurredAt, window)) return;
+      for (const [list, field] of ENTITY_FIELDS) {
+        const value = finding[field];
+        if (value === null) continue;
+        const entity = tallies[list].get(value) ?? { findings: 0, incidents: new Set<string>() };
+        entity.findings += 1;
+        if (finding.incidentId) entity.incidents.add(finding.incidentId);
+        tallies[list].set(value, entity);
+      }
+    },
+    result: () => ({
+      ...window,
+      users: rankEntities(tallies.users),
+      ips: rankEntities(tallies.ips),
+      keys: rankEntities(tallies.keys),
+      resources: rankEntities(tallies.resources),
+    }),
   };
+}
+
+export function entitiesReport(findings: Iterable<ReportFinding>, window: ReportWindow): EntitiesReport {
+  return foldFindings(entitiesFold(window), findings);
 }
 
 export function incidentsReport(
@@ -480,28 +574,45 @@ export interface ReportAccount {
   lastEventAt: string | null;
 }
 
-export function coverageReport(
-  accounts: readonly ReportAccount[],
-  allFindings: readonly ReportFinding[],
+export function coverageFold(
+  allAccounts: readonly ReportAccount[],
   window: ReportWindow,
-): CoverageReport {
-  const findings = allFindings.filter((item) => inWindow(item.occurredAt, window));
+): FindingsFold<CoverageReport> {
+  const accounts = allAccounts.slice(0, 200);
+  const tallies = new Map(
+    accounts.map((account) => [account.accountId, { findings: 0, bySource: new Map<string, number>() }]),
+  );
   return {
-    ...window,
-    accounts: accounts.slice(0, 200).map((account) => {
-      const own = findings.filter((finding) => finding.accountId === account.accountId);
-      const bySource = new Map<string, number>();
-      for (const finding of own) bySource.set(finding.source, (bySource.get(finding.source) ?? 0) + 1);
-      return {
-        ...account,
-        findings: own.length,
-        bySource: topCounts(bySource, (value) => value, 20).map(([source, total]) => ({
-          source,
-          count: total,
-        })),
-      };
+    add(finding) {
+      if (!inWindow(finding.occurredAt, window)) return;
+      const tally = tallies.get(finding.accountId);
+      if (!tally) return;
+      tally.findings += 1;
+      increment(tally.bySource, finding.source);
+    },
+    result: () => ({
+      ...window,
+      accounts: accounts.map((account) => {
+        const tally = tallies.get(account.accountId);
+        return {
+          ...account,
+          findings: tally?.findings ?? 0,
+          bySource: topCounts(tally?.bySource ?? [], (value) => value, 20).map(([source, count]) => ({
+            source,
+            count,
+          })),
+        };
+      }),
     }),
   };
+}
+
+export function coverageReport(
+  accounts: readonly ReportAccount[],
+  findings: Iterable<ReportFinding>,
+  window: ReportWindow,
+): CoverageReport {
+  return foldFindings(coverageFold(accounts, window), findings);
 }
 
 export interface ReportException {
@@ -515,33 +626,42 @@ export interface ReportException {
   lastMatchedAt: string | null;
 }
 
+export function exceptionsFold(
+  exceptions: readonly ReportException[],
+  window: ReportWindow,
+): FindingsFold<ExceptionsReport> {
+  const matched = new Map<string, number>();
+  return {
+    add(finding) {
+      if (finding.exceptionId !== null && inWindow(finding.occurredAt, window)) {
+        increment(matched, finding.exceptionId);
+      }
+    },
+    result: () => ({
+      ...window,
+      items: exceptions
+        .map((exception) => ({
+          id: exception.id,
+          ruleId: exception.ruleId,
+          field: exception.field,
+          value: exception.value,
+          reason: exception.reason,
+          active: exception.expiresAt === null || exception.expiresAt > window.to,
+          expiresAt: exception.expiresAt,
+          matchedInPeriod: matched.get(exception.id) ?? 0,
+          matchedTotal: exception.matchedCount,
+          lastMatchedAt: exception.lastMatchedAt,
+        }))
+        .sort((a, b) => b.matchedInPeriod - a.matchedInPeriod || a.ruleId.localeCompare(b.ruleId))
+        .slice(0, 500),
+    }),
+  };
+}
+
 export function exceptionsReport(
   exceptions: readonly ReportException[],
-  allFindings: readonly ReportFinding[],
+  findings: Iterable<ReportFinding>,
   window: ReportWindow,
 ): ExceptionsReport {
-  const matched = new Map<string, number>();
-  for (const finding of allFindings) {
-    if (finding.exceptionId !== null && inWindow(finding.occurredAt, window)) {
-      matched.set(finding.exceptionId, (matched.get(finding.exceptionId) ?? 0) + 1);
-    }
-  }
-  return {
-    ...window,
-    items: exceptions
-      .map((exception) => ({
-        id: exception.id,
-        ruleId: exception.ruleId,
-        field: exception.field,
-        value: exception.value,
-        reason: exception.reason,
-        active: exception.expiresAt === null || exception.expiresAt > window.to,
-        expiresAt: exception.expiresAt,
-        matchedInPeriod: matched.get(exception.id) ?? 0,
-        matchedTotal: exception.matchedCount,
-        lastMatchedAt: exception.lastMatchedAt,
-      }))
-      .sort((a, b) => b.matchedInPeriod - a.matchedInPeriod || a.ruleId.localeCompare(b.ruleId))
-      .slice(0, 500),
-  };
+  return foldFindings(exceptionsFold(exceptions, window), findings);
 }

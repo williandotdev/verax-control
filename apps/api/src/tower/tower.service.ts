@@ -3,7 +3,9 @@ import {
   FINDING_SEVERITIES,
   type FindingSeverity,
   hasPermission,
-  mitreTactics,
+  mitreFold,
+  REPORT_PERIOD_DAYS,
+  reportWindow,
   type TowerSummary,
 } from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
@@ -12,8 +14,8 @@ import { combinedScore, PostureService } from '../posture/posture.service.js';
 import { ReportsService } from '../reports/reports.service.js';
 import { coverage, DEFAULT_TOWER_THRESHOLDS, pendingDecisions, trafficLight } from './tower-rules.js';
 
-/** O resumo MITRE ATT&CK da Torre olha os últimos 30 dias. */
-const MITRE_DAYS = 30;
+/** O resumo MITRE ATT&CK da Torre olha os últimos 30 dias, com as mesmas contas do relatório MITRE desse período. */
+const MITRE_PERIOD = '30d';
 
 /** A fila sem dono que conta na Torre: os alertas dos últimos 7 dias. */
 const UNOWNED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -82,18 +84,12 @@ export class TowerService {
     ]);
 
     // Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE.
-    const mitreFrom = new Date(now.getTime() - MITRE_DAYS * 24 * 60 * 60 * 1000);
-    const [recentFindings, recentIncidents] = await Promise.all([
-      this.reports.findingsSince(mitreFrom),
-      this.reports.incidentsSince(mitreFrom),
-    ]);
-    const mitre = {
-      periodDays: MITRE_DAYS,
-      tactics: mitreTactics(
-        recentFindings,
-        recentIncidents.filter((incident) => incident.firstSeenAt >= mitreFrom.toISOString()),
-      ),
-    };
+    const mitreWindow = reportWindow(MITRE_PERIOD, now);
+    const { tactics } = await this.reports.foldFindings(
+      mitreWindow,
+      mitreFold(await this.reports.incidentsSince(new Date(mitreWindow.from)), mitreWindow),
+    );
+    const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics };
 
     const { light, reasons } = trafficLight({ openIncidents, postureScore }, thresholds);
     return {

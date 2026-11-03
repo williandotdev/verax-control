@@ -5,6 +5,7 @@ import { REPORT_KINDS, reportSchemas, towerSummarySchema } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
+import { REPORT_BATCH_SIZE } from '../src/reports/reports.service.js';
 import { createSignedInUser, createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
 
@@ -40,7 +41,8 @@ describe('relatórios e resumo MITRE da Torre', () => {
   }
 
   beforeAll(async () => {
-    app = await createApp();
+    // Lotes de 2 achados: todo relatório aqui passa por mais de um lote, como um cliente grande em produção.
+    app = await createApp({ overrideProviders: [{ provide: REPORT_BATCH_SIZE, useValue: 2 }] });
     prisma = app.get(PrismaService);
     tenantA = await createTenant(app, 'Cliente A (relatórios)');
     tenantB = await createTenant(app, 'Cliente B (relatórios)');
@@ -83,6 +85,40 @@ describe('relatórios e resumo MITRE da Torre', () => {
 
     const coverage = reportSchemas.coverage.parse((await get('/v1/reports/coverage').expect(200)).body);
     expect(coverage.accounts).toEqual([expect.objectContaining({ accountId: account, findings: 3 })]);
+  });
+
+  it('lê o período inteiro em lotes: nenhum achado fica de fora nem conta duas vezes, mesmo com a mesma data', async () => {
+    const tenantC = await createTenant(app, 'Cliente C (relatórios em lotes)');
+    const readerC = await createSignedInUser(app, { role: 'leitura', tenantId: tenantC });
+    const at = new Date(Date.now() - 5 * HOUR);
+    for (const occurredAt of [new Date(Date.now() - HOUR), at, at, at, new Date(Date.now() - 6 * HOUR)]) {
+      await prisma.finding.create({
+        data: {
+          tenantId: tenantC,
+          accountId: account,
+          source: 'wazuh',
+          sourceEventId: randomUUID(),
+          logSource: 'cloudtrail',
+          occurredAt,
+          severity: 'medium',
+          ruleId: '80202',
+          ruleLevel: 7,
+          title: 'Regra 80202',
+          mitreTactics: ['Discovery'],
+          mitreTechniques: ['T1087'],
+        },
+      });
+    }
+    const getC = (path: string) => request(app.getHttpServer()).get(path).set('Cookie', readerC.cookie);
+    const summary = reportSchemas.summary.parse(
+      (await getC('/v1/reports/summary?period=7d').expect(200)).body,
+    );
+    expect(summary.findings.total).toBe(5);
+    expect(summary.daily.reduce((sum, day) => sum + day.medium, 0)).toBe(5);
+    const rules = reportSchemas.rules.parse((await getC('/v1/reports/rules?period=7d').expect(200)).body);
+    expect(rules.items).toEqual([expect.objectContaining({ ruleId: '80202', findings: 5 })]);
+    const tower = towerSummarySchema.parse((await getC('/v1/tower').expect(200)).body);
+    expect(tower.mitre.tactics.find((tactic) => tactic.name === 'Discovery')?.findings).toBe(5);
   });
 
   it('a Torre traz o resumo MITRE dos últimos 30 dias', async () => {

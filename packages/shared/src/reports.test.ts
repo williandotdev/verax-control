@@ -11,6 +11,7 @@ import {
   type ReportIncident,
   reportWindow,
   rulesReport,
+  summaryFold,
   summaryReport,
   summaryReportSchema,
 } from './reports.js';
@@ -113,6 +114,34 @@ describe('resumo do período', () => {
     expect(report.meanTimeToTriageMinutes).toBe(60);
     expect(report.meanTimeToResolveMinutes).toBe(120);
     expect(report.daily.at(-1)).toMatchObject({ date: '2026-11-03', high: 1, low: 1 });
+  });
+
+  it('90 dias tocam 91 datas: o achado do primeiro dia aparece na tabela por dia', () => {
+    const window = reportWindow('90d', NOW);
+    const report = summaryReportSchema.parse(
+      summaryReport([finding({ occurredAt: window.from }), finding({ occurredAt: window.to })], [], window),
+    );
+    expect(report.daily).toHaveLength(91);
+    expect(report.daily[0]).toMatchObject({ date: '2026-08-05', high: 1 });
+    expect(report.daily.at(-1)).toMatchObject({ date: '2026-11-03', high: 1 });
+    const perDay = report.daily.reduce((sum, day) => sum + day.critical + day.high + day.medium + day.low, 0);
+    expect(perDay).toBe(report.findings.total);
+    expect(summaryReport([], [], WINDOW).daily).toHaveLength(8);
+  });
+
+  it('em lotes dá o mesmo que de uma vez (a API lê o período em lotes)', () => {
+    const findings = [
+      finding({ createdAt: hoursAgo(5), triagedAt: hoursAgo(4), status: 'investigating' }),
+      finding({ severity: 'low', source: 'guardduty', createdAt: hoursAgo(3), triagedAt: hoursAgo(1) }),
+      finding({ occurredAt: hoursAgo(24 * 3), severity: 'critical' }),
+      finding({ occurredAt: hoursAgo(24 * 30) }),
+    ];
+    const fold = summaryFold([incident()], WINDOW);
+    for (const batch of [findings.slice(0, 1), findings.slice(1, 3), findings.slice(3)]) {
+      for (const item of batch) fold.add(item);
+    }
+    expect(fold.result()).toEqual(summaryReport(findings, [incident()], WINDOW));
+    expect(fold.result().meanTimeToTriageMinutes).toBe(90);
   });
 
   it('sem triagem nem resolução, os tempos ficam vazios', () => {
