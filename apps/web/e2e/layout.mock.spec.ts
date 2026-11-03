@@ -21,7 +21,6 @@ test.describe('estrutura e navegação (modo mock)', () => {
       'Contas cloud',
       'Lista de proteção',
       'Exceções',
-      'Auditoria',
     ]);
 
     const tenant = page.getByLabel('Cliente');
@@ -40,17 +39,18 @@ test.describe('estrutura e navegação (modo mock)', () => {
     await page.screenshot({ path: testInfo.outputPath('layout-admin.png'), fullPage: true });
   });
 
-  test('leitura: sem administração nem seletor de cliente; auditoria vira "sem permissão"', async ({
+  test('leitura: sem clientes nem usuários nem seletor de cliente; a tela de clientes vira "sem permissão"', async ({
     page,
   }) => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'leitura'));
     await page.goto('/');
     const menu = page.getByRole('navigation', { name: 'Menu principal' });
     await expect(menu.getByRole('link', { name: 'Torre' })).toBeVisible();
-    await expect(menu.getByRole('link', { name: 'Auditoria' })).toHaveCount(0);
+    await expect(menu.getByRole('link', { name: 'Clientes' })).toHaveCount(0);
+    await expect(menu.getByRole('link', { name: 'Usuários' })).toHaveCount(0);
     await expect(page.getByLabel('Cliente')).toHaveCount(0);
 
-    await page.goto('/auditoria');
+    await page.goto('/cadastros/clientes');
     await expect(page.getByRole('heading', { name: 'Sem permissão' })).toBeVisible();
   });
 });

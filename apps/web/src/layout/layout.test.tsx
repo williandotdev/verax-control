@@ -47,7 +47,7 @@ describe('rotas internas', () => {
   });
 
   it('página sem permissão leva a "Sem permissão" (a API recusaria os dados de qualquer forma)', async () => {
-    const { router } = renderApp('/auditoria', demoMe('leitura'));
+    const { router } = renderApp('/cadastros/clientes', demoMe('leitura'));
     await waitFor(() => expect(router.state.location.pathname).toBe('/sem-permissao'));
     expect(await screen.findByRole('heading', { name: 'Sem permissão' })).toBeInTheDocument();
   });
@@ -58,8 +58,8 @@ describe('menu e cabeçalho por papel', () => {
   const shared = ['Contas cloud', 'Lista de proteção', 'Exceções'];
   const operation = ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades'];
   const expectedMenu: Record<Role, string[]> = {
-    admin_verax: [...operation, 'Clientes', 'Usuários', ...shared, 'Auditoria'],
-    admin_cliente: [...operation, 'Usuários', ...shared, 'Auditoria'],
+    admin_verax: [...operation, 'Clientes', 'Usuários', ...shared],
+    admin_cliente: [...operation, 'Usuários', ...shared],
     analista_cliente: [...operation, ...shared],
     leitura: [...operation, ...shared],
   };
