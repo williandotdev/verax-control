@@ -116,7 +116,9 @@ A leitura de logs pela API não gera transferência entre regiões quando o nó 
 2. Conector revisado: só o papel de leitura, que só o papel do nó assume, com leitura do CloudWatch Logs, dos buckets
    e das chaves informados, findings do Inspector e do Access Analyzer e negação explícita de escrita. Sem trilha,
    bucket ou log do WAF criados pelo conector. **Feito.**
-3. Pilha do nó (VPC isolada, VM, bucket, papéis com negação explícita, snapshots e alarme de custo).
+3. Pilha do nó (`infra/cloudformation/verax-control-node.yaml`): VPC isolada sem porta de entrada, VM, disco de dados,
+   bucket, papel com negação explícita, snapshots, alarmes, orçamento e instalação pelo State Manager conferida por
+   SHA-256. **Feito** (a instalação espera o pacote do passo 4).
 4. Docker Compose do nó: instalação, atualização por versão fixada e backup.
 5. Painel no Firebase Hosting, com os cabeçalhos de segurança, e publicação pelo GitHub Actions.
 6. Remoção do que deixou de ser usado (E8 e a rede do E4).
