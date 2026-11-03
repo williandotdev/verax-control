@@ -925,3 +925,61 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **CI:** novo job "Testes de navegador" (Playwright + Chromium) roda o catálogo, o modo mock e o e2e de ponta a ponta com PostgreSQL. Ele entra como check obrigatório no `.github/rulesets/main.json`; o ruleset vivo só será atualizado depois do merge deste épico, senão o PR do E2 ficaria esperando um check que ele não tem.
 - **Definição de pronto:** critérios de aceite ✔ (login, cadastro e verificação de MFA, códigos de recuperação, redefinição e aceite de convite, mensagens que não revelam se o e-mail existe) · testes ✔ · lint e tipos ✔ · dependências aprovadas ✔ · regras de segurança ✔
 - **Observação de ambiente:** no Windows, com a suíte da API em paralelo e logo depois de várias rodadas do Playwright, um processo do Vitest caiu uma vez com encerramento forçado nativo (0xC0000409). Não é falha de teste: o mesmo arquivo passa isolado 6 em 6 vezes, a suíte inteira passa 3 em 3, e no CI (Linux) nunca ocorreu. A limitação a 4 workers continua.
+
+## Nova arquitetura de implantação: diagnóstico somente leitura (passo 1)
+
+- **Decisão (02/11/2026):** a plataforma central na AWS do E8 sai, por custo. Entra um **nó por implantação**: uma VM com Wazuh, API, banco, Prowler e túnel do Cloudflare. Ele pode rodar na conta do cliente ou numa conta da Verax e lê os dados sempre pela API, com papel de leitura e ExternalId. O painel vai para o Firebase Hosting na GCP. Detalhes, garantias e ordem de execução em `docs/ARQUITETURA.md`.
+- **Achado:** o coletor de CloudWatch Logs do Wazuh 4.14.9 tem a opção `remove_log_streams`, que chama `delete_log_stream` depois de ler (conferido no código da imagem). Na nova arquitetura ela fica desligada de forma explícita, e o papel de leitura não tem ação de exclusão. O WAF aceita um só destino de log por Web ACL (documentação da AWS): ligar o log pelo conector substituiria o destino do cliente, então essa opção sai do conector.
+- **Arquivos:** `infra/diagnostico/{diagnostico_aws.py,README.md,tests/test_diagnostico.py}`, `docs/ARQUITETURA.md`, `.github/workflows/iac.yml`
+- **Como funciona:**
+  - Script Python para o AWS CloudShell da conta monitorada, sem instalar nada. Lista as trilhas do CloudTrail, GuardDuty, Security Hub, Inspector, Access Analyzer, as Web ACLs do WAF e o destino de log de cada uma, os VPC Flow Logs, os grupos do CloudWatch Logs (retenção, volume e subscription filters) e os limites de leitura da conta, e diz se a conta está numa organização.
+  - **Só leitura por construção:** `ReadOnlyClient` recusa qualquer operação que não comece com `get_`, `list_`, `describe_` ou `batch_get_` (inclusive paginadores do boto3, que escapariam do controle). No máximo 4 chamadas por segundo, e nenhum conteúdo de log é lido.
+  - O resumo aponta o que não pode ser alterado: Web ACL que já envia log, GuardDuty que já exporta e grupos já no limite de subscription filters.
+- **Testes:** 8, sem boto3 (clientes falsos): todas as chamadas de um diagnóstico completo são de leitura; escrita e paginador recusados sem chegar ao cliente da AWS; intervalo mínimo; paginação; falha de permissão vira registro; avisos e resumo. Os nomes de parâmetros de entrada foram conferidos contra os esqueletos do AWS CLI. No CI, no job do CloudFormation.
+
+## Diagnóstico replicável para qualquer cliente
+
+- **Motivo:** o diagnóstico precisa ser enviado e lido para qualquer cliente sem depender de quem o criou.
+- **Arquivos:** `infra/diagnostico/{diagnostico_aws.py,GUIA-CLIENTE.md,README.md,tests/test_diagnostico.py}`, `.github/workflows/diagnostico-release.yml`, `docs/runbooks/onboarding-cliente.md`, `docs/ARQUITETURA.md` (logs do Cloudflare)
+- **Como funciona:**
+  - **Relatório legível:** o script gera também `diagnostico-verax-<conta>.md`, com visão geral, fontes sugeridas, pontos de atenção (o que não pode ser alterado), limites de leitura e próximos passos.
+  - **Fontes sugeridas:** o JSON ganha `fontes_sugeridas`, que a configuração do nó vai usar. A classificação é `sim`, `avaliar` ou `não`:
+    - `sim`: CloudTrail, WAF, findings exportados do GuardDuty e Inspector;
+    - `avaliar`: VPC Flow Logs, banco, DNS, Security Hub e logs de aplicação;
+    - `não`: métricas de desempenho.
+  - Cada fonte traz o volume estimado por dia (armazenado dividido pela retenção).
+  - Leituras novas: o destino de exportação do GuardDuty e os logs de consulta DNS do Route 53.
+  - **Versão e distribuição:** a constante `VERSION` aparece no relatório e em `--versao`. A tag `diagnostico-vX.Y.Z` dispara o workflow, que roda os testes, confere que a tag bate com a versão e publica a release. A release leva o script, o guia do cliente (com a versão já nos comandos), o `SHA256SUMS` e o atestado de procedência. O cliente confere o checksum no próprio CloudShell.
+  - **Roteiro interno** de onboarding: enviar o guia, receber e guardar os arquivos fora do git, ler o relatório, reunião de definição (fontes, região, quem hospeda, escalonamento e baseline de rede) e as próximas etapas.
+- **Testes:** 17 (8 novos):
+  - classificação das fontes;
+  - cada grupo aparece uma vez;
+  - volume pela retenção;
+  - relatório em Markdown;
+  - célula que não quebra a tabela;
+  - avisos sem duplicata.
+
+  Também conferi a compatibilidade das f-strings com o Python 3.9 do CloudShell e passei o actionlint no workflow.
+
+## Publicação do painel no Firebase Hosting ⚠️ altera `.github/`
+
+- **Decisões (02/11/2026):**
+  - projeto novo na GCP, `verax-control-prod`, na organização da Verax, isolado do Verax OS;
+  - destinos:
+    - `control.veraxsistemas.com.br`: demonstração comercial;
+    - `verax.control.veraxsistemas.com.br`: SOC da própria Verax, com fontes da GCP e do Cloudflare;
+    - `<cliente>.control.veraxsistemas.com.br`: um por cliente.
+  - subdomínio com o nome do cliente: o responsável aceitou que a relação fique pública nos certificados.
+- **Arquivos:** `apps/web/src/hosting.ts` (+ teste), `apps/web/src/components/demo-banner.tsx` (+ teste), `apps/web/src/App.tsx`, `apps/web/vite.config.ts`, `apps/web/package.json` (`build:demo`), `scripts/firebase-hosting-deploy.mjs`, `.github/workflows/painel.yml`, `docs/runbooks/painel.md`, `docs/ARQUITETURA.md`, `.gitignore`
+- **Dependências:** nenhuma npm nova. Action `google-github-actions/auth` v3.0.0, fixada pelo commit `7c6bc770` (sem alertas de segurança publicados).
+- **Como funciona:**
+  - **Publicação sem `firebase-tools`:** pela API REST do Firebase Hosting (versão, hashes, envio só do que mudou, finalização e release).
+  - **Configuração do site:** os cabeçalhos (CSP, HSTS, anti-iframe, Permissions-Policy, COOP) e o cache vêm de `firebaseHostingConfig`, que usa os mesmos `securityHeaders` do preview dos testes e2e. O build grava `dist-hosting.json`, fora do `dist`.
+  - **Demonstração:** é o build no modo `mock`. O MSW simula a API no navegador, com a "API" na própria origem do site, então a CSP só permite essa origem. Uma faixa avisa, em toda tela, que os dados são fictícios. Os builds normais não levam o MSW (conferido).
+  - **Login na GCP:** sem chave. A conta `painel-deployer` só aceita o subject imutável do GitHub (`repo:williandotdev@92734416/verax-control@1441377752:environment:painel`, com os IDs numéricos do dono e do repositório) e só tem `firebasehosting.admin` no projeto novo.
+  - **Lista de sites:** fica em variável do environment, fora do código. Sem ela, o job não roda.
+- **Testes:** 6 do web (configuração do Hosting e faixa da demo). Builds de demo e normal conferidos (CSP e presença do MSW). actionlint limpo.
+- **Publicado (02/11/2026):** `verax-control-demo.web.app` e `verax-control-verax.web.app`, com os cabeçalhos conferidos de fora.
+- **Correção depois da primeira publicação:** a raiz e as rotas da aplicação saíam com o cache padrão do Firebase (1 hora), porque a regra `no-cache` só casava com `/index.html`. Agora tudo é `no-cache` e só `/assets/` tem cache longo. O workflow confere as duas regras no site publicado.
+- **Ruleset:** o vivo passou a exigir os 18 checks do `.github/rulesets/main.json`. Antes, exigia só 11: faltavam "Testes de navegador", "Imagem da API" e os 5 jobs de infraestrutura. Todos rodam em qualquer PR, sem filtro de caminho, então nenhum PR fica esperando um check que não roda.
+- **Pendente:** os domínios próprios. Os registros de DNS (CNAME e TXT `_acme-challenge` de cada domínio, com o proxy desligado) ainda precisam ser criados no Cloudflare.

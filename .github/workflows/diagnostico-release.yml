@@ -1,0 +1,60 @@
+name: Publicar diagnóstico
+
+# Publica o diagnóstico somente leitura (infra/diagnostico) como release versionada, com checksum e atestado de
+# procedência, para ser enviado a qualquer cliente sem depender de quem o gerou. Disparo: tag `diagnostico-vX.Y.Z`,
+# que precisa bater com a constante VERSION do script.
+
+on:
+  push:
+    tags: ['diagnostico-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  publicar:
+    name: Publicar o diagnóstico (release, checksum e procedência)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Testes
+        run: python3 -m unittest discover -b -s infra/diagnostico/tests -v
+      - name: Conferir a versão
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 infra/diagnostico/diagnostico_aws.py --versao | awk '{print $NF}')
+          if [ "diagnostico-v${version}" != "$TAG" ]; then
+            echo "A tag ${TAG} não bate com VERSION=${version} do script" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Montar os arquivos da release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          cp infra/diagnostico/diagnostico_aws.py dist/
+          sed "s/{{VERSAO}}/${VERSION}/g" infra/diagnostico/GUIA-CLIENTE.md > dist/GUIA-CLIENTE.md
+          (cd dist && sha256sum diagnostico_aws.py GUIA-CLIENTE.md > SHA256SUMS && cat SHA256SUMS)
+      - name: Atestado de procedência
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/diagnostico_aws.py
+      - name: Criar a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "$TAG" dist/diagnostico_aws.py dist/GUIA-CLIENTE.md dist/SHA256SUMS \
+            --verify-tag --title "Diagnóstico AWS ${VERSION}" \
+            --notes "Diagnóstico somente leitura de uma conta AWS. Instruções para o cliente em GUIA-CLIENTE.md; confira os arquivos com SHA256SUMS."

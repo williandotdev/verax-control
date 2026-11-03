@@ -88,6 +88,30 @@
           {
             "context": "Workflows (actionlint + zizmor)",
             "integration_id": 15368
+          },
+          {
+            "context": "Imagem da API (build, Trivy e teste como em produção)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Terraform (formatação, validação e lint)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Wazuh (scripts, compose e teste de ponta a ponta)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Prowler (entrypoint e imagem)",
+            "integration_id": 15368
+          },
+          {
+            "context": "CloudFormation (cfn-lint e testes do conector)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Checkov (políticas de segurança da infra)",
+            "integration_id": 15368
           }
         ]
       }
