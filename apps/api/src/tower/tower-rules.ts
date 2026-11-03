@@ -1,4 +1,7 @@
-import type { FindingSeverity } from '../alerts/finding-draft.js';
+import type { FindingSeverity, PendingDecisionKind, TrafficLight, TrafficLightReason } from '@verax/shared';
+
+// Os tipos do resumo vêm do contrato compartilhado com o painel (`packages/shared/src/tower.ts`).
+export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
 
 /**
  * Regras do resumo da Torre (T5.10).
@@ -10,9 +13,6 @@ import type { FindingSeverity } from '../alerts/finding-draft.js';
  * Sem nota de postura (nenhuma varredura ainda), a postura não pesa. Os limites ficam em configuração, e os
  * motivos vão junto, para a tela dizer por que a cor é aquela.
  */
-
-export type TrafficLight = 'red' | 'yellow' | 'green';
-export type TrafficLightReason = 'critical_incident' | 'high_incident' | 'low_posture';
 
 export interface TowerThresholds {
   /** Nota de postura abaixo disto deixa a Torre amarela. */
@@ -76,8 +76,6 @@ export function coverage(
       .sort(),
   };
 }
-
-export type PendingDecisionKind = 'unassigned_incident' | 'untriaged_finding' | 'unowned_alert';
 
 export interface PendingDecision {
   kind: PendingDecisionKind;

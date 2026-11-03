@@ -1,6 +1,7 @@
 import { ROLE_LABELS } from '@verax/shared';
-import { LogOut } from 'lucide-react';
-import { NavLink, Outlet, useNavigate } from 'react-router';
+import { LogOut, Menu, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
 import { useMe, useSignOut } from '@/features/session/session';
@@ -8,19 +9,67 @@ import { cn } from '@/lib/cn';
 import { visibleNavigation } from './navigation';
 import { TenantSwitcher } from './tenant-switcher';
 
-/** Estrutura das páginas internas: menu lateral por permissão e cabeçalho com cliente e usuário. */
+/**
+ * Estrutura das páginas internas: menu lateral por permissão e cabeçalho com cliente e usuário. Em telas estreitas
+ * (celular), o menu vira uma gaveta aberta pelo botão "Menu" e fecha ao navegar, ao tocar fora ou com Esc.
+ */
 export function AppLayout() {
   const { data: me } = useMe();
   const signOut = useSignOut();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Qualquer navegação (link, voltar ou avançar do navegador) fecha a gaveta. Ajuste de estado durante a
+  // renderização, como recomenda o React para zerar estado quando um valor muda, sem efeito.
+  const [lastPath, setLastPath] = useState(pathname);
+  if (pathname !== lastPath) {
+    setLastPath(pathname);
+    setMenuOpen(false);
+  }
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [menuOpen]);
+
   if (!me) return null;
 
   const groups = visibleNavigation(me.permissions);
 
   return (
-    <div className="grid min-h-screen grid-cols-[15rem_1fr]">
-      <aside className="flex flex-col border-r bg-surface">
-        <div className="px-5 py-4 text-base font-semibold">Verax Control</div>
+    <div className="min-h-screen md:grid md:grid-cols-[15rem_1fr]">
+      {menuOpen && (
+        <button
+          type="button"
+          aria-label="Fechar menu"
+          className="fixed inset-0 z-30 bg-foreground/30 md:hidden"
+          onClick={() => setMenuOpen(false)}
+        />
+      )}
+      <aside
+        id="menu-principal"
+        data-open={menuOpen}
+        className={cn(
+          'flex-col border-r bg-surface md:static md:flex',
+          menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-64 shadow-lg' : 'hidden',
+        )}
+      >
+        <div className="flex items-center justify-between px-5 py-4">
+          <span className="text-base font-semibold">Verax Control</span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="md:hidden"
+            aria-label="Fechar menu"
+            onClick={() => setMenuOpen(false)}
+          >
+            <X aria-hidden />
+          </Button>
+        </div>
         <nav aria-label="Menu principal" className="flex-1 space-y-5 px-3">
           {groups.map((group) => (
             <div key={group.label}>
@@ -50,10 +99,23 @@ export function AppLayout() {
       </aside>
 
       <div className="flex min-w-0 flex-col">
-        <header className="flex items-end justify-between gap-4 border-b bg-surface px-6 py-3">
-          {me.permissions.includes('session:switch_tenant') ? <TenantSwitcher me={me} /> : <span />}
+        <header className="flex flex-wrap items-end justify-between gap-3 border-b bg-surface px-4 py-3 md:px-6">
+          <div className="flex items-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              className="md:hidden"
+              aria-expanded={menuOpen}
+              aria-controls="menu-principal"
+              onClick={() => setMenuOpen(true)}
+            >
+              <Menu aria-hidden />
+              Menu
+            </Button>
+            {me.permissions.includes('session:switch_tenant') && <TenantSwitcher me={me} />}
+          </div>
           <div className="flex items-center gap-3">
-            <div className="text-right">
+            <div className="hidden text-right sm:block">
               <p className="text-sm font-medium">{me.email}</p>
               <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
             </div>
@@ -71,7 +133,7 @@ export function AppLayout() {
             </Button>
           </div>
         </header>
-        <main className="flex-1 p-6">
+        <main className="flex-1 p-4 md:p-6">
           <Outlet />
         </main>
       </div>

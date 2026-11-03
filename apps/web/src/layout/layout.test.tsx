@@ -132,3 +132,29 @@ it('sair encerra a sessão e volta ao login', async () => {
   await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
   expect(state.me).toBeNull();
 });
+
+describe('menu no celular', () => {
+  it('abre como gaveta, fecha com Esc e ao navegar', async () => {
+    const { router } = renderApp('/', demoMe('analista_cliente'));
+    const open = await screen.findByRole('button', { name: 'Menu' });
+    const drawer = document.getElementById('menu-principal');
+    expect(open).toHaveAttribute('aria-expanded', 'false');
+    expect(drawer).toHaveAttribute('data-open', 'false');
+
+    await userEvent.click(open);
+    expect(open).toHaveAttribute('aria-expanded', 'true');
+    expect(drawer).toHaveAttribute('data-open', 'true');
+    await userEvent.keyboard('{Escape}');
+    expect(drawer).toHaveAttribute('data-open', 'false');
+
+    await userEvent.click(open);
+    await userEvent.click(within(await menu()).getByRole('link', { name: 'Incidentes' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/incidentes'));
+    expect(drawer).toHaveAttribute('data-open', 'false');
+
+    // Voltar pelo navegador não reabre a gaveta da página anterior.
+    await router.navigate(-1);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'));
+    expect(document.getElementById('menu-principal')).toHaveAttribute('data-open', 'false');
+  });
+});

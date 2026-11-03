@@ -2,7 +2,7 @@ import { type Me, type Role, ROLES } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAuthHandlers } from './auth-handlers';
-import { DEMO_TENANTS, demoMe } from './fixtures';
+import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -19,11 +19,20 @@ function roleFromStorage(): Role {
   return (ROLES as readonly string[]).includes(stored ?? '') ? (stored as Role) : 'admin_verax';
 }
 
+/** O admin_verax da demonstração já começa com o primeiro cliente selecionado, para a Torre abrir com dados. */
+function defaultMe(): Me {
+  const role = roleFromStorage();
+  const first = DEMO_TENANTS[0]?.id ?? null;
+  return role === 'admin_verax'
+    ? demoMe(role, { activeTenantId: first, scopeTenantId: first })
+    : demoMe(role);
+}
+
 /**
  * Handlers do Mock Service Worker com o mesmo contrato da API. No modo `dev:mock`, o papel do usuário
  * fictício sai de `localStorage['verax.mock.role']` (padrão: admin_verax).
  */
-export function createHandlers(state: MockState = { me: demoMe(roleFromStorage()) }) {
+export function createHandlers(state: MockState = { me: defaultMe() }) {
   return [
     ...createAuthHandlers(state),
     http.get(url('/v1/me'), () =>
@@ -32,6 +41,19 @@ export function createHandlers(state: MockState = { me: demoMe(roleFromStorage()
         : HttpResponse.json({ statusCode: 401, message: 'Não autenticado' }, { status: 401 }),
     ),
     http.get(url('/v1/csrf-token'), () => HttpResponse.json({ token: 'token-csrf-ficticio' })),
+    http.get(url('/v1/tower'), () => {
+      if (!state.me)
+        return HttpResponse.json({ statusCode: 401, message: 'Não autenticado' }, { status: 401 });
+      if (!state.me.scopeTenantId) {
+        return HttpResponse.json(
+          { statusCode: 400, code: 'TENANT_REQUIRED', message: 'Escolha um cliente' },
+          { status: 400 },
+        );
+      }
+      return HttpResponse.json(
+        demoTower(state.me.scopeTenantId, { includeUnowned: state.me.role === 'admin_verax' }),
+      );
+    }),
     http.get(url('/v1/tenants'), () => {
       if (state.me?.role !== 'admin_verax')
         return HttpResponse.json({ statusCode: 403, message: 'Sem permissão' }, { status: 403 });

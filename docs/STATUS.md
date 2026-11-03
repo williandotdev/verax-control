@@ -1062,3 +1062,37 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - a AMI ficou fixa (`AmiId`, tipo `AWS::EC2::Image::Id`), e a AMI e o tipo saíram do modelo de lançamento e foram para a instância. Antes, o parâmetro do SSM era relido a cada atualização do stack e trocava a VM sempre que saía uma imagem nova. A troca falharia, porque o disco de dados ainda estaria preso à VM antiga. Agora trocar o tipo só para e religa a VM, e o sistema é atualizado no lugar pelo pacote do nó;
   - os snapshots usam uma etiqueta-alvo só, exclusiva do disco de dados de cada nó. O DLM escolhe volumes com qualquer uma das etiquetas-alvo, e as duas anteriores pegavam também o disco raiz e os discos de outros nós;
   - exceções do Trivy com motivo: saída 443/7844, tópico SNS sem chave própria, bucket com SSE-S3 e o falso positivo do disco raiz, cifrado no modelo de lançamento. Conferido com o Trivy 0.76.1 do CI: a versão anterior falha com os 6 achados e esta passa.
+
+## T7.6 Torre (e o menu no celular)
+
+- **Arquivos:** `packages/shared/src/{tower.ts,findings.ts}` (+ teste), `apps/api/src/{tower/tower-rules.ts,alerts/finding-draft.ts}`, `apps/web/src/pages/{tower-page.tsx,tower-reason.ts}` (+ teste), `apps/web/src/lib/format.ts` (+ teste), `apps/web/src/mocks/{fixtures.ts,handlers.ts}`, `apps/web/src/routes/router.tsx`, `apps/web/src/layout/app-layout.tsx` (+ teste)
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Contrato compartilhado** de `GET /v1/tower` (`towerSummarySchema`):
+    - semáforo, motivos, decisões pendentes, incidentes abertos por severidade, postura (nota, data e limite) e cobertura;
+    - a API passa a importar dele os tipos do semáforo e as severidades dos achados, para os dois lados não divergirem;
+    - os status dos achados da T5.5 (novo, em análise, legítimo, resolvido) também entram no pacote compartilhado.
+  - **Tela**, que responde em segundos "está tudo bem?" e "o que preciso decidir?":
+    - o semáforo vem com a frase do porquê e os números (por exemplo, "1 incidente crítico aberto, 2 incidentes altos abertos e nota de postura 64, abaixo de 70.");
+    - cada decisão pendente tem um botão que leva à lista já filtrada;
+    - os incidentes abertos aparecem por severidade, com link;
+    - a nota de postura usa o limite que a API informa;
+    - a cobertura mostra as contas conectadas, o último evento e as contas silenciosas.
+
+    A Torre se atualiza a cada minuto. O admin_verax sem cliente escolhido é orientado a escolher um, e a Torre nem é buscada. Erro ou resposta fora do contrato mostram a mensagem com "Tentar de novo".
+
+  - **Demonstração:**
+    - o cliente fictício Alfa tem o que mostrar numa apresentação: incidente crítico, decisões, postura baixa e uma conta silenciosa;
+    - o Beta está tranquilo, para comparar;
+    - o admin_verax da demonstração já começa com o Alfa selecionado.
+  - **Celular:** a moldura do app (E6) não se adaptava: o menu lateral espremia o conteúdo. Abaixo da largura de tablet, o menu vira uma gaveta, aberta pelo botão "Menu". Ela fecha ao navegar, ao tocar fora ou com Esc. O estado deriva do caminho em que foi aberta, sem efeito.
+- **Testes:**
+  - 13 no contrato;
+  - 9 na tela e na frase do semáforo: conteúdo completo, navegação filtrada, cliente verde com alertas sem dono, nenhuma decisão, sem cliente, erro da API e resposta fora do contrato;
+  - 5 de formatação (tempo relativo, lista e plural);
+  - 1 da gaveta.
+
+  Os testes da API que usam as severidades continuam verdes. Conferido visualmente no modo de demonstração, em tema claro, tema escuro e celular (390 px).
+
+- **Definição de pronto:** critérios de aceite ✔ (semáforo com frase, decisões, incidentes por severidade, nota de postura e cobertura) · testes ✔ · lint ✔ · dependências ✔
+- **Pendente:** o endpoint real `GET /v1/tower`, com a persistência do E5. A demonstração usa o mesmo contrato.
