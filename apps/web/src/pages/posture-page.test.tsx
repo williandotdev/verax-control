@@ -84,7 +84,9 @@ describe('Postura cloud', () => {
     expect(within(panel).getByRole('region', { name: 'Como corrigir' })).toHaveTextContent(
       'ative um dispositivo de MFA',
     );
-    const link = within(panel).getByRole('link', { name: /docs\.aws\.amazon\.com/ });
+    const link = within(panel).getByRole('link', {
+      name: (name) => name.startsWith('docs.aws.amazon.com') && name.endsWith('(abre em outra aba)'),
+    });
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
@@ -99,6 +101,36 @@ describe('Postura cloud', () => {
     // Os mesmos números estão na tabela para leitor de tela: 30 dias.
     const table = within(prod).getByRole('table', { name: /Evolução da nota/, hidden: true });
     expect(within(table).getAllByRole('row', { hidden: true })).toHaveLength(31);
+  });
+
+  it('varredura sem nota (só checagens que não pesam) continua mostrando os resultados', async () => {
+    renderAt('/postura');
+    server.use(
+      http.get(`${API_URL}/v1/posture`, () =>
+        HttpResponse.json({
+          score: null,
+          warningBelow: 70,
+          accounts: [
+            {
+              accountId: DEMO_ACCOUNTS.alfaProducao,
+              score: null,
+              scannedAt: new Date().toISOString(),
+              passed: 0,
+              failed: 1,
+              failedBySeverity: { critical: 0, high: 0, medium: 0, low: 0, informational: 1 },
+              history: [],
+            },
+          ],
+        }),
+      ),
+    );
+    const card = await screen.findByRole('region', { name: `Conta ${DEMO_ACCOUNTS.alfaProducao}` });
+    expect(card).toHaveTextContent('Sem nota nesta varredura');
+    expect(card).toHaveTextContent('0 aprovadas e 1 reprovadas: 1 informativa.');
+    expect(screen.queryByText('Ainda sem varredura')).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole('table', { name: 'Checagens reprovadas na última varredura' }),
+    ).toBeInTheDocument();
   });
 
   it('cliente sem varredura ainda', async () => {

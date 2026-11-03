@@ -79,7 +79,9 @@ export function PosturePage() {
       </PostureShell>
     );
   }
-  if (overview.data.score === null) {
+  // Sem varredura é nenhuma conta com data de varredura. Uma varredura só com checagens informativas, manuais ou
+  // silenciadas não gera nota, mas os resultados dela continuam visíveis.
+  if (overview.data.accounts.every((item) => item.scannedAt === null)) {
     return (
       <PostureShell>
         <EmptyState
@@ -223,11 +225,18 @@ function AccountCard({
           <span className="text-xs text-muted-foreground">varredura {formatRelative(account.scannedAt)}</span>
         )}
       </CardHeader>
-      {account.score === null ? (
+      {account.scannedAt === null ? (
         <p className="text-sm text-muted-foreground">Ainda sem varredura nesta conta.</p>
       ) : (
         <div className="space-y-4">
-          <ScoreMeter score={account.score} thresholds={{ ...DEFAULT_THRESHOLDS, warning: warningBelow }} />
+          {account.score === null ? (
+            <p className="text-sm text-muted-foreground">
+              Sem nota nesta varredura: nenhuma checagem que conta para a nota (só informativas, manuais ou
+              silenciadas).
+            </p>
+          ) : (
+            <ScoreMeter score={account.score} thresholds={{ ...DEFAULT_THRESHOLDS, warning: warningBelow }} />
+          )}
           <ScoreTrend
             points={account.history}
             warningBelow={warningBelow}
@@ -306,7 +315,7 @@ function CheckDetail({ check }: { check: PostureCheck }) {
                 >
                   {new URL(reference).hostname}
                   <ExternalLink aria-hidden className="size-3.5" />
-                  <span className="sr-only">(abre em outra aba)</span>
+                  <span className="sr-only"> (abre em outra aba)</span>
                 </a>
               </li>
             ))}
