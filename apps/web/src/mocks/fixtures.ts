@@ -49,15 +49,23 @@ const minutesAgo = (now: Date, minutes: number): string =>
 
 /**
  * Torre de cada cliente fictício. A Alfa tem o que mostrar numa apresentação (incidente crítico, decisões
- * pendentes, postura baixa e uma conta silenciosa); a Beta está tranquila, para comparar.
+ * pendentes, postura baixa e uma conta silenciosa); a Beta está tranquila, para comparar. A contagem de achados sem
+ * triagem vem do estado do mock, para a Torre acompanhar a triagem feita na tela de Achados.
  */
-export function demoTower(tenantId: string, options: { includeUnowned: boolean; now?: Date }): TowerSummary {
+export function demoTower(
+  tenantId: string,
+  options: { includeUnowned: boolean; untriagedFindings?: number; now?: Date },
+): TowerSummary {
   const now = options.now ?? new Date();
+  const untriaged = options.untriagedFindings ?? (tenantId === ALFA ? 5 : 0);
   if (tenantId !== ALFA) {
     return towerSummarySchema.parse({
       light: 'green',
       reasons: [],
-      pendingDecisions: options.includeUnowned ? [{ kind: 'unowned_alert', count: 3 }] : [],
+      pendingDecisions: [
+        { kind: 'untriaged_finding', count: untriaged },
+        { kind: 'unowned_alert', count: options.includeUnowned ? 3 : 0 },
+      ].filter((decision) => decision.count > 0),
       openIncidents: { critical: 0, high: 0, medium: 1, low: 2 },
       posture: { score: 91, scannedAt: minutesAgo(now, 7 * 60), warningBelow: 70 },
       coverage: {
@@ -74,9 +82,9 @@ export function demoTower(tenantId: string, options: { includeUnowned: boolean; 
     reasons: ['critical_incident', 'high_incident', 'low_posture'],
     pendingDecisions: [
       { kind: 'unassigned_incident', count: 2 },
-      { kind: 'untriaged_finding', count: 5 },
-      ...(options.includeUnowned ? [{ kind: 'unowned_alert', count: 3 }] : []),
-    ],
+      { kind: 'untriaged_finding', count: untriaged },
+      { kind: 'unowned_alert', count: options.includeUnowned ? 3 : 0 },
+    ].filter((decision) => decision.count > 0),
     openIncidents: { critical: 1, high: 2, medium: 3, low: 1 },
     posture: { score: 64, scannedAt: minutesAgo(now, 6 * 60), warningBelow: 70 },
     coverage: {

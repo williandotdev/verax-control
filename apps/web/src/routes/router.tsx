@@ -2,6 +2,7 @@ import { type ComponentType, createElement } from 'react';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
+import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { ForgotPasswordPage } from '@/pages/forgot-password-page';
 import { LoginPage } from '@/pages/login-page';
@@ -29,6 +30,7 @@ const devRoutes: RouteObject[] = import.meta.env.DEV
 /** Telas do E7 já construídas, por caminho do menu; as demais mostram o aviso de construção. */
 const pageByPath: Partial<Record<string, ComponentType>> = {
   '/': TowerPage,
+  '/achados': FindingsPage,
 };
 
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */

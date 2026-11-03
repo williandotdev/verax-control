@@ -1096,3 +1096,38 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 - **Definição de pronto:** critérios de aceite ✔ (semáforo com frase, decisões, incidentes por severidade, nota de postura e cobertura) · testes ✔ · lint ✔ · dependências ✔
 - **Pendente:** o endpoint real `GET /v1/tower`, com a persistência do E5. A demonstração usa o mesmo contrato.
+
+## T7.7 Achados
+
+- **Arquivos:** `packages/shared/src/findings.ts` (+ teste), `apps/web/src/pages/findings-page.tsx` (+ teste), `apps/web/src/features/findings/*`, `apps/web/src/components/ui/{sheet,select-field}.tsx`, `apps/web/src/components/ui/field.tsx` (área de texto), `apps/web/src/mocks/{findings-fixtures,findings-handlers}.ts`
+- **Dependências:** nenhuma; o painel lateral usa o Dialog do `radix-ui`, que já estava aprovado e instalado.
+- **Como funciona:**
+  - **Contrato compartilhado** dos endpoints das T5.4 e T5.5:
+    - lista com filtros por severidade, status, conta e período;
+    - detalhe com regra do Wazuh, técnicas MITRE, comentários e evento bruto (null depois dos 90 dias de retenção);
+    - mudança de status com comentário opcional e comentário avulso. O comentário aceita quebra de linha; os outros caracteres de controle são recusados.
+  - **Tela:**
+    - os filtros ficam na URL (`/achados?status=new&severidade=critical`): o atalho da Torre abre a lista já filtrada, o endereço pode ser compartilhado, e valor desconhecido na URL é ignorado;
+    - trocar um filtro volta para a primeira página;
+    - o detalhe abre num painel lateral acessível (foco preso, Esc fecha), também pela URL (`?achado=<id>`). Ele mostra os campos, MITRE, o vínculo com o incidente, o evento bruto formatado e os comentários.
+  - **Triagem** (`findings:triage`):
+    - mudar o status com comentário, aplicado na tela assim que a API responde;
+    - ao marcar "legítimo", a tela oferece criar a exceção (T3.5) por usuário, IP ou recurso, com motivo obrigatório. A lista e a Torre são atualizadas.
+
+    O papel de leitura vê tudo, sem as ações.
+
+  - **Demonstração:** 21 achados fictícios no cliente Alfa e 3 no Beta, coerentes com a Torre: exatamente 5 altos ou críticos novos fora de incidente, e grupos que formam os incidentes da próxima tela (chave comprometida, força bruta SSH, ataque ao WAF e bucket público). Os IPs são das faixas de documentação. O mock guarda as mudanças em memória, então a demonstração é interativa.
+- **Testes:** 9 no contrato e 8 na tela:
+  - filtros da URL;
+  - troca de filtro com volta à primeira página e limpeza;
+  - painel com o evento bruto, fechando com Esc;
+  - status com comentário e exceção;
+  - comentário avulso;
+  - papel de leitura sem ações;
+  - admin sem cliente;
+  - filtro inválido ignorado.
+
+  Conferido visualmente na lista e no painel, no desktop e no celular.
+
+- **Definição de pronto:** critérios de aceite ✔ (tabela com filtros, detalhe lateral com evento bruto, mudar status, comentar e marcar legítimo criando exceção) · testes ✔ · lint ✔ · dependências ✔
+- **Pendente:** os endpoints reais, com a persistência do E5.
