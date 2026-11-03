@@ -123,4 +123,8 @@ systemctl enable verax-node.service verax-backup.timer >/dev/null
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
 systemctl --no-pager --lines=0 status verax-node.service || true
+if [[ ! -s /run/verax/cloudflared.env ]]; then
+  echo 'AVISO: o nó subiu sem o túnel do Cloudflare (o cofre do token ainda não tem valor). Grave o token e rode:' \
+    'sudo systemctl restart verax-node'
+fi
 echo "Nó na versão $version."

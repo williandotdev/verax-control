@@ -26,14 +26,26 @@ compose() {
 internal_secret() { cat "$secrets/$1"; }
 
 # Segredo do Secret Manager, sem quebra de linha no fim; recusa valor com quebra no meio (quebraria o arquivo de
-# ambiente e poderia injetar outra variável).
+# ambiente e poderia injetar outra variável). Sai com 3 quando o cofre ainda não tem valor (NOT_FOUND) e com 1 em
+# qualquer outro erro (permissão, rede, valor inválido), mostrando o motivo que o gcloud deu.
 external_secret() {
-  local value
+  local value errors status=0
+  errors=$(mktemp)
   value=$(gcloud secrets versions access latest --project "$VERAX_GCP_PROJECT" \
-    --secret "$VERAX_SECRET_PREFIX-$1" 2>/dev/null) || {
-    echo "Segredo $VERAX_SECRET_PREFIX-$1 sem valor no Secret Manager (ver docs/runbooks/no-verax.md)." >&2
-    return 1
-  }
+    --secret "$VERAX_SECRET_PREFIX-$1" 2>"$errors") || status=$?
+  if ((status != 0)); then
+    if grep -q 'NOT_FOUND' "$errors"; then
+      echo "Segredo $VERAX_SECRET_PREFIX-$1 ainda sem valor no Secret Manager (ver docs/runbooks/no-verax.md)." >&2
+      status=3
+    else
+      echo "Falha ao ler o segredo $VERAX_SECRET_PREFIX-$1 no Secret Manager:" >&2
+      sed 's/^/  /' "$errors" >&2
+      status=1
+    fi
+    rm -f "$errors"
+    return "$status"
+  fi
+  rm -f "$errors"
   value=${value%$'\n'}
   if [[ -z $value || $value == *$'\n'* || $value == *$'\r'* ]]; then
     echo "Segredo $VERAX_SECRET_PREFIX-$1 vazio ou com quebra de linha." >&2
@@ -102,15 +114,19 @@ render() {
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "DATABASE_URL=$(database_url verax_app "$app")"
-  # Túnel: sem o token, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa. Com o token gravado,
-  # `sudo systemctl restart verax-node` liga o túnel. O arquivo existe sempre (vazio sem o token): o Compose o exige.
-  local tunnel
-  if tunnel=$(external_secret cloudflare-tunnel-token); then
-    write_env cloudflared.env "TUNNEL_TOKEN=$tunnel"
-  else
+  # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
+  # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
+  # inválido) para a partida, como nos outros segredos. O arquivo existe sempre (vazio sem o token): o Compose o exige.
+  local tunnel status=0
+  tunnel=$(external_secret cloudflare-tunnel-token) || status=$?
+  if ((status == 3)); then
     write_env cloudflared.env
     echo "AVISO: sem o token do túnel, o nó sobe sem o cloudflared e o painel não alcança a API. Grave o token" \
       "(docs/runbooks/no-verax.md) e reinicie: sudo systemctl restart verax-node" >&2
+  elif ((status != 0)); then
+    return "$status"
+  else
+    write_env cloudflared.env "TUNNEL_TOKEN=$tunnel"
   fi
 }
 

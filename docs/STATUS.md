@@ -1719,5 +1719,6 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Problema (desde o pacote do nó):** com `set -e`, um `$(...)` usado como argumento de outro comando não interrompe o script quando falha. Os segredos lidos assim (senhas da sessão e do CSRF, senha do e-mail e token do túnel) saíam vazios no arquivo de ambiente, sem erro. Com o cofre do túnel vazio, o `cloudflared` subia com o token vazio e ficava reiniciando, ao contrário do que o roteiro dizia.
 - **Correção:**
   - cada segredo é lido numa atribuição própria, e uma falha para a partida;
-  - sem o token do túnel, o nó sobe sem o `cloudflared`, com um aviso no journal. Banco, API e coleta rodam, e o primeiro acesso (bootstrap) já pode ser feito. Com o token gravado, `systemctl restart verax-node` liga o túnel.
+  - com o cofre do túnel ainda sem valor (`NOT_FOUND`), o nó sobe sem o `cloudflared`, com aviso no journal e no fim do `deploy.sh`. Banco, API e coleta rodam, e o primeiro acesso (bootstrap) já pode ser feito. Com o token gravado, `systemctl restart verax-node` liga o túnel;
+  - qualquer outro erro na leitura do cofre (permissão, rede, valor inválido) para a partida e mostra o motivo que o gcloud deu (antes, o erro era descartado). Assim, uma falha passageira numa reinicialização não derruba um túnel que funcionava.
 - **Testes:** shellcheck limpo; o comportamento do `set -e` foi conferido no bash (antes: seguia com o valor vazio e saía com 0; agora: sai com 1).
