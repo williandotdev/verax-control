@@ -20,7 +20,10 @@ repo=williandotdev/verax-control
 images=$(sed -n 's/^IMAGES_REPOSITORY=//p' "$config" | tr -d '\r')
 [[ $images =~ ^[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+$ ]] || { echo 'IMAGES_REPOSITORY inválido no node.conf.' >&2; exit 2; }
 
-# O gh lê o manifesto da imagem no registro com as credenciais do Docker desta máquina.
+# O gh lê o manifesto da imagem no registro com as credenciais do Docker desta máquina. No Windows, o ajudante de
+# credenciais do Docker Desktop fica fora do PATH do Git Bash.
+docker_desktop_bin='/c/Program Files/Docker/Docker/resources/bin'
+if [[ -d $docker_desktop_bin ]]; then PATH="$PATH:$docker_desktop_bin"; fi
 gcloud auth print-access-token | docker login -u oauth2accesstoken --password-stdin "https://${images%%/*}" >/dev/null
 
 verified_digest() { # <imagem>
