@@ -94,6 +94,10 @@ model Tenant {
   alertExceptions    AlertException[]
   findings           Finding[]
   findingComments    FindingComment[]
+  incidents          Incident[]
+  postureScans       PostureScan[]
+  postureFailures    PostureFailure[]
+  inventorySnapshots InventorySnapshot[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -124,6 +128,7 @@ model User {
   protectedResources ProtectedResource[]
   alertExceptions    AlertException[]
   findingComments    FindingComment[]
+  assignedIncidents  Incident[]
 
   @@index([tenantId])
 }
@@ -366,6 +371,11 @@ model Finding {
   /// Exceção que marcou o achado como esperado na chegada (T3.5); o achado já nasce "legítimo".
   exceptionId     String?          @db.Uuid
   exception       AlertException?  @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
+  /// Incidente em que o achado entrou (T5.6); o sync agrupa, sempre dentro do mesmo cliente.
+  incidentId      String?          @db.Uuid
+  incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
+  triagedAt       DateTime?        @db.Timestamptz(3)
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
@@ -375,6 +385,7 @@ model Finding {
   @@unique([id, tenantId])
   @@index([tenantId, occurredAt(sort: Desc)])
   @@index([tenantId, status])
+  @@index([incidentId])
 }
 
 /// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da
@@ -441,4 +452,118 @@ model SyncState {
   leaseOwner      String?   @db.VarChar(64)
   leaseUntil      DateTime? @db.Timestamptz(3)
   updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+enum IncidentStatus {
+  open
+  investigating
+  resolved
+}
+
+/// Incidente (T5.6 e T5.7): achados do mesmo cliente com usuário, chave, IP ou recurso em comum, numa janela de
+/// tempo. O sync abre e alimenta; pela API, mudam o status e o responsável. Os campos de resumo (severidade, nota,
+/// período, chaves, contas, recursos e MITRE) são recalculados a cada achado novo.
+model Incident {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  tenantId        String          @db.Uuid
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  severity        FindingSeverity
+  status          IncidentStatus  @default(open)
+  riskScore       Int             @db.SmallInt
+  findingCount    Int
+  firstSeenAt     DateTime        @db.Timestamptz(3)
+  lastSeenAt      DateTime        @db.Timestamptz(3)
+  keys            String[]
+  accounts        String[]
+  resources       String[]
+  mitreTactics    String[]
+  mitreTechniques String[]
+  assigneeId      String?
+  assignee        User?           @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  /// Quando foi resolvido (relatório de tempo até a resolução); limpo se reaberto.
+  resolvedAt      DateTime?       @db.Timestamptz(3)
+  createdAt       DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
+  findings        Finding[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, riskScore(sort: Desc)])
+}
+
+/// Uma varredura de postura (T5.8) de uma conta: a nota e as contagens. As checagens reprovadas ficam em
+/// `PostureFailure`. Gravada pelo job que lê o relatório do Prowler.
+model PostureScan {
+  id                  String           @id @default(uuid(7)) @db.Uuid
+  tenantId            String           @db.Uuid
+  tenant              Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  accountId           String           @db.VarChar(32)
+  scannedAt           DateTime         @db.Timestamptz(3)
+  /// De 0 a 100; null quando nenhuma checagem conta (só manuais ou silenciadas).
+  score               Int?             @db.SmallInt
+  /// Pesos aprovados e totais (crítica 10, alta 5, média 2, baixa 1): a nota do cliente soma os de todas as contas.
+  weightPassed        Int
+  weightTotal         Int
+  passed              Int
+  failed              Int
+  failedCritical      Int
+  failedHigh          Int
+  failedMedium        Int
+  failedLow           Int
+  failedInformational Int
+  createdAt           DateTime         @default(now()) @db.Timestamptz(3)
+  failures            PostureFailure[]
+
+  @@unique([tenantId, accountId, scannedAt])
+  /// Alvo da chave composta das reprovações: a reprovação é sempre do mesmo cliente da varredura.
+  @@unique([id, tenantId])
+  @@index([tenantId, accountId, scannedAt(sort: Desc)])
+}
+
+enum PostureSeverity {
+  critical
+  high
+  medium
+  low
+  informational
+}
+
+/// Checagem reprovada numa varredura de postura.
+model PostureFailure {
+  id           String          @id @default(uuid(7)) @db.Uuid
+  tenantId     String          @db.Uuid
+  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  scanId       String          @db.Uuid
+  scan         PostureScan     @relation(fields: [scanId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  /// Id estável da reprovação no relatório (checagem + recurso).
+  findingUid   String          @db.VarChar(512)
+  checkId      String          @db.VarChar(160)
+  title        String          @db.VarChar(500)
+  severity     PostureSeverity
+  region       String          @db.VarChar(40)
+  resource     String?         @db.VarChar(4000)
+  resourceType String?         @db.VarChar(4000)
+  risk         String?         @db.VarChar(4000)
+  remediation  String?         @db.VarChar(4000)
+  references   String[]
+
+  @@unique([scanId, findingUid])
+  @@index([tenantId, scanId])
+}
+
+/// Retrato do inventário de uma conta (T5.9): os itens de cada tipo, já com o risco, como JSON validado pelo
+/// contrato compartilhado ao gravar e ao ler. Gravado pelo job de inventário; o mais recente de cada conta vale.
+model InventorySnapshot {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  tenantId    String   @db.Uuid
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  accountId   String   @db.VarChar(32)
+  collectedAt DateTime @db.Timestamptz(3)
+  /// Conta root (MFA e chaves) com o risco.
+  root        Json?
+  /// Itens por tipo: `users`, `keys`, `instances`, `buckets`, `security-groups`.
+  items       Json
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([tenantId, accountId, collectedAt])
+  @@index([tenantId, accountId, collectedAt(sort: Desc)])
 }

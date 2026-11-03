@@ -7,7 +7,7 @@ import type { FindingDraft, FindingSeverity } from '../alerts/finding-draft.js';
  * - Um achado entra num incidente aberto do **mesmo cliente** que tenha uma chave em comum e cujo período, alargado
  *   pela janela, contenha o horário do achado. Incidente de outro cliente nunca é candidato, nem com o mesmo IP.
  * - Sem incidente para entrar, um achado médio ou mais grave abre um incidente; um achado baixo fica só como achado
- *   (entra num incidente se um dia houver um com chave em comum).
+ *   (entra num incidente se um dia houver um com chave em comum). Achado sem nenhuma chave nunca abre incidente.
  */
 
 export type CorrelationKind = 'user' | 'key' | 'ip' | 'resource';
@@ -59,6 +59,9 @@ export function planIncident(
 
   const [best] = matches;
   if (best !== undefined) return { action: 'join', incidentId: best.id };
+  // Sem usuário, chave, IP nem recurso, não há o que agrupar: o achado fica sozinho, e um incidente sem chave nem
+  // caberia no contrato.
+  if (keys.size === 0) return { action: 'none' };
   return OPENING_SEVERITIES.includes(finding.severity) ? { action: 'open' } : { action: 'none' };
 }
 

@@ -208,6 +208,8 @@ describe('nota de postura (T5.8)', () => {
     ]);
     expect(summary).toEqual({
       score: Math.round((12 / 19) * 100),
+      weightPassed: 12,
+      weightTotal: 19,
       passed: 3,
       failed: 2,
       manual: 0,

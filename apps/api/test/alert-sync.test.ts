@@ -3,6 +3,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AlertSync, type AlertSearchClient } from '../src/alerts/alert-sync.js';
+import { IncidentGrouping, protectedItemsOf } from '../src/incidents/incident-grouping.js';
 import { DEFAULT_SYNC_SETTINGS } from '../src/alerts/sync-query.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { AlertSearch } from '../src/indexer/alert-queries.js';
@@ -238,7 +239,7 @@ describe('sync de alertas para achados (T5.3)', () => {
   });
 
   it('exceção de um cliente não vale para alerta de outro', async () => {
-    await prisma.alertException.create({
+    const catchAll = await prisma.alertException.create({
       data: {
         tenantId: tenantA,
         ruleId: '80254',
@@ -260,6 +261,8 @@ describe('sync de alertas para achados (T5.3)', () => {
         where: { source_sourceEventId: { source: 'wazuh', sourceEventId: String(doc['id']) } },
       }),
     ).toMatchObject({ tenantId: tenantB, status: 'new', exceptionId: null });
+    // A exceção ampla não fica valendo para os testes seguintes do cliente A.
+    await prisma.alertException.delete({ where: { id: catchAll.id } });
   });
 
   it('GuardDuty da conta A, pelo bucket cadastrado, usa a severidade da AWS', async () => {
@@ -382,6 +385,161 @@ describe('sync de alertas para achados (T5.3)', () => {
       lastError: 'IndexerError',
       lastProcessedAt: null,
       leaseOwner: null,
+    });
+  });
+
+  describe('agrupamento em incidentes (T5.6)', () => {
+    it('lista de proteção no formato do achado: s3:, ec2: e sg:', () => {
+      const items = protectedItemsOf([
+        { type: 's3_bucket', identifier: 'relatorios' },
+        { type: 'ec2_instance', identifier: 'i-0abc1234' },
+        { type: 'security_group', identifier: 'sg-0123456789abcdef0' },
+      ]);
+      expect([...items]).toEqual(
+        expect.arrayContaining(['s3:relatorios', 'ec2:i-0abc1234', 'sg:sg-0123456789abcdef0']),
+      );
+      expect(items.has('ec2:sg-0123456789abcdef0')).toBe(false);
+    });
+
+    it('falha no meio do agrupamento não deixa o achado gravado sem incidente: a próxima execução refaz', async () => {
+      class FailingOnce extends IncidentGrouping {
+        failed = false;
+        override place(...args: Parameters<IncidentGrouping['place']>) {
+          if (!this.failed) {
+            this.failed = true;
+            return Promise.reject(new Error('banco caiu no meio'));
+          }
+          return super.place(...args);
+        }
+      }
+      const name = `teste-${randomUUID().slice(0, 8)}`;
+      const doc = trailAlertA(7, { sourceIp: `100.65.${randomInt(0, 255)}.${randomInt(1, 254)}`, level: 12 });
+      const where = { source_sourceEventId: { source: 'wazuh', sourceEventId: String(doc['id']) } };
+      const grouping = new FailingOnce();
+
+      await expect(
+        new AlertSync(prisma, new FakeIndexer([doc]), { name, grouping }).runOnce(),
+      ).rejects.toThrow();
+      expect(await prisma.finding.findUnique({ where })).toBeNull();
+
+      const report = await new AlertSync(prisma, new FakeIndexer([doc]), { name, grouping }).runOnce();
+      expect(report.created).toBe(1);
+      expect((await prisma.finding.findUniqueOrThrow({ where })).incidentId).not.toBeNull();
+    });
+
+    // Faixa que nenhuma exceção dos outros testes cobre.
+    const ip = () => `100.64.${randomInt(0, 255)}.${randomInt(1, 254)}`;
+    /** Usuário e chave próprios: os alertas de exemplo dividem o mesmo usuário e cairiam no mesmo incidente. */
+    const identity = () => {
+      const name = `teste-${randomInt(1e6, 9e6)}`;
+      return {
+        type: 'IAMUser',
+        arn: `arn:aws:iam::${accountA}:user/${name}`,
+        accountId: accountA,
+        accessKeyId: `AKIA${randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase()}`,
+        userName: name,
+      };
+    };
+    const findingOf = (doc: Record<string, unknown>) =>
+      prisma.finding.findUniqueOrThrow({
+        where: { source_sourceEventId: { source: 'wazuh', sourceEventId: String(doc['id']) } },
+      });
+
+    it('o primeiro achado grave abre o incidente; o seguinte com o mesmo IP entra nele', async () => {
+      const shared = ip();
+      const first = trailAlertA(40, {
+        sourceIp: shared,
+        level: 12,
+        identity: { type: 'IAMUser', userName: 'um' },
+      });
+      const second = trailAlertA(20, {
+        sourceIp: shared,
+        level: 10,
+        identity: { type: 'IAMUser', userName: 'dois' },
+      });
+      const report = await syncFor(new FakeIndexer([first, second])).runOnce();
+      expect(report).toMatchObject({ created: 2, incidentsOpened: 1, incidentsJoined: 1 });
+
+      const [a, b] = [await findingOf(first), await findingOf(second)];
+      expect(a.incidentId).not.toBeNull();
+      expect(b.incidentId).toBe(a.incidentId);
+      const incident = await prisma.incident.findUniqueOrThrow({ where: { id: a.incidentId as string } });
+      expect(incident).toMatchObject({
+        tenantId: tenantA,
+        severity: 'critical',
+        findingCount: 2,
+        status: 'open',
+      });
+      expect(incident.keys).toContain(`ip:${shared}`);
+      expect(incident.riskScore).toBe(73);
+    });
+
+    it('achado baixo sozinho fica só como achado', async () => {
+      const low = trailAlertA(10, { sourceIp: ip(), level: 5, identity: identity() });
+      const report = await syncFor(new FakeIndexer([low])).runOnce();
+      expect(report).toMatchObject({ created: 1, incidentsOpened: 0, incidentsJoined: 0 });
+      expect((await findingOf(low)).incidentId).toBeNull();
+    });
+
+    it('achado esperado por exceção não abre incidente', async () => {
+      const address = ip();
+      await prisma.alertException.create({
+        data: {
+          tenantId: tenantA,
+          ruleId: '80254',
+          field: 'ip',
+          value: address,
+          reason: 'Teste de carga autorizado',
+          createdById: creatorA,
+        },
+      });
+      const doc = trailAlertA(8, { sourceIp: address, level: 12 });
+      const report = await syncFor(new FakeIndexer([doc])).runOnce();
+      expect(report).toMatchObject({ excepted: 1, incidentsOpened: 0 });
+      expect((await findingOf(doc)).incidentId).toBeNull();
+    });
+
+    it('recurso da lista de proteção soma 15 na nota', async () => {
+      const bucketName = `relatorios-${randomInt(1e6, 9e6)}`;
+      await prisma.protectedResource.create({
+        data: {
+          tenantId: tenantA,
+          type: 's3_bucket',
+          identifier: bucketName,
+          reason: 'Dados de clientes',
+          createdById: creatorA,
+        },
+      });
+      const doc = trailAlertA(6, {
+        sourceIp: ip(),
+        identity: identity(),
+        level: 10,
+        eventName: 'PutBucketPolicy',
+        requestParameters: { bucketName },
+      });
+      await syncFor(new FakeIndexer([doc])).runOnce();
+      const finding = await findingOf(doc);
+      expect(finding.resource).toBe(`s3:${bucketName}`);
+      const incident = await prisma.incident.findUniqueOrThrow({
+        where: { id: finding.incidentId as string },
+      });
+      expect(incident.riskScore).toBe(65);
+    });
+
+    it('incidente de outro cliente nunca recebe achado, nem com o mesmo IP', async () => {
+      const shared = ip();
+      const docB = cloudTrailAlert({ account: accountB, bucket: trailB, sourceIp: shared, level: 12 });
+      const fromB = {
+        ...docB,
+        id: `b.${randomInt(1e6, 9e6)}`,
+        timestamp: wazuhTime(new Date(Date.now() - 5 * MINUTE)),
+      };
+      const fromA = trailAlertA(4, { sourceIp: shared, level: 12 });
+      await syncFor(new FakeIndexer([fromB, fromA])).runOnce();
+      const [b, a] = [await findingOf(fromB), await findingOf(fromA)];
+      expect(a.incidentId).not.toBeNull();
+      expect(b.incidentId).not.toBeNull();
+      expect(a.incidentId).not.toBe(b.incidentId);
     });
   });
 
