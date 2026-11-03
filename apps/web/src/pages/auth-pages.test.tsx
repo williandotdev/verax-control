@@ -56,6 +56,19 @@ describe('login', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('E-mail ou senha incorretos.');
   });
 
+  it('senha temporária vencida: diz o motivo e o que fazer', async () => {
+    renderAt('/login');
+    server.use(
+      http.post(`${API_URL}/v1/auth/sign-in/email`, () =>
+        HttpResponse.json({ code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'x' }, { status: 401 }),
+      ),
+    );
+    await fillLogin(MOCK_AUTH.email, MOCK_AUTH.password);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Sua senha temporária venceu. Peça outra ao administrador.',
+    );
+  });
+
   it('conta bloqueada mostra a espera, sem confirmar que a conta existe', async () => {
     renderAt('/login');
     server.use(

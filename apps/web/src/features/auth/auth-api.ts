@@ -85,13 +85,17 @@ function newPasswordProblem(error: ApiRequestError): string | undefined {
 
 /**
  * Mensagens de erro da autenticação. Nunca dizem se um e-mail existe: credencial errada, usuário
- * inexistente ou desativado recebem a mesma mensagem.
+ * inexistente ou desativado recebem a mesma mensagem. A senha temporária vencida tem mensagem própria: a API só a
+ * devolve a quem acertou a senha.
  */
 export function authErrorMessage(error: unknown, step: AuthStep): string {
   if (!(error instanceof ApiRequestError))
     return 'Não foi possível falar com o servidor. Verifique a conexão.';
   if (error.status === 429) return 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
   if (error.status >= 500) return 'O servidor não conseguiu concluir agora. Tente de novo em instantes.';
+
+  if (error.code === 'TEMPORARY_PASSWORD_EXPIRED' && (step === 'sign-in' || step === 'code'))
+    return 'Sua senha temporária venceu. Peça outra ao administrador.';
 
   switch (step) {
     case 'sign-in':
@@ -107,6 +111,7 @@ export function authErrorMessage(error: unknown, step: AuthStep): string {
       return newPasswordProblem(error) ?? 'Não foi possível definir a senha. Tente de novo.';
     case 'change-password':
       if (error.code === 'INVALID_PASSWORD') return 'Senha temporária incorreta. Confira e digite de novo.';
+      if (error.code === 'PASSWORD_UNCHANGED') return 'A senha nova precisa ser diferente da temporária.';
       // A sessão da senha temporária acabou (ou o administrador gerou outra): só um login novo resolve.
       if (error.status === 401) return 'Sua sessão terminou. Entre de novo com a senha temporária.';
       return newPasswordProblem(error) ?? 'Não foi possível trocar a senha. Tente de novo.';

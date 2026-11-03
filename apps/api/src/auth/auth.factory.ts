@@ -25,6 +25,7 @@ import {
 } from './auth.constants.js';
 import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
 import { passwordLinkMail } from './password-links.js';
+import { temporaryPasswordExpired } from './temporary-password.js';
 
 export interface AuthDependencies {
   config: AppConfig;
@@ -43,6 +44,14 @@ const ACCOUNT_LOCKED_MESSAGE = 'Muitas tentativas. Tente novamente em alguns min
 /** Mesmo erro do Better Auth para senha errada (o teste de login compara as duas respostas). */
 const INVALID_CREDENTIALS = { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' };
 const INVALID_CODE = { code: 'INVALID_CODE', message: 'Invalid code' };
+// Senha temporária vencida (72 h): o login recusa dizendo o motivo, para a pessoa pedir outra ao administrador. Só
+// chega aqui quem acertou a senha, então o código não ajuda quem não a tem.
+const TEMPORARY_EXPIRED = { code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'Temporary password expired' };
+// Na troca, a senha nova não pode repetir a atual: a troca obrigatória precisa tirar de uso a senha temporária.
+const SAME_AS_CURRENT = {
+  code: 'PASSWORD_UNCHANGED',
+  message: 'New password must differ from the current one',
+};
 
 /**
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
@@ -125,12 +134,25 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
             // Só usuário ativo, de cliente ativo, recebe sessão (convidado sem senha definida ou desativado não).
             const user = await prisma.user.findUnique({
               where: { id: session.userId },
-              select: { status: true, tenant: { select: { status: true } } },
+              select: {
+                status: true,
+                mustChangePassword: true,
+                temporaryPasswordExpiresAt: true,
+                tenant: { select: { status: true } },
+              },
             });
             const allowed = user?.status === 'active' && (!user.tenant || user.tenant.status === 'active');
             if (!allowed) {
               // No login, a mesma resposta da senha errada: não revela que a conta existe nem que a senha bateu.
               if (ctx?.path === SIGN_IN_PATH) throw new APIError('UNAUTHORIZED', INVALID_CREDENTIALS);
+              return false;
+            }
+            // Senha temporária vencida: nenhuma sessão nasce com ela (nem a do desafio do MFA), e o login diz o motivo.
+            if (temporaryPasswordExpired(user)) {
+              const signingIn = [SIGN_IN_PATH, VERIFY_TOTP_PATH, VERIFY_BACKUP_CODE_PATH].includes(
+                ctx?.path ?? '',
+              );
+              if (signingIn) throw new APIError('UNAUTHORIZED', TEMPORARY_EXPIRED);
               return false;
             }
             // Código TOTP vale uma vez (NIST SP 800-63B): um segundo login com o mesmo código é recusado.
@@ -161,6 +183,13 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
       // Bloqueio por conta (T2.3): cada tentativa é reservada antes de a senha ser conferida; e-mail bloqueado
       // nem chega à senha.
       before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === '/change-password') {
+          const body = ctx.body as { currentPassword?: unknown; newPassword?: unknown } | undefined;
+          if (typeof body?.newPassword === 'string' && body.newPassword === body.currentPassword) {
+            throw new APIError('BAD_REQUEST', SAME_AS_CURRENT);
+          }
+          return;
+        }
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
         if (email === undefined || (await reserveLoginAttempt(prisma, email))) return;

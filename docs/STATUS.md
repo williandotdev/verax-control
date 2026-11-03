@@ -1695,3 +1695,15 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - e2e contra a API real: o admin cria a conta na tela, a pessoa entra com a temporária, troca a senha, cadastra o MFA, e a temporária deixa de valer.
 - **Rota `/convite` removida:** nenhum convite chegou a ser enviado em produção.
 - **Correção: painel lateral com a CSP de produção.** O `Dialog.Overlay` do Radix trava a rolagem injetando um `<style>`, que a CSP (`style-src 'self'`) recusa. Era assim em todos os painéis laterais: em produção, a página de trás rolava e o console mostrava a violação. O fundo agora é uma `div` comum, e a trava fica numa regra do `index.css`; o foco preso, o Esc e o `aria-hidden` seguem com o `Dialog.Content`. O e2e confere que não há violação e que a página trava.
+
+  Depois da revisão independente (17 achados, 10 confirmados, todos de gravidade baixa, todos corrigidos):
+  - **Senha nova igual à temporária:** a API recusa (`PASSWORD_UNCHANGED`); antes, só a tela barrava, e a troca obrigatória podia manter a senha temporária como definitiva.
+  - **Login com a senha temporária vencida:** recusado já no login e na verificação do código, com o motivo (`TEMPORARY_PASSWORD_EXPIRED`, que só chega a quem acertou a senha) e "negado" na auditoria. Antes, o login dava 200, entrava como sucesso e a tela dizia "senha incorreta".
+  - **Uma transação só:** a senha temporária, a marca, a queda das sessões e o fim do bloqueio entram juntos, na transação da requisição, com o registro de auditoria no mesmo commit.
+  - **Auditoria:** valores booleanos não são mais ocultados pelo sanitizador (um sim ou não não é segredo). A marca `mustChangePassword` aparece antes e depois.
+  - **Bootstrap:**
+    - se uma execução parar entre criar a conta e gravar a senha, a próxima gera a senha;
+    - saída de emergência `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true` para o admin que esqueceu a senha num nó sem e-mail. Só como root na VM; o MFA continua;
+    - admin desativado: a saída de emergência recusa;
+    - as linhas da senha nunca vão para a tela, mesmo se o bootstrap falhar no meio.
+  - **Fora:** a redefinição pelo link (só com e-mail ligado) não confere se a senha nova repete a temporária. O link chega só ao dono da conta, e a biblioteca não expõe a senha nesse ponto.

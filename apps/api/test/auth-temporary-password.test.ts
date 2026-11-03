@@ -10,7 +10,10 @@ import {
 } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { generateTemporaryPassword } from '../src/auth/temporary-password.js';
+import { AUTH } from '../src/auth/auth.constants.js';
+import type { Auth } from '../src/auth/auth.factory.js';
+import { generateTemporaryPassword, setTemporaryPassword } from '../src/auth/temporary-password.js';
+import { requestContext } from '../src/common/context/request-context.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import {
   authPost,
@@ -140,18 +143,87 @@ describe('senha temporária: criada pelo administrador, troca obrigatória e dep
     await get(full, '/v1/findings').expect(200);
   });
 
-  it('senha temporária vencida: o login não abre sessão que sirva', async () => {
-    const created = await createViaApi();
-    await prisma.user.update({
-      where: { id: created.user.id },
+  const expire = (id: string) =>
+    prisma.user.update({
+      where: { id },
       data: { temporaryPasswordExpiresAt: new Date(Date.now() - 60_000) },
     });
+
+  it('senha temporária vencida: o login recusa com o motivo, sem sessão, e a auditoria registra a negativa', async () => {
+    const created = await createViaApi();
+    await expire(created.user.id);
+
+    const response = await signInRequest(app, created.email, created.temporaryPassword).expect(401);
+    expect(response.body).toMatchObject({ code: 'TEMPORARY_PASSWORD_EXPIRED' });
+    expect(([] as string[]).concat(response.headers['set-cookie'] ?? []).join()).not.toContain(
+      'session_token=',
+    );
+    expect(await prisma.session.count({ where: { userId: created.user.id } })).toBe(0);
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'auth.sign_in', resourceId: created.email },
+      orderBy: { occurredAt: 'desc' },
+    });
+    expect(audit).toMatchObject({ outcome: 'denied', statusCode: 401 });
+
+    // Senha errada continua com a resposta de sempre: o motivo só aparece para quem acertou a senha.
+    const wrong = await signInRequest(app, created.email, 'outra-senha-bem-longa').expect(401);
+    expect(wrong.body).not.toMatchObject({ code: 'TEMPORARY_PASSWORD_EXPIRED' });
+  });
+
+  it('senha temporária vencida com MFA: o login para já na senha, antes do código', async () => {
+    const user = await createSignedInUser(app, { role: 'leitura', tenantId: tenantA });
+    const renewed = temporaryPasswordSchema.parse(
+      (await post(`/v1/users/${user.id}/temporary-password`).expect(200)).body,
+    );
+    await expire(user.id);
+    const response = await signInRequest(app, user.email, renewed.temporaryPassword).expect(401);
+    expect(response.body).toMatchObject({ code: 'TEMPORARY_PASSWORD_EXPIRED' });
+  });
+
+  it('sessão aberta antes do vencimento deixa de valer quando a senha temporária vence', async () => {
+    const created = await createViaApi();
     const cookie = await signIn(app, created.email, created.temporaryPassword);
+    await get(cookie, '/v1/me').expect(200);
+    await expire(created.user.id);
     await get(cookie, '/v1/me').expect(401);
     await authPost(app, '/change-password', cookie, {
       currentPassword: created.temporaryPassword,
       newPassword: NEW_PASSWORD,
     }).expect(401);
+  });
+
+  it('a troca recusa a senha nova igual à temporária, e a troca obrigatória continua', async () => {
+    const created = await createViaApi();
+    const cookie = await signIn(app, created.email, created.temporaryPassword);
+    const response = await authPost(app, '/change-password', cookie, {
+      currentPassword: created.temporaryPassword,
+      newPassword: created.temporaryPassword,
+    }).expect(400);
+    expect(response.body).toMatchObject({ code: 'PASSWORD_UNCHANGED' });
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: created.user.id } })).toMatchObject({
+      mustChangePassword: true,
+    });
+    const blocked = await get(cookie, '/v1/findings').expect(403);
+    expect(blocked.body).toMatchObject({ code: CREDENTIAL_CHANGE_REQUIRED_CODE });
+  });
+
+  it('dentro de uma transação que falha, nada muda: a senha anterior e as sessões continuam', async () => {
+    const user = await createSignedInUser(app, { role: 'leitura', tenantId: tenantA });
+    const auth = app.get<Auth>(AUTH);
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await requestContext.run({ tx }, () => setTemporaryPassword(auth, prisma, user));
+        throw new Error('falha depois de gravar');
+      }),
+    ).rejects.toThrow('falha depois de gravar');
+
+    await get(user.cookie, '/v1/me').expect(200);
+    expect(await prisma.user.findUniqueOrThrow({ where: { id: user.id } })).toMatchObject({
+      mustChangePassword: false,
+      temporaryPasswordExpiresAt: null,
+    });
+    const first = await signInRequest(app, user.email, user.password).expect(200);
+    expect(first.body).toMatchObject({ twoFactorRedirect: true });
   });
 
   it('o administrador gera outra: a anterior para de valer e as sessões abertas caem', async () => {
@@ -170,6 +242,9 @@ describe('senha temporária: criada pelo administrador, troca obrigatória e dep
     const audit = await entryOf(response);
     expect(audit).toMatchObject({ action: 'user.temporary_password', tenantId: tenantA });
     expect(JSON.stringify(audit)).not.toContain(renewed.temporaryPassword);
+    // A marca aparece na auditoria (um sim ou não não é segredo), com a mudança de estado.
+    expect(audit.before).toMatchObject({ mustChangePassword: true });
+    expect(audit.after).toMatchObject({ mustChangePassword: true });
   });
 
   it('quem esqueceu a senha e tem MFA recebe a temporária sem perder o MFA; o bloqueio por tentativas zera', async () => {

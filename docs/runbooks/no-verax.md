@@ -100,6 +100,15 @@ sudo cat /root/verax-senha-temporaria && sudo rm /root/verax-senha-temporaria
 No primeiro login, o painel pede uma senha nova e depois o cadastro do MFA. Se a temporária vencer ou se perder,
 rode o mesmo comando de novo: enquanto você não trocar a senha, ele gera outra e a anterior deixa de valer.
 
+**Esqueceu a senha depois de já ter entrado?** Sem e-mail no nó, não há link de redefinição. Na VM, como root:
+
+```bash
+sudo BOOTSTRAP_ADMIN_EMAIL='SEU_EMAIL' BOOTSTRAP_RENEW_ADMIN_PASSWORD=true /opt/verax/bin/start.sh bootstrap
+```
+
+Sai uma senha temporária nova no mesmo arquivo. A anterior e as sessões abertas deixam de valer, e o MFA continua: no
+login, você usa o código do aplicativo (ou um código de recuperação) e depois troca a senha. A ação fica na auditoria.
+
 As outras contas, você cria no painel, em Usuários: a senha temporária aparece uma única vez, para você repassar à
 pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (Gerar senha temporária).
 

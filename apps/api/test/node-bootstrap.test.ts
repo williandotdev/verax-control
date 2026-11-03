@@ -5,6 +5,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AUTH } from '../src/auth/auth.constants.js';
 import type { Auth } from '../src/auth/auth.factory.js';
+import { provisionUser } from '../src/auth/user-provisioning.js';
 import { bootstrapEnvSchema, bootstrapNode } from '../src/cli/node-bootstrap.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { randomProject } from './gcp/fixtures.js';
@@ -79,6 +80,62 @@ describe('bootstrap do nó: primeiro admin, cliente e contas da GCP', () => {
     expect(third.admin).toBe('exists');
     expect(third.temporaryPassword).toBeUndefined();
     expect(await prisma.user.count({ where: { email } })).toBe(1);
+  });
+
+  it('execução anterior que parou entre criar a conta e gravar a senha: a próxima gera a senha', async () => {
+    const env = input();
+    const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+    // Conta criada, sem senha nenhuma e sem a marca (o que sobra se o processo cair no meio).
+    await provisionUser(auth, {
+      email,
+      name: 'Admin',
+      role: 'admin_verax',
+      tenantId: null,
+      status: 'active',
+    });
+    const result = await bootstrapNode(prisma, auth, env);
+    expect(result.admin).toBe('renewed');
+    await signIn(app, email, result.temporaryPassword?.temporaryPassword ?? '');
+  });
+
+  it('saída de emergência: admin que já trocou a senha recebe outra a pedido, e só a pedido', async () => {
+    const env = input();
+    const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+    const first = await bootstrapNode(prisma, auth, env);
+    const cookie = await signIn(app, email, first.temporaryPassword?.temporaryPassword ?? '');
+    const own = 'uma senha longa e única 4821';
+    await authPost(app, '/change-password', cookie, {
+      currentPassword: first.temporaryPassword?.temporaryPassword ?? '',
+      newPassword: own,
+    }).expect(200);
+    expect((await bootstrapNode(prisma, auth, env)).admin).toBe('exists');
+
+    const reset = await bootstrapNode(prisma, auth, { ...env, BOOTSTRAP_RENEW_ADMIN_PASSWORD: true });
+    expect(reset.admin).toBe('reset');
+    await signInRequest(app, email, own).expect(401);
+    const fresh = await signIn(app, email, reset.temporaryPassword?.temporaryPassword ?? '');
+    const me = (await request(app.getHttpServer()).get('/v1/me').set('Cookie', fresh).expect(200)).body as {
+      mustChangePassword: boolean;
+    };
+    expect(me.mustChangePassword).toBe(true);
+    const user = await prisma.user.findUniqueOrThrow({ where: { email } });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'user.temporary_password', resourceId: user.id },
+      orderBy: { occurredAt: 'desc' },
+    });
+    expect(audit).toMatchObject({ actorType: 'system', outcome: 'success' });
+    expect(audit.after).toMatchObject({ mustChangePassword: true });
+  });
+
+  it('admin desativado: a saída de emergência recusa; sem ela, o bootstrap segue sem mexer no admin', async () => {
+    const env = input();
+    const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+    await bootstrapNode(prisma, auth, env);
+    await prisma.user.update({ where: { email }, data: { status: 'disabled', mustChangePassword: false } });
+    await expect(
+      bootstrapNode(prisma, auth, { ...env, BOOTSTRAP_RENEW_ADMIN_PASSWORD: true }),
+    ).rejects.toThrow('desativado');
+    expect((await bootstrapNode(prisma, auth, env)).admin).toBe('exists');
   });
 
   it('e-mail de usuário de cliente não vira admin da Verax', async () => {

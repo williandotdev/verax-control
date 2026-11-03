@@ -2,6 +2,7 @@ import type { RequestAuth } from '../common/auth/request-auth.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { UserRole } from '../generated/prisma/enums.js';
 import { SESSION_ABSOLUTE_MAX_MS, SESSION_IDLE_TIMEOUT_SECONDS } from './auth.constants.js';
+import { temporaryPasswordExpired } from './temporary-password.js';
 
 const ROLES = new Set<string>(Object.values(UserRole));
 /** Folga para o tempo entre a renovação da sessão e esta checagem. */
@@ -25,15 +26,6 @@ export interface SessionData {
     mustChangePassword?: boolean | null;
     temporaryPasswordExpiresAt?: Date | string | null;
   };
-}
-
-/** Senha temporária vencida: a sessão aberta com ela não vale (o administrador gera outra). */
-function temporaryPasswordExpired(user: SessionData['user'], now: number): boolean {
-  if (user.mustChangePassword !== true) return false;
-  const expiresAt = user.temporaryPasswordExpiresAt
-    ? new Date(user.temporaryPasswordExpiresAt).getTime()
-    : NaN;
-  return !(expiresAt > now);
 }
 
 async function isTenantActive(prisma: PrismaService, id: string): Promise<boolean> {

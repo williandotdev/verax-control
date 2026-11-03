@@ -135,11 +135,13 @@ bootstrap() {
     "BOOTSTRAP_ADMIN_EMAIL=$BOOTSTRAP_ADMIN_EMAIL" \
     "BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-Administrador Verax}" \
     "BOOTSTRAP_TENANT_NAME=${BOOTSTRAP_TENANT_NAME:-}" \
-    "BOOTSTRAP_GCP_ACCOUNTS=${BOOTSTRAP_GCP_ACCOUNTS:-}"
+    "BOOTSTRAP_GCP_ACCOUNTS=${BOOTSTRAP_GCP_ACCOUNTS:-}" \
+    "BOOTSTRAP_RENEW_ADMIN_PASSWORD=${BOOTSTRAP_RENEW_ADMIN_PASSWORD:-false}"
   # A senha temporária do admin sai em duas linhas marcadas da saída: elas vão para um arquivo só de root, e o resto
-  # aparece na tela. Quem instala lê o arquivo pelo SSH e apaga (docs/runbooks/no-verax.md).
-  local output secret_file=/root/verax-senha-temporaria
-  output=$(compose --profile setup run --rm -T bootstrap)
+  # aparece na tela. Quem instala lê o arquivo pelo SSH e apaga (docs/runbooks/no-verax.md). Mesmo se o bootstrap
+  # falhar depois de gerar a senha, as linhas marcadas nunca vão para a tela.
+  local output status=0 secret_file=/root/verax-senha-temporaria
+  output=$(compose --profile setup run --rm -T bootstrap) || status=$?
   rm -f "$run/bootstrap.env"
   grep -v '^VERAX_SENHA_TEMPORARIA' <<<"$output" || true
   if grep -q '^VERAX_SENHA_TEMPORARIA=' <<<"$output"; then
@@ -149,6 +151,7 @@ bootstrap() {
     )
     echo "Senha temporária do administrador gravada em $secret_file (só root). Leia com: sudo cat $secret_file e depois apague com: sudo rm $secret_file"
   fi
+  return "$status"
 }
 
 case ${1:-} in

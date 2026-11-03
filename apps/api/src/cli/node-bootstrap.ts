@@ -18,8 +18,11 @@ import { mailTransport } from '../mail/mail.module.js';
  *   não fica no log nem na tela de quem rodou;
  * - o cliente do nó e as contas da GCP dele, cada uma com a sua assinatura do Pub/Sub.
  *
- * Idempotente: o que já existe fica como está (inclusive um admin que já ativou a conta). Cada criação entra na trilha
- * de auditoria como ação do sistema. Os valores vêm do ambiente da instalação, nunca do repositório.
+ * Idempotente: o que já existe fica como está (inclusive um admin que já definiu a própria senha). Cada criação entra
+ * na trilha de auditoria como ação do sistema. Os valores vêm do ambiente da instalação, nunca do repositório.
+ *
+ * Saída de emergência: com `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true`, o admin que esqueceu a senha recebe uma temporária
+ * nova (o MFA continua). Num nó sem e-mail não há link de redefinição, e só quem é root na VM roda isto.
  */
 
 const gcpAccountsSchema = z
@@ -51,12 +54,17 @@ export const bootstrapEnvSchema = z.object({
   BOOTSTRAP_ADMIN_NAME: z.string().min(1).max(120).default('Administrador Verax'),
   BOOTSTRAP_TENANT_NAME: z.string().min(1).max(120).optional(),
   BOOTSTRAP_GCP_ACCOUNTS: gcpAccountsSchema,
+  BOOTSTRAP_RENEW_ADMIN_PASSWORD: z
+    .enum(['true', 'false'], { error: 'use true ou false' })
+    .default('false')
+    .transform((value) => value === 'true'),
 });
 
 export type BootstrapInput = z.infer<typeof bootstrapEnvSchema>;
 
 export interface BootstrapResult {
-  admin: 'created' | 'renewed' | 'exists';
+  /** `renewed`: ainda não tinha entrado (ou ficou sem senha); `reset`: senha nova a pedido, pela saída de emergência. */
+  admin: 'created' | 'renewed' | 'reset' | 'exists';
   /** Só quando a senha temporária foi gerada nesta execução. */
   temporaryPassword?: { temporaryPassword: string; expiresAt: string };
   tenant: 'created' | 'exists' | 'skipped';
@@ -73,11 +81,18 @@ export async function bootstrapNode(
   const system = { type: 'system' as const };
   const email = input.BOOTSTRAP_ADMIN_EMAIL.trim().toLowerCase();
 
-  // Primeiro admin com senha temporária. Se ainda não entrou (a temporária não foi trocada), gera outra; se já definiu a
-  // própria senha, nada muda.
+  // Primeiro admin com senha temporária. Se ainda não entrou (a temporária não foi trocada) ou ficou sem senha (uma
+  // execução anterior parou entre criar a conta e gravar a senha), gera outra; se já definiu a própria senha, nada
+  // muda, a não ser pela saída de emergência.
   const existing = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, role: true, mustChangePassword: true, status: true },
+    select: {
+      id: true,
+      role: true,
+      mustChangePassword: true,
+      status: true,
+      accounts: { where: { providerId: 'credential', password: { not: null } }, select: { id: true } },
+    },
   });
   let admin: BootstrapResult['admin'];
   let temporaryPassword: BootstrapResult['temporaryPassword'];
@@ -103,7 +118,17 @@ export async function bootstrapNode(
     throw new Error(
       'O e-mail informado já pertence a um usuário de cliente; use outro para o administrador da Verax.',
     );
-  } else if (existing.mustChangePassword || existing.status === 'invited') {
+  } else if (
+    input.BOOTSTRAP_RENEW_ADMIN_PASSWORD ||
+    existing.mustChangePassword ||
+    existing.status === 'invited' ||
+    existing.accounts.length === 0
+  ) {
+    if (existing.status === 'disabled') {
+      throw new Error(
+        'O administrador informado está desativado: reative-o pelo painel com outro administrador.',
+      );
+    }
     temporaryPassword = await setTemporaryPassword(auth, prisma, { id: existing.id, email });
     await audit.write(prisma, {
       actor: system,
@@ -111,9 +136,13 @@ export async function bootstrapNode(
       outcome: 'success',
       resourceType: 'user',
       resourceId: existing.id,
-      after: { mustChangePassword: true },
+      before: { status: existing.status, mustChangePassword: existing.mustChangePassword },
+      after: { status: 'active', mustChangePassword: true },
     });
-    admin = 'renewed';
+    admin =
+      input.BOOTSTRAP_RENEW_ADMIN_PASSWORD && !existing.mustChangePassword && existing.accounts.length > 0
+        ? 'reset'
+        : 'renewed';
   } else {
     admin = 'exists';
   }
@@ -200,7 +229,10 @@ async function main(): Promise<void> {
       created: 'Administrador criado com senha temporária.',
       renewed:
         'Administrador ainda não tinha entrado: senha temporária nova gerada (a anterior deixou de valer).',
-      exists: 'Administrador já definiu a própria senha: nada alterado.',
+      reset:
+        'Senha temporária nova para o administrador, a pedido: a senha anterior e as sessões abertas deixaram de valer; o MFA continua.',
+      exists:
+        'Administrador já definiu a própria senha: nada alterado (para gerar outra, use BOOTSTRAP_RENEW_ADMIN_PASSWORD=true).',
     }[result.admin];
     console.log(adminMessage);
     if (result.temporaryPassword) {
