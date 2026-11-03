@@ -21,6 +21,9 @@ export function mailTransport(config: AppConfig): MailTransport {
         password: config.SMTP_PASSWORD as string,
         from: config.MAIL_FROM,
       });
+    case 'none':
+      // Nó sem e-mail: nenhum link sai (a resposta da rota pública de redefinição é a mesma de sempre).
+      return { send: () => Promise.resolve() };
     case 'dev-mailbox':
       return new DevMailboxTransport(
         config.DEV_MAILBOX_DIR ?? join(findWorkspaceRoot() ?? process.cwd(), '.dev-mailbox'),

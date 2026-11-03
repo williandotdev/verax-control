@@ -120,19 +120,25 @@ export function TextAreaField({
   );
 }
 
-/** Ação destrutiva em dois passos: o primeiro clique pede a confirmação, sem janela do navegador. */
+/**
+ * Ação destrutiva em dois passos: o primeiro clique pede a confirmação, sem janela do navegador. O aviso, quando há,
+ * diz junto dos botões o que a confirmação desfaz.
+ */
 export function ConfirmButton({
   label,
   confirmLabel,
   onConfirm,
   busy = false,
+  warning,
 }: {
   label: string;
   confirmLabel: string;
   onConfirm: () => void;
   busy?: boolean;
+  warning?: ReactNode;
 }) {
   const [asking, setAsking] = useState(false);
+  const warningId = useId();
   if (!asking) {
     return (
       <Button type="button" variant="secondary" onClick={() => setAsking(true)}>
@@ -140,15 +146,35 @@ export function ConfirmButton({
       </Button>
     );
   }
-  return (
-    <span className="flex flex-wrap items-center gap-2" role="group" aria-label="Confirmação">
+  const buttons = (
+    <>
       <Button type="button" variant="danger" disabled={busy} onClick={onConfirm}>
         {confirmLabel}
       </Button>
       <Button type="button" variant="ghost" onClick={() => setAsking(false)}>
         Cancelar
       </Button>
-    </span>
+    </>
+  );
+  if (!warning) {
+    return (
+      <span className="flex flex-wrap items-center gap-2" role="group" aria-label="Confirmação">
+        {buttons}
+      </span>
+    );
+  }
+  return (
+    <div
+      className="space-y-3 rounded-md border border-critical/40 bg-critical/5 p-3"
+      role="group"
+      aria-label="Confirmação"
+      aria-describedby={warningId}
+    >
+      <p id={warningId} className="text-sm">
+        {warning}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">{buttons}</div>
+    </div>
   );
 }
 

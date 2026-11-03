@@ -80,6 +80,28 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
   });
 
+  // A troca da senha temporária só abre para a sessão de primeiro acesso: entra pela senha temporária da demonstração.
+  test('/trocar-senha (primeiro acesso): sem violação de acessibilidade', async ({ page }) => {
+    await page.goto('/login');
+    await page.getByLabel('E-mail').fill('analista@demo.verax.local');
+    await page.getByLabel('Senha', { exact: true }).fill('senha-temporaria-demonstracao');
+    await page.getByRole('button', { name: 'Entrar' }).click();
+    await expect(page).toHaveURL(/\/trocar-senha$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Troque a senha temporária' })).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+  });
+
+  test('senha temporária de uma conta nova: sem violação de acessibilidade', async ({ page }) => {
+    await open(page, '/cadastros/usuarios', 'Usuários');
+    await page.getByRole('button', { name: 'Criar usuário' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Criar usuário' });
+    await sheet.getByLabel('Nome').fill('Bruna Melo');
+    await sheet.getByLabel('E-mail').fill('bruna@exemplo.com.br');
+    await sheet.getByRole('button', { name: 'Criar usuário' }).click();
+    await expect(sheet.getByRole('region', { name: 'Senha temporária de Bruna Melo' })).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+  });
+
   test('teclado: o detalhe abre com Enter, fecha com Esc e o foco volta para o achado', async ({ page }) => {
     await open(page, '/achados?severidade=critical', 'Achados');
     const finding = page.getByRole('button', { name: /Tentativa de desligar a trilha/ });

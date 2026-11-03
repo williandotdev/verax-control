@@ -5,14 +5,12 @@ import { join } from 'node:path';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { InvitationService } from '../src/auth/invitation.service.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { DevMailboxTransport } from '../src/mail/dev-mailbox.transport.js';
-import { invitationMail } from '../src/mail/templates.js';
+import { passwordResetMail } from '../src/mail/templates.js';
 import {
   authPost,
   createSignedInUser,
-  createTenant,
   createUser,
   signIn,
   signInRequest,
@@ -24,12 +22,11 @@ import { MemoryMailTransport } from './support/memory-mail.js';
 
 const NEW_PASSWORD = 'senha-nova-bem-longa-1';
 
-describe('convite e redefinição de senha (T2.6)', () => {
+describe('redefinição de senha pelo link (T2.6)', () => {
   const mailbox = new MemoryMailTransport();
   const capture = new LogCapture();
   let app: NestExpressApplication;
   let prisma: PrismaService;
-  let invitations: InvitationService;
 
   const resetPassword = (token: string, newPassword = NEW_PASSWORD) =>
     request(app.getHttpServer())
@@ -55,77 +52,61 @@ describe('convite e redefinição de senha (T2.6)', () => {
   beforeAll(async () => {
     app = await createApp({ mailbox, capture });
     prisma = app.get(PrismaService);
-    invitations = app.get(InvitationService);
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  describe('convite', () => {
-    it('cria o usuário convidado, sem senha, e manda o link por e-mail', async () => {
-      const tenantId = await createTenant(app);
-      const email = 'convidado-1@cliente.example';
-      const { id } = await invitations.invite({ email, name: 'Ana', role: 'analista_cliente', tenantId });
+  /** Usuário ativo e o token do link que ele recebe ao pedir a redefinição. */
+  async function resetLink(): Promise<{ email: string; password: string; token: string }> {
+    const user = await createUser(app);
+    await requestReset(user.email).expect(200);
+    return { ...user, token: await tokenFor(user.email) };
+  }
 
-      const user = await prisma.user.findUniqueOrThrow({ where: { id }, include: { accounts: true } });
-      expect(user).toMatchObject({ status: 'invited', role: 'analista_cliente', tenantId });
-      expect(user.accounts).toHaveLength(0);
-
-      await tokenFor(email);
-      const [message] = mailbox.to(email);
-      expect(message?.subject).toBe('Convite para o Verax Control');
-      expect(message?.text).toContain(`${TEST_WEB_ORIGIN}/convite#token=`);
-      expect(message?.text).toContain('60 minutos');
-    });
-
-    it('definir a senha pelo link ativa a conta; o login passa a funcionar e pede o cadastro do MFA', async () => {
-      const email = 'convidado-2@cliente.example';
-      const { id } = await invitations.invite({ email, name: 'Bruno', role: 'admin_verax', tenantId: null });
-      await signInRequest(app, email, NEW_PASSWORD).expect(401);
-
-      await resetPassword(await tokenFor(email)).expect(200);
-
-      expect((await prisma.user.findUniqueOrThrow({ where: { id } })).status).toBe('active');
-      const cookie = await signIn(app, email, NEW_PASSWORD);
-      const me = await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookie).expect(200);
-      expect(me.body).toMatchObject({ mfaEnabled: false });
-    });
-
+  describe('link', () => {
     it('o link é de uso único', async () => {
-      const email = 'convidado-3@cliente.example';
-      await invitations.invite({ email, name: 'Carla', role: 'admin_verax', tenantId: null });
-      const token = await tokenFor(email);
-
+      const { token } = await resetLink();
       await resetPassword(token).expect(200);
       await resetPassword(token, 'outra-senha-bem-longa').expect(400);
     });
 
     it('o link expira', async () => {
-      const email = 'convidado-4@cliente.example';
-      await invitations.invite({ email, name: 'Davi', role: 'admin_verax', tenantId: null });
-      const token = await tokenFor(email);
+      const { token } = await resetLink();
       await prisma.verification.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
-
       await resetPassword(token).expect(400);
     });
 
     it('o token fica só com hash no banco', async () => {
-      const email = 'convidado-5@cliente.example';
-      await invitations.invite({ email, name: 'Eva', role: 'admin_verax', tenantId: null });
-      const token = await tokenFor(email);
-
+      const { token } = await resetLink();
       const rows = await prisma.verification.findMany();
       expect(JSON.stringify(rows)).not.toContain(token);
     });
 
     it('senha curta é recusada e o link continua valendo', async () => {
-      const email = 'convidado-6@cliente.example';
-      await invitations.invite({ email, name: 'Fábio', role: 'admin_verax', tenantId: null });
-      const token = await tokenFor(email);
-
+      const { token } = await resetLink();
       await resetPassword(token, 'curta').expect(400);
       await resetPassword(token).expect(200);
+    });
+
+    it('definir a senha pelo link também encerra a senha temporária', async () => {
+      const { email, token } = await resetLink();
+      await prisma.user.update({
+        where: { email },
+        data: { mustChangePassword: true, temporaryPasswordExpiresAt: new Date(Date.now() + 3_600_000) },
+      });
+      await resetPassword(token).expect(200);
+      expect(await prisma.user.findUniqueOrThrow({ where: { email } })).toMatchObject({
+        mustChangePassword: false,
+        temporaryPasswordExpiresAt: null,
+      });
+    });
+
+    it('conta que não está ativa não recebe link', async () => {
+      const invited = await createUser(app, { status: 'invited' });
+      await requestReset(invited.email).expect(200);
+      expect(mailbox.to(invited.email)).toHaveLength(0);
     });
   });
 
@@ -225,29 +206,6 @@ describe('convite e redefinição de senha (T2.6)', () => {
         revokeOtherSessions: true,
       }).expect(400);
     });
-
-    it('pela rota pública, convidado não recebe link novo: o convite expira de fato', async () => {
-      const email = 'convidado-sem-reenvio@cliente.example';
-      await invitations.invite({ email, name: 'Eva', role: 'admin_verax', tenantId: null });
-      await tokenFor(email);
-      const active = await createUser(app);
-
-      await Promise.all([requestReset(email).expect(200), requestReset(active.email).expect(200)]);
-      await tokenFor(active.email);
-      expect(mailbox.to(email)).toHaveLength(1);
-    });
-
-    it('o reenvio pelo administrador serve só a convidados', async () => {
-      const active = await createUser(app);
-      const email = 'convidado-reenvio@cliente.example';
-      await invitations.invite({ email, name: 'Fábio', role: 'admin_verax', tenantId: null });
-      await tokenFor(email);
-
-      await invitations.sendLink(active.email);
-      await invitations.sendLink(email);
-      await vi.waitFor(() => expect(mailbox.to(email)).toHaveLength(2));
-      expect(mailbox.to(active.email)).toHaveLength(0);
-    });
   });
 
   it('nenhum token de link vai para o log', () => {
@@ -281,10 +239,10 @@ describe('caixa de e-mail local de desenvolvimento', () => {
 
 describe('modelos de e-mail', () => {
   it('escapam o nome no HTML', () => {
-    const message = invitationMail({
+    const message = passwordResetMail({
       to: 'a@b.example',
       name: '<script>alert(1)</script>',
-      link: 'https://painel.example/convite#token=x',
+      link: 'https://painel.example/redefinir-senha#token=x',
       validMinutes: 60,
     });
     expect(message.html).not.toContain('<script>');

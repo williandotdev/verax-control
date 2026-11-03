@@ -20,7 +20,7 @@ export const SESSION_ABSOLUTE_MAX_MS = 12 * 60 * 60 * 1000;
 
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
-/** Links de convite e de redefinição de senha: uso único, 60 min. */
+/** Link de redefinição de senha: uso único, 60 min. */
 export const PASSWORD_LINK_TTL_SECONDS = 60 * 60;
 
 /** MFA (T2.2): falhas seguidas de TOTP/código de recuperação antes do bloqueio, e duração do bloqueio. */
@@ -33,6 +33,9 @@ export const BACKUP_CODES_AMOUNT = 10;
 /** Código e mensagem de erro devolvidos quando a sessão ainda não cadastrou o MFA. */
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
 export const MFA_REQUIRED_MESSAGE = 'Cadastre a verificação em duas etapas para continuar';
+
+/** Mensagem devolvida quando a sessão foi aberta com a senha temporária (o código vem de `@verax/shared`). */
+export const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'Troque a senha temporária para continuar';
 
 /** Um código TOTP aceito no login não vale de novo por este tempo (cobre a janela de ±1 passo de 30 s). */
 export const TOTP_REPLAY_WINDOW_SECONDS = 2 * 60;

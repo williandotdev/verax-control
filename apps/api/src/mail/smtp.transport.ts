@@ -15,7 +15,7 @@ export const MAIL_FROM_NAME = 'Verax Control';
 
 /**
  * Opções do SMTP, sempre com TLS e certificado conferido: na porta 465 a conexão já começa cifrada; nas outras, o
- * STARTTLS é obrigatório (sem ele, a senha e o link do convite trafegariam abertos). Nada aqui desliga a verificação
+ * STARTTLS é obrigatório (sem ele, a senha e o link de redefinição trafegariam abertos). Nada aqui desliga a verificação
  * do certificado do servidor.
  */
 export function smtpOptions(settings: SmtpSettings): SMTPTransportOptions {
@@ -27,8 +27,8 @@ export function smtpOptions(settings: SmtpSettings): SMTPTransportOptions {
     requireTLS: !implicitTls,
     auth: { user: settings.user, pass: settings.password },
     tls: { minVersion: 'TLSv1.2', servername: settings.host },
-    // Poucos e-mails (convites e redefinições de senha): uma conexão por envio, com tempo limite curto, para uma
-    // falha do servidor não prender a requisição de quem pediu o convite.
+    // Poucos e-mails (redefinições de senha): uma conexão por envio, com tempo limite curto, para uma
+    // falha do servidor não prender a requisição de quem pediu o link.
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
     socketTimeout: 20_000,

@@ -10,6 +10,10 @@ import { ApiRequestError } from '@/lib/api-client';
 export const RESET_REQUESTED_MESSAGE =
   'Se o e-mail estiver cadastrado, você vai receber um link para redefinir a senha. O link vale por 60 minutos.';
 
+/** Caminho para quem não recebe o e-mail: o administrador gera uma senha temporária na tela de Usuários. */
+export const ASK_ADMIN_MESSAGE =
+  'Se o e-mail não chegar (confira também o spam), peça ao administrador do painel uma senha temporária. No próximo login, você troca a senha.';
+
 export function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
@@ -60,6 +64,7 @@ export function ForgotPasswordPage() {
           </Link>
         </form>
       )}
+      <p className="text-xs text-muted-foreground">{ASK_ADMIN_MESSAGE}</p>
     </AuthShell>
   );
 }

@@ -38,15 +38,6 @@ function render(
   };
 }
 
-export function invitationMail(data: LinkMail): MailMessage {
-  return render(
-    `Convite para o ${PRODUCT_NAME}`,
-    `Você foi convidado para acessar o painel ${PRODUCT_NAME}. Defina sua senha para ativar o acesso; no primeiro login você vai cadastrar a verificação em duas etapas.`,
-    'Definir senha',
-    data,
-  );
-}
-
 export function passwordResetMail(data: LinkMail): MailMessage {
   return render(
     `Redefinição de senha do ${PRODUCT_NAME}`,

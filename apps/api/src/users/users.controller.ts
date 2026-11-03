@@ -13,9 +13,11 @@ import {
 } from '@nestjs/common';
 import {
   type Paginated,
+  type TemporaryPassword,
   type User,
-  type UserInvite,
-  userInviteSchema,
+  type UserCreate,
+  type UserCreated,
+  userCreateSchema,
   type UserListQuery,
   userListQuerySchema,
   type UserUpdate,
@@ -48,8 +50,11 @@ export class UsersController {
 
   @Post()
   @RequirePermission('users:write')
-  invite(@Req() request: Request, @Body({ schema: userInviteSchema }) body: UserInvite): Promise<User> {
-    return this.users.invite(request.auth as RequestAuth, body);
+  create(
+    @Req() request: Request,
+    @Body({ schema: userCreateSchema }) body: UserCreate,
+  ): Promise<UserCreated> {
+    return this.users.create(request.auth as RequestAuth, body);
   }
 
   @Patch(':id')
@@ -69,11 +74,14 @@ export class UsersController {
     return this.users.deactivate(request.auth as RequestAuth, id);
   }
 
-  @Post(':id/invitation')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @Post(':id/temporary-password')
+  @HttpCode(HttpStatus.OK)
   @RequirePermission('users:write')
-  resendInvitation(@Param('id', { schema: userIdSchema }) id: string): Promise<void> {
-    return this.users.resendInvitation(id);
+  temporaryPassword(
+    @Req() request: Request,
+    @Param('id', { schema: userIdSchema }) id: string,
+  ): Promise<TemporaryPassword> {
+    return this.users.temporaryPassword(request.auth as RequestAuth, id);
   }
 
   @Post(':id/mfa-reset')

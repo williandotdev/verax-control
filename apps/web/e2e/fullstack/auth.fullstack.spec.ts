@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
 import {
+  enrollMfa,
   firstLoginWithMfaEnrollment,
   fixtures,
   latestMail,
@@ -86,6 +87,54 @@ test.describe('autenticação contra a API real', () => {
     await expect(page.getByRole('alert')).toHaveText('E-mail ou senha incorretos.');
     await submitLogin(page, email, newPassword);
     await expect(page).toHaveURL(/\/mfa\/cadastro$/);
+  });
+
+  test('senha temporária: o administrador cria a conta; no primeiro login, troca a senha e depois o MFA', async ({
+    page,
+  }) => {
+    const csp = watchCspViolations(page);
+    await firstLoginWithMfaEnrollment(page, fixtures().users.adminB.email);
+
+    // O administrador cria a conta pela tela de Usuários e vê a senha temporária uma única vez.
+    const email = `temporaria-${randomUUID()}@e2e.verax.local`;
+    await page.goto('/cadastros/usuarios');
+    await page.getByRole('button', { name: 'Criar usuário' }).click();
+    const panel = page.getByRole('dialog');
+    // Com o painel aberto, a página de trás não rola (trava pelo CSS do painel, sem estilo inline).
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).overflow)).toBe('hidden');
+    await panel.getByLabel('Nome').fill('Pessoa Nova');
+    await panel.getByLabel('E-mail').fill(email);
+    await panel.getByRole('button', { name: 'Criar usuário' }).click();
+    await expect(panel.getByRole('status')).toContainText('criada');
+    const temporary = (await panel.locator('code').innerText()).trim();
+    const groups = temporary.split('-');
+    expect(groups).toHaveLength(4);
+    for (const group of groups) expect(group).toMatch(/^[A-HJ-NP-Za-km-z2-9]{5}$/);
+    await panel.getByRole('button', { name: 'Concluir' }).click();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).overflow)).not.toBe('hidden');
+    await page.getByRole('button', { name: 'Sair' }).click();
+    await expect(page).toHaveURL(/\/login$/);
+
+    // Com a senha temporária, só a troca de senha abre; o painel volta para ela.
+    await submitLogin(page, email, temporary);
+    await expect(page).toHaveURL(/\/trocar-senha$/);
+    await page.goto('/');
+    await expect(page).toHaveURL(/\/trocar-senha$/);
+
+    const newPassword = `nova-${randomUUID()}`;
+    await page.getByLabel('Senha temporária', { exact: true }).fill(temporary);
+    await page.getByLabel('Nova senha', { exact: true }).fill(newPassword);
+    await page.getByLabel('Confirme a nova senha', { exact: true }).fill(newPassword);
+    await page.getByRole('button', { name: 'Salvar e continuar' }).click();
+
+    // Em seguida, o cadastro do MFA com a senha nova; depois, o painel.
+    await expect(page.getByRole('status')).toContainText('Senha trocada');
+    await enrollMfa(page, newPassword);
+
+    await page.getByRole('button', { name: 'Sair' }).click();
+    await submitLogin(page, email, temporary);
+    await expect(page.getByRole('alert')).toHaveText('E-mail ou senha incorretos.');
+    expect(csp).toEqual([]);
   });
 
   test('papel leitura: página de administração vira "sem permissão" e a API recusa a ação', async ({

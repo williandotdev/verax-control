@@ -2,12 +2,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Copy, Download } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import QRCode from 'react-qr-code';
-import { Navigate, useNavigate } from 'react-router';
+import { Navigate, useLocation, useNavigate } from 'react-router';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { authErrorMessage, enableMfa, totpSecretFromUri, verifyTotp } from '@/features/auth/auth-api';
-import { AuthShell, FormError } from '@/features/auth/auth-shell';
+import { AuthShell, FormError, FormNotice } from '@/features/auth/auth-shell';
 import { useMe } from '@/features/session/session';
 import { ApiRequestError } from '@/lib/api-client';
 
@@ -17,12 +17,15 @@ interface Enrollment {
 }
 
 /**
- * Cadastro obrigatório do MFA no primeiro acesso: senha, QR para o aplicativo autenticador (gerado aqui no
- * navegador; o segredo nunca passa por serviço externo), códigos de recuperação e o primeiro código.
+ * Cadastro obrigatório do MFA no primeiro acesso, depois da troca da senha temporária: senha, QR para o aplicativo
+ * autenticador (gerado aqui no navegador; o segredo nunca passa por serviço externo), códigos de recuperação e o
+ * primeiro código.
  */
 export function MfaEnrollPage() {
   const me = useMe();
   const navigate = useNavigate();
+  const location = useLocation();
+  const notice = (location.state as { notice?: unknown } | null)?.notice;
   const queryClient = useQueryClient();
   const [password, setPassword] = useState('');
   const [enrollment, setEnrollment] = useState<Enrollment>();
@@ -34,6 +37,8 @@ export function MfaEnrollPage() {
   if (me.isPending) return <LoadingState className="m-8" />;
   if (me.error instanceof ApiRequestError && me.error.status === 401) return <Navigate to="/login" replace />;
   if (me.error) return <ErrorState className="m-8" error={me.error} onRetry={() => void me.refetch()} />;
+  // A senha temporária vem antes: a API recusa o cadastro do MFA até ela ser trocada.
+  if (me.data.mustChangePassword) return <Navigate to="/trocar-senha" replace />;
   if (me.data.mfaEnabled) return <Navigate to="/" replace />;
 
   async function start(event: FormEvent) {
@@ -73,6 +78,7 @@ export function MfaEnrollPage() {
         description="O acesso ao painel exige um código do aplicativo autenticador além da senha. Confirme sua senha para começar."
       >
         <form className="space-y-4" onSubmit={(event) => void start(event)} noValidate>
+          <FormNotice message={typeof notice === 'string' ? notice : undefined} />
           <FormError message={error} />
           <Field
             label="Senha"

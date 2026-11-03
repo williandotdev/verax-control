@@ -24,7 +24,7 @@ import {
   SESSION_REFRESH_AFTER_SECONDS,
 } from './auth.constants.js';
 import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
-import { invitationRequest, passwordLinkMail } from './password-links.js';
+import { passwordLinkMail } from './password-links.js';
 
 export interface AuthDependencies {
   config: AppConfig;
@@ -32,7 +32,7 @@ export interface AuthDependencies {
   logger: Pick<PinoLogger, 'warn' | 'error'>;
   /** Onde gravar os eventos de autenticação (a trilha de auditoria, na aplicação). */
   audit: AuthAuditSink;
-  /** Envio dos e-mails de convite e de redefinição de senha (T2.6). */
+  /** Envio do e-mail de redefinição de senha (T2.6). */
   mail: MailTransport;
 }
 
@@ -69,26 +69,24 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
 
     emailAndPassword: {
       enabled: true,
-      // Ninguém se cadastra sozinho: usuário só entra por convite (T2.6).
+      // Ninguém se cadastra sozinho: a conta é criada pelo administrador, com senha temporária.
       disableSignUp: true,
       autoSignIn: false,
       minPasswordLength: PASSWORD_MIN_LENGTH,
       maxPasswordLength: PASSWORD_MAX_LENGTH,
       resetPasswordTokenExpiresIn: PASSWORD_LINK_TTL_SECONDS,
       revokeSessionsOnPasswordReset: true,
-      // Convite e redefinição (T2.6). Usuário desativado, ou convidado pedindo pela rota pública, não recebe
-      // nada, e a resposta da API é a mesma.
+      // Redefinição pelo e-mail (T2.6), onde o nó envia e-mail. Usuário que não está ativo não recebe nada, e a
+      // resposta da API é a mesma.
       sendResetPassword: async ({ user, token }) => {
-        const message = passwordLinkMail(config.WEB_ORIGIN, user, token, {
-          invitation: invitationRequest.getStore() === true,
-        });
+        const message = passwordLinkMail(config.WEB_ORIGIN, user, token);
         if (message) await mail.send(message);
       },
-      // Definir a senha pelo link do convite ativa a conta.
+      // A senha definida pela própria pessoa encerra a senha temporária.
       onPasswordReset: async ({ user }) => {
-        await prisma.user.updateMany({
-          where: { id: user.id, status: 'invited' },
-          data: { status: 'active' },
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { mustChangePassword: false, temporaryPasswordExpiresAt: null },
         });
       },
     },
@@ -110,12 +108,14 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
         role: { type: 'string', required: true, input: false },
         tenantId: { type: 'string', required: false, input: false },
         status: { type: 'string', required: true, input: false, defaultValue: 'invited' },
+        mustChangePassword: { type: 'boolean', required: false, input: false, defaultValue: false },
+        temporaryPasswordExpiresAt: { type: 'date', required: false, input: false },
       },
       changeEmail: { enabled: false },
       deleteUser: { enabled: false },
     },
     account: { accountLinking: { enabled: false } },
-    // Tokens de convite e de redefinição ficam só com hash no banco.
+    // Tokens de redefinição ficam só com hash no banco.
     verification: { storeIdentifier: 'hashed' },
 
     databaseHooks: {
@@ -200,6 +200,11 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
           await prisma.session.deleteMany({
             where: { userId: current.user.id, id: { not: current.session.id } },
           });
+          // A senha temporária acabou: a sessão passa a alcançar o cadastro do MFA e, depois, o painel.
+          await prisma.user.update({
+            where: { id: current.user.id },
+            data: { mustChangePassword: false, temporaryPasswordExpiresAt: null },
+          });
         }
 
         await record({
@@ -218,7 +223,7 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
     },
 
     plugins: [
-      // Senha nova (redefinição, convite e troca) não pode estar em vazamentos conhecidos. Só os 5 primeiros
+      // Senha nova (redefinição e troca) não pode estar em vazamentos conhecidos. Só os 5 primeiros
       // caracteres do SHA-1 vão ao Have I Been Pwned (k-anonimato, com padding). Se o serviço não responder,
       // a troca falha: a senha não é aceita sem a checagem.
       haveIBeenPwned({

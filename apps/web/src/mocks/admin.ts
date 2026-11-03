@@ -18,13 +18,17 @@ import {
   protectedResourceSchema,
   protectedResourceUpdateSchema,
   readOnlyRoleArn,
+  TEMPORARY_PASSWORD_HOURS,
   type Tenant,
   tenantCreateSchema,
   tenantListQuerySchema,
   tenantSchema,
   tenantUpdateSchema,
+  type TemporaryPassword,
+  temporaryPasswordSchema,
   type User,
-  userInviteSchema,
+  userCreatedSchema,
+  userCreateSchema,
   userListQuerySchema,
   userSchema,
   userUpdateSchema,
@@ -82,6 +86,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     status: User['status'],
     mfaEnabled: boolean,
     days: number,
+    mustChangePassword = false,
   ) =>
     userSchema.parse({
       id,
@@ -90,6 +95,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       role,
       status,
       mfaEnabled,
+      mustChangePassword,
       createdAt: at(days),
     });
   const account = (
@@ -183,7 +189,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
           user('demo-ana.souza', 'Ana Souza', 'analista_cliente', 'active', true, 90),
           user('demo-joao.lima', 'João Lima', 'analista_cliente', 'active', true, 60),
           user('demo-diretoria', 'Diretoria', 'leitura', 'active', true, 50),
-          user('demo-carlos.dev', 'Carlos Dev', 'leitura', 'invited', false, 1),
+          // Criado ontem, com a senha temporária: ainda não entrou.
+          user('demo-carlos.dev', 'Carlos Dev', 'leitura', 'active', false, 1, true),
           user('demo-ex.funcionario', 'Ex-funcionário', 'analista_cliente', 'disabled', true, 200),
         ],
       ],
@@ -278,6 +285,20 @@ const problem = (status: number, message: string, code?: string) =>
 let sequence = 0;
 const newId = (): string =>
   `018f2c1e-0000-7000-8000-${(0xa00000 + (sequence += 1)).toString(16).padStart(12, '0')}`;
+
+/** Sem os caracteres que se confundem ao ler ou ditar (0/O, 1/l/I), como a senha temporária da API. */
+const TEMPORARY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/** Senha temporária fictícia, sorteada a cada pedido: quatro grupos de cinco, no formato da API. */
+function demoTemporaryPassword(now: Date = new Date()): TemporaryPassword {
+  const chars = Array.from(crypto.getRandomValues(new Uint8Array(20)), (byte) =>
+    TEMPORARY_ALPHABET.charAt(byte % TEMPORARY_ALPHABET.length),
+  ).join('');
+  return temporaryPasswordSchema.parse({
+    temporaryPassword: chars.replace(/(.{5})(?=.)/g, '$1-'),
+    expiresAt: new Date(now.getTime() + TEMPORARY_PASSWORD_HOURS * 3_600_000).toISOString(),
+  });
+}
 
 const paginate = <T>(items: T[], page: number, pageSize: number) => {
   const start = (page - 1) * pageSize;
@@ -382,22 +403,29 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       );
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
     }),
+    // A conta nasce ativa, com a senha temporária devolvida só nesta resposta (como na API, nenhum e-mail sai).
     http.post(url('/v1/users'), async ({ request }) => {
       const scope = scoped('users:write', request);
       if (!scope.ok) return scope.error;
-      const input = userInviteSchema.safeParse(await body(request));
+      const input = userCreateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
       const users = listOf(store.users, scope.tenantId);
-      if (users.some((user) => user.email === input.data.email)) return problem(409, 'E-mail já cadastrado');
+      const email = input.data.email.trim().toLowerCase();
+      if ([...store.users.values()].flat().some((user) => user.email === email))
+        return problem(409, 'Já existe um usuário com este e-mail');
       const user = userSchema.parse({
-        id: `demo-${input.data.email}`,
+        id: `demo-${email}`,
         ...input.data,
-        status: 'invited',
+        email,
+        status: 'active',
         mfaEnabled: false,
+        mustChangePassword: true,
         createdAt: new Date().toISOString(),
       });
       users.push(user);
-      return HttpResponse.json(user, { status: 201 });
+      return HttpResponse.json(userCreatedSchema.parse({ user, ...demoTemporaryPassword() }), {
+        status: 201,
+      });
     }),
     http.patch(url('/v1/users/:id'), async ({ params, request }) => {
       const scope = scoped('users:write', request);
@@ -410,12 +438,18 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       Object.assign(user, input.data);
       return HttpResponse.json(user);
     }),
-    http.post(url('/v1/users/:id/invitation'), ({ params, request }) => {
+    // Senha temporária nova: a anterior deixa de valer e as sessões caem (no mock, só a marca de primeiro acesso).
+    http.post(url('/v1/users/:id/temporary-password'), ({ params, request }) => {
       const scope = scoped('users:write', request);
       if (!scope.ok) return scope.error;
       const user = listOf(store.users, scope.tenantId).find((candidate) => candidate.id === params['id']);
-      if (!user || user.status !== 'invited') return problem(404, 'Convite não encontrado');
-      return new HttpResponse(null, { status: 204 });
+      if (!user) return problem(404, 'Usuário não encontrado');
+      if (user.id === scope.me.userId) return problem(403, 'Você não pode alterar o próprio acesso');
+      if (user.status === 'disabled')
+        return problem(409, 'Usuário desativado: reative antes de gerar uma senha temporária');
+      user.mustChangePassword = true;
+      user.status = 'active'; // conta do antigo convite, ainda sem senha, passa a ativa
+      return HttpResponse.json(demoTemporaryPassword());
     }),
 
     // --- Contas cloud (T3.3) ---

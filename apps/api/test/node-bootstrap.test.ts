@@ -8,8 +8,8 @@ import type { Auth } from '../src/auth/auth.factory.js';
 import { bootstrapEnvSchema, bootstrapNode } from '../src/cli/node-bootstrap.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { randomProject } from './gcp/fixtures.js';
-import { createTenant } from './support/auth-helpers.js';
-import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
+import { authPost, createTenant, signIn, signInRequest } from './support/auth-helpers.js';
+import { createApp } from './support/create-app.js';
 import { MemoryMailTransport } from './support/memory-mail.js';
 
 describe('bootstrap do nó: primeiro admin, cliente e contas da GCP', () => {
@@ -31,44 +31,53 @@ describe('bootstrap do nó: primeiro admin, cliente e contas da GCP', () => {
     await app.close();
   });
 
-  it('cria o admin_verax sem senha e envia o convite; ele define a senha pelo link', async () => {
+  it('cria o admin_verax com senha temporária, sem e-mail; no primeiro login ele troca a senha', async () => {
     const env = input({ BOOTSTRAP_ADMIN_NAME: 'Pessoa Admin' });
     const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-    expect((await bootstrapNode(prisma, auth, env)).admin).toBe('invited');
+    const result = await bootstrapNode(prisma, auth, env);
+    expect(result.admin).toBe('created');
+    const temporary = result.temporaryPassword?.temporaryPassword ?? '';
+    expect(temporary).toHaveLength(23);
 
     const user = await prisma.user.findUniqueOrThrow({ where: { email } });
     expect(user).toMatchObject({
       role: 'admin_verax',
       tenantId: null,
-      status: 'invited',
+      status: 'active',
       name: 'Pessoa Admin',
+      mustChangePassword: true,
     });
-    expect(await prisma.account.count({ where: { userId: user.id } })).toBe(0);
-    const token = mailbox.lastToken(email);
-    expect(token).toBeDefined();
-    expect(mailbox.to(email).at(-1)?.subject).toMatch(/convite/i);
+    expect(mailbox.to(email)).toHaveLength(0);
 
-    // O link do e-mail é o mesmo do convite pelo painel: define a senha e ativa a conta.
-    await request(app.getHttpServer())
-      .post('/v1/auth/reset-password')
-      .set('Origin', TEST_WEB_ORIGIN)
-      .send({ newPassword: 'uma senha longa e única 4821', token })
-      .expect(200);
-    expect((await prisma.user.findUniqueOrThrow({ where: { email } })).status).toBe('active');
-    const audit = await prisma.auditLog.findFirst({ where: { action: 'user.invite', resourceId: user.id } });
+    // O primeiro login é o mesmo de qualquer conta nova: só a troca de senha, depois o MFA.
+    const cookie = await signIn(app, email, temporary);
+    const me = (await request(app.getHttpServer()).get('/v1/me').set('Cookie', cookie).expect(200)).body as {
+      mustChangePassword: boolean;
+    };
+    expect(me.mustChangePassword).toBe(true);
+    await authPost(app, '/change-password', cookie, {
+      currentPassword: temporary,
+      newPassword: 'uma senha longa e única 4821',
+    }).expect(200);
+
+    const audit = await prisma.auditLog.findFirst({ where: { action: 'user.create', resourceId: user.id } });
     expect(audit).toMatchObject({ actorType: 'system', outcome: 'success', tenantId: null });
+    expect(JSON.stringify(audit)).not.toContain(temporary);
   });
 
-  it('de novo: admin ainda sem senha recebe outro convite; admin ativo fica como está, sem e-mail', async () => {
+  it('de novo: admin que ainda não entrou recebe outra senha; admin que já trocou fica como está', async () => {
     const env = input();
     const email = env.BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-    await bootstrapNode(prisma, auth, env);
-    expect((await bootstrapNode(prisma, auth, env)).admin).toBe('reinvited');
-    expect(mailbox.to(email)).toHaveLength(2);
+    const first = await bootstrapNode(prisma, auth, env);
+    const second = await bootstrapNode(prisma, auth, env);
+    expect(second.admin).toBe('renewed');
+    expect(second.temporaryPassword?.temporaryPassword).not.toBe(first.temporaryPassword?.temporaryPassword);
+    await signInRequest(app, email, first.temporaryPassword?.temporaryPassword ?? '').expect(401);
 
-    await prisma.user.update({ where: { email }, data: { status: 'active' } });
-    expect((await bootstrapNode(prisma, auth, env)).admin).toBe('exists');
-    expect(mailbox.to(email)).toHaveLength(2);
+    await prisma.user.update({ where: { email }, data: { mustChangePassword: false } });
+    const third = await bootstrapNode(prisma, auth, env);
+    expect(third.admin).toBe('exists');
+    expect(third.temporaryPassword).toBeUndefined();
     expect(await prisma.user.count({ where: { email } })).toBe(1);
   });
 

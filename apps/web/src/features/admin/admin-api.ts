@@ -14,7 +14,9 @@ import {
   tenantSchema,
   tenantSummarySchema,
   type TenantUpdate,
-  type UserInvite,
+  temporaryPasswordSchema,
+  type UserCreate,
+  userCreatedSchema,
   userSchema,
   type UserUpdate,
 } from '@verax/shared';
@@ -38,10 +40,15 @@ function useList<T>(key: string, path: string, schema: z.ZodType<T>, page: numbe
   });
 }
 
-function useWrite<TInput, TOutput>(keys: string[], write: (input: TInput) => Promise<TOutput>) {
+function useWrite<TInput, TOutput>(
+  keys: string[],
+  write: (input: TInput) => Promise<TOutput>,
+  options: { gcTime?: number } = {},
+) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: write,
+    ...options,
     onSuccess: () => {
       for (const key of keys) void queryClient.invalidateQueries({ queryKey: [key] });
     },
@@ -71,14 +78,25 @@ export const useUpdateTenant = (id: string) =>
 // --- Usuários do cliente (T3.2) ---
 export const useUserList = (page: number, enabled: boolean) =>
   useList('admin-users', '/v1/users', userSchema, page, enabled);
-export const useInviteUser = () =>
-  useWrite(['admin-users'], (input: UserInvite) => api.post('/v1/users', input, userSchema));
+/**
+ * A senha temporária só vem na resposta que a gera (criar a conta ou gerar outra). Ela fica no estado da mutação, que
+ * é esquecido assim que a tela que a mostra sai (`gcTime: 0`): nada a guarda depois.
+ */
+const FORGET = { gcTime: 0 };
+export const useCreateUser = () =>
+  useWrite(['admin-users'], (input: UserCreate) => api.post('/v1/users', input, userCreatedSchema), FORGET);
 export const useUpdateUser = (id: string) =>
   useWrite(['admin-users'], (input: UserUpdate) =>
     api.patch(`/v1/users/${encodeURIComponent(id)}`, input, userSchema),
   );
-export const useResendInvite = (id: string) =>
-  useWrite(['admin-users'], () => api.post(`/v1/users/${encodeURIComponent(id)}/invitation`));
+/** Senha temporária nova: a anterior deixa de valer e as sessões abertas da pessoa caem. */
+export const useGenerateTemporaryPassword = (id: string) =>
+  useWrite(
+    ['admin-users'],
+    () =>
+      api.post(`/v1/users/${encodeURIComponent(id)}/temporary-password`, undefined, temporaryPasswordSchema),
+    FORGET,
+  );
 
 // --- Contas cloud (T3.3) ---
 export const useCloudAccountList = (page: number, enabled: boolean) =>

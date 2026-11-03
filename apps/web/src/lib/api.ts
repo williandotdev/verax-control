@@ -6,6 +6,7 @@ let hooks: ApiClientHooks = {};
 export const api = new ApiClient(undefined, {
   onUnauthorized: () => hooks.onUnauthorized?.(),
   onMfaRequired: () => hooks.onMfaRequired?.(),
+  onPasswordChangeRequired: () => hooks.onPasswordChangeRequired?.(),
 });
 
 export function bindApiNavigation(next: ApiClientHooks): void {

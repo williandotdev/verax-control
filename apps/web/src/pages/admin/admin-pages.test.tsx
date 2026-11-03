@@ -1,6 +1,7 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { temporaryPasswordSchema } from '@verax/shared';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -68,43 +69,135 @@ describe('Clientes (T7.1)', { timeout: FORM_TIMEOUT }, () => {
   });
 });
 
+/** A senha temporária do mock tem o formato da API: quatro grupos de cinco, sem caracteres ambíguos. */
+const TEMPORARY_PASSWORD =
+  /^[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}$/;
+
 describe('Usuários (T7.2)', { timeout: FORM_TIMEOUT }, () => {
-  it('convida com validação, e o convidado aparece na lista', async () => {
+  it('cria com validação; a senha temporária aparece uma vez, e a lista indica quem ainda está com ela', async () => {
+    // Com `setup`, a área de transferência simulada do user-event recebe a cópia.
+    const user = userEvent.setup();
     renderAt('/cadastros/usuarios');
-    expect(await rowsOf('Usuários do cliente')).toHaveLength(6);
-    await userEvent.click(screen.getByRole('button', { name: 'Convidar usuário' }));
-    const sheet = await screen.findByRole('dialog', { name: 'Convidar usuário' });
-    await userEvent.type(within(sheet).getByLabelText('Nome'), 'Bruna Melo');
-    await userEvent.type(within(sheet).getByLabelText('E-mail'), 'bruna-sem-arroba');
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Enviar convite' }));
+    const before = await rowsOf('Usuários do cliente');
+    expect(before).toHaveLength(6);
+    expect(before.find((row) => row.textContent?.includes('Carlos Dev'))).toHaveTextContent(
+      'Com senha temporária',
+    );
+    expect(before.find((row) => row.textContent?.includes('Ana Souza'))).not.toHaveTextContent(
+      'Com senha temporária',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Criar usuário' }));
+    let sheet = await screen.findByRole('dialog', { name: 'Criar usuário' });
+    await user.type(within(sheet).getByLabelText('Nome'), 'Bruna Melo');
+    await user.type(within(sheet).getByLabelText('E-mail'), 'bruna-sem-arroba');
+    await user.click(within(sheet).getByRole('button', { name: 'Criar usuário' }));
     expect(within(sheet).getByLabelText('E-mail')).toHaveAccessibleDescription('E-mail inválido.');
-    await userEvent.clear(within(sheet).getByLabelText('E-mail'));
-    await userEvent.type(within(sheet).getByLabelText('E-mail'), 'bruna@exemplo.com.br');
-    await userEvent.selectOptions(within(sheet).getByLabelText('Papel'), 'leitura');
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Enviar convite' }));
+    await user.clear(within(sheet).getByLabelText('E-mail'));
+    await user.type(within(sheet).getByLabelText('E-mail'), 'bruna@exemplo.com.br');
+    await user.selectOptions(within(sheet).getByLabelText('Papel'), 'leitura');
+    await user.click(within(sheet).getByRole('button', { name: 'Criar usuário' }));
+
+    const notice = await within(sheet).findByRole('region', { name: 'Senha temporária de Bruna Melo' });
+    expect(within(sheet).getByRole('status')).toHaveTextContent(
+      'Conta de Bruna Melo (bruna@exemplo.com.br) criada.',
+    );
+    // O formulário saiu da tela: o foco vai para a senha.
+    expect(within(notice).getByRole('heading', { name: 'Senha temporária de Bruna Melo' })).toHaveFocus();
+    const password = within(notice).getByText(TEMPORARY_PASSWORD);
+    expect(password.tagName).toBe('CODE');
+    expect(notice).toHaveTextContent('Ela só aparece agora.');
+    expect(notice).toHaveTextContent('canal seguro');
+    expect(notice).toHaveTextContent(/Vale até \d{2}\/\d{2}\/\d{4},? \d{2}:\d{2} \(72 horas\)/);
+    expect(notice).toHaveTextContent(
+      'No primeiro login, a pessoa troca esta senha por uma só dela e cadastra o MFA.',
+    );
+
+    await user.click(within(notice).getByRole('button', { name: 'Copiar' }));
+    expect(await within(notice).findByRole('button', { name: 'Copiada' })).toBeInTheDocument();
+    expect(await navigator.clipboard.readText()).toBe(password.textContent);
+
+    await user.click(within(notice).getByRole('button', { name: 'Concluir' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    const rows = await rowsOf('Usuários do cliente');
-    await waitFor(() => expect(rows.length).toBeGreaterThanOrEqual(6));
-    expect(await screen.findByText('bruna@exemplo.com.br')).toBeInTheDocument();
+    await waitFor(async () =>
+      expect(
+        (await rowsOf('Usuários do cliente')).find((row) =>
+          row.textContent?.includes('bruna@exemplo.com.br'),
+        ),
+      ).toHaveTextContent('Com senha temporária'),
+    );
+
+    // Reabrir o cadastro não traz a senha de volta.
+    await user.click(screen.getByRole('button', { name: 'Criar usuário' }));
+    sheet = await screen.findByRole('dialog', { name: 'Criar usuário' });
+    expect(within(sheet).getByLabelText('Nome')).toHaveValue('');
+    expect(within(sheet).queryByText(password.textContent ?? '')).not.toBeInTheDocument();
   });
 
-  it('troca o papel, desativa o acesso e reenvia o convite pendente', async () => {
+  it('gera senha temporária só depois da confirmação, e a nova aparece uma vez', async () => {
     renderAt('/cadastros/usuarios');
     await userEvent.click(await screen.findByRole('button', { name: /Ana Souza/ }));
-    let sheet = await screen.findByRole('dialog', { name: 'Ana Souza' });
+    const sheet = await screen.findByRole('dialog', { name: 'Ana Souza' });
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Gerar senha temporária' }));
+    const confirmation = within(sheet).getByRole('group', { name: 'Confirmação' });
+    expect(confirmation).toHaveAccessibleDescription(
+      'A senha atual de Ana Souza deixa de valer, e as sessões abertas da conta caem na hora.',
+    );
+    // Desistir não gera nada.
+    await userEvent.click(within(confirmation).getByRole('button', { name: 'Cancelar' }));
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Gerar senha temporária' }));
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Gerar e encerrar as sessões' }));
+
+    const notice = await within(sheet).findByRole('region', { name: 'Senha temporária de Ana Souza' });
+    expect(within(sheet).getByRole('status')).toHaveTextContent(
+      'A anterior deixou de valer, e as sessões abertas foram encerradas.',
+    );
+    const password = within(notice).getByText(TEMPORARY_PASSWORD).textContent ?? '';
+    // Ana já tem MFA: ele continua valendo.
+    expect(notice).toHaveTextContent('O MFA já cadastrado continua valendo.');
+
+    await userEvent.click(within(notice).getByRole('button', { name: 'Concluir' }));
+    expect(
+      await within(sheet).findByText('Ainda com a senha temporária: não entrou nem trocou a senha.'),
+    ).toBeInTheDocument();
+    expect(within(sheet).queryByText(password)).not.toBeInTheDocument();
+  });
+
+  it('troca o papel e desativa o acesso; conta desativada não recebe senha temporária', async () => {
+    renderAt('/cadastros/usuarios');
+    await userEvent.click(await screen.findByRole('button', { name: /Ana Souza/ }));
+    const sheet = await screen.findByRole('dialog', { name: 'Ana Souza' });
     await userEvent.selectOptions(within(sheet).getByLabelText('Papel'), 'leitura');
     await waitFor(() => expect(within(sheet).getByLabelText('Papel')).toHaveValue('leitura'));
     await userEvent.click(within(sheet).getByRole('button', { name: 'Desativar acesso' }));
     expect(await within(sheet).findByRole('button', { name: 'Reativar acesso' })).toBeInTheDocument();
-    await userEvent.keyboard('{Escape}');
+    expect(within(sheet).queryByRole('button', { name: 'Gerar senha temporária' })).not.toBeInTheDocument();
+    expect(within(sheet).getByText(/Conta desativada: reative o acesso/)).toBeInTheDocument();
+  });
 
-    await userEvent.click(await screen.findByRole('button', { name: /Carlos Dev/ }));
-    sheet = await screen.findByRole('dialog', { name: 'Carlos Dev' });
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Reenviar convite' }));
-    expect(await within(sheet).findByRole('status')).toHaveTextContent('Convite reenviado');
-    // Convite para a pessoa errada: cancelar antes do aceite.
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Cancelar convite' }));
-    expect(await within(sheet).findByRole('button', { name: 'Reativar acesso' })).toBeInTheDocument();
+  it('na própria conta, nenhuma ação: nem papel, nem desativar, nem senha temporária', async () => {
+    renderAt('/cadastros/usuarios', { me: demoMe('admin_cliente', { userId: 'demo-marina.alves' }) });
+    await userEvent.click(await screen.findByRole('button', { name: /Marina Alves/ }));
+    const sheet = await screen.findByRole('dialog', { name: 'Marina Alves' });
+    expect(within(sheet).getByText(/Ninguém altera o próprio acesso/)).toBeInTheDocument();
+    expect(within(sheet).queryByRole('button', { name: 'Gerar senha temporária' })).not.toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Papel')).not.toBeInTheDocument();
+  });
+
+  it('o mock recusa como a API: a própria conta (403), conta desativada (409) e sem permissão (403)', async () => {
+    const state: MockState = { me: demoMe('admin_cliente', { userId: 'demo-marina.alves' }) };
+    server.use(...createHandlers(state));
+    const generate = (id: string) =>
+      api.post(`/v1/users/${id}/temporary-password`, undefined, temporaryPasswordSchema);
+
+    await expect(generate('demo-marina.alves')).rejects.toMatchObject({ status: 403 });
+    await expect(generate('demo-ex.funcionario')).rejects.toMatchObject({ status: 409 });
+    await expect(generate('demo-carlos.dev')).resolves.toHaveProperty(
+      'temporaryPassword',
+      expect.stringMatching(TEMPORARY_PASSWORD),
+    );
+    state.me = demoMe('analista_cliente');
+    await expect(generate('demo-carlos.dev')).rejects.toMatchObject({ status: 403 });
   });
 });
 

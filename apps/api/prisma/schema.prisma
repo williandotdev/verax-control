@@ -108,27 +108,31 @@ model Tenant {
 // ---------------------------------------------------------------------------------------------------
 
 model User {
-  id                 String              @id
-  name               String              @db.VarChar(120)
-  email              String              @unique @db.VarChar(254)
-  emailVerified      Boolean             @default(false)
-  image              String?
-  role               UserRole
-  tenantId           String?             @db.Uuid
-  tenant             Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  status             UserStatus          @default(invited)
+  id                         String              @id
+  name                       String              @db.VarChar(120)
+  email                      String              @unique @db.VarChar(254)
+  emailVerified              Boolean             @default(false)
+  image                      String?
+  role                       UserRole
+  tenantId                   String?             @db.Uuid
+  tenant                     Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status                     UserStatus          @default(invited)
   /// MFA (T2.2): sem ele, a sessão só alcança o cadastro do próprio MFA.
-  twoFactorEnabled   Boolean             @default(false)
-  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
-  sessions           Session[]
-  accounts           Account[]
-  twoFactors         TwoFactor[]
-  usedTotpCodes      UsedTotpCode[]
-  protectedResources ProtectedResource[]
-  alertExceptions    AlertException[]
-  findingComments    FindingComment[]
-  assignedIncidents  Incident[]
+  twoFactorEnabled           Boolean             @default(false)
+  /// Senha temporária (criada pelo administrador): a sessão só alcança a troca de senha até a pessoa definir a dela.
+  mustChangePassword         Boolean             @default(false)
+  /// Validade da senha temporária: depois disso, o login com ela não abre sessão.
+  temporaryPasswordExpiresAt DateTime?           @db.Timestamptz(3)
+  createdAt                  DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt                  DateTime            @updatedAt @db.Timestamptz(3)
+  sessions                   Session[]
+  accounts                   Account[]
+  twoFactors                 TwoFactor[]
+  usedTotpCodes              UsedTotpCode[]
+  protectedResources         ProtectedResource[]
+  alertExceptions            AlertException[]
+  findingComments            FindingComment[]
+  assignedIncidents          Incident[]
 
   @@index([tenantId])
 }

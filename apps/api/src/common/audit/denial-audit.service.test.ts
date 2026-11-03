@@ -14,6 +14,7 @@ const auth: RequestAuth = {
   activeTenantId: null,
   scopeTenantId: 't',
   mfaEnabled: true,
+  mustChangePassword: false,
 };
 
 function setup(writeImpl: () => Promise<void> = () => Promise.resolve()) {

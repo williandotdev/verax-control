@@ -92,6 +92,23 @@ describe('ApiClient', () => {
     expect(onMfaRequired).toHaveBeenCalledOnce();
   });
 
+  it('403 PASSWORD_CHANGE_REQUIRED leva à troca da senha temporária, inclusive vindo de rota de autenticação', async () => {
+    const onPasswordChangeRequired = vi.fn();
+    const onMfaRequired = vi.fn();
+    const refused = () => json(403, { code: 'PASSWORD_CHANGE_REQUIRED', message: 'x' });
+    const { client } = setup([refused(), refused()], { onPasswordChangeRequired, onMfaRequired });
+    await expect(client.get('/v1/x')).rejects.toMatchObject({
+      status: 403,
+      code: 'PASSWORD_CHANGE_REQUIRED',
+    });
+    // O cadastro do MFA também espera a troca da senha.
+    await expect(client.post('/v1/auth/two-factor/enable', {})).rejects.toMatchObject({
+      code: 'PASSWORD_CHANGE_REQUIRED',
+    });
+    expect(onPasswordChangeRequired).toHaveBeenCalledTimes(2);
+    expect(onMfaRequired).not.toHaveBeenCalled();
+  });
+
   it('demais erros trazem status, mensagem, código, request id e problemas de validação', async () => {
     const { client } = setup([
       json(400, {

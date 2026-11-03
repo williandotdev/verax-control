@@ -64,7 +64,7 @@ variable "dns_zone_id" {
 }
 
 variable "mail_from" {
-  description = "Remetente dos e-mails de convite e redefinição (identidade verificada no SES)."
+  description = "Remetente dos e-mails de redefinição de senha (identidade verificada no SES)."
   type        = string
 }
 

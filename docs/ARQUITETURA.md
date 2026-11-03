@@ -99,8 +99,9 @@ por mês. Os nós que monitoram contas AWS de clientes continuam com o Wazuh.
 
 O pacote do nó está em `infra/node/`, com o roteiro em `docs/runbooks/no-verax.md`. Ele roda numa VM só, sem porta
 aberta: Postgres com TLS, papéis e migrations, API, worker e o túnel do Cloudflare. As imagens vêm do registro do
-projeto, fixadas pelo digest. Os convites e as redefinições de senha saem pelo Zoho Mail do domínio, por SMTP com TLS
-(decisão de 03/11/2026, no lugar do Resend).
+projeto, fixadas pelo digest. O nó não depende de e-mail: toda conta nasce com uma senha temporária, que a pessoa
+troca no primeiro login antes de cadastrar o MFA (decisão de 03/11/2026). Se o e-mail for ligado (SMTP com TLS), ele
+serve só para a redefinição de senha pelo link.
 
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 

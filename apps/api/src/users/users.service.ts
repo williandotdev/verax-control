@@ -1,6 +1,17 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
-import type { Paginated, User, UserInvite, UserListQuery, UserUpdate } from '@verax/shared';
-import { InvitationService } from '../auth/invitation.service.js';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import type {
+  Paginated,
+  TemporaryPassword,
+  User,
+  UserCreate,
+  UserCreated,
+  UserListQuery,
+  UserUpdate,
+} from '@verax/shared';
+import { AUTH } from '../auth/auth.constants.js';
+import type { Auth } from '../auth/auth.factory.js';
+import { setTemporaryPassword } from '../auth/temporary-password.js';
+import { provisionUser } from '../auth/user-provisioning.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { ApiError } from '../common/http/api-error.js';
@@ -15,6 +26,7 @@ const userSelect = {
   role: true,
   status: true,
   twoFactorEnabled: true,
+  mustChangePassword: true,
   createdAt: true,
 } as const satisfies Prisma.UserSelect;
 
@@ -29,6 +41,7 @@ function toUser(row: UserRow): User {
     role: row.role as User['role'],
     status: row.status,
     mfaEnabled: row.twoFactorEnabled,
+    mustChangePassword: row.mustChangePassword,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -38,14 +51,17 @@ const SELF = 'Você não pode alterar o próprio acesso';
 
 /**
  * Usuários do cliente (T3.2). Tudo pelo escopo da sessão: `admin_cliente` gerencia o próprio cliente, e
- * `admin_verax`, o cliente selecionado. Ninguém altera o próprio papel, status ou MFA.
+ * `admin_verax`, o cliente selecionado. Ninguém altera o próprio papel, status, MFA ou senha por aqui.
+ *
+ * A conta nasce com uma senha temporária, devolvida uma vez a quem criou (nunca gravada em texto nem na auditoria);
+ * no primeiro login, a pessoa troca a senha e cadastra o MFA.
  */
 @Injectable()
 export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
-    private readonly invitations: InvitationService,
+    @Inject(AUTH) private readonly auth: Auth,
   ) {}
 
   async list(query: UserListQuery): Promise<Paginated<User>> {
@@ -67,7 +83,7 @@ export class UsersService {
     return toUser(await this.find(id));
   }
 
-  async invite(auth: RequestAuth, input: UserInvite): Promise<User> {
+  async create(auth: RequestAuth, input: UserCreate): Promise<UserCreated> {
     this.prisma.scoped(); // exige um cliente no escopo e marca a trilha de auditoria dele
     const tenantId = auth.scopeTenantId as string;
     const email = input.email.trim().toLowerCase();
@@ -75,17 +91,24 @@ export class UsersService {
     if (await this.prisma.db().user.findUnique({ where: { email }, select: { id: true } })) {
       throw new ApiError(HttpStatus.CONFLICT, 'Já existe um usuário com este e-mail');
     }
-    const { id } = await this.invitations.invite({ email, name: input.name, role: input.role, tenantId });
+    const { id } = await provisionUser(this.auth, {
+      email,
+      name: input.name,
+      role: input.role,
+      tenantId,
+      status: 'active',
+    });
+    const temporary = await setTemporaryPassword(this.auth, this.prisma, { id, email });
     const user = await this.get(id);
-    this.audit.describe({ action: 'user.invite', resourceType: 'user', resourceId: id, after: user });
-    return user;
+    this.audit.describe({ action: 'user.create', resourceType: 'user', resourceId: id, after: user });
+    return { user, ...temporary };
   }
 
   async update(auth: RequestAuth, id: string, input: UserUpdate): Promise<User> {
     const before = toUser(await this.find(id));
     if (id === auth.userId) throw new ApiError(HttpStatus.FORBIDDEN, SELF);
     if (input.status === 'active' && before.status === 'invited') {
-      throw new ApiError(HttpStatus.CONFLICT, 'Convidado só fica ativo ao definir a senha pelo link');
+      throw new ApiError(HttpStatus.CONFLICT, 'Conta ainda sem senha: gere uma senha temporária');
     }
     const row = await this.prisma.scoped().user.update({
       where: { id },
@@ -115,14 +138,29 @@ export class UsersService {
     });
   }
 
-  /** Reenvia o convite. O link anterior continua valendo até expirar ou ser usado. */
-  async resendInvitation(id: string): Promise<void> {
-    const user = toUser(await this.find(id));
-    if (user.status !== 'invited') {
-      throw new ApiError(HttpStatus.CONFLICT, 'Só usuário convidado recebe o convite de novo');
+  /**
+   * Senha temporária nova (quem esqueceu a senha, ou não entrou a tempo): a anterior deixa de valer, as sessões caem,
+   * e no próximo login a pessoa troca a senha. O MFA já cadastrado continua valendo.
+   */
+  async temporaryPassword(auth: RequestAuth, id: string): Promise<TemporaryPassword> {
+    const before = toUser(await this.find(id));
+    if (id === auth.userId) throw new ApiError(HttpStatus.FORBIDDEN, SELF);
+    if (before.status === 'disabled') {
+      throw new ApiError(
+        HttpStatus.CONFLICT,
+        'Usuário desativado: reative antes de gerar uma senha temporária',
+      );
     }
-    await this.invitations.sendLink(user.email);
-    this.audit.describe({ action: 'user.resend_invitation', resourceType: 'user', resourceId: id });
+    const temporary = await setTemporaryPassword(this.auth, this.prisma, { id, email: before.email });
+    const after = toUser(await this.find(id));
+    this.audit.describe({
+      action: 'user.temporary_password',
+      resourceType: 'user',
+      resourceId: id,
+      before,
+      after,
+    });
+    return temporary;
   }
 
   /**

@@ -9,7 +9,7 @@ export interface NewUser {
   role: UserRole;
   tenantId: string | null;
   status: UserStatus;
-  /** Sem senha, o usuário só entra depois de definir uma pelo link de convite (T2.6). */
+  /** Sem senha, o usuário só entra depois de receber uma senha temporária (`temporary-password.ts`). */
   password?: string;
 }
 
@@ -42,7 +42,7 @@ export async function provisionUser(auth: Auth, input: NewUser): Promise<{ id: s
       providerId: 'credential',
       accountId: user.id,
       // Hasher padrão da biblioteca (scrypt), o mesmo do login. A checagem de senha vazada vale nos caminhos em
-      // que o próprio usuário escolhe a senha (convite, redefinição e troca); aqui só entram o seed e os testes.
+      // que o próprio usuário escolhe a senha (redefinição e troca); aqui só entram o seed e os testes.
       password: await hashPassword(input.password),
     });
   }

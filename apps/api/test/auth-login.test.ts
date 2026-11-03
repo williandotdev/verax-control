@@ -42,8 +42,13 @@ describe('login com Better Auth (T2.1)', () => {
       expect(sessionCookie).toMatch(/;\s*SameSite=Strict/i);
       expect(sessionCookie).toMatch(/;\s*Path=\//i);
       // Sem dados sensíveis no corpo. O Better Auth devolve o token da sessão, mas sozinho ele não abre sessão:
-      // o cookie leva o token assinado com a chave do servidor.
-      expect(JSON.stringify(response.body)).not.toMatch(/password|hash/i);
+      // o cookie leva o token assinado com a chave do servidor. Os nomes dos marcadores da senha temporária saem da
+      // conferência: são só a flag e o prazo, nunca a senha.
+      const body = JSON.stringify(response.body).replace(
+        /"(mustChangePassword|temporaryPasswordExpiresAt)"/g,
+        '',
+      );
+      expect(body).not.toMatch(/password|hash/i);
       const { token } = response.body as { token: string };
       await request(app.getHttpServer())
         .get('/v1/me')

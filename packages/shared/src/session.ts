@@ -15,6 +15,8 @@ export const meSchema = z.strictObject({
   /** Cliente cujos dados a sessão enxerga. */
   scopeTenantId: z.uuid().nullable(),
   mfaEnabled: z.boolean(),
+  /** Entrou com a senha temporária: precisa trocá-la antes de tudo (depois, o MFA). */
+  mustChangePassword: z.boolean(),
   permissions: z.array(z.enum(permissionNames)),
 });
 export type Me = z.infer<typeof meSchema>;

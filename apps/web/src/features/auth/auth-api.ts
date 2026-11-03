@@ -44,6 +44,11 @@ export async function resetPassword(token: string, newPassword: string): Promise
   await api.post('/v1/auth/reset-password', { token, newPassword }, okResponse);
 }
 
+/** Troca a senha da sessão (a temporária, no primeiro acesso). A sessão atual continua; as outras caem. */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await api.post('/v1/auth/change-password', { currentPassword, newPassword }, okResponse);
+}
+
 /** Segredo do TOTP extraído do URI, para quem não consegue ler o QR (digitado no aplicativo). */
 export function totpSecretFromUri(uri: string): string {
   return new URL(uri).searchParams.get('secret') ?? '';
@@ -65,7 +70,18 @@ export function safeRedirect(target: unknown): string {
   return target;
 }
 
-type AuthStep = 'sign-in' | 'code' | 'set-password' | 'enroll';
+type AuthStep = 'sign-in' | 'code' | 'set-password' | 'change-password' | 'enroll';
+
+/** Senha nova recusada pela API (redefinição ou troca): o motivo, quando ela diz qual é. */
+function newPasswordProblem(error: ApiRequestError): string | undefined {
+  if (error.code === 'PASSWORD_COMPROMISED')
+    return 'Esta senha aparece em vazamentos conhecidos. Escolha outra.';
+  if (error.code === 'PASSWORD_TOO_SHORT')
+    return `A senha precisa ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres.`;
+  if (error.code === 'PASSWORD_TOO_LONG')
+    return `A senha pode ter no máximo ${PASSWORD_MAX_LENGTH} caracteres.`;
+  return undefined;
+}
 
 /**
  * Mensagens de erro da autenticação. Nunca dizem se um e-mail existe: credencial errada, usuário
@@ -88,10 +104,11 @@ export function authErrorMessage(error: unknown, step: AuthStep): string {
         : 'Não foi possível iniciar o cadastro.';
     case 'set-password':
       if (error.code === 'INVALID_TOKEN') return 'Este link é inválido ou expirou. Peça um novo.';
-      if (error.code === 'PASSWORD_COMPROMISED')
-        return 'Esta senha aparece em vazamentos conhecidos. Escolha outra.';
-      if (error.code === 'PASSWORD_TOO_SHORT')
-        return `A senha precisa ter pelo menos ${PASSWORD_MIN_LENGTH} caracteres.`;
-      return 'Não foi possível definir a senha. Tente de novo.';
+      return newPasswordProblem(error) ?? 'Não foi possível definir a senha. Tente de novo.';
+    case 'change-password':
+      if (error.code === 'INVALID_PASSWORD') return 'Senha temporária incorreta. Confira e digite de novo.';
+      // A sessão da senha temporária acabou (ou o administrador gerou outra): só um login novo resolve.
+      if (error.status === 401) return 'Sua sessão terminou. Entre de novo com a senha temporária.';
+      return newPasswordProblem(error) ?? 'Não foi possível trocar a senha. Tente de novo.';
   }
 }

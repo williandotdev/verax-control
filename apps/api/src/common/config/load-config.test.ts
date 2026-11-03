@@ -81,9 +81,11 @@ describe('loadConfig', () => {
 
   it('exige SES ou SMTP em produção', () => {
     expect(problemsOf({ ...validProductionEnv, MAIL_TRANSPORT: 'dev-mailbox' })).toContain(
-      'MAIL_TRANSPORT: deve ser ses ou smtp em produção',
+      'MAIL_TRANSPORT: deve ser ses, smtp ou none em produção',
     );
     expect(loadConfig({ ...validProductionEnv, MAIL_TRANSPORT: 'ses' }).MAIL_TRANSPORT).toBe('ses');
+    // Nó sem e-mail: contas nascem com senha temporária, e quem esquece a senha pede outra ao administrador.
+    expect(loadConfig({ ...validProductionEnv, MAIL_TRANSPORT: 'none' }).MAIL_TRANSPORT).toBe('none');
   });
 
   it('não aceita desligar o limite de tentativas em produção', () => {

@@ -22,7 +22,18 @@ export interface SessionData {
     tenantId?: string | null;
     status: string;
     twoFactorEnabled?: boolean | null;
+    mustChangePassword?: boolean | null;
+    temporaryPasswordExpiresAt?: Date | string | null;
   };
+}
+
+/** Senha temporária vencida: a sessão aberta com ela não vale (o administrador gera outra). */
+function temporaryPasswordExpired(user: SessionData['user'], now: number): boolean {
+  if (user.mustChangePassword !== true) return false;
+  const expiresAt = user.temporaryPasswordExpiresAt
+    ? new Date(user.temporaryPasswordExpiresAt).getTime()
+    : NaN;
+  return !(expiresAt > now);
 }
 
 async function isTenantActive(prisma: PrismaService, id: string): Promise<boolean> {
@@ -36,7 +47,8 @@ async function isTenantActive(prisma: PrismaService, id: string): Promise<boolea
  * (`AuthController`).
  * - no máximo 12 h desde o login, mesmo com uso contínuo;
  * - nunca mais de 30 min de validade à frente (a sessão "sem lembrar de mim" do Better Auth teria 24 h);
- * - usuário ativo, com papel conhecido, e cliente dele ativo: desativar um ou outro derruba a sessão.
+ * - usuário ativo, com papel conhecido, e cliente dele ativo: desativar um ou outro derruba a sessão;
+ * - senha temporária dentro da validade (vencida, a sessão não vale).
  *
  * Sessão que fere alguma regra é apagada, e o retorno é `undefined`.
  */
@@ -51,6 +63,7 @@ export async function resolveSession(
     new Date(session.expiresAt).getTime() - now <= SESSION_IDLE_TIMEOUT_SECONDS * 1000 + EXPIRY_SLACK_MS &&
     user.status === 'active' &&
     ROLES.has(user.role) &&
+    !temporaryPasswordExpired(user, now) &&
     (tenantId === null || (await isTenantActive(prisma, tenantId)));
   if (!valid) {
     await prisma.session.deleteMany({ where: { id: session.id } });
@@ -71,5 +84,6 @@ export async function resolveSession(
     // Regra 4: o cliente do escopo vem sempre da sessão, nunca do corpo, da query ou da URL.
     scopeTenantId: role === 'admin_verax' ? activeTenantId : tenantId,
     mfaEnabled: user.twoFactorEnabled === true,
+    mustChangePassword: user.mustChangePassword === true,
   };
 }

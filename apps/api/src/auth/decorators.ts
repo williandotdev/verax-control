@@ -5,6 +5,7 @@ import type { Permission } from '@verax/shared';
 export const IS_PUBLIC_KEY = 'verax:public';
 export const SELF_MANAGED_KEY = 'verax:self-managed';
 export const ALLOW_WITHOUT_MFA_KEY = 'verax:allow-without-mfa';
+export const ALLOW_WITH_TEMPORARY_PASSWORD_KEY = 'verax:allow-with-temporary-password';
 
 /** Rota acessível sem sessão. Toda rota sem este decorator exige login (negação por padrão). */
 export const Public = (): MethodDecorator & ClassDecorator => SetMetadata(IS_PUBLIC_KEY, true);
@@ -15,6 +16,13 @@ export const Public = (): MethodDecorator & ClassDecorator => SetMetadata(IS_PUB
  */
 export const AllowWithoutMfa = (): MethodDecorator & ClassDecorator =>
   SetMetadata(ALLOW_WITHOUT_MFA_KEY, true);
+
+/**
+ * Rota acessível por sessão aberta com a senha temporária (só a identidade e o token CSRF, para o painel conduzir a
+ * troca). Todas as outras exigem a senha definida pela própria pessoa.
+ */
+export const AllowWithTemporaryPassword = (): MethodDecorator & ClassDecorator =>
+  SetMetadata(ALLOW_WITH_TEMPORARY_PASSWORD_KEY, true);
 
 /**
  * Rota que valida a própria entrada e grava a própria auditoria (hoje, só o handler do Better Auth). Fica
