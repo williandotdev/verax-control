@@ -51,7 +51,7 @@ describe('Ativos e identidades', () => {
     expect(within(rows.at(-1) as HTMLElement).getByText('Ok')).toBeInTheDocument();
     const joao = rows.find((row) => row.textContent?.includes('joao.lima')) as HTMLElement;
     expect(within(joao).getByText('console sem MFA')).toBeInTheDocument();
-    expect(within(joao).getByText('Não')).toHaveClass('text-critical');
+    expect(within(joao).getByText('Não')).toHaveClass('text-critical-text');
   });
 
   it('chaves: a antiga em destaque, com o motivo', async () => {
@@ -60,7 +60,7 @@ describe('Ativos e identidades', () => {
     await waitFor(() => expect(router.state.location.search).toBe('?aba=keys'));
     const rows = await rowsOf('Chaves de acesso');
     const key = rows.find((row) => row.textContent?.includes('DEMO3QX7Z2KD9WLB5N8R')) as HTMLElement;
-    expect(within(key).getByText('240 dias')).toHaveClass('text-critical');
+    expect(within(key).getByText('240 dias')).toHaveClass('text-critical-text');
     expect(within(key).getByText('chave com mais de 90 dias')).toBeInTheDocument();
     const never = rows.find((row) => row.textContent?.includes('DEMO1NV6TF8QA4GS0K2P')) as HTMLElement;
     expect(within(never).getByText('nunca')).toBeInTheDocument();
@@ -73,7 +73,7 @@ describe('Ativos e identidades', () => {
     const reports = rows[0] as HTMLElement;
     expect(reports).toHaveTextContent('loja-exemplo-relatorios');
     expect(within(reports).getByText('bucket público')).toBeInTheDocument();
-    expect(within(reports).getByText('Sim')).toHaveClass('text-critical');
+    expect(within(reports).getByText('Sim')).toHaveClass('text-critical-text');
 
     await userEvent.selectOptions(screen.getByLabelText('Mostrar'), 'sim');
     await waitFor(() => expect(router.state.location.search).toBe('?aba=buckets&risco=sim'));

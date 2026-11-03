@@ -52,11 +52,18 @@ test.describe('revisão de UX (modo mock)', () => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'admin_verax'));
   });
 
-  for (const [path, heading] of PAGES) {
-    test(`${path}: sem violação de acessibilidade`, async ({ page }) => {
-      await open(page, path, heading);
-      expect(await violations(page)).toEqual([]);
-    });
+  // Nos dois temas: o contraste do escuro não é o do claro invertido (tokens escolhidos à mão em cada modo).
+  for (const theme of ['light', 'dark'] as const) {
+    for (const [path, heading] of PAGES) {
+      test(`${path} (${theme === 'light' ? 'claro' : 'escuro'}): sem violação de acessibilidade`, async ({
+        page,
+      }) => {
+        await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
+        await open(page, path, heading);
+        await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+        expect(await violations(page)).toEqual([]);
+      });
+    }
   }
 
   // Um teste por painel: cada análise de acessibilidade leva alguns segundos, e juntos passavam do tempo de um teste.

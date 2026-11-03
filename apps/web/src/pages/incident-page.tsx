@@ -213,7 +213,7 @@ function StatusAndAssignee({ incident, canWrite }: { incident: IncidentDetail; c
             </p>
           )}
           {update.error && (
-            <p role="alert" className="text-sm text-critical">
+            <p role="alert" className="text-sm text-critical-text">
               {errorMessage(update.error)}
             </p>
           )}

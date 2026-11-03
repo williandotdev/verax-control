@@ -1722,3 +1722,17 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - com o cofre do túnel ainda sem valor (`NOT_FOUND`), o nó sobe sem o `cloudflared`, com aviso no journal e no fim do `deploy.sh`. Banco, API e coleta rodam, e o primeiro acesso (bootstrap) já pode ser feito. Com o token gravado, `systemctl restart verax-node` liga o túnel;
   - qualquer outro erro na leitura do cofre (permissão, rede, valor inválido) para a partida e mostra o motivo que o gcloud deu (antes, o erro era descartado). Assim, uma falha passageira numa reinicialização não derruba um túnel que funcionava.
 - **Testes:** shellcheck limpo; o comportamento do `set -e` foi conferido no bash (antes: seguia com o valor vazio e saía com 0; agora: sai com 1).
+
+## Identidade visual do site no painel
+
+- **Pedido:** o painel usa a identidade visual do site da Verax e a logo dela.
+- **Marca:** a logo do site (palavra VERAX e símbolo X) virou componente SVG em linha (`currentColor`, nos dois temas). A marca do painel é "VERAX | CONTROL", no padrão do "VERAX | SISTEMAS" do site. Aparece na barra lateral, numa faixa no celular e nas telas de entrada. O favicon é o do site.
+- **Tokens** a partir das cores do site, escolhidos à mão em cada modo:
+  - claro: fundo papel, superfícies brancas, tinta navy e primário `#315add` (texto branco a 5,8:1; o `#426dff` do site daria 4,3:1);
+  - escuro: fundo e superfícies navy, primário `#86a7ff` com texto navy;
+  - a barra lateral fica no navy do site nos dois modos;
+  - fonte Inter (só a pilha, sem baixar fonte);
+  - as cores de severidade não mudaram (validação de daltonismo refeita com as superfícies novas).
+- **Texto em vermelho:** novo token `--critical-text`, para erros de formulário e valores de risco. A cor da severidade fica em ~3,1-3,6:1 sobre as superfícies do escuro (já era assim antes); o token novo passa de 5,5:1. Ícones e marcas seguem com a cor da severidade.
+- **Mapa do MITRE:** as intensidades usam a tinta neutra, porque o azul da marca ficava perto do azul do "baixo".
+- **Testes:** o axe passa a rodar em todas as telas nos dois temas (antes, só no claro: foi assim que o contraste do texto vermelho no escuro passou despercebido). Resultado: 45 e2e da demonstração, 7 contra a API real com a CSP de produção e 212 unitários.

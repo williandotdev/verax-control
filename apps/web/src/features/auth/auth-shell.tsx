@@ -1,7 +1,12 @@
 import type { ReactNode } from 'react';
+import { BrandLockup } from '@/components/brand/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 
-/** Moldura das telas de autenticação: cartão central, nome do produto e tema. */
+/**
+ * Moldura das telas de autenticação: o navy da marca ao fundo (como o topo do site), a logo, o cartão central e o
+ * tema. O cartão segue o tema escolhido; só o que fica sobre o navy (logo e tema) usa a faixa da marca, para os
+ * tokens dela não vazarem para o cartão.
+ */
 export function AuthShell({
   title,
   description,
@@ -12,16 +17,18 @@ export function AuthShell({
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-6">
-      <div className="w-full max-w-sm space-y-6 rounded-xl border bg-surface p-6 shadow-sm">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-8 bg-brand p-6">
+      <BrandLockup size="lg" className="brand-surface" />
+      <div className="w-full max-w-sm space-y-6 rounded-panel border bg-surface p-6 shadow-xl">
         <div className="space-y-1">
-          <p className="text-sm font-semibold text-muted-foreground">Verax Control</p>
           <h1 className="text-2xl font-semibold">{title}</h1>
           {description && <p className="text-sm text-muted-foreground">{description}</p>}
         </div>
         {children}
       </div>
-      <ThemeToggle />
+      <div className="brand-surface">
+        <ThemeToggle />
+      </div>
     </div>
   );
 }

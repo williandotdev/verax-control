@@ -275,7 +275,7 @@ const accountColumn = <T extends { accountId: string }>(): Column<T> => ({
 function YesNo({ value, risky }: { value: boolean | null; risky: boolean | null }) {
   if (value === null) return <span className="text-muted-foreground">não lido</span>;
   return (
-    <span className={cn(value === risky && 'font-semibold text-critical')}>{value ? 'Sim' : 'Não'}</span>
+    <span className={cn(value === risky && 'font-semibold text-critical-text')}>{value ? 'Sim' : 'Não'}</span>
   );
 }
 
@@ -319,7 +319,9 @@ const KEY_COLUMNS: Column<AccessKeyAsset>[] = [
       const age = ageDays(row.createdAt);
       if (age === null) return '—';
       return (
-        <span className={cn(age > 90 && 'font-semibold text-critical')}>{plural(age, 'dia', 'dias')}</span>
+        <span className={cn(age > 90 && 'font-semibold text-critical-text')}>
+          {plural(age, 'dia', 'dias')}
+        </span>
       );
     },
   },
@@ -404,7 +406,7 @@ const GROUP_COLUMNS: Column<SecurityGroupAsset>[] = [
       ) : (
         <span
           className={cn(
-            row.risk === 'critical' || row.risk === 'high' ? 'font-semibold text-critical' : undefined,
+            row.risk === 'critical' || row.risk === 'high' ? 'font-semibold text-critical-text' : undefined,
           )}
         >
           {formatList(row.openToWorld.map(describeRule))}

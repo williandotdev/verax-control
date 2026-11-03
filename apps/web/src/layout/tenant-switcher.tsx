@@ -36,7 +36,7 @@ export function TenantSwitcher({ me }: { me: Me }) {
         ))}
       </select>
       {switchTenant.error && (
-        <p role="alert" className="text-xs text-critical">
+        <p role="alert" className="text-xs text-critical-text">
           {errorMessage(switchTenant.error)}
         </p>
       )}

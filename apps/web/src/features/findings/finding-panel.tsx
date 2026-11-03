@@ -192,7 +192,7 @@ function StatusActions({
         ))}
       </div>
       {update.error && (
-        <p role="alert" className="text-sm text-critical">
+        <p role="alert" className="text-sm text-critical-text">
           {errorMessage(update.error)}
         </p>
       )}
@@ -276,7 +276,7 @@ function ExceptionOffer({ finding, onDone }: { finding: FindingDetail; onDone: (
         />
       </div>
       {create.error && (
-        <p role="alert" className="text-sm text-critical">
+        <p role="alert" className="text-sm text-critical-text">
           {errorMessage(create.error)}
         </p>
       )}
@@ -336,7 +336,7 @@ function Comments({ finding, canComment }: { finding: FindingDetail; canComment:
             maxLength={2000}
           />
           {add.error && (
-            <p role="alert" className="text-sm text-critical">
+            <p role="alert" className="text-sm text-critical-text">
               {errorMessage(add.error)}
             </p>
           )}
