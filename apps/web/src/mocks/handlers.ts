@@ -1,4 +1,4 @@
-import { type Me, type Role, ROLES } from '@verax/shared';
+import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE, type Role, ROLES } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
@@ -22,6 +22,21 @@ export interface MockState {
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
+
+/**
+ * O que a sessão aberta com a senha temporária alcança, como na API: a identidade, o token CSRF, sair e trocar a senha.
+ * Entrar e redefinir a senha pelo link não usam a sessão.
+ */
+const ALLOWED_WITH_TEMPORARY_PASSWORD = new Set([
+  'GET /v1/me',
+  'GET /v1/csrf-token',
+  'POST /v1/auth/sign-out',
+  'GET /v1/auth/get-session',
+  'POST /v1/auth/change-password',
+  'POST /v1/auth/sign-in/email',
+  'POST /v1/auth/request-password-reset',
+  'POST /v1/auth/reset-password',
+]);
 
 function roleFromStorage(): Role {
   const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('verax.mock.role');
@@ -68,6 +83,20 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     };
   };
   return [
+    // Antes de todos: sessão com senha temporária só passa para as rotas da troca (as demais seguem adiante).
+    http.all(url('/v1/*'), ({ request }) => {
+      if (!state.me?.mustChangePassword) return undefined;
+      const path = request.url.slice(API_URL.length).split('?')[0] ?? '';
+      if (ALLOWED_WITH_TEMPORARY_PASSWORD.has(`${request.method} ${path}`)) return undefined;
+      return HttpResponse.json(
+        {
+          statusCode: 403,
+          code: CREDENTIAL_CHANGE_REQUIRED_CODE,
+          message: 'Troque a senha temporária para continuar',
+        },
+        { status: 403 },
+      );
+    }),
     ...createAuthHandlers(state),
     ...createAdminHandlers(state, admin),
     ...createFindingHandlers(state, findings),

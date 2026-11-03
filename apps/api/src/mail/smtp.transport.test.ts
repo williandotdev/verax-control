@@ -49,7 +49,7 @@ describe('SMTP', () => {
     });
   });
 
-  it('falha do servidor chega a quem chamou (o convite não fica como enviado)', async () => {
+  it('falha do servidor chega a quem chamou (o link não fica como enviado)', async () => {
     const sendMail = vi.fn().mockRejectedValue(new Error('535 Authentication Failed'));
     const transport = new SmtpMailTransport(settings, vi.fn().mockReturnValue({ sendMail }) as never);
     await expect(

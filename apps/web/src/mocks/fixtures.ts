@@ -33,6 +33,7 @@ export function demoMe(role: Role, overrides: Partial<Me> = {}): Me {
     activeTenantId: null,
     scopeTenantId: tenantId,
     mfaEnabled: true,
+    mustChangePassword: false,
     permissions: permissionsOf(role),
     ...overrides,
   });

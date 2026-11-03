@@ -36,12 +36,18 @@ export function LoginPage() {
         await navigate('/login/codigo', { replace: true, state: { from: state.from } });
         return;
       }
-      // Sem MFA cadastrado ainda: a sessão só serve para cadastrar o MFA.
+      // Sem MFA cadastrado ainda: a sessão só serve para trocar a senha temporária (primeiro acesso) e, depois,
+      // cadastrar o MFA.
       const me = await queryClient.fetchQuery({
         queryKey: ME_QUERY_KEY,
         queryFn: () => api.get('/v1/me', meSchema),
       });
-      await navigate(me.mfaEnabled ? safeRedirect(state.from) : '/mfa/cadastro', { replace: true });
+      const next = me.mustChangePassword
+        ? '/trocar-senha'
+        : me.mfaEnabled
+          ? safeRedirect(state.from)
+          : '/mfa/cadastro';
+      await navigate(next, { replace: true });
     } catch (caught) {
       setError(authErrorMessage(caught, 'sign-in'));
     } finally {
@@ -50,7 +56,10 @@ export function LoginPage() {
   }
 
   return (
-    <AuthShell title="Entrar" description="Use o e-mail e a senha do seu convite.">
+    <AuthShell
+      title="Entrar"
+      description="No primeiro acesso, use a senha temporária que o administrador enviou para você."
+    >
       <form className="space-y-4" onSubmit={(event) => void onSubmit(event)} noValidate>
         <FormNotice message={typeof state.notice === 'string' ? state.notice : undefined} />
         <FormError message={error} />

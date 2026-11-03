@@ -20,6 +20,8 @@ export interface RequestAuth {
   scopeTenantId: string | null;
   /** MFA cadastrado e confirmado. Sem ele, só as rotas `@AllowWithoutMfa` respondem. */
   mfaEnabled: boolean;
+  /** Entrou com a senha temporária: só as rotas `@AllowWithTemporaryPassword` (e a troca de senha) respondem. */
+  mustChangePassword: boolean;
 }
 
 declare module 'express' {

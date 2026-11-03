@@ -9,6 +9,7 @@ import { TenantsPage } from '@/pages/admin/tenants-page';
 import { UsersPage } from '@/pages/admin/users-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { AuditPage } from '@/pages/audit-page';
+import { ChangePasswordPage } from '@/pages/change-password-page';
 import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { IncidentPage } from '@/pages/incident-page';
@@ -83,10 +84,10 @@ export const routes: RouteObject[] = [
   ...devRoutes,
   { path: '/login', element: <LoginPage /> },
   { path: '/login/codigo', element: <MfaVerifyPage /> },
+  { path: '/trocar-senha', element: <ChangePasswordPage /> },
   { path: '/mfa/cadastro', element: <MfaEnrollPage /> },
   { path: '/esqueci-senha', element: <ForgotPasswordPage /> },
-  { path: '/redefinir-senha', element: <SetPasswordPage mode="reset" /> },
-  { path: '/convite', element: <SetPasswordPage mode="invite" /> },
+  { path: '/redefinir-senha', element: <SetPasswordPage /> },
   { path: '/sem-permissao', element: <ForbiddenPage /> },
   {
     element: <RequireSession />,

@@ -47,7 +47,8 @@ arquitetura (`docs/ARQUITETURA.md`).
 2. Crie a pilha do nó na conta escolhida e na região dos logs (`infra/cloudformation/GUIA-NO.md`), grave o token do
    túnel no parâmetro indicado e passe ao conector as saídas `NodeAccountId` e `NodeRoleName`.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
-4. Cadastre o cliente, a conta e os usuários no painel. O convite chega por e-mail.
+4. Cadastre o cliente, a conta e os usuários no painel. Cada usuário nasce com uma senha temporária, que aparece
+   uma vez: repasse por um canal seguro. No primeiro login, a pessoa troca a senha e cadastra o MFA.
 
 ## Publicar uma versão nova do diagnóstico
 

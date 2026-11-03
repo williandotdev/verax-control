@@ -25,6 +25,10 @@ export function DemoLoginHint({ mode = import.meta.env.MODE }: { mode?: string }
         <span className="font-mono">senha-de-demonstracao</span> e, no código,{' '}
         <span className="font-mono">123456</span>.
       </p>
+      <p className="mt-1">
+        Para ver o primeiro acesso (troca da senha e cadastro do MFA), entre com a senha temporária{' '}
+        <span className="font-mono">senha-temporaria-demonstracao</span>.
+      </p>
     </div>
   );
 }

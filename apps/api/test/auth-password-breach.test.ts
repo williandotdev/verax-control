@@ -3,8 +3,7 @@ import { createHash } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { InvitationService } from '../src/auth/invitation.service.js';
-import { authPost, createSignedInUser, signInRequest } from './support/auth-helpers.js';
+import { authPost, createSignedInUser, createUser, signInRequest } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { MemoryMailTransport } from './support/memory-mail.js';
 
@@ -52,8 +51,14 @@ describe('senha vazada (Have I Been Pwned, k-anonimato)', () => {
     await app.close();
   });
 
-  async function inviteToken(email: string): Promise<string> {
-    await app.get(InvitationService).invite({ email, name: 'Teste', role: 'admin_verax', tenantId: null });
+  /** Token do link de redefinição de um usuário ativo com este e-mail. */
+  async function resetToken(email: string): Promise<string> {
+    await createUser(app, { email });
+    await request(app.getHttpServer())
+      .post('/v1/auth/request-password-reset')
+      .set('Origin', TEST_WEB_ORIGIN)
+      .send({ email })
+      .expect(200);
     let token: string | undefined;
     await vi.waitFor(() => {
       token = mailbox.lastToken(email);
@@ -68,9 +73,9 @@ describe('senha vazada (Have I Been Pwned, k-anonimato)', () => {
       .set('Origin', TEST_WEB_ORIGIN)
       .send({ token, newPassword });
 
-  it('recusa senha vazada ao aceitar convite, e só o prefixo do hash sai da API', async () => {
+  it('recusa senha vazada ao definir pelo link, e só o prefixo do hash sai da API', async () => {
     const calls = mockPwnedPasswords();
-    const token = await inviteToken('vazada-convite@cliente.example');
+    const token = await resetToken('vazada-link@cliente.example');
 
     const response = await reset(token, LEAKED).expect(400);
     expect(JSON.stringify(response.body)).toContain('vazamentos conhecidos');
@@ -99,7 +104,7 @@ describe('senha vazada (Have I Been Pwned, k-anonimato)', () => {
   it('se o serviço não responder, a senha não é aceita (falha fechada)', async () => {
     mockPwnedPasswords('down');
     const email = 'servico-fora@cliente.example';
-    const token = await inviteToken(email);
+    const token = await resetToken(email);
 
     const response = await reset(token, SAFE);
     expect(response.status).toBeGreaterThanOrEqual(500);

@@ -77,6 +77,13 @@ render() {
     "MIGRATOR_DATABASE_URL=$(database_url verax_migrator "$migrator")" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env migrate.env NODE_ENV=production "DATABASE_URL=$(database_url verax_migrator "$migrator")"
+  # E-mail opcional: contas novas nascem com senha temporária. Só com MAIL_TRANSPORT=smtp a senha da caixa de envio
+  # é lida do cofre (e passa a ser obrigatória).
+  local mail=(MAIL_TRANSPORT=none "MAIL_FROM=$MAIL_FROM")
+  if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then
+    mail=(MAIL_TRANSPORT=smtp "MAIL_FROM=$MAIL_FROM" "SMTP_HOST=$SMTP_HOST" "SMTP_PORT=$SMTP_PORT"
+      "SMTP_USER=$SMTP_USER" "SMTP_PASSWORD=$(external_secret smtp-password)")
+  fi
   # TRUST_PROXY_HOPS=1: um proxy confiável na frente da API, o Cloudflare (o cloudflared só repassa).
   write_env api.env \
     NODE_ENV=production LOG_LEVEL=info PORT=3000 \
@@ -84,9 +91,7 @@ render() {
     TRUST_PROXY_HOPS=1 \
     "BETTER_AUTH_SECRET=$(internal_secret better-auth-secret)" \
     "CSRF_SECRET=$(internal_secret csrf-secret)" \
-    MAIL_TRANSPORT=smtp "MAIL_FROM=$MAIL_FROM" \
-    "SMTP_HOST=$SMTP_HOST" "SMTP_PORT=$SMTP_PORT" "SMTP_USER=$SMTP_USER" \
-    "SMTP_PASSWORD=$(external_secret smtp-password)" \
+    "${mail[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
@@ -130,9 +135,23 @@ bootstrap() {
     "BOOTSTRAP_ADMIN_EMAIL=$BOOTSTRAP_ADMIN_EMAIL" \
     "BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-Administrador Verax}" \
     "BOOTSTRAP_TENANT_NAME=${BOOTSTRAP_TENANT_NAME:-}" \
-    "BOOTSTRAP_GCP_ACCOUNTS=${BOOTSTRAP_GCP_ACCOUNTS:-}"
-  compose --profile setup run --rm bootstrap
+    "BOOTSTRAP_GCP_ACCOUNTS=${BOOTSTRAP_GCP_ACCOUNTS:-}" \
+    "BOOTSTRAP_RENEW_ADMIN_PASSWORD=${BOOTSTRAP_RENEW_ADMIN_PASSWORD:-false}"
+  # A senha temporária do admin sai em duas linhas marcadas da saída: elas vão para um arquivo só de root, e o resto
+  # aparece na tela. Quem instala lê o arquivo pelo SSH e apaga (docs/runbooks/no-verax.md). Mesmo se o bootstrap
+  # falhar depois de gerar a senha, as linhas marcadas nunca vão para a tela.
+  local output status=0 secret_file=/root/verax-senha-temporaria
+  output=$(compose --profile setup run --rm -T bootstrap) || status=$?
   rm -f "$run/bootstrap.env"
+  grep -v '^VERAX_SENHA_TEMPORARIA' <<<"$output" || true
+  if grep -q '^VERAX_SENHA_TEMPORARIA=' <<<"$output"; then
+    (
+      umask 077
+      grep '^VERAX_SENHA_TEMPORARIA' <<<"$output" | sed 's/^VERAX_SENHA_TEMPORARIA=/Senha temporária: /; s/^VERAX_SENHA_TEMPORARIA_VALE_ATE=/Vale até (UTC): /' >"$secret_file"
+    )
+    echo "Senha temporária do administrador gravada em $secret_file (só root). Leia com: sudo cat $secret_file e depois apague com: sudo rm $secret_file"
+  fi
+  return "$status"
 }
 
 case ${1:-} in

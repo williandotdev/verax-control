@@ -22,6 +22,7 @@ describe('acesso de demonstração no login', () => {
     expect(hint).toHaveTextContent(MOCK_AUTH.email);
     expect(hint).toHaveTextContent(MOCK_AUTH.password);
     expect(hint).toHaveTextContent(MOCK_AUTH.totp);
+    expect(hint).toHaveTextContent(MOCK_AUTH.temporaryPassword);
   });
 
   it.each(['production', 'development'])('não aparece no modo %s', (mode) => {

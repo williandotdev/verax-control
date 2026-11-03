@@ -5,7 +5,9 @@
  * - por nome de chave, em qualquer profundidade: senha, token, cookie, Authorization, segredos AWS etc.;
  * - por padrão de valor, em qualquer string: `Bearer ...`, ID de chave de acesso AWS e senha embutida em URL.
  *
- * Na dúvida, a chave é ocultada: um campo inofensivo a menos no log é melhor que um segredo vazado.
+ * Na dúvida, a chave é ocultada: um campo inofensivo a menos no log é melhor que um segredo vazado. A exceção são
+ * valores booleanos (`mustChangePassword: true`): um sim ou não não carrega segredo, e a auditoria precisa mostrar a
+ * mudança de estado.
  */
 export const REDACTED = '[REDACTED]';
 
@@ -103,7 +105,8 @@ export function sanitize(value: unknown, depth = 0, seen: WeakSet<object> = new 
 
     const result: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value)) {
-      result[key] = isSensitiveKey(key) ? REDACTED : sanitize(item, depth + 1, seen);
+      result[key] =
+        isSensitiveKey(key) && typeof item !== 'boolean' ? REDACTED : sanitize(item, depth + 1, seen);
     }
     return result;
   } finally {

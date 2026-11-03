@@ -7,6 +7,10 @@ import { Button } from './button';
  * Painel lateral para o detalhe de um item da lista. É um diálogo acessível: o foco fica preso no painel, Esc ou o
  * botão fecham, e o foco volta para quem abriu. O painel abre pela URL (sem gatilho do Radix), então ele mesmo guarda
  * o elemento em foco ao abrir e o devolve ao fechar.
+ *
+ * O fundo escuro é uma `div` comum, e não o `Dialog.Overlay`: a trava de rolagem do overlay injeta um `<style>` na
+ * página, que a CSP de produção (`style-src 'self'`) recusa. A trava fica numa regra do `index.css` (`data-sheet`);
+ * o foco preso, o Esc e o `aria-hidden` no resto da página continuam com o `Dialog.Content`.
  */
 export function Sheet({
   open,
@@ -25,8 +29,9 @@ export function Sheet({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-foreground/30" />
+        <div aria-hidden className="pointer-events-auto fixed inset-0 z-40 bg-foreground/30" />
         <Dialog.Content
+          data-sheet=""
           {...(description ? {} : { 'aria-describedby': undefined })}
           onOpenAutoFocus={() => {
             opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;

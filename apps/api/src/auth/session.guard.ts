@@ -12,9 +12,15 @@ import type { Request, Response } from 'express';
 import { DenialAudit } from '../common/audit/denial-audit.service.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
-import { AUTH, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from './auth.constants.js';
+import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
+import {
+  AUTH,
+  MFA_REQUIRED_CODE,
+  MFA_REQUIRED_MESSAGE,
+  CREDENTIAL_CHANGE_REQUIRED_MESSAGE,
+} from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
-import { ALLOW_WITHOUT_MFA_KEY, IS_PUBLIC_KEY } from './decorators.js';
+import { ALLOW_WITH_TEMPORARY_CREDENTIAL_KEY, ALLOW_WITHOUT_MFA_KEY, IS_PUBLIC_KEY } from './decorators.js';
 import { resolveSession } from './session-validation.js';
 
 /**
@@ -57,6 +63,20 @@ export class SessionGuard implements CanActivate {
     const auth = await resolveSession(this.prisma, data);
     if (!auth) throw new UnauthorizedException();
     request.auth = auth;
+
+    // Senha temporária: antes de tudo, a pessoa define a própria senha (depois vem o MFA).
+    const allowWithTemporaryPassword = this.reflector.getAllAndOverride<boolean | undefined>(
+      ALLOW_WITH_TEMPORARY_CREDENTIAL_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    if (auth.mustChangePassword && !allowWithTemporaryPassword) {
+      await this.denials.record(request, HttpStatus.FORBIDDEN);
+      throw new ApiError(
+        HttpStatus.FORBIDDEN,
+        CREDENTIAL_CHANGE_REQUIRED_MESSAGE,
+        CREDENTIAL_CHANGE_REQUIRED_CODE,
+      );
+    }
 
     // MFA obrigatório (T2.2): sem ele, a sessão só alcança as rotas marcadas para o cadastro do MFA.
     const allowWithoutMfa = this.reflector.getAllAndOverride<boolean | undefined>(ALLOW_WITHOUT_MFA_KEY, [

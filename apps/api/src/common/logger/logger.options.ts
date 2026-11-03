@@ -14,7 +14,7 @@ export const REQUEST_ID_HEADER = 'x-request-id';
 const QUIET_PATHS = new Set(['/health', '/health/ready']);
 
 function pathOnly(url: string | undefined): string | undefined {
-  // A query string fica fora do log: pode carregar token de convite ou de redefinição de senha.
+  // A query string fica fora do log: pode carregar token de redefinição de senha.
   return url?.split('?', 1)[0];
 }
 

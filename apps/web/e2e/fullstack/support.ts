@@ -59,8 +59,13 @@ export async function submitLogin(page: Page, email: string, secret = password()
 /** Primeiro login de um usuário: cadastra o MFA pela tela e devolve o segredo (o "aplicativo" do teste). */
 export async function firstLoginWithMfaEnrollment(page: Page, email: string): Promise<string> {
   await submitLogin(page, email);
+  return enrollMfa(page, password());
+}
+
+/** Cadastro do MFA na tela `/mfa/cadastro`, já aberta: confirma a senha da conta e devolve o segredo do TOTP. */
+export async function enrollMfa(page: Page, accountPassword: string): Promise<string> {
   await expect(page).toHaveURL(/\/mfa\/cadastro$/);
-  await page.getByLabel('Senha').fill(password());
+  await page.getByLabel('Senha').fill(accountPassword);
   await page.getByRole('button', { name: 'Continuar' }).click();
 
   await expect(page.getByRole('img', { name: 'QR code para o aplicativo autenticador' })).toBeVisible();

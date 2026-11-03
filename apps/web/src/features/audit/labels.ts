@@ -19,6 +19,9 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'tenant.create': 'Cadastrou cliente',
   'tenant.update': 'Alterou cliente',
   'tenant.deactivate': 'Desativou cliente',
+  'user.create': 'Criou usuário',
+  'user.temporary_password': 'Gerou senha temporária',
+  // Do convite por e-mail, antes da senha temporária: continuam na trilha antiga.
   'user.invite': 'Convidou usuário',
   'user.resend_invitation': 'Reenviou convite',
   'user.update': 'Alterou usuário',

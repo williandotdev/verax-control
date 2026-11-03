@@ -1,7 +1,7 @@
 import { PRODUCT_NAME } from '@verax/shared';
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { APIError, createAuthMiddleware, isAPIError } from 'better-auth/api';
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from 'better-auth/api';
 import { haveIBeenPwned } from 'better-auth/plugins/haveibeenpwned';
 import { twoFactor } from 'better-auth/plugins/two-factor';
 import type { PinoLogger } from 'nestjs-pino';
@@ -24,7 +24,8 @@ import {
   SESSION_REFRESH_AFTER_SECONDS,
 } from './auth.constants.js';
 import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
-import { invitationRequest, passwordLinkMail } from './password-links.js';
+import { passwordLinkMail } from './password-links.js';
+import { temporaryPasswordExpired } from './temporary-password.js';
 
 export interface AuthDependencies {
   config: AppConfig;
@@ -32,7 +33,7 @@ export interface AuthDependencies {
   logger: Pick<PinoLogger, 'warn' | 'error'>;
   /** Onde gravar os eventos de autenticação (a trilha de auditoria, na aplicação). */
   audit: AuthAuditSink;
-  /** Envio dos e-mails de convite e de redefinição de senha (T2.6). */
+  /** Envio do e-mail de redefinição de senha (T2.6). */
   mail: MailTransport;
 }
 
@@ -43,6 +44,14 @@ const ACCOUNT_LOCKED_MESSAGE = 'Muitas tentativas. Tente novamente em alguns min
 /** Mesmo erro do Better Auth para senha errada (o teste de login compara as duas respostas). */
 const INVALID_CREDENTIALS = { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' };
 const INVALID_CODE = { code: 'INVALID_CODE', message: 'Invalid code' };
+// Senha temporária vencida (72 h): o login recusa dizendo o motivo, para a pessoa pedir outra ao administrador. Só
+// chega aqui quem acertou a senha, então o código não ajuda quem não a tem.
+const TEMPORARY_EXPIRED = { code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'Temporary password expired' };
+// Na troca, a senha nova não pode repetir a atual: a troca obrigatória precisa tirar de uso a senha temporária.
+const SAME_AS_CURRENT = {
+  code: 'PASSWORD_UNCHANGED',
+  message: 'New password must differ from the current one',
+};
 
 /**
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
@@ -69,26 +78,24 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
 
     emailAndPassword: {
       enabled: true,
-      // Ninguém se cadastra sozinho: usuário só entra por convite (T2.6).
+      // Ninguém se cadastra sozinho: a conta é criada pelo administrador, com senha temporária.
       disableSignUp: true,
       autoSignIn: false,
       minPasswordLength: PASSWORD_MIN_LENGTH,
       maxPasswordLength: PASSWORD_MAX_LENGTH,
       resetPasswordTokenExpiresIn: PASSWORD_LINK_TTL_SECONDS,
       revokeSessionsOnPasswordReset: true,
-      // Convite e redefinição (T2.6). Usuário desativado, ou convidado pedindo pela rota pública, não recebe
-      // nada, e a resposta da API é a mesma.
+      // Redefinição pelo e-mail (T2.6), onde o nó envia e-mail. Usuário que não está ativo não recebe nada, e a
+      // resposta da API é a mesma.
       sendResetPassword: async ({ user, token }) => {
-        const message = passwordLinkMail(config.WEB_ORIGIN, user, token, {
-          invitation: invitationRequest.getStore() === true,
-        });
+        const message = passwordLinkMail(config.WEB_ORIGIN, user, token);
         if (message) await mail.send(message);
       },
-      // Definir a senha pelo link do convite ativa a conta.
+      // A senha definida pela própria pessoa encerra a senha temporária.
       onPasswordReset: async ({ user }) => {
-        await prisma.user.updateMany({
-          where: { id: user.id, status: 'invited' },
-          data: { status: 'active' },
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { mustChangePassword: false, temporaryPasswordExpiresAt: null },
         });
       },
     },
@@ -110,12 +117,14 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
         role: { type: 'string', required: true, input: false },
         tenantId: { type: 'string', required: false, input: false },
         status: { type: 'string', required: true, input: false, defaultValue: 'invited' },
+        mustChangePassword: { type: 'boolean', required: false, input: false, defaultValue: false },
+        temporaryPasswordExpiresAt: { type: 'date', required: false, input: false },
       },
       changeEmail: { enabled: false },
       deleteUser: { enabled: false },
     },
     account: { accountLinking: { enabled: false } },
-    // Tokens de convite e de redefinição ficam só com hash no banco.
+    // Tokens de redefinição ficam só com hash no banco.
     verification: { storeIdentifier: 'hashed' },
 
     databaseHooks: {
@@ -125,12 +134,25 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
             // Só usuário ativo, de cliente ativo, recebe sessão (convidado sem senha definida ou desativado não).
             const user = await prisma.user.findUnique({
               where: { id: session.userId },
-              select: { status: true, tenant: { select: { status: true } } },
+              select: {
+                status: true,
+                mustChangePassword: true,
+                temporaryPasswordExpiresAt: true,
+                tenant: { select: { status: true } },
+              },
             });
             const allowed = user?.status === 'active' && (!user.tenant || user.tenant.status === 'active');
             if (!allowed) {
               // No login, a mesma resposta da senha errada: não revela que a conta existe nem que a senha bateu.
               if (ctx?.path === SIGN_IN_PATH) throw new APIError('UNAUTHORIZED', INVALID_CREDENTIALS);
+              return false;
+            }
+            // Senha temporária vencida: nenhuma sessão nasce com ela (nem a do desafio do MFA), e o login diz o motivo.
+            if (temporaryPasswordExpired(user)) {
+              const signingIn = [SIGN_IN_PATH, VERIFY_TOTP_PATH, VERIFY_BACKUP_CODE_PATH].includes(
+                ctx?.path ?? '',
+              );
+              if (signingIn) throw new APIError('UNAUTHORIZED', TEMPORARY_EXPIRED);
               return false;
             }
             // Código TOTP vale uma vez (NIST SP 800-63B): um segundo login com o mesmo código é recusado.
@@ -161,6 +183,31 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
       // Bloqueio por conta (T2.3): cada tentativa é reservada antes de a senha ser conferida; e-mail bloqueado
       // nem chega à senha.
       before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === '/change-password') {
+          // Comparadas como a biblioteca guarda (NFKC): a senha em caracteres de largura total vira o mesmo hash.
+          const body = ctx.body as { currentPassword?: unknown; newPassword?: unknown } | undefined;
+          const same =
+            typeof body?.newPassword === 'string' &&
+            typeof body.currentPassword === 'string' &&
+            body.newPassword.normalize('NFKC') === body.currentPassword.normalize('NFKC');
+          if (!same) return;
+          // Sem sessão, o próprio endpoint responde 401 (e o hook `after` registra).
+          const current = await getSessionFromCtx(ctx);
+          if (!current) return;
+          // O hook `after` não roda quando este lança: a recusa entra na trilha daqui, como o bloqueio do login.
+          await record({
+            actor: {
+              type: 'user',
+              id: current.user.id,
+              tenantId: (current.user as { tenantId?: string | null }).tenantId ?? null,
+            },
+            action: AUTH_AUDIT_ACTIONS['/change-password'] ?? '/change-password',
+            outcome: 'failure',
+            statusCode: 400,
+            ...requestMetadata(ctx.headers),
+          });
+          throw new APIError('BAD_REQUEST', SAME_AS_CURRENT);
+        }
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
         if (email === undefined || (await reserveLoginAttempt(prisma, email))) return;
@@ -200,6 +247,11 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
           await prisma.session.deleteMany({
             where: { userId: current.user.id, id: { not: current.session.id } },
           });
+          // A senha temporária acabou: a sessão passa a alcançar o cadastro do MFA e, depois, o painel.
+          await prisma.user.update({
+            where: { id: current.user.id },
+            data: { mustChangePassword: false, temporaryPasswordExpiresAt: null },
+          });
         }
 
         await record({
@@ -218,7 +270,7 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
     },
 
     plugins: [
-      // Senha nova (redefinição, convite e troca) não pode estar em vazamentos conhecidos. Só os 5 primeiros
+      // Senha nova (redefinição e troca) não pode estar em vazamentos conhecidos. Só os 5 primeiros
       // caracteres do SHA-1 vão ao Have I Been Pwned (k-anonimato, com padding). Se o serviço não responder,
       // a troca falha: a senha não é aceita sem a checagem.
       haveIBeenPwned({

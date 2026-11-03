@@ -22,8 +22,10 @@ import {
   CLIENT_IP_HEADER,
   MFA_REQUIRED_CODE,
   MFA_REQUIRED_MESSAGE,
+  CREDENTIAL_CHANGE_REQUIRED_MESSAGE,
   REQUEST_ID_INTERNAL_HEADER,
 } from './auth.constants.js';
+import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import type { Auth } from './auth.factory.js';
 import { Public, SelfManaged } from './decorators.js';
 import { resolveSession } from './session-validation.js';
@@ -58,6 +60,9 @@ const SESSIONLESS_ROUTES = new Set([
   'POST /reset-password',
   'POST /sign-out',
 ]);
+
+/** Rotas que uma sessão aberta com a senha temporária alcança: a troca de senha (com ou sem MFA). */
+const ROUTES_WITH_TEMPORARY_PASSWORD = new Set(['GET /get-session', 'POST /change-password']);
 
 /** Rotas que uma sessão ainda sem MFA alcança: o próprio cadastro do MFA. */
 const ROUTES_WITHOUT_MFA = new Set([
@@ -134,6 +139,16 @@ export class AuthController {
     if (!data) return;
     const auth = await resolveSession(this.prisma, data);
     if (!auth) throw new UnauthorizedException();
+    if (auth.mustChangePassword) {
+      if (!ROUTES_WITH_TEMPORARY_PASSWORD.has(route)) {
+        throw new ApiError(
+          HttpStatus.FORBIDDEN,
+          CREDENTIAL_CHANGE_REQUIRED_MESSAGE,
+          CREDENTIAL_CHANGE_REQUIRED_CODE,
+        );
+      }
+      return;
+    }
     if (!auth.mfaEnabled && !ROUTES_WITHOUT_MFA.has(route)) {
       throw new ApiError(HttpStatus.FORBIDDEN, MFA_REQUIRED_MESSAGE, MFA_REQUIRED_CODE);
     }

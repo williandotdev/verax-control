@@ -61,8 +61,10 @@ fi
 sed -i 's/\r$//' /etc/verax/node.conf
 # shellcheck source=/dev/null
 source /etc/verax/node.conf
-for key in VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SMTP_HOST SMTP_PORT \
-  SMTP_USER SYNC_SOURCES BACKUP_BUCKET; do
+required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET)
+# E-mail opcional (MAIL_TRANSPORT=none por padrão): com smtp, os dados da caixa de envio passam a ser obrigatórios.
+if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then required+=(SMTP_HOST SMTP_PORT SMTP_USER); fi
+for key in "${required[@]}"; do
   [[ -n ${!key:-} ]] || { echo "Falta $key em /etc/verax/node.conf." >&2; exit 2; }
 done
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml

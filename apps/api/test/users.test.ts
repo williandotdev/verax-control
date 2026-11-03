@@ -1,8 +1,8 @@
 import 'reflect-metadata';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { userSchema } from '@verax/shared';
+import { temporaryPasswordSchema, userCreatedSchema, userSchema } from '@verax/shared';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { createSignedInUser, createTenant, createUser, signIn, withCsrf } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
@@ -104,22 +104,23 @@ describe('usuários do cliente (T3.2)', () => {
     });
   });
 
-  describe('convite', () => {
-    it('convida no cliente da sessão, manda o link e audita na trilha do cliente', async () => {
+  describe('criação', () => {
+    it('cria no cliente da sessão com senha temporária, sem e-mail, e audita na trilha do cliente', async () => {
       const address = email();
       const created = await call(adminA)
         .post('/v1/users', { email: address, name: 'Nova', role: 'analista_cliente' })
         .expect(201);
-      expect(userSchema.parse(created.body)).toMatchObject({
+      expect(userCreatedSchema.parse(created.body).user).toMatchObject({
         email: address,
-        status: 'invited',
+        status: 'active',
         mfaEnabled: false,
+        mustChangePassword: true,
       });
       const stored = await prisma.user.findUniqueOrThrow({ where: { email: address } });
       expect(stored.tenantId).toBe(tenantA);
-      await vi.waitFor(() => expect(mailbox.lastToken(address)).toBeDefined());
+      expect(mailbox.to(address)).toHaveLength(0);
       expect(await entryOf(created)).toMatchObject({
-        action: 'user.invite',
+        action: 'user.create',
         tenantId: tenantA,
         outcome: 'success',
       });
@@ -140,18 +141,11 @@ describe('usuários do cliente (T3.2)', () => {
       await call(adminA).post('/v1/users', { email: existing.email, name: 'X', role: 'leitura' }).expect(409);
     });
 
-    it('reenvio só para convidado', async () => {
-      const address = email();
-      const created = await call(adminA)
-        .post('/v1/users', { email: address, name: 'Reenvio', role: 'leitura' })
-        .expect(201);
-      const id = (created.body as { id: string }).id;
-      await vi.waitFor(() => expect(mailbox.to(address)).toHaveLength(1));
-      await call(adminA).post(`/v1/users/${id}/invitation`).expect(204);
-      await vi.waitFor(() => expect(mailbox.to(address)).toHaveLength(2));
-
+    it('senha temporária nova para quem já existe; a rota antiga do convite não existe mais', async () => {
       const active = await createUser(app, { role: 'leitura', tenantId: tenantA });
-      await call(adminA).post(`/v1/users/${active.id}/invitation`).expect(409);
+      const response = await call(adminA).post(`/v1/users/${active.id}/temporary-password`).expect(200);
+      temporaryPasswordSchema.parse(response.body);
+      await call(adminA).post(`/v1/users/${active.id}/invitation`).expect(404);
     });
   });
 
@@ -170,10 +164,11 @@ describe('usuários do cliente (T3.2)', () => {
       });
     });
 
-    it('ninguém altera o próprio papel, status nem MFA', async () => {
+    it('ninguém altera o próprio papel, status, MFA nem senha por aqui', async () => {
       await call(adminA).patch(`/v1/users/${adminA.userId}`, { role: 'leitura' }).expect(403);
       await call(adminA).delete(`/v1/users/${adminA.userId}`).expect(403);
       await call(adminA).post(`/v1/users/${adminA.userId}/mfa-reset`).expect(403);
+      await call(adminA).post(`/v1/users/${adminA.userId}/temporary-password`).expect(403);
       expect((await prisma.user.findUniqueOrThrow({ where: { id: adminA.userId } })).role).toBe(
         'admin_cliente',
       );

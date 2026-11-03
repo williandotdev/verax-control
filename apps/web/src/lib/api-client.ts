@@ -1,3 +1,4 @@
+import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import type { z } from 'zod';
 import { API_URL } from './env';
 
@@ -37,6 +38,8 @@ export interface ApiClientHooks {
   onUnauthorized?: () => void;
   /** Sessão sem MFA cadastrado: o painel leva ao cadastro do MFA. */
   onMfaRequired?: () => void;
+  /** Sessão aberta com a senha temporária: o painel leva à troca de senha (antes do MFA). */
+  onPasswordChangeRequired?: () => void;
 }
 
 const UNSAFE: ReadonlySet<Method> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -51,7 +54,8 @@ interface ErrorBody {
 /**
  * Cliente HTTP do painel. Sempre com o cookie de sessão (`credentials: 'include'`); em toda escrita, manda o
  * token CSRF da sessão (buscado uma vez e renovado se a API recusar). 401 leva ao login, 403 com
- * `MFA_REQUIRED` leva ao cadastro do MFA, e os demais erros chegam à tela como `ApiRequestError`.
+ * `PASSWORD_CHANGE_REQUIRED` leva à troca da senha temporária, 403 com `MFA_REQUIRED` leva ao cadastro do MFA, e
+ * os demais erros chegam à tela como `ApiRequestError`.
  */
 export class ApiClient {
   private csrfToken: Promise<string> | undefined;
@@ -106,6 +110,9 @@ export class ApiClient {
       const authRoute = path.startsWith('/v1/auth/');
       if (error.status === 401 && !authRoute) this.hooks.onUnauthorized?.();
       if (error.code === 'MFA_REQUIRED' && !authRoute) this.hooks.onMfaRequired?.();
+      // Este código só vem de sessão com senha temporária, inclusive nas rotas de autenticação (o cadastro do MFA
+      // também espera a troca da senha).
+      if (error.code === CREDENTIAL_CHANGE_REQUIRED_CODE) this.hooks.onPasswordChangeRequired?.();
       throw error;
     }
 

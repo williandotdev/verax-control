@@ -5,7 +5,7 @@ import type { MailMessage, MailTransport } from './mail.types.js';
 
 /**
  * Caixa de e-mail local de desenvolvimento: cada mensagem vira um arquivo JSON em `.dev-mailbox/` (fora do
- * git e bloqueado para o agente). Os links de convite e de redefinição são tokens, por isso nunca vão para
+ * git e bloqueado para o agente). Os links de redefinição são tokens, por isso nunca vão para
  * o log; a pasta é o único lugar onde aparecem.
  */
 export class DevMailboxTransport implements MailTransport {

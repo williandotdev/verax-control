@@ -83,6 +83,24 @@ describe('sanitize', () => {
     });
   });
 
+  it('mantém valores booleanos de chaves sensíveis (sim ou não não é segredo) e oculta o resto', () => {
+    expect(
+      sanitize({
+        mustChangePassword: true,
+        passwordEnabled: false,
+        password: 'p4ss',
+        token: 1,
+        secret: null,
+      }),
+    ).toEqual({
+      mustChangePassword: true,
+      passwordEnabled: false,
+      password: REDACTED,
+      token: REDACTED,
+      secret: REDACTED,
+    });
+  });
+
   it('não altera o objeto original', () => {
     const original = { password: 'p4ss' };
     sanitize(original);

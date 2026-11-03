@@ -1,4 +1,11 @@
-import { ROLE_LABELS, TENANT_ROLES, type TenantRole, type User, userInviteSchema } from '@verax/shared';
+import {
+  ROLE_LABELS,
+  TEMPORARY_PASSWORD_HOURS,
+  TENANT_ROLES,
+  type TenantRole,
+  type User,
+  userCreateSchema,
+} from '@verax/shared';
 import { type FormEvent, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
@@ -7,20 +14,24 @@ import { Field } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
 import {
   ADMIN_PAGE_SIZE,
-  useInviteUser,
-  useResendInvite,
+  useCreateUser,
+  useGenerateTemporaryPassword,
   useUpdateUser,
   useUserList,
 } from '@/features/admin/admin-api';
-import { AdminShell, FormError, SelectInput } from '@/features/admin/admin-ui';
+import { AdminShell, ConfirmButton, FormError, SelectInput } from '@/features/admin/admin-ui';
 import { fieldErrors } from '@/features/admin/forms';
 import { USER_STATUS_LABELS } from '@/features/admin/labels';
+import { TemporaryPasswordNotice } from '@/features/admin/temporary-password';
 import { useMe } from '@/features/session/session';
 
-const NEW = 'convite';
+const NEW = 'novo';
 const ROLE_OPTIONS = TENANT_ROLES.map((role) => ({ value: role, label: ROLE_LABELS[role] }));
 
-/** Usuários do cliente (T7.2): listar, convidar, alterar papel e desativar. */
+/** Ainda com a senha temporária: não entrou nem trocou. Conta desativada não entra, então não conta. */
+const awaitingFirstAccess = (user: User) => user.mustChangePassword && user.status !== 'disabled';
+
+/** Usuários do cliente (T7.2): listar, criar com senha temporária, alterar papel, desativar e gerar senha nova. */
 export function UsersPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
@@ -50,7 +61,18 @@ export function UsersPage() {
       ),
     },
     { key: 'papel', header: 'Papel', cell: (row) => ROLE_LABELS[row.role] },
-    { key: 'status', header: 'Status', cell: (row) => USER_STATUS_LABELS[row.status] },
+    {
+      key: 'status',
+      header: 'Status',
+      cell: (row) => (
+        <>
+          {USER_STATUS_LABELS[row.status]}
+          {awaitingFirstAccess(row) && (
+            <span className="block text-xs text-muted-foreground">Com senha temporária</span>
+          )}
+        </>
+      ),
+    },
     {
       key: 'mfa',
       header: 'MFA',
@@ -62,8 +84,8 @@ export function UsersPage() {
   return (
     <AdminShell
       title="Usuários"
-      description="Quem acessa o painel deste cliente. Todo usuário entra por convite e cadastra o MFA no primeiro acesso."
-      action={canWrite && <Button onClick={() => setOpen(NEW)}>Convidar usuário</Button>}
+      description="Quem acessa o painel deste cliente. Toda conta nasce com uma senha temporária: no primeiro acesso, a pessoa troca a senha e cadastra o MFA."
+      action={canWrite && <Button onClick={() => setOpen(NEW)}>Criar usuário</Button>}
     >
       <DataTable
         caption="Usuários do cliente"
@@ -84,11 +106,11 @@ export function UsersPage() {
         onOpenChange={(value) => {
           if (!value) setOpen(null);
         }}
-        title={open === NEW ? 'Convidar usuário' : (selected?.name ?? 'Usuário')}
+        title={open === NEW ? 'Criar usuário' : (selected?.name ?? 'Usuário')}
         description={selected?.email}
       >
         {open === NEW ? (
-          <InviteForm onDone={() => setOpen(null)} />
+          <CreateUserForm onDone={() => setOpen(null)} />
         ) : (
           selected && (
             <UserAccess
@@ -104,20 +126,34 @@ export function UsersPage() {
   );
 }
 
-function InviteForm({ onDone }: { onDone: () => void }) {
+function CreateUserForm({ onDone }: { onDone: () => void }) {
   const [values, setValues] = useState({ name: '', email: '', role: 'analista_cliente' as TenantRole });
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const invite = useInviteUser();
+  const create = useCreateUser();
+
+  // A senha temporária aparece uma vez, no lugar do formulário; ao concluir (ou fechar o painel), ela some.
+  if (create.data) {
+    const { user } = create.data;
+    return (
+      <TemporaryPasswordNotice
+        title={`Senha temporária de ${user.name}`}
+        summary={`Conta de ${user.name} (${user.email}) criada.`}
+        password={create.data}
+        hasMfa={false}
+        onDone={onDone}
+      />
+    );
+  }
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const input = userInviteSchema.safeParse(values);
+    const input = userCreateSchema.safeParse(values);
     if (!input.success) {
       setErrors(fieldErrors(input.error));
       return;
     }
     setErrors({});
-    invite.mutate(input.data, { onSuccess: onDone });
+    create.mutate(input.data);
   };
 
   return (
@@ -143,11 +179,12 @@ function InviteForm({ onDone }: { onDone: () => void }) {
         error={errors['role']}
       />
       <p className="text-xs text-muted-foreground">
-        O convite chega por e-mail, com um link de uso único que vale 60 minutos.
+        A conta nasce com uma senha temporária, que aparece uma única vez depois de criar e vale por{' '}
+        {TEMPORARY_PASSWORD_HOURS} horas. Nenhum e-mail é enviado: você manda a senha à pessoa.
       </p>
-      <FormError error={invite.error} />
-      <Button type="submit" disabled={invite.isPending}>
-        Enviar convite
+      <FormError error={create.error} />
+      <Button type="submit" disabled={create.isPending}>
+        Criar usuário
       </Button>
     </form>
   );
@@ -155,7 +192,7 @@ function InviteForm({ onDone }: { onDone: () => void }) {
 
 function UserAccess({ user, isSelf, canWrite }: { user: User; isSelf: boolean; canWrite: boolean }) {
   const update = useUpdateUser(user.id);
-  const resend = useResendInvite(user.id);
+  const generate = useGenerateTemporaryPassword(user.id);
   if (isSelf) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -163,15 +200,37 @@ function UserAccess({ user, isSelf, canWrite }: { user: User; isSelf: boolean; c
       </p>
     );
   }
+  const pending =
+    user.status === 'invited'
+      ? 'Conta do antigo convite por e-mail, ainda sem senha: o acesso começa com uma senha temporária.'
+      : awaitingFirstAccess(user)
+        ? 'Ainda com a senha temporária: não entrou nem trocou a senha.'
+        : undefined;
+  const firstAccess = pending && <p className="text-sm text-muted-foreground">{pending}</p>;
   if (!canWrite) {
     return (
-      <p className="text-sm">
-        {ROLE_LABELS[user.role]} · {USER_STATUS_LABELS[user.status]}
-      </p>
+      <div className="space-y-2">
+        <p className="text-sm">
+          {ROLE_LABELS[user.role]} · {USER_STATUS_LABELS[user.status]}
+        </p>
+        {firstAccess}
+      </div>
+    );
+  }
+  if (generate.data) {
+    return (
+      <TemporaryPasswordNotice
+        title={`Senha temporária de ${user.name}`}
+        summary="Senha temporária nova gerada. A anterior deixou de valer, e as sessões abertas foram encerradas."
+        password={generate.data}
+        hasMfa={user.mfaEnabled}
+        onDone={() => generate.reset()}
+      />
     );
   }
   return (
     <div className="space-y-4">
+      {firstAccess}
       <SelectInput
         label="Papel"
         value={user.role}
@@ -180,37 +239,39 @@ function UserAccess({ user, isSelf, canWrite }: { user: User; isSelf: boolean; c
         options={ROLE_OPTIONS}
       />
       <div className="flex flex-wrap gap-2">
-        {user.status !== 'invited' && (
-          <Button
-            variant="secondary"
-            disabled={update.isPending}
-            onClick={() => update.mutate({ status: user.status === 'disabled' ? 'active' : 'disabled' })}
-          >
-            {user.status === 'disabled' ? 'Reativar acesso' : 'Desativar acesso'}
-          </Button>
-        )}
-        {user.status === 'invited' && (
+        <Button
+          variant="secondary"
+          disabled={update.isPending}
+          onClick={() => update.mutate({ status: user.status === 'disabled' ? 'active' : 'disabled' })}
+        >
+          {user.status === 'disabled' ? 'Reativar acesso' : 'Desativar acesso'}
+        </Button>
+      </div>
+      <section aria-labelledby="senha-temporaria" className="space-y-2 rounded-md border p-3">
+        <h3 id="senha-temporaria" className="text-sm font-semibold">
+          Senha temporária
+        </h3>
+        {user.status === 'disabled' ? (
+          <p className="text-sm text-muted-foreground">
+            Conta desativada: reative o acesso para gerar uma senha temporária.
+          </p>
+        ) : (
           <>
-            <Button variant="secondary" disabled={resend.isPending} onClick={() => resend.mutate(undefined)}>
-              Reenviar convite
-            </Button>
-            {/* Convite para a pessoa errada: cancelar antes do aceite (o link deixa de valer). */}
-            <Button
-              variant="secondary"
-              disabled={update.isPending}
-              onClick={() => update.mutate({ status: 'disabled' })}
-            >
-              Cancelar convite
-            </Button>
+            <p className="text-sm text-muted-foreground">
+              Para quem esqueceu a senha ou não entrou a tempo. A senha nova vale por{' '}
+              {TEMPORARY_PASSWORD_HOURS} horas, e no próximo login a pessoa a troca por uma só dela.
+            </p>
+            <ConfirmButton
+              label="Gerar senha temporária"
+              confirmLabel="Gerar e encerrar as sessões"
+              warning={`A senha atual de ${user.name} deixa de valer, e as sessões abertas da conta caem na hora.`}
+              busy={generate.isPending}
+              onConfirm={() => generate.mutate(undefined)}
+            />
           </>
         )}
-      </div>
-      {resend.isSuccess && (
-        <p role="status" className="text-sm">
-          Convite reenviado para {user.email}.
-        </p>
-      )}
-      <FormError error={update.error ?? resend.error} />
+      </section>
+      <FormError error={update.error ?? generate.error} />
     </div>
   );
 }

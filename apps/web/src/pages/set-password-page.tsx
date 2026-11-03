@@ -20,28 +20,21 @@ function takeTokenFromFragment(): string | undefined {
   return token;
 }
 
+/** Contas novas nascem com senha temporária; o link por e-mail serve só para redefinir a senha. */
 const COPY = {
-  reset: {
-    title: 'Defina uma nova senha',
-    description: 'Depois de salvar, as sessões abertas são encerradas e você entra de novo com a senha nova.',
-    done: 'Senha redefinida. Entre com a senha nova.',
-  },
-  invite: {
-    title: 'Ative seu acesso',
-    description:
-      'Crie a senha do seu acesso ao Verax Control. No primeiro login, você vai ativar a verificação em duas etapas.',
-    done: 'Acesso ativado. Entre com a senha que você criou.',
-  },
+  title: 'Defina uma nova senha',
+  description: 'Depois de salvar, as sessões abertas são encerradas e você entra de novo com a senha nova.',
+  done: 'Senha redefinida. Entre com a senha nova.',
 } as const;
 
-export function SetPasswordPage({ mode }: { mode: 'reset' | 'invite' }) {
+export function SetPasswordPage() {
   const navigate = useNavigate();
   const [token] = useState(takeTokenFromFragment);
   const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const copy = COPY[mode];
+  const copy = COPY;
 
   const tooShort = password.length > 0 && password.length < PASSWORD_MIN_LENGTH;
   const mismatch = confirmation.length > 0 && confirmation !== password;

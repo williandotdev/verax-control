@@ -140,8 +140,9 @@ read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-cloudflare-tunnel-token --data-file=- && unset VALOR
 ```
 
-- **Senha do e-mail:** a senha de aplicativo da caixa `nao-responda@` no Zoho (Minha conta → Segurança → Senhas
-  específicas de aplicativo). Os convites e as redefinições de senha saem por ela.
+- **Senha do e-mail (opcional):** o nó funciona sem e-mail, porque as contas nascem com senha temporária. Só com
+  `MAIL_TRANSPORT=smtp` grave aqui a senha de aplicativo da caixa `nao-responda@` no Zoho (Minha conta → Segurança →
+  Senhas específicas de aplicativo); a redefinição de senha pelo link sai por ela.
 - **Token do túnel:** no Cloudflare, em Zero Trust → Networks → Tunnels, crie um túnel chamado `verax-node` e copie
   o token do comando de instalação (o texto longo depois de `--token`).
 

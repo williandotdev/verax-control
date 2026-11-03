@@ -10,7 +10,6 @@ import { AUTH } from './auth.constants.js';
 import { createAuth } from './auth.factory.js';
 import { CSRF_UTILITIES, CsrfController, CsrfGuard, createCsrfUtilities } from './csrf.js';
 import { MeController } from './me.controller.js';
-import { InvitationService } from './invitation.service.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { SessionTenantController } from './session-tenant.controller.js';
 import { SessionGuard } from './session.guard.js';
@@ -40,13 +39,12 @@ import { SessionGuard } from './session.guard.js';
         });
       },
     },
-    InvitationService,
     { provide: CSRF_UTILITIES, inject: [APP_CONFIG], useFactory: createCsrfUtilities },
     // A ordem importa: sessão, depois permissão (nega por padrão), depois CSRF (só em escrita autenticada).
     { provide: APP_GUARD, useClass: SessionGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
     { provide: APP_GUARD, useClass: CsrfGuard },
   ],
-  exports: [AUTH, InvitationService],
+  exports: [AUTH],
 })
 export class AuthModule {}

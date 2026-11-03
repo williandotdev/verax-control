@@ -43,9 +43,10 @@ export const envSchema = z
       .enum(['true', 'false'], { error: 'deve ser true ou false' })
       .default('true')
       .transform((value) => value === 'true'),
-    // E-mail (T2.6): SES ou SMTP autenticado em produção; caixa local em desenvolvimento (links de convite nunca vão
-    // para o log). O nó da Verax usa o SMTP do Zoho Mail do domínio.
-    MAIL_TRANSPORT: z.enum(['ses', 'smtp', 'dev-mailbox']).default('dev-mailbox'),
+    // E-mail (T2.6): só a redefinição de senha pelo link usa (contas novas nascem com senha temporária). SES ou SMTP
+    // autenticado em produção, ou `none` no nó sem e-mail (quem esquece a senha pede uma temporária ao administrador);
+    // caixa local em desenvolvimento (links nunca vão para o log).
+    MAIL_TRANSPORT: z.enum(['ses', 'smtp', 'none', 'dev-mailbox']).default('dev-mailbox'),
     MAIL_FROM: z.email({ error: 'deve ser um e-mail válido' }),
     AWS_REGION: z
       .string()
@@ -79,7 +80,11 @@ export const envSchema = z
       });
     }
     if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT === 'dev-mailbox') {
-      ctx.addIssue({ code: 'custom', path: ['MAIL_TRANSPORT'], message: 'deve ser ses ou smtp em produção' });
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_TRANSPORT'],
+        message: 'deve ser ses, smtp ou none em produção',
+      });
     }
     if (env.MAIL_TRANSPORT === 'smtp') {
       for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD'] as const) {

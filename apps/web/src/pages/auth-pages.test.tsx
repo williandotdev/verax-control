@@ -13,7 +13,10 @@ import { MOCK_AUTH } from '@/mocks/auth-handlers';
 import { demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
-import { RESET_REQUESTED_MESSAGE } from './forgot-password-page';
+import { ASK_ADMIN_MESSAGE, RESET_REQUESTED_MESSAGE } from './forgot-password-page';
+
+// Os formulários são preenchidos letra por letra: com a suíte inteira em paralelo, passam dos 5 s padrão.
+const FORM_TIMEOUT = 15_000;
 
 const server = setupServer();
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }));
@@ -51,6 +54,19 @@ describe('login', () => {
     await userEvent.clear(screen.getByLabelText('E-mail'));
     await fillLogin('ninguem@demo.verax.local', MOCK_AUTH.password);
     expect(await screen.findByRole('alert')).toHaveTextContent('E-mail ou senha incorretos.');
+  });
+
+  it('senha temporária vencida: diz o motivo e o que fazer', async () => {
+    renderAt('/login');
+    server.use(
+      http.post(`${API_URL}/v1/auth/sign-in/email`, () =>
+        HttpResponse.json({ code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'x' }, { status: 401 }),
+      ),
+    );
+    await fillLogin(MOCK_AUTH.email, MOCK_AUTH.password);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Sua senha temporária venceu. Peça outra ao administrador.',
+    );
   });
 
   it('conta bloqueada mostra a espera, sem confirmar que a conta existe', async () => {
@@ -93,6 +109,13 @@ describe('login', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/mfa/cadastro'));
   });
 
+  it('com a senha temporária, o login leva à troca de senha (antes do MFA)', async () => {
+    const { router } = renderAt('/login');
+    await fillLogin(MOCK_AUTH.email, MOCK_AUTH.temporaryPassword);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/trocar-senha'));
+    expect(await screen.findByRole('heading', { name: 'Troque a senha temporária' })).toBeInTheDocument();
+  });
+
   it.each([
     'https://site-malicioso.example',
     '//site-malicioso.example',
@@ -133,12 +156,111 @@ describe('cadastro do MFA', () => {
   });
 });
 
+describe('troca da senha temporária', { timeout: FORM_TIMEOUT }, () => {
+  /** Sessão aberta com a senha temporária: conta nova, ainda sem MFA. */
+  const temporarySession = (): MockState => ({
+    me: demoMe('analista_cliente', { mfaEnabled: false, mustChangePassword: true }),
+  });
+
+  async function submitChange(temporary: string, password: string, confirmation = password) {
+    await userEvent.type(await screen.findByLabelText('Senha temporária'), temporary);
+    await userEvent.type(screen.getByLabelText('Nova senha'), password);
+    await userEvent.type(screen.getByLabelText('Confirme a nova senha'), confirmation);
+    await userEvent.click(screen.getByRole('button', { name: 'Salvar e continuar' }));
+  }
+
+  it('explica o motivo; trocada a senha, segue para o cadastro do MFA, que aceita a senha nova', async () => {
+    const { router, state } = renderAt('/trocar-senha', temporarySession());
+    expect(await screen.findByText(/Como outra pessoa já a viu/)).toHaveTextContent(
+      'Em seguida, você vai ativar a verificação em duas etapas.',
+    );
+    await submitChange(MOCK_AUTH.temporaryPassword, 'uma-senha-nova-bem-longa');
+    await waitFor(() => expect(router.state.location.pathname).toBe('/mfa/cadastro'));
+    expect(await screen.findByRole('status')).toHaveTextContent('Senha trocada.');
+    expect(state.me?.mustChangePassword).toBe(false);
+
+    await userEvent.type(screen.getByLabelText('Senha'), 'uma-senha-nova-bem-longa');
+    await userEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    expect(
+      await screen.findByRole('img', { name: 'QR code para o aplicativo autenticador' }),
+    ).toBeInTheDocument();
+  });
+
+  it('valida tamanho, senha igual à temporária e confirmação antes de enviar', async () => {
+    renderAt('/trocar-senha', temporarySession());
+    await userEvent.type(await screen.findByLabelText('Nova senha'), 'curta');
+    expect(screen.getByLabelText('Nova senha')).toHaveAccessibleDescription(
+      /A senha precisa ter pelo menos 12 caracteres\./,
+    );
+    await userEvent.clear(screen.getByLabelText('Nova senha'));
+    await userEvent.type(screen.getByLabelText('Senha temporária'), MOCK_AUTH.temporaryPassword);
+    await userEvent.type(screen.getByLabelText('Nova senha'), MOCK_AUTH.temporaryPassword);
+    expect(screen.getByLabelText('Nova senha')).toHaveAccessibleDescription(
+      /A senha nova precisa ser diferente da temporária\./,
+    );
+    // A mesma senha em caracteres de largura total vira o mesmo hash na API (NFKC): também é igual.
+    const fullWidth = [...MOCK_AUTH.temporaryPassword]
+      .map((char) => String.fromCharCode(char.charCodeAt(0) + 0xfee0))
+      .join('');
+    await userEvent.clear(screen.getByLabelText('Nova senha'));
+    await userEvent.type(screen.getByLabelText('Nova senha'), fullWidth);
+    expect(screen.getByLabelText('Nova senha')).toHaveAccessibleDescription(
+      /A senha nova precisa ser diferente da temporária\./,
+    );
+    await userEvent.clear(screen.getByLabelText('Nova senha'));
+    await userEvent.type(screen.getByLabelText('Nova senha'), 'uma-senha-bem-longa');
+    await userEvent.type(screen.getByLabelText('Confirme a nova senha'), 'outra-senha-longa');
+    expect(screen.getByLabelText('Confirme a nova senha')).toHaveAccessibleDescription(
+      'As senhas não são iguais.',
+    );
+    expect(screen.getByRole('button', { name: 'Salvar e continuar' })).toBeDisabled();
+  });
+
+  it('mostra a recusa da API: senha temporária errada e senha nova vazada', async () => {
+    const { router } = renderAt('/trocar-senha', temporarySession());
+    await submitChange('senha-temporaria-errada', 'uma-senha-bem-longa');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Senha temporária incorreta.');
+
+    await userEvent.clear(screen.getByLabelText('Senha temporária'));
+    await userEvent.clear(screen.getByLabelText('Nova senha'));
+    await userEvent.clear(screen.getByLabelText('Confirme a nova senha'));
+    await submitChange(MOCK_AUTH.temporaryPassword, MOCK_AUTH.leakedPassword);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Esta senha aparece em vazamentos conhecidos. Escolha outra.',
+    );
+    expect(router.state.location.pathname).toBe('/trocar-senha');
+  });
+
+  it('a sessão com senha temporária não chega às rotas internas nem ao cadastro do MFA', async () => {
+    const { router } = renderAt('/incidentes', temporarySession());
+    await waitFor(() => expect(router.state.location.pathname).toBe('/trocar-senha'));
+    await router.navigate('/mfa/cadastro');
+    await waitFor(() => expect(router.state.location.pathname).toBe('/trocar-senha'));
+  });
+
+  it('sem senha temporária, a página segue adiante', async () => {
+    const { router } = renderAt('/trocar-senha', { me: demoMe('analista_cliente') });
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'));
+  });
+
+  it('dá para sair sem trocar', async () => {
+    const { router, state } = renderAt('/trocar-senha', temporarySession());
+    await userEvent.click(await screen.findByRole('button', { name: 'Sair' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
+    expect(state.me).toBeNull();
+  });
+});
+
 describe('esqueci a senha', () => {
-  it('mesma mensagem para qualquer e-mail', async () => {
+  it('mesma mensagem para qualquer e-mail, e o caminho se o e-mail não chegar', async () => {
     renderAt('/esqueci-senha');
+    expect(await screen.findByText(ASK_ADMIN_MESSAGE)).toBeInTheDocument();
     await userEvent.type(await screen.findByLabelText('E-mail'), 'qualquer@demo.verax.local');
     await userEvent.click(screen.getByRole('button', { name: 'Enviar link' }));
     expect(await screen.findByRole('status')).toHaveTextContent(RESET_REQUESTED_MESSAGE);
+    expect(screen.getByText(ASK_ADMIN_MESSAGE)).toHaveTextContent(
+      'peça ao administrador do painel uma senha temporária',
+    );
   });
 
   it('recusa da API que não seja limite ou falha também mostra a mesma mensagem', async () => {
@@ -195,16 +317,8 @@ describe('redefinição e convite', () => {
     );
   });
 
-  it('convite: ativa e leva ao login com o aviso', async () => {
-    const { router } = openLink('/convite', MOCK_AUTH.validLinkToken);
-    expect(await screen.findByRole('heading', { name: 'Ative seu acesso' })).toBeInTheDocument();
-    await submitPassword('uma-senha-bem-longa');
-    await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
-    expect(await screen.findByRole('status')).toHaveTextContent('Acesso ativado.');
-  });
-
   it('link sem token explica o que fazer', async () => {
-    renderAt('/convite');
+    renderAt('/redefinir-senha');
     expect(await screen.findByRole('alert')).toHaveTextContent('Este link está incompleto.');
   });
 });

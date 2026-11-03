@@ -98,6 +98,12 @@
     outline-offset: 2px;
   }
 
+  /* Painel lateral aberto: a página de trás não rola. No lugar da trava do Radix, que injeta um <style> que a CSP
+     (style-src 'self') recusa. */
+  body:has([data-sheet][data-state='open']) {
+    overflow: hidden;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     *,
     *::before,

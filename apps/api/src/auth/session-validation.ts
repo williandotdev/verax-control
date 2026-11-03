@@ -2,6 +2,7 @@ import type { RequestAuth } from '../common/auth/request-auth.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { UserRole } from '../generated/prisma/enums.js';
 import { SESSION_ABSOLUTE_MAX_MS, SESSION_IDLE_TIMEOUT_SECONDS } from './auth.constants.js';
+import { temporaryPasswordExpired } from './temporary-password.js';
 
 const ROLES = new Set<string>(Object.values(UserRole));
 /** Folga para o tempo entre a renovação da sessão e esta checagem. */
@@ -22,6 +23,8 @@ export interface SessionData {
     tenantId?: string | null;
     status: string;
     twoFactorEnabled?: boolean | null;
+    mustChangePassword?: boolean | null;
+    temporaryPasswordExpiresAt?: Date | string | null;
   };
 }
 
@@ -36,7 +39,8 @@ async function isTenantActive(prisma: PrismaService, id: string): Promise<boolea
  * (`AuthController`).
  * - no máximo 12 h desde o login, mesmo com uso contínuo;
  * - nunca mais de 30 min de validade à frente (a sessão "sem lembrar de mim" do Better Auth teria 24 h);
- * - usuário ativo, com papel conhecido, e cliente dele ativo: desativar um ou outro derruba a sessão.
+ * - usuário ativo, com papel conhecido, e cliente dele ativo: desativar um ou outro derruba a sessão;
+ * - senha temporária dentro da validade (vencida, a sessão não vale).
  *
  * Sessão que fere alguma regra é apagada, e o retorno é `undefined`.
  */
@@ -51,6 +55,7 @@ export async function resolveSession(
     new Date(session.expiresAt).getTime() - now <= SESSION_IDLE_TIMEOUT_SECONDS * 1000 + EXPIRY_SLACK_MS &&
     user.status === 'active' &&
     ROLES.has(user.role) &&
+    !temporaryPasswordExpired(user, now) &&
     (tenantId === null || (await isTenantActive(prisma, tenantId)));
   if (!valid) {
     await prisma.session.deleteMany({ where: { id: session.id } });
@@ -71,5 +76,6 @@ export async function resolveSession(
     // Regra 4: o cliente do escopo vem sempre da sessão, nunca do corpo, da query ou da URL.
     scopeTenantId: role === 'admin_verax' ? activeTenantId : tenantId,
     mfaEnabled: user.twoFactorEnabled === true,
+    mustChangePassword: user.mustChangePassword === true,
   };
 }

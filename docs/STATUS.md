@@ -1664,3 +1664,52 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
     - confere a atestação com `gh attestation verify`: assinatura e identidade do workflow, `main`, commit e executor do GitHub;
     - copia com caminho relativo (o pscp do Windows não expande `~`);
     - aceita `node.conf` com CRLF.
+
+## Contas com senha temporária: sem convite por e-mail
+
+- **Pedido:** dispensar o servidor de e-mail. O administrador cria o usuário e recebe uma senha temporária. No primeiro login, a pessoa troca a senha e depois cadastra o MFA.
+- **Senha temporária:**
+  - 20 caracteres, gerados com `crypto.randomInt`, de um alfabeto de 57 símbolos sem caracteres ambíguos (cerca de 116 bits), em 4 grupos de 5;
+  - vale 72 horas;
+  - fica só com hash, como qualquer senha. Aparece uma única vez, na resposta de quem criou, e não vai para a auditoria nem para o log.
+- **Troca obrigatória** (`mustChangePassword`):
+  - **API:** a sessão só alcança a identidade (`/v1/me`), o token CSRF e `change-password`. O resto responde 403 `PASSWORD_CHANGE_REQUIRED`, inclusive o cadastro do MFA e as rotas de sessão da autenticação.
+  - **Depois da troca:** a senha temporária deixa de valer e a regra do MFA obrigatório segue como antes.
+  - **Vencida:** a sessão vale como inválida (401).
+  - **Pelo link de redefinição** (quando houver e-mail): também encerra a temporária.
+- **API de usuários:**
+  - `POST /v1/users` cria a conta já ativa, com a senha temporária na resposta (`user.create` na auditoria);
+  - `POST /v1/users/:id/temporary-password` gera outra para quem esqueceu (`user.temporary_password`): a anterior e as sessões abertas caem, o bloqueio por tentativas zera e o MFA cadastrado continua;
+  - recusa para a própria conta (403) e para conta desativada (409);
+  - o convite por e-mail e o reenvio saíram. Conta do antigo convite, ainda sem senha, fica ativa ao receber a temporária.
+- **Painel:** "Criar usuário" e "Gerar senha temporária" mostram a senha uma vez, com botão de copiar. A tela `/trocar-senha` é aberta antes de qualquer outra quando a troca é obrigatória.
+- **Primeiro admin do nó (`node-bootstrap`):**
+  - cria o `admin_verax` com senha temporária;
+  - se ele ainda não entrou, gera outra a cada execução;
+  - se ele já definiu a própria senha, não muda nada.
+  - O `start.sh` grava a senha em `/root/verax-senha-temporaria` (só root) e não a mostra na tela.
+- **E-mail opcional:** `MAIL_TRANSPORT=none` é aceito em produção. Com `smtp`, a redefinição pelo link volta a funcionar. O `install.sh` só exige os dados da caixa de envio com `smtp`.
+- **Testes:**
+  - API: senha temporária (11), redefinição pelo link (antigo teste do convite), usuários, bootstrap, configuração e senha vazada;
+  - painel: troca obrigatória, criação com a senha mostrada uma vez, geração de senha nova e modo demonstração;
+  - e2e contra a API real: o admin cria a conta na tela, a pessoa entra com a temporária, troca a senha, cadastra o MFA, e a temporária deixa de valer.
+- **Rota `/convite` removida:** nenhum convite chegou a ser enviado em produção.
+- **Correção: painel lateral com a CSP de produção.** O `Dialog.Overlay` do Radix trava a rolagem injetando um `<style>`, que a CSP (`style-src 'self'`) recusa. Era assim em todos os painéis laterais: em produção, a página de trás rolava e o console mostrava a violação. O fundo agora é uma `div` comum, e a trava fica numa regra do `index.css`; o foco preso, o Esc e o `aria-hidden` seguem com o `Dialog.Content`. O e2e confere que não há violação e que a página trava.
+
+  Depois da revisão independente (17 achados, 10 confirmados, todos de gravidade baixa, todos corrigidos):
+  - **Senha nova igual à temporária:** a API recusa (`PASSWORD_UNCHANGED`); antes, só a tela barrava, e a troca obrigatória podia manter a senha temporária como definitiva.
+  - **Login com a senha temporária vencida:** recusado já no login e na verificação do código, com o motivo (`TEMPORARY_PASSWORD_EXPIRED`, que só chega a quem acertou a senha) e "negado" na auditoria. Antes, o login dava 200, entrava como sucesso e a tela dizia "senha incorreta".
+  - **Uma transação só:** a senha temporária, a marca, a queda das sessões e o fim do bloqueio entram juntos, na transação da requisição, com o registro de auditoria no mesmo commit.
+  - **Auditoria:** valores booleanos não são mais ocultados pelo sanitizador (um sim ou não não é segredo). A marca `mustChangePassword` aparece antes e depois.
+  - **Bootstrap:**
+    - se uma execução parar entre criar a conta e gravar a senha, a próxima gera a senha;
+    - saída de emergência `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true` para o admin que esqueceu a senha num nó sem e-mail. Só como root na VM; o MFA continua;
+    - admin desativado: a saída de emergência recusa;
+    - as linhas da senha nunca vão para a tela, mesmo se o bootstrap falhar no meio.
+      Depois da verificação das correções (5 confirmados, 1 de gravidade média, todos corrigidos):
+  - **Saída de emergência:** sem cliente, o `start.sh` escreve a linha `BOOTSTRAP_TENANT_NAME` vazia, e o bootstrap a recusava. Vazia agora vale como ausente, com teste do que o `start.sh` escreve.
+  - **Senha nova igual:** comparada como a biblioteca guarda (NFKC), na API e na tela. A mesma senha em caracteres de largura total vira o mesmo hash e também é recusada.
+  - **Recusa auditada:** a recusa `PASSWORD_UNCHANGED` acontece antes do hook que audita a troca, então ela mesma registra a falha.
+  - **Conta nasce sem acesso:** o usuário (e o primeiro admin) é criado como `invited` e só fica ativo junto com a senha, na mesma transação. Se ela falhar, sobra uma conta que não entra.
+  - **Duas gerações simultâneas:** a linha do usuário é travada primeiro, sem duas contas de senha para a mesma pessoa.
+  - **Fora:** a redefinição pelo link (só com e-mail ligado) não confere se a senha nova repete a temporária. O link chega só ao dono da conta, e a biblioteca não expõe a senha nesse ponto.

@@ -27,17 +27,7 @@ bucket de backups (`verax-backup.timer`).
 
 1. **Infraestrutura.** Aplique o Terraform de `infra/gcp/` (guia em `infra/gcp/GUIA.md`). Ele cria uma assinatura do
    Pub/Sub por projeto monitorado, os cofres dos segredos e o registro das imagens.
-2. **E-mail (Zoho).** O domínio já usa o Zoho Mail, com SPF e DKIM.
-   - Crie a caixa `nao-responda@veraxsistemas.com.br` (ou um alias de uma caixa existente).
-   - Gere uma senha de aplicativo: no Zoho, em Minha conta → Segurança → Senhas específicas de aplicativo.
-   - Grave a senha no cofre. Cole quando o terminal pedir; nada aparece na tela:
-
-     ```bash
-     read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-smtp-password \
-       --project PROJETO_DO_NO --data-file=- && unset VALOR
-     ```
-
-3. **Túnel do Cloudflare.**
+2. **Túnel do Cloudflare.**
    - Em Zero Trust → Networks → Tunnels, crie um túnel `verax-node` do tipo Cloudflared.
    - Na tela de instalação, copie só o token, o texto longo depois de `--token`.
    - Em Public Hostnames, crie `api-verax.veraxsistemas.com.br` com o serviço `HTTP` e a URL `api:3000`.
@@ -48,12 +38,16 @@ bucket de backups (`verax-backup.timer`).
        --project PROJETO_DO_NO --data-file=- && unset VALOR
      ```
 
-4. **Imagens.** O workflow `Imagens do nó` publica a API e as migrations a cada merge na `main` que mexa na API. Ele
+3. **Imagens.** O workflow `Imagens do nó` publica a API e as migrations a cada merge na `main` que mexa na API. Ele
    usa o environment `imagens` do GitHub, que só aceita a `main`, com três variáveis:
    - `IMAGES_REPOSITORY` e `GCP_IMAGES_SA`: valores em `terraform output images_repository` e `images_publisher`;
    - `GCP_WIF_PROVIDER`: o mesmo provedor do Painel.
 
    A versão de cada publicação é o commit, que aparece no resumo da execução.
+
+O nó não precisa de e-mail (`MAIL_TRANSPORT=none` no `node.conf`): toda conta nasce com uma senha temporária,
+entregue a quem a criou. Para ligar também a redefinição de senha pelo link, use `MAIL_TRANSPORT=smtp` com os dados
+da caixa de envio e grave a senha dela no cofre `verax-node-smtp-password`.
 
 ## Instalar ou atualizar
 
@@ -93,12 +87,30 @@ sudo BOOTSTRAP_ADMIN_EMAIL='SEU_EMAIL'   BOOTSTRAP_ADMIN_NAME='Seu nome'   BOOTS
 
 O que esse comando faz:
 
-1. Cria você como `admin_verax`, sem senha.
-2. Envia o convite por e-mail. O link vale 60 minutos.
+1. Cria você como `admin_verax`, com uma senha temporária que vale 72 horas.
+2. Grava essa senha em `/root/verax-senha-temporaria`, que só o root lê. Ela não aparece na tela nem no log.
 3. Cria o cliente com as contas da GCP, cada uma com a sua assinatura.
 
-Pelo link, você define a senha. No primeiro login, cadastra o MFA. Se o link vencer, rode o mesmo comando de novo:
-ele reenvia o convite enquanto a conta não estiver ativa.
+Ainda na VM, leia a senha e apague o arquivo:
+
+```bash
+sudo cat /root/verax-senha-temporaria && sudo rm /root/verax-senha-temporaria
+```
+
+No primeiro login, o painel pede uma senha nova e depois o cadastro do MFA. Se a temporária vencer ou se perder,
+rode o mesmo comando de novo: enquanto você não trocar a senha, ele gera outra e a anterior deixa de valer.
+
+**Esqueceu a senha depois de já ter entrado?** Sem e-mail no nó, não há link de redefinição. Na VM, como root:
+
+```bash
+sudo BOOTSTRAP_ADMIN_EMAIL='SEU_EMAIL' BOOTSTRAP_RENEW_ADMIN_PASSWORD=true /opt/verax/bin/start.sh bootstrap
+```
+
+Sai uma senha temporária nova no mesmo arquivo. A anterior e as sessões abertas deixam de valer, e o MFA continua: no
+login, você usa o código do aplicativo (ou um código de recuperação) e depois troca a senha. A ação fica na auditoria.
+
+As outras contas, você cria no painel, em Usuários: a senha temporária aparece uma única vez, para você repassar à
+pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (Gerar senha temporária).
 
 ## Conferir
 
@@ -129,9 +141,11 @@ ele reenvia o convite enquanto a conta não estiver ativa.
 
 ## Problemas comuns
 
-- **O convite não chega.**
+- **Login com a senha temporária volta para a tela de entrada.** A senha venceu (72 horas): gere outra, pelo
+  `start.sh bootstrap` (o administrador) ou pelo menu Usuários (as outras contas).
+- **Com `MAIL_TRANSPORT=smtp`, o link de redefinição não chega.**
   - Veja o log da API: `logs --tail 100 api`.
-  - "535 Authentication Failed" é senha de aplicativo errada ou revogada: grave outra no cofre e reinicie com
+  - "535 Authentication Failed" é senha errada ou revogada: grave outra no cofre e reinicie com
     `sudo systemctl restart verax-node`.
   - O remetente (`MAIL_FROM`) precisa ser a caixa autenticada ou um alias dela.
 - **A API não sobe por causa de um segredo.** `systemctl status verax-node` diz qual cofre está vazio. Grave o valor

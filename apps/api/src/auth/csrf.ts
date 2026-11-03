@@ -15,7 +15,7 @@ import type { Request, Response } from 'express';
 import { DenialAudit } from '../common/audit/denial-audit.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
-import { AllowWithoutMfa, Authenticated, isSelfManaged } from './decorators.js';
+import { AllowWithoutMfa, AllowWithTemporaryPassword, Authenticated, isSelfManaged } from './decorators.js';
 
 export const CSRF_HEADER = 'x-csrf-token';
 export const CSRF_COOKIE = '__Host-verax.csrf';
@@ -50,6 +50,7 @@ export class CsrfController {
   @Get()
   @Authenticated()
   @AllowWithoutMfa()
+  @AllowWithTemporaryPassword()
   token(@Req() request: Request, @Res({ passthrough: true }) response: Response): { token: string } {
     return { token: this.csrf.generateCsrfToken(request, response, { overwrite: true }) };
   }
