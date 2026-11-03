@@ -161,22 +161,28 @@ Resources:
     Properties:
       GroupDescription: Verax Control - no sem portas de entrada
       VpcId: !Ref Vpc
+      # Exceção à regra AWS-0104 do Trivy: o nó fala com as APIs da AWS (as dele e as das contas dos clientes), com
+      # os registros de imagens, com o GitHub (pacote do nó) e com o Cloudflare, sem CIDR fixo. Só estas três portas,
+      # com flow logs.
       SecurityGroupEgress:
-        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: HTTPS }
-        - {
-            IpProtocol: tcp,
-            FromPort: 7844,
-            ToPort: 7844,
-            CidrIp: 0.0.0.0/0,
-            Description: Tunel Cloudflare (http2),
-          }
-        - {
-            IpProtocol: udp,
-            FromPort: 7844,
-            ToPort: 7844,
-            CidrIp: 0.0.0.0/0,
-            Description: Tunel Cloudflare (quic),
-          }
+        #trivy:ignore:AWS-0104
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+        #trivy:ignore:AWS-0104
+        - IpProtocol: tcp
+          FromPort: 7844
+          ToPort: 7844
+          CidrIp: 0.0.0.0/0
+          Description: Tunel Cloudflare (http2)
+        #trivy:ignore:AWS-0104
+        - IpProtocol: udp
+          FromPort: 7844
+          ToPort: 7844
+          CidrIp: 0.0.0.0/0
+          Description: Tunel Cloudflare (quic)
       Tags:
         - {
             Key: verax-control-node,
@@ -201,6 +207,9 @@ Resources:
 
   # --- Bucket do nó: backup do banco, snapshots do indexer, relatórios do Prowler e flow logs ---
 
+  # Exceção à regra AWS-0132 do Trivy: cifra do S3 (SSE-S3) em vez de chave própria do KMS, que custaria mais uma
+  # chave por nó e exigiria liberar a entrega dos flow logs na política dela. O bucket é privado e só do nó.
+  #trivy:ignore:AWS-0132
   BackupBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -477,6 +486,9 @@ Resources:
               - Key: verax-control-node
                 Value: !If [HasName, !Sub 'verax-control-node-${NodeName}', verax-control-node]
 
+  # Exceção à regra AWS-0131 do Trivy (falso positivo): o disco raiz é cifrado no modelo de lançamento
+  # (BlockDeviceMappings acima), que o Trivy não resolve. O teste do template confere a cifra.
+  #trivy:ignore:AWS-0131
   Instance:
     Type: AWS::EC2::Instance
     Properties:
@@ -620,6 +632,8 @@ Resources:
 
   # --- Alertas e custo ---
 
+  # Exceção à regra AWS-0095 do Trivy: mesmo motivo da exceção do checkov abaixo.
+  #trivy:ignore:AWS-0095
   AlertTopic:
     Type: AWS::SNS::Topic
     Metadata:
