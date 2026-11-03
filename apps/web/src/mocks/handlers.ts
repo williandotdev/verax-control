@@ -2,6 +2,7 @@ import { type Me, type Role, ROLES } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
+import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
@@ -10,6 +11,7 @@ import { createIncidentHandlers, incidentSummaries, initialIncidents } from './i
 import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
 import { createPostureHandlers } from './posture';
+import { createUnownedHandlers } from './unowned-handlers';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -69,6 +71,8 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createPostureHandlers(state),
     ...createInventoryHandlers(state),
     ...createReportHandlers(state, findings, incidents, admin),
+    ...createAuditHandlers(state),
+    ...createUnownedHandlers(state, admin),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)

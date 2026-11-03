@@ -9,6 +9,7 @@ import { expect, type Page, test } from '@playwright/test';
 
 const INCIDENT = '018f2c1e-0000-7000-8000-0000000a0001';
 const FINDING = '018f2c1e-0000-7000-8000-000000001001';
+const AUDIT_ENTRY = '018f2c1e-0000-7000-8000-0000000d0002';
 
 const PAGES: [string, string | RegExp][] = [
   ['/', 'Torre'],
@@ -26,6 +27,8 @@ const PAGES: [string, string | RegExp][] = [
   ['/cadastros/contas', 'Contas cloud'],
   ['/cadastros/protecao', 'Lista de proteção'],
   ['/cadastros/excecoes', 'Exceções'],
+  ['/auditoria', 'Auditoria'],
+  ['/alertas-sem-dono', 'Alertas sem dono'],
 ];
 
 async function open(page: Page, path: string, heading: string | RegExp) {
@@ -62,6 +65,11 @@ test.describe('revisão de UX (modo mock)', () => {
     await expect(
       page.getByRole('dialog', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
     ).toBeVisible();
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    expect(await violations(page)).toEqual([]);
+
+    await page.goto(`/auditoria?registro=${AUDIT_ENTRY}`);
+    await expect(page.getByRole('dialog', { name: 'Comentou achado' })).toBeVisible();
     await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
     expect(await violations(page)).toEqual([]);
 

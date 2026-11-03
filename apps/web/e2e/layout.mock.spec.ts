@@ -22,6 +22,8 @@ test.describe('estrutura e navegação (modo mock)', () => {
       'Contas cloud',
       'Lista de proteção',
       'Exceções',
+      'Auditoria',
+      'Alertas sem dono',
     ]);
 
     const tenant = page.getByLabel('Cliente');
