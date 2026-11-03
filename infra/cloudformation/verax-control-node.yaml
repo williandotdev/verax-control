@@ -483,9 +483,9 @@ Resources:
 
   # Exceção à regra AWS-0131 do Trivy (falso positivo): o disco raiz é cifrado no modelo de lançamento
   # (BlockDeviceMappings acima), que o Trivy não resolve. O teste do template confere a cifra.
-  #trivy:ignore:AWS-0131
   # A AMI e o tipo ficam na instância, e não no modelo de lançamento: trocar o tipo só para e religa a VM, e o modelo
   # não muda numa atualização comum. Trocar a instância exigiria soltar antes o disco de dados (guia).
+  #trivy:ignore:AWS-0131
   Instance:
     Type: AWS::EC2::Instance
     Properties:
