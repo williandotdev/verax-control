@@ -976,7 +976,10 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Publicação sem `firebase-tools`:** pela API REST do Firebase Hosting (versão, hashes, envio só do que mudou, finalização e release).
   - **Configuração do site:** os cabeçalhos (CSP, HSTS, anti-iframe, Permissions-Policy, COOP) e o cache vêm de `firebaseHostingConfig`, que usa os mesmos `securityHeaders` do preview dos testes e2e. O build grava `dist-hosting.json`, fora do `dist`.
   - **Demonstração:** é o build no modo `mock`. O MSW simula a API no navegador, com a "API" na própria origem do site, então a CSP só permite essa origem. Uma faixa avisa, em toda tela, que os dados são fictícios. Os builds normais não levam o MSW (conferido).
-  - **Login na GCP:** sem chave. A conta `painel-deployer` só aceita o subject `repo:williandotdev/verax-control:environment:painel` e só tem `firebasehosting.admin` no projeto novo.
+  - **Login na GCP:** sem chave. A conta `painel-deployer` só aceita o subject imutável do GitHub (`repo:williandotdev@92734416/verax-control@1441377752:environment:painel`, com os IDs numéricos do dono e do repositório) e só tem `firebasehosting.admin` no projeto novo.
   - **Lista de sites:** fica em variável do environment, fora do código. Sem ela, o job não roda.
 - **Testes:** 6 do web (configuração do Hosting e faixa da demo). Builds de demo e normal conferidos (CSP e presença do MSW). actionlint limpo.
-- **Pendente:** ativar o Firebase no projeto exige aceitar os termos do Firebase pela conta Google do responsável. A API responde 403 até isso ser feito. Depois disso: criar os sites, configurar o environment, publicar e conectar os domínios no Cloudflare.
+- **Publicado (02/11/2026):** `verax-control-demo.web.app` e `verax-control-verax.web.app`, com os cabeçalhos conferidos de fora.
+- **Correção depois da primeira publicação:** a raiz e as rotas da aplicação saíam com o cache padrão do Firebase (1 hora), porque a regra `no-cache` só casava com `/index.html`. Agora tudo é `no-cache` e só `/assets/` tem cache longo. O workflow confere as duas regras no site publicado.
+- **Ruleset:** o vivo passou a exigir os 18 checks do `.github/rulesets/main.json`. Antes, exigia só 11: faltavam "Testes de navegador", "Imagem da API" e os 5 jobs de infraestrutura. Todos rodam em qualquer PR, sem filtro de caminho, então nenhum PR fica esperando um check que não roda.
+- **Pendente:** os domínios próprios. Os registros de DNS (CNAME e TXT `_acme-challenge` de cada domínio, com o proxy desligado) ainda precisam ser criados no Cloudflare.
