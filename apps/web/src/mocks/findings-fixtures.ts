@@ -1,0 +1,571 @@
+import {
+  type FindingDetail,
+  findingDetailSchema,
+  type FindingSeverity,
+  type FindingSource,
+  type FindingStatus,
+} from '@verax/shared';
+import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
+
+/**
+ * Achados fictícios da demonstração, coerentes com a Torre: o cliente Alfa tem exatamente 5 achados altos ou
+ * críticos novos fora de incidente, e grupos de achados que formam os incidentes (mesma chave, mesmo IP, mesma
+ * instância). Endereços IP das faixas reservadas para documentação (RFC 5737) e IDs de exemplo da AWS.
+ */
+
+export const DEMO_INCIDENTS = {
+  chaveComprometida: '018f2c1e-0000-7000-8000-0000000a0001',
+  forcaBrutaSsh: '018f2c1e-0000-7000-8000-0000000a0002',
+  ataqueWaf: '018f2c1e-0000-7000-8000-0000000a0003',
+  bucketPublico: '018f2c1e-0000-7000-8000-0000000a0004',
+} as const;
+
+interface Template {
+  title: string;
+  source: FindingSource;
+  severity: FindingSeverity;
+  status: FindingStatus;
+  minutesAgo: number;
+  ruleId: string;
+  ruleLevel: number;
+  eventName?: string;
+  region?: string;
+  resource?: string;
+  user?: string;
+  userType?: string;
+  accessKeyId?: string;
+  ip?: string;
+  tactics?: string[];
+  techniques?: string[];
+  incident?: string;
+  account?: string;
+  comments?: { author: string; body: string; minutesAgo: number }[];
+}
+
+const KEY = 'AKIAIOSFODNN7EXAMPLE';
+const ATTACKER = '198.51.100.23';
+
+const ALFA_FINDINGS: Template[] = [
+  {
+    title: 'Tentativa de desligar a trilha do CloudTrail',
+    source: 'cloudtrail',
+    severity: 'critical',
+    status: 'investigating',
+    minutesAgo: 25,
+    ruleId: '80255',
+    ruleLevel: 12,
+    eventName: 'StopLogging',
+    region: 'us-east-1',
+    resource: 'arn:aws:cloudtrail:us-east-1:111122223333:trail/trilha-principal',
+    user: 'deploy-bot',
+    userType: 'IAMUser',
+    accessKeyId: KEY,
+    ip: ATTACKER,
+    tactics: ['Defense Evasion'],
+    techniques: ['T1562.008'],
+    incident: DEMO_INCIDENTS.chaveComprometida,
+    comments: [
+      {
+        author: 'Equipe Verax',
+        body: 'O deploy-bot não tem motivo para mexer na trilha. Chave desativada às 12:41; investigando a origem.',
+        minutesAgo: 18,
+      },
+    ],
+  },
+  {
+    title: 'Nova chave de acesso criada para usuário com perfil administrador',
+    source: 'cloudtrail',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 35,
+    ruleId: '80256',
+    ruleLevel: 10,
+    eventName: 'CreateAccessKey',
+    region: 'us-east-1',
+    resource: 'arn:aws:iam::111122223333:user/admin-financeiro',
+    user: 'deploy-bot',
+    userType: 'IAMUser',
+    accessKeyId: KEY,
+    ip: ATTACKER,
+    tactics: ['Persistence'],
+    techniques: ['T1098.001'],
+    incident: DEMO_INCIDENTS.chaveComprometida,
+  },
+  {
+    title: 'Credencial da AWS usada a partir de um IP fora da rede da empresa',
+    source: 'guardduty',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 40,
+    ruleId: '80301',
+    ruleLevel: 10,
+    eventName: 'UnauthorizedAccess:IAMUser/MaliciousIPCaller',
+    region: 'us-east-1',
+    user: 'deploy-bot',
+    userType: 'IAMUser',
+    accessKeyId: KEY,
+    ip: ATTACKER,
+    tactics: ['Initial Access'],
+    techniques: ['T1078.004'],
+    incident: DEMO_INCIDENTS.chaveComprometida,
+  },
+  {
+    title: 'Login do usuário root no console',
+    source: 'cloudtrail',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 120,
+    ruleId: '80253',
+    ruleLevel: 10,
+    eventName: 'ConsoleLogin',
+    region: 'us-east-1',
+    user: 'root',
+    userType: 'Root',
+    ip: '203.0.113.50',
+    tactics: ['Privilege Escalation', 'Initial Access'],
+    techniques: ['T1078.004'],
+  },
+  {
+    title: 'Tentativa de desativar o GuardDuty',
+    source: 'cloudtrail',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 150,
+    ruleId: '80259',
+    ruleLevel: 10,
+    eventName: 'DeleteDetector',
+    region: 'sa-east-1',
+    resource: 'detector/12abc34d567e8fa901bc2d34e56789f0',
+    user: 'joao.lima',
+    userType: 'IAMUser',
+    ip: '203.0.113.12',
+    tactics: ['Defense Evasion'],
+    techniques: ['T1562.001'],
+  },
+  {
+    title: 'Grupo de log do CloudWatch apagado',
+    source: 'cloudtrail',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 210,
+    ruleId: '80262',
+    ruleLevel: 10,
+    eventName: 'DeleteLogGroup',
+    region: 'sa-east-1',
+    resource: '/aws/lambda/pagamentos',
+    user: 'joao.lima',
+    userType: 'IAMUser',
+    ip: '203.0.113.12',
+    tactics: ['Defense Evasion'],
+    techniques: ['T1070'],
+  },
+  {
+    title: 'Usuário IAM criado com a política AdministratorAccess',
+    source: 'cloudtrail',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 300,
+    ruleId: '80257',
+    ruleLevel: 10,
+    eventName: 'AttachUserPolicy',
+    region: 'us-east-1',
+    resource: 'arn:aws:iam::111122223333:user/suporte-temporario',
+    user: 'ana.souza',
+    userType: 'IAMUser',
+    ip: '203.0.113.10',
+    tactics: ['Persistence', 'Privilege Escalation'],
+    techniques: ['T1136.003', 'T1098'],
+  },
+  {
+    title: 'Instância consultando domínio de mineração de criptomoeda',
+    source: 'guardduty',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 480,
+    ruleId: '80301',
+    ruleLevel: 10,
+    eventName: 'CryptoCurrency:EC2/BitcoinTool.B!DNS',
+    region: 'sa-east-1',
+    resource: 'i-0f1e2d3c4b5a69788',
+    tactics: ['Impact'],
+    techniques: ['T1496'],
+  },
+  {
+    title: 'Força bruta SSH contra instância',
+    source: 'guardduty',
+    severity: 'high',
+    status: 'investigating',
+    minutesAgo: 190,
+    ruleId: '80301',
+    ruleLevel: 10,
+    eventName: 'UnauthorizedAccess:EC2/SSHBruteForce',
+    region: 'sa-east-1',
+    resource: 'i-0a1b2c3d4e5f67890',
+    ip: '192.0.2.77',
+    tactics: ['Credential Access'],
+    techniques: ['T1110'],
+    incident: DEMO_INCIDENTS.forcaBrutaSsh,
+  },
+  {
+    title: 'Força bruta SSH contra instância',
+    source: 'guardduty',
+    severity: 'medium',
+    status: 'investigating',
+    minutesAgo: 250,
+    ruleId: '80300',
+    ruleLevel: 7,
+    eventName: 'UnauthorizedAccess:EC2/SSHBruteForce',
+    region: 'sa-east-1',
+    resource: 'i-0a1b2c3d4e5f67890',
+    ip: '192.0.2.77',
+    tactics: ['Credential Access'],
+    techniques: ['T1110'],
+    incident: DEMO_INCIDENTS.forcaBrutaSsh,
+  },
+  {
+    title: 'WAF bloqueou rajada de tentativas de SQL injection',
+    source: 'waf',
+    severity: 'high',
+    status: 'new',
+    minutesAgo: 50,
+    ruleId: '80410',
+    ruleLevel: 10,
+    eventName: 'AWS-AWSManagedRulesSQLiRuleSet',
+    region: 'sa-east-1',
+    resource: 'arn:aws:wafv2:sa-east-1:111122223333:regional/webacl/api-publica/a1b2c3d4',
+    ip: '192.0.2.200',
+    tactics: ['Initial Access'],
+    techniques: ['T1190'],
+    incident: DEMO_INCIDENTS.ataqueWaf,
+  },
+  {
+    title: 'WAF bloqueou tentativa de cross-site scripting',
+    source: 'waf',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 55,
+    ruleId: '80402',
+    ruleLevel: 7,
+    eventName: 'AWS-AWSManagedRulesCommonRuleSet',
+    region: 'sa-east-1',
+    resource: 'arn:aws:wafv2:sa-east-1:111122223333:regional/webacl/api-publica/a1b2c3d4',
+    ip: '192.0.2.200',
+    tactics: ['Initial Access'],
+    techniques: ['T1190'],
+    incident: DEMO_INCIDENTS.ataqueWaf,
+  },
+  {
+    title: 'WAF bloqueou varredura de caminhos administrativos',
+    source: 'waf',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 70,
+    ruleId: '80402',
+    ruleLevel: 7,
+    eventName: 'AWS-AWSManagedRulesAdminProtectionRuleSet',
+    region: 'sa-east-1',
+    resource: 'arn:aws:wafv2:sa-east-1:111122223333:regional/webacl/api-publica/a1b2c3d4',
+    ip: '192.0.2.200',
+    tactics: ['Discovery'],
+    techniques: ['T1595.003'],
+    incident: DEMO_INCIDENTS.ataqueWaf,
+  },
+  {
+    title: 'Política de bucket alterada para permitir leitura pública',
+    source: 'cloudtrail',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 600,
+    ruleId: '80270',
+    ruleLevel: 8,
+    eventName: 'PutBucketPolicy',
+    region: 'sa-east-1',
+    resource: 'loja-exemplo-relatorios',
+    user: 'carlos.dev',
+    userType: 'IAMUser',
+    ip: '203.0.113.31',
+    tactics: ['Exfiltration'],
+    techniques: ['T1537'],
+    incident: DEMO_INCIDENTS.bucketPublico,
+  },
+  {
+    title: 'Bloqueio de acesso público removido do bucket',
+    source: 'cloudtrail',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 605,
+    ruleId: '80271',
+    ruleLevel: 8,
+    eventName: 'DeletePublicAccessBlock',
+    region: 'sa-east-1',
+    resource: 'loja-exemplo-relatorios',
+    user: 'carlos.dev',
+    userType: 'IAMUser',
+    ip: '203.0.113.31',
+    tactics: ['Defense Evasion'],
+    techniques: ['T1562'],
+    incident: DEMO_INCIDENTS.bucketPublico,
+  },
+  {
+    title: 'Grupo de segurança liberou a porta 22 para a internet',
+    source: 'cloudtrail',
+    severity: 'medium',
+    status: 'investigating',
+    minutesAgo: 360,
+    ruleId: '80275',
+    ruleLevel: 8,
+    eventName: 'AuthorizeSecurityGroupIngress',
+    region: 'sa-east-1',
+    resource: 'sg-0123456789abcdef0',
+    user: 'joao.lima',
+    userType: 'IAMUser',
+    ip: '203.0.113.12',
+    tactics: ['Defense Evasion'],
+    techniques: ['T1562.007'],
+  },
+  {
+    title: 'Login no console sem MFA',
+    source: 'cloudtrail',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 330,
+    ruleId: '80254',
+    ruleLevel: 7,
+    eventName: 'ConsoleLogin',
+    region: 'us-east-1',
+    user: 'marcos.vendas',
+    userType: 'IAMUser',
+    ip: '203.0.113.44',
+    tactics: ['Initial Access'],
+    techniques: ['T1078.004'],
+  },
+  {
+    title: 'Política de bucket alterada',
+    source: 'cloudtrail',
+    severity: 'medium',
+    status: 'legitimate',
+    minutesAgo: 1_500,
+    ruleId: '80270',
+    ruleLevel: 8,
+    eventName: 'PutBucketPolicy',
+    region: 'sa-east-1',
+    resource: 'loja-exemplo-imagens',
+    user: 'ana.souza',
+    userType: 'IAMUser',
+    ip: '203.0.113.10',
+    tactics: ['Exfiltration'],
+    techniques: ['T1537'],
+    comments: [
+      {
+        author: 'Ana Souza',
+        body: 'Liberação de leitura para o CDN, combinada com o time de infraestrutura.',
+        minutesAgo: 1_440,
+      },
+    ],
+  },
+  {
+    title: 'Chamadas negadas por falta de permissão (AccessDenied) em sequência',
+    source: 'cloudtrail',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 95,
+    ruleId: '80202',
+    ruleLevel: 5,
+    eventName: 'ListBuckets',
+    region: 'us-east-1',
+    user: 'relatorios-app',
+    userType: 'AssumedRole',
+    ip: '203.0.113.60',
+    tactics: ['Discovery'],
+    techniques: ['T1619'],
+  },
+  {
+    title: 'Login no console com falha',
+    source: 'cloudtrail',
+    severity: 'low',
+    status: 'resolved',
+    minutesAgo: 2_880,
+    ruleId: '80250',
+    ruleLevel: 5,
+    eventName: 'ConsoleLogin',
+    region: 'us-east-1',
+    user: 'maria.rh',
+    userType: 'IAMUser',
+    ip: '203.0.113.99',
+    tactics: ['Credential Access'],
+    techniques: ['T1110.001'],
+    comments: [
+      { author: 'Equipe Verax', body: 'Senha digitada errada; confirmado com a usuária.', minutesAgo: 2_800 },
+    ],
+  },
+  {
+    title: 'Chave de acesso usada de uma região incomum',
+    source: 'cloudtrail',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 1_000,
+    ruleId: '80205',
+    ruleLevel: 5,
+    eventName: 'DescribeInstances',
+    region: 'ap-southeast-2',
+    user: 'backup-job',
+    userType: 'IAMUser',
+    accessKeyId: 'AKIAI44QH8DHBEXAMPLE',
+    ip: '203.0.113.70',
+    tactics: ['Discovery'],
+    techniques: ['T1580'],
+    account: DEMO_ACCOUNTS.alfaHomologacao,
+  },
+];
+
+const BETA_FINDINGS: Template[] = [
+  {
+    title: 'Login no console sem MFA',
+    source: 'cloudtrail',
+    severity: 'medium',
+    status: 'resolved',
+    minutesAgo: 2_000,
+    ruleId: '80254',
+    ruleLevel: 7,
+    eventName: 'ConsoleLogin',
+    region: 'sa-east-1',
+    user: 'paulo.ti',
+    userType: 'IAMUser',
+    ip: '203.0.113.80',
+    tactics: ['Initial Access'],
+    techniques: ['T1078.004'],
+    account: DEMO_ACCOUNTS.beta,
+  },
+  {
+    title: 'WAF bloqueou tentativa de cross-site scripting',
+    source: 'waf',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 400,
+    ruleId: '80402',
+    ruleLevel: 7,
+    eventName: 'AWS-AWSManagedRulesCommonRuleSet',
+    region: 'sa-east-1',
+    resource: 'arn:aws:wafv2:sa-east-1:777788889999:regional/webacl/site/e5f6a7b8',
+    ip: '192.0.2.150',
+    tactics: ['Initial Access'],
+    techniques: ['T1190'],
+    account: DEMO_ACCOUNTS.beta,
+  },
+  {
+    title: 'Login no console com falha',
+    source: 'cloudtrail',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 600,
+    ruleId: '80250',
+    ruleLevel: 5,
+    eventName: 'ConsoleLogin',
+    region: 'sa-east-1',
+    user: 'paulo.ti',
+    userType: 'IAMUser',
+    ip: '203.0.113.80',
+    tactics: ['Credential Access'],
+    techniques: ['T1110.001'],
+    account: DEMO_ACCOUNTS.beta,
+  },
+];
+
+const id = (prefix: number, index: number): string =>
+  `018f2c1e-0000-7000-8000-${(prefix * 0x1000 + index + 1).toString(16).padStart(12, '0')}`;
+
+const iso = (now: Date, minutes: number): string => new Date(now.getTime() - minutes * 60_000).toISOString();
+
+function rawEvent(t: Template, account: string, at: string): Record<string, unknown> {
+  if (t.source === 'guardduty') {
+    return {
+      schemaVersion: '2.0',
+      accountId: account,
+      region: t.region,
+      type: t.eventName,
+      severity: t.severity === 'critical' ? 9 : t.severity === 'high' ? 8 : 5,
+      updatedAt: at,
+      resource: t.resource
+        ? { resourceType: 'Instance', instanceDetails: { instanceId: t.resource } }
+        : { resourceType: 'AccessKey', accessKeyDetails: { userName: t.user, accessKeyId: t.accessKeyId } },
+      service: { action: { networkConnectionAction: { remoteIpDetails: { ipAddressV4: t.ip } } }, count: 37 },
+    };
+  }
+  if (t.source === 'waf') {
+    return {
+      timestamp: Date.parse(at),
+      webaclId: t.resource,
+      action: 'BLOCK',
+      terminatingRuleId: t.eventName,
+      httpRequest: {
+        clientIp: t.ip,
+        country: 'NL',
+        httpMethod: 'GET',
+        uri: '/api/produtos',
+        args: "busca=1' OR '1'='1",
+        headers: [{ name: 'user-agent', value: 'sqlmap/1.8' }],
+      },
+    };
+  }
+  return {
+    eventVersion: '1.10',
+    eventTime: at,
+    eventSource: 'iam.amazonaws.com',
+    eventName: t.eventName,
+    awsRegion: t.region,
+    sourceIPAddress: t.ip,
+    userAgent: 'aws-cli/2.17.0 Python/3.12',
+    userIdentity: { type: t.userType, userName: t.user, accessKeyId: t.accessKeyId, accountId: account },
+    requestParameters: t.resource ? { resource: t.resource } : null,
+    recipientAccountId: account,
+  };
+}
+
+function build(templates: Template[], prefix: number, defaultAccount: string, now: Date): FindingDetail[] {
+  return templates.map((t, index) => {
+    const account = t.account ?? defaultAccount;
+    const occurredAt = iso(now, t.minutesAgo);
+    const comments = (t.comments ?? []).map((comment, position) => ({
+      id: id(prefix + 8, index * 10 + position),
+      author: { id: `demo-${comment.author}`, name: comment.author },
+      body: comment.body,
+      createdAt: iso(now, comment.minutesAgo),
+    }));
+    return findingDetailSchema.parse({
+      id: id(prefix, index),
+      accountId: account,
+      occurredAt,
+      severity: t.severity,
+      status: t.status,
+      title: t.title,
+      source: t.source,
+      eventName: t.eventName ?? null,
+      region: t.region ?? null,
+      resource: t.resource ?? null,
+      actor: {
+        user: t.user ?? null,
+        type: t.userType ?? null,
+        accessKeyId: t.accessKeyId ?? null,
+        ip: t.ip ?? null,
+      },
+      mitreTactics: t.tactics ?? [],
+      incidentId: t.incident ?? null,
+      commentCount: comments.length,
+      ruleId: t.ruleId,
+      ruleLevel: t.ruleLevel,
+      mitreTechniques: t.techniques ?? [],
+      comments,
+      rawEvent: t.minutesAgo > 90 * 24 * 60 ? null : rawEvent(t, account, occurredAt),
+    });
+  });
+}
+
+/** Achados de cada cliente fictício, do mais recente ao mais antigo. */
+export function demoFindings(now: Date = new Date()): Map<string, FindingDetail[]> {
+  const [alfa, beta] = DEMO_TENANTS.map((tenant) => tenant.id);
+  const byDate = (a: FindingDetail, b: FindingDetail) => b.occurredAt.localeCompare(a.occurredAt);
+  return new Map([
+    [alfa ?? '', build(ALFA_FINDINGS, 1, DEMO_ACCOUNTS.alfaProducao, now).sort(byDate)],
+    [beta ?? '', build(BETA_FINDINGS, 2, DEMO_ACCOUNTS.beta, now).sort(byDate)],
+  ]);
+}

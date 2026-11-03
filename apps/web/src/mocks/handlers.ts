@@ -3,6 +3,7 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
+import { createFindingHandlers } from './findings-handlers';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -35,6 +36,7 @@ function defaultMe(): Me {
 export function createHandlers(state: MockState = { me: defaultMe() }) {
   return [
     ...createAuthHandlers(state),
+    ...createFindingHandlers(state),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
