@@ -104,6 +104,17 @@ describe('agrupamento em incidentes (T5.6)', () => {
     expect(planIncident(finding({ severity: 'low' }), [incident()])).toMatchObject({ action: 'join' });
   });
 
+  it('achado grave sem nenhuma chave (usuário, chave, IP, recurso) não abre incidente', () => {
+    const bare = finding({
+      severity: 'critical',
+      actorUser: null,
+      accessKeyId: null,
+      sourceIp: null,
+      resource: null,
+    });
+    expect(planIncident(bare, [])).toEqual({ action: 'none' });
+  });
+
   it('janela configurável', () => {
     expect(planIncident(finding(), [incident()], 10)).toEqual({ action: 'open' });
     expect(planIncident(finding(), [incident()], 20)).toMatchObject({ action: 'join' });

@@ -3,6 +3,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AlertSync, type AlertSearchClient } from '../src/alerts/alert-sync.js';
+import { IncidentGrouping, protectedItemsOf } from '../src/incidents/incident-grouping.js';
 import { DEFAULT_SYNC_SETTINGS } from '../src/alerts/sync-query.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { AlertSearch } from '../src/indexer/alert-queries.js';
@@ -388,6 +389,44 @@ describe('sync de alertas para achados (T5.3)', () => {
   });
 
   describe('agrupamento em incidentes (T5.6)', () => {
+    it('lista de proteção no formato do achado: s3:, ec2: e sg:', () => {
+      const items = protectedItemsOf([
+        { type: 's3_bucket', identifier: 'relatorios' },
+        { type: 'ec2_instance', identifier: 'i-0abc1234' },
+        { type: 'security_group', identifier: 'sg-0123456789abcdef0' },
+      ]);
+      expect([...items]).toEqual(
+        expect.arrayContaining(['s3:relatorios', 'ec2:i-0abc1234', 'sg:sg-0123456789abcdef0']),
+      );
+      expect(items.has('ec2:sg-0123456789abcdef0')).toBe(false);
+    });
+
+    it('falha no meio do agrupamento não deixa o achado gravado sem incidente: a próxima execução refaz', async () => {
+      class FailingOnce extends IncidentGrouping {
+        failed = false;
+        override place(...args: Parameters<IncidentGrouping['place']>) {
+          if (!this.failed) {
+            this.failed = true;
+            return Promise.reject(new Error('banco caiu no meio'));
+          }
+          return super.place(...args);
+        }
+      }
+      const name = `teste-${randomUUID().slice(0, 8)}`;
+      const doc = trailAlertA(7, { sourceIp: `100.65.${randomInt(0, 255)}.${randomInt(1, 254)}`, level: 12 });
+      const where = { source_sourceEventId: { source: 'wazuh', sourceEventId: String(doc['id']) } };
+      const grouping = new FailingOnce();
+
+      await expect(
+        new AlertSync(prisma, new FakeIndexer([doc]), { name, grouping }).runOnce(),
+      ).rejects.toThrow();
+      expect(await prisma.finding.findUnique({ where })).toBeNull();
+
+      const report = await new AlertSync(prisma, new FakeIndexer([doc]), { name, grouping }).runOnce();
+      expect(report.created).toBe(1);
+      expect((await prisma.finding.findUniqueOrThrow({ where })).incidentId).not.toBeNull();
+    });
+
     // Faixa que nenhuma exceção dos outros testes cobre.
     const ip = () => `100.64.${randomInt(0, 255)}.${randomInt(1, 254)}`;
     /** Usuário e chave próprios: os alertas de exemplo dividem o mesmo usuário e cairiam no mesmo incidente. */

@@ -13,6 +13,7 @@ import {
   syncPage,
   syncWindowStart,
 } from './sync-query.js';
+import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import { IncidentGrouping, protectedItemsOf } from '../incidents/incident-grouping.js';
 import { parseWazuhAlert, type WazuhAwsAlert } from './wazuh-alert.js';
 
@@ -35,6 +36,8 @@ export interface AlertSyncOptions {
   owner?: string;
   /** Janela de agrupamento de incidentes (T5.6), em minutos. */
   groupingWindowMinutes?: number;
+  /** Agrupamento usado (os testes trocam por um que falha, para provar que nada fica pela metade). */
+  grouping?: IncidentGrouping;
 }
 
 export interface SyncReport {
@@ -116,7 +119,7 @@ export class AlertSync {
     this.leaseMs = options.leaseMs ?? 5 * 60 * 1000;
     this.maxPages = options.maxPages ?? 100;
     this.owner = options.owner ?? `worker-${randomUUID()}`;
-    this.grouping = new IncidentGrouping(prisma, options.groupingWindowMinutes);
+    this.grouping = options.grouping ?? new IncidentGrouping(options.groupingWindowMinutes);
   }
 
   async runOnce(now: Date = new Date()): Promise<SyncReport> {
@@ -235,37 +238,37 @@ export class AlertSync {
       lastEvents.set(key, { tenantId: owner.tenantId, accountId: owner.accountId, at });
     }
 
-    const db = this.prisma.forTenant(owner.tenantId);
-    const { count } = await db.finding.createMany({
-      data: [findingRow(draft, exception)],
-      skipDuplicates: true,
+    // Achado, uso da exceção e incidente na mesma transação: se algo falhar no meio, nada fica gravado, e a releitura
+    // grava tudo de novo. Sem isso, o achado ficaria e voltaria como duplicado, sem nunca entrar no incidente.
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      const db = scopeToTenant(tx, owner.tenantId);
+      const { count } = await db.finding.createMany({
+        data: [findingRow(draft, exception)],
+        skipDuplicates: true,
+      });
+      if (count === 0) return 'duplicate' as const;
+      if (exception) {
+        await db.alertException.update({
+          where: { id: exception.id },
+          data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
+        });
+        // Esperado por exceção: não abre nem alimenta incidente.
+        return 'excepted' as const;
+      }
+      const { id } = await db.finding.findUniqueOrThrow({
+        where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
+        select: { id: true },
+      });
+      return this.grouping.place(db, id, protectedItems.get(owner.tenantId) ?? new Set());
     });
-    if (count === 0) {
+    if (outcome === 'duplicate') {
       report.duplicates += 1;
       return;
     }
     report.created += 1;
-    if (exception) {
-      report.excepted += 1;
-      await db.alertException.update({
-        where: { id: exception.id },
-        data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
-      });
-      // Esperado por exceção: não abre nem alimenta incidente.
-      return;
-    }
-
-    const { id } = await db.finding.findUniqueOrThrow({
-      where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
-      select: { id: true },
-    });
-    const grouped = await this.grouping.place(
-      owner.tenantId,
-      id,
-      protectedItems.get(owner.tenantId) ?? new Set(),
-    );
-    if (grouped === 'opened') report.incidentsOpened += 1;
-    if (grouped === 'joined') report.incidentsJoined += 1;
+    if (outcome === 'excepted') report.excepted += 1;
+    if (outcome === 'opened') report.incidentsOpened += 1;
+    if (outcome === 'joined') report.incidentsJoined += 1;
   }
 
   /** Lista de proteção de cada cliente, para a nota de risco dos incidentes (+15). */
