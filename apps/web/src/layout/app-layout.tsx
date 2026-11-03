@@ -18,15 +18,19 @@ export function AppLayout() {
   const signOut = useSignOut();
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  // O menu guarda o caminho em que foi aberto: ao navegar, o caminho muda e a gaveta fecha sozinha.
-  const [openAt, setOpenAt] = useState<string | null>(null);
-  const menuOpen = openAt === pathname;
-  const setMenuOpen = (open: boolean) => setOpenAt(open ? pathname : null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Qualquer navegação (link, voltar ou avançar do navegador) fecha a gaveta. Ajuste de estado durante a
+  // renderização, como recomenda o React para zerar estado quando um valor muda, sem efeito.
+  const [lastPath, setLastPath] = useState(pathname);
+  if (pathname !== lastPath) {
+    setLastPath(pathname);
+    setMenuOpen(false);
+  }
 
   useEffect(() => {
     if (!menuOpen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpenAt(null);
+      if (event.key === 'Escape') setMenuOpen(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

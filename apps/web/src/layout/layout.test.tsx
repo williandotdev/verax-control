@@ -151,5 +151,10 @@ describe('menu no celular', () => {
     await userEvent.click(within(await menu()).getByRole('link', { name: 'Incidentes' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/incidentes'));
     expect(drawer).toHaveAttribute('data-open', 'false');
+
+    // Voltar pelo navegador não reabre a gaveta da página anterior.
+    await router.navigate(-1);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/'));
+    expect(document.getElementById('menu-principal')).toHaveAttribute('data-open', 'false');
   });
 });
