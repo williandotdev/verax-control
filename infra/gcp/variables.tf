@@ -87,3 +87,15 @@ variable "monthly_budget" {
   type        = number
   default     = 50
 }
+
+variable "github_repository" {
+  description = "Repositório do GitHub que publica as imagens do nó (dono/nome)."
+  type        = string
+  default     = "williandotdev/verax-control"
+}
+
+variable "github_wif_pool" {
+  description = "Pool de federação de identidade do GitHub neste projeto (o mesmo do Painel)."
+  type        = string
+  default     = "github-pool"
+}

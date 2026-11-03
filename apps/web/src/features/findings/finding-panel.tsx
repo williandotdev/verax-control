@@ -65,7 +65,11 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
     ],
     ['Chave de acesso', finding.actor.accessKeyId],
     ['IP de origem', finding.actor.ip],
-    ['Regra do Wazuh', `${finding.ruleId} (nível ${finding.ruleLevel})`],
+    [
+      // Os alertas da AWS vêm das regras do Wazuh; os da GCP, das regras do próprio nó.
+      finding.source === 'gcp_audit' ? 'Regra (auditoria da GCP)' : 'Regra do Wazuh',
+      `${finding.ruleId} (nível ${finding.ruleLevel})`,
+    ],
   ];
   const mitre = [...finding.mitreTactics, ...finding.mitreTechniques];
 

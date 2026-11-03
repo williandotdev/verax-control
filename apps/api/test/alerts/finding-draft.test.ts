@@ -69,7 +69,7 @@ describe('de alerta a achado (T5.3)', () => {
       ruleId: '80303',
       ruleLevel: 10,
       title: 'AWS GuardDuty: AWS_API_CALL - Credenciais usadas de fora da AWS.',
-      awsSource: 'guardduty',
+      logSource: 'guardduty',
       eventName: 'UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS',
       region: 'sa-east-1',
       resource: 'ec2:i-0abc1234def567890',

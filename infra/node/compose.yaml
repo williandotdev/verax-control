@@ -1,0 +1,141 @@
+# Pacote do nó (passo 4 de docs/ARQUITETURA.md): PostgreSQL com TLS, papéis de banco, migrations, API, worker e túnel
+# do Cloudflare, numa VM só. Segue a mesma sequência e as mesmas opções de execução do teste da imagem no CI
+# (scripts/test-api-image.sh): banco por TLS com o certificado conferido, raiz só leitura, sem capabilities, sem ganho
+# de privilégio e sem root.
+#
+# Nenhuma porta é publicada: o painel chega à API pelo túnel (conexão de saída do cloudflared), e o banco só é
+# alcançável pela rede interna. As imagens da API e das migrations vêm pelo digest (`/etc/verax/images.env`); os
+# arquivos de ambiente ficam em /run/verax (memória), montados pelo start.sh a cada partida.
+
+name: verax
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  tmpfs: ['/tmp:rw,noexec,nosuid,size=16m']
+  networks: [verax]
+  logging:
+    driver: local
+    options: { max-size: 10m, max-file: '3' }
+
+x-database-ca: &database-ca /var/lib/verax/tls/ca.crt:/etc/verax/tls/ca.crt:ro
+
+services:
+  postgres:
+    image: postgres:18-alpine@sha256:10a5c69a83035ab5239f5620d708520e8b28f5aa1f2b20143e6024532edadfb5
+    env_file: /run/verax/postgres.env
+    command:
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/verax/tls/server.crt
+      - -c
+      - ssl_key_file=/etc/verax/tls/server.key
+      - -c
+      - ssl_min_protocol_version=TLSv1.2
+      - -c
+      - hba_file=/etc/verax/pg_hba.conf
+      # A VM tem 1 GB de memória: banco enxuto (poucos usuários, um worker).
+      - -c
+      - shared_buffers=32MB
+      - -c
+      - max_connections=40
+      - -c
+      - work_mem=2MB
+      - -c
+      - maintenance_work_mem=16MB
+      - -c
+      - effective_cache_size=128MB
+    volumes:
+      - /var/lib/verax/postgres:/var/lib/postgresql
+      - /var/lib/verax/tls/server.crt:/etc/verax/tls/server.crt:ro
+      - /var/lib/verax/tls/server.key:/etc/verax/tls/server.key:ro
+      - /opt/verax/pg_hba.conf:/etc/verax/pg_hba.conf:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d verax']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    security_opt: ['no-new-privileges:true']
+    shm_size: 64m
+    mem_limit: 256m
+    restart: unless-stopped
+    networks: [verax]
+    logging:
+      driver: local
+      options: { max-size: 10m, max-file: '3' }
+
+  # Papéis de banco (conta mestra): roda antes das migrations, para o papel delas existir, e depois, para as
+  # permissões valerem nas tabelas novas. Idempotente.
+  db-bootstrap:
+    <<: *hardened
+    image: ${API_IMAGE:?}
+    command: ['node', 'dist/cli/db-bootstrap.js']
+    env_file: /run/verax/db-bootstrap.env
+    volumes: [*database-ca]
+    mem_limit: 192m
+    restart: 'no'
+    profiles: [setup]
+
+  migrate:
+    <<: *hardened
+    image: ${MIGRATE_IMAGE:?}
+    env_file: /run/verax/migrate.env
+    volumes: [*database-ca]
+    mem_limit: 256m
+    restart: 'no'
+    profiles: [setup]
+
+  # Primeira configuração (primeiro admin, cliente e contas): `start.sh bootstrap`.
+  bootstrap:
+    <<: *hardened
+    image: ${API_IMAGE:?}
+    command: ['node', 'dist/cli/node-bootstrap.js']
+    env_file: [/run/verax/api.env, /run/verax/bootstrap.env]
+    volumes: [*database-ca]
+    mem_limit: 256m
+    restart: 'no'
+    profiles: [setup]
+
+  api:
+    <<: *hardened
+    image: ${API_IMAGE:?}
+    env_file: /run/verax/api.env
+    environment:
+      NODE_OPTIONS: --max-old-space-size=192
+    volumes: [*database-ca]
+    mem_limit: 320m
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  worker:
+    <<: *hardened
+    image: ${API_IMAGE:?}
+    command: ['node', 'dist/worker.js']
+    env_file: /run/verax/worker.env
+    environment:
+      NODE_OPTIONS: --max-old-space-size=160
+    volumes: [*database-ca]
+    # A imagem confere a porta da API; o worker não tem porta.
+    healthcheck:
+      disable: true
+    mem_limit: 256m
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  cloudflared:
+    <<: *hardened
+    image: cloudflare/cloudflared:2026.10.7@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
+    command: ['tunnel', '--no-autoupdate', 'run']
+    env_file: /run/verax/cloudflared.env
+    mem_limit: 96m
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+
+networks:
+  verax:
+    driver: bridge

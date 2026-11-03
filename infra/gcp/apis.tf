@@ -1,6 +1,7 @@
 # APIs que os recursos abaixo usam. Ligar uma API não muda nada do que já existe no projeto.
 resource "google_project_service" "apis" {
   for_each = toset([
+    "artifactregistry.googleapis.com",
     "billingbudgets.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "compute.googleapis.com",

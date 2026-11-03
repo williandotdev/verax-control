@@ -58,9 +58,30 @@ describe('loadConfig', () => {
     );
   });
 
-  it('exige SES em produção', () => {
+  it('SMTP exige servidor, usuário e senha; a porta padrão é a 465 (TLS desde o início)', () => {
+    const smtp = { ...validProductionEnv, MAIL_TRANSPORT: 'smtp' };
+    expect(problemsOf(smtp)).toEqual(
+      expect.arrayContaining([
+        'SMTP_HOST: obrigatória e não definida',
+        'SMTP_USER: obrigatória e não definida',
+        'SMTP_PASSWORD: obrigatória e não definida',
+      ]),
+    );
+    const config = loadConfig({
+      ...smtp,
+      SMTP_HOST: 'smtp.exemplo.com',
+      SMTP_USER: 'nao-responda@verax.example',
+      SMTP_PASSWORD: 'senha-de-aplicativo',
+    });
+    expect(config).toMatchObject({ MAIL_TRANSPORT: 'smtp', SMTP_PORT: 465 });
+    expect(problemsOf({ ...smtp, SMTP_HOST: 'smtp.exemplo.com/../x' })).toContain(
+      'SMTP_HOST: nome de servidor inválido',
+    );
+  });
+
+  it('exige SES ou SMTP em produção', () => {
     expect(problemsOf({ ...validProductionEnv, MAIL_TRANSPORT: 'dev-mailbox' })).toContain(
-      'MAIL_TRANSPORT: deve ser ses em produção',
+      'MAIL_TRANSPORT: deve ser ses ou smtp em produção',
     );
     expect(loadConfig({ ...validProductionEnv, MAIL_TRANSPORT: 'ses' }).MAIL_TRANSPORT).toBe('ses');
   });
@@ -169,6 +190,18 @@ describe('configuração do worker do sync (T5.3)', () => {
       ]);
       expect((error as Error).message).not.toContain(secret);
     }
+  });
+
+  it('fontes do sync: Wazuh por padrão; a GCP sozinha no nó da Verax; repetida conta uma vez', () => {
+    expect(loadWorkerConfig(workerEnv).SYNC_SOURCES).toEqual(['wazuh']);
+    expect(loadWorkerConfig({ ...workerEnv, SYNC_SOURCES: 'gcp' }).SYNC_SOURCES).toEqual(['gcp']);
+    expect(loadWorkerConfig({ ...workerEnv, SYNC_SOURCES: 'gcp, wazuh,gcp' }).SYNC_SOURCES).toEqual([
+      'gcp',
+      'wazuh',
+    ]);
+    expect(() => loadWorkerConfig({ ...workerEnv, SYNC_SOURCES: 'gcp,splunk' })).toThrow(
+      ConfigValidationError,
+    );
   });
 
   it.each(['5', '7200', 'um minuto'])('intervalo fora da faixa é recusado: %s', (value) => {

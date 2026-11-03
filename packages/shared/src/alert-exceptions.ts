@@ -26,7 +26,7 @@ const expiresAtSchema = z.iso.datetime({ offset: true }).refine(
  */
 export const alertExceptionCreateSchema = z
   .strictObject({
-    ruleId: z.string().regex(/^\d{1,6}$/, { error: 'ID de regra do Wazuh tem até 6 dígitos' }),
+    ruleId: z.string().regex(/^\d{1,6}$/, { error: 'ID de regra tem até 6 dígitos' }),
     field: z.enum(ALERT_EXCEPTION_FIELDS),
     value: plainText(256),
     reason: plainText(500),

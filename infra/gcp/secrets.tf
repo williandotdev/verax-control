@@ -4,7 +4,7 @@
 
 locals {
   node_secrets = {
-    "resend-api-key"          = "Chave da API do Resend: envio dos convites e da redefinição de senha."
+    "smtp-password"           = "Senha de aplicativo da caixa de envio no Zoho: convites e redefinição de senha."
     "cloudflare-tunnel-token" = "Token do túnel do Cloudflare (cloudflared): o painel chega à API sem porta aberta."
   }
 }

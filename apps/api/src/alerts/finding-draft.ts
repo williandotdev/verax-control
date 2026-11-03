@@ -13,16 +13,18 @@ export { FINDING_SEVERITIES, type FindingSeverity } from '@verax/shared';
 export interface FindingDraft {
   tenantId: string;
   accountId: string;
-  source: 'wazuh';
-  /** ID do alerta no Wazuh. */
+  /** Sistema de origem: o Wazuh (contas AWS) ou a própria leitura dos logs da GCP. */
+  source: 'wazuh' | 'gcp';
+  /** ID do evento no sistema de origem. */
   sourceEventId: string;
   occurredAt: string;
   severity: FindingSeverity;
   ruleId: string;
   ruleLevel: number;
-  /** Descrição da regra do Wazuh (o resumo em português vem do dicionário da T7.9). */
+  /** Descrição da regra (o resumo em português vem do dicionário da T7.9). */
   title: string;
-  awsSource: AwsSource;
+  /** Fonte de log: `cloudtrail`, `guardduty`, `waf` ou `gcp_audit`. */
+  logSource: AwsSource | 'gcp_audit';
   eventName: string | null;
   region: string | null;
   resource: string | null;
@@ -74,7 +76,7 @@ export function toFindingDraft(
     ruleId: alert.rule.id,
     ruleLevel: alert.rule.level,
     title: alert.rule.description,
-    awsSource: alert.source,
+    logSource: alert.source,
     eventName: alert.eventName ?? null,
     region: alert.region ?? null,
     resource: alert.resource ?? null,

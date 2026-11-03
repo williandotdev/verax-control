@@ -188,8 +188,8 @@ function CreateException({ onDone }: { onDone: () => void }) {
   return (
     <form onSubmit={submit} noValidate className="space-y-4">
       <Field
-        label="Regra do Wazuh"
-        hint="O número da regra, que aparece no detalhe do achado."
+        label="Regra"
+        hint="O número da regra, que aparece no detalhe do achado (do Wazuh ou da auditoria da GCP)."
         inputMode="numeric"
         value={values.ruleId}
         onChange={(event) => setValues({ ...values, ruleId: event.target.value })}
