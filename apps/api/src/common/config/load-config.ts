@@ -1,4 +1,5 @@
-import { envSchema, type Env } from './env.schema.js';
+import type { z } from 'zod';
+import { envSchema, type Env, type WorkerEnv, workerEnvSchema } from './env.schema.js';
 
 export class ConfigValidationError extends Error {
   constructor(readonly problems: readonly string[]) {
@@ -12,7 +13,16 @@ export class ConfigValidationError extends Error {
  * nunca o valor recebido, que pode ser um segredo.
  */
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): Readonly<Env> {
-  const result = envSchema.safeParse(source);
+  return parseEnv(envSchema, source);
+}
+
+/** Configuração do worker do sync, com as mesmas regras de mensagem (só nomes, nunca valores). */
+export function loadWorkerConfig(source: NodeJS.ProcessEnv = process.env): Readonly<WorkerEnv> {
+  return parseEnv(workerEnvSchema, source);
+}
+
+function parseEnv<T extends z.ZodType>(schema: T, source: NodeJS.ProcessEnv): Readonly<z.infer<T>> {
+  const result = schema.safeParse(source);
   if (!result.success) {
     const problems = result.error.issues.map((issue) => {
       const name = issue.path.join('.') || '(ambiente)';

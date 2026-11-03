@@ -14,7 +14,7 @@ import { type Prisma, PrismaClient } from '../../generated/prisma/client.js';
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleDestroy {
-  constructor(@Inject(APP_CONFIG) config: AppConfig) {
+  constructor(@Inject(APP_CONFIG) config: Pick<AppConfig, 'DATABASE_URL'>) {
     super({ adapter: new PrismaPg({ connectionString: config.DATABASE_URL }) });
   }
 

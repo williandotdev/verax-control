@@ -96,3 +96,29 @@ export const envSchema = z
   });
 
 export type Env = z.infer<typeof envSchema>;
+
+/**
+ * Variáveis do worker do sync de alertas (T5.3): só o banco, o log e o intervalo. Nada de autenticação, e-mail
+ * nem origens, porque o worker não atende requisição. O indexer tem configuração própria (`loadIndexerConfig`).
+ */
+export const workerEnvSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']),
+    LOG_LEVEL: z.enum(logLevels).default('info'),
+    DATABASE_URL: z
+      .string({ error: 'obrigatória' })
+      .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
+    /** Intervalo entre execuções do sync. */
+    SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(15).max(3600).default(60),
+  })
+  .superRefine((env, ctx) => {
+    if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DATABASE_URL'],
+        message: 'deve usar sslmode=verify-full em produção (TLS com certificado conferido)',
+      });
+    }
+  });
+
+export type WorkerEnv = z.infer<typeof workerEnvSchema>;

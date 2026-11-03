@@ -1394,3 +1394,40 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o sync que grava os achados a partir do indexer (worker com lock, cursor, exceções e `lastEventAt`), com o leitor de evento bruto ligado ao indexer;
   - o vínculo com incidentes (`incidentId`);
   - achados de exemplo no seed local.
+
+## E5 (integração): sync de alertas para achados (T5.3), com exceções e fila sem dono
+
+- **Arquivos:**
+  - `apps/api/src/alerts/{alert-sync,exception-match}.ts`, `apps/api/src/worker.ts` e `apps/api/package.json` (`start:worker`);
+  - `apps/api/src/findings/{indexer-raw-events,findings.module}.ts`, `apps/api/src/main.ts` e `apps/api/src/app.module.ts`;
+  - `apps/api/src/common/config/{env.schema,load-config}.ts` e `apps/api/src/common/prisma/prisma.service.ts`;
+  - `apps/api/src/cloud-accounts/cloud-accounts.service.ts` (`lastEventAt`);
+  - `apps/api/prisma/schema.prisma` e as migrations `20261103090000_alert_sync` e `20261103100000_sync_continuation`;
+  - testes: `apps/api/test/{alert-sync,cloud-accounts}.test.ts`, `apps/api/test/alerts/exception-match.test.ts`, `apps/api/test/findings/indexer-raw-events.test.ts` e `apps/api/src/common/config/load-config.test.ts`.
+- **Dependências:** nenhuma. A faixa de IP das exceções usa o `BlockList` do próprio Node.
+- **Como funciona:**
+  - **Worker:** é o mesmo código da API num processo à parte (`node dist/worker.js`), sem porta aberta. Roda em laço, a cada `SYNC_INTERVAL_SECONDS` (60 por padrão, de 15 a 3600). SIGTERM espera a execução em curso. A configuração dele só pede banco e log, além do indexer (`loadIndexerConfig`); em produção, exige TLS conferido até o banco, como a API.
+  - **Uma execução:**
+    1. pega a concessão em `SyncState`, um worker por vez. Ela vence sozinha, então um worker que morre no meio não trava o próximo;
+    2. monta o cadastro de contas AWS ativas, com os buckets, e as exceções em vigor;
+    3. lê o indexer a partir do último alerta processado, menos a sobreposição, página a página pelo cursor. Há um limite de páginas por execução: um atraso grande é lido em várias execuções;
+    4. decide o dono de cada alerta (T5.2). Com dono, grava o achado sem duplicar (`skipDuplicates` na chave única), pelo escopo do cliente. Sem dono ou inválido, o alerta vai para a `UnownedAlert` com o motivo, sem o evento bruto;
+    5. grava o `lastEventAt` de cada conta e até onde leu. Numa falha, grava só o tipo do erro, sem a mensagem, que poderia carregar dado do indexer, e não avança a leitura.
+  - **Exceções (T3.5):** mesma regra do Wazuh, dentro da validade, e usuário ou recurso iguais, ou IP dentro da faixa, em IPv4 ou IPv6. O achado já nasce "legítimo", com o `exceptionId`, e a exceção soma `matchedCount` e `lastMatchedAt`. A exceção de um cliente nunca vale para outro.
+  - **Reler não desfaz a triagem:** um achado já gravado não é sobrescrito; o status dado por alguém fica.
+  - **Continuação (apontado pelo revisor automático):** quando uma execução bate o limite de páginas, ela grava o cursor (horário e id), e a próxima segue dele. Sem isso, uma sobreposição com mais alertas do que o limite fazia toda execução reler os mesmos alertas, e a leitura não avançava. Com a leitura em dia, volta a reler a sobreposição.
+  - **Último evento depois de falha (apontado pelo revisor automático):** o `lastEventAt` considera também os achados que voltam como duplicados. Assim, a nova tentativa depois de uma falha no meio grava o que a execução interrompida não gravou.
+  - **Evento bruto do detalhe:** com `INDEXER_URL` configurado, a API busca o alerta no indexer pelo id e devolve o evento saneado; sem indexer, sai sem.
+  - **Contas:** a API passa a devolver o `lastEventAt` gravado pelo sync.
+- **Testes:** 39 novos.
+  - 13 de integração do sync: dono certo, fila sem dono e alerta inválido, releitura sem duplicar nem desfazer a triagem, evento forjado no bucket de outro cliente, exceção aplicada e vencida, exceção que não atravessa clientes, GuardDuty, paginação com limite e continuação, concessão ocupada e vencida, falha do indexer, conta desativada, continuação com sobreposição maior que o limite e último evento gravado na nova tentativa (os dois últimos falham sem a correção).
+  - 15 da regra de exceção, 4 do evento bruto, 4 da configuração do worker (inclusive sem vazar a URL do banco) e 1 do `lastEventAt`.
+
+  Suíte da API: 599.
+
+- **Pendente:**
+  - o agrupamento em incidentes dentro do sync (T5.6, próximo passo);
+  - as fontes da GCP e do Cloudflare;
+  - a tela da fila sem dono para `admin_verax`;
+  - o worker no pacote do nó;
+  - as variáveis do worker (`SYNC_INTERVAL_SECONDS` e `INDEXER_*`) no `.env.example`, que o agente não lê por regra do projeto.
