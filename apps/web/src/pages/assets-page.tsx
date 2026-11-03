@@ -130,7 +130,11 @@ export function AssetsPage() {
       </div>
 
       <Tabs.Root value={kind} onValueChange={(value) => update({ aba: value === 'users' ? null : value })}>
-        <Tabs.List aria-label="Tipo de ativo" className="flex flex-wrap gap-1 border-b">
+        <Tabs.List
+          data-tour="ativos-abas"
+          aria-label="Tipo de ativo"
+          className="flex flex-wrap gap-1 border-b"
+        >
           {ASSET_KINDS.map((value) => {
             const count = summary.data.counts[value];
             return (

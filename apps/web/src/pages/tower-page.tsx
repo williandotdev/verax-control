@@ -74,7 +74,7 @@ function TowerShell({ children, updatedAt }: { children: ReactNode; updatedAt?: 
 function TowerContent({ summary }: { summary: TowerSummary }) {
   return (
     <TowerShell updatedAt={summary.generatedAt}>
-      <Card>
+      <Card data-tour="torre-semaforo">
         <Semaphore state={summary.light} reason={towerReason(summary)} />
       </Card>
       <div className="grid gap-6 lg:grid-cols-3">
@@ -123,7 +123,7 @@ const DECISIONS: Record<
 function PendingDecisions({ summary }: { summary: TowerSummary }) {
   const navigate = useNavigate();
   return (
-    <section aria-labelledby="torre-decisoes" className="space-y-3 lg:col-span-2">
+    <section data-tour="torre-decisoes" aria-labelledby="torre-decisoes" className="space-y-3 lg:col-span-2">
       <h2 id="torre-decisoes" className="text-lg font-semibold">
         Decisões pendentes
       </h2>
@@ -214,7 +214,7 @@ function Posture({ posture }: { posture: TowerSummary['posture'] }) {
 function Mitre({ mitre }: { mitre: TowerSummary['mitre'] }) {
   const observed = mitre.tactics.filter((tactic) => tactic.findings > 0).length;
   return (
-    <Card aria-labelledby="torre-mitre" className="space-y-3">
+    <Card data-tour="torre-mitre" aria-labelledby="torre-mitre" className="space-y-3">
       <CardHeader>
         <div>
           <CardTitle id="torre-mitre">MITRE ATT&CK</CardTitle>

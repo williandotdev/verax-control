@@ -28,11 +28,11 @@ export const UNOWNED_REASON_LABELS: Readonly<Record<UnownedReason, { label: stri
   },
   not_aws: {
     label: 'Não veio de conta AWS',
-    hint: 'O alerta não veio da leitura dos logs da AWS (por exemplo, um alerta do próprio Wazuh).',
+    hint: 'O alerta não veio da leitura dos logs da AWS (por exemplo, um alerta interno do coletor).',
   },
   invalid_alert: {
     label: 'Fora do formato esperado',
-    hint: 'O alerta não passou na validação. Confira a versão do Wazuh e os decodificadores.',
+    hint: 'O alerta não passou na validação. Confira a versão do coletor e o formato do log de origem.',
   },
 };
 

@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
+import { skipDemoTour } from './demo-tour';
 
 /**
  * Revisão de UX (T7.12) no navegador, sobre a demonstração (`dev:mock`): toda tela sem violação de acessibilidade
@@ -50,6 +51,7 @@ async function violations(page: Page): Promise<string[]> {
 test.describe('revisão de UX (modo mock)', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'admin_verax'));
+    await skipDemoTour(page);
   });
 
   // Nos dois temas: o contraste do escuro não é o do claro invertido (tokens escolhidos à mão em cada modo).

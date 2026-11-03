@@ -22,7 +22,7 @@ import { formatTimestamp } from '@/lib/format';
 const PERIOD_OPTIONS = REPORT_PERIODS.map((period) => ({ value: period, label: PERIOD_LABELS[period] }));
 
 /**
- * Relatórios para especialistas: as visões tradicionais de um SOC, por período, com exportação em CSV. A Torre
+ * Relatórios para especialistas: as visões tradicionais de uma operação de segurança, por período, com exportação em CSV. A Torre
  * continua sendo o ponto de partida; aqui fica o detalhe para quem quer analisar a fundo.
  */
 export function ReportsPage() {
@@ -47,8 +47,8 @@ export function ReportsPage() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold">Relatórios</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            As visões clássicas de um SOC, para análise detalhada. Todas as tabelas podem ser exportadas em
-            CSV.
+            Para análise detalhada: resumo, MITRE ATT&CK, detecções, entidades, incidentes, cobertura e
+            exceções. Todas as tabelas podem ser exportadas em CSV.
           </p>
         </div>
         <SelectField
@@ -68,7 +68,11 @@ export function ReportsPage() {
           value={tab?.slug ?? 'resumo'}
           onValueChange={(value) => update({ aba: value === 'resumo' ? null : value })}
         >
-          <Tabs.List aria-label="Relatório" className="flex flex-wrap gap-1 border-b">
+          <Tabs.List
+            data-tour="relatorios-abas"
+            aria-label="Relatório"
+            className="flex flex-wrap gap-1 border-b"
+          >
             {REPORT_TABS.map((item) => (
               <Tabs.Trigger
                 key={item.slug}

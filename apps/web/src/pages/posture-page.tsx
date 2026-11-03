@@ -132,7 +132,7 @@ export function PosturePage() {
 
   return (
     <PostureShell>
-      <div className="grid gap-4 md:grid-cols-2">
+      <div data-tour="postura-contas" className="grid gap-4 md:grid-cols-2">
         {overview.data.accounts.map((item) => (
           <AccountCard
             key={item.accountId}

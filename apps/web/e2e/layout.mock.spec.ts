@@ -1,8 +1,13 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import { skipDemoTour } from './demo-tour';
 
 /** Estrutura do painel no navegador, sobre a API simulada pelo Mock Service Worker (`dev:mock`). */
 test.describe('estrutura e navegação (modo mock)', () => {
+  test.beforeEach(async ({ page }) => {
+    await skipDemoTour(page);
+  });
+
   test('admin_verax: menu completo, troca de cliente e sem violações de acessibilidade', async ({
     page,
   }, testInfo) => {

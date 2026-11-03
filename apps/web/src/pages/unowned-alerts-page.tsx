@@ -199,7 +199,7 @@ export function UnownedAlertsPage() {
 function AccountsSummary({ onPick }: { onPick: (account: string) => void }) {
   const accounts = useUnownedAccounts('30d');
   return (
-    <section aria-labelledby="fila-contas" className="space-y-3">
+    <section data-tour="sem-dono-contas" aria-labelledby="fila-contas" className="space-y-3">
       <div className="space-y-1">
         <h2 id="fila-contas" className="text-lg font-semibold">
           Contas que mais aparecem

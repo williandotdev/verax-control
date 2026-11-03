@@ -12,7 +12,7 @@ const OPTIONS: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
 export function ThemeToggle() {
   const [preference, setPreference] = useTheme();
   return (
-    <div role="radiogroup" aria-label="Tema" className="inline-flex rounded-md border p-0.5">
+    <div data-tour="tema" role="radiogroup" aria-label="Tema" className="inline-flex rounded-md border p-0.5">
       {OPTIONS.map(({ value, label, icon: Icon }) => (
         <button
           key={value}
