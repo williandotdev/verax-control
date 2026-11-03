@@ -10,6 +10,8 @@ export const TENANT_SCOPED_MODELS = [
   'cloudAccount',
   'protectedResource',
   'alertException',
+  'finding',
+  'findingComment',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

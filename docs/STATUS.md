@@ -1353,3 +1353,44 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Pendente:**
   - a leitura de fato (o Wazuh lendo a assinatura do Pub/Sub e o coletor do Cloudflare), com o nó na GCP;
   - o vínculo do alerta ao cliente para essas fontes (T5.2 para GCP e Cloudflare).
+
+## E5 (integração): achados gravados e endpoints de triagem (T5.4 e T5.5)
+
+- **Arquivos:**
+  - `apps/api/prisma/schema.prisma` e a migration `20261103080000_findings`;
+  - `apps/api/src/findings/{findings.service,findings.controller,findings.module,raw-events}.ts`;
+  - `apps/api/src/app.module.ts` e `apps/api/src/common/prisma/tenant-scope.ts`;
+  - `apps/api/test/findings.test.ts` e `apps/api/test/support/create-app.ts` (troca de provider por dublê).
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Models:**
+    - `Finding` guarda os campos que o painel mostra, a severidade e o status. É único por `(source, sourceEventId)`, para o sync reler a janela de sobreposição sem duplicar;
+    - `FindingComment` guarda os comentários.
+
+    Os dois têm `tenantId` e entram no escopo por cliente; o meta-teste do DMMF confere.
+
+  - **Garantias no banco:**
+    - a chave estrangeira do comentário inclui o cliente, então um comentário nunca aponta para achado de outro cliente;
+    - um gatilho recusa UPDATE, DELETE e TRUNCATE nos comentários, como na auditoria: eles são o registro de quem decidiu o quê.
+  - **Endpoints** (o contrato que o painel e o modo de demonstração já usam):
+    - `GET /v1/findings`: filtros de severidade, status, conta e período, com os mais recentes primeiro e a contagem de comentários;
+    - `GET /v1/findings/:id`: regra, técnicas MITRE, comentários e o evento bruto;
+    - `PATCH /v1/findings/:id/status`: o comentário opcional entra na mesma transação e na mesma auditoria (`finding.status`, com status anterior e novo);
+    - `POST /v1/findings/:id/comments`: auditado como `finding.comment`.
+
+    Leitura com `findings:read`; mudança de status e comentário com `findings:triage`. Achado não é criado pela API, só pelo sync.
+
+  - **Evento bruto:** vem do indexer por uma interface (`RawEventReader`). Neste passo, ela devolve vazio; o próximo passo liga o indexer. Se o indexer falhar, o detalhe sai sem o evento, e o erro vai para o log.
+- **Testes:** 22 na API:
+  - isolamento A/B na lista e no detalhe, e na mudança de status e no comentário, sem nada mudar;
+  - ordem, formato, filtros e filtros inválidos (inclusive injeção na conta);
+  - detalhe com e sem evento bruto, inclusive com o indexer fora do ar;
+  - status com comentário e auditoria, comentário avulso, corpos inválidos sem mudar nada e permissão de leitura;
+  - garantias do banco: alerta duplicado, comentário para achado de outro cliente, comentário editado ou apagado.
+
+  Suíte da API completa: 562.
+
+- **Pendente (próximo passo do E5):**
+  - o sync que grava os achados a partir do indexer (worker com lock, cursor, exceções e `lastEventAt`), com o leitor de evento bruto ligado ao indexer;
+  - o vínculo com incidentes (`incidentId`);
+  - achados de exemplo no seed local.

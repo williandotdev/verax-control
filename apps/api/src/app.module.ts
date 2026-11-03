@@ -13,6 +13,7 @@ import { UndeclaredInputInterceptor } from './common/http/undeclared-input.inter
 import { AppValidationPipe } from './common/http/validation.pipe.js';
 import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/logger.options.js';
 import { PrismaModule } from './common/prisma/prisma.module.js';
+import { FindingsModule } from './findings/findings.module.js';
 import { HealthModule } from './health/health.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { ProtectedResourcesModule } from './protected-resources/protected-resources.module.js';
@@ -41,6 +42,7 @@ export class AppModule {
         TenantsModule,
         UsersModule,
         CloudAccountsModule,
+        FindingsModule,
         ProtectedResourcesModule,
         AlertExceptionsModule,
       ],
