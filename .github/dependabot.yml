@@ -58,12 +58,13 @@ updates:
     commit-message:
       prefix: deps
 
-  # Provider AWS de cada raiz do Terraform. O PR atualiza o .terraform.lock.hcl; o iac.yml valida.
+  # Providers de cada raiz do Terraform (AWS e GCP). O PR atualiza o .terraform.lock.hcl; o iac.yml valida.
   - package-ecosystem: terraform
     directories:
       - /infra/terraform/bootstrap
       - /infra/terraform/envs/staging
       - /infra/terraform/envs/production
+      - /infra/gcp
     schedule:
       interval: weekly
       day: monday
