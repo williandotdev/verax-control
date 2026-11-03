@@ -1,8 +1,9 @@
 import { Download } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, useContext } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/cn';
 import { type CsvCell, downloadCsv, toCsv } from './csv';
+import { ReportContext } from './report-context';
 
 export interface ReportColumn<Row> {
   header: string;
@@ -22,19 +23,21 @@ export function ReportTable<Row>({
   columns,
   rows,
   rowKey,
-  filename,
+  file,
   empty = 'Nada no período.',
 }: {
   caption: string;
   columns: readonly ReportColumn<Row>[];
   rows: readonly Row[];
   rowKey: (row: Row, index: number) => string;
-  filename: string;
+  /** Nome do arquivo, sem o período (que vem dos próprios números) nem a extensão. */
+  file: string;
   empty?: string;
 }) {
+  const { period, current } = useContext(ReportContext);
   const exportCsv = () =>
     downloadCsv(
-      filename,
+      `verax-${file}-${period}.csv`,
       toCsv(
         columns.map((column) => column.header),
         rows.map((row) => columns.map((column) => column.csv(row))),
@@ -50,7 +53,7 @@ export function ReportTable<Row>({
           variant="ghost"
           size="sm"
           onClick={exportCsv}
-          disabled={rows.length === 0}
+          disabled={rows.length === 0 || !current}
           aria-label={`Exportar ${caption} em CSV`}
         >
           <Download aria-hidden />

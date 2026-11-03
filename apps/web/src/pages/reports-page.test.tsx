@@ -1,12 +1,14 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { delay, http } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
+import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
-import { demoMe } from '@/mocks/fixtures';
+import { DEMO_TENANTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
 
@@ -70,7 +72,50 @@ describe('Relatórios', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Exportar Por severidade em CSV' }));
     expect(click).toHaveBeenCalledOnce();
     const blob = created.mock.calls[0]?.[0] as Blob;
-    expect(await blob.text()).toContain('"Severidade","Abertos","Resolvidos","Tempo médio até resolver"');
+    expect(await blob.text()).toContain('"Severidade";"Abertos";"Resolvidos";"Tempo médio até resolver"');
+    expect(click.mock.contexts[0]).toHaveProperty('download', 'verax-incidentes-por-severidade-30d.csv');
+  });
+
+  it('ao trocar de período, os números anteriores ficam marcados como desatualizados e não exportam', async () => {
+    renderAt('/relatorios');
+    await rowsOf('Achados por severidade');
+    // O período novo não responde: a tela segue com o anterior, que não pode sair com o nome do novo.
+    server.use(
+      http.get(`${API_URL}/v1/reports/summary`, async ({ request }) => {
+        if (new URL(request.url).searchParams.get('period') === '90d') await delay('infinite');
+      }),
+    );
+    await userEvent.selectOptions(screen.getByLabelText('Período'), '90d');
+    expect(await screen.findByText(/Atualizando para o período escolhido/)).toBeInTheDocument();
+    expect(await rowsOf('Achados por severidade')).toHaveLength(4);
+    expect(screen.getByRole('button', { name: 'Exportar Achados por severidade em CSV' })).toBeDisabled();
+  });
+
+  it('ao trocar de cliente, o relatório do anterior sai da tela na hora', async () => {
+    const [alfa, beta] = DEMO_TENANTS.map((tenant) => tenant.id);
+    renderAt('/relatorios?aba=entidades', {
+      me: demoMe('admin_verax', { activeTenantId: alfa ?? null, scopeTenantId: alfa ?? null }),
+    });
+    expect(await rowsOf('Usuários e identidades')).not.toHaveLength(0);
+    server.use(
+      http.get(`${API_URL}/v1/reports/:kind`, async () => {
+        await delay('infinite');
+      }),
+    );
+    const select = await screen.findByLabelText('Cliente');
+    await waitFor(() => expect(select).toBeEnabled());
+    await userEvent.selectOptions(select, beta ?? '');
+    expect(await screen.findByText(/Carregando as entidades/)).toBeInTheDocument();
+    expect(screen.queryByRole('table', { name: 'Usuários e identidades' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['entidades', 'IPs de origem'],
+    ['cobertura', 'Contas monitoradas e o que chegou de cada uma'],
+    ['excecoes', 'Exceções e quantos alertas cada uma silenciou'],
+  ])('a aba %s mostra a tabela do relatório', async (tab, caption) => {
+    renderAt(`/relatorios?aba=${tab}`);
+    expect(await rowsOf(caption)).not.toHaveLength(0);
   });
 
   it('admin_verax sem cliente escolhido é orientado a escolher um', async () => {

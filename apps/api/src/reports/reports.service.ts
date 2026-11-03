@@ -5,6 +5,7 @@ import {
   exceptionsFold,
   type FindingsFold,
   incidentsReport,
+  type MitreReport,
   mitreFold,
   type ReportFinding,
   type ReportIncident,
@@ -57,6 +58,20 @@ const incidentSelect = {
   assignee: { select: { id: true, name: true } },
 } as const satisfies Prisma.IncidentSelect;
 
+/** Só o que o cálculo do MITRE usa, mais o id da paginação. */
+const mitreSelect = {
+  id: true,
+  occurredAt: true,
+  mitreTactics: true,
+  mitreTechniques: true,
+} as const satisfies Prisma.FindingSelect;
+
+/** Do mais recente para trás, com o id como desempate: a ordem da paginação por chave. */
+const KEYSET_ORDER = [
+  { occurredAt: 'desc' },
+  { id: 'desc' },
+] satisfies Prisma.FindingOrderByWithRelationInput[];
+
 type FindingRow = Prisma.FindingGetPayload<{ select: typeof findingSelect }>;
 type IncidentRow = Prisma.IncidentGetPayload<{ select: typeof incidentSelect }>;
 
@@ -91,34 +106,60 @@ export class ReportsService {
   ) {}
 
   /**
-   * Passa pelo cálculo todos os achados que começaram no período, do mais recente para trás. A paginação é por chave
-   * (data e id): nenhum achado fica de fora nem conta duas vezes, mesmo com datas iguais na virada do lote.
+   * Lê os achados que começaram no período, do mais recente para trás, em lotes de `batchSize`, e entrega cada linha
+   * a `onRow`. A paginação é por chave (data e id): nenhum achado fica de fora nem conta duas vezes, mesmo com datas
+   * iguais na virada do lote. O cursor também vira o limite de cima do intervalo, para o Postgres começar a varredura
+   * do índice nele, em vez de reler a cada lote tudo o que já passou.
    */
+  private async scanFindings<T extends { id: string; occurredAt: Date }>(
+    window: Pick<ReportWindow, 'from' | 'to'>,
+    read: (where: Prisma.FindingWhereInput, take: number) => Promise<T[]>,
+    onRow: (row: T) => void,
+  ): Promise<void> {
+    const from = new Date(window.from);
+    let where: Prisma.FindingWhereInput = { occurredAt: { gte: from, lte: new Date(window.to) } };
+    for (;;) {
+      const rows = await read(where, this.batchSize);
+      for (const row of rows) onRow(row);
+      const last = rows.at(-1);
+      if (last === undefined || rows.length < this.batchSize) return;
+      where = {
+        occurredAt: { gte: from, lte: last.occurredAt },
+        OR: [{ occurredAt: { lt: last.occurredAt } }, { id: { lt: last.id } }],
+      };
+    }
+  }
+
+  /** Passa pelo cálculo todos os achados que começaram no período. */
   async foldFindings<R>(window: Pick<ReportWindow, 'from' | 'to'>, fold: FindingsFold<R>): Promise<R> {
     const db = this.prisma.scoped();
-    const occurredAt = { gte: new Date(window.from), lte: new Date(window.to) };
-    let after: { occurredAt: Date; id: string } | null = null;
-    for (;;) {
-      const rows: (FindingRow & { id: string })[] = await db.finding.findMany({
-        where:
-          after === null
-            ? { occurredAt }
-            : {
-                occurredAt,
-                OR: [
-                  { occurredAt: { lt: after.occurredAt } },
-                  { occurredAt: after.occurredAt, id: { lt: after.id } },
-                ],
-              },
-        select: { id: true, ...findingSelect },
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-        take: this.batchSize,
-      });
-      for (const row of rows) fold.add(toReportFinding(row));
-      const last = rows.at(-1);
-      if (last === undefined || rows.length < this.batchSize) return fold.result();
-      after = { occurredAt: last.occurredAt, id: last.id };
-    }
+    await this.scanFindings(
+      window,
+      (where, take) =>
+        db.finding.findMany({ where, select: { id: true, ...findingSelect }, orderBy: KEYSET_ORDER, take }),
+      (row) => fold.add(toReportFinding(row)),
+    );
+    return fold.result();
+  }
+
+  /**
+   * Resumo MITRE ATT&CK do período (a Torre pede a cada minuto): lê só as três colunas que o cálculo usa, em vez do
+   * achado inteiro.
+   */
+  async mitre(window: ReportWindow): Promise<MitreReport> {
+    const db = this.prisma.scoped();
+    const fold = mitreFold(await this.incidentsSince(new Date(window.from)), window);
+    await this.scanFindings(
+      window,
+      (where, take) => db.finding.findMany({ where, select: mitreSelect, orderBy: KEYSET_ORDER, take }),
+      (row) =>
+        fold.add({
+          occurredAt: row.occurredAt.toISOString(),
+          mitreTactics: row.mitreTactics,
+          mitreTechniques: row.mitreTechniques,
+        }),
+    );
+    return fold.result();
   }
 
   /** Incidentes que importam no período: os que começaram ou foram resolvidos nele, e todos os abertos. */
@@ -140,7 +181,7 @@ export class ReportsService {
       case 'summary':
         return this.foldFindings(window, summaryFold(await this.incidentsSince(from), window));
       case 'mitre':
-        return this.foldFindings(window, mitreFold(await this.incidentsSince(from), window));
+        return this.mitre(window);
       case 'rules':
         return this.foldFindings(window, rulesFold(window));
       case 'entities':

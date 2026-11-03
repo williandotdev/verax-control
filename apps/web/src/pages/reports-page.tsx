@@ -11,10 +11,12 @@ import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/finding
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { formatDuration, PERIOD_LABELS, REPORT_TABS, TACTIC_LABELS } from '@/features/reports/labels';
 import { MitreGrid } from '@/features/reports/mitre-grid';
+import { ReportContext } from '@/features/reports/report-context';
 import { ReportTable } from '@/features/reports/report-table';
 import { useReport } from '@/features/reports/reports-api';
 import { useMe } from '@/features/session/session';
 import { SEVERITY_STYLES } from '@/design/severity';
+import { cn } from '@/lib/cn';
 import { formatTimestamp } from '@/lib/format';
 
 const PERIOD_OPTIONS = REPORT_PERIODS.map((period) => ({ value: period, label: PERIOD_LABELS[period] }));
@@ -105,25 +107,38 @@ function ReportView({ kind, period }: { kind: ReportKind; period: ReportPeriod }
   }
 }
 
-/** Estados comuns: carregando, erro e o conteúdo, com a janela do relatório no topo. */
-function Loaded<T extends { from: string; to: string }>({
+/**
+ * Estados comuns: carregando, erro e o conteúdo, com a janela do relatório no topo. Ao trocar de período, os números
+ * anteriores seguem na tela até os novos chegarem, marcados como desatualizados e sem exportação.
+ */
+function Loaded<T extends { period: ReportPeriod; from: string; to: string }>({
   query,
   label,
   children,
 }: {
-  query: { data?: T; error: Error | null; isError: boolean; refetch: () => unknown };
+  query: {
+    data?: T;
+    error: Error | null;
+    isError: boolean;
+    isPlaceholderData: boolean;
+    refetch: () => unknown;
+  };
   label: string;
   children: (data: T) => ReactNode;
 }) {
   if (query.isError) return <ErrorState error={query.error} onRetry={() => void query.refetch()} />;
   if (!query.data) return <LoadingState rows={6} label={`Carregando ${label}`} />;
+  const current = !query.isPlaceholderData;
   return (
-    <div className="space-y-6">
-      <p className="text-xs text-muted-foreground">
-        De {formatTimestamp(query.data.from)} a {formatTimestamp(query.data.to)}
-      </p>
-      {children(query.data)}
-    </div>
+    <ReportContext value={{ period: query.data.period, current }}>
+      <div className="space-y-6" aria-busy={!current}>
+        <p className="text-xs text-muted-foreground">
+          De {formatTimestamp(query.data.from)} a {formatTimestamp(query.data.to)}
+          {!current && <span role="status"> · Atualizando para o período escolhido…</span>}
+        </p>
+        <div className={cn('space-y-6', !current && 'opacity-60')}>{children(query.data)}</div>
+      </div>
+    </ReportContext>
   );
 }
 
@@ -135,8 +150,6 @@ function Kpi({ label, value }: { label: string; value: ReactNode }) {
     </Card>
   );
 }
-
-const fileOf = (name: string, period: ReportPeriod) => `verax-${name}-${period}.csv`;
 
 function SummaryReportView({ period }: { period: ReportPeriod }) {
   const report = useReport('summary', period, true);
@@ -154,7 +167,7 @@ function SummaryReportView({ period }: { period: ReportPeriod }) {
           <div className="grid gap-6 lg:grid-cols-3">
             <ReportTable
               caption="Achados por severidade"
-              filename={fileOf('achados-por-severidade', period)}
+              file={'achados-por-severidade'}
               rows={FINDING_SEVERITIES.map((severity) => ({
                 severity,
                 count: data.findings.bySeverity[severity],
@@ -171,7 +184,7 @@ function SummaryReportView({ period }: { period: ReportPeriod }) {
             />
             <ReportTable
               caption="Achados por status"
-              filename={fileOf('achados-por-status', period)}
+              file={'achados-por-status'}
               rows={Object.entries(data.findings.byStatus).map(([status, count]) => ({ status, count }))}
               rowKey={(row) => row.status}
               columns={[
@@ -185,7 +198,7 @@ function SummaryReportView({ period }: { period: ReportPeriod }) {
             />
             <ReportTable
               caption="Achados por fonte"
-              filename={fileOf('achados-por-fonte', period)}
+              file={'achados-por-fonte'}
               rows={data.findings.bySource}
               rowKey={(row) => row.source}
               columns={[
@@ -200,7 +213,7 @@ function SummaryReportView({ period }: { period: ReportPeriod }) {
           </div>
           <ReportTable
             caption="Achados por dia"
-            filename={fileOf('achados-por-dia', period)}
+            file={'achados-por-dia'}
             rows={[...data.daily].reverse()}
             rowKey={(row) => row.date}
             columns={[
@@ -228,7 +241,7 @@ function MitreReportView({ period }: { period: ReportPeriod }) {
           <MitreGrid tactics={data.tactics} />
           <ReportTable
             caption="Táticas e técnicas do MITRE ATT&CK"
-            filename={fileOf('mitre-attck', period)}
+            file={'mitre-attck'}
             rows={data.tactics}
             rowKey={(row) => row.id}
             columns={[
@@ -274,7 +287,7 @@ function RulesReportView({ period }: { period: ReportPeriod }) {
       {(data) => (
         <ReportTable
           caption="Regras que mais dispararam"
-          filename={fileOf('deteccoes', period)}
+          file={'deteccoes'}
           rows={data.items}
           rowKey={(row) => row.ruleId}
           columns={[
@@ -319,7 +332,7 @@ function EntitiesReportView({ period }: { period: ReportPeriod }) {
             <ReportTable
               key={list.key}
               caption={list.caption}
-              filename={fileOf(`entidades-${list.file}`, period)}
+              file={`entidades-${list.file}`}
               rows={data[list.key]}
               rowKey={(row) => row.value}
               columns={[
@@ -358,7 +371,7 @@ function IncidentsReportView({ period }: { period: ReportPeriod }) {
           <div className="grid gap-6 lg:grid-cols-2">
             <ReportTable
               caption="Por severidade"
-              filename={fileOf('incidentes-por-severidade', period)}
+              file={'incidentes-por-severidade'}
               rows={data.bySeverity}
               rowKey={(row) => row.severity}
               columns={[
@@ -384,7 +397,7 @@ function IncidentsReportView({ period }: { period: ReportPeriod }) {
             />
             <ReportTable
               caption="Por responsável"
-              filename={fileOf('incidentes-por-responsavel', period)}
+              file={'incidentes-por-responsavel'}
               rows={data.byAssignee}
               rowKey={(row) => row.assignee?.id ?? 'ninguem'}
               columns={[
@@ -405,7 +418,7 @@ function IncidentsReportView({ period }: { period: ReportPeriod }) {
           </div>
           <ReportTable
             caption="Incidentes abertos no período"
-            filename={fileOf('incidentes', period)}
+            file={'incidentes'}
             rows={data.items}
             rowKey={(row) => row.id}
             columns={[
@@ -454,7 +467,7 @@ function CoverageReportView({ period }: { period: ReportPeriod }) {
       {(data) => (
         <ReportTable
           caption="Contas monitoradas e o que chegou de cada uma"
-          filename={fileOf('cobertura', period)}
+          file={'cobertura'}
           rows={data.accounts}
           rowKey={(row) => `${row.provider}:${row.accountId}`}
           empty="Nenhuma conta cadastrada."
@@ -500,7 +513,7 @@ function ExceptionsReportView({ period }: { period: ReportPeriod }) {
       {(data) => (
         <ReportTable
           caption="Exceções e quantos alertas cada uma silenciou"
-          filename={fileOf('excecoes', period)}
+          file={'excecoes'}
           rows={data.items}
           rowKey={(row) => row.id}
           empty="Nenhuma exceção cadastrada."

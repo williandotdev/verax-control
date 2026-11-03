@@ -3,7 +3,6 @@ import {
   FINDING_SEVERITIES,
   type FindingSeverity,
   hasPermission,
-  mitreFold,
   REPORT_PERIOD_DAYS,
   reportWindow,
   type TowerSummary,
@@ -84,11 +83,7 @@ export class TowerService {
     ]);
 
     // Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE.
-    const mitreWindow = reportWindow(MITRE_PERIOD, now);
-    const { tactics } = await this.reports.foldFindings(
-      mitreWindow,
-      mitreFold(await this.reports.incidentsSince(new Date(mitreWindow.from)), mitreWindow),
-    );
+    const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now));
     const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics };
 
     const { light, reasons } = trafficLight({ openIncidents, postureScore }, thresholds);

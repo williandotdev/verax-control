@@ -61,8 +61,11 @@ export const mitreTacticSchema = z.strictObject({
   name: z.string().max(100),
   findings: count,
   incidents: count,
-  /** Técnicas vistas nos achados desta tática, da mais frequente para a menos (até 10). */
-  techniques: z.array(z.strictObject({ id: z.string().max(20), findings: count })).max(10),
+  /**
+   * Técnicas vistas nos achados desta tática, da mais frequente para a menos (até 10). O id tem o mesmo limite da
+   * leitura do alerta (32): um id fora do padrão não derruba a Torre.
+   */
+  techniques: z.array(z.strictObject({ id: z.string().max(32), findings: count })).max(10),
 });
 export type MitreTactic = z.infer<typeof mitreTacticSchema>;
 
@@ -281,7 +284,7 @@ export function foldFindings<R, F>(fold: FindingsFold<R, F>, findings: Iterable<
   return fold.result();
 }
 
-type MitreFinding = Pick<ReportFinding, 'mitreTactics' | 'mitreTechniques'>;
+export type MitreFinding = Pick<ReportFinding, 'mitreTactics' | 'mitreTechniques'>;
 
 /** Táticas e técnicas do MITRE ATT&CK nos achados e incidentes dados, sem olhar o período. */
 export function mitreTacticsFold(
@@ -411,7 +414,7 @@ export function summaryReport(
 export function mitreFold(
   incidents: readonly ReportIncident[],
   window: ReportWindow,
-): FindingsFold<MitreReport> {
+): FindingsFold<MitreReport, MitreFinding & Pick<ReportFinding, 'occurredAt'>> {
   const tactics = mitreTacticsFold(incidents.filter((incident) => inWindow(incident.firstSeenAt, window)));
   return {
     add(finding) {

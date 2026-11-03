@@ -11,6 +11,10 @@ function neutralize(value: string): string {
 
 function cell(value: CsvCell): string {
   if (value === null || value === undefined) return '';
+  // Identificador só de dígitos (conta AWS, regra do Wazuh) vai como ="012345678901", que a planilha mostra como
+  // texto: sem isso, o Excel o converte em número, tira o zero à esquerda e mostra a conta em notação científica.
+  // Só dígitos entram nessa forma, então ela nunca leva conteúdo do alerta para dentro de uma fórmula.
+  if (typeof value === 'string' && /^\d+$/.test(value)) return `"=""${value}"""`;
   const text = typeof value === 'string' ? neutralize(value) : String(value);
   return `"${text.replace(/"/g, '""')}"`;
 }
@@ -18,9 +22,16 @@ function cell(value: CsvCell): string {
 /** Marca de ordem de bytes do UTF-8: sem ela, o Excel lê os acentos errado. */
 export const BOM = String.fromCharCode(0xfeff);
 
-/** CSV com cabeçalho, separado por vírgula, linhas em CRLF e BOM do UTF-8 (para o Excel ler os acentos). */
+/**
+ * Separador de campos: ponto e vírgula, o separador de lista do Excel em português (com vírgula, o arquivo aberto com
+ * dois cliques cai inteiro na primeira coluna). Os números dos relatórios são inteiros: não há conflito com a vírgula
+ * decimal.
+ */
+export const SEPARATOR = ';';
+
+/** CSV com cabeçalho, separado por ponto e vírgula, linhas em CRLF e BOM do UTF-8 (para o Excel ler os acentos). */
 export function toCsv(header: readonly string[], rows: readonly (readonly CsvCell[])[]): string {
-  return `${BOM}${[header, ...rows].map((row) => row.map(cell).join(',')).join('\r\n')}\r\n`;
+  return `${BOM}${[header, ...rows].map((row) => row.map(cell).join(SEPARATOR)).join('\r\n')}\r\n`;
 }
 
 /** Baixa o CSV no navegador, sem passar por servidor. */

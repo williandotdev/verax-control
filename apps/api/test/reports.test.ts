@@ -90,10 +90,39 @@ describe('relatórios e resumo MITRE da Torre', () => {
   it('lê o período inteiro em lotes: nenhum achado fica de fora nem conta duas vezes, mesmo com a mesma data', async () => {
     const tenantC = await createTenant(app, 'Cliente C (relatórios em lotes)');
     const readerC = await createSignedInUser(app, { role: 'leitura', tenantId: tenantC });
+    const exception = await prisma.alertException.create({
+      data: {
+        tenantId: tenantC,
+        ruleId: '80202',
+        field: 'user',
+        value: 'scanner-interno',
+        reason: 'Varredura interna agendada',
+        matchedCount: 9,
+        createdById: readerC.id,
+      },
+    });
+    const incident = await prisma.incident.create({
+      data: {
+        tenantId: tenantC,
+        severity: 'high',
+        status: 'resolved',
+        riskScore: 55,
+        findingCount: 2,
+        firstSeenAt: new Date(Date.now() - 6 * HOUR),
+        lastSeenAt: new Date(Date.now() - 5 * HOUR),
+        createdAt: new Date(Date.now() - 6 * HOUR),
+        resolvedAt: new Date(Date.now() - 4 * HOUR),
+        mitreTactics: ['Discovery'],
+      },
+    });
     const at = new Date(Date.now() - 5 * HOUR);
-    for (const occurredAt of [new Date(Date.now() - HOUR), at, at, at, new Date(Date.now() - 6 * HOUR)]) {
+    const times = [new Date(Date.now() - HOUR), at, at, at, new Date(Date.now() - 6 * HOUR)];
+    for (const [index, occurredAt] of times.entries()) {
       await prisma.finding.create({
         data: {
+          // Dois achados silenciados pela exceção e dois no incidente, na virada dos lotes de 2.
+          exceptionId: index < 2 ? exception.id : null,
+          incidentId: index >= 3 ? incident.id : null,
           tenantId: tenantC,
           accountId: account,
           source: 'wazuh',
@@ -118,7 +147,32 @@ describe('relatórios e resumo MITRE da Torre', () => {
     const rules = reportSchemas.rules.parse((await getC('/v1/reports/rules?period=7d').expect(200)).body);
     expect(rules.items).toEqual([expect.objectContaining({ ruleId: '80202', findings: 5 })]);
     const tower = towerSummarySchema.parse((await getC('/v1/tower').expect(200)).body);
-    expect(tower.mitre.tactics.find((tactic) => tactic.name === 'Discovery')?.findings).toBe(5);
+    expect(tower.mitre.tactics.find((tactic) => tactic.name === 'Discovery')).toMatchObject({
+      findings: 5,
+      incidents: 1,
+      techniques: [{ id: 'T1087', findings: 5 }],
+    });
+
+    const exceptions = reportSchemas.exceptions.parse(
+      (await getC('/v1/reports/exceptions?period=7d').expect(200)).body,
+    );
+    expect(exceptions.items).toEqual([
+      expect.objectContaining({ id: exception.id, matchedInPeriod: 2, matchedTotal: 9, active: true }),
+    ]);
+    const incidents = reportSchemas.incidents.parse(
+      (await getC('/v1/reports/incidents?period=7d').expect(200)).body,
+    );
+    expect(incidents.bySeverity.find((row) => row.severity === 'high')).toEqual({
+      severity: 'high',
+      opened: 1,
+      resolved: 1,
+      meanTimeToResolveMinutes: 120,
+    });
+    expect(incidents.items).toEqual([expect.objectContaining({ id: incident.id, status: 'resolved' })]);
+    const entities = reportSchemas.entities.parse(
+      (await getC('/v1/reports/entities?period=7d').expect(200)).body,
+    );
+    expect(entities.users).toEqual([]);
   });
 
   it('a Torre traz o resumo MITRE dos últimos 30 dias', async () => {
