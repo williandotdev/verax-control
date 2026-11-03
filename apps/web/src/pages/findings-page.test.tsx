@@ -67,7 +67,10 @@ describe('Achados', () => {
     expect(within(panel).getByText('StopLogging')).toBeInTheDocument();
     expect(within(panel).getByText('AKIAIOSFODNN7EXAMPLE')).toBeInTheDocument();
     expect(within(panel).getByText('T1562.008')).toBeInTheDocument();
-    expect(within(panel).getByRole('link', { name: 'Ver incidente' })).toBeInTheDocument();
+    expect(within(panel).getByRole('link', { name: 'Ver incidentes' })).toHaveAttribute(
+      'href',
+      '/incidentes',
+    );
     expect(within(panel).getByText(/"eventName": "StopLogging"/)).toBeInTheDocument();
 
     await userEvent.keyboard('{Escape}');
@@ -115,6 +118,19 @@ describe('Achados', () => {
     await userEvent.click(within(panel).getByRole('button', { name: 'Comentar' }));
     expect(await within(panel).findByText('Aguardando retorno do fornecedor.')).toBeInTheDocument();
     expect(within(panel).getByLabelText('Novo comentário')).toHaveValue('');
+  });
+
+  it('a triagem aparece na Torre: um achado a menos sem triagem', async () => {
+    const router = renderAt('/');
+    expect(await screen.findByText('5 achados altos ou críticos sem triagem')).toBeInTheDocument();
+    await router.navigate('/achados?status=new&severidade=high');
+    await userEvent.click(await screen.findByRole('button', { name: /Login do usuário root no console/ }));
+    const panel = await screen.findByRole('dialog');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Colocar em análise' }));
+    await within(panel).findByText('Em análise');
+    await userEvent.keyboard('{Escape}');
+    await router.navigate('/');
+    expect(await screen.findByText('4 achados altos ou críticos sem triagem')).toBeInTheDocument();
   });
 
   it('papel de leitura vê o detalhe, mas não muda status nem comenta', async () => {

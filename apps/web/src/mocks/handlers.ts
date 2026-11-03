@@ -3,6 +3,7 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
+import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
@@ -34,9 +35,18 @@ function defaultMe(): Me {
  * fictício sai de `localStorage['verax.mock.role']` (padrão: admin_verax).
  */
 export function createHandlers(state: MockState = { me: defaultMe() }) {
+  // Achados, Torre (e, depois, incidentes) compartilham o mesmo estado: a triagem aparece em todas as telas.
+  const findings = demoFindings();
+  const untriaged = (tenantId: string) =>
+    (findings.get(tenantId) ?? []).filter(
+      (finding) =>
+        (finding.severity === 'critical' || finding.severity === 'high') &&
+        finding.status === 'new' &&
+        finding.incidentId === null,
+    ).length;
   return [
     ...createAuthHandlers(state),
-    ...createFindingHandlers(state),
+    ...createFindingHandlers(state, findings),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
@@ -53,7 +63,10 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
         );
       }
       return HttpResponse.json(
-        demoTower(state.me.scopeTenantId, { includeUnowned: state.me.role === 'admin_verax' }),
+        demoTower(state.me.scopeTenantId, {
+          includeUnowned: state.me.role === 'admin_verax',
+          untriagedFindings: untriaged(state.me.scopeTenantId),
+        }),
       );
     }),
     http.get(url('/v1/tenants'), () => {
