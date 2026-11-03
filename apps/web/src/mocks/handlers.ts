@@ -6,6 +6,7 @@ import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
 import { createIncidentHandlers, incidentSummaries, initialIncidents } from './incidents-handlers';
+import { createInventoryHandlers } from './inventory';
 import { createPostureHandlers } from './posture';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
@@ -62,6 +63,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createFindingHandlers(state, findings),
     ...createIncidentHandlers(state, findings, incidents),
     ...createPostureHandlers(state),
+    ...createInventoryHandlers(state),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)

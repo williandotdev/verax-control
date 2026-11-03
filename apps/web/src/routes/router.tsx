@@ -2,6 +2,7 @@ import { type ComponentType, createElement } from 'react';
 import { createBrowserRouter, type RouteObject } from 'react-router';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
+import { AssetsPage } from '@/pages/assets-page';
 import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { IncidentPage } from '@/pages/incident-page';
@@ -36,6 +37,7 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/achados': FindingsPage,
   '/incidentes': IncidentsPage,
   '/postura': PosturePage,
+  '/ativos': AssetsPage,
 };
 
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */
