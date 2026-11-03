@@ -26,6 +26,9 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 });
 
+// O jsdom também não implementa a rolagem até um elemento.
+Element.prototype.scrollIntoView = vi.fn();
+
 afterEach(() => {
   cleanup();
   window.localStorage.clear();

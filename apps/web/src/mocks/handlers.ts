@@ -11,7 +11,7 @@ import { createIncidentHandlers, incidentSummaries, initialIncidents } from './i
 import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
 import { createPostureHandlers } from './posture';
-import { createUnownedHandlers } from './unowned-handlers';
+import { createUnownedHandlers, demoUnownedAlerts } from './unowned-handlers';
 
 /** Estado em memória do modo mock: quem está logado e qual cliente está selecionado. */
 export interface MockState {
@@ -46,6 +46,10 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
   const findings = demoFindings();
   const admin = demoAdminStore();
   const incidents = initialIncidents();
+  const unowned = demoUnownedAlerts();
+  // A Torre conta a fila sem dono dos últimos 7 dias, como a API.
+  const recentUnowned = () =>
+    unowned.filter((alert) => Date.parse(alert.createdAt) >= Date.now() - 7 * 24 * 3_600_000).length;
   const towerCounts = (tenantId: string) => {
     const open = incidentSummaries(tenantId, findings, incidents).filter(
       (incident) => incident.status !== 'resolved',
@@ -72,7 +76,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createInventoryHandlers(state),
     ...createReportHandlers(state, findings, incidents, admin),
     ...createAuditHandlers(state),
-    ...createUnownedHandlers(state, admin),
+    ...createUnownedHandlers(state, admin, unowned),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
@@ -91,6 +95,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
       return HttpResponse.json(
         demoTower(state.me.scopeTenantId, {
           includeUnowned: state.me.role === 'admin_verax',
+          unownedAlerts: recentUnowned(),
           ...towerCounts(state.me.scopeTenantId),
           mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
         }),

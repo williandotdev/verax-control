@@ -60,6 +60,8 @@ export function demoTower(
   tenantId: string,
   options: {
     includeUnowned: boolean;
+    /** Alertas sem dono dos últimos 7 dias (só para a equipe da Verax). */
+    unownedAlerts?: number;
     untriagedFindings?: number;
     openIncidents?: TowerSummary['openIncidents'];
     unassignedIncidents?: number;
@@ -85,7 +87,7 @@ export function demoTower(
     pendingDecisions: [
       { kind: 'unassigned_incident', count: options.unassignedIncidents ?? (alfa ? 2 : 0) },
       { kind: 'untriaged_finding', count: options.untriagedFindings ?? (alfa ? 5 : 0) },
-      { kind: 'unowned_alert', count: options.includeUnowned ? 3 : 0 },
+      { kind: 'unowned_alert', count: options.includeUnowned ? (options.unownedAlerts ?? 3) : 0 },
     ].filter((decision) => decision.count > 0),
     openIncidents: open,
     posture: { score, scannedAt: minutesAgo(now, alfa ? 6 * 60 : 7 * 60), warningBelow },

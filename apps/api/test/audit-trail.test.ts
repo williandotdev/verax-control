@@ -113,9 +113,10 @@ describe('tela Auditoria: leitura da trilha', () => {
       occurredAt: at(1),
       actorType: 'user',
       actorId: veraxUser.id,
+      // Login da equipe da Verax: o ator não tem cliente, então o registro fica na trilha da Verax.
       tenantId: null,
-      action: 'tenant.create',
-      resourceType: 'tenant',
+      action: 'auth.sign_in',
+      resourceType: 'login',
       outcome: 'success',
       ip: '198.51.100.7',
     });

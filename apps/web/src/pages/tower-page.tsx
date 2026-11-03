@@ -115,7 +115,8 @@ const DECISIONS: Record<
     description:
       'Chegaram de contas que não pertencem a nenhum cliente. Veja na fila qual conta falta cadastrar ou investigue a origem.',
     action: 'Ver a fila',
-    to: '/alertas-sem-dono',
+    // A mesma janela que a API conta para esta decisão (os últimos 7 dias): o total da fila bate com o cartão.
+    to: '/alertas-sem-dono?periodo=7d',
   },
 };
 

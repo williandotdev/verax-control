@@ -46,7 +46,7 @@ describe('Auditoria', () => {
     expect(verax).not.toHaveTextContent('198.51.100.7');
     // Só a trilha do próprio cliente: nada da Beta nem da Verax.
     expect(screen.queryByText('Rafael Costa')).not.toBeInTheDocument();
-    expect(screen.queryByText('Cadastrou cliente')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sem identificação')).not.toBeInTheDocument();
   });
 
   it('abre o registro com o estado anterior e o novo, e o link leva à mesma visão', async () => {
@@ -94,7 +94,9 @@ describe('Auditoria', () => {
     const lines = await rows();
     expect(lines[0]).toHaveTextContent('Sem identificação');
     expect(lines[0]).toHaveTextContent('192.0.2.44');
-    expect(screen.getAllByText('Cadastrou cliente').length).toBeGreaterThan(0);
+    // O que a Verax faz num cliente, inclusive o cadastro dele, fica na trilha do cliente.
+    expect(screen.queryByText('Cadastrou cliente')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Convidou usuário').length).toBeGreaterThan(0);
   });
 
   it('o admin_verax com cliente escolhido vê a trilha dele, com o IP da equipe da Verax', async () => {
@@ -102,6 +104,12 @@ describe('Auditoria', () => {
     renderAt('/auditoria', { me: demoMe('admin_verax', { activeTenantId: alfa, scopeTenantId: alfa }) });
     const verax = (await rows()).find((line) => line.textContent?.includes('Equipe Verax entrou no cliente'));
     expect(verax).toHaveTextContent('198.51.100.7');
+  });
+
+  it('pessoa vazia na URL conta como sem filtro', async () => {
+    renderAt('/auditoria?pessoa=');
+    expect(await rows()).not.toHaveLength(0);
+    expect(screen.queryByText(/Só as ações de/)).not.toBeInTheDocument();
   });
 
   it('analista não vê a tela', async () => {

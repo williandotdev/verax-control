@@ -159,6 +159,12 @@ export function demoAuditTrail(now: Date = new Date()): MockAuditRecord[] {
       statusCode: 201,
       after: { accountId: DEMO_ACCOUNTS.alfaHomologacao, regions: ['sa-east-1'] },
     }),
+    entry(alfa, 60 * day, PEOPLE.verax, 'tenant.create', {
+      resourceType: 'tenant',
+      resourceId: alfa,
+      statusCode: 201,
+      after: { name: 'Cliente Demo Alfa' },
+    }),
     // Cliente Demo Beta
     entry(beta, 3 * 60, PEOPLE.rafael, 'auth.sign_in', {
       resourceType: 'login',
@@ -169,7 +175,20 @@ export function demoAuditTrail(now: Date = new Date()): MockAuditRecord[] {
       before: { status: 'open', assigneeId: null },
       after: { status: 'investigating', assigneeId: PEOPLE.rafael.id },
     }),
-    // Trilha da própria Verax (sem cliente)
+    entry(beta, 3 * day, PEOPLE.verax, 'tenant.update', {
+      resourceType: 'tenant',
+      resourceId: beta,
+      before: { contactEmail: 'ti@beta.exemplo.com.br' },
+      after: { contactEmail: 'seguranca@beta.exemplo.com.br' },
+    }),
+    entry(beta, 45 * day, PEOPLE.verax, 'tenant.create', {
+      resourceType: 'tenant',
+      resourceId: beta,
+      statusCode: 201,
+      after: { name: 'Cliente Demo Beta' },
+    }),
+    // Trilha da própria Verax (sem cliente): logins da equipe, o que ela faz sem tocar dados de cliente e tentativas
+    // de login de quem não se identificou. O que a Verax faz num cliente, inclusive o cadastro, fica na trilha dele.
     entry(null, 30, 'anonymous', 'auth.sign_in', {
       resourceType: 'login',
       resourceId: 'admin@exemplo.com',
@@ -190,17 +209,15 @@ export function demoAuditTrail(now: Date = new Date()): MockAuditRecord[] {
       resourceType: 'login',
       resourceId: 'equipe@veraxsistemas.com.br',
     }),
-    entry(null, 3 * day, PEOPLE.verax, 'tenant.update', {
-      resourceType: 'tenant',
-      resourceId: beta,
-      before: { contactEmail: 'ti@beta.exemplo.com.br' },
-      after: { contactEmail: 'seguranca@beta.exemplo.com.br' },
-    }),
-    entry(null, 45 * day, PEOPLE.verax, 'tenant.create', {
-      resourceType: 'tenant',
-      resourceId: beta,
+    entry(null, 2 * day, PEOPLE.verax, 'user.invite', {
+      resourceType: 'user',
+      resourceId: 'demo-novo.analista.verax',
       statusCode: 201,
-      after: { name: 'Cliente Demo Beta' },
+      after: { name: 'Novo analista', email: 'analista@veraxsistemas.com.br', role: 'admin_verax' },
+    }),
+    entry(null, 3 * day, PEOPLE.verax, 'POST /v1/tenants', {
+      outcome: 'failure',
+      statusCode: 409,
     }),
   ];
 }

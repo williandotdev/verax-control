@@ -37,7 +37,8 @@ export function AuditPage() {
   const { data: me } = useMe();
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
-  const actorId = params.get('pessoa') ?? undefined;
+  // Parâmetro vazio (`?pessoa=`) conta como ausente: a API recusaria a pessoa vazia.
+  const actorId = params.get('pessoa') || undefined;
   const filters = {
     period: pick(AUDIT_PERIODS, params.get('periodo')),
     resourceType: pick(AUDIT_RESOURCE_TYPES, params.get('area')),
@@ -127,7 +128,7 @@ export function AuditPage() {
         <h1 className="text-2xl font-semibold">Auditoria</h1>
         <p className="text-sm text-muted-foreground">
           {veraxTrail
-            ? 'Trilha da Verax: operações sem cliente, como o cadastro de clientes, e tentativas de login de quem não chegou a se identificar. Para ver a trilha de um cliente, escolha-o no seletor do topo.'
+            ? 'Trilha da Verax: logins da equipe da Verax, o que ela faz sem tocar dados de um cliente (como cuidar dos usuários da Verax) e tentativas de login de quem não chegou a se identificar. O que a Verax faz num cliente, inclusive o cadastro dele, fica na trilha do cliente: escolha-o no seletor do topo.'
             : 'Tudo o que foi feito no painel deste cliente: quem fez, o quê, quando e de onde. Os registros não podem ser alterados nem apagados.'}
         </p>
       </header>

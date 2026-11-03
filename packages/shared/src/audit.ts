@@ -4,7 +4,7 @@ import { withPagination } from './pagination.js';
 /**
  * Trilha de auditoria na tela Auditoria. Só leitura: nenhuma rota altera ou apaga registro, e o banco bloqueia as duas
  * operações (T1.3). O admin do cliente vê a trilha do próprio cliente. O admin_verax vê a do cliente escolhido ou,
- * sem cliente, a da própria Verax: operações globais (cadastro de cliente, por exemplo) e tentativas de login de quem
+ * sem cliente, a da própria Verax: logins da equipe, o que ela faz sem tocar dados de cliente e tentativas de login de quem
  * não chegou a se identificar.
  */
 export const AUDIT_OUTCOMES = ['success', 'failure', 'denied'] as const;

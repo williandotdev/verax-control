@@ -5,6 +5,7 @@ import {
   type UnownedAlertListQuery,
 } from '@verax/shared';
 import { X } from 'lucide-react';
+import { useRef } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { ErrorState, LoadingState } from '@/components/states';
@@ -28,7 +29,8 @@ const pick = <T extends string>(values: readonly T[], value: string | null): T |
 export function UnownedAlertsPage() {
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
-  const account = params.get('conta') ?? undefined;
+  // Parâmetro vazio (`?conta=`) conta como ausente: a API recusaria a conta vazia.
+  const account = params.get('conta') || undefined;
   const reason = pick(UNOWNED_REASONS, params.get('motivo'));
   const period = pick(UNOWNED_PERIODS, params.get('periodo'));
   const query: UnownedAlertListQuery = { reason, period, account, page, pageSize: PAGE_SIZE };
@@ -45,6 +47,13 @@ export function UnownedAlertsPage() {
       return next;
     });
   const hasFilters = reason !== undefined || period !== undefined || account !== undefined;
+  const listHeading = useRef<HTMLHeadingElement>(null);
+  /** Do resumo (30 dias) para a lista da mesma conta e do mesmo período, levando o foco até ela. */
+  const showAccount = (item: string) => {
+    update({ conta: item, periodo: '30d', motivo: null });
+    listHeading.current?.focus();
+    listHeading.current?.scrollIntoView({ block: 'start' });
+  };
 
   const columns: Column<UnownedAlert>[] = [
     {
@@ -110,10 +119,10 @@ export function UnownedAlertsPage() {
         </p>
       </header>
 
-      <AccountsSummary onPick={(item) => update({ conta: item })} />
+      <AccountsSummary onPick={showAccount} />
 
       <section aria-labelledby="fila-alertas" className="space-y-3">
-        <h2 id="fila-alertas" className="text-lg font-semibold">
+        <h2 id="fila-alertas" ref={listHeading} tabIndex={-1} className="text-lg font-semibold outline-none">
           Alertas
         </h2>
         {account !== undefined && (
@@ -251,14 +260,14 @@ function AccountsSummary({ onPick }: { onPick: (account: string) => void }) {
                     variant="ghost"
                     size="sm"
                     onClick={() => onPick(row.account)}
-                    aria-label={`Ver os alertas da conta ${row.account}`}
+                    aria-label={`Ver alertas da conta ${row.account}`}
                   >
                     Ver alertas
                   </Button>
                   {row.registeredIn === null && (
                     <Link
                       to="/cadastros/contas"
-                      aria-label={`Cadastrar a conta ${row.account}`}
+                      aria-label={`Cadastrar conta ${row.account}`}
                       className="inline-flex items-center text-sm font-medium underline-offset-4 hover:underline"
                     >
                       Cadastrar conta
