@@ -15,7 +15,8 @@ const bucket = (prefix = 'trilha') => `${prefix}-${randomInt(1_000_000, 9_999_99
 /** Projeto da GCP, conta do Cloudflare, assinatura e zona fictícios, diferentes a cada chamada. */
 const gcpProject = () => `vx-${randomInt(1_000_000, 9_999_999)}-proj`;
 const cloudflareAccount = () => randomBytes(16).toString('hex');
-const subscription = () => `verax-logs-${randomInt(1_000_000, 9_999_999)}`;
+const subscription = (project = gcpProject(), id = `verax-logs-${randomInt(1_000_000, 9_999_999)}`) =>
+  `projects/${project}/subscriptions/${id}`;
 const zone = () => `z${randomInt(1_000_000, 9_999_999)}.example.com`;
 
 describe('contas cloud (T3.3)', () => {
@@ -224,6 +225,34 @@ describe('contas cloud (T3.3)', () => {
       const project = gcpProject();
       await call(adminA).post('/v1/cloud-accounts', { provider: 'gcp', accountId: project }).expect(201);
       await call(adminB).post('/v1/cloud-accounts', { provider: 'gcp', accountId: project }).expect(409);
+    });
+
+    it('o mesmo ID de assinatura em projetos diferentes não conflita: vale o nome completo', async () => {
+      const id = `verax-logs-${randomInt(1_000_000, 9_999_999)}`;
+      await call(adminA)
+        .post('/v1/cloud-accounts', {
+          provider: 'gcp',
+          accountId: gcpProject(),
+          pubsubSubscription: subscription(gcpProject(), id),
+        })
+        .expect(201);
+      await call(adminB)
+        .post('/v1/cloud-accounts', {
+          provider: 'gcp',
+          accountId: gcpProject(),
+          pubsubSubscription: subscription(gcpProject(), id),
+        })
+        .expect(201);
+    });
+
+    it('só o ID da assinatura, sem o projeto, é recusado', async () => {
+      await call(adminA)
+        .post('/v1/cloud-accounts', {
+          provider: 'gcp',
+          accountId: gcpProject(),
+          pubsubSubscription: 'verax-logs',
+        })
+        .expect(400);
     });
 
     it('a assinatura serve vários projetos do mesmo cliente, nunca de outro', async () => {

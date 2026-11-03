@@ -141,6 +141,12 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
 
   it('projeto da GCP: sem ExternalId nem papel, com os passos da assinatura do Pub/Sub', async () => {
     renderAt('/cadastros/contas');
+    // A assinatura no próprio projeto aparece só pelo ID; a API guarda o nome completo.
+    const gcpRow = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
+      candidate.textContent?.includes(DEMO_ACCOUNTS.alfaGcp),
+    ) as HTMLElement;
+    expect(gcpRow).toHaveTextContent('verax-logs-seguranca');
+    expect(gcpRow).not.toHaveTextContent('projects/');
     await userEvent.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
     const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
     await userEvent.selectOptions(within(sheet).getByLabelText('Provedor'), 'gcp');

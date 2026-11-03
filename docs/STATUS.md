@@ -1328,7 +1328,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Como funciona:**
   - **Provedores:** o cadastro é uma união por provedor, e cada um tem o próprio formato de ID e os próprios campos:
     - **AWS:** 12 dígitos, regiões, buckets e ExternalId;
-    - **GCP:** ID do projeto (6 a 30 caracteres, começa com letra) e a assinatura do Pub/Sub, opcional no cadastro;
+    - **GCP:** ID do projeto (6 a 30 caracteres, começa com letra) e a assinatura do Pub/Sub, opcional no cadastro. A assinatura é guardada pelo nome completo (`projects/<projeto>/subscriptions/<id>`), porque o ID só é único dentro do projeto dono. A tela aceita só o ID e completa com o projeto da conta;
     - **Cloudflare:** 32 caracteres hexadecimais e as zonas (domínios).
 
     Os três formatos não se sobrepõem, e achados, incidentes, postura e Torre aceitam qualquer um deles como referência de conta.
@@ -1347,8 +1347,8 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
     - o detalhe explica a configuração de cada provedor e permite informar depois a assinatura (GCP) ou as zonas (Cloudflare);
     - a demonstração ganhou um projeto da GCP e uma conta do Cloudflare fictícios.
 - **Testes:**
-  - 27 no contrato: formatos, campos de outro provedor, credenciais recusadas, domínios, referência de conta e campos fora do provedor;
-  - 13 na API: cadastro de GCP e Cloudflare, credenciais recusadas, projeto, assinatura e zona disputados por dois clientes, alteração com campo de outro provedor e o `CHECK` do banco;
+  - 32 no contrato: formatos, campos de outro provedor, credenciais recusadas, domínios, referência de conta e campos fora do provedor;
+  - 15 na API: cadastro de GCP e Cloudflare, credenciais recusadas, projeto, assinatura e zona disputados por dois clientes, o mesmo ID de assinatura em projetos diferentes (apontado pelo revisor automático), alteração com campo de outro provedor e o `CHECK` do banco;
   - 2 na tela: projeto da GCP com validação e passos, e zonas do Cloudflare editadas no detalhe.
 - **Pendente:**
   - a leitura de fato (o Wazuh lendo a assinatura do Pub/Sub e o coletor do Cloudflare), com o nó na GCP;

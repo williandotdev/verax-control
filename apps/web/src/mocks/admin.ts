@@ -197,7 +197,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
           account(2, DEMO_ACCOUNTS.alfaHomologacao, ['sa-east-1'], 'ok', 30 * 60),
           account(4, DEMO_ACCOUNTS.alfaGcp, [], 'ok', 12, {
             provider: 'gcp',
-            pubsubSubscription: 'verax-logs-seguranca',
+            pubsubSubscription: `projects/${DEMO_ACCOUNTS.alfaGcp}/subscriptions/verax-logs-seguranca`,
           }),
           account(5, DEMO_ACCOUNTS.alfaCloudflare, [], 'pending', null, {
             provider: 'cloudflare',

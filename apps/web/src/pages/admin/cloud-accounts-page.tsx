@@ -4,6 +4,7 @@ import {
   cloudAccountCreateSchema,
   cloudAccountUpdateSchema,
   type CloudProvider,
+  qualifyPubsubSubscription,
 } from '@verax/shared';
 import { Copy, ExternalLink } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
@@ -46,10 +47,17 @@ function splitList(value: string): string[] {
     .filter(Boolean);
 }
 
+/** A assinatura no próprio projeto aparece só pelo ID; noutro projeto (coletor agregado), pelo nome completo. */
+function subscriptionLabel(account: CloudAccount): string | null {
+  const prefix = `projects/${account.accountId}/subscriptions/`;
+  const name = account.pubsubSubscription;
+  return name?.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 /** O que a conta monitora: regiões (AWS), a assinatura do Pub/Sub (GCP) ou as zonas (Cloudflare). */
 function scopeOf(account: CloudAccount): string | null {
   if (account.provider === 'aws') return account.regions.join(', ');
-  if (account.provider === 'gcp') return account.pubsubSubscription;
+  if (account.provider === 'gcp') return subscriptionLabel(account);
   return account.zones.length > 0 ? account.zones.join(', ') : null;
 }
 
@@ -194,7 +202,13 @@ function createInput(values: CreateValues) {
     case 'aws':
       return { provider: 'aws', accountId, regions: splitList(values.regions) };
     case 'gcp':
-      return { provider: 'gcp', accountId, pubsubSubscription: values.pubsubSubscription.trim() || null };
+      return {
+        provider: 'gcp',
+        accountId,
+        pubsubSubscription: values.pubsubSubscription.trim()
+          ? qualifyPubsubSubscription(accountId, values.pubsubSubscription)
+          : null,
+      };
     case 'cloudflare':
       return { provider: 'cloudflare', accountId, zones: splitList(values.zones) };
   }
@@ -283,7 +297,7 @@ function CreateAccount() {
           />
           <Field
             label="Assinatura do Pub/Sub (opcional)"
-            hint="A que recebe os logs de segurança do projeto. Pode ser informada depois."
+            hint="O nome da assinatura, se ela estiver no próprio projeto, ou o nome completo (projects/<projeto>/subscriptions/<nome>), se estiver noutro. Pode ser informada depois."
             value={values.pubsubSubscription}
             onChange={set('pubsubSubscription')}
             error={errors['pubsubSubscription']}
@@ -363,14 +377,16 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
 /** GCP: a assinatura do Pub/Sub; Cloudflare: as zonas. Os dois podem chegar depois do cadastro. */
 function EditSource({ account }: { account: CloudAccount }) {
   const gcp = account.provider === 'gcp';
-  const [value, setValue] = useState(gcp ? (account.pubsubSubscription ?? '') : account.zones.join(', '));
+  const [value, setValue] = useState(gcp ? (subscriptionLabel(account) ?? '') : account.zones.join(', '));
   const [error, setError] = useState<string>();
   const update = useUpdateCloudAccount(account.id);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const input = cloudAccountUpdateSchema.safeParse(
-      gcp ? { pubsubSubscription: value.trim() || null } : { zones: splitList(value) },
+      gcp
+        ? { pubsubSubscription: value.trim() ? qualifyPubsubSubscription(account.accountId, value) : null }
+        : { zones: splitList(value) },
     );
     if (!input.success) {
       setError(Object.values(fieldErrors(input.error))[0]);
@@ -384,7 +400,11 @@ function EditSource({ account }: { account: CloudAccount }) {
     <form onSubmit={submit} noValidate className="space-y-2">
       <Field
         label={gcp ? 'Assinatura do Pub/Sub' : 'Zonas monitoradas'}
-        hint={gcp ? undefined : 'Domínios separados por vírgula.'}
+        hint={
+          gcp
+            ? 'O nome, ou o nome completo (projects/<projeto>/subscriptions/<nome>) se estiver noutro projeto.'
+            : 'Domínios separados por vírgula.'
+        }
         value={value}
         onChange={(event) => setValue(event.target.value)}
         error={error}

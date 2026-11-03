@@ -246,8 +246,8 @@ model CloudAccount {
   cloudtrailBucket   String?            @db.VarChar(63)
   guarddutyBucket    String?            @db.VarChar(63)
   wafBucket          String?            @db.VarChar(63)
-  /// GCP: assinatura do Pub/Sub que o nó lê.
-  pubsubSubscription String?            @db.VarChar(255)
+  /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
+  pubsubSubscription String?            @db.VarChar(320)
   /// Cloudflare: zonas (domínios) monitoradas.
   zones              String[]           @default([])
   status             CloudAccountStatus @default(active)

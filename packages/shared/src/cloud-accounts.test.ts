@@ -7,6 +7,8 @@ import {
   fieldsOutsideProvider,
   isAwsRegion,
   isDomainName,
+  isPubsubSubscriptionName,
+  qualifyPubsubSubscription,
   readOnlyRoleArn,
 } from './cloud-accounts.js';
 
@@ -85,7 +87,7 @@ describe('provedores: AWS, GCP e Cloudflare', () => {
       cloudAccountCreateSchema.safeParse({
         provider: 'gcp',
         accountId: 'verax-prod-123',
-        pubsubSubscription: 'verax-soc-logs',
+        pubsubSubscription: 'projects/verax-prod-123/subscriptions/verax-soc-logs',
       }).success,
     ).toBe(true);
     expect(
@@ -132,18 +134,25 @@ describe('provedores: AWS, GCP e Cloudflare', () => {
     ).toBe(false);
   });
 
-  it.each(['goog-logs', 'a', '1logs', 'logs com espaço', 'logs/../x'])(
-    'assinatura do Pub/Sub inválida: %s',
-    (name) => {
-      expect(
-        cloudAccountCreateSchema.safeParse({
-          provider: 'gcp',
-          accountId: 'verax-prod-123',
-          pubsubSubscription: name,
-        }).success,
-      ).toBe(false);
-    },
-  );
+  it.each([
+    'verax-logs',
+    'projects/verax-prod-123/subscriptions/goog-logs',
+    'projects/verax-prod-123/subscriptions/a',
+    'projects/verax-prod-123/subscriptions/1logs',
+    'projects/verax-prod-123/subscriptions/logs com espaço',
+    'projects/verax-prod-123/subscriptions/logs/../x',
+    'projects/123456789012/subscriptions/verax-logs',
+    'projects/verax-prod-123/topics/verax-logs',
+    'organizations/verax-prod-123/subscriptions/verax-logs',
+  ])('assinatura do Pub/Sub inválida: %s', (name) => {
+    expect(
+      cloudAccountCreateSchema.safeParse({
+        provider: 'gcp',
+        accountId: 'verax-prod-123',
+        pubsubSubscription: name,
+      }).success,
+    ).toBe(false);
+  });
 
   it.each([
     ['exemplo.com.br', true],
@@ -156,6 +165,16 @@ describe('provedores: AWS, GCP e Cloudflare', () => {
     [`${'a'.repeat(64)}.com`, false],
   ])('domínio %s: %s', (name, valid) => {
     expect(isDomainName(name)).toBe(valid);
+  });
+
+  it('o ID da assinatura vira o nome completo no projeto da conta; o nome completo fica como está', () => {
+    expect(qualifyPubsubSubscription('verax-prod-123', ' verax-logs ')).toBe(
+      'projects/verax-prod-123/subscriptions/verax-logs',
+    );
+    expect(
+      qualifyPubsubSubscription('verax-prod-123', 'projects/verax-logs-hub/subscriptions/verax-logs'),
+    ).toBe('projects/verax-logs-hub/subscriptions/verax-logs');
+    expect(isPubsubSubscriptionName(qualifyPubsubSubscription('verax-prod-123', 'verax-logs'))).toBe(true);
   });
 
   it('zona repetida é recusada', () => {

@@ -59,15 +59,31 @@ const bucketSchema = z
   });
 
 /**
- * Assinatura do Pub/Sub de onde o nó lê os logs do projeto (o coletor do Cloud Logging publica no tópico dela).
- * Subconjunto das regras da GCP: começa com letra, 3 a 255 caracteres, sem o prefixo reservado `goog`.
+ * Assinatura do Pub/Sub de onde o nó lê os logs do projeto (o coletor do Cloud Logging publica no tópico dela),
+ * pelo nome completo: `projects/<projeto>/subscriptions/<id>`. O ID só é único dentro do projeto dono, e o
+ * projeto pode ser outro que não o monitorado (coletor agregado). Do ID, um subconjunto das regras da GCP: começa
+ * com letra, 3 a 255 caracteres, sem o prefixo reservado `goog`. Conferido por partes, sem regex aninhada.
  */
-const pubsubSubscriptionSchema = z
-  .string()
-  .regex(/^[A-Za-z][A-Za-z0-9._-]{2,254}$/, { error: 'nome de assinatura do Pub/Sub inválido' })
-  .refine((name) => !name.toLowerCase().startsWith('goog'), {
-    error: 'nome de assinatura do Pub/Sub inválido',
-  });
+export function isPubsubSubscriptionName(name: string): boolean {
+  const parts = name.split('/');
+  if (parts.length !== 4 || parts[0] !== 'projects' || parts[2] !== 'subscriptions') return false;
+  const [, project = '', , id = ''] = parts;
+  return (
+    gcpProjectIdSchema.safeParse(project).success &&
+    /^[A-Za-z][A-Za-z0-9._-]{2,254}$/.test(id) &&
+    !id.toLowerCase().startsWith('goog')
+  );
+}
+
+/** Só o ID digitado vira o nome completo no projeto da conta; um nome completo fica como está. */
+export function qualifyPubsubSubscription(projectId: string, value: string): string {
+  const trimmed = value.trim();
+  return trimmed.includes('/') ? trimmed : `projects/${projectId}/subscriptions/${trimmed}`;
+}
+
+const pubsubSubscriptionSchema = z.string().max(320).refine(isPubsubSubscriptionName, {
+  error: 'assinatura inválida: use projects/<projeto>/subscriptions/<nome>',
+});
 
 /** Nome de domínio (zona do Cloudflare), conferido rótulo a rótulo, sem regex aninhada. */
 export function isDomainName(name: string): boolean {
