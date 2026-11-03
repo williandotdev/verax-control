@@ -35,7 +35,7 @@ export const MFA_REQUIRED_CODE = 'MFA_REQUIRED';
 export const MFA_REQUIRED_MESSAGE = 'Cadastre a verificação em duas etapas para continuar';
 
 /** Mensagem devolvida quando a sessão foi aberta com a senha temporária (o código vem de `@verax/shared`). */
-export const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'Troque a senha temporária para continuar';
+export const CREDENTIAL_CHANGE_REQUIRED_MESSAGE = 'Troque a senha temporária para continuar';
 
 /** Um código TOTP aceito no login não vale de novo por este tempo (cobre a janela de ±1 passo de 30 s). */
 export const TOTP_REPLAY_WINDOW_SECONDS = 2 * 60;

@@ -442,13 +442,13 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
     http.post(url('/v1/users/:id/temporary-password'), ({ params, request }) => {
       const scope = scoped('users:write', request);
       if (!scope.ok) return scope.error;
-      const user = listOf(store.users, scope.tenantId).find((candidate) => candidate.id === params['id']);
-      if (!user) return problem(404, 'Usuário não encontrado');
-      if (user.id === scope.me.userId) return problem(403, 'Você não pode alterar o próprio acesso');
-      if (user.status === 'disabled')
+      const target = listOf(store.users, scope.tenantId).find((candidate) => candidate.id === params['id']);
+      if (!target) return problem(404, 'Usuário não encontrado');
+      if (target.id === scope.me.userId) return problem(403, 'Você não pode alterar o próprio acesso');
+      if (target.status === 'disabled')
         return problem(409, 'Usuário desativado: reative antes de gerar uma senha temporária');
-      user.mustChangePassword = true;
-      user.status = 'active'; // conta do antigo convite, ainda sem senha, passa a ativa
+      target.mustChangePassword = true;
+      target.status = 'active'; // conta do antigo convite, ainda sem senha, passa a ativa
       return HttpResponse.json(demoTemporaryPassword());
     }),
 

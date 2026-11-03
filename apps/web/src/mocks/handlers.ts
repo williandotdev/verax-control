@@ -1,4 +1,4 @@
-import { type Me, PASSWORD_CHANGE_REQUIRED_CODE, type Role, ROLES } from '@verax/shared';
+import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE, type Role, ROLES } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
@@ -91,7 +91,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
       return HttpResponse.json(
         {
           statusCode: 403,
-          code: PASSWORD_CHANGE_REQUIRED_CODE,
+          code: CREDENTIAL_CHANGE_REQUIRED_CODE,
           message: 'Troque a senha temporária para continuar',
         },
         { status: 403 },

@@ -1,6 +1,6 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
-import { PASSWORD_CHANGE_REQUIRED_CODE } from '@verax/shared';
+import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -55,7 +55,7 @@ describe('navegação ligada às respostas da API', () => {
     server.use(
       http.get(`${API_URL}/v1/tower`, () =>
         HttpResponse.json(
-          { statusCode: 403, code: PASSWORD_CHANGE_REQUIRED_CODE, message: 'x' },
+          { statusCode: 403, code: CREDENTIAL_CHANGE_REQUIRED_CODE, message: 'x' },
           { status: 403 },
         ),
       ),

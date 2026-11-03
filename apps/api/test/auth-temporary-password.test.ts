@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import {
   meSchema,
-  PASSWORD_CHANGE_REQUIRED_CODE,
+  CREDENTIAL_CHANGE_REQUIRED_CODE,
   TEMPORARY_PASSWORD_HOURS,
   temporaryPasswordSchema,
   userCreatedSchema,
@@ -107,11 +107,11 @@ describe('senha temporária: criada pelo administrador, troca obrigatória e dep
     await get(cookie, '/v1/csrf-token').expect(200);
 
     const blocked = await get(cookie, '/v1/findings').expect(403);
-    expect(blocked.body).toMatchObject({ code: PASSWORD_CHANGE_REQUIRED_CODE });
+    expect(blocked.body).toMatchObject({ code: CREDENTIAL_CHANGE_REQUIRED_CODE });
     // Nem o cadastro do MFA, nem as rotas de sessão da autenticação, antes de trocar a senha.
     const enable = await authPost(app, '/two-factor/enable', cookie, { password: created.temporaryPassword });
     expect(enable.status).toBe(403);
-    expect(enable.body).toMatchObject({ code: PASSWORD_CHANGE_REQUIRED_CODE });
+    expect(enable.body).toMatchObject({ code: CREDENTIAL_CHANGE_REQUIRED_CODE });
     await request(app.getHttpServer()).get('/v1/auth/list-sessions').set('Cookie', cookie).expect(403);
   });
 

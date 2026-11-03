@@ -1,4 +1,4 @@
-import { PASSWORD_CHANGE_REQUIRED_CODE } from '@verax/shared';
+import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import type { z } from 'zod';
 import { API_URL } from './env';
 
@@ -112,7 +112,7 @@ export class ApiClient {
       if (error.code === 'MFA_REQUIRED' && !authRoute) this.hooks.onMfaRequired?.();
       // Este código só vem de sessão com senha temporária, inclusive nas rotas de autenticação (o cadastro do MFA
       // também espera a troca da senha).
-      if (error.code === PASSWORD_CHANGE_REQUIRED_CODE) this.hooks.onPasswordChangeRequired?.();
+      if (error.code === CREDENTIAL_CHANGE_REQUIRED_CODE) this.hooks.onPasswordChangeRequired?.();
       throw error;
     }
 

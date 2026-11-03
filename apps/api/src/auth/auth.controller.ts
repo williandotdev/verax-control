@@ -22,10 +22,10 @@ import {
   CLIENT_IP_HEADER,
   MFA_REQUIRED_CODE,
   MFA_REQUIRED_MESSAGE,
-  PASSWORD_CHANGE_REQUIRED_MESSAGE,
+  CREDENTIAL_CHANGE_REQUIRED_MESSAGE,
   REQUEST_ID_INTERNAL_HEADER,
 } from './auth.constants.js';
-import { PASSWORD_CHANGE_REQUIRED_CODE } from '@verax/shared';
+import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import type { Auth } from './auth.factory.js';
 import { Public, SelfManaged } from './decorators.js';
 import { resolveSession } from './session-validation.js';
@@ -143,8 +143,8 @@ export class AuthController {
       if (!ROUTES_WITH_TEMPORARY_PASSWORD.has(route)) {
         throw new ApiError(
           HttpStatus.FORBIDDEN,
-          PASSWORD_CHANGE_REQUIRED_MESSAGE,
-          PASSWORD_CHANGE_REQUIRED_CODE,
+          CREDENTIAL_CHANGE_REQUIRED_MESSAGE,
+          CREDENTIAL_CHANGE_REQUIRED_CODE,
         );
       }
       return;

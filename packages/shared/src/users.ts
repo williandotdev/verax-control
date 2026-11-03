@@ -13,7 +13,7 @@ export type UserStatus = (typeof USER_STATUSES)[number];
 export const TEMPORARY_PASSWORD_HOURS = 72;
 
 /** Código da API para a sessão com senha temporária: ela só alcança a troca de senha. */
-export const PASSWORD_CHANGE_REQUIRED_CODE = 'PASSWORD_CHANGE_REQUIRED';
+export const CREDENTIAL_CHANGE_REQUIRED_CODE = 'PASSWORD_CHANGE_REQUIRED';
 
 /**
  * Novo usuário (T3.2): o cliente vem da sessão. A conta nasce com uma senha temporária, mostrada uma vez a quem criou;

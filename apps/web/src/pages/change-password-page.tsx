@@ -15,7 +15,7 @@ import { ME_QUERY_KEY, useMe, useSignOut } from '@/features/session/session';
 import { ApiRequestError } from '@/lib/api-client';
 
 /** Aviso que o cadastro do MFA mostra depois da troca (a senha nova é pedida de novo lá). */
-export const PASSWORD_CHANGED_NOTICE = 'Senha trocada. Use a senha nova para confirmar abaixo.';
+export const CREDENTIAL_CHANGED_NOTICE = 'Senha trocada. Use a senha nova para confirmar abaixo.';
 
 /**
  * Troca obrigatória da senha temporária, no primeiro acesso ou depois que o administrador gerou outra. A sessão aberta
@@ -44,7 +44,7 @@ export function ChangePasswordPage() {
       <Navigate
         to="/mfa/cadastro"
         replace
-        state={changed ? { notice: PASSWORD_CHANGED_NOTICE } : undefined}
+        state={changed ? { notice: CREDENTIAL_CHANGED_NOTICE } : undefined}
       />
     );
   }
