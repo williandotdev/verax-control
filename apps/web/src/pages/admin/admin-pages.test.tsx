@@ -109,20 +109,20 @@ describe('Usuários (T7.2)', { timeout: FORM_TIMEOUT }, () => {
 });
 
 describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
-  it('mostra conexão e último evento; cadastrar gera o ExternalId e o passo do conector', async () => {
+  it('mostra conexão e último evento; cadastrar conta AWS gera o ExternalId e o passo do conector', async () => {
     renderAt('/cadastros/contas');
     const rows = await rowsOf('Contas cloud do cliente');
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveTextContent('Conectada');
     await userEvent.click(screen.getByRole('button', { name: 'Cadastrar conta' }));
-    const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta AWS' });
+    const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
     await userEvent.type(within(sheet).getByLabelText('ID da conta AWS'), '1234');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar e gerar o ExternalId' }));
     expect(within(sheet).getByLabelText('ID da conta AWS')).toHaveAccessibleDescription(/12 dígitos/);
     await userEvent.clear(within(sheet).getByLabelText('ID da conta AWS'));
     await userEvent.type(within(sheet).getByLabelText('ID da conta AWS'), '210987654321');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar e gerar o ExternalId' }));
-    expect(await within(sheet).findByRole('status')).toHaveTextContent('Conta 210987654321 cadastrada');
+    expect(await within(sheet).findByRole('status')).toHaveTextContent('Conta AWS 210987654321 cadastrada');
     expect(within(sheet).getByText(/^vx-/)).toBeInTheDocument();
     expect(within(sheet).getByRole('link', { name: 'template do conector' })).toHaveAttribute(
       'href',
@@ -137,6 +137,58 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     await userEvent.type(within(sheet).getByLabelText('ID da conta AWS'), DEMO_ACCOUNTS.beta);
     await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar e gerar o ExternalId' }));
     expect(await within(sheet).findByRole('alert')).toBeInTheDocument();
+  });
+
+  it('projeto da GCP: sem ExternalId nem papel, com os passos da assinatura do Pub/Sub', async () => {
+    renderAt('/cadastros/contas');
+    await userEvent.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
+    await userEvent.selectOptions(within(sheet).getByLabelText('Provedor'), 'gcp');
+    expect(within(sheet).queryByLabelText('Regiões monitoradas')).not.toBeInTheDocument();
+    await userEvent.type(within(sheet).getByLabelText('ID do projeto da GCP'), '123456789012');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
+    expect(within(sheet).getByLabelText('ID do projeto da GCP')).toHaveAccessibleDescription(
+      /ID de projeto da GCP inválido/,
+    );
+    await userEvent.clear(within(sheet).getByLabelText('ID do projeto da GCP'));
+    await userEvent.type(within(sheet).getByLabelText('ID do projeto da GCP'), 'verax-soc-prod');
+    await userEvent.type(within(sheet).getByLabelText('Assinatura do Pub/Sub (opcional)'), 'verax-logs');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
+    expect(await within(sheet).findByRole('status')).toHaveTextContent(
+      'Projeto da GCP verax-soc-prod cadastrado. Falta configurar a leitura no nó.',
+    );
+    expect(
+      within(sheet).getByRole('heading', { name: 'Leitura do projeto verax-soc-prod' }),
+    ).toBeInTheDocument();
+    expect(within(sheet).getByText(/Nenhuma chave de conta de serviço é criada/)).toBeInTheDocument();
+    expect(within(sheet).queryByText(/^vx-/)).not.toBeInTheDocument();
+  });
+
+  it('Cloudflare: zonas na tabela; o token fica no nó; as zonas mudam no detalhe', async () => {
+    renderAt('/cadastros/contas');
+    const row = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
+      candidate.textContent?.includes(DEMO_ACCOUNTS.alfaCloudflare),
+    ) as HTMLElement;
+    expect(row).toHaveTextContent('loja-alfa.example');
+    expect(row).toHaveTextContent('Aguardando a configuração');
+    await userEvent.click(
+      within(row).getByRole('button', { name: (name) => name.includes(DEMO_ACCOUNTS.alfaCloudflare) }),
+    );
+    const sheet = await screen.findByRole('dialog', {
+      name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    });
+    expect(within(sheet).getByText(/nunca entra neste cadastro/)).toBeInTheDocument();
+    expect(within(sheet).queryByText('Papel de leitura')).not.toBeInTheDocument();
+    const zones = within(sheet).getByLabelText('Zonas monitoradas');
+    await userEvent.clear(zones);
+    await userEvent.type(zones, 'loja-alfa.example, https://errado');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar zonas' }));
+    expect(zones).toHaveAccessibleDescription(/zona inválida/);
+    await userEvent.clear(zones);
+    await userEvent.type(zones, 'loja-alfa.example, api.loja-alfa.example');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar zonas' }));
+    // O detalhe relê a conta depois de salvar (a tabela fica fora da árvore enquanto o painel modal está aberto).
+    expect(await within(sheet).findByText('loja-alfa.example, api.loja-alfa.example')).toBeInTheDocument();
   });
 });
 

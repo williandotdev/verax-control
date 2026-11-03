@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { awsAccountIdSchema } from './cloud-accounts.js';
+import { awsAccountIdSchema, cloudAccountRefSchema } from './cloud-accounts.js';
 import { withPagination } from './pagination.js';
 
 /**
@@ -113,7 +113,7 @@ export const assetSchemas = {
 } as const satisfies Record<AssetKind, z.ZodType>;
 
 export const assetListQuerySchema = withPagination({
-  accountId: awsAccountIdSchema.optional(),
+  accountId: cloudAccountRefSchema.optional(),
   /** `true`: só os itens com algum risco. */
   atRisk: z.enum(['true']).optional(),
 });

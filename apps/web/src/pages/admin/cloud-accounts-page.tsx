@@ -1,4 +1,10 @@
-import { type CloudAccount, cloudAccountCreateSchema } from '@verax/shared';
+import {
+  CLOUD_PROVIDERS,
+  type CloudAccount,
+  cloudAccountCreateSchema,
+  cloudAccountUpdateSchema,
+  type CloudProvider,
+} from '@verax/shared';
 import { Copy, ExternalLink } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 import { useSearchParams } from 'react-router';
@@ -13,16 +19,56 @@ import {
   useCreateCloudAccount,
   useUpdateCloudAccount,
 } from '@/features/admin/admin-api';
-import { AdminShell, FormError } from '@/features/admin/admin-ui';
+import { AdminShell, FormError, SelectInput } from '@/features/admin/admin-ui';
 import { fieldErrors } from '@/features/admin/forms';
-import { CONNECTION_LABELS, CONNECTOR_GUIDE_URL, CONNECTOR_TEMPLATE_URL } from '@/features/admin/labels';
+import {
+  ACCOUNT_NOUNS,
+  CONNECTOR_GUIDE_URL,
+  CONNECTOR_TEMPLATE_URL,
+  connectionLabel,
+  PROVIDER_LABELS,
+} from '@/features/admin/labels';
 import { useMe } from '@/features/session/session';
 import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/format';
 
 const NEW = 'nova';
+const PROVIDER_OPTIONS = CLOUD_PROVIDERS.map((provider) => ({
+  value: provider,
+  label: PROVIDER_LABELS[provider],
+}));
 
-/** Contas cloud (T7.3): cadastrar, ver o ExternalId e o template do conector, e acompanhar a conexão. */
+/** "a, b , c" → ["a", "b", "c"]: regiões e zonas são digitadas separadas por vírgula. */
+function splitList(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/** O que a conta monitora: regiões (AWS), a assinatura do Pub/Sub (GCP) ou as zonas (Cloudflare). */
+function scopeOf(account: CloudAccount): string | null {
+  if (account.provider === 'aws') return account.regions.join(', ');
+  if (account.provider === 'gcp') return account.pubsubSubscription;
+  return account.zones.length > 0 ? account.zones.join(', ') : null;
+}
+
+const SCOPE_LABELS: Readonly<Record<CloudProvider, string>> = {
+  aws: 'Regiões',
+  gcp: 'Assinatura do Pub/Sub',
+  cloudflare: 'Zonas',
+};
+
+const MISSING_SCOPE: Readonly<Record<CloudProvider, string>> = {
+  aws: '—',
+  gcp: 'assinatura não informada',
+  cloudflare: 'nenhuma zona informada',
+};
+
+/**
+ * Contas cloud (T7.3): AWS, GCP e Cloudflare. Cadastrar, ver o que configurar em cada provedor e acompanhar a
+ * conexão. Nenhum formulário pede credencial.
+ */
 export function CloudAccountsPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
@@ -43,14 +89,20 @@ export function CloudAccountsPage() {
   const columns: Column<CloudAccount>[] = [
     {
       key: 'conta',
-      header: 'Conta AWS',
+      header: 'Conta',
       cell: (row) => (
-        <button type="button" className="font-mono text-sm hover:underline" onClick={() => setOpen(row.id)}>
-          {row.accountId}
+        <button type="button" className="text-left hover:underline" onClick={() => setOpen(row.id)}>
+          <span className="block text-xs text-muted-foreground">{PROVIDER_LABELS[row.provider]}</span>
+          <span className="break-all font-mono text-sm">{row.accountId}</span>
         </button>
       ),
     },
-    { key: 'regioes', header: 'Regiões', cell: (row) => row.regions.join(', ') },
+    {
+      key: 'escopo',
+      header: 'Monitorando',
+      cell: (row) =>
+        scopeOf(row) ?? <span className="text-muted-foreground">{MISSING_SCOPE[row.provider]}</span>,
+    },
     { key: 'conexao', header: 'Conexão', cell: (row) => <ConnectionBadge account={row} /> },
     {
       key: 'evento',
@@ -74,7 +126,7 @@ export function CloudAccountsPage() {
   return (
     <AdminShell
       title="Contas cloud"
-      description="Contas AWS monitoradas. O Verax Control lê cada uma por um papel somente leitura que o cliente cria com o conector."
+      description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê, e nenhum cadastro guarda credencial."
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
     >
       <DataTable
@@ -90,19 +142,25 @@ export function CloudAccountsPage() {
         error={list.error}
         onRetry={() => void list.refetch()}
         emptyTitle="Nenhuma conta cadastrada"
-        emptyDescription="Cadastre a primeira conta AWS do cliente para começar o monitoramento."
+        emptyDescription="Cadastre a primeira conta do cliente (AWS, GCP ou Cloudflare) para começar o monitoramento."
       />
       <Sheet
         open={open === NEW || selected !== null}
         onOpenChange={(value) => {
           if (!value) setOpen(null);
         }}
-        title={open === NEW ? 'Cadastrar conta AWS' : `Conta ${selected?.accountId ?? ''}`}
+        title={
+          open === NEW
+            ? 'Cadastrar conta'
+            : selected
+              ? `${ACCOUNT_NOUNS[selected.provider].noun} ${selected.accountId}`
+              : 'Conta'
+        }
       >
         {open === NEW ? (
           <CreateAccount />
         ) : (
-          selected && <AccountDetail account={selected} canWrite={canWrite} />
+          selected && <AccountDetail key={selected.id} account={selected} canWrite={canWrite} />
         )}
       </Sheet>
     </AdminShell>
@@ -116,37 +174,63 @@ function ConnectionBadge({ account }: { account: CloudAccount }) {
   return (
     <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
       <Icon aria-hidden className={cn('size-4', tone)} />
-      {CONNECTION_LABELS[connection]}
+      {connectionLabel(account.provider, connection)}
     </span>
   );
 }
 
+interface CreateValues {
+  provider: CloudProvider;
+  accountId: string;
+  regions: string;
+  pubsubSubscription: string;
+  zones: string;
+}
+
+/** Monta o corpo do cadastro com só os campos do provedor escolhido. */
+function createInput(values: CreateValues) {
+  const accountId = values.accountId.trim();
+  switch (values.provider) {
+    case 'aws':
+      return { provider: 'aws', accountId, regions: splitList(values.regions) };
+    case 'gcp':
+      return { provider: 'gcp', accountId, pubsubSubscription: values.pubsubSubscription.trim() || null };
+    case 'cloudflare':
+      return { provider: 'cloudflare', accountId, zones: splitList(values.zones) };
+  }
+}
+
 function CreateAccount() {
-  const [values, setValues] = useState({ accountId: '', regions: 'sa-east-1' });
+  const [values, setValues] = useState<CreateValues>({
+    provider: 'aws',
+    accountId: '',
+    regions: 'sa-east-1',
+    pubsubSubscription: '',
+    zones: '',
+  });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const create = useCreateCloudAccount();
+  const set = (key: keyof CreateValues) => (event: { target: { value: string } }) =>
+    setValues((current) => ({ ...current, [key]: event.target.value }));
 
   if (create.data) {
     return (
       <div className="space-y-4">
         <p role="status" className="rounded-md border border-ok/50 bg-ok/10 p-3 text-sm">
-          Conta {create.data.accountId} cadastrada. Falta o cliente criar o conector nela.
+          {ACCOUNT_NOUNS[create.data.provider].noun} {create.data.accountId}{' '}
+          {ACCOUNT_NOUNS[create.data.provider].registered}.{' '}
+          {create.data.provider === 'aws'
+            ? 'Falta o cliente criar o conector nela.'
+            : 'Falta configurar a leitura no nó.'}
         </p>
-        <ConnectorSteps account={create.data} />
+        <ProviderSteps account={create.data} />
       </div>
     );
   }
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const input = cloudAccountCreateSchema.safeParse({
-      provider: 'aws',
-      accountId: values.accountId.trim(),
-      regions: values.regions
-        .split(',')
-        .map((region) => region.trim())
-        .filter(Boolean),
-    });
+    const input = cloudAccountCreateSchema.safeParse(createInput(values));
     if (!input.success) {
       setErrors(fieldErrors(input.error));
       return;
@@ -155,26 +239,78 @@ function CreateAccount() {
     create.mutate(input.data);
   };
 
+  const listError = (key: string) =>
+    errors[key] ?? Object.entries(errors).find(([field]) => field.startsWith(`${key}.`))?.[1];
+
   return (
     <form onSubmit={submit} noValidate className="space-y-4">
-      <Field
-        label="ID da conta AWS"
-        hint="12 dígitos (canto superior direito do console da AWS)."
-        inputMode="numeric"
-        value={values.accountId}
-        onChange={(event) => setValues({ ...values, accountId: event.target.value })}
-        error={errors['accountId']}
+      <SelectInput
+        label="Provedor"
+        value={values.provider}
+        onChange={(event) => {
+          setErrors({});
+          setValues({ ...values, provider: event.target.value as CloudProvider });
+        }}
+        options={PROVIDER_OPTIONS}
       />
-      <Field
-        label="Regiões monitoradas"
-        hint="Separadas por vírgula, por exemplo: sa-east-1, us-east-1."
-        value={values.regions}
-        onChange={(event) => setValues({ ...values, regions: event.target.value })}
-        error={errors['regions'] ?? Object.entries(errors).find(([key]) => key.startsWith('regions.'))?.[1]}
-      />
+      {values.provider === 'aws' && (
+        <>
+          <Field
+            label="ID da conta AWS"
+            hint="12 dígitos (canto superior direito do console da AWS)."
+            inputMode="numeric"
+            value={values.accountId}
+            onChange={set('accountId')}
+            error={errors['accountId']}
+          />
+          <Field
+            label="Regiões monitoradas"
+            hint="Separadas por vírgula, por exemplo: sa-east-1, us-east-1."
+            value={values.regions}
+            onChange={set('regions')}
+            error={listError('regions')}
+          />
+        </>
+      )}
+      {values.provider === 'gcp' && (
+        <>
+          <Field
+            label="ID do projeto da GCP"
+            hint="Como aparece no seletor de projetos do console, por exemplo: minha-empresa-prod (não é o número do projeto)."
+            value={values.accountId}
+            onChange={set('accountId')}
+            error={errors['accountId']}
+          />
+          <Field
+            label="Assinatura do Pub/Sub (opcional)"
+            hint="A que recebe os logs de segurança do projeto. Pode ser informada depois."
+            value={values.pubsubSubscription}
+            onChange={set('pubsubSubscription')}
+            error={errors['pubsubSubscription']}
+          />
+        </>
+      )}
+      {values.provider === 'cloudflare' && (
+        <>
+          <Field
+            label="ID da conta do Cloudflare"
+            hint="32 caracteres, na página inicial da conta no painel do Cloudflare."
+            value={values.accountId}
+            onChange={set('accountId')}
+            error={errors['accountId']}
+          />
+          <Field
+            label="Zonas monitoradas (opcional)"
+            hint="Domínios separados por vírgula, por exemplo: exemplo.com.br, loja.exemplo.com.br."
+            value={values.zones}
+            onChange={set('zones')}
+            error={listError('zones')}
+          />
+        </>
+      )}
       <FormError error={create.error} />
       <Button type="submit" disabled={create.isPending}>
-        Cadastrar e gerar o ExternalId
+        {values.provider === 'aws' ? 'Cadastrar e gerar o ExternalId' : 'Cadastrar conta'}
       </Button>
     </form>
   );
@@ -191,18 +327,23 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
         </dd>
         <dt className="text-muted-foreground">Último evento</dt>
         <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
-        <dt className="text-muted-foreground">Regiões</dt>
-        <dd>{account.regions.join(', ')}</dd>
-        <dt className="text-muted-foreground">Papel de leitura</dt>
-        <dd className="break-all font-mono text-xs">{account.roleArn}</dd>
+        <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
+        <dd className="break-all">{scopeOf(account) ?? MISSING_SCOPE[account.provider]}</dd>
+        {account.roleArn && (
+          <>
+            <dt className="text-muted-foreground">Papel de leitura</dt>
+            <dd className="break-all font-mono text-xs">{account.roleArn}</dd>
+          </>
+        )}
       </dl>
-      {account.externalId ? (
-        <ConnectorSteps account={account} />
-      ) : (
+      {account.provider === 'aws' && !account.externalId ? (
         <p className="text-sm text-muted-foreground">
           O ExternalId só aparece para quem configura o conector.
         </p>
+      ) : (
+        <ProviderSteps account={account} />
       )}
+      {canWrite && account.provider !== 'aws' && <EditSource account={account} />}
       {canWrite && (
         <div className="space-y-2">
           <Button
@@ -219,7 +360,96 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
   );
 }
 
-/** O que o cliente faz na conta dele: o template do conector com o ExternalId desta conta. */
+/** GCP: a assinatura do Pub/Sub; Cloudflare: as zonas. Os dois podem chegar depois do cadastro. */
+function EditSource({ account }: { account: CloudAccount }) {
+  const gcp = account.provider === 'gcp';
+  const [value, setValue] = useState(gcp ? (account.pubsubSubscription ?? '') : account.zones.join(', '));
+  const [error, setError] = useState<string>();
+  const update = useUpdateCloudAccount(account.id);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const input = cloudAccountUpdateSchema.safeParse(
+      gcp ? { pubsubSubscription: value.trim() || null } : { zones: splitList(value) },
+    );
+    if (!input.success) {
+      setError(Object.values(fieldErrors(input.error))[0]);
+      return;
+    }
+    setError(undefined);
+    update.mutate(input.data);
+  };
+
+  return (
+    <form onSubmit={submit} noValidate className="space-y-2">
+      <Field
+        label={gcp ? 'Assinatura do Pub/Sub' : 'Zonas monitoradas'}
+        hint={gcp ? undefined : 'Domínios separados por vírgula.'}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        error={error}
+      />
+      <FormError error={update.error} />
+      <Button type="submit" variant="secondary" disabled={update.isPending}>
+        {gcp ? 'Salvar assinatura' : 'Salvar zonas'}
+      </Button>
+    </form>
+  );
+}
+
+function ProviderSteps({ account }: { account: CloudAccount }) {
+  if (account.provider === 'gcp') return <GcpSteps account={account} />;
+  if (account.provider === 'cloudflare') return <CloudflareSteps account={account} />;
+  return <ConnectorSteps account={account} />;
+}
+
+/** O que configurar no projeto da GCP: o nó lê uma assinatura do Pub/Sub, sem chave de conta de serviço. */
+function GcpSteps({ account }: { account: CloudAccount }) {
+  return (
+    <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
+      <h3 id="conector-passos" className="text-sm font-semibold">
+        Leitura do projeto {account.accountId}
+      </h3>
+      <ol className="list-decimal space-y-2 pl-5 text-sm">
+        <li>
+          No projeto, crie um coletor de logs (sink) do Cloud Logging que publique só os eventos de segurança
+          num tópico do Pub/Sub, e uma assinatura nesse tópico.
+        </li>
+        <li>
+          Dê à conta de serviço do nó do Verax a permissão de assinante nessa assinatura e a de revisor de
+          segurança no projeto. Nenhuma chave de conta de serviço é criada: o nó usa a identidade da própria
+          VM.
+        </li>
+        <li>
+          Informe aqui o nome da assinatura. A conexão muda para "Conectada" quando o primeiro evento chegar.
+        </li>
+      </ol>
+    </section>
+  );
+}
+
+/** O que configurar no Cloudflare: o token só de leitura fica no cofre do nó, nunca neste cadastro. */
+function CloudflareSteps({ account }: { account: CloudAccount }) {
+  return (
+    <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
+      <h3 id="conector-passos" className="text-sm font-semibold">
+        Leitura da conta {account.accountId}
+      </h3>
+      <ol className="list-decimal space-y-2 pl-5 text-sm">
+        <li>No Cloudflare, crie um token de API só de leitura, com acesso a Analytics e Logs das zonas.</li>
+        <li>
+          Grave o token no cofre de segredos do nó. Ele nunca entra neste cadastro, nem passa por e-mail ou
+          chat.
+        </li>
+        <li>
+          Informe as zonas monitoradas. A conexão muda para "Conectada" quando o primeiro evento chegar.
+        </li>
+      </ol>
+    </section>
+  );
+}
+
+/** O que o cliente faz na conta AWS dele: o template do conector com o ExternalId desta conta. */
 function ConnectorSteps({ account }: { account: CloudAccount }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {

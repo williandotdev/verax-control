@@ -9,6 +9,7 @@ import {
   cloudAccountListQuerySchema,
   cloudAccountSchema,
   cloudAccountUpdateSchema,
+  fieldsOutsideProvider,
   type Me,
   type Permission,
   type ProtectedResource,
@@ -97,15 +98,21 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     regions: string[],
     connection: CloudAccount['connection'],
     lastEventMinutes: number | null,
+    other:
+      | { provider: 'gcp'; pubsubSubscription: string }
+      | { provider: 'cloudflare'; zones: string[] }
+      | null = null,
   ) =>
     cloudAccountSchema.parse({
       id: `018f2c1e-0000-7000-8000-0000000c${index.toString(16).padStart(4, '0')}`,
-      provider: 'aws',
+      provider: other?.provider ?? 'aws',
       accountId,
-      regions,
-      roleArn: readOnlyRoleArn(accountId),
-      externalId: `vx-${accountId}-0f3c9a1e7b2d4c6e8a0b1c2d3e4f5a6b`,
+      regions: other ? [] : regions,
+      roleArn: other ? null : readOnlyRoleArn(accountId),
+      externalId: other ? null : `vx-${accountId}-0f3c9a1e7b2d4c6e8a0b1c2d3e4f5a6b`,
       buckets: { cloudtrail: null, guardduty: null, waf: null },
+      pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
+      zones: other?.provider === 'cloudflare' ? other.zones : [],
       status: 'active',
       connection,
       lastEventAt:
@@ -188,6 +195,14 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         [
           account(1, DEMO_ACCOUNTS.alfaProducao, ['sa-east-1', 'us-east-1'], 'ok', 3),
           account(2, DEMO_ACCOUNTS.alfaHomologacao, ['sa-east-1'], 'ok', 30 * 60),
+          account(4, DEMO_ACCOUNTS.alfaGcp, [], 'ok', 12, {
+            provider: 'gcp',
+            pubsubSubscription: 'verax-logs-seguranca',
+          }),
+          account(5, DEMO_ACCOUNTS.alfaCloudflare, [], 'pending', null, {
+            provider: 'cloudflare',
+            zones: ['loja-alfa.example'],
+          }),
         ],
       ],
       [beta, [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'], 'ok', 1)]],
@@ -421,21 +436,28 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const input = cloudAccountCreateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
       const all = [...store.accounts.values()].flat();
-      if (all.some((account) => account.accountId === input.data.accountId)) {
-        return problem(409, 'Esta conta AWS já está cadastrada');
+      if (
+        all.some(
+          (account) => account.provider === input.data.provider && account.accountId === input.data.accountId,
+        )
+      ) {
+        return problem(409, 'Esta conta já está cadastrada');
       }
+      const data = input.data;
       const now = new Date().toISOString();
       const random = Array.from(crypto.getRandomValues(new Uint8Array(20)), (byte) =>
         byte.toString(16).padStart(2, '0'),
       ).join('');
       const account = cloudAccountSchema.parse({
         id: newId(),
-        provider: input.data.provider,
-        accountId: input.data.accountId,
-        regions: input.data.regions,
-        roleArn: readOnlyRoleArn(input.data.accountId),
-        externalId: `vx-${random}`,
+        provider: data.provider,
+        accountId: data.accountId,
+        regions: data.provider === 'aws' ? data.regions : [],
+        roleArn: data.provider === 'aws' ? readOnlyRoleArn(data.accountId) : null,
+        externalId: data.provider === 'aws' ? `vx-${random}` : null,
         buckets: { cloudtrail: null, guardduty: null, waf: null },
+        pubsubSubscription: data.provider === 'gcp' ? (data.pubsubSubscription ?? null) : null,
+        zones: data.provider === 'cloudflare' ? (data.zones ?? []) : [],
         status: 'active',
         connection: 'pending',
         lastEventAt: null,
@@ -454,6 +476,8 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!account) return problem(404, 'Conta não encontrada');
       const input = cloudAccountUpdateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      const foreign = fieldsOutsideProvider(account.provider, input.data);
+      if (foreign.length > 0) return problem(400, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
       const { buckets: _buckets, ...rest } = input.data;
       Object.assign(account, rest, { updatedAt: new Date().toISOString() });
       return HttpResponse.json(account);
