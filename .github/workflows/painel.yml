@@ -89,8 +89,13 @@ jobs:
             fi
             node scripts/firebase-hosting-deploy.mjs "$site" apps/web/dist apps/web/dist-hosting.json
             # Conferência no endereço padrão do Firebase (o domínio próprio pode ainda não estar no DNS).
-            headers=$(curl -fsSI --retry 5 --retry-all-errors "https://${site}.web.app/")
+            base="https://${site}.web.app"
+            headers=$(curl -fsSI --retry 5 --retry-all-errors "${base}/")
             grep -qi '^content-security-policy:' <<<"$headers"
             grep -qi '^strict-transport-security:' <<<"$headers"
+            # index.html sempre revalidado; arquivos com hash em /assets com cache longo.
+            grep -qi '^cache-control: no-cache' <<<"$headers"
+            asset=$(curl -fsS "${base}/" | grep -o '/assets/[A-Za-z0-9._-]*\.js' | head -1)
+            curl -fsSI "${base}${asset}" | grep -qi '^cache-control:.*immutable'
             echo "${site}: publicado e com os cabeçalhos de segurança"
           done

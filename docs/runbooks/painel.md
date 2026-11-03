@@ -20,6 +20,9 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
   sem `firebase-tools`.
 - **Cabeçalhos.** CSP, HSTS, anti-iframe e afins são gerados no build a partir da mesma função dos testes e2e
   (`apps/web/src/hosting.ts`), e o workflow confere a CSP e o HSTS no site publicado.
+- **Cache.** Tudo é revalidado a cada visita (`no-cache`), inclusive a raiz e as rotas da aplicação, que devolvem o
+  `index.html`: depois de uma publicação, ninguém fica com um `index.html` velho apontando para arquivos que já não
+  existem. Só `/assets/` (nomes com hash) tem cache de um ano. O workflow confere as duas regras no site publicado.
 - **Demonstração.** O build `demo` não conecta em nenhuma API: a CSP só permite a própria origem, e uma faixa avisa,
   em toda tela, que os dados são fictícios.
 

@@ -10,6 +10,7 @@ describe('configuração do Firebase Hosting', () => {
     expect(all).toEqual({
       ...securityHeaders('https://api.cliente.control.example.com.br'),
       'Strict-Transport-Security': STRICT_TRANSPORT_SECURITY,
+      'Cache-Control': 'no-cache',
     });
     expect(all['Content-Security-Policy']).toContain(
       "connect-src 'self' https://api.cliente.control.example.com.br",
@@ -23,13 +24,11 @@ describe('configuração do Firebase Hosting', () => {
     expect(csp).toContain("connect-src 'self' https://demo.example.com.br;");
   });
 
-  it('cache longo só para arquivos com hash; index sempre revalidado', () => {
-    expect(config.headers.find((rule) => rule.glob === '/assets/**')?.headers['Cache-Control']).toContain(
-      'immutable',
-    );
-    expect(config.headers.find((rule) => rule.glob === '/index.html')?.headers['Cache-Control']).toBe(
-      'no-cache',
-    );
+  it('tudo revalidado a cada visita; cache longo só em /assets, numa regra posterior', () => {
+    expect(all['Cache-Control']).toBe('no-cache');
+    const globs = config.headers.map((rule) => rule.glob);
+    expect(globs).toEqual(['**', '/assets/**']);
+    expect(config.headers[1]?.headers['Cache-Control']).toContain('immutable');
   });
 
   it('rotas da aplicação caem no index.html', () => {
