@@ -31,6 +31,7 @@ const accountSelect = {
   wafBucket: true,
   pubsubSubscription: true,
   zones: true,
+  lastEventAt: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -62,6 +63,8 @@ function toAccount(row: AccountRow, revealExternalId: boolean): CloudAccount {
     pubsubSubscription: row.pubsubSubscription,
     zones: row.zones,
     status: row.status,
+    // Gravado pelo sync de alertas (T5.3).
+    lastEventAt: row.lastEventAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

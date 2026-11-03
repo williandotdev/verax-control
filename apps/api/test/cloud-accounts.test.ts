@@ -374,6 +374,17 @@ describe('contas cloud (T3.3)', () => {
       await call(adminA).patch(`/v1/cloud-accounts/${created.id}`, { accountId: accountId() }).expect(400);
     });
 
+    it('o último evento gravado pelo sync aparece na conta', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      expect(created.lastEventAt).toBeNull();
+      const at = new Date('2026-11-03T10:15:00.000Z');
+      await prisma.cloudAccount.update({ where: { id: created.id }, data: { lastEventAt: at } });
+      const seen = await call(readerA).get(`/v1/cloud-accounts/${created.id}`).expect(200);
+      expect(seen.body).toMatchObject({ lastEventAt: at.toISOString() });
+    });
+
     it('desativar é exclusão lógica, auditada', async () => {
       const created = cloudAccountSchema.parse(
         (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,

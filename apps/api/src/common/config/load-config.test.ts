@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigValidationError, loadConfig } from './load-config.js';
+import { ConfigValidationError, loadConfig, loadWorkerConfig } from './load-config.js';
 
 const validEnv = {
   NODE_ENV: 'development',
@@ -141,5 +141,39 @@ describe('loadConfig', () => {
     expect(message).toContain('DATABASE_URL');
     expect(message).toContain('WEB_ORIGIN');
     expect(message).not.toContain(secret);
+  });
+});
+
+describe('configuração do worker do sync (T5.3)', () => {
+  const workerEnv = {
+    NODE_ENV: 'development',
+    DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
+  };
+
+  it('sobe só com banco: sem segredos de autenticação nem e-mail', () => {
+    expect(loadWorkerConfig(workerEnv)).toMatchObject({ LOG_LEVEL: 'info', SYNC_INTERVAL_SECONDS: 60 });
+  });
+
+  it('em produção exige TLS conferido até o banco, sem imprimir a URL', () => {
+    const secret = 'senha-que-nao-pode-vazar';
+    try {
+      loadWorkerConfig({
+        NODE_ENV: 'production',
+        DATABASE_URL: `postgresql://verax:${secret}@db.internal:5432/verax`,
+      });
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigValidationError);
+      expect((error as ConfigValidationError).problems).toEqual([
+        'DATABASE_URL: deve usar sslmode=verify-full em produção (TLS com certificado conferido)',
+      ]);
+      expect((error as Error).message).not.toContain(secret);
+    }
+  });
+
+  it.each(['5', '7200', 'um minuto'])('intervalo fora da faixa é recusado: %s', (value) => {
+    expect(() => loadWorkerConfig({ ...workerEnv, SYNC_INTERVAL_SECONDS: value })).toThrow(
+      ConfigValidationError,
+    );
   });
 });

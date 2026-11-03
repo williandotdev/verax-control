@@ -14,6 +14,7 @@ import { AppValidationPipe } from './common/http/validation.pipe.js';
 import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/logger.options.js';
 import { PrismaModule } from './common/prisma/prisma.module.js';
 import { FindingsModule } from './findings/findings.module.js';
+import type { RawEventReader } from './findings/raw-events.js';
 import { HealthModule } from './health/health.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { ProtectedResourcesModule } from './protected-resources/protected-resources.module.js';
@@ -22,6 +23,8 @@ import { UsersModule } from './users/users.module.js';
 
 export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
+  /** Evento bruto do detalhe do achado, lido do indexer quando ele está configurado. */
+  rawEvents?: RawEventReader;
 }
 
 @Module({})
@@ -42,7 +45,7 @@ export class AppModule {
         TenantsModule,
         UsersModule,
         CloudAccountsModule,
-        FindingsModule,
+        FindingsModule.register(options.rawEvents),
         ProtectedResourcesModule,
         AlertExceptionsModule,
       ],

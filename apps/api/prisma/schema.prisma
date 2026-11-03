@@ -253,6 +253,8 @@ model CloudAccount {
   pubsubSubscription String?            @db.VarChar(320)
   /// Cloudflare: zonas (domínios) monitoradas.
   zones              String[]           @default([])
+  /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
+  lastEventAt        DateTime?          @db.Timestamptz(3)
   status             CloudAccountStatus @default(active)
   createdAt          DateTime           @default(now()) @db.Timestamptz(3)
   updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
@@ -311,6 +313,7 @@ model AlertException {
   createdBy     User                @relation(fields: [createdById], references: [id], onDelete: Restrict)
   createdAt     DateTime            @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime            @updatedAt @db.Timestamptz(3)
+  findings      Finding[]
 
   @@unique([tenantId, ruleId, field, value])
 }
@@ -360,6 +363,9 @@ model Finding {
   sourceIp        String?          @db.VarChar(64)
   mitreTactics    String[]
   mitreTechniques String[]
+  /// Exceção que marcou o achado como esperado na chegada (T3.5); o achado já nasce "legítimo".
+  exceptionId     String?          @db.Uuid
+  exception       AlertException?  @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
@@ -385,4 +391,50 @@ model FindingComment {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   @@index([findingId, createdAt])
+}
+
+/// Motivo de um alerta ficar sem dono (T5.2).
+enum UnownedReason {
+  invalid_alert
+  not_aws
+  unknown_source
+  ambiguous_source
+  no_account
+  conflicting_accounts
+  unknown_account
+  source_mismatch
+}
+
+/// Alerta que o sync não atribuiu a nenhum cliente (T5.2): na dúvida, o alerta não é de ninguém. Sem `tenantId`
+/// de propósito; só `admin_verax` vê a fila. Guarda o mínimo para a triagem, nunca o evento bruto.
+model UnownedAlert {
+  id            String        @id @default(uuid(7)) @db.Uuid
+  source        String        @db.VarChar(16)
+  sourceEventId String        @db.VarChar(128)
+  reason        UnownedReason
+  /// Contas citadas no evento, quando o formato permitiu ler.
+  accounts      String[]
+  occurredAt    DateTime?     @db.Timestamptz(3)
+  ruleId        String?       @db.VarChar(6)
+  ruleLevel     Int?          @db.SmallInt
+  title         String?       @db.VarChar(500)
+  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
+
+  @@unique([source, sourceEventId])
+  @@index([createdAt(sort: Desc)])
+}
+
+/// Estado de uma sincronização (T5.3): até onde leu e a concessão que impede duas execuções ao mesmo tempo. A
+/// concessão vence sozinha: um worker que morre no meio não trava o próximo.
+model SyncState {
+  name            String    @id @db.VarChar(32)
+  /// Horário do alerta mais recente já processado; a próxima execução relê a partir dele, menos a sobreposição.
+  lastProcessedAt DateTime? @db.Timestamptz(3)
+  lastRunAt       DateTime? @db.Timestamptz(3)
+  lastSuccessAt   DateTime? @db.Timestamptz(3)
+  /// Tipo do último erro, sem mensagem (que poderia carregar dado do indexer).
+  lastError       String?   @db.VarChar(64)
+  leaseOwner      String?   @db.VarChar(64)
+  leaseUntil      DateTime? @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
 }
