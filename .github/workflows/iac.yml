@@ -75,6 +75,44 @@ jobs:
           tflint --init --config "$PWD/.tflint.hcl"
           tflint --config "$PWD/.tflint.hcl" --format compact
 
+  node:
+    name: Pacote do nó (scripts e compose)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: shellcheck -x -S style infra/node/bin/*.sh
+      - name: Compose válida (arquivos de ambiente fictícios, como o start.sh monta na VM)
+        run: |
+          sudo install -d -m 0755 /run/verax
+          for file in postgres db-bootstrap migrate api worker cloudflared bootstrap; do
+            echo "EXEMPLO=1" | sudo tee "/run/verax/$file.env" >/dev/null
+          done
+          {
+            echo "API_IMAGE=exemplo/api@sha256:$(printf '0%.0s' {1..64})"
+            echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
+          } >images.env
+          docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
+      - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e no start.sh)
+        run: |
+          grep -q 'subnet: 172.30.53.0/24' infra/node/compose.yaml
+          grep -q 'ipv4_address: 172.30.53.10' infra/node/compose.yaml
+          grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/start.sh
+          grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/start.sh
+      - name: Nenhuma porta publicada e todo contêiner da aplicação endurecido
+        run: |
+          config=$(docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --format json)
+          if jq -e '[.services[] | select(.ports != null and (.ports | length) > 0)] | length > 0' <<<"$config" >/dev/null; then
+            echo "O nó não publica porta: o acesso é pelo túnel." >&2
+            exit 1
+          fi
+          jq -e '[.services | to_entries[] | select(.key != "postgres") | .value
+            | select(.read_only != true or (.cap_drop | index("ALL")) == null
+              or (.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)
     runs-on: ubuntu-24.04

@@ -20,9 +20,13 @@ locals {
   EOT
 }
 
+# Um tópico e uma assinatura por projeto monitorado: no painel, cada projeto é uma conta cloud com a própria
+# assinatura, e é ela que diz de qual cliente é cada evento (uma origem de log pertence a um só cliente).
 resource "google_pubsub_topic" "security_logs" {
   #checkov:skip=CKV_GCP_83:Cifrado pelo Google (AES-256). As mensagens são cópias de logs que já estão no Cloud Logging com a mesma proteção.
-  name = "${var.name_prefix}-security-logs"
+  for_each = toset(var.monitored_projects)
+
+  name = "${var.name_prefix}-security-${each.key}"
 
   # Se o nó ficar parado, as mensagens esperam até 7 dias.
   message_retention_duration = "604800s"
@@ -31,8 +35,10 @@ resource "google_pubsub_topic" "security_logs" {
 }
 
 resource "google_pubsub_subscription" "security_logs" {
-  name  = "${var.name_prefix}-security-logs"
-  topic = google_pubsub_topic.security_logs.id
+  for_each = google_pubsub_topic.security_logs
+
+  name  = each.value.name
+  topic = each.value.id
 
   ack_deadline_seconds       = 60
   message_retention_duration = "604800s"
@@ -50,24 +56,26 @@ resource "google_logging_project_sink" "security" {
   project     = each.key
   name        = "${var.name_prefix}-security"
   description = "Eventos de segurança para o nó do Verax Control (só cópia; os logs originais não mudam)."
-  destination = "pubsub.googleapis.com/${google_pubsub_topic.security_logs.id}"
+  destination = "pubsub.googleapis.com/${google_pubsub_topic.security_logs[each.key].id}"
   filter      = local.security_log_filter
 
   unique_writer_identity = true
 }
 
-# Cada sink escreve no tópico com uma identidade própria, criada pela GCP, e só ela pode publicar.
+# Cada sink escreve só no tópico do próprio projeto, com uma identidade própria criada pela GCP.
 resource "google_pubsub_topic_iam_member" "sink_publisher" {
   for_each = google_logging_project_sink.security
 
-  topic  = google_pubsub_topic.security_logs.id
+  topic  = google_pubsub_topic.security_logs[each.key].id
   role   = "roles/pubsub.publisher"
   member = each.value.writer_identity
 }
 
-# O nó só lê esta assinatura; não publica nem mexe no tópico.
+# O nó só lê as assinaturas; não publica nem mexe nos tópicos.
 resource "google_pubsub_subscription_iam_member" "node_subscriber" {
-  subscription = google_pubsub_subscription.security_logs.id
+  for_each = google_pubsub_subscription.security_logs
+
+  subscription = each.value.id
   role         = "roles/pubsub.subscriber"
   member       = "serviceAccount:${google_service_account.node.email}"
 }

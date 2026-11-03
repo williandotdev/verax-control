@@ -1,0 +1,11 @@
+# Backup diário, com um sorteio de até 30 min para não coincidir sempre com a mesma hora.
+[Unit]
+Description=Verax Control - backup diario do banco
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

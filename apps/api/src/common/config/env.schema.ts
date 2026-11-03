@@ -43,13 +43,22 @@ export const envSchema = z
       .enum(['true', 'false'], { error: 'deve ser true ou false' })
       .default('true')
       .transform((value) => value === 'true'),
-    // E-mail (T2.6): SES em produção; caixa local em desenvolvimento (links de convite nunca vão para o log).
-    MAIL_TRANSPORT: z.enum(['ses', 'dev-mailbox']).default('dev-mailbox'),
+    // E-mail (T2.6): SES ou SMTP autenticado em produção; caixa local em desenvolvimento (links de convite nunca vão
+    // para o log). O nó da Verax usa o SMTP do Zoho Mail do domínio.
+    MAIL_TRANSPORT: z.enum(['ses', 'smtp', 'dev-mailbox']).default('dev-mailbox'),
     MAIL_FROM: z.email({ error: 'deve ser um e-mail válido' }),
     AWS_REGION: z
       .string()
       .regex(/^[a-z]{2}-[a-z]+-[0-9]$/, { error: 'região AWS inválida' })
       .default('sa-east-1'),
+    // SMTP (só com MAIL_TRANSPORT=smtp): sempre com TLS. A senha é de aplicativo e vem do cofre de segredos do nó.
+    SMTP_HOST: z
+      .string()
+      .regex(/^[a-z0-9.-]+$/i, { error: 'nome de servidor inválido' })
+      .optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
+    SMTP_USER: z.string().min(1).optional(),
+    SMTP_PASSWORD: z.string().min(1).optional(),
     // Pasta da caixa local. Vazio: `.dev-mailbox` na raiz do monorepo.
     DEV_MAILBOX_DIR: z.string().optional(),
     DATABASE_URL: z
@@ -69,8 +78,14 @@ export const envSchema = z
         message: 'deve ficar ligado em produção',
       });
     }
-    if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT !== 'ses') {
-      ctx.addIssue({ code: 'custom', path: ['MAIL_TRANSPORT'], message: 'deve ser ses em produção' });
+    if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT === 'dev-mailbox') {
+      ctx.addIssue({ code: 'custom', path: ['MAIL_TRANSPORT'], message: 'deve ser ses ou smtp em produção' });
+    }
+    if (env.MAIL_TRANSPORT === 'smtp') {
+      for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD'] as const) {
+        if (!env[key])
+          ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com MAIL_TRANSPORT=smtp' });
+      }
     }
     if (env.NODE_ENV === 'production' && env.TRUST_PROXY_HOPS === 0) {
       ctx.addIssue({
@@ -110,6 +125,15 @@ export const workerEnvSchema = z
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
     /** Intervalo entre execuções do sync. */
     SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(15).max(3600).default(60),
+    /**
+     * De onde o worker lê, separado por vírgula: `wazuh` (alertas das contas AWS, pelo indexer) e `gcp` (auditoria da
+     * GCP, pelas assinaturas do Pub/Sub cadastradas nas contas). O nó da Verax, sem Wazuh, usa só `gcp`.
+     */
+    SYNC_SOURCES: z
+      .string()
+      .default('wazuh')
+      .transform((value) => [...new Set(value.split(',').map((source) => source.trim()))])
+      .pipe(z.array(z.enum(['wazuh', 'gcp'], { error: 'fontes aceitas: wazuh e gcp' })).min(1)),
   })
   .superRefine((env, ctx) => {
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {

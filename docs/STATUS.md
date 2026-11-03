@@ -1590,3 +1590,77 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Contratos:** 4.
   - **Front:** 13 nas duas telas e o menu por papel.
   - **e2e:** acessibilidade das duas telas e do painel de auditoria, e o teste de celular. A acessibilidade pegou dois problemas, ambos corrigidos: alvo de toque pequeno nos botões de conta e o bloco do estado, que rolava sem receber foco.
+
+## SOC da Verax em operação: coleta da GCP, e-mail pelo Zoho, primeiro admin e pacote do nó
+
+- **Pedido:** deixar o SOC da Verax em operação de fato, com o próprio usuário como primeiro admin e o e-mail que a Verax já usa (Zoho).
+- **E-mail:** transporte SMTP (nodemailer 10.3.1, aprovado pelo usuário).
+  - TLS sempre: na porta 465 a conexão já começa cifrada; nas outras, o STARTTLS é obrigatório.
+  - Certificado conferido e TLS 1.2 no mínimo.
+  - Em produção, a configuração aceita `ses` ou `smtp`; o `smtp` exige servidor, usuário e senha.
+  - O domínio já tem MX, SPF (`include:zohomail.com`) e DKIM do Zoho.
+- **Coleta da auditoria da GCP** (nó sem Wazuh):
+  - **Cliente do Pub/Sub:** API REST com o token da identidade da VM (servidor de metadados), sem chave e sem biblioteca do Google.
+  - **Regras:** 19 regras próprias (faixa 9901xx), com nível na escala do Wazuh, título em português e MITRE ATT&CK. Cobrem:
+    - logs desviados ou apagados;
+    - auditoria reduzida;
+    - acesso público (`allUsers`);
+    - papéis de dono e privilegiados;
+    - chave e conta de serviço criadas;
+    - firewall aberto para a internet (crítico com SSH, RDP ou todas as portas) e firewall apagado;
+    - chave SSH nos metadados;
+    - chave KMS destruída;
+    - projeto apagado;
+    - API desativada;
+    - bucket apagado;
+    - política da organização alterada;
+    - federação de identidade criada ou alterada;
+    - VM criada;
+    - acesso negado (sem os agentes do Google).
+  - **Dono do evento:** cada conta GCP tem a própria assinatura, que diz de qual cliente é o evento; o projeto do `logName` precisa bater com a conta. Evento de outro projeto, sem projeto ou mensagem inválida vai para a fila sem dono.
+  - **Gravação:** achado, exceção e incidente na mesma transação, compartilhada com o sync do Wazuh (`finding-store.ts`, extraído sem mudar o comportamento). O lote só é confirmado (ack) depois de gravado, e a releitura não duplica.
+  - **Worker:** escolhe as fontes por `SYNC_SOURCES` (`wazuh`, `gcp`).
+  - **Contrato:** fonte nova `gcp_audit`, com rótulo na tela e "Regra" em vez de "Regra do Wazuh" onde vale para as duas.
+- **Primeiro admin e cliente** (`node-bootstrap`, idempotente):
+  - cria o `admin_verax` sem senha e envia o convite (o mesmo link de uso único do painel);
+  - cria o cliente do nó e as contas GCP com as assinaturas;
+  - tudo na trilha de auditoria como ação do sistema;
+  - e-mail de usuário de cliente não vira admin, e conta de outro cliente não muda de dono.
+- **Pacote do nó** (`infra/node/`), segundo o teste da imagem no CI:
+  - **Compose:** Postgres com TLS e `pg_hba` só `hostssl`, papéis e migrations, API, worker e `cloudflared`. Nenhuma porta publicada; raiz só leitura, sem capabilities e com limite de memória (VM de 1 GB).
+  - **`install.sh`:** Docker pelo repositório oficial com a chave conferida; CA do nó (a chave da CA é apagada depois de assinar o certificado do banco); senhas internas geradas uma vez; imagens fixadas pelo digest.
+  - **`start.sh`:** monta os arquivos de ambiente em `/run` (memória) com os segredos do Secret Manager.
+  - **`backup.sh`:** backup diário para o bucket.
+  - **systemd:** serviço e timer.
+- **Imagens:** workflow `Imagens do nó` publica no Artifact Registry do nó, sem chave (federação de identidade, environment `imagens`), com atestação de origem.
+- **Terraform** (`infra/gcp/`):
+  - tópico e assinatura por projeto monitorado;
+  - cofre `smtp-password` no lugar do `resend-api-key` (que estava vazio);
+  - registro de imagens com limpeza automática, conta de publicação só para este repositório e leitura pela VM.
+- **CI:** job novo "Pacote do nó" no `iac.yml` (shellcheck e Compose válida, sem porta publicada e com todos os contêineres da aplicação endurecidos).
+- **Testes:**
+  - API: SMTP (4), configuração (2), regras e leitura da GCP (41), cliente do Pub/Sub contra um servidor falso (7), sync com o banco (6), bootstrap com o fluxo completo do convite (8);
+  - sync do Wazuh, rascunho do achado e incidentes seguem verdes depois da extração.
+- **Roteiro:** `docs/runbooks/no-verax.md` (instalação, primeiro acesso, conferência, backup e restauração, problemas comuns).
+
+  Depois da revisão independente (11 achados confirmados, 8 problemas distintos, todos corrigidos):
+  - **Chave SSH:** a regra lê os nomes das chaves no delta de metadados do Compute (`protoPayload.metadata`), porque o `request` vem redigido. Também pega OS Login alterado ou apagado.
+  - **Assinatura compartilhada por vários projetos do mesmo cliente:** é lida uma vez, e cada evento vai para a conta do projeto dele. Assinatura em clientes diferentes vira origem ambígua.
+  - **IAM:** com `serviceData`, só o delta conta (política reenviada sem mudança não é concessão). Sem `serviceData`, o achado tem ID estável por recurso e vínculos.
+  - **Operação longa:** o início e o fim viram um achado só (ID da operação).
+  - **Token da VM:** só o worker alcança o servidor de metadados (regra no `DOCKER-USER`, IP fixo).
+  - **Postgres:** healthcheck por TCP, com tempo de partida.
+  - **Imagens conferidas:** o `deploy.sh` confere no GitHub a atestação de cada imagem (workflow, `main` e commit) e instala pelo digest; a VM não confia em tag.
+  - **Roteiro:** o primeiro acesso roda dentro da sessão SSH, e a cópia antiga é apagada antes da nova.
+
+  Depois da verificação das correções e do Codex:
+  - **Entrada da GCP:** texto grande demais é cortado, não recusado, e as listas não têm limite de quantidade (o Cloud Logging limita a entrada a 256 KB). Assim, um User-Agent enorme ou centenas de chaves de metadados não escondem o evento.
+  - **`enable-oslogin` incluído na VM** também conta.
+  - **Firewall:** só regra de liberação ativa expõe. Bloqueio (DENY) ou regra desativada, não.
+  - **Política sem delta:** o ID estável inclui o dia (UTC), para uma concessão refeita depois de revogada voltar a ser achado.
+  - **Operação longa:** o ID é o hash de produtor, ID da operação e regra (sem corte que junte operações diferentes).
+  - **Arquivos de ambiente:** valores entre aspas simples (o Compose não interpreta `$`).
+  - **`deploy.sh`:**
+    - confere a atestação com `gh attestation verify`: assinatura e identidade do workflow, `main`, commit e executor do GitHub;
+    - copia com caminho relativo (o pscp do Windows não expande `~`);
+    - aceita `node.conf` com CRLF.

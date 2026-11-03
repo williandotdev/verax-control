@@ -237,7 +237,7 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Nova exceção' }));
     const sheet = await screen.findByRole('dialog', { name: 'Nova exceção' });
-    await userEvent.type(within(sheet).getByLabelText(/^Regra do Wazuh/), '80254');
+    await userEvent.type(within(sheet).getByLabelText(/^Regra/), '80254');
     await userEvent.selectOptions(within(sheet).getByLabelText('Comparar por'), 'ip');
     await userEvent.type(within(sheet).getByLabelText(/^Valor/), 'não-é-ip');
     await userEvent.type(within(sheet).getByLabelText('Motivo (obrigatório)'), 'VPN da empresa.');

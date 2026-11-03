@@ -1,0 +1,8 @@
+[Unit]
+Description=Verax Control - backup do banco no bucket
+Requires=verax-node.service
+After=verax-node.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/verax/bin/backup.sh

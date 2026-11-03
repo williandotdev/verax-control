@@ -97,6 +97,11 @@ A base do nó da Verax na GCP está em `infra/gcp/`, com o passo a passo em `inf
 do Pub/Sub e aplica regras próprias. Tudo roda numa e2-micro do nível gratuito em us-east1, com custo de R$ 5 a 15
 por mês. Os nós que monitoram contas AWS de clientes continuam com o Wazuh.
 
+O pacote do nó está em `infra/node/`, com o roteiro em `docs/runbooks/no-verax.md`. Ele roda numa VM só, sem porta
+aberta: Postgres com TLS, papéis e migrations, API, worker e o túnel do Cloudflare. As imagens vêm do registro do
+projeto, fixadas pelo digest. Os convites e as redefinições de senha saem pelo Zoho Mail do domínio, por SMTP com TLS
+(decisão de 03/11/2026, no lugar do Resend).
+
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
 - **Cloud Logging:** auditoria (Admin Activity e acesso a dados, onde estiver ligado), requisições das APIs (Cloud
@@ -143,7 +148,8 @@ A leitura de logs pela API não gera transferência entre regiões quando o nó 
 3. Pilha do nó (`infra/cloudformation/verax-control-node.yaml`): VPC isolada sem porta de entrada, VM, disco de dados,
    bucket, papel com negação explícita, snapshots, alarmes, orçamento e instalação pelo State Manager conferida por
    SHA-256. **Feito** (a instalação espera o pacote do passo 4).
-4. Docker Compose do nó: instalação, atualização por versão fixada e backup.
+4. Docker Compose do nó: instalação, atualização por versão fixada e backup (`infra/node/`). **Feito** para o nó
+   da Verax na GCP.
 5. Painel no Firebase Hosting, com os cabeçalhos de segurança, e publicação pelo GitHub Actions.
 6. Remoção do que deixou de ser usado (E8 e a rede do E4).
 7. Integração do E5 e telas do E7, sem mudança por causa desta decisão.

@@ -23,7 +23,7 @@ function finding(overrides: Partial<FindingDraft> = {}): FindingDraft {
     ruleId: '80255',
     ruleLevel: 10,
     title: 'Possible break in attempt',
-    awsSource: 'cloudtrail',
+    logSource: 'cloudtrail',
     eventName: 'ConsoleLogin',
     region: 'sa-east-1',
     resource: null,

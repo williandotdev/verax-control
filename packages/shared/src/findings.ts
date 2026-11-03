@@ -17,7 +17,8 @@ export const FINDING_STATUSES = ['new', 'investigating', 'legitimate', 'resolved
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
 
 /** Origem do alerta na AWS, lida pelo Wazuh. */
-export const FINDING_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
+/** Fontes de log: as da AWS (lidas pelo Wazuh) e a auditoria da GCP (lida do Pub/Sub pelo próprio nó). */
+export const FINDING_SOURCES = ['cloudtrail', 'guardduty', 'waf', 'gcp_audit'] as const;
 export type FindingSource = (typeof FINDING_SOURCES)[number];
 
 /** Períodos do filtro, em horas. */

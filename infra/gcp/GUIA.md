@@ -27,8 +27,9 @@ detecção. Tudo cabe numa **e2-micro**, que é gratuita em us-east1.
 | Disco `verax-node` (30 GB padrão)           | Sistema e dados. Fica se a VM for apagada. Snapshot semanal guardado por 4 semanas.  |
 | Conta de serviço `verax-node`               | Identidade da VM, sem chave JSON. Só lê os logs e os segredos do nó.                 |
 | Sink em cada projeto monitorado             | Copia os logs de auditoria e os bloqueios do Cloud Armor para o tópico do nó.        |
-| Tópico e assinatura do Pub/Sub              | Fila dos logs. Guarda as mensagens por 7 dias se o nó parar.                         |
-| 2 segredos no Secret Manager (vazios)       | Chave do Resend e token do túnel do Cloudflare. Você grava os valores no passo 7.    |
+| Tópico e assinatura por projeto monitorado  | Fila dos logs. Guarda as mensagens por 7 dias se o nó parar.                         |
+| 2 segredos no Secret Manager (vazios)       | Senha do e-mail (Zoho) e token do túnel do Cloudflare. Gravados no passo 7.          |
+| Registro de imagens `verax-control`         | Imagens da API e das migrations, publicadas pelo GitHub Actions sem chave.           |
 | Bucket `<projeto>-verax-node-backups`       | Backups do banco. Privado e versionado; a VM cria e lê, mas não apaga.               |
 | Orçamento (opcional)                        | E-mail em 50%, 90% e 100% do valor do mês.                                           |
 
@@ -135,11 +136,12 @@ Os valores nunca passam pelo Terraform. No **Git Bash**, cole o valor quando ele
 fica no histórico:
 
 ```bash
-read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-resend-api-key --data-file=- && unset VALOR
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-smtp-password --data-file=- && unset VALOR
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-cloudflare-tunnel-token --data-file=- && unset VALOR
 ```
 
-- **Chave do Resend:** no painel do Resend, em API Keys, crie uma com permissão só de envio ("Sending access").
+- **Senha do e-mail:** a senha de aplicativo da caixa `nao-responda@` no Zoho (Minha conta → Segurança → Senhas
+  específicas de aplicativo). Os convites e as redefinições de senha saem por ela.
 - **Token do túnel:** no Cloudflare, em Zero Trust → Networks → Tunnels, crie um túnel chamado `verax-node` e copie
   o token do comando de instalação (o texto longo depois de `--token`).
 
@@ -168,7 +170,7 @@ Uma forma inofensiva é "atualizar" o próprio sink com a mesma descrição, e l
 ```bash
 gcloud logging sinks update verax-node-security --project PROJETO_MONITORADO \
   --description="Eventos de segurança para o nó do Verax Control (só cópia; os logs originais não mudam)."
-gcloud pubsub subscriptions pull verax-node-security-logs --limit=3
+gcloud pubsub subscriptions pull verax-node-security-PROJETO_MONITORADO --limit=3
 ```
 
 Deve aparecer uma mensagem com `cloudaudit.googleapis.com` e `UpdateSink`. O `pull` sem `--auto-ack` não consome
@@ -204,5 +206,6 @@ a mensagem: ela volta para a fila e o nó vai lê-la depois.
 
 ## Próximos passos
 
-Com a base no ar, o próximo passo é o pacote do nó: instalar a API, o banco e o túnel na VM. Depois, no painel,
-o projeto entra em Contas cloud com a assinatura que aparece em `terraform output pubsub_subscription`.
+Com a base no ar, o próximo passo é o pacote do nó (`infra/node/`): instalar a API, o banco e o túnel na VM. O
+roteiro está em `docs/runbooks/no-verax.md`. Cada projeto monitorado entra em Contas cloud com a assinatura que
+aparece em `terraform output pubsub_subscriptions`.

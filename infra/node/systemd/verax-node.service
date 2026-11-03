@@ -1,0 +1,16 @@
+# Nó do Verax Control: banco, papéis e migrations, API, worker e túnel do Cloudflare (infra/node/compose.yaml).
+[Unit]
+Description=Verax Control - no (banco, API, worker e tunel)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/verax/bin/start.sh up
+ExecStop=/opt/verax/bin/start.sh down
+TimeoutStartSec=1200
+
+[Install]
+WantedBy=multi-user.target
