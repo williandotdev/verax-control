@@ -1,4 +1,4 @@
-import type { AssetKind, AssetRisk, OpenRule, RiskReason } from '@verax/shared';
+import type { AssetKind, AssetRisk, BucketAsset, OpenRule, RiskReason } from '@verax/shared';
 import type { Severity } from '@/design/severity';
 
 export const ASSET_KIND_LABELS: Readonly<Record<AssetKind, string>> = {
@@ -45,4 +45,11 @@ export function describeRule(rule: OpenRule): string {
   return rule.fromPort === rule.toPort
     ? `${protocol} ${rule.fromPort}`
     : `${protocol} ${rule.fromPort}–${rule.toPort}`;
+}
+
+/** Público por política ou por ACL; desconhecido só quando nenhum dos dois pôde ser lido. */
+export function bucketPublic(bucket: Pick<BucketAsset, 'policyPublic' | 'aclPublic'>): boolean | null {
+  if (bucket.policyPublic === true || bucket.aclPublic === true) return true;
+  if (bucket.policyPublic === null && bucket.aclPublic === null) return null;
+  return false;
 }

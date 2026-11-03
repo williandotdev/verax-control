@@ -21,6 +21,7 @@ import { SEVERITY_STYLES } from '@/design/severity';
 import { useAssets, useInventorySummary } from '@/features/inventory/inventory-api';
 import {
   ASSET_KIND_LABELS,
+  bucketPublic,
   describeRule,
   RISK_REASON_LABELS,
   RISK_SEVERITY,
@@ -153,6 +154,7 @@ export function AssetsPage() {
         </Tabs.List>
         <Tabs.Content value={kind} className="pt-4 focus:outline-none">
           <AssetTable
+            key={kind}
             kind={kind}
             query={query}
             enabled={scope !== null}
@@ -369,16 +371,7 @@ const BUCKET_COLUMNS: Column<BucketAsset>[] = [
   {
     key: 'publico',
     header: 'Público',
-    cell: (row) => (
-      <YesNo
-        value={
-          row.policyPublic === null && row.aclPublic === null
-            ? null
-            : Boolean(row.policyPublic ?? row.aclPublic)
-        }
-        risky={true}
-      />
-    ),
+    cell: (row) => <YesNo value={bucketPublic(row)} risky={true} />,
   },
   {
     key: 'bloqueio',

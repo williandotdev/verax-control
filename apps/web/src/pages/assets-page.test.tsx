@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { describeRule } from '@/features/inventory/labels';
+import { bucketPublic, describeRule } from '@/features/inventory/labels';
 import { api } from '@/lib/api';
 import { createQueryClient } from '@/lib/query-client';
 import { demoMe } from '@/mocks/fixtures';
@@ -91,6 +91,17 @@ describe('Ativos e identidades', () => {
     expect(internal).toHaveTextContent('nada');
   });
 
+  it('trocar de aba nunca mostra linhas do tipo anterior com as colunas do novo', async () => {
+    const router = renderAt('/ativos');
+    await rowsOf('Usuários IAM');
+    // Vai direto a um tipo ainda não carregado, com colunas incompatíveis com usuários.
+    await userEvent.click(screen.getByRole('tab', { name: /Security groups/ }));
+    await waitFor(() => expect(router.state.location.search).toBe('?aba=security-groups'));
+    const rows = await rowsOf('Security groups');
+    expect(rows[0]).toHaveTextContent('TCP 22');
+    expect(screen.queryByText(/deu errado|Erro/)).not.toBeInTheDocument();
+  });
+
   it('as abas funcionam pelo teclado', async () => {
     const router = renderAt('/ativos');
     const users = await screen.findByRole('tab', { name: /Usuários IAM/ });
@@ -118,5 +129,18 @@ describe('regras abertas', () => {
     [{ protocol: 'icmp', fromPort: -1, toPort: -1 }, 'ICMP'],
   ])('%o vira %s', (rule, text) => {
     expect(describeRule(rule)).toBe(text);
+  });
+});
+
+describe('bucket público', () => {
+  it.each([
+    [{ policyPublic: true, aclPublic: false }, true],
+    [{ policyPublic: false, aclPublic: true }, true],
+    [{ policyPublic: null, aclPublic: true }, true],
+    [{ policyPublic: false, aclPublic: false }, false],
+    [{ policyPublic: false, aclPublic: null }, false],
+    [{ policyPublic: null, aclPublic: null }, null],
+  ])('%o é %s', (bucket, expected) => {
+    expect(bucketPublic(bucket)).toBe(expected);
   });
 });

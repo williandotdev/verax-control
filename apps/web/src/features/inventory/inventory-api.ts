@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   type AssetKind,
   type AssetListQuery,
@@ -28,6 +28,9 @@ export function useAssets<K extends AssetKind>(kind: K, query: AssetListQuery, e
     queryKey: ['assets', kind, query],
     queryFn: () => api.get(`/v1/assets/${kind}?${params.toString()}`, schema),
     enabled,
-    placeholderData: keepPreviousData,
+    // Mantém a página anterior enquanto a próxima carrega, mas só do mesmo tipo: as linhas de outro tipo não
+    // servem para as colunas deste.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[1] === kind ? previous : undefined,
   });
 }
