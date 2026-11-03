@@ -26,7 +26,7 @@ const PERIOD_HOURS = {
   '90d': 24 * 90,
 } as const satisfies Record<FindingPeriod, number>;
 
-/** O detalhe mostra até 500 comentários, o limite do contrato. */
+/** O detalhe mostra os 500 comentários mais recentes, o limite do contrato; a contagem traz o total. */
 const MAX_COMMENTS = 500;
 
 const commentSelect = {
@@ -62,7 +62,8 @@ const detailSelect = {
   ruleId: true,
   ruleLevel: true,
   mitreTechniques: true,
-  comments: { select: commentSelect, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: MAX_COMMENTS },
+  // Os mais recentes: um comentário novo nunca fica de fora. Na tela, voltam à ordem cronológica.
+  comments: { select: commentSelect, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: MAX_COMMENTS },
 } as const satisfies Prisma.FindingSelect;
 
 type FindingRow = Prisma.FindingGetPayload<{ select: typeof findingSelect }>;
@@ -193,7 +194,7 @@ export class FindingsService {
       ruleId: row.ruleId,
       ruleLevel: row.ruleLevel,
       mitreTechniques: row.mitreTechniques,
-      comments: row.comments.map(toComment),
+      comments: row.comments.map(toComment).reverse(),
       rawEvent: await this.readRawEvent(row),
     };
   }

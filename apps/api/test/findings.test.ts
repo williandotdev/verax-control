@@ -178,6 +178,28 @@ describe('achados (T5.4 e T5.5)', () => {
       });
     });
 
+    it('acima de 500 comentários, o detalhe traz os 500 mais recentes, em ordem cronológica', async () => {
+      const finding = await insertFinding(tenantA);
+      const start = Date.now() - 1000 * 60_000;
+      await prisma.findingComment.createMany({
+        data: Array.from({ length: 501 }, (_, index) => ({
+          tenantId: tenantA,
+          findingId: finding.id,
+          authorId: analystUserA.id,
+          body: `comentário ${index}`,
+          createdAt: new Date(start + index * 60_000),
+        })),
+      });
+      await call(analystA).post(`/v1/findings/${finding.id}/comments`, { body: 'o mais novo' }).expect(201);
+      const detail = findingDetailSchema.parse(
+        (await call(readerA).get(`/v1/findings/${finding.id}`).expect(200)).body,
+      );
+      expect(detail.commentCount).toBe(502);
+      expect(detail.comments).toHaveLength(500);
+      expect(detail.comments.at(-1)?.body).toBe('o mais novo');
+      expect(detail.comments[0]?.body).toBe('comentário 2');
+    });
+
     it('evento fora da retenção ou indexer fora do ar: o detalhe sai sem o evento bruto', async () => {
       const finding = await insertFinding(tenantA);
       const rawEventOf = async () =>
