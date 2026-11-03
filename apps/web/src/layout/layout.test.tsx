@@ -58,8 +58,8 @@ describe('menu e cabeçalho por papel', () => {
   const shared = ['Contas cloud', 'Lista de proteção', 'Exceções'];
   const operation = ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades', 'Relatórios'];
   const expectedMenu: Record<Role, string[]> = {
-    admin_verax: [...operation, 'Clientes', 'Usuários', ...shared],
-    admin_cliente: [...operation, 'Usuários', ...shared],
+    admin_verax: [...operation, 'Clientes', 'Usuários', ...shared, 'Auditoria', 'Alertas sem dono'],
+    admin_cliente: [...operation, 'Usuários', ...shared, 'Auditoria'],
     analista_cliente: [...operation, ...shared],
     leitura: [...operation, ...shared],
   };

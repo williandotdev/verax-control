@@ -113,9 +113,10 @@ const DECISIONS: Record<
     severity: 'medium',
     title: (count) => `${plural(count, 'alerta', 'alertas')} de conta não cadastrada`,
     description:
-      'Chegaram de contas AWS que não pertencem a nenhum cliente. Cadastre a conta no cliente certo ou investigue a origem.',
-    action: 'Ver clientes',
-    to: '/cadastros/clientes',
+      'Chegaram de contas que não pertencem a nenhum cliente. Veja na fila qual conta falta cadastrar ou investigue a origem.',
+    action: 'Ver a fila',
+    // A mesma janela que a API conta para esta decisão (os últimos 7 dias): o total da fila bate com o cartão.
+    to: '/alertas-sem-dono?periodo=7d',
   },
 };
 

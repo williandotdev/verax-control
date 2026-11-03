@@ -9,8 +9,8 @@ export interface ReportColumn<Row> {
   header: string;
   /** O que aparece na tela. */
   cell: (row: Row) => ReactNode;
-  /** O que vai para o CSV (texto ou número cru, sem formatação de tela). */
-  csv: (row: Row) => CsvCell;
+  /** O que vai para o CSV (texto ou número cru, sem formatação de tela). Sem ele, a coluna fica fora do arquivo. */
+  csv?: (row: Row) => CsvCell;
   align?: 'right';
 }
 
@@ -35,12 +35,13 @@ export function ReportTable<Row>({
   empty?: string;
 }) {
   const { period, current } = useContext(ReportContext);
+  const exported = columns.filter((column) => column.csv !== undefined);
   const exportCsv = () =>
     downloadCsv(
       `verax-${file}-${period}.csv`,
       toCsv(
-        columns.map((column) => column.header),
-        rows.map((row) => columns.map((column) => column.csv(row))),
+        exported.map((column) => column.header),
+        rows.map((row) => exported.map((column) => column.csv?.(row))),
       ),
     );
   return (

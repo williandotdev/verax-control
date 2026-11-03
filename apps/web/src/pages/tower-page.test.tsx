@@ -10,6 +10,7 @@ import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
 import { DEMO_ACCOUNTS, DEMO_TENANTS, demoMe, demoTower } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
+import { demoUnownedAlerts } from '@/mocks/unowned-handlers';
 import { routes } from '@/routes/router';
 import { towerReason } from './tower-reason';
 
@@ -85,7 +86,11 @@ describe('Torre', () => {
     expect(await screen.findByRole('status', { name: /Situação: Normal/ })).toHaveTextContent(
       'Nenhum incidente crítico ou alto aberto, e a postura está dentro do esperado.',
     );
-    expect(screen.getByText('3 alertas de conta não cadastrada')).toBeInTheDocument();
+    // A contagem é a da própria fila fictícia, nos últimos 7 dias, como a API conta.
+    const week = demoUnownedAlerts().filter(
+      (alert) => Date.parse(alert.createdAt) >= Date.now() - 7 * 24 * 3_600_000,
+    ).length;
+    expect(screen.getByText(`${week} alertas de conta não cadastrada`)).toBeInTheDocument();
   });
 
   it('sem nenhuma decisão pendente, diz isso', async () => {

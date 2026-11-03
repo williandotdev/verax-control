@@ -2,6 +2,7 @@ import { type DynamicModule, Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import { AlertExceptionsModule } from './alert-exceptions/alert-exceptions.module.js';
+import { AuditTrailModule } from './audit-trail/audit-trail.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { CloudAccountsModule } from './cloud-accounts/cloud-accounts.module.js';
 import { AuditInterceptor } from './common/audit/audit.interceptor.js';
@@ -24,6 +25,7 @@ import { TowerModule } from './tower/tower.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { ProtectedResourcesModule } from './protected-resources/protected-resources.module.js';
 import { TenantsModule } from './tenants/tenants.module.js';
+import { UnownedAlertsModule } from './unowned-alerts/unowned-alerts.module.js';
 import { UsersModule } from './users/users.module.js';
 
 export interface AppModuleOptions {
@@ -55,6 +57,8 @@ export class AppModule {
         PostureModule,
         AssetsModule,
         TowerModule,
+        AuditTrailModule,
+        UnownedAlertsModule,
         ReportsModule,
         ProtectedResourcesModule,
         AlertExceptionsModule,

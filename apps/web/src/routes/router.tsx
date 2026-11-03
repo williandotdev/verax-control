@@ -8,6 +8,7 @@ import { ProtectedResourcesPage } from '@/pages/admin/protected-resources-page';
 import { TenantsPage } from '@/pages/admin/tenants-page';
 import { UsersPage } from '@/pages/admin/users-page';
 import { AssetsPage } from '@/pages/assets-page';
+import { AuditPage } from '@/pages/audit-page';
 import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { IncidentPage } from '@/pages/incident-page';
@@ -22,6 +23,7 @@ import { ReportsPage } from '@/pages/reports-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
 import { TowerPage } from '@/pages/tower-page';
+import { UnownedAlertsPage } from '@/pages/unowned-alerts-page';
 import { RequirePermission, RequireSession } from './guards';
 
 /** Catálogo do design system: só no build de desenvolvimento (o Vite remove este ramo do build final). */
@@ -50,6 +52,8 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/cadastros/contas': CloudAccountsPage,
   '/cadastros/protecao': ProtectedResourcesPage,
   '/cadastros/excecoes': ExceptionsPage,
+  '/auditoria': AuditPage,
+  '/alertas-sem-dono': UnownedAlertsPage,
 };
 
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */

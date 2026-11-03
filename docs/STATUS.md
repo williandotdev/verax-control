@@ -1557,3 +1557,36 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - e2e: acessibilidade em 3 telas novas e o teste de celular. O teste de celular pegou a tabela alargando a página na grade, corrigido com `min-w-0`.
 
   Suítes: shared 128, web 175, API 641, e2e da demonstração 22.
+
+  Depois da revisão (Codex e revisão independente com verificação adversarial): cada relatório é calculado achado por achado (`FindingsFold`), e a API lê o período inteiro em lotes por chave, sem teto. A Torre lê só as colunas do MITRE. O cliente entra na chave do cache dos relatórios e a página remonta ao trocar de cliente. Números de outro período ficam marcados e não exportam. O CSV usa `;` e mantém contas AWS como texto.
+
+## Telas de Auditoria e da fila de alertas sem dono
+
+- **Pedido:** fechar o front: a trilha de auditoria (gravada desde a T1.3) e a fila sem dono (T5.2) ganham tela.
+- **Arquivos:**
+  - `packages/shared/src/{audit,unowned-alerts}.ts` (+ testes) e `index.ts`;
+  - `apps/api/src/audit-trail/*` e `apps/api/src/unowned-alerts/*`, `app.module.ts`, `apps/api/test/{audit-trail,unowned-alerts}.test.ts`;
+  - `apps/web/src/features/{audit,unowned}/*`, `pages/{audit-page,unowned-alerts-page}.tsx` (+ testes), `layout/navigation.ts`, `routes/router.tsx` e `tower-page.tsx`;
+  - `apps/web/src/features/reports/report-table.tsx` (coluna sem CSV fica fora do arquivo);
+  - `apps/web/src/mocks/{audit-handlers,unowned-handlers}.ts` e `handlers.ts`;
+  - e2e: `pages.mock.spec.ts` e `layout.mock.spec.ts`.
+- **Dependências:** nenhuma.
+- **Auditoria** (`GET /v1/audit` e `GET /v1/audit/:id`, permissão `audit:read`, só leitura):
+  - **Quem vê o quê:**
+    - o admin do cliente vê a trilha do próprio cliente;
+    - o admin_verax vê a do cliente escolhido ou, sem cliente, a da própria Verax (operações globais e tentativas de login de quem não se identificou).
+  - **Equipe da Verax na trilha do cliente:** aparece com o nome e a marca "Verax", sem o IP nem o navegador.
+  - **Nomes:** só saem para pessoas do próprio cliente ou da Verax. Um registro que cite pessoa de outro cliente aparece sem nome.
+  - **Filtros e detalhe:**
+    - filtros por período, área, resultado e pessoa, todos na URL;
+    - o detalhe abre num painel lateral, com o estado anterior e o novo, já limpos na gravação;
+    - não há rota de escrita.
+- **Fila sem dono** (`GET /v1/unowned-alerts` e `GET /v1/unowned-alerts/accounts`, `unowned_alerts:read`, só a equipe da Verax):
+  - **Resumo:** as contas que mais aparecem em 30 dias e onde cada uma está cadastrada hoje (a pergunta que a fila quase sempre responde: qual conta falta cadastrar). Exporta em CSV.
+  - **Lista:** os alertas, com filtros por motivo, período e conta. Cada motivo vem com o que costuma resolver.
+  - A decisão "alertas de conta não cadastrada" da Torre agora leva à fila.
+- **Testes:**
+  - **API:** 27. Escopo de cada papel, isolamento entre clientes, a Verax sem IP para o cliente, nome de outro cliente que não vaza, filtros, paginação, 404 entre trilhas, 403 por papel, parâmetros inválidos e nenhuma rota de escrita.
+  - **Contratos:** 4.
+  - **Front:** 13 nas duas telas e o menu por papel.
+  - **e2e:** acessibilidade das duas telas e do painel de auditoria, e o teste de celular. A acessibilidade pegou dois problemas, ambos corrigidos: alvo de toque pequeno nos botões de conta e o bloco do estado, que rolava sem receber foco.
