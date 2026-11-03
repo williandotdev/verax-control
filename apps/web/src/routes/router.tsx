@@ -4,6 +4,8 @@ import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
+import { IncidentPage } from '@/pages/incident-page';
+import { IncidentsPage } from '@/pages/incidents-page';
 import { ForgotPasswordPage } from '@/pages/forgot-password-page';
 import { LoginPage } from '@/pages/login-page';
 import { MfaEnrollPage } from '@/pages/mfa-enroll-page';
@@ -31,6 +33,7 @@ const devRoutes: RouteObject[] = import.meta.env.DEV
 const pageByPath: Partial<Record<string, ComponentType>> = {
   '/': TowerPage,
   '/achados': FindingsPage,
+  '/incidentes': IncidentsPage,
 };
 
 /** Páginas internas, geradas do menu: cada uma exige a mesma permissão do item (só UX; a API decide). */
@@ -44,6 +47,18 @@ const appPages: RouteObject[] = NAVIGATION.flatMap((group) => group.items).map((
   return item.to === '/' ? { index: true, element } : { path: item.to.slice(1), element };
 });
 
+/** Páginas de detalhe, fora do menu, com a permissão da lista a que pertencem. */
+const detailPages: RouteObject[] = [
+  {
+    path: 'incidentes/:id',
+    element: (
+      <RequirePermission permission="incidents:read">
+        <IncidentPage />
+      </RequirePermission>
+    ),
+  },
+];
+
 export const routes: RouteObject[] = [
   ...devRoutes,
   { path: '/login', element: <LoginPage /> },
@@ -55,7 +70,7 @@ export const routes: RouteObject[] = [
   { path: '/sem-permissao', element: <ForbiddenPage /> },
   {
     element: <RequireSession />,
-    children: [{ path: '/', element: <AppLayout />, children: appPages }],
+    children: [{ path: '/', element: <AppLayout />, children: [...appPages, ...detailPages] }],
   },
   { path: '*', element: <NotFoundPage /> },
 ];

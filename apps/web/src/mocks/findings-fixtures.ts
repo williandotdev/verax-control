@@ -18,6 +18,10 @@ export const DEMO_INCIDENTS = {
   forcaBrutaSsh: '018f2c1e-0000-7000-8000-0000000a0002',
   ataqueWaf: '018f2c1e-0000-7000-8000-0000000a0003',
   bucketPublico: '018f2c1e-0000-7000-8000-0000000a0004',
+  portaSsh: '018f2c1e-0000-7000-8000-0000000a0005',
+  loginSemMfa: '018f2c1e-0000-7000-8000-0000000a0006',
+  betaWaf: '018f2c1e-0000-7000-8000-0000000b0001',
+  betaLogin: '018f2c1e-0000-7000-8000-0000000b0002',
 } as const;
 
 interface Template {
@@ -322,6 +326,7 @@ const ALFA_FINDINGS: Template[] = [
     ip: '203.0.113.12',
     tactics: ['Defense Evasion'],
     techniques: ['T1562.007'],
+    incident: DEMO_INCIDENTS.portaSsh,
   },
   {
     title: 'Login no console sem MFA',
@@ -338,6 +343,7 @@ const ALFA_FINDINGS: Template[] = [
     ip: '203.0.113.44',
     tactics: ['Initial Access'],
     techniques: ['T1078.004'],
+    incident: DEMO_INCIDENTS.loginSemMfa,
   },
   {
     title: 'Política de bucket alterada',
@@ -435,6 +441,7 @@ const BETA_FINDINGS: Template[] = [
     tactics: ['Initial Access'],
     techniques: ['T1078.004'],
     account: DEMO_ACCOUNTS.beta,
+    incident: DEMO_INCIDENTS.betaLogin,
   },
   {
     title: 'WAF bloqueou tentativa de cross-site scripting',
@@ -451,6 +458,7 @@ const BETA_FINDINGS: Template[] = [
     tactics: ['Initial Access'],
     techniques: ['T1190'],
     account: DEMO_ACCOUNTS.beta,
+    incident: DEMO_INCIDENTS.betaWaf,
   },
   {
     title: 'Login no console com falha',

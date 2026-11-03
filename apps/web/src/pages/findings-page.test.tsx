@@ -67,9 +67,9 @@ describe('Achados', () => {
     expect(within(panel).getByText('StopLogging')).toBeInTheDocument();
     expect(within(panel).getByText('AKIAIOSFODNN7EXAMPLE')).toBeInTheDocument();
     expect(within(panel).getByText('T1562.008')).toBeInTheDocument();
-    expect(within(panel).getByRole('link', { name: 'Ver incidentes' })).toHaveAttribute(
+    expect(within(panel).getByRole('link', { name: 'Ver incidente' })).toHaveAttribute(
       'href',
-      '/incidentes',
+      '/incidentes/018f2c1e-0000-7000-8000-0000000a0001',
     );
     expect(within(panel).getByText(/"eventName": "StopLogging"/)).toBeInTheDocument();
 

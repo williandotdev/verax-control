@@ -103,8 +103,8 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
       {finding.incidentId && (
         <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
           Este achado faz parte de um incidente.{' '}
-          <Link to="/incidentes" className="font-medium underline">
-            Ver incidentes
+          <Link to={`/incidentes/${finding.incidentId}`} className="font-medium underline">
+            Ver incidente
           </Link>
         </p>
       )}

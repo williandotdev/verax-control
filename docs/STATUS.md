@@ -1131,3 +1131,42 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 
 - **Definição de pronto:** critérios de aceite ✔ (tabela com filtros, detalhe lateral com evento bruto, mudar status, comentar e marcar legítimo criando exceção) · testes ✔ · lint ✔ · dependências ✔
 - **Pendente:** os endpoints reais, com a persistência do E5.
+
+## T7.8 e T7.9 Incidentes (lista e detalhe)
+
+- **Arquivos:** `packages/shared/src/incidents.ts` (+ teste), `packages/shared/src/protected-resources.ts` (tipo `Author`), `apps/web/src/pages/{incidents-page,incident-page}.tsx` (+ teste), `apps/web/src/features/incidents/*`, `apps/web/src/components/security/timeline.tsx` (link por evento), `apps/web/src/mocks/{incidents-handlers,handlers,fixtures,findings-fixtures}.ts`, `apps/web/src/routes/router.tsx` (rota de detalhe)
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Contrato compartilhado** da T5.7:
+    - lista com filtros por status, severidade e "só os sem responsável";
+    - cada incidente traz nota, severidade, chaves de agrupamento (`tipo:valor`, como o núcleo da T5.6 grava), contas, recursos, MITRE e responsável;
+    - o detalhe traz a linha do tempo dos achados;
+    - a atualização muda status e responsável;
+    - a lista de responsáveis possíveis vem do endpoint `/v1/incidents/assignees`.
+  - **Lista (T7.8):**
+    - ordenada pela nota, com severidade, ativos, tempo aberto, responsável e status;
+    - filtros na URL: o atalho da Torre (`?responsavel=nenhum`) e os links por severidade já abrem filtrados.
+  - **Detalhe (T7.9, pendência 8):**
+    - o título e o resumo em português saem de modelo, sem LLM: quem (chave, usuário e IP, pelo elo mais forte), o que fez na ordem dos achados (dicionário das ações AWS mais comuns e dos tipos do GuardDuty; o que não estiver nele usa o título do achado), quando, onde e quão grave;
+    - "primeiro passo" recomendado pelo elo do agrupamento;
+    - linha do tempo com link para cada achado, ativos envolvidos e MITRE;
+    - status e responsável (`incidents:write`), aplicados na tela assim que a API responde.
+
+    O papel de leitura vê o tratamento sem poder mudar. Incidente inexistente ou de outro cliente mostra o erro, sem dados.
+
+  - **Demonstração:**
+    - seis incidentes no cliente Alfa e dois no Beta, montados dos mesmos achados da tela de Achados;
+    - a Torre agora calcula do estado do mock os incidentes abertos por severidade, os sem responsável, os achados sem triagem e a cor do semáforo (regra da T5.10). Triar um achado, resolver um incidente ou atribuir um responsável aparece em todas as telas;
+    - pela regra da T5.6, achado baixo não abre incidente, então a Torre fictícia passou a ter zero incidentes baixos abertos.
+- **Revisão do PR dos Achados (Codex), aplicada lá:**
+  - a contagem de achados sem triagem da Torre vem do estado do mock;
+  - o link "Ver incidente" levava a uma rota que ainda não existia; o link aponta de novo para o detalhe neste PR, junto com a rota.
+- **Testes:**
+  - 7 no contrato;
+  - 3 na lista: ordem pela nota, atalho da Torre, e filtros por severidade e status;
+  - 4 no detalhe: resumo, linha do tempo com links, ativos e MITRE; troca de status e responsável refletida na Torre; papel de leitura; incidente inexistente;
+  - 2 na narrativa.
+
+  Conferido visualmente na lista e no detalhe, no desktop e no celular.
+
+- **Definição de pronto:** critérios de aceite ✔ (lista ordenada por nota com severidade, ativos e tempo aberto, filtros por status; resumo em português, linha do tempo, ativos, MITRE, status e responsável) · testes ✔ · lint ✔ · dependências ✔
