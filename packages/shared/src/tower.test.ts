@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FINDING_SEVERITIES, FINDING_STATUSES } from './findings.js';
+import { mitreTactics } from './reports.js';
 import { type TowerSummary, towerSummarySchema } from './tower.js';
 
 const summary: TowerSummary = {
@@ -14,6 +15,7 @@ const summary: TowerSummary = {
     silentAccounts: [],
     silentAfterHours: 24,
   },
+  mitre: { periodDays: 30, tactics: mitreTactics([], []) },
   generatedAt: '2026-11-02T13:00:00.000Z',
 };
 

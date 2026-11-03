@@ -1,9 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { FINDING_SEVERITIES, type FindingSeverity, hasPermission, type TowerSummary } from '@verax/shared';
+import {
+  FINDING_SEVERITIES,
+  type FindingSeverity,
+  hasPermission,
+  REPORT_PERIOD_DAYS,
+  reportWindow,
+  type TowerSummary,
+} from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { combinedScore, PostureService } from '../posture/posture.service.js';
+import { ReportsService } from '../reports/reports.service.js';
 import { coverage, DEFAULT_TOWER_THRESHOLDS, pendingDecisions, trafficLight } from './tower-rules.js';
+
+/** O resumo MITRE ATT&CK da Torre olha os últimos 30 dias, com as mesmas contas do relatório MITRE desse período. */
+const MITRE_PERIOD = '30d';
 
 /** A fila sem dono que conta na Torre: os alertas dos últimos 7 dias. */
 const UNOWNED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -17,6 +28,7 @@ export class TowerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly posture: PostureService,
+    private readonly reports: ReportsService,
   ) {}
 
   async summary(auth: RequestAuth, now = new Date()): Promise<TowerSummary> {
@@ -70,6 +82,10 @@ export class TowerService {
         : Promise.resolve(0),
     ]);
 
+    // Achados e incidentes que começaram nos últimos 30 dias, pelas mesmas contas do relatório MITRE.
+    const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now));
+    const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics };
+
     const { light, reasons } = trafficLight({ openIncidents, postureScore }, thresholds);
     return {
       light,
@@ -81,6 +97,7 @@ export class TowerService {
       openIncidents,
       posture: { score: postureScore, scannedAt, warningBelow: thresholds.postureWarning },
       coverage: { ...cover, silentAfterHours: thresholds.silentAfterHours },
+      mitre,
       generatedAt: now.toISOString(),
     };
   }
