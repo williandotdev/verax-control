@@ -16,6 +16,10 @@ import { PrismaModule } from './common/prisma/prisma.module.js';
 import { FindingsModule } from './findings/findings.module.js';
 import type { RawEventReader } from './findings/raw-events.js';
 import { HealthModule } from './health/health.module.js';
+import { IncidentsModule } from './incidents/incidents.module.js';
+import { AssetsModule } from './inventory/assets.module.js';
+import { PostureModule } from './posture/posture.module.js';
+import { TowerModule } from './tower/tower.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { ProtectedResourcesModule } from './protected-resources/protected-resources.module.js';
 import { TenantsModule } from './tenants/tenants.module.js';
@@ -46,6 +50,10 @@ export class AppModule {
         UsersModule,
         CloudAccountsModule,
         FindingsModule.register(options.rawEvents),
+        IncidentsModule,
+        PostureModule,
+        AssetsModule,
+        TowerModule,
         ProtectedResourcesModule,
         AlertExceptionsModule,
       ],

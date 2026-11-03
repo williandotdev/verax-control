@@ -172,6 +172,9 @@ const WEIGHTS: Readonly<Record<PostureSeverity, number>> = {
 export interface PostureSummary {
   /** De 0 a 100, ou `null` sem checagem que conte. */
   score: number | null;
+  /** Pesos aprovados e totais: a nota de várias contas soma estes, em vez de tirar média das notas. */
+  weightPassed: number;
+  weightTotal: number;
   passed: number;
   failed: number;
   manual: number;
@@ -219,6 +222,8 @@ export function summarizePosture(checks: readonly PostureCheck[]): PostureSummar
   }
   return {
     score: totalWeight === 0 ? null : Math.round((passedWeight / totalWeight) * 100),
+    weightPassed: passedWeight,
+    weightTotal: totalWeight,
     passed,
     failed,
     manual,

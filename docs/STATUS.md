@@ -1475,3 +1475,50 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - os valores dos dois segredos;
   - o pacote do nó (API com a leitura do Pub/Sub e as regras de detecção da GCP, banco e túnel);
   - os papéis de leitura para a postura.
+
+## E5 (integração): incidentes, Torre, postura e ativos na API
+
+- **Pedido:** fechar o painel real. As telas já existiam no modo de demonstração; faltava a API responder a elas.
+- **Arquivos:**
+  - `apps/api/prisma/schema.prisma` e a migration `20261103110000_incidents_posture_inventory`;
+  - `apps/api/src/incidents/{incident-grouping,incidents.service,incidents.controller,incidents.module}.ts`;
+  - `apps/api/src/tower/tower.{service,controller,module}.ts`;
+  - `apps/api/src/posture/posture.{service,controller,module}.ts` e `apps/api/src/inventory/assets.{service,controller,module}.ts`;
+  - `apps/api/src/alerts/alert-sync.ts`, `apps/api/src/findings/findings.service.ts`, `apps/api/src/posture/prowler-report.ts`, `apps/api/src/common/prisma/tenant-scope.ts` e `apps/api/src/app.module.ts`;
+  - testes: `apps/api/test/{incidents,tower-posture-assets,alert-sync}.test.ts` e `apps/api/test/posture/prowler-report.test.ts`.
+- **Dependências:** nenhuma.
+- **Como funciona:**
+  - **Models novos, com escopo por cliente:** `Incident`, `PostureScan`, `PostureFailure` e `InventorySnapshot`. Os achados ganham `incidentId` e `triagedAt` (a primeira saída de "novo", para o relatório de tempo até a triagem). O incidente ganha `resolvedAt`.
+  - **Garantias no banco:**
+    - um gatilho impede achado e incidente de clientes diferentes;
+    - a reprovação de postura tem chave composta com a varredura e o cliente.
+  - **Agrupamento no sync (T5.6):** cada achado novo e não esperado por exceção entra num incidente aberto do mesmo cliente, com chave em comum na janela, ou abre um se for médio ou mais grave. O resumo do incidente (severidade, nota, período, chaves, contas, recursos e MITRE) é recalculado a cada achado. A nota soma 15 quando o achado envolve a lista de proteção, comparada também no formato `tipo:id` do achado.
+  - **Incidentes (T5.7):**
+    - lista pela nota de risco, com filtros;
+    - detalhe com a linha do tempo, os 500 achados mais recentes em ordem cronológica;
+    - responsáveis possíveis: usuários ativos do cliente que operam, e a equipe da Verax;
+    - status e responsável auditados; responsável de outro cliente é recusado. Resolver grava `resolvedAt`, e reabrir limpa.
+  - **Torre (T5.10):**
+    - semáforo e motivos;
+    - incidentes abertos por severidade;
+    - decisões pendentes, em que a fila sem dono dos últimos 7 dias conta só para quem tem `unowned_alerts:read`;
+    - postura da última varredura de cada conta;
+    - cobertura pelo `lastEventAt` das contas.
+  - **Postura (T5.8):**
+    - nota de cada conta e evolução com uma nota por dia, em 90 dias;
+    - reprovações só da última varredura, da mais grave para a menos grave;
+    - a nota do cliente soma os pesos aprovados e totais de todas as contas, em vez de tirar média das notas. Por isso a varredura grava os pesos, e o resumo do Prowler passou a devolvê-los.
+  - **Ativos (T5.9):** o retrato mais recente de cada conta AWS ativa, com cada item conferido pelo contrato ao ler (item fora do formato não aparece), o risco primeiro e as contagens.
+  - **Quem grava postura e inventário:** os jobs do Prowler e do inventário. Sem varredura ou retrato, as telas mostram a conta sem dados.
+- **Testes:** 36 novos.
+  - Incidentes (11): isolamento A/B, lista e filtros, detalhe, responsáveis, alteração auditada com `resolvedAt`, responsável de outro cliente, permissão e gatilho do banco.
+  - Torre, postura e ativos (9).
+  - Agrupamento no sync (5): abrir e entrar, baixo sozinho, exceção, lista de proteção e incidente de outro cliente.
+  - Pesos da postura e o restante.
+
+  Suíte da API: 626.
+
+- **Pendente:**
+  - o resumo MITRE ATT&CK na Torre e o menu Relatórios (próximo passo, pedido do usuário);
+  - as telas de auditoria e da fila sem dono;
+  - os jobs que gravam postura e inventário.

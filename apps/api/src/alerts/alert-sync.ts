@@ -13,6 +13,7 @@ import {
   syncPage,
   syncWindowStart,
 } from './sync-query.js';
+import { IncidentGrouping, protectedItemsOf } from '../incidents/incident-grouping.js';
 import { parseWazuhAlert, type WazuhAwsAlert } from './wazuh-alert.js';
 
 /** Quem busca os alertas: o `IndexerClient` em produção, um dublê nos testes. */
@@ -32,6 +33,8 @@ export interface AlertSyncOptions {
   maxPages?: number;
   /** Identifica este worker na concessão. */
   owner?: string;
+  /** Janela de agrupamento de incidentes (T5.6), em minutos. */
+  groupingWindowMinutes?: number;
 }
 
 export interface SyncReport {
@@ -44,6 +47,9 @@ export interface SyncReport {
   unowned: number;
   /** Achados que já nasceram esperados por uma exceção. */
   excepted: number;
+  /** Incidentes abertos e achados que entraram num incidente existente (T5.6). */
+  incidentsOpened: number;
+  incidentsJoined: number;
   lastProcessedAt: string | null;
 }
 
@@ -98,6 +104,7 @@ export class AlertSync {
   private readonly leaseMs: number;
   private readonly maxPages: number;
   private readonly owner: string;
+  private readonly grouping: IncidentGrouping;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -109,6 +116,7 @@ export class AlertSync {
     this.leaseMs = options.leaseMs ?? 5 * 60 * 1000;
     this.maxPages = options.maxPages ?? 100;
     this.owner = options.owner ?? `worker-${randomUUID()}`;
+    this.grouping = new IncidentGrouping(prisma, options.groupingWindowMinutes);
   }
 
   async runOnce(now: Date = new Date()): Promise<SyncReport> {
@@ -119,6 +127,8 @@ export class AlertSync {
       duplicates: 0,
       unowned: 0,
       excepted: 0,
+      incidentsOpened: 0,
+      incidentsJoined: 0,
       lastProcessedAt: null,
     };
     if (!(await this.acquireLease(now))) return { ...report, status: 'locked' };
@@ -126,6 +136,7 @@ export class AlertSync {
       const state = await this.prisma.syncState.findUniqueOrThrow({ where: { name: this.name } });
       const directory = AccountDirectory.from(await this.registeredAccounts());
       const exceptions = await this.activeExceptions(now);
+      const protectedItems = await this.protectedItems();
       const lastEvents = new Map<string, { tenantId: string; accountId: string; at: Date }>();
       let lastProcessedAt = state.lastProcessedAt;
       // Uma execução anterior que bateu o limite de páginas deixou a continuação: segue dela. Sem isso, reler a
@@ -142,7 +153,7 @@ export class AlertSync {
         const hits = await this.indexer.search(syncPage(windowStart, cursor, this.settings));
         for (const hit of hits) {
           report.read += 1;
-          await this.process(hit, directory, exceptions, now, report, lastEvents);
+          await this.process(hit, directory, exceptions, protectedItems, now, report, lastEvents);
         }
         const last = hits.at(-1);
         if (last) {
@@ -193,6 +204,7 @@ export class AlertSync {
     hit: AlertHit,
     directory: AccountDirectory,
     exceptions: ReadonlyMap<string, ActiveException[]>,
+    protectedItems: ReadonlyMap<string, ReadonlySet<string>>,
     now: Date,
     report: SyncReport,
     lastEvents: Map<string, { tenantId: string; accountId: string; at: Date }>,
@@ -239,7 +251,32 @@ export class AlertSync {
         where: { id: exception.id },
         data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
       });
+      // Esperado por exceção: não abre nem alimenta incidente.
+      return;
     }
+
+    const { id } = await db.finding.findUniqueOrThrow({
+      where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
+      select: { id: true },
+    });
+    const grouped = await this.grouping.place(
+      owner.tenantId,
+      id,
+      protectedItems.get(owner.tenantId) ?? new Set(),
+    );
+    if (grouped === 'opened') report.incidentsOpened += 1;
+    if (grouped === 'joined') report.incidentsJoined += 1;
+  }
+
+  /** Lista de proteção de cada cliente, para a nota de risco dos incidentes (+15). */
+  private async protectedItems(): Promise<Map<string, Set<string>>> {
+    const rows = await this.prisma.protectedResource.findMany({
+      select: { tenantId: true, type: true, identifier: true },
+    });
+    const byTenant = new Map<string, { type: string; identifier: string }[]>();
+    for (const { tenantId, ...item } of rows)
+      byTenant.set(tenantId, [...(byTenant.get(tenantId) ?? []), item]);
+    return new Map([...byTenant].map(([tenantId, items]) => [tenantId, protectedItemsOf(items)]));
   }
 
   /** Na dúvida, o alerta não é de ninguém (T5.2): a fila guarda o motivo e o mínimo para a triagem. */

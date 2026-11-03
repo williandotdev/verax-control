@@ -12,6 +12,10 @@ export const TENANT_SCOPED_MODELS = [
   'alertException',
   'finding',
   'findingComment',
+  'incident',
+  'postureScan',
+  'postureFailure',
+  'inventorySnapshot',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

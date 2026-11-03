@@ -36,7 +36,7 @@ const commentSelect = {
   author: { select: { id: true, name: true } },
 } as const satisfies Prisma.FindingCommentSelect;
 
-const findingSelect = {
+export const findingSelect = {
   id: true,
   accountId: true,
   occurredAt: true,
@@ -52,11 +52,13 @@ const findingSelect = {
   accessKeyId: true,
   sourceIp: true,
   mitreTactics: true,
+  incidentId: true,
   _count: { select: { comments: true } },
 } as const satisfies Prisma.FindingSelect;
 
 const detailSelect = {
   ...findingSelect,
+  triagedAt: true,
   source: true,
   sourceEventId: true,
   ruleId: true,
@@ -66,7 +68,7 @@ const detailSelect = {
   comments: { select: commentSelect, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: MAX_COMMENTS },
 } as const satisfies Prisma.FindingSelect;
 
-type FindingRow = Prisma.FindingGetPayload<{ select: typeof findingSelect }>;
+export type FindingRow = Prisma.FindingGetPayload<{ select: typeof findingSelect }>;
 type DetailRow = Prisma.FindingGetPayload<{ select: typeof detailSelect }>;
 type CommentRow = Prisma.FindingCommentGetPayload<{ select: typeof commentSelect }>;
 
@@ -76,7 +78,7 @@ function logSourceOf(value: string): FindingSource {
   throw new Error(`Fonte de log desconhecida num achado: ${value}`);
 }
 
-function toFinding(row: FindingRow): Finding {
+export function toFinding(row: FindingRow): Finding {
   return {
     id: row.id,
     accountId: row.accountId,
@@ -90,8 +92,7 @@ function toFinding(row: FindingRow): Finding {
     resource: row.resource,
     actor: { user: row.actorUser, type: row.actorType, accessKeyId: row.accessKeyId, ip: row.sourceIp },
     mitreTactics: row.mitreTactics,
-    // O agrupamento em incidentes (T5.6) é gravado pelo sync, no próximo passo do E5.
-    incidentId: null,
+    incidentId: row.incidentId,
     commentCount: row._count.comments,
   };
 }
@@ -146,7 +147,13 @@ export class FindingsService {
   async updateStatus(auth: RequestAuth, id: string, input: FindingStatusUpdate): Promise<FindingDetail> {
     const before = await this.find(id);
     const db = this.prisma.scoped();
-    await db.finding.update({ where: { id }, data: { status: input.status }, select: { id: true } });
+    // A primeira saída de "novo" marca a triagem (relatório de tempo até a triagem); as seguintes não mudam a data.
+    const firstTriage = before.status === 'new' && input.status !== 'new' && before.triagedAt === null;
+    await db.finding.update({
+      where: { id },
+      data: { status: input.status, ...(firstTriage && { triagedAt: new Date() }) },
+      select: { id: true },
+    });
     let commentId: string | undefined;
     if (input.comment) {
       commentId = (await this.addComment(auth, id, input.comment)).id;
