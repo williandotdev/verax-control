@@ -18,6 +18,7 @@ import { MfaEnrollPage } from '@/pages/mfa-enroll-page';
 import { MfaVerifyPage } from '@/pages/mfa-verify-page';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { PosturePage } from '@/pages/posture-page';
+import { ReportsPage } from '@/pages/reports-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
 import { TowerPage } from '@/pages/tower-page';
@@ -43,6 +44,7 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/incidentes': IncidentsPage,
   '/postura': PosturePage,
   '/ativos': AssetsPage,
+  '/relatorios': ReportsPage,
   '/cadastros/clientes': TenantsPage,
   '/cadastros/usuarios': UsersPage,
   '/cadastros/contas': CloudAccountsPage,

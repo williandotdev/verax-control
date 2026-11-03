@@ -1,6 +1,7 @@
 import {
   type Me,
   meSchema,
+  mitreTactics,
   permissionsOf,
   type Role,
   type TenantSummary,
@@ -62,6 +63,7 @@ export function demoTower(
     untriagedFindings?: number;
     openIncidents?: TowerSummary['openIncidents'];
     unassignedIncidents?: number;
+    mitre?: TowerSummary['mitre'];
     now?: Date;
   },
 ): TowerSummary {
@@ -95,6 +97,7 @@ export function demoTower(
           silentAfterHours: 24,
         }
       : { connectedAccounts: 1, lastEventAt: minutesAgo(now, 1), silentAccounts: [], silentAfterHours: 24 },
+    mitre: options.mitre ?? { periodDays: 30, tactics: mitreTactics([], []) },
     generatedAt: now.toISOString(),
   });
 }

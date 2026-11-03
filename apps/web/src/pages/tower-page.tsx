@@ -14,6 +14,7 @@ import { SeverityBadge } from '@/components/security/severity-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { DEFAULT_THRESHOLDS } from '@/design/score';
+import { MitreGrid } from '@/features/reports/mitre-grid';
 import { type Severity, SEVERITY_STYLES } from '@/design/severity';
 import { useMe } from '@/features/session/session';
 import { api } from '@/lib/api';
@@ -84,6 +85,7 @@ function TowerContent({ summary }: { summary: TowerSummary }) {
           <Coverage coverage={summary.coverage} />
         </div>
       </div>
+      <Mitre mitre={summary.mitre} />
     </TowerShell>
   );
 }
@@ -203,6 +205,29 @@ function Posture({ posture }: { posture: TowerSummary['posture'] }) {
           )}
         </div>
       )}
+    </Card>
+  );
+}
+
+/** Onde estão os sinais na cadeia de ataque: as 14 táticas do MITRE ATT&CK, com o detalhe no relatório. */
+function Mitre({ mitre }: { mitre: TowerSummary['mitre'] }) {
+  const observed = mitre.tactics.filter((tactic) => tactic.findings > 0).length;
+  return (
+    <Card aria-labelledby="torre-mitre" className="space-y-3">
+      <CardHeader>
+        <div>
+          <CardTitle id="torre-mitre">MITRE ATT&CK</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            {observed === 0
+              ? `Nenhuma tática observada nos últimos ${mitre.periodDays} dias.`
+              : `${plural(observed, 'tática observada', 'táticas observadas')} nos últimos ${mitre.periodDays} dias, na ordem da cadeia de ataque.`}
+          </p>
+        </div>
+        <Link to="/relatorios?aba=mitre" className="text-sm underline">
+          Ver relatório
+        </Link>
+      </CardHeader>
+      <MitreGrid tactics={mitre.tactics} to="/relatorios?aba=mitre" />
     </Card>
   );
 }

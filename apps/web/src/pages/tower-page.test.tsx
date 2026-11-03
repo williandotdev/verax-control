@@ -63,6 +63,15 @@ describe('Torre', () => {
     );
   });
 
+  it('resumo MITRE ATT&CK: as 14 táticas dos últimos 30 dias, cada uma levando ao relatório', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    const mitre = await screen.findByRole('region', { name: 'MITRE ATT&CK' });
+    expect(within(mitre).getAllByRole('listitem')).toHaveLength(14);
+    const evasion = within(mitre).getByRole('link', { name: /^Evasão de defesas \(TA0005\): \d+ achados?/ });
+    expect(evasion).toHaveAttribute('href', '/relatorios?aba=mitre');
+    expect(within(mitre).getByText(/táticas? observadas? nos últimos 30 dias/)).toBeInTheDocument();
+  });
+
   it('o botão da decisão leva à lista já filtrada', async () => {
     const router = renderTower({ me: demoMe('analista_cliente') });
     const card = (await screen.findByText('2 incidentes sem responsável')).closest('section');

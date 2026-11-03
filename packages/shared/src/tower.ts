@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
+import { MITRE_TACTICS, mitreTacticSchema } from './reports.js';
 
 /**
  * Resumo da Torre (T5.10): a resposta de `GET /v1/tower`, do cliente da sessão. A regra do semáforo está em
@@ -40,6 +41,11 @@ export const towerSummarySchema = z.strictObject({
     /** Contas sem evento há mais de `silentAfterHours` horas (ou que nunca mandaram nada). */
     silentAccounts: z.array(cloudAccountRefSchema).max(500),
     silentAfterHours: z.number().int().positive(),
+  }),
+  /** Táticas do MITRE ATT&CK nos achados e incidentes dos últimos `periodDays` dias, na ordem da cadeia de ataque. */
+  mitre: z.strictObject({
+    periodDays: z.number().int().positive(),
+    tactics: z.array(mitreTacticSchema).length(MITRE_TACTICS.length),
   }),
   generatedAt: z.iso.datetime(),
 });

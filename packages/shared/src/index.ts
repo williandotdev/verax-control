@@ -9,6 +9,7 @@ export * from './pagination.js';
 export * from './permissions.js';
 export * from './posture.js';
 export * from './protected-resources.js';
+export * from './reports.js';
 export * from './session.js';
 export * from './tenants.js';
 export * from './tower.js';

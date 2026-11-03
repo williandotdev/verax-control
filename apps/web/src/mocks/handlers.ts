@@ -7,6 +7,7 @@ import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
 import { createIncidentHandlers, incidentSummaries, initialIncidents } from './incidents-handlers';
+import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
 import { createPostureHandlers } from './posture';
 
@@ -67,6 +68,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createIncidentHandlers(state, findings, incidents),
     ...createPostureHandlers(state),
     ...createInventoryHandlers(state),
+    ...createReportHandlers(state, findings, incidents, admin),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
@@ -86,6 +88,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
         demoTower(state.me.scopeTenantId, {
           includeUnowned: state.me.role === 'admin_verax',
           ...towerCounts(state.me.scopeTenantId),
+          mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
         }),
       );
     }),

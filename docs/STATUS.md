@@ -1522,3 +1522,38 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o resumo MITRE ATT&CK na Torre e o menu Relatórios (próximo passo, pedido do usuário);
   - as telas de auditoria e da fila sem dono;
   - os jobs que gravam postura e inventário.
+
+## Torre com resumo MITRE ATT&CK e menu Relatórios
+
+- **Pedido:** um resumo do MITRE ATT&CK na Torre e um menu Relatórios com os relatórios tradicionais de SOC, para especialistas, sem mudar o conceito do produto. A Torre continua sendo o ponto de partida; os relatórios ficam para quem quer o detalhe.
+- **Arquivos:**
+  - `packages/shared/src/reports.ts` (+ teste), `tower.ts`, `permissions.ts` (`reports:read`) e `index.ts`;
+  - `apps/api/src/reports/reports.{service,controller,module}.ts`, `apps/api/src/tower/tower.{service,module}.ts`, `apps/api/src/app.module.ts` e `apps/api/test/reports.test.ts`;
+  - `apps/web/src/features/reports/{labels,csv,reports-api,mitre-grid,report-table}.ts(x)` (+ teste do CSV);
+  - `apps/web/src/pages/reports-page.tsx` (+ teste), `tower-page.tsx` (+ teste), `layout/navigation.ts` e `routes/router.tsx`;
+  - `apps/web/src/mocks/reports-handlers.ts`, `handlers.ts` e `fixtures.ts`;
+  - e2e: `pages.mock.spec.ts` e `layout.mock.spec.ts`.
+- **Dependências:** nenhuma. O CSV é gerado no navegador.
+- **Como funciona:**
+  - **Cálculo único:** todos os números saem de funções puras em `@verax/shared` (`summaryReport`, `mitreReport`, `rulesReport`, `entitiesReport`, `incidentsReport`, `coverageReport`, `exceptionsReport` e `mitreTactics`). A API lê do banco e o modo de demonstração lê das fixtures, e os dois chamam as mesmas funções.
+  - **MITRE ATT&CK:**
+    - as 14 táticas (Enterprise) na ordem da cadeia de ataque, com achados, incidentes e as técnicas mais vistas;
+    - na Torre, os últimos 30 dias, numa grade em que cada célula traz a tática em português, o id, o número de achados e de incidentes e leva ao relatório;
+    - a intensidade usa um tom só e sutil: o número está sempre escrito, e o fundo não tira o contraste.
+  - **Relatórios** (`GET /v1/reports/:tipo?period=7d|30d|90d`, permissão `reports:read`; 30 dias por padrão):
+    - **Resumo do período:** achados por severidade, status, fonte e dia; incidentes abertos e resolvidos; tempo médio até a triagem e até a resolução;
+    - **MITRE ATT&CK;**
+    - **Detecções:** as regras que mais dispararam, com severidade, contas e última vez;
+    - **Entidades:** usuários, IPs, chaves e recursos mais envolvidos;
+    - **Incidentes:** por severidade, com o tempo médio até resolver; por responsável; e a lista;
+    - **Cobertura das fontes:** cada conta, o último evento e o que chegou por fonte;
+    - **Exceções:** quantos alertas cada exceção silenciou no período e no total.
+  - **Período:** conta o que começou nele, e os incidentes em aberto entram no resumo.
+  - **Tela:** período e aba ficam na URL. As tabelas rolam por dentro no celular. Cada tabela exporta em CSV com o BOM do UTF-8, para o Excel ler os acentos, e neutraliza fórmulas: texto que começa com `=`, `+`, `-`, `@` ou tabulação ganha um apóstrofo, contra injeção de CSV vinda de um nome de usuário ou recurso do alerta.
+- **Testes:**
+  - 9 nas funções de relatório e 3 no contrato da Torre;
+  - 12 na API: cada tipo no contrato, o período, o isolamento entre clientes, o MITRE da Torre e parâmetros inválidos;
+  - 13 no front: CSV (com fórmulas neutralizadas), página de relatórios, card MITRE da Torre e menu;
+  - e2e: acessibilidade em 3 telas novas e o teste de celular. O teste de celular pegou a tabela alargando a página na grade, corrigido com `min-w-0`.
+
+  Suítes: shared 128, web 175, API 641, e2e da demonstração 22.

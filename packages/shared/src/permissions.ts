@@ -32,6 +32,7 @@ export const PERMISSIONS = {
   'alert_exceptions:write': OPERATORS,
   // Dados (E5) e telas (E7)
   'tower:read': ALL,
+  'reports:read': ALL,
   'findings:read': ALL,
   'findings:triage': OPERATORS,
   'incidents:read': ALL,

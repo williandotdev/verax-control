@@ -4,6 +4,7 @@ import {
   BellOff,
   Boxes,
   Building2,
+  ChartColumn,
   Cloud,
   FileSearch,
   type LucideIcon,
@@ -39,6 +40,7 @@ export const NAVIGATION: NavGroup[] = [
       { to: '/achados', label: 'Achados', icon: FileSearch, permission: 'findings:read' },
       { to: '/postura', label: 'Postura cloud', icon: ShieldCheck, permission: 'posture:read' },
       { to: '/ativos', label: 'Ativos e identidades', icon: Boxes, permission: 'assets:read' },
+      { to: '/relatorios', label: 'Relatórios', icon: ChartColumn, permission: 'reports:read' },
     ],
   },
   {
