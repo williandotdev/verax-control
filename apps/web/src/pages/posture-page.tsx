@@ -311,11 +311,11 @@ function CheckDetail({ check }: { check: PostureCheck }) {
                   href={reference}
                   target="_blank"
                   rel="noopener noreferrer"
+                  aria-label={`${new URL(reference).hostname} (abre em outra aba)`}
                   className="inline-flex items-center gap-1 break-all underline"
                 >
                   {new URL(reference).hostname}
                   <ExternalLink aria-hidden className="size-3.5" />
-                  <span className="sr-only"> (abre em outra aba)</span>
                 </a>
               </li>
             ))}

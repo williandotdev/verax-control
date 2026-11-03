@@ -84,9 +84,13 @@ describe('Postura cloud', () => {
     expect(within(panel).getByRole('region', { name: 'Como corrigir' })).toHaveTextContent(
       'ative um dispositivo de MFA',
     );
-    const link = within(panel).getByRole('link', {
-      name: (name) => name.startsWith('docs.aws.amazon.com') && name.endsWith('(abre em outra aba)'),
-    });
+    // Comparação exata do endereço e do nome (nada de prefixo de URL).
+    const link = within(panel).getByRole('link');
+    expect(link).toHaveAttribute(
+      'href',
+      'https://docs.aws.amazon.com/IAM/latest/UserGuide/enable-virt-mfa-for-root.html',
+    );
+    expect(link).toHaveAccessibleName('docs.aws.amazon.com (abre em outra aba)');
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
