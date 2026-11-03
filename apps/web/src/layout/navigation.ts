@@ -1,13 +1,16 @@
 import type { Permission } from '@verax/shared';
 import {
   Activity,
+  BellOff,
   Boxes,
   Building2,
+  Cloud,
   FileSearch,
   type LucideIcon,
   ScrollText,
   ShieldAlert,
   ShieldCheck,
+  ShieldPlus,
   Users,
 } from 'lucide-react';
 
@@ -41,6 +44,14 @@ export const NAVIGATION: NavGroup[] = [
     items: [
       { to: '/cadastros/clientes', label: 'Clientes', icon: Building2, permission: 'tenants:read' },
       { to: '/cadastros/usuarios', label: 'Usuários', icon: Users, permission: 'users:read' },
+      { to: '/cadastros/contas', label: 'Contas cloud', icon: Cloud, permission: 'cloud_accounts:read' },
+      {
+        to: '/cadastros/protecao',
+        label: 'Lista de proteção',
+        icon: ShieldPlus,
+        permission: 'protected_resources:read',
+      },
+      { to: '/cadastros/excecoes', label: 'Exceções', icon: BellOff, permission: 'alert_exceptions:read' },
       { to: '/auditoria', label: 'Auditoria', icon: ScrollText, permission: 'audit:read' },
     ],
   },

@@ -54,28 +54,14 @@ describe('rotas internas', () => {
 });
 
 describe('menu e cabeçalho por papel', () => {
+  // Contas cloud, Lista de proteção e Exceções: leitura liberada para todos (matriz de permissões).
+  const shared = ['Contas cloud', 'Lista de proteção', 'Exceções'];
+  const operation = ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades'];
   const expectedMenu: Record<Role, string[]> = {
-    admin_verax: [
-      'Torre',
-      'Incidentes',
-      'Achados',
-      'Postura cloud',
-      'Ativos e identidades',
-      'Clientes',
-      'Usuários',
-      'Auditoria',
-    ],
-    admin_cliente: [
-      'Torre',
-      'Incidentes',
-      'Achados',
-      'Postura cloud',
-      'Ativos e identidades',
-      'Usuários',
-      'Auditoria',
-    ],
-    analista_cliente: ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades'],
-    leitura: ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades'],
+    admin_verax: [...operation, 'Clientes', 'Usuários', ...shared, 'Auditoria'],
+    admin_cliente: [...operation, 'Usuários', ...shared, 'Auditoria'],
+    analista_cliente: [...operation, ...shared],
+    leitura: [...operation, ...shared],
   };
 
   it.each(Object.entries(expectedMenu))('%s vê só o que pode', async (role, items) => {
