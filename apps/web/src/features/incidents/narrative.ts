@@ -56,24 +56,35 @@ const ACTIONS: Readonly<Record<string, string>> = {
   GetSecretValue: 'leu um segredo do Secrets Manager',
 };
 
-/** Tipos do GuardDuty pelo prefixo (o resto do nome varia por recurso). */
-const GUARDDUTY: readonly [string, string][] = [
-  ['UnauthorizedAccess:IAMUser', 'usou credenciais da AWS de forma suspeita'],
-  ['UnauthorizedAccess:EC2/SSHBruteForce', 'sofreu tentativas de força bruta no SSH'],
-  ['UnauthorizedAccess:EC2/RDPBruteForce', 'sofreu tentativas de força bruta no RDP'],
-  ['CryptoCurrency:', 'consultou domínios de mineração de criptomoeda'],
-  ['Recon:', 'fez reconhecimento da conta'],
-  ['Backdoor:', 'mostrou sinais de porta dos fundos'],
-  ['Trojan:', 'mostrou sinais de software malicioso'],
+/**
+ * Tipos do GuardDuty pelo prefixo (o resto do nome varia por recurso). Sempre na voz ativa, com quem age como
+ * sujeito: na força bruta, quem age é o IP de origem, e a instância atacada vai no complemento.
+ */
+const GUARDDUTY: readonly [string, (resource: string | null) => string][] = [
+  ['UnauthorizedAccess:IAMUser', () => 'usou credenciais da AWS de forma suspeita'],
+  [
+    'UnauthorizedAccess:EC2/SSHBruteForce',
+    (resource) => `tentou força bruta no SSH${resource ? ` da instância ${resource}` : ''}`,
+  ],
+  [
+    'UnauthorizedAccess:EC2/RDPBruteForce',
+    (resource) => `tentou força bruta no RDP${resource ? ` da instância ${resource}` : ''}`,
+  ],
+  ['CryptoCurrency:', () => 'consultou domínios de mineração de criptomoeda'],
+  ['Recon:', () => 'fez reconhecimento da conta'],
+  ['Backdoor:', () => 'mostrou sinais de porta dos fundos'],
+  ['Trojan:', () => 'mostrou sinais de software malicioso'],
 ];
 
-export function describeFinding(finding: Pick<Finding, 'source' | 'eventName' | 'title'>): string {
+export function describeFinding(
+  finding: Pick<Finding, 'source' | 'eventName' | 'title' | 'resource'>,
+): string {
   const event = finding.eventName ?? '';
   const known = ACTIONS[event];
   if (known) return known;
   if (finding.source === 'guardduty') {
     const match = GUARDDUTY.find(([prefix]) => event.startsWith(prefix));
-    if (match) return match[1];
+    if (match) return match[1](finding.resource);
   }
   if (finding.source === 'waf') return 'teve requisições bloqueadas pelo WAF';
   return finding.title.charAt(0).toLowerCase() + finding.title.slice(1);

@@ -174,10 +174,29 @@ describe('narrativa', () => {
   it('só IP vira ataque; evento desconhecido usa o título do achado', () => {
     expect(incidentTitle({ keys: ['ip:192.0.2.1'] })).toBe('Ataque a partir do IP 192.0.2.1');
     expect(
-      describeFinding({ source: 'cloudtrail', eventName: 'SomethingNew', title: 'Algo novo aconteceu' }),
+      describeFinding({
+        source: 'cloudtrail',
+        eventName: 'SomethingNew',
+        title: 'Algo novo aconteceu',
+        resource: null,
+      }),
     ).toBe('algo novo aconteceu');
-    expect(describeFinding({ source: 'guardduty', eventName: 'CryptoCurrency:EC2/X', title: 'x' })).toBe(
-      'consultou domínios de mineração de criptomoeda',
+    expect(
+      describeFinding({
+        source: 'guardduty',
+        eventName: 'CryptoCurrency:EC2/X',
+        title: 'x',
+        resource: 'i-1',
+      }),
+    ).toBe('consultou domínios de mineração de criptomoeda');
+  });
+
+  it('força bruta: o IP de origem é quem age, e a instância atacada vai no complemento', async () => {
+    renderAt(`/incidentes/${DEMO_INCIDENTS.forcaBrutaSsh}`);
+    const summary = await screen.findByRole('region', { name: 'Resumo' });
+    expect(summary).toHaveTextContent(
+      'O IP 192.0.2.77 tentou força bruta no SSH da instância i-0a1b2c3d4e5f67890.',
     );
+    expect(summary).not.toHaveTextContent('sofreu');
   });
 });
