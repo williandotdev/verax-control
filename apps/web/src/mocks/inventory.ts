@@ -78,10 +78,11 @@ function alfa(now: Date): RawInventory {
     user(prod, 'carlos.dev', true, true, 0, 'none', [], 200),
     user(homolog, 'ci-homolog', false, false, 1, 'none', [], 60),
   ];
+  // IDs fictícios com prefixo DEMO: o formato real (AKIA/ASIA) é barrado pela varredura do bundle.
   const keys: AccessKeyAsset[] = [
     {
       accountId: prod,
-      id: 'AKIAIOSFODNN7EXAMPLE',
+      id: 'DEMO3QX7Z2KD9WLB5N8R',
       userName: 'deploy-bot',
       status: 'Active',
       createdAt: days(now, 240),
@@ -91,7 +92,7 @@ function alfa(now: Date): RawInventory {
     },
     {
       accountId: prod,
-      id: 'AKIAI44QH8DHBEXAMPLE',
+      id: 'DEMO8HB4QP1TV6YC2J7F',
       userName: 'backup-job',
       status: 'Active',
       createdAt: days(now, 410),
@@ -101,7 +102,7 @@ function alfa(now: Date): RawInventory {
     },
     {
       accountId: prod,
-      id: 'AKIA2OLDUNUSEDEXAMPLE',
+      id: 'DEMO5MW2XR9LK3ZD7H4E',
       userName: 'ana.souza',
       status: 'Active',
       createdAt: days(now, 80),
@@ -111,7 +112,7 @@ function alfa(now: Date): RawInventory {
     },
     {
       accountId: prod,
-      id: 'AKIAJNEWKEYEXAMPLE01',
+      id: 'DEMO1NV6TF8QA4GS0K2P',
       userName: 'admin-financeiro',
       status: 'Active',
       createdAt: minutes(now, 35),
@@ -121,7 +122,7 @@ function alfa(now: Date): RawInventory {
     },
     {
       accountId: homolog,
-      id: 'AKIAHOMOLOGEXAMPLE99',
+      id: 'DEMO9CH4LG7MB2XW6R1T',
       userName: 'ci-homolog',
       status: 'Active',
       createdAt: days(now, 30),

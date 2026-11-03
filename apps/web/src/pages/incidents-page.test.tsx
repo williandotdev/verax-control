@@ -49,7 +49,7 @@ describe('lista de incidentes', () => {
     expect(items).toHaveLength(6);
     const scores = items.map((row) => Number(within(row).getByLabelText(/Nota de risco/).textContent));
     expect(scores).toEqual([...scores].sort((a, b) => b - a));
-    expect(items[0]).toHaveTextContent('Atividade suspeita com a chave de acesso AKIAIOSFODNN7EXAMPLE');
+    expect(items[0]).toHaveTextContent('Atividade suspeita com a chave de acesso DEMO3QX7Z2KD9WLB5N8R');
     expect(items[0]).toHaveTextContent('Crítico');
     expect(items[0]).toHaveTextContent('Equipe Verax');
   });
@@ -79,12 +79,12 @@ describe('detalhe do incidente', () => {
     renderAt(path);
     expect(
       await screen.findByRole('heading', {
-        name: 'Atividade suspeita com a chave de acesso AKIAIOSFODNN7EXAMPLE',
+        name: 'Atividade suspeita com a chave de acesso DEMO3QX7Z2KD9WLB5N8R',
       }),
     ).toBeInTheDocument();
     const summary = screen.getByRole('region', { name: 'Resumo' });
     expect(summary).toHaveTextContent(
-      'A chave de acesso AKIAIOSFODNN7EXAMPLE, do usuário deploy-bot, a partir do IP 198.51.100.23, usou credenciais da AWS de forma suspeita, criou uma chave de acesso e tentou desligar a trilha do CloudTrail. 3 achados entre',
+      'A chave de acesso DEMO3QX7Z2KD9WLB5N8R, do usuário deploy-bot, a partir do IP 198.51.100.23, usou credenciais da AWS de forma suspeita, criou uma chave de acesso e tentou desligar a trilha do CloudTrail. 3 achados entre',
     );
     expect(summary).toHaveTextContent('Desative a chave de acesso');
 

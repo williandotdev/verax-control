@@ -86,6 +86,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      # A demonstração embute os dados fictícios do mock: passa pela mesma varredura de segredos que o deploy
+      # do painel faz depois do merge, para o problema aparecer no PR e não na publicação.
+      - run: pnpm --filter @verax/web build:demo
 
   api-image:
     name: Imagem da API (build, Trivy e teste como em produção)

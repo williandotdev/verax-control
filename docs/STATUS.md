@@ -1279,3 +1279,12 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   Também 1 no contrato e as expectativas do menu por papel. Os testes de formulário têm 15 s de prazo, porque são preenchidos letra por letra e a suíte inteira roda em paralelo. Conferido visualmente.
 
 - **Definição de pronto:** critérios de aceite ✔ (T7.1 a T7.5) · testes ✔ · lint ✔ · dependências ✔
+
+## Correção: deploy da demonstração barrado pela varredura de segredos
+
+- **Problema:** desde a tela de Achados (#19), o deploy do painel falhava. Os dados fictícios usavam os IDs de chave de exemplo da documentação da AWS (`AKIA…EXAMPLE`). A varredura do bundle (`scripts/scan-bundle.mjs`) barra esse padrão, e o painel no ar continuava na versão da Torre. O CI dos PRs não pegou: compilava só o build de produção, que não leva os dados do mock.
+- **Correção:**
+  - as chaves fictícias passam a usar o prefixo `DEMO`, que não é formato da AWS;
+  - a varredura continua igual;
+  - o job de build do CI agora também compila a demonstração (`build:demo`), com a mesma varredura, para que o erro apareça no PR.
+- **Testes:** os testes de Ativos, Achados e Incidentes conferem os novos IDs. O `build:demo` local passa na varredura.

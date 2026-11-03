@@ -59,10 +59,10 @@ describe('Ativos e identidades', () => {
     await userEvent.click(await screen.findByRole('tab', { name: /Chaves de acesso/ }));
     await waitFor(() => expect(router.state.location.search).toBe('?aba=keys'));
     const rows = await rowsOf('Chaves de acesso');
-    const key = rows.find((row) => row.textContent?.includes('AKIAIOSFODNN7EXAMPLE')) as HTMLElement;
+    const key = rows.find((row) => row.textContent?.includes('DEMO3QX7Z2KD9WLB5N8R')) as HTMLElement;
     expect(within(key).getByText('240 dias')).toHaveClass('text-critical');
     expect(within(key).getByText('chave com mais de 90 dias')).toBeInTheDocument();
-    const never = rows.find((row) => row.textContent?.includes('AKIAJNEWKEYEXAMPLE01')) as HTMLElement;
+    const never = rows.find((row) => row.textContent?.includes('DEMO1NV6TF8QA4GS0K2P')) as HTMLElement;
     expect(within(never).getByText('nunca')).toBeInTheDocument();
   });
 

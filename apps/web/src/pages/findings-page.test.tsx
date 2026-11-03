@@ -65,7 +65,7 @@ describe('Achados', () => {
     const panel = await screen.findByRole('dialog', { name: 'Tentativa de desligar a trilha do CloudTrail' });
     expect(router.state.location.search).toMatch(/achado=/);
     expect(within(panel).getByText('StopLogging')).toBeInTheDocument();
-    expect(within(panel).getByText('AKIAIOSFODNN7EXAMPLE')).toBeInTheDocument();
+    expect(within(panel).getByText('DEMO3QX7Z2KD9WLB5N8R')).toBeInTheDocument();
     expect(within(panel).getByText('T1562.008')).toBeInTheDocument();
     expect(within(panel).getByRole('link', { name: 'Ver incidente' })).toHaveAttribute(
       'href',

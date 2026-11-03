@@ -46,7 +46,9 @@ interface Template {
   comments?: { author: string; body: string; minutesAgo: number }[];
 }
 
-const KEY = 'AKIAIOSFODNN7EXAMPLE';
+// Chaves fictícias com prefixo DEMO: o formato real (AKIA/ASIA) é barrado pela varredura do bundle
+// (scripts/scan-bundle.mjs), e a demonstração publica estes dados no painel.
+const KEY = 'DEMO3QX7Z2KD9WLB5N8R';
 const ATTACKER = '198.51.100.23';
 
 const ALFA_FINDINGS: Template[] = [
@@ -416,7 +418,7 @@ const ALFA_FINDINGS: Template[] = [
     region: 'ap-southeast-2',
     user: 'backup-job',
     userType: 'IAMUser',
-    accessKeyId: 'AKIAI44QH8DHBEXAMPLE',
+    accessKeyId: 'DEMO8HB4QP1TV6YC2J7F',
     ip: '203.0.113.70',
     tactics: ['Discovery'],
     techniques: ['T1580'],
