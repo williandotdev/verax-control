@@ -1736,3 +1736,24 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Texto em vermelho:** novo token `--critical-text`, para erros de formulário e valores de risco. A cor da severidade fica em ~3,1-3,6:1 sobre as superfícies do escuro (já era assim antes); o token novo passa de 5,5:1. Ícones e marcas seguem com a cor da severidade.
 - **Mapa do MITRE:** as intensidades usam a tinta neutra, porque o azul da marca ficava perto do azul do "baixo".
 - **Testes:** o axe passa a rodar em todas as telas nos dois temas (antes, só no claro: foi assim que o contraste do texto vermelho no escuro passou despercebido). Resultado: 45 e2e da demonstração, 7 contra a API real com a CSP de produção e 212 unitários.
+
+## Tour guiado na demonstração
+
+- **Pedido:** um tour guiado na demonstração comercial para conhecer o sistema completo.
+- **Abertura e retomada:**
+  - abre sozinho no primeiro acesso, na Torre;
+  - pode ser retomado pelo botão "Fazer o tour" da faixa da demonstração;
+  - o progresso fica no `localStorage`.
+- **Passos:** 18 para o admin da Verax e 14 para a analista (os passos de telas que o papel não abre saem). Cada passo destaca o elemento real da tela.
+- **Exemplos:** o incidente e o achado mostrados vêm do cliente da sessão, buscados na hora. Com outro cliente selecionado, o exemplo é dele. Sem nenhum, o passo fica na lista.
+- **Escopo:** só no modo `mock`. O build de produção não contém o código nem os textos do tour.
+- **Dependências e CSP:** nenhuma dependência nova e nenhum `<style>` injetado (CSP de produção).
+- **Acessibilidade:** o cartão é um diálogo com título e descrição (a contagem do passo e a explicação); o foco volta ao lugar de origem ao encerrar; Esc e as setas funcionam; respeita a preferência por menos movimento.
+- **Textos da interface sem "SOC" nem "Wazuh":** a demonstração é vitrine, e o posicionamento não usa esses termos. Mudaram:
+  - o subtítulo de Relatórios;
+  - o rótulo da regra no detalhe do achado ("Regra (logs da AWS)");
+  - as dicas da fila sem dono e de Exceções;
+  - o estado vazio de Achados.
+- **Testes:**
+  - 244 unitários do painel;
+  - 52 e2e da demonstração, com o tour completo nos dois papéis, o axe no cartão nos dois temas, o celular, a reabertura e o exemplo do cliente Beta.

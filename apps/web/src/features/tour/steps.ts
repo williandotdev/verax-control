@@ -16,14 +16,15 @@ export interface TourStep {
   permission?: Permission;
   /** Link de saída, aberto em outra aba. */
   link?: { href: string; label: string };
+  /**
+   * Passo que mostra um exemplo: o primeiro incidente ou achado do cliente da sessão, buscado na hora (o admin da
+   * Verax pode ter trocado de cliente). Sem nenhum, o passo fica na lista (`path`).
+   */
+  example?: 'incident' | 'finding';
 }
 
 /** Endereço do site da Verax, para o convite do fim do tour. */
 export const VERAX_SITE = 'https://veraxsistemas.com.br';
-
-/** Incidente e achado da demonstração usados como exemplo (cliente Demo Alfa, com dados nos mocks). */
-export const TOUR_INCIDENT_ID = '018f2c1e-0000-7000-8000-0000000a0001';
-export const TOUR_FINDING_ID = '018f2c1e-0000-7000-8000-000000001001';
 
 const tour = (name: string) => `[data-tour="${name}"]`;
 /** Os alvos de tela ficam dentro do conteúdo da página (fora do menu e do cabeçalho). */
@@ -73,7 +74,8 @@ export const TOUR_STEPS: readonly TourStep[] = [
   },
   {
     id: 'incidente',
-    path: `/incidentes/${TOUR_INCIDENT_ID}`,
+    path: '/incidentes',
+    example: 'incident',
     target: [inMain('incidente-resumo')],
     permission: 'incidents:read',
     title: 'Detalhe do incidente',
@@ -89,7 +91,8 @@ export const TOUR_STEPS: readonly TourStep[] = [
   },
   {
     id: 'achado-triagem',
-    path: `/achados?achado=${TOUR_FINDING_ID}`,
+    path: '/achados',
+    example: 'finding',
     target: [tour('achado-triagem')],
     permission: 'findings:triage',
     title: 'Triagem e exceção',
@@ -117,7 +120,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [inMain('relatorios-abas')],
     permission: 'reports:read',
     title: 'Relatórios',
-    body: 'As visões clássicas de um SOC para quem quer analisar a fundo: resumo do período, MITRE ATT&CK, detecções, entidades, incidentes, cobertura das fontes e exceções. Escolha 7, 30 ou 90 dias e exporte as tabelas em CSV.',
+    body: 'Para quem quer analisar a fundo: resumo do período, MITRE ATT&CK, detecções, entidades, incidentes, cobertura das fontes e exceções. Escolha 7, 30 ou 90 dias e exporte as tabelas em CSV.',
   },
   {
     id: 'alertas-sem-dono',

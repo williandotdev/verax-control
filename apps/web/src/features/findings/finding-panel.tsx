@@ -67,7 +67,7 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
     ['IP de origem', finding.actor.ip],
     [
       // Os alertas da AWS vêm das regras do Wazuh; os da GCP, das regras do próprio nó.
-      finding.source === 'gcp_audit' ? 'Regra (auditoria da GCP)' : 'Regra do Wazuh',
+      finding.source === 'gcp_audit' ? 'Regra (auditoria da GCP)' : 'Regra (logs da AWS)',
       `${finding.ruleId} (nível ${finding.ruleLevel})`,
     ],
   ];

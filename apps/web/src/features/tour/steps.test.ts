@@ -1,9 +1,7 @@
 import { type Permission, permissionsOf, ROLES } from '@verax/shared';
 import { describe, expect, it } from 'vitest';
 import { NAVIGATION } from '@/layout/navigation';
-import { DEMO_INCIDENTS, demoFindings } from '@/mocks/findings-fixtures';
-import { DEMO_TENANTS } from '@/mocks/fixtures';
-import { TOUR_FINDING_ID, TOUR_INCIDENT_ID, TOUR_STEPS, tourStepsFor, VERAX_SITE } from './steps';
+import { TOUR_STEPS, tourStepsFor, VERAX_SITE } from './steps';
 
 /** A permissão que a rota exige (a mesma do menu; o detalhe do incidente segue a lista). */
 function routePermission(path: string): Permission | undefined {
@@ -52,13 +50,11 @@ describe('percurso do tour', () => {
     expect(tourStepsFor(permissionsOf('admin_verax'))).toHaveLength(TOUR_STEPS.length);
   });
 
-  it('o incidente e o achado de exemplo existem nos dados da demonstração, no cliente que abre a Torre', () => {
-    const alfa = DEMO_TENANTS[0]?.id ?? '';
-    expect(Object.values(DEMO_INCIDENTS)).toContain(TOUR_INCIDENT_ID);
-    const finding = demoFindings()
-      .get(alfa)
-      ?.find((candidate) => candidate.id === TOUR_FINDING_ID);
-    expect(finding).toBeDefined();
-    expect(finding?.incidentId).toBe(TOUR_INCIDENT_ID);
+  it('os exemplos (incidente e achado) vêm do cliente da sessão, com a lista como reserva', () => {
+    const examples = TOUR_STEPS.filter((step) => step.example);
+    expect(examples.map((step) => [step.id, step.example, step.path])).toEqual([
+      ['incidente', 'incident', '/incidentes'],
+      ['achado-triagem', 'finding', '/achados'],
+    ]);
   });
 });

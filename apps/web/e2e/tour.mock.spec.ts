@@ -107,7 +107,7 @@ test.describe('tour guiado (modo mock)', () => {
       } else {
         // O convite final fica no centro, sem destaque, com o link do site.
         await expect(card(page)).toHaveAttribute('data-placement', 'center');
-        await expect(card(page).getByRole('link', { name: /veraxsistemas\.com\.br/ })).toHaveAttribute(
+        await expect(card(page).getByRole('link', { name: /^veraxsistemas\.com\.br/ })).toHaveAttribute(
           'href',
           'https://veraxsistemas.com.br',
         );
@@ -155,6 +155,33 @@ test.describe('tour guiado (modo mock)', () => {
       expect(layout.left, `passo ${step}`).toBeGreaterThanOrEqual(0);
       expect(layout.right, `passo ${step}`).toBeLessThanOrEqual(layout.width);
     });
+  });
+
+  test('com outro cliente selecionado, o incidente e o achado de exemplo são desse cliente', async ({
+    page,
+  }) => {
+    const errors = collectErrors(page);
+    await setTourProgress(page, { seen: true, open: false, step: 'incidente' });
+    await page.goto('/');
+    const tenant = page.getByLabel('Cliente');
+    await tenant.selectOption({ label: 'Cliente Demo Beta' });
+    await expect(tenant).toHaveValue('018f2c1e-0000-7000-8000-00000000be7a');
+    await page.getByRole('note').getByRole('button', { name: 'Fazer o tour' }).click();
+
+    // O incidente de maior nota do cliente Beta, com o resumo em destaque (e não uma tela de "não encontrado").
+    expect((await currentStep(page))[0]).toBe(6);
+    expect(new URL(page.url()).pathname).toMatch(/^\/incidentes\/018f2c1e-0000-7000-8000-0000000b000\d$/);
+    await expect(backdrop(page)).toHaveAttribute('data-spotlight', 'sim');
+
+    await card(page).getByRole('button', { name: 'Próximo' }).click();
+    expect((await currentStep(page))[0]).toBe(7);
+    await card(page).getByRole('button', { name: 'Próximo' }).click();
+    expect((await currentStep(page))[0]).toBe(8);
+    const finding = new URL(page.url()).searchParams.get('achado');
+    expect(finding).not.toBeNull();
+    expect(finding).not.toBe('018f2c1e-0000-7000-8000-000000001001');
+    await expect(backdrop(page)).toHaveAttribute('data-spotlight', 'sim');
+    expect(errors).toEqual([]);
   });
 
   test('"Fazer o tour" na faixa reabre o tour; Esc encerra e o foco volta ao botão', async ({ page }) => {

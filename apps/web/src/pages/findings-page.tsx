@@ -123,7 +123,9 @@ export function FindingsPage() {
         onRowClick={(row) => update({ achado: row.id }, { keepPage: true })}
         emptyTitle={hasFilters ? 'Nenhum achado com esses filtros' : 'Nenhum achado ainda'}
         emptyDescription={
-          hasFilters ? 'Ajuste ou limpe os filtros.' : 'Os alertas aparecem aqui assim que o Wazuh os recebe.'
+          hasFilters
+            ? 'Ajuste ou limpe os filtros.'
+            : 'Os alertas aparecem aqui assim que chegam das contas conectadas.'
         }
         filters={
           <>

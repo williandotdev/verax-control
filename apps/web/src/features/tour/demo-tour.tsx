@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState, useSyncExternalSt
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router';
 import { useMe } from '@/features/session/session';
+import { examplePath } from './examples';
 import { type Box, placeCard, spotlightBox } from './placement';
 import { readTourProgress, type TourProgress, writeTourProgress } from './progress';
 import { TOUR_STEPS, type TourStep, tourStepsFor } from './steps';
@@ -47,6 +48,14 @@ function TourController({ steps, timeoutMs }: { steps: readonly TourStep[]; time
   const { pathname, search } = useLocation();
   const here = `${pathname}${search}`;
   const [progress, setProgress] = useState(() => initialProgress(steps));
+  /** Tela resolvida de cada passo com exemplo (o incidente ou achado do cliente da sessão). */
+  const [examples, setExamples] = useState<Record<string, string | undefined>>({});
+  /** Passo pedido por último: um exemplo que chega depois de a pessoa seguir adiante não navega. */
+  const requested = useRef<string | null>(null);
+  const hereRef = useRef(here);
+  useEffect(() => {
+    hereRef.current = here;
+  }, [here]);
   /** Onde estava o foco quando o tour abriu: volta para lá quando ele encerra. */
   const opener = useRef<HTMLElement | null>(null);
   const closing = useRef(false);
@@ -67,9 +76,22 @@ function TourController({ steps, timeoutMs }: { steps: readonly TourStep[]; time
     opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
   };
 
+  /** Vai para a tela do passo; com exemplo, primeiro busca qual é ele no cliente da sessão. */
+  const show = (target: TourStep) => {
+    requested.current = target.id;
+    if (!target.example) {
+      if (target.path && target.path !== hereRef.current) void navigate(target.path);
+      return;
+    }
+    void examplePath(target).then((path) => {
+      setExamples((current) => ({ ...current, [target.id]: path }));
+      if (requested.current === target.id && path && path !== hereRef.current) void navigate(path);
+    });
+  };
+
   const goTo = (target: TourStep) => {
     setProgress((current) => ({ ...current, open: true, step: target.id }));
-    if (target.path && target.path !== here) void navigate(target.path);
+    show(target);
   };
 
   const close = (finished: boolean) => {
@@ -92,7 +114,7 @@ function TourController({ steps, timeoutMs }: { steps: readonly TourStep[]; time
     if (navigatedOnMount.current || !step) return;
     navigatedOnMount.current = true;
     rememberOpener();
-    if (step.path && step.path !== here) void navigate(step.path);
+    show(step);
   });
   useEffect(() => {
     openOnMount();
@@ -103,6 +125,8 @@ function TourController({ steps, timeoutMs }: { steps: readonly TourStep[]; time
   return (
     <TourSession
       step={step}
+      path={step.example ? examples[step.id] : step.path}
+      pending={Boolean(step.example) && !(step.id in examples)}
       index={index}
       total={steps.length}
       here={here}
@@ -130,6 +154,10 @@ function TourController({ steps, timeoutMs }: { steps: readonly TourStep[]; time
 
 interface TourSessionProps {
   step: TourStep;
+  /** Tela do passo (no passo com exemplo, a resolvida). */
+  path: string | undefined;
+  /** O exemplo do passo ainda está sendo buscado: o destaque espera. */
+  pending: boolean;
   index: number;
   total: number;
   here: string;
@@ -142,9 +170,9 @@ interface TourSessionProps {
 }
 
 /** O tour aberto: acompanha o alvo do passo, escurece o resto da tela e posiciona o cartão. */
-function TourSession({ step, index, total, here, timeoutMs, ...actions }: TourSessionProps) {
+function TourSession({ step, path, pending, index, total, here, timeoutMs, ...actions }: TourSessionProps) {
   const [watcher] = useState(createTargetWatcher);
-  const ready = !step.path || step.path === here;
+  const ready = !pending && (!path || path === here);
   const key = `${step.id}@${here}`;
   const selectors = step.target ?? NO_TARGET;
 

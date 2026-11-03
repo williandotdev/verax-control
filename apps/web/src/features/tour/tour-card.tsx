@@ -41,6 +41,7 @@ export function TourCard({
 }: TourCardProps) {
   const content = useRef<HTMLDivElement | null>(null);
   const countId = useId();
+  const bodyId = useId();
   const first = index === 0;
   const last = index === total - 1;
   const setContent = useCallback(
@@ -73,7 +74,7 @@ export function TourCard({
           ref={setContent}
           data-tour-card=""
           data-placement={placement?.side ?? 'pendente'}
-          aria-describedby={countId}
+          aria-describedby={`${countId} ${bodyId}`}
           style={placement ? { top: placement.top, left: placement.left } : undefined}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
@@ -98,7 +99,9 @@ export function TourCard({
             </p>
             <Dialog.Title className="text-base font-semibold">{step.title}</Dialog.Title>
           </div>
-          <Dialog.Description className="text-sm text-muted-foreground">{step.body}</Dialog.Description>
+          <Dialog.Description id={bodyId} className="text-sm text-muted-foreground">
+            {step.body}
+          </Dialog.Description>
           {step.link && (
             <a
               href={step.link.href}

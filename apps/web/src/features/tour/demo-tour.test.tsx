@@ -155,7 +155,7 @@ describe('tour guiado da demonstração', () => {
     const first = renderTour({ progress: { seen: false, open: true, step: 'tres' } });
     const dialog = await screen.findByRole('dialog', { name: 'Último passo' });
     expect(dialog).toHaveAccessibleDescription('Passo 3 de 3 Texto do último.');
-    expect(screen.getByRole('link', { name: /veraxsistemas\.com\.br/ })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: /^veraxsistemas\.com\.br/ })).toHaveAttribute(
       'href',
       'https://veraxsistemas.com.br',
     );
