@@ -59,6 +59,9 @@ jobs:
           --health-retries 20
     env:
       TEST_DATABASE_URL: postgresql://verax:ci-ephemeral-db@localhost:5432/verax_test
+      # Emulador oficial do Firestore (testes de integração do plano de controle). Sem a variável, esses testes
+      # falham no CI de propósito (test/firestore-emulator.test.ts), para nunca serem pulados em silêncio.
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:8681
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,7 +72,14 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Não é um `service` como o Postgres: a imagem dos emuladores não tem comando padrão, e o GitHub não deixa
+      # passar um comando a um service. O script fixa a imagem por digest e espera o emulador responder.
+      - name: Emulador do Firestore (imagem fixada por digest)
+        run: bash apps/control-plane/scripts/firestore-emulator.sh start
       - run: pnpm test
+      - name: Parar o emulador
+        if: always()
+        run: bash apps/control-plane/scripts/firestore-emulator.sh stop
 
   build:
     name: Build
@@ -127,6 +137,31 @@ jobs:
           name: zap-api-local
           path: ${{ runner.temp }}/zap/
           retention-days: 30
+
+  control-plane-image:
+    name: Imagem do plano de controle (build, Trivy e raiz só leitura)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Mesmo binário e checksum do security.yml e do job da API.
+      TRIVY_VERSION: 0.76.1
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build (a mesma imagem para cp-public e cp-worker)
+        run: docker build -f apps/control-plane/Dockerfile -t verax-control-plane:teste .
+      - name: Instalar trivy (checksum fixado)
+        run: |
+          curl -fsSLo trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf trivy.tar.gz trivy && rm trivy.tar.gz
+      - name: Trivy na imagem
+        # --ignore-unfixed: só bloqueia o que tem correção disponível, para o gate ser acionável.
+        run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-control-plane:teste
+      - name: Execução como no Cloud Run (os dois papéis, raiz só leitura, configuração inválida)
+        run: bash scripts/test-control-plane-image.sh verax-control-plane:teste
 
   e2e:
     name: Testes de navegador

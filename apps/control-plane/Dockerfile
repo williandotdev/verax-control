@@ -1,0 +1,37 @@
+# Imagem do plano de controle do Verax Control (fase 3, CP-01). Contexto: a raiz do repositório; o .dockerignore
+# só deixa entrar o necessário (nunca .env nem chaves). Molde de apps/api/Dockerfile.
+#
+# Uma só imagem para os dois serviços do Cloud Run: `cp-public` e `cp-worker` recebem a mesma imagem e a variável
+# ROLE (public ou worker) decide quais rotas existem. Só dependências de produção, usuário sem privilégio, roda com
+# sistema de arquivos só leitura e sem npm nem corepack, que não são usados em execução.
+#
+# A instalação respeita o pnpm-workspace.yaml: quarentena de 24 h, política de confiança e scripts de instalação
+# bloqueados. Imagem base fixada por SHA-256 (a mesma da API).
+
+ARG NODE_IMAGE=node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
+
+FROM ${NODE_IMAGE} AS build
+WORKDIR /repo
+ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/control-plane/package.json apps/control-plane/
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @verax/control-plane...
+COPY apps/control-plane apps/control-plane
+RUN pnpm --filter @verax/control-plane build
+RUN pnpm --filter @verax/control-plane deploy --prod --legacy --ignore-scripts /out
+
+FROM ${NODE_IMAGE} AS control-plane
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+  /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+WORKDIR /app
+# Arquivos do root: o usuário `node` não consegue alterá-los (e a raiz ainda é montada só leitura).
+COPY --from=build /out/package.json ./
+COPY --from=build /out/node_modules ./node_modules
+COPY --from=build /repo/apps/control-plane/dist ./dist
+ENV NODE_ENV=production PORT=8080
+USER node
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 8080) + '/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+CMD ["node", "dist/main.js"]

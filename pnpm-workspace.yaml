@@ -34,6 +34,10 @@ allowBuilds:
   lefthook: false
   # O preinstall só confere a versão do Node, o que o engineStrict já faz.
   prisma: false
+  # Dependência do SDK do Firestore (plano de controle). O postinstall (scripts/postinstall.js) só imprime um aviso
+  # quando o pacote que depende dele usa um prefixo de versão diferente do recomendado (`~`); não compila nem
+  # altera nada, e o pacote publicado já vem pronto.
+  protobufjs: false
 saveExact: true
 engineStrict: true
 
@@ -41,3 +45,9 @@ engineStrict: true
 overrides:
   # GHSA-g3hv-75wg-m249 (DoS em globparts). Entra via ESLint, typescript-eslint e Nest CLI.
   'minimatch@<11.0.1': 11.0.1
+  # GHSA-3g3m-2fjr-6pw4 (o AbortSignal não interrompe a travessia do disco). Entra só pelo plano de controle:
+  # @google-cloud/firestore → @google-cloud/firestore-api@0.2 → google-gax@5 → rimraf@5 → glob@10. Ninguém carrega
+  # o rimraf em execução (o Firestore usa o google-gax@6, que não o traz); a troca de major é segura porque o
+  # código nunca roda e só serve para o OSV-Scanner e o Dependency Review. Remover quando o
+  # @google-cloud/firestore deixar de trazer o google-gax@5 (decisão do responsável, docs/STATUS.md).
+  'glob@10.5.0': 14.0.3
