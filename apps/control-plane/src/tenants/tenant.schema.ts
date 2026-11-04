@@ -26,6 +26,25 @@ export const slugSchema = z
   .string()
   .regex(/^[a-z][a-z0-9-]{1,14}[a-z0-9]$/, { error: 'subdomínio inválido' });
 
+/** Nomes que nenhum cliente recebe: endereços da própria Verax (plano §4a). */
+export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
+  'verax',
+  'api',
+  'www',
+  'conta',
+  'control',
+  'demo',
+  'status',
+  'admin',
+  'mail',
+  'suporte',
+]);
+
+/** Um subdomínio que um cliente pode pedir: no formato e fora da lista reservada. */
+export function isReservableSlug(value: string): boolean {
+  return slugSchema.safeParse(value).success && !RESERVED_SLUGS.has(value);
+}
+
 /** CNPJ no formato alfanumérico da Receita (12 posições `[A-Z0-9]` e 2 dígitos). O DV é conferido no checkout. */
 export const cnpjSchema = z.string().regex(/^[A-Z0-9]{12}[0-9]{2}$/, { error: 'CNPJ inválido' });
 
@@ -147,17 +166,45 @@ export const transitionSchema = z.strictObject({
 export type TenantTransition = z.infer<typeof transitionSchema>;
 
 /**
- * Documento `slugs/{slug}` (plano §3): o checkout reserva o subdomínio (`reserved`, com `expiresAt` de 2 h 30 para o
- * TTL e o `checkoutSessionId` da sessão) e o `checkout.session.completed` o toma para o cliente (`taken`, sem
- * `expiresAt`). O id do documento é o próprio slug: dois clientes nunca nascem com o mesmo subdomínio, porque o
- * segundo `TenantStore.create` encontra o documento `taken` (ou falha no commit do `create`).
+ * O pedido feito no checkout (CP-03), guardado na reserva até virar cliente: é o que a Stripe não guarda (o CNPJ não
+ * vai à sessão, e a Stripe não coleta CNPJ do Brasil) e o que o `checkout.session.completed` (CP-04) copia para o
+ * tenant. Some com a reserva: o TTL apaga a reserva vencida, e a liberação e a tomada (`taken`) regravam o documento
+ * sem ele.
+ */
+export const slugOrderSchema = z.strictObject({
+  plan: planIdSchema,
+  company: z.strictObject({ legalName: shortText, cnpj: cnpjSchema }),
+  adminEmail: z.email(),
+  consent: z.strictObject({ termsVersion: shortText, privacyVersion: shortText, dpaVersion: shortText }),
+});
+
+export type SlugOrder = z.infer<typeof slugOrderSchema>;
+
+/**
+ * Documento `slugs/{slug}` (plano §3): o checkout reserva o subdomínio (`reserved`, com o `tenantId` novo, o pedido,
+ * `expiresAt` de 2 h 30 para o TTL e, depois de criada, o `checkoutSessionId` da sessão) e o
+ * `checkout.session.completed` o toma para o cliente (`taken`, sem `expiresAt`). Uma reserva desfeita (a Stripe falhou
+ * depois da reserva) fica `released`, que volta a aceitar reserva. O id do documento é o próprio slug: dois clientes
+ * nunca nascem com o mesmo subdomínio, porque o segundo `TenantStore.create` encontra o documento `taken` (ou falha no
+ * commit do `create`).
  */
 export const slugDocumentSchema = z.strictObject({
-  state: z.enum(['reserved', 'taken']),
+  state: z.enum(['reserved', 'taken', 'released']),
   tenantId: z.string().regex(ULID_PATTERN).optional(),
   checkoutSessionId: stripeId.optional(),
+  order: slugOrderSchema.optional(),
   updatedAt: z.date(),
   expiresAt: z.date().optional(),
 });
 
 export type SlugDocument = z.infer<typeof slugDocumentSchema>;
+
+/**
+ * O subdomínio está livre: sem documento, liberado, ou reservado com o prazo vencido (o TTL ainda não o apagou). Uma
+ * reserva sem `expiresAt` nunca vence (não deveria existir; na dúvida, ocupado). `taken` nunca fica livre.
+ */
+export function isSlugFree(current: SlugDocument | undefined, now: Date): boolean {
+  if (current === undefined || current.state === 'released') return true;
+  if (current.state === 'taken') return false;
+  return current.expiresAt !== undefined && current.expiresAt.getTime() <= now.getTime();
+}

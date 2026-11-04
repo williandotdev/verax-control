@@ -13,6 +13,7 @@ import {
 } from '../firestore/document-store.js';
 import { canTransition } from './tenant-transitions.js';
 import {
+  isSlugFree,
   type SlugDocument,
   slugDocumentSchema,
   type Tenant,
@@ -332,12 +333,14 @@ export class TenantStore {
   }
 }
 
-/** Reserva do mesmo checkout, ou reserva de outro já vencida (o TTL ainda não a apagou): o slug está livre. */
+/**
+ * Reserva do mesmo checkout, ou subdomínio livre (liberado, ou reserva de outro já vencida que o TTL ainda não
+ * apagou): o slug pode ser tomado.
+ */
 function slugAvailableFor(current: SlugDocument, tenant: Tenant, now: Date): boolean {
-  if (current.state !== 'reserved') return false;
   const sameCheckout =
+    current.state === 'reserved' &&
     current.checkoutSessionId !== undefined &&
     current.checkoutSessionId === tenant.consent?.checkoutSessionId;
-  const expired = current.expiresAt !== undefined && current.expiresAt.getTime() <= now.getTime();
-  return sameCheckout || expired;
+  return sameCheckout || isSlugFree(current, now);
 }

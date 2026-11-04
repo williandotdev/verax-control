@@ -9,6 +9,7 @@ import type { Role } from '../../src/common/config/env.schema.js';
 import { loadConfig } from '../../src/common/config/load-config.js';
 import type { DocumentStore } from '../../src/firestore/document-store.js';
 import { MemoryDocumentStore } from '../../src/firestore/memory-document-store.js';
+import type { StripeApiOptions } from '../../src/stripe/stripe-client.js';
 import { LogCapture } from './log-capture.js';
 
 export interface CreateAppOptions {
@@ -22,6 +23,8 @@ export interface CreateAppOptions {
   capture?: LogCapture;
   documentStore?: DocumentStore;
   clock?: Clock;
+  /** A API da Stripe no servidor falso (`fake-stripe.ts`). */
+  stripeApi?: StripeApiOptions;
 }
 
 /**
@@ -43,6 +46,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         documentStore: options.documentStore ?? new MemoryDocumentStore(),
         clock: options.clock,
         logger: { destination: options.capture ?? new LogCapture() },
+        stripeApi: options.stripeApi,
       }),
     ],
   }).compile();
