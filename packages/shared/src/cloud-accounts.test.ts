@@ -296,14 +296,38 @@ describe('projeto GCP de cliente (fase 2, PR-05)', () => {
     ).toBe(false);
   });
 
-  it('a identidade como o gcloud mostra (entre crases) ou só o e-mail vira a forma completa', () => {
-    expect(normalizeSinkWriterIdentity(` \`${IDENTITY}\` `)).toBe(IDENTITY);
-    expect(normalizeSinkWriterIdentity(`"${IDENTITY}"`)).toBe(IDENTITY);
-    expect(normalizeSinkWriterIdentity('service-123456789012@gcp-sa-logging.iam.gserviceaccount.com')).toBe(
-      IDENTITY,
-    );
-    // Outro tipo fica como está, e o schema recusa.
+  const EMAIL = 'service-123456789012@gcp-sa-logging.iam.gserviceaccount.com';
+
+  it.each([
+    ['entre crases e espaços, como no aviso do gcloud', ` \`${IDENTITY}\` `],
+    ['entre aspas duplas', `"${IDENTITY}"`],
+    ['entre aspas simples', `'${IDENTITY}'`],
+    ['com tabulações e quebra de linha', `\t${IDENTITY}\r\n`],
+    ['crases e espaços misturados', `\` \`${IDENTITY}\` \``],
+    ['só o e-mail', EMAIL],
+    ['só o e-mail entre crases', `\`${EMAIL}\``],
+  ])('a identidade colada vira a forma completa: %s', (_label, pasted) => {
+    expect(normalizeSinkWriterIdentity(pasted)).toBe(IDENTITY);
+    expect(sinkWriterIdentitySchema.safeParse(normalizeSinkWriterIdentity(pasted)).success).toBe(true);
+  });
+
+  it('a normalização não inventa nem tira nada do meio: outro tipo fica como está, e o schema recusa', () => {
     expect(normalizeSinkWriterIdentity('user:alguem@example.com')).toBe('user:alguem@example.com');
+    expect(normalizeSinkWriterIdentity(`${IDENTITY} the Pub/Sub Publisher role`)).toBe(
+      `${IDENTITY} the Pub/Sub Publisher role`,
+    );
+    expect(normalizeSinkWriterIdentity(IDENTITY)).toBe(IDENTITY);
+  });
+
+  it('milhares de tabulações em volta da identidade não travam a normalização (CodeQL: regex polinomial)', () => {
+    const tabs = '\t'.repeat(10_000);
+    // A regex antiga (`^[...]+|[...]+$` com `g`) tentava a segunda alternativa em cada tabulação; com outro
+    // caractere depois delas, o custo era quadrático (centenas de milissegundos aqui, segundos com 50 mil).
+    const started = Date.now();
+    expect(normalizeSinkWriterIdentity(`${tabs}${IDENTITY}${tabs}`)).toBe(IDENTITY);
+    expect(normalizeSinkWriterIdentity(`${tabs}${IDENTITY}${tabs}x`)).toBe(`${IDENTITY}${tabs}x`);
+    expect(normalizeSinkWriterIdentity(`x${tabs}y`)).toBe(`serviceAccount:x${tabs}y`);
+    expect(Date.now() - started).toBeLessThan(50);
   });
 
   it('o comando cria só o sink no projeto do cliente, com o filtro de segurança, apontando para o tópico do nó', () => {

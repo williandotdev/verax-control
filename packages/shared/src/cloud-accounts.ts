@@ -105,13 +105,22 @@ export const sinkWriterIdentitySchema = z.string().max(128).regex(SINK_WRITER_ID
     'identidade do sink inválida: use serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com',
 });
 
+/** O que envolve a identidade colada: espaço em branco (o `\s` do JavaScript), crase e aspas. Um caractere por vez. */
+const SINK_WRITER_IDENTITY_WRAPPER = /[\s`'"]/;
+
 /**
  * A identidade como o gcloud mostra (entre crases, no aviso do `sinks create`) ou só o e-mail dela vira a forma
  * completa, `serviceAccount:<e-mail>`, que é a que o IAM aceita. Outro tipo (`user:`, `group:`) fica como está, e o
- * schema recusa.
+ * schema recusa. As pontas são andadas caractere a caractere, em tempo linear: a regex `^[...]+|[...]+$` com `g`
+ * tentava a segunda alternativa em cada posição, e milhares de tabulações seguidas de outro caractere custavam
+ * tempo quadrático (CodeQL, regex polinomial sobre dado não confiável).
  */
 export function normalizeSinkWriterIdentity(value: string): string {
-  const trimmed = value.replace(/^[\s`'"]+|[\s`'"]+$/g, '');
+  let start = 0;
+  let end = value.length;
+  while (start < end && SINK_WRITER_IDENTITY_WRAPPER.test(value.charAt(start))) start += 1;
+  while (end > start && SINK_WRITER_IDENTITY_WRAPPER.test(value.charAt(end - 1))) end -= 1;
+  const trimmed = value.slice(start, end);
   return trimmed.includes(':') ? trimmed : `serviceAccount:${trimmed}`;
 }
 
