@@ -165,15 +165,23 @@ cd infra/gcp/envs/verax        # ou infra/gcp/envs/homolog-sp
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-- **`envs/verax`:** `project_id` e `monitored_projects`, os mesmos da primeira subida. Se você já tinha o
-  `infra/gcp/terraform.tfvars`, mova o arquivo para `infra/gcp/envs/verax/terraform.tfvars`, sem mudar nada nele.
+- **`envs/verax`:** todas as variáveis da primeira subida, com os mesmos valores, porque o estado já tem o que elas
+  criaram: `project_id`, `monitored_projects`, `billing_account_id` e `monthly_budget` (o nó da Verax tem orçamento)
+  e, se a primeira subida mudou o padrão deles, `operators`, `region` e `zone`. Uma variável que falte vira mudança
+  no `plan`: sem o `billing_account_id`, o `plan` apaga o alerta de orçamento do projeto. Se você já tinha o
+  `infra/gcp/terraform.tfvars`, mova o arquivo para `infra/gcp/envs/verax/terraform.tfvars`, sem mudar nada nele. Se
+  a primeira subida foi por `-var`, sem arquivo, tire os valores do próprio estado depois do `init` (passo 4):
+  `terraform state list` mostra os projetos monitorados nos sinks (`google_logging_project_sink.security["PROJETO"]`)
+  e os operadores nos acessos da VM, e `terraform state show 'google_billing_budget.project[0]'` mostra a conta
+  (`billing_account`) e o valor (`units`).
 - **`envs/homolog-sp`:** `project_id` (projeto dos nós de clientes) e `images_project_id` (projeto da Verax, onde
   está o registro das imagens). O resto tem padrão e está explicado no arquivo e em `variables.tf`.
 
 O `terraform.tfvars` fica só na sua máquina: o `.gitignore` não deixa ele entrar no repositório.
 
 > **Orçamento:** para o alerta, preencha `billing_account_id` (em Faturamento, no console) e `monthly_budget`,
-> na moeda da conta. É preciso ser administrador da conta de faturamento; se não for, deixe vazio.
+> na moeda da conta. Num ambiente novo, é preciso ser administrador da conta de faturamento; se não for, deixe vazio.
+> No `envs/verax`, o orçamento já existe: preencha os dois com os valores do estado.
 
 ## Passo 4: `terraform init`
 
@@ -212,11 +220,13 @@ e mostrar 30 linhas `has moved to`, uma por recurso que passou para o módulo (p
 `# google_compute_instance.node has moved to module.node.google_compute_instance.node`). Os blocos `moved` de
 `envs/verax/main.tf` dizem ao Terraform que só o endereço mudou. Confira:
 
-1. **Nenhum `must be replaced`, `forces replacement` ou `will be destroyed`.** Se aparecer, pare: um bloco `moved`
-   ou um valor do perfil `lean` está errado, e o `apply` tentaria recriar algo. A VM tem proteção contra exclusão e
-   o disco tem `prevent_destroy`, mas não conte com isso para os outros recursos. A proteção da VM nem impede tudo:
-   ela só é conferida na hora de apagar a VM, e antes disso o `apply` já apagou os acessos dos operadores nela (veja
-   "Mudar ou desfazer"). Foi conferido com um `plan` só de leitura contra o estado real em 04/11/2026: 47 recursos,
+1. **Nenhum `must be replaced`, `forces replacement` ou `will be destroyed`.** Se aparecer, pare: falta uma variável
+   da primeira subida no `terraform.tfvars` (sem o `billing_account_id`, aparece
+   `google_billing_budget.project[0] will be destroyed`), ou um bloco `moved` ou um valor do perfil `lean` está
+   errado, e o `apply` apagaria ou recriaria algo. A VM tem proteção contra exclusão e o disco tem `prevent_destroy`,
+   mas não conte com isso para os outros recursos. A proteção da VM nem impede tudo: ela só é conferida na hora de
+   apagar a VM, e antes disso o `apply` já apagou os acessos dos operadores nela (veja "Mudar ou desfazer"). Foi
+   conferido com um `plan` só de leitura contra o estado real em 04/11/2026: 47 recursos (o orçamento é um deles),
    nenhuma mudança, 30 movidos.
 2. **Nenhum `will be updated in-place`** no nó da Verax. Uma mudança no lugar não derruba nada, mas este PR não
    pretende mudar nada nele.
@@ -249,10 +259,18 @@ Pub/Sub, os nomes dos segredos e, na homologação, o `nat_ip`. Para vê-las de 
 API e a GCP ainda não propagou. Espere 1 ou 2 minutos e rode o `plan` e o `apply` de novo. O Terraform continua de
 onde parou; o novo `plan` mostra só o que faltou. Foi o que aconteceu na primeira subida do nó da Verax.
 
-Se o mesmo erro vier no `plan`, esperar não resolve: nada ligou essa API ainda, e todo `plan` para no mesmo ponto.
-Ligue a API que a mensagem cita, no projeto que ela cita (`gcloud services enable NOME.googleapis.com --project
-PROJETO`), e rode o `plan` de novo. Na homologação, o `plan` de um projeto novo não depende de nenhuma API que só o
-`apply` liga.
+Se o mesmo erro vier no `plan`, a causa depende de algum `apply` já ter rodado no projeto:
+
+- **Depois de um `apply`, mesmo um que parou com esse erro:** é a mesma propagação. O `apply` ligou as APIs e as
+  gravou no estado; com elas lá, o `plan` volta a ler o projeto e os recursos que já existem, e a leitura esbarra na
+  API que ainda não propagou (a própria mensagem diz _wait a few minutes_). Confira com
+  `gcloud services list --enabled --project PROJETO` que a API está ligada, espere mais alguns minutos e rode o
+  `plan` de novo. Se ela não estiver na lista, ligue-a como no caso abaixo.
+- **Antes do primeiro `apply` no projeto:** esperar não resolve, porque nada ligou essa API ainda, e todo `plan` para
+  no mesmo ponto. Ligue a API que a mensagem cita, no projeto que ela cita
+  (`gcloud services enable NOME.googleapis.com --project PROJETO`), e rode o `plan` de novo. Na homologação, isso
+  não deve acontecer: antes do primeiro `apply`, o `plan` de um projeto novo não depende de nenhuma API que só o
+  `apply` liga.
 
 ## Passo 7: gravar os segredos
 

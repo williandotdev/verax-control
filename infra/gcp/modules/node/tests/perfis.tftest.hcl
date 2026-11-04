@@ -156,3 +156,34 @@ run "perfil_invalido" {
 
   expect_failures = [var.node_profile]
 }
+
+# O teste do alerta no GUIA (homologação) usa `stalled_subscription_hours = 1`, o mínimo, como o exemplo do
+# terraform.tfvars, e manda esperar pouco mais de 1 hora: o limite de 1 hora, mais os 5 minutos da condição.
+run "alerta_do_teste_do_guia" {
+  command = plan
+
+  variables {
+    node_profile               = "standard"
+    stalled_subscription_hours = 1
+  }
+
+  assert {
+    condition = (
+      google_monitoring_alert_policy.stalled_subscription[0].conditions[0].display_name == "Mensagem sem leitura há mais de 1 h" &&
+      google_monitoring_alert_policy.stalled_subscription[0].conditions[0].condition_threshold[0].threshold_value == 3600 &&
+      google_monitoring_alert_policy.stalled_subscription[0].conditions[0].condition_threshold[0].duration == "300s"
+    )
+    error_message = "Com 1 hora, o alerta não abre pouco mais de 1 hora depois da mensagem, como o GUIA diz."
+  }
+}
+
+run "alerta_abaixo_de_1_hora" {
+  command = plan
+
+  variables {
+    node_profile               = "standard"
+    stalled_subscription_hours = 0
+  }
+
+  expect_failures = [var.stalled_subscription_hours]
+}

@@ -63,9 +63,16 @@ run "apply_da_primeira_subida" {
 }
 
 # Com as APIs já ligadas, a leitura volta para o `plan`: o orçamento fica com o número do projeto, sem nada para depois
-# do `apply` e sem mudança a cada `plan`.
+# do `apply` e sem mudança a cada `plan`. Vale também depois de um `apply` que parou num 403 de API: tudo depende das
+# APIs, que já estão no estado, então o `plan` seguinte lê o projeto, e um 403 nele é propagação, que se resolve
+# esperando (GUIA, passo 6).
 run "plan_seguinte" {
   command = plan
+
+  assert {
+    condition     = data.google_project.this.number == "123456789012"
+    error_message = "Com as APIs no estado, o plan lê o projeto, e não deixa a leitura para o apply."
+  }
 
   assert {
     condition     = google_billing_budget.project[0].budget_filter[0].projects == toset(["projects/123456789012"])

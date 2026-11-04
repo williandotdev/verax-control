@@ -13,6 +13,7 @@ monitored_projects = ["meu-projeto-123"]
 # Quem pode entrar na VM por SSH, além do dono do projeto.
 # operators = ["user:voce@exemplo.com"]
 
-# Alerta de orçamento (opcional): conta de faturamento e valor mensal, na moeda dela.
+# Alerta de orçamento: conta de faturamento e valor mensal, na moeda dela. O nó da Verax já tem o orçamento no estado:
+# sem `billing_account_id`, o `plan` apaga o alerta (veja o GUIA, passo 3).
 # billing_account_id = "000000-000000-000000"
 # monthly_budget     = 50

@@ -24,7 +24,7 @@ images_project_id = "projeto-do-no-verax-123"
 # Quem pode entrar na VM por SSH, além do dono do projeto.
 # operators = ["user:voce@exemplo.com"]
 
-# Alerta de fila parada: e-mail que recebe (vazio: só no console) e as horas até alertar (2 para o teste do alerta).
+# Alerta de fila parada: e-mail que recebe (vazio: só no console) e as horas até alertar (1 para o teste do alerta).
 # alert_email                = "voce@exemplo.com"
 # stalled_subscription_hours = 24
 
