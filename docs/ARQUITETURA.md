@@ -69,8 +69,12 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 
 - **Configuração da AWS (Ativos e Postura):** o worker lê com a mesma chave, só pelas ações de leitura da política,
   com cerca de 18 checagens de postura nativas. Sem Prowler.
-- **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O worker lê a assinatura com
-  a identidade da VM e aplica regras próprias, como no nó da Verax.
+- **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O cliente cria o sink com o
+  comando pronto de Contas cloud e cola no painel a identidade dele; o Terraform do nó (`customer_projects`) deixa só
+  essa identidade publicar no tópico do projeto, sem nada no nível do projeto do nó (que isso basta é o que o teste
+  na homologação confirma: `infra/gcp/GUIA.md`, "Projeto de cliente: o sink é do cliente"). O worker lê a assinatura
+  com a identidade da VM e aplica regras próprias, como no nó da Verax (roteiro em
+  `docs/runbooks/onboarding-cliente.md`, seção 5).
 - **Cloudflare:** coletor nativo no worker (seção "Logs do Cloudflare").
 - **Retenção:** o índice do Wazuh guarda 30 dias (alertas a partir do nível 5, 1 shard). Os achados ficam no Postgres
   pelo prazo do plano (90 ou 365 dias), com os campos do evento; só o evento bruto do detalhe expira em 30 dias.
@@ -172,14 +176,15 @@ O cadastro de contas (Contas cloud) aceita três provedores. A GCP não usa cred
 de leitura cifrada no cofre do nó** (seção "Cofre de credenciais"). Um admin cola a credencial no painel; ela nunca
 volta pela API e nunca fica no cadastro da conta.
 
-| Provedor   | Identificador                            | Origem dos logs                          | Como o nó lê                                                                 |
-| ---------- | ---------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------------- |
-| AWS        | ID da conta (12 dígitos)                 | Buckets S3 (CloudTrail, GuardDuty e WAF) | Usuário IAM `verax-control-reader`, com chave restrita ao IP do nó, no cofre |
-| GCP        | ID do projeto                            | Assinatura do Pub/Sub ligada ao sink     | Identidade da VM do nó, sem chave                                            |
-| Cloudflare | ID da conta (32 caracteres hexadecimais) | Zonas (domínios) monitoradas             | Token só de leitura, no cofre                                                |
+| Provedor   | Identificador                            | Origem dos logs                                                                                                                   | Como o nó lê                                                                 |
+| ---------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| AWS        | ID da conta (12 dígitos)                 | Buckets S3 (CloudTrail, GuardDuty e WAF)                                                                                          | Usuário IAM `verax-control-reader`, com chave restrita ao IP do nó, no cofre |
+| GCP        | ID do projeto                            | Assinatura do Pub/Sub, no projeto do nó, ligada ao sink que o cliente cria (a identidade do sink fica no cadastro; não é segredo) | Identidade da VM do nó, sem chave                                            |
+| Cloudflare | ID da conta (32 caracteres hexadecimais) | Zonas (domínios) monitoradas                                                                                                      | Token só de leitura, no cofre                                                |
 
-Cada origem de log (bucket, assinatura ou zona) pertence a um só cliente, como já valia para os buckets: é o que
-permite atribuir cada alerta ao cliente certo.
+Cada origem de log (bucket, assinatura, identidade do sink ou zona) pertence a um só cliente, como já valia para os
+buckets: é o que permite atribuir cada alerta ao cliente certo. A identidade do sink, além disso, é de um projeto só,
+mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
 
 ## Cofre de credenciais
 
@@ -356,7 +361,7 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
 
 1. **Fundação:** esta revisão; plano do nó e medidor de uso; módulo Terraform do nó com os perfis e o IP reservado do
    NAT, mais o nó de homologação em São Paulo; conexão de projeto GCP de cliente. O agendador do worker, o cursor dos
-   coletores e o estado da conexão já estão feitos.
+   coletores, o estado da conexão e a conexão de projeto GCP de cliente já estão feitos.
 2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado.
 3. **Cofre e AWS:** cofre de credenciais; template do usuário IAM; chave no painel; entrega da chave ao Wazuh, com
    recarga sem parar o painel; checagem da conexão, das fontes e da idade da chave; medidor da ingestão; regras

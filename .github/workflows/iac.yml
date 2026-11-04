@@ -107,9 +107,11 @@ jobs:
       - name: shellcheck
         run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
       - name: Arquivos de ambiente do nó (start.sh render com o gcloud simulado)
-        # O api.env byte a byte: sem TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai como antes (e o cofre do
-        # Turnstile nem é lido); com a chave do site, a secreta vem do cofre (vazio: sobe sem o desafio e avisa; sem
-        # permissão ou com quebra de linha: a partida para). Roda sem root, sem Docker e sem a GCP.
+        # Os cenários de tests/start-test.sh, com o api.env conferido byte a byte. O tópico do sink de projeto de
+        # cliente só vai para a API com o projeto e o prefixo do node.conf no formato do módulo (fora dele, a API sobe
+        # sem o tópico). Sem TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai como antes (e o cofre do Turnstile nem
+        # é lido); com a chave do site, a secreta vem do cofre (vazio: sobe sem o desafio e avisa; sem permissão ou
+        # com quebra de linha: a partida para). Roda sem root, sem Docker e sem a GCP.
         run: bash infra/node/tests/start-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,

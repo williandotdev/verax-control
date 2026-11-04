@@ -14,6 +14,7 @@ module "node" {
   disk_gb            = var.disk_gb
   subnet_cidr        = var.subnet_cidr
   monitored_projects = var.monitored_projects
+  customer_projects  = var.customer_projects
   operators          = var.operators
 
   alert_email                = var.alert_email

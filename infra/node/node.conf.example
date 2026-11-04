@@ -1,6 +1,8 @@
 # Configuração do nó (/etc/verax/node.conf). Nada aqui é segredo: as senhas ficam no Secret Manager (de fora) ou são
 # geradas na VM pelo install.sh (de dentro). Exemplo com valores fictícios; o arquivo real fica só na VM.
 VERAX_GCP_PROJECT=projeto-do-no
+# Prefixo dos cofres: o name_prefix do ambiente do Terraform (infra/gcp/envs/<ambiente>). Com ele e com o projeto, o
+# start.sh monta o tópico do sink de projeto de cliente que o painel mostra; os dois seguem o formato do módulo.
 VERAX_SECRET_PREFIX=verax-node
 IMAGES_REPOSITORY=us-east1-docker.pkg.dev/projeto-do-no/verax-control
 WEB_ORIGIN=https://cliente.control.exemplo.com.br
