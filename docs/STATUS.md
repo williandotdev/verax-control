@@ -3088,6 +3088,12 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - **Fora deste PR (proposta, SH-02):** cópia do manifesto no bucket de releases (CP-09) e a checagem de migration `contract` no CI;
   - **Condição do `envs/control-plane`:** o provedor de lá compara `assertion.sub` com `repo:williandotdev/verax-control:environment:control-plane`, mas os environments `imagens` e `painel` usam o subject imutável (`dono@id/repo@id`). Se o repositório emite o subject imutável, aquele provedor recusaria o token. Conferir antes do `apply` do plano de controle (fora deste escopo).
 
+## Correção: federação do plano de controle com o `sub` imutável do GitHub ⚠️ altera `infra/`
+
+- **Problema:** `infra/gcp/envs/control-plane/identities.tf` comparava o `sub` do token OIDC do GitHub com `repo:williandotdev/verax-control:environment:control-plane`, mas o repositório usa o `sub` imutável (`use_immutable_subject`: `repo:williandotdev@92734416/verax-control@1441377752:environment:...`), como o `envs/verax` já trata (`github_oidc_repository`). Aplicado assim, o provedor recusaria todo token e o workflow do plano de controle não implantaria. Achado na revisão do SH-02 (#65), cujo pool novo já usa o formato imutável. O ambiente ainda não foi aplicado: nada no ar mudou.
+- **Correção:** `local.github_subject` monta o `sub` com o nome e os IDs fixos do dono e do repositório (variáveis que o ambiente já tinha), usado na condição do provedor e no membro do `workloadIdentityUser` do `cp-deployer`. Os testes de identidade passam a exigir o formato imutável.
+- **Testes:** `terraform fmt`, `validate` e `terraform test` em `envs/control-plane` (25 casos).
+
 ## Fase 2, PR-11': token do Cloudflare no cofre e tela de conexão ⚠️ altera credenciais (`credentials/`, `common/logger`) e `infra/`
 
 - **Pedido:** o token só de leitura do Cloudflare colado no painel, conferido e guardado no cofre do nó (plano revisado da fase 2, Bloco D, PR-11', com R13, R14, R19 e a D-4). Este PR faz o **recebimento genérico** que o PR-V3 faria (rota, permissão, limite, auditoria, contrato), com `cloudflare_api_token` como o único tipo aceito. Outro tipo de credencial entra como mais uma opção da mesma união, sem mudar a rota nem a resposta.
