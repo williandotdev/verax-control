@@ -445,10 +445,13 @@ Os dois valores de quem entra no papel que não mudam de cliente para cliente:
   `Audience`, o valor que o nó pede ao Google ao emitir o token (no PR-V4', `AWS_WEB_IDENTITY_AUDIENCE` no
   `node.conf`) e o que o painel mostra. Mudá-lo exige atualizar a pilha de todos os clientes.
 - **O ID único da conta de serviço do nó** sai da saída `service_account_unique_id` do módulo
-  `infra/gcp/modules/node` (na homologação, `terraform output node_service_account_unique_id`). A conta tem
-  `prevent_destroy`: recriada, ela ganharia outro ID, e o papel de todo cliente daquele nó deixaria de aceitá-la. Uma
-  conta apagada por engano volta com o mesmo ID em até 30 dias (`gcloud iam service-accounts undelete`); depois disso,
-  cada cliente atualiza a pilha com o ID novo.
+  `infra/gcp/modules/node` (na homologação, `terraform output node_service_account_unique_id`). Recriada, a conta
+  ganha outro ID, e o papel de todo cliente daquele nó deixa de aceitá-la. Ela não tem `prevent_destroy` (a
+  homologação é destruída entre as janelas de teste, e a exclusão do cliente destrói tudo): o que a recriaria sai só
+  do `name_prefix` e do `project_id`, um teste do módulo confere que as mudanças de rotina não a recriam, e o executor
+  do Terraform do plano de controle (CP-07) vai recusar um plano que a recrie ou apague fora da exclusão do cliente.
+  Uma conta apagada por engano volta com o mesmo ID em até 30 dias (`gcloud iam service-accounts undelete`); depois
+  disso, cada cliente atualiza a pilha com o ID novo.
 
 O checkov não avalia as duas políticas gerenciadas do papel de leitura, porque elas têm declarações condicionais
 (`Fn::If`): quem as confere são os testes e o cfn-guard. Os recursos opcionais (trilha e export) só entram na

@@ -59,8 +59,13 @@ O perfil (`node_profile` no Terraform, `NODE_PROFILE` no `node.conf`) define a m
 | Wazuh             | não                                   | sim, a partir do PR-W1                                   |
 
 O IP fixo existe porque o papel de leitura na AWS do cliente só aceita o nó a partir dele: se ele mudasse, a coleta
-pararia. Pelo mesmo motivo, a conta de serviço do nó tem `prevent_destroy` nos dois perfis: o papel confia no ID único
-dela (saída `service_account_unique_id` do módulo), e uma conta recriada ganha outro ID.
+pararia. A conta de serviço do nó pesa do mesmo jeito: o papel confia no ID único dela (saída
+`service_account_unique_id` do módulo), e uma conta recriada, mesmo com o mesmo nome, ganha outro ID, que o papel de
+nenhum cliente aceita. Ela não tem `prevent_destroy`, porque a homologação é destruída entre as janelas de teste e a
+exclusão do cliente destrói tudo; o que a recriaria (`account_id` e `project`) sai só do `name_prefix` e do
+`project_id`, e o teste `tests/conta_de_servico.tftest.hcl` confere que as mudanças de rotina não a recriam. **Num nó
+de cliente, um `plan` que recrie ou apague `module.node.google_service_account.node` fora da exclusão do cliente é
+erro: pare.**
 
 Todo nó criado pelo módulo, nos dois perfis, também tem:
 
@@ -108,7 +113,9 @@ para todo nó criado pelo módulo, mais:
 - o **IP de saída reservado** (`verax-homolog-nat-ip`), com o NAT em modo manual. Ele aparece em
   `terraform output nat_ip` e vai no `node.conf` como `NODE_EGRESS_IPS=<ip>/32`;
 - a saída **`node_service_account_unique_id`**, o ID único da conta de serviço do nó: com o `nat_ip`, é o que o
-  papel de leitura sem chave pede na AWS de teste (`infra/cloudformation/README.md`);
+  papel de leitura sem chave pede na AWS de teste (`infra/cloudformation/README.md`). A cada janela de teste com
+  `apply` depois de um `destroy`, a conta é nova e o ID muda: atualize o parâmetro `NodeServiceAccountId` da pilha na
+  AWS de teste antes de testar (o IP do NAT também é novo);
 - a **leitura do registro de imagens** do projeto da Verax, só para a conta da VM de homologação.
 
 Não há registro de imagens nem publicação no projeto dos nós: a VM baixa as mesmas imagens do registro da Verax.
@@ -568,9 +575,9 @@ expirarem.
 - **Desfazer tudo:** existe atrito de propósito, para nada sumir por engano.
   1. A VM tem proteção contra exclusão: acrescente `deletion_protection = false` na chamada do módulo, no `main.tf`
      do ambiente, e faça o `apply`.
-  2. O disco, a conta de serviço e o IP fixo do NAT têm `prevent_destroy`: remova esse bloco `lifecycle` em
-     `modules/node/node.tf` e `modules/node/network.tf` só na sua cópia, para essa vez. Num nó de cliente, apagar a
-     conta de serviço desliga a AWS do cliente: o papel de leitura confia no ID único dela, e uma conta nova tem outro.
+  2. O disco e o IP fixo do NAT têm `prevent_destroy`: remova esse bloco `lifecycle` em `modules/node/node.tf` e
+     `modules/node/network.tf` só na sua cópia, para essa vez. A conta de serviço não tem, mas num nó de cliente
+     apagá-la desliga a AWS do cliente: o papel de leitura confia no ID único dela, e uma conta nova tem outro.
   3. O bucket de backups só é apagado vazio.
   4. Depois disso, `terraform destroy` mostra o que vai apagar e pede confirmação. As APIs continuam ligadas e o
      bucket do estado fica.
