@@ -12,6 +12,7 @@
     "src/build-guards.ts",
     "playwright.config.ts",
     "playwright.fullstack.config.ts",
+    "playwright.sites.config.ts",
     "e2e/**/*.ts"
   ]
 }
