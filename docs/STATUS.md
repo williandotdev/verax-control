@@ -1892,3 +1892,40 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o `.env.example` não foi alterado; fora de produção o padrão é `interno`, então o ambiente local não muda.
 - **O que testar manualmente:** acrescentar `PLAN=interno` ao `node.conf` do nó da Verax antes do próximo deploy; depois do deploy, conferir no journal que a API e o worker subiram (o log do worker mostra `plan`) e rodar o bootstrap uma vez para o cadastro do cliente Verax mostrar "Interno".
 - **Riscos:** a reentrega do Pub/Sub conta duas vezes (documentado como "uso justo"); se a gravação do uso falhar depois do ack, aquele lote fica sem medir (a favor do cliente) e a assinatura conta como falha interna na execução.
+
+## Fase 2, PR-W2: leitura do indexer no nó e chave estável do achado
+
+- **Pedido:** a API e o worker leem o indexer do Wazuh do próprio nó de cliente (perfil `standard`), e o achado do Wazuh ganha uma chave que não duplica quando o mesmo evento volta ao indexer (plano revisado da fase 2, PR-W2). O código não depende do PR-W1; o aceite no nó, sim.
+- **Modo nó do indexer** (`apps/api/src/indexer/indexer.config.ts` e `indexer-secrets.ts`):
+  - `INDEXER_AUTH` escolhe o modo, e os dois nunca se misturam: `aws` (Secrets Manager e SSM, como antes) recusa `INDEXER_USERNAME`, `INDEXER_PASSWORD` e `INDEXER_CA_FILE`; `node` exige essas três e recusa `INDEXER_CREDENTIALS_SECRET_ARN` e `INDEXER_CA_PARAMETER`. A recusa vale em todo ambiente, não só em produção;
+  - sem `INDEXER_AUTH`: em produção, `aws` (a implantação na AWS não muda); fora dela, `aws` se houver variável da AWS, senão `node` (o ambiente local não muda);
+  - em produção, a senha do modo nó precisa de 16 caracteres ou mais, o mesmo piso do segredo do Secrets Manager. As mensagens citam só o nome da variável;
+  - a CA do modo nó (o arquivo do volume público dos certificados, montado só leitura) é lida a cada conexão nova, e não na partida: na primeira subida do nó, a API e o worker sobem antes de o Wazuh gerar os certificados. Até lá, a tarefa `wazuh` falha e tenta de novo no intervalo, e o detalhe do achado sai sem o evento bruto;
+  - TLS com `rejectUnauthorized: true`, timeout e renovação da credencial no 401 seguem iguais (`indexer.client.ts` não mudou). `EnvIndexerSecrets` virou `NodeIndexerSecrets`.
+- **Fontes** (`infra/node/node.conf.example`, revisar linha a linha): o comentário documenta `SYNC_SOURCES=gcp,wazuh` no nó de cliente e `gcp` no nó da Verax (`lean`), sem nenhuma variável do indexer. O valor do exemplo continua `gcp`, e o `start.sh` não mudou: o nó da Verax segue igual. Escrever `INDEXER_*` no `api.env` e no `worker.env` fica para o PR-W1, que gera a senha e o volume da CA.
+- **Chave do achado** (`apps/api/src/alerts/wazuh-alert.ts` e `finding-draft.ts`): `sourceEventId` passa de `alert.id` a `wazuh/<conta>/<tipo>:<id>:<regra>`:
+  - o id é o do evento na AWS, extraído com zod por fonte: `eventID` do CloudTrail, `id` do achado do GuardDuty e `httpRequest.requestId` do WAF (`nativeId`, uma classe de caracteres só, até 128). Ausente ou fora do formato, vale o `id` do alerta, com o tipo `alert`;
+  - a conta é a do cadastro (T5.2). A chave é única no banco inteiro, e cada conta é de um cliente só: um id repetido de propósito no bucket de B nunca apaga, como duplicado, o achado de A;
+  - a regra dá chave própria à correlação (80255, 80443): o evento que fecha a rajada, relido sem os anteriores, casa só com a regra simples, e cada regra vira o próprio achado;
+  - id longo demais para a coluna (128) entra pelo resumo SHA-256, sempre o mesmo;
+  - a fila sem dono continua pelo `id` do alerta.
+- **Evento bruto do detalhe (desvio do plano):** o detalhe buscava o evento no indexer pelo `sourceEventId`, que era o `id` do alerta. Com a chave nova, essa busca deixaria de achar o evento. O achado ganha a coluna `rawEventId`, com o `id` do alerta da primeira leitura, e o detalhe busca por ela. Achado sem a coluna (GCP) nem consulta o indexer. A outra saída, buscar pelo id nativo, deixaria um id forjado no bucket de um cliente trazer o evento de outro.
+  - **Migration** `20261104110000_finding_raw_event_id`: só a coluna, nula. Nenhum achado do Wazuh existe em produção, então nada é migrado.
+- **Dependências:** nenhuma.
+- **Testes:**
+  - configuração do indexer (8): modo nó em produção, cada variável obrigatória do modo nó, os dois modos misturados (em produção e fora dela), produção sem `INDEXER_AUTH=node` com credencial no ambiente, modo inválido e senha curta sem o valor na mensagem, CA lida na conexão (ausente, inválida, depois válida);
+  - cliente do indexer no modo nó (3): leitura com a credencial do ambiente e a CA do arquivo pelo HTTPS local, recusa de certificado de outra CA e **log-capture**: senha recusada, erro 500 e CA ausente, pelo agendador do worker, vão para o log só como `IndexerError`, sem a senha, sem `Basic ` e sem o base64 da credencial;
+  - alerta (2): id nativo de cada fonte (inclusive o do CloudFront, em base64) e ausente ou fora do formato;
+  - chave (6): formato por fonte, mesmo evento com outro `id` de alerta, GuardDuty atualizado, correlação com chave própria, contas diferentes, sem id nativo e id longo;
+  - sync com banco real (5): mesmo evento relido numa execução posterior não duplica nem desfaz a triagem, GuardDuty atualizado três vezes vira um achado, correlação e evento simples viram dois achados e a correlação relida não duplica, **A/B** (o mesmo id de evento no bucket de B chega antes e não apaga o achado de A, e cada um fica no próprio cliente), chave pelo `id` do alerta sem id nativo;
+  - detalhe (1): achado da GCP sai sem evento bruto e não consulta o indexer;
+  - os testes do sync e do detalhe foram ajustados para achar o achado pela chave nova; as fixtures ganharam o id nativo de cada fonte.
+  - Resultado: API 66 arquivos e 863 testes; lint, tipos e Prettier limpos. O compartilhado e o painel não mudaram.
+- **Definição de pronto:** aceite do código ✔ (o aceite no nó depende do PR-W1) · testes, com A/B e log-capture ✔ · lint e tipos ✔ · nenhuma dependência ✔ · regras de segurança ✔ (TLS validado, nenhum segredo em log ou mensagem, entrada do indexer validada com zod, dados fictícios).
+- **O que testar manualmente:** nada no nó da Verax (`lean`), que segue com `SYNC_SOURCES=gcp`. Com o PR-W1 no nó de homologação: `INDEXER_AUTH=node` no ambiente da API e do worker, a tarefa `wazuh` concluindo no journal e o detalhe de um achado da AWS com o evento bruto.
+- **Riscos e pendências:**
+  - o `.env.example` não foi alterado (o agente não lê arquivos `.env*`). Sem `INDEXER_AUTH`, o ambiente local continua igual; só um `.env` com variáveis dos dois modos juntas passa a ser recusado;
+  - a chave nova deduplica pelo primeiro que chega: quem escreve no bucket de log do cliente consegue, com um id previsto, fazer um evento forjado ocupar a chave do verdadeiro (mesma conta e mesma regra). Os ids da AWS não são previsíveis, e quem escreve no bucket já consegue apagar logs;
+  - o achado do GuardDuty atualizado guarda os campos e o evento bruto da primeira versão. Uma atualização que mude a severidade a ponto de trocar a regra do Wazuh vira outro achado (a escalada aparece);
+  - com a retenção de 30 dias do indexer (D-6), o evento bruto do detalhe é o da primeira leitura e some com ele, mesmo que versões mais novas do mesmo evento sigam no índice;
+  - a fila sem dono continua pelo `id` do alerta: uma releitura repete o alerta na fila.
