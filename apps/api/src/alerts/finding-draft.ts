@@ -73,6 +73,10 @@ const MAX_EVENT_ID = 128;
  * - O id é o do evento na própria AWS (`nativeId`), com o tipo da fonte (`cloudtrail`, `guardduty`, `waf`). O mesmo
  *   evento lido de novo (snapshot restaurado, `--reparse`, achado do GuardDuty atualizado) ganha outro `id` de alerta,
  *   mas cai na mesma chave e não duplica. Sem id nativo, vale o `id` do alerta, com o tipo `alert`.
+ *   O `nativeId` já separa o que a AWS repete em eventos diferentes: cada IP da sondagem de porta do GuardDuty e
+ *   cada requisição do WAF (horário e IP, e não só o `requestId`, que atrás de um ALB o cliente escolhe).
+ * - O achado do GuardDuty atualizado não reabre nada: se o primeiro já foi triado (resolvido ou legítimo), a
+ *   atividade nova cai como duplicada e não aparece no painel (risco registrado no STATUS, à espera de decisão).
  * - A conta é a do cadastro, decidida pela T5.2, e cada conta é de um cliente só. A chave é única no banco inteiro:
  *   sem a conta, um id repetido de propósito no bucket de um cliente apagaria, como duplicado, o achado de outro.
  * - A regra separa a correlação (rajada de logins com falha, de bloqueios no WAF) do evento simples: o evento que

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeTimestamp, parseWazuhAlert, type WazuhAwsAlert } from '../../src/alerts/wazuh-alert.js';
-import { cloudTrailAlert, guardDutyAlert, wafAlert, withAws } from './fixtures.js';
+import { cloudTrailAlert, guardDutyAlert, portProbeAlerts, wafAlert, withAws } from './fixtures.js';
 
 function parsed(document: Record<string, unknown>): WazuhAwsAlert {
   const result = parseWazuhAlert(document);
@@ -93,19 +93,73 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     });
   });
 
-  it('ID do evento na AWS de cada fonte: eventID, id do achado e requestId (fase 2, PR-W2)', () => {
+  it('ID do evento na AWS de cada fonte: eventID, id do achado e, no WAF, horário, IP e requestId (fase 2, PR-W2)', () => {
     const eventId = '7a3c9e1f-0b2d-4c6e-8f10-2a4b6c8d0e1f';
     const findingId = '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0';
     const requestId = '1-6720a0b0-0a1b2c3d4e5f6a7b8c9d0e1f';
     expect(parsed(cloudTrailAlert({ eventId })).nativeId).toBe(eventId);
     expect(parsed(guardDutyAlert({ findingId })).nativeId).toBe(findingId);
-    expect(parsed(wafAlert({ requestId })).nativeId).toBe(requestId);
-    // ID de requisição do CloudFront, em base64.
+    expect(parsed(wafAlert({ requestId })).nativeId).toBe(`1793527200000/203.0.113.50/${requestId}`);
+    // ID de requisição do CloudFront, em base64, e IP do cliente em IPv6.
     const cloudFront = 'kWOMOnhtc0bYcI9eH1Q4ilGWHbACUtz3FrEdZ6uWoPHqDGMkMt1Wyg==';
-    expect(parsed(wafAlert({ requestId: cloudFront })).nativeId).toBe(cloudFront);
+    expect(parsed(wafAlert({ requestId: cloudFront, clientIp: '2001:db8::7' })).nativeId).toBe(
+      `1793527200000/2001:db8::7/${cloudFront}`,
+    );
+    // O horário em texto dá o mesmo id.
+    expect(parsed(wafAlert({ requestId, loggedAt: '1793527200000' })).nativeId).toBe(
+      parsed(wafAlert({ requestId })).nativeId,
+    );
     // O id do alerta muda a cada leitura; o da AWS, não.
     const again = { ...cloudTrailAlert({ eventId }), id: '1793600000.000099' };
     expect(parsed(again).nativeId).toBe(eventId);
+  });
+
+  it('WAF: o requestId repetido pelo cliente (trace ID do ALB) não junta requisições diferentes', () => {
+    // Quem ataca manda sempre o mesmo `X-Amzn-Trace-Id: Root=...`, e o WAF atrás do ALB o grava como requestId.
+    const root = '1-6720a0b0-000000000000000000000000';
+    const first = parsed(wafAlert({ requestId: root, loggedAt: 1793527200000 })).nativeId;
+    const later = parsed(wafAlert({ requestId: root, loggedAt: 1793527260123 })).nativeId;
+    const otherIp = parsed(
+      wafAlert({ requestId: root, loggedAt: 1793527200000, clientIp: '203.0.113.51' }),
+    ).nativeId;
+    expect(new Set([first, later, otherIp]).size).toBe(3);
+    // A mesma requisição relida continua com o mesmo id.
+    expect(parsed(wafAlert({ requestId: root, loggedAt: 1793527200000 })).nativeId).toBe(first);
+  });
+
+  it('GuardDuty: cada item da sondagem de porta, que o wodle separa com o mesmo id, tem id próprio', () => {
+    const findingId = '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0';
+    const alerts = portProbeAlerts(
+      [
+        { ip: '198.51.100.20', port: 22 },
+        { ip: '198.51.100.21', port: 22 },
+        { ip: '198.51.100.20', port: 3389 },
+      ],
+      { findingId },
+    ).map(parsed);
+    expect(alerts.map((alert) => alert.nativeId)).toEqual([
+      `${findingId}/198.51.100.20:22`,
+      `${findingId}/198.51.100.21:22`,
+      `${findingId}/198.51.100.20:3389`,
+    ]);
+    expect(alerts.map((alert) => alert.actor.ip)).toEqual([
+      '198.51.100.20',
+      '198.51.100.21',
+      '198.51.100.20',
+    ]);
+    // A porta em texto dá o mesmo id.
+    const probe = (portProbeDetails: unknown) =>
+      parsed(
+        guardDutyAlert({
+          findingId,
+          action: { actionType: 'PORT_PROBE', portProbeAction: { blocked: false, portProbeDetails } },
+        }),
+      ).nativeId;
+    expect(
+      probe({ localPortDetails: { port: '22' }, remoteIpDetails: { ipAddressV4: '198.51.100.20' } }),
+    ).toBe(`${findingId}/198.51.100.20:22`);
+    // Sem `portProbeDetails`, vale só o id do achado.
+    expect(probe(undefined)).toBe(findingId);
   });
 
   it('sem ID da AWS, ou fora do formato, o alerta segue válido, sem id nativo', () => {
@@ -117,6 +171,30 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     expect(parsed(withAws(guardDutyAlert(), { id: ['lista'] })).nativeId).toBeUndefined();
     // O id de outra fonte não vale: no CloudTrail, só o eventID.
     expect(parsed(withAws(cloudTrailAlert({ eventId: null }), { id: 'abc' })).nativeId).toBeUndefined();
+    // WAF sem horário ou sem IP do cliente válido: o requestId sozinho não basta.
+    for (const loggedAt of [null, -1, 1.5, '17935x', '']) {
+      expect(parsed(wafAlert({ loggedAt })).nativeId).toBeUndefined();
+    }
+    for (const clientIp of ['fe80::1%eth0', 'não é ip', '999.1.1.1']) {
+      expect(parsed(wafAlert({ clientIp })).nativeId).toBeUndefined();
+    }
+    // Sondagem de porta com item fora do formato (sem IPv4, porta inválida, lista): nunca junta dois IPs.
+    const probe = (portProbeDetails: unknown) =>
+      parsed(guardDutyAlert({ action: { actionType: 'PORT_PROBE', portProbeAction: { portProbeDetails } } }))
+        .nativeId;
+    const remote = { ipAddressV4: '198.51.100.20' };
+    for (const portProbeDetails of [
+      { localPortDetails: { port: 22 }, remoteIpDetails: { ipAddressV6: '2001:db8::1' } },
+      { localPortDetails: { port: 70000 }, remoteIpDetails: remote },
+      { remoteIpDetails: remote },
+      [
+        { localPortDetails: { port: 22 }, remoteIpDetails: remote },
+        { localPortDetails: { port: 22 }, remoteIpDetails: { ipAddressV4: '198.51.100.21' } },
+      ],
+      'texto',
+    ]) {
+      expect(probe(portProbeDetails)).toBeUndefined();
+    }
   });
 
   it('não guarda nada além do que usa: evento bruto, correlações anteriores e cabeçalhos ficam de fora', () => {

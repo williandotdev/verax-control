@@ -10,7 +10,7 @@ import { DEFAULT_SYNC_SETTINGS } from '../src/alerts/sync-query.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { AlertSearch } from '../src/indexer/alert-queries.js';
 import type { AlertHit } from '../src/indexer/indexer.client.js';
-import { cloudTrailAlert, guardDutyAlert, withAws } from './alerts/fixtures.js';
+import { cloudTrailAlert, guardDutyAlert, portProbeAlerts, wafAlert, withAws } from './alerts/fixtures.js';
 import { createTenant, createUser } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
 
@@ -83,6 +83,7 @@ describe('sync de alertas para achados (T5.3)', () => {
   const trailA = `trilha-a-${randomInt(1e6, 9e6)}`;
   const trailB = `trilha-b-${randomInt(1e6, 9e6)}`;
   const guardDutyA = `guardduty-a-${randomInt(1e6, 9e6)}`;
+  const wafA = `aws-waf-logs-a-${randomInt(1e6, 9e6)}`;
 
   /** Alerta do CloudTrail da conta A, no bucket dela, `minutesAgo` minutos atrás. */
   function trailAlertA(minutesAgo: number, options: Parameters<typeof cloudTrailAlert>[0] = {}) {
@@ -121,6 +122,7 @@ describe('sync de alertas para achados (T5.3)', () => {
         externalId: 'x'.repeat(43),
         cloudtrailBucket: trailA,
         guarddutyBucket: guardDutyA,
+        wafBucket: wafA,
       },
     });
     await prisma.cloudAccount.create({
@@ -656,6 +658,121 @@ describe('sync de alertas para achados (T5.3)', () => {
           where: { sourceEventId: `wazuh/${accountA}/guardduty:${findingId}:80303` },
         }),
       ).toBe(1);
+    });
+
+    it('a atividade nova num achado do GuardDuty já triado não reabre nada (risco registrado no STATUS)', async () => {
+      const findingId = randomUUID().replace(/-/g, '');
+      const version = (count: number, minutesAgo: number) => ({
+        ...guardDutyAlert({
+          account: accountA,
+          bucket: guardDutyA,
+          findingId,
+          count,
+          updatedAt: new Date(Date.now() - minutesAgo * MINUTE).toISOString(),
+        }),
+        id: newAlertId(),
+        timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
+      });
+      const first = version(1, 20);
+      await syncFor(new FakeIndexer([first])).runOnce();
+      await prisma.finding.update({ where: byKey(first), data: { status: 'resolved' } });
+
+      // O GuardDuty soma a atividade nova ao mesmo achado: a chave é a mesma, e a versão nova cai como duplicada.
+      const report = await syncFor(new FakeIndexer([version(7, 1)])).runOnce();
+      expect(report).toMatchObject({ read: 1, created: 0, duplicates: 1 });
+      expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toMatchObject({
+        status: 'resolved',
+        rawEventId: first.id,
+      });
+    });
+
+    it('a sondagem de porta que o wodle separa por IP vira um achado por IP, cada um com a própria exceção', async () => {
+      const findingId = randomUUID().replace(/-/g, '');
+      const instanceId = `i-0${randomInt(1e6, 9e6)}abcdef0`;
+      const [allowed, first, second] = [1, 2, 3].map(
+        () => `100.67.${randomInt(0, 255)}.${randomInt(1, 254)}`,
+      ) as [string, string, string];
+      // O primeiro item é de um IP com exceção (varredura autorizada): ele não pode levar os outros junto.
+      const exception = await prisma.alertException.create({
+        data: {
+          tenantId: tenantA,
+          ruleId: '80305',
+          field: 'ip',
+          value: allowed,
+          reason: 'Varredura autorizada',
+          createdById: creatorA,
+        },
+      });
+      const docs = portProbeAlerts(
+        [
+          { ip: allowed, port: 22 },
+          { ip: first, port: 22 },
+          { ip: second, port: 3389 },
+        ],
+        { account: accountA, bucket: guardDutyA, findingId, instanceId },
+      ).map((doc, index) => ({
+        ...doc,
+        id: newAlertId(),
+        timestamp: wazuhTime(new Date(Date.now() - (5 - index) * MINUTE)),
+      }));
+      // Releitura do mesmo item (outro id de alerta) não duplica.
+      const again = { ...docs[1]!, id: newAlertId() };
+      const report = await syncFor(new FakeIndexer([...docs, again])).runOnce();
+      expect(report).toMatchObject({ read: 4, created: 3, excepted: 1, duplicates: 1 });
+
+      const findings = await prisma.finding.findMany({
+        where: { tenantId: tenantA, sourceEventId: { contains: findingId } },
+        select: { sourceEventId: true, sourceIp: true, status: true, exceptionId: true },
+      });
+      const bySourceIp = new Map(findings.map((finding) => [finding.sourceIp, finding]));
+      expect(findings).toHaveLength(3);
+      expect(bySourceIp.get(allowed)).toMatchObject({
+        sourceEventId: `wazuh/${accountA}/guardduty:${findingId}/${allowed}:22:80305`,
+        status: 'legitimate',
+        exceptionId: exception.id,
+      });
+      expect(bySourceIp.get(first)).toMatchObject({ status: 'new', exceptionId: null });
+      expect(bySourceIp.get(second)).toMatchObject({
+        sourceEventId: `wazuh/${accountA}/guardduty:${findingId}/${second}:3389:80305`,
+        status: 'new',
+      });
+      await prisma.alertException.delete({ where: { id: exception.id } });
+    });
+
+    it('WAF atrás do ALB: o mesmo trace ID em rajadas diferentes vira um achado por rajada', async () => {
+      // Quem ataca fixa o `X-Amzn-Trace-Id: Root=...`; o WAF grava esse Root como requestId em toda requisição.
+      const root = `1-6720a0b0-${randomUUID().replace(/-/g, '').slice(0, 24)}`;
+      const clientIp = `100.68.${randomInt(0, 255)}.${randomInt(1, 254)}`;
+      const webaclId = `arn:aws:wafv2:sa-east-1:${accountA}:regional/webacl/painel-${randomInt(1e6, 9e6)}/0000`;
+      const burst = (minutesAgo: number) => {
+        const at = new Date(Date.now() - minutesAgo * MINUTE);
+        return {
+          ...wafAlert({
+            account: accountA,
+            bucket: wafA,
+            webaclId,
+            clientIp,
+            requestId: root,
+            loggedAt: at.getTime(),
+          }),
+          id: newAlertId(),
+          timestamp: wazuhTime(at),
+        };
+      };
+      const first = burst(30);
+      const later = burst(3);
+      // A primeira rajada relida (snapshot, `--reparse`) continua sem duplicar.
+      const reread = { ...first, id: newAlertId() };
+      const report = await syncFor(new FakeIndexer([first, later, reread])).runOnce();
+      expect(report).toMatchObject({ read: 3, created: 2, duplicates: 1 });
+      expect(
+        await prisma.finding.count({ where: { tenantId: tenantA, sourceEventId: { contains: root } } }),
+      ).toBe(2);
+      expect(await prisma.finding.findUniqueOrThrow({ where: byKey(later) })).toMatchObject({
+        logSource: 'waf',
+        sourceIp: clientIp,
+        rawEventId: later.id,
+      });
     });
 
     it('a correlação ganha chave própria, e relida também não duplica', async () => {

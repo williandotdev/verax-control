@@ -21,7 +21,10 @@ export interface WazuhAwsAlert {
   /** ID do alerta no Wazuh. Muda a cada leitura do mesmo evento; o detalhe do achado busca o evento bruto por ele. */
   id: string;
   /**
-   * ID do evento na própria AWS: `eventID` do CloudTrail, `id` do achado do GuardDuty, `httpRequest.requestId` do WAF.
+   * Identidade do evento na própria AWS, montada só com campos do log original (`NATIVE_ID`):
+   * - CloudTrail: `eventID`;
+   * - GuardDuty: `id` do achado e, na sondagem de porta, `/<IP>:<porta>` de quem sondou;
+   * - WAF: `<timestamp>/<clientIp>/<requestId>`.
    * Repete-se quando o mesmo evento volta ao indexer (snapshot restaurado, `--reparse`, achado do GuardDuty
    * atualizado), por isso é a base da chave do achado. Ausente ou fora do formato, a chave usa o `id` do alerta.
    */
@@ -279,12 +282,65 @@ const DETAILS: Record<AwsSource, (aws: Record<string, unknown>) => Partial<Wazuh
  */
 const nativeIdSchema = z.string().regex(/^[A-Za-z0-9._:+/=-]{1,128}$/);
 
+/** Inteiro sem sinal, em número (como a AWS grava) ou em texto: os dois viram o mesmo valor. */
+const unsignedSchema = (max: number) =>
+  z
+    .union([
+      z.number(),
+      z
+        .string()
+        .regex(/^\d{1,16}$/)
+        .transform(Number),
+    ])
+    .pipe(z.number().int().min(0).max(max));
+
+/** IP (v4 ou v6) só com dígitos, letras hexadecimais, pontos e dois-pontos: sem zona (`%`) nem espaço. */
+const ipSchema = z
+  .string()
+  .regex(/^[0-9A-Fa-f.:]{2,45}$/)
+  .refine((value) => isIP(value) !== 0);
+
+/**
+ * Quem sondou, no achado de sondagem de porta do GuardDuty. O módulo aws-s3 do Wazuh
+ * (`AWSGuardDutyBucket.reformat_msg`) divide o achado com mais de um item em `portProbeDetails` em um evento por
+ * item, todos com o mesmo `id`, e cada evento traz um item só, como objeto. Sem o IP e a porta na chave, só o
+ * primeiro item viraria achado, e os outros IPs cairiam como duplicados.
+ */
+const portProbeDetailSchema = z
+  .object({
+    remoteIpDetails: z.object({ ipAddressV4: ipSchema }),
+    localPortDetails: z.object({ port: unsignedSchema(65_535) }),
+  })
+  .transform((detail) => `${detail.remoteIpDetails.ipAddressV4}:${detail.localPortDetails.port}`);
+
+/**
+ * Identidade de cada evento, só com campos do log original (os mesmos a cada releitura):
+ * - CloudTrail: `eventID`, gerado pela AWS.
+ * - GuardDuty: `id` do achado. Na sondagem de porta, mais `/<IP>:<porta>` do item; item fora do formato (sem IPv4,
+ *   por exemplo) deixa o alerta sem id nativo, e a chave fica no `id` do alerta: nunca junta dois IPs.
+ * - WAF: `<timestamp>/<clientIp>/<requestId>`. Atrás de um ALB, o `requestId` é o trace ID, que o cliente HTTP
+ *   escolhe (`X-Amzn-Trace-Id: Root=...`) e que se repete em todas as chamadas de um mesmo trace do X-Ray. Sozinho,
+ *   ele deixaria quem ataca repetir o mesmo valor e fazer cada rajada nova cair como duplicada da primeira. O horário
+ *   (em milissegundos) é o do WAF, e o IP é o da conexão que a AWS recebeu: nenhum dos dois vem de cabeçalho.
+ */
 const NATIVE_ID: Record<AwsSource, z.ZodType<string>> = {
   cloudtrail: z.object({ eventID: nativeIdSchema }).transform((event) => event.eventID),
-  guardduty: z.object({ id: nativeIdSchema }).transform((finding) => finding.id),
+  guardduty: z.object({ id: nativeIdSchema, service: z.unknown() }).transform((finding, context) => {
+    const probe = at(finding.service, 'action', 'portProbeAction', 'portProbeDetails');
+    if (probe === undefined) return finding.id;
+    const detail = portProbeDetailSchema.safeParse(probe);
+    if (detail.success) return `${finding.id}/${detail.data}`;
+    context.issues.push({ code: 'custom', message: 'portProbeDetails fora do formato', input: probe });
+    return z.NEVER;
+  }),
   waf: z
-    .object({ httpRequest: z.object({ requestId: nativeIdSchema }) })
-    .transform((log) => log.httpRequest.requestId),
+    .object({
+      timestamp: unsignedSchema(Number.MAX_SAFE_INTEGER),
+      httpRequest: z.object({ clientIp: ipSchema, requestId: nativeIdSchema }),
+    })
+    .transform(
+      ({ timestamp, httpRequest }) => `${timestamp}/${httpRequest.clientIp}/${httpRequest.requestId}`,
+    ),
 };
 
 function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): string | undefined {

@@ -10,7 +10,15 @@ import {
 } from '../../src/alerts/sync-query.js';
 import { parseWazuhAlert, type WazuhAwsAlert } from '../../src/alerts/wazuh-alert.js';
 import { assertStructuredQuery } from '../../src/indexer/alert-queries.js';
-import { ALFA, BETA, cloudTrailAlert, guardDutyAlert, wafAlert, withAws } from './fixtures.js';
+import {
+  ALFA,
+  BETA,
+  cloudTrailAlert,
+  guardDutyAlert,
+  portProbeAlerts,
+  wafAlert,
+  withAws,
+} from './fixtures.js';
 
 const directory = AccountDirectory.from([ALFA, BETA]);
 
@@ -108,7 +116,27 @@ describe('chave estável do achado (fase 2, PR-W2)', () => {
         alertOf(wafAlert({ requestId: '1-6720a0b0-0a1b2c3d4e5f6a7b8c9d0e1f' })),
         ALFA.accountId,
       ),
-    ).toBe('wazuh/111122223333/waf:1-6720a0b0-0a1b2c3d4e5f6a7b8c9d0e1f:80443');
+    ).toBe('wazuh/111122223333/waf:1793527200000/203.0.113.50/1-6720a0b0-0a1b2c3d4e5f6a7b8c9d0e1f:80443');
+    const [probe] = portProbeAlerts([{ ip: '198.51.100.20', port: 22 }], {
+      findingId: '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0',
+    });
+    expect(wazuhFindingKey(alertOf(probe!), ALFA.accountId)).toBe(
+      'wazuh/111122223333/guardduty:5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0/198.51.100.20:22:80305',
+    );
+  });
+
+  it('o que a AWS repete em eventos diferentes não junta achados: sondagem de cada IP, requisição do WAF', () => {
+    const probes = portProbeAlerts([
+      { ip: '198.51.100.20', port: 22 },
+      { ip: '198.51.100.21', port: 22 },
+    ]).map(alertOf);
+    expect(new Set(probes.map((alert) => wazuhFindingKey(alert, ALFA.accountId))).size).toBe(2);
+    // Trace ID fixo no ALB: cada rajada nova, em outro horário, tem chave própria.
+    const root = '1-6720a0b0-000000000000000000000000';
+    const bursts = [1793527200000, 1793613600000].map((loggedAt) =>
+      alertOf(wafAlert({ requestId: root, loggedAt })),
+    );
+    expect(new Set(bursts.map((alert) => wazuhFindingKey(alert, ALFA.accountId))).size).toBe(2);
   });
 
   it('o mesmo evento lido de novo, com outro id de alerta, cai na mesma chave', () => {
@@ -155,7 +183,7 @@ describe('chave estável do achado (fase 2, PR-W2)', () => {
   it('a chave cabe na coluna (128): ID longo entra pelo resumo, sempre o mesmo', () => {
     const longId = `${'a'.repeat(100)}-${'b'.repeat(27)}`;
     const alert = alertOf(wafAlert({ requestId: longId }));
-    expect(alert.nativeId).toBe(longId);
+    expect(alert.nativeId).toBe(`1793527200000/203.0.113.50/${longId}`);
     const key = wazuhFindingKey(alert, ALFA.accountId);
     expect(key).toMatch(/^wazuh\/111122223333\/waf:sha256-[0-9a-f]{40}:80443$/);
     expect(key.length).toBeLessThanOrEqual(128);

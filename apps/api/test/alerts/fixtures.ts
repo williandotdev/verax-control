@@ -111,6 +111,11 @@ export function guardDutyAlert(
     /** Quantas vezes o GuardDuty viu a atividade (sobe a cada atualização do achado). */
     count?: number;
     updatedAt?: string;
+    type?: string;
+    /** `service.action`; o padrão é uma chamada de API de fora da AWS. */
+    action?: Record<string, unknown>;
+    /** Regra que casou; a padrão é a de severidade alta (80303). */
+    rule?: { id: string; level: number; description: string };
   } = {},
 ): Record<string, unknown> {
   const account = options.account ?? ALFA.accountId;
@@ -118,9 +123,10 @@ export function guardDutyAlert(
   const findingId = options.findingId ?? randomUUID().replace(/-/g, '');
   return document(
     {
-      id: '80303',
-      level: 10,
-      description: 'AWS GuardDuty: AWS_API_CALL - Credenciais usadas de fora da AWS.',
+      id: options.rule?.id ?? '80303',
+      level: options.rule?.level ?? 10,
+      description:
+        options.rule?.description ?? 'AWS GuardDuty: AWS_API_CALL - Credenciais usadas de fora da AWS.',
       groups: ['amazon', 'aws', 'aws_guardduty'],
       mitre: { id: ['T1078'], tactic: ['Initial Access'], technique: ['Valid Accounts'] },
     },
@@ -136,7 +142,7 @@ export function guardDutyAlert(
       partition: 'aws',
       id: findingId,
       arn: `arn:aws:guardduty:sa-east-1:${arnAccount}:detector/0000/finding/${findingId}`,
-      type: 'UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS',
+      type: options.type ?? 'UnauthorizedAccess:IAMUser/InstanceCredentialExfiltration.OutsideAWS',
       title: 'Credenciais usadas de fora da AWS',
       severity: options.severity ?? 8,
       createdAt: '2026-11-01T09:55:00.000Z',
@@ -154,7 +160,7 @@ export function guardDutyAlert(
       service: {
         serviceName: 'guardduty',
         count: options.count ?? 1,
-        action: {
+        action: options.action ?? {
           actionType: 'AWS_API_CALL',
           awsApiCallAction: { api: 'ListBuckets', remoteIpDetails: { ipAddressV4: '198.51.100.7' } },
         },
@@ -164,14 +170,59 @@ export function guardDutyAlert(
   );
 }
 
+/**
+ * Achado de sondagem de porta do GuardDuty como o módulo aws-s3 do Wazuh o entrega: com mais de um item em
+ * `portProbeDetails`, o wodle (`AWSGuardDutyBucket.reformat_msg`) gera um evento por item, todos com o mesmo `id`, e
+ * cada um traz o próprio item como objeto. Devolve um alerta por item, na ordem.
+ */
+export function portProbeAlerts(
+  probes: readonly { ip: string; port: number }[],
+  options: Omit<NonNullable<Parameters<typeof guardDutyAlert>[0]>, 'action' | 'type'> & {
+    instanceId?: string;
+  } = {},
+): Record<string, unknown>[] {
+  const { instanceId = 'i-0abc1234def567890', findingId = randomUUID().replace(/-/g, ''), ...rest } = options;
+  return probes.map(({ ip, port }) =>
+    guardDutyAlert({
+      severity: 5,
+      // A descrição da regra do Wazuh cita o IP e a porta do item.
+      rule: {
+        id: '80305',
+        level: 7,
+        description: `AWS GuardDuty: PORT_PROBE - Unprotected port on EC2 instance ${instanceId} is being probed. [IP: ${ip}] [Port: ${port}]`,
+      },
+      resource: { resourceType: 'Instance', instanceDetails: { instanceId } },
+      ...rest,
+      findingId,
+      type: 'Recon:EC2/PortProbeUnprotectedPort',
+      action: {
+        actionType: 'PORT_PROBE',
+        portProbeAction: {
+          blocked: false,
+          portProbeDetails: {
+            localPortDetails: { port, portName: port === 22 ? 'SSH' : 'Unknown' },
+            localIpDetails: { ipAddressV4: '10.0.0.10' },
+            remoteIpDetails: { ipAddressV4: ip, organization: { asnOrg: 'Exemplo' } },
+          },
+        },
+      },
+    }),
+  );
+}
+
 export function wafAlert(
   options: {
     account?: string;
     bucket?: string;
     webaclId?: string | null;
     clientIp?: string;
-    /** `httpRequest.requestId` (o do ALB na frente do WAF); `null` tira o campo. */
+    /**
+     * `httpRequest.requestId`. Atrás do ALB é o trace ID (`1-<8 hex>-<24 hex>`), que o cliente HTTP pode escolher
+     * pelo cabeçalho `X-Amzn-Trace-Id`; `null` tira o campo.
+     */
     requestId?: string | null;
+    /** `timestamp` do log do WAF, em milissegundos; `null` tira o campo. */
+    loggedAt?: number | string | null;
   } = {},
 ): Record<string, unknown> {
   const account = options.account ?? ALFA.accountId;
@@ -196,7 +247,7 @@ export function wafAlert(
         log_file: 'waf/2026/11/01/w.gz',
         s3bucket: options.bucket ?? 'aws-waf-logs-alfa',
       },
-      timestamp: 1793527200000,
+      ...(options.loggedAt === null ? {} : { timestamp: options.loggedAt ?? 1793527200000 }),
       formatVersion: 1,
       ...(webaclId === null ? {} : { webaclId }),
       terminatingRuleId: 'AWS-AWSManagedRulesCommonRuleSet',
