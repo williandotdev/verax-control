@@ -237,7 +237,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
   });
 
   it('preço existente divergente (valor, tipo ou metadados): relata e para sem gravar nada', async () => {
-    fake.addPrice('vc_env_p_v1', 99_000, {
+    fake.addPrice('vc_env_p_v1', 90_000, {
       product: 'vc_ambiente',
       metadata: { component: 'environment', variant: 'managed_P', tableVersion: 'exemplo-v1' },
     });
@@ -253,7 +253,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     const { code, output } = await run([`--catalog=${catalogPath}`, '--apply']);
 
     expect(code).toBe(1);
-    expect(output).toContain('unit_amount: esperado 100000, encontrado 99000');
+    expect(output).toContain('unit_amount: esperado 100000, encontrado 90000');
     // A implantação existente foi cadastrada como mensal: o tipo e o intervalo divergem.
     expect(output).toContain('type: esperado one_time, encontrado recurring');
     expect(output).toContain('metadata.tableVersion: esperado exemplo-v1, encontrado outra-versao');

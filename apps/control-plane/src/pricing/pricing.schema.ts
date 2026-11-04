@@ -55,7 +55,7 @@ export const lookupKeySchema = z.string().regex(/^[a-z0-9_]{3,64}$/, { error: 'l
 const cents = z.number().int().min(0).max(MAX_AMOUNT_CENTS);
 const positiveCents = z.number().int().min(1).max(MAX_AMOUNT_CENTS);
 const publicText = z.string().trim().min(1).max(120);
-/** Taxa entre 0 e 1 (0,06 = 6%). */
+/** Taxa entre 0 e 1 (0,1 = 10%). */
 const rate = z.number().min(0).max(1);
 
 /** Um preço da tabela: o valor em centavos e o `lookup_key` do preço correspondente na Stripe. */
@@ -404,7 +404,7 @@ export const costModelSchema = z
     }),
     /** Margem de contribuição sobre a receita bruta: abaixo da mínima a publicação é recusada; da de alerta, avisa. */
     margins: z.strictObject({ minimum: rate, alert: rate }),
-    /** Faixa da estimativa da nuvem do cliente (0,25 = ±25%), só informativa. */
+    /** Faixa da estimativa da nuvem do cliente (0,5 = ±50%), só informativa. */
     customerCloudEstimateSpread: rate,
     /** De onde veio cada número (link e data), para o console. */
     sources: z
