@@ -191,10 +191,16 @@ export class CheckoutStore {
   }
 
   /**
-   * Desfaz a reserva deste checkout (a Stripe falhou depois dela): `released`, sem o pedido e sem prazo, e o slug
-   * volta a aceitar reserva na hora. Se a reserva já não for deste checkout, não mexe e devolve `false`.
+   * Desfaz a reserva deste checkout (a Stripe falhou depois dela, ou a sessão venceu sem pagamento, CP-04):
+   * `released`, sem o pedido e sem prazo, e o slug volta a aceitar reserva na hora. Se a reserva já não for deste
+   * checkout, não mexe e devolve `false`. O ator padrão é `system`; o webhook passa `stripe:<eventId>`.
    */
-  async release(reservation: Reservation, reason: string, requestId?: string): Promise<boolean> {
+  async release(
+    reservation: Pick<Reservation, 'tenantId' | 'slug'>,
+    reason: string,
+    requestId?: string,
+    actor: string = ACTOR,
+  ): Promise<boolean> {
     return this.store.runTransaction(async (tx) => {
       const current = await this.readSlug(tx, reservation.slug);
       if (!this.isOwnReservation(current, reservation)) return false;
@@ -208,7 +214,7 @@ export class CheckoutStore {
         }),
       );
       this.audit.record(tx, {
-        actor: ACTOR,
+        actor,
         action: 'checkout.slug_released',
         tenantId: reservation.tenantId,
         details: { slug: reservation.slug, reason },
@@ -220,7 +226,7 @@ export class CheckoutStore {
 
   private isOwnReservation(
     current: SlugDocument | undefined,
-    reservation: Reservation,
+    reservation: Pick<Reservation, 'tenantId'>,
   ): current is SlugDocument {
     return current?.state === 'reserved' && current.tenantId === reservation.tenantId;
   }

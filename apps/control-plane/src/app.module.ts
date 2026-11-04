@@ -11,8 +11,12 @@ import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/log
 import type { DocumentStore } from './firestore/document-store.js';
 import { FirestoreModule } from './firestore/firestore.module.js';
 import { HealthModule } from './health/health.module.js';
+import type { StepQueue } from './queue/step-queue.js';
+import { StepQueueModule } from './queue/step-queue.module.js';
 import type { StripeApiOptions } from './stripe/stripe-client.js';
+import { StripeModule } from './stripe/stripe.module.js';
 import { TenantsModule } from './tenants/tenants.module.js';
+import { WebhookModule } from './webhook/webhook.module.js';
 
 export interface AppModuleOptions {
   /** `FirestoreDocumentStore` em produção; o dublê em memória nos testes. */
@@ -21,6 +25,8 @@ export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
   /** Só nos testes: a API da Stripe num servidor falso em 127.0.0.1 (em produção, o padrão do SDK). */
   stripeApi?: StripeApiOptions;
+  /** Só nos testes: a fila de passos em memória (em produção, o Cloud Tasks pela configuração). */
+  stepQueue?: StepQueue;
 }
 
 /**
@@ -31,7 +37,7 @@ export interface AppModuleOptions {
 function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
   switch (role) {
     case 'public':
-      return [CheckoutModule.register({ stripeApi: options.stripeApi })];
+      return [StripeModule.forRoot({ stripeApi: options.stripeApi }), CheckoutModule, WebhookModule];
     case 'worker':
       return [];
   }
@@ -46,6 +52,7 @@ export class AppModule {
         ConfigModule.forRoot(config),
         LoggerModule.forRoot(buildLoggerParams(config, options.logger)),
         FirestoreModule.forRoot({ store: options.documentStore, clock: options.clock }),
+        StepQueueModule.forRoot({ stepQueue: options.stepQueue }),
         AuditModule,
         TenantsModule,
         HealthModule,

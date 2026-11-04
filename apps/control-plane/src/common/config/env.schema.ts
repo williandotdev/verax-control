@@ -142,7 +142,9 @@ const envShape = {
   PRIVACY_VERSION: documentVersion.optional(),
   DPA_VERSION: documentVersion.optional(),
 
-  // Stripe (CP-03 e CP-04). Chaves de teste e de produção são segredos distintos; STRIPE_LIVE diz qual vale.
+  // Stripe (CP-03 e CP-04). Chaves de teste e de produção são segredos distintos; STRIPE_LIVE diz qual vale (e o
+  // webhook ignora evento do outro modo). Sem STRIPE_WEBHOOK_SECRET e STRIPE_SECRET_KEY o webhook responde 503 sem
+  // ler nada (a Stripe repete por até 3 dias); a partida avisa quais faltam.
   STRIPE_SECRET_KEY: stripeSecretKey.optional(),
   STRIPE_WEBHOOK_SECRET: stripeWebhookSecret.optional(),
   STRIPE_LIVE: boolean('false'),
@@ -158,6 +160,10 @@ const envShape = {
     .default('(default)'),
   FIRESTORE_PROJECT_ID: gcpProjectId.optional(),
   FIRESTORE_EMULATOR_HOST: hostPort.optional(),
+  // Cloud Tasks (CP-04): a fila é `projects/<TASKS_PROJECT_ID>/locations/<TASKS_LOCATION>/queues/<nome>`. Sem o grupo
+  // inteiro (`STEP_QUEUE_REQUIRED`, em queue/step-queue.module.ts) o serviço sobe e avisa quais faltam, e o webhook
+  // que precisar enfileirar responde 500 (a Stripe repete a entrega). O Terraform deriva todas (run.tf).
+  TASKS_PROJECT_ID: gcpProjectId.optional(),
   TASKS_LOCATION: gcpRegion.optional(),
   TASKS_QUEUE_PROVISIONING: gcpResourceName.optional(),
   TASKS_QUEUE_LIFECYCLE: gcpResourceName.optional(),
