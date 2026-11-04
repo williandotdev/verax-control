@@ -106,8 +106,9 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
 - **Swap cifrado, nos dois perfis:** o swap usa uma chave aleatória nova a cada boot (dm-crypt no modo plain, com a
   chave tirada de `/dev/urandom`), que só existe na memória. O que o kernel tira da memória para o swap (o tmpfs com
   a chave privada do cofre e a chave da AWS, a memória do worker e a do manager) chega ao disco, e ao snapshot dele,
-  só cifrado. Ao trocar o swap atual por este, o arquivo antigo é recriado, para não sobrar texto claro nele. Todo
-  nó criado pelo módulo já nasce assim. O nó da Verax, aplicado antes do módulo, segue com o script de boot antigo
+  só cifrado. Ao trocar o swap atual por este, o cifrado é ligado antes, num arquivo novo; só depois o antigo é
+  desligado, sobrescrito com zeros e tirado do `fstab` e do disco, para a VM não ficar sem swap nem sobrar texto
+  claro nos blocos. Todo nó criado pelo módulo já nasce assim. O nó da Verax, aplicado antes do módulo, segue com o script de boot antigo
   (swap em claro) até uma manutenção planejada: trocar o script recria a VM (o disco fica), como descreve
   `infra/gcp/GUIA.md`.
 - **Imagem uniforme:** todo nó de cliente é `standard`, com ou sem conta AWS, nos planos Essencial e Profissional. O

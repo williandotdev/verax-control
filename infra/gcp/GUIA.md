@@ -319,15 +319,39 @@ em claro no `fstab` e falharia ao ligar o swap, e a e2-micro ficaria sem swap. A
 planejada**, com alguns minutos do nó fora do ar:
 
 1. Escolha uma janela. O disco fica (é um recurso à parte, com `prevent_destroy` e `auto_delete = false`) e os dados
-   continuam nele; só a VM é recriada.
+   continuam nele; só a VM é recriada. Confira que o disco tem 2 GB livres (`df -h /`): o swap cifrado usa um
+   arquivo novo, e os dois arquivos convivem até o antigo sair.
 2. Em `envs/verax/main.tf`, acrescente `deletion_protection = false` na chamada do módulo e faça o `plan` e o
    `apply`: só essa proteção muda, no lugar.
-3. Tire a linha `deletion_protection = false` e a linha `legacy_startup_script = ...`. O `plan` mostra
-   `module.node.google_compute_instance.node must be replaced` (por causa do `metadata_startup_script`) e mais nada
-   para destruir. Faça o `apply`: a VM nasce de novo com o mesmo disco, com a proteção ligada e com o script do
-   módulo, que no primeiro boot tira o swap antigo do `fstab`, sobrescreve o arquivo com zeros e liga o swap
-   cifrado. O serviço `verax-node` sobe sozinho.
-4. Confira com `sudo cryptsetup status verax-swap` e `cat /proc/swaps`, e apague o `envs/verax/startup.sh`.
+3. Tire a linha `deletion_protection = false` e a linha `legacy_startup_script = ...` e faça o `plan`. Ele mostra:
+   - `module.node.google_compute_instance.node must be replaced` (por causa do `metadata_startup_script`);
+   - para cada pessoa em `operators`, os dois acessos dela na VM (`google_compute_instance_iam_member.operators` e
+     `google_iap_tunnel_instance_iam_member.operators`) com `will be replaced due to changes in replace_triggered_by`.
+     A política de IAM da VM some com ela; o Terraform grava os acessos de novo, já na VM nova;
+   - mais nada. No resumo, `to destroy` é 1 (a VM) mais 2 por pessoa em `operators`.
+
+   Faça o `apply`: a VM nasce de novo com o mesmo disco, com a proteção ligada e com o script do módulo. No primeiro
+   boot, o script instala o `cryptsetup`, liga o swap cifrado no arquivo novo (`/var/lib/verax-swap.img`) e só então
+   desliga o swap antigo (o que estava nele passa para o cifrado). Depois sobrescreve o `/swapfile` com zeros, tira a
+   linha do `fstab` e apaga o arquivo. O serviço `verax-node` sobe sozinho.
+
+4. Confira e apague o `envs/verax/startup.sh`:
+
+   ```bash
+   sudo journalctl -u google-startup-scripts --no-pager | tail   # o script de boot terminou sem erro
+   sudo cryptsetup status verax-swap    # type: PLAIN, cipher: aes-xts-plain64, keysize: 512 bits
+   cat /proc/swaps                      # só /dev/dm-0 (o swap cifrado), com 2 GB
+   ls /swapfile; grep swapfile /etc/fstab   # o arquivo não existe, e o fstab não tem a linha
+   ```
+
+**Se o script parar no meio**, a VM nunca fica sem swap, e a linha do `fstab` só sai depois de o arquivo estar zerado:
+
+- **Sem o `cryptsetup`** (o apt falhou 5 vezes, por rede ou pela trava do apt): o script para antes de mexer em
+  qualquer swap. O swap antigo continua ligado, como antes da manutenção, e nada foi apagado. Veja o erro no log do
+  passo 4, resolva e rode o script de novo com `sudo google_metadata_script_runner startup` (ou reinicie a VM).
+- **Parou depois de ligar o swap cifrado** (a VM reiniciou no meio da limpeza, por exemplo): a linha do `fstab` ou o
+  arquivo antigo continuam lá, e a próxima execução (o mesmo comando, ou o boot seguinte) repete a limpeza do
+  começo. Um arquivo meio zerado perde a assinatura de swap: o systemd só registra que não conseguiu ligá-lo.
 
 Os snapshots tirados antes da troca (até 28 dias) guardam o swap antigo, que pode ter páginas em claro, até
 expirarem.

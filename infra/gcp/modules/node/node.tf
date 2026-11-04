@@ -176,6 +176,11 @@ resource "google_compute_instance" "node" {
 }
 
 # Acesso de quem opera o nó: túnel do IAP e login de administrador só nesta VM, nada no resto do projeto.
+#
+# A política de IAM de uma VM some junto com ela. Quando a VM é recriada (a manutenção do GUIA.md), o nome continua o
+# mesmo e, sem o `replace_triggered_by`, o Terraform não veria diferença nestes acessos: o estado diria que existem e a
+# VM nova nasceria sem eles. Com ele, o `plan` que recria a VM também recria os acessos, na VM nova. O `instance_id`
+# só muda quando a VM é recriada; uma mudança no lugar (o tamanho da VM, por exemplo) não mexe nos acessos.
 resource "google_iap_tunnel_instance_iam_member" "operators" {
   for_each = toset(var.operators)
 
@@ -183,6 +188,10 @@ resource "google_iap_tunnel_instance_iam_member" "operators" {
   zone     = var.zone
   role     = "roles/iap.tunnelResourceAccessor"
   member   = each.key
+
+  lifecycle {
+    replace_triggered_by = [google_compute_instance.node.instance_id]
+  }
 }
 
 resource "google_compute_instance_iam_member" "operators" {
@@ -192,6 +201,10 @@ resource "google_compute_instance_iam_member" "operators" {
   zone          = var.zone
   role          = "roles/compute.osAdminLogin"
   member        = each.key
+
+  lifecycle {
+    replace_triggered_by = [google_compute_instance.node.instance_id]
+  }
 }
 
 # O `gcloud compute ssh` lê o projeto antes de conectar (`compute.projects.get`), e o OS Login concedido só na VM

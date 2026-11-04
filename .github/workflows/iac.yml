@@ -62,6 +62,14 @@ jobs:
             terraform -chdir="$root" validate
             echo "::endgroup::"
           done
+      - name: Testes do módulo do nó (provider simulado, sem credenciais)
+        # Os dois perfis, o nó da Verax sem nenhuma mudança (os valores de antes e o script de boot byte a byte) e os
+        # acessos dos operadores quando a VM é recriada. O provider simulado não fala com a GCP.
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: |
+          terraform -chdir=infra/gcp/modules/node init -backend=false -lockfile=readonly
+          terraform -chdir=infra/gcp/modules/node test
       - name: tflint
         # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
         env:
@@ -87,6 +95,17 @@ jobs:
           persist-credentials: false
       - name: shellcheck
         run: shellcheck -x -S style infra/node/bin/*.sh
+      - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
+        # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
+        # disco do script antigo, apt fora do ar e VM reiniciada no meio da limpeza. Roda sem root e sem tocar na máquina.
+        run: |
+          test=infra/gcp/modules/node/tests/startup-test.sh
+          shellcheck -x -S style infra/gcp/modules/node/startup.sh.tftpl "$test"
+          for profile in lean standard; do
+            bash "$test" render "$profile" >"$RUNNER_TEMP/startup-$profile.sh"
+          done
+          shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
+          bash "$test"
       - name: Compose válida (arquivos de ambiente fictícios, como o start.sh monta na VM)
         run: |
           sudo install -d -m 0755 /run/verax
@@ -101,6 +120,7 @@ jobs:
       - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
         run: |
           # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
+          # shellcheck source=/dev/null # só as duas linhas MEMORY_* do start.sh, filtradas pelo grep
           source <(grep -E '^MEMORY_(LEAN|STANDARD)=\(' infra/node/bin/start.sh)
           printf '%s\n' "${MEMORY_LEAN[@]}" >lean.env
           printf '%s\n' "${MEMORY_STANDARD[@]}" >standard.env

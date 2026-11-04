@@ -32,27 +32,36 @@ fi
 # /dev/urandom e guardada só na memória do kernel. O que vai da memória para o swap (o tmpfs com a chave do cofre e a
 # chave da AWS, a memória do worker e a do manager) chega ao disco, e ao snapshot dele, só cifrado. Depois de um
 # reboot, nem a própria VM lê o swap anterior.
-SWAPFILE=/swapfile
+SWAPFILE=/var/lib/verax-swap.img
 SWAPDEV=verax-swap
+# Swap em claro do script de antes do módulo (o nó da Verax): sai só depois que o cifrado estiver ligado, lá embaixo.
+LEGACY_SWAPFILE=/swapfile
 
-# Disco que veio de um nó com o script antigo, de swap em claro no fstab: tira a linha do fstab, desliga esse swap e
-# sobrescreve o arquivo com zeros antes de apagar, para não sobrar texto claro nos blocos do disco.
-if grep -q "^$SWAPFILE " /etc/fstab; then
-  if grep -qx "$SWAPFILE" <<<"$(swapon --show=NAME --noheadings)"; then swapoff "$SWAPFILE"; fi
-  sed -i "\|^$SWAPFILE |d" /etc/fstab
-  shred --iterations=0 --zero --remove "$SWAPFILE"
-fi
+# Repete um comando que depende da rede ou da trava do apt (no boot, o apt-daily pode estar com ela): 5 tentativas.
+retry() {
+  local attempt=1
+  until "$@"; do
+    if [ "$attempt" -ge 5 ]; then
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    sleep 20
+  done
+}
 
-# O cryptsetup (pacote do Debian) entra no primeiro boot, pela saída do NAT.
+# O cryptsetup (pacote do Debian) entra no primeiro boot, pela saída do NAT. Se não entrar, o script para aqui, antes
+# de mexer em qualquer swap: num nó novo, a VM fica sem swap (nunca em claro); num disco do script antigo, o swap de
+# antes continua ligado, como estava, e o boot seguinte tenta de novo.
 if ! command -v cryptsetup >/dev/null; then
-  apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cryptsetup-bin >/dev/null
+  retry apt-get -o DPkg::Lock::Timeout=120 update -qq
+  retry env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq cryptsetup-bin >/dev/null
 fi
 
+# O arquivo só recebe o que passa pelo dm-crypt: desde a criação, nunca tem texto claro.
 if [ ! -f "$SWAPFILE" ]; then
   fallocate -l 2G "$SWAPFILE"
-  chmod 0600 "$SWAPFILE"
 fi
+chmod 0600 "$SWAPFILE"
 active=$(swapon --show=NAME --noheadings)
 if ! grep -qx "$(readlink -f "/dev/mapper/$SWAPDEV")" <<<"$active"; then
   if [ ! -e "/dev/mapper/$SWAPDEV" ]; then
@@ -66,4 +75,16 @@ if ! grep -qx "$(readlink -f "/dev/mapper/$SWAPDEV")" <<<"$active"; then
   # Fora de uso, o conteúdo é só texto cifrado com uma chave que já se perdeu: formatar não perde nada.
   mkswap "/dev/mapper/$SWAPDEV" >/dev/null
   swapon "/dev/mapper/$SWAPDEV"
+fi
+
+# Disco que veio de um nó com o script antigo (swap em claro em /swapfile, ligado pelo fstab). Com o swap cifrado já
+# ligado, o antigo é desligado (o que estava nele passa para o cifrado, sem faltar memória), o arquivo é sobrescrito
+# com zeros e só depois a linha sai do fstab e o arquivo é apagado. Se o boot cair no meio, a linha ou o arquivo
+# continuam lá e o boot seguinte repete a limpeza do começo. Um arquivo já zerado não tem mais a assinatura de swap: o
+# systemd só falha ao tentar ligá-lo, sem efeito.
+if [ -e "$LEGACY_SWAPFILE" ] || grep -q "^$LEGACY_SWAPFILE " /etc/fstab; then
+  if grep -qx "$LEGACY_SWAPFILE" <<<"$(swapon --show=NAME --noheadings)"; then swapoff "$LEGACY_SWAPFILE"; fi
+  if [ -e "$LEGACY_SWAPFILE" ]; then shred --iterations=0 --zero "$LEGACY_SWAPFILE"; fi
+  sed -i "\|^$LEGACY_SWAPFILE |d" /etc/fstab
+  rm -f "$LEGACY_SWAPFILE"
 fi

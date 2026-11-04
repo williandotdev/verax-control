@@ -1902,8 +1902,9 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
     - `standard`: e2-standard-2 (e2-standard-4 aceito como plano B), 60 GB pd-balanced, snapshot diário de 7 dias e IP do NAT reservado (`google_compute_address` com `prevent_destroy`, `MANUAL_ONLY` e a saída `nat_ip`);
     - uma VM fora do perfil é recusada no `plan`.
   - **Script de boot do módulo** (`startup.sh.tftpl`, na chave `startup-script` dos metadados, que muda sem recriar a VM):
-    - swap de 2 GB cifrado com dm-crypt no modo plain (AES-256-XTS), com uma chave nova de `/dev/urandom` a cada boot, sobre um loop com acesso direto ao arquivo;
-    - num disco que veio do script antigo, tira a linha do `fstab`, desliga o swap em claro e sobrescreve o arquivo com zeros antes de apagar;
+    - swap de 2 GB cifrado com dm-crypt no modo plain (AES-256-XTS), com uma chave nova de `/dev/urandom` a cada boot, sobre um loop com acesso direto ao arquivo (`/var/lib/verax-swap.img`, que só recebe texto cifrado);
+    - o `cryptsetup-bin` entra antes de qualquer mudança no swap, com 5 tentativas e espera pela trava do apt; sem ele, o script para ali;
+    - num disco que veio do script antigo, liga primeiro o swap cifrado; depois desliga o swap em claro (as páginas passam para o cifrado), zera o `/swapfile` e só então tira a linha do `fstab` e apaga o arquivo. Se parar no meio, a execução seguinte repete a limpeza;
     - no `standard`, `vm.max_map_count=262144` e `vm.swappiness=1` em `/etc/sysctl.d/90-verax.conf`.
   - **Cofres que a VM grava:** `credentials-key` (`secretVersionAdder` e `secretAccessor` só nele) e `admin-bootstrap` (só `secretVersionAdder`: a VM grava a senha temporária e não lê de volta).
   - **Pub/Sub** com `message_storage_policy` na região do nó.
@@ -1913,7 +1914,8 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
     - desliga o Pub/Sub na região, os cofres novos e o alerta;
     - o NAT continua automático.
   - **`envs/homolog-sp`:** southamerica-east1, perfil `standard`, projeto dos nós de clientes por variável, estado próprio (prefixo `homolog-sp`), orçamento opcional e leitura do registro de imagens do projeto da Verax só para a conta da VM. Nunca aplicado.
-  - `deletion_protection` virou variável do módulo (padrão `true`), para a manutenção que recria a VM.
+  - `deletion_protection` virou variável do módulo (padrão `true`), para a manutenção que recria a VM;
+  - os acessos dos operadores na VM (OS Login de administrador e túnel do IAP) têm `replace_triggered_by` no `instance_id`: quando a VM é recriada, o Terraform grava os acessos de novo na VM nova, e uma mudança no lugar não mexe neles.
 - **Pacote do nó (`infra/node/`, revisar linha a linha):**
   - `compose.yaml`: o `mem_limit` do Postgres, da API e do worker, os heaps (`NODE_OPTIONS`) e o `shared_buffers` vêm de variáveis, com o padrão igual ao de antes (lean);
   - `start.sh`: escreve `/run/verax/memory.env` pelo `NODE_PROFILE` e passa o arquivo ao Compose quando ele existe:
@@ -1924,23 +1926,36 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **CI e Dependabot (`.github/`, revisar linha a linha):**
   - `iac.yml`, job do Terraform: valida `infra/gcp/envs/verax` e `infra/gcp/envs/homolog-sp` no lugar de `infra/gcp`, que deixou de ser raiz, e roda o tflint da GCP com `--recursive` (ambientes e módulo);
   - `iac.yml`, job "Pacote do nó": passo novo de memória por perfil. Sem as variáveis, o Compose tem de dar exatamente o lean do `start.sh` (o nó da Verax antes do perfil), e o standard tem de chegar aos três contêineres. A checagem de memória que o plano citava não existia; o passo novo é ela;
+  - `iac.yml`, job do Terraform: `terraform test` do módulo do nó, com o provider simulado (`init -backend=false` com o lock do módulo, o mesmo `google` 8.9.0 dos ambientes);
+  - `iac.yml`, job "Pacote do nó": shellcheck do script de boot do módulo (o modelo e o resultado nos dois perfis) e os cenários do `tests/startup-test.sh`;
   - `dependabot.yml`: as duas pastas de ambiente no lugar de `/infra/gcp`.
 - **Documentação:** `infra/gcp/GUIA.md` (organização, perfis, init, plan e apply por ambiente, o que conferir no plan com os `moved`, homologação e a manutenção do swap), `docs/ARQUITETURA.md` (situação dos perfis e caminho do nó da Verax) e `docs/runbooks/no-verax.md` (caminho e `NODE_PROFILE`).
 - **Dependências:** nenhuma. Os ambientes continuam no `hashicorp/google` 8.9.0 (o lock não mudou); o módulo aceita `>= 8.9.0, < 9.0.0`.
 - **Testes:**
   - `terraform fmt -check`, `init -backend=false` e `validate` no módulo e nos dois ambientes;
   - tflint 0.65.0 recursivo e checkov 3.4.0 (os do CI) em `infra/`, sem falhas. As checagens dos metadados da VM (chaves de projeto, OS Login e console serial) continuam passando com o `merge`;
-  - `terraform test` local com o provider simulado (não versionado): os dois perfis, o script de antes no lean, VM fora do perfil recusada e perfil inválido;
-  - shellcheck no pacote do nó e no script de boot (o modelo e o resultado nos dois perfis);
-  - script de boot num contêiner Debian 12 privilegiado (cryptsetup 2.6.1, com `swapon` e `sysctl` falsos). Partindo do swap em claro do script antigo, a linha sai do `fstab`, o texto antigo some do arquivo e o swap cifrado sobe com aes-xts-plain64 de 512 bits; a segunda execução não refaz nada;
+  - `terraform test` do módulo (`modules/node/tests`, provider simulado, 11 casos, sem credencial):
+    - `lean_verax`: o módulo chamado como em `envs/verax`, com os valores de antes um a um (VM, disco, snapshot semanal de 28 dias com o mesmo nome, NAT automático, metadados, cofres de antes, nada dos extras) e o `sha256` do `startup.sh` aplicado;
+    - `perfis`: o standard, o lean novo (o script que a VM recebe é o modelo com o perfil trocado, e nada mais), VM fora do perfil recusada nos dois perfis e perfil inválido;
+    - `operadores`: recriar a VM recria os dois acessos de cada operador; mudar o tamanho da VM (no lugar) não mexe neles;
+    - mutações conferidas: sem o `replace_triggered_by`, com ele no recurso inteiro, outro nome de snapshot, IP fixo no lean, um byte a mais no `startup.sh` da Verax e uma sequência de modelo no script; cada uma derruba ao menos um caso;
+  - `tests/startup-test.sh`, sem root, com os comandos do kernel e da rede simulados e o `shred`, o `sed` e o `grep` de verdade (rodado num contêiner Debian 12 como usuário comum): nó novo lean e standard, mesmo boot e boot seguinte, disco do script antigo, apt fora do ar (5 tentativas, o swap antigo fica intacto e ligado), VM reiniciada no meio do `shred`, arquivo sem a linha, linha sem o arquivo e perfil inválido. Mutações conferidas: a ordem antiga, a linha do `fstab` antes do `shred`, sem repetir o apt, só o `fstab` decidindo, sem `shred` e sem `mkswap`; todas falham;
+  - shellcheck no pacote do nó, no script de boot (o modelo e o resultado nos dois perfis) e no teste;
+  - antes da revisão, o script de boot rodou num contêiner Debian 12 privilegiado (cryptsetup 2.6.1, com `swapon` e `sysctl` falsos): o loop e o dm-crypt de verdade subiram com aes-xts-plain64 de 512 bits. Os comandos do loop e do dm-crypt não mudaram na revisão, só o arquivo e a ordem;
   - Compose com e sem as variáveis, como o passo novo do CI, mais uma mutação: um padrão diferente do lean faz o passo falhar;
   - **`plan` só de leitura de `envs/verax` contra o estado real** (`-lock=false`, sem apply): `Plan: 0 to add, 0 to change, 0 to destroy`, com 47 recursos sem mudança, 30 deles movidos para o módulo, e nenhuma diferença nas saídas. O `terraform.tfvars` não estava nesta máquina; as variáveis foram montadas a partir do próprio estado.
+- **Correções da revisão do PR, com testes novos:**
+  - a manutenção do GUIA recria a VM, e a política de IAM dela some junto. Os acessos dos operadores usam o nome da VM, que não muda, e o Terraform não os gravaria de novo: quem está em `operators` e não é dono do projeto perderia o SSH. Agora eles têm `replace_triggered_by`, e o GUIA diz o que o `plan` mostra;
+  - o script de boot desligava e apagava o swap em claro antes de instalar o `cryptsetup` e de ligar o cifrado: na e2-micro, uma falha do apt deixaria o nó da Verax sem swap. Agora o cifrado sobe antes, num arquivo novo, e o antigo só sai depois; sem o `cryptsetup`, nada muda;
+  - a linha do `fstab` saía antes do `shred`. Se a VM reiniciasse no meio, o arquivo meio zerado viraria o do swap cifrado, com o resto do texto claro dentro. Agora a linha só sai com o arquivo zerado, e um arquivo que sobrou é zerado e apagado no boot seguinte;
+  - os valores que mantêm o nó da Verax sem mudança e o script de boot não tinham teste no CI: os testes do módulo e do script foram versionados e entraram no `iac.yml` (acima);
+  - o passo de memória por perfil do `iac.yml` ganhou a diretiva `# shellcheck source=/dev/null`: o actionlint do CI (`security.yml`) recusaria o `source <(...)` dele.
 - **Desvios do plano:**
   - o `infra/gcp/startup.sh` não ganhou o swap cifrado nem os ajustes do kernel: virou o script do nó da Verax, idêntico, e o comportamento novo está no script do módulo, que só chega aos nós novos;
   - APIs, orçamento e registro de imagens ficam no ambiente, porque valem para o projeto inteiro (vários nós de clientes no mesmo projeto);
   - o nó da Verax fica sem os cofres, o alerta e o Pub/Sub na região, para o `plan` dele não mudar nada;
   - `NODE_EGRESS_IPS` é opcional por enquanto: quem o usa (template do usuário IAM e regras do Wazuh) vem nos PRs V2 a V4.
-- **Definição de pronto:** módulo, perfis e ambientes ✔ · `plan` do nó da Verax sem mudança ✔ · validate, tflint, checkov e shellcheck ✔ · nenhuma dependência ✔ · regras de segurança ✔ (nenhum ID de projeto, conta ou e-mail real no código) · **aceite:** depende do apply da homologação.
+- **Definição de pronto:** módulo, perfis e ambientes ✔ · `plan` do nó da Verax sem mudança ✔ · validate, tflint, checkov e shellcheck ✔ · testes do módulo e do script de boot no CI ✔ · nenhuma dependência ✔ · regras de segurança ✔ (nenhum ID de projeto, conta ou e-mail real no código) · **aceite:** depende do apply da homologação.
 - **Pendências para o responsável:**
   - criar o projeto dos nós de clientes e o bucket do estado, preencher o `terraform.tfvars` da homologação e aplicar (GUIA, passos 2 a 6); conferir o `nat_ip`, o Pub/Sub na região e o swap cifrado (passo 8);
   - no nó da Verax: mover o `terraform.tfvars` para `envs/verax`, rodar o `init` e o `plan` (tem de dar 0, 0 e 0, com 30 linhas `has moved to`) e o `apply`, que só grava os endereços novos no estado;
@@ -1949,7 +1964,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Riscos:**
   - um `moved` errado recriaria a VM; o `plan` contra o estado real mostrou que não;
   - o swap passa por loop e dm-crypt, uma camada a mais que o swap em arquivo, sob pressão de memória: medir no ensaio da homologação (24 h de `docker stats`);
-  - o script de boot instala o `cryptsetup-bin` pela internet no primeiro boot. Se o apt falhar, a VM fica sem swap (nunca em claro), e o log do `google-startup-scripts` mostra o erro;
+  - o script de boot instala o `cryptsetup-bin` pela internet no primeiro boot, com 5 tentativas. Se não instalar, um nó novo fica sem swap (nunca em claro) e o disco do script antigo continua com o swap de antes, sem nada apagado; o log do `google-startup-scripts` mostra o erro;
   - a homologação dá à VM leitura do registro de imagens no projeto da Verax (só as imagens do código aberto);
   - o PR-V1 pode precisar listar as versões do `credentials-key` (`secretmanager.versions.list`), que o `secretAccessor` não dá; se o desenho dele pedir, o papel entra lá;
   - a homologação ligada custa cerca de R$ 613 por mês: parar fora das janelas de teste.
