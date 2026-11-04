@@ -81,14 +81,22 @@ chave de conta de serviço é criada em lugar nenhum, e nada que já existe no p
    o segundo comando do painel a mostra de novo. Quem administra as contas cola a identidade no painel, no campo
    "Identidade do sink". Ela não é segredo: é só quem vai poder publicar no tópico.
 3. **No Terraform do nó**, acrescente o projeto e a identidade em `customer_projects`, no `terraform.tfvars` do
-   ambiente (`infra/gcp/envs/<ambiente>`), e rode `plan` e `apply`. O plano cria só três coisas, todas no projeto do
-   nó: o tópico, a assinatura e a permissão de publicar no tópico, só para essa identidade. Nada no projeto do
-   cliente (`infra/gcp/GUIA.md`, "Projeto de cliente: o sink é do cliente").
+   ambiente (`infra/gcp/envs/<ambiente>`), e rode `plan` e `apply`. O plano cria quatro recursos, todos no projeto do
+   nó: o tópico, a assinatura, a publicação no tópico só para essa identidade e a leitura da assinatura pela conta de
+   serviço do nó. Nada no projeto do cliente (`infra/gcp/GUIA.md`, "Projeto de cliente: o sink é do cliente"); o
+   teste na homologação, abaixo, confirma que isso basta. A mesma identidade em dois projetos é recusada, pelo
+   módulo e pelo painel: cada identidade é do sink de um projeto só.
 4. **Informe a assinatura no painel:** `terraform output pubsub_subscriptions` mostra
    `projects/<projeto-do-nó>/subscriptions/<prefixo>-security-<projeto>`; cole no campo "Assinatura do Pub/Sub" da
    conta. A conexão muda para "Conectada" quando o primeiro evento chegar.
-5. **Confira:** uma ação de administração no projeto do cliente aparece na assinatura em um minuto, e
-   `gcloud pubsub topics get-iam-policy` do tópico mostra só a identidade do sink como publicadora (comandos no GUIA).
+5. **Confira, nesta ordem** (os comandos estão no GUIA, "Projeto de cliente: o sink é do cliente"):
+   1. o log `logging.googleapis.com/sink_error` do projeto do cliente, depois de uma ação de administração posterior
+      ao `apply`, **sem `PERMISSION_DENIED`** (`gcloud logging read`, pelo dono do projeto). É o portão do desenho: a
+      documentação da Google pede também `roles/logging.logWriter` para a identidade do sink no destino, e o módulo
+      concede só a publicação no tópico. Enquanto esse passo não passar na homologação, o desenho não está validado
+      e a decisão registrada no GUIA ("Se o `logWriter` for exigido") entra;
+   2. a mesma ação aparece na assinatura em um minuto;
+   3. `gcloud pubsub topics get-iam-policy` do tópico mostra só a identidade do sink como publicadora.
 
 A permissão fica no projeto do nó, para uma identidade de fora dele: se a organização da Verax tiver restrição de
 domínio (_Domain Restricted Sharing_), é ela que precisa de exceção, nunca a do cliente. Para encerrar, tire o projeto

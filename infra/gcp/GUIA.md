@@ -132,17 +132,40 @@ projeto do nó):
   }
   ```
 
-  Para cada projeto, o `plan` mostra só três coisas, todas no projeto do nó: o tópico, a assinatura e a permissão
-  `roles/pubsub.publisher` no tópico, só para essa identidade. O módulo recusa qualquer outra identidade (uma conta de
-  serviço comum, uma pessoa, a identidade compartilhada antiga `cloud-logs@system`, o agente de uma pasta ou
-  organização) e recusa um projeto que esteja nas duas listas. A API aceita a mesma regra no campo "Identidade do
-  sink"; um teste da API confere que as duas continuam iguais, e que o filtro do comando do painel é o
-  `security_log_filter` de `logs.tf` sem a exclusão das leituras do nó.
+  Para cada projeto, o `plan` mostra quatro recursos, todos no projeto do nó: o tópico, a assinatura, a publicação no
+  tópico (`roles/pubsub.publisher`) só para essa identidade e a leitura da assinatura (`roles/pubsub.subscriber`) pela
+  conta de serviço do nó. É só isso que o módulo cria; o teste na homologação (abaixo) confirma que basta. O módulo
+  recusa qualquer outra identidade (uma conta de serviço comum, uma pessoa, a identidade compartilhada antiga
+  `cloud-logs@system`, o agente de uma pasta ou organização), a mesma identidade em dois projetos (daria ao sink de um
+  a publicação no tópico do outro, e o `apply` passaria) e um projeto que esteja nas duas listas. A API aceita a mesma
+  regra no campo "Identidade do sink" e também recusa a identidade repetida entre as contas do cliente; um teste da
+  API confere que as duas continuam iguais, e que o filtro do comando do painel é o `security_log_filter` de `logs.tf`
+  sem a exclusão das leituras do nó.
 
 O roteiro inteiro, do cadastro no painel à assinatura informada, está em `docs/runbooks/onboarding-cliente.md`
 (seção 5). O que conferir depois do `apply`, com um projeto de teste de **outra organização** na homologação (é o teste
-do "sem papel para a Verax"): peça ao dono do projeto uma ação de administração qualquer (ou o `sinks update` abaixo),
-e leia a assinatura um minuto depois; e confira que só a identidade do sink publica no tópico.
+do "sem papel para a Verax"), em três partes; o desenho só está validado com as três:
+
+1. **O log de erro do sink no projeto do cliente, sem `PERMISSION_DENIED`.** A documentação da Google para sinks
+   ("Configure and manage sinks", em _Set destination permissions_, e "Route logs to Pub/Sub", passo 7) pede, para a
+   identidade do sink no destino, `roles/pubsub.publisher` **e** `roles/logging.logWriter` (pela permissão
+   `logging.logEntries.route`). O módulo concede só o `pubsub.publisher`, no tópico, e não dá para confirmar sem a
+   GCP se um destino em outro projeto exige o segundo. Quando o Cloud Logging não consegue entregar, ele registra o
+   motivo no projeto do cliente, no log `logging.googleapis.com/sink_error`. Peça ao dono do projeto uma ação de
+   administração qualquer (ou o `sinks update` abaixo), espere um minuto e leia esse log (quem roda é o dono do
+   projeto; a Verax não tem acesso):
+
+   ```bash
+   gcloud logging read 'logName="projects/PROJETO_DO_CLIENTE/logs/logging.googleapis.com%2Fsink_error"' \
+     --project PROJETO_DO_CLIENTE --freshness=1h --limit=20 --format=json
+   ```
+
+   A saída tem de ser `[]`. Uma entrada com `PERMISSION_DENIED` quer dizer que a publicação no tópico não basta, e o
+   desenho não está validado: veja "Se o `logWriter` for exigido", abaixo. (Entradas de antes do `apply` são
+   esperadas: o sink foi criado antes do tópico existir; por isso o `--freshness=1h`, e a ação depois do `apply`.)
+
+2. **A mensagem na assinatura**, lida um minuto depois da ação.
+3. **Só a identidade do sink publica no tópico.**
 
 ```bash
 # No projeto do cliente (quem roda é o dono dele; a Verax não tem acesso):
@@ -153,6 +176,16 @@ gcloud pubsub subscriptions pull verax-homolog-security-PROJETO_DO_CLIENTE --pro
 gcloud pubsub topics get-iam-policy verax-homolog-security-PROJETO_DO_CLIENTE --project PROJETO_DOS_NOS \
   --format='value(bindings)'   # só roles/pubsub.publisher para serviceAccount:service-...@gcp-sa-logging...
 ```
+
+**Se o `logWriter` for exigido** (o passo 1 mostra `PERMISSION_DENIED`), a decisão já está tomada aqui, antes da
+primeira venda, para não ser improvisada num onboarding: o módulo passa a conceder `roles/logging.logWriter` no
+**projeto do nó** à identidade do sink do cliente, restrito por uma condição do IAM ao tópico daquele projeto
+(`resource.name == "projects/PROJETO_DOS_NOS/topics/<prefixo>-security-<projeto>"`), se a condição valer para a
+permissão `logging.logEntries.route` (o mesmo teste diz: com a condição, o erro some). Se não valer, o papel entra sem
+condição, por uma variável própria do módulo, desligada por padrão, e o custo fica registrado neste guia e em
+`docs/ARQUITETURA.md`: a identidade do sink de cada cliente passa a poder gravar logs no projeto do nó
+(`logging.logEntries.create`), e só isso; ela continua sem ler nada no projeto do nó, e a Verax continua sem papel no
+projeto do cliente. Até o teste, não há concessão no nível do projeto.
 
 A permissão fica no projeto do nó, para uma identidade de fora da organização da Verax: se a organização da Verax
 ligar a restrição de domínio (_Domain Restricted Sharing_, `iam.allowedPolicyMemberDomains`), é esse `apply` que
@@ -284,9 +317,9 @@ O `apply` desse plano só grava os endereços novos no estado; nada muda na GCP.
 `No changes.`, e os blocos `moved` podem ficar (não atrapalham) ou sair.
 
 **Na homologação, numa subida do zero,** a última linha é **`Plan: 39 to add, 0 to change, 0 to destroy.`**, sem
-orçamento e sem e-mail de alerta (41 com os dois), mais 5 por projeto monitorado e 4 por pessoa em `operators` (mais
-1 papel na primeira). Todos os nomes começam com `verax-homolog`, menos a permissão de leitura no registro de imagens
-do projeto da Verax.
+orçamento e sem e-mail de alerta (41 com os dois), mais 5 por projeto monitorado, 4 por projeto de cliente e 4 por
+pessoa em `operators` (mais 1 papel na primeira). Todos os nomes começam com `verax-homolog`, menos a permissão de
+leitura no registro de imagens do projeto da Verax.
 
 Nesse primeiro `plan`, aparece também `data.google_project.this will be read during apply` e, com orçamento, o
 projeto dele como `(known after apply)`. É de propósito: ler o projeto usa a API do Resource Manager, que vem
@@ -524,5 +557,8 @@ expirarem.
 
 Com a base no ar, o próximo passo é o pacote do nó (`infra/node/`): instalar a API, o banco e o túnel na VM. O
 roteiro está em `docs/runbooks/no-verax.md`; no `node.conf`, `NODE_PROFILE` é o perfil do ambiente (`lean` no nó da
-Verax, `standard` na homologação). Cada projeto, monitorado ou de cliente, entra em Contas cloud com a assinatura que
-aparece em `terraform output pubsub_subscriptions`.
+Verax, `standard` na homologação) e `VERAX_SECRET_PREFIX` é o `name_prefix` do ambiente (`verax-node` e
+`verax-homolog`). Essa igualdade é uma premissa operacional: o `start.sh` monta com o prefixo o tópico do sink de
+projeto de cliente que o painel mostra, e o teste de contrato da API prende o painel ao Terraform, não ao `node.conf`
+instalado. Cada projeto, monitorado ou de cliente, entra em Contas cloud com a assinatura que aparece em
+`terraform output pubsub_subscriptions`.

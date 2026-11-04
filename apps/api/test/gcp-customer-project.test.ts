@@ -232,6 +232,29 @@ describe('projeto GCP de cliente: tópico do nó e identidade do sink (fase 2, P
     expect(await prisma.cloudAccount.count({ where: { sinkWriterIdentity: identity } })).toBe(1);
   });
 
+  it('a mesma identidade não entra em dois projetos do mesmo cliente, no cadastro nem na alteração', async () => {
+    const identity = sinkIdentity();
+    const first = await createGcp(adminA, { sinkWriterIdentity: identity });
+
+    // A identidade é de um projeto só: em outro, daria a ele a publicação no tópico do primeiro.
+    const conflict = await call(adminA)
+      .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject(), sinkWriterIdentity: identity })
+      .expect(409);
+    expect(conflict.body).toMatchObject({
+      message: 'A identidade do sink já está cadastrada em outra conta deste cliente',
+    });
+    expect(JSON.stringify(conflict.body)).not.toContain(first.id);
+    expect(JSON.stringify(conflict.body)).not.toContain(first.accountId);
+
+    const second = await createGcp(adminA);
+    await call(adminA).patch(`/v1/cloud-accounts/${second.id}`, { sinkWriterIdentity: identity }).expect(409);
+    expect(await identityOf(second.id)).toBeNull();
+
+    // A própria conta pode receber a identidade que já tem (a alteração não conflita consigo mesma).
+    await call(adminA).patch(`/v1/cloud-accounts/${first.id}`, { sinkWriterIdentity: identity }).expect(200);
+    expect(await prisma.cloudAccount.count({ where: { sinkWriterIdentity: identity } })).toBe(1);
+  });
+
   it('leitura vê o tópico e a identidade, mas não grava a identidade (403)', async () => {
     const identity = sinkIdentity();
     const account = await createGcp(adminA, { sinkWriterIdentity: identity });

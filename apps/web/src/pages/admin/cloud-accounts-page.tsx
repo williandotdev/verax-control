@@ -475,6 +475,11 @@ function GcpSteps({ account, canWrite }: { account: CloudAccount; canWrite: bool
               passar.
             </p>
           )}
+          <p className="text-xs text-muted-foreground">
+            Se o projeto está em <code className="font-mono text-xs">monitored_projects</code> do nó (um
+            projeto da própria Verax), o sink já existe, criado pelo Terraform: não rode o comando, ou o
+            projeto ganha um segundo sink e conta em dobro no uso.
+          </p>
         </li>
         <li className="space-y-2">
           <p>

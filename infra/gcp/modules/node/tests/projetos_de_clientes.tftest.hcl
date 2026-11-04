@@ -185,6 +185,20 @@ run "recusa_projeto_invalido" {
   expect_failures = [var.customer_projects]
 }
 
+# A mesma identidade em dois projetos daria ao sink de um a publicação no tópico do outro, e o apply não falharia.
+run "recusa_identidade_repetida_em_dois_projetos" {
+  command = plan
+
+  variables {
+    customer_projects = {
+      "cliente-demo-a" = { writer_identity = "serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com" }
+      "cliente-demo-b" = { writer_identity = "serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com" }
+    }
+  }
+
+  expect_failures = [var.customer_projects]
+}
+
 # O mesmo projeto nas duas listas criaria o sink do Terraform e daria a publicação a outra identidade no mesmo tópico.
 run "recusa_projeto_monitorado_e_de_cliente" {
   command = plan

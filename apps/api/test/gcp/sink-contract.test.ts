@@ -53,4 +53,27 @@ describe('sink de projeto GCP de cliente: o painel, o Terraform do nó e o start
       'GCP_SINK_TOPIC_PREFIX=projects/$VERAX_GCP_PROJECT/topics/$VERAX_SECRET_PREFIX-security-',
     );
   });
+
+  it('o projeto e o prefixo que o install.sh e o start.sh aceitam são os do módulo, e a API exige o mesmo formato', () => {
+    // As regras de `project_id` e `name_prefix` do módulo. O install.sh recusa um node.conf fora delas, o start.sh
+    // só escreve a variável quando as duas valem, e a API recusa a variável fora do formato: se uma das quatro
+    // mudasse sozinha, a API deixaria de subir, ou o painel mostraria um tópico que o módulo não cria.
+    const projectId = '^[a-z][a-z0-9-]{4,28}[a-z0-9]$';
+    const namePrefix = '^[a-z][a-z0-9-]{3,18}$';
+    expect(variablesTf).toContain(`can(regex("${projectId}", var.project_id))`);
+    expect(variablesTf).toContain(`can(regex("${namePrefix}", var.name_prefix))`);
+    for (const script of ['infra/node/bin/install.sh', 'infra/node/bin/start.sh']) {
+      expect(repoFile(script)).toContain(`$VERAX_GCP_PROJECT =~ ${projectId}`);
+      expect(repoFile(script)).toContain(`$VERAX_SECRET_PREFIX =~ ${namePrefix}`);
+    }
+    expect(repoFile('infra/node/bin/deploy.sh')).toContain(`$project =~ ${projectId}`);
+    const envSchema = repoFile('apps/api/src/common/config/env.schema.ts');
+    const apiPattern = /GCP_SINK_TOPIC_PREFIX: z\s*\.string\(\)\s*\.regex\(\/(.+?)\/, \{/.exec(
+      envSchema,
+    )?.[1];
+    const unanchored = (pattern: string) => pattern.slice(1, -1);
+    expect(apiPattern).toBe(
+      `^projects\\/${unanchored(projectId)}\\/topics\\/${unanchored(namePrefix)}-security-$`,
+    );
+  });
 });

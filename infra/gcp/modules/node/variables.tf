@@ -96,6 +96,14 @@ variable "customer_projects" {
     condition     = length(setintersection(keys(var.customer_projects), var.monitored_projects)) == 0
     error_message = "Um projeto fica em monitored_projects (o Terraform cria o sink nele) ou em customer_projects (o cliente cria), nunca nos dois."
   }
+
+  # A identidade é do sink de um projeto só. Repetida em dois projetos (uma colada errada no painel), daria ao sink de
+  # um a publicação no tópico do outro, e o apply passaria: o IAM aceita o mesmo membro em dois tópicos. A API recusa
+  # a repetição entre as contas do mesmo cliente pela mesma razão.
+  validation {
+    condition     = length(distinct([for project in values(var.customer_projects) : project.writer_identity])) == length(var.customer_projects)
+    error_message = "A mesma writer_identity aparece em mais de um projeto: cada identidade de sink é de um projeto só."
+  }
 }
 
 variable "operators" {

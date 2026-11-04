@@ -71,8 +71,10 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
   com cerca de 18 checagens de postura nativas. Sem Prowler.
 - **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O cliente cria o sink com o
   comando pronto de Contas cloud e cola no painel a identidade dele; o Terraform do nó (`customer_projects`) deixa só
-  essa identidade publicar no tópico do projeto. O worker lê a assinatura com a identidade da VM e aplica regras
-  próprias, como no nó da Verax (roteiro em `docs/runbooks/onboarding-cliente.md`, seção 5).
+  essa identidade publicar no tópico do projeto, sem nada no nível do projeto do nó (que isso basta é o que o teste
+  na homologação confirma: `infra/gcp/GUIA.md`, "Projeto de cliente: o sink é do cliente"). O worker lê a assinatura
+  com a identidade da VM e aplica regras próprias, como no nó da Verax (roteiro em
+  `docs/runbooks/onboarding-cliente.md`, seção 5).
 - **Cloudflare:** coletor nativo no worker (seção "Logs do Cloudflare").
 - **Retenção:** o índice do Wazuh guarda 30 dias (alertas a partir do nível 5, 1 shard). Os achados ficam no Postgres
   pelo prazo do plano (90 ou 365 dias), com os campos do evento; só o evento bruto do detalhe expira em 30 dias.
@@ -157,8 +159,9 @@ volta pela API e nunca fica no cadastro da conta.
 | GCP        | ID do projeto                            | Assinatura do Pub/Sub, no projeto do nó, ligada ao sink que o cliente cria (a identidade do sink fica no cadastro; não é segredo) | Identidade da VM do nó, sem chave                                            |
 | Cloudflare | ID da conta (32 caracteres hexadecimais) | Zonas (domínios) monitoradas                                                                                                      | Token só de leitura, no cofre                                                |
 
-Cada origem de log (bucket, assinatura ou zona) pertence a um só cliente, como já valia para os buckets: é o que
-permite atribuir cada alerta ao cliente certo.
+Cada origem de log (bucket, assinatura, identidade do sink ou zona) pertence a um só cliente, como já valia para os
+buckets: é o que permite atribuir cada alerta ao cliente certo. A identidade do sink, além disso, é de um projeto só,
+mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
 
 ## Cofre de credenciais
 

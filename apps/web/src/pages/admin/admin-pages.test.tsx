@@ -317,6 +317,10 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       '--project=cliente-soc-prod',
     );
     expect(within(sheet).getByText(/nenhuma chave de conta de serviço é criada/)).toBeInTheDocument();
+    // Um projeto da própria Verax, com o sink criado pelo Terraform, não pode ganhar um segundo sink pelo comando.
+    expect(
+      within(sheet).getByText(/o sink já existe, criado pelo Terraform: não rode o comando/),
+    ).toBeInTheDocument();
     expect(within(sheet).queryByText(/revisor de segurança/)).not.toBeInTheDocument();
     expect(within(sheet).queryByText(/^vx-/)).not.toBeInTheDocument();
   });

@@ -213,7 +213,7 @@ export class CloudAccountsService {
     if (foreign.length > 0) {
       throw new ApiError(HttpStatus.BAD_REQUEST, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
     }
-    await this.assertOriginsFree(auth, input);
+    await this.assertOriginsFree(auth, input, id);
     // Outra assinatura é outra fonte, e a conta desativada ou reativada recomeça: a conexão volta a "aguardando" até
     // o coletor confirmar a leitura de novo.
     const sourceChanged =
@@ -276,15 +276,24 @@ export class CloudAccountsService {
    *   GuardDuty de outro também é ambíguo).
    * - Assinatura do Pub/Sub: um coletor agregado pode servir vários projetos do mesmo cliente, nunca de dois.
    * - Identidade do sink: é o agente do Cloud Logging do projeto do cliente, e quem a tem publica no tópico dele.
-   *   Vale para um projeto só; colada em outro cliente, daria a publicação a um projeto que não é dele.
+   *   Vale para um projeto só: colada em outro cliente, daria a publicação a um projeto que não é dele; colada em
+   *   outro projeto do mesmo cliente, daria a um projeto a publicação no tópico de outro (o Terraform do nó recusa
+   *   a repetição em `customer_projects` pela mesma razão). Por isso é a única origem que também não se repete
+   *   entre as contas do próprio cliente (`exceptId` é a conta que está sendo alterada).
    * - Zona do Cloudflare: o domínio identifica o cliente nos eventos do WAF.
    *
    * A checagem roda sob um lock transacional por origem, para dois cadastros simultâneos não passarem juntos.
    * Responde só "já cadastrado", sem dizer de quem.
    */
-  private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins): Promise<void> {
+  private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins, exceptId?: string): Promise<void> {
     const tenantId = auth.scopeTenantId as string;
-    const checks: { key: string; label: string; where: Prisma.CloudAccountWhereInput }[] = [];
+    const checks: {
+      key: string;
+      label: string;
+      where: Prisma.CloudAccountWhereInput;
+      /** A origem também não pode estar em outra conta do mesmo cliente. */
+      onePerAccount?: boolean;
+    }[] = [];
     const buckets = new Set(
       LOG_SOURCES.map((source) => origins.buckets?.[source]).filter((name) => typeof name === 'string'),
     );
@@ -309,6 +318,7 @@ export class CloudAccountsService {
         key: `verax:sink:${identity}`,
         label: 'A identidade do sink já está cadastrada',
         where: { sinkWriterIdentity: identity },
+        onePerAccount: true,
       });
     }
     for (const zone of origins.zones ?? []) {
@@ -329,6 +339,14 @@ export class CloudAccountsService {
       });
       if (taken) {
         throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outro cliente`);
+      }
+      if (!check.onePerAccount) continue;
+      const repeated = await db.cloudAccount.findFirst({
+        where: { tenantId, ...check.where, ...(exceptId && { id: { not: exceptId } }) },
+        select: { id: true },
+      });
+      if (repeated) {
+        throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outra conta deste cliente`);
       }
     }
   }
