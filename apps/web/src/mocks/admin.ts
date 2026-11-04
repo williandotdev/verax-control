@@ -20,6 +20,7 @@ import {
   readOnlyRoleArn,
   TEMPORARY_PASSWORD_HOURS,
   type Tenant,
+  tenantCreatedSchema,
   tenantCreateSchema,
   tenantListQuerySchema,
   tenantSchema,
@@ -388,6 +389,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const tenant = store.tenants.find((candidate) => candidate.id === params['id']);
       return tenant ? HttpResponse.json(tenant) : problem(404, 'Cliente não encontrado');
     }),
+    // O cliente nasce com o primeiro administrador (`admin_cliente`), com a senha temporária só nesta resposta.
     http.post(url('/v1/tenants'), async ({ request }) => {
       const check = guard('tenants:write', request);
       if (!check.ok) return check.error;
@@ -395,20 +397,39 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!input.success) return problem(400, 'Dados inválidos');
       if (store.tenants.some((tenant) => tenant.cnpj === input.data.cnpj))
         return problem(409, 'CNPJ já cadastrado');
+      const { firstAdmin, ...fields } = input.data;
+      const email = firstAdmin.email.trim().toLowerCase();
+      // Como na API: e-mail já usado em qualquer cliente recusa o cadastro inteiro, sem dizer de quem é.
+      if ([...store.users.values()].flat().some((user) => user.email === email))
+        return problem(409, 'Já existe um usuário com este e-mail');
       const now = new Date().toISOString();
       const tenant = tenantSchema.parse({
         id: newId(),
-        ...input.data,
-        escalationContact: {
-          ...input.data.escalationContact,
-          phone: input.data.escalationContact.phone ?? null,
-        },
+        ...fields,
+        escalationContact: { ...fields.escalationContact, phone: fields.escalationContact.phone ?? null },
         status: 'active',
         createdAt: now,
         updatedAt: now,
       });
+      const admin = userSchema.parse({
+        id: `demo-${email}`,
+        name: firstAdmin.name,
+        email,
+        role: 'admin_cliente',
+        status: 'active',
+        mfaEnabled: false,
+        mustChangePassword: true,
+        createdAt: now,
+      });
       store.tenants.push(tenant);
-      return HttpResponse.json(tenant, { status: 201 });
+      store.users.set(tenant.id, [admin]);
+      return HttpResponse.json(
+        tenantCreatedSchema.parse({
+          tenant,
+          firstAdmin: { id: admin.id, name: admin.name, email: admin.email, ...demoTemporaryPassword() },
+        }),
+        { status: 201 },
+      );
     }),
     http.patch(url('/v1/tenants/:id'), async ({ params, request }) => {
       const check = guard('tenants:write', request);

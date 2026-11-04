@@ -62,7 +62,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [tour('seletor-cliente')],
     permission: 'session:switch_tenant',
     title: 'Um cliente por vez',
-    body: 'A equipe da Verax escolhe aqui qual cliente está vendo. A troca vale só para esta sessão, fica registrada na auditoria e tira da tela os dados do cliente anterior. Os clientes são cadastrados em Administração, no menu.',
+    body: 'A equipe da Verax escolhe aqui qual cliente está vendo. A troca vale só para esta sessão, fica registrada na auditoria e tira da tela os dados do cliente anterior. Os clientes são cadastrados em Administração, no menu, cada um já com o primeiro administrador dele.',
   },
   {
     id: 'incidentes',

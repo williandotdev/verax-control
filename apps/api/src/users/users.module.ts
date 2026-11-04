@@ -5,5 +5,7 @@ import { UsersService } from './users.service.js';
 @Module({
   controllers: [UsersController],
   providers: [UsersService],
+  // O cadastro de clientes cria o primeiro administrador pelo mesmo caminho (senha temporária incluída).
+  exports: [UsersService],
 })
 export class UsersModule {}

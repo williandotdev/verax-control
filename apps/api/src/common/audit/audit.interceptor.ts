@@ -8,7 +8,13 @@ import { isSelfManaged } from '../../auth/decorators.js';
 import { type AuditDetails, requestContext } from '../context/request-context.js';
 import { toErrorResponse } from '../http/all-exceptions.filter.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { type RequestEntry, requestEntry, withDetails, WRITE_METHODS } from './audit-request.js';
+import {
+  inheritTenant,
+  type RequestEntry,
+  requestEntry,
+  withDetails,
+  WRITE_METHODS,
+} from './audit-request.js';
 import { AuditService } from './audit.service.js';
 
 /** Limites da transação de uma requisição de escrita. */
@@ -49,18 +55,24 @@ export class AuditInterceptor implements NestInterceptor {
 
   private async runAudited(entry: RequestEntry, statusCode: number, next: CallHandler): Promise<unknown> {
     const details: AuditDetails = {};
+    const additional: AuditDetails[] = [];
     try {
       return await this.prisma.$transaction(
         async (tx) => {
           const result: unknown = await requestContext.run(
-            { ...requestContext.getStore(), tx, audit: details },
+            { ...requestContext.getStore(), tx, audit: details, additionalAudit: additional },
             () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
           );
-          await this.auditService.write(tx, {
-            ...withDetails(entry, details),
-            outcome: 'success',
-            statusCode,
-          });
+          // O principal e os adicionais (`AuditContext.also`) entram no mesmo commit da alteração. O adicional sem
+          // cliente próprio segue a trilha do principal (a do escopo, marcada por `scoped()`), não a do ator: para
+          // admin_verax a do ator é nenhuma, e os dois registros de uma requisição ficariam em trilhas diferentes.
+          for (const described of [details, ...additional.map((extra) => inheritTenant(details, extra))]) {
+            await this.auditService.write(tx, {
+              ...withDetails(entry, described),
+              outcome: 'success',
+              statusCode,
+            });
+          }
           return result;
         },
         { maxWait: TRANSACTION_MAX_WAIT_MS, timeout: TRANSACTION_TIMEOUT_MS },
