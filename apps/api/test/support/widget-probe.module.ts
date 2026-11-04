@@ -11,7 +11,7 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
-import { Public } from '../../src/auth/decorators.js';
+import { Public, RequirePermission } from '../../src/auth/decorators.js';
 import { z } from 'zod';
 import { AuditContext } from '../../src/common/audit/audit-context.service.js';
 import { PrismaService } from '../../src/common/prisma/prisma.service.js';
@@ -104,5 +104,40 @@ class WidgetProbeController {
   }
 }
 
-@Module({ controllers: [WidgetProbeController], providers: [WidgetProbeService] })
+const scopedPairSchema = z.strictObject({
+  /** Adicional com `tenantId: null` (operação global) em vez de herdar o cliente do principal. */
+  extraGlobal: z.boolean().optional(),
+});
+
+/**
+ * Escrita no escopo do cliente da sessão com um registro adicional (`AuditContext.also`): o `scoped()` marca a
+ * trilha do principal, e o adicional vem sem `tenantId`. Só admin_verax com um cliente selecionado distingue a
+ * trilha do escopo da do ator (nenhuma).
+ */
+@Controller('widgets-probe/scoped')
+@RequirePermission('users:write')
+class ScopedWidgetProbeController {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditContext,
+  ) {}
+
+  @Post('pair')
+  pair(@Body({ schema: scopedPairSchema }) body: z.infer<typeof scopedPairSchema>): { ok: true } {
+    this.prisma.scoped(); // exige um cliente no escopo e marca a trilha de auditoria dele
+    this.audit.describe({ action: 'widget.pair', resourceType: 'widget', resourceId: 'principal' });
+    this.audit.also({
+      action: 'widget.pair_extra',
+      resourceType: 'widget',
+      resourceId: 'adicional',
+      ...(body.extraGlobal ? { tenantId: null } : {}),
+    });
+    return { ok: true };
+  }
+}
+
+@Module({
+  controllers: [WidgetProbeController, ScopedWidgetProbeController],
+  providers: [WidgetProbeService],
+})
 export class WidgetProbeModule {}

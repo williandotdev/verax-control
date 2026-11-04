@@ -471,3 +471,6 @@ Firestore com modelo de dados e auditoria), venda (checkout, webhook e página d
 painel de build único, bundle do painel na versão, bootstrap do admin do cliente), provisionamento e ciclo (executor
 Terraform e passos, suspensão e exclusão, reconciliação e alertas) e o portão da venda (ensaio ponta a ponta no modo
 de teste da Stripe).
+Hoje o primeiro acesso é manual: a Verax cadastra o cliente em Clientes → Novo cliente, já com o primeiro
+administrador, e repassa a senha temporária dele por um canal seguro (`docs/runbooks/onboarding-cliente.md`). Na fase
+3, o bootstrap do nó cria esse administrador no provisionamento, com o e-mail do checkout.

@@ -14,6 +14,7 @@ import {
   type Paginated,
   type Tenant,
   type TenantCreate,
+  type TenantCreated,
   tenantCreateSchema,
   type TenantListQuery,
   tenantListQuerySchema,
@@ -44,9 +45,10 @@ export class TenantsController {
     return this.tenants.get(id);
   }
 
+  /** Cria o cliente e o primeiro administrador dele; a senha temporária só sai nesta resposta. */
   @Post()
   @RequirePermission('tenants:write')
-  create(@Body({ schema: tenantCreateSchema }) body: TenantCreate): Promise<Tenant> {
+  create(@Body({ schema: tenantCreateSchema }) body: TenantCreate): Promise<TenantCreated> {
     return this.tenants.create(body);
   }
 

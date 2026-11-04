@@ -1,7 +1,12 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { temporaryPasswordSchema } from '@verax/shared';
+import {
+  paginatedSchema,
+  temporaryPasswordSchema,
+  tenantCreatedSchema,
+  tenantSummarySchema,
+} from '@verax/shared';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -38,40 +43,99 @@ const rowsOf = async (caption: string) =>
     .getAllByRole('row')
     .slice(1);
 
+/** A senha temporária do mock tem o formato da API: quatro grupos de cinco, sem caracteres ambíguos. */
+const TEMPORARY_PASSWORD =
+  /^[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}$/;
+
 describe('Clientes (T7.1)', { timeout: FORM_TIMEOUT }, () => {
-  it('lista, valida e cadastra; o novo cliente entra na lista', async () => {
+  it('lista, valida e cadastra com o primeiro administrador; a senha temporária dele aparece uma vez', async () => {
+    // Com `setup`, a área de transferência simulada do user-event recebe a cópia.
+    const user = userEvent.setup();
     renderAt('/cadastros/clientes', { me: demoMe('admin_verax') });
     expect(await rowsOf('Clientes')).toHaveLength(3);
-    await userEvent.click(screen.getByRole('button', { name: 'Novo cliente' }));
+    await user.click(screen.getByRole('button', { name: 'Novo cliente' }));
     const sheet = await screen.findByRole('dialog', { name: 'Novo cliente' });
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar cliente' }));
+    await user.click(within(sheet).getByRole('button', { name: 'Cadastrar cliente' }));
     expect(within(sheet).getByLabelText('Nome')).toHaveAccessibleDescription('Preencha este campo.');
+    expect(within(sheet).getByLabelText('Nome do administrador')).toHaveAccessibleDescription(
+      'Preencha este campo.',
+    );
 
-    await userEvent.type(within(sheet).getByLabelText('Nome'), 'Cliente Novo Gama');
-    await userEvent.type(within(sheet).getByLabelText(/^CNPJ/), '45.723.174/0001-10');
-    await userEvent.type(within(sheet).getByLabelText('Plano'), 'Postura');
-    await userEvent.type(within(sheet).getByLabelText('Nome do contato'), 'Gabriel Lima');
-    await userEvent.type(within(sheet).getByLabelText('E-mail do contato'), 'gabriel@exemplo.com.br');
-    await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar cliente' }));
+    await user.type(within(sheet).getByLabelText('Nome'), 'Cliente Novo Gama');
+    await user.type(within(sheet).getByLabelText(/^CNPJ/), '45.723.174/0001-10');
+    await user.type(within(sheet).getByLabelText('Plano'), 'Postura');
+    await user.type(within(sheet).getByLabelText('Nome do contato'), 'Gabriel Lima');
+    await user.type(within(sheet).getByLabelText('E-mail do contato'), 'gabriel@exemplo.com.br');
+    await user.type(within(sheet).getByLabelText('Nome do administrador'), 'Helena Prado');
+    await user.type(within(sheet).getByLabelText('E-mail do administrador'), 'helena-sem-arroba');
+    await user.click(within(sheet).getByRole('button', { name: 'Cadastrar cliente' }));
+    expect(within(sheet).getByLabelText('E-mail do administrador')).toHaveAccessibleDescription(
+      'E-mail inválido.',
+    );
+    await user.clear(within(sheet).getByLabelText('E-mail do administrador'));
+    await user.type(within(sheet).getByLabelText('E-mail do administrador'), 'helena@exemplo.com.br');
+    await user.click(within(sheet).getByRole('button', { name: 'Cadastrar cliente' }));
+
+    // O formulário sai da tela; no lugar, a senha temporária do administrador, com o foco.
+    const notice = await within(sheet).findByRole('region', { name: 'Senha temporária de Helena Prado' });
+    expect(within(sheet).getByRole('status')).toHaveTextContent(
+      'Cliente Cliente Novo Gama cadastrado. Conta de Helena Prado (helena@exemplo.com.br) criada como administrador do cliente.',
+    );
+    expect(within(notice).getByRole('heading', { name: 'Senha temporária de Helena Prado' })).toHaveFocus();
+    const password = within(notice).getByText(TEMPORARY_PASSWORD);
+    expect(password.tagName).toBe('CODE');
+    expect(notice).toHaveTextContent('Ela só aparece agora.');
+    expect(notice).toHaveTextContent('canal seguro');
+    expect(notice).toHaveTextContent(
+      'No primeiro login, a pessoa troca esta senha por uma só dela e cadastra o MFA.',
+    );
+    await user.click(within(notice).getByRole('button', { name: 'Copiar' }));
+    expect(await within(notice).findByRole('button', { name: 'Copiada' })).toBeInTheDocument();
+    expect(await navigator.clipboard.readText()).toBe(password.textContent);
+
+    await user.click(within(notice).getByRole('button', { name: 'Concluir' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(async () => expect(await rowsOf('Clientes')).toHaveLength(4));
+
+    // Reabrir o cadastro não traz a senha de volta.
+    await user.click(screen.getByRole('button', { name: 'Novo cliente' }));
+    const again = await screen.findByRole('dialog', { name: 'Novo cliente' });
+    expect(within(again).getByLabelText('Nome do administrador')).toHaveValue('');
+    expect(within(again).queryByText(password.textContent ?? '')).not.toBeInTheDocument();
   });
 
-  it('edita e desativa um cliente existente', async () => {
+  it('edita e desativa um cliente existente, sem o primeiro administrador no formulário', async () => {
     renderAt('/cadastros/clientes', { me: demoMe('admin_verax') });
     await userEvent.click(await screen.findByRole('button', { name: 'Cliente Demo Beta' }));
     const sheet = await screen.findByRole('dialog', { name: 'Cliente' });
     expect(await within(sheet).findByDisplayValue('Postura e alertas')).toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Nome do administrador')).not.toBeInTheDocument();
     await userEvent.click(within(sheet).getByRole('button', { name: 'Desativar cliente' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     const beta = (await rowsOf('Clientes')).find((row) => row.textContent?.includes('Beta')) as HTMLElement;
     await waitFor(() => expect(beta).toHaveTextContent('Inativo'));
   });
-});
 
-/** A senha temporária do mock tem o formato da API: quatro grupos de cinco, sem caracteres ambíguos. */
-const TEMPORARY_PASSWORD =
-  /^[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}-[A-HJ-NP-Za-km-z2-9]{5}$/;
+  it('o mock recusa como a API: e-mail do administrador já usado em qualquer cliente (409), sem criar o cliente', async () => {
+    const state: MockState = { me: demoMe('admin_verax') };
+    server.use(...createHandlers(state));
+    const body = (email: string) => ({
+      name: 'Cliente Repetido',
+      cnpj: '04.252.011/0001-10',
+      plan: 'Postura',
+      escalationContact: { name: 'Ana', email: 'ana@exemplo.com.br' },
+      firstAdmin: { name: 'Marina Alves', email },
+    });
+    await expect(api.post('/v1/tenants', body('marina.alves@exemplo.com.br'))).rejects.toMatchObject({
+      status: 409,
+    });
+    const list = await api.get('/v1/tenants?pageSize=100', paginatedSchema(tenantSummarySchema));
+    expect(list.items.some((tenant) => tenant.name === 'Cliente Repetido')).toBe(false);
+    const created = await api.post('/v1/tenants', body('nova@exemplo.com.br'), tenantCreatedSchema);
+    expect(created.firstAdmin).toMatchObject({ name: 'Marina Alves', email: 'nova@exemplo.com.br' });
+    expect(created.firstAdmin.temporaryPassword).toMatch(TEMPORARY_PASSWORD);
+  });
+});
 
 describe('Usuários (T7.2)', { timeout: FORM_TIMEOUT }, () => {
   it('cria com validação; a senha temporária aparece uma vez, e a lista indica quem ainda está com ela', async () => {

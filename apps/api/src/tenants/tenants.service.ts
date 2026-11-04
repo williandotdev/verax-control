@@ -3,6 +3,7 @@ import type {
   Paginated,
   Tenant,
   TenantCreate,
+  TenantCreated,
   TenantListQuery,
   TenantSummary,
   TenantUpdate,
@@ -12,6 +13,7 @@ import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
+import { UsersService } from '../users/users.service.js';
 
 const tenantSelect = {
   id: true,
@@ -44,7 +46,7 @@ export function toTenant(row: TenantRow): Tenant {
   };
 }
 
-function toData(input: TenantCreate | TenantUpdate): Prisma.TenantUpdateInput {
+function toData(input: Omit<TenantCreate, 'firstAdmin'> | TenantUpdate): Prisma.TenantUpdateInput {
   const contact = input.escalationContact;
   return {
     name: input.name,
@@ -78,6 +80,7 @@ export class TenantsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
+    private readonly users: UsersService,
   ) {}
 
   async list(query: TenantListQuery): Promise<Paginated<TenantSummary>> {
@@ -98,11 +101,17 @@ export class TenantsService {
     return toTenant(await this.find(id));
   }
 
-  async create(input: TenantCreate): Promise<Tenant> {
+  /**
+   * O cliente nasce com o primeiro administrador (`admin_cliente`), criado na mesma transação da requisição com uma
+   * senha temporária, devolvida uma vez a quem cadastrou (nunca gravada em texto, nem na auditoria, nem relida). Se
+   * a conta não puder ser criada (e-mail já usado), o cliente também não é.
+   */
+  async create(input: TenantCreate): Promise<TenantCreated> {
+    const { firstAdmin, ...fields } = input;
     let row: TenantRow;
     try {
       row = await this.prisma.db().tenant.create({
-        data: toData(input) as Prisma.TenantCreateInput,
+        data: toData(fields) as Prisma.TenantCreateInput,
         select: tenantSelect,
       });
     } catch (error) {
@@ -110,6 +119,11 @@ export class TenantsService {
       throw error;
     }
     const tenant = toTenant(row);
+    const { user, ...temporary } = await this.users.provision(tenant.id, {
+      ...firstAdmin,
+      role: 'admin_cliente',
+    });
+    // Dois registros na trilha do cliente novo: o cadastro e a conta do administrador.
     this.audit.describe({
       action: 'tenant.create',
       resourceType: 'tenant',
@@ -117,7 +131,14 @@ export class TenantsService {
       tenantId: tenant.id,
       after: tenant,
     });
-    return tenant;
+    this.audit.also({
+      action: 'user.create',
+      resourceType: 'user',
+      resourceId: user.id,
+      tenantId: tenant.id,
+      after: user,
+    });
+    return { tenant, firstAdmin: { id: user.id, name: user.name, email: user.email, ...temporary } };
   }
 
   async update(id: string, input: TenantUpdate): Promise<Tenant> {

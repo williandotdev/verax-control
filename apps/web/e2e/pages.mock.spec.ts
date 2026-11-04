@@ -115,6 +115,26 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
   });
 
+  test('cliente novo com o primeiro administrador: formulário e senha temporária sem violação de acessibilidade', async ({
+    page,
+  }) => {
+    await open(page, '/cadastros/clientes', 'Clientes');
+    await page.getByRole('button', { name: 'Novo cliente' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Novo cliente' });
+    await expect(sheet.getByLabel('E-mail do administrador')).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+    await sheet.getByLabel('Nome', { exact: true }).fill('Cliente Novo Gama');
+    await sheet.getByLabel(/^CNPJ/).fill('45.723.174/0001-10');
+    await sheet.getByLabel('Plano').fill('Postura');
+    await sheet.getByLabel('Nome do contato').fill('Gabriel Lima');
+    await sheet.getByLabel('E-mail do contato').fill('gabriel@exemplo.com.br');
+    await sheet.getByLabel('Nome do administrador').fill('Helena Prado');
+    await sheet.getByLabel('E-mail do administrador').fill('helena@exemplo.com.br');
+    await sheet.getByRole('button', { name: 'Cadastrar cliente' }).click();
+    await expect(sheet.getByRole('region', { name: 'Senha temporária de Helena Prado' })).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+  });
+
   test('teclado: o detalhe abre com Enter, fecha com Esc e o foco volta para o achado', async ({ page }) => {
     await open(page, '/achados?severidade=critical', 'Achados');
     const finding = page.getByRole('button', { name: /Tentativa de desligar a trilha/ });
