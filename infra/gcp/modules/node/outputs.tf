@@ -42,3 +42,12 @@ output "nat_ip" {
   description = "IP de saída fixo do nó (Cloud NAT), no perfil standard. É o IP que a política IAM da AWS do cliente libera (NODE_EGRESS_IPS no node.conf, com /32). Nulo no lean, que usa o IP automático do NAT."
   value       = local.static_nat_ip ? google_compute_address.nat[0].address : null
 }
+
+output "wazuh_agents" {
+  description = "Agentes do Wazuh (wazuh_agents): o IP fixo de entrada (WAZUH_AGENTS_ADDRESS no node.conf, sem máscara) e as faixas liberadas (WAZUH_AGENTS_SOURCES, separadas por vírgula). `allowlist_pending` é verdadeiro sem faixa nenhuma: as portas ficam fechadas. Nulo com o interruptor desligado."
+  value = var.wazuh_agents ? {
+    address           = google_compute_address.agents[0].address
+    sources           = var.wazuh_agents_sources
+    allowlist_pending = length(var.wazuh_agents_sources) == 0
+  } : null
+}

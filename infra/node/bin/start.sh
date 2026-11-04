@@ -30,6 +30,12 @@ MEMORY_STANDARD=(POSTGRES_MEM_LIMIT=512m POSTGRES_SHARED_BUFFERS=128MB API_MEM_L
 # Wazuh só no perfil standard (PR-W1): o segundo arquivo do Compose e a cópia de infra/wazuh que o install.sh instala.
 wazuh=/opt/verax/wazuh
 standard() { [[ ${NODE_PROFILE:-lean} == standard ]]; }
+# Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; só no standard): o terceiro arquivo do
+# Compose (as portas 1514 e 1515 do manager, a senha de registro para o gerador e a lista dos agentes para o worker) e o
+# certificado do registro, emitido pelo install.sh. Sem a linha, nada muda: os arquivos de ambiente e o projeto do
+# Compose são os de sempre.
+agents() { [[ ${WAZUH_AGENTS:-false} == true ]]; }
+agents_certs=/var/lib/verax/wazuh-agents
 # Pasta das chaves privadas do cofre de credenciais, em /run/verax (memória): o compose.vault.yaml a monta só leitura
 # no worker, em WORKER_VAULT_MOUNT, e o arquivo das chaves (WORKER_KEYS) fica dentro dela, no caminho WORKER_KEYS_MOUNT
 # que o worker.env aponta (o CI confere que tudo bate). O volume é a pasta, e não o arquivo, porque a origem de um bind
@@ -48,6 +54,7 @@ compose() { # [--base] <argumentos do compose...>; --base: sem o compose.wazuh.y
     shift
   elif standard; then
     files+=(-f /opt/verax/compose.wazuh.yaml)
+    if agents; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi
   fi
   # Com o cofre, o worker ganha o arquivo das chaves (compose.vault.yaml), também com --base (o worker é da pilha da
   # aplicação). Sem ele (o nó da Verax), os serviços são os de antes do cofre: os do compose.yaml (e os do Wazuh, no
@@ -267,6 +274,56 @@ wazuh_passwords() {
   check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
 }
 
+# Agentes (WAZUH_AGENTS=true): o que o node.conf diz e o que o install.sh gerou, conferidos antes de qualquer arquivo
+# ser escrito, nos mesmos formatos do install.sh. Preenche `agents_api` (para a API: o endereço, o cliente, as faixas
+# liberadas, o limite, a CA do registro em base64 e a senha de registro, que só os administradores veem no painel) e
+# `agents_worker` (o caminho da lista dos agentes e o cliente a quem eles pertencem), declaradas no render. A senha não
+# vai para o worker nem para o manager por variável: o gerador a lê do arquivo, montado só leitura.
+wazuh_agents() {
+  local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])' ipv4 cidr file enrollment ca
+  ipv4="$octet(\\.$octet){3}"
+  cidr="$ipv4/(1[6-9]|2[0-9]|3[0-2])"
+  if ! standard; then
+    echo 'WAZUH_AGENTS=true só no perfil standard: o Wazuh só existe nele (NODE_PROFILE em /etc/verax/node.conf).' >&2
+    return 1
+  fi
+  if [[ ! ${WAZUH_AGENTS_ADDRESS:-} =~ ^$ipv4$ ]]; then
+    echo 'WAZUH_AGENTS_ADDRESS inválido em /etc/verax/node.conf: use o IP fixo dos agentes, sem máscara.' >&2
+    return 1
+  fi
+  if [[ ! ${WAZUH_AGENTS_TENANT:-} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+    echo 'WAZUH_AGENTS_TENANT inválido em /etc/verax/node.conf: use o id do cliente do nó.' >&2
+    return 1
+  fi
+  if [[ -n ${WAZUH_AGENTS_SOURCES:-} && ! $WAZUH_AGENTS_SOURCES =~ ^$cidr(,$cidr)*$ ]]; then
+    echo 'WAZUH_AGENTS_SOURCES inválido em /etc/verax/node.conf: IPv4 de /16 a /32, separados por vírgula.' >&2
+    return 1
+  fi
+  if [[ -n ${WAZUH_AGENTS_MAX:-} ]] && { [[ ! $WAZUH_AGENTS_MAX =~ ^[1-9][0-9]{0,2}$ ]] || ((WAZUH_AGENTS_MAX > 500)); }; then
+    echo 'WAZUH_AGENTS_MAX inválido em /etc/verax/node.conf: use um inteiro de 1 a 500.' >&2
+    return 1
+  fi
+  for file in "$secrets/wazuh-agents-enrollment" "$agents_certs/ca.crt" "$agents_certs/manager.crt" \
+    "$agents_certs/manager.key"; do
+    if [[ ! -s $file ]]; then
+      echo "Falta $file: com WAZUH_AGENTS=true, o install.sh gera a senha de registro e o certificado dos agentes." \
+        "Rode o deploy.sh (ou o install.sh na VM) de novo antes de subir o nó." >&2
+      return 1
+    fi
+  done
+  enrollment=$(internal_secret wazuh-agents-enrollment)
+  if [[ ! $enrollment =~ ^[A-Za-z0-9]{32,64}$ ]]; then
+    echo "A senha de registro dos agentes ($secrets/wazuh-agents-enrollment) deve ter de 32 a 64 letras e dígitos." >&2
+    return 1
+  fi
+  ca=$(base64 -w0 "$agents_certs/ca.crt")
+  agents_api=(WAZUH_AGENTS=true "WAZUH_AGENTS_ADDRESS=$WAZUH_AGENTS_ADDRESS" "WAZUH_AGENTS_TENANT=$WAZUH_AGENTS_TENANT")
+  if [[ -n ${WAZUH_AGENTS_SOURCES:-} ]]; then agents_api+=("WAZUH_AGENTS_SOURCES=$WAZUH_AGENTS_SOURCES"); fi
+  if [[ -n ${WAZUH_AGENTS_MAX:-} ]]; then agents_api+=("WAZUH_AGENTS_MAX=$WAZUH_AGENTS_MAX"); fi
+  agents_api+=("WAZUH_AGENTS_CA=$ca" "WAZUH_AGENTS_ENROLLMENT_PASSWORD=$enrollment")
+  agents_worker=(WAZUH_AGENTS_FILE=/run/wazuh-agents/agents.json "WAZUH_AGENTS_TENANT=$WAZUH_AGENTS_TENANT")
+}
+
 render() {
   case ${NODE_PROFILE:-lean} in
     lean | standard) ;;
@@ -276,6 +333,16 @@ render() {
       ;;
   esac
   if standard; then wazuh_passwords; fi
+  local agents_api=() agents_worker=()
+  case ${WAZUH_AGENTS:-false} in
+    # O `|| return` deixa a parada explícita também quando o render roda num contexto sem `set -e` (o teste).
+    true) wazuh_agents || return 1 ;;
+    false) ;;
+    *)
+      echo 'WAZUH_AGENTS inválido em /etc/verax/node.conf: use true ou false.' >&2
+      return 1
+      ;;
+  esac
   mkdir -p "$run"
   chmod 0700 "$run"
   if standard; then
@@ -382,6 +449,7 @@ render() {
     "${indexer[@]}" \
     "${sink_topic[@]}" \
     "${turnstile[@]}" \
+    "${agents_api[@]}" \
     "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
@@ -389,6 +457,7 @@ render() {
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "${plan[@]}" \
     "${indexer[@]}" \
+    "${agents_worker[@]}" \
     "${vault_worker[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
@@ -437,8 +506,9 @@ wazuh_up() {
     echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
     return 1
   fi
-  # Os mesmos arquivos do compose(), com o do cofre quando ele está ligado: o projeto é um só.
+  # Os mesmos arquivos do compose(), com o dos agentes e o do cofre quando ligados: o projeto é um só.
   COMPOSE_FILE=/opt/verax/compose.yaml:/opt/verax/compose.wazuh.yaml
+  if agents; then COMPOSE_FILE+=:/opt/verax/compose.wazuh-agents.yaml; fi
   if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then COMPOSE_FILE+=:/opt/verax/compose.vault.yaml; fi
   export COMPOSE_FILE
   export COMPOSE_ENV_FILES=/etc/verax/images.env,$run/memory.env
@@ -451,9 +521,13 @@ wazuh_up() {
   bash "$wazuh/scripts/configure-indexer.sh"
   /opt/verax/bin/wazuh-apply.sh
   compose up --detach --wait --wait-timeout 900 wazuh.manager
+  # Com os agentes, o smoke test espera só a 1514 e a 1515 publicadas no manager e confere o registro (certificado do IP
+  # dos agentes e senha errada recusada); sem eles, nenhuma porta.
+  local agents_address=''
+  if agents; then agents_address=$WAZUH_AGENTS_ADDRESS; fi
   INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD \
     WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD \
-    bash "$wazuh/scripts/smoke-test.sh"
+    WAZUH_AGENTS_ADDRESS=$agents_address bash "$wazuh/scripts/smoke-test.sh"
   # A guarda do metadata vale para o Wazuh (no molde do teste do EC2, infra/wazuh/scripts/bootstrap-host.sh): sem
   # resposta (000) no manager e no indexer. Se algum alcançar, os dois param e a partida falha.
   local service status

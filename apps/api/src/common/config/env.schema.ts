@@ -13,6 +13,12 @@ import {
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import {
+  apiAgentsEnvShape,
+  wazuhAgentsConfigOf,
+  wazuhAgentsFeedOf,
+  workerAgentsEnvShape,
+} from '../../agents/agents-config.js';
+import {
   CredentialKeyError,
   MAX_KEY_VERSION,
   parsePrivateKeys,
@@ -279,6 +285,9 @@ const apiEnvSchema = z
     // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola (PR-V3).
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),
     CREDENTIALS_KEY_VERSION: keyVersionFromEnv.optional(),
+    // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; desligado por padrão): o endereço,
+    // o cliente do nó, as faixas liberadas, o limite, a CA e a senha de registro (agents/agents-config.ts).
+    ...apiAgentsEnvShape,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
@@ -352,18 +361,47 @@ const apiEnvSchema = z
       });
     }
   })
-  .transform(({ CREDENTIALS_PUBLIC_KEY, CREDENTIALS_KEY_VERSION, ...env }, ctx) => {
-    // A chave pública já validada no lugar do texto em base64; sem o par, a API sobe sem o cofre.
-    let credentialsPublicKey: VaultPublicKey | null = null;
-    if (CREDENTIALS_PUBLIC_KEY !== undefined && CREDENTIALS_KEY_VERSION !== undefined) {
-      credentialsPublicKey = vaultKey(
-        () => parsePublicKey(CREDENTIALS_PUBLIC_KEY, CREDENTIALS_KEY_VERSION),
-        'CREDENTIALS_PUBLIC_KEY',
+  .transform(
+    (
+      {
+        CREDENTIALS_PUBLIC_KEY,
+        CREDENTIALS_KEY_VERSION,
+        WAZUH_AGENTS,
+        WAZUH_AGENTS_ADDRESS,
+        WAZUH_AGENTS_TENANT,
+        WAZUH_AGENTS_SOURCES,
+        WAZUH_AGENTS_MAX,
+        WAZUH_AGENTS_CA,
+        WAZUH_AGENTS_ENROLLMENT_PASSWORD,
+        ...env
+      },
+      ctx,
+    ) => {
+      // A chave pública já validada no lugar do texto em base64; sem o par, a API sobe sem o cofre.
+      let credentialsPublicKey: VaultPublicKey | null = null;
+      if (CREDENTIALS_PUBLIC_KEY !== undefined && CREDENTIALS_KEY_VERSION !== undefined) {
+        credentialsPublicKey = vaultKey(
+          () => parsePublicKey(CREDENTIALS_PUBLIC_KEY, CREDENTIALS_KEY_VERSION),
+          'CREDENTIALS_PUBLIC_KEY',
+          ctx,
+        );
+      }
+      // Os agentes num objeto só (null, desligados); o texto das variáveis não fica na configuração.
+      const wazuhAgents = wazuhAgentsConfigOf(
+        {
+          WAZUH_AGENTS,
+          WAZUH_AGENTS_ADDRESS,
+          WAZUH_AGENTS_TENANT,
+          WAZUH_AGENTS_SOURCES,
+          WAZUH_AGENTS_MAX,
+          WAZUH_AGENTS_CA,
+          WAZUH_AGENTS_ENROLLMENT_PASSWORD,
+        },
         ctx,
       );
-    }
-    return { ...withDefaultPlan(env), credentialsPublicKey };
-  });
+      return { ...withDefaultPlan(env), credentialsPublicKey, wazuhAgents };
+    },
+  );
 
 export const envSchema = z.preprocess(refusePrivateKeyVariables, apiEnvSchema);
 
@@ -398,10 +436,14 @@ const workerEnvObjectSchema = z
     // `<versão>:<PEM em base64>`), montado só leitura no worker, e a versão corrente. Só o worker decifra.
     CREDENTIALS_PRIVATE_KEYS_FILE: z.string().min(1, { error: 'deve ser o caminho do arquivo' }).optional(),
     CREDENTIALS_KEY_CURRENT: keyVersionFromEnv.optional(),
+    // Agentes do Wazuh (WAZUH_AGENTS=true no node.conf): o arquivo da lista que o host exporta do manager e o cliente
+    // do nó, a quem os agentes pertencem. Sempre juntos.
+    ...workerAgentsEnvShape,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
+    checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({
         code: 'custom',
@@ -410,18 +452,30 @@ const workerEnvObjectSchema = z
       });
     }
   })
-  .transform(({ CREDENTIALS_PRIVATE_KEYS_FILE, CREDENTIALS_KEY_CURRENT, ...env }, ctx) => {
-    // As chaves já lidas do arquivo (um objeto que não vira JSON nem texto de log); o caminho não fica na configuração.
-    let credentialsKeyring: VaultKeyring | null = null;
-    if (CREDENTIALS_PRIVATE_KEYS_FILE !== undefined && CREDENTIALS_KEY_CURRENT !== undefined) {
-      credentialsKeyring = vaultKey(
-        () => parsePrivateKeys(readPrivateKeysFile(CREDENTIALS_PRIVATE_KEYS_FILE), CREDENTIALS_KEY_CURRENT),
-        'CREDENTIALS_PRIVATE_KEYS_FILE',
-        ctx,
-      );
-    }
-    return { ...withDefaultPlan(env), credentialsKeyring };
-  });
+  .transform(
+    (
+      {
+        CREDENTIALS_PRIVATE_KEYS_FILE,
+        CREDENTIALS_KEY_CURRENT,
+        WAZUH_AGENTS_FILE,
+        WAZUH_AGENTS_TENANT,
+        ...env
+      },
+      ctx,
+    ) => {
+      // As chaves já lidas do arquivo (um objeto que não vira JSON nem texto de log); o caminho não fica na configuração.
+      let credentialsKeyring: VaultKeyring | null = null;
+      if (CREDENTIALS_PRIVATE_KEYS_FILE !== undefined && CREDENTIALS_KEY_CURRENT !== undefined) {
+        credentialsKeyring = vaultKey(
+          () => parsePrivateKeys(readPrivateKeysFile(CREDENTIALS_PRIVATE_KEYS_FILE), CREDENTIALS_KEY_CURRENT),
+          'CREDENTIALS_PRIVATE_KEYS_FILE',
+          ctx,
+        );
+      }
+      const wazuhAgents = wazuhAgentsFeedOf({ WAZUH_AGENTS_FILE, WAZUH_AGENTS_TENANT });
+      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents };
+    },
+  );
 
 export const workerEnvSchema = z.preprocess(refuseKeysInEnvironment, workerEnvObjectSchema);
 

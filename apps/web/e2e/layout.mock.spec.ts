@@ -25,6 +25,7 @@ test.describe('estrutura e navegação (modo mock)', () => {
       'Clientes',
       'Usuários',
       'Contas cloud',
+      'Agentes',
       'Lista de proteção',
       'Exceções',
       'Auditoria',

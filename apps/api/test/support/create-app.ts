@@ -37,6 +37,8 @@ export interface CreateAppOptions {
   overrideProviders?: { provide: unknown; useValue: unknown }[];
   /** Tópico do nó para o sink de projeto GCP de cliente (`GCP_SINK_TOPIC_PREFIX`); sem ele, como no ambiente local. */
   gcpSinkTopicPrefix?: string;
+  /** Agentes do Wazuh ligados no nó (as variáveis WAZUH_AGENTS_* que o start.sh escreve); sem informar, desligados. */
+  wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
 }
 
 /**
@@ -62,6 +64,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       TURNSTILE_SITEVERIFY_URL: options.turnstile.siteverifyUrl,
     }),
     ...(options.gcpSinkTopicPrefix !== undefined && { GCP_SINK_TOPIC_PREFIX: options.gcpSinkTopicPrefix }),
+    ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
   });
   const builder = Test.createTestingModule({
     imports: [

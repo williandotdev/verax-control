@@ -105,6 +105,33 @@ fi
 # `credentials-key` (`credentials_vault` no Terraform). Sem a linha, vale false: o nó da Verax não muda.
 [[ ${CREDENTIALS_VAULT:-false} =~ ^(true|false)$ ]] ||
   { echo 'CREDENTIALS_VAULT inválido em /etc/verax/node.conf: use true ou false.' >&2; exit 2; }
+# Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true; sem a linha, false): só no standard, com o IP fixo de
+# entrada dos agentes (`terraform output wazuh_agents`, sem máscara) e o cliente do nó (o id dele no painel, em
+# Clientes): os agentes registrados são dele. As faixas de IP liberadas no firewall (as mesmas do Terraform, para o
+# painel dizer se a liberação está pronta) e o limite de agentes (padrão 50) são opcionais. O start.sh confere de novo.
+[[ ${WAZUH_AGENTS:-false} =~ ^(true|false)$ ]] ||
+  { echo 'WAZUH_AGENTS inválido em /etc/verax/node.conf: use true ou false.' >&2; exit 2; }
+agents=false
+if [[ ${WAZUH_AGENTS:-false} == true ]]; then
+  agents=true
+  [[ ${NODE_PROFILE:-lean} == standard ]] ||
+    { echo 'WAZUH_AGENTS=true só no perfil standard: o Wazuh só existe nele.' >&2; exit 2; }
+  ipv4="$octet(\\.$octet){3}"
+  [[ ${WAZUH_AGENTS_ADDRESS:-} =~ ^$ipv4$ ]] ||
+    { echo 'WAZUH_AGENTS_ADDRESS inválido em /etc/verax/node.conf: use o IP fixo dos agentes (terraform output wazuh_agents), sem máscara.' >&2; exit 2; }
+  [[ ${WAZUH_AGENTS_TENANT:-} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    { echo 'WAZUH_AGENTS_TENANT inválido em /etc/verax/node.conf: use o id do cliente do nó (Clientes, no painel).' >&2; exit 2; }
+  # Faixas de /16 a /32, como o Terraform aceita em wazuh_agents_sources.
+  cidr="$ipv4/(1[6-9]|2[0-9]|3[0-2])"
+  if [[ -n ${WAZUH_AGENTS_SOURCES:-} && ! $WAZUH_AGENTS_SOURCES =~ ^$cidr(,$cidr)*$ ]]; then
+    echo 'WAZUH_AGENTS_SOURCES inválido em /etc/verax/node.conf: use as faixas de wazuh_agents_sources do Terraform (IPv4 de /16 a /32), separadas por vírgula.' >&2
+    exit 2
+  fi
+  if [[ -n ${WAZUH_AGENTS_MAX:-} ]] && { [[ ! $WAZUH_AGENTS_MAX =~ ^[1-9][0-9]{0,2}$ ]] || ((WAZUH_AGENTS_MAX > 500)); }; then
+    echo 'WAZUH_AGENTS_MAX inválido em /etc/verax/node.conf: use um inteiro de 1 a 500.' >&2
+    exit 2
+  fi
+fi
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
 # O complemento do cofre de credenciais fica instalado sempre; o start.sh só o usa com CREDENTIALS_VAULT=true.
 install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
@@ -131,6 +158,13 @@ if $standard; then
   # O verax-node passa a querer (Wants) o verax-wazuh: o restart do nó o sobe de novo mesmo quando ele tinha falhado.
   install -d -m 0755 /etc/systemd/system/verax-node.service.d
   install -m 0644 "$here/systemd/wazuh/verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf
+  # Agentes (WAZUH_AGENTS=true): o terceiro arquivo do Compose (portas 1514 e 1515 do manager), o certificado do
+  # registro e a lista dos agentes para o painel, a cada minuto. Sem o interruptor, nada disso é instalado.
+  if $agents; then
+    install -m 0640 "$here/compose.wazuh-agents.yaml" /opt/verax/compose.wazuh-agents.yaml
+    install -m 0750 "$here/bin/wazuh-agents-certs.sh" "$here/bin/wazuh-agents-export.sh" /opt/verax/bin/
+    install -m 0644 "$here"/systemd/wazuh-agents/*.service "$here"/systemd/wazuh-agents/*.timer /etc/systemd/system/
+  fi
 fi
 
 echo '== Pastas de dados'
@@ -187,6 +221,14 @@ if $standard; then
   generate_wazuh wazuh-api
   generate_wazuh wazuh-indexer-read
 fi
+# Agentes: a senha de registro do nó (o authd confere; o painel a mostra só aos administradores), só letras e dígitos
+# para caber sem escape no comando de instalação do Linux e do Windows; e o certificado do registro, com o IP fixo dos
+# agentes (uma CA só dos agentes, refeita se o IP mudar). Os dois ficam no disco do nó, como as outras senhas internas.
+if $agents; then
+  generate wazuh-agents-enrollment 32
+  echo '== Certificado do registro dos agentes'
+  /opt/verax/bin/wazuh-agents-certs.sh /var/lib/verax/wazuh-agents "$WAZUH_AGENTS_ADDRESS"
+fi
 
 # A chave do cofre de credenciais nasce aqui, na VM, só com CREDENTIALS_VAULT=true. O par RSA-3072 vai por pipe direto
 # do openssl para o Secret Manager: a chave privada não passa pelo disco nem por variável, e nunca sai da GCP. A VM só
@@ -238,6 +280,13 @@ systemctl start verax-backup.timer
 if $standard; then
   systemctl start verax-wazuh.service
   systemctl enable --now verax-wazuh-alerts.timer >/dev/null
+fi
+# A lista dos agentes, depois do Wazuh no ar. Desligado o interruptor num nó que já o teve, o timer para (o script, se
+# rodar, só apaga a lista da memória).
+if $agents; then
+  systemctl enable --now verax-wazuh-agents.timer >/dev/null
+elif [[ -f /etc/systemd/system/verax-wazuh-agents.timer ]]; then
+  systemctl disable --now verax-wazuh-agents.timer >/dev/null 2>&1 || true
 fi
 systemctl --no-pager --lines=0 status verax-node.service || true
 if $standard; then systemctl --no-pager --lines=0 status verax-wazuh.service || true; fi

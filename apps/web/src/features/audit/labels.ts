@@ -39,6 +39,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'finding.status': 'Mudou o status de achado',
   'finding.comment': 'Comentou achado',
   'incident.update': 'Alterou incidente',
+  'agents.install_instructions.view': 'Viu as instruções de instalação dos agentes',
 };
 
 export function actionLabel(action: string): string {
@@ -60,6 +61,7 @@ export const AUDIT_RESOURCE_LABELS: Readonly<Record<AuditResourceType, string>> 
   alert_exception: 'Exceções',
   finding: 'Achados',
   incident: 'Incidentes',
+  wazuh_agents: 'Agentes',
 };
 
 export function resourceLabel(resourceType: string | null): string | null {
