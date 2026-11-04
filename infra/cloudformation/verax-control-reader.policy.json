@@ -1,0 +1,171 @@
+{
+  "VeraxControlReader": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "ListarBucketsDeLog",
+        "Effect": "Allow",
+        "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+        "Resource": [
+          "arn:aws:s3:::trilha-111111111111",
+          "arn:aws:s3:::guardduty-111111111111",
+          "arn:aws:s3:::aws-waf-logs-111111111111"
+        ]
+      },
+      {
+        "Sid": "LerObjetosDeLog",
+        "Effect": "Allow",
+        "Action": "s3:GetObject",
+        "Resource": [
+          "arn:aws:s3:::trilha-111111111111/*",
+          "arn:aws:s3:::guardduty-111111111111/*",
+          "arn:aws:s3:::aws-waf-logs-111111111111/*"
+        ]
+      },
+      {
+        "Sid": "DecifrarSoPeloS3",
+        "Effect": "Allow",
+        "Action": "kms:Decrypt",
+        "Resource": ["arn:aws:kms:sa-east-1:111111111111:key/00000000-0000-0000-0000-000000000000"],
+        "Condition": {
+          "StringLike": {
+            "kms:ViaService": "s3.*.amazonaws.com"
+          }
+        }
+      },
+      {
+        "Sid": "AutoInspecao",
+        "Effect": "Allow",
+        "Action": "iam:SimulatePrincipalPolicy",
+        "Resource": "arn:aws:iam::111111111111:user/verax/verax-control-reader"
+      },
+      {
+        "Sid": "ValidarFontes",
+        "Effect": "Allow",
+        "Resource": "*",
+        "Action": [
+          "cloudtrail:DescribeTrails",
+          "cloudtrail:GetTrailStatus",
+          "guardduty:ListDetectors",
+          "guardduty:GetDetector",
+          "guardduty:ListPublishingDestinations",
+          "guardduty:DescribePublishingDestination"
+        ]
+      },
+      {
+        "Sid": "PosturaEAtivos",
+        "Effect": "Allow",
+        "Resource": "*",
+        "Action": [
+          "iam:GetAccountSummary",
+          "iam:GetAccountPasswordPolicy",
+          "iam:ListUsers",
+          "iam:ListAccessKeys",
+          "iam:GetAccessKeyLastUsed",
+          "iam:ListMFADevices",
+          "iam:GetLoginProfile",
+          "ec2:DescribeRegions",
+          "ec2:DescribeInstances",
+          "ec2:DescribeSecurityGroups",
+          "ec2:GetEbsEncryptionByDefault",
+          "s3:ListAllMyBuckets",
+          "s3:GetBucketAcl",
+          "s3:GetBucketPolicyStatus",
+          "s3:GetBucketPublicAccessBlock",
+          "s3:GetAccountPublicAccessBlock"
+        ]
+      }
+    ]
+  },
+  "VeraxControlGuardrails": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "SoDoNoDaVerax",
+        "Effect": "Deny",
+        "Action": "*",
+        "Resource": "*",
+        "Condition": {
+          "NotIpAddress": {
+            "aws:SourceIp": ["203.0.113.10/32"]
+          }
+        }
+      },
+      {
+        "Sid": "NuncaAlterarLogs",
+        "Effect": "Deny",
+        "Resource": "*",
+        "Action": [
+          "access-analyzer:Delete*",
+          "access-analyzer:Update*",
+          "cloudtrail:Create*",
+          "cloudtrail:Delete*",
+          "cloudtrail:Put*",
+          "cloudtrail:Stop*",
+          "cloudtrail:Update*",
+          "guardduty:Archive*",
+          "guardduty:Create*",
+          "guardduty:Delete*",
+          "guardduty:Disable*",
+          "guardduty:Disassociate*",
+          "guardduty:Update*",
+          "inspector2:Delete*",
+          "inspector2:Disable*",
+          "inspector2:Update*",
+          "kms:Delete*",
+          "kms:Disable*",
+          "kms:Put*",
+          "kms:ScheduleKeyDeletion",
+          "kms:Update*",
+          "logs:Associate*",
+          "logs:Create*",
+          "logs:Delete*",
+          "logs:Disassociate*",
+          "logs:Put*",
+          "logs:Tag*",
+          "logs:Unmask",
+          "logs:Untag*",
+          "logs:Update*",
+          "s3:Abort*",
+          "s3:Bypass*",
+          "s3:Create*",
+          "s3:Delete*",
+          "s3:Put*",
+          "s3:Replicate*",
+          "s3:Restore*",
+          "s3:Update*",
+          "securityhub:BatchImport*",
+          "securityhub:BatchUpdate*",
+          "securityhub:Delete*",
+          "securityhub:Disable*",
+          "securityhub:Update*",
+          "wafv2:Delete*",
+          "wafv2:Put*",
+          "wafv2:Update*"
+        ]
+      },
+      {
+        "Sid": "NuncaAmpliarOProprioAcesso",
+        "Effect": "Deny",
+        "Resource": "*",
+        "Action": [
+          "iam:Add*",
+          "iam:Attach*",
+          "iam:Create*",
+          "iam:Delete*",
+          "iam:Detach*",
+          "iam:PassRole",
+          "iam:Put*",
+          "iam:Remove*",
+          "iam:Set*",
+          "iam:Update*",
+          "iam:Upload*",
+          "sts:AssumeRole",
+          "sts:AssumeRoleWithSAML",
+          "sts:AssumeRoleWithWebIdentity",
+          "sts:GetFederationToken"
+        ]
+      }
+    ]
+  }
+}
