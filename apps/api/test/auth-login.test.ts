@@ -287,6 +287,15 @@ describe('login com Better Auth (T2.1)', () => {
     });
   });
 
+  it('sem o Turnstile configurado, a configuração pública diz null e o login não pede token', async () => {
+    const config = await request(app.getHttpServer()).get('/v1/auth/client-config').expect(200);
+    expect(config.body).toEqual({ turnstileSiteKey: null });
+    // Chegou ao controller próprio, e não ao 404 das rotas fechadas do Better Auth.
+    await request(app.getHttpServer()).get('/v1/auth/client-config?x=1').expect(400);
+    const user = await createUser(app);
+    await signInRequest(app, user.email, user.password).expect(200);
+  });
+
   it('o IP da sessão vem do Express; um header de IP mandado pelo cliente é ignorado', async () => {
     const user = await createUser(app);
     await signInRequest(app, user.email, user.password)

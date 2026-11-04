@@ -14,6 +14,14 @@ import { z } from 'zod';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
+/** Endpoint oficial de validação do token do Turnstile. */
+export const TURNSTILE_SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+/**
+ * Chave do site do Turnstile: um dígito, `x` e de 20 a 40 caracteres (as reais começam com `0x`; as de teste da
+ * Cloudflare, como `1x00000000000000000000AA`, com `1x`, `2x` ou `3x`). A mesma expressão do `install.sh` do nó.
+ */
+export const TURNSTILE_SITE_KEY_PATTERN = /^[0-9]x[0-9A-Za-z_-]{20,40}$/;
+
 /** Plano e ajustes, como ficam depois da validação do ambiente. */
 interface PlanEnv {
   NODE_ENV: 'development' | 'test' | 'production';
@@ -142,10 +150,45 @@ export const envSchema = z
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
+    // Cloudflare Turnstile nos formulários públicos do painel (login e "esqueci minha senha"). Com a chave secreta
+    // definida, o token do widget passa a ser obrigatório nessas rotas; sem ela, nada é conferido (em produção, a API
+    // avisa na partida). A chave do site é pública (vai ao painel por `GET /v1/auth/client-config`); as duas andam
+    // juntas, porque uma sem a outra deixaria o painel sem login. A URL do siteverify só muda fora de produção, para
+    // o servidor falso dos testes.
+    TURNSTILE_SECRET_KEY: z.string().min(1).optional(),
+    TURNSTILE_SITE_KEY: z
+      .string()
+      .regex(TURNSTILE_SITE_KEY_PATTERN, { error: 'chave do site do Turnstile em formato inválido' })
+      .optional(),
+    TURNSTILE_SITEVERIFY_URL: z
+      .url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' })
+      .default(TURNSTILE_SITEVERIFY_URL),
     ...planEnvShape,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
+    // O problema é apontado na chave presente: a que falta sairia só como "não definida".
+    if (env.TURNSTILE_SECRET_KEY !== undefined && env.TURNSTILE_SITE_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SECRET_KEY'],
+        message: 'exige TURNSTILE_SITE_KEY (as duas chaves andam juntas, ou nenhuma)',
+      });
+    }
+    if (env.TURNSTILE_SITE_KEY !== undefined && env.TURNSTILE_SECRET_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SITE_KEY'],
+        message: 'exige TURNSTILE_SECRET_KEY (as duas chaves andam juntas, ou nenhuma)',
+      });
+    }
+    if (env.NODE_ENV === 'production' && env.TURNSTILE_SITEVERIFY_URL !== TURNSTILE_SITEVERIFY_URL) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SITEVERIFY_URL'],
+        message: 'só muda fora de produção (servidor falso dos testes)',
+      });
+    }
     for (const key of ['WEB_ORIGIN', 'API_ORIGIN'] as const) {
       if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
