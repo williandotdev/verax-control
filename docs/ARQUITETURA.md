@@ -141,6 +141,24 @@ Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.v
 custaria cerca de US$ 10 por mês (decisão de 02/11/2026). Os painéis não têm esse limite: ficam com o proxy desligado
 e o certificado é do Firebase.
 
+### Proteções do login
+
+O login é do Better Auth (regra 10: nada de hash, sessão ou MFA próprios), com o que o E2 definiu: MFA obrigatório
+(TOTP, código válido uma vez), senha temporária de 72 h no primeiro acesso, bloqueio por conta (5 tentativas em 15
+min, reservadas antes de a senha ser conferida), limite por IP nas rotas de autenticação, checagem de origem em todo
+POST (CSRF de login), senha nova conferida no Have I Been Pwned e trilha de auditoria de cada evento.
+
+Na frente de tudo isso, nos dois formulários que qualquer pessoa chama sem sessão, o **Cloudflare Turnstile** (widget
+"Managed", em português, no tema do painel): o login e o "esqueci minha senha". O painel manda o token do widget no
+header `X-Turnstile-Token`; a API o confere no `siteverify` da Cloudflare (com o IP de quem pediu, 5 s de limite)
+**antes** de reservar a tentativa de login e de olhar a senha. Sem token ou com token recusado, 400
+(`TURNSTILE_REQUIRED` / `TURNSTILE_FAILED`, mensagem genérica, sem gastar tentativa); com o `siteverify` fora do ar,
+503 genérico: a porta fecha, nunca abre. A chave secreta fica no cofre `<prefixo>-turnstile-secret-key` do Secret
+Manager e a chave do site (pública) no `node.conf`; sem as duas, o desafio fica desligado e a API avisa na partida
+(`Turnstile desligado`). O painel descobre a chave do site em `GET /v1/auth/client-config` (público, com cache curto)
+e, sem ela, os formulários são os de sempre. A CSP do painel abre só `script-src` e `frame-src` para
+`https://challenges.cloudflare.com`. O token não vai para o log nem para a auditoria; a recusa, sim.
+
 ## Contas monitoradas por provedor
 
 _(credencial no cofre: fase 2, a construir)_
