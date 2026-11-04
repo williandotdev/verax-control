@@ -44,3 +44,10 @@ pnpm --filter @verax/web test:e2e   # testes de navegador (Playwright + axe)
 ## Segurança
 
 Veja [SECURITY.md](SECURITY.md) para reportar vulnerabilidades.
+
+## Licença
+
+O código é público para leitura, revisão de segurança e auditoria, mas não é de código aberto: todos os direitos são
+reservados à Verax Sistemas. Usar, copiar, modificar, distribuir, executar para terceiros ou oferecer como serviço
+depende de contrato escrito. Os termos completos estão em [LICENSE](LICENSE); os componentes de terceiros seguem as
+licenças próprias deles.

@@ -131,7 +131,10 @@ const envShape = {
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
   TRUSTED_PROXIES: list(ipOrCidr).optional(),
 
-  // Site (CP-03): origens aceitas no CORS, páginas de retorno do Checkout e versões dos textos aceitos.
+  // Site (CP-03): origens aceitas no CORS, páginas de retorno do Checkout e versões dos textos aceitos. Os links dos
+  // textos legais no aceite do Checkout saem da origem de SITE_SUCCESS_URL (`/termos`, `/privacidade`, `/dpa`).
+  // Site e Stripe ficam opcionais mesmo no cp-public: sem o grupo completo (`CHECKOUT_REQUIRED`, em
+  // checkout/checkout-settings.ts), o serviço sobe, avisa quais faltam e o checkout responde 503.
   SITE_ORIGINS: list(httpsUrl).optional(),
   SITE_SUCCESS_URL: httpsUrl.optional(),
   SITE_CANCEL_URL: httpsUrl.optional(),
@@ -232,7 +235,9 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
  * obrigatória faltar ou for inválida. Os grupos que só os PRs seguintes usam (site, Stripe, filas, provisionamento,
  * Cloudflare e Firebase, acesso e e-mail) já entram aqui como opcionais com o formato conferido, para que uma
  * configuração errada apareça na partida, e não no meio de um checkout. Cada PR que passar a depender de um grupo
- * o torna obrigatório no papel certo. A porta de entrada é `loadConfig`, que aplica `ROLE_ONLY.settings` antes.
+ * decide se ele derruba a partida no papel certo ou só desliga a função: o checkout (CP-03) escolheu desligar
+ * (503 `checkout_unavailable`), para o serviço subir e responder `/health` antes de o responsável preencher as
+ * versões dos textos legais. A porta de entrada é `loadConfig`, que aplica `ROLE_ONLY.settings` antes.
  */
 export const envSchema = z.object(envShape).superRefine((env, ctx) => {
   const production = env.NODE_ENV === 'production';

@@ -125,8 +125,9 @@ projeto de `monitored_projects`, um sink que só copia (`verax-homolog-security`
 criada pela GCP); e, com `billing_account_id` preenchido, o orçamento na conta de faturamento. Liste em
 `monitored_projects` só projetos de teste.
 
-**Custo estimado:** cerca de R$ 613 por mês ligada o mês todo (VM, 60 GB de disco, snapshots, NAT, IP e o resto).
-Parada, cerca de R$ 70 (disco e IP). Ligue só nas janelas de teste:
+**Custo:** o de um nó `standard` ligado o mês todo (VM, 60 GB de disco, snapshots, NAT, IP e o resto; estime na
+[calculadora da Google Cloud](https://cloud.google.com/products/calculator)). Parada, sobram o disco, os snapshots e o
+IP reservado. Ligue só nas janelas de teste:
 
 ```bash
 gcloud compute instances stop verax-homolog --zone southamerica-east1-b --project PROJETO_DOS_NOS
@@ -585,7 +586,8 @@ expirarem.
 ## O plano de controle (`envs/control-plane`)
 
 O plano de controle é a parte da fase 3 que vende e provisiona: o site chama `POST /v1/public/checkout`, a Stripe
-avisa pelo webhook, e um worker executa o provisionamento do nó do cliente passo a passo (`plano-controle.md`, fase 3).
+avisa pelo webhook, e um worker executa o provisionamento do nó do cliente passo a passo (plano da fase 3, documento
+interno).
 Este ambiente cria a infraestrutura dele na GCP; o código do serviço (`apps/control-plane`) vem nos PRs CP-01 em
 diante. Fica no **projeto da Verax que hospeda o Firebase dos painéis**: o rewrite do Hosting para o Cloud Run exige o
 mesmo projeto, e o Firestore gratuito é um banco por projeto. Tudo o que é da Verax fica no nível gratuito: Cloud Run
@@ -738,7 +740,8 @@ Do que a seção 9 do plano lista, o Terraform faz os itens 8 a 12 (APIs, banco,
 filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam com você:
 
 - **Stripe** (itens 1 a 7): produto e preços (`lookup_key` `verax_control_essencial_mensal` e
-  `verax_control_profissional_mensal`), cupom `FUNDADOR30`, cartão e boleto com validade de 3 dias, o link hospedado
+  `verax_control_profissional_mensal`; os valores ficam fora do repositório público), cupons, se houver (termos também
+  fora do repositório), cartão e boleto com validade de 3 dias, o link hospedado
   para confirmação, Smart Retries com "marcar como não paga", dados públicos, Portal do cliente, a chave restrita e o
   webhook. Não há API para quase nada disso, e os dois últimos entram no passo 4.
 - **Firebase:** o plano Blaze neste projeto (passo 1; só o rewrite do Hosting para o Cloud Run exige) e, na primeira

@@ -113,8 +113,8 @@ run "alertas_sem_email" {
   command = plan
 
   assert {
-    condition     = length(google_monitoring_notification_channel.email) == 0 && length(google_monitoring_alert_policy.log) == 2
-    error_message = "Sem e-mail, os dois alertas existem e ficam só no console."
+    condition     = length(google_monitoring_notification_channel.email) == 0 && length(google_monitoring_alert_policy.log) == 3
+    error_message = "Sem e-mail, os três alertas existem e ficam só no console."
   }
 
   assert {
@@ -135,16 +135,18 @@ run "alertas_com_email_e_orcamento" {
       google_monitoring_notification_channel.email[0].labels["email_address"] == "alertas@example.com" &&
       alltrue([for policy in google_monitoring_alert_policy.log : length(policy.notification_channels) == 1])
     )
-    error_message = "Com e-mail, os dois alertas avisam por ele."
+    error_message = "Com e-mail, os três alertas avisam por ele."
   }
 
   assert {
     condition = (
       google_monitoring_alert_policy.log["provisioning_failed"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-worker\" AND jsonPayload.event=\"provisioning_failed\"" &&
       google_monitoring_alert_policy.log["webhook_signature_failed"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-public\" AND jsonPayload.event=\"stripe_webhook_signature_failed\"" &&
+      google_monitoring_alert_policy.log["checkout_daily_limit"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-public\" AND jsonPayload.event=\"checkout_daily_limit_reached\"" &&
+      google_monitoring_alert_policy.log["checkout_daily_limit"].conditions[0].condition_matched_log[0].label_extractors == tomap({ day = "EXTRACT(jsonPayload.day)" }) &&
       alltrue([for policy in google_monitoring_alert_policy.log : policy.alert_strategy[0].notification_rate_limit[0].period == "3600s"])
     )
-    error_message = "Os filtros dos alertas leem jsonPayload.event (o contrato com o CP-04 e o CP-12), um aviso por hora."
+    error_message = "Os filtros dos alertas leem jsonPayload.event (o contrato com o CP-03, o CP-04 e o CP-12), um aviso por hora; o do teto diário só leva o dia."
   }
 
   assert {

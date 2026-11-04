@@ -199,6 +199,8 @@ jobs:
         run: pnpm --filter @verax/web exec playwright install --with-deps chromium
       # Catálogo e estrutura (servidor de desenvolvimento e modo mock), com axe.
       - run: pnpm --filter @verax/web test:e2e
+      # Build único: o mesmo dist servido em dois sites de cliente, cada um com a própria API e a própria CSP.
+      - run: pnpm --filter @verax/web test:e2e:sites
       # Painel compilado, com a CSP de produção, contra a API real e o PostgreSQL de teste.
       - run: pnpm --filter @verax/web test:e2e:fullstack
       - name: Guardar relatórios e traces em caso de falha

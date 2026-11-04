@@ -296,8 +296,9 @@ resource "aws_iam_role_policy_attachment" "verax_control_reader" {
 ## Custos na sua conta
 
 O papel e as políticas não têm custo, e a troca do token no STS também não. A leitura gera requisições do S3 (e do
-KMS, nos buckets com SSE-KMS) e a transferência dos logs para fora da AWS, cobradas pela AWS conforme o volume. Com o
-CloudTrail compactado abaixo de 5 GB por mês, fica abaixo de US$ 1. O log completo do WAF pode pesar mais. Cada
+KMS, nos buckets com SSE-KMS) e a transferência dos logs para fora da AWS, cobradas pela AWS conforme o volume. Os valores estão nos
+[preços do S3](https://aws.amazon.com/s3/pricing/) e na [calculadora da AWS](https://calculator.aws/); com o CloudTrail
+compactado, o volume é pequeno. O log completo do WAF pode pesar mais. Cada
 entrada do nó no papel é um evento de gerenciamento a mais no seu CloudTrail (alguns por hora, por bucket), que a
 primeira trilha da conta registra sem custo. A trilha e o export opcionais somam o armazenamento nos buckets novos e,
 no caso da trilha, a cópia extra dos eventos se a conta já tiver outra.

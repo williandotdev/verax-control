@@ -47,6 +47,18 @@ export const SEVERITY_STYLES: Readonly<Record<Severity, SeverityStyle>> = {
   },
 };
 
+/**
+ * Classes das marcas de gráfico por severidade: o traço da linha, o preenchimento do ponto e a amostra da legenda.
+ * Severidade num gráfico usa estas cores e nenhuma outra, sempre com o ícone e o rótulo do nível ao lado.
+ */
+export const SEVERITY_MARKS: Readonly<Record<Severity, { stroke: string; fill: string; swatch: string }>> = {
+  critical: { stroke: 'stroke-critical', fill: 'fill-critical', swatch: 'bg-critical' },
+  high: { stroke: 'stroke-high', fill: 'fill-high', swatch: 'bg-high' },
+  medium: { stroke: 'stroke-medium', fill: 'fill-medium', swatch: 'bg-medium' },
+  low: { stroke: 'stroke-low', fill: 'fill-low', swatch: 'bg-low' },
+  ok: { stroke: 'stroke-ok', fill: 'fill-ok', swatch: 'bg-ok' },
+};
+
 /** Ordenação: mais grave primeiro. */
 export function compareSeverity(a: Severity, b: Severity): number {
   return SEVERITIES.indexOf(a) - SEVERITIES.indexOf(b);

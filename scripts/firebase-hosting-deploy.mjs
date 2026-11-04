@@ -60,6 +60,12 @@ async function call(method, url, body) {
 
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- arquivo de configuração gerado pelo build
 const config = JSON.parse(readFileSync(configFile, 'utf8'));
+// Configuração-modelo do build único (`VITE_API_URL` com `{tenant}`): publicada assim, a CSP não liberaria a API de
+// cliente nenhum. Cada site precisa da sua, gerada antes (`siteHostingConfig` em apps/web/src/hosting.ts).
+if (JSON.stringify(config).includes('{tenant}')) {
+  console.error('Configuração com o marcador {tenant}: gere a do site antes de publicar');
+  process.exit(2);
+}
 
 const manifest = {};
 const blobs = new Map();

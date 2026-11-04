@@ -81,7 +81,7 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 - **Retenção:** o índice do Wazuh guarda 30 dias (alertas a partir do nível 5, 1 shard). Os achados ficam no Postgres
   pelo prazo do plano (90 ou 365 dias), com os campos do evento; só o evento bruto do detalhe expira em 30 dias.
 - **Região:** os nós de clientes ficam em São Paulo (southamerica-east1). A leitura dos buckets sai da AWS pela
-  internet, com custo na conta do cliente (seção "Custo estimado por nó").
+  internet, com custo na conta do cliente (seção "Custo por nó").
 - **Acesso:**
   - o painel e a API saem pelo túnel do Cloudflare, com login, MFA e as proteções do E2. Equipe remota sem IP fixo
     acessa sem VPN;
@@ -156,8 +156,8 @@ O painel é estático, no Firebase Hosting do projeto `verax-control-prod` (GCP)
 A API de cada destino fica em `api-<cliente>.veraxsistemas.com.br` (a da Verax, em `api-verax`), e não em
 `api.<cliente>.control...`. Ela passa pelo túnel do Cloudflare, que exige o proxy ligado e, portanto, o certificado do
 Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.veraxsistemas.com.br`), e o de mais níveis
-custaria cerca de US$ 10 por mês (decisão de 02/11/2026). Os painéis não têm esse limite: ficam com o proxy desligado
-e o certificado é do Firebase.
+exigiria o Advanced Certificate Manager, pago à parte (decisão de 02/11/2026). Os painéis não têm esse limite: ficam
+com o proxy desligado e o certificado é do Firebase.
 
 ### Proteções do login
 
@@ -377,29 +377,24 @@ no cofre do nó. A recomendação ao cliente é restringir o token ao IP de saí
 O Logpush fica fora da v1: exige permissão de escrita (`Logs Edit`) e um destino que o Cloudflare possa gravar. Pode
 voltar depois como modo completo, sem amostragem.
 
-## Custo estimado por nó
+## Custo por nó
 
-Estimativa por mês, a conferir na calculadora do Google. Premissas: câmbio de R$ 5,4935; e2-standard-2 a US$ 77,65
-por mês em southamerica-east1 (preço de agregador); pd-balanced a US$ 0,15/GB; snapshot a US$ 0,08/GiB. "Outros"
-soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, segredos, backup e flow logs.
+Valores ficam fora deste documento: o preço da nuvem muda, e preço, custo por cliente e margem são informação
+comercial, mantida fora do repositório público. Para estimar a infraestrutura, use a
+[calculadora da Google Cloud](https://cloud.google.com/products/calculator) com os recursos de cada perfil (seção
+"Perfis de nó"):
 
-| Perfil `standard` (R$)           | VM     | Disco | Snapshots | Outros | Total  | Com folga de 15% |
-| -------------------------------- | ------ | ----- | --------- | ------ | ------ | ---------------- |
-| Essencial (plano de R$ 2.490)    | 426,57 | 49,44 | 21,97     | 34,84  | 532,83 | **612,75**       |
-| Profissional (plano de R$ 4.990) | 426,57 | 49,44 | 26,37     | 37,56  | 539,94 | **620,93**       |
-
-- **Com CUD de 1 ano**, quando houver clientes anuais: a VM cai para R$ 268,74, e o total com folga fica em cerca de
-  R$ 431 (Essencial) e R$ 439 (Profissional).
-- **Plano B (e2-standard-4):** cerca de R$ 1.103 (Essencial) e R$ 1.111 (Profissional) com folga.
-- **Homologação parada** fora das janelas de teste: cerca de R$ 70 por mês (disco e IP).
-- **`lean`:** de R$ 5 a 15 por mês, pelo `infra/gcp/GUIA.md`. Essa estimativa não conta o IP do Cloud NAT (cerca de
-  R$ 20), a conferir na fatura.
+- **`standard`** (nó de cliente, southamerica-east1): a VM e2-standard-2 é a maior parte; depois vêm o disco de 60
+  GB pd-balanced, os snapshots diários guardados por 7 dias e o resto: o Cloud NAT com o IP reservado, o Pub/Sub, os
+  segredos, o backup e os flow logs. O plano B (e2-standard-4) dobra a VM.
+- **Homologação parada** fora das janelas de teste: só o disco, os snapshots e o IP reservado.
+- **`lean`** (nó da Verax): estimativa em `infra/gcp/GUIA.md`.
 - **Túnel do Cloudflare e Firebase Hosting:** sem custo nesta escala.
-- **Na conta AWS do cliente** (fora da tabela): saída do S3 para a internet (cerca de US$ 0,15/GB em sa-east-1, a
-  conferir), GETs e KMS. Com o CloudTrail compactado abaixo de 5 GB por mês, fica abaixo de US$ 1. O log completo do
-  WAF pode pesar, e por isso ele é opcional.
-- **Referência anterior:** na pilha do nó na AWS, fora do caminho atual, só a VM `t3a.xlarge` (16 GB) era estimada em
-  US$ 150 a 170 por mês.
+- **Na conta AWS do cliente** (fora da conta da Verax): saída do S3 para a internet, GETs e KMS, pelos
+  [preços do S3](https://aws.amazon.com/s3/pricing/). Com o CloudTrail compactado, o volume é pequeno; o log completo
+  do WAF pode pesar, e por isso ele é opcional.
+- **Referência anterior:** a pilha do nó na AWS, fora do caminho atual, usa uma VM `t3a.xlarge` (16 GB); estimativa
+  na [calculadora da AWS](https://calculator.aws/).
 
 ## Plano de controle _(fase 3, a construir)_
 
