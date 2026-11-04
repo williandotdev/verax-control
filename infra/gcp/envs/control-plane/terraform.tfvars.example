@@ -13,7 +13,9 @@ project_id = "projeto-exemplo"
 # relógio e o rewrite do Hosting.
 # services_enabled = true
 
-# Entrada do cp-worker: INGRESS_TRAFFIC_ALL só quando for chamar as operações do responsável da sua máquina.
+# Entrada do cp-worker: INGRESS_TRAFFIC_ALL quando for chamar as operações do responsável da sua máquina. A revelação
+# da senha na página de status também depende dela (o cp-public chama o cp-worker): ver o GUIA, "Revelação da senha e
+# a entrada do cp-worker", antes de decidir.
 # worker_ingress = "INGRESS_TRAFFIC_ALL"
 
 # Variáveis dos dois serviços que são suas (plano, seção 2.5), por cima dos padrões de run.tf. As versões dos aceites

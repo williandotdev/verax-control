@@ -3,10 +3,13 @@
  * Cópia de `apps/api/src/common/logger/sanitize.ts` (a API não é dependência deste app), com os padrões que só
  * o plano de controle encontra: chaves e segredos de webhook da Stripe e tokens de identidade e de acesso do Google.
  *
- * Duas camadas:
+ * Três camadas:
  * - por nome de chave, em qualquer profundidade: senha, token, cookie, Authorization, assinatura, segredos etc.;
  * - por padrão de valor, em qualquer string: `Bearer ...`, chave da Stripe, JWT, token de acesso do Google, ID de
- *   chave de acesso AWS e senha embutida em URL.
+ *   chave de acesso AWS e senha embutida em URL;
+ * - por valor exato, em qualquer string: os segredos vivos deste processo (`registerLiveSecret`), como a senha
+ *   temporária do primeiro admin na revelação única (CP-05). Uma senha não tem formato que a distinga de um texto
+ *   qualquer, e uma mensagem de erro de terceiros pode repeti-la sem nome de campo nenhum.
  *
  * Na dúvida, a chave é ocultada: um campo inofensivo a menos no log é melhor que um segredo vazado. A exceção são
  * valores booleanos (`passwordRevealed: true`): um sim ou não não carrega segredo, e a auditoria precisa mostrar a
@@ -57,6 +60,25 @@ const VALUE_PATTERNS: readonly [RegExp, string][] = [
   [/(\b[a-z][\w+.-]*:\/\/[^\s:/?#@]+:)[^\s@/?#]+@/gi, `$1${REDACTED}@`],
 ];
 
+/**
+ * Segredos vivos: valores que este processo segura por um instante (a senha temporária lida do Secret Manager, no
+ * cp-worker, e repassada ao site, no cp-public). Quem recebe o valor registra antes de qualquer `await`, e quem o
+ * entrega esquece no fim da resposta (`forgetLiveSecret`): o conjunto não cresce a cada revelação. Valores curtos
+ * ficam de fora, para não ocultar pedaços de texto comum (a senha temporária do nó tem 23 caracteres).
+ */
+const liveSecrets = new Set<string>();
+export const MIN_LIVE_SECRET_LENGTH = 16;
+
+/** Passa a ocultar este valor em toda linha de log e em todo `details` da auditoria deste processo. */
+export function registerLiveSecret(value: string): void {
+  if (value.length >= MIN_LIVE_SECRET_LENGTH) liveSecrets.add(value);
+}
+
+/** Deixa de guardar o valor (no fim da resposta que o entregou). */
+export function forgetLiveSecret(value: string): void {
+  liveSecrets.delete(value);
+}
+
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -70,7 +92,14 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 export function scrubString(value: string): string {
-  return VALUE_PATTERNS.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), value);
+  let text = value;
+  for (const liveValue of liveSecrets) {
+    if (text.includes(liveValue)) text = text.replaceAll(liveValue, REDACTED);
+  }
+  return VALUE_PATTERNS.reduce(
+    (result, [pattern, replacement]) => result.replace(pattern, replacement),
+    text,
+  );
 }
 
 function isPlainObject(value: object): boolean {

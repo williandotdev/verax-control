@@ -178,6 +178,9 @@ importers:
       '@google-cloud/firestore':
         specifier: 9.4.0
         version: 9.4.0
+      '@google-cloud/secret-manager':
+        specifier: 7.2.0
+        version: 7.2.0
       '@google-cloud/tasks':
         specifier: 7.3.1
         version: 7.3.1
@@ -196,6 +199,9 @@ importers:
       nestjs-pino:
         specifier: 5.3.1
         version: 5.3.1(@nestjs/common@12.3.2(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.3.2)(pino-http@11.0.0)(pino@10.4.0)(rxjs@7.8.2)
+      nodemailer:
+        specifier: 10.3.1
+        version: 10.3.1
       pino:
         specifier: 10.4.0
         version: 10.4.0
@@ -783,6 +789,10 @@ packages:
 
   '@google-cloud/firestore@9.4.0':
     resolution: {integrity: sha512-4tVhdRFepX5w+fRfl3H6D2+gaGQjmMiA9l+OwIwInfAkCi8iacfRx4jS9SmSfpQNlXequ55DfzFopwyFnIIJ9w==}
+    engines: {node: '>=22'}
+
+  '@google-cloud/secret-manager@7.2.0':
+    resolution: {integrity: sha512-SQ/e9mo7Pl5QpFIn3GOa8K/PhS+3HgQnlWpMZbaE1UiZBa42AFB+EqxWQZOljv0kNwemo/PWiesAh8TywU9uVw==}
     engines: {node: '>=22'}
 
   '@google-cloud/tasks@7.3.1':
@@ -5781,6 +5791,12 @@ snapshots:
       functional-red-black-tree: 1.0.1
       google-gax: 6.14.0
       protobufjs: 7.6.6
+    transitivePeerDependencies:
+      - supports-color
+
+  '@google-cloud/secret-manager@7.2.0':
+    dependencies:
+      google-gax: 6.14.0
     transitivePeerDependencies:
       - supports-color
 

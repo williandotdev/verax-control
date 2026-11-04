@@ -206,6 +206,10 @@ const envShape = {
   // O grupo do SMTP é só do cp-worker (`ROLE_ONLY`): SMTP_HOST e SMTP_PORT têm padrão no `worker_env` do
   // Terraform, SMTP_USER e MAIL_FROM o responsável define lá, e SMTP_PASSWORD vem do Secret Manager.
   COOKIE_KEY: z.string().min(32, { error: 'deve ter pelo menos 32 caracteres' }).optional(),
+  // A conta do cp-public (contrato com identities.tf e run.tf, que a derivam): o cp-worker aceita o token dela só na
+  // revelação da senha (`POST /internal/access/reveal`), a única rota interna que o cp-public chama; o token das tasks
+  // e do Scheduler (a cp-invoker) não serve nessa rota, e o do cp-public não serve nos passos (`worker-caller.ts`).
+  PUBLIC_SA_EMAIL: serviceAccountEmail.optional(),
   SMTP_HOST: hostname.optional(),
   SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
   SMTP_USER: z.string().min(1).optional(),

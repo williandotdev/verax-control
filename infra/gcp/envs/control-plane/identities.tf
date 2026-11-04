@@ -24,7 +24,9 @@ resource "google_service_account" "terraform" {
 # os segredos do provisionamento); consegue, no máximo, chamar o cp-worker, que já é o que ele faz.
 #
 # Contrato com o app (plano, seção 2.5): o cp-worker confere `aud == WORKER_URL` e `email` do token em
-# {WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL} ∪ OWNER_PRINCIPALS; as duas variáveis apontam para esta conta (run.tf).
+# {WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL} ∪ OWNER_PRINCIPALS nos passos, no tick e no reconcile; as duas variáveis
+# apontam para esta conta (run.tf). Na revelação da senha (CP-05) vale só o token do próprio cp-public
+# (PUBLIC_SA_EMAIL), que chama o worker com a identidade dele, e o desta conta não vale.
 resource "google_service_account" "invoker" {
   account_id   = "cp-invoker"
   display_name = "Plano de controle: token das tasks e do Scheduler para o cp-worker (cp-invoker)"

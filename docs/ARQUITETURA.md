@@ -546,6 +546,45 @@ tenant (`lock{owner, expiresAt}`, 20 min renovados; vencida, é tomada), que os 
 | `canceled`                    | `customer.subscription.deleted`, reembolso integral na garantia, boleto do 1.º ciclo vencido ou 30 dias sem pagar | VM parada; exportação sob pedido por 30 dias; relógios de D+30 e D+97                                  |
 | `deleted`                     | `tick` com `deleteAfter` vencido, ou `delete-now` pelo responsável                                                | Exclusão em dois tempos (abaixo)                                                                       |
 
+### Página de status e revelação única da senha (CP-05)
+
+A página `/checkout/sucesso` do site acompanha a compra e mostra a senha temporária do primeiro admin uma vez. O site
+fala só com o `cp-public`; quem lê o segredo é o `cp-worker`.
+
+- **`POST /v1/public/status/claim`** (`{sessionId: "cs_..."}`, 10 por hora por IP): relê a sessão do Checkout na Stripe
+  (completa, do mesmo modo, com `metadata.tenantId` igual ao `client_reference_id`), confere que o cliente, se já
+  existe, é dessa sessão, não foi excluído e não teve a senha revelada, e devolve o cookie `__session` (httpOnly,
+  Secure, SameSite=Lax, `Path=/v1/public/status`, 7 dias): `v1.<valor>.<HMAC-SHA256 com a COOKIE_KEY>`. O valor tem
+  256 bits aleatórios; no Firestore fica só o SHA-256 dele (`statusTokens/{sha256}`, tipo `cookie`). Qualquer
+  divergência é o mesmo 404. Uma compra paga cujo cliente o webhook ainda não criou também recebe o cookie, e a página
+  mostra `pending` até ele nascer.
+- **`GET /v1/public/status`** (12 por minuto por cookie): `{state, step, etaMinutes, panelUrl, apiUrl,
+revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os endereços do ambiente pronto em
+  diante; o link do boleto só em `pending` com boleto em aberto, lido na hora da Stripe e nunca guardado. Nunca o
+  código de um erro. Cookie ausente, forjado, vencido ou de cliente excluído: 404.
+- **`POST /v1/public/status/reveal`** (5 por hora por IP, só JSON): com o cookie, ou com o valor do link do e-mail no
+  corpo. O `cp-public` confere a credencial e chama `POST <WORKER_URL>/internal/access/reveal` com o token de
+  identidade da própria conta. No `cp-worker`: (1) uma transação marca `access.passwordRevealedAt` (e o uso do link)
+  antes de qualquer leitura, com a auditoria `access.revealed`; a segunda revelação é 409; (2) lê a versão `latest` de
+  `vx-<slug>-admin-bootstrap` no projeto dos nós e põe a senha na máscara do logger antes do próximo `await`; (3)
+  enfileira `secrets.destroy_bootstrap` antes de responder, então a versão é destruída mesmo que a resposta se perca;
+  (4) devolve painel, login e senha, com `Cache-Control: private, no-store`. Se a leitura falhar, a senha já tiver
+  vencido ou a fila recusar, nada foi mostrado: a marcação é desfeita (`access.reveal_reverted`) e o cliente tenta de
+  novo. Depois da revelação o `cs_` não vale mais.
+- **Quem chama o quê no `cp-worker`:** o ingresso exige token de identidade do Google com `run.invoker` (cp-invoker,
+  cp-public e o responsável); o app confere emissor, `aud = WORKER_URL`, prazo e o e-mail por rota. O token do
+  `cp-public` (`PUBLIC_SA_EMAIL`) só vale na revelação; o da cp-invoker e o do responsável, só nos passos
+  (`POST /internal/steps/<passo>`). A chamada do `cp-public` sai pela internet, então a revelação depende da decisão
+  sobre a entrada do `cp-worker` no GUIA ("Revelação da senha e a entrada do cp-worker"); até lá, ela responde 503.
+- **Plano B por e-mail:** 48 h depois de o cliente entrar em `waiting_customer_connection` sem ver a senha (e antes das
+  72 h em que ela vence), o `tick` do CP-11 chama `RevealEmailService.dispatchDue`, que enfileira o passo
+  `access.reveal_email`; o passo cria um link de uso único (`statusTokens` do tipo `email_reveal`, 24 h), manda o
+  e-mail "ambiente pronto" pelo SMTP do `cp-worker` com o link no fragmento (`#acesso=<valor>`, que o navegador não
+  envia a servidor nenhum) e marca `access.revealEmailSentAt`. O e-mail nunca leva a senha.
+- **Contrato com o bootstrap do nó (CP-10):** cada versão de `admin-bootstrap` é um JSON com exatamente `email`,
+  `password` (16 a 256 caracteres) e `expiresAt` (ISO 8601 com fuso). O segredo guarda só o admin do cliente: a senha
+  de outra conta (a de suporte) vai para outro segredo, senão a `latest` a mostraria ao cliente.
+
 ### Exclusão em dois tempos
 
 | Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                         |

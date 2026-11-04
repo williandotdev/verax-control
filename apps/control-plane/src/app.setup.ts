@@ -38,6 +38,9 @@ const HELMET_OPTIONS = {
   referrerPolicy: { policy: 'no-referrer' as const },
 };
 
+/** As rotas internas do cp-worker (`/internal/...`), fora do prefixo `/v1`. */
+const INTERNAL_ROUTES = [{ path: 'internal/*path', method: RequestMethod.POST }];
+
 function noStore(_req: Request, res: Response, next: NextFunction): void {
   res.setHeader('Cache-Control', 'private, no-store');
   next();
@@ -60,7 +63,11 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
   // navegador): sem cabeçalho nenhum para outra origem, `credentials` só nas rotas de status (cors.ts).
   if (config.ROLE === 'public') app.enableCors(buildCorsDelegate(config.SITE_ORIGINS ?? []));
   app.setGlobalPrefix(API_PREFIX, {
-    // O health check fica fora do prefixo versionado.
-    exclude: [{ path: 'health', method: RequestMethod.GET }],
+    // O health check fica fora do prefixo versionado, e as rotas internas do cp-worker também: as tasks chamam
+    // `<WORKER_URL>/internal/steps/<passo>` (cloud-tasks-step-queue.ts). O cp-public não tem rota interna nenhuma.
+    exclude: [
+      { path: 'health', method: RequestMethod.GET },
+      ...(config.ROLE === 'worker' ? INTERNAL_ROUTES : []),
+    ],
   });
 }

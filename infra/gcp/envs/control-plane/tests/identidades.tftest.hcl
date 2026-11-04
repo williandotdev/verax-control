@@ -347,9 +347,18 @@ run "ninguem_anonimo_no_worker_nem_no_job" {
   assert {
     condition = sort([for member in google_cloud_run_v2_service_iam_member.worker_invokers : member.member]) == tolist([
       "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com",
+      "serviceAccount:cp-public@projeto-exemplo.iam.gserviceaccount.com",
       "user:responsavel@example.com",
     ])
-    error_message = "Só a conta do token das tasks e do Scheduler (cp-invoker) e o responsável chamam o cp-worker; o próprio cp-worker não."
+    error_message = "Só a conta do token das tasks e do Scheduler (cp-invoker), o cp-public (a revelação da senha, CP-05) e o responsável chamam o cp-worker; o próprio cp-worker não."
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_service_iam_member.worker_invokers["public"].role == "roles/run.invoker" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "PUBLIC_SA_EMAIL"]) == "cp-public@projeto-exemplo.iam.gserviceaccount.com"
+    )
+    error_message = "O cp-public só invoca o cp-worker (run.invoker), e o worker recebe o e-mail dele em PUBLIC_SA_EMAIL para aceitá-lo só na rota da revelação."
   }
 
   assert {

@@ -55,8 +55,11 @@ locals {
     WORKER_URL               = local.worker_url
     # As duas apontam para a cp-invoker (identities.tf): é o e-mail do token que as tasks e o Scheduler levam, e o
     # que o cp-worker aceita (além de OWNER_PRINCIPALS).
-    WORKER_SA_EMAIL         = google_service_account.invoker.email
-    SCHEDULER_SA_EMAIL      = google_service_account.invoker.email
+    WORKER_SA_EMAIL    = google_service_account.invoker.email
+    SCHEDULER_SA_EMAIL = google_service_account.invoker.email
+    # A conta do cp-public (CP-05): o cp-worker aceita o token dela só na revelação da senha
+    # (`POST /internal/access/reveal`), e o dela não serve nos passos.
+    PUBLIC_SA_EMAIL         = google_service_account.public.email
     OWNER_PRINCIPALS        = join(",", local.owner_emails)
     OWNER_ALERT_EMAIL       = var.alert_email
     TERRAFORM_JOB_NAME      = "cp-terraform"
@@ -267,11 +270,18 @@ resource "google_cloud_run_v2_service" "worker" {
   depends_on = [google_secret_manager_secret_iam_member.readers, google_project_service.apis]
 }
 
-# Quem chama o cp-worker: a conta do token das tasks e do Scheduler (cp-invoker) e o responsável. Nunca allUsers, e
-# nem o próprio cp-worker (ele enfileira, mas quem o chama de volta é a task, com o token da cp-invoker).
+# Quem chama o cp-worker: a conta do token das tasks e do Scheduler (cp-invoker), o cp-public (CP-05: só para a
+# revelação da senha, que lê o `admin-bootstrap` do tenant com a identidade do cp-worker, a única com acesso a ele) e
+# o responsável. Nunca allUsers, e nem o próprio cp-worker (ele enfileira, mas quem o chama de volta é a task, com o
+# token da cp-invoker). O app separa as rotas por quem chama (`internal/worker-caller.ts`): o token do cp-public só
+# vale em `POST /internal/access/reveal`, e o da cp-invoker não vale nela.
+#
+# A chamada do cp-public chega pela URL `run.app` do worker, de fora de uma rede VPC: com `worker_ingress` em
+# INGRESS_TRAFFIC_INTERNAL_ONLY (o padrão) a entrada a recusa e a revelação responde 503. Decisão do responsável no
+# GUIA ("Revelação da senha e a entrada do cp-worker").
 resource "google_cloud_run_v2_service_iam_member" "worker_invokers" {
   for_each = var.services_enabled ? merge(
-    { invoker = local.invoker_member },
+    { invoker = local.invoker_member, public = local.public_member },
     { for principal in var.owner_principals : principal => principal },
   ) : {}
 

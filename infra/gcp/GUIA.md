@@ -777,11 +777,39 @@ em `owner_principals`. Volte para `INGRESS_TRAFFIC_INTERNAL_ONLY` depois. O `aud
 é a URL do serviço: como o worker aceita o responsável (impersonação de uma conta de serviço com `--audiences`, por
 exemplo) é decisão do CP-11.
 
+### Revelação da senha e a entrada do `cp-worker` (decisão pendente, CP-05)
+
+A senha temporária do primeiro admin fica no segredo `vx-<slug>-admin-bootstrap` do projeto dos nós, e só o
+`cp-worker` tem acesso a ele (por tenant, concedido pelo `envs/tenant` do CP-06: `secretAccessor` e
+`secretVersionManager` para a conta em `CP_WORKER_SA`). Na revelação, o `cp-public` (que atende o site) chama
+`POST <WORKER_URL>/internal/access/reveal` com o token de identidade da própria conta, e o `cp-worker` marca, lê,
+enfileira a destruição da versão e devolve a senha. Para isso o `cp-public` tem `run.invoker` no `cp-worker` (run.tf), e
+o worker só aceita o token dele nessa rota.
+
+Essa chamada sai de um serviço do Cloud Run pela internet. Com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` (o
+padrão) a entrada do `cp-worker` a recusa, e a revelação responde 503 ao site. Há duas saídas, e a escolha é sua:
+
+1. **`worker_ingress = "INGRESS_TRAFFIC_ALL"`:** o `cp-worker` fica alcançável pela internet, mas só com token de
+   identidade do Google de quem tem `run.invoker` nele (cp-invoker, cp-public e `owner_principals`); qualquer outra
+   chamada é recusada pelo Cloud Run antes de chegar ao contêiner, e o app ainda confere `aud`, prazo e o e-mail por
+   rota. É o desenho da seção 2.1 do plano ("não é alcançável pela internet sem token de identidade do Google") e não
+   custa nada. Perde-se a camada de rede que hoje se soma ao IAM.
+2. **Manter `INGRESS_TRAFFIC_INTERNAL_ONLY` e dar ao `cp-public` saída por uma rede VPC** (Direct VPC egress com todo o
+   tráfego pela VPC e Cloud NAT para a Stripe): a chamada passa a contar como interna. Sai do nível gratuito (NAT) e
+   acrescenta rede, sub-rede e NAT a este ambiente.
+
+Enquanto nenhuma das duas for aplicada, o resto da página de status funciona (claim, estado, boleto) e a revelação
+responde 503 com o código `reveal_unavailable`.
+
 ### Quem pode o quê (a fronteira de confiança)
 
 - **`cp-invoker`** só chama o `cp-worker`. É o e-mail que o worker aceita no token (`WORKER_SA_EMAIL` e
-  `SCHEDULER_SA_EMAIL`, além de `OWNER_PRINCIPALS`), e o `cp-public` e o `cp-worker` só conseguem token dela: um
-  `cp-public` comprometido chama o worker, que é o que ele já faz, e nada mais.
+  `SCHEDULER_SA_EMAIL`, além de `OWNER_PRINCIPALS`) nos passos, no `tick` e no `reconcile`, e o `cp-public` e o
+  `cp-worker` agem como ela ao enfileirar.
+- **`cp-public`** também chama o `cp-worker` com a própria conta, mas o worker só aceita esse token em
+  `POST /internal/access/reveal` (`PUBLIC_SA_EMAIL`): um `cp-public` comprometido pode pedir a revelação (que marca a
+  senha como mostrada uma vez por cliente, fica na auditoria e destrói a versão: o cliente veria "senha já mostrada"),
+  mas não dispara passo nenhum e não lê o segredo por conta própria.
 - **`cp-terraform`** não lê segredo nem backup de tenant nenhum: no projeto dos nós, cria cofres e buckets
   (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin` ele ainda poderia
   se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo `envs/nodes-platform`)

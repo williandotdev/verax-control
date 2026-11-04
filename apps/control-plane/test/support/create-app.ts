@@ -24,6 +24,10 @@ export interface CreateAppOptions {
   capture?: LogCapture;
   documentStore?: DocumentStore;
   clock?: Clock;
+  /** Página de status (CP-05): o caminho até a revelação, o cofre da senha inicial e o e-mail, em memória. */
+  revealGateway?: Parameters<typeof AppModule.register>[1]['revealGateway'];
+  bootstrapSecrets?: Parameters<typeof AppModule.register>[1]['bootstrapSecrets'];
+  mailSender?: Parameters<typeof AppModule.register>[1]['mailSender'];
   /** A API da Stripe no servidor falso (`fake-stripe.ts`). */
   stripeApi?: StripeApiOptions;
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
@@ -49,6 +53,9 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         documentStore: options.documentStore ?? new MemoryDocumentStore(),
         clock: options.clock,
         logger: { destination: options.capture ?? new LogCapture() },
+        revealGateway: options.revealGateway,
+        bootstrapSecrets: options.bootstrapSecrets,
+        mailSender: options.mailSender,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
       }),
