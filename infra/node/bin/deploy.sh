@@ -7,6 +7,9 @@
 #    de quem assinou, que precisa ser o workflow `Imagens do nó` deste repositório, na `main`, nesse mesmo commit, num
 #    executor do GitHub. Uma imagem gravada no registro por outro caminho não passa.
 # 3. Copia o pacote para a VM (pelo IAP, sem porta aberta) e instala pelo digest conferido: a VM nunca confia em tag.
+# 4. Marca as imagens instaladas com a tag `no-<vm>`, que sai da versão anterior. A limpeza do registro guarda toda
+#    versão com tag `no-` (infra/gcp/envs/verax/images.tf), por mais antiga que seja: o `compose pull` de cada partida
+#    do nó (`start.sh up`) nunca procura uma imagem que a limpeza apagou.
 #
 # A conexão é um túnel do IAP até a porta 22 com o OpenSSH desta máquina, com uma chave criada só para esta execução
 # (registrada no OS Login por 1 hora e removida no fim). Não usa o `gcloud compute ssh`: no Windows ele abre o PuTTY
@@ -21,6 +24,8 @@ zone=${4:-us-east1-b}
 repo=williandotdev/verax-control
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || { echo 'Uso: deploy.sh <commit (40 hexadecimais)> <node.conf> [vm] [zona]' >&2; exit 2; }
 [[ -f $config ]] || { echo "Configuração não encontrada: $config" >&2; exit 2; }
+# O nome da VM entra na tag das imagens (`no-<vm>`) e no nome do arquivo das chaves do servidor.
+[[ $vm =~ ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || { echo "Nome de VM inválido: $vm" >&2; exit 2; }
 # O node.conf pode ter sido salvo no Windows (CRLF).
 images=$(sed -n 's/^IMAGES_REPOSITORY=//p' "$config" | tr -d '\r')
 [[ $images =~ ^[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+$ ]] || { echo 'IMAGES_REPOSITORY inválido no node.conf.' >&2; exit 2; }
@@ -103,3 +108,9 @@ to_vm "$config" "$user@localhost:verax-node/node.conf"
 
 echo "== Instalando"
 on_vm "sudo bash verax-node/bin/install.sh --version $commit --api-digest $api_digest --migrate-digest $migrate_digest --config verax-node/node.conf"
+
+echo "== Marcando as imagens no ar com a tag no-$vm"
+for image in "api@$api_digest" "migrate@$migrate_digest"; do
+  gcloud artifacts docker tags add "$images/$image" "$images/${image%@*}:no-$vm" --quiet ||
+    { echo "O nó está instalado, mas a tag no-$vm não foi gravada em ${image%@*}: sem ela, a limpeza do registro pode apagar a imagem no ar depois de 30 dias. Rode de novo: gcloud artifacts docker tags add $images/$image $images/${image%@*}:no-$vm" >&2; exit 1; }
+done
