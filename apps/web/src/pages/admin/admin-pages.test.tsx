@@ -247,7 +247,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(sheet).getByText('Último evento').nextElementSibling).toHaveTextContent('ontem');
   });
 
-  it('GCP: conectada pela leitura da assinatura; trocar a assinatura volta para Aguardando', async () => {
+  it('GCP: conecta quando o primeiro evento chega; trocar a assinatura volta para Aguardando', async () => {
     renderAt('/cadastros/contas');
     const row = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
       candidate.textContent?.includes(DEMO_ACCOUNTS.alfaGcp),
@@ -257,12 +257,17 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     );
     const sheet = await screen.findByRole('dialog', { name: `Projeto da GCP ${DEMO_ACCOUNTS.alfaGcp}` });
     expect(within(sheet).getByText('A última leitura deu certo.')).toBeInTheDocument();
-    expect(within(sheet).getByText(/na primeira leitura bem-sucedida da assinatura/)).toBeInTheDocument();
+    // A GCP entrega por evento: a leitura vazia da assinatura não conecta a conta.
+    expect(within(sheet).getByText(/Conectada" quando o primeiro evento chegar/)).toBeInTheDocument();
     const field = within(sheet).getByLabelText('Assinatura do Pub/Sub');
     await userEvent.clear(field);
     await userEvent.type(field, 'verax-logs-nova');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar assinatura' }));
-    expect(await within(sheet).findByText(/Aguardando a configuração/)).toBeInTheDocument();
+    expect(
+      await within(sheet).findByText(
+        'Aguardando a configuração: a conta conecta quando o primeiro evento chegar.',
+      ),
+    ).toBeInTheDocument();
     expect(within(sheet).getByText('Conexão').nextElementSibling).toHaveTextContent(/^Aguardando/);
   });
 

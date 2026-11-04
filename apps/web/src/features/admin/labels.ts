@@ -31,7 +31,10 @@ export const ACCOUNT_NOUNS: Readonly<Record<CloudProvider, { noun: string; regis
   cloudflare: { noun: 'Conta do Cloudflare', registered: 'cadastrada' },
 };
 
-/** Selo da conexão: "Conectada" é a última coleta bem-sucedida, com ou sem evento. */
+/**
+ * Selo da conexão. "Conectada" pede sinal de vida: na AWS e na GCP, que entregam por evento, o evento recebido; no
+ * Cloudflare, coletado por API, a leitura bem-sucedida, mesmo sem evento.
+ */
 export const CONNECTION_LABELS: Readonly<Record<CloudAccountConnection, string>> = {
   waiting: 'Aguardando',
   connected: 'Conectada',
@@ -44,10 +47,11 @@ export function connectionHint(provider: CloudProvider, connection: CloudAccount
   if (provider === 'aws') {
     return connection === 'error'
       ? 'A última tentativa de assumir o papel de leitura falhou.'
-      : 'Aguardando o conector: a conta conecta na primeira leitura bem-sucedida.';
+      : 'Aguardando o conector: a conta conecta quando o primeiro evento chegar.';
   }
-  return connection === 'error'
-    ? 'A última leitura falhou.'
+  if (connection === 'error') return 'A última leitura falhou.';
+  return provider === 'gcp'
+    ? 'Aguardando a configuração: a conta conecta quando o primeiro evento chegar.'
     : 'Aguardando a configuração: a conta conecta na primeira leitura bem-sucedida.';
 }
 

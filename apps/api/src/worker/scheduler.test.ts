@@ -198,6 +198,62 @@ describe('agendador do worker', () => {
     ]);
   });
 
+  it('passou do orçamento e depois lançou um erro comum: é falha, não interrupção', async () => {
+    const stuck = deferred();
+    const late = task(
+      'estourada',
+      MINUTE,
+      async () => {
+        await stuck.promise;
+        // O erro é do banco, não do cancelamento: o sinal abortado não pode esconder a falha.
+        throw new TypeError('conexão perdida com 203.0.113.10');
+      },
+      2 * SECOND,
+    );
+    const { scheduler, capture, lines } = setup([late.definition]);
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(3 * SECOND);
+    expect(late.calls[0]?.aborted).toBe(true);
+    stuck.resolve();
+    await vi.advanceTimersByTimeAsync(SECOND);
+
+    expect(lines('tarefa interrompida')).toEqual([]);
+    expect(lines('tarefa falhou')).toEqual([
+      expect.objectContaining({ level: 50, task: 'estourada', error: 'TypeError' }),
+    ]);
+    expect(capture.text).not.toContain('203.0.113.10');
+
+    await scheduler.stop();
+  });
+
+  it('erro comum durante a parada também é falha; o motivo da parada é interrupção', async () => {
+    const definition = (name: string, fail: () => Error): ScheduledTask => ({
+      name,
+      intervalMs: MINUTE,
+      budgetMs: 10 * MINUTE,
+      run: (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(fail()), { once: true });
+        }),
+    });
+    const { scheduler, lines } = setup([
+      // Ao receber o aviso, uma tarefa falha por outro motivo; a outra para com o próprio erro de cancelamento.
+      definition('desatenta', () => new RangeError('lote inválido')),
+      definition('cancelada', () => new DOMException('leitura cancelada', 'AbortError')),
+    ]);
+
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(SECOND);
+    await scheduler.stop();
+    expect(lines('tarefa falhou')).toEqual([
+      expect.objectContaining({ level: 50, task: 'desatenta', error: 'RangeError' }),
+    ]);
+    expect(lines('tarefa interrompida')).toEqual([
+      expect.objectContaining({ level: 40, task: 'cancelada', error: 'AbortError' }),
+    ]);
+  });
+
   it('recusa nomes repetidos, intervalo ou orçamento que não sejam positivos e partida dupla', async () => {
     const ok = task('coleta', SECOND, () => Promise.resolve()).definition;
     expect(() => setup([ok, { ...ok }])).toThrow('tarefa repetida no agendador: coleta');

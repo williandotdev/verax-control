@@ -5,7 +5,10 @@ import { withPagination } from './pagination.js';
 export const CLOUD_PROVIDERS = ['aws', 'gcp', 'cloudflare'] as const;
 export type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
 export const CLOUD_ACCOUNT_STATUSES = ['active', 'inactive'] as const;
-/** Estado da coleta: aguardando a primeira leitura bem-sucedida, conectada (a última deu certo) ou com erro. */
+/**
+ * Estado da coleta: aguardando o primeiro sinal de vida, conectada ou com erro na última leitura. Na AWS e na GCP
+ * (entregues por evento), o sinal é o evento recebido; nos coletados por API (Cloudflare), a leitura bem-sucedida.
+ */
 export const CLOUD_ACCOUNT_CONNECTIONS = ['waiting', 'connected', 'error'] as const;
 export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
 /** Fontes de log que o Wazuh lê de buckets S3 da conta do cliente (T4.4 a T4.6). */
@@ -203,8 +206,9 @@ export const cloudAccountSchema = z.strictObject({
   zones: z.array(z.string()),
   status: z.enum(CLOUD_ACCOUNT_STATUSES),
   /**
-   * Estado da coleta, gravado pelo coletor da conta: `waiting` antes da primeira leitura bem-sucedida, `connected`
-   * quando a última deu certo (com ou sem evento) e `error` quando a última falhou.
+   * Estado da coleta, gravado pelo sync da conta: `waiting` até o primeiro sinal de vida, `connected` depois dele e
+   * `error` quando a última leitura da fonte falhou. Na AWS e na GCP, o sinal é o evento recebido; no Cloudflare,
+   * a leitura bem-sucedida, mesmo sem evento.
    */
   connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS),
   /** Tipo do último erro de coleta (`AccessDenied`, `TimeoutError`), só em `error`. Nunca a mensagem nem segredo. */
@@ -212,7 +216,7 @@ export const cloudAccountSchema = z.strictObject({
     .string()
     .regex(/^[A-Za-z0-9_.:-]{1,64}$/)
     .nullable(),
-  /** Última coleta bem-sucedida, com ou sem evento; null antes da primeira. */
+  /** Última leitura bem-sucedida da fonte, com ou sem evento; null antes da primeira. */
   lastCollectedAt: z.iso.datetime().nullable(),
   /** Horário do último alerta recebido desta conta (T5.3); null se nunca chegou nada. */
   lastEventAt: z.iso.datetime().nullable().optional(),

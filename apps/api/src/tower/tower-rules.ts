@@ -1,5 +1,6 @@
 import type {
   CloudAccountConnection,
+  CloudProvider,
   FindingSeverity,
   PendingDecisionKind,
   TrafficLight,
@@ -23,7 +24,7 @@ export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
 export interface TowerThresholds {
   /** Nota de postura abaixo disto deixa a Torre amarela. */
   postureWarning: number;
-  /** Conta sem coleta bem-sucedida há mais horas que isto aparece como silenciosa na cobertura. */
+  /** Conta sem sinal de vida (evento ou coleta, conforme o provedor) há mais horas que isto aparece como silenciosa. */
   silentAfterHours: number;
 }
 
@@ -52,24 +53,32 @@ export function trafficLight(
 
 export interface AccountActivity {
   accountId: string;
+  /** O provedor decide o sinal de vida da conta (ver `coverage`). */
+  provider: CloudProvider;
   /** Estado da coleta, gravado pelo coletor da conta. */
   connection: CloudAccountConnection;
-  /** Última coleta bem-sucedida da conta (com ou sem evento), ou `null` se nunca houve. */
+  /** Última leitura bem-sucedida da fonte da conta (com ou sem evento), ou `null` se nunca houve. */
   lastCollectedAt: string | null;
   /** Horário do último alerta recebido da conta, ou `null` se nunca chegou nada. */
   lastEventAt: string | null;
 }
 
 export interface Coverage {
-  /** Contas no estado "Conectada": a última coleta deu certo. */
+  /** Contas no estado "Conectada". */
   connectedAccounts: number;
   /** A coleta bem-sucedida mais recente entre todas as contas. */
   lastCollectedAt: string | null;
   /** O evento mais recente entre todas as contas. */
   lastEventAt: string | null;
-  /** Contas sem coleta bem-sucedida há mais que o limite (ou que nunca coletaram), em ordem. */
+  /** Contas sem sinal de vida há mais que o limite (ou que nunca deram sinal), em ordem. */
   silentAccounts: string[];
 }
+
+/**
+ * Provedores cujas fontes entregam por evento: a AWS, lida pelo Wazuh, e a GCP, pelo Pub/Sub. Uma leitura vazia
+ * não prova que os logs chegam (sink apagado, trilha parada), então só o evento conta como sinal de vida.
+ */
+const EVENT_DELIVERED: ReadonlySet<CloudProvider> = new Set<CloudProvider>(['aws', 'gcp']);
 
 function latest(times: readonly (string | null)[]): string | null {
   return times.reduce<string | null>(
@@ -79,11 +88,19 @@ function latest(times: readonly (string | null)[]): string | null {
   );
 }
 
+/** O sinal de vida mais recente da conta, que depende de como o provedor entrega os logs. */
+function lastSignOfLife(account: AccountActivity): string | null {
+  if (EVENT_DELIVERED.has(account.provider)) return account.lastEventAt;
+  return latest([account.lastCollectedAt, account.lastEventAt]);
+}
+
 /**
- * Cobertura (fase 2): "conectada" é a última coleta bem-sucedida, não o último evento. Uma conta sem atividade, mas
- * lida sem erro, não parece parada. O sinal de vida de cada conta é a coleta mais recente; o horário de um evento
- * recebido também conta, porque o evento só chega por uma leitura que deu certo. É o único sinal das contas lidas
- * pelo Wazuh, que não registra coleta por conta.
+ * Cobertura (fase 2): "conectadas" são as contas no estado `connected`, gravado pelo coletor de cada uma. Conta
+ * silenciosa é a que não dá sinal de vida há mais que o limite, e o sinal depende do provedor:
+ * - **AWS e GCP** (entregues por evento: Wazuh e Pub/Sub): só o último evento. Uma leitura vazia não prova que os
+ *   logs chegam, então uma conta lida sem erro, mas sem evento, fica silenciosa;
+ * - **Cloudflare e os demais coletados por API**: o mais recente entre a última coleta e o último evento. A leitura
+ *   bem-sucedida prova que a conta está acessível, mesmo sem evento.
  */
 export function coverage(
   accounts: readonly AccountActivity[],
@@ -97,7 +114,7 @@ export function coverage(
     lastEventAt: latest(accounts.map((account) => account.lastEventAt)),
     silentAccounts: accounts
       .filter((account) => {
-        const alive = latest([account.lastCollectedAt, account.lastEventAt]);
+        const alive = lastSignOfLife(account);
         return alive === null || Date.parse(alive) < limit;
       })
       .map((account) => account.accountId)

@@ -240,7 +240,6 @@ function Coverage({ coverage }: { coverage: TowerSummary['coverage'] }) {
       <CardHeader>
         <CardTitle id="torre-cobertura">Cobertura</CardTitle>
       </CardHeader>
-      {/* "Conectada" é a última coleta bem-sucedida: uma conta sem atividade, mas lida sem erro, não parece parada. */}
       <dl className="space-y-1 text-sm">
         <div className="flex justify-between gap-3">
           <dt className="text-muted-foreground">Contas conectadas</dt>
@@ -259,12 +258,16 @@ function Coverage({ coverage }: { coverage: TowerSummary['coverage'] }) {
           </dd>
         </div>
       </dl>
+      {/*
+        A API decide quem é silenciosa: na AWS e na GCP, a conta sem evento no período (a leitura vazia não prova que
+        os logs chegam); no Cloudflare, a sem coleta nem evento. Em todos os casos, ela está sem eventos no período.
+      */}
       {coverage.silentAccounts.length > 0 && (
         <p className={`mt-3 flex items-start gap-2 rounded-md border p-2 text-sm ${surface}`}>
           <WarningIcon aria-hidden className={`mt-0.5 size-4 shrink-0 ${tone}`} />
           {/* wrap-anywhere: o ID de uma conta do Cloudflare tem 32 caracteres sem espaço e alargaria a página no celular. */}
           <span className="min-w-0 wrap-anywhere">
-            {plural(coverage.silentAccounts.length, 'conta', 'contas')} sem coleta bem-sucedida há mais de{' '}
+            {plural(coverage.silentAccounts.length, 'conta', 'contas')} sem eventos há mais de{' '}
             {coverage.silentAfterHours} horas: {formatList(coverage.silentAccounts)}.
           </span>
         </p>

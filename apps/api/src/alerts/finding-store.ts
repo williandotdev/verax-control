@@ -51,7 +51,13 @@ export interface UnownedRecord {
   title: string | null;
 }
 
-/** Último evento visto de cada conta numa execução, para a cobertura (conta silenciosa) da Torre. */
+/**
+ * Último evento visto de cada conta numa execução, para a cobertura (conta silenciosa) da Torre.
+ *
+ * O evento recebido também conecta a conta: na AWS (lida pelo Wazuh) e na GCP (Pub/Sub), as fontes entregam por
+ * evento, e só o evento prova que os logs chegam. A conta que recebeu evento passa de `waiting` para `connected`.
+ * Nunca sai de `error` por aqui: quem tira a conta do erro é o sync da fonte, numa leitura que deu certo.
+ */
 export class LastEvents {
   private readonly events = new Map<string, { tenantId: string; accountId: string; at: Date }>();
 
@@ -63,9 +69,15 @@ export class LastEvents {
 
   async save(prisma: PrismaService, provider: CloudProvider): Promise<void> {
     for (const { tenantId, accountId, at } of this.events.values()) {
-      await prisma.forTenant(tenantId).cloudAccount.updateMany({
+      const accounts = prisma.forTenant(tenantId).cloudAccount;
+      await accounts.updateMany({
         where: { provider, accountId, OR: [{ lastEventAt: null }, { lastEventAt: { lt: at } }] },
         data: { lastEventAt: at },
+      });
+      // Conta desativada no meio da execução fica como a desativação deixou.
+      await accounts.updateMany({
+        where: { provider, accountId, status: 'active', connection: 'waiting' },
+        data: { connection: 'connected', connectionError: null },
       });
     }
   }

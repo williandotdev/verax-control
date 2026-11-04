@@ -97,6 +97,12 @@ function isUniqueViolation(error: unknown): boolean {
 
 const NOT_FOUND = 'Conta não encontrada';
 
+/** A conexão recomeça (outra fonte, conta desativada ou reativada): aguardando, sem erro. A última coleta é história. */
+const RESET_CONNECTION = {
+  connection: 'waiting',
+  connectionError: null,
+} as const satisfies Prisma.CloudAccountUpdateInput;
+
 /** Dados próprios de cada provedor no cadastro. Os campos dos outros provedores ficam vazios. */
 function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCreateInput {
   const base = {
@@ -188,9 +194,11 @@ export class CloudAccountsService {
       throw new ApiError(HttpStatus.BAD_REQUEST, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
     }
     await this.assertOriginsFree(auth, input);
-    // Outra assinatura é outra fonte: a conexão volta a "aguardando" até o coletor ler a nova.
+    // Outra assinatura é outra fonte, e a conta desativada ou reativada recomeça: a conexão volta a "aguardando" até
+    // o coletor confirmar a leitura de novo.
     const sourceChanged =
       input.pubsubSubscription !== undefined && input.pubsubSubscription !== beforeRow.pubsubSubscription;
+    const statusChanged = input.status !== undefined && input.status !== beforeRow.status;
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
       data: {
@@ -199,7 +207,7 @@ export class CloudAccountsService {
         pubsubSubscription: input.pubsubSubscription,
         zones: input.zones,
         ...bucketData(input.buckets),
-        ...(sourceChanged && { connection: 'waiting', connectionError: null }),
+        ...((sourceChanged || statusChanged) && RESET_CONNECTION),
       },
       select: accountSelect,
     });
@@ -214,12 +222,17 @@ export class CloudAccountsService {
     return after;
   }
 
-  /** Exclusão lógica: a conta deixa de ser lida e de receber alertas, mas o ID continua do cliente. */
+  /**
+   * Exclusão lógica: a conta deixa de ser lida e de receber alertas, mas o ID continua do cliente. A conexão volta a
+   * "aguardando": parada, a conta não está conectada nem com erro.
+   */
   async deactivate(id: string): Promise<void> {
     const before = await this.find(id);
-    const row = await this.prisma
-      .scoped()
-      .cloudAccount.update({ where: { id }, data: { status: 'inactive' }, select: accountSelect });
+    const row = await this.prisma.scoped().cloudAccount.update({
+      where: { id },
+      data: { status: 'inactive', ...RESET_CONNECTION },
+      select: accountSelect,
+    });
     this.audit.describe({
       action: 'cloud_account.deactivate',
       resourceType: 'cloud_account',

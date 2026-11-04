@@ -468,12 +468,14 @@ describe('contas cloud (T3.3)', () => {
         ).body,
       );
       const at = new Date('2026-11-03T12:00:00.000Z');
+      // Com evento já recebido: o sync da GCP de outro teste, rodando ao mesmo tempo no mesmo banco, lê todas as
+      // contas GCP ativas e mantém conectada a que já recebeu evento (a sem evento ele deixaria aguardando).
       await prisma.cloudAccount.update({
         where: { id: created.id },
-        data: { connection: 'connected', lastCollectedAt: at },
+        data: { connection: 'connected', lastCollectedAt: at, lastEventAt: at },
       });
-      // Confere a resposta da própria alteração, e não uma leitura depois: o teste do sync da GCP, rodando ao mesmo
-      // tempo no mesmo banco, lê todas as contas GCP ativas e pode marcar esta como conectada a qualquer momento.
+      // Confere a resposta da própria alteração, e não uma leitura depois: o sync pode gravar a conexão desta conta a
+      // qualquer momento.
       const same = await call(adminA)
         .patch(`/v1/cloud-accounts/${created.id}`, { pubsubSubscription: created.pubsubSubscription })
         .expect(200);
@@ -491,6 +493,67 @@ describe('contas cloud (T3.3)', () => {
         before: { connection: 'connected' },
         after: { connection: 'waiting' },
       });
+    });
+
+    it('desativar e reativar a conta voltam a conexão para aguardando, com o antes e o depois na auditoria', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', lastCollectedAt: at, lastEventAt: at },
+      });
+      const stored = () =>
+        prisma.cloudAccount.findUniqueOrThrow({
+          where: { id: created.id },
+          select: { status: true, connection: true, connectionError: true, lastCollectedAt: true },
+        });
+
+      // Desativada, a conta para de ser lida: nem conectada nem com erro. A última coleta é história.
+      const removed = await call(adminA).delete(`/v1/cloud-accounts/${created.id}`).expect(204);
+      expect(await stored()).toEqual({
+        status: 'inactive',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: at,
+      });
+      expect(await entryOf(removed)).toMatchObject({
+        action: 'cloud_account.deactivate',
+        before: { status: 'active', connection: 'connected' },
+        after: { status: 'inactive', connection: 'waiting' },
+      });
+
+      // Reativada, recomeça do zero, qualquer que fosse o estado gravado enquanto parada.
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'error', connectionError: 'AccessDenied' },
+      });
+      const reactivated = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'active' })
+        .expect(200);
+      expect(cloudAccountSchema.parse(reactivated.body)).toMatchObject({
+        status: 'active',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: at.toISOString(),
+      });
+      expect(await entryOf(reactivated)).toMatchObject({
+        action: 'cloud_account.update',
+        before: { status: 'inactive', connection: 'error', connectionError: 'AccessDenied' },
+        after: { status: 'active', connection: 'waiting', connectionError: null },
+      });
+
+      // Desativar pela alteração também recomeça; repetir a situação atual, ou mudar só as regiões, não mexe.
+      await prisma.cloudAccount.update({ where: { id: created.id }, data: { connection: 'connected' } });
+      const unchanged = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'active', regions: ['eu-west-1'] })
+        .expect(200);
+      expect(unchanged.body).toMatchObject({ connection: 'connected' });
+      const paused = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'inactive' })
+        .expect(200);
+      expect(paused.body).toMatchObject({ status: 'inactive', connection: 'waiting' });
     });
 
     it('isolamento: A não vê a conexão nem o erro das contas de B', async () => {

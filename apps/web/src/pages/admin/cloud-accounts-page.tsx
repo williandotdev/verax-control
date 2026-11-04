@@ -458,8 +458,7 @@ function GcpSteps({ account }: { account: CloudAccount }) {
           VM.
         </li>
         <li>
-          Informe aqui o nome da assinatura. A conexão muda para "Conectada" na primeira leitura bem-sucedida
-          da assinatura, mesmo sem nenhum evento.
+          Informe aqui o nome da assinatura. A conexão muda para "Conectada" quando o primeiro evento chegar.
         </li>
       </ol>
     </section>
@@ -537,7 +536,7 @@ function ConnectorSteps({ account }: { account: CloudAccount }) {
             </Button>
           </div>
         </li>
-        <li>A conexão muda para "Conectada" na primeira leitura bem-sucedida do papel.</li>
+        <li>A conexão muda para "Conectada" quando o primeiro evento da conta chegar.</li>
       </ol>
     </section>
   );

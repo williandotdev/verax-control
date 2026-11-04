@@ -18,6 +18,17 @@ export interface ScheduledTask {
   run(signal: AbortSignal): Promise<unknown>;
 }
 
+/**
+ * O erro veio do próprio cancelamento: o sinal foi abortado e a tarefa devolveu o motivo dele, ou um `DOMException`
+ * de cancelamento (`AbortError`, `TimeoutError`), como o do `fetch` que recebeu o sinal. Qualquer outro erro é falha,
+ * mesmo depois do estouro do orçamento ou do começo da parada: um erro do banco não pode sumir como "interrompida".
+ */
+function cancelledBy(signal: AbortSignal, error: unknown): boolean {
+  if (!signal.aborted) return false;
+  if (error === signal.reason) return true;
+  return error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError');
+}
+
 /** O que o agendador usa do logger (o pino do worker; um dublê nos testes). */
 export interface SchedulerLogger {
   info(fields: object, message: string): void;
@@ -99,7 +110,7 @@ export class Scheduler {
     } catch (error) {
       // Só o tipo: a mensagem e a pilha de um erro do banco ou da fonte podem carregar dado do cliente ou segredo.
       const fields = { task: task.name, durationMs: Date.now() - startedAt, error: errorKind(error) };
-      if (controller.signal.aborted) this.logger.warn(fields, 'tarefa interrompida');
+      if (cancelledBy(controller.signal, error)) this.logger.warn(fields, 'tarefa interrompida');
       else this.logger.error(fields, 'tarefa falhou');
     } finally {
       clearTimeout(budget);

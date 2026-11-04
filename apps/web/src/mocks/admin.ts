@@ -546,14 +546,16 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const foreign = fieldsOutsideProvider(account.provider, input.data);
       if (foreign.length > 0) return problem(400, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
       const { buckets: _buckets, ...rest } = input.data;
-      // Como a API: outra assinatura é outra fonte, e a conexão volta a "aguardando".
+      // Como a API: outra assinatura é outra fonte, e a conta desativada ou reativada recomeça; nos dois casos, a
+      // conexão volta a "aguardando".
       const sourceChanged =
         rest.pubsubSubscription !== undefined && rest.pubsubSubscription !== account.pubsubSubscription;
+      const statusChanged = rest.status !== undefined && rest.status !== account.status;
       Object.assign(
         account,
         rest,
         { updatedAt: new Date().toISOString() },
-        sourceChanged ? { connection: 'waiting', connectionError: null } : {},
+        sourceChanged || statusChanged ? { connection: 'waiting', connectionError: null } : {},
       );
       return HttpResponse.json(account);
     }),

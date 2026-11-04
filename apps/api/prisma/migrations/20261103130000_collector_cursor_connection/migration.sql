@@ -8,9 +8,14 @@ ALTER TABLE "CloudAccount" ADD COLUMN     "connection" "CloudAccountConnection" 
 ADD COLUMN     "connectionError" VARCHAR(64),
 ADD COLUMN     "lastCollectedAt" TIMESTAMPTZ(3);
 
--- Contas da GCP que já receberam evento nascem conectadas: o evento só chegou porque o sync leu a assinatura delas. A
--- última coleta fica vazia até a próxima leitura (um intervalo do worker); até lá, a Torre usa o último evento.
-UPDATE "CloudAccount" SET "connection" = 'connected' WHERE "provider" = 'gcp' AND "lastEventAt" IS NOT NULL;
+-- Contas ativas que já receberam evento nascem conectadas, nos provedores entregues por evento: a AWS (lida pelo
+-- Wazuh, que vincula o alerta pelo bucket) e a GCP com assinatura do Pub/Sub (o evento só chegou porque o sync leu a
+-- assinatura). É a mesma regra do sync: o evento recebido conecta a conta. As demais ficam aguardando. A última
+-- coleta fica vazia até a próxima leitura; na AWS e na GCP, a Torre olha só o último evento.
+UPDATE "CloudAccount" SET "connection" = 'connected'
+WHERE "status" = 'active'
+  AND "lastEventAt" IS NOT NULL
+  AND ("provider" = 'aws' OR ("provider" = 'gcp' AND "pubsubSubscription" IS NOT NULL));
 
 -- CreateTable
 CREATE TABLE "CollectorCursor" (

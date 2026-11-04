@@ -239,8 +239,9 @@ enum CloudProvider {
   cloudflare
 }
 
-/// Estado da coleta de uma conta: `waiting` antes da primeira leitura bem-sucedida, `connected` quando a última deu
-/// certo e `error` quando a última falhou.
+/// Estado da coleta de uma conta: `waiting` até o primeiro sinal de vida, `connected` depois dele e `error` quando a
+/// última leitura da fonte falhou. O sinal depende do provedor: na AWS (Wazuh) e na GCP (Pub/Sub), que entregam por
+/// evento, é o evento recebido; nos coletados por API (Cloudflare), basta a leitura bem-sucedida.
 enum CloudAccountConnection {
   waiting
   connected
@@ -272,11 +273,12 @@ model CloudAccount {
   zones              String[]               @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
   lastEventAt        DateTime?              @db.Timestamptz(3)
-  /// Estado da coleta, gravado pelo coletor da conta. "Conectada" é a última leitura bem-sucedida, com ou sem evento.
+  /// Estado da coleta, gravado pelo sync da conta (ver `CloudAccountConnection`).
   connection         CloudAccountConnection @default(waiting)
   /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
   connectionError    String?                @db.VarChar(64)
-  /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento: o sinal de vida da conta na Torre.
+  /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
+  /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
   lastCollectedAt    DateTime?              @db.Timestamptz(3)
   status             CloudAccountStatus     @default(active)
   createdAt          DateTime               @default(now()) @db.Timestamptz(3)

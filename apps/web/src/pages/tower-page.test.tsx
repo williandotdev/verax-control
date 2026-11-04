@@ -61,16 +61,16 @@ describe('Torre', () => {
     expect(screen.getByRole('meter', { name: 'Nota de postura' })).toHaveAttribute('aria-valuenow', '64');
   });
 
-  it('cobertura pela última coleta: conectadas, última coleta, último evento e contas sem coleta', async () => {
+  it('cobertura: conectadas, última coleta, último evento e as contas silenciosas, sem eventos no período', async () => {
     renderTower({ me: demoMe('analista_cliente') });
     const coverage = await screen.findByRole('region', { name: 'Cobertura' });
     const value = (term: string) => within(coverage).getByText(term).nextElementSibling;
     expect(value('Contas conectadas')).toHaveTextContent('2');
     expect(value('Última coleta')).toHaveTextContent(/há 1 min/);
     expect(value('Último evento recebido')).toHaveTextContent(/há 3 min/);
-    expect(
-      within(coverage).getByText(/2 contas sem coleta bem-sucedida há mais de 24 horas/),
-    ).toHaveTextContent(`${DEMO_ACCOUNTS.alfaHomologacao} e ${DEMO_ACCOUNTS.alfaCloudflare}`);
+    expect(within(coverage).getByText(/2 contas sem eventos há mais de 24 horas/)).toHaveTextContent(
+      `${DEMO_ACCOUNTS.alfaHomologacao} e ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    );
   });
 
   it('cobertura de quem nunca coletou: nenhuma coleta, nenhum evento e nenhuma conta conectada', async () => {
@@ -95,7 +95,7 @@ describe('Torre', () => {
     expect(within(coverage).getByText('Último evento recebido').nextElementSibling).toHaveTextContent(
       'nenhum ainda',
     );
-    expect(within(coverage).getByText(/1 conta sem coleta bem-sucedida/)).toHaveTextContent(
+    expect(within(coverage).getByText(/1 conta sem eventos há mais de 24 horas/)).toHaveTextContent(
       DEMO_ACCOUNTS.beta,
     );
   });
