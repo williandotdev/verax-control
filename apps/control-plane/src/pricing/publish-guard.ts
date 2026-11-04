@@ -11,6 +11,7 @@ import {
   type SizeId,
   SUPPORT_LEVELS,
 } from './pricing.schema.js';
+import { ONLINE_MODES } from './public-pricing.js';
 import { quote, startingAt } from './quote.js';
 
 /** Teto da grade: acima disso a tabela tem dimensões absurdas e a checagem não roda (vira problema). */
@@ -288,6 +289,15 @@ export function runPublishGuard(table: PriceTable, model: CostModel): GuardRepor
     (mode) => report.startingAt[mode] === report.gridMinimum[mode],
   );
   if (!startingAtIsMinimum) report.problems.push('o "a partir de" não é o menor preço da grade');
+  // Um modo vendido no site precisa ter preço: sem nenhuma configuração cotável (por exemplo, contas incluídas acima do
+  // maior porte), o "a partir de" e o mínimo da grade somem os dois, e a comparação acima passaria com zero conferidas.
+  for (const mode of ONLINE_MODES) {
+    if (report.startingAt[mode] === undefined || report.gridMinimum[mode] === undefined) {
+      report.problems.push(
+        `o modo ${mode}, vendido no site, não tem nenhuma configuração com preço (tudo sob consulta)`,
+      );
+    }
+  }
   // Um pacote de partida que cai em "sob consulta" levaria o site a um botão que não cota.
   for (const preset of table.presets) {
     const outcome = quote(preset.configuration, table);

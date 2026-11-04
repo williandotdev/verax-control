@@ -157,6 +157,26 @@ describe('checagem de publicação (grade inteira)', () => {
     expect(report.problems).toEqual(['pacote de partida grande-demais fica sob consulta (agents_above_max)']);
   });
 
+  it('sem nenhuma configuração com preço num modo vendido no site, a tabela é recusada (não passa com zero conferidas)', () => {
+    // Contas incluídas acima do maior porte e nenhum pacote de partida: toda a grade cai em "sob consulta".
+    const table = tableWith((input) => {
+      input.cloudAccounts.included = 25;
+      input.cloudAccounts.max = 30;
+      input.presets = [];
+    });
+
+    const report = runPublishGuard(table, model);
+
+    expect(report.checkedConfigurations).toBe(0);
+    expect(report.contactUsConfigurations).toBe(gridSize(table));
+    expect(report.startingAt).toEqual({});
+    expect(report.gridMinimum).toEqual({});
+    expect(report.ok).toBe(false);
+    expect(report.problems).toEqual([
+      'o modo managed, vendido no site, não tem nenhuma configuração com preço (tudo sob consulta)',
+    ]);
+  });
+
   it('uma tabela que vende mais agentes do que o nó aceita é recusada', () => {
     const table = tableWith((input) => {
       input.agents.packSize = 100;
