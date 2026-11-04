@@ -96,8 +96,8 @@ us-east1.
 **Custo estimado:** de R$ 5 a 15 por mês, mais o IP do Cloud NAT (cerca de R$ 20 por mês, a conferir na fatura). A
 e2-micro, os 30 GB de disco padrão, o Pub/Sub, os segredos e 5 GB do bucket ficam no nível gratuito da GCP em
 us-east1, que vale para uma e2-micro por conta de faturamento. Sobram o Cloud NAT e centavos de snapshot. O registro
-das imagens guarda as 3 versões mais recentes de cada imagem (a que está no ar e duas para voltar) e apaga o resto
-depois de 30 dias, para ficar perto dos 0,5 GB gratuitos.
+das imagens guarda a versão no ar (tag `no-<vm>`, gravada pelo `deploy.sh`) e as 3 versões mais recentes de cada
+imagem, e apaga o resto depois de 30 dias, para ficar perto dos 0,5 GB gratuitos.
 
 ## O nó de homologação: o que muda
 
@@ -306,10 +306,13 @@ Plan: 0 to add, 1 to change, 0 to destroy.
 ```
 
 A única mudança é no registro das imagens, `google_artifact_registry_repository.node will be updated in-place`:
-`~ immutable_tags = true -> false` dentro de `docker_config` e, na política de limpeza `manter-recentes`, o bloco
-`cleanup_policies` saindo (`-`, com `keep_count = 10`) e voltando (`+`, com `keep_count = 3`), porque é um conjunto.
-Nada mais muda, e nenhuma imagem é apagada pelo `apply`: a limpeza roda num job do próprio Artifact Registry, mais ou
-menos uma vez por dia. O motivo está no `envs/verax/images.tf`: com tags imutáveis, o Artifact Registry não apaga
+`~ immutable_tags = true -> false` dentro de `docker_config`; na política de limpeza `manter-recentes`, o bloco
+`cleanup_policies` saindo (`-`, com `keep_count = 10`) e voltando (`+`, com `keep_count = 3`), porque é um conjunto; e
+um bloco novo (`+`), a política `manter-no-ar`, que guarda toda versão com tag `no-` (a versão no ar: o `deploy.sh`
+grava `no-<vm>` nas imagens que instala). Nada mais muda, e nenhuma imagem é apagada pelo `apply`: a limpeza roda num
+job do próprio Artifact Registry, mais ou menos uma vez por dia. Logo depois do `apply`, grave a tag na versão que o nó
+já roda (as próximas vêm do `deploy.sh`), com os digests que o último `deploy.sh` mostrou:
+`gcloud artifacts docker tags add REGISTRO/api@DIGEST_DA_API REGISTRO/api:no-verax-node` e o mesmo para `migrate`. O motivo está no `envs/verax/images.tf`: com tags imutáveis, o Artifact Registry não apaga
 nenhuma versão com tag, e toda imagem do nó tem a tag do commit, então a política de limpeza nunca apagava nada. A
 tag mutável não muda o risco, porque o nó instala pelo digest conferido contra a atestação (`deploy.sh`), nunca pela
 tag. É uma atualização no lugar, não uma recriação (o provider só recria o registro por lugar, nome, formato, modo ou

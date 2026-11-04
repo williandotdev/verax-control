@@ -23,13 +23,26 @@ resource "google_artifact_registry_repository" "node" {
     immutable_tags = false
   }
 
-  # Guarda as 3 versões mais recentes de cada imagem (a que está no ar e duas para voltar, com
-  # `deploy.sh <commit anterior>`) e apaga o resto depois de 30 dias, para o registro não crescer sem limite. Uma
-  # versão que casa com as duas políticas fica. Três bastam: o nó não volta mais do que isso, porque as migrations
-  # do banco rodam a cada partida e só andam para a frente, e uma versão apagada não se republica (o environment
-  # `imagens` só aceita a `main`): para voltar mais longe, o caminho é reverter o commit na `main`, que publica uma
-  # imagem nova e atestada.
+  # Guarda a versão no ar e as 3 versões mais recentes de cada imagem (para voltar, com `deploy.sh <commit anterior>`)
+  # e apaga o resto depois de 30 dias, para o registro não crescer sem limite. Uma versão que casa com uma política
+  # KEEP e com a DELETE fica. Três bastam: o nó não volta mais do que isso, porque as migrations do banco rodam a cada
+  # partida e só andam para a frente, e uma versão apagada não se republica (o environment `imagens` só aceita a
+  # `main`): para voltar mais longe, o caminho é reverter o commit na `main`, que publica uma imagem nova e atestada.
+  #
+  # A versão no ar fica sempre, por mais antiga que seja: o workflow `Imagens do nó` publica a cada push na `main`,
+  # sem esperar o deploy, então as 3 mais recentes podem não incluir a que o nó roda. Se ela sumisse, a partida
+  # seguinte do nó (`start.sh up` faz `compose pull` antes de subir) pararia. O `deploy.sh` marca as imagens
+  # instaladas com a tag `no-<vm>`, que sai da versão anterior, e a política `manter-no-ar` guarda toda versão com
+  # tag `no-` (as tags dos commits são hexadecimais e nunca começam assim).
   cleanup_policy_dry_run = false
+  cleanup_policies {
+    id     = "manter-no-ar"
+    action = "KEEP"
+    condition {
+      tag_state    = "TAGGED"
+      tag_prefixes = ["no-"]
+    }
+  }
   cleanup_policies {
     id     = "manter-recentes"
     action = "KEEP"
