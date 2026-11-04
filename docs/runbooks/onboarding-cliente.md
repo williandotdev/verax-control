@@ -109,6 +109,56 @@ domínio (_Domain Restricted Sharing_), é ela que precisa de exceção, nunca a
 de `customer_projects` e aplique (o tópico e a assinatura somem, com as mensagens que ainda não foram lidas) e desative
 a conta no painel; o cliente apaga o sink quando quiser (`gcloud logging sinks delete verax-control-security`).
 
+## 6. Agentes do Wazuh nas instâncias do cliente (opcional, desligado por padrão)
+
+O cliente instala o agente do Wazuh nas VMs e EC2 dele, e os agentes falam com o manager do nó dedicado: integridade de
+arquivos, inventário, vulnerabilidades e configuração das máquinas. Nada disso existe num nó até a Verax ligar, nó a
+nó, com os IPs de saída que o cliente informa. O desenho está em `docs/ARQUITETURA.md`, "Agentes nas instâncias do
+cliente".
+
+Antes: o nó é `standard`, está no ar com o Wazuh e o cliente já tem o cadastro no painel (o id dele vai no
+`node.conf`). Os agentes valem para esse cliente; para qualquer outro, a tela diz que não estão ligados.
+
+1. **Peça ao cliente os IPs de saída** das instâncias que vão ter o agente: o NAT gateway ou os IPs elásticos da AWS, o
+   Cloud NAT da GCP, o IP da rede dele. Faixas IPv4 de /16 a /32, no endereço da rede (`198.51.100.0/28`,
+   `192.0.2.15/32`); nada mais largo é aceito.
+2. **No Terraform do nó**, no `terraform.tfvars` do ambiente (`infra/gcp/envs/<ambiente>`): `wazuh_agents = true` e as
+   faixas em `wazuh_agents_sources`. Rode `plan` e `apply`. O plano cria só o IP fixo de entrada, a regra de
+   encaminhamento (TCP 1514 e 1515 para a VM) e, com faixas, a regra de firewall que libera as duas portas só para
+   elas; a VM, o NAT e o resto não mudam (a VM continua sem IP externo, e a saída continua pelo IP do Cloud NAT). Sem
+   faixa nenhuma, o IP nasce e as portas ficam fechadas: o painel diz ao cliente que a liberação está pendente.
+3. **`terraform output wazuh_agents`** mostra o IP fixo (`address`) e as faixas (`sources`).
+4. **No `node.conf` do nó** (o arquivo que o `deploy.sh` leva):
+   ```sh
+   WAZUH_AGENTS=true
+   WAZUH_AGENTS_ADDRESS=<address do output, sem máscara>
+   WAZUH_AGENTS_TENANT=<id do cliente, em Clientes no painel>
+   WAZUH_AGENTS_SOURCES=<as mesmas faixas do Terraform, separadas por vírgula>
+   # WAZUH_AGENTS_MAX=50   # limite de agentes do nó (padrão 50, até 500)
+   ```
+5. **Rode o `deploy.sh`** com a versão de sempre. O `install.sh` gera a senha de registro do nó
+   (`/var/lib/verax/secrets/wazuh-agents-enrollment`, só na primeira vez) e o certificado do registro, com uma CA só
+   dos agentes e o IP fixo no certificado (`/var/lib/verax/wazuh-agents`, refeito se o IP mudar); instala o terceiro
+   arquivo do Compose (`compose.wazuh-agents.yaml`) e liga o `verax-wazuh-agents.timer`, que exporta a lista dos
+   agentes a cada minuto. O smoke test do fim do `verax-wazuh` confere as duas portas publicadas (e nenhuma outra), o
+   certificado com o IP e a recusa de uma senha errada.
+6. **Confira no painel** (Administração → Agentes, com o cliente escolhido): a instalação guiada aparece com o IP, as
+   faixas e a CA; a senha só para quem administra. Instale o agente numa VM de teste com o script da tela: em um
+   minuto ela aparece na lista como "Conectado".
+
+**Trocar a senha de registro** (vazou, ou o cliente pediu): apague `/var/lib/verax/secrets/wazuh-agents-enrollment` na
+VM e rode o `deploy.sh` de novo (o `install.sh` gera outra). Os agentes já registrados seguem funcionando: a senha só
+serve para registrar um agente novo.
+
+**Faixas novas:** mude `wazuh_agents_sources` e `WAZUH_AGENTS_SOURCES` juntos (o Terraform abre a porta; o `node.conf`
+só informa o painel), aplique e rode o `deploy.sh`.
+
+**Desligar:** `WAZUH_AGENTS=false` no `node.conf` e `deploy.sh` (o manager volta a escutar só no loopback e o timer
+para); depois `wazuh_agents = false` (e sem faixas) no Terraform e `apply`, que apaga a regra de firewall, a de
+encaminhamento e o IP fixo: religar dá outro IP, e os agentes precisam ser reinstalados com ele. A senha de registro
+fica no disco do nó e no volume `manager-etc` (`/var/ossec/etc/authd.pass`), sem uso; apague os dois se o desligamento
+for definitivo. Os agentes das instâncias continuam instalados até o cliente desinstalá-los.
+
 ## Publicar uma versão nova do diagnóstico
 
 1. Altere o script, os testes e a constante `VERSION` em `infra/diagnostico/diagnostico_aws.py`, num PR.

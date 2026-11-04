@@ -8,6 +8,7 @@ import { ExceptionsPage } from '@/pages/admin/exceptions-page';
 import { ProtectedResourcesPage } from '@/pages/admin/protected-resources-page';
 import { TenantsPage } from '@/pages/admin/tenants-page';
 import { UsersPage } from '@/pages/admin/users-page';
+import { AgentsPage } from '@/pages/agents-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { AuditPage } from '@/pages/audit-page';
 import { ChangePasswordPage } from '@/pages/change-password-page';
@@ -52,6 +53,7 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/cadastros/clientes': TenantsPage,
   '/cadastros/usuarios': UsersPage,
   '/cadastros/contas': CloudAccountsPage,
+  '/cadastros/agentes': AgentsPage,
   '/cadastros/protecao': ProtectedResourcesPage,
   '/cadastros/excecoes': ExceptionsPage,
   '/auditoria': AuditPage,

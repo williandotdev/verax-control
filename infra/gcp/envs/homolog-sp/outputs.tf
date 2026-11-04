@@ -47,3 +47,8 @@ output "images_repository" {
   description = "Registro das imagens do nó (IMAGES_REPOSITORY no node.conf)."
   value       = "${var.images_location}-docker.pkg.dev/${var.images_project_id}/${var.images_repository_id}"
 }
+
+output "wazuh_agents" {
+  description = "Agentes do Wazuh (wazuh_agents): IP fixo de entrada (WAZUH_AGENTS_ADDRESS no node.conf) e faixas liberadas (WAZUH_AGENTS_SOURCES). Nulo com o interruptor desligado."
+  value       = module.node.wazuh_agents
+}

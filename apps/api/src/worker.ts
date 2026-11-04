@@ -1,4 +1,5 @@
 import { pino } from 'pino';
+import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
@@ -24,6 +25,8 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * vira uma tarefa do agendador, a cada `SYNC_INTERVAL_SECONDS`; as tarefas rodam ao mesmo tempo, cada uma no próprio
  * laço. A concessão no banco garante um worker por vez em cada fonte, mesmo com mais de uma réplica. SIGTERM ou SIGINT
  * esperam as execuções em curso terminarem, e elas liberam a concessão.
+ *
+ * Com os agentes do Wazuh ligados no nó, entra a tarefa `wazuh-agents`, que grava a lista dos agentes exportada pelo host.
  *
  * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
  * `credential-rekey`, que recifra com a versão corrente as credenciais guardadas com uma versão antiga da chave.
@@ -55,6 +58,12 @@ async function main(): Promise<void> {
       const sync = new GcpAuditSync(prisma, new PubsubRestReader(new MetadataTokenProvider()));
       return { name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() };
     });
+    // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf): a lista que o host exporta do
+    // manager, no mesmo intervalo das fontes.
+    if (config.wazuhAgents !== null) {
+      const agents = new WazuhAgentsSync(prisma, config.wazuhAgents);
+      tasks.push({ name: 'wazuh-agents', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => agents.runOnce() });
+    }
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
       const rekey = new CredentialRekey(prisma, keyring);

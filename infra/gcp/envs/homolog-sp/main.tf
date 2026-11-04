@@ -23,6 +23,10 @@ module "node" {
   # O cofre da chave secreta do Turnstile (desafio no login do painel): a homologação ensaia antes do nó da Verax.
   turnstile_secret = true
 
+  # Agentes do Wazuh nas instâncias de teste (desligados por padrão): o ensaio da liberação por faixa e do registro.
+  wazuh_agents         = var.wazuh_agents
+  wazuh_agents_sources = var.wazuh_agents_sources
+
   # As APIs do projeto vêm antes de qualquer recurso do nó.
   depends_on = [google_project_service.apis]
 }

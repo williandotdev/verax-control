@@ -2845,6 +2845,155 @@ Correções dos quatro checks do CI que falharam no PR da base (CodeQL, Semgrep,
   - **P2, fatura de outra assinatura do mesmo Customer** (`stripe-event-processor.ts`): procedente. O cliente pode ser achado pelo Customer, e o `onInvoice` não tinha a guarda do `onSubscription`. Agora, com `stripe.subscriptionId` gravado e diferente do da fatura, o evento fica `ignored` (`other_subscription`, com aviso) antes de gravar a fatura ou decidir qualquer coisa. Testes: a falha de outra assinatura não deixa o cliente `past_due`; a 1.ª fatura paga de outra assinatura não provisiona quem espera o próprio boleto (nem grava a fatura, nem enfileira);
   - os dois testes novos falham com a correção correspondente desligada (mutação conferida). Suíte depois da correção (já com a `main` mesclada): 355 testes verdes contra o emulador; `pnpm typecheck`, eslint e prettier verdes.
 
+## Fase 2, pedido de 04/11/2026: agentes do Wazuh nas instâncias do cliente (instalação guiada), desligados por padrão ⚠️ altera `infra/`, `.github/` e as permissões
+
+Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.github/workflows/iac.yml` e
+`packages/shared/src/permissions.ts` (duas permissões novas).
+
+- **O que faz:** o cliente instala o agente do Wazuh 4.14.9 nas VMs e EC2 dele, e os agentes falam com o manager do nó
+  dedicado (integridade de arquivos, inventário, vulnerabilidades pelo inventário e SCA). A tela "Agentes"
+  (Administração) traz a instalação guiada (Linux deb/rpm e Windows) e a lista dos agentes. Desenho em
+  `docs/ARQUITETURA.md`, "Agentes nas instâncias do cliente"; roteiro para ligar em
+  `docs/runbooks/onboarding-cliente.md`, seção 6.
+- **Desligado por padrão, nó a nó:** `WAZUH_AGENTS` no `node.conf` (sem a linha, `false`) e `wazuh_agents` no módulo do
+  Terraform (padrão `false`), só no perfil `standard` (o lean é recusado nos dois). Desligado: o Terraform não cria
+  nada (o nó da Verax e a homologação sem a variável ficam com o `plan` zero), o `install.sh` não instala nada, os
+  arquivos de ambiente saem byte a byte como antes (o teste confere as variáveis de cada arquivo, na ordem) e o projeto
+  do Compose é o de sempre, sem porta publicada.
+- **Conectividade:** IP fixo de entrada por uma **regra de encaminhamento (protocol forwarding)** para a VM, só TCP
+  1514-1515, e regra de firewall só com as faixas do cliente (`wazuh_agents_sources`, IPv4 de /16 a /32 no endereço da
+  rede, até 20; lista vazia = nenhuma regra e o painel diz que a liberação está pendente). **Desvio do pedido:** o
+  pedido era um IP externo estático na VM. Na GCP, uma interface com IP externo faz o NAT um para um e deixa de usar o
+  Cloud NAT (docs.cloud.google.com/nat/docs/public-nat: "The existence of an external IP address on an interface
+  always takes precedence"); a saída do nó mudaria de IP e a chave da AWS do cliente, que só vale do IP reservado do
+  NAT, pararia. Com a regra de encaminhamento, a VM segue sem IP externo e a saída segue pelo NAT, como o pedido exige.
+- **No nó:** `compose.wazuh-agents.yaml` (o `start.sh`, o `wazuh-apply.sh` e o `wazuh-up` o somam só no standard com o
+  interruptor): o manager publica só 1514/tcp e 1515/tcp e continua nas mesmas redes; o gerador recebe a pasta
+  `config/manager/agents` e a senha (só leitura); o worker recebe a pasta da lista (só leitura). O `install.sh` gera a
+  senha de registro (`/var/lib/verax/secrets/wazuh-agents-enrollment`, 32 letras e dígitos, como as outras senhas
+  internas) e o certificado do registro (`bin/wazuh-agents-certs.sh`: CA só dos agentes, IP no CN e no SAN, refeito se
+  o IP mudar, chave da CA descartada) e liga o `verax-wazuh-agents.timer`. O `start.sh` confere tudo antes de escrever
+  qualquer arquivo e passa à API o endereço, o cliente do nó, as faixas, o limite, a CA (base64) e a senha; ao worker,
+  o caminho da lista e o cliente. A senha não vai ao worker nem ao manager por variável.
+- **Manager endurecido** (`infra/wazuh/config/manager/agents/ossec-agents.conf`, opções conferidas na referência 4.14:
+  `auth.html`, `remote.html`, `active-response.html`, `vuln-detector.html`, `internal-options.html`,
+  `centralized-configuration.html`, `manager-identity-verification.html`): o gerador troca `<remote>` (fora do
+  loopback, agente mais novo recusado), `<auth>` (`use_password`, certificado do nó, `ssl_auto_negotiate` não, `force`
+  e `purge` padrão explícitos), `<active-response><disabled>yes</disabled>` (desliga no manager e em todos os agentes) e
+  `<vulnerability-detection>` (ligada, `index-status` não); escreve `etc/authd.pass` e o agent.conf do grupo `default`
+  (FIM, rootcheck, syscollector, SCA, `client_buffer` de 200 eventos/s; nada de comando: os `remote_commands` do agente
+  ficam no padrão 0). Desligado, o `ossec.conf` sai igual e os dois arquivos saem do volume.
+- **Leitura dos agentes sem dividir rede com o manager:** o host (timer, a cada minuto, `bin/wazuh-agents-export.sh`)
+  pede a lista à API do manager de dentro do contêiner dele (`localhost:55000`, `wazuh-wui`, senha e token pela
+  entrada padrão do curl, token conferido como JWT), só com os campos do painel e sem o 000, com teto de 4 MiB, e grava
+  `/run/verax/wazuh-agents/agents.json` (0440, grupo do worker, troca atômica). O worker (tarefa `wazuh-agents`)
+  confere cada campo com zod, grava em `WazuhAgent` no cliente do nó (`WAZUH_AGENTS_TENANT`), tira quem saiu do
+  manager e quem estiver em outro cliente, e guarda a hora do arquivo em `SyncState`. O indexer não serviria: sem o
+  dashboard ninguém grava `wazuh-monitoring-*`, e `wazuh-states-*` não tem o estado nem o último sinal.
+- **API:** `GET /v1/agents` (lista paginada do cliente da sessão, filtro por situação, hora da última lista) e
+  `GET /v1/agents/install` (situação `disabled`, `allowlist_pending` ou `ready`; endereço, portas, grupo, versão,
+  faixas, CA; a senha só com `agents:enroll`, só com `ready` e com vaga no limite; `Cache-Control: no-store`). A
+  consulta às instruções entra na trilha do cliente antes da resposta (`agents.install_instructions.view`, com
+  `enrollmentPasswordShown`, nunca a senha); se a auditoria falhar, nada sai. A senha é registrada como segredo vivo no
+  logger. Permissões: `agents:read` (todos os papéis) e `agents:enroll` (`admin_cliente` e `admin_verax`). Os agentes
+  valem só para o cliente do nó: para outro, `disabled`. Migration `20261106100000_wazuh_agents` (tabela `WazuhAgent`,
+  no escopo do cliente). Área "Agentes" na tela de Auditoria.
+- **Painel:** Administração → Agentes (`/cadastros/agentes`): desligado (explica e diz como pedir), liberação pendente
+  (pede os IPs de saída) e pronto (requisitos, senha mascarada com "Mostrar senha" e copiar, abas Linux deb, Linux rpm
+  com a arquitetura e Windows, scripts com o pacote oficial conferido pelo SHA-512 publicado pela Wazuh e a CA, nota de
+  instalação em escala com SSM Run Command e VM Manager); lista com nome, sistema, IP, versão, situação e último sinal,
+  aviso de lista desatualizada (10 min) e estado vazio. Mock do MSW com dados fictícios (Alfa pronta, Beta pendente).
+- **Arquivos:**
+  - Terraform: `infra/gcp/modules/node/{agents.tf,variables.tf,outputs.tf,tests/agentes.tftest.hcl,tests/lean_verax.tftest.hcl}`
+    e `infra/gcp/envs/homolog-sp/{main.tf,variables.tf,outputs.tf,terraform.tfvars.example}`;
+  - nó: `infra/node/{compose.wazuh-agents.yaml,node.conf.example,tests/start-test.sh}`,
+    `infra/node/bin/{install.sh,start.sh,wazuh-apply.sh,wazuh-agents-certs.sh,wazuh-agents-export.sh}` e
+    `infra/node/systemd/wazuh-agents/*`;
+  - Wazuh: `infra/wazuh/{README.md,config/manager/agents/*,scripts/render-manager-config.py,scripts/smoke-test.sh}`,
+    `infra/wazuh/scripts/test-agents.sh` e `infra/wazuh/tests/test_render_manager_config.py`;
+  - CI: `.github/workflows/iac.yml`;
+  - compartilhado: `packages/shared/src/{agents.ts,agents.test.ts,audit.ts,index.ts,permissions.ts,permissions.test.ts}`;
+  - API: `apps/api/prisma/{schema.prisma,migrations/20261106100000_wazuh_agents}`,
+    `apps/api/src/{agents/*,app.module.ts,worker.ts,common/config/env.schema.ts,common/prisma/tenant-scope.ts}` e
+    `apps/api/test/{agents.test.ts,agents-pending.test.ts,agents-disabled.test.ts,agents/agents-contract.test.ts,fixtures/agents-ca.crt,support/create-app.ts}`;
+  - painel: `apps/web/src/{pages/agents-page.tsx,pages/agents-page.test.tsx,features/agents/*,mocks/agents-handlers.ts}`,
+    `apps/web/src/{mocks/handlers.ts,layout/navigation.ts,layout/layout.test.tsx,routes/router.tsx,features/audit/labels.ts}`
+    e `apps/web/e2e/{pages.mock.spec.ts,layout.mock.spec.ts}`;
+  - documentação: `docs/{ARQUITETURA.md,runbooks/onboarding-cliente.md,STATUS.md}`.
+- **Dependências:** nenhuma. Nenhuma imagem nova (os testes usam as já fixadas).
+- **Testes:**
+  - Nó (num contêiner Linux): `start-test.sh` com os cenários novos (desligado = standard byte a byte e com as mesmas
+    variáveis na mesma ordem; ligado = as variáveis da API e do worker, a senha só no `api.env` e fora da tela; lean,
+    valor inválido, sem IP, IP com máscara, sem cliente, faixa larga, limite acima de 500, sem a senha, sem a chave e
+    senha fora do formato = o render para sem escrever nada; o projeto do Compose com o Docker simulado nos cinco
+    casos); `vault-test.sh`; shellcheck (`-x -S style`, Docker) em `infra/node` e `infra/wazuh`.
+  - Manager real, avulso e sem rede (`scripts/test-agents.sh`, 34 verificações, imagem 4.14.9 fixada): certificado
+    emitido, mantido e refeito com CA nova quando o IP muda; `ossec.conf` dos agentes aceito por `wazuh-analysisd`,
+    `wazuh-remoted`, `wazuh-authd` e `wazuh-modulesd -t`; agent.conf aceito pelo `verify-agent-conf` sem aviso; remoted
+    e authd escutando 1514 e 1515; authd como root; registro pela 1515 como o agente faz (TLS conferido com a CA e o IP;
+    outro IP recusado; sem senha, senha errada e grupo inexistente recusados; senha certa registra); lista pelo
+    `wazuh-agents-export.sh` real, sem o 000 e sem a chave do agente. Gerador: 8 testes novos (16 no arquivo).
+  - Compose: `config` e as checagens do `iac.yml` (jq num contêiner) nos casos com e sem os agentes e o cofre: nenhuma
+    porta sem os agentes; com eles, só 1514/tcp e 1515/tcp no manager; o arquivo dos agentes só soma o previsto, tudo
+    só leitura; a API igual; as redes iguais. `actionlint` no `iac.yml`.
+  - Terraform: `fmt`, `init -backend=false`, `validate` e `test` no módulo (38, 10 novos: desligado sem nada; ligado
+    com faixas = IP externo, regra de encaminhamento TCP 1514-1515 para a VM e firewall exatamente com tcp 1514/1515 e
+    as faixas; a VM sem IP externo e o NAT igual; sem faixas = sem firewall e liberação pendente; lean, faixas sem o
+    interruptor, `0.0.0.0/0`, /8, endereço fora da rede, IPv6 e repetição recusados), no `lean_verax` (nenhum recurso
+    dos agentes no nó da Verax), `envs/homolog-sp` (5) e `envs/verax` (6); tflint; Checkov (89 passaram, 0 falharam).
+  - API (banco descartável): suíte inteira verde (79 arquivos, 1031 testes); novos: lista e filtro, todos os papéis leem, isolamento
+    A/B, 401 e `TENANT_REQUIRED`, instruções do administrador (senha, CA, `no-store`), trilha com
+    `enrollmentPasswordShown` e sem a senha, analista e leitura sem a senha, outro cliente `disabled` sem trilha,
+    admin_verax na trilha do cliente, limite do nó, **log capturado sem a senha** (mesmo escrita de propósito numa
+    mensagem), a tarefa do worker (grava, atualiza, tira, ignora o 000 e itens inválidos, lista fora do formato não muda
+    nada, sem arquivo espera, cliente desativado não grava, teto do arquivo), liberação pendente, nó desligado,
+    configuração do ambiente (7) e o contrato entre o painel, o nó, o manager e o Terraform (6: versão do agente igual à
+    do manager, portas, grupo, caminho e campos da lista, formato da senha e das faixas).
+  - Painel: unitários (scripts: 4; tela: 9, com a senha mascarada e o "Mostrar senha", a cópia com a senha, as abas, o
+    analista, a lista, pendente, desligado e sem cliente) e a suíte inteira (29 arquivos, 276 testes); compartilhado
+    (180); e2e no modo mock (`pages.mock.spec.ts` e `layout.mock.spec.ts`, 50): sem violação de acessibilidade nos dois
+    temas, com a senha à mostra na aba do Windows, e sem rolagem horizontal no celular.
+  - `pnpm typecheck`, `eslint . --max-warnings=0`, `prettier --check apps packages docs infra .github`,
+    `pnpm --filter @verax/web build:demo` (bundle sem padrões de segredo) e Gitleaks no commit.
+- **Definição de pronto:** aceite do código ✔ · testes, inclusive o negativo de acesso entre clientes ✔ · lint, tipos e
+  Prettier ✔ · nenhuma dependência ✔ · regras de segurança ✔ (senha fora do log e da auditoria; entrada do manager
+  validada com zod; nenhuma porta sem o interruptor; o manager sem rede com a API) · **aceite:** depende de ligar na
+  homologação.
+- **O que o responsável precisa fazer (nada foi aplicado nem ligado):** na homologação, `wazuh_agents = true` e uma
+  faixa de saída de teste em `envs/homolog-sp`, `apply`, `WAZUH_AGENTS*` no `node.conf` e `deploy.sh`; instalar o
+  agente numa VM Linux e numa Windows de teste com o script da tela e ver "Conectado" na lista; conferir que a coleta da
+  AWS segue pelo IP do NAT (a regra de encaminhamento não muda a saída) e medir a memória do manager com a detecção de
+  vulnerabilidades ligada por 24 h.
+- **Riscos e pendências:**
+  - não verificado sem a GCP: que a regra de encaminhamento entrega à VM sem IP externo, que o ambiente de convidado da
+    imagem do Debian aceita o IP da regra (necessário para o DNAT do Docker) e que a resposta sai sem passar pelo NAT.
+    É o portão da homologação;
+  - o preço da regra de encaminhamento em São Paulo não aparece na página (só o dos EUA); a SKU existe e precisa ser
+    conferida na calculadora;
+  - a detecção de vulnerabilidades baixa o feed da CTI e pode pesar na memória do manager (1,5 GiB);
+  - os alertas dos agentes chegam ao indexer, mas o sync de achados só atribui alerta a cliente pela conta AWS: os dos
+    agentes vão para a fila sem dono até a próxima etapa;
+  - o limite de agentes é do produto (o Wazuh 4.14 não tem opção para isso): quem já tem a senha ainda registraria;
+  - o `.env.example` não foi tocado (a regra do agente proíbe lê-lo): as variáveis `WAZUH_AGENTS*` estão no
+    `node.conf.example` e no `env.schema.ts`.
+- **Revisão do PR #59:**
+  - **CI (job do Wazuh, `scripts/test-agents.sh`):** o contêiner do certificado rodava
+    `/verax/wazuh-agents-certs.sh` direto, e no repositório o script não tem o bit de execução (exit 126,
+    `Permission denied`). Localmente passava porque o `docker cp` no Windows marca o `.sh` como executável. O teste
+    passa a rodar `bash /verax/wazuh-agents-certs.sh` e a copiar o script por um `tar` com o modo do git (0644), que
+    reproduz o CI também no Windows (o erro foi reproduzido assim antes da correção). Na VM nada muda: o `install.sh`
+    instala o script com 0750.
+  - **Achado do Codex (P2), pacote num caminho previsível do `/tmp`:** o script do Linux baixava o pacote em
+    `/tmp/<arquivo>`; numa máquina com outros usuários (sem `fs.protected_regular`), um usuário sem privilégio poderia
+    criar o arquivo antes e trocar o pacote entre a conferência do SHA-512 e o `dpkg`/`rpm` (root). Agora o pacote fica
+    numa pasta de `mktemp -d` (nome aleatório, 0700, do root), apagada por `trap` na saída. No Windows, o MSI fica numa
+    pasta de nome aleatório (GUID) em `$env:TEMP`, com a herança cortada e acesso só para Administradores e SYSTEM
+    antes do download (a pasta precisa estar vazia), apagada no `finally`: rodando como SYSTEM (o SSM, por exemplo), o
+    `$env:TEMP` é o `C:\Windows\Temp`, compartilhado. Testes dos scripts atualizados; os scripts gerados passaram no
+    shellcheck, o do Debian rodou como root num contêiner (download e SHA-512 de verdade, `dpkg`, `chown` e
+    `systemctl` simulados: a pasta é `drwx------ root` e não sobra nada), e o do Windows passou no parser do PowerShell
+    5.1, com a pasta e a ACL conferidas num ensaio local sem o instalador.
+
 ## Fase 2, PR-V2': papel de leitura sem chave na AWS do cliente (federação do Google) ⚠️ altera `infra/` e `.github/`
 
 - **Pedido:** decisão do responsável de 04/11/2026, depois de ler a proposta "conectar a AWS do cliente sem chave": o acesso de leitura à AWS do cliente deixa de ser o usuário IAM com chave do PR-V2 (#48) e passa a ser um papel IAM sem chave, em que o nó entra com o token que o Google assina para a conta de serviço dele (`AssumeRoleWithWebIdentity`). Fluxo do cliente escolhido: **opção B** (baixar o template e enviar no console da AWS, sem conta AWS da Verax e sem link de um clique); a opção C (CLI e Terraform) fica só na documentação. Este PR é só o V2'; V3', V4' e V5' vêm depois do teste prático do responsável. Nada foi aplicado na AWS nem na GCP.

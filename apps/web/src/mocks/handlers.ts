@@ -2,6 +2,7 @@ import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE, type Role, ROLES } from '@ver
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
+import { createAgentsHandlers } from './agents-handlers';
 import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
 import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
@@ -109,6 +110,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createReportHandlers(state, findings, incidents, admin),
     ...createAuditHandlers(state),
     ...createUnownedHandlers(state, admin, unowned),
+    ...createAgentsHandlers(state),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
