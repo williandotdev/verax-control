@@ -269,7 +269,7 @@ export class FakeStripe {
       status: input.status,
       payment_status: input.paymentStatus,
       client_reference_id: input.tenantId,
-      metadata: { tenantId: input.tenantId, slug: input.slug, plan: 'essencial' },
+      metadata: { tenantId: input.tenantId, slug: input.slug, priceTableVersion: 'teste-v1' },
       customer: input.customer,
       subscription: input.subscription,
       consent: { promotions: null, terms_of_service: input.termsAccepted === false ? null : 'accepted' },
@@ -511,22 +511,30 @@ export class FakeStripe {
     return this.list(data, '/v1/prices');
   }
 
+  /** Mensal com `recurring[...]`; sem ele, avulso (`one_time`), como a Stripe faz. */
   private createPrice(form: URLSearchParams): StripeObject {
     const lookupKey = form.get('lookup_key');
-    if (lookupKey !== null && form.get('transfer_lookup_key') === 'true') {
-      for (const price of this.prices.values())
-        if (price['lookup_key'] === lookupKey) price['lookup_key'] = null;
-    }
+    const interval = form.get('recurring[interval]');
     return this.addPrice(lookupKey ?? '', Number(form.get('unit_amount')), {
       lookup_key: lookupKey,
       currency: form.get('currency'),
       product: form.get('product'),
       nickname: form.get('nickname'),
-      recurring: {
-        interval: form.get('recurring[interval]'),
-        interval_count: Number(form.get('recurring[interval_count]') ?? '1'),
-        usage_type: 'licensed',
-      },
+      metadata: Object.fromEntries(
+        [...form.entries()]
+          .filter(([key]) => key.startsWith('metadata['))
+          .map(([key, value]) => [key.slice('metadata['.length, -1), value]),
+      ),
+      ...(interval === null
+        ? { type: 'one_time', recurring: null }
+        : {
+            type: 'recurring',
+            recurring: {
+              interval,
+              interval_count: Number(form.get('recurring[interval_count]') ?? '1'),
+              usage_type: 'licensed',
+            },
+          }),
     });
   }
 
@@ -536,6 +544,7 @@ export class FakeStripe {
       object: 'product',
       active: true,
       name: form.get('name'),
+      unit_label: form.get('unit_label'),
       livemode: false,
     };
     this.products.set(product.id, product);
@@ -554,6 +563,9 @@ export class FakeStripe {
       times_redeemed: 0,
       valid: true,
       livemode: false,
+      ...(indexed(form, 'applies_to[products]').length === 0
+        ? {}
+        : { applies_to: { products: indexed(form, 'applies_to[products]') } }),
     };
     this.coupons.set(coupon.id, coupon);
     return coupon;

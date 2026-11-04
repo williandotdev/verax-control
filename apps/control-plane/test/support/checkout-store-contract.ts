@@ -15,6 +15,7 @@ import type { DocumentStore } from '../../src/firestore/document-store.js';
 import type { TenantStore } from '../../src/tenants/tenant-store.js';
 import type { SlugOrder } from '../../src/tenants/tenant.schema.js';
 import { type FakeClock, MINUTE_MS } from './fake-clock.js';
+import { demoConfiguration, demoLimits, demoOrderPricing } from './pricing-fixtures.js';
 import { demoTenant } from './tenant-store-contract.js';
 
 export interface CheckoutStoreHarness {
@@ -28,7 +29,9 @@ export interface CheckoutStoreHarness {
 /** Pedido fictício (CLAUDE.md, regra 10): CNPJ alfanumérico do exemplo da Receita, e-mail em domínio `.example`. */
 export function demoOrder(slug = 'cliente-demo-a'): SlugOrder {
   return {
-    plan: 'essencial',
+    configuration: demoConfiguration(),
+    limits: demoLimits(),
+    pricing: demoOrderPricing(),
     company: { legalName: `Cliente Demo ${slug.slice(-1).toUpperCase()} Ltda`, cnpj: '12ABC34501DE35' },
     adminEmail: `admin@${slug}.example`,
     consent: { termsVersion: '2026-11-04', privacyVersion: '2026-11-04', dpaVersion: '2026-11-04' },
@@ -91,7 +94,13 @@ export function describeCheckoutStoreContract(
         actor: 'system',
         action: 'checkout.slug_reserved',
         requestId: 'req-demo-0001',
-        details: { slug: 'cliente-demo-a', plan: 'essencial', expiresAt: reservation.expiresAt },
+        details: {
+          slug: 'cliente-demo-a',
+          size: 'P',
+          priceTableVersion: 'teste-v1',
+          quoteId: demoOrderPricing().quoteId,
+          expiresAt: reservation.expiresAt,
+        },
       });
       const raw = JSON.stringify(await h.documents.query(COLLECTIONS.auditLog));
       for (const personal of ['admin@cliente-demo-a.example', '12ABC34501DE35', 'Cliente Demo']) {
@@ -245,7 +254,9 @@ export function describeCheckoutStoreContract(
       ]);
       expect(audit[1]?.details).toEqual({
         slug: 'cliente-demo-a',
-        plan: 'essencial',
+        size: 'P',
+        priceTableVersion: 'teste-v1',
+        quoteId: demoOrderPricing().quoteId,
         livemode: false,
         sessionExpiresAt,
       });

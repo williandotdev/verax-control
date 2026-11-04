@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ULID_PATTERN } from '../common/ulid.js';
+import { configurationSchema, nodeLimitsSchema, orderPricingSchema } from '../pricing/pricing.schema.js';
 
 /** Estados do cliente (plano §4b). */
 export const TENANT_STATES = [
@@ -15,11 +16,6 @@ export const TENANT_STATES = [
 ] as const;
 export const tenantStateSchema = z.enum(TENANT_STATES);
 export type TenantState = z.infer<typeof tenantStateSchema>;
-
-/** Planos vendidos pelo marketplace (os demais planos do nó não passam pelo checkout). */
-export const PLAN_IDS = ['essencial', 'profissional'] as const;
-export const planIdSchema = z.enum(PLAN_IDS);
-export type PlanId = z.infer<typeof planIdSchema>;
 
 /**
  * Subdomínio do cliente: 3 a 16 caracteres, para `vx-<slug>` caber nos nomes da GCP (plano §4a). Traços nas posições
@@ -61,8 +57,8 @@ const stripeId = stripeIdSchema;
 
 /**
  * Um item da assinatura como a Stripe o devolve na releitura: o preço, a quantidade e o `lookup_key` do preço. A
- * assinatura pode ter vários (o preço por componente e quantidade está em estudo); o plano de controle guarda a
- * lista como veio e não deduz plano nenhum dela.
+ * assinatura tem um item por componente cobrado (preço configurável); o plano de controle guarda a lista como veio e
+ * não deduz a configuração dela (a configuração vem da cotação, no pedido da reserva).
  */
 export const subscriptionItemSchema = z.strictObject({
   priceId: stripeId,
@@ -98,7 +94,14 @@ export const tenantSchema = z.strictObject({
   slug: slugSchema,
   state: tenantStateSchema,
   stateUpdatedAt: z.date(),
-  plan: planIdSchema,
+  /**
+   * O que foi contratado (preço configurável): a configuração com o porte, os limites do nó (`node-limits.ts`, para o
+   * provisionamento e o PR-18) e de qual tabela e cotação saiu o preço. Copiados do pedido da reserva, sem regra em
+   * cima: uma tabela nova nunca muda um cliente existente.
+   */
+  configuration: configurationSchema,
+  limits: nodeLimitsSchema,
+  pricing: orderPricingSchema,
   priceId: stripeId.optional(),
   company: z.strictObject({ legalName: shortText, cnpj: cnpjSchema }),
   /** Apagado em `deleted`. */
@@ -235,11 +238,14 @@ export type InvoiceDocument = z.infer<typeof invoiceSchema>;
 /**
  * O pedido feito no checkout (CP-03), guardado na reserva até virar cliente: é o que a Stripe não guarda (o CNPJ não
  * vai à sessão, e a Stripe não coleta CNPJ do Brasil) e o que o `checkout.session.completed` (CP-04) copia para o
- * tenant. O `plan` é copiado como veio, sem regra em cima dele (a tabela de preços pode mudar). Some com a reserva: o
- * TTL apaga a reserva vencida, e a liberação e a tomada (`taken`) regravam o documento sem ele.
+ * tenant. A configuração, os limites e o preço saem da cotação gravada (nunca do que o site mandou) e são copiados como
+ * vieram, sem regra em cima (a tabela de preços pode mudar). Some com a reserva: o TTL apaga a reserva vencida, e a
+ * liberação e a tomada (`taken`) regravam o documento sem ele.
  */
 export const slugOrderSchema = z.strictObject({
-  plan: planIdSchema,
+  configuration: configurationSchema,
+  limits: nodeLimitsSchema,
+  pricing: orderPricingSchema,
   company: z.strictObject({ legalName: shortText, cnpj: cnpjSchema }),
   adminEmail: z.email(),
   consent: z.strictObject({ termsVersion: shortText, privacyVersion: shortText, dpaVersion: shortText }),

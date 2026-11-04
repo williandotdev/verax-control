@@ -120,8 +120,9 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
   claro nos blocos. Todo nó criado pelo módulo já nasce assim. O nó da Verax, aplicado antes do módulo, segue com o script de boot antigo
   (swap em claro) até uma manutenção planejada: trocar o script recria a VM (o disco fica), como descreve
   `infra/gcp/GUIA.md`.
-- **Imagem uniforme:** todo nó de cliente é `standard`, com ou sem conta AWS, nos planos Essencial e Profissional. O
-  plano muda limites e retenção, não a máquina.
+- **Imagem uniforme:** todo nó de cliente é `standard`, com ou sem conta AWS. A configuração contratada (preço
+  configurável) muda limites e retenção e decide o porte (P, M ou G); hoje o módulo só tem o porte P, e o M e o G chegam
+  no PC-09 (seção "Custo por nó").
 - **Memória no `standard`** (soma dos limites de cerca de 6 GiB): indexer com 3 GiB, heap de 1,5 GiB e memória
   travada; manager com 1,5 GiB; Postgres com 512 MB; API com 384 MB; worker com 512 MB. O swap protege os outros
   processos de um OOM; o heap travado não vai para ele.
@@ -466,13 +467,20 @@ worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente d
 ## Custo por nó
 
 Valores ficam fora deste documento: o preço da nuvem muda, e preço, custo por cliente e margem são informação
-comercial, mantida fora do repositório público. Para estimar a infraestrutura, use a
+comercial, mantida fora do repositório público. Preços e custos vivem no Firestore do plano de controle: a tabela de
+preços (`pricingTables`) e o modelo de custos (`costModels`), editados pelo responsável no console (`cp-admin`) e
+conferidos pela checagem de publicação (seção "Preço configurável"); o custo de cada porte, a estimativa da nuvem do
+cliente e a DRE de qualquer configuração saem do simulador do console. Para estimar a infraestrutura, use a
 [calculadora da Google Cloud](https://cloud.google.com/products/calculator) com os recursos de cada perfil (seção
 "Perfis de nó"):
 
 - **`standard`** (nó de cliente, southamerica-east1): a VM e2-standard-2 é a maior parte; depois vêm o disco de 60
   GB pd-balanced, os snapshots diários guardados por 7 dias e o resto: o Cloud NAT com o IP reservado, o Pub/Sub, os
   segredos, o backup e os flow logs. O plano B (e2-standard-4) dobra a VM.
+- **Portes:** o nó de cliente tem um porte, P, M ou G, calculado pela regra da tabela de preços a partir das contas
+  de nuvem, do volume de logs e dos agentes contratados (o maior que qualquer um exigir). O porte P é o nó `standard`
+  de hoje; M e G (máquina, disco, memória e heap do indexer maiores) chegam ao módulo `node` no PC-09. A regra (os
+  limites de cada porte) é dado da tabela, não código: o portão do ensaio geral decide os números do P.
 - **Homologação parada** fora das janelas de teste: só o disco, os snapshots e o IP reservado.
 - **`lean`** (nó da Verax): estimativa em `infra/gcp/GUIA.md`.
 - **Túnel do Cloudflare e Firebase Hosting:** sem custo nesta escala.
@@ -486,27 +494,30 @@ comercial, mantida fora do repositório público. Para estimar a infraestrutura,
   do WAF pode pesar, e por isso ele é opcional.
 - **Referência anterior:** a pilha do nó na AWS, fora do caminho atual, usa uma VM `t3a.xlarge` (16 GB); estimativa
   na [calculadora da AWS](https://calculator.aws/).
+- **Plano de controle:** cabe no nível gratuito do projeto da Verax.
 
 ## Plano de controle _(fase 3, a construir)_
 
-O plano de controle é o que transforma uma compra no site num nó de cliente no ar sem operador: checkout, webhook
-da Stripe, máquina de estados do cliente, provisionamento passo a passo e exclusão. Vive em `apps/control-plane`
-(NestJS 12 + zod 4, as mesmas regras do monorepo) e roda no projeto da Verax na GCP, dentro do nível gratuito
-(R$ 0 com 0 clientes; R$ 2 a 8 por mês com 20). Os nós continuam como na fase 2; o plano de controle só os cria,
-para, liga e destrói. O detalhamento (fluxos, limites, custos e PRs) está no plano da fase 3, documento interno.
+O plano de controle é o que transforma uma compra no site num nó de cliente no ar sem operador: calculadora de preço,
+checkout, webhook da Stripe, máquina de estados do cliente, provisionamento passo a passo e exclusão, mais o console do
+responsável (tabelas de preços e de custos e DRE). Vive em `apps/control-plane` (NestJS 12 + zod 4, as mesmas regras
+do monorepo) e roda no projeto da Verax na GCP, dentro do nível gratuito. Os nós continuam como na fase 2; o plano de
+controle só os cria, para, liga e destrói. O detalhamento (fluxos, limites e PRs) está no plano da fase 3 e no estudo
+do preço configurável, documentos internos.
 
 ### Peças
 
-| Peça                                           | Onde                                                                                | Faz                                                                                                                                          | Não faz                                                                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                             | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita                                       |
-| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Checkout, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                     | Nenhuma rota interna: aceita invocação anônima (exigência do rewrite do Hosting)                                  |
-| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export`)        | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                  |
-| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                              | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                               |
-| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`    | Nunca guarda segredo, senha, cartão, token do túnel nem corpo bruto do webhook                                    |
-| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00            | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                          |
-| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie; manifesto da versão e bundle do painel      | —                                                                                                                 |
-| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>` | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado |
+| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                           | Não faz                                                                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                 | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)     |
+| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                     | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                   |
+| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export`)                                                                         | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                  |
+| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás do IAP ligado direto no Cloud Run (sem balanceador)         | Console do responsável: tabelas de preços e modelos de custo (rascunho, publicação com a checagem da grade), simulador de DRE                                                                                 | Só o responsável entra (IAP); o app confere de novo o JWT assinado do IAP; nenhum segredo, nem a chave da Stripe  |
+| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                               | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                               |
+| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h) | Nunca guarda segredo, senha, cartão, token do túnel nem corpo bruto do webhook                                    |
+| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                             | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                          |
+| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie; manifesto da versão e bundle do painel                                                                       | —                                                                                                                 |
+| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                  | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado |
 
 ### Identidades
 
@@ -522,7 +533,13 @@ para, liga e destrói. O detalhamento (fluxos, limites, custos e PRs) está no p
   troca a imagem dos serviços (`run.developer` em cada serviço e no Job, nunca no projeto; `iam.serviceAccountUser`
   nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
   Nenhum segredo.
-- **Responsável:** invoca o `cp-worker` com token de identidade, administra os segredos; tudo auditado.
+- **`cp-admin`:** lê e escreve no Firestore (tabelas de preços, modelos de custo e auditoria). Nenhum segredo: a
+  configuração recusa qualquer um, inclusive a chave da Stripe. O ingresso é só pelo IAP (o agente de serviço do IAP
+  tem `run.invoker`; o responsável, `iap.httpsResourceAccessor`), e o app confere em toda requisição o JWT do cabeçalho
+  `x-goog-iap-jwt-assertion` (ES256, emissor `https://cloud.google.com/iap`, `aud` = `IAP_AUDIENCE`, e-mail em
+  `OWNER_PRINCIPALS`).
+- **Responsável:** invoca o `cp-worker` com token de identidade, entra no `cp-admin` pelo IAP, administra os segredos;
+  tudo auditado (`owner:<e-mail>`).
 
 O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS
 Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita).
@@ -563,6 +580,44 @@ proteção que substitui o `prevent_destroy`, que não muda por variável e impe
 Retenção do resto: `auditLog` 24 meses, `stripeEvents` 90 dias, `provisioningRuns` 180 dias, tokens e reservas pelo
 próprio prazo, tudo por TTL do Firestore. Nunca gravado: dado de cartão, senha temporária (lida do Secret Manager e
 devolvida uma vez), token do túnel, chaves da Stripe e do Cloudflare, corpo bruto do webhook, IP completo do cliente.
+
+### Preço configurável
+
+O preço é montado pelo cliente: seis respostas (onde roda, contas de nuvem, volume de logs, agentes nas instâncias,
+histórico e suporte), o porte do nó calculado por uma regra determinística (nunca escolhido) e o total como a soma dos
+componentes. Nenhum valor comercial está no código nem neste repositório; o código (`apps/control-plane/src/pricing`)
+só define a forma dos documentos e as regras.
+
+- **Tabela de preços** (`pricingTables/{versão}`): por componente, o valor em centavos e o `lookup_key` do preço na
+  Stripe (ambiente ou licença por porte e modo, conta adicional, faixas de volume, pacote de agentes, histórico
+  estendido, suporte prioritário, implantação por modo), os incluídos e máximos, a regra de porte e os pacotes de
+  partida. Estados: `draft` (editável), `published` (imutável, vigente a partir de `effectiveFrom`, que pode ser
+  agendado) e `retired` (substituída; `retiredAt` diz quando deixa de valer). A vigente é a de maior `effectiveFrom`
+  até agora. Uma versão nova nunca muda assinatura existente (os preços da Stripe são imutáveis).
+- **Modelo de custos** (`costModels/{versão}`, confidencial, só no console): custo de nuvem por porte e por item,
+  câmbio e folga, tarifas por meio de pagamento, alíquotas, reserva, horas e custo do suporte, custos fixos e as metas
+  de margem (mínima e de alerta). Publicado, vale na hora (custo não muda o preço de ninguém).
+- **Cotação** (`POST /v1/public/quote`, sem nenhum campo de preço): a configuração é levada à opção vendida (sempre
+  para cima); acima do que a tabela vende ou do maior porte, a resposta é "fale conosco". Na v1, a nuvem do cliente
+  também é "fale conosco" (o provisionamento desse modo não existe). A cotação é gravada em `quotes/{id}` por 24 h, com
+  limite por IP e teto diário, e é o que o checkout aceita. `GET /v1/public/pricing` devolve só a parte pública da
+  tabela vigente (preços e regras, o "a partir de"), sem custo, margem nem `lookup_key`, com 5 min de cache no CDN.
+- **Checkout** (`POST /v1/public/checkout` com `quoteId`): relê a cotação, recalcula pela tabela da versão dela
+  (honrada até vencer, mesmo com outra tabela publicada), confere cada preço na Stripe (ativo, em BRL, mensal ou
+  avulso, com o valor da tabela, e a soma igual ao total) e abre a sessão com um item por componente; a implantação, se
+  o modo tiver, entra como item avulso, só na primeira fatura. A reserva guarda a configuração, os limites do nó e o
+  preço cotado (versão, cotação, mensal e implantação), que o webhook copia para o cliente.
+- **Checagem de publicação** (no console): antes de publicar uma tabela, o motor percorre a grade inteira de
+  configurações vendáveis com o modelo de custos vigente (cartão e a alíquota padrão) e recusa a publicação se alguma
+  ficar com margem de contribuição abaixo da mínima, se acrescentar uma unidade baixar o preço ou se o "a partir de"
+  não for o menor preço da grade. O relatório (as piores, as abaixo do alerta, o pior caso com as outras alíquotas e
+  no boleto) volta ao console; a recusa e a publicação ficam na auditoria.
+- **DRE** (`POST /v1/admin/dre/simulate`): por cliente e por mês, receita bruta, imposto, reserva, receita líquida,
+  infraestrutura (só no gerenciado), meio de pagamento, suporte, margem de contribuição, custos fixos rateados e
+  resultado; a implantação à parte e os 12 meses; na nuvem do cliente, a estimativa da nuvem dele, só informativa.
+- **Limites no nó** (gancho do PR-18): a configuração vira os ajustes `PLAN_*` que o nó já lê (`PLAN=enterprise` e os
+  quatro limites) e, com agentes contratados, `WAZUH_AGENTS=true` e `WAZUH_AGENTS_MAX` (seção "Agentes nas instâncias
+  do cliente"); fica gravada no cliente (`tenants/{id}.limits`) para o provisionamento.
 
 ## Versões do nó: imagens públicas e manifesto assinado _(fase 3, SH-02)_
 

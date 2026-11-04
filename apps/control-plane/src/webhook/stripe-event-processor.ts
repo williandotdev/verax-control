@@ -137,9 +137,10 @@ function copyItems(items: readonly StripeItem[]): StripeItem[] {
 }
 
 /**
- * O pedido da reserva vira o cliente (plano §4b, linha `pending`): o plano e os dados da empresa vêm do pedido como
- * foram gravados no checkout (o plano é copiado, sem regra nenhuma em cima dele), os ids e os itens vêm da releitura
- * da sessão e da assinatura. `priceId` só existe quando há um item só; a lista inteira fica em `stripe.items`.
+ * O pedido da reserva vira o cliente (plano §4b, linha `pending`): a configuração, os limites do nó, o preço cotado e os
+ * dados da empresa vêm do pedido como foram gravados no checkout (copiados, sem regra nenhuma em cima deles: a cotação
+ * já foi conferida contra a tabela e a Stripe no checkout), os ids e os itens vêm da releitura da sessão e da
+ * assinatura. `priceId` só existe quando há um item só; a lista inteira fica em `stripe.items`.
  */
 export function tenantFromOrder(
   slug: string,
@@ -152,7 +153,9 @@ export function tenantFromOrder(
   const paymentMethodType = paymentMethodOf(session, subscription);
   return {
     slug,
-    plan: order.plan,
+    configuration: { ...order.configuration },
+    limits: { ...order.limits },
+    pricing: { ...order.pricing },
     ...(items.length === 1 && items[0] !== undefined ? { priceId: items[0].priceId } : {}),
     company: { ...order.company },
     adminEmail: order.adminEmail,

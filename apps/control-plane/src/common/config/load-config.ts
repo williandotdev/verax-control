@@ -1,4 +1,4 @@
-import { type Env, envSchema, isRole, otherRole, ROLE_ONLY } from './env.schema.js';
+import { type Env, envSchema, isRole, otherRoles, ROLE_ONLY } from './env.schema.js';
 
 export class ConfigValidationError extends Error {
   constructor(readonly problems: readonly string[]) {
@@ -14,14 +14,19 @@ function warnToConsole(message: string): void {
   console.warn(message);
 }
 
-/** Tira do ambiente as variáveis comuns do outro papel (`ROLE_ONLY.settings`), avisando cada uma pelo nome. */
+/** Tira do ambiente as variáveis comuns de outro papel (`ROLE_ONLY.settings`), avisando cada uma pelo nome. */
 function dropOtherRoleSettings(source: NodeJS.ProcessEnv, onWarning: ConfigWarning): NodeJS.ProcessEnv {
   const role = source['ROLE'];
   if (!isRole(role)) return source;
-  const other = otherRole(role);
-  const ignored = new Set<string>(ROLE_ONLY[other].settings.filter((key) => source[key] !== undefined));
+  const ignored = new Set<string>();
+  for (const other of otherRoles(role)) {
+    for (const key of ROLE_ONLY[other].settings) {
+      if (source[key] === undefined) continue;
+      ignored.add(key);
+      onWarning(`${key}: só o papel ${other} usa; ignorada no papel ${role}`);
+    }
+  }
   if (ignored.size === 0) return source;
-  for (const key of ignored) onWarning(`${key}: só o papel ${other} usa; ignorada no papel ${role}`);
   return Object.fromEntries(Object.entries(source).filter(([key]) => !ignored.has(key)));
 }
 

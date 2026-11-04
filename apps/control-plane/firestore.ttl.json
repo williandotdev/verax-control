@@ -18,6 +18,7 @@
       "retention": "180 dias (o TTL do run não alcança a subcoleção)"
     },
     { "collectionGroup": "auditLog", "field": "expiresAt", "retention": "24 meses" },
-    { "collectionGroup": "rateLimits", "field": "expiresAt", "retention": "janela do limite" }
+    { "collectionGroup": "rateLimits", "field": "expiresAt", "retention": "janela do limite" },
+    { "collectionGroup": "quotes", "field": "expiresAt", "retention": "24 h (validade da cotação)" }
   ]
 }

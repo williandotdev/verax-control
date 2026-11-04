@@ -228,7 +228,8 @@ export class TenantStore {
           tenantId: id,
           details: {
             slug: tenant.slug,
-            plan: tenant.plan,
+            size: tenant.configuration.size,
+            priceTableVersion: tenant.pricing.priceTableVersion,
             to: 'pending',
             reason: options.reason,
             eventId: options.eventId,
