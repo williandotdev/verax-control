@@ -1,6 +1,7 @@
 import { pino } from 'pino';
 import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
+import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
@@ -26,6 +27,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * laço. A concessão no banco garante um worker por vez em cada fonte, mesmo com mais de uma réplica. SIGTERM ou SIGINT
  * esperam as execuções em curso terminarem, e elas liberam a concessão.
  *
+ * A fonte `cloudflare` (auditoria das contas do Cloudflare) roda no mesmo intervalo, e cada conta é lida a cada
+ * `CLOUDFLARE_AUDIT_INTERVAL_SECONDS` (o cursor de cada conta guarda a próxima leitura). Ela exige o cofre.
+ *
  * Com os agentes do Wazuh ligados no nó, entra a tarefa `wazuh-agents`, que grava a lista dos agentes exportada pelo host.
  *
  * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
@@ -40,7 +44,8 @@ async function main(): Promise<void> {
   let tasks: ScheduledTask[];
   let prisma: PrismaService;
   try {
-    config = loadWorkerConfig();
+    const loaded = loadWorkerConfig();
+    config = loaded;
     prisma = new PrismaService(config);
     const intervalMs = config.SYNC_INTERVAL_SECONDS * 1000;
     tasks = config.SYNC_SOURCES.map((source): ScheduledTask => {
@@ -52,6 +57,22 @@ async function main(): Promise<void> {
           intervalMs,
           budgetMs: SYNC_BUDGET_MS,
           run: () => new AlertSync(prisma, indexer).runOnce(),
+        };
+      }
+      if (source === 'cloudflare') {
+        // Auditoria do Cloudflare: o token de cada conta vem do cofre do nó, aberto só aqui (a configuração exige as
+        // chaves privadas para esta fonte).
+        const keyring = loaded.credentialsKeyring;
+        if (keyring === null)
+          throw new Error('SYNC_SOURCES: a fonte cloudflare exige o cofre de credenciais');
+        const cloudflare = new CloudflareAuditSync(prisma, keyring, {
+          auditIntervalMs: loaded.CLOUDFLARE_AUDIT_INTERVAL_SECONDS * 1000,
+        });
+        return {
+          name: 'cloudflare',
+          intervalMs,
+          budgetMs: SYNC_BUDGET_MS,
+          run: (signal) => cloudflare.runOnce(new Date(), signal),
         };
       }
       // Auditoria da GCP: o token vem da identidade da VM do nó, sem chave.

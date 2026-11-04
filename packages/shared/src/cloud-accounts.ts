@@ -12,6 +12,24 @@ export const CLOUD_ACCOUNT_STATUSES = ['active', 'inactive'] as const;
  */
 export const CLOUD_ACCOUNT_CONNECTIONS = ['waiting', 'connected', 'error'] as const;
 export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
+
+/**
+ * Erros de conexão do coletor do Cloudflare (fase 2, PR-12) que param a coleta da conta: o Cloudflare recusou o token
+ * (inválido ou revogado), o token não lê a auditoria desta conta (permissão ou filtro de IP), venceu ou foi desativado.
+ * O worker não chama mais o Cloudflare com aquele token; a coleta volta quando um admin cola outro token (ou o mesmo,
+ * depois de corrigido no Cloudflare), o que recomeça a conexão.
+ */
+export const CLOUDFLARE_BLOCKING_ERRORS = [
+  'credential_rejected',
+  'credential_forbidden',
+  'credential_expired',
+  'credential_disabled',
+] as const;
+export type CloudflareBlockingError = (typeof CLOUDFLARE_BLOCKING_ERRORS)[number];
+
+export function isCloudflareBlockingError(code: string | null): code is CloudflareBlockingError {
+  return code !== null && (CLOUDFLARE_BLOCKING_ERRORS as readonly string[]).includes(code);
+}
 /** Fontes de log que o Wazuh lê de buckets S3 da conta do cliente (T4.4 a T4.6). */
 export const LOG_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
 export type LogSource = (typeof LOG_SOURCES)[number];

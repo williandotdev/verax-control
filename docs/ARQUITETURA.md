@@ -377,12 +377,12 @@ A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
 ## Logs do Cloudflare
 
-_(fase 2, a construir)_
+_(fase 2: a auditoria está no código, no PR-12; os eventos de segurança vêm no PR-13)_
 
 O Cloudflare é lido pela API dele, por um coletor nativo no worker, sem o Wazuh. Vale para o nó da Verax e para os
 nós de clientes:
 
-- **Auditoria da conta** (audit logs v2), com cursor por conta;
+- **Auditoria da conta** (audit logs v2), com cursor por conta (detalhes abaixo);
 - **Eventos de segurança do WAF**, pela API GraphQL de analytics, em janelas de 15 min. O Cloudflare amostra esses
   eventos, então as contagens são aproximadas. Ele guarda os eventos por uma janela que vale por zona e depende do
   plano (`notOlderThan`, de até 31 dias). Uma parada do nó mais curta que essa janela não perde dados; numa parada
@@ -396,6 +396,43 @@ token e recebe o token colado, que vai para o cofre do nó (seção "Cofre de cr
 
 O Logpush fica fora da v1: exige permissão de escrita (`Logs Edit`) e um destino que o Cloudflare possa gravar. Pode
 voltar depois como modo completo, sem amostragem.
+
+### Coletor da auditoria (`apps/api/src/cloudflare/`)
+
+- **Onde roda:** no worker, como a fonte `cloudflare` de `SYNC_SOURCES`, que exige o cofre de credenciais (o worker
+  não sobe com a fonte e sem as chaves privadas). O token de cada conta é aberto na memória do worker a cada execução,
+  entra na máscara do logger (segredo vivo) e só sai no header `Authorization`, só para `api.cloudflare.com` (host
+  fixo; só os testes apontam para `127.0.0.1`). A API nunca decifra.
+- **O que lê:** `GET /accounts/<conta>/logs/audit` com `since` e `before` (obrigatórios, RFC 3339), `direction=asc`,
+  `limit=500` e o `cursor` opaco de `result_info.cursor`, no máximo 20 páginas por execução. A conta só é lida com o
+  token dela, e cada uma tem dois cursores (`CollectorCursor`): `cloudflare_audit` e `cloudflare_check`.
+- **Janela:** a cada `CLOUDFLARE_AUDIT_INTERVAL_SECONDS` (5 min por padrão; o laço da tarefa segue o
+  `SYNC_INTERVAL_SECONDS`), de `cursor - 10 min` até `agora - 1 min`. A primeira leitura pega 7 dias, e nenhuma volta
+  mais de 30 dias. Lida a janela inteira, o cursor vai para o fim dela; cortada no teto de páginas, a continuação (o
+  cursor do Cloudflare e a janela) fica gravada e a próxima execução, logo em seguida, segue dela. Uma continuação
+  recusada (400) recomeça a janela pelo cursor.
+- **Cada entrada:** validada com zod, uma a uma (texto longo é cortado, `request` e `response` são lidos pelas regras e
+  descartados; nada do evento bruto é gravado). A inválida vai para a fila sem dono (`invalid_alert`) sem parar o lote;
+  a que diz ser de outra conta, também (`source_mismatch`, ou `no_account` sem conta). A da conta conta como atividade
+  (`lastEventAt`), e a de uma zona fora da lista cadastrada é ignorada (lista vazia é todas). Regra que casa vira
+  achado do cliente da conta (`source='cloudflare'`, `logSource='cloudflare_audit'`, chave única `cf/<conta>/<id>`),
+  com a exceção e o incidente na mesma transação: reler a sobreposição não duplica. O ator é o e-mail ou o nome do
+  token, e o ID do token (que não é segredo) vai em `accessKeyId`, para juntar as ações do mesmo token num incidente.
+- **Regras (990301 a 990324):** tabela em `cloudflare-rules.ts`, pelo caminho da API (`raw.uri`, sem regex), pelo
+  método e, quando precisa, pelo corpo da requisição. Os caminhos são os da API pública; se as ações feitas pelo painel
+  aparecem com o mesmo caminho só os eventos reais confirmam.
+- **Conferência de hora em hora:** o `tokens/verify` e a leitura de prova (os mesmos do painel), que atualizam a
+  validade e a última conferência do token guardado, e, com zonas cadastradas, `GET /zones?account.id=<conta>`: uma
+  zona cadastrada que não existe deixa a conexão em erro (`zone_not_found`), e o token sem `Zone: Read`, também
+  (`zones_forbidden`), sem parar a auditoria.
+- **Falhas e conexão:** 5xx, rede e tempo esgotado (20 s por tentativa) são tentados de novo duas vezes na mesma
+  execução; depois, o cursor recua (1 min, dobrando, até 1 h). O 429 nunca é repetido: o cursor espera o
+  `retry-after` (5 min sem ele). O cartão da conta mostra o código (`rate_limited`, `timeout`, `http_503`...).
+  **Token recusado (401), sem acesso à auditoria (403), vencido ou desativado** param a coleta: o worker não chama mais
+  o Cloudflare com aquele token até um admin colar outro (o que recomeça a conexão), e o cartão explica o motivo. Toda
+  escrita da conexão confere, sob o lock da credencial, que o token guardado ainda é o usado na leitura.
+- **Medidor:** os bytes de cada página lida entram no uso do cliente (`IngestUsage`, fonte `cloudflare`), depois de o
+  cursor avançar.
 
 ## Agentes nas instâncias do cliente
 

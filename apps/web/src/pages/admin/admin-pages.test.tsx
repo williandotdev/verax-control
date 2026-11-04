@@ -23,6 +23,7 @@ import {
   DEMO_SINK_TOPIC_PREFIX,
   demoMe,
 } from '@/mocks/fixtures';
+import { demoAdminStore } from '@/mocks/admin';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
 
@@ -41,8 +42,10 @@ function renderAt(
   path: string,
   state: MockState = { me: demoMe('admin_cliente') },
   client: QueryClient = createQueryClient(),
+  /** Respostas que valem antes das do mock (o MSW usa a primeira que casa). */
+  overrides: Parameters<typeof server.use> = [],
 ) {
-  server.use(...createHandlers(state));
+  server.use(...overrides, ...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
     <QueryClientProvider client={client}>
@@ -445,6 +448,31 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     ).toBeInTheDocument();
     expect(within(sheet).queryByLabelText('Identidade do sink')).not.toBeInTheDocument();
     expect(within(sheet).queryByLabelText('Assinatura do Pub/Sub')).not.toBeInTheDocument();
+  });
+
+  it('Cloudflare com o token recusado pelo coletor: o detalhe explica o erro e diz que a coleta parou', async () => {
+    const accounts = [...demoAdminStore().accounts.values()].flat();
+    const cloudflare = accounts.find((account) => account.accountId === DEMO_ACCOUNTS.alfaCloudflare);
+    if (!cloudflare) throw new Error('a conta do Cloudflare da demonstração sumiu');
+    const failing = { ...cloudflare, connection: 'error' as const, connectionError: 'credential_rejected' };
+    renderAt('/cadastros/contas', undefined, undefined, [
+      http.get(`${API_URL}/v1/cloud-accounts`, () =>
+        HttpResponse.json({ items: [failing], page: 1, pageSize: 20, total: 1 }),
+      ),
+    ]);
+    const [row] = await rowsOf('Contas cloud do cliente');
+    expect(row).toHaveTextContent('Erro');
+    await userEvent.click(
+      within(row as HTMLElement).getByRole('button', {
+        name: (name) => name.includes(DEMO_ACCOUNTS.alfaCloudflare),
+      }),
+    );
+    const sheet = await screen.findByRole('dialog', {
+      name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    });
+    expect(within(sheet).getByText(/A última leitura falhou/)).toHaveTextContent(
+      'A última leitura falhou. O Cloudflare recusou o token (inválido ou revogado). A coleta está parada até um token válido ser colado abaixo. Tipo do erro: credential_rejected.',
+    );
   });
 
   it('Cloudflare: zonas na tabela; o token guardado aparece só pelo fim do ID; as zonas mudam no detalhe', async () => {

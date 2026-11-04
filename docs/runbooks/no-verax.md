@@ -87,6 +87,27 @@ e as privadas ao worker, num arquivo em memória (`/run/verax/vault/worker-keys`
 nunca por variável de ambiente (o Docker grava o ambiente dos contêineres no disco). A parada (`start.sh down`) apaga
 a pasta.
 
+### Coleta do Cloudflare (auditoria da conta)
+
+O coletor da auditoria do Cloudflare roda no worker e lê o token guardado no cofre, então pede o cofre ligado (acima).
+Para ligar, acrescente `cloudflare` às fontes do `node.conf` (`SYNC_SOURCES=gcp,cloudflare` no nó da Verax,
+`SYNC_SOURCES=gcp,wazuh,cloudflare` num nó de cliente) e faça um deploy. Com a fonte e sem o cofre, o worker não sobe
+(a mensagem cita `SYNC_SOURCES`). Depois, em Contas cloud, cadastre a conta do Cloudflare e cole o token pelo link
+do painel (só leitura; filtro de IP do token com o IP de saída do nó).
+
+- **Conferir:** no journal, a tarefa `cloudflare` conclui a cada minuto com `report` (`accounts`, `pages`, `read`,
+  `created`, `blocked`...); a conta fica "Conectada" na primeira leitura bem-sucedida, mesmo sem evento, e a "Última
+  coleta" anda a cada 5 minutos (o padrão de `CLOUDFLARE_AUDIT_INTERVAL_SECONDS`, aceito de 60 a 3600 no worker; o
+  `start.sh` não escreve essa variável, então no nó vale o padrão).
+- **Coleta parada por causa do token** (`credential_rejected`, `credential_forbidden`, `credential_expired`,
+  `credential_disabled` no cartão): o worker não chama mais o Cloudflare com aquele token. Nada a fazer no nó: o
+  admin do cliente cola outro token (ou o mesmo, depois de corrigir permissão, filtro de IP ou validade no Cloudflare),
+  e a coleta volta na volta seguinte do worker.
+- **`credential_unreadable`:** o worker não abriu o token guardado (versão da chave desativada antes da recifragem,
+  por exemplo). Reative a versão (seção abaixo) ou peça para colarem o token de novo.
+- **`rate_limited`:** o Cloudflare limitou o token (1200 requisições a cada 5 minutos, somando tudo que usa o mesmo
+  token); o coletor espera o `retry-after`. Se repetir, confira se o mesmo token não está em uso em outro lugar.
+
 ### Chave do cofre: trocar, reativar ou gravar de novo
 
 Cada versão do segredo `<prefixo>-credentials-key` é uma versão da chave; o `start.sh` lê todas as ativas e cifra

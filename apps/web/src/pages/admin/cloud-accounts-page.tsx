@@ -11,6 +11,7 @@ import {
   daysUntilExpiry,
   gcpSinkCommand,
   gcpSinkIdentityCommand,
+  isCloudflareBlockingError,
   normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
 } from '@verax/shared';
@@ -36,6 +37,7 @@ import {
   CONNECTION_LABELS,
   CONNECTOR_GUIDE_URL,
   CONNECTOR_TEMPLATE_URL,
+  connectionErrorHint,
   connectionHint,
   CREDENTIAL_STATUS_LABELS,
   PROVIDER_LABELS,
@@ -196,6 +198,22 @@ const CONNECTION_SEVERITY = {
 } as const satisfies Record<CloudAccount['connection'], keyof typeof SEVERITY_STYLES>;
 
 /** Selo "Aguardando / Conectada / Erro": a cor vem com ícone e texto, nunca só a cor. */
+/**
+ * O erro da última coleta: a explicação, quando há uma, e o código. No Cloudflare, os erros do token param a coleta
+ * até outro token ser colado (o worker não chama mais o Cloudflare com ele).
+ */
+function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code: string }) {
+  const hint = connectionErrorHint(code);
+  const stopped = account.provider === 'cloudflare' && isCloudflareBlockingError(code);
+  return (
+    <>
+      {hint && ` ${hint}`}
+      {stopped && ' A coleta está parada até um token válido ser colado abaixo.'} Tipo do erro:{' '}
+      <code className="font-mono">{code}</code>.
+    </>
+  );
+}
+
 function ConnectionBadge({ account }: { account: CloudAccount }) {
   const { icon: Icon, tone } = SEVERITY_STYLES[CONNECTION_SEVERITY[account.connection]];
   return (
@@ -362,10 +380,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           <p className="text-xs text-muted-foreground">
             {connectionHint(account.provider, account.connection)}
             {account.connection === 'error' && account.connectionError && (
-              <>
-                {' '}
-                Tipo do erro: <code className="font-mono">{account.connectionError}</code>.
-              </>
+              <ConnectionErrorDetail account={account} code={account.connectionError} />
             )}
           </p>
         </dd>

@@ -51,6 +51,12 @@ export function FindingPanel({ id, onClose }: { id: string | null; onClose: () =
   );
 }
 
+/** De onde vem a regra do achado, quando não é a do Wazuh (logs da AWS). */
+const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
+  gcp_audit: 'Regra (auditoria da GCP)',
+  cloudflare_audit: 'Regra (auditoria do Cloudflare)',
+};
+
 function FindingDetailView({ finding }: { finding: FindingDetail }) {
   const { data: me } = useMe();
   const can = (permission: Permission) => me?.permissions.includes(permission) === true;
@@ -63,11 +69,15 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
       'Usuário',
       finding.actor.user && `${finding.actor.user}${finding.actor.type ? ` (${finding.actor.type})` : ''}`,
     ],
-    ['Chave de acesso', finding.actor.accessKeyId],
+    // No Cloudflare, o campo guarda o ID do token de API usado na ação (não é segredo).
+    [
+      finding.source === 'cloudflare_audit' ? 'ID do token de API' : 'Chave de acesso',
+      finding.actor.accessKeyId,
+    ],
     ['IP de origem', finding.actor.ip],
     [
-      // Os alertas da AWS vêm das regras do Wazuh; os da GCP, das regras do próprio nó.
-      finding.source === 'gcp_audit' ? 'Regra (auditoria da GCP)' : 'Regra (logs da AWS)',
+      // Os alertas da AWS vêm das regras do Wazuh; os da GCP e do Cloudflare, das regras do próprio nó.
+      RULE_LABELS[finding.source] ?? 'Regra (logs da AWS)',
       `${finding.ruleId} (nível ${finding.ruleLevel})`,
     ],
   ];
