@@ -19,9 +19,12 @@ repositório.
 | `cloudflared`             | Túnel do Cloudflare: conexão de saída da VM até o Cloudflare.                                        |
 
 Todos rodam com a raiz só leitura, sem capabilities e com limite de memória. Só o worker alcança o servidor de
-metadados da GCP, que entrega o token da VM: uma regra no `DOCKER-USER`, aplicada a cada partida, bloqueia os outros
-contêineres. O backup do banco sai todo dia para o
-bucket de backups (`verax-backup.timer`).
+metadados da GCP, que entrega o token da VM: uma regra no `DOCKER-USER`, aplicada antes de o Docker subir
+(`verax-metadata-guard`, que o Docker exige) e reafirmada a cada partida, bloqueia os outros contêineres. A guarda não
+aceita `systemctl stop` nem `restart` (como o Docker a exige, levaria o Docker e o nó junto): para reaplicar as regras,
+`sudo systemctl restart verax-node`. Se o script dela falhar no boot, o Docker não sobe e nenhum contêiner fica no ar
+sem a guarda; é de propósito, e `systemctl status verax-metadata-guard` mostra o motivo. O backup do banco sai todo dia
+para o bucket de backups (`verax-backup.timer`).
 
 ## Antes de instalar (uma vez)
 
@@ -55,6 +58,13 @@ sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do pl
 
 O perfil do nó (`NODE_PROFILE`) define a memória do banco, da API e do worker. O da Verax é `lean`, com os mesmos
 limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` atual não precisa mudar.
+
+No perfil `standard` (homologação e nós de clientes), o mesmo pacote sobe também o Wazuh (manager e indexer, sem
+dashboard), num serviço próprio, o `verax-wazuh`, depois do `verax-node`: o `deploy.sh` leva junto a configuração de
+`infra/wazuh`, o `install.sh` gera as quatro senhas dele em `/var/lib/verax/secrets`, e o serviço espera o Wazuh ficar
+saudável (alguns minutos, mais na primeira vez, que baixa as imagens); uma falha dele não derruba a aplicação nem o
+backup. O que roda, como conferir e como ler os alertas estão em `infra/wazuh/README.md`, seção "Nó de cliente". Nesse
+perfil, use `SYNC_SOURCES=gcp,wazuh` no `node.conf`. O nó da Verax (`lean`) não recebe nada disso.
 
 O prefixo dos cofres (`VERAX_SECRET_PREFIX`) é o `name_prefix` do ambiente do Terraform (`verax-node` no nó da Verax,
 `verax-homolog` na homologação). Essa igualdade é uma premissa operacional, não algo que o nó confira: o `start.sh`
@@ -192,6 +202,10 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   sudo docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml --env-file /etc/verax/images.env ps
   sudo docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml --env-file /etc/verax/images.env logs --tail 50 worker
   ```
+
+- A guarda do servidor de metadados, depois de um deploy ou de um reboot: `systemctl status verax-metadata-guard`
+  (ativa, `exited`, antes do Docker) e `sudo iptables -S DOCKER-USER` (o salto `-d 169.254.169.254/32 -j VERAX-METADATA`
+  antes do `RETURN` do Docker, sem nenhuma regra com `-s`).
 
 ## Backups e restauração
 

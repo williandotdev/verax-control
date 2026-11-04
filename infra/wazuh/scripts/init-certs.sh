@@ -57,7 +57,6 @@ if [[ -n $extra_sans ]]; then indexer_sans="$indexer_sans,$extra_sans"; fi
 issue wazuh.indexer serverAuth,clientAuth "$indexer_sans"
 issue admin clientAuth
 issue wazuh.manager serverAuth,clientAuth 'DNS:wazuh.manager'
-issue wazuh.dashboard serverAuth 'DNS:wazuh.dashboard,DNS:localhost,IP:127.0.0.1'
 
 # place <volume> <uid> <arquivos...>
 place() {
@@ -69,11 +68,11 @@ place() {
   done
 }
 
-# O indexer e o dashboard rodam como uid 1000; os módulos do manager que falam com o indexer, como `wazuh` (999).
+# O indexer roda como uid 1000; os módulos do manager que falam com o indexer, como `wazuh` (999). Sem dashboard
+# (fase 2, PR-W1), nenhum par é emitido para ele.
 place indexer 1000 root-ca.pem wazuh.indexer.pem wazuh.indexer-key.pem admin.pem admin-key.pem
-place dashboard 1000 root-ca.pem wazuh.dashboard.pem wazuh.dashboard-key.pem
 place manager 999 root-ca.pem wazuh.manager.pem wazuh.manager-key.pem
-# Só o certificado público da CA, para quem precisa validar o indexer (a API, na T4.8).
+# Só o certificado público da CA, para quem precisa validar o indexer (a API e o worker).
 install -d -m 0755 "$out/public"
 install -m 0444 root-ca.pem "$out/public/root-ca.pem"
 

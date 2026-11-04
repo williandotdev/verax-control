@@ -1,6 +1,6 @@
-# Indexer do Wazuh (T4.2). Baseado no wazuh.indexer.yml do single-node oficial (v4.14.9). Mudanças:
-# DNs da CA própria (scripts/init-certs.sh) e limites de disco ligados, para o índice ficar só leitura antes de o
-# disco encher, em vez de corromper.
+# Indexer do Wazuh (T4.2 e fase 2, PR-W1). Baseado no wazuh.indexer.yml do single-node oficial (v4.14.9). Mudanças:
+# DNs da CA própria (scripts/init-certs.sh), limites de disco ligados, para o índice ficar só leitura antes de o
+# disco encher, em vez de corromper, e o heap travado na memória.
 network.host: '0.0.0.0'
 node.name: 'wazuh.indexer'
 cluster.name: 'wazuh-cluster'
@@ -8,6 +8,9 @@ path.data: /var/lib/wazuh-indexer
 path.logs: /var/log/wazuh-indexer
 discovery.type: single-node
 compatibility.override_main_response_version: true
+# Heap travado na memória (o guia de ajuste do indexer): nunca vai para o swap do host. O ulimit memlock ilimitado da
+# compose permite travar sem nenhuma capability; o ci-test confere `mlockall` ligado.
+bootstrap.memory_lock: true
 
 # TLS obrigatório no HTTP e no transporte. Não existe modo sem TLS nesta configuração.
 plugins.security.ssl.http.enabled: true
@@ -58,6 +61,7 @@ plugins.security.allow_default_init_securityindex: true
 
 cluster.routing.allocation.disk.threshold_enabled: true
 
-# Repositório de snapshots em disco (T4.9). O snapshot diário é do Snapshot Management do próprio indexer, e o
-# host copia o repositório para o S3 (scripts/bootstrap-host.sh). A imagem oficial não traz o plugin repository-s3.
+# Repositório de snapshots em disco (T4.9). O snapshot diário é do Snapshot Management do próprio indexer. No nó de
+# cliente ele fica só no disco (erro lógico; o disco inteiro tem o snapshot diário da GCP); no EC2, o host copia o
+# repositório para o S3 (scripts/bootstrap-host.sh). A imagem oficial não traz o plugin repository-s3.
 path.repo: ['/mnt/snapshots']

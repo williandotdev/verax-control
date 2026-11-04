@@ -1,0 +1,23 @@
+# Wazuh do nó de cliente (perfil standard; infra/node/compose.wazuh.yaml): indexer e manager, depois da pilha da
+# aplicação. Serviço separado do verax-node de propósito: uma falha do Wazuh (healthcheck, smoke test, guarda do
+# metadata) fica neste serviço, e o banco, a API, o worker, o túnel e o backup diário seguem no ar. `systemctl restart
+# verax-node` reinicia este serviço junto (Requires) e o sobe de novo mesmo quando ele tinha falhado (o drop-in
+# verax-node.service.d/wazuh.conf, Wants); `systemctl restart verax-wazuh` reaplica só o Wazuh.
+[Unit]
+Description=Verax Control - Wazuh do no (indexer e manager)
+Requires=verax-node.service
+After=verax-node.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/verax/bin/start.sh wazuh-up
+ExecStop=/opt/verax/bin/start.sh wazuh-down
+# Acima da soma das esperas do start.sh (indexer até 10 min e manager até 15 min, mais a primeira descarga das
+# imagens): se o systemd matasse a partida no meio de uma espera, o Wazuh ficaria pela metade.
+TimeoutStartSec=2400
+# O manager e o indexer têm 60 s cada para parar (stop_grace_period), em sequência.
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -1,6 +1,8 @@
+# Wants, e não Requires: o backup roda mesmo com o verax-node em falha (o banco pode estar no ar; se não estiver, o
+# backup.sh falha sozinho, com o motivo no journal), em vez de parar em "dependency failed" sem dizer nada.
 [Unit]
 Description=Verax Control - backup do banco no bucket
-Requires=verax-node.service
+Wants=verax-node.service
 After=verax-node.service
 
 [Service]

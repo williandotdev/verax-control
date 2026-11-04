@@ -1,0 +1,250 @@
+# Wazuh no nó de cliente (perfil standard; fase 2, PR-W1): manager e indexer 4.14.9, sem dashboard, no mesmo projeto
+# `verax` do compose.yaml. O start.sh junta os dois arquivos (-f compose.yaml -f compose.wazuh.yaml) só com
+# NODE_PROFILE=standard; o nó da Verax (lean) nunca lê este arquivo.
+#
+# Parte de infra/wazuh/docker-compose.yml (mesmas imagens, scripts e healthchecks; o CI confere que os digests são os
+# mesmos), com estas mudanças:
+# - sem o dashboard, sem porta publicada do indexer e sem IP fixo no manager;
+# - redes do nó, todas fora da rede `verax` do banco: `wazuh` (interna, sem rota para fora) só com o indexer e o
+#   manager; `wazuh-read` (interna) com o indexer, a API e o worker, que só leem; e `wazuh-egress` só com o manager
+#   (saída para o S3 e o STS). O manager processa log de fora como root e não divide rede com a API: numa rede só, ele
+#   chegaria a `http://api:3000` por dentro, fora do Cloudflare, e forjaria o `X-Forwarded-For` em que a API confia
+#   (TRUST_PROXY_HOPS=1). O desenho da seção 2.1 do plano tinha uma rede só; a separação é um endurecimento deliberado
+#   (docs/STATUS.md, PR-W1). Nenhum contêiner do Wazuh alcança o servidor de metadados da VM (guarda em
+#   infra/node/bin/metadata-guard.sh, conferida no fim do `start.sh wazuh-up`);
+# - credencial da AWS: o diretório /run/verax/wazuh-aws (memória do host, só root), só leitura no manager, no lugar do
+#   volume manager-aws;
+# - limites de memória, CPU e processos, nenhuma capability (o manager recebe só as que o init da imagem usa) e log com
+#   o driver local, como os contêineres da aplicação. A raiz só leitura não cabe nas imagens do Wazuh (o init delas
+#   grava em /var/ossec e /etc): o CI tem essa exceção só para o indexer e o manager.
+# As senhas ficam em /run/verax/wazuh-*.env (memória, só root), escritas pelo start.sh a partir de
+# /var/lib/verax/secrets; os scripts e a configuração vêm do pacote (/opt/verax/wazuh, cópia de infra/wazuh).
+# Os jobs de inicialização ficam no perfil `setup`: só o start.sh os roda, na ordem dele.
+
+x-wazuh-logging: &wazuh-logging
+  driver: local
+  options: { max-size: 10m, max-file: '3' }
+
+# Jobs de inicialização: root (gravam nos volumes e os entregam aos usuários das imagens), sem rede, raiz só leitura,
+# sem ganho de privilégio e só com as capabilities de quem troca dono e permissão de arquivo.
+x-wazuh-job: &wazuh-job
+  user: root
+  network_mode: none
+  restart: 'no'
+  profiles: [setup]
+  read_only: true
+  tmpfs: ['/tmp:rw,noexec,nosuid,size=16m']
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  logging: *wazuh-logging
+
+services:
+  certs-init:
+    <<: *wazuh-job
+    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    entrypoint: ['/bin/bash', '/verax/init-certs.sh']
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    mem_limit: 128m
+    volumes:
+      - ./wazuh/scripts/init-certs.sh:/verax/init-certs.sh:ro
+      - certs-indexer:/out/indexer
+      - certs-manager:/out/manager
+      - certs-public:/out/public
+
+  security-init:
+    <<: *wazuh-job
+    image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
+    entrypoint: ['/bin/bash', '/verax/init-security.sh']
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    env_file: /run/verax/wazuh-security.env
+    mem_limit: 512m
+    volumes:
+      - ./wazuh/scripts/init-security.sh:/verax/init-security.sh:ro
+      - ./wazuh/config/indexer/internal_users.yml.tmpl:/verax/internal_users.yml.tmpl:ro
+      - ./wazuh/config/indexer/roles-verax.yml:/verax/roles-verax.yml:ro
+      - ./wazuh/config/indexer/roles_mapping.yml:/verax/roles_mapping.yml:ro
+      - indexer-security:/out/security
+      - indexer-snapshots:/out/snapshots
+
+  # A lista de contas chega pela entrada padrão (infra/node/bin/wazuh-apply.sh); o gerador é o único que escreve o
+  # ossec.conf e os arquivos da AWS do manager.
+  manager-config:
+    <<: *wazuh-job
+    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    entrypoint:
+      - /var/ossec/framework/python/bin/python3
+      - /verax/render-manager-config.py
+      - /verax/ossec.conf
+      - /out/config
+      - /out/aws
+      - /verax/rules
+    stdin_open: true
+    mem_limit: 128m
+    volumes:
+      - ./wazuh/scripts/render-manager-config.py:/verax/render-manager-config.py:ro
+      - ./wazuh/config/manager/ossec.conf:/verax/ossec.conf:ro
+      - ./wazuh/config/manager/rules:/verax/rules:ro
+      - manager-config:/out/config
+      - /run/verax/wazuh-aws:/out/aws
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
+    hostname: wazuh.indexer
+    restart: unless-stopped
+    # Heap de 1,5 GiB travado na memória (bootstrap.memory_lock no opensearch.yml): o resto do limite fica para o
+    # que o Java usa fora do heap. O ensaio da homologação decide se o heap sobe para 2 GiB.
+    environment:
+      OPENSEARCH_JAVA_OPTS: -Xms1500m -Xmx1500m
+    mem_limit: 3g
+    cpus: 1.5
+    pids_limit: 1024
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    # Só redes internas: sem porta publicada e sem rota para fora. O manager chega pela `wazuh`; a API e o worker, pela
+    # `wazuh-read`. O certificado vale pelo nome (DNS:wazuh.indexer), o mesmo nas duas redes.
+    networks: [wazuh, wazuh-read]
+    # Tempo para o indexer fechar os índices e o translog antes do SIGKILL (o padrão do Docker são 10 s).
+    stop_grace_period: 60s
+    volumes:
+      - indexer-data:/var/lib/wazuh-indexer
+      - indexer-snapshots:/mnt/snapshots
+      - certs-indexer:/usr/share/wazuh-indexer/config/certs:ro
+      - indexer-security:/usr/share/wazuh-indexer/config/opensearch-security
+      - ./wazuh/config/indexer/opensearch.yml:/usr/share/wazuh-indexer/config/opensearch.yml:ro
+    healthcheck:
+      # Sem credencial, o indexer saudável responde 401 por HTTPS com o certificado da CA própria.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -s -o /dev/null -w '%{http_code}'
+          --cacert /usr/share/wazuh-indexer/config/certs/root-ca.pem https://wazuh.indexer:9200
+          | grep -q 401
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    logging: *wazuh-logging
+
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    hostname: wazuh.manager
+    restart: unless-stopped
+    depends_on:
+      wazuh.indexer: { condition: service_healthy }
+    # Senhas do usuário wazuh_filebeat do indexer (o filebeat grava os alertas com ele: só escrita em wazuh-alerts-*,
+    # sem leitura e sem apagar; config/indexer/roles-verax.yml) e do wazuh-wui da API do manager. A senha do admin do
+    # indexer não chega a nenhum contêiner que fica no ar: o securityadmin e os scripts usam o certificado admin.
+    env_file: /run/verax/wazuh-manager.env
+    environment:
+      # As aspas fazem parte do valor: o init da imagem monta `hosts: [$INDEXER_URL]` no filebeat.yml.
+      INDEXER_URL: '"https://wazuh.indexer:9200"'
+      INDEXER_USERNAME: wazuh_filebeat
+      FILEBEAT_SSL_VERIFICATION_MODE: full
+      SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/verax/root-ca.pem
+      SSL_CERTIFICATE: /etc/ssl/verax/wazuh.manager.pem
+      SSL_KEY: /etc/ssl/verax/wazuh.manager-key.pem
+      API_USERNAME: wazuh-wui
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 1024
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 655360
+        hard: 655360
+    # O init da imagem roda como root, troca o dono dos arquivos dos volumes e sobe os daemons como o usuário wazuh,
+    # alguns presos (chroot) em /var/ossec; o módulo da AWS roda como root (lê /root/.aws). Conferido na 4.14.9: sem
+    # qualquer uma destas, nenhum daemon sobe. Nenhuma outra capability.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID, KILL, SYS_CHROOT]
+    security_opt: ['no-new-privileges:true']
+    networks: [wazuh, wazuh-egress]
+    # Tempo para o wazuh-control parar os daemons e o filebeat gravar o registro do que já enviou (com o SIGKILL aos
+    # 10 s do padrão, o filebeat reenviaria alertas na volta).
+    stop_grace_period: 60s
+    volumes:
+      - manager-api-configuration:/var/ossec/api/configuration
+      - manager-etc:/var/ossec/etc
+      - manager-logs:/var/ossec/logs
+      - manager-queue:/var/ossec/queue
+      - manager-var-multigroups:/var/ossec/var/multigroups
+      - manager-integrations:/var/ossec/integrations
+      - manager-active-response:/var/ossec/active-response/bin
+      - manager-agentless:/var/ossec/agentless
+      # O código do módulo da AWS vem da imagem a cada partida (lista de exclusão do init); o volume guarda o marcador
+      # de cada bucket (wodles/aws/s3_cloudtrail.db). O ci-test confere isso numa atualização 4.14.x → 4.14.y.
+      - manager-wodles:/var/ossec/wodles
+      - filebeat-etc:/etc/filebeat
+      - filebeat-var:/var/lib/filebeat
+      - certs-manager:/etc/ssl/verax:ro
+      # O init da imagem copia /wazuh-config-mount para /var/ossec a cada partida (etc/ossec.conf gerado).
+      - manager-config:/wazuh-config-mount:ro
+      - /run/verax/wazuh-aws:/root/.aws:ro
+    healthcheck:
+      test: ['CMD-SHELL', "/var/ossec/bin/wazuh-control status | grep -q 'wazuh-apid is running'"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 60s
+    logging: *wazuh-logging
+
+  # A API (evento bruto do detalhe do achado) e o worker (tarefa `wazuh`) leem o indexer pela rede interna
+  # `wazuh-read`, com o usuário só leitura (INDEXER_AUTH=node no api.env e no worker.env) e a CA do volume público dos
+  # certificados. A API não divide rede com o manager (o CI confere). A saída dos dois continua pela rede `verax`; a
+  # API ganha prioridade de CPU sobre o resto do nó.
+  api:
+    networks: [wazuh-read]
+    volumes: ['certs-public:/etc/verax/wazuh:ro']
+    cpu_shares: 2048
+
+  worker:
+    networks: [wazuh-read]
+    volumes: ['certs-public:/etc/verax/wazuh:ro']
+
+networks:
+  wazuh:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.54.0/24
+  wazuh-read:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.56.0/24
+  wazuh-egress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.55.0/24
+
+volumes:
+  certs-indexer:
+  certs-manager:
+  certs-public:
+  indexer-security:
+  indexer-data:
+  indexer-snapshots:
+  manager-api-configuration:
+  manager-etc:
+  manager-logs:
+  manager-queue:
+  manager-var-multigroups:
+  manager-integrations:
+  manager-active-response:
+  manager-agentless:
+  manager-wodles:
+  manager-config:
+  filebeat-etc:
+  filebeat-var:
