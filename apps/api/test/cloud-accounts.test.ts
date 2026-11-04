@@ -36,7 +36,7 @@ describe('contas cloud (T3.3)', () => {
 
   const call = (session: TestSession) => {
     const server = request(app.getHttpServer());
-    const write = (method: 'post' | 'patch' | 'delete', path: string) =>
+    const write = (method: 'post' | 'patch' | 'put' | 'delete', path: string) =>
       server[method](path)
         .set('Cookie', session.cookie)
         .set('Origin', TEST_WEB_ORIGIN)
@@ -45,6 +45,7 @@ describe('contas cloud (T3.3)', () => {
       get: (path: string) => server.get(path).set('Cookie', session.cookie),
       post: (path: string, body: object) => write('post', path).send(body),
       patch: (path: string, body: object) => write('patch', path).send(body),
+      put: (path: string, body: object) => write('put', path).send(body),
       delete: (path: string) => write('delete', path),
     };
   };
@@ -201,7 +202,28 @@ describe('contas cloud (T3.3)', () => {
         externalId: null,
         zones,
         pubsubSubscription: null,
+        // Sem credencial ainda, e sem NODE_EGRESS_IPS (como no ambiente local), sem IP para o filtro do token.
+        keyStatus: null,
+        egressIps: [],
       });
+    });
+
+    it('sem o cofre ligado no nó (como o nó da Verax), colar o token dá 409, sem chamar o Cloudflare nem gravar', async () => {
+      const created = await call(adminA)
+        .post('/v1/cloud-accounts', { provider: 'cloudflare', accountId: cloudflareAccount() })
+        .expect(201);
+      const id = (created.body as { id: string }).id;
+      // Formato válido, gerado na hora; a checagem do cofre vem antes de qualquer chamada para fora.
+      const token = randomBytes(30).toString('base64url');
+      const response = await call(adminA)
+        .put(`/v1/cloud-accounts/${id}/credential`, { kind: 'cloudflare_api_token', token })
+        .expect(409);
+      expect(response.body).toMatchObject({ code: 'CREDENTIAL_VAULT_DISABLED' });
+      expect(response.text).not.toContain(token);
+      expect(await prisma.cloudCredential.count({ where: { cloudAccountId: id } })).toBe(0);
+      await call(readerA)
+        .put(`/v1/cloud-accounts/${id}/credential`, { kind: 'cloudflare_api_token', token })
+        .expect(403);
     });
 
     it.each([

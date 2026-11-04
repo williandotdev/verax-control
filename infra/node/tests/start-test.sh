@@ -135,6 +135,17 @@ expect "o render avisa e segue" 0 "$status"
 expect "nenhum tópico que a API recusaria" 0 "$(grep -c GCP_SINK_TOPIC_PREFIX "$run/api.env" || true)"
 expect "o aviso" 1 "$(grep -c 'fora do formato' "$work/render.err")"
 
+echo "== IP de saída do nó: só na API, e só no formato que o install.sh e a API aceitam"
+expect "sem a linha no node.conf (o exemplo), nada" 0 "$(grep -c NODE_EGRESS_IPS "$run/api.env" || true)"
+render_with NODE_EGRESS_IPS=203.0.113.10/32,198.51.100.7/32
+expect "a API recebe os IPs (o filtro de IP recomendado para o token do Cloudflare)" 1 \
+  "$(grep -c "^NODE_EGRESS_IPS='203.0.113.10/32,198.51.100.7/32'$" "$run/api.env")"
+expect "o worker não os recebe (não os usa)" 0 "$(grep -c NODE_EGRESS_IPS "$run/worker.env" || true)"
+status=0
+render_with NODE_EGRESS_IPS=203.0.113.10/24 || status=$?
+expect "fora do formato: o render avisa e segue, sem a variável que a API recusaria" '0 0 1' \
+  "$status $(grep -c NODE_EGRESS_IPS "$run/api.env" || true) $(grep -c 'NODE_EGRESS_IPS fora do formato' "$work/render.err")"
+
 echo "== lean: pull_images --base baixa só a imagem que falta"
 COMPOSE_IMAGES=('exemplo/api@sha256:presente' '' 'postgres:18-alpine@sha256:falta' 'exemplo/api@sha256:presente')
 : >"$calls"

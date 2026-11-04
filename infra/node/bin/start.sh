@@ -339,6 +339,21 @@ render() {
     echo "AVISO: VERAX_GCP_PROJECT ou VERAX_SECRET_PREFIX fora do formato em /etc/verax/node.conf: a API sobe sem o" \
       "tópico do sink de projeto de cliente (Contas cloud mostra o comando com o tópico a preencher)." >&2
   fi
+  # IP de saída do nó (o IP fixo do NAT, no perfil standard): Contas cloud o mostra como o filtro de IP recomendado
+  # para o token do Cloudflare. Não é segredo. Vai só no formato que o install.sh confere (IPv4 com /32, separados por
+  # vírgula), o mesmo que a API aceita: com um node.conf editado depois fora dele, a variável fica de fora, com o aviso,
+  # e a API sobe mesmo assim (a tela recomenda o filtro sem mostrar o IP).
+  local egress=()
+  if [[ -n ${NODE_EGRESS_IPS:-} ]]; then
+    local octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+    local egress_ip="$octet(\\.$octet){3}/32"
+    if [[ $NODE_EGRESS_IPS =~ ^$egress_ip(,$egress_ip)*$ ]]; then
+      egress=("NODE_EGRESS_IPS=$NODE_EGRESS_IPS")
+    else
+      echo "AVISO: NODE_EGRESS_IPS fora do formato em /etc/verax/node.conf: a API sobe sem o IP de saída do nó" \
+        "(Contas cloud recomenda o filtro de IP do token do Cloudflare sem mostrar o IP)." >&2
+    fi
+  fi
   # Cofre de credenciais: só no nó que tem o segredo `credentials-key` (CREDENTIALS_VAULT=true; sem a linha, false). O
   # nó da Verax não liga: nada é lido, e os arquivos de ambiente saem como antes.
   local vault_api=() vault_worker=()
@@ -361,6 +376,7 @@ render() {
     "${plan[@]}" \
     "${indexer[@]}" \
     "${sink_topic[@]}" \
+    "${egress[@]}" \
     "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \

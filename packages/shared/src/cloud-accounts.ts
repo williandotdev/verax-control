@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cloudCredentialStatusSchema } from './cloud-credentials.js';
 import { withPagination } from './pagination.js';
 
 /** AWS, GCP (o SOC da própria Verax) e Cloudflare (WAF e DNS de quem usa). */
@@ -286,6 +287,16 @@ export const cloudAccountSchema = z.strictObject({
   sinkWriterIdentity: z.string().nullable(),
   /** Cloudflare: zonas (domínios) monitoradas. Vazio nos demais. */
   zones: z.array(z.string()),
+  /**
+   * Credencial guardada no cofre do nó (fase 2): só os metadados (tipo, `…abcd`, validade, última conferência). Null
+   * sem credencial. O segredo nunca sai pela API.
+   */
+  keyStatus: cloudCredentialStatusSchema.nullable(),
+  /**
+   * Cloudflare: IPs de saída do nó (`NODE_EGRESS_IPS`, IPv4 com /32), os que o filtro de IP do token deve liberar.
+   * Vazio nos demais provedores e no nó que não informa. Não é segredo.
+   */
+  egressIps: z.array(z.string()),
   status: z.enum(CLOUD_ACCOUNT_STATUSES),
   /**
    * Estado da coleta, gravado pelo sync da conta: `waiting` até o primeiro sinal de vida, `connected` depois dele e

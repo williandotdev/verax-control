@@ -35,6 +35,10 @@ export interface CreateAppOptions {
   overrideProviders?: { provide: unknown; useValue: unknown }[];
   /** Tópico do nó para o sink de projeto GCP de cliente (`GCP_SINK_TOPIC_PREFIX`); sem ele, como no ambiente local. */
   gcpSinkTopicPrefix?: string;
+  /** Cofre de credenciais ligado: a chave pública (PEM em base64) e a versão. Sem ele, a API sobe sem o cofre. */
+  vault?: { publicKey: string; version: number };
+  /** IPs de saída do nó (`NODE_EGRESS_IPS`), separados por vírgula. */
+  nodeEgressIps?: string;
 }
 
 /**
@@ -55,6 +59,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),
     ...(options.gcpSinkTopicPrefix !== undefined && { GCP_SINK_TOPIC_PREFIX: options.gcpSinkTopicPrefix }),
+    ...(options.vault !== undefined && {
+      CREDENTIALS_PUBLIC_KEY: options.vault.publicKey,
+      CREDENTIALS_KEY_VERSION: String(options.vault.version),
+    }),
+    ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
   });
   const builder = Test.createTestingModule({
     imports: [

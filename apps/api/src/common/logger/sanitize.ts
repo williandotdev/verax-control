@@ -76,6 +76,15 @@ export function registerLiveSecret(value: string): void {
   if (value.length >= MIN_LIVE_SECRET_LENGTH) liveSecrets.add(value);
 }
 
+/**
+ * Deixa de guardar o valor. A API usa no fim da requisição que recebeu a credencial colada: ela só a vê durante a
+ * conferência e a cifra, e um conjunto que crescesse com cada credencial colada as manteria todas na memória do
+ * processo exposto pelo túnel. O worker não chama: o que ele decifra continua em uso.
+ */
+export function forgetLiveSecret(value: string): void {
+  liveSecrets.delete(value);
+}
+
 function normalizeKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, '');
 }

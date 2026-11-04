@@ -1,7 +1,7 @@
 import { constants, type KeyObject, privateDecrypt, publicEncrypt } from 'node:crypto';
 import { inspect } from 'node:util';
 import { z } from 'zod';
-import { registerLiveSecret } from '../common/logger/sanitize.js';
+import { forgetLiveSecret, registerLiveSecret } from '../common/logger/sanitize.js';
 import type { CloudCredentialKind, CloudProvider } from '../generated/prisma/enums.js';
 import type { VaultKeyring, VaultPublicKey } from './credential-keys.js';
 
@@ -186,6 +186,16 @@ export class CloudflareToken {
 }
 
 export type VaultSecret = StaticAwsCredentials | CloudflareToken;
+
+/**
+ * A API acabou de usar a credencial colada (conferir e cifrar): o logger deixa de guardar o valor dela
+ * (`forgetLiveSecret`). Só a API chama, no fim da requisição; o worker mantém o que decifrou.
+ */
+export function releaseSecret(credential: VaultSecret): void {
+  forgetLiveSecret(
+    credential instanceof StaticAwsCredentials ? credential.identity().secretAccessKey : credential.value(),
+  );
+}
 
 /** O que vai para a linha: o envelope e a versão da chave que cifrou. */
 export interface SealedCredential {

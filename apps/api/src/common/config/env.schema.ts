@@ -116,6 +116,39 @@ function readPrivateKeysFile(path: string): string {
   }
 }
 
+/** Um octeto do IPv4: 0 a 255, sem zero à esquerda. Caractere a caractere, sem expressão regular. */
+function isOctet(octet: string): boolean {
+  if (octet.length < 1 || octet.length > 3 || (octet.length > 1 && octet.startsWith('0'))) return false;
+  for (let index = 0; index < octet.length; index += 1) {
+    const code = octet.charCodeAt(index);
+    if (code < 48 || code > 57) return false;
+  }
+  return Number(octet) <= 255;
+}
+
+/** IPv4 com /32, conferido por partes: `203.0.113.10/32`. */
+function isEgressIp(value: string): boolean {
+  const [address = '', prefix, ...rest] = value.split('/');
+  if (prefix !== '32' || rest.length > 0) return false;
+  const octets = address.split('.');
+  return octets.length === 4 && octets.every(isOctet);
+}
+
+/**
+ * IPs de saída do nó (o IP fixo do Cloud NAT, `NODE_EGRESS_IPS` no `node.conf`), separados por vírgula. Contas cloud
+ * os mostra como o filtro de IP recomendado para o token do Cloudflare. Não é segredo.
+ */
+const egressIpsFromEnv = z
+  .string()
+  .max(400)
+  .transform((value) => value.split(',').map((ip) => ip.trim()))
+  .pipe(
+    z
+      .array(z.string().refine(isEgressIp, { error: 'use IPv4 com /32, separados por vírgula' }))
+      .min(1)
+      .max(16),
+  );
+
 /** Plano e ajustes, como ficam depois da validação do ambiente. */
 interface PlanEnv {
   NODE_ENV: 'development' | 'test' | 'production';
@@ -255,7 +288,10 @@ const apiEnvSchema = z
       })
       .optional(),
     ...planEnvShape,
-    // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola (PR-V3).
+    // IPs de saída do nó (o IP fixo do NAT, no perfil standard): o filtro de IP recomendado para o token do
+    // Cloudflare. O start.sh escreve quando o node.conf tem a linha; sem ela, a tela recomenda o filtro sem o IP.
+    NODE_EGRESS_IPS: egressIpsFromEnv.optional(),
+    // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola.
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),
     CREDENTIALS_KEY_VERSION: keyVersionFromEnv.optional(),
   })

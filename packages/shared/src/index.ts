@@ -3,6 +3,7 @@ export const PRODUCT_NAME = 'Verax Control' as const;
 export * from './alert-exceptions.js';
 export * from './audit.js';
 export * from './cloud-accounts.js';
+export * from './cloud-credentials.js';
 export * from './findings.js';
 export * from './incidents.js';
 export * from './inventory.js';
