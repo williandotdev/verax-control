@@ -38,10 +38,20 @@ locals {
 
 # Identidade da VM. Sem chave: a VM pega credenciais temporárias pelo servidor de metadados, e nenhuma chave JSON
 # de conta de serviço é criada.
+#
+# É também quem entra na AWS do cliente: o papel verax-control-reader confia no ID único desta conta (o `sub` e o
+# `azp` do token que o Google assina para ela; saída `service_account_unique_id`). Recriada, mesmo com o mesmo nome,
+# ela ganharia outro ID, e o papel de todo cliente deste nó deixaria de aceitá-la até cada um atualizar a pilha. Por
+# isso não some num `destroy` nem num `plan` que a recrie. Apagada por engano fora do Terraform, volta com o mesmo ID
+# em até 30 dias (`gcloud iam service-accounts undelete`).
 resource "google_service_account" "node" {
   account_id   = var.name_prefix
   display_name = "Nó do Verax Control (SOC)"
   description  = "Identidade da VM do nó: lê os logs de segurança e os segredos do nó."
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 locals {

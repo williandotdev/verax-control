@@ -104,6 +104,36 @@ run "standard_com_disco_maior" {
   }
 }
 
+# O ID único da conta de serviço do nó é o NodeServiceAccountId do papel de leitura na AWS do cliente (o `sub` e o
+# `azp` do token que o Google assina para o nó). A GCP só o informa no apply; aqui, um ID fictício de 21 dígitos.
+run "id_unico_da_conta_de_servico_para_a_aws" {
+  command = plan
+
+  variables {
+    node_profile = "standard"
+  }
+
+  override_resource {
+    target          = google_service_account.node
+    override_during = plan
+    values = {
+      name      = "projects/projeto-exemplo-nos/serviceAccounts/verax-teste@projeto-exemplo-nos.iam.gserviceaccount.com"
+      email     = "verax-teste@projeto-exemplo-nos.iam.gserviceaccount.com"
+      unique_id = "123456789012345678901"
+    }
+  }
+
+  assert {
+    condition     = output.service_account_unique_id == "123456789012345678901"
+    error_message = "A saída service_account_unique_id não é o ID único da conta de serviço do nó."
+  }
+
+  assert {
+    condition     = google_service_account.node.account_id == "verax-teste"
+    error_message = "O nome da conta de serviço do nó mudou: a conta seria recriada, com outro ID único."
+  }
+}
+
 run "lean_novo_usa_o_script_do_modulo" {
   command = plan
 
