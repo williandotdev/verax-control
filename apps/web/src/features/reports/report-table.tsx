@@ -14,6 +14,61 @@ export interface ReportColumn<Row> {
   align?: 'right';
 }
 
+/** Coluna do CSV: o cabeçalho e o valor cru da linha (texto ou número, sem formatação de tela). */
+export interface CsvColumn<Row> {
+  header: string;
+  csv: (row: Row) => CsvCell;
+}
+
+/**
+ * Bloco de relatório: o título e a exportação em CSV, com o conteúdo embaixo (a tabela ou um gráfico dos mesmos
+ * números). O CSV é o mesmo nos dois casos, para o especialista levar à planilha ou a outra ferramenta.
+ */
+export function ReportSection<Row>({
+  caption,
+  file,
+  rows,
+  csv,
+  children,
+}: {
+  caption: string;
+  /** Nome do arquivo, sem o período (que vem dos próprios números) nem a extensão. */
+  file: string;
+  rows: readonly Row[];
+  csv: readonly CsvColumn<Row>[];
+  children: ReactNode;
+}) {
+  const { period, current } = useContext(ReportContext);
+  const exportCsv = () =>
+    downloadCsv(
+      `verax-${file}-${period}.csv`,
+      toCsv(
+        csv.map((column) => column.header),
+        rows.map((row) => csv.map((column) => column.csv(row))),
+      ),
+    );
+  return (
+    // min-w-0: numa grade, o bloco encolhe até a tela e a tabela rola por dentro, em vez de alargar a página.
+    <section className="min-w-0 space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">{caption}</h3>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={exportCsv}
+          disabled={rows.length === 0 || !current}
+          aria-label={`Exportar ${caption} em CSV`}
+        >
+          <Download aria-hidden />
+          CSV
+        </Button>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 /**
  * Tabela de relatório: rolagem horizontal dentro do próprio quadro (no celular) e exportação em CSV com o mesmo
  * conteúdo, para o especialista levar à planilha ou a outra ferramenta.
@@ -34,33 +89,11 @@ export function ReportTable<Row>({
   file: string;
   empty?: string;
 }) {
-  const { period, current } = useContext(ReportContext);
-  const exported = columns.filter((column) => column.csv !== undefined);
-  const exportCsv = () =>
-    downloadCsv(
-      `verax-${file}-${period}.csv`,
-      toCsv(
-        exported.map((column) => column.header),
-        rows.map((row) => exported.map((column) => column.csv?.(row))),
-      ),
-    );
+  const exported = columns.flatMap((column) =>
+    column.csv === undefined ? [] : [{ header: column.header, csv: column.csv }],
+  );
   return (
-    // min-w-0: numa grade, o bloco encolhe até a tela e a tabela rola por dentro, em vez de alargar a página.
-    <section className="min-w-0 space-y-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">{caption}</h3>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          onClick={exportCsv}
-          disabled={rows.length === 0 || !current}
-          aria-label={`Exportar ${caption} em CSV`}
-        >
-          <Download aria-hidden />
-          CSV
-        </Button>
-      </div>
+    <ReportSection caption={caption} file={file} rows={rows} csv={exported}>
       {rows.length === 0 ? (
         <p className="rounded-md border p-3 text-sm text-muted-foreground">{empty}</p>
       ) : (
@@ -103,6 +136,6 @@ export function ReportTable<Row>({
           </table>
         </div>
       )}
-    </section>
+    </ReportSection>
   );
 }

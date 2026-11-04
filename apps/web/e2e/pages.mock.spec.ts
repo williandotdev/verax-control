@@ -72,6 +72,35 @@ test.describe('revisão de UX (modo mock)', () => {
     }
   }
 
+  // Os gráficos do resumo dos Relatórios com o que só aparece na interação: a tabela de "Ver tabela" aberta e a dica
+  // de cada gráfico pelo teclado. Nos dois temas, no computador e no celular (sem nada passar da tela).
+  for (const theme of ['light', 'dark'] as const) {
+    for (const [device, width] of [
+      ['computador', 1280],
+      ['celular', 360],
+    ] as const) {
+      test(`/relatorios, gráficos com a tabela e a dica (${theme === 'light' ? 'claro' : 'escuro'}, ${device}): sem violação de acessibilidade`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: 800 });
+        await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
+        await open(page, '/relatorios', 'Relatórios');
+        await page.getByText('Ver tabela').click();
+        await expect(page.getByRole('table', { name: 'Achados por dia' })).toBeVisible();
+        await page.getByRole('img', { name: /^Achados por dia/ }).focus();
+        await page.keyboard.press('ArrowLeft');
+        await expect(page.getByText(/^\d{2}\/\d{2}\/\d{4}: Crítico \d+/)).toBeAttached();
+        expect(await violations(page)).toEqual([]);
+        await page.getByRole('img', { name: /^Achados por status/ }).focus();
+        await expect(page.getByText(/^Novo: \d+ achados?, .*% do total\.$/)).toBeAttached();
+        expect(await violations(page)).toEqual([]);
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+        ).toBeLessThanOrEqual(1);
+      });
+    }
+  }
+
   // Um teste por painel: cada análise de acessibilidade leva alguns segundos, e juntos passavam do tempo de um teste.
   // Abertos pela URL: com o painel modal, o resto da página fica fora da árvore de acessibilidade.
   for (const [path, dialog] of [
