@@ -147,7 +147,10 @@ export function guardDutyAlert(
     findingId?: string;
     /** Quantas vezes o GuardDuty viu a atividade (sobe a cada atualização do achado). */
     count?: number;
+    /** Última atualização do achado; a atividade (`service.eventLastSeen`) é a mesma, salvo `eventLastSeen`. */
     updatedAt?: string;
+    /** `service.eventLastSeen`; `null` tira o campo (o `updatedAt` fica como reserva). */
+    eventLastSeen?: string | null;
     type?: string;
     /** `service.action`; o padrão é uma chamada de API de fora da AWS. */
     action?: Record<string, unknown>;
@@ -158,6 +161,8 @@ export function guardDutyAlert(
   const account = options.account ?? ALFA.accountId;
   const arnAccount = options.arnAccount ?? account;
   const findingId = options.findingId ?? randomUUID().replace(/-/g, '');
+  const updatedAt = options.updatedAt ?? '2026-11-01T09:55:00.000Z';
+  const eventLastSeen = options.eventLastSeen === undefined ? updatedAt : options.eventLastSeen;
   return document(
     {
       id: options.rule?.id ?? '80303',
@@ -183,7 +188,7 @@ export function guardDutyAlert(
       title: 'Credenciais usadas de fora da AWS',
       severity: options.severity ?? 8,
       createdAt: '2026-11-01T09:55:00.000Z',
-      updatedAt: options.updatedAt ?? '2026-11-01T09:55:00.000Z',
+      updatedAt,
       resource: options.resource ?? {
         resourceType: 'AccessKey',
         accessKeyDetails: {
@@ -197,6 +202,8 @@ export function guardDutyAlert(
       service: {
         serviceName: 'guardduty',
         count: options.count ?? 1,
+        eventFirstSeen: '2026-11-01T09:55:00.000Z',
+        ...(eventLastSeen === null ? {} : { eventLastSeen }),
         action: options.action ?? {
           actionType: 'AWS_API_CALL',
           awsApiCallAction: { api: 'ListBuckets', remoteIpDetails: { ipAddressV4: '198.51.100.7' } },
