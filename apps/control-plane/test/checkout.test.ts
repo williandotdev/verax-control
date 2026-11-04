@@ -512,6 +512,34 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(0);
   });
 
+  it('o cache dos preços vence 5 min depois da leitura na Stripe, mesmo com uso no meio: um preço arquivado é visto', async () => {
+    // Longe de qualquer leitura de outro teste: o cache começa vazio.
+    clock.advance(6 * MINUTE_MS);
+    await checkout(order()).expect(201);
+    expect(fake.calls('GET', '/v1/prices')).toHaveLength(1);
+
+    clock.advance(3 * MINUTE_MS);
+    await checkout(order({ slug: 'cliente-demo-b' })).expect(201);
+    // Servido do cache, sem nova consulta (e sem renovar a hora da leitura).
+    expect(fake.calls('GET', '/v1/prices')).toHaveLength(1);
+
+    // Arquivado na Stripe depois da leitura. 6 min depois dela (3 do último uso), o preço é relido e recusado.
+    const archived = fake.prices.get(price('vc_sup_v1'));
+    if (archived !== undefined) archived['active'] = false;
+    clock.advance(3 * MINUTE_MS);
+    const before = capture.lines.length;
+
+    await checkout(order({ slug: 'cliente-demo-c' })).expect(503);
+
+    expect(fake.calls('GET', '/v1/prices')).toHaveLength(2);
+    const logged = capture
+      .entries()
+      .slice(before)
+      .find((entry) => entry['event'] === 'checkout_price_invalid');
+    expect(logged).toMatchObject({ lookupKey: 'vc_sup_v1', problem: 'inactive' });
+    expect(await slugDocument('cliente-demo-c')).toBeUndefined();
+  });
+
   it('implantação cadastrada como mensal na Stripe: 503 (o item avulso precisa de preço avulso)', async () => {
     documents.clear();
     fake.reset();

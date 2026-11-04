@@ -246,6 +246,8 @@ export class CheckoutService implements OnModuleInit {
   ): Promise<Map<string, StripePrice>> {
     const now = this.clock.now().getTime();
     const resolved = new Map<string, StripePrice>();
+    /** Só os preços lidos agora da Stripe: um preço servido do cache mantém a hora da leitura original. */
+    const fetched = new Map<string, StripePrice>();
     const missing: string[] = [];
     for (const item of quoted.lineItems) {
       const cached = this.prices.get(item.lookupKey);
@@ -267,8 +269,9 @@ export class CheckoutService implements OnModuleInit {
         throw new ApiError(HttpStatus.BAD_GATEWAY, 'Falha ao abrir o pagamento', 'checkout_failed');
       }
       for (const price of found) {
-        if (price.lookupKey !== null && missing.includes(price.lookupKey))
-          resolved.set(price.lookupKey, price);
+        if (price.lookupKey === null || !missing.includes(price.lookupKey)) continue;
+        resolved.set(price.lookupKey, price);
+        fetched.set(price.lookupKey, price);
       }
     }
 
@@ -292,7 +295,9 @@ export class CheckoutService implements OnModuleInit {
       );
       throw UNAVAILABLE();
     }
-    for (const [key, price] of resolved) this.prices.set(key, { price, fetchedAt: now });
+    // Guarda só o que veio da Stripe agora. Renovar a hora de um preço servido do cache faria um preço muito usado
+    // nunca ser relido, e um preço arquivado na Stripe continuaria valendo aqui.
+    for (const [key, price] of fetched) this.prices.set(key, { price, fetchedAt: now });
     return resolved;
   }
 
