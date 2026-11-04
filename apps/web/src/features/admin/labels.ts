@@ -2,6 +2,7 @@ import type {
   AlertExceptionField,
   CloudAccountConnection,
   CloudProvider,
+  CredentialStatus,
   ProtectedResourceType,
   TenantStatus,
   UserStatus,
@@ -54,6 +55,13 @@ export function connectionHint(provider: CloudProvider, connection: CloudAccount
     ? 'Aguardando a configuração: a conta conecta quando o primeiro evento chegar.'
     : 'Aguardando a configuração: a conta conecta na primeira leitura bem-sucedida.';
 }
+
+/** Situação do token guardado no cofre, pela validade. */
+export const CREDENTIAL_STATUS_LABELS: Readonly<Record<CredentialStatus, string>> = {
+  active: 'Válido',
+  expiring: 'Vence em breve',
+  expired: 'Vencido',
+};
 
 export const PROTECTED_TYPE_LABELS: Readonly<Record<ProtectedResourceType, string>> = {
   aws_account: 'Conta AWS',

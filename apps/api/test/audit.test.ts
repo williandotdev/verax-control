@@ -11,6 +11,7 @@ import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { LogCapture } from './support/log-capture.js';
 import {
   EXPLODE_AFTER_INSERT,
+  REFUSE_AFTER_INSERT,
   FORCE_AUDIT_FAILURE,
   WidgetProbeModule,
 } from './support/widget-probe.module.js';
@@ -148,6 +149,27 @@ describe('trilha de auditoria (T1.3)', () => {
         statusCode: 500,
         before: null,
         after: null,
+      });
+    });
+
+    it('recusa gravada (CommittedApiError): o erro sai depois do commit, com o que o handler gravou e um registro só', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/widgets-probe')
+        .send({ name: REFUSE_AFTER_INSERT })
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        message: 'Recusado, e a recusa ficou gravada',
+        code: 'PROBE_REFUSED',
+      });
+      expect(await widgetExists(REFUSE_AFTER_INSERT)).toBe(true);
+      const entries = await auditFor(response.headers['x-request-id']);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        action: 'widget.create',
+        outcome: 'failure',
+        statusCode: 409,
+        after: { name: REFUSE_AFTER_INSERT },
       });
     });
 

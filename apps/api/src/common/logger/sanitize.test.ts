@@ -4,6 +4,7 @@ import {
   MIN_LIVE_SECRET_LENGTH,
   REDACTED,
   isSensitiveKey,
+  forgetLiveSecret,
   registerLiveSecret,
   sanitize,
   scrubString,
@@ -98,6 +99,14 @@ describe('scrubString', () => {
     expect(
       JSON.stringify(sanitize({ detail: { reason: `token ${secret}` }, err: new Error(secret) })),
     ).not.toContain(secret);
+  });
+
+  it('o valor esquecido (fim da requisição que colou a credencial, na API) deixa de ser guardado', () => {
+    const secret = randomBytes(30).toString('base64url');
+    registerLiveSecret(secret);
+    expect(scrubString(secret)).toBe(REDACTED);
+    forgetLiveSecret(secret);
+    expect(scrubString(`texto ${secret}`)).toBe(`texto ${secret}`);
   });
 
   it('valor curto não vira segredo vivo (não oculta pedaços de texto comum)', () => {

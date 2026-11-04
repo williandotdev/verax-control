@@ -139,6 +139,25 @@ describe('loadConfig', () => {
     }
   });
 
+  it('IPs de saída do nó: opcional, IPv4 com /32 separados por vírgula', () => {
+    expect(loadConfig(validEnv).NODE_EGRESS_IPS).toBeUndefined();
+    expect(
+      loadConfig({ ...validProductionEnv, NODE_EGRESS_IPS: '203.0.113.10/32, 198.51.100.7/32' })
+        .NODE_EGRESS_IPS,
+    ).toEqual(['203.0.113.10/32', '198.51.100.7/32']);
+    for (const value of [
+      '203.0.113.10',
+      '203.0.113.10/24',
+      '203.0.113.256/32',
+      '203.0.113.010/32',
+      'a.b.c.d/32',
+    ]) {
+      expect(problemsOf({ ...validEnv, NODE_EGRESS_IPS: value })).toEqual([
+        'NODE_EGRESS_IPS.0: use IPv4 com /32, separados por vírgula',
+      ]);
+    }
+  });
+
   it('converte PORT para número', () => {
     expect(loadConfig({ ...validEnv, PORT: '8080' }).PORT).toBe(8080);
   });

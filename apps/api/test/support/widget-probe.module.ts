@@ -14,10 +14,13 @@ import {
 import { Public, RequirePermission } from '../../src/auth/decorators.js';
 import { z } from 'zod';
 import { AuditContext } from '../../src/common/audit/audit-context.service.js';
+import { CommittedApiError } from '../../src/common/http/api-error.js';
 import { PrismaService } from '../../src/common/prisma/prisma.service.js';
 
 /** Nome que faz o service lançar erro depois de gravar: prova que a transação é desfeita. */
 export const EXPLODE_AFTER_INSERT = 'explode-after-insert';
+/** Nome que faz o service recusar com `CommittedApiError` depois de gravar: prova que a transação fica. */
+export const REFUSE_AFTER_INSERT = 'refuse-after-insert';
 /** Tipo de recurso que um trigger só de teste recusa ao gravar a auditoria. */
 export const FORCE_AUDIT_FAILURE = 'force-audit-failure';
 
@@ -55,6 +58,9 @@ class WidgetProbeService {
     });
 
     if (input.name === EXPLODE_AFTER_INSERT) throw new Error('falha depois de gravar');
+    if (input.name === REFUSE_AFTER_INSERT) {
+      throw new CommittedApiError(HttpStatus.CONFLICT, 'Recusado, e a recusa ficou gravada', 'PROBE_REFUSED');
+    }
     return widget;
   }
 

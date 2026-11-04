@@ -2,17 +2,27 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
+  GLOBAL_KEY_REFUSED_MESSAGE,
   paginatedSchema,
   temporaryPasswordSchema,
   tenantCreatedSchema,
   tenantSummarySchema,
 } from '@verax/shared';
+import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import type { QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
-import { DEMO_ACCOUNTS, DEMO_SINK_TOPIC_PREFIX, demoMe } from '@/mocks/fixtures';
+import {
+  DEMO_ACCOUNTS,
+  DEMO_CLOUDFLARE_TOKEN_SUFFIX,
+  DEMO_EGRESS_IPS,
+  DEMO_SINK_TOPIC_PREFIX,
+  demoMe,
+} from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
 
@@ -27,11 +37,15 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-function renderAt(path: string, state: MockState = { me: demoMe('admin_cliente') }) {
+function renderAt(
+  path: string,
+  state: MockState = { me: demoMe('admin_cliente') },
+  client: QueryClient = createQueryClient(),
+) {
   server.use(...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={client}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
@@ -433,7 +447,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(sheet).queryByLabelText('Assinatura do Pub/Sub')).not.toBeInTheDocument();
   });
 
-  it('Cloudflare: zonas na tabela; o token fica no nó; as zonas mudam no detalhe', async () => {
+  it('Cloudflare: zonas na tabela; o token guardado aparece só pelo fim do ID; as zonas mudam no detalhe', async () => {
     renderAt('/cadastros/contas');
     const row = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
       candidate.textContent?.includes(DEMO_ACCOUNTS.alfaCloudflare),
@@ -446,7 +460,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     const sheet = await screen.findByRole('dialog', {
       name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
     });
-    expect(within(sheet).getByText(/nunca entra neste cadastro/)).toBeInTheDocument();
+    expect(within(sheet).getByText(/fica\s+cifrado no cofre do nó/)).toBeInTheDocument();
     expect(within(sheet).queryByText('Papel de leitura')).not.toBeInTheDocument();
     const zones = within(sheet).getByLabelText('Zonas monitoradas');
     await userEvent.clear(zones);
@@ -458,6 +472,197 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar zonas' }));
     // O detalhe relê a conta depois de salvar (a tabela fica fora da árvore enquanto o painel modal está aberto).
     expect(await within(sheet).findByText('loja-alfa.example, api.loja-alfa.example')).toBeInTheDocument();
+  });
+
+  it('Cloudflare: o link cria um token de conta só de leitura, e o filtro de IP recomendado é o IP de saída do nó', async () => {
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`);
+    const sheet = await screen.findByRole('dialog', {
+      name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    });
+    const link = within(sheet).getByRole('link', { name: /criar o token no Cloudflare/ });
+    const url = new URL(link.getAttribute('href') ?? '');
+    expect(url.origin).toBe('https://dash.cloudflare.com');
+    expect(url.searchParams.get('to')).toBe('/:account/api-tokens');
+    const permissions = JSON.parse(url.searchParams.get('permissionGroupKeys') ?? '[]') as { type: string }[];
+    expect(permissions.length).toBeGreaterThan(0);
+    expect(permissions.every((permission) => permission.type === 'read')).toBe(true);
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(within(sheet).getByText('Conta · Account Settings · Read')).toBeInTheDocument();
+    expect(within(sheet).getByText(DEMO_EGRESS_IPS.join(', '))).toBeInTheDocument();
+  });
+
+  it('Cloudflare: o cartão mostra o token guardado pelo fim do ID, a validade e o aviso de 14 dias', async () => {
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`);
+    const card = await screen.findByRole('group', { name: 'Token de API guardado' });
+    expect(within(card).getByText(`…${DEMO_CLOUDFLARE_TOKEN_SUFFIX}`)).toBeInTheDocument();
+    expect(within(card).getByText('Vence em breve')).toBeInTheDocument();
+    expect(within(card).getByText(/^vence em \d{2}\/\d{2}\/\d{4}$/)).toBeInTheDocument();
+    expect(within(card).getByText(/O token vence em 9 dias/)).toBeInTheDocument();
+    // Não há como ver o token: nenhum campo com valor, nenhum botão de mostrar.
+    expect(within(card).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(card).queryByLabelText('Token de API do Cloudflare')).not.toBeInTheDocument();
+  });
+
+  it('Cloudflare: trocar o token pelo campo de senha; o campo zera no envio, e nada do token fica no cache', async () => {
+    const user = userEvent.setup();
+    const client = createQueryClient();
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`, undefined, client);
+    const card = await screen.findByRole('group', { name: 'Token de API guardado' });
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    const field = within(card).getByLabelText('Token de API do Cloudflare');
+    expect(field).toHaveAttribute('type', 'password');
+    expect(field).toHaveAttribute('autocomplete', 'off');
+    expect(field).toHaveAttribute('spellcheck', 'false');
+
+    // A Global API Key é recusada antes de sair do navegador, com a mensagem própria; o campo zera.
+    const globalKey = Array.from(crypto.getRandomValues(new Uint8Array(19)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    )
+      .join('')
+      .slice(0, 37);
+    await user.click(field);
+    await user.paste(globalKey);
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    expect(field).toHaveValue('');
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(GLOBAL_KEY_REFUSED_MESSAGE));
+
+    // Token gerado na hora, no formato; colado com a quebra de linha que a cópia costuma trazer.
+    const token = `cfat_${Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('')}`;
+    await user.click(field);
+    await user.paste(`${token}\n`);
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    expect(field).toHaveValue('');
+    // Primeiro o aviso de conferência, depois a confirmação, os dois anunciados (role=status).
+    const saved = await within(card).findByText(
+      /Token conferido no Cloudflare e guardado no cofre do nó \(…[0-9a-f]{4}\)/,
+    );
+    expect(saved).toHaveAttribute('role', 'status');
+    await waitFor(() => expect(within(card).getByText('Válido')).toBeInTheDocument());
+    expect(within(card).getByText('sem data de vencimento')).toBeInTheDocument();
+    expect(within(card).queryByLabelText('Token de API do Cloudflare')).not.toBeInTheDocument();
+    expect(within(card).getByText('Token de API guardado')).toHaveFocus();
+    // Sem `useMutation`: o cache de mutações não guardou as variáveis, e nenhuma consulta guardou o token.
+    expect(client.getMutationCache().getAll()).toEqual([]);
+    expect(
+      JSON.stringify(
+        client
+          .getQueryCache()
+          .getAll()
+          .map((query) => query.state.data),
+      ),
+    ).not.toContain(token);
+    expect(document.body.innerHTML).not.toContain(token);
+  });
+
+  it('Cloudflare: remover o token pede confirmação; depois, o campo para colar outro', async () => {
+    const user = userEvent.setup();
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`);
+    const card = await screen.findByRole('group', { name: 'Token de API guardado' });
+    await user.click(within(card).getByRole('button', { name: 'Remover token' }));
+    const confirmation = within(card).getByRole('group', { name: 'Confirmação' });
+    expect(confirmation).toHaveAccessibleDescription(/A coleta do Cloudflare para/);
+    await user.click(within(confirmation).getByRole('button', { name: 'Confirmar remoção' }));
+    const sheet = screen.getByRole('dialog');
+    const field = await within(sheet).findByLabelText('Token de API do Cloudflare');
+    expect(field).toHaveAttribute('type', 'password');
+    expect(field).toHaveFocus();
+    expect(within(sheet).getByRole('status')).toHaveTextContent(/Token removido do cofre do nó/);
+    expect(within(sheet).queryByRole('group', { name: 'Token de API guardado' })).not.toBeInTheDocument();
+    expect(within(sheet).getByRole('button', { name: 'Guardar token' })).toBeInTheDocument();
+  });
+
+  it('Cloudflare: o Cloudflare fora do ar (503) aparece junto do campo, e dá para tentar de novo', async () => {
+    const user = userEvent.setup();
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`);
+    const card = await screen.findByRole('group', { name: 'Token de API guardado' });
+    server.use(
+      http.put(`${API_URL}/v1/cloud-accounts/:id/credential`, () =>
+        HttpResponse.json(
+          { statusCode: 503, message: 'Serviço temporariamente indisponível' },
+          { status: 503 },
+        ),
+      ),
+    );
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    const field = within(card).getByLabelText('Token de API do Cloudflare');
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    await user.click(field);
+    await user.paste(token);
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    await waitFor(() => expect(field).toHaveAccessibleDescription(/O Cloudflare não respondeu a tempo/));
+    expect(field).toHaveValue('');
+    expect(within(card).getByRole('button', { name: 'Trocar token' })).toBeEnabled();
+  });
+
+  it('Cloudflare: depois de trocar o token, desativar o monitoramento tira o cartão; reativada, a conta pede o token', async () => {
+    const user = userEvent.setup();
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`);
+    const sheet = await screen.findByRole('dialog', {
+      name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    });
+    const card = within(sheet).getByRole('group', { name: 'Token de API guardado' });
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    await user.click(within(card).getByLabelText('Token de API do Cloudflare'));
+    await user.paste(token);
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    await within(card).findByText(/guardado no cofre do nó/);
+
+    // Desativar apaga o token na API (e no mock): a conta relida vale sobre a troca feita aqui.
+    await user.click(within(sheet).getByRole('button', { name: 'Desativar monitoramento' }));
+    await waitFor(() =>
+      expect(within(sheet).queryByRole('group', { name: 'Token de API guardado' })).not.toBeInTheDocument(),
+    );
+    expect(within(sheet).getByText(/Reative o monitoramento para colar o token/)).toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Token de API do Cloudflare')).not.toBeInTheDocument();
+
+    await user.click(within(sheet).getByRole('button', { name: 'Reativar monitoramento' }));
+    expect(await within(sheet).findByLabelText('Token de API do Cloudflare')).toHaveValue('');
+    expect(within(sheet).queryByRole('group', { name: 'Token de API guardado' })).not.toBeInTheDocument();
+    expect(within(sheet).queryByText(/guardado no cofre do nó/)).not.toBeInTheDocument();
+  });
+
+  it('Cloudflare: quem só lê vê o cartão, sem o campo, sem trocar e sem remover', async () => {
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`, { me: demoMe('leitura') });
+    const card = await screen.findByRole('group', { name: 'Token de API guardado' });
+    expect(within(card).getByText(`…${DEMO_CLOUDFLARE_TOKEN_SUFFIX}`)).toBeInTheDocument();
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Token de API do Cloudflare')).not.toBeInTheDocument();
+  });
+
+  it('Cloudflare: conta nova sem token mostra o campo; o mock recusa como a API', async () => {
+    const user = userEvent.setup();
+    renderAt('/cadastros/contas');
+    await user.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
+    await user.selectOptions(within(sheet).getByLabelText('Provedor'), 'cloudflare');
+    await user.type(
+      within(sheet).getByLabelText('ID da conta do Cloudflare'),
+      'd0e0000000000000000000000000b2fb',
+    );
+    await user.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
+    expect(
+      await within(sheet).findByText(/Falta colar o token de leitura do Cloudflare/),
+    ).toBeInTheDocument();
+    const field = within(sheet).getByLabelText('Token de API do Cloudflare');
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    await user.click(field);
+    await user.paste(token);
+    await user.click(within(sheet).getByRole('button', { name: 'Guardar token' }));
+    expect(field).toHaveValue('');
+    // O cartão entra no lugar do campo, com a confirmação e o foco; do token, só o fim do ID.
+    const card = await within(sheet).findByRole('group', { name: 'Token de API guardado' });
+    expect(within(card).getByRole('status')).toHaveTextContent(/guardado no cofre do nó \(…[0-9a-f]{4}\)/);
+    expect(within(card).getByText('Token de API guardado')).toHaveFocus();
+    expect(document.body.innerHTML).not.toContain(token);
   });
 });
 

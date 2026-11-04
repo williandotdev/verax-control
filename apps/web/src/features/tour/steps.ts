@@ -152,7 +152,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [inMain('tabela')],
     permission: 'cloud_accounts:read',
     title: 'Contas cloud',
-    body: 'Contas AWS, projetos da GCP e contas do Cloudflare monitorados. Ao cadastrar, o painel mostra o passo a passo: na AWS, o template do conector com o ExternalId; na GCP, o comando do sink que o cliente roda no projeto dele, sem dar acesso à Verax. O Verax só lê, e nenhum cadastro guarda credencial.',
+    body: 'Contas AWS, projetos da GCP e contas do Cloudflare monitorados. Cada provedor tem o passo a passo: o template do conector na AWS, o comando do sink na GCP e, no Cloudflare, o token só de leitura, colado aqui e cifrado no cofre do nó. O Verax só lê.',
   },
   {
     id: 'protecao-excecoes',

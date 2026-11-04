@@ -3,9 +3,11 @@ import {
   type AlertExceptionCreate,
   alertExceptionSchema,
   type AlertExceptionUpdate,
+  type CloudAccount,
   type CloudAccountCreate,
   cloudAccountSchema,
   type CloudAccountUpdate,
+  type CloudCredentialInput,
   paginatedSchema,
   type ProtectedResourceCreate,
   protectedResourceSchema,
@@ -21,6 +23,7 @@ import {
   userSchema,
   type UserUpdate,
 } from '@verax/shared';
+import { useCallback, useState } from 'react';
 import type { z } from 'zod';
 import { api } from '@/lib/api';
 
@@ -115,6 +118,68 @@ export const useUpdateCloudAccount = (id: string) =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountUpdate) =>
     api.patch(`/v1/cloud-accounts/${encodeURIComponent(id)}`, input, cloudAccountSchema),
   );
+
+/** Estado da última escrita da credencial: só o resultado (a conta, sem segredo) ou o erro, nunca o que foi colado. */
+interface CredentialWriteState {
+  pending: boolean;
+  error: unknown;
+  /** A conta depois do `PUT` (com `keyStatus`), para o aviso de sucesso. */
+  saved: CloudAccount | null;
+  removed: boolean;
+}
+
+const IDLE: CredentialWriteState = { pending: false, error: null, saved: null, removed: false };
+
+/**
+ * Credencial de leitura da conta (fase 2: o token do Cloudflare). Sem `useMutation` de propósito: o cache de mutações
+ * guarda as `variables` (o token colado) enquanto a tela está aberta, e as ferramentas de desenvolvimento as mostram.
+ * A chamada vai direto pelo cliente HTTP, e o estado guarda só a resposta e o erro. Depois de gravar ou remover, as
+ * listas de contas são relidas (a resposta traz só os metadados, `keyStatus`).
+ */
+export function useCloudCredential(id: string) {
+  const queryClient = useQueryClient();
+  const [state, setState] = useState<CredentialWriteState>(IDLE);
+  const path = `/v1/cloud-accounts/${encodeURIComponent(id)}/credential`;
+
+  const refresh = useCallback(() => {
+    for (const key of ['admin-cloud-accounts', 'cloud-accounts']) {
+      void queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  }, [queryClient]);
+
+  const save = useCallback(
+    async (input: CloudCredentialInput): Promise<CloudAccount | null> => {
+      setState({ ...IDLE, pending: true });
+      try {
+        const saved = await api.put(path, input, cloudAccountSchema);
+        setState({ ...IDLE, saved });
+        refresh();
+        return saved;
+      } catch (error) {
+        setState({ ...IDLE, error });
+        return null;
+      }
+    },
+    [path, refresh],
+  );
+
+  const remove = useCallback(async (): Promise<boolean> => {
+    setState({ ...IDLE, pending: true });
+    try {
+      await api.delete(path);
+      setState({ ...IDLE, removed: true });
+      refresh();
+      return true;
+    } catch (error) {
+      setState({ ...IDLE, error });
+      return false;
+    }
+  }, [path, refresh]);
+
+  const reset = useCallback(() => setState(IDLE), []);
+
+  return { ...state, save, remove, reset };
+}
 
 // --- Lista de proteção (T3.4) ---
 export const useProtectedList = (page: number, enabled: boolean) =>

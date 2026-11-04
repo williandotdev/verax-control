@@ -65,6 +65,8 @@ describe('estado da conexão (T7.3 e fase 2)', () => {
     sinkTopic: null,
     sinkWriterIdentity: null,
     zones: [],
+    keyStatus: null,
+    egressIps: [],
     status: 'active',
     connection: 'waiting',
     connectionError: null,

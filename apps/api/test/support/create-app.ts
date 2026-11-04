@@ -37,6 +37,10 @@ export interface CreateAppOptions {
   overrideProviders?: { provide: unknown; useValue: unknown }[];
   /** Tópico do nó para o sink de projeto GCP de cliente (`GCP_SINK_TOPIC_PREFIX`); sem ele, como no ambiente local. */
   gcpSinkTopicPrefix?: string;
+  /** Cofre de credenciais ligado: a chave pública (PEM em base64) e a versão. Sem ele, a API sobe sem o cofre. */
+  vault?: { publicKey: string; version: number };
+  /** IPs de saída do nó (`NODE_EGRESS_IPS`), separados por vírgula. */
+  nodeEgressIps?: string;
   /** Agentes do Wazuh ligados no nó (as variáveis WAZUH_AGENTS_* que o start.sh escreve); sem informar, desligados. */
   wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
 }
@@ -64,6 +68,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       TURNSTILE_SITEVERIFY_URL: options.turnstile.siteverifyUrl,
     }),
     ...(options.gcpSinkTopicPrefix !== undefined && { GCP_SINK_TOPIC_PREFIX: options.gcpSinkTopicPrefix }),
+    ...(options.vault !== undefined && {
+      CREDENTIALS_PUBLIC_KEY: options.vault.publicKey,
+      CREDENTIALS_KEY_VERSION: String(options.vault.version),
+    }),
+    ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
     ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
   });
   const builder = Test.createTestingModule({

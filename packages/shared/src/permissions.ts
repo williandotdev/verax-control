@@ -26,6 +26,8 @@ export const PERMISSIONS = {
   'users:write': ADMINS,
   'cloud_accounts:read': ALL,
   'cloud_accounts:write': ADMINS,
+  // Colar, trocar e remover a credencial de leitura de uma conta (token do Cloudflare; fase 2, decisão D-4).
+  'cloud_credentials:write': ADMINS,
   'protected_resources:read': ALL,
   'protected_resources:write': ADMINS,
   'alert_exceptions:read': ALL,
