@@ -7,7 +7,9 @@
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
 # partida. Segredos de fora (senha do e-mail e token do túnel) vêm do Secret Manager com a identidade da própria VM;
 # os de dentro (senhas do banco, chaves da sessão e do CSRF) foram gerados pelo install.sh e ficam em
-# /var/lib/verax/secrets (0600, só root). Nenhum valor é impresso.
+# /var/lib/verax/secrets (0600, só root). A chave do cofre de credenciais (nó de cliente) foi gerada pelo install.sh
+# direto no Secret Manager; as versões ativas dela passam pela memória (um arquivo numa pasta de /run/verax montada só
+# leitura no worker), nunca por variável de ambiente. Nenhum valor é impresso.
 set -euo pipefail
 umask 077
 
@@ -23,11 +25,26 @@ WORKER_IP=172.30.53.10
 # antes do perfil, que também são o padrão do compose.yaml (o CI confere); o standard é o nó de cliente, com 8 GB.
 MEMORY_LEAN=(POSTGRES_MEM_LIMIT=256m POSTGRES_SHARED_BUFFERS=32MB API_MEM_LIMIT=320m API_HEAP_MB=192 WORKER_MEM_LIMIT=256m WORKER_HEAP_MB=160)
 MEMORY_STANDARD=(POSTGRES_MEM_LIMIT=512m POSTGRES_SHARED_BUFFERS=128MB API_MEM_LIMIT=384m API_HEAP_MB=256 WORKER_MEM_LIMIT=512m WORKER_HEAP_MB=384)
+# Pasta das chaves privadas do cofre de credenciais, em /run/verax (memória): o compose.vault.yaml a monta só leitura
+# no worker, em WORKER_VAULT_MOUNT, e o arquivo das chaves (WORKER_KEYS) fica dentro dela, no caminho WORKER_KEYS_MOUNT
+# que o worker.env aponta (o CI confere que tudo bate). O volume é a pasta, e não o arquivo, porque a origem de um bind
+# mount que não existe vira uma pasta criada pelo Docker ao subir o contêiner (um worker que o Docker reinicia depois
+# de um reboot inesperado, antes desta partida, criaria uma pasta no lugar do arquivo e nunca mais leria chave), e
+# porque um arquivo dentro de uma pasta montada pode ser trocado de uma vez (rename). Só o usuário do worker lê o
+# arquivo (uid 1000, o `node` da imagem da API; scripts/test-api-image.sh confere na imagem).
+WORKER_VAULT=$run/vault
+WORKER_KEYS=$WORKER_VAULT/worker-keys
+WORKER_VAULT_MOUNT=/run/vault
+WORKER_KEYS_MOUNT=$WORKER_VAULT_MOUNT/worker-keys
+WORKER_UID=1000
 compose() {
-  local env_files=(--env-file /etc/verax/images.env)
+  local files=(-f /opt/verax/compose.yaml) env_files=(--env-file /etc/verax/images.env)
+  # Com o cofre, o worker ganha o arquivo das chaves (compose.vault.yaml). Sem ele (o nó da Verax), os serviços são só
+  # os do compose.yaml, como antes do cofre.
+  if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then files+=(-f /opt/verax/compose.vault.yaml); fi
   # Antes do render (no `down` depois de um reboot), o arquivo da memória ainda não existe; o `down` não precisa dele.
   if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
-  docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml "${env_files[@]}" "$@"
+  docker compose --project-directory /opt/verax "${files[@]}" "${env_files[@]}" "$@"
 }
 
 internal_secret() { cat "$secrets/$1"; }
@@ -59,6 +76,141 @@ external_secret() {
     return 1
   fi
   printf '%s' "$value"
+}
+
+# Os bits de uma chave privada RSA em PEM (o conteúdo de uma versão do cofre, em base64), ou falha se o conteúdo não
+# for isso. A mesma régua do worker (credential-keys.ts): o PEM começa na linha BEGIN (o openssl aceitaria texto antes
+# dela; o worker, não) e a chave é RSA, não RSA-PSS (o openssl imprime um módulo para as duas, e o worker recusa a PSS;
+# só ela leva "PSS parameter" no texto). O "RSA " antes de "Private-Key" é do OpenSSL 1.1. Tudo em pipes: nada vai para
+# o disco.
+vault_key_bits() { # <base64 do PEM>
+  local begin='^[[:space:]]*-----BEGIN (RSA )?PRIVATE KEY-----[[:space:]]*$' bits='^(RSA )?Private-Key: \(([0-9]+) bit'
+  local first text
+  first=$(printf '%s' "$1" | base64 -d 2>/dev/null | sed -n '/[^[:space:]]/{p;q}') || return 1
+  [[ $first =~ $begin ]] || return 1
+  text=$(printf '%s' "$1" | base64 -d 2>/dev/null | openssl pkey -noout -text 2>/dev/null) || return 1
+  [[ $text == *$'\nmodulus:'* && $text != *'PSS parameter'* && $text =~ $bits ]] || return 1
+  echo "${BASH_REMATCH[2]}"
+}
+
+# Chave do cofre de credenciais (fase 2; só com CREDENTIALS_VAULT=true no node.conf). Cada versão do segredo
+# `<prefixo>-credentials-key` é uma versão da chave, o par RSA que o install.sh gerou na VM. O Secret Manager numera as
+# versões em sequência e nunca reaproveita um número: a leitura vai da 1 até a primeira que não existe (NOT_FOUND), com
+# a permissão de ler o segredo e sem a de listar as versões (cada versão que existe, em qualquer estado, custa uma
+# leitura na partida). Versão desativada ou destruída (FAILED_PRECONDITION) fica de fora; a mais alta que abre é a
+# corrente. O PEM não passa pelo shell: o gcloud entrega o conteúdo em base64, que segue assim para o worker.
+#
+# Cada versão ativa é conferida aqui como o worker vai conferir (PEM de chave privada RSA de 3072 a 4096 bits): uma que
+# ele recusasse derrubaria só o worker, em laço, depois de a partida ter dito que deu certo. Então a partida para aqui,
+# dizendo qual versão desativar.
+#
+# Preenche `vault_api` (só a chave pública corrente, para a API, que cifra) e `vault_worker` (o caminho do arquivo das
+# privadas e a corrente, para o worker, o único que decifra), declaradas no render, e escreve o arquivo das privadas em
+# WORKER_KEYS (tmpfs), na pasta que o compose.vault.yaml monta só leitura no worker. As privadas nunca vão por variável
+# de ambiente: o Docker grava o ambiente de cada contêiner na configuração dele, em /var/lib/docker, que está no disco
+# e nos snapshots; o conteúdo de um arquivo montado não vai para lá. Sem nenhuma versão ativa, avisa, deixa as duas
+# listas vazias e o arquivo vazio: a API e o worker sobem sem o cofre. Qualquer outro erro (permissão, rede, conteúdo
+# que não é chave) para a partida, e nada do cofre fica na memória (nem o arquivo da partida anterior).
+credentials_vault() {
+  local secret=$VERAX_SECRET_PREFIX-credentials-key version=1 data errors status bits keys=() current=''
+  local disabled=() destroyed=()
+  errors=$(mktemp)
+  while :; do
+    status=0
+    data=$(gcloud secrets versions access "$version" --project "$VERAX_GCP_PROJECT" --secret "$secret" \
+      --format='get(payload.data)' 2>"$errors") || status=$?
+    if ((status == 0)); then
+      # O base64 do gcloud usa o alfabeto da URL; o worker lê o comum. E, se o `=` do fim vier cortado, ele volta: o
+      # `base64 -d` do nó (coreutils 9.1) recusa base64 sem o fim, e nenhuma versão passaria.
+      data=${data//-/+}
+      data=${data//_//}
+      case $((${#data} % 4)) in
+        2) data+='==' ;;
+        3) data+='=' ;;
+      esac
+      if [[ ! $data =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+        echo "Versão $version do segredo $secret fora do formato." >&2
+        rm -f "$errors"
+        discard_worker_keys
+        return 1
+      fi
+      if ! bits=$(vault_key_bits "$data") || ((bits < 3072 || bits > 4096)); then
+        echo "A versão $version do segredo $secret não é uma chave privada RSA de 3072 a 4096 bits em PEM, e o worker" \
+          "não subiria com ela. Desative essa versão (gcloud secrets versions disable $version --secret $secret" \
+          "--project $VERAX_GCP_PROJECT) e reinicie: sudo systemctl restart verax-node" >&2
+        rm -f "$errors"
+        discard_worker_keys
+        return 1
+      fi
+      keys+=("$version:$data")
+      current=$version
+    elif grep -q 'NOT_FOUND' "$errors"; then
+      break
+    elif grep -q 'FAILED_PRECONDITION' "$errors"; then
+      # Fora de uso. A mensagem do gcloud diz o estado ("is in DISABLED state" ou "is in DESTROYED state"): só a
+      # desativada pode voltar, e o aviso sem versão ativa depende disso.
+      if grep -q 'DISABLED' "$errors"; then disabled+=("$version"); else destroyed+=("$version"); fi
+    else
+      echo "Falha ao ler a versão $version do segredo $secret no Secret Manager:" >&2
+      sed 's/^/  /' "$errors" >&2
+      rm -f "$errors"
+      discard_worker_keys
+      return 1
+    fi
+    version=$((version + 1))
+  done
+  rm -f "$errors"
+  if [[ -z $current ]]; then
+    # Sem versão nenhuma (a 1 não existe), o install.sh gera a chave; com versões que existem, ele não mexe (a versão 1
+    # decide), então o caminho é reativar a desativada mais recente ou, se só há destruídas, gravar uma versão nova.
+    local remedy
+    if ((version == 1)); then
+      remedy="O segredo ainda não tem versão: rode o deploy de novo (o install.sh gera a chave na VM quando o cofre nunca teve uma)"
+    elif ((${#disabled[@]})); then
+      remedy="Toda versão que existe está desativada ou destruída: reative a desativada mais recente (gcloud secrets versions enable ${disabled[-1]} --secret $secret --project $VERAX_GCP_PROJECT)"
+    else
+      remedy="Toda versão que existe foi destruída (${destroyed[*]}): grave uma chave nova (docs/runbooks/no-verax.md; as credenciais precisam ser coladas de novo)"
+    fi
+    echo "AVISO: o cofre de credenciais ($secret) não tem nenhuma versão ativa: a API e o worker sobem sem ele, e a" \
+      "chave da AWS e o token do Cloudflare não podem ser gravados nem lidos. $remedy e reinicie:" \
+      "sudo systemctl restart verax-node" >&2
+    write_worker_keys
+    return 0
+  fi
+  # A pública sai da privada corrente, num pipe (nada vai para o disco).
+  local public
+  public=$(printf '%s' "${keys[-1]#*:}" | base64 -d | openssl pkey -pubout 2>/dev/null | base64 -w0) || {
+    echo "A versão $current do segredo $secret não é uma chave privada legível." >&2
+    discard_worker_keys
+    return 1
+  }
+  write_worker_keys "${keys[@]}"
+  vault_api=("CREDENTIALS_PUBLIC_KEY=$public" "CREDENTIALS_KEY_VERSION=$current")
+  vault_worker=("CREDENTIALS_PRIVATE_KEYS_FILE=$WORKER_KEYS_MOUNT" "CREDENTIALS_KEY_CURRENT=$current")
+}
+
+# O arquivo das chaves privadas do worker (WORKER_KEYS, na pasta WORKER_VAULT de /run/verax): uma linha
+# `<versão>:<PEM em base64>` por versão ativa, 0400 e do usuário do worker, que é o único que o lê. Existe sempre que o
+# cofre está ligado (vazio sem versão ativa). A pasta pode já existir: o Docker a cria (0755, de root) se o worker subir
+# antes desta partida (reinício pelo Docker depois de um reboot inesperado), e o install acerta o modo e o dono dela
+# (0750, de root e do grupo do worker, que só precisa atravessá-la). O arquivo nasce ao lado, 0600 de root pelo umask,
+# e entra no lugar de uma vez (rename): um worker que o Docker esteja reiniciando nunca lê um arquivo pela metade. O
+# `-T` recusa um destino que seja pasta, em vez de mover o arquivo para dentro dela.
+write_worker_keys() { # [<versão>:<base64>...]
+  local file
+  install -d -m 0750 -o 0 -g "$WORKER_UID" "$WORKER_VAULT"
+  rm -f "$WORKER_VAULT"/.worker-keys.*
+  file=$(mktemp "$WORKER_VAULT/.worker-keys.XXXXXX")
+  if (($#)); then printf '%s\n' "$@" >"$file"; fi
+  chmod 0400 "$file"
+  chown "$WORKER_UID:$WORKER_UID" "$file"
+  mv -fT "$file" "$WORKER_KEYS"
+}
+
+# Nada do cofre fica na memória quando a leitura para no meio (nem o arquivo da partida anterior). A parada também o
+# tira (`down`); um reboot, por ser tmpfs, idem.
+discard_worker_keys() {
+  rm -rf "$WORKER_VAULT"
 }
 
 database_url() { # <papel> <senha>
@@ -135,6 +287,17 @@ render() {
     echo "AVISO: VERAX_GCP_PROJECT ou VERAX_SECRET_PREFIX fora do formato em /etc/verax/node.conf: a API sobe sem o" \
       "tópico do sink de projeto de cliente (Contas cloud mostra o comando com o tópico a preencher)." >&2
   fi
+  # Cofre de credenciais: só no nó que tem o segredo `credentials-key` (CREDENTIALS_VAULT=true; sem a linha, false). O
+  # nó da Verax não liga: nada é lido, e os arquivos de ambiente saem como antes.
+  local vault_api=() vault_worker=()
+  case ${CREDENTIALS_VAULT:-false} in
+    true) credentials_vault ;;
+    false) ;;
+    *)
+      echo 'CREDENTIALS_VAULT inválido em /etc/verax/node.conf: use true ou false.' >&2
+      return 1
+      ;;
+  esac
   # TRUST_PROXY_HOPS=1: um proxy confiável na frente da API, o Cloudflare (o cloudflared só repassa).
   write_env api.env \
     NODE_ENV=production LOG_LEVEL=info PORT=3000 \
@@ -145,11 +308,13 @@ render() {
     "${mail[@]}" \
     "${plan[@]}" \
     "${sink_topic[@]}" \
+    "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "${plan[@]}" \
+    "${vault_worker[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
   # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
@@ -200,6 +365,15 @@ up() {
   fi
 }
 
+# A parada tira as chaves do cofre da memória junto com os contêineres, mesmo que o Compose falhe (o resto de /run/verax,
+# os arquivos de ambiente, fica e é reescrito na próxima partida, como sempre foi).
+down() {
+  local status=0
+  compose down || status=$?
+  discard_worker_keys
+  return "$status"
+}
+
 bootstrap() {
   : "${BOOTSTRAP_ADMIN_EMAIL:?defina BOOTSTRAP_ADMIN_EMAIL}"
   render
@@ -228,7 +402,7 @@ bootstrap() {
 
 case ${1:-} in
   up) up ;;
-  down) compose down ;;
+  down) down ;;
   bootstrap) bootstrap ;;
   *)
     echo "Uso: start.sh up|down|bootstrap" >&2

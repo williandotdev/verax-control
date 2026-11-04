@@ -95,7 +95,13 @@ if [[ -n ${NODE_EGRESS_IPS:-} && ! $NODE_EGRESS_IPS =~ ^$egress_ip(,$egress_ip)*
   echo 'NODE_EGRESS_IPS inválido em /etc/verax/node.conf: use IPv4 com /32, separados por vírgula.' >&2
   exit 2
 fi
+# Cofre de credenciais (a chave da AWS e o token do Cloudflare colados no painel): true só no nó com o segredo
+# `credentials-key` (`credentials_vault` no Terraform). Sem a linha, vale false: o nó da Verax não muda.
+[[ ${CREDENTIALS_VAULT:-false} =~ ^(true|false)$ ]] ||
+  { echo 'CREDENTIALS_VAULT inválido em /etc/verax/node.conf: use true ou false.' >&2; exit 2; }
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
+# O complemento do cofre de credenciais fica instalado sempre; o start.sh só o usa com CREDENTIALS_VAULT=true.
+install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" /opt/verax/bin/
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
@@ -134,6 +140,33 @@ generate postgres-migrator 40
 generate postgres-app 40
 generate better-auth-secret 48
 generate csrf-secret 48
+
+# A chave do cofre de credenciais nasce aqui, na VM, só com CREDENTIALS_VAULT=true. O par RSA-3072 vai por pipe direto
+# do openssl para o Secret Manager: a chave privada não passa pelo disco nem por variável, e nunca sai da GCP. A VM só
+# acrescenta versões nesse segredo (secretVersionAdder) e lê as dele (secretAccessor). A versão 1 decide: sem ela
+# (NOT_FOUND), o cofre nunca teve chave e uma nasce agora; com ela (ativa, desativada ou destruída), nada muda, porque
+# trocar a chave é uma versão nova feita de propósito.
+if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then
+  echo '== Chave do cofre de credenciais (só na primeira vez)'
+  vault_secret=$VERAX_SECRET_PREFIX-credentials-key
+  vault_errors=$(mktemp)
+  vault_status=0
+  gcloud secrets versions access 1 --project "$VERAX_GCP_PROJECT" --secret "$vault_secret" --format='value(name)' \
+    >/dev/null 2>"$vault_errors" || vault_status=$?
+  if ((vault_status == 0)) || grep -q 'FAILED_PRECONDITION' "$vault_errors"; then
+    echo "O cofre $vault_secret já tem chave."
+  elif grep -q 'NOT_FOUND' "$vault_errors"; then
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 2>/dev/null |
+      gcloud secrets versions add "$vault_secret" --project "$VERAX_GCP_PROJECT" --data-file=- >/dev/null
+    echo "Chave nova (RSA-3072) gravada no cofre $vault_secret."
+  else
+    echo "Falha ao ler o cofre $vault_secret no Secret Manager (ele existe? confira credentials_vault no Terraform):" >&2
+    sed 's/^/  /' "$vault_errors" >&2
+    rm -f "$vault_errors"
+    exit 1
+  fi
+  rm -f "$vault_errors"
+fi
 
 echo '== Imagens (pelo digest conferido)'
 # O Docker baixa do registro com a identidade da VM (só leitura).

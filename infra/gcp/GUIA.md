@@ -775,5 +775,7 @@ roteiro está em `docs/runbooks/no-verax.md`; no `node.conf`, `NODE_PROFILE` é 
 Verax, `standard` na homologação) e `VERAX_SECRET_PREFIX` é o `name_prefix` do ambiente (`verax-node` e
 `verax-homolog`). Essa igualdade é uma premissa operacional: o `start.sh` monta com o prefixo o tópico do sink de
 projeto de cliente que o painel mostra, e o teste de contrato da API prende o painel ao Terraform, não ao `node.conf`
-instalado. Cada projeto, monitorado ou de cliente, entra em Contas cloud com a assinatura que aparece em
-`terraform output pubsub_subscriptions`.
+instalado. Na homologação, `CREDENTIALS_VAULT=true` liga o cofre de credenciais: na primeira instalação, o
+`install.sh` gera a chave do cofre na VM e a grava como versão 1 do `credentials-key`. No nó da Verax, que não tem
+esse cofre, a linha fica `false` (ou ausente). Cada projeto, monitorado ou de cliente, entra em Contas cloud com a
+assinatura que aparece em `terraform output pubsub_subscriptions`.
