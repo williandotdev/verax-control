@@ -128,6 +128,31 @@ jobs:
           path: ${{ runner.temp }}/zap/
           retention-days: 30
 
+  control-plane-image:
+    name: Imagem do plano de controle (build, Trivy e raiz só leitura)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      # Mesmo binário e checksum do security.yml e do job da API.
+      TRIVY_VERSION: 0.76.1
+      TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build (a mesma imagem para cp-public e cp-worker)
+        run: docker build -f apps/control-plane/Dockerfile -t verax-control-plane:teste .
+      - name: Instalar trivy (checksum fixado)
+        run: |
+          curl -fsSLo trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum --check --strict
+          tar -xzf trivy.tar.gz trivy && rm trivy.tar.gz
+      - name: Trivy na imagem
+        # --ignore-unfixed: só bloqueia o que tem correção disponível, para o gate ser acionável.
+        run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-control-plane:teste
+      - name: Execução como no Cloud Run (os dois papéis, raiz só leitura, configuração inválida)
+        run: bash scripts/test-control-plane-image.sh verax-control-plane:teste
+
   e2e:
     name: Testes de navegador
     runs-on: ubuntu-24.04
