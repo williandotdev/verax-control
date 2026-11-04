@@ -1,0 +1,152 @@
+{
+  "_comment": "EXEMPLO com valores FICTÍCIOS (números redondos inventados), só para mostrar o formato do --catalog do stripe-setup.ts. O catálogo de verdade fica FORA do repositório (que é público) e tem de bater com a tabela de preços publicada no Firestore: mesmos lookup_key e valores (centavos de real). metadata.component e metadata.variant seguem lookupKeysOf (src/pricing/pricing.schema.ts); o script acrescenta tableVersion. recurring=false só na implantação (avulsa, na primeira fatura). O cupom nunca pode descontar um produto avulso. O texto do código promocional nunca vai neste arquivo: é argumento na hora (STRIPE_SETUP_PROMO_CODE).",
+  "tableVersion": "exemplo-v1",
+  "products": [
+    { "id": "vc_ambiente", "name": "Verax Control: ambiente gerenciado" },
+    { "id": "vc_licenca_byoc", "name": "Verax Control: na sua nuvem" },
+    { "id": "vc_conta_adicional", "name": "Conta de nuvem adicional", "unitLabel": "conta" },
+    { "id": "vc_volume", "name": "Volume de logs (franquia mensal)" },
+    { "id": "vc_agentes", "name": "Agentes nas instâncias", "unitLabel": "pacote" },
+    { "id": "vc_historico", "name": "Histórico estendido" },
+    { "id": "vc_suporte", "name": "Suporte prioritário" },
+    { "id": "vc_implantacao", "name": "Implantação na sua nuvem" }
+  ],
+  "prices": [
+    {
+      "lookupKey": "vc_env_p_v1",
+      "product": "vc_ambiente",
+      "unitAmount": 100000,
+      "recurring": true,
+      "nickname": "Ambiente P (mensal)",
+      "metadata": { "component": "environment", "variant": "managed_P" }
+    },
+    {
+      "lookupKey": "vc_env_m_v1",
+      "product": "vc_ambiente",
+      "unitAmount": 200000,
+      "recurring": true,
+      "nickname": "Ambiente M (mensal)",
+      "metadata": { "component": "environment", "variant": "managed_M" }
+    },
+    {
+      "lookupKey": "vc_env_g_v1",
+      "product": "vc_ambiente",
+      "unitAmount": 400000,
+      "recurring": true,
+      "nickname": "Ambiente G (mensal)",
+      "metadata": { "component": "environment", "variant": "managed_G" }
+    },
+    {
+      "lookupKey": "vc_lic_p_v1",
+      "product": "vc_licenca_byoc",
+      "unitAmount": 50000,
+      "recurring": true,
+      "nickname": "Licença P (mensal)",
+      "metadata": { "component": "environment", "variant": "self_hosted_P" }
+    },
+    {
+      "lookupKey": "vc_lic_m_v1",
+      "product": "vc_licenca_byoc",
+      "unitAmount": 100000,
+      "recurring": true,
+      "nickname": "Licença M (mensal)",
+      "metadata": { "component": "environment", "variant": "self_hosted_M" }
+    },
+    {
+      "lookupKey": "vc_lic_g_v1",
+      "product": "vc_licenca_byoc",
+      "unitAmount": 200000,
+      "recurring": true,
+      "nickname": "Licença G (mensal)",
+      "metadata": { "component": "environment", "variant": "self_hosted_G" }
+    },
+    {
+      "lookupKey": "vc_acc_v1",
+      "product": "vc_conta_adicional",
+      "unitAmount": 3000,
+      "recurring": true,
+      "nickname": "Conta adicional (mensal)",
+      "metadata": { "component": "cloud_accounts", "variant": "additional" }
+    },
+    {
+      "lookupKey": "vc_vol_50_v1",
+      "product": "vc_volume",
+      "unitAmount": 10000,
+      "recurring": true,
+      "nickname": "Volume até 50 GiB (mensal)",
+      "metadata": { "component": "volume", "variant": "50" }
+    },
+    {
+      "lookupKey": "vc_vol_100_v1",
+      "product": "vc_volume",
+      "unitAmount": 20000,
+      "recurring": true,
+      "nickname": "Volume até 100 GiB (mensal)",
+      "metadata": { "component": "volume", "variant": "100" }
+    },
+    {
+      "lookupKey": "vc_vol_200_v1",
+      "product": "vc_volume",
+      "unitAmount": 40000,
+      "recurring": true,
+      "nickname": "Volume até 200 GiB (mensal)",
+      "metadata": { "component": "volume", "variant": "200" }
+    },
+    {
+      "lookupKey": "vc_agt_v1",
+      "product": "vc_agentes",
+      "unitAmount": 10000,
+      "recurring": true,
+      "nickname": "Pacote de 10 agentes (mensal)",
+      "metadata": { "component": "agents", "variant": "10" }
+    },
+    {
+      "lookupKey": "vc_his_180_v1",
+      "product": "vc_historico",
+      "unitAmount": 2000,
+      "recurring": true,
+      "nickname": "Histórico de 180 dias (mensal)",
+      "metadata": { "component": "history", "variant": "180" }
+    },
+    {
+      "lookupKey": "vc_his_360_v1",
+      "product": "vc_historico",
+      "unitAmount": 4000,
+      "recurring": true,
+      "nickname": "Histórico de 360 dias (mensal)",
+      "metadata": { "component": "history", "variant": "360" }
+    },
+    {
+      "lookupKey": "vc_sup_v1",
+      "product": "vc_suporte",
+      "unitAmount": 30000,
+      "recurring": true,
+      "nickname": "Suporte prioritário (mensal)",
+      "metadata": { "component": "priority_support", "variant": "priority" }
+    },
+    {
+      "lookupKey": "vc_set_v1",
+      "product": "vc_implantacao",
+      "unitAmount": 100000,
+      "recurring": false,
+      "nickname": "Implantação na sua nuvem (uma vez)",
+      "metadata": { "component": "setup", "variant": "self_hosted" }
+    }
+  ],
+  "coupon": {
+    "id": "vc_cupom_exemplo",
+    "name": "Cupom de exemplo",
+    "percentOff": 10,
+    "durationInMonths": 3,
+    "maxRedemptions": 2,
+    "appliesToProducts": [
+      "vc_ambiente",
+      "vc_licenca_byoc",
+      "vc_conta_adicional",
+      "vc_volume",
+      "vc_agentes",
+      "vc_historico",
+      "vc_suporte"
+    ]
+  }
+}

@@ -1,37 +1,45 @@
 /**
- * Catálogo da Stripe do Verax Control, idempotente (plano da fase 3, §9, item 1): o produto "Verax Control", os dois
- * preços mensais em BRL achados pelo `lookup_key` e o cupom dos fundadores (30% por 12 meses, 5 resgates) com o
- * código promocional. Roda na conta da chave informada (sandbox primeiro; produção só com `--live`).
+ * Catálogo da Stripe do Verax Control (preço configurável), idempotente: um produto por componente, os preços da
+ * versão da tabela achados pelo `lookup_key` (mensais em BRL; a implantação, avulsa), o cupom e o código promocional.
+ * Roda na conta da chave informada (sandbox primeiro; produção só com `--live`).
+ *
+ * Nenhum valor comercial está aqui: produtos, preços, valores e os termos do cupom vêm de um arquivo JSON passado com
+ * `--catalog <arquivo>`, que fica FORA do repositório (ele é público). O formato está documentado, com valores
+ * fictícios, em `apps/control-plane/scripts/catalog.example.json`. Os preços do arquivo precisam ser os da tabela de
+ * preços publicada no Firestore (mesmos `lookup_key` e valores): o checkout confere cada preço antes de abrir a sessão
+ * e fica indisponível se algum divergir.
  *
  * Uso (Node 24 executa o TypeScript direto, sem build). A chave nunca vai para a linha de comando, o histórico do
  * shell ou a saída: `read -s` não ecoa o que é digitado.
  *
  *   read -rsp 'Chave da Stripe: ' STRIPE_SETUP_KEY && echo && export STRIPE_SETUP_KEY
- *   read -rsp 'Código promocional dos fundadores: ' STRIPE_SETUP_PROMO_CODE && echo && export STRIPE_SETUP_PROMO_CODE
- *   node apps/control-plane/scripts/stripe-setup.ts            # simulação: só lê e mostra o que faria
- *   node apps/control-plane/scripts/stripe-setup.ts --apply    # cria o que falta
+ *   read -rsp 'Código promocional: ' STRIPE_SETUP_PROMO_CODE && echo && export STRIPE_SETUP_PROMO_CODE
+ *   node apps/control-plane/scripts/stripe-setup.ts --catalog=$HOME/verax/catalogo-2026-11-v1.json           # simulação
+ *   node apps/control-plane/scripts/stripe-setup.ts --catalog=$HOME/verax/catalogo-2026-11-v1.json --apply   # cria
  *   unset STRIPE_SETUP_KEY STRIPE_SETUP_PROMO_CODE
  *
  * A chave precisa escrever em Products, Prices, Coupons e Promotion Codes: a chave secreta do sandbox, ou uma chave
  * restrita só para isto. Nunca a chave do serviço (`cp-stripe-secret-key`), que não tem essas permissões.
  *
  * O texto do código promocional é decidido na hora (variável STRIPE_SETUP_PROMO_CODE ou `--promo-code`, que fica no
- * histórico do shell) e nunca entra no repositório: ele é público, e quem o lesse queimaria os 5 resgates. A saída
- * mostra só os ids dos objetos e o que foi criado ou mantido.
+ * histórico do shell) e nunca entra no repositório nem no arquivo do catálogo: quem o lesse queimaria os resgates. A
+ * saída mostra só os ids dos objetos e o que foi criado ou mantido.
  *
  * Opções:
+ *   --catalog=<arquivo>           o catálogo (JSON, fora do repositório)
  *   --apply                       grava (sem ela, simulação)
  *   --live                        aceita chave de produção (sem ela, só chave de teste)
- *   --promo-code=<texto>          o código promocional (prefira STRIPE_SETUP_PROMO_CODE)
- *   --transfer-lookup-key         se um preço existente divergir, cria um preço novo e move o `lookup_key` para ele
+ *   --promo-code=<texto>          o código promocional (prefira STRIPE_SETUP_PROMO_CODE); exige o cupom no catálogo
  *   --webhook-url=<url>           confere também o endpoint do webhook (abaixo): https://<host>/v1/stripe/webhook
  *   --webhook-secret-name=<nome>  o segredo do Secret Manager que recebe o segredo de assinatura (só na criação)
  *   --gcloud-project=<projeto>    o projeto do segredo, se não for o configurado no gcloud
  *
- * Preços são imutáveis: um preço existente que diverge do esperado (valor, moeda, intervalo, produto, inativo) não é
- * alterado; o script relata e para sem gravar nada. Trocar o preço é criar outro com `transfer_lookup_key`, e só com
- * `--transfer-lookup-key`. O mesmo vale para o cupom (sem saída automática: um cupom diferente com o mesmo id exige
- * decisão no Dashboard) e para um código promocional igual ligado a outro cupom.
+ * Preços são imutáveis, e cada versão da tabela tem os próprios `lookup_key` (sufixo `_v<n>`): mudar um valor é
+ * publicar uma versão nova da tabela com uma chave nova, nunca mover a chave de um preço. Um preço existente que
+ * diverge do arquivo (valor, moeda, tipo, intervalo, produto, metadados, inativo) não é alterado: o script relata e para
+ * sem gravar nada. O mesmo vale para o cupom (um cupom diferente com o mesmo id exige decisão no Dashboard) e para um
+ * código promocional igual ligado a outro cupom. Os metadados de cada preço levam `component`, `variant` (do arquivo) e
+ * `tableVersion` (do campo do arquivo): é por eles que o webhook reconhece cada item de uma assinatura.
  *
  * Endpoint do webhook (CP-04, opcional, plano §9, item 7). Com `--webhook-url`, o script procura o endpoint com essa
  * URL: se não existe, cria com os 13 eventos do plano §4b (`WEBHOOK_EVENTS`) e a versão fixada da API; se existe com
@@ -44,46 +52,28 @@
  * (um segredo que ninguém guardou não serve). O gcloud precisa de permissão para adicionar versão ao segredo
  * (`secretmanager.versions.add`). No Windows o gcloud é um `.cmd`, que o Node não executa sem shell: rode este passo
  * no WSL ou no Cloud Shell (ou crie o endpoint no Workbench, grave o segredo à mão e use o script só para conferir os
- * eventos). A chave da Stripe precisa escrever em Webhook Endpoints.
+ * eventos). A chave da Stripe precisa escrever em Webhook Endpoints. Sem `--catalog`, só o webhook é conferido.
  *
  *   node apps/control-plane/scripts/stripe-setup.ts --apply \
  *     --webhook-url=https://conta.veraxsistemas.com.br/v1/stripe/webhook \
  *     --webhook-secret-name=cp-stripe-webhook-secret --gcloud-project=<projeto-da-verax>
  *
- * Saída: 0 feito (ou simulado), 1 divergência (nada gravado), 2 uso ou configuração, 3 erro da Stripe, 4 o gcloud
- * falhou (nada criado na Stripe, ou o endpoint criado foi apagado).
+ * Saída: 0 feito (ou simulado), 1 divergência (nada gravado), 2 uso, configuração ou catálogo inválido, 3 erro da
+ * Stripe, 4 o gcloud falhou (nada criado na Stripe, ou o endpoint criado foi apagado).
  */
 import { type ChildProcess, spawn, type SpawnOptions } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import Stripe from 'stripe';
+import { z } from 'zod';
 
 /** A mesma versão fixada do serviço (`src/stripe/stripe-client.ts`); o script não importa do `src` para rodar sem build. */
 const STRIPE_API_VERSION = '2026-10-28.endive' satisfies Stripe.LatestApiVersion;
 
-export const PRODUCT = { id: 'verax_control', name: 'Verax Control' } as const;
-
-export const PLAN_PRICES = [
-  {
-    plan: 'essencial',
-    lookupKey: 'verax_control_essencial_mensal',
-    unitAmount: 249_000,
-    nickname: 'Essencial mensal',
-  },
-  {
-    plan: 'profissional',
-    lookupKey: 'verax_control_profissional_mensal',
-    unitAmount: 499_000,
-    nickname: 'Profissional mensal',
-  },
-] as const;
-
-export const FOUNDERS_COUPON = {
-  id: 'verax_fundadores_30',
-  name: 'Fundadores: 30% por 12 meses',
-  percentOff: 30,
-  durationInMonths: 12,
-  maxRedemptions: 5,
-} as const;
+/** A raiz do repositório (público): o catálogo de verdade fica fora dela. */
+const REPOSITORY_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 
 /**
  * Os 13 eventos do endpoint (plano §4b). A mesma lista, na mesma ordem, de `HANDLED_EVENT_TYPES` em
@@ -115,6 +105,86 @@ const PROMO_CODE_PATTERN = /^[A-Za-z0-9]{3,40}$/;
 /** Id de segredo do Secret Manager. Classe única: tempo linear. */
 const SECRET_ID_PATTERN = /^[A-Za-z0-9_-]{1,255}$/;
 const GCP_PROJECT_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+/** Ids de produto e de cupom e `lookup_key`: o mesmo alfabeto da tabela de preços do plano de controle. */
+const stripeKey = z.string().regex(/^[a-z0-9_]{3,64}$/, { error: 'use minúsculas, números e _' });
+const label = z.string().trim().min(1).max(250);
+const metadataValue = z.string().min(1).max(500);
+
+/**
+ * O formato do arquivo do catálogo (`--catalog`), conferido antes de qualquer chamada à Stripe. Os valores são do
+ * responsável e vivem fora do repositório; o exemplo `catalog.example.json` tem só valores fictícios.
+ */
+export const catalogSchema = z
+  .strictObject({
+    /** Comentário livre (o JSON não tem comentários). Ignorado. */
+    _comment: z.string().max(2000).optional(),
+    /** A versão da tabela de preços (ex.: `2026-11-v1`): vai aos metadados de cada preço. */
+    tableVersion: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/, { error: 'versão inválida' }),
+    products: z
+      .array(
+        z.strictObject({
+          id: stripeKey,
+          name: label,
+          unitLabel: z.string().trim().min(1).max(12).optional(),
+        }),
+      )
+      .min(1)
+      .max(50),
+    prices: z
+      .array(
+        z.strictObject({
+          lookupKey: stripeKey,
+          product: stripeKey,
+          /** Centavos de real. */
+          unitAmount: z.number().int().min(1).max(100_000_000),
+          /** `true`: mensal; `false`: avulso (a implantação, só na primeira fatura). */
+          recurring: z.boolean(),
+          nickname: label.optional(),
+          metadata: z.strictObject({ component: metadataValue, variant: metadataValue }),
+        }),
+      )
+      .min(1)
+      .max(100),
+    coupon: z
+      .strictObject({
+        id: stripeKey,
+        name: label,
+        percentOff: z.number().gt(0).max(100),
+        durationInMonths: z.number().int().min(1).max(36),
+        maxRedemptions: z.number().int().min(1).max(100_000),
+        /** Só produtos com preço mensal: o cupom nunca desconta a implantação. */
+        appliesToProducts: z.array(stripeKey).min(1).max(50),
+      })
+      .optional(),
+  })
+  .superRefine((catalog, ctx) => {
+    const issue = (path: (string | number)[], message: string): void => {
+      ctx.addIssue({ code: 'custom', path, message });
+    };
+    const products = new Set(catalog.products.map((product) => product.id));
+    if (products.size !== catalog.products.length) issue(['products'], 'produto repetido');
+    const keys = catalog.prices.map((price) => price.lookupKey);
+    if (new Set(keys).size !== keys.length) issue(['prices'], 'lookup_key repetido');
+    catalog.prices.forEach((price, index) => {
+      if (!products.has(price.product))
+        issue(['prices', index, 'product'], 'produto fora da lista de produtos');
+    });
+    const oneTime = new Set(catalog.prices.filter((price) => !price.recurring).map((price) => price.product));
+    catalog.coupon?.appliesToProducts.forEach((product, index) => {
+      if (!products.has(product)) {
+        issue(['coupon', 'appliesToProducts', index], 'produto fora da lista de produtos');
+      } else if (oneTime.has(product)) {
+        issue(
+          ['coupon', 'appliesToProducts', index],
+          'o cupom não pode descontar um produto avulso (implantação)',
+        );
+      }
+    });
+  });
+export type Catalog = z.infer<typeof catalogSchema>;
+type CatalogPrice = Catalog['prices'][number];
+type CatalogCoupon = NonNullable<Catalog['coupon']>;
 
 const EXIT = { ok: 0, conflict: 1, usage: 2, stripe: 3, gcloud: 4 } as const;
 
@@ -201,70 +271,121 @@ function differences(checks: readonly [string, unknown, unknown][]): string[] {
     .map(([field, expected, found]) => `${field}: esperado ${String(expected)}, encontrado ${String(found)}`);
 }
 
-async function productStep(stripe: Stripe): Promise<Step> {
-  const label = `produto ${PRODUCT.id}`;
+function idOf(value: string | { id: string } | null | undefined): string | null | undefined {
+  return typeof value === 'object' && value !== null ? value.id : value;
+}
+
+/**
+ * Lê e valida o arquivo do catálogo; `undefined` com a mensagem já escrita (só caminhos e problemas, nunca valores).
+ * Um arquivo dentro do repositório gera um aviso: o catálogo de verdade tem valores comerciais e fica fora dele.
+ */
+export function loadCatalog(path: string, out: (line: string) => void): Catalog | undefined {
+  const absolute = resolve(path);
+  const inside = relative(REPOSITORY_ROOT, absolute);
+  if (!inside.startsWith('..') && !inside.startsWith('/') && !/^[A-Za-z]:/.test(inside)) {
+    out(
+      `aviso: o catálogo ${inside} está dentro do repositório, que é público. O de verdade (com os valores) fica fora ` +
+        'dele; o exemplo do repositório só tem valores fictícios.',
+    );
+  }
+  let text: string;
   try {
-    const product = await stripe.products.retrieve(PRODUCT.id);
-    return { label, status: 'keep', existingId: product.id };
+    // O caminho é o que o responsável passou na linha de comando, de propósito.
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- arquivo indicado pelo operador
+    text = readFileSync(absolute, 'utf8');
+  } catch {
+    out(`--catalog: não consegui ler ${path}.`);
+    return undefined;
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    out('--catalog: o arquivo não é um JSON válido.');
+    return undefined;
+  }
+  const result = catalogSchema.safeParse(json);
+  if (result.success) return result.data;
+  out('--catalog inválido:');
+  for (const issue of result.error.issues.slice(0, 20)) {
+    out(`  ${issue.path.map(String).join('.') || '(raiz)'}: ${issue.message}`);
+  }
+  return undefined;
+}
+
+async function productStep(stripe: Stripe, product: Catalog['products'][number]): Promise<Step> {
+  const label = `produto ${product.id}`;
+  try {
+    const existing = await stripe.products.retrieve(product.id);
+    return { label, status: 'keep', existingId: existing.id };
   } catch (error) {
     if (!isMissing(error)) throw error;
   }
   return {
     label,
     status: 'create',
-    plan: `"${PRODUCT.name}"`,
-    create: async () => (await stripe.products.create({ id: PRODUCT.id, name: PRODUCT.name })).id,
+    plan: `"${product.name}"`,
+    create: async () =>
+      (
+        await stripe.products.create({
+          id: product.id,
+          name: product.name,
+          ...(product.unitLabel === undefined ? {} : { unit_label: product.unitLabel }),
+        })
+      ).id,
   };
 }
 
-async function priceStep(
-  stripe: Stripe,
-  price: (typeof PLAN_PRICES)[number],
-  transferLookupKey: boolean,
-): Promise<Step> {
-  const label = `preço ${price.lookupKey} (${brl(price.unitAmount)}/mês)`;
-  const create = (transfer: boolean) => async () =>
-    (
-      await stripe.prices.create({
-        product: PRODUCT.id,
-        currency: 'brl',
-        unit_amount: price.unitAmount,
-        recurring: { interval: 'month', interval_count: 1 },
-        lookup_key: price.lookupKey,
-        ...(transfer ? { transfer_lookup_key: true } : {}),
-        nickname: price.nickname,
-        metadata: { plan: price.plan },
-      })
-    ).id;
+async function priceStep(stripe: Stripe, price: CatalogPrice, tableVersion: string): Promise<Step> {
+  const label = `preço ${price.lookupKey} (${brl(price.unitAmount)}${price.recurring ? '/mês' : ', avulso'})`;
+  const metadata = { ...price.metadata, tableVersion };
   const [existing] = (await stripe.prices.list({ lookup_keys: [price.lookupKey], limit: 1 })).data;
-  if (existing === undefined) return { label, status: 'create', plan: 'novo', create: create(false) };
-  const productId = typeof existing.product === 'string' ? existing.product : existing.product.id;
+  if (existing === undefined) {
+    return {
+      label,
+      status: 'create',
+      plan: 'novo',
+      create: async () =>
+        (
+          await stripe.prices.create({
+            product: price.product,
+            currency: 'brl',
+            unit_amount: price.unitAmount,
+            ...(price.recurring ? { recurring: { interval: 'month', interval_count: 1 } } : {}),
+            lookup_key: price.lookupKey,
+            ...(price.nickname === undefined ? {} : { nickname: price.nickname }),
+            metadata,
+          })
+        ).id,
+    };
+  }
   const problems = differences([
     ['active', true, existing.active],
-    ['type', 'recurring', existing.type],
+    ['type', price.recurring ? 'recurring' : 'one_time', existing.type],
     ['currency', 'brl', existing.currency],
     ['unit_amount', price.unitAmount, existing.unit_amount],
-    ['recurring.interval', 'month', existing.recurring?.interval],
-    ['recurring.interval_count', 1, existing.recurring?.interval_count],
-    ['product', PRODUCT.id, productId],
+    ['recurring.interval', price.recurring ? 'month' : undefined, existing.recurring?.interval],
+    ['recurring.interval_count', price.recurring ? 1 : undefined, existing.recurring?.interval_count],
+    ['product', price.product, idOf(existing.product)],
+    ['metadata.component', metadata.component, existing.metadata['component']],
+    ['metadata.variant', metadata.variant, existing.metadata['variant']],
+    ['metadata.tableVersion', metadata.tableVersion, existing.metadata['tableVersion']],
   ]);
-  if (problems.length === 0) return { label, status: 'keep', existingId: existing.id };
-  if (!transferLookupKey) return { label, status: 'conflict', existingId: existing.id, problems };
-  return {
-    label,
-    status: 'create',
-    existingId: existing.id,
-    problems,
-    plan: `novo, com o lookup_key transferido de ${existing.id}`,
-    create: create(true),
-  };
+  return problems.length === 0
+    ? { label, status: 'keep', existingId: existing.id }
+    : { label, status: 'conflict', existingId: existing.id, problems };
 }
 
-async function couponStep(stripe: Stripe): Promise<Step> {
-  const coupon = FOUNDERS_COUPON;
+function sameProducts(expected: readonly string[], found: readonly string[] | undefined): boolean {
+  const wanted = [...expected].sort();
+  const actual = [...(found ?? [])].sort();
+  return wanted.length === actual.length && wanted.every((product, index) => product === actual[index]);
+}
+
+async function couponStep(stripe: Stripe, coupon: CatalogCoupon): Promise<Step> {
   const label = `cupom ${coupon.id} (${coupon.percentOff}% por ${coupon.durationInMonths} meses, ${coupon.maxRedemptions} resgates)`;
   try {
-    const existing = await stripe.coupons.retrieve(coupon.id);
+    const existing = await stripe.coupons.retrieve(coupon.id, { expand: ['applies_to'] });
     const problems = differences([
       ['percent_off', coupon.percentOff, existing.percent_off],
       ['duration', 'repeating', existing.duration],
@@ -272,6 +393,12 @@ async function couponStep(stripe: Stripe): Promise<Step> {
       ['max_redemptions', coupon.maxRedemptions, existing.max_redemptions],
       ['valid', true, existing.valid],
     ]);
+    if (!sameProducts(coupon.appliesToProducts, existing.applies_to?.products)) {
+      problems.push(
+        `applies_to.products: esperado ${[...coupon.appliesToProducts].sort().join(', ')}, encontrado ` +
+          `${[...(existing.applies_to?.products ?? [])].sort().join(', ') || 'todos'}`,
+      );
+    }
     return problems.length === 0
       ? { label, status: 'keep', existingId: existing.id }
       : { label, status: 'conflict', existingId: existing.id, problems };
@@ -281,7 +408,7 @@ async function couponStep(stripe: Stripe): Promise<Step> {
   return {
     label,
     status: 'create',
-    plan: 'novo',
+    plan: `novo, só nos produtos ${coupon.appliesToProducts.join(', ')}`,
     create: async () =>
       (
         await stripe.coupons.create({
@@ -291,22 +418,22 @@ async function couponStep(stripe: Stripe): Promise<Step> {
           duration: 'repeating',
           duration_in_months: coupon.durationInMonths,
           max_redemptions: coupon.maxRedemptions,
+          applies_to: { products: [...coupon.appliesToProducts] },
         })
       ).id,
   };
 }
 
-async function promotionCodeStep(stripe: Stripe, code: string): Promise<Step> {
+async function promotionCodeStep(stripe: Stripe, code: string, couponId: string): Promise<Step> {
   // O texto do código fica fora da saída: só o id do objeto aparece.
-  const label = 'código promocional dos fundadores (texto omitido)';
+  const label = 'código promocional (texto omitido)';
   const existing = (await stripe.promotionCodes.list({ code, limit: 100 })).data.find(
     (promotion) => promotion.code.toLowerCase() === code.toLowerCase(),
   );
   if (existing !== undefined) {
     const coupon = existing.promotion.coupon;
-    const couponId = typeof coupon === 'string' || coupon === null ? coupon : coupon.id;
     const problems = differences([
-      ['cupom', FOUNDERS_COUPON.id, couponId],
+      ['cupom', couponId, idOf(coupon)],
       ['active', true, existing.active],
     ]);
     return problems.length === 0
@@ -316,11 +443,11 @@ async function promotionCodeStep(stripe: Stripe, code: string): Promise<Step> {
   return {
     label,
     status: 'create',
-    plan: `novo, no cupom ${FOUNDERS_COUPON.id}`,
+    plan: `novo, no cupom ${couponId}`,
     create: async () =>
       (
         await stripe.promotionCodes.create({
-          promotion: { type: 'coupon', coupon: FOUNDERS_COUPON.id },
+          promotion: { type: 'coupon', coupon: couponId },
           code,
           active: true,
         })
@@ -438,14 +565,15 @@ async function webhookStep(
 function usage(out: SetupIo['out']): void {
   out('Uso:');
   out("  read -rsp 'Chave da Stripe: ' STRIPE_SETUP_KEY && echo && export STRIPE_SETUP_KEY");
+  out("  read -rsp 'Código promocional: ' STRIPE_SETUP_PROMO_CODE && echo && export STRIPE_SETUP_PROMO_CODE");
   out(
-    "  read -rsp 'Código promocional dos fundadores: ' STRIPE_SETUP_PROMO_CODE && echo && export STRIPE_SETUP_PROMO_CODE",
+    '  node apps/control-plane/scripts/stripe-setup.ts --catalog=<arquivo fora do repositório> [--apply] [--live]',
   );
-  out('  node apps/control-plane/scripts/stripe-setup.ts [--apply] [--live] [--transfer-lookup-key]');
   out(
     '      [--webhook-url=https://<host>/v1/stripe/webhook --webhook-secret-name=<segredo> [--gcloud-project=<id>]]',
   );
   out('  unset STRIPE_SETUP_KEY STRIPE_SETUP_PROMO_CODE');
+  out('O formato do catálogo está em apps/control-plane/scripts/catalog.example.json (valores fictícios).');
 }
 
 /** Lê e confere as opções do webhook; `undefined` sem `--webhook-url`; `'invalid'` com a mensagem já escrita. */
@@ -489,15 +617,17 @@ function describeError(error: unknown): string {
 
 export async function main(io: SetupIo): Promise<number> {
   const { out } = io;
+  // As mensagens da validação do catálogo em português, como no serviço.
+  z.config(z.locales.ptBR());
   let args;
   try {
     args = parseArgs({
       args: [...io.argv],
       options: {
+        catalog: { type: 'string' },
         apply: { type: 'boolean', default: false },
         live: { type: 'boolean', default: false },
         'promo-code': { type: 'string' },
-        'transfer-lookup-key': { type: 'boolean', default: false },
         'webhook-url': { type: 'string' },
         'webhook-secret-name': { type: 'string' },
         'gcloud-project': { type: 'string' },
@@ -543,6 +673,18 @@ export async function main(io: SetupIo): Promise<number> {
   }
   const webhook = webhookOptions(args, out);
   if (webhook === 'invalid') return EXIT.usage;
+  if (args.catalog === undefined && webhook === undefined) {
+    out('Informe --catalog=<arquivo> (o catálogo de preços) e/ou --webhook-url (o endpoint do webhook).');
+    usage(out);
+    return EXIT.usage;
+  }
+  const catalog = args.catalog === undefined ? undefined : loadCatalog(args.catalog, out);
+  if (args.catalog !== undefined && catalog === undefined) return EXIT.usage;
+  const withPromo = promoCode !== undefined && promoCode !== '';
+  if (catalog !== undefined && withPromo && catalog.coupon === undefined) {
+    out('Código promocional informado, mas o catálogo não tem cupom: o código precisa de um cupom.');
+    return EXIT.usage;
+  }
 
   const stripe = new Stripe(apiKey, {
     apiVersion: STRIPE_API_VERSION,
@@ -560,38 +702,41 @@ export async function main(io: SetupIo): Promise<number> {
   );
 
   try {
-    const steps: Step[] = [await productStep(stripe)];
-    for (const price of PLAN_PRICES) steps.push(await priceStep(stripe, price, args['transfer-lookup-key']));
-    steps.push(await couponStep(stripe));
-    if (promoCode === undefined || promoCode === '') {
-      out('código promocional: não informado (STRIPE_SETUP_PROMO_CODE), pulado');
-    } else {
-      steps.push(await promotionCodeStep(stripe, promoCode));
-    }
-
-    const conflicts = steps.filter((step) => step.status === 'conflict');
-    if (conflicts.length > 0) {
-      for (const step of conflicts) {
-        out(`${step.label}: diverge em ${step.existingId ?? '?'} (${(step.problems ?? []).join('; ')})`);
-      }
+    if (catalog !== undefined) {
       out(
-        'Nada foi gravado. Preços e cupons são imutáveis: para trocar um preço, rode com --transfer-lookup-key ' +
-          '(cria um preço novo e move o lookup_key); cupom ou código promocional divergente se resolve no Dashboard.',
+        `Catálogo da tabela ${catalog.tableVersion}: ${catalog.products.length} produtos, ${catalog.prices.length} preços.`,
       );
-      return EXIT.conflict;
-    }
+      const steps: Step[] = [];
+      for (const product of catalog.products) steps.push(await productStep(stripe, product));
+      for (const price of catalog.prices) steps.push(await priceStep(stripe, price, catalog.tableVersion));
+      if (catalog.coupon === undefined) {
+        out('cupom: o catálogo não tem, pulado');
+      } else {
+        steps.push(await couponStep(stripe, catalog.coupon));
+        if (withPromo) steps.push(await promotionCodeStep(stripe, promoCode, catalog.coupon.id));
+        else out('código promocional: não informado (STRIPE_SETUP_PROMO_CODE), pulado');
+      }
 
-    for (const step of steps) {
-      if (step.status === 'keep') {
-        out(`${step.label}: mantido ${step.existingId ?? ''}`.trimEnd());
-      } else if (!args.apply) {
-        const diverges = step.problems === undefined ? '' : `; o atual diverge: ${step.problems.join('; ')}`;
-        out(`${step.label}: criaria (${step.plan ?? 'novo'}${diverges})`);
-      } else if (step.create !== undefined) {
-        const id = await step.create();
+      const conflicts = steps.filter((step) => step.status === 'conflict');
+      if (conflicts.length > 0) {
+        for (const step of conflicts) {
+          out(`${step.label}: diverge em ${step.existingId ?? '?'} (${(step.problems ?? []).join('; ')})`);
+        }
         out(
-          `${step.label}: criado ${id}${step.existingId === undefined ? '' : ` (o anterior ${step.existingId} continua; arquive-o no Dashboard se não tiver assinatura)`}`,
+          'Nada foi gravado. Preços e cupons são imutáveis: um valor novo é um preço novo, com outro lookup_key, ' +
+            'numa versão nova da tabela; cupom ou código promocional divergente se resolve no Dashboard.',
         );
+        return EXIT.conflict;
+      }
+
+      for (const step of steps) {
+        if (step.status === 'keep') {
+          out(`${step.label}: mantido ${step.existingId ?? ''}`.trimEnd());
+        } else if (!args.apply) {
+          out(`${step.label}: criaria (${step.plan ?? 'novo'})`);
+        } else if (step.create !== undefined) {
+          out(`${step.label}: criado ${await step.create()}`);
+        }
       }
     }
     if (webhook === undefined) return EXIT.ok;
