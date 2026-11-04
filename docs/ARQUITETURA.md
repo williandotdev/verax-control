@@ -11,7 +11,7 @@ revisão e feito no PR-V2, deu lugar a esse papel no mesmo dia (seção "Por que
 O que vem dessa revisão é o **desenho-alvo da fase 2, ainda a construir**: o nó de cliente com o Wazuh, os perfis de
 nó, o template do papel de leitura, o cofre, o token do Cloudflare colado no painel e o coletor nativo do Cloudflare.
 As seções dessas partes levam a marca _(fase 2, a construir)_, e o que já existe está marcado como feito em "Ordem de
-execução". Até lá, o painel segue com o fluxo anterior, do papel com ExternalId.
+execução". O painel já conecta a AWS pelo papel sem chave (PR-V3'): o ExternalId saiu do cadastro.
 
 ## Princípios
 
@@ -186,8 +186,8 @@ auditoria; a recusa, sim.
 
 ## Contas monitoradas por provedor
 
-_(fase 2: o token do Cloudflare entra pelo painel (PR-11'); o template do papel da AWS está feito (PR-V2'); a conexão
-da AWS no painel e a leitura pelo nó vêm nos PRs V3' a V5')_
+_(fase 2: o token do Cloudflare entra pelo painel (PR-11'); o template do papel da AWS está feito (PR-V2'), e o
+"Conectar AWS" do painel também (PR-V3'); a leitura pelo nó e a conferência real vêm nos PRs V4' e V5')_
 
 O cadastro de contas (Contas cloud) aceita três provedores. **A GCP e a AWS não guardam credencial:** na GCP, o sink
 do cliente publica no tópico do nó; na AWS, o nó entra no papel de leitura do cliente com a própria identidade no
@@ -212,8 +212,8 @@ a AWS não passa por ela)_
 
 - **O que guarda:** o token do Cloudflare, uma linha por conta cloud (`CloudCredential`), com o mesmo isolamento por
   cliente de todo dado de cliente. A AWS não passa pelo cofre: o papel de leitura não tem chave. O tipo
-  `aws_access_key`, feito no PR-V1 para a chave do usuário IAM, e o código que só ele usa viraram código morto e saem
-  no PR-V3', enquanto não há linha dele em produção.
+  `aws_access_key`, feito no PR-V1 para a chave do usuário IAM, e o código que só ele usava saíram no PR-V3', antes
+  de existir alguma linha dele (a migration para, sem mudar nada, se encontrar uma).
 - **Cifra assimétrica:** RSA-3072 com OAEP-SHA256. A API, exposta pelo túnel, tem só a chave pública: cifra o que o
   admin cola e não consegue decifrar o que já está guardado. Só o worker tem a chave privada.
 - **Vínculo:** o rótulo do OAEP amarra o texto cifrado ao cliente, à conta e ao tipo. Uma linha copiada para outra
@@ -253,8 +253,8 @@ a AWS não passa por ela)_
 
 ## Por que papel sem chave
 
-_(fase 2: o template está feito, no PR-V2'; o resto vem nos PRs V3' a V5', depois do teste prático na conta AWS de
-teste)_
+_(fase 2: o template está feito, no PR-V2', e o "Conectar AWS" do painel, no PR-V3'; o resto vem nos PRs V4' e V5',
+depois do teste prático na conta AWS de teste)_
 
 **Decisão de 04/11/2026**, tomada pelo responsável pelo produto depois da proposta de conectar a AWS sem chave. Ela
 substitui a decisão do mesmo dia de ler com um usuário IAM com chave (PR-V2).
@@ -307,14 +307,37 @@ CloudFormation aceita sem bucket.
   (seção "Exclusão em dois tempos").
 
 **O audience** é uma constante do produto, `https://control.veraxsistemas.com.br/aws-reader`: o padrão do parâmetro
-`Audience` do template e o valor que o nó pede ao servidor de metadados da GCP (no PR-V4', `AWS_WEB_IDENTITY_AUDIENCE`
-no `node.conf`). Mudá-la exige atualizar a pilha de todos os clientes.
+`Audience` do template e o valor que o nó pede ao servidor de metadados da GCP. A linha opcional
+`AWS_WEB_IDENTITY_AUDIENCE` do `node.conf` a troca num nó (o painel mostra o valor do nó; o timer do token do PR-V4' o
+usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
 
 **Ciclo da conexão:**
 
-1. **Conectar (PR-V3'):** o admin cadastra a conta (ID e buckets), baixa o template e o cria no console da AWS com os
-   três valores que o painel mostra: o ID da conta de serviço do nó, o IP do nó e o audience (que já vem preenchido).
-   "Verificar" grava `connection=waiting`; a API não alcança o metadata e não assume o papel.
+1. **Conectar (PR-V3', feito):** o admin cadastra a conta (ID e buckets). O detalhe da conta em Contas cloud mostra
+   o ARN do papel (derivado do ID, nunca digitado), o link "Baixar o template" e os três valores da pilha, com cópia:
+   o ID único da conta de serviço do nó (`NODE_SA_UNIQUE_ID`), o IP de saída (`NODE_EGRESS_IPS`) e o audience. Os
+   dois primeiros vêm do `node.conf`, que o `start.sh` passa à API só quando têm a linha; sem eles, a tela os pede à
+   Verax. Mostra também os ARNs dos buckets cadastrados (`LogBucketArns`), o link do console do CloudFormation e o
+   comando da CLI. Nenhum valor é segredo, e quem só lê vê o mesmo, sem o botão.
+   - **O template é servido pelo painel:** o arquivo do repositório entra no build como recurso (`?url` do Vite),
+     copiado byte a byte para `assets/` com o hash do conteúdo no nome, e é baixado da mesma origem, com o nome
+     `verax-control-reader.yaml`. É o template revisado no commit do painel, sem nada preenchido; o e2e confere byte a
+     byte. Um link para o GitHub dependeria de saber o commit no navegador (o painel só aceita `VITE_API_URL`), não
+     baixaria o arquivo (o atributo `download` não vale para outra origem) e dependeria do GitHub no ar.
+   - **"Verificar"** (`POST /v1/cloud-accounts/:id/aws/verify`, `cloud_accounts:write`, 202): grava o pedido
+     (`checkRequestedAt`) e volta a conexão para `waiting`, sem erro; um pedido pendente não é renovado. A API não
+     alcança o metadata e não assume o papel. A tarefa `aws-check` do worker (a cada 30 s) confere cada pedido pela
+     interface `AwsConnectionChecker` e grava `connected` ou `error` com o código (`trust_denied`, `token_invalid`,
+     `idp_unavailable`, `region_disabled`, `account_mismatch`, `bucket_missing`, `bucket_denied`, `kms_denied`,
+     `aws_unavailable`, `check_unavailable`), com auditoria (`cloud_account.aws_check`) na trilha do cliente. Um erro
+     que pode passar deixa o pedido pendente por até 10 min (o papel recém-criado pode levar segundos para valer). O
+     resultado só vale para o pedido conferido: a conta desativada no meio o descarta. O painel relê a conta a cada 5 s
+     enquanto o pedido está pendente e mostra o que conferir em cada erro.
+   - **Início da coleta (`ingestFrom`):** na primeira verificação bem-sucedida, o dia anterior, gravado uma vez só. É
+     o `only_logs_after` que o gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do
+     bucket.
+   - **Até o PR-V5',** a conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem
+     chamar a AWS nem o metadata: o fluxo funciona de ponta a ponta, e o PR-V5' só troca a classe no `worker.ts`.
 2. **Coletar (PR-V4'):** um timer do host renova a cada 10 min o token do Google (`format=standard`, sem o projeto
    nem a VM) num tmpfs (`/run/verax/wazuh-aws`, 0600), montado só leitura no manager. O gerador da configuração, o
    único que escreve, grava o `ossec.conf` e o `config` com um profile por conta: o ARN do papel, derivado do ID da
@@ -322,7 +345,8 @@ no `node.conf`). Mudá-la exige atualizar a pilha de todos os clientes.
    leva segredo. Mudar contas ou buckets reinicia só o manager, com volta automática à configuração anterior se ele
    não subir; indexer, API e painel seguem no ar.
 3. **Conferir (PR-V5'):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e confere a
-   cada 15 min a conta (`GetCallerIdentity`) e a leitura de cada bucket. Uma vez por dia, simula a permissão demais
+   conta (`GetCallerIdentity`) e a leitura de cada bucket: é a implementação real do `AwsConnectionChecker` do PR-V3',
+   que passa a rodar também a cada 15 min, sem pedido. Uma vez por dia, simula a permissão demais
    (só avisa) e confere se a trilha e o export do GuardDuty apontam para os buckets cadastrados. Erros próprios: papel
    recusado, Google fora do ar, token inválido, STS regional desligado e token do host sem renovar.
 4. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
@@ -624,7 +648,8 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
 2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado. **Feito no
    código** (PR-W1 e PR-W2); o aceite depende da homologação no ar.
 3. **Cofre e AWS:** cofre de credenciais (feito no PR-V1; fica para o token do Cloudflare); template do papel de
-   leitura sem chave (feito no PR-V2', que substituiu o usuário IAM do PR-V2); "Conectar AWS" no painel; entrega ao
+   leitura sem chave (feito no PR-V2', que substituiu o usuário IAM do PR-V2); "Conectar AWS" no painel (feito no
+   PR-V3', com a conferência real ainda por fazer no PR-V5'); entrega ao
    Wazuh pelo token do Google, com recarga sem parar o painel; checagem da conexão e das fontes; medidor da ingestão;
    regras críticas da AWS com títulos em português. O template espera o teste prático na conta AWS de teste.
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
