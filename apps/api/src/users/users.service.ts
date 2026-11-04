@@ -85,14 +85,29 @@ export class UsersService {
 
   async create(auth: RequestAuth, input: UserCreate): Promise<UserCreated> {
     this.prisma.scoped(); // exige um cliente no escopo e marca a trilha de auditoria dele
-    const tenantId = auth.scopeTenantId as string;
+    const created = await this.provision(auth.scopeTenantId as string, input);
+    this.audit.describe({
+      action: 'user.create',
+      resourceType: 'user',
+      resourceId: created.user.id,
+      after: created.user,
+    });
+    return created;
+  }
+
+  /**
+   * Conta nova no cliente informado, com a senha temporária: o caminho comum do cadastro de usuários e do primeiro
+   * administrador de um cliente recém-criado (`TenantsService`, na mesma requisição). O cliente nunca vem do
+   * usuário: é o da sessão ou o que a Verax acabou de criar. Quem chama descreve a auditoria.
+   */
+  async provision(tenantId: string, input: UserCreate): Promise<UserCreated> {
     const email = input.email.trim().toLowerCase();
     // O e-mail é único na plataforma inteira.
     if (await this.prisma.db().user.findUnique({ where: { email }, select: { id: true } })) {
       throw new ApiError(HttpStatus.CONFLICT, 'Já existe um usuário com este e-mail');
     }
-    // Nasce sem acesso (`invited`) e só fica ativa junto com a senha temporária, na transação da requisição: se ela
-    // falhar, sobra uma conta que não entra e para a qual o painel pede gerar a senha.
+    // Nasce sem acesso (`invited`) e só fica ativa junto com a senha temporária. As duas gravações entram na
+    // transação da requisição: ou a conta nasce pronta para o primeiro login, ou não nasce.
     const { id } = await provisionUser(this.auth, {
       email,
       name: input.name,
@@ -101,9 +116,10 @@ export class UsersService {
       status: 'invited',
     });
     const temporary = await setTemporaryPassword(this.auth, this.prisma, { id, email });
-    const user = await this.get(id);
-    this.audit.describe({ action: 'user.create', resourceType: 'user', resourceId: id, after: user });
-    return { user, ...temporary };
+    const row = await this.prisma
+      .forTenant(tenantId)
+      .user.findUniqueOrThrow({ where: { id }, select: userSelect });
+    return { user: toUser(row), ...temporary };
   }
 
   async update(auth: RequestAuth, id: string, input: UserUpdate): Promise<User> {

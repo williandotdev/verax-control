@@ -11,6 +11,7 @@ import {
   protectedResourceSchema,
   type ProtectedResourceUpdate,
   type TenantCreate,
+  tenantCreatedSchema,
   tenantSchema,
   tenantSummarySchema,
   type TenantUpdate,
@@ -57,6 +58,13 @@ function useWrite<TInput, TOutput>(
 
 export const ADMIN_PAGE_SIZE = PAGE_SIZE;
 
+/**
+ * A senha temporária só vem na resposta que a gera (criar a conta, criar o cliente com o primeiro administrador ou
+ * gerar outra). Ela fica no estado da mutação, que é esquecido assim que a tela que a mostra sai (`gcTime: 0`): nada
+ * a guarda depois.
+ */
+const FORGET = { gcTime: 0 };
+
 // --- Clientes (T3.1, só admin_verax) ---
 export const useTenantList = (page: number, enabled: boolean) =>
   useList('admin-tenants', '/v1/tenants', tenantSummarySchema, page, enabled);
@@ -66,9 +74,12 @@ export const useTenant = (id: string | null) =>
     queryFn: () => api.get(`/v1/tenants/${encodeURIComponent(id ?? '')}`, tenantSchema),
     enabled: id !== null,
   });
+/** O cliente nasce com o primeiro administrador; a senha temporária dele vem só nesta resposta. */
 export const useCreateTenant = () =>
-  useWrite(['admin-tenants', 'tenants'], (input: TenantCreate) =>
-    api.post('/v1/tenants', input, tenantSchema),
+  useWrite(
+    ['admin-tenants', 'tenants'],
+    (input: TenantCreate) => api.post('/v1/tenants', input, tenantCreatedSchema),
+    FORGET,
   );
 export const useUpdateTenant = (id: string) =>
   useWrite(['admin-tenants', 'admin-tenant', 'tenants'], (input: TenantUpdate) =>
@@ -78,11 +89,6 @@ export const useUpdateTenant = (id: string) =>
 // --- Usuários do cliente (T3.2) ---
 export const useUserList = (page: number, enabled: boolean) =>
   useList('admin-users', '/v1/users', userSchema, page, enabled);
-/**
- * A senha temporária só vem na resposta que a gera (criar a conta ou gerar outra). Ela fica no estado da mutação, que
- * é esquecido assim que a tela que a mostra sai (`gcTime: 0`): nada a guarda depois.
- */
-const FORGET = { gcTime: 0 };
 export const useCreateUser = () =>
   useWrite(['admin-users'], (input: UserCreate) => api.post('/v1/users', input, userCreatedSchema), FORGET);
 export const useUpdateUser = (id: string) =>

@@ -26,6 +26,8 @@ export interface RequestStore {
   auth?: RequestAuth;
   tx?: Prisma.TransactionClient;
   audit?: AuditDetails;
+  /** Registros adicionais da mesma escrita (uma operação que cria mais de um recurso), gravados junto com o principal. */
+  additionalAudit?: AuditDetails[];
 }
 
 export const requestContext = new AsyncLocalStorage<RequestStore>();

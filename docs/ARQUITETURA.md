@@ -351,4 +351,7 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
    a versão publicada, sem SSH e sem operador.
 
 **Fase 3:** provisionamento automático do cliente (checkout, estados do cliente, Terraform por cliente, túnel e DNS
-por API e primeiro acesso). **A primeira venda só acontece depois dela**; não há venda assistida.
+por API e primeiro acesso). **A primeira venda só acontece depois dela**; não há venda assistida. Hoje o primeiro
+acesso é manual: a Verax cadastra o cliente em Clientes → Novo cliente, já com o primeiro administrador, e repassa a
+senha temporária dele por um canal seguro (`docs/runbooks/onboarding-cliente.md`). Na fase 3, o bootstrap do nó cria
+esse administrador no provisionamento, com o e-mail do checkout.

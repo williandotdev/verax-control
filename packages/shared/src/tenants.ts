@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { withPagination } from './pagination.js';
+import { temporaryPasswordSchema } from './users.js';
 
 export const TENANT_STATUSES = ['active', 'inactive'] as const;
 export type TenantStatus = (typeof TENANT_STATUSES)[number];
@@ -47,8 +48,8 @@ const escalationContactSchema = z.strictObject({
     .optional(),
 });
 
-/** Cadastro de cliente (T3.1). Só `admin_verax` cria e altera. */
-export const tenantCreateSchema = z.strictObject({
+/** Dados cadastrais do cliente, comuns ao cadastro e à alteração. */
+const tenantFieldsSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   cnpj: cnpjSchema,
   /** Texto livre (premissa aprovada: o plano não define valores). */
@@ -56,9 +57,23 @@ export const tenantCreateSchema = z.strictObject({
   /** Quem a Verax aciona num incidente grave. */
   escalationContact: escalationContactSchema,
 });
+
+/**
+ * Primeiro usuário do cliente: nasce junto com o cadastro, como `admin_cliente`, com uma senha temporária. O papel
+ * não vem do corpo, e o cliente é o que está sendo criado.
+ */
+export const tenantFirstAdminSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  email: z.email().max(254),
+});
+export type TenantFirstAdmin = z.infer<typeof tenantFirstAdminSchema>;
+
+/** Cadastro de cliente (T3.1). Só `admin_verax` cria e altera; o primeiro administrador é criado na mesma requisição. */
+export const tenantCreateSchema = tenantFieldsSchema.extend({ firstAdmin: tenantFirstAdminSchema });
 export type TenantCreate = z.infer<typeof tenantCreateSchema>;
 
-export const tenantUpdateSchema = tenantCreateSchema
+/** Alteração parcial. O primeiro administrador não entra aqui: usuários do cliente mudam pela gestão de usuários. */
+export const tenantUpdateSchema = tenantFieldsSchema
   .partial()
   .extend({ status: z.enum(TENANT_STATUSES).optional() })
   .refine((update) => Object.keys(update).length > 0, { error: 'informe ao menos um campo' });
@@ -86,3 +101,18 @@ export const tenantSchema = tenantSummarySchema.extend({
   updatedAt: z.iso.datetime(),
 });
 export type Tenant = z.infer<typeof tenantSchema>;
+
+/**
+ * Resposta do cadastro: o cliente e o primeiro administrador, com a senha temporária dele. Ela só aparece aqui (a
+ * leitura do cliente e a dos usuários nunca a devolvem), como no cadastro de usuários.
+ */
+export const tenantCreatedSchema = z.strictObject({
+  tenant: tenantSchema,
+  firstAdmin: z.strictObject({
+    id: z.string().min(1),
+    name: z.string(),
+    email: z.string(),
+    ...temporaryPasswordSchema.shape,
+  }),
+});
+export type TenantCreated = z.infer<typeof tenantCreatedSchema>;

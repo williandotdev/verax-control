@@ -63,8 +63,14 @@ arquitetura (`docs/ARQUITETURA.md`).
 2. Crie a pilha do nó na conta escolhida e na região dos logs (`infra/cloudformation/GUIA-NO.md`), grave o token do
    túnel no parâmetro indicado e passe ao conector as saídas `NodeAccountId` e `NodeRoleName`.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
-4. Cadastre o cliente, a conta e os usuários no painel. Cada usuário nasce com uma senha temporária, que aparece
-   uma vez: repasse por um canal seguro. No primeiro login, a pessoa troca a senha e cadastra o MFA.
+4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
+   A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
+   única vez**, na tela do cadastro: copie e repasse à pessoa por um canal seguro, de preferência fora do e-mail
+   (pessoalmente, por telefone ou por mensageiro com criptografia de ponta a ponta). A senha vale por 72 horas; no
+   primeiro login, a pessoa troca a senha e cadastra o MFA. Se a senha se perder ou vencer, selecione o cliente no
+   seletor do topo e gere outra em Usuários.
+5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
+   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
 
 ## 5. Projeto GCP do cliente (sem acesso ao projeto)
 

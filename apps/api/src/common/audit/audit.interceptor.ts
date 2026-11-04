@@ -49,18 +49,22 @@ export class AuditInterceptor implements NestInterceptor {
 
   private async runAudited(entry: RequestEntry, statusCode: number, next: CallHandler): Promise<unknown> {
     const details: AuditDetails = {};
+    const additional: AuditDetails[] = [];
     try {
       return await this.prisma.$transaction(
         async (tx) => {
           const result: unknown = await requestContext.run(
-            { ...requestContext.getStore(), tx, audit: details },
+            { ...requestContext.getStore(), tx, audit: details, additionalAudit: additional },
             () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
           );
-          await this.auditService.write(tx, {
-            ...withDetails(entry, details),
-            outcome: 'success',
-            statusCode,
-          });
+          // O principal e os adicionais (`AuditContext.also`) entram no mesmo commit da alteração.
+          for (const described of [details, ...additional]) {
+            await this.auditService.write(tx, {
+              ...withDetails(entry, described),
+              outcome: 'success',
+              statusCode,
+            });
+          }
           return result;
         },
         { maxWait: TRANSACTION_MAX_WAIT_MS, timeout: TRANSACTION_TIMEOUT_MS },
