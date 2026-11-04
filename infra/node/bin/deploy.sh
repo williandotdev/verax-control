@@ -58,7 +58,7 @@ echo "== Conectando a $vm pelo IAP"
 work=$(mktemp -d)
 tunnel_pid=''
 cleanup() {
-  [[ -n $tunnel_pid ]] && kill "$tunnel_pid" 2>/dev/null || true
+  if [[ -n $tunnel_pid ]]; then kill "$tunnel_pid" 2>/dev/null || true; fi
   if [[ -f $work/key.pub ]]; then
     gcloud compute os-login ssh-keys remove --key-file "$work/key.pub" >/dev/null 2>&1 || true
   fi
