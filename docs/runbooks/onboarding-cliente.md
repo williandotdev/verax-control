@@ -28,6 +28,19 @@ arquitetura (`docs/ARQUITETURA.md`).
 
 ## 3. Reunião de definição com o cliente
 
+> **Desatualizado (seções 3 e 4).** Estas seções seguem o desenho de 02/11/2026: nó na AWS, na conta do cliente ou da
+> Verax, conector com papel e ExternalId e leitura do CloudWatch Logs. A revisão de 04/11/2026 em
+> `docs/ARQUITETURA.md` substituiu esse desenho, e o roteiro será reescrito com o template do usuário de leitura e a
+> chave no painel (fase 2). Até lá, **não peça ao cliente a pilha do conector nem a do nó na AWS** e siga a
+> arquitetura:
+>
+> - todo nó de cliente roda na GCP da Verax, em São Paulo (southamerica-east1), criado pelo Terraform de `infra/gcp/`;
+> - a AWS do cliente é lida por um usuário IAM de leitura com chave restrita ao IP do nó, só nos buckets S3 do
+>   CloudTrail, do export do GuardDuty e, se o cliente quiser, do WAF;
+> - o CloudWatch Logs, o Security Hub e o Inspector ficam fora da v1, inclusive no que o diagnóstico (seção 2) mostrar
+>   deles;
+> - não há venda assistida: a primeira venda só acontece depois do provisionamento automático (fase 3).
+
 - Confirme a lista final de fontes, a região do nó (a mesma dos logs) e quem hospeda o nó: a conta do cliente ou a
   da Verax.
 - Colete o fluxo de escalonamento (quem recebe Critical, High, Medium e Low, e por qual canal) e a baseline de rede:
@@ -35,6 +48,9 @@ arquitetura (`docs/ARQUITETURA.md`).
 - Combine o subdomínio do painel: `<cliente>.control.veraxsistemas.com.br`.
 
 ## 4. Conector, nó e painel _(em construção)_
+
+> **Desatualizado:** veja o aviso no início da seção 3. Os passos 1 e 2 abaixo descrevem o desenho substituído e não
+> devem ser seguidos.
 
 1. O cliente cria a pilha do conector na conta monitorada (`infra/cloudformation/README.md`). Ela cria só o papel
    somente leitura, que só o papel do nó pode assumir, com o ExternalId. Passe ao cliente:

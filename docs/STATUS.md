@@ -1810,6 +1810,44 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Testes ajustados à regra nova:** a leitura vazia da GCP não conecta mais; a cobertura da Torre (unitária e de integração) por provedor; a troca de assinatura agora usa conta com evento, para o sync da GCP concorrente não mudar a conexão no meio; o painel confere os textos novos.
   - Resultado: API 64 arquivos e 809 testes; painel 248 unitários e 52 e2e da demonstração; lint, tipos e Prettier limpos.
 
+## Fase 2, PR-01': nó de cliente com Wazuh na GCP, usuário IAM com chave e cofre
+
+- **Pedido:** registrar na arquitetura as decisões de 04/11/2026 antes do código (plano revisado da fase 2, PR-01').
+- **Decisões (04/11/2026):**
+  - todo nó de cliente roda na GCP, em São Paulo, com o Wazuh completo (manager e indexer, sem dashboard) numa e2-standard-2. O nó da Verax segue enxuto (`lean`, e2-micro, sem Wazuh);
+  - a AWS do cliente é lida com um usuário IAM de leitura, com chave restrita ao IP do NAT do nó. O responsável aceitou o risco, com as mitigações listadas na arquitetura;
+  - o Cloudflare é lido pela API dele, com o token no cofre do nó; a GCP do cliente, pelo Pub/Sub;
+  - sem venda assistida: a primeira venda vem depois do provisionamento automático (fase 3).
+- **Arquivos:** `docs/ARQUITETURA.md`, `docs/runbooks/onboarding-cliente.md`, `README.md`, `docs/STATUS.md`. O `PLANO.md` não foi editado (regra 9).
+- **O que mudou em `docs/ARQUITETURA.md`:**
+  - princípios 1 a 4: nó na GCP pelo Terraform, um cliente por nó, usuário IAM de leitura no lugar do papel com ExternalId, template que só cria o usuário, o grupo e as políticas;
+  - diagrama: VM na GCP, Wazuh sem dashboard, sem Prowler, Cloud NAT com IP reservado e cofre;
+  - fontes: só buckets S3 (CloudTrail, export do GuardDuty e WAF opcional); CloudWatch Logs, Security Hub e Inspector fora da v1; retenção de 30 dias no índice do Wazuh;
+  - acesso: IAP com OS Login no lugar do SSM; sem dashboard do Wazuh; metadata só para o worker;
+  - a regra "Nenhum guarda credencial" passa a "AWS e Cloudflare: credencial de leitura cifrada no cofre do nó";
+  - SOC da Verax: perfil `lean`; nós de clientes com o Wazuh;
+  - Cloudflare nativo (auditoria v2 e eventos de segurança por GraphQL), com o Logpush fora da v1;
+  - custos por perfil, com os números do plano revisado (sem as margens);
+  - ordem: os passos da decisão de 02/11 com a situação de cada um, os blocos da fase 2 e a fase 3;
+  - seções novas: "Perfis de nó (`lean` e `standard`)", "Cofre de credenciais" e "Por que usuário IAM com chave", com os riscos residuais e a mitigação de cada um.
+- **Dependências:** nenhuma.
+- **Testes:** só documentação, sem teste automatizado aplicável. Prettier limpo.
+- **Definição de pronto:** texto ✔ · Prettier ✔ · nenhuma dependência ✔ · regras de segurança ✔ (nenhum dado real de cliente ou de conta) · **aceite:** o responsável aprova o texto.
+- **Pendências para o responsável:**
+  - a estimativa do nó `lean` em `infra/gcp/GUIA.md` (R$ 5 a 15 por mês) não conta o IP do Cloud NAT, de cerca de R$ 20 por mês; conferir na fatura;
+  - `infra/cloudformation/GUIA-NO.md` ainda aponta para a estimativa de custo da pilha na AWS, que agora é só uma referência no fim da seção de custos;
+  - `docs/runbooks/onboarding-cliente.md`: as seções 3 e 4 ganharam só o aviso de desatualizadas. A reescrita entra com o template do usuário de leitura e a chave no painel (PR-V2 e PR-V3);
+  - **swap cifrado (decisão nova, a confirmar):** o PR-04' troca o swap em claro do `startup.sh` por swap cifrado com chave aleatória a cada boot, nos dois perfis, e recria o arquivo de swap na troca. Os snapshots do nó da Verax tirados antes da troca (até 28 dias) guardam o swap antigo, que pode ter páginas em claro, até expirarem;
+  - **checagem de permissão demais (desvio do plano revisado, PR-V3 passo 5 e PR-V5):** a simulação passa o IP do NAT do nó em `aws:SourceIp` e testa também leitura fora da política (um bucket não cadastrado e o Secrets Manager). Sem o IP no contexto, o Deny de IP (`NotIpAddress`) pode negar tudo e esconder a permissão a mais; sem as leituras, um `ReadOnlyAccess` anexado sem o boundary passaria.
+
+  Depois da revisão independente (6 achados confirmados, todos de gravidade baixa, todos corrigidos):
+  - **Roteiro de onboarding e README:** as seções 3 e 4 do `onboarding-cliente.md` (nó na AWS, conector com ExternalId, CloudWatch Logs) ganharam o aviso de que foram substituídas pela revisão de 04/11, com o resumo da arquitetura nova e a ordem de não pedir ao cliente as pilhas antigas. O `README.md` não cita mais o Prowler.
+  - **Swap e snapshots:** a frase "os backups e snapshots levam só texto cifrado" não valia: o tmpfs com a chave privada e a chave da AWS e a memória do worker e do manager podem ir para o swap em claro, no disco do snapshot. O desenho passa a ter swap cifrado com chave aleatória a cada boot nos dois perfis, a frase diz por que vale, e o risco entrou na tabela.
+  - **Permissão demais:** "nenhuma permissão além da política" prometia mais do que a simulação de algumas ações entrega. O texto diz que é uma amostra (escrita, IAM, KMS e leitura fora da política), com o IP do nó no contexto, e que permissão fora dela não é detectada; a tabela de riscos diz o mesmo.
+  - **O que já existe e o que é alvo:** a introdução diz que a revisão de 04/11 é o desenho-alvo da fase 2, e as seções dela levam a marca _(fase 2, a construir)_. O perfil "passa a ser" uma variável do Terraform.
+  - **Pub/Sub:** quem lê a assinatura é o worker, o único que alcança o metadata da VM, e não a API (também no SOC da Verax).
+  - **Cloudflare:** uma parada do nó só não perde dados se for mais curta que a janela de retenção da zona (`notOlderThan`, de até 31 dias, conforme o plano).
+
 ## Fase 2, PR-03: plano do nó e medidor de uso
 
 - **Pedido:** o plano do nó e o medidor de GiB por mês (plano da fase 2, PR-03, com a mudança do plano revisado: a fonte `aws` do medidor vem depois, pelo Wazuh do nó, no PR-V6). Sem tela e sem rota nova: a página "Plano e uso" e o `GET /v1/plan` ficam para o PR-18.
