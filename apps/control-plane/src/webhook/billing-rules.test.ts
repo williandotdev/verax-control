@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { CustomerSnapshot, InvoiceSnapshot, SubscriptionSnapshot } from '../stripe/stripe-client.js';
 import type { TenantChange } from '../tenants/tenant-store.js';
 import { type TenantRecord, type TenantState, tenantSchema } from '../tenants/tenant.schema.js';
+import { demoConfiguration, demoLimits, demoOrderPricing } from '../../test/support/pricing-fixtures.js';
 import {
   cancelTenant,
   customerChange,
@@ -32,7 +33,9 @@ function tenant(state: TenantState, overrides: Partial<TenantRecord> = {}): Tena
     slug: 'cliente-demo-a',
     state,
     stateUpdatedAt: new Date('2026-11-04T12:00:00.000Z'),
-    plan: 'essencial',
+    configuration: demoConfiguration(),
+    limits: demoLimits(),
+    pricing: demoOrderPricing(),
     company: { legalName: 'Cliente Demo A Ltda', cnpj: '12ABC34501DE35' },
     adminEmail: 'admin@cliente-demo-a.example',
     stripe: { customerId: 'cus_fake_1', subscriptionId: 'sub_fake_1', livemode: false },
@@ -59,7 +62,7 @@ function invoice(overrides: Partial<InvoiceSnapshot> = {}): InvoiceSnapshot {
     customerId: 'cus_fake_1',
     subscriptionId: 'sub_fake_1',
     subscriptionMetadata: {},
-    amountPaid: 249_000,
+    amountPaid: 100_000,
     currency: 'brl',
     paidAt: AT,
     periodStart: AT,
@@ -211,13 +214,14 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
     ).toBeUndefined();
   });
 
-  it('a assinatura relida atualiza status, período e todos os itens, sem mexer no plano', () => {
+  it('a assinatura relida atualiza status, período e todos os itens, sem mexer na configuração contratada', () => {
     const items = [
-      { priceId: 'price_fake_1', quantity: 1, lookupKey: 'verax_control_essencial_mensal' },
+      { priceId: 'price_fake_1', quantity: 1, lookupKey: 'vc_env_p_v1' },
       { priceId: 'price_fake_2', quantity: 4 },
     ];
     const next = apply(tenant('active'), subscriptionChange(tenant('active'), subscription({ items }), CTX));
-    expect(next?.plan).toBe('essencial');
+    expect(next?.configuration).toEqual(demoConfiguration());
+    expect(next?.limits).toEqual(demoLimits());
     expect(next?.stripe).toMatchObject({ status: 'active', items });
     expect(itemsChanged([{ priceId: 'price_fake_1', quantity: 1 }], items)).toBe(true);
     expect(itemsChanged(items, [...items].reverse())).toBe(false);
@@ -255,7 +259,7 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
 
   it('garantia: reembolso integral até 7 dias da contratação', () => {
     const t = tenant('active');
-    const full = { amount: 249_000, amountRefunded: 249_000, refunded: true };
+    const full = { amount: 100_000, amountRefunded: 100_000, refunded: true };
     expect(isRefundWithinGuarantee(t, full, new Date(t.createdAt.getTime() + 7 * DAY_MS))).toBe(true);
     expect(isRefundWithinGuarantee(t, full, new Date(t.createdAt.getTime() + 7 * DAY_MS + 1))).toBe(false);
     expect(

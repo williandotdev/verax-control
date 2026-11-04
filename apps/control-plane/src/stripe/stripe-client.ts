@@ -12,6 +12,8 @@ export const STRIPE_API_VERSION = '2026-10-28.endive' satisfies Stripe.LatestApi
  */
 const STRIPE_TIMEOUT_MS = 10_000;
 const STRIPE_MAX_NETWORK_RETRIES = 1;
+/** Quantos `lookup_keys` a listagem de preços aceita numa chamada. */
+const LOOKUP_KEYS_PER_REQUEST = 10;
 
 /** Onde fica a API da Stripe. Só os testes mudam (servidor falso em 127.0.0.1); em produção, o padrão do SDK. */
 export interface StripeApiOptions {
@@ -144,8 +146,8 @@ export const OUTSTANDING_INVOICE_STATUSES = ['open', 'uncollectible'] as const;
  * testes, o mesmo SDK aponta para um servidor falso em 127.0.0.1, que confere os parâmetros exatos de cada chamada.
  */
 export interface StripeClient {
-  /** O preço com este `lookup_key`, ativo ou não; `undefined` se nenhum tiver a chave. */
-  findPriceByLookupKey(lookupKey: string): Promise<StripePrice | undefined>;
+  /** Os preços com estes `lookup_key`, ativos ou não (os que não existem ficam de fora), numa consulta por 10 chaves. */
+  findPricesByLookupKeys(lookupKeys: readonly string[]): Promise<StripePrice[]>;
   createCheckoutSession(
     params: CheckoutSessionParams,
     idempotencyKey: string,
@@ -294,10 +296,15 @@ function riskOf(
 export class SdkStripeClient implements StripeClient {
   constructor(private readonly stripe: Stripe) {}
 
-  async findPriceByLookupKey(lookupKey: string): Promise<StripePrice | undefined> {
-    const prices = await this.stripe.prices.list({ lookup_keys: [lookupKey], limit: 1 });
-    const [price] = prices.data;
-    return price === undefined ? undefined : toPrice(price);
+  async findPricesByLookupKeys(lookupKeys: readonly string[]): Promise<StripePrice[]> {
+    const found: StripePrice[] = [];
+    // A Stripe aceita até 10 `lookup_keys` por consulta; um `lookup_key` é único na conta.
+    for (let start = 0; start < lookupKeys.length; start += LOOKUP_KEYS_PER_REQUEST) {
+      const chunk = lookupKeys.slice(start, start + LOOKUP_KEYS_PER_REQUEST);
+      const prices = await this.stripe.prices.list({ lookup_keys: [...chunk], limit: chunk.length });
+      found.push(...prices.data.map(toPrice));
+    }
+    return found;
   }
 
   async createCheckoutSession(

@@ -3,17 +3,20 @@ import { afterAll, beforeAll, describe } from 'vitest';
 import { AuditService } from '../src/audit/audit.service.js';
 import { CheckoutStore } from '../src/checkout/checkout-store.js';
 import { createFirestore, FirestoreDocumentStore } from '../src/firestore/firestore-document-store.js';
+import { CostModelStore, PricingTableStore } from '../src/pricing/pricing-store.js';
+import { QuoteStore } from '../src/pricing/quote-store.js';
 import { TenantStore } from '../src/tenants/tenant-store.js';
 import { StripeEventStore } from '../src/webhook/stripe-event-store.js';
 import { describeCheckoutStoreContract } from './support/checkout-store-contract.js';
 import { describeDocumentStoreContract } from './support/document-store-contract.js';
 import { FakeClock } from './support/fake-clock.js';
+import { describePricingStoreContract } from './support/pricing-store-contract.js';
 import { describeStripeEventStoreContract } from './support/stripe-event-store-contract.js';
 import { describeTenantStoreContract } from './support/tenant-store-contract.js';
 
 /**
- * Os contratos do `DocumentStore`, do `TenantStore`, do `CheckoutStore` e do `StripeEventStore` contra o emulador
- * oficial do Firestore
+ * Os contratos do `DocumentStore`, do `TenantStore`, do `CheckoutStore`, do `StripeEventStore` e dos repositórios do
+ * preço configurável (tabelas, modelos de custo e cotações) contra o emulador oficial do Firestore
  * (`scripts/firestore-emulator.sh start`; no CI, passo do job "Testes" em ci.yml). Sem `FIRESTORE_EMULATOR_HOST`
  * os testes são pulados na máquina de desenvolvimento, nunca no CI.
  */
@@ -84,6 +87,21 @@ describe.skipIf(host === undefined)('Firestore (emulador oficial)', () => {
       audit,
       store: new CheckoutStore(documents, clock, audit),
       tenants: new TenantStore(documents, clock, audit),
+    };
+  });
+
+  describePricingStoreContract('emulador', async () => {
+    await clearDatabase();
+    const documents = new FirestoreDocumentStore(db);
+    const clock = new FakeClock();
+    const audit = new AuditService(documents, clock);
+    return {
+      documents,
+      clock,
+      audit,
+      tables: new PricingTableStore(documents, clock, audit),
+      costs: new CostModelStore(documents, clock, audit),
+      quotes: new QuoteStore(documents, clock),
     };
   });
 });

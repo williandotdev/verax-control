@@ -11,10 +11,10 @@ import {
   type DocumentStore,
   parseDocument,
 } from '../firestore/document-store.js';
+import type { SizeId } from '../pricing/pricing.schema.js';
 import {
   isReservableSlug,
   isSlugFree,
-  type PlanId,
   type SlugDocument,
   slugDocumentSchema,
   type SlugOrder,
@@ -69,7 +69,10 @@ export class ReservationLostError extends Error {
 export interface Reservation {
   tenantId: string;
   slug: string;
-  plan: PlanId;
+  /** Da cotação do pedido: o porte, a versão da tabela e o id da cotação (para logs e auditoria, sem valores). */
+  size: SizeId;
+  priceTableVersion: string;
+  quoteId: string;
   expiresAt: Date;
 }
 
@@ -84,7 +87,7 @@ const ACTOR = 'system';
 /**
  * Reserva de subdomínio e teto diário do checkout (plano §4a, passos 3 e 4), sobre `slugs/{slug}` e
  * `rateLimits/{bucket}`. Cada escrita leva a auditoria na mesma transação (ator `system`; em `details`, só o slug, o
- * plano e prazos: nada de e-mail, CNPJ ou razão social).
+ * porte, a versão da tabela, a cotação e prazos: nada de e-mail, CNPJ, razão social ou valores).
  */
 @Injectable()
 export class CheckoutStore {
@@ -144,7 +147,13 @@ export class CheckoutStore {
           actor: ACTOR,
           action: 'checkout.slug_reserved',
           tenantId,
-          details: { slug, plan: order.plan, expiresAt },
+          details: {
+            slug,
+            size: order.configuration.size,
+            priceTableVersion: order.pricing.priceTableVersion,
+            quoteId: order.pricing.quoteId,
+            expiresAt,
+          },
           requestId: request.requestId,
         });
       });
@@ -158,7 +167,14 @@ export class CheckoutStore {
       }
       throw error;
     }
-    return { tenantId, slug, plan: order.plan, expiresAt };
+    return {
+      tenantId,
+      slug,
+      size: order.configuration.size,
+      priceTableVersion: order.pricing.priceTableVersion,
+      quoteId: order.pricing.quoteId,
+      expiresAt,
+    };
   }
 
   /** Grava na reserva a sessão criada (o `checkout.session.completed` a reconhece por ela) e audita a criação. */
@@ -181,7 +197,9 @@ export class CheckoutStore {
         tenantId: reservation.tenantId,
         details: {
           slug: reservation.slug,
-          plan: reservation.plan,
+          size: reservation.size,
+          priceTableVersion: reservation.priceTableVersion,
+          quoteId: reservation.quoteId,
           livemode: session.livemode,
           sessionExpiresAt: session.expiresAt,
         },

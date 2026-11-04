@@ -61,10 +61,12 @@ resource "google_firebaserules_release" "firestore" {
 #   - rateLimits: o fim da janela do balde;
 #   - provisioningRuns e steps (o grupo de coleções `steps`, uma subcoleção por execução): 180 dias depois de
 #     terminar. O TTL não desce para subcoleções: cada passo leva o próprio `expiresAt`;
-#   - auditLog: 24 meses.
-# `tenants`, `transitions` e `invoices` não têm prazo (5 anos de faturas e a identificação fiscal ficam).
+#   - auditLog: 24 meses;
+#   - quotes: 24 h, a validade da cotação do site (preço configurável).
+# `tenants`, `transitions` e `invoices` não têm prazo (5 anos de faturas e a identificação fiscal ficam), nem as
+# tabelas de preços e de custos (`pricingTables`, `costModels`), que são o histórico do que foi vendido.
 resource "google_firestore_field" "ttl" {
-  for_each = toset(["slugs", "stripeEvents", "statusTokens", "rateLimits", "provisioningRuns", "steps", "auditLog"])
+  for_each = toset(["slugs", "stripeEvents", "statusTokens", "rateLimits", "provisioningRuns", "steps", "auditLog", "quotes"])
 
   database   = google_firestore_database.default.name
   collection = each.key

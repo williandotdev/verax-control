@@ -24,8 +24,6 @@ describe('cp-worker sem as rotas do checkout (CP-03)', () => {
         PRIVACY_VERSION: '2026-11-04',
         DPA_VERSION: '2026-11-04',
         STRIPE_SECRET_KEY: fakeStripeKey('test', 'rk'),
-        STRIPE_PRICE_LOOKUP_ESSENCIAL: 'verax_control_essencial_mensal',
-        STRIPE_PRICE_LOOKUP_PROFISSIONAL: 'verax_control_profissional_mensal',
       },
     });
     await app.listen(0, '127.0.0.1');
@@ -35,13 +33,16 @@ describe('cp-worker sem as rotas do checkout (CP-03)', () => {
     await app.close();
   });
 
-  it('POST /v1/public/checkout e GET /v1/public/slugs/:slug não existem no worker', async () => {
+  it('o checkout, a consulta de subdomínio e a calculadora não existem no worker', async () => {
     await request(app.getHttpServer())
       .post('/v1/public/checkout')
       .set('Origin', SITE)
-      .send({ plan: 'essencial' })
+      .send({ quoteId: '01JBTESTE0000000000000000Q' })
       .expect(404);
     await request(app.getHttpServer()).get('/v1/public/slugs/cliente-demo-a').expect(404);
+    await request(app.getHttpServer()).get('/v1/public/pricing').expect(404);
+    await request(app.getHttpServer()).post('/v1/public/quote').send({}).expect(404);
+    await request(app.getHttpServer()).get('/v1/admin/pricing-tables').expect(404);
     await request(app.getHttpServer()).get('/health').expect(200);
   });
 

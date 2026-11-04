@@ -13,6 +13,8 @@ export const API_PREFIX = 'v1';
 
 /** Teto do JSON das rotas públicas (plano §2.3). O webhook da Stripe tem o próprio leitor de corpo bruto (1 MB). */
 export const JSON_BODY_LIMIT = '16kb';
+/** No console do responsável, uma tabela de preços ou um modelo de custos inteiro (com as fontes) cabe folgado. */
+export const ADMIN_JSON_BODY_LIMIT = '64kb';
 
 /**
  * Opções de criação da aplicação, iguais em produção e nos testes. Sem body parser padrão: só JSON, registrado
@@ -55,7 +57,7 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
   // O webhook da Stripe (CP-04, só no cp-public) lê o corpo bruto até 1 MB: a assinatura vale sobre os bytes exatos.
   // Registrado antes do JSON, que encontra a requisição já lida e não a toca.
   if (config.ROLE === 'public') app.use(WEBHOOK_PATH, rawBodyParser(WEBHOOK_BODY_LIMIT_BYTES));
-  app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
+  app.useBodyParser('json', { limit: config.ROLE === 'admin' ? ADMIN_JSON_BODY_LIMIT : JSON_BODY_LIMIT });
   app.use(helmet(HELMET_OPTIONS));
   // Toda resposta é dinâmica: nem o cache do Hosting nem o do navegador guardam (plano §2.4).
   app.use(noStore);

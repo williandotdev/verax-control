@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
+import type { IapKeySource } from '../../src/admin/iap-verifier.js';
 import { AppModule } from '../../src/app.module.js';
 import { APP_CREATE_OPTIONS, configureApp } from '../../src/app.setup.js';
 import type { Clock } from '../../src/common/clock.js';
@@ -32,6 +33,8 @@ export interface CreateAppOptions {
   stripeApi?: StripeApiOptions;
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
   stepQueue?: StepQueue;
+  /** As chaves do "IAP" do console (`iap-test-keys.ts`): uma chave ES256 gerada no teste, nunca as do Google. */
+  iapKeySource?: IapKeySource;
 }
 
 /**
@@ -58,6 +61,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         mailSender: options.mailSender,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
+        iapKeySource: options.iapKeySource,
       }),
     ],
   }).compile();
