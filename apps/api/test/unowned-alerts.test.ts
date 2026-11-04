@@ -42,7 +42,7 @@ describe('fila de alertas sem dono', () => {
     tenantA = await createTenant(app, 'Cliente A (fila sem dono)');
     veraxCookie = (await createSignedInUser(app, { role: 'admin_verax' })).cookie;
     await prisma.cloudAccount.create({
-      data: { tenantId: tenantA, accountId: registered, regions: ['sa-east-1'], externalId: 'x'.repeat(43) },
+      data: { tenantId: tenantA, accountId: registered, regions: ['sa-east-1'] },
     });
     // A conta que falta cadastrar aparece em muitos alertas: fica no topo do resumo.
     for (let index = 0; index < 60; index += 1) {

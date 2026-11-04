@@ -30,6 +30,8 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'cloud_account.create': 'Conectou conta cloud',
   'cloud_account.update': 'Alterou conta cloud',
   'cloud_account.deactivate': 'Desativou conta cloud',
+  'cloud_account.aws_verify': 'Pediu a verificação da conta AWS',
+  'cloud_account.aws_check': 'Verificou a conta AWS (papel de leitura)',
   'cloud_credential.set': 'Guardou a credencial de leitura da conta',
   'cloud_credential.rotate': 'Trocou a credencial de leitura da conta',
   'cloud_credential.remove': 'Removeu a credencial de leitura da conta',
