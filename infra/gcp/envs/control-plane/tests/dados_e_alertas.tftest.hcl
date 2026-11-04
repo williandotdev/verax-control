@@ -113,8 +113,8 @@ run "alertas_sem_email" {
   command = plan
 
   assert {
-    condition     = length(google_monitoring_notification_channel.email) == 0 && length(google_monitoring_alert_policy.log) == 3
-    error_message = "Sem e-mail, os três alertas existem e ficam só no console."
+    condition     = length(google_monitoring_notification_channel.email) == 0 && length(google_monitoring_alert_policy.log) == 5
+    error_message = "Sem e-mail, os cinco alertas existem e ficam só no console."
   }
 
   assert {
@@ -135,7 +135,17 @@ run "alertas_com_email_e_orcamento" {
       google_monitoring_notification_channel.email[0].labels["email_address"] == "alertas@example.com" &&
       alltrue([for policy in google_monitoring_alert_policy.log : length(policy.notification_channels) == 1])
     )
-    error_message = "Com e-mail, os três alertas avisam por ele."
+    error_message = "Com e-mail, os cinco alertas avisam por ele."
+  }
+
+  assert {
+    condition = (
+      google_monitoring_alert_policy.log["webhook_attention"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-public\" AND jsonPayload.event=\"stripe_webhook_attention\"" &&
+      google_monitoring_alert_policy.log["webhook_attention"].conditions[0].condition_matched_log[0].label_extractors == tomap({ reason = "EXTRACT(jsonPayload.reason)", tenant = "EXTRACT(jsonPayload.tenantId)", type = "EXTRACT(jsonPayload.eventType)" }) &&
+      google_monitoring_alert_policy.log["webhook_failed"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-public\" AND jsonPayload.event=\"stripe_webhook_failed\"" &&
+      google_monitoring_alert_policy.log["webhook_failed"].conditions[0].condition_matched_log[0].label_extractors == tomap({ type = "EXTRACT(jsonPayload.eventType)", event_id = "EXTRACT(jsonPayload.eventId)" })
+    )
+    error_message = "Os alertas do webhook (CP-04): decisão humana (motivo, cliente e tipo do evento) e falha de processamento (tipo e id do evento), os dois no cp-public."
   }
 
   assert {
