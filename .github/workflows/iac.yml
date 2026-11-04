@@ -58,7 +58,7 @@ jobs:
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
-            infra/gcp/envs/verax infra/gcp/envs/homolog-sp; do
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
@@ -77,10 +77,18 @@ jobs:
       - name: Testes dos ambientes (provider simulado, sem credenciais)
         # Homologação: a primeira subida num projeto novo (o `plan` não lê o projeto antes de o `apply` ligar as APIs).
         # Nó da Verax: o `terraform.tfvars` precisa de todas as variáveis da primeira subida (sem a conta de
-        # faturamento, o `plan` apaga o orçamento). O `init` sem backend é o da validação, acima.
+        # faturamento, o `plan` apaga o orçamento). Plano de controle: os papéis de cada conta um a um, nada anônimo
+        # no cp-worker nem no Job, zero instâncias mínimas, a imagem que o workflow troca sem o Terraform desfazer, a
+        # primeira subida sem os serviços, o Firestore e os alertas. O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
           terraform -chdir=infra/gcp/envs/verax test
+          terraform -chdir=infra/gcp/envs/control-plane test
+          # Os segredos do plano de controle nascem vazios: nenhuma versão de segredo passa pelo Terraform.
+          if grep -lq 'google_secret_manager_secret_version' infra/gcp/envs/control-plane/*.tf; then
+            echo "O plano de controle não grava versão de segredo pelo Terraform (secrets.tf)." >&2
+            exit 1
+          fi
       - name: tflint
         # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
         env:

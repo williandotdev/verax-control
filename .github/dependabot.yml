@@ -66,6 +66,7 @@ updates:
       - /infra/terraform/envs/production
       - /infra/gcp/envs/verax
       - /infra/gcp/envs/homolog-sp
+      - /infra/gcp/envs/control-plane
     schedule:
       interval: weekly
       day: monday
