@@ -1,10 +1,12 @@
 import { type NestApplicationOptions, RequestMethod } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { z } from 'zod';
 import type { AppConfig } from './common/config/config.module.js';
 import { buildTrustProxy } from './common/http/client-ip.js';
+import { buildCorsDelegate } from './common/http/cors.js';
 
 export const API_PREFIX = 'v1';
 
@@ -35,6 +37,11 @@ const HELMET_OPTIONS = {
   referrerPolicy: { policy: 'no-referrer' as const },
 };
 
+function noStore(_req: Request, res: Response, next: NextFunction): void {
+  res.setHeader('Cache-Control', 'private, no-store');
+  next();
+}
+
 /** Configuração HTTP aplicada igual no `main.ts` e nos testes. */
 export function configureApp(app: NestExpressApplication, config: AppConfig): void {
   z.config(z.locales.ptBR());
@@ -43,7 +50,11 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
   app.set('trust proxy', buildTrustProxy(config));
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.use(helmet(HELMET_OPTIONS));
-  // CORS só para as origens do site, e só no cp-public: entra no CP-03 com as rotas públicas.
+  // Toda resposta é dinâmica: nem o cache do Hosting nem o do navegador guardam (plano §2.4).
+  app.use(noStore);
+  // CORS só para as origens do site, e só no cp-public (o worker é chamado por tasks e pelo Scheduler, nunca por um
+  // navegador): sem cabeçalho nenhum para outra origem, `credentials` só nas rotas de status (cors.ts).
+  if (config.ROLE === 'public') app.enableCors(buildCorsDelegate(config.SITE_ORIGINS ?? []));
   app.setGlobalPrefix(API_PREFIX, {
     // O health check fica fora do prefixo versionado.
     exclude: [{ path: 'health', method: RequestMethod.GET }],
