@@ -1,13 +1,18 @@
-# Guia: os nós do Verax Control na GCP com Terraform
+# Guia: os nós e o plano de controle do Verax Control na GCP com Terraform
 
-Este guia sobe ou altera a infraestrutura dos nós na GCP. Há dois ambientes, cada um com o próprio estado:
+Este guia sobe ou altera a infraestrutura dos nós e do plano de controle na GCP. Há três ambientes, cada um com o
+próprio estado:
 
 - **`envs/verax`:** o SOC da própria Verax, no perfil `lean`. A primeira subida foi feita em 03/11/2026, quando o
   código ainda ficava direto em `infra/gcp`. Está no ar.
 - **`envs/homolog-sp`:** o nó de homologação em São Paulo, no perfil `standard`, igual ao que um nó de cliente vai
   ter. Fica no projeto dos nós de clientes, separado do projeto da Verax. Ainda não foi aplicado.
+- **`envs/control-plane`:** o plano de controle da fase 3 (checkout, webhook da Stripe, página de status e
+  provisionamento dos nós de clientes), no projeto da Verax que hospeda o Firebase dos painéis. Ainda não foi
+  aplicado. Tem a própria seção, "O plano de controle", no fim deste guia.
 
-Os dois chamam o mesmo módulo, `modules/node`. Na fase 3, cada cliente ganha um ambiente igual ao de homologação.
+Os dois primeiros chamam o mesmo módulo, `modules/node`. Na fase 3, cada cliente ganha um ambiente igual ao de
+homologação, aplicado pelo plano de controle.
 
 ## Antes de começar: 5 ideias do Terraform
 
@@ -30,7 +35,9 @@ infra/gcp/
 │   └── startup.sh.tftpl   script de boot dos nós novos (swap cifrado e, no standard, ajustes do kernel)
 ├── envs/verax/            nó da Verax (lean): APIs, orçamento, registro das imagens e o módulo
 │   └── startup.sh         script de boot de antes do módulo, que o nó da Verax continua usando
-└── envs/homolog-sp/       nó de homologação em São Paulo (standard): APIs, orçamento e o módulo
+├── envs/homolog-sp/       nó de homologação em São Paulo (standard): APIs, orçamento e o módulo
+└── envs/control-plane/    plano de controle (fase 3): Cloud Run, Firestore, filas, relógio, segredos, Hosting e
+                           federação com o GitHub, sem módulo (veja "O plano de controle")
 ```
 
 O que vale para o projeto inteiro fica no ambiente: as APIs, o orçamento e, no da Verax, o registro das imagens e a
@@ -538,6 +545,214 @@ expirarem.
   4. Depois disso, `terraform destroy` mostra o que vai apagar e pede confirmação. As APIs continuam ligadas e o
      bucket do estado fica.
 
+## O plano de controle (`envs/control-plane`)
+
+O plano de controle é a parte da fase 3 que vende e provisiona: o site chama `POST /v1/public/checkout`, a Stripe
+avisa pelo webhook, e um worker executa o provisionamento do nó do cliente passo a passo (`plano-controle.md`, fase 3).
+Este ambiente cria a infraestrutura dele na GCP; o código do serviço (`apps/control-plane`) vem nos PRs CP-01 em
+diante. Fica no **projeto da Verax que hospeda o Firebase dos painéis**: o rewrite do Hosting para o Cloud Run exige o
+mesmo projeto, e o Firestore gratuito é um banco por projeto. Tudo o que é da Verax fica no nível gratuito: Cloud Run
+sem instância mínima, sem Cloud SQL, sem IP reservado e sem NAT.
+
+**Custo estimado:** R$ 0 com 0 clientes, cerca de R$ 1 com 5 e R$ 2 a 8 com 20 (plano, seção 6: Cloud Run, Firestore,
+Cloud Tasks e Scheduler no nível gratuito; sobram centavos de Secret Manager e Artifact Registry). O orçamento do
+projeto é de R$ 15. A recuperação pontual (PITR) do Firestore fica **desligada**: a GCP cobra o armazenamento dela à
+parte, sem nível gratuito e com no mínimo 1 dia cobrado (preços do Firestore, 04/11/2026); `firestore_pitr = true`
+liga, se um dia valer o custo.
+
+### O que ele cria
+
+| Recurso                                                   | Para quê                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 16 APIs                                                   | Cloud Run, Cloud Tasks, Cloud Scheduler, Firestore e as regras dele, Secret Manager, Artifact Registry, Firebase Hosting, federação (iam, iamcredentials, sts), orçamento, logs e alertas. Nenhuma é desligada no destroy.                                                                                                                                                                                                                     |
+| Firestore `(default)`                                     | Modo nativo, em São Paulo, protegido contra exclusão. Regras de segurança que negam tudo aos SDKs de cliente (só os serviços chegam, pelo IAM). Prazos (TTL em `expiresAt`) nas coleções com retenção do plano e os 4 índices compostos de `tenants`.                                                                                                                                                                                          |
+| 5 contas de serviço                                       | `cp-public`, `cp-worker`, `cp-terraform`, `cp-invoker` e `cp-deployer`, com os papéis da seção 2.2 do plano, cada um no menor recurso possível (a fila, o segredo, o Job). A `cp-invoker` é só o token das tasks e do Scheduler para chamar o `cp-worker`: ninguém age como o `cp-worker` além de quem implanta. O papel personalizado `cpJobRunner`; os agentes de serviço do Cloud Tasks e do Cloud Scheduler criados antes do primeiro uso. |
+| Pool e provedor de federação `cp-github`                  | O GitHub Actions implanta sem chave: só o token do environment `control-plane` do repositório, pelos IDs fixos do repositório e do dono, vindo de um `push` ou de um disparo manual na `main`, vira `cp-deployer`.                                                                                                                                                                                                                             |
+| 5 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key`. Gravados no passo 4, só na região. Logs de auditoria de acesso a dados do Secret Manager ligados no projeto (quem leu, gravou ou consultou a política de qual segredo).                                                                                                                                                    |
+| Registro de imagens `verax-control-plane`                 | Imagens dos serviços e do executor Terraform, neste projeto e nesta região; `cp-deployer` publica. Ficam as 3 versões mais recentes de cada imagem (mais as publicadas nos últimos 30 dias). Tags mutáveis de propósito: com tags imutáveis, a limpeza não apaga versão com tag, e o registro cresceria sem limite.                                                                                                                            |
+| Cloud Run `cp-public`, `cp-worker` e o Job `cp-terraform` | Só com `services_enabled = true` (passo 5). 1 vCPU e 512 MiB, 0 a 2 e 0 a 1 instâncias, sonda de partida em `/health`; o Job com 2 GiB, 30 min e 1 tentativa. O worker só recebe tráfego de dentro do projeto, e só com token.                                                                                                                                                                                                                 |
+| Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
+| Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                   |
+| Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                            |
+| 2 alertas por log                                         | Provisionamento com falha e assinatura inválida no webhook, por e-mail (`alert_email`).                                                                                                                                                                                                                                                                                                                                                        |
+| Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): os papéis no projeto dos nós de
+clientes (`nodes_project_id`, depois do `envs/nodes-platform`; no lugar de `secretmanager.admin` e `storage.admin` do
+plano entram dois papéis personalizados, `cpSecretsProvisioner` e `cpBucketsProvisioner`, que criam cofres e buckets
+sem ler o conteúdo de nenhum), a gravação da política do registro de imagens do nó (`images_project_id`), a leitura
+do bucket de releases (`release_bucket`) e o `firebasehosting.admin` nos projetos do pool dos painéis dos clientes
+(`firebase_panel_projects`; nunca neste projeto).
+
+### Passo 1: login, projeto e bucket do estado
+
+O mesmo login do passo 1 dos nós, com `SEU_PROJETO` = o projeto do Firebase dos painéis. Você precisa ser
+**Proprietário** dele, e ele precisa estar no plano **Blaze** do Firebase (o rewrite do Hosting para o Cloud Run
+exige; o Terraform não muda o plano). O estado vai para o bucket que já existe (passo 2 dos nós, o do nó da Verax),
+com o prefixo `control-plane` do `versions.tf`; qualquer bucket em que você grave serve.
+
+### Passo 2: as variáveis
+
+```bash
+cd infra/gcp/envs/control-plane
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Só `project_id` é obrigatório. Preencha também `owner_principals` (quem opera, para chamar o `cp-worker`),
+`alert_email` e, se for administrador da conta de faturamento, `billing_account_id`. O resto está explicado no
+arquivo e em `variables.tf`; `services_enabled` fica `false` nesta primeira subida.
+
+### Passo 3: primeira subida (sem os serviços)
+
+```bash
+terraform init -backend-config="bucket=PROJETO_DA_VERAX-tfstate"
+terraform plan -out=plano.tfplan
+terraform apply plano.tfplan
+```
+
+A última linha do `plan` é **`Plan: 74 to add, 0 to change, 0 to destroy.`** (75 com orçamento, 76 com e-mail de
+alerta), sem nada para mudar ou destruir, e `data.google_project.this will be read during apply` (como na homologação:
+a leitura do projeto espera as APIs). Os serviços ficam para o passo 5: o Cloud Run recusa subir com um segredo sem
+versão, e os cinco nascem vazios. Erro de API "has not been used in project": a mesma propagação do passo 6 dos nós;
+espere 1 ou 2 minutos e repita o `plan` e o `apply`. Se o projeto já tiver logs de auditoria de acesso a dados do
+Secret Manager configurados à mão, importe antes (`terraform import google_project_iam_audit_config.secretmanager
+"SEU_PROJETO secretmanager.googleapis.com"`): o recurso é a configuração inteira desse serviço.
+
+### Passo 4: gravar os segredos
+
+No **Git Bash**, cole o valor quando ele pedir; nada aparece na tela nem fica no histórico. A chave do cookie é
+gerada, não digitada:
+
+```bash
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-stripe-secret-key --data-file=- && unset VALOR
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-stripe-webhook-secret --data-file=- && unset VALOR
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-cloudflare-api-token --data-file=- && unset VALOR
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-smtp-password --data-file=- && unset VALOR
+openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add cp-cookie-key --data-file=-
+```
+
+- **Chave da Stripe:** uma chave **restrita** (não a `sk_`), com escrita em Checkout Sessions, Customers,
+  Subscriptions, Tax IDs e Billing Portal e leitura em Invoices e Events; a do sandbox primeiro (plano, seção 9, item
+  6). Trocar para produção é gravar uma versão nova (CP-13).
+- **Segredo do webhook:** no Workbench da Stripe, o endpoint `https://conta.veraxsistemas.com.br/v1/stripe/webhook`
+  com os 13 eventos da seção 4(b) do plano, formato _snapshot_ (item 7). O endpoint pode ser cadastrado antes de o
+  serviço existir.
+- **Token do Cloudflare:** só `Account > Cloudflare Tunnel > Edit` e `Zone > DNS > Edit`, restrito à zona
+  `veraxsistemas.com.br`, validade de 1 ano (item 13). Os IDs da conta e da zona vão no `terraform.tfvars`
+  (`cloudflare_account_id`, `cloudflare_zone_id`), não são segredo.
+- **Senha do SMTP:** a senha de aplicativo da caixa de envio no Zoho, como no passo 7 dos nós.
+
+Todos os cinco precisam ter versão antes do passo 5, mesmo que o provisionamento ainda esteja desligado: o Cloud Run
+monta os cinco na partida.
+
+### Passo 5: segunda subida (os serviços)
+
+Mude `services_enabled = true` no `terraform.tfvars` e repita o `plan` e o `apply`. O `plan` mostra
+**`Plan: 13 to add`** (mais 1 por pessoa em `owner_principals`): os dois serviços com a imagem de exemplo do Google,
+o Job, os acessos deles, os dois jobs do Scheduler e a versão do Hosting com o rewrite. Faça isso **antes** da
+primeira execução do workflow de implantação (CP-01): o `gcloud run deploy` criaria os serviços por fora do
+Terraform, e o `apply` seguinte pararia em "already exists".
+
+Depois da primeira implantação pelo workflow, rode o `plan`: tem de dar `No changes.`. A imagem, o tráfego (o workflow
+sobe a revisão candidata sem tráfego, com a etiqueta `candidato`, e só a promove depois do `/health`), o `client` e o
+`client_version` que o gcloud grava estão em `ignore_changes` (`run.tf`); se aparecer outra diferença, ela entra na
+mesma lista. O resto (tamanhos, prazos, sonda de partida, variáveis e segredos) é do Terraform: o workflow só troca a
+imagem. Uma revisão criada pelo Terraform (uma mudança em `service_env`, por exemplo) recebe o tráfego porque o
+workflow deixa o serviço apontando para a revisão mais recente ao promover.
+
+### Passo 6: o domínio no Cloudflare
+
+```bash
+terraform output cloudflare_dns_records
+```
+
+Crie cada registro na zona `veraxsistemas.com.br` com o proxy **desligado** ("DNS only"): o Firebase emite e renova o
+certificado, e com o proxy ligado não consegue. Lista vazia: o Firebase ainda não respondeu; `terraform refresh` e
+`terraform output` de novo. Minutos a horas depois, confira:
+
+```bash
+terraform refresh
+terraform state show google_firebase_hosting_custom_domain.conta | grep -E 'host_state|state '   # HOST_ACTIVE e CERT_ACTIVE
+curl -sI https://conta.veraxsistemas.com.br/health | head -1                                        # HTTP 200 depois do CP-01
+```
+
+### Passo 7: o environment `control-plane` no GitHub
+
+Em Settings → Environments, crie `control-plane`, restrito à `main` (deployment branches), e preencha as variáveis
+(não são segredos) com `terraform output github_environment`. A restrição à `main` no GitHub é uma segunda tranca: o
+provedor de identidade (`identities.tf`) já recusa qualquer token que não venha de um `push` ou de um disparo manual
+na `main`, mesmo que o environment fique aberto por engano.
+
+| Variável do environment | Saída do Terraform                        | O que é                                                           |
+| ----------------------- | ----------------------------------------- | ----------------------------------------------------------------- |
+| `GCP_WIF_PROVIDER`      | `github_environment.GCP_WIF_PROVIDER`     | o provedor `github` do pool `cp-github` deste projeto             |
+| `GCP_DEPLOYER_SA`       | `github_environment.GCP_DEPLOYER_SA`      | `cp-deployer@<projeto>.iam.gserviceaccount.com`                   |
+| `GCP_PROJECT_ID`        | `github_environment.GCP_PROJECT_ID`       | o projeto                                                         |
+| `GCP_PROJECT_NUMBER`    | `github_environment.GCP_PROJECT_NUMBER`   | o número do projeto                                               |
+| `GCP_REGION`            | `github_environment.GCP_REGION`           | `southamerica-east1`                                              |
+| `CP_IMAGES_REPOSITORY`  | `github_environment.CP_IMAGES_REPOSITORY` | `southamerica-east1-docker.pkg.dev/<projeto>/verax-control-plane` |
+| `CP_PUBLIC_SERVICE`     | `github_environment.CP_PUBLIC_SERVICE`    | `cp-public`                                                       |
+| `CP_WORKER_SERVICE`     | `github_environment.CP_WORKER_SERVICE`    | `cp-worker`                                                       |
+| `CP_TERRAFORM_JOB`      | `github_environment.CP_TERRAFORM_JOB`     | `cp-terraform`                                                    |
+
+### O que continua manual
+
+Do que a seção 9 do plano lista, o Terraform faz os itens 8 a 12 (APIs, banco, contas, federação, segredos vazios,
+filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam com você:
+
+- **Stripe** (itens 1 a 7): produto e preços (`lookup_key` `verax_control_essencial_mensal` e
+  `verax_control_profissional_mensal`), cupom `FUNDADOR30`, cartão e boleto com validade de 3 dias, o link hospedado
+  para confirmação, Smart Retries com "marcar como não paga", dados públicos, Portal do cliente, a chave restrita e o
+  webhook. Não há API para quase nada disso, e os dois últimos entram no passo 4.
+- **Firebase:** o plano Blaze neste projeto (passo 1; só o rewrite do Hosting para o Cloud Run exige) e, na primeira
+  venda, um projeto **só para os painéis dos clientes** em `firebase_panel_projects` (item 14), e mais um a cada 36
+  clientes. Esse projeto fica no plano Spark: site estático com domínio próprio não precisa de faturamento. O
+  `cp-worker` é `firebasehosting.admin` só lá, nunca aqui: o site `conta.veraxsistemas.com.br` e os sites do Painel
+  que já existem neste projeto ficam fora do alcance dele.
+- **Cloudflare:** o token (passo 4) e os registros de DNS (passo 6); conferir a cota de registros da zona (item 13).
+- **GitHub:** o environment (passo 7).
+- **Serviços:** `service_env` (os dois serviços) com as versões dos aceites, a URL do Portal e, se o app exigir,
+  `TRUST_PROXY_HOPS` (o Terraform não decide quantos proxies o serviço confia; é do app, CP-01); `worker_env` (só o
+  `cp-worker`) com o remetente e o usuário do SMTP; na primeira venda, `nodes_project_id`, `images_project_id`,
+  `release_bucket` e, em `worker_env`, `NODE_RELEASE` e `PROVISIONING_ENABLED = "true"` (itens 15 a 17; o projeto dos
+  nós e o bucket do estado dele vêm do `envs/nodes-platform`). As chaves que o Terraform deriva de outras variáveis, os
+  segredos, `ROLE` e `NODE_ENV` são recusados nos dois mapas; `SMTP_*` e `MAIL_FROM*` só entram em `worker_env`.
+
+### Operações do responsável no `cp-worker`
+
+Por padrão o `cp-worker` só recebe tráfego de dentro do projeto (Cloud Tasks e Cloud Scheduler), além do IAM. Para
+chamar `resume`, `delete-now` ou `export` da sua máquina (CP-11), mude `worker_ingress = "INGRESS_TRAFFIC_ALL"` no
+`terraform.tfvars` e faça o `apply` (uma mudança no lugar); o IAM continua exigindo o token de identidade de quem está
+em `owner_principals`. Volte para `INGRESS_TRAFFIC_INTERNAL_ONLY` depois. O `aud` de um token de usuário do gcloud não
+é a URL do serviço: como o worker aceita o responsável (impersonação de uma conta de serviço com `--audiences`, por
+exemplo) é decisão do CP-11.
+
+### Quem pode o quê (a fronteira de confiança)
+
+- **`cp-invoker`** só chama o `cp-worker`. É o e-mail que o worker aceita no token (`WORKER_SA_EMAIL` e
+  `SCHEDULER_SA_EMAIL`, além de `OWNER_PRINCIPALS`), e o `cp-public` e o `cp-worker` só conseguem token dela: um
+  `cp-public` comprometido chama o worker, que é o que ele já faz, e nada mais.
+- **`cp-terraform`** não lê segredo nem backup de tenant nenhum: no projeto dos nós, cria cofres e buckets
+  (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin` ele ainda poderia
+  se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo `envs/nodes-platform`)
+  vigia.
+- **`cp-deployer`** é `run.developer` nos dois serviços e no Job: além de publicar revisões, muda qualquer atributo
+  deles, apaga-os e executa o Job. Não há papel predefinido mais estreito que sirva ao `gcloud run deploy`. Na
+  prática, quem controla a `main` com o environment `control-plane` controla a imagem do `cp-worker` e, por ele, o
+  Job, que roda como `cp-terraform` no projeto dos nós. É a fronteira aceita: a `main` é protegida por ruleset sem
+  exceção, e o environment e o provedor de identidade só aceitam a `main`.
+
+### Mudar ou desfazer
+
+- **Mudar algo:** edite o `terraform.tfvars` e repita o `plan` e o `apply`. Trocar uma variável dos serviços
+  (`service_env` ou `worker_env`) cria uma revisão nova de cada um, com a imagem que está no ar.
+- **Rotação de um segredo:** grave uma versão nova (passo 4) e implante de novo pelo workflow (ou mude qualquer
+  `service_env`): a instância lê `latest` na partida.
+- **Desfazer tudo:** os dois serviços e o Job têm `deletion_protection` (mude para `false` no `run.tf` só na sua
+  cópia, para essa vez); o banco do Firestore tem a proteção da GCP e, no Terraform, só sai do estado
+  (`deletion_policy = "ABANDON"`): para apagá-lo, desligue a proteção no console e apague por lá. As APIs continuam
+  ligadas e o bucket do estado fica.
+
 ## Escolhas de segurança desta base
 
 - **Sem IP público e sem porta aberta.** SSH só pelo IAP, com a conta Google. O painel e a API chegam ao nó pelo
@@ -560,5 +775,7 @@ roteiro está em `docs/runbooks/no-verax.md`; no `node.conf`, `NODE_PROFILE` é 
 Verax, `standard` na homologação) e `VERAX_SECRET_PREFIX` é o `name_prefix` do ambiente (`verax-node` e
 `verax-homolog`). Essa igualdade é uma premissa operacional: o `start.sh` monta com o prefixo o tópico do sink de
 projeto de cliente que o painel mostra, e o teste de contrato da API prende o painel ao Terraform, não ao `node.conf`
-instalado. Cada projeto, monitorado ou de cliente, entra em Contas cloud com a assinatura que aparece em
-`terraform output pubsub_subscriptions`.
+instalado. Na homologação, `CREDENTIALS_VAULT=true` liga o cofre de credenciais: na primeira instalação, o
+`install.sh` gera a chave do cofre na VM e a grava como versão 1 do `credentials-key`. No nó da Verax, que não tem
+esse cofre, a linha fica `false` (ou ausente). Cada projeto, monitorado ou de cliente, entra em Contas cloud com a
+assinatura que aparece em `terraform output pubsub_subscriptions`.

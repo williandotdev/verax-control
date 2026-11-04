@@ -135,6 +135,11 @@ expect "/health" 200 "$(probe "$api" /health)"
 expect "/health/ready (banco por TLS verificado)" 200 "$(probe "$api" /health/ready)"
 expect "processo sem root" 1000 "$(docker exec "$api" id -u)"
 expect "raiz só leitura" 1 "$(docker exec "$api" sh -c 'touch /app/x 2>/dev/null && echo 0 || echo 1')"
+# No nó, o arquivo das chaves do cofre é 0400 do WORKER_UID que o start.sh escreve, numa pasta do grupo dele: o usuário
+# da imagem (que roda a API e o worker) tem de ser esse uid e esse gid, senão o worker não lê as chaves.
+worker_uid=$(sed -n 's/^WORKER_UID=//p' "$(dirname "$0")/../infra/node/bin/start.sh")
+expect "usuário e grupo da imagem são o WORKER_UID do start.sh do nó" "$worker_uid:$worker_uid" \
+  "$(docker run --rm --entrypoint sh "$image" -c 'echo "$(id -u):$(id -g)"')"
 
 if [[ ${RUN_ZAP:-0} == 1 ]]; then
   echo "== OWASP ZAP baseline na API (T8.7; risco alto reprova)"
