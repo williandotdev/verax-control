@@ -270,6 +270,10 @@ model CloudAccount {
   wafBucket          String?                @db.VarChar(63)
   /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
   pubsubSubscription String?                @db.VarChar(320)
+  /// GCP, projeto de cliente: identidade de escrita do sink que o cliente criou no projeto dele, colada no painel
+  /// (`serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com`). Não é segredo: é a quem o Terraform
+  /// do nó deixa publicar no tópico do projeto.
+  sinkWriterIdentity String?                @db.VarChar(128)
   /// Cloudflare: zonas (domínios) monitoradas.
   zones              String[]               @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
