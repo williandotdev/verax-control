@@ -331,6 +331,64 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       expect(copied.lock?.owner).toBe('run-1');
     });
 
+    it('a mutação no lugar também é recusada: slug no argumento, lock e company por trás de cópia rasa', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      const lock = await h.store.acquireLock(id, 'run-1', LOCK_TTL_MS);
+      const inPlace: Record<'slug' | 'company' | 'lock', (tenant: Tenant) => Tenant> = {
+        // Edita o argumento e o devolve: sem a cópia independente, a comparação olharia o valor já mudado.
+        slug: (tenant) => {
+          tenant.slug = 'outro-slug';
+          return tenant;
+        },
+        // Cópia rasa com mudança aninhada: o objeto `company` seria o mesmo do documento relido.
+        company: (tenant) => {
+          tenant.company.legalName = 'Outra Ltda';
+          return { ...tenant };
+        },
+        lock: (tenant) => {
+          if (tenant.lock !== undefined) tenant.lock.owner = 'run-2';
+          return { ...tenant };
+        },
+      };
+      for (const [key, mutate] of Object.entries(inPlace)) {
+        await expect(
+          h.store.transition(id, { to: 'provisioning', reason: 'x', audit: AUDIT, mutate }),
+        ).rejects.toThrow(new TypeError(`a mutação de uma transição não pode mexer em ${key}`));
+      }
+      expect(await h.store.get(id)).toMatchObject({
+        state: 'pending',
+        slug: 'cliente-demo-a',
+        company: { legalName: 'cliente-demo-a Ltda' },
+        lock,
+      });
+      expect(await h.store.listTransitions(id)).toHaveLength(1);
+      expect(await h.audit.listForTenant(id)).toHaveLength(1);
+    });
+
+    it('mexer em state dentro da mutação não corrompe o from da transição nem da auditoria', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+
+      const updated = await h.store.transition(id, {
+        to: 'provisioning',
+        reason: 'invoice.paid',
+        audit: AUDIT,
+        mutate: (tenant) => {
+          tenant.state = 'active';
+          return tenant;
+        },
+      });
+
+      expect(updated.state).toBe('provisioning');
+      expect((await h.store.listTransitions(id)).at(-1)).toMatchObject({
+        from: 'pending',
+        to: 'provisioning',
+      });
+      expect((await h.audit.listForTenant(id)).at(-1)?.details).toMatchObject({
+        from: 'pending',
+        to: 'provisioning',
+      });
+    });
+
     it('registros do mesmo instante saem na ordem em que foram gravados (ids ULID como desempate)', async () => {
       const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
       // O relógio não anda: `at` é igual nos três registros.

@@ -138,6 +138,41 @@ describe('MemoryDocumentStore (só o dublê)', () => {
     ).rejects.toBeInstanceOf(UnsupportedQueryError);
   });
 
+  it('campo que só existe no protótipo (constructor, __proto__, toString) conta como ausente', async () => {
+    const store = new MemoryDocumentStore();
+    await store.runTransaction((tx) => {
+      tx.set('counters', 'a', { n: 1, map: { k: 1 } });
+      return Promise.resolve();
+    });
+    // Sem o `Object.hasOwn`, `__proto__` resolvia para `Object.prototype` (igual a `{}` por valor) e `toString`
+    // para a função herdada: a condição casava e a ordenação incluía o documento; no Firestore, nenhum dos dois.
+    for (const field of ['constructor', '__proto__', 'toString', 'map.__proto__', 'map.hasOwnProperty']) {
+      await expect(store.query('counters', { where: [{ field, op: '==', value: {} }] })).resolves.toEqual([]);
+      await expect(store.query('counters', { orderBy: { field } })).resolves.toEqual([]);
+    }
+    // O campo próprio aninhado continua acessível pelo mesmo caminho.
+    const own = await store.query('counters', { where: [{ field: 'map.k', op: '==', value: 1 }] });
+    expect(own.map((doc) => doc.id)).toEqual(['a']);
+  });
+
+  it('ids novos sorteiam o alfabeto inteiro sem viés (randomInt, não o resto de um byte por 62)', () => {
+    const store = new MemoryDocumentStore();
+    const ids = 5_000;
+    const counts = new Map<string, number>();
+    for (let i = 0; i < ids; i += 1) {
+      for (const char of store.newId()) counts.set(char, (counts.get(char) ?? 0) + 1);
+    }
+    const expected = (ids * 20) / 62;
+    // Com `byte % 62`, os oito primeiros caracteres (5/256 contra 4/256) sairiam 21% acima do esperado, mais de
+    // 8 desvios; 6 desvios (±239 em 100 mil sorteios) separa isso do acaso (uma falha espúria a cada ~10 milhões
+    // de execuções).
+    const tolerance = 6 * Math.sqrt(expected * (1 - 1 / 62));
+    expect(counts.size).toBe(62);
+    for (const [char, count] of counts) {
+      expect(Math.abs(count - expected), `caractere ${char}`).toBeLessThanOrEqual(tolerance);
+    }
+  });
+
   it('sem orderBy, a desigualdade ordena pelo próprio campo e depois pelo id, como no Firestore', async () => {
     const store = new MemoryDocumentStore();
     await store.runTransaction((tx) => {

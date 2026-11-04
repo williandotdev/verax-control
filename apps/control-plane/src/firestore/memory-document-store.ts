@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomBytes } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { type CompositeIndex, COMPOSITE_INDEXES } from './collections.js';
 import {
   assertCollectionPath,
@@ -17,6 +17,8 @@ import {
 } from './document-store.js';
 
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+/** O mesmo tamanho dos ids automáticos do Firestore (`collection.doc().id`). */
+const ID_LENGTH = 20;
 
 /**
  * Cópia profunda no formato que o Firestore aceita: objetos simples, arrays, primitivos e `Date`; `undefined`
@@ -48,12 +50,20 @@ function cloneDocument(data: DocumentData): DocumentData {
   return clone(data) as DocumentData;
 }
 
+/**
+ * Campo próprio de um objeto simples. O que só existe no protótipo (`constructor`, `__proto__`, `toString`) conta
+ * como ausente: no Firestore um documento sem o campo não casa com a condição nem entra na ordenação por ele.
+ */
+function ownField(value: unknown, key: string): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return Object.hasOwn(value, key) ? (value as DocumentData)[key] : undefined;
+}
+
 /** Valor de um campo por caminho com pontos; `undefined` quando o caminho não existe. */
 function fieldValue(data: DocumentData, field: string): unknown {
   let current: unknown = data;
   for (const segment of field.split('.')) {
-    if (current === null || typeof current !== 'object' || Array.isArray(current)) return undefined;
-    current = (current as DocumentData)[segment];
+    current = ownField(current, segment);
     if (current === undefined) return undefined;
   }
   return current;
@@ -284,11 +294,9 @@ export class MemoryDocumentStore implements DocumentStore {
   }
 
   newId(): string {
-    let id = '';
-    for (const byte of randomBytes(20)) {
-      id += ID_ALPHABET[byte % ID_ALPHABET.length];
-    }
-    return id;
+    // `randomInt` sorteia cada posição sem viés; `byte % 62` favoreceria os oito primeiros caracteres do alfabeto.
+    const chars = Array.from({ length: ID_LENGTH }, () => ID_ALPHABET.charAt(randomInt(ID_ALPHABET.length)));
+    return chars.join('');
   }
 
   /** Só para testes: apaga tudo. */

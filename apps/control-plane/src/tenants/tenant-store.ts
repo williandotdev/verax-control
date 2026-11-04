@@ -47,8 +47,9 @@ export interface TransitionRequest {
   audit: AuditContext;
   /**
    * Mudanças que acompanham a transição (ex.: `billing.graceUntil` ao entrar em `past_due`), aplicadas sobre o
-   * documento relido na transação. Não pode mexer em `state` nem nos carimbos de tempo (o store os define) nem nos
-   * campos de `IMMUTABLE_IN_TRANSITION`.
+   * documento relido na transação. Recebe uma cópia profunda dele: pode editá-la no lugar ou devolver outro objeto.
+   * Não pode mexer em `state` nem nos carimbos de tempo (o store os define) nem nos campos de
+   * `IMMUTABLE_IN_TRANSITION`.
    */
   mutate?: (tenant: Tenant) => Tenant;
 }
@@ -225,7 +226,10 @@ export class TenantStore {
         throw new InvalidTransitionError(tenantId, current.state, request.to);
       }
       const now = this.clock.now();
-      const mutated = request.mutate === undefined ? current : request.mutate(current);
+      // A mutação recebe uma cópia profunda: uma edição no lugar (`tenant.slug = ...`, `tenant.lock.owner = ...`,
+      // mesmo por trás de uma cópia rasa) nunca alcança `current`, que é a referência da comparação dos campos
+      // imutáveis e o `from` da transição.
+      const mutated = request.mutate === undefined ? current : request.mutate(structuredClone(current));
       for (const key of IMMUTABLE_IN_TRANSITION) {
         if (!equalValues(mutated[key], current[key])) {
           throw new TypeError(`a mutação de uma transição não pode mexer em ${key}`);

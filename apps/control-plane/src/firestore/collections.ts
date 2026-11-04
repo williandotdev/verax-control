@@ -1,4 +1,4 @@
-import { ULID_PATTERN } from '../common/ulid.js';
+import { isUlid } from '../common/ulid.js';
 import { assertDocumentId } from './document-store.js';
 
 const TENANTS = 'tenants';
@@ -6,7 +6,7 @@ const PROVISIONING_RUNS = 'provisioningRuns';
 
 /** Id de cliente: sempre um ULID (`TenantStore.create`). Qualquer outra coisa (inclusive com barra) não monta caminho. */
 function tenantSubcollection(tenantId: string, name: string): string {
-  if (!ULID_PATTERN.test(tenantId)) throw new TypeError('id de cliente inválido');
+  if (!isUlid(tenantId)) throw new TypeError('id de cliente inválido');
   return `${TENANTS}/${tenantId}/${name}`;
 }
 

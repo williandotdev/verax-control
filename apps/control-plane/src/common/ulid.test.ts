@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { newUlid, ULID_PATTERN } from './ulid.js';
+import { isUlid, newUlid, ULID_PATTERN } from './ulid.js';
+
+describe('isUlid', () => {
+  it('aceita um ULID e recusa tamanho, alfabeto ou caixa errados', () => {
+    expect(isUlid(newUlid())).toBe(true);
+    expect(isUlid('01ARZ3NDEKTSV4RRFFQ69G5FAV')).toBe(true);
+    expect(isUlid('01ARZ3NDEKTSV4RRFFQ69G5FA')).toBe(false);
+    expect(isUlid('01ARZ3NDEKTSV4RRFFQ69G5FAVX')).toBe(false);
+    expect(isUlid('01arz3ndektsv4rrffq69g5fav')).toBe(false);
+    expect(isUlid('01ARZ3NDEKTSV4RRFFQ69G5FAI')).toBe(false);
+    expect(isUlid('01ARZ3NDEKTSV4RRFFQ69G5FAV/x')).toBe(false);
+    expect(isUlid('')).toBe(false);
+  });
+});
 
 describe('newUlid', () => {
   it('tem 26 caracteres do alfabeto Crockford e nunca se repete', () => {

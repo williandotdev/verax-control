@@ -5,6 +5,11 @@ const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 export const ULID_PATTERN = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 
+/** `true` se `value` tem a forma de um ULID: 26 caracteres do alfabeto, em maiúsculas. */
+export function isUlid(value: string): boolean {
+  return ULID_PATTERN.test(value);
+}
+
 /** A parte aleatória tem 80 bits; este é o maior valor dela. */
 const RANDOM_MAX = (1n << 80n) - 1n;
 
