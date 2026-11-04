@@ -2112,3 +2112,12 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o `GetCallerIdentity` não pode ser negado e revela a conta e o ARN (risco aceito no plano);
   - uma pilha por conta (os nomes do IAM são únicos na conta); o export criado cobre o detector da região da pilha;
   - o cfn-guard não está no Dependabot (como o Terraform e o tflint, a versão e o SHA-256 ficam no `iac.yml`).
+
+## Fase 3, CP-00: arquitetura do plano de controle
+
+- **Arquivos:** `docs/ARQUITETURA.md` (seção nova "Plano de controle": peças, identidades, estados do cliente, exclusão em dois tempos; o parágrafo da fase 3 em "Ordem de execução" aponta para ela e lista os blocos de PRs), `docs/STATUS.md`.
+- **Dependências:** nenhuma.
+- **Testes:** `prettier --check docs`. Só documentação.
+- **Definição de pronto:** seção escrita a partir do plano da fase 3 (§2, §4b e §4d), sem ID de projeto, conta ou pessoa ✔ · **aceite:** texto a aprovar pelo responsável.
+- **Teste manual:** ler a seção e conferir que descreve o que o responsável decidiu (projeto da Verax, nível gratuito, boleto mensal, exclusão em D+30 e D+97).
+- **Notas:** o plano completo (fluxos, limites, custos, 14 PRs) é documento interno e não entra no repositório público; a seção resume o que o código vai implementar.

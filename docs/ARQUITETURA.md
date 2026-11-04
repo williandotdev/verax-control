@@ -313,6 +313,75 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
 - **Referência anterior:** na pilha do nó na AWS, fora do caminho atual, só a VM `t3a.xlarge` (16 GB) era estimada em
   US$ 150 a 170 por mês.
 
+## Plano de controle _(fase 3, a construir)_
+
+O plano de controle é o que transforma uma compra no site num nó de cliente no ar sem operador: checkout, webhook
+da Stripe, máquina de estados do cliente, provisionamento passo a passo e exclusão. Vive em `apps/control-plane`
+(NestJS 12 + zod 4, as mesmas regras do monorepo) e roda no projeto da Verax na GCP, dentro do nível gratuito
+(R$ 0 com 0 clientes; R$ 2 a 8 por mês com 20). Os nós continuam como na fase 2; o plano de controle só os cria,
+para, liga e destrói. O detalhamento (fluxos, limites, custos e PRs) está no plano da fase 3, documento interno.
+
+### Peças
+
+| Peça                                           | Onde                                                                                | Faz                                                                                                                                          | Não faz                                                                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                             | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita                                       |
+| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Checkout, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                     | Nenhuma rota interna: aceita invocação anônima (exigência do rewrite do Hosting)                                  |
+| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export`)        | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                  |
+| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                              | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                               |
+| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`    | Nunca guarda segredo, senha, cartão, token do túnel nem corpo bruto do webhook                                    |
+| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00            | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                          |
+| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie; manifesto da versão e bundle do painel      | —                                                                                                                 |
+| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>` | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado |
+
+### Identidades
+
+- **`cp-public`:** lê e escreve no Firestore, enfileira tasks e lê as chaves da Stripe e do cookie. Nada mais.
+- **`cp-worker`:** Firestore, tasks, execução do Job, Firebase Hosting nos projetos do pool, leitura do bucket de
+  releases e, no projeto dos nós, um papel personalizado que só para, liga e lê atributos de VMs cujo nome começa com
+  `vx-`. Por tenant, o Terraform concede: adicionar a versão do token do túnel; ler uma vez e destruir a versão do
+  `admin-bootstrap`; destruir versões de `credentials-key`. Nunca ler o cofre de credenciais.
+- **`cp-terraform`:** os papéis de criar e destruir os recursos do módulo `node` no projeto dos nós (o mais sensível é
+  `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado pelo projeto isolado, pela imagem fixada e
+  por alerta em `SetIamPolicy` fora da lista). Não lê Stripe, Cloudflare nem Firestore.
+- **`cp-deployer`:** Workload Identity Federation para o environment `control-plane` da `main`; publica a imagem e
+  implanta os serviços (`run.developer`, `iam.serviceAccountUser` nas SAs de execução, escrita no registro, índices do
+  Firestore). Nenhum segredo.
+- **Responsável:** invoca o `cp-worker` com token de identidade, administra os segredos; tudo auditado.
+
+O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS
+Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita).
+
+### Estados do cliente
+
+Toda mudança de estado é uma transação no documento `tenants/{id}` que relê o estado, confere a tabela de transições,
+grava a transição em `tenants/{id}/transitions` e a auditoria em `auditLog`. O evento da Stripe só dispara: o objeto
+que decide é relido na API; `event.id` é único (`stripeEvents`). Os passos do provisionamento usam uma trava por
+tenant (`lock{owner, expiresAt}`, 20 min renovados; vencida, é tomada), que os campos de cobrança nunca disputam.
+
+| Estado                        | Entra quando                                                                                                      | Ação                                                                                                   |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `pending`                     | `checkout.session.completed`: a reserva do subdomínio vira tenant                                                 | Cartão pago segue direto; boleto espera a compensação                                                  |
+| `provisioning`                | `invoice.paid` do 1.º ciclo ou `checkout.session.async_payment_succeeded`                                         | Enfileira o `preflight`; 10 passos idempotentes, um por task                                           |
+| `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)   | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado |
+| `waiting_customer_connection` | Passo `access.ready`                                                                                              | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez               |
+| `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                 | Monitoramento normal                                                                                   |
+| `past_due`                    | `invoice.payment_failed` numa renovação                                                                           | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar  |
+| `suspended`                   | Assinatura `unpaid`, carência vencida, disputa ou alerta de fraude (decisão humana)                               | VM parada (`instances.stop`); disco e snapshots ficam; `invoice.paid` reativa                          |
+| `canceled`                    | `customer.subscription.deleted`, reembolso integral na garantia, boleto do 1.º ciclo vencido ou 30 dias sem pagar | VM parada; exportação sob pedido por 30 dias; relógios de D+30 e D+97                                  |
+| `deleted`                     | `tick` com `deleteAfter` vencido, ou `delete-now` pelo responsável                                                | Exclusão em dois tempos (abaixo)                                                                       |
+
+### Exclusão em dois tempos
+
+| Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
+| D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                  |
+
+Retenção do resto: `auditLog` 24 meses, `stripeEvents` 90 dias, `provisioningRuns` 180 dias, tokens e reservas pelo
+próprio prazo, tudo por TTL do Firestore. Nunca gravado: dado de cartão, senha temporária (lida do Secret Manager e
+devolvida uma vez), token do túnel, chaves da Stripe e do Cloudflare, corpo bruto do webhook, IP completo do cliente.
+
 ## Ordem de execução
 
 **Decisão de 02/11/2026** (os números dos passos são citados em outros arquivos):
@@ -346,4 +415,9 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
    a versão publicada, sem SSH e sem operador.
 
 **Fase 3:** provisionamento automático do cliente (checkout, estados do cliente, Terraform por cliente, túnel e DNS
-por API e primeiro acesso). **A primeira venda só acontece depois dela**; não há venda assistida.
+por API e primeiro acesso), pelo plano de controle da seção "Plano de controle". **A primeira venda só acontece depois
+dela**; não há venda assistida. Blocos: base (CP-00 a CP-02: arquitetura, esqueleto com configuração e `/health`,
+Firestore com modelo de dados e auditoria), venda (checkout, webhook e página de status), nó (ambiente `tenant`,
+painel de build único, bundle do painel na versão, bootstrap do admin do cliente), provisionamento e ciclo (executor
+Terraform e passos, suspensão e exclusão, reconciliação e alertas) e o portão da venda (ensaio ponta a ponta no modo
+de teste da Stripe).
