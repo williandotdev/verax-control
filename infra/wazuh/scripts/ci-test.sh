@@ -5,8 +5,9 @@
 # /run/verax e a mesma sequência do start.sh. O banco, a API e o worker não sobem (a imagem da API tem teste próprio).
 #
 # Precisa de Docker com uns 5 GB livres, de /run/verax gravável por quem roda (no CI, criado antes com sudo) e das
-# faixas 172.30.54.0/24 e 172.30.55.0/24 livres no Docker. Usa um projeto próprio (verax-wazuh-ci), apagado com os
-# volumes no começo e no fim. Nunca rode num nó: o teste recusa onde houver /etc/verax/node.conf.
+# faixas das redes do Wazuh (172.30.54.0/24, 172.30.55.0/24 e 172.30.56.0/24) livres no Docker. Usa um projeto
+# próprio (verax-wazuh-ci), apagado com os volumes no começo e no fim. Nunca rode num nó: o teste recusa onde houver
+# /etc/verax/node.conf.
 #
 # 1. instalação nova com senhas aleatórias e sem contas AWS → smoke test;
 # 2. rotação das quatro senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
@@ -189,8 +190,9 @@ expect "pipeline do módulo wazuh instalado pelo filebeat" 200 "$response_code"
 # cada partida, nada indexado). Se um dia conseguir, o usuário do filebeat ganhou permissão demais.
 expect "o harvester do manager não consegue iniciar o conector com o usuário do filebeat" 0 \
   "$(manager_file_count 'IndexerConnector initialized successfully' /var/ossec/logs/ossec.log)"
-expect "o harvester tentou (e o aviso ficou no log), uma vez por índice a cada partida" '[1-9][0-9]*' \
-  "$(manager_file_count 'IndexerConnector initialization failed' /var/ossec/logs/ossec.log)"
+# Quantas vezes ele tentou é um detalhe da 4.14.9 (uma versão nova pode honrar o <indexer> desligado e nem tentar):
+# fica registrado, sem ser exigido. As sentinelas são a de cima e a de baixo: nenhum conector iniciado, nenhum índice.
+echo "       tentativas do harvester registradas no log: $(manager_file_count 'IndexerConnector initialization failed' /var/ossec/logs/ossec.log)"
 indexer_admin GET '/_cat/indices/wazuh-states-*?h=index' </dev/null
 expect "nenhum índice wazuh-states-* criado pelo manager" '' "${response_body//[[:space:]]/}"
 

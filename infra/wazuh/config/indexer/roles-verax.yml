@@ -17,7 +17,12 @@ verax_api_read:
 # - cluster: a versão do indexer (`GET /`); o template legado `wazuh`, que ele grava sempre (`PUT /_template/wazuh`,
 #   `setup.template.overwrite`); o pipeline de ingestão do módulo (`GET` e, se faltar, `PUT /_ingest/pipeline/...`); e
 #   a entrada do `_bulk`, que o plugin confere no cluster antes de descer a cada índice. O `GET /_cat/templates/wazuh`
-#   que ele faz antes do PUT recebe 403, e o filebeat ignora a resposta (grava o template de qualquer jeito);
+#   que ele faz antes do PUT recebe 403, e o filebeat ignora a resposta (grava o template de qualquer jeito). As duas
+#   escritas (`template/put` e `pipeline/put`) valem para qualquer template legado e qualquer pipeline: o plugin não as
+#   restringe por nome. Risco que fica: um manager comprometido reescreveria o template `verax-alertas` (shards dos
+#   índices novos) ou o pipeline dos alertas, nunca os dados já indexados. Instalar o template `wazuh` pelo admin e
+#   desligar o `setup.template` exigiria um filebeat.yml próprio, que o init da imagem recopia e edita a cada partida
+#   (docs/STATUS.md, PR-W1, revisão final);
 # - índices wazuh-alerts-*: o `_bulk` desce como `bulk[s]` por shard, e cada item é conferido pela ação dele
 #   (`indices:data/write/index`); o índice do dia (o pipeline o troca pelo `date_index_name`) é criado pelo primeiro
 #   item, e o mapeamento dinâmico pede `mapping/put` também num índice que já existe (os dois vêm de `create_index`).

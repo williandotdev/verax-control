@@ -20,8 +20,11 @@ repositório.
 
 Todos rodam com a raiz só leitura, sem capabilities e com limite de memória. Só o worker alcança o servidor de
 metadados da GCP, que entrega o token da VM: uma regra no `DOCKER-USER`, aplicada antes de o Docker subir
-(`verax-metadata-guard`, que o Docker exige) e reafirmada a cada partida, bloqueia os outros contêineres. O backup do
-banco sai todo dia para o bucket de backups (`verax-backup.timer`).
+(`verax-metadata-guard`, que o Docker exige) e reafirmada a cada partida, bloqueia os outros contêineres. A guarda não
+aceita `systemctl stop` nem `restart` (como o Docker a exige, levaria o Docker e o nó junto): para reaplicar as regras,
+`sudo systemctl restart verax-node`. Se o script dela falhar no boot, o Docker não sobe e nenhum contêiner fica no ar
+sem a guarda; é de propósito, e `systemctl status verax-metadata-guard` mostra o motivo. O backup do banco sai todo dia
+para o bucket de backups (`verax-backup.timer`).
 
 ## Antes de instalar (uma vez)
 
@@ -144,6 +147,10 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   sudo docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml --env-file /etc/verax/images.env ps
   sudo docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml --env-file /etc/verax/images.env logs --tail 50 worker
   ```
+
+- A guarda do servidor de metadados, depois de um deploy ou de um reboot: `systemctl status verax-metadata-guard`
+  (ativa, `exited`, antes do Docker) e `sudo iptables -S DOCKER-USER` (o salto `-d 169.254.169.254/32 -j VERAX-METADATA`
+  antes do `RETURN` do Docker, sem nenhuma regra com `-s`).
 
 ## Backups e restauração
 

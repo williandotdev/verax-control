@@ -120,14 +120,18 @@ jobs:
           done
           shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
           bash "$test"
-      - name: Compose válida nos dois perfis (arquivos de ambiente fictícios, como o start.sh monta na VM)
-        # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml, com os arquivos das senhas do
-        # Wazuh que o start.sh escreve nesse perfil.
+      - name: Arquivos de ambiente, bootstrap e pull das imagens do start.sh (Compose, Docker e cofre simulados)
+        run: bash infra/node/tests/start-test.sh
+      - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
+        # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Os arquivos de /run/verax são os
+        # que o `render` do start.sh escreve (a lista vem do próprio script): um env_file do Compose sem o write_env
+        # correspondente falha aqui, e não só na VM (foi o caso do bootstrap.env, que o `config --images` do
+        # pull_images exigia e o render não escrevia). As duas últimas linhas são esse `config --images`, por perfil
+        # (só o nome do repositório; os digests mudam com o Dependabot).
         run: |
           sudo install -d -m 0755 /run/verax
-          for file in postgres db-bootstrap migrate api worker cloudflared bootstrap wazuh-security wazuh-manager; do
-            echo "EXEMPLO=1" | sudo tee "/run/verax/$file.env" >/dev/null
-          done
+          awk '/^render\(\) \{/,/^\}/' infra/node/bin/start.sh | grep -oE 'write_env [a-z-]+\.env' | awk '{ print $2 }' | sort -u |
+            while read -r file; do echo "EXEMPLO=1" | sudo tee "/run/verax/$file" >/dev/null; done
           {
             echo "API_IMAGE=exemplo/api@sha256:$(printf '0%.0s' {1..64})"
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
@@ -135,6 +139,10 @@ jobs:
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
           docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
             --profile setup config --quiet
+          images() { docker compose "$@" --env-file images.env --profile setup config --images | sed 's/[@:].*//' | sort -u | tr '\n' ' '; }
+          test "$(images -f infra/node/compose.yaml)" = 'cloudflare/cloudflared exemplo/api exemplo/migrate postgres '
+          test "$(images -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)" = \
+            'cloudflare/cloudflared exemplo/api exemplo/migrate postgres wazuh/wazuh-indexer wazuh/wazuh-manager '
       - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
         run: |
           # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
@@ -178,6 +186,35 @@ jobs:
           grep -q '^RequiredBy=docker.service$' infra/node/systemd/verax-metadata-guard.service
           grep -q '^Before=docker.service$' infra/node/systemd/verax-metadata-guard.service
           grep -qE '^Requires=.*verax-metadata-guard.service' infra/node/systemd/verax-node.service
+          # E recusa stop e restart manuais: pelo Requires do Docker, levariam o Docker, o nó e o Wazuh junto.
+          grep -qx 'RefuseManualStop=yes' infra/node/systemd/verax-metadata-guard.service
+          grep -qx 'RefuseManualStart=yes' infra/node/systemd/verax-metadata-guard.service
+      - name: No standard, o restart do verax-node sobe o verax-wazuh de novo (drop-in com Wants); o lean não o conhece
+        run: |
+          dropin=infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf
+          test "$(grep -vE '^(#|$)' "$dropin" | tr '\n' ';')" = '[Unit];Wants=verax-wazuh.service;'
+          grep -qx 'Requires=verax-node.service' infra/node/systemd/wazuh/verax-wazuh.service
+          grep -qx 'After=verax-node.service' infra/node/systemd/wazuh/verax-wazuh.service
+          if grep -v '^#' infra/node/systemd/verax-node.service | grep -q 'verax-wazuh'; then
+            echo "O verax-node.service do lean não pode conhecer o verax-wazuh: o Wants fica no drop-in do standard." >&2
+            exit 1
+          fi
+          # O install.sh o instala no diretório do drop-in, só dentro do bloco do standard.
+          awk '/^if \$standard; then$/ { block = 1 } block { print } block && /^fi$/ { exit }' infra/node/bin/install.sh |
+            grep -q 'verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf$'
+      - name: Unidades do systemd (sintaxe e dependências, como ficam num nó standard, com o drop-in)
+        # As unidades, os timers e o drop-in do verax-node num diretório só, com os scripts onde o ExecStart os espera
+        # e um docker.service de mentira (o teste não depende do Docker do runner).
+        run: |
+          units=$RUNNER_TEMP/units
+          install -d "$units/verax-node.service.d"
+          install -m 0644 infra/node/systemd/*.service infra/node/systemd/*.timer \
+            infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer "$units/"
+          install -m 0644 infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf "$units/verax-node.service.d/"
+          printf '[Unit]\nDescription=Docker (simulado)\n[Service]\nExecStart=/bin/true\n' >"$units/docker.service"
+          sudo install -d /opt/verax/bin
+          sudo install -m 0755 infra/node/bin/*.sh /opt/verax/bin/
+          systemd-analyze verify --man=no "$units"/*.service "$units"/*.timer
       - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard)
         # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
         # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das

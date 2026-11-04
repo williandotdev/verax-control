@@ -127,9 +127,11 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
 - **Usuários do indexer no `standard`:** o filebeat do manager grava com `wazuh_filebeat` (só escrita em
   `wazuh-alerts-*`); a API e o worker leem com `verax_api_read`; a senha do `admin` não fica em nenhum contêiner que
   fica no ar (os scripts usam o certificado admin).
-- **Serviços do systemd no `standard`:** `verax-metadata-guard` (a guarda do servidor de metadados, antes do Docker e
-  exigida por ele), `verax-node` (a aplicação) e `verax-wazuh` (o Wazuh, depois dela): uma falha do Wazuh não derruba
-  a aplicação nem o backup diário.
+- **Serviços do systemd:** nos dois perfis, `verax-metadata-guard` (a guarda do servidor de metadados, antes do Docker
+  e exigida por ele: sem ela o Docker não sobe, e ela não aceita `stop` nem `restart` manual) e `verax-node` (a
+  aplicação, que exige a guarda); no `standard`, também `verax-wazuh` (o Wazuh, depois da aplicação, que o
+  `restart` do `verax-node` sobe de novo mesmo quando ele tinha falhado): uma falha do Wazuh não derruba a aplicação
+  nem o backup diário.
 - **Portão:** o ensaio geral da fase 2 mede 24 h de `docker stats` e CPU. A documentação do Wazuh pede 4 núcleos para
   o single-node em Docker; se 2 vCPU não bastarem, o plano B é a e2-standard-4.
 - Os nós de clientes ficam num projeto da GCP separado do nó da Verax.

@@ -67,8 +67,11 @@ aplicação: banco, API, worker e túnel) e, depois dele, o `verax-wazuh` (`star
 `infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do nó; no PR-W1, sem contas AWS), o manager (espera o healthcheck), o
 `smoke-test.sh` e a conferência de que manager e indexer não alcançam o servidor de metadados da VM (sem isso, os dois
 param e o serviço falha). Serviços separados de propósito: uma falha do Wazuh fica no `verax-wazuh`, e o banco, a API,
-o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart verax-node` reinicia os dois;
-`sudo systemctl restart verax-wazuh` reaplica só o Wazuh.
+o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart verax-node` reinicia os dois e sobe o
+`verax-wazuh` de novo mesmo quando ele tinha falhado (drop-in `verax-node.service.d/wazuh.conf`, com `Wants=`, que o
+`install.sh` põe só no `standard`); `sudo systemctl restart verax-wazuh` reaplica só o Wazuh. A guarda do servidor de
+metadados (`verax-metadata-guard`, antes do Docker e exigida por ele) não aceita `stop` nem `restart`: reaplique-a pelo
+`restart` do `verax-node`.
 
 - **Redes:** `wazuh` (interna, sem rota para fora) só com o indexer e o manager; `wazuh-read` (interna) com o
   indexer, a API e o worker; `wazuh-egress` só com o manager, para a saída ao S3 e ao STS. O manager não está na rede
@@ -84,7 +87,9 @@ o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart vera
   `wazuh.indexer`, com a CA do volume `certs-public`, montado só leitura em `/etc/verax/wazuh`.
 - **Partida e parada:** o indexer e o manager têm `restart: unless-stopped` e 60 s para parar (`stop_grace_period`:
   o filebeat grava o registro do que já enviou e o indexer fecha o translog). As imagens, fixadas pelo digest, só são
-  baixadas quando faltam (`docker image inspect` antes do `pull`): a partida não depende do Docker Hub.
+  baixadas quando faltam: a lista vem de `compose config --images` com o perfil `setup` (o que exige todos os arquivos
+  de ambiente, o `bootstrap.env` vazio incluído), `docker image inspect` decide antes do `pull`, e um erro na lista para
+  a partida com o motivo no journal. A partida não depende do Docker Hub.
 - **Credencial da AWS:** o diretório `/run/verax/wazuh-aws` (memória do host, só root), só leitura no manager em
   `/root/.aws`. Quem escreve nele é só o gerador (`manager-config`, sem rede).
 - **Memória e CPU:** indexer com 3 GiB, heap de 1,5 GiB travado e 1,5 CPU; manager com 1,5 GiB e 1 CPU. Com a

@@ -109,6 +109,9 @@ if $standard; then
   find /opt/verax/wazuh -type f -exec chmod 0644 {} +
   install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" /opt/verax/bin/
   install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer /etc/systemd/system/
+  # O verax-node passa a querer (Wants) o verax-wazuh: o restart do nó o sobe de novo mesmo quando ele tinha falhado.
+  install -d -m 0755 /etc/systemd/system/verax-node.service.d
+  install -m 0644 "$here/systemd/wazuh/verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf
 fi
 
 echo '== Pastas de dados'
@@ -184,8 +187,8 @@ systemctl enable verax-metadata-guard.service verax-node.service verax-backup.ti
 if $standard; then systemctl enable verax-wazuh.service >/dev/null; fi
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
-# Standard: o restart do verax-node já reinicia o verax-wazuh quando ele estava no ar (Requires); na primeira
-# instalação, o `start` o sobe (e espera o Wazuh ficar saudável; nada acontece se já estiver subindo).
+# Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
+# `start` espera o Wazuh ficar saudável (nada acontece a mais se já estiver subindo).
 if $standard; then
   systemctl start verax-wazuh.service
   systemctl enable --now verax-wazuh-alerts.timer >/dev/null

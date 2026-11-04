@@ -128,6 +128,10 @@ render() {
   else
     write_env memory.env "${MEMORY_LEAN[@]}"
   fi
+  # O bootstrap.env existe sempre, vazio: o serviço `bootstrap` (perfil setup) o exige, e o `config --images` do
+  # pull_images lê o projeto inteiro com esse perfil (sem o arquivo, o Compose recusa o projeto e nada é baixado). O
+  # `start.sh bootstrap` o preenche só durante a execução.
+  write_env bootstrap.env
   # Cada segredo numa atribuição própria. Lido direto num argumento (`write_env x "K=$(...)"`), uma falha passaria pelo
   # `set -e` sem parar nada, e o arquivo sairia com o valor vazio.
   local master migrator app session_key csrf_key
@@ -206,11 +210,14 @@ render() {
 # falta é baixado. Um `compose pull` a cada partida iria ao registro de cada imagem toda vez (as do Wazuh, no Docker
 # Hub, anônimo e com limite por IP) e, com o registro fora do ar num reboot, pararia a partida antes de o banco subir.
 pull_images() { # [--base]
-  local image
+  local images image
+  # A lista primeiro, numa atribuição própria: um erro do Compose (um arquivo de ambiente que falte) para a partida com
+  # o motivo no journal. Numa substituição de processo (`done < <(...)`), ele passaria em silêncio e nada seria baixado.
+  images=$(compose "$@" --profile setup config --images) || return 1
   while read -r image; do
     [[ -n $image ]] || continue
     docker image inspect "$image" >/dev/null 2>&1 || docker pull --quiet "$image"
-  done < <(compose "$@" --profile setup config --images)
+  done <<<"$images"
 }
 
 # Wazuh do perfil standard (verax-wazuh.service), depois da pilha da aplicação (o painel fica no ar antes; a tarefa
@@ -296,7 +303,9 @@ bootstrap() {
   # falhar depois de gerar a senha, as linhas marcadas nunca vão para a tela.
   local output status=0 secret_file=/root/verax-senha-temporaria
   output=$(compose --profile setup run --rm -T bootstrap) || status=$?
-  rm -f "$run/bootstrap.env"
+  # Vazio de novo, e não apagado: os dados do bootstrap saem da memória, e o arquivo continua existindo para o Compose
+  # (o `wazuh-up` e o próximo `up` leem o projeto inteiro).
+  write_env bootstrap.env
   grep -v '^VERAX_SENHA_TEMPORARIA' <<<"$output" || true
   if grep -q '^VERAX_SENHA_TEMPORARIA=' <<<"$output"; then
     (
