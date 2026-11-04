@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Front do Verax Control (React + Vite)",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && vite build && node ../../scripts/scan-bundle.mjs dist",
@@ -13,7 +14,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:e2e": "playwright test",
-    "test:e2e:fullstack": "playwright test -c playwright.fullstack.config.ts"
+    "test:e2e:fullstack": "playwright test -c playwright.fullstack.config.ts",
+    "test:e2e:sites": "playwright test -c playwright.sites.config.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "5.105.0",

@@ -17,6 +17,9 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['provisioning', 'waiting_customer_connection'],
     ['provisioning', 'provisioning_failed'],
     ['provisioning_failed', 'provisioning'],
+    // Disputa ou alerta de fraude durante o provisionamento (CP-04): suspenso para revisão humana.
+    ['provisioning', 'suspended'],
+    ['provisioning_failed', 'suspended'],
     ['waiting_customer_connection', 'active'],
     ['active', 'past_due'],
     ['past_due', 'suspended'],
@@ -31,6 +34,12 @@ describe('tabela de transições (plano §4b e §4d)', () => {
   it.each<[TenantState, TenantState]>([
     ['pending', 'active'],
     ['pending', 'deleted'],
+    // Boleto sem pagamento não tem disputa; a renovação não vence durante o provisionamento.
+    ['pending', 'suspended'],
+    ['provisioning', 'past_due'],
+    ['provisioning_failed', 'past_due'],
+    // Sair da revisão de fraude de quem nunca terminou de provisionar é operação do responsável (CP-11).
+    ['suspended', 'provisioning'],
     ['active', 'provisioning'],
     ['active', 'deleted'],
     ['canceled', 'active'],

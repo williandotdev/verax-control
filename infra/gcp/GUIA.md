@@ -115,8 +115,9 @@ projeto de `monitored_projects`, um sink que só copia (`verax-homolog-security`
 criada pela GCP); e, com `billing_account_id` preenchido, o orçamento na conta de faturamento. Liste em
 `monitored_projects` só projetos de teste.
 
-**Custo estimado:** cerca de R$ 613 por mês ligada o mês todo (VM, 60 GB de disco, snapshots, NAT, IP e o resto).
-Parada, cerca de R$ 70 (disco e IP). Ligue só nas janelas de teste:
+**Custo:** o de um nó `standard` ligado o mês todo (VM, 60 GB de disco, snapshots, NAT, IP e o resto; estime na
+[calculadora da Google Cloud](https://cloud.google.com/products/calculator)). Parada, sobram o disco, os snapshots e o
+IP reservado. Ligue só nas janelas de teste:
 
 ```bash
 gcloud compute instances stop verax-homolog --zone southamerica-east1-b --project PROJETO_DOS_NOS
@@ -574,7 +575,8 @@ expirarem.
 ## O plano de controle (`envs/control-plane`)
 
 O plano de controle é a parte da fase 3 que vende e provisiona: o site chama `POST /v1/public/checkout`, a Stripe
-avisa pelo webhook, e um worker executa o provisionamento do nó do cliente passo a passo (`plano-controle.md`, fase 3).
+avisa pelo webhook, e um worker executa o provisionamento do nó do cliente passo a passo (plano da fase 3, documento
+interno).
 Este ambiente cria a infraestrutura dele na GCP; o código do serviço (`apps/control-plane`) vem nos PRs CP-01 em
 diante. Fica no **projeto da Verax que hospeda o Firebase dos painéis**: o rewrite do Hosting para o Cloud Run exige o
 mesmo projeto, e o Firestore gratuito é um banco por projeto. Tudo o que é da Verax fica no nível gratuito: Cloud Run
@@ -600,7 +602,7 @@ liga, se um dia valer o custo.
 | Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
 | Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                   |
 | Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                            |
-| 2 alertas por log                                         | Provisionamento com falha e assinatura inválida no webhook, por e-mail (`alert_email`).                                                                                                                                                                                                                                                                                                                                                        |
+| 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                    |
 | Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): os papéis no projeto dos nós de
@@ -658,11 +660,15 @@ openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add cp-cookie-key
 ```
 
 - **Chave da Stripe:** uma chave **restrita** (não a `sk_`), com escrita em Checkout Sessions, Customers,
-  Subscriptions, Tax IDs e Billing Portal e leitura em Invoices e Events; a do sandbox primeiro (plano, seção 9, item
-  6). Trocar para produção é gravar uma versão nova (CP-13).
-- **Segredo do webhook:** no Workbench da Stripe, o endpoint `https://conta.veraxsistemas.com.br/v1/stripe/webhook`
-  com os 13 eventos da seção 4(b) do plano, formato _snapshot_ (item 7). O endpoint pode ser cadastrado antes de o
-  serviço existir.
+  Subscriptions, Tax IDs e Billing Portal e leitura em Invoices, Charges, Disputes, Radar (Early Fraud Warnings) e
+  Events (o webhook relê cada objeto antes de decidir, CP-04); a do sandbox primeiro (plano, seção 9, item 6). Trocar
+  para produção é gravar uma versão nova (CP-13).
+- **Segredo do webhook:** o endpoint `https://conta.veraxsistemas.com.br/v1/stripe/webhook` com os 13 eventos da
+  seção 4(b) do plano, formato _snapshot_ (item 7), pode ser cadastrado antes de o serviço existir. Duas formas: no
+  Workbench da Stripe, gravando o segredo de assinatura com a linha acima; ou pelo `stripe-setup` (CP-04), que cria o
+  endpoint e manda o segredo direto para `gcloud secrets versions add cp-stripe-webhook-secret --data-file=-`, sem
+  mostrá-lo (`--webhook-url=... --webhook-secret-name=cp-stripe-webhook-secret`; no WSL ou no Cloud Shell, porque no
+  Windows o Node não executa o `gcloud.cmd` sem shell; detalhes no cabeçalho do script).
 - **Token do Cloudflare:** só `Account > Cloudflare Tunnel > Edit` e `Zone > DNS > Edit`, restrito à zona
   `veraxsistemas.com.br`, validade de 1 ano (item 13). Os IDs da conta e da zona vão no `terraform.tfvars`
   (`cloudflare_account_id`, `cloudflare_zone_id`), não são segredo.
@@ -727,9 +733,11 @@ Do que a seção 9 do plano lista, o Terraform faz os itens 8 a 12 (APIs, banco,
 filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam com você:
 
 - **Stripe** (itens 1 a 7): produto e preços (`lookup_key` `verax_control_essencial_mensal` e
-  `verax_control_profissional_mensal`), cupom `FUNDADOR30`, cartão e boleto com validade de 3 dias, o link hospedado
+  `verax_control_profissional_mensal`; os valores ficam fora do repositório público), cupons, se houver (termos também
+  fora do repositório), cartão e boleto com validade de 3 dias, o link hospedado
   para confirmação, Smart Retries com "marcar como não paga", dados públicos, Portal do cliente, a chave restrita e o
-  webhook. Não há API para quase nada disso, e os dois últimos entram no passo 4.
+  webhook. O catálogo e o endpoint do webhook saem do `apps/control-plane/scripts/stripe-setup.ts` (CP-03 e CP-04); o
+  resto não tem API, e a chave e o segredo do webhook entram no passo 4.
 - **Firebase:** o plano Blaze neste projeto (passo 1; só o rewrite do Hosting para o Cloud Run exige) e, na primeira
   venda, um projeto **só para os painéis dos clientes** em `firebase_panel_projects` (item 14), e mais um a cada 36
   clientes. Esse projeto fica no plano Spark: site estático com domínio próprio não precisa de faturamento. O

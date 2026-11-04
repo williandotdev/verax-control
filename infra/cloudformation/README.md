@@ -178,8 +178,9 @@ arquivo editado. A trilha, o export do GuardDuty e a revogação de sessões fic
 ## Custos na sua conta
 
 O usuário, o grupo e as políticas não têm custo. A leitura gera requisições do S3 (e do KMS, nos buckets com SSE-KMS)
-e a transferência dos logs para fora da AWS, cobradas pela AWS conforme o volume. Com o CloudTrail compactado abaixo
-de 5 GB por mês, fica abaixo de US$ 1. O log completo do WAF pode pesar mais. A trilha e o export opcionais somam o
+e a transferência dos logs para fora da AWS, cobradas pela AWS conforme o volume (veja os
+[preços do S3](https://aws.amazon.com/s3/pricing/) ou estime na [calculadora da AWS](https://calculator.aws/)). Com o
+CloudTrail compactado, o volume é pequeno. O log completo do WAF pode pesar mais. A trilha e o export opcionais somam o
 armazenamento nos buckets novos e, no caso da trilha, a cópia extra dos eventos se a conta já tiver outra.
 
 ## Como remover

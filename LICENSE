@@ -1,0 +1,137 @@
+Licença do Verax Control: código-fonte disponível, todos os direitos reservados
+
+Copyright (c) 2026 Verax Sistemas, CNPJ 34.282.636/0001-95. Todos os direitos reservados.
+
+1. Titularidade. O Verax Control, com o código-fonte, o código-objeto, a documentação, os templates de
+   infraestrutura, os scripts, as regras de detecção, os textos e os elementos visuais deste repositório (o
+   "Software"), pertence exclusivamente à Verax Sistemas (a "Titular") e é protegido pela Lei nº 9.609/1998, pela Lei
+   nº 9.610/1998 e pelos tratados internacionais aplicáveis.
+
+2. Finalidade da publicação. O código-fonte é público apenas para leitura, revisão de segurança e auditoria por
+   clientes, potenciais clientes e pesquisadores de segurança. A publicação não transfere nenhum direito sobre o
+   Software e não é uma licença de código aberto.
+
+3. O que é permitido sem contrato:
+   a) ler o código-fonte no repositório público e em cópias locais feitas só para essa leitura;
+   b) analisá-lo, inclusive com ferramentas automatizadas, e executá-lo localmente, num ambiente isolado e fora de
+      produção, só para avaliar a segurança, a privacidade e o funcionamento do Software, sem atender terceiros e sem
+      dados de terceiros;
+   c) reportar vulnerabilidades e citar trechos curtos, com a fonte, em relatórios de segurança, avisos e trabalhos
+      acadêmicos, de acordo com o item 6.
+   As funcionalidades do GitHub para repositórios públicos (ver e criar fork dentro do GitHub) valem só na medida em
+   que os Termos de Serviço do GitHub as exigem, e não ampliam os direitos desta licença.
+
+4. O que é proibido sem autorização prévia e por escrito da Titular, em contrato assinado:
+   a) usar o Software, no todo ou em parte, para qualquer finalidade fora do item 3, inclusive uso interno ou em
+      produção;
+   b) copiar, reproduzir, modificar, traduzir, adaptar ou criar obras derivadas, além do que o item 3 permite;
+   c) distribuir, publicar, sublicenciar, vender, alugar, emprestar, ceder ou transferir o Software ou obras
+      derivadas;
+   d) executar o Software para terceiros ou oferecê-lo como serviço, inclusive como software como serviço, serviço
+      gerenciado ou hospedagem;
+   e) remover ou alterar avisos de direitos autorais, de licença ou de marca.
+   Esta licença não autoriza testes contra ambientes em produção da Titular ou dos clientes dela.
+
+5. Marcas. Esta licença não concede nenhum direito sobre os nomes "Verax", "Verax Sistemas" e "Verax Control", os
+   logotipos ou qualquer outro sinal distintivo da Titular.
+
+6. Divulgação responsável. Reporte vulnerabilidades de forma privada, como descreve o arquivo SECURITY.md deste
+   repositório, e não as divulgue antes do prazo combinado com a Titular.
+
+7. Componentes de terceiros. Os componentes de terceiros usados pelo Software continuam sob as licenças próprias
+   deles, e esta licença não se aplica a eles: as dependências instaladas pelo pnpm (declaradas nos arquivos
+   package.json e travadas no pnpm-lock.yaml), as imagens de contêiner baixadas na instalação dos registros dos
+   autores, como as do Wazuh (GPLv2) e a do Prowler (Apache-2.0), e os providers do Terraform. Este repositório não
+   redistribui essas imagens. Nos arquivos deste repositório baseados em arquivos de terceiros, a parte derivada
+   segue as obrigações da licença original.
+
+8. Sem garantia. Na máxima extensão permitida pela lei, o Software é fornecido "no estado em que se encontra", sem
+   garantia de nenhum tipo, expressa ou implícita, inclusive de funcionamento, adequação a uma finalidade
+   específica, ausência de defeitos ou de vulnerabilidades e não violação de direitos de terceiros.
+
+9. Limitação de responsabilidade. Na máxima extensão permitida pela lei, a Titular não responde por danos diretos,
+   indiretos, incidentais, especiais ou consequentes, nem por lucros cessantes ou perda de dados, decorrentes do
+   acesso a este repositório ou do uso do Software fora de um contrato com ela.
+
+10. Contrato. O uso comercial do Software, em qualquer modalidade, depende de contrato escrito com a Titular
+    (contato pelo site https://veraxsistemas.com.br). Havendo contrato, ele prevalece sobre esta licença no que
+    tratar.
+
+11. Fim das permissões. Qualquer violação desta licença encerra, de imediato e sem aviso, as permissões do item 3.
+
+12. Lei e foro. Esta licença é regida pelas leis da República Federativa do Brasil. Fica eleito o foro do domicílio
+    da Titular.
+
+13. Idioma. A tradução para o inglês abaixo é só uma referência: havendo divergência, vale o texto em português.
+
+--------------------------------------------------------------------------------------------------------------------
+
+English translation (for reference only; the Portuguese text above prevails)
+
+Verax Control License: source available, all rights reserved
+
+Copyright (c) 2026 Verax Sistemas, CNPJ 34.282.636/0001-95. All rights reserved.
+
+1. Ownership. Verax Control, including the source code, object code, documentation, infrastructure templates,
+   scripts, detection rules, texts and visual elements in this repository (the "Software"), is the exclusive
+   property of Verax Sistemas (the "Owner") and is protected by Brazilian Law No. 9,609/1998, Brazilian Law No.
+   9,610/1998 and the applicable international treaties.
+
+2. Purpose of publication. The source code is public only for reading, security review and auditing by customers,
+   prospective customers and security researchers. Publication transfers no rights in the Software and is not an
+   open source license.
+
+3. What is allowed without an agreement:
+   a) reading the source code in the public repository and in local copies made only for such reading;
+   b) analyzing it, including with automated tools, and running it locally, in an isolated non-production
+      environment, only to assess the security, privacy and behavior of the Software, without serving third parties
+      and without third-party data;
+   c) reporting vulnerabilities and quoting short excerpts, with attribution, in security reports, advisories and
+      academic work, in accordance with section 6.
+   GitHub features for public repositories (viewing and forking within GitHub) apply only to the extent required by
+   the GitHub Terms of Service, and do not expand the rights under this license.
+
+4. What is prohibited without the Owner's prior written authorization, in a signed agreement:
+   a) using the Software, in whole or in part, for any purpose outside section 3, including internal or production
+      use;
+   b) copying, reproducing, modifying, translating, adapting or creating derivative works, beyond what section 3
+      allows;
+   c) distributing, publishing, sublicensing, selling, renting, lending, assigning or transferring the Software or
+      derivative works;
+   d) running the Software for third parties or offering it as a service, including as software as a service, a
+      managed service or hosting;
+   e) removing or altering copyright, license or trademark notices.
+   This license does not authorize testing against production environments of the Owner or its customers.
+
+5. Trademarks. This license grants no rights to the names "Verax", "Verax Sistemas" and "Verax Control", the logos
+   or any other distinctive sign of the Owner.
+
+6. Responsible disclosure. Report vulnerabilities privately, as described in this repository's SECURITY.md file,
+   and do not disclose them before the deadline agreed with the Owner.
+
+7. Third-party components. Third-party components used by the Software remain under their own licenses, and this
+   license does not apply to them: the dependencies installed by pnpm (declared in the package.json files and locked
+   in pnpm-lock.yaml), the container images downloaded at installation from their authors' registries, such as the
+   Wazuh images (GPLv2) and the Prowler image (Apache-2.0), and the Terraform providers. This repository does not
+   redistribute those images. In files of this repository based on third-party files, the derived portion remains
+   subject to the obligations of the original license.
+
+8. No warranty. To the maximum extent permitted by law, the Software is provided "as is", without warranty of any
+   kind, express or implied, including of operation, fitness for a particular purpose, absence of defects or
+   vulnerabilities, and non-infringement of third-party rights.
+
+9. Limitation of liability. To the maximum extent permitted by law, the Owner is not liable for any direct,
+   indirect, incidental, special or consequential damages, lost profits or data loss arising from access to this
+   repository or from use of the Software outside an agreement with the Owner.
+
+10. Agreement. Commercial use of the Software, in any form, requires a written agreement with the Owner (contact
+    through https://veraxsistemas.com.br). Where an agreement exists, it prevails over this license on the matters it
+    covers.
+
+11. Termination of permissions. Any breach of this license immediately terminates, without notice, the permissions
+    in section 3.
+
+12. Governing law and venue. This license is governed by the laws of the Federative Republic of Brazil. The courts
+    of the Owner's domicile are chosen as the venue.
+
+13. Language. The English translation is for reference only: in case of divergence, the Portuguese text prevails.
