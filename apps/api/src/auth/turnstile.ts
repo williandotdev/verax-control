@@ -23,7 +23,7 @@ export const TURNSTILE_ACTIONS: ReadonlyMap<string, string> = new Map([
  * Chave de site real da Cloudflare (`0x…`): o `hostname` do siteverify precisa ser o do painel. As de teste (`1x…`,
  * `2x…`, `3x…`) respondem com um hostname fictício, e a conferência não se aplica.
  */
-const REAL_SITE_KEY = /^0x/;
+const REAL_SITE_KEY_PREFIX = '0x';
 
 /** O siteverify responde em bem menos que isso; passou, a API recusa o login (fecha, não abre). */
 export const TURNSTILE_SITEVERIFY_TIMEOUT_MS = 5_000;
@@ -95,9 +95,10 @@ export function createTurnstileVerifier(
   const { TURNSTILE_SECRET_KEY: secret, TURNSTILE_SITEVERIFY_URL: url } = config;
   if (typeof secret !== 'string') return undefined;
   // Com uma chave real, o token só vale se foi resolvido numa página do painel (o `WEB_ORIGIN` deste nó).
-  const expectedHostname = REAL_SITE_KEY.test(config.TURNSTILE_SITE_KEY ?? '')
-    ? new URL(config.WEB_ORIGIN).hostname
-    : undefined;
+  const expectedHostname =
+    config.TURNSTILE_SITE_KEY?.startsWith(REAL_SITE_KEY_PREFIX) === true
+      ? new URL(config.WEB_ORIGIN).hostname
+      : undefined;
 
   return {
     async verify(token, remoteIp, expectedAction) {

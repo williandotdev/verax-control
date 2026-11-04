@@ -9,7 +9,7 @@ import { skipDemoTour } from './demo-tour';
  * O mock devolve a chave em `GET /v1/auth/client-config` e, com ela, exige o header, como a API.
  */
 
-const PASS_KEY = '1x00000000000000000000AA';
+const ALLOW_KEY = '1x00000000000000000000AA';
 const BLOCK_KEY = '2x00000000000000000000AB';
 
 async function withSiteKey(page: Page, siteKey: string): Promise<void> {
@@ -43,7 +43,7 @@ test.describe('Turnstile (modo mock, chaves de teste da Cloudflare)', () => {
   test('chave que sempre passa: widget no login e no "esqueci a senha", e o token no header dos dois', async ({
     page,
   }) => {
-    await withSiteKey(page, PASS_KEY);
+    await withSiteKey(page, ALLOW_KEY);
     await page.goto('/login');
     await expect(widget(page)).toBeVisible();
     await expect(page.getByText('Carregando verificação…')).toHaveCount(0);
@@ -86,7 +86,7 @@ test.describe('Turnstile (modo mock, chaves de teste da Cloudflare)', () => {
   });
 
   test('tema escuro: o widget acompanha, sem violação de acessibilidade', async ({ page }) => {
-    await withSiteKey(page, PASS_KEY);
+    await withSiteKey(page, ALLOW_KEY);
     await page.addInitScript(() => window.localStorage.setItem('verax.theme', 'dark'));
     await page.goto('/login');
     await expect(widget(page)).toBeVisible();
