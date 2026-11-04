@@ -19,6 +19,8 @@ export interface MockState {
   /** Login com MFA: devolve só o desafio do código (padrão). */
   mfa?: boolean;
   pendingCode?: boolean;
+  /** Chave do site do Turnstile que a configuração pública devolve. Sem informar, vem do `localStorage` (ou nada). */
+  turnstileSiteKey?: string | null;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -36,6 +38,7 @@ const ALLOWED_WITH_TEMPORARY_PASSWORD = new Set([
   'POST /v1/auth/sign-in/email',
   'POST /v1/auth/request-password-reset',
   'POST /v1/auth/reset-password',
+  'GET /v1/auth/client-config',
 ]);
 
 function roleFromStorage(): Role {

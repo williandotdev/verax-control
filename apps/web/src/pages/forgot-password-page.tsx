@@ -2,8 +2,11 @@ import { type FormEvent, useState } from 'react';
 import { Link } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
-import { authErrorMessage, requestPasswordReset } from '@/features/auth/auth-api';
+import { authErrorMessage, isTurnstileRefusal, requestPasswordReset } from '@/features/auth/auth-api';
 import { AuthShell, FormError, FormNotice } from '@/features/auth/auth-shell';
+import { useAuthClientConfig } from '@/features/auth/client-config';
+import { useTurnstile } from '@/features/auth/turnstile';
+import { TurnstileWidget } from '@/features/auth/turnstile-widget';
 import { ApiRequestError } from '@/lib/api-client';
 
 /** A resposta é sempre a mesma, exista ou não o e-mail (não revela quem tem acesso ao painel). */
@@ -19,19 +22,30 @@ export function ForgotPasswordPage() {
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  // Turnstile só com a chave do site vinda da API; sem ela, o formulário é o de sempre.
+  const clientConfig = useAuthClientConfig();
+  const siteKey = clientConfig.data?.turnstileSiteKey ?? null;
+  const turnstile = useTurnstile(siteKey, 'password-reset');
+  const waitingTurnstile = clientConfig.isPending || (siteKey !== null && turnstile.token === undefined);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError(undefined);
     setSubmitting(true);
     try {
-      await requestPasswordReset(email.trim());
+      await requestPasswordReset(email.trim(), turnstile.token);
       setSent(true);
     } catch (caught) {
-      // Só limite de tentativas, falha do servidor ou de rede aparecem como erro; qualquer outra recusa mostra
-      // a mesma mensagem de sucesso, para não revelar nada sobre o e-mail.
-      if (caught instanceof ApiRequestError && caught.status < 500 && caught.status !== 429) setSent(true);
-      else setError(authErrorMessage(caught, 'sign-in'));
+      // Só limite de tentativas, falha do servidor, de rede ou do Turnstile aparecem como erro; qualquer outra recusa
+      // mostra a mesma mensagem de sucesso, para não revelar nada sobre o e-mail.
+      const refused = caught instanceof ApiRequestError && caught.status < 500 && caught.status !== 429;
+      if (refused && !isTurnstileRefusal(caught)) {
+        setSent(true);
+        return;
+      }
+      setError(authErrorMessage(caught, 'sign-in'));
+      // Cada token vale uma vez: a próxima tentativa precisa de outro.
+      turnstile.reset();
     } finally {
       setSubmitting(false);
     }
@@ -56,7 +70,14 @@ export function ForgotPasswordPage() {
             value={email}
             onChange={(event) => setEmail(event.target.value)}
           />
-          <Button type="submit" className="w-full" disabled={submitting || !email.includes('@')}>
+          {siteKey !== null && (
+            <TurnstileWidget containerRef={turnstile.containerRef} status={turnstile.status} />
+          )}
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={submitting || !email.includes('@') || waitingTurnstile}
+          >
             Enviar link
           </Button>
           <Link to="/login" className="block text-center text-sm underline">
