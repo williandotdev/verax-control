@@ -172,12 +172,14 @@ _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em
 - **Chave do nó:** com `CREDENTIALS_VAULT=true` no `node.conf` (o nó da Verax não liga), nasce na VM, na instalação,
   se o segredo `<prefixo>-credentials-key` do Secret Manager estiver vazio, e vai direto para ele, sem passar pelo
   disco. A permissão de acrescentar versões vale só nesse segredo. A chave privada nunca sai da GCP e não é gravada no
-  disco do nó: a cada partida, o `start.sh` escreve as versões ativas num arquivo do tmpfs (`/run/verax/worker-keys`,
-  0400, só o usuário do worker lê), montado só leitura no worker (`compose.vault.yaml`), e a API recebe só a pública.
-  As privadas não vão por variável de ambiente, porque o Docker grava o ambiente de cada contêiner na configuração
-  dele, em `/var/lib/docker`, que está no disco e nos snapshots; de um arquivo montado, só o caminho vai para lá. O
-  swap é cifrado com uma chave que some a cada boot (seção "Perfis de nó"). Por isso, os backups do banco e os
-  snapshots do disco não levam a chave privada nem credencial em claro.
+  disco do nó: a cada partida, o `start.sh` escreve as versões ativas num arquivo do tmpfs
+  (`/run/verax/vault/worker-keys`, 0400, só o usuário do worker lê), numa pasta montada só leitura no worker
+  (`compose.vault.yaml`; a pasta, e não o arquivo, porque a origem de um bind mount que falta vira uma pasta criada
+  pelo Docker ao subir o contêiner), e a API recebe só a pública. A parada do nó apaga a pasta. As privadas não vão
+  por variável de ambiente, porque o Docker grava o ambiente de cada contêiner na configuração dele, em
+  `/var/lib/docker`, que está no disco e nos snapshots; de um volume montado, só o caminho vai para lá. O swap é
+  cifrado com uma chave que some a cada boot (seção "Perfis de nó"). Por isso, os backups do banco e os snapshots do
+  disco não levam a chave privada nem credencial em claro.
 - **Versões:** a versão do segredo é a versão da chave. Uma tarefa diária do worker recifra as linhas antigas. Na
   saída de um cliente, destruir a versão depois do prazo dos backups inutiliza o texto cifrado que sobrou neles.
 - **Validação antes de gravar:** só os admins (`admin_cliente` e `admin_verax`) colam, com permissão própria e limite

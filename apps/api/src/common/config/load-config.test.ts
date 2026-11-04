@@ -417,17 +417,37 @@ describe('cofre de credenciais no ambiente (fase 2)', () => {
     expect(JSON.stringify(config)).toContain('[chaves privadas do cofre]');
   });
 
-  it('o worker recusa as chaves privadas pelo ambiente: só por arquivo', () => {
-    // O ambiente do contêiner fica gravado no disco do nó (configuração do Docker) e nos snapshots dele.
-    const problems = problemsOfWorker({
-      ...workerEnv,
-      CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}`,
-      CREDENTIALS_KEY_CURRENT: '1',
-    });
-    expect(problems).toEqual([
-      'CREDENTIALS_PRIVATE_KEYS: as chaves privadas do cofre vêm por arquivo (CREDENTIALS_PRIVATE_KEYS_FILE), nunca pelo ambiente',
-    ]);
-    expect(problems.join(' ')).not.toContain(privateKey64.slice(0, 40));
+  it('o worker recusa chave privada pelo ambiente: qualquer nome com PRIVATE_KEY, menos o caminho do arquivo', () => {
+    // O ambiente do contêiner fica gravado no disco do nó (configuração do Docker) e nos snapshots dele. A mesma
+    // régua da API, com a única exceção do caminho do arquivo.
+    const refused =
+      'as chaves privadas do cofre vêm por arquivo (CREDENTIALS_PRIVATE_KEYS_FILE), nunca pelo ambiente';
+    for (const extra of [
+      { CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}` },
+      { CREDENTIALS_PRIVATE_KEY: privateKey64 },
+      { CREDENTIALS_PRIVATEKEY_V1: privateKey64 },
+      { VAULT_PRIVATE_KEY: privateKey64 },
+      { privateKey: privateKey64 },
+      { CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}`, WORKER_PRIVATE_KEY_PEM: privateKey64 },
+    ]) {
+      const problems = problemsOfWorker({
+        ...workerEnv,
+        CREDENTIALS_PRIVATE_KEYS_FILE: keysFile,
+        CREDENTIALS_KEY_CURRENT: '2',
+        ...extra,
+      });
+      expect(problems).toEqual(Object.keys(extra).map((key) => `${key}: ${refused}`));
+      expect(problems.join(' ')).not.toContain(privateKey64.slice(0, 40));
+    }
+    // O caminho do arquivo é a exceção, e um nome parecido sem PRIVATE_KEY passa.
+    expect(
+      loadWorkerConfig({
+        ...workerEnv,
+        CREDENTIALS_PRIVATE_KEYS_FILE: keysFile,
+        CREDENTIALS_KEY_CURRENT: '2',
+        PRIVATE_NETWORK: 'sim',
+      }).credentialsKeyring?.current,
+    ).toBe(2);
   });
 
   it('o worker recusa par incompleto, arquivo ilegível, corrente fora da lista e chave pública no lugar da privada, sem o valor', () => {

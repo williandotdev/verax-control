@@ -2,11 +2,16 @@
 # passa os dois (`-f compose.yaml -f compose.vault.yaml`), e o Compose soma este volume aos do worker. O nó da Verax,
 # sem a linha (ou com false), sobe só com o compose.yaml, como antes do cofre.
 #
-# As chaves privadas do cofre chegam ao worker por este arquivo, que o start.sh escreve em /run/verax (memória) a cada
+# As chaves privadas do cofre chegam ao worker pela pasta /run/verax/vault (memória), que o start.sh escreve a cada
 # partida, e não pelo worker.env: o Docker grava o ambiente de cada contêiner na configuração dele, em /var/lib/docker,
-# que está no disco do nó e nos snapshots dele. De um arquivo montado, só o caminho vai para lá. O caminho de destino é
-# o CREDENTIALS_PRIVATE_KEYS_FILE que o start.sh escreve no worker.env (WORKER_KEYS_MOUNT; o CI confere que batem).
+# que está no disco do nó e nos snapshots dele. De um volume montado, só o caminho vai para lá. O volume é a pasta, e
+# não o arquivo das chaves (/run/verax/vault/worker-keys), porque a origem de um bind mount que não existe vira uma
+# pasta criada pelo Docker ao subir o contêiner (um worker que o Docker reinicia depois de um reboot inesperado, antes
+# do verax-node.service, encontraria /run vazio e criaria uma pasta no lugar do arquivo), e porque um arquivo dentro de
+# uma pasta montada pode ser trocado de uma vez (rename), sem o contêiner ficar preso à versão antiga. O destino é o
+# WORKER_VAULT_MOUNT do start.sh, e o arquivo dentro dele, o CREDENTIALS_PRIVATE_KEYS_FILE que ele escreve no
+# worker.env (WORKER_KEYS_MOUNT; o CI confere que batem).
 services:
   worker:
     volumes:
-      - /run/verax/worker-keys:/run/vault/worker-keys:ro
+      - /run/verax/vault:/run/vault:ro

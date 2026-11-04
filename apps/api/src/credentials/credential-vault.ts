@@ -34,11 +34,24 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** ID da conta no provedor: 12 dígitos (AWS) ou 32 hexadecimais (Cloudflare). Sem `:`, que separa o rótulo. */
 const PROVIDER_ACCOUNT_ID = /^[A-Za-z0-9-]{1,64}$/;
 
-/** Formatos aceitos (os mesmos que o contrato da tela vai conferir antes, no PR-V3). */
+/**
+ * Formatos aceitos (os mesmos que o contrato da tela vai conferir antes, no PR-V3). Expressões ancoradas, de tamanho
+ * limitado e sem quantificador aninhado: o tempo de conferir é proporcional ao tamanho da entrada.
+ */
 export const AWS_ACCESS_KEY_ID = /^AKIA[A-Z0-9]{16}$/;
 export const AWS_SECRET_ACCESS_KEY = /^[A-Za-z0-9/+]{40}$/;
 /** Token do Cloudflare: o alfabeto do Bearer (RFC 6750), com tamanho limitado. */
 export const CLOUDFLARE_API_TOKEN = /^[A-Za-z0-9._~+/-]{20,255}={0,2}$/;
+
+/**
+ * O texto claro de cada tipo, em JSON de chaves curtas. É a régua única do formato: os invólucros a aplicam ao que a
+ * API recebe colado (antes de cifrar), e `open`, ao que saiu da cifra.
+ */
+const awsPayload = z.strictObject({
+  i: z.string().regex(AWS_ACCESS_KEY_ID),
+  s: z.string().regex(AWS_SECRET_ACCESS_KEY),
+});
+const cloudflarePayload = z.strictObject({ t: z.string().regex(CLOUDFLARE_API_TOKEN) });
 
 /** Provedor de cada tipo de credencial: a credencial da AWS só vale numa conta AWS, e a do Cloudflare, numa Cloudflare. */
 export const CREDENTIAL_KIND_PROVIDER = {
@@ -106,7 +119,7 @@ export class StaticAwsCredentials {
   readonly #secretAccessKey: string;
 
   constructor(accessKeyId: string, secretAccessKey: string) {
-    if (!AWS_ACCESS_KEY_ID.test(accessKeyId) || !AWS_SECRET_ACCESS_KEY.test(secretAccessKey)) {
+    if (!awsPayload.safeParse({ i: accessKeyId, s: secretAccessKey }).success) {
       throw new CredentialVaultError('secret_invalid');
     }
     registerLiveSecret(secretAccessKey);
@@ -146,7 +159,7 @@ export class CloudflareToken {
   readonly #token: string;
 
   constructor(token: string) {
-    if (!CLOUDFLARE_API_TOKEN.test(token)) throw new CredentialVaultError('secret_invalid');
+    if (!cloudflarePayload.safeParse({ t: token }).success) throw new CredentialVaultError('secret_invalid');
     registerLiveSecret(token);
     this.#token = token;
   }
@@ -180,18 +193,12 @@ export interface SealedCredential {
   keyVersion: number;
 }
 
-const awsPayload = z.strictObject({
-  i: z.string().regex(AWS_ACCESS_KEY_ID),
-  s: z.string().regex(AWS_SECRET_ACCESS_KEY),
-});
-const cloudflarePayload = z.strictObject({ t: z.string().regex(CLOUDFLARE_API_TOKEN) });
-
-function payloadOf(secret: VaultSecret): string {
-  if (secret instanceof StaticAwsCredentials) {
-    const { accessKeyId, secretAccessKey } = secret.identity();
+function payloadOf(credential: VaultSecret): string {
+  if (credential instanceof StaticAwsCredentials) {
+    const { accessKeyId, secretAccessKey } = credential.identity();
     return JSON.stringify({ i: accessKeyId, s: secretAccessKey });
   }
-  return JSON.stringify({ t: secret.value() });
+  return JSON.stringify({ t: credential.value() });
 }
 
 /** RSA-OAEP com SHA-256 e o rótulo da amarração, igual ao cifrar e ao decifrar. */
@@ -203,11 +210,11 @@ function oaep(key: KeyObject, label: Buffer) {
 export function seal(
   publicKey: VaultPublicKey,
   binding: CredentialBinding,
-  secret: VaultSecret,
+  credential: VaultSecret,
 ): SealedCredential {
-  if (secret.kind !== binding.kind) throw new CredentialVaultError('binding_invalid');
+  if (credential.kind !== binding.kind) throw new CredentialVaultError('binding_invalid');
   const label = oaepLabel(binding);
-  const plaintext = Buffer.from(payloadOf(secret), 'utf8');
+  const plaintext = Buffer.from(payloadOf(credential), 'utf8');
   try {
     if (plaintext.length > MAX_PLAINTEXT_BYTES) throw new CredentialVaultError('plaintext_too_large');
     const encrypted = publicEncrypt(oaep(publicKey.key, label), plaintext);

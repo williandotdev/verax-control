@@ -90,8 +90,8 @@ export function isSensitiveKey(key: string): boolean {
 
 export function scrubString(value: string): string {
   let text = value;
-  for (const secret of liveSecrets) {
-    if (text.includes(secret)) text = text.replaceAll(secret, REDACTED);
+  for (const liveValue of liveSecrets) {
+    if (text.includes(liveValue)) text = text.replaceAll(liveValue, REDACTED);
   }
   return VALUE_PATTERNS.reduce(
     (result, [pattern, replacement]) => result.replace(pattern, replacement),

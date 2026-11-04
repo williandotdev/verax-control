@@ -84,18 +84,24 @@ function vaultKey<T>(build: () => T, path: string, ctx: z.RefinementCtx): T | nu
   }
 }
 
+/** A única variável do worker com `PRIVATE_KEY` no nome: o caminho do arquivo das privadas. */
+const WORKER_KEYS_FILE_VARIABLE = 'CREDENTIALS_PRIVATE_KEYS_FILE';
+
 /**
- * As chaves privadas do worker vêm só pelo arquivo (`CREDENTIALS_PRIVATE_KEYS_FILE`): uma variável com elas no
- * ambiente é recusada antes de qualquer outra checagem, porque o ambiente do contêiner fica gravado no disco do nó.
+ * As chaves privadas do worker vêm só pelo arquivo (`CREDENTIALS_PRIVATE_KEYS_FILE`): qualquer outra variável com
+ * `PRIVATE_KEY` no nome (a mesma régua da API) é recusada antes de qualquer outra checagem, porque o ambiente do
+ * contêiner fica gravado no disco do nó. A mensagem cita só o nome da variável.
  */
 function refuseKeysInEnvironment(source: unknown, ctx: z.RefinementCtx): unknown {
-  if (typeof source === 'object' && source !== null && 'CREDENTIALS_PRIVATE_KEYS' in source) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['CREDENTIALS_PRIVATE_KEYS'],
-      message:
-        'as chaves privadas do cofre vêm por arquivo (CREDENTIALS_PRIVATE_KEYS_FILE), nunca pelo ambiente',
-    });
+  if (typeof source !== 'object' || source === null) return source;
+  for (const key of Object.keys(source)) {
+    if (key !== WORKER_KEYS_FILE_VARIABLE && /PRIVATE_?KEY/i.test(key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: `as chaves privadas do cofre vêm por arquivo (${WORKER_KEYS_FILE_VARIABLE}), nunca pelo ambiente`,
+      });
+    }
   }
   return source;
 }

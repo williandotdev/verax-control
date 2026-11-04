@@ -61,8 +61,9 @@ desligado no nó da Verax: sem a linha no `node.conf`, vale `false`, nada é lid
 sobem como antes. Ligar pede, nesta ordem: o segredo `verax-node-credentials-key` (`credentials_vault = true` em
 `infra/gcp/envs/verax/main.tf` e um `apply`), `CREDENTIALS_VAULT=true` no `node.conf` e um deploy. Na instalação, o
 `install.sh` gera a chave na VM e a grava direto no segredo; a cada partida, o `start.sh` entrega a chave pública à API
-e as privadas ao worker, num arquivo em memória (`/run/verax/worker-keys`) montado só leitura nele, nunca por variável
-de ambiente (o Docker grava o ambiente dos contêineres no disco).
+e as privadas ao worker, num arquivo em memória (`/run/verax/vault/worker-keys`, numa pasta montada só leitura nele),
+nunca por variável de ambiente (o Docker grava o ambiente dos contêineres no disco). A parada (`start.sh down`) apaga
+a pasta.
 
 ### Chave do cofre: trocar, reativar ou gravar de novo
 
@@ -89,8 +90,9 @@ gcloud secrets versions disable N --secret PREFIXO-credentials-key --project PRO
 **A partida para numa versão que não é chave** (RSA de 3072 a 4096 bits em PEM): a mensagem diz qual; desative-a e
 reinicie. O `start.sh` confere todas as versões ativas, porque o worker recusaria qualquer uma e cairia em laço.
 
-**Nenhuma versão ativa** (o nó sobe sem o cofre, com aviso): se as versões foram desativadas, reative a mais recente
-(`gcloud secrets versions enable N ...`) e reinicie; se foram destruídas, grave uma chave nova como na troca (o que
+**Nenhuma versão ativa** (o nó sobe sem o cofre, com aviso): o aviso diz qual é o caso, porque o Secret Manager
+informa o estado de cada versão. Se há versão desativada, reative a mais recente delas (`gcloud secrets versions
+enable N ...`, com o `N` do aviso) e reinicie; se todas foram destruídas, grave uma chave nova como na troca (o que
 estava cifrado com as destruídas se perdeu: os admins colam as credenciais de novo). Só um segredo recriado, sem versão
 nenhuma, volta a ganhar chave pelo `install.sh` (um deploy).
 

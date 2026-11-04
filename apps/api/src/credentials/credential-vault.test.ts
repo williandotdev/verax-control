@@ -251,6 +251,46 @@ describe('cofre de credenciais', () => {
     expect(vaultError(() => new CloudflareToken('x'.repeat(256)))).toBe('secret_invalid');
   });
 
+  it('formatos nos limites: 40 caracteres no segredo da AWS, AKIA e 16 no ID; de 20 a 255 no token, com até dois = no fim', () => {
+    // Os formatos são os mesmos que `open` aplica ao texto decifrado (a régua é uma só).
+    const base64Of = (length: number) => 'aB9/+'.repeat(Math.ceil(length / 5)).slice(0, length);
+    expect(new StaticAwsCredentials(accessKeyId(), base64Of(40)).identity().secretAccessKey).toBe(
+      base64Of(40),
+    );
+    for (const value of [
+      base64Of(39),
+      base64Of(41),
+      `${base64Of(39)}=`,
+      `${base64Of(39)}-`,
+      `${base64Of(39)} `,
+    ]) {
+      expect(vaultError(() => new StaticAwsCredentials(accessKeyId(), value))).toBe('secret_invalid');
+    }
+    expect(new StaticAwsCredentials(`AKIA${'Z9'.repeat(8)}`, base64Of(40)).keyIdSuffix).toBe('Z9Z9');
+    for (const id of [
+      `AKIA${'A'.repeat(15)}`,
+      `AKIA${'A'.repeat(17)}`,
+      `AKIA${'a'.repeat(16)}`,
+      `akia${'A'.repeat(16)}`,
+      `AKIA${'A'.repeat(15)}-`,
+    ]) {
+      expect(vaultError(() => new StaticAwsCredentials(id, base64Of(40)))).toBe('secret_invalid');
+    }
+    const bearerOf = (length: number) => 'aZ9._~+/-'.repeat(Math.ceil(length / 9)).slice(0, length);
+    for (const token of [bearerOf(20), bearerOf(255), `${bearerOf(255)}==`, `${bearerOf(20)}=`]) {
+      expect(new CloudflareToken(token).value()).toBe(token);
+    }
+    for (const token of [
+      bearerOf(19),
+      bearerOf(256),
+      `${bearerOf(20)}===`,
+      `${bearerOf(20)}=x`,
+      `=${bearerOf(20)}`,
+    ]) {
+      expect(vaultError(() => new CloudflareToken(token))).toBe('secret_invalid');
+    }
+  });
+
   it('o tipo da credencial é o do provedor da conta, e a amarração não aceita separador nem ID inválido', () => {
     const account = { id: randomUUID(), tenantId: randomUUID(), accountId: 'projeto-de-teste' };
     expect(vaultError(() => credentialBinding({ ...account, provider: 'gcp' }, 'aws_access_key'))).toBe(
