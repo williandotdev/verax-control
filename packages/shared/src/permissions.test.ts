@@ -28,6 +28,14 @@ describe('matriz de permissões', () => {
     expect(hasPermission('leitura', 'audit:read')).toBe(false);
   });
 
+  it('agentes: todos leem a lista e as instruções; só administradores veem a senha de registro', () => {
+    for (const role of ROLES) expect(hasPermission(role, 'agents:read')).toBe(true);
+    expect(ROLES.filter((role) => hasPermission(role, 'agents:enroll'))).toEqual([
+      'admin_verax',
+      'admin_cliente',
+    ]);
+  });
+
   it('todo papel referenciado na matriz existe', () => {
     for (const roles of Object.values(PERMISSIONS)) {
       for (const role of roles) expect(isRole(role)).toBe(true);
