@@ -1,8 +1,10 @@
 #!/bin/bash
-# Partida e parada do nó (verax-node.service) e a primeira configuração. Uso (root, na VM):
-#   start.sh up          monta os arquivos de ambiente e sobe banco, papéis, migrations, API, worker e túnel; no perfil
-#                        standard, depois deles, o Wazuh (indexer e manager)
+# Partida e parada do nó (verax-node.service e, no standard, verax-wazuh.service) e a primeira configuração. Uso
+# (root, na VM):
+#   start.sh up          monta os arquivos de ambiente e sobe banco, papéis, migrations, API, worker e túnel
 #   start.sh down        para tudo (os dados ficam em /var/lib/verax e nos volumes do Docker)
+#   start.sh wazuh-up    perfil standard, depois do `up` (verax-wazuh.service): sobe o Wazuh (indexer e manager)
+#   start.sh wazuh-down  para o indexer e o manager
 #   start.sh bootstrap   primeiro admin, cliente e contas (variáveis BOOTSTRAP_*; ver docs/runbooks/no-verax.md)
 #
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
@@ -17,9 +19,6 @@ source /etc/verax/node.conf
 
 secrets=/var/lib/verax/secrets
 run=/run/verax
-# Rede dos contêineres e o IP do worker: os mesmos do compose.yaml.
-NODE_SUBNET=172.30.53.0/24
-WORKER_IP=172.30.53.10
 # Memória dos contêineres por perfil do nó (NODE_PROFILE no node.conf; sem a linha, lean). O lean repete os valores de
 # antes do perfil, que também são o padrão do compose.yaml (o CI confere); o standard é o nó de cliente, com 8 GB.
 MEMORY_LEAN=(POSTGRES_MEM_LIMIT=256m POSTGRES_SHARED_BUFFERS=32MB API_MEM_LIMIT=320m API_HEAP_MB=192 WORKER_MEM_LIMIT=256m WORKER_HEAP_MB=160)
@@ -27,9 +26,13 @@ MEMORY_STANDARD=(POSTGRES_MEM_LIMIT=512m POSTGRES_SHARED_BUFFERS=128MB API_MEM_L
 # Wazuh só no perfil standard (PR-W1): o segundo arquivo do Compose e a cópia de infra/wazuh que o install.sh instala.
 wazuh=/opt/verax/wazuh
 standard() { [[ ${NODE_PROFILE:-lean} == standard ]]; }
-compose() {
+compose() { # [--base] <argumentos do compose...>; --base: só o compose.yaml (a pilha da aplicação), mesmo no standard
   local files=(-f /opt/verax/compose.yaml) env_files=(--env-file /etc/verax/images.env)
-  if standard; then files+=(-f /opt/verax/compose.wazuh.yaml); fi
+  if [[ ${1:-} == --base ]]; then
+    shift
+  elif standard; then
+    files+=(-f /opt/verax/compose.wazuh.yaml)
+  fi
   # Antes do render (no `down` depois de um reboot), o arquivo da memória ainda não existe; o `down` não precisa dele.
   if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
   docker compose --project-directory /opt/verax "${files[@]}" "${env_files[@]}" "$@"
@@ -87,17 +90,44 @@ write_env() { # <arquivo> <CHAVE=valor...>
   done
 }
 
+# Standard: as quatro senhas do Wazuh (admin do indexer, wazuh_filebeat do manager, wazuh-wui da API do manager e o
+# usuário só leitura verax_api_read), geradas pelo install.sh. Conferidas antes de qualquer arquivo ser escrito: num
+# nó que passou a standard sem rodar o install.sh de novo, a falta é dita com todas as letras, e nada sobe pela metade.
+# Formato que todos os componentes aceitam e senhas diferentes entre si (scripts/lib-passwords.sh).
+wazuh_passwords() {
+  local name
+  for name in wazuh-indexer-admin wazuh-indexer-filebeat wazuh-api wazuh-indexer-read; do
+    if [[ ! -s $secrets/$name ]]; then
+      echo "Falta $secrets/$name: o perfil standard precisa das senhas do Wazuh, que o install.sh gera. Rode o" \
+        "deploy.sh (ou o install.sh na VM) de novo antes de subir o nó." >&2
+      return 1
+    fi
+  done
+  # shellcheck source=SCRIPTDIR/../../wazuh/scripts/lib-passwords.sh
+  source "$wazuh/scripts/lib-passwords.sh"
+  INDEXER_ADMIN_PASSWORD=$(internal_secret wazuh-indexer-admin)
+  INDEXER_FILEBEAT_PASSWORD=$(internal_secret wazuh-indexer-filebeat)
+  WAZUH_API_PASSWORD=$(internal_secret wazuh-api)
+  INDEXER_API_READ_PASSWORD=$(internal_secret wazuh-indexer-read)
+  check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+}
+
 render() {
-  mkdir -p "$run"
-  chmod 0700 "$run"
   case ${NODE_PROFILE:-lean} in
-    lean) write_env memory.env "${MEMORY_LEAN[@]}" ;;
-    standard) write_env memory.env "${MEMORY_STANDARD[@]}" ;;
+    lean | standard) ;;
     *)
       echo 'NODE_PROFILE inválido em /etc/verax/node.conf: use lean ou standard.' >&2
       return 1
       ;;
   esac
+  if standard; then wazuh_passwords; fi
+  mkdir -p "$run"
+  chmod 0700 "$run"
+  if standard; then
+    write_env memory.env "${MEMORY_STANDARD[@]}"
+  else
+    write_env memory.env "${MEMORY_LEAN[@]}"
+  fi
   # Cada segredo numa atribuição própria. Lido direto num argumento (`write_env x "K=$(...)"`), uma falha passaria pelo
   # `set -e` sem parar nada, e o arquivo sairia com o valor vazio.
   local master migrator app session_key csrf_key
@@ -106,20 +136,15 @@ render() {
   app=$(internal_secret postgres-app)
   session_key=$(internal_secret better-auth-secret)
   csrf_key=$(internal_secret csrf-secret)
-  # Standard: senhas do Wazuh (admin do indexer, wazuh-wui da API do manager e o usuário só leitura verax_api_read),
-  # conferidas no formato que os componentes aceitam e diferentes entre si; cada contêiner recebe só as que usa. A API
-  # e o worker leem o indexer do próprio nó com o usuário só leitura e a CA do volume público dos certificados.
+  # Standard: cada contêiner do Wazuh recebe só as senhas que usa (o security-init, as três que ele transforma em hash;
+  # o manager, a do filebeat e a da API dele). A senha do admin do indexer não chega a nenhum contêiner que fica no
+  # ar. A API e o worker leem o indexer do próprio nó com o usuário só leitura e a CA do volume público dos
+  # certificados.
   local indexer=()
   if standard; then
-    # shellcheck source=SCRIPTDIR/../../wazuh/scripts/lib-passwords.sh
-    source "$wazuh/scripts/lib-passwords.sh"
-    INDEXER_ADMIN_PASSWORD=$(internal_secret wazuh-indexer-admin)
-    WAZUH_API_PASSWORD=$(internal_secret wazuh-api)
-    INDEXER_API_READ_PASSWORD=$(internal_secret wazuh-indexer-read)
-    check_wazuh_passwords INDEXER_ADMIN_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
-    write_env wazuh-security.env \
-      "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" "INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD"
-    write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_ADMIN_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
+    write_env wazuh-security.env "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" \
+      "INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD"
+    write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
     indexer=(INDEXER_URL=https://wazuh.indexer:9200 INDEXER_AUTH=node INDEXER_USERNAME=verax_api_read
       "INDEXER_PASSWORD=$INDEXER_API_READ_PASSWORD" INDEXER_CA_FILE=/etc/verax/wazuh/root-ca.pem)
   fi
@@ -177,34 +202,36 @@ render() {
   fi
 }
 
-# Só o worker fala com o servidor de metadados da GCP, que entrega o token da VM (leitura das assinaturas, dos
-# segredos e dos backups). A API (exposta pelo túnel), o cloudflared, o banco e, no standard, o manager e o indexer do
-# Wazuh (que processam log de fora) ficam sem acesso: uma falha num deles não vira o token da VM. O DNS da GCE usa o
-# mesmo IP, na porta 53, e segue liberado para todos. Reaplicado a cada partida (as regras não sobrevivem a um reboot).
-# A regra vale para o tráfego de qualquer contêiner (sem `-s`; o DOCKER-USER só vê o que sai dos contêineres): as redes
-# do Wazuh ficam fora de NODE_SUBNET. A regra antiga, só de NODE_SUBNET, sai depois que a nova entra (partida sem
-# reboot logo depois da atualização), para não haver um instante sem guarda.
-guard_metadata() {
-  local chain=VERAX-METADATA
-  iptables -N "$chain" 2>/dev/null || iptables -F "$chain"
-  iptables -A "$chain" -s "$WORKER_IP" -j RETURN
-  iptables -A "$chain" -p udp --dport 53 -j RETURN
-  iptables -A "$chain" -p tcp --dport 53 -j RETURN
-  iptables -A "$chain" -j DROP
-  iptables -C DOCKER-USER -d 169.254.169.254 -j "$chain" 2>/dev/null ||
-    iptables -I DOCKER-USER -d 169.254.169.254 -j "$chain"
-  while iptables -D DOCKER-USER -s "$NODE_SUBNET" -d 169.254.169.254 -j "$chain" 2>/dev/null; do :; done
+# Toda imagem do nó é fixada pelo digest (`imagem@sha256:...`): a que já está no disco é a definitiva, e só o que
+# falta é baixado. Um `compose pull` a cada partida iria ao registro de cada imagem toda vez (as do Wazuh, no Docker
+# Hub, anônimo e com limite por IP) e, com o registro fora do ar num reboot, pararia a partida antes de o banco subir.
+pull_images() { # [--base]
+  local image
+  while read -r image; do
+    [[ -n $image ]] || continue
+    docker image inspect "$image" >/dev/null 2>&1 || docker pull --quiet "$image"
+  done < <(compose "$@" --profile setup config --images)
 }
 
-# Wazuh do perfil standard, depois da pilha da aplicação (o painel fica no ar antes; a tarefa `wazuh` do worker só
-# registra o erro até o indexer subir). Mesma sequência do infra/wazuh/scripts/ci-test.sh: certificados (só na
-# primeira vez), usuários do indexer com o hash das senhas, indexer, configuração de segurança, retenção e snapshot,
-# configuração do manager, manager e o teste de fumaça. Os scripts do pacote chamam o Compose deste mesmo projeto pelas
-# variáveis COMPOSE_*.
+# Wazuh do perfil standard (verax-wazuh.service), depois da pilha da aplicação (o painel fica no ar antes; a tarefa
+# `wazuh` do worker só registra o erro até o indexer subir). Mesma sequência do infra/wazuh/scripts/ci-test.sh:
+# certificados (só na primeira vez), usuários do indexer com o hash das senhas, indexer, configuração de segurança,
+# retenção e snapshot, configuração do manager, manager e o teste de fumaça. Os scripts do pacote chamam o Compose
+# deste mesmo projeto pelas variáveis COMPOSE_*. Os arquivos de ambiente são os do `up` (o serviço exige o verax-node).
 wazuh_up() {
+  if ! standard; then
+    echo 'O Wazuh só existe no perfil standard (NODE_PROFILE em /etc/verax/node.conf).' >&2
+    return 2
+  fi
+  wazuh_passwords
+  if [[ ! -f $run/memory.env || ! -f $run/wazuh-manager.env ]]; then
+    echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
+    return 1
+  fi
   export COMPOSE_FILE=/opt/verax/compose.yaml:/opt/verax/compose.wazuh.yaml
   export COMPOSE_ENV_FILES=/etc/verax/images.env,$run/memory.env
   install -d -m 0700 "$run/wazuh-aws"
+  pull_images
   compose --profile setup run --rm certs-init
   compose --profile setup run --rm security-init
   compose up --detach --wait --wait-timeout 600 wazuh.indexer
@@ -212,8 +239,9 @@ wazuh_up() {
   bash "$wazuh/scripts/configure-indexer.sh"
   /opt/verax/bin/wazuh-apply.sh
   compose up --detach --wait --wait-timeout 900 wazuh.manager
-  INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD \
-    INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD bash "$wazuh/scripts/smoke-test.sh"
+  INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD \
+    WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD \
+    bash "$wazuh/scripts/smoke-test.sh"
   # A guarda do metadata vale para o Wazuh (no molde do teste do EC2, infra/wazuh/scripts/bootstrap-host.sh): sem
   # resposta (000) no manager e no indexer. Se algum alcançar, os dois param e a partida falha.
   local service status
@@ -229,10 +257,17 @@ wazuh_up() {
   echo 'Wazuh no ar: manager e indexer sem acesso ao servidor de metadados.'
 }
 
+wazuh_down() {
+  if standard; then compose stop wazuh.manager wazuh.indexer; fi
+}
+
 up() {
-  guard_metadata
+  # A guarda do metadata já está valendo desde antes do Docker (verax-metadata-guard.service); aqui ela é só
+  # reafirmada, para uma partida sem reboot logo depois de uma atualização do script.
+  /opt/verax/bin/metadata-guard.sh
   render
-  compose pull --quiet
+  # Só as imagens da aplicação: as do Wazuh ficam para o `wazuh-up`, e o painel não espera por elas.
+  pull_images --base
   compose up --detach --wait postgres
   # Sequência do deploy, a mesma do teste da imagem no CI.
   compose --profile setup run --rm db-bootstrap
@@ -245,7 +280,6 @@ up() {
   else
     compose rm --stop --force cloudflared >/dev/null 2>&1 || true
   fi
-  if standard; then wazuh_up; fi
 }
 
 bootstrap() {
@@ -277,9 +311,11 @@ bootstrap() {
 case ${1:-} in
   up) up ;;
   down) compose down ;;
+  wazuh-up) wazuh_up ;;
+  wazuh-down) wazuh_down ;;
   bootstrap) bootstrap ;;
   *)
-    echo "Uso: start.sh up|down|bootstrap" >&2
+    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap" >&2
     exit 2
     ;;
 esac

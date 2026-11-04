@@ -4,9 +4,10 @@
 # - imagens fixadas por digest; o Dependabot propõe as atualizações;
 # - certificados emitidos por script próprio (scripts/init-certs.sh), e não pelo gerador oficial, que baixa e
 #   executa um script sem checksum;
-# - nenhuma senha padrão: as três senhas vêm do ambiente (Secrets Manager no EC2) e a compose não sobe sem elas;
+# - nenhuma senha padrão: as quatro senhas vêm do ambiente (Secrets Manager no EC2) e a compose não sobe sem elas;
 # - usuários e mapeamentos de demonstração do indexer removidos; a API lê com o usuário verax_api_read, que só
-#   lê os alertas (scripts/init-security.sh, T4.8);
+#   lê os alertas (scripts/init-security.sh, T4.8), e o filebeat do manager grava com o wazuh_filebeat, que só
+#   escreve neles (fase 2, PR-W1): a senha do admin não chega a nenhum contêiner que fica no ar;
 # - sem o dashboard (fase 2, PR-W1): os alertas são lidos pelo produto ou pela API do indexer, de dentro da máquina;
 # - nenhuma porta do manager publicada (não há agentes); o indexer só em 127.0.0.1 do host, liberado para a rede da
 #   API na T4.8, por security group;
@@ -41,6 +42,7 @@ services:
     security_opt: ['no-new-privileges:true']
     environment:
       INDEXER_ADMIN_PASSWORD: ${INDEXER_ADMIN_PASSWORD:?use scripts/deploy.sh}
+      INDEXER_FILEBEAT_PASSWORD: ${INDEXER_FILEBEAT_PASSWORD:?use scripts/deploy.sh}
       INDEXER_API_READ_PASSWORD: ${INDEXER_API_READ_PASSWORD:?use scripts/deploy.sh}
     volumes:
       - ./scripts/init-security.sh:/verax/init-security.sh:ro
@@ -140,8 +142,8 @@ services:
     environment:
       # As aspas fazem parte do valor: o init da imagem monta `hosts: [$INDEXER_URL]` no filebeat.yml.
       INDEXER_URL: '"https://wazuh.indexer:9200"'
-      INDEXER_USERNAME: admin
-      INDEXER_PASSWORD: ${INDEXER_ADMIN_PASSWORD:?use scripts/deploy.sh}
+      INDEXER_USERNAME: wazuh_filebeat
+      INDEXER_PASSWORD: ${INDEXER_FILEBEAT_PASSWORD:?use scripts/deploy.sh}
       FILEBEAT_SSL_VERIFICATION_MODE: full
       SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/verax/root-ca.pem
       SSL_CERTIFICATE: /etc/ssl/verax/wazuh.manager.pem

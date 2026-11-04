@@ -103,7 +103,11 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x -S style infra/node/bin/*.sh
+        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
+      - name: Guarda do servidor de metadados (num espaço de nomes de rede próprio, sem tocar nas regras do runner)
+        # Antes do Docker (sem DOCKER-USER), reaplicada com tudo no lugar, regra antiga removida e a troca do conteúdo
+        # da cadeia numa transação só (sem -F/-A soltos): não há instante sem guarda com contêineres no ar.
+        run: sudo unshare -n bash infra/node/tests/metadata-guard-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
         # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
@@ -146,25 +150,34 @@ jobs:
               and .api.mem_limit == "402653184" and .api.environment.NODE_OPTIONS == "--max-old-space-size=256"
               and .worker.mem_limit == "536870912" and .worker.environment.NODE_OPTIONS == "--max-old-space-size=384"'
           # Standard com o Wazuh: indexer com 3 GiB e 1,5 CPU, manager com 1,5 GiB e 1 CPU, e a soma dos limites dos
-          # contêineres que ficam no ar cabe em 6 GiB (a VM tem 8 GB; o resto é do sistema e do cache de páginas).
+          # contêineres que ficam no ar cabe em 6 GiB (a VM tem 8 GB; o resto é do sistema e do cache de páginas). Os
+          # jobs de inicialização rodam um por vez (sequência do start.sh), e o maior deles (security-init, 512 MiB)
+          # pode coincidir com a pilha inteira no ar (reinício do verax-wazuh, ou um reboot abrupto em que o Docker
+          # restaurou o Wazuh antes do serviço): essa soma cabe em 6,5 GiB, abaixo dos 7,76 GiB da VM.
           render -f infra/node/compose.wazuh.yaml --env-file standard.env | jq -e '.services
+            | ([.[] | select(.restart == "unless-stopped") | .mem_limit | tonumber] | add) as $up
+            | ([.[] | select(.restart == "no") | .mem_limit | tonumber] | max) as $job
             | ."wazuh.indexer".mem_limit == "3221225472" and (."wazuh.indexer".cpus | tonumber) == 1.5
               and ."wazuh.manager".mem_limit == "1610612736" and (."wazuh.manager".cpus | tonumber) == 1
-              and ([.[] | select(.restart == "unless-stopped") | .mem_limit | tonumber] | add) <= 6 * 1073741824'
-      - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e no start.sh)
+              and $up <= 6 * 1073741824 and ($up + $job) <= 6.5 * 1073741824'
+      - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e na guarda)
         run: |
           grep -q 'subnet: 172.30.53.0/24' infra/node/compose.yaml
           grep -q 'ipv4_address: 172.30.53.10' infra/node/compose.yaml
-          grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/start.sh
-          grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/start.sh
+          grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/metadata-guard.sh
+          grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/metadata-guard.sh
           # A guarda vale para o tráfego de qualquer rede de contêiner (as do Wazuh ficam fora de NODE_SUBNET): o salto
           # para a cadeia não filtra a origem.
-          # shellcheck disable=SC2016 # o `$chain` é texto do start.sh, não variável daqui
-          grep -qxF '    iptables -I DOCKER-USER -d 169.254.169.254 -j "$chain"' infra/node/bin/start.sh
-          if grep -qE 'iptables -[IA] DOCKER-USER -s' infra/node/bin/start.sh; then
+          # shellcheck disable=SC2016 # o `$chain` é texto do script, não variável daqui
+          grep -qxF '  iptables -I DOCKER-USER 1 -d 169.254.169.254 -j "$chain"' infra/node/bin/metadata-guard.sh
+          if grep -qE 'iptables -[IA] DOCKER-USER -s' infra/node/bin/metadata-guard.sh; then
             echo "A guarda do metadata não pode depender da rede de origem." >&2
             exit 1
           fi
+          # A guarda vale desde antes do Docker (o Docker a exige) e o verax-node a exige também.
+          grep -q '^RequiredBy=docker.service$' infra/node/systemd/verax-metadata-guard.service
+          grep -q '^Before=docker.service$' infra/node/systemd/verax-metadata-guard.service
+          grep -qE '^Requires=.*verax-metadata-guard.service' infra/node/systemd/verax-node.service
       - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard)
         # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
         # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
@@ -184,16 +197,22 @@ jobs:
           }
           check -f infra/node/compose.yaml
           check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml
-      - name: Redes do Wazuh no standard (indexer só na rede interna, manager fora da rede do banco)
+      - name: Redes do Wazuh no standard (indexer só nas internas; manager fora da rede do banco e da rede da API)
+        # Duas redes internas: `wazuh` (indexer e manager) e `wazuh-read` (indexer, API e worker). A API nunca divide
+        # rede com o manager, que processa log de fora como root: numa rede só, ele chegaria à API por dentro, fora do
+        # Cloudflare, e forjaria o X-Forwarded-For em que ela confia (TRUST_PROXY_HOPS=1).
         run: |
           docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
             --profile setup config --format json | jq -e '
-              .networks.wazuh.internal == true and (.networks."wazuh-egress".internal // false) == false
-              and (.services."wazuh.indexer".networks | keys) == ["wazuh"]
+              .networks.wazuh.internal == true and .networks."wazuh-read".internal == true
+              and (.networks."wazuh-egress".internal // false) == false
+              and (.services."wazuh.indexer".networks | keys) == ["wazuh", "wazuh-read"]
               and (.services."wazuh.manager".networks | keys) == ["wazuh", "wazuh-egress"]
-              and (.services.api.networks | keys) == ["verax", "wazuh"]
-              and (.services.worker.networks | keys) == ["verax", "wazuh"]
-              and .services.worker.networks.verax.ipv4_address == "172.30.53.10"'
+              and (.services.api.networks | keys) == ["verax", "wazuh-read"]
+              and (.services.worker.networks | keys) == ["verax", "wazuh-read"]
+              and .services.worker.networks.verax.ipv4_address == "172.30.53.10"
+              and (((.services.api.networks | keys) - ((.services.api.networks | keys)
+                - (.services."wazuh.manager".networks | keys))) | length) == 0'
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)
@@ -212,6 +231,7 @@ jobs:
         working-directory: infra/wazuh
         env:
           INDEXER_ADMIN_PASSWORD: ficticia
+          INDEXER_FILEBEAT_PASSWORD: ficticia
           WAZUH_API_PASSWORD: ficticia
           INDEXER_API_READ_PASSWORD: ficticia
         run: docker compose config --quiet

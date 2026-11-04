@@ -19,9 +19,9 @@ repositório.
 | `cloudflared`             | Túnel do Cloudflare: conexão de saída da VM até o Cloudflare.                                        |
 
 Todos rodam com a raiz só leitura, sem capabilities e com limite de memória. Só o worker alcança o servidor de
-metadados da GCP, que entrega o token da VM: uma regra no `DOCKER-USER`, aplicada a cada partida, bloqueia os outros
-contêineres. O backup do banco sai todo dia para o
-bucket de backups (`verax-backup.timer`).
+metadados da GCP, que entrega o token da VM: uma regra no `DOCKER-USER`, aplicada antes de o Docker subir
+(`verax-metadata-guard`, que o Docker exige) e reafirmada a cada partida, bloqueia os outros contêineres. O backup do
+banco sai todo dia para o bucket de backups (`verax-backup.timer`).
 
 ## Antes de instalar (uma vez)
 
@@ -57,10 +57,11 @@ O perfil do nó (`NODE_PROFILE`) define a memória do banco, da API e do worker.
 limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` atual não precisa mudar.
 
 No perfil `standard` (homologação e nós de clientes), o mesmo pacote sobe também o Wazuh (manager e indexer, sem
-dashboard): o `deploy.sh` leva junto a configuração de `infra/wazuh`, o `install.sh` gera as três senhas dele em
-`/var/lib/verax/secrets`, e a partida espera o Wazuh ficar saudável (alguns minutos a mais, mais na primeira vez, que
-baixa as imagens). O que roda, como conferir e como ler os alertas estão em `infra/wazuh/README.md`, seção "Nó de
-cliente". Nesse perfil, use `SYNC_SOURCES=gcp,wazuh` no `node.conf`. O nó da Verax (`lean`) não recebe nada disso.
+dashboard), num serviço próprio, o `verax-wazuh`, depois do `verax-node`: o `deploy.sh` leva junto a configuração de
+`infra/wazuh`, o `install.sh` gera as quatro senhas dele em `/var/lib/verax/secrets`, e o serviço espera o Wazuh ficar
+saudável (alguns minutos, mais na primeira vez, que baixa as imagens); uma falha dele não derruba a aplicação nem o
+backup. O que roda, como conferir e como ler os alertas estão em `infra/wazuh/README.md`, seção "Nó de cliente". Nesse
+perfil, use `SYNC_SOURCES=gcp,wazuh` no `node.conf`. O nó da Verax (`lean`) não recebe nada disso.
 
 ## Instalar ou atualizar
 

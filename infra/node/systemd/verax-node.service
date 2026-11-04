@@ -1,8 +1,9 @@
-# Nó do Verax Control: banco, papéis e migrations, API, worker e túnel do Cloudflare (infra/node/compose.yaml).
+# Nó do Verax Control: banco, papéis e migrations, API, worker e túnel do Cloudflare (infra/node/compose.yaml). No
+# perfil standard, o Wazuh sobe depois, pelo verax-wazuh.service.
 [Unit]
 Description=Verax Control - no (banco, API, worker e tunel)
-Requires=docker.service
-After=docker.service network-online.target
+Requires=docker.service verax-metadata-guard.service
+After=docker.service verax-metadata-guard.service network-online.target
 Wants=network-online.target
 
 [Service]
@@ -10,9 +11,9 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/verax/bin/start.sh up
 ExecStop=/opt/verax/bin/start.sh down
-# Acima da soma das esperas do start.sh no perfil standard (indexer até 10 min e manager até 15 min, mais a primeira
-# descarga das imagens do Wazuh): se o systemd matasse a partida no meio de uma espera, o nó ficaria pela metade.
-TimeoutStartSec=2400
+TimeoutStartSec=1200
+# No standard, o `down` para o manager e o indexer do Wazuh (até 60 s cada, em sequência) antes de remover o resto.
+TimeoutStopSec=180
 
 [Install]
 WantedBy=multi-user.target

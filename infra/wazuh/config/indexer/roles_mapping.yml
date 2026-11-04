@@ -18,3 +18,9 @@ verax_api_read:
   users:
     - 'verax_api_read'
   description: 'API do Verax Control: só leitura dos alertas'
+
+wazuh_filebeat:
+  reserved: true
+  users:
+    - 'wazuh_filebeat'
+  description: 'Filebeat do manager do Wazuh: só escrita dos alertas'

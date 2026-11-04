@@ -27,10 +27,19 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 
 ## O que muda em relação ao single-node oficial
 
-- **Nenhuma senha padrão.** As senhas de `admin` (indexer), `wazuh-wui` (API do manager) e `verax_api_read` (leitura
-  da API do Verax Control) são geradas no nó pelo `install.sh` (no EC2, pelo Terraform, no Secrets Manager). Os
-  usuários de demonstração do indexer (`kibanaro`, `logstash`, `readall`, `snapshotrestore`) não existem, e o outro
-  usuário padrão da API (`wazuh`) recebe uma senha aleatória descartada.
+- **Nenhuma senha padrão.** As senhas de `admin` (indexer), `wazuh_filebeat` (o filebeat do manager), `wazuh-wui`
+  (API do manager) e `verax_api_read` (leitura da API do Verax Control) são geradas no nó pelo `install.sh` (no EC2,
+  pelo Terraform, no Secrets Manager). Os usuários de demonstração do indexer (`kibanaro`, `logstash`, `readall`,
+  `snapshotrestore`) não existem, e o outro usuário padrão da API (`wazuh`) recebe uma senha aleatória descartada.
+- **O manager não tem a senha do admin.** O filebeat grava os alertas com o usuário `wazuh_filebeat`, que só faz o que
+  o filebeat faz (`config/indexer/roles-verax.yml`): gravar pelo `_bulk` em `wazuh-alerts-*`, criar o índice do dia,
+  instalar o template e o pipeline dele. Sem leitura, sem apagar índice ou documento, sem o índice de segurança: um
+  manager comprometido (ele processa log de fora como root) não apaga nem lê o que já indexou. A conexão do próprio
+  manager com o indexer (bloco `<indexer>` do `ossec.conf`) fica desligada; o harvester de inventário da 4.14.9 a
+  ignora, sobe e tenta criar os templates `wazuh-states-inventory-*` com a credencial do filebeat, falha (um aviso por
+  índice a cada partida, no `ossec.log`) e não indexa nada, porque o inventário e o FIM estão desligados; o
+  `ci-test.sh` confere que a tentativa falha. A senha do `admin` só é usada pelo smoke test; o `securityadmin` e os
+  scripts de retenção e restauração usam o certificado admin, que só o contêiner do indexer tem.
 - **Sem dashboard** (fase 2, PR-W1): sem o contêiner, sem o par de certificados e sem o usuário de serviço dele
   (`kibanaserver`). A operação lê os alertas pelo próprio produto ou pela API do indexer, de dentro da VM (seção
   "Ler os alertas sem o dashboard").
@@ -52,19 +61,30 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 
 ## Nó de cliente (perfil `standard`)
 
-O `start.sh up` do nó sobe a aplicação (banco, API, worker e túnel) e depois o Wazuh, nesta ordem: a guarda do
-metadata, os arquivos de ambiente, a pilha da aplicação, `certs-init`, `security-init`, o indexer (espera o
-healthcheck), o `security-admin.sh`, o `configure-indexer.sh`, o `infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do
-nó; no PR-W1, sem contas AWS), o manager (espera o healthcheck), o `smoke-test.sh` e a conferência de que manager e
-indexer não alcançam o servidor de metadados da VM (sem isso, os dois param e a partida falha).
+Dois serviços do systemd: o `verax-node` (`start.sh up`: a guarda do metadata, os arquivos de ambiente e a pilha da
+aplicação: banco, API, worker e túnel) e, depois dele, o `verax-wazuh` (`start.sh wazuh-up`), nesta ordem:
+`certs-init`, `security-init`, o indexer (espera o healthcheck), o `security-admin.sh`, o `configure-indexer.sh`, o
+`infra/node/bin/wazuh-apply.sh` (o `ossec.conf` do nó; no PR-W1, sem contas AWS), o manager (espera o healthcheck), o
+`smoke-test.sh` e a conferência de que manager e indexer não alcançam o servidor de metadados da VM (sem isso, os dois
+param e o serviço falha). Serviços separados de propósito: uma falha do Wazuh fica no `verax-wazuh`, e o banco, a API,
+o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart verax-node` reinicia os dois;
+`sudo systemctl restart verax-wazuh` reaplica só o Wazuh.
 
-- **Redes:** `wazuh` (interna, sem rota para fora) com indexer, manager, API e worker; `wazuh-egress` só com o
-  manager, para a saída ao S3 e ao STS. O manager não está na rede do banco.
-- **Senhas:** em `/var/lib/verax/secrets` (`wazuh-indexer-admin`, `wazuh-api` e `wazuh-indexer-read`, 0600), geradas
-  pelo `install.sh` no formato de `scripts/lib-passwords.sh` e conferidas pelo `start.sh` a cada partida (formato e
-  senhas diferentes entre si). Cada contêiner recebe só as dele, por arquivos em `/run/verax` (memória, só root).
+- **Redes:** `wazuh` (interna, sem rota para fora) só com o indexer e o manager; `wazuh-read` (interna) com o
+  indexer, a API e o worker; `wazuh-egress` só com o manager, para a saída ao S3 e ao STS. O manager não está na rede
+  do banco nem divide rede com a API (numa rede só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o
+  `X-Forwarded-For` em que ela confia). O `ci-test.sh` confere que o manager não alcança a `wazuh-read`.
+- **Senhas:** em `/var/lib/verax/secrets` (`wazuh-indexer-admin`, `wazuh-indexer-filebeat`, `wazuh-api` e
+  `wazuh-indexer-read`, 0600), geradas pelo `install.sh` no formato de `scripts/lib-passwords.sh` e conferidas pelo
+  `start.sh` antes de escrever qualquer arquivo de ambiente (formato e senhas diferentes entre si; faltando alguma,
+  o erro aponta para o `install.sh`). Cada contêiner recebe só as dele, por arquivos em `/run/verax` (memória, só
+  root): o manager, a do `wazuh_filebeat` e a da API dele; o `security-init` (job, sem rede), as que transforma em
+  hash. A do `admin` não fica em nenhum contêiner que fica no ar.
 - **API e worker:** leem o indexer com `verax_api_read` (`INDEXER_AUTH=node` no `api.env` e no `worker.env`), pelo nome
   `wazuh.indexer`, com a CA do volume `certs-public`, montado só leitura em `/etc/verax/wazuh`.
+- **Partida e parada:** o indexer e o manager têm `restart: unless-stopped` e 60 s para parar (`stop_grace_period`:
+  o filebeat grava o registro do que já enviou e o indexer fecha o translog). As imagens, fixadas pelo digest, só são
+  baixadas quando faltam (`docker image inspect` antes do `pull`): a partida não depende do Docker Hub.
 - **Credencial da AWS:** o diretório `/run/verax/wazuh-aws` (memória do host, só root), só leitura no manager em
   `/root/.aws`. Quem escreve nele é só o gerador (`manager-config`, sem rede).
 - **Memória e CPU:** indexer com 3 GiB, heap de 1,5 GiB travado e 1,5 CPU; manager com 1,5 GiB e 1 CPU. Com a
@@ -100,12 +120,12 @@ fica no histórico do Run Command.
 ## Trocar as senhas
 
 - **Nó:** troque o arquivo da senha em `/var/lib/verax/secrets` (no formato de `scripts/lib-passwords.sh`, ou apague-o
-  e rode o `install.sh` de novo, que gera outro) e reinicie o nó (`sudo systemctl restart verax-node`). A partida
-  aplica as senhas novas no indexer, recria o manager, a API e o worker e confere que as antigas deixaram de
-  funcionar. O Wazuh fica fora do ar por 2 a 3 minutos.
-- **EC2:** aumente `password_version` no módulo `wazuh` e rode `terraform apply`. A AWS gera as senhas novas, gravadas
-  direto no Secrets Manager, sem passar pelo state. Depois, rode o documento de reaplicação (seção anterior) e faça a
-  API reler o segredo `<nome>/wazuh-api-read`.
+  e rode o `install.sh` de novo, que gera outro) e reinicie o nó (`sudo systemctl restart verax-node`, que reinicia o
+  `verax-wazuh` junto). A partida aplica as senhas novas no indexer, recria o manager, a API e o worker e confere que
+  as antigas deixaram de funcionar. O Wazuh fica fora do ar por 2 a 3 minutos.
+- **EC2:** aumente `password_version` no módulo `wazuh` e rode `terraform apply`. A AWS gera as senhas novas (inclusive
+  a do `wazuh_filebeat`, que não existia antes do PR-W1), gravadas direto no Secrets Manager, sem passar pelo state.
+  Depois, rode o documento de reaplicação (seção anterior) e faça a API reler o segredo `<nome>/wazuh-api-read`.
 
 ## Acesso da API (usuário só leitura)
 
@@ -205,7 +225,8 @@ em `/opt/verax-wazuh` no EC2:
 
 ## Diagnóstico
 
-No nó, com as variáveis `COMPOSE_*` da seção "Ler os alertas sem o dashboard": `docker compose ps`,
+No nó, `systemctl status verax-wazuh` e `journalctl -u verax-wazuh` (a sequência da partida e o smoke test) e, com as
+variáveis `COMPOSE_*` da seção "Ler os alertas sem o dashboard", `docker compose ps`,
 `docker compose logs --tail 100 wazuh.manager` e `docker stats`. No EC2, a compose exige as senhas até para `ps` e
 `logs`; use o Docker direto (`sudo docker ps` e `sudo docker logs --tail 100 verax-wazuh-wazuh.manager-1`). Lá, os
 mesmos logs estão no CloudWatch, no grupo `/verax-control/<nome>/wazuh`.
@@ -215,9 +236,10 @@ mesmos logs estão no CloudWatch, no grupo `/verax-control/<nome>/wazuh`.
 Os certificados valem 5 anos, e a CA, 10 (a data aparece no log da primeira subida). Como a chave da CA não é
 guardada, renovar significa emitir uma CA nova: pare o Wazuh, apague os volumes dos certificados e suba de novo.
 
-- **Nó:** `sudo systemctl stop verax-node`, depois
+- **Nó:** `sudo systemctl stop verax-node` (para o `verax-wazuh` junto), depois
   `sudo docker volume rm verax_certs-indexer verax_certs-manager verax_certs-public` e
-  `sudo systemctl start verax-node`. A API e o worker passam a confiar na CA nova sozinhos: ela fica no mesmo volume.
+  `sudo systemctl start verax-node verax-wazuh`. A API e o worker passam a confiar na CA nova sozinhos: ela fica no
+  mesmo volume.
 - **EC2:** pare e remova `verax-wazuh-wazuh.manager-1` e `verax-wazuh-wazuh.indexer-1`, apague os volumes
   `verax-wazuh_certs-indexer`, `verax-wazuh_certs-manager` e `verax-wazuh_certs-public` e rode o documento de
   reaplicação. A API precisa receber a CA nova (parâmetro do SSM).
@@ -232,9 +254,10 @@ cd infra/wazuh && bash scripts/ci-test.sh
 
 O teste sobe o Wazuh como o nó (o `compose.yaml` e o `compose.wazuh.yaml` de `infra/node`) num projeto próprio,
 `verax-wazuh-ci`, apagado com os volumes no começo e no fim, e recusa rodar num nó. Ele termina com a atualização do
-manager da versão anterior (`UPGRADE_FROM`, no começo do script) para a da compose, com os mesmos volumes: o código dos
-módulos que a imagem nova traz não pode ficar escondido pelo volume dos wodles, e o marcador do módulo da AWS tem de
-continuar lá. Quando o Dependabot subir a versão, `UPGRADE_FROM` passa a ser a que estava em produção.
+manager da versão anterior (`UPGRADE_FROM`, no começo do script) para a da compose, com os mesmos volumes: o código
+que a imagem nova traz para os volumes persistentes (wodles, integrations, active-response/bin e agentless) não pode
+ficar escondido por eles, e o marcador do módulo da AWS tem de continuar lá. Quando o Dependabot subir a versão,
+`UPGRADE_FROM` passa a ser a que estava em produção.
 
 As correlações por conta têm um teste próprio, mais leve (só um manager avulso): `bash scripts/test-rules.sh`. No Git
 Bash do Windows, rode antes `export MSYS_NO_PATHCONV=1`; o `ci-test.sh` precisa de um shell Linux (o caminho
@@ -242,8 +265,8 @@ Bash do Windows, rode antes `export MSYS_NO_PATHCONV=1`; o `ci-test.sh` precisa 
 
 ## Riscos conhecidos
 
-- O manager usa o usuário `admin` do indexer, como no oficial (o filebeat grava os alertas com ele). Manager e
-  indexer estão no mesmo host e na mesma fronteira de confiança.
+- Manager e indexer estão no mesmo host. O manager não tem mais a senha do admin do indexer (usuário `wazuh_filebeat`,
+  só escrita), mas divide o kernel e o Docker com o resto do nó.
 - Os contêineres do manager e do indexer não rodam com sistema de arquivos só leitura: as imagens oficiais escrevem
   em vários caminhos internos na inicialização. Os jobs de inicialização rodam só leitura.
 - No nó, 2 vCPU contra as 4 que a documentação do Docker do Wazuh pede: o ensaio da homologação mede (24 h de

@@ -90,7 +90,7 @@ if [[ -n ${NODE_EGRESS_IPS:-} && ! $NODE_EGRESS_IPS =~ ^$egress_ip(,$egress_ip)*
 fi
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
-install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" /opt/verax/bin/
+install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" "$here/bin/metadata-guard.sh" /opt/verax/bin/
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
 # Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, o gerador da
 # configuração do manager e a limpeza diária dos alertas antigos). O nó da Verax (lean) não recebe nada disso.
@@ -145,9 +145,10 @@ generate postgres-migrator 40
 generate postgres-app 40
 generate better-auth-secret 48
 generate csrf-secret 48
-# Senhas do Wazuh (standard): admin do indexer, wazuh-wui da API do manager e o usuário só leitura da API e do worker.
-# O generate() acima só emite letras e dígitos, e os componentes do Wazuh exigem também `.` ou `-`
-# (scripts/lib-passwords.sh do pacote do Wazuh, o mesmo formato que o start.sh confere a cada partida).
+# Senhas do Wazuh (standard): admin do indexer, wazuh_filebeat (o filebeat do manager, só escrita dos alertas),
+# wazuh-wui da API do manager e o usuário só leitura da API e do worker. O generate() acima só emite letras e dígitos,
+# e os componentes do Wazuh exigem também `.` ou `-` (scripts/lib-passwords.sh do pacote do Wazuh, o mesmo formato que
+# o start.sh confere a cada partida).
 if $standard; then
   # shellcheck source=SCRIPTDIR/../../wazuh/scripts/lib-passwords.sh
   source "$here/wazuh/scripts/lib-passwords.sh"
@@ -160,6 +161,7 @@ if $standard; then
     chmod 0600 "$file"
   }
   generate_wazuh wazuh-indexer-admin
+  generate_wazuh wazuh-indexer-filebeat
   generate_wazuh wazuh-api
   generate_wazuh wazuh-indexer-read
 fi
@@ -174,13 +176,22 @@ gcloud auth configure-docker "${IMAGES_REPOSITORY%%/*}" --quiet >/dev/null 2>&1
 } >/etc/verax/images.env
 chmod 0640 /etc/verax/images.env
 
-echo '== Serviço e backup diário'
+echo '== Serviços e backup diário'
 systemctl daemon-reload
-systemctl enable verax-node.service verax-backup.timer >/dev/null
+# A guarda do metadata passa a ser exigida pelo Docker (RequiredBy) e roda antes dele a cada boot; agora, com o Docker
+# já no ar, ela só entra em vigor (o restart do verax-node a exige).
+systemctl enable verax-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
+if $standard; then systemctl enable verax-wazuh.service >/dev/null; fi
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
-if $standard; then systemctl enable --now verax-wazuh-alerts.timer >/dev/null; fi
+# Standard: o restart do verax-node já reinicia o verax-wazuh quando ele estava no ar (Requires); na primeira
+# instalação, o `start` o sobe (e espera o Wazuh ficar saudável; nada acontece se já estiver subindo).
+if $standard; then
+  systemctl start verax-wazuh.service
+  systemctl enable --now verax-wazuh-alerts.timer >/dev/null
+fi
 systemctl --no-pager --lines=0 status verax-node.service || true
+if $standard; then systemctl --no-pager --lines=0 status verax-wazuh.service || true; fi
 if [[ ! -s /run/verax/cloudflared.env ]]; then
   echo 'AVISO: o nó subiu sem o túnel do Cloudflare (o cofre do token ainda não tem valor). Grave o token e rode:' \
     'sudo systemctl restart verax-node'

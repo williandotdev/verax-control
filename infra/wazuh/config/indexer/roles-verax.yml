@@ -1,4 +1,4 @@
-# --- Acrescentado pelo Verax Control (scripts/init-security.sh, T4.8) ---
+# --- Acrescentado pelo Verax Control (scripts/init-security.sh, T4.8 e fase 2, PR-W1) ---
 # A API lê os alertas e nada mais: sem permissão de cluster, sem escrita, sem outros índices.
 verax_api_read:
   reserved: true
@@ -9,3 +9,31 @@ verax_api_read:
         - 'wazuh-alerts-*'
       allowed_actions:
         - 'read'
+
+# O filebeat do manager grava os alertas e nada mais: sem leitura, sem apagar índice nem documento, sem o índice de
+# segurança. Um manager comprometido (ele processa log de fora como root) não apaga nem lê o que já indexou. É o que o
+# filebeat 7.10.2 da imagem faz a cada partida, conferido no scripts/ci-test.sh; cada permissão abaixo foi tirada num
+# ensaio e o `_bulk` passou a ser recusado com o nome dela (plugin de segurança 2.19):
+# - cluster: a versão do indexer (`GET /`); o template legado `wazuh`, que ele grava sempre (`PUT /_template/wazuh`,
+#   `setup.template.overwrite`); o pipeline de ingestão do módulo (`GET` e, se faltar, `PUT /_ingest/pipeline/...`); e
+#   a entrada do `_bulk`, que o plugin confere no cluster antes de descer a cada índice. O `GET /_cat/templates/wazuh`
+#   que ele faz antes do PUT recebe 403, e o filebeat ignora a resposta (grava o template de qualquer jeito);
+# - índices wazuh-alerts-*: o `_bulk` desce como `bulk[s]` por shard, e cada item é conferido pela ação dele
+#   (`indices:data/write/index`); o índice do dia (o pipeline o troca pelo `date_index_name`) é criado pelo primeiro
+#   item, e o mapeamento dinâmico pede `mapping/put` também num índice que já existe (os dois vêm de `create_index`).
+wazuh_filebeat:
+  reserved: true
+  description: 'Filebeat do manager do Wazuh: só escrita dos alertas'
+  cluster_permissions:
+    - 'cluster:monitor/main'
+    - 'indices:admin/template/put'
+    - 'cluster:admin/ingest/pipeline/get'
+    - 'cluster:admin/ingest/pipeline/put'
+    - 'indices:data/write/bulk'
+  index_permissions:
+    - index_patterns:
+        - 'wazuh-alerts-*'
+      allowed_actions:
+        - 'create_index'
+        - 'indices:data/write/bulk*'
+        - 'indices:data/write/index'

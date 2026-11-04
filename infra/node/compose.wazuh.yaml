@@ -5,9 +5,13 @@
 # Parte de infra/wazuh/docker-compose.yml (mesmas imagens, scripts e healthchecks; o CI confere que os digests são os
 # mesmos), com estas mudanças:
 # - sem o dashboard, sem porta publicada do indexer e sem IP fixo no manager;
-# - redes do nó: `wazuh` (interna, sem rota para fora) para indexer, manager, API e worker, e `wazuh-egress` só para o
-#   manager (saída para o S3 e o STS). O manager não está na rede `verax` e não alcança o Postgres; nenhum contêiner do
-#   Wazuh alcança o servidor de metadados da VM (guarda do start.sh, conferida no fim do `start.sh up`);
+# - redes do nó, todas fora da rede `verax` do banco: `wazuh` (interna, sem rota para fora) só com o indexer e o
+#   manager; `wazuh-read` (interna) com o indexer, a API e o worker, que só leem; e `wazuh-egress` só com o manager
+#   (saída para o S3 e o STS). O manager processa log de fora como root e não divide rede com a API: numa rede só, ele
+#   chegaria a `http://api:3000` por dentro, fora do Cloudflare, e forjaria o `X-Forwarded-For` em que a API confia
+#   (TRUST_PROXY_HOPS=1). O desenho da seção 2.1 do plano tinha uma rede só; a separação é um endurecimento deliberado
+#   (docs/STATUS.md, PR-W1). Nenhum contêiner do Wazuh alcança o servidor de metadados da VM (guarda em
+#   infra/node/bin/metadata-guard.sh, conferida no fim do `start.sh wazuh-up`);
 # - credencial da AWS: o diretório /run/verax/wazuh-aws (memória do host, só root), só leitura no manager, no lugar do
 #   volume manager-aws;
 # - limites de memória, CPU e processos, nenhuma capability (o manager recebe só as que o init da imagem usa) e log com
@@ -103,8 +107,11 @@ services:
         hard: 65536
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
-    # Só a rede interna: sem porta publicada e sem rota para fora.
-    networks: [wazuh]
+    # Só redes internas: sem porta publicada e sem rota para fora. O manager chega pela `wazuh`; a API e o worker, pela
+    # `wazuh-read`. O certificado vale pelo nome (DNS:wazuh.indexer), o mesmo nas duas redes.
+    networks: [wazuh, wazuh-read]
+    # Tempo para o indexer fechar os índices e o translog antes do SIGKILL (o padrão do Docker são 10 s).
+    stop_grace_period: 60s
     volumes:
       - indexer-data:/var/lib/wazuh-indexer
       - indexer-snapshots:/mnt/snapshots
@@ -131,12 +138,14 @@ services:
     restart: unless-stopped
     depends_on:
       wazuh.indexer: { condition: service_healthy }
-    # Senhas do usuário admin do indexer (o filebeat grava os alertas com ele, como no oficial) e do wazuh-wui da API.
+    # Senhas do usuário wazuh_filebeat do indexer (o filebeat grava os alertas com ele: só escrita em wazuh-alerts-*,
+    # sem leitura e sem apagar; config/indexer/roles-verax.yml) e do wazuh-wui da API do manager. A senha do admin do
+    # indexer não chega a nenhum contêiner que fica no ar: o securityadmin e os scripts usam o certificado admin.
     env_file: /run/verax/wazuh-manager.env
     environment:
       # As aspas fazem parte do valor: o init da imagem monta `hosts: [$INDEXER_URL]` no filebeat.yml.
       INDEXER_URL: '"https://wazuh.indexer:9200"'
-      INDEXER_USERNAME: admin
+      INDEXER_USERNAME: wazuh_filebeat
       FILEBEAT_SSL_VERIFICATION_MODE: full
       SSL_CERTIFICATE_AUTHORITIES: /etc/ssl/verax/root-ca.pem
       SSL_CERTIFICATE: /etc/ssl/verax/wazuh.manager.pem
@@ -159,6 +168,9 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID, KILL, SYS_CHROOT]
     security_opt: ['no-new-privileges:true']
     networks: [wazuh, wazuh-egress]
+    # Tempo para o wazuh-control parar os daemons e o filebeat gravar o registro do que já enviou (com o SIGKILL aos
+    # 10 s do padrão, o filebeat reenviaria alertas na volta).
+    stop_grace_period: 60s
     volumes:
       - manager-api-configuration:/var/ossec/api/configuration
       - manager-etc:/var/ossec/etc
@@ -185,16 +197,17 @@ services:
       start_period: 60s
     logging: *wazuh-logging
 
-  # A API (evento bruto do detalhe do achado) e o worker (tarefa `wazuh`) leem o indexer pela rede interna, com o
-  # usuário só leitura (INDEXER_AUTH=node no api.env e no worker.env) e a CA do volume público dos certificados. A
-  # saída deles continua pela rede `verax`; a API ganha prioridade de CPU sobre o resto do nó.
+  # A API (evento bruto do detalhe do achado) e o worker (tarefa `wazuh`) leem o indexer pela rede interna
+  # `wazuh-read`, com o usuário só leitura (INDEXER_AUTH=node no api.env e no worker.env) e a CA do volume público dos
+  # certificados. A API não divide rede com o manager (o CI confere). A saída dos dois continua pela rede `verax`; a
+  # API ganha prioridade de CPU sobre o resto do nó.
   api:
-    networks: [wazuh]
+    networks: [wazuh-read]
     volumes: ['certs-public:/etc/verax/wazuh:ro']
     cpu_shares: 2048
 
   worker:
-    networks: [wazuh]
+    networks: [wazuh-read]
     volumes: ['certs-public:/etc/verax/wazuh:ro']
 
 networks:
@@ -204,6 +217,12 @@ networks:
     ipam:
       config:
         - subnet: 172.30.54.0/24
+  wazuh-read:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.56.0/24
   wazuh-egress:
     driver: bridge
     ipam:

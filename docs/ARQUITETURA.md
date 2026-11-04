@@ -119,8 +119,17 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
   processos de um OOM; o heap travado não vai para ele.
 - **Redes no `standard`:**
   - `verax`: Postgres, API, worker e cloudflared;
-  - `wazuh`, interna: indexer, manager, worker e API. O indexer não tem porta publicada nem rota para fora;
+  - `wazuh`, interna: indexer e manager. O indexer não tem porta publicada nem rota para fora;
+  - `wazuh-read`, interna: indexer, API e worker, que só leem. A API nunca divide rede com o manager, que processa
+    log de fora como root: numa rede só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o
+    `X-Forwarded-For` em que ela confia;
   - `wazuh-egress`: só o manager, para a saída ao S3 e ao STS. O manager não alcança o Postgres.
+- **Usuários do indexer no `standard`:** o filebeat do manager grava com `wazuh_filebeat` (só escrita em
+  `wazuh-alerts-*`); a API e o worker leem com `verax_api_read`; a senha do `admin` não fica em nenhum contêiner que
+  fica no ar (os scripts usam o certificado admin).
+- **Serviços do systemd no `standard`:** `verax-metadata-guard` (a guarda do servidor de metadados, antes do Docker e
+  exigida por ele), `verax-node` (a aplicação) e `verax-wazuh` (o Wazuh, depois dela): uma falha do Wazuh não derruba
+  a aplicação nem o backup diário.
 - **Portão:** o ensaio geral da fase 2 mede 24 h de `docker stats` e CPU. A documentação do Wazuh pede 4 núcleos para
   o single-node em Docker; se 2 vCPU não bastarem, o plano B é a e2-standard-4.
 - Os nós de clientes ficam num projeto da GCP separado do nó da Verax.

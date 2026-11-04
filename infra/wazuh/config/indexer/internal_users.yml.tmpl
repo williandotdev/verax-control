@@ -11,7 +11,12 @@ admin:
   reserved: true
   backend_roles:
     - 'admin'
-  description: 'Administração do indexer (o filebeat do manager grava os alertas com ele)'
+  description: 'Administração do indexer (só o smoke test usa a senha; os scripts usam o certificado admin)'
+
+wazuh_filebeat:
+  hash: '__FILEBEAT_HASH__'
+  reserved: true
+  description: 'Filebeat do manager do Wazuh: só escrita dos alertas (fase 2, PR-W1)'
 
 verax_api_read:
   hash: '__API_READ_HASH__'

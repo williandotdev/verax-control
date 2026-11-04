@@ -5,10 +5,11 @@
 # Roda dentro do contêiner do manager (sem caminho de volume no host). Com o manager parado, não faz nada.
 set -euo pipefail
 
-# O projeto do Compose é o do nó; o ci-test troca pelo dele.
+# O projeto do Compose é o do nó; o ci-test troca pelo dele. Só o contêiner em execução, e um só: no meio de uma
+# recriação pelo Compose, o antigo e o novo coexistem por um instante, e dois ids quebrariam o `docker exec`.
 project=${COMPOSE_PROJECT_NAME:-verax}
 manager=$(docker ps -q --filter "label=com.docker.compose.project=$project" \
-  --filter label=com.docker.compose.service=wazuh.manager)
+  --filter label=com.docker.compose.service=wazuh.manager --filter status=running | head -n 1)
 if [[ -z $manager ]]; then
   echo 'Manager do Wazuh parado: nada a apagar.'
   exit 0

@@ -4,7 +4,8 @@
 # reaplica configuração e senhas (é assim que uma rotação chega aos contêineres).
 #
 # As senhas chegam por variável de ambiente, nunca por argumento (que aparece na lista de processos):
-#   INDEXER_ADMIN_PASSWORD      usuário `admin` do indexer (o filebeat do manager grava os alertas com ele)
+#   INDEXER_ADMIN_PASSWORD      usuário `admin` do indexer (só o smoke test a usa; os scripts usam o certificado)
+#   INDEXER_FILEBEAT_PASSWORD   usuário `wazuh_filebeat` do indexer (o filebeat do manager grava os alertas com ele)
 #   WAZUH_API_PASSWORD          usuário `wazuh-wui` da API do manager
 #   INDEXER_API_READ_PASSWORD   usuário `verax_api_read` do indexer, que a API do Verax Control usa (T4.8)
 # No EC2 quem as define é o bootstrap-host.sh, a partir do Secrets Manager.
@@ -16,7 +17,7 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source=SCRIPTDIR/lib-passwords.sh
 source scripts/lib-passwords.sh
-check_wazuh_passwords INDEXER_ADMIN_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
 
 compose() { docker compose --progress quiet "$@"; }
 

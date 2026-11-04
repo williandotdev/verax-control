@@ -9,20 +9,23 @@
 # volumes no começo e no fim. Nunca rode num nó: o teste recusa onde houver /etc/verax/node.conf.
 #
 # 1. instalação nova com senhas aleatórias e sem contas AWS → smoke test;
-# 2. rotação das três senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
-# 3. filebeat do manager gravando no indexer com TLS verificado;
+# 2. rotação das quatro senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
+# 3. filebeat do manager gravando no indexer com TLS verificado e com o usuário wazuh_filebeat (só escrita): um alerta
+#    posto no alerts.json chega ao índice do dia pelo pipeline do módulo, com o template do Wazuh instalado por ele;
 # 4. contas AWS: módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da conta, profiles só para o
 #    root (no diretório em memória do host, só leitura no manager), ExternalId fora do ossec.conf e do ambiente do
 #    contêiner, correlações da AWS por conta instaladas (o efeito delas é testado no scripts/test-rules.sh);
 # 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente;
-# 6. acesso como a API e o worker fazem (INDEXER_AUTH=node): da rede interna, pelo nome do serviço, com a CA do volume
-#    público dos certificados;
+# 6. acesso como a API e o worker fazem (INDEXER_AUTH=node): da rede `wazuh-read`, pelo nome do serviço, com a CA do
+#    volume público dos certificados;
 # 7. retenção e backup: política de 30 dias ligada aos índices novos, 1 shard por índice de alertas, snapshot diário
 #    guardado 7 dias e o teste de restauração (snapshot, índice apagado, restauração com e sem renomear, mesma contagem);
-# 8. perfil do nó: limites de memória, CPU e processos, capabilities, log local, heap travado, redes (o indexer sem rota
-#    para fora, o manager fora da rede do banco), ossec.conf do nó e a limpeza dos alertas antigos;
-# 9. atualização do manager (UPGRADE_FROM → a versão da compose) com os mesmos volumes: o código dos módulos que a
-#    imagem nova traz não fica escondido pelo volume dos wodles, e o marcador do módulo da AWS continua lá.
+# 8. perfil do nó: limites de memória, CPU e processos, capabilities, log local, heap travado, tempo de parada, redes
+#    (o indexer só nas internas e sem rota para fora, o manager fora da rede do banco e sem alcançar a rede da API),
+#    ossec.conf do nó e a limpeza dos alertas antigos;
+# 9. atualização do manager (UPGRADE_FROM → a versão da compose) com os mesmos volumes: o código que a imagem nova traz
+#    para os volumes persistentes (wodles, integrations, active-response/bin e agentless) não fica escondido por eles,
+#    e o marcador do módulo da AWS continua lá.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -93,9 +96,10 @@ manager_file_count() { # <regex> <arquivo no manager>
 
 new_passwords() {
   INDEXER_ADMIN_PASSWORD=$(new_wazuh_password)
+  INDEXER_FILEBEAT_PASSWORD=$(new_wazuh_password)
   WAZUH_API_PASSWORD=$(new_wazuh_password)
   INDEXER_API_READ_PASSWORD=$(new_wazuh_password)
-  export INDEXER_ADMIN_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+  export INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
 }
 
 # Mesmo formato do write_env do start.sh: CHAVE='valor', só para quem roda.
@@ -109,10 +113,10 @@ write_env() { # <arquivo> <CHAVE=valor...>
 # A sequência do wazuh_up do start.sh. A diferença é a lista de contas: no nó, o wazuh-apply.sh manda a lista vazia
 # (as chaves chegam no PR-V4); aqui, a do arquivo.
 wazuh_up() { # <lista de contas AWS>
-  check_wazuh_passwords INDEXER_ADMIN_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
-  write_env wazuh-security.env \
-    "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" "INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD"
-  write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_ADMIN_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
+  check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+  write_env wazuh-security.env "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" \
+    "INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD"
+  write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
   docker compose --profile setup run --rm certs-init
   docker compose --profile setup run --rm security-init
   docker compose up --detach --wait --wait-timeout 600 wazuh.indexer
@@ -128,34 +132,78 @@ echo "== Instalação nova"
 wazuh_up /dev/null
 expect "sem contas, sem módulo aws-s3" 0 "$(manager_file_count '<wodle name="aws-s3">' /var/ossec/etc/ossec.conf)"
 
-old_admin=$INDEXER_ADMIN_PASSWORD old_api=$WAZUH_API_PASSWORD old_api_read=$INDEXER_API_READ_PASSWORD
+old_admin=$INDEXER_ADMIN_PASSWORD old_filebeat=$INDEXER_FILEBEAT_PASSWORD old_api=$WAZUH_API_PASSWORD
+old_api_read=$INDEXER_API_READ_PASSWORD
 new_passwords
 
-echo "== Rotação das três senhas, com duas contas AWS"
+echo "== Rotação das quatro senhas, com duas contas AWS"
 wazuh_up tests/fixtures/aws-sources.example.json
 
 echo "== Depois da rotação"
 indexer_ca=/usr/share/wazuh-indexer/config/certs/root-ca.pem
 expect "admin antigo recusado" 401 \
   "$(code_as wazuh.indexer admin "$old_admin" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
+expect "wazuh_filebeat antigo recusado" 401 \
+  "$(code_as wazuh.indexer wazuh_filebeat "$old_filebeat" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
 expect "verax_api_read antigo recusado" 401 \
   "$(code_as wazuh.indexer verax_api_read "$old_api_read" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
 expect "wazuh-wui antigo recusado" 401 \
   "$(code_as wazuh.manager wazuh-wui "$old_api" -X POST --cacert /var/ossec/api/configuration/ssl/server.crt \
     https://localhost:55000/security/user/authenticate)"
 
-filebeat=$(docker exec "$(container wazuh.manager)" filebeat test output 2>&1 || true)
+echo "== Filebeat do manager: usuário só de escrita, TLS verificado e um alerta de ponta a ponta"
+manager=$(container wazuh.manager)
+filebeat=$(docker exec "$manager" filebeat test output 2>&1 || true)
 expect "filebeat verifica o certificado do indexer" 1 \
   "$(grep -c "server's certificate chain verification is enabled" <<<"$filebeat")"
 expect "filebeat autentica no indexer" 1 "$(grep -c 'talk to server... OK' <<<"$filebeat")"
+expect "filebeat configurado com o usuário wazuh_filebeat, e não com o admin" "username: 'wazuh_filebeat'" \
+  "$(docker exec "$manager" grep -oE "^  username: '[a-z_]+'" /etc/filebeat/filebeat.yml | sed 's/^ *//')"
+expect "a senha do admin do indexer não está no ambiente do manager" 0 \
+  "$(docker inspect --format '{{json .Config.Env}}' "$manager" | grep -c "$INDEXER_ADMIN_PASSWORD" || true)"
+# shellcheck source=SCRIPTDIR/lib-indexer.sh
+source "$bundle/scripts/lib-indexer.sh"
+match_count() { grep -oE "$1" <<<"$response_body" | head -n 1 || true; }
+# Um alerta de nível 5 posto no alerts.json (o que o analysisd grava) tem de aparecer no índice do dia: o caminho
+# inteiro do filebeat com o usuário só de escrita (bulk, criação do índice e pipeline). O filebeat só abre a conexão
+# com o indexer quando tem o que enviar (um manager sem agentes e com corte no nível 5 pode ficar minutos sem alerta):
+# é este alerta que força a conexão, e só depois dele o template e o pipeline existem.
+alert_marker="verax-ci-$(date -u +%s)"
+alert=$(printf '{"timestamp":"%s","rule":{"level":5,"description":"Verax CI: alerta de teste","id":"999999","firedtimes":1,"mail":false,"groups":["verax-ci"]},"agent":{"id":"000","name":"wazuh.manager"},"manager":{"name":"wazuh.manager"},"id":"%s.1","decoder":{"name":"json"},"data":{"verax_ci":"%s"},"location":"verax-ci"}' \
+  "$(date -u +%Y-%m-%dT%H:%M:%S.000+0000)" "$(date -u +%s)" "$alert_marker")
+docker exec "$manager" sh -c "printf '%s\n' '$alert' >>/var/ossec/logs/alerts/alerts.json"
+for _ in {1..36}; do
+  indexer_admin GET "/wazuh-alerts-4.x-*/_count?q=data.verax_ci:$alert_marker" </dev/null
+  [[ $(match_count '"count":[0-9]+') == '"count":1' ]] && break
+  sleep 5
+done
+expect "alerta do alerts.json indexado pelo filebeat no índice do dia" '"count":1' "$(match_count '"count":[0-9]+')"
+# O que o filebeat instalou ao conectar, com as permissões do wazuh_filebeat: o template legado do Wazuh e o pipeline
+# de ingestão do módulo (o índice do dia vem do `date_index_name` dele).
+indexer_admin GET /_template/wazuh </dev/null
+expect "template wazuh instalado pelo filebeat" 200 "$response_code"
+indexer_admin GET /_ingest/pipeline/filebeat-7.10.2-wazuh-alerts-pipeline </dev/null
+expect "pipeline do módulo wazuh instalado pelo filebeat" 200 "$response_code"
+# O harvester de inventário do manager (4.14.9) sobe mesmo com o bloco <indexer> desligado e tenta criar um template
+# wazuh-states-inventory-* por tipo com a credencial do keystore, a do filebeat: tem de falhar (um aviso por índice a
+# cada partida, nada indexado). Se um dia conseguir, o usuário do filebeat ganhou permissão demais.
+expect "o harvester do manager não consegue iniciar o conector com o usuário do filebeat" 0 \
+  "$(manager_file_count 'IndexerConnector initialized successfully' /var/ossec/logs/ossec.log)"
+expect "o harvester tentou (e o aviso ficou no log), uma vez por índice a cada partida" '[1-9][0-9]*' \
+  "$(manager_file_count 'IndexerConnector initialization failed' /var/ossec/logs/ossec.log)"
+indexer_admin GET '/_cat/indices/wazuh-states-*?h=index' </dev/null
+expect "nenhum índice wazuh-states-* criado pelo manager" '' "${response_body//[[:space:]]/}"
 
-echo "== Acesso como a API e o worker (rede interna, nome do serviço e CA do volume público)"
+echo "== Acesso como a API e o worker (rede wazuh-read, nome do serviço e CA do volume público)"
 indexer_image=$(docker inspect --format '{{.Config.Image}}' "$(container wazuh.indexer)")
-indexer_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(container wazuh.indexer)")
-# Um contêiner só na rede interna, com a CA montada onde a API e o worker a leem (INDEXER_CA_FILE do start.sh).
+indexer_ip_of() { # <rede>
+  docker inspect --format "{{(index .NetworkSettings.Networks \"$1\").IPAddress}}" "$(container wazuh.indexer)"
+}
+indexer_ip=$(indexer_ip_of "${project}_wazuh-read")
+# Um contêiner só na rede da API, com a CA montada onde a API e o worker a leem (INDEXER_CA_FILE do start.sh).
 as_app() { # <curl args...>
   printf 'user = "verax_api_read:%s"\n' "$INDEXER_API_READ_PASSWORD" |
-    docker run --rm -i --network "${project}_wazuh" -v "${project}_certs-public:/etc/verax/wazuh:ro" \
+    docker run --rm -i --network "${project}_wazuh-read" -v "${project}_certs-public:/etc/verax/wazuh:ro" \
       --entrypoint curl "$indexer_image" -s -K - -o /dev/null -w '%{http_code}' \
       --cacert /etc/verax/wazuh/root-ca.pem "$@" || true
 }
@@ -165,7 +213,6 @@ expect "por outro nome, o TLS recusa" 000 \
   "$(as_app --resolve "outro-nome.exemplo.internal:9200:$indexer_ip" https://outro-nome.exemplo.internal:9200/)"
 
 echo "== Contas AWS"
-manager=$(container wazuh.manager)
 expect "um bucket por fonte" 4 "$(manager_file_count '<bucket type="(cloudtrail|guardduty|waf)">' /var/ossec/etc/ossec.conf)"
 expect "ExternalId fora do ossec.conf" 0 "$(manager_file_count 'exemplo-external-id' /var/ossec/etc/ossec.conf)"
 expect "ExternalId fora do ambiente do contêiner" 0 \
@@ -193,9 +240,6 @@ expect "analysisd carregou as regras" 0 "$(manager_file_count 'Error loading the
 expect "analysisd rodando como wazuh" wazuh "$(docker exec "$manager" ps -o user= -C wazuh-analysisd | head -n 1 | tr -d ' ')"
 
 echo "== Retenção e backup"
-# shellcheck source=SCRIPTDIR/lib-indexer.sh
-source "$bundle/scripts/lib-indexer.sh"
-match_count() { grep -oE "$1" <<<"$response_body" | head -n 1 || true; }
 indexer_admin GET /_plugins/_ism/policies/verax-retencao </dev/null
 expect "política de retenção apaga com 30 dias" '"min_index_age":"30d"' "$(match_count '"min_index_age":"[^"]*"')"
 indexer_admin GET /_plugins/_sm/policies/verax-diario </dev/null
@@ -266,16 +310,26 @@ for service in wazuh.indexer wazuh.manager; do
   id=$(container "$service")
   expect "$service: limite de processos, sem ganho de privilégio e log local" '1024 \[no-new-privileges:true\] local' \
     "$(host_config PidsLimit "$id") $(host_config SecurityOpt "$id") $(host_config LogConfig.Type "$id")"
+  expect "$service: 60 s para parar antes do SIGKILL" 60 "$(docker inspect --format '{{.Config.StopTimeout}}' "$id")"
   # Para calibrar os limites no ensaio: o uso agora, sem carga.
   docker stats --no-stream --format "       uso de $service: {{.MemUsage}}, CPU {{.CPUPerc}}, {{.PIDs}} processos" "$id"
 done
 indexer_admin GET '/_nodes/_local/process?filter_path=nodes.*.process.mlockall' </dev/null
 expect "indexer com o heap travado na memória" '"mlockall":true' "$(match_count '"mlockall":(true|false)')"
-expect "indexer só na rede interna" "${project}_wazuh " "$(networks_of "$indexer")"
-expect "rede interna sem saída" true "$(docker network inspect --format '{{.Internal}}' "${project}_wazuh")"
+expect "indexer só nas redes internas (manager de um lado, API e worker do outro)" \
+  "${project}_wazuh ${project}_wazuh-read " "$(networks_of "$indexer")"
+for network in wazuh wazuh-read; do
+  expect "rede $network sem saída" true "$(docker network inspect --format '{{.Internal}}' "${project}_$network")"
+done
 expect "indexer sem rota para fora" 0 "$(docker exec "$indexer" awk '$2 == "00000000"' /proc/net/route | wc -l)"
-expect "manager nas redes interna e de saída, fora da rede do banco" "${project}_wazuh ${project}_wazuh-egress " \
-  "$(networks_of "$manager")"
+expect "manager nas redes interna e de saída, fora da rede do banco e da rede da API" \
+  "${project}_wazuh ${project}_wazuh-egress " "$(networks_of "$manager")"
+# O manager não chega à rede da API (wazuh-read): o Docker isola uma rede bridge da outra, e o único caminho dele
+# para fora é a wazuh-egress. Sem isso, um manager comprometido falaria com a API por dentro, fora do Cloudflare.
+expect "manager não alcança a rede da API (indexer pelo endereço da wazuh-read)" 000 \
+  "$(docker exec "$manager" curl -s -m 3 -o /dev/null -w '%{http_code}' -k "https://$indexer_ip:9200/" || true)"
+expect "manager alcança o indexer pela rede dele (wazuh)" 401 \
+  "$(docker exec "$manager" curl -s -m 3 -o /dev/null -w '%{http_code}' -k "https://$(indexer_ip_of "${project}_wazuh"):9200/" || true)"
 expect "só alertas de nível 5 para cima no indexer" 1 \
   "$(manager_file_count '<log_alert_level>5</log_alert_level>' /var/ossec/etc/ossec.conf)"
 expect "sem alerts.log em texto" 1 "$(manager_file_count '<alerts_log>no</alerts_log>' /var/ossec/etc/ossec.conf)"
@@ -317,28 +371,33 @@ manager=$(container wazuh.manager)
 expect "manager atualizado" "$new_version" "$(docker exec "$manager" /var/ossec/bin/wazuh-control info -v)"
 expect "marcador do módulo da AWS mantido no volume" marcador \
   "$(docker exec "$manager" cat /var/ossec/wodles/aws/verax-ci-marcador.db)"
-# O que a imagem traz para /var/ossec/wodles: a base (copiada na primeira partida) e a lista que o init copia a cada
-# partida, que vale por cima. Cada arquivo tem de estar no volume igual ao da imagem; os que sobram da versão anterior
-# não importam, e os bancos (*.db) são do volume.
-image_wodles='cd /var/ossec/data_tmp/permanent/var/ossec/wodles && find . -type f ! -path "*/__pycache__/*" -exec sha256sum {} + &&
-  cd /var/ossec/data_tmp/exclusion/var/ossec/wodles && find . -type f -exec sha256sum {} +'
-wodles_of_image() { # <imagem>
-  docker run --rm --entrypoint sh "$1" -c "$image_wodles" |
+# Os volumes persistentes que guardam código da imagem (permanent_data.env dela): wodles, integrations,
+# active-response/bin e agentless. Para cada um, o que a imagem traz: a base (copiada na primeira partida) e a lista
+# que o init copia a cada partida, que vale por cima. Cada arquivo tem de estar no volume igual ao da imagem; os que
+# sobram da versão anterior não importam, e os arquivos de estado (os bancos *.db dos wodles) são do volume.
+files_of_image() { # <imagem> <diretório sob /var/ossec>
+  # shellcheck disable=SC2016 # expandido pelo sh do contêiner
+  docker run --rm --entrypoint sh "$1" -c 'for base in permanent exclusion; do
+      dir="/var/ossec/data_tmp/$base/var/ossec/$1"
+      [ -d "$dir" ] && cd "$dir" && find . -type f ! -path "*/__pycache__/*" -exec sha256sum {} +
+    done; true' sh "$2" |
     awk '{ hash[$2] = $1 } END { for (file in hash) print hash[file], file }' | sort
 }
-expected=$(wodles_of_image "$current_image")
-# shellcheck disable=SC2016 # expandido pelo sh do contêiner
-installed=$(docker exec "$manager" sh -c \
-  'cd /var/ossec/wodles && find . -type f ! -name "*.db" ! -path "*/__pycache__/*" -exec sha256sum {} +' |
-  awk '{ print $1, $2 }' | sort)
-hidden=$(comm -23 <(echo "$expected") <(echo "$installed"))
-expect "código dos módulos igual ao da imagem nova (nada escondido pelo volume)" 0 "$(grep -c . <<<"$hidden" || true)"
-if [[ -n $hidden ]]; then
-  while read -r line; do echo "       diferente ou ausente no volume: $line"; done <<<"$hidden"
-fi
-# Sem nenhum arquivo diferente entre as duas versões, o teste acima não prova nada: fica registrado.
-changed=$(comm -23 <(echo "$expected") <(wodles_of_image "$UPGRADE_FROM") | grep -c . || true)
-echo "       $changed arquivo(s) dos módulos mudaram de $old_version para $new_version"
+for dir in wodles integrations active-response/bin agentless; do
+  expected=$(files_of_image "$current_image" "$dir")
+  # shellcheck disable=SC2016 # expandido pelo sh do contêiner
+  installed=$(docker exec "$manager" sh -c \
+    'cd "/var/ossec/$1" && find . -type f ! -name "*.db" ! -path "*/__pycache__/*" -exec sha256sum {} +' sh "$dir" |
+    awk '{ print $1, $2 }' | sort)
+  hidden=$(comm -23 <(echo "$expected") <(echo "$installed"))
+  expect "$dir: código igual ao da imagem nova (nada escondido pelo volume)" 0 "$(grep -c . <<<"$hidden" || true)"
+  if [[ -n $hidden ]]; then
+    while read -r line; do echo "       diferente ou ausente no volume: $line"; done <<<"$hidden"
+  fi
+  # Sem nenhum arquivo diferente entre as duas versões, o teste acima não prova nada: fica registrado.
+  changed=$(comm -23 <(echo "$expected") <(files_of_image "$UPGRADE_FROM" "$dir") | grep -c . || true)
+  echo "       $dir: $changed arquivo(s) mudaram de $old_version para $new_version"
+done
 
 if ((failures > 0)); then
   echo "$failures verificação(ões) falharam." >&2
