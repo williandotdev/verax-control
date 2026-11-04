@@ -76,6 +76,18 @@ done
 # ajuste; aqui, só o nome do plano, para o erro mais comum aparecer antes de reiniciar o serviço.
 [[ $PLAN =~ ^(essencial|profissional|enterprise|interno)$ ]] ||
   { echo 'PLAN inválido em /etc/verax/node.conf: use essencial, profissional, enterprise ou interno.' >&2; exit 2; }
+# Perfil do nó: lean (o da Verax) ou standard (nó de cliente). Sem a linha, vale lean: o nó da Verax, instalado antes do
+# perfil, sobe com a mesma memória de antes sem mudar o node.conf. O start.sh escreve os limites de cada perfil.
+[[ ${NODE_PROFILE:-lean} =~ ^(lean|standard)$ ]] ||
+  { echo 'NODE_PROFILE inválido em /etc/verax/node.conf: use lean ou standard.' >&2; exit 2; }
+# IP de saída do nó (o IP fixo do Cloud NAT), que a política IAM da AWS do cliente libera: um ou mais IPv4 com /32,
+# separados por vírgula. Opcional até a chave da AWS chegar ao painel; quando presente, o formato é conferido aqui.
+octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+egress_ip="$octet(\\.$octet){3}/32"
+if [[ -n ${NODE_EGRESS_IPS:-} && ! $NODE_EGRESS_IPS =~ ^$egress_ip(,$egress_ip)*$ ]]; then
+  echo 'NODE_EGRESS_IPS inválido em /etc/verax/node.conf: use IPv4 com /32, separados por vírgula.' >&2
+  exit 2
+fi
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" /opt/verax/bin/

@@ -8,7 +8,8 @@ terraform {
   }
 
   # O estado fica num bucket do Cloud Storage criado no passo 2 do GUIA.md, com versionamento: dá para voltar a
-  # uma versão anterior se algo der errado. O nome do bucket vem no `terraform init -backend-config`.
+  # uma versão anterior se algo der errado. O nome do bucket vem no `terraform init -backend-config`. É o mesmo
+  # bucket e o mesmo prefixo de quando esta raiz era `infra/gcp`: o estado do nó aplicado continua o mesmo.
   backend "gcs" {
     prefix = "verax-node"
   }

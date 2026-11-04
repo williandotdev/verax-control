@@ -31,7 +31,13 @@ resource "google_pubsub_topic" "security_logs" {
   # Se o nó ficar parado, as mensagens esperam até 7 dias.
   message_retention_duration = "604800s"
 
-  depends_on = [google_project_service.apis]
+  # As mensagens (logs de auditoria do cliente) ficam guardadas só na região do nó.
+  dynamic "message_storage_policy" {
+    for_each = var.pubsub_storage_in_region ? [1] : []
+    content {
+      allowed_persistence_regions = [var.region]
+    }
+  }
 }
 
 resource "google_pubsub_subscription" "security_logs" {

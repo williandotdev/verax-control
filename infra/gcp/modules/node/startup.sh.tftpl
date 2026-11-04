@@ -1,0 +1,69 @@
+#!/bin/bash
+# Roda a cada boot da VM do nó (nós criados pelo módulo; o nó da Verax ainda usa o script de antes, veja o GUIA.md).
+# Só prepara a VM: a pasta dos dados do nó, 2 GB de swap cifrado e, no perfil standard, os ajustes do kernel que o
+# indexer do Wazuh pede. Não apaga dado do nó: cada passo confere se já foi feito.
+#
+# Modelo do Terraform (templatefile): a única interpolação é o perfil, logo abaixo. O resto do script não usa chave
+# logo depois de cifrão nem de porcentagem, que o Terraform tentaria interpretar.
+set -euo pipefail
+
+# shellcheck disable=SC2016 # o Terraform troca o texto entre as aspas pelo perfil antes de o script chegar à VM
+profile='${node_profile}'
+case $profile in
+  lean | standard) ;;
+  *)
+    echo "Perfil do nó inválido no script de boot: $profile" >&2
+    exit 1
+    ;;
+esac
+
+mkdir -p /var/lib/verax
+chmod 0750 /var/lib/verax
+
+# Perfil standard: o indexer do Wazuh (OpenSearch) exige vm.max_map_count de 262144, e o kernel só usa o swap em último
+# caso. O heap do indexer fica travado na memória; o swap protege os outros processos de um OOM.
+if [ "$profile" = standard ]; then
+  mkdir -p /etc/sysctl.d
+  printf 'vm.max_map_count = 262144\nvm.swappiness = 1\n' >/etc/sysctl.d/90-verax.conf
+  sysctl --quiet --load=/etc/sysctl.d/90-verax.conf
+fi
+
+# Swap cifrado: dm-crypt no modo plain sobre um arquivo, com uma chave aleatória nova a cada boot, tirada de
+# /dev/urandom e guardada só na memória do kernel. O que vai da memória para o swap (o tmpfs com a chave do cofre e a
+# chave da AWS, a memória do worker e a do manager) chega ao disco, e ao snapshot dele, só cifrado. Depois de um
+# reboot, nem a própria VM lê o swap anterior.
+SWAPFILE=/swapfile
+SWAPDEV=verax-swap
+
+# Disco que veio de um nó com o script antigo, de swap em claro no fstab: tira a linha do fstab, desliga esse swap e
+# sobrescreve o arquivo com zeros antes de apagar, para não sobrar texto claro nos blocos do disco.
+if grep -q "^$SWAPFILE " /etc/fstab; then
+  if grep -qx "$SWAPFILE" <<<"$(swapon --show=NAME --noheadings)"; then swapoff "$SWAPFILE"; fi
+  sed -i "\|^$SWAPFILE |d" /etc/fstab
+  shred --iterations=0 --zero --remove "$SWAPFILE"
+fi
+
+# O cryptsetup (pacote do Debian) entra no primeiro boot, pela saída do NAT.
+if ! command -v cryptsetup >/dev/null; then
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cryptsetup-bin >/dev/null
+fi
+
+if [ ! -f "$SWAPFILE" ]; then
+  fallocate -l 2G "$SWAPFILE"
+  chmod 0600 "$SWAPFILE"
+fi
+active=$(swapon --show=NAME --noheadings)
+if ! grep -qx "$(readlink -f "/dev/mapper/$SWAPDEV")" <<<"$active"; then
+  if [ ! -e "/dev/mapper/$SWAPDEV" ]; then
+    # O arquivo vira um dispositivo de bloco com acesso direto (sem passar pelo cache de páginas), e o dm-crypt cifra
+    # tudo o que passa por ele. A chave (512 bits, AES-256 no modo XTS) sai de /dev/urandom, que o cryptsetup lê só no
+    # tamanho da chave, e não é gravada em lugar nenhum.
+    loop=$(losetup --associated "$SWAPFILE" | awk -F: 'NR == 1 { print $1 }')
+    if [ -z "$loop" ]; then loop=$(losetup --find --show --direct-io=on "$SWAPFILE"); fi
+    cryptsetup open --type plain --cipher aes-xts-plain64 --key-size 512 --key-file /dev/urandom "$loop" "$SWAPDEV"
+  fi
+  # Fora de uso, o conteúdo é só texto cifrado com uma chave que já se perdeu: formatar não perde nada.
+  mkswap "/dev/mapper/$SWAPDEV" >/dev/null
+  swapon "/dev/mapper/$SWAPDEV"
+fi

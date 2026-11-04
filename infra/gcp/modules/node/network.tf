@@ -5,8 +5,6 @@ resource "google_compute_network" "node" {
   name                    = "${var.name_prefix}-vpc"
   auto_create_subnetworks = false
   routing_mode            = "REGIONAL"
-
-  depends_on = [google_project_service.apis]
 }
 
 resource "google_compute_subnetwork" "node" {
@@ -31,11 +29,29 @@ resource "google_compute_router" "node" {
   region  = var.region
 }
 
+# IP de saída fixo, no perfil standard: é o único IP de onde a chave de leitura da AWS do cliente funciona (a política
+# IAM nega qualquer outro). Se ele mudasse, a coleta pararia até o cliente atualizar a pilha; por isso o endereço é
+# reservado e protegido contra `terraform destroy`. O lean (nó da Verax) sai pelo IP automático do NAT.
+resource "google_compute_address" "nat" {
+  count = local.static_nat_ip ? 1 : 0
+
+  name         = "${var.name_prefix}-nat-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+  network_tier = "PREMIUM"
+  description  = "IP de saída do nó (Cloud NAT): o que a política IAM da AWS do cliente libera."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "google_compute_router_nat" "node" {
   name                               = "${var.name_prefix}-nat"
   router                             = google_compute_router.node.name
   region                             = var.region
-  nat_ip_allocate_option             = "AUTO_ONLY"
+  nat_ip_allocate_option             = local.static_nat_ip ? "MANUAL_ONLY" : "AUTO_ONLY"
+  nat_ips                            = local.static_nat_ip ? google_compute_address.nat[*].self_link : null
   source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
 
   subnetwork {

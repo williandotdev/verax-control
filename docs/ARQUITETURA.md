@@ -88,10 +88,11 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 
 ## Perfis de nó (`lean` e `standard`)
 
-_(fase 2, a construir)_
+_(fase 2: o módulo, os perfis e o ambiente de homologação estão no código, em `infra/gcp/modules/node` e
+`infra/gcp/envs/`; falta o apply da homologação. O Wazuh no `standard` vem no PR-W1.)_
 
-O perfil passa a ser uma variável do Terraform (`node_profile`) e do pacote do nó (`NODE_PROFILE`). Ele define a VM,
-o disco, o snapshot e os limites de memória dos contêineres.
+O perfil é uma variável do Terraform (`node_profile`) e do pacote do nó (`NODE_PROFILE`). Ele define a VM, o disco,
+o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos contêineres.
 
 |          | `lean`                                           | `standard`                                                          |
 | -------- | ------------------------------------------------ | ------------------------------------------------------------------- |
@@ -105,7 +106,10 @@ o disco, o snapshot e os limites de memória dos contêineres.
 - **Swap cifrado, nos dois perfis:** o swap usa uma chave aleatória nova a cada boot (dm-crypt no modo plain, com a
   chave tirada de `/dev/urandom`), que só existe na memória. O que o kernel tira da memória para o swap (o tmpfs com
   a chave privada do cofre e a chave da AWS, a memória do worker e a do manager) chega ao disco, e ao snapshot dele,
-  só cifrado. Ao trocar o swap atual por este, o arquivo antigo é recriado, para não sobrar texto claro nele.
+  só cifrado. Ao trocar o swap atual por este, o arquivo antigo é recriado, para não sobrar texto claro nele. Todo
+  nó criado pelo módulo já nasce assim. O nó da Verax, aplicado antes do módulo, segue com o script de boot antigo
+  (swap em claro) até uma manutenção planejada: trocar o script recria a VM (o disco fica), como descreve
+  `infra/gcp/GUIA.md`.
 - **Imagem uniforme:** todo nó de cliente é `standard`, com ou sem conta AWS, nos planos Essencial e Profissional. O
   plano muda limites e retenção, não a máquina.
 - **Memória no `standard`** (soma dos limites de cerca de 6 GiB): indexer com 3 GiB, heap de 1,5 GiB e memória
@@ -243,10 +247,11 @@ grupo e duas políticas gerenciadas. Nenhuma saída da pilha é segredo.
 
 ## SOC da própria Verax (fontes da GCP)
 
-A base do nó da Verax na GCP está em `infra/gcp/`, com o passo a passo em `infra/gcp/GUIA.md`, e foi aplicada em
-03/11/2026. É um nó **`lean`**: como ele monitora só a GCP e o Cloudflare, não usa o Wazuh. O worker lê os logs
-direto do Pub/Sub e aplica regras próprias. Tudo roda numa e2-micro do nível gratuito em us-east1. Os nós de clientes
-usam o perfil `standard`, todos com o Wazuh (seção "Perfis de nó").
+A base do nó da Verax na GCP está em `infra/gcp/envs/verax`, pelo módulo `infra/gcp/modules/node`, com o passo a
+passo em `infra/gcp/GUIA.md`, e foi aplicada em 03/11/2026. É um nó **`lean`**: como ele monitora só a GCP e o
+Cloudflare, não usa o Wazuh. O worker lê os logs direto do Pub/Sub e aplica regras próprias. Tudo roda numa
+e2-micro do nível gratuito em us-east1. Os nós de clientes usam o perfil `standard`, todos com o Wazuh (seção
+"Perfis de nó").
 
 O pacote do nó está em `infra/node/`, com o roteiro em `docs/runbooks/no-verax.md`. Ele roda numa VM só, sem porta
 aberta: Postgres com TLS, papéis e migrations, API, worker e o túnel do Cloudflare. As imagens vêm do registro do
