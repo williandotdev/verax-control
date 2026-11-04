@@ -7,11 +7,13 @@ import { inspect } from 'node:util';
  * chave. A cada partida, o `start.sh` entrega:
  * - à API, só a chave pública da versão corrente: `CREDENTIALS_PUBLIC_KEY` (o PEM em base64) e
  *   `CREDENTIALS_KEY_VERSION`. A API cifra o que o admin cola e não consegue decifrar o que está guardado;
- * - ao worker, as chaves privadas de todas as versões ativas: `CREDENTIALS_PRIVATE_KEYS` (`<versão>:<PEM em base64>`,
- *   separados por vírgula) e `CREDENTIALS_KEY_CURRENT` (a versão que cifra).
+ * - ao worker, as chaves privadas de todas as versões ativas, num arquivo do tmpfs do nó montado só leitura nele
+ *   (`CREDENTIALS_PRIVATE_KEYS_FILE`, uma linha `<versão>:<PEM em base64>` por versão) e `CREDENTIALS_KEY_CURRENT` (a
+ *   versão que cifra). As privadas nunca vêm por variável de ambiente: o Docker grava o ambiente de cada contêiner na
+ *   configuração dele, em `/var/lib/docker`, que está no disco do nó e nos snapshots; o conteúdo de um arquivo montado
+ *   não vai para lá.
  *
- * O PEM vai em base64 porque o arquivo de ambiente do nó recusa quebra de linha. As mensagens de erro citam no máximo a
- * versão, nunca o conteúdo da chave.
+ * O PEM vai em base64 para caber numa linha. As mensagens de erro citam no máximo a versão, nunca o conteúdo da chave.
  */
 
 /** RSA de 3072 bits (o que o `install.sh` gera) a 4096: o envelope de 4096 ainda cabe na coluna de 1024. */
@@ -140,12 +142,17 @@ export class VaultKeyring {
   }
 }
 
-/** Chaves privadas do worker, vindas do ambiente (`<versão>:<PEM em base64>`, separados por vírgula). */
-export function parsePrivateKeys(list: string, current: number): VaultKeyring {
+/**
+ * Chaves privadas do worker, do conteúdo do arquivo que o `start.sh` escreve: uma linha `<versão>:<PEM em base64>` por
+ * versão ativa (linhas em branco são ignoradas).
+ */
+export function parsePrivateKeys(content: string, current: number): VaultKeyring {
   const keys = new Map<number, KeyObject>();
-  for (const entry of list.split(',')) {
-    const match = PRIVATE_KEY_ENTRY.exec(entry);
-    if (!match) throw new CredentialKeyError('cada item deve ser <versão>:<PEM da chave privada em base64>');
+  const entries = content.split(/\r?\n/).filter((line) => line.trim() !== '');
+  if (entries.length === 0) throw new CredentialKeyError('o arquivo das chaves privadas está vazio');
+  for (const entry of entries) {
+    const match = PRIVATE_KEY_ENTRY.exec(entry.trim());
+    if (!match) throw new CredentialKeyError('cada linha deve ser <versão>:<PEM da chave privada em base64>');
     const version = Number(match[1]);
     if (keys.has(version)) throw new CredentialKeyError(`a versão ${version} aparece mais de uma vez`);
     const pem = decodePem(match[2] ?? '');

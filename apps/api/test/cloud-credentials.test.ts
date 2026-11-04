@@ -123,7 +123,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     publicV1 = parsePublicKey(pem64(v1.publicKey, 'spki'), 1);
     onlyV1 = parsePrivateKeys(`1:${pem64(v1.privateKey, 'pkcs8')}`, 1);
     bothCurrentV2 = parsePrivateKeys(
-      `1:${pem64(v1.privateKey, 'pkcs8')},2:${pem64(v2.privateKey, 'pkcs8')}`,
+      `1:${pem64(v1.privateKey, 'pkcs8')}\n2:${pem64(v2.privateKey, 'pkcs8')}`,
       2,
     );
     onlyV2 = parsePrivateKeys(`2:${pem64(v2.privateKey, 'pkcs8')}`, 2);

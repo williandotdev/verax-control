@@ -25,7 +25,7 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * laço. A concessão no banco garante um worker por vez em cada fonte, mesmo com mais de uma réplica. SIGTERM ou SIGINT
  * esperam as execuções em curso terminarem, e elas liberam a concessão.
  *
- * Com o cofre de credenciais (as chaves privadas no ambiente, só no nó de cliente), entra também a tarefa diária
+ * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
  * `credential-rekey`, que recifra com a versão corrente as credenciais guardadas com uma versão antiga da chave.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.

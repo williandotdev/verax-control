@@ -72,7 +72,7 @@ describe('cofre de credenciais', () => {
     publicV1 = parsePublicKey(publicPem64(v1), 1);
     publicV2 = parsePublicKey(publicPem64(v2), 2);
     onlyV1 = parsePrivateKeys(`1:${privatePem64(v1)}`, 1);
-    bothCurrentV2 = parsePrivateKeys(`1:${privatePem64(v1)},2:${privatePem64(v2)}`, 2);
+    bothCurrentV2 = parsePrivateKeys(`1:${privatePem64(v1)}\n2:${privatePem64(v2)}`, 2);
     onlyV2 = parsePrivateKeys(`2:${privatePem64(v2)}`, 2);
     const tenantId = randomUUID();
     aws = credentialBinding(
@@ -352,19 +352,24 @@ describe('chaves do cofre', () => {
 
   it('as privadas do worker: uma por versão, com a corrente entre elas, sem repetir versão', () => {
     const other = rsa(3072);
-    const keyring = parsePrivateKeys(`3:${privatePem64(key)},5:${privatePem64(other)}`, 5);
+    // Uma versão por linha, como o start.sh escreve o arquivo; a linha em branco do fim é ignorada.
+    const keyring = parsePrivateKeys(`3:${privatePem64(key)}\n5:${privatePem64(other)}\n`, 5);
     expect(keyring.versions).toEqual([3, 5]);
     expect(keyring.current).toBe(5);
     expect(keyring.privateKey(4)).toBeUndefined();
     expect(keyError(() => parsePrivateKeys(`3:${privatePem64(key)}`, 5))).toBe(
       'a versão corrente precisa estar entre as chaves privadas',
     );
-    expect(keyError(() => parsePrivateKeys(`3:${privatePem64(key)},3:${privatePem64(other)}`, 3))).toBe(
+    expect(keyError(() => parsePrivateKeys(`3:${privatePem64(key)}\n3:${privatePem64(other)}`, 3))).toBe(
       'a versão 3 aparece mais de uma vez',
     );
     expect(keyError(() => parsePrivateKeys(privatePem64(key), 1))).toBe(
-      'cada item deve ser <versão>:<PEM da chave privada em base64>',
+      'cada linha deve ser <versão>:<PEM da chave privada em base64>',
     );
+    expect(keyError(() => parsePrivateKeys(`1:${privatePem64(key)},2:${privatePem64(other)}`, 1))).toBe(
+      'cada linha deve ser <versão>:<PEM da chave privada em base64>',
+    );
+    expect(keyError(() => parsePrivateKeys('\n\n', 1))).toBe('o arquivo das chaves privadas está vazio');
     expect(keyError(() => parsePrivateKeys(`1:${privatePem64(rsa(2048))}`, 1))).toBe(
       'versão 1: a chave RSA deve ter de 3072 a 4096 bits',
     );

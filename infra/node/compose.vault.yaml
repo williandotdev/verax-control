@@ -1,0 +1,12 @@
+# Complemento do compose.yaml para o nó com o cofre de credenciais (CREDENTIALS_VAULT=true no node.conf): o start.sh
+# passa os dois (`-f compose.yaml -f compose.vault.yaml`), e o Compose soma este volume aos do worker. O nó da Verax,
+# sem a linha (ou com false), sobe só com o compose.yaml, como antes do cofre.
+#
+# As chaves privadas do cofre chegam ao worker por este arquivo, que o start.sh escreve em /run/verax (memória) a cada
+# partida, e não pelo worker.env: o Docker grava o ambiente de cada contêiner na configuração dele, em /var/lib/docker,
+# que está no disco do nó e nos snapshots dele. De um arquivo montado, só o caminho vai para lá. O caminho de destino é
+# o CREDENTIALS_PRIVATE_KEYS_FILE que o start.sh escreve no worker.env (WORKER_KEYS_MOUNT; o CI confere que batem).
+services:
+  worker:
+    volumes:
+      - /run/verax/worker-keys:/run/vault/worker-keys:ro

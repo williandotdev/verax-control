@@ -93,6 +93,8 @@ fi
 [[ ${CREDENTIALS_VAULT:-false} =~ ^(true|false)$ ]] ||
   { echo 'CREDENTIALS_VAULT inválido em /etc/verax/node.conf: use true ou false.' >&2; exit 2; }
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
+# O complemento do cofre de credenciais fica instalado sempre; o start.sh só o usa com CREDENTIALS_VAULT=true.
+install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" /opt/verax/bin/
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/

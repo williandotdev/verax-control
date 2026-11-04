@@ -10,6 +10,11 @@
 # destruída e PERMISSION_DENIED quando o segredo não existe (a VM só tem permissão em cada segredo, então um segredo
 # que não existe aparece assim). O conteúdo sai em base64 com o alfabeto da URL, como no `--format='get(payload.data)'`.
 #
+# As chaves privadas chegam ao worker pelo arquivo /run/verax/worker-keys (montado nele pelo compose.vault.yaml), nunca
+# pelo worker.env: o ambiente de um contêiner fica gravado no disco, na configuração do Docker. Os cenários conferem
+# isso, e também que o nó da Verax (sem CREDENTIALS_VAULT, ou false) não lê nada, não ganha o arquivo nem o
+# compose.vault.yaml e escreve os mesmos arquivos de ambiente de antes.
+#
 #   bash infra/node/tests/vault-test.sh
 set -euo pipefail
 
@@ -170,6 +175,12 @@ value_of() { # <arquivo de ambiente> <CHAVE>: o valor entre as aspas simples que
 keys_of() { # <arquivo de ambiente>: as chaves, em ordem
   sed 's/=.*//' "$root/run/verax/$1" | tr '\n' ' '
 }
+worker_keys() { # o arquivo das chaves privadas que o worker lê
+  cat "$root/run/verax/worker-keys"
+}
+key64() { # <versão>: o conteúdo da versão como o worker o recebe (o PEM em base64)
+  base64 -w0 <"$state/vault/$1"
+}
 add_version() { # <estado>: uma versão nova da chave no "Secret Manager", fora do install.sh
   local next
   next=$(($(find "$state/vault" -maxdepth 1 -name '[0-9]*' ! -name '*.*' | wc -l) + 1))
@@ -184,16 +195,25 @@ vault_calls() { # quantas vezes o gcloud foi chamado para o segredo do cofre
 
 lean_api='NODE_ENV LOG_LEVEL PORT WEB_ORIGIN API_ORIGIN TRUST_PROXY_HOPS BETTER_AUTH_SECRET CSRF_SECRET MAIL_TRANSPORT MAIL_FROM PLAN DATABASE_URL '
 lean_worker='NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN DATABASE_URL '
+# O que o install.sh e o start.sh dizem quando o cofre entra em cena (o nó da Verax não pode dizer nada disso).
+vault_words='credentials-key|cofre de credenciais'
+# Onde o worker lê o arquivo das chaves: o destino do volume no compose.vault.yaml, que o worker.env precisa apontar.
+keys_mount=$(sed -n 's#^ *- /run/verax/worker-keys:\(/[^:]*\):ro$#\1#p' "$here/compose.vault.yaml")
+[[ -n $keys_mount ]] || fail "compose.vault.yaml sem o volume só leitura do arquivo das chaves no worker"
 
 for setting in absent false; do
   scenario="nó da Verax (CREDENTIALS_VAULT $setting)"
   new_node "$setting"
   run install || fail "install.sh falhou: $(cat "$state/out")"
+  ! grep -qE "$vault_words" "$state/out" || fail "o install.sh fala do cofre: $(cat "$state/out")"
   run start up || fail "start.sh up falhou: $(cat "$state/out")"
+  ! grep -qE "$vault_words" "$state/out" || fail "o start.sh fala do cofre: $(cat "$state/out")"
   [[ $(vault_calls) == 0 ]] || fail "o cofre foi consultado: $(grep credentials-key "$state/gcloud.log")"
   [[ $(keys_of api.env) == "$lean_api" ]] || fail "api.env mudou: $(keys_of api.env)"
   [[ $(keys_of worker.env) == "$lean_worker" ]] || fail "worker.env mudou: $(keys_of worker.env)"
-  ! grep -q 'credentials-key|cofre de credenciais' "$state/out" || fail "a saída fala do cofre: $(cat "$state/out")"
+  [[ ! -e $root/run/verax/worker-keys ]] || fail "o arquivo das chaves do worker existe sem o cofre"
+  ! grep -q 'compose.vault.yaml' "$state/docker.log" ||
+    fail "o compose.vault.yaml entrou sem o cofre: $(grep 'compose.vault.yaml' "$state/docker.log")"
   grep -q 'compose --project-directory .* up --detach worker' "$state/docker.log" || fail "o worker não subiu"
 done
 
@@ -207,25 +227,43 @@ grep -q 'Chave nova (RSA-3072) gravada no cofre verax-node-credentials-key' "$st
 # A chave privada só existe no "Secret Manager": nenhuma linha dela na raiz do nó (disco e /tmp).
 line=$(sed -n 5p "$state/vault/1")
 ! grep -rqF -- "$line" "$root" || fail "a chave privada foi para o disco: $(grep -rlF -- "$line" "$root")"
+[[ -f $root/opt/verax/compose.vault.yaml && $(stat -c %a "$root/opt/verax/compose.vault.yaml") == 640 ]] ||
+  fail "o compose.vault.yaml não foi instalado em /opt/verax com 0640"
 run install || fail "a segunda instalação falhou: $(cat "$state/out")"
 [[ ! -e $state/vault/2 ]] || fail "a segunda instalação gerou outra chave"
 grep -q 'já tem chave' "$state/out" || fail "a segunda instalação não disse que o cofre já tem chave"
 run start up || fail "start.sh up falhou: $(cat "$state/out")"
 [[ $(keys_of api.env) == "${lean_api% DATABASE_URL } CREDENTIALS_PUBLIC_KEY CREDENTIALS_KEY_VERSION DATABASE_URL " ]] ||
   fail "api.env: $(keys_of api.env)"
-[[ $(keys_of worker.env) == "${lean_worker% DATABASE_URL } CREDENTIALS_PRIVATE_KEYS CREDENTIALS_KEY_CURRENT DATABASE_URL " ]] ||
+[[ $(keys_of worker.env) == "${lean_worker% DATABASE_URL } CREDENTIALS_PRIVATE_KEYS_FILE CREDENTIALS_KEY_CURRENT DATABASE_URL " ]] ||
   fail "worker.env: $(keys_of worker.env)"
 [[ $(value_of api.env CREDENTIALS_KEY_VERSION) == 1 && $(value_of worker.env CREDENTIALS_KEY_CURRENT) == 1 ]] ||
   fail "versão corrente diferente de 1"
 public=$(value_of api.env CREDENTIALS_PUBLIC_KEY | base64 -d)
 [[ $public == "$(openssl pkey -in "$state/vault/1" -pubout 2>/dev/null)" ]] || fail "a pública não é a da versão 1"
-[[ $(value_of worker.env CREDENTIALS_PRIVATE_KEYS) == "1:$(base64 -w0 <"$state/vault/1")" ]] ||
-  fail "as privadas do worker não são a versão 1 em base64"
+# As privadas vão ao worker por arquivo (0400, do usuário do worker), montado nele no caminho que o worker.env aponta.
+[[ $(value_of worker.env CREDENTIALS_PRIVATE_KEYS_FILE) == "$keys_mount" ]] ||
+  fail "o worker.env aponta para $(value_of worker.env CREDENTIALS_PRIVATE_KEYS_FILE), e o compose monta em $keys_mount"
+[[ $(worker_keys) == "1:$(key64 1)" ]] || fail "o arquivo das chaves do worker não é a versão 1 em base64"
+[[ $(stat -c %a "$root/run/verax/worker-keys") == 400 ]] || fail "arquivo das chaves fora do 0400"
+grep -q "^chown 1000:1000 $root/run/verax/worker-keys\$" "$state/chown.log" ||
+  fail "o arquivo das chaves não passou ao usuário do worker: $(cat "$state/chown.log")"
+# A chave, no formato em que o worker a lê, está só nesse arquivo: não no worker.env (que vira o ambiente do contêiner
+# e vai para o disco, na configuração do Docker), não no api.env e em nenhum outro lugar da raiz.
+[[ $(grep -rlF -- "$(key64 1)" "$root") == "$root/run/verax/worker-keys" ]] ||
+  fail "a chave privada está fora do arquivo do worker: $(grep -rlF -- "$(key64 1)" "$root")"
 # A API nunca recebe a privada, nem em base64.
 ! grep -q 'PRIVATE' "$root/run/verax/api.env" || fail "api.env com PRIVATE"
 ! grep -q PRIVATE < <(value_of api.env CREDENTIALS_PUBLIC_KEY | base64 -d) || fail "api.env com chave privada"
 [[ $(stat -c %a "$root/run/verax/worker.env") == 600 && $(stat -c %a "$root/run/verax/api.env") == 600 ]] ||
   fail "arquivos de ambiente fora do 0600"
+# O compose.vault.yaml entra em toda chamada do Compose, depois do compose.yaml: na partida e na parada.
+compose_files="-f $root/opt/verax/compose.yaml -f $root/opt/verax/compose.vault.yaml"
+grep -q "compose --project-directory $root/opt/verax $compose_files .* up --detach worker" "$state/docker.log" ||
+  fail "o worker subiu sem o compose.vault.yaml: $(grep 'up --detach worker' "$state/docker.log")"
+run start down || fail "start.sh down falhou: $(cat "$state/out")"
+grep -q "compose --project-directory $root/opt/verax $compose_files .* down\$" "$state/docker.log" ||
+  fail "a parada sem o compose.vault.yaml: $(grep ' down$' "$state/docker.log")"
 
 scenario="rotação: versões desativadas e destruídas ficam de fora; a mais alta ativa é a corrente"
 new_node true
@@ -236,8 +274,7 @@ add_version enabled
 run install || fail "install.sh falhou: $(cat "$state/out")"
 [[ ! -e $state/vault/5 ]] || fail "o install.sh gerou chave com a versão 1 destruída"
 run start up || fail "start.sh up falhou: $(cat "$state/out")"
-expected="2:$(base64 -w0 <"$state/vault/2"),4:$(base64 -w0 <"$state/vault/4")"
-[[ $(value_of worker.env CREDENTIALS_PRIVATE_KEYS) == "$expected" ]] || fail "as privadas não são as versões 2 e 4"
+[[ $(worker_keys) == "2:$(key64 2)"$'\n'"4:$(key64 4)" ]] || fail "o arquivo das chaves não tem as versões 2 e 4"
 [[ $(value_of worker.env CREDENTIALS_KEY_CURRENT) == 4 && $(value_of api.env CREDENTIALS_KEY_VERSION) == 4 ]] ||
   fail "a corrente não é a 4"
 [[ $(value_of api.env CREDENTIALS_PUBLIC_KEY | base64 -d) == "$(openssl pkey -in "$state/vault/4" -pubout 2>/dev/null)" ]] ||
@@ -245,7 +282,23 @@ expected="2:$(base64 -w0 <"$state/vault/2"),4:$(base64 -w0 <"$state/vault/4")"
 # Da 1 à 5 (a primeira que não existe), uma leitura cada.
 [[ $(vault_calls) == 6 ]] || fail "leituras do cofre: $(vault_calls) (1 do install.sh e 5 do start.sh)"
 
-scenario="nenhuma versão ativa: a API e o worker sobem sem o cofre, com aviso"
+scenario="muitas versões: o Secret Manager não reaproveita número, então nenhum limite conta as destruídas"
+new_node true
+add_version enabled
+for ((n = 2; n <= 100; n++)); do
+  cp "$state/vault/1" "$state/vault/$n"
+  echo destroyed >"$state/vault/$n.state"
+done
+echo destroyed >"$state/vault/1.state"
+add_version enabled
+[[ -f $state/vault/101 ]] || fail "o cenário não chegou à versão 101"
+run install || fail "install.sh falhou: $(cat "$state/out")"
+run start up || fail "start.sh up falhou com 101 versões: $(cat "$state/out")"
+[[ $(value_of worker.env CREDENTIALS_KEY_CURRENT) == 101 && $(worker_keys) == "101:$(key64 101)" ]] ||
+  fail "a corrente não é a 101, ou o arquivo tem outra coisa"
+[[ $(vault_calls) == 103 ]] || fail "leituras do cofre: $(vault_calls) (1 do install.sh e 102 do start.sh)"
+
+scenario="nenhuma versão ativa: a API e o worker sobem sem o cofre, com aviso que leva à saída certa"
 new_node true
 add_version disabled
 run install || fail "install.sh falhou: $(cat "$state/out")"
@@ -253,8 +306,30 @@ run install || fail "install.sh falhou: $(cat "$state/out")"
 run start up || fail "start.sh up falhou: $(cat "$state/out")"
 grep -q 'AVISO: o cofre de credenciais (verax-node-credentials-key) não tem nenhuma versão ativa' "$state/out" ||
   fail "sem o aviso: $(cat "$state/out")"
+# O install.sh não mexe num cofre que já tem versão (a 1 decide): o aviso manda reativar ou gravar uma versão nova.
+grep -q 'reative a mais recente (gcloud secrets versions enable <n> --secret verax-node-credentials-key' "$state/out" ||
+  fail "o aviso não diz como reativar: $(cat "$state/out")"
+grep -q 'grave uma chave nova (docs/runbooks/no-verax.md' "$state/out" || fail "o aviso não diz como gravar a chave nova"
+! grep -q 'install.sh' "$state/out" || fail "o aviso manda rodar o install.sh, que não geraria chave: $(cat "$state/out")"
 [[ $(keys_of api.env) == "$lean_api" && $(keys_of worker.env) == "$lean_worker" ]] || fail "variáveis do cofre sem chave"
+# O arquivo que o compose.vault.yaml monta no worker existe, vazio, e o worker sobe.
+[[ -f $root/run/verax/worker-keys && ! -s $root/run/verax/worker-keys ]] || fail "o arquivo das chaves deveria existir vazio"
+[[ $(stat -c %a "$root/run/verax/worker-keys") == 400 ]] || fail "arquivo das chaves fora do 0400"
 grep -q 'up --detach worker' "$state/docker.log" || fail "o worker não subiu"
+# Versão destruída: reativar não dá; a saída é a chave nova.
+echo destroyed >"$state/vault/1.state"
+run start up || fail "start.sh up falhou com a versão 1 destruída: $(cat "$state/out")"
+grep -q 'grave uma chave nova' "$state/out" || fail "sem a saída para a versão destruída: $(cat "$state/out")"
+
+scenario="segredo sem versão nenhuma (recriado): o aviso manda rodar o deploy, cujo install.sh gera a chave"
+rm -f "$state/vault/1" "$state/vault/1.state"
+run start up || fail "start.sh up falhou: $(cat "$state/out")"
+grep -q 'não tem nenhuma versão ativa' "$state/out" || fail "sem o aviso: $(cat "$state/out")"
+grep -q 'rode o deploy de novo (o install.sh gera a chave' "$state/out" || fail "o aviso não aponta o install.sh: $(cat "$state/out")"
+! grep -q 'reative' "$state/out" || fail "o aviso manda reativar uma versão que não existe"
+run install || fail "install.sh falhou: $(cat "$state/out")"
+[[ -f $state/vault/1 ]] || fail "o install.sh não gerou a chave: $(cat "$state/out")"
+grep -q 'Chave nova' "$state/out" || fail "o install.sh não disse que gerou a chave: $(cat "$state/out")"
 
 scenario="segredo inexistente ou sem permissão: install.sh e start.sh param"
 new_node true
@@ -280,14 +355,45 @@ rm "$state/vault-missing"
 if run start up; then fail "o start.sh seguiu sem ler o cofre"; fi
 grep -q 'Falha ao ler a versão 1' "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
 
-scenario="conteúdo que não é chave privada: a partida para"
+refused='não é uma chave privada RSA de 3072 a 4096 bits em PEM'
+scenario="conteúdo que não é chave privada na versão corrente: a partida para"
 new_node true
 printf 'nao-e-uma-chave' >"$state/vault/1"
 echo enabled >"$state/vault/1.state"
 run install || fail "install.sh falhou: $(cat "$state/out")"
 if run start up; then fail "o start.sh aceitou um conteúdo que não é chave"; fi
-grep -q 'A versão 1 do segredo verax-node-credentials-key não é uma chave privada legível' "$state/out" ||
-  fail "sem a mensagem: $(cat "$state/out")"
+grep -q "A versão 1 do segredo verax-node-credentials-key $refused" "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
+
+scenario="versão antiga que o worker recusaria: a partida para antes de subir e diz qual versão desativar"
+# O worker só sobe se toda versão ativa for uma chave privada RSA de 3072 a 4096 bits em PEM; a corrente válida (3)
+# não basta. Cada conteúdo abaixo na versão 2 passaria pelo openssl da versão corrente (menos o lixo), e o worker
+# cairia em laço depois de a partida ter dito que deu certo.
+new_node true
+add_version enabled
+add_version enabled
+add_version enabled
+run install || fail "install.sh falhou: $(cat "$state/out")"
+for bad in lixo rsa-2048 ec-p256 chave-publica texto-antes-do-begin; do
+  case $bad in
+    lixo) printf 'nao-e-uma-chave' >"$state/vault/2" ;;
+    rsa-2048) openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$state/vault/2" 2>/dev/null ;;
+    ec-p256) openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$state/vault/2" 2>/dev/null ;;
+    chave-publica) openssl pkey -in "$state/vault/1" -pubout -out "$state/vault/2" 2>/dev/null ;;
+    texto-antes-do-begin) { echo 'chave do cofre'; cat "$state/vault/1"; } >"$state/vault/2" ;;
+  esac
+  rm -f "$state/docker.log"
+  if run start up; then fail "o start.sh aceitou a versão 2 ($bad)"; fi
+  grep -q "A versão 2 do segredo verax-node-credentials-key $refused" "$state/out" ||
+    fail "sem a mensagem ($bad): $(cat "$state/out")"
+  grep -q 'gcloud secrets versions disable 2 --secret verax-node-credentials-key' "$state/out" ||
+    fail "sem a saída ($bad): $(cat "$state/out")"
+  ! grep -q ' up ' "$state/docker.log" 2>/dev/null || fail "o nó subiu com a versão 2 ($bad)"
+done
+# De volta a uma chave válida (de 4096 bits, o máximo que o worker aceita): as três versões vão para o worker.
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$state/vault/2" 2>/dev/null
+run start up || fail "start.sh up falhou com a versão 2 de 4096 bits: $(cat "$state/out")"
+[[ $(worker_keys) == "1:$(key64 1)"$'\n'"2:$(key64 2)"$'\n'"3:$(key64 3)" ]] || fail "o arquivo das chaves não tem as versões 1, 2 e 3"
+[[ $(value_of worker.env CREDENTIALS_KEY_CURRENT) == 3 ]] || fail "a corrente não é a 3"
 
 scenario="CREDENTIALS_VAULT inválido"
 new_node sim

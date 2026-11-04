@@ -105,10 +105,12 @@ jobs:
       - name: shellcheck
         run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
       - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
-        # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente),
-        # a primeira instalação de um nó de cliente (a chave nasce e vai direto para o Secret Manager), a rotação com
-        # versões desativadas e destruídas, o cofre sem versão ativa, o segredo inexistente, a rede fora do ar e um
-        # conteúdo que não é chave. Roda sem root e sem tocar na máquina.
+        # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
+        # sem o arquivo das chaves nem o compose.vault.yaml), a primeira instalação de um nó de cliente (a chave nasce
+        # e vai direto para o Secret Manager; as privadas chegam ao worker só pelo arquivo do tmpfs, nunca pelo
+        # worker.env), a rotação com versões desativadas e destruídas, 101 versões, o cofre sem versão ativa e sem
+        # versão nenhuma (cada aviso com a saída certa), o segredo inexistente, a rede fora do ar e um conteúdo que não
+        # é chave, na versão corrente e numa antiga. Roda sem root e sem tocar na máquina.
         run: bash infra/node/tests/vault-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
@@ -133,6 +135,8 @@ jobs:
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
           } >images.env
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
+          # Com o cofre de credenciais (CREDENTIALS_VAULT=true), o start.sh soma o compose.vault.yaml.
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
       - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
         run: |
           # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
@@ -166,6 +170,20 @@ jobs:
           # Sem core dump na API e no worker (a memória deles tem as chaves do cofre de credenciais). O Compose escreve o
           # limite 0 como um objeto vazio (soft e hard 0); um valor diferente de 0 apareceria nele.
           jq -e '.services | .api.ulimits.core == {} and .worker.ulimits.core == {}' <<<"$config"
+      - name: Cofre de credenciais (as chaves privadas chegam ao worker por arquivo só leitura, e só a ele)
+        # O ambiente de um contêiner fica gravado no disco (configuração do Docker); o conteúdo de um arquivo montado,
+        # não. O compose.vault.yaml monta o arquivo que o start.sh escreve em /run/verax só no worker, só leitura, no
+        # caminho que o start.sh põe em CREDENTIALS_PRIVATE_KEYS_FILE (WORKER_KEYS_MOUNT). O worker continua endurecido.
+        run: |
+          mount=$(sed -n 's/^WORKER_KEYS_MOUNT=//p' infra/node/bin/start.sh)
+          [[ $mount == /* ]]
+          config=$(docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --format json)
+          jq -e --arg mount "$mount" '.services.worker.volumes
+            | any(.source == "/run/verax/worker-keys" and .target == $mount and .read_only == true)' <<<"$config"
+          jq -e --arg mount "$mount" '[.services[] | (.volumes // [])[] | select(.target == $mount)] | length == 1' <<<"$config"
+          jq -e '.services.worker | .read_only == true and (.cap_drop | index("ALL")) != null' <<<"$config"
+          # Nada do cofre entra pelo ambiente do worker: só o caminho do arquivo e a versão corrente.
+          ! grep -q 'CREDENTIALS_PRIVATE_KEYS=' infra/node/bin/start.sh
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)
