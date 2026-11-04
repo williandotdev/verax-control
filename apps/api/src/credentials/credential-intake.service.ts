@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   type AcceptedCredentialKind,
@@ -11,7 +12,7 @@ import { CloudflareTokenCheck } from '../cloudflare/cloudflare-token-check.js';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
-import { ApiError } from '../common/http/api-error.js';
+import { ApiError, CommittedApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import type { VaultPublicKey } from './credential-keys.js';
@@ -31,23 +32,54 @@ import {
   type VaultSecret,
 } from './credential-vault.js';
 
-/** Ações da trilha: a primeira credencial da conta, a troca e a remoção pelo painel. */
+/**
+ * Ações da trilha: a primeira credencial da conta, a troca, a remoção pelo painel e a credencial que a origem recusou
+ * (com o tipo e o motivo, nunca o valor).
+ */
 export const CREDENTIAL_ACTIONS = {
   set: 'cloud_credential.set',
   rotate: 'cloud_credential.rotate',
   remove: 'cloud_credential.remove',
+  refused: 'cloud_credential.refused',
 } as const;
 const RESOURCE_TYPE = 'cloud_credential';
 
 /**
  * Limite de tentativas recusadas (R19 do plano revisado), contadas na própria trilha de auditoria: a cada hora, 5
- * por conta e 20 por cliente. Conta só o que a API recusou com 400 depois de achar a conta (recusa da origem, tipo de
- * outro provedor, conta inativa): é o que faria do endpoint um verificador de tokens. Formato inválido (o schema
- * recusa antes, sem chamar a origem), indisponibilidade (503) e o próprio 429 não contam.
+ * por conta e 20 por cliente. Conta só a recusa da origem (`cloud_credential.refused`), que é o que faria do endpoint
+ * um verificador de tokens. Formato inválido, outro provedor e conta inativa (recusados antes de chamar a origem),
+ * indisponibilidade (503) e o próprio 429 não contam.
+ *
+ * A contagem é exata mesmo com pedidos simultâneos: cada cliente confere uma credencial por vez (lock transacional do
+ * cliente, segurado da contagem até o fim da requisição), e a recusa entra na trilha no mesmo commit, antes de o lock
+ * ser solto (`CommittedApiError`). A próxima tentativa do cliente já a enxerga.
  */
 export const CREDENTIAL_ATTEMPT_WINDOW_MS = 60 * 60 * 1000;
 export const CREDENTIAL_ATTEMPTS_PER_ACCOUNT = 5;
 export const CREDENTIAL_ATTEMPTS_PER_TENANT = 20;
+/**
+ * Quanto uma tentativa espera a anterior do mesmo cliente terminar. Cada uma leva no máximo os 5 s da origem, e a
+ * espera mais a conferência cabem nos 15 s da transação da requisição; passado isso, 429.
+ */
+export const CREDENTIAL_ATTEMPT_LOCK_WAIT_MS = 8_000;
+const LOCK_POLL_MS = 50;
+
+/**
+ * Lock transacional das tentativas de um cliente. Tentado em laço (`pg_try_advisory_xact_lock`) até o prazo, para a
+ * espera ter fim conhecido em vez de esbarrar no tempo limite da transação. Só vale dentro de uma transação.
+ */
+async function lockTenantAttempts(tx: Prisma.TransactionClient, tenantId: string): Promise<boolean> {
+  const lockName = `verax:cloud-credential-attempts:${tenantId}`;
+  const deadline = Date.now() + CREDENTIAL_ATTEMPT_LOCK_WAIT_MS;
+  for (;;) {
+    const [row] = await tx.$queryRaw<
+      { locked: boolean }[]
+    >`SELECT pg_try_advisory_xact_lock(hashtext(${lockName})) AS locked`;
+    if (row?.locked === true) return true;
+    if (Date.now() >= deadline) return false;
+    await sleep(LOCK_POLL_MS);
+  }
+}
 
 /** O que a trilha guarda da credencial: só metadados. */
 const SUMMARY_SELECT = {
@@ -86,10 +118,11 @@ interface KindHandler {
  *
  * No `PUT`, nesta ordem:
  * 1. o cofre precisa estar ligado no nó (a API tem a chave pública);
- * 2. lock da conta (o mesmo da recifragem do worker) e a conta pelo escopo do cliente: de outro cliente, 404 sem
- *    chamar a origem; de outro provedor ou inativa, 400;
+ * 2. lock das tentativas do cliente da sessão (uma conferência por vez; esperando demais, 429), lock da conta (o
+ *    mesmo da recifragem do worker) e a conta pelo escopo do cliente: de outro cliente, 404 sem chamar a origem; de
+ *    outro provedor ou inativa, 400;
  * 3. limite de tentativas recusadas (429);
- * 4. a conferência na origem, na memória da API (recusa: 400; origem fora: 503);
+ * 4. a conferência na origem, na memória da API (recusa: 400, gravada na trilha no mesmo commit; origem fora: 503);
  * 5. cifra com a chave pública (a API não decifra), grava a linha e volta a conexão para "aguardando";
  * 6. auditoria `cloud_credential.set` ou `.rotate`, só com tipo, `keyIdSuffix` e validade.
  *
@@ -132,8 +165,17 @@ export class CredentialIntakeService {
         'CREDENTIAL_VAULT_DISABLED',
       );
     }
-    await lockCredential(this.prisma.db(), id);
     const db = this.prisma.scoped();
+    // Uma conferência por vez no cliente, antes de tudo: a espera tem prazo (429 depois dele), e a contagem do limite
+    // e a recusa gravada acontecem com o lock na mão. Depois, o lock da conta (o mesmo da recifragem e da desativação).
+    if (!(await lockTenantAttempts(this.prisma.db(), auth.scopeTenantId as string))) {
+      throw new ApiError(
+        HttpStatus.TOO_MANY_REQUESTS,
+        'Outra credencial está sendo conferida para este cliente. Tente de novo em instantes.',
+        'CREDENTIAL_CHECK_BUSY',
+      );
+    }
+    await lockCredential(this.prisma.db(), id);
     const account = await db.cloudAccount.findUnique({
       where: { id },
       select: { id: true, tenantId: true, provider: true, accountId: true, status: true },
@@ -201,12 +243,14 @@ export class CredentialIntakeService {
     this.audit.describe({ before: summary(current), after: null });
   }
 
-  /** Tentativas recusadas na última hora, na trilha do cliente do escopo: por conta e no cliente inteiro. */
+  /**
+   * Recusas da origem na última hora, na trilha do cliente do escopo: por conta e no cliente inteiro. Roda sob o lock
+   * das tentativas do cliente.
+   */
   private async assertAttemptsLeft(db: Prisma.TransactionClient, id: string): Promise<void> {
     const refused = {
-      action: { in: [CREDENTIAL_ACTIONS.set, CREDENTIAL_ACTIONS.rotate] },
+      action: CREDENTIAL_ACTIONS.refused,
       outcome: 'failure',
-      statusCode: HttpStatus.BAD_REQUEST,
       occurredAt: { gte: new Date(Date.now() - CREDENTIAL_ATTEMPT_WINDOW_MS) },
     } satisfies Prisma.AuditLogWhereInput;
     const onAccount = await db.auditLog.count({
@@ -239,7 +283,14 @@ export class CredentialIntakeService {
           { cloudAccountId, kind, reason: error.reason, sourceStatus: error.sourceStatus },
           'credencial recusada na origem',
         );
-        throw new ApiError(HttpStatus.BAD_REQUEST, REJECTION_MESSAGES[error.reason], 'CREDENTIAL_REJECTED');
+        // A recusa entra na trilha no commit desta requisição, ainda sob o lock das tentativas do cliente: é ela que o
+        // limite conta. Só o tipo e o motivo; nada foi gravado antes dela.
+        this.audit.describe({ action: CREDENTIAL_ACTIONS.refused, after: { kind, reason: error.reason } });
+        throw new CommittedApiError(
+          HttpStatus.BAD_REQUEST,
+          REJECTION_MESSAGES[error.reason],
+          'CREDENTIAL_REJECTED',
+        );
       }
       if (error instanceof CredentialSourceUnavailable) {
         this.logger.warn(

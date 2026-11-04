@@ -598,6 +598,36 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(card).getByRole('button', { name: 'Trocar token' })).toBeEnabled();
   });
 
+  it('Cloudflare: depois de trocar o token, desativar o monitoramento tira o cartão; reativada, a conta pede o token', async () => {
+    const user = userEvent.setup();
+    renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`);
+    const sheet = await screen.findByRole('dialog', {
+      name: `Conta do Cloudflare ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    });
+    const card = within(sheet).getByRole('group', { name: 'Token de API guardado' });
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('');
+    await user.click(within(card).getByLabelText('Token de API do Cloudflare'));
+    await user.paste(token);
+    await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
+    await within(card).findByText(/guardado no cofre do nó/);
+
+    // Desativar apaga o token na API (e no mock): a conta relida vale sobre a troca feita aqui.
+    await user.click(within(sheet).getByRole('button', { name: 'Desativar monitoramento' }));
+    await waitFor(() =>
+      expect(within(sheet).queryByRole('group', { name: 'Token de API guardado' })).not.toBeInTheDocument(),
+    );
+    expect(within(sheet).getByText(/Reative o monitoramento para colar o token/)).toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Token de API do Cloudflare')).not.toBeInTheDocument();
+
+    await user.click(within(sheet).getByRole('button', { name: 'Reativar monitoramento' }));
+    expect(await within(sheet).findByLabelText('Token de API do Cloudflare')).toHaveValue('');
+    expect(within(sheet).queryByRole('group', { name: 'Token de API guardado' })).not.toBeInTheDocument();
+    expect(within(sheet).queryByText(/guardado no cofre do nó/)).not.toBeInTheDocument();
+  });
+
   it('Cloudflare: quem só lê vê o cartão, sem o campo, sem trocar e sem remover', async () => {
     renderAt(`/cadastros/contas?conta=018f2c1e-0000-7000-8000-0000000c0005`, { me: demoMe('leitura') });
     const card = await screen.findByRole('group', { name: 'Token de API guardado' });

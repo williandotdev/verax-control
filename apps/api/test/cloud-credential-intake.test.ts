@@ -271,14 +271,19 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
       // A mensagem do Cloudflare (que repete o token) não chega ao painel.
       expect(response.text).not.toContain(token);
       expect(response.text).not.toMatch(/Invalid API Token|Authentication error/);
-      const entry = await entryOf(response);
-      expect(entry).toMatchObject({
-        action: 'cloud_credential.set',
+      // Um registro só da requisição: a recusa, gravada no commit dela (é o que o limite conta), com o motivo.
+      const entries = await entriesOf(response);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        action: 'cloud_credential.refused',
+        resourceType: 'cloud_credential',
         outcome: 'failure',
         statusCode: 400,
         resourceId: account.id,
+        tenantId: tenantA,
+        after: { kind: 'cloudflare_api_token' },
       });
-      expect(JSON.stringify(entry)).not.toContain(token);
+      expect(JSON.stringify(entries)).not.toContain(token);
     }
     expect(await prisma.cloudCredential.count({ where: { cloudAccountId: account.id } })).toBe(0);
   });
@@ -311,8 +316,9 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
     expect(cloudflare.callsWith(valid)).toEqual([]);
     expect(await entryOf(blocked)).toMatchObject({ outcome: 'failure', statusCode: 429 });
 
-    // Não contam: recusa com mais de uma hora, indisponibilidade, o próprio 429 e a remoção recusada. A trilha só
-    // aceita inserção, então o passado entra direto com o horário antigo.
+    // Não contam: recusa da origem com mais de uma hora, indisponibilidade, o próprio 429, a recusa antes da origem
+    // (outro provedor, conta inativa) e a remoção recusada. A trilha só aceita inserção, então o passado entra direto
+    // com o horário antigo.
     const other = await cloudflareAccount(tenantA);
     const failure = (occurredAt: Date, statusCode: number, action = 'cloud_credential.set') => ({
       occurredAt,
@@ -327,7 +333,8 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
     const anHourAgo = new Date(Date.now() - CREDENTIAL_ATTEMPT_WINDOW_MS - 60_000);
     await prisma.auditLog.createMany({
       data: [
-        ...[1, 2, 3, 4, 5].map(() => failure(anHourAgo, 400)),
+        ...[1, 2, 3, 4, 5].map(() => failure(anHourAgo, 400, 'cloud_credential.refused')),
+        ...[1, 2, 3, 4, 5].map(() => failure(new Date(), 400)),
         ...[1, 2, 3, 4, 5].map(() => failure(new Date(), 503)),
         ...[1, 2, 3, 4, 5].map(() => failure(new Date(), 429)),
         ...[1, 2, 3, 4, 5].map(() => failure(new Date(), 400, 'cloud_credential.remove')),
@@ -351,6 +358,43 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
     // O cliente B não é afetado pelas recusas do C.
     const accountB = await cloudflareAccount(tenantB);
     await put(adminB, accountB.id, cloudflare.readableAccountToken(accountB.accountId)).expect(200);
+  });
+
+  it('concorrência no cliente: 25 tokens ruins em paralelo em 5 contas, e só 20 chegam ao Cloudflare', async () => {
+    const tenantD = await createTenant(app, 'Cliente Demo D (concorrência)');
+    const adminD = await sessionFor(tenantD, 'admin_cliente');
+    const accounts = await Promise.all([1, 2, 3, 4, 5].map(() => cloudflareAccount(tenantD)));
+    // 5 por conta: o limite da conta nunca barra; o do cliente (20) precisa barrar os 5 últimos, mesmo em paralelo.
+    const tokens = accounts.flatMap((account) =>
+      [1, 2, 3, 4, 5].map(() => ({ account, token: fakeCloudflare.accountToken() })),
+    );
+    const responses = await Promise.all(tokens.map(({ account, token }) => put(adminD, account.id, token)));
+    const statuses = responses.map((response) => response.status).sort();
+    expect(statuses.filter((status) => status === 400)).toHaveLength(CREDENTIAL_ATTEMPTS_PER_TENANT);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(
+      tokens.length - CREDENTIAL_ATTEMPTS_PER_TENANT,
+    );
+    const reached = tokens.filter(({ token }) => cloudflare.callsWith(token).length > 0);
+    expect(reached).toHaveLength(CREDENTIAL_ATTEMPTS_PER_TENANT);
+    expect(
+      await prisma.auditLog.count({ where: { tenantId: tenantD, action: 'cloud_credential.refused' } }),
+    ).toBe(CREDENTIAL_ATTEMPTS_PER_TENANT);
+  });
+
+  it('concorrência na conta: 8 tokens ruins em paralelo na mesma conta, e só 5 chegam ao Cloudflare', async () => {
+    const tenantE = await createTenant(app, 'Cliente Demo E (concorrência na conta)');
+    const adminE = await sessionFor(tenantE, 'admin_cliente');
+    const account = await cloudflareAccount(tenantE);
+    const tokens = [1, 2, 3, 4, 5, 6, 7, 8].map(() => fakeCloudflare.accountToken());
+    const responses = await Promise.all(tokens.map((token) => put(adminE, account.id, token)));
+    const statuses = responses.map((response) => response.status);
+    expect(statuses.filter((status) => status === 400)).toHaveLength(CREDENTIAL_ATTEMPTS_PER_ACCOUNT);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(
+      tokens.length - CREDENTIAL_ATTEMPTS_PER_ACCOUNT,
+    );
+    expect(tokens.filter((token) => cloudflare.callsWith(token).length > 0)).toHaveLength(
+      CREDENTIAL_ATTEMPTS_PER_ACCOUNT,
+    );
   });
 
   it('A/B: o admin de A não grava, não troca e não remove a credencial da conta de B (404), sem chamar o Cloudflare', async () => {

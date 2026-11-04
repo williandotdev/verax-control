@@ -593,10 +593,17 @@ function SinkIdentityForm({ account }: { account: CloudAccount }) {
  * mostra só o fim do ID do token (`…abcd`), a validade e a última conferência.
  */
 function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
-  // A última escrita feita aqui vale sobre a conta recebida: no cadastro, a conta da resposta não é relida, e no
-  // detalhe a lista relida chega um pouco depois.
+  // A última escrita feita aqui vale só até chegar um estado mais novo da conta: no detalhe, a lista relida depois dela
+  // ou depois de outra escrita (desativar o monitoramento apaga o token); no cadastro, a conta da resposta não é
+  // relida, e a escrita daqui continua valendo. Só os metadados; o token nunca fica guardado.
   const [local, setLocal] = useState<LocalCredential | null>(null);
-  const keyStatus = local ? local.keyStatus : account.keyStatus;
+  const current = local !== null && local.accountUpdatedAt === account.updatedAt ? local : null;
+  const keyStatus = current ? current.keyStatus : account.keyStatus;
+  // Os avisos seguem o que está na tela: "guardado" só com o mesmo token, "removido" só sem token.
+  const justSaved = local?.event === 'saved' && keyStatus?.keyIdSuffix === local.keyStatus?.keyIdSuffix;
+  const justRemoved = local?.event === 'removed' && keyStatus === null;
+  const remember = (next: Omit<LocalCredential, 'accountUpdatedAt'>) =>
+    setLocal({ ...next, accountUpdatedAt: account.updatedAt });
   return (
     <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
       <h3 id="conector-passos" className="text-sm font-semibold">
@@ -647,12 +654,14 @@ function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrit
               account={account}
               status={keyStatus}
               canWrite={canWrite}
-              justSaved={local?.event === 'saved'}
-              onChange={setLocal}
+              justSaved={justSaved}
+              onChange={remember}
             />
+          ) : canWrite && account.status !== 'active' ? (
+            <p>Reative o monitoramento para colar o token: a conta desativada não guarda credencial.</p>
           ) : canWrite ? (
             <>
-              {local?.event === 'removed' && (
+              {justRemoved && (
                 <p role="status" className="text-muted-foreground">
                   Token removido do cofre do nó. Apague-o também no Cloudflare.
                 </p>
@@ -660,8 +669,8 @@ function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrit
               <p>Cole o token aqui:</p>
               <CloudflareTokenForm
                 account={account}
-                focusOnMount={local?.event === 'removed'}
-                onSaved={(saved) => setLocal({ keyStatus: saved, event: 'saved' })}
+                focusOnMount={justRemoved}
+                onSaved={(saved) => remember({ keyStatus: saved, event: 'saved' })}
               />
             </>
           ) : (
@@ -677,10 +686,14 @@ function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrit
   );
 }
 
-/** O que esta tela acabou de fazer com a credencial: guardou (com os metadados da resposta) ou removeu. */
+/**
+ * O que esta tela acabou de fazer com a credencial: guardou (com os metadados da resposta) ou removeu, e sobre qual
+ * versão da conta (`updatedAt`). Chegando outra versão, vale a da conta.
+ */
 interface LocalCredential {
   keyStatus: CloudCredentialStatus | null;
   event: 'saved' | 'removed' | 'idle';
+  accountUpdatedAt: string;
 }
 
 const CREDENTIAL_SEVERITY = {
@@ -714,7 +727,7 @@ function CredentialCard({
   status: CloudCredentialStatus;
   canWrite: boolean;
   justSaved: boolean;
-  onChange: (local: LocalCredential) => void;
+  onChange: (local: Omit<LocalCredential, 'accountUpdatedAt'>) => void;
 }) {
   const titleId = useId();
   const title = useRef<HTMLParagraphElement>(null);

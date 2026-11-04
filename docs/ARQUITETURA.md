@@ -229,7 +229,9 @@ _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em
   (`cloud_credentials:write`), pela rota `PUT /v1/cloud-accounts/:id/credential` (corpo discriminado por `kind`; trocar
   é colar de novo) e `DELETE` no mesmo caminho. A conferência roda na memória da API, antes de cifrar, sob o lock da
   conta. O limite é de 5 recusas por conta e 20 por cliente a cada hora, contadas na própria trilha de auditoria (só as
-  recusas com 400; indisponibilidade da origem não conta). Conta de outro cliente dá 404 sem chamar a origem.
+  recusas da origem; indisponibilidade não conta). Cada cliente confere uma credencial por vez, e a recusa entra na
+  trilha no mesmo commit, antes de o lock ser solto: a contagem é exata com pedidos simultâneos. Conta de outro cliente
+  dá 404 sem chamar a origem.
   - AWS: a conta e o ARN exatos do usuário de leitura (`GetCallerIdentity`). Chave de root ou de outro usuário é
     recusada.
   - AWS, permissão demais: o `SimulatePrincipalPolicy`, com o IP do NAT do nó no contexto (`aws:SourceIp`; sem ele,
