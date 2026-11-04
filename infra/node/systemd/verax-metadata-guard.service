@@ -1,0 +1,20 @@
+# Guarda do servidor de metadados da GCP (infra/node/bin/metadata-guard.sh), antes de o Docker subir: as regras do
+# iptables não sobrevivem a um reboot, e sem elas o Docker recriaria os contêineres com `restart` (API, cloudflared e,
+# no standard, o Wazuh) com rota para o metadata até o verax-node rodar. O Docker exige a guarda (RequiredBy): sem ela,
+# nenhum contêiner sobe. Pelo mesmo Requires, um `systemctl stop` ou `restart` desta unidade pararia (ou reiniciaria) o
+# Docker, o nó e o Wazuh junto: ela recusa os dois (RefuseManualStop) e só entra como dependência do Docker, no boot ou
+# no restart do verax-node (RefuseManualStart). Para reaplicar as regras, `systemctl restart verax-node`: o `start.sh
+# up` roda o script de novo.
+[Unit]
+Description=Verax Control - guarda do servidor de metadados antes do Docker
+Before=docker.service
+RefuseManualStart=yes
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/verax/bin/metadata-guard.sh
+
+[Install]
+RequiredBy=docker.service

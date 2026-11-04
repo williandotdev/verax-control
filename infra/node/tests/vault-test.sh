@@ -2,8 +2,8 @@
 # Testes da chave do cofre de credenciais no pacote do nó (bin/install.sh e bin/start.sh), sem root e sem tocar na
 # máquina nem na nuvem. Os dois scripts rodam numa pasta temporária que faz o papel da raiz: /etc/verax, /opt/verax,
 # /var/lib/verax, /run/verax e /etc/systemd/system viram caminhos dentro dela. Os comandos que mexem na máquina ou na
-# nuvem (gcloud, docker, systemctl, iptables, chown e id) são simulados e anotam cada chamada; o `install` tira só o
-# dono (-o/-g), que pede root; o openssl, o base64, o grep e o resto são os de verdade.
+# nuvem (gcloud, docker, systemctl, iptables, iptables-restore, chown e id) são simulados e anotam cada chamada; o
+# `install` tira só o dono (-o/-g), que pede root; o openssl, o base64, o grep e o resto são os de verdade.
 #
 # O gcloud simulado faz o papel do Secret Manager: guarda as versões do segredo `credentials-key` numa pasta, com o
 # estado de cada uma, e responde como ele: NOT_FOUND depois da última versão, FAILED_PRECONDITION na desativada ou
@@ -119,8 +119,15 @@ echo "systemctl $*" >>"$state/systemctl.log"
 EOF
 stub iptables <<'EOF'
 echo "iptables $*" >>"$state/iptables.log"
-# A regra ainda não existe: o -C falha e o script a insere.
-[[ $1 != -C ]]
+# A regra ainda não existe: o -C falha e o script a insere; o -D (da regra antiga, só de NODE_SUBNET) não tem o que
+# tirar.
+[[ $1 != -C && $1 != -D ]]
+EOF
+# A guarda do metadata (bin/metadata-guard.sh, que o `start.sh up` reafirma) troca o conteúdo da cadeia numa transação
+# do iptables-restore; tests/metadata-guard-test.sh a testa de verdade, num espaço de nomes de rede próprio.
+stub iptables-restore <<'EOF'
+echo "iptables-restore $*" >>"$state/iptables.log"
+cat >>"$state/iptables.log"
 EOF
 stub chown <<'EOF'
 echo "chown $*" >>"$state/chown.log"

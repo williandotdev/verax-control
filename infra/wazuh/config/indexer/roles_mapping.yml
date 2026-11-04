@@ -1,7 +1,8 @@
 ---
 # Mapeamento de papéis do indexer (T4.8), aplicado inteiro a cada deploy. Só o que o Wazuh e a Verax usam: os
 # mapeamentos de demonstração da imagem ficam de fora, inclusive o `own_index` para todos os usuários, que daria a
-# qualquer usuário (até o de leitura) escrita num índice com o nome dele.
+# qualquer usuário (até o de leitura) escrita num índice com o nome dele. Sem dashboard (fase 2, PR-W1), saem também
+# os do usuário de serviço dele (kibana_server e manage_wazuh_index).
 _meta:
   type: 'rolesmapping'
   config_version: 2
@@ -12,20 +13,14 @@ all_access:
     - 'admin'
   description: 'Administração (usuário admin)'
 
-kibana_server:
-  reserved: true
-  users:
-    - 'kibanaserver'
-  description: 'Usuário de serviço do dashboard'
-
-manage_wazuh_index:
-  reserved: true
-  users:
-    - 'kibanaserver'
-  description: 'Índices do Wazuh usados pelo dashboard'
-
 verax_api_read:
   reserved: true
   users:
     - 'verax_api_read'
   description: 'API do Verax Control: só leitura dos alertas'
+
+wazuh_filebeat:
+  reserved: true
+  users:
+    - 'wazuh_filebeat'
+  description: 'Filebeat do manager do Wazuh: só escrita dos alertas'

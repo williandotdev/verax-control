@@ -1,0 +1,12 @@
+# Uma vez por dia, depois da virada do dia do manager (a compactação dos alertas do dia anterior), com um sorteio de
+# até 30 min.
+[Unit]
+Description=Verax Control - limpeza diaria dos alertas antigos do Wazuh
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

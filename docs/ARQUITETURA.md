@@ -93,7 +93,8 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 ## Perfis de nó (`lean` e `standard`)
 
 _(fase 2: o módulo, os perfis e o ambiente de homologação estão no código, em `infra/gcp/modules/node` e
-`infra/gcp/envs/`; falta o apply da homologação. O Wazuh no `standard` vem no PR-W1.)_
+`infra/gcp/envs/`, e o Wazuh do `standard` está no pacote do nó, em `infra/node/compose.wazuh.yaml` (PR-W1); falta o
+apply da homologação e o aceite nela.)_
 
 O perfil é uma variável do Terraform (`node_profile`) e do pacote do nó (`NODE_PROFILE`). Ele define a VM, o disco,
 o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos contêineres.
@@ -122,8 +123,19 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
   processos de um OOM; o heap travado não vai para ele.
 - **Redes no `standard`:**
   - `verax`: Postgres, API, worker e cloudflared;
-  - `wazuh`, interna: indexer, manager, worker e API. O indexer não tem porta publicada nem rota para fora;
+  - `wazuh`, interna: indexer e manager. O indexer não tem porta publicada nem rota para fora;
+  - `wazuh-read`, interna: indexer, API e worker, que só leem. A API nunca divide rede com o manager, que processa
+    log de fora como root: numa rede só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o
+    `X-Forwarded-For` em que ela confia;
   - `wazuh-egress`: só o manager, para a saída ao S3 e ao STS. O manager não alcança o Postgres.
+- **Usuários do indexer no `standard`:** o filebeat do manager grava com `wazuh_filebeat` (só escrita em
+  `wazuh-alerts-*`); a API e o worker leem com `verax_api_read`; a senha do `admin` não fica em nenhum contêiner que
+  fica no ar (os scripts usam o certificado admin).
+- **Serviços do systemd:** nos dois perfis, `verax-metadata-guard` (a guarda do servidor de metadados, antes do Docker
+  e exigida por ele: sem ela o Docker não sobe, e ela não aceita `stop` nem `restart` manual) e `verax-node` (a
+  aplicação, que exige a guarda); no `standard`, também `verax-wazuh` (o Wazuh, depois da aplicação, que o
+  `restart` do `verax-node` sobe de novo mesmo quando ele tinha falhado): uma falha do Wazuh não derruba a aplicação
+  nem o backup diário.
 - **Portão:** o ensaio geral da fase 2 mede 24 h de `docker stats` e CPU. A documentação do Wazuh pede 4 núcleos para
   o single-node em Docker; se 2 vCPU não bastarem, o plano B é a e2-standard-4.
 - Os nós de clientes ficam num projeto da GCP separado do nó da Verax.
@@ -440,7 +452,8 @@ devolvida uma vez), token do túnel, chaves da Stripe e do Cloudflare, corpo bru
 1. **Fundação:** esta revisão; plano do nó e medidor de uso; módulo Terraform do nó com os perfis e o IP reservado do
    NAT, mais o nó de homologação em São Paulo; conexão de projeto GCP de cliente. O agendador do worker, o cursor dos
    coletores, o estado da conexão e a conexão de projeto GCP de cliente já estão feitos.
-2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado.
+2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado. **Feito no
+   código** (PR-W1 e PR-W2); o aceite depende da homologação no ar.
 3. **Cofre e AWS:** cofre de credenciais; template do usuário IAM; chave no painel; entrega da chave ao Wazuh, com
    recarga sem parar o painel; checagem da conexão, das fontes e da idade da chave; medidor da ingestão; regras
    críticas da AWS com títulos em português. O template do usuário IAM já está feito, à espera do teste na conta AWS
