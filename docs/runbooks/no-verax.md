@@ -51,9 +51,10 @@ da caixa de envio e grave a senha dela no cofre `verax-node-smtp-password`.
 
 ## Instalar ou atualizar
 
-Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados e o Docker instalado (o `gh` lê a
-imagem no registro com as credenciais dele). O arquivo `node.conf` segue
-`infra/node/node.conf.example`, com os valores reais. Ele não é segredo, mas fica fora do repositório.
+Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados, o Docker instalado (o `gh` lê a imagem
+no registro com as credenciais dele) e o OpenSSH (`ssh`, `scp` e `ssh-keygen`; vêm com o Git for Windows, o macOS e o
+Linux). O arquivo `node.conf` segue `infra/node/node.conf.example`, com os valores reais. Ele não é segredo, mas fica
+fora do repositório.
 
 ```bash
 infra/node/bin/deploy.sh COMMIT caminho/para/node.conf
@@ -64,7 +65,9 @@ atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
 
 1. **Confere as imagens.** Com `gh attestation verify`, confere a assinatura da atestação de origem de cada imagem e
    quem a assinou: o workflow `Imagens do nó` deste repositório, na `main`, nesse commit, num executor do GitHub.
-2. **Copia o pacote para a VM** pelo IAP, sem porta aberta.
+2. **Copia o pacote para a VM** pelo IAP, sem porta aberta: um túnel até a porta 22 e uma chave SSH criada só para
+   esta execução (vale 1 hora no OS Login e é removida no fim). A chave do servidor fica em
+   `~/.ssh/known_hosts_verax-node`: a primeira execução a registra, e as seguintes a conferem.
 3. **Instala pelo digest conferido.** A VM nunca confia em tag do registro.
 
 A instalação instala o Docker pelo repositório oficial, com a chave conferida. Na primeira vez, também gera a CA e o
