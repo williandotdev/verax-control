@@ -38,3 +38,9 @@ images_project_id = "projeto-do-no-verax-123"
 # Alerta de orçamento (opcional): conta de faturamento e valor mensal, na moeda dela.
 # billing_account_id = "000000-000000-000000"
 # monthly_budget     = 300
+
+# Agentes do Wazuh nas instâncias de teste (desligado por padrão): IP fixo de entrada nas portas 1514 e 1515, liberadas
+# só para as faixas de saída das instâncias de teste (sem faixa, nenhuma regra de entrada). Depois do apply, o IP vai
+# no node.conf (WAZUH_AGENTS_ADDRESS) com WAZUH_AGENTS=true (docs/runbooks/onboarding-cliente.md, seção dos agentes).
+# wazuh_agents         = true
+# wazuh_agents_sources = ["198.51.100.0/28"]

@@ -1,0 +1,34 @@
+# Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; desligado por padrão). O start.sh soma
+# este arquivo ao compose.wazuh.yaml só com o interruptor, e só no perfil standard: sem ele, o projeto do Compose é o de
+# sempre, sem nenhuma porta publicada (o CI confere os dois casos).
+#
+# - wazuh.manager: publica só a 1514/tcp (eventos dos agentes, conexão segura com a chave de cada agente) e a 1515/tcp
+#   (registro com a senha do nó). Quem chega a elas é decidido fora da VM: o Terraform do nó (wazuh_agents) põe um IP
+#   fixo de entrada na frente da VM e libera as duas portas só para as faixas de IP que o cliente informou; sem faixa
+#   nenhuma, nenhuma regra de entrada existe. O certificado do registro (CA só dos agentes, IP fixo no CN e no SAN)
+#   vem de /var/lib/verax/wazuh-agents, emitido pelo install.sh, só leitura. O manager continua nas mesmas redes: não
+#   divide rede com a API nem com o banco;
+# - manager-config: o gerador recebe a pasta config/manager/agents e a senha de registro (só leitura), e escreve o
+#   ossec.conf com o registro ligado, o authd.pass e o agent.conf do grupo default;
+# - worker: a lista dos agentes que o host exporta da API do manager (bin/wazuh-agents-export.sh, a cada minuto), numa
+#   pasta de /run/verax (memória) montada só leitura. Nem a API nem o worker falam com o manager.
+
+services:
+  manager-config:
+    environment:
+      VERAX_AGENTS_CONFIG: /verax/agents
+      VERAX_AGENTS_ENROLLMENT: /verax/agents-enrollment
+    volumes:
+      - ./wazuh/config/manager/agents:/verax/agents:ro
+      - /var/lib/verax/secrets/wazuh-agents-enrollment:/verax/agents-enrollment:ro
+
+  wazuh.manager:
+    ports:
+      - '1514:1514/tcp'
+      - '1515:1515/tcp'
+    volumes:
+      - /var/lib/verax/wazuh-agents:/etc/ssl/verax-agents:ro
+
+  worker:
+    volumes:
+      - /run/verax/wazuh-agents:/run/wazuh-agents:ro

@@ -149,7 +149,9 @@ jobs:
         # (fora dele, a API sobe sem o tópico). E o Turnstile, com o api.env conferido byte a byte: sem
         # TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai como antes (e o cofre do Turnstile nem é lido); com a chave
         # do site, a secreta vem do cofre (vazio: sobe sem o desafio e avisa; sem permissão ou com quebra de linha: a
-        # partida para).
+        # partida para). E os agentes do Wazuh: WAZUH_AGENTS=false dá o standard byte a byte; ligado, as variáveis da API
+        # (a senha de registro só nela) e do worker; no lean ou com algo faltando, a partida para sem escrever nada; o
+        # compose.wazuh-agents.yaml só entra no standard com o interruptor.
         run: bash infra/node/tests/start-test.sh
       - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
         # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
@@ -181,9 +183,16 @@ jobs:
           docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
           docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml \
             --env-file images.env --profile setup config --quiet
+          # Com os agentes do Wazuh (WAZUH_AGENTS=true, só no standard), o start.sh soma o compose.wazuh-agents.yaml, com
+          # e sem o cofre. As imagens são as mesmas.
+          agents=(-f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml)
+          docker compose "${agents[@]}" --env-file images.env --profile setup config --quiet
+          docker compose "${agents[@]}" -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
           images() { docker compose "$@" --env-file images.env --profile setup config --images | sed 's/[@:].*//' | sort -u | tr '\n' ' '; }
           test "$(images -f infra/node/compose.yaml)" = 'cloudflare/cloudflared exemplo/api exemplo/migrate postgres '
           test "$(images -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)" = \
+            'cloudflare/cloudflared exemplo/api exemplo/migrate postgres wazuh/wazuh-indexer wazuh/wazuh-manager '
+          test "$(images "${agents[@]}")" = \
             'cloudflare/cloudflared exemplo/api exemplo/migrate postgres wazuh/wazuh-indexer wazuh/wazuh-manager '
       - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
         run: |
@@ -251,23 +260,31 @@ jobs:
           units=$RUNNER_TEMP/units
           install -d "$units/verax-node.service.d"
           install -m 0644 infra/node/systemd/*.service infra/node/systemd/*.timer \
-            infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer "$units/"
+            infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer \
+            infra/node/systemd/wazuh-agents/*.service infra/node/systemd/wazuh-agents/*.timer "$units/"
           install -m 0644 infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf "$units/verax-node.service.d/"
           printf '[Unit]\nDescription=Docker (simulado)\n[Service]\nExecStart=/bin/true\n' >"$units/docker.service"
           sudo install -d /opt/verax/bin
           sudo install -m 0755 infra/node/bin/*.sh /opt/verax/bin/
           systemd-analyze verify --man=no "$units"/*.service "$units"/*.timer
-      - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard, com e sem o cofre)
+      - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard, com e sem o cofre; com os agentes, só 1514 e 1515)
         # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
         # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
         # declaradas e sem ganho de privilégio; os jobs de inicialização dele têm a raiz só leitura. A API e o worker,
-        # sem core dump em toda combinação.
+        # sem core dump em toda combinação. Porta publicada, só uma exceção: com os agentes do Wazuh nas instâncias do
+        # cliente (WAZUH_AGENTS=true, desligado por padrão; o compose.wazuh-agents.yaml), o manager publica a 1514/tcp e a
+        # 1515/tcp, em todas as interfaces (o firewall da GCP decide quem chega), e nenhum outro contêiner publica nada.
         run: |
-          check() {
-            local config
+          check() { # [--agents] <-f arquivos...>
+            local config expected='[]'
+            if [[ $1 == --agents ]]; then
+              shift
+              expected='[["wazuh.manager","1514",1514,"tcp",""],["wazuh.manager","1515",1515,"tcp",""]]'
+            fi
             config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
-            if jq -e '[.services[] | select(.ports != null and (.ports | length) > 0)] | length > 0' <<<"$config" >/dev/null; then
-              echo "O nó não publica porta: o acesso é pelo túnel." >&2
+            if ! jq -e --argjson expected "$expected" '[.services | to_entries[] | .key as $service | (.value.ports // [])[]
+              | [$service, .published, .target, .protocol, (.host_ip // "")]] | sort == $expected' <<<"$config" >/dev/null; then
+              echo "O nó não publica porta: o acesso é pelo túnel (com os agentes, só a 1514/tcp e a 1515/tcp do manager)." >&2
               exit 1
             fi
             jq -e '[.services | to_entries[] | select(.key != "postgres")
@@ -282,22 +299,58 @@ jobs:
           check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml
           check -f infra/node/compose.yaml -f infra/node/compose.vault.yaml
           check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml
+          check --agents -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml
+          check --agents -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml \
+            -f infra/node/compose.vault.yaml
+      - name: Agentes do Wazuh (o compose.wazuh-agents.yaml só soma as portas, o certificado, a senha ao gerador e a lista ao worker)
+        # Fora as duas portas do manager, o certificado do registro, a pasta dos agentes e a senha de registro para o
+        # gerador (manager-config) e a lista dos agentes para o worker, o projeto com os agentes é igual ao de sempre,
+        # com e sem o cofre: as redes, a API, os limites e o endurecimento não mudam. Tudo o que entra é só leitura. E o
+        # start.sh só soma o arquivo no standard, com WAZUH_AGENTS=true (os cenários de tests/start-test.sh).
+        run: |
+          strip='del(.services."wazuh.manager".ports)
+            | .services."wazuh.manager".volumes |= map(select(.target != "/etc/ssl/verax-agents"))
+            | .services."manager-config".volumes |= map(select(.target | IN("/verax/agents", "/verax/agents-enrollment") | not))
+            | .services."manager-config".environment |= ((. // {}) | del(.VERAX_AGENTS_CONFIG, .VERAX_AGENTS_ENROLLMENT))
+            | if .services."manager-config".environment == {} then del(.services."manager-config".environment) else . end
+            | .services.worker.volumes |= map(select(.target != "/run/wazuh-agents"))'
+          render() { docker compose "$@" --env-file images.env --profile setup config --format json; }
+          standard=(-f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)
+          agents=(-f infra/node/compose.wazuh-agents.yaml)
+          vault=(-f infra/node/compose.vault.yaml)
+          diff <(render "${standard[@]}" | jq -S "$strip") <(render "${standard[@]}" "${agents[@]}" | jq -S "$strip")
+          diff <(render "${standard[@]}" "${vault[@]}" | jq -S "$strip") \
+            <(render "${standard[@]}" "${agents[@]}" "${vault[@]}" | jq -S "$strip")
+          render "${standard[@]}" "${agents[@]}" | jq -e '[.services."wazuh.manager".volumes[], .services."manager-config".volumes[],
+            .services.worker.volumes[] | select(.target | IN("/etc/ssl/verax-agents", "/verax/agents", "/verax/agents-enrollment",
+            "/run/wazuh-agents")) | [.target, .read_only, .type]] | sort == [["/etc/ssl/verax-agents", true, "bind"],
+            ["/run/wazuh-agents", true, "bind"], ["/verax/agents", true, "bind"], ["/verax/agents-enrollment", true, "bind"]]'
+          # O start.sh soma o arquivo só dentro do ramo do standard; o wazuh-apply.sh e o wazuh-up também, só com o interruptor.
+          grep -qxF '    if agents; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi' infra/node/bin/start.sh
+          grep -qxF '  if agents; then COMPOSE_FILE+=:/opt/verax/compose.wazuh-agents.yaml; fi' infra/node/bin/start.sh
+          # shellcheck disable=SC2016 # o `${WAZUH_AGENTS...}` é texto do script, não variável daqui
+          grep -qxF 'if [[ ${WAZUH_AGENTS:-false} == true ]]; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi' \
+            infra/node/bin/wazuh-apply.sh
       - name: Redes do Wazuh no standard (indexer só nas internas; manager fora da rede do banco e da rede da API)
         # Duas redes internas: `wazuh` (indexer e manager) e `wazuh-read` (indexer, API e worker). A API nunca divide
         # rede com o manager, que processa log de fora como root: numa rede só, ele chegaria à API por dentro, fora do
-        # Cloudflare, e forjaria o X-Forwarded-For em que ela confia (TRUST_PROXY_HOPS=1).
+        # Cloudflare, e forjaria o X-Forwarded-For em que ela confia (TRUST_PROXY_HOPS=1). Com os agentes ligados
+        # (compose.wazuh-agents.yaml), as mesmas redes: nem a API nem o worker falam com o manager (a lista dos agentes
+        # vem do host, num arquivo só leitura).
         run: |
-          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
-            --profile setup config --format json | jq -e '
-              .networks.wazuh.internal == true and .networks."wazuh-read".internal == true
-              and (.networks."wazuh-egress".internal // false) == false
-              and (.services."wazuh.indexer".networks | keys) == ["wazuh", "wazuh-read"]
-              and (.services."wazuh.manager".networks | keys) == ["wazuh", "wazuh-egress"]
-              and (.services.api.networks | keys) == ["verax", "wazuh-read"]
-              and (.services.worker.networks | keys) == ["verax", "wazuh-read"]
-              and .services.worker.networks.verax.ipv4_address == "172.30.53.10"
-              and (((.services.api.networks | keys) - ((.services.api.networks | keys)
-                - (.services."wazuh.manager".networks | keys))) | length) == 0'
+          for extra in '' infra/node/compose.wazuh-agents.yaml; do
+            docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
+              --env-file images.env --profile setup config --format json | jq -e '
+                .networks.wazuh.internal == true and .networks."wazuh-read".internal == true
+                and (.networks."wazuh-egress".internal // false) == false
+                and (.services."wazuh.indexer".networks | keys) == ["wazuh", "wazuh-read"]
+                and (.services."wazuh.manager".networks | keys) == ["wazuh", "wazuh-egress"]
+                and (.services.api.networks | keys) == ["verax", "wazuh-read"]
+                and (.services.worker.networks | keys) == ["verax", "wazuh-read"]
+                and .services.worker.networks.verax.ipv4_address == "172.30.53.10"
+                and (((.services.api.networks | keys) - ((.services.api.networks | keys)
+                  - (.services."wazuh.manager".networks | keys))) | length) == 0'
+          done
       - name: Cofre de credenciais (as chaves privadas chegam ao worker por arquivo só leitura, e só a ele)
         # O ambiente de um contêiner fica gravado no disco (configuração do Docker); o conteúdo de um volume montado,
         # não. O compose.vault.yaml monta só no worker, só leitura, a pasta que o start.sh escreve em /run/verax/vault
@@ -405,6 +458,14 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: bash scripts/test-rules.sh
+      - name: Agentes do Wazuh no manager (certificado, configuração, registro com senha e lista; sem rede e sem porta)
+        # Um manager avulso, sem rede: o certificado do registro (CA dos agentes, IP no CN e no SAN, refeito com outro
+        # IP), o ossec.conf no modo dos agentes aceito por cada daemon, o agent.conf sem comando remoto aceito pelo
+        # verify-agent-conf, o registro pela 1515 como o agente faz (TLS conferido com a CA e o IP; sem senha, senha
+        # errada e grupo inexistente recusados) e a lista dos agentes pelo wazuh-agents-export.sh.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-agents.sh
       - name: Wazuh do nó standard (subida, rotação de senha, verificações e atualização do manager)
         # O teste sobe o compose do nó com o compose.wazuh.yaml, como o start.sh, com as senhas em /run/verax.
         if: steps.changes.outputs.run == 'true'

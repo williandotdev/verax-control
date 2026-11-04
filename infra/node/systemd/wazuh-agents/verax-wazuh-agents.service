@@ -1,0 +1,12 @@
+# Lista dos agentes do Wazuh para o painel (WAZUH_AGENTS=true no node.conf; infra/node/bin/wazuh-agents-export.sh).
+# Sem Requires: com o Wazuh parado, o timer não o sobe, e o script só avisa que o manager está fora do ar (a lista
+# antiga fica, e o painel mostra a hora dela). O install.sh só a instala com o interruptor ligado; por isso ela fica
+# fora de systemd/wazuh, que todo nó standard recebe.
+[Unit]
+Description=Verax Control - lista dos agentes do Wazuh para o painel
+After=verax-wazuh.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/verax/bin/wazuh-agents-export.sh
+TimeoutStartSec=120

@@ -54,8 +54,8 @@ describe('rotas internas', () => {
 });
 
 describe('menu e cabeçalho por papel', () => {
-  // Contas cloud, Lista de proteção e Exceções: leitura liberada para todos (matriz de permissões).
-  const shared = ['Contas cloud', 'Lista de proteção', 'Exceções'];
+  // Contas cloud, Agentes, Lista de proteção e Exceções: leitura liberada para todos (matriz de permissões).
+  const shared = ['Contas cloud', 'Agentes', 'Lista de proteção', 'Exceções'];
   const operation = ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades', 'Relatórios'];
   const expectedMenu: Record<Role, string[]> = {
     admin_verax: [...operation, 'Clientes', 'Usuários', ...shared, 'Auditoria', 'Alertas sem dono'],

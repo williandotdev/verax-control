@@ -45,3 +45,14 @@ NODE_EGRESS_IPS=
 # (`credentials_vault` no Terraform, ligado nos nós de clientes e na homologação). Sem a linha, vale false: o nó da
 # Verax não guarda credencial e sobe como antes.
 CREDENTIALS_VAULT=false
+# Agentes do Wazuh nas instâncias do cliente (só no perfil standard): o cliente instala o agente nas VMs e EC2 dele, e
+# os agentes falam com o manager deste nó pelas portas 1514 e 1515, num IP fixo de entrada (`wazuh_agents` no
+# Terraform, que libera as duas portas só para as faixas do cliente). Sem a linha, vale false: nada muda. Com true, o
+# IP fixo (`terraform output wazuh_agents`, sem máscara) e o cliente do nó (o id dele em Clientes) são obrigatórios; as
+# faixas liberadas no Terraform (`wazuh_agents_sources`, para o painel dizer se a liberação está pronta) e o limite de
+# agentes (padrão 50, até 500) são opcionais. Roteiro em docs/runbooks/onboarding-cliente.md.
+WAZUH_AGENTS=false
+# WAZUH_AGENTS_ADDRESS=203.0.113.10
+# WAZUH_AGENTS_TENANT=00000000-0000-7000-8000-000000000001
+# WAZUH_AGENTS_SOURCES=198.51.100.0/28,192.0.2.15/32
+# WAZUH_AGENTS_MAX=50
