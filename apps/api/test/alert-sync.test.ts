@@ -279,17 +279,26 @@ describe('sync de alertas para achados (T5.3)', () => {
   });
 
   it('GuardDuty da conta A, pelo bucket cadastrado, usa a severidade da AWS', async () => {
-    const alert = guardDutyAlert({ account: accountA, bucket: guardDutyA });
-    const doc = {
-      ...alert,
-      id: `gd.${randomInt(1e6, 9e6)}`,
+    // A regra padrão da fixture tem nível 10, que pelo nível daria alta. A fixture grava a severidade em texto, como
+    // o Wazuh ("5.500000", "9.500000"): média e crítica no banco só saem da severidade da AWS, lida até a gravação.
+    const docOf = (severity: number) => ({
+      ...guardDutyAlert({ account: accountA, bucket: guardDutyA, severity }),
+      id: `gd.${severity}.${randomInt(1e6, 9e6)}`,
       timestamp: wazuhTime(new Date(Date.now() - MINUTE)),
-    };
-    const report = await syncFor(new FakeIndexer([doc])).runOnce();
-    expect(report.created).toBe(1);
-    expect(await prisma.finding.findUniqueOrThrow({ where: byKey(doc) })).toMatchObject({
+    });
+    const medium = docOf(5.5);
+    const critical = docOf(9.5);
+    const report = await syncFor(new FakeIndexer([medium, critical])).runOnce();
+    expect(report.created).toBe(2);
+    expect(await prisma.finding.findUniqueOrThrow({ where: byKey(medium) })).toMatchObject({
       tenantId: tenantA,
       logSource: 'guardduty',
+      ruleLevel: 10,
+      severity: 'medium',
+    });
+    expect(await prisma.finding.findUniqueOrThrow({ where: byKey(critical) })).toMatchObject({
+      ruleLevel: 10,
+      severity: 'critical',
     });
   });
 
