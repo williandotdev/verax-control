@@ -2648,3 +2648,21 @@ Correções dos quatro checks do CI que falharam no PR da base (CodeQL, Semgrep,
 - **Dependências:** nenhuma.
 - **Testes:** só documentação e a descrição de uma variável do Terraform. `terraform fmt -check -recursive infra/gcp` e `validate` em `envs/homolog-sp`; Prettier limpo; nova busca por `R$`, `US$`, margem, desconto de uso contínuo, cupom e o caminho do estudo, sem nada comercial.
 - **Definição de pronto:** nada comercial na árvore ✔ · informação de operação mantida ✔ · nenhuma dependência ✔ · regras de segurança ✔ · **aceite:** o responsável aprova o texto.
+
+## Licença proprietária: código-fonte disponível, todos os direitos reservados
+
+- **Pedido:** uma licença explícita para o repositório público: o código fica aberto só para leitura, revisão de segurança e auditoria por clientes e pesquisadores; usar, copiar, modificar, distribuir, sublicenciar, executar para terceiros ou oferecer como serviço depende de contrato escrito (04/11/2026).
+- **Arquivos:** `LICENSE` (novo, em português, com a tradução em inglês só como referência), `README.md` (seção "Licença"), `package.json` da raiz (`"license"` de `UNLICENSED` para `SEE LICENSE IN LICENSE`) e dos quatro workspaces (`apps/api`, `apps/control-plane`, `apps/web`, `packages/shared`, que não tinham o campo). O `"private": true` continua em todos.
+- **Titular:** "Verax Sistemas", CNPJ 34.282.636/0001-95, como no rodapé do site. A razão social não aparece no site: conferir no cartão do CNPJ e trocar no `LICENSE` se for diferente.
+- **O que o `LICENSE` diz:** titularidade (Leis 9.609/1998 e 9.610/1998); a finalidade da publicação; o que vale sem contrato (ler, analisar e executar localmente, isolado e fora de produção, só para avaliar a segurança; citar trechos em relatórios), com a ressalva do fork dentro do GitHub pelos Termos de Serviço dele; o que é proibido sem contrato; nenhum direito de marca; divulgação responsável pelo `SECURITY.md`; os componentes de terceiros seguem as licenças deles (dependências do pnpm, imagens do Wazuh em GPLv2 e do Prowler em Apache-2.0, providers do Terraform), sem redistribuição por este repositório, e a parte derivada de arquivo de terceiro segue a licença original; sem garantia; limitação de responsabilidade; o contrato prevalece; violação encerra as permissões; lei brasileira e foro do domicílio da Titular; o português prevalece sobre a tradução.
+- **CI:** nenhuma política de licença a ajustar. O Dependency Review só tem `fail-on-severity`, sem `allow-licenses` nem `deny-licenses`; o Trivy roda com `vuln,secret,misconfig` (sem `license`); o OSV-Scanner não olha licença. `pnpm install --frozen-lockfile` passa sem mudar o lockfile (o campo não entra nele).
+- **Revisão jurídica, obrigatória antes de vender o modo self-hosted:** o `LICENSE` foi escrito sem advogado e vale como está até a revisão. Pontos para ela:
+  - a razão social da Titular e o foro;
+  - arquivos baseados no Wazuh, que é GPLv2: `infra/wazuh/config/manager/rules/verax_aws_rules.xml` (regras do ruleset do Wazuh sobrescritas, com o resto de cada regra igual ao original), `infra/wazuh/config/manager/ossec.conf` e `infra/wazuh/config/indexer/opensearch.yml` (a partir dos arquivos do single-node do wazuh-docker), `infra/wazuh/docker-compose.yml` e `infra/node/compose.wazuh.yaml` (a partir do compose do single-node). Decidir se precisam do aviso da GPLv2 (ou da licença do arquivo de origem) e se podem ficar sob este `LICENSE`;
+  - o modo self-hosted: o pacote do nó instala as imagens do Wazuh (GPLv2) na máquina do cliente, e o contrato precisa tratar disso;
+  - contribuições de fora (pull requests): não há cessão de direitos nem acordo de contribuição;
+  - `elkjs` (EPL-2.0), que chega à imagem das migrations pelo CLI do Prisma (`@prisma/studio-core`); as outras dependências de produção têm licenças permissivas (MIT, Apache-2.0, ISC, BSD, BlueOak, 0BSD, Unlicense, MIT-0 e PSF-2.0, por `pnpm -r licenses list --prod`);
+  - o alcance da execução local liberada no item 3(b).
+- **Dependências:** nenhuma.
+- **Testes:** `pnpm install --frozen-lockfile --offline` sem mudança; Prettier limpo; gitleaks pelo hook.
+- **Definição de pronto:** `LICENSE` e seção no README ✔ · campo nos cinco `package.json` ✔ · CI sem política afetada ✔ · nenhuma dependência ✔ · regras de segurança ✔ · **aceite:** depende do responsável e da revisão jurídica.

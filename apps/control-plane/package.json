@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Plano de controle do Verax Control: checkout, webhook, estados do cliente e provisionamento (NestJS)",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
     "build": "nest build",

@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "Tipos e schemas compartilhados entre a API e o front",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "exports": {
     ".": {
