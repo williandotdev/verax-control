@@ -297,6 +297,47 @@ describe('sync da auditoria da GCP para achados', () => {
     expect(queued.reason).toBe('ambiguous_source');
   });
 
+  it('projeto de cliente: a assinatura do nó só atribui ao cliente do projeto; outro cliente nunca recebe por ela', async () => {
+    // O módulo do Terraform (`customer_projects`) nomeia a assinatura de cada projeto de cliente
+    // `<prefixo>-security-<projeto>`, no projeto do nó, e só o sink daquele projeto publica no tópico dela. A conta
+    // guarda a identidade do sink e a assinatura; é a assinatura que decide o dono de cada evento.
+    const [ofA, ofB] = [randomProject(), randomProject()];
+    for (const [tenantId, project, number] of [
+      [tenantA, ofA, '111111111111'],
+      [tenantB, ofB, '222222222222'],
+    ] as const) {
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscriptionOf(project),
+          sinkWriterIdentity: `serviceAccount:service-${number}@gcp-sa-logging.iam.gserviceaccount.com`,
+        },
+      });
+    }
+    const pubsub = new FakePubsub();
+    // Pela assinatura de A: um evento do projeto de A e um do projeto de B (só o sink de A publica no tópico de A; se
+    // chegasse, seria cadastro errado). O de B não vai para B nem para A.
+    pubsub.publish(
+      subscriptionOf(ofA),
+      pubsubMessage(auditEntry({ project: ofA, insertId: `cli-${ofA}`, methodName: 'DeleteProject' })),
+      pubsubMessage(auditEntry({ project: ofB, insertId: `cli-${ofB}`, methodName: 'DeleteProject' })),
+    );
+    expect(await syncFor(pubsub).runOnce()).toMatchObject({ read: 2, created: 1, unowned: 1 });
+    expect(
+      await prisma.finding.findMany({
+        where: { sourceEventId: { in: [`${ofA}/cli-${ofA}`, `${ofB}/cli-${ofB}`] } },
+        select: { tenantId: true, sourceEventId: true },
+      }),
+    ).toEqual([{ tenantId: tenantA, sourceEventId: `${ofA}/cli-${ofA}` }]);
+    const queued = await prisma.unownedAlert.findUniqueOrThrow({
+      where: { source_sourceEventId: { source: 'gcp', sourceEventId: `${ofB}/cli-${ofB}` } },
+    });
+    expect(queued).toMatchObject({ reason: 'source_mismatch', accounts: [ofB] });
+  });
+
   it('operação longa: o registro do início e o do fim viram um achado só', async () => {
     const pubsub = new FakePubsub();
     const operation = `operation-${projectA}`;

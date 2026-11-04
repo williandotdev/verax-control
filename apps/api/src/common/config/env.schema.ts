@@ -244,6 +244,16 @@ const apiEnvSchema = z
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
+    // Tópico do nó para o sink de um projeto GCP de cliente, sem o projeto do cliente no fim:
+    // `projects/<projeto-do-nó>/topics/<prefixo>-security-`, o nome que o módulo do Terraform dá (logs.tf). O start.sh
+    // escreve no nó; sem ele (ambiente local), Contas cloud mostra o comando do sink com o tópico a preencher. Não é
+    // segredo.
+    GCP_SINK_TOPIC_PREFIX: z
+      .string()
+      .regex(/^projects\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/topics\/[a-z][a-z0-9-]{3,18}-security-$/, {
+        error: 'deve ser projects/<projeto>/topics/<prefixo>-security-',
+      })
+      .optional(),
     ...planEnvShape,
     // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola (PR-V3).
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),

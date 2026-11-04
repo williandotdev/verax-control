@@ -48,6 +48,12 @@ export const DEMO_ACCOUNTS = {
   alfaCloudflare: 'd0e0000000000000000000000000a1fa',
 } as const;
 
+/**
+ * Tópico do nó da demonstração para o sink de projeto GCP de cliente, sem o projeto no fim (o que o start.sh informa à
+ * API no nó). Projeto e prefixo fictícios.
+ */
+export const DEMO_SINK_TOPIC_PREFIX = 'projects/verax-nos-demo/topics/verax-demo-security-';
+
 const minutesAgo = (now: Date, minutes: number): string =>
   new Date(now.getTime() - minutes * 60_000).toISOString();
 

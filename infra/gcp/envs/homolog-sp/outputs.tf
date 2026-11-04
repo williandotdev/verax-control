@@ -19,7 +19,7 @@ output "nat_ip" {
 }
 
 output "pubsub_subscriptions" {
-  description = "Assinatura dos logs de segurança de cada projeto monitorado (campo \"Assinatura do Pub/Sub\" no painel)."
+  description = "Assinatura dos logs de segurança de cada projeto, monitorado ou de cliente (campo \"Assinatura do Pub/Sub\" no painel)."
   value       = module.node.pubsub_subscriptions
 }
 

@@ -80,6 +80,13 @@ done
 # perfil, sobe com a mesma memória de antes sem mudar o node.conf. O start.sh escreve os limites de cada perfil.
 [[ ${NODE_PROFILE:-lean} =~ ^(lean|standard)$ ]] ||
   { echo 'NODE_PROFILE inválido em /etc/verax/node.conf: use lean ou standard.' >&2; exit 2; }
+# Projeto do nó e prefixo dos cofres: o start.sh monta com eles o tópico do sink de projeto de cliente que o painel
+# mostra (GCP_SINK_TOPIC_PREFIX), e a API só o aceita no formato do Terraform do nó. As regras são as do módulo
+# (project_id e name_prefix em infra/gcp/modules/node/variables.tf) e a do deploy.sh; um teste da API confere as três.
+[[ $VERAX_GCP_PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] ||
+  { echo 'VERAX_GCP_PROJECT inválido em /etc/verax/node.conf: use o ID do projeto (6 a 30 caracteres, minúsculas, números e hífen).' >&2; exit 2; }
+[[ $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]] ||
+  { echo 'VERAX_SECRET_PREFIX inválido em /etc/verax/node.conf: use o name_prefix do Terraform do nó (4 a 19 caracteres: minúsculas, números e hífen, começando com letra).' >&2; exit 2; }
 # IP de saída do nó (o IP fixo do Cloud NAT), que a política IAM da AWS do cliente libera: um ou mais IPv4 com /32,
 # separados por vírgula. Opcional até a chave da AWS chegar ao painel; quando presente, o formato é conferido aqui.
 octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'

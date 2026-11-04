@@ -56,6 +56,15 @@ sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do pl
 O perfil do nó (`NODE_PROFILE`) define a memória do banco, da API e do worker. O da Verax é `lean`, com os mesmos
 limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` atual não precisa mudar.
 
+O prefixo dos cofres (`VERAX_SECRET_PREFIX`) é o `name_prefix` do ambiente do Terraform (`verax-node` no nó da Verax,
+`verax-homolog` na homologação). Essa igualdade é uma premissa operacional, não algo que o nó confira: o `start.sh`
+monta com ela, para a API, o tópico do sink de um projeto de cliente que o painel mostra
+(`projects/<VERAX_GCP_PROJECT>/topics/<prefixo>-security-`), e o teste de contrato da API prende o painel ao
+Terraform, não ao `node.conf` instalado. Com outro prefixo, o `start.sh` já não acharia os cofres, e o painel
+mostraria um tópico que não existe. A instalação recusa o projeto e o prefixo fora do formato do módulo; se o
+`node.conf` for editado depois e sair dele, a API sobe sem o tópico e o painel mostra o comando com o tópico a
+preencher.
+
 O cofre de credenciais (`CREDENTIALS_VAULT`, para a chave da AWS e o token do Cloudflare colados no painel) fica
 desligado no nó da Verax: sem a linha no `node.conf`, vale `false`, nada é lido do Secret Manager e a API e o worker
 sobem como antes. Ligar pede, nesta ordem: o segredo `verax-node-credentials-key` (`credentials_vault = true` em

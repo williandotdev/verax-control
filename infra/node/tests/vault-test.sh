@@ -198,7 +198,9 @@ vault_calls() { # quantas vezes o gcloud foi chamado para o segredo do cofre
   echo "${calls:-0}"
 }
 
-lean_api='NODE_ENV LOG_LEVEL PORT WEB_ORIGIN API_ORIGIN TRUST_PROXY_HOPS BETTER_AUTH_SECRET CSRF_SECRET MAIL_TRANSPORT MAIL_FROM PLAN DATABASE_URL '
+# O tópico do sink de projeto de cliente (GCP_SINK_TOPIC_PREFIX) vai para a API em todo nó cujo projeto e prefixo
+# estejam no formato do módulo (os do node.conf de exemplo estão); tests/start-test.sh cobre os casos fora dele.
+lean_api='NODE_ENV LOG_LEVEL PORT WEB_ORIGIN API_ORIGIN TRUST_PROXY_HOPS BETTER_AUTH_SECRET CSRF_SECRET MAIL_TRANSPORT MAIL_FROM PLAN GCP_SINK_TOPIC_PREFIX DATABASE_URL '
 lean_worker='NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN DATABASE_URL '
 # O que o install.sh e o start.sh dizem quando o cofre entra em cena (o nó da Verax não pode dizer nada disso).
 vault_words='credentials-key|cofre de credenciais'

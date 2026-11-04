@@ -19,7 +19,7 @@ output "monitored_projects" {
 }
 
 output "pubsub_subscriptions" {
-  description = "Assinatura dos logs de segurança de cada projeto monitorado."
+  description = "Assinatura dos logs de segurança de cada projeto, monitorado ou de cliente (`customer_projects`)."
   value       = { for project, subscription in google_pubsub_subscription.security_logs : project => subscription.id }
 }
 

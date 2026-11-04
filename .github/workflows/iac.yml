@@ -106,6 +106,10 @@ jobs:
           persist-credentials: false
       - name: shellcheck
         run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
+      - name: start.sh (a montagem dos arquivos de ambiente, com o gcloud simulado)
+        # Os cenários de tests/start-test.sh: o tópico do sink de projeto de cliente só vai para a API com o projeto e o
+        # prefixo do node.conf no formato do módulo; fora dele, a API sobe sem o tópico. Roda sem root e sem Docker.
+        run: bash infra/node/tests/start-test.sh
       - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
         # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
         # sem o arquivo das chaves nem o compose.vault.yaml), a primeira instalação de um nó de cliente (a chave nasce
