@@ -5,11 +5,16 @@ import {
   cloudAccountSchema,
   cloudAccountUpdateSchema,
   fieldsOutsideProvider,
+  GCP_SINK_LOG_FILTER,
+  gcpSinkCommand,
+  gcpSinkIdentityCommand,
   isAwsRegion,
   isDomainName,
   isPubsubSubscriptionName,
+  normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
   readOnlyRoleArn,
+  sinkWriterIdentitySchema,
 } from './cloud-accounts.js';
 
 describe('contas cloud (T3.3)', () => {
@@ -57,6 +62,8 @@ describe('estado da conexão (T7.3 e fase 2)', () => {
     externalId: null,
     buckets: { cloudtrail: null, guardduty: null, waf: null },
     pubsubSubscription: null,
+    sinkTopic: null,
+    sinkWriterIdentity: null,
     zones: [],
     status: 'active',
     connection: 'waiting',
@@ -226,5 +233,119 @@ describe('provedores: AWS, GCP e Cloudflare', () => {
     expect(fieldsOutsideProvider('gcp', update)).toEqual(['regions', 'zones']);
     expect(fieldsOutsideProvider('cloudflare', update)).toEqual(['regions']);
     expect(fieldsOutsideProvider('gcp', cloudAccountUpdateSchema.parse({ status: 'inactive' }))).toEqual([]);
+  });
+});
+
+describe('projeto GCP de cliente (fase 2, PR-05)', () => {
+  const IDENTITY = 'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com';
+
+  it('a identidade do sink é o agente do Cloud Logging do projeto, na forma completa', () => {
+    expect(sinkWriterIdentitySchema.safeParse(IDENTITY).success).toBe(true);
+    expect(
+      cloudAccountCreateSchema.safeParse({
+        provider: 'gcp',
+        accountId: 'cliente-prod-123',
+        sinkWriterIdentity: IDENTITY,
+      }).success,
+    ).toBe(true);
+    expect(cloudAccountUpdateSchema.safeParse({ sinkWriterIdentity: IDENTITY }).success).toBe(true);
+  });
+
+  it.each([
+    // A identidade compartilhada antiga serve a sinks de qualquer projeto.
+    ['identidade compartilhada antiga', 'serviceAccount:cloud-logs@system.gserviceaccount.com'],
+    ['conta de serviço comum', 'serviceAccount:coletor@cliente-prod-123.iam.gserviceaccount.com'],
+    // Sinks de pasta e de organização, e o formato dos sinks de antes de 2023: não são o sink deste projeto.
+    ['agente de pasta', 'serviceAccount:service-folder-123456789012@gcp-sa-logging.iam.gserviceaccount.com'],
+    [
+      'agente de organização',
+      'serviceAccount:service-org-123456789012@gcp-sa-logging.iam.gserviceaccount.com',
+    ],
+    ['sink antigo', 'serviceAccount:p123456789012-123456@gcp-sa-logging.iam.gserviceaccount.com'],
+    ['pessoa', 'user:alguem@example.com'],
+    ['grupo', 'group:todos@example.com'],
+    ['sem o tipo', 'service-123456789012@gcp-sa-logging.iam.gserviceaccount.com'],
+    ['com maiúscula', 'serviceAccount:Service-123456789012@gcp-sa-logging.iam.gserviceaccount.com'],
+    [
+      'domínio parecido',
+      'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com.example',
+    ],
+    ['com o resto do aviso do gcloud', `${IDENTITY} the Pub/Sub Publisher role`],
+    ['vazia', ''],
+    ['longa demais', `serviceAccount:service-${'1'.repeat(120)}@gcp-sa-logging.iam.gserviceaccount.com`],
+  ])('identidade do sink recusada: %s', (_label, identity) => {
+    expect(sinkWriterIdentitySchema.safeParse(identity).success).toBe(false);
+    expect(cloudAccountUpdateSchema.safeParse({ sinkWriterIdentity: identity }).success).toBe(false);
+  });
+
+  it('a identidade só existe na GCP; null apaga', () => {
+    const update = cloudAccountUpdateSchema.parse({ sinkWriterIdentity: IDENTITY });
+    expect(fieldsOutsideProvider('gcp', update)).toEqual([]);
+    expect(fieldsOutsideProvider('aws', update)).toEqual(['sinkWriterIdentity']);
+    expect(fieldsOutsideProvider('cloudflare', update)).toEqual(['sinkWriterIdentity']);
+    expect(cloudAccountUpdateSchema.parse({ sinkWriterIdentity: null })).toEqual({
+      sinkWriterIdentity: null,
+    });
+    expect(
+      cloudAccountCreateSchema.safeParse({
+        provider: 'aws',
+        accountId: '123456789012',
+        regions: ['sa-east-1'],
+        sinkWriterIdentity: IDENTITY,
+      }).success,
+    ).toBe(false);
+  });
+
+  const EMAIL = 'service-123456789012@gcp-sa-logging.iam.gserviceaccount.com';
+
+  it.each([
+    ['entre crases e espaços, como no aviso do gcloud', ` \`${IDENTITY}\` `],
+    ['entre aspas duplas', `"${IDENTITY}"`],
+    ['entre aspas simples', `'${IDENTITY}'`],
+    ['com tabulações e quebra de linha', `\t${IDENTITY}\r\n`],
+    ['crases e espaços misturados', `\` \`${IDENTITY}\` \``],
+    ['só o e-mail', EMAIL],
+    ['só o e-mail entre crases', `\`${EMAIL}\``],
+  ])('a identidade colada vira a forma completa: %s', (_label, pasted) => {
+    expect(normalizeSinkWriterIdentity(pasted)).toBe(IDENTITY);
+    expect(sinkWriterIdentitySchema.safeParse(normalizeSinkWriterIdentity(pasted)).success).toBe(true);
+  });
+
+  it('a normalização não inventa nem tira nada do meio: outro tipo fica como está, e o schema recusa', () => {
+    expect(normalizeSinkWriterIdentity('user:alguem@example.com')).toBe('user:alguem@example.com');
+    expect(normalizeSinkWriterIdentity(`${IDENTITY} the Pub/Sub Publisher role`)).toBe(
+      `${IDENTITY} the Pub/Sub Publisher role`,
+    );
+    expect(normalizeSinkWriterIdentity(IDENTITY)).toBe(IDENTITY);
+  });
+
+  it('milhares de tabulações em volta da identidade não travam a normalização (CodeQL: regex polinomial)', () => {
+    const tabs = '\t'.repeat(10_000);
+    // A regex antiga (`^[...]+|[...]+$` com `g`) tentava a segunda alternativa em cada tabulação; com outro
+    // caractere depois delas, o custo era quadrático (centenas de milissegundos aqui, segundos com 50 mil).
+    const started = Date.now();
+    expect(normalizeSinkWriterIdentity(`${tabs}${IDENTITY}${tabs}`)).toBe(IDENTITY);
+    expect(normalizeSinkWriterIdentity(`${tabs}${IDENTITY}${tabs}x`)).toBe(`${IDENTITY}${tabs}x`);
+    expect(normalizeSinkWriterIdentity(`x${tabs}y`)).toBe(`serviceAccount:x${tabs}y`);
+    expect(Date.now() - started).toBeLessThan(50);
+  });
+
+  it('o comando cria só o sink no projeto do cliente, com o filtro de segurança, apontando para o tópico do nó', () => {
+    const topic = 'projects/nos-exemplo/topics/verax-c1-security-cliente-prod-123';
+    const command = gcpSinkCommand('cliente-prod-123', topic);
+    const lines = command.split('\n');
+    expect(lines[0]).toBe(
+      `gcloud logging sinks create verax-control-security pubsub.googleapis.com/${topic} \\`,
+    );
+    expect(lines[1]).toBe('  --project=cliente-prod-123 \\');
+    expect(command).toContain(`--log-filter='${GCP_SINK_LOG_FILTER}'`);
+    // As linhas continuam até o filtro; o filtro (entre aspas simples) não tem aspa simples nem a exclusão do nó.
+    expect(lines.slice(0, 3).every((line) => line.endsWith(' \\'))).toBe(true);
+    expect(GCP_SINK_LOG_FILTER).not.toContain("'");
+    expect(GCP_SINK_LOG_FILTER).not.toContain('NOT');
+    expect(command).not.toMatch(/add-iam-policy-binding|roles\//);
+    expect(gcpSinkIdentityCommand('cliente-prod-123')).toBe(
+      "gcloud logging sinks describe verax-control-security --project=cliente-prod-123 --format='value(writerIdentity)'",
+    );
   });
 });

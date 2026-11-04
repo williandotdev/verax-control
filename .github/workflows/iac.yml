@@ -122,7 +122,11 @@ jobs:
           done
           shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
           bash "$test"
-      - name: Arquivos de ambiente, bootstrap e pull das imagens do start.sh (Compose, Docker e cofre simulados)
+      - name: start.sh (arquivos de ambiente, bootstrap e pull das imagens, com o Compose, o Docker e o gcloud simulados)
+        # Os cenários de tests/start-test.sh, sem root e sem Docker: os arquivos que o `render` escreve nos dois perfis
+        # (bootstrap.env vazio; as variáveis do indexer só no standard), o `bootstrap`, o `pull_images` e o tópico do
+        # sink de projeto de cliente, que só vai para a API com o projeto e o prefixo do node.conf no formato do módulo
+        # (fora dele, a API sobe sem o tópico).
         run: bash infra/node/tests/start-test.sh
       - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
         # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Os arquivos de /run/verax são os

@@ -45,9 +45,17 @@ variable "subnet_cidr" {
 }
 
 variable "monitored_projects" {
-  description = "Projetos de teste cujos logs de segurança vão para o nó (o sink é criado em cada um; você precisa ser dono deles)."
+  description = "Projetos de teste cujos logs de segurança vão para o nó (o sink é criado em cada um; você precisa ser dono deles). Projeto de cliente vai em customer_projects."
   type        = list(string)
   default     = []
+}
+
+variable "customer_projects" {
+  description = "Projetos de clientes (de teste, na homologação: um projeto de outra organização) em que o próprio cliente criou o sink com o comando de Contas cloud: o ID do projeto e a identidade do sink que ele colou no painel. O nó ganha tópico e assinatura, e só essa identidade publica no tópico; nada é concedido no projeto do cliente."
+  type = map(object({
+    writer_identity = string
+  }))
+  default = {}
 }
 
 variable "operators" {
