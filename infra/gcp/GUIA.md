@@ -97,10 +97,14 @@ para todo nó criado pelo módulo, mais:
 
 - o **IP de saída reservado** (`verax-homolog-nat-ip`), com o NAT em modo manual. Ele aparece em
   `terraform output nat_ip` e vai no `node.conf` como `NODE_EGRESS_IPS=<ip>/32`;
-- a **leitura do registro de imagens** do projeto da Verax, só para a conta da VM de homologação. É a única coisa que
-  este ambiente cria fora do projeto dos nós de clientes.
+- a **leitura do registro de imagens** do projeto da Verax, só para a conta da VM de homologação.
 
 Não há registro de imagens nem publicação no projeto dos nós: a VM baixa as mesmas imagens do registro da Verax.
+
+Fora do projeto dos nós de clientes, este ambiente cria só três coisas: essa leitura no registro da Verax; em cada
+projeto de `monitored_projects`, um sink que só copia (`verax-homolog-security`, com a própria identidade de escrita,
+criada pela GCP); e, com `billing_account_id` preenchido, o orçamento na conta de faturamento. Liste em
+`monitored_projects` só projetos de teste.
 
 **Custo estimado:** cerca de R$ 613 por mês ligada o mês todo (VM, 60 GB de disco, snapshots, NAT, IP e o resto).
 Parada, cerca de R$ 70 (disco e IP). Ligue só nas janelas de teste:
@@ -210,8 +214,10 @@ e mostrar 30 linhas `has moved to`, uma por recurso que passou para o módulo (p
 
 1. **Nenhum `must be replaced`, `forces replacement` ou `will be destroyed`.** Se aparecer, pare: um bloco `moved`
    ou um valor do perfil `lean` está errado, e o `apply` tentaria recriar algo. A VM tem proteção contra exclusão e
-   o disco tem `prevent_destroy`, mas não conte com isso para os outros recursos. Foi conferido com um `plan` só de
-   leitura contra o estado real em 04/11/2026: 47 recursos, nenhuma mudança, 30 movidos.
+   o disco tem `prevent_destroy`, mas não conte com isso para os outros recursos. A proteção da VM nem impede tudo:
+   ela só é conferida na hora de apagar a VM, e antes disso o `apply` já apagou os acessos dos operadores nela (veja
+   "Mudar ou desfazer"). Foi conferido com um `plan` só de leitura contra o estado real em 04/11/2026: 47 recursos,
+   nenhuma mudança, 30 movidos.
 2. **Nenhum `will be updated in-place`** no nó da Verax. Uma mudança no lugar não derruba nada, mas este PR não
    pretende mudar nada nele.
 3. Se o seu `terraform.tfvars` não for o mesmo da primeira subida, o `plan` mostra a diferença: compare antes de
@@ -319,12 +325,16 @@ em claro no `fstab` e falharia ao ligar o swap, e a e2-micro ficaria sem swap. A
 planejada**, com alguns minutos do nó fora do ar:
 
 1. Escolha uma janela. O disco fica (é um recurso à parte, com `prevent_destroy` e `auto_delete = false`) e os dados
-   continuam nele; só a VM é recriada. Confira que o disco tem 2 GB livres (`df -h /`): o swap cifrado usa um
-   arquivo novo, e os dois arquivos convivem até o antigo sair.
+   continuam nele; só a VM é recriada. Confira que o disco tem 3 GB livres (`df -h /`, coluna `Avail`): o swap
+   cifrado usa um arquivo novo de 2 GB, que convive com o antigo até ele sair, e o script só cria o arquivo se ainda
+   sobrar 1 GB para o banco e o resto do nó.
 2. Em `envs/verax/main.tf`, acrescente `deletion_protection = false` na chamada do módulo e faça o `plan` e o
    `apply`: só essa proteção muda, no lugar.
 3. Tire a linha `deletion_protection = false` e a linha `legacy_startup_script = ...` e faça o `plan`. Ele mostra:
-   - `module.node.google_compute_instance.node must be replaced` (por causa do `metadata_startup_script`);
+   - `module.node.google_compute_instance.node must be replaced` (por causa do `metadata_startup_script`), e dentro
+     dela `deletion_protection = false -> true`. Essa linha é a prova de que o passo 2 foi aplicado: sem ela, **pare
+     e volte ao passo 2**. Com a proteção ainda ligada na VM, o `apply` apagaria primeiro os acessos dos operadores
+     na VM no ar e só depois esbarraria na proteção (veja "Mudar ou desfazer");
    - para cada pessoa em `operators`, os dois acessos dela na VM (`google_compute_instance_iam_member.operators` e
      `google_iap_tunnel_instance_iam_member.operators`) com `will be replaced due to changes in replace_triggered_by`.
      A política de IAM da VM some com ela; o Terraform grava os acessos de novo, já na VM nova;
@@ -335,7 +345,7 @@ planejada**, com alguns minutos do nó fora do ar:
    desliga o swap antigo (o que estava nele passa para o cifrado). Depois sobrescreve o `/swapfile` com zeros, tira a
    linha do `fstab` e apaga o arquivo. O serviço `verax-node` sobe sozinho.
 
-4. Confira e apague o `envs/verax/startup.sh`:
+4. Confira na VM:
 
    ```bash
    sudo journalctl -u google-startup-scripts --no-pager | tail   # o script de boot terminou sem erro
@@ -344,11 +354,34 @@ planejada**, com alguns minutos do nó fora do ar:
    ls /swapfile; grep swapfile /etc/fstab   # o arquivo não existe, e o fstab não tem a linha
    ```
 
+5. A VM nova gerou chaves de SSH (do servidor) novas. O `gcloud compute ssh` confere a chave sozinho, mas o
+   `deploy.sh` guarda a da VM antiga em `~/.ssh/known_hosts_verax-node` e recusaria a próxima conexão com
+   `REMOTE HOST IDENTIFICATION HAS CHANGED`. Apague a chave antiga; o próximo `deploy.sh` registra a nova, como na
+   primeira vez. Se quiser conferir antes, as chaves que a VM nova publicou estão em
+   `gcloud compute instances get-guest-attributes verax-node --zone us-east1-b --query-path=hostkeys/`.
+
+   ```bash
+   ssh-keygen -R verax-node -f ~/.ssh/known_hosts_verax-node
+   ```
+
+6. Deixe o repositório igual ao nó, num commit só (o `main.tf` já está sem as duas linhas do passo 3):
+   - apague o `envs/verax/startup.sh`;
+   - em `modules/node/tests/lean_verax.tftest.hcl`, tire a linha `legacy_startup_script` do bloco `variables` do
+     topo e o `run "vm_e_script_de_boot"`, que conferem o script antigo. O `run "apos_a_manutencao_do_swap"` já
+     confere a VM como ela ficou. Sem isso, o teste do módulo procura o arquivo apagado e o check obrigatório do
+     Terraform no CI falha.
+
 **Se o script parar no meio**, a VM nunca fica sem swap, e a linha do `fstab` só sai depois de o arquivo estar zerado:
 
-- **Sem o `cryptsetup`** (o apt falhou 5 vezes, por rede ou pela trava do apt): o script para antes de mexer em
-  qualquer swap. O swap antigo continua ligado, como antes da manutenção, e nada foi apagado. Veja o erro no log do
-  passo 4, resolva e rode o script de novo com `sudo google_metadata_script_runner startup` (ou reinicie a VM).
+- **Sem o `cryptsetup`:** cada uma das 5 tentativas, com 20 s entre elas, baixa a lista do apt de novo e tenta
+  instalar; a trava do apt (o `apt-daily` no boot) é esperada por até 2 minutos em cada uma. Se as 5 falharem (rede
+  fora do ar o tempo todo, por exemplo), o script para antes de mexer em qualquer swap. O swap antigo continua
+  ligado, como antes da manutenção, e nada foi apagado. Veja o erro no log do passo 4, resolva e rode o script de
+  novo com `sudo google_metadata_script_runner startup` (ou reinicie a VM).
+- **Sem espaço no disco:** com menos de 3 GB livres, o script para antes de criar o arquivo do swap cifrado. Se o
+  disco encher durante a criação, o arquivo incompleto é apagado na hora e o espaço volta. Nos dois casos, nenhum
+  swap mudou. Libere espaço e rode o script de novo, como acima. Um arquivo do swap com o tamanho errado que tenha
+  sobrado é refeito.
 - **Parou depois de ligar o swap cifrado** (a VM reiniciou no meio da limpeza, por exemplo): a linha do `fstab` ou o
   arquivo antigo continuam lá, e a próxima execução (o mesmo comando, ou o boot seguinte) repete a limpeza do
   começo. Um arquivo meio zerado perde a assinatura de swap: o systemd só registra que não conseguiu ligá-lo.
@@ -360,11 +393,18 @@ expirarem.
 
 - **Mudar algo** (incluir um projeto monitorado, dar acesso a alguém): edite o `terraform.tfvars` do ambiente e
   repita os passos 5 e 6. O `plan` mostra só a diferença.
-- **Aumentar o disco:** mude `disk_gb` e repita os passos 5 e 6. A GCP aumenta o disco com a VM ligada; reinicie a
-  VM (`sudo reboot` dentro dela) e o serviço `google-disk-expand` da imagem do Debian estende a partição e o sistema
-  de arquivos no boot. Confira com `df -h /`. Disco não diminui: para menos espaço, só criando outro.
+- **Aumentar o disco:** mude `disk_gb` no `terraform.tfvars` (nos dois ambientes; sem a linha, vale o do perfil: 30
+  GB no lean, 60 no standard) e repita os passos 5 e 6. A GCP aumenta o disco com a VM ligada; reinicie a VM
+  (`sudo reboot` dentro dela) e o serviço `google-disk-expand` da imagem do Debian estende a partição e o sistema de
+  arquivos no boot. Confira com `df -h /`. Disco não diminui: para menos espaço, só criando outro.
 - **Trocar o tamanho da VM** (plano B da homologação, e2-standard-4): mude `machine_type` e repita os passos 5 e 6.
   A VM para, muda e volta (`allow_stopping_for_update`).
+- **Algo que recria a VM** (o `plan` mostra `module.node.google_compute_instance.node must be replaced`): nunca
+  aplique com a proteção ligada. O Terraform apaga primeiro os acessos dos operadores na VM, que ainda está no ar, e
+  só ao tentar apagar a VM esbarra na proteção: o `apply` falha, a VM continua rodando, e quem está em `operators` (e
+  não é dono do projeto) perde o SSH. Faça como na manutenção do swap: primeiro um `apply` só com
+  `deletion_protection = false`, depois o da mudança. Se já aconteceu, volte o `main.tf` para como estava antes da
+  mudança e faça o `plan` e o `apply`: os acessos saíram do estado, e o Terraform os grava de novo na mesma VM.
 - **Desfazer tudo:** existe atrito de propósito, para nada sumir por engano.
   1. A VM tem proteção contra exclusão: acrescente `deletion_protection = false` na chamada do módulo, no `main.tf`
      do ambiente, e faça o `apply`.

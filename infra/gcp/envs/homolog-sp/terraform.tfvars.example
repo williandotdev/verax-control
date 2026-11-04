@@ -15,6 +15,9 @@ images_project_id = "projeto-do-no-verax-123"
 # Plano B, se o ensaio mostrar que 2 vCPU não bastam para o Wazuh.
 # machine_type = "e2-standard-4"
 
+# Disco maior que os 60 GB do perfil, se o indexer do Wazuh pedir. Só cresce.
+# disk_gb = 120
+
 # Projetos de teste cujos logs vão para o nó (você precisa ser dono deles).
 # monitored_projects = ["projeto-de-teste-123"]
 

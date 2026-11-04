@@ -89,6 +89,21 @@ run "standard" {
   }
 }
 
+# O disco do standard cresce pelo `disk_gb` (o ambiente de homologação o repassa), sem mudar de tipo.
+run "standard_com_disco_maior" {
+  command = plan
+
+  variables {
+    node_profile = "standard"
+    disk_gb      = 120
+  }
+
+  assert {
+    condition     = google_compute_disk.node.size == 120 && google_compute_disk.node.type == "pd-balanced"
+    error_message = "O disk_gb não aumentou o disco do standard, ou o disco mudou de tipo."
+  }
+}
+
 run "lean_novo_usa_o_script_do_modulo" {
   command = plan
 

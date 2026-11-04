@@ -11,6 +11,7 @@ module "node" {
   name_prefix        = var.name_prefix
   node_profile       = "standard"
   machine_type       = var.machine_type
+  disk_gb            = var.disk_gb
   subnet_cidr        = var.subnet_cidr
   monitored_projects = var.monitored_projects
   operators          = var.operators

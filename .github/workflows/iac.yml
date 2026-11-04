@@ -63,8 +63,10 @@ jobs:
             echo "::endgroup::"
           done
       - name: Testes do módulo do nó (provider simulado, sem credenciais)
-        # Os dois perfis, o nó da Verax sem nenhuma mudança (os valores de antes e o script de boot byte a byte) e os
-        # acessos dos operadores quando a VM é recriada. O provider simulado não fala com a GCP.
+        # Os dois perfis; no nó da Verax, os nomes e os valores que recriariam algo no ar se mudassem (rede, NAT,
+        # firewall, conta de serviço, VM, disco, snapshot, cofres, tópicos, sinks e bucket), o script de boot byte a byte
+        # e a VM depois da manutenção do swap; e os acessos dos operadores quando a VM é recriada. Não substitui o `plan`
+        # contra o estado real (GUIA.md), que confere tudo. O provider simulado não fala com a GCP.
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: |
@@ -97,7 +99,8 @@ jobs:
         run: shellcheck -x -S style infra/node/bin/*.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
-        # disco do script antigo, apt fora do ar e VM reiniciada no meio da limpeza. Roda sem root e sem tocar na máquina.
+        # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
+        # VM reiniciada no meio da limpeza. Roda sem root e sem tocar na máquina.
         run: |
           test=infra/gcp/modules/node/tests/startup-test.sh
           shellcheck -x -S style infra/gcp/modules/node/startup.sh.tftpl "$test"

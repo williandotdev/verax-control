@@ -32,6 +32,12 @@ variable "machine_type" {
   default     = "e2-standard-2"
 }
 
+variable "disk_gb" {
+  description = "Disco da VM (sistema, banco e dados do nó, o indexer do Wazuh inclusive), em GB. Nulo: 60, o do perfil standard. O disco só cresce (veja \"Aumentar o disco\" no GUIA.md)."
+  type        = number
+  default     = null
+}
+
 variable "subnet_cidr" {
   description = "Faixa de IPs da rede própria do nó. Não pode coincidir com outra rede do projeto."
   type        = string

@@ -34,10 +34,13 @@ fi
 # reboot, nem a própria VM lê o swap anterior.
 SWAPFILE=/var/lib/verax-swap.img
 SWAPDEV=verax-swap
+# Tamanho do arquivo do swap, em bytes (2 GiB), e o espaço que precisa sobrar no disco depois dele (1 GiB).
+SWAPSIZE=2147483648
+SPARE=1073741824
 # Swap em claro do script de antes do módulo (o nó da Verax): sai só depois que o cifrado estiver ligado, lá embaixo.
 LEGACY_SWAPFILE=/swapfile
 
-# Repete um comando que depende da rede ou da trava do apt (no boot, o apt-daily pode estar com ela): 5 tentativas.
+# Repete um comando até 5 vezes, com 20 s entre as tentativas.
 retry() {
   local attempt=1
   until "$@"; do
@@ -49,17 +52,41 @@ retry() {
   done
 }
 
+# A lista do apt e a instalação vão juntas em cada tentativa. Sem rede (DNS, tempo esgotado, conexão recusada), o
+# `apt-get update` do Debian 12 só avisa ("Some index files failed to download") e sai com 0: repetido sozinho, ele
+# nunca seria tentado de novo, e o `install` insistiria numa lista vazia ou velha. Assim, cada tentativa baixa a lista
+# outra vez. Com a trava do apt (o apt-daily no boot), o apt espera até 120 s e sai com erro, e a tentativa se repete.
+install_cryptsetup() {
+  apt-get -o DPkg::Lock::Timeout=120 update -qq &&
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq cryptsetup-bin >/dev/null
+}
+
 # O cryptsetup (pacote do Debian) entra no primeiro boot, pela saída do NAT. Se não entrar, o script para aqui, antes
 # de mexer em qualquer swap: num nó novo, a VM fica sem swap (nunca em claro); num disco do script antigo, o swap de
 # antes continua ligado, como estava, e o boot seguinte tenta de novo.
 if ! command -v cryptsetup >/dev/null; then
-  retry apt-get -o DPkg::Lock::Timeout=120 update -qq
-  retry env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y -qq cryptsetup-bin >/dev/null
+  retry install_cryptsetup
 fi
 
-# O arquivo só recebe o que passa pelo dm-crypt: desde a criação, nunca tem texto claro.
+# O arquivo só recebe o que passa pelo dm-crypt: desde a criação, nunca tem texto claro. Fora de um loop (antes de o
+# swap subir neste boot), o que ele guarda é texto cifrado com uma chave que já se perdeu. Por isso, um arquivo fora de
+# uso com o tamanho errado (sobra de um fallocate que falhou num boot antigo) é apagado e feito de novo.
+if [ -f "$SWAPFILE" ] && [ "$(stat -c %s "$SWAPFILE")" != "$SWAPSIZE" ] && [ -z "$(losetup --associated "$SWAPFILE")" ]; then
+  rm -f "$SWAPFILE"
+fi
 if [ ! -f "$SWAPFILE" ]; then
-  fallocate -l 2G "$SWAPFILE"
+  # Só cria o arquivo se depois dele ainda sobrar 1 GiB livre: o banco e o resto do nó não podem ficar sem disco (o
+  # fallocate, como root, usaria até a reserva do ext4). Se o fallocate falhar no meio, o arquivo incompleto sai na
+  # hora e devolve o espaço; nenhum swap mudou até aqui.
+  free=$(df --output=avail -B1 "$(dirname "$SWAPFILE")" | awk 'NR == 2 { print $1 }')
+  if ! [ "$free" -ge $((SWAPSIZE + SPARE)) ]; then
+    echo "Sem espaço para o swap cifrado: o disco precisa de 3 GB livres (o arquivo de 2 GB e 1 GB de folga)." >&2
+    exit 1
+  fi
+  fallocate -l "$SWAPSIZE" "$SWAPFILE" || {
+    rm -f "$SWAPFILE"
+    exit 1
+  }
 fi
 chmod 0600 "$SWAPFILE"
 active=$(swapon --show=NAME --noheadings)

@@ -74,7 +74,11 @@ atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
    quem a assinou: o workflow `Imagens do nó` deste repositório, na `main`, nesse commit, num executor do GitHub.
 2. **Copia o pacote para a VM** pelo IAP, sem porta aberta: um túnel até a porta 22 e uma chave SSH criada só para
    esta execução (vale 1 hora no OS Login e é removida no fim). A chave do servidor fica em
-   `~/.ssh/known_hosts_verax-node`: a primeira execução a registra, e as seguintes a conferem.
+   `~/.ssh/known_hosts_verax-node`: a primeira execução a registra, e as seguintes a conferem. Uma VM recriada (a
+   manutenção do swap no `infra/gcp/GUIA.md`) tem chaves novas, e a conexão para com
+   `REMOTE HOST IDENTIFICATION HAS CHANGED`: depois de uma recriação planejada, apague a chave antiga com
+   `ssh-keygen -R verax-node -f ~/.ssh/known_hosts_verax-node` e rode de novo. Fora disso, a mensagem é um alerta:
+   não apague a chave sem entender por que ela mudou.
 3. **Instala pelo digest conferido.** A VM nunca confia em tag do registro.
 
 A instalação instala o Docker pelo repositório oficial, com a chave conferida. Na primeira vez, também gera a CA e o
