@@ -36,9 +36,12 @@ export const towerSummarySchema = z.strictObject({
     warningBelow: z.number().int().min(0).max(100),
   }),
   coverage: z.strictObject({
+    /** Contas ativas no estado "Conectada": a última coleta deu certo. */
     connectedAccounts: count,
+    /** A coleta bem-sucedida mais recente entre as contas ativas. */
+    lastCollectedAt: z.iso.datetime().nullable(),
     lastEventAt: z.iso.datetime().nullable(),
-    /** Contas sem evento há mais de `silentAfterHours` horas (ou que nunca mandaram nada). */
+    /** Contas ativas sem coleta bem-sucedida há mais de `silentAfterHours` horas (ou que nunca coletaram). */
     silentAccounts: z.array(cloudAccountRefSchema).max(500),
     silentAfterHours: z.number().int().positive(),
   }),

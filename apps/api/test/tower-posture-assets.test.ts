@@ -97,7 +97,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
   });
 
   describe('Torre', () => {
-    it('cliente sem nada: verde, sem decisões, conta sem evento aparece como silenciosa', async () => {
+    it('cliente sem nada: verde, sem decisões, conta que nunca coletou aparece como silenciosa', async () => {
       const { accountId, get } = await setup();
       const summary = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
       expect(summary).toMatchObject({
@@ -106,7 +106,52 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         pendingDecisions: [],
         openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
         posture: { score: null, scannedAt: null, warningBelow: 70 },
-        coverage: { connectedAccounts: 1, lastEventAt: null, silentAccounts: [accountId] },
+        coverage: {
+          connectedAccounts: 0,
+          lastCollectedAt: null,
+          lastEventAt: null,
+          silentAccounts: [accountId],
+        },
+      });
+    });
+
+    it('cobertura pela última coleta: conta lida sem evento não fica silenciosa, e só a conectada entra na contagem', async () => {
+      const { tenantId, get } = await setup();
+      const collected = new Date(Date.now() - HOUR);
+      await prisma.cloudAccount.updateMany({
+        where: { tenantId },
+        data: { connection: 'connected', lastCollectedAt: collected },
+      });
+      const newAccount = (owner: string, data: object) =>
+        prisma.cloudAccount.create({
+          data: {
+            tenantId: owner,
+            accountId: String(randomInt(100_000_000_000, 999_999_999_999)),
+            regions: ['sa-east-1'],
+            externalId: 'x'.repeat(43),
+            ...data,
+          },
+        });
+      // Uma segunda conta, com erro e sem coleta há dois dias: silenciosa e fora das conectadas.
+      const stalled = await newAccount(tenantId, {
+        connection: 'error',
+        connectionError: 'AccessDenied',
+        lastCollectedAt: new Date(Date.now() - 2 * DAY),
+      });
+      // Conta de outro cliente, coletada agora: não entra na cobertura deste.
+      await newAccount(await createTenant(app, `Cliente ${randomInt(1e6, 9e6)}`), {
+        connection: 'connected',
+        lastCollectedAt: new Date(),
+        lastEventAt: new Date(),
+      });
+
+      const summary = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(summary.coverage).toEqual({
+        connectedAccounts: 1,
+        lastCollectedAt: collected.toISOString(),
+        lastEventAt: null,
+        silentAccounts: [stalled.accountId],
+        silentAfterHours: 24,
       });
     });
 

@@ -24,9 +24,10 @@ import { AdminShell, FormError, SelectInput } from '@/features/admin/admin-ui';
 import { fieldErrors } from '@/features/admin/forms';
 import {
   ACCOUNT_NOUNS,
+  CONNECTION_LABELS,
   CONNECTOR_GUIDE_URL,
   CONNECTOR_TEMPLATE_URL,
-  connectionLabel,
+  connectionHint,
   PROVIDER_LABELS,
 } from '@/features/admin/labels';
 import { useMe } from '@/features/session/session';
@@ -175,14 +176,19 @@ export function CloudAccountsPage() {
   );
 }
 
+const CONNECTION_SEVERITY = {
+  waiting: 'medium',
+  connected: 'ok',
+  error: 'critical',
+} as const satisfies Record<CloudAccount['connection'], keyof typeof SEVERITY_STYLES>;
+
+/** Selo "Aguardando / Conectada / Erro": a cor vem com ícone e texto, nunca só a cor. */
 function ConnectionBadge({ account }: { account: CloudAccount }) {
-  const connection = account.connection ?? 'pending';
-  const severity = connection === 'ok' ? 'ok' : connection === 'error' ? 'critical' : 'medium';
-  const { icon: Icon, tone } = SEVERITY_STYLES[severity];
+  const { icon: Icon, tone } = SEVERITY_STYLES[CONNECTION_SEVERITY[account.connection]];
   return (
     <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
       <Icon aria-hidden className={cn('size-4', tone)} />
-      {connectionLabel(account.provider, connection)}
+      {CONNECTION_LABELS[account.connection]}
     </span>
   );
 }
@@ -336,9 +342,20 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
     <div className="space-y-5">
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
         <dt className="text-muted-foreground">Conexão</dt>
-        <dd>
+        <dd className="space-y-0.5">
           <ConnectionBadge account={account} />
+          <p className="text-xs text-muted-foreground">
+            {connectionHint(account.provider, account.connection)}
+            {account.connection === 'error' && account.connectionError && (
+              <>
+                {' '}
+                Tipo do erro: <code className="font-mono">{account.connectionError}</code>.
+              </>
+            )}
+          </p>
         </dd>
+        <dt className="text-muted-foreground">Última coleta</dt>
+        <dd>{account.lastCollectedAt ? formatRelative(account.lastCollectedAt) : 'nenhuma ainda'}</dd>
         <dt className="text-muted-foreground">Último evento</dt>
         <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
         <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
@@ -441,7 +458,8 @@ function GcpSteps({ account }: { account: CloudAccount }) {
           VM.
         </li>
         <li>
-          Informe aqui o nome da assinatura. A conexão muda para "Conectada" quando o primeiro evento chegar.
+          Informe aqui o nome da assinatura. A conexão muda para "Conectada" na primeira leitura bem-sucedida
+          da assinatura, mesmo sem nenhum evento.
         </li>
       </ol>
     </section>
@@ -462,7 +480,8 @@ function CloudflareSteps({ account }: { account: CloudAccount }) {
           chat.
         </li>
         <li>
-          Informe as zonas monitoradas. A conexão muda para "Conectada" quando o primeiro evento chegar.
+          Informe as zonas monitoradas. A conexão muda para "Conectada" na primeira leitura bem-sucedida,
+          mesmo sem nenhum evento.
         </li>
       </ol>
     </section>

@@ -1765,3 +1765,34 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - A chave SSH é criada só para a execução, registrada no OS Login por 1 hora e removida no fim, mesmo com erro.
   - A chave do servidor fica num `known_hosts` próprio da VM: a primeira execução registra, as seguintes conferem.
 - **Testado:** um deploy real no nó da Verax, com a mesma versão. Atestações conferidas, pacote copiado, serviço reiniciado; no fim, nenhuma chave temporária nem túnel sobrando.
+
+## Fase 2, PR-02: agendador do worker, cursor dos coletores e estado da conexão das contas
+
+- **Pedido:** a base comum dos coletores da fase 2 (plano da fase 2, PR-02 e conflitos C4, C5 e C13).
+- **Agendador** (`apps/api/src/worker/scheduler.ts`), no lugar do laço sequencial do `worker.ts`:
+  - cada tarefa tem nome, intervalo e orçamento de tempo próprios, e roda no próprio laço;
+  - tarefas diferentes rodam ao mesmo tempo; a mesma tarefa nunca roda duas vezes ao mesmo tempo (o intervalo conta do fim de uma execução ao começo da próxima);
+  - a parada aborta o sinal (`AbortSignal`) das execuções em curso e espera todas terminarem;
+  - o orçamento estourado vai para o log e aborta o sinal da execução; a próxima só começa quando ela terminar;
+  - a exceção vai para o log só pelo tipo (nunca a mensagem nem a pilha) e não derruba o laço.
+  - Os syncs do Wazuh e da GCP viram as tarefas `wazuh` e `gcp`, com `SYNC_INTERVAL_SECONDS` e orçamento de 5 min (a validade da concessão). Comportamento igual ao de antes: rodam ao iniciar, não interrompem no meio e a concessão no banco continua valendo entre réplicas.
+  - **Pool do banco:** 10 conexões por processo, agora fixadas em `PrismaService` (era o padrão implícito do `pg`). O Postgres do nó aceita 40.
+- **Cursor** (`model CollectorCursor` e `apps/api/src/collectors/collector-cursor.ts`):
+  - um por conta, fluxo e região (`@@unique`), com índice por fluxo e próxima leitura; apagar a conta apaga os cursores (cascade);
+  - sem `tenantId`: é dado de sistema, e o escopo do cliente recusa o model;
+  - `read` cria o cursor vazio na primeira vez; `due` lista os vencidos de contas ativas; `advance` só anda para a frente, guarda a continuação e zera as falhas; `fail` guarda só o tipo do erro, não mexe na posição e recua (1 min, dobrando, até 1 h; ou a hora pedida pela fonte).
+  - Os coletores novos usam o cursor a partir do PR-08.
+- **Estado da conexão na `CloudAccount`:** `connection` (`waiting`, `connected`, `error`), `connectionError` (só o tipo do erro, até 64 caracteres) e `lastCollectedAt`.
+  - **Migration** `20261103130000_collector_cursor_connection`: contas da GCP que já tinham `lastEventAt` nascem `connected`.
+  - **Sync da GCP:** cada assinatura lida sem erro marca as contas dela como `connected`, com a hora da coleta, haja evento ou não; a que falha marca `error` com o tipo do erro, sem mexer na última coleta. Assinatura em dois clientes vira `error` (`ambiguous_source`).
+  - **API e contrato:** a conta devolve os três campos (a conexão deixa de ser opcional). Nenhum deles é aceito no cadastro nem na alteração. Trocar a assinatura do Pub/Sub volta a conexão para `waiting`, com o antes e o depois na auditoria.
+  - **Torre:** "Contas conectadas" conta as contas `connected`; a cobertura ganha "Última coleta"; conta silenciosa é a que não coleta com sucesso há mais de 24 h. O evento recebido também vale como sinal de vida (só chega por uma leitura que deu certo), que é o único sinal das contas lidas pelo Wazuh.
+  - **Painel:** selo "Aguardando / Conectada / Erro" em Contas cloud; o detalhe explica o estado, mostra o tipo do erro e a última coleta. Os passos da GCP e do Cloudflare dizem que a conta conecta na primeira leitura, mesmo sem evento. Os mocks da demonstração têm os campos novos (a homologação da Alfa aparece com erro).
+- **Gravação de achados com tarefas ao mesmo tempo:** `FindingStore.persist` toma um lock transacional por cliente. Sem ele, dois achados do mesmo cliente com a mesma chave, gravados juntos por coletores diferentes, abriam dois incidentes (o teste novo falha sem o lock).
+- **Testes:**
+  - agendador com relógio falso (7): tarefa lenta não atrasa outra, nunca duas execuções da mesma, a parada espera as execuções em curso, exceção não derruba o laço e vai para o log só pelo tipo, orçamento estourado registrado, interrupção pela parada e validação;
+  - tipo do erro (3);
+  - integração com o banco: cursor (9: unicidade, cascade, leitura, avanço, falha e recuo, vencidos, formato e escopo), sync da GCP (conectada, erro com o tipo e conectada de novo, sem mexer na conta de B; origem ambígua), API de contas (conexão devolvida, não gravável pela API, troca de assinatura e A/B), Torre (cobertura pela última coleta e A/B) e achados concorrentes (2);
+  - os testes atuais do Wazuh e da GCP passam sem mudança;
+  - painel: selo, detalhe, troca de assinatura e cobertura da Torre.
+  - Resultado: API 64 arquivos e 801 testes; painel 248 unitários e 52 e2e da demonstração; lint, tipos e Prettier limpos.

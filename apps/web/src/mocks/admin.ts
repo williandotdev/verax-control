@@ -98,11 +98,18 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       mustChangePassword,
       createdAt: at(days),
     });
+  const minutesBefore = (minutes: number | null) =>
+    minutes === null ? null : new Date(now.getTime() - minutes * 60_000).toISOString();
   const account = (
     index: number,
     accountId: string,
     regions: string[],
-    connection: CloudAccount['connection'],
+    /** Estado da coleta e há quantos minutos foi a última coleta bem-sucedida. */
+    collection: {
+      connection: CloudAccount['connection'];
+      collectedMinutes: number | null;
+      error?: string;
+    },
     lastEventMinutes: number | null,
     other:
       | { provider: 'gcp'; pubsubSubscription: string }
@@ -120,9 +127,10 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
       zones: other?.provider === 'cloudflare' ? other.zones : [],
       status: 'active',
-      connection,
-      lastEventAt:
-        lastEventMinutes === null ? null : new Date(now.getTime() - lastEventMinutes * 60_000).toISOString(),
+      connection: collection.connection,
+      connectionError: collection.error ?? null,
+      lastCollectedAt: minutesBefore(collection.collectedMinutes),
+      lastEventAt: minutesBefore(lastEventMinutes),
       createdAt: at(40),
       updatedAt: at(10),
     });
@@ -200,19 +208,42 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       [
         alfa,
         [
-          account(1, DEMO_ACCOUNTS.alfaProducao, ['sa-east-1', 'us-east-1'], 'ok', 3),
-          account(2, DEMO_ACCOUNTS.alfaHomologacao, ['sa-east-1'], 'ok', 30 * 60),
-          account(4, DEMO_ACCOUNTS.alfaGcp, [], 'ok', 12, {
+          account(
+            1,
+            DEMO_ACCOUNTS.alfaProducao,
+            ['sa-east-1', 'us-east-1'],
+            { connection: 'connected', collectedMinutes: 1 },
+            3,
+          ),
+          // A homologação perdeu o acesso há 30 horas: é a conta silenciosa da Torre.
+          account(
+            2,
+            DEMO_ACCOUNTS.alfaHomologacao,
+            ['sa-east-1'],
+            { connection: 'error', collectedMinutes: 30 * 60, error: 'AccessDenied' },
+            30 * 60,
+          ),
+          account(4, DEMO_ACCOUNTS.alfaGcp, [], { connection: 'connected', collectedMinutes: 1 }, 12, {
             provider: 'gcp',
             pubsubSubscription: `projects/${DEMO_ACCOUNTS.alfaGcp}/subscriptions/verax-logs-seguranca`,
           }),
-          account(5, DEMO_ACCOUNTS.alfaCloudflare, [], 'pending', null, {
-            provider: 'cloudflare',
-            zones: ['loja-alfa.example'],
-          }),
+          account(
+            5,
+            DEMO_ACCOUNTS.alfaCloudflare,
+            [],
+            { connection: 'waiting', collectedMinutes: null },
+            null,
+            {
+              provider: 'cloudflare',
+              zones: ['loja-alfa.example'],
+            },
+          ),
         ],
       ],
-      [beta, [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'], 'ok', 1)]],
+      [
+        beta,
+        [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'], { connection: 'connected', collectedMinutes: 1 }, 1)],
+      ],
     ]),
     protectedResources: new Map([
       [
@@ -493,7 +524,9 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         pubsubSubscription: data.provider === 'gcp' ? (data.pubsubSubscription ?? null) : null,
         zones: data.provider === 'cloudflare' ? (data.zones ?? []) : [],
         status: 'active',
-        connection: 'pending',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: null,
         lastEventAt: null,
         createdAt: now,
         updatedAt: now,
@@ -513,7 +546,15 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const foreign = fieldsOutsideProvider(account.provider, input.data);
       if (foreign.length > 0) return problem(400, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
       const { buckets: _buckets, ...rest } = input.data;
-      Object.assign(account, rest, { updatedAt: new Date().toISOString() });
+      // Como a API: outra assinatura é outra fonte, e a conexão volta a "aguardando".
+      const sourceChanged =
+        rest.pubsubSubscription !== undefined && rest.pubsubSubscription !== account.pubsubSubscription;
+      Object.assign(
+        account,
+        rest,
+        { updatedAt: new Date().toISOString() },
+        sourceChanged ? { connection: 'waiting', connectionError: null } : {},
+      );
       return HttpResponse.json(account);
     }),
 

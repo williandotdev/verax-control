@@ -11,6 +11,7 @@ const summary: TowerSummary = {
   posture: { score: 74, scannedAt: '2026-11-02T06:00:00.000Z', warningBelow: 70 },
   coverage: {
     connectedAccounts: 2,
+    lastCollectedAt: '2026-11-02T12:59:00.000Z',
     lastEventAt: '2026-11-02T12:58:00.000Z',
     silentAccounts: [],
     silentAfterHours: 24,
@@ -24,7 +25,7 @@ describe('resumo da Torre', () => {
     expect(towerSummarySchema.parse(summary)).toEqual(summary);
   });
 
-  it('aceita a conta nova, sem varredura nem evento', () => {
+  it('aceita a conta nova, sem varredura, coleta nem evento', () => {
     const fresh = {
       ...summary,
       light: 'green',
@@ -33,7 +34,8 @@ describe('resumo da Torre', () => {
       openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
       posture: { score: null, scannedAt: null, warningBelow: 70 },
       coverage: {
-        connectedAccounts: 1,
+        connectedAccounts: 0,
+        lastCollectedAt: null,
         lastEventAt: null,
         silentAccounts: ['111122223333'],
         silentAfterHours: 24,

@@ -80,6 +80,10 @@ export class FindingStore {
   /**
    * Achado, uso da exceção e incidente na mesma transação: se algo falhar no meio, nada fica gravado, e a releitura
    * grava tudo de novo. Sem isso, o achado ficaria e voltaria como duplicado, sem nunca entrar no incidente.
+   *
+   * Os coletores rodam ao mesmo tempo (agendador do worker): os achados de um mesmo cliente entram um por vez, sob um
+   * lock transacional por cliente. Sem ele, dois achados com a mesma chave, gravados juntos por coletores diferentes,
+   * não se veriam e abririam dois incidentes. Clientes diferentes não esperam um pelo outro.
    */
   async persist(
     draft: FindingDraft,
@@ -88,6 +92,7 @@ export class FindingStore {
     now: Date,
   ): Promise<PersistOutcome> {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:findings:${draft.tenantId}`}))`;
       const db = scopeToTenant(tx, draft.tenantId);
       const { count } = await db.finding.createMany({
         data: [findingRow(draft, exception)],

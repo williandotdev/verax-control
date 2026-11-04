@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { type ActiveException, matchingException } from '../alerts/exception-match.js';
 import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from '../alerts/finding-store.js';
+import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
 import { parseLogMessage } from './gcp-log-entry.js';
 import { detect, gcpEventId, type GcpRule, toGcpFindingDraft } from './gcp-rules.js';
@@ -88,6 +90,9 @@ function unownedRecord(
  * 4. só depois confirma (ack) o lote. Se algo falhar antes, o Pub/Sub entrega de novo, e a chave única do achado
  *    impede duplicar.
  *
+ * A leitura de cada assinatura também dá o estado da conexão das contas que a usam: lida sem erro, as contas ficam
+ * `connected`, com a hora da coleta, haja evento ou não; com erro, ficam `error`, com o tipo do erro.
+ *
  * Nada do evento bruto é gravado: o achado guarda os campos já validados.
  */
 export class GcpAuditSync {
@@ -150,8 +155,18 @@ export class GcpAuditSync {
         } catch (error) {
           // Uma assinatura com problema (permissão, rede) não para as outras.
           report.failedSubscriptions += 1;
-          firstError ??= (error instanceof Error ? error.name : 'Error').slice(0, 64);
+          const kind = errorKind(error);
+          firstError ??= kind;
+          await this.markConnection(group, { connection: 'error', connectionError: kind });
+          continue;
         }
+        // Assinatura em mais de um cliente: a leitura funciona, mas nenhum evento vai para as contas.
+        await this.markConnection(
+          group,
+          group.ambiguous
+            ? { connection: 'error', connectionError: 'ambiguous_source' }
+            : { connection: 'connected', connectionError: null, lastCollectedAt: now },
+        );
       }
       await context.lastEvents.save(this.prisma, 'gcp');
       await this.prisma.syncState.update({
@@ -168,11 +183,39 @@ export class GcpAuditSync {
       // Só o tipo do erro: a mensagem de um erro do banco ou do Google pode carregar dado.
       await this.prisma.syncState.update({
         where: { name: this.name },
-        data: { lastRunAt: now, lastError: (error instanceof Error ? error.name : 'Error').slice(0, 64) },
+        data: { lastRunAt: now, lastError: errorKind(error) },
       });
       throw error;
     } finally {
       await this.lease.release();
+    }
+  }
+
+  /**
+   * Estado da conexão das contas ativas que usam a assinatura, cada uma pelo escopo do próprio cliente. A coleta conta
+   * a leitura, não o evento: um projeto sem atividade continua conectado.
+   */
+  private async markConnection(
+    group: SubscriptionGroup,
+    data: Pick<
+      Prisma.CloudAccountUpdateManyMutationInput,
+      'connection' | 'connectionError' | 'lastCollectedAt'
+    >,
+  ): Promise<void> {
+    const projectsByTenant = new Map<string, string[]>();
+    for (const [project, tenantId] of group.projects) {
+      projectsByTenant.set(tenantId, [...(projectsByTenant.get(tenantId) ?? []), project]);
+    }
+    for (const [tenantId, projects] of projectsByTenant) {
+      await this.prisma.forTenant(tenantId).cloudAccount.updateMany({
+        where: {
+          provider: 'gcp',
+          status: 'active',
+          accountId: { in: projects },
+          pubsubSubscription: group.subscription,
+        },
+        data,
+      });
     }
   }
 

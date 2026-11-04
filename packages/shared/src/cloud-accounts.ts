@@ -5,7 +5,8 @@ import { withPagination } from './pagination.js';
 export const CLOUD_PROVIDERS = ['aws', 'gcp', 'cloudflare'] as const;
 export type CloudProvider = (typeof CLOUD_PROVIDERS)[number];
 export const CLOUD_ACCOUNT_STATUSES = ['active', 'inactive'] as const;
-export const CLOUD_ACCOUNT_CONNECTIONS = ['ok', 'error', 'pending'] as const;
+/** Estado da coleta: aguardando a primeira leitura bem-sucedida, conectada (a última deu certo) ou com erro. */
+export const CLOUD_ACCOUNT_CONNECTIONS = ['waiting', 'connected', 'error'] as const;
 export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
 /** Fontes de log que o Wazuh lê de buckets S3 da conta do cliente (T4.4 a T4.6). */
 export const LOG_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
@@ -202,10 +203,17 @@ export const cloudAccountSchema = z.strictObject({
   zones: z.array(z.string()),
   status: z.enum(CLOUD_ACCOUNT_STATUSES),
   /**
-   * Situação da conexão (T7.3): `ok` quando o papel de leitura foi assumido na última tentativa, `error` quando
-   * falhou, `pending` antes da primeira. Opcional até a persistência do E5 gravar.
+   * Estado da coleta, gravado pelo coletor da conta: `waiting` antes da primeira leitura bem-sucedida, `connected`
+   * quando a última deu certo (com ou sem evento) e `error` quando a última falhou.
    */
-  connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS).optional(),
+  connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS),
+  /** Tipo do último erro de coleta (`AccessDenied`, `TimeoutError`), só em `error`. Nunca a mensagem nem segredo. */
+  connectionError: z
+    .string()
+    .regex(/^[A-Za-z0-9_.:-]{1,64}$/)
+    .nullable(),
+  /** Última coleta bem-sucedida, com ou sem evento; null antes da primeira. */
+  lastCollectedAt: z.iso.datetime().nullable(),
   /** Horário do último alerta recebido desta conta (T5.3); null se nunca chegou nada. */
   lastEventAt: z.iso.datetime().nullable().optional(),
   createdAt: z.iso.datetime(),

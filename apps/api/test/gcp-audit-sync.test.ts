@@ -324,6 +324,99 @@ describe('sync da auditoria da GCP para achados', () => {
     ).toBe(1);
   });
 
+  it('a conexão segue a leitura da assinatura: conectada, erro com o tipo e conectada de novo', async () => {
+    const project = randomProject();
+    const subscription = subscriptionOf(project);
+    const account = await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenantA,
+        provider: 'gcp',
+        accountId: project,
+        regions: [],
+        pubsubSubscription: subscription,
+      },
+    });
+    expect(account).toMatchObject({ connection: 'waiting', connectionError: null, lastCollectedAt: null });
+    const state = (accountId: string) =>
+      prisma.cloudAccount.findFirstOrThrow({
+        where: { provider: 'gcp', accountId },
+        select: { connection: true, connectionError: true, lastCollectedAt: true, lastEventAt: true },
+      });
+
+    // Lida sem nenhum evento: já é coleta bem-sucedida.
+    const pubsub = new FakePubsub();
+    const first = new Date('2026-11-03T12:00:00.000Z');
+    await syncFor(pubsub).runOnce(first);
+    expect(await state(project)).toEqual({
+      connection: 'connected',
+      connectionError: null,
+      lastCollectedAt: first,
+      lastEventAt: null,
+    });
+
+    // A leitura falha: erro com o tipo, nunca a mensagem; a última coleta bem-sucedida fica.
+    class PermissionDenied extends Error {
+      override name = 'PermissionDenied';
+    }
+    const failing: PubsubReader = {
+      pull: (name, max) =>
+        name === subscription
+          ? Promise.reject(new PermissionDenied(`Pub/Sub pull respondeu 403 em ${subscription}`))
+          : pubsub.pull(name, max),
+      acknowledge: (name, ackIds) => pubsub.acknowledge(name, ackIds),
+    };
+    const second = new Date('2026-11-03T12:01:00.000Z');
+    expect(await syncFor(failing).runOnce(second)).toMatchObject({ failedSubscriptions: 1 });
+    expect(await state(project)).toEqual({
+      connection: 'error',
+      connectionError: 'PermissionDenied',
+      lastCollectedAt: first,
+      lastEventAt: null,
+    });
+    // A falha numa assinatura de A não mexe na conta de B, lida na mesma execução.
+    expect(await state(projectB)).toMatchObject({ connection: 'connected', lastCollectedAt: second });
+
+    // Volta a ler: conectada de novo, sem o tipo do erro, com a nova coleta e o evento.
+    pubsub.publish(
+      subscription,
+      pubsubMessage(
+        auditEntry({
+          project,
+          timestamp: '2026-11-03T12:01:30.000Z',
+          methodName: 'v1.compute.instances.list',
+        }),
+      ),
+    );
+    const third = new Date('2026-11-03T12:02:00.000Z');
+    await syncFor(pubsub).runOnce(third);
+    expect(await state(project)).toEqual({
+      connection: 'connected',
+      connectionError: null,
+      lastCollectedAt: third,
+      lastEventAt: new Date('2026-11-03T12:01:30.000Z'),
+    });
+  });
+
+  it('assinatura em clientes diferentes: as contas ficam com erro de origem ambígua, sem coleta', async () => {
+    const [ofA, ofB] = [randomProject(), randomProject()];
+    const shared = `projects/projeto-no/subscriptions/ambigua-conexao-${ofA}`;
+    await prisma.cloudAccount.create({
+      data: { tenantId: tenantA, provider: 'gcp', accountId: ofA, regions: [], pubsubSubscription: shared },
+    });
+    await prisma.cloudAccount.create({
+      data: { tenantId: tenantB, provider: 'gcp', accountId: ofB, regions: [], pubsubSubscription: shared },
+    });
+    await syncFor(new FakePubsub()).runOnce();
+    const accounts = await prisma.cloudAccount.findMany({
+      where: { provider: 'gcp', accountId: { in: [ofA, ofB] } },
+      select: { connection: true, connectionError: true, lastCollectedAt: true },
+    });
+    expect(accounts).toEqual([
+      { connection: 'error', connectionError: 'ambiguous_source', lastCollectedAt: null },
+      { connection: 'error', connectionError: 'ambiguous_source', lastCollectedAt: null },
+    ]);
+  });
+
   it('dois workers ao mesmo tempo: só um lê', async () => {
     const pubsub = new FakePubsub();
     const name = `gcp-lease-${projectA.slice(-12)}`;

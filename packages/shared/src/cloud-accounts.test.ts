@@ -47,7 +47,7 @@ describe('contas cloud (T3.3)', () => {
   });
 });
 
-describe('situação da conexão (T7.3)', () => {
+describe('estado da conexão (T7.3 e fase 2)', () => {
   const account = {
     id: '018f2c1e-0000-7000-8000-0000000c0001',
     provider: 'aws',
@@ -59,20 +59,44 @@ describe('situação da conexão (T7.3)', () => {
     pubsubSubscription: null,
     zones: [],
     status: 'active',
+    connection: 'waiting',
+    connectionError: null,
+    lastCollectedAt: null,
     createdAt: '2026-11-01T00:00:00.000Z',
     updatedAt: '2026-11-01T00:00:00.000Z',
   };
 
-  it('conexão e último evento são opcionais até a persistência do E5', () => {
+  it('aguardando, conectada (com a última coleta) ou com erro (com o tipo)', () => {
     expect(cloudAccountSchema.safeParse(account).success).toBe(true);
     expect(
-      cloudAccountSchema.safeParse({ ...account, connection: 'ok', lastEventAt: '2026-11-02T12:00:00.000Z' })
-        .success,
+      cloudAccountSchema.safeParse({
+        ...account,
+        connection: 'connected',
+        lastCollectedAt: '2026-11-02T12:01:00.000Z',
+        lastEventAt: '2026-11-02T12:00:00.000Z',
+      }).success,
     ).toBe(true);
     expect(
-      cloudAccountSchema.safeParse({ ...account, connection: 'pending', lastEventAt: null }).success,
+      cloudAccountSchema.safeParse({ ...account, connection: 'error', connectionError: 'AccessDenied' })
+        .success,
     ).toBe(true);
     expect(cloudAccountSchema.safeParse({ ...account, connection: 'talvez' }).success).toBe(false);
+  });
+
+  it('a conexão é obrigatória, e o erro é só o tipo: nada de mensagem', () => {
+    const { connection: _connection, ...withoutConnection } = account;
+    expect(cloudAccountSchema.safeParse(withoutConnection).success).toBe(false);
+    expect(
+      cloudAccountSchema.safeParse({
+        ...account,
+        connection: 'error',
+        connectionError: 'Pub/Sub pull respondeu 403 em projects/x',
+      }).success,
+    ).toBe(false);
+    expect(
+      cloudAccountSchema.safeParse({ ...account, connection: 'error', connectionError: 'x'.repeat(65) })
+        .success,
+    ).toBe(false);
   });
 });
 

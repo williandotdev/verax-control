@@ -1,4 +1,10 @@
-import type { FindingSeverity, PendingDecisionKind, TrafficLight, TrafficLightReason } from '@verax/shared';
+import type {
+  CloudAccountConnection,
+  FindingSeverity,
+  PendingDecisionKind,
+  TrafficLight,
+  TrafficLightReason,
+} from '@verax/shared';
 
 // Os tipos do resumo vêm do contrato compartilhado com o painel (`packages/shared/src/tower.ts`).
 export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
@@ -17,7 +23,7 @@ export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
 export interface TowerThresholds {
   /** Nota de postura abaixo disto deixa a Torre amarela. */
   postureWarning: number;
-  /** Conta sem evento há mais horas que isto aparece como silenciosa na cobertura. */
+  /** Conta sem coleta bem-sucedida há mais horas que isto aparece como silenciosa na cobertura. */
   silentAfterHours: number;
 }
 
@@ -46,32 +52,54 @@ export function trafficLight(
 
 export interface AccountActivity {
   accountId: string;
+  /** Estado da coleta, gravado pelo coletor da conta. */
+  connection: CloudAccountConnection;
+  /** Última coleta bem-sucedida da conta (com ou sem evento), ou `null` se nunca houve. */
+  lastCollectedAt: string | null;
   /** Horário do último alerta recebido da conta, ou `null` se nunca chegou nada. */
   lastEventAt: string | null;
 }
 
 export interface Coverage {
+  /** Contas no estado "Conectada": a última coleta deu certo. */
   connectedAccounts: number;
+  /** A coleta bem-sucedida mais recente entre todas as contas. */
+  lastCollectedAt: string | null;
   /** O evento mais recente entre todas as contas. */
   lastEventAt: string | null;
-  /** Contas sem evento há mais que o limite (ou que nunca mandaram nada), em ordem. */
+  /** Contas sem coleta bem-sucedida há mais que o limite (ou que nunca coletaram), em ordem. */
   silentAccounts: string[];
 }
 
+function latest(times: readonly (string | null)[]): string | null {
+  return times.reduce<string | null>(
+    (newest, time) =>
+      time !== null && (newest === null || Date.parse(time) > Date.parse(newest)) ? time : newest,
+    null,
+  );
+}
+
+/**
+ * Cobertura (fase 2): "conectada" é a última coleta bem-sucedida, não o último evento. Uma conta sem atividade, mas
+ * lida sem erro, não parece parada. O sinal de vida de cada conta é a coleta mais recente; o horário de um evento
+ * recebido também conta, porque o evento só chega por uma leitura que deu certo. É o único sinal das contas lidas
+ * pelo Wazuh, que não registra coleta por conta.
+ */
 export function coverage(
   accounts: readonly AccountActivity[],
   now: Date,
   thresholds: TowerThresholds = DEFAULT_TOWER_THRESHOLDS,
 ): Coverage {
   const limit = now.getTime() - thresholds.silentAfterHours * 60 * 60 * 1000;
-  const times = accounts
-    .flatMap((account) => (account.lastEventAt === null ? [] : [account.lastEventAt]))
-    .sort();
   return {
-    connectedAccounts: accounts.length,
-    lastEventAt: times[times.length - 1] ?? null,
+    connectedAccounts: accounts.filter((account) => account.connection === 'connected').length,
+    lastCollectedAt: latest(accounts.map((account) => account.lastCollectedAt)),
+    lastEventAt: latest(accounts.map((account) => account.lastEventAt)),
     silentAccounts: accounts
-      .filter((account) => account.lastEventAt === null || Date.parse(account.lastEventAt) < limit)
+      .filter((account) => {
+        const alive = latest([account.lastCollectedAt, account.lastEventAt]);
+        return alive === null || Date.parse(alive) < limit;
+      })
       .map((account) => account.accountId)
       .sort(),
   };

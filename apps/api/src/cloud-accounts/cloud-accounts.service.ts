@@ -32,6 +32,9 @@ const accountSelect = {
   pubsubSubscription: true,
   zones: true,
   lastEventAt: true,
+  connection: true,
+  connectionError: true,
+  lastCollectedAt: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -63,6 +66,10 @@ function toAccount(row: AccountRow, revealExternalId: boolean): CloudAccount {
     pubsubSubscription: row.pubsubSubscription,
     zones: row.zones,
     status: row.status,
+    // Gravados pelo coletor da conta: só o worker escreve, nunca o request.
+    connection: row.connection,
+    connectionError: row.connection === 'error' ? row.connectionError : null,
+    lastCollectedAt: row.lastCollectedAt?.toISOString() ?? null,
     // Gravado pelo sync de alertas (T5.3).
     lastEventAt: row.lastEventAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
@@ -181,6 +188,9 @@ export class CloudAccountsService {
       throw new ApiError(HttpStatus.BAD_REQUEST, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
     }
     await this.assertOriginsFree(auth, input);
+    // Outra assinatura é outra fonte: a conexão volta a "aguardando" até o coletor ler a nova.
+    const sourceChanged =
+      input.pubsubSubscription !== undefined && input.pubsubSubscription !== beforeRow.pubsubSubscription;
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
       data: {
@@ -189,6 +199,7 @@ export class CloudAccountsService {
         pubsubSubscription: input.pubsubSubscription,
         zones: input.zones,
         ...bucketData(input.buckets),
+        ...(sourceChanged && { connection: 'waiting', connectionError: null }),
       },
       select: accountSelect,
     });

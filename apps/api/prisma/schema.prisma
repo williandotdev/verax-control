@@ -239,37 +239,80 @@ enum CloudProvider {
   cloudflare
 }
 
+/// Estado da coleta de uma conta: `waiting` antes da primeira leitura bem-sucedida, `connected` quando a última deu
+/// certo e `error` quando a última falhou.
+enum CloudAccountConnection {
+  waiting
+  connected
+  error
+}
+
 /// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial é
 /// guardada: na AWS, a Verax assume o papel de leitura `VeraxControlReadOnly` com o ExternalId, gerado aqui; na
 /// GCP, o nó lê com a identidade dele, sem chave; o token do Cloudflare fica no cofre de segredos do nó. Cada
 /// conta pertence a um só cliente. A migration garante, por CHECK, que toda conta AWS tem ExternalId.
 model CloudAccount {
-  id                 String             @id @default(uuid(7)) @db.Uuid
-  tenantId           String             @db.Uuid
-  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  provider           CloudProvider      @default(aws)
+  id                 String                 @id @default(uuid(7)) @db.Uuid
+  tenantId           String                 @db.Uuid
+  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider           CloudProvider          @default(aws)
   /// 12 dígitos (AWS), ID do projeto (GCP, até 30) ou 32 hexadecimais (Cloudflare).
-  accountId          String             @db.VarChar(32)
+  accountId          String                 @db.VarChar(32)
   /// AWS: regiões monitoradas.
   regions            String[]
   /// AWS: ExternalId do papel de leitura.
-  externalId         String?            @db.VarChar(128)
+  externalId         String?                @db.VarChar(128)
   /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
-  cloudtrailBucket   String?            @db.VarChar(63)
-  guarddutyBucket    String?            @db.VarChar(63)
-  wafBucket          String?            @db.VarChar(63)
+  cloudtrailBucket   String?                @db.VarChar(63)
+  guarddutyBucket    String?                @db.VarChar(63)
+  wafBucket          String?                @db.VarChar(63)
   /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
-  pubsubSubscription String?            @db.VarChar(320)
+  pubsubSubscription String?                @db.VarChar(320)
   /// Cloudflare: zonas (domínios) monitoradas.
-  zones              String[]           @default([])
+  zones              String[]               @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
-  lastEventAt        DateTime?          @db.Timestamptz(3)
-  status             CloudAccountStatus @default(active)
-  createdAt          DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
+  lastEventAt        DateTime?              @db.Timestamptz(3)
+  /// Estado da coleta, gravado pelo coletor da conta. "Conectada" é a última leitura bem-sucedida, com ou sem evento.
+  connection         CloudAccountConnection @default(waiting)
+  /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
+  connectionError    String?                @db.VarChar(64)
+  /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento: o sinal de vida da conta na Torre.
+  lastCollectedAt    DateTime?              @db.Timestamptz(3)
+  status             CloudAccountStatus     @default(active)
+  createdAt          DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
+  cursors            CollectorCursor[]
 
   @@unique([provider, accountId])
   @@index([tenantId])
+}
+
+/// Cursor de um coletor (fase 2): até onde cada fluxo de cada conta já foi lido e quando ler de novo. Um por conta,
+/// fluxo e região. Dado de sistema, sem `tenantId` de propósito: o cliente da sessão nem alcança o model (o escopo
+/// recusa), e o estado que o cliente vê fica na `CloudAccount` (`connection`, `lastCollectedAt`).
+model CollectorCursor {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  cloudAccountId String       @db.Uuid
+  cloudAccount   CloudAccount @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  /// Fluxo lido, como `aws_cloudtrail` ou `cloudflare_audit`.
+  stream         String       @db.VarChar(32)
+  /// Região da AWS; vazio nos fluxos sem região.
+  region         String       @default("") @db.VarChar(32)
+  /// Horário do evento mais recente já processado. Só anda para a frente; null antes da primeira leitura.
+  cursorAt       DateTime?    @db.Timestamptz(3)
+  /// Continuação opaca da fonte (NextToken, cursor da API) quando a execução parou no teto de páginas.
+  continuation   String?      @db.VarChar(2048)
+  /// Próxima leitura: o intervalo do fluxo depois de um sucesso, o recuo depois de uma falha.
+  nextRunAt      DateTime     @default(now()) @db.Timestamptz(3)
+  lastSuccessAt  DateTime?    @db.Timestamptz(3)
+  /// Tipo do último erro, sem mensagem.
+  lastErrorKind  String?      @db.VarChar(64)
+  /// Falhas seguidas desde o último sucesso; definem o recuo.
+  failures       Int          @default(0)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@unique([cloudAccountId, stream, region])
+  @@index([stream, nextRunAt])
 }
 
 enum ProtectedResourceType {
