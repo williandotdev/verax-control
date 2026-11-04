@@ -72,19 +72,19 @@ O nó da Verax monitora só a GCP e o Cloudflare. Para isso não precisa do Wazu
 lê os logs direto do Pub/Sub e aplica as próprias regras de detecção. Tudo cabe numa **e2-micro**, que é gratuita em
 us-east1.
 
-| Recurso                                     | Para quê                                                                             |
-| ------------------------------------------- | ------------------------------------------------------------------------------------ |
-| Rede `verax-node-vpc`, sub-rede, Cloud NAT  | Rede própria. A VM não tem IP público: sai para a internet pelo NAT e ninguém entra. |
-| 2 regras de firewall                        | SSH só pelo IAP do Google; todo o resto que chega é recusado e registrado.           |
-| VM `verax-node` (e2-micro, 1 GB, Debian 12) | Onde rodam API, worker, banco e o túnel do Cloudflare. Tem 2 GB de memória de troca. |
-| Disco `verax-node` (30 GB padrão)           | Sistema e dados. Fica se a VM for apagada. Snapshot semanal guardado por 4 semanas.  |
-| Conta de serviço `verax-node`               | Identidade da VM, sem chave JSON. Só lê os logs e os segredos do nó.                 |
-| Sink em cada projeto monitorado             | Copia os logs de auditoria e os bloqueios do Cloud Armor para o tópico do nó.        |
-| Tópico e assinatura por projeto monitorado  | Fila dos logs. Guarda as mensagens por 7 dias se o nó parar.                         |
-| 2 segredos no Secret Manager (vazios)       | Senha do e-mail (Zoho) e token do túnel do Cloudflare. Gravados no passo 7.          |
-| Registro de imagens `verax-control`         | Imagens da API e das migrations, publicadas pelo GitHub Actions sem chave.           |
-| Bucket `<projeto>-verax-node-backups`       | Backups do banco. Privado e versionado; a VM cria e lê, mas não apaga.               |
-| Orçamento (opcional)                        | E-mail em 50%, 90% e 100% do valor do mês.                                           |
+| Recurso                                     | Para quê                                                                                                                                                                 |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Rede `verax-node-vpc`, sub-rede, Cloud NAT  | Rede própria. A VM não tem IP público: sai para a internet pelo NAT e ninguém entra.                                                                                     |
+| 2 regras de firewall                        | SSH só pelo IAP do Google; todo o resto que chega é recusado e registrado.                                                                                               |
+| VM `verax-node` (e2-micro, 1 GB, Debian 12) | Onde rodam API, worker, banco e o túnel do Cloudflare. Tem 2 GB de memória de troca.                                                                                     |
+| Disco `verax-node` (30 GB padrão)           | Sistema e dados. Fica se a VM for apagada. Snapshot semanal guardado por 4 semanas.                                                                                      |
+| Conta de serviço `verax-node`               | Identidade da VM, sem chave JSON. Só lê os logs e os segredos do nó.                                                                                                     |
+| Sink em cada projeto monitorado             | Copia os logs de auditoria e os bloqueios do Cloud Armor para o tópico do nó.                                                                                            |
+| Tópico e assinatura por projeto monitorado  | Fila dos logs. Guarda as mensagens por 7 dias se o nó parar.                                                                                                             |
+| 2 segredos no Secret Manager (vazios)       | Senha do e-mail (Zoho) e token do túnel do Cloudflare. Gravados no passo 7. Com `turnstile_secret = true`, um terceiro: a chave secreta do Turnstile (desafio no login). |
+| Registro de imagens `verax-control`         | Imagens da API e das migrations, publicadas pelo GitHub Actions sem chave.                                                                                               |
+| Bucket `<projeto>-verax-node-backups`       | Backups do banco. Privado e versionado; a VM cria e lê, mas não apaga.                                                                                                   |
+| Orçamento (opcional)                        | E-mail em 50%, 90% e 100% do valor do mês.                                                                                                                               |
 
 **Custo estimado:** de R$ 5 a 15 por mês, mais o IP do Cloud NAT (cerca de R$ 20 por mês, a conferir na fatura). A
 e2-micro, os 30 GB de disco padrão, o Pub/Sub, os segredos e 5 GB do bucket ficam no nível gratuito da GCP em
@@ -281,6 +281,7 @@ homologação):
 ```bash
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-smtp-password --data-file=- && unset VALOR
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-cloudflare-tunnel-token --data-file=- && unset VALOR
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-turnstile-secret-key --data-file=- && unset VALOR
 ```
 
 - **Senha do e-mail (opcional):** o nó funciona sem e-mail, porque as contas nascem com senha temporária. Só com
@@ -288,6 +289,10 @@ read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-
   Senhas específicas de aplicativo); a redefinição de senha pelo link sai por ela.
 - **Token do túnel:** no Cloudflare, em Zero Trust → Networks → Tunnels, crie um túnel com o nome do nó e copie
   o token do comando de instalação (o texto longo depois de `--token`).
+- **Chave secreta do Turnstile (opcional; só com `turnstile_secret = true` no `main.tf`):** no Cloudflare, em
+  Turnstile → Add widget, modo Managed, com o hostname do painel. A chave do site (pública) vai no `node.conf`
+  (`TURNSTILE_SITE_KEY`), e é ela que liga o desafio no nó; o roteiro completo está em `docs/runbooks/no-verax.md`.
+  O nó da Verax ainda não tem o cofre: ligar é uma mudança no lugar (o `plan` mostra só o cofre e a permissão).
 
 Se ainda não tiver algum deles, deixe para depois: o nó só precisa deles na instalação do pacote. Os cofres
 `credentials-key` e `admin-bootstrap` da homologação ficam vazios: quem grava neles é a própria VM.

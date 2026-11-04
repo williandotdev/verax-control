@@ -105,7 +105,12 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x -S style infra/node/bin/*.sh
+        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
+      - name: Arquivos de ambiente do nó (start.sh render com o gcloud simulado)
+        # O api.env byte a byte: sem TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai como antes (e o cofre do
+        # Turnstile nem é lido); com a chave do site, a secreta vem do cofre (vazio: sobe sem o desafio e avisa; sem
+        # permissão ou com quebra de linha: a partida para). Roda sem root, sem Docker e sem a GCP.
+        run: bash infra/node/tests/start-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
         # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e

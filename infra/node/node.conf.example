@@ -33,3 +33,7 @@ NODE_PROFILE=lean
 # IAM da AWS do cliente libera. Vazio no nó da Verax, que sai pelo IP automático do NAT.
 NODE_EGRESS_IPS=
 # NODE_EGRESS_IPS=203.0.113.10/32
+# Cloudflare Turnstile no login e no "esqueci minha senha" do painel (opcional). A chave do site (pública) fica aqui e
+# é o interruptor: sem a linha, nada muda. Com ela, o start.sh lê a chave secreta do cofre `<prefixo>-turnstile-secret-key`
+# (criado pelo Terraform com `turnstile_secret = true`); enquanto o cofre estiver vazio, o nó sobe sem o desafio e avisa.
+# TURNSTILE_SITE_KEY=0x4AAAAAAAexemploDeChave

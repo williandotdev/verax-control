@@ -156,9 +156,10 @@ run "nat_e_extras_desligados" {
     error_message = "O nó da Verax ganhou o alerta de fila parada, desligado em envs/verax."
   }
 
+  # Também sem o cofre do Turnstile: `turnstile_secret` fica no padrão (falso) em envs/verax até a mudança no lugar.
   assert {
     condition     = keys(google_secret_manager_secret.node) == ["cloudflare-tunnel-token", "smtp-password"] && google_secret_manager_secret.node["smtp-password"].secret_id == "verax-node-smtp-password"
-    error_message = "Os cofres de antes (SMTP e túnel) mudaram de nome."
+    error_message = "Os cofres de antes (SMTP e túnel) mudaram de nome, ou o nó da Verax ganhou o cofre do Turnstile sem a mudança no lugar."
   }
 }
 
