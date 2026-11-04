@@ -58,7 +58,7 @@ jobs:
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
-            infra/gcp/envs/verax infra/gcp/envs/homolog-sp; do
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
@@ -77,10 +77,19 @@ jobs:
       - name: Testes dos ambientes (provider simulado, sem credenciais)
         # Homologação: a primeira subida num projeto novo (o `plan` não lê o projeto antes de o `apply` ligar as APIs).
         # Nó da Verax: o `terraform.tfvars` precisa de todas as variáveis da primeira subida (sem a conta de
-        # faturamento, o `plan` apaga o orçamento). O `init` sem backend é o da validação, acima.
+        # faturamento, o `plan` apaga o orçamento). Plano de controle: os papéis de cada conta um a um, nada anônimo
+        # no cp-worker nem no Job, zero instâncias mínimas, a imagem que o workflow troca sem o Terraform desfazer, a
+        # primeira subida sem os serviços, o Firestore e os alertas. O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
           terraform -chdir=infra/gcp/envs/verax test
+          terraform -chdir=infra/gcp/envs/control-plane test
+          # Os segredos do plano de controle nascem vazios: nenhuma versão de segredo (regional ou não) passa pelo
+          # Terraform. Só a declaração do recurso conta; um comentário que cite o nome não dispara.
+          if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' infra/gcp/envs/control-plane/*.tf; then
+            echo "O plano de controle não grava versão de segredo pelo Terraform (secrets.tf)." >&2
+            exit 1
+          fi
       - name: tflint
         # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
         env:
@@ -110,6 +119,14 @@ jobs:
         # Os cenários de tests/start-test.sh: o tópico do sink de projeto de cliente só vai para a API com o projeto e o
         # prefixo do node.conf no formato do módulo; fora dele, a API sobe sem o tópico. Roda sem root e sem Docker.
         run: bash infra/node/tests/start-test.sh
+      - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
+        # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
+        # sem o arquivo das chaves nem o compose.vault.yaml), a primeira instalação de um nó de cliente (a chave nasce
+        # e vai direto para o Secret Manager; as privadas chegam ao worker só pelo arquivo do tmpfs, nunca pelo
+        # worker.env), a rotação com versões desativadas e destruídas, 101 versões, o cofre sem versão ativa e sem
+        # versão nenhuma (cada aviso com a saída certa), o segredo inexistente, a rede fora do ar e um conteúdo que não
+        # é chave, na versão corrente e numa antiga. Roda sem root e sem tocar na máquina.
+        run: bash infra/node/tests/vault-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
         # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
@@ -133,6 +150,8 @@ jobs:
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
           } >images.env
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
+          # Com o cofre de credenciais (CREDENTIALS_VAULT=true), o start.sh soma o compose.vault.yaml.
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
       - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
         run: |
           # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
@@ -163,6 +182,67 @@ jobs:
           jq -e '[.services | to_entries[] | select(.key != "postgres") | .value
             | select(.read_only != true or (.cap_drop | index("ALL")) == null
               or (.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+          # Sem core dump na API e no worker (a memória deles tem as chaves do cofre de credenciais). O Compose escreve o
+          # limite 0 como um objeto vazio (soft e hard 0); um valor diferente de 0 apareceria nele.
+          jq -e '.services | .api.ulimits.core == {} and .worker.ulimits.core == {}' <<<"$config"
+      - name: Cofre de credenciais (as chaves privadas chegam ao worker por arquivo só leitura, e só a ele)
+        # O ambiente de um contêiner fica gravado no disco (configuração do Docker); o conteúdo de um volume montado,
+        # não. O compose.vault.yaml monta só no worker, só leitura, a pasta que o start.sh escreve em /run/verax/vault
+        # (a pasta, e não o arquivo: a origem de um bind mount que falta vira uma pasta criada pelo Docker, e um arquivo
+        # dentro de uma pasta montada pode ser trocado de uma vez), no caminho WORKER_VAULT_MOUNT; o arquivo das chaves
+        # fica dentro dela, em WORKER_KEYS_MOUNT, que o start.sh põe em CREDENTIALS_PRIVATE_KEYS_FILE. O worker continua
+        # endurecido.
+        run: |
+          # Linha inteira e texto literal (-xF): o `$` é o do shell do start.sh (escapado em aspas duplas), não uma
+          # expansão daqui nem uma âncora.
+          grep -qxF 'run=/run/verax' infra/node/bin/start.sh
+          grep -qxF "WORKER_VAULT=\$run/vault" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS=\$WORKER_VAULT/worker-keys" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS_MOUNT=\$WORKER_VAULT_MOUNT/worker-keys" infra/node/bin/start.sh
+          mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
+          [[ $mount == /* ]]
+          config=$(docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --format json)
+          jq -e --arg mount "$mount" '.services.worker.volumes
+            | any(.type == "bind" and .source == "/run/verax/vault" and .target == $mount and .read_only == true)' <<<"$config"
+          jq -e --arg mount "$mount" '[.services[] | (.volumes // [])[]
+            | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+          jq -e '.services.worker | .read_only == true and (.cap_drop | index("ALL")) != null' <<<"$config"
+          # Nada do cofre entra pelo ambiente do worker: só o caminho do arquivo e a versão corrente. A única variável
+          # com PRIVATE_KEY no nome que o start.sh escreve é a do caminho (o worker recusa qualquer outra).
+          if grep -Eio '[A-Z0-9_]*PRIVATE_?KEY[A-Z0-9_]*=' infra/node/bin/start.sh | grep -v '^CREDENTIALS_PRIVATE_KEYS_FILE=$'; then
+            echo 'O start.sh escreve uma variável com chave privada: só CREDENTIALS_PRIVATE_KEYS_FILE pode ter PRIVATE_KEY no nome.' >&2
+            exit 1
+          fi
+      - name: O worker sobe com a pasta do cofre ausente (o Docker a cria) e lê o que o start.sh escreve nela depois
+        # A origem do bind mount do compose.vault.yaml é uma pasta. Ausente (a VM reiniciou sem a parada, e o Docker
+        # reiniciou o worker antes do verax-node.service), o Docker a cria vazia e o contêiner sobe; o arquivo que o
+        # start.sh escreve nela em seguida (write_worker_keys, repetido aqui passo a passo) aparece dentro do contêiner,
+        # só leitura, legível pelo usuário do worker e por mais ninguém. Roda o serviço de verdade, com os dois arquivos
+        # do Compose, trocando a imagem da API pela base dela (a mesma de scripts/test-api-image.sh) e o comando por
+        # um `sh`.
+        env:
+          BASE_IMAGE: node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
+        run: |
+          mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
+          uid=$(sed -n 's/^WORKER_UID=//p' infra/node/bin/start.sh)
+          [[ $mount == /* && $uid =~ ^[0-9]+$ ]]
+          { echo "API_IMAGE=$BASE_IMAGE"; echo "MIGRATE_IMAGE=$BASE_IMAGE"; } >base.env
+          compose() { docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file base.env "$@"; }
+          sudo rm -rf /run/verax/vault
+          # Pasta ausente: o worker sobe, e a pasta aparece vazia nele e na VM (criada pelo Docker).
+          compose run --rm -T --no-deps --entrypoint sh worker -c "test -d $mount && test -z \"\$(ls -A $mount)\""
+          test -d /run/verax/vault
+          # O que o start.sh faz na partida seguinte (write_worker_keys), com a pasta que o Docker deixou.
+          sudo install -d -m 0750 -o 0 -g "$uid" /run/verax/vault
+          file=$(sudo mktemp /run/verax/vault/.worker-keys.XXXXXX)
+          echo '1:exemplo' | sudo tee "$file" >/dev/null
+          sudo chmod 0400 "$file"
+          sudo chown "$uid:$uid" "$file"
+          sudo mv -fT "$file" /run/verax/vault/worker-keys
+          # O worker lê o arquivo e não escreve na pasta; outro usuário não lê.
+          compose run --rm -T --no-deps --entrypoint sh --user "$uid:$uid" worker -c "test \"\$(cat $mount/worker-keys)\" = 1:exemplo && ! touch $mount/x 2>/dev/null"
+          compose run --rm -T --no-deps --entrypoint sh --user 65534:65534 worker -c "! cat $mount/worker-keys 2>/dev/null"
+          compose down
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)
