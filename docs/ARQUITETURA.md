@@ -86,7 +86,9 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
   - a operação da VM é pelo túnel do IAP com OS Login, auditado, sem IP público e sem porta aberta;
   - não há dashboard do Wazuh: a operação lê os alertas pelo próprio produto ou pela API do indexer, de dentro da VM;
   - só o worker alcança o servidor de metadados da VM, que dá acesso aos segredos. O manager e o indexer, que
-    processam log não confiável, não alcançam.
+    processam log não confiável, não alcançam;
+  - a única porta que um nó pode abrir é a dos agentes do Wazuh nas instâncias do cliente (TCP 1514 e 1515), desligada
+    por padrão e só para as faixas de IP do cliente (seção "Agentes nas instâncias do cliente").
 - **Disponibilidade:** uma VM só, sem alta disponibilidade. Se ela parar, os logs continuam onde estão e o Wazuh
   retoma de onde parou. Tem backup diário do banco e snapshot do disco.
 
@@ -337,6 +339,71 @@ no cofre do nó. A recomendação ao cliente é restringir o token ao IP de saí
 O Logpush fica fora da v1: exige permissão de escrita (`Logs Edit`) e um destino que o Cloudflare possa gravar. Pode
 voltar depois como modo completo, sem amostragem.
 
+## Agentes nas instâncias do cliente
+
+_(no código, desligado por padrão em cada nó; o aceite depende da homologação no ar. Roteiro para ligar:
+`docs/runbooks/onboarding-cliente.md`, seção 6)_
+
+O cliente instala o agente do Wazuh 4.14.9 nas VMs e EC2 dele, e os agentes falam com o manager do nó dedicado:
+integridade de arquivos, inventário, vulnerabilidades pelo inventário e avaliação de configuração (SCA). Liga nó a nó,
+em dois interruptores que andam juntos: `wazuh_agents` no Terraform do nó e `WAZUH_AGENTS=true` no `node.conf`, só no
+perfil `standard`. Desligado, nada muda: o Terraform não cria nada, o `install.sh` não instala nada, os arquivos de
+ambiente e o projeto do Compose saem byte a byte como antes e o nó não publica porta nenhuma (os testes e o CI conferem).
+
+```
+instância do cliente (agente) ──TCP 1514 e 1515──► IP fixo de entrada (regra de encaminhamento da GCP, só das faixas
+                                                    do cliente) ──► VM do nó, sem IP externo ──► Docker ──► manager
+host do nó (timer, a cada minuto) ──docker exec──► API do manager (localhost:55000) ──► /run/verax/wazuh-agents/agents.json
+worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente do nó) ──► API ──► painel (Agentes)
+```
+
+- **Entrada sem tirar a saída do Cloud NAT.** Um IP externo na VM faria o NAT um para um por ele e tiraria a VM do
+  Cloud NAT (docs.cloud.google.com/nat/docs/public-nat): a saída do nó mudaria de IP, e a chave da AWS do cliente, que
+  só vale do IP reservado do NAT, pararia. Por isso o IP fixo é de uma regra de encaminhamento (protocol forwarding)
+  para a VM, nas portas 1514-1515: o IP de origem do agente chega preservado, a resposta sai com o IP da regra, e o que
+  o nó inicia continua saindo pelo NAT (`infra/gcp/modules/node/agents.tf`).
+- **Firewall:** uma regra de entrada só com as faixas que o cliente informa (`wazuh_agents_sources`, IPv4 de /16 a
+  /32, no endereço da rede; nada de `0.0.0.0/0`), só TCP 1514 e 1515, só para a VM do nó, com registro. Sem faixa, a
+  regra não existe, a `deny-ingress` recusa tudo e o painel diz que a liberação está pendente.
+- **No nó:** o `compose.wazuh-agents.yaml`, que o `start.sh` soma só com o interruptor, publica no manager só a
+  1514/tcp e a 1515/tcp. O manager continua nas mesmas redes (`wazuh` e `wazuh-egress`): não divide rede com a API nem
+  com o banco.
+- **Registro (authd, 1515) só com senha** (`use_password`), gerada por nó pelo `install.sh` como as outras senhas
+  internas (`/var/lib/verax/secrets/wazuh-agents-enrollment`, 32 letras e dígitos) e entregue ao manager pelo gerador
+  da configuração (`etc/authd.pass`). A API a recebe pelo ambiente e a mostra só a quem administra o cliente
+  (`agents:enroll`), só na resposta das instruções, com vaga no limite do nó; a trilha de auditoria registra cada
+  consulta às instruções e se a senha foi mostrada, nunca a senha, e o logger a oculta por valor.
+- **O agente confere o manager antes de mandar a senha:** o `install.sh` emite uma CA só dos agentes e o certificado do
+  authd com o IP fixo no CN e no SAN (refeitos se o IP mudar; a chave da CA é descartada). A CA vai no script de
+  instalação (`WAZUH_REGISTRATION_CA`). Conferido num manager 4.14.9 avulso: o TLS fecha com o IP certo e é recusado
+  com outro (`infra/wazuh/scripts/test-agents.sh`).
+- **Manager endurecido** (`infra/wazuh/config/manager/agents/ossec-agents.conf`, opções da referência 4.14): resposta
+  ativa desligada no manager e em todos os agentes (`<active-response><disabled>yes</disabled>`), nenhum comando de
+  resposta definido; agente mais novo que o manager recusado; o agent.conf do grupo `default` só com FIM, inventário,
+  rootcheck, SCA e limite de eventos por agente (`client_buffer`, 200 por segundo), sem coleta por comando nem módulo
+  de comando (os `remote_commands` do agente ficam no padrão, 0); detecção de vulnerabilidades ligada, sem indexar o
+  estado (as detecções viram alertas). Os pacotes do script são os oficiais da versão do manager, conferidos pelo
+  SHA-512 publicado pela Wazuh, sem acrescentar repositório.
+- **Como o painel sabe dos agentes sem falar com o manager:** nem a API nem o worker dividem rede com ele. O host, que
+  já fala com o contêiner do manager pelo Docker, pede a lista à API dele (`localhost:55000`, usuário `wazuh-wui`, a
+  senha pela entrada padrão do curl) a cada minuto, só com os campos do painel, e grava o arquivo em `/run/verax`
+  (memória), com teto de tamanho. O worker o lê montado só leitura, confere cada campo com zod (a resposta é entrada
+  não confiável), grava em `WazuhAgent` no cliente do nó (`WAZUH_AGENTS_TENANT`) e tira o que saiu do manager; a API lê
+  pelo escopo da sessão. O indexer não serve: sem o dashboard, ninguém grava o estado dos agentes em
+  `wazuh-monitoring-*`, e o `wazuh-states-*` só traria o inventário, não o estado nem o último sinal.
+- **Limite por nó:** `WAZUH_AGENTS_MAX` (padrão 50, até 500). O Wazuh 4.14 não tem opção de limite de agentes (as
+  referências de `auth` e `remote` não trazem nenhuma): o limite é do produto, e no limite a senha deixa de sair no
+  painel. Quem já tem a senha ainda registraria; a troca da senha (roteiro) fecha isso.
+- **Memória:** o manager segue com 1,5 GiB (a soma dos limites do nó continua em cerca de 6 GiB). Para 50 agentes, o
+  remoted e o analysisd pesam pouco; o que pode pesar é a detecção de vulnerabilidades (o banco do feed da CTI e as
+  varreduras). O ensaio da homologação mede: se passar, o caminho é subir o manager e baixar o heap do indexer, ou o
+  plano B da VM.
+- **Alertas dos agentes:** chegam ao indexer como os outros, mas o sync de achados atribui alerta a cliente só pela
+  conta AWS (os dos agentes caem na fila sem dono). Atribuí-los ao cliente do nó é a próxima etapa.
+- **Fora desta entrega:** o agente com o cloudflared de cada instância (túnel TCP, sem IP de entrada, mas um processo
+  a mais em cada máquina do cliente e um token por instância) e a VPN para o Enterprise (rede privada até o nó, sem
+  porta na internet).
+
 ## Custo estimado por nó
 
 Estimativa por mês, a conferir na calculadora do Google. Premissas: câmbio de R$ 5,4935; e2-standard-2 a US$ 77,65
@@ -355,6 +422,14 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
 - **`lean`:** de R$ 5 a 15 por mês, pelo `infra/gcp/GUIA.md`. Essa estimativa não conta o IP do Cloud NAT (cerca de
   R$ 20), a conferir na fatura.
 - **Túnel do Cloudflare e Firebase Hosting:** sem custo nesta escala.
+- **Agentes nas instâncias do cliente** (só nos nós que ligam): a regra de encaminhamento da GCP custa US$ 0,025 por
+  hora para as 5 primeiras do projeto e região e US$ 0,01 por hora para cada outra (preço dos EUA na página oficial,
+  cloud.google.com/load-balancing/pricing; São Paulo tem SKU própria, "Forwarding Rule Minimum/Additional for São
+  Paulo", a conferir na calculadora). Como todos os nós de clientes ficam no mesmo projeto, o primeiro nó com agentes
+  custa cerca de US$ 18 por mês (R$ 100) e cada nó a partir do sexto, cerca de US$ 7,30 (R$ 40). O IP fixo preso a uma
+  regra de encaminhamento não é cobrado (cloud.google.com/vpc/network-pricing, "External IP address pricing"). Somam-se
+  o dado de entrada processado (US$ 0,008/GiB nos EUA; 50 agentes mandam de 2 a 75 GiB por mês) e a saída das
+  respostas, pequena. Um IP externo na VM custaria US$ 0,005 por hora (R$ 20), mas tiraria a saída do Cloud NAT.
 - **Na conta AWS do cliente** (fora da tabela): saída do S3 para a internet (cerca de US$ 0,15/GB em sa-east-1, a
   conferir), GETs e KMS. Com o CloudTrail compactado abaixo de 5 GB por mês, fica abaixo de US$ 1. O log completo do
   WAF pode pesar, e por isso ele é opcional.
