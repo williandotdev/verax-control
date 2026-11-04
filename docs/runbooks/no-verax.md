@@ -152,7 +152,9 @@ infra/node/bin/deploy.sh COMMIT caminho/para/node.conf
 ```
 
 `COMMIT` é o commit da `main` cujas imagens você quer rodar; ele aparece no resumo do workflow `Imagens do nó`. Para
-atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
+atualizar, repita com o commit novo; para voltar, repita com o anterior. O registro guarda a versão no ar, as 3
+versões mais recentes de cada imagem e tudo o que tem menos de 30 dias; para voltar mais longe, reverta o commit na
+`main`, que publica uma imagem nova. O `deploy.sh` faz quatro coisas:
 
 1. **Confere as imagens.** Com `gh attestation verify`, confere a assinatura da atestação de origem de cada imagem e
    quem a assinou: o workflow `Imagens do nó` deste repositório, na `main`, nesse commit, num executor do GitHub.
@@ -164,6 +166,10 @@ atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
    `ssh-keygen -R verax-node -f ~/.ssh/known_hosts_verax-node` e rode de novo. Fora disso, a mensagem é um alerta:
    não apague a chave sem entender por que ela mudou.
 3. **Instala pelo digest conferido.** A VM nunca confia em tag do registro.
+4. **Marca a versão no ar.** Grava a tag `no-verax-node` nas duas imagens instaladas (ela sai da versão anterior). A
+   limpeza do registro guarda toda versão com tag `no-`, por mais antiga que seja: o nó pode ficar meses numa versão
+   enquanto a `main` publica outras, e cada partida dele baixa as imagens de novo (`compose pull`). Se essa etapa
+   falhar, o nó já está instalado: o erro mostra o comando para gravar a tag à mão.
 
 A instalação instala o Docker pelo repositório oficial, com a chave conferida. Na primeira vez, também gera a CA e o
 certificado do banco e as senhas internas. Em todas as vezes, (re)inicia o serviço.
