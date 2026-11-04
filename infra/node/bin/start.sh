@@ -189,8 +189,8 @@ credentials_vault() {
     else
       remedy="Toda versão que existe foi destruída (${destroyed[*]}): grave uma chave nova (docs/runbooks/no-verax.md; as credenciais precisam ser coladas de novo)"
     fi
-    echo "AVISO: o cofre de credenciais ($secret) não tem nenhuma versão ativa: a API e o worker sobem sem ele, e a" \
-      "chave da AWS e o token do Cloudflare não podem ser gravados nem lidos. $remedy e reinicie:" \
+    echo "AVISO: o cofre de credenciais ($secret) não tem nenhuma versão ativa: a API e o worker sobem sem ele, e o" \
+      "token do Cloudflare não pode ser gravado nem lido. $remedy e reinicie:" \
       "sudo systemctl restart verax-node" >&2
     write_worker_keys
     return 0
@@ -408,8 +408,8 @@ render() {
     echo "AVISO: VERAX_GCP_PROJECT ou VERAX_SECRET_PREFIX fora do formato em /etc/verax/node.conf: a API sobe sem o" \
       "tópico do sink de projeto de cliente (Contas cloud mostra o comando com o tópico a preencher)." >&2
   fi
-  # IP de saída do nó (o IP fixo do NAT, no perfil standard): Contas cloud o mostra como o filtro de IP recomendado
-  # para o token do Cloudflare. Não é segredo. Vai só no formato que o install.sh confere (IPv4 com /32, separados por
+  # IP de saída do nó (o IP fixo do NAT, no perfil standard): Contas cloud o mostra como o `NodeEgressIps` da pilha do
+  # papel de leitura da AWS e o filtro de IP recomendado para o token do Cloudflare. Não é segredo. Vai só no formato que o install.sh confere (IPv4 com /32, separados por
   # vírgula), o mesmo que a API aceita: com um node.conf editado depois fora dele, a variável fica de fora, com o aviso,
   # e a API sobe mesmo assim (a tela recomenda o filtro sem mostrar o IP).
   local egress=()
@@ -421,6 +421,30 @@ render() {
     else
       echo "AVISO: NODE_EGRESS_IPS fora do formato em /etc/verax/node.conf: a API sobe sem o IP de saída do nó" \
         "(Contas cloud recomenda o filtro de IP do token do Cloudflare sem mostrar o IP)." >&2
+    fi
+  fi
+  # Papel de leitura sem chave da AWS (PR-V3'): o ID único da conta de serviço do nó no Google e o audience do token,
+  # os valores que Contas cloud mostra para a pilha do cliente (com o IP de saída acima). Nenhum é segredo. Cada um vai
+  # só quando o node.conf tem a linha, e só no formato que o install.sh, a API e o template aceitam (21 dígitos; https,
+  # host em minúsculas e caminho sem curinga): fora dele, a variável fica de fora, com o aviso, e a API sobe mesmo
+  # assim (sem o ID, a tela o pede à Verax; sem o audience, vale o padrão do template). Sem nenhum dos dois, o api.env
+  # sai como antes.
+  local aws_reader=()
+  if [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
+    if [[ $NODE_SA_UNIQUE_ID =~ ^[0-9]{21}$ ]]; then
+      aws_reader+=("NODE_SA_UNIQUE_ID=$NODE_SA_UNIQUE_ID")
+    else
+      echo "AVISO: NODE_SA_UNIQUE_ID fora do formato em /etc/verax/node.conf: a API sobe sem o ID da conta de serviço" \
+        "do nó (Contas cloud não o mostra para a pilha da AWS)." >&2
+    fi
+  fi
+  if [[ -n ${AWS_WEB_IDENTITY_AUDIENCE:-} ]]; then
+    local audience_pattern='^https://[a-z0-9.-]+(/[A-Za-z0-9._-]+)*$'
+    if ((${#AWS_WEB_IDENTITY_AUDIENCE} <= 256)) && [[ $AWS_WEB_IDENTITY_AUDIENCE =~ $audience_pattern ]]; then
+      aws_reader+=("AWS_WEB_IDENTITY_AUDIENCE=$AWS_WEB_IDENTITY_AUDIENCE")
+    else
+      echo "AVISO: AWS_WEB_IDENTITY_AUDIENCE fora do formato em /etc/verax/node.conf: a API sobe com o audience" \
+        "padrão do template." >&2
     fi
   fi
   # Turnstile (desafio no login e no "esqueci minha senha" do painel): a chave do site no node.conf é o interruptor.
@@ -464,6 +488,7 @@ render() {
     "${indexer[@]}" \
     "${sink_topic[@]}" \
     "${egress[@]}" \
+    "${aws_reader[@]}" \
     "${turnstile[@]}" \
     "${agents_api[@]}" \
     "${vault_api[@]}" \

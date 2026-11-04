@@ -20,6 +20,7 @@ import {
 import {
   type CredentialBinding,
   CloudflareToken,
+  CREDENTIAL_KIND_PROVIDER,
   CredentialVaultError,
   credentialBinding,
   envelopeVersion,
@@ -28,7 +29,6 @@ import {
   open,
   reseal,
   seal,
-  StaticAwsCredentials,
 } from './credential-vault.js';
 
 // Chaves e segredos gerados na hora: nenhum valor real, nada fixo no repositório.
@@ -41,9 +41,7 @@ const privatePem64 = (key: TestKey) =>
   Buffer.from(key.privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64');
 const publicPem64 = (key: TestKey) =>
   Buffer.from(key.publicKey.export({ type: 'spki', format: 'pem' })).toString('base64');
-const awsSecret = () => randomBytes(30).toString('base64');
 const cloudflareToken = () => randomBytes(30).toString('base64url');
-const accessKeyId = (suffix = 'WXYZ') => `AKIA${'Q7'.repeat(6)}${suffix}`;
 
 function vaultError(action: () => unknown): string {
   try {
@@ -63,7 +61,6 @@ describe('cofre de credenciais', () => {
   let onlyV1: VaultKeyring;
   let bothCurrentV2: VaultKeyring;
   let onlyV2: VaultKeyring;
-  let aws: CredentialBinding;
   let cloudflare: CredentialBinding;
 
   beforeAll(() => {
@@ -74,45 +71,32 @@ describe('cofre de credenciais', () => {
     onlyV1 = parsePrivateKeys(`1:${privatePem64(v1)}`, 1);
     bothCurrentV2 = parsePrivateKeys(`1:${privatePem64(v1)}\n2:${privatePem64(v2)}`, 2);
     onlyV2 = parsePrivateKeys(`2:${privatePem64(v2)}`, 2);
-    const tenantId = randomUUID();
-    aws = credentialBinding(
-      { id: randomUUID(), tenantId, provider: 'aws', accountId: '111111111111' },
-      'aws_access_key',
-    );
     cloudflare = credentialBinding(
-      { id: randomUUID(), tenantId, provider: 'cloudflare', accountId: 'a'.repeat(32) },
+      { id: randomUUID(), tenantId: randomUUID(), provider: 'cloudflare', accountId: 'a'.repeat(32) },
       'cloudflare_api_token',
     );
   });
 
-  it('cifra e abre a chave da AWS e o token do Cloudflare; o envelope leva a versão da chave', () => {
-    const secret = awsSecret();
-    const sealed = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), secret));
+  it('cifra e abre o token do Cloudflare; o envelope leva a versão da chave', () => {
+    const token = cloudflareToken();
+    const sealed = seal(publicV1, cloudflare, new CloudflareToken(token));
     expect(sealed.keyVersion).toBe(1);
     expect(sealed.ciphertext).toMatch(/^v1:[A-Za-z0-9+/]{512}$/);
-    expect(sealed.ciphertext).not.toContain(secret);
-    const opened = open(onlyV1, aws, sealed.ciphertext);
-    expect(opened).toBeInstanceOf(StaticAwsCredentials);
-    expect((opened as StaticAwsCredentials).identity()).toEqual({
-      accessKeyId: accessKeyId(),
-      secretAccessKey: secret,
-    });
-    expect((opened as StaticAwsCredentials).keyIdSuffix).toBe('WXYZ');
-
-    const token = cloudflareToken();
-    const sealedToken = seal(publicV1, cloudflare, new CloudflareToken(token));
-    const openedToken = open(onlyV1, cloudflare, sealedToken.ciphertext);
-    expect(openedToken).toBeInstanceOf(CloudflareToken);
-    expect((openedToken as CloudflareToken).value()).toBe(token);
+    expect(sealed.ciphertext).not.toContain(token);
+    const opened = open(onlyV1, cloudflare, sealed.ciphertext);
+    expect(opened).toBeInstanceOf(CloudflareToken);
+    expect(opened.value()).toBe(token);
   });
 
   it('o mesmo segredo cifrado duas vezes dá textos diferentes (OAEP é aleatório)', () => {
-    const credentials = new StaticAwsCredentials(accessKeyId(), awsSecret());
-    expect(seal(publicV1, aws, credentials).ciphertext).not.toBe(seal(publicV1, aws, credentials).ciphertext);
+    const token = new CloudflareToken(cloudflareToken());
+    expect(seal(publicV1, cloudflare, token).ciphertext).not.toBe(
+      seal(publicV1, cloudflare, token).ciphertext,
+    );
   });
 
   it('a API não decifra: a chave pública não abre o texto e não entra no lugar das privadas', () => {
-    const sealed = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+    const sealed = seal(publicV1, cloudflare, new CloudflareToken(cloudflareToken()));
     const body = Buffer.from(sealed.ciphertext.slice(3), 'base64');
     // O que a API tem é só a pública: o RSA não decifra com ela.
     expect(() =>
@@ -121,7 +105,7 @@ describe('cofre de credenciais', () => {
           key: publicV1.key,
           padding: constants.RSA_PKCS1_OAEP_PADDING,
           oaepHash: 'sha256',
-          oaepLabel: oaepLabel(aws),
+          oaepLabel: oaepLabel(cloudflare),
         },
         body,
       ),
@@ -130,27 +114,28 @@ describe('cofre de credenciais', () => {
     expect(() => parsePrivateKeys(`1:${publicPem64(v1)}`, 1)).toThrow(CredentialKeyError);
   });
 
-  it('a linha copiada para outro cliente, outra conta, outro tipo ou outro ID no provedor não abre', () => {
-    const sealed = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+  it('a linha copiada para outro cliente, outra conta ou outro ID no provedor não abre', () => {
+    const sealed = seal(publicV1, cloudflare, new CloudflareToken(cloudflareToken()));
     const others: CredentialBinding[] = [
-      { ...aws, tenantId: randomUUID() },
-      { ...aws, cloudAccountId: randomUUID() },
-      { ...aws, kind: 'cloudflare_api_token' },
-      { ...aws, accountId: '222222222222' },
+      { ...cloudflare, tenantId: randomUUID() },
+      { ...cloudflare, cloudAccountId: randomUUID() },
+      { ...cloudflare, accountId: 'b'.repeat(32) },
     ];
     for (const binding of others) {
       expect(vaultError(() => open(onlyV1, binding, sealed.ciphertext))).toBe('decrypt_failed');
     }
     // A amarração certa continua abrindo.
-    expect(open(onlyV1, aws, sealed.ciphertext)).toBeInstanceOf(StaticAwsCredentials);
+    expect(open(onlyV1, cloudflare, sealed.ciphertext)).toBeInstanceOf(CloudflareToken);
   });
 
   it('texto adulterado, cortado ou fora do envelope não abre', () => {
-    const { ciphertext } = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+    const { ciphertext } = seal(publicV1, cloudflare, new CloudflareToken(cloudflareToken()));
     const body = Buffer.from(ciphertext.slice(3), 'base64');
     body[100] = (body[100] ?? 0) ^ 0x01;
-    expect(vaultError(() => open(onlyV1, aws, `v1:${body.toString('base64')}`))).toBe('decrypt_failed');
-    expect(vaultError(() => open(onlyV1, aws, ciphertext.slice(0, -8)))).toBe('decrypt_failed');
+    expect(vaultError(() => open(onlyV1, cloudflare, `v1:${body.toString('base64')}`))).toBe(
+      'decrypt_failed',
+    );
+    expect(vaultError(() => open(onlyV1, cloudflare, ciphertext.slice(0, -8)))).toBe('decrypt_failed');
     for (const envelope of [
       ciphertext.slice(3),
       `v0:${ciphertext.slice(3)}`,
@@ -159,29 +144,30 @@ describe('cofre de credenciais', () => {
       `v1:${'A'.repeat(1100)}`,
       '',
     ]) {
-      expect(vaultError(() => open(onlyV1, aws, envelope))).toBe('envelope_invalid');
+      expect(vaultError(() => open(onlyV1, cloudflare, envelope))).toBe('envelope_invalid');
     }
   });
 
   it('versão ausente falha fechado; o envelope que mente a versão também', () => {
-    const { ciphertext } = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), awsSecret()));
-    expect(vaultError(() => open(onlyV2, aws, ciphertext))).toBe('key_version_missing');
-    expect(vaultError(() => open(onlyV2, aws, ciphertext.replace(/^v1:/, 'v2:')))).toBe('decrypt_failed');
-    expect(vaultError(() => open(onlyV1, aws, ciphertext.replace(/^v1:/, 'v9:')))).toBe(
+    const { ciphertext } = seal(publicV1, cloudflare, new CloudflareToken(cloudflareToken()));
+    expect(vaultError(() => open(onlyV2, cloudflare, ciphertext))).toBe('key_version_missing');
+    expect(vaultError(() => open(onlyV2, cloudflare, ciphertext.replace(/^v1:/, 'v2:')))).toBe(
+      'decrypt_failed',
+    );
+    expect(vaultError(() => open(onlyV1, cloudflare, ciphertext.replace(/^v1:/, 'v9:')))).toBe(
       'key_version_missing',
     );
   });
 
   it('troca da v1 para a v2: recifra na corrente, e a linha nova abre sem a v1', () => {
-    const secret = awsSecret();
-    const old = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), secret));
-    const rekeyed = reseal(bothCurrentV2, aws, old.ciphertext);
+    const token = cloudflareToken();
+    const old = seal(publicV1, cloudflare, new CloudflareToken(token));
+    const rekeyed = reseal(bothCurrentV2, cloudflare, old.ciphertext);
     expect(rekeyed?.keyVersion).toBe(2);
     expect(envelopeVersion(rekeyed?.ciphertext ?? '')).toBe(2);
-    const opened = open(onlyV2, aws, rekeyed?.ciphertext ?? '') as StaticAwsCredentials;
-    expect(opened.identity().secretAccessKey).toBe(secret);
+    expect(open(onlyV2, cloudflare, rekeyed?.ciphertext ?? '').value()).toBe(token);
     // Já na corrente: nada a fazer. A pública da corrente é a da v2.
-    expect(reseal(bothCurrentV2, aws, rekeyed?.ciphertext ?? '')).toBeNull();
+    expect(reseal(bothCurrentV2, cloudflare, rekeyed?.ciphertext ?? '')).toBeNull();
     expect(bothCurrentV2.publicKey().version).toBe(2);
     expect(
       bothCurrentV2
@@ -191,91 +177,60 @@ describe('cofre de credenciais', () => {
     ).toBe(true);
     // A recifragem também amarra: com outra conta, não abre nem recifra.
     expect(
-      vaultError(() => reseal(bothCurrentV2, { ...aws, cloudAccountId: randomUUID() }, old.ciphertext)),
+      vaultError(() =>
+        reseal(bothCurrentV2, { ...cloudflare, cloudAccountId: randomUUID() }, old.ciphertext),
+      ),
     ).toBe('decrypt_failed');
   });
 
-  it('texto claro no limite: o RSA-3072 com OAEP-SHA256 cifra 318 bytes, não 319, e a maior credencial cabe', () => {
+  it('texto claro no limite: o RSA-3072 com OAEP-SHA256 cifra 318 bytes, não 319, e o maior token cabe', () => {
     const options = {
       key: publicV1.key,
       padding: constants.RSA_PKCS1_OAEP_PADDING,
       oaepHash: 'sha256',
-      oaepLabel: oaepLabel(aws),
+      oaepLabel: oaepLabel(cloudflare),
     };
     expect(() => publicEncrypt(options, Buffer.alloc(MAX_PLAINTEXT_BYTES, 0x41))).not.toThrow();
     expect(() => publicEncrypt(options, Buffer.alloc(MAX_PLAINTEXT_BYTES + 1, 0x41))).toThrow();
-    // A maior credencial aceita: o token de 255 caracteres (o JSON tem 263 bytes) e a chave da AWS (75 bytes).
-    const longest = 'x'.repeat(255);
+    // O maior token aceito: 255 caracteres e dois `=` (o JSON tem 265 bytes).
+    const longest = `${'x'.repeat(255)}==`;
     expect(Buffer.byteLength(JSON.stringify({ t: longest }))).toBeLessThanOrEqual(MAX_PLAINTEXT_BYTES);
     const sealed = seal(publicV1, cloudflare, new CloudflareToken(longest));
-    expect((open(onlyV1, cloudflare, sealed.ciphertext) as CloudflareToken).value()).toBe(longest);
-    expect(Buffer.byteLength(JSON.stringify({ i: accessKeyId(), s: awsSecret() }))).toBe(75);
+    expect(open(onlyV1, cloudflare, sealed.ciphertext).value()).toBe(longest);
   });
 
-  it('zod ao abrir: texto claro fora do formato do tipo não abre', () => {
-    const encrypt = (binding: CredentialBinding, plaintext: string) =>
+  it('zod ao abrir: texto claro fora do formato não abre, nem o da chave da AWS que saiu do cofre', () => {
+    const encrypt = (plaintext: string) =>
       `v1:${publicEncrypt(
         {
           key: publicV1.key,
           padding: constants.RSA_PKCS1_OAEP_PADDING,
           oaepHash: 'sha256',
-          oaepLabel: oaepLabel(binding),
+          oaepLabel: oaepLabel(cloudflare),
         },
         Buffer.from(plaintext, 'utf8'),
       ).toString('base64')}`;
-    const secret = awsSecret();
     for (const plaintext of [
-      JSON.stringify({ t: cloudflareToken() }),
-      JSON.stringify({ i: accessKeyId(), s: secret, extra: 1 }),
-      JSON.stringify({ i: `ASIA${'Q7'.repeat(8)}`, s: secret }),
-      JSON.stringify({ i: accessKeyId(), s: `${secret}\nx` }),
-      JSON.stringify([accessKeyId(), secret]),
+      JSON.stringify({ t: cloudflareToken(), extra: 1 }),
+      JSON.stringify({ t: 'curto demais' }),
+      JSON.stringify({ t: `${cloudflareToken()}\nx` }),
+      // O formato do texto claro da chave da AWS (PR-V1), que não existe mais: um ID e um segredo.
+      JSON.stringify({ i: 'x'.repeat(20), s: randomBytes(30).toString('base64') }),
+      JSON.stringify([cloudflareToken()]),
       'não é JSON',
     ]) {
-      expect(vaultError(() => open(onlyV1, aws, encrypt(aws, plaintext)))).toBe('payload_invalid');
+      expect(vaultError(() => open(onlyV1, cloudflare, encrypt(plaintext)))).toBe('payload_invalid');
     }
-    expect(
-      vaultError(() => open(onlyV1, cloudflare, encrypt(cloudflare, JSON.stringify({ t: 'curto demais' })))),
-    ).toBe('payload_invalid');
   });
 
   it('segredo fora do formato é recusado antes de cifrar', () => {
-    expect(vaultError(() => new StaticAwsCredentials(`ASIA${'Q7'.repeat(8)}`, awsSecret()))).toBe(
-      'secret_invalid',
-    );
-    expect(vaultError(() => new StaticAwsCredentials(accessKeyId(), 'curto'))).toBe('secret_invalid');
-    expect(vaultError(() => new StaticAwsCredentials(accessKeyId(), `${awsSecret().slice(1)}\n`))).toBe(
-      'secret_invalid',
-    );
     expect(vaultError(() => new CloudflareToken(`${cloudflareToken()} x`))).toBe('secret_invalid');
     expect(vaultError(() => new CloudflareToken('x'.repeat(256)))).toBe('secret_invalid');
+    expect(vaultError(() => new CloudflareToken(`${cloudflareToken()}\n`))).toBe('secret_invalid');
   });
 
-  it('formatos nos limites: 40 caracteres no segredo da AWS, AKIA e 16 no ID; de 20 a 255 no token, com até dois = no fim', () => {
+  it('formatos nos limites: de 20 a 255 caracteres no token, com até dois = no fim', () => {
     // Os formatos são os mesmos que `open` aplica ao texto decifrado (a régua é uma só).
-    const base64Of = (length: number) => 'aB9/+'.repeat(Math.ceil(length / 5)).slice(0, length);
-    expect(new StaticAwsCredentials(accessKeyId(), base64Of(40)).identity().secretAccessKey).toBe(
-      base64Of(40),
-    );
-    for (const value of [
-      base64Of(39),
-      base64Of(41),
-      `${base64Of(39)}=`,
-      `${base64Of(39)}-`,
-      `${base64Of(39)} `,
-    ]) {
-      expect(vaultError(() => new StaticAwsCredentials(accessKeyId(), value))).toBe('secret_invalid');
-    }
-    expect(new StaticAwsCredentials(`AKIA${'Z9'.repeat(8)}`, base64Of(40)).keyIdSuffix).toBe('Z9Z9');
-    for (const id of [
-      `AKIA${'A'.repeat(15)}`,
-      `AKIA${'A'.repeat(17)}`,
-      `AKIA${'a'.repeat(16)}`,
-      `akia${'A'.repeat(16)}`,
-      `AKIA${'A'.repeat(15)}-`,
-    ]) {
-      expect(vaultError(() => new StaticAwsCredentials(id, base64Of(40)))).toBe('secret_invalid');
-    }
     const bearerOf = (length: number) => 'aZ9._~+/-'.repeat(Math.ceil(length / 9)).slice(0, length);
     for (const token of [bearerOf(20), bearerOf(255), `${bearerOf(255)}==`, `${bearerOf(20)}=`]) {
       expect(new CloudflareToken(token).value()).toBe(token);
@@ -291,58 +246,52 @@ describe('cofre de credenciais', () => {
     }
   });
 
-  it('o tipo da credencial é o do provedor da conta, e a amarração não aceita separador nem ID inválido', () => {
-    const account = { id: randomUUID(), tenantId: randomUUID(), accountId: 'projeto-de-teste' };
-    expect(vaultError(() => credentialBinding({ ...account, provider: 'gcp' }, 'aws_access_key'))).toBe(
-      'binding_invalid',
-    );
-    expect(vaultError(() => credentialBinding({ ...account, provider: 'aws' }, 'cloudflare_api_token'))).toBe(
-      'binding_invalid',
-    );
-    // Um token do Cloudflare não entra numa amarração da AWS.
-    expect(vaultError(() => seal(publicV1, aws, new CloudflareToken(cloudflareToken())))).toBe(
+  it('o tipo da credencial é o do provedor da conta; a chave da AWS não entra mais no cofre', () => {
+    expect(CREDENTIAL_KIND_PROVIDER).toEqual({ cloudflare_api_token: 'cloudflare' });
+    const account = { id: randomUUID(), tenantId: randomUUID(), accountId: '111122223333' };
+    for (const provider of ['aws', 'gcp'] as const) {
+      expect(vaultError(() => credentialBinding({ ...account, provider }, 'cloudflare_api_token'))).toBe(
+        'binding_invalid',
+      );
+    }
+    // O tipo antigo, se aparecer (uma linha velha, um erro), não amarra nada: nem rótulo, nem conta.
+    const legacyKind = 'aws_access_key' as CredentialBinding['kind'];
+    expect(vaultError(() => credentialBinding({ ...account, provider: 'aws' }, legacyKind))).toBe(
       'binding_invalid',
     );
     for (const binding of [
-      { ...aws, accountId: '1111:2222' },
-      { ...aws, tenantId: 'não-é-uuid' },
-      { ...aws, kind: 'outro' as CredentialBinding['kind'] },
+      { ...cloudflare, accountId: 'aaaa:bbbb' },
+      { ...cloudflare, tenantId: 'não-é-uuid' },
+      { ...cloudflare, kind: legacyKind },
+      { ...cloudflare, kind: 'outro' as CredentialBinding['kind'] },
     ]) {
       expect(vaultError(() => oaepLabel(binding))).toBe('binding_invalid');
     }
   });
 
-  it('os invólucros não viram JSON, texto nem inspeção, e o segredo vivo some de qualquer texto de log', () => {
-    const secret = awsSecret();
+  it('o invólucro não vira JSON, texto nem inspeção, e o segredo vivo some de qualquer texto de log', () => {
     const token = cloudflareToken();
-    const credentials = new StaticAwsCredentials(accessKeyId(), secret);
     const cloudflareSecret = new CloudflareToken(token);
     const views = [
-      JSON.stringify({ credentials, cloudflareSecret }),
-      String(credentials),
+      JSON.stringify({ cloudflareSecret }),
+      String(cloudflareSecret),
       // eslint-disable-next-line @typescript-eslint/restrict-template-expressions -- o teste confere a interpolação
       `${cloudflareSecret}`,
-      inspect({ credentials, cloudflareSecret }, { depth: 5, showHidden: true }),
-      Object.keys(credentials).join(','),
+      inspect({ cloudflareSecret }, { depth: 5, showHidden: true }),
+      Object.keys(cloudflareSecret).join(','),
     ];
-    for (const view of views) {
-      expect(view).not.toContain(secret);
-      expect(view).not.toContain(token);
-    }
-    expect(JSON.stringify(credentials)).toBe('"[credencial da AWS]"');
+    for (const view of views) expect(view).not.toContain(token);
+    expect(JSON.stringify(cloudflareSecret)).toBe('"[token do Cloudflare]"');
     expect(String(cloudflareSecret)).toBe('[token do Cloudflare]');
     // Decifrado no processo, o segredo passa a ser ocultado pelo logger mesmo sem nome de campo.
-    expect(scrubString(`a AWS recusou ${secret} e o Cloudflare ${token}`)).toBe(
-      `a AWS recusou ${REDACTED} e o Cloudflare ${REDACTED}`,
-    );
+    expect(scrubString(`o Cloudflare recusou ${token}`)).toBe(`o Cloudflare recusou ${REDACTED}`);
   });
 
   it('os erros do cofre levam só o código', () => {
-    const secret = awsSecret();
-    const { ciphertext } = seal(publicV1, aws, new StaticAwsCredentials(accessKeyId(), secret));
+    const { ciphertext } = seal(publicV1, cloudflare, new CloudflareToken(cloudflareToken()));
     for (const action of [
-      () => open(onlyV2, aws, ciphertext),
-      () => open(onlyV1, { ...aws, tenantId: randomUUID() }, ciphertext),
+      () => open(onlyV2, cloudflare, ciphertext),
+      () => open(onlyV1, { ...cloudflare, tenantId: randomUUID() }, ciphertext),
     ]) {
       try {
         action();

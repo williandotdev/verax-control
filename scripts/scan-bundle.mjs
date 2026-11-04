@@ -22,7 +22,8 @@ function* files(dir) {
     const path = join(dir, name);
     // eslint-disable-next-line security/detect-non-literal-fs-filename -- pasta do build passada na linha de comando
     if (statSync(path).isDirectory()) yield* files(path);
-    else if (/\.(js|mjs|css|html|json|map|txt)$/.test(name)) yield path;
+    // O template da AWS (`.yaml`) também é servido pelo painel: entra na varredura como o resto do texto.
+    else if (/\.(js|mjs|css|html|json|map|txt|yaml|yml)$/.test(name)) yield path;
   }
 }
 

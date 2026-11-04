@@ -32,17 +32,25 @@ PLAN=interno
 # memória do banco, da API e do worker e, no standard, sobe também o Wazuh (infra/node/compose.wazuh.yaml); o mesmo
 # perfil do Terraform (node_profile). Sem a linha, vale lean.
 NODE_PROFILE=lean
-# IP de saída do nó com /32 (`terraform output nat_ip` no perfil standard), separados por vírgula: é o IP que a política
-# IAM da AWS do cliente libera e o filtro de IP recomendado para o token do Cloudflare (Contas cloud o mostra; o start.sh
-# o passa à API). Vazio no nó da Verax, que sai pelo IP automático do NAT.
+# IP de saída do nó com /32 (`terraform output nat_ip` no perfil standard), separados por vírgula: é o `NodeEgressIps` da
+# pilha do papel de leitura na AWS do cliente (o papel só aceita o nó vindo dele) e o filtro de IP recomendado para o
+# token do Cloudflare (Contas cloud o mostra; o start.sh o passa à API). Vazio no nó da Verax, que sai pelo IP automático
+# do NAT.
 NODE_EGRESS_IPS=
 # NODE_EGRESS_IPS=203.0.113.10/32
+# Papel de leitura sem chave da AWS (nó de cliente, opcional): o ID único da conta de serviço do nó no Google, 21 dígitos
+# (`terraform output node_service_account_unique_id`, ou a saída `service_account_unique_id` do módulo), que Contas cloud
+# mostra para a pilha do cliente (`NodeServiceAccountId`). Não é segredo. Sem a linha, a tela pede o valor à Verax.
+# NODE_SA_UNIQUE_ID=123456789012345678901
+# O audience do token que o nó pede ao Google (`Audience` da pilha). Sem a linha, vale o padrão do template; troque só
+# num nó que precise de outro, porque a pilha de todo cliente do nó precisa ter o mesmo valor.
+# AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
 # Cloudflare Turnstile no login e no "esqueci minha senha" do painel (opcional). A chave do site (pública) fica aqui e
 # é o interruptor: sem a linha, nada muda. Com ela, o start.sh lê a chave secreta do cofre `<prefixo>-turnstile-secret-key`
 # (criado pelo Terraform com `turnstile_secret = true`); enquanto o cofre estiver vazio, o nó sobe sem o desafio e avisa.
 # TURNSTILE_SITE_KEY=0x4AAAAAAAexemploDeChave
-# Cofre de credenciais: a chave da AWS e o token do Cloudflare colados no painel ficam cifrados com uma chave RSA que o
-# install.sh gera na VM e guarda só no Secret Manager (`<prefixo>-credentials-key`). true só no nó que tem esse segredo
+# Cofre de credenciais: o token do Cloudflare colado no painel fica cifrado com uma chave RSA que o install.sh gera na
+# VM e guarda só no Secret Manager (`<prefixo>-credentials-key`); a AWS não usa o cofre. true só no nó que tem esse segredo
 # (`credentials_vault` no Terraform, ligado nos nós de clientes e na homologação). Sem a linha, vale false: o nó da
 # Verax não guarda credencial e sobe como antes.
 CREDENTIALS_VAULT=false

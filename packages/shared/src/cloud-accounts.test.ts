@@ -13,9 +13,9 @@ import {
   isPubsubSubscriptionName,
   normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
-  readOnlyRoleArn,
   sinkWriterIdentitySchema,
 } from './cloud-accounts.js';
+import { AWS_READER_AUDIENCE, awsReaderRoleArn } from './aws-reader.js';
 
 describe('contas cloud (T3.3)', () => {
   it.each(['sa-east-1', 'us-east-1', 'ap-southeast-4', 'us-gov-west-1', 'us-isob-east-1'])(
@@ -31,10 +31,6 @@ describe('contas cloud (T3.3)', () => {
       expect(isAwsRegion(region)).toBe(false);
     },
   );
-
-  it('o papel de leitura é sempre o do conector, na conta informada', () => {
-    expect(readOnlyRoleArn('123456789012')).toBe('arn:aws:iam::123456789012:role/VeraxControlReadOnly');
-  });
 
   it.each([
     ['bucket com maiúscula', { cloudtrail: 'Trilha' }],
@@ -58,18 +54,21 @@ describe('estado da conexão (T7.3 e fase 2)', () => {
     provider: 'aws',
     accountId: '111122223333',
     regions: ['sa-east-1'],
-    roleArn: readOnlyRoleArn('111122223333'),
-    externalId: null,
+    readerRoleArn: awsReaderRoleArn('111122223333'),
+    nodeServiceAccountId: '123456789012345678901',
+    webIdentityAudience: AWS_READER_AUDIENCE,
     buckets: { cloudtrail: null, guardduty: null, waf: null },
     pubsubSubscription: null,
     sinkTopic: null,
     sinkWriterIdentity: null,
     zones: [],
     keyStatus: null,
-    egressIps: [],
+    egressIps: ['203.0.113.10/32'],
     status: 'active',
     connection: 'waiting',
     connectionError: null,
+    checkRequestedAt: null,
+    ingestFrom: null,
     lastCollectedAt: null,
     createdAt: '2026-11-01T00:00:00.000Z',
     updatedAt: '2026-11-01T00:00:00.000Z',
@@ -105,6 +104,28 @@ describe('estado da conexão (T7.3 e fase 2)', () => {
     expect(
       cloudAccountSchema.safeParse({ ...account, connection: 'error', connectionError: 'x'.repeat(65) })
         .success,
+    ).toBe(false);
+  });
+
+  it('AWS sem chave: verificação pendente e data de início da coleta; nada de ExternalId nem de papel antigo', () => {
+    expect(
+      cloudAccountSchema.safeParse({
+        ...account,
+        checkRequestedAt: '2026-11-04T12:00:00.000Z',
+        ingestFrom: '2026-11-03',
+      }).success,
+    ).toBe(true);
+    expect(cloudAccountSchema.safeParse({ ...account, ingestFrom: '2026-11-03T00:00:00.000Z' }).success).toBe(
+      false,
+    );
+    expect(cloudAccountSchema.safeParse({ ...account, nodeServiceAccountId: '12345' }).success).toBe(false);
+    // O contrato é estrito: o ExternalId e o `roleArn` do conector antigo não voltam.
+    expect(cloudAccountSchema.safeParse({ ...account, externalId: null }).success).toBe(false);
+    expect(
+      cloudAccountSchema.safeParse({
+        ...account,
+        roleArn: 'arn:aws:iam::111122223333:role/VeraxControlReadOnly',
+      }).success,
     ).toBe(false);
   });
 });

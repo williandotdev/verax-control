@@ -16,9 +16,6 @@ export type CloudAccountConnection = (typeof CLOUD_ACCOUNT_CONNECTIONS)[number];
 export const LOG_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
 export type LogSource = (typeof LOG_SOURCES)[number];
 
-/** Papel criado pelo template do conector (T4.3) em toda conta: o cadastro não escolhe papel. */
-export const READ_ONLY_ROLE_NAME = 'VeraxControlReadOnly';
-
 export const awsAccountIdSchema = z.string().regex(/^\d{12}$/, { error: 'ID de conta AWS tem 12 dígitos' });
 
 /** ID do projeto da GCP: 6 a 30 caracteres, minúsculas, números e hífen; começa com letra e não termina em hífen. */
@@ -203,7 +200,8 @@ const bucketsSchema = z.strictObject({
 
 /**
  * Conta cloud do cliente (T3.3), com os campos do provedor. Não há campo de credencial em nenhum deles:
- * - AWS: a Verax só assume o papel de leitura com o ExternalId, gerado pelo servidor e nunca aceito do request;
+ * - AWS: o nó entra no papel de leitura sem chave da conta (`verax-control-reader`, derivado do ID) com o token que o
+ *   Google assina para a conta de serviço dele. Não há chave nem ExternalId;
  * - GCP: o nó lê a assinatura com a identidade dele, sem chave de conta de serviço. A identidade do sink do cliente
  *   não é credencial: é só quem pode publicar no tópico do nó;
  * - Cloudflare: o token somente leitura fica no cofre de segredos do nó, nunca no cadastro.
@@ -266,10 +264,21 @@ export const cloudAccountSchema = z.strictObject({
   accountId: cloudAccountRefSchema,
   /** AWS: regiões monitoradas. Vazio nos demais provedores. */
   regions: z.array(z.string()),
-  /** AWS: papel de leitura do conector. Null nos demais. */
-  roleArn: z.string().nullable(),
-  /** AWS, só para quem configura o conector (`cloud_accounts:write`); para os demais e fora da AWS, null. */
-  externalId: z.string().nullable(),
+  /**
+   * AWS: o papel de leitura sem chave que a pilha cria, `arn:aws:iam::<conta>:role/verax/verax-control-reader`,
+   * derivado do ID da conta (nunca digitado). Null nos demais.
+   */
+  readerRoleArn: z.string().nullable(),
+  /**
+   * AWS: o ID único da conta de serviço do nó no Google (`NodeServiceAccountId` da pilha, 21 dígitos), que o
+   * `start.sh` informa à API (`NODE_SA_UNIQUE_ID`). Não é segredo. Null nos demais provedores e no nó que não informa.
+   */
+  nodeServiceAccountId: z
+    .string()
+    .regex(/^\d{21}$/)
+    .nullable(),
+  /** AWS: o audience do token do nó (`Audience` da pilha). Null nos demais. */
+  webIdentityAudience: z.string().max(256).nullable(),
   /** AWS: buckets de log por fonte. Todos null nos demais. */
   buckets: z.strictObject({
     cloudtrail: z.string().nullable(),
@@ -293,22 +302,36 @@ export const cloudAccountSchema = z.strictObject({
    */
   keyStatus: cloudCredentialStatusSchema.nullable(),
   /**
-   * Cloudflare: IPs de saída do nó (`NODE_EGRESS_IPS`, IPv4 com /32), os que o filtro de IP do token deve liberar.
-   * Vazio nos demais provedores e no nó que não informa. Não é segredo.
+   * IPs de saída do nó (`NODE_EGRESS_IPS`, IPv4 com /32). Na AWS, o `NodeEgressIps` da pilha (o papel só aceita o nó
+   * vindo deles); no Cloudflare, o filtro de IP recomendado para o token. Vazio na GCP e no nó que não informa. Não é
+   * segredo.
    */
   egressIps: z.array(z.string()),
   status: z.enum(CLOUD_ACCOUNT_STATUSES),
   /**
-   * Estado da coleta, gravado pelo sync da conta: `waiting` até o primeiro sinal de vida, `connected` depois dele e
-   * `error` quando a última leitura da fonte falhou. Na AWS e na GCP, o sinal é o evento recebido; no Cloudflare,
-   * a leitura bem-sucedida, mesmo sem evento.
+   * Estado da coleta, gravado pelo worker: `waiting` até o primeiro sinal de vida, `connected` depois dele e `error`
+   * quando a última leitura da fonte falhou. Na GCP, o sinal é o evento recebido; no Cloudflare, a leitura
+   * bem-sucedida, mesmo sem evento; na AWS, a verificação do papel de leitura ("Verificar") ou o primeiro evento.
    */
   connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS),
-  /** Tipo do último erro de coleta (`AccessDenied`, `TimeoutError`), só em `error`. Nunca a mensagem nem segredo. */
+  /**
+   * Tipo do último erro de coleta (`AccessDenied`; na AWS, os códigos de `AWS_CONNECTION_ERROR_CODES`), só em
+   * `error`. Nunca a mensagem nem segredo.
+   */
   connectionError: z
     .string()
     .regex(/^[A-Za-z0-9_.:-]{1,64}$/)
     .nullable(),
+  /**
+   * AWS: quando um administrador pediu "Verificar" e o worker ainda não respondeu (a conexão fica em `waiting`). Null
+   * sem pedido pendente e nos demais provedores.
+   */
+  checkRequestedAt: z.iso.datetime().nullable(),
+  /**
+   * AWS: a data (`AAAA-MM-DD`) a partir da qual o Wazuh lê os logs dos buckets: a da primeira verificação bem-sucedida,
+   * menos um dia. Gravada uma vez só, pelo worker. Null antes dela e nos demais provedores.
+   */
+  ingestFrom: z.iso.date().nullable(),
   /** Última leitura bem-sucedida da fonte, com ou sem evento; null antes da primeira. */
   lastCollectedAt: z.iso.datetime().nullable(),
   /** Horário do último alerta recebido desta conta (T5.3); null se nunca chegou nada. */
@@ -317,7 +340,3 @@ export const cloudAccountSchema = z.strictObject({
   updatedAt: z.iso.datetime(),
 });
 export type CloudAccount = z.infer<typeof cloudAccountSchema>;
-
-export function readOnlyRoleArn(accountId: string): string {
-  return `arn:aws:iam::${accountId}:role/${READ_ONLY_ROLE_NAME}`;
-}

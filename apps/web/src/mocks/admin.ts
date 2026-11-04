@@ -4,6 +4,8 @@ import {
   alertExceptionListQuerySchema,
   alertExceptionSchema,
   alertExceptionUpdateSchema,
+  AWS_READER_AUDIENCE,
+  awsReaderRoleArn,
   type CloudAccount,
   cloudAccountCreateSchema,
   cloudAccountListQuerySchema,
@@ -20,7 +22,6 @@ import {
   protectedResourceListQuerySchema,
   protectedResourceSchema,
   protectedResourceUpdateSchema,
-  readOnlyRoleArn,
   TEMPORARY_PASSWORD_HOURS,
   type Tenant,
   tenantCreatedSchema,
@@ -41,8 +42,10 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import {
   DEMO_ACCOUNTS,
+  DEMO_AWS_CHECK_DELAY_MS,
   DEMO_CLOUDFLARE_TOKEN_SUFFIX,
   DEMO_EGRESS_IPS,
+  DEMO_NODE_SERVICE_ACCOUNT_ID,
   DEMO_SINK_TOPIC_PREFIX,
   DEMO_TENANTS,
 } from './fixtures';
@@ -136,9 +139,13 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       provider: other?.provider ?? 'aws',
       accountId,
       regions: other ? [] : regions,
-      roleArn: other ? null : readOnlyRoleArn(accountId),
-      externalId: other ? null : `vx-${accountId}-0f3c9a1e7b2d4c6e8a0b1c2d3e4f5a6b`,
-      buckets: { cloudtrail: null, guardduty: null, waf: null },
+      // AWS: o papel de leitura sem chave, derivado do ID, e os três valores do nó para a pilha.
+      readerRoleArn: other ? null : awsReaderRoleArn(accountId),
+      nodeServiceAccountId: other ? null : DEMO_NODE_SERVICE_ACCOUNT_ID,
+      webIdentityAudience: other ? null : AWS_READER_AUDIENCE,
+      buckets: other
+        ? { cloudtrail: null, guardduty: null, waf: null }
+        : { cloudtrail: `trilha-${accountId}`, guardduty: null, waf: null },
       pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
       sinkTopic: other?.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${accountId}` : null,
       sinkWriterIdentity: other?.provider === 'gcp' ? other.sinkWriterIdentity : null,
@@ -154,10 +161,13 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
             status: credentialStatus(tokenExpiresAt, now),
           }
         : null,
-      egressIps: cloudflare ? DEMO_EGRESS_IPS : [],
+      egressIps: other?.provider === 'gcp' ? [] : DEMO_EGRESS_IPS,
       status: 'active',
       connection: collection.connection,
       connectionError: collection.error ?? null,
+      checkRequestedAt: null,
+      // A conta AWS conectada lê os logs desde o dia anterior à primeira verificação.
+      ingestFrom: !other && collection.connection === 'connected' ? at(41).slice(0, 10) : null,
       lastCollectedAt: minutesBefore(collection.collectedMinutes),
       lastEventAt: minutesBefore(lastEventMinutes),
       createdAt: at(40),
@@ -245,12 +255,13 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
             { connection: 'connected', collectedMinutes: 1 },
             3,
           ),
-          // A homologação perdeu o acesso há 30 horas: é a conta silenciosa da Torre.
+          // A homologação perdeu o acesso há 30 horas (a AWS recusou a entrada no papel): é a conta silenciosa da
+          // Torre. Verificada de novo na demonstração, continua recusada.
           account(
             2,
             DEMO_ACCOUNTS.alfaHomologacao,
             ['sa-east-1'],
-            { connection: 'error', collectedMinutes: 30 * 60, error: 'AccessDenied' },
+            { connection: 'error', collectedMinutes: 30 * 60, error: 'trust_denied' },
             30 * 60,
           ),
           // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó.
@@ -375,6 +386,25 @@ const author = (me: Me) => ({ id: me.userId, name: me.email });
 type Denied = { ok: false; error: Response };
 type Allowed = { ok: true; me: Me };
 type Scoped = { ok: true; me: Me; tenantId: string };
+
+/**
+ * O "worker" da demonstração: responde o "Verificar" pendente há mais de `DEMO_AWS_CHECK_DELAY_MS`. A homologação da
+ * demonstração continua recusada (`trust_denied`); qualquer outra conta conecta e ganha o dia de início da coleta (o
+ * anterior), uma vez só, como a tarefa `aws-check`.
+ */
+function answerAwsCheck(account: CloudAccount, now: Date = new Date()): void {
+  if (account.checkRequestedAt === null) return;
+  if (now.getTime() - Date.parse(account.checkRequestedAt) < DEMO_AWS_CHECK_DELAY_MS) return;
+  const refused = account.accountId === DEMO_ACCOUNTS.alfaHomologacao;
+  const yesterday = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+  Object.assign(account, {
+    checkRequestedAt: null,
+    connection: refused ? 'error' : 'connected',
+    connectionError: refused ? 'trust_denied' : null,
+    ingestFrom: refused ? account.ingestFrom : (account.ingestFrom ?? yesterday),
+    updatedAt: now.toISOString(),
+  });
+}
 
 export function createAdminHandlers(state: MockState, store: AdminStore) {
   /** Permissão de leitura ou escrita (com CSRF) e, quando pedido, o cliente da sessão. */
@@ -543,10 +573,9 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!scope.ok) return scope.error;
       const query = cloudAccountListQuerySchema.safeParse(queryOf(request));
       if (!query.success) return problem(400, 'Filtro inválido');
-      const canSeeExternalId = scope.me.permissions.includes('cloud_accounts:write');
-      const items = listOf(store.accounts, scope.tenantId)
-        .filter((account) => !query.data.status || account.status === query.data.status)
-        .map((account) => ({ ...account, externalId: canSeeExternalId ? account.externalId : null }));
+      const accounts = listOf(store.accounts, scope.tenantId);
+      for (const account of accounts) answerAwsCheck(account);
+      const items = accounts.filter((account) => !query.data.status || account.status === query.data.status);
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
     }),
     http.post(url('/v1/cloud-accounts'), async ({ request }) => {
@@ -564,26 +593,31 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       }
       const data = input.data;
       const now = new Date().toISOString();
-      const random = Array.from(crypto.getRandomValues(new Uint8Array(20)), (byte) =>
-        byte.toString(16).padStart(2, '0'),
-      ).join('');
+      const aws = data.provider === 'aws';
       const account = cloudAccountSchema.parse({
         id: newId(),
         provider: data.provider,
         accountId: data.accountId,
-        regions: data.provider === 'aws' ? data.regions : [],
-        roleArn: data.provider === 'aws' ? readOnlyRoleArn(data.accountId) : null,
-        externalId: data.provider === 'aws' ? `vx-${random}` : null,
-        buckets: { cloudtrail: null, guardduty: null, waf: null },
+        regions: aws ? data.regions : [],
+        readerRoleArn: aws ? awsReaderRoleArn(data.accountId) : null,
+        nodeServiceAccountId: aws ? DEMO_NODE_SERVICE_ACCOUNT_ID : null,
+        webIdentityAudience: aws ? AWS_READER_AUDIENCE : null,
+        buckets: {
+          cloudtrail: aws ? (data.buckets?.cloudtrail ?? null) : null,
+          guardduty: aws ? (data.buckets?.guardduty ?? null) : null,
+          waf: aws ? (data.buckets?.waf ?? null) : null,
+        },
         pubsubSubscription: data.provider === 'gcp' ? (data.pubsubSubscription ?? null) : null,
         sinkTopic: data.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${data.accountId}` : null,
         sinkWriterIdentity: data.provider === 'gcp' ? (data.sinkWriterIdentity ?? null) : null,
         zones: data.provider === 'cloudflare' ? (data.zones ?? []) : [],
         keyStatus: null,
-        egressIps: data.provider === 'cloudflare' ? DEMO_EGRESS_IPS : [],
+        egressIps: data.provider === 'gcp' ? [] : DEMO_EGRESS_IPS,
         status: 'active',
         connection: 'waiting',
         connectionError: null,
+        checkRequestedAt: null,
+        ingestFrom: null,
         lastCollectedAt: null,
         lastEventAt: null,
         createdAt: now,
@@ -613,11 +647,37 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         account,
         rest,
         { updatedAt: new Date().toISOString() },
-        sourceChanged || statusChanged ? { connection: 'waiting', connectionError: null } : {},
+        sourceChanged || statusChanged
+          ? { connection: 'waiting', connectionError: null, checkRequestedAt: null }
+          : {},
         // Como a API: a conta desativada não guarda credencial.
         rest.status === 'inactive' ? { keyStatus: null } : {},
       );
       return HttpResponse.json(account);
+    }),
+    // "Verificar" a conta AWS, como a API: grava o pedido (a conexão volta a aguardar) e responde na hora (202); o
+    // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista.
+    http.post(url('/v1/cloud-accounts/:id/aws/verify'), ({ params, request }) => {
+      const scope = scoped('cloud_accounts:write', request);
+      if (!scope.ok) return scope.error;
+      const account = listOf(store.accounts, scope.tenantId).find(
+        (candidate) => candidate.id === params['id'],
+      );
+      if (!account) return problem(404, 'Conta não encontrada');
+      if (account.provider !== 'aws') return problem(400, 'Só uma conta AWS é verificada assim.');
+      if (account.status !== 'active') {
+        return problem(400, 'Reative o monitoramento antes de verificar a conta.');
+      }
+      if (account.checkRequestedAt === null) {
+        const now = new Date().toISOString();
+        Object.assign(account, {
+          connection: 'waiting',
+          connectionError: null,
+          checkRequestedAt: now,
+          updatedAt: now,
+        });
+      }
+      return HttpResponse.json(account, { status: 202 });
     }),
     // Credencial de leitura (token do Cloudflare). O mock não fala com o Cloudflare: todo token no formato é aceito,
     // com um ID fictício, e nada do valor colado fica no estado (só o fim do ID, como na API).

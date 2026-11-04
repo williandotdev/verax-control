@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { randomBytes, randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { cloudAccountSchema } from '@verax/shared';
+import { AWS_READER_AUDIENCE, cloudAccountSchema } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
@@ -79,12 +79,7 @@ describe('contas cloud (T3.3)', () => {
     createInTenantB: async () =>
       (
         await prisma.cloudAccount.create({
-          data: {
-            tenantId: tenantB,
-            accountId: accountId(),
-            regions: ['sa-east-1'],
-            externalId: 'x'.repeat(43),
-          },
+          data: { tenantId: tenantB, accountId: accountId(), regions: ['sa-east-1'] },
         })
       ).id,
     readDirect: (id) => prisma.cloudAccount.findUniqueOrThrow({ where: { id } }),
@@ -93,25 +88,40 @@ describe('contas cloud (T3.3)', () => {
   });
 
   describe('cadastro', () => {
-    it('gera o ExternalId no servidor, deriva o papel e audita sem o ExternalId', async () => {
+    it('AWS sem chave: deriva o papel de leitura do ID, sem ExternalId na conta, na linha nem na trilha', async () => {
       const body = newAccount({
         buckets: { cloudtrail: bucket(), waf: `aws-waf-logs-${randomInt(1e6, 9e6)}` },
       });
       const created = await call(adminA).post('/v1/cloud-accounts', body).expect(201);
       const account = cloudAccountSchema.parse(created.body);
-      expect(account.externalId).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(account.roleArn).toBe(`arn:aws:iam::${account.accountId}:role/VeraxControlReadOnly`);
+      expect(account.readerRoleArn).toBe(`arn:aws:iam::${account.accountId}:role/verax/verax-control-reader`);
+      expect(account).toMatchObject({ connection: 'waiting', checkRequestedAt: null, ingestFrom: null });
+      // Este nó (como o ambiente local) não informa o ID da conta de serviço nem o IP de saída: a tela os pede à Verax.
+      // O audience é o padrão do template.
+      expect(account).toMatchObject({
+        nodeServiceAccountId: null,
+        webIdentityAudience: AWS_READER_AUDIENCE,
+        egressIps: [],
+      });
       expect(account.buckets.guardduty).toBeNull();
+      expect(created.text).not.toMatch(/externalId|ExternalId|VeraxControlReadOnly/);
+      expect(
+        (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: account.id } })).externalId,
+      ).toBeNull();
 
       const entry = await entryOf(created);
       expect(entry).toMatchObject({ action: 'cloud_account.create', tenantId: tenantA });
-      expect(JSON.stringify(entry)).not.toContain(account.externalId as string);
+      expect(JSON.stringify(entry)).not.toMatch(/externalId/i);
     });
 
     it.each([
       ['ExternalId no corpo', { externalId: 'escolhido-pelo-cliente-0000000000000000' }],
-      ['chave de acesso', { accessKeyId: 'AKIAEXEMPLO0000000000', secretAccessKey: 'x'.repeat(40) }],
+      ['chave de acesso', { accessKeyId: 'chave-colada-no-cadastro', secretAccessKey: 'x'.repeat(40) }],
       ['papel escolhido', { roleArn: 'arn:aws:iam::123456789012:role/Admin' }],
+      ['papel de leitura escolhido', { readerRoleArn: 'arn:aws:iam::123456789012:role/Admin' }],
+      ['ID da conta de serviço do nó', { nodeServiceAccountId: '123456789012345678901' }],
+      ['pedido de verificação', { checkRequestedAt: '2026-11-04T12:00:00.000Z' }],
+      ['dia de início da coleta', { ingestFrom: '2020-01-01' }],
       ['cliente no corpo', { tenantId: '018f0000-0000-7000-8000-00000000000b' }],
       ['ID de conta curto', { accountId: '12345' }],
       ['região inválida', { regions: ['marte-1'] }],
@@ -168,7 +178,7 @@ describe('contas cloud (T3.3)', () => {
   });
 
   describe('GCP e Cloudflare', () => {
-    it('projeto da GCP: sem papel nem ExternalId; a assinatura do Pub/Sub fica gravada', async () => {
+    it('projeto da GCP: sem papel nem valores do papel da AWS; a assinatura do Pub/Sub fica gravada', async () => {
       const name = subscription();
       const created = await call(adminA)
         .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject(), pubsubSubscription: name })
@@ -176,8 +186,12 @@ describe('contas cloud (T3.3)', () => {
       const account = cloudAccountSchema.parse(created.body);
       expect(account).toMatchObject({
         provider: 'gcp',
-        roleArn: null,
-        externalId: null,
+        readerRoleArn: null,
+        nodeServiceAccountId: null,
+        webIdentityAudience: null,
+        checkRequestedAt: null,
+        ingestFrom: null,
+        egressIps: [],
         regions: [],
         pubsubSubscription: name,
         zones: [],
@@ -185,9 +199,6 @@ describe('contas cloud (T3.3)', () => {
         sinkTopic: null,
         sinkWriterIdentity: null,
       });
-      expect(
-        (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: account.id } })).externalId,
-      ).toBeNull();
       expect(await entryOf(created)).toMatchObject({ action: 'cloud_account.create', tenantId: tenantA });
     });
 
@@ -198,8 +209,9 @@ describe('contas cloud (T3.3)', () => {
         .expect(201);
       expect(cloudAccountSchema.parse(created.body)).toMatchObject({
         provider: 'cloudflare',
-        roleArn: null,
-        externalId: null,
+        readerRoleArn: null,
+        nodeServiceAccountId: null,
+        webIdentityAudience: null,
         zones,
         pubsubSubscription: null,
         // Sem credencial ainda, e sem NODE_EGRESS_IPS (como no ambiente local), sem IP para o filtro do token.
@@ -349,29 +361,34 @@ describe('contas cloud (T3.3)', () => {
         .expect(400);
     });
 
-    it('o banco recusa conta AWS sem ExternalId, mesmo fora da API', async () => {
+    it('o banco aceita conta AWS sem ExternalId (o papel sem chave não tem), e só a AWS tem verificação e início da coleta', async () => {
       await expect(
         prisma.cloudAccount.create({
           data: { tenantId: tenantA, provider: 'aws', accountId: accountId(), regions: [] },
         }),
-      ).rejects.toThrow();
-      await expect(
-        prisma.cloudAccount.create({
-          data: { tenantId: tenantA, provider: 'gcp', accountId: gcpProject(), regions: [] },
-        }),
-      ).resolves.toMatchObject({ externalId: null });
+      ).resolves.toMatchObject({ externalId: null, checkRequestedAt: null, ingestFrom: null });
+      for (const data of [
+        { checkRequestedAt: new Date() },
+        { ingestFrom: new Date('2026-11-03T00:00:00.000Z') },
+      ]) {
+        await expect(
+          prisma.cloudAccount.create({
+            data: { tenantId: tenantA, provider: 'gcp', accountId: gcpProject(), regions: [], ...data },
+          }),
+        ).rejects.toThrow();
+      }
     });
   });
 
   describe('leitura', () => {
-    it('leitura vê a conta, mas não o ExternalId; não cadastra nem altera', async () => {
+    it('leitura vê a conta e os valores do papel (nenhum é segredo); não cadastra nem altera', async () => {
       const created = cloudAccountSchema.parse(
         (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
       );
       const seen = await call(readerA).get(`/v1/cloud-accounts/${created.id}`).expect(200);
-      expect(seen.body).toMatchObject({ id: created.id, externalId: null });
+      expect(seen.body).toMatchObject({ id: created.id, readerRoleArn: created.readerRoleArn });
       const list = await call(readerA).get('/v1/cloud-accounts?pageSize=100').expect(200);
-      expect(JSON.stringify(list.body)).not.toContain(created.externalId as string);
+      expect(JSON.stringify(list.body)).not.toMatch(/externalId/i);
 
       await call(readerA).post('/v1/cloud-accounts', newAccount()).expect(403);
       await call(readerA)
@@ -587,7 +604,6 @@ describe('contas cloud (T3.3)', () => {
           tenantId: tenantB,
           accountId: accountId(),
           regions: ['sa-east-1'],
-          externalId: 'x'.repeat(43),
           connection: 'error',
           connectionError: 'ErroDaContaDoClienteB',
           lastCollectedAt: new Date('2026-11-03T11:00:00.000Z'),

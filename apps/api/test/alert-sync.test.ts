@@ -119,7 +119,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         tenantId: tenantA,
         accountId: accountA,
         regions: ['sa-east-1'],
-        externalId: 'x'.repeat(43),
         cloudtrailBucket: trailA,
         guarddutyBucket: guardDutyA,
         wafBucket: wafA,
@@ -130,7 +129,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         tenantId: tenantB,
         accountId: accountB,
         regions: ['sa-east-1'],
-        externalId: 'y'.repeat(43),
         cloudtrailBucket: trailB,
       },
     });
@@ -347,7 +345,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         tenantId: tenant,
         accountId: account,
         regions: ['sa-east-1'],
-        externalId: 'w'.repeat(43),
         cloudtrailBucket: bucket,
       },
     });
@@ -381,7 +378,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         tenantId: tenant,
         accountId: waiting,
         regions: ['sa-east-1'],
-        externalId: 'v'.repeat(43),
         cloudtrailBucket: waitingBucket,
       },
     });
@@ -391,7 +387,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         tenantId: tenant,
         accountId: failed,
         regions: ['sa-east-1'],
-        externalId: 'u'.repeat(43),
         cloudtrailBucket: failedBucket,
         connection: 'error',
         connectionError: 'AccessDenied',
@@ -886,7 +881,6 @@ describe('sync de alertas para achados (T5.3)', () => {
             tenantId: tenant,
             accountId: account,
             regions: ['sa-east-1'],
-            externalId: 't'.repeat(43),
             guarddutyBucket: bucket,
           },
         });
@@ -1326,7 +1320,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         tenantId: tenant,
         accountId: account,
         regions: ['sa-east-1'],
-        externalId: 'z'.repeat(43),
         cloudtrailBucket: bucket,
         status: 'inactive',
       },

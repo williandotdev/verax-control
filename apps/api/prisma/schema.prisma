@@ -252,10 +252,9 @@ enum CloudAccountConnection {
 }
 
 /// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial fica no
-/// cadastro: na AWS, a Verax assume o papel de leitura `VeraxControlReadOnly` com o ExternalId, gerado aqui; na
-/// GCP, o nó lê com a identidade dele, sem chave. Na fase 2, a chave do usuário IAM de leitura da AWS e o token do
-/// Cloudflare ficam cifrados à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente. A
-/// migration garante, por CHECK, que toda conta AWS tem ExternalId.
+/// cadastro: na AWS, o nó entra no papel de leitura sem chave da conta (`/verax/verax-control-reader`, derivado do ID)
+/// com o token que o Google assina para a conta de serviço dele; na GCP, o nó lê com a identidade dele, sem chave. Só
+/// o token do Cloudflare fica cifrado à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente.
 model CloudAccount {
   id                 String                 @id @default(uuid(7)) @db.Uuid
   tenantId           String                 @db.Uuid
@@ -265,7 +264,9 @@ model CloudAccount {
   accountId          String                 @db.VarChar(32)
   /// AWS: regiões monitoradas.
   regions            String[]
-  /// AWS: ExternalId do papel de leitura.
+  /// Obsoleto (o ExternalId do conector antigo): a API não lê nem grava desde o PR-V3', e a migration dele apagou os
+  /// valores. A coluna fica só para a versão anterior da API, numa volta de versão, encontrar o que ela lê; sai numa
+  /// migration de contração.
   externalId         String?                @db.VarChar(128)
   /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
   cloudtrailBucket   String?                @db.VarChar(63)
@@ -288,6 +289,14 @@ model CloudAccount {
   /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
   /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
   lastCollectedAt    DateTime?              @db.Timestamptz(3)
+  /// AWS: "Verificar" pedido no painel e ainda não respondido pela tarefa `aws-check` do worker, que confere a entrada
+  /// no papel e a leitura dos buckets e grava a conexão (`src/aws/aws-check.ts`). Null sem pedido pendente. A
+  /// migration confere por CHECK que só conta AWS tem o pedido.
+  checkRequestedAt   DateTime?              @db.Timestamptz(3)
+  /// AWS: dia a partir do qual o Wazuh lê os logs dos buckets (`only_logs_after`): o da primeira verificação
+  /// bem-sucedida, menos um dia. Gravado uma vez só, pelo worker; sem ele, o Wazuh leria todo o histórico do bucket.
+  /// Só conta AWS (CHECK da migration).
+  ingestFrom         DateTime?              @db.Date
   status             CloudAccountStatus     @default(active)
   createdAt          DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
@@ -660,10 +669,9 @@ model IngestUsage {
   @@id([tenantId, month, source])
 }
 
-/// Tipo da credencial guardada no cofre do nó: a chave de acesso do usuário IAM de leitura da AWS ou o token só de
-/// leitura do Cloudflare.
+/// Tipo da credencial guardada no cofre do nó: o token só de leitura do Cloudflare. A chave de acesso da AWS
+/// (`aws_access_key`, do PR-V1) saiu no PR-V3': a AWS é lida pelo papel sem chave.
 enum CloudCredentialKind {
-  aws_access_key
   cloudflare_api_token
 }
 
@@ -684,14 +692,13 @@ model CloudCredential {
   /// Versão da chave do nó (a versão do segredo `credentials-key` no Secret Manager). A tarefa `credential-rekey` do
   /// worker recifra as linhas de versões antigas com a corrente.
   keyVersion       Int
-  /// Os 4 últimos caracteres do ID da chave de acesso (AWS) ou do ID do token (Cloudflare): o que o painel e a
-  /// auditoria mostram.
+  /// Os 4 últimos caracteres do ID do token: o que o painel e a auditoria mostram.
   keyIdSuffix      String              @db.VarChar(4)
-  /// Criação da chave na AWS (`ListAccessKeys`) ou do token: a idade conta daqui.
+  /// Criação do token na origem, quando ela informa: a idade conta daqui.
   issuedAt         DateTime?           @db.Timestamptz(3)
   /// Validade do token do Cloudflare, quando ele tem uma.
   expiresAt        DateTime?           @db.Timestamptz(3)
-  /// Última validação bem-sucedida na fonte (STS, `tokens/verify`).
+  /// Última validação bem-sucedida na fonte (`tokens/verify`).
   verifiedAt       DateTime            @db.Timestamptz(3)
   /// Quando saiu o aviso de troca da chave (rotação).
   rotationNoticeAt DateTime?           @db.Timestamptz(3)

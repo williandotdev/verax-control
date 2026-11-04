@@ -11,7 +11,8 @@
 #    e num ambiente limpo), numa pasta temporária que faz o papel de /etc/verax, /var/lib/verax/secrets e /run/verax,
 #    com o gcloud simulado (um cofre por arquivo). Sem TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai exatamente
 #    como antes do Turnstile (e o cofre nem é lido); com a chave do site, a chave secreta vem do cofre, e as duas só
-#    entram juntas.
+#    entram juntas. Os valores do papel de leitura sem chave da AWS (NODE_SA_UNIQUE_ID e AWS_WEB_IDENTITY_AUDIENCE)
+#    entram depois do IP de saída e antes do Turnstile; sem eles, o api.env é o de referência, byte a byte.
 # 3. Os agentes do Wazuh (WAZUH_AGENTS): desligados, o standard sai byte a byte como sem a linha; ligados, a API recebe
 #    o endereço, o cliente, as faixas, o limite, a CA e a senha de registro (só ela), o worker o caminho da lista e o
 #    cliente; no lean, sem o IP, o cliente, a senha ou o certificado, ou com um valor fora do formato, o render para
@@ -157,6 +158,36 @@ status=0
 render_with NODE_EGRESS_IPS=203.0.113.10/24 || status=$?
 expect "fora do formato: o render avisa e segue, sem a variável que a API recusaria" '0 0 1' \
   "$status $(grep -c NODE_EGRESS_IPS "$run/api.env" || true) $(grep -c 'NODE_EGRESS_IPS fora do formato' "$work/render.err")"
+
+echo "== papel de leitura sem chave da AWS: o ID da conta de serviço do nó e o audience, só na API e só no formato"
+render 2>"$work/render.err"
+expect "sem as linhas no node.conf (o exemplo, só com elas comentadas), nada" 0 \
+  "$(grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$run/api.env" || true)"
+expect "e nenhum aviso sobre elas" 0 "$(grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$work/render.err" || true)"
+render_with NODE_SA_UNIQUE_ID=123456789012345678901 AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
+expect "a API recebe o ID da conta de serviço (o NodeServiceAccountId da pilha)" 1 \
+  "$(grep -c "^NODE_SA_UNIQUE_ID='123456789012345678901'$" "$run/api.env")"
+expect "a API recebe o audience (o Audience da pilha)" 1 \
+  "$(grep -c "^AWS_WEB_IDENTITY_AUDIENCE='https://control.veraxsistemas.com.br/aws-reader'$" "$run/api.env")"
+expect "o worker não os recebe (a conferência real, que os usa, vem no PR-V5')" 0 \
+  "$(grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$run/worker.env" || true)"
+render_with NODE_SA_UNIQUE_ID=123456789012345678901
+expect "só o ID: o audience fica de fora (vale o padrão do template)" '1 0' \
+  "$(grep -c '^NODE_SA_UNIQUE_ID=' "$run/api.env") $(grep -c AWS_WEB_IDENTITY_AUDIENCE "$run/api.env" || true)"
+for bad_id in 12345678901234567890 1234567890123456789012 conta-do-no@exemplo; do
+  status=0
+  render_with "NODE_SA_UNIQUE_ID=$bad_id" || status=$?
+  expect "ID fora do formato ($bad_id): o render avisa e segue, sem a variável que a API recusaria" '0 0 1' \
+    "$status $(grep -c NODE_SA_UNIQUE_ID "$run/api.env" || true) $(grep -c 'NODE_SA_UNIQUE_ID fora do formato' "$work/render.err")"
+done
+for bad_audience in http://control.veraxsistemas.com.br/aws-reader 'https://control.veraxsistemas.com.br/*' \
+  https://Control.veraxsistemas.com.br https://control.veraxsistemas.com.br:8443/aws-reader \
+  "https://control.veraxsistemas.com.br/$(printf 'a%.0s' {1..250})"; do
+  status=0
+  render_with "AWS_WEB_IDENTITY_AUDIENCE=$bad_audience" || status=$?
+  expect "audience fora do formato (${bad_audience:0:60}): o render avisa e segue, sem a variável" '0 0 1' \
+    "$status $(grep -c AWS_WEB_IDENTITY_AUDIENCE "$run/api.env" || true) $(grep -c 'AWS_WEB_IDENTITY_AUDIENCE fora do formato' "$work/render.err")"
+done
 
 echo "== lean: pull_images --base baixa só a imagem que falta"
 COMPOSE_IMAGES=('exemplo/api@sha256:presente' '' 'postgres:18-alpine@sha256:falta' 'exemplo/api@sha256:presente')
@@ -442,6 +473,31 @@ with_turnstile_and_egress=${with_turnstile/TURNSTILE_SITE_KEY=/$egress_line$'\n'
 [ "$(api_env)" = "$with_turnstile_and_egress" ] || fail "a ordem do api.env mudou:
 $(diff <(echo "$with_turnstile_and_egress") <(api_env) || true)"
 grep -qi 'aviso' "$root/out" && fail "avisou com tudo configurado: $(cat "$root/out")"
+
+# --- Papel de leitura sem chave da AWS: os dois valores do nó logo depois do IP de saída, antes do Turnstile --------
+# Sem as duas linhas, o api.env é o de referência acima, byte a byte (o primeiro cenário, com o node.conf de exemplo,
+# em que elas só aparecem comentadas).
+new_root "papel de leitura da AWS, IP de saída e Turnstile" papel-aws
+node_conf TURNSTILE_SITE_KEY=1x00000000000000000000AA NODE_EGRESS_IPS=203.0.113.10/32 \
+  NODE_SA_UNIQUE_ID=123456789012345678901 AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
+printf 'segredo-ficticio-do-turnstile\n' >"$root/vault/verax-node-turnstile-secret-key"
+render_env || fail "o render falhou: $(cat "$root/out")"
+aws_reader_lines="NODE_SA_UNIQUE_ID='123456789012345678901'"$'\n'"AWS_WEB_IDENTITY_AUDIENCE='https://control.veraxsistemas.com.br/aws-reader'"
+with_aws_reader=${with_turnstile_and_egress/TURNSTILE_SITE_KEY=/$aws_reader_lines$'\n'TURNSTILE_SITE_KEY=}
+[ "$(api_env)" = "$with_aws_reader" ] || fail "o api.env com o papel da AWS saiu diferente:
+$(diff <(echo "$with_aws_reader") <(api_env) || true)"
+grep -qi 'aviso' "$root/out" && fail "avisou com tudo configurado: $(cat "$root/out")"
+grep -q -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$root/run/verax/worker.env" &&
+  fail "o worker recebeu os valores do papel da AWS (só a API os usa neste PR)"
+grep -q -e 'node-sa' -e 'aws' "$root/vault/log" && fail "leu um cofre por causa do papel da AWS: $(cat "$root/vault/log")"
+
+# Só com os dois valores (sem o IP de saída nem o Turnstile): o resto do api.env continua o de referência.
+new_root "só o papel de leitura da AWS" papel-aws-so
+node_conf NODE_SA_UNIQUE_ID=123456789012345678901 AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
+render_env || fail "o render falhou: $(cat "$root/out")"
+only_aws_reader=${baseline/DATABASE_URL=/$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(api_env)" = "$only_aws_reader" ] || fail "o api.env só com o papel da AWS saiu diferente:
+$(diff <(echo "$only_aws_reader") <(api_env) || true)"
 
 # --- Sem permissão no cofre (ou outro erro do gcloud): a partida para -----------------------------------------------
 new_root "cofre sem permissão" negado
