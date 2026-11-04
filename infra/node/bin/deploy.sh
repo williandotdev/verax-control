@@ -26,6 +26,9 @@ images=$(sed -n 's/^IMAGES_REPOSITORY=//p' "$config" | tr -d '\r')
 [[ $images =~ ^[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9-]+/[a-z0-9-]+$ ]] || { echo 'IMAGES_REPOSITORY inválido no node.conf.' >&2; exit 2; }
 project=$(sed -n 's/^VERAX_GCP_PROJECT=//p' "$config" | tr -d '\r')
 [[ $project =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || { echo 'VERAX_GCP_PROJECT inválido no node.conf.' >&2; exit 2; }
+# Perfil do nó: no standard, o pacote leva também o Wazuh (a configuração e os scripts de infra/wazuh, que o install.sh
+# instala em /opt/verax/wazuh). O install.sh confere o valor.
+profile=$(sed -n 's/^NODE_PROFILE=//p' "$config" | tr -d '\r')
 
 # O gh lê o manifesto da imagem no registro com as credenciais do Docker desta máquina. No Windows, o ajudante de
 # credenciais do Docker Desktop fica fora do PATH do Git Bash.
@@ -91,6 +94,11 @@ to_vm() { scp "${ssh_opts[@]}" -P "$port" -q "$@"; }
 echo "== Copiando o pacote para $vm"
 on_vm 'rm -rf ~/verax-node'
 to_vm -r infra/node "$user@localhost:verax-node"
+if [[ $profile == standard ]]; then
+  on_vm 'mkdir -p verax-node/wazuh/config'
+  to_vm -r infra/wazuh/scripts "$user@localhost:verax-node/wazuh/"
+  to_vm -r infra/wazuh/config/indexer infra/wazuh/config/manager "$user@localhost:verax-node/wazuh/config/"
+fi
 to_vm "$config" "$user@localhost:verax-node/node.conf"
 
 echo "== Instalando"
