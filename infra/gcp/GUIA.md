@@ -88,7 +88,9 @@ us-east1.
 
 **Custo estimado:** de R$ 5 a 15 por mês, mais o IP do Cloud NAT (cerca de R$ 20 por mês, a conferir na fatura). A
 e2-micro, os 30 GB de disco padrão, o Pub/Sub, os segredos e 5 GB do bucket ficam no nível gratuito da GCP em
-us-east1, que vale para uma e2-micro por conta de faturamento. Sobram o Cloud NAT e centavos de snapshot.
+us-east1, que vale para uma e2-micro por conta de faturamento. Sobram o Cloud NAT e centavos de snapshot. O registro
+das imagens guarda as 3 versões mais recentes de cada imagem (a que está no ar e duas para voltar) e apaga o resto
+depois de 30 dias, para ficar perto dos 0,5 GB gratuitos.
 
 ## O nó de homologação: o que muda
 
@@ -210,13 +212,24 @@ terraform plan -out=plano.tfplan
 
 O `-out=plano.tfplan` grava exatamente esse plano, para o `apply` fazer só isso.
 
-**No nó da Verax, o primeiro `plan` depois da mudança de pasta** tem de terminar com:
+**No nó da Verax, o próximo `plan`** tem de terminar com:
 
 ```
-Plan: 0 to add, 0 to change, 0 to destroy.
+Plan: 0 to add, 1 to change, 0 to destroy.
 ```
 
-e mostrar 30 linhas `has moved to`, uma por recurso que passou para o módulo (por exemplo,
+A única mudança é no registro das imagens, `google_artifact_registry_repository.node will be updated in-place`:
+`~ immutable_tags = true -> false` dentro de `docker_config` e, na política de limpeza `manter-recentes`, o bloco
+`cleanup_policies` saindo (`-`, com `keep_count = 10`) e voltando (`+`, com `keep_count = 3`), porque é um conjunto.
+Nada mais muda, e nenhuma imagem é apagada pelo `apply`: a limpeza roda num job do próprio Artifact Registry, mais ou
+menos uma vez por dia. O motivo está no `envs/verax/images.tf`: com tags imutáveis, o Artifact Registry não apaga
+nenhuma versão com tag, e toda imagem do nó tem a tag do commit, então a política de limpeza nunca apagava nada. A
+tag mutável não muda o risco, porque o nó instala pelo digest conferido contra a atestação (`deploy.sh`), nunca pela
+tag. É uma atualização no lugar, não uma recriação (o provider só recria o registro por lugar, nome, formato, modo ou
+chave); o teste `envs/verax/tests/imagens.tftest.hcl` fixa isso.
+
+Se o `plan` da mudança de pasta ainda não foi aplicado, o mesmo `plan` mostra também 30 linhas `has moved to`, uma
+por recurso que passou para o módulo (por exemplo,
 `# google_compute_instance.node has moved to module.node.google_compute_instance.node`). Os blocos `moved` de
 `envs/verax/main.tf` dizem ao Terraform que só o endereço mudou. Confira:
 
@@ -228,13 +241,17 @@ e mostrar 30 linhas `has moved to`, uma por recurso que passou para o módulo (p
    apagar a VM, e antes disso o `apply` já apagou os acessos dos operadores nela (veja "Mudar ou desfazer"). Foi
    conferido com um `plan` só de leitura contra o estado real em 04/11/2026: 47 recursos (o orçamento é um deles),
    nenhuma mudança, 30 movidos.
-2. **Nenhum `will be updated in-place`** no nó da Verax. Uma mudança no lugar não derruba nada, mas este PR não
-   pretende mudar nada nele.
+2. **Só um `will be updated in-place`**, o do registro das imagens, acima. Uma mudança no lugar não derruba nada,
+   mas qualquer outra não é deste PR.
 3. Se o seu `terraform.tfvars` não for o mesmo da primeira subida, o `plan` mostra a diferença: compare antes de
    seguir.
 
-O `apply` desse plano só grava os endereços novos no estado; nada muda na GCP. Depois dele, o `plan` seguinte mostra
-`No changes.`, e os blocos `moved` podem ficar (não atrapalham) ou sair.
+O `apply` desse plano muda o registro no lugar (a VM, o banco e as imagens não são tocados) e, se for o caso, grava
+os endereços novos no estado. Depois dele, o `plan` seguinte mostra `No changes.`, e os blocos `moved` podem ficar
+(não atrapalham) ou sair. Se, em vez disso, ele insistir em `+ docker_config { + immutable_tags = false }`, é uma
+quirk conhecida do serviço (hashicorp/terraform-provider-google#14846: o Artifact Registry guarda a mesma coisa para
+"falso" e "sem valor" e pode devolver o bloco vazio); o registro já está como se quer, e a saída é tirar o bloco
+`docker_config` do `images.tf` (sem valor é o mesmo que falso) e ajustar o teste.
 
 **Na homologação, numa subida do zero,** a última linha é **`Plan: 39 to add, 0 to change, 0 to destroy.`**, sem
 orçamento e sem e-mail de alerta (41 com os dois), mais 5 por projeto monitorado e 4 por pessoa em `operators` (mais

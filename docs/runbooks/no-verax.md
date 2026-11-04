@@ -68,7 +68,9 @@ infra/node/bin/deploy.sh COMMIT caminho/para/node.conf
 ```
 
 `COMMIT` é o commit da `main` cujas imagens você quer rodar; ele aparece no resumo do workflow `Imagens do nó`. Para
-atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
+atualizar, repita com o commit novo; para voltar, repita com o anterior. O registro guarda as 3 versões mais recentes
+de cada imagem (e tudo o que tem menos de 30 dias); para voltar mais longe, reverta o commit na `main`, que publica
+uma imagem nova. O `deploy.sh` faz três coisas:
 
 1. **Confere as imagens.** Com `gh attestation verify`, confere a assinatura da atestação de origem de cada imagem e
    quem a assinou: o workflow `Imagens do nó` deste repositório, na `main`, nesse commit, num executor do GitHub.

@@ -12,17 +12,29 @@ resource "google_artifact_registry_repository" "node" {
   format        = "DOCKER"
 
   docker_config {
-    # Uma versão publicada nunca é sobrescrita: o nó roda sempre pelo digest.
-    immutable_tags = true
+    # Tags mutáveis, para a limpeza abaixo poder apagar. Com tags imutáveis, o Artifact Registry não apaga nenhuma
+    # versão com tag ("If a repository has immutable tags enabled, tagged artifacts can't be deleted", documentação
+    # das políticas de limpeza), e o workflow `Imagens do nó` põe a tag do commit em toda imagem: a política DELETE
+    # nunca apagava nada, e o registro guardava todas as versões (o nível gratuito é 0,5 GB). A tag mutável não muda
+    # o risco: o nó instala sempre pelo digest conferido contra a atestação de origem (infra/node/bin/deploy.sh),
+    # nunca pela tag, que só serve para achar o digest do commit. É a mesma decisão do registro do plano de controle.
+    # Mudar este valor é uma atualização no lugar do registro, não uma recriação: no provider google 8.9.0, nenhum
+    # campo de `docker_config` tem `ForceNew`, e a mudança vai no `updateMask` como `dockerConfig`.
+    immutable_tags = false
   }
 
-  # Guarda as 10 versões mais recentes e apaga o resto depois de 30 dias, para o registro não crescer sem limite.
+  # Guarda as 3 versões mais recentes de cada imagem (a que está no ar e duas para voltar, com
+  # `deploy.sh <commit anterior>`) e apaga o resto depois de 30 dias, para o registro não crescer sem limite. Uma
+  # versão que casa com as duas políticas fica. Três bastam: o nó não volta mais do que isso, porque as migrations
+  # do banco rodam a cada partida e só andam para a frente, e uma versão apagada não se republica (o environment
+  # `imagens` só aceita a `main`): para voltar mais longe, o caminho é reverter o commit na `main`, que publica uma
+  # imagem nova e atestada.
   cleanup_policy_dry_run = false
   cleanup_policies {
     id     = "manter-recentes"
     action = "KEEP"
     most_recent_versions {
-      keep_count = 10
+      keep_count = 3
     }
   }
   cleanup_policies {
