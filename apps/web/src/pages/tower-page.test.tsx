@@ -59,8 +59,44 @@ describe('Torre', () => {
     );
     expect(screen.getByRole('link', { name: 'Alto: 2 incidentes abertos' })).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Nota de postura' })).toHaveAttribute('aria-valuenow', '64');
-    expect(screen.getByText(/1 conta sem eventos há mais de 24 horas/)).toHaveTextContent(
-      DEMO_ACCOUNTS.alfaHomologacao,
+  });
+
+  it('cobertura: conectadas, última coleta, último evento e as contas silenciosas, sem eventos no período', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    const coverage = await screen.findByRole('region', { name: 'Cobertura' });
+    const value = (term: string) => within(coverage).getByText(term).nextElementSibling;
+    expect(value('Contas conectadas')).toHaveTextContent('2');
+    expect(value('Última coleta')).toHaveTextContent(/há 1 min/);
+    expect(value('Último evento recebido')).toHaveTextContent(/há 3 min/);
+    expect(within(coverage).getByText(/2 contas sem eventos há mais de 24 horas/)).toHaveTextContent(
+      `${DEMO_ACCOUNTS.alfaHomologacao} e ${DEMO_ACCOUNTS.alfaCloudflare}`,
+    );
+  });
+
+  it('cobertura de quem nunca coletou: nenhuma coleta, nenhum evento e nenhuma conta conectada', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    server.use(
+      http.get(`${API_URL}/v1/tower`, () =>
+        HttpResponse.json({
+          ...demoTower(beta ?? '', { includeUnowned: false }),
+          coverage: {
+            connectedAccounts: 0,
+            lastCollectedAt: null,
+            lastEventAt: null,
+            silentAccounts: [DEMO_ACCOUNTS.beta],
+            silentAfterHours: 24,
+          },
+        }),
+      ),
+    );
+    const coverage = await screen.findByRole('region', { name: 'Cobertura' });
+    expect(within(coverage).getByText('Contas conectadas').nextElementSibling).toHaveTextContent('0');
+    expect(within(coverage).getByText('Última coleta').nextElementSibling).toHaveTextContent('nenhuma ainda');
+    expect(within(coverage).getByText('Último evento recebido').nextElementSibling).toHaveTextContent(
+      'nenhum ainda',
+    );
+    expect(within(coverage).getByText(/1 conta sem eventos há mais de 24 horas/)).toHaveTextContent(
+      DEMO_ACCOUNTS.beta,
     );
   });
 

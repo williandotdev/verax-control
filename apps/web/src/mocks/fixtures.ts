@@ -92,14 +92,23 @@ export function demoTower(
     ].filter((decision) => decision.count > 0),
     openIncidents: open,
     posture: { score, scannedAt: minutesAgo(now, alfa ? 6 * 60 : 7 * 60), warningBelow },
+    // Como as contas da demonstração (`mocks/admin.ts`): na Alfa, produção e GCP conectadas, a homologação com erro
+    // há 30 horas e o Cloudflare aguardando a primeira leitura.
     coverage: alfa
       ? {
           connectedAccounts: 2,
+          lastCollectedAt: minutesAgo(now, 1),
           lastEventAt: minutesAgo(now, 3),
-          silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao],
+          silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao, DEMO_ACCOUNTS.alfaCloudflare],
           silentAfterHours: 24,
         }
-      : { connectedAccounts: 1, lastEventAt: minutesAgo(now, 1), silentAccounts: [], silentAfterHours: 24 },
+      : {
+          connectedAccounts: 1,
+          lastCollectedAt: minutesAgo(now, 1),
+          lastEventAt: minutesAgo(now, 1),
+          silentAccounts: [],
+          silentAfterHours: 24,
+        },
     mitre: options.mitre ?? { periodDays: 30, tactics: mitreTactics([], []) },
     generatedAt: now.toISOString(),
   });

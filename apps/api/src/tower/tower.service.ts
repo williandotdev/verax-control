@@ -57,11 +57,14 @@ export class TowerService {
 
     const accounts = await db.cloudAccount.findMany({
       where: { status: 'active' },
-      select: { accountId: true, lastEventAt: true },
+      select: { accountId: true, provider: true, connection: true, lastCollectedAt: true, lastEventAt: true },
     });
     const cover = coverage(
       accounts.map((account) => ({
         accountId: account.accountId,
+        provider: account.provider,
+        connection: account.connection,
+        lastCollectedAt: account.lastCollectedAt?.toISOString() ?? null,
         lastEventAt: account.lastEventAt?.toISOString() ?? null,
       })),
       now,

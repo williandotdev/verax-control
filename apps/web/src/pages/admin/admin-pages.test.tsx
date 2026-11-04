@@ -223,6 +223,54 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     );
   });
 
+  it('selo da conexão: Conectada, Erro ou Aguardando; o detalhe mostra a última coleta e o tipo do erro', async () => {
+    renderAt('/cadastros/contas');
+    const rows = await rowsOf('Contas cloud do cliente');
+    const rowOf = (id: string) => rows.find((row) => row.textContent?.includes(id)) as HTMLElement;
+    // A terceira coluna é a da conexão.
+    const badge = (id: string) => within(rowOf(id)).getAllByRole('cell')[2];
+    expect(badge(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada$/);
+    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Conectada$/);
+    expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(/^Erro$/);
+    expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(/^Aguardando$/);
+
+    await userEvent.click(
+      within(rowOf(DEMO_ACCOUNTS.alfaHomologacao)).getByRole('button', {
+        name: (name) => name.includes(DEMO_ACCOUNTS.alfaHomologacao),
+      }),
+    );
+    const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaHomologacao}` });
+    expect(
+      within(sheet).getByText(/A última tentativa de assumir o papel de leitura falhou/),
+    ).toHaveTextContent('Tipo do erro: AccessDenied.');
+    expect(within(sheet).getByText('Última coleta').nextElementSibling).toHaveTextContent('ontem');
+    expect(within(sheet).getByText('Último evento').nextElementSibling).toHaveTextContent('ontem');
+  });
+
+  it('GCP: conecta quando o primeiro evento chega; trocar a assinatura volta para Aguardando', async () => {
+    renderAt('/cadastros/contas');
+    const row = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
+      candidate.textContent?.includes(DEMO_ACCOUNTS.alfaGcp),
+    ) as HTMLElement;
+    await userEvent.click(
+      within(row).getByRole('button', { name: (name) => name.includes(DEMO_ACCOUNTS.alfaGcp) }),
+    );
+    const sheet = await screen.findByRole('dialog', { name: `Projeto da GCP ${DEMO_ACCOUNTS.alfaGcp}` });
+    expect(within(sheet).getByText('A última leitura deu certo.')).toBeInTheDocument();
+    // A GCP entrega por evento: a leitura vazia da assinatura não conecta a conta.
+    expect(within(sheet).getByText(/Conectada" quando o primeiro evento chegar/)).toBeInTheDocument();
+    const field = within(sheet).getByLabelText('Assinatura do Pub/Sub');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'verax-logs-nova');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar assinatura' }));
+    expect(
+      await within(sheet).findByText(
+        'Aguardando a configuração: a conta conecta quando o primeiro evento chegar.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(sheet).getByText('Conexão').nextElementSibling).toHaveTextContent(/^Aguardando/);
+  });
+
   it('conta já cadastrada (em qualquer cliente) é recusada pela API, com a mensagem', async () => {
     renderAt('/cadastros/contas');
     await userEvent.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
@@ -269,7 +317,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       candidate.textContent?.includes(DEMO_ACCOUNTS.alfaCloudflare),
     ) as HTMLElement;
     expect(row).toHaveTextContent('loja-alfa.example');
-    expect(row).toHaveTextContent('Aguardando a configuração');
+    expect(row).toHaveTextContent('Aguardando');
     await userEvent.click(
       within(row).getByRole('button', { name: (name) => name.includes(DEMO_ACCOUNTS.alfaCloudflare) }),
     );

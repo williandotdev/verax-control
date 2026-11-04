@@ -7,6 +7,12 @@ import { scopeToTenant } from './tenant-scope.js';
 import { type Prisma, PrismaClient } from '../../generated/prisma/client.js';
 
 /**
+ * Conexões do pool em cada processo (API e worker). É o padrão do `pg`, fixado aqui: o worker roda tarefas ao mesmo
+ * tempo (agendador) e precisa de pelo menos 5. O Postgres do nó aceita 40 (`max_connections` em `infra/node/compose.yaml`).
+ */
+export const DATABASE_POOL_MAX = 10;
+
+/**
  * Cliente Prisma único da aplicação, com o driver `pg`.
  *
  * Não conecta no boot: o pool abre conexões sob demanda, então a API sobe mesmo com o banco
@@ -15,7 +21,7 @@ import { type Prisma, PrismaClient } from '../../generated/prisma/client.js';
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleDestroy {
   constructor(@Inject(APP_CONFIG) config: Pick<AppConfig, 'DATABASE_URL'>) {
-    super({ adapter: new PrismaPg({ connectionString: config.DATABASE_URL }) });
+    super({ adapter: new PrismaPg({ connectionString: config.DATABASE_URL, max: DATABASE_POOL_MAX }) });
   }
 
   /**

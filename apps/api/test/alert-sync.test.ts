@@ -165,6 +165,8 @@ describe('sync de alertas para achados (T5.3)', () => {
 
     const account = await prisma.cloudAccount.findFirstOrThrow({ where: { accountId: accountA } });
     expect(account.lastEventAt?.toISOString()).toBe(finding.occurredAt.toISOString());
+    // O evento recebido conecta a conta, que aguardava desde o cadastro.
+    expect(account.connection).toBe('connected');
   });
 
   it('reler a janela não duplica e não desfaz a triagem', async () => {
@@ -347,6 +349,57 @@ describe('sync de alertas para achados (T5.3)', () => {
     const report = await new AlertSync(prisma, new FakeIndexer([doc]), { name, settings }).runOnce();
     expect(report).toMatchObject({ created: 0, duplicates: 1 });
     expect((await stored()).lastEventAt?.toISOString()).toBe(at.toISOString());
+  });
+
+  it('o evento recebido pelo Wazuh conecta a conta que aguardava; a conta com erro continua com erro', async () => {
+    const tenant = await createTenant(app, 'Cliente da conexão pelo Wazuh');
+    const waiting = String(randomInt(100_000_000_000, 999_999_999_999));
+    const failed = String(randomInt(100_000_000_000, 999_999_999_999));
+    const bucketOf = (prefix: string) => `${prefix}-${randomInt(1e6, 9e6)}`;
+    const [waitingBucket, failedBucket] = [bucketOf('trilha-aguardando'), bucketOf('trilha-com-erro')];
+    await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenant,
+        accountId: waiting,
+        regions: ['sa-east-1'],
+        externalId: 'v'.repeat(43),
+        cloudtrailBucket: waitingBucket,
+      },
+    });
+    // Só o sync da fonte tira a conta do erro: o evento que chega pelo Wazuh não apaga o erro registrado.
+    await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenant,
+        accountId: failed,
+        regions: ['sa-east-1'],
+        externalId: 'u'.repeat(43),
+        cloudtrailBucket: failedBucket,
+        connection: 'error',
+        connectionError: 'AccessDenied',
+      },
+    });
+    const at = new Date(Date.now() - 2 * MINUTE);
+    const doc = (account: string, bucket: string) => ({
+      ...cloudTrailAlert({ account, bucket }),
+      id: `conexao.${randomInt(1e6, 9e6)}`,
+      timestamp: wazuhTime(at),
+    });
+    const report = await syncFor(
+      new FakeIndexer([doc(waiting, waitingBucket), doc(failed, failedBucket)]),
+    ).runOnce();
+    expect(report).toMatchObject({ read: 2, unowned: 0 });
+
+    const state = (accountId: string) =>
+      prisma.cloudAccount.findFirstOrThrow({
+        where: { provider: 'aws', accountId },
+        select: { connection: true, connectionError: true, lastEventAt: true },
+      });
+    expect(await state(waiting)).toEqual({ connection: 'connected', connectionError: null, lastEventAt: at });
+    expect(await state(failed)).toEqual({
+      connection: 'error',
+      connectionError: 'AccessDenied',
+      lastEventAt: at,
+    });
   });
 
   it('outro worker com a concessão em vigor: a execução não lê nada', async () => {

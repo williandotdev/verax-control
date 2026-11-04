@@ -51,7 +51,13 @@ export interface UnownedRecord {
   title: string | null;
 }
 
-/** Último evento visto de cada conta numa execução, para a cobertura (conta silenciosa) da Torre. */
+/**
+ * Último evento visto de cada conta numa execução, para a cobertura (conta silenciosa) da Torre.
+ *
+ * O evento recebido também conecta a conta: na AWS (lida pelo Wazuh) e na GCP (Pub/Sub), as fontes entregam por
+ * evento, e só o evento prova que os logs chegam. A conta que recebeu evento passa de `waiting` para `connected`.
+ * Nunca sai de `error` por aqui: quem tira a conta do erro é o sync da fonte, numa leitura que deu certo.
+ */
 export class LastEvents {
   private readonly events = new Map<string, { tenantId: string; accountId: string; at: Date }>();
 
@@ -63,9 +69,15 @@ export class LastEvents {
 
   async save(prisma: PrismaService, provider: CloudProvider): Promise<void> {
     for (const { tenantId, accountId, at } of this.events.values()) {
-      await prisma.forTenant(tenantId).cloudAccount.updateMany({
+      const accounts = prisma.forTenant(tenantId).cloudAccount;
+      await accounts.updateMany({
         where: { provider, accountId, OR: [{ lastEventAt: null }, { lastEventAt: { lt: at } }] },
         data: { lastEventAt: at },
+      });
+      // Conta desativada no meio da execução fica como a desativação deixou.
+      await accounts.updateMany({
+        where: { provider, accountId, status: 'active', connection: 'waiting' },
+        data: { connection: 'connected', connectionError: null },
       });
     }
   }
@@ -80,6 +92,10 @@ export class FindingStore {
   /**
    * Achado, uso da exceção e incidente na mesma transação: se algo falhar no meio, nada fica gravado, e a releitura
    * grava tudo de novo. Sem isso, o achado ficaria e voltaria como duplicado, sem nunca entrar no incidente.
+   *
+   * Os coletores rodam ao mesmo tempo (agendador do worker): os achados de um mesmo cliente entram um por vez, sob um
+   * lock transacional por cliente. Sem ele, dois achados com a mesma chave, gravados juntos por coletores diferentes,
+   * não se veriam e abririam dois incidentes. Clientes diferentes não esperam um pelo outro.
    */
   async persist(
     draft: FindingDraft,
@@ -88,6 +104,7 @@ export class FindingStore {
     now: Date,
   ): Promise<PersistOutcome> {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:findings:${draft.tenantId}`}))`;
       const db = scopeToTenant(tx, draft.tenantId);
       const { count } = await db.finding.createMany({
         data: [findingRow(draft, exception)],

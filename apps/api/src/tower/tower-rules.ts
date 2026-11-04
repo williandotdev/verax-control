@@ -1,4 +1,11 @@
-import type { FindingSeverity, PendingDecisionKind, TrafficLight, TrafficLightReason } from '@verax/shared';
+import type {
+  CloudAccountConnection,
+  CloudProvider,
+  FindingSeverity,
+  PendingDecisionKind,
+  TrafficLight,
+  TrafficLightReason,
+} from '@verax/shared';
 
 // Os tipos do resumo vêm do contrato compartilhado com o painel (`packages/shared/src/tower.ts`).
 export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
@@ -17,7 +24,7 @@ export type { PendingDecisionKind, TrafficLight, TrafficLightReason };
 export interface TowerThresholds {
   /** Nota de postura abaixo disto deixa a Torre amarela. */
   postureWarning: number;
-  /** Conta sem evento há mais horas que isto aparece como silenciosa na cobertura. */
+  /** Conta sem sinal de vida (evento ou coleta, conforme o provedor) há mais horas que isto aparece como silenciosa. */
   silentAfterHours: number;
 }
 
@@ -46,32 +53,70 @@ export function trafficLight(
 
 export interface AccountActivity {
   accountId: string;
+  /** O provedor decide o sinal de vida da conta (ver `coverage`). */
+  provider: CloudProvider;
+  /** Estado da coleta, gravado pelo coletor da conta. */
+  connection: CloudAccountConnection;
+  /** Última leitura bem-sucedida da fonte da conta (com ou sem evento), ou `null` se nunca houve. */
+  lastCollectedAt: string | null;
   /** Horário do último alerta recebido da conta, ou `null` se nunca chegou nada. */
   lastEventAt: string | null;
 }
 
 export interface Coverage {
+  /** Contas no estado "Conectada". */
   connectedAccounts: number;
+  /** A coleta bem-sucedida mais recente entre todas as contas. */
+  lastCollectedAt: string | null;
   /** O evento mais recente entre todas as contas. */
   lastEventAt: string | null;
-  /** Contas sem evento há mais que o limite (ou que nunca mandaram nada), em ordem. */
+  /** Contas sem sinal de vida há mais que o limite (ou que nunca deram sinal), em ordem. */
   silentAccounts: string[];
 }
 
+/**
+ * Provedores cujas fontes entregam por evento: a AWS, lida pelo Wazuh, e a GCP, pelo Pub/Sub. Uma leitura vazia
+ * não prova que os logs chegam (sink apagado, trilha parada), então só o evento conta como sinal de vida.
+ */
+const EVENT_DELIVERED: ReadonlySet<CloudProvider> = new Set<CloudProvider>(['aws', 'gcp']);
+
+function latest(times: readonly (string | null)[]): string | null {
+  return times.reduce<string | null>(
+    (newest, time) =>
+      time !== null && (newest === null || Date.parse(time) > Date.parse(newest)) ? time : newest,
+    null,
+  );
+}
+
+/** O sinal de vida mais recente da conta, que depende de como o provedor entrega os logs. */
+function lastSignOfLife(account: AccountActivity): string | null {
+  if (EVENT_DELIVERED.has(account.provider)) return account.lastEventAt;
+  return latest([account.lastCollectedAt, account.lastEventAt]);
+}
+
+/**
+ * Cobertura (fase 2): "conectadas" são as contas no estado `connected`, gravado pelo coletor de cada uma. Conta
+ * silenciosa é a que não dá sinal de vida há mais que o limite, e o sinal depende do provedor:
+ * - **AWS e GCP** (entregues por evento: Wazuh e Pub/Sub): só o último evento. Uma leitura vazia não prova que os
+ *   logs chegam, então uma conta lida sem erro, mas sem evento, fica silenciosa;
+ * - **Cloudflare e os demais coletados por API**: o mais recente entre a última coleta e o último evento. A leitura
+ *   bem-sucedida prova que a conta está acessível, mesmo sem evento.
+ */
 export function coverage(
   accounts: readonly AccountActivity[],
   now: Date,
   thresholds: TowerThresholds = DEFAULT_TOWER_THRESHOLDS,
 ): Coverage {
   const limit = now.getTime() - thresholds.silentAfterHours * 60 * 60 * 1000;
-  const times = accounts
-    .flatMap((account) => (account.lastEventAt === null ? [] : [account.lastEventAt]))
-    .sort();
   return {
-    connectedAccounts: accounts.length,
-    lastEventAt: times[times.length - 1] ?? null,
+    connectedAccounts: accounts.filter((account) => account.connection === 'connected').length,
+    lastCollectedAt: latest(accounts.map((account) => account.lastCollectedAt)),
+    lastEventAt: latest(accounts.map((account) => account.lastEventAt)),
     silentAccounts: accounts
-      .filter((account) => account.lastEventAt === null || Date.parse(account.lastEventAt) < limit)
+      .filter((account) => {
+        const alive = lastSignOfLife(account);
+        return alive === null || Date.parse(alive) < limit;
+      })
       .map((account) => account.accountId)
       .sort(),
   };

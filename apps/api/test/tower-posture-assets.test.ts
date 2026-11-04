@@ -12,6 +12,7 @@ import {
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
+import type { Prisma } from '../src/generated/prisma/client.js';
 import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 
@@ -97,7 +98,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
   });
 
   describe('Torre', () => {
-    it('cliente sem nada: verde, sem decisões, conta sem evento aparece como silenciosa', async () => {
+    it('cliente sem nada: verde, sem decisões, conta que nunca coletou aparece como silenciosa', async () => {
       const { accountId, get } = await setup();
       const summary = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
       expect(summary).toMatchObject({
@@ -106,8 +107,77 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         pendingDecisions: [],
         openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
         posture: { score: null, scannedAt: null, warningBelow: 70 },
-        coverage: { connectedAccounts: 1, lastEventAt: null, silentAccounts: [accountId] },
+        coverage: {
+          connectedAccounts: 0,
+          lastCollectedAt: null,
+          lastEventAt: null,
+          silentAccounts: [accountId],
+        },
       });
+    });
+
+    it('cobertura por provedor: AWS e GCP só pelo evento, Cloudflare também pela coleta; só a conectada entra na contagem', async () => {
+      const { tenantId, accountId, get } = await setup();
+      const event = new Date(Date.now() - 2 * HOUR);
+      const collected = new Date(Date.now() - HOUR);
+      // A conta AWS do cliente, lida pelo Wazuh: conectada pelo evento recebido, sem coleta por conta.
+      await prisma.cloudAccount.updateMany({
+        where: { tenantId },
+        data: { connection: 'connected', lastEventAt: event },
+      });
+      const newAccount = (owner: string, data: Partial<Prisma.CloudAccountUncheckedCreateInput>) =>
+        prisma.cloudAccount.create({
+          data: {
+            tenantId: owner,
+            accountId: String(randomInt(100_000_000_000, 999_999_999_999)),
+            regions: ['sa-east-1'],
+            externalId: 'x'.repeat(43),
+            ...data,
+          },
+        });
+      // Sem assinatura do Pub/Sub, para o sync da GCP de outro arquivo de teste não ler estas contas.
+      const gcp = (data: Partial<Prisma.CloudAccountUncheckedCreateInput>) =>
+        newAccount(tenantId, {
+          provider: 'gcp',
+          accountId: `vx-torre-${randomInt(1e6, 9e6)}`,
+          regions: [],
+          externalId: null,
+          ...data,
+        });
+      // Cloudflare lida sem erro, sem nenhum evento: a leitura bem-sucedida já é sinal de vida.
+      await newAccount(tenantId, {
+        provider: 'cloudflare',
+        accountId: randomUUID().replace(/-/g, ''),
+        regions: [],
+        externalId: null,
+        connection: 'connected',
+        lastCollectedAt: collected,
+      });
+      // GCP lida agora há pouco, mas nunca recebeu evento: a leitura vazia não é sinal de vida.
+      const empty = await gcp({ lastCollectedAt: new Date(Date.now() - 5 * 60_000) });
+      // GCP com erro e o último evento há dois dias: silenciosa e fora das conectadas.
+      const stalled = await gcp({
+        connection: 'error',
+        connectionError: 'PermissionDenied',
+        lastCollectedAt: new Date(Date.now() - 2 * DAY),
+        lastEventAt: new Date(Date.now() - 2 * DAY),
+      });
+      // Conta de outro cliente, coletada agora: não entra na cobertura deste.
+      await newAccount(await createTenant(app, `Cliente ${randomInt(1e6, 9e6)}`), {
+        connection: 'connected',
+        lastCollectedAt: new Date(),
+        lastEventAt: new Date(),
+      });
+
+      const summary = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(summary.coverage).toEqual({
+        connectedAccounts: 2,
+        lastCollectedAt: empty.lastCollectedAt?.toISOString(),
+        lastEventAt: event.toISOString(),
+        silentAccounts: [empty.accountId, stalled.accountId].sort(),
+        silentAfterHours: 24,
+      });
+      expect(summary.coverage.silentAccounts).not.toContain(accountId);
     });
 
     it('incidente crítico aberto sem responsável e achado alto sem triagem: vermelho, com as decisões', async () => {

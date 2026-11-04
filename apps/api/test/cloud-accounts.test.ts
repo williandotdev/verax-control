@@ -400,4 +400,179 @@ describe('contas cloud (T3.3)', () => {
       });
     });
   });
+  describe('conexão (fase 2)', () => {
+    it('a API devolve a conexão: aguardando no cadastro, depois o que o coletor gravou', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      expect(created).toMatchObject({ connection: 'waiting', connectionError: null, lastCollectedAt: null });
+
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'error', connectionError: 'AccessDenied' },
+      });
+      const failed = await call(readerA).get(`/v1/cloud-accounts/${created.id}`).expect(200);
+      expect(cloudAccountSchema.parse(failed.body)).toMatchObject({
+        connection: 'error',
+        connectionError: 'AccessDenied',
+        lastCollectedAt: null,
+      });
+
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', connectionError: null, lastCollectedAt: at },
+      });
+      const list = await call(readerA).get('/v1/cloud-accounts?pageSize=100').expect(200);
+      const seen = (list.body as { items: { id: string }[] }).items.find((item) => item.id === created.id);
+      expect(seen).toMatchObject({
+        connection: 'connected',
+        connectionError: null,
+        lastCollectedAt: at.toISOString(),
+      });
+    });
+
+    it('ninguém grava a conexão pela API: só o coletor', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      await call(adminA)
+        .post('/v1/cloud-accounts', newAccount({ connection: 'connected' }))
+        .expect(400);
+      for (const body of [
+        { connection: 'connected' },
+        { connectionError: null },
+        { lastCollectedAt: '2026-11-03T12:00:00.000Z' },
+      ]) {
+        await call(adminA).patch(`/v1/cloud-accounts/${created.id}`, body).expect(400);
+      }
+      expect(
+        await prisma.cloudAccount.findUniqueOrThrow({
+          where: { id: created.id },
+          select: { connection: true, lastCollectedAt: true },
+        }),
+      ).toEqual({ connection: 'waiting', lastCollectedAt: null });
+    });
+
+    it('trocar a assinatura do Pub/Sub volta a conexão para aguardando; a mesma assinatura não muda nada', async () => {
+      const project = gcpProject();
+      const created = cloudAccountSchema.parse(
+        (
+          await call(adminA)
+            .post('/v1/cloud-accounts', {
+              provider: 'gcp',
+              accountId: project,
+              pubsubSubscription: subscription(project),
+            })
+            .expect(201)
+        ).body,
+      );
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      // Com evento já recebido: o sync da GCP de outro teste, rodando ao mesmo tempo no mesmo banco, lê todas as
+      // contas GCP ativas e mantém conectada a que já recebeu evento (a sem evento ele deixaria aguardando).
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', lastCollectedAt: at, lastEventAt: at },
+      });
+      // Confere a resposta da própria alteração, e não uma leitura depois: o sync pode gravar a conexão desta conta a
+      // qualquer momento.
+      const same = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { pubsubSubscription: created.pubsubSubscription })
+        .expect(200);
+      expect(same.body).toMatchObject({ connection: 'connected' });
+
+      const changed = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { pubsubSubscription: subscription(project) })
+        .expect(200);
+      // A última coleta continua: é história, não estado.
+      const account = cloudAccountSchema.parse(changed.body);
+      expect(account).toMatchObject({ connection: 'waiting', connectionError: null });
+      expect(account.lastCollectedAt).not.toBeNull();
+      expect(await entryOf(changed)).toMatchObject({
+        action: 'cloud_account.update',
+        before: { connection: 'connected' },
+        after: { connection: 'waiting' },
+      });
+    });
+
+    it('desativar e reativar a conta voltam a conexão para aguardando, com o antes e o depois na auditoria', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', lastCollectedAt: at, lastEventAt: at },
+      });
+      const stored = () =>
+        prisma.cloudAccount.findUniqueOrThrow({
+          where: { id: created.id },
+          select: { status: true, connection: true, connectionError: true, lastCollectedAt: true },
+        });
+
+      // Desativada, a conta para de ser lida: nem conectada nem com erro. A última coleta é história.
+      const removed = await call(adminA).delete(`/v1/cloud-accounts/${created.id}`).expect(204);
+      expect(await stored()).toEqual({
+        status: 'inactive',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: at,
+      });
+      expect(await entryOf(removed)).toMatchObject({
+        action: 'cloud_account.deactivate',
+        before: { status: 'active', connection: 'connected' },
+        after: { status: 'inactive', connection: 'waiting' },
+      });
+
+      // Reativada, recomeça do zero, qualquer que fosse o estado gravado enquanto parada.
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'error', connectionError: 'AccessDenied' },
+      });
+      const reactivated = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'active' })
+        .expect(200);
+      expect(cloudAccountSchema.parse(reactivated.body)).toMatchObject({
+        status: 'active',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: at.toISOString(),
+      });
+      expect(await entryOf(reactivated)).toMatchObject({
+        action: 'cloud_account.update',
+        before: { status: 'inactive', connection: 'error', connectionError: 'AccessDenied' },
+        after: { status: 'active', connection: 'waiting', connectionError: null },
+      });
+
+      // Desativar pela alteração também recomeça; repetir a situação atual, ou mudar só as regiões, não mexe.
+      await prisma.cloudAccount.update({ where: { id: created.id }, data: { connection: 'connected' } });
+      const unchanged = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'active', regions: ['eu-west-1'] })
+        .expect(200);
+      expect(unchanged.body).toMatchObject({ connection: 'connected' });
+      const paused = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'inactive' })
+        .expect(200);
+      expect(paused.body).toMatchObject({ status: 'inactive', connection: 'waiting' });
+    });
+
+    it('isolamento: A não vê a conexão nem o erro das contas de B', async () => {
+      const ofB = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantB,
+          accountId: accountId(),
+          regions: ['sa-east-1'],
+          externalId: 'x'.repeat(43),
+          connection: 'error',
+          connectionError: 'ErroDaContaDoClienteB',
+          lastCollectedAt: new Date('2026-11-03T11:00:00.000Z'),
+        },
+      });
+      const list = await call(adminA).get('/v1/cloud-accounts?pageSize=100').expect(200);
+      expect(JSON.stringify(list.body)).not.toContain('ErroDaContaDoClienteB');
+      await call(adminA).get(`/v1/cloud-accounts/${ofB.id}`).expect(404);
+      const own = await call(adminB).get(`/v1/cloud-accounts/${ofB.id}`).expect(200);
+      expect(own.body).toMatchObject({ connection: 'error', connectionError: 'ErroDaContaDoClienteB' });
+    });
+  });
 });

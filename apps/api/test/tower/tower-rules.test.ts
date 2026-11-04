@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { coverage, pendingDecisions, trafficLight } from '../../src/tower/tower-rules.js';
+import {
+  type AccountActivity,
+  coverage,
+  pendingDecisions,
+  trafficLight,
+} from '../../src/tower/tower-rules.js';
 
 const none = { critical: 0, high: 0, medium: 0, low: 0 };
 
@@ -43,32 +48,113 @@ describe('semáforo da Torre (T5.10, pendência 9)', () => {
   });
 });
 
-describe('cobertura da Torre (T5.10)', () => {
+describe('cobertura da Torre (T5.10 e fase 2)', () => {
   const now = new Date('2026-11-02T12:00:00.000Z');
+  const CLOUDFLARE_ID = '0123456789abcdef0123456789abcdef';
+  /** Conta AWS (lida pelo Wazuh) por padrão. */
+  const account = (accountId: string, activity: Partial<AccountActivity> = {}): AccountActivity => ({
+    accountId,
+    provider: 'aws',
+    connection: 'waiting',
+    lastCollectedAt: null,
+    lastEventAt: null,
+    ...activity,
+  });
 
-  it('contas conectadas, último evento e contas silenciosas', () => {
+  it('contas conectadas pelo estado, a coleta e o evento mais recentes e as contas silenciosas', () => {
     expect(
       coverage(
         [
-          { accountId: '444455556666', lastEventAt: '2026-11-02T11:59:00.000Z' },
-          { accountId: '111122223333', lastEventAt: '2026-11-01T11:00:00.000Z' },
-          { accountId: '222233334444', lastEventAt: null },
+          account('444455556666', {
+            connection: 'connected',
+            lastCollectedAt: '2026-11-02T11:59:30.000Z',
+            lastEventAt: '2026-11-02T11:59:00.000Z',
+          }),
+          account('111122223333', {
+            connection: 'error',
+            lastCollectedAt: '2026-11-01T11:00:00.000Z',
+            lastEventAt: '2026-11-01T10:00:00.000Z',
+          }),
+          account('222233334444'),
         ],
         now,
       ),
     ).toEqual({
-      connectedAccounts: 3,
+      connectedAccounts: 1,
+      lastCollectedAt: '2026-11-02T11:59:30.000Z',
       lastEventAt: '2026-11-02T11:59:00.000Z',
       silentAccounts: ['111122223333', '222233334444'],
     });
   });
 
-  it('sem contas: nada conectado e nenhum evento', () => {
-    expect(coverage([], now)).toEqual({ connectedAccounts: 0, lastEventAt: null, silentAccounts: [] });
+  it('AWS lida pelo Wazuh: o evento recente é o sinal de vida, e a conta conectada pelo evento entra na contagem', () => {
+    // Sem coleta por conta: o Wazuh só registra o evento, e o evento conecta a conta (`LastEvents.save`).
+    const wazuh = account('222233334444', {
+      connection: 'connected',
+      lastEventAt: '2026-11-02T10:00:00.000Z',
+    });
+    expect(coverage([wazuh], now)).toMatchObject({ connectedAccounts: 1, silentAccounts: [] });
+  });
+
+  it('GCP (entregue por evento): coleta recente com evento antigo, ou sem evento nenhum, deixa a conta silenciosa', () => {
+    const stale = account('vx-projeto-antigo', {
+      provider: 'gcp',
+      connection: 'connected',
+      lastCollectedAt: '2026-11-02T11:58:00.000Z',
+      lastEventAt: '2026-11-01T09:00:00.000Z',
+    });
+    // Lida sem erro, mas nunca recebeu evento: a leitura vazia não prova que os logs chegam.
+    const empty = account('vx-projeto-vazio', {
+      provider: 'gcp',
+      lastCollectedAt: '2026-11-02T11:58:00.000Z',
+    });
+    expect(coverage([stale, empty], now)).toEqual({
+      connectedAccounts: 1,
+      lastCollectedAt: '2026-11-02T11:58:00.000Z',
+      lastEventAt: '2026-11-01T09:00:00.000Z',
+      silentAccounts: ['vx-projeto-antigo', 'vx-projeto-vazio'],
+    });
+    // A AWS segue a mesma regra: a coleta não conta, só o evento.
+    const aws = account('111122223333', { lastCollectedAt: '2026-11-02T11:58:00.000Z' });
+    expect(coverage([aws], now).silentAccounts).toEqual(['111122223333']);
+  });
+
+  it('Cloudflare (coletado por API): coleta recente sem nenhum evento não fica silenciosa; coleta antiga, sim', () => {
+    const quiet = account(CLOUDFLARE_ID, {
+      provider: 'cloudflare',
+      connection: 'connected',
+      lastCollectedAt: '2026-11-02T11:58:00.000Z',
+    });
+    expect(coverage([quiet], now)).toEqual({
+      connectedAccounts: 1,
+      lastCollectedAt: '2026-11-02T11:58:00.000Z',
+      lastEventAt: null,
+      silentAccounts: [],
+    });
+    const stalled = account(CLOUDFLARE_ID, {
+      provider: 'cloudflare',
+      connection: 'error',
+      lastCollectedAt: '2026-11-01T09:00:00.000Z',
+    });
+    expect(coverage([stalled], now).silentAccounts).toEqual([CLOUDFLARE_ID]);
+    // O evento recebido também vale como sinal de vida.
+    const withEvent = { ...stalled, lastEventAt: '2026-11-02T11:00:00.000Z' };
+    expect(coverage([withEvent], now).silentAccounts).toEqual([]);
+  });
+
+  it('sem contas: nada conectado, nenhuma coleta e nenhum evento', () => {
+    expect(coverage([], now)).toEqual({
+      connectedAccounts: 0,
+      lastCollectedAt: null,
+      lastEventAt: null,
+      silentAccounts: [],
+    });
   });
 
   it('o limite de silêncio vem da configuração', () => {
-    const accounts = [{ accountId: '111122223333', lastEventAt: '2026-11-02T09:00:00.000Z' }];
+    const accounts = [
+      account('111122223333', { connection: 'connected', lastEventAt: '2026-11-02T09:00:00.000Z' }),
+    ];
     expect(coverage(accounts, now).silentAccounts).toEqual([]);
     expect(coverage(accounts, now, { postureWarning: 70, silentAfterHours: 2 }).silentAccounts).toEqual([
       '111122223333',
