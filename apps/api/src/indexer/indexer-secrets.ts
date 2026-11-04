@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { z } from 'zod';
@@ -31,14 +31,14 @@ function requirePem(value: string, origin: string): string {
   return value;
 }
 
-/** Desenvolvimento e teste: credencial no ambiente e CA num arquivo local. */
-export class EnvIndexerSecrets implements IndexerSecrets {
-  private readonly ca: string;
-
-  constructor(private readonly config: IndexerConfig) {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho da configuração, só fora de produção
-    this.ca = requirePem(readFileSync(config.INDEXER_CA_FILE ?? '', 'utf8'), 'INDEXER_CA_FILE');
-  }
+/**
+ * Modo `node` (e desenvolvimento e teste): credencial no ambiente e CA num arquivo. No nó, o arquivo vem do volume
+ * público dos certificados do Wazuh, montado só leitura. A CA é lida a cada conexão nova, e não na partida: na primeira
+ * subida do nó, a API e o worker sobem antes de o Wazuh gerar os certificados, e até lá a leitura falha sem derrubar
+ * nada (o detalhe sai sem o evento bruto, e a tarefa `wazuh` tenta de novo no intervalo seguinte).
+ */
+export class NodeIndexerSecrets implements IndexerSecrets {
+  constructor(private readonly config: IndexerConfig) {}
 
   credentials(): Promise<IndexerCredentials> {
     return Promise.resolve({
@@ -47,8 +47,15 @@ export class EnvIndexerSecrets implements IndexerSecrets {
     });
   }
 
-  certificateAuthority(): Promise<string> {
-    return Promise.resolve(this.ca);
+  async certificateAuthority(): Promise<string> {
+    let content: string;
+    try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho da configuração, não do request
+      content = await readFile(this.config.INDEXER_CA_FILE ?? '', 'utf8');
+    } catch {
+      throw new Error('CA do indexer indisponível (INDEXER_CA_FILE)');
+    }
+    return requirePem(content, 'INDEXER_CA_FILE');
   }
 }
 
@@ -60,7 +67,7 @@ export interface AwsClients {
 
 const CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 
-/** Produção: credencial do Secrets Manager (com cache de 5 minutos) e CA do SSM Parameter Store. */
+/** Modo `aws`: credencial do Secrets Manager (com cache de 5 minutos) e CA do SSM Parameter Store. */
 export class AwsIndexerSecrets implements IndexerSecrets {
   private cached: { value: IndexerCredentials; until: number } | null = null;
   private ca: string | null = null;
@@ -106,8 +113,7 @@ export class AwsIndexerSecrets implements IndexerSecrets {
   }
 }
 
+/** O provedor do modo em vigor (`INDEXER_AUTH`, já resolvido e conferido pela configuração). */
 export function indexerSecretsFor(config: IndexerConfig): IndexerSecrets {
-  return config.INDEXER_CREDENTIALS_SECRET_ARN !== undefined
-    ? new AwsIndexerSecrets(config)
-    : new EnvIndexerSecrets(config);
+  return config.INDEXER_AUTH === 'aws' ? new AwsIndexerSecrets(config) : new NodeIndexerSecrets(config);
 }
