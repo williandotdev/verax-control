@@ -26,6 +26,8 @@ export interface CreateAppOptions {
   authRateLimit?: boolean;
   /** Checagem no Have I Been Pwned: desligada por padrão (os testes não acessam a internet). */
   passwordBreachCheck?: boolean;
+  /** Turnstile ligado, apontando para um siteverify falso em 127.0.0.1. Sem informar, desligado (como no `.env`). */
+  turnstile?: { secretKey: string; siteKey: string; siteverifyUrl: string };
   capture?: LogCapture;
   /** Caixa de e-mail em memória no lugar do transporte configurado. */
   mailbox?: MailTransport;
@@ -58,6 +60,11 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     // Por padrão, o banco de teste: toda escrita abre transação e grava auditoria de verdade.
     DATABASE_URL: options.databaseUrl ?? inject('testDatabaseUrl'),
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),
+    ...(options.turnstile && {
+      TURNSTILE_SECRET_KEY: options.turnstile.secretKey,
+      TURNSTILE_SITE_KEY: options.turnstile.siteKey,
+      TURNSTILE_SITEVERIFY_URL: options.turnstile.siteverifyUrl,
+    }),
     ...(options.gcpSinkTopicPrefix !== undefined && { GCP_SINK_TOPIC_PREFIX: options.gcpSinkTopicPrefix }),
     ...(options.vault !== undefined && {
       CREDENTIALS_PUBLIC_KEY: options.vault.publicKey,

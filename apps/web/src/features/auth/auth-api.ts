@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { api } from '@/lib/api';
-import { ApiRequestError } from '@/lib/api-client';
+import { ApiRequestError, type PostOptions } from '@/lib/api-client';
+import { TURNSTILE_TOKEN_HEADER } from './turnstile';
 
 /**
  * Chamadas às rotas de autenticação (Better Auth em `/v1/auth`). As respostas têm o formato da biblioteca;
@@ -16,8 +17,22 @@ const okResponse = z.object({}).loose();
 export const PASSWORD_MIN_LENGTH = 12;
 export const PASSWORD_MAX_LENGTH = 128;
 
-export async function signIn(email: string, password: string): Promise<{ needsCode: boolean }> {
-  const response = await api.post('/v1/auth/sign-in/email', { email, password }, signInResponse);
+/** O token do Turnstile, quando a tela tem um, vai num header próprio (a API o confere antes da senha). */
+function withTurnstile(token: string | undefined): PostOptions {
+  return token === undefined ? {} : { headers: { [TURNSTILE_TOKEN_HEADER]: token } };
+}
+
+export async function signIn(
+  email: string,
+  password: string,
+  turnstileToken?: string,
+): Promise<{ needsCode: boolean }> {
+  const response = await api.post(
+    '/v1/auth/sign-in/email',
+    { email, password },
+    signInResponse,
+    withTurnstile(turnstileToken),
+  );
   api.resetCsrf();
   return { needsCode: response.twoFactorRedirect === true };
 }
@@ -36,8 +51,16 @@ export function enableMfa(password: string) {
   return api.post('/v1/auth/two-factor/enable', { password }, enableMfaResponse);
 }
 
-export async function requestPasswordReset(email: string): Promise<void> {
-  await api.post('/v1/auth/request-password-reset', { email }, okResponse);
+export async function requestPasswordReset(email: string, turnstileToken?: string): Promise<void> {
+  await api.post('/v1/auth/request-password-reset', { email }, okResponse, withTurnstile(turnstileToken));
+}
+
+/** A API recusou por causa do Turnstile (sem token, ou token que a Cloudflare não aceitou). */
+export function isTurnstileRefusal(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    (error.code === 'TURNSTILE_REQUIRED' || error.code === 'TURNSTILE_FAILED')
+  );
 }
 
 export async function resetPassword(token: string, newPassword: string): Promise<void> {
@@ -93,6 +116,9 @@ export function authErrorMessage(error: unknown, step: AuthStep): string {
     return 'Não foi possível falar com o servidor. Verifique a conexão.';
   if (error.status === 429) return 'Muitas tentativas. Aguarde alguns minutos e tente de novo.';
   if (error.status >= 500) return 'O servidor não conseguiu concluir agora. Tente de novo em instantes.';
+  // Sem token (o widget não carregou ou a configuração não chegou) ou token vencido: outro token resolve.
+  if (isTurnstileRefusal(error))
+    return 'A verificação de segurança não foi concluída. Tente de novo; se persistir, recarregue a página.';
 
   if (error.code === 'TEMPORARY_PASSWORD_EXPIRED' && (step === 'sign-in' || step === 'code'))
     return 'Sua senha temporária venceu. Peça outra ao administrador.';

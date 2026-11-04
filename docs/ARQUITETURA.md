@@ -157,10 +157,34 @@ Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.v
 custaria cerca de US$ 10 por mês (decisão de 02/11/2026). Os painéis não têm esse limite: ficam com o proxy desligado
 e o certificado é do Firebase.
 
+### Proteções do login
+
+O login é do Better Auth (regra 10: nada de hash, sessão ou MFA próprios), com o que o E2 definiu: MFA obrigatório
+(TOTP, código válido uma vez), senha temporária de 72 h no primeiro acesso, bloqueio por conta (5 tentativas em 15
+min, reservadas antes de a senha ser conferida), limite por IP nas rotas de autenticação, checagem de origem em todo
+POST (CSRF de login), senha nova conferida no Have I Been Pwned e trilha de auditoria de cada evento.
+
+Na frente de tudo isso, nos dois formulários que qualquer pessoa chama sem sessão, o **Cloudflare Turnstile** (widget
+"Managed", em português, no tema do painel): o login e o "esqueci minha senha". O painel manda o token do widget no
+header `X-Turnstile-Token`; a API o confere no `siteverify` da Cloudflare (com o IP de quem pediu, 5 s de limite)
+**antes** de reservar a tentativa de login e de olhar a senha. Sem token ou com token recusado, 400
+(`TURNSTILE_REQUIRED` / `TURNSTILE_FAILED`, mensagem genérica, sem gastar tentativa); com o `siteverify` fora do ar,
+503 genérico: a porta fecha, nunca abre. A chave secreta fica no cofre `<prefixo>-turnstile-secret-key` do Secret
+Manager e a chave do site (pública) no `node.conf`; sem as duas, o desafio fica desligado e a API avisa na partida
+(`Turnstile desligado`). O `siteverify` também diz a `action` do widget que gerou o token e o `hostname` da página: a
+API exige a `action` da rota (`login` ou `password-reset`; um token do login não vale no pedido de redefinição) e,
+com uma chave de site real, o `hostname` do `WEB_ORIGIN`; a chamada não segue redirecionamento (a chave secreta vai
+no corpo). O painel descobre a chave do site em `GET /v1/auth/client-config` (público e sem limite por IP: devolve um
+valor constante lido da configuração em memória, com `Cache-Control: public, max-age=300`, que o navegador e o
+Cloudflare na frente da API reaproveitam) e, sem ela, os formulários são os de sempre. A CSP do painel abre só
+`script-src` e `frame-src` para `https://challenges.cloudflare.com`. O token não vai para o log nem para a
+auditoria; a recusa, sim.
+
 ## Contas monitoradas por provedor
 
-_(credencial no cofre, fase 2: o token do Cloudflare já entra pelo painel; a chave da AWS espera a decisão sobre o acesso
-sem chave)_
+_(credencial no cofre, fase 2: o token do Cloudflare já entra pelo painel. Na AWS, a decisão de 04/11/2026 troca a chave
+do usuário IAM pelo acesso sem chave, com um papel que confia na identidade do nó; as seções da AWS abaixo ainda
+descrevem a chave e mudam com o PR desse acesso)_
 
 O cadastro de contas (Contas cloud) aceita três provedores. A GCP não usa credencial. **AWS e Cloudflare: credencial
 de leitura cifrada no cofre do nó** (seção "Cofre de credenciais"). Um admin cola a credencial no painel; ela nunca
@@ -179,8 +203,8 @@ mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico
 ## Cofre de credenciais
 
 _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e
-`infra/node`. A rota que recebe a credencial colada também, hoje só com o token do Cloudflare; a chave da AWS entra na
-mesma rota quando a decisão sobre o acesso sem chave sair, e a entrega ao Wazuh vem no PR-V4)_
+`infra/node`. A rota que recebe a credencial colada também, só com o token do Cloudflare: com o acesso sem chave à AWS
+(decisão de 04/11/2026), a chave da AWS não passa por ela. A rota segue genérica, por tipo)_
 
 - **O que guarda:** a chave de acesso do usuário IAM da AWS e o token do Cloudflare, uma linha por conta cloud
   (`CloudCredential`), com o mesmo isolamento por cliente de todo dado de cliente.

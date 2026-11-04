@@ -3,10 +3,17 @@
 # segredos (senhas do banco e do Wazuh, chaves da API) são gerados dentro da própria VM na instalação.
 
 locals {
-  node_secrets = {
-    "smtp-password"           = "Senha de aplicativo da caixa de envio no Zoho: convites e redefinição de senha."
-    "cloudflare-tunnel-token" = "Token do túnel do Cloudflare (cloudflared): o painel chega à API sem porta aberta."
-  }
+  node_secrets = merge(
+    {
+      "smtp-password"           = "Senha de aplicativo da caixa de envio no Zoho: convites e redefinição de senha."
+      "cloudflare-tunnel-token" = "Token do túnel do Cloudflare (cloudflared): o painel chega à API sem porta aberta."
+    },
+    # O cofre do Turnstile entra por variável: o nó da Verax, já no ar, só o ganha numa mudança no lugar (um
+    # `apply` que cria o cofre e a permissão, sem tocar em mais nada).
+    var.turnstile_secret ? {
+      "turnstile-secret-key" = "Chave secreta do Cloudflare Turnstile: o desafio no login e na redefinição de senha do painel."
+    } : {},
+  )
 
   # Cofres que a própria VM grava. A chave do cofre de credenciais (o par RSA que cifra a chave da AWS e o token do
   # Cloudflare) nasce na VM, na instalação, e nunca sai da GCP. A senha temporária do primeiro admin, numa instalação

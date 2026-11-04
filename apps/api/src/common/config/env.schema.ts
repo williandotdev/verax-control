@@ -23,6 +23,14 @@ import {
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
+/** Endpoint oficial de validação do token do Turnstile. */
+export const TURNSTILE_SITEVERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+/**
+ * Chave do site do Turnstile: um dígito, `x` e de 20 a 40 caracteres (as reais começam com `0x`; as de teste da
+ * Cloudflare, como `1x00000000000000000000AA`, com `1x`, `2x` ou `3x`). A mesma expressão do `install.sh` do nó.
+ */
+export const TURNSTILE_SITE_KEY_PATTERN = /^[0-9]x[0-9A-Za-z_-]{20,40}$/;
+
 /**
  * Cofre de credenciais do nó (fase 2, PR-V1; `credentials/credential-keys.ts`). As variáveis são opcionais: sem elas,
  * a API e o worker sobem sem o cofre (o nó da Verax, que não guarda credencial, e o ambiente local). Com elas, vêm
@@ -277,6 +285,19 @@ const apiEnvSchema = z
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
+    // Cloudflare Turnstile nos formulários públicos do painel (login e "esqueci minha senha"). Com a chave secreta
+    // definida, o token do widget passa a ser obrigatório nessas rotas; sem ela, nada é conferido (em produção, a API
+    // avisa na partida). A chave do site é pública (vai ao painel por `GET /v1/auth/client-config`); as duas andam
+    // juntas, porque uma sem a outra deixaria o painel sem login. A URL do siteverify só muda fora de produção, para
+    // o servidor falso dos testes.
+    TURNSTILE_SECRET_KEY: z.string().min(1).optional(),
+    TURNSTILE_SITE_KEY: z
+      .string()
+      .regex(TURNSTILE_SITE_KEY_PATTERN, { error: 'chave do site do Turnstile em formato inválido' })
+      .optional(),
+    TURNSTILE_SITEVERIFY_URL: z
+      .url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' })
+      .default(TURNSTILE_SITEVERIFY_URL),
     // Tópico do nó para o sink de um projeto GCP de cliente, sem o projeto do cliente no fim:
     // `projects/<projeto-do-nó>/topics/<prefixo>-security-`, o nome que o módulo do Terraform dá (logs.tf). O start.sh
     // escreve no nó; sem ele (ambiente local), Contas cloud mostra o comando do sink com o tópico a preencher. Não é
@@ -298,6 +319,28 @@ const apiEnvSchema = z
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkPair(env, ['CREDENTIALS_PUBLIC_KEY', 'CREDENTIALS_KEY_VERSION'], ctx);
+    // O problema é apontado na chave presente: a que falta sairia só como "não definida".
+    if (env.TURNSTILE_SECRET_KEY !== undefined && env.TURNSTILE_SITE_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SECRET_KEY'],
+        message: 'exige TURNSTILE_SITE_KEY (as duas chaves andam juntas, ou nenhuma)',
+      });
+    }
+    if (env.TURNSTILE_SITE_KEY !== undefined && env.TURNSTILE_SECRET_KEY === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SITE_KEY'],
+        message: 'exige TURNSTILE_SECRET_KEY (as duas chaves andam juntas, ou nenhuma)',
+      });
+    }
+    if (env.NODE_ENV === 'production' && env.TURNSTILE_SITEVERIFY_URL !== TURNSTILE_SITEVERIFY_URL) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['TURNSTILE_SITEVERIFY_URL'],
+        message: 'só muda fora de produção (servidor falso dos testes)',
+      });
+    }
     for (const key of ['WEB_ORIGIN', 'API_ORIGIN'] as const) {
       if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });

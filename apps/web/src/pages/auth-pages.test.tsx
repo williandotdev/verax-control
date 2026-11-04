@@ -4,12 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { safeRedirect } from '@/features/auth/auth-api';
+import { TURNSTILE_ERROR_MESSAGE, type TurnstileApi } from '@/features/auth/turnstile';
 import { api } from '@/lib/api';
 import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
-import { MOCK_AUTH } from '@/mocks/auth-handlers';
+import { MOCK_AUTH, MOCK_TURNSTILE_STORAGE_KEY } from '@/mocks/auth-handlers';
 import { demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
@@ -248,6 +249,184 @@ describe('troca da senha temporária', { timeout: FORM_TIMEOUT }, () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Sair' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
     expect(state.me).toBeNull();
+  });
+});
+
+describe('Turnstile (chave do site vinda da API)', { timeout: FORM_TIMEOUT }, () => {
+  const PASS_KEY = '1x00000000000000000000AA';
+  const BLOCK_KEY = '2x00000000000000000000AB';
+  type RenderOptions = Record<string, unknown> & {
+    callback?: (token: string) => void;
+    'error-callback'?: (code?: string) => void;
+  };
+
+  /**
+   * O script da Cloudflare não roda no jsdom: um dublê do objeto global faz o que o widget faria. `pass` entrega um
+   * token logo depois de desenhar (e outro a cada `reset`); `block` chama o erro, como a chave de teste que bloqueia.
+   */
+  function stubTurnstile(behaviour: 'pass' | 'block') {
+    let tokens = 0;
+    const emit = (options: RenderOptions): void => {
+      tokens += 1;
+      const token = `token-de-teste-${tokens}`;
+      queueMicrotask(() => {
+        if (behaviour === 'pass') options.callback?.(token);
+        else options['error-callback']?.('300030');
+      });
+    };
+    const stub = {
+      render: vi.fn((container: HTMLElement, options: RenderOptions) => {
+        container.append(document.createElement('iframe'));
+        emit(options);
+        return `widget-${stub.render.mock.calls.length}`;
+      }),
+      reset: vi.fn(() => emit(stub.render.mock.lastCall?.[1] ?? {})),
+      remove: vi.fn(),
+    };
+    window.turnstile = stub as unknown as TurnstileApi;
+    return stub;
+  }
+
+  /** Os tokens que chegaram no header de uma rota (um handler que só observa e deixa o mock responder). */
+  function sentTokens(path: string): (string | null)[] {
+    const tokens: (string | null)[] = [];
+    server.use(
+      http.post(`${API_URL}${path}`, ({ request }) => {
+        tokens.push(request.headers.get('X-Turnstile-Token'));
+        return undefined;
+      }),
+    );
+    return tokens;
+  }
+
+  afterEach(() => {
+    delete window.turnstile;
+  });
+
+  it('sem a chave do site, nada do Turnstile aparece e o login é o de sempre', async () => {
+    const stub = stubTurnstile('pass');
+    const { router } = renderAt('/login');
+    await fillLogin(MOCK_AUTH.email, MOCK_AUTH.password);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login/codigo'));
+    expect(stub.render).not.toHaveBeenCalled();
+    expect(screen.queryByText('Carregando verificação…')).toBeNull();
+  });
+
+  it('com a chave, o widget segue o tema e o idioma do painel, e o token vai no header do login', async () => {
+    window.localStorage.setItem(MOCK_TURNSTILE_STORAGE_KEY, PASS_KEY);
+    // A preferência guardada: o seletor de tema da tela a aplica antes de o widget ser desenhado.
+    window.localStorage.setItem('verax.theme', 'dark');
+    const stub = stubTurnstile('pass');
+    const { router } = renderAt('/login');
+    const sent = sentTokens('/v1/auth/sign-in/email');
+
+    await waitFor(() => expect(stub.render).toHaveBeenCalledOnce());
+    expect(stub.render.mock.calls[0]?.[1]).toMatchObject({
+      sitekey: PASS_KEY,
+      action: 'login',
+      theme: 'dark',
+      language: 'pt-br',
+      'response-field': false,
+    });
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+
+    // Trocar o tema redesenha o widget com o tema novo.
+    document.documentElement.dataset['theme'] = 'light';
+    await waitFor(() => expect(stub.render).toHaveBeenCalledTimes(2));
+    expect(stub.remove).toHaveBeenCalledWith('widget-1');
+    expect(stub.render.mock.calls[1]?.[1]).toMatchObject({ theme: 'light' });
+
+    await fillLogin(MOCK_AUTH.email, MOCK_AUTH.password);
+    await waitFor(() => expect(router.state.location.pathname).toBe('/login/codigo'));
+    expect(sent).toEqual(['token-de-teste-2']);
+  });
+
+  it('senha errada reinicia o widget (cada token vale uma vez); a recusa do Turnstile pela API tem mensagem própria', async () => {
+    window.localStorage.setItem(MOCK_TURNSTILE_STORAGE_KEY, PASS_KEY);
+    const stub = stubTurnstile('pass');
+    const { router } = renderAt('/login');
+    const sent = sentTokens('/v1/auth/sign-in/email');
+    await waitFor(() => expect(stub.render).toHaveBeenCalledOnce());
+
+    await fillLogin(MOCK_AUTH.email, 'senha-errada-qualquer');
+    expect(await screen.findByRole('alert')).toHaveTextContent('E-mail ou senha incorretos.');
+    expect(stub.reset).toHaveBeenCalledOnce();
+    expect(sent).toEqual(['token-de-teste-1']);
+
+    // A recusa vem antes do observador (o `use` põe o handler na frente): outro observador para esta chamada.
+    server.use(
+      http.post(`${API_URL}/v1/auth/sign-in/email`, () =>
+        HttpResponse.json({ code: 'TURNSTILE_FAILED', message: 'x' }, { status: 400 }),
+      ),
+    );
+    const sentAfter = sentTokens('/v1/auth/sign-in/email');
+    await userEvent.clear(screen.getByLabelText('Senha'));
+    await userEvent.type(screen.getByLabelText('Senha'), MOCK_AUTH.password);
+    await userEvent.click(screen.getByRole('button', { name: 'Entrar' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'A verificação de segurança não foi concluída',
+    );
+    expect(stub.reset).toHaveBeenCalledTimes(2);
+    expect(router.state.location.pathname).toBe('/login');
+    expect(sentAfter).toEqual(['token-de-teste-2']);
+  });
+
+  it('chave que bloqueia: o aviso aparece e o envio fica desligado', async () => {
+    window.localStorage.setItem(MOCK_TURNSTILE_STORAGE_KEY, BLOCK_KEY);
+    stubTurnstile('block');
+    renderAt('/login');
+    expect(await screen.findByRole('alert')).toHaveTextContent(TURNSTILE_ERROR_MESSAGE);
+    await userEvent.type(screen.getByLabelText('E-mail'), MOCK_AUTH.email);
+    await userEvent.type(screen.getByLabelText('Senha'), MOCK_AUTH.password);
+    expect(screen.getByRole('button', { name: 'Entrar' })).toBeDisabled();
+  });
+
+  it('enquanto o script não carrega: "Carregando verificação…" e o envio desligado', async () => {
+    window.localStorage.setItem(MOCK_TURNSTILE_STORAGE_KEY, PASS_KEY);
+    renderAt('/login');
+    expect(await screen.findByRole('status')).toHaveTextContent('Carregando verificação…');
+    expect(
+      document.querySelector('script[src^="https://challenges.cloudflare.com/turnstile/v0/api.js"]'),
+    ).not.toBeNull();
+    await userEvent.type(screen.getByLabelText('E-mail'), MOCK_AUTH.email);
+    await userEvent.type(screen.getByLabelText('Senha'), MOCK_AUTH.password);
+    expect(screen.getByRole('button', { name: 'Entrar' })).toBeDisabled();
+  });
+
+  it('esqueci a senha: o token vai no header, e a recusa do Turnstile não vira a mensagem de "enviado"', async () => {
+    window.localStorage.setItem(MOCK_TURNSTILE_STORAGE_KEY, PASS_KEY);
+    const stub = stubTurnstile('pass');
+    renderAt('/esqueci-senha');
+    await waitFor(() => expect(stub.render).toHaveBeenCalledOnce());
+    expect(stub.render.mock.calls[0]?.[1]).toMatchObject({ sitekey: PASS_KEY, action: 'password-reset' });
+
+    server.use(
+      http.post(`${API_URL}/v1/auth/request-password-reset`, () =>
+        HttpResponse.json({ code: 'TURNSTILE_REQUIRED', message: 'x' }, { status: 400 }),
+      ),
+    );
+    const sent = sentTokens('/v1/auth/request-password-reset');
+    await userEvent.type(await screen.findByLabelText('E-mail'), 'qualquer@demo.verax.local');
+    await userEvent.click(screen.getByRole('button', { name: 'Enviar link' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'A verificação de segurança não foi concluída',
+    );
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(stub.reset).toHaveBeenCalledOnce();
+
+    server.resetHandlers();
+    server.use(...createHandlers({ me: null }));
+    const sentAfter = sentTokens('/v1/auth/request-password-reset');
+    await userEvent.click(screen.getByRole('button', { name: 'Enviar link' }));
+    expect(await screen.findByRole('status')).toHaveTextContent(RESET_REQUESTED_MESSAGE);
+    expect(sent).toEqual(['token-de-teste-1']);
+    expect(sentAfter).toEqual(['token-de-teste-2']);
+
+    // Enviado, o formulário sai da tela e o widget sai junto: trocar o tema não o redesenha num contêiner solto.
+    expect(stub.remove).toHaveBeenCalledWith('widget-1');
+    document.documentElement.dataset['theme'] = 'dark';
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stub.render).toHaveBeenCalledOnce();
   });
 });
 
