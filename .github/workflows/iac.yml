@@ -72,6 +72,10 @@ jobs:
         run: |
           terraform -chdir=infra/gcp/modules/node init -backend=false -lockfile=readonly
           terraform -chdir=infra/gcp/modules/node test
+      - name: Testes da homologação (provider simulado, sem credenciais)
+        # A primeira subida num projeto novo: o `plan` não lê o projeto antes de o `apply` ligar as APIs. O `init` sem
+        # backend é o da validação, acima.
+        run: terraform -chdir=infra/gcp/envs/homolog-sp test
       - name: tflint
         # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
         env:

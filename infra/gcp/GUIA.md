@@ -231,6 +231,11 @@ orçamento e sem e-mail de alerta (41 com os dois), mais 5 por projeto monitorad
 1 papel na primeira). Todos os nomes começam com `verax-homolog`, menos a permissão de leitura no registro de imagens
 do projeto da Verax.
 
+Nesse primeiro `plan`, aparece também `data.google_project.this will be read during apply` e, com orçamento, o
+projeto dele como `(known after apply)`. É de propósito: ler o projeto usa a API do Resource Manager, que vem
+desligada num projeto novo e só o `apply` liga. Depois, isso só volta quando a lista do `apis.tf` mudar, e aí o
+orçamento aparece como `update in-place` só por isso: o projeto continua o mesmo.
+
 ## Passo 6: `terraform apply`
 
 ```bash
@@ -240,9 +245,14 @@ terraform apply plano.tfplan
 Leva de 3 a 5 minutos numa subida do zero. No fim, aparecem as saídas (_outputs_): o comando de SSH, a assinatura do
 Pub/Sub, os nomes dos segredos e, na homologação, o `nat_ip`. Para vê-las de novo depois, use `terraform output`.
 
-**Se der erro de API "has not been used in project ... or it is disabled":** o Terraform acabou de ligar a API e
-a GCP ainda não propagou. Espere 1 ou 2 minutos e rode o `plan` e o `apply` de novo. O Terraform continua de onde
-parou; o novo `plan` mostra só o que faltou. Foi o que aconteceu na primeira subida.
+**Se o `apply` der erro de API "has not been used in project ... or it is disabled":** o Terraform acabou de ligar a
+API e a GCP ainda não propagou. Espere 1 ou 2 minutos e rode o `plan` e o `apply` de novo. O Terraform continua de
+onde parou; o novo `plan` mostra só o que faltou. Foi o que aconteceu na primeira subida do nó da Verax.
+
+Se o mesmo erro vier no `plan`, esperar não resolve: nada ligou essa API ainda, e todo `plan` para no mesmo ponto.
+Ligue a API que a mensagem cita, no projeto que ela cita (`gcloud services enable NOME.googleapis.com --project
+PROJETO`), e rode o `plan` de novo. Na homologação, o `plan` de um projeto novo não depende de nenhuma API que só o
+`apply` liga.
 
 ## Passo 7: gravar os segredos
 
@@ -300,7 +310,8 @@ gcloud pubsub subscriptions pull verax-node-security-PROJETO_MONITORADO --limit=
 ```
 
 Deve aparecer uma mensagem com `cloudaudit.googleapis.com` e `UpdateSink`. O `pull` sem `--auto-ack` não consome
-a mensagem: ela volta para a fila e o nó vai lê-la depois.
+a mensagem: ela volta para a fila e o nó vai lê-la depois. Na homologação, os nomes e o projeto da assinatura mudam
+(veja o teste do alerta, abaixo).
 
 **Pub/Sub só na região** (homologação, com um projeto monitorado):
 
@@ -309,9 +320,18 @@ gcloud pubsub topics describe verax-homolog-security-PROJETO_MONITORADO --projec
   --format='value(messageStoragePolicy.allowedPersistenceRegions)'   # southamerica-east1
 ```
 
-**Testar o alerta de fila parada:** com a VM parada e um projeto monitorado, use `stalled_subscription_hours = 1` no
-`terraform.tfvars`, faça o `apply`, gere um log (o `sinks update` acima) e espere pouco mais de 1 hora: o incidente
-abre no Cloud Monitoring (Alertas) e o e-mail chega. Depois, volte para 24 e faça o `apply` de novo.
+**Testar o alerta de fila parada** (só na homologação: o nó da Verax não tem o alerta): com a VM parada e um projeto
+monitorado, use `stalled_subscription_hours = 1` no `terraform.tfvars` e faça o `apply`. Gere um log com o sink da
+homologação, que fica no projeto monitorado, e confira que ele chegou à assinatura, que fica no projeto dos nós:
+
+```bash
+gcloud logging sinks update verax-homolog-security --project PROJETO_MONITORADO \
+  --description="Eventos de segurança para o nó do Verax Control (só cópia; os logs originais não mudam)."
+gcloud pubsub subscriptions pull verax-homolog-security-PROJETO_MONITORADO --project PROJETO_DOS_NOS --limit=3
+```
+
+Espere pouco mais de 1 hora: o incidente abre no Cloud Monitoring (Alertas) e o e-mail chega. Depois, volte para 24 e
+faça o `apply` de novo.
 
 ## O nó da Verax ainda usa o script antigo (pendência)
 
@@ -354,15 +374,21 @@ planejada**, com alguns minutos do nó fora do ar:
    ls /swapfile; grep swapfile /etc/fstab   # o arquivo não existe, e o fstab não tem a linha
    ```
 
-5. A VM nova gerou chaves de SSH (do servidor) novas. O `gcloud compute ssh` confere a chave sozinho, mas o
-   `deploy.sh` guarda a da VM antiga em `~/.ssh/known_hosts_verax-node` e recusaria a próxima conexão com
-   `REMOTE HOST IDENTIFICATION HAS CHANGED`. Apague a chave antiga; o próximo `deploy.sh` registra a nova, como na
-   primeira vez. Se quiser conferir antes, as chaves que a VM nova publicou estão em
-   `gcloud compute instances get-guest-attributes verax-node --zone us-east1-b --query-path=hostkeys/`.
+5. A VM nova gerou chaves de SSH (do servidor) novas. O `deploy.sh` guarda a da VM antiga em
+   `~/.ssh/known_hosts_verax-node` e recusaria a próxima conexão com `REMOTE HOST IDENTIFICATION HAS CHANGED`. Apague
+   a chave antiga:
 
    ```bash
    ssh-keygen -R verax-node -f ~/.ssh/known_hosts_verax-node
    ```
+
+   O próximo `deploy.sh` aceita a chave nova sem perguntar e a guarda (`StrictHostKeyChecking=accept-new`), como na
+   primeira vez, e as conexões seguintes a conferem. Não há uma fonte à parte para conferir a chave nova antes: a VM
+   só publicaria as chaves nos atributos de convidado (_guest attributes_), que o módulo não liga. O
+   `gcloud compute ssh` também não confere: a VM nova tem outro ID, e ele aceita a chave na primeira conexão. As duas
+   conexões só passam pelo túnel do IAP, que o Google autentica e que leva só a essa VM. Para comparar depois do
+   `deploy.sh`: a impressão digital que ele guardou sai em `ssh-keygen -lF verax-node -f ~/.ssh/known_hosts_verax-node`,
+   e a da VM, dentro dela (passo 8), em `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`; as duas têm de ser iguais.
 
 6. Deixe o repositório igual ao nó, num commit só (o `main.tf` já está sem as duas linhas do passo 3):
    - apague o `envs/verax/startup.sh`;
