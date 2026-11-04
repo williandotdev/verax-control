@@ -90,13 +90,35 @@ describe('de alerta a achado (T5.3)', () => {
       sourceIp: '198.51.100.7',
       mitreTactics: ['Initial Access'],
       mitreTechniques: ['T1078'],
+      // Só o GuardDuty: a versão (o `updatedAt`), a chave do achado inteiro (a cadeia, aqui igual à base) e a chave
+      // que a versão nova ganha se a cadeia já estiver triada.
+      recurrence: {
+        lastSeenAt: '2026-11-01T09:55:00.000Z',
+        chainKey: 'wazuh/111122223333/guardduty:5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0:80303',
+        sourceEventId:
+          'wazuh/111122223333/guardduty:5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0:80303@2026-11-01T09:55:00.000Z',
+      },
     });
   });
 
-  it('campos ausentes viram null, não somem', () => {
+  it('campos ausentes viram null, não somem; sem versão ou sem id nativo, não há recorrência', () => {
+    const owner = { owned: true, tenantId: ALFA.tenantId, accountId: ALFA.accountId } as const;
     const alert = alertOf(wafAlert());
-    const draft = toFindingDraft(alert, { owned: true, tenantId: ALFA.tenantId, accountId: ALFA.accountId });
+    const draft = toFindingDraft(alert, owner);
     expect(draft).toMatchObject({ actorUser: null, actorType: null, accessKeyId: null, mitreTactics: [] });
+    expect(draft).not.toHaveProperty('recurrence');
+    // O `updatedAt` fora do formato deixa o achado sem versão, mesmo com o `eventLastSeen` em dia.
+    const bare = alertOf(guardDutyAlert({ eventLastSeen: '2026-11-01T09:55:00.000Z', updatedAt: 'ontem' }));
+    expect(bare.lastSeenAt).toBeUndefined();
+    expect(toFindingDraft(bare, owner)).not.toHaveProperty('recurrence');
+    // A sondagem com item fora do formato fica sem id nativo: a chave é a do alerta, que nunca repete.
+    const unkeyed = alertOf(
+      guardDutyAlert({
+        action: { actionType: 'PORT_PROBE', portProbeAction: { portProbeDetails: 'texto' } },
+      }),
+    );
+    expect(unkeyed).toMatchObject({ nativeId: undefined, lastSeenAt: '2026-11-01T09:55:00.000Z' });
+    expect(toFindingDraft(unkeyed, owner)).not.toHaveProperty('recurrence');
   });
 });
 
@@ -152,6 +174,57 @@ describe('chave estável do achado (fase 2, PR-W2)', () => {
     expect(wazuhFindingKey(updated, ALFA.accountId)).toBe(
       wazuhFindingKey(alertOf(guardDutyAlert({ findingId })), ALFA.accountId),
     );
+  });
+
+  it('a recorrência do GuardDuty leva a chave do achado inteiro mais o horário da versão (fix da reincidência)', () => {
+    const findingId = '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0';
+    const at = '2026-11-02T08:00:00.000Z';
+    const updated = alertOf(guardDutyAlert({ findingId, count: 7, updatedAt: at }));
+    const base = wazuhFindingKey(updated, ALFA.accountId);
+    expect(base).toBe(`wazuh/111122223333/guardduty:${findingId}:80303`);
+    expect(wazuhFindingKey(updated, ALFA.accountId, at)).toBe(`${base}@${at}`);
+    // A mesma versão relida (outro id de alerta) dá a mesma chave; outra versão, outra chave.
+    const reread = alertOf({
+      ...guardDutyAlert({ findingId, count: 7, updatedAt: at }),
+      id: '1793600000.000123',
+    });
+    expect(wazuhFindingKey(reread, ALFA.accountId, reread.lastSeenAt)).toBe(`${base}@${at}`);
+    expect(wazuhFindingKey(updated, ALFA.accountId, '2026-11-03T08:00:00.000Z')).toBe(
+      `${base}@2026-11-03T08:00:00.000Z`,
+    );
+    // O rascunho leva as três chaves: a base, que é tentada primeiro, a da cadeia e a da recorrência.
+    const owner = resolveAlertOwner(updated, directory);
+    if (!owner.owned) throw new Error(owner.reason);
+    expect(toFindingDraft(updated, owner)).toMatchObject({
+      sourceEventId: base,
+      recurrence: { lastSeenAt: at, chainKey: base, sourceEventId: `${base}@${at}` },
+    });
+    // Na sondagem de porta, a chave base leva o IP e a porta do item; a cadeia e a recorrência levam só o achado
+    // inteiro, iguais em todos os itens da versão: a versão nova é uma por achado, não uma por IP.
+    const probes = portProbeAlerts(
+      [
+        { ip: '198.51.100.20', port: 22 },
+        { ip: '198.51.100.21', port: 3389 },
+      ],
+      { findingId, updatedAt: at },
+    ).map((probe) => toFindingDraft(alertOf(probe), owner));
+    expect(probes.map((draft) => draft.sourceEventId)).toEqual([
+      `wazuh/111122223333/guardduty:${findingId}/198.51.100.20:22:80305`,
+      `wazuh/111122223333/guardduty:${findingId}/198.51.100.21:3389:80305`,
+    ]);
+    const chain = `wazuh/111122223333/guardduty:${findingId}:80305`;
+    for (const draft of probes) {
+      expect(draft.recurrence).toEqual({ lastSeenAt: at, chainKey: chain, sourceEventId: `${chain}@${at}` });
+    }
+    // Um id que cabe na coluna sozinho, mas não com o horário: a recorrência entra pelo resumo, e a chave cabe.
+    const longId = 'f'.repeat(80);
+    const long = toFindingDraft(alertOf(guardDutyAlert({ findingId: longId, updatedAt: at })), owner);
+    expect(long.sourceEventId).toBe(`wazuh/111122223333/guardduty:${longId}:80303`);
+    expect(long.recurrence?.chainKey).toBe(long.sourceEventId);
+    expect(long.recurrence?.sourceEventId).toMatch(
+      /^wazuh\/111122223333\/guardduty:sha256-[0-9a-f]{40}:80303@2026-11-02T08:00:00\.000Z$/,
+    );
+    expect(long.recurrence?.sourceEventId.length).toBeLessThanOrEqual(128);
   });
 
   it('a correlação tem chave própria, mesmo terminando no mesmo evento', () => {

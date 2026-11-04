@@ -52,6 +52,20 @@ export interface WazuhAwsAlert {
   eventName?: string;
   /** Severidade dada pela própria AWS (GuardDuty, de 0 a 10). */
   awsSeverity?: number;
+  /**
+   * Só no GuardDuty: a versão do achado, pelo `updatedAt` que a AWS grava em toda versão e que só avança (ISO 8601
+   * em UTC). O GuardDuty soma a atividade nova ao mesmo achado (mesmo `id`, `service.count` maior) e grava outra
+   * versão; é este horário que diz se a versão relida é a mesma ou uma nova. O `service.eventLastSeen` não entra:
+   * ora um, ora outro, as versões seriam comparadas por horários de natureza diferente, e uma versão nova cujo
+   * `eventLastSeen` ficasse atrás do `updatedAt` da anterior cairia como antiga.
+   */
+  lastSeenAt?: string;
+  /**
+   * Só no GuardDuty, com id nativo: o `id` do achado sozinho. Na sondagem de porta, o `nativeId` leva o IP e a porta
+   * do item, e este campo fica só com o achado inteiro: a reincidência é dele, uma por versão, por mais itens que o
+   * wodle separe.
+   */
+  findingId?: string;
   actor: {
     /** ARN ou nome da identidade que agiu. */
     user?: string;
@@ -173,6 +187,22 @@ const awsSeveritySchema = z
   ])
   .pipe(z.number().min(0).max(10));
 
+/** Horário gravado pela AWS no evento (ISO 8601 com fuso, inclusive na forma sem dois-pontos), em UTC. */
+const eventTimeSchema = z
+  .string()
+  .max(64)
+  .transform((value, context) => {
+    const normalized = normalizeTimestamp(value);
+    if (normalized !== null) return normalized;
+    context.issues.push({ code: 'custom', message: 'horário fora do formato', input: value });
+    return z.NEVER;
+  });
+
+function eventTime(value: unknown): string | undefined {
+  const parsed = eventTimeSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 interface Arn {
   service: string;
   region: string;
@@ -263,6 +293,9 @@ function guardDutyDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert> 
     region: matching(aws['region'], REGION),
     eventName: text(aws['type'], 256),
     awsSeverity: severity.success ? severity.data : undefined,
+    // A versão é o `updatedAt` do achado, presente em toda versão. Sem reserva no `service.eventLastSeen`: as versões
+    // de um achado são sempre comparadas pelo mesmo horário.
+    lastSeenAt: eventTime(aws['updatedAt']),
     actor: {
       user: firstOf(
         text(at(resource, 'accessKeyDetails', 'userName'), 128),
@@ -325,11 +358,18 @@ const portProbeDetailSchema = z
   })
   .transform((detail) => `${detail.remoteIpDetails.ipAddressV4}:${detail.localPortDetails.port}`);
 
+/** O id nativo e, só no GuardDuty, o `id` do achado inteiro (igual ao nativo fora da sondagem de porta). */
+interface NativeIdentity {
+  nativeId: string;
+  findingId?: string;
+}
+
 /**
  * Identidade de cada evento, só com campos do log original (os mesmos a cada releitura):
  * - CloudTrail: `eventID`, gerado pela AWS.
  * - GuardDuty: `id` do achado. Na sondagem de porta, mais `/<IP>:<porta>` do item; item fora do formato (sem IPv4,
- *   por exemplo) deixa o alerta sem id nativo, e a chave fica no `id` do alerta: nunca junta dois IPs.
+ *   por exemplo) deixa o alerta sem id nativo, e a chave fica no `id` do alerta: nunca junta dois IPs. O `id` sozinho
+ *   sai em `findingId`, para a reincidência, que é do achado inteiro.
  * - WAF: `<timestamp>/<clientIp>/<requestId>`. Atrás de um ALB, o `requestId` é o trace ID, que o cliente HTTP
  *   escolhe (`X-Amzn-Trace-Id: Root=...`) e que se repete em todas as chamadas de um mesmo trace do X-Ray. Sozinho,
  *   ele deixaria quem ataca repetir o mesmo valor e fazer cada rajada nova cair como duplicada da primeira. O horário
@@ -337,13 +377,13 @@ const portProbeDetailSchema = z
  *   dígitos, o horário passa de 32 bits e chega do Wazuh com seis casas (`"1793527200000.000000"`); no id, vai o
  *   inteiro.
  */
-const NATIVE_ID: Record<AwsSource, z.ZodType<string>> = {
-  cloudtrail: z.object({ eventID: nativeIdSchema }).transform((event) => event.eventID),
+const NATIVE_ID: Record<AwsSource, z.ZodType<NativeIdentity>> = {
+  cloudtrail: z.object({ eventID: nativeIdSchema }).transform((event) => ({ nativeId: event.eventID })),
   guardduty: z.object({ id: nativeIdSchema, service: z.unknown() }).transform((finding, context) => {
     const probe = at(finding.service, 'action', 'portProbeAction', 'portProbeDetails');
-    if (probe === undefined) return finding.id;
+    if (probe === undefined) return { nativeId: finding.id, findingId: finding.id };
     const detail = portProbeDetailSchema.safeParse(probe);
-    if (detail.success) return `${finding.id}/${detail.data}`;
+    if (detail.success) return { nativeId: `${finding.id}/${detail.data}`, findingId: finding.id };
     context.issues.push({ code: 'custom', message: 'portProbeDetails fora do formato', input: probe });
     return z.NEVER;
   }),
@@ -352,12 +392,12 @@ const NATIVE_ID: Record<AwsSource, z.ZodType<string>> = {
       timestamp: unsignedSchema(Number.MAX_SAFE_INTEGER),
       httpRequest: z.object({ clientIp: ipSchema, requestId: nativeIdSchema }),
     })
-    .transform(
-      ({ timestamp, httpRequest }) => `${timestamp}/${httpRequest.clientIp}/${httpRequest.requestId}`,
-    ),
+    .transform(({ timestamp, httpRequest }) => ({
+      nativeId: `${timestamp}/${httpRequest.clientIp}/${httpRequest.requestId}`,
+    })),
 };
 
-function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): string | undefined {
+function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): NativeIdentity | undefined {
   const parsed = NATIVE_ID[source].safeParse(aws);
   return parsed.success ? parsed.data : undefined;
 }
@@ -384,11 +424,13 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
   }
 
   const details = DETAILS[source](aws);
+  const identity = nativeIdOf(source, aws);
   return {
     ok: true,
     alert: {
       id,
-      nativeId: nativeIdOf(source, aws),
+      nativeId: identity?.nativeId,
+      findingId: identity?.findingId,
       timestamp,
       rule: {
         id: rule.id,
@@ -407,6 +449,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
       region: details.region,
       eventName: details.eventName,
       awsSeverity: details.awsSeverity,
+      lastSeenAt: details.lastSeenAt,
       actor: details.actor ?? {},
       resource: details.resource,
     },
