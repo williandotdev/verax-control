@@ -30,8 +30,9 @@ trap cleanup EXIT
 
 docker network create --internal "$network" >/dev/null
 
+# Só NODE_ENV, como o Terraform dá aos serviços: TRUST_PROXY_HOPS fica no padrão do app (1, o front end do Cloud Run).
 hardened=(--network "$network" --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m --cap-drop ALL
-  --security-opt no-new-privileges:true -e NODE_ENV=production -e TRUST_PROXY_HOPS=1)
+  --security-opt no-new-privileges:true -e NODE_ENV=production)
 
 # Requisição de dentro da rede isolada, pelo Node da própria imagem (a rede não tem saída para o host).
 probe() { # <contêiner>

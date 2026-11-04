@@ -5,12 +5,16 @@ import { newUlid } from '../common/ulid.js';
 import { COLLECTIONS } from '../firestore/collections.js';
 import {
   DOCUMENT_STORE,
+  DocumentAlreadyExistsError,
   type DocumentReader,
   type DocumentStore,
+  equalValues,
   parseDocument,
 } from '../firestore/document-store.js';
 import { canTransition } from './tenant-transitions.js';
 import {
+  type SlugDocument,
+  slugDocumentSchema,
   type Tenant,
   type TenantLock,
   type TenantRecord,
@@ -43,7 +47,8 @@ export interface TransitionRequest {
   audit: AuditContext;
   /**
    * Mudanças que acompanham a transição (ex.: `billing.graceUntil` ao entrar em `past_due`), aplicadas sobre o
-   * documento relido na transação. Não pode mexer em `state`, nos carimbos de tempo nem na `lock`.
+   * documento relido na transação. Não pode mexer em `state` nem nos carimbos de tempo (o store os define) nem nos
+   * campos de `IMMUTABLE_IN_TRANSITION`.
    */
   mutate?: (tenant: Tenant) => Tenant;
 }
@@ -52,6 +57,13 @@ export class TenantNotFoundError extends Error {
   constructor(readonly tenantId: string) {
     super(`cliente não encontrado: ${tenantId}`);
     this.name = 'TenantNotFoundError';
+  }
+}
+
+export class SlugTakenError extends Error {
+  constructor(readonly slug: string) {
+    super(`subdomínio já em uso: ${slug}`);
+    this.name = 'SlugTakenError';
   }
 }
 
@@ -87,10 +99,11 @@ export class LockNotHeldError extends Error {
   }
 }
 
-function sameLock(a: TenantLock | undefined, b: TenantLock | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  return a.owner === b.owner && a.expiresAt.getTime() === b.expiresAt.getTime();
-}
+/**
+ * O que uma transição nunca muda: a identidade do cliente (`slug`, `company`), o aceite dos textos legais
+ * (`consent`), a data de criação e a trava, que tem fluxo próprio (`acquireLock`/`renewLock`/`releaseLock`).
+ */
+export const IMMUTABLE_IN_TRANSITION = ['slug', 'company', 'consent', 'createdAt', 'lock'] as const;
 
 /**
  * Repositório de `tenants` (plano §3 e §4b): toda mudança de estado acontece numa transação que relê o documento,
@@ -99,6 +112,9 @@ function sameLock(a: TenantLock | undefined, b: TenantLock | undefined): boolean
  *
  * A `lock` dos passos do provisionamento (dono = `runId`, 20 min renovados) é independente das transições: os
  * campos de cobrança nunca disputam a trava (plano §4b), e uma trava vencida é tomada por quem chegar.
+ *
+ * Os ids de `transitions` (e da auditoria) são ULIDs do instante da escrita: a listagem por `at` desempata pelo id,
+ * então dois registros do mesmo milissegundo saem na mesma ordem no Firestore e no dublê.
  */
 @Injectable()
 export class TenantStore {
@@ -108,7 +124,11 @@ export class TenantStore {
     private readonly audit: AuditService,
   ) {}
 
-  /** Cria o cliente em `pending` (a reserva do slug vira tenant no `checkout.session.completed`). */
+  /**
+   * Cria o cliente em `pending` e toma o subdomínio em `slugs/{slug}` na mesma transação. O slug precisa estar livre
+   * ou reservado para o mesmo checkout (`consent.checkoutSessionId`); uma reserva vencida de outro checkout também
+   * conta como livre. Caso contrário, `SlugTakenError`, e nada é gravado.
+   */
   async create(input: NewTenant, options: CreateTenantOptions): Promise<TenantRecord> {
     const now = this.clock.now();
     const id = newUlid(now.getTime());
@@ -119,34 +139,55 @@ export class TenantStore {
       createdAt: now,
       updatedAt: now,
     });
-    await this.store.runTransaction((tx) => {
-      tx.create(COLLECTIONS.tenants, id, tenant);
-      tx.create(
-        COLLECTIONS.transitions(id),
-        this.store.newId(),
-        transitionSchema.parse({
-          from: null,
-          to: 'pending',
-          reason: options.reason,
-          eventId: options.eventId,
-          at: now,
-        }),
-      );
-      this.audit.record(tx, {
-        actor: options.audit.actor,
-        action: 'tenant.create',
-        tenantId: id,
-        details: {
-          slug: tenant.slug,
-          plan: tenant.plan,
-          to: 'pending',
-          reason: options.reason,
-          eventId: options.eventId,
-        },
-        requestId: options.audit.requestId,
-      });
-      return Promise.resolve();
+    const taken = slugDocumentSchema.parse({
+      state: 'taken',
+      tenantId: id,
+      checkoutSessionId: tenant.consent?.checkoutSessionId,
+      updatedAt: now,
     });
+    try {
+      await this.store.runTransaction(async (tx) => {
+        // Leitura antes de qualquer escrita, como o Firestore exige.
+        const current = await this.readSlug(tx, tenant.slug);
+        if (current === undefined) tx.create(COLLECTIONS.slugs, tenant.slug, taken);
+        else if (slugAvailableFor(current, tenant, now)) tx.set(COLLECTIONS.slugs, tenant.slug, taken);
+        else throw new SlugTakenError(tenant.slug);
+        tx.create(COLLECTIONS.tenants, id, tenant);
+        tx.create(
+          COLLECTIONS.transitions(id),
+          newUlid(now.getTime()),
+          transitionSchema.parse({
+            from: null,
+            to: 'pending',
+            reason: options.reason,
+            eventId: options.eventId,
+            at: now,
+          }),
+        );
+        this.audit.record(tx, {
+          actor: options.audit.actor,
+          action: 'tenant.create',
+          tenantId: id,
+          details: {
+            slug: tenant.slug,
+            plan: tenant.plan,
+            to: 'pending',
+            reason: options.reason,
+            eventId: options.eventId,
+          },
+          requestId: options.audit.requestId,
+        });
+      });
+    } catch (error) {
+      // Duas criações simultâneas sem reserva: as duas leem o slug livre e a segunda falha no commit do `create`.
+      if (
+        error instanceof DocumentAlreadyExistsError &&
+        error.documents.includes(`${COLLECTIONS.slugs}/${tenant.slug}`)
+      ) {
+        throw new SlugTakenError(tenant.slug);
+      }
+      throw error;
+    }
     return { id, ...tenant };
   }
 
@@ -171,6 +212,11 @@ export class TenantStore {
     return { id: doc.id, ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data) };
   }
 
+  /** O documento `slugs/{slug}`, se existir. */
+  async getSlug(slug: string): Promise<SlugDocument | undefined> {
+    return this.readSlug(this.store, slug);
+  }
+
   /** Muda o estado conforme a tabela de transições, gravando `transitions` e a auditoria na mesma transação. */
   async transition(tenantId: string, request: TransitionRequest): Promise<TenantRecord> {
     return this.store.runTransaction(async (tx) => {
@@ -180,14 +226,16 @@ export class TenantStore {
       }
       const now = this.clock.now();
       const mutated = request.mutate === undefined ? current : request.mutate(current);
-      if (!sameLock(mutated.lock, current.lock)) {
-        throw new TypeError('a mutação de uma transição não pode mexer na lock');
+      for (const key of IMMUTABLE_IN_TRANSITION) {
+        if (!equalValues(mutated[key], current[key])) {
+          throw new TypeError(`a mutação de uma transição não pode mexer em ${key}`);
+        }
       }
       const next = tenantSchema.parse({ ...mutated, state: request.to, stateUpdatedAt: now, updatedAt: now });
       tx.set(COLLECTIONS.tenants, tenantId, next);
       tx.create(
         COLLECTIONS.transitions(tenantId),
-        this.store.newId(),
+        newUlid(now.getTime()),
         transitionSchema.parse({
           from: current.state,
           to: request.to,
@@ -207,7 +255,7 @@ export class TenantStore {
     });
   }
 
-  /** Histórico de estados, do mais antigo ao mais novo. */
+  /** Histórico de estados, do mais antigo ao mais novo (empate em `at` sai pelo id, nos dois backends). */
   async listTransitions(tenantId: string): Promise<TenantTransition[]> {
     const collection = COLLECTIONS.transitions(tenantId);
     const docs = await this.store.query(collection, { orderBy: { field: 'at' } });
@@ -272,4 +320,20 @@ export class TenantStore {
     if (data === undefined) throw new TenantNotFoundError(tenantId);
     return parseDocument(tenantSchema, COLLECTIONS.tenants, tenantId, data);
   }
+
+  private async readSlug(reader: DocumentReader, slug: string): Promise<SlugDocument | undefined> {
+    const data = await reader.get(COLLECTIONS.slugs, slug);
+    if (data === undefined) return undefined;
+    return parseDocument(slugDocumentSchema, COLLECTIONS.slugs, slug, data);
+  }
+}
+
+/** Reserva do mesmo checkout, ou reserva de outro já vencida (o TTL ainda não a apagou): o slug está livre. */
+function slugAvailableFor(current: SlugDocument, tenant: Tenant, now: Date): boolean {
+  if (current.state !== 'reserved') return false;
+  const sameCheckout =
+    current.checkoutSessionId !== undefined &&
+    current.checkoutSessionId === tenant.consent?.checkoutSessionId;
+  const expired = current.expiresAt !== undefined && current.expiresAt.getTime() <= now.getTime();
+  return sameCheckout || expired;
 }

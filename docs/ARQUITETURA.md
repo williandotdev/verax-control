@@ -345,8 +345,9 @@ para, liga e destrói. O detalhamento (fluxos, limites, custos e PRs) está no p
   `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado pelo projeto isolado, pela imagem fixada e
   por alerta em `SetIamPolicy` fora da lista). Não lê Stripe, Cloudflare nem Firestore.
 - **`cp-deployer`:** Workload Identity Federation para o environment `control-plane` da `main`; publica a imagem e
-  implanta os serviços (`run.developer`, `iam.serviceAccountUser` nas SAs de execução, escrita no registro, índices do
-  Firestore). Nenhum segredo.
+  troca a imagem dos serviços (`run.developer` em cada serviço e no Job, nunca no projeto; `iam.serviceAccountUser`
+  nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
+  Nenhum segredo.
 - **Responsável:** invoca o `cp-worker` com token de identidade, administra os segredos; tudo auditado.
 
 O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS

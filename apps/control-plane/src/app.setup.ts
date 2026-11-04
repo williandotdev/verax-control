@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { z } from 'zod';
 import type { AppConfig } from './common/config/config.module.js';
+import { buildTrustProxy } from './common/http/client-ip.js';
 
 export const API_PREFIX = 'v1';
 
@@ -38,7 +39,8 @@ const HELMET_OPTIONS = {
 export function configureApp(app: NestExpressApplication, config: AppConfig): void {
   z.config(z.locales.ptBR());
   app.useLogger(app.get(Logger));
-  app.set('trust proxy', config.TRUST_PROXY_HOPS);
+  // `req.ip` pela regra de client-ip.ts (saltos confiáveis mais as saídas do Hosting); é o IP dos limites e dos logs.
+  app.set('trust proxy', buildTrustProxy(config));
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.use(helmet(HELMET_OPTIONS));
   // CORS só para as origens do site, e só no cp-public: entra no CP-03 com as rotas públicas.

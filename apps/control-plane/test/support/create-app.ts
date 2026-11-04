@@ -15,6 +15,10 @@ export interface CreateAppOptions {
   role?: Role;
   nodeEnv?: AppConfig['NODE_ENV'];
   trustProxyHops?: number;
+  /** Valor de TRUSTED_PROXIES (lista separada por vírgula). */
+  trustedProxies?: string;
+  /** Outras variáveis de ambiente, por cima das acima. */
+  env?: Record<string, string>;
   capture?: LogCapture;
   documentStore?: DocumentStore;
   clock?: Clock;
@@ -22,13 +26,16 @@ export interface CreateAppOptions {
 
 /**
  * Sobe a aplicação inteira para teste, com a mesma configuração HTTP de produção, o dublê em memória do Firestore
- * e os logs capturados. O nestjs-pino guarda o logger raiz em estado estático: use um app por arquivo de teste.
+ * e os logs capturados. O nestjs-pino guarda o primeiro pino-http do processo em estado de módulo: um segundo app
+ * no mesmo arquivo reaproveitaria o logger (e o destino) do primeiro. Um app por arquivo de teste.
  */
 export async function createApp(options: CreateAppOptions = {}): Promise<NestExpressApplication> {
   const config = loadConfig({
     ROLE: options.role ?? 'public',
     NODE_ENV: options.nodeEnv ?? 'test',
     TRUST_PROXY_HOPS: String(options.trustProxyHops ?? 0),
+    ...(options.trustedProxies === undefined ? {} : { TRUSTED_PROXIES: options.trustedProxies }),
+    ...options.env,
   });
   const moduleRef = await Test.createTestingModule({
     imports: [

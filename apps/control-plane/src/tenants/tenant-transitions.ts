@@ -14,6 +14,12 @@ import type { TenantState } from './tenant.schema.js';
  * - `active` ↔ `past_due` ↔ `suspended`: inadimplência, carência e reativação por `invoice.paid`;
  * - `suspended` volta a `waiting_customer_connection` quando o cliente nunca chegou a conectar;
  * - `canceled` → `deleted` em D+30 (exclusão em dois tempos: a cripto-destruição em D+97 não muda o estado).
+ *
+ * TODO(CP-04): a revisão apontou que o plano §4b admite disputa ou fraude durante o provisionamento
+ * (`provisioning` → `past_due` e `suspended`; `provisioning_failed` → `suspended`). Entram com o webhook, junto com
+ * a regra de como um passo em andamento trata o cliente suspenso (CP-07), cada uma com teste. Até lá, esses eventos
+ * são recusados com `InvalidTransitionError`: recusar é mais seguro do que aceitar um estado que o worker ainda não
+ * sabe tratar.
  */
 export const TENANT_TRANSITIONS: Readonly<Record<TenantState, readonly TenantState[]>> = {
   pending: ['provisioning', 'canceled'],

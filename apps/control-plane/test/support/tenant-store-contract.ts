@@ -5,13 +5,16 @@ import { ULID_PATTERN } from '../../src/common/ulid.js';
 import { COLLECTIONS } from '../../src/firestore/collections.js';
 import { type DocumentStore, DocumentValidationError } from '../../src/firestore/document-store.js';
 import {
+  IMMUTABLE_IN_TRANSITION,
   InvalidTransitionError,
   LockHeldError,
   LockNotHeldError,
   type NewTenant,
+  SlugTakenError,
   TenantNotFoundError,
   type TenantStore,
 } from '../../src/tenants/tenant-store.js';
+import type { Tenant } from '../../src/tenants/tenant.schema.js';
 import type { FakeClock } from './fake-clock.js';
 import { MINUTE_MS } from './fake-clock.js';
 
@@ -99,6 +102,80 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
         at: h.clock.now(),
       });
       expect(audit[0]?.expiresAt.getTime()).toBeGreaterThan(h.clock.now().getTime());
+    });
+
+    it('toma o subdomínio em slugs/{slug}: o segundo cliente com o mesmo slug é recusado e nada é gravado', async () => {
+      const a = await h.store.create(demoTenant('cliente-demo-a'), { reason: 'teste', audit: AUDIT });
+      expect(await h.store.getSlug('cliente-demo-a')).toEqual({
+        state: 'taken',
+        tenantId: a.id,
+        checkoutSessionId: 'cs_test_demo_a',
+        updatedAt: h.clock.now(),
+      });
+
+      h.clock.advance(MINUTE_MS);
+      await expect(
+        h.store.create(demoTenant('cliente-demo-a', '22333444000181'), { reason: 'teste', audit: AUDIT }),
+      ).rejects.toBeInstanceOf(SlugTakenError);
+
+      expect((await h.store.getSlug('cliente-demo-a'))?.tenantId).toBe(a.id);
+      const tenants = await h.documents.query(COLLECTIONS.tenants, {
+        where: [{ field: 'slug', op: '==', value: 'cliente-demo-a' }],
+      });
+      expect(tenants.map((doc) => doc.id)).toEqual([a.id]);
+      expect(await h.documents.query(COLLECTIONS.auditLog)).toHaveLength(1);
+    });
+
+    it('a reserva do mesmo checkout vira taken; a de outro checkout bloqueia até vencer', async () => {
+      const reserve = (slug: string, checkoutSessionId: string, expiresAt: Date): Promise<void> =>
+        h.documents.runTransaction((tx) => {
+          tx.set(COLLECTIONS.slugs, slug, {
+            state: 'reserved',
+            checkoutSessionId,
+            updatedAt: h.clock.now(),
+            expiresAt,
+          });
+          return Promise.resolve();
+        });
+      const in150min = new Date(h.clock.now().getTime() + 150 * MINUTE_MS);
+
+      await reserve('cliente-demo-a', 'cs_test_outro', in150min);
+      await expect(h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT })).rejects.toBeInstanceOf(
+        SlugTakenError,
+      );
+      expect(await h.store.findBySlug('cliente-demo-a')).toBeUndefined();
+
+      await reserve('cliente-demo-a', 'cs_test_demo_a', in150min);
+      const created = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      expect(await h.store.getSlug('cliente-demo-a')).toEqual({
+        state: 'taken',
+        tenantId: created.id,
+        checkoutSessionId: 'cs_test_demo_a',
+        updatedAt: h.clock.now(),
+      });
+
+      // Reserva de outro checkout já vencida (o TTL ainda não a apagou): o slug está livre.
+      await reserve('cliente-demo-b', 'cs_test_outro', new Date(h.clock.now().getTime() - MINUTE_MS));
+      const b = await h.store.create(demoTenant('cliente-demo-b', '22333444000181'), {
+        reason: 'teste',
+        audit: AUDIT,
+      });
+      expect((await h.store.getSlug('cliente-demo-b'))?.tenantId).toBe(b.id);
+    });
+
+    it('duas criações simultâneas com o mesmo slug: só uma nasce, e a outra recebe SlugTakenError', async () => {
+      const results = await Promise.allSettled([
+        h.store.create(demoTenant('cliente-demo-a'), { reason: 'teste', audit: AUDIT }),
+        h.store.create(demoTenant('cliente-demo-a', '22333444000181'), { reason: 'teste', audit: AUDIT }),
+      ]);
+
+      expect(results.map((result) => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+      const winner = results.find((result) => result.status === 'fulfilled');
+      const loser = results.find((result) => result.status === 'rejected');
+      expect(loser?.reason).toBeInstanceOf(SlugTakenError);
+      expect((await h.store.findBySlug('cliente-demo-a'))?.id).toBe(winner?.value.id);
+      expect((await h.store.getSlug('cliente-demo-a'))?.tenantId).toBe(winner?.value.id);
+      expect(await h.documents.query(COLLECTIONS.tenants)).toHaveLength(1);
     });
 
     it('encontra pelo subdomínio e devolve undefined para quem não existe', async () => {
@@ -216,6 +293,71 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
         }),
       ).rejects.toBeInstanceOf(TypeError);
       expect((await h.store.get(id))?.state).toBe('past_due');
+    });
+
+    it('a mutação não pode mexer em slug, company, consent, createdAt nem lock; cópia igual passa', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      await h.store.acquireLock(id, 'run-1', LOCK_TTL_MS);
+      const changes: Record<(typeof IMMUTABLE_IN_TRANSITION)[number], (tenant: Tenant) => Tenant> = {
+        slug: (tenant) => ({ ...tenant, slug: 'outro-slug' }),
+        company: (tenant) => ({ ...tenant, company: { ...tenant.company, legalName: 'Outra Ltda' } }),
+        consent: (tenant) => ({ ...tenant, consent: undefined }),
+        createdAt: (tenant) => ({ ...tenant, createdAt: new Date(0) }),
+        lock: (tenant) => ({ ...tenant, lock: undefined }),
+      };
+      for (const key of IMMUTABLE_IN_TRANSITION) {
+        await expect(
+          h.store.transition(id, { to: 'provisioning', reason: 'x', audit: AUDIT, mutate: changes[key] }),
+        ).rejects.toThrow(new TypeError(`a mutação de uma transição não pode mexer em ${key}`));
+      }
+      expect((await h.store.get(id))?.state).toBe('pending');
+      expect(await h.store.listTransitions(id)).toHaveLength(1);
+
+      // Uma cópia estrutural (objetos novos com o mesmo conteúdo) não é mudança.
+      const copied = await h.store.transition(id, {
+        to: 'provisioning',
+        reason: 'x',
+        audit: AUDIT,
+        mutate: (tenant) => ({
+          ...tenant,
+          company: { ...tenant.company },
+          consent: tenant.consent === undefined ? undefined : { ...tenant.consent },
+          lock: tenant.lock === undefined ? undefined : { ...tenant.lock },
+          createdAt: new Date(tenant.createdAt.getTime()),
+          provisioning: { attempts: 0 },
+        }),
+      });
+      expect(copied).toMatchObject({ state: 'provisioning', provisioning: { attempts: 0 } });
+      expect(copied.lock?.owner).toBe('run-1');
+    });
+
+    it('registros do mesmo instante saem na ordem em que foram gravados (ids ULID como desempate)', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      // O relógio não anda: `at` é igual nos três registros.
+      await h.store.transition(id, { to: 'provisioning', reason: 'invoice.paid', audit: AUDIT });
+      await h.store.transition(id, {
+        to: 'waiting_customer_connection',
+        reason: 'access.ready',
+        audit: AUDIT,
+      });
+
+      const transitions = await h.store.listTransitions(id);
+      expect(transitions.map((t) => t.to)).toEqual([
+        'pending',
+        'provisioning',
+        'waiting_customer_connection',
+      ]);
+      expect(new Set(transitions.map((t) => t.at.getTime())).size).toBe(1);
+      const ids = (await h.documents.query(COLLECTIONS.transitions(id))).map((doc) => doc.id);
+      for (const docId of ids) expect(docId).toMatch(ULID_PATTERN);
+
+      const audit = await h.audit.listForTenant(id);
+      expect(audit.map((entry) => entry.details?.['to'])).toEqual([
+        'pending',
+        'provisioning',
+        'waiting_customer_connection',
+      ]);
+      for (const entry of audit) expect(entry.id).toMatch(ULID_PATTERN);
     });
 
     it('trava: adquire, renova e solta; outro dono é recusado enquanto ela vale', async () => {

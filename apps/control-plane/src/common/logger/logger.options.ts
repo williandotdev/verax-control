@@ -36,15 +36,22 @@ interface SerializedRequestLike {
   method?: unknown;
   url?: unknown;
   remoteAddress?: unknown;
+  /** O IncomingMessage original (o pino-http o anexa), já com o `req.ip` do Express. */
+  raw?: { ip?: unknown };
 }
 
-/** Só o necessário para investigar: nunca headers, corpo ou query string. */
+/**
+ * Só o necessário para investigar: nunca headers, corpo ou query string. `remoteAddress` é o socket (no Cloud Run,
+ * o front end interno); `ip` é o IP do cliente pela regra de `common/http/client-ip.ts`, o mesmo dos limites por
+ * IP. É por ele que o responsável descobre as saídas do Hosting a listar em TRUSTED_PROXIES.
+ */
 function serializeRequest(req: SerializedRequestLike): Record<string, unknown> {
   return {
     id: req.id,
     method: req.method,
     url: typeof req.url === 'string' ? pathOnly(req.url) : undefined,
     remoteAddress: req.remoteAddress,
+    ip: typeof req.raw?.ip === 'string' ? req.raw.ip : undefined,
   };
 }
 

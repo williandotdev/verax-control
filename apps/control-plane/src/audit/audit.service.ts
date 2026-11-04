@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { sanitize } from '../common/logger/sanitize.js';
-import { ULID_PATTERN } from '../common/ulid.js';
+import { newUlid, ULID_PATTERN } from '../common/ulid.js';
 import { COLLECTIONS } from '../firestore/collections.js';
 import {
   DOCUMENT_STORE,
@@ -85,7 +85,9 @@ export class AuditService {
 
   /** Grava dentro de uma transação aberta pelo chamador (a mesma da mudança de estado). */
   record(tx: DocumentTransaction, entry: AuditEntry): void {
-    tx.create(COLLECTIONS.auditLog, this.store.newId(), this.toRecord(entry));
+    const record = this.toRecord(entry);
+    // Id ordenado pelo tempo: a listagem por `at` desempata pelo id, igual nos dois backends.
+    tx.create(COLLECTIONS.auditLog, newUlid(record.at.getTime()), record);
   }
 
   /** Grava sozinho, para ações que não mudam estado (ex.: uma operação recusada). */
@@ -96,7 +98,10 @@ export class AuditService {
     });
   }
 
-  /** Registros de um cliente, do mais antigo ao mais novo (consulta por igualdade: sem índice composto). */
+  /**
+   * Registros de um cliente, do mais antigo ao mais novo (consulta por igualdade: sem índice composto). Empate em
+   * `at` sai pelo id, que é um ULID do mesmo instante.
+   */
   async listForTenant(tenantId: string): Promise<AuditRecordWithId[]> {
     const docs = await this.store.query(COLLECTIONS.auditLog, {
       where: [{ field: 'tenantId', op: '==', value: tenantId }],

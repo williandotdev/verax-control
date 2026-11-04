@@ -76,6 +76,49 @@ export class ReadAfterWriteError extends Error {
   }
 }
 
+/**
+ * `runTransaction` chamado de dentro de outra transação do mesmo store. No Firestore seriam duas transações
+ * independentes (a interna commitaria mesmo que a externa falhasse: auditoria sem a mudança, por exemplo); no dublê
+ * em memória a interna esperaria a externa na fila para sempre. Nos dois casos é um erro de programação: quem está
+ * numa transação grava pela `tx` que recebeu.
+ */
+export class NestedTransactionError extends Error {
+  constructor() {
+    super('transação aninhada: dentro de uma transação, use a tx recebida em vez de abrir outra');
+    this.name = 'NestedTransactionError';
+  }
+}
+
+/**
+ * Igualdade de valores de documento, como o `==` do Firestore: primitivos por valor, `Date` pelo instante, arrays
+ * elemento a elemento na ordem, objetos simples chave a chave (um campo `undefined` conta como ausente).
+ */
+export function equalValues(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => equalValues(item, b[index]))
+    );
+  }
+  if (typeof a === 'object' && typeof b === 'object' && a !== null && b !== null) {
+    const left = a as DocumentData;
+    const right = b as DocumentData;
+    const keysOf = (data: DocumentData): string[] =>
+      Object.keys(data).filter((key) => data[key] !== undefined);
+    const leftKeys = keysOf(left);
+    return (
+      leftKeys.length === keysOf(right).length && leftKeys.every((key) => equalValues(left[key], right[key]))
+    );
+  }
+  return false;
+}
+
 /** Documento gravado fora do formato esperado. A mensagem cita o caminho e os campos, nunca os valores. */
 export class DocumentValidationError extends Error {
   constructor(

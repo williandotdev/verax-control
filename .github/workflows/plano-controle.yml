@@ -1,14 +1,24 @@
 name: Plano de controle
 
 # Publica a imagem do plano de controle no Artifact Registry e implanta os dois serviços do Cloud Run (cp-public e
-# cp-worker: a mesma imagem, com ROLE diferente) no projeto da Verax. A revisão nova sobe sem tráfego, com a sonda
-# de partida em /health, e só recebe o tráfego depois de responder. Antes da implantação, aplica os índices e as
-# políticas de TTL do Firestore (apps/control-plane/scripts/firestore-apply.sh), de forma idempotente.
+# cp-worker: a mesma imagem, com ROLE diferente) no projeto da Verax.
+#
+# Divisão com o Terraform (infra/gcp/envs/control-plane; GUIA, seção "O plano de controle"):
+# - o Terraform é dono dos serviços e de tudo o que há neles: conta de serviço, variáveis de ambiente, segredos,
+#   IAM, escala, timeout, sonda de partida em /health, ingress; e também dos índices compostos e das políticas de
+#   TTL do Firestore. Este workflow nunca cria um serviço: se algum dos dois não existir, o job para antes do build
+#   e aponta o passo do GUIA (services_enabled = true);
+# - o workflow é dono só da imagem em execução. `gcloud run deploy --image` cria uma revisão nova copiando o resto
+#   do template; ROLE e NODE_ENV vão junto como cinto de segurança (os mesmos valores do Terraform, que ignora
+#   `image`, `traffic`, `client` e `client_version`). Nada mais é passado, para os dois não brigarem.
+#
+# A revisão nova nasce sem tráfego e etiquetada; o gcloud só termina quando a sonda de partida (do Terraform)
+# passa. Depois, a prova: o /health no endereço etiquetado do cp-public e a condição Ready da revisão nos dois. Só
+# então o tráfego vai para a revisão nova; qualquer falha antes disso deixa a revisão anterior servindo.
 #
 # Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `control-plane`,
-# que só aceita a `main` (molde do painel.yml). Projeto, região, registro e contas de serviço vêm das variáveis do
-# environment, nunca do código. Sem elas, nada roda: o workflow é seguro de existir antes de o environment ser
-# criado (docs/STATUS.md, CP-01, lista o que o responsável configura).
+# que só aceita a `main` (molde do painel.yml). As variáveis do environment são a saída `github_environment` do
+# Terraform (GUIA, passo 7), nunca código. Sem elas, nada roda: o workflow é seguro de existir antes do environment.
 
 on:
   push:
@@ -30,8 +40,6 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PUBLIC_SERVICE: cp-public
-  WORKER_SERVICE: cp-worker
   # Etiqueta da revisão candidata (sem tráfego) até o /health responder.
   CANDIDATE_TAG: candidato
 
@@ -47,21 +55,22 @@ jobs:
       attestations: write
     steps:
       # As variáveis do environment só existem dentro do job: a checagem fica num passo. Falta alguma, nada roda.
+      # Os nomes são os da saída `github_environment` do Terraform.
       - name: Conferir a configuração
         id: config
         env:
-          CP_IMAGES_REPOSITORY: ${{ vars.CP_IMAGES_REPOSITORY }}
+          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          GCP_DEPLOYER_SA: ${{ vars.GCP_DEPLOYER_SA }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
-          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
-          GCP_CP_DEPLOY_SA: ${{ vars.GCP_CP_DEPLOY_SA }}
-          CP_PUBLIC_SA: ${{ vars.CP_PUBLIC_SA }}
-          CP_WORKER_SA: ${{ vars.CP_WORKER_SA }}
+          CP_IMAGES_REPOSITORY: ${{ vars.CP_IMAGES_REPOSITORY }}
+          CP_PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
+          CP_WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
         run: |
           ready=true
-          for name in CP_IMAGES_REPOSITORY GCP_PROJECT_ID GCP_REGION GCP_WIF_PROVIDER GCP_CP_DEPLOY_SA CP_PUBLIC_SA CP_WORKER_SA; do
+          for name in GCP_WIF_PROVIDER GCP_DEPLOYER_SA GCP_PROJECT_ID GCP_REGION CP_IMAGES_REPOSITORY CP_PUBLIC_SERVICE CP_WORKER_SERVICE; do
             if [ -z "${!name}" ]; then
-              echo "::notice::$name não configurada no environment control-plane; nada a implantar."
+              echo "::notice::$name não configurada no environment control-plane (terraform output github_environment); nada a implantar."
               ready=false
             fi
           done
@@ -78,9 +87,28 @@ jobs:
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_CP_DEPLOY_SA }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
           token_format: access_token
           access_token_lifetime: 1800s
+      # Os serviços nascem no Terraform (services_enabled = true), nunca aqui: o deploy abaixo é só uma revisão nova
+      # num serviço que já existe (o gcloud nem aceita --no-traffic ao criar um serviço). Antes do build, para falhar
+      # barato.
+      - name: Conferir que os serviços existem (Terraform)
+        if: steps.config.outputs.ready == 'true'
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+          PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
+          WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+        run: |
+          set -euo pipefail
+          for service in "$PUBLIC_SERVICE" "$WORKER_SERVICE"; do
+            if ! gcloud run services describe "$service" --project "$PROJECT" --region "$REGION" --format 'value(metadata.name)' >/dev/null; then
+              echo "::error::o serviço $service não existe em $REGION: aplique infra/gcp/envs/control-plane com services_enabled = true (infra/gcp/GUIA.md, passo 5) antes de implantar. O workflow não cria serviços."
+              exit 1
+            fi
+            echo "$service: existe"
+          done
       - name: Build e publicação da imagem
         if: steps.config.outputs.ready == 'true'
         id: build
@@ -106,13 +134,9 @@ jobs:
         with:
           subject-name: ${{ vars.CP_IMAGES_REPOSITORY }}/control-plane
           subject-digest: ${{ steps.build.outputs.digest }}
-      - name: Índices compostos e políticas de TTL do Firestore
-        if: steps.config.outputs.ready == 'true'
-        env:
-          PROJECT: ${{ vars.GCP_PROJECT_ID }}
-        run: bash apps/control-plane/scripts/firestore-apply.sh "$PROJECT"
-      # A revisão nova nasce sem tráfego e etiquetada; o gcloud só termina quando a sonda de partida (/health) passa.
-      # Nada do que já está configurado no serviço (variáveis, segredos, IAM) é tocado: só a imagem e o papel.
+      # Só a imagem (mais ROLE e NODE_ENV, iguais aos do Terraform). Conta de serviço, variáveis, segredos, escala,
+      # timeout, sonda e rótulos vêm do template que já está no serviço: o gcloud os preserva quando não são
+      # informados, e o Terraform continua dono deles.
       - name: Implantar sem tráfego (cp-public e cp-worker)
         if: steps.config.outputs.ready == 'true'
         env:
@@ -120,27 +144,25 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           REPOSITORY: ${{ vars.CP_IMAGES_REPOSITORY }}
           DIGEST: ${{ steps.build.outputs.digest }}
-          PUBLIC_SA: ${{ vars.CP_PUBLIC_SA }}
-          WORKER_SA: ${{ vars.CP_WORKER_SA }}
+          PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
+          WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
         run: |
           set -euo pipefail
           image="$REPOSITORY/control-plane@$DIGEST"
-          deploy() { # <serviço> <papel> <conta de serviço> <máximo de instâncias> <timeout da requisição>
+          deploy() { # <serviço> <papel>
             gcloud run deploy "$1" --project "$PROJECT" --region "$REGION" --image "$image" \
-              --service-account "$3" --no-traffic --tag "$CANDIDATE_TAG" \
-              --update-env-vars "ROLE=$2,NODE_ENV=production,TRUST_PROXY_HOPS=1" \
-              --cpu 1 --memory 512Mi --min-instances 0 --max-instances "$4" --timeout "$5" \
-              --startup-probe "httpGet.path=/health,httpGet.port=8080,periodSeconds=5,failureThreshold=12,timeoutSeconds=3" \
-              --labels "commit=$GITHUB_SHA" --quiet
+              --update-env-vars "ROLE=$2,NODE_ENV=production" \
+              --no-traffic --tag "$CANDIDATE_TAG" --quiet
           }
-          # cp-public atrás do Hosting (rewrite de 60 s); cp-worker atende tasks e o Scheduler (até 15 min).
-          deploy "$PUBLIC_SERVICE" public "$PUBLIC_SA" 2 60
-          deploy "$WORKER_SERVICE" worker "$WORKER_SA" 1 900
+          deploy "$PUBLIC_SERVICE" public
+          deploy "$WORKER_SERVICE" worker
       - name: Conferir o /health da revisão candidata
         if: steps.config.outputs.ready == 'true'
         env:
           PROJECT: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
+          PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
+          WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
         run: |
           set -euo pipefail
           describe() { gcloud run services describe "$1" --project "$PROJECT" --region "$REGION" --format json; }
@@ -160,6 +182,8 @@ jobs:
         env:
           PROJECT: ${{ vars.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
+          PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
+          WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
         run: |
           set -euo pipefail
           for service in "$PUBLIC_SERVICE" "$WORKER_SERVICE"; do
@@ -170,6 +194,8 @@ jobs:
         if: steps.config.outputs.ready == 'true'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
+          PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
+          WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
         run: |
           {
             echo "### Plano de controle implantado (versão \`$GITHUB_SHA\`)"

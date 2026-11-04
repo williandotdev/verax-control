@@ -34,8 +34,9 @@ allowBuilds:
   lefthook: false
   # O preinstall só confere a versão do Node, o que o engineStrict já faz.
   prisma: false
-  # Dependência do SDK do Firestore (plano de controle). O postinstall só reescreve metadados nos bundles de
-  # navegador, que o Node não usa; o pacote publicado já vem compilado.
+  # Dependência do SDK do Firestore (plano de controle). O postinstall (scripts/postinstall.js) só imprime um aviso
+  # quando o pacote que depende dele usa um prefixo de versão diferente do recomendado (`~`); não compila nem
+  # altera nada, e o pacote publicado já vem pronto.
   protobufjs: false
 saveExact: true
 engineStrict: true

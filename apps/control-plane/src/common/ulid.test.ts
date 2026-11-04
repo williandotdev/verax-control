@@ -15,6 +15,16 @@ describe('newUlid', () => {
     expect(newUlid(0).slice(0, 10)).toBe('0000000000');
   });
 
+  it('no mesmo milissegundo, os ids saem em ordem crescente (modo monotônico)', () => {
+    const at = Date.UTC(2026, 10, 4, 12, 0, 0, 500);
+    const ids = Array.from({ length: 50 }, () => newUlid(at));
+    for (let i = 1; i < ids.length; i += 1) {
+      expect(ids[i - 1]?.slice(0, 10)).toBe(ids[i]?.slice(0, 10));
+      expect(ids[i - 1]! < ids[i]!).toBe(true);
+    }
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it('recusa tempo fora do intervalo', () => {
     expect(() => newUlid(-1)).toThrow(RangeError);
     expect(() => newUlid(2 ** 48)).toThrow(RangeError);

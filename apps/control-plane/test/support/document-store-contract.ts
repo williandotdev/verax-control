@@ -76,12 +76,14 @@ export function describeDocumentStoreContract(name: string, factory: () => Promi
     });
 
     it('consulta por igualdade, desigualdade, ordenação e limite; sem o campo, o documento fica fora', async () => {
+      // `state` mais `billing.graceUntil`: a consulta do `tick` e um dos índices compostos declarados.
       const day = (n: number): Date => new Date(Date.UTC(2026, 10, n));
+      const grace = (n: number): { graceUntil: Date } => ({ graceUntil: day(n) });
       await store.runTransaction((tx) => {
-        tx.set('tenants', 'a', { state: 'active', due: day(1) });
-        tx.set('tenants', 'b', { state: 'active', due: day(3) });
-        tx.set('tenants', 'c', { state: 'active', due: day(2) });
-        tx.set('tenants', 'd', { state: 'canceled', due: day(1) });
+        tx.set('tenants', 'a', { state: 'active', billing: grace(1) });
+        tx.set('tenants', 'b', { state: 'active', billing: grace(3) });
+        tx.set('tenants', 'c', { state: 'active', billing: grace(2) });
+        tx.set('tenants', 'd', { state: 'canceled', billing: grace(1) });
         tx.set('tenants', 'e', { state: 'active' });
         return Promise.resolve();
       });
@@ -89,17 +91,61 @@ export function describeDocumentStoreContract(name: string, factory: () => Promi
       const active = await store.query('tenants', {
         where: [
           { field: 'state', op: '==', value: 'active' },
-          { field: 'due', op: '<=', value: day(2) },
+          { field: 'billing.graceUntil', op: '<=', value: day(2) },
         ],
-        orderBy: { field: 'due' },
+        orderBy: { field: 'billing.graceUntil' },
       });
       expect(active.map((doc) => doc.id)).toEqual(['a', 'c']);
 
-      const newest = await store.query('tenants', { orderBy: { field: 'due', direction: 'desc' }, limit: 1 });
+      const newest = await store.query('tenants', {
+        orderBy: { field: 'billing.graceUntil', direction: 'desc' },
+        limit: 1,
+      });
       expect(newest.map((doc) => doc.id)).toEqual(['b']);
 
       const all = await store.query('tenants', { where: [{ field: 'state', op: '==', value: 'active' }] });
       expect(all.map((doc) => doc.id).sort()).toEqual(['a', 'b', 'c', 'e']);
+    });
+
+    it('== compara datas, arrays e objetos por valor; tipo diferente e campo ausente não casam', async () => {
+      const at = new Date('2026-11-04T12:00:00.000Z');
+      await store.runTransaction((tx) => {
+        tx.set('counters', 'a', { at, list: [1, 'x'], map: { n: 1 }, n: 1 });
+        tx.set('counters', 'b', { at: new Date(at.getTime() + 1), list: [1, 'x', 2], map: { n: 2 }, n: '1' });
+        return Promise.resolve();
+      });
+      const ids = async (field: string, value: unknown): Promise<string[]> =>
+        (await store.query('counters', { where: [{ field, op: '==', value }] })).map((doc) => doc.id);
+
+      expect(await ids('at', new Date(at.getTime()))).toEqual(['a']);
+      expect(await ids('list', [1, 'x'])).toEqual(['a']);
+      expect(await ids('map', { n: 1 })).toEqual(['a']);
+      expect(await ids('n', 1)).toEqual(['a']);
+      expect(await ids('n', '1')).toEqual(['b']);
+      expect(await ids('nada', null)).toEqual([]);
+      expect(await ids('map.n', 2)).toEqual(['b']);
+    });
+
+    it('valor undefined numa condição é recusado (o SDK não aceita)', async () => {
+      await expect(
+        store.query('counters', { where: [{ field: 'n', op: '==', value: undefined }] }),
+      ).rejects.toThrow();
+    });
+
+    it('empate na ordenação sai pelo id, na direção da ordenação', async () => {
+      const at = new Date('2026-11-04T12:00:00.000Z');
+      await store.runTransaction((tx) => {
+        tx.set('tenants/t/transitions', 'b', { at });
+        tx.set('tenants/t/transitions', 'a', { at });
+        tx.set('tenants/t/transitions', 'c', { at: new Date(at.getTime() + 1) });
+        return Promise.resolve();
+      });
+      const asc = await store.query('tenants/t/transitions', { orderBy: { field: 'at' } });
+      expect(asc.map((doc) => doc.id)).toEqual(['a', 'b', 'c']);
+      const desc = await store.query('tenants/t/transitions', {
+        orderBy: { field: 'at', direction: 'desc' },
+      });
+      expect(desc.map((doc) => doc.id)).toEqual(['c', 'b', 'a']);
     });
 
     it('lê e consulta dentro da transação e separa subcoleções por caminho', async () => {

@@ -1,19 +1,38 @@
+import { ULID_PATTERN } from '../common/ulid.js';
+import { assertDocumentId } from './document-store.js';
+
+const TENANTS = 'tenants';
+const PROVISIONING_RUNS = 'provisioningRuns';
+
+/** Id de cliente: sempre um ULID (`TenantStore.create`). Qualquer outra coisa (inclusive com barra) não monta caminho. */
+function tenantSubcollection(tenantId: string, name: string): string {
+  if (!ULID_PATTERN.test(tenantId)) throw new TypeError('id de cliente inválido');
+  return `${TENANTS}/${tenantId}/${name}`;
+}
+
 /**
- * Coleções do plano de controle (plano da fase 3, §3). Os índices compostos e os campos de TTL definidos aqui
- * são espelhados em `firestore.indexes.json` e `firestore.ttl.json` (o teste `collections.test.ts` garante), que o
- * workflow de implantação aplica com o gcloud (`scripts/firestore-apply.sh`).
+ * Coleções do plano de controle (plano da fase 3, §3).
+ *
+ * Os índices compostos e os campos de TTL declarados aqui são criados no projeto pelo Terraform, e só por ele
+ * (`infra/gcp/envs/control-plane/firestore.tf`: `google_firestore_index.tenants` e `google_firestore_field.ttl`).
+ * `firestore.indexes.json` e `firestore.ttl.json` são o espelho legível (formato do Firebase CLI, e um próprio para
+ * o TTL). O teste `collections.test.ts` garante que código e JSON batem e, quando o `firestore.tf` está na árvore,
+ * que ele cita os mesmos campos. Mudou aqui, mude lá.
  */
 export const COLLECTIONS = {
-  tenants: 'tenants',
+  tenants: TENANTS,
   /** Histórico de estados do cliente; mesma vida do tenant. */
-  transitions: (tenantId: string): string => `tenants/${tenantId}/transitions`,
+  transitions: (tenantId: string): string => tenantSubcollection(tenantId, 'transitions'),
   /** Faturas (5 anos, obrigação fiscal). */
-  invoices: (tenantId: string): string => `tenants/${tenantId}/invoices`,
+  invoices: (tenantId: string): string => tenantSubcollection(tenantId, 'invoices'),
   slugs: 'slugs',
   stripeEvents: 'stripeEvents',
   statusTokens: 'statusTokens',
-  provisioningRuns: 'provisioningRuns',
-  steps: (runId: string): string => `provisioningRuns/${runId}/steps`,
+  provisioningRuns: PROVISIONING_RUNS,
+  steps: (runId: string): string => {
+    assertDocumentId(runId);
+    return `${PROVISIONING_RUNS}/${runId}/steps`;
+  },
   auditLog: 'auditLog',
   rateLimits: 'rateLimits',
   counters: 'counters',

@@ -77,6 +77,17 @@ describe('AuditService (CP-02)', () => {
     expect((await audit.listForTenant(other)).map((entry) => entry.action)).toEqual(['b.outro']);
   });
 
+  it('registros do mesmo instante saem na ordem de gravação (o id é um ULID do instante)', async () => {
+    const { audit } = harness();
+    for (const action of ['a.primeira', 'b.segunda', 'c.terceira']) {
+      await audit.write({ actor: 'system', action, tenantId: TENANT_ID });
+    }
+    const entries = await audit.listForTenant(TENANT_ID);
+    expect(entries.map((entry) => entry.action)).toEqual(['a.primeira', 'b.segunda', 'c.terceira']);
+    expect(new Set(entries.map((entry) => entry.at.getTime())).size).toBe(1);
+    for (const entry of entries) expect(entry.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+  });
+
   it('details passa pela limpeza dos logs e tem teto de tamanho', () => {
     expect(toStoredDetails(undefined)).toBeUndefined();
     expect(toStoredDetails({ step: 'preflight', token: 'x', nested: { secret: 'y', ok: true } })).toEqual({

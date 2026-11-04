@@ -11,9 +11,11 @@ import { createFirestore, FirestoreDocumentStore } from './firestore/firestore-d
 async function bootstrap(): Promise<void> {
   loadEnvFileForLocalDevelopment();
 
+  // Avisos da carga (variável do outro papel ignorada) esperam o logger subir, para sair com redaction e severidade.
+  const warnings: string[] = [];
   let config;
   try {
-    config = loadConfig();
+    config = loadConfig(process.env, (message) => warnings.push(message));
   } catch (error) {
     if (error instanceof ConfigValidationError) {
       // Só nomes de variáveis e o problema; nenhum valor é impresso.
@@ -29,9 +31,11 @@ async function bootstrap(): Promise<void> {
     APP_CREATE_OPTIONS,
   );
   configureApp(app, config);
+  const logger = app.get(Logger);
+  for (const warning of warnings) logger.warn(warning, 'Config');
   app.enableShutdownHooks();
   await app.listen(config.PORT);
-  app.get(Logger).log(`plano de controle no ar: papel ${config.ROLE}, porta ${config.PORT}`, 'Bootstrap');
+  logger.log(`plano de controle no ar: papel ${config.ROLE}, porta ${config.PORT}`, 'Bootstrap');
 }
 
 void bootstrap();

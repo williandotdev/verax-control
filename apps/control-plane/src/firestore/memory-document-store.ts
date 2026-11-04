@@ -1,4 +1,6 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
+import { type CompositeIndex, COMPOSITE_INDEXES } from './collections.js';
 import {
   assertCollectionPath,
   assertDocumentId,
@@ -7,6 +9,8 @@ import {
   type DocumentQuery,
   type DocumentStore,
   type DocumentTransaction,
+  equalValues,
+  NestedTransactionError,
   ReadAfterWriteError,
   type StoredDocument,
   type WhereClause,
@@ -82,12 +86,18 @@ function compare(a: unknown, b: unknown): number | undefined {
   return undefined;
 }
 
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** `==` é igualdade profunda (arrays e objetos entram, como no Firestore); os demais comparam primitivos. */
 function matches(data: DocumentData, clause: WhereClause): boolean {
-  const result = compare(fieldValue(data, clause.field), clause.value);
+  const actual = fieldValue(data, clause.field);
+  if (actual === undefined) return false;
+  if (clause.op === '==') return equalValues(actual, clause.value);
+  const result = compare(actual, clause.value);
   if (result === undefined) return false;
   switch (clause.op) {
-    case '==':
-      return result === 0;
     case '<':
       return result < 0;
     case '<=':
@@ -101,6 +111,98 @@ function matches(data: DocumentData, clause: WhereClause): boolean {
   }
 }
 
+/** Consulta que o dublê não sabe executar como o Firestore executaria; falha alto em vez de divergir em silêncio. */
+export class UnsupportedQueryError extends TypeError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsupportedQueryError';
+  }
+}
+
+/**
+ * Consulta que em produção exige um índice composto que não está declarado em `COMPOSITE_INDEXES` (e, portanto,
+ * nem no `firestore.tf`). O emulador não confere índices, então só o dublê pega isso antes do deploy.
+ */
+export class MissingCompositeIndexError extends Error {
+  constructor(
+    readonly collection: string,
+    readonly fields: readonly string[],
+  ) {
+    super(
+      `consulta em ${collection} precisa de um índice composto (${fields.join(', ')}) declarado em ` +
+        'collections.ts (COMPOSITE_INDEXES) e no firestore.tf do infra/gcp/envs/control-plane',
+    );
+    this.name = 'MissingCompositeIndexError';
+  }
+}
+
+const RANGE_OPERATORS = new Set(['<', '<=', '>', '>=']);
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+/**
+ * Campos do índice composto que a consulta exige, ou `undefined` quando os índices de campo único bastam. Regras do
+ * Firestore: só igualdades (quantas forem) se resolvem por junção de índices simples; um único campo com desigualdade
+ * ou ordenação também; igualdade mais outro campo com desigualdade ou ordenação, ou dois campos desses, pedem um
+ * índice com as igualdades na frente e os demais na ordem. A direção (ASC/DESC) não é conferida.
+ */
+function requiredIndexFields(query: DocumentQuery): string[] | undefined {
+  const where = query.where ?? [];
+  const equalities = unique(where.filter((clause) => clause.op === '==').map((clause) => clause.field));
+  const tail = unique(where.filter((clause) => RANGE_OPERATORS.has(clause.op)).map((clause) => clause.field));
+  if (query.orderBy !== undefined && !tail.includes(query.orderBy.field)) tail.push(query.orderBy.field);
+  const others = tail.filter((field) => !equalities.includes(field));
+  if (others.length === 0) return undefined;
+  if (equalities.length === 0 && others.length === 1) return undefined;
+  return [...equalities, ...others];
+}
+
+function hasIndex(
+  indexes: readonly CompositeIndex[],
+  group: string,
+  required: readonly string[],
+  equalities: number,
+): boolean {
+  const wantedEqualities = new Set(required.slice(0, equalities));
+  const wantedTail = required.slice(equalities);
+  return indexes.some((index) => {
+    if (index.collectionGroup !== group || index.fields.length !== required.length) return false;
+    const paths = index.fields.map((field) => field.fieldPath);
+    const head = paths.slice(0, equalities);
+    return (
+      head.every((path) => wantedEqualities.has(path)) &&
+      new Set(head).size === wantedEqualities.size &&
+      paths.slice(equalities).every((path, position) => path === wantedTail[position])
+    );
+  });
+}
+
+/** O que o SDK recusa na montagem da consulta, mais o que o dublê não implementa. */
+function assertSupportedQuery(
+  collection: string,
+  query: DocumentQuery,
+  indexes: readonly CompositeIndex[],
+): void {
+  for (const clause of query.where ?? []) {
+    if (clause.value === undefined) {
+      throw new UnsupportedQueryError(`valor undefined na condição sobre ${clause.field} (o SDK recusa)`);
+    }
+    if (RANGE_OPERATORS.has(clause.op) && !isComparable(clause.value)) {
+      throw new UnsupportedQueryError(
+        `o dublê não compara arrays nem objetos com ${clause.op} (condição sobre ${clause.field})`,
+      );
+    }
+  }
+  const required = requiredIndexFields(query);
+  if (required === undefined) return;
+  const group = collection.split('/').at(-1) ?? collection;
+  const equalities = unique((query.where ?? []).filter((c) => c.op === '==').map((c) => c.field)).length;
+  if (!hasIndex(indexes, group, required, equalities))
+    throw new MissingCompositeIndexError(collection, required);
+}
+
 interface PendingWrite {
   kind: 'create' | 'set' | 'delete';
   collection: string;
@@ -108,15 +210,30 @@ interface PendingWrite {
   data?: DocumentData;
 }
 
+export interface MemoryDocumentStoreOptions {
+  /** Índices compostos "existentes"; o padrão é a lista do código, a mesma do `firestore.tf`. */
+  indexes?: readonly CompositeIndex[];
+}
+
 /**
  * Dublê em memória do `DocumentStore` para testes unitários. As transações rodam uma por vez (fila): uma segunda
  * transação só lê depois que a primeira gravou, o que reproduz o efeito observável da disputa no Firestore
  * (a perdedora relê o estado novo e a regra de negócio a rejeita). Os mesmos testes de contrato rodam contra o
  * emulador oficial (`test/firestore-emulator.test.ts`).
+ *
+ * O dublê é mais estrito que o emulador onde o emulador é mais frouxo que a produção: recusa consulta que exigiria
+ * índice composto não declarado (`MissingCompositeIndexError`) e as formas que não sabe reproduzir
+ * (`UnsupportedQueryError`), em vez de devolver um resultado que o Firestore real não devolveria.
  */
 export class MemoryDocumentStore implements DocumentStore {
   private readonly collections = new Map<string, Map<string, DocumentData>>();
+  private readonly indexes: readonly CompositeIndex[];
+  private readonly insideTransaction = new AsyncLocalStorage<true>();
   private queue: Promise<void> = Promise.resolve();
+
+  constructor(options: MemoryDocumentStoreOptions = {}) {
+    this.indexes = options.indexes ?? COMPOSITE_INDEXES;
+  }
 
   get(collection: string, id: string): Promise<DocumentData | undefined> {
     assertCollectionPath(collection);
@@ -127,34 +244,38 @@ export class MemoryDocumentStore implements DocumentStore {
 
   query(collection: string, query: DocumentQuery = {}): Promise<StoredDocument[]> {
     assertCollectionPath(collection);
+    try {
+      // Como no SDK, que recusa a consulta dentro do método assíncrono: a recusa chega como rejeição.
+      assertSupportedQuery(collection, query, this.indexes);
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     const where = query.where ?? [];
     const orderBy = query.orderBy;
+    // Sem orderBy, o Firestore ordena pelo campo da desigualdade (se houver) e pelo id; com orderBy, por ele e
+    // pelo id, na mesma direção. Os empates saem iguais nos dois backends.
+    const direction = orderBy?.direction === 'desc' ? -1 : 1;
+    const sortField = orderBy?.field ?? where.find((clause) => RANGE_OPERATORS.has(clause.op))?.field;
     let docs = [...(this.collections.get(collection)?.entries() ?? [])]
       .map(([id, data]) => ({ id, data }))
       .filter(({ data }) => where.every((clause) => matches(data, clause)))
       // Como no Firestore: sem o campo da ordenação, o documento fica fora.
-      .filter(({ data }) => orderBy === undefined || fieldValue(data, orderBy.field) !== undefined);
-    if (orderBy !== undefined) {
-      const direction = orderBy.direction === 'desc' ? -1 : 1;
-      docs = docs
-        .map((doc, index) => ({ doc, index }))
-        .sort((a, b) => {
-          const result = compare(
-            fieldValue(a.doc.data, orderBy.field),
-            fieldValue(b.doc.data, orderBy.field),
-          );
-          return (result ?? 0) * direction || a.index - b.index;
-        })
-        .map(({ doc }) => doc);
-    } else {
-      docs.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    }
+      .filter(({ data }) => orderBy === undefined || fieldValue(data, orderBy.field) !== undefined)
+      .sort((a, b) => {
+        const byField =
+          sortField === undefined
+            ? 0
+            : (compare(fieldValue(a.data, sortField), fieldValue(b.data, sortField)) ?? 0);
+        return (byField || compareIds(a.id, b.id)) * direction;
+      });
     if (query.limit !== undefined) docs = docs.slice(0, query.limit);
     return Promise.resolve(docs.map(({ id, data }) => ({ id, data: cloneDocument(data) })));
   }
 
   runTransaction<T>(fn: (tx: DocumentTransaction) => Promise<T>): Promise<T> {
-    const run = this.queue.then(() => this.execute(fn));
+    // Chamada de dentro de uma transação deste store: no dublê esperaria a fila para sempre.
+    if (this.insideTransaction.getStore() === true) return Promise.reject(new NestedTransactionError());
+    const run = this.queue.then(() => this.insideTransaction.run(true, () => this.execute(fn)));
     this.queue = run.then(
       () => undefined,
       () => undefined,

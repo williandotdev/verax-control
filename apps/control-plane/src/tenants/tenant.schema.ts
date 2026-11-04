@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ULID_PATTERN } from '../common/ulid.js';
 
 /** Estados do cliente (plano §4b). */
 export const TENANT_STATES = [
@@ -144,3 +145,19 @@ export const transitionSchema = z.strictObject({
 });
 
 export type TenantTransition = z.infer<typeof transitionSchema>;
+
+/**
+ * Documento `slugs/{slug}` (plano §3): o checkout reserva o subdomínio (`reserved`, com `expiresAt` de 2 h 30 para o
+ * TTL e o `checkoutSessionId` da sessão) e o `checkout.session.completed` o toma para o cliente (`taken`, sem
+ * `expiresAt`). O id do documento é o próprio slug: dois clientes nunca nascem com o mesmo subdomínio, porque o
+ * segundo `TenantStore.create` encontra o documento `taken` (ou falha no commit do `create`).
+ */
+export const slugDocumentSchema = z.strictObject({
+  state: z.enum(['reserved', 'taken']),
+  tenantId: z.string().regex(ULID_PATTERN).optional(),
+  checkoutSessionId: stripeId.optional(),
+  updatedAt: z.date(),
+  expiresAt: z.date().optional(),
+});
+
+export type SlugDocument = z.infer<typeof slugDocumentSchema>;
