@@ -2047,7 +2047,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - um `apply` que recria a VM com a proteção ligada tira os acessos dos operadores da VM no ar antes de falhar (o Terraform não deixa barrar isso no `plan`); o GUIA manda conferir a proteção no `plan` e diz como devolvê-los;
   - a homologação dá à VM leitura do registro de imagens no projeto da Verax (só as imagens do código aberto);
   - o PR-V1 pode precisar listar as versões do `credentials-key` (`secretmanager.versions.list`), que o `secretAccessor` não dá; se o desenho dele pedir, o papel entra lá;
-  - a homologação ligada custa cerca de R$ 613 por mês: parar fora das janelas de teste.
+  - a homologação ligada custa o mesmo que um nó `standard` (valor fora do repositório público): parar fora das janelas de teste.
 
 ## Fase 2, PR-V2: usuário IAM somente leitura do cliente ⚠️ altera `infra/` e `.github/`
 
@@ -2632,3 +2632,19 @@ Correções dos quatro checks do CI que falharam no PR da base (CodeQL, Semgrep,
   - A sondagem da CSP de produção e a ressalva do build de demonstração estão em "Riscos e pendências".
 - **Mesclagem da `main` com o cofre de credenciais (PR-V1, #47):** os dois interruptores do nó seguem independentes e desligados por padrão (sem `CREDENTIALS_VAULT=true` nem `TURNSTILE_SITE_KEY`, os arquivos de ambiente saem como na `main`). `env.schema.ts` com as variáveis e as checagens dos dois; no `start.sh`, a chave secreta do Turnstile é lida antes do cofre (uma falha nela para a partida antes de as chaves do worker irem para a memória) e o `api.env` leva as chaves do Turnstile e depois as do cofre; `install.sh`, `node.conf.example` e o runbook com os dois blocos (no runbook, o cofre antes da seção do Turnstile).
 - **Mesclagem da `main` com o Wazuh no nó (PR-W1, #53):** o `start.sh` fica com os subcomandos dos dois (`wazuh-up`, `wazuh-down` e `render`), e o `api.env` leva as variáveis do indexer (standard), o tópico do sink, as do Turnstile e as do cofre, nessa ordem; o Turnstile só mexe no `api.env`. O `start-test.sh` virou duas partes: a do PR-W1 (os dois perfis, `bootstrap` e `pull_images`) e, num subshell com raiz e gcloud próprios, os cenários do Turnstile com o `start.sh render` e o `api.env` byte a byte (os três do tópico do sink saíram dessa parte, porque a do PR-W1 já os cobre); no `iac.yml`, os passos ficam onde o PR-W1 os pôs, com o Turnstile na descrição do `start-test.sh`.
+
+## Informação comercial fora do repositório público ⚠️ altera `infra/`
+
+- **Pedido:** o repositório continua público, mas sem informação comercial na árvore: preço dos planos, custo por cliente, margens, impostos, cupons, metas e caminhos do estudo de mercado (04/11/2026). O preço está sendo refeito (ambiente configurável, preço por componente; o site mostra só o "a partir de"), e valores no repositório ficariam velhos de qualquer forma.
+- **O que saiu:**
+  - `docs/ARQUITETURA.md`, seção "Custo estimado por nó", agora "Custo por nó": a tabela por plano (preço de cada plano, custo do nó, total e folga), as premissas de câmbio e de preço da nuvem, o desconto de uso contínuo, o plano B, a homologação parada e a pilha na AWS, todos com valores. Ficaram os recursos que pesam em cada perfil e os links para a calculadora da Google Cloud, os preços do S3 e a calculadora da AWS. O preço do certificado do Cloudflare de mais níveis (o motivo de a API ficar em `api-<cliente>`) virou "pago à parte";
+  - `infra/gcp/GUIA.md`: o custo da homologação ligada e parada (é o de um nó de cliente) virou a lista do que é cobrado, com a calculadora; o cupom da Stripe saiu (os passos citam "cupons, se houver", com os termos fora do repositório), e os preços continuam só pelos `lookup_key`; o nome do arquivo do plano da fase 3 virou "documento interno";
+  - `infra/gcp/envs/homolog-sp/variables.tf`: a mesma estimativa, na descrição de `monthly_budget` (só o texto; o padrão não mudou);
+  - `infra/cloudformation/README.md` e `GUIA-NO.md`: o custo na conta AWS do cliente e o da pilha do nó na AWS viraram links para os preços e a calculadora da AWS;
+  - este arquivo: só a linha com o custo da homologação ligada (riscos do PR-04'), com o valor trocado por "valor fora do repositório público". O resto do registro não mudou.
+- **O que ficou, de propósito:** o custo e o orçamento da infraestrutura da própria Verax (nó `lean` e plano de controle, no GUIA, no `ARQUITETURA.md` e nos `.tf`), que não é preço nem custo de cliente; os limites de cada plano (contas, usuários, GiB e histórico), que o código aplica (`packages/shared/src/plans.ts`); os `lookup_key` da Stripe, que o plano de controle usa; preços de nuvem citados como motivo de decisões antigas neste registro e no comentário do checkov do template do nó na AWS.
+- **Preço no código:** nenhum valor na `main`. O plano de controle só conhece os `lookup_key` (`STRIPE_PRICE_LOOKUP_ESSENCIAL` e `STRIPE_PRICE_LOOKUP_PROFISSIONAL`, em `env.schema.ts` e em `infra/gcp/envs/control-plane/run.tf`), e não há script de catálogo da Stripe na `main`. O catálogo vai para um arquivo lido em tempo de execução, num PR próprio.
+- **Histórico do git:** não foi reescrito (decisão do responsável). Os valores antigos continuam nos commits anteriores.
+- **Dependências:** nenhuma.
+- **Testes:** só documentação e a descrição de uma variável do Terraform. `terraform fmt -check -recursive infra/gcp` e `validate` em `envs/homolog-sp`; Prettier limpo; nova busca por `R$`, `US$`, margem, desconto de uso contínuo, cupom e o caminho do estudo, sem nada comercial.
+- **Definição de pronto:** nada comercial na árvore ✔ · informação de operação mantida ✔ · nenhuma dependência ✔ · regras de segurança ✔ · **aceite:** o responsável aprova o texto.
