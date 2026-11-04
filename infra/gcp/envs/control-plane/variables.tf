@@ -204,7 +204,7 @@ variable "firestore_pitr" {
 }
 
 variable "github_repository" {
-  description = "Repositório do GitHub cujo environment pode implantar (dono/nome, como no `sub` do token OIDC do GitHub)."
+  description = "Repositório do GitHub cujo environment pode implantar (dono/nome). O `sub` aceito é montado com ele e os IDs fixos abaixo, no formato imutável que o repositório usa (`repo:dono@id/nome@id:environment:...`)."
   type        = string
   default     = "williandotdev/verax-control"
 }
