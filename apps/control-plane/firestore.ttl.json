@@ -1,0 +1,23 @@
+{
+  "fields": [
+    {
+      "collectionGroup": "slugs",
+      "field": "expiresAt",
+      "retention": "reserva de 2 h 30; `taken` não tem o campo"
+    },
+    { "collectionGroup": "stripeEvents", "field": "expiresAt", "retention": "90 dias" },
+    {
+      "collectionGroup": "statusTokens",
+      "field": "expiresAt",
+      "retention": "7 dias (cookie) ou 24 h (e-mail)"
+    },
+    { "collectionGroup": "provisioningRuns", "field": "expiresAt", "retention": "180 dias" },
+    {
+      "collectionGroup": "steps",
+      "field": "expiresAt",
+      "retention": "180 dias (o TTL do run não alcança a subcoleção)"
+    },
+    { "collectionGroup": "auditLog", "field": "expiresAt", "retention": "24 meses" },
+    { "collectionGroup": "rateLimits", "field": "expiresAt", "retention": "janela do limite" }
+  ]
+}

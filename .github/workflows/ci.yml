@@ -59,6 +59,9 @@ jobs:
           --health-retries 20
     env:
       TEST_DATABASE_URL: postgresql://verax:ci-ephemeral-db@localhost:5432/verax_test
+      # Emulador oficial do Firestore (testes de integração do plano de controle). Sem a variável, esses testes
+      # falham no CI de propósito (test/firestore-emulator.test.ts), para nunca serem pulados em silêncio.
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:8681
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,7 +72,14 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Não é um `service` como o Postgres: a imagem dos emuladores não tem comando padrão, e o GitHub não deixa
+      # passar um comando a um service. O script fixa a imagem por digest e espera o emulador responder.
+      - name: Emulador do Firestore (imagem fixada por digest)
+        run: bash apps/control-plane/scripts/firestore-emulator.sh start
       - run: pnpm test
+      - name: Parar o emulador
+        if: always()
+        run: bash apps/control-plane/scripts/firestore-emulator.sh stop
 
   build:
     name: Build

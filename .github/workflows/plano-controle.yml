@@ -2,7 +2,8 @@ name: Plano de controle
 
 # Publica a imagem do plano de controle no Artifact Registry e implanta os dois serviços do Cloud Run (cp-public e
 # cp-worker: a mesma imagem, com ROLE diferente) no projeto da Verax. A revisão nova sobe sem tráfego, com a sonda
-# de partida em /health, e só recebe o tráfego depois de responder.
+# de partida em /health, e só recebe o tráfego depois de responder. Antes da implantação, aplica os índices e as
+# políticas de TTL do Firestore (apps/control-plane/scripts/firestore-apply.sh), de forma idempotente.
 #
 # Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `control-plane`,
 # que só aceita a `main` (molde do painel.yml). Projeto, região, registro e contas de serviço vêm das variáveis do
@@ -105,6 +106,11 @@ jobs:
         with:
           subject-name: ${{ vars.CP_IMAGES_REPOSITORY }}/control-plane
           subject-digest: ${{ steps.build.outputs.digest }}
+      - name: Índices compostos e políticas de TTL do Firestore
+        if: steps.config.outputs.ready == 'true'
+        env:
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: bash apps/control-plane/scripts/firestore-apply.sh "$PROJECT"
       # A revisão nova nasce sem tráfego e etiquetada; o gcloud só termina quando a sonda de partida (/health) passa.
       # Nada do que já está configurado no serviço (variáveis, segredos, IAM) é tocado: só a imagem e o papel.
       - name: Implantar sem tráfego (cp-public e cp-worker)

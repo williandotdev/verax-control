@@ -6,6 +6,7 @@ import { AppModule } from './app.module.js';
 import { APP_CREATE_OPTIONS, configureApp } from './app.setup.js';
 import { ConfigValidationError, loadConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
+import { createFirestore, FirestoreDocumentStore } from './firestore/firestore-document-store.js';
 
 async function bootstrap(): Promise<void> {
   loadEnvFileForLocalDevelopment();
@@ -24,7 +25,7 @@ async function bootstrap(): Promise<void> {
 
   // Os logs do boot ficam retidos até o pino assumir, para que tudo saia pelo logger com redaction.
   const app = await NestFactory.create<NestExpressApplication>(
-    AppModule.register(config),
+    AppModule.register(config, { documentStore: new FirestoreDocumentStore(createFirestore(config)) }),
     APP_CREATE_OPTIONS,
   );
   configureApp(app, config);
