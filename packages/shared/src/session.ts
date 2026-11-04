@@ -22,3 +22,10 @@ export const meSchema = z.strictObject({
 export type Me = z.infer<typeof meSchema>;
 
 export const switchTenantResponseSchema = z.strictObject({ activeTenantId: z.uuid() });
+
+/** Resposta de `GET /v1/auth/client-config`: o que o painel precisa saber antes do login. Nada aqui é segredo. */
+export const authClientConfigSchema = z.strictObject({
+  /** Chave do site do Cloudflare Turnstile; `null` com o desafio desligado (os formulários funcionam sem ele). */
+  turnstileSiteKey: z.string().min(1).nullable(),
+});
+export type AuthClientConfig = z.infer<typeof authClientConfigSchema>;

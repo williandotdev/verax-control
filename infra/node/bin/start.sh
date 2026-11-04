@@ -6,13 +6,15 @@
 #   start.sh wazuh-up    perfil standard, depois do `up` (verax-wazuh.service): sobe o Wazuh (indexer e manager)
 #   start.sh wazuh-down  para o indexer e o manager
 #   start.sh bootstrap   primeiro admin, cliente e contas (variáveis BOOTSTRAP_*; ver docs/runbooks/no-verax.md)
+#   start.sh render      só monta os arquivos de ambiente (o que o up faz antes de subir; usado pelo teste do pacote)
 #
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
-# partida. Segredos de fora (senha do e-mail e token do túnel) vêm do Secret Manager com a identidade da própria VM;
-# os de dentro (senhas do banco, chaves da sessão e do CSRF e, no standard, as do Wazuh) foram gerados pelo install.sh
-# e ficam em /var/lib/verax/secrets (0600, só root). A chave do cofre de credenciais (nó de cliente) foi gerada pelo
-# install.sh direto no Secret Manager; as versões ativas dela passam pela memória (um arquivo numa pasta de /run/verax
-# montada só leitura no worker), nunca por variável de ambiente. Nenhum valor é impresso.
+# partida. Segredos de fora (senha do e-mail, token do túnel e chave secreta do Turnstile) vêm do Secret Manager com
+# a identidade da própria VM; os de dentro (senhas do banco, chaves da sessão e do CSRF e, no standard, as do Wazuh)
+# foram gerados pelo install.sh e ficam em /var/lib/verax/secrets (0600, só root). A chave do cofre de credenciais (nó
+# de cliente) foi gerada pelo install.sh direto no Secret Manager; as versões ativas dela passam pela memória (um
+# arquivo numa pasta de /run/verax montada só leitura no worker), nunca por variável de ambiente. Nenhum valor é
+# impresso.
 set -euo pipefail
 umask 077
 
@@ -339,8 +341,26 @@ render() {
     echo "AVISO: VERAX_GCP_PROJECT ou VERAX_SECRET_PREFIX fora do formato em /etc/verax/node.conf: a API sobe sem o" \
       "tópico do sink de projeto de cliente (Contas cloud mostra o comando com o tópico a preencher)." >&2
   fi
+  # Turnstile (desafio no login e no "esqueci minha senha" do painel): a chave do site no node.conf é o interruptor.
+  # Sem a linha, nada é lido e o api.env sai como sempre (o nó da Verax, enquanto não ligar). Com ela, a chave secreta
+  # vem do cofre como o token do túnel: cofre ainda sem valor, o nó sobe sem o desafio e avisa; qualquer outro erro
+  # para a partida. As duas chaves só entram juntas: a API recusa uma sem a outra.
+  local turnstile=() turnstile_secret status=0
+  if [[ -n ${TURNSTILE_SITE_KEY:-} ]]; then
+    turnstile_secret=$(external_secret turnstile-secret-key) || status=$?
+    if ((status == 3)); then
+      echo "AVISO: TURNSTILE_SITE_KEY definida no node.conf, mas o cofre da chave secreta ainda não tem valor: o" \
+        "login sobe sem o desafio do Turnstile. Grave a chave (docs/runbooks/no-verax.md) e reinicie:" \
+        "sudo systemctl restart verax-node" >&2
+    elif ((status != 0)); then
+      return "$status"
+    else
+      turnstile=("TURNSTILE_SITE_KEY=$TURNSTILE_SITE_KEY" "TURNSTILE_SECRET_KEY=$turnstile_secret")
+    fi
+  fi
   # Cofre de credenciais: só no nó que tem o segredo `credentials-key` (CREDENTIALS_VAULT=true; sem a linha, false). O
-  # nó da Verax não liga: nada é lido, e os arquivos de ambiente saem como antes.
+  # nó da Verax não liga: nada é lido, e os arquivos de ambiente saem como antes. Vem depois do e-mail e do Turnstile:
+  # uma falha na leitura deles para a partida antes de as chaves do worker irem para a memória.
   local vault_api=() vault_worker=()
   case ${CREDENTIALS_VAULT:-false} in
     true) credentials_vault ;;
@@ -361,6 +381,7 @@ render() {
     "${plan[@]}" \
     "${indexer[@]}" \
     "${sink_topic[@]}" \
+    "${turnstile[@]}" \
     "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
@@ -373,7 +394,8 @@ render() {
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
   # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
   # inválido) para a partida, como nos outros segredos. O arquivo existe sempre (vazio sem o token): o Compose o exige.
-  local tunnel status=0
+  local tunnel
+  status=0
   tunnel=$(external_secret cloudflare-tunnel-token) || status=$?
   if ((status == 3)); then
     write_env cloudflared.env
@@ -515,8 +537,9 @@ case ${1:-} in
   wazuh-up) wazuh_up ;;
   wazuh-down) wazuh_down ;;
   bootstrap) bootstrap ;;
+  render) render ;;
   *)
-    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap" >&2
+    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|render" >&2
     exit 2
     ;;
 esac

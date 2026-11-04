@@ -6,6 +6,9 @@ import { Field } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
 import { authErrorMessage, safeRedirect, signIn } from '@/features/auth/auth-api';
 import { AuthShell, FormError, FormNotice } from '@/features/auth/auth-shell';
+import { useAuthClientConfig } from '@/features/auth/client-config';
+import { useTurnstile } from '@/features/auth/turnstile';
+import { TurnstileWidget } from '@/features/auth/turnstile-widget';
 import { ME_QUERY_KEY } from '@/features/session/session';
 import { api } from '@/lib/api';
 import { DemoLoginHint } from '@/components/demo-banner';
@@ -24,13 +27,18 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  // Turnstile só com a chave do site vinda da API; sem ela, o formulário é o de sempre.
+  const clientConfig = useAuthClientConfig();
+  const siteKey = clientConfig.data?.turnstileSiteKey ?? null;
+  const turnstile = useTurnstile(siteKey, 'login');
+  const waitingTurnstile = clientConfig.isPending || (siteKey !== null && turnstile.token === undefined);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError(undefined);
     setSubmitting(true);
     try {
-      const { needsCode } = await signIn(email.trim(), password);
+      const { needsCode } = await signIn(email.trim(), password, turnstile.token);
       setPassword('');
       if (needsCode) {
         await navigate('/login/codigo', { replace: true, state: { from: state.from } });
@@ -50,6 +58,8 @@ export function LoginPage() {
       await navigate(next, { replace: true });
     } catch (caught) {
       setError(authErrorMessage(caught, 'sign-in'));
+      // Cada token vale uma vez: a próxima tentativa precisa de outro.
+      turnstile.reset();
     } finally {
       setSubmitting(false);
     }
@@ -79,7 +89,14 @@ export function LoginPage() {
           value={password}
           onChange={(event) => setPassword(event.target.value)}
         />
-        <Button type="submit" className="w-full" disabled={submitting || !email || !password}>
+        {siteKey !== null && (
+          <TurnstileWidget containerRef={turnstile.containerRef} status={turnstile.status} />
+        )}
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={submitting || !email || !password || waitingTurnstile}
+        >
           {submitting ? 'Entrando…' : 'Entrar'}
         </Button>
         <Link to="/esqueci-senha" className="block text-center text-sm underline">

@@ -142,6 +142,12 @@ variable "bootstrap_secret" {
   default     = true
 }
 
+variable "turnstile_secret" {
+  description = "Cria o cofre `turnstile-secret-key` (chave secreta do Cloudflare Turnstile, que o nó lê para conferir o desafio do login). Falso por padrão: o nó da Verax, já no ar, liga numa mudança no lugar."
+  type        = bool
+  default     = false
+}
+
 variable "stalled_subscription_alert" {
   description = "Cria o alerta de fila parada: alguma assinatura de logs com mensagem sem leitura há mais de `stalled_subscription_hours`."
   type        = bool

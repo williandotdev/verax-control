@@ -135,7 +135,10 @@ jobs:
         # Os cenários de tests/start-test.sh, sem root e sem Docker: os arquivos que o `render` escreve nos dois perfis
         # (bootstrap.env vazio; as variáveis do indexer só no standard), o `bootstrap`, o `pull_images` e o tópico do
         # sink de projeto de cliente, que só vai para a API com o projeto e o prefixo do node.conf no formato do módulo
-        # (fora dele, a API sobe sem o tópico).
+        # (fora dele, a API sobe sem o tópico). E o Turnstile, com o api.env conferido byte a byte: sem
+        # TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai como antes (e o cofre do Turnstile nem é lido); com a chave
+        # do site, a secreta vem do cofre (vazio: sobe sem o desafio e avisa; sem permissão ou com quebra de linha: a
+        # partida para).
         run: bash infra/node/tests/start-test.sh
       - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
         # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
