@@ -117,6 +117,24 @@ describe('loadConfig', () => {
     );
   });
 
+  it('tópico do sink de projeto GCP de cliente: opcional, só no formato do Terraform do nó', () => {
+    expect(loadConfig(validEnv).GCP_SINK_TOPIC_PREFIX).toBeUndefined();
+    const prefix = 'projects/projeto-dos-nos/topics/verax-c1-security-';
+    expect(loadConfig({ ...validProductionEnv, GCP_SINK_TOPIC_PREFIX: prefix }).GCP_SINK_TOPIC_PREFIX).toBe(
+      prefix,
+    );
+    for (const value of [
+      'projects/projeto-dos-nos/topics/verax-c1-security-cliente',
+      'projects/projeto-dos-nos/subscriptions/verax-c1-security-',
+      'projects/Projeto/topics/verax-c1-security-',
+      "projects/projeto-dos-nos/topics/verax-c1-security-' --log-filter='",
+    ]) {
+      expect(problemsOf({ ...validEnv, GCP_SINK_TOPIC_PREFIX: value })).toEqual([
+        'GCP_SINK_TOPIC_PREFIX: deve ser projects/<projeto>/topics/<prefixo>-security-',
+      ]);
+    }
+  });
+
   it('converte PORT para número', () => {
     expect(loadConfig({ ...validEnv, PORT: '8080' }).PORT).toBe(8080);
   });

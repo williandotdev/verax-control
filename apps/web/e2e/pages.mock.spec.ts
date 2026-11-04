@@ -11,6 +11,8 @@ import { skipDemoTour } from './demo-tour';
 const INCIDENT = '018f2c1e-0000-7000-8000-0000000a0001';
 const FINDING = '018f2c1e-0000-7000-8000-000000001001';
 const AUDIT_ENTRY = '018f2c1e-0000-7000-8000-0000000d0002';
+/** O projeto da GCP da demonstração (`account(4, ...)` em mocks/admin.ts). */
+const GCP_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0004';
 
 const PAGES: [string, string | RegExp][] = [
   ['/', 'Torre'],
@@ -73,6 +75,8 @@ test.describe('revisão de UX (modo mock)', () => {
   for (const [path, dialog] of [
     [`/achados?achado=${FINDING}`, 'Tentativa de desligar a trilha do CloudTrail'],
     [`/auditoria?registro=${AUDIT_ENTRY}`, 'Comentou achado'],
+    // Projeto GCP de cliente: o comando do sink e o campo da identidade.
+    [`/cadastros/contas?conta=${GCP_ACCOUNT}`, 'Projeto da GCP loja-alfa-demo'],
   ] as const) {
     test(`painel de detalhe ${path}: sem violação de acessibilidade`, async ({ page }) => {
       await page.goto(path);

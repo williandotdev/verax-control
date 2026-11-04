@@ -156,6 +156,18 @@ run "nat_e_extras_desligados" {
     error_message = "O nó da Verax ganhou o alerta de fila parada, desligado em envs/verax."
   }
 
+  # Sem projeto de cliente (envs/verax não passa `customer_projects`): os tópicos e as assinaturas são os dos projetos
+  # monitorados, como antes, e nenhuma identidade de fora publica neles.
+  assert {
+    condition = (
+      keys(google_pubsub_topic.security_logs) == ["projeto-monitorado-a"] &&
+      keys(google_pubsub_subscription.security_logs) == ["projeto-monitorado-a"] &&
+      keys(google_pubsub_subscription_iam_member.node_subscriber) == ["projeto-monitorado-a"] &&
+      length(google_pubsub_topic_iam_member.customer_sink_publisher) == 0
+    )
+    error_message = "O nó da Verax ganhou tópico, assinatura ou publicação de projeto de cliente."
+  }
+
   assert {
     condition     = keys(google_secret_manager_secret.node) == ["cloudflare-tunnel-token", "smtp-password"] && google_secret_manager_secret.node["smtp-password"].secret_id == "verax-node-smtp-password"
     error_message = "Os cofres de antes (SMTP e túnel) mudaram de nome."

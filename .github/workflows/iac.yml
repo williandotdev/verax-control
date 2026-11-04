@@ -114,7 +114,11 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x -S style infra/node/bin/*.sh
+        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
+      - name: start.sh (a montagem dos arquivos de ambiente, com o gcloud simulado)
+        # Os cenários de tests/start-test.sh: o tópico do sink de projeto de cliente só vai para a API com o projeto e o
+        # prefixo do node.conf no formato do módulo; fora dele, a API sobe sem o tópico. Roda sem root e sem Docker.
+        run: bash infra/node/tests/start-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
         # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
