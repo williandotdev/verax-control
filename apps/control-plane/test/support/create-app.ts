@@ -31,6 +31,11 @@ export interface CreateAppOptions {
   stepQueue?: StepQueue;
   /** As chaves do "IAP" do console (`iap-test-keys.ts`): uma chave ES256 gerada no teste, nunca as do Google. */
   iapKeySource?: IapKeySource;
+  /**
+   * Só com `role: 'admin'`: a pasta com os arquivos do console. Sem ela, nenhuma (`null`): o teste não depende de um
+   * build do `apps/console` que pode ou não existir na máquina.
+   */
+  consoleRoot?: string | null;
 }
 
 /**
@@ -59,7 +64,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     ],
   }).compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>(APP_CREATE_OPTIONS);
-  configureApp(app, config);
+  configureApp(app, config, { consoleRoot: options.consoleRoot ?? null });
   await app.init();
   return app;
 }

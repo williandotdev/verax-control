@@ -6,6 +6,7 @@ import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { PricingCoreModule } from '../pricing/pricing-core.module.js';
 import { AdminPricingController } from './admin-pricing.controller.js';
 import { AdminPricingService } from './admin-pricing.service.js';
+import { AdminSessionController } from './admin-session.controller.js';
 import {
   GoogleIapKeySource,
   IAP_KEY_SOURCE,
@@ -30,7 +31,7 @@ export class AdminModule {
     return {
       module: AdminModule,
       imports: [AuditModule, PricingCoreModule],
-      controllers: [AdminPricingController],
+      controllers: [AdminPricingController, AdminSessionController],
       providers: [
         AdminPricingService,
         {
