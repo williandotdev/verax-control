@@ -257,8 +257,11 @@ expect "indexer: 3 GiB de memória e 1,5 CPU" '3221225472 1500000000' \
 expect "manager: 1,5 GiB de memória e 1 CPU" '1610612736 1000000000' \
   "$(host_config Memory "$manager") $(host_config NanoCpus "$manager")"
 expect "indexer: nenhuma capability" '\[ALL\] \[\]' "$(host_config CapDrop "$indexer") $(host_config CapAdd "$indexer")"
-expect "manager: só as capabilities do init" '\[ALL\] \[CHOWN DAC_OVERRIDE FOWNER SETGID SETUID KILL SYS_CHROOT\]' \
-  "$(host_config CapDrop "$manager") $(host_config CapAdd "$manager")"
+# O Docker guarda as capabilities acrescentadas no formato dele (prefixo CAP_, em ordem alfabética): a comparação
+# normaliza o nome e a ordem.
+caps_added() { docker inspect --format '{{range .HostConfig.CapAdd}}{{.}}{{"\n"}}{{end}}' "$1" | sed -e 's/^CAP_//' -e '/^$/d' | sort | tr '\n' ' '; }
+expect "manager: todas as capabilities retiradas" '\[ALL\]' "$(host_config CapDrop "$manager")"
+expect "manager: só as capabilities do init" 'CHOWN DAC_OVERRIDE FOWNER KILL SETGID SETUID SYS_CHROOT ' "$(caps_added "$manager")"
 for service in wazuh.indexer wazuh.manager; do
   id=$(container "$service")
   expect "$service: limite de processos, sem ganho de privilégio e log local" '1024 \[no-new-privileges:true\] local' \
@@ -277,9 +280,13 @@ expect "só alertas de nível 5 para cima no indexer" 1 \
   "$(manager_file_count '<log_alert_level>5</log_alert_level>' /var/ossec/etc/ossec.conf)"
 expect "sem alerts.log em texto" 1 "$(manager_file_count '<alerts_log>no</alerts_log>' /var/ossec/etc/ossec.conf)"
 # Sem agentes: o remoted escuta só no loopback (sem o bloco <remote>, o wazuh-control não sobe nenhum daemon) e o authd
-# não sobe. Fora dele, só a API do manager (55000), na rede interna.
-expect "manager só escuta a API e, no loopback, o remoted" '00000000:D6D8 0100007F:05EA' \
-  "$(docker exec "$manager" sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" | awk '$4 == "0A" { print $2 }' | sort | tr '\n' ' ' | sed 's/ $//')"
+# não sobe. Fora do loopback, só a API do manager (55000, em IPv4 e IPv6), na rede interna. Os sockets em escuta
+# (estado 0A) vêm de /proc/net/tcp e tcp6, com o endereço em hexadecimal: 127.x.x.x termina em 7F (também o
+# 127.0.0.11 do DNS interno do Docker e o IPv4 mapeado em IPv6), e ::1 é 00...01000000.
+listening=$(docker exec "$manager" sh -c "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" | awk '$4 == "0A" { print $2 }' | sort -u)
+expect "remoted só no loopback (127.0.0.1:1514)" 1 "$(grep -c '^0100007F:05EA$' <<<"$listening" || true)"
+expect "fora do loopback, o manager só escuta a API (55000)" D6D8 \
+  "$(awk -F: '$1 !~ /7F$/ && $1 != "00000000000000000000000001000000" { print $2 }' <<<"$listening" | sort -u | tr '\n' ' ' | sed 's/ $//')"
 # Limpeza dos alertas antigos (o script do timer do nó): só os .gz com mais de 7 dias saem.
 # shellcheck disable=SC2016 # expandido pelo sh do contêiner
 docker exec "$manager" sh -c 'd=/var/ossec/logs/alerts/1999/Jan && mkdir -p "$d" &&

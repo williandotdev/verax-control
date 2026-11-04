@@ -50,8 +50,8 @@ users=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer
 expect "só admin e verax_api_read existem (sem dashboard, sem kibanaserver)" 'admin verax_api_read ' "$users"
 mappings=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
   "$indexer_url/_plugins/_security/api/rolesmapping" | top_level_keys)
-expect "só os mapeamentos de papel necessários (sem own_index para todos)" \
-  'all_access kibana_server manage_wazuh_index verax_api_read ' "$mappings"
+expect "só os mapeamentos de papel necessários (sem own_index para todos, sem os do dashboard)" \
+  'all_access verax_api_read ' "$mappings"
 expect "HTTP sem TLS recusado" 000 "$(in_service wazuh.indexer curl -s -o /dev/null -w '%{http_code}' \
   http://wazuh.indexer:9200 || true)"
 expect "TLS 1.1 recusado" 000 "$(in_service wazuh.indexer curl -s -o /dev/null -w '%{http_code}' --tls-max 1.1 \

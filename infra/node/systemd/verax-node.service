@@ -10,7 +10,9 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/verax/bin/start.sh up
 ExecStop=/opt/verax/bin/start.sh down
-TimeoutStartSec=1200
+# Acima da soma das esperas do start.sh no perfil standard (indexer até 10 min e manager até 15 min, mais a primeira
+# descarga das imagens do Wazuh): se o systemd matasse a partida no meio de uma espera, o nó ficaria pela metade.
+TimeoutStartSec=2400
 
 [Install]
 WantedBy=multi-user.target

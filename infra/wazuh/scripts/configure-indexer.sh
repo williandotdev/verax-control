@@ -52,11 +52,17 @@ if upsert "política de retenção" /_plugins/_ism/policies/verax-retencao PUT \
   "$(sed "s/__RETENTION_DAYS__/$retention/" config/indexer/ism-retention.json)"; then
   # Política nova: os índices que já existiam também passam a segui-la (os novos entram pelo ism_template).
   indexer_admin POST "/_plugins/_ism/add/$patterns" <<<'{"policy_id":"verax-retencao"}'
+  require_ok "retenção nos índices existentes"
 else
-  # Política atualizada: os índices que já a seguem passam para a versão nova.
-  indexer_admin POST "/_plugins/_ism/change_policy/$patterns" <<<'{"policy_id":"verax-retencao"}'
+  # Política atualizada: os índices que já a seguem passam para a versão nova. Sem nenhum índice nos padrões (nó
+  # novo, ainda sem alerta de nível 5), a API recusa a troca com 400 ("no documents to get"): não há o que mudar.
+  indexer_admin GET "/_cat/indices/$patterns?h=index" </dev/null
+  require_ok "índices dos padrões de retenção"
+  if [[ -n ${response_body//[[:space:]]/} ]]; then
+    indexer_admin POST "/_plugins/_ism/change_policy/$patterns" <<<'{"policy_id":"verax-retencao"}'
+    require_ok "retenção nos índices existentes"
+  fi
 fi
-require_ok "retenção nos índices existentes"
 
 upsert "snapshot diário" /_plugins/_sm/policies/verax-diario POST "$(cat config/indexer/sm-daily.json)" || true
 echo "Retenção de $retention dias, 1 shard por índice de alertas e snapshot diário configurados."
