@@ -13,6 +13,11 @@ output "service_account_email" {
   value       = google_service_account.node.email
 }
 
+output "service_account_unique_id" {
+  description = "ID único (21 dígitos) da conta de serviço do nó: o NodeServiceAccountId do papel de leitura na AWS do cliente (infra/cloudformation/verax-control-reader.yaml). Não é segredo e só muda se a conta for recriada."
+  value       = google_service_account.node.unique_id
+}
+
 output "monitored_projects" {
   description = "Projetos com o coletor de logs de segurança apontando para o nó."
   value       = keys(google_logging_project_sink.security)
@@ -39,7 +44,7 @@ output "node_written_secrets" {
 }
 
 output "nat_ip" {
-  description = "IP de saída fixo do nó (Cloud NAT), no perfil standard. É o IP que a política IAM da AWS do cliente libera (NODE_EGRESS_IPS no node.conf, com /32). Nulo no lean, que usa o IP automático do NAT."
+  description = "IP de saída fixo do nó (Cloud NAT), no perfil standard. É o único IP de que o papel de leitura da AWS do cliente aceita o nó (NodeEgressIps; NODE_EGRESS_IPS no node.conf, com /32). Nulo no lean, que usa o IP automático do NAT."
   value       = local.static_nat_ip ? google_compute_address.nat[0].address : null
 }
 

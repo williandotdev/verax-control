@@ -58,8 +58,14 @@ O perfil (`node_profile` no Terraform, `NODE_PROFILE` no `node.conf`) define a m
 | Memória no pacote | a de sempre (Postgres 256m, API 320m) | Postgres 512m, API 384m e worker 512m, com heaps maiores |
 | Wazuh             | não                                   | sim, a partir do PR-W1                                   |
 
-O IP fixo existe porque a chave de leitura da AWS do cliente só funciona a partir dele: se ele mudasse, a coleta
-pararia.
+O IP fixo existe porque o papel de leitura na AWS do cliente só aceita o nó a partir dele: se ele mudasse, a coleta
+pararia. A conta de serviço do nó pesa do mesmo jeito: o papel confia no ID único dela (saída
+`service_account_unique_id` do módulo), e uma conta recriada, mesmo com o mesmo nome, ganha outro ID, que o papel de
+nenhum cliente aceita. Ela não tem `prevent_destroy`, porque a homologação é destruída entre as janelas de teste e a
+exclusão do cliente destrói tudo; o que a recriaria (`account_id` e `project`) sai só do `name_prefix` e do
+`project_id`, e o teste `tests/conta_de_servico.tftest.hcl` confere que as mudanças de rotina não a recriam. **Num nó
+de cliente, um `plan` que recrie ou apague `module.node.google_service_account.node` fora da exclusão do cliente é
+erro: pare.**
 
 Todo nó criado pelo módulo, nos dois perfis, também tem:
 
@@ -106,6 +112,10 @@ para todo nó criado pelo módulo, mais:
 
 - o **IP de saída reservado** (`verax-homolog-nat-ip`), com o NAT em modo manual. Ele aparece em
   `terraform output nat_ip` e vai no `node.conf` como `NODE_EGRESS_IPS=<ip>/32`;
+- a saída **`node_service_account_unique_id`**, o ID único da conta de serviço do nó: com o `nat_ip`, é o que o
+  papel de leitura sem chave pede na AWS de teste (`infra/cloudformation/README.md`). A cada janela de teste com
+  `apply` depois de um `destroy`, a conta é nova e o ID muda: atualize o parâmetro `NodeServiceAccountId` da pilha na
+  AWS de teste antes de testar (o IP do NAT também é novo);
 - a **leitura do registro de imagens** do projeto da Verax, só para a conta da VM de homologação.
 
 Não há registro de imagens nem publicação no projeto dos nós: a VM baixa as mesmas imagens do registro da Verax.
@@ -567,7 +577,8 @@ expirarem.
   1. A VM tem proteção contra exclusão: acrescente `deletion_protection = false` na chamada do módulo, no `main.tf`
      do ambiente, e faça o `apply`.
   2. O disco e o IP fixo do NAT têm `prevent_destroy`: remova esse bloco `lifecycle` em `modules/node/node.tf` e
-     `modules/node/network.tf` só na sua cópia, para essa vez.
+     `modules/node/network.tf` só na sua cópia, para essa vez. A conta de serviço não tem, mas num nó de cliente
+     apagá-la desliga a AWS do cliente: o papel de leitura confia no ID único dela, e uma conta nova tem outro.
   3. O bucket de backups só é apagado vazio.
   4. Depois disso, `terraform destroy` mostra o que vai apagar e pede confirmação. As APIs continuam ligadas e o
      bucket do estado fica.
@@ -796,8 +807,8 @@ exemplo) é decisão do CP-11.
   manda os próprios logs. Nos cofres que são dela, grava versões; ler, só a chave do cofre de credenciais. A
   permissão de leitura da configuração dos projetos, para a postura, vem na etapa da postura.
 - **Logs só copiados.** Os sinks novos copiam; nenhum log, sink ou retenção existente muda.
-- **Swap cifrado nos nós novos.** O que vai da memória para o disco (a chave do cofre, a chave da AWS, a memória do
-  worker e do manager) chega ao disco e ao snapshot só cifrado, com uma chave que some a cada boot.
+- **Swap cifrado nos nós novos.** O que vai da memória para o disco (a chave do cofre, o token de 1 hora para a AWS,
+  a memória do worker e do manager) chega ao disco e ao snapshot só cifrado, com uma chave que some a cada boot.
 - **Criptografia do Google** no disco, no tópico e no bucket (AES-256). Chave própria (CMEK) fica como reforço
   futuro; ela não muda o risco principal, que é quem controla a VM. Os verificadores (checkov e Trivy) registram
   isso como exceção justificada.

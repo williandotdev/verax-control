@@ -1,10 +1,11 @@
 # Acesso de leitura do Verax Control à sua conta AWS
 
-O template `verax-control-reader.yaml` cria na sua conta o usuário IAM **somente leitura** `verax-control-reader`
-(caminho `/verax/`), **sem chave e sem senha**, o grupo `VeraxControlReaders` e duas políticas gerenciadas. O nó do
-Verax Control roda fora da AWS e lê os seus logs com uma chave desse usuário, que você mesmo cria no console e que
-**só funciona a partir do IP do nó**. O motivo de usar um usuário IAM, e não um papel, está em `docs/ARQUITETURA.md`
-("Por que usuário IAM com chave").
+O template `verax-control-reader.yaml` cria na sua conta o papel IAM **somente leitura** `verax-control-reader`
+(caminho `/verax/`) e duas políticas gerenciadas. **Não existe chave de acesso:** ninguém cria, copia, guarda ou troca
+uma chave. O nó do Verax Control roda na Google Cloud e prova quem é com um token que o Google assina para a conta de
+serviço dele e que vale no máximo 1 hora. A AWS troca esse token por uma sessão do papel, também de no máximo 1 hora,
+e **só aceita o pedido vindo do IP de saída do nó**. O motivo de usar um papel sem chave está em `docs/ARQUITETURA.md`
+("Por que papel sem chave").
 
 Nada que já existe na conta é alterado: trilhas, destinos de log, buckets, assinaturas e políticas continuam como
 estão, e o **WAF nunca é tocado**. A trilha do CloudTrail e o export do GuardDuty só são criados se você pedir na
@@ -15,49 +16,106 @@ novas (seção no fim).
 
 ## O que a pilha cria
 
-| Recurso                                  | Para quê                                                                                                                                                              |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Usuário `/verax/verax-control-reader`    | O nó lê com a chave dele. Nasce sem chave e sem senha, é membro só do grupo e tem como limite de permissões (_permissions boundary_) a política `VeraxControlReader`. |
-| Grupo `/verax/VeraxControlReaders`       | Recebe as duas políticas.                                                                                                                                             |
-| Política `/verax/VeraxControlReader`     | A leitura mínima, abaixo. Como também é o limite de permissões do usuário, uma política que alguém anexe a ele depois não passa dela.                                 |
-| Política `/verax/VeraxControlGuardrails` | As negações explícitas, abaixo.                                                                                                                                       |
+| Recurso                                  | Para quê                                                                                                                                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Papel `/verax/verax-control-reader`      | O nó entra nele com o token do Google (`sts:AssumeRoleWithWebIdentity`), em sessões de até 1 hora. Tem as duas políticas abaixo e, como limite de permissões (_permissions boundary_), a `VeraxControlReader`. |
+| Política `/verax/VeraxControlReader`     | A leitura mínima, abaixo. Como também é o limite de permissões do papel, uma política que alguém anexe a ele depois não passa dela.                                                                            |
+| Política `/verax/VeraxControlGuardrails` | As negações explícitas, abaixo.                                                                                                                                                                                |
 
-## O que o usuário pode fazer
+O ARN do papel é sempre `arn:aws:iam::<sua conta>:role/verax/verax-control-reader`: o painel o deriva do ID da conta
+que você cadastrou. Nenhuma saída da pilha é segredo.
+
+## Quem entra no papel
+
+Só o nó do Verax Control que atende a sua empresa. A política de confiança do papel, com valores fictícios:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SoONoDaVerax",
+      "Effect": "Allow",
+      "Principal": { "Federated": "accounts.google.com" },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "accounts.google.com:aud": "123456789012345678901",
+          "accounts.google.com:sub": "123456789012345678901",
+          "accounts.google.com:oaud": "https://control.veraxsistemas.com.br/aws-reader"
+        },
+        "IpAddress": {
+          "aws:SourceIp": ["203.0.113.10/32"]
+        }
+      }
+    }
+  ]
+}
+```
+
+- **`Federated: accounts.google.com`:** o Google é um provedor de identidade já embutido na AWS, e não se cria
+  provedor OIDC no IAM. Só a troca do token (`sts:AssumeRoleWithWebIdentity`) é permitida; nenhum usuário, papel ou
+  conta da AWS entra.
+- **`accounts.google.com:aud` e `accounts.google.com:sub`:** o ID único da conta de serviço do nó, com 21 dígitos. No
+  token de uma conta de serviço, a AWS lê o `aud` do campo `azp`, que é esse ID. O `sub` é o identificador estável: uma
+  conta de serviço apagada e recriada com o mesmo nome ganha outro ID e não entra mais. O ID não é segredo, mas não se
+  forja, porque o token é assinado pelo Google.
+- **`accounts.google.com:oaud`:** o _audience_ que o nó pede ao Google, `https://control.veraxsistemas.com.br/aws-reader`,
+  o mesmo para todo cliente. Um token que o nó emitiu para outro destino não serve aqui.
+- **`aws:SourceIp`:** o IP de saída do nó. Um token vazado não entra de outro lugar.
+
+Todas as condições comparam o valor exato (`StringEquals` e `IpAddress`), sem curinga. Cada cliente tem o próprio nó e
+a própria conta de serviço: se outro cliente da Verax cadastrar a sua conta AWS no painel dele, o nó dele chega com
+outro `sub` e de outro IP, e o seu papel recusa. É isso que substitui o ExternalId do conector antigo.
+
+> **Não crie o papel pelo assistente "Web identity → Google" do console da AWS.** Ele grava o audience em
+> `accounts.google.com:aud`, onde a AWS espera o ID da conta de serviço, e o papel nunca aceitaria o nó. Use o
+> template ou a política escrita à mão (seção "Sem CloudFormation").
+
+Se a sua organização usa uma RCP (_resource control policy_) de perímetro de dados que nega a federação de provedores
+fora de uma lista, inclua `accounts.google.com` nela ou marque o papel como exceção. A decisão é sua.
+
+## O que o papel pode fazer
 
 | Permissão                                                                                                                                                                                                     | Alcance                                                                                                            |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Listar e ler objetos de log (`s3:ListBucket`, `s3:GetBucketLocation` e `s3:GetObject`)                                                                                                                        | **Só** os buckets de `LogBucketArns` (e os criados pela pilha). Com `LogObjectPrefix`, só os objetos com o prefixo |
 | Decifrar esses objetos (`kms:Decrypt`), e só pelo S3                                                                                                                                                          | **Só** as chaves de `LogKmsKeyArns` (e a criada pela pilha)                                                        |
-| Simular as próprias permissões (`iam:SimulatePrincipalPolicy`): o painel confere que a chave não tem permissão demais                                                                                         | **Só** o próprio usuário                                                                                           |
+| Simular as próprias permissões (`iam:SimulatePrincipalPolicy`): o Verax Control confere que o papel não tem permissão demais                                                                                  | **Só** o próprio papel                                                                                             |
 | Conferir as fontes: trilhas (`cloudtrail:DescribeTrails`, `GetTrailStatus`) e o export do GuardDuty (`guardduty:ListDetectors`, `GetDetector`, `ListPublishingDestinations`, `DescribePublishingDestination`) | Toda a conta, sem acesso a dados                                                                                   |
 | Ativos e Postura: usuários, chaves (só os dados, nunca o segredo), MFA e política de senha do IAM; regiões, instâncias, grupos de segurança e cifragem padrão do EBS; exposição dos buckets                   | Toda a conta, sem acesso a dados                                                                                   |
 
 Nada além disso: sem a política `SecurityAudit` e sem `iam:GenerateCredentialReport` (que cria o relatório na
-conta). Com `LogBucketArns` vazio e sem a trilha ou o export da pilha, o usuário não lê o conteúdo de nenhum log.
+conta). Com `LogBucketArns` vazio e sem a trilha ou o export da pilha, o papel não lê o conteúdo de nenhum log.
 
-### O que o usuário nunca faz
+### O que o papel nunca faz
 
-O usuário não tem nenhuma permissão de escrita, e o teste do template falha se alguma aparecer. Além disso, a
-política `VeraxControlGuardrails` nega explicitamente, o que vale mesmo se alguém anexar outra política ao usuário:
+O papel não tem nenhuma permissão de escrita, e o teste do template falha se alguma aparecer. Além disso, a política
+`VeraxControlGuardrails` nega explicitamente, o que vale mesmo se alguém anexar outra política ao papel:
 
-- **qualquer chamada de fora do IP do nó** (`NodeEgressIps`). As duas exceções são chamadas do STS que a AWS não
-  deixa negar por política: o `sts:GetCallerIdentity`, que só revela a conta e o ARN do próprio usuário, e o
-  `sts:GetSessionToken`, que emite uma sessão temporária; a sessão, por sua vez, só funciona do IP do nó, e
-  `RevokeSessionsIssuedBefore` a corta. A leitura de objetos cifrados continua funcionando do nó: o S3 decifra no KMS
-  em nome do usuário e preserva o IP de origem;
+- **qualquer chamada de fora do IP do nó** (`NodeEgressIps`), mesmo com uma sessão já emitida: as credenciais de uma
+  sessão vazada não servem de outro lugar. A única exceção é o `sts:GetCallerIdentity`, que a AWS não deixa negar por
+  política e que só revela a conta e o ARN da sessão. A leitura de objetos cifrados continua funcionando do nó: o S3
+  decifra no KMS em nome do papel e preserva o IP de origem;
 - apagar, alterar, assinar ou exportar no CloudWatch Logs; apagar, gravar ou replicar no S3; parar, apagar ou alterar
   trilhas; alterar o log do WAF; arquivar findings ou desligar o GuardDuty, o Security Hub, o Inspector e o Access
   Analyzer; desativar ou apagar chaves KMS;
-- ampliar o próprio acesso: nenhuma escrita no IAM, `PassRole`, assumir papéis ou `GetFederationToken`. O usuário não
-  consegue nem criar, desativar ou apagar a própria chave: a troca e a revogação são sempre feitas por você;
-- com `LogObjectPrefix`, ler objetos fora dos prefixos;
-- num incidente, com `RevokeSessionsIssuedBefore`, usar uma sessão temporária emitida antes da data.
+- ampliar o próprio acesso: nenhuma escrita no IAM (nem na confiança ou no limite do próprio papel), `PassRole`,
+  assumir outros papéis ou `GetFederationToken`;
+- com `LogObjectPrefix`, ler objetos fora dos prefixos.
 
 ## Antes de começar
 
 - Use um usuário ou papel com permissão de administrador na conta. A pilha cria nomes fixos no IAM, então o
   CloudFormation pede a confirmação `CAPABILITY_NAMED_IAM`.
-- Tenha em mãos, da Verax, o **IP de saída do nó**, com `/32` (`NodeEgressIps`). Sem ele, a pilha não é criada.
+- Tenha em mãos os **três valores que o painel mostra** em Contas cloud → AWS. Nenhum deles é segredo:
+  - o **ID da conta de serviço do nó** (`NodeServiceAccountId`), com 21 dígitos;
+  - o **IP de saída do nó** (`NodeEgressIps`), com `/32` (até 4, separados por vírgula);
+  - o **audience** (`Audience`), que já vem preenchido no template com
+    `https://control.veraxsistemas.com.br/aws-reader`: só confira.
+
+  Sem o ID e o IP, a pilha não é criada.
+
 - Escolha os logs que o Verax Control vai ler. O relatório do diagnóstico somente leitura (`infra/diagnostico/`)
   lista as fontes que existem na conta. Para cada uma, informe o ARN do bucket em `LogBucketArns` (exemplo:
   `arn:aws:s3:::empresa-cloudtrail-logs`) e, se o bucket usar SSE-KMS, a chave em `LogKmsKeyArns`
@@ -67,57 +125,57 @@ política `VeraxControlGuardrails` nega explicitamente, o que vale mesmo se algu
 
 ## Como criar a pilha
 
-Baixe o `verax-control-reader.yaml` (pelo painel ou deste repositório). Crie uma pilha só por conta, porque os
-nomes no IAM são únicos na conta. Qualquer região serve; com o export do GuardDuty, use a região do detector.
+Crie uma pilha só por conta, porque os nomes no IAM são únicos na conta. Qualquer região serve; com o export do
+GuardDuty, use a região do detector.
 
-**Pelo console:** CloudFormation → _Create stack_ → _With new resources_ → _Upload a template file_, escolha o
-arquivo, preencha os parâmetros e marque a confirmação de recursos IAM.
+**Pelo console:**
 
-**Pela CLI** (ou no AWS CloudShell, com o arquivo enviado pelo menu _Actions_ → _Upload file_). Os valores abaixo são
-fictícios: troque pelos seus e pelo IP informado pela Verax. Nenhum parâmetro é segredo.
+1. Baixe o `verax-control-reader.yaml` (pelo painel ou deste repositório).
+2. No console da AWS, abra o CloudFormation → _Create stack_ → _With new resources (standard)_ → _Upload a template
+   file_, escolha o arquivo e avance. O console guarda o arquivo num bucket `cf-templates-…` que ele cria na sua
+   conta: é o comportamento padrão do CloudFormation.
+3. Dê o nome `verax-control-reader` à pilha e preencha os três valores do painel, os buckets e as chaves dos logs e,
+   se quiser, os opcionais.
+4. Avance até a revisão, marque _I acknowledge that AWS CloudFormation might create IAM resources with custom names_
+   e clique em _Submit_. A pilha fica pronta em 1 ou 2 minutos.
+5. Volte ao painel do Verax Control. Ele confere a conexão sozinho: entra no papel e lê um objeto de cada bucket
+   cadastrado. Não há nada para copiar ou colar.
+
+**Pela CLI** (ou no AWS CloudShell, com o arquivo enviado pelo menu _Actions_ → _Upload file_). O template tem cerca
+de 32 KB, abaixo do limite de 51.200 bytes do CloudFormation, e vai direto, sem bucket. Os valores abaixo são
+fictícios: troque pelos seus e pelos do painel.
 
 ```sh
 aws cloudformation deploy --stack-name verax-control-reader \
   --template-file verax-control-reader.yaml --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
+    NodeServiceAccountId=123456789012345678901 \
     NodeEgressIps=203.0.113.10/32 \
     LogBucketArns=arn:aws:s3:::trilha-111111111111,arn:aws:s3:::guardduty-111111111111 \
     LogKmsKeyArns=arn:aws:kms:sa-east-1:111111111111:key/00000000-0000-0000-0000-000000000000
 ```
 
-Para incluir ou tirar um bucket depois, rode o mesmo comando com os valores novos: só as políticas mudam, e a chave
-continua valendo.
+Para incluir ou tirar um bucket depois, atualize a pilha (_Update stack_ → _Use existing template_ no console, ou o
+mesmo comando com os valores novos): só as políticas mudam, e o nó continua entrando.
 
-## Criar a chave e informar no painel
+## Como desconectar
 
-1. Abra o link da saída `SecurityCredentialsUrl` da pilha (ou IAM → _Users_ → `verax-control-reader` → _Security
-   credentials_).
-2. _Create access key_ → caso de uso _Application running outside AWS_ → _Create access key_.
-3. Copie o _Access key ID_ e o _Secret access key_ e cole no painel do Verax Control, no cadastro da conta. O segredo
-   só aparece nessa tela: não guarde cópia e não mande por e-mail ou chat.
+1. No painel, remova a conta: a coleta para.
+2. Se quiser cortar na hora as sessões já emitidas (cada uma vale no máximo 1 hora): no console do IAM, _Roles_ →
+   `verax-control-reader` → aba _Revoke sessions_ → _Revoke active sessions_. O IAM grava no papel a política
+   `AWSRevokeOlderSessions`, que nega tudo às sessões emitidas antes do clique.
+3. Apague a pilha `verax-control-reader` (CloudFormation → _Delete_). Sem o papel, o nó não consegue mais entrar. Os
+   buckets e a chave KMS criados pela pilha (se houver) ficam, com os logs; apague-os quando não precisar mais deles
+   (uma pilha nova cria outros). Nenhum log ou recurso seu é afetado.
 
-O painel confere a conta e o ARN exatos do usuário, que a chave não tem permissão demais e a data de criação dela, e
-guarda a chave cifrada no cofre do nó. O segredo nunca volta pela API.
-
-## Trocar a chave
-
-O painel avisa aos 90 dias (e mostra uma faixa a partir dos 75). Crie a segunda chave no mesmo lugar (o IAM aceita
-duas por usuário), cole no painel e, só depois, exclua a antiga no console. A coleta nunca para por idade da chave.
+Não existe chave para lembrar de apagar.
 
 ## Num incidente
 
-1. Desative ou exclua a chave no console (_Security credentials_ → _Actions_).
-2. Sessões temporárias já emitidas com a chave (`GetSessionToken`, que a AWS não deixa negar e responde de qualquer
-   IP) continuam valendo por até 36 horas depois da exclusão. Elas também só funcionam do IP do nó, mas, para negá-las
-   de vez, atualize a pilha com a data e a hora de agora, em UTC:
-
-```sh
-aws cloudformation deploy --stack-name verax-control-reader \
-  --template-file verax-control-reader.yaml --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides RevokeSessionsIssuedBefore="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-```
-
-Os outros parâmetros ficam como estavam. A chave em si não tem data de sessão e não é afetada: só a exclusão a revoga.
+- **Para tirar o acesso da Verax na hora:** os passos 2 e 3 de "Como desconectar".
+- **Para ver o que o nó fez:** no seu CloudTrail, cada entrada no papel aparece como `AssumeRoleWithWebIdentity`, com
+  o ID da conta de serviço do nó e o IP de origem, e cada leitura, como a sessão
+  `assumed-role/verax-control-reader/...`.
 
 ## Opcional: trilha e export do GuardDuty
 
@@ -132,7 +190,7 @@ O padrão é não. Com eles, a pilha cria recursos novos, e nada que já existe 
 
 Os buckets criados são privados, versionados, com retenção de `LogRetentionDays` dias (365 por padrão) e log de
 acesso num terceiro bucket (saída `AccessLogsBucketArn`). O nome dos três é gerado pelo CloudFormation (começa com o
-nome da pilha). O usuário já lê os dois de log: cadastre no painel as saídas `TrailBucketArn` e `GuardDutyBucketArn`.
+nome da pilha). O papel já lê os dois de log: cadastre no painel as saídas `TrailBucketArn` e `GuardDutyBucketArn`.
 
 Se uma opção for desligada ou a pilha apagada, a trilha e o export param, mas os buckets e a chave ficam na conta, com
 os logs. Ligar a opção de novo, ou recriar a pilha, cria buckets e chave novos (por isso o nome não é fixo: a criação
@@ -157,42 +215,98 @@ prefixos valem para todos os buckets informados.
 
 ## Sem CloudFormation
 
-O `verax-control-reader.policy.json` traz as duas políticas com os mesmos valores fictícios (a conta
-`111111111111`, os buckets, a chave e o IP `203.0.113.10/32`). Troque pelos seus, apague os buckets e a declaração
-`DecifrarSoPeloS3` se não se aplicarem, e rode, com o `jq` (já instalado no AWS CloudShell):
+O `verax-control-reader.policy.json` traz a confiança (`AssumeRolePolicyDocument`) e as duas políticas com os mesmos
+valores fictícios (a conta `111111111111`, a conta de serviço `123456789012345678901`, os buckets, a chave e o IP
+`203.0.113.10/32`). Troque pelos seus e pelos do painel, e apague os buckets e a declaração `DecifrarSoPeloS3` se não
+se aplicarem. O audience não muda. A trilha e o export do GuardDuty ficam só na pilha.
+
+### Com a CLI
+
+Com o `jq` (já instalado no AWS CloudShell):
 
 ```sh
 conta=$(aws sts get-caller-identity --query Account --output text)
 aws iam create-policy --path /verax/ --policy-name VeraxControlReader --policy-document "$(jq -c .VeraxControlReader verax-control-reader.policy.json)"
 aws iam create-policy --path /verax/ --policy-name VeraxControlGuardrails --policy-document "$(jq -c .VeraxControlGuardrails verax-control-reader.policy.json)"
-aws iam create-group --path /verax/ --group-name VeraxControlReaders
-aws iam attach-group-policy --group-name VeraxControlReaders --policy-arn "arn:aws:iam::$conta:policy/verax/VeraxControlReader"
-aws iam attach-group-policy --group-name VeraxControlReaders --policy-arn "arn:aws:iam::$conta:policy/verax/VeraxControlGuardrails"
-aws iam create-user --path /verax/ --user-name verax-control-reader --permissions-boundary "arn:aws:iam::$conta:policy/verax/VeraxControlReader"
-aws iam add-user-to-group --group-name VeraxControlReaders --user-name verax-control-reader
+aws iam create-role --path /verax/ --role-name verax-control-reader --max-session-duration 3600 --permissions-boundary "arn:aws:iam::$conta:policy/verax/VeraxControlReader" --assume-role-policy-document "$(jq -c .AssumeRolePolicyDocument verax-control-reader.policy.json)"
+aws iam attach-role-policy --role-name verax-control-reader --policy-arn "arn:aws:iam::$conta:policy/verax/VeraxControlReader"
+aws iam attach-role-policy --role-name verax-control-reader --policy-arn "arn:aws:iam::$conta:policy/verax/VeraxControlGuardrails"
 ```
 
-Depois, crie a chave como acima. Para mudar uma política, use `aws iam create-policy-version --set-as-default` com o
-arquivo editado. A trilha, o export do GuardDuty e a revogação de sessões ficam só na pilha.
+Para mudar uma política depois, use `aws iam create-policy-version --set-as-default` com o arquivo editado; para mudar
+a confiança, `aws iam update-assume-role-policy`.
+
+### Com Terraform
+
+O mesmo papel num projeto Terraform seu, com o provedor `hashicorp/aws`. As duas políticas vêm do mesmo arquivo, e a
+confiança fica escrita no código, com os valores do painel no lugar dos fictícios:
+
+```hcl
+locals {
+  verax = jsondecode(file("${path.module}/verax-control-reader.policy.json"))
+}
+
+resource "aws_iam_policy" "verax_control_reader" {
+  name   = "VeraxControlReader"
+  path   = "/verax/"
+  policy = jsonencode(local.verax.VeraxControlReader)
+}
+
+resource "aws_iam_policy" "verax_control_guardrails" {
+  name   = "VeraxControlGuardrails"
+  path   = "/verax/"
+  policy = jsonencode(local.verax.VeraxControlGuardrails)
+}
+
+resource "aws_iam_role" "verax_control_reader" {
+  name                 = "verax-control-reader"
+  path                 = "/verax/"
+  max_session_duration = 3600
+  permissions_boundary = aws_iam_policy.verax_control_reader.arn
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "SoONoDaVerax"
+      Effect    = "Allow"
+      Principal = { Federated = "accounts.google.com" }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "accounts.google.com:aud"  = "123456789012345678901"
+          "accounts.google.com:sub"  = "123456789012345678901"
+          "accounts.google.com:oaud" = "https://control.veraxsistemas.com.br/aws-reader"
+        }
+        IpAddress = { "aws:SourceIp" = ["203.0.113.10/32"] }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "verax_control_reader" {
+  for_each = {
+    reader     = aws_iam_policy.verax_control_reader.arn
+    guardrails = aws_iam_policy.verax_control_guardrails.arn
+  }
+
+  role       = aws_iam_role.verax_control_reader.name
+  policy_arn = each.value
+}
+```
 
 ## Custos na sua conta
 
-O usuário, o grupo e as políticas não têm custo. A leitura gera requisições do S3 (e do KMS, nos buckets com SSE-KMS)
-e a transferência dos logs para fora da AWS, cobradas pela AWS conforme o volume (veja os
-[preços do S3](https://aws.amazon.com/s3/pricing/) ou estime na [calculadora da AWS](https://calculator.aws/)). Com o
-CloudTrail compactado, o volume é pequeno. O log completo do WAF pode pesar mais. A trilha e o export opcionais somam o
-armazenamento nos buckets novos e, no caso da trilha, a cópia extra dos eventos se a conta já tiver outra.
-
-## Como remover
-
-1. Exclua a chave no console (_Security credentials_ → _Actions_ → _Delete_). A Verax perde o acesso na hora.
-2. Apague a pilha `verax-control-reader`. Os buckets e a chave KMS criados pela pilha (se houver) ficam, com os
-   logs; apague-os quando não precisar mais deles (uma pilha nova cria outros). Nenhum log ou recurso seu é afetado.
+O papel e as políticas não têm custo, e a troca do token no STS também não. A leitura gera requisições do S3 (e do
+KMS, nos buckets com SSE-KMS) e a transferência dos logs para fora da AWS, cobradas pela AWS conforme o volume. Os valores estão nos
+[preços do S3](https://aws.amazon.com/s3/pricing/) e na [calculadora da AWS](https://calculator.aws/); com o CloudTrail
+compactado, o volume é pequeno. O log completo do WAF pode pesar mais. Cada
+entrada do nó no papel é um evento de gerenciamento a mais no seu CloudTrail (alguns por hora, por bucket), que a
+primeira trilha da conta registra sem custo. A trilha e o export opcionais somam o armazenamento nos buckets novos e,
+no caso da trilha, a cópia extra dos eventos se a conta já tiver outra.
 
 ## Conector com papel e ExternalId (obsoleto)
 
 > **Obsoleto desde a revisão de 04/11/2026.** Não use em contas novas: o nó do Verax Control roda fora da AWS e lê
-> pelo usuário de leitura acima. O arquivo `verax-control-connector.yaml` fica guardado para um futuro modo
+> pelo papel de leitura sem chave acima. O arquivo `verax-control-connector.yaml` fica guardado para um futuro modo
 > Enterprise, com papel e ExternalId.
 
 O template `verax-control-connector.yaml` cria **um único recurso** na sua conta: o papel **somente leitura**
@@ -312,8 +426,9 @@ Apague o stack `verax-control-connector`. A Verax perde o acesso na hora. Nenhum
 
 Validação no CI (`.github/workflows/iac.yml`): cfn-lint (instalado com hashes, `requirements-lint.txt`), checkov,
 cfn-guard (binário com o SHA-256 fixado, regras em `guard/`) e os testes de `tests/`, que conferem as garantias acima.
-`tests/test_reader.py` monta a pilha com valores fictícios e decide cada chamada com as duas políticas juntas, e o
-`verax-control-reader.policy.json` precisa ser a pilha com os valores do exemplo (o teste compara). Localmente:
+`tests/test_reader.py` monta a pilha com valores fictícios, decide cada chamada com as duas políticas juntas e cada
+entrada no papel com a confiança, e confere que o `verax-control-reader.policy.json` é a pilha com os valores do
+exemplo e que a confiança deste README e o exemplo de Terraform são os mesmos. Localmente:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install --require-hashes --no-deps -r infra/cloudformation/requirements-lint.txt
@@ -325,6 +440,20 @@ cfn-guard test --rules-file infra/cloudformation/guard/verax-control-reader.guar
   --test-data infra/cloudformation/guard/verax-control-reader.tests.yaml
 ```
 
-O checkov não avalia as duas políticas gerenciadas do usuário de leitura, porque elas têm declarações condicionais
+Os dois valores de quem entra no papel que não mudam de cliente para cliente:
+
+- **O audience `https://control.veraxsistemas.com.br/aws-reader` é uma constante do produto:** o padrão do parâmetro
+  `Audience`, o valor que o nó pede ao Google ao emitir o token (no PR-V4', `AWS_WEB_IDENTITY_AUDIENCE` no
+  `node.conf`) e o que o painel mostra. Mudá-lo exige atualizar a pilha de todos os clientes.
+- **O ID único da conta de serviço do nó** sai da saída `service_account_unique_id` do módulo
+  `infra/gcp/modules/node` (na homologação, `terraform output node_service_account_unique_id`). Recriada, a conta
+  ganha outro ID, e o papel de todo cliente daquele nó deixa de aceitá-la. Ela não tem `prevent_destroy` (a
+  homologação é destruída entre as janelas de teste, e a exclusão do cliente destrói tudo): o que a recriaria sai só
+  do `name_prefix` e do `project_id`, um teste do módulo confere que as mudanças de rotina não a recriam, e o executor
+  do Terraform do plano de controle (CP-07) vai recusar um plano que a recrie ou apague fora da exclusão do cliente.
+  Uma conta apagada por engano volta com o mesmo ID em até 30 dias (`gcloud iam service-accounts undelete`); depois
+  disso, cada cliente atualiza a pilha com o ID novo.
+
+O checkov não avalia as duas políticas gerenciadas do papel de leitura, porque elas têm declarações condicionais
 (`Fn::If`): quem as confere são os testes e o cfn-guard. Os recursos opcionais (trilha e export) só entram na
 varredura com os parâmetros ligados; o checkov roda com os padrões, que os desligam.

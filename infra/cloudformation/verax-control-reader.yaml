@@ -1,23 +1,24 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Verax Control - usuário IAM somente leitura (verax-control-reader), sem chave e sem senha, com o grupo e duas
-  políticas: a de leitura, que também é o limite de permissões do usuário, e a de negação, que barra qualquer chamada
-  de fora do IP do nó, qualquer alteração de logs e qualquer ampliação do próprio acesso. A trilha do CloudTrail e o
-  export do GuardDuty só são criados se pedidos (o padrão é não). O WAF nunca é alterado.
+  Verax Control - papel IAM somente leitura (verax-control-reader), sem chave: só o nó do Verax Control entra nele,
+  com um token de até 1 hora que o Google assina para a conta de serviço do nó, e só a partir do IP de saída do nó.
+  Duas políticas: a de leitura, que também é o limite de permissões do papel, e a de negação, que barra qualquer
+  chamada de fora do IP do nó, qualquer alteração de logs e qualquer ampliação do próprio acesso. A trilha do
+  CloudTrail e o export do GuardDuty só são criados se pedidos (o padrão é não). O WAF nunca é alterado.
 
 Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
-      - Label: { default: De onde o Verax Control lê (o nó) }
-        Parameters: [NodeEgressIps]
+      - Label: { default: Quem entra no papel (o nó do Verax Control; copie os valores do painel) }
+        Parameters: [NodeServiceAccountId, NodeEgressIps, Audience]
       - Label: { default: Logs que o Verax Control lê (já existentes nesta conta) }
         Parameters: [LogBucketArns, LogKmsKeyArns, LogObjectPrefix]
       - Label: { default: 'Opcional: criar a trilha e o export do GuardDuty (o padrão é não)' }
         Parameters: [CreateTrail, EnableGuardDutyExport, GuardDutyDetectorId, LogRetentionDays]
-      - Label: { default: Só num incidente }
-        Parameters: [RevokeSessionsIssuedBefore]
     ParameterLabels:
-      NodeEgressIps: { default: IP de saída do nó (informado pela Verax) }
+      NodeServiceAccountId: { default: ID da conta de serviço do nó (informado pelo painel) }
+      NodeEgressIps: { default: IP de saída do nó (informado pelo painel) }
+      Audience: { default: Audience do token do nó (já preenchido; confira com o painel) }
       LogBucketArns: { default: Buckets S3 de log }
       LogKmsKeyArns: { default: Chaves KMS dos buckets de log }
       LogObjectPrefix: { default: Prefixo dos objetos (bucket com logs de várias contas) }
@@ -25,20 +26,34 @@ Metadata:
       EnableGuardDutyExport: { default: Exportar os findings do GuardDuty para S3 }
       GuardDutyDetectorId: { default: ID do detector do GuardDuty já ativo }
       LogRetentionDays: { default: Dias de retenção nos buckets criados }
-      RevokeSessionsIssuedBefore: { default: Negar sessões emitidas antes de (UTC) }
 
 Parameters:
-  NodeEgressIps:
-    Type: CommaDelimitedList
+  NodeServiceAccountId:
+    Type: String
     Description: >-
-      IP de saída do nó do Verax Control, com /32 (vários separados por vírgula). Toda chamada à AWS feita com a chave
-      deste usuário a partir de qualquer outro IP é negada. Obrigatório.
-    AllowedPattern: '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/32$'
-    ConstraintDescription: IPv4 com /32, como 203.0.113.10/32.
+      ID único (21 dígitos) da conta de serviço do nó do Verax Control no Google, informado pelo painel. Não é segredo:
+      o papel só aceita um token que o Google assina para esta conta, e ninguém o forja. Obrigatório.
+    AllowedPattern: '^[0-9]{21}$'
+    ConstraintDescription: 21 dígitos, como 123456789012345678901.
+  NodeEgressIps:
+    Type: String
+    Description: >-
+      IP de saída do nó do Verax Control, com /32 (até 4, separados por vírgula), informado pelo painel. O papel só é
+      assumido a partir dele, e toda chamada à AWS feita com o papel de qualquer outro IP é negada. Obrigatório.
+    AllowedPattern: '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/32(,(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/32){0,3}$'
+    ConstraintDescription: de 1 a 4 IPv4 com /32, separados por vírgula e sem espaço, como 203.0.113.10/32.
+  Audience:
+    Type: String
+    Description: >-
+      O destinatário (audience) que o nó pede ao Google ao emitir o token. É o mesmo para todo cliente do Verax
+      Control: deixe o valor que já vem preenchido. Um token emitido para outro destino não entra no papel.
+    Default: https://control.veraxsistemas.com.br/aws-reader
+    AllowedPattern: '^https://[a-z0-9.-]+(/[A-Za-z0-9._-]+)*$'
+    ConstraintDescription: um endereço https sem curinga, como o que já vem preenchido.
   LogBucketArns:
     Type: CommaDelimitedList
     Description: >-
-      ARNs dos buckets S3 de log já existentes que o usuário lê (CloudTrail, export do GuardDuty e logs do WAF em
+      ARNs dos buckets S3 de log já existentes que o papel lê (CloudTrail, export do GuardDuty e logs do WAF em
       aws-waf-logs-*), separados por vírgula. Vazio não libera nenhum.
     Default: ''
     AllowedPattern: '^$|^arn:aws[a-z-]*:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
@@ -47,7 +62,7 @@ Parameters:
     Type: CommaDelimitedList
     Description: >-
       ARNs das chaves KMS que cifram os buckets acima (SSE-KMS; o export do GuardDuty sempre usa uma), separados por
-      vírgula; chave comum ou multirregião (key/mrk-...). O usuário só decifra pelo S3. Vazio se os buckets usam a
+      vírgula; chave comum ou multirregião (key/mrk-...). O papel só decifra pelo S3. Vazio se os buckets usam a
       cifragem padrão do S3.
     Default: ''
     AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|mrk-[a-f0-9]{32})$'
@@ -55,7 +70,7 @@ Parameters:
   LogObjectPrefix:
     Type: CommaDelimitedList
     Description: >-
-      Opcional. Só para um bucket que recebe logs de várias contas (por exemplo, a trilha da organização): o usuário só
+      Opcional. Só para um bucket que recebe logs de várias contas (por exemplo, a trilha da organização): o papel só
       lê, nos buckets informados acima, os objetos com um destes prefixos, terminados em / e separados por vírgula,
       como AWSLogs/o-exemplo123/111111111111/,AWSLogs/111111111111/. Vazio libera os buckets inteiros.
     Default: ''
@@ -87,22 +102,18 @@ Parameters:
     Default: 365
     MinValue: 90
     MaxValue: 3650
-  RevokeSessionsIssuedBefore:
-    Type: String
-    Description: >-
-      Só num incidente. Data e hora em UTC, como 2026-11-04T18:00:00Z: nega toda sessão temporária deste usuário
-      (GetSessionToken) emitida antes dela. A chave em si não é afetada: desative-a ou exclua-a no console. Vazio não
-      nega nada.
-    Default: ''
-    AllowedPattern: '^$|^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$'
-    ConstraintDescription: AAAA-MM-DDThh:mm:ssZ, em UTC.
 
 Rules:
-  # O IP do nó é obrigatório: sem ele, a chave valeria de qualquer lugar.
-  IpDoNoObrigatorio:
+  # Quem entra é obrigatório: sem a conta de serviço, o papel não teria a quem confiar, e sem o IP, um token vazado
+  # entraria de qualquer lugar. Os padrões dos parâmetros já recusam o vazio; a regra é a segunda trava.
+  NoDaVeraxObrigatorio:
     Assertions:
-      - Assert: !Not [!EachMemberIn [!Ref NodeEgressIps, ['']]]
+      - Assert: !Not [!Equals [!Ref NodeServiceAccountId, '']]
+        AssertDescription: Informe o ID da conta de serviço do nó (NodeServiceAccountId), que o painel mostra.
+      - Assert: !Not [!Equals [!Ref NodeEgressIps, '']]
         AssertDescription: Informe o IP de saída do nó (NodeEgressIps), com /32.
+      - Assert: !Not [!Equals [!Ref Audience, '']]
+        AssertDescription: Deixe o audience (Audience) com o valor que já vem preenchido.
   # Uma vírgula sobrando vira um item vazio: num prefixo, ele liberaria o bucket inteiro.
   ListasSemItemVazio:
     Assertions:
@@ -132,12 +143,11 @@ Conditions:
   CreatesLogBucket: !Or
     - !Condition CreatesTrail
     - !Condition ExportsGuardDuty
-  RevokesSessions: !Not [!Equals [!Ref RevokeSessionsIssuedBefore, '']]
 
 Resources:
-  # --- Usuário de leitura ---
+  # --- Papel de leitura ---
 
-  # Leitura mínima. Também é o limite de permissões (PermissionsBoundary) do usuário: uma política que alguém anexe
+  # Leitura mínima. Também é o limite de permissões (PermissionsBoundary) do papel: uma política que alguém anexe
   # depois não passa do que está aqui.
   ReaderPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -204,11 +214,11 @@ Resources:
                 StringEquals:
                   kms:ViaService: !Sub 's3.${AWS::Region}.amazonaws.com'
             - !Ref AWS::NoValue
-          # O painel confere que a chave colada não tem permissão demais (só este usuário, nunca outro).
+          # O Verax Control confere que o papel não tem permissão demais (só este papel, nunca outro principal).
           - Sid: AutoInspecao
             Effect: Allow
             Action: iam:SimulatePrincipalPolicy
-            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/verax/verax-control-reader'
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader'
           # Confere que a trilha e o export do GuardDuty gravam nos buckets cadastrados.
           - Sid: ValidarFontes
             Effect: Allow
@@ -243,7 +253,7 @@ Resources:
               - s3:GetBucketPublicAccessBlock
               - s3:GetAccountPublicAccessBlock
 
-  # Negações explícitas: valem mesmo que alguém anexe outra política ao usuário ou ao grupo.
+  # Negações explícitas: valem mesmo que alguém anexe outra política ao papel.
   GuardrailsPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -253,17 +263,16 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          # A chave só vale a partir do IP do nó. A leitura cifrada continua: o S3 decifra no KMS numa sessão de acesso
-          # encaminhada, que preserva o IP de quem chamou o S3. Duas chamadas do STS não passam por política e não
-          # podem ser negadas: o GetCallerIdentity (só revela a conta e o ARN) e o GetSessionToken (a sessão que ele
-          # emite, sim, fica presa ao IP do nó, e RevogarSessoesAntigas a corta).
+          # A sessão do papel só vale a partir do IP do nó, mesmo que as credenciais dela vazem. A leitura cifrada
+          # continua: o S3 decifra no KMS numa sessão de acesso encaminhada, que preserva o IP de quem chamou o S3. O
+          # GetCallerIdentity não passa por política e não pode ser negado (só revela a conta e o ARN da sessão).
           - Sid: SoDoNoDaVerax
             Effect: Deny
             Action: '*'
             Resource: '*'
             Condition:
               NotIpAddress:
-                aws:SourceIp: !Ref NodeEgressIps
+                aws:SourceIp: !Split [',', !Ref NodeEgressIps]
           # Ações que poderiam apagar, desligar ou desviar logs e findings (a mesma lista do conector).
           - Sid: NuncaAlterarLogs
             Effect: Deny
@@ -315,7 +324,8 @@ Resources:
               - wafv2:Delete*
               - wafv2:Put*
               - wafv2:Update*
-          # Nem o próprio usuário: sem criar, trocar ou apagar chaves (nem a dele), políticas, grupos ou papéis.
+          # Nem o próprio papel: sem criar, trocar ou apagar chaves, usuários, políticas ou papéis (nem a confiança e o
+          # limite dele), sem passar papel a um serviço e sem assumir outro papel.
           - Sid: NuncaAmpliarOProprioAcesso
             Effect: Deny
             Resource: '*'
@@ -354,38 +364,45 @@ Resources:
                     - !If [CreatesTrail, !Sub ',${TrailBucket.Arn}/*', '']
                     - !If [ExportsGuardDuty, !Sub ',${GuardDutyBucket.Arn}/*', '']
             - !Ref AWS::NoValue
-          # Incidente: sessões temporárias (GetSessionToken) sobrevivem à exclusão da chave. A chave em si não tem
-          # aws:TokenIssueTime e não é afetada.
-          - !If
-            - RevokesSessions
-            - Sid: RevogarSessoesAntigas
-              Effect: Deny
-              Action: '*'
-              Resource: '*'
-              Condition:
-                DateLessThan:
-                  aws:TokenIssueTime: !Ref RevokeSessionsIssuedBefore
-            - !Ref AWS::NoValue
 
-  ReadersGroup:
-    Type: AWS::IAM::Group
+  # O papel que o nó assume. Sem chave: o nó troca no STS (AssumeRoleWithWebIdentity) um token de até 1 hora, que o
+  # Google assina para a conta de serviço dele, por uma sessão de até 1 hora. Nome e caminho fixos (por isso o
+  # CAPABILITY_NAMED_IAM): o ARN, arn:aws:iam::<conta>:role/verax/verax-control-reader, sai só do ID da conta.
+  ReaderRole:
+    Type: AWS::IAM::Role
     Properties:
-      GroupName: VeraxControlReaders
+      RoleName: verax-control-reader
       Path: /verax/
+      Description: Verax Control - leitura dos logs e da configuração, só pelo nó do Verax Control, sem chave.
+      MaxSessionDuration: 3600
+      PermissionsBoundary: !Ref ReaderPolicy
       ManagedPolicyArns:
         - !Ref ReaderPolicy
         - !Ref GuardrailsPolicy
-
-  # Sem chave (AWS::IAM::AccessKey) e sem senha (LoginProfile): o cliente cria a chave no console, e o segredo nunca
-  # aparece numa saída da pilha.
-  ReaderUser:
-    Type: AWS::IAM::User
-    Properties:
-      UserName: verax-control-reader
-      Path: /verax/
-      PermissionsBoundary: !Ref ReaderPolicy
-      Groups:
-        - !Ref ReadersGroup
+      # Escrita à mão, e não pelo assistente "Web identity / Google" do console, que grava o audience pedido ao
+      # Google em accounts.google.com:aud: no token de uma conta de serviço, a AWS lê essa chave do campo azp (o ID
+      # da conta), e um papel feito pelo assistente nunca aceitaria o nó. O Google é um provedor embutido na AWS:
+      # não há provedor OIDC a criar no IAM.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SoONoDaVerax
+            Effect: Allow
+            Principal:
+              Federated: accounts.google.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                # O campo azp do token, que numa conta de serviço é o ID único dela.
+                accounts.google.com:aud: !Ref NodeServiceAccountId
+                # O identificador estável da conta de serviço: recriada com o mesmo e-mail, ela ganha outro ID. Cada
+                # cliente tem o nó e a conta de serviço dele, e o sub de um não entra no papel de outro.
+                accounts.google.com:sub: !Ref NodeServiceAccountId
+                # O audience que o nó pede ao Google: um token emitido para outro destino não serve aqui.
+                accounts.google.com:oaud: !Ref Audience
+              # Só a partir do IP de saída do nó: um token vazado não entra de outro lugar.
+              IpAddress:
+                aws:SourceIp: !Split [',', !Ref NodeEgressIps]
 
   # --- Opcional: trilha e export do GuardDuty (do conector T4.3) ---
 
@@ -707,14 +724,11 @@ Resources:
         KmsKeyArn: !GetAtt LogsKey.Arn
 
 Outputs:
-  UserArn:
-    Description: ARN do usuário de leitura. O painel confere este ARN quando a chave é colada.
-    Value: !GetAtt ReaderUser.Arn
-  SecurityCredentialsUrl:
+  RoleArn:
     Description: >-
-      Aba "Security credentials" do usuário: crie a chave em "Create access key", no caso de uso "Application running
-      outside AWS", e cole no painel. O segredo aparece só nessa tela, nunca na pilha.
-    Value: !Sub 'https://console.aws.amazon.com/iam/home#/users/details/${ReaderUser}?section=security_credentials'
+      ARN do papel de leitura, sempre arn:aws:iam::<conta>:role/verax/verax-control-reader: o painel o deriva do ID da
+      conta e confere a conexão sozinho. Não há chave nem segredo a copiar.
+    Value: !GetAtt ReaderRole.Arn
   TrailBucketArn:
     Condition: CreatesTrail
     Description: Bucket da trilha criada pela pilha (cadastre no painel).
@@ -729,5 +743,5 @@ Outputs:
     Value: !GetAtt LogsKey.Arn
   AccessLogsBucketArn:
     Condition: CreatesLogBucket
-    Description: Bucket com o log de acesso dos buckets criados pela pilha (o usuário não o lê).
+    Description: Bucket com o log de acesso dos buckets criados pela pilha (o papel não o lê).
     Value: !GetAtt AccessLogsBucket.Arn
