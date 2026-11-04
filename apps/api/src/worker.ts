@@ -4,6 +4,7 @@ import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
+import { CREDENTIAL_REKEY_INTERVAL_MS, CredentialRekey } from './credentials/credential-rekey.js';
 import { GcpAuditSync } from './gcp/gcp-audit-sync.js';
 import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js';
 import { IndexerClient } from './indexer/indexer.client.js';
@@ -23,6 +24,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * vira uma tarefa do agendador, a cada `SYNC_INTERVAL_SECONDS`; as tarefas rodam ao mesmo tempo, cada uma no próprio
  * laço. A concessão no banco garante um worker por vez em cada fonte, mesmo com mais de uma réplica. SIGTERM ou SIGINT
  * esperam as execuções em curso terminarem, e elas liberam a concessão.
+ *
+ * Com o cofre de credenciais (as chaves privadas no ambiente, só no nó de cliente), entra também a tarefa diária
+ * `credential-rekey`, que recifra com a versão corrente as credenciais guardadas com uma versão antiga da chave.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -51,6 +55,16 @@ async function main(): Promise<void> {
       const sync = new GcpAuditSync(prisma, new PubsubRestReader(new MetadataTokenProvider()));
       return { name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() };
     });
+    const keyring = config.credentialsKeyring;
+    if (keyring !== null) {
+      const rekey = new CredentialRekey(prisma, keyring);
+      tasks.push({
+        name: 'credential-rekey',
+        intervalMs: CREDENTIAL_REKEY_INTERVAL_MS,
+        budgetMs: SYNC_BUDGET_MS,
+        run: (signal) => rekey.runOnce(signal),
+      });
+    }
   } catch (error) {
     // Só nomes de variáveis e o problema; nenhum valor é impresso.
     console.error((error as Error).message);
@@ -69,6 +83,8 @@ async function main(): Promise<void> {
       intervalSeconds: config.SYNC_INTERVAL_SECONDS,
       tasks: tasks.map((task) => task.name),
       plan: config.PLAN,
+      // Só a versão corrente da chave do cofre (null sem o cofre), nunca a chave.
+      vaultKeyVersion: config.credentialsKeyring?.current ?? null,
     },
     'worker iniciado',
   );

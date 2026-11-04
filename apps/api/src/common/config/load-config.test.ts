@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { generateKeyPairSync } from 'node:crypto';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { nodePlan } from './env.schema.js';
 import { ConfigValidationError, loadConfig, loadWorkerConfig } from './load-config.js';
 
@@ -304,5 +305,127 @@ describe('configuração do worker do sync (T5.3)', () => {
     expect(() => loadWorkerConfig({ ...workerEnv, SYNC_INTERVAL_SECONDS: value })).toThrow(
       ConfigValidationError,
     );
+  });
+});
+
+describe('cofre de credenciais no ambiente (fase 2)', () => {
+  // Chaves geradas na hora; o PEM vai em base64, como o start.sh escreve.
+  let publicKey64: string;
+  let privateKey64: string;
+  let otherPrivateKey64: string;
+  const workerEnv = {
+    NODE_ENV: 'development',
+    DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
+  };
+
+  beforeAll(() => {
+    const pair = generateKeyPairSync('rsa', { modulusLength: 3072 });
+    const other = generateKeyPairSync('rsa', { modulusLength: 3072 });
+    publicKey64 = Buffer.from(pair.publicKey.export({ type: 'spki', format: 'pem' })).toString('base64');
+    privateKey64 = Buffer.from(pair.privateKey.export({ type: 'pkcs8', format: 'pem' })).toString('base64');
+    otherPrivateKey64 = Buffer.from(other.privateKey.export({ type: 'pkcs8', format: 'pem' })).toString(
+      'base64',
+    );
+  });
+
+  it('sem as variáveis, a API e o worker sobem sem o cofre (o nó da Verax)', () => {
+    expect(loadConfig(validProductionEnv).credentialsPublicKey).toBeNull();
+    expect(loadWorkerConfig(workerEnv).credentialsKeyring).toBeNull();
+  });
+
+  it('a API recebe a chave pública e a versão; o texto em base64 não fica na configuração', () => {
+    const config = loadConfig({
+      ...validProductionEnv,
+      CREDENTIALS_PUBLIC_KEY: publicKey64,
+      CREDENTIALS_KEY_VERSION: '3',
+    });
+    expect(config.credentialsPublicKey?.version).toBe(3);
+    expect(config.credentialsPublicKey?.key.type).toBe('public');
+    expect(JSON.stringify(config)).not.toContain(publicKey64.slice(0, 40));
+    expect(problemsOf({ ...validProductionEnv, CREDENTIALS_PUBLIC_KEY: publicKey64 })).toEqual([
+      'CREDENTIALS_KEY_VERSION: obrigatória e não definida',
+    ]);
+    expect(problemsOf({ ...validProductionEnv, CREDENTIALS_KEY_VERSION: '1' })).toEqual([
+      'CREDENTIALS_PUBLIC_KEY: obrigatória e não definida',
+    ]);
+    expect(
+      problemsOf({
+        ...validProductionEnv,
+        CREDENTIALS_PUBLIC_KEY: publicKey64,
+        CREDENTIALS_KEY_VERSION: '0',
+      }),
+    ).toEqual(['CREDENTIALS_KEY_VERSION: deve ser um inteiro positivo']);
+  });
+
+  it('a API recusa qualquer chave privada: as variáveis do worker, outro nome e a privada no lugar da pública', () => {
+    const refused = 'a API recebe só a chave pública do cofre de credenciais; a privada fica só no worker';
+    for (const extra of [
+      { CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}`, CREDENTIALS_KEY_CURRENT: '1' },
+      { CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}` },
+      { CREDENTIALS_KEY_CURRENT: '1' },
+      { CREDENTIALS_KEY_V1: privateKey64 },
+      { VAULT_PRIVATE_KEY: privateKey64 },
+    ]) {
+      const problems = problemsOf({
+        ...validProductionEnv,
+        CREDENTIALS_PUBLIC_KEY: publicKey64,
+        CREDENTIALS_KEY_VERSION: '1',
+        ...extra,
+      });
+      expect(problems).toEqual(Object.keys(extra).map((key) => `${key}: ${refused}`));
+      expect(problems.join(' ')).not.toContain(privateKey64.slice(0, 40));
+    }
+    const problems = problemsOf({
+      ...validProductionEnv,
+      CREDENTIALS_PUBLIC_KEY: privateKey64,
+      CREDENTIALS_KEY_VERSION: '1',
+    });
+    expect(problems).toEqual([
+      'CREDENTIALS_PUBLIC_KEY: a API recebe só a chave pública do cofre; a privada fica só no worker',
+    ]);
+    expect(problems.join(' ')).not.toContain(privateKey64.slice(0, 40));
+  });
+
+  it('o worker recebe as privadas de todas as versões e a corrente; nada do texto fica na configuração', () => {
+    const config = loadWorkerConfig({
+      ...workerEnv,
+      CREDENTIALS_PRIVATE_KEYS: `1:${otherPrivateKey64},2:${privateKey64}`,
+      CREDENTIALS_KEY_CURRENT: '2',
+    });
+    expect(config.credentialsKeyring?.versions).toEqual([1, 2]);
+    expect(config.credentialsKeyring?.current).toBe(2);
+    expect(JSON.stringify(config)).not.toContain(privateKey64.slice(0, 40));
+    expect(JSON.stringify(config)).toContain('[chaves privadas do cofre]');
+  });
+
+  it('o worker recusa par incompleto, corrente fora da lista e chave pública no lugar da privada, sem o valor', () => {
+    const problemsOfWorker = (env: NodeJS.ProcessEnv): readonly string[] => {
+      try {
+        loadWorkerConfig(env);
+      } catch (error) {
+        if (error instanceof ConfigValidationError) return error.problems;
+        throw error;
+      }
+      throw new Error('loadWorkerConfig deveria ter falhado');
+    };
+    expect(problemsOfWorker({ ...workerEnv, CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}` })).toEqual([
+      'CREDENTIALS_KEY_CURRENT: obrigatória e não definida',
+    ]);
+    expect(
+      problemsOfWorker({
+        ...workerEnv,
+        CREDENTIALS_PRIVATE_KEYS: `1:${privateKey64}`,
+        CREDENTIALS_KEY_CURRENT: '2',
+      }),
+    ).toEqual(['CREDENTIALS_PRIVATE_KEYS: a versão corrente precisa estar entre as chaves privadas']);
+    const problems = problemsOfWorker({
+      ...workerEnv,
+      CREDENTIALS_PRIVATE_KEYS: `1:${publicKey64}`,
+      CREDENTIALS_KEY_CURRENT: '1',
+    });
+    expect(problems).toEqual([
+      'CREDENTIALS_PRIVATE_KEYS: a versão 1 deve ser uma chave privada em PEM (BEGIN PRIVATE KEY)',
+    ]);
+    expect(problems.join(' ')).not.toContain(publicKey64.slice(0, 40));
   });
 });
