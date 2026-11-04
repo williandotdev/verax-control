@@ -125,6 +125,46 @@ run "lean_novo_usa_o_script_do_modulo" {
   }
 }
 
+# O cofre da chave secreta do Turnstile entra por variável (a homologação liga; o nó da Verax, por enquanto, não).
+run "cofre_do_turnstile_ligado" {
+  command = plan
+
+  variables {
+    node_profile     = "standard"
+    turnstile_secret = true
+  }
+
+  assert {
+    condition = (
+      keys(google_secret_manager_secret.node) == ["cloudflare-tunnel-token", "smtp-password", "turnstile-secret-key"] &&
+      google_secret_manager_secret.node["turnstile-secret-key"].secret_id == "verax-teste-turnstile-secret-key" &&
+      [for replica in google_secret_manager_secret.node["turnstile-secret-key"].replication[0].user_managed[0].replicas : replica.location] == ["southamerica-east1"]
+    )
+    error_message = "Com turnstile_secret, o cofre `<prefixo>-turnstile-secret-key` existe, só na região do nó, ao lado dos de sempre."
+  }
+
+  assert {
+    condition = (
+      contains(keys(google_secret_manager_secret_iam_member.node), "turnstile-secret-key") &&
+      google_secret_manager_secret_iam_member.node["turnstile-secret-key"].role == "roles/secretmanager.secretAccessor"
+    )
+    error_message = "A VM do nó precisa ler o cofre do Turnstile (secretAccessor), como os outros cofres de fora."
+  }
+}
+
+run "cofre_do_turnstile_desligado_por_padrao" {
+  command = plan
+
+  variables {
+    node_profile = "standard"
+  }
+
+  assert {
+    condition     = keys(google_secret_manager_secret.node) == ["cloudflare-tunnel-token", "smtp-password"] && !contains(keys(google_secret_manager_secret_iam_member.node), "turnstile-secret-key")
+    error_message = "Sem turnstile_secret, nem o cofre nem a permissão do Turnstile existem (o padrão é falso)."
+  }
+}
+
 run "standard_recusa_vm_fora_do_perfil" {
   command = plan
 

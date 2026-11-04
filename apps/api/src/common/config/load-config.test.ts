@@ -184,6 +184,58 @@ describe('loadConfig', () => {
     }
   });
 
+  describe('Cloudflare Turnstile', () => {
+    const keys = { TURNSTILE_SITE_KEY: '1x00000000000000000000AA', TURNSTILE_SECRET_KEY: 'segredo-de-teste' };
+
+    it('é opcional: sem as chaves, desligado, com o siteverify oficial como padrão', () => {
+      const config = loadConfig(validEnv);
+      expect(config.TURNSTILE_SECRET_KEY).toBeUndefined();
+      expect(config.TURNSTILE_SITE_KEY).toBeUndefined();
+      expect(config.TURNSTILE_SITEVERIFY_URL).toBe(
+        'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+      );
+      expect(loadConfig({ ...validProductionEnv, ...keys }).TURNSTILE_SITE_KEY).toBe(keys.TURNSTILE_SITE_KEY);
+    });
+
+    it('as duas chaves andam juntas: uma sem a outra é recusada, sem mostrar o valor', () => {
+      expect(problemsOf({ ...validEnv, TURNSTILE_SECRET_KEY: keys.TURNSTILE_SECRET_KEY })).toEqual([
+        'TURNSTILE_SECRET_KEY: exige TURNSTILE_SITE_KEY (as duas chaves andam juntas, ou nenhuma)',
+      ]);
+      const problems = problemsOf({ ...validEnv, TURNSTILE_SITE_KEY: keys.TURNSTILE_SITE_KEY });
+      expect(problems).toEqual([
+        'TURNSTILE_SITE_KEY: exige TURNSTILE_SECRET_KEY (as duas chaves andam juntas, ou nenhuma)',
+      ]);
+      expect(problems.join(' ')).not.toContain(keys.TURNSTILE_SITE_KEY);
+    });
+
+    it('confere o formato da chave do site (as reais e as de teste da Cloudflare)', () => {
+      for (const siteKey of [
+        '0x4AAAAAAADnPIDROrmt1Wwj',
+        '2x00000000000000000000AB',
+        '3x00000000000000000000FF',
+      ]) {
+        expect(loadConfig({ ...validEnv, ...keys, TURNSTILE_SITE_KEY: siteKey }).TURNSTILE_SITE_KEY).toBe(
+          siteKey,
+        );
+      }
+      for (const siteKey of ['chave', '0x curta', '0x' + 'a'.repeat(41), 'AAAAAAAADnPIDROrmt1Wwj']) {
+        expect(problemsOf({ ...validEnv, ...keys, TURNSTILE_SITE_KEY: siteKey })).toContain(
+          'TURNSTILE_SITE_KEY: chave do site do Turnstile em formato inválido',
+        );
+      }
+    });
+
+    it('a URL do siteverify só muda fora de produção (servidor falso dos testes)', () => {
+      const fake = 'http://127.0.0.1:4545/siteverify';
+      expect(
+        loadConfig({ ...validEnv, ...keys, TURNSTILE_SITEVERIFY_URL: fake }).TURNSTILE_SITEVERIFY_URL,
+      ).toBe(fake);
+      expect(problemsOf({ ...validProductionEnv, ...keys, TURNSTILE_SITEVERIFY_URL: fake })).toEqual([
+        'TURNSTILE_SITEVERIFY_URL: só muda fora de produção (servidor falso dos testes)',
+      ]);
+    });
+  });
+
   describe('plano do nó (fase 2)', () => {
     it('em produção, PLAN é obrigatório', () => {
       const { PLAN: _plan, ...withoutPlan } = validProductionEnv;

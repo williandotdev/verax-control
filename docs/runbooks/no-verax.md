@@ -115,6 +115,31 @@ enable N ...`, com o `N` do aviso) e reinicie; se todas foram destruídas, grave
 estava cifrado com as destruídas se perdeu: os admins colam as credenciais de novo). Só um segredo recriado, sem versão
 nenhuma, volta a ganhar chave pelo `install.sh` (um deploy).
 
+### Turnstile: o desafio "não sou um robô" no login (opcional)
+
+O Cloudflare Turnstile protege o login e o "esqueci minha senha" do painel (`docs/ARQUITETURA.md`, "Proteções do
+login"). Fica desligado até você fazer os quatro passos abaixo; enquanto isso, nada muda no nó.
+
+1. **Cofre.** Em `infra/gcp/envs/verax/main.tf`, acrescente `turnstile_secret = true` ao `module "node"` e aplique
+   (`infra/gcp/GUIA.md`): o `plan` mostra só o cofre `verax-node-turnstile-secret-key` e a permissão de leitura da VM
+   nele, nada mais. A homologação já nasce com o cofre.
+2. **Widget.** No Cloudflare, em Turnstile → Add widget: nome `verax-control`, hostname `veraxsistemas.com.br` (um
+   hostname cobre os subdomínios: o painel da Verax e os de clientes), modo **Managed**. Ele mostra a chave do site
+   (`0x...`, pública) e a chave secreta.
+3. **Chave secreta no cofre** (no Git Bash; cole o valor quando ele pedir, nada aparece na tela):
+
+   ```bash
+   read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-turnstile-secret-key \
+     --project PROJETO_DO_NO --data-file=- && unset VALOR
+   ```
+
+4. **Chave do site no `node.conf`** (`TURNSTILE_SITE_KEY=0x...`) e reinicie: `sudo systemctl restart verax-node`,
+   ou o próximo `deploy.sh` com o `node.conf` novo. A chave do site é o interruptor: só com ela o `start.sh` lê o
+   cofre. Se o cofre ainda estiver vazio, o nó sobe sem o desafio e avisa no journal; grave a chave e reinicie.
+
+Para conferir: abra o painel, saia e entre de novo. O widget aparece abaixo da senha; o botão "Entrar" só liga depois
+dele. No journal da API, sem `Turnstile desligado` na partida.
+
 ## Instalar ou atualizar
 
 Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados, o Docker instalado (o `gh` lê a imagem
@@ -239,3 +264,11 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   leitura do cofre (permissão, rede) para a partida, com o motivo do gcloud no journal.
 - **IP de quem acessou, na auditoria.** A API confia em um proxy na frente, o Cloudflare (`TRUST_PROXY_HOPS=1`).
   Depois do primeiro login, confira na tela de Auditoria se aparece o seu IP, e não um do Cloudflare.
+- **O login diz "A verificação de segurança não foi concluída".** A API tem o Turnstile ligado e o token não chegou
+  ou foi recusado. Recarregar a página resolve o caso comum (token vencido). Se persistir: a chave do site no
+  `node.conf` e a secreta no cofre precisam ser do mesmo widget, e o hostname do widget precisa cobrir o domínio do
+  painel. Com "Serviço temporariamente indisponível", o `siteverify` da Cloudflare não respondeu: o log da API traz o
+  motivo (`siteverify do Turnstile`), nunca a chave.
+- **O widget não aparece e o botão "Entrar" fica desligado.** O navegador não carregou
+  `challenges.cloudflare.com` (bloqueio de rede ou de extensão). A tela mostra "Carregando verificação…" ou o aviso
+  de erro; sem o widget, não há token, e a API recusaria o login de qualquer jeito.

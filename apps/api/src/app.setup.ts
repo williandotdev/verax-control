@@ -8,6 +8,7 @@ import type { AppConfig } from './common/config/config.module.js';
 import { API_PREFIX } from './common/http/api-prefix.js';
 import { setupOpenApi } from './common/http/openapi.js';
 import { CSRF_HEADER } from './auth/csrf.js';
+import { TURNSTILE_TOKEN_HEADER } from './auth/turnstile.js';
 
 export { API_PREFIX };
 export const JSON_BODY_LIMIT = '100kb';
@@ -52,7 +53,8 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-    allowedHeaders: ['Content-Type', CSRF_HEADER],
+    // O token do Turnstile vai num header próprio no login e no pedido de redefinição (preflight do navegador).
+    allowedHeaders: ['Content-Type', CSRF_HEADER, TURNSTILE_TOKEN_HEADER],
     exposedHeaders: ['X-Request-Id'],
     maxAge: 600,
   });

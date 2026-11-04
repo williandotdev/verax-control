@@ -251,10 +251,12 @@ describe('proteções de login e sessão (T2.3)', () => {
         .options('/v1/me')
         .set('Origin', TEST_WEB_ORIGIN)
         .set('Access-Control-Request-Method', 'POST')
-        .set('Access-Control-Request-Headers', 'content-type,x-csrf-token');
+        .set('Access-Control-Request-Headers', 'content-type,x-csrf-token,x-turnstile-token');
       expect(response.headers['access-control-allow-origin']).toBe(TEST_WEB_ORIGIN);
       expect(response.headers['access-control-allow-credentials']).toBe('true');
       expect(response.headers['access-control-allow-headers']).toMatch(/x-csrf-token/i);
+      // O token do Turnstile vai num header próprio: sem ele aqui, o navegador nem manda o login.
+      expect(response.headers['access-control-allow-headers']).toMatch(/x-turnstile-token/i);
     });
 
     it('não libera nenhuma outra origem', async () => {
