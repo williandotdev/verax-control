@@ -615,8 +615,9 @@ só define a forma dos documentos e as regras.
 - **DRE** (`POST /v1/admin/dre/simulate`): por cliente e por mês, receita bruta, imposto, reserva, receita líquida,
   infraestrutura (só no gerenciado), meio de pagamento, suporte, margem de contribuição, custos fixos rateados e
   resultado; a implantação à parte e os 12 meses; na nuvem do cliente, a estimativa da nuvem dele, só informativa.
-- **Limites no nó** (gancho do PR-18): a configuração vira os ajustes `PLAN_*` que o nó já lê (`PLAN=enterprise`, os
-  quatro limites e o novo `PLAN_MAX_AGENTS`), gravados no cliente (`tenants/{id}.limits`) para o provisionamento.
+- **Limites no nó** (gancho do PR-18): a configuração vira os ajustes `PLAN_*` que o nó já lê (`PLAN=enterprise` e os
+  quatro limites) e, com agentes contratados, `WAZUH_AGENTS=true` e `WAZUH_AGENTS_MAX` (seção "Agentes nas instâncias
+  do cliente"); fica gravada no cliente (`tenants/{id}.limits`) para o provisionamento.
 
 ## Versões do nó: imagens públicas e manifesto assinado _(fase 3, SH-02)_
 

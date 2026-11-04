@@ -1,4 +1,5 @@
 import { costModelProblems, dreFromQuote } from './dre.js';
+import { NODE_AGENTS_MAX_LIMIT } from './node-limits.js';
 import {
   type Configuration,
   type ConfigurationInput,
@@ -201,6 +202,10 @@ export function runPublishGuard(table: PriceTable, model: CostModel): GuardRepor
   };
   const size = gridSize(table);
   if (size > MAX_GRID_CONFIGURATIONS) report.problems.push(`grade grande demais (${size} configurações)`);
+  const agents = table.agents.maxPacks * table.agents.packSize;
+  if (agents > NODE_AGENTS_MAX_LIMIT) {
+    report.problems.push(`agentes acima do que o nó aceita (${agents} de ${NODE_AGENTS_MAX_LIMIT})`);
+  }
   if (report.problems.length > 0) return report;
 
   const below = new WorstList(REPORT_LIMIT);

@@ -117,7 +117,7 @@ export function fictitiousCostModel(): CostModelInput {
       natIpUsdPerMonth: 2,
       otherUsdPerNodeMonth: 1,
       ingestionUsdPerGib: 0.1,
-      agents: { staticIpUsdPerMonth: 2, diskBaseGb: 10, diskPerAgentGb: 2 },
+      agents: { entryUsdPerMonth: 2, diskBaseGb: 10, diskPerAgentGb: 2 },
     },
     paymentFees: { card: { rate: 0.05, fixed: 50 }, boleto: { fixed: 300 }, billingRate: 0.01 },
     taxes: {

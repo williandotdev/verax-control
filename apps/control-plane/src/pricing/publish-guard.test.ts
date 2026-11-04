@@ -157,6 +157,16 @@ describe('checagem de publicação (grade inteira)', () => {
     expect(report.problems).toEqual(['pacote de partida grande-demais fica sob consulta (agents_above_max)']);
   });
 
+  it('uma tabela que vende mais agentes do que o nó aceita é recusada', () => {
+    const table = tableWith((input) => {
+      input.agents.packSize = 100;
+      input.agents.maxPacks = 6;
+    });
+    const report = runPublishGuard(table, model);
+    expect(report.ok).toBe(false);
+    expect(report.problems).toEqual(['agentes acima do que o nó aceita (600 de 500)']);
+  });
+
   it('configurações acima do maior porte contam como sob consulta e ficam fora da margem', () => {
     const table = tableWith((input) => {
       input.cloudAccounts.max = 22;

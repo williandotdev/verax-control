@@ -113,7 +113,8 @@ function taxRateOf(model: CostModel, taxRateId: string | undefined): { id: strin
 
 /**
  * Custo mensal da nuvem do nó, em dólares: VM, disco e snapshots do porte, NAT, IP do NAT, outros, a ingestão da
- * franquia de volume e, com agentes, o IP estático e o disco a mais (base mais um tanto por agente, com snapshot).
+ * franquia de volume e, com agentes, a entrada deles (regra de encaminhamento com o IP fixo) e o disco a mais (base
+ * mais um tanto por agente, com snapshot).
  */
 export function nodeCloudUsd(quoteResult: Quote, model: CostModel): number {
   const { configuration } = quoteResult;
@@ -123,7 +124,7 @@ export function nodeCloudUsd(quoteResult: Quote, model: CostModel): number {
   const perGib = infra.diskUsdPerGibMonth + infra.snapshotUsdPerGibMonth;
   const agents =
     configuration.agents > 0
-      ? infra.agents.staticIpUsdPerMonth +
+      ? infra.agents.entryUsdPerMonth +
         (infra.agents.diskBaseGb + configuration.agents * infra.agents.diskPerAgentGb) * perGib
       : 0;
   return (

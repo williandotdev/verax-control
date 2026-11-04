@@ -359,7 +359,8 @@ export const costModelSchema = z
       /** Custo da ingestão por GiB de franquia (publicação, entrega e retenção no tópico). */
       ingestionUsdPerGib: usd,
       agents: z.strictObject({
-        staticIpUsdPerMonth: usd,
+        /** A entrada dos agentes no nó (a regra de encaminhamento com o IP fixo), por mês. */
+        entryUsdPerMonth: usd,
         /** Disco a mais com agentes: a base de vulnerabilidades mais o índice por agente. */
         diskBaseGb: z.number().min(0).max(100_000),
         diskPerAgentGb: z.number().min(0).max(1_000),

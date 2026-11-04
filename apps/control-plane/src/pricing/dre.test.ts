@@ -44,7 +44,7 @@ describe('DRE por cliente e por mês', () => {
 
     // Receita: ambiente 1.000 + 2 contas × 30 + faixa de 50 GiB 100 + 1 pacote 100 + histórico de 180 dias 20 = 1.280.
     // Nuvem do nó (US$): VM 100 + disco 10 × 0,10 + snapshots 10 × 0,05 + NAT 1 + IP do NAT 2 + outros 1
-    //   + ingestão 50 × 0,10 + agentes (IP 2 + (10 + 10 × 2) GB × 0,15) = 117 → × câmbio 2 × folga 1,1 = R$ 257,40.
+    //   + ingestão 50 × 0,10 + agentes (entrada 2 + (10 + 10 × 2) GB × 0,15) = 117 → × câmbio 2 × folga 1,1 = R$ 257,40.
     // Meio de pagamento: 1.280 × (5% + 1%) + 0,50 = 77,30. Suporte: (1,5 + 2 × 0,15 + 0,5 + 0,5) h = 2,8 h × 80.
     expect(result.monthly).toEqual({
       grossRevenue: 128_000,
