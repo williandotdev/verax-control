@@ -1,0 +1,232 @@
+name: Versão do nó
+
+# Promove um commit da main a uma versão do nó, para os nós na nuvem do cliente (modo próprio, fase 3, SH-02):
+# 1. confere que as imagens do Verax desse commit descem do GHCR sem login e que cada digest tem a atestação de origem
+#    do workflow `Imagens do nó`, na main, nesse commit, num executor do GitHub (as mesmas opções do deploy.sh);
+# 2. monta o pacote do nó do commit (scripts/node-release.sh, igual byte a byte em qualquer máquina) e o manifesto:
+#    commit, digests do Verax no GHCR, imagens de terceiros pelo digest dos compose e SHA-256 do pacote;
+# 3. só então pede o token da GCP e assina o manifesto com a chave de release no Cloud KMS; a assinatura só vale se
+#    fechar com as chaves do próprio pacote e com as da main (infra/node/keys);
+# 4. cria a tag `node-v<versão>` no commit e o release com o pacote, o manifesto e a assinatura.
+# Um nó confere a assinatura com o openssl e as chaves do pacote que já tem (infra/node/bin/verify-release.sh), sem o
+# gh. Roteiro: docs/runbooks/versao-no.md.
+#
+# Divisão de poderes: o job `assinar` roda no environment `release` (aprovação obrigatória, só a main) e é o único que
+# fala com o KMS, por uma federação de identidade que só aceita este arquivo, na main, por disparo manual
+# (infra/gcp/envs/release); ele não escreve no repositório. O job `publicar` cria a tag e o release e não tem
+# identidade na GCP. O nó da Verax continua com o deploy.sh (Artifact Registry e gh attestation verify).
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit da main (40 caracteres hexadecimais) já publicado pelo workflow Imagens do nó
+        required: true
+        type: string
+      version:
+        description: Versão X.Y.Z (vira a tag node-vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: versao-no
+  cancel-in-progress: false
+
+jobs:
+  assinar:
+    name: Conferir as imagens, montar o pacote e assinar o manifesto
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # federação com a GCP (assinatura no KMS) e certificado do Sigstore da atestação do pacote
+      attestations: write # atestação do pacote; também lê as das imagens (gh attestation verify)
+    outputs:
+      tag: ${{ steps.input.outputs.tag }}
+      sums: ${{ steps.sign.outputs.sums }}
+    steps:
+      - name: Conferir a entrada e a configuração
+        id: input
+        env:
+          COMMIT: ${{ inputs.commit }}
+          VERSION: ${{ inputs.version }}
+          WIF_PROVIDER: ${{ vars.GCP_RELEASE_WIF_PROVIDER }}
+          SIGNER: ${{ vars.GCP_RELEASE_SA }}
+          KEY_VERSION: ${{ vars.RELEASE_KMS_KEY_VERSION }}
+        run: |
+          set -euo pipefail
+          [[ $GITHUB_REF == refs/heads/main ]] || { echo "::error::Dispare a partir da main (veio de $GITHUB_REF)."; exit 1; }
+          [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo '::error::commit: 40 caracteres hexadecimais.'; exit 1; }
+          [[ $VERSION =~ ^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$ ]] ||
+            { echo '::error::version: X.Y.Z (só números).'; exit 1; }
+          for name in WIF_PROVIDER SIGNER KEY_VERSION; do
+            [[ -n ${!name} ]] || { echo "::error::Falta $name no environment release (docs/runbooks/versao-no.md)."; exit 1; }
+          done
+          echo "tag=node-v$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: O commit é da main e a versão é nova
+        env:
+          COMMIT: ${{ inputs.commit }}
+          TAG: ${{ steps.input.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$COMMIT" HEAD || { echo "::error::O commit $COMMIT não está na main."; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::A tag $TAG já existe."
+            exit 1
+          fi
+      - name: Imagens no GHCR (pull anônimo) e atestações de origem
+        id: images
+        env:
+          COMMIT: ${{ inputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          name=${GITHUB_REPOSITORY,,}
+          accept='application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json'
+          accept+=',application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json'
+          resolve() { # <imagem>: o digest da tag <commit> no GHCR, sem login; o manifesto baixado por ele tem esse hash
+            local token digest got
+            token=$(curl -fsS --proto '=https' "https://ghcr.io/token?scope=repository:$name/$1:pull" | jq -er .token) ||
+              { echo "::error::Sem token anônimo para ghcr.io/$name/$1: o pacote é público? (docs/runbooks/versao-no.md)" >&2; return 1; }
+            digest=$(curl -fsS --proto '=https' -I -H @<(printf 'Authorization: Bearer %s\n' "$token") -H "Accept: $accept" \
+              "https://ghcr.io/v2/$name/$1/manifests/$COMMIT" | tr -d '\r' |
+              awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }') ||
+              { echo "::error::ghcr.io/$name/$1:$COMMIT não desce sem login: o pacote é público e o workflow Imagens do nó publicou este commit? (docs/runbooks/versao-no.md)" >&2; return 1; }
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Digest inesperado para $1: $digest" >&2; return 1; }
+            curl -fsS --proto '=https' -H @<(printf 'Authorization: Bearer %s\n' "$token") -H "Accept: $accept" \
+              -o "$RUNNER_TEMP/$1.manifest" "https://ghcr.io/v2/$name/$1/manifests/$digest" ||
+              { echo "::error::O manifesto $1@$digest não desce sem login." >&2; return 1; }
+            got=sha256:$(sha256sum "$RUNNER_TEMP/$1.manifest" | cut -d' ' -f1)
+            [[ $got == "$digest" ]] || { echo "::error::O manifesto de $1 não confere com o digest ($got, $digest)." >&2; return 1; }
+            gh attestation verify "oci://ghcr.io/$name/$1@$digest" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/imagens.yml" \
+              --source-ref refs/heads/main \
+              --source-digest "$COMMIT" \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --deny-self-hosted-runners >&2 ||
+              { echo "::error::$1 ($digest) sem atestação válida do workflow Imagens do nó na main para $COMMIT." >&2; return 1; }
+            printf '%s' "$digest"
+          }
+          api=$(resolve api)
+          migrate=$(resolve migrate)
+          {
+            echo "api_digest=$api"
+            echo "migrate_digest=$migrate"
+          } >> "$GITHUB_OUTPUT"
+      - name: Pacote e manifesto
+        env:
+          COMMIT: ${{ inputs.commit }}
+          TAG: ${{ steps.input.outputs.tag }}
+          API_DIGEST: ${{ steps.images.outputs.api_digest }}
+          MIGRATE_DIGEST: ${{ steps.images.outputs.migrate_digest }}
+        run: |
+          set -euo pipefail
+          dist=$RUNNER_TEMP/dist
+          mkdir -p "$dist" "$RUNNER_TEMP/pacote"
+          bash scripts/node-release.sh package "$COMMIT" "$dist/verax-node.tar.gz"
+          bash scripts/node-release.sh manifest --commit "$COMMIT" --release "$TAG" --api-digest "$API_DIGEST" \
+            --migrate-digest "$MIGRATE_DIGEST" --package "$dist/verax-node.tar.gz" --repository "$GITHUB_REPOSITORY" \
+            > "$dist/manifest.json"
+          tar -xzf "$dist/verax-node.tar.gz" -C "$RUNNER_TEMP/pacote"
+          cat "$dist/manifest.json"
+      # O token só existe daqui em diante, depois das atestações conferidas, e vale 5 minutos.
+      - name: Login na GCP (sem chave; só assina)
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_RELEASE_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SA }}
+          token_format: access_token
+          access_token_lifetime: 300s
+          create_credentials_file: false
+      - name: Assinar no Cloud KMS e conferir a assinatura
+        id: sign
+        env:
+          KEY_VERSION: ${{ vars.RELEASE_KMS_KEY_VERSION }}
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          dist=$RUNNER_TEMP/dist
+          # Grava a assinatura só se ela fechar com o verificador e as chaves do próprio pacote.
+          bash scripts/node-release.sh sign --key-version "$KEY_VERSION" --manifest "$dist/manifest.json" \
+            --out "$dist/manifest.json.sig" --node-package-dir "$RUNNER_TEMP/pacote/verax-node"
+          # E com as chaves da main: um nó confia nas chaves que já tem, nunca nas do pacote novo.
+          bash infra/node/bin/verify-release.sh "$dist/manifest.json" "$dist/manifest.json.sig"
+          sums=$(cd "$dist" && sha256sum verax-node.tar.gz manifest.json manifest.json.sig | base64 -w0)
+          echo "sums=$sums" >> "$GITHUB_OUTPUT"
+      - name: Atestação de origem do pacote
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/dist/verax-node.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: versao-no
+          path: |
+            ${{ runner.temp }}/dist/verax-node.tar.gz
+            ${{ runner.temp }}/dist/manifest.json
+            ${{ runner.temp }}/dist/manifest.json.sig
+          if-no-files-found: error
+          retention-days: 1
+
+  publicar:
+    name: Criar a tag e o release
+    needs: assinar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # a tag node-v<versão> e o release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: versao-no
+          path: ${{ runner.temp }}/dist
+      # Os mesmos bytes que o job `assinar` conferiu.
+      - name: Conferir os arquivos assinados
+        env:
+          SUMS: ${{ needs.assinar.outputs.sums }}
+        working-directory: ${{ runner.temp }}/dist
+        run: base64 -d <<<"$SUMS" | sha256sum --check --strict
+      - name: Tag e release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+          TAG: ${{ needs.assinar.outputs.tag }}
+        working-directory: ${{ runner.temp }}/dist
+        run: |
+          set -euo pipefail
+          # A tag nasce no commit pela API, que recusa uma tag que já existe. Só uma nova tentativa deste job (a tag
+          # neste mesmo commit, sem release) segue adiante.
+          if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$TAG" -f "sha=$COMMIT" >/dev/null; then
+            existing=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha' || true)
+            [[ $existing == "commit $COMMIT" ]] || { echo "::error::A tag $TAG já existe em outro objeto ($existing)."; exit 1; }
+            echo "::notice::A tag $TAG já estava no commit $COMMIT (nova tentativa do job)."
+          fi
+          {
+            echo "Versão do nó \`$TAG\`, do commit \`$COMMIT\`."
+            echo
+            echo "- Pacote: \`verax-node.tar.gz\`, SHA-256 \`$(jq -r .package.sha256 manifest.json)\`"
+            echo "- API: \`$(jq -r .images.api manifest.json)\`"
+            echo "- Migrations: \`$(jq -r .images.migrate manifest.json)\`"
+            echo "- Imagens de terceiros, baixadas da origem pelo digest (a Verax não as redistribui):"
+            jq -r '.thirdPartyImages[] | "  - `" + . + "`"' manifest.json
+            echo
+            echo "O \`manifest.json\` é assinado pela chave de release da Verax (ECDSA P-256 no Cloud KMS; \`manifest.json.sig\`)."
+            echo "Confira com as chaves de \`infra/node/keys\` de um commit em que você confia, nunca com as do pacote baixado:"
+            echo
+            echo '```bash'
+            echo 'bash infra/node/bin/verify-release.sh manifest.json manifest.json.sig infra/node/keys'
+            echo 'sha256sum verax-node.tar.gz  # igual a package.sha256 do manifesto'
+            echo "gh attestation verify oci://<imagem@digest do manifesto> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/imagens.yml --source-ref refs/heads/main --source-digest $COMMIT --deny-self-hosted-runners"
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" verax-node.tar.gz manifest.json manifest.json.sig --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --latest=false --title "Nó $TAG" --notes-file "$RUNNER_TEMP/notes.md"

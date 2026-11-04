@@ -5,6 +5,15 @@ name: Imagens do nó
 # (infra/node/bin/deploy.sh <commit> <node.conf>).
 # Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `imagens`, que só
 # aceita a `main`. A imagem é a mesma que o CI testa a cada PR (job "Imagem da API").
+#
+# Depois, as mesmas imagens vão para o registro público do GitHub (ghcr.io/<dono>/<repositório>/{api,migrate}), de onde
+# um nó na nuvem do cliente baixa sem login (modo próprio, fase 3). É uma cópia pelo digest, nunca um build novo: o
+# `imagetools create --prefer-index=false` copia o manifesto byte a byte (com mais de uma plataforma ou com atestação
+# do BuildKit, o índice também), e o job confere que o digest no GHCR é o do Artifact Registry. A atestação de origem
+# vale para o digest, onde quer que ele esteja; a cópia ganha mais uma, com o nome do GHCR e guardada também no próprio
+# registro (`gh attestation verify --bundle-from-oci`, sem a API do GitHub). O job do GHCR é o único com
+# `packages: write`; se ele falhar, o Artifact Registry e o nó da Verax seguem como antes. Só as imagens do Verax vão
+# para o GHCR: as de terceiros (Wazuh, PostgreSQL, cloudflared) o nó baixa da origem, pelo digest dos compose.
 
 on:
   push:
@@ -35,6 +44,10 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    # Vazios quando o registro não está configurado: o job do GHCR não roda.
+    outputs:
+      api_digest: ${{ steps.build.outputs.api_digest }}
+      migrate_digest: ${{ steps.build.outputs.migrate_digest }}
     steps:
       # Sem o registro configurado no environment, não há onde publicar e os demais passos não rodam.
       - name: Conferir a configuração
@@ -107,4 +120,89 @@ jobs:
             echo "- Migrations: \`$MIGRATE_DIGEST\`"
             echo
             echo "No nó: \`infra/node/bin/deploy.sh $GITHUB_SHA <node.conf>\` (docs/runbooks/no-verax.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ghcr:
+    name: Copiar para o GHCR (mesmo digest) e atestar
+    needs: publicar
+    if: needs.publicar.outputs.api_digest != '' && needs.publicar.outputs.migrate_digest != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # O mesmo environment: a leitura do Artifact Registry é pela mesma federação de identidade do job anterior.
+    environment: imagens
+    permissions:
+      contents: read
+      id-token: write # federação com a GCP (leitura do registro) e certificado do Sigstore da atestação
+      attestations: write # atestação com o nome do GHCR
+      packages: write # cópia das imagens e da atestação para o GHCR (só neste job)
+    steps:
+      - name: Login na GCP (sem chave; aqui só lê o registro)
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_IMAGES_SA }}
+          token_format: access_token
+          access_token_lifetime: 900s
+          create_credentials_file: false
+      - name: Copiar pelo digest e conferir o digest no GHCR
+        id: copy
+        env:
+          REPOSITORY: ${{ vars.IMAGES_REPOSITORY }}
+          GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          GHCR_TOKEN: ${{ github.token }}
+          API_DIGEST: ${{ needs.publicar.outputs.api_digest }}
+          MIGRATE_DIGEST: ${{ needs.publicar.outputs.migrate_digest }}
+        run: |
+          set -euo pipefail
+          # O GHCR só aceita minúsculas no nome.
+          ghcr="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repository=$ghcr" >> "$GITHUB_OUTPUT"
+          registry=${REPOSITORY%%/*}
+          docker login -u oauth2accesstoken --password-stdin "https://$registry" <<<"$GOOGLE_ACCESS_TOKEN"
+          trap 'docker logout "https://$registry" >/dev/null 2>&1 || true' EXIT
+          docker login -u "$GITHUB_ACTOR" --password-stdin ghcr.io <<<"$GHCR_TOKEN"
+          copy() { # <imagem> <digest no Artifact Registry>
+            local got
+            [[ $2 =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Digest inválido para $1: $2" >&2; return 1; }
+            # --prefer-index=false: com uma origem só, cópia exata do manifesto. O padrão (true) embrulharia uma
+            # imagem de plataforma única num índice novo, com outro digest.
+            docker buildx imagetools create --prefer-index=false --tag "$ghcr/$1:$GITHUB_SHA" "$REPOSITORY/$1@$2"
+            got=$(docker buildx imagetools inspect "$ghcr/$1:$GITHUB_SHA" --format '{{json .Manifest}}' | jq -r .digest)
+            [[ $got == "$2" ]] || { echo "A cópia de $1 no GHCR tem outro digest: $got (no Artifact Registry: $2)." >&2; return 1; }
+            echo "$1: $ghcr/$1@$got"
+          }
+          copy api "$API_DIGEST"
+          copy migrate "$MIGRATE_DIGEST"
+      # Guardada também no GHCR, ao lado da imagem: confere-se sem a API do GitHub (`--bundle-from-oci`). Sem registro
+      # de armazenamento: a API dele só existe para repositórios de organização.
+      - name: Atestação de origem no GHCR (API)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.copy.outputs.repository }}/api
+          subject-digest: ${{ needs.publicar.outputs.api_digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Atestação de origem no GHCR (migrations)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.copy.outputs.repository }}/migrate
+          subject-digest: ${{ needs.publicar.outputs.migrate_digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Sair do GHCR
+        if: always()
+        run: docker logout ghcr.io >/dev/null 2>&1 || true
+      - name: Resumo
+        env:
+          GHCR: ${{ steps.copy.outputs.repository }}
+          API_DIGEST: ${{ needs.publicar.outputs.api_digest }}
+          MIGRATE_DIGEST: ${{ needs.publicar.outputs.migrate_digest }}
+        run: |
+          {
+            echo "### Imagens públicas no GHCR (versão \`$GITHUB_SHA\`)"
+            echo "- API: \`$GHCR/api@$API_DIGEST\`"
+            echo "- Migrations: \`$GHCR/migrate@$MIGRATE_DIGEST\`"
+            echo
+            echo "O mesmo digest do Artifact Registry. Pull anônimo só depois de o pacote ficar público (docs/runbooks/versao-no.md)."
           } >> "$GITHUB_STEP_SUMMARY"
