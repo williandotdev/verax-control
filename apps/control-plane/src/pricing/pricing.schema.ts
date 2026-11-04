@@ -58,6 +58,11 @@ const publicText = z.string().trim().min(1).max(120);
 /** Taxa entre 0 e 1 (0,1 = 10%). */
 const rate = z.number().min(0).max(1);
 
+/** Um teto abaixo do piso correspondente (máximo menor que o incluído, alerta menor que a mínima). */
+function belowFloor(ceiling: number, floor: number): boolean {
+  return ceiling < floor;
+}
+
 /** Um preço da tabela: o valor em centavos e o `lookup_key` do preço correspondente na Stripe. */
 export const pricedSchema = z.strictObject({ amount: positiveCents, lookupKey: lookupKeySchema });
 export type Priced = z.infer<typeof pricedSchema>;
@@ -184,7 +189,7 @@ export const priceTableSchema = z
         }
       }
     }
-    if (table.cloudAccounts.max < table.cloudAccounts.included) {
+    if (belowFloor(table.cloudAccounts.max, table.cloudAccounts.included)) {
       issue(['cloudAccounts', 'max'], 'menor que o incluído');
     }
     const bands = table.volume.bands.map((band) => band.monthlyGib);
@@ -427,7 +432,7 @@ export const costModelSchema = z
     if (new Set(ids).size !== ids.length) {
       ctx.addIssue({ code: 'custom', path: ['taxes', 'rates'], message: 'alíquota repetida' });
     }
-    if (model.margins.alert < model.margins.minimum) {
+    if (belowFloor(model.margins.alert, model.margins.minimum)) {
       ctx.addIssue({ code: 'custom', path: ['margins', 'alert'], message: 'menor que a mínima' });
     }
     const bands = model.support.hours.perVolumeBand.map((band) => band.monthlyGib);
