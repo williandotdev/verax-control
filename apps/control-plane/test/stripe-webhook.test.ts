@@ -812,6 +812,100 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       expect((await tenants.require(p.tenantId)).state).toBe('waiting_customer_connection');
     });
 
+    it('fatura antiga paga com atraso (ou evento dela atrasado) não reativa com renovação mais nova em aberto', async () => {
+      const p = await activeTenant();
+      const older = renewalInvoice(p, 'open');
+      clock.advance(30 * DAY_MS);
+      await send('invoice.payment_failed', String(older['id']));
+      clock.advance(30 * DAY_MS);
+      const newer = renewalInvoice(p, 'open');
+      await send('invoice.payment_failed', String(newer['id']));
+      const delinquent = await tenants.require(p.tenantId);
+      expect(delinquent.state).toBe('past_due');
+
+      // A renovação antiga é paga (ou o invoice.paid dela chega só agora); a mais nova continua em aberto.
+      clock.advance(DAY_MS);
+      older['status'] = 'paid';
+      (older['status_transitions'] as StripeObject)['paid_at'] = unix(clock.now());
+      const late = await send('invoice.paid', String(older['id']));
+
+      const still = await tenants.require(p.tenantId);
+      expect(still.state).toBe('past_due');
+      expect(still.billing).toMatchObject({
+        pastDueSince: delinquent.billing?.pastDueSince,
+        graceUntil: delinquent.billing?.graceUntil,
+        resumeState: 'active',
+      });
+      expect(await events.get(late)).toMatchObject({ outcome: 'applied', reason: 'debt_outstanding' });
+      expect((await invoices.list(p.tenantId)).map((doc) => doc.id)).toEqual([String(older['id'])]);
+      const [lookup] = fake.calls('GET', '/v1/invoices');
+      expect(lookup?.query.get('subscription')).toBe(p.subscriptionId);
+      expect(lookup?.query.get('status')).toBe('open');
+
+      // A que faltava é paga: agora a dívida acabou, e o cliente volta.
+      newer['status'] = 'paid';
+      await send('invoice.paid', String(newer['id']));
+      const back = await tenants.require(p.tenantId);
+      expect(back.state).toBe('active');
+      // O período pago vai até o fim da renovação mais nova (emitida em D+60, cobrindo D+90 a D+120).
+      expect(back.billing).toEqual({ paidUntil: new Date(START.getTime() + 120 * DAY_MS) });
+      expect(await invoices.list(p.tenantId)).toHaveLength(2);
+    });
+
+    it('fatura de outra assinatura do mesmo Customer: recusada, sem mexer no cliente nem gravar a fatura', async () => {
+      // Uma falha de outra assinatura não deixa o cliente inadimplente.
+      const p = await activeTenant();
+      const foreign = fake.addSubscription({
+        customer: p.customerId,
+        items: [ESSENCIAL],
+        periodEnd: inDays(30),
+      });
+      const failed = fake.addInvoice({
+        customer: p.customerId,
+        subscription: String(foreign['id']),
+        subscriptionMetadata: {},
+        status: 'open',
+        billingReason: 'subscription_cycle',
+        amountPaid: 0,
+        periodStart: clock.now(),
+        periodEnd: inDays(30),
+      });
+      const failedId = await send('invoice.payment_failed', String(failed['id']));
+      expect((await tenants.require(p.tenantId)).state).toBe('active');
+      expect(await events.get(failedId)).toMatchObject({ outcome: 'ignored', reason: 'other_subscription' });
+
+      // A 1.ª fatura paga de outra assinatura não provisiona quem espera o próprio boleto.
+      const q = await purchase({ paymentStatus: 'unpaid', slug: 'cliente-demo-b' });
+      await send('checkout.session.completed', q.sessionId);
+      const other = fake.addSubscription({
+        customer: q.customerId,
+        items: [ESSENCIAL],
+        periodEnd: inDays(30),
+      });
+      const paid = fake.addInvoice({
+        customer: q.customerId,
+        subscription: String(other['id']),
+        subscriptionMetadata: {},
+        status: 'paid',
+        billingReason: 'subscription_create',
+        amountPaid: 249_000,
+        periodStart: clock.now(),
+        periodEnd: inDays(30),
+        paidAt: clock.now(),
+      });
+      const paidId = await send('invoice.paid', String(paid['id']));
+
+      expect((await tenants.require(q.tenantId)).state).toBe('pending');
+      expect(queue.tasks.filter((task) => task.tenantId === q.tenantId)).toHaveLength(0);
+      expect(await invoices.list(q.tenantId)).toHaveLength(0);
+      expect(await events.get(paidId)).toMatchObject({ outcome: 'ignored', reason: 'other_subscription' });
+      const attention = capture
+        .entries()
+        .filter((entry) => entry['reason'] === 'other_subscription')
+        .map((entry) => entry['eventId']);
+      expect(attention).toEqual(expect.arrayContaining([failedId, paidId]));
+    });
+
     it('contestação suspende (fraud_review), avisa o responsável, e o pagamento não reativa', async () => {
       const p = await activeTenant();
       const charge = fake.addCharge({ customer: p.customerId, amount: 249_000, created: clock.now() });

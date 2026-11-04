@@ -182,17 +182,29 @@ function syncOnly(ctx: DecisionContext, mutate: (tenant: Tenant) => Tenant): Ten
   return { reason: 'stripe_synced', eventId: ctx.eventId, audit: ctx.audit, mutate };
 }
 
+/** Inadimplente por falta de pagamento: o estado que uma fatura paga pode desfazer, se a dívida acabou. */
+export function isDelinquent(tenant: Tenant): boolean {
+  return (
+    tenant.state === 'past_due' ||
+    (tenant.state === 'suspended' && tenant.billing?.suspendedReason !== 'fraud_review')
+  );
+}
+
 /**
  * `invoice.paid` com a fatura relida como paga (plano §4b e §4d): `paidUntil` avança até o fim do período cobrado.
  * Em `pending`, a 1.ª fatura (`subscription_create`) leva a `provisioning`. Em `past_due`, ou `suspended` por falta de
  * pagamento, o cliente volta ao estado de antes (`active` ou `waiting_customer_connection`) e os campos da
- * inadimplência somem. Suspenso por `fraud_review` não volta sozinho: a decisão é humana.
+ * inadimplência somem, mas só com `debtCleared === true`: a fatura paga prova que ela foi paga, não que a assinatura
+ * não deve outra (uma fatura antiga paga atrasada, ou o evento dela entregue tarde, com uma renovação mais nova em
+ * aberto). Quem chama relê as faturas em aberto da assinatura; sem essa leitura (`undefined`), não reativa. Suspenso por
+ * `fraud_review` não volta sozinho: a decisão é humana.
  */
 export function invoicePaidChange(
   tenant: TenantRecord,
   invoice: InvoiceSnapshot,
   ctx: DecisionContext,
   runId: string,
+  debtCleared: boolean | undefined,
 ): TenantChange | undefined {
   const paidUntil = latest(tenant.billing?.paidUntil, invoice.periodEnd ?? undefined);
   const withPaid = (current: Tenant): Tenant =>
@@ -200,10 +212,7 @@ export function invoicePaidChange(
   if (tenant.state === 'pending' && invoice.billingReason === 'subscription_create') {
     return enterProvisioning(tenant, ctx, runId, 'first_invoice_paid', withPaid);
   }
-  const reactivates =
-    tenant.state === 'past_due' ||
-    (tenant.state === 'suspended' && tenant.billing?.suspendedReason !== 'fraud_review');
-  if (reactivates) {
+  if (isDelinquent(tenant) && debtCleared === true) {
     const to: TenantState = resumeStateOf(tenant) ?? 'active';
     return {
       to,

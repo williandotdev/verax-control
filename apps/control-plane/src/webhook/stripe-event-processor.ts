@@ -33,6 +33,7 @@ import {
   enterProvisioning,
   fraudReviewChange,
   invoicePaidChange,
+  isDelinquent,
   isRefundWithinGuarantee,
   itemsChanged,
   neverProvisioned,
@@ -422,7 +423,17 @@ export class StripeEventProcessor {
       subscriptionId: invoice.subscriptionId,
     });
     if (tenant === undefined) return this.deferOrIgnore(ctx, invoice.subscriptionMetadata);
-    if (invoice.status === 'paid') return this.onInvoicePaid(ctx, tenant, invoice);
+    // Achado pelo Customer, mas a fatura é de outra assinatura dele: não mexe neste cliente (nem grava a fatura), como
+    // em `onSubscription`. Senão a falha de outra assinatura o deixaria inadimplente, e a 1.ª fatura paga dela
+    // provisionaria um cliente cujo próprio checkout não foi pago.
+    if (
+      tenant.stripe?.subscriptionId !== undefined &&
+      tenant.stripe.subscriptionId !== invoice.subscriptionId
+    ) {
+      this.attention(ctx, 'other_subscription', tenant.id);
+      return ignored('other_subscription', tenant.id);
+    }
+    if (invoice.status === 'paid') return this.onInvoicePaid(ctx, tenant, invoice, invoice.subscriptionId);
     if (
       ctx.type === 'invoice.payment_failed' &&
       invoice.status !== null &&
@@ -443,19 +454,28 @@ export class StripeEventProcessor {
     return ignored('invoice_not_paid', tenant.id);
   }
 
-  /** Fatura paga: grava em `invoices` (NFS-e manual) e aplica a regra (1.ª fatura provisiona; renovação reativa). */
+  /**
+   * Fatura paga: grava em `invoices` (NFS-e manual) e aplica a regra (1.ª fatura provisiona; renovação reativa). Para
+   * reativar um inadimplente, relê as faturas da assinatura: com outra ainda em aberto (`open` ou `uncollectible`), a
+   * fatura é gravada e o cliente continua onde está; a reativação vem com o `invoice.paid` da que faltava.
+   */
   private async onInvoicePaid(
     ctx: ProcessContext,
     tenant: TenantRecord,
     invoice: InvoiceSnapshot,
+    subscriptionId: string,
   ): Promise<ProcessResult> {
     const recorded = await this.invoices.record(tenant.id, invoice, tenant.stripe?.paymentMethodType, {
       ...this.audit(ctx),
       eventId: ctx.eventId,
     });
+    // Só quem pode ser reativado custa a releitura; se o estado mudar até a transição, `undefined` não reativa.
+    const debtCleared = isDelinquent(tenant)
+      ? !(await this.stripe().hasOutstandingInvoices(subscriptionId))
+      : undefined;
     const runId = newUlid(this.clock.now().getTime());
     const result = await this.applyChange(ctx, tenant.id, (current) =>
-      invoicePaidChange(current, invoice, this.decision(ctx), runId),
+      invoicePaidChange(current, invoice, this.decision(ctx), runId, debtCleared),
     );
     const after = result?.tenant ?? tenant;
     const enqueued = await this.ensurePreflight(after);
@@ -463,7 +483,8 @@ export class StripeEventProcessor {
       this.attention(ctx, 'paid_while_fraud_review', tenant.id);
     }
     const changed = recorded !== 'unchanged' || (result?.changed ?? false) || enqueued;
-    return outcomeOf(changed, result, 'invoice_paid', tenant.id);
+    const fallback = isDelinquent(after) && debtCleared === false ? 'debt_outstanding' : 'invoice_paid';
+    return outcomeOf(changed, result, fallback, tenant.id);
   }
 
   // --- Reembolso, contestação e fraude ------------------------------------------------------------------------

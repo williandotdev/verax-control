@@ -467,6 +467,8 @@ export class FakeStripe {
         return this.subscriptions.get(String(id));
       case 'DELETE subscriptions/:id':
         return this.cancelSubscription(String(id));
+      case 'GET invoices':
+        return this.listInvoices(query);
       case 'GET invoices/:id':
         return this.invoices.get(String(id));
       case 'GET charges/:id':
@@ -606,6 +608,21 @@ export class FakeStripe {
       ...session,
       line_items: this.list(this.sessionLineItems.get(id) ?? [], `/v1/checkout/sessions/${id}/line_items`),
     };
+  }
+
+  /** Faturas filtradas por assinatura (`parent.subscription_details.subscription`) e status, como a Stripe lista. */
+  private listInvoices(query: URLSearchParams): StripeObject {
+    const subscription = query.get('subscription');
+    const status = query.get('status');
+    const limit = Number(query.get('limit') ?? '10');
+    const data = [...this.invoices.values()].filter((invoice) => {
+      const parent = invoice['parent'] as { subscription_details?: { subscription?: unknown } } | null;
+      return (
+        (subscription === null || parent?.subscription_details?.subscription === subscription) &&
+        (status === null || invoice['status'] === status)
+      );
+    });
+    return this.list(data.slice(0, limit), '/v1/invoices');
   }
 
   private cancelSubscription(id: string): StripeObject | undefined {

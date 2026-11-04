@@ -134,6 +134,12 @@ export interface CustomerSnapshot {
 export type TaxIdResult = 'created' | 'exists';
 
 /**
+ * Faturas que ainda são dívida: `open` (a cobrar, inclusive o boleto emitido e não pago) e `uncollectible` (marcada
+ * como incobrável, mas que o cliente ainda pode pagar). `draft` ainda não venceu; `void` foi anulada.
+ */
+export const OUTSTANDING_INVOICE_STATUSES = ['open', 'uncollectible'] as const;
+
+/**
  * O pouco do SDK da Stripe que o plano de controle usa, atrás de uma interface. A implementação é o SDK oficial; nos
  * testes, o mesmo SDK aponta para um servidor falso em 127.0.0.1, que confere os parâmetros exatos de cada chamada.
  */
@@ -147,6 +153,11 @@ export interface StripeClient {
   retrieveCheckoutSession(id: string): Promise<CheckoutSessionSnapshot>;
   retrieveSubscription(id: string): Promise<SubscriptionSnapshot>;
   retrieveInvoice(id: string): Promise<InvoiceSnapshot>;
+  /**
+   * A assinatura ainda deve alguma fatura (`open` ou `uncollectible`)? É o que decide se uma fatura paga quita a
+   * inadimplência: ela prova só que aquela fatura foi paga, não que não há outra em aberto.
+   */
+  hasOutstandingInvoices(subscriptionId: string): Promise<boolean>;
   retrieveCharge(id: string): Promise<ChargeSnapshot>;
   retrieveDispute(id: string): Promise<PaymentRiskSnapshot>;
   retrieveEarlyFraudWarning(id: string): Promise<PaymentRiskSnapshot>;
@@ -333,6 +344,14 @@ export class SdkStripeClient implements StripeClient {
       periodEnd: ends.length === 0 ? null : fromUnix(Math.max(...ends)),
       hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
     };
+  }
+
+  async hasOutstandingInvoices(subscriptionId: string): Promise<boolean> {
+    for (const status of OUTSTANDING_INVOICE_STATUSES) {
+      const page = await this.stripe.invoices.list({ subscription: subscriptionId, status, limit: 1 });
+      if (page.data.length > 0) return true;
+    }
+    return false;
   }
 
   async retrieveCharge(id: string): Promise<ChargeSnapshot> {

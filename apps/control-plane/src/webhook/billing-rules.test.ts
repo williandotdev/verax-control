@@ -105,10 +105,32 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
       invoice({ billingReason: 'subscription_create' }),
       CTX,
       RUN_ID,
+      undefined,
     );
     expect(first?.to).toBe('provisioning');
     expect(apply(tenant('pending'), first)?.billing?.paidUntil).toEqual(new Date(AT.getTime() + 30 * DAY_MS));
-    expect(invoicePaidChange(tenant('pending'), invoice(), CTX, RUN_ID)?.to).toBeUndefined();
+    expect(invoicePaidChange(tenant('pending'), invoice(), CTX, RUN_ID, undefined)?.to).toBeUndefined();
+  });
+
+  it('fatura paga só reativa o inadimplente com a dívida quitada (nenhuma outra em aberto confirmada)', () => {
+    const billing = { pastDueSince: AT, graceUntil: AT, resumeState: 'active' as const };
+    for (const delinquent of [
+      tenant('past_due', { billing }),
+      tenant('suspended', { billing: { ...billing, suspendedReason: 'unpaid' } }),
+    ]) {
+      expect(invoicePaidChange(delinquent, invoice(), CTX, RUN_ID, true)?.to, delinquent.state).toBe(
+        'active',
+      );
+      // Outra fatura em aberto (ou sem a releitura): só grava o `paidUntil`; a inadimplência fica.
+      for (const debtCleared of [false, undefined]) {
+        const change = invoicePaidChange(delinquent, invoice(), CTX, RUN_ID, debtCleared);
+        expect(change?.to).toBeUndefined();
+        expect(apply(delinquent, change)).toMatchObject({
+          state: delinquent.state,
+          billing: { ...delinquent.billing, paidUntil: new Date(AT.getTime() + 30 * DAY_MS) },
+        });
+      }
+    }
   });
 
   it('falha na renovação: past_due com 7 dias de carência; de novo em past_due não estende', () => {
@@ -146,7 +168,7 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
       resumeState: 'waiting_customer_connection',
     });
 
-    const paid = invoicePaidChange(suspended as TenantRecord, invoice(), CTX, RUN_ID);
+    const paid = invoicePaidChange(suspended as TenantRecord, invoice(), CTX, RUN_ID, true);
     expect(paid?.to).toBe('waiting_customer_connection');
     expect(apply(suspended as TenantRecord, paid)?.billing).toEqual({
       paidUntil: new Date(AT.getTime() + 30 * DAY_MS),
@@ -171,7 +193,7 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
     const fraud = apply(unpaid, relabel) as TenantRecord;
     expect(fraud.billing?.suspendedReason).toBe('fraud_review');
     expect(fraudReviewChange(fraud, CTX)).toBeUndefined();
-    expect(invoicePaidChange(fraud, invoice(), CTX, RUN_ID)?.to).toBeUndefined();
+    expect(invoicePaidChange(fraud, invoice(), CTX, RUN_ID, true)?.to).toBeUndefined();
   });
 
   it('assinatura encerrada cancela com os prazos de 30 e 97 dias; cancelado não cancela de novo', () => {
