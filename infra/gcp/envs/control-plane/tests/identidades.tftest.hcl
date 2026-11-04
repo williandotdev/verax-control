@@ -1,6 +1,6 @@
-# As identidades e os papéis do plano de controle (plano, seção 2.2), conta a conta: o que cada uma pode, e só isso.
-# Quem chama o cp-worker e o Job nunca é allUsers. Com o projeto dos nós preenchido, as concessões de lá; sem ele,
-# nada fora deste projeto.
+# As identidades e os papéis do plano de controle (plano, seção 2.2, e as correções da revisão), conta a conta: o que
+# cada uma pode, e só isso. Quem chama o cp-worker e o Job nunca é allUsers. Com o projeto dos nós preenchido, as
+# concessões de lá; sem ele, nada fora deste projeto.
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
 
@@ -25,7 +25,15 @@ mock_provider "google" {
   }
 }
 
-mock_provider "google-beta" {}
+mock_provider "google-beta" {
+  # O agente de serviço (Cloud Tasks e Cloud Scheduler) entra como membro de uma concessão: precisa ter o formato.
+  mock_resource "google_project_service_identity" {
+    defaults = {
+      email  = "service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
+      member = "serviceAccount:service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
+    }
+  }
+}
 
 override_resource {
   target = google_service_account.public
@@ -48,6 +56,14 @@ override_resource {
   values = {
     name  = "projects/projeto-exemplo/serviceAccounts/cp-terraform@projeto-exemplo.iam.gserviceaccount.com"
     email = "cp-terraform@projeto-exemplo.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target = google_service_account.invoker
+  values = {
+    name  = "projects/projeto-exemplo/serviceAccounts/cp-invoker@projeto-exemplo.iam.gserviceaccount.com"
+    email = "cp-invoker@projeto-exemplo.iam.gserviceaccount.com"
   }
 }
 
@@ -96,35 +112,68 @@ run "cp_public" {
   }
 
   assert {
+    condition     = google_cloud_run_v2_service.public[0].template[0].service_account == "cp-public@projeto-exemplo.iam.gserviceaccount.com"
+    error_message = "O cp-public roda com a própria conta."
+  }
+}
+
+# A conta do token das tasks e do Scheduler: quem age como ela, e que ninguém age como o cp-worker.
+run "cp_invoker" {
+  assert {
     condition = (
-      sort([for member in google_service_account_iam_member.worker_token_users : member.member]) == tolist([
-        "serviceAccount:cp-public@projeto-exemplo.iam.gserviceaccount.com",
-        "serviceAccount:cp-worker@projeto-exemplo.iam.gserviceaccount.com",
-      ]) &&
-      alltrue([for member in google_service_account_iam_member.worker_token_users : member.role == "roles/iam.serviceAccountUser"]) &&
-      alltrue([for member in google_service_account_iam_member.worker_token_users : member.service_account_id == google_service_account.worker.name])
+      length(google_service_account_iam_member.invoker_token_users) == 4 &&
+      google_service_account_iam_member.invoker_token_users["public"].member == "serviceAccount:cp-public@projeto-exemplo.iam.gserviceaccount.com" &&
+      google_service_account_iam_member.invoker_token_users["worker"].member == "serviceAccount:cp-worker@projeto-exemplo.iam.gserviceaccount.com" &&
+      google_service_account_iam_member.invoker_token_users["cloudtasks_agent"].member == google_project_service_identity.agents["cloudtasks"].member &&
+      google_service_account_iam_member.invoker_token_users["cloudscheduler_agent"].member == google_project_service_identity.agents["cloudscheduler"].member &&
+      alltrue([for member in google_service_account_iam_member.invoker_token_users : member.role == "roles/iam.serviceAccountUser"]) &&
+      alltrue([for member in google_service_account_iam_member.invoker_token_users : member.service_account_id == google_service_account.invoker.name])
     )
-    error_message = "Só o cp-public e o próprio cp-worker agem como o cp-worker (o token das tasks)."
+    error_message = "O cp-public, o cp-worker e os agentes de serviço do Cloud Tasks e do Cloud Scheduler agem como a cp-invoker (o token das tasks e do relógio), e só como ela."
   }
 
   assert {
-    condition     = google_cloud_run_v2_service.public[0].template[0].service_account == "cp-public@projeto-exemplo.iam.gserviceaccount.com"
-    error_message = "O cp-public roda com a própria conta."
+    condition = (
+      google_project_service_identity.agents["cloudtasks"].service == "cloudtasks.googleapis.com" &&
+      google_project_service_identity.agents["cloudscheduler"].service == "cloudscheduler.googleapis.com"
+    )
+    error_message = "Os dois agentes de serviço existem antes da primeira task e do primeiro job do relógio."
+  }
+
+  assert {
+    condition = (
+      !contains([for member in google_service_account_iam_member.invoker_token_users : member.service_account_id], google_service_account.worker.name) &&
+      !contains([for member in google_service_account_iam_member.deployer_acts_as : member.service_account_id], google_service_account.invoker.name)
+    )
+    error_message = "Ninguém além de quem implanta age como o cp-worker (nem o cp-public, nem o próprio cp-worker), e quem implanta não age como a cp-invoker."
+  }
+
+  assert {
+    condition = (
+      !contains([for member in google_project_iam_member.public : member.member], "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com") &&
+      !contains([for member in google_project_iam_member.worker : member.member], "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com") &&
+      !contains([for member in google_secret_manager_secret_iam_member.readers : member.member], "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com") &&
+      !contains([for member in google_cloud_tasks_queue_iam_member.enqueuers : member.member], "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com") &&
+      google_cloud_run_v2_job_iam_member.worker_runner[0].member != "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com"
+    )
+    error_message = "A cp-invoker não tem papel no projeto, nos segredos, nas filas nem no Job: só chama o cp-worker."
+  }
+
+  assert {
+    condition     = output.service_accounts.invoker == "cp-invoker@projeto-exemplo.iam.gserviceaccount.com"
+    error_message = "A conta do token sai na lista de contas."
   }
 }
 
 run "cp_worker" {
   assert {
     condition     = keys(google_project_iam_member.worker) == ["roles/datastore.user"]
-    error_message = "No projeto, o cp-worker tem só datastore.user (o firebasehosting.admin é por projeto do pool)."
+    error_message = "No projeto, o cp-worker tem só datastore.user."
   }
 
   assert {
-    condition = (
-      keys(google_project_iam_member.worker_hosting_admin) == ["projeto-exemplo"] &&
-      google_project_iam_member.worker_hosting_admin["projeto-exemplo"].role == "roles/firebasehosting.admin"
-    )
-    error_message = "O cp-worker é firebasehosting.admin neste projeto, o primeiro do pool dos painéis."
+    condition     = length(google_project_iam_member.worker_hosting_admin) == 0
+    error_message = "Sem projetos no pool dos painéis, o cp-worker não é firebasehosting.admin em lugar nenhum: nunca neste projeto, que hospeda o site do plano de controle."
   }
 
   assert {
@@ -159,6 +208,37 @@ run "cp_worker" {
   }
 }
 
+# O pool dos painéis dos clientes: só os projetos informados, na ordem, e nunca este.
+run "pool_dos_paineis" {
+  variables {
+    firebase_panel_projects = ["projeto-paineis-1", "projeto-paineis-2"]
+  }
+
+  assert {
+    condition = (
+      keys(google_project_iam_member.worker_hosting_admin) == ["projeto-paineis-1", "projeto-paineis-2"] &&
+      alltrue([for member in google_project_iam_member.worker_hosting_admin : member.role == "roles/firebasehosting.admin" && member.member == "serviceAccount:cp-worker@projeto-exemplo.iam.gserviceaccount.com"]) &&
+      !contains(keys(google_project_iam_member.worker_hosting_admin), "projeto-exemplo")
+    )
+    error_message = "O cp-worker é firebasehosting.admin nos projetos do pool, e só neles."
+  }
+
+  assert {
+    condition     = one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "FIREBASE_PANEL_PROJECTS"]) == "projeto-paineis-1,projeto-paineis-2"
+    error_message = "FIREBASE_PANEL_PROJECTS lista os projetos do pool na ordem, sem este projeto."
+  }
+}
+
+run "este_projeto_nao_entra_no_pool" {
+  command = plan
+
+  variables {
+    firebase_panel_projects = ["projeto-paineis-1", "projeto-exemplo"]
+  }
+
+  expect_failures = [var.firebase_panel_projects]
+}
+
 run "cp_terraform" {
   assert {
     condition     = google_cloud_run_v2_job.terraform[0].template[0].template[0].service_account == "cp-terraform@projeto-exemplo.iam.gserviceaccount.com"
@@ -168,6 +248,8 @@ run "cp_terraform" {
   assert {
     condition = (
       length(google_project_iam_member.terraform_nodes) == 0 &&
+      length(google_project_iam_custom_role.secrets_provisioner) == 0 &&
+      length(google_project_iam_custom_role.buckets_provisioner) == 0 &&
       length(google_storage_bucket_iam_member.terraform_state) == 0 &&
       length(google_storage_bucket_iam_member.worker_runs) == 0 &&
       length(google_project_iam_custom_role.node_lifecycle) == 0 &&
@@ -230,25 +312,44 @@ run "cp_deployer" {
   assert {
     condition = (
       google_iam_workload_identity_pool_provider.github.oidc[0].issuer_uri == "https://token.actions.githubusercontent.com" &&
-      google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.sub == \"repo:williandotdev/verax-control:environment:control-plane\" && assertion.repository_owner_id == \"92734416\" && assertion.repository_id == \"1441377752\"" &&
-      google_iam_workload_identity_pool_provider.github.attribute_mapping["google.subject"] == "assertion.sub"
+      google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.sub == \"repo:williandotdev/verax-control:environment:control-plane\" && assertion.repository_owner_id == \"92734416\" && assertion.repository_id == \"1441377752\" && assertion.ref == \"refs/heads/main\" && assertion.ref_type == \"branch\" && (assertion.event_name == \"push\" || assertion.event_name == \"workflow_dispatch\")" &&
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["google.subject"] == "assertion.sub" &&
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.ref"] == "assertion.ref" &&
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.ref_type"] == "assertion.ref_type" &&
+      google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.event_name"] == "assertion.event_name"
     )
-    error_message = "O provedor aceita só o token do environment control-plane do repositório, pelos IDs fixos do repositório e do dono."
+    error_message = "O provedor aceita só o token do environment control-plane do repositório, pelos IDs fixos do repositório e do dono, na branch main, de um push ou de um disparo manual; ref, ref_type e event_name viram atributos."
+  }
+
+  assert {
+    condition = (
+      google_iam_workload_identity_pool.github.display_name == "GitHub Actions (control-plane)" &&
+      length(google_iam_workload_identity_pool.github.display_name) <= 32
+    )
+    error_message = "O nome de exibição do pool cabe nos 32 caracteres da API."
   }
 
   assert {
     condition     = output.github_environment.GCP_WIF_PROVIDER == "projects/123456789012/locations/global/workloadIdentityPools/cp-github/providers/github" && output.github_environment.GCP_DEPLOYER_SA == "cp-deployer@projeto-exemplo.iam.gserviceaccount.com"
     error_message = "As saídas do environment do GitHub apontam para o provedor e a conta de implantação."
   }
+
+  assert {
+    condition = keys(output.github_environment) == [
+      "CP_IMAGES_REPOSITORY", "CP_PUBLIC_SERVICE", "CP_TERRAFORM_JOB", "CP_WORKER_SERVICE",
+      "GCP_DEPLOYER_SA", "GCP_PROJECT_ID", "GCP_PROJECT_NUMBER", "GCP_REGION", "GCP_WIF_PROVIDER",
+    ]
+    error_message = "As nove variáveis do environment do GitHub, com estes nomes (o workflow de implantação as lê assim)."
+  }
 }
 
 run "ninguem_anonimo_no_worker_nem_no_job" {
   assert {
     condition = sort([for member in google_cloud_run_v2_service_iam_member.worker_invokers : member.member]) == tolist([
-      "serviceAccount:cp-worker@projeto-exemplo.iam.gserviceaccount.com",
+      "serviceAccount:cp-invoker@projeto-exemplo.iam.gserviceaccount.com",
       "user:responsavel@example.com",
     ])
-    error_message = "Só a conta das tasks e do Scheduler (a do cp-worker) e o responsável chamam o cp-worker."
+    error_message = "Só a conta do token das tasks e do Scheduler (cp-invoker) e o responsável chamam o cp-worker; o próprio cp-worker não."
   }
 
   assert {
@@ -282,6 +383,8 @@ run "projeto_dos_nos_preenchido" {
   assert {
     condition = (
       keys(google_project_iam_member.terraform_nodes) == [
+        "cpBucketsProvisioner",
+        "cpSecretsProvisioner",
         "roles/compute.instanceAdmin.v1",
         "roles/compute.networkAdmin",
         "roles/compute.securityAdmin",
@@ -292,12 +395,47 @@ run "projeto_dos_nos_preenchido" {
         "roles/monitoring.notificationChannelEditor",
         "roles/pubsub.admin",
         "roles/resourcemanager.projectIamAdmin",
-        "roles/secretmanager.admin",
-        "roles/storage.admin",
       ] &&
-      alltrue([for member in google_project_iam_member.terraform_nodes : member.project == "projeto-exemplo-nos" && member.member == "serviceAccount:cp-terraform@projeto-exemplo.iam.gserviceaccount.com"])
+      alltrue([for member in google_project_iam_member.terraform_nodes : member.project == "projeto-exemplo-nos" && member.member == "serviceAccount:cp-terraform@projeto-exemplo.iam.gserviceaccount.com"]) &&
+      google_project_iam_member.terraform_nodes["cpSecretsProvisioner"].role == google_project_iam_custom_role.secrets_provisioner[0].id &&
+      google_project_iam_member.terraform_nodes["cpBucketsProvisioner"].role == google_project_iam_custom_role.buckets_provisioner[0].id
     )
-    error_message = "Os 12 papéis do cp-terraform no projeto dos nós (plano, seção 2.2), e nenhum outro."
+    error_message = "Os 12 papéis do cp-terraform no projeto dos nós: os 10 predefinidos da seção 2.2 e os dois personalizados no lugar de secretmanager.admin e storage.admin."
+  }
+
+  assert {
+    condition = (
+      !contains([for member in google_project_iam_member.terraform_nodes : member.role], "roles/secretmanager.admin") &&
+      !contains([for member in google_project_iam_member.terraform_nodes : member.role], "roles/storage.admin")
+    )
+    error_message = "secretmanager.admin e storage.admin no projeto dos nós deixariam o cp-terraform ler os segredos e os backups de todos os tenants."
+  }
+
+  assert {
+    condition = (
+      google_project_iam_custom_role.secrets_provisioner[0].project == "projeto-exemplo-nos" &&
+      google_project_iam_custom_role.secrets_provisioner[0].role_id == "cpSecretsProvisioner" &&
+      google_project_iam_custom_role.secrets_provisioner[0].permissions == toset([
+        "secretmanager.secrets.create", "secretmanager.secrets.delete", "secretmanager.secrets.get", "secretmanager.secrets.list",
+        "secretmanager.secrets.update", "secretmanager.secrets.getIamPolicy", "secretmanager.secrets.setIamPolicy",
+        "secretmanager.versions.list",
+      ]) &&
+      alltrue([for permission in google_project_iam_custom_role.secrets_provisioner[0].permissions : !contains(["secretmanager.versions.access", "secretmanager.versions.add", "secretmanager.versions.destroy"], permission)])
+    )
+    error_message = "cpSecretsProvisioner: o cofre e a política de acesso, nunca ler, gravar ou destruir versão."
+  }
+
+  assert {
+    condition = (
+      google_project_iam_custom_role.buckets_provisioner[0].project == "projeto-exemplo-nos" &&
+      google_project_iam_custom_role.buckets_provisioner[0].role_id == "cpBucketsProvisioner" &&
+      google_project_iam_custom_role.buckets_provisioner[0].permissions == toset([
+        "storage.buckets.create", "storage.buckets.delete", "storage.buckets.get", "storage.buckets.list",
+        "storage.buckets.update", "storage.buckets.getIamPolicy", "storage.buckets.setIamPolicy",
+      ]) &&
+      alltrue([for permission in google_project_iam_custom_role.buckets_provisioner[0].permissions : !startswith(permission, "storage.objects.")])
+    )
+    error_message = "cpBucketsProvisioner: o bucket e a política de acesso, nenhum storage.objects.*."
   }
 
   assert {
@@ -308,7 +446,7 @@ run "projeto_dos_nos_preenchido" {
       google_storage_bucket_iam_member.worker_runs[0].role == "roles/storage.objectViewer" &&
       google_storage_bucket_iam_member.worker_runs[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/projeto-exemplo-nos-tfstate/objects/runs/\")"
     )
-    error_message = "No bucket do estado: o executor grava tudo; o cp-worker lê só runs/."
+    error_message = "No bucket do estado: o executor grava tudo (a única leitura de objeto que ele tem no projeto dos nós); o cp-worker lê só runs/."
   }
 
   assert {

@@ -84,8 +84,9 @@ jobs:
           terraform -chdir=infra/gcp/envs/homolog-sp test
           terraform -chdir=infra/gcp/envs/verax test
           terraform -chdir=infra/gcp/envs/control-plane test
-          # Os segredos do plano de controle nascem vazios: nenhuma versão de segredo passa pelo Terraform.
-          if grep -lq 'google_secret_manager_secret_version' infra/gcp/envs/control-plane/*.tf; then
+          # Os segredos do plano de controle nascem vazios: nenhuma versão de segredo (regional ou não) passa pelo
+          # Terraform. Só a declaração do recurso conta; um comentário que cite o nome não dispara.
+          if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' infra/gcp/envs/control-plane/*.tf; then
             echo "O plano de controle não grava versão de segredo pelo Terraform (secrets.tf)." >&2
             exit 1
           fi

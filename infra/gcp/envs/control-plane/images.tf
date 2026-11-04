@@ -1,8 +1,8 @@
 # Imagens do plano de controle (serviços cp-public/cp-worker, a mesma imagem, e o executor Terraform cp-terraform):
 # registro próprio, neste projeto e nesta região. O registro do nó (`verax-control`, envs/verax) fica em outro projeto
 # e em outra região: um registro aqui evita a leitura entre projetos e o tráfego entre regiões a cada instância nova,
-# e o custo é o mesmo (cerca de R$ 0,20 por mês pelas versões guardadas, plano, seção 6). O GitHub Actions publica
-# sem chave, pela federação de identidade (identities.tf).
+# e o custo é o mesmo (cerca de R$ 0,20 por mês pelas 3 versões guardadas de cada imagem, plano, seção 6). O GitHub
+# Actions publica sem chave, pela federação de identidade (identities.tf).
 
 resource "google_artifact_registry_repository" "control_plane" {
   #checkov:skip=CKV_GCP_84:Cifrado pelo Google (AES-256). As imagens são públicas no código-fonte (repositório aberto) e não carregam segredo.
@@ -16,13 +16,15 @@ resource "google_artifact_registry_repository" "control_plane" {
     immutable_tags = true
   }
 
-  # Guarda as 10 versões mais recentes e apaga o resto depois de 30 dias, para o registro não crescer sem limite.
+  # Guarda as 3 versões mais recentes de cada imagem (a que está no ar e duas para voltar; é a conta da estimativa de
+  # custo) e apaga o resto depois de 30 dias, para o registro não crescer sem limite. Uma versão apagada se recria a
+  # partir do commit (o workflow publica por SHA).
   cleanup_policy_dry_run = false
   cleanup_policies {
     id     = "manter-recentes"
     action = "KEEP"
     most_recent_versions {
-      keep_count = 10
+      keep_count = 3
     }
   }
   cleanup_policies {

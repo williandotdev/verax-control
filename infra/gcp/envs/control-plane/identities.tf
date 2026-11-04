@@ -1,6 +1,7 @@
-# As quatro identidades do plano de controle (plano, seção 2.2), sem chave JSON em lugar nenhum: três contas de
-# execução (uma por peça) e a conta que o GitHub Actions usa para implantar, pela federação de identidade. Cada papel
-# vale no menor recurso possível (a fila, o segredo, o Job, a conta), nunca no projeto quando dá para evitar.
+# As cinco identidades do plano de controle (plano, seção 2.2, mais a `cp-invoker` da revisão), sem chave JSON em
+# lugar nenhum: três contas de execução (uma por peça), a conta que só serve de token para chamar o cp-worker e a
+# conta que o GitHub Actions usa para implantar, pela federação de identidade. Cada papel vale no menor recurso
+# possível (a fila, o segredo, o Job, a conta), nunca no projeto quando dá para evitar.
 
 resource "google_service_account" "public" {
   account_id   = "cp-public"
@@ -17,6 +18,18 @@ resource "google_service_account" "terraform" {
   display_name = "Plano de controle: executor Terraform dos nós de clientes (Job cp-terraform)"
 }
 
+# A identidade que as tasks e o Scheduler levam no token para chamar o cp-worker. Só isso: `run.invoker` no
+# cp-worker (run.tf) e nenhum outro papel. Quem enfileira (cp-public e cp-worker) age como ela, e não como o
+# cp-worker: um cp-public comprometido não consegue um token com os papéis do cp-worker (Firestore, Hosting, o Job,
+# os segredos do provisionamento); consegue, no máximo, chamar o cp-worker, que já é o que ele faz.
+#
+# Contrato com o app (plano, seção 2.5): o cp-worker confere `aud == WORKER_URL` e `email` do token em
+# {WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL} ∪ OWNER_PRINCIPALS; as duas variáveis apontam para esta conta (run.tf).
+resource "google_service_account" "invoker" {
+  account_id   = "cp-invoker"
+  display_name = "Plano de controle: token das tasks e do Scheduler para o cp-worker (cp-invoker)"
+}
+
 resource "google_service_account" "deployer" {
   account_id   = "cp-deployer"
   display_name = "Implantação do plano de controle (GitHub Actions, environment control-plane)"
@@ -26,6 +39,7 @@ locals {
   public_member    = "serviceAccount:${google_service_account.public.email}"
   worker_member    = "serviceAccount:${google_service_account.worker.email}"
   terraform_member = "serviceAccount:${google_service_account.terraform.email}"
+  invoker_member   = "serviceAccount:${google_service_account.invoker.email}"
   deployer_member  = "serviceAccount:${google_service_account.deployer.email}"
 
   runtime_members = {
@@ -33,8 +47,10 @@ locals {
     worker = local.worker_member
   }
 
-  # Projetos do pool do Firebase dos painéis: este (o primeiro) e os demais, quando houver.
-  panel_projects = toset(concat([var.project_id], var.firebase_panel_projects))
+  # Projetos do pool do Firebase dos painéis dos clientes: só os de `firebase_panel_projects`, nunca este. O site do
+  # plano de controle (`verax-conta`, hosting.tf) e os sites do Painel que já existem aqui ficam fora do alcance do
+  # cp-worker: um cp-worker comprometido não troca o conteúdo de conta.veraxsistemas.com.br.
+  panel_projects = toset(var.firebase_panel_projects)
 }
 
 # Papéis no projeto: só o acesso ao Firestore. O resto é por recurso (abaixo e nos outros arquivos).
@@ -54,7 +70,7 @@ resource "google_project_iam_member" "worker" {
   member  = local.worker_member
 }
 
-# O cp-worker cria o site e o domínio do painel de cada cliente nos projetos do pool.
+# O cp-worker cria o site e o domínio do painel de cada cliente nos projetos do pool (e só neles).
 resource "google_project_iam_member" "worker_hosting_admin" {
   for_each = local.panel_projects
 
@@ -63,13 +79,31 @@ resource "google_project_iam_member" "worker_hosting_admin" {
   member  = local.worker_member
 }
 
-# As tasks levam o token de identidade do cp-worker. Quem cria a task precisa poder "agir como" ele: o cp-public (que
-# enfileira o primeiro passo) e o próprio cp-worker (que enfileira o passo seguinte; o Cloud Tasks exige a permissão
-# mesmo de quem age como si mesmo).
-resource "google_service_account_iam_member" "worker_token_users" {
-  for_each = local.runtime_members
+# Os agentes de serviço do Cloud Tasks e do Cloud Scheduler (contas que o Google gerencia, uma por projeto): são
+# eles que geram o token OIDC da cp-invoker na hora de despachar. O recurso garante que cada agente já existe antes
+# do primeiro job e da primeira task (num projeto que acabou de ligar a API, ele só nasce no primeiro uso, e a
+# criação do job do Scheduler falha antes disso). O papel de agente de serviço de cada um (`cloudtasks.serviceAgent`,
+# `cloudscheduler.serviceAgent`), concedido pelo Google ao ligar a API, é o que lhes permite gerar o token; a
+# concessão abaixo deixa explícito, na própria conta, que os dois agem como a cp-invoker, e vale mesmo que aquele
+# papel do projeto encolha.
+resource "google_project_service_identity" "agents" {
+  provider = google-beta
+  for_each = toset(["cloudtasks", "cloudscheduler"])
 
-  service_account_id = google_service_account.worker.name
+  service = "${each.key}.googleapis.com"
+
+  depends_on = [google_project_service.apis]
+}
+
+# Quem age como a cp-invoker: o cp-public (que enfileira o primeiro passo), o cp-worker (que enfileira o passo
+# seguinte e o ciclo de vida) e os dois agentes de serviço. Ninguém age como o cp-worker além de quem implanta.
+resource "google_service_account_iam_member" "invoker_token_users" {
+  for_each = merge(local.runtime_members, {
+    cloudtasks_agent     = google_project_service_identity.agents["cloudtasks"].member
+    cloudscheduler_agent = google_project_service_identity.agents["cloudscheduler"].member
+  })
+
+  service_account_id = google_service_account.invoker.name
   role               = "roles/iam.serviceAccountUser"
   member             = each.value
 }
@@ -90,7 +124,8 @@ resource "google_project_iam_custom_role" "job_runner" {
   depends_on = [google_project_service.apis]
 }
 
-# Quem implanta age como as três contas de execução (uma revisão nova do serviço roda com a conta dele).
+# Quem implanta age como as três contas de execução (uma revisão nova do serviço roda com a conta dele). Não age
+# como a cp-invoker: nenhum serviço roda com ela.
 resource "google_service_account_iam_member" "deployer_acts_as" {
   for_each = {
     public    = google_service_account.public.name
@@ -107,35 +142,58 @@ resource "google_service_account_iam_member" "deployer_acts_as" {
 # Painel fica em outro projeto e foi criado fora do Terraform; este é próprio deste projeto e deste repositório.
 resource "google_iam_workload_identity_pool" "github" {
   workload_identity_pool_id = "cp-github"
-  display_name              = "GitHub Actions (plano de controle)"
-  description               = "Tokens OIDC do GitHub Actions do repositório do Verax Control."
+  # No máximo 32 caracteres (limite da API).
+  display_name = "GitHub Actions (control-plane)"
+  description  = "Tokens OIDC do GitHub Actions do repositório do Verax Control."
 
   depends_on = [google_project_service.apis]
 }
 
+locals {
+  # A condição do provedor, pedaço a pedaço (a mesma ordem vale no teste):
+  #   1. o subject do environment `control-plane` deste repositório (o nome; depois de renomear, atualize
+  #      `github_repository`);
+  #   2 e 3. os IDs fixos do dono e do repositório (molde do envs/verax): um repositório recriado com o mesmo nome
+  #      tem outro ID e não entra;
+  #   4 e 5. o token veio de um job na branch `main` (e não de uma tag com esse nome). A proteção "deployment
+  #      branches" do environment no GitHub faz o mesmo, mas é configuração fora do Terraform; aqui a condição não
+  #      depende dela;
+  #   6. só os eventos que implantam (`push` e `workflow_dispatch`): um `pull_request_target`, que roda com o `ref`
+  #      da base, também fica de fora.
+  github_attribute_condition = join(" && ", [
+    "assertion.sub == \"repo:${var.github_repository}:environment:${var.github_environment}\"",
+    "assertion.repository_owner_id == \"${var.github_repository_owner_id}\"",
+    "assertion.repository_id == \"${var.github_repository_id}\"",
+    "assertion.ref == \"refs/heads/main\"",
+    "assertion.ref_type == \"branch\"",
+    "(assertion.event_name == \"push\" || assertion.event_name == \"workflow_dispatch\")",
+  ])
+}
+
 resource "google_iam_workload_identity_pool_provider" "github" {
-  #checkov:skip=CKV_GCP_125:O checkov trata todo subject com `environment` como abusável, mas o environment só é configurado por administradores do repositório, o GitHub o restringe à `main`, e a condição ainda exige os IDs fixos do repositório e do dono. É o mesmo desenho do Painel e das imagens do nó.
+  #checkov:skip=CKV_GCP_125:O checkov trata todo subject com `environment` como abusável, mas o environment só é configurado por administradores do repositório, e a condição ainda exige os IDs fixos do repositório e do dono, a branch `main` e um evento de push ou de disparo manual. É o mesmo desenho do Painel e das imagens do nó, com a branch e o evento conferidos aqui também.
   workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
   workload_identity_pool_provider_id = "github"
   display_name                       = "GitHub Actions"
 
+  # O `ref`, o tipo dele e o evento entram como atributos, para aparecerem nos logs de auditoria de cada token.
   attribute_mapping = {
     "google.subject"          = "assertion.sub"
     "attribute.repository"    = "assertion.repository"
     "attribute.repository_id" = "assertion.repository_id"
+    "attribute.ref"           = "assertion.ref"
+    "attribute.ref_type"      = "assertion.ref_type"
+    "attribute.event_name"    = "assertion.event_name"
   }
 
-  # Só o token do environment `control-plane` deste repositório, e ainda pelos IDs fixos do GitHub (molde do
-  # envs/verax): um repositório recriado com o mesmo nome tem outro ID e não entra; uma troca de nome não abre nada
-  # por si só (o subject cita o nome; depois de renomear, atualize `github_repository`).
-  attribute_condition = "assertion.sub == \"repo:${var.github_repository}:environment:${var.github_environment}\" && assertion.repository_owner_id == \"${var.github_repository_owner_id}\" && assertion.repository_id == \"${var.github_repository_id}\""
+  attribute_condition = local.github_attribute_condition
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
   }
 }
 
-# Só o environment `control-plane` (que o GitHub restringe à `main`) vira a conta de implantação.
+# Só o environment `control-plane` (que a condição acima prende à `main`) vira a conta de implantação.
 resource "google_service_account_iam_member" "deployer_wif" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"

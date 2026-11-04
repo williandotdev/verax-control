@@ -7,7 +7,12 @@
 # TODO(CP-06, envs/nodes-platform): o bucket do estado, as APIs e o orçamento do projeto dos nós vão nascer lá. Os
 # papéis personalizados e as concessões abaixo podem mudar para lá no mesmo PR (basta mover os blocos; o estado segue
 # com `moved`), ou ficar aqui, onde estão as contas. Até lá, `nodes_project_id` exige o bucket `<projeto>-tfstate` já
-# criado (passo 2 do GUIA.md, no projeto dos nós), senão o `apply` para na concessão do bucket.
+# criado (passo 2 do GUIA.md, no projeto dos nós), senão o `apply` para na concessão do bucket. O que o nodes-platform
+# precisa garantir nesse bucket e nesse projeto:
+#   - acesso uniforme no nível do bucket (`uniform_bucket_level_access = true`) no bucket do estado: a concessão
+#     condicionada `worker_runs` (abaixo) exige; com ACLs por objeto, a GCP recusa a condição;
+#   - o alerta por log do CP-12 em `SetIamPolicy` feito pelo cp-terraform com um papel fora da lista permitida é do
+#     projeto dos nós (é lá que o `projectIamAdmin` vale), e não deste; fica para o nodes-platform.
 
 locals {
   nodes_enabled        = var.nodes_project_id != ""
@@ -18,7 +23,17 @@ locals {
   # conta de serviço e papéis dela, segredos, Pub/Sub, bucket de backups e alerta). `projectIamAdmin` é o mais
   # sensível (plano, seção 2.2): o Job só roda a imagem fixada, só com variáveis validadas, num projeto que contém só
   # nós, e o CP-12 alerta em `SetIamPolicy` fora da lista.
-  terraform_nodes_roles = toset([
+  #
+  # Dois papéis da seção 2.2 ficam de fora, de propósito: `secretmanager.admin` e `storage.admin` no projeto
+  # inteiro deixariam o cp-terraform ler a chave privada do cofre de credenciais de todo tenant, as senhas
+  # temporárias do admin, os tokens de túnel e os backups do Postgres de todos os nós. No lugar deles, os dois papéis
+  # personalizados abaixo: criar, mudar, apagar e dar acesso a cofres e buckets, sem ler o conteúdo de nenhum. É tudo
+  # o que o módulo `node` faz com eles (cofres vazios com os papéis da VM; o bucket de backups com `force_destroy =
+  # false`, sem tocar em objeto). Destruir as versões de `credentials-key` em D+97 é do cp-worker, pelo
+  # `secretVersionManager` por tenant que o envs/tenant concede; o estado dos tenants continua no `objectAdmin`
+  # explícito do bucket do estado. Com o `projectIamAdmin`, o cp-terraform ainda poderia se conceder a leitura; é o
+  # que o alerta em `SetIamPolicy` do CP-12 vigia: a leitura deixa de ser silenciosa.
+  terraform_nodes_predefined_roles = [
     "roles/compute.instanceAdmin.v1",
     "roles/compute.networkAdmin",
     "roles/compute.securityAdmin",
@@ -26,24 +41,71 @@ locals {
     "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",
     "roles/resourcemanager.projectIamAdmin",
-    "roles/secretmanager.admin",
     "roles/pubsub.admin",
-    "roles/storage.admin",
     "roles/monitoring.alertPolicyEditor",
     "roles/monitoring.notificationChannelEditor",
-  ])
+  ]
+
+  terraform_nodes_roles = merge(
+    { for role in local.terraform_nodes_predefined_roles : role => role },
+    local.nodes_enabled ? {
+      cpSecretsProvisioner = google_project_iam_custom_role.secrets_provisioner[0].id
+      cpBucketsProvisioner = google_project_iam_custom_role.buckets_provisioner[0].id
+    } : {},
+  )
+}
+
+# Cofres do Secret Manager: o contêiner e a política de acesso, nunca o conteúdo. Sem `versions.access` (ler), sem
+# `versions.add` (gravar) e sem `versions.destroy`; `versions.list` só mostra os metadados.
+resource "google_project_iam_custom_role" "secrets_provisioner" {
+  count = local.nodes_enabled ? 1 : 0
+
+  project     = var.nodes_project_id
+  role_id     = "cpSecretsProvisioner"
+  title       = "Verax Control: cria os cofres dos nós"
+  description = "Cria, muda, apaga e dá acesso aos cofres do Secret Manager dos nós de clientes, sem ler nem gravar versão."
+  permissions = [
+    "secretmanager.secrets.create",
+    "secretmanager.secrets.delete",
+    "secretmanager.secrets.get",
+    "secretmanager.secrets.list",
+    "secretmanager.secrets.update",
+    "secretmanager.secrets.getIamPolicy",
+    "secretmanager.secrets.setIamPolicy",
+    "secretmanager.versions.list",
+  ]
+}
+
+# Buckets do Cloud Storage: o bucket e a política de acesso, nunca os objetos (nenhum `storage.objects.*`).
+resource "google_project_iam_custom_role" "buckets_provisioner" {
+  count = local.nodes_enabled ? 1 : 0
+
+  project     = var.nodes_project_id
+  role_id     = "cpBucketsProvisioner"
+  title       = "Verax Control: cria os buckets dos nós"
+  description = "Cria, muda, apaga e dá acesso aos buckets dos nós de clientes (backups), sem ler nem gravar objeto."
+  permissions = [
+    "storage.buckets.create",
+    "storage.buckets.delete",
+    "storage.buckets.get",
+    "storage.buckets.list",
+    "storage.buckets.update",
+    "storage.buckets.getIamPolicy",
+    "storage.buckets.setIamPolicy",
+  ]
 }
 
 resource "google_project_iam_member" "terraform_nodes" {
-  for_each = local.nodes_enabled ? local.terraform_nodes_roles : toset([])
+  for_each = local.nodes_enabled ? local.terraform_nodes_roles : {}
 
   project = var.nodes_project_id
-  role    = each.key
+  role    = each.value
   member  = local.terraform_member
 }
 
-# O estado de cada tenant (`tenants/<slug>/`) e o `outputs.json` de cada execução (`runs/<slug>/<runId>/`). O
-# `storage.admin` do projeto já cobre o bucket; a concessão explícita fica, para valer mesmo que aquele papel encolha.
+# O estado de cada tenant (`tenants/<slug>/`) e o `outputs.json` de cada execução (`runs/<slug>/<runId>/`). É a única
+# leitura e gravação de objeto que o cp-terraform tem no projeto dos nós (o `cpBucketsProvisioner` não alcança
+# objeto).
 resource "google_storage_bucket_iam_member" "terraform_state" {
   count = local.nodes_enabled ? 1 : 0
 
@@ -52,7 +114,8 @@ resource "google_storage_bucket_iam_member" "terraform_state" {
   member = local.terraform_member
 }
 
-# O cp-worker lê só `runs/` do bucket do estado (os `outputs.json`), nunca o estado dos tenants.
+# O cp-worker lê só `runs/` do bucket do estado (os `outputs.json`), nunca o estado dos tenants. A condição exige o
+# acesso uniforme no nível do bucket (TODO no cabeçalho).
 resource "google_storage_bucket_iam_member" "worker_runs" {
   count = local.nodes_enabled ? 1 : 0
 

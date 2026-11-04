@@ -1,4 +1,5 @@
-# O Firestore (banco, prazos e índices da seção 3 do plano), os alertas por log, o orçamento e as APIs.
+# O Firestore (banco, regras, prazos e índices da seção 3 do plano), os logs de auditoria do Secret Manager, os
+# alertas por log, o orçamento e as APIs.
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
 
@@ -18,7 +19,14 @@ mock_provider "google" {
   }
 }
 
-mock_provider "google-beta" {}
+mock_provider "google-beta" {
+  mock_resource "google_project_service_identity" {
+    defaults = {
+      email  = "service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
+      member = "serviceAccount:service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
+    }
+  }
+}
 
 variables {
   project_id = "projeto-exemplo"
@@ -61,6 +69,30 @@ run "firestore" {
       google_firestore_index.tenants["state-updated"].fields[1].field_path == "stateUpdatedAt"
     )
     error_message = "Os quatro índices compostos de tenants (estado e uma data), e só eles."
+  }
+
+  assert {
+    condition = (
+      strcontains(google_firebaserules_ruleset.firestore_deny_all.source[0].files[0].content, "allow read, write: if false;") &&
+      strcontains(google_firebaserules_ruleset.firestore_deny_all.source[0].files[0].content, "match /{document=**}") &&
+      google_firebaserules_release.firestore.name == "cloud.firestore" &&
+      startswith(google_firebaserules_release.firestore.ruleset_name, "projects/projeto-exemplo/rulesets/")
+    )
+    error_message = "As regras do Firestore negam tudo aos SDKs de cliente, e a release do (default) é a cloud.firestore."
+  }
+}
+
+run "auditoria_do_secret_manager" {
+  command = plan
+
+  assert {
+    condition = (
+      google_project_iam_audit_config.secretmanager.service == "secretmanager.googleapis.com" &&
+      google_project_iam_audit_config.secretmanager.project == "projeto-exemplo" &&
+      toset([for config in google_project_iam_audit_config.secretmanager.audit_log_config : config.log_type]) == toset(["ADMIN_READ", "DATA_READ", "DATA_WRITE"]) &&
+      alltrue([for config in google_project_iam_audit_config.secretmanager.audit_log_config : config.exempted_members == null || length(config.exempted_members) == 0])
+    )
+    error_message = "Quem lê, grava e consulta a política dos segredos do projeto fica nos logs de auditoria, sem exceção."
   }
 }
 
@@ -132,10 +164,11 @@ run "apis" {
       for api in [
         "run.googleapis.com", "cloudtasks.googleapis.com", "cloudscheduler.googleapis.com", "firestore.googleapis.com",
         "secretmanager.googleapis.com", "artifactregistry.googleapis.com", "iamcredentials.googleapis.com",
-        "sts.googleapis.com", "firebasehosting.googleapis.com", "firebase.googleapis.com", "cloudresourcemanager.googleapis.com",
+        "sts.googleapis.com", "firebasehosting.googleapis.com", "firebase.googleapis.com", "firebaserules.googleapis.com",
+        "cloudresourcemanager.googleapis.com",
       ] : contains(keys(google_project_service.apis), api)
     ])
-    error_message = "As APIs do plano de controle (e as da federação e do orçamento) ficam ligadas pelo ambiente."
+    error_message = "As APIs do plano de controle (e as da federação, das regras do Firestore e do orçamento) ficam ligadas pelo ambiente."
   }
 
   assert {

@@ -19,6 +19,40 @@ resource "google_firestore_database" "default" {
   depends_on = [google_project_service.apis]
 }
 
+# Regras de segurança do Firestore: nada para os SDKs de cliente (web e celular). Só os serviços chegam ao banco, pelo
+# IAM (`datastore.user`, identities.tf), que as regras não limitam. Sem uma release, um projeto do Firebase pode ter
+# regras abertas ou de teste de outra época; esta nega tudo, explicitamente.
+resource "google_firebaserules_ruleset" "firestore_deny_all" {
+  source {
+    files {
+      name    = "firestore.rules"
+      content = <<-EOT
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /{document=**} {
+              allow read, write: if false;
+            }
+          }
+        }
+      EOT
+    }
+  }
+
+  depends_on = [google_firestore_database.default, google_project_service.apis]
+}
+
+# A release do banco `(default)` sempre se chama `cloud.firestore`. Uma regra nova é um ruleset novo e uma release
+# nova (`replace_triggered_by`), como no exemplo do provider.
+resource "google_firebaserules_release" "firestore" {
+  name         = "cloud.firestore"
+  ruleset_name = "projects/${var.project_id}/rulesets/${google_firebaserules_ruleset.firestore_deny_all.name}"
+
+  lifecycle {
+    replace_triggered_by = [google_firebaserules_ruleset.firestore_deny_all]
+  }
+}
+
 # Prazos (TTL): o Firestore apaga sozinho, em até 72 h depois da data, todo documento destas coleções cujo campo
 # `expiresAt` (timestamp) já passou. Um documento sem o campo nunca expira. O app (CP-02) grava `expiresAt` assim:
 #   - slugs: só na reserva (`reserved`, 2 h 30); `taken` fica sem o campo;

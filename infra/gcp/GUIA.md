@@ -482,24 +482,27 @@ liga, se um dia valer o custo.
 
 ### O que ele cria
 
-| Recurso                                                   | Para quê                                                                                                                                                                                                  |
-| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 15 APIs                                                   | Cloud Run, Cloud Tasks, Cloud Scheduler, Firestore, Secret Manager, Artifact Registry, Firebase Hosting, federação (iam, iamcredentials, sts), orçamento, logs e alertas. Nenhuma é desligada no destroy. |
-| Firestore `(default)`                                     | Modo nativo, em São Paulo, protegido contra exclusão. Prazos (TTL em `expiresAt`) nas coleções com retenção do plano e os 4 índices compostos de `tenants`.                                               |
-| 4 contas de serviço                                       | `cp-public`, `cp-worker`, `cp-terraform` e `cp-deployer`, com os papéis da seção 2.2 do plano, cada um no menor recurso possível (a fila, o segredo, o Job). O papel personalizado `cpJobRunner`.         |
-| Pool e provedor de federação `cp-github`                  | O GitHub Actions implanta sem chave: só o token do environment `control-plane` do repositório (pelos IDs fixos do repositório e do dono) vira `cp-deployer`.                                              |
-| 5 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key`. Gravados no passo 4, só na região.                                                    |
-| Registro de imagens `verax-control-plane`                 | Imagens dos serviços e do executor Terraform, neste projeto e nesta região; `cp-deployer` publica.                                                                                                        |
-| Cloud Run `cp-public`, `cp-worker` e o Job `cp-terraform` | Só com `services_enabled = true` (passo 5). 1 vCPU e 512 MiB, 0 a 2 e 0 a 1 instâncias; o Job com 2 GiB, 30 min e 1 tentativa. O worker só recebe tráfego de dentro do projeto, e só com token.           |
-| Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                      |
-| Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da própria conta dele.                                                                                                              |
-| Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                       |
-| 2 alertas por log                                         | Provisionamento com falha e assinatura inválida no webhook, por e-mail (`alert_email`).                                                                                                                   |
-| Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                             |
+| Recurso                                                   | Para quê                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 16 APIs                                                   | Cloud Run, Cloud Tasks, Cloud Scheduler, Firestore e as regras dele, Secret Manager, Artifact Registry, Firebase Hosting, federação (iam, iamcredentials, sts), orçamento, logs e alertas. Nenhuma é desligada no destroy.                                                                                                                                                                                                                     |
+| Firestore `(default)`                                     | Modo nativo, em São Paulo, protegido contra exclusão. Regras de segurança que negam tudo aos SDKs de cliente (só os serviços chegam, pelo IAM). Prazos (TTL em `expiresAt`) nas coleções com retenção do plano e os 4 índices compostos de `tenants`.                                                                                                                                                                                          |
+| 5 contas de serviço                                       | `cp-public`, `cp-worker`, `cp-terraform`, `cp-invoker` e `cp-deployer`, com os papéis da seção 2.2 do plano, cada um no menor recurso possível (a fila, o segredo, o Job). A `cp-invoker` é só o token das tasks e do Scheduler para chamar o `cp-worker`: ninguém age como o `cp-worker` além de quem implanta. O papel personalizado `cpJobRunner`; os agentes de serviço do Cloud Tasks e do Cloud Scheduler criados antes do primeiro uso. |
+| Pool e provedor de federação `cp-github`                  | O GitHub Actions implanta sem chave: só o token do environment `control-plane` do repositório, pelos IDs fixos do repositório e do dono, vindo de um `push` ou de um disparo manual na `main`, vira `cp-deployer`.                                                                                                                                                                                                                             |
+| 5 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key`. Gravados no passo 4, só na região. Logs de auditoria de acesso a dados do Secret Manager ligados no projeto (quem leu, gravou ou consultou a política de qual segredo).                                                                                                                                                    |
+| Registro de imagens `verax-control-plane`                 | Imagens dos serviços e do executor Terraform, neste projeto e nesta região; `cp-deployer` publica. Ficam as 3 versões mais recentes de cada imagem (mais as publicadas nos últimos 30 dias).                                                                                                                                                                                                                                                   |
+| Cloud Run `cp-public`, `cp-worker` e o Job `cp-terraform` | Só com `services_enabled = true` (passo 5). 1 vCPU e 512 MiB, 0 a 2 e 0 a 1 instâncias, sonda de partida em `/health`; o Job com 2 GiB, 30 min e 1 tentativa. O worker só recebe tráfego de dentro do projeto, e só com token.                                                                                                                                                                                                                 |
+| Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
+| Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                   |
+| Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                            |
+| 2 alertas por log                                         | Provisionamento com falha e assinatura inválida no webhook, por e-mail (`alert_email`).                                                                                                                                                                                                                                                                                                                                                        |
+| Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): os papéis no projeto dos nós de
-clientes (`nodes_project_id`, depois do `envs/nodes-platform`), a gravação da política do registro de imagens do nó
-(`images_project_id`) e a leitura do bucket de releases (`release_bucket`).
+clientes (`nodes_project_id`, depois do `envs/nodes-platform`; no lugar de `secretmanager.admin` e `storage.admin` do
+plano entram dois papéis personalizados, `cpSecretsProvisioner` e `cpBucketsProvisioner`, que criam cofres e buckets
+sem ler o conteúdo de nenhum), a gravação da política do registro de imagens do nó (`images_project_id`), a leitura
+do bucket de releases (`release_bucket`) e o `firebasehosting.admin` nos projetos do pool dos painéis dos clientes
+(`firebase_panel_projects`; nunca neste projeto).
 
 ### Passo 1: login, projeto e bucket do estado
 
@@ -527,11 +530,13 @@ terraform plan -out=plano.tfplan
 terraform apply plano.tfplan
 ```
 
-A última linha do `plan` é **`Plan: 66 to add, 0 to change, 0 to destroy.`** (67 com orçamento, 68 com e-mail de
+A última linha do `plan` é **`Plan: 74 to add, 0 to change, 0 to destroy.`** (75 com orçamento, 76 com e-mail de
 alerta), sem nada para mudar ou destruir, e `data.google_project.this will be read during apply` (como na homologação:
 a leitura do projeto espera as APIs). Os serviços ficam para o passo 5: o Cloud Run recusa subir com um segredo sem
 versão, e os cinco nascem vazios. Erro de API "has not been used in project": a mesma propagação do passo 6 dos nós;
-espere 1 ou 2 minutos e repita o `plan` e o `apply`.
+espere 1 ou 2 minutos e repita o `plan` e o `apply`. Se o projeto já tiver logs de auditoria de acesso a dados do
+Secret Manager configurados à mão, importe antes (`terraform import google_project_iam_audit_config.secretmanager
+"SEU_PROJETO secretmanager.googleapis.com"`): o recurso é a configuração inteira desse serviço.
 
 ### Passo 4: gravar os segredos
 
@@ -568,9 +573,12 @@ o Job, os acessos deles, os dois jobs do Scheduler e a versão do Hosting com o 
 primeira execução do workflow de implantação (CP-01): o `gcloud run deploy` criaria os serviços por fora do
 Terraform, e o `apply` seguinte pararia em "already exists".
 
-Depois da primeira implantação pelo workflow, rode o `plan`: tem de dar `No changes.`. A imagem, o `client` e o
+Depois da primeira implantação pelo workflow, rode o `plan`: tem de dar `No changes.`. A imagem, o tráfego (o workflow
+sobe a revisão candidata sem tráfego, com a etiqueta `candidato`, e só a promove depois do `/health`), o `client` e o
 `client_version` que o gcloud grava estão em `ignore_changes` (`run.tf`); se aparecer outra diferença, ela entra na
-mesma lista.
+mesma lista. O resto (tamanhos, prazos, sonda de partida, variáveis e segredos) é do Terraform: o workflow só troca a
+imagem. Uma revisão criada pelo Terraform (uma mudança em `service_env`, por exemplo) recebe o tráfego porque o
+workflow deixa o serviço apontando para a revisão mais recente ao promover.
 
 ### Passo 6: o domínio no Cloudflare
 
@@ -591,7 +599,9 @@ curl -sI https://conta.veraxsistemas.com.br/health | head -1                    
 ### Passo 7: o environment `control-plane` no GitHub
 
 Em Settings → Environments, crie `control-plane`, restrito à `main` (deployment branches), e preencha as variáveis
-(não são segredos) com `terraform output github_environment`:
+(não são segredos) com `terraform output github_environment`. A restrição à `main` no GitHub é uma segunda tranca: o
+provedor de identidade (`identities.tf`) já recusa qualquer token que não venha de um `push` ou de um disparo manual
+na `main`, mesmo que o environment fique aberto por engano.
 
 | Variável do environment | Saída do Terraform                        | O que é                                                           |
 | ----------------------- | ----------------------------------------- | ----------------------------------------------------------------- |
@@ -614,13 +624,19 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
   `verax_control_profissional_mensal`), cupom `FUNDADOR30`, cartão e boleto com validade de 3 dias, o link hospedado
   para confirmação, Smart Retries com "marcar como não paga", dados públicos, Portal do cliente, a chave restrita e o
   webhook. Não há API para quase nada disso, e os dois últimos entram no passo 4.
-- **Firebase:** o plano Blaze (passo 1) e, para o pool dos painéis, um projeto a cada 36 clientes em
-  `firebase_panel_projects` (item 14).
+- **Firebase:** o plano Blaze neste projeto (passo 1; só o rewrite do Hosting para o Cloud Run exige) e, na primeira
+  venda, um projeto **só para os painéis dos clientes** em `firebase_panel_projects` (item 14), e mais um a cada 36
+  clientes. Esse projeto fica no plano Spark: site estático com domínio próprio não precisa de faturamento. O
+  `cp-worker` é `firebasehosting.admin` só lá, nunca aqui: o site `conta.veraxsistemas.com.br` e os sites do Painel
+  que já existem neste projeto ficam fora do alcance dele.
 - **Cloudflare:** o token (passo 4) e os registros de DNS (passo 6); conferir a cota de registros da zona (item 13).
 - **GitHub:** o environment (passo 7).
-- **Serviços:** `service_env` com as versões dos aceites, a URL do Portal, o remetente e o usuário do SMTP; na primeira
-  venda, `nodes_project_id`, `images_project_id`, `release_bucket`, `NODE_RELEASE` e `PROVISIONING_ENABLED = "true"`
-  (itens 15 a 17; o projeto dos nós e o bucket do estado dele vêm do `envs/nodes-platform`).
+- **Serviços:** `service_env` (os dois serviços) com as versões dos aceites, a URL do Portal e, se o app exigir,
+  `TRUST_PROXY_HOPS` (o Terraform não decide quantos proxies o serviço confia; é do app, CP-01); `worker_env` (só o
+  `cp-worker`) com o remetente e o usuário do SMTP; na primeira venda, `nodes_project_id`, `images_project_id`,
+  `release_bucket` e, em `worker_env`, `NODE_RELEASE` e `PROVISIONING_ENABLED = "true"` (itens 15 a 17; o projeto dos
+  nós e o bucket do estado dele vêm do `envs/nodes-platform`). As chaves que o Terraform deriva de outras variáveis, os
+  segredos, `ROLE` e `NODE_ENV` são recusados nos dois mapas; `SMTP_*` e `MAIL_FROM*` só entram em `worker_env`.
 
 ### Operações do responsável no `cp-worker`
 
@@ -631,10 +647,25 @@ em `owner_principals`. Volte para `INGRESS_TRAFFIC_INTERNAL_ONLY` depois. O `aud
 é a URL do serviço: como o worker aceita o responsável (impersonação de uma conta de serviço com `--audiences`, por
 exemplo) é decisão do CP-11.
 
+### Quem pode o quê (a fronteira de confiança)
+
+- **`cp-invoker`** só chama o `cp-worker`. É o e-mail que o worker aceita no token (`WORKER_SA_EMAIL` e
+  `SCHEDULER_SA_EMAIL`, além de `OWNER_PRINCIPALS`), e o `cp-public` e o `cp-worker` só conseguem token dela: um
+  `cp-public` comprometido chama o worker, que é o que ele já faz, e nada mais.
+- **`cp-terraform`** não lê segredo nem backup de tenant nenhum: no projeto dos nós, cria cofres e buckets
+  (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin` ele ainda poderia
+  se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo `envs/nodes-platform`)
+  vigia.
+- **`cp-deployer`** é `run.developer` nos dois serviços e no Job: além de publicar revisões, muda qualquer atributo
+  deles, apaga-os e executa o Job. Não há papel predefinido mais estreito que sirva ao `gcloud run deploy`. Na
+  prática, quem controla a `main` com o environment `control-plane` controla a imagem do `cp-worker` e, por ele, o
+  Job, que roda como `cp-terraform` no projeto dos nós. É a fronteira aceita: a `main` é protegida por ruleset sem
+  exceção, e o environment e o provedor de identidade só aceitam a `main`.
+
 ### Mudar ou desfazer
 
 - **Mudar algo:** edite o `terraform.tfvars` e repita o `plan` e o `apply`. Trocar uma variável dos serviços
-  (`service_env`) cria uma revisão nova de cada um, com a imagem que está no ar.
+  (`service_env` ou `worker_env`) cria uma revisão nova de cada um, com a imagem que está no ar.
 - **Rotação de um segredo:** grave uma versão nova (passo 4) e implante de novo pelo workflow (ou mude qualquer
   `service_env`): a instância lê `latest` na partida.
 - **Desfazer tudo:** os dois serviços e o Job têm `deletion_protection` (mude para `false` no `run.tf` só na sua

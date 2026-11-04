@@ -30,11 +30,12 @@ output "cloudflare_dns_records" {
 }
 
 output "service_accounts" {
-  description = "As quatro contas do plano de controle."
+  description = "As cinco contas do plano de controle. A `invoker` é a do token das tasks e do Scheduler (WORKER_SA_EMAIL e SCHEDULER_SA_EMAIL): só chama o cp-worker."
   value = {
     public    = google_service_account.public.email
     worker    = google_service_account.worker.email
     terraform = google_service_account.terraform.email
+    invoker   = google_service_account.invoker.email
     deployer  = google_service_account.deployer.email
   }
 }

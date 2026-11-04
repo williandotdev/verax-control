@@ -1,5 +1,6 @@
 # Filas do Cloud Tasks e relógio do Cloud Scheduler (plano, seção 2.1). Cada passo do provisionamento é uma task HTTP
-# com o token de identidade do cp-worker; o prazo de despacho (15 min) é de cada task e fica no app, não na fila.
+# com o token de identidade da cp-invoker (identities.tf); o prazo de despacho (15 min) é de cada task e fica no app,
+# não na fila.
 
 resource "google_cloud_tasks_queue" "cp" {
   for_each = toset(["provisioning", "lifecycle"])
@@ -38,8 +39,9 @@ resource "google_cloud_tasks_queue_iam_member" "enqueuers" {
 }
 
 # O relógio: `tick` a cada hora (carências, exclusões, estado dos nós) e `reconcile` às 3 h (assinaturas da Stripe
-# contra os tenants). Os dois chamam o cp-worker com o token de identidade da própria conta dele (plano, seção 9,
-# item 10); 2 dos 3 jobs gratuitos.
+# contra os tenants). Os dois chamam o cp-worker com o token de identidade da cp-invoker (plano, seção 9, item 10, com
+# a conta de token da revisão no lugar da do próprio worker); 2 dos 3 jobs gratuitos. O prazo de cada tentativa é o
+# mesmo da requisição no cp-worker (900 s, run.tf): o Scheduler não desiste antes de o worker terminar.
 resource "google_cloud_scheduler_job" "cp" {
   for_each = var.services_enabled ? {
     tick = {
@@ -54,21 +56,26 @@ resource "google_cloud_scheduler_job" "cp" {
     }
   } : {}
 
-  name        = each.key
-  region      = var.region
-  description = each.value.description
-  schedule    = each.value.schedule
-  time_zone   = "America/Sao_Paulo"
+  name             = each.key
+  region           = var.region
+  description      = each.value.description
+  schedule         = each.value.schedule
+  time_zone        = "America/Sao_Paulo"
+  attempt_deadline = "900s"
 
   http_target {
     http_method = "POST"
     uri         = "${local.worker_url}${each.value.path}"
 
     oidc_token {
-      service_account_email = google_service_account.worker.email
+      service_account_email = google_service_account.invoker.email
       audience              = local.worker_url
     }
   }
 
-  depends_on = [google_cloud_run_v2_service.worker, google_project_service.apis]
+  depends_on = [
+    google_cloud_run_v2_service.worker,
+    google_service_account_iam_member.invoker_token_users,
+    google_project_service.apis,
+  ]
 }

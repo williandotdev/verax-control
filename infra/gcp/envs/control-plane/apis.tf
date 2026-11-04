@@ -9,6 +9,8 @@ resource "google_project_service" "apis" {
     "cloudtasks.googleapis.com",
     "firebase.googleapis.com",
     "firebasehosting.googleapis.com",
+    # As regras de segurança do Firestore (firestore.tf): nega tudo aos SDKs de cliente.
+    "firebaserules.googleapis.com",
     "firestore.googleapis.com",
     "iam.googleapis.com",
     # Os três da federação de identidade com o GitHub: iam, iamcredentials e sts.

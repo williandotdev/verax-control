@@ -1,5 +1,6 @@
-# Os serviços, o Job, as filas e o relógio: os tamanhos da seção 2.1 do plano, zero instâncias mínimas, as variáveis
-# e os segredos de cada serviço, a imagem que o workflow troca sem o Terraform desfazer, e a primeira subida sem os
+# Os serviços, o Job, as filas e o relógio: os tamanhos da seção 2.1 do plano, zero instâncias mínimas, a sonda de
+# partida, as variáveis e os segredos de cada serviço (o que é só do worker não chega ao público; o que o Terraform
+# deriva não é substituído), a imagem que o workflow troca sem o Terraform desfazer, e a primeira subida sem os
 # serviços (os segredos nascem vazios).
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
@@ -12,7 +13,14 @@ mock_provider "google" {
   }
 }
 
-mock_provider "google-beta" {}
+mock_provider "google-beta" {
+  mock_resource "google_project_service_identity" {
+    defaults = {
+      email  = "service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
+      member = "serviceAccount:service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
+    }
+  }
+}
 
 override_resource {
   target = google_service_account.public
@@ -35,6 +43,14 @@ override_resource {
   values = {
     name  = "projects/projeto-exemplo/serviceAccounts/cp-terraform@projeto-exemplo.iam.gserviceaccount.com"
     email = "cp-terraform@projeto-exemplo.iam.gserviceaccount.com"
+  }
+}
+
+override_resource {
+  target = google_service_account.invoker
+  values = {
+    name  = "projects/projeto-exemplo/serviceAccounts/cp-invoker@projeto-exemplo.iam.gserviceaccount.com"
+    email = "cp-invoker@projeto-exemplo.iam.gserviceaccount.com"
   }
 }
 
@@ -93,8 +109,12 @@ run "primeira_subida_sem_servicos" {
   }
 
   assert {
-    condition     = google_artifact_registry_repository.control_plane.repository_id == "verax-control-plane" && google_artifact_registry_repository.control_plane.docker_config[0].immutable_tags
-    error_message = "O registro das imagens do plano de controle, com tags imutáveis."
+    condition = (
+      google_artifact_registry_repository.control_plane.repository_id == "verax-control-plane" &&
+      google_artifact_registry_repository.control_plane.docker_config[0].immutable_tags &&
+      one([for policy in google_artifact_registry_repository.control_plane.cleanup_policies : policy.most_recent_versions[0].keep_count if policy.action == "KEEP"]) == 3
+    )
+    error_message = "O registro das imagens do plano de controle, com tags imutáveis e as 3 versões mais recentes guardadas (a conta da estimativa de custo)."
   }
 }
 
@@ -133,6 +153,19 @@ run "servicos_no_tamanho_do_plano" {
     error_message = "cp-worker: 0 a 1 instância, CPU só na requisição, 15 min por requisição."
   }
 
+  # A sonda de partida em /health nos dois serviços: a revisão candidata do workflow só fica pronta depois dela.
+  assert {
+    condition = alltrue([
+      for service in [google_cloud_run_v2_service.public[0], google_cloud_run_v2_service.worker[0]] : (
+        service.template[0].containers[0].startup_probe[0].http_get[0].path == "/health" &&
+        service.template[0].containers[0].startup_probe[0].period_seconds == 5 &&
+        service.template[0].containers[0].startup_probe[0].failure_threshold == 12 &&
+        service.template[0].containers[0].startup_probe[0].timeout_seconds == 3
+      )
+    ])
+    error_message = "Sonda de partida HTTP em /health (a cada 5 s, 12 tentativas de 3 s) nos dois serviços."
+  }
+
   assert {
     condition = (
       google_cloud_run_v2_job.terraform[0].name == "cp-terraform" &&
@@ -158,26 +191,40 @@ run "servicos_no_tamanho_do_plano" {
   assert {
     condition = (
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "WORKER_URL"]) == "https://cp-worker-123456789012.southamerica-east1.run.app" &&
-      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "WORKER_SA_EMAIL"]) == "cp-worker@projeto-exemplo.iam.gserviceaccount.com" &&
-      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "SCHEDULER_SA_EMAIL"]) == "cp-worker@projeto-exemplo.iam.gserviceaccount.com" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "WORKER_SA_EMAIL"]) == "cp-invoker@projeto-exemplo.iam.gserviceaccount.com" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "SCHEDULER_SA_EMAIL"]) == "cp-invoker@projeto-exemplo.iam.gserviceaccount.com" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "WORKER_SA_EMAIL"]) == "cp-invoker@projeto-exemplo.iam.gserviceaccount.com" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "OWNER_PRINCIPALS"]) == "responsavel@example.com" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "OWNER_ALERT_EMAIL"]) == "alertas@example.com" &&
-      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "FIREBASE_PANEL_PROJECTS"]) == "projeto-exemplo" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "TASKS_QUEUE_PROVISIONING"]) == "provisioning" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "PROVISIONING_ENABLED"]) == "false" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "FIRESTORE_DATABASE"]) == "(default)"
     )
-    error_message = "As variáveis que o Terraform preenche (URL e conta do worker, responsável, pool dos painéis, filas) no cp-worker."
+    error_message = "As variáveis que o Terraform preenche (URL do worker, a cp-invoker como conta do token nos dois serviços, responsável, filas) no cp-worker."
   }
 
   assert {
     condition = (
       !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "NODES_PROJECT_ID") &&
       !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "CLOUDFLARE_ZONE_ID") &&
+      !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "FIREBASE_PANEL_PROJECTS") &&
       alltrue([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value != ""]) &&
       alltrue([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value != ""])
     )
-    error_message = "Variável sem valor (projeto dos nós, zona do Cloudflare) não vai para o serviço; nenhuma vai vazia."
+    error_message = "Variável sem valor (projeto dos nós, zona do Cloudflare, pool dos painéis vazio) não vai para o serviço; nenhuma vai vazia."
+  }
+
+  # O que é só do worker não chega ao público; nenhum dos dois leva um TRUST_PROXY_HOPS decidido aqui.
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "SMTP_HOST"]) == "smtp.zoho.com" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "SMTP_PORT"]) == "465" &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "SMTP_HOST") &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "SMTP_PORT") &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "TRUST_PROXY_HOPS") &&
+      !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "TRUST_PROXY_HOPS")
+    )
+    error_message = "SMTP_HOST e SMTP_PORT só no cp-worker; TRUST_PROXY_HOPS é do app (ou de service_env), não do Terraform."
   }
 
   assert {
@@ -210,12 +257,12 @@ run "servicos_no_tamanho_do_plano" {
       keys(google_cloud_scheduler_job.cp) == ["reconcile", "tick"] &&
       google_cloud_scheduler_job.cp["tick"].schedule == "0 * * * *" &&
       google_cloud_scheduler_job.cp["reconcile"].schedule == "0 3 * * *" &&
-      alltrue([for job in google_cloud_scheduler_job.cp : job.time_zone == "America/Sao_Paulo"]) &&
+      alltrue([for job in google_cloud_scheduler_job.cp : job.time_zone == "America/Sao_Paulo" && job.attempt_deadline == "900s"]) &&
       google_cloud_scheduler_job.cp["tick"].http_target[0].uri == "https://cp-worker-123456789012.southamerica-east1.run.app/internal/tick" &&
       google_cloud_scheduler_job.cp["reconcile"].http_target[0].uri == "https://cp-worker-123456789012.southamerica-east1.run.app/internal/reconcile" &&
-      alltrue([for job in google_cloud_scheduler_job.cp : job.http_target[0].http_method == "POST" && job.http_target[0].oidc_token[0].service_account_email == "cp-worker@projeto-exemplo.iam.gserviceaccount.com" && job.http_target[0].oidc_token[0].audience == "https://cp-worker-123456789012.southamerica-east1.run.app"])
+      alltrue([for job in google_cloud_scheduler_job.cp : job.http_target[0].http_method == "POST" && job.http_target[0].oidc_token[0].service_account_email == "cp-invoker@projeto-exemplo.iam.gserviceaccount.com" && job.http_target[0].oidc_token[0].audience == "https://cp-worker-123456789012.southamerica-east1.run.app"])
     )
-    error_message = "Relógio: tick a cada hora e reconcile às 3 h de São Paulo, no cp-worker, com o token da conta dele."
+    error_message = "Relógio: tick a cada hora e reconcile às 3 h de São Paulo, no cp-worker, com o token da cp-invoker e o mesmo prazo do worker (900 s)."
   }
 
   assert {
@@ -227,6 +274,84 @@ run "servicos_no_tamanho_do_plano" {
     )
     error_message = "O Hosting reescreve tudo para o cp-public em southamerica-east1."
   }
+}
+
+# As variáveis do responsável: `service_env` vai aos dois serviços; `worker_env` só ao cp-worker e vence `service_env`
+# e os padrões de SMTP; nenhuma das duas muda o que o Terraform deriva (as chaves reservadas são recusadas, abaixo).
+run "variaveis_do_responsavel" {
+  command = plan
+
+  variables {
+    services_enabled = true
+    service_env = {
+      LOG_LEVEL     = "debug"
+      TERMS_VERSION = "2026-11-01"
+    }
+    worker_env = {
+      SMTP_HOST            = "smtp.exemplo.com"
+      MAIL_FROM            = "Verax Control <nao-responda@exemplo.com>"
+      PROVISIONING_ENABLED = "true"
+    }
+  }
+
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "LOG_LEVEL"]) == "debug" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TERMS_VERSION"]) == "2026-11-01" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "LOG_LEVEL"]) == "debug" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "TERMS_VERSION"]) == "2026-11-01"
+    )
+    error_message = "service_env substitui um padrão e acrescenta uma variável nos dois serviços."
+  }
+
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "SMTP_HOST"]) == "smtp.exemplo.com" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "MAIL_FROM"]) == "Verax Control <nao-responda@exemplo.com>" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "PROVISIONING_ENABLED"]) == "true" &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "SMTP_HOST") &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "MAIL_FROM") &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "PROVISIONING_ENABLED"]) == "false"
+    )
+    error_message = "worker_env vence o padrão de SMTP e o service_env só no cp-worker; o cp-public não vê nada dele."
+  }
+}
+
+run "service_env_nao_muda_o_que_o_terraform_deriva" {
+  command = plan
+
+  variables {
+    service_env = {
+      WORKER_SA_EMAIL = "outra@projeto-exemplo.iam.gserviceaccount.com"
+    }
+  }
+
+  expect_failures = [var.service_env]
+}
+
+run "service_env_nao_leva_smtp" {
+  command = plan
+
+  variables {
+    service_env = {
+      MAIL_FROM = "nao-responda@exemplo.com"
+    }
+  }
+
+  expect_failures = [var.service_env]
+}
+
+run "worker_env_nao_leva_segredo_nem_papel" {
+  command = plan
+
+  variables {
+    worker_env = {
+      ROLE              = "public"
+      STRIPE_SECRET_KEY = "rk_test_exemplo"
+    }
+  }
+
+  expect_failures = [var.worker_env]
 }
 
 # O workflow de implantação troca a imagem dos serviços e do Job; no `plan` seguinte, o Terraform não a devolve (o
@@ -263,7 +388,7 @@ run "worker_aberto_so_por_escolha" {
 
   assert {
     condition     = google_cloud_run_v2_service.worker[0].ingress == "INGRESS_TRAFFIC_ALL" && length(google_cloud_run_v2_service_iam_member.worker_invokers) == 1
-    error_message = "Com INGRESS_TRAFFIC_ALL, o cp-worker continua só com o IAM (a conta dele; sem responsável, ninguém mais)."
+    error_message = "Com INGRESS_TRAFFIC_ALL, o cp-worker continua só com o IAM (a cp-invoker; sem responsável, ninguém mais)."
   }
 }
 

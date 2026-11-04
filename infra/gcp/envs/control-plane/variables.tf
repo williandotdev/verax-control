@@ -66,10 +66,39 @@ variable "alert_email" {
   default     = ""
 }
 
+locals {
+  # Chaves que o responsável não define em `service_env` nem em `worker_env`: as que o Terraform deriva de outras
+  # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
+  # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
+  # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+}
+
 variable "service_env" {
-  description = "Variáveis de ambiente dos dois serviços (plano, seção 2.5), por cima dos padrões de `service_env_defaults` em run.tf; uma chave igual substitui o padrão. Só o que não é segredo: os segredos vêm do Secret Manager. Ex.: { TERMS_VERSION = \"2026-11-01\", MAIL_FROM = \"nao-responda@exemplo.com\" }."
+  description = "Variáveis de ambiente dos dois serviços (plano, seção 2.5), por cima dos padrões de `service_env_defaults` em run.tf; uma chave igual substitui o padrão. Só o que não é segredo nem o Terraform deriva (a validação recusa essas chaves). Nada de SMTP nem remetente aqui: isso é só do cp-worker (`worker_env`). Ex.: { TERMS_VERSION = \"2026-11-01\", TRUST_PROXY_HOPS = \"1\" }."
   type        = map(string)
   default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+  }
+
+  validation {
+    condition     = alltrue([for name in keys(var.service_env) : !can(regex("^(SMTP_.*|MAIL_FROM.*)$", name))])
+    error_message = "SMTP_* e MAIL_FROM* são só do cp-worker: use worker_env."
+  }
+}
+
+variable "worker_env" {
+  description = "Variáveis de ambiente só do cp-worker (plano, seção 2.5: e-mail e provisionamento), por cima de `service_env` e dos padrões de SMTP em run.tf. O cp-public não as recebe. Ex.: { SMTP_USER = \"nao-responda@exemplo.com\", MAIL_FROM = \"Verax Control <nao-responda@exemplo.com>\", MAIL_FROM_NODES = \"nao-responda@exemplo.com\", NODE_RELEASE = \"v1.2.3\", PROVISIONING_ENABLED = \"true\" }."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for name in keys(var.worker_env) : !can(regex(local.reserved_env_keys, name))])
+    error_message = "worker_env não aceita ROLE, NODE_ENV, PORT, os segredos nem o que o Terraform deriva de outras variáveis (a mesma lista de service_env): use a variável própria de cada um."
+  }
 }
 
 variable "cloudflare_account_id" {
@@ -141,13 +170,18 @@ variable "release_bucket" {
 }
 
 variable "firebase_panel_projects" {
-  description = "Outros projetos do pool do Firebase dos painéis, além deste (um projeto a cada 36 clientes), na ordem em que o preflight os usa. cp-worker ganha firebasehosting.admin em cada um."
+  description = "Projetos do pool do Firebase dos painéis dos clientes (um projeto a cada 36 clientes; o primeiro nasce na primeira venda, no plano Spark), na ordem em que o preflight os usa. cp-worker ganha firebasehosting.admin em cada um, e em mais nenhum: nunca este projeto, que hospeda o site do plano de controle (`verax-conta`) e os sites do Painel que já existem. Vazio até a primeira venda."
   type        = list(string)
   default     = []
 
   validation {
     condition     = alltrue([for project in var.firebase_panel_projects : can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", project))])
     error_message = "Cada item precisa ser um ID de projeto da GCP."
+  }
+
+  validation {
+    condition     = !contains(var.firebase_panel_projects, var.project_id)
+    error_message = "O projeto do plano de controle não entra no pool dos painéis dos clientes: o cp-worker não pode ser firebasehosting.admin do site conta.veraxsistemas.com.br. Crie um projeto só para os painéis."
   }
 }
 
@@ -188,7 +222,7 @@ variable "github_repository_owner_id" {
 }
 
 variable "github_environment" {
-  description = "Environment do GitHub Actions que implanta o plano de controle. Só aceita a main (configurado no GitHub)."
+  description = "Environment do GitHub Actions que implanta o plano de controle. A condição do provedor de identidade (identities.tf) só aceita o token dele vindo de um push ou de um disparo manual na branch main; restrinja o environment à main no GitHub também (deployment branches)."
   type        = string
   default     = "control-plane"
 }
