@@ -1,0 +1,101 @@
+#
+# Regras do cfn-guard para o usuário de leitura (verax-control-reader.yaml), conferidas no template como ele é, com os
+# Fn::If e os Ref. É uma segunda leitura, com outra ferramenta, das garantias que tests/test_reader.py confere com a
+# pilha montada: sem chave nem senha, usuário preso ao limite de permissões, negação de fora do IP do nó, leitura só
+# com verbos de leitura e conteúdo de log nunca em "*". Os casos de verax-control-reader.tests.yaml conferem as regras.
+#
+
+let usuarios = Resources.*[ Type == 'AWS::IAM::User' ]
+let negacoes = Resources.*[
+    Type == 'AWS::IAM::ManagedPolicy'
+    Properties.ManagedPolicyName == 'VeraxControlGuardrails'
+]
+let leitura = Resources.*[
+    Type == 'AWS::IAM::ManagedPolicy'
+    Properties.ManagedPolicyName == 'VeraxControlReader'
+]
+
+# A pilha não cria chave de acesso nem outra credencial: o cliente cria a chave no console.
+rule sem_chave_de_acesso {
+    Resources.*[ Type == 'AWS::IAM::AccessKey' ] empty
+    Resources.*[ Type == 'AWS::IAM::ServiceSpecificCredential' ] empty
+    Resources.*[ Type == 'AWS::IAM::UserPolicy' ] empty
+}
+
+# Nenhuma saída lê o segredo de uma chave (o GetAtt vem como lista ou, na forma curta, como texto com ponto).
+rule nenhuma_saida_com_segredo {
+    Outputs !empty
+    Outputs.* {
+        Value.'Fn::GetAtt' !exists or Value.'Fn::GetAtt' != /SecretAccessKey/
+        Value.'Fn::Sub' !exists or Value.'Fn::Sub' != /SecretAccessKey/
+    }
+}
+
+# O usuário nasce sem senha, sem política própria, só no grupo e com o limite de permissões da política de leitura.
+rule usuario_sem_senha_e_com_limite {
+    %usuarios !empty
+    %usuarios {
+        Properties.UserName == 'verax-control-reader'
+        Properties.Path == '/verax/'
+        Properties.LoginProfile !exists
+        Properties.Policies !exists
+        Properties.ManagedPolicyArns !exists
+        Properties.PermissionsBoundary.Ref == 'ReaderPolicy'
+        Properties.Groups == [ { 'Ref': 'ReadersGroup' } ]
+    }
+}
+
+# Toda chamada de fora do IP do nó é negada, sem outra condição.
+rule nega_fora_do_ip_do_no {
+    %negacoes !empty
+    some %negacoes.Properties.PolicyDocument.Statement[*] {
+        Sid == 'SoDoNoDaVerax'
+        Effect == 'Deny'
+        Action == '*'
+        Resource == '*'
+        Condition.NotIpAddress.'aws:SourceIp'.Ref == 'NodeEgressIps'
+    }
+}
+
+# A política de leitura só libera verbos de leitura (mais a simulação do próprio usuário e o Decrypt pelo S3).
+rule leitura_so_le {
+    %leitura !empty
+    let declaracoes = %leitura.Properties.PolicyDocument.Statement[ Effect exists ]
+    let condicionais = %leitura.Properties.PolicyDocument.Statement[ 'Fn::If' exists ].'Fn::If'[1]
+    %declaracoes {
+        Effect == 'Allow'
+        NotAction !exists
+        NotResource !exists
+        Action == /^[a-z0-9-]+:(Get|List|Describe|BatchGet|Search|SimulatePrincipalPolicy$|Decrypt$)/
+    }
+    %condicionais {
+        Effect == 'Allow'
+        NotAction !exists
+        NotResource !exists
+        Action == /^[a-z0-9-]+:(Get|List|Describe|BatchGet|Search|SimulatePrincipalPolicy$|Decrypt$)/
+    }
+}
+
+# O conteúdo de log (objetos e Decrypt) só existe nas declarações condicionais, que dependem de o cliente informar ou
+# pedir a fonte; nunca em "*" nem num curinga de bucket ou de chave; e o Decrypt só vale pelo S3.
+rule conteudo_so_nos_recursos_informados {
+    %leitura !empty
+    let declaracoes = %leitura.Properties.PolicyDocument.Statement[ Effect exists ]
+    let condicionais = %leitura.Properties.PolicyDocument.Statement[ 'Fn::If' exists ].'Fn::If'[1]
+    %declaracoes {
+        Action != 's3:GetObject'
+        Action != 'kms:Decrypt'
+    }
+    %condicionais[ Action == 's3:GetObject' or Action == 'kms:Decrypt' ] {
+        Resource !is_string or Resource != /(^\*$|^arn:[^:]*:(s3|kms):[^\/]*\*)/
+    }
+    %condicionais[ Action == 'kms:Decrypt' ] {
+        Condition.*.'kms:ViaService' exists
+    }
+}
+
+# O WAF nunca é alterado e o GuardDuty nunca é ativado pela pilha.
+rule waf_e_guardduty_intocados {
+    Resources.*[ Type == /^AWS::WAF/ ] empty
+    Resources.*[ Type == 'AWS::GuardDuty::Detector' ] empty
+}
