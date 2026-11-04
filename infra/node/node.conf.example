@@ -12,6 +12,11 @@ MAIL_FROM=nao-responda@exemplo.com.br
 # SMTP_HOST=smtp.exemplo.com
 # SMTP_PORT=465
 # SMTP_USER=nao-responda@exemplo.com.br
+# Fontes do worker. O nó da Verax (perfil lean, sem Wazuh) lê só a GCP: SYNC_SOURCES=gcp, sem nenhuma variável do
+# indexer. O nó de cliente (perfil standard, com o Wazuh no nó) lê também as contas AWS pelo indexer local:
+# SYNC_SOURCES=gcp,wazuh. A credencial do indexer (INDEXER_AUTH=node) não fica aqui: com o Wazuh no nó (PR-W1), o
+# start.sh a escreve no ambiente da API e do worker a partir dos segredos gerados na VM, com a CA do volume dos
+# certificados do Wazuh. Sem isso, o worker com `wazuh` nas fontes não sobe.
 SYNC_SOURCES=gcp
 BACKUP_BUCKET=projeto-do-no-verax-node-backups
 # Plano do nó: essencial, profissional, enterprise ou interno (o nó da própria Verax, sem limite). Os ajustes trocam um

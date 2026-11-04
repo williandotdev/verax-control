@@ -212,7 +212,8 @@ export const workerEnvSchema = z
     SYNC_INTERVAL_SECONDS: z.coerce.number().int().min(15).max(3600).default(60),
     /**
      * De onde o worker lê, separado por vírgula: `wazuh` (alertas das contas AWS, pelo indexer) e `gcp` (auditoria da
-     * GCP, pelas assinaturas do Pub/Sub cadastradas nas contas). O nó da Verax, sem Wazuh, usa só `gcp`.
+     * GCP, pelas assinaturas do Pub/Sub cadastradas nas contas). O nó da Verax (perfil `lean`, sem Wazuh) usa só `gcp`;
+     * o nó de cliente (perfil `standard`) usa `gcp,wazuh`, com o indexer do próprio nó (`INDEXER_AUTH=node`).
      */
     SYNC_SOURCES: z
       .string()
