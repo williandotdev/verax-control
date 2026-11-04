@@ -75,10 +75,18 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       'steps',
       COLLECTIONS.auditLog,
       COLLECTIONS.rateLimits,
+      COLLECTIONS.quotes,
     ]) {
       expect(withTtl).toContain(group);
     }
-    for (const group of [COLLECTIONS.tenants, 'transitions', 'invoices', COLLECTIONS.counters]) {
+    for (const group of [
+      COLLECTIONS.tenants,
+      'transitions',
+      'invoices',
+      COLLECTIONS.counters,
+      COLLECTIONS.pricingTables,
+      COLLECTIONS.costModels,
+    ]) {
       expect(withTtl).not.toContain(group);
     }
     expect(new Set(withTtl).size).toBe(withTtl.length);

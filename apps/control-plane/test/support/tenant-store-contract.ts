@@ -18,6 +18,7 @@ import {
 import type { Tenant } from '../../src/tenants/tenant.schema.js';
 import type { FakeClock } from './fake-clock.js';
 import { MINUTE_MS } from './fake-clock.js';
+import { demoConfiguration, demoLimits, demoOrderPricing } from './pricing-fixtures.js';
 
 export interface TenantStoreHarness {
   store: TenantStore;
@@ -30,7 +31,9 @@ export interface TenantStoreHarness {
 export function demoTenant(slug = 'cliente-demo-a', cnpj = '11222333000181'): NewTenant {
   return {
     slug,
-    plan: 'essencial',
+    configuration: demoConfiguration(),
+    limits: demoLimits(),
+    pricing: demoOrderPricing(),
     company: { legalName: `${slug} Ltda`, cnpj },
     adminEmail: `admin@${slug}.example`,
     consent: {
@@ -99,7 +102,7 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
         action: 'tenant.create',
         tenantId: created.id,
         requestId: 'req-demo-00001',
-        details: { slug: 'cliente-demo-a', plan: 'essencial', to: 'pending' },
+        details: { slug: 'cliente-demo-a', size: 'P', priceTableVersion: 'teste-v1', to: 'pending' },
         at: h.clock.now(),
       });
       expect(audit[0]?.expiresAt.getTime()).toBeGreaterThan(h.clock.now().getTime());

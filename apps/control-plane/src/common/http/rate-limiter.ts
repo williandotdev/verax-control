@@ -1,5 +1,7 @@
+import { HttpStatus } from '@nestjs/common';
 import { isIP } from 'node:net';
 import type { Clock } from '../clock.js';
+import { ApiError } from './api-error.js';
 
 /** `capacity` pedidos de uma vez e, depois, `capacity` por `windowMs`, repostos aos poucos (token bucket). */
 export interface RateLimitRule {
@@ -119,4 +121,23 @@ export function rateLimitKey(ip: string | undefined): string {
     if (prefix !== undefined) return `${prefix}::/64`;
   }
   return address;
+}
+
+/**
+ * Aplica o limite por IP de uma rota pública: o IP vem de `req.ip`, pela regra de `client-ip.ts` (o mesmo do log da
+ * requisição). Estourado, 429 `rate_limited` com `Retry-After`.
+ */
+export function enforceRateLimit(
+  limiter: TokenBucketLimiter,
+  req: { ip?: string | undefined },
+  res: { setHeader(name: string, value: string): unknown },
+): void {
+  const decision = limiter.take(rateLimitKey(req.ip));
+  if (decision.allowed) return;
+  res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+  throw new ApiError(
+    HttpStatus.TOO_MANY_REQUESTS,
+    'Muitas tentativas. Tente novamente mais tarde.',
+    'rate_limited',
+  );
 }
