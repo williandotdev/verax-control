@@ -1,24 +1,30 @@
 import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { msw } from 'msw/vite';
 import { loadEnv, type Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
-import { assertOnlyAllowedPublicEnv, securityHeaders } from './src/build-guards';
+import { assertOnlyAllowedPublicEnv, assertValidApiUrl, securityHeaders } from './src/build-guards';
 import { firebaseHostingConfig } from './src/hosting';
 
 /**
- * Grava a configuração do Firebase Hosting do build (cabeçalhos e rotas) fora do `dist`, para o script de
- * publicação (`scripts/firebase-hosting-deploy.mjs`). Gerada da mesma função dos testes: não há cópia à mão.
+ * Grava a configuração do Firebase Hosting do build (cabeçalhos e rotas) fora do `dist`, ao lado dele
+ * (`dist-hosting.json`), para o script de publicação (`scripts/firebase-hosting-deploy.mjs`). Gerada da mesma função
+ * dos testes: não há cópia à mão. No build único, sai o modelo com `{tenant}`, e cada site recebe a sua
+ * (`siteHostingConfig`).
  */
 function hostingConfig(apiUrl: string): Plugin {
+  let file = '';
   return {
     name: 'verax-hosting-config',
     apply: 'build',
+    configResolved(config) {
+      file = `${resolve(config.root, config.build.outDir)}-hosting.json`;
+    },
     closeBundle() {
-      const file = fileURLToPath(new URL('./dist-hosting.json', import.meta.url));
-      // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho fixo, relativo a este arquivo
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- ao lado da pasta do build
       writeFileSync(file, `${JSON.stringify(firebaseHostingConfig(apiUrl), null, 2)}\n`);
     },
   };
@@ -44,6 +50,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_');
   assertOnlyAllowedPublicEnv({ ...env, ...process.env });
   const apiUrl = env['VITE_API_URL'] ?? 'http://localhost:3000';
+  assertValidApiUrl(apiUrl);
 
   return {
     // Cache de dependências por modo. O e2e sobe o servidor normal e o de demonstração ao mesmo tempo, e o modo mock
@@ -75,6 +82,8 @@ export default defineConfig(({ mode }) => {
       // esperar o primeiro navegador pedir: os testes de navegador abrem 6 páginas ao mesmo tempo logo no início.
       warmup: { clientFiles: ['./src/main.tsx'] },
     },
+    // No build único, o preview manda a política-modelo, com `{tenant}`: a de cada site sai na publicação, e o e2e
+    // `test:e2e:sites` serve o mesmo `dist` como o Firebase Hosting, um site por cliente.
     preview: {
       headers: securityHeaders(apiUrl),
     },
