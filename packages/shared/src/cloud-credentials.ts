@@ -69,7 +69,7 @@ export function isCloudflareApiTokenShape(value: string): boolean {
   return true;
 }
 
-export const GLOBAL_API_KEY_MESSAGE =
+export const GLOBAL_KEY_REFUSED_MESSAGE =
   'Esta é a Global API Key, que dá acesso total à conta. Crie um token de API só de leitura.';
 export const CLOUDFLARE_TOKEN_FORMAT_MESSAGE =
   'Token do Cloudflare inválido: cole o valor completo do token de API, sem espaços.';
@@ -77,7 +77,7 @@ export const CLOUDFLARE_TOKEN_FORMAT_MESSAGE =
 /** O token colado. As mensagens nunca repetem o valor. */
 export const cloudflareApiTokenSchema = z.string().superRefine((value, ctx) => {
   if (isCloudflareGlobalApiKey(value)) {
-    ctx.addIssue({ code: 'custom', message: GLOBAL_API_KEY_MESSAGE });
+    ctx.addIssue({ code: 'custom', message: GLOBAL_KEY_REFUSED_MESSAGE });
     return;
   }
   if (!isCloudflareApiTokenShape(value))

@@ -9,7 +9,7 @@ import {
   cloudflareTokenTemplateUrl,
   credentialStatus,
   daysUntilExpiry,
-  GLOBAL_API_KEY_MESSAGE,
+  GLOBAL_KEY_REFUSED_MESSAGE,
   isCloudflareApiTokenShape,
   isCloudflareGlobalApiKey,
 } from './cloud-credentials.js';
@@ -39,12 +39,12 @@ describe('credencial colada no painel (fase 2, PR-11)', () => {
   it.each([37, 40, 45])('recusa a Global API Key antiga (%i hexadecimais) com mensagem própria', (length) => {
     const key = legacyGlobalKey(length);
     expect(isCloudflareGlobalApiKey(key)).toBe(true);
-    expect(issuesOf({ kind: 'cloudflare_api_token', token: key })).toEqual([GLOBAL_API_KEY_MESSAGE]);
+    expect(issuesOf({ kind: 'cloudflare_api_token', token: key })).toEqual([GLOBAL_KEY_REFUSED_MESSAGE]);
   });
 
   it('recusa a Global API Key no formato novo (cfk_)', () => {
     const key = `cfk_${randomBytes(30).toString('base64url')}`;
-    expect(issuesOf({ kind: 'cloudflare_api_token', token: key })).toEqual([GLOBAL_API_KEY_MESSAGE]);
+    expect(issuesOf({ kind: 'cloudflare_api_token', token: key })).toEqual([GLOBAL_KEY_REFUSED_MESSAGE]);
   });
 
   it('hexadecimal fora do tamanho da Global API Key, ou com maiúsculas, não é tratado como ela', () => {

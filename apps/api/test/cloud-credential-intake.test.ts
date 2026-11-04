@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { generateKeyPairSync, type KeyObject, randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { cloudAccountSchema, GLOBAL_API_KEY_MESSAGE, type Role } from '@verax/shared';
+import { cloudAccountSchema, GLOBAL_KEY_REFUSED_MESSAGE, type Role } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CloudflareTokenCheck } from '../src/cloudflare/cloudflare-token-check.js';
@@ -243,7 +243,7 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
     for (const token of [fakeCloudflare.globalApiKey(), `cfk_${fakeCloudflare.legacyToken()}`]) {
       const response = await put(adminA, account.id, token).expect(400);
       expect(errorOf(response).issues).toEqual([
-        { path: 'token', code: 'custom', message: GLOBAL_API_KEY_MESSAGE },
+        { path: 'token', code: 'custom', message: GLOBAL_KEY_REFUSED_MESSAGE },
       ]);
       expect(response.text).not.toContain(token);
     }

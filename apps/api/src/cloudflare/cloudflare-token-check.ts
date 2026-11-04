@@ -42,6 +42,13 @@ function isAllowedBaseUrl(baseUrl: string): boolean {
   }
 }
 
+/** De quem é o token: da conta (o recomendado) ou de um usuário. Cada um tem o seu verify. */
+type VerifyOwner = 'account' | 'user';
+
+function verifyPath(owner: VerifyOwner, accountId: string): string {
+  return owner === 'account' ? `/accounts/${accountId}/tokens/verify` : '/user/tokens/verify';
+}
+
 /** RFC 3339 em segundos, como os exemplos da API de auditoria. */
 function rfc3339(date: Date): string {
   return `${date.toISOString().slice(0, 19)}Z`;
@@ -106,16 +113,15 @@ export class CloudflareTokenCheck {
     accountId: string,
     signal: AbortSignal,
   ): Promise<VerifiedToken> {
-    const accountPath = `/accounts/${accountId}/tokens/verify`;
-    const userPath = '/user/tokens/verify';
     const value = token.value();
-    const paths = value.startsWith('cfut_')
-      ? [userPath]
+    const owners: VerifyOwner[] = value.startsWith('cfut_')
+      ? ['user']
       : value.startsWith('cfat_')
-        ? [accountPath]
-        : [accountPath, userPath];
+        ? ['account']
+        : ['account', 'user'];
     let lastStatus: number | undefined;
-    for (const path of paths) {
+    for (const owner of owners) {
+      const path = verifyPath(owner, accountId);
       const { status, body } = await this.get(path, token, signal);
       if (status === 200) {
         const parsed = verifyResponseSchema.safeParse(body);

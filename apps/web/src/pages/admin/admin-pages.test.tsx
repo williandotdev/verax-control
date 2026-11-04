@@ -2,7 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
-  GLOBAL_API_KEY_MESSAGE,
+  GLOBAL_KEY_REFUSED_MESSAGE,
   paginatedSchema,
   temporaryPasswordSchema,
   tenantCreatedSchema,
@@ -524,7 +524,7 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     await user.paste(globalKey);
     await user.click(within(card).getByRole('button', { name: 'Trocar token' }));
     expect(field).toHaveValue('');
-    expect(field).toHaveAccessibleDescription(expect.stringContaining(GLOBAL_API_KEY_MESSAGE));
+    expect(field).toHaveAccessibleDescription(expect.stringContaining(GLOBAL_KEY_REFUSED_MESSAGE));
 
     // Token gerado na hora, no formato; colado com a quebra de linha que a cópia costuma trazer.
     const token = `cfat_${Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
