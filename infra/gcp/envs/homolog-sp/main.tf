@@ -20,6 +20,9 @@ module "node" {
   alert_email                = var.alert_email
   stalled_subscription_hours = var.stalled_subscription_hours
 
+  # O cofre da chave secreta do Turnstile (desafio no login do painel): a homologação ensaia antes do nó da Verax.
+  turnstile_secret = true
+
   # As APIs do projeto vêm antes de qualquer recurso do nó.
   depends_on = [google_project_service.apis]
 }

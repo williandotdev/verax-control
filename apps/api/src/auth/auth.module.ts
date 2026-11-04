@@ -8,6 +8,7 @@ import { MAIL_TRANSPORT, type MailTransport } from '../mail/mail.types.js';
 import { AuthController } from './auth.controller.js';
 import { AUTH } from './auth.constants.js';
 import { createAuth } from './auth.factory.js';
+import { AuthClientConfigController } from './client-config.controller.js';
 import { CSRF_UTILITIES, CsrfController, CsrfGuard, createCsrfUtilities } from './csrf.js';
 import { MeController } from './me.controller.js';
 import { PermissionsGuard } from './permissions.guard.js';
@@ -16,7 +17,14 @@ import { SessionGuard } from './session.guard.js';
 
 @Global()
 @Module({
-  controllers: [AuthController, MeController, CsrfController, SessionTenantController],
+  // A configuração pública vem antes do `AuthController`: o `*path` dele pegaria `/auth/client-config` (ordem do Express).
+  controllers: [
+    AuthClientConfigController,
+    AuthController,
+    MeController,
+    CsrfController,
+    SessionTenantController,
+  ],
   providers: [
     {
       provide: AUTH,

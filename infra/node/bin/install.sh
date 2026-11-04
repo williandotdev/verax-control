@@ -95,6 +95,12 @@ if [[ -n ${NODE_EGRESS_IPS:-} && ! $NODE_EGRESS_IPS =~ ^$egress_ip(,$egress_ip)*
   echo 'NODE_EGRESS_IPS inválido em /etc/verax/node.conf: use IPv4 com /32, separados por vírgula.' >&2
   exit 2
 fi
+# Chave do site do Cloudflare Turnstile (opcional; liga o desafio no login do painel). Um dígito, `x` e de 20 a 40
+# caracteres, como a API confere (`TURNSTILE_SITE_KEY_PATTERN`). A chave secreta fica no cofre, lida pelo start.sh.
+if [[ -n ${TURNSTILE_SITE_KEY:-} && ! $TURNSTILE_SITE_KEY =~ ^[0-9]x[0-9A-Za-z_-]{20,40}$ ]]; then
+  echo 'TURNSTILE_SITE_KEY inválida em /etc/verax/node.conf: use a chave do site do widget (ex.: 0x4AAAAAAA...).' >&2
+  exit 2
+fi
 # Cofre de credenciais (a chave da AWS e o token do Cloudflare colados no painel): true só no nó com o segredo
 # `credentials-key` (`credentials_vault` no Terraform). Sem a linha, vale false: o nó da Verax não muda.
 [[ ${CREDENTIALS_VAULT:-false} =~ ^(true|false)$ ]] ||

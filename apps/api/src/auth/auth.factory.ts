@@ -26,6 +26,16 @@ import {
 import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
 import { passwordLinkMail } from './password-links.js';
 import { temporaryPasswordExpired } from './temporary-password.js';
+import {
+  createTurnstileVerifier,
+  TURNSTILE_ACTIONS,
+  TURNSTILE_FAILED,
+  TURNSTILE_REQUIRED,
+  TURNSTILE_TOKEN_HEADER,
+  TURNSTILE_UNAVAILABLE,
+  type TurnstileOutcome,
+  type TurnstileVerifier,
+} from './turnstile.js';
 
 export interface AuthDependencies {
   config: AppConfig;
@@ -35,7 +45,23 @@ export interface AuthDependencies {
   audit: AuthAuditSink;
   /** Envio do e-mail de redefinição de senha (T2.6). */
   mail: MailTransport;
+  /** Conferência do token do Turnstile. Sem informar, vem da configuração (`undefined` sem a chave secreta). */
+  turnstile?: TurnstileVerifier | undefined;
 }
+
+/** Resposta de cada recusa do Turnstile. A indisponibilidade do siteverify fecha a porta (503), nunca abre. */
+const TURNSTILE_REFUSALS: Record<
+  Exclude<TurnstileOutcome, 'ok'>,
+  {
+    status: 'BAD_REQUEST' | 'SERVICE_UNAVAILABLE';
+    statusCode: 400 | 503;
+    body: { code: string; message: string };
+  }
+> = {
+  required: { status: 'BAD_REQUEST', statusCode: 400, body: TURNSTILE_REQUIRED },
+  failed: { status: 'BAD_REQUEST', statusCode: 400, body: TURNSTILE_FAILED },
+  unavailable: { status: 'SERVICE_UNAVAILABLE', statusCode: 503, body: TURNSTILE_UNAVAILABLE },
+};
 
 const SIGN_IN_PATH = '/sign-in/email';
 const VERIFY_TOTP_PATH = '/two-factor/verify-totp';
@@ -57,7 +83,7 @@ const SAME_AS_CURRENT = {
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
  * Cada opção abaixo tem um motivo de segurança; mudar qualquer uma pede revisão.
  */
-export function createAuth({ config, prisma, logger, audit, mail }: AuthDependencies) {
+export function createAuth({ config, prisma, logger, audit, mail, ...deps }: AuthDependencies) {
   /** A auditoria nunca derruba o login; uma falha ao gravar vai para o log. */
   const record: AuthAuditSink = async (entry) => {
     try {
@@ -66,6 +92,49 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
       logger.error({ audit: { action: entry.action, outcome: entry.outcome } }, 'falha ao gravar auditoria');
     }
   };
+
+  // Turnstile (desafio nos formulários públicos): só com a chave secreta. Em produção, sem ela, fica o aviso: o login
+  // e o "esqueci minha senha" seguem sem o desafio, com o limite por IP e o bloqueio por conta de sempre.
+  const turnstile = 'turnstile' in deps ? deps.turnstile : createTurnstileVerifier(config, logger);
+  if (config.NODE_ENV === 'production' && !turnstile) {
+    logger.warn(
+      { turnstile: { enabled: false } },
+      'Turnstile desligado: login e "esqueci minha senha" sem o desafio (defina TURNSTILE_SECRET_KEY e TURNSTILE_SITE_KEY)',
+    );
+  }
+
+  /**
+   * Confere o token do Turnstile antes de tudo (antes de reservar a tentativa de login e de olhar a senha). O hook
+   * `after` não roda quando este lança, então a recusa entra na trilha daqui.
+   */
+  async function checkTurnstile(ctx: {
+    path: string;
+    headers?: Headers | undefined;
+    body?: unknown;
+  }): Promise<void> {
+    const expectedAction = TURNSTILE_ACTIONS.get(ctx.path);
+    if (!turnstile || expectedAction === undefined) return;
+    const outcome = await turnstile.verify(
+      ctx.headers?.get(TURNSTILE_TOKEN_HEADER),
+      ctx.headers?.get(CLIENT_IP_HEADER) ?? undefined,
+      expectedAction,
+    );
+    if (outcome === 'ok') return;
+    const refusal = TURNSTILE_REFUSALS[outcome];
+    await record({
+      actor: { type: 'anonymous' },
+      action: AUTH_AUDIT_ACTIONS[ctx.path] ?? ctx.path,
+      resourceType: ctx.path === SIGN_IN_PATH ? 'login' : undefined,
+      resourceId:
+        ctx.path === SIGN_IN_PATH
+          ? normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email)
+          : undefined,
+      outcome: refusal.statusCode === 503 ? 'failure' : 'denied',
+      statusCode: refusal.statusCode,
+      ...requestMetadata(ctx.headers),
+    });
+    throw new APIError(refusal.status, refusal.body);
+  }
 
   return betterAuth({
     appName: PRODUCT_NAME,
@@ -208,6 +277,8 @@ export function createAuth({ config, prisma, logger, audit, mail }: AuthDependen
           });
           throw new APIError('BAD_REQUEST', SAME_AS_CURRENT);
         }
+        // Turnstile antes da tentativa de login: uma requisição sem o desafio não gasta nenhuma das 5 tentativas.
+        await checkTurnstile(ctx);
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
         if (email === undefined || (await reserveLoginAttempt(prisma, email))) return;

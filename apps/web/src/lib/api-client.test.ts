@@ -71,6 +71,18 @@ describe('ApiClient', () => {
     expect((call(0).init.headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
   });
 
+  it('headers a mais da chamada vão junto (o token do Turnstile no login), sem tirar os de sempre', async () => {
+    const { client, call } = setup([json(200, {})]);
+    await client.post('/v1/auth/sign-in/email', { email: 'a@b.example' }, undefined, {
+      headers: { 'X-Turnstile-Token': 'token-do-widget' },
+    });
+    expect(call(0).init.headers).toEqual({
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Turnstile-Token': 'token-do-widget',
+    });
+  });
+
   it('401 chama o login', async () => {
     const onUnauthorized = vi.fn();
     const { client } = setup([json(401, { message: 'Não autenticado' })], { onUnauthorized });

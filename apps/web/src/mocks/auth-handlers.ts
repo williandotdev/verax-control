@@ -18,6 +18,21 @@ export const MOCK_AUTH = {
     'otpauth://totp/Verax%20Control:analista%40demo.verax.local?secret=JBSWY3DPEHPK3PXP&issuer=Verax%20Control&digits=6&period=30',
 };
 
+/**
+ * Turnstile na demonstração: desligado, a não ser que `localStorage['verax.mock.turnstile']` traga uma chave de site
+ * (os testes usam as de teste da Cloudflare: `1x00000000000000000000AA` sempre passa, `2x00000000000000000000AB`
+ * sempre bloqueia). Com a chave, o login e o pedido de redefinição exigem o header do token, como a API.
+ */
+export const MOCK_TURNSTILE_STORAGE_KEY = 'verax.mock.turnstile';
+const TURNSTILE_SITE_KEY_PATTERN = /^[0-9]x[0-9A-Za-z_-]{20,40}$/;
+const TURNSTILE_TOKEN_HEADER = 'X-Turnstile-Token';
+
+export function turnstileSiteKeyFromStorage(): string | null {
+  const stored =
+    typeof window === 'undefined' ? null : window.localStorage.getItem(MOCK_TURNSTILE_STORAGE_KEY);
+  return stored !== null && TURNSTILE_SITE_KEY_PATTERN.test(stored) ? stored : null;
+}
+
 /** Valores aceitos pelo mock (conjuntos, não comparação direta com o valor digitado). */
 const ACCEPTED_PASSWORDS = new Set([MOCK_AUTH.password]);
 const TEMPORARY_PASSWORDS = new Set([MOCK_AUTH.temporaryPassword]);
@@ -42,8 +57,21 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
   // Cada instância do mock tem as próprias senhas: a troca vale só para ela (cada teste e cada aba começam do zero).
   const accepted = new Set(ACCEPTED_PASSWORDS);
   const temporary = new Set(TEMPORARY_PASSWORDS);
+  const turnstileSiteKey =
+    state.turnstileSiteKey === undefined ? turnstileSiteKeyFromStorage() : state.turnstileSiteKey;
+  // Como a API com o Turnstile ligado: sem o header do token, 400 antes de olhar qualquer outra coisa.
+  const turnstileRefusal = (request: Request) =>
+    turnstileSiteKey !== null && !request.headers.get(TURNSTILE_TOKEN_HEADER)
+      ? HttpResponse.json(
+          { message: 'Conclua a verificação de segurança e tente de novo', code: 'TURNSTILE_REQUIRED' },
+          { status: 400 },
+        )
+      : undefined;
   return [
+    http.get(url('/client-config'), () => HttpResponse.json({ turnstileSiteKey })),
     http.post(url('/sign-in/email'), async ({ request }) => {
+      const refused = turnstileRefusal(request);
+      if (refused) return refused;
       const body = (await request.json()) as { email?: string; password?: string };
       if (body.email === MOCK_AUTH.email && temporary.has(body.password ?? '')) {
         state.pendingCode = false;
@@ -88,12 +116,14 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
       return HttpResponse.json({ totpURI: MOCK_AUTH.totpURI, backupCodes: MOCK_AUTH.backupCodes });
     }),
     // Mesma resposta para qualquer e-mail, como na API.
-    http.post(url('/request-password-reset'), () =>
-      HttpResponse.json({
+    http.post(url('/request-password-reset'), ({ request }) => {
+      const refused = turnstileRefusal(request);
+      if (refused) return refused;
+      return HttpResponse.json({
         status: true,
         message: 'If this email exists in our system, check your email for the reset link',
-      }),
-    ),
+      });
+    }),
     // Troca de senha da sessão: no primeiro acesso, a atual é a temporária, que deixa de valer depois da troca.
     http.post(url('/change-password'), async ({ request }) => {
       if (!state.me) return HttpResponse.json({ message: 'Unauthorized' }, { status: 401 });

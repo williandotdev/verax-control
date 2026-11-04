@@ -14,6 +14,9 @@ const site = (tenant: string) => ({
 const A = site('cliente-demo-a');
 const B = site('cliente-demo-b');
 
+/** Origem do Cloudflare Turnstile (script do widget e iframe do desafio no login). */
+const TURNSTILE = 'https://challenges.cloudflare.com';
+
 /** API de qualquer cliente, interceptada antes da rede. */
 const ANY_TENANT_API = /^https:\/\/api-[a-z0-9-]+\.veraxsistemas\.com\.br\//;
 
@@ -79,6 +82,9 @@ test('o mesmo dist serve os dois sites: cada um chama só a própria API e receb
     [b, B],
   ] as const) {
     expect(directive(opened.csp, 'connect-src')).toEqual(["'self'", target.api]);
+    // O Turnstile do login entra em todo site, como no build de destino único.
+    expect(directive(opened.csp, 'script-src')).toEqual(["'self'", TURNSTILE]);
+    expect(directive(opened.csp, 'frame-src')).toEqual([TURNSTILE]);
     expect(opened.traffic.api).toContain(`${target.api}/v1/me`);
     expect(opened.traffic.external.filter((url) => !url.startsWith(`${target.api}/`))).toEqual([]);
   }

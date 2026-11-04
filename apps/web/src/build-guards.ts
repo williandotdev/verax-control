@@ -68,19 +68,25 @@ export function apiOrigin(apiUrl: string): string {
   return apiUrl;
 }
 
+/** Origem do Cloudflare Turnstile: o script do widget e o iframe do desafio (login e "esqueci minha senha"). */
+export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
+
 /**
  * Content-Security-Policy do painel. A mesma política vale no `vite preview` (testes e2e) e no Firebase Hosting,
- * para o e2e pegar qualquer violação antes de produção. A `connect-src` libera só a API do site: no build único, a
- * política sai com o marcador e cada site recebe a sua (`siteHostingConfig`, em `hosting.ts`).
+ * para o e2e pegar qualquer violação antes de produção. Fora do próprio domínio, só a API do site e o Turnstile (o
+ * script e o iframe do desafio; a documentação da Cloudflare pede `script-src` e `frame-src`). No build único, a
+ * `connect-src` sai com o marcador e cada site recebe a sua (`siteHostingConfig`, em `hosting.ts`); o resto da
+ * política é o mesmo em todos os sites.
  */
 export function contentSecurityPolicy(apiUrl: string): string {
   return [
     "default-src 'self'",
-    "script-src 'self'",
+    `script-src 'self' ${TURNSTILE_ORIGIN}`,
     "style-src 'self'",
     "img-src 'self' data:",
     "font-src 'self'",
     `connect-src 'self' ${apiOrigin(apiUrl)}`,
+    `frame-src ${TURNSTILE_ORIGIN}`,
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "form-action 'self'",

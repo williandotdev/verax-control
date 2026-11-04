@@ -71,7 +71,7 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
     expect(probeViolations).toEqual([]);
   });
 
-  it('só o health check e a autenticação são públicos; o resto exige sessão', () => {
+  it('só o health check, a autenticação e a configuração pública do login são públicos; o resto exige sessão', () => {
     const isTestProbe = (route: string): boolean => /^(Broken|Probe)Controller./.test(route);
     const policies = listRoutePolicies(app).filter((policy) => !isTestProbe(policy.route));
 
@@ -80,7 +80,12 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
         .filter((policy) => policy.isPublic)
         .map((policy) => policy.route)
         .sort(),
-    ).toEqual(['AuthController.handle', 'HealthController.live', 'HealthController.ready']);
+    ).toEqual([
+      'AuthClientConfigController.read',
+      'AuthController.handle',
+      'HealthController.live',
+      'HealthController.ready',
+    ]);
     expect(policies.filter((policy) => policy.selfManaged).map((policy) => policy.route)).toEqual([
       'AuthController.handle',
     ]);

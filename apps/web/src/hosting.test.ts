@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { securityHeaders } from './build-guards';
+import { securityHeaders, TURNSTILE_ORIGIN } from './build-guards';
 import {
   firebaseHostingConfig,
   type HostingConfig,
@@ -9,15 +9,17 @@ import {
 
 const TEMPLATE = 'https://api-{tenant}.veraxsistemas.com.br';
 
-/** Fontes da `connect-src` da CSP do site (a regra `**`). */
-function connectSources(config: HostingConfig): string[] {
+/** Fontes de uma diretiva da CSP do site (a regra `**`). */
+function sources(config: HostingConfig, name: string): string[] {
   const csp = config.headers.find((rule) => rule.glob === '**')?.headers['Content-Security-Policy'] ?? '';
   const directive = csp
     .split(';')
     .map((part) => part.trim().split(/\s+/))
-    .find(([name]) => name === 'connect-src');
+    .find(([first]) => first === name);
   return directive?.slice(1) ?? [];
 }
+
+const connectSources = (config: HostingConfig): string[] => sources(config, 'connect-src');
 
 describe('build único: configuração de cada site', () => {
   const template = firebaseHostingConfig(TEMPLATE);
@@ -37,6 +39,14 @@ describe('build único: configuração de cada site', () => {
       "'self'",
       'https://api-cliente-demo-b.veraxsistemas.com.br',
     ]);
+  });
+
+  it('o Turnstile do login entra na CSP de cada site, como no build de destino único', () => {
+    for (const tenant of ['cliente-demo-a', 'cliente-demo-b']) {
+      const config = siteHostingConfig(template, tenant);
+      expect(sources(config, 'script-src')).toEqual(["'self'", TURNSTILE_ORIGIN]);
+      expect(sources(config, 'frame-src')).toEqual([TURNSTILE_ORIGIN]);
+    }
   });
 
   it('dois sites só diferem na CSP', () => {
