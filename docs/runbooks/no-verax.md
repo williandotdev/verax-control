@@ -46,7 +46,10 @@ para o bucket de backups (`verax-backup.timer`).
    - `IMAGES_REPOSITORY` e `GCP_IMAGES_SA`: valores em `terraform output images_repository` e `images_publisher`;
    - `GCP_WIF_PROVIDER`: o mesmo provedor do Painel.
 
-   A versão de cada publicação é o commit, que aparece no resumo da execução.
+   A versão de cada publicação é o commit, que aparece no resumo da execução. Depois, outro job do mesmo workflow
+   copia as duas imagens, com o mesmo digest, para o registro público do GitHub (GHCR), para os nós na nuvem do
+   cliente (`docs/runbooks/versao-no.md`). O nó da Verax não usa essa cópia, e uma falha nela não afeta o Artifact
+   Registry nem o `deploy.sh`.
 
 O nó não precisa de e-mail (`MAIL_TRANSPORT=none` no `node.conf`): toda conta nasce com uma senha temporária,
 entregue a quem a criou. Para ligar também a redefinição de senha pelo link, use `MAIL_TRANSPORT=smtp` com os dados

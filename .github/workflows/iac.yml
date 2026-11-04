@@ -58,7 +58,7 @@ jobs:
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
-            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane; do
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane infra/gcp/envs/release; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
@@ -79,11 +79,14 @@ jobs:
         # Nó da Verax: o `terraform.tfvars` precisa de todas as variáveis da primeira subida (sem a conta de
         # faturamento, o `plan` apaga o orçamento). Plano de controle: os papéis de cada conta um a um, nada anônimo
         # no cp-worker nem no Job, zero instâncias mínimas, a imagem que o workflow troca sem o Terraform desfazer, a
-        # primeira subida sem os serviços, o Firestore e os alertas. O `init` sem backend é o da validação, acima.
+        # primeira subida sem os serviços, o Firestore e os alertas. Chave de release: ECDSA P-256 em software, protegida
+        # contra exclusão, só `cloudkms.signer` para a conta do workflow e o token aceito só do workflow Versão do nó.
+        # O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
           terraform -chdir=infra/gcp/envs/verax test
           terraform -chdir=infra/gcp/envs/control-plane test
+          terraform -chdir=infra/gcp/envs/release test
           # Os segredos do plano de controle nascem vazios: nenhuma versão de segredo (regional ou não) passa pelo
           # Terraform. Só a declaração do recurso conta; um comentário que cite o nome não dispara.
           if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' infra/gcp/envs/control-plane/*.tf; then
@@ -114,7 +117,15 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
+        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh scripts/node-release.sh scripts/test-node-release.sh
+      - name: Versão do nó (verificador do host, pacote, manifesto e assinatura com o KMS simulado)
+        # Chaves descartáveis geradas no teste (nenhuma privada no repositório). O verificador recusa manifesto
+        # adulterado ou cortado, chave errada e assinatura cortada, sem gh e sem rede; o pacote sai igual byte a byte do
+        # mesmo commit; o manifesto só aceita imagem de terceiro fixada pelo digest; a assinatura só é gravada quando o
+        # KMS responde com a versão pedida da chave e ela fecha com as chaves do pacote.
+        run: |
+          bash infra/node/tests/verify-release-test.sh
+          bash scripts/test-node-release.sh
       - name: Guarda do servidor de metadados (num espaço de nomes de rede próprio, sem tocar nas regras do runner)
         # Antes do Docker (sem DOCKER-USER), reaplicada com tudo no lugar, regra antiga removida e a troca do conteúdo
         # da cadeia numa transação só (sem -F/-A soltos): não há instante sem guarda com contêineres no ar.
