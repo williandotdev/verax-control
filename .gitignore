@@ -12,6 +12,8 @@ apps/api/src/generated/
 .env.*
 !.env.example
 *.pem
+# Exceção: só as chaves PÚBLICAS de release do pacote do nó (verify-release.sh). Nunca uma privada aqui.
+!infra/node/keys/release-*.pem
 *.key
 *.p12
 *.pfx

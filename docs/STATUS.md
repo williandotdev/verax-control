@@ -3087,3 +3087,10 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - **Divergência com o PR-N7:** o N7 previa espelhar as imagens de terceiros no Artifact Registry; a proposta do modo próprio e este PR as baixam da origem pelo digest (sem redistribuir GPL). O espelho para os nós gerenciados, se o N7 o mantiver, não muda o manifesto;
   - **Fora deste PR (proposta, SH-02):** cópia do manifesto no bucket de releases (CP-09) e a checagem de migration `contract` no CI;
   - **Condição do `envs/control-plane`:** o provedor de lá compara `assertion.sub` com `repo:williandotdev/verax-control:environment:control-plane`, mas os environments `imagens` e `painel` usam o subject imutável (`dono@id/repo@id`). Se o repositório emite o subject imutável, aquele provedor recusaria o token. Conferir antes do `apply` do plano de controle (fora deste escopo).
+
+## SH-02: chave pública de release no pacote do nó
+
+- **O que entrou:** `infra/node/keys/release-node-manifest-v1.pem`, a chave pública (EC P-256) da versão 1 da chave `node-manifest` do Cloud KMS, saída `release_public_key_pem` de `infra/gcp/envs/release`. Com ela, o `verify-release.sh` de um nó instalado confere o manifesto das próximas versões.
+- **Aplicado em 04/11/2026** (`infra/gcp/envs/release`, no projeto do nó da Verax): `Plan: 12 to add, 0 to change, 0 to destroy`; o chaveiro, a chave (software, protegida contra exclusão), a conta `verax-release-signer` só com `cloudkms.signer` na chave, e a federação presa ao workflow `Versão do nó`. As APIs ligadas pelo ambiente ficam ligadas num `destroy` (`disable_on_destroy = false`).
+- **Environment `release` no GitHub:** só a `main`, aprovação obrigatória e as três variáveis da saída `github_environment`.
+- **Ainda não feito:** tornar públicos os pacotes do GHCR (decisão do responsável, irreversível) e promover a primeira versão.
