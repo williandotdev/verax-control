@@ -160,7 +160,8 @@ permite atribuir cada alerta ao cliente certo.
 
 ## Cofre de credenciais
 
-_(fase 2, a construir)_
+_(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e
+`infra/node`; a tela que grava a credencial vem no PR-V3, e a entrega ao Wazuh, no PR-V4)_
 
 - **O que guarda:** a chave de acesso do usuário IAM da AWS e o token do Cloudflare, uma linha por conta cloud
   (`CloudCredential`), com o mesmo isolamento por cliente de todo dado de cliente.
@@ -168,11 +169,12 @@ _(fase 2, a construir)_
   admin cola e não consegue decifrar o que já está guardado. Só o worker tem a chave privada.
 - **Vínculo:** o rótulo do OAEP amarra o texto cifrado ao cliente, à conta e ao tipo. Uma linha copiada para outra
   conta ou outro cliente não abre.
-- **Chave do nó:** nasce na VM, na instalação, se o segredo `<prefixo>-credentials-key` do Secret Manager estiver
-  vazio, e vai direto para ele, sem passar pelo disco. A permissão de acrescentar versões vale só nesse segredo. A
-  chave privada nunca sai da GCP e não é gravada no disco do nó: fica no tmpfs e na memória do worker, e o swap é
-  cifrado com uma chave que some a cada boot (seção "Perfis de nó"). Por isso, os backups do banco e os snapshots do
-  disco não levam a chave privada nem credencial em claro.
+- **Chave do nó:** com `CREDENTIALS_VAULT=true` no `node.conf` (o nó da Verax não liga), nasce na VM, na instalação,
+  se o segredo `<prefixo>-credentials-key` do Secret Manager estiver vazio, e vai direto para ele, sem passar pelo
+  disco. A permissão de acrescentar versões vale só nesse segredo. A chave privada nunca sai da GCP e não é gravada no
+  disco do nó: fica no tmpfs e na memória do worker, e o swap é cifrado com uma chave que some a cada boot (seção
+  "Perfis de nó"). Por isso, os backups do banco e os snapshots do disco não levam a chave privada nem credencial em
+  claro.
 - **Versões:** a versão do segredo é a versão da chave. Uma tarefa diária do worker recifra as linhas antigas. Na
   saída de um cliente, destruir a versão depois do prazo dos backups inutiliza o texto cifrado que sobrou neles.
 - **Validação antes de gravar:** só os admins (`admin_cliente` e `admin_verax`) colam, com permissão própria e limite

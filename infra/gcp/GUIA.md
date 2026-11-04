@@ -477,5 +477,7 @@ expirarem.
 
 Com a base no ar, o próximo passo é o pacote do nó (`infra/node/`): instalar a API, o banco e o túnel na VM. O
 roteiro está em `docs/runbooks/no-verax.md`; no `node.conf`, `NODE_PROFILE` é o perfil do ambiente (`lean` no nó da
-Verax, `standard` na homologação). Cada projeto monitorado entra em Contas cloud com a assinatura que aparece em
-`terraform output pubsub_subscriptions`.
+Verax, `standard` na homologação). Na homologação, `CREDENTIALS_VAULT=true` liga o cofre de credenciais: na primeira
+instalação, o `install.sh` gera a chave do cofre na VM e a grava como versão 1 do `credentials-key`. No nó da Verax,
+que não tem esse cofre, a linha fica `false` (ou ausente). Cada projeto monitorado entra em Contas cloud com a
+assinatura que aparece em `terraform output pubsub_subscriptions`.

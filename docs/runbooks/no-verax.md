@@ -56,6 +56,13 @@ sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do pl
 O perfil do nó (`NODE_PROFILE`) define a memória do banco, da API e do worker. O da Verax é `lean`, com os mesmos
 limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` atual não precisa mudar.
 
+O cofre de credenciais (`CREDENTIALS_VAULT`, para a chave da AWS e o token do Cloudflare colados no painel) fica
+desligado no nó da Verax: sem a linha no `node.conf`, vale `false`, nada é lido do Secret Manager e a API e o worker
+sobem como antes. Ligar pede, nesta ordem: o segredo `verax-node-credentials-key` (`credentials_vault = true` em
+`infra/gcp/envs/verax/main.tf` e um `apply`), `CREDENTIALS_VAULT=true` no `node.conf` e um deploy. Na instalação, o
+`install.sh` gera a chave na VM e a grava direto no segredo; a cada partida, o `start.sh` entrega a chave pública à API
+e as privadas ao worker.
+
 ## Instalar ou atualizar
 
 Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados, o Docker instalado (o `gh` lê a imagem
