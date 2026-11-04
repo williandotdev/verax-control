@@ -186,7 +186,8 @@ auditoria; a recusa, sim.
 
 ## Contas monitoradas por provedor
 
-_(papel da AWS e token do Cloudflare no cofre: fase 2, a construir)_
+_(fase 2: o token do Cloudflare entra pelo painel (PR-11'); o template do papel da AWS está feito (PR-V2'); a conexão
+da AWS no painel e a leitura pelo nó vêm nos PRs V3' a V5')_
 
 O cadastro de contas (Contas cloud) aceita três provedores. **A GCP e a AWS não guardam credencial:** na GCP, o sink
 do cliente publica no tópico do nó; na AWS, o nó entra no papel de leitura do cliente com a própria identidade no
@@ -206,7 +207,8 @@ mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico
 ## Cofre de credenciais
 
 _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e
-`infra/node`; a tela que grava o token do Cloudflare vem no PR-11')_
+`infra/node`, e a rota que recebe o token do Cloudflare colado no painel também, no PR-11'. A rota é genérica, por tipo;
+a AWS não passa por ela)_
 
 - **O que guarda:** o token do Cloudflare, uma linha por conta cloud (`CloudCredential`), com o mesmo isolamento por
   cliente de todo dado de cliente. A AWS não passa pelo cofre: o papel de leitura não tem chave. O tipo
@@ -229,10 +231,24 @@ _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em
   disco não levam a chave privada nem credencial em claro.
 - **Versões:** a versão do segredo é a versão da chave. Uma tarefa diária do worker recifra as linhas antigas. Na
   saída de um cliente, destruir a versão depois do prazo dos backups inutiliza o texto cifrado que sobrou neles.
-- **Validação antes de gravar:** só os admins (`admin_cliente` e `admin_verax`) colam, com permissão própria e limite
-  de tentativas por conta e por cliente. Cloudflare: `tokens/verify`. A Global API Key é recusada.
-- **O segredo não sai:** não volta pela API e não vai para a auditoria (só os 4 últimos caracteres, `keyIdSuffix`)
-  nem para o log (o logger mascara os segredos decifrados no processo).
+- **Validação antes de gravar:** só os admins (`admin_cliente` e `admin_verax`) colam, com permissão própria
+  (`cloud_credentials:write`), pela rota `PUT /v1/cloud-accounts/:id/credential` (corpo discriminado por `kind`; trocar
+  é colar de novo) e `DELETE` no mesmo caminho. A conferência roda na memória da API, antes de cifrar, sob o lock da
+  conta. O limite é de 5 recusas por conta e 20 por cliente a cada hora, contadas na própria trilha de auditoria (só as
+  recusas da origem; indisponibilidade não conta). Cada cliente confere uma credencial por vez, e a recusa entra na
+  trilha no mesmo commit, antes de o lock ser solto: a contagem é exata com pedidos simultâneos. Conta de outro cliente
+  dá 404 sem chamar a origem.
+  - Cloudflare: a Global API Key é recusada antes de tudo (`cfk_` ou 37 a 45 hexadecimais). Depois, em até 5 s, o
+    `GET /accounts/<conta>/tokens/verify` (token de conta, o recomendado) ou `GET /user/tokens/verify` (de usuário),
+    que precisa responder `active`, dentro da validade; e uma leitura de prova da auditoria da conta cadastrada (uma
+    entrada da última hora), que exige `Account Settings: Read` nela. O `verify` sozinho não diz a quais contas o token
+    dá acesso, e o filtro de IP do token não vale para ele (vale para a leitura de prova). O sufixo guardado é o fim do
+    ID do token, e a validade vai para `expiresAt`: a tela avisa 14 dias antes. O host é fixo (`api.cloudflare.com`),
+    sem variável que o troque; só os testes apontam para um servidor falso em `127.0.0.1`.
+- **O segredo não sai:** não volta pela API e não vai para a auditoria (só os 4 últimos caracteres do ID do token,
+  `keyIdSuffix`) nem para o log (o logger mascara os segredos decifrados no processo). A conta mostra só os metadados
+  (`keyStatus`: tipo, sufixo, validade, última conferência). Erros da origem vão para o log só pelo código. Na API, o
+  logger esquece o valor colado no fim da requisição, para a memória do processo exposto não acumular credenciais.
 - **Desativar a conta** apaga a credencial na mesma transação.
 
 ## Por que papel sem chave
@@ -373,8 +389,10 @@ nós de clientes:
   mais longa, o que passou da janela se perde.
 
 As regras são próprias (faixa 9903xx), com título em português e MITRE. O token é de conta, **só de leitura**, com
-três permissões: `Account Settings Read`, `Analytics Read` e `Zone Read`. O admin cola o token no painel, e ele fica
-no cofre do nó. A recomendação ao cliente é restringir o token ao IP de saída do nó.
+três permissões: `Account Settings: Read` (a auditoria da conta), `Zone: Read` (a lista de zonas) e `Analytics: Read`
+(os eventos de segurança). Contas cloud abre a criação dele no Cloudflare com as três já marcadas (o link de token de
+conta pré-preenchido que o Cloudflare documenta), mostra o IP de saída do nó (`NODE_EGRESS_IPS`) para o filtro de IP do
+token e recebe o token colado, que vai para o cofre do nó (seção "Cofre de credenciais").
 
 O Logpush fica fora da v1: exige permissão de escrita (`Logs Edit`) e um destino que o Cloudflare possa gravar. Pode
 voltar depois como modo completo, sem amostragem.

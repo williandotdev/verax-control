@@ -5,6 +5,7 @@ import {
   type CloudAccountCreate,
   type CloudAccountListQuery,
   type CloudAccountUpdate,
+  credentialStatus,
   fieldsOutsideProvider,
   hasPermission,
   LOG_SOURCES,
@@ -18,6 +19,7 @@ import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
+import { lockCredential } from '../credentials/credential-rekey.js';
 import { Prisma } from '../generated/prisma/client.js';
 
 const accountSelect = {
@@ -40,6 +42,10 @@ const accountSelect = {
   status: true,
   createdAt: true,
   updatedAt: true,
+  // Do cofre, só os metadados: nunca o texto cifrado nem a versão da chave do nó.
+  credential: {
+    select: { kind: true, keyIdSuffix: true, issuedAt: true, expiresAt: true, verifiedAt: true },
+  },
 } as const satisfies Prisma.CloudAccountSelect;
 
 type AccountRow = Prisma.CloudAccountGetPayload<{ select: typeof accountSelect }>;
@@ -55,13 +61,23 @@ function newExternalId(): string {
   return randomBytes(32).toString('base64url');
 }
 
+/** O que vem da configuração do nó, igual para todas as contas. */
+interface NodeFacts {
+  /** Começo do nome dos tópicos do nó (`GCP_SINK_TOPIC_PREFIX`). */
+  sinkTopicPrefix?: string | undefined;
+  /** IPs de saída do nó (`NODE_EGRESS_IPS`). */
+  egressIps: readonly string[];
+}
+
 /**
- * Como a conta sai da API. `sinkTopicPrefix` é o começo do nome dos tópicos do nó (`GCP_SINK_TOPIC_PREFIX`): com ele,
- * o projeto da GCP ganha o tópico do comando do sink; sem ele (ambiente local), o tópico fica null.
+ * Como a conta sai da API. Com o prefixo dos tópicos do nó, o projeto da GCP ganha o tópico do comando do sink; sem
+ * ele (ambiente local), o tópico fica null. A conta do Cloudflare leva os IPs de saída do nó, o filtro de IP
+ * recomendado para o token.
  */
-function toAccount(row: AccountRow, revealExternalId: boolean, sinkTopicPrefix?: string): CloudAccount {
+function toAccount(row: AccountRow, revealExternalId: boolean, node: NodeFacts): CloudAccount {
   const aws = row.provider === 'aws';
   const gcp = row.provider === 'gcp';
+  const { credential } = row;
   return {
     id: row.id,
     provider: row.provider,
@@ -71,9 +87,20 @@ function toAccount(row: AccountRow, revealExternalId: boolean, sinkTopicPrefix?:
     externalId: aws && revealExternalId ? row.externalId : null,
     buckets: { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket },
     pubsubSubscription: row.pubsubSubscription,
-    sinkTopic: gcp && sinkTopicPrefix ? `${sinkTopicPrefix}${row.accountId}` : null,
+    sinkTopic: gcp && node.sinkTopicPrefix ? `${node.sinkTopicPrefix}${row.accountId}` : null,
     sinkWriterIdentity: gcp ? row.sinkWriterIdentity : null,
     zones: row.zones,
+    keyStatus: credential
+      ? {
+          kind: credential.kind,
+          keyIdSuffix: credential.keyIdSuffix,
+          issuedAt: credential.issuedAt?.toISOString() ?? null,
+          expiresAt: credential.expiresAt?.toISOString() ?? null,
+          verifiedAt: credential.verifiedAt.toISOString(),
+          status: credentialStatus(credential.expiresAt),
+        }
+      : null,
+    egressIps: row.provider === 'cloudflare' ? [...node.egressIps] : [],
     status: row.status,
     // Gravados pelo coletor da conta: só o worker escreve, nunca o request.
     connection: row.connection,
@@ -106,8 +133,11 @@ function isUniqueViolation(error: unknown): boolean {
 
 const NOT_FOUND = 'Conta não encontrada';
 
-/** A conexão recomeça (outra fonte, conta desativada ou reativada): aguardando, sem erro. A última coleta é história. */
-const RESET_CONNECTION = {
+/**
+ * A conexão recomeça (outra fonte, credencial nova ou removida, conta desativada ou reativada): aguardando, sem erro. A
+ * última coleta é história.
+ */
+export const RESET_CONNECTION = {
   connection: 'waiting',
   connectionError: null,
 } as const satisfies Prisma.CloudAccountUpdateInput;
@@ -142,22 +172,24 @@ interface LogOrigins {
 }
 
 /**
- * Contas cloud dos clientes (T3.3): AWS, GCP e Cloudflare, pelo escopo da sessão. Nenhuma credencial entra: o
- * schema é estrito; na AWS, a Verax só assume o papel de leitura com o ExternalId gerado aqui.
+ * Contas cloud dos clientes (T3.3): AWS, GCP e Cloudflare, pelo escopo da sessão. Nenhuma credencial entra pelo
+ * cadastro: o schema é estrito; na AWS, a Verax só assume o papel de leitura com o ExternalId gerado aqui. A
+ * credencial de leitura (o token do Cloudflare) tem rota própria e vai cifrada para o cofre
+ * (`credentials/credential-intake.service.ts`); a conta mostra só os metadados dela (`keyStatus`).
  *
  * Duas garantias que vinculam os alertas ao cliente certo (T5.2): o ID da conta é único por provedor, e cada
  * origem de log (bucket, assinatura do Pub/Sub, identidade do sink, zona do Cloudflare) pertence a um só cliente.
  */
 @Injectable()
 export class CloudAccountsService {
-  private readonly sinkTopicPrefix: string | undefined;
+  private readonly node: NodeFacts;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
-    @Inject(APP_CONFIG) config: Pick<AppConfig, 'GCP_SINK_TOPIC_PREFIX'>,
+    @Inject(APP_CONFIG) config: Pick<AppConfig, 'GCP_SINK_TOPIC_PREFIX' | 'NODE_EGRESS_IPS'>,
   ) {
-    this.sinkTopicPrefix = config.GCP_SINK_TOPIC_PREFIX;
+    this.node = { sinkTopicPrefix: config.GCP_SINK_TOPIC_PREFIX, egressIps: config.NODE_EGRESS_IPS ?? [] };
   }
 
   async list(auth: RequestAuth, query: CloudAccountListQuery): Promise<Paginated<CloudAccount>> {
@@ -173,14 +205,14 @@ export class CloudAccountsService {
       db.cloudAccount.count({ where }),
     ]);
     return toPaginated(
-      rows.map((row) => toAccount(row, canSeeExternalId(auth), this.sinkTopicPrefix)),
+      rows.map((row) => toAccount(row, canSeeExternalId(auth), this.node)),
       total,
       query,
     );
   }
 
   async get(auth: RequestAuth, id: string): Promise<CloudAccount> {
-    return toAccount(await this.find(id), canSeeExternalId(auth), this.sinkTopicPrefix);
+    return toAccount(await this.find(id), canSeeExternalId(auth), this.node);
   }
 
   async create(auth: RequestAuth, input: CloudAccountCreate): Promise<CloudAccount> {
@@ -195,7 +227,7 @@ export class CloudAccountsService {
       }
       throw error;
     }
-    const account = toAccount(row, true, this.sinkTopicPrefix);
+    const account = toAccount(row, true, this.node);
     // O ExternalId não vai para a auditoria: quem lê a trilha não precisa dele.
     this.audit.describe({
       action: 'cloud_account.create',
@@ -219,6 +251,7 @@ export class CloudAccountsService {
     const sourceChanged =
       input.pubsubSubscription !== undefined && input.pubsubSubscription !== beforeRow.pubsubSubscription;
     const statusChanged = input.status !== undefined && input.status !== beforeRow.status;
+    if (input.status === 'inactive') await this.wipeCredential(id);
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
       data: {
@@ -233,12 +266,12 @@ export class CloudAccountsService {
       },
       select: accountSelect,
     });
-    const after = toAccount(row, true, this.sinkTopicPrefix);
+    const after = toAccount(row, true, this.node);
     this.audit.describe({
       action: 'cloud_account.update',
       resourceType: 'cloud_account',
       resourceId: id,
-      before: { ...toAccount(beforeRow, false, this.sinkTopicPrefix), externalId: undefined },
+      before: { ...toAccount(beforeRow, false, this.node), externalId: undefined },
       after: { ...after, externalId: undefined },
     });
     return after;
@@ -246,10 +279,12 @@ export class CloudAccountsService {
 
   /**
    * Exclusão lógica: a conta deixa de ser lida e de receber alertas, mas o ID continua do cliente. A conexão volta a
-   * "aguardando": parada, a conta não está conectada nem com erro.
+   * "aguardando": parada, a conta não está conectada nem com erro. A credencial do cofre é apagada junto (D-13):
+   * reativar pede colar de novo.
    */
   async deactivate(id: string): Promise<void> {
     const before = await this.find(id);
+    await this.wipeCredential(id);
     const row = await this.prisma.scoped().cloudAccount.update({
       where: { id },
       data: { status: 'inactive', ...RESET_CONNECTION },
@@ -259,8 +294,34 @@ export class CloudAccountsService {
       action: 'cloud_account.deactivate',
       resourceType: 'cloud_account',
       resourceId: id,
-      before: { ...toAccount(before, false, this.sinkTopicPrefix), externalId: undefined },
-      after: { ...toAccount(row, false, this.sinkTopicPrefix), externalId: undefined },
+      before: { ...toAccount(before, false, this.node), externalId: undefined },
+      after: { ...toAccount(row, false, this.node), externalId: undefined },
+    });
+  }
+
+  /**
+   * Conta desativada não guarda credencial: a linha do cofre sai na mesma transação, sob o lock da conta (o mesmo da
+   * troca pelo painel e da recifragem), com um registro próprio na trilha (`cloud_credential.wipe`, só metadados).
+   */
+  private async wipeCredential(id: string): Promise<void> {
+    await lockCredential(this.prisma.db(), id);
+    const db = this.prisma.scoped();
+    const credential = await db.cloudCredential.findUnique({
+      where: { cloudAccountId: id },
+      select: { kind: true, keyIdSuffix: true, expiresAt: true },
+    });
+    if (!credential) return;
+    await db.cloudCredential.delete({ where: { cloudAccountId: id }, select: { cloudAccountId: true } });
+    this.audit.also({
+      action: 'cloud_credential.wipe',
+      resourceType: 'cloud_credential',
+      resourceId: id,
+      before: {
+        kind: credential.kind,
+        keyIdSuffix: credential.keyIdSuffix,
+        expiresAt: credential.expiresAt?.toISOString() ?? null,
+      },
+      after: null,
     });
   }
 

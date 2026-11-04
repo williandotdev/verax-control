@@ -3,14 +3,19 @@ import {
   type CloudAccount,
   cloudAccountCreateSchema,
   cloudAccountUpdateSchema,
+  type CloudCredentialStatus,
+  cloudCredentialInputSchema,
+  CLOUDFLARE_TOKEN_PERMISSIONS,
+  cloudflareTokenTemplateUrl,
   type CloudProvider,
+  daysUntilExpiry,
   gcpSinkCommand,
   gcpSinkIdentityCommand,
   normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
 } from '@verax/shared';
 import { Copy, ExternalLink } from 'lucide-react';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
@@ -20,10 +25,11 @@ import { SEVERITY_STYLES } from '@/design/severity';
 import {
   ADMIN_PAGE_SIZE,
   useCloudAccountList,
+  useCloudCredential,
   useCreateCloudAccount,
   useUpdateCloudAccount,
 } from '@/features/admin/admin-api';
-import { AdminShell, FormError, SelectInput } from '@/features/admin/admin-ui';
+import { AdminShell, ConfirmButton, FormError, SelectInput } from '@/features/admin/admin-ui';
 import { fieldErrors } from '@/features/admin/forms';
 import {
   ACCOUNT_NOUNS,
@@ -31,11 +37,14 @@ import {
   CONNECTOR_GUIDE_URL,
   CONNECTOR_TEMPLATE_URL,
   connectionHint,
+  CREDENTIAL_STATUS_LABELS,
   PROVIDER_LABELS,
 } from '@/features/admin/labels';
 import { useMe } from '@/features/session/session';
+import { ApiRequestError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
-import { formatRelative } from '@/lib/format';
+import { errorMessage } from '@/lib/errors';
+import { formatDate, formatRelative, plural } from '@/lib/format';
 
 const NEW = 'nova';
 const PROVIDER_OPTIONS = CLOUD_PROVIDERS.map((provider) => ({
@@ -79,7 +88,8 @@ const MISSING_SCOPE: Readonly<Record<CloudProvider, string>> = {
 
 /**
  * Contas cloud (T7.3): AWS, GCP e Cloudflare. Cadastrar, ver o que configurar em cada provedor e acompanhar a
- * conexão. Nenhum formulário pede credencial.
+ * conexão. O cadastro não pede credencial; o token do Cloudflare tem formulário próprio no detalhe da conta e vai
+ * cifrado para o cofre do nó (fase 2).
  */
 export function CloudAccountsPage() {
   const { data: me } = useMe();
@@ -138,7 +148,7 @@ export function CloudAccountsPage() {
   return (
     <AdminShell
       title="Contas cloud"
-      description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê, e nenhum cadastro guarda credencial."
+      description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê. O token do Cloudflare fica cifrado no cofre do nó, nunca no cadastro."
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
     >
       <DataTable
@@ -244,7 +254,9 @@ function CreateAccount() {
           {ACCOUNT_NOUNS[create.data.provider].registered}.{' '}
           {create.data.provider === 'aws'
             ? 'Falta o cliente criar o conector nela.'
-            : 'Falta configurar a leitura no nó.'}
+            : create.data.provider === 'cloudflare'
+              ? 'Falta colar o token de leitura do Cloudflare.'
+              : 'Falta configurar a leitura no nó.'}
         </p>
         <ProviderSteps account={create.data} canWrite />
       </div>
@@ -439,7 +451,7 @@ function EditSource({ account }: { account: CloudAccount }) {
 
 function ProviderSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   if (account.provider === 'gcp') return <GcpSteps account={account} canWrite={canWrite} />;
-  if (account.provider === 'cloudflare') return <CloudflareSteps account={account} />;
+  if (account.provider === 'cloudflare') return <CloudflareSteps account={account} canWrite={canWrite} />;
   return <ConnectorSteps account={account} />;
 }
 
@@ -575,18 +587,95 @@ function SinkIdentityForm({ account }: { account: CloudAccount }) {
   );
 }
 
-/** O que configurar no Cloudflare: o token só de leitura fica no cofre do nó, nunca neste cadastro. */
-function CloudflareSteps({ account }: { account: CloudAccount }) {
+/**
+ * O que configurar no Cloudflare: um token de conta só de leitura, criado pelo link com as permissões já marcadas,
+ * restrito ao IP de saída do nó e colado aqui. Ele vai cifrado para o cofre do nó e nunca volta para a tela: o cartão
+ * mostra só o fim do ID do token (`…abcd`), a validade e a última conferência.
+ */
+function CloudflareSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  // A última escrita feita aqui vale só até chegar um estado mais novo da conta: no detalhe, a lista relida depois dela
+  // ou depois de outra escrita (desativar o monitoramento apaga o token); no cadastro, a conta da resposta não é
+  // relida, e a escrita daqui continua valendo. Só os metadados; o token nunca fica guardado.
+  const [local, setLocal] = useState<LocalCredential | null>(null);
+  const current = local !== null && local.accountUpdatedAt === account.updatedAt ? local : null;
+  const keyStatus = current ? current.keyStatus : account.keyStatus;
+  // Os avisos seguem o que está na tela: "guardado" só com o mesmo token, "removido" só sem token.
+  const justSaved = local?.event === 'saved' && keyStatus?.keyIdSuffix === local.keyStatus?.keyIdSuffix;
+  const justRemoved = local?.event === 'removed' && keyStatus === null;
+  const remember = (next: Omit<LocalCredential, 'accountUpdatedAt'>) =>
+    setLocal({ ...next, accountUpdatedAt: account.updatedAt });
   return (
     <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
       <h3 id="conector-passos" className="text-sm font-semibold">
         Leitura da conta {account.accountId}
       </h3>
-      <ol className="list-decimal space-y-2 pl-5 text-sm">
-        <li>No Cloudflare, crie um token de API só de leitura, com acesso a Analytics e Logs das zonas.</li>
-        <li>
-          Grave o token no cofre de segredos do nó. Ele nunca entra neste cadastro, nem passa por e-mail ou
-          chat.
+      <p className="text-sm text-muted-foreground">
+        O Verax lê a auditoria e os eventos de segurança da conta com um token só de leitura. O token fica
+        cifrado no cofre do nó: não volta para esta tela, nem para a auditoria ou o log.
+      </p>
+      <ol className="list-decimal space-y-3 pl-5 text-sm">
+        <li className="space-y-2">
+          <p>
+            No Cloudflare, crie um token de conta com as permissões já marcadas, todas só de leitura:{' '}
+            <a
+              href={cloudflareTokenTemplateUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 underline"
+            >
+              criar o token no Cloudflare
+              <ExternalLink aria-hidden className="size-3.5" />
+            </a>
+            .
+          </p>
+          <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+            {CLOUDFLARE_TOKEN_PERMISSIONS.map((permission) => (
+              <li key={permission.key}>
+                {permission.scope} · {permission.name} · Read
+              </li>
+            ))}
+          </ul>
+        </li>
+        <li className="space-y-2">
+          <p>
+            Em <span lang="en">Client IP Address Filtering</span>, libere só o IP de saída do nó
+            {account.egressIps.length > 0 ? ':' : ', que a Verax informa.'}
+          </p>
+          {account.egressIps.length > 0 && (
+            <CommandBlock command={account.egressIps.join(', ')} label="Copiar o IP de saída do nó" />
+          )}
+          <p className="text-xs text-muted-foreground">
+            Se definir uma validade (TTL), o painel avisa 14 dias antes de o token vencer.
+          </p>
+        </li>
+        <li className="space-y-2">
+          {keyStatus ? (
+            <CredentialCard
+              account={account}
+              status={keyStatus}
+              canWrite={canWrite}
+              justSaved={justSaved}
+              onChange={remember}
+            />
+          ) : canWrite && account.status !== 'active' ? (
+            <p>Reative o monitoramento para colar o token: a conta desativada não guarda credencial.</p>
+          ) : canWrite ? (
+            <>
+              {justRemoved && (
+                <p role="status" className="text-muted-foreground">
+                  Token removido do cofre do nó. Apague-o também no Cloudflare.
+                </p>
+              )}
+              <p>Cole o token aqui:</p>
+              <CloudflareTokenForm
+                account={account}
+                focusOnMount={justRemoved}
+                onSaved={(saved) => remember({ keyStatus: saved, event: 'saved' })}
+              />
+            </>
+          ) : (
+            <p>Quem administra as contas cola o token aqui. Nenhum token guardado ainda.</p>
+          )}
         </li>
         <li>
           Informe as zonas monitoradas. A conexão muda para "Conectada" na primeira leitura bem-sucedida,
@@ -594,6 +683,221 @@ function CloudflareSteps({ account }: { account: CloudAccount }) {
         </li>
       </ol>
     </section>
+  );
+}
+
+/**
+ * O que esta tela acabou de fazer com a credencial: guardou (com os metadados da resposta) ou removeu, e sobre qual
+ * versão da conta (`updatedAt`). Chegando outra versão, vale a da conta.
+ */
+interface LocalCredential {
+  keyStatus: CloudCredentialStatus | null;
+  event: 'saved' | 'removed' | 'idle';
+  accountUpdatedAt: string;
+}
+
+const CREDENTIAL_SEVERITY = {
+  active: 'ok',
+  expiring: 'medium',
+  expired: 'critical',
+} as const satisfies Record<CloudCredentialStatus['status'], keyof typeof SEVERITY_STYLES>;
+
+/** O erro da API em texto, para ficar junto do campo ou do cartão (o 503 é o Cloudflare que não respondeu). */
+function credentialErrorText(error: unknown): string {
+  if (error instanceof ApiRequestError && error.status === 503) {
+    return 'O Cloudflare não respondeu a tempo. Tente de novo em instantes.';
+  }
+  // 404 aqui é a conta ou o token que outra pessoa já tirou: a mensagem da API diz qual.
+  if (error instanceof ApiRequestError && error.status === 404) return error.message;
+  return errorMessage(error);
+}
+
+/**
+ * O token guardado: só os metadados. Vencendo em até 14 dias, o aviso pede a troca; vencido, a coleta parou. Quem
+ * administra troca (cola outro) ou remove.
+ */
+function CredentialCard({
+  account,
+  status,
+  canWrite,
+  justSaved,
+  onChange,
+}: {
+  account: CloudAccount;
+  status: CloudCredentialStatus;
+  canWrite: boolean;
+  justSaved: boolean;
+  onChange: (local: Omit<LocalCredential, 'accountUpdatedAt'>) => void;
+}) {
+  const titleId = useId();
+  const title = useRef<HTMLParagraphElement>(null);
+  const [replacing, setReplacing] = useState(false);
+  const credential = useCloudCredential(account.id);
+  const { icon: Icon, tone } = SEVERITY_STYLES[CREDENTIAL_SEVERITY[status.status]];
+  const days = daysUntilExpiry(status.expiresAt);
+  // Guardado o token, o formulário sai da tela: o foco vai para o título do cartão, ao lado da confirmação.
+  useEffect(() => {
+    if (justSaved) title.current?.focus();
+  }, [justSaved, status.keyIdSuffix]);
+
+  const remove = async () => {
+    if (await credential.remove()) onChange({ keyStatus: null, event: 'removed' });
+  };
+
+  return (
+    <div role="group" aria-labelledby={titleId} className="space-y-3 rounded-md border p-3">
+      <p id={titleId} ref={title} tabIndex={-1} className="font-semibold">
+        Token de API guardado
+      </p>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
+        <dt className="text-muted-foreground">Token</dt>
+        <dd>
+          <code className="font-mono">…{status.keyIdSuffix}</code>
+        </dd>
+        <dt className="text-muted-foreground">Situação</dt>
+        <dd className="inline-flex items-center gap-1">
+          <Icon aria-hidden className={cn('size-4', tone)} />
+          {CREDENTIAL_STATUS_LABELS[status.status]}
+        </dd>
+        <dt className="text-muted-foreground">Validade</dt>
+        <dd>{status.expiresAt ? `vence em ${formatDate(status.expiresAt)}` : 'sem data de vencimento'}</dd>
+        <dt className="text-muted-foreground">Conferido</dt>
+        <dd>{formatRelative(status.verifiedAt)}</dd>
+      </dl>
+      {status.status === 'expiring' && days !== null && (
+        <p className="rounded-md border border-medium/70 bg-medium/15 p-2">
+          O token vence em {plural(days, 'dia', 'dias')}. Crie outro no Cloudflare e cole aqui antes disso, ou
+          a coleta para.
+        </p>
+      )}
+      {status.status === 'expired' && (
+        <p className="rounded-md border border-critical/50 bg-critical/10 p-2">
+          O token venceu e a coleta parou. Crie outro no Cloudflare e cole aqui.
+        </p>
+      )}
+      {justSaved && (
+        <p role="status" className="text-muted-foreground">
+          Token conferido no Cloudflare e guardado no cofre do nó (…{status.keyIdSuffix}).
+        </p>
+      )}
+      {canWrite && !replacing && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => {
+              credential.reset();
+              onChange({ keyStatus: status, event: 'idle' });
+              setReplacing(true);
+            }}
+          >
+            Trocar token
+          </Button>
+          <ConfirmButton
+            label="Remover token"
+            confirmLabel="Confirmar remoção"
+            busy={credential.pending}
+            warning="A coleta do Cloudflare para até outro token ser colado. Apague o token no Cloudflare também."
+            onConfirm={() => void remove()}
+          />
+        </div>
+      )}
+      {!replacing && credential.error ? (
+        <p role="alert" className="text-critical-text">
+          {credentialErrorText(credential.error)}
+        </p>
+      ) : null}
+      {replacing && (
+        <CloudflareTokenForm
+          account={account}
+          replacing
+          focusOnMount
+          onCancel={() => setReplacing(false)}
+          onSaved={(saved) => {
+            setReplacing(false);
+            onChange({ keyStatus: saved, event: 'saved' });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * O campo do token: tipo senha, sem preenchimento automático nem correção, e zerado no envio (antes da resposta). O
+ * valor colado vai do campo para a requisição e não fica em nenhum estado da tela depois disso.
+ */
+function CloudflareTokenForm({
+  account,
+  replacing = false,
+  focusOnMount = false,
+  onCancel,
+  onSaved,
+}: {
+  account: CloudAccount;
+  replacing?: boolean;
+  focusOnMount?: boolean;
+  onCancel?: () => void;
+  onSaved: (keyStatus: CloudCredentialStatus) => void;
+}) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string>();
+  const input = useRef<HTMLInputElement>(null);
+  const credential = useCloudCredential(account.id);
+  useEffect(() => {
+    if (focusOnMount) input.current?.focus();
+  }, [focusOnMount]);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    // O que o Cloudflare mostra costuma vir com espaço ou quebra de linha nas pontas ao copiar.
+    const parsed = cloudCredentialInputSchema.safeParse({
+      kind: 'cloudflare_api_token',
+      token: value.trim(),
+    });
+    setValue('');
+    if (!parsed.success) {
+      credential.reset();
+      setError(parsed.error.issues[0]?.message ?? 'Token inválido.');
+      return;
+    }
+    setError(undefined);
+    const saved = await credential.save(parsed.data);
+    if (saved?.keyStatus) onSaved(saved.keyStatus);
+  };
+
+  const apiError = credential.error ? credentialErrorText(credential.error) : undefined;
+  return (
+    <form onSubmit={(event) => void submit(event)} noValidate className="space-y-2">
+      <Field
+        ref={input}
+        label="Token de API do Cloudflare"
+        hint="O Cloudflare mostra o token uma vez só, ao criá-lo. Depois de guardado, ele não volta para esta tela."
+        type="password"
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        error={error ?? apiError}
+      />
+      {credential.pending && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Conferindo o token no Cloudflare…
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button type="submit" disabled={credential.pending}>
+          {replacing ? 'Trocar token' : 'Guardar token'}
+        </Button>
+        {onCancel && (
+          <Button type="button" variant="ghost" onClick={onCancel}>
+            Cancelar
+          </Button>
+        )}
+      </div>
+    </form>
   );
 }
 

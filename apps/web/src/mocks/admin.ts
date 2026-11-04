@@ -9,6 +9,9 @@ import {
   cloudAccountListQuerySchema,
   cloudAccountSchema,
   cloudAccountUpdateSchema,
+  cloudCredentialInputSchema,
+  CREDENTIAL_KIND_PROVIDERS,
+  credentialStatus,
   fieldsOutsideProvider,
   type Me,
   type Permission,
@@ -36,7 +39,13 @@ import {
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
-import { DEMO_ACCOUNTS, DEMO_SINK_TOPIC_PREFIX, DEMO_TENANTS } from './fixtures';
+import {
+  DEMO_ACCOUNTS,
+  DEMO_CLOUDFLARE_TOKEN_SUFFIX,
+  DEMO_EGRESS_IPS,
+  DEMO_SINK_TOPIC_PREFIX,
+  DEMO_TENANTS,
+} from './fixtures';
 import type { MockState } from './handlers';
 
 /**
@@ -114,10 +123,15 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     lastEventMinutes: number | null,
     other:
       | { provider: 'gcp'; pubsubSubscription: string; sinkWriterIdentity: string }
-      | { provider: 'cloudflare'; zones: string[] }
+      | { provider: 'cloudflare'; zones: string[]; tokenExpiresInDays: number | null }
       | null = null,
-  ) =>
-    cloudAccountSchema.parse({
+  ) => {
+    const cloudflare = other?.provider === 'cloudflare' ? other : null;
+    const tokenExpiresAt =
+      cloudflare?.tokenExpiresInDays != null
+        ? new Date(now.getTime() + cloudflare.tokenExpiresInDays * 86_400_000).toISOString()
+        : null;
+    return cloudAccountSchema.parse({
       id: `018f2c1e-0000-7000-8000-0000000c${index.toString(16).padStart(4, '0')}`,
       provider: other?.provider ?? 'aws',
       accountId,
@@ -128,7 +142,19 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
       sinkTopic: other?.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${accountId}` : null,
       sinkWriterIdentity: other?.provider === 'gcp' ? other.sinkWriterIdentity : null,
-      zones: other?.provider === 'cloudflare' ? other.zones : [],
+      zones: cloudflare ? cloudflare.zones : [],
+      // O token guardado no cofre: só os metadados, como a API devolve.
+      keyStatus: cloudflare
+        ? {
+            kind: 'cloudflare_api_token',
+            keyIdSuffix: DEMO_CLOUDFLARE_TOKEN_SUFFIX,
+            issuedAt: null,
+            expiresAt: tokenExpiresAt,
+            verifiedAt: at(0.05),
+            status: credentialStatus(tokenExpiresAt, now),
+          }
+        : null,
+      egressIps: cloudflare ? DEMO_EGRESS_IPS : [],
       status: 'active',
       connection: collection.connection,
       connectionError: collection.error ?? null,
@@ -137,6 +163,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       createdAt: at(40),
       updatedAt: at(10),
     });
+  };
   const protectedItem = (id: string, type: ProtectedResource['type'], identifier: string, reason: string) =>
     protectedResourceSchema.parse({
       id,
@@ -238,9 +265,11 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
             [],
             { connection: 'waiting', collectedMinutes: null },
             null,
+            // O token vence em 9 dias: o cartão mostra o aviso de troca.
             {
               provider: 'cloudflare',
               zones: ['loja-alfa.example'],
+              tokenExpiresInDays: 9,
             },
           ),
         ],
@@ -550,6 +579,8 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         sinkTopic: data.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${data.accountId}` : null,
         sinkWriterIdentity: data.provider === 'gcp' ? (data.sinkWriterIdentity ?? null) : null,
         zones: data.provider === 'cloudflare' ? (data.zones ?? []) : [],
+        keyStatus: null,
+        egressIps: data.provider === 'cloudflare' ? DEMO_EGRESS_IPS : [],
         status: 'active',
         connection: 'waiting',
         connectionError: null,
@@ -583,8 +614,60 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         rest,
         { updatedAt: new Date().toISOString() },
         sourceChanged || statusChanged ? { connection: 'waiting', connectionError: null } : {},
+        // Como a API: a conta desativada não guarda credencial.
+        rest.status === 'inactive' ? { keyStatus: null } : {},
       );
       return HttpResponse.json(account);
+    }),
+    // Credencial de leitura (token do Cloudflare). O mock não fala com o Cloudflare: todo token no formato é aceito,
+    // com um ID fictício, e nada do valor colado fica no estado (só o fim do ID, como na API).
+    http.put(url('/v1/cloud-accounts/:id/credential'), async ({ params, request }) => {
+      const scope = scoped('cloud_credentials:write', request);
+      if (!scope.ok) return scope.error;
+      const account = listOf(store.accounts, scope.tenantId).find(
+        (candidate) => candidate.id === params['id'],
+      );
+      if (!account) return problem(404, 'Conta não encontrada');
+      const input = cloudCredentialInputSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      if (CREDENTIAL_KIND_PROVIDERS[input.data.kind] !== account.provider) {
+        return problem(400, 'Este tipo de credencial não vale para esta conta.');
+      }
+      if (account.status !== 'active') return problem(400, 'Reative a conta antes de guardar a credencial.');
+      const tokenId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join('');
+      const now = new Date().toISOString();
+      Object.assign(account, {
+        keyStatus: {
+          kind: input.data.kind,
+          keyIdSuffix: tokenId.slice(-4),
+          issuedAt: null,
+          expiresAt: null,
+          verifiedAt: now,
+          status: 'active',
+        },
+        connection: 'waiting',
+        connectionError: null,
+        updatedAt: now,
+      });
+      return HttpResponse.json(account);
+    }),
+    http.delete(url('/v1/cloud-accounts/:id/credential'), ({ params, request }) => {
+      const scope = scoped('cloud_credentials:write', request);
+      if (!scope.ok) return scope.error;
+      const account = listOf(store.accounts, scope.tenantId).find(
+        (candidate) => candidate.id === params['id'],
+      );
+      if (!account) return problem(404, 'Conta não encontrada');
+      if (!account.keyStatus) return problem(404, 'Esta conta não tem credencial guardada.');
+      Object.assign(account, {
+        keyStatus: null,
+        connection: 'waiting',
+        connectionError: null,
+        updatedAt: new Date().toISOString(),
+      });
+      return new HttpResponse(null, { status: 204 });
     }),
 
     // --- Lista de proteção (T3.4) ---

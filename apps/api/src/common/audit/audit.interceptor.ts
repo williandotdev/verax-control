@@ -7,6 +7,7 @@ import { from, lastValueFrom, type Observable } from 'rxjs';
 import { isSelfManaged } from '../../auth/decorators.js';
 import { type AuditDetails, requestContext } from '../context/request-context.js';
 import { toErrorResponse } from '../http/all-exceptions.filter.js';
+import { CommittedApiError } from '../http/api-error.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import {
   inheritTenant,
@@ -32,8 +33,9 @@ function successStatus(context: ExecutionContext, method: string): number {
  * O handler roda dentro de uma transação, exposta aos services por `PrismaService.db`. No sucesso, o
  * registro de auditoria entra na mesma transação: ou a alteração e a auditoria são gravadas juntas, ou
  * nada é gravado. Na falha (validação, escopo do cliente, erro), a transação é desfeita e a tentativa é
- * registrada à parte com o status do erro. Recusas dos guards (permissão, CSRF, MFA) não chegam aqui: quem
- * as grava é o `DenialAudit`.
+ * registrada à parte com o status do erro. A exceção é a `CommittedApiError`: a recusa que precisa ficar gravada
+ * enquanto a requisição ainda segura os locks dela entra no mesmo commit, e o erro sai depois. Recusas dos guards
+ * (permissão, CSRF, MFA) não chegam aqui: quem as grava é o `DenialAudit`.
  */
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
@@ -56,13 +58,28 @@ export class AuditInterceptor implements NestInterceptor {
   private async runAudited(entry: RequestEntry, statusCode: number, next: CallHandler): Promise<unknown> {
     const details: AuditDetails = {};
     const additional: AuditDetails[] = [];
+    // A recusa gravada no commit: sai como erro depois dele (num objeto, porque é atribuída dentro da transação).
+    const committed: { error?: CommittedApiError } = {};
+    let result: unknown;
     try {
-      return await this.prisma.$transaction(
+      result = await this.prisma.$transaction(
         async (tx) => {
-          const result: unknown = await requestContext.run(
-            { ...requestContext.getStore(), tx, audit: details, additionalAudit: additional },
-            () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
-          );
+          let value: unknown;
+          try {
+            value = await requestContext.run(
+              { ...requestContext.getStore(), tx, audit: details, additionalAudit: additional },
+              () => lastValueFrom(next.handle() as Observable<unknown>, { defaultValue: undefined }),
+            );
+          } catch (error) {
+            if (!(error instanceof CommittedApiError)) throw error;
+            committed.error = error;
+            await this.auditService.write(tx, {
+              ...withDetails(entry, details),
+              outcome: 'failure',
+              statusCode: error.getStatus(),
+            });
+            return undefined;
+          }
           // O principal e os adicionais (`AuditContext.also`) entram no mesmo commit da alteração. O adicional sem
           // cliente próprio segue a trilha do principal (a do escopo, marcada por `scoped()`), não a do ator: para
           // admin_verax a do ator é nenhuma, e os dois registros de uma requisição ficariam em trilhas diferentes.
@@ -73,7 +90,7 @@ export class AuditInterceptor implements NestInterceptor {
               statusCode,
             });
           }
-          return result;
+          return value;
         },
         { maxWait: TRANSACTION_MAX_WAIT_MS, timeout: TRANSACTION_TIMEOUT_MS },
       );
@@ -81,6 +98,8 @@ export class AuditInterceptor implements NestInterceptor {
       await this.recordFailure(entry, details, error);
       throw error;
     }
+    if (committed.error) throw committed.error;
+    return result;
   }
 
   private async recordFailure(entry: RequestEntry, details: AuditDetails, error: unknown): Promise<void> {
