@@ -235,6 +235,44 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     }
   });
 
+  it('GuardDuty: a versão do achado é o updatedAt, em toda versão; o eventLastSeen não entra; fora do formato, fica ausente', () => {
+    // A fixture passa por `asWazuhWrites`: o horário é texto na origem e sai igual; o `count` vira texto ("7"). O
+    // `eventLastSeen` fica atrás do `updatedAt` de propósito: toda versão é comparada pelo mesmo horário, senão uma
+    // versão nova com o `eventLastSeen` atrás do `updatedAt` da anterior cairia como antiga.
+    const updated = parsed(
+      guardDutyAlert({
+        count: 7,
+        eventLastSeen: '2026-11-02T07:59:00.000Z',
+        updatedAt: '2026-11-02T08:00:05.000Z',
+      }),
+    );
+    expect(updated.lastSeenAt).toBe('2026-11-02T08:00:05.000Z');
+    expect(
+      parsed(guardDutyAlert({ eventLastSeen: null, updatedAt: '2026-11-02T08:00:05.000Z' })).lastSeenAt,
+    ).toBe('2026-11-02T08:00:05.000Z');
+    // Em UTC, com o fuso como o Wazuh grava (sem dois-pontos) ou com ele.
+    const lastSeenOf = (updatedAt: unknown) => parsed(withAws(guardDutyAlert(), { updatedAt })).lastSeenAt;
+    expect(lastSeenOf('2026-11-02T05:00:00.000-0300')).toBe('2026-11-02T08:00:00.000Z');
+    expect(lastSeenOf('2026-11-02T05:00:00-03:00')).toBe('2026-11-02T08:00:00.000Z');
+    expect(lastSeenOf('2026-11-02T08:00:00Z')).toBe('2026-11-02T08:00:00.000Z');
+    // O `eventLastSeen` válido da fixture não serve de reserva: sem `updatedAt`, não há versão.
+    for (const invalid of [
+      'ontem',
+      '2026-11-02',
+      '1793527200000',
+      '',
+      ' 2026-11-02T08:00:00Z',
+      7,
+      true,
+      null,
+    ]) {
+      expect(lastSeenOf(invalid)).toBeUndefined();
+    }
+    // As outras fontes não têm versão.
+    expect(parsed(cloudTrailAlert()).lastSeenAt).toBeUndefined();
+    expect(parsed(wafAlert()).lastSeenAt).toBeUndefined();
+  });
+
   it('GuardDuty: lista de um item vira objeto no wodle, e as duas formas são lidas', () => {
     const bucket = { name: 'dados-alfa', arn: 'arn:aws:s3:::dados-alfa' };
     for (const s3BucketDetails of [bucket, [bucket]]) {
@@ -262,6 +300,10 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     expect(parsed(cloudTrailAlert({ eventId })).nativeId).toBe(eventId);
     expect(parsed(guardDutyAlert({ findingId })).nativeId).toBe(findingId);
     expect(parsed(wafAlert({ requestId })).nativeId).toBe(`1793527200000/203.0.113.50/${requestId}`);
+    // Só o GuardDuty tem o id do achado inteiro (fora da sondagem de porta, igual ao nativo).
+    expect(parsed(guardDutyAlert({ findingId })).findingId).toBe(findingId);
+    expect(parsed(cloudTrailAlert({ eventId })).findingId).toBeUndefined();
+    expect(parsed(wafAlert({ requestId })).findingId).toBeUndefined();
     // ID de requisição do CloudFront, em base64, e IP do cliente em IPv6.
     const cloudFront = 'kWOMOnhtc0bYcI9eH1Q4ilGWHbACUtz3FrEdZ6uWoPHqDGMkMt1Wyg==';
     expect(parsed(wafAlert({ requestId: cloudFront, clientIp: '2001:db8::7' })).nativeId).toBe(
@@ -304,10 +346,13 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
 
     expect(parsed(withWritten(guardDutyAlert(), WAZUH_WRITTEN.portProbe.written))).toMatchObject({
       nativeId: '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0/198.51.100.20:22',
+      findingId: '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0',
       awsSeverity: 5.5,
       accounts: ['111122223333'],
       actor: { ip: '198.51.100.20' },
       resource: 'ec2:i-0abc1234def567890',
+      // A versão é o `updatedAt` (esse achado saiu sem `service.eventLastSeen`, que não entraria mesmo assim).
+      lastSeenAt: '2026-11-01T09:55:00.000Z',
     });
   });
 
@@ -326,6 +371,8 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
       `${findingId}/198.51.100.21:22`,
       `${findingId}/198.51.100.20:3389`,
     ]);
+    // O achado inteiro é o mesmo para todos os itens: é por ele que a reincidência é uma só por versão.
+    expect(alerts.map((alert) => alert.findingId)).toEqual([findingId, findingId, findingId]);
     expect(alerts.map((alert) => alert.actor.ip)).toEqual([
       '198.51.100.20',
       '198.51.100.21',
@@ -388,10 +435,14 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     for (const clientIp of ['fe80::1%eth0', 'não é ip', '999.1.1.1']) {
       expect(parsed(wafAlert({ clientIp })).nativeId).toBeUndefined();
     }
-    // Sondagem de porta com item fora do formato (sem IPv4, porta inválida, lista): nunca junta dois IPs.
-    const probe = (portProbeDetails: unknown) =>
-      parsed(guardDutyAlert({ action: { actionType: 'PORT_PROBE', portProbeAction: { portProbeDetails } } }))
-        .nativeId;
+    // Sondagem de porta com item fora do formato (sem IPv4, porta inválida, lista): nunca junta dois IPs, e também
+    // fica sem o id do achado inteiro (sem id nativo, a chave é a do alerta, e não há reincidência).
+    const probe = (portProbeDetails: unknown) => {
+      const alert = parsed(
+        guardDutyAlert({ action: { actionType: 'PORT_PROBE', portProbeAction: { portProbeDetails } } }),
+      );
+      return [alert.nativeId, alert.findingId];
+    };
     const remote = { ipAddressV4: '198.51.100.20' };
     for (const portProbeDetails of [
       { localPortDetails: { port: 22 }, remoteIpDetails: { ipAddressV6: '2001:db8::1' } },
@@ -403,7 +454,7 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
       ],
       'texto',
     ]) {
-      expect(probe(portProbeDetails)).toBeUndefined();
+      expect(probe(portProbeDetails)).toEqual([undefined, undefined]);
     }
   });
 

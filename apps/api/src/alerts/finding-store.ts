@@ -1,6 +1,11 @@
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
-import type { CloudProvider, UnownedReason as DbUnownedReason } from '../generated/prisma/client.js';
+import type {
+  CloudProvider,
+  FindingStatus,
+  Prisma,
+  UnownedReason as DbUnownedReason,
+} from '../generated/prisma/client.js';
 import { type IncidentGrouping, protectedItemsOf } from '../incidents/incident-grouping.js';
 import type { ActiveException } from './exception-match.js';
 import type { FindingDraft } from './finding-draft.js';
@@ -13,6 +18,16 @@ import type { FindingDraft } from './finding-draft.js';
 
 export type PersistOutcome = 'duplicate' | 'excepted' | 'opened' | 'joined' | 'none';
 
+/** Cliente do banco já no escopo de um cliente, dentro da transação que grava o achado. */
+type ScopedDb = Prisma.TransactionClient;
+
+/**
+ * Triado é todo status fora do inicial (`new`): investigando, legítimo e resolvido. É a mesma régua da triagem pela
+ * API (`findings.service.ts`), que marca `triagedAt` na primeira saída de "novo"; o achado que já nasce legítimo pela
+ * exceção também conta como triado, e a atividade nova dele vira outro achado esperado (a exceção conta o uso).
+ */
+const isTriaged = (status: FindingStatus): boolean => status !== 'new';
+
 export function findingRow(draft: FindingDraft, exception: ActiveException | null) {
   return {
     tenantId: draft.tenantId,
@@ -22,6 +37,8 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     rawEventId: draft.rawEventId ?? null,
     logSource: draft.logSource,
     occurredAt: new Date(draft.occurredAt),
+    lastSeenAt: draft.recurrence ? new Date(draft.recurrence.lastSeenAt) : null,
+    chainKey: draft.recurrence?.chainKey ?? null,
     severity: draft.severity,
     // A exceção marca o achado como esperado já na chegada: ele não entra na fila de triagem.
     status: exception ? ('legitimate' as const) : ('new' as const),
@@ -111,21 +128,110 @@ export class FindingStore {
         data: [findingRow(draft, exception)],
         skipDuplicates: true,
       });
-      if (count === 0) return 'duplicate' as const;
-      if (exception) {
-        await db.alertException.update({
-          where: { id: exception.id },
-          data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
-        });
-        // Esperado por exceção: não abre nem alimenta incidente.
-        return 'excepted' as const;
-      }
-      const { id } = await db.finding.findUniqueOrThrow({
-        where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
+      if (count === 1) return this.settle(db, draft, draft.sourceEventId, exception, protectedItems, now);
+      // A chave já existe. Só o GuardDuty traz a versão do achado, que diz se é a mesma ou uma nova.
+      return draft.recurrence
+        ? this.recur(db, draft, draft.recurrence, exception, protectedItems, now)
+        : ('duplicate' as const);
+    });
+  }
+
+  /** Depois de gravar o achado: o uso da exceção ou o incidente. */
+  private async settle(
+    db: ScopedDb,
+    draft: Pick<FindingDraft, 'source'>,
+    sourceEventId: string,
+    exception: ActiveException | null,
+    protectedItems: ReadonlySet<string>,
+    now: Date,
+  ): Promise<PersistOutcome> {
+    if (exception) {
+      await db.alertException.update({
+        where: { id: exception.id },
+        data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
+      });
+      // Esperado por exceção: não abre nem alimenta incidente.
+      return 'excepted' as const;
+    }
+    const { id } = await db.finding.findUniqueOrThrow({
+      where: { source_sourceEventId: { source: draft.source, sourceEventId } },
+      select: { id: true },
+    });
+    return this.grouping.place(db, id, protectedItems);
+  }
+
+  /**
+   * A chave já existe e o alerta traz a versão do achado: o GuardDuty soma a atividade nova ao mesmo achado (mesmo
+   * `id`, `service.count` maior) e grava outra versão (`updatedAt` mais novo). Decisão de 2026-11-04:
+   * - achado sem versão conhecida (gravado antes da coluna, ou com o `updatedAt` fora do formato na primeira versão):
+   *   esta versão vira a base de comparação, seja qual for o status, e nada mais muda. Sem isso, reler a mesma versão
+   *   de um achado triado viraria recorrência;
+   * - versão igual ou mais antiga que a última conhecida: duplicada, nada muda;
+   * - achado ainda não triado: ele absorve a versão nova, e só a versão conhecida avança. Assim a mesma versão,
+   *   relida na sobreposição depois da triagem, não vira achado;
+   * - achado já triado (investigando, legítimo ou resolvido) e versão estritamente mais nova: a versão vira um
+   *   achado novo, com a chave do achado inteiro mais o horário (reler essa versão cai como duplicada), ligado ao
+   *   original por `recurrenceOfId`. O original não muda: nem o status, nem os campos, nem o evento bruto.
+   * Quem decide é o achado mais recente da cadeia (`chainKey`: o original, as recorrências e, na sondagem de porta,
+   * o achado de cada IP): a versão que chega com uma recorrência ainda aberta entra nela, e não abre outra.
+   * Na sondagem de porta, o wodle entrega a versão em vários alertas (um por IP), todos na mesma cadeia: a
+   * recorrência é uma só por versão (os outros alertas caem como duplicados), e o alerta com exceção não a cria,
+   * porque a exceção é do IP dele, e a recorrência fala pela versão inteira. Se todos os IPs têm exceção, a versão
+   * não vira nada; o IP que aparece pela primeira vez é outro achado por IP, como sempre.
+   * A chave é única no banco inteiro; se for de um achado de outro cliente (conta recadastrada), o escopo não o vê, e
+   * nada é tocado.
+   */
+  private async recur(
+    db: ScopedDb,
+    draft: FindingDraft,
+    recurrence: NonNullable<FindingDraft['recurrence']>,
+    exception: ActiveException | null,
+    protectedItems: ReadonlySet<string>,
+    now: Date,
+  ): Promise<PersistOutcome> {
+    const original = await db.finding.findUnique({
+      where: { source_sourceEventId: { source: draft.source, sourceEventId: draft.sourceEventId } },
+      select: { id: true },
+    });
+    if (!original) return 'duplicate' as const;
+    // O original entra pelo id também: gravado sem a chave da cadeia (antes da coluna), ele ainda decide.
+    const latest = await db.finding.findFirstOrThrow({
+      where: { OR: [{ id: original.id }, { chainKey: recurrence.chainKey }] },
+      orderBy: [{ lastSeenAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, status: true, lastSeenAt: true },
+    });
+    const seenAt = new Date(recurrence.lastSeenAt);
+    if (latest.lastSeenAt === null) {
+      await db.finding.update({
+        where: { id: latest.id },
+        data: { lastSeenAt: seenAt, chainKey: recurrence.chainKey },
         select: { id: true },
       });
-      return this.grouping.place(db, id, protectedItems);
+      return 'duplicate' as const;
+    }
+    if (seenAt <= latest.lastSeenAt) return 'duplicate' as const;
+    if (!isTriaged(latest.status)) {
+      await db.finding.update({
+        where: { id: latest.id },
+        data: { lastSeenAt: seenAt },
+        select: { id: true },
+      });
+      return 'duplicate' as const;
+    }
+    // Alerta de um item só da versão (a chave base leva o IP; a da cadeia, não) com exceção: não fala pela versão.
+    if (exception && draft.sourceEventId !== recurrence.chainKey) return 'duplicate' as const;
+    const { count } = await db.finding.createMany({
+      data: [
+        {
+          ...findingRow(draft, exception),
+          sourceEventId: recurrence.sourceEventId,
+          recurrenceOfId: original.id,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (count === 0) return 'duplicate' as const;
+    return this.settle(db, draft, recurrence.sourceEventId, exception, protectedItems, now);
   }
 
   /** Na dúvida, o evento não é de ninguém (T5.2): a fila guarda o motivo e o mínimo para a triagem. */
