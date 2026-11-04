@@ -64,7 +64,8 @@ updates:
       - /infra/terraform/bootstrap
       - /infra/terraform/envs/staging
       - /infra/terraform/envs/production
-      - /infra/gcp
+      - /infra/gcp/envs/verax
+      - /infra/gcp/envs/homolog-sp
     schedule:
       interval: weekly
       day: monday

@@ -1,0 +1,33 @@
+# Copie para `terraform.tfvars` (que o git ignora) e preencha. Nada daqui vai para o repositório.
+
+# ID do projeto da GCP dos nós de clientes (o projeto novo, separado do nó da Verax).
+project_id = "projeto-dos-nos-123"
+
+# Projeto do registro das imagens do nó (o do nó da Verax). A VM de homologação ganha só leitura nele.
+images_project_id = "projeto-do-no-verax-123"
+# images_location      = "us-east1"
+# images_repository_id = "verax-control"
+
+# Região e zona: São Paulo, como os nós de clientes.
+# region = "southamerica-east1"
+# zone   = "southamerica-east1-b"
+
+# Plano B, se o ensaio mostrar que 2 vCPU não bastam para o Wazuh.
+# machine_type = "e2-standard-4"
+
+# Disco maior que os 60 GB do perfil, se o indexer do Wazuh pedir. Só cresce.
+# disk_gb = 120
+
+# Projetos de teste cujos logs vão para o nó (você precisa ser dono deles).
+# monitored_projects = ["projeto-de-teste-123"]
+
+# Quem pode entrar na VM por SSH, além do dono do projeto.
+# operators = ["user:voce@exemplo.com"]
+
+# Alerta de fila parada: e-mail que recebe (vazio: só no console) e as horas até alertar (1 para o teste do alerta).
+# alert_email                = "voce@exemplo.com"
+# stalled_subscription_hours = 24
+
+# Alerta de orçamento (opcional): conta de faturamento e valor mensal, na moeda dela.
+# billing_account_id = "000000-000000-000000"
+# monthly_budget     = 300

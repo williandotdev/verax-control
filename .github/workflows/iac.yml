@@ -55,12 +55,30 @@ jobs:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production infra/gcp; do
+          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
             echo "::endgroup::"
           done
+      - name: Testes do módulo do nó (provider simulado, sem credenciais)
+        # Os dois perfis; no nó da Verax, os nomes e os valores que recriariam algo no ar se mudassem (rede, NAT,
+        # firewall, conta de serviço, VM, disco, snapshot, cofres, tópicos, sinks e bucket), o script de boot byte a byte
+        # e a VM depois da manutenção do swap; e os acessos dos operadores quando a VM é recriada. Não substitui o `plan`
+        # contra o estado real (GUIA.md), que confere tudo. O provider simulado não fala com a GCP.
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: |
+          terraform -chdir=infra/gcp/modules/node init -backend=false -lockfile=readonly
+          terraform -chdir=infra/gcp/modules/node test
+      - name: Testes dos ambientes (provider simulado, sem credenciais)
+        # Homologação: a primeira subida num projeto novo (o `plan` não lê o projeto antes de o `apply` ligar as APIs).
+        # Nó da Verax: o `terraform.tfvars` precisa de todas as variáveis da primeira subida (sem a conta de
+        # faturamento, o `plan` apaga o orçamento). O `init` sem backend é o da validação, acima.
+        run: |
+          terraform -chdir=infra/gcp/envs/homolog-sp test
+          terraform -chdir=infra/gcp/envs/verax test
       - name: tflint
         # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
         env:
@@ -70,10 +88,11 @@ jobs:
           tflint --init --config "$PWD/.tflint.hcl"
           tflint --recursive --config "$PWD/.tflint.hcl" --format compact
       - name: tflint (GCP)
+        # Um ambiente por pasta (envs/*) e o módulo do nó (modules/node).
         working-directory: infra/gcp
         run: |
           tflint --init --config "$PWD/.tflint.hcl"
-          tflint --config "$PWD/.tflint.hcl" --format compact
+          tflint --recursive --config "$PWD/.tflint.hcl" --format compact
 
   node:
     name: Pacote do nó (scripts e compose)
@@ -85,6 +104,18 @@ jobs:
           persist-credentials: false
       - name: shellcheck
         run: shellcheck -x -S style infra/node/bin/*.sh
+      - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
+        # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
+        # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
+        # VM reiniciada no meio da limpeza. Roda sem root e sem tocar na máquina.
+        run: |
+          test=infra/gcp/modules/node/tests/startup-test.sh
+          shellcheck -x -S style infra/gcp/modules/node/startup.sh.tftpl "$test"
+          for profile in lean standard; do
+            bash "$test" render "$profile" >"$RUNNER_TEMP/startup-$profile.sh"
+          done
+          shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
+          bash "$test"
       - name: Compose válida (arquivos de ambiente fictícios, como o start.sh monta na VM)
         run: |
           sudo install -d -m 0755 /run/verax
@@ -96,6 +127,20 @@ jobs:
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
           } >images.env
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
+      - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
+        run: |
+          # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
+          # shellcheck source=/dev/null # só as duas linhas MEMORY_* do start.sh, filtradas pelo grep
+          source <(grep -E '^MEMORY_(LEAN|STANDARD)=\(' infra/node/bin/start.sh)
+          printf '%s\n' "${MEMORY_LEAN[@]}" >lean.env
+          printf '%s\n' "${MEMORY_STANDARD[@]}" >standard.env
+          render() { docker compose -f infra/node/compose.yaml --env-file images.env "$@" --profile setup config --format json; }
+          # O nó da Verax sem o arquivo (antes do perfil, ou antes do render) sobe com a mesma memória do lean.
+          diff <(render) <(render --env-file lean.env)
+          render --env-file standard.env | jq -e '.services
+            | .postgres.mem_limit == "536870912" and any(.postgres.command[]; . == "shared_buffers=128MB")
+              and .api.mem_limit == "402653184" and .api.environment.NODE_OPTIONS == "--max-old-space-size=256"
+              and .worker.mem_limit == "536870912" and .worker.environment.NODE_OPTIONS == "--max-old-space-size=384"'
       - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e no start.sh)
         run: |
           grep -q 'subnet: 172.30.53.0/24' infra/node/compose.yaml

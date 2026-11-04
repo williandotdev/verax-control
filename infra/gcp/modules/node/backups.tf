@@ -39,8 +39,6 @@ resource "google_storage_bucket" "backups" {
       type = "Delete"
     }
   }
-
-  depends_on = [google_project_service.apis]
 }
 
 # O nó cria backups novos e lê os antigos, mas não apaga nem sobrescreve: um nó comprometido não destrói os backups.

@@ -1,7 +1,7 @@
 # Nó da Verax (SOC na GCP): instalação e operação
 
-O SOC da própria Verax roda numa VM e2-micro da GCP (`infra/gcp/`), sem Wazuh. O painel fica em
-`verax.control.veraxsistemas.com.br` (Firebase Hosting, `docs/runbooks/painel.md`) e fala com a API em
+O SOC da própria Verax roda numa VM e2-micro da GCP (`infra/gcp/envs/verax/`, perfil `lean`), sem Wazuh. O painel
+fica em `verax.control.veraxsistemas.com.br` (Firebase Hosting, `docs/runbooks/painel.md`) e fala com a API em
 `api-verax.veraxsistemas.com.br`, que chega à VM pelo túnel do Cloudflare. Nos comandos abaixo, `PROJETO_DO_NO` é o
 projeto da GCP onde está a VM, e `PROJETO_MONITORADO` é cada projeto vigiado. Os valores reais ficam fora do
 repositório.
@@ -25,8 +25,8 @@ bucket de backups (`verax-backup.timer`).
 
 ## Antes de instalar (uma vez)
 
-1. **Infraestrutura.** Aplique o Terraform de `infra/gcp/` (guia em `infra/gcp/GUIA.md`). Ele cria uma assinatura do
-   Pub/Sub por projeto monitorado, os cofres dos segredos e o registro das imagens.
+1. **Infraestrutura.** Aplique o Terraform de `infra/gcp/envs/verax/` (guia em `infra/gcp/GUIA.md`). Ele cria uma
+   assinatura do Pub/Sub por projeto monitorado, os cofres dos segredos e o registro das imagens.
 2. **Túnel do Cloudflare.**
    - Em Zero Trust → Networks → Tunnels, crie um túnel `verax-node` do tipo Cloudflared.
    - Na tela de instalação, copie só o token, o texto longo depois de `--token`.
@@ -53,6 +53,9 @@ O plano do nó também fica no `node.conf`: o da Verax é `PLAN=interno`, sem li
 sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do plano precisa ganhar a linha
 `PLAN=interno` antes do próximo deploy. O bootstrap grava o rótulo do plano no cadastro do cliente do nó.
 
+O perfil do nó (`NODE_PROFILE`) define a memória do banco, da API e do worker. O da Verax é `lean`, com os mesmos
+limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` atual não precisa mudar.
+
 ## Instalar ou atualizar
 
 Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados, o Docker instalado (o `gh` lê a imagem
@@ -71,7 +74,11 @@ atualizar, repita com o commit novo. O `deploy.sh` faz três coisas:
    quem a assinou: o workflow `Imagens do nó` deste repositório, na `main`, nesse commit, num executor do GitHub.
 2. **Copia o pacote para a VM** pelo IAP, sem porta aberta: um túnel até a porta 22 e uma chave SSH criada só para
    esta execução (vale 1 hora no OS Login e é removida no fim). A chave do servidor fica em
-   `~/.ssh/known_hosts_verax-node`: a primeira execução a registra, e as seguintes a conferem.
+   `~/.ssh/known_hosts_verax-node`: a primeira execução a registra, e as seguintes a conferem. Uma VM recriada (a
+   manutenção do swap no `infra/gcp/GUIA.md`) tem chaves novas, e a conexão para com
+   `REMOTE HOST IDENTIFICATION HAS CHANGED`: depois de uma recriação planejada, apague a chave antiga com
+   `ssh-keygen -R verax-node -f ~/.ssh/known_hosts_verax-node` e rode de novo. Fora disso, a mensagem é um alerta:
+   não apague a chave sem entender por que ela mudou.
 3. **Instala pelo digest conferido.** A VM nunca confia em tag do registro.
 
 A instalação instala o Docker pelo repositório oficial, com a chave conferida. Na primeira vez, também gera a CA e o

@@ -1,4 +1,4 @@
-# APIs que os recursos abaixo usam. Ligar uma API não muda nada do que já existe no projeto.
+# APIs que os recursos deste ambiente e do módulo do nó usam. Ligar uma API não muda nada do que já existe no projeto.
 resource "google_project_service" "apis" {
   for_each = toset([
     "artifactregistry.googleapis.com",

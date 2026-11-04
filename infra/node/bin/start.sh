@@ -19,8 +19,15 @@ run=/run/verax
 # Rede dos contêineres e o IP do worker: os mesmos do compose.yaml.
 NODE_SUBNET=172.30.53.0/24
 WORKER_IP=172.30.53.10
+# Memória dos contêineres por perfil do nó (NODE_PROFILE no node.conf; sem a linha, lean). O lean repete os valores de
+# antes do perfil, que também são o padrão do compose.yaml (o CI confere); o standard é o nó de cliente, com 8 GB.
+MEMORY_LEAN=(POSTGRES_MEM_LIMIT=256m POSTGRES_SHARED_BUFFERS=32MB API_MEM_LIMIT=320m API_HEAP_MB=192 WORKER_MEM_LIMIT=256m WORKER_HEAP_MB=160)
+MEMORY_STANDARD=(POSTGRES_MEM_LIMIT=512m POSTGRES_SHARED_BUFFERS=128MB API_MEM_LIMIT=384m API_HEAP_MB=256 WORKER_MEM_LIMIT=512m WORKER_HEAP_MB=384)
 compose() {
-  docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml --env-file /etc/verax/images.env "$@"
+  local env_files=(--env-file /etc/verax/images.env)
+  # Antes do render (no `down` depois de um reboot), o arquivo da memória ainda não existe; o `down` não precisa dele.
+  if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
+  docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml "${env_files[@]}" "$@"
 }
 
 internal_secret() { cat "$secrets/$1"; }
@@ -78,6 +85,14 @@ write_env() { # <arquivo> <CHAVE=valor...>
 render() {
   mkdir -p "$run"
   chmod 0700 "$run"
+  case ${NODE_PROFILE:-lean} in
+    lean) write_env memory.env "${MEMORY_LEAN[@]}" ;;
+    standard) write_env memory.env "${MEMORY_STANDARD[@]}" ;;
+    *)
+      echo 'NODE_PROFILE inválido em /etc/verax/node.conf: use lean ou standard.' >&2
+      return 1
+      ;;
+  esac
   # Cada segredo numa atribuição própria. Lido direto num argumento (`write_env x "K=$(...)"`), uma falha passaria pelo
   # `set -e` sem parar nada, e o arquivo sairia com o valor vazio.
   local master migrator app session_key csrf_key
