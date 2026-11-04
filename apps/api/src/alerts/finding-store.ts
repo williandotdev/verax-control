@@ -19,6 +19,7 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     accountId: draft.accountId,
     source: draft.source,
     sourceEventId: draft.sourceEventId,
+    rawEventId: draft.rawEventId ?? null,
     logSource: draft.logSource,
     occurredAt: new Date(draft.occurredAt),
     severity: draft.severity,

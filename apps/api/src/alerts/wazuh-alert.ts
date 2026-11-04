@@ -18,8 +18,14 @@ export const AWS_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
 export type AwsSource = (typeof AWS_SOURCES)[number];
 
 export interface WazuhAwsAlert {
-  /** ID do alerta no Wazuh: a chave de idempotência do achado. */
+  /** ID do alerta no Wazuh. Muda a cada leitura do mesmo evento; o detalhe do achado busca o evento bruto por ele. */
   id: string;
+  /**
+   * ID do evento na própria AWS: `eventID` do CloudTrail, `id` do achado do GuardDuty, `httpRequest.requestId` do WAF.
+   * Repete-se quando o mesmo evento volta ao indexer (snapshot restaurado, `--reparse`, achado do GuardDuty
+   * atualizado), por isso é a base da chave do achado. Ausente ou fora do formato, a chave usa o `id` do alerta.
+   */
+  nativeId?: string;
   /** ISO 8601 em UTC. */
   timestamp: string;
   rule: {
@@ -266,6 +272,26 @@ const DETAILS: Record<AwsSource, (aws: Record<string, unknown>) => Partial<Wazuh
   waf: wafDetails,
 };
 
+/**
+ * ID do evento na AWS, como cada fonte grava: UUID no CloudTrail, 32 caracteres hexadecimais no GuardDuty e, no WAF,
+ * o ID da requisição de quem fica na frente dele (ALB, CloudFront em base64, API Gateway). Uma classe de caracteres só,
+ * sem espaço nem caractere de controle, com tamanho limitado.
+ */
+const nativeIdSchema = z.string().regex(/^[A-Za-z0-9._:+/=-]{1,128}$/);
+
+const NATIVE_ID: Record<AwsSource, z.ZodType<string>> = {
+  cloudtrail: z.object({ eventID: nativeIdSchema }).transform((event) => event.eventID),
+  guardduty: z.object({ id: nativeIdSchema }).transform((finding) => finding.id),
+  waf: z
+    .object({ httpRequest: z.object({ requestId: nativeIdSchema }) })
+    .transform((log) => log.httpRequest.requestId),
+};
+
+function nativeIdOf(source: AwsSource, aws: Record<string, unknown>): string | undefined {
+  const parsed = NATIVE_ID[source].safeParse(aws);
+  return parsed.success ? parsed.data : undefined;
+}
+
 /** Valida o documento do indexer e extrai o que a API usa. Nunca lança: o que não serve vira um motivo. */
 export function parseWazuhAlert(document: unknown): ParsedAlert {
   const envelope = envelopeSchema.safeParse(document);
@@ -292,6 +318,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
     ok: true,
     alert: {
       id,
+      nativeId: nativeIdOf(source, aws),
       timestamp,
       rule: {
         id: rule.id,

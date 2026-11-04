@@ -93,6 +93,32 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     });
   });
 
+  it('ID do evento na AWS de cada fonte: eventID, id do achado e requestId (fase 2, PR-W2)', () => {
+    const eventId = '7a3c9e1f-0b2d-4c6e-8f10-2a4b6c8d0e1f';
+    const findingId = '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0';
+    const requestId = '1-6720a0b0-0a1b2c3d4e5f6a7b8c9d0e1f';
+    expect(parsed(cloudTrailAlert({ eventId })).nativeId).toBe(eventId);
+    expect(parsed(guardDutyAlert({ findingId })).nativeId).toBe(findingId);
+    expect(parsed(wafAlert({ requestId })).nativeId).toBe(requestId);
+    // ID de requisição do CloudFront, em base64.
+    const cloudFront = 'kWOMOnhtc0bYcI9eH1Q4ilGWHbACUtz3FrEdZ6uWoPHqDGMkMt1Wyg==';
+    expect(parsed(wafAlert({ requestId: cloudFront })).nativeId).toBe(cloudFront);
+    // O id do alerta muda a cada leitura; o da AWS, não.
+    const again = { ...cloudTrailAlert({ eventId }), id: '1793600000.000099' };
+    expect(parsed(again).nativeId).toBe(eventId);
+  });
+
+  it('sem ID da AWS, ou fora do formato, o alerta segue válido, sem id nativo', () => {
+    expect(parsed(cloudTrailAlert({ eventId: null })).nativeId).toBeUndefined();
+    expect(parsed(wafAlert({ requestId: null })).nativeId).toBeUndefined();
+    for (const eventID of ['', 'com espaço', 'x'.repeat(129), 'quebra\nde linha', 42, { id: 'objeto' }]) {
+      expect(parsed(withAws(cloudTrailAlert(), { eventID })).nativeId).toBeUndefined();
+    }
+    expect(parsed(withAws(guardDutyAlert(), { id: ['lista'] })).nativeId).toBeUndefined();
+    // O id de outra fonte não vale: no CloudTrail, só o eventID.
+    expect(parsed(withAws(cloudTrailAlert({ eventId: null }), { id: 'abc' })).nativeId).toBeUndefined();
+  });
+
   it('não guarda nada além do que usa: evento bruto, correlações anteriores e cabeçalhos ficam de fora', () => {
     const serialized = JSON.stringify([parsed(cloudTrailAlert()), parsed(wafAlert())]);
     for (const leaked of ['conteudo', 'evento anterior', 'token-do-usuario', 'ConsoleLogin":"Failure']) {

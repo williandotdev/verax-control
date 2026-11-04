@@ -396,10 +396,12 @@ model Finding {
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   /// Conta do provedor de onde veio o evento (12 dígitos, ID do projeto ou ID do Cloudflare).
   accountId       String           @db.VarChar(32)
-  /// Sistema de origem do alerta (`wazuh`).
+  /// Sistema de origem do alerta (`wazuh` ou `gcp`).
   source          String           @db.VarChar(16)
-  /// ID do alerta no sistema de origem.
+  /// Chave do achado na origem, a mesma a cada releitura do evento (no Wazuh, `wazuh/<conta>/<tipo>:<id>:<regra>`).
   sourceEventId   String           @db.VarChar(128)
+  /// Só no Wazuh: ID do alerta da primeira leitura, por onde o detalhe busca o evento bruto no indexer.
+  rawEventId      String?          @db.VarChar(128)
   /// Fonte de log: `cloudtrail`, `guardduty`, `waf`.
   logSource       String           @db.VarChar(32)
   occurredAt      DateTime         @db.Timestamptz(3)

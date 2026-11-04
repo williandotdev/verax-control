@@ -10,9 +10,9 @@ import type { RawEventReader } from './raw-events.js';
 export class IndexerRawEvents implements RawEventReader {
   constructor(private readonly indexer: AlertSearchClient) {}
 
-  async read(source: string, sourceEventId: string): Promise<Record<string, unknown> | null> {
+  async read(source: string, rawEventId: string): Promise<Record<string, unknown> | null> {
     if (source !== 'wazuh') return null;
-    const [hit] = await this.indexer.search(alertById(sourceEventId));
+    const [hit] = await this.indexer.search(alertById(rawEventId));
     if (!hit) return null;
     const clean = sanitizeRawAlert(hit.source);
     return typeof clean === 'object' && clean !== null && !Array.isArray(clean)
