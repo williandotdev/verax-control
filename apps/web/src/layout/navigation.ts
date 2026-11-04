@@ -10,6 +10,7 @@ import {
   Inbox,
   type LucideIcon,
   ScrollText,
+  Server,
   ShieldAlert,
   ShieldCheck,
   ShieldPlus,
@@ -48,6 +49,7 @@ export const NAVIGATION: NavGroup[] = [
       { to: '/cadastros/clientes', label: 'Clientes', icon: Building2, permission: 'tenants:read' },
       { to: '/cadastros/usuarios', label: 'Usuários', icon: Users, permission: 'users:read' },
       { to: '/cadastros/contas', label: 'Contas cloud', icon: Cloud, permission: 'cloud_accounts:read' },
+      { to: '/cadastros/agentes', label: 'Agentes', icon: Server, permission: 'agents:read' },
       {
         to: '/cadastros/protecao',
         label: 'Lista de proteção',
