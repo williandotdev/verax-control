@@ -21,10 +21,16 @@ export const PLAN_IDS = ['essencial', 'profissional'] as const;
 export const planIdSchema = z.enum(PLAN_IDS);
 export type PlanId = z.infer<typeof planIdSchema>;
 
-/** Subdomínio do cliente: 3 a 16 caracteres, para `vx-<slug>` caber nos nomes da GCP (plano §4a). */
+/**
+ * Subdomínio do cliente: 3 a 16 caracteres, para `vx-<slug>` caber nos nomes da GCP (plano §4a). Traços nas posições
+ * 3 e 4 juntos ficam de fora: são reservados do DNS (RFC 5891), como o `xn--` dos domínios internacionalizados, e o
+ * painel recusa abrir um endereço assim (`isTenantSlug`, em `apps/web/src/lib/tenant-address.ts`). As duas regras
+ * andam juntas, para nunca vender um subdomínio que o painel não abre.
+ */
 export const slugSchema = z
   .string()
-  .regex(/^[a-z][a-z0-9-]{1,14}[a-z0-9]$/, { error: 'subdomínio inválido' });
+  .regex(/^[a-z][a-z0-9-]{1,14}[a-z0-9]$/, { error: 'subdomínio inválido' })
+  .refine((value) => value.slice(2, 4) !== '--', { error: 'subdomínio inválido' });
 
 /** Nomes que nenhum cliente recebe: endereços da própria Verax (plano §4a). */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
