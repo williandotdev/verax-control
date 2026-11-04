@@ -21,6 +21,13 @@ images_project_id = "projeto-do-no-verax-123"
 # Projetos de teste cujos logs vão para o nó (você precisa ser dono deles).
 # monitored_projects = ["projeto-de-teste-123"]
 
+# Projetos de clientes (na homologação, um projeto de outra organização, para o teste "sem papel para a Verax"): o
+# cliente cria o sink com o comando de Contas cloud e cola a identidade dele no painel; ela vem para cá (GUIA, "Projeto
+# de cliente: o sink é do cliente").
+# customer_projects = {
+#   "projeto-do-cliente-123" = { writer_identity = "serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com" }
+# }
+
 # Quem pode entrar na VM por SSH, além do dono do projeto.
 # operators = ["user:voce@exemplo.com"]
 
