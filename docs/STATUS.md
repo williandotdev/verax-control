@@ -2047,7 +2047,7 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - um `apply` que recria a VM com a proteção ligada tira os acessos dos operadores da VM no ar antes de falhar (o Terraform não deixa barrar isso no `plan`); o GUIA manda conferir a proteção no `plan` e diz como devolvê-los;
   - a homologação dá à VM leitura do registro de imagens no projeto da Verax (só as imagens do código aberto);
   - o PR-V1 pode precisar listar as versões do `credentials-key` (`secretmanager.versions.list`), que o `secretAccessor` não dá; se o desenho dele pedir, o papel entra lá;
-  - a homologação ligada custa cerca de R$ 613 por mês: parar fora das janelas de teste.
+  - a homologação ligada custa o mesmo que um nó `standard` (valor fora do repositório público): parar fora das janelas de teste.
 
 ## Fase 2, PR-V2: usuário IAM somente leitura do cliente ⚠️ altera `infra/` e `.github/`
 
@@ -2706,6 +2706,40 @@ Correções dos quatro checks do CI que falharam no PR da base (CodeQL, Semgrep,
 - **Definição de pronto:** critérios ✔ · testes ✔ · lint e tipos ✔ · nenhuma dependência ✔ · regras de segurança ✔ (só dados fictícios; nomes de série e categoria entram como texto, nunca como HTML).
 - **O que testar manualmente:** `pnpm --filter @verax/web dev:mock`, Relatórios → Resumo do período nos dois temas: passar o mouse e usar Tab e as setas nos dois gráficos; abrir "Ver tabela"; trocar o período (7, 30 e 90 dias); no celular, conferir a legenda e a dica.
 - **Riscos:** o guia de visualização prefere barras para comparar partes de um todo; a pizza ficou por pedido do responsável e funciona bem com 4 partes e a tabela ao lado. Com muitos dias sem achado, as quatro linhas correm juntas no zero e só a de cima aparece ali (a dica e a tabela dão cada uma). O Médio, amarelo, é discreto no tema claro.
+
+## Informação comercial fora do repositório público ⚠️ altera `infra/`
+
+- **Pedido:** o repositório continua público, mas sem informação comercial na árvore: preço dos planos, custo por cliente, margens, impostos, cupons, metas e caminhos do estudo de mercado (04/11/2026). O preço está sendo refeito (ambiente configurável, preço por componente; o site mostra só o "a partir de"), e valores no repositório ficariam velhos de qualquer forma.
+- **O que saiu:**
+  - `docs/ARQUITETURA.md`, seção "Custo estimado por nó", agora "Custo por nó": a tabela por plano (preço de cada plano, custo do nó, total e folga), as premissas de câmbio e de preço da nuvem, o desconto de uso contínuo, o plano B, a homologação parada e a pilha na AWS, todos com valores. Ficaram os recursos que pesam em cada perfil e os links para a calculadora da Google Cloud, os preços do S3 e a calculadora da AWS. O preço do certificado do Cloudflare de mais níveis (o motivo de a API ficar em `api-<cliente>`) virou "pago à parte";
+  - `infra/gcp/GUIA.md`: o custo da homologação ligada e parada (é o de um nó de cliente) virou a lista do que é cobrado, com a calculadora; o cupom da Stripe saiu (os passos citam "cupons, se houver", com os termos fora do repositório), e os preços continuam só pelos `lookup_key`; o nome do arquivo do plano da fase 3 virou "documento interno";
+  - `infra/gcp/envs/homolog-sp/variables.tf`: a mesma estimativa, na descrição de `monthly_budget` (só o texto; o padrão não mudou);
+  - `infra/cloudformation/README.md` e `GUIA-NO.md`: o custo na conta AWS do cliente e o da pilha do nó na AWS viraram links para os preços e a calculadora da AWS;
+  - este arquivo: só a linha com o custo da homologação ligada (riscos do PR-04'), com o valor trocado por "valor fora do repositório público". O resto do registro não mudou.
+- **O que ficou, de propósito:** o custo e o orçamento da infraestrutura da própria Verax (nó `lean` e plano de controle, no GUIA, no `ARQUITETURA.md` e nos `.tf`), que não é preço nem custo de cliente; os limites de cada plano (contas, usuários, GiB e histórico), que o código aplica (`packages/shared/src/plans.ts`); os `lookup_key` da Stripe, que o plano de controle usa; preços de nuvem citados como motivo de decisões antigas neste registro e no comentário do checkov do template do nó na AWS.
+- **Preço no código:** nenhum valor na `main`. O plano de controle só conhece os `lookup_key` (`STRIPE_PRICE_LOOKUP_ESSENCIAL` e `STRIPE_PRICE_LOOKUP_PROFISSIONAL`, em `env.schema.ts` e em `infra/gcp/envs/control-plane/run.tf`), e não há script de catálogo da Stripe na `main`. O catálogo vai para um arquivo lido em tempo de execução, num PR próprio.
+- **Histórico do git:** não foi reescrito (decisão do responsável). Os valores antigos continuam nos commits anteriores.
+- **Dependências:** nenhuma.
+- **Testes:** só documentação e a descrição de uma variável do Terraform. `terraform fmt -check -recursive infra/gcp` e `validate` em `envs/homolog-sp`; Prettier limpo; nova busca por `R$`, `US$`, margem, desconto de uso contínuo, cupom e o caminho do estudo, sem nada comercial.
+- **Definição de pronto:** nada comercial na árvore ✔ · informação de operação mantida ✔ · nenhuma dependência ✔ · regras de segurança ✔ · **aceite:** o responsável aprova o texto.
+
+## Licença proprietária: código-fonte disponível, todos os direitos reservados
+
+- **Pedido:** uma licença explícita para o repositório público: o código fica aberto só para leitura, revisão de segurança e auditoria por clientes e pesquisadores; usar, copiar, modificar, distribuir, sublicenciar, executar para terceiros ou oferecer como serviço depende de contrato escrito (04/11/2026).
+- **Arquivos:** `LICENSE` (novo, em português, com a tradução em inglês só como referência), `README.md` (seção "Licença"), `package.json` da raiz (`"license"` de `UNLICENSED` para `SEE LICENSE IN LICENSE`) e dos quatro workspaces (`apps/api`, `apps/control-plane`, `apps/web`, `packages/shared`, que não tinham o campo). O `"private": true` continua em todos.
+- **Titular:** "Verax Sistemas", CNPJ 34.282.636/0001-95, como no rodapé do site. A razão social não aparece no site: conferir no cartão do CNPJ e trocar no `LICENSE` se for diferente.
+- **O que o `LICENSE` diz:** titularidade (Leis 9.609/1998 e 9.610/1998); a finalidade da publicação; o que vale sem contrato (ler, analisar e executar localmente, isolado e fora de produção, só para avaliar a segurança; citar trechos em relatórios), com a ressalva do fork dentro do GitHub pelos Termos de Serviço dele; o que é proibido sem contrato; nenhum direito de marca; divulgação responsável pelo `SECURITY.md`; os componentes de terceiros seguem as licenças deles (dependências do pnpm, imagens do Wazuh em GPLv2 e do Prowler em Apache-2.0, providers do Terraform), sem redistribuição por este repositório, e a parte derivada de arquivo de terceiro segue a licença original; sem garantia; limitação de responsabilidade; o contrato prevalece; violação encerra as permissões; lei brasileira e foro do domicílio da Titular; o português prevalece sobre a tradução.
+- **CI:** nenhuma política de licença a ajustar. O Dependency Review só tem `fail-on-severity`, sem `allow-licenses` nem `deny-licenses`; o Trivy roda com `vuln,secret,misconfig` (sem `license`); o OSV-Scanner não olha licença. `pnpm install --frozen-lockfile` passa sem mudar o lockfile (o campo não entra nele).
+- **Revisão jurídica, obrigatória antes de vender o modo self-hosted:** o `LICENSE` foi escrito sem advogado e vale como está até a revisão. Pontos para ela:
+  - a razão social da Titular e o foro;
+  - arquivos baseados no Wazuh, que é GPLv2: `infra/wazuh/config/manager/rules/verax_aws_rules.xml` (regras do ruleset do Wazuh sobrescritas, com o resto de cada regra igual ao original), `infra/wazuh/config/manager/ossec.conf` e `infra/wazuh/config/indexer/opensearch.yml` (a partir dos arquivos do single-node do wazuh-docker), `infra/wazuh/docker-compose.yml` e `infra/node/compose.wazuh.yaml` (a partir do compose do single-node). Decidir se precisam do aviso da GPLv2 (ou da licença do arquivo de origem) e se podem ficar sob este `LICENSE`;
+  - o modo self-hosted: o pacote do nó instala as imagens do Wazuh (GPLv2) na máquina do cliente, e o contrato precisa tratar disso;
+  - contribuições de fora (pull requests): não há cessão de direitos nem acordo de contribuição;
+  - `elkjs` (EPL-2.0), que chega à imagem das migrations pelo CLI do Prisma (`@prisma/studio-core`); as outras dependências de produção têm licenças permissivas (MIT, Apache-2.0, ISC, BSD, BlueOak, 0BSD, Unlicense, MIT-0 e PSF-2.0, por `pnpm -r licenses list --prod`);
+  - o alcance da execução local liberada no item 3(b).
+- **Dependências:** nenhuma.
+- **Testes:** `pnpm install --frozen-lockfile --offline` sem mudança; Prettier limpo; gitleaks pelo hook.
+- **Definição de pronto:** `LICENSE` e seção no README ✔ · campo nos cinco `package.json` ✔ · CI sem política afetada ✔ · nenhuma dependência ✔ · regras de segurança ✔ · **aceite:** depende do responsável e da revisão jurídica.
 
 ## Fase 3, CP-08: painel de build único (API derivada do endereço) ⚠️ altera `.github/`
 

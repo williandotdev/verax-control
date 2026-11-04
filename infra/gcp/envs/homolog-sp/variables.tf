@@ -110,7 +110,7 @@ variable "billing_account_id" {
 }
 
 variable "monthly_budget" {
-  description = "Orçamento mensal do projeto, na moeda da conta de faturamento. Avisos em 50%, 90% e 100%. Ligada o mês todo, a homologação custa cerca de R$ 613; parada, cerca de R$ 70 (disco e IP)."
+  description = "Orçamento mensal do projeto, na moeda da conta de faturamento. Avisos em 50%, 90% e 100%. Ligada o mês todo, a homologação custa o mesmo que um nó standard; parada, só o disco, os snapshots e o IP (infra/gcp/GUIA.md)."
   type        = number
   default     = 300
 }
