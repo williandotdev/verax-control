@@ -55,8 +55,16 @@ export function toErrorResponse(exception: unknown): ErrorResponseBody {
     exception instanceof HttpException ? exception.getStatus() : (clientErrorStatus(exception) ?? 500);
 
   if (status >= 500) {
+    // A mensagem de um 5xx é sempre a genérica; o código estável de um `ApiError` (ex.: `checkout_unavailable`) vai
+    // junto, para o site escolher o texto sem depender da mensagem.
     const message = status === 503 ? UNAVAILABLE_MESSAGE : INTERNAL_ERROR_MESSAGE;
-    return { statusCode: status, error: statusName(status), message };
+    const code = exception instanceof ApiError ? exception.code : undefined;
+    return {
+      statusCode: status,
+      error: statusName(status),
+      message,
+      ...(code === undefined ? {} : { code }),
+    };
   }
 
   if (exception instanceof ApiError) {

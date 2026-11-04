@@ -6,8 +6,10 @@
 #   - cp-worker, `logger.error({ event: "provisioning_failed", tenantId, step, code })`: um passo esgotou as
 #     tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error:<código>`);
 #   - cp-public, `logger.warn({ event: "stripe_webhook_signature_failed", requestId })`: `constructEvent` recusou a
-#     assinatura. Nunca o corpo nem os cabeçalhos.
-# O `tenantId` e o `requestId` viram rótulos do incidente; nada mais do log entra no e-mail.
+#     assinatura. Nunca o corpo nem os cabeçalhos;
+#   - cp-public (CP-03), `warn({ event: "checkout_daily_limit_reached", limit, day, requestId })`: o teto global de
+#     sessões do Checkout do dia (UTC) foi atingido e a sessão foi recusada. Sem dado do pedido nem o IP.
+# O `tenantId`, o `requestId` e o `day` viram rótulos do incidente; nada mais do log entra no e-mail.
 
 resource "google_monitoring_notification_channel" "email" {
   count = var.alert_email == "" ? 0 : 1
@@ -34,6 +36,13 @@ locals {
       display_name = "Plano de controle: assinatura inválida no webhook da Stripe"
       labels       = { request = "EXTRACT(jsonPayload.requestId)" }
       runbook      = "O cp-public recusou um webhook por assinatura inválida. Uma ocorrência isolada é ruído da internet; várias seguidas indicam segredo trocado (rotação no Dashboard sem nova versão em `cp-stripe-webhook-secret`) ou tentativa de forjar eventos."
+    }
+    checkout_daily_limit = {
+      service      = "cp-public"
+      event        = "checkout_daily_limit_reached"
+      display_name = "Plano de controle: teto diário de sessões do Checkout atingido"
+      labels       = { day = "EXTRACT(jsonPayload.day)" }
+      runbook      = "O cp-public recusou uma sessão do Checkout (429 `checkout_daily_limit`) porque o teto global do dia (50 sessões, dia UTC) foi atingido: o disjuntor contra criação em massa. Compras novas voltam sozinhas à meia-noite UTC. Confira nos logs de requisição do cp-public (status 201 e 429 em `/v1/public/checkout`) se é um robô (poucos IPs, slugs em série) ou venda de verdade; reservas de robô vencem sozinhas em 2 h 30."
     }
   }
 }
