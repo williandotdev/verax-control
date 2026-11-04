@@ -61,9 +61,13 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
   let tenantA: string;
   let tenantB: string;
   let publicV1: VaultPublicKey;
+  let publicV2: VaultPublicKey;
   let onlyV1: VaultKeyring;
   let bothCurrentV2: VaultKeyring;
   let onlyV2: VaultKeyring;
+  /** A versão 2 desativada antes da recifragem: o worker tem a 1 e a 3 (corrente). */
+  let v1v3Current3: VaultKeyring;
+  let allCurrent3: VaultKeyring;
   /** Contas criadas por cada teste: as credenciais delas saem no fim do teste (a recifragem varre a tabela toda). */
   const created: string[] = [];
 
@@ -120,13 +124,17 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     tenantB = await createTenant(app, 'Cliente Demo B (cofre)');
     const v1 = generateKeyPairSync('rsa', { modulusLength: 3072 });
     const v2 = generateKeyPairSync('rsa', { modulusLength: 3072 });
+    const v3 = generateKeyPairSync('rsa', { modulusLength: 3072 });
+    const private1 = `1:${pem64(v1.privateKey, 'pkcs8')}`;
+    const private2 = `2:${pem64(v2.privateKey, 'pkcs8')}`;
+    const private3 = `3:${pem64(v3.privateKey, 'pkcs8')}`;
     publicV1 = parsePublicKey(pem64(v1.publicKey, 'spki'), 1);
-    onlyV1 = parsePrivateKeys(`1:${pem64(v1.privateKey, 'pkcs8')}`, 1);
-    bothCurrentV2 = parsePrivateKeys(
-      `1:${pem64(v1.privateKey, 'pkcs8')}\n2:${pem64(v2.privateKey, 'pkcs8')}`,
-      2,
-    );
-    onlyV2 = parsePrivateKeys(`2:${pem64(v2.privateKey, 'pkcs8')}`, 2);
+    publicV2 = parsePublicKey(pem64(v2.publicKey, 'spki'), 2);
+    onlyV1 = parsePrivateKeys(private1, 1);
+    bothCurrentV2 = parsePrivateKeys(`${private1}\n${private2}`, 2);
+    onlyV2 = parsePrivateKeys(private2, 2);
+    v1v3Current3 = parsePrivateKeys(`${private1}\n${private3}`, 3);
+    allCurrent3 = parsePrivateKeys(`${private1}\n${private2}\n${private3}`, 3);
   });
 
   afterEach(async () => {
@@ -413,5 +421,79 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
       report: { stale: 2, rekeyed: 2, skipped: 0, failed: 0 },
     });
     expect(text).toContain('[REDACTED]');
+  });
+
+  it('recifragem: a linha que não abre não segura as seguintes (páginas de 1 linha), e a execução seguinte a tenta de novo', async () => {
+    // Três contas, na ordem da varredura (o ID da conta). A primeira fica cifrada com a versão 2, que o chaveiro da
+    // primeira execução não tem (só a 1 e a 3, corrente 3): ela não abre, e as outras duas, na versão 1, têm de ser
+    // recifradas na mesma execução, mesmo com uma linha por página (sem o cursor, a página seria sempre a primeira).
+    const accounts = [await newAccount(tenantA), await newAccount(tenantB), await newAccount(tenantA)].sort(
+      (a, b) => (a.id < b.id ? -1 : 1),
+    );
+    const [first, second, third] = accounts as [Account, Account, Account];
+    const secrets = [awsSecret(), awsSecret(), awsSecret()] as const;
+    const storedFirst = await store(first, new StaticAwsCredentials(accessKeyId(), secrets[0]), publicV2);
+    const storedSecond = await store(second, new StaticAwsCredentials(accessKeyId(), secrets[1]));
+    const storedThird = await store(third, new StaticAwsCredentials(accessKeyId(), secrets[2]));
+
+    const capture = new LogCapture();
+    const logger = pino(buildPinoOptions({ LOG_LEVEL: 'trace' }), capture);
+    const rekey = new CredentialRekey(prisma, v1v3Current3, { batch: 1 });
+    const scheduler = new Scheduler(
+      [
+        {
+          name: 'credential-rekey',
+          intervalMs: 60_000,
+          budgetMs: 60_000,
+          run: (signal) => rekey.runOnce(signal),
+        },
+      ],
+      logger,
+    );
+    scheduler.start();
+    await vi.waitFor(() => expect(capture.text).toContain('tarefa concluída'), { timeout: 20_000 });
+    await scheduler.stop();
+
+    const done = capture.entries().find((entry) => entry['msg'] === 'tarefa concluída');
+    expect(done).toMatchObject({
+      task: 'credential-rekey',
+      report: { stale: 3, rekeyed: 2, skipped: 0, failed: 1, failures: { key_version_missing: 1 } },
+    });
+    expect(await rowOf(first.id)).toMatchObject({ ciphertext: storedFirst.ciphertext, keyVersion: 2 });
+    const rowSecond = await rowOf(second.id);
+    const rowThird = await rowOf(third.id);
+    expect(rowSecond).toMatchObject({ tenantId: tenantB, keyVersion: 3 });
+    expect(rowThird).toMatchObject({ tenantId: tenantA, keyVersion: 3 });
+    for (const value of [
+      ...secrets,
+      ...[storedFirst, storedSecond, storedThird, rowSecond, rowThird].map((row) =>
+        row.ciphertext.slice(3, 60),
+      ),
+    ]) {
+      expect(capture.text).not.toContain(value);
+    }
+
+    // A execução seguinte, com a versão 2 de volta no chaveiro: só a primeira está pendente, e agora abre.
+    expect(await new CredentialRekey(prisma, allCurrent3, { batch: 1 }).runOnce()).toEqual({
+      stale: 1,
+      rekeyed: 1,
+      skipped: 0,
+      failed: 0,
+    });
+    const rowFirst = await rowOf(first.id);
+    expect(rowFirst).toMatchObject({ tenantId: tenantA, keyVersion: 3 });
+    expect(
+      (open(allCurrent3, storedFirst.binding, rowFirst.ciphertext) as StaticAwsCredentials).identity()
+        .secretAccessKey,
+    ).toBe(secrets[0]);
+    // Uma entrada de auditoria por linha recifrada (duas na primeira execução, uma na segunda), nenhuma pela falha.
+    const audit = await prisma.auditLog.findMany({
+      where: { action: 'cloud_credential.rekey', resourceId: { in: accounts.map((account) => account.id) } },
+      select: { resourceId: true, tenantId: true, after: true },
+    });
+    expect(audit.map((entry) => [entry.resourceId, entry.tenantId]).sort()).toEqual(
+      accounts.map((account) => [account.id, account.tenantId]).sort(),
+    );
+    for (const entry of audit) expect(entry.after).toMatchObject({ keyVersion: 3 });
   });
 });

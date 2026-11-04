@@ -180,10 +180,12 @@ jobs:
         # fica dentro dela, em WORKER_KEYS_MOUNT, que o start.sh põe em CREDENTIALS_PRIVATE_KEYS_FILE. O worker continua
         # endurecido.
         run: |
-          grep -q '^run=/run/verax$' infra/node/bin/start.sh
-          grep -q '^WORKER_VAULT=\$run/vault$' infra/node/bin/start.sh
-          grep -q '^WORKER_KEYS=\$WORKER_VAULT/worker-keys$' infra/node/bin/start.sh
-          grep -q '^WORKER_KEYS_MOUNT=\$WORKER_VAULT_MOUNT/worker-keys$' infra/node/bin/start.sh
+          # Linha inteira e texto literal (-xF): o `$` é o do shell do start.sh (escapado em aspas duplas), não uma
+          # expansão daqui nem uma âncora.
+          grep -qxF 'run=/run/verax' infra/node/bin/start.sh
+          grep -qxF "WORKER_VAULT=\$run/vault" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS=\$WORKER_VAULT/worker-keys" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS_MOUNT=\$WORKER_VAULT_MOUNT/worker-keys" infra/node/bin/start.sh
           mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
           [[ $mount == /* ]]
           config=$(docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --format json)
