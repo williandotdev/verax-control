@@ -1892,3 +1892,20 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - o `.env.example` não foi alterado; fora de produção o padrão é `interno`, então o ambiente local não muda.
 - **O que testar manualmente:** acrescentar `PLAN=interno` ao `node.conf` do nó da Verax antes do próximo deploy; depois do deploy, conferir no journal que a API e o worker subiram (o log do worker mostra `plan`) e rodar o bootstrap uma vez para o cadastro do cliente Verax mostrar "Interno".
 - **Riscos:** a reentrega do Pub/Sub conta duas vezes (documentado como "uso justo"); se a gravação do uso falhar depois do ack, aquele lote fica sem medir (a favor do cliente) e a assinatura conta como falha interna na execução.
+
+## Correção: teste do bloqueio do MFA intermitente no CI
+
+- **Problema:** de vez em quando, o teste "depois de 5 códigos errados, nem o código certo entra" (`auth-mfa.test.ts`) falhava no CI: o código certo abria sessão em vez de responder 429. O bloqueio da conta não tinha defeito. O teste "o link expira" (`auth-password-reset.test.ts`) vencia **todas** as linhas de `Verification`, e o banco de teste é o mesmo para os arquivos que rodam em paralelo. Na consulta seguinte, o Better Auth apaga o que venceu, e isso levava junto o desafio de MFA e o contador de tentativas de outro teste.
+  - Os códigos errados seguintes respondiam `INVALID_TWO_FACTOR_COOKIE` (401, sem avaliar o código e sem contar para o bloqueio), e o teste só conferia o 401.
+  - O mesmo efeito já tinha derrubado "a senha sozinha não abre sessão; o código abre" (o código certo recebeu 401).
+  - As falhas começaram depois do PR #35, que encolheu o arquivo da redefinição e o fez coincidir com o do MFA.
+- **Correção (só nos testes; produto, configuração do bloqueio e do Vitest sem mudança):**
+  - "o link expira" vence só o link da própria pessoa (`where: { value: id }`) e confere que tocou exatamente uma linha;
+  - o mesmo teste prova que o link de outra pessoa continua valendo depois da limpeza. Com a linha antiga ele falha sempre, sem depender de tempo;
+  - o teste do bloqueio confere o motivo de cada recusa (`INVALID_CODE`) e, no banco, que a conta ficou com 5 falhas e bloqueada. Se algo voltar a derrubar o desafio, a falha aponta a causa no laço, e não parece defeito do bloqueio. "Código errado não abre sessão" também confere o motivo.
+- **Testes:**
+  - a versão nova de "o link expira" falhou com a linha antiga (o link da outra pessoa voltou 400) e passa com a correção;
+  - corrida reproduzida com dois arquivos temporários em paralelo (fora do commit), um repetindo o bloqueio e outro vencendo links. Vencendo tudo: 6 de 30 bloqueios falharam em cada uma de 2 execuções, com o sintoma do CI (200 no lugar de 429, `INVALID_TWO_FACTOR_COOKIE` nos códigos errados). Vencendo só o link da pessoa: 0 de 90 em 3 execuções;
+  - os 7 arquivos `auth-*` (4 processos em paralelo) rodaram 16 vezes seguidas: 12 verdes e 4 com a queda conhecida do processo do Vitest no Windows (código 3221226505 ao subir o arquivo, sem nenhuma asserção falhando);
+  - API completa: 66 arquivos e 838 testes; lint, tipos e Prettier limpos.
+- **Nota:** duas suítes rodando ao mesmo tempo com o mesmo `TEST_DATABASE_URL` se derrubam, porque o `global-setup` recria o schema a cada execução. Para rodar em paralelo (outra cópia do repositório, por exemplo), use um banco `_test` para cada uma.

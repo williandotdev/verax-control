@@ -59,7 +59,7 @@ describe('redefinição de senha pelo link (T2.6)', () => {
   });
 
   /** Usuário ativo e o token do link que ele recebe ao pedir a redefinição. */
-  async function resetLink(): Promise<{ email: string; password: string; token: string }> {
+  async function resetLink(): Promise<{ id: string; email: string; password: string; token: string }> {
     const user = await createUser(app);
     await requestReset(user.email).expect(200);
     return { ...user, token: await tokenFor(user.email) };
@@ -72,10 +72,19 @@ describe('redefinição de senha pelo link (T2.6)', () => {
       await resetPassword(token, 'outra-senha-bem-longa').expect(400);
     });
 
-    it('o link expira', async () => {
-      const { token } = await resetLink();
-      await prisma.verification.updateMany({ data: { expiresAt: new Date(Date.now() - 1000) } });
+    it('o link expira; o de outra pessoa continua valendo', async () => {
+      const other = await resetLink();
+      const { id, token } = await resetLink();
+      // Só o link desta pessoa: o banco de teste é o mesmo para os arquivos que rodam em paralelo, e vencer
+      // tudo derruba desafios de MFA de outros testes (o Better Auth apaga o que venceu na próxima consulta).
+      const expired = await prisma.verification.updateMany({
+        where: { value: id },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+      expect(expired.count).toBe(1);
       await resetPassword(token).expect(400);
+      // A consulta acima disparou a limpeza do que venceu: o link da outra pessoa tem de ter sobrado.
+      await resetPassword(other.token).expect(200);
     });
 
     it('o token fica só com hash no banco', async () => {
