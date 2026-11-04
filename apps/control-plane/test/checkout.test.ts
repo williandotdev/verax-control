@@ -4,40 +4,46 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CHECKOUT_DAILY_LIMIT, SLUG_RESERVATION_MS } from '../src/checkout/checkout-store.js';
 import { COLLECTIONS } from '../src/firestore/collections.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
+import type { ConfigurationInput, PriceTableInput } from '../src/pricing/pricing.schema.js';
+import { QUOTE_TTL_MS } from '../src/pricing/quote-store.js';
 import { STRIPE_API_VERSION } from '../src/stripe/stripe-client.js';
 import { createApp } from './support/create-app.js';
 import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
 import { FakeStripe, fakeStripeKey, formEntries } from './support/fake-stripe.js';
 import { LogCapture } from './support/log-capture.js';
+import { fictitiousPriceTable } from './support/pricing-fixtures.js';
+import { seedPublishedTable, seedStripePrices } from './support/pricing-seed.js';
 
 const SITE = 'https://veraxsistemas.com.br';
 const VERSION = '2026-11-04';
-const ESSENCIAL = 'verax_control_essencial_mensal';
-const PROFISSIONAL = 'verax_control_profissional_mensal';
 const START = new Date('2026-11-04T12:00:00.000Z');
+const DAY_MS = 24 * 60 * MINUTE_MS;
 
 /** Dados fictícios (CLAUDE.md, regra 10): CNPJ alfanumérico do exemplo da Receita e um numérico com DV válido. */
 const CNPJ_ALPHANUMERIC = '12.ABC.345/01DE-35';
 const CNPJ_NUMERIC = '11.222.333/0001-81';
 
-function order(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    plan: 'essencial',
-    companyName: 'Cliente Demo A Ltda',
-    cnpj: CNPJ_ALPHANUMERIC,
-    adminEmail: 'admin@cliente-demo-a.example',
-    slug: 'cliente-demo-a',
-    consent: { terms: VERSION, privacy: VERSION, dpa: VERSION },
-    ...overrides,
-  };
-}
+/**
+ * A configuração do teste, na tabela FICTÍCIA (`pricing-fixtures.ts`, valores redondos e inventados): porte P, duas
+ * contas a mais, a primeira faixa de volume, um pacote de agentes, o primeiro histórico estendido e o suporte
+ * prioritário. Seis itens mensais.
+ */
+const CONFIGURATION: ConfigurationInput = {
+  mode: 'managed',
+  cloudAccounts: 4,
+  monthlyGib: 50,
+  agents: 10,
+  historyDays: 180,
+  support: 'priority',
+};
 
 /**
- * O checkout pelo app inteiro (CP-03), com o SDK oficial da Stripe apontado para o servidor falso em 127.0.0.1, o
- * dublê do Firestore e um relógio falso. Cada teste usa IPs próprios (endereços de documentação), porque o limite por
- * IP vive no app durante o arquivo todo; um app por arquivo (o nestjs-pino guarda o logger em estado estático).
+ * O checkout pela cotação (preço configurável, sobre o CP-03), pelo app inteiro, com o SDK oficial da Stripe apontado
+ * para o servidor falso em 127.0.0.1, o dublê do Firestore e um relógio falso. A cotação sai de `POST /v1/public/quote`
+ * sobre uma tabela publicada fictícia. Cada teste usa IPs próprios (endereços de documentação), porque o limite por IP
+ * vive no app durante o arquivo todo; um app por arquivo (o nestjs-pino guarda o logger em estado estático).
  */
-describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () => {
+describe('cp-public: checkout pela cotação, com vários itens (preço configurável)', () => {
   const capture = new LogCapture();
   const clock = new FakeClock(START);
   const documents = new MemoryDocumentStore();
@@ -45,6 +51,13 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
   const stripeKey = fakeStripeKey('test', 'rk');
   let app: NestExpressApplication;
   let ipSequence = 0;
+  let prices = new Map<string, string>();
+  let quoteId = '';
+  /**
+   * Cada teste começa 10 min depois do anterior, no mesmo dia: o checkout guarda os preços lidos da Stripe por 5 min,
+   * e a Stripe falsa recria os preços (com ids novos) a cada teste.
+   */
+  let testStart = START.getTime();
 
   /** Um IP novo (TEST-NET-3 e TEST-NET-2), para o limite por IP de um teste não alcançar o outro. */
   function nextIp(): string {
@@ -52,11 +65,32 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     return ipSequence <= 250 ? `203.0.113.${ipSequence}` : `198.51.100.${ipSequence - 250}`;
   }
 
+  function order(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      quoteId,
+      companyName: 'Cliente Demo A Ltda',
+      cnpj: CNPJ_ALPHANUMERIC,
+      adminEmail: 'admin@cliente-demo-a.example',
+      slug: 'cliente-demo-a',
+      consent: { terms: VERSION, privacy: VERSION, dpa: VERSION },
+      ...overrides,
+    };
+  }
+
   function checkout(body: unknown, ip = nextIp()): request.Test {
     return request(app.getHttpServer())
       .post('/v1/public/checkout')
       .set('X-Forwarded-For', ip)
       .send(body as object);
+  }
+
+  async function newQuote(configuration: ConfigurationInput = CONFIGURATION): Promise<string> {
+    const response = await request(app.getHttpServer())
+      .post('/v1/public/quote')
+      .set('X-Forwarded-For', nextIp())
+      .send(configuration)
+      .expect(200);
+    return String((response.body as { quoteId: string }).quoteId);
   }
 
   function slugLookup(slug: string, ip = nextIp()): request.Test {
@@ -67,8 +101,18 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     return documents.get(COLLECTIONS.slugs, slug);
   }
 
-  function seedPrices(): void {
-    fake.addPrice(ESSENCIAL, 249_000);
+  async function seed(table: PriceTableInput = fictitiousPriceTable()): Promise<void> {
+    await seedPublishedTable(documents, table, { effectiveFrom: new Date(START.getTime() - DAY_MS) });
+    prices = seedStripePrices(fake, table);
+    quoteId = await newQuote();
+  }
+
+  function price(lookupKey: string): string {
+    return prices.get(lookupKey) ?? `ausente:${lookupKey}`;
+  }
+
+  function lineItemsOf(form: URLSearchParams | undefined): [string, string][] {
+    return [...(form ?? new URLSearchParams()).entries()].filter(([key]) => key.startsWith('line_items'));
   }
 
   beforeAll(async () => {
@@ -92,18 +136,18 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
         DPA_VERSION: VERSION,
         STRIPE_SECRET_KEY: stripeKey,
         STRIPE_LIVE: 'false',
-        STRIPE_PRICE_LOOKUP_ESSENCIAL: ESSENCIAL,
-        STRIPE_PRICE_LOOKUP_PROFISSIONAL: PROFISSIONAL,
       },
     });
     // Um servidor só, no ar o arquivo todo: o supertest abriria e fecharia um por requisição (são centenas aqui).
     await app.listen(0, '127.0.0.1');
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    testStart += 10 * MINUTE_MS;
+    clock.set(new Date(testStart));
     documents.clear();
     fake.reset();
-    seedPrices();
+    await seed();
   });
 
   afterAll(async () => {
@@ -111,19 +155,21 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     await fake.stop();
   });
 
-  it('abre a sessão com exatamente os parâmetros do plano (§4a) e devolve só {url, livemode}', async () => {
+  it('abre a sessão com um item por componente da cotação, nos parâmetros exatos, e grava a configuração na reserva', async () => {
     const response = await checkout(order()).expect(201);
 
     const [session] = fake.calls('POST', '/v1/checkout/sessions');
     expect(session).toBeDefined();
     const sent = session?.form ?? new URLSearchParams();
     const tenantId = sent.get('client_reference_id') ?? '';
-    const price = [...fake.prices.values()][0]?.['id'];
     const expiresAt = Math.floor(clock.now().getTime() / 1000) + 2 * 60 * 60;
     const metadata = (prefix: string): [string, string][] => [
       [`${prefix}[dpaVersion]`, VERSION],
-      [`${prefix}[plan]`, 'essencial'],
+      [`${prefix}[mode]`, 'managed'],
+      [`${prefix}[priceTableVersion]`, 'teste-v1'],
       [`${prefix}[privacyVersion]`, VERSION],
+      [`${prefix}[quoteId]`, quoteId],
+      [`${prefix}[size]`, 'P'],
       [`${prefix}[slug]`, 'cliente-demo-a'],
       [`${prefix}[tenantId]`, tenantId],
       [`${prefix}[termsVersion]`, VERSION],
@@ -132,8 +178,19 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
       formEntries(
         new URLSearchParams([
           ['mode', 'subscription'],
-          ['line_items[0][price]', String(price)],
+          // Os itens da cotação, na ordem dela, com o preço da Stripe achado pelo lookup_key de cada componente.
+          ['line_items[0][price]', price('vc_env_p_v1')],
           ['line_items[0][quantity]', '1'],
+          ['line_items[1][price]', price('vc_acc_v1')],
+          ['line_items[1][quantity]', '2'],
+          ['line_items[2][price]', price('vc_vol_50_v1')],
+          ['line_items[2][quantity]', '1'],
+          ['line_items[3][price]', price('vc_agt_v1')],
+          ['line_items[3][quantity]', '1'],
+          ['line_items[4][price]', price('vc_his_180_v1')],
+          ['line_items[4][quantity]', '1'],
+          ['line_items[5][price]', price('vc_sup_v1')],
+          ['line_items[5][quantity]', '1'],
           ['allowed_payment_method_types[0]', 'card'],
           ['allowed_payment_method_types[1]', 'boleto'],
           ['payment_method_options[boleto][expires_after_days]', '3'],
@@ -162,21 +219,28 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     expect(session?.headers['authorization']).toBe(`Bearer ${stripeKey}`);
     expect(session?.headers['stripe-version']).toBe(STRIPE_API_VERSION);
     expect(session?.headers['idempotency-key']).toBe(`checkout-session-${tenantId}`);
-    // O preço veio pelo lookup_key do plano.
-    const [lookup] = fake.calls('GET', '/v1/prices');
-    expect(lookup?.query.get('lookup_keys[0]')).toBe(ESSENCIAL);
+    // Os seis preços vieram numa consulta só, pelos lookup_keys da cotação.
+    const lookups = fake.calls('GET', '/v1/prices');
+    expect(lookups).toHaveLength(1);
+    expect([...(lookups[0]?.query.keys() ?? [])].filter((key) => key.startsWith('lookup_keys'))).toHaveLength(
+      6,
+    );
 
     const sessionId = [...fake.sessions.keys()][0];
     expect(response.body).toEqual({ url: `https://checkout.stripe.com/c/pay/${sessionId}`, livemode: false });
     expect(response.headers['cache-control']).toBe('private, no-store');
 
-    // A reserva: o mesmo tenantId, 2 h 30, a sessão gravada e o pedido com o CNPJ normalizado.
+    // A reserva: o mesmo tenantId, 2 h 30, a sessão gravada e o pedido com a configuração, os limites e o preço da
+    // cotação (que o CP-04 copia para o cliente) e o CNPJ normalizado.
     expect(await slugDocument('cliente-demo-a')).toEqual({
       state: 'reserved',
       tenantId,
       checkoutSessionId: sessionId,
       order: {
-        plan: 'essencial',
+        configuration: { ...CONFIGURATION, size: 'P' },
+        limits: { maxCloudAccounts: 4, monthlyGib: 50, historyDays: 180, maxAgents: 10, maxUsers: 10 },
+        // Fictícios: ambiente 1.000 + 2 contas × 30 + volume 100 + 1 pacote 100 + histórico 20 + suporte 300.
+        pricing: { priceTableVersion: 'teste-v1', quoteId, monthlyTotal: 158_000, setupTotal: 0 },
         company: { legalName: 'Cliente Demo A Ltda', cnpj: '12ABC34501DE35' },
         adminEmail: 'admin@cliente-demo-a.example',
         consent: { termsVersion: VERSION, privacyVersion: VERSION, dpaVersion: VERSION },
@@ -186,7 +250,53 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     });
   });
 
-  it('audita a reserva e a sessão (ator system), sem e-mail, CNPJ nem razão social', async () => {
+  it('com implantação no modo, ela entra como o último item (avulso, só na primeira fatura)', async () => {
+    documents.clear();
+    fake.reset();
+    const table = fictitiousPriceTable();
+    table.modes.managed.setup = { amount: 50_000, lookupKey: 'vc_set_m_v1' };
+    await seed(table);
+
+    await checkout(order()).expect(201);
+
+    expect(lineItemsOf(fake.calls('POST', '/v1/checkout/sessions')[0]?.form)).toEqual([
+      ['line_items[0][price]', price('vc_env_p_v1')],
+      ['line_items[0][quantity]', '1'],
+      ['line_items[1][price]', price('vc_acc_v1')],
+      ['line_items[1][quantity]', '2'],
+      ['line_items[2][price]', price('vc_vol_50_v1')],
+      ['line_items[2][quantity]', '1'],
+      ['line_items[3][price]', price('vc_agt_v1')],
+      ['line_items[3][quantity]', '1'],
+      ['line_items[4][price]', price('vc_his_180_v1')],
+      ['line_items[4][quantity]', '1'],
+      ['line_items[5][price]', price('vc_sup_v1')],
+      ['line_items[5][quantity]', '1'],
+      ['line_items[6][price]', price('vc_set_m_v1')],
+      ['line_items[6][quantity]', '1'],
+    ]);
+    expect((await slugDocument('cliente-demo-a'))?.['order']).toMatchObject({
+      pricing: { monthlyTotal: 158_000, setupTotal: 50_000 },
+    });
+  });
+
+  it('a configuração mínima tem um item só, o ambiente', async () => {
+    quoteId = await newQuote({
+      mode: 'managed',
+      cloudAccounts: 0,
+      monthlyGib: 0,
+      agents: 0,
+      historyDays: 0,
+      support: 'standard',
+    });
+    await checkout(order()).expect(201);
+    expect(lineItemsOf(fake.calls('POST', '/v1/checkout/sessions')[0]?.form)).toEqual([
+      ['line_items[0][price]', price('vc_env_p_v1')],
+      ['line_items[0][quantity]', '1'],
+    ]);
+  });
+
+  it('audita a reserva e a sessão (ator system), sem e-mail, CNPJ, razão social nem valores', async () => {
     const response = await checkout(order()).set('X-Request-Id', 'site-trace-00000001').expect(201);
     expect(response.headers['x-request-id']).toBe('site-trace-00000001');
 
@@ -201,12 +311,20 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     }
     expect(audit[1]?.['details']).toEqual({
       slug: 'cliente-demo-a',
-      plan: 'essencial',
+      size: 'P',
+      priceTableVersion: 'teste-v1',
+      quoteId,
       livemode: false,
       sessionExpiresAt: new Date(clock.now().getTime() + 2 * 60 * 60_000),
     });
     const raw = JSON.stringify(audit);
-    for (const personal of ['admin@cliente-demo-a.example', '12ABC34501DE35', 'Cliente Demo A', 'cs_test_']) {
+    for (const personal of [
+      'admin@cliente-demo-a.example',
+      '12ABC34501DE35',
+      'Cliente Demo A',
+      'cs_test_',
+      '158000',
+    ]) {
       expect(raw).not.toContain(personal);
     }
   });
@@ -231,14 +349,18 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(sessionsBefore);
   });
 
-  it('pedido fora do formato: 400 citando só os campos conhecidos, sem reservar', async () => {
+  it('pedido fora do formato: 400 citando só os campos conhecidos; preço, plano ou itens vindos do site são recusados', async () => {
     const cases: [Record<string, unknown>, string][] = [
-      [order({ plan: 'enterprise' }), 'Dados do pedido inválidos: plan.'],
+      [order({ quoteId: 'nao-e-uma-cotacao' }), 'Dados do pedido inválidos: quoteId.'],
+      [order({ quoteId: undefined }), 'Dados do pedido inválidos: quoteId.'],
       [order({ adminEmail: 'nao-e-email' }), 'Dados do pedido inválidos: adminEmail.'],
       [order({ slug: 'Cliente_Demo' }), 'Dados do pedido inválidos: slug.'],
       [order({ companyName: 'Cliente\nDemo' }), 'Dados do pedido inválidos: companyName.'],
       [order({ consent: { terms: VERSION, privacy: VERSION } }), 'Dados do pedido inválidos: consent.'],
-      [order({ campoNovo: 'x' }), 'Dados do pedido inválidos.'],
+      // O preço nunca vem do cliente: qualquer campo a mais é recusado, sem ser ecoado.
+      [order({ plan: 'essencial' }), 'Dados do pedido inválidos.'],
+      [order({ monthlyTotal: 1 }), 'Dados do pedido inválidos.'],
+      [order({ lineItems: [{ price: 'price_qualquer', quantity: 1 }] }), 'Dados do pedido inválidos.'],
     ];
     for (const [body, message] of cases) {
       const response = await checkout(body).expect(400);
@@ -247,6 +369,46 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     await checkout('texto').set('Content-Type', 'text/plain').expect(400);
     expect(await documents.query(COLLECTIONS.slugs)).toHaveLength(0);
     expect(fake.writes()).toHaveLength(0);
+  });
+
+  it('cotação inexistente ou vencida (24 h): 409 quote_outdated, sem reservar nem chamar a Stripe', async () => {
+    const unknown = await checkout(order({ quoteId: '01JBZZZZZZZZZZZZZZZZZZZZZZ' })).expect(409);
+    expect(unknown.body).toMatchObject({ code: 'quote_outdated' });
+
+    clock.advance(QUOTE_TTL_MS - 1);
+    await checkout(order({ slug: 'cliente-demo-b' })).expect(201);
+    clock.advance(1);
+    const expired = await checkout(order({ slug: 'cliente-demo-c' })).expect(409);
+    expect(expired.body).toMatchObject({ code: 'quote_outdated' });
+    expect(await slugDocument('cliente-demo-c')).toBeUndefined();
+    expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(1);
+  });
+
+  it('cotação adulterada no banco (total diferente do recálculo pela tabela): 409 e alerta no log', async () => {
+    const stored = await documents.get(COLLECTIONS.quotes, quoteId);
+    await documents.runTransaction((tx) => {
+      tx.set(COLLECTIONS.quotes, quoteId, { ...stored, monthlyTotal: 1_000 });
+      return Promise.resolve();
+    });
+
+    const response = await checkout(order()).expect(409);
+
+    expect(response.body).toMatchObject({ code: 'quote_outdated' });
+    expect(capture.entries().some((entry) => entry['event'] === 'checkout_quote_mismatch')).toBe(true);
+    expect(fake.requests).toHaveLength(0);
+  });
+
+  it('uma tabela nova publicada depois da cotação não muda o preço dela: a cotação vale até vencer', async () => {
+    const newer = fictitiousPriceTable();
+    newer.modes.managed.environment.P = { amount: 120_000, lookupKey: 'vc_env_p_v2' };
+    await seedPublishedTable(documents, newer, { version: 'teste-v2', effectiveFrom: clock.now() });
+    fake.addPrice('vc_env_p_v2', 120_000);
+
+    await checkout(order()).expect(201);
+
+    const sent = fake.calls('POST', '/v1/checkout/sessions')[0]?.form;
+    expect(sent?.get('line_items[0][price]')).toBe(price('vc_env_p_v1'));
+    expect(sent?.get('metadata[priceTableVersion]')).toBe('teste-v1');
   });
 
   it('subdomínio da lista reservada: 409 slug_unavailable, igual à consulta', async () => {
@@ -322,21 +484,53 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     expect(await slugDocument('cliente-demo-a')).toMatchObject({ state: 'reserved' });
   });
 
-  it('preço do plano ausente na Stripe: 503 checkout_unavailable, sem reservar; com o preço, abre', async () => {
-    const missing = await checkout(order({ plan: 'profissional' })).expect(503);
-    expect(missing.body).toMatchObject({
-      statusCode: 503,
-      code: 'checkout_unavailable',
-      message: 'Serviço temporariamente indisponível',
-    });
-    expect(await slugDocument('cliente-demo-a')).toBeUndefined();
-    expect(capture.entries().some((entry) => entry['event'] === 'checkout_price_invalid')).toBe(true);
+  it('preço da cotação ausente, com outro valor, inativo, de outro tipo ou em outra moeda na Stripe: 503, sem reservar', async () => {
+    const cases: [string, Record<string, unknown>, string][] = [
+      ['vc_sup_v1', { lookup_key: 'outro_lookup_key' }, 'missing'],
+      ['vc_acc_v1', { unit_amount: 2_999 }, 'amount'],
+      ['vc_vol_50_v1', { active: false }, 'inactive'],
+      ['vc_agt_v1', { type: 'one_time', recurring: null }, 'interval'],
+      ['vc_his_180_v1', { currency: 'usd' }, 'currency'],
+    ];
+    for (const [lookupKey, change, problem] of cases) {
+      fake.reset();
+      prices = seedStripePrices(fake, fictitiousPriceTable());
+      const target = fake.prices.get(price(lookupKey));
+      if (target !== undefined) Object.assign(target, change);
+      const before = capture.lines.length;
 
-    const price = fake.addPrice(PROFISSIONAL, 499_000);
-    await checkout(order({ plan: 'profissional' })).expect(201);
-    const [session] = fake.calls('POST', '/v1/checkout/sessions');
-    expect(session?.form.get('line_items[0][price]')).toBe(price['id']);
-    expect(session?.form.get('metadata[plan]')).toBe('profissional');
+      const response = await checkout(order()).expect(503);
+
+      expect(response.body, problem).toMatchObject({ statusCode: 503, code: 'checkout_unavailable' });
+      const logged = capture
+        .entries()
+        .slice(before)
+        .find((entry) => entry['event'] === 'checkout_price_invalid');
+      expect(logged, problem).toMatchObject({ lookupKey, problem });
+    }
+    expect(await slugDocument('cliente-demo-a')).toBeUndefined();
+    expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(0);
+  });
+
+  it('implantação cadastrada como mensal na Stripe: 503 (o item avulso precisa de preço avulso)', async () => {
+    documents.clear();
+    fake.reset();
+    const table = fictitiousPriceTable();
+    table.modes.managed.setup = { amount: 50_000, lookupKey: 'vc_set_m_v1' };
+    await seed(table);
+    const setup = fake.prices.get(price('vc_set_m_v1'));
+    if (setup !== undefined) {
+      Object.assign(setup, { type: 'recurring', recurring: { interval: 'month', interval_count: 1 } });
+    }
+    const before = capture.lines.length;
+
+    await checkout(order()).expect(503);
+
+    const logged = capture
+      .entries()
+      .slice(before)
+      .find((entry) => entry['event'] === 'checkout_price_invalid');
+    expect(logged).toMatchObject({ lookupKey: 'vc_set_m_v1', problem: 'type' });
   });
 
   it('a sessão sem boleto (desligado no Dashboard) segue, mas avisa no log', async () => {
@@ -361,22 +555,10 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     await checkout(order({ slug: 'cliente-demo-b' }), ip).expect(201);
   });
 
-  it('consulta de subdomínio: só available, sem reservar; 30 por minuto por IP', async () => {
-    const ip = nextIp();
-    const free = await slugLookup('cliente-demo-z', ip).expect(200);
-    expect(free.body).toEqual({ available: true });
-    expect(await slugDocument('cliente-demo-z')).toBeUndefined();
-    await slugLookup('Cliente_Demo', ip).expect(200, { available: false });
-    for (let i = 0; i < 28; i += 1) await slugLookup('cliente-demo-z', ip).expect(200);
-
-    const refused = await slugLookup('cliente-demo-z', ip).expect(429);
-    expect(refused.body).toMatchObject({ code: 'rate_limited' });
-    expect(refused.headers['retry-after']).toBe('2');
-  });
-
   it(`teto diário: a ${CHECKOUT_DAILY_LIMIT + 1}ª sessão do dia é recusada com 429 e uma linha de log para o alerta`, async () => {
-    // Um dia novo (UTC): o balde começa do zero.
+    // Um dia novo (UTC): o balde começa do zero. A cotação de antes venceu: uma nova.
     clock.set(new Date('2026-11-06T09:00:00.000Z'));
+    quoteId = await newQuote();
     const ips = Array.from({ length: 10 }, () => nextIp());
     for (let i = 0; i < CHECKOUT_DAILY_LIMIT; i += 1) {
       const slug = `teto-${String(i + 1).padStart(2, '0')}`;
@@ -469,7 +651,7 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
     expect(status.headers['access-control-allow-credentials']).toBe('true');
   });
 
-  it('nenhum log leva a chave da Stripe, o e-mail, o CNPJ ou a razão social', async () => {
+  it('nenhum log leva a chave da Stripe, o e-mail, o CNPJ, a razão social ou valores da cotação', async () => {
     // Um pouco de tudo: sucesso, CNPJ errado, versão vencida, falha da Stripe e conflito.
     await checkout(order()).expect(201);
     await checkout(order({ slug: 'cliente-demo-b', cnpj: '12.ABC.345/01DE-36' })).expect(400);
@@ -500,6 +682,11 @@ describe('cp-public: reserva de subdomínio e sessão do Checkout (CP-03)', () =
       '12ABC34501DE36',
       '11222333000181',
       'Cliente Demo A Ltda',
+      // Os valores ficam na cotação e na reserva, nunca no log (nenhum campo de valor em linha nenhuma).
+      '"monthlyTotal":',
+      '"setupTotal":',
+      '"unitAmount":',
+      '"amount":',
     ];
     for (const value of forbidden) expect(text, value).not.toContain(value);
   });

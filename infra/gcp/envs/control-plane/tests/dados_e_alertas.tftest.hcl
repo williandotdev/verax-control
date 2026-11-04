@@ -53,7 +53,7 @@ run "firestore" {
 
   assert {
     condition = (
-      keys(google_firestore_field.ttl) == ["auditLog", "provisioningRuns", "rateLimits", "slugs", "statusTokens", "steps", "stripeEvents"] &&
+      keys(google_firestore_field.ttl) == ["auditLog", "provisioningRuns", "quotes", "rateLimits", "slugs", "statusTokens", "steps", "stripeEvents"] &&
       alltrue([for field in google_firestore_field.ttl : field.field == "expiresAt" && length(field.ttl_config) == 1 && field.database == "(default)"])
     )
     error_message = "Prazo (TTL) em expiresAt nas coleções com retenção do plano, e só nelas."

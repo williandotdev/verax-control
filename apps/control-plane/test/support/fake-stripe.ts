@@ -269,7 +269,7 @@ export class FakeStripe {
       status: input.status,
       payment_status: input.paymentStatus,
       client_reference_id: input.tenantId,
-      metadata: { tenantId: input.tenantId, slug: input.slug, plan: 'essencial' },
+      metadata: { tenantId: input.tenantId, slug: input.slug, priceTableVersion: 'teste-v1' },
       customer: input.customer,
       subscription: input.subscription,
       consent: { promotions: null, terms_of_service: input.termsAccepted === false ? null : 'accepted' },

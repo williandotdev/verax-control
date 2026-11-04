@@ -2,6 +2,12 @@ import { HttpStatus, Inject, Injectable, type OnModuleInit } from '@nestjs/commo
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { ApiError } from '../common/http/api-error.js';
+import { equalValues } from '../firestore/document-store.js';
+import { PricingTableStore } from '../pricing/pricing-store.js';
+import type { ConfigurationInput, QuoteLineItem } from '../pricing/pricing.schema.js';
+import { isSoldOnline } from '../pricing/public-pricing.js';
+import { type StoredQuote, QuoteStore } from '../pricing/quote-store.js';
+import { quote } from '../pricing/quote.js';
 import {
   type CheckoutSessionParams,
   describeStripeError,
@@ -9,7 +15,7 @@ import {
   type StripeClient,
   type StripePrice,
 } from '../stripe/stripe-client.js';
-import { isReservableSlug, type PlanId } from '../tenants/tenant.schema.js';
+import { isReservableSlug } from '../tenants/tenant.schema.js';
 import {
   CHECKOUT_SETTINGS,
   type CheckoutSettings,
@@ -41,15 +47,26 @@ const BOLETO_EXPIRES_AFTER_DAYS = 3;
 const UNAVAILABLE = (): ApiError =>
   new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Checkout indisponível', 'checkout_unavailable');
 
+/** A cotação venceu, sumiu ou não confere com a tabela: o site pede uma cotação nova e mostra o preço antes de pagar. */
+const QUOTE_OUTDATED = (): ApiError =>
+  new ApiError(
+    HttpStatus.CONFLICT,
+    'O preço desta cotação não vale mais. Calcule o preço de novo para continuar.',
+    'quote_outdated',
+  );
+
 export interface RequestContext {
   requestId?: string;
 }
 
 /**
- * Checkout (plano §4a): valida o pedido, confere as versões do aceite, reserva o subdomínio dentro do teto diário e
- * abre a sessão do Checkout hospedado da Stripe. Se a Stripe falhar depois da reserva, a reserva é desfeita na hora
- * (`released`); se nem isso for possível, ela vence sozinha em 2 h 30. Nenhum log leva e-mail, CNPJ, razão social ou
- * a chave da Stripe: só o `tenantId`, o slug, o plano e, de um erro da Stripe, tipo, código, status e id.
+ * Checkout (plano §4a, com o preço configurável): valida o pedido, confere as versões do aceite, relê a cotação gravada
+ * (`quoteId`) e a recalcula pela tabela da versão dela, confere na Stripe cada preço dos itens (ativo, em BRL, mensal
+ * ou avulso, com o valor da tabela), reserva o subdomínio dentro do teto diário e abre a sessão do Checkout hospedado
+ * com um item por componente. O site nunca manda preço. Se a Stripe falhar depois da reserva, a reserva é desfeita na
+ * hora (`released`); se nem isso for possível, ela vence sozinha em 2 h 30. Nenhum log leva e-mail, CNPJ, razão social,
+ * valores ou a chave da Stripe: só o `tenantId`, o slug, o porte, a versão da tabela, a cotação e, de um erro da
+ * Stripe, tipo, código, status e id.
  */
 @Injectable()
 export class CheckoutService implements OnModuleInit {
@@ -60,6 +77,8 @@ export class CheckoutService implements OnModuleInit {
     @Inject(STRIPE_CLIENT) private readonly stripe: StripeClient | null,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly store: CheckoutStore,
+    private readonly quotes: QuoteStore,
+    private readonly tables: PricingTableStore,
     @InjectPinoLogger(CheckoutService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -92,10 +111,11 @@ export class CheckoutService implements OnModuleInit {
         'terms_outdated',
       );
     }
-    const price = await this.resolvePrice(stripe, settings, request.plan);
+    const quoted = await this.resolveQuote(request.quoteId);
+    const prices = await this.resolvePrices(stripe, settings, quoted);
 
-    const reservation = await this.reserve(request, settings, context);
-    const params = this.sessionParams(request, settings, price, reservation);
+    const reservation = await this.reserve(request, settings, quoted, context);
+    const params = this.sessionParams(request, settings, quoted, prices, reservation);
     let session;
     try {
       session = await stripe.createCheckoutSession(params, `checkout-session-${reservation.tenantId}`);
@@ -151,7 +171,10 @@ export class CheckoutService implements OnModuleInit {
         event: 'checkout_session_created',
         tenantId: reservation.tenantId,
         slug: reservation.slug,
-        plan: reservation.plan,
+        size: reservation.size,
+        priceTableVersion: reservation.priceTableVersion,
+        quoteId: reservation.quoteId,
+        lineItems: params.line_items?.length ?? 0,
         livemode: session.livemode,
       },
       'sessão do Checkout criada',
@@ -181,57 +204,116 @@ export class CheckoutService implements OnModuleInit {
   }
 
   /**
-   * O preço do plano pelo `lookup_key`, guardado por alguns minutos. Precisa ser um preço ativo, recorrente mensal e
-   * em reais; qualquer outra coisa é configuração errada na Stripe (o checkout fica indisponível e o log diz qual).
+   * A cotação gravada, válida e recalculada pela tabela da versão dela (publicada ou já aposentada: o preço mostrado é
+   * honrado até a cotação vencer). Vencida, inexistente, de um modo que o site não vende ou diferente do recálculo
+   * (tabela apagada, documento adulterado): 409 `quote_outdated`, e o site pede outra.
    */
-  private async resolvePrice(
+  private async resolveQuote(quoteId: string): Promise<StoredQuote> {
+    const stored = await this.quotes.getValid(quoteId);
+    if (stored === undefined) throw QUOTE_OUTDATED();
+    const table = await this.tables.get(stored.priceTableVersion);
+    const { size: _size, ...answers } = stored.configuration;
+    const input: ConfigurationInput = answers;
+    const outcome = table === undefined || table.status === 'draft' ? undefined : quote(input, table.content);
+    const matches =
+      outcome?.kind === 'quote' &&
+      isSoldOnline(stored.configuration.mode) &&
+      equalValues(outcome.quote.configuration, stored.configuration) &&
+      equalValues(outcome.quote.lineItems, stored.lineItems) &&
+      equalValues(outcome.quote.limits, stored.limits) &&
+      outcome.quote.monthlyTotal === stored.monthlyTotal &&
+      outcome.quote.setupTotal === stored.setupTotal;
+    if (!matches) {
+      this.logger.error(
+        { event: 'checkout_quote_mismatch', quoteId, priceTableVersion: stored.priceTableVersion },
+        'a cotação gravada não confere com o recálculo pela tabela da versão dela',
+      );
+      throw QUOTE_OUTDATED();
+    }
+    return stored;
+  }
+
+  /**
+   * Os preços dos itens pelo `lookup_key`, guardados por alguns minutos. Cada um precisa estar ativo, em reais, no
+   * modo da chave, com o valor unitário da tabela e, conforme o item, recorrente mensal ou avulso (a implantação); a
+   * soma de valor × quantidade precisa dar o total da cotação. Qualquer outra coisa é configuração errada na Stripe:
+   * o checkout fica indisponível e o log diz qual preço (só o `lookup_key`, o id e o problema).
+   */
+  private async resolvePrices(
     stripe: StripeClient,
     settings: CheckoutSettings,
-    plan: PlanId,
-  ): Promise<StripePrice> {
-    const lookupKey = settings.priceLookupKeys[plan];
+    quoted: StoredQuote,
+  ): Promise<Map<string, StripePrice>> {
     const now = this.clock.now().getTime();
-    const cached = this.prices.get(lookupKey);
-    if (cached !== undefined && now - cached.fetchedAt < PRICE_CACHE_MS) return cached.price;
-    let price: StripePrice | undefined;
-    try {
-      price = await stripe.findPriceByLookupKey(lookupKey);
-    } catch (error) {
-      this.logger.error(
-        { event: 'checkout_price_lookup_failed', lookupKey, stripe: describeStripeError(error) },
-        'a Stripe não respondeu a consulta do preço',
-      );
-      throw new ApiError(HttpStatus.BAD_GATEWAY, 'Falha ao abrir o pagamento', 'checkout_failed');
+    const resolved = new Map<string, StripePrice>();
+    const missing: string[] = [];
+    for (const item of quoted.lineItems) {
+      const cached = this.prices.get(item.lookupKey);
+      // Um relógio que voltou também invalida o cache (só vale o que foi lido nos últimos minutos, para a frente).
+      const fresh =
+        cached !== undefined && now >= cached.fetchedAt && now - cached.fetchedAt < PRICE_CACHE_MS;
+      if (fresh) resolved.set(item.lookupKey, cached.price);
+      else missing.push(item.lookupKey);
     }
-    const usable =
-      price !== undefined &&
-      price.active &&
-      price.type === 'recurring' &&
-      price.currency === 'brl' &&
-      price.interval === 'month' &&
-      price.intervalCount === 1 &&
-      price.livemode === settings.livemode;
-    if (price === undefined || !usable) {
+    if (missing.length > 0) {
+      let found: StripePrice[];
+      try {
+        found = await stripe.findPricesByLookupKeys(missing);
+      } catch (error) {
+        this.logger.error(
+          { event: 'checkout_price_lookup_failed', lookupKeys: missing, stripe: describeStripeError(error) },
+          'a Stripe não respondeu a consulta dos preços',
+        );
+        throw new ApiError(HttpStatus.BAD_GATEWAY, 'Falha ao abrir o pagamento', 'checkout_failed');
+      }
+      for (const price of found) {
+        if (price.lookupKey !== null && missing.includes(price.lookupKey))
+          resolved.set(price.lookupKey, price);
+      }
+    }
+
+    let sum = 0;
+    for (const item of quoted.lineItems) {
+      const price = resolved.get(item.lookupKey);
+      const problem = priceProblem(price, item, settings.livemode);
+      if (problem !== undefined) {
+        this.logger.error(
+          { event: 'checkout_price_invalid', lookupKey: item.lookupKey, priceId: price?.id, problem },
+          'preço da cotação ausente ou fora do esperado na Stripe (ativo, em BRL, no modo da chave, com o valor da tabela)',
+        );
+        throw UNAVAILABLE();
+      }
+      sum += (price?.unitAmount ?? 0) * item.quantity;
+    }
+    if (sum !== quoted.monthlyTotal + quoted.setupTotal) {
       this.logger.error(
-        { event: 'checkout_price_invalid', lookupKey, priceId: price?.id },
-        'preço do plano ausente ou fora do esperado na Stripe (ativo, mensal, em BRL, no modo da chave)',
+        { event: 'checkout_price_invalid', quoteId: quoted.quoteId, problem: 'total' },
+        'a soma dos preços da Stripe não dá o total da cotação',
       );
       throw UNAVAILABLE();
     }
-    this.prices.set(lookupKey, { price, fetchedAt: now });
-    return price;
+    for (const [key, price] of resolved) this.prices.set(key, { price, fetchedAt: now });
+    return resolved;
   }
 
   private async reserve(
     request: CheckoutRequest,
     settings: CheckoutSettings,
+    quoted: StoredQuote,
     context: RequestContext,
   ): Promise<Reservation> {
     try {
       return await this.store.reserve({
         slug: request.slug,
         order: {
-          plan: request.plan,
+          configuration: quoted.configuration,
+          limits: quoted.limits,
+          pricing: {
+            priceTableVersion: quoted.priceTableVersion,
+            quoteId: quoted.quoteId,
+            monthlyTotal: quoted.monthlyTotal,
+            setupTotal: quoted.setupTotal,
+          },
           company: { legalName: request.companyName, cnpj: request.cnpj },
           adminEmail: request.adminEmail,
           consent: {
@@ -267,17 +349,25 @@ export class CheckoutService implements OnModuleInit {
     }
   }
 
-  /** Os parâmetros da sessão, exatamente os do plano §4a. */
+  /**
+   * Os parâmetros da sessão (plano §4a), com um item por componente da cotação, na ordem dela: os mensais e, por
+   * último, a implantação (avulsa, só na primeira fatura). Os metadados levam a versão da tabela, a cotação, o modo e o
+   * porte, para o webhook reconhecer a compra.
+   */
   private sessionParams(
     request: CheckoutRequest,
     settings: CheckoutSettings,
-    price: StripePrice,
+    quoted: StoredQuote,
+    prices: ReadonlyMap<string, StripePrice>,
     reservation: Reservation,
   ): CheckoutSessionParams {
     const metadata = {
       tenantId: reservation.tenantId,
       slug: reservation.slug,
-      plan: reservation.plan,
+      priceTableVersion: quoted.priceTableVersion,
+      quoteId: quoted.quoteId,
+      mode: quoted.configuration.mode,
+      size: quoted.configuration.size,
       termsVersion: settings.versions.terms,
       privacyVersion: settings.versions.privacy,
       dpaVersion: settings.versions.dpa,
@@ -285,7 +375,10 @@ export class CheckoutService implements OnModuleInit {
     const { legalUrls, versions } = settings;
     return {
       mode: 'subscription',
-      line_items: [{ price: price.id, quantity: 1 }],
+      line_items: quoted.lineItems.map((item) => ({
+        price: prices.get(item.lookupKey)?.id ?? '',
+        quantity: item.quantity,
+      })),
       // `payment_method_types` saiu da API na versão fixada (2026-09-30.endive); `allowed_payment_method_types` é o
       // filtro que a substitui: só cartão e boleto, se estiverem ligados no Dashboard.
       allowed_payment_method_types: [...PAYMENT_METHODS],
@@ -328,6 +421,26 @@ export class CheckoutService implements OnModuleInit {
       );
     }
   }
+}
+
+/** O que há de errado com o preço da Stripe para este item; `undefined` quando ele serve. */
+function priceProblem(
+  price: StripePrice | undefined,
+  item: QuoteLineItem,
+  livemode: boolean,
+): string | undefined {
+  if (price === undefined) return 'missing';
+  if (!price.active) return 'inactive';
+  if (price.currency !== 'brl') return 'currency';
+  if (price.livemode !== livemode) return 'livemode';
+  if (price.unitAmount !== item.unitAmount) return 'amount';
+  if (item.recurring) {
+    if (price.type !== 'recurring' || price.interval !== 'month' || price.intervalCount !== 1)
+      return 'interval';
+  } else if (price.type !== 'one_time') {
+    return 'type';
+  }
+  return undefined;
 }
 
 function slugUnavailable(): ApiError {

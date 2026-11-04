@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { planIdSchema, slugSchema } from '../tenants/tenant.schema.js';
+import { ULID_PATTERN } from '../common/ulid.js';
+import { slugSchema } from '../tenants/tenant.schema.js';
 import { CNPJ_INPUT_MAX_LENGTH, isValidCnpj, normalizeCnpj } from './cnpj.js';
 
 /** Sem caracteres de controle (quebra de linha, tabulação, NUL): o nome vai a e-mail, painel e nota fiscal. */
@@ -14,13 +15,14 @@ function hasNoControlCharacters(value: string): boolean {
 const versionSchema = z.string().min(1).max(64);
 
 /**
- * Corpo de `POST /v1/public/checkout` (plano §4a): estrito (campo desconhecido é recusado), com o CNPJ normalizado
- * (sem a máscara, letras em maiúsculas) e conferido pelos dígitos verificadores. O subdomínio é conferido só no
- * formato aqui; a lista reservada responde como "indisponível" (409), igual à consulta. As versões do aceite são
- * comparadas com as vigentes no serviço depois da validação (409 `terms_outdated`).
+ * Corpo de `POST /v1/public/checkout` (plano §4a, com o preço configurável): estrito (campo desconhecido é recusado),
+ * com o CNPJ normalizado (sem a máscara, letras em maiúsculas) e conferido pelos dígitos verificadores. O preço vem
+ * só da cotação gravada (`quoteId`, de `POST /v1/public/quote`): nenhum campo de preço, plano ou item é aceito. O
+ * subdomínio é conferido só no formato aqui; a lista reservada responde como "indisponível" (409), igual à consulta.
+ * As versões do aceite são comparadas com as vigentes no serviço depois da validação (409 `terms_outdated`).
  */
 export const checkoutRequestSchema = z.strictObject({
-  plan: planIdSchema,
+  quoteId: z.string().max(64).regex(ULID_PATTERN),
   companyName: z
     .string()
     .trim()
