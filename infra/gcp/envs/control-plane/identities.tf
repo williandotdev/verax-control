@@ -150,9 +150,19 @@ resource "google_iam_workload_identity_pool" "github" {
 }
 
 locals {
+  # O `sub` do token OIDC do GitHub para o environment de implantação, com os IDs fixos do dono e do repositório.
+  github_subject = format(
+    "repo:%s@%s/%s@%s:environment:%s",
+    split("/", var.github_repository)[0], var.github_repository_owner_id,
+    split("/", var.github_repository)[1], var.github_repository_id,
+    var.github_environment,
+  )
+
   # A condição do provedor, pedaço a pedaço (a mesma ordem vale no teste):
-  #   1. o subject do environment `control-plane` deste repositório (o nome; depois de renomear, atualize
-  #      `github_repository`);
+  #   1. o subject do environment `control-plane` deste repositório, no formato imutável que o repositório usa
+  #      (`use_immutable_subject` na personalização do `sub` do OIDC do GitHub: `repo:dono@id/nome@id:environment:...`,
+  #      como em `envs/verax`, variável `github_oidc_repository`). Com o formato só de nomes, o provedor recusaria
+  #      todo token do repositório;
   #   2 e 3. os IDs fixos do dono e do repositório (molde do envs/verax): um repositório recriado com o mesmo nome
   #      tem outro ID e não entra;
   #   4 e 5. o token veio de um job na branch `main` (e não de uma tag com esse nome). A proteção "deployment
@@ -161,7 +171,7 @@ locals {
   #   6. só os eventos que implantam (`push` e `workflow_dispatch`): um `pull_request_target`, que roda com o `ref`
   #      da base, também fica de fora.
   github_attribute_condition = join(" && ", [
-    "assertion.sub == \"repo:${var.github_repository}:environment:${var.github_environment}\"",
+    "assertion.sub == \"${local.github_subject}\"",
     "assertion.repository_owner_id == \"${var.github_repository_owner_id}\"",
     "assertion.repository_id == \"${var.github_repository_id}\"",
     "assertion.ref == \"refs/heads/main\"",
@@ -197,5 +207,5 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 resource "google_service_account_iam_member" "deployer_wif" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repository}:environment:${var.github_environment}"
+  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/${local.github_subject}"
 }

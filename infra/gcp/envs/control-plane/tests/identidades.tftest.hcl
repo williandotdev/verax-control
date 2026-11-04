@@ -304,7 +304,7 @@ run "cp_deployer" {
   assert {
     condition = (
       google_service_account_iam_member.deployer_wif.role == "roles/iam.workloadIdentityUser" &&
-      google_service_account_iam_member.deployer_wif.member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/cp-github/subject/repo:williandotdev/verax-control:environment:control-plane"
+      google_service_account_iam_member.deployer_wif.member == "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/cp-github/subject/repo:williandotdev@92734416/verax-control@1441377752:environment:control-plane"
     )
     error_message = "Só o environment control-plane do repositório vira a conta de implantação."
   }
@@ -312,7 +312,7 @@ run "cp_deployer" {
   assert {
     condition = (
       google_iam_workload_identity_pool_provider.github.oidc[0].issuer_uri == "https://token.actions.githubusercontent.com" &&
-      google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.sub == \"repo:williandotdev/verax-control:environment:control-plane\" && assertion.repository_owner_id == \"92734416\" && assertion.repository_id == \"1441377752\" && assertion.ref == \"refs/heads/main\" && assertion.ref_type == \"branch\" && (assertion.event_name == \"push\" || assertion.event_name == \"workflow_dispatch\")" &&
+      google_iam_workload_identity_pool_provider.github.attribute_condition == "assertion.sub == \"repo:williandotdev@92734416/verax-control@1441377752:environment:control-plane\" && assertion.repository_owner_id == \"92734416\" && assertion.repository_id == \"1441377752\" && assertion.ref == \"refs/heads/main\" && assertion.ref_type == \"branch\" && (assertion.event_name == \"push\" || assertion.event_name == \"workflow_dispatch\")" &&
       google_iam_workload_identity_pool_provider.github.attribute_mapping["google.subject"] == "assertion.sub" &&
       google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.ref"] == "assertion.ref" &&
       google_iam_workload_identity_pool_provider.github.attribute_mapping["attribute.ref_type"] == "assertion.ref_type" &&
