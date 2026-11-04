@@ -428,9 +428,12 @@ model Finding {
   incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
   triagedAt       DateTime?        @db.Timestamptz(3)
-  /// Só no GuardDuty: última atividade do achado na origem (`service.eventLastSeen`). Decide a reincidência: a versão
-  /// mais nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data.
+  /// Só no GuardDuty: a versão do achado na origem (o `updatedAt` do GuardDuty, que só avança). Decide a reincidência:
+  /// a versão mais nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data.
   lastSeenAt      DateTime?        @db.Timestamptz(3)
+  /// Só no GuardDuty: a chave do achado inteiro na origem (`wazuh/<conta>/guardduty:<id>:<regra>`), a mesma no
+  /// original, nas recorrências e, na sondagem de porta, no achado de cada IP. A cadeia da reincidência é lida por aqui.
+  chainKey        String?          @db.VarChar(128)
   /// Achado original de que este é a recorrência (GuardDuty: atividade nova depois da triagem). A chave estrangeira
   /// inclui o cliente, então uma recorrência nunca aponta para achado de outro cliente.
   recurrenceOfId  String?          @db.Uuid
@@ -447,6 +450,7 @@ model Finding {
   @@index([tenantId, status])
   @@index([incidentId])
   @@index([recurrenceOfId])
+  @@index([tenantId, chainKey])
 }
 
 /// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da

@@ -38,10 +38,12 @@ export interface FindingDraft {
   mitreTactics: string[];
   mitreTechniques: string[];
   /**
-   * Só no GuardDuty: a última atividade do achado na origem (`service.eventLastSeen`) e a chave que a versão nova
-   * ganha se o achado já estiver triado (a chave base mais esse horário). A gravação decide a reincidência por aqui.
+   * Só no GuardDuty, com id nativo: a versão do achado na origem (`updatedAt`), a chave do achado inteiro
+   * (`chainKey`: a mesma no original, nas recorrências e, na sondagem de porta, no achado de cada IP) e a chave que a
+   * versão nova ganha se a cadeia já estiver triada (a chave do achado inteiro mais o horário). A gravação decide a
+   * reincidência por aqui.
    */
-  recurrence?: { lastSeenAt: string; sourceEventId: string };
+  recurrence?: { lastSeenAt: string; chainKey: string; sourceEventId: string };
 }
 
 /**
@@ -81,9 +83,11 @@ const MAX_EVENT_ID = 128;
  *   O `nativeId` já separa o que a AWS repete em eventos diferentes: cada IP da sondagem de porta do GuardDuty e
  *   cada requisição do WAF (horário e IP, e não só o `requestId`, que atrás de um ALB o cliente escolhe).
  * - O achado do GuardDuty atualizado (mesmo `id`, atividade nova) cai nessa mesma chave. Se o primeiro ainda não foi
- *   triado, a versão nova é duplicada; se já foi (decisão de 2026-11-04), ela vira outro achado, com a chave base mais
- *   o horário da atividade (`recurrenceAt`, o `lastSeenAt` do alerta): `...:<regra>@<ISO>`. Reler essa versão cai na
- *   mesma chave e não duplica de novo. Quem decide é a gravação (`FindingStore`); a chave só a torna estável.
+ *   triado, a versão nova é duplicada; se já foi (decisão de 2026-11-04), ela vira outro achado, com a chave do achado
+ *   inteiro mais o horário da versão (`recurrenceAt`, o `updatedAt` do GuardDuty): `...:<regra>@<ISO>`. Reler essa
+ *   versão cai na mesma chave e não duplica de novo. Na sondagem de porta, a chave da recorrência leva só o `id` do
+ *   achado, sem o IP e a porta do item: a versão nova é uma por achado, não uma por IP. Quem decide é a gravação
+ *   (`FindingStore`); a chave só a torna estável.
  * - A conta é a do cadastro, decidida pela T5.2, e cada conta é de um cliente só. A chave é única no banco inteiro:
  *   sem a conta, um id repetido de propósito no bucket de um cliente apagaria, como duplicado, o achado de outro.
  * - A regra separa a correlação (rajada de logins com falha, de bloqueios no WAF) do evento simples: o evento que
@@ -103,10 +107,25 @@ export function wazuhFindingKey(
   return `wazuh/${accountId}/${type}:sha256-${digest}:${alert.rule.id}${suffix}`;
 }
 
+/**
+ * A reincidência do GuardDuty, pelo achado inteiro: na sondagem de porta, a chave base leva o IP e a porta do item,
+ * e a cadeia e a recorrência levam só o `id` do achado, para a versão nova ser uma por achado.
+ */
+function recurrenceOf(alert: WazuhAwsAlert, accountId: string): FindingDraft['recurrence'] {
+  if (alert.lastSeenAt === undefined || alert.findingId === undefined) return undefined;
+  const whole = { ...alert, nativeId: alert.findingId };
+  return {
+    lastSeenAt: alert.lastSeenAt,
+    chainKey: wazuhFindingKey(whole, accountId),
+    sourceEventId: wazuhFindingKey(whole, accountId, alert.lastSeenAt),
+  };
+}
+
 export function toFindingDraft(
   alert: WazuhAwsAlert,
   owner: Extract<AlertOwner, { owned: true }>,
 ): FindingDraft {
+  const recurrence = recurrenceOf(alert, owner.accountId);
   return {
     tenantId: owner.tenantId,
     accountId: owner.accountId,
@@ -128,11 +147,6 @@ export function toFindingDraft(
     sourceIp: alert.actor.ip ?? null,
     mitreTactics: unique(alert.rule.mitre.tactics),
     mitreTechniques: unique(alert.rule.mitre.ids),
-    ...(alert.lastSeenAt !== undefined && {
-      recurrence: {
-        lastSeenAt: alert.lastSeenAt,
-        sourceEventId: wazuhFindingKey(alert, owner.accountId, alert.lastSeenAt),
-      },
-    }),
+    ...(recurrence && { recurrence }),
   };
 }

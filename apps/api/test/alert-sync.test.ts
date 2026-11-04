@@ -3,7 +3,7 @@ import { randomInt, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AlertSync, type AlertSearchClient } from '../src/alerts/alert-sync.js';
-import { wazuhFindingKey } from '../src/alerts/finding-draft.js';
+import { toFindingDraft, wazuhFindingKey } from '../src/alerts/finding-draft.js';
 import { parseWazuhAlert } from '../src/alerts/wazuh-alert.js';
 import { IncidentGrouping, protectedItemsOf } from '../src/incidents/incident-grouping.js';
 import { DEFAULT_SYNC_SETTINGS } from '../src/alerts/sync-query.js';
@@ -671,24 +671,43 @@ describe('sync de alertas para achados (T5.3)', () => {
             timestamp: wazuhTime(at),
           };
         };
-      /** A última atividade e a chave da recorrência de uma versão, pelas mesmas funções do sync. */
+      /** A versão de um alerta e a reincidência do rascunho (cadeia e chave da recorrência), pelas funções do sync. */
       const lastSeenOf = (doc: Record<string, unknown>): Date => {
         const parsed = parseWazuhAlert(doc);
-        if (!parsed.ok || parsed.alert.lastSeenAt === undefined)
-          throw new Error('versão sem última atividade');
+        if (!parsed.ok || parsed.alert.lastSeenAt === undefined) throw new Error('versão sem horário');
         return new Date(parsed.alert.lastSeenAt);
       };
+      const recurrenceOf = (doc: Record<string, unknown>) => {
+        const parsed = parseWazuhAlert(doc);
+        if (!parsed.ok) throw new Error(parsed.reason);
+        const draft = toFindingDraft(parsed.alert, { owned: true, tenantId: tenantA, accountId: accountA });
+        if (!draft.recurrence) throw new Error('versão sem reincidência');
+        return draft.recurrence;
+      };
       const byRecurrence = (doc: Record<string, unknown>) => ({
-        source_sourceEventId: {
-          source: 'wazuh',
-          sourceEventId: `${keyOf(doc)}@${lastSeenOf(doc).toISOString()}`,
-        },
+        source_sourceEventId: { source: 'wazuh', sourceEventId: recurrenceOf(doc).sourceEventId },
       });
       const findingsOf = (findingId: string) =>
         prisma.finding.findMany({
           where: { sourceEventId: { contains: findingId } },
           orderBy: { createdAt: 'asc' },
         });
+      /**
+       * A versão de uma sondagem de porta como o wodle a entrega: um alerta por IP, na ordem dada (o horário do
+       * alerta cresce com a posição, e o indexer falso lê nessa ordem), todos com o mesmo `updatedAt`.
+       */
+      const probeVersionsOf =
+        (findingId: string, instanceId: string) => (minutesAgo: number, ips: readonly string[]) => {
+          const at = new Date(Date.now() - minutesAgo * MINUTE);
+          return portProbeAlerts(
+            ips.map((ip) => ({ ip, port: 22 })),
+            { account: accountA, bucket: guardDutyA, findingId, instanceId, updatedAt: at.toISOString() },
+          ).map((doc, index) => ({
+            ...doc,
+            id: newAlertId(),
+            timestamp: wazuhTime(new Date(at.getTime() + index * 1000)),
+          }));
+        };
 
       it('ainda não triado, o achado absorve as versões novas: um achado só, com a última atividade da mais nova', async () => {
         const findingId = randomUUID().replace(/-/g, '');
@@ -899,6 +918,222 @@ describe('sync de alertas para achados (T5.3)', () => {
         });
         expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toEqual(original);
         expect(await prisma.finding.count({ where: { recurrenceOfId: original.id } })).toBe(0);
+      });
+
+      it('sondagem de porta: a versão nova de um achado com três IPs triados vira um achado só, e relida não vira nada', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = probeVersionsOf(findingId, `i-0${randomInt(1e6, 9e6)}abcdef0`);
+        const ips = [1, 2, 3].map(() => `100.70.${randomInt(0, 255)}.${randomInt(1, 254)}`);
+        const first = version(40, ips);
+        expect(await syncFor(new FakeIndexer(first)).runOnce()).toMatchObject({ created: 3, duplicates: 0 });
+        const chain = recurrenceOf(first[0]!).chainKey;
+        expect(chain).toBe(`wazuh/${accountA}/guardduty:${findingId}:80305`);
+        const originals = await findingsOf(findingId);
+        expect(originals.map((finding) => finding.chainKey)).toEqual([chain, chain, chain]);
+        await prisma.finding.updateMany({
+          where: { id: { in: originals.map((finding) => finding.id) } },
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+        const triaged = await findingsOf(findingId);
+
+        // A versão nova repete os três IPs (o wodle reemite todos): um achado só, com a chave do achado inteiro, sem
+        // o IP, ligado ao original do primeiro item lido; os outros dois itens caem como duplicados.
+        const second = version(30, ips);
+        expect(await syncFor(new FakeIndexer(second)).runOnce()).toMatchObject({
+          read: 3,
+          created: 1,
+          duplicates: 2,
+        });
+        const recurrence = await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second[0]!) });
+        expect(recurrence).toMatchObject({
+          sourceEventId: `${chain}@${lastSeenOf(second[0]!).toISOString()}`,
+          chainKey: chain,
+          status: 'new',
+          sourceIp: ips[0],
+          lastSeenAt: lastSeenOf(second[0]!),
+          recurrenceOfId: originals.find((finding) => finding.sourceIp === ips[0])?.id,
+        });
+        // Relida (outros ids de alerta): nada.
+        const reread = second.map((doc) => ({ ...doc, id: newAlertId() }));
+        expect(await syncFor(new FakeIndexer(reread)).runOnce()).toMatchObject({ created: 0, duplicates: 3 });
+        expect(await findingsOf(findingId)).toHaveLength(4);
+
+        // Ainda aberta, a recorrência absorve a versão seguinte, mesmo que o primeiro item lido seja o IP de outro
+        // original (a cadeia é do achado inteiro, não de cada IP).
+        const third = version(20, [...ips].reverse());
+        expect(await syncFor(new FakeIndexer(third)).runOnce()).toMatchObject({ created: 0, duplicates: 3 });
+        expect((await prisma.finding.findUniqueOrThrow({ where: { id: recurrence.id } })).lastSeenAt).toEqual(
+          lastSeenOf(third[0]!),
+        );
+        expect(await findingsOf(findingId)).toHaveLength(4);
+
+        // Triada a recorrência, a versão seguinte vira outro achado, também um só.
+        await prisma.finding.update({
+          where: { id: recurrence.id },
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+        const fourth = version(10, [...ips].reverse());
+        expect(await syncFor(new FakeIndexer(fourth)).runOnce()).toMatchObject({ created: 1, duplicates: 2 });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byRecurrence(fourth[0]!) })).toMatchObject({
+          chainKey: chain,
+          status: 'new',
+          sourceIp: ips[2],
+        });
+        const all = await findingsOf(findingId);
+        expect(all).toHaveLength(5);
+        // Os originais por IP não mudam.
+        expect(all.slice(0, 3)).toEqual(triaged);
+      });
+
+      it('sondagem de porta: o IP com exceção não cria a recorrência; o IP sem exceção cria; o IP novo é outro achado por IP', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = probeVersionsOf(findingId, `i-0${randomInt(1e6, 9e6)}abcdef0`);
+        const [allowed, other, newcomer] = [1, 2, 3].map(
+          () => `100.71.${randomInt(0, 255)}.${randomInt(1, 254)}`,
+        ) as [string, string, string];
+        const exception = await prisma.alertException.create({
+          data: {
+            tenantId: tenantA,
+            ruleId: '80305',
+            field: 'ip',
+            value: allowed,
+            reason: 'Varredura autorizada',
+            createdById: creatorA,
+          },
+        });
+        const first = version(40, [allowed, other]);
+        expect(await syncFor(new FakeIndexer(first)).runOnce()).toMatchObject({ created: 2, excepted: 1 });
+        await prisma.finding.update({
+          where: byKey(first[1]!),
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+
+        // O IP autorizado chega primeiro e não fala pela versão inteira: a recorrência nasce do outro, sem exceção.
+        const second = version(30, [allowed, other]);
+        expect(await syncFor(new FakeIndexer(second)).runOnce()).toMatchObject({
+          created: 1,
+          excepted: 0,
+          duplicates: 1,
+        });
+        const recurrence = await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second[0]!) });
+        expect(recurrence).toMatchObject({
+          status: 'new',
+          exceptionId: null,
+          sourceIp: other,
+          rawEventId: second[1]!.id,
+        });
+        // Resolvida a recorrência, a versão só com o IP autorizado não vira nada.
+        await prisma.finding.update({
+          where: { id: recurrence.id },
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+        expect(await syncFor(new FakeIndexer(version(20, [allowed]))).runOnce()).toMatchObject({
+          created: 0,
+          duplicates: 1,
+        });
+        // Um IP que aparece pela primeira vez é outro achado por IP, na mesma cadeia, e não uma recorrência.
+        const fourth = version(10, [allowed, newcomer]);
+        expect(await syncFor(new FakeIndexer(fourth)).runOnce()).toMatchObject({ created: 1, duplicates: 1 });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byKey(fourth[1]!) })).toMatchObject({
+          sourceEventId: `wazuh/${accountA}/guardduty:${findingId}/${newcomer}:22:80305`,
+          sourceIp: newcomer,
+          status: 'new',
+          recurrenceOfId: null,
+          chainKey: recurrence.chainKey,
+        });
+        expect(await findingsOf(findingId)).toHaveLength(4);
+        // A exceção contou só o achado do IP autorizado.
+        expect(await prisma.alertException.findUniqueOrThrow({ where: { id: exception.id } })).toMatchObject({
+          matchedCount: 1,
+        });
+        await prisma.alertException.delete({ where: { id: exception.id } });
+      });
+
+      it('achado triado sem versão conhecida: a versão relida vira a base de comparação, e só a seguinte vira recorrência', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = versionsOf(findingId);
+        const first = version(2, 30);
+        // Gravado antes da coluna, ou com o `updatedAt` fora do formato na primeira versão: sem versão nem cadeia.
+        const seeded = await prisma.finding.create({
+          data: {
+            tenantId: tenantA,
+            accountId: accountA,
+            source: 'wazuh',
+            sourceEventId: keyOf(first),
+            logSource: 'guardduty',
+            occurredAt: new Date(Date.now() - 30 * MINUTE),
+            severity: 'high',
+            status: 'resolved',
+            triagedAt: new Date(),
+            ruleId: '80303',
+            ruleLevel: 10,
+            title: 'Achado gravado sem versão',
+          },
+        });
+        expect(seeded).toMatchObject({ lastSeenAt: null, chainKey: null });
+
+        expect(await syncFor(new FakeIndexer([first])).runOnce()).toMatchObject({
+          read: 1,
+          created: 0,
+          duplicates: 1,
+        });
+        expect(await prisma.finding.findUniqueOrThrow({ where: { id: seeded.id } })).toMatchObject({
+          status: 'resolved',
+          lastSeenAt: lastSeenOf(first),
+          chainKey: recurrenceOf(first).chainKey,
+        });
+        expect(await findingsOf(findingId)).toHaveLength(1);
+        // Relida de novo: nada. A versão seguinte, mais nova, aí sim vira recorrência.
+        expect(await syncFor(new FakeIndexer([{ ...first, id: newAlertId() }])).runOnce()).toMatchObject({
+          created: 0,
+          duplicates: 1,
+        });
+        const second = version(5, 10);
+        expect(await syncFor(new FakeIndexer([second])).runOnce()).toMatchObject({ created: 1 });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second) })).toMatchObject({
+          recurrenceOfId: seeded.id,
+        });
+      });
+
+      it('a versão é sempre o updatedAt: o eventLastSeen atrás do updatedAt da versão anterior não esconde a nova', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const ip = `100.69.${randomInt(0, 255)}.${randomInt(1, 254)}`;
+        const ago = (minutes: number) => new Date(Date.now() - minutes * MINUTE);
+        const versionOf = (count: number, updatedAt: Date, eventLastSeen: string | null) => ({
+          ...guardDutyAlert({
+            account: accountA,
+            bucket: guardDutyA,
+            findingId,
+            count,
+            updatedAt: updatedAt.toISOString(),
+            eventLastSeen,
+            action: {
+              actionType: 'AWS_API_CALL',
+              awsApiCallAction: { api: 'ListBuckets', remoteIpDetails: { ipAddressV4: ip } },
+            },
+          }),
+          id: newAlertId(),
+          timestamp: wazuhTime(updatedAt),
+        });
+        // A primeira versão saiu sem `eventLastSeen`; a segunda traz um `eventLastSeen` anterior ao `updatedAt` da
+        // primeira. Comparadas ora por um, ora por outro, a segunda cairia como antiga.
+        const first = versionOf(1, ago(30), null);
+        const secondAt = ago(10);
+        const second = versionOf(2, secondAt, ago(40).toISOString());
+        await syncFor(new FakeIndexer([first])).runOnce();
+        await prisma.finding.update({
+          where: byKey(first),
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+
+        expect(await syncFor(new FakeIndexer([second])).runOnce()).toMatchObject({
+          created: 1,
+          duplicates: 0,
+        });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second) })).toMatchObject({
+          lastSeenAt: secondAt,
+          sourceEventId: `${keyOf(second)}@${secondAt.toISOString()}`,
+        });
       });
 
       it('A/B: a chave ocupada por um achado de outro cliente não é vista nem tocada, e nada é criado', async () => {

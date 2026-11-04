@@ -38,6 +38,7 @@ export function findingRow(draft: FindingDraft, exception: ActiveException | nul
     logSource: draft.logSource,
     occurredAt: new Date(draft.occurredAt),
     lastSeenAt: draft.recurrence ? new Date(draft.recurrence.lastSeenAt) : null,
+    chainKey: draft.recurrence?.chainKey ?? null,
     severity: draft.severity,
     // A exceção marca o achado como esperado já na chegada: ele não entra na fila de triagem.
     status: exception ? ('legitimate' as const) : ('new' as const),
@@ -128,7 +129,7 @@ export class FindingStore {
         skipDuplicates: true,
       });
       if (count === 1) return this.settle(db, draft, draft.sourceEventId, exception, protectedItems, now);
-      // A chave já existe. Só o GuardDuty traz a última atividade, que diz se é a mesma versão ou uma nova.
+      // A chave já existe. Só o GuardDuty traz a versão do achado, que diz se é a mesma ou uma nova.
       return draft.recurrence
         ? this.recur(db, draft, draft.recurrence, exception, protectedItems, now)
         : ('duplicate' as const);
@@ -160,16 +161,23 @@ export class FindingStore {
   }
 
   /**
-   * A chave já existe e o alerta traz a última atividade: o GuardDuty soma a atividade nova ao mesmo achado (mesmo
-   * `id`, `service.count` maior, `eventLastSeen` mais novo). Decisão de 2026-11-04:
-   * - versão igual ou mais antiga que a última atividade conhecida: duplicada, nada muda;
-   * - achado ainda não triado: ele absorve a versão nova, e só a última atividade avança. Assim a mesma versão,
+   * A chave já existe e o alerta traz a versão do achado: o GuardDuty soma a atividade nova ao mesmo achado (mesmo
+   * `id`, `service.count` maior) e grava outra versão (`updatedAt` mais novo). Decisão de 2026-11-04:
+   * - achado sem versão conhecida (gravado antes da coluna, ou com o `updatedAt` fora do formato na primeira versão):
+   *   esta versão vira a base de comparação, seja qual for o status, e nada mais muda. Sem isso, reler a mesma versão
+   *   de um achado triado viraria recorrência;
+   * - versão igual ou mais antiga que a última conhecida: duplicada, nada muda;
+   * - achado ainda não triado: ele absorve a versão nova, e só a versão conhecida avança. Assim a mesma versão,
    *   relida na sobreposição depois da triagem, não vira achado;
-   * - achado já triado (investigando, legítimo ou resolvido) e atividade estritamente mais nova: a versão vira um
-   *   achado novo, com a chave base mais o horário da atividade (reler essa versão cai como duplicada), ligado ao
+   * - achado já triado (investigando, legítimo ou resolvido) e versão estritamente mais nova: a versão vira um
+   *   achado novo, com a chave do achado inteiro mais o horário (reler essa versão cai como duplicada), ligado ao
    *   original por `recurrenceOfId`. O original não muda: nem o status, nem os campos, nem o evento bruto.
-   * Quem decide é o achado mais recente da cadeia (o original ou a última recorrência): a atividade que chega com uma
-   * recorrência ainda aberta entra nela, e não abre outra.
+   * Quem decide é o achado mais recente da cadeia (`chainKey`: o original, as recorrências e, na sondagem de porta,
+   * o achado de cada IP): a versão que chega com uma recorrência ainda aberta entra nela, e não abre outra.
+   * Na sondagem de porta, o wodle entrega a versão em vários alertas (um por IP), todos na mesma cadeia: a
+   * recorrência é uma só por versão (os outros alertas caem como duplicados), e o alerta com exceção não a cria,
+   * porque a exceção é do IP dele, e a recorrência fala pela versão inteira. Se todos os IPs têm exceção, a versão
+   * não vira nada; o IP que aparece pela primeira vez é outro achado por IP, como sempre.
    * A chave é única no banco inteiro; se for de um achado de outro cliente (conta recadastrada), o escopo não o vê, e
    * nada é tocado.
    */
@@ -186,13 +194,22 @@ export class FindingStore {
       select: { id: true },
     });
     if (!original) return 'duplicate' as const;
+    // O original entra pelo id também: gravado sem a chave da cadeia (antes da coluna), ele ainda decide.
     const latest = await db.finding.findFirstOrThrow({
-      where: { OR: [{ id: original.id }, { recurrenceOfId: original.id }] },
+      where: { OR: [{ id: original.id }, { chainKey: recurrence.chainKey }] },
       orderBy: [{ lastSeenAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
       select: { id: true, status: true, lastSeenAt: true },
     });
     const seenAt = new Date(recurrence.lastSeenAt);
-    if (latest.lastSeenAt !== null && seenAt <= latest.lastSeenAt) return 'duplicate' as const;
+    if (latest.lastSeenAt === null) {
+      await db.finding.update({
+        where: { id: latest.id },
+        data: { lastSeenAt: seenAt, chainKey: recurrence.chainKey },
+        select: { id: true },
+      });
+      return 'duplicate' as const;
+    }
+    if (seenAt <= latest.lastSeenAt) return 'duplicate' as const;
     if (!isTriaged(latest.status)) {
       await db.finding.update({
         where: { id: latest.id },
@@ -201,6 +218,8 @@ export class FindingStore {
       });
       return 'duplicate' as const;
     }
+    // Alerta de um item só da versão (a chave base leva o IP; a da cadeia, não) com exceção: não fala pela versão.
+    if (exception && draft.sourceEventId !== recurrence.chainKey) return 'duplicate' as const;
     const { count } = await db.finding.createMany({
       data: [
         {
