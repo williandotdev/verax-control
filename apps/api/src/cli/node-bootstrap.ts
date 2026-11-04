@@ -1,11 +1,12 @@
 import 'reflect-metadata';
-import { gcpProjectIdSchema, isPubsubSubscriptionName } from '@verax/shared';
+import { gcpProjectIdSchema, isPubsubSubscriptionName, type ResolvedPlan } from '@verax/shared';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { type Auth, createAuth } from '../auth/auth.factory.js';
 import { setTemporaryPassword } from '../auth/temporary-password.js';
 import { provisionUser } from '../auth/user-provisioning.js';
 import { AuditService } from '../common/audit/audit.service.js';
+import { nodePlan } from '../common/config/env.schema.js';
 import { loadConfig } from '../common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from '../common/config/load-env-file.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
@@ -16,7 +17,9 @@ import { mailTransport } from '../mail/mail.module.js';
  * - o primeiro `admin_verax`, com uma senha temporária (a mesma regra do painel: no primeiro login, troca a senha e
  *   cadastra o MFA). A senha sai numa linha marcada da saída, que o `start.sh` grava num arquivo só de root na VM: ela
  *   não fica no log nem na tela de quem rodou;
- * - o cliente do nó e as contas da GCP dele, cada uma com a sua assinatura do Pub/Sub.
+ * - o cliente do nó e as contas da GCP dele, cada uma com a sua assinatura do Pub/Sub;
+ * - o rótulo do plano do nó (`PLAN`) em `Tenant.plan`. Quem vale é o ambiente: o cadastro só mostra o plano, e cada
+ *   execução o atualiza se o `PLAN` mudou.
  *
  * Idempotente: o que já existe fica como está (inclusive um admin que já definiu a própria senha). Cada criação entra
  * na trilha de auditoria como ação do sistema. Os valores vêm do ambiente da instalação, nunca do repositório.
@@ -72,6 +75,8 @@ export interface BootstrapResult {
   /** Só quando a senha temporária foi gerada nesta execução. */
   temporaryPassword?: { temporaryPassword: string; expiresAt: string };
   tenant: 'created' | 'exists' | 'skipped';
+  /** Rótulo do plano em `Tenant.plan`: gravado agora (`set`) ou já igual (`unchanged`). */
+  plan?: 'set' | 'unchanged';
   accounts: { project: string; outcome: 'created' | 'exists' | 'other-tenant' }[];
 }
 
@@ -80,6 +85,7 @@ export async function bootstrapNode(
   prisma: PrismaService,
   auth: Auth,
   input: BootstrapInput,
+  plan: ResolvedPlan,
 ): Promise<BootstrapResult> {
   const audit = new AuditService();
   const system = { type: 'system' as const };
@@ -156,14 +162,15 @@ export async function bootstrapNode(
 
   let tenant = await prisma.tenant.findFirst({
     where: { name: input.BOOTSTRAP_TENANT_NAME },
-    select: { id: true },
+    select: { id: true, plan: true },
     orderBy: { createdAt: 'asc' },
   });
   let tenantOutcome: BootstrapResult['tenant'] = 'exists';
+  let planOutcome: BootstrapResult['plan'] = 'unchanged';
   if (!tenant) {
     tenant = await prisma.tenant.create({
-      data: { name: input.BOOTSTRAP_TENANT_NAME },
-      select: { id: true },
+      data: { name: input.BOOTSTRAP_TENANT_NAME, plan: plan.label },
+      select: { id: true, plan: true },
     });
     await audit.write(prisma, {
       actor: { ...system, tenantId: tenant.id },
@@ -171,9 +178,23 @@ export async function bootstrapNode(
       outcome: 'success',
       resourceType: 'tenant',
       resourceId: tenant.id,
-      after: { name: input.BOOTSTRAP_TENANT_NAME },
+      after: { name: input.BOOTSTRAP_TENANT_NAME, plan: plan.label },
     });
     tenantOutcome = 'created';
+    planOutcome = 'set';
+  } else if (tenant.plan !== plan.label) {
+    // O plano mudou no node.conf (ou o cliente veio de antes do plano): o cadastro passa a mostrar o do ambiente.
+    await prisma.forTenant(tenant.id).tenant.update({ where: { id: tenant.id }, data: { plan: plan.label } });
+    await audit.write(prisma, {
+      actor: { ...system, tenantId: tenant.id },
+      action: 'tenant.update',
+      outcome: 'success',
+      resourceType: 'tenant',
+      resourceId: tenant.id,
+      before: { plan: tenant.plan },
+      after: { plan: plan.label },
+    });
+    planOutcome = 'set';
   }
 
   const accounts: BootstrapResult['accounts'] = [];
@@ -207,7 +228,7 @@ export async function bootstrapNode(
     });
     accounts.push({ project, outcome: 'created' });
   }
-  return { admin, temporaryPassword, tenant: tenantOutcome, accounts };
+  return { admin, temporaryPassword, tenant: tenantOutcome, plan: planOutcome, accounts };
 }
 
 async function main(): Promise<void> {
@@ -229,7 +250,8 @@ async function main(): Promise<void> {
       mail: mailTransport(config),
       audit: (entry) => auditService.write(prisma, entry),
     });
-    const result = await bootstrapNode(prisma, auth, input.data);
+    const plan = nodePlan(config);
+    const result = await bootstrapNode(prisma, auth, input.data, plan);
     const adminMessage = {
       created: 'Administrador criado com senha temporária.',
       renewed:
@@ -246,6 +268,7 @@ async function main(): Promise<void> {
       console.log(`${EXPIRY_LINE_MARKER}${result.temporaryPassword.expiresAt}`);
     }
     console.log(`Cliente do nó: ${result.tenant}.`);
+    if (result.plan) console.log(`Plano do nó: ${plan.label} (${result.plan}).`);
     for (const account of result.accounts) console.log(`Conta GCP ${account.project}: ${account.outcome}.`);
   } finally {
     await prisma.$disconnect();

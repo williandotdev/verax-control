@@ -1809,3 +1809,48 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
   - **Testes novos:** agendador (2: erro comum depois do estouro do orçamento e durante a parada); Torre (GCP com coleta recente e evento antigo é silenciosa; Cloudflare com coleta recente e sem evento não é; AWS conectada pelo evento); integração do Wazuh (o evento conecta a conta em `waiting`, a em `error` continua); GCP (leitura vazia mantém `waiting` a conta sem evento e deixa `connected` a com evento, mesmo vindo de erro; falha no acknowledge; erro interno não mexe na conexão); API de contas (desativar e reativar, com auditoria).
   - **Testes ajustados à regra nova:** a leitura vazia da GCP não conecta mais; a cobertura da Torre (unitária e de integração) por provedor; a troca de assinatura agora usa conta com evento, para o sync da GCP concorrente não mudar a conexão no meio; o painel confere os textos novos.
   - Resultado: API 64 arquivos e 809 testes; painel 248 unitários e 52 e2e da demonstração; lint, tipos e Prettier limpos.
+
+## Fase 2, PR-03: plano do nó e medidor de uso
+
+- **Pedido:** o plano do nó e o medidor de GiB por mês (plano da fase 2, PR-03, com a mudança do plano revisado: a fonte `aws` do medidor vem depois, pelo Wazuh do nó, no PR-V6). Sem tela e sem rota nova: a página "Plano e uso" e o `GET /v1/plan` ficam para o PR-18.
+- **Planos** (`packages/shared/src/plans.ts`):
+  - Essencial: 3 contas cloud, 5 usuários, 15 GiB por mês e 90 dias de histórico;
+  - Profissional: 15, 15, 60 e 365;
+  - Enterprise: sem padrão, os quatro limites vêm sempre dos ajustes;
+  - Interno (o nó da própria Verax): sem limite nenhum, e não aceita ajuste.
+  - Os ajustes trocam só o limite informado (extras como "conta extra" ou "+10 GiB"), cada um numa faixa: contas e usuários de 1 a 1000, GiB de 1 a 100.000 e histórico de 30 a 3650 dias (o piso evita apagar dados por engano no expurgo).
+  - Exporta o id, o rótulo, os limites, o schema zod dos ajustes e do plano resolvido, e `resolvePlan`.
+- **Ambiente** (parte comum da API e do worker, `env.schema.ts`):
+  - `PLAN` obrigatório em produção; fora dela, o padrão é `interno`;
+  - `PLAN_MAX_CLOUD_ACCOUNTS`, `PLAN_MAX_USERS`, `PLAN_MONTHLY_GIB` e `PLAN_HISTORY_DAYS`, opcionais, validados pela faixa; o `enterprise` exige os quatro e o `interno` recusa qualquer um;
+  - as mensagens citam só o nome da variável, como as outras; `nodePlan(config)` devolve o plano em vigor. O worker registra o plano no log de partida.
+- **Medidor** (`apps/api/src/usage/usage-meter.ts` e `model IngestUsage`):
+  - uma linha por cliente, mês e fonte (`@@id([tenantId, month, source])`), com `bytes` e `events` em `BigInt`; o model entra em `TENANT_SCOPED_MODELS`, e toda escrita passa por `forTenant`;
+  - mês do calendário de Brasília: a virada é às 03:00 UTC do dia 1º (UTC-3 fixo, sem horário de verão);
+  - regra única do GiB: bytes UTF-8 de cada registro como a fonte entrega, já descompactado, contando todo registro lido, inclusive o que nenhuma regra acusa;
+  - o coletor soma em memória e grava com `flush` só depois de confirmar a leitura: uma escrita (upsert com incremento) por cliente, mês e fonte. O que já foi gravado sai do medidor, então repetir o `flush` depois de uma falha no meio não conta duas vezes;
+  - ganchos para as próximas fontes, descritos no próprio arquivo: `aws` pela tarefa `wazuh-usage` (PR-V6, diferença do `bytes.received` do analysisd) e `cloudflare` pelo coletor nativo (`utf8Bytes` do corpo, depois de avançar o cursor).
+  - **Migration** `20261104100000_ingest_usage`: a tabela, a chave estrangeira para `Tenant` e dois CHECK (o mês é sempre o dia 1º; os contadores nunca ficam negativos).
+- **Sync da GCP:** depois do ack de cada lote, mede o `data` de toda mensagem do lote (inclusive a inválida, a sem dono e a que nenhuma regra acusa) para o cliente da assinatura. A assinatura cadastrada em mais de um cliente não conta para nenhum. O lote que falha antes do ack não conta: volta pelo Pub/Sub e é medido quando for confirmado. Uma reentrega de mensagem já confirmada conta duas vezes ("uso justo").
+- **Bootstrap do nó:** grava o rótulo do plano (`Essencial`, `Profissional`, `Enterprise` ou `Interno`) em `Tenant.plan` ao criar o cliente; com o `PLAN` trocado, atualiza na próxima execução, com o antes e o depois na auditoria. Quem vale é o ambiente; o cadastro só mostra.
+- **Pacote do nó (`infra/`, revisar linha a linha):**
+  - `start.sh`: escreve `PLAN` e os ajustes definidos no `api.env` e no `worker.env`; sem `PLAN` no `node.conf`, a partida para com mensagem;
+  - `install.sh`: `PLAN` entra nos obrigatórios, com o nome conferido; no `enterprise`, os quatro ajustes também;
+  - `node.conf.example`: `PLAN=interno`, com os ajustes comentados;
+  - `infra/terraform/modules/api/main.tf`: a tarefa da API na AWS (implantação com vários clientes, não aplicada) ganha `PLAN=interno`, para continuar subindo;
+  - `scripts/test-api-image.sh` (teste da imagem no CI): `PLAN=interno` no contêiner de produção;
+  - roteiro `docs/runbooks/no-verax.md`: o `node.conf` precisa de `PLAN=interno` antes do próximo deploy.
+- **Testes:**
+  - planos (12): tabela comercial, interno sem limite e sem ajuste, enterprise com os quatro ajustes, ajuste parcial, faixas, contrato e rótulo;
+  - ambiente (7): `PLAN` ausente em produção, padrão `interno`, enterprise sem os ajustes e com eles, ajuste no Essencial, valores inválidos e o mesmo no worker;
+  - medidor sem banco (9): virada do mês às 03:00 UTC e do ano, bytes UTF-8 e base64, validação, uma escrita por chave e falha no meio;
+  - medidor com banco (6): soma e incremento, virada do mês, volume acima de 32 bits, A/B (o uso de B nunca conta para A; o escopo de A não grava nem altera a linha de B) e os CHECK;
+  - sync da GCP (4): mede toda mensagem lida depois do ack, sem contar para o cliente do projeto intruso; lote que falha antes do ack (gravação ou ack) não conta e, confirmado depois, conta uma vez; mês da execução com a virada; assinatura ambígua não conta para ninguém;
+  - bootstrap (3): rótulo gravado e atualizado com auditoria, cliente de antes do plano, sem cliente nada é gravado;
+  - shellcheck limpo no pacote do nó e no teste da imagem.
+  - Resultado: API 66 arquivos e 838 testes; compartilhado 147; painel 248 unitários (o painel não mudou); lint, tipos e Prettier limpos.
+- **Desvios:**
+  - o medidor da GCP grava depois de cada ack (uma escrita por lote), e não uma vez no fim da execução: uma falha mais adiante na execução não perde o que já foi confirmado;
+  - o `.env.example` não foi alterado; fora de produção o padrão é `interno`, então o ambiente local não muda.
+- **O que testar manualmente:** acrescentar `PLAN=interno` ao `node.conf` do nó da Verax antes do próximo deploy; depois do deploy, conferir no journal que a API e o worker subiram (o log do worker mostra `plan`) e rodar o bootstrap uma vez para o cadastro do cliente Verax mostrar "Interno".
+- **Riscos:** a reentrega do Pub/Sub conta duas vezes (documentado como "uso justo"); se a gravação do uso falhar depois do ack, aquele lote fica sem medir (a favor do cliente) e a assinatura conta como falha interna na execução.

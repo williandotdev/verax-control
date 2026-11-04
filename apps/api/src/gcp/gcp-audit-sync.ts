@@ -5,6 +5,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
 import { detect, gcpEventId, type GcpRule, toGcpFindingDraft } from './gcp-rules.js';
 import type { PubsubMessage, PubsubReader } from './pubsub.client.js';
@@ -110,7 +111,11 @@ function unownedRecord(
  *    dono: na dúvida, o evento não é de ninguém);
  * 3. aplica as regras; o evento suspeito vira achado, com a exceção e o incidente, na mesma transação;
  * 4. só depois confirma (ack) o lote. Se algo falhar antes, o Pub/Sub entrega de novo, e a chave única do achado
- *    impede duplicar.
+ *    impede duplicar;
+ * 5. depois do ack, grava o volume lido no medidor de uso (`IngestUsage`, fonte `gcp`): o `data` de toda mensagem do
+ *    lote, inclusive a inválida, a sem dono e a que nenhuma regra acusa, para o cliente da assinatura. A assinatura
+ *    cadastrada em mais de um cliente não conta para nenhum. O lote que falha antes do ack não conta: volta pelo
+ *    Pub/Sub e é medido quando for confirmado.
  *
  * A leitura de cada assinatura também dá o estado da conexão das contas que a usam:
  * - lida sem erro, todas ganham a hora da coleta e perdem o erro. Só fica `connected` a conta que já recebeu evento:
@@ -280,10 +285,14 @@ export class GcpAuditSync {
   }
 
   private async readSubscription(group: SubscriptionGroup, context: RunContext): Promise<void> {
+    // O volume lido é do cliente da assinatura (todos os projetos dela são dele); ambígua, não é de ninguém.
+    const owner = group.ambiguous ? undefined : group.projects.values().next().value;
     for (let pull = 0; pull < this.maxPulls; pull += 1) {
       const messages = await fromSource(() => this.reader.pull(group.subscription, this.pullSize));
+      const usage = new UsageMeter();
       for (const message of messages) {
         context.report.read += 1;
+        if (owner) usage.add(owner, 'gcp', base64Bytes(message.data), 1, context.now);
         await this.process(message, group, context);
       }
       // Confirma só o que já foi gravado.
@@ -293,6 +302,8 @@ export class GcpAuditSync {
           messages.map((message) => message.ackId),
         ),
       );
+      // Mede só o que foi confirmado: uma escrita por lote.
+      await usage.flush(this.prisma);
       await this.lease.renew();
       if (messages.length < this.pullSize) return;
     }

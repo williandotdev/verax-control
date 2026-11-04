@@ -65,7 +65,11 @@ async function main(): Promise<void> {
   });
 
   logger.info(
-    { intervalSeconds: config.SYNC_INTERVAL_SECONDS, tasks: tasks.map((task) => task.name) },
+    {
+      intervalSeconds: config.SYNC_INTERVAL_SECONDS,
+      tasks: tasks.map((task) => task.name),
+      plan: config.PLAN,
+    },
     'worker iniciado',
   );
   scheduler.start();

@@ -539,6 +539,158 @@ describe('sync da auditoria da GCP para achados', () => {
     });
   });
 
+  describe('medidor de uso (fonte gcp)', () => {
+    /** Cliente novo com uma conta GCP e a assinatura dela: o uso medido não se mistura com o dos outros testes. */
+    const meteredTenant = async (label: string) => {
+      const tenantId = await createTenant(app, `Cliente Demo ${label} (uso GCP)`);
+      const project = randomProject();
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscriptionOf(project),
+        },
+      });
+      return { tenantId, project, subscription: subscriptionOf(project) };
+    };
+    const gcpUsage = async (tenantId: string) =>
+      (
+        await prisma.forTenant(tenantId).ingestUsage.findMany({
+          where: { source: 'gcp' },
+          orderBy: { month: 'asc' },
+        })
+      ).map((row) => ({
+        month: row.month.toISOString().slice(0, 10),
+        bytes: row.bytes,
+        events: row.events,
+      }));
+    /** Tamanho do registro como o Pub/Sub entrega, já decodificado. */
+    const decoded = (...messages: PubsubMessage[]) =>
+      BigInt(
+        messages.reduce((total, message) => total + Buffer.from(message.data ?? '', 'base64').length, 0),
+      );
+
+    it('depois do ack, conta toda mensagem lida (suspeita, comum, inválida e de outro projeto) para o cliente da assinatura', async () => {
+      const owner = await meteredTenant('A');
+      const other = await meteredTenant('B');
+      const messages = [
+        pubsubMessage(auditEntry({ project: owner.project, methodName: 'DeleteProject' })),
+        pubsubMessage(auditEntry({ project: owner.project, methodName: 'v1.compute.instances.list' })),
+        pubsubMessage(null, Buffer.from('registro que não é JSON: ação inválida').toString('base64')),
+        // Evento do projeto de B que chegou pela assinatura de A: o volume é da assinatura, não do projeto.
+        pubsubMessage(auditEntry({ project: other.project, methodName: 'SetIamPolicy' })),
+        pubsubMessage(auditEntry({ project: owner.project, methodName: 'v1.compute.instances.get' })),
+      ];
+      const pubsub = new FakePubsub();
+      pubsub.publish(owner.subscription, ...messages);
+
+      const report = await syncFor(pubsub).runOnce(new Date('2027-02-10T12:00:00.000Z'));
+      expect(report).toMatchObject({ read: 5, created: 1, ignored: 2, unowned: 2, failedSubscriptions: 0 });
+      expect(await gcpUsage(owner.tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(...messages), events: 5n },
+      ]);
+      // A/B: nada do que chegou pela assinatura de A conta para B.
+      expect(await gcpUsage(other.tenantId)).toEqual([]);
+
+      // Próxima execução no mesmo mês: soma na mesma linha.
+      const later = pubsubMessage(
+        auditEntry({ project: owner.project, methodName: 'v1.compute.zones.list' }),
+      );
+      pubsub.publish(owner.subscription, later);
+      await syncFor(pubsub).runOnce(new Date('2027-02-10T12:01:00.000Z'));
+      expect(await gcpUsage(owner.tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(...messages, later), events: 6n },
+      ]);
+    });
+
+    it('o lote que falha antes do ack não conta; quando volta e é confirmado, conta uma vez', async () => {
+      class BrokenGrouping extends IncidentGrouping {
+        override place(): ReturnType<IncidentGrouping['place']> {
+          return Promise.reject(new TypeError('banco caiu no meio da gravação'));
+        }
+      }
+      class DeadlineExceeded extends Error {
+        override name = 'DeadlineExceeded';
+      }
+      const { tenantId, project, subscription } = await meteredTenant('falha');
+      const message = pubsubMessage(
+        auditEntry({ project, insertId: `medido-${project}`, methodName: 'DeleteProject' }),
+      );
+      const pubsub = new FakePubsub();
+      pubsub.publish(subscription, message);
+      const now = new Date('2027-02-11T12:00:00.000Z');
+
+      // Falha na gravação do achado, antes do ack: a mensagem volta e nada é medido.
+      const broken = new GcpAuditSync(prisma, pubsub, {
+        name: `gcp-uso-${project.slice(-12)}`,
+        grouping: new BrokenGrouping(),
+      });
+      expect(await broken.runOnce(now)).toMatchObject({ failedSubscriptions: 1, read: 1 });
+      // Falha no próprio ack: também não conta.
+      const failingAck: PubsubReader = {
+        pull: (name, max) => pubsub.pull(name, max),
+        acknowledge: (name, ackIds) =>
+          name === subscription
+            ? Promise.reject(new DeadlineExceeded('ack expirou'))
+            : pubsub.acknowledge(name, ackIds),
+      };
+      expect(await syncFor(failingAck).runOnce(now)).toMatchObject({ failedSubscriptions: 1, read: 1 });
+      expect(pubsub.pending(subscription)).toBe(1);
+      expect(await gcpUsage(tenantId)).toEqual([]);
+
+      // Lida de novo e confirmada: medida uma vez só (o achado já tinha sido gravado na execução do ack que falhou).
+      expect(await syncFor(pubsub).runOnce(now)).toMatchObject({
+        failedSubscriptions: 0,
+        read: 1,
+        duplicates: 1,
+      });
+      expect(pubsub.pending(subscription)).toBe(0);
+      expect(await gcpUsage(tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(message), events: 1n },
+      ]);
+    });
+
+    it('o mês do uso é o da execução, no calendário de Brasília (vira às 03:00 UTC)', async () => {
+      const { tenantId, project, subscription } = await meteredTenant('virada');
+      const pubsub = new FakePubsub();
+      const before = pubsubMessage(auditEntry({ project, methodName: 'v1.compute.instances.list' }));
+      pubsub.publish(subscription, before);
+      await syncFor(pubsub).runOnce(new Date('2027-03-01T02:59:59.999Z'));
+      const after = pubsubMessage(auditEntry({ project, methodName: 'v1.compute.instances.list' }));
+      pubsub.publish(subscription, after);
+      await syncFor(pubsub).runOnce(new Date('2027-03-01T03:00:00.000Z'));
+      expect(await gcpUsage(tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(before), events: 1n },
+        { month: '2027-03-01', bytes: decoded(after), events: 1n },
+      ]);
+    });
+
+    it('assinatura cadastrada em clientes diferentes: o volume não conta para nenhum', async () => {
+      const first = await createTenant(app, 'Cliente Demo A (uso ambíguo)');
+      const second = await createTenant(app, 'Cliente Demo B (uso ambíguo)');
+      const [ofFirst, ofSecond] = [randomProject(), randomProject()];
+      const shared = `projects/projeto-no/subscriptions/ambigua-uso-${ofFirst}`;
+      for (const [tenantId, project] of [
+        [first, ofFirst],
+        [second, ofSecond],
+      ] as const) {
+        await prisma.cloudAccount.create({
+          data: { tenantId, provider: 'gcp', accountId: project, regions: [], pubsubSubscription: shared },
+        });
+      }
+      const pubsub = new FakePubsub();
+      pubsub.publish(shared, pubsubMessage(auditEntry({ project: ofFirst, methodName: 'DeleteProject' })));
+      expect(await syncFor(pubsub).runOnce(new Date('2027-02-12T12:00:00.000Z'))).toMatchObject({
+        read: 1,
+        unowned: 1,
+      });
+      expect(await gcpUsage(first)).toEqual([]);
+      expect(await gcpUsage(second)).toEqual([]);
+    });
+  });
+
   it('dois workers ao mesmo tempo: só um lê', async () => {
     const pubsub = new FakePubsub();
     const name = `gcp-lease-${projectA.slice(-12)}`;

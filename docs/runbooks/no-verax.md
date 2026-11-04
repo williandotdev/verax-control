@@ -49,6 +49,10 @@ O nó não precisa de e-mail (`MAIL_TRANSPORT=none` no `node.conf`): toda conta 
 entregue a quem a criou. Para ligar também a redefinição de senha pelo link, use `MAIL_TRANSPORT=smtp` com os dados
 da caixa de envio e grave a senha dela no cofre `verax-node-smtp-password`.
 
+O plano do nó também fica no `node.conf`: o da Verax é `PLAN=interno`, sem limite. A instalação recusa um `node.conf`
+sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do plano precisa ganhar a linha
+`PLAN=interno` antes do próximo deploy. O bootstrap grava o rótulo do plano no cadastro do cliente do nó.
+
 ## Instalar ou atualizar
 
 Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados, o Docker instalado (o `gh` lê a imagem

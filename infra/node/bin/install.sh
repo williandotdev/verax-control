@@ -61,12 +61,21 @@ fi
 sed -i 's/\r$//' /etc/verax/node.conf
 # shellcheck source=/dev/null
 source /etc/verax/node.conf
-required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET)
+required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET
+  PLAN)
 # E-mail opcional (MAIL_TRANSPORT=none por padrão): com smtp, os dados da caixa de envio passam a ser obrigatórios.
 if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then required+=(SMTP_HOST SMTP_PORT SMTP_USER); fi
+# Plano enterprise: os quatro ajustes são obrigatórios (não há padrão).
+if [[ ${PLAN:-} == enterprise ]]; then
+  required+=(PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS)
+fi
 for key in "${required[@]}"; do
   [[ -n ${!key:-} ]] || { echo "Falta $key em /etc/verax/node.conf." >&2; exit 2; }
 done
+# Plano do nó (o da Verax é `interno`). A API e o worker conferem tudo de novo na partida, inclusive a faixa de cada
+# ajuste; aqui, só o nome do plano, para o erro mais comum aparecer antes de reiniciar o serviço.
+[[ $PLAN =~ ^(essencial|profissional|enterprise|interno)$ ]] ||
+  { echo 'PLAN inválido em /etc/verax/node.conf: use essencial, profissional, enterprise ou interno.' >&2; exit 2; }
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" /opt/verax/bin/
