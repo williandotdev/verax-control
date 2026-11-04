@@ -1,6 +1,83 @@
+import {
+  PLAN_LIMIT_BOUNDS,
+  PLAN_LIMIT_KEYS,
+  type PlanId,
+  planIdSchema,
+  type PlanLimitKey,
+  planLimitRangeMessage,
+  planOverrideProblems,
+  type PlanOverrides,
+  type ResolvedPlan,
+  resolvePlan,
+} from '@verax/shared';
 import { z } from 'zod';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
+
+/** Plano e ajustes, como ficam depois da validação do ambiente. */
+interface PlanEnv {
+  NODE_ENV: 'development' | 'test' | 'production';
+  PLAN?: PlanId | undefined;
+  PLAN_MAX_CLOUD_ACCOUNTS?: number | undefined;
+  PLAN_MAX_USERS?: number | undefined;
+  PLAN_MONTHLY_GIB?: number | undefined;
+  PLAN_HISTORY_DAYS?: number | undefined;
+}
+
+/** Variável de ambiente de cada ajuste do plano. */
+export const PLAN_LIMIT_ENV = {
+  maxCloudAccounts: 'PLAN_MAX_CLOUD_ACCOUNTS',
+  maxUsers: 'PLAN_MAX_USERS',
+  monthlyGib: 'PLAN_MONTHLY_GIB',
+  historyDays: 'PLAN_HISTORY_DAYS',
+} as const satisfies Record<PlanLimitKey, keyof PlanEnv>;
+
+const planLimitFromEnv = (key: PlanLimitKey) => {
+  const { min, max } = PLAN_LIMIT_BOUNDS[key];
+  const error = planLimitRangeMessage(key);
+  return z.coerce.number({ error }).int({ error }).min(min, { error }).max(max, { error }).optional();
+};
+
+/**
+ * Plano do nó (fase 2), parte comum à API e ao worker. Vem do `node.conf`, escrito pelo `start.sh`. Em produção, o
+ * `PLAN` é obrigatório; fora dela, o padrão é `interno` (sem limite). Os ajustes são opcionais, menos no `enterprise`,
+ * que exige os quatro; o `interno` não aceita nenhum (ver `packages/shared/src/plans.ts`).
+ */
+const planEnvShape = {
+  PLAN: planIdSchema.optional(),
+  PLAN_MAX_CLOUD_ACCOUNTS: planLimitFromEnv('maxCloudAccounts'),
+  PLAN_MAX_USERS: planLimitFromEnv('maxUsers'),
+  PLAN_MONTHLY_GIB: planLimitFromEnv('monthlyGib'),
+  PLAN_HISTORY_DAYS: planLimitFromEnv('historyDays'),
+};
+
+function planOverridesOf(env: Omit<PlanEnv, 'NODE_ENV'>): PlanOverrides {
+  const overrides: PlanOverrides = {};
+  for (const key of PLAN_LIMIT_KEYS) {
+    const value = env[PLAN_LIMIT_ENV[key]];
+    if (value !== undefined) overrides[key] = value;
+  }
+  return overrides;
+}
+
+function checkPlanEnv(env: PlanEnv, ctx: z.RefinementCtx): void {
+  if (env.NODE_ENV === 'production' && env.PLAN === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['PLAN'], message: 'obrigatória em produção' });
+  }
+  for (const { key, message } of planOverrideProblems(env.PLAN ?? 'interno', planOverridesOf(env))) {
+    ctx.addIssue({ code: 'custom', path: [PLAN_LIMIT_ENV[key]], message });
+  }
+}
+
+/** Sem `PLAN` (só fora de produção), o plano é o `interno`. */
+function withDefaultPlan<T extends { PLAN?: PlanId | undefined }>(env: T): T & { PLAN: PlanId } {
+  return { ...env, PLAN: env.PLAN ?? 'interno' };
+}
+
+/** Plano em vigor no nó, com os ajustes do ambiente (a carga da configuração já validou a combinação). */
+export function nodePlan(env: Omit<PlanEnv, 'NODE_ENV'> & { PLAN: PlanId }): ResolvedPlan {
+  return resolvePlan(env.PLAN, planOverridesOf(env));
+}
 
 /** TLS com verificação de certificado e de hostname até o banco (regra 5: nada de TLS sem validação). */
 function requiresVerifiedTls(databaseUrl: string): boolean {
@@ -65,8 +142,10 @@ export const envSchema = z
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
+    ...planEnvShape,
   })
   .superRefine((env, ctx) => {
+    checkPlanEnv(env, ctx);
     for (const key of ['WEB_ORIGIN', 'API_ORIGIN'] as const) {
       if (env.NODE_ENV === 'production' && !env[key].startsWith('https://')) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'deve usar https em produção' });
@@ -113,13 +192,14 @@ export const envSchema = z
         message: 'deve usar sslmode=verify-full em produção (TLS com certificado conferido)',
       });
     }
-  });
+  })
+  .transform(withDefaultPlan);
 
 export type Env = z.infer<typeof envSchema>;
 
 /**
- * Variáveis do worker do sync de alertas (T5.3): só o banco, o log e o intervalo. Nada de autenticação, e-mail
- * nem origens, porque o worker não atende requisição. O indexer tem configuração própria (`loadIndexerConfig`).
+ * Variáveis do worker do sync de alertas (T5.3): só o banco, o log, o intervalo e o plano. Nada de autenticação,
+ * e-mail nem origens, porque o worker não atende requisição. O indexer tem configuração própria (`loadIndexerConfig`).
  */
 export const workerEnvSchema = z
   .object({
@@ -139,8 +219,10 @@ export const workerEnvSchema = z
       .default('wazuh')
       .transform((value) => [...new Set(value.split(',').map((source) => source.trim()))])
       .pipe(z.array(z.enum(['wazuh', 'gcp'], { error: 'fontes aceitas: wazuh e gcp' })).min(1)),
+    ...planEnvShape,
   })
   .superRefine((env, ctx) => {
+    checkPlanEnv(env, ctx);
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({
         code: 'custom',
@@ -148,6 +230,7 @@ export const workerEnvSchema = z
         message: 'deve usar sslmode=verify-full em produção (TLS com certificado conferido)',
       });
     }
-  });
+  })
+  .transform(withDefaultPlan);
 
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;

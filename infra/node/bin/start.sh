@@ -101,6 +101,12 @@ render() {
     mail=(MAIL_TRANSPORT=smtp "MAIL_FROM=$MAIL_FROM" "SMTP_HOST=$SMTP_HOST" "SMTP_PORT=$SMTP_PORT"
       "SMTP_USER=$SMTP_USER" "SMTP_PASSWORD=$smtp_password")
   fi
+  # Plano do nó, o mesmo na API e no worker. Os ajustes só entram quando definidos no node.conf; a API e o worker
+  # conferem a combinação na partida (no enterprise, os quatro são obrigatórios).
+  local plan=("PLAN=${PLAN:?defina PLAN em /etc/verax/node.conf}") key
+  for key in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
+    if [[ -n ${!key:-} ]]; then plan+=("$key=${!key}"); fi
+  done
   # TRUST_PROXY_HOPS=1: um proxy confiável na frente da API, o Cloudflare (o cloudflared só repassa).
   write_env api.env \
     NODE_ENV=production LOG_LEVEL=info PORT=3000 \
@@ -109,10 +115,12 @@ render() {
     "BETTER_AUTH_SECRET=$session_key" \
     "CSRF_SECRET=$csrf_key" \
     "${mail[@]}" \
+    "${plan[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
+    "${plan[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
   # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
