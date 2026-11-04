@@ -1757,3 +1757,11 @@ O campo "Status" no `PLANO.md` só é marcado como concluído depois da confirma
 - **Testes:**
   - 244 unitários do painel;
   - 52 e2e da demonstração, com o tour completo nos dois papéis, o axe no cartão nos dois temas, o celular, a reabertura e o exemplo do cliente Beta.
+
+## Correção: `deploy.sh` sem o PuTTY
+
+- **Problema:** no Windows, `gcloud compute ssh` abre o PuTTY numa janela, e o `deploy.sh` ficava parado esperando. Foi o que travou o primeiro deploy do nó.
+- **Correção:** o deploy usa um túnel do IAP até a porta 22 e o OpenSSH da máquina, igual em Windows, macOS e Linux.
+  - A chave SSH é criada só para a execução, registrada no OS Login por 1 hora e removida no fim, mesmo com erro.
+  - A chave do servidor fica num `known_hosts` próprio da VM: a primeira execução registra, as seguintes conferem.
+- **Testado:** um deploy real no nó da Verax, com a mesma versão. Atestações conferidas, pacote copiado, serviço reiniciado; no fim, nenhuma chave temporária nem túnel sobrando.
