@@ -11,6 +11,7 @@ import {
   LockNotHeldError,
   type NewTenant,
   SlugTakenError,
+  TenantAlreadyExistsError,
   TenantNotFoundError,
   type TenantStore,
 } from '../../src/tenants/tenant-store.js';
@@ -525,6 +526,174 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       });
       const raw = JSON.stringify(await h.documents.query(COLLECTIONS.auditLog));
       for (const leak of Object.values(LEAKS)) expect(raw).not.toContain(leak);
+    });
+
+    // --- CP-04: a reserva vira o cliente, mudanças decididas na transação e o subdomínio devolvido ---
+
+    async function reserveFor(slug: string, tenantId: string, checkoutSessionId: string): Promise<void> {
+      await h.documents.runTransaction((tx) => {
+        tx.set(COLLECTIONS.slugs, slug, {
+          state: 'reserved',
+          tenantId,
+          checkoutSessionId,
+          updatedAt: h.clock.now(),
+          expiresAt: new Date(h.clock.now().getTime() + 150 * MINUTE_MS),
+        });
+        return Promise.resolve();
+      });
+    }
+
+    const RESERVED_ID = '01JC0000000000000000000RES';
+    const OTHER_ID = '01JC0000000000000000000XYZ';
+
+    it('cria com o id reservado: a reserva do mesmo checkout e do mesmo id vira o cliente; repetir é recusado', async () => {
+      await reserveFor('cliente-demo-a', RESERVED_ID, 'cs_test_demo_a');
+
+      const created = await h.store.create(demoTenant(), {
+        reason: 'teste',
+        audit: AUDIT,
+        tenantId: RESERVED_ID,
+      });
+
+      expect(created.id).toBe(RESERVED_ID);
+      expect(await h.store.getSlug('cliente-demo-a')).toMatchObject({
+        state: 'taken',
+        tenantId: RESERVED_ID,
+      });
+      await expect(
+        h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT, tenantId: RESERVED_ID }),
+      ).rejects.toBeInstanceOf(TenantAlreadyExistsError);
+      await expect(
+        h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT, tenantId: 'nao-e-ulid' }),
+      ).rejects.toBeInstanceOf(TypeError);
+    });
+
+    it('cria com o id reservado: a reserva da mesma sessão com outro id não serve', async () => {
+      await reserveFor('cliente-demo-a', OTHER_ID, 'cs_test_demo_a');
+      await expect(
+        h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT, tenantId: RESERVED_ID }),
+      ).rejects.toBeInstanceOf(SlugTakenError);
+      expect(await h.store.get(RESERVED_ID)).toBeUndefined();
+    });
+
+    it('change decide sobre o documento relido; sem mudança não grava; atualização audita só os nomes dos campos', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      expect((await h.store.change(id, () => undefined)).changed).toBe(false);
+      const synced = (tenant: Tenant): Tenant => ({
+        ...tenant,
+        stripe: { livemode: false, customerId: 'cus_demo_a', status: 'active' },
+      });
+
+      h.clock.advance(MINUTE_MS);
+      const updated = await h.store.change(id, () => ({
+        reason: 'stripe_synced',
+        eventId: 'evt_demo_2',
+        audit: AUDIT,
+        mutate: synced,
+      }));
+      expect(updated).toMatchObject({ changed: true, transitioned: false, tenant: { state: 'pending' } });
+      expect(updated.tenant.updatedAt).toEqual(h.clock.now());
+      expect(await h.store.listTransitions(id)).toHaveLength(1);
+      const [, entry] = await h.audit.listForTenant(id);
+      expect(entry).toMatchObject({
+        action: 'tenant.update',
+        details: { state: 'pending', fields: ['stripe'], reason: 'stripe_synced', eventId: 'evt_demo_2' },
+      });
+
+      // A mesma mudança de novo não grava nada.
+      const again = await h.store.change(id, () => ({
+        reason: 'stripe_synced',
+        audit: AUDIT,
+        mutate: synced,
+      }));
+      expect(again.changed).toBe(false);
+      expect(await h.audit.listForTenant(id)).toHaveLength(2);
+    });
+
+    it('change: só a razão social muda com allowLegalNameChange, e só sem transição; o CNPJ nunca', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      const rename =
+        (cnpj?: string) =>
+        (tenant: Tenant): Tenant => ({
+          ...tenant,
+          company: { legalName: 'Cliente Demo A Comercio Ltda', cnpj: cnpj ?? tenant.company.cnpj },
+        });
+      await expect(
+        h.store.change(id, () => ({ reason: 'x', audit: AUDIT, mutate: rename() })),
+      ).rejects.toBeInstanceOf(TypeError);
+      await expect(
+        h.store.change(id, () => ({
+          reason: 'x',
+          audit: AUDIT,
+          allowLegalNameChange: true,
+          mutate: rename('22333444000181'),
+        })),
+      ).rejects.toBeInstanceOf(TypeError);
+      await expect(
+        h.store.change(id, () => ({
+          to: 'provisioning',
+          reason: 'x',
+          audit: AUDIT,
+          allowLegalNameChange: true,
+          mutate: rename(),
+        })),
+      ).rejects.toBeInstanceOf(TypeError);
+
+      const renamed = await h.store.change(id, () => ({
+        reason: 'customer_synced',
+        audit: AUDIT,
+        allowLegalNameChange: true,
+        mutate: rename(),
+      }));
+      expect(renamed.tenant.company).toEqual({
+        legalName: 'Cliente Demo A Comercio Ltda',
+        cnpj: '11222333000181',
+      });
+    });
+
+    it('change concorrente: cada decisão vê o estado deixado pela outra, e só uma transiciona', async () => {
+      const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      const toProvisioning = (eventId: string) => (current: Tenant) =>
+        current.state === 'pending'
+          ? { to: 'provisioning' as const, reason: 'pago', eventId, audit: AUDIT }
+          : undefined;
+
+      const results = await Promise.all([
+        h.store.change(id, toProvisioning('evt_a')),
+        h.store.change(id, toProvisioning('evt_b')),
+      ]);
+
+      expect(results.map((result) => result.transitioned).sort()).toEqual([false, true]);
+      expect((await h.store.listTransitions(id)).map((t) => t.to)).toEqual(['pending', 'provisioning']);
+    });
+
+    it('acha pelo Customer e pela assinatura da Stripe', async () => {
+      const a = await h.store.create(
+        {
+          ...demoTenant(),
+          stripe: { customerId: 'cus_demo_a', subscriptionId: 'sub_demo_a', livemode: false },
+        },
+        { reason: 'teste', audit: AUDIT },
+      );
+      expect((await h.store.findByStripeCustomer('cus_demo_a'))?.id).toBe(a.id);
+      expect((await h.store.findByStripeSubscription('sub_demo_a'))?.id).toBe(a.id);
+      expect(await h.store.findByStripeCustomer('cus_demo_x')).toBeUndefined();
+    });
+
+    it('devolve o subdomínio tomado pelo cliente (released), uma vez só; o de outro cliente não', async () => {
+      const a = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
+      expect(await h.store.releaseSlug(OTHER_ID, 'cliente-demo-a', 'x', AUDIT)).toBe(false);
+      expect(await h.store.releaseSlug(a.id, 'cliente-demo-a', 'canceled_before_provisioning', AUDIT)).toBe(
+        true,
+      );
+      expect(await h.store.getSlug('cliente-demo-a')).toEqual({
+        state: 'released',
+        tenantId: a.id,
+        updatedAt: h.clock.now(),
+      });
+      expect(await h.store.releaseSlug(a.id, 'cliente-demo-a', 'x', AUDIT)).toBe(false);
+      const actions = (await h.audit.listForTenant(a.id)).map((entry) => entry.action);
+      expect(actions).toEqual(['tenant.create', 'tenant.slug_released']);
     });
   });
 }

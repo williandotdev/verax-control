@@ -602,7 +602,7 @@ liga, se um dia valer o custo.
 | Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
 | Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                   |
 | Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                            |
-| 2 alertas por log                                         | Provisionamento com falha e assinatura inválida no webhook, por e-mail (`alert_email`).                                                                                                                                                                                                                                                                                                                                                        |
+| 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                    |
 | Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): os papéis no projeto dos nós de
@@ -660,11 +660,15 @@ openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add cp-cookie-key
 ```
 
 - **Chave da Stripe:** uma chave **restrita** (não a `sk_`), com escrita em Checkout Sessions, Customers,
-  Subscriptions, Tax IDs e Billing Portal e leitura em Invoices e Events; a do sandbox primeiro (plano, seção 9, item
-  6). Trocar para produção é gravar uma versão nova (CP-13).
-- **Segredo do webhook:** no Workbench da Stripe, o endpoint `https://conta.veraxsistemas.com.br/v1/stripe/webhook`
-  com os 13 eventos da seção 4(b) do plano, formato _snapshot_ (item 7). O endpoint pode ser cadastrado antes de o
-  serviço existir.
+  Subscriptions, Tax IDs e Billing Portal e leitura em Invoices, Charges, Disputes, Radar (Early Fraud Warnings) e
+  Events (o webhook relê cada objeto antes de decidir, CP-04); a do sandbox primeiro (plano, seção 9, item 6). Trocar
+  para produção é gravar uma versão nova (CP-13).
+- **Segredo do webhook:** o endpoint `https://conta.veraxsistemas.com.br/v1/stripe/webhook` com os 13 eventos da
+  seção 4(b) do plano, formato _snapshot_ (item 7), pode ser cadastrado antes de o serviço existir. Duas formas: no
+  Workbench da Stripe, gravando o segredo de assinatura com a linha acima; ou pelo `stripe-setup` (CP-04), que cria o
+  endpoint e manda o segredo direto para `gcloud secrets versions add cp-stripe-webhook-secret --data-file=-`, sem
+  mostrá-lo (`--webhook-url=... --webhook-secret-name=cp-stripe-webhook-secret`; no WSL ou no Cloud Shell, porque no
+  Windows o Node não executa o `gcloud.cmd` sem shell; detalhes no cabeçalho do script).
 - **Token do Cloudflare:** só `Account > Cloudflare Tunnel > Edit` e `Zone > DNS > Edit`, restrito à zona
   `veraxsistemas.com.br`, validade de 1 ano (item 13). Os IDs da conta e da zona vão no `terraform.tfvars`
   (`cloudflare_account_id`, `cloudflare_zone_id`), não são segredo.
@@ -732,7 +736,8 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
   `verax_control_profissional_mensal`; os valores ficam fora do repositório público), cupons, se houver (termos também
   fora do repositório), cartão e boleto com validade de 3 dias, o link hospedado
   para confirmação, Smart Retries com "marcar como não paga", dados públicos, Portal do cliente, a chave restrita e o
-  webhook. Não há API para quase nada disso, e os dois últimos entram no passo 4.
+  webhook. O catálogo e o endpoint do webhook saem do `apps/control-plane/scripts/stripe-setup.ts` (CP-03 e CP-04); o
+  resto não tem API, e a chave e o segredo do webhook entram no passo 4.
 - **Firebase:** o plano Blaze neste projeto (passo 1; só o rewrite do Hosting para o Cloud Run exige) e, na primeira
   venda, um projeto **só para os painéis dos clientes** em `firebase_panel_projects` (item 14), e mais um a cada 36
   clientes. Esse projeto fica no plano Spark: site estático com domínio próprio não precisa de faturamento. O
