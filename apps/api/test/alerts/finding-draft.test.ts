@@ -90,13 +90,25 @@ describe('de alerta a achado (T5.3)', () => {
       sourceIp: '198.51.100.7',
       mitreTactics: ['Initial Access'],
       mitreTechniques: ['T1078'],
+      // Só o GuardDuty: a última atividade e a chave que a versão nova ganha se o achado já estiver triado.
+      recurrence: {
+        lastSeenAt: '2026-11-01T09:55:00.000Z',
+        sourceEventId:
+          'wazuh/111122223333/guardduty:5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0:80303@2026-11-01T09:55:00.000Z',
+      },
     });
   });
 
-  it('campos ausentes viram null, não somem', () => {
+  it('campos ausentes viram null, não somem; sem última atividade, não há recorrência', () => {
     const alert = alertOf(wafAlert());
     const draft = toFindingDraft(alert, { owned: true, tenantId: ALFA.tenantId, accountId: ALFA.accountId });
     expect(draft).toMatchObject({ actorUser: null, actorType: null, accessKeyId: null, mitreTactics: [] });
+    expect(draft).not.toHaveProperty('recurrence');
+    const bare = alertOf(guardDutyAlert({ eventLastSeen: null, updatedAt: 'ontem' }));
+    expect(bare.lastSeenAt).toBeUndefined();
+    expect(
+      toFindingDraft(bare, { owned: true, tenantId: ALFA.tenantId, accountId: ALFA.accountId }),
+    ).not.toHaveProperty('recurrence');
   });
 });
 
@@ -152,6 +164,44 @@ describe('chave estável do achado (fase 2, PR-W2)', () => {
     expect(wazuhFindingKey(updated, ALFA.accountId)).toBe(
       wazuhFindingKey(alertOf(guardDutyAlert({ findingId })), ALFA.accountId),
     );
+  });
+
+  it('a recorrência do GuardDuty leva a chave base mais o horário da atividade (fix da reincidência)', () => {
+    const findingId = '5ab9d8a0c4e6f1b2a3c4d5e6f7a8b9c0';
+    const at = '2026-11-02T08:00:00.000Z';
+    const updated = alertOf(guardDutyAlert({ findingId, count: 7, eventLastSeen: at }));
+    const base = wazuhFindingKey(updated, ALFA.accountId);
+    expect(base).toBe(`wazuh/111122223333/guardduty:${findingId}:80303`);
+    expect(wazuhFindingKey(updated, ALFA.accountId, at)).toBe(`${base}@${at}`);
+    // A mesma versão relida (outro id de alerta) dá a mesma chave; outra atividade, outra chave.
+    const reread = alertOf({
+      ...guardDutyAlert({ findingId, count: 7, eventLastSeen: at }),
+      id: '1793600000.000123',
+    });
+    expect(wazuhFindingKey(reread, ALFA.accountId, reread.lastSeenAt)).toBe(`${base}@${at}`);
+    expect(wazuhFindingKey(updated, ALFA.accountId, '2026-11-03T08:00:00.000Z')).toBe(
+      `${base}@2026-11-03T08:00:00.000Z`,
+    );
+    // O rascunho leva as duas chaves: a base, que é tentada primeiro, e a da recorrência.
+    const owner = resolveAlertOwner(updated, directory);
+    if (!owner.owned) throw new Error(owner.reason);
+    expect(toFindingDraft(updated, owner)).toMatchObject({
+      sourceEventId: base,
+      recurrence: { lastSeenAt: at, sourceEventId: `${base}@${at}` },
+    });
+    // A sondagem de porta com um IP longo passa da coluna com o horário: o id entra pelo resumo, e a chave cabe.
+    const [probe] = portProbeAlerts([{ ip: '2001:0db8:85a3:0000:0000:8a2e:0370:7334', port: 22 }], {
+      findingId,
+      eventLastSeen: at,
+    });
+    const long = alertOf(probe!);
+    expect(wazuhFindingKey(long, ALFA.accountId).length).toBeLessThanOrEqual(128);
+    const recurrence = wazuhFindingKey(long, ALFA.accountId, at);
+    expect(recurrence).toMatch(
+      /^wazuh\/111122223333\/guardduty:sha256-[0-9a-f]{40}:80305@2026-11-02T08:00:00\.000Z$/,
+    );
+    expect(recurrence.length).toBeLessThanOrEqual(128);
+    expect(wazuhFindingKey(alertOf(probe!), ALFA.accountId, at)).toBe(recurrence);
   });
 
   it('a correlação tem chave própria, mesmo terminando no mesmo evento', () => {

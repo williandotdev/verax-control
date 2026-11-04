@@ -235,6 +235,44 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
     }
   });
 
+  it('GuardDuty: a última atividade vem de service.eventLastSeen; sem ele, do updatedAt; fora do formato, fica ausente', () => {
+    // A fixture passa por `asWazuhWrites`: o horário é texto na origem e sai igual; o `count` vira texto ("7").
+    const updated = parsed(
+      guardDutyAlert({
+        count: 7,
+        eventLastSeen: '2026-11-02T08:00:00.000Z',
+        updatedAt: '2026-11-02T08:00:05.000Z',
+      }),
+    );
+    expect(updated.lastSeenAt).toBe('2026-11-02T08:00:00.000Z');
+    expect(
+      parsed(guardDutyAlert({ eventLastSeen: null, updatedAt: '2026-11-02T08:00:05.000Z' })).lastSeenAt,
+    ).toBe('2026-11-02T08:00:05.000Z');
+    // Em UTC, com o fuso como o Wazuh grava (sem dois-pontos) ou com ele.
+    const lastSeenOf = (eventLastSeen: unknown, updatedAt?: unknown) =>
+      parsed(withAws(guardDutyAlert(), { service: { eventLastSeen }, updatedAt })).lastSeenAt;
+    expect(lastSeenOf('2026-11-02T05:00:00.000-0300')).toBe('2026-11-02T08:00:00.000Z');
+    expect(lastSeenOf('2026-11-02T05:00:00-03:00')).toBe('2026-11-02T08:00:00.000Z');
+    expect(lastSeenOf('2026-11-02T08:00:00Z')).toBe('2026-11-02T08:00:00.000Z');
+    for (const invalid of [
+      'ontem',
+      '2026-11-02',
+      '1793527200000',
+      '',
+      ' 2026-11-02T08:00:00Z',
+      7,
+      true,
+      null,
+    ]) {
+      expect(lastSeenOf(invalid)).toBeUndefined();
+      // O reserva vale por si: o `updatedAt` válido cobre o `eventLastSeen` fora do formato.
+      expect(lastSeenOf(invalid, '2026-11-02T08:00:05.000Z')).toBe('2026-11-02T08:00:05.000Z');
+    }
+    // As outras fontes não têm última atividade.
+    expect(parsed(cloudTrailAlert()).lastSeenAt).toBeUndefined();
+    expect(parsed(wafAlert()).lastSeenAt).toBeUndefined();
+  });
+
   it('GuardDuty: lista de um item vira objeto no wodle, e as duas formas são lidas', () => {
     const bucket = { name: 'dados-alfa', arn: 'arn:aws:s3:::dados-alfa' };
     for (const s3BucketDetails of [bucket, [bucket]]) {
@@ -308,6 +346,8 @@ describe('alerta do Wazuh (T5.2 e T5.3)', () => {
       accounts: ['111122223333'],
       actor: { ip: '198.51.100.20' },
       resource: 'ec2:i-0abc1234def567890',
+      // Esse achado saiu sem `service.eventLastSeen`: a última atividade é o `updatedAt`.
+      lastSeenAt: '2026-11-01T09:55:00.000Z',
     });
   });
 

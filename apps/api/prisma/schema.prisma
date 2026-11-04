@@ -428,16 +428,25 @@ model Finding {
   incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
   triagedAt       DateTime?        @db.Timestamptz(3)
+  /// Só no GuardDuty: última atividade do achado na origem (`service.eventLastSeen`). Decide a reincidência: a versão
+  /// mais nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data.
+  lastSeenAt      DateTime?        @db.Timestamptz(3)
+  /// Achado original de que este é a recorrência (GuardDuty: atividade nova depois da triagem). A chave estrangeira
+  /// inclui o cliente, então uma recorrência nunca aponta para achado de outro cliente.
+  recurrenceOfId  String?          @db.Uuid
+  recurrenceOf    Finding?         @relation("FindingRecurrence", fields: [recurrenceOfId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  recurrences     Finding[]        @relation("FindingRecurrence")
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
 
   @@unique([source, sourceEventId])
-  /// Alvo da chave composta dos comentários: o comentário só aponta para achado do mesmo cliente.
+  /// Alvo da chave composta dos comentários e das recorrências: só apontam para achado do mesmo cliente.
   @@unique([id, tenantId])
   @@index([tenantId, occurredAt(sort: Desc)])
   @@index([tenantId, status])
   @@index([incidentId])
+  @@index([recurrenceOfId])
 }
 
 /// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da

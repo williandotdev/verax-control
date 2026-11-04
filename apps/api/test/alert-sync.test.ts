@@ -645,53 +645,293 @@ describe('sync de alertas para achados (T5.3)', () => {
       expect(await prisma.finding.count({ where: { rawEventId: { in: [first.id, reparsed.id] } } })).toBe(1);
     });
 
-    it('o achado do GuardDuty atualizado (mesmo id, contagem maior) não duplica', async () => {
-      const findingId = randomUUID().replace(/-/g, '');
-      const version = (count: number, minutesAgo: number) => ({
-        ...guardDutyAlert({
-          account: accountA,
-          bucket: guardDutyA,
-          findingId,
-          count,
-          updatedAt: new Date(Date.now() - minutesAgo * MINUTE).toISOString(),
-        }),
-        id: newAlertId(),
-        timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
+    describe('achado do GuardDuty atualizado: reincidência depois da triagem (decisão de 2026-11-04)', () => {
+      /**
+       * Versões do mesmo achado do GuardDuty na conta A: o `count` sobe e a última atividade (`eventLastSeen`, que
+       * a fixture também grava no `updatedAt`) avança a cada atualização. O IP próprio separa os incidentes.
+       */
+      const versionsOf =
+        (findingId: string, ip = `100.69.${randomInt(0, 255)}.${randomInt(1, 254)}`) =>
+        (count: number, minutesAgo: number, severity?: number) => {
+          const at = new Date(Date.now() - minutesAgo * MINUTE);
+          return {
+            ...guardDutyAlert({
+              account: accountA,
+              bucket: guardDutyA,
+              findingId,
+              count,
+              ...(severity !== undefined && { severity }),
+              updatedAt: at.toISOString(),
+              action: {
+                actionType: 'AWS_API_CALL',
+                awsApiCallAction: { api: 'ListBuckets', remoteIpDetails: { ipAddressV4: ip } },
+              },
+            }),
+            id: newAlertId(),
+            timestamp: wazuhTime(at),
+          };
+        };
+      /** A última atividade e a chave da recorrência de uma versão, pelas mesmas funções do sync. */
+      const lastSeenOf = (doc: Record<string, unknown>): Date => {
+        const parsed = parseWazuhAlert(doc);
+        if (!parsed.ok || parsed.alert.lastSeenAt === undefined)
+          throw new Error('versão sem última atividade');
+        return new Date(parsed.alert.lastSeenAt);
+      };
+      const byRecurrence = (doc: Record<string, unknown>) => ({
+        source_sourceEventId: {
+          source: 'wazuh',
+          sourceEventId: `${keyOf(doc)}@${lastSeenOf(doc).toISOString()}`,
+        },
       });
-      const report = await syncFor(
-        new FakeIndexer([version(1, 25), version(4, 12), version(9, 2)]),
-      ).runOnce();
-      expect(report).toMatchObject({ read: 3, created: 1, duplicates: 2 });
-      expect(
-        await prisma.finding.count({
-          where: { sourceEventId: `wazuh/${accountA}/guardduty:${findingId}:80303` },
-        }),
-      ).toBe(1);
-    });
+      const findingsOf = (findingId: string) =>
+        prisma.finding.findMany({
+          where: { sourceEventId: { contains: findingId } },
+          orderBy: { createdAt: 'asc' },
+        });
 
-    it('a atividade nova num achado do GuardDuty já triado não reabre nada (risco registrado no STATUS)', async () => {
-      const findingId = randomUUID().replace(/-/g, '');
-      const version = (count: number, minutesAgo: number) => ({
-        ...guardDutyAlert({
-          account: accountA,
-          bucket: guardDutyA,
-          findingId,
-          count,
-          updatedAt: new Date(Date.now() - minutesAgo * MINUTE).toISOString(),
-        }),
-        id: newAlertId(),
-        timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
+      it('ainda não triado, o achado absorve as versões novas: um achado só, com a última atividade da mais nova', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = versionsOf(findingId);
+        const [first, second, third] = [version(1, 25), version(4, 12), version(9, 2)];
+        const report = await syncFor(new FakeIndexer([first, second, third])).runOnce();
+        expect(report).toMatchObject({ read: 3, created: 1, duplicates: 2 });
+
+        const findings = await findingsOf(findingId);
+        expect(findings).toHaveLength(1);
+        expect(findings[0]).toMatchObject({
+          sourceEventId: `wazuh/${accountA}/guardduty:${findingId}:80303`,
+          status: 'new',
+          // Os campos e o evento bruto seguem os da primeira versão; só a última atividade avança.
+          rawEventId: first.id,
+          lastSeenAt: lastSeenOf(third),
+          recurrenceOfId: null,
+        });
+        // A versão do meio, relida depois (sobreposição), já está coberta.
+        expect(await syncFor(new FakeIndexer([{ ...second, id: newAlertId() }])).runOnce()).toMatchObject({
+          created: 0,
+          duplicates: 1,
+        });
+        expect((await findingsOf(findingId))[0]?.lastSeenAt).toEqual(lastSeenOf(third));
       });
-      const first = version(1, 20);
-      await syncFor(new FakeIndexer([first])).runOnce();
-      await prisma.finding.update({ where: byKey(first), data: { status: 'resolved' } });
 
-      // O GuardDuty soma a atividade nova ao mesmo achado: a chave é a mesma, e a versão nova cai como duplicada.
-      const report = await syncFor(new FakeIndexer([version(7, 1)])).runOnce();
-      expect(report).toMatchObject({ read: 1, created: 0, duplicates: 1 });
-      expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toMatchObject({
-        status: 'resolved',
-        rawEventId: first.id,
+      for (const status of ['investigating', 'legitimate', 'resolved'] as const) {
+        it(`atividade nova num achado ${status} vira outro achado, ligado ao original, que não muda; reler a versão nova não faz um terceiro`, async () => {
+          const findingId = randomUUID().replace(/-/g, '');
+          const version = versionsOf(findingId);
+          const first = version(1, 30, 5.5);
+          await syncFor(new FakeIndexer([first])).runOnce();
+          await prisma.finding.update({ where: byKey(first), data: { status, triagedAt: new Date() } });
+          const original = await prisma.finding.findUniqueOrThrow({ where: byKey(first) });
+          expect(original.severity).toBe('medium');
+
+          // A atividade nova, mais grave: o GuardDuty exporta o mesmo achado com a contagem e a severidade novas.
+          const second = version(7, 5, 9.5);
+          const report = await syncFor(new FakeIndexer([second])).runOnce();
+          expect(report).toMatchObject({ read: 1, created: 1, duplicates: 0 });
+          const recurrence = await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second) });
+          expect(recurrence).toMatchObject({
+            tenantId: tenantA,
+            accountId: accountA,
+            status: 'new',
+            triagedAt: null,
+            // Os campos, a severidade (faixa da AWS) e o evento bruto são os da versão nova.
+            severity: 'critical',
+            rawEventId: second.id,
+            lastSeenAt: lastSeenOf(second),
+            recurrenceOfId: original.id,
+          });
+          expect(recurrence.id).not.toBe(original.id);
+          // O original não muda: nem o status, nem a última atividade, nem o evento bruto.
+          expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toEqual(original);
+
+          // Reler a versão nova (outro id de alerta) e a antiga (sobreposição): nada.
+          const reread = await syncFor(
+            new FakeIndexer([
+              { ...second, id: newAlertId() },
+              { ...first, id: newAlertId() },
+            ]),
+          ).runOnce();
+          expect(reread).toMatchObject({ read: 2, created: 0, duplicates: 2 });
+          expect(await findingsOf(findingId)).toHaveLength(2);
+          expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toEqual(original);
+          expect(await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second) })).toEqual(recurrence);
+        });
+      }
+
+      it('já triado, a mesma versão ou uma mais antiga relida não vira nada', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = versionsOf(findingId);
+        const first = version(3, 20);
+        await syncFor(new FakeIndexer([first])).runOnce();
+        await prisma.finding.update({
+          where: byKey(first),
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+        const original = await prisma.finding.findUniqueOrThrow({ where: byKey(first) });
+
+        // A mesma versão com outro id de alerta (snapshot, `--reparse`) e uma versão mais antiga que voltou ao índice.
+        const older = version(1, 40);
+        const report = await syncFor(new FakeIndexer([older, { ...first, id: newAlertId() }])).runOnce();
+        expect(report).toMatchObject({ read: 2, created: 0, duplicates: 2 });
+        expect(await findingsOf(findingId)).toHaveLength(1);
+        expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toEqual(original);
+      });
+
+      it('a recorrência ainda aberta absorve a atividade seguinte; triada, a próxima vira a terceira, ligada ao original', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = versionsOf(findingId);
+        const first = version(1, 50);
+        await syncFor(new FakeIndexer([first])).runOnce();
+        await prisma.finding.update({
+          where: byKey(first),
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+        const original = await prisma.finding.findUniqueOrThrow({ where: byKey(first) });
+
+        const second = version(5, 30);
+        expect(await syncFor(new FakeIndexer([second])).runOnce()).toMatchObject({ created: 1 });
+        // A terceira versão chega com a recorrência ainda aberta: entra nela, sem abrir outra.
+        const third = version(8, 20);
+        expect(await syncFor(new FakeIndexer([third])).runOnce()).toMatchObject({
+          created: 0,
+          duplicates: 1,
+        });
+        const recurrence = await prisma.finding.findUniqueOrThrow({ where: byRecurrence(second) });
+        expect(recurrence).toMatchObject({
+          status: 'new',
+          rawEventId: second.id,
+          lastSeenAt: lastSeenOf(third),
+        });
+        expect(await findingsOf(findingId)).toHaveLength(2);
+
+        // Triada a recorrência, a quarta versão vira o terceiro achado, também ligado ao original.
+        await prisma.finding.update({ where: { id: recurrence.id }, data: { status: 'legitimate' } });
+        const fourth = version(13, 5);
+        expect(await syncFor(new FakeIndexer([fourth])).runOnce()).toMatchObject({
+          created: 1,
+          duplicates: 0,
+        });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byRecurrence(fourth) })).toMatchObject({
+          status: 'new',
+          rawEventId: fourth.id,
+          recurrenceOfId: original.id,
+        });
+        // A terceira versão, relida agora, é mais antiga que a última atividade conhecida: nada.
+        expect(await syncFor(new FakeIndexer([{ ...third, id: newAlertId() }])).runOnce()).toMatchObject({
+          created: 0,
+          duplicates: 1,
+        });
+        expect(await findingsOf(findingId)).toHaveLength(3);
+        expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toEqual(original);
+      });
+
+      it('nascido legítimo pela exceção, a atividade nova vira outro achado esperado, e a exceção conta o uso', async () => {
+        const findingId = randomUUID().replace(/-/g, '');
+        const ip = `100.69.${randomInt(0, 255)}.${randomInt(1, 254)}`;
+        const exception = await prisma.alertException.create({
+          data: {
+            tenantId: tenantA,
+            ruleId: '80303',
+            field: 'ip',
+            value: ip,
+            reason: 'Integração conhecida',
+            createdById: creatorA,
+          },
+        });
+        const version = versionsOf(findingId, ip);
+        const first = version(1, 15);
+        expect(await syncFor(new FakeIndexer([first])).runOnce()).toMatchObject({ created: 1, excepted: 1 });
+        const second = version(4, 3);
+        expect(await syncFor(new FakeIndexer([second])).runOnce()).toMatchObject({
+          created: 1,
+          excepted: 1,
+          incidentsOpened: 0,
+          incidentsJoined: 0,
+        });
+        const findings = await findingsOf(findingId);
+        expect(findings.map((finding) => finding.status)).toEqual(['legitimate', 'legitimate']);
+        expect(findings[1]).toMatchObject({ exceptionId: exception.id, recurrenceOfId: findings[0]?.id });
+        expect(await prisma.alertException.findUniqueOrThrow({ where: { id: exception.id } })).toMatchObject({
+          matchedCount: 2,
+        });
+        await prisma.alertException.delete({ where: { id: exception.id } });
+      });
+
+      it('A/B: o mesmo id de achado no bucket de outro cliente é achado dele, nunca recorrência do de A', async () => {
+        const tenant = await createTenant(app, 'Cliente B (GuardDuty)');
+        const account = String(randomInt(100_000_000_000, 999_999_999_999));
+        const bucket = `guardduty-b-${randomInt(1e6, 9e6)}`;
+        await prisma.cloudAccount.create({
+          data: {
+            tenantId: tenant,
+            accountId: account,
+            regions: ['sa-east-1'],
+            externalId: 't'.repeat(43),
+            guarddutyBucket: bucket,
+          },
+        });
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = versionsOf(findingId);
+        const first = version(1, 25);
+        await syncFor(new FakeIndexer([first])).runOnce();
+        await prisma.finding.update({
+          where: byKey(first),
+          data: { status: 'resolved', triagedAt: new Date() },
+        });
+        const original = await prisma.finding.findUniqueOrThrow({ where: byKey(first) });
+
+        // B exporta o mesmo id com atividade mais nova: a chave leva a conta, então é o primeiro achado de B.
+        const at = new Date(Date.now() - 2 * MINUTE);
+        const fromB = {
+          ...guardDutyAlert({ account, bucket, findingId, count: 9, updatedAt: at.toISOString() }),
+          id: newAlertId(),
+          timestamp: wazuhTime(at),
+        };
+        expect(await syncFor(new FakeIndexer([fromB])).runOnce()).toMatchObject({
+          created: 1,
+          duplicates: 0,
+        });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byKey(fromB, account) })).toMatchObject({
+          tenantId: tenant,
+          status: 'new',
+          recurrenceOfId: null,
+        });
+        expect(await prisma.finding.findUniqueOrThrow({ where: byKey(first) })).toEqual(original);
+        expect(await prisma.finding.count({ where: { recurrenceOfId: original.id } })).toBe(0);
+      });
+
+      it('A/B: a chave ocupada por um achado de outro cliente não é vista nem tocada, e nada é criado', async () => {
+        // A conta só é de um cliente por vez; a chave de A em B simula a conta recadastrada em outro cliente.
+        const findingId = randomUUID().replace(/-/g, '');
+        const version = versionsOf(findingId);
+        const first = version(1, 10);
+        const held = await prisma.finding.create({
+          data: {
+            tenantId: tenantB,
+            accountId: accountB,
+            source: 'wazuh',
+            sourceEventId: keyOf(first),
+            logSource: 'guardduty',
+            occurredAt: new Date(Date.now() - 60 * MINUTE),
+            lastSeenAt: new Date(Date.now() - 60 * MINUTE),
+            severity: 'high',
+            status: 'resolved',
+            ruleId: '80303',
+            ruleLevel: 10,
+            title: 'Achado de B com a chave de A',
+          },
+        });
+        const report = await syncFor(new FakeIndexer([first])).runOnce();
+        expect(report).toMatchObject({ read: 1, created: 0, duplicates: 1 });
+        expect(await findingsOf(findingId)).toHaveLength(1);
+        expect(await prisma.finding.findUniqueOrThrow({ where: { id: held.id } })).toEqual(held);
+        expect(
+          await prisma.finding.count({
+            where: { tenantId: tenantA, sourceEventId: { contains: findingId } },
+          }),
+        ).toBe(0);
+        await prisma.finding.delete({ where: { id: held.id } });
       });
     });
 

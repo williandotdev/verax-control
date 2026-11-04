@@ -52,6 +52,12 @@ export interface WazuhAwsAlert {
   eventName?: string;
   /** Severidade dada pela própria AWS (GuardDuty, de 0 a 10). */
   awsSeverity?: number;
+  /**
+   * Só no GuardDuty: última atividade do achado (`service.eventLastSeen`; sem ele, `updatedAt`), ISO 8601 em UTC. O
+   * GuardDuty soma a atividade nova ao mesmo achado (mesmo `id`, `service.count` maior), e é este horário que diz se
+   * a versão relida é a mesma ou uma nova.
+   */
+  lastSeenAt?: string;
   actor: {
     /** ARN ou nome da identidade que agiu. */
     user?: string;
@@ -173,6 +179,22 @@ const awsSeveritySchema = z
   ])
   .pipe(z.number().min(0).max(10));
 
+/** Horário gravado pela AWS no evento (ISO 8601 com fuso, inclusive na forma sem dois-pontos), em UTC. */
+const eventTimeSchema = z
+  .string()
+  .max(64)
+  .transform((value, context) => {
+    const normalized = normalizeTimestamp(value);
+    if (normalized !== null) return normalized;
+    context.issues.push({ code: 'custom', message: 'horário fora do formato', input: value });
+    return z.NEVER;
+  });
+
+function eventTime(value: unknown): string | undefined {
+  const parsed = eventTimeSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 interface Arn {
   service: string;
   region: string;
@@ -263,6 +285,8 @@ function guardDutyDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert> 
     region: matching(aws['region'], REGION),
     eventName: text(aws['type'], 256),
     awsSeverity: severity.success ? severity.data : undefined,
+    // A última atividade é a do serviço; o `updatedAt` do achado, que também muda a cada atualização, é o reserva.
+    lastSeenAt: firstOf(eventTime(at(aws, 'service', 'eventLastSeen')), eventTime(aws['updatedAt'])),
     actor: {
       user: firstOf(
         text(at(resource, 'accessKeyDetails', 'userName'), 128),
@@ -407,6 +431,7 @@ export function parseWazuhAlert(document: unknown): ParsedAlert {
       region: details.region,
       eventName: details.eventName,
       awsSeverity: details.awsSeverity,
+      lastSeenAt: details.lastSeenAt,
       actor: details.actor ?? {},
       resource: details.resource,
     },
