@@ -22,11 +22,12 @@ mock_provider "google" {
     }
   }
 
-  # O provider confere o formato destes valores no `apply`; o simulado inventaria textos soltos.
+  # O provider confere o formato destes valores no `apply`; o simulado inventaria textos soltos. O ID único é fictício.
   mock_resource "google_service_account" {
     defaults = {
-      name  = "projects/projeto-exemplo-nos/serviceAccounts/verax-homolog@projeto-exemplo-nos.iam.gserviceaccount.com"
-      email = "verax-homolog@projeto-exemplo-nos.iam.gserviceaccount.com"
+      name      = "projects/projeto-exemplo-nos/serviceAccounts/verax-homolog@projeto-exemplo-nos.iam.gserviceaccount.com"
+      email     = "verax-homolog@projeto-exemplo-nos.iam.gserviceaccount.com"
+      unique_id = "123456789012345678901"
     }
   }
 }
@@ -59,6 +60,12 @@ run "apply_da_primeira_subida" {
   assert {
     condition     = google_billing_budget.project[0].budget_filter[0].projects == toset(["projects/123456789012"])
     error_message = "No apply, o orçamento recebe o número do projeto lido depois das APIs."
+  }
+
+  # O que o teste do papel sem chave na AWS de teste pede: o ID único da conta de serviço do nó.
+  assert {
+    condition     = output.node_service_account_unique_id == "123456789012345678901"
+    error_message = "A saída node_service_account_unique_id não é o ID único da conta de serviço do nó."
   }
 }
 

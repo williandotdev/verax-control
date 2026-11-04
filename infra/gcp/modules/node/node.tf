@@ -38,7 +38,22 @@ locals {
 
 # Identidade da VM. Sem chave: a VM pega credenciais temporárias pelo servidor de metadados, e nenhuma chave JSON
 # de conta de serviço é criada.
+#
+# É também quem entra na AWS do cliente: o papel verax-control-reader confia no ID único desta conta (o `sub` e o
+# `azp` do token que o Google assina para ela; saída `service_account_unique_id`). Recriada, mesmo com o mesmo nome,
+# ela ganha outro ID, e o papel de todo cliente deste nó deixa de aceitá-la até cada um atualizar a pilha.
+#
+# Sem `prevent_destroy` de propósito: a homologação é destruída entre as janelas de teste, e a exclusão do cliente
+# (CP-11) destrói o ambiente inteiro; o `lifecycle` não muda por variável. A proteção é outra:
+# - o que recria a conta (`account_id` e `project`, os dois ForceNew no provider) sai só do `name_prefix` e do
+#   `project_id`, que não mudam na vida do nó; tests/conta_de_servico.tftest.hcl confere que as mudanças de rotina
+#   não a recriam;
+# - o executor do Terraform do plano de controle (CP-07) recusa um plano que recrie ou apague esta conta, salvo na
+#   exclusão do cliente (docs/ARQUITETURA.md, "Exclusão em dois tempos").
+# Apagada por engano fora do Terraform, volta com o mesmo ID em até 30 dias (`gcloud iam service-accounts undelete`),
+# desde que nenhuma outra tenha sido criada com o mesmo nome.
 resource "google_service_account" "node" {
+  project      = var.project_id
   account_id   = var.name_prefix
   display_name = "Nó do Verax Control (SOC)"
   description  = "Identidade da VM do nó: lê os logs de segurança e os segredos do nó."

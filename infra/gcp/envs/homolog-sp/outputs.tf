@@ -13,8 +13,13 @@ output "node_service_account" {
   value       = module.node.service_account_email
 }
 
+output "node_service_account_unique_id" {
+  description = "ID único da conta de serviço do nó: o NodeServiceAccountId do papel de leitura na AWS de teste."
+  value       = module.node.service_account_unique_id
+}
+
 output "nat_ip" {
-  description = "IP de saída fixo do nó (Cloud NAT). Vai no node.conf como NODE_EGRESS_IPS=<ip>/32 e é o IP que a política IAM da AWS de teste libera."
+  description = "IP de saída fixo do nó (Cloud NAT). Vai no node.conf como NODE_EGRESS_IPS=<ip>/32 e é o NodeEgressIps do papel de leitura na AWS de teste."
   value       = module.node.nat_ip
 }
 
