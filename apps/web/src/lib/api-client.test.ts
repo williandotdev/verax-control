@@ -131,4 +131,12 @@ describe('ApiClient', () => {
     const { client } = setup([json(200, { token: 't' }), new Response(null, { status: 204 })]);
     await expect(client.delete('/v1/x/1')).resolves.toBeUndefined();
   });
+
+  it('sem API resolvida (build único fora do endereço de um cliente), nenhuma chamada sai', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const client = new ApiClient('', {}, fetchMock);
+    await expect(client.get('/v1/me')).rejects.toBeInstanceOf(ApiRequestError);
+    await expect(client.post('/v1/x', { a: 1 })).rejects.toBeInstanceOf(ApiRequestError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

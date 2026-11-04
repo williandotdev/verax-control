@@ -13,7 +13,8 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test:e2e": "playwright test",
-    "test:e2e:fullstack": "playwright test -c playwright.fullstack.config.ts"
+    "test:e2e:fullstack": "playwright test -c playwright.fullstack.config.ts",
+    "test:e2e:sites": "playwright test -c playwright.sites.config.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "5.105.0",

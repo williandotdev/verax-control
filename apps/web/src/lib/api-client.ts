@@ -88,6 +88,9 @@ export class ApiClient {
   }
 
   async request<T>(path: string, options: RequestOptions<T> = {}, retried = false): Promise<T> {
+    // Build único aberto fora do endereço de um cliente: sem API resolvida, nenhuma chamada sai. O `main.tsx` nem
+    // monta o app nesse caso; esta é a segunda trava.
+    if (!this.baseUrl) throw new ApiRequestError(0, 'Endereço do painel não reconhecido');
     const method = options.method ?? 'GET';
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
