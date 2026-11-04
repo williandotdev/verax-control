@@ -122,6 +122,7 @@ describe('MFA obrigatório (T2.2)', () => {
 
       const wrong = await authPost(app, '/two-factor/verify-totp', challenge, { code: '000000' });
       expect(wrong.status).toBeGreaterThanOrEqual(400);
+      expect(wrong.body).toMatchObject({ code: 'INVALID_CODE' });
       expect(hasSessionCookie(cookieHeader(wrong.headers['set-cookie']))).toBe(false);
     });
 
@@ -162,8 +163,15 @@ describe('MFA obrigatório (T2.2)', () => {
       const first = await signInRequest(app, user.email, user.password).expect(200);
       const challenge = cookieHeader(first.headers['set-cookie']);
       for (let i = 0; i < 5; i += 1) {
-        await authPost(app, '/two-factor/verify-totp', challenge, { code: '000000' }).expect(401);
+        // Só o INVALID_CODE conta para o bloqueio. Desafio que sumiu responde INVALID_TWO_FACTOR_COOKIE, também
+        // com 401, sem nem avaliar o código; conferir o motivo mostra a causa se o bloqueio falhar adiante.
+        const wrong = await authPost(app, '/two-factor/verify-totp', challenge, { code: '000000' });
+        expect(wrong.status).toBe(401);
+        expect(wrong.body).toMatchObject({ code: 'INVALID_CODE' });
       }
+      const counted = await prisma.twoFactor.findFirstOrThrow({ where: { userId: user.id } });
+      expect(counted.failedVerificationCount).toBe(5);
+      expect(counted.lockedUntil?.getTime()).toBeGreaterThan(Date.now());
 
       // Desafio novo (o limite por desafio não vale aqui): o bloqueio é da conta.
       const second = await signInRequest(app, user.email, user.password).expect(200);
