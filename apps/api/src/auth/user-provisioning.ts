@@ -22,6 +22,11 @@ export interface NewUser {
  * grava pelo cliente base, fora dela): se a requisição falhar, a conta não fica, e um cliente criado na mesma
  * requisição pode ser referenciado antes do commit. Fora dela (seed, bootstrap do nó, testes), pelo adaptador interno
  * da biblioteca.
+ *
+ * Invariante: o caminho transacional grava direto pelo Prisma, sem o `createWithHooks` do Better Auth. Por isso a
+ * configuração (e os plugins) não podem ter `databaseHooks.user.create` nem `databaseHooks.account.create`: rodariam
+ * no seed e no bootstrap, mas não em `POST /users` nem em `POST /tenants`. O teste `user-provisioning.test.ts` falha
+ * se um aparecer; se um hook desses for necessário um dia, este caminho precisa passar a chamá-lo.
  */
 export async function provisionUser(auth: Auth, input: NewUser): Promise<{ id: string }> {
   if (

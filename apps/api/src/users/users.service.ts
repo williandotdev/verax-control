@@ -17,7 +17,7 @@ import type { RequestAuth } from '../common/auth/request-auth.js';
 import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
-import type { Prisma } from '../generated/prisma/client.js';
+import { Prisma } from '../generated/prisma/client.js';
 
 const userSelect = {
   id: true,
@@ -48,6 +48,11 @@ function toUser(row: UserRow): User {
 
 const NOT_FOUND = 'Usuário não encontrado';
 const SELF = 'Você não pode alterar o próprio acesso';
+const EMAIL_TAKEN = 'Já existe um usuário com este e-mail';
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
 
 /**
  * Usuários do cliente (T3.2). Tudo pelo escopo da sessão: `admin_cliente` gerencia o próprio cliente, e
@@ -104,17 +109,24 @@ export class UsersService {
     const email = input.email.trim().toLowerCase();
     // O e-mail é único na plataforma inteira.
     if (await this.prisma.db().user.findUnique({ where: { email }, select: { id: true } })) {
-      throw new ApiError(HttpStatus.CONFLICT, 'Já existe um usuário com este e-mail');
+      throw new ApiError(HttpStatus.CONFLICT, EMAIL_TAKEN);
     }
     // Nasce sem acesso (`invited`) e só fica ativa junto com a senha temporária. As duas gravações entram na
     // transação da requisição: ou a conta nasce pronta para o primeiro login, ou não nasce.
-    const { id } = await provisionUser(this.auth, {
-      email,
-      name: input.name,
-      role: input.role,
-      tenantId,
-      status: 'invited',
-    });
+    let id: string;
+    try {
+      ({ id } = await provisionUser(this.auth, {
+        email,
+        name: input.name,
+        role: input.role,
+        tenantId,
+        status: 'invited',
+      }));
+    } catch (error) {
+      // Outra requisição confirmou o mesmo e-mail entre a checagem acima e a gravação: a mesma resposta.
+      if (isUniqueViolation(error)) throw new ApiError(HttpStatus.CONFLICT, EMAIL_TAKEN);
+      throw error;
+    }
     const temporary = await setTemporaryPassword(this.auth, this.prisma, { id, email });
     const row = await this.prisma
       .forTenant(tenantId)

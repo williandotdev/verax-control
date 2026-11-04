@@ -12,8 +12,9 @@ export interface AuditDetails {
   after?: unknown;
   /**
    * Cliente em cuja trilha o registro entra (quem pode lê-lo). Sem valor: o cliente do usuário; para
-   * admin_verax, o cliente acessado pelo escopo (`PrismaService.scoped()` preenche), ou nenhum. `null`
-   * marca operação global da Verax, fora da trilha de qualquer cliente.
+   * admin_verax, o cliente acessado pelo escopo (`PrismaService.scoped()` preenche), ou nenhum; num registro
+   * adicional (`AuditContext.also`), o cliente do principal. `null` marca operação global da Verax, fora da
+   * trilha de qualquer cliente.
    */
   tenantId?: string | null;
 }

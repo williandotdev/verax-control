@@ -23,8 +23,9 @@ export class AuditContext {
 
   /**
    * Registro adicional da mesma requisição, para a operação que cria mais de um recurso (o cliente novo e o primeiro
-   * administrador dele). Entra na mesma transação do principal, com o mesmo ator, IP e request id; se a requisição
-   * falhar, só a tentativa principal é registrada, porque nada disto foi gravado.
+   * administrador dele). Entra na mesma transação do principal, com o mesmo ator, IP e request id; sem `tenantId`,
+   * na trilha do principal (a do cliente cujos dados foram tocados), nunca só na do ator. Se a requisição falhar,
+   * só a tentativa principal é registrada, porque nada disto foi gravado.
    */
   also(details: AuditDetails): void {
     const store = requestContext.getStore();
