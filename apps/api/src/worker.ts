@@ -1,6 +1,8 @@
 import { pino } from 'pino';
 import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
+import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
+import { UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
@@ -30,6 +32,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  *
  * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
  * `credential-rekey`, que recifra com a versão corrente as credenciais guardadas com uma versão antiga da chave.
+ *
+ * A tarefa `aws-check` responde o "Verificar" das contas AWS (a cada 30 s, só quando há pedido pendente). Até o PR-V5',
+ * a conferência é a `UnavailableAwsConnectionChecker`: o pedido vira o código `check_unavailable`, sem chamar a AWS.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -64,6 +69,15 @@ async function main(): Promise<void> {
       const agents = new WazuhAgentsSync(prisma, config.wazuhAgents);
       tasks.push({ name: 'wazuh-agents', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => agents.runOnce() });
     }
+    // "Verificar" da AWS: a API só grava o pedido; o worker, o único contêiner com o metadata, responde. O PR-V5' troca
+    // a conferência pela real (token do Google, STS e S3).
+    const awsCheck = new AwsCheck(prisma, new UnavailableAwsConnectionChecker());
+    tasks.push({
+      name: 'aws-check',
+      intervalMs: AWS_CHECK_INTERVAL_MS,
+      budgetMs: SYNC_BUDGET_MS,
+      run: (signal) => awsCheck.runOnce(signal),
+    });
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
       const rekey = new CredentialRekey(prisma, keyring);

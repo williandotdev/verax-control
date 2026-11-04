@@ -6,8 +6,9 @@ import type { CloudCredentialKind, CloudProvider } from '../generated/prisma/enu
 import type { VaultKeyring, VaultPublicKey } from './credential-keys.js';
 
 /**
- * Cofre de credenciais do nó (fase 2, PR-V1): a chave de acesso do usuário IAM de leitura da AWS e o token do
- * Cloudflare, cifrados com RSA-OAEP-SHA256 (`docs/ARQUITETURA.md`, "Cofre de credenciais").
+ * Cofre de credenciais do nó (fase 2, PR-V1): o token só de leitura do Cloudflare, cifrado com RSA-OAEP-SHA256
+ * (`docs/ARQUITETURA.md`, "Cofre de credenciais"). A AWS não passa por aqui: o papel de leitura dela não tem chave
+ * (a chave de acesso do usuário IAM, do PR-V1, saiu no PR-V3').
  *
  * - `seal` cifra com a chave pública. É o que a API faz quando o admin cola a credencial: ela não tem a privada, então
  *   uma execução remota de código nela não abre o que já está guardado.
@@ -15,8 +16,8 @@ import type { VaultKeyring, VaultPublicKey } from './credential-keys.js';
  * - O rótulo do OAEP (`oaepLabel`) amarra o texto ao cliente, à conta, ao tipo e ao ID da conta no provedor: uma linha
  *   copiada para outra conta ou outro cliente, ou trocada de tipo, não abre.
  * - O envelope é `v<versão da chave>:<base64>`. Versão que o worker não tem (desativada ou destruída) falha fechado.
- * - O texto claro é o mínimo, em JSON de chaves curtas (`{i,s}` na AWS, `{t}` no Cloudflare), conferido com zod ao
- *   abrir. Ele cabe nos 318 bytes que o RSA-3072 com OAEP-SHA256 cifra de uma vez.
+ * - O texto claro é o mínimo, em JSON de chave curta (`{t}` no Cloudflare), conferido com zod ao abrir. Ele cabe nos
+ *   318 bytes que o RSA-3072 com OAEP-SHA256 cifra de uma vez.
  * - O que sai de `open` (e o que a API monta com o que foi colado) são invólucros que se recusam a virar JSON ou texto
  *   e registram o segredo no logger, que passa a ocultá-lo em qualquer linha (`registerLiveSecret`).
  *
@@ -31,31 +32,23 @@ export const MAX_CIPHERTEXT_LENGTH = 1024;
 const LABEL_PREFIX = 'verax-cred:v1';
 const ENVELOPE = /^v([1-9][0-9]{0,8}):([A-Za-z0-9+/]+={0,2})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-/** ID da conta no provedor: 12 dígitos (AWS) ou 32 hexadecimais (Cloudflare). Sem `:`, que separa o rótulo. */
+/** ID da conta no provedor (32 hexadecimais no Cloudflare). Sem `:`, que separa o rótulo. */
 const PROVIDER_ACCOUNT_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 /**
- * Formatos aceitos (os mesmos que o contrato da tela vai conferir antes, no PR-V3). Expressões ancoradas, de tamanho
- * limitado e sem quantificador aninhado: o tempo de conferir é proporcional ao tamanho da entrada.
+ * Token do Cloudflare: o alfabeto do Bearer (RFC 6750), com tamanho limitado. Expressão ancorada, de tamanho limitado e
+ * sem quantificador aninhado: o tempo de conferir é proporcional ao tamanho da entrada.
  */
-export const AWS_ACCESS_KEY_ID = /^AKIA[A-Z0-9]{16}$/;
-export const AWS_SECRET_ACCESS_KEY = /^[A-Za-z0-9/+]{40}$/;
-/** Token do Cloudflare: o alfabeto do Bearer (RFC 6750), com tamanho limitado. */
 export const CLOUDFLARE_API_TOKEN = /^[A-Za-z0-9._~+/-]{20,255}={0,2}$/;
 
 /**
- * O texto claro de cada tipo, em JSON de chaves curtas. É a régua única do formato: os invólucros a aplicam ao que a
- * API recebe colado (antes de cifrar), e `open`, ao que saiu da cifra.
+ * O texto claro, em JSON de chave curta. É a régua única do formato: o invólucro a aplica ao que a API recebe colado
+ * (antes de cifrar), e `open`, ao que saiu da cifra.
  */
-const awsPayload = z.strictObject({
-  i: z.string().regex(AWS_ACCESS_KEY_ID),
-  s: z.string().regex(AWS_SECRET_ACCESS_KEY),
-});
 const cloudflarePayload = z.strictObject({ t: z.string().regex(CLOUDFLARE_API_TOKEN) });
 
-/** Provedor de cada tipo de credencial: a credencial da AWS só vale numa conta AWS, e a do Cloudflare, numa Cloudflare. */
+/** Provedor de cada tipo de credencial: o token do Cloudflare só vale numa conta do Cloudflare. */
 export const CREDENTIAL_KIND_PROVIDER = {
-  aws_access_key: 'aws',
   cloudflare_api_token: 'cloudflare',
 } as const satisfies Record<CloudCredentialKind, CloudProvider>;
 
@@ -80,7 +73,7 @@ export interface CredentialBinding {
   readonly tenantId: string;
   readonly cloudAccountId: string;
   readonly kind: CloudCredentialKind;
-  /** ID da conta no provedor (12 dígitos na AWS, 32 hexadecimais no Cloudflare). */
+  /** ID da conta no provedor (32 hexadecimais no Cloudflare). */
   readonly accountId: string;
 }
 
@@ -107,52 +100,7 @@ export function oaepLabel(binding: CredentialBinding): Buffer {
   return Buffer.from(`${LABEL_PREFIX}:${tenantId}:${cloudAccountId}:${kind}:${accountId}`, 'utf8');
 }
 
-const HIDDEN_AWS = '[credencial da AWS]';
 const HIDDEN_CLOUDFLARE = '[token do Cloudflare]';
-
-/**
- * Chave de acesso de longo prazo do usuário IAM de leitura (no molde de `TemporaryCredentials`, em
- * `inventory/read-only-session.ts`). O segredo só sai por `identity()`, para criar os clientes da AWS.
- */
-export class StaticAwsCredentials {
-  readonly #accessKeyId: string;
-  readonly #secretAccessKey: string;
-
-  constructor(accessKeyId: string, secretAccessKey: string) {
-    if (!awsPayload.safeParse({ i: accessKeyId, s: secretAccessKey }).success) {
-      throw new CredentialVaultError('secret_invalid');
-    }
-    registerLiveSecret(secretAccessKey);
-    this.#accessKeyId = accessKeyId;
-    this.#secretAccessKey = secretAccessKey;
-  }
-
-  get kind(): 'aws_access_key' {
-    return 'aws_access_key';
-  }
-
-  /** Os 4 últimos caracteres do ID da chave: o que o painel e a auditoria mostram. */
-  get keyIdSuffix(): string {
-    return this.#accessKeyId.slice(-4);
-  }
-
-  /** Para criar os clientes da AWS e nada mais. */
-  identity(): { accessKeyId: string; secretAccessKey: string } {
-    return { accessKeyId: this.#accessKeyId, secretAccessKey: this.#secretAccessKey };
-  }
-
-  toJSON(): string {
-    return HIDDEN_AWS;
-  }
-
-  toString(): string {
-    return HIDDEN_AWS;
-  }
-
-  [inspect.custom](): string {
-    return HIDDEN_AWS;
-  }
-}
 
 /** Token só de leitura do Cloudflare. O valor só sai por `value()`, para o header da requisição. */
 export class CloudflareToken {
@@ -185,16 +133,15 @@ export class CloudflareToken {
   }
 }
 
-export type VaultSecret = StaticAwsCredentials | CloudflareToken;
+/** O que o cofre guarda. Um tipo novo de credencial entra aqui como mais um invólucro. */
+export type VaultSecret = CloudflareToken;
 
 /**
  * A API acabou de usar a credencial colada (conferir e cifrar): o logger deixa de guardar o valor dela
  * (`forgetLiveSecret`). Só a API chama, no fim da requisição; o worker mantém o que decifrou.
  */
 export function releaseSecret(credential: VaultSecret): void {
-  forgetLiveSecret(
-    credential instanceof StaticAwsCredentials ? credential.identity().secretAccessKey : credential.value(),
-  );
+  forgetLiveSecret(credential.value());
 }
 
 /** O que vai para a linha: o envelope e a versão da chave que cifrou. */
@@ -204,10 +151,6 @@ export interface SealedCredential {
 }
 
 function payloadOf(credential: VaultSecret): string {
-  if (credential instanceof StaticAwsCredentials) {
-    const { accessKeyId, secretAccessKey } = credential.identity();
-    return JSON.stringify({ i: accessKeyId, s: secretAccessKey });
-  }
   return JSON.stringify({ t: credential.value() });
 }
 
@@ -263,11 +206,6 @@ export function open(keyring: VaultKeyring, binding: CredentialBinding, cipherte
       json = JSON.parse(plaintext.toString('utf8'));
     } catch {
       throw new CredentialVaultError('payload_invalid');
-    }
-    if (binding.kind === 'aws_access_key') {
-      const parsed = awsPayload.safeParse(json);
-      if (!parsed.success) throw new CredentialVaultError('payload_invalid');
-      return new StaticAwsCredentials(parsed.data.i, parsed.data.s);
     }
     const parsed = cloudflarePayload.safeParse(json);
     if (!parsed.success) throw new CredentialVaultError('payload_invalid');

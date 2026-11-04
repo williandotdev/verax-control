@@ -41,6 +41,11 @@ export interface CreateAppOptions {
   vault?: { publicKey: string; version: number };
   /** IPs de saída do nó (`NODE_EGRESS_IPS`), separados por vírgula. */
   nodeEgressIps?: string;
+  /**
+   * Papel de leitura sem chave da AWS: o ID único da conta de serviço do nó (`NODE_SA_UNIQUE_ID`) e o audience
+   * (`AWS_WEB_IDENTITY_AUDIENCE`). Sem informar, como no nó que não os tem no `node.conf`.
+   */
+  awsReader?: { serviceAccountId?: string; audience?: string };
   /** Agentes do Wazuh ligados no nó (as variáveis WAZUH_AGENTS_* que o start.sh escreve); sem informar, desligados. */
   wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
 }
@@ -73,6 +78,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       CREDENTIALS_KEY_VERSION: String(options.vault.version),
     }),
     ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
+    ...(options.awsReader?.serviceAccountId !== undefined && {
+      NODE_SA_UNIQUE_ID: options.awsReader.serviceAccountId,
+    }),
+    ...(options.awsReader?.audience !== undefined && {
+      AWS_WEB_IDENTITY_AUDIENCE: options.awsReader.audience,
+    }),
     ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
   });
   const builder = Test.createTestingModule({

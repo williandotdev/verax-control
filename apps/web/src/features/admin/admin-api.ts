@@ -34,13 +34,23 @@ import { api } from '@/lib/api';
 
 const PAGE_SIZE = 20;
 
-function useList<T>(key: string, path: string, schema: z.ZodType<T>, page: number, enabled: boolean) {
+function useList<T>(
+  key: string,
+  path: string,
+  schema: z.ZodType<T>,
+  page: number,
+  enabled: boolean,
+  /** Relê a página nesse intervalo enquanto algum item pedir (ms); sem informar, só quando a tela pede. */
+  pollWhile?: { intervalMs: number; item: (item: T) => boolean },
+) {
   const list = paginatedSchema(schema);
   return useQuery({
     queryKey: [key, page],
     queryFn: () => api.get(`${path}?page=${page}&pageSize=${PAGE_SIZE}`, list),
     enabled,
     placeholderData: keepPreviousData,
+    refetchInterval: (query) =>
+      pollWhile && query.state.data?.items.some(pollWhile.item) === true ? pollWhile.intervalMs : false,
   });
 }
 
@@ -108,8 +118,16 @@ export const useGenerateTemporaryPassword = (id: string) =>
   );
 
 // --- Contas cloud (T3.3) ---
+/**
+ * Enquanto uma conta AWS tem o "Verificar" pendente, a lista é relida a cada 5 s, até o worker gravar o resultado (ele
+ * responde em até 30 s, ou em até 10 min se o papel ainda não valer no IAM).
+ */
+export const AWS_CHECK_POLL_MS = 5_000;
 export const useCloudAccountList = (page: number, enabled: boolean) =>
-  useList('admin-cloud-accounts', '/v1/cloud-accounts', cloudAccountSchema, page, enabled);
+  useList('admin-cloud-accounts', '/v1/cloud-accounts', cloudAccountSchema, page, enabled, {
+    intervalMs: AWS_CHECK_POLL_MS,
+    item: (account) => account.checkRequestedAt !== null,
+  });
 export const useCreateCloudAccount = () =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountCreate) =>
     api.post('/v1/cloud-accounts', input, cloudAccountSchema),
@@ -117,6 +135,11 @@ export const useCreateCloudAccount = () =>
 export const useUpdateCloudAccount = (id: string) =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountUpdate) =>
     api.patch(`/v1/cloud-accounts/${encodeURIComponent(id)}`, input, cloudAccountSchema),
+  );
+/** "Verificar" a conta AWS: o pedido vai para o worker; a resposta já traz a conta com o pedido pendente. */
+export const useVerifyAwsAccount = (id: string) =>
+  useWrite(['admin-cloud-accounts', 'cloud-accounts'], () =>
+    api.post(`/v1/cloud-accounts/${encodeURIComponent(id)}/aws/verify`, undefined, cloudAccountSchema),
   );
 
 /** Estado da última escrita da credencial: só o resultado (a conta, sem segredo) ou o erro, nunca o que foi colado. */

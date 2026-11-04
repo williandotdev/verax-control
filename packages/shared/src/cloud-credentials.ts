@@ -3,22 +3,22 @@ import type { CloudProvider } from './cloud-accounts.js';
 
 /**
  * Credencial de leitura colada no painel e guardada cifrada no cofre do nó (fase 2; `docs/ARQUITETURA.md`, "Cofre de
- * credenciais"). A rota é `PUT /v1/cloud-accounts/:id/credential`, com o corpo discriminado por `kind`: hoje o painel
- * aceita só o token do Cloudflare (PR-11'); a chave de acesso da AWS (PR-V3) entra como outra opção da mesma união,
- * sem mudar a rota nem a resposta.
+ * credenciais"). A rota é `PUT /v1/cloud-accounts/:id/credential`, com o corpo discriminado por `kind`: hoje só o token
+ * do Cloudflare (PR-11'). Outro tipo entra como outra opção da mesma união, sem mudar a rota nem a resposta. A AWS não
+ * passa por aqui: o papel de leitura dela não tem chave (`aws-reader.ts`).
  *
  * O segredo vai num sentido só: a API confere, cifra e grava. Nada dele volta (a resposta é a conta, com os metadados
  * em `keyStatus`), e nem a auditoria nem o log o recebem.
  */
 
-/** Tipos guardados no cofre (o enum `CloudCredentialKind` do banco). */
-export const CLOUD_CREDENTIAL_KINDS = ['aws_access_key', 'cloudflare_api_token'] as const;
+/**
+ * Tipos guardados no cofre (o enum `CloudCredentialKind` do banco). A chave de acesso da AWS (`aws_access_key`, do
+ * PR-V1) saiu no PR-V3', sem nunca ter tido linha em produção: a AWS é lida pelo papel sem chave.
+ */
+export const CLOUD_CREDENTIAL_KINDS = ['cloudflare_api_token'] as const;
 export type CloudCredentialKind = (typeof CLOUD_CREDENTIAL_KINDS)[number];
 
-/**
- * Tipos que o painel aceita colar hoje. A chave da AWS espera a decisão sobre o acesso sem chave à conta do cliente:
- * quando entrar, é mais um item aqui e mais uma opção em `cloudCredentialInputSchema`.
- */
+/** Tipos que o painel aceita colar. Um tipo novo é mais um item aqui e mais uma opção em `cloudCredentialInputSchema`. */
 export const ACCEPTED_CREDENTIAL_KINDS = [
   'cloudflare_api_token',
 ] as const satisfies readonly CloudCredentialKind[];
@@ -26,7 +26,6 @@ export type AcceptedCredentialKind = (typeof ACCEPTED_CREDENTIAL_KINDS)[number];
 
 /** Provedor de cada tipo: a credencial só vale numa conta do provedor dela. */
 export const CREDENTIAL_KIND_PROVIDERS = {
-  aws_access_key: 'aws',
   cloudflare_api_token: 'cloudflare',
 } as const satisfies Record<CloudCredentialKind, CloudProvider>;
 
@@ -117,7 +116,7 @@ export function daysUntilExpiry(expiresAt: Date | string | null, now: Date = new
  */
 export const cloudCredentialStatusSchema = z.strictObject({
   kind: z.enum(CLOUD_CREDENTIAL_KINDS),
-  /** Os 4 últimos caracteres do ID do token (Cloudflare) ou da chave de acesso (AWS): o painel mostra `…abcd`. */
+  /** Os 4 últimos caracteres do ID do token do Cloudflare: o painel mostra `…abcd`. */
   keyIdSuffix: z.string().regex(/^[A-Za-z0-9]{4}$/),
   /** Criação da credencial na origem, quando ela informa (o `verify` do Cloudflare não informa). */
   issuedAt: z.iso.datetime().nullable(),

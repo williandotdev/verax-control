@@ -113,8 +113,9 @@ interface KindHandler {
 }
 
 /**
- * Recebimento da credencial colada no painel (fase 2; a rota genérica que o PR-V3 descrevia, hoje só com o token do
- * Cloudflare, PR-11'): `PUT` e `DELETE /v1/cloud-accounts/:id/credential`, na transação do `AuditInterceptor`.
+ * Recebimento da credencial colada no painel (fase 2; a rota genérica, hoje só com o token do Cloudflare, PR-11'; a
+ * AWS não passa por ela, porque o papel de leitura não tem chave): `PUT` e `DELETE /v1/cloud-accounts/:id/credential`,
+ * na transação do `AuditInterceptor`.
  *
  * No `PUT`, nesta ordem:
  * 1. o cofre precisa estar ligado no nó (a API tem a chave pública);
@@ -224,7 +225,7 @@ export class CredentialIntakeService {
     } finally {
       releaseSecret(secret);
     }
-    return this.accounts.get(auth, id);
+    return this.accounts.get(id);
   }
 
   async remove(id: string): Promise<void> {

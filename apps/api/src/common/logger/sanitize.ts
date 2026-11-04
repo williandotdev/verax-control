@@ -55,18 +55,17 @@ const VALUE_PATTERNS: readonly [RegExp, string][] = [
   [/\bBearer\s+[\w.~+/=-]+/gi, `Bearer ${REDACTED}`],
   // ID de chave de acesso AWS, de longo prazo (AKIA) ou temporária (ASIA).
   [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, REDACTED],
-  // Linha de um arquivo `credentials` da AWS (o que o Wazuh do nó lê) copiada para uma mensagem: o valor vai até o
-  // primeiro espaço.
+  // Linha de um arquivo `credentials` da AWS copiada para uma mensagem: o valor vai até o primeiro espaço. Fica mesmo
+  // sem a chave de acesso no cofre: as credenciais de sessão do papel de leitura também têm os dois campos.
   [/(\baws_(?:secret_access_key|session_token)\s*=\s*)\S+/gi, `$1${REDACTED}`],
   // Senha embutida em URL, como postgresql://usuario:senha@host/banco.
   [/(\b[a-z][\w+.-]*:\/\/[^\s:/?#@]+:)[^\s@/?#]+@/gi, `$1${REDACTED}@`],
 ];
 
 /**
- * Segredos vivos: os valores decifrados do cofre de credenciais neste processo (a chave secreta da AWS e o token do
- * Cloudflare, registrados pelos invólucros de `credentials/credential-vault.ts`). Ficam enquanto o processo vive: só o
- * worker decifra, e as contas de um nó são poucas. Valores curtos ficam de fora, para não ocultar pedaços de texto
- * comum.
+ * Segredos vivos: os valores decifrados do cofre de credenciais neste processo (o token do Cloudflare, registrado pelo
+ * invólucro de `credentials/credential-vault.ts`). Ficam enquanto o processo vive: só o worker decifra, e as contas de
+ * um nó são poucas. Valores curtos ficam de fora, para não ocultar pedaços de texto comum.
  */
 const liveSecrets = new Set<string>();
 export const MIN_LIVE_SECRET_LENGTH = 16;

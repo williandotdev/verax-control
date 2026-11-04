@@ -28,40 +28,43 @@ arquitetura (`docs/ARQUITETURA.md`).
 
 ## 3. Reunião de definição com o cliente
 
-> **Desatualizado (seções 3 e 4).** Estas seções seguem o desenho de 02/11/2026: nó na AWS, na conta do cliente ou da
-> Verax, conector com papel e ExternalId e leitura do CloudWatch Logs. A revisão de 04/11/2026 em
-> `docs/ARQUITETURA.md` substituiu esse desenho, e o roteiro será reescrito com o template do usuário de leitura e a
-> chave no painel (fase 2). Até lá, **não peça ao cliente a pilha do conector nem a do nó na AWS** e siga a
-> arquitetura:
->
-> - todo nó de cliente roda na GCP da Verax, em São Paulo (southamerica-east1), criado pelo Terraform de `infra/gcp/`;
-> - a AWS do cliente é lida por um usuário IAM de leitura com chave restrita ao IP do nó, só nos buckets S3 do
->   CloudTrail, do export do GuardDuty e, se o cliente quiser, do WAF;
-> - o CloudWatch Logs, o Security Hub e o Inspector ficam fora da v1, inclusive no que o diagnóstico (seção 2) mostrar
->   deles;
-> - não há venda assistida: a primeira venda só acontece depois do provisionamento automático (fase 3).
+O desenho é o da revisão de 04/11/2026 (`docs/ARQUITETURA.md`): **não peça ao cliente a pilha do conector antigo, com
+ExternalId, nem a do nó na AWS**, que ficaram fora do caminho.
 
-- Confirme a lista final de fontes, a região do nó (a mesma dos logs) e quem hospeda o nó: a conta do cliente ou a
-  da Verax.
+- Todo nó de cliente roda na GCP da Verax, em São Paulo (southamerica-east1), criado pelo Terraform de `infra/gcp/`.
+- A AWS do cliente é lida por um **papel IAM de leitura sem chave** (`verax-control-reader`), que o próprio cliente
+  cria com o template `infra/cloudformation/verax-control-reader.yaml`. Só o nó dele entra no papel, com um token de
+  até 1 hora que o Google assina para a conta de serviço do nó, e só a partir do IP de saída do nó. Não existe chave
+  para criar, copiar, guardar ou trocar, nem ExternalId. O papel lê só os buckets S3 do CloudTrail, do export do
+  GuardDuty e, se o cliente quiser, do WAF.
+- O CloudWatch Logs, o Security Hub e o Inspector ficam fora da v1, inclusive no que o diagnóstico (seção 2) mostrar
+  deles. Não há venda assistida: a primeira venda só acontece depois do provisionamento automático (fase 3).
+
+Na reunião:
+
+- Confirme a lista final de fontes: os buckets do CloudTrail, do export do GuardDuty e do WAF, e as chaves KMS deles.
+- Avise o que o cliente vai ver: o IAM Access Analyzer mostra o papel com acesso externo federado (esperado: papel com
+  credencial temporária é o que a AWS recomenda), e o CloudTrail registra cada entrada (`AssumeRoleWithWebIdentity`)
+  com o ID da conta de serviço do nó. Se a organização dele usa uma RCP de perímetro de dados que nega a federação de
+  provedores fora de uma lista, ele inclui `accounts.google.com` nela ou marca o papel como exceção. A decisão é dele.
 - Colete o fluxo de escalonamento (quem recebe Critical, High, Medium e Low, e por qual canal) e a baseline de rede:
   portas publicadas e tráfego interno esperado. As duas coisas evitam o ruído que mais incomoda o cliente.
 - Combine o subdomínio do painel: `<cliente>.control.veraxsistemas.com.br`.
 
-## 4. Conector, nó e painel _(em construção)_
+## 4. Nó, conta AWS e painel _(em construção)_
 
-> **Desatualizado:** veja o aviso no início da seção 3. Os passos 1 e 2 abaixo descrevem o desenho substituído e não
-> devem ser seguidos.
-
-1. O cliente cria a pilha do conector na conta monitorada (`infra/cloudformation/README.md`). Ela cria só o papel
-   somente leitura, que só o papel do nó pode assumir, com o ExternalId. Passe ao cliente:
-   - a conta onde o nó vai rodar;
-   - o ExternalId gerado pelo painel;
-   - os ARNs das fontes aprovadas no passo 3: grupos do CloudWatch Logs, buckets e as chaves KMS deles.
-
-   O papel só lê o conteúdo desses logs e tem negação explícita para apagar, alterar ou desviar logs.
-
-2. Crie a pilha do nó na conta escolhida e na região dos logs (`infra/cloudformation/GUIA-NO.md`), grave o token do
-   túnel no parâmetro indicado e passe ao conector as saídas `NodeAccountId` e `NodeRoleName`.
+1. **Nó do cliente** no perfil `standard`, pelo Terraform de `infra/gcp/` (`infra/gcp/GUIA.md`). Anote o IP reservado
+   do NAT (`terraform output nat_ip`) e o ID único da conta de serviço do nó, com 21 dígitos (a saída
+   `service_account_unique_id` do módulo; na homologação, `terraform output node_service_account_unique_id`). Nenhum
+   dos dois é segredo. Uma conta de serviço recriada ganha outro ID e quebra o papel do cliente até ele atualizar a
+   pilha: pare diante de um `plan` que a recrie.
+2. **No `node.conf` do nó** (o arquivo que o `deploy.sh` leva), os valores que o painel mostra para a pilha:
+   ```sh
+   NODE_EGRESS_IPS=<o nat_ip>/32
+   NODE_SA_UNIQUE_ID=<o ID único da conta de serviço, 21 dígitos>
+   # AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader   # só para trocar o padrão
+   ```
+   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -71,6 +74,23 @@ arquitetura (`docs/ARQUITETURA.md`).
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
+6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta e as regiões. O detalhe da conta mostra o passo
+   a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
+   - **Baixar o template:** o painel serve o próprio `verax-control-reader.yaml` do repositório, sem nada preenchido;
+   - no CloudFormation, _Create stack_ → _Upload a template file_, a pilha `verax-control-reader` com os três valores
+     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), os ARNs dos
+     buckets em `LogBucketArns` e as chaves KMS em `LogKmsKeyArns`; a tela também traz o comando da CLI;
+   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel e leia os buckets. A resposta chega em até
+     30 s, ou em até 10 min se o papel recém-criado ainda não valer no IAM, e cada erro diz o que conferir (pilha
+     ainda não criada, valor errado, papel feito pelo assistente "Web identity → Google" do console, SCP ou RCP).
+
+   Os buckets da conta ainda não têm campo no painel: vão pela API (`PATCH /v1/cloud-accounts/:id`, com `buckets`).
+   **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`): confira
+   com o cliente no CloudTrail da conta dele, depois que o nó começar a ler (PR-V4'), as entradas
+   `AssumeRoleWithWebIdentity` com o ID da conta de serviço do nó.
+
+   **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
+   as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.
 
 ## 5. Projeto GCP do cliente (sem acesso ao projeto)
 
