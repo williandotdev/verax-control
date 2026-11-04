@@ -4,8 +4,10 @@ import type { RegisteredAwsAccount } from '../../src/alerts/alert-owner.js';
 /**
  * Alertas do Wazuh como ficam no indexer, no formato do módulo aws-s3 do Wazuh 4.14.9 (conferido no código do
  * wodle): evento original em `data.aws`, com `source`, `log_info.s3bucket` e, só no CloudTrail, `aws_account_id`.
+ * O `data.aws` passa por `asWazuhWrites`, que grava os valores como o analysisd grava (números e booleanos em texto).
  * Contas e clientes fictícios (IDs de exemplo da documentação da AWS). Cada chamada é um evento novo na AWS, com ID
  * próprio (`eventID`, `id` do achado, `requestId`); para o mesmo evento lido de novo, o teste passa o ID.
+ * `withAws` não passa por `asWazuhWrites`: grava o valor como veio, para os casos fora do formato.
  */
 
 export const ALFA: RegisteredAwsAccount = {
@@ -22,6 +24,41 @@ export const BETA: RegisteredAwsAccount = {
 
 export const UNREGISTERED_ACCOUNT = '999988887777';
 
+const INT32_MIN = -(2 ** 31);
+const INT32_MAX = 2 ** 31 - 1;
+
+function isEmptyObject(value: unknown): boolean {
+  return (
+    value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0
+  );
+}
+
+/**
+ * Evento da AWS como o analysisd do Wazuh o grava em `data.aws` (conferido no wazuh-logtest do manager 4.14.9; ver
+ * "formato que o Wazuh grava" em wazuh-alert.test.ts). O decoder JSON guarda cada campo como texto:
+ * - o inteiro que cabe em 32 bits sai como o próprio número (`22` vira `"22"`); os outros números, com seis casas
+ *   (`5.5` vira `"5.500000"`, e o horário do WAF, `"1793527200000.000000"`);
+ * - booleano e null viram `"true"`, `"false"` e `"null"`;
+ * - texto vazio e objeto vazio somem;
+ * - lista volta como JSON, com os tipos de origem.
+ */
+export function asWazuhWrites(value: unknown): unknown {
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value >= INT32_MIN && value <= INT32_MAX
+      ? String(value)
+      : value.toFixed(6);
+  }
+  if (typeof value === 'boolean' || value === null) return String(value);
+  if (typeof value !== 'object') return value;
+  const fields: [string, unknown][] = [];
+  for (const [key, field] of Object.entries(value)) {
+    const written = asWazuhWrites(field);
+    if (written !== undefined && written !== '' && !isEmptyObject(written)) fields.push([key, written]);
+  }
+  return Object.fromEntries(fields);
+}
+
 let sequence = 0;
 
 function document(rule: Record<string, unknown>, aws: Record<string, unknown>): Record<string, unknown> {
@@ -37,7 +74,7 @@ function document(rule: Record<string, unknown>, aws: Record<string, unknown>): 
     // Campos que a API nunca guarda: o evento bruto e, nas correlações, eventos anteriores.
     full_log: '{"conteudo":"bruto"}',
     previous_output: 'evento anterior de outra conta',
-    data: { integration: 'aws', aws },
+    data: { integration: 'aws', aws: asWazuhWrites(aws) },
   };
 }
 
@@ -221,7 +258,7 @@ export function wafAlert(
      * pelo cabeçalho `X-Amzn-Trace-Id`; `null` tira o campo.
      */
     requestId?: string | null;
-    /** `timestamp` do log do WAF, em milissegundos; `null` tira o campo. */
+    /** `timestamp` do log do WAF, em milissegundos (o Wazuh grava `"<ms>.000000"`); `null` tira o campo. */
     loggedAt?: number | string | null;
   } = {},
 ): Record<string, unknown> {

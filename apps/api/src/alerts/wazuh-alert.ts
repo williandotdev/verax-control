@@ -10,7 +10,11 @@ import { z } from 'zod';
  * - o evento original da AWS fica em `data.aws`, com `source` e `log_info.s3bucket` (o bucket que o módulo leu);
  * - só o CloudTrail ganha `aws_account_id`, a conta da pasta `AWSLogs/<conta>` lida. No GuardDuty e no WAF, a conta
  *   vem do próprio evento, que o cliente controla (por isso a T5.2 cruza com o bucket de origem);
- * - listas de um elemento viram o próprio elemento (os acessos aceitam os dois).
+ * - listas de um elemento viram o próprio elemento (os acessos aceitam os dois);
+ * - o decoder JSON do analysisd grava cada campo de `data.aws` como texto (conferido no wazuh-logtest do 4.14.9): o
+ *   inteiro que cabe em 32 bits sai como o próprio número (`"22"`, `"8"`), os outros números com seis casas
+ *   (`"5.500000"` e o horário do WAF, em milissegundos, `"1793527200000.000000"`), e os booleanos como `"true"` e
+ *   `"false"`. Os números lidos aqui aceitam esse texto e o número em si, e os dois dão o mesmo valor.
  */
 
 /** As fontes que o módulo aws-s3 coleta (infra/wazuh/scripts/render-manager-config.py). */
@@ -146,6 +150,29 @@ function firstOf<T>(...values: (T | undefined)[]): T | undefined {
   return values.find((value) => value !== undefined);
 }
 
+/** Inteiro sem sinal: o número ou o texto que o Wazuh grava (`"22"`, `"1793527200000.000000"`). */
+const unsignedSchema = (max: number) =>
+  z
+    .union([
+      z.number(),
+      z
+        .string()
+        .regex(/^\d{1,16}$|^\d{1,16}\.0{1,6}$/)
+        .transform(Number),
+    ])
+    .pipe(z.number().int().min(0).max(max));
+
+/** Severidade do GuardDuty, de 0 a 10: o número ou o texto que o Wazuh grava (`"8"`, `"5.500000"`). */
+const awsSeveritySchema = z
+  .union([
+    z.number(),
+    z
+      .string()
+      .regex(/^\d{1,2}$|^\d{1,2}\.\d{1,6}$/)
+      .transform(Number),
+  ])
+  .pipe(z.number().min(0).max(10));
+
 interface Arn {
   service: string;
   region: string;
@@ -229,16 +256,13 @@ function cloudTrailDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert>
 function guardDutyDetails(aws: Record<string, unknown>): Partial<WazuhAwsAlert> {
   const resource = aws['resource'];
   const action = at(aws, 'service', 'action');
-  const severity = aws['severity'];
+  const severity = awsSeveritySchema.safeParse(aws['severity']);
   const instance = matching(at(resource, 'instanceDetails', 'instanceId'), /^i-[0-9a-f]{8,32}$/);
   const bucket = matching(at(resource, 's3BucketDetails', 'name'), BUCKET);
   return {
     region: matching(aws['region'], REGION),
     eventName: text(aws['type'], 256),
-    awsSeverity:
-      typeof severity === 'number' && Number.isFinite(severity) && severity >= 0 && severity <= 10
-        ? severity
-        : undefined,
+    awsSeverity: severity.success ? severity.data : undefined,
     actor: {
       user: firstOf(
         text(at(resource, 'accessKeyDetails', 'userName'), 128),
@@ -282,18 +306,6 @@ const DETAILS: Record<AwsSource, (aws: Record<string, unknown>) => Partial<Wazuh
  */
 const nativeIdSchema = z.string().regex(/^[A-Za-z0-9._:+/=-]{1,128}$/);
 
-/** Inteiro sem sinal, em número (como a AWS grava) ou em texto: os dois viram o mesmo valor. */
-const unsignedSchema = (max: number) =>
-  z
-    .union([
-      z.number(),
-      z
-        .string()
-        .regex(/^\d{1,16}$/)
-        .transform(Number),
-    ])
-    .pipe(z.number().int().min(0).max(max));
-
 /** IP (v4 ou v6) só com dígitos, letras hexadecimais, pontos e dois-pontos: sem zona (`%`) nem espaço. */
 const ipSchema = z
   .string()
@@ -321,7 +333,9 @@ const portProbeDetailSchema = z
  * - WAF: `<timestamp>/<clientIp>/<requestId>`. Atrás de um ALB, o `requestId` é o trace ID, que o cliente HTTP
  *   escolhe (`X-Amzn-Trace-Id: Root=...`) e que se repete em todas as chamadas de um mesmo trace do X-Ray. Sozinho,
  *   ele deixaria quem ataca repetir o mesmo valor e fazer cada rajada nova cair como duplicada da primeira. O horário
- *   (em milissegundos) é o do WAF, e o IP é o da conexão que a AWS recebeu: nenhum dos dois vem de cabeçalho.
+ *   (em milissegundos) é o do WAF, e o IP é o da conexão que a AWS recebeu: nenhum dos dois vem de cabeçalho. Com 13
+ *   dígitos, o horário passa de 32 bits e chega do Wazuh com seis casas (`"1793527200000.000000"`); no id, vai o
+ *   inteiro.
  */
 const NATIVE_ID: Record<AwsSource, z.ZodType<string>> = {
   cloudtrail: z.object({ eventID: nativeIdSchema }).transform((event) => event.eventID),

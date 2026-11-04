@@ -30,6 +30,8 @@ function alertOf(document: Record<string, unknown>): WazuhAwsAlert {
 
 describe('de alerta a achado (T5.3)', () => {
   it('GuardDuty usa a severidade da AWS, nas faixas do GuardDuty', () => {
+    // A fixture grava a severidade em texto, como o Wazuh ("8.900000", "10"), e a regra padrão tem nível 10 (alta):
+    // cada faixa diferente de alta só sai da severidade da AWS.
     const cases: [number, string][] = [
       [10, 'critical'],
       [9, 'critical'],
