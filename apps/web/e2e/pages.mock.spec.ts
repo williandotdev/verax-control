@@ -13,6 +13,9 @@ const FINDING = '018f2c1e-0000-7000-8000-000000001001';
 const AUDIT_ENTRY = '018f2c1e-0000-7000-8000-0000000d0002';
 /** O projeto da GCP da demonstração (`account(4, ...)` em mocks/admin.ts). */
 const GCP_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0004';
+/** A conta do Cloudflare da demonstração (`account(5, ...)`), com o token guardado perto de vencer. */
+const CLOUDFLARE_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0005';
+const CLOUDFLARE_DIALOG = 'Conta do Cloudflare d0e0000000000000000000000000a1fa';
 
 const PAGES: [string, string | RegExp][] = [
   ['/', 'Torre'],
@@ -77,6 +80,8 @@ test.describe('revisão de UX (modo mock)', () => {
     [`/auditoria?registro=${AUDIT_ENTRY}`, 'Comentou achado'],
     // Projeto GCP de cliente: o comando do sink e o campo da identidade.
     [`/cadastros/contas?conta=${GCP_ACCOUNT}`, 'Projeto da GCP loja-alfa-demo'],
+    // Conta do Cloudflare: o link do token, o IP de saída e o cartão do token com o aviso de vencimento.
+    [`/cadastros/contas?conta=${CLOUDFLARE_ACCOUNT}`, CLOUDFLARE_DIALOG],
   ] as const) {
     test(`painel de detalhe ${path}: sem violação de acessibilidade`, async ({ page }) => {
       await page.goto(path);
@@ -85,6 +90,37 @@ test.describe('revisão de UX (modo mock)', () => {
       expect(await violations(page)).toEqual([]);
     });
   }
+
+  test('token do Cloudflare: o campo de senha com erro, a troca e a remoção sem violação de acessibilidade', async ({
+    page,
+  }) => {
+    await page.goto(`/cadastros/contas?conta=${CLOUDFLARE_ACCOUNT}`);
+    const sheet = page.getByRole('dialog', { name: CLOUDFLARE_DIALOG });
+    const card = sheet.getByRole('group', { name: 'Token de API guardado' });
+    await card.getByRole('button', { name: 'Trocar token' }).click();
+    const field = card.getByLabel('Token de API do Cloudflare');
+    await expect(field).toBeFocused();
+    await expect(field).toHaveAttribute('type', 'password');
+    await expect(field).toHaveAttribute('autocomplete', 'off');
+    // Curto demais: o erro fica ligado ao campo, e o campo zera.
+    await field.fill('curto');
+    await card.getByRole('button', { name: 'Trocar token' }).click();
+    await expect(field).toHaveValue('');
+    await expect(field).toHaveAccessibleDescription(/Token do Cloudflare inválido/);
+    expect(await violations(page)).toEqual([]);
+    // Um token no formato, só de teste: o mock aceita e o cartão volta, com o foco no título.
+    await field.fill(`cfat_${'0123456789abcdef'.repeat(3)}`);
+    await card.getByRole('button', { name: 'Trocar token' }).click();
+    await expect(card.getByText(/guardado no cofre do nó/)).toBeVisible();
+    await expect(card.getByText('Token de API guardado')).toBeFocused();
+    expect(await violations(page)).toEqual([]);
+    await card.getByRole('button', { name: 'Remover token' }).click();
+    await expect(card.getByRole('group', { name: 'Confirmação' })).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+    await card.getByRole('button', { name: 'Confirmar remoção' }).click();
+    await expect(sheet.getByLabel('Token de API do Cloudflare')).toBeFocused();
+    expect(await violations(page)).toEqual([]);
+  });
 
   test('painel de detalhe da postura: sem violação de acessibilidade', async ({ page }) => {
     await open(page, '/postura?severidade=critical', 'Postura cloud');

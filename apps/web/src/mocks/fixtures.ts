@@ -54,6 +54,12 @@ export const DEMO_ACCOUNTS = {
  */
 export const DEMO_SINK_TOPIC_PREFIX = 'projects/verax-nos-demo/topics/verax-demo-security-';
 
+/** IP de saída do nó da demonstração (faixa reservada para documentação, RFC 5737). */
+export const DEMO_EGRESS_IPS = ['203.0.113.10/32'];
+
+/** Fim do ID do token do Cloudflare guardado na demonstração (fictício). */
+export const DEMO_CLOUDFLARE_TOKEN_SUFFIX = 'c0de';
+
 const minutesAgo = (now: Date, minutes: number): string =>
   new Date(now.getTime() - minutes * 60_000).toISOString();
 

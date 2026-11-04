@@ -5,6 +5,14 @@ export function formatTimestamp(value: string | Date): string {
   return Number.isNaN(date.getTime()) ? '—' : formatter.format(date);
 }
 
+const dateFormatter = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' });
+
+/** Só a data: "04/11/2026". */
+export function formatDate(value: string | Date): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  return Number.isNaN(date.getTime()) ? '—' : dateFormatter.format(date);
+}
+
 const relative = new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' });
 const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ['day', 86_400],

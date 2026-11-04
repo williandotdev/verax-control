@@ -78,6 +78,10 @@ export class ApiClient {
     return this.request(path, { method: 'PATCH', body, schema });
   }
 
+  put<T>(path: string, body?: unknown, schema?: z.ZodType<T>): Promise<T> {
+    return this.request(path, { method: 'PUT', body, schema });
+  }
+
   delete<T>(path: string, schema?: z.ZodType<T>): Promise<T> {
     return this.request(path, { method: 'DELETE', schema });
   }
