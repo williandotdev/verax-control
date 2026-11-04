@@ -209,10 +209,24 @@ run "servicos_no_tamanho_do_plano" {
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "OWNER_PRINCIPALS"]) == "responsavel@example.com" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "OWNER_ALERT_EMAIL"]) == "alertas@example.com" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "TASKS_QUEUE_PROVISIONING"]) == "provisioning" &&
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "TASKS_PROJECT_ID"]) == "projeto-exemplo" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "PROVISIONING_ENABLED"]) == "false" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "FIRESTORE_DATABASE"]) == "(default)"
     )
     error_message = "As variáveis que o Terraform preenche (URL do worker, a cp-invoker como conta do token nos dois serviços, responsável, filas) no cp-worker."
+  }
+
+  # O cp-public enfileira o primeiro passo do provisionamento (CP-04): recebe o caminho completo da fila (projeto,
+  # região e nome), a URL do worker (destino e `audience` do token) e a conta do token.
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TASKS_PROJECT_ID"]) == "projeto-exemplo" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TASKS_LOCATION"]) == "southamerica-east1" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TASKS_QUEUE_PROVISIONING"]) == "provisioning" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TASKS_QUEUE_LIFECYCLE"]) == "lifecycle" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "WORKER_URL"]) == "https://cp-worker-123456789012.southamerica-east1.run.app"
+    )
+    error_message = "O cp-public recebe o grupo inteiro da fila (TASKS_PROJECT_ID, TASKS_LOCATION, os nomes das filas e WORKER_URL)."
   }
 
   assert {

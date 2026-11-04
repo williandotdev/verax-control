@@ -114,8 +114,8 @@ quando não forem mais necessários.
 
 ## Custo
 
-Veja a estimativa em `docs/ARQUITETURA.md`: a VM é a maior parte. Os flow logs e o bucket custam poucos dólares por
-mês.
+A VM é a maior parte; estime na [calculadora da AWS](https://calculator.aws/) com o tipo escolhido (`t3a.xlarge` por
+padrão). Os flow logs e o bucket custam pouco.
 
 ## Para quem mantém este template (Verax)
 

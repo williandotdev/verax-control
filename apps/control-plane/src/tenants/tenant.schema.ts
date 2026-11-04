@@ -55,7 +55,33 @@ export function isReservableSlug(value: string): boolean {
 export const cnpjSchema = z.string().regex(/^[A-Z0-9]{12}[0-9]{2}$/, { error: 'CNPJ inválido' });
 
 const shortText = z.string().min(1).max(200);
-const stripeId = z.string().regex(/^[A-Za-z0-9_]{3,255}$/);
+/** Id de objeto da Stripe (`cus_...`, `sub_...`, `in_...`, `evt_...`): letras, números e sublinhado. */
+export const stripeIdSchema = z.string().regex(/^[A-Za-z0-9_]{3,255}$/);
+const stripeId = stripeIdSchema;
+
+/**
+ * Um item da assinatura como a Stripe o devolve na releitura: o preço, a quantidade e o `lookup_key` do preço. A
+ * assinatura pode ter vários (o preço por componente e quantidade está em estudo); o plano de controle guarda a
+ * lista como veio e não deduz plano nenhum dela.
+ */
+export const subscriptionItemSchema = z.strictObject({
+  priceId: stripeId,
+  quantity: z.number().int().min(0).max(1_000_000).optional(),
+  lookupKey: z.string().min(1).max(200).optional(),
+});
+export type SubscriptionItem = z.infer<typeof subscriptionItemSchema>;
+
+/**
+ * Por que o cliente está suspenso (plano §4b e §4d): `unpaid` (a assinatura ficou não paga), `grace_expired` (a
+ * carência de 7 dias venceu, pelo `tick` do CP-11) e `fraud_review` (contestação ou alerta de fraude: decisão
+ * humana; um pagamento não reativa sozinho).
+ */
+export const SUSPENSION_REASONS = ['unpaid', 'grace_expired', 'fraud_review'] as const;
+export type SuspensionReason = (typeof SUSPENSION_REASONS)[number];
+
+/** Para onde o cliente volta quando a inadimplência acaba: o estado em que estava antes dela. */
+export const RESUME_STATES = ['active', 'waiting_customer_connection'] as const;
+export type ResumeState = (typeof RESUME_STATES)[number];
 
 /** Trava por cliente dos passos do provisionamento: dono (`runId`) e vencimento (plano §4c). */
 export const lockSchema = z.strictObject({
@@ -96,6 +122,8 @@ export const tenantSchema = z.strictObject({
       latestInvoiceId: stripeId.optional(),
       cancelAt: z.date().optional(),
       livemode: z.boolean(),
+      /** Os itens da assinatura na última releitura (preço e quantidade), na ordem da Stripe. */
+      items: z.array(subscriptionItemSchema).max(50).optional(),
     })
     .optional(),
   billing: z
@@ -104,6 +132,10 @@ export const tenantSchema = z.strictObject({
       pastDueSince: z.date().optional(),
       graceUntil: z.date().optional(),
       unpaidSince: z.date().optional(),
+      /** Só em `suspended`: o motivo decide se um pagamento reativa (`fraud_review` não reativa). */
+      suspendedReason: z.enum(SUSPENSION_REASONS).optional(),
+      /** Só em `past_due` e `suspended`: o estado ao qual o cliente volta quando a fatura em aberto for paga. */
+      resumeState: z.enum(RESUME_STATES).optional(),
     })
     .optional(),
   provisioning: z
@@ -171,11 +203,40 @@ export const transitionSchema = z.strictObject({
 
 export type TenantTransition = z.infer<typeof transitionSchema>;
 
+/** Estado da nota fiscal de serviço de uma fatura (plano §4f): `manual` na v1, sem emissor automático. */
+export const NFSE_STATUSES = ['manual', 'pending', 'issued'] as const;
+
+/**
+ * Documento `tenants/{id}/invoices/{invoiceId}` (plano §3 e §4f): a fatura paga, como a releitura na Stripe a
+ * mostrou. Guardado por 5 anos (obrigação fiscal). O período é o do serviço cobrado (o das linhas da fatura). A NFS-e
+ * nasce `manual` e só o responsável a muda: a releitura de uma fatura já gravada nunca mexe em `nfse`.
+ */
+export const invoiceSchema = z.strictObject({
+  amount: z.number().int().min(0),
+  currency: z.string().regex(/^[a-z]{3}$/),
+  status: z.string().min(1).max(32),
+  billingReason: z.string().min(1).max(64).optional(),
+  subscriptionId: stripeId.optional(),
+  periodStart: z.date().optional(),
+  periodEnd: z.date().optional(),
+  paidAt: z.date().optional(),
+  hostedInvoiceUrl: z
+    .url({ protocol: /^https$/ })
+    .max(2048)
+    .optional(),
+  paymentMethodType: z.enum(['card', 'boleto']).optional(),
+  nfse: z.strictObject({ status: z.enum(NFSE_STATUSES), number: z.string().min(1).max(64).optional() }),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type InvoiceDocument = z.infer<typeof invoiceSchema>;
+
 /**
  * O pedido feito no checkout (CP-03), guardado na reserva até virar cliente: é o que a Stripe não guarda (o CNPJ não
  * vai à sessão, e a Stripe não coleta CNPJ do Brasil) e o que o `checkout.session.completed` (CP-04) copia para o
- * tenant. Some com a reserva: o TTL apaga a reserva vencida, e a liberação e a tomada (`taken`) regravam o documento
- * sem ele.
+ * tenant. O `plan` é copiado como veio, sem regra em cima dele (a tabela de preços pode mudar). Some com a reserva: o
+ * TTL apaga a reserva vencida, e a liberação e a tomada (`taken`) regravam o documento sem ele.
  */
 export const slugOrderSchema = z.strictObject({
   plan: planIdSchema,
@@ -189,10 +250,11 @@ export type SlugOrder = z.infer<typeof slugOrderSchema>;
 /**
  * Documento `slugs/{slug}` (plano §3): o checkout reserva o subdomínio (`reserved`, com o `tenantId` novo, o pedido,
  * `expiresAt` de 2 h 30 para o TTL e, depois de criada, o `checkoutSessionId` da sessão) e o
- * `checkout.session.completed` o toma para o cliente (`taken`, sem `expiresAt`). Uma reserva desfeita (a Stripe falhou
- * depois da reserva) fica `released`, que volta a aceitar reserva. O id do documento é o próprio slug: dois clientes
- * nunca nascem com o mesmo subdomínio, porque o segundo `TenantStore.create` encontra o documento `taken` (ou falha no
- * commit do `create`).
+ * `checkout.session.completed` o toma para o cliente (`taken`, com o mesmo `tenantId`, sem `expiresAt` nem o pedido).
+ * Fica `released` (volta a aceitar reserva) uma reserva desfeita (a Stripe falhou depois dela, ou a sessão venceu:
+ * `checkout.session.expired`) e o subdomínio de um cliente cancelado que nunca provisionou nada (boleto do 1.º ciclo
+ * vencido, CP-04). O id do documento é o próprio slug: dois clientes nunca nascem com o mesmo subdomínio, porque o
+ * segundo `TenantStore.create` encontra o documento `taken` (ou falha no commit do `create`).
  */
 export const slugDocumentSchema = z.strictObject({
   state: z.enum(['reserved', 'taken', 'released']),

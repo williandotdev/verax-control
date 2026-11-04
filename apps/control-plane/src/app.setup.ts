@@ -7,10 +7,11 @@ import { z } from 'zod';
 import type { AppConfig } from './common/config/config.module.js';
 import { buildTrustProxy } from './common/http/client-ip.js';
 import { buildCorsDelegate } from './common/http/cors.js';
+import { rawBodyParser, WEBHOOK_BODY_LIMIT_BYTES, WEBHOOK_PATH } from './webhook/raw-body.js';
 
 export const API_PREFIX = 'v1';
 
-/** Teto do JSON das rotas públicas (plano §2.3). O webhook da Stripe registra o próprio parser de corpo bruto. */
+/** Teto do JSON das rotas públicas (plano §2.3). O webhook da Stripe tem o próprio leitor de corpo bruto (1 MB). */
 export const JSON_BODY_LIMIT = '16kb';
 
 /**
@@ -48,6 +49,9 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
   app.useLogger(app.get(Logger));
   // `req.ip` pela regra de client-ip.ts (saltos confiáveis mais as saídas do Hosting); é o IP dos limites e dos logs.
   app.set('trust proxy', buildTrustProxy(config));
+  // O webhook da Stripe (CP-04, só no cp-public) lê o corpo bruto até 1 MB: a assinatura vale sobre os bytes exatos.
+  // Registrado antes do JSON, que encontra a requisição já lida e não a toca.
+  if (config.ROLE === 'public') app.use(WEBHOOK_PATH, rawBodyParser(WEBHOOK_BODY_LIMIT_BYTES));
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.use(helmet(HELMET_OPTIONS));
   // Toda resposta é dinâmica: nem o cache do Hosting nem o do navegador guardam (plano §2.4).

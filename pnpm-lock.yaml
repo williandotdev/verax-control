@@ -178,6 +178,9 @@ importers:
       '@google-cloud/firestore':
         specifier: 9.4.0
         version: 9.4.0
+      '@google-cloud/tasks':
+        specifier: 7.3.1
+        version: 7.3.1
       '@nestjs/common':
         specifier: 12.3.2
         version: 12.3.2(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -780,6 +783,10 @@ packages:
 
   '@google-cloud/firestore@9.4.0':
     resolution: {integrity: sha512-4tVhdRFepX5w+fRfl3H6D2+gaGQjmMiA9l+OwIwInfAkCi8iacfRx4jS9SmSfpQNlXequ55DfzFopwyFnIIJ9w==}
+    engines: {node: '>=22'}
+
+  '@google-cloud/tasks@7.3.1':
+    resolution: {integrity: sha512-RA+Fzm7dA00q/FqxxstSmkD3gVozFR2In8L6hqy78jnbUB0TvF+kMvfwHE2jTSQsrLbsht6oEkzxS6u4UNyB/w==}
     engines: {node: '>=22'}
 
   '@grpc/grpc-js@1.14.7':
@@ -5774,6 +5781,12 @@ snapshots:
       functional-red-black-tree: 1.0.1
       google-gax: 6.14.0
       protobufjs: 7.6.6
+    transitivePeerDependencies:
+      - supports-color
+
+  '@google-cloud/tasks@7.3.1':
+    dependencies:
+      google-gax: 6.14.0
     transitivePeerDependencies:
       - supports-color
 

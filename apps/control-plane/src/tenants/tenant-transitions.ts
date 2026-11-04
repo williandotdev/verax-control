@@ -15,16 +15,17 @@ import type { TenantState } from './tenant.schema.js';
  * - `suspended` volta a `waiting_customer_connection` quando o cliente nunca chegou a conectar;
  * - `canceled` → `deleted` em D+30 (exclusão em dois tempos: a cripto-destruição em D+97 não muda o estado).
  *
- * TODO(CP-04): a revisão apontou que o plano §4b admite disputa ou fraude durante o provisionamento
- * (`provisioning` → `past_due` e `suspended`; `provisioning_failed` → `suspended`). Entram com o webhook, junto com
- * a regra de como um passo em andamento trata o cliente suspenso (CP-07), cada uma com teste. Até lá, esses eventos
- * são recusados com `InvalidTransitionError`: recusar é mais seguro do que aceitar um estado que o worker ainda não
- * sabe tratar.
+ * Disputa ou alerta de fraude durante o provisionamento (CP-04, plano §4b): `provisioning` e `provisioning_failed`
+ * → `suspended` (motivo `fraud_review`, decisão humana). Regra para os passos (CP-07): um passo que relê o cliente
+ * fora de `provisioning` termina sem fazer nada e sem enfileirar o seguinte; a volta de um `fraud_review` que nunca
+ * terminou de provisionar é operação do responsável (CP-11), que acrescenta a transição dela. `provisioning` →
+ * `past_due` não entra: a renovação só vence um mês depois da compra, e uma falha de pagamento nesses estados vira
+ * aviso ao responsável (webhook), não transição.
  */
 export const TENANT_TRANSITIONS: Readonly<Record<TenantState, readonly TenantState[]>> = {
   pending: ['provisioning', 'canceled'],
-  provisioning: ['waiting_customer_connection', 'provisioning_failed', 'canceled'],
-  provisioning_failed: ['provisioning', 'canceled'],
+  provisioning: ['waiting_customer_connection', 'provisioning_failed', 'suspended', 'canceled'],
+  provisioning_failed: ['provisioning', 'suspended', 'canceled'],
   waiting_customer_connection: ['active', 'past_due', 'suspended', 'canceled'],
   active: ['past_due', 'suspended', 'canceled'],
   past_due: ['active', 'waiting_customer_connection', 'suspended', 'canceled'],
