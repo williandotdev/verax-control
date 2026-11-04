@@ -213,8 +213,9 @@ _(fase 2, a construir)_
 - O módulo `aws-s3` do Wazuh lê com um profile em `/root/.aws/credentials`, sem código novo de coleta.
 - O modo papel com ExternalId fica guardado para um futuro modo Enterprise.
 
-**O template** (`verax-control-reader.yaml`) cria o usuário `/verax/verax-control-reader` sem chave e sem senha, o
-grupo e duas políticas gerenciadas. Nenhuma saída da pilha é segredo.
+**O template** (`infra/cloudformation/verax-control-reader.yaml`, feito; o passo a passo do cliente está no README da
+pasta) cria o usuário `/verax/verax-control-reader` sem chave e sem senha, o grupo e duas políticas gerenciadas.
+Nenhuma saída da pilha é segredo.
 
 - `VeraxControlReader` (Allow, que também é o permissions boundary do usuário): lê só os buckets e as chaves KMS
   informados (`kms:Decrypt` só pelo S3), confere as fontes e lê a configuração para Ativos e Postura.
@@ -344,7 +345,8 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
 2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado.
 3. **Cofre e AWS:** cofre de credenciais; template do usuário IAM; chave no painel; entrega da chave ao Wazuh, com
    recarga sem parar o painel; checagem da conexão, das fontes e da idade da chave; medidor da ingestão; regras
-   críticas da AWS com títulos em português.
+   críticas da AWS com títulos em português. O template do usuário IAM já está feito, à espera do teste na conta AWS
+   de teste.
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
 5. **Ativos e Postura da AWS** com a chave do cliente.
 6. **Compromissos do plano:** avisos por e-mail, limites do plano, expurgo do histórico e 365 dias nas telas.
