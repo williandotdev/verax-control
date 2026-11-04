@@ -464,7 +464,7 @@ jobs:
           tar -xzf cfn-guard.tar.gz -C "$RUNNER_TEMP/bin" --strip-components=1 cfn-guard-v3-x86_64-ubuntu-latest/cfn-guard
           rm cfn-guard.tar.gz
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: cfn-guard (usuário de leitura)
+      - name: cfn-guard (papel de leitura sem chave)
         # Primeiro os casos das regras (cada mutação derruba a regra certa), depois o template.
         run: |
           rules=infra/cloudformation/guard/verax-control-reader.guard
