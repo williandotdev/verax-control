@@ -1,8 +1,10 @@
 import type { Firestore } from '@google-cloud/firestore';
 import { afterAll, beforeAll, describe } from 'vitest';
 import { AuditService } from '../src/audit/audit.service.js';
+import { CheckoutStore } from '../src/checkout/checkout-store.js';
 import { createFirestore, FirestoreDocumentStore } from '../src/firestore/firestore-document-store.js';
 import { TenantStore } from '../src/tenants/tenant-store.js';
+import { describeCheckoutStoreContract } from './support/checkout-store-contract.js';
 import { describeDocumentStoreContract } from './support/document-store-contract.js';
 import { FakeClock } from './support/fake-clock.js';
 import { describeTenantStoreContract } from './support/tenant-store-contract.js';
@@ -52,5 +54,19 @@ describe.skipIf(host === undefined)('Firestore (emulador oficial)', () => {
     const clock = new FakeClock();
     const audit = new AuditService(documents, clock);
     return { documents, clock, audit, store: new TenantStore(documents, clock, audit) };
+  });
+
+  describeCheckoutStoreContract('emulador', async () => {
+    await clearDatabase();
+    const documents = new FirestoreDocumentStore(db);
+    const clock = new FakeClock();
+    const audit = new AuditService(documents, clock);
+    return {
+      documents,
+      clock,
+      audit,
+      store: new CheckoutStore(documents, clock, audit),
+      tenants: new TenantStore(documents, clock, audit),
+    };
   });
 });
