@@ -47,10 +47,11 @@ Parameters:
     Type: CommaDelimitedList
     Description: >-
       ARNs das chaves KMS que cifram os buckets acima (SSE-KMS; o export do GuardDuty sempre usa uma), separados por
-      vírgula. O usuário só decifra pelo S3. Vazio se os buckets usam a cifragem padrão do S3.
+      vírgula; chave comum ou multirregião (key/mrk-...). O usuário só decifra pelo S3. Vazio se os buckets usam a
+      cifragem padrão do S3.
     Default: ''
-    AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-f0-9-]{36}$'
-    ConstraintDescription: 'arn:aws:kms:<região>:<conta>:key/<id>'
+    AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|mrk-[a-f0-9]{32})$'
+    ConstraintDescription: 'arn:aws:kms:<região>:<conta>:key/<id>, com o id comum (UUID) ou multirregião (mrk-...)'
   LogObjectPrefix:
     Type: CommaDelimitedList
     Description: >-
@@ -253,7 +254,9 @@ Resources:
         Version: '2012-10-17'
         Statement:
           # A chave só vale a partir do IP do nó. A leitura cifrada continua: o S3 decifra no KMS numa sessão de acesso
-          # encaminhada, que preserva o IP de quem chamou o S3. O GetCallerIdentity não pode ser negado.
+          # encaminhada, que preserva o IP de quem chamou o S3. Duas chamadas do STS não passam por política e não
+          # podem ser negadas: o GetCallerIdentity (só revela a conta e o ARN) e o GetSessionToken (a sessão que ele
+          # emite, sim, fica presa ao IP do nó, e RevogarSessoesAntigas a corta).
           - Sid: SoDoNoDaVerax
             Effect: Deny
             Action: '*'
@@ -444,6 +447,9 @@ Resources:
       TargetKeyId: !Ref LogsKey
 
   # Log de acesso dos buckets de log (CIS: acesso ao bucket do CloudTrail registrado).
+  # Os três buckets ficam sem BucketName: o CloudFormation gera o nome, e as saídas da pilha o mostram. Como eles
+  # ficam na conta (Retain) quando a opção é desligada ou a pilha apagada, um nome fixo faria a criação seguinte
+  # falhar porque o bucket já existe.
   AccessLogsBucket:
     Type: AWS::S3::Bucket
     Condition: CreatesLogBucket
@@ -455,7 +461,6 @@ Resources:
           - id: CKV_AWS_18
             comment: É o próprio destino dos logs de acesso; registrar o acesso a ele criaria um ciclo.
     Properties:
-      BucketName: !Sub 'verax-control-access-logs-${AWS::AccountId}-${AWS::Region}'
       # O log de acesso do S3 só é entregue em bucket com SSE-S3 (não aceita SSE-KMS).
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -506,8 +511,12 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
-              ArnLike:
-                aws:SourceArn: !Sub 'arn:${AWS::Partition}:s3:::verax-control-*-${AWS::AccountId}-${AWS::Region}'
+              # Só os buckets desta pilha, pelo ARN exato. A ordem é a do exemplo da AWS para o log de acesso: o bucket
+              # de origem nasce com o log configurado, e esta política vem depois.
+              ArnEquals:
+                aws:SourceArn:
+                  - !If [CreatesTrail, !GetAtt TrailBucket.Arn, !Ref AWS::NoValue]
+                  - !If [ExportsGuardDuty, !GetAtt GuardDutyBucket.Arn, !Ref AWS::NoValue]
 
   TrailBucket:
     Type: AWS::S3::Bucket
@@ -515,7 +524,6 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub 'verax-control-cloudtrail-${AWS::AccountId}-${AWS::Region}'
       LoggingConfiguration:
         DestinationBucketName: !Ref AccessLogsBucket
         LogFilePrefix: cloudtrail/
@@ -603,7 +611,6 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub 'verax-control-guardduty-${AWS::AccountId}-${AWS::Region}'
       LoggingConfiguration:
         DestinationBucketName: !Ref AccessLogsBucket
         LogFilePrefix: guardduty/
@@ -720,3 +727,7 @@ Outputs:
     Condition: CreatesLogBucket
     Description: Chave KMS que cifra os buckets criados pela pilha.
     Value: !GetAtt LogsKey.Arn
+  AccessLogsBucketArn:
+    Condition: CreatesLogBucket
+    Description: Bucket com o log de acesso dos buckets criados pela pilha (o usuário não o lê).
+    Value: !GetAtt AccessLogsBucket.Arn

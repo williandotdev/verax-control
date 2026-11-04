@@ -45,7 +45,8 @@ rule usuario_sem_senha_e_com_limite {
     }
 }
 
-# Toda chamada de fora do IP do nó é negada, sem outra condição.
+# Toda chamada de fora do IP do nó é negada, sem outra condição: a condição inteira é comparada, para que nenhum outro
+# operador (que estreitaria a negação) nem outra chave ao lado do aws:SourceIp passe.
 rule nega_fora_do_ip_do_no {
     %negacoes !empty
     some %negacoes.Properties.PolicyDocument.Statement[*] {
@@ -53,7 +54,9 @@ rule nega_fora_do_ip_do_no {
         Effect == 'Deny'
         Action == '*'
         Resource == '*'
-        Condition.NotIpAddress.'aws:SourceIp'.Ref == 'NodeEgressIps'
+        NotAction !exists
+        NotResource !exists
+        Condition == { 'NotIpAddress': { 'aws:SourceIp': { 'Ref': 'NodeEgressIps' } } }
     }
 }
 
@@ -77,19 +80,30 @@ rule leitura_so_le {
 }
 
 # O conteúdo de log (objetos e Decrypt) só existe nas declarações condicionais, que dependem de o cliente informar ou
-# pedir a fonte; nunca em "*" nem num curinga de bucket ou de chave; e o Decrypt só vale pelo S3.
+# pedir a fonte (a ação em texto ou em lista). Nelas, nenhum recurso, em texto ou em lista, é "*", um curinga de bucket
+# (antes da primeira /) ou um curinga de chave (qualquer * num ARN do KMS); e o Decrypt só vale pelo S3.
 rule conteudo_so_nos_recursos_informados {
     %leitura !empty
     let declaracoes = %leitura.Properties.PolicyDocument.Statement[ Effect exists ]
     let condicionais = %leitura.Properties.PolicyDocument.Statement[ 'Fn::If' exists ].'Fn::If'[1]
+    let curinga = /(^\*$|^arn:[^:]*:s3:[^\/]*\*|^arn:[^:]*:kms:.*\*)/
     %declaracoes {
         Action != 's3:GetObject'
         Action != 'kms:Decrypt'
     }
-    %condicionais[ Action == 's3:GetObject' or Action == 'kms:Decrypt' ] {
-        Resource !is_string or Resource != /(^\*$|^arn:[^:]*:(s3|kms):[^\/]*\*)/
+    %condicionais {
+        Resource exists
+        NotResource !exists
+        when Resource is_string {
+            Resource != %curinga
+        }
+        when Resource is_list {
+            Resource[*] {
+                this !is_string or this != %curinga
+            }
+        }
     }
-    %condicionais[ Action == 'kms:Decrypt' ] {
+    %condicionais[ Action == 'kms:Decrypt' or some Action[*] == 'kms:Decrypt' ] {
         Condition.*.'kms:ViaService' exists
     }
 }

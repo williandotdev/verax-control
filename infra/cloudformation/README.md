@@ -40,9 +40,11 @@ conta). Com `LogBucketArns` vazio e sem a trilha ou o export da pilha, o usuári
 O usuário não tem nenhuma permissão de escrita, e o teste do template falha se alguma aparecer. Além disso, a
 política `VeraxControlGuardrails` nega explicitamente, o que vale mesmo se alguém anexar outra política ao usuário:
 
-- **qualquer chamada de fora do IP do nó** (`NodeEgressIps`). A única exceção é o `sts:GetCallerIdentity`, que a AWS
-  não deixa negar e que só revela a conta e o ARN do próprio usuário. A leitura de objetos cifrados continua
-  funcionando do nó: o S3 decifra no KMS em nome do usuário e preserva o IP de origem;
+- **qualquer chamada de fora do IP do nó** (`NodeEgressIps`). As duas exceções são chamadas do STS que a AWS não
+  deixa negar por política: o `sts:GetCallerIdentity`, que só revela a conta e o ARN do próprio usuário, e o
+  `sts:GetSessionToken`, que emite uma sessão temporária; a sessão, por sua vez, só funciona do IP do nó, e
+  `RevokeSessionsIssuedBefore` a corta. A leitura de objetos cifrados continua funcionando do nó: o S3 decifra no KMS
+  em nome do usuário e preserva o IP de origem;
 - apagar, alterar, assinar ou exportar no CloudWatch Logs; apagar, gravar ou replicar no S3; parar, apagar ou alterar
   trilhas; alterar o log do WAF; arquivar findings ou desligar o GuardDuty, o Security Hub, o Inspector e o Access
   Analyzer; desativar ou apagar chaves KMS;
@@ -59,8 +61,9 @@ política `VeraxControlGuardrails` nega explicitamente, o que vale mesmo se algu
 - Escolha os logs que o Verax Control vai ler. O relatório do diagnóstico somente leitura (`infra/diagnostico/`)
   lista as fontes que existem na conta. Para cada uma, informe o ARN do bucket em `LogBucketArns` (exemplo:
   `arn:aws:s3:::empresa-cloudtrail-logs`) e, se o bucket usar SSE-KMS, a chave em `LogKmsKeyArns`
-  (`aws s3api get-bucket-encryption --bucket <nome>`). O export do GuardDuty sempre usa uma chave KMS. Para o WAF,
-  informe o bucket `aws-waf-logs-*` que já recebe o log. Vários valores vão separados por vírgula.
+  (`aws s3api get-bucket-encryption --bucket <nome>`; chave comum ou multirregião, `key/mrk-...`). O export do
+  GuardDuty sempre usa uma chave KMS. Para o WAF, informe o bucket `aws-waf-logs-*` que já recebe o log. Vários
+  valores vão separados por vírgula.
 
 ## Como criar a pilha
 
@@ -104,9 +107,9 @@ duas por usuário), cole no painel e, só depois, exclua a antiga no console. A 
 ## Num incidente
 
 1. Desative ou exclua a chave no console (_Security credentials_ → _Actions_).
-2. Sessões temporárias já emitidas com a chave (`GetSessionToken`) continuam valendo por até 36 horas depois da
-   exclusão. Elas também só funcionam do IP do nó, mas, para negá-las de vez, atualize a pilha com a data e a hora de
-   agora, em UTC:
+2. Sessões temporárias já emitidas com a chave (`GetSessionToken`, que a AWS não deixa negar e responde de qualquer
+   IP) continuam valendo por até 36 horas depois da exclusão. Elas também só funcionam do IP do nó, mas, para negá-las
+   de vez, atualize a pilha com a data e a hora de agora, em UTC:
 
 ```sh
 aws cloudformation deploy --stack-name verax-control-reader \
@@ -121,17 +124,20 @@ Os outros parâmetros ficam como estavam. A chave em si não tem data de sessão
 O padrão é não. Com eles, a pilha cria recursos novos, e nada que já existe muda:
 
 - **`CreateTrail=true`:** uma trilha multi-região `verax-control`, com validação de integridade, num bucket novo
-  (`verax-control-cloudtrail-<conta>-<região>`) cifrado com uma chave KMS nova (`alias/verax-control-logs`). Use só
-  se a conta não tiver trilha: uma segunda trilha dos mesmos eventos de gerenciamento é cobrada pela AWS.
+  (saída `TrailBucketArn`) cifrado com uma chave KMS nova (`alias/verax-control-logs`). Use só se a conta não tiver
+  trilha: uma segunda trilha dos mesmos eventos de gerenciamento é cobrada pela AWS.
 - **`EnableGuardDutyExport=true`**, com o `GuardDutyDetectorId` do detector já ativo na região
-  (`aws guardduty list-detectors`): exporta os findings para um bucket novo
-  (`verax-control-guardduty-<conta>-<região>`), cifrado com a chave da pilha. A pilha não ativa o GuardDuty; sem o
-  ID do detector, ela é recusada.
+  (`aws guardduty list-detectors`): exporta os findings para um bucket novo (saída `GuardDutyBucketArn`), cifrado com
+  a chave da pilha. A pilha não ativa o GuardDuty; sem o ID do detector, ela é recusada.
 
 Os buckets criados são privados, versionados, com retenção de `LogRetentionDays` dias (365 por padrão) e log de
-acesso em `verax-control-access-logs-<conta>-<região>`. O usuário já lê esses buckets: cadastre no painel as saídas
-`TrailBucketArn` e `GuardDutyBucketArn`. Se a pilha for apagada, a trilha e o export param, mas os buckets e a chave
-ficam, com os logs.
+acesso num terceiro bucket (saída `AccessLogsBucketArn`). O nome dos três é gerado pelo CloudFormation (começa com o
+nome da pilha). O usuário já lê os dois de log: cadastre no painel as saídas `TrailBucketArn` e `GuardDutyBucketArn`.
+
+Se uma opção for desligada ou a pilha apagada, a trilha e o export param, mas os buckets e a chave ficam na conta, com
+os logs. Ligar a opção de novo, ou recriar a pilha, cria buckets e chave novos (por isso o nome não é fixo: a criação
+nunca esbarra num bucket que ficou); cadastre as saídas novas no painel e apague os buckets antigos quando não
+precisar mais dos logs deles.
 
 O WAF aceita um só destino de log por Web ACL, e a pilha nunca o troca: informe em `LogBucketArns` o bucket que já
 recebe o log.
@@ -180,7 +186,7 @@ armazenamento nos buckets novos e, no caso da trilha, a cópia extra dos eventos
 
 1. Exclua a chave no console (_Security credentials_ → _Actions_ → _Delete_). A Verax perde o acesso na hora.
 2. Apague a pilha `verax-control-reader`. Os buckets e a chave KMS criados pela pilha (se houver) ficam, com os
-   logs. Nenhum log ou recurso seu é afetado.
+   logs; apague-os quando não precisar mais deles (uma pilha nova cria outros). Nenhum log ou recurso seu é afetado.
 
 ## Conector com papel e ExternalId (obsoleto)
 

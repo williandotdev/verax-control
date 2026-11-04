@@ -1,5 +1,6 @@
-# Casos do `cfn-guard test` para as regras de verax-control-reader.guard: um modelo que passa e uma mutação por regra
-# (as do plano: sem o Deny de IP, com uma chave, com GetObject em qualquer recurso e sem o limite de permissões).
+# Casos do `cfn-guard test` para as regras de verax-control-reader.guard: um modelo que passa e mutações por regra (as
+# do plano: sem o Deny de IP, com uma chave, com GetObject em qualquer recurso e sem o limite de permissões; e as formas
+# que uma regra frouxa deixaria passar: outra condição no Deny de IP, ação ou recurso em lista, curinga de chave).
 - name: modelo (o mínimo do template, como o cfn-guard o lê)
   input:
     Resources:
@@ -89,7 +90,7 @@
     rules:
       nega_fora_do_ip_do_no: FAIL
 
-- name: Deny de IP com outra condição (o IP vira opcional)
+- name: Deny de IP com um IP fixo no lugar do parâmetro
   input:
     Resources:
       GuardrailsPolicy:
@@ -103,6 +104,64 @@
                 Action: '*'
                 Resource: '*'
                 Condition: { NotIpAddress: { aws:SourceIp: ['0.0.0.0/0'] } }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP com um segundo operador (só valeria numa região)
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps } }
+                  StringEquals: { aws:RequestedRegion: us-east-1 }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP com outra chave ao lado do aws:SourceIp
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
+                Condition:
+                  NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps }, aws:VpcSourceIp: 10.0.0.0/8 }
+  expectations:
+    rules:
+      nega_fora_do_ip_do_no: FAIL
+
+- name: Deny de IP com NotResource (parte dos recursos fica de fora)
+  input:
+    Resources:
+      GuardrailsPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlGuardrails
+          PolicyDocument:
+            Statement:
+              - Sid: SoDoNoDaVerax
+                Effect: Deny
+                Action: '*'
+                Resource: '*'
+                NotResource: 'arn:aws:s3:::*'
+                Condition: { NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps } } }
   expectations:
     rules:
       nega_fora_do_ip_do_no: FAIL
@@ -169,6 +228,121 @@
   expectations:
     rules:
       conteudo_so_nos_recursos_informados: FAIL
+
+- name: GetObject em todos os buckets por curinga, com o recurso numa lista
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - HasLogBuckets
+                  - Sid: LerObjetosDeLog
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource: [{ Fn::Sub: 'arn:${AWS::Partition}:s3:::um-bucket/*' }, 'arn:aws:s3:::*/*']
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: GetObject em qualquer recurso, com a ação numa lista
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - HasLogBuckets
+                  - Sid: LerObjetosDeLog
+                    Effect: Allow
+                    Action: [s3:GetObject, s3:GetBucketLocation]
+                    Resource: '*'
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      leitura_so_le: PASS
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: Decrypt em qualquer chave da conta
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - DecryptsLogBuckets
+                  - Sid: DecifrarSoPeloS3
+                    Effect: Allow
+                    Action: kms:Decrypt
+                    Resource: 'arn:aws:kms:sa-east-1:111111111111:key/*'
+                    Condition: { StringLike: { kms:ViaService: s3.*.amazonaws.com } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: Decrypt fora do S3, com a ação numa lista
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - DecryptsLogBuckets
+                  - Sid: DecifrarSoPeloS3
+                    Effect: Allow
+                    Action: [kms:Decrypt]
+                    Resource: { Ref: LogKmsKeyArns }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      conteudo_so_nos_recursos_informados: FAIL
+
+- name: conteúdo de log só nos recursos da pilha (recursos em lista de Fn::If e GetAtt, como no template)
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          ManagedPolicyName: VeraxControlReader
+          PolicyDocument:
+            Statement:
+              - Fn::If:
+                  - CreatesLogBucket
+                  - Sid: LerObjetosCriados
+                    Effect: Allow
+                    Action: s3:GetObject
+                    Resource:
+                      - Fn::If: [CreatesTrail, { Fn::Sub: '${TrailBucket.Arn}/*' }, { Ref: AWS::NoValue }]
+                      - Fn::If:
+                          [ExportsGuardDuty, { Fn::Sub: '${GuardDutyBucket.Arn}/*' }, { Ref: AWS::NoValue }]
+                  - { Ref: AWS::NoValue }
+              - Fn::If:
+                  - CreatesLogBucket
+                  - Sid: DecifrarCriadosSoPeloS3
+                    Effect: Allow
+                    Action: kms:Decrypt
+                    Resource: { Fn::GetAtt: [LogsKey, Arn] }
+                    Condition:
+                      { StringEquals: { kms:ViaService: { Fn::Sub: 's3.${AWS::Region}.amazonaws.com' } } }
+                  - { Ref: AWS::NoValue }
+  expectations:
+    rules:
+      leitura_so_le: PASS
+      conteudo_so_nos_recursos_informados: PASS
 
 - name: GetObject numa declaração que não depende das fontes informadas
   input:

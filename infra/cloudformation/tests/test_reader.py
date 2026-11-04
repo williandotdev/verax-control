@@ -30,10 +30,13 @@ README = HERE / "README.md"
 INSTALL_SH = HERE.parents[0] / "node" / "bin" / "install.sh"
 
 ACCOUNT = "111111111111"
+STACK_NAME = "verax-control-reader"
 USER_ARN = f"arn:aws:iam::{ACCOUNT}:user/verax/verax-control-reader"
 NODE_IP = "203.0.113.10"
 OTHER_IP = "198.51.100.7"
 KMS_KEY = f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/00000000-0000-0000-0000-000000000000"
+# Uma chave multirregião (mrk- e 32 hexadecimais), comum em landing zones.
+KMS_MRK = f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/mrk-1234abcd12ab34cd56ef1234567890ab"
 BUCKETS = [
     f"arn:aws:s3:::trilha-{ACCOUNT}",
     f"arn:aws:s3:::guardduty-{ACCOUNT}",
@@ -360,9 +363,14 @@ class Stack:
         kind = resource["Type"]
         if kind == "AWS::IAM::ManagedPolicy":
             return f"arn:aws:iam::{ACCOUNT}:policy{props['Path']}{props['ManagedPolicyName']}"
-        if kind in ("AWS::IAM::Group", "AWS::IAM::User", "AWS::S3::Bucket"):
-            key = {"AWS::IAM::Group": "GroupName", "AWS::IAM::User": "UserName", "AWS::S3::Bucket": "BucketName"}
+        if kind in ("AWS::IAM::Group", "AWS::IAM::User"):
+            key = {"AWS::IAM::Group": "GroupName", "AWS::IAM::User": "UserName"}
             return self.resolve(props[key[kind]])
+        if kind == "AWS::S3::Bucket":
+            # Sem BucketName, o CloudFormation gera <pilha>-<id lógico em minúsculas>-<sufixo aleatório>.
+            if "BucketName" in props:
+                return self.resolve(props["BucketName"])
+            return f"{STACK_NAME}-{name.lower()}-1a2b3c4d5e6f"
         if kind == "AWS::KMS::Key":
             return "11111111-2222-3333-4444-555555555555"
         return name
@@ -520,7 +528,14 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertEqual(problems_no_key_or_password(self.template), [])
         self.assertEqual(
             set(self.template["Outputs"]),
-            {"UserArn", "SecurityCredentialsUrl", "TrailBucketArn", "GuardDutyBucketArn", "LogsKeyArn"},
+            {
+                "UserArn",
+                "SecurityCredentialsUrl",
+                "TrailBucketArn",
+                "GuardDutyBucketArn",
+                "LogsKeyArn",
+                "AccessLogsBucketArn",
+            },
         )
         self.assertEqual(self.template["Outputs"]["UserArn"]["Value"], {"Fn::GetAtt": ["ReaderUser", "Arn"]})
         url = self.stack().resolve(self.template["Outputs"]["SecurityCredentialsUrl"]["Value"])
@@ -605,11 +620,22 @@ class ReaderTemplateTest(unittest.TestCase):
             valid=["", *BUCKETS, "arn:aws:s3:::findings.guardduty-1"],
             invalid=["*", "arn:aws:s3:::*", "arn:aws:s3:::bucket/*", "trilha-111111111111", "arn:aws:s3:::a*"],
         )
+        # Chave comum (UUID) ou multirregião (mrk- e 32 hexadecimais); nada de curinga, alias ou id fora do formato.
         self.assert_pattern(
             "LogKmsKeyArns",
-            valid=["", KMS_KEY],
-            invalid=["*", f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/*", f"arn:aws:kms:sa-east-1:{ACCOUNT}:alias/x"],
+            valid=["", KMS_KEY, KMS_MRK],
+            invalid=[
+                "*",
+                f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/*",
+                f"arn:aws:kms:sa-east-1:{ACCOUNT}:alias/x",
+                f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/mrk-*",
+                KMS_MRK[:-1],
+                KMS_MRK.replace("mrk-", "MRK-"),
+                f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/{'0' * 36}",
+            ],
         )
+        stack = self.stack(LogKmsKeyArns=f"{KMS_KEY},{KMS_MRK}")
+        self.assertTrue(stack.allows("kms:Decrypt", KMS_MRK, kms_ViaService="s3.sa-east-1.amazonaws.com"))
         for parameter in ("LogBucketArns", "LogKmsKeyArns"):
             with self.subTest(parameter=parameter):
                 self.assertEqual(self.parameters[parameter]["Type"], "CommaDelimitedList")
@@ -771,7 +797,7 @@ class ReaderTemplateTest(unittest.TestCase):
         # Só o GetObject: o módulo do Wazuh lista o bucket a partir da raiz, e a listagem não leva o prefixo.
         self.assertTrue(stack.allows("s3:ListBucket", trail))
         # A trilha criada pela pilha é só desta conta e fica fora dos prefixos.
-        created = f"arn:aws:s3:::verax-control-cloudtrail-{ACCOUNT}-sa-east-1"
+        created = stack.attribute("TrailBucket", "Arn")
         self.assertTrue(stack.allows("s3:GetObject", f"{created}/AWSLogs/{ACCOUNT}/CloudTrail/x.json.gz"))
         # Um prefixo só também funciona, e sem prefixo a negação nem existe.
         single = self.stack(LogObjectPrefix=organization)
@@ -797,21 +823,55 @@ class ReaderTemplateTest(unittest.TestCase):
             GuardDutyDetectorId="a" * 32,
         )
         key = f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/11111111-2222-3333-4444-555555555555"
-        for service in ("cloudtrail", "guardduty"):
-            bucket = f"arn:aws:s3:::verax-control-{service}-{ACCOUNT}-sa-east-1"
-            with self.subTest(bucket=bucket):
+        for name in ("TrailBucket", "GuardDutyBucket"):
+            bucket = stack.attribute(name, "Arn")
+            with self.subTest(bucket=name):
                 self.assertTrue(stack.allows("s3:ListBucket", bucket))
                 self.assertTrue(stack.allows("s3:GetBucketLocation", bucket))
                 self.assertTrue(stack.allows("s3:GetObject", f"{bucket}/AWSLogs/{ACCOUNT}/x.json.gz"))
         self.assertTrue(stack.allows("kms:Decrypt", key, kms_ViaService="s3.sa-east-1.amazonaws.com"))
         self.assertFalse(stack.allows("kms:Decrypt", key, kms_ViaService="s3.us-east-1.amazonaws.com"))
-        self.assertFalse(
-            stack.allows("s3:GetObject", f"arn:aws:s3:::verax-control-access-logs-{ACCOUNT}-sa-east-1/cloudtrail/x")
-        )
+        access_logs = stack.attribute("AccessLogsBucket", "Arn")
+        self.assertFalse(stack.allows("s3:GetObject", f"{access_logs}/cloudtrail/x"))
+        self.assertFalse(stack.allows("s3:ListBucket", access_logs))
         only_trail = Stack(self.template, NodeEgressIps=f"{NODE_IP}/32", CreateTrail="true")
         self.assertNotIn("GuardDutyBucket", only_trail.resources)
-        trail = f"arn:aws:s3:::verax-control-cloudtrail-{ACCOUNT}-sa-east-1"
-        self.assertTrue(only_trail.allows("s3:ListBucket", trail))
+        self.assertTrue(only_trail.allows("s3:ListBucket", only_trail.attribute("TrailBucket", "Arn")))
+
+    def test_created_buckets_have_generated_names_and_only_they_write_access_logs(self):
+        # Os buckets ficam na conta (Retain) quando a opção é desligada ou a pilha apagada: com um nome fixo, religar
+        # a opção ou recriar a pilha falharia porque o bucket já existe. O nome é gerado pelo CloudFormation, e a
+        # política do bucket de log de acesso aponta o ARN exato de cada bucket criado (como no exemplo da AWS).
+        for name, resource in self.resources.items():
+            if resource["Type"] == "AWS::S3::Bucket":
+                with self.subTest(bucket=name):
+                    self.assertNotIn("BucketName", resource["Properties"])
+        export = {"EnableGuardDutyExport": "true", "GuardDutyDetectorId": "a" * 32}
+        for options, created in (
+            ({"CreateTrail": "true"}, ["TrailBucket"]),
+            (export, ["GuardDutyBucket"]),
+            ({"CreateTrail": "true", **export}, ["TrailBucket", "GuardDutyBucket"]),
+        ):
+            with self.subTest(created=created):
+                stack = self.stack(**options)
+                statement = next(
+                    s
+                    for s in stack.policy_document("AccessLogsBucketPolicy")["Statement"]
+                    if s["Sid"] == "LogDeAcessoDosBucketsDaPilha"
+                )
+                self.assertEqual(statement["Principal"], {"Service": "logging.s3.amazonaws.com"})
+                self.assertEqual(statement["Action"], "s3:PutObject")
+                self.assertEqual(
+                    statement["Condition"],
+                    {
+                        "StringEquals": {"aws:SourceAccount": ACCOUNT},
+                        "ArnEquals": {"aws:SourceArn": [stack.attribute(name, "Arn") for name in created]},
+                    },
+                )
+                self.assertEqual(
+                    stack.resolve(self.template["Outputs"]["AccessLogsBucketArn"]["Value"]),
+                    stack.attribute("AccessLogsBucket", "Arn"),
+                )
 
     def test_created_buckets_are_private_encrypted_versioned_and_retained(self):
         buckets = {name: r for name, r in self.resources.items() if r["Type"] == "AWS::S3::Bucket"}
@@ -952,6 +1012,16 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertIn(
             "aws iam add-user-to-group --group-name VeraxControlReaders --user-name verax-control-reader", commands
         )
+
+    def test_readme_names_the_two_sts_calls_the_ip_deny_cannot_stop(self):
+        # O GetCallerIdentity e o GetSessionToken não passam por política ("You cannot use policies to control
+        # authentication operations"): o README não pode prometer que só o primeiro responde de fora do IP do nó.
+        text = README.read_text(encoding="utf-8")
+        section = text.split("### O que o usuário nunca faz", 1)[1].split("\n## ", 1)[0]
+        for call in ("sts:GetCallerIdentity", "sts:GetSessionToken"):
+            with self.subTest(call=call):
+                self.assertIn(f"`{call}`", section)
+        self.assertNotIn("única exceção", section)
 
 
 class MutationTest(unittest.TestCase):
