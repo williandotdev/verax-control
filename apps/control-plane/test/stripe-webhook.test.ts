@@ -31,15 +31,17 @@ import {
   type StripeObject,
 } from './support/fake-stripe.js';
 import { LogCapture } from './support/log-capture.js';
+import { demoConfiguration, demoLimits, demoOrderPricing } from './support/pricing-fixtures.js';
 
 const WEBHOOK = '/v1/stripe/webhook';
 const SITE = 'https://veraxsistemas.com.br';
 const START = new Date('2026-11-04T12:00:00.000Z');
 const DAY_MS = 24 * 60 * MINUTE_MS;
-const ESSENCIAL: FakeItem = {
-  price: 'price_fake_essencial',
+/** O item do ambiente, com o `lookup_key` da tabela fictícia (`pricing-fixtures.ts`). Valores redondos e inventados. */
+const AMBIENTE: FakeItem = {
+  price: 'price_fake_ambiente',
   quantity: 1,
-  lookupKey: 'verax_control_essencial_mensal',
+  lookupKey: 'vc_env_p_v1',
 };
 
 /** Um DocumentStore que conta cada acesso: prova que a assinatura inválida não toca o banco. */
@@ -181,8 +183,13 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
     personalData.add(order.adminEmail).add(order.company.legalName).add(order.company.cnpj);
     const reservation = await checkouts.reserve({ slug, order });
     const customer = fake.addCustomer({ email: order.adminEmail, business_name: order.company.legalName });
-    const items = options.items ?? [ESSENCIAL];
-    const metadata = { tenantId: reservation.tenantId, slug, plan: order.plan };
+    const items = options.items ?? [AMBIENTE];
+    const metadata = {
+      tenantId: reservation.tenantId,
+      slug,
+      priceTableVersion: order.pricing.priceTableVersion,
+      quoteId: order.pricing.quoteId,
+    };
     const subscription = fake.addSubscription({
       customer: String(customer['id']),
       items,
@@ -235,7 +242,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       subscriptionMetadata: p.metadata,
       status,
       billingReason: 'subscription_cycle',
-      amountPaid: status === 'paid' ? 249_000 : 0,
+      amountPaid: status === 'paid' ? 100_000 : 0,
       periodStart: inDays(30),
       periodEnd: inDays(60),
       ...(status === 'paid' ? { paidAt: clock.now() } : {}),
@@ -377,8 +384,10 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         id: p.tenantId,
         slug: 'cliente-demo-a',
         state: 'provisioning',
-        plan: 'essencial',
-        priceId: ESSENCIAL.price,
+        configuration: demoConfiguration(),
+        limits: demoLimits(),
+        pricing: demoOrderPricing(),
+        priceId: AMBIENTE.price,
         company: { legalName: 'Cliente Demo A Ltda', cnpj: '12ABC34501DE35' },
         adminEmail: 'admin@cliente-demo-a.example',
         consent: { checkoutSessionId: p.sessionId, acceptedAt: clock.now() },
@@ -388,7 +397,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
           status: 'active',
           paymentMethodType: 'card',
           livemode: false,
-          items: [{ priceId: ESSENCIAL.price, quantity: 1, lookupKey: ESSENCIAL.lookupKey }],
+          items: [{ priceId: AMBIENTE.price, quantity: 1, lookupKey: AMBIENTE.lookupKey }],
         },
         provisioning: { step: 'preflight', attempts: 0 },
       });
@@ -510,7 +519,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         subscription: null,
         status: 'open',
         paymentStatus: 'unpaid',
-        items: [ESSENCIAL],
+        items: [AMBIENTE],
       });
       const sessionId = String(session['id']);
       await checkouts.attachSession(reservation, { id: sessionId, livemode: false, expiresAt: inDays(1) });
@@ -539,7 +548,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         subscription: null,
         status: 'complete',
         paymentStatus: 'paid',
-        items: [ESSENCIAL],
+        items: [AMBIENTE],
       });
       session['metadata'] = {};
       const id = await send('checkout.session.completed', String(session['id']));
@@ -559,7 +568,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         subscriptionMetadata: p.metadata,
         status: 'paid',
         billingReason: 'subscription_create',
-        amountPaid: 249_000,
+        amountPaid: 100_000,
         periodStart: clock.now(),
         periodEnd: inDays(30),
         paidAt: clock.now(),
@@ -599,7 +608,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         state: 'provisioning',
         chain: ['∅->pending', 'pending->provisioning'],
         paidUntil: inDays(30),
-        invoices: [['subscription_create', 249_000, { status: 'manual' }]],
+        invoices: [['subscription_create', 100_000, { status: 'manual' }]],
         tasks: 1,
         outcomes: ['applied', 'applied'],
       });
@@ -688,7 +697,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         subscriptionMetadata: p.metadata,
         status: 'paid',
         billingReason: 'subscription_create',
-        amountPaid: 249_000,
+        amountPaid: 100_000,
         periodStart: clock.now(),
         periodEnd: inDays(30),
         paidAt: clock.now(),
@@ -760,7 +769,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
 
       clock.advance(DAY_MS);
       invoice['status'] = 'paid';
-      invoice['amount_paid'] = 249_000;
+      invoice['amount_paid'] = 100_000;
       (invoice['status_transitions'] as StripeObject)['paid_at'] = unix(clock.now());
       if (subscription !== undefined) subscription['status'] = 'active';
       await send('invoice.paid', invoiceId);
@@ -780,7 +789,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       const [recorded] = await invoices.list(p.tenantId);
       expect(recorded).toMatchObject({
         id: invoiceId,
-        amount: 249_000,
+        amount: 100_000,
         currency: 'brl',
         status: 'paid',
         billingReason: 'subscription_cycle',
@@ -857,7 +866,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       const p = await activeTenant();
       const foreign = fake.addSubscription({
         customer: p.customerId,
-        items: [ESSENCIAL],
+        items: [AMBIENTE],
         periodEnd: inDays(30),
       });
       const failed = fake.addInvoice({
@@ -879,7 +888,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       await send('checkout.session.completed', q.sessionId);
       const other = fake.addSubscription({
         customer: q.customerId,
-        items: [ESSENCIAL],
+        items: [AMBIENTE],
         periodEnd: inDays(30),
       });
       const paid = fake.addInvoice({
@@ -888,7 +897,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         subscriptionMetadata: {},
         status: 'paid',
         billingReason: 'subscription_create',
-        amountPaid: 249_000,
+        amountPaid: 100_000,
         periodStart: clock.now(),
         periodEnd: inDays(30),
         paidAt: clock.now(),
@@ -908,7 +917,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
 
     it('contestação suspende (fraud_review), avisa o responsável, e o pagamento não reativa', async () => {
       const p = await activeTenant();
-      const charge = fake.addCharge({ customer: p.customerId, amount: 249_000, created: clock.now() });
+      const charge = fake.addCharge({ customer: p.customerId, amount: 100_000, created: clock.now() });
       const dispute = fake.addDispute(String(charge['id']));
 
       const id = await send('charge.dispute.created', String(dispute['id']));
@@ -939,7 +948,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
     it('alerta de fraude durante o provisionamento suspende (provisioning → suspended)', async () => {
       const p = await purchase({ paymentStatus: 'paid' });
       await send('checkout.session.completed', p.sessionId);
-      const charge = fake.addCharge({ customer: p.customerId, amount: 249_000, created: clock.now() });
+      const charge = fake.addCharge({ customer: p.customerId, amount: 100_000, created: clock.now() });
       const warning = fake.addEarlyFraudWarning(String(charge['id']));
 
       await send('radar.early_fraud_warning.created', String(warning['id']));
@@ -956,8 +965,8 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       await send('checkout.session.completed', p.sessionId);
       const charge = fake.addCharge({
         customer: p.customerId,
-        amount: 249_000,
-        amountRefunded: 100_000,
+        amount: 100_000,
+        amountRefunded: 40_000,
         created: clock.now(),
       });
       clock.advance(2 * DAY_MS);
@@ -969,7 +978,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       });
       expect(fake.calls('DELETE', `/v1/subscriptions/${p.subscriptionId}`)).toHaveLength(0);
 
-      charge['amount_refunded'] = 249_000;
+      charge['amount_refunded'] = 100_000;
       charge['refunded'] = true;
       const full = await send('charge.refunded', String(charge['id']));
 
@@ -990,8 +999,8 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       clock.advance(8 * DAY_MS);
       const charge = fake.addCharge({
         customer: p.customerId,
-        amount: 249_000,
-        amountRefunded: 249_000,
+        amount: 100_000,
+        amountRefunded: 100_000,
         created: START,
       });
       await send('charge.refunded', String(charge['id']));
@@ -1036,9 +1045,9 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       const id = await send('customer.subscription.updated', p.subscriptionId);
 
       const tenant = await tenants.require(p.tenantId);
-      expect(tenant.plan).toBe('essencial');
+      expect(tenant.configuration).toEqual(demoConfiguration());
       expect(tenant.stripe?.items).toEqual([
-        { priceId: ESSENCIAL.price, quantity: 1, lookupKey: ESSENCIAL.lookupKey },
+        { priceId: AMBIENTE.price, quantity: 1, lookupKey: AMBIENTE.lookupKey },
         { priceId: extra.price, quantity: 3 },
       ]);
       expect(tenant.state).toBe('active');
@@ -1082,7 +1091,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       const other = fake.addCustomer();
       const subscription = fake.addSubscription({
         customer: String(other['id']),
-        items: [ESSENCIAL],
+        items: [AMBIENTE],
         metadata: p.metadata,
         status: 'canceled',
         periodEnd: inDays(30),
@@ -1104,7 +1113,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       personalData.add('ninguem@cliente-demo-z.example');
       const subscription = fake.addSubscription({
         customer: String(customer['id']),
-        items: [ESSENCIAL],
+        items: [AMBIENTE],
         periodEnd: inDays(30),
       });
       const invoice = fake.addInvoice({
@@ -1113,7 +1122,7 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
         subscriptionMetadata: {},
         status: 'paid',
         billingReason: 'subscription_cycle',
-        amountPaid: 249_000,
+        amountPaid: 100_000,
         periodStart: clock.now(),
         periodEnd: inDays(30),
         paidAt: clock.now(),

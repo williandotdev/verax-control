@@ -2,16 +2,19 @@ import { z } from 'zod';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
-/** Papel do processo: a mesma imagem sobe como `cp-public` (rotas públicas) ou `cp-worker` (passos internos). */
-export const ROLES = ['public', 'worker'] as const;
+/**
+ * Papel do processo: a mesma imagem sobe como `cp-public` (rotas públicas), `cp-worker` (passos internos) ou
+ * `cp-admin` (console do responsável, atrás do IAP: tabelas de preços e de custos, publicação e DRE).
+ */
+export const ROLES = ['public', 'worker', 'admin'] as const;
 export type Role = (typeof ROLES)[number];
 
 export function isRole(value: unknown): value is Role {
   return typeof value === 'string' && (ROLES as readonly string[]).includes(value);
 }
 
-export function otherRole(role: Role): Role {
-  return role === 'public' ? 'worker' : 'public';
+export function otherRoles(role: Role): Role[] {
+  return ROLES.filter((candidate) => candidate !== role);
 }
 
 /** `true`/`false` com padrão. O `.default()` vem antes do `.transform()`: depois dele, o padrão sairia sem converter. */
@@ -90,7 +93,6 @@ const stripeSecretKey = z
 const stripeWebhookSecret = z
   .string()
   .regex(/^whsec_[A-Za-z0-9]{8,}$/, { error: 'segredo de webhook da Stripe em formato inválido' });
-const stripeLookupKey = z.string().regex(/^[a-z0-9_]{3,64}$/, { error: 'lookup_key inválido' });
 
 /** Variáveis que passam a ser obrigatórias com `PROVISIONING_ENABLED=true` (plano §2.5). */
 export const PROVISIONING_REQUIRED = [
@@ -107,7 +109,7 @@ export const PROVISIONING_REQUIRED = [
 
 const envShape = {
   // Papel
-  ROLE: z.enum(ROLES, { error: 'deve ser public ou worker' }),
+  ROLE: z.enum(ROLES, { error: 'deve ser public, worker ou admin' }),
   NODE_ENV: z.enum(['development', 'test', 'production']),
   LOG_LEVEL: z.enum(logLevels).default('info'),
   // O Cloud Run define PORT (8080 por padrão); o valor precisa bater com a porta do contêiner.
@@ -148,8 +150,8 @@ const envShape = {
   STRIPE_SECRET_KEY: stripeSecretKey.optional(),
   STRIPE_WEBHOOK_SECRET: stripeWebhookSecret.optional(),
   STRIPE_LIVE: boolean('false'),
-  STRIPE_PRICE_LOOKUP_ESSENCIAL: stripeLookupKey.optional(),
-  STRIPE_PRICE_LOOKUP_PROFISSIONAL: stripeLookupKey.optional(),
+  // Os preços não são variáveis: saem da tabela de preços publicada no Firestore (preço configurável). Uma
+  // `STRIPE_PRICE_LOOKUP_*` antiga ainda no ambiente é ignorada (o schema não a conhece).
   STRIPE_PORTAL_LOGIN_URL: httpsUrl.optional(),
 
   // Estado e filas. O banco gratuito do Firestore é o `(default)`; o projeto vem do ambiente do Cloud Run, e só
@@ -177,6 +179,16 @@ const envShape = {
   WORKER_SA_EMAIL: serviceAccountEmail.optional(),
   SCHEDULER_SA_EMAIL: serviceAccountEmail.optional(),
   OWNER_PRINCIPALS: list(email).optional(),
+  // Console do responsável (cp-admin, só ROLE=admin, obrigatória nele): o `aud` que o IAP põe no JWT assinado do
+  // cabeçalho `x-goog-iap-jwt-assertion` (o serviço do Cloud Run com o IAP ligado). O e-mail do JWT precisa estar em
+  // OWNER_PRINCIPALS, também obrigatória no admin.
+  IAP_AUDIENCE: z
+    .string()
+    .max(300)
+    .regex(/^\/projects\/[0-9]{1,20}\/[a-z][a-zA-Z0-9/_-]{1,250}$/, {
+      error: 'deve ser o aud do IAP (/projects/<número>/...)',
+    })
+    .optional(),
 
   // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida.
   PROVISIONING_ENABLED: boolean('false'),
@@ -234,7 +246,14 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
       secrets: ['SMTP_PASSWORD', 'CLOUDFLARE_API_TOKEN'],
       settings: ['SMTP_HOST', 'SMTP_USER', 'MAIL_FROM'],
     },
+    admin: { secrets: [], settings: ['IAP_AUDIENCE'] },
   };
+
+/**
+ * Segredos que o papel admin nunca recebe, além dos de um papel só: o console não fala com a Stripe nesta versão (a
+ * conferência dos preços na Stripe é do `stripe-setup` e do checkout), então a chave da Stripe fica fora dele.
+ */
+export const ADMIN_FORBIDDEN_SECRETS = ['STRIPE_SECRET_KEY'] as const satisfies readonly EnvKey[];
 
 /**
  * Variáveis de ambiente do plano de controle (plano §2.5), validadas na partida: o processo não sobe se alguma
@@ -292,15 +311,29 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
       }
     }
   }
-  // Segredo do outro papel: recusado. (As variáveis comuns do outro papel já saíram em `loadConfig`.)
-  const other = otherRole(env.ROLE);
-  for (const key of ROLE_ONLY[other].secrets) {
-    if (env[key] !== undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: [key],
-        message: `segredo só do papel ${other}; não pode estar no papel ${env.ROLE}`,
-      });
+  // Segredo de outro papel: recusado. (As variáveis comuns de outro papel já saíram em `loadConfig`.)
+  for (const other of otherRoles(env.ROLE)) {
+    for (const key of ROLE_ONLY[other].secrets) {
+      if (env[key] !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message: `segredo só do papel ${other}; não pode estar no papel ${env.ROLE}`,
+        });
+      }
+    }
+  }
+  if (env.ROLE === 'admin') {
+    for (const key of ADMIN_FORBIDDEN_SECRETS) {
+      if (env[key] !== undefined) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'o papel admin não recebe este segredo' });
+      }
+    }
+    // Sem o `aud` do IAP e a lista de responsáveis, o console não teria como conferir quem chama: não sobe.
+    for (const key of ['IAP_AUDIENCE', 'OWNER_PRINCIPALS'] as const) {
+      if (env[key] === undefined) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com ROLE=admin' });
+      }
     }
   }
   // O grupo do SMTP é do worker (quem envia e-mail): informado o servidor, o resto é obrigatório.

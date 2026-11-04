@@ -8,6 +8,7 @@ export interface ErrorResponseBody {
   error: string;
   message: string;
   code?: string;
+  details?: Readonly<Record<string, unknown>>;
   requestId?: string;
 }
 
@@ -73,6 +74,7 @@ export function toErrorResponse(exception: unknown): ErrorResponseBody {
       error: statusName(status),
       message: exception.message,
       ...(exception.code === undefined ? {} : { code: exception.code }),
+      ...(exception.details === undefined ? {} : { details: exception.details }),
     };
   }
   const message = GENERIC_MESSAGES[status] ?? GENERIC_MESSAGES[400] ?? INTERNAL_ERROR_MESSAGE;

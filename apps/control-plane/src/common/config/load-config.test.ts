@@ -39,6 +39,8 @@ const terraformSharedEnv = {
   SITE_SUCCESS_URL: 'https://veraxsistemas.com.br/checkout/sucesso?cs={CHECKOUT_SESSION_ID}',
   SITE_CANCEL_URL: 'https://veraxsistemas.com.br/#planos',
   STRIPE_LIVE: 'false',
+  // O `run.tf` ainda passa os dois `lookup_key` dos planos fixos; com o preço configurável o app os ignora (o schema
+  // não os conhece), até o PR da infraestrutura do cp-admin tirá-los de lá.
   STRIPE_PRICE_LOOKUP_ESSENCIAL: 'verax_control_essencial_mensal',
   STRIPE_PRICE_LOOKUP_PROFISSIONAL: 'verax_control_profissional_mensal',
   PROVISIONING_ENABLED: 'false',
@@ -105,7 +107,7 @@ describe('loadConfig (CP-01)', () => {
 
   it('sem ROLE o processo não sobe; papel desconhecido é recusado', () => {
     expect(problemsOf({ NODE_ENV: 'development' })).toEqual(['ROLE: obrigatória e não definida']);
-    expect(problemsOf({ ...validEnv, ROLE: 'admin' })).toEqual(['ROLE: deve ser public ou worker']);
+    expect(problemsOf({ ...validEnv, ROLE: 'operador' })).toEqual(['ROLE: deve ser public, worker ou admin']);
     expect(loadConfig({ ...validEnv, ROLE: 'worker' }).ROLE).toBe('worker');
   });
 
@@ -227,6 +229,7 @@ describe('loadConfig (CP-01)', () => {
     expect(config.SMTP_PASSWORD).toBeUndefined();
     expect(config.STRIPE_WEBHOOK_SECRET).toBe(webhookSecret);
     expect(config.COOKIE_KEY).toBe(cookieKey);
+    expect(Object.keys(config).filter((key) => key.startsWith('STRIPE_PRICE_LOOKUP_'))).toEqual([]);
   });
 
   it('o ambiente que o Terraform dá ao cp-worker sobe com o grupo do SMTP completo', () => {
@@ -293,6 +296,59 @@ describe('loadConfig (CP-01)', () => {
     expect(secrets).toEqual(['CLOUDFLARE_API_TOKEN', 'COOKIE_KEY', 'SMTP_PASSWORD', 'STRIPE_WEBHOOK_SECRET']);
     // A chave da Stripe é lida pelos dois papéis: nunca pode entrar na lista de um só.
     expect(secrets).not.toContain('STRIPE_SECRET_KEY');
+    // O console (admin) não recebe segredo nenhum.
+    expect(ROLE_ONLY.admin.secrets).toEqual([]);
+  });
+
+  describe('papel admin (console do responsável, atrás do IAP)', () => {
+    const audience = '/projects/111111111111/locations/southamerica-east1/services/cp-admin';
+    const adminEnv = {
+      ROLE: 'admin',
+      NODE_ENV: 'production',
+      IAP_AUDIENCE: audience,
+      OWNER_PRINCIPALS: 'responsavel@verax.example',
+    };
+
+    it('sobe com o aud do IAP e a lista de responsáveis; sem eles, não sobe', () => {
+      expect(loadConfig(adminEnv)).toMatchObject({
+        ROLE: 'admin',
+        IAP_AUDIENCE: audience,
+        OWNER_PRINCIPALS: ['responsavel@verax.example'],
+      });
+      expect(problemsOf({ ROLE: 'admin', NODE_ENV: 'production' })).toEqual([
+        'IAP_AUDIENCE: obrigatória e não definida',
+        'OWNER_PRINCIPALS: obrigatória e não definida',
+      ]);
+      expect(problemsOf({ ...adminEnv, IAP_AUDIENCE: 'https://cp-admin.example' })).toEqual([
+        'IAP_AUDIENCE: deve ser o aud do IAP (/projects/<número>/...)',
+      ]);
+    });
+
+    it('recusa os segredos dos outros papéis e a chave da Stripe; ignora as variáveis só do worker', () => {
+      expect(
+        problemsOf({
+          ...adminEnv,
+          STRIPE_WEBHOOK_SECRET: webhookSecret,
+          COOKIE_KEY: cookieKey,
+          SMTP_PASSWORD: 'senha-de-teste',
+          STRIPE_SECRET_KEY: testKey,
+        }),
+      ).toEqual([
+        'STRIPE_WEBHOOK_SECRET: segredo só do papel public; não pode estar no papel admin',
+        'COOKIE_KEY: segredo só do papel public; não pode estar no papel admin',
+        'SMTP_PASSWORD: segredo só do papel worker; não pode estar no papel admin',
+        'STRIPE_SECRET_KEY: o papel admin não recebe este segredo',
+      ]);
+      expect(warningsOf({ ...adminEnv, SMTP_HOST: 'smtp.zoho.com' })).toEqual([
+        'SMTP_HOST: só o papel worker usa; ignorada no papel admin',
+      ]);
+    });
+
+    it('IAP_AUDIENCE é só do admin: nos outros papéis é ignorada com aviso', () => {
+      expect(warningsOf({ ...validEnv, IAP_AUDIENCE: audience })).toEqual([
+        'IAP_AUDIENCE: só o papel admin usa; ignorada no papel public',
+      ]);
+    });
   });
 
   it('MAIL_FROM e MAIL_FROM_NODES aceitam o e-mail puro ou "Nome <e-mail>"', () => {

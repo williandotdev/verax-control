@@ -1,8 +1,7 @@
-import { Body, Controller, Get, HttpStatus, Inject, Param, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { CLOCK, type Clock } from '../common/clock.js';
-import { ApiError } from '../common/http/api-error.js';
-import { rateLimitKey, type RateLimitRule, TokenBucketLimiter } from '../common/http/rate-limiter.js';
+import { enforceRateLimit, type RateLimitRule, TokenBucketLimiter } from '../common/http/rate-limiter.js';
 import type { CheckoutResponse, SlugAvailability } from './checkout.schema.js';
 import { CheckoutService, DailyLimitApiError } from './checkout.service.js';
 
@@ -22,18 +21,6 @@ export class CheckoutRateLimits {
 }
 
 export const CHECKOUT_RATE_LIMITS = Symbol('CHECKOUT_RATE_LIMITS');
-
-/** O IP vem de `req.ip`, pela regra de `common/http/client-ip.ts` (o mesmo do log da requisição). */
-function enforce(limiter: TokenBucketLimiter, req: Request, res: Response): void {
-  const decision = limiter.take(rateLimitKey(req.ip));
-  if (decision.allowed) return;
-  res.setHeader('Retry-After', String(decision.retryAfterSeconds));
-  throw new ApiError(
-    HttpStatus.TOO_MANY_REQUESTS,
-    'Muitas tentativas. Tente novamente mais tarde.',
-    'rate_limited',
-  );
-}
 
 function requestIdOf(req: Request): string | undefined {
   const id = (req as Request & { id?: unknown }).id;
@@ -55,7 +42,7 @@ export class CheckoutController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<SlugAvailability> {
-    enforce(this.limits.slugs, req, res);
+    enforceRateLimit(this.limits.slugs, req, res);
     return { available: await this.checkout.isSlugAvailable(slug) };
   }
 
@@ -65,7 +52,7 @@ export class CheckoutController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<CheckoutResponse> {
-    enforce(this.limits.checkout, req, res);
+    enforceRateLimit(this.limits.checkout, req, res);
     try {
       return await this.checkout.createSession(body, { requestId: requestIdOf(req) });
     } catch (error) {

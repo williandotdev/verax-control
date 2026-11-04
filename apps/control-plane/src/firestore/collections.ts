@@ -36,6 +36,12 @@ export const COLLECTIONS = {
   auditLog: 'auditLog',
   rateLimits: 'rateLimits',
   counters: 'counters',
+  /** Tabelas de preços versionadas (preço configurável): rascunho, publicada e aposentada. */
+  pricingTables: 'pricingTables',
+  /** Modelos de custo versionados (confidenciais: só o console do responsável os lê). */
+  costModels: 'costModels',
+  /** Cotações do site, válidas por 24 h; o checkout só aceita uma cotação gravada aqui. */
+  quotes: 'quotes',
 } as const;
 
 export interface CompositeIndex {
@@ -105,4 +111,5 @@ export const TTL_FIELDS: readonly TtlField[] = [
   },
   { collectionGroup: COLLECTIONS.auditLog, field: TTL_FIELD, retention: '24 meses' },
   { collectionGroup: COLLECTIONS.rateLimits, field: TTL_FIELD, retention: 'janela do limite' },
+  { collectionGroup: COLLECTIONS.quotes, field: TTL_FIELD, retention: '24 h (validade da cotação)' },
 ];
