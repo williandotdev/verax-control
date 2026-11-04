@@ -383,7 +383,8 @@ worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente d
   rootcheck, SCA e limite de eventos por agente (`client_buffer`, 200 por segundo), sem coleta por comando nem módulo
   de comando (os `remote_commands` do agente ficam no padrão, 0); detecção de vulnerabilidades ligada, sem indexar o
   estado (as detecções viram alertas). Os pacotes do script são os oficiais da versão do manager, conferidos pelo
-  SHA-512 publicado pela Wazuh, sem acrescentar repositório.
+  SHA-512 publicado pela Wazuh numa pasta temporária própria (`mktemp -d` no Linux; no Windows, nome aleatório e ACL
+  só de Administradores e SYSTEM), apagada no fim, sem acrescentar repositório.
 - **Como o painel sabe dos agentes sem falar com o manager:** nem a API nem o worker dividem rede com ele. O host, que
   já fala com o contêiner do manager pelo Docker, pede a lista à API dele (`localhost:55000`, usuário `wazuh-wui`, a
   senha pela entrada padrão do curl) a cada minuto, só com os campos do painel, e grava o arquivo em `/run/verax`

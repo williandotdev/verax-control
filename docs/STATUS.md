@@ -2838,3 +2838,20 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - o limite de agentes é do produto (o Wazuh 4.14 não tem opção para isso): quem já tem a senha ainda registraria;
   - o `.env.example` não foi tocado (a regra do agente proíbe lê-lo): as variáveis `WAZUH_AGENTS*` estão no
     `node.conf.example` e no `env.schema.ts`.
+- **Revisão do PR #59:**
+  - **CI (job do Wazuh, `scripts/test-agents.sh`):** o contêiner do certificado rodava
+    `/verax/wazuh-agents-certs.sh` direto, e no repositório o script não tem o bit de execução (exit 126,
+    `Permission denied`). Localmente passava porque o `docker cp` no Windows marca o `.sh` como executável. O teste
+    passa a rodar `bash /verax/wazuh-agents-certs.sh` e a copiar o script por um `tar` com o modo do git (0644), que
+    reproduz o CI também no Windows (o erro foi reproduzido assim antes da correção). Na VM nada muda: o `install.sh`
+    instala o script com 0750.
+  - **Achado do Codex (P2), pacote num caminho previsível do `/tmp`:** o script do Linux baixava o pacote em
+    `/tmp/<arquivo>`; numa máquina com outros usuários (sem `fs.protected_regular`), um usuário sem privilégio poderia
+    criar o arquivo antes e trocar o pacote entre a conferência do SHA-512 e o `dpkg`/`rpm` (root). Agora o pacote fica
+    numa pasta de `mktemp -d` (nome aleatório, 0700, do root), apagada por `trap` na saída. No Windows, o MSI fica numa
+    pasta de nome aleatório (GUID) em `$env:TEMP`, com a herança cortada e acesso só para Administradores e SYSTEM
+    antes do download (a pasta precisa estar vazia), apagada no `finally`: rodando como SYSTEM (o SSM, por exemplo), o
+    `$env:TEMP` é o `C:\Windows\Temp`, compartilhado. Testes dos scripts atualizados; os scripts gerados passaram no
+    shellcheck, o do Debian rodou como root num contêiner (download e SHA-512 de verdade, `dpkg`, `chown` e
+    `systemctl` simulados: a pasta é `drwx------ root` e não sobra nada), e o do Windows passou no parser do PowerShell
+    5.1, com a pasta e a ACL conferidas num ensaio local sem o instalador.

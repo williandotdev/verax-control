@@ -55,17 +55,20 @@ api_password=$(new_wazuh_password)
 echo "== Certificado do registro ($IMAGE)"
 mkdir -p "$work/certs-in/verax"
 cp ../node/bin/wazuh-agents-certs.sh "$work/certs-in/verax/"
-# O IP de cada rodada vai num arquivo do contêiner (o comando dele é fixo; o `$(...)` é do shell do contêiner).
+# O IP de cada rodada vai num arquivo do contêiner (o comando dele é fixo; o `$(...)` é do shell do contêiner). O
+# script roda pelo bash: no repositório ele não tem o bit de execução (na VM, o install.sh o instala com 0750).
 # shellcheck disable=SC2016
 docker create --name "$CERTS" --network none --entrypoint /bin/bash "$IMAGE" \
-  -c '/verax/wazuh-agents-certs.sh /out "$(cat /verax/address)" && openssl x509 -in /out/ca.crt -noout -fingerprint' \
+  -c 'bash /verax/wazuh-agents-certs.sh /out "$(cat /verax/address)" && openssl x509 -in /out/ca.crt -noout -fingerprint' \
   >/dev/null
 certs_for() { # <IP>: a saída do script e a impressão digital da CA
   printf '%s' "$1" >"$work/certs-in/verax/address"
   docker cp "$work/certs-in/verax/address" "$CERTS:/verax/address"
   docker start -a "$CERTS"
 }
-docker cp "$work/certs-in/verax" "$CERTS:/verax"
+# Os arquivos entram com o modo do git (0644, sem execução), também no Windows, onde o `docker cp` de um arquivo .sh
+# o marcaria como executável e esconderia a diferença (foi o que passou aqui e falhou no CI).
+(cd "$work/certs-in" && tar --mode=u=rw,go=r -cf - verax) | docker cp - "$CERTS:/"
 first=$(certs_for "$OTHER_ADDRESS")
 expect "emitido na primeira vez" '.*emitido para 198\.51\.100\.7.*' "$first"
 second=$(certs_for "$OTHER_ADDRESS")

@@ -38,6 +38,18 @@ describe('scripts de instalação do agente', () => {
     expect(script.indexOf('sha512sum -c')).toBeLessThan(script.indexOf('dpkg -i'));
   });
 
+  it('Linux: o pacote fica numa pasta própria do root (mktemp -d), apagada no fim, nunca num caminho previsível do /tmp', () => {
+    for (const script of [linuxScript(inputs, 'deb', 'x86_64'), linuxScript(inputs, 'rpm', 'arm64')]) {
+      expect(script).toContain('workdir=$(mktemp -d)\n');
+      expect(script).toContain(`trap 'rm -rf "$workdir"' EXIT\n`);
+      expect(script).toMatch(/^package="\$workdir\/wazuh-agent[^"/]+"$/m);
+      expect(script).not.toContain('/tmp/');
+      // A pasta existe antes do download, e o trap vem antes de qualquer coisa que possa falhar.
+      expect(script.indexOf('mktemp -d')).toBeLessThan(script.indexOf('curl '));
+      expect(script.indexOf('trap ')).toBeLessThan(script.indexOf('curl '));
+    }
+  });
+
   it('Linux (rpm, ARM64): o pacote aarch64 e o rpm', () => {
     const script = linuxScript(inputs, 'rpm', 'arm64');
     expect(script).toContain(WAZUH_AGENT_PACKAGES['rpm-aarch64'].url);
@@ -62,6 +74,26 @@ describe('scripts de instalação do agente', () => {
     expect(script).toContain("Join-Path ${env:ProgramFiles(x86)} 'ossec-agent\\verax-ca.pem'");
     expect(script).toContain('Start-Service WazuhSvc');
     expect(script.indexOf('Get-FileHash')).toBeLessThan(script.indexOf('msiexec'));
+    // O MSI fica numa pasta própria, de nome aleatório, só de administradores e SYSTEM, apagada no fim.
+    expect(script).not.toContain("Join-Path $env:TEMP 'wazuh-agent");
+    expect(script).toContain(`$package = Join-Path $workdir '${pkg.file}'`);
+  });
+
+  it('Windows: a pasta temporária tem nome aleatório, ACL sem herança só para administradores e SYSTEM, e sai no fim', () => {
+    const script = windowsScript(inputs);
+    expect(script).toContain(
+      "$workdir = Join-Path $env:TEMP ('verax-agente-' + [guid]::NewGuid().ToString('N'))",
+    );
+    expect(script).toContain('$acl.SetAccessRuleProtection($true, $false)');
+    expect(script).toContain("foreach ($sid in 'S-1-5-32-544', 'S-1-5-18') {");
+    expect(script).toContain('Set-Acl -Path $workdir -AclObject $acl');
+    expect(script).toContain(
+      "if (Get-ChildItem -Force -Path $workdir) { throw 'A pasta temporária não está vazia.' }",
+    );
+    expect(script).toContain('} finally {\n  Remove-Item -Recurse -Force -Path $workdir\n}\n');
+    // A ACL vale antes do download; o here-string da CA fecha na coluna 0, fora do try.
+    expect(script.indexOf('Set-Acl')).toBeLessThan(script.indexOf('Invoke-WebRequest'));
+    expect(script.indexOf("\n'@\n")).toBeLessThan(script.indexOf('try {'));
   });
 
   it('sem a senha (quem não administra), o lugar dela fica marcado; mascarada, só a máscara aparece', () => {
