@@ -39,3 +39,8 @@ NODE_EGRESS_IPS=
 # é o interruptor: sem a linha, nada muda. Com ela, o start.sh lê a chave secreta do cofre `<prefixo>-turnstile-secret-key`
 # (criado pelo Terraform com `turnstile_secret = true`); enquanto o cofre estiver vazio, o nó sobe sem o desafio e avisa.
 # TURNSTILE_SITE_KEY=0x4AAAAAAAexemploDeChave
+# Cofre de credenciais: a chave da AWS e o token do Cloudflare colados no painel ficam cifrados com uma chave RSA que o
+# install.sh gera na VM e guarda só no Secret Manager (`<prefixo>-credentials-key`). true só no nó que tem esse segredo
+# (`credentials_vault` no Terraform, ligado nos nós de clientes e na homologação). Sem a linha, vale false: o nó da
+# Verax não guarda credencial e sobe como antes.
+CREDENTIALS_VAULT=false

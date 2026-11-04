@@ -99,6 +99,7 @@ model Tenant {
   postureFailures    PostureFailure[]
   inventorySnapshots InventorySnapshot[]
   ingestUsage        IngestUsage[]
+  cloudCredentials   CloudCredential[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -249,10 +250,11 @@ enum CloudAccountConnection {
   error
 }
 
-/// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial é
-/// guardada: na AWS, a Verax assume o papel de leitura `VeraxControlReadOnly` com o ExternalId, gerado aqui; na
-/// GCP, o nó lê com a identidade dele, sem chave; o token do Cloudflare fica no cofre de segredos do nó. Cada
-/// conta pertence a um só cliente. A migration garante, por CHECK, que toda conta AWS tem ExternalId.
+/// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial fica no
+/// cadastro: na AWS, a Verax assume o papel de leitura `VeraxControlReadOnly` com o ExternalId, gerado aqui; na
+/// GCP, o nó lê com a identidade dele, sem chave. Na fase 2, a chave do usuário IAM de leitura da AWS e o token do
+/// Cloudflare ficam cifrados à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente. A
+/// migration garante, por CHECK, que toda conta AWS tem ExternalId.
 model CloudAccount {
   id                 String                 @id @default(uuid(7)) @db.Uuid
   tenantId           String                 @db.Uuid
@@ -289,8 +291,11 @@ model CloudAccount {
   createdAt          DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
   cursors            CollectorCursor[]
+  credential         CloudCredential?
 
   @@unique([provider, accountId])
+  /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
+  @@unique([id, tenantId])
   @@index([tenantId])
 }
 
@@ -652,4 +657,47 @@ model IngestUsage {
   events   BigInt
 
   @@id([tenantId, month, source])
+}
+
+/// Tipo da credencial guardada no cofre do nó: a chave de acesso do usuário IAM de leitura da AWS ou o token só de
+/// leitura do Cloudflare.
+enum CloudCredentialKind {
+  aws_access_key
+  cloudflare_api_token
+}
+
+/// Credencial de leitura de uma conta cloud, cifrada no cofre do nó (fase 2, PR-V1; `src/credentials/`). Uma por
+/// conta. O texto cifrado é RSA-OAEP-SHA256 com a chave pública do nó: a API cifra e não decifra; só o worker tem a
+/// chave privada. O rótulo do OAEP amarra o texto ao cliente, à conta e ao tipo, então uma linha copiada para outra
+/// conta ou outro cliente não abre. O segredo nunca sai pela API nem vai para a auditoria (só `keyIdSuffix`). A
+/// migration confere por CHECK o formato do envelope, a versão e o sufixo.
+model CloudCredential {
+  cloudAccountId   String              @id @db.Uuid
+  /// Chave estrangeira composta (conta e cliente): o banco recusa a credencial de um cliente na conta de outro.
+  cloudAccount     CloudAccount        @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  tenantId         String              @db.Uuid
+  tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind             CloudCredentialKind
+  /// `v<keyVersion>:<base64>`: o envelope do cofre, com a versão da chave do nó que cifrou.
+  ciphertext       String              @db.VarChar(1024)
+  /// Versão da chave do nó (a versão do segredo `credentials-key` no Secret Manager). A tarefa `credential-rekey` do
+  /// worker recifra as linhas de versões antigas com a corrente.
+  keyVersion       Int
+  /// Os 4 últimos caracteres do ID da chave de acesso (AWS) ou do ID do token (Cloudflare): o que o painel e a
+  /// auditoria mostram.
+  keyIdSuffix      String              @db.VarChar(4)
+  /// Criação da chave na AWS (`ListAccessKeys`) ou do token: a idade conta daqui.
+  issuedAt         DateTime?           @db.Timestamptz(3)
+  /// Validade do token do Cloudflare, quando ele tem uma.
+  expiresAt        DateTime?           @db.Timestamptz(3)
+  /// Última validação bem-sucedida na fonte (STS, `tokens/verify`).
+  verifiedAt       DateTime            @db.Timestamptz(3)
+  /// Quando saiu o aviso de troca da chave (rotação).
+  rotationNoticeAt DateTime?           @db.Timestamptz(3)
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+
+  /// Exigido pelo Prisma na relação um para um com chave composta (o `cloudAccountId` sozinho já é único).
+  @@unique([cloudAccountId, tenantId])
+  @@index([tenantId])
 }

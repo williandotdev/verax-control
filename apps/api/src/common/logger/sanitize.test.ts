@@ -1,5 +1,13 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { REDACTED, isSensitiveKey, sanitize, scrubString } from './sanitize.js';
+import {
+  MIN_LIVE_SECRET_LENGTH,
+  REDACTED,
+  isSensitiveKey,
+  registerLiveSecret,
+  sanitize,
+  scrubString,
+} from './sanitize.js';
 
 describe('isSensitiveKey', () => {
   it.each([
@@ -32,6 +40,7 @@ describe('isSensitiveKey', () => {
     'otp',
     'totp',
     'externalId',
+    'ciphertext',
   ])('oculta %s', (key) => {
     expect(isSensitiveKey(key)).toBe(true);
   });
@@ -65,6 +74,36 @@ describe('scrubString', () => {
 
   it('não altera texto comum', () => {
     expect(scrubString('usuário entrou no cliente piloto')).toBe('usuário entrou no cliente piloto');
+  });
+
+  it('oculta o segredo de uma linha do arquivo credentials da AWS copiada para o texto', () => {
+    const secret = randomBytes(30).toString('base64');
+    const text = scrubString(
+      `[verax-111111111111]\naws_secret_access_key = ${secret}\nAWS_SESSION_TOKEN=${secret}x`,
+    );
+    expect(text).not.toContain(secret);
+    expect(text).toBe(
+      `[verax-111111111111]\naws_secret_access_key = ${REDACTED}\nAWS_SESSION_TOKEN=${REDACTED}`,
+    );
+  });
+
+  it('oculta o segredo vivo (decifrado do cofre) em qualquer lugar do texto, inclusive repetido', () => {
+    const secret = randomBytes(30).toString('base64url');
+    expect(scrubString(`antes ${secret}`)).toContain(secret);
+    registerLiveSecret(secret);
+    expect(scrubString(`recusado: ${secret}; de novo:${secret}.`)).toBe(
+      `recusado: ${REDACTED}; de novo:${REDACTED}.`,
+    );
+    // Também dentro de objetos e erros, que passam pela mesma limpeza.
+    expect(
+      JSON.stringify(sanitize({ detail: { reason: `token ${secret}` }, err: new Error(secret) })),
+    ).not.toContain(secret);
+  });
+
+  it('valor curto não vira segredo vivo (não oculta pedaços de texto comum)', () => {
+    const short = 'x'.repeat(MIN_LIVE_SECRET_LENGTH - 1);
+    registerLiveSecret(short);
+    expect(scrubString(`texto ${short}`)).toBe(`texto ${short}`);
   });
 });
 

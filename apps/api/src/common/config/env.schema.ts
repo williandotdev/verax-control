@@ -10,7 +10,16 @@ import {
   type ResolvedPlan,
   resolvePlan,
 } from '@verax/shared';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import {
+  CredentialKeyError,
+  MAX_KEY_VERSION,
+  parsePrivateKeys,
+  parsePublicKey,
+  type VaultKeyring,
+  type VaultPublicKey,
+} from '../../credentials/credential-keys.js';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
@@ -21,6 +30,99 @@ export const TURNSTILE_SITEVERIFY_URL = 'https://challenges.cloudflare.com/turns
  * Cloudflare, como `1x00000000000000000000AA`, com `1x`, `2x` ou `3x`). A mesma expressão do `install.sh` do nó.
  */
 export const TURNSTILE_SITE_KEY_PATTERN = /^[0-9]x[0-9A-Za-z_-]{20,40}$/;
+
+/**
+ * Cofre de credenciais do nó (fase 2, PR-V1; `credentials/credential-keys.ts`). As variáveis são opcionais: sem elas,
+ * a API e o worker sobem sem o cofre (o nó da Verax, que não guarda credencial, e o ambiente local). Com elas, vêm
+ * sempre em par:
+ * - a API recebe só a chave pública e a versão dela (`CREDENTIALS_PUBLIC_KEY` e `CREDENTIALS_KEY_VERSION`);
+ * - o worker recebe o caminho do arquivo das privadas e a versão corrente (`CREDENTIALS_PRIVATE_KEYS_FILE` e
+ *   `CREDENTIALS_KEY_CURRENT`). O arquivo fica no tmpfs do nó, montado só leitura no worker; as chaves nunca vêm pelo
+ *   ambiente, que o Docker grava no disco na configuração do contêiner.
+ */
+const keyVersionFromEnv = z.coerce
+  .number({ error: 'deve ser um inteiro positivo' })
+  .int({ error: 'deve ser um inteiro positivo' })
+  .min(1, { error: 'deve ser um inteiro positivo' })
+  .max(MAX_KEY_VERSION, { error: 'deve ser um inteiro positivo' });
+
+/** As duas variáveis do cofre que a API aceita. */
+const API_VAULT_KEYS = new Set(['CREDENTIALS_PUBLIC_KEY', 'CREDENTIALS_KEY_VERSION']);
+
+/**
+ * A API nunca recebe chave privada do cofre: ela fica exposta pelo túnel e só cifra. Qualquer outra variável
+ * `CREDENTIALS_*` (as do worker) e qualquer nome com `PRIVATE_KEY` impedem a partida, antes de qualquer outra
+ * checagem. A mensagem cita só o nome da variável.
+ */
+function refusePrivateKeyVariables(source: unknown, ctx: z.RefinementCtx): unknown {
+  if (typeof source !== 'object' || source === null) return source;
+  for (const key of Object.keys(source)) {
+    if ((key.startsWith('CREDENTIALS_') && !API_VAULT_KEYS.has(key)) || /PRIVATE_?KEY/i.test(key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: 'a API recebe só a chave pública do cofre de credenciais; a privada fica só no worker',
+      });
+    }
+  }
+  return source;
+}
+
+/** As duas variáveis de um par vêm juntas ou não vêm. */
+function checkPair(
+  env: Record<string, unknown>,
+  keys: readonly [string, string],
+  ctx: z.RefinementCtx,
+): void {
+  const [first, second] = keys;
+  if ((env[first] === undefined) === (env[second] === undefined)) return;
+  const missing = env[first] === undefined ? first : second;
+  const present = missing === first ? second : first;
+  ctx.addIssue({ code: 'custom', path: [missing], message: `obrigatória junto com ${present}` });
+}
+
+/** A chave do cofre lida do ambiente; o erro vira um problema da configuração, sem o valor. */
+function vaultKey<T>(build: () => T, path: string, ctx: z.RefinementCtx): T | null {
+  try {
+    return build();
+  } catch (error) {
+    if (!(error instanceof CredentialKeyError)) throw error;
+    ctx.addIssue({ code: 'custom', path: [path], message: error.message });
+    return null;
+  }
+}
+
+/** A única variável do worker com `PRIVATE_KEY` no nome: o caminho do arquivo das privadas. */
+const WORKER_KEYS_FILE_VARIABLE = 'CREDENTIALS_PRIVATE_KEYS_FILE';
+
+/**
+ * As chaves privadas do worker vêm só pelo arquivo (`CREDENTIALS_PRIVATE_KEYS_FILE`): qualquer outra variável com
+ * `PRIVATE_KEY` no nome (a mesma régua da API) é recusada antes de qualquer outra checagem, porque o ambiente do
+ * contêiner fica gravado no disco do nó. A mensagem cita só o nome da variável.
+ */
+function refuseKeysInEnvironment(source: unknown, ctx: z.RefinementCtx): unknown {
+  if (typeof source !== 'object' || source === null) return source;
+  for (const key of Object.keys(source)) {
+    if (key !== WORKER_KEYS_FILE_VARIABLE && /PRIVATE_?KEY/i.test(key)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: `as chaves privadas do cofre vêm por arquivo (${WORKER_KEYS_FILE_VARIABLE}), nunca pelo ambiente`,
+      });
+    }
+  }
+  return source;
+}
+
+/** O conteúdo do arquivo das chaves privadas; a falha de leitura cita a variável, não o caminho nem o conteúdo. */
+function readPrivateKeysFile(path: string): string {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- caminho da configuração, não do request
+    return readFileSync(path, 'utf8');
+  } catch {
+    throw new CredentialKeyError('não foi possível ler o arquivo das chaves privadas');
+  }
+}
 
 /** Plano e ajustes, como ficam depois da validação do ambiente. */
 interface PlanEnv {
@@ -100,7 +202,7 @@ function requiresVerifiedTls(databaseUrl: string): boolean {
  * Variáveis de ambiente da API. A API não sobe se alguma obrigatória faltar ou for inválida.
  * Cada task que precisar de configuração nova acrescenta o campo aqui e no .env.example.
  */
-export const envSchema = z
+const apiEnvSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']),
     LOG_LEVEL: z.enum(logLevels).default('info'),
@@ -174,9 +276,13 @@ export const envSchema = z
       })
       .optional(),
     ...planEnvShape,
+    // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola (PR-V3).
+    CREDENTIALS_PUBLIC_KEY: z.string().optional(),
+    CREDENTIALS_KEY_VERSION: keyVersionFromEnv.optional(),
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
+    checkPair(env, ['CREDENTIALS_PUBLIC_KEY', 'CREDENTIALS_KEY_VERSION'], ctx);
     // O problema é apontado na chave presente: a que falta sairia só como "não definida".
     if (env.TURNSTILE_SECRET_KEY !== undefined && env.TURNSTILE_SITE_KEY === undefined) {
       ctx.addIssue({
@@ -246,15 +352,29 @@ export const envSchema = z
       });
     }
   })
-  .transform(withDefaultPlan);
+  .transform(({ CREDENTIALS_PUBLIC_KEY, CREDENTIALS_KEY_VERSION, ...env }, ctx) => {
+    // A chave pública já validada no lugar do texto em base64; sem o par, a API sobe sem o cofre.
+    let credentialsPublicKey: VaultPublicKey | null = null;
+    if (CREDENTIALS_PUBLIC_KEY !== undefined && CREDENTIALS_KEY_VERSION !== undefined) {
+      credentialsPublicKey = vaultKey(
+        () => parsePublicKey(CREDENTIALS_PUBLIC_KEY, CREDENTIALS_KEY_VERSION),
+        'CREDENTIALS_PUBLIC_KEY',
+        ctx,
+      );
+    }
+    return { ...withDefaultPlan(env), credentialsPublicKey };
+  });
+
+export const envSchema = z.preprocess(refusePrivateKeyVariables, apiEnvSchema);
 
 export type Env = z.infer<typeof envSchema>;
 
 /**
- * Variáveis do worker do sync de alertas (T5.3): só o banco, o log, o intervalo e o plano. Nada de autenticação,
- * e-mail nem origens, porque o worker não atende requisição. O indexer tem configuração própria (`loadIndexerConfig`).
+ * Variáveis do worker do sync de alertas (T5.3): só o banco, o log, o intervalo, o plano e o arquivo das chaves
+ * privadas do cofre de credenciais. Nada de autenticação, e-mail nem origens, porque o worker não atende requisição. O
+ * indexer tem configuração própria (`loadIndexerConfig`).
  */
-export const workerEnvSchema = z
+const workerEnvObjectSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']),
     LOG_LEVEL: z.enum(logLevels).default('info'),
@@ -274,9 +394,14 @@ export const workerEnvSchema = z
       .transform((value) => [...new Set(value.split(',').map((source) => source.trim()))])
       .pipe(z.array(z.enum(['wazuh', 'gcp'], { error: 'fontes aceitas: wazuh e gcp' })).min(1)),
     ...planEnvShape,
+    // Cofre de credenciais (fase 2): o arquivo com as chaves privadas de todas as versões ativas (uma por linha,
+    // `<versão>:<PEM em base64>`), montado só leitura no worker, e a versão corrente. Só o worker decifra.
+    CREDENTIALS_PRIVATE_KEYS_FILE: z.string().min(1, { error: 'deve ser o caminho do arquivo' }).optional(),
+    CREDENTIALS_KEY_CURRENT: keyVersionFromEnv.optional(),
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
+    checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({
         code: 'custom',
@@ -285,6 +410,19 @@ export const workerEnvSchema = z
       });
     }
   })
-  .transform(withDefaultPlan);
+  .transform(({ CREDENTIALS_PRIVATE_KEYS_FILE, CREDENTIALS_KEY_CURRENT, ...env }, ctx) => {
+    // As chaves já lidas do arquivo (um objeto que não vira JSON nem texto de log); o caminho não fica na configuração.
+    let credentialsKeyring: VaultKeyring | null = null;
+    if (CREDENTIALS_PRIVATE_KEYS_FILE !== undefined && CREDENTIALS_KEY_CURRENT !== undefined) {
+      credentialsKeyring = vaultKey(
+        () => parsePrivateKeys(readPrivateKeysFile(CREDENTIALS_PRIVATE_KEYS_FILE), CREDENTIALS_KEY_CURRENT),
+        'CREDENTIALS_PRIVATE_KEYS_FILE',
+        ctx,
+      );
+    }
+    return { ...withDefaultPlan(env), credentialsKeyring };
+  });
+
+export const workerEnvSchema = z.preprocess(refuseKeysInEnvironment, workerEnvObjectSchema);
 
 export type WorkerEnv = z.infer<typeof workerEnvSchema>;

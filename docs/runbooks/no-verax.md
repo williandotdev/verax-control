@@ -65,6 +65,46 @@ mostraria um tópico que não existe. A instalação recusa o projeto e o prefix
 `node.conf` for editado depois e sair dele, a API sobe sem o tópico e o painel mostra o comando com o tópico a
 preencher.
 
+O cofre de credenciais (`CREDENTIALS_VAULT`, para a chave da AWS e o token do Cloudflare colados no painel) fica
+desligado no nó da Verax: sem a linha no `node.conf`, vale `false`, nada é lido do Secret Manager e a API e o worker
+sobem como antes. Ligar pede, nesta ordem: o segredo `verax-node-credentials-key` (`credentials_vault = true` em
+`infra/gcp/envs/verax/main.tf` e um `apply`), `CREDENTIALS_VAULT=true` no `node.conf` e um deploy. Na instalação, o
+`install.sh` gera a chave na VM e a grava direto no segredo; a cada partida, o `start.sh` entrega a chave pública à API
+e as privadas ao worker, num arquivo em memória (`/run/verax/vault/worker-keys`, numa pasta montada só leitura nele),
+nunca por variável de ambiente (o Docker grava o ambiente dos contêineres no disco). A parada (`start.sh down`) apaga
+a pasta.
+
+### Chave do cofre: trocar, reativar ou gravar de novo
+
+Cada versão do segredo `<prefixo>-credentials-key` é uma versão da chave; o `start.sh` lê todas as ativas e cifra
+com a mais alta. O `install.sh` só gera chave quando o segredo nunca teve versão (a versão 1 decide); depois disso,
+toda mudança é uma versão feita de propósito.
+
+**Trocar a chave.** Na VM, porque a chave nasce lá e vai direto para o Secret Manager (a identidade da VM só
+acrescenta versões a esse segredo):
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 | gcloud secrets versions add PREFIXO-credentials-key --data-file=-
+sudo systemctl restart verax-node
+```
+
+O log do worker mostra `vaultKeyVersion` com a versão nova, e a tarefa `credential-rekey` (na partida e uma vez por
+dia) recifra as linhas antigas. Só depois disso, do seu computador, desative a antiga (desativar, não destruir:
+destruir é o passo da saída do cliente):
+
+```bash
+gcloud secrets versions disable N --secret PREFIXO-credentials-key --project PROJETO
+```
+
+**A partida para numa versão que não é chave** (RSA de 3072 a 4096 bits em PEM): a mensagem diz qual; desative-a e
+reinicie. O `start.sh` confere todas as versões ativas, porque o worker recusaria qualquer uma e cairia em laço.
+
+**Nenhuma versão ativa** (o nó sobe sem o cofre, com aviso): o aviso diz qual é o caso, porque o Secret Manager
+informa o estado de cada versão. Se há versão desativada, reative a mais recente delas (`gcloud secrets versions
+enable N ...`, com o `N` do aviso) e reinicie; se todas foram destruídas, grave uma chave nova como na troca (o que
+estava cifrado com as destruídas se perdeu: os admins colam as credenciais de novo). Só um segredo recriado, sem versão
+nenhuma, volta a ganhar chave pelo `install.sh` (um deploy).
+
 ### Turnstile: o desafio "não sou um robô" no login (opcional)
 
 O Cloudflare Turnstile protege o login e o "esqueci minha senha" do painel (`docs/ARQUITETURA.md`, "Proteções do
