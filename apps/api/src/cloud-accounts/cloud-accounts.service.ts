@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   type CloudAccount,
   type CloudAccountCreate,
@@ -14,6 +14,7 @@ import {
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
@@ -30,6 +31,7 @@ const accountSelect = {
   guarddutyBucket: true,
   wafBucket: true,
   pubsubSubscription: true,
+  sinkWriterIdentity: true,
   zones: true,
   lastEventAt: true,
   connection: true,
@@ -53,8 +55,13 @@ function newExternalId(): string {
   return randomBytes(32).toString('base64url');
 }
 
-function toAccount(row: AccountRow, revealExternalId: boolean): CloudAccount {
+/**
+ * Como a conta sai da API. `sinkTopicPrefix` é o começo do nome dos tópicos do nó (`GCP_SINK_TOPIC_PREFIX`): com ele,
+ * o projeto da GCP ganha o tópico do comando do sink; sem ele (ambiente local), o tópico fica null.
+ */
+function toAccount(row: AccountRow, revealExternalId: boolean, sinkTopicPrefix?: string): CloudAccount {
   const aws = row.provider === 'aws';
+  const gcp = row.provider === 'gcp';
   return {
     id: row.id,
     provider: row.provider,
@@ -64,6 +71,8 @@ function toAccount(row: AccountRow, revealExternalId: boolean): CloudAccount {
     externalId: aws && revealExternalId ? row.externalId : null,
     buckets: { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket },
     pubsubSubscription: row.pubsubSubscription,
+    sinkTopic: gcp && sinkTopicPrefix ? `${sinkTopicPrefix}${row.accountId}` : null,
+    sinkWriterIdentity: gcp ? row.sinkWriterIdentity : null,
     zones: row.zones,
     status: row.status,
     // Gravados pelo coletor da conta: só o worker escreve, nunca o request.
@@ -113,7 +122,12 @@ function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCr
     case 'aws':
       return { ...base, regions: input.regions, externalId: newExternalId(), ...bucketData(input.buckets) };
     case 'gcp':
-      return { ...base, regions: [], pubsubSubscription: input.pubsubSubscription ?? null };
+      return {
+        ...base,
+        regions: [],
+        pubsubSubscription: input.pubsubSubscription ?? null,
+        sinkWriterIdentity: input.sinkWriterIdentity ?? null,
+      };
     case 'cloudflare':
       return { ...base, regions: [], zones: input.zones ?? [] };
   }
@@ -123,6 +137,7 @@ function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCr
 interface LogOrigins {
   buckets?: AwsBuckets;
   pubsubSubscription?: string | null;
+  sinkWriterIdentity?: string | null;
   zones?: string[];
 }
 
@@ -131,14 +146,19 @@ interface LogOrigins {
  * schema é estrito; na AWS, a Verax só assume o papel de leitura com o ExternalId gerado aqui.
  *
  * Duas garantias que vinculam os alertas ao cliente certo (T5.2): o ID da conta é único por provedor, e cada
- * origem de log (bucket, assinatura do Pub/Sub, zona do Cloudflare) pertence a um só cliente.
+ * origem de log (bucket, assinatura do Pub/Sub, identidade do sink, zona do Cloudflare) pertence a um só cliente.
  */
 @Injectable()
 export class CloudAccountsService {
+  private readonly sinkTopicPrefix: string | undefined;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
-  ) {}
+    @Inject(APP_CONFIG) config: Pick<AppConfig, 'GCP_SINK_TOPIC_PREFIX'>,
+  ) {
+    this.sinkTopicPrefix = config.GCP_SINK_TOPIC_PREFIX;
+  }
 
   async list(auth: RequestAuth, query: CloudAccountListQuery): Promise<Paginated<CloudAccount>> {
     const where: Prisma.CloudAccountWhereInput = query.status ? { status: query.status } : {};
@@ -153,14 +173,14 @@ export class CloudAccountsService {
       db.cloudAccount.count({ where }),
     ]);
     return toPaginated(
-      rows.map((row) => toAccount(row, canSeeExternalId(auth))),
+      rows.map((row) => toAccount(row, canSeeExternalId(auth), this.sinkTopicPrefix)),
       total,
       query,
     );
   }
 
   async get(auth: RequestAuth, id: string): Promise<CloudAccount> {
-    return toAccount(await this.find(id), canSeeExternalId(auth));
+    return toAccount(await this.find(id), canSeeExternalId(auth), this.sinkTopicPrefix);
   }
 
   async create(auth: RequestAuth, input: CloudAccountCreate): Promise<CloudAccount> {
@@ -175,7 +195,7 @@ export class CloudAccountsService {
       }
       throw error;
     }
-    const account = toAccount(row, true);
+    const account = toAccount(row, true, this.sinkTopicPrefix);
     // O ExternalId não vai para a auditoria: quem lê a trilha não precisa dele.
     this.audit.describe({
       action: 'cloud_account.create',
@@ -193,7 +213,7 @@ export class CloudAccountsService {
     if (foreign.length > 0) {
       throw new ApiError(HttpStatus.BAD_REQUEST, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
     }
-    await this.assertOriginsFree(auth, input);
+    await this.assertOriginsFree(auth, input, id);
     // Outra assinatura é outra fonte, e a conta desativada ou reativada recomeça: a conexão volta a "aguardando" até
     // o coletor confirmar a leitura de novo.
     const sourceChanged =
@@ -205,18 +225,20 @@ export class CloudAccountsService {
         regions: input.regions,
         status: input.status,
         pubsubSubscription: input.pubsubSubscription,
+        // A identidade do sink não é a fonte que o nó lê: trocá-la não mexe na conexão.
+        sinkWriterIdentity: input.sinkWriterIdentity,
         zones: input.zones,
         ...bucketData(input.buckets),
         ...((sourceChanged || statusChanged) && RESET_CONNECTION),
       },
       select: accountSelect,
     });
-    const after = toAccount(row, true);
+    const after = toAccount(row, true, this.sinkTopicPrefix);
     this.audit.describe({
       action: 'cloud_account.update',
       resourceType: 'cloud_account',
       resourceId: id,
-      before: { ...toAccount(beforeRow, false), externalId: undefined },
+      before: { ...toAccount(beforeRow, false, this.sinkTopicPrefix), externalId: undefined },
       after: { ...after, externalId: undefined },
     });
     return after;
@@ -237,8 +259,8 @@ export class CloudAccountsService {
       action: 'cloud_account.deactivate',
       resourceType: 'cloud_account',
       resourceId: id,
-      before: { ...toAccount(before, false), externalId: undefined },
-      after: { ...toAccount(row, false), externalId: undefined },
+      before: { ...toAccount(before, false, this.sinkTopicPrefix), externalId: undefined },
+      after: { ...toAccount(row, false, this.sinkTopicPrefix), externalId: undefined },
     });
   }
 
@@ -253,14 +275,25 @@ export class CloudAccountsService {
    * - Bucket: o nome é único no S3, então vale para qualquer fonte (o mesmo bucket como CloudTrail de um cliente e
    *   GuardDuty de outro também é ambíguo).
    * - Assinatura do Pub/Sub: um coletor agregado pode servir vários projetos do mesmo cliente, nunca de dois.
+   * - Identidade do sink: é o agente do Cloud Logging do projeto do cliente, e quem a tem publica no tópico dele.
+   *   Vale para um projeto só: colada em outro cliente, daria a publicação a um projeto que não é dele; colada em
+   *   outro projeto do mesmo cliente, daria a um projeto a publicação no tópico de outro (o Terraform do nó recusa
+   *   a repetição em `customer_projects` pela mesma razão). Por isso é a única origem que também não se repete
+   *   entre as contas do próprio cliente (`exceptId` é a conta que está sendo alterada).
    * - Zona do Cloudflare: o domínio identifica o cliente nos eventos do WAF.
    *
    * A checagem roda sob um lock transacional por origem, para dois cadastros simultâneos não passarem juntos.
    * Responde só "já cadastrado", sem dizer de quem.
    */
-  private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins): Promise<void> {
+  private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins, exceptId?: string): Promise<void> {
     const tenantId = auth.scopeTenantId as string;
-    const checks: { key: string; label: string; where: Prisma.CloudAccountWhereInput }[] = [];
+    const checks: {
+      key: string;
+      label: string;
+      where: Prisma.CloudAccountWhereInput;
+      /** A origem também não pode estar em outra conta do mesmo cliente. */
+      onePerAccount?: boolean;
+    }[] = [];
     const buckets = new Set(
       LOG_SOURCES.map((source) => origins.buckets?.[source]).filter((name) => typeof name === 'string'),
     );
@@ -277,6 +310,15 @@ export class CloudAccountsService {
         key: `verax:pubsub:${name}`,
         label: `A assinatura ${name} já está cadastrada`,
         where: { pubsubSubscription: name },
+      });
+    }
+    if (origins.sinkWriterIdentity) {
+      const identity = origins.sinkWriterIdentity;
+      checks.push({
+        key: `verax:sink:${identity}`,
+        label: 'A identidade do sink já está cadastrada',
+        where: { sinkWriterIdentity: identity },
+        onePerAccount: true,
       });
     }
     for (const zone of origins.zones ?? []) {
@@ -297,6 +339,14 @@ export class CloudAccountsService {
       });
       if (taken) {
         throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outro cliente`);
+      }
+      if (!check.onePerAccount) continue;
+      const repeated = await db.cloudAccount.findFirst({
+        where: { tenantId, ...check.where, ...(exceptId && { id: { not: exceptId } }) },
+        select: { id: true },
+      });
+      if (repeated) {
+        throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outra conta deste cliente`);
       }
     }
   }

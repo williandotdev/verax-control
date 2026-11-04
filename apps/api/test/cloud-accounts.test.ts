@@ -180,6 +180,9 @@ describe('contas cloud (T3.3)', () => {
         regions: [],
         pubsubSubscription: name,
         zones: [],
+        // Sem GCP_SINK_TOPIC_PREFIX (como no ambiente local), sem tópico para o comando do sink.
+        sinkTopic: null,
+        sinkWriterIdentity: null,
       });
       expect(
         (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: account.id } })).externalId,

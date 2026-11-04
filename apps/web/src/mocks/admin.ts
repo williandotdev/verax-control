@@ -35,7 +35,7 @@ import {
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
-import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
+import { DEMO_ACCOUNTS, DEMO_SINK_TOPIC_PREFIX, DEMO_TENANTS } from './fixtures';
 import type { MockState } from './handlers';
 
 /**
@@ -112,7 +112,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     },
     lastEventMinutes: number | null,
     other:
-      | { provider: 'gcp'; pubsubSubscription: string }
+      | { provider: 'gcp'; pubsubSubscription: string; sinkWriterIdentity: string }
       | { provider: 'cloudflare'; zones: string[] }
       | null = null,
   ) =>
@@ -125,6 +125,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       externalId: other ? null : `vx-${accountId}-0f3c9a1e7b2d4c6e8a0b1c2d3e4f5a6b`,
       buckets: { cloudtrail: null, guardduty: null, waf: null },
       pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
+      sinkTopic: other?.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${accountId}` : null,
+      sinkWriterIdentity: other?.provider === 'gcp' ? other.sinkWriterIdentity : null,
       zones: other?.provider === 'cloudflare' ? other.zones : [],
       status: 'active',
       connection: collection.connection,
@@ -223,9 +225,11 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
             { connection: 'error', collectedMinutes: 30 * 60, error: 'AccessDenied' },
             30 * 60,
           ),
+          // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó.
           account(4, DEMO_ACCOUNTS.alfaGcp, [], { connection: 'connected', collectedMinutes: 1 }, 12, {
             provider: 'gcp',
-            pubsubSubscription: `projects/${DEMO_ACCOUNTS.alfaGcp}/subscriptions/verax-logs-seguranca`,
+            pubsubSubscription: `${DEMO_SINK_TOPIC_PREFIX.replace('/topics/', '/subscriptions/')}${DEMO_ACCOUNTS.alfaGcp}`,
+            sinkWriterIdentity: 'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com',
           }),
           account(
             5,
@@ -522,6 +526,8 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         externalId: data.provider === 'aws' ? `vx-${random}` : null,
         buckets: { cloudtrail: null, guardduty: null, waf: null },
         pubsubSubscription: data.provider === 'gcp' ? (data.pubsubSubscription ?? null) : null,
+        sinkTopic: data.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${data.accountId}` : null,
+        sinkWriterIdentity: data.provider === 'gcp' ? (data.sinkWriterIdentity ?? null) : null,
         zones: data.provider === 'cloudflare' ? (data.zones ?? []) : [],
         status: 'active',
         connection: 'waiting',
