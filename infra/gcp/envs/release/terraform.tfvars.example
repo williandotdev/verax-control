@@ -1,0 +1,11 @@
+# Copie para `terraform.tfvars` (que o git ignora) e preencha. Nada daqui vai para o repositório.
+
+# ID do projeto da GCP da chave de release. Recomendado: o do nó da Verax (o mesmo de envs/verax); nunca o do plano de
+# controle, onde fica a chave das licenças.
+project_id = "meu-projeto-123"
+
+# Local do chaveiro do Cloud KMS.
+# region = "us-east1"
+
+# Versão da chave que o workflow usa. Só muda na troca de chave (docs/runbooks/versao-no.md).
+# release_key_version = 1

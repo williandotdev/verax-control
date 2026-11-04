@@ -564,6 +564,42 @@ Retenção do resto: `auditLog` 24 meses, `stripeEvents` 90 dias, `provisioningR
 próprio prazo, tudo por TTL do Firestore. Nunca gravado: dado de cartão, senha temporária (lida do Secret Manager e
 devolvida uma vez), token do túnel, chaves da Stripe e do Cloudflare, corpo bruto do webhook, IP completo do cliente.
 
+## Versões do nó: imagens públicas e manifesto assinado _(fase 3, SH-02)_
+
+Preparação do modo próprio (o nó na nuvem do cliente, que vem depois do portão da venda gerenciada). Um nó fora da
+GCP da Verax precisa baixar as imagens sem login e saber, sem o `gh` e sem falar com a Verax, que a versão foi
+publicada por ela. O roteiro e os passos únicos do responsável estão em `docs/runbooks/versao-no.md`.
+
+| Imagem                                      | Nó gerenciado (GCP da Verax)                            | Nó na nuvem do cliente                                   |
+| ------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- |
+| API e migrations (do Verax)                 | Artifact Registry privado, pelo `deploy.sh`             | GHCR público (`ghcr.io/williandotdev/verax-control/...`) |
+| Wazuh, PostgreSQL e cloudflared (terceiros) | Registro de origem, pelo digest dos compose (como hoje) | Registro de origem, pelo digest dos compose              |
+
+- **O mesmo digest nos dois registros.** O workflow `Imagens do nó` publica no Artifact Registry e, num job separado
+  (o único com `packages: write`), copia o manifesto byte a byte para o GHCR com
+  `docker buildx imagetools create --prefer-index=false` e confere o digest lá. A atestação de origem vale para o
+  digest, em qualquer registro; a cópia ganha mais uma, com o nome do GHCR, guardada também no registro.
+- **Terceiros não são copiados.** A Verax não redistribui a imagem do Wazuh (GPLv2) nem as outras: o nó as baixa da
+  origem, pelo digest fixado nos compose, e o manifesto lista exatamente essas referências.
+- **Manifesto por versão.** O workflow `Versão do nó` (disparo manual, environment `release` com aprovação, só a
+  `main`) confere o pull anônimo e as atestações das imagens, monta o pacote do nó (reproduzível a partir do commit),
+  escreve o `manifest.json` (commit, digests, imagens de terceiros e SHA-256 do pacote), assina com a chave de release
+  no Cloud KMS e publica tudo num release `node-vX.Y.Z`.
+- **Chave de release:** ECDSA P-256 com SHA-256, em software, em `infra/gcp/envs/release` (no projeto do nó da Verax).
+  Só a conta do workflow assina (`cloudkms.signer` na chave, nada no projeto), e a federação só aceita o token desse
+  arquivo, na `main`, por disparo manual, num executor do GitHub. É separada da chave das licenças (SH-03, Ed25519, no
+  plano de controle): comprometer o plano de controle não permite empurrar código para a nuvem de um cliente. O P-256
+  foi escolhido porque o nó confere com `openssl dgst -sha256 -verify`, que existe em qualquer Linux, e porque existe
+  também em HSM, se um cliente exigir (o Ed25519 só existe em software).
+- **Confiança no nó:** `infra/node/bin/verify-release.sh` confere a assinatura com as chaves públicas do pacote já
+  instalado (`keys/release-*.pem`), nunca com as do pacote novo. O pacote leva a chave antiga e a nova por uma versão
+  na troca; revogar é publicar um pacote sem ela.
+- **Diferença em relação ao PR-N7 do plano da fase 2:** o N7 previa espelhar as imagens de terceiros no Artifact
+  Registry para o nó gerenciado não depender do Docker Hub. Para o nó na nuvem do cliente, a proposta do modo próprio
+  troca isso por "terceiros pela origem, pelo digest", para a Verax não redistribuir imagem GPL a terceiros. Este
+  passo segue a proposta e não espelha nada; o manifesto já descreve as imagens de terceiros pelo digest, então um
+  espelho privado só para os nós gerenciados, se o N7 o mantiver, não muda o manifesto.
+
 ## Ordem de execução
 
 **Decisão de 02/11/2026** (os números dos passos são citados em outros arquivos):
