@@ -45,7 +45,10 @@ locals {
   # O que o próprio Terraform sabe (nomes, URLs e contas que ele criou). Entra por último no `merge`: nem `service_env`
   # nem `worker_env` substituem (a validação em variables.tf recusa essas chaves, em vez de ignorá-las em silêncio).
   service_env_infra = {
-    FIRESTORE_DATABASE       = google_firestore_database.default.name
+    FIRESTORE_DATABASE = google_firestore_database.default.name
+    # O caminho da fila no Cloud Tasks é projects/<projeto>/locations/<região>/queues/<nome> (CP-04): o nome da fila
+    # sozinho não basta, e o app não consulta os metadados do Cloud Run para descobrir o projeto.
+    TASKS_PROJECT_ID         = var.project_id
     TASKS_LOCATION           = var.region
     TASKS_QUEUE_PROVISIONING = google_cloud_tasks_queue.cp["provisioning"].name
     TASKS_QUEUE_LIFECYCLE    = google_cloud_tasks_queue.cp["lifecycle"].name

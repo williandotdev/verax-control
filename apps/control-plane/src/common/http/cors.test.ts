@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { buildCorsDelegate, type CorsDecision } from './cors.js';
+import { WEBHOOK_PATH } from '../../webhook/raw-body.js';
+import { buildCorsDelegate, type CorsDecision, NO_CORS_PATHS } from './cors.js';
 
 const SITE = 'https://veraxsistemas.com.br';
 const SITE_WWW = 'https://www.veraxsistemas.com.br';
@@ -52,5 +53,12 @@ describe('CORS do cp-public (CP-03)', () => {
 
   it('sem origens configuradas, nenhuma é aceita', () => {
     expect(decide([], '/v1/public/checkout', SITE).origin).toBe(false);
+  });
+
+  it('o webhook da Stripe não tem CORS nenhum, nem para a origem do site (CP-04)', () => {
+    expect(decide([SITE], '/v1/stripe/webhook', SITE)).toMatchObject({ origin: false, credentials: false });
+    expect(decide([SITE], '/v1/stripe/webhook?x=1', SITE).origin).toBe(false);
+    expect(WEBHOOK_PATH).toBe('/v1/stripe/webhook');
+    expect(NO_CORS_PATHS.has(WEBHOOK_PATH)).toBe(true);
   });
 });
