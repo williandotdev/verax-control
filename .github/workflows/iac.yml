@@ -103,7 +103,13 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x -S style infra/node/bin/*.sh
+        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh
+      - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
+        # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente),
+        # a primeira instalação de um nó de cliente (a chave nasce e vai direto para o Secret Manager), a rotação com
+        # versões desativadas e destruídas, o cofre sem versão ativa, o segredo inexistente, a rede fora do ar e um
+        # conteúdo que não é chave. Roda sem root e sem tocar na máquina.
+        run: bash infra/node/tests/vault-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
         # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
@@ -157,6 +163,9 @@ jobs:
           jq -e '[.services | to_entries[] | select(.key != "postgres") | .value
             | select(.read_only != true or (.cap_drop | index("ALL")) == null
               or (.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+          # Sem core dump na API e no worker (a memória deles tem as chaves do cofre de credenciais). O Compose escreve o
+          # limite 0 como um objeto vazio (soft e hard 0); um valor diferente de 0 apareceria nele.
+          jq -e '.services | .api.ulimits.core == {} and .worker.ulimits.core == {}' <<<"$config"
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)

@@ -7,7 +7,8 @@
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
 # partida. Segredos de fora (senha do e-mail e token do túnel) vêm do Secret Manager com a identidade da própria VM;
 # os de dentro (senhas do banco, chaves da sessão e do CSRF) foram gerados pelo install.sh e ficam em
-# /var/lib/verax/secrets (0600, só root). Nenhum valor é impresso.
+# /var/lib/verax/secrets (0600, só root). A chave do cofre de credenciais (nó de cliente) foi gerada pelo install.sh
+# direto no Secret Manager e só passa pela memória. Nenhum valor é impresso.
 set -euo pipefail
 umask 077
 
@@ -59,6 +60,65 @@ external_secret() {
     return 1
   fi
   printf '%s' "$value"
+}
+
+# Chave do cofre de credenciais (fase 2; só com CREDENTIALS_VAULT=true no node.conf). Cada versão do segredo
+# `<prefixo>-credentials-key` é uma versão da chave, o par RSA que o install.sh gerou na VM. O Secret Manager numera as
+# versões em sequência: a leitura vai da 1 até a primeira que não existe (NOT_FOUND), com a permissão de ler o segredo
+# e sem a de listar as versões. Versão desativada ou destruída (FAILED_PRECONDITION) fica de fora; a mais alta que abre
+# é a corrente. O PEM não passa pelo shell: o gcloud entrega o conteúdo em base64, que segue assim para o ambiente.
+# Preenche `vault_api` (só a chave pública corrente, para a API, que cifra) e `vault_worker` (as privadas e a
+# corrente, para o worker, o único que decifra), declaradas no render. Sem nenhuma versão ativa, avisa e deixa as duas
+# vazias: a API e o worker sobem sem o cofre. Qualquer outro erro (permissão, rede, valor inválido) para a partida.
+VAULT_MAX_VERSIONS=100
+credentials_vault() {
+  local secret=$VERAX_SECRET_PREFIX-credentials-key version=1 data errors status keys=() current=''
+  errors=$(mktemp)
+  while ((version <= VAULT_MAX_VERSIONS)); do
+    status=0
+    data=$(gcloud secrets versions access "$version" --project "$VERAX_GCP_PROJECT" --secret "$secret" \
+      --format='get(payload.data)' 2>"$errors") || status=$?
+    if ((status == 0)); then
+      # O base64 do gcloud usa o alfabeto da URL; o worker lê o comum.
+      data=${data//-/+}
+      data=${data//_//}
+      if [[ ! $data =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+        echo "Versão $version do segredo $secret fora do formato." >&2
+        rm -f "$errors"
+        return 1
+      fi
+      keys+=("$version:$data")
+      current=$version
+    elif grep -q 'NOT_FOUND' "$errors"; then
+      break
+    elif ! grep -q 'FAILED_PRECONDITION' "$errors"; then
+      echo "Falha ao ler a versão $version do segredo $secret no Secret Manager:" >&2
+      sed 's/^/  /' "$errors" >&2
+      rm -f "$errors"
+      return 1
+    fi
+    version=$((version + 1))
+  done
+  rm -f "$errors"
+  if ((version > VAULT_MAX_VERSIONS)); then
+    echo "O segredo $secret tem mais de $VAULT_MAX_VERSIONS versões: destrua as antigas." >&2
+    return 1
+  fi
+  if [[ -z $current ]]; then
+    echo "AVISO: o cofre de credenciais ($secret) não tem nenhuma versão ativa: a API e o worker sobem sem ele, e a" \
+      "chave da AWS e o token do Cloudflare não podem ser gravados nem lidos. Rode o install.sh de novo para gerar a" \
+      "chave (ou reative a última versão) e reinicie: sudo systemctl restart verax-node" >&2
+    return 0
+  fi
+  # A pública sai da privada corrente, num pipe (nada vai para o disco); um conteúdo que não é chave privada para aqui.
+  local public joined
+  public=$(printf '%s' "${keys[-1]#*:}" | base64 -d | openssl pkey -pubout 2>/dev/null | base64 -w0) || {
+    echo "A versão $current do segredo $secret não é uma chave privada legível." >&2
+    return 1
+  }
+  joined=$(printf '%s,' "${keys[@]}")
+  vault_api=("CREDENTIALS_PUBLIC_KEY=$public" "CREDENTIALS_KEY_VERSION=$current")
+  vault_worker=("CREDENTIALS_PRIVATE_KEYS=${joined%,}" "CREDENTIALS_KEY_CURRENT=$current")
 }
 
 database_url() { # <papel> <senha>
@@ -122,6 +182,17 @@ render() {
   for key in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
     if [[ -n ${!key:-} ]]; then plan+=("$key=${!key}"); fi
   done
+  # Cofre de credenciais: só no nó que tem o segredo `credentials-key` (CREDENTIALS_VAULT=true; sem a linha, false). O
+  # nó da Verax não liga: nada é lido, e os arquivos de ambiente saem como antes.
+  local vault_api=() vault_worker=()
+  case ${CREDENTIALS_VAULT:-false} in
+    true) credentials_vault ;;
+    false) ;;
+    *)
+      echo 'CREDENTIALS_VAULT inválido em /etc/verax/node.conf: use true ou false.' >&2
+      return 1
+      ;;
+  esac
   # TRUST_PROXY_HOPS=1: um proxy confiável na frente da API, o Cloudflare (o cloudflared só repassa).
   write_env api.env \
     NODE_ENV=production LOG_LEVEL=info PORT=3000 \
@@ -131,11 +202,13 @@ render() {
     "CSRF_SECRET=$csrf_key" \
     "${mail[@]}" \
     "${plan[@]}" \
+    "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "${plan[@]}" \
+    "${vault_worker[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
   # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
