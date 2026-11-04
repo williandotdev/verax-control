@@ -25,6 +25,8 @@ env:
   TFLINT_VERSION: 0.65.0
   TFLINT_SHA256: d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61
   CHECKOV_IMAGE: bridgecrew/checkov:3.4.0@sha256:ece5efac4443084ca273072909985dce988a81e8cc94faa305aeda0df27c68f9
+  CFN_GUARD_VERSION: 3.2.1
+  CFN_GUARD_SHA256: 09c2b8cfd81d513374a8da89d4805dc55006a3da52bbf598e272022d4d198e94
   TF_IN_AUTOMATION: '1'
   TF_INPUT: '0'
 
@@ -255,6 +257,20 @@ jobs:
           "$RUNNER_TEMP/cfn/bin/pip" install --disable-pip-version-check --require-hashes --no-deps             -r infra/cloudformation/requirements-lint.txt
       - name: cfn-lint
         run: '"$RUNNER_TEMP/cfn/bin/cfn-lint" infra/cloudformation/*.yaml'
+      - name: Instalar cfn-guard (checksum fixado)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo cfn-guard.tar.gz "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/${CFN_GUARD_VERSION}/cfn-guard-v3-x86_64-ubuntu-latest.tar.gz"
+          echo "${CFN_GUARD_SHA256}  cfn-guard.tar.gz" | sha256sum --check --strict
+          tar -xzf cfn-guard.tar.gz -C "$RUNNER_TEMP/bin" --strip-components=1 cfn-guard-v3-x86_64-ubuntu-latest/cfn-guard
+          rm cfn-guard.tar.gz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: cfn-guard (usuário de leitura)
+        # Primeiro os casos das regras (cada mutação derruba a regra certa), depois o template.
+        run: |
+          rules=infra/cloudformation/guard/verax-control-reader.guard
+          cfn-guard test --rules-file "$rules" --test-data infra/cloudformation/guard/verax-control-reader.tests.yaml
+          cfn-guard validate --rules "$rules" --data infra/cloudformation/verax-control-reader.yaml --show-summary fail
       - name: Testes de segurança do template
         run: '"$RUNNER_TEMP/cfn/bin/python" -m unittest discover -s infra/cloudformation/tests -v'
       - name: Testes do diagnóstico somente leitura
