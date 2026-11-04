@@ -71,13 +71,13 @@ export async function startHostingServer(options: {
       response.writeHead(404).end();
       return;
     }
-    const headers: Record<string, string> = {
-      'Content-Type': CONTENT_TYPES[extname(file)] ?? 'application/octet-stream',
-    };
+    response.setHeader('Content-Type', CONTENT_TYPES[extname(file)] ?? 'application/octet-stream');
+    // Cabeçalhos da configuração do site (nunca do pedido), regra a regra: o da regra posterior substitui.
     for (const rule of config.headers) {
-      if (matches(rule.glob, path)) Object.assign(headers, rule.headers);
+      if (!matches(rule.glob, path)) continue;
+      for (const [name, value] of Object.entries(rule.headers)) response.setHeader(name, value);
     }
-    response.writeHead(200, headers).end(readFileSync(file));
+    response.writeHead(200).end(readFileSync(file));
   };
 
   const server = createServer(handle);
