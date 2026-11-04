@@ -7,6 +7,11 @@ A revisão de 04/11/2026 (fase 2) põe todo nó de cliente na GCP da Verax, com 
 por um usuário IAM de leitura com chave, guardada cifrada no cofre do nó. A pilha do nó na AWS e o conector com papel
 saem do caminho atual.
 
+O que vem dessa revisão é o **desenho-alvo da fase 2, ainda a construir**: o nó de cliente com o Wazuh, os perfis de
+nó, o template do usuário de leitura, o cofre, a chave e o token colados no painel e o coletor nativo do Cloudflare.
+As seções dessas partes levam a marca _(fase 2, a construir)_, e o que já existe está marcado como feito em "Ordem de
+execução". Até lá, o painel segue com o fluxo anterior, do papel com ExternalId.
+
 ## Princípios
 
 1. **Simples e replicável.** Cada implantação é um **nó**: uma VM com tudo dentro, criada pelo Terraform de
@@ -64,8 +69,8 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 
 - **Configuração da AWS (Ativos e Postura):** o worker lê com a mesma chave, só pelas ações de leitura da política,
   com cerca de 18 checagens de postura nativas. Sem Prowler.
-- **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. A API lê a assinatura com a
-  identidade da VM e aplica regras próprias, como no nó da Verax.
+- **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O worker lê a assinatura com
+  a identidade da VM e aplica regras próprias, como no nó da Verax.
 - **Cloudflare:** coletor nativo no worker (seção "Logs do Cloudflare").
 - **Retenção:** o índice do Wazuh guarda 30 dias (alertas a partir do nível 5, 1 shard). Os achados ficam no Postgres
   pelo prazo do plano (90 ou 365 dias), com os campos do evento; só o evento bruto do detalhe expira em 30 dias.
@@ -83,18 +88,24 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 
 ## Perfis de nó (`lean` e `standard`)
 
-O perfil é uma variável do Terraform (`node_profile`) e do pacote do nó (`NODE_PROFILE`). Ele define a VM, o disco, o
-snapshot e os limites de memória dos contêineres.
+_(fase 2, a construir)_
 
-|          | `lean`                                           | `standard`                                                  |
-| -------- | ------------------------------------------------ | ----------------------------------------------------------- |
-| Uso      | Nó da própria Verax (fontes da GCP e Cloudflare) | Nó de cliente, um por cliente                               |
-| VM       | e2-micro do nível gratuito, em us-east1          | e2-standard-2 (2 vCPU, 8 GB), em southamerica-east1         |
-| Disco    | 30 GB pd-standard                                | 60 GB pd-balanced, que cresce sem parar a VM                |
-| Snapshot | Semanal, guardado por 28 dias                    | Diário, guardado por 7 dias                                 |
-| Wazuh    | Não                                              | Manager e indexer, sem dashboard                            |
-| Sistema  | Swap de 2 GB                                     | Swap de 2 GB, `vm.swappiness=1` e `vm.max_map_count=262144` |
+O perfil passa a ser uma variável do Terraform (`node_profile`) e do pacote do nó (`NODE_PROFILE`). Ele define a VM,
+o disco, o snapshot e os limites de memória dos contêineres.
 
+|          | `lean`                                           | `standard`                                                          |
+| -------- | ------------------------------------------------ | ------------------------------------------------------------------- |
+| Uso      | Nó da própria Verax (fontes da GCP e Cloudflare) | Nó de cliente, um por cliente                                       |
+| VM       | e2-micro do nível gratuito, em us-east1          | e2-standard-2 (2 vCPU, 8 GB), em southamerica-east1                 |
+| Disco    | 30 GB pd-standard                                | 60 GB pd-balanced, que cresce sem parar a VM                        |
+| Snapshot | Semanal, guardado por 28 dias                    | Diário, guardado por 7 dias                                         |
+| Wazuh    | Não                                              | Manager e indexer, sem dashboard                                    |
+| Sistema  | Swap cifrado de 2 GB                             | Swap cifrado de 2 GB, `vm.swappiness=1` e `vm.max_map_count=262144` |
+
+- **Swap cifrado, nos dois perfis:** o swap usa uma chave aleatória nova a cada boot (dm-crypt no modo plain, com a
+  chave tirada de `/dev/urandom`), que só existe na memória. O que o kernel tira da memória para o swap (o tmpfs com
+  a chave privada do cofre e a chave da AWS, a memória do worker e a do manager) chega ao disco, e ao snapshot dele,
+  só cifrado. Ao trocar o swap atual por este, o arquivo antigo é recriado, para não sobrar texto claro nele.
 - **Imagem uniforme:** todo nó de cliente é `standard`, com ou sem conta AWS, nos planos Essencial e Profissional. O
   plano muda limites e retenção, não a máquina.
 - **Memória no `standard`** (soma dos limites de cerca de 6 GiB): indexer com 3 GiB, heap de 1,5 GiB e memória
@@ -127,6 +138,8 @@ e o certificado é do Firebase.
 
 ## Contas monitoradas por provedor
 
+_(credencial no cofre: fase 2, a construir)_
+
 O cadastro de contas (Contas cloud) aceita três provedores. A GCP não usa credencial. **AWS e Cloudflare: credencial
 de leitura cifrada no cofre do nó** (seção "Cofre de credenciais"). Um admin cola a credencial no painel; ela nunca
 volta pela API e nunca fica no cadastro da conta.
@@ -142,6 +155,8 @@ permite atribuir cada alerta ao cliente certo.
 
 ## Cofre de credenciais
 
+_(fase 2, a construir)_
+
 - **O que guarda:** a chave de acesso do usuário IAM da AWS e o token do Cloudflare, uma linha por conta cloud
   (`CloudCredential`), com o mesmo isolamento por cliente de todo dado de cliente.
 - **Cifra assimétrica:** RSA-3072 com OAEP-SHA256. A API, exposta pelo túnel, tem só a chave pública: cifra o que o
@@ -150,13 +165,19 @@ permite atribuir cada alerta ao cliente certo.
   conta ou outro cliente não abre.
 - **Chave do nó:** nasce na VM, na instalação, se o segredo `<prefixo>-credentials-key` do Secret Manager estiver
   vazio, e vai direto para ele, sem passar pelo disco. A permissão de acrescentar versões vale só nesse segredo. A
-  chave privada nunca sai da GCP, e os backups e snapshots levam só texto cifrado.
+  chave privada nunca sai da GCP e não é gravada no disco do nó: fica no tmpfs e na memória do worker, e o swap é
+  cifrado com uma chave que some a cada boot (seção "Perfis de nó"). Por isso, os backups do banco e os snapshots do
+  disco não levam a chave privada nem credencial em claro.
 - **Versões:** a versão do segredo é a versão da chave. Uma tarefa diária do worker recifra as linhas antigas. Na
   saída de um cliente, destruir a versão depois do prazo dos backups inutiliza o texto cifrado que sobrou neles.
 - **Validação antes de gravar:** só os admins (`admin_cliente` e `admin_verax`) colam, com permissão própria e limite
   de tentativas por conta e por cliente.
-  - AWS: a conta e o ARN exatos do usuário de leitura (`GetCallerIdentity`) e nenhuma permissão além da política
-    (`SimulatePrincipalPolicy`). Chave de root ou de outro usuário é recusada.
+  - AWS: a conta e o ARN exatos do usuário de leitura (`GetCallerIdentity`). Chave de root ou de outro usuário é
+    recusada.
+  - AWS, permissão demais: o `SimulatePrincipalPolicy`, com o IP do NAT do nó no contexto (`aws:SourceIp`; sem ele,
+    o Deny de IP pode negar tudo e esconder a permissão a mais), testa uma amostra de ações que o usuário não pode ter:
+    escrita, IAM, KMS e leitura fora da política, como um bucket não cadastrado e o Secrets Manager. Se alguma for
+    permitida, a chave é recusada. É uma amostra: uma permissão a mais fora dela não é detectada.
   - Cloudflare: `tokens/verify`. A Global API Key é recusada.
 - **O segredo não sai:** não volta pela API e não vai para a auditoria (só os 4 últimos caracteres do ID da chave,
   `keyIdSuffix`) nem para o log (o logger mascara os segredos decifrados no processo). Erros da AWS vão para o log só
@@ -170,6 +191,8 @@ permite atribuir cada alerta ao cliente certo.
 - **Desativar a conta** apaga a credencial na mesma transação.
 
 ## Por que usuário IAM com chave
+
+_(fase 2, a construir)_
 
 **Decisão de 04/11/2026, com o risco aceito pelo responsável pelo produto.**
 
@@ -190,38 +213,40 @@ grupo e duas políticas gerenciadas. Nenhuma saída da pilha é segredo.
 
 1. O cliente aplica o template, cria a chave no console e cola no painel. O nó passa a ler os buckets em poucos
    minutos.
-2. O worker confere a cada 15 min a conexão, o KMS, a idade e se há outra chave ativa. Uma vez por dia, confere
-   permissão demais e se a trilha e o export do GuardDuty apontam para os buckets cadastrados.
+2. O worker confere a cada 15 min a conexão, o KMS, a idade e se há outra chave ativa. Uma vez por dia, repete a
+   simulação de permissão demais (só avisa) e confere se a trilha e o export do GuardDuty apontam para os buckets
+   cadastrados.
 3. Troca: faixa no painel aos 75 dias, aviso e e-mail aos 90 e escalonamento aos 120. O cliente cria a segunda chave,
    cola e exclui a antiga. **A coleta nunca para por idade.**
 4. Remoção: a credencial é apagada, e o painel mostra os passos no console: excluir a chave e depois a pilha.
 
 **Riscos residuais e mitigação:**
 
-| Risco                                                                                            | Mitigação                                                                                                                                                   |
-| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Chave de longa duração fora da AWS do cliente                                                    | Só vale do IP do NAT do nó; leitura mínima com boundary; Deny de alteração de logs e de IAM; regra de nível 12 para uso fora do nó; troca aos 90 dias       |
-| Root no nó lê a chave em claro (tmpfs e memória do worker e do manager)                          | Nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração |
-| Execução remota de código na API, exposta pelo túnel                                             | Cofre assimétrico: a API não decifra o que está guardado, só vê as chaves coladas durante o comprometimento                                                 |
-| O manager processa log não confiável e lê a chave                                                | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado                                           |
-| Sessões do `GetSessionToken` sobrevivem à exclusão da chave e não podem ser negadas              | O Deny de IP vale para elas; `RevokeSessionsIssuedBefore` no incidente                                                                                      |
-| O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN                               | Impacto baixo; documentado                                                                                                                                  |
-| O IP do NAT muda e a coleta para                                                                 | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                         |
-| O cliente amplia o usuário (anexa política, tira o boundary)                                     | `SimulatePrincipalPolicy` ao colar e todo dia, com aviso na Torre                                                                                           |
-| A chave antiga continua ativa depois da troca                                                    | Aviso até ela sumir; escalonamento aos 120 dias                                                                                                             |
-| Na saída do cliente, a chave segue válida na AWS, e os backups guardam o texto cifrado           | Roteiro de exclusão; destruição da versão da chave do nó depois do prazo dos backups                                                                        |
-| Pessoa interna da Verax com acesso à VM ou ao Secret Manager consegue decifrar                   | IAM mínimo no projeto dos nós; IAP auditado; o CloudTrail do cliente registra todo uso pelo ARN e pelo IP                                                   |
-| Objeção de conformidade: Security Hub e Prowler acusam a chave; uma SCP pode proibir usuário IAM | Texto "Por que usuário IAM" no onboarding; modo papel guardado para Enterprise                                                                              |
-| Quarentena automática da AWS se a chave vazar em público                                         | A checagem mostra o AccessDenied com instrução de troca                                                                                                     |
-| Bucket de organização legível inteiro                                                            | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente                                                                                 |
-| Chave em argumento de processo ou em log de debug                                                | Nunca `<access_key>` no `ossec.conf`; debug do módulo desligado; máscara de segredos no logger                                                              |
+| Risco                                                                                                             | Mitigação                                                                                                                                                                          |
+| ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Chave de longa duração fora da AWS do cliente                                                                     | Só vale do IP do NAT do nó; leitura mínima com boundary; Deny de alteração de logs e de IAM; regra de nível 12 para uso fora do nó; troca aos 90 dias                              |
+| Root no nó lê a chave em claro (tmpfs e memória do worker e do manager)                                           | Nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração                        |
+| Página da memória com segredo em claro (chave privada, chave da AWS, token) vai para o swap, no disco do snapshot | Swap cifrado com chave aleatória a cada boot, nos dois perfis; no `standard`, `vm.swappiness=1` e o heap do indexer travado na memória                                             |
+| Execução remota de código na API, exposta pelo túnel                                                              | Cofre assimétrico: a API não decifra o que está guardado, só vê as chaves coladas durante o comprometimento                                                                        |
+| O manager processa log não confiável e lê a chave                                                                 | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado                                                                  |
+| Sessões do `GetSessionToken` sobrevivem à exclusão da chave e não podem ser negadas                               | O Deny de IP vale para elas; `RevokeSessionsIssuedBefore` no incidente                                                                                                             |
+| O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN                                                | Impacto baixo; documentado                                                                                                                                                         |
+| O IP do NAT muda e a coleta para                                                                                  | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                |
+| O cliente amplia o usuário (anexa política, tira o boundary)                                                      | `SimulatePrincipalPolicy` ao colar e todo dia, com uma amostra de escrita, IAM, KMS e leitura fora da política, e aviso na Torre. Permissão a mais fora da amostra não é detectada |
+| A chave antiga continua ativa depois da troca                                                                     | Aviso até ela sumir; escalonamento aos 120 dias                                                                                                                                    |
+| Na saída do cliente, a chave segue válida na AWS, e os backups guardam o texto cifrado                            | Roteiro de exclusão; destruição da versão da chave do nó depois do prazo dos backups                                                                                               |
+| Pessoa interna da Verax com acesso à VM ou ao Secret Manager consegue decifrar                                    | IAM mínimo no projeto dos nós; IAP auditado; o CloudTrail do cliente registra todo uso pelo ARN e pelo IP                                                                          |
+| Objeção de conformidade: Security Hub e Prowler acusam a chave; uma SCP pode proibir usuário IAM                  | Texto "Por que usuário IAM" no onboarding; modo papel guardado para Enterprise                                                                                                     |
+| Quarentena automática da AWS se a chave vazar em público                                                          | A checagem mostra o AccessDenied com instrução de troca                                                                                                                            |
+| Bucket de organização legível inteiro                                                                             | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente                                                                                                        |
+| Chave em argumento de processo ou em log de debug                                                                 | Nunca `<access_key>` no `ossec.conf`; debug do módulo desligado; máscara de segredos no logger                                                                                     |
 
 ## SOC da própria Verax (fontes da GCP)
 
 A base do nó da Verax na GCP está em `infra/gcp/`, com o passo a passo em `infra/gcp/GUIA.md`, e foi aplicada em
-03/11/2026. É um nó **`lean`**: como ele monitora só a GCP e o Cloudflare, não usa o Wazuh. A API lê os logs direto
-do Pub/Sub e aplica regras próprias. Tudo roda numa e2-micro do nível gratuito em us-east1. Os nós de clientes usam o
-perfil `standard`, todos com o Wazuh (seção "Perfis de nó").
+03/11/2026. É um nó **`lean`**: como ele monitora só a GCP e o Cloudflare, não usa o Wazuh. O worker lê os logs
+direto do Pub/Sub e aplica regras próprias. Tudo roda numa e2-micro do nível gratuito em us-east1. Os nós de clientes
+usam o perfil `standard`, todos com o Wazuh (seção "Perfis de nó").
 
 O pacote do nó está em `infra/node/`, com o roteiro em `docs/runbooks/no-verax.md`. Ele roda numa VM só, sem porta
 aberta: Postgres com TLS, papéis e migrations, API, worker e o túnel do Cloudflare. As imagens vêm do registro do
@@ -239,12 +264,16 @@ A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
 ## Logs do Cloudflare
 
+_(fase 2, a construir)_
+
 O Cloudflare é lido pela API dele, por um coletor nativo no worker, sem o Wazuh. Vale para o nó da Verax e para os
 nós de clientes:
 
 - **Auditoria da conta** (audit logs v2), com cursor por conta;
 - **Eventos de segurança do WAF**, pela API GraphQL de analytics, em janelas de 15 min. O Cloudflare amostra esses
-  eventos, então as contagens são aproximadas. Ele guarda até 31 dias, e uma parada do nó não perde dados.
+  eventos, então as contagens são aproximadas. Ele guarda os eventos por uma janela que vale por zona e depende do
+  plano (`notOlderThan`, de até 31 dias). Uma parada do nó mais curta que essa janela não perde dados; numa parada
+  mais longa, o que passou da janela se perde.
 
 As regras são próprias (faixa 9903xx), com título em português e MITRE. O token é de conta, **só de leitura**, com
 três permissões: `Account Settings Read`, `Analytics Read` e `Zone Read`. O admin cola o token no painel, e ele fica

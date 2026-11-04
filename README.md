@@ -1,6 +1,6 @@
 # Verax Control
 
-Painel de segurança para empresas com operação em nuvem. Ferramentas open source (Wazuh, Prowler) fazem a coleta e a detecção, a API transforma alertas em decisões e o painel mostra, em português claro, se está tudo bem e o que o gestor precisa decidir.
+Painel de segurança para empresas com operação em nuvem. O Wazuh (open source) e coletores próprios fazem a coleta e a detecção, a API transforma alertas em decisões e o painel mostra, em português claro, se está tudo bem e o que o gestor precisa decidir.
 
 ## Estrutura
 
