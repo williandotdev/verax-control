@@ -113,6 +113,9 @@ services:
       NODE_OPTIONS: --max-old-space-size=${API_HEAP_MB:-192}
     volumes: [*database-ca]
     mem_limit: ${API_MEM_LIMIT:-320m}
+    # Sem core dump: a memória da API tem as chaves da sessão e do CSRF e a credencial que o admin cola no painel.
+    ulimits:
+      core: 0
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -134,6 +137,9 @@ services:
     healthcheck:
       disable: true
     mem_limit: ${WORKER_MEM_LIMIT:-256m}
+    # Sem core dump: a memória do worker tem as chaves privadas do cofre e as credenciais decifradas.
+    ulimits:
+      core: 0
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }

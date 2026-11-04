@@ -17,6 +17,7 @@ export const TENANT_SCOPED_MODELS = [
   'postureFailure',
   'inventorySnapshot',
   'ingestUsage',
+  'cloudCredential',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

@@ -137,8 +137,17 @@ jobs:
         # sink de projeto de cliente, que só vai para a API com o projeto e o prefixo do node.conf no formato do módulo
         # (fora dele, a API sobe sem o tópico).
         run: bash infra/node/tests/start-test.sh
+      - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
+        # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
+        # sem o arquivo das chaves nem o compose.vault.yaml), a primeira instalação de um nó de cliente (a chave nasce
+        # e vai direto para o Secret Manager; as privadas chegam ao worker só pelo arquivo do tmpfs, nunca pelo
+        # worker.env), a rotação com versões desativadas e destruídas, 101 versões, o cofre sem versão ativa e sem
+        # versão nenhuma (cada aviso com a saída certa), o segredo inexistente, a rede fora do ar e um conteúdo que não
+        # é chave, na versão corrente e numa antiga. Roda sem root e sem tocar na máquina.
+        run: bash infra/node/tests/vault-test.sh
       - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
-        # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Os arquivos de /run/verax são os
+        # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Com o cofre de credenciais,
+        # nos dois, mais o compose.vault.yaml (o start.sh o soma em toda chamada). Os arquivos de /run/verax são os
         # que o `render` do start.sh escreve (a lista vem do próprio script): um env_file do Compose sem o write_env
         # correspondente falha aqui, e não só na VM (foi o caso do bootstrap.env, que o `config --images` do
         # pull_images exigia e o render não escrevia). As duas últimas linhas são esse `config --images`, por perfil
@@ -154,6 +163,10 @@ jobs:
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
           docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
             --profile setup config --quiet
+          # Com o cofre de credenciais (CREDENTIALS_VAULT=true), o start.sh soma o compose.vault.yaml, nos dois perfis.
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml \
+            --env-file images.env --profile setup config --quiet
           images() { docker compose "$@" --env-file images.env --profile setup config --images | sed 's/[@:].*//' | sort -u | tr '\n' ' '; }
           test "$(images -f infra/node/compose.yaml)" = 'cloudflare/cloudflared exemplo/api exemplo/migrate postgres '
           test "$(images -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)" = \
@@ -230,10 +243,11 @@ jobs:
           sudo install -d /opt/verax/bin
           sudo install -m 0755 infra/node/bin/*.sh /opt/verax/bin/
           systemd-analyze verify --man=no "$units"/*.service "$units"/*.timer
-      - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard)
+      - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard, com e sem o cofre)
         # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
         # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
-        # declaradas e sem ganho de privilégio; os jobs de inicialização dele têm a raiz só leitura.
+        # declaradas e sem ganho de privilégio; os jobs de inicialização dele têm a raiz só leitura. A API e o worker,
+        # sem core dump em toda combinação.
         run: |
           check() {
             local config
@@ -246,9 +260,14 @@ jobs:
               | select((.value.read_only != true and (.key | IN("wazuh.indexer", "wazuh.manager") | not))
                 or (.value.cap_drop | index("ALL")) == null
                 or (.value.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+            # Sem core dump na API e no worker (a memória deles tem as chaves do cofre de credenciais). O Compose
+            # escreve o limite 0 como um objeto vazio (soft e hard 0); um valor diferente de 0 apareceria nele.
+            jq -e '.services | .api.ulimits.core == {} and .worker.ulimits.core == {}' <<<"$config"
           }
           check -f infra/node/compose.yaml
           check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.vault.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml
       - name: Redes do Wazuh no standard (indexer só nas internas; manager fora da rede do banco e da rede da API)
         # Duas redes internas: `wazuh` (indexer e manager) e `wazuh-read` (indexer, API e worker). A API nunca divide
         # rede com o manager, que processa log de fora como root: numa rede só, ele chegaria à API por dentro, fora do
@@ -265,6 +284,70 @@ jobs:
               and .services.worker.networks.verax.ipv4_address == "172.30.53.10"
               and (((.services.api.networks | keys) - ((.services.api.networks | keys)
                 - (.services."wazuh.manager".networks | keys))) | length) == 0'
+      - name: Cofre de credenciais (as chaves privadas chegam ao worker por arquivo só leitura, e só a ele)
+        # O ambiente de um contêiner fica gravado no disco (configuração do Docker); o conteúdo de um volume montado,
+        # não. O compose.vault.yaml monta só no worker, só leitura, a pasta que o start.sh escreve em /run/verax/vault
+        # (a pasta, e não o arquivo: a origem de um bind mount que falta vira uma pasta criada pelo Docker, e um arquivo
+        # dentro de uma pasta montada pode ser trocado de uma vez), no caminho WORKER_VAULT_MOUNT; o arquivo das chaves
+        # fica dentro dela, em WORKER_KEYS_MOUNT, que o start.sh põe em CREDENTIALS_PRIVATE_KEYS_FILE. O worker continua
+        # endurecido. Nos dois perfis.
+        run: |
+          # Linha inteira e texto literal (-xF): o `$` é o do shell do start.sh (escapado em aspas duplas), não uma
+          # expansão daqui nem uma âncora.
+          grep -qxF 'run=/run/verax' infra/node/bin/start.sh
+          grep -qxF "WORKER_VAULT=\$run/vault" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS=\$WORKER_VAULT/worker-keys" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS_MOUNT=\$WORKER_VAULT_MOUNT/worker-keys" infra/node/bin/start.sh
+          mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
+          [[ $mount == /* ]]
+          vault() {
+            local config
+            config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
+            jq -e --arg mount "$mount" '.services.worker.volumes
+              | any(.type == "bind" and .source == "/run/verax/vault" and .target == $mount and .read_only == true)' <<<"$config"
+            jq -e --arg mount "$mount" '[.services[] | (.volumes // [])[]
+              | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+            jq -e '.services.worker | .read_only == true and (.cap_drop | index("ALL")) != null' <<<"$config"
+          }
+          # Nos dois perfis: no standard, o compose.wazuh.yaml também soma um volume ao worker (a CA do indexer).
+          vault -f infra/node/compose.yaml -f infra/node/compose.vault.yaml
+          vault -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml
+          # Nada do cofre entra pelo ambiente do worker: só o caminho do arquivo e a versão corrente. A única variável
+          # com PRIVATE_KEY no nome que o start.sh escreve é a do caminho (o worker recusa qualquer outra).
+          if grep -Eio '[A-Z0-9_]*PRIVATE_?KEY[A-Z0-9_]*=' infra/node/bin/start.sh | grep -v '^CREDENTIALS_PRIVATE_KEYS_FILE=$'; then
+            echo 'O start.sh escreve uma variável com chave privada: só CREDENTIALS_PRIVATE_KEYS_FILE pode ter PRIVATE_KEY no nome.' >&2
+            exit 1
+          fi
+      - name: O worker sobe com a pasta do cofre ausente (o Docker a cria) e lê o que o start.sh escreve nela depois
+        # A origem do bind mount do compose.vault.yaml é uma pasta. Ausente (a VM reiniciou sem a parada, e o Docker
+        # reiniciou o worker antes do verax-node.service), o Docker a cria vazia e o contêiner sobe; o arquivo que o
+        # start.sh escreve nela em seguida (write_worker_keys, repetido aqui passo a passo) aparece dentro do contêiner,
+        # só leitura, legível pelo usuário do worker e por mais ninguém. Roda o serviço de verdade, com os dois arquivos
+        # do Compose, trocando a imagem da API pela base dela (a mesma de scripts/test-api-image.sh) e o comando por
+        # um `sh`.
+        env:
+          BASE_IMAGE: node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
+        run: |
+          mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
+          uid=$(sed -n 's/^WORKER_UID=//p' infra/node/bin/start.sh)
+          [[ $mount == /* && $uid =~ ^[0-9]+$ ]]
+          { echo "API_IMAGE=$BASE_IMAGE"; echo "MIGRATE_IMAGE=$BASE_IMAGE"; } >base.env
+          compose() { docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file base.env "$@"; }
+          sudo rm -rf /run/verax/vault
+          # Pasta ausente: o worker sobe, e a pasta aparece vazia nele e na VM (criada pelo Docker).
+          compose run --rm -T --no-deps --entrypoint sh worker -c "test -d $mount && test -z \"\$(ls -A $mount)\""
+          test -d /run/verax/vault
+          # O que o start.sh faz na partida seguinte (write_worker_keys), com a pasta que o Docker deixou.
+          sudo install -d -m 0750 -o 0 -g "$uid" /run/verax/vault
+          file=$(sudo mktemp /run/verax/vault/.worker-keys.XXXXXX)
+          echo '1:exemplo' | sudo tee "$file" >/dev/null
+          sudo chmod 0400 "$file"
+          sudo chown "$uid:$uid" "$file"
+          sudo mv -fT "$file" /run/verax/vault/worker-keys
+          # O worker lê o arquivo e não escreve na pasta; outro usuário não lê.
+          compose run --rm -T --no-deps --entrypoint sh --user "$uid:$uid" worker -c "test \"\$(cat $mount/worker-keys)\" = 1:exemplo && ! touch $mount/x 2>/dev/null"
+          compose run --rm -T --no-deps --entrypoint sh --user 65534:65534 worker -c "! cat $mount/worker-keys 2>/dev/null"
+          compose down
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)

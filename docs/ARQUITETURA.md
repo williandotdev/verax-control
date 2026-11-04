@@ -177,7 +177,8 @@ mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico
 
 ## Cofre de credenciais
 
-_(fase 2, a construir)_
+_(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e
+`infra/node`; a tela que grava a credencial vem no PR-V3, e a entrega ao Wazuh, no PR-V4)_
 
 - **O que guarda:** a chave de acesso do usuário IAM da AWS e o token do Cloudflare, uma linha por conta cloud
   (`CloudCredential`), com o mesmo isolamento por cliente de todo dado de cliente.
@@ -185,9 +186,15 @@ _(fase 2, a construir)_
   admin cola e não consegue decifrar o que já está guardado. Só o worker tem a chave privada.
 - **Vínculo:** o rótulo do OAEP amarra o texto cifrado ao cliente, à conta e ao tipo. Uma linha copiada para outra
   conta ou outro cliente não abre.
-- **Chave do nó:** nasce na VM, na instalação, se o segredo `<prefixo>-credentials-key` do Secret Manager estiver
-  vazio, e vai direto para ele, sem passar pelo disco. A permissão de acrescentar versões vale só nesse segredo. A
-  chave privada nunca sai da GCP e não é gravada no disco do nó: fica no tmpfs e na memória do worker, e o swap é
+- **Chave do nó:** com `CREDENTIALS_VAULT=true` no `node.conf` (o nó da Verax não liga), nasce na VM, na instalação,
+  se o segredo `<prefixo>-credentials-key` do Secret Manager estiver vazio, e vai direto para ele, sem passar pelo
+  disco. A permissão de acrescentar versões vale só nesse segredo. A chave privada nunca sai da GCP e não é gravada no
+  disco do nó: a cada partida, o `start.sh` escreve as versões ativas num arquivo do tmpfs
+  (`/run/verax/vault/worker-keys`, 0400, só o usuário do worker lê), numa pasta montada só leitura no worker
+  (`compose.vault.yaml`; a pasta, e não o arquivo, porque a origem de um bind mount que falta vira uma pasta criada
+  pelo Docker ao subir o contêiner), e a API recebe só a pública. A parada do nó apaga a pasta. As privadas não vão
+  por variável de ambiente, porque o Docker grava o ambiente de cada contêiner na configuração dele, em
+  `/var/lib/docker`, que está no disco e nos snapshots; de um volume montado, só o caminho vai para lá. O swap é
   cifrado com uma chave que some a cada boot (seção "Perfis de nó"). Por isso, os backups do banco e os snapshots do
   disco não levam a chave privada nem credencial em claro.
 - **Versões:** a versão do segredo é a versão da chave. Uma tarefa diária do worker recifra as linhas antigas. Na
@@ -250,6 +257,7 @@ Nenhuma saída da pilha é segredo.
 | Chave de longa duração fora da AWS do cliente                                                                     | Só vale do IP do NAT do nó; leitura mínima com boundary; Deny de alteração de logs e de IAM; regra de nível 12 para uso fora do nó; troca aos 90 dias                              |
 | Root no nó lê a chave em claro (tmpfs e memória do worker e do manager)                                           | Nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração                        |
 | Página da memória com segredo em claro (chave privada, chave da AWS, token) vai para o swap, no disco do snapshot | Swap cifrado com chave aleatória a cada boot, nos dois perfis; no `standard`, `vm.swappiness=1` e o heap do indexer travado na memória                                             |
+| O ambiente de um contêiner fica gravado em `/var/lib/docker`, no disco e no snapshot                              | Chaves privadas do cofre só por arquivo do tmpfs montado só leitura no worker, nunca por variável (teste e CI conferem); os outros segredos do nó não abrem credencial             |
 | Execução remota de código na API, exposta pelo túnel                                                              | Cofre assimétrico: a API não decifra o que está guardado, só vê as chaves coladas durante o comprometimento                                                                        |
 | O manager processa log não confiável e lê a chave                                                                 | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado                                                                  |
 | Sessões do `GetSessionToken` sobrevivem à exclusão da chave e não podem ser negadas                               | O Deny de IP vale para elas; `RevokeSessionsIssuedBefore` no incidente                                                                                                             |

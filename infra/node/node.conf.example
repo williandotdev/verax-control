@@ -36,3 +36,8 @@ NODE_PROFILE=lean
 # IAM da AWS do cliente libera. Vazio no nó da Verax, que sai pelo IP automático do NAT.
 NODE_EGRESS_IPS=
 # NODE_EGRESS_IPS=203.0.113.10/32
+# Cofre de credenciais: a chave da AWS e o token do Cloudflare colados no painel ficam cifrados com uma chave RSA que o
+# install.sh gera na VM e guarda só no Secret Manager (`<prefixo>-credentials-key`). true só no nó que tem esse segredo
+# (`credentials_vault` no Terraform, ligado nos nós de clientes e na homologação). Sem a linha, vale false: o nó da
+# Verax não guarda credencial e sobe como antes.
+CREDENTIALS_VAULT=false
