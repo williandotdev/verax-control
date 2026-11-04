@@ -1,6 +1,6 @@
 # Guia: os nós e o plano de controle do Verax Control na GCP com Terraform
 
-Este guia sobe ou altera a infraestrutura dos nós e do plano de controle na GCP. Há três ambientes, cada um com o
+Este guia sobe ou altera a infraestrutura dos nós e do plano de controle na GCP. Há quatro ambientes, cada um com o
 próprio estado:
 
 - **`envs/verax`:** o SOC da própria Verax, no perfil `lean`. A primeira subida foi feita em 03/11/2026, quando o
@@ -10,6 +10,9 @@ próprio estado:
 - **`envs/control-plane`:** o plano de controle da fase 3 (checkout, webhook da Stripe, página de status e
   provisionamento dos nós de clientes), no projeto da Verax que hospeda o Firebase dos painéis. Ainda não foi
   aplicado. Tem a própria seção, "O plano de controle", no fim deste guia.
+- **`envs/release`:** a chave de release do nó no Cloud KMS, que assina o manifesto de cada versão (preparação do
+  modo próprio, fase 3, SH-02), e a federação que só deixa o workflow `Versão do nó` usá-la. Fica no projeto do nó da
+  Verax, nunca no do plano de controle. Ainda não foi aplicado. O passo a passo está em `docs/runbooks/versao-no.md`.
 
 Os dois primeiros chamam o mesmo módulo, `modules/node`. Na fase 3, cada cliente ganha um ambiente igual ao de
 homologação, aplicado pelo plano de controle.
@@ -36,8 +39,10 @@ infra/gcp/
 ├── envs/verax/            nó da Verax (lean): APIs, orçamento, registro das imagens e o módulo
 │   └── startup.sh         script de boot de antes do módulo, que o nó da Verax continua usando
 ├── envs/homolog-sp/       nó de homologação em São Paulo (standard): APIs, orçamento e o módulo
-└── envs/control-plane/    plano de controle (fase 3): Cloud Run, Firestore, filas, relógio, segredos, Hosting e
-                           federação com o GitHub, sem módulo (veja "O plano de controle")
+├── envs/control-plane/    plano de controle (fase 3): Cloud Run, Firestore, filas, relógio, segredos, Hosting e
+│                          federação com o GitHub, sem módulo (veja "O plano de controle")
+└── envs/release/          chave de release do nó (Cloud KMS) e a federação do workflow Versão do nó, sem módulo
+                           (docs/runbooks/versao-no.md)
 ```
 
 O que vale para o projeto inteiro fica no ambiente: as APIs, o orçamento e, no da Verax, o registro das imagens e a
