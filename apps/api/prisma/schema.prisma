@@ -100,6 +100,7 @@ model Tenant {
   inventorySnapshots InventorySnapshot[]
   ingestUsage        IngestUsage[]
   cloudCredentials   CloudCredential[]
+  wazuhAgents        WazuhAgent[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -700,4 +701,38 @@ model CloudCredential {
   /// Exigido pelo Prisma na relação um para um com chave composta (o `cloudAccountId` sozinho já é único).
   @@unique([cloudAccountId, tenantId])
   @@index([tenantId])
+}
+
+/// Estado do agente do Wazuh, como o manager do nó informa.
+enum WazuhAgentStatus {
+  active
+  disconnected
+  pending
+  never_connected
+}
+
+/// Agente do Wazuh numa instância do cliente (agentes nas instâncias, desligado por padrão em cada nó). O worker grava
+/// a lista que o host exporta da API do manager a cada minuto, no cliente do nó (WAZUH_AGENTS_TENANT); o painel só lê.
+/// O id do agente é o do manager do nó, único no nó. Tudo vem da instância do cliente: entrada não confiável, validada
+/// pelo worker antes de gravar.
+model WazuhAgent {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  tenantId        String           @db.Uuid
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  agentId         String           @db.VarChar(8)
+  name            String           @db.VarChar(128)
+  /// IP de onde o agente fala com o manager (`any` antes da primeira conexão).
+  ip              String?          @db.VarChar(64)
+  osName          String?          @db.VarChar(128)
+  osVersion       String?          @db.VarChar(64)
+  osPlatform      String?          @db.VarChar(32)
+  version         String?          @db.VarChar(32)
+  status          WazuhAgentStatus
+  lastKeepAliveAt DateTime?        @db.Timestamptz(3)
+  registeredAt    DateTime?        @db.Timestamptz(3)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@unique([agentId])
+  @@index([tenantId, name])
 }

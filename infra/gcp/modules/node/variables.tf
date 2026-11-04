@@ -170,3 +170,42 @@ variable "alert_email" {
   type        = string
   default     = ""
 }
+
+variable "wazuh_agents" {
+  description = "Agentes do Wazuh nas instâncias do cliente: um IP fixo de entrada (regra de encaminhamento para a VM, sem IP externo nela; a saída continua pelo Cloud NAT) nas portas TCP 1514 e 1515. Só no perfil standard. Falso por padrão: nada é criado. Liga junto com WAZUH_AGENTS=true no node.conf (docs/runbooks/onboarding-cliente.md)."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.wazuh_agents || var.node_profile == "standard"
+    error_message = "Os agentes do Wazuh só existem no perfil standard (o lean não tem o Wazuh)."
+  }
+}
+
+variable "wazuh_agents_sources" {
+  description = "Faixas de IP de saída do cliente que podem chegar às portas 1514 e 1515 (IPv4, de /16 a /32, no endereço da rede). Vazia: nenhuma regra de entrada, e o painel diz que a liberação está pendente. Ex.: [\"198.51.100.0/28\", \"192.0.2.15/32\"]."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = length(var.wazuh_agents_sources) == 0 || var.wazuh_agents
+    error_message = "As faixas dos agentes só valem com wazuh_agents = true."
+  }
+
+  # O endereço da rede (sem bit de host) e no máximo /16: nada de 0.0.0.0/0 nem de faixas largas que abririam as portas
+  # para a internet. O install.sh e o start.sh aceitam o mesmo formato em WAZUH_AGENTS_SOURCES.
+  validation {
+    condition = alltrue([for cidr in var.wazuh_agents_sources : try(
+      can(regex("^[0-9]{1,3}([.][0-9]{1,3}){3}/[0-9]{1,2}$", cidr)) &&
+      tonumber(split("/", cidr)[1]) >= 16 &&
+      "${cidrhost(cidr, 0)}/${split("/", cidr)[1]}" == cidr,
+      false
+    )])
+    error_message = "Cada faixa é um IPv4 de /16 a /32, escrito pelo endereço da rede (ex.: 198.51.100.0/28 ou 192.0.2.15/32)."
+  }
+
+  validation {
+    condition     = length(var.wazuh_agents_sources) <= 20 && length(distinct(var.wazuh_agents_sources)) == length(var.wazuh_agents_sources)
+    error_message = "No máximo 20 faixas, sem repetição."
+  }
+}

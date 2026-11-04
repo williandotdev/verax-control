@@ -1,8 +1,14 @@
-# Casos do `cfn-guard test` para as regras de verax-control-reader.guard: um modelo que passa e mutações por regra (as
-# do plano: sem o Deny de IP, com uma chave, com GetObject em qualquer recurso e sem o limite de permissões; e as formas
-# que uma regra frouxa deixaria passar: outra condição no Deny de IP, ação ou recurso em lista, curinga de chave).
+# Casos do `cfn-guard test` para as regras de verax-control-reader.guard: um modelo que passa e mutações por regra (um
+# usuário, uma chave ou um segredo na pilha; cada condição da confiança tirada, afrouxada ou trocada; outro principal
+# ou outra ação; o papel sem o limite ou com sessão, nome ou política a mais; sem o Deny de IP; GetObject em qualquer
+# recurso) e as formas que uma regra frouxa deixaria passar (GetAtt em lista ou em texto, ação ou recurso em lista,
+# curinga no StringLike ou no StringEquals, uma chave ou um operador a mais).
 - name: modelo (o mínimo do template, como o cfn-guard o lê)
   input:
+    Parameters:
+      NodeServiceAccountId: { Type: String, AllowedPattern: '^[0-9]{21}$' }
+      NodeEgressIps: { Type: String }
+      Audience: { Type: String, Default: 'https://control.veraxsistemas.com.br/aws-reader' }
     Resources:
       ReaderPolicy:
         Type: AWS::IAM::ManagedPolicy
@@ -29,7 +35,7 @@
                 Effect: Allow
                 Action: iam:SimulatePrincipalPolicy
                 Resource:
-                  Fn::Sub: 'arn:${AWS::Partition}:iam::${AWS::AccountId}:user/verax/verax-control-reader'
+                  Fn::Sub: 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader'
               - Sid: PosturaEAtivos
                 Effect: Allow
                 Resource: '*'
@@ -44,37 +50,574 @@
                 Effect: Deny
                 Action: '*'
                 Resource: '*'
-                Condition: { NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps } } }
-      ReaderUser:
-        Type: AWS::IAM::User
+                Condition: { NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } } }
+      ReaderRole:
+        Type: AWS::IAM::Role
         Properties:
-          UserName: verax-control-reader
+          RoleName: verax-control-reader
           Path: /verax/
+          MaxSessionDuration: 3600
           PermissionsBoundary: { Ref: ReaderPolicy }
-          Groups: [{ Ref: ReadersGroup }]
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+          AssumeRolePolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SoONoDaVerax
+                Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress:
+                    aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] }
     Outputs:
-      UserArn: { Value: { Fn::GetAtt: ReaderUser.Arn } }
+      RoleArn: { Value: { Fn::GetAtt: ReaderRole.Arn } }
+      LogsKeyArn: { Value: { Fn::GetAtt: [LogsKey, Arn] } }
   expectations:
     rules:
-      sem_chave_de_acesso: PASS
+      sem_usuario_nem_chave: PASS
       nenhuma_saida_com_segredo: PASS
-      usuario_sem_senha_e_com_limite: PASS
+      papel_preso_ao_limite: PASS
+      confianca_so_do_google: PASS
+      confianca_amarrada_ao_no: PASS
       nega_fora_do_ip_do_no: PASS
       leitura_so_le: PASS
       conteudo_so_nos_recursos_informados: PASS
       waf_e_guardduty_intocados: PASS
 
-- name: com uma chave de acesso e o segredo numa saída
+# --- Usuário, chave e segredo ---
+
+- name: com um usuário, uma chave e o segredo numa saída (GetAtt em lista)
   input:
     Resources:
-      Chave: { Type: AWS::IAM::AccessKey, Properties: { UserName: { Ref: ReaderUser } } }
+      Usuario: { Type: AWS::IAM::User, Properties: { UserName: verax-control-reader } }
+      Chave: { Type: AWS::IAM::AccessKey, Properties: { UserName: { Ref: Usuario } } }
     Outputs:
-      Segredo: { Value: { Fn::GetAtt: [Chave, SecretAccessKey] } }
-      SegredoCurto: { Value: { Fn::GetAtt: Chave.SecretAccessKey } }
+      Saida: { Value: { Fn::GetAtt: [Chave, SecretAccessKey] } }
   expectations:
     rules:
-      sem_chave_de_acesso: FAIL
+      sem_usuario_nem_chave: FAIL
       nenhuma_saida_com_segredo: FAIL
+
+- name: o segredo de uma chave numa saída, com o GetAtt na forma curta
+  input:
+    Outputs:
+      Saida: { Value: { Fn::GetAtt: Chave.SecretAccessKey } }
+  expectations:
+    rules:
+      nenhuma_saida_com_segredo: FAIL
+
+- name: o segredo de uma chave numa saída, por Fn::Sub
+  input:
+    Outputs:
+      Saida: { Value: { Fn::Sub: '${Chave.SecretAccessKey}' } }
+  expectations:
+    rules:
+      nenhuma_saida_com_segredo: FAIL
+
+- name: uma saída com nome de segredo
+  input:
+    Outputs:
+      SessionToken: { Value: { Fn::GetAtt: [ReaderRole, Arn] } }
+  expectations:
+    rules:
+      nenhuma_saida_com_segredo: FAIL
+
+- name: um parâmetro secreto (NoEcho) devolvido numa saída
+  input:
+    Parameters:
+      Senha: { Type: String, NoEcho: true }
+    Outputs:
+      Devolve: { Value: { Ref: Senha } }
+  expectations:
+    rules:
+      nenhuma_saida_com_segredo: FAIL
+
+- name: um grupo do IAM na pilha
+  input:
+    Resources:
+      Grupo: { Type: AWS::IAM::Group, Properties: { GroupName: VeraxControlReaders } }
+  expectations:
+    rules:
+      sem_usuario_nem_chave: FAIL
+
+- name: a política de leitura pendurada num usuário que já existe
+  input:
+    Resources:
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          { ManagedPolicyName: VeraxControlReader, Users: [admin], PolicyDocument: { Statement: [] } }
+  expectations:
+    rules:
+      sem_usuario_nem_chave: FAIL
+
+# --- O papel ---
+
+- name: papel sem o limite de permissões
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+          MaxSessionDuration: 3600
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+- name: papel com sessão de 12 horas
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+          MaxSessionDuration: 43200
+          PermissionsBoundary: { Ref: ReaderPolicy }
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+- name: papel com outro caminho (o ARN deixa de sair só do ID da conta)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /
+          MaxSessionDuration: 3600
+          PermissionsBoundary: { Ref: ReaderPolicy }
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+- name: papel com uma política em linha
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+          MaxSessionDuration: 3600
+          PermissionsBoundary: { Ref: ReaderPolicy }
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+          Policies: [{ PolicyName: Extra, PolicyDocument: { Statement: [] } }]
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+- name: papel com uma política gerenciada a mais
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+          MaxSessionDuration: 3600
+          PermissionsBoundary: { Ref: ReaderPolicy }
+          ManagedPolicyArns:
+            - { Ref: ReaderPolicy }
+            - { Ref: GuardrailsPolicy }
+            - arn:aws:iam::aws:policy/AdministratorAccess
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+- name: papel sem a política de negação
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+          MaxSessionDuration: 3600
+          PermissionsBoundary: { Ref: ReaderPolicy }
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }]
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+- name: a política de leitura anexada a outro papel
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: verax-control-reader
+          Path: /verax/
+          MaxSessionDuration: 3600
+          PermissionsBoundary: { Ref: ReaderPolicy }
+          ManagedPolicyArns: [{ Ref: ReaderPolicy }, { Ref: GuardrailsPolicy }]
+      ReaderPolicy:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          { ManagedPolicyName: VeraxControlReader, Roles: [OutroPapel], PolicyDocument: { Statement: [] } }
+  expectations:
+    rules:
+      papel_preso_ao_limite: FAIL
+
+# --- Quem entra no papel ---
+
+- name: confiança sem o sub
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_so_do_google: PASS
+      confianca_amarrada_ao_no: FAIL
+
+- name: confiança sem o aud
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: confiança sem o oaud
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: confiança sem o IP do nó
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: confiança sem condição nenhuma
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+  expectations:
+    rules:
+      confianca_so_do_google: PASS
+      confianca_amarrada_ao_no: FAIL
+
+- name: sub e aud com StringLike e curinga
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringLike:
+                    accounts.google.com:aud: '*'
+                    accounts.google.com:sub: '*'
+                  StringEquals:
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: sub com um curinga fixo no StringEquals
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: '*'
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: o IP inteiro da internet no lugar do parâmetro
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: ['0.0.0.0/0'] }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: uma chave a mais no StringEquals (o e-mail, que a AWS manda não usar como identificador)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                    accounts.google.com:email: verax-homolog@projeto-exemplo.iam.gserviceaccount.com
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: um operador a mais ao lado das quatro condições
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: NodeServiceAccountId }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+                  StringLike: { accounts.google.com:sub: '*' }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: a armadilha do assistente do console (o audience em accounts.google.com:aud)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+                Condition:
+                  StringEquals:
+                    accounts.google.com:aud: { Ref: Audience }
+                    accounts.google.com:sub: { Ref: NodeServiceAccountId }
+                    accounts.google.com:oaud: { Ref: Audience }
+                  IpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
+  expectations:
+    rules:
+      confianca_amarrada_ao_no: FAIL
+
+- name: outro provedor de identidade ao lado do Google
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: [accounts.google.com, cognito-identity.amazonaws.com] }
+                Action: sts:AssumeRoleWithWebIdentity
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: uma conta da AWS ao lado do Google
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com, AWS: 'arn:aws:iam::222222222222:root' }
+                Action: sts:AssumeRoleWithWebIdentity
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: uma segunda declaração com o AssumeRole comum para outra conta
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:AssumeRoleWithWebIdentity
+              - Effect: Allow
+                Principal: { AWS: 'arn:aws:iam::222222222222:root' }
+                Action: sts:AssumeRole
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: o AssumeRole comum ao lado da troca do token (ação em lista)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: [sts:AssumeRoleWithWebIdentity, sts:AssumeRole]
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: qualquer ação do STS
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                Action: sts:*
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: qualquer principal
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: '*'
+                Action: sts:AssumeRoleWithWebIdentity
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: NotPrincipal (todo mundo menos alguém)
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties:
+          AssumeRolePolicyDocument:
+            Statement:
+              - Effect: Allow
+                Principal: { Federated: accounts.google.com }
+                NotPrincipal: { AWS: 'arn:aws:iam::222222222222:root' }
+                Action: sts:AssumeRoleWithWebIdentity
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+
+- name: papel sem confiança declarada
+  input:
+    Resources:
+      ReaderRole:
+        Type: AWS::IAM::Role
+        Properties: { RoleName: verax-control-reader }
+  expectations:
+    rules:
+      confianca_so_do_google: FAIL
+      confianca_amarrada_ao_no: FAIL
+
+# --- Negação de fora do IP do nó ---
 
 - name: sem o Deny de fora do IP do nó
   input:
@@ -122,7 +665,7 @@
                 Action: '*'
                 Resource: '*'
                 Condition:
-                  NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps } }
+                  NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } }
                   StringEquals: { aws:RequestedRegion: us-east-1 }
   expectations:
     rules:
@@ -142,7 +685,9 @@
                 Action: '*'
                 Resource: '*'
                 Condition:
-                  NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps }, aws:VpcSourceIp: 10.0.0.0/8 }
+                  NotIpAddress:
+                    aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] }
+                    aws:VpcSourceIp: 10.0.0.0/8
   expectations:
     rules:
       nega_fora_do_ip_do_no: FAIL
@@ -161,35 +706,12 @@
                 Action: '*'
                 Resource: '*'
                 NotResource: 'arn:aws:s3:::*'
-                Condition: { NotIpAddress: { aws:SourceIp: { Ref: NodeEgressIps } } }
+                Condition: { NotIpAddress: { aws:SourceIp: { Fn::Split: [',', { Ref: NodeEgressIps }] } } }
   expectations:
     rules:
       nega_fora_do_ip_do_no: FAIL
 
-- name: sem o limite de permissões
-  input:
-    Resources:
-      ReaderUser:
-        Type: AWS::IAM::User
-        Properties: { UserName: verax-control-reader, Path: /verax/, Groups: [{ Ref: ReadersGroup }] }
-  expectations:
-    rules:
-      usuario_sem_senha_e_com_limite: FAIL
-
-- name: com senha de console
-  input:
-    Resources:
-      ReaderUser:
-        Type: AWS::IAM::User
-        Properties:
-          UserName: verax-control-reader
-          Path: /verax/
-          PermissionsBoundary: { Ref: ReaderPolicy }
-          Groups: [{ Ref: ReadersGroup }]
-          LoginProfile: { Password: { Ref: SenhaInicial } }
-  expectations:
-    rules:
-      usuario_sem_senha_e_com_limite: FAIL
+# --- Leitura ---
 
 - name: GetObject em qualquer recurso
   input:

@@ -1,13 +1,15 @@
-"""Testes de segurança do template do usuário de leitura (verax-control-reader).
+"""Testes de segurança do template do papel de leitura (verax-control-reader).
 
 Leem o template com o parser do cfn-lint (mesmo venv do CI, sem dependência nova) e conferem o que o cliente aceita ao
-criar a pilha: só o usuário sem chave e sem senha, o grupo e as duas políticas (a trilha e o export do GuardDuty só se
-pedidos); o usuário só lê, só a partir do IP do nó, e nunca altera logs nem o próprio acesso.
+criar a pilha: só o papel, sem chave, e as duas políticas (a trilha e o export do GuardDuty só se pedidos); só o nó do
+Verax Control entra no papel, com o token que o Google assina para a conta de serviço dele, pedido com o audience da
+Verax e só a partir do IP de saída do nó; o papel só lê, só desse IP, e nunca altera logs nem o próprio acesso.
 
 Além das conferências no texto do template, um avaliador mínimo de políticas do IAM monta a pilha com parâmetros
-fictícios e decide cada chamada com as duas políticas juntas (negação explícita, permissão e limite de permissões). As
-mutações conferem que os testes pegam o que deveriam: sem o Deny de IP, com uma chave, com GetObject em qualquer
-recurso e sem o limite de permissões.
+fictícios e decide cada chamada com as duas políticas juntas (negação explícita, permissão e limite de permissões) e
+cada pedido de entrada no papel com a política de confiança. As mutações conferem que os testes pegam o que deveriam:
+sem o Deny de IP, com um usuário e uma chave, com GetObject em qualquer recurso, sem o limite de permissões, e cada
+condição da confiança tirada, afrouxada ou trocada.
 """
 
 import copy
@@ -31,7 +33,15 @@ INSTALL_SH = HERE.parents[0] / "node" / "bin" / "install.sh"
 
 ACCOUNT = "111111111111"
 STACK_NAME = "verax-control-reader"
-USER_ARN = f"arn:aws:iam::{ACCOUNT}:user/verax/verax-control-reader"
+ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/verax/verax-control-reader"
+GOOGLE = "accounts.google.com"
+WEB_IDENTITY = "sts:AssumeRoleWithWebIdentity"
+# O audience fixo do Verax Control: o padrão do parâmetro Audience e o que o nó pede ao Google. É uma constante do
+# produto, igual para todo cliente (README, "Para quem mantém estes templates").
+AUDIENCE = "https://control.veraxsistemas.com.br/aws-reader"
+# IDs únicos fictícios de contas de serviço do Google (21 dígitos): a do nó deste cliente e a do nó de outro cliente.
+NODE_SA = "123456789012345678901"
+OTHER_SA = "109876543210987654321"
 NODE_IP = "203.0.113.10"
 OTHER_IP = "198.51.100.7"
 KMS_KEY = f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/00000000-0000-0000-0000-000000000000"
@@ -42,12 +52,9 @@ BUCKETS = [
     f"arn:aws:s3:::guardduty-{ACCOUNT}",
     f"arn:aws:s3:::aws-waf-logs-{ACCOUNT}",
 ]
-# Os valores fictícios da política mínima do plano (seção 2.3), os mesmos do verax-control-reader.policy.json.
-EXAMPLE = {
-    "NodeEgressIps": f"{NODE_IP}/32",
-    "LogBucketArns": ",".join(BUCKETS),
-    "LogKmsKeyArns": KMS_KEY,
-}
+# O nó (os valores que o painel mostra) e os logs do exemplo: os mesmos do verax-control-reader.policy.json.
+NODE = {"NodeServiceAccountId": NODE_SA, "NodeEgressIps": f"{NODE_IP}/32"}
+EXAMPLE = {**NODE, "LogBucketArns": ",".join(BUCKETS), "LogKmsKeyArns": KMS_KEY}
 
 # Chamadas do módulo aws-s3 do Wazuh: o subconjunto S3 das do conector, mais o GetBucketLocation (conferido no módulo
 # 4.14.9) e o kms:Decrypt dos objetos com SSE-KMS (obrigatório no export do GuardDuty).
@@ -75,10 +82,9 @@ POSTURE_CALLS = {
     "s3:GetBucketPublicAccessBlock",
     "s3:GetAccountPublicAccessBlock",
 }
-# Conferência da chave colada (PR-V3) e das fontes (PR-V5). O sts:GetCallerIdentity não passa por política.
+# Conferência do papel e das fontes (a checagem do worker, PR-V5'). O sts:GetCallerIdentity não passa por política.
 VALIDATION_CALLS = {
     "iam:SimulatePrincipalPolicy",
-    "iam:ListAccessKeys",
     "cloudtrail:DescribeTrails",
     "cloudtrail:GetTrailStatus",
     "guardduty:ListDetectors",
@@ -86,31 +92,31 @@ VALIDATION_CALLS = {
     "guardduty:ListPublishingDestinations",
     "guardduty:DescribePublishingDestination",
 }
-# O que o usuário nunca faz, nem do IP do nó: o mesmo do conector, mais mexer no próprio usuário e na própria chave
-# (sem autorrevogação, D-12), no WAF, na trilha e no export.
+# O que o papel nunca faz, nem do IP do nó: o mesmo do conector, mais mexer no próprio papel (a confiança, o limite e as
+# políticas), criar usuário, chave ou provedor de identidade, assumir outro papel, e mexer no WAF, na trilha e no export.
 MUST_DENY = CONNECTOR_MUST_DENY | {
-    "iam:CreateAccessKey",
-    "iam:DeleteAccessKey",
-    "iam:UpdateAccessKey",
-    "iam:CreateLoginProfile",
-    "iam:UpdateLoginProfile",
+    "iam:UpdateAssumeRolePolicy",
+    "iam:UpdateRole",
+    "iam:DeleteRole",
+    "iam:DetachRolePolicy",
+    "iam:DeleteRolePolicy",
+    "iam:PutRolePermissionsBoundary",
+    "iam:DeleteRolePermissionsBoundary",
+    "iam:CreateRole",
     "iam:CreateUser",
-    "iam:AttachUserPolicy",
-    "iam:PutUserPolicy",
-    "iam:PutUserPermissionsBoundary",
-    "iam:DeleteUserPermissionsBoundary",
-    "iam:AddUserToGroup",
-    "iam:RemoveUserFromGroup",
-    "iam:AttachGroupPolicy",
+    "iam:CreateAccessKey",
+    "iam:CreateLoginProfile",
+    "iam:CreateOpenIDConnectProvider",
     "iam:CreatePolicyVersion",
     "iam:SetDefaultPolicyVersion",
+    "sts:AssumeRoleWithWebIdentity",
     "sts:GetFederationToken",
     "wafv2:UpdateWebACL",
     "wafv2:DeleteWebACL",
     "cloudtrail:CreateTrail",
     "guardduty:CreatePublishingDestination",
 }
-# Fora do limite de permissões: nem com uma política de administrador anexada ao usuário.
+# Fora do limite de permissões: nem com uma política de administrador anexada ao papel.
 OUTSIDE_BOUNDARY = {
     "secretsmanager:GetSecretValue",
     "ssm:GetParameter",
@@ -131,8 +137,27 @@ ANY_RESOURCE = (
     "arn:aws:s3:::bucket-qualquer/x",
     f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/x",
 )
-# Tipos que dariam ao usuário chave, senha ou outra credencial.
-CREDENTIAL_TYPES = {"AWS::IAM::AccessKey", "AWS::IAM::ServiceSpecificCredential", "AWS::IAM::UserPolicy"}
+# Tipos que dariam a alguém uma chave, uma senha ou outra credencial de longa duração, ou um usuário onde pendurá-las.
+USER_OR_KEY_TYPES = {
+    "AWS::IAM::User",
+    "AWS::IAM::AccessKey",
+    "AWS::IAM::ServiceSpecificCredential",
+    "AWS::IAM::UserPolicy",
+    "AWS::IAM::UserToGroupAddition",
+    "AWS::IAM::Group",
+    "AWS::IAM::GroupPolicy",
+}
+# Uma saída cujo nome ou valor lembre um segredo.
+SECRET_WORDS = re.compile(r"secret|password|senha|token|credential|accesskey", re.IGNORECASE)
+# A confiança inteira, condição por condição, como o template a escreve: só valores dos parâmetros validados.
+TRUST_CONDITION = {
+    "StringEquals": {
+        f"{GOOGLE}:aud": {"Ref": "NodeServiceAccountId"},
+        f"{GOOGLE}:sub": {"Ref": "NodeServiceAccountId"},
+        f"{GOOGLE}:oaud": {"Ref": "Audience"},
+    },
+    "IpAddress": {"aws:SourceIp": {"Fn::Split": [",", {"Ref": "NodeEgressIps"}]}},
+}
 PSEUDO = {"AWS::Partition": "aws", "AWS::AccountId": ACCOUNT, "AWS::Region": "sa-east-1"}
 NO_VALUE = object()
 
@@ -175,22 +200,102 @@ def is_unconditional_deny(statement):
     )
 
 
+def trust_statements(template):
+    role = template["Resources"].get("ReaderRole", {}).get("Properties", {})
+    return role.get("AssumeRolePolicyDocument", {}).get("Statement", [])
+
+
+# --- O token do Google, como a AWS o lê ---
+
+
+def google_token(sub=NODE_SA, audience=AUDIENCE):
+    """Os campos de um ID token que o Google assina para uma conta de serviço: azp e sub são o ID único dela, e aud é o
+    audience que ela pediu ao metadata (format=standard: sem o projeto nem a VM)."""
+    return {"iss": "https://accounts.google.com", "aud": audience, "azp": sub, "sub": sub}
+
+
+def web_identity_context(token, source_ip):
+    """As chaves que a AWS monta para a troca do token do Google: accounts.google.com:aud vem do azp, quando ele existe,
+    e o aud do token vira accounts.google.com:oaud."""
+    return {
+        "aws:SourceIp": source_ip,
+        f"{GOOGLE}:aud": token.get("azp") or token["aud"],
+        f"{GOOGLE}:oaud": token["aud"],
+        f"{GOOGLE}:sub": token["sub"],
+    }
+
+
 # --- Conferências no texto do template (também usadas nas mutações) ---
 
 
-def problems_no_key_or_password(template):
+def problems_no_user_or_key(template):
+    """Nenhum usuário, chave ou senha na pilha, nenhuma política pendurada num usuário ou grupo, nenhum parâmetro
+    secreto e nenhuma saída que lembre um segredo."""
     found = []
     for name, resource in template["Resources"].items():
-        if resource["Type"] in CREDENTIAL_TYPES:
+        if resource["Type"] in USER_OR_KEY_TYPES:
             found.append(f"{name}: {resource['Type']}")
-        if resource["Type"] == "AWS::IAM::User" and "LoginProfile" in resource.get("Properties", {}):
-            found.append(f"{name}: LoginProfile")
+        if resource["Type"] == "AWS::IAM::ManagedPolicy":
+            for key in ("Users", "Groups"):
+                if key in resource["Properties"]:
+                    found.append(f"{name}: anexada a {key}")
+    for name, spec in template["Parameters"].items():
+        if spec.get("NoEcho"):
+            found.append(f"parâmetro secreto {name}")
     for name, output in template.get("Outputs", {}).items():
-        text = json.dumps(output)
-        if "SecretAccessKey" in text or any(
-            f'"{param}"' in text for param, spec in template["Parameters"].items() if spec.get("NoEcho")
-        ):
+        if SECRET_WORDS.search(name) or SECRET_WORDS.search(json.dumps(output["Value"])):
             found.append(f"saída {name}")
+    return found
+
+
+def problems_trust(template):
+    """Só o Google, só a troca do token, e as quatro condições exatas (aud, sub e oaud em StringEquals, IP do nó)."""
+    found = []
+    trust = trust_statements(template)
+    if not trust:
+        found.append("papel sem política de confiança")
+    for statement in trust:
+        sid = statement.get("Sid")
+        if statement.get("Effect") != "Allow" or "NotPrincipal" in statement or "NotAction" in statement:
+            found.append(f"{sid}: declaração fora do formato")
+        if statement.get("Principal") != {"Federated": GOOGLE}:
+            found.append(f"{sid}: outro principal além do Google")
+        if statement.get("Action") != WEB_IDENTITY:
+            found.append(f"{sid}: outra ação além da troca do token")
+        if statement.get("Condition") != TRUST_CONDITION:
+            found.append(f"{sid}: condições diferentes de aud, sub e oaud exatos e do IP do nó")
+    account = template["Parameters"].get("NodeServiceAccountId", {})
+    if "Default" in account or account.get("AllowedPattern") != "^[0-9]{21}$":
+        found.append("NodeServiceAccountId sem os 21 dígitos obrigatórios")
+    audience = template["Parameters"].get("Audience", {})
+    pattern = audience.get("AllowedPattern", "")
+    if audience.get("Default") != AUDIENCE or not pattern or any(
+        re.fullmatch(pattern, probe) for probe in ("", "*", "https://*", f"{AUDIENCE}*", "http://exemplo.example")
+    ):
+        found.append("Audience diferente da constante do Verax Control, ou aceitando curinga")
+    return found
+
+
+def problems_role(template):
+    """Um papel só, com nome, caminho e sessão fixos, preso ao limite e só com as duas políticas da pilha."""
+    found = []
+    roles = sorted(name for name, r in template["Resources"].items() if r["Type"] == "AWS::IAM::Role")
+    if roles != ["ReaderRole"]:
+        found.append(f"papéis na pilha: {roles}")
+    role = template["Resources"].get("ReaderRole", {}).get("Properties", {})
+    if (role.get("RoleName"), role.get("Path")) != ("verax-control-reader", "/verax/"):
+        found.append("papel fora do nome e do caminho fixos: o ARN deixaria de sair só do ID da conta")
+    if role.get("MaxSessionDuration") != 3600:
+        found.append("sessão diferente de 1 hora")
+    if role.get("PermissionsBoundary") != {"Ref": "ReaderPolicy"}:
+        found.append("papel sem o limite de permissões da política de leitura")
+    if role.get("ManagedPolicyArns") != [{"Ref": "ReaderPolicy"}, {"Ref": "GuardrailsPolicy"}]:
+        found.append("papel sem as duas políticas da pilha, ou com outra")
+    if "Policies" in role:
+        found.append("papel com política em linha")
+    for name, policy in managed_policies(template).items():
+        if "Roles" in policy["Properties"]:
+            found.append(f"{name}: anexada a outro papel")
     return found
 
 
@@ -201,23 +306,23 @@ def problems_ip_deny(template):
         "Effect": "Deny",
         "Action": "*",
         "Resource": "*",
-        "Condition": {"NotIpAddress": {"aws:SourceIp": {"Ref": "NodeEgressIps"}}},
+        "Condition": {"NotIpAddress": {"aws:SourceIp": {"Fn::Split": [",", {"Ref": "NodeEgressIps"}]}}},
     }
     guardrails = managed_policies(template).get("GuardrailsPolicy")
     if guardrails is None or expected not in guardrails["Properties"]["PolicyDocument"]["Statement"]:
         found.append("sem o Deny incondicional de fora do IP do nó")
     parameter = template["Parameters"].get("NodeEgressIps", {})
-    if "Default" in parameter or not parameter.get("AllowedPattern", "").endswith("/32$"):
+    if "Default" in parameter or not parameter.get("AllowedPattern", "").endswith("/32){0,3}$"):
         found.append("NodeEgressIps sem /32 obrigatório")
-    group = template["Resources"].get("ReadersGroup", {}).get("Properties", {})
-    if {"Ref": "GuardrailsPolicy"} not in group.get("ManagedPolicyArns", []):
-        found.append("negações fora do grupo")
+    role = template["Resources"].get("ReaderRole", {}).get("Properties", {})
+    if {"Ref": "GuardrailsPolicy"} not in role.get("ManagedPolicyArns", []):
+        found.append("negações fora do papel")
     return found
 
 
 def problems_read_only(template):
     found = []
-    own_user = {"Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:user/verax/verax-control-reader"}
+    own_role = {"Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader"}
     for statement in all_statements(template):
         if statement["Effect"] != "Allow":
             continue
@@ -233,7 +338,7 @@ def problems_read_only(template):
                 if via not in ("s3.*.amazonaws.com", {"Fn::Sub": "s3.${AWS::Region}.amazonaws.com"}):
                     found.append(f"{sid}: kms:Decrypt fora do S3")
             elif action == "iam:SimulatePrincipalPolicy":
-                if statement["Resource"] != own_user:
+                if statement["Resource"] != own_role:
                     found.append(f"{sid}: simulação de outro principal")
             elif not READ_ACTION.match(action):
                 found.append(f"{sid}: {action} não é leitura")
@@ -241,19 +346,6 @@ def problems_read_only(template):
                 isinstance(r, str) and any(wildcard(r, probe) for probe in ANY_RESOURCE) for r in resources
             ):
                 found.append(f"{sid}: {action} em qualquer recurso")
-    return found
-
-
-def problems_boundary(template):
-    found = []
-    user = template["Resources"].get("ReaderUser", {}).get("Properties", {})
-    if user.get("PermissionsBoundary") != {"Ref": "ReaderPolicy"}:
-        found.append("usuário sem o limite de permissões da política de leitura")
-    if user.get("Groups") != [{"Ref": "ReadersGroup"}]:
-        found.append("usuário fora do grupo, ou em outro grupo")
-    for key in ("Policies", "ManagedPolicyArns"):
-        if key in user:
-            found.append(f"usuário com {key} próprio")
     return found
 
 
@@ -335,9 +427,6 @@ class Stack:
             return all(self.resolve(item) for item in argument)
         if function == "Fn::Or":
             return any(self.resolve(item) for item in argument)
-        if function == "Fn::EachMemberIn":
-            values, allowed = self.resolve(argument)
-            return all(value in allowed for value in values)
         if function == "Fn::EachMemberEquals":
             values, expected = self.resolve(argument)
             return all(value == expected for value in values)
@@ -363,9 +452,8 @@ class Stack:
         kind = resource["Type"]
         if kind == "AWS::IAM::ManagedPolicy":
             return f"arn:aws:iam::{ACCOUNT}:policy{props['Path']}{props['ManagedPolicyName']}"
-        if kind in ("AWS::IAM::Group", "AWS::IAM::User"):
-            key = {"AWS::IAM::Group": "GroupName", "AWS::IAM::User": "UserName"}
-            return self.resolve(props[key[kind]])
+        if kind == "AWS::IAM::Role":
+            return self.resolve(props["RoleName"])
         if kind == "AWS::S3::Bucket":
             # Sem BucketName, o CloudFormation gera <pilha>-<id lógico em minúsculas>-<sufixo aleatório>.
             if "BucketName" in props:
@@ -383,9 +471,9 @@ class Stack:
             return f"arn:aws:s3:::{self.ref(name)}"
         if kind == "AWS::KMS::Key":
             return f"arn:aws:kms:sa-east-1:{ACCOUNT}:key/{self.ref(name)}"
-        if kind == "AWS::IAM::User":
+        if kind == "AWS::IAM::Role":
             path = resource["Properties"]["Path"]
-            return f"arn:aws:iam::{ACCOUNT}:user{path}{self.ref(name)}"
+            return f"arn:aws:iam::{ACCOUNT}:role{path}{self.ref(name)}"
         raise AssertionError(f"atributo sem suporte no teste: {name}.{attribute}")
 
     def live(self, name):
@@ -407,27 +495,42 @@ class Stack:
             if resource["Type"] == "AWS::IAM::ManagedPolicy"
         }
 
-    def user_policies(self, extra=()):
-        """As políticas do usuário (grupos, anexadas e em linha) e o limite de permissões."""
+    def role_policies(self, extra=()):
+        """As políticas do papel (anexadas e em linha) e o limite de permissões."""
         documents = self.documents_by_arn()
-        user = self.properties("ReaderUser")
-        groups = {
-            self.ref(name): self.properties(name)
-            for name, resource in self.resources.items()
-            if resource["Type"] == "AWS::IAM::Group"
-        }
-        identity = [documents[arn] for group in user.get("Groups", []) for arn in groups[group]["ManagedPolicyArns"]]
-        identity += [documents[arn] for arn in user.get("ManagedPolicyArns", [])]
-        identity += [policy["PolicyDocument"] for policy in user.get("Policies", [])]
+        role = self.properties("ReaderRole")
+        identity = [documents[arn] for arn in role.get("ManagedPolicyArns", [])]
+        identity += [policy["PolicyDocument"] for policy in role.get("Policies", [])]
         identity += list(extra)
-        boundary = documents.get(user["PermissionsBoundary"]) if "PermissionsBoundary" in user else None
+        boundary = documents.get(role["PermissionsBoundary"]) if "PermissionsBoundary" in role else None
         return identity, boundary
 
     def allows(self, action, resource="*", source_ip=NODE_IP, extra=(), **context):
-        """Decide a chamada do usuário. As chaves do contexto vêm com _ no lugar do primeiro : (kms_ViaService)."""
+        """Decide uma chamada feita com a sessão do papel. As chaves do contexto vêm com _ no lugar do primeiro :
+        (kms_ViaService)."""
         context = {"aws:SourceIp": source_ip, **{key.replace("_", ":", 1): value for key, value in context.items()}}
-        identity, boundary = self.user_policies(extra)
+        identity, boundary = self.role_policies(extra)
         return decide(identity, boundary, action, resource, context)
+
+    def assumes(self, kind, principal, action, context):
+        """Decide a entrada no papel pela política de confiança, como o STS: uma negação vence, e é preciso uma
+        permissão. Quem chega pela federação não tem política de identidade na AWS."""
+        trust = self.properties("ReaderRole")["AssumeRolePolicyDocument"]["Statement"]
+        hits = [s for s in trust if principal_matches(s, kind, principal) and applies(s, action, "*", context)]
+        return any(s["Effect"] == "Allow" for s in hits) and not any(s["Effect"] == "Deny" for s in hits)
+
+    def node_assumes(self, token=None, source_ip=NODE_IP):
+        """O nó troca o token do Google pela sessão do papel (AssumeRoleWithWebIdentity)."""
+        token = google_token() if token is None else token
+        return self.assumes("Federated", GOOGLE, WEB_IDENTITY, web_identity_context(token, source_ip))
+
+
+def principal_matches(statement, kind, principal):
+    assert "NotPrincipal" not in statement, "NotPrincipal sem suporte no teste"
+    declared = statement["Principal"]
+    if declared == "*":
+        return True
+    return any(value in ("*", principal) for value in as_list(declared.get(kind, [])))
 
 
 def applies(statement, action, resource, context):
@@ -445,6 +548,8 @@ def applies(statement, action, resource, context):
 
 
 def holds(operator, value, expected):
+    if operator == "IpAddress":
+        return value is not None and any(ipaddress.ip_address(value) in ipaddress.ip_network(c) for c in expected)
     if operator == "NotIpAddress":
         # Operador negado: sem a chave no pedido, a condição vale (e a negação se aplica).
         return value is None or not any(ipaddress.ip_address(value) in ipaddress.ip_network(c) for c in expected)
@@ -486,8 +591,14 @@ def resource_for(action, bucket=BUCKETS[0]):
     if action == "kms:Decrypt":
         return KMS_KEY
     if action == "iam:SimulatePrincipalPolicy":
-        return USER_ARN
+        return ROLE_ARN
     return "*"
+
+
+def readme_block(language, after):
+    """O primeiro bloco de código da linguagem dada depois do título indicado, no README."""
+    text = README.read_text(encoding="utf-8").split(after, 1)[1]
+    return re.search(rf"```{language}\n(.*?)\n```", text, re.DOTALL).group(1)
 
 
 class ReaderTemplateTest(unittest.TestCase):
@@ -512,11 +623,20 @@ class ReaderTemplateTest(unittest.TestCase):
         for value in invalid:
             self.assertFalse(pattern.fullmatch(value), f"{parameter} deveria recusar {value!r}")
 
+    def assert_rule_refuses_empty(self, parameter):
+        """A regra NoDaVeraxObrigatorio recusa o parâmetro vazio, se o padrão dele deixar passar."""
+        stack = self.stack()
+        assertions = self.template["Rules"]["NoDaVeraxObrigatorio"]["Assertions"]
+        rule = next(a["Assert"] for a in assertions if {"Ref": parameter} in a["Assert"]["Fn::Not"][0]["Fn::Equals"])
+        self.assertTrue(stack.resolve(rule))
+        stack.params[parameter] = ""
+        self.assertFalse(stack.resolve(rule))
+
     # --- O que a pilha cria ---
 
-    def test_by_default_only_the_user_the_group_and_the_two_policies(self):
-        stack = Stack(self.template, NodeEgressIps=f"{NODE_IP}/32")
-        self.assertEqual(set(stack.resources), {"ReaderPolicy", "GuardrailsPolicy", "ReadersGroup", "ReaderUser"})
+    def test_by_default_only_the_role_and_the_two_policies(self):
+        stack = Stack(self.template, **NODE)
+        self.assertEqual(set(stack.resources), {"ReaderPolicy", "GuardrailsPolicy", "ReaderRole"})
         for name, resource in self.resources.items():
             if name not in stack.resources:
                 with self.subTest(resource=name):
@@ -524,33 +644,22 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertEqual(self.parameters["CreateTrail"]["Default"], "false")
         self.assertEqual(self.parameters["EnableGuardDutyExport"]["Default"], "false")
 
-    def test_no_access_key_password_or_secret_output(self):
-        self.assertEqual(problems_no_key_or_password(self.template), [])
+    def test_no_user_key_or_secret_anywhere(self):
+        self.assertEqual(problems_no_user_or_key(self.template), [])
         self.assertEqual(
             set(self.template["Outputs"]),
-            {
-                "UserArn",
-                "SecurityCredentialsUrl",
-                "TrailBucketArn",
-                "GuardDutyBucketArn",
-                "LogsKeyArn",
-                "AccessLogsBucketArn",
-            },
+            {"RoleArn", "TrailBucketArn", "GuardDutyBucketArn", "LogsKeyArn", "AccessLogsBucketArn"},
         )
-        self.assertEqual(self.template["Outputs"]["UserArn"]["Value"], {"Fn::GetAtt": ["ReaderUser", "Arn"]})
-        url = self.stack().resolve(self.template["Outputs"]["SecurityCredentialsUrl"]["Value"])
-        self.assertEqual(
-            url,
-            "https://console.aws.amazon.com/iam/home#/users/details/verax-control-reader?section=security_credentials",
-        )
+        self.assertFalse([name for name, spec in self.parameters.items() if spec.get("NoEcho")])
 
-    def test_user_group_and_policies_live_under_verax(self):
-        self.assertEqual(problems_boundary(self.template), [])
-        user = self.resources["ReaderUser"]["Properties"]
-        self.assertEqual((user["UserName"], user["Path"]), ("verax-control-reader", "/verax/"))
-        group = self.resources["ReadersGroup"]["Properties"]
-        self.assertEqual((group["GroupName"], group["Path"]), ("VeraxControlReaders", "/verax/"))
-        self.assertEqual(group["ManagedPolicyArns"], [{"Ref": "ReaderPolicy"}, {"Ref": "GuardrailsPolicy"}])
+    def test_role_and_policies_live_under_verax_with_a_predictable_arn(self):
+        self.assertEqual(problems_role(self.template), [])
+        # O ARN sai só do ID da conta (o painel nunca o pede), e é o que a saída da pilha mostra.
+        stack = self.stack()
+        self.assertEqual(stack.ref("ReaderRole"), "verax-control-reader")
+        self.assertEqual(stack.attribute("ReaderRole", "Arn"), ROLE_ARN)
+        self.assertEqual(self.template["Outputs"]["RoleArn"]["Value"], {"Fn::GetAtt": ["ReaderRole", "Arn"]})
+        self.assertEqual(stack.resolve(self.template["Outputs"]["RoleArn"]["Value"]), ROLE_ARN)
         names = {
             name: (resource["Properties"]["ManagedPolicyName"], resource["Properties"]["Path"])
             for name, resource in managed_policies(self.template).items()
@@ -562,8 +671,11 @@ class ReaderTemplateTest(unittest.TestCase):
                 "GuardrailsPolicy": ("VeraxControlGuardrails", "/verax/"),
             },
         )
-        self.assertEqual(self.stack().ref("ReaderUser"), "verax-control-reader")
-        self.assertEqual(self.stack().attribute("ReaderUser", "Arn"), USER_ARN)
+
+    def test_template_fits_the_create_stack_body(self):
+        # O console ("Upload a template file") e a CLI mandam o arquivo no TemplateBody, que vai até 51.200 bytes:
+        # acima disso, o cliente precisaria de um bucket só para o template.
+        self.assertLess(TEMPLATE.stat().st_size, 51200)
 
     def test_waf_is_never_touched_and_guardduty_is_never_enabled(self):
         types = {resource["Type"] for resource in self.resources.values()}
@@ -572,15 +684,124 @@ class ReaderTemplateTest(unittest.TestCase):
         allowed = {a for s in all_statements(self.template) if s["Effect"] == "Allow" for a in as_list(s["Action"])}
         self.assertFalse({a for a in allowed if a.startswith("wafv2:")})
 
+    # --- Quem entra no papel ---
+
+    def test_the_trust_has_the_four_exact_conditions(self):
+        self.assertEqual(problems_trust(self.template), [])
+        (statement,) = self.stack().properties("ReaderRole")["AssumeRolePolicyDocument"]["Statement"]
+        self.assertEqual(
+            statement,
+            {
+                "Sid": "SoONoDaVerax",
+                "Effect": "Allow",
+                "Principal": {"Federated": GOOGLE},
+                "Action": WEB_IDENTITY,
+                "Condition": {
+                    "StringEquals": {f"{GOOGLE}:aud": NODE_SA, f"{GOOGLE}:sub": NODE_SA, f"{GOOGLE}:oaud": AUDIENCE},
+                    "IpAddress": {"aws:SourceIp": [f"{NODE_IP}/32"]},
+                },
+            },
+        )
+
+    def test_only_the_node_token_from_the_node_ip_enters(self):
+        stack = self.stack()
+        self.assertTrue(stack.node_assumes())
+        without_azp = {key: value for key, value in google_token().items() if key != "azp"}
+        for case, token, source_ip in (
+            ("token de outra conta de serviço", google_token(sub=OTHER_SA), NODE_IP),
+            ("token do nó para outro destino", google_token(audience="https://outro-servico.example"), NODE_IP),
+            ("token do nó vazado, usado de outro IP", google_token(), OTHER_IP),
+            ("token do nó, do IP vizinho", google_token(), "203.0.113.11"),
+            ("token com o sub do nó e o azp de outra conta", {**google_token(), "azp": OTHER_SA}, NODE_IP),
+            ("token com o azp do nó e outro sub", {**google_token(), "sub": OTHER_SA}, NODE_IP),
+            # Sem azp, a AWS lê o aud do próprio aud do token: é o audience, e não o ID da conta de serviço.
+            ("token sem azp", without_azp, NODE_IP),
+        ):
+            with self.subTest(case=case):
+                self.assertFalse(stack.node_assumes(token, source_ip))
+
+    def test_another_customer_node_never_enters(self):
+        # Confused deputy, sem ExternalId: o cliente A cadastra no painel dele a conta AWS do cliente B. O nó de A chega
+        # com o token da conta de serviço de A, do IP de A, e o papel de B (que confia só no nó de B) recusa. O token é
+        # assinado pelo Google, e o sub não se forja; nem a partir do IP de B o token de A entra.
+        customer_b = self.stack(NodeServiceAccountId=OTHER_SA, NodeEgressIps="198.51.100.20/32")
+        self.assertTrue(customer_b.node_assumes(google_token(sub=OTHER_SA), "198.51.100.20"))
+        self.assertFalse(customer_b.node_assumes(google_token(sub=NODE_SA), NODE_IP))
+        self.assertFalse(customer_b.node_assumes(google_token(sub=NODE_SA), "198.51.100.20"))
+
+    def test_only_web_identity_from_google(self):
+        stack = self.stack()
+        context = web_identity_context(google_token(), NODE_IP)
+        for kind, principal, action in (
+            ("Federated", "cognito-identity.amazonaws.com", WEB_IDENTITY),
+            ("Federated", "www.amazon.com", WEB_IDENTITY),
+            ("Federated", "graph.facebook.com", WEB_IDENTITY),
+            ("Federated", f"arn:aws:iam::{ACCOUNT}:saml-provider/Empresa", "sts:AssumeRoleWithSAML"),
+            ("Federated", GOOGLE, "sts:AssumeRole"),
+            ("AWS", f"arn:aws:iam::{ACCOUNT}:root", "sts:AssumeRole"),
+            ("AWS", "arn:aws:iam::222222222222:root", "sts:AssumeRole"),
+            ("Service", "ec2.amazonaws.com", "sts:AssumeRole"),
+        ):
+            with self.subTest(principal=principal, action=action):
+                self.assertFalse(stack.assumes(kind, principal, action, context))
+
     # --- Parâmetros ---
 
-    def test_node_egress_ips_are_required_and_only_slash_32(self):
-        parameter = self.parameters["NodeEgressIps"]
-        self.assertEqual(parameter["Type"], "CommaDelimitedList")
+    def test_node_service_account_id_is_required_and_has_21_digits(self):
+        parameter = self.parameters["NodeServiceAccountId"]
+        self.assertEqual(parameter["Type"], "String")
         self.assertNotIn("Default", parameter)
         self.assert_pattern(
+            "NodeServiceAccountId",
+            valid=[NODE_SA, OTHER_SA],
+            invalid=[
+                "",
+                "*",
+                NODE_SA[:-1],
+                f"{NODE_SA}1",
+                f"{NODE_SA[:-1]}a",
+                f" {NODE_SA}",
+                f"{NODE_SA},{OTHER_SA}",
+                "verax-homolog@projeto-exemplo.iam.gserviceaccount.com",
+            ],
+        )
+        with self.assertRaisesRegex(ValueError, "obrigatório sem valor: NodeServiceAccountId"):
+            Stack(self.template, NodeEgressIps=f"{NODE_IP}/32")
+        self.assert_rule_refuses_empty("NodeServiceAccountId")
+
+    def test_audience_is_the_verax_constant(self):
+        parameter = self.parameters["Audience"]
+        self.assertEqual(parameter["Type"], "String")
+        self.assertEqual(parameter["Default"], AUDIENCE)
+        self.assert_pattern(
+            "Audience",
+            valid=[AUDIENCE, "https://exemplo.example/aws"],
+            invalid=[
+                "",
+                "*",
+                "https://*",
+                f"{AUDIENCE}*",
+                f"{AUDIENCE}/",
+                AUDIENCE.replace("https://", "http://"),
+                AUDIENCE.replace("control", "Control"),
+                "https://exemplo.example/a b",
+                NODE_SA,
+            ],
+        )
+        self.assert_rule_refuses_empty("Audience")
+        # A mesma constante no exemplo sem CloudFormation e no README.
+        trust = json.loads(POLICY_JSON.read_text(encoding="utf-8"))["AssumeRolePolicyDocument"]
+        self.assertEqual(trust["Statement"][0]["Condition"]["StringEquals"][f"{GOOGLE}:oaud"], AUDIENCE)
+        self.assertIn(f"`{AUDIENCE}`", README.read_text(encoding="utf-8"))
+
+    def test_node_egress_ips_are_required_from_one_to_four_and_only_slash_32(self):
+        parameter = self.parameters["NodeEgressIps"]
+        self.assertEqual(parameter["Type"], "String")
+        self.assertNotIn("Default", parameter)
+        four = ",".join(f"203.0.113.{i}/32" for i in range(1, 5))
+        self.assert_pattern(
             "NodeEgressIps",
-            valid=["203.0.113.10/32", "192.0.2.1/32", "255.255.255.255/32", "10.0.0.1/32"],
+            valid=["203.0.113.10/32", "192.0.2.1/32", "255.255.255.255/32", "10.0.0.1/32", four],
             invalid=[
                 "",
                 "*",
@@ -592,27 +813,35 @@ class ReaderTemplateTest(unittest.TestCase):
                 "203.0.113.010/32",
                 "2001:db8::1/128",
                 "203.0.113.10/32,",
+                ",203.0.113.10/32",
+                "203.0.113.10/32,,198.51.100.20/32",
+                "203.0.113.10/32, 198.51.100.20/32",
+                f"{four},203.0.113.5/32",
+                "203.0.113.10/32,0.0.0.0/0",
             ],
         )
-        with self.assertRaisesRegex(ValueError, "obrigatório"):
-            Stack(self.template)
+        with self.assertRaisesRegex(ValueError, "obrigatório sem valor: NodeEgressIps"):
+            Stack(self.template, NodeServiceAccountId=NODE_SA)
         with self.assertRaisesRegex(ValueError, "NodeEgressIps"):
-            Stack(self.template, NodeEgressIps="")
-        # A regra também recusa a lista vazia, se o padrão do parâmetro deixar passar.
-        rule = self.template["Rules"]["IpDoNoObrigatorio"]["Assertions"][0]["Assert"]
-        stack = self.stack()
-        self.assertTrue(stack.resolve(rule))
-        for empty in ([""], []):
-            with self.subTest(empty=empty):
-                stack.params["NodeEgressIps"] = empty
-                self.assertFalse(stack.resolve(rule))
-        two = Stack(self.template, NodeEgressIps="203.0.113.10/32,198.51.100.20/32")
-        self.assertTrue(two.allows("iam:ListUsers", source_ip="198.51.100.20"))
+            Stack(self.template, NodeServiceAccountId=NODE_SA, NodeEgressIps="")
+        self.assert_rule_refuses_empty("NodeEgressIps")
+        # Com dois IPs, os dois entram no papel e leem; um terceiro, não.
+        two = self.stack(NodeEgressIps="203.0.113.10/32,198.51.100.20/32")
+        for source_ip in (NODE_IP, "198.51.100.20"):
+            with self.subTest(source_ip=source_ip):
+                self.assertTrue(two.node_assumes(source_ip=source_ip))
+                self.assertTrue(two.allows("iam:ListUsers", source_ip=source_ip))
+        self.assertFalse(two.node_assumes(source_ip=OTHER_IP))
+        self.assertFalse(two.allows("iam:ListUsers", source_ip=OTHER_IP))
 
     def test_node_egress_ips_match_the_node_conf_check(self):
-        # O install.sh confere o NODE_EGRESS_IPS com a mesma expressão: o IP que o nó aceita é o que a pilha aceita.
-        octet = re.search(r"^octet='([^']+)'$", INSTALL_SH.read_text(encoding="utf-8"), re.MULTILINE).group(1)
-        self.assertEqual(self.parameters["NodeEgressIps"]["AllowedPattern"], f"^{octet}(\\.{octet}){{3}}/32$")
+        # O install.sh confere cada IP do NODE_EGRESS_IPS com a mesma expressão: o IP que o nó aceita é o que a pilha
+        # aceita (a pilha só limita a 4).
+        script = INSTALL_SH.read_text(encoding="utf-8")
+        octet = re.search(r"^octet='([^']+)'$", script, re.MULTILINE).group(1)
+        self.assertIn('egress_ip="$octet(\\\\.$octet){3}/32"', script)
+        ip = f"{octet}(\\.{octet}){{3}}/32"
+        self.assertEqual(self.parameters["NodeEgressIps"]["AllowedPattern"], f"^{ip}(,{ip}){{0,3}}$")
 
     def test_log_sources_accept_only_exact_arns(self):
         self.assert_pattern(
@@ -672,14 +901,6 @@ class ReaderTemplateTest(unittest.TestCase):
                     self.stack(**{parameter: value})
         self.stack(LogObjectPrefix=f"AWSLogs/{ACCOUNT}/,AWSLogs/o-exemplo123/{ACCOUNT}/")
 
-    def test_session_revocation_takes_an_utc_instant(self):
-        self.assertEqual(self.parameters["RevokeSessionsIssuedBefore"]["Default"], "")
-        self.assert_pattern(
-            "RevokeSessionsIssuedBefore",
-            valid=["", "2026-11-04T18:00:00Z"],
-            invalid=["2026-11-04", "2026-11-04T18:00:00", "2026-11-04T18:00:00-03:00", "2026-13-01T00:00:00Z", "*"],
-        )
-
     def test_guardduty_export_requires_an_existing_detector(self):
         with self.assertRaisesRegex(ValueError, "ExportPrecisaDoDetector"):
             self.stack(EnableGuardDutyExport="true")
@@ -687,7 +908,7 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertEqual(stack.properties("GuardDutyExport")["DetectorId"], "a" * 32)
         self.assert_pattern("GuardDutyDetectorId", valid=["", "a" * 32], invalid=["*", "a" * 31, "A" * 32])
 
-    # --- O que o usuário pode fazer ---
+    # --- O que o papel pode fazer ---
 
     def test_every_allow_only_reads(self):
         self.assertEqual(problems_read_only(self.template), [])
@@ -709,10 +930,11 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertFalse(stack.allows("s3:ListBucket", f"arn:aws:s3:::outro-bucket-{ACCOUNT}"))
         other_key = KMS_KEY.replace("00000000-0000", "99999999-0000")
         self.assertFalse(stack.allows("kms:Decrypt", other_key, kms_ViaService="s3.sa-east-1.amazonaws.com"))
-        # A chave só decifra pelo S3, e a simulação só vale para o próprio usuário.
+        # A chave só decifra pelo S3, e a simulação só vale para o próprio papel.
         self.assertFalse(stack.allows("kms:Decrypt", KMS_KEY))
         self.assertFalse(stack.allows("kms:Decrypt", KMS_KEY, kms_ViaService="secretsmanager.sa-east-1.amazonaws.com"))
         self.assertFalse(stack.allows("iam:SimulatePrincipalPolicy", f"arn:aws:iam::{ACCOUNT}:user/admin"))
+        self.assertFalse(stack.allows("iam:SimulatePrincipalPolicy", f"arn:aws:iam::{ACCOUNT}:role/admin"))
 
     def test_no_allowed_call_is_cancelled_by_an_unconditional_deny(self):
         denied = {a for s in all_statements(self.template) if is_unconditional_deny(s) for a in as_list(s["Action"])}
@@ -722,7 +944,7 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertTrue(WAZUH_CALLS | POSTURE_CALLS | VALIDATION_CALLS <= allowed)
 
     def test_without_sources_nothing_of_log_content_is_readable(self):
-        stack = Stack(self.template, NodeEgressIps=f"{NODE_IP}/32")
+        stack = Stack(self.template, **NODE)
         for action in sorted(CONTENT_ACTIONS):
             with self.subTest(action=action):
                 self.assertFalse(
@@ -739,9 +961,10 @@ class ReaderTemplateTest(unittest.TestCase):
                 self.assertEqual(by_sid["LerObjetosDeLog"]["Resource"], [f"{arn}/*" for arn in BUCKETS[:count]])
                 self.assertEqual(by_sid["ListarBucketsDeLog"]["Resource"], BUCKETS[:count])
 
-    # --- O que o usuário nunca faz ---
+    # --- O que o papel nunca faz ---
 
     def test_nothing_from_outside_the_node_ip(self):
+        # Também com as credenciais da sessão vazadas: o Deny de IP vale para a sessão, não só para a entrada.
         self.assertEqual(problems_ip_deny(self.template), [])
         stack = self.stack(CreateTrail="true", EnableGuardDutyExport="true", GuardDutyDetectorId="a" * 32)
         for action in sorted(WAZUH_CALLS | POSTURE_CALLS | VALIDATION_CALLS):
@@ -758,11 +981,11 @@ class ReaderTemplateTest(unittest.TestCase):
         denied = {a for s in all_statements(self.template) if is_unconditional_deny(s) for a in as_list(s["Action"])}
         missing = {action for action in MUST_DENY if not matches(action, denied)}
         self.assertFalse(missing, f"ações sem negação explícita: {sorted(missing)}")
-        # Com uma política de administrador anexada ao usuário, a negação continua valendo.
+        # Com uma política de administrador anexada ao papel, a negação continua valendo.
         stack = self.stack()
         for action in sorted(MUST_DENY):
             with self.subTest(action=action):
-                self.assertFalse(stack.allows(action, USER_ARN, extra=[ADMIN]))
+                self.assertFalse(stack.allows(action, ROLE_ARN, extra=[ADMIN]))
 
     def test_the_boundary_caps_any_policy_attached_later(self):
         stack = self.stack()
@@ -781,6 +1004,25 @@ class ReaderTemplateTest(unittest.TestCase):
         for sid in ("NuncaAlterarLogs", "NuncaAmpliarOProprioAcesso"):
             with self.subTest(sid=sid):
                 self.assertEqual(self.statement(sid)["Action"], expected[sid])
+
+    def test_revoke_active_sessions_cuts_only_older_sessions(self):
+        # "Revoke active sessions", no console do IAM, grava no papel a política AWSRevokeOlderSessions: nega tudo à
+        # sessão emitida antes do clique. A sessão seguinte (o nó entra de novo, se o papel continuar) passa.
+        revoke = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Deny",
+                    "Action": ["*"],
+                    "Resource": ["*"],
+                    "Condition": {"DateLessThan": {"aws:TokenIssueTime": "2026-11-04T18:00:00Z"}},
+                }
+            ],
+        }
+        stack = self.stack()
+        self.assertFalse(stack.allows("iam:ListUsers", extra=[revoke], aws_TokenIssueTime="2026-11-04T17:59:59Z"))
+        self.assertTrue(stack.allows("iam:ListUsers", extra=[revoke], aws_TokenIssueTime="2026-11-04T18:00:01Z"))
+        self.assertTrue(stack.node_assumes())
 
     # --- Opcionais ---
 
@@ -806,18 +1048,10 @@ class ReaderTemplateTest(unittest.TestCase):
         sids = {s["Sid"] for s in self.stack().policy_document("GuardrailsPolicy")["Statement"]}
         self.assertNotIn("SoOsPrefixosInformados", sids)
 
-    def test_session_revocation_denies_only_older_sessions(self):
-        stack = self.stack(RevokeSessionsIssuedBefore="2026-11-04T18:00:00Z")
-        self.assertFalse(stack.allows("iam:ListUsers", aws_TokenIssueTime="2026-11-04T17:59:59Z"))
-        self.assertTrue(stack.allows("iam:ListUsers", aws_TokenIssueTime="2026-11-04T18:00:01Z"))
-        # A chave de longa duração não tem aws:TokenIssueTime: só a exclusão dela no console a revoga.
-        self.assertTrue(stack.allows("iam:ListUsers"))
-        self.assertTrue(self.stack().allows("iam:ListUsers", aws_TokenIssueTime="2026-11-04T17:59:59Z"))
-
     def test_created_trail_and_export_are_readable_from_the_node(self):
         stack = Stack(
             self.template,
-            NodeEgressIps=f"{NODE_IP}/32",
+            **NODE,
             CreateTrail="true",
             EnableGuardDutyExport="true",
             GuardDutyDetectorId="a" * 32,
@@ -834,7 +1068,7 @@ class ReaderTemplateTest(unittest.TestCase):
         access_logs = stack.attribute("AccessLogsBucket", "Arn")
         self.assertFalse(stack.allows("s3:GetObject", f"{access_logs}/cloudtrail/x"))
         self.assertFalse(stack.allows("s3:ListBucket", access_logs))
-        only_trail = Stack(self.template, NodeEgressIps=f"{NODE_IP}/32", CreateTrail="true")
+        only_trail = Stack(self.template, **NODE, CreateTrail="true")
         self.assertNotIn("GuardDutyBucket", only_trail.resources)
         self.assertTrue(only_trail.allows("s3:ListBucket", only_trail.attribute("TrailBucket", "Arn")))
 
@@ -950,7 +1184,7 @@ class ReaderTemplateTest(unittest.TestCase):
         )
 
     def test_policies_fit_the_managed_policy_size_limit(self):
-        # Limite do IAM: 6.144 caracteres sem espaços. Com 10 buckets, 10 chaves e todos os opcionais ligados.
+        # Limite do IAM: 6.144 caracteres sem espaços. Com 10 buckets, 10 chaves, 4 IPs e todos os opcionais ligados.
         stack = self.stack(
             LogBucketArns=",".join(f"arn:aws:s3:::bucket-de-log-com-nome-longo-{i:02d}-{ACCOUNT}" for i in range(10)),
             LogKmsKeyArns=",".join(KMS_KEY.replace("00000000-0000", f"000000{i:02d}-0000") for i in range(10)),
@@ -958,12 +1192,14 @@ class ReaderTemplateTest(unittest.TestCase):
             CreateTrail="true",
             EnableGuardDutyExport="true",
             GuardDutyDetectorId="a" * 32,
-            RevokeSessionsIssuedBefore="2026-11-04T18:00:00Z",
-            NodeEgressIps="203.0.113.10/32,203.0.113.11/32",
+            NodeEgressIps=",".join(f"203.0.113.{i}/32" for i in range(1, 5)),
         )
         for name in ("ReaderPolicy", "GuardrailsPolicy"):
             with self.subTest(policy=name):
                 self.assertLess(len(json.dumps(stack.policy_document(name), separators=(",", ":"))), 6144)
+        # A confiança tem um limite próprio (2.048 caracteres por padrão).
+        trust = stack.properties("ReaderRole")["AssumeRolePolicyDocument"]
+        self.assertLess(len(json.dumps(trust, separators=(",", ":"))), 2048)
 
     # --- O equivalente sem CloudFormation ---
 
@@ -972,26 +1208,46 @@ class ReaderTemplateTest(unittest.TestCase):
         self.assertEqual(
             json.loads(POLICY_JSON.read_text(encoding="utf-8")),
             {
+                "AssumeRolePolicyDocument": stack.properties("ReaderRole")["AssumeRolePolicyDocument"],
                 "VeraxControlReader": stack.policy_document("ReaderPolicy"),
                 "VeraxControlGuardrails": stack.policy_document("GuardrailsPolicy"),
             },
         )
 
-    def test_readme_cli_creates_the_same_user_without_key_or_password(self):
+    def test_readme_shows_the_same_trust(self):
+        trust = json.loads(POLICY_JSON.read_text(encoding="utf-8"))["AssumeRolePolicyDocument"]
+        self.assertEqual(json.loads(readme_block("json", "## Quem entra no papel")), trust)
+
+    def test_readme_cli_creates_the_same_role_without_user_or_key(self):
         commands = [
             line.strip()
             for line in README.read_text(encoding="utf-8").splitlines()
             if line.strip().startswith("aws iam ")
         ]
         text = "\n".join(commands)
-        for forbidden in ("create-access-key", "create-login-profile", "attach-user-policy", "put-user-policy"):
+        for forbidden in (
+            "create-user",
+            "create-access-key",
+            "create-login-profile",
+            "create-group",
+            "add-user-to-group",
+            "attach-user-policy",
+            "put-user-policy",
+            "put-role-policy",
+        ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
-        user = [c for c in commands if c.startswith("aws iam create-user")]
-        self.assertEqual(len(user), 1)
-        self.assertIn("--path /verax/", user[0])
-        self.assertIn("--user-name verax-control-reader", user[0])
-        self.assertIn('--permissions-boundary "arn:aws:iam::$conta:policy/verax/VeraxControlReader"', user[0])
+        role = [c for c in commands if c.startswith("aws iam create-role")]
+        self.assertEqual(len(role), 1)
+        for part in (
+            "--path /verax/",
+            "--role-name verax-control-reader",
+            "--max-session-duration 3600",
+            '--permissions-boundary "arn:aws:iam::$conta:policy/verax/VeraxControlReader"',
+            '--assume-role-policy-document "$(jq -c .AssumeRolePolicyDocument verax-control-reader.policy.json)"',
+        ):
+            with self.subTest(part=part):
+                self.assertIn(part, role[0])
         for name in ("VeraxControlReader", "VeraxControlGuardrails"):
             with self.subTest(policy=name):
                 self.assertTrue(
@@ -1003,29 +1259,55 @@ class ReaderTemplateTest(unittest.TestCase):
                 )
                 self.assertTrue(
                     any(
-                        c.startswith("aws iam attach-group-policy --group-name VeraxControlReaders")
+                        c.startswith("aws iam attach-role-policy --role-name verax-control-reader")
                         and c.endswith(f'policy/verax/{name}"')
                         for c in commands
                     )
                 )
-        self.assertIn("aws iam create-group --path /verax/ --group-name VeraxControlReaders", commands)
-        self.assertIn(
-            "aws iam add-user-to-group --group-name VeraxControlReaders --user-name verax-control-reader", commands
-        )
 
-    def test_readme_names_the_two_sts_calls_the_ip_deny_cannot_stop(self):
-        # O GetCallerIdentity e o GetSessionToken não passam por política ("You cannot use policies to control
-        # authentication operations"): o README não pode prometer que só o primeiro responde de fora do IP do nó.
+    def test_readme_terraform_example_creates_the_same_role(self):
+        hcl = readme_block("hcl", "### Com Terraform")
+        for forbidden in ("aws_iam_user", "aws_iam_access_key", "aws_iam_group", "StringLike", "*"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, hcl)
+        for pattern in (
+            r'name\s*=\s*"verax-control-reader"',
+            r'path\s*=\s*"/verax/"',
+            r"max_session_duration\s*=\s*3600",
+            r"permissions_boundary\s*=\s*aws_iam_policy\.verax_control_reader\.arn",
+            r'Principal\s*=\s*\{\s*Federated\s*=\s*"accounts\.google\.com"\s*\}',
+            r'Action\s*=\s*"sts:AssumeRoleWithWebIdentity"',
+            rf'"accounts\.google\.com:aud"\s*=\s*"{NODE_SA}"',
+            rf'"accounts\.google\.com:sub"\s*=\s*"{NODE_SA}"',
+            rf'"accounts\.google\.com:oaud"\s*=\s*"{re.escape(AUDIENCE)}"',
+            rf'IpAddress\s*=\s*\{{\s*"aws:SourceIp"\s*=\s*\["{re.escape(NODE_IP)}/32"\]\s*\}}',
+            r'jsondecode\(file\("\$\{path\.module\}/verax-control-reader\.policy\.json"\)\)',
+        ):
+            with self.subTest(pattern=pattern):
+                self.assertRegex(hcl, pattern)
+        for name in ("VeraxControlReader", "VeraxControlGuardrails"):
+            with self.subTest(policy=name):
+                self.assertRegex(hcl, rf'name\s*=\s*"{name}"')
+                self.assertIn(f"jsonencode(local.verax.{name})", hcl)
+        self.assertEqual(hcl.count("aws_iam_role_policy_attachment"), 1)
+
+    def test_readme_names_the_sts_call_the_ip_deny_cannot_stop(self):
+        # O GetCallerIdentity não passa por política ("You cannot use policies to control authentication
+        # operations"): o README não pode prometer que nada responde de fora do IP do nó.
         text = README.read_text(encoding="utf-8")
-        section = text.split("### O que o usuário nunca faz", 1)[1].split("\n## ", 1)[0]
-        for call in ("sts:GetCallerIdentity", "sts:GetSessionToken"):
-            with self.subTest(call=call):
-                self.assertIn(f"`{call}`", section)
-        self.assertNotIn("única exceção", section)
+        section = text.split("### O que o papel nunca faz", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("`sts:GetCallerIdentity`", section)
+
+    def test_readme_never_asks_for_a_key(self):
+        text = README.read_text(encoding="utf-8")
+        reader_part = text.split("## Conector com papel e ExternalId (obsoleto)", 1)[0]
+        for forbidden in ("Create access key", "Access key ID", "Secret access key", "SecurityCredentialsUrl", "AKIA"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, reader_part)
 
 
 class MutationTest(unittest.TestCase):
-    """Cada mutação do plano derruba ao menos uma conferência."""
+    """Cada mutação derruba ao menos uma conferência, e o avaliador mostra o efeito dela."""
 
     @classmethod
     def setUpClass(cls):
@@ -1034,25 +1316,39 @@ class MutationTest(unittest.TestCase):
     def mutated(self):
         return copy.deepcopy(self.template)
 
+    def trust(self, template):
+        return trust_statements(template)[0]
+
     def test_without_the_ip_deny(self):
         template = self.mutated()
         document = template["Resources"]["GuardrailsPolicy"]["Properties"]["PolicyDocument"]
         document["Statement"] = [s for s in document["Statement"] if s.get("Sid") != "SoDoNoDaVerax"]
         self.assertTrue(problems_ip_deny(template))
+        # Credenciais da sessão vazadas serviriam de outro IP.
         stack = Stack(template, **EXAMPLE)
         self.assertTrue(stack.allows("s3:GetObject", f"{BUCKETS[0]}/x.json.gz", source_ip=OTHER_IP))
 
-    def test_with_an_access_key(self):
+    def test_with_a_user_and_an_access_key(self):
         template = self.mutated()
+        template["Resources"]["Usuario"] = {
+            "Type": "AWS::IAM::User",
+            "Properties": {"UserName": "verax-control-reader"},
+        }
         template["Resources"]["Chave"] = {
             "Type": "AWS::IAM::AccessKey",
-            "Properties": {"UserName": {"Ref": "ReaderUser"}},
+            "Properties": {"UserName": {"Ref": "Usuario"}},
         }
         template["Outputs"]["Segredo"] = {"Value": {"Fn::GetAtt": ["Chave", "SecretAccessKey"]}}
-        self.assertEqual(len(problems_no_key_or_password(template)), 2)
+        self.assertEqual(len(problems_no_user_or_key(template)), 3)
+        # A política de leitura pendurada num usuário que já existe, sem criá-lo.
         template = self.mutated()
-        template["Resources"]["ReaderUser"]["Properties"]["LoginProfile"] = {"Password": {"Ref": "SenhaInicial"}}
-        self.assertTrue(problems_no_key_or_password(template))
+        template["Resources"]["ReaderPolicy"]["Properties"]["Users"] = ["admin"]
+        self.assertTrue(problems_no_user_or_key(template))
+        # Um parâmetro secreto e uma saída que o devolve.
+        template = self.mutated()
+        template["Parameters"]["Senha"] = {"Type": "String", "NoEcho": True}
+        template["Outputs"]["Senha"] = {"Value": {"Ref": "Senha"}}
+        self.assertEqual(len(problems_no_user_or_key(template)), 2)
 
     def test_with_get_object_on_any_resource(self):
         template = self.mutated()
@@ -1071,10 +1367,23 @@ class MutationTest(unittest.TestCase):
 
     def test_without_the_boundary(self):
         template = self.mutated()
-        del template["Resources"]["ReaderUser"]["Properties"]["PermissionsBoundary"]
-        self.assertTrue(problems_boundary(template))
+        del template["Resources"]["ReaderRole"]["Properties"]["PermissionsBoundary"]
+        self.assertTrue(problems_role(template))
         stack = Stack(template, **EXAMPLE)
         self.assertTrue(stack.allows("secretsmanager:GetSecretValue", "*", extra=[ADMIN]))
+
+    def test_role_with_a_longer_session_another_arn_or_an_inline_policy(self):
+        for key, value in (
+            ("MaxSessionDuration", 43200),
+            ("Path", "/"),
+            ("RoleName", "verax-reader"),
+            ("Policies", [{"PolicyName": "Extra", "PolicyDocument": ADMIN}]),
+            ("ManagedPolicyArns", [{"Ref": "ReaderPolicy"}]),
+        ):
+            with self.subTest(key=key):
+                template = self.mutated()
+                template["Resources"]["ReaderRole"]["Properties"][key] = value
+                self.assertTrue(problems_role(template))
 
     def test_with_a_write_action_or_a_decrypt_outside_s3(self):
         template = self.mutated()
@@ -1090,6 +1399,96 @@ class MutationTest(unittest.TestCase):
             if isinstance(item, dict) and "Fn::If" in item and item["Fn::If"][1].get("Sid") == "DecifrarSoPeloS3":
                 del item["Fn::If"][1]["Condition"]
         self.assertTrue(problems_read_only(template))
+
+    def test_trust_without_each_condition(self):
+        attacks = {
+            # Sem o sub: um token com o azp do nó e outro sub entraria (a AWS não exige o sub do Google).
+            f"{GOOGLE}:sub": {**google_token(), "sub": OTHER_SA},
+            # Sem o aud: um token com o sub do nó e o azp de outra conta entraria.
+            f"{GOOGLE}:aud": {**google_token(), "azp": OTHER_SA},
+            # Sem o oaud: um token que o nó emitiu para outro destino serviria aqui.
+            f"{GOOGLE}:oaud": google_token(audience="https://outro-servico.example"),
+        }
+        for key, token in attacks.items():
+            with self.subTest(key=key):
+                self.assertFalse(Stack(self.template, **EXAMPLE).node_assumes(token))
+                template = self.mutated()
+                del self.trust(template)["Condition"]["StringEquals"][key]
+                self.assertTrue(problems_trust(template))
+                self.assertTrue(Stack(template, **EXAMPLE).node_assumes(token))
+        # Sem o IP: o token do nó, vazado, entraria de qualquer lugar por até 1 hora.
+        template = self.mutated()
+        del self.trust(template)["Condition"]["IpAddress"]
+        self.assertTrue(problems_trust(template))
+        self.assertTrue(Stack(template, **EXAMPLE).node_assumes(google_token(), OTHER_IP))
+
+    def test_trust_with_a_wildcard(self):
+        # StringLike com curinga no sub e no aud: qualquer conta de serviço do Google entraria do IP do nó.
+        template = self.mutated()
+        condition = self.trust(template)["Condition"]
+        condition["StringLike"] = {f"{GOOGLE}:sub": "*", f"{GOOGLE}:aud": "*"}
+        for key in (f"{GOOGLE}:sub", f"{GOOGLE}:aud"):
+            del condition["StringEquals"][key]
+        self.assertTrue(problems_trust(template))
+        self.assertTrue(Stack(template, **EXAMPLE).node_assumes(google_token(sub=OTHER_SA)))
+        # Um valor fixo no lugar do parâmetro validado (o curinga, aqui, nem casaria no StringEquals).
+        for key in (f"{GOOGLE}:sub", f"{GOOGLE}:oaud"):
+            with self.subTest(key=key):
+                template = self.mutated()
+                self.trust(template)["Condition"]["StringEquals"][key] = "*"
+                self.assertTrue(problems_trust(template))
+        # O IP inteiro da internet.
+        template = self.mutated()
+        self.trust(template)["Condition"]["IpAddress"]["aws:SourceIp"] = "0.0.0.0/0"
+        self.assertTrue(problems_trust(template))
+        self.assertTrue(Stack(template, **EXAMPLE).node_assumes(google_token(), OTHER_IP))
+
+    def test_trust_with_another_principal_or_action(self):
+        # Uma segunda declaração para outra conta AWS, com o AssumeRole comum.
+        template = self.mutated()
+        other = "arn:aws:iam::222222222222:root"
+        trust_statements(template).append(
+            {"Sid": "OutraConta", "Effect": "Allow", "Principal": {"AWS": other}, "Action": "sts:AssumeRole"}
+        )
+        self.assertTrue(problems_trust(template))
+        self.assertTrue(
+            Stack(template, **EXAMPLE).assumes("AWS", other, "sts:AssumeRole", {"aws:SourceIp": OTHER_IP})
+        )
+        # Outro provedor ao lado do Google, qualquer principal, e outra ação ao lado da troca do token.
+        for key, value in (
+            ("Principal", {"Federated": [GOOGLE, "cognito-identity.amazonaws.com"]}),
+            ("Principal", {"Federated": GOOGLE, "AWS": other}),
+            ("Principal", "*"),
+            ("Action", [WEB_IDENTITY, "sts:AssumeRole"]),
+            ("Action", "sts:*"),
+        ):
+            with self.subTest(key=key, value=value):
+                template = self.mutated()
+                self.trust(template)[key] = value
+                self.assertTrue(problems_trust(template))
+
+    def test_console_wizard_audience_pitfall(self):
+        # O assistente "Web identity / Google" do console grava o audience pedido ao Google em accounts.google.com:aud.
+        # No token de uma conta de serviço, a AWS lê essa chave do azp (o ID da conta): o papel nunca aceitaria o nó.
+        template = self.mutated()
+        self.trust(template)["Condition"]["StringEquals"][f"{GOOGLE}:aud"] = {"Ref": "Audience"}
+        self.assertTrue(problems_trust(template))
+        self.assertFalse(Stack(template, **EXAMPLE).node_assumes())
+
+    def test_parameters_loosened(self):
+        for parameter, key, value in (
+            ("NodeServiceAccountId", "AllowedPattern", "^.*$"),
+            ("NodeServiceAccountId", "Default", NODE_SA),
+            ("Audience", "Default", "https://outro.example/aws"),
+            ("Audience", "AllowedPattern", "^.*$"),
+        ):
+            with self.subTest(parameter=parameter, key=key):
+                template = self.mutated()
+                template["Parameters"][parameter][key] = value
+                self.assertTrue(problems_trust(template))
+        template = self.mutated()
+        template["Parameters"]["NodeEgressIps"]["AllowedPattern"] = "^.*$"
+        self.assertTrue(problems_ip_deny(template))
 
 
 if __name__ == "__main__":

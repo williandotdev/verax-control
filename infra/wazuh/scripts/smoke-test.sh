@@ -118,13 +118,37 @@ expect "senha padrão recusada (wazuh)" 401 "$(api_code wazuh wazuh)"
 
 echo "Portas publicadas no host"
 published() { docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q "$1")"; }
-expect "manager sem nenhuma porta" '\{\}' "$(published wazuh.manager)"
+# Com os agentes nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; o start.sh passa o IP fixo deles), o
+# manager publica só a 1514/tcp e a 1515/tcp; sem eles, nenhuma porta.
+if [[ -n ${WAZUH_AGENTS_ADDRESS:-} ]]; then
+  expect "manager só com a 1514/tcp e a 1515/tcp (agentes)" \
+    '\{"1514/tcp":\[\{"HostIp":"[0-9.]*","HostPort":"1514"\}\],"1515/tcp":\[\{"HostIp":"[0-9.]*","HostPort":"1515"\}\]\}' \
+    "$(published wazuh.manager)"
+else
+  expect "manager sem nenhuma porta" '\{\}' "$(published wazuh.manager)"
+fi
 # No nó de cliente o indexer não publica porta (a API e o worker o alcançam pela rede interna do Docker); no EC2 ele
 # publica só no endereço liberado para a API (INDEXER_PUBLISH_ADDRESS, que o bootstrap-host.sh sempre define).
 if [[ -n ${INDEXER_PUBLISH_ADDRESS:-} ]]; then
   expect "indexer só no endereço configurado" ".*\"HostIp\":\"${INDEXER_PUBLISH_ADDRESS}\".*" "$(published wazuh.indexer)"
 else
   expect "indexer sem nenhuma porta" '\{\}' "$(published wazuh.indexer)"
+fi
+
+if [[ -n ${WAZUH_AGENTS_ADDRESS:-} ]]; then
+  echo "Registro dos agentes (porta 1515, de dentro do manager)"
+  # Como o agente faz: TLS conferido com a CA dos agentes e o IP fixo deles; uma senha errada nunca registra nada.
+  registration() { # <mensagem do agente>
+    printf '%s\n' "$1" | in_service wazuh.manager timeout 10 openssl s_client -quiet -connect 127.0.0.1:1515 \
+      -CAfile /etc/ssl/verax-agents/ca.crt -verify_ip "$WAZUH_AGENTS_ADDRESS" -verify_return_error 2>&1 || true
+  }
+  expect "certificado do registro confere com a CA dos agentes e o IP $WAZUH_AGENTS_ADDRESS" '.*verify return:1.*' \
+    "$(registration "OSSEC A:'verax-smoke'" | tr '\n' ' ')"
+  expect "senha errada recusada" '.*ERROR: Invalid password.*' \
+    "$(registration "OSSEC PASS: senha-errada-do-smoke-test-0000000000 OSSEC A:'verax-smoke'" | tr '\n' ' ')"
+  expect "resposta ativa desligada no manager e nos agentes" 1 \
+    "$(in_service wazuh.manager sed -n '/<active-response>/,/<\/active-response>/p' /var/ossec/etc/ossec.conf |
+      grep -c '<disabled>yes</disabled>' || true)"
 fi
 
 if ((failures > 0)); then

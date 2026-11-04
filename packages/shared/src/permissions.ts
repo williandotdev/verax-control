@@ -42,6 +42,10 @@ export const PERMISSIONS = {
   'posture:read': ALL,
   'assets:read': ALL,
   'audit:read': ADMINS,
+  // Agentes do Wazuh nas instâncias do cliente: todos veem a lista e as instruções; a senha de registro, só quem
+  // administra.
+  'agents:read': ALL,
+  'agents:enroll': ADMINS,
   // Exclusivas da Verax
   'session:switch_tenant': VERAX,
   'unowned_alerts:read': VERAX,

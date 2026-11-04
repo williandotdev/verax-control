@@ -19,5 +19,9 @@ run=/run/verax
 install -d -m 0700 "$run/wazuh-aws"
 env_files=(--env-file /etc/verax/images.env)
 if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
-docker compose --project-directory /opt/verax -f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml \
+# Com os agentes (WAZUH_AGENTS=true), o compose.wazuh-agents.yaml dá ao gerador a pasta dos agentes e a senha de
+# registro (só leitura): o ossec.conf sai com o registro ligado, mais o authd.pass e o agent.conf do grupo default.
+files=(-f /opt/verax/compose.yaml -f /opt/verax/compose.wazuh.yaml)
+if [[ ${WAZUH_AGENTS:-false} == true ]]; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi
+docker compose --project-directory /opt/verax "${files[@]}" \
   "${env_files[@]}" --profile setup run --rm -T manager-config </dev/null

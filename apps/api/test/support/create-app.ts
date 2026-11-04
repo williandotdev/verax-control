@@ -41,6 +41,8 @@ export interface CreateAppOptions {
   vault?: { publicKey: string; version: number };
   /** IPs de saída do nó (`NODE_EGRESS_IPS`), separados por vírgula. */
   nodeEgressIps?: string;
+  /** Agentes do Wazuh ligados no nó (as variáveis WAZUH_AGENTS_* que o start.sh escreve); sem informar, desligados. */
+  wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
 }
 
 /**
@@ -71,6 +73,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       CREDENTIALS_KEY_VERSION: String(options.vault.version),
     }),
     ...(options.nodeEgressIps !== undefined && { NODE_EGRESS_IPS: options.nodeEgressIps }),
+    ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
   });
   const builder = Test.createTestingModule({
     imports: [

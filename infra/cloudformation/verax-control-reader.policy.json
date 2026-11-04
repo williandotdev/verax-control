@@ -1,4 +1,25 @@
 {
+  "AssumeRolePolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "SoONoDaVerax",
+        "Effect": "Allow",
+        "Principal": { "Federated": "accounts.google.com" },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "accounts.google.com:aud": "123456789012345678901",
+            "accounts.google.com:sub": "123456789012345678901",
+            "accounts.google.com:oaud": "https://control.veraxsistemas.com.br/aws-reader"
+          },
+          "IpAddress": {
+            "aws:SourceIp": ["203.0.113.10/32"]
+          }
+        }
+      }
+    ]
+  },
   "VeraxControlReader": {
     "Version": "2012-10-17",
     "Statement": [
@@ -37,7 +58,7 @@
         "Sid": "AutoInspecao",
         "Effect": "Allow",
         "Action": "iam:SimulatePrincipalPolicy",
-        "Resource": "arn:aws:iam::111111111111:user/verax/verax-control-reader"
+        "Resource": "arn:aws:iam::111111111111:role/verax/verax-control-reader"
       },
       {
         "Sid": "ValidarFontes",

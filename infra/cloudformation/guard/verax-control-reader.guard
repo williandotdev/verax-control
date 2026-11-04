@@ -1,11 +1,14 @@
 #
-# Regras do cfn-guard para o usuário de leitura (verax-control-reader.yaml), conferidas no template como ele é, com os
+# Regras do cfn-guard para o papel de leitura (verax-control-reader.yaml), conferidas no template como ele é, com os
 # Fn::If e os Ref. É uma segunda leitura, com outra ferramenta, das garantias que tests/test_reader.py confere com a
-# pilha montada: sem chave nem senha, usuário preso ao limite de permissões, negação de fora do IP do nó, leitura só
-# com verbos de leitura e conteúdo de log nunca em "*". Os casos de verax-control-reader.tests.yaml conferem as regras.
+# pilha montada: nenhum usuário nem chave e nada com cara de segredo, só o nó do Verax Control entra no papel (só o
+# Google, só a troca do token, com aud, sub, oaud e o IP do nó exatos), papel preso ao limite de permissões, negação de
+# fora do IP do nó, leitura só com verbos de leitura e conteúdo de log nunca em "*". Os casos de
+# verax-control-reader.tests.yaml conferem as regras.
 #
 
-let usuarios = Resources.*[ Type == 'AWS::IAM::User' ]
+let papeis = Resources.*[ Type == 'AWS::IAM::Role' ]
+let politicas = Resources.*[ Type == 'AWS::IAM::ManagedPolicy' ]
 let negacoes = Resources.*[
     Type == 'AWS::IAM::ManagedPolicy'
     Properties.ManagedPolicyName == 'VeraxControlGuardrails'
@@ -14,34 +17,96 @@ let leitura = Resources.*[
     Type == 'AWS::IAM::ManagedPolicy'
     Properties.ManagedPolicyName == 'VeraxControlReader'
 ]
+let segredo = /(?i)(secret|password|senha|token|credential|accesskey)/
 
-# A pilha não cria chave de acesso nem outra credencial: o cliente cria a chave no console.
-rule sem_chave_de_acesso {
-    Resources.*[ Type == 'AWS::IAM::AccessKey' ] empty
-    Resources.*[ Type == 'AWS::IAM::ServiceSpecificCredential' ] empty
-    Resources.*[ Type == 'AWS::IAM::UserPolicy' ] empty
-}
-
-# Nenhuma saída lê o segredo de uma chave (o GetAtt vem como lista ou, na forma curta, como texto com ponto).
-rule nenhuma_saida_com_segredo {
-    Outputs !empty
-    Outputs.* {
-        Value.'Fn::GetAtt' !exists or Value.'Fn::GetAtt' != /SecretAccessKey/
-        Value.'Fn::Sub' !exists or Value.'Fn::Sub' != /SecretAccessKey/
+# Nenhum usuário, chave, senha ou grupo: o nó entra no papel com um token do Google, e a pilha não tem credencial de
+# longa duração. As políticas da pilha também não se penduram num usuário ou num grupo que já exista.
+rule sem_usuario_nem_chave {
+    Resources.*[
+        Type in [
+            'AWS::IAM::User',
+            'AWS::IAM::AccessKey',
+            'AWS::IAM::ServiceSpecificCredential',
+            'AWS::IAM::UserPolicy',
+            'AWS::IAM::UserToGroupAddition',
+            'AWS::IAM::Group',
+            'AWS::IAM::GroupPolicy'
+        ]
+    ] empty
+    when %politicas !empty {
+        %politicas {
+            Properties.Users !exists
+            Properties.Groups !exists
+        }
     }
 }
 
-# O usuário nasce sem senha, sem política própria, só no grupo e com o limite de permissões da política de leitura.
-rule usuario_sem_senha_e_com_limite {
-    %usuarios !empty
-    %usuarios {
-        Properties.UserName == 'verax-control-reader'
+# Nenhuma saída nem parâmetro com cara de segredo: a pilha não tem segredo nenhum. O GetAtt vem como lista ou, na
+# forma curta, como texto com ponto; o nome da saída também conta.
+rule nenhuma_saida_com_segredo {
+    Outputs !empty
+    Outputs[ keys == %segredo ] empty
+    Outputs.* {
+        Value.'Fn::GetAtt' !exists or Value.'Fn::GetAtt' != %segredo
+        Value.'Fn::Sub' !exists or Value.'Fn::Sub' != %segredo
+        Value.Ref !exists or Value.Ref != %segredo
+    }
+    when Parameters exists {
+        Parameters.*[ NoEcho exists ] empty
+    }
+}
+
+# Um papel só, com nome e caminho fixos (o ARN sai só do ID da conta), sessão de 1 hora, sem política em linha, com o
+# limite de permissões da política de leitura e só as duas políticas da pilha, que não se anexam a nenhum outro papel.
+rule papel_preso_ao_limite {
+    %papeis !empty
+    %papeis {
+        Properties.RoleName == 'verax-control-reader'
         Properties.Path == '/verax/'
-        Properties.LoginProfile !exists
+        Properties.MaxSessionDuration == 3600
         Properties.Policies !exists
-        Properties.ManagedPolicyArns !exists
         Properties.PermissionsBoundary.Ref == 'ReaderPolicy'
-        Properties.Groups == [ { 'Ref': 'ReadersGroup' } ]
+        Properties.ManagedPolicyArns == [ { 'Ref': 'ReaderPolicy' }, { 'Ref': 'GuardrailsPolicy' } ]
+    }
+    when %politicas !empty {
+        %politicas {
+            Properties.Roles !exists
+        }
+    }
+}
+
+# Só o Google entra, e só pela troca do token: nenhum outro provedor, nenhum usuário, papel, conta ou serviço da AWS,
+# nenhum AssumeRole comum, e nada de NotPrincipal ou NotAction (que inverteriam o sentido da declaração).
+rule confianca_so_do_google {
+    %papeis !empty
+    let confianca = %papeis.Properties.AssumeRolePolicyDocument.Statement[*]
+    %confianca !empty
+    %confianca {
+        Effect == 'Allow'
+        NotPrincipal !exists
+        NotAction !exists
+        Principal == { 'Federated': 'accounts.google.com' }
+        Action == 'sts:AssumeRoleWithWebIdentity'
+    }
+}
+
+# Toda declaração da confiança tem as quatro condições, exatas e só elas: aud, sub e oaud em StringEquals, com os
+# valores dos parâmetros validados (aud e sub, o ID único da conta de serviço do nó; oaud, o audience do Verax
+# Control), e o IP de saída do nó em IpAddress. A condição inteira é comparada: nenhum StringLike, curinga ou valor
+# fixo, nenhuma chave a menos ou a mais e nenhum outro operador passa.
+rule confianca_amarrada_ao_no {
+    %papeis !empty
+    let confianca = %papeis.Properties.AssumeRolePolicyDocument.Statement[*]
+    %confianca !empty
+    %confianca {
+        Condition == {
+            'StringEquals': {
+                'accounts.google.com:aud': { 'Ref': 'NodeServiceAccountId' },
+                'accounts.google.com:sub': { 'Ref': 'NodeServiceAccountId' },
+                'accounts.google.com:oaud': { 'Ref': 'Audience' }
+            },
+            'IpAddress': { 'aws:SourceIp': { 'Fn::Split': [ ',', { 'Ref': 'NodeEgressIps' } ] } }
+        }
     }
 }
 
@@ -56,11 +121,11 @@ rule nega_fora_do_ip_do_no {
         Resource == '*'
         NotAction !exists
         NotResource !exists
-        Condition == { 'NotIpAddress': { 'aws:SourceIp': { 'Ref': 'NodeEgressIps' } } }
+        Condition == { 'NotIpAddress': { 'aws:SourceIp': { 'Fn::Split': [ ',', { 'Ref': 'NodeEgressIps' } ] } } }
     }
 }
 
-# A política de leitura só libera verbos de leitura (mais a simulação do próprio usuário e o Decrypt pelo S3).
+# A política de leitura só libera verbos de leitura (mais a simulação do próprio papel e o Decrypt pelo S3).
 rule leitura_so_le {
     %leitura !empty
     let declaracoes = %leitura.Properties.PolicyDocument.Statement[ Effect exists ]

@@ -31,6 +31,8 @@ const PAGES: [string, string | RegExp][] = [
   ['/cadastros/clientes', 'Clientes'],
   ['/cadastros/usuarios', 'Usuários'],
   ['/cadastros/contas', 'Contas cloud'],
+  ['/cadastros/agentes', 'Agentes'],
+  ['/cadastros/agentes?sistema=windows', 'Agentes'],
   ['/cadastros/protecao', 'Lista de proteção'],
   ['/cadastros/excecoes', 'Exceções'],
   ['/auditoria', 'Auditoria'],
@@ -148,6 +150,18 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
     await card.getByRole('button', { name: 'Confirmar remoção' }).click();
     await expect(sheet.getByLabel('Token de API do Cloudflare')).toBeFocused();
+    expect(await violations(page)).toEqual([]);
+  });
+
+  // A senha de registro à mostra (o botão alternado) e a aba do Windows, com o script na região rolável.
+  test('agentes com a senha de registro à mostra: sem violação de acessibilidade', async ({ page }) => {
+    await open(page, '/cadastros/agentes?sistema=windows', 'Agentes');
+    await page.getByRole('button', { name: 'Mostrar senha' }).click();
+    await expect(page.getByRole('button', { name: 'Esconder senha' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await expect(page.getByRole('region', { name: 'Script de instalação para Windows' })).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
 

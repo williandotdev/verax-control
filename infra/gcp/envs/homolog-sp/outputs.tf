@@ -13,8 +13,13 @@ output "node_service_account" {
   value       = module.node.service_account_email
 }
 
+output "node_service_account_unique_id" {
+  description = "ID único da conta de serviço do nó: o NodeServiceAccountId do papel de leitura na AWS de teste."
+  value       = module.node.service_account_unique_id
+}
+
 output "nat_ip" {
-  description = "IP de saída fixo do nó (Cloud NAT). Vai no node.conf como NODE_EGRESS_IPS=<ip>/32 e é o IP que a política IAM da AWS de teste libera."
+  description = "IP de saída fixo do nó (Cloud NAT). Vai no node.conf como NODE_EGRESS_IPS=<ip>/32 e é o NodeEgressIps do papel de leitura na AWS de teste."
   value       = module.node.nat_ip
 }
 
@@ -41,4 +46,9 @@ output "node_written_secrets" {
 output "images_repository" {
   description = "Registro das imagens do nó (IMAGES_REPOSITORY no node.conf)."
   value       = "${var.images_location}-docker.pkg.dev/${var.images_project_id}/${var.images_repository_id}"
+}
+
+output "wazuh_agents" {
+  description = "Agentes do Wazuh (wazuh_agents): IP fixo de entrada (WAZUH_AGENTS_ADDRESS no node.conf) e faixas liberadas (WAZUH_AGENTS_SOURCES). Nulo com o interruptor desligado."
+  value       = module.node.wazuh_agents
 }
