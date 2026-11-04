@@ -56,6 +56,12 @@ sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do pl
 O perfil do nó (`NODE_PROFILE`) define a memória do banco, da API e do worker. O da Verax é `lean`, com os mesmos
 limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` atual não precisa mudar.
 
+No perfil `standard` (homologação e nós de clientes), o mesmo pacote sobe também o Wazuh (manager e indexer, sem
+dashboard): o `deploy.sh` leva junto a configuração de `infra/wazuh`, o `install.sh` gera as três senhas dele em
+`/var/lib/verax/secrets`, e a partida espera o Wazuh ficar saudável (alguns minutos a mais, mais na primeira vez, que
+baixa as imagens). O que roda, como conferir e como ler os alertas estão em `infra/wazuh/README.md`, seção "Nó de
+cliente". Nesse perfil, use `SYNC_SOURCES=gcp,wazuh` no `node.conf`. O nó da Verax (`lean`) não recebe nada disso.
+
 ## Instalar ou atualizar
 
 Do seu computador, na raiz do repositório, com o `gcloud` e o `gh` logados, o Docker instalado (o `gh` lê a imagem

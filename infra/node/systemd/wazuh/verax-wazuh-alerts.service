@@ -1,0 +1,9 @@
+# Limpeza dos alertas antigos do Wazuh (perfil standard; infra/node/bin/wazuh-alerts-cleanup.sh). Sem Requires: com o
+# nó parado, o timer não sobe o nó, e o script não faz nada.
+[Unit]
+Description=Verax Control - apaga os alertas do Wazuh com mais de 7 dias
+After=verax-node.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/verax/bin/wazuh-alerts-cleanup.sh

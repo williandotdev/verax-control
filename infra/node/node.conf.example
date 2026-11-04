@@ -27,7 +27,8 @@ PLAN=interno
 # PLAN_MONTHLY_GIB=15
 # PLAN_HISTORY_DAYS=90
 # Perfil do nó: lean (o da Verax: e2-micro, sem Wazuh) ou standard (nó de cliente: e2-standard-2, com o Wazuh). Define a
-# memória do banco, da API e do worker; o mesmo perfil do Terraform (node_profile). Sem a linha, vale lean.
+# memória do banco, da API e do worker e, no standard, sobe também o Wazuh (infra/node/compose.wazuh.yaml); o mesmo
+# perfil do Terraform (node_profile). Sem a linha, vale lean.
 NODE_PROFILE=lean
 # IP de saída do nó com /32 (`terraform output nat_ip` no perfil standard), separados por vírgula: é o IP que a política
 # IAM da AWS do cliente libera. Vazio no nó da Verax, que sai pelo IP automático do NAT.

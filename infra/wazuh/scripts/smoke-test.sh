@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Confere a instalação do Wazuh (T4.2 e T4.8): TLS obrigatório, senhas novas aceitas, senhas padrão e usuários de
-# demonstração recusados, usuário da API só com leitura dos alertas, e nenhuma porta publicada além do previsto. Roda no fim do deploy.sh e pode ser
-# chamado sozinho, com as mesmas variáveis de senha.
+# Confere a instalação do Wazuh (T4.2, T4.8 e fase 2, PR-W1): TLS obrigatório, senhas novas aceitas, senhas padrão e
+# usuários de demonstração recusados, usuário da API só com leitura dos alertas, e nenhuma porta publicada além do
+# previsto. Roda no fim do `start.sh up` do nó de cliente e do deploy.sh (EC2), e pode ser chamado sozinho, com as
+# mesmas variáveis de senha. Fala com o projeto do Compose em vigor: o da pasta (EC2) ou o das variáveis COMPOSE_*
+# (nó e CI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-: "${INDEXER_ADMIN_PASSWORD:?}" "${INDEXER_DASHBOARD_PASSWORD:?}" "${WAZUH_API_PASSWORD:?}"
-: "${INDEXER_API_READ_PASSWORD:?}"
+: "${INDEXER_ADMIN_PASSWORD:?}" "${WAZUH_API_PASSWORD:?}" "${INDEXER_API_READ_PASSWORD:?}"
 
 failures=0
 expect() { # <descrição> <esperado (regex)> <obtido>
@@ -33,7 +34,6 @@ indexer_code() { curl_as wazuh.indexer "$1" "$2" -o /dev/null -w '%{http_code}' 
 
 echo "Indexer"
 expect "admin com a senha nova" 200 "$(indexer_code admin "$INDEXER_ADMIN_PASSWORD" /)"
-expect "kibanaserver com a senha nova" 200 "$(indexer_code kibanaserver "$INDEXER_DASHBOARD_PASSWORD" /)"
 for default in admin:admin admin:SecretPassword kibanaserver:kibanaserver kibanaro:kibanaro logstash:logstash \
   readall:readall snapshotrestore:snapshotrestore; do
   expect "senha padrão recusada (${default%%:*})" 401 "$(indexer_code "${default%%:*}" "${default#*:}" /)"
@@ -47,7 +47,7 @@ top_level_keys() {
 }
 users=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
   "$indexer_url/_plugins/_security/api/internalusers" | top_level_keys)
-expect "só admin, kibanaserver e verax_api_read existem" 'admin kibanaserver verax_api_read ' "$users"
+expect "só admin e verax_api_read existem (sem dashboard, sem kibanaserver)" 'admin verax_api_read ' "$users"
 mappings=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
   "$indexer_url/_plugins/_security/api/rolesmapping" | top_level_keys)
 expect "só os mapeamentos de papel necessários (sem own_index para todos)" \
@@ -82,19 +82,16 @@ expect "wazuh-wui com a senha nova" 200 "$(api_code wazuh-wui "$WAZUH_API_PASSWO
 expect "senha padrão recusada (wazuh-wui)" 401 "$(api_code wazuh-wui wazuh-wui)"
 expect "senha padrão recusada (wazuh)" 401 "$(api_code wazuh wazuh)"
 
-echo "Dashboard"
-dashboard_ca=/usr/share/wazuh-dashboard/certs/root-ca.pem
-expect "login do admin" 200 "$(curl_as wazuh.dashboard admin "$INDEXER_ADMIN_PASSWORD" -o /dev/null \
-  -w '%{http_code}' --cacert "$dashboard_ca" https://wazuh.dashboard:5601/api/status)"
-expect "HTTP sem TLS recusado" '000|400' "$(in_service wazuh.dashboard curl -s -o /dev/null -w '%{http_code}' \
-  http://wazuh.dashboard:5601/api/status || true)"
-
 echo "Portas publicadas no host"
 published() { docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q "$1")"; }
 expect "manager sem nenhuma porta" '\{\}' "$(published wazuh.manager)"
-expect "dashboard só em 127.0.0.1" '.*"HostIp":"127\.0\.0\.1".*' "$(published wazuh.dashboard)"
-expect "indexer só no endereço configurado" ".*\"HostIp\":\"${INDEXER_PUBLISH_ADDRESS:-127.0.0.1}\".*" \
-  "$(published wazuh.indexer)"
+# No nó de cliente o indexer não publica porta (a API e o worker o alcançam pela rede interna do Docker); no EC2 ele
+# publica só no endereço liberado para a API (INDEXER_PUBLISH_ADDRESS, que o bootstrap-host.sh sempre define).
+if [[ -n ${INDEXER_PUBLISH_ADDRESS:-} ]]; then
+  expect "indexer só no endereço configurado" ".*\"HostIp\":\"${INDEXER_PUBLISH_ADDRESS}\".*" "$(published wazuh.indexer)"
+else
+  expect "indexer sem nenhuma porta" '\{\}' "$(published wazuh.indexer)"
+fi
 
 if ((failures > 0)); then
   echo "$failures verificação(ões) falharam." >&2

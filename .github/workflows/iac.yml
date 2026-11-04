@@ -116,10 +116,12 @@ jobs:
           done
           shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
           bash "$test"
-      - name: Compose válida (arquivos de ambiente fictícios, como o start.sh monta na VM)
+      - name: Compose válida nos dois perfis (arquivos de ambiente fictícios, como o start.sh monta na VM)
+        # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml, com os arquivos das senhas do
+        # Wazuh que o start.sh escreve nesse perfil.
         run: |
           sudo install -d -m 0755 /run/verax
-          for file in postgres db-bootstrap migrate api worker cloudflared bootstrap; do
+          for file in postgres db-bootstrap migrate api worker cloudflared bootstrap wazuh-security wazuh-manager; do
             echo "EXEMPLO=1" | sudo tee "/run/verax/$file.env" >/dev/null
           done
           {
@@ -127,6 +129,8 @@ jobs:
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
           } >images.env
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
+            --profile setup config --quiet
       - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
         run: |
           # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
@@ -141,27 +145,60 @@ jobs:
             | .postgres.mem_limit == "536870912" and any(.postgres.command[]; . == "shared_buffers=128MB")
               and .api.mem_limit == "402653184" and .api.environment.NODE_OPTIONS == "--max-old-space-size=256"
               and .worker.mem_limit == "536870912" and .worker.environment.NODE_OPTIONS == "--max-old-space-size=384"'
+          # Standard com o Wazuh: indexer com 3 GiB e 1,5 CPU, manager com 1,5 GiB e 1 CPU, e a soma dos limites dos
+          # contêineres que ficam no ar cabe em 6 GiB (a VM tem 8 GB; o resto é do sistema e do cache de páginas).
+          render -f infra/node/compose.wazuh.yaml --env-file standard.env | jq -e '.services
+            | ."wazuh.indexer".mem_limit == "3221225472" and (."wazuh.indexer".cpus | tonumber) == 1.5
+              and ."wazuh.manager".mem_limit == "1610612736" and (."wazuh.manager".cpus | tonumber) == 1
+              and ([.[] | select(.restart == "unless-stopped") | .mem_limit | tonumber] | add) <= 6 * 1073741824'
       - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e no start.sh)
         run: |
           grep -q 'subnet: 172.30.53.0/24' infra/node/compose.yaml
           grep -q 'ipv4_address: 172.30.53.10' infra/node/compose.yaml
           grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/start.sh
           grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/start.sh
-      - name: Nenhuma porta publicada e todo contêiner da aplicação endurecido
-        run: |
-          config=$(docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --format json)
-          if jq -e '[.services[] | select(.ports != null and (.ports | length) > 0)] | length > 0' <<<"$config" >/dev/null; then
-            echo "O nó não publica porta: o acesso é pelo túnel." >&2
+          # A guarda vale para o tráfego de qualquer rede de contêiner (as do Wazuh ficam fora de NODE_SUBNET): o salto
+          # para a cadeia não filtra a origem.
+          # shellcheck disable=SC2016 # o `$chain` é texto do start.sh, não variável daqui
+          grep -qxF '    iptables -I DOCKER-USER -d 169.254.169.254 -j "$chain"' infra/node/bin/start.sh
+          if grep -qE 'iptables -[IA] DOCKER-USER -s' infra/node/bin/start.sh; then
+            echo "A guarda do metadata não pode depender da rede de origem." >&2
             exit 1
           fi
-          jq -e '[.services | to_entries[] | select(.key != "postgres") | .value
-            | select(.read_only != true or (.cap_drop | index("ALL")) == null
-              or (.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+      - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard)
+        # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
+        # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
+        # declaradas e sem ganho de privilégio; os jobs de inicialização dele têm a raiz só leitura.
+        run: |
+          check() {
+            local config
+            config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
+            if jq -e '[.services[] | select(.ports != null and (.ports | length) > 0)] | length > 0' <<<"$config" >/dev/null; then
+              echo "O nó não publica porta: o acesso é pelo túnel." >&2
+              exit 1
+            fi
+            jq -e '[.services | to_entries[] | select(.key != "postgres")
+              | select((.value.read_only != true and (.key | IN("wazuh.indexer", "wazuh.manager") | not))
+                or (.value.cap_drop | index("ALL")) == null
+                or (.value.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+          }
+          check -f infra/node/compose.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml
+      - name: Redes do Wazuh no standard (indexer só na rede interna, manager fora da rede do banco)
+        run: |
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
+            --profile setup config --format json | jq -e '
+              .networks.wazuh.internal == true and (.networks."wazuh-egress".internal // false) == false
+              and (.services."wazuh.indexer".networks | keys) == ["wazuh"]
+              and (.services."wazuh.manager".networks | keys) == ["wazuh", "wazuh-egress"]
+              and (.services.api.networks | keys) == ["verax", "wazuh"]
+              and (.services.worker.networks | keys) == ["verax", "wazuh"]
+              and .services.worker.networks.verax.ipv4_address == "172.30.53.10"'
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -175,31 +212,37 @@ jobs:
         working-directory: infra/wazuh
         env:
           INDEXER_ADMIN_PASSWORD: ficticia
-          INDEXER_DASHBOARD_PASSWORD: ficticia
           WAZUH_API_PASSWORD: ficticia
           INDEXER_API_READ_PASSWORD: ficticia
         run: docker compose config --quiet
+      - name: Mesmas imagens do Wazuh no nó e no bundle do EC2 (o Dependabot atualiza o infra/wazuh)
+        run: |
+          images() { grep -oE 'wazuh/wazuh-(manager|indexer):[^[:space:]]+' "$1" | sort -u; }
+          diff <(images infra/wazuh/docker-compose.yml) <(images infra/node/compose.wazuh.yaml)
       - name: O PR mexe no Wazuh?
         id: changes
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ $EVENT_NAME != pull_request ]] || ! git diff --quiet "$BASE_SHA" HEAD -- infra/wazuh .github/workflows/iac.yml; then
+          if [[ $EVENT_NAME != pull_request ]] ||
+            ! git diff --quiet "$BASE_SHA" HEAD -- infra/wazuh infra/node .github/workflows/iac.yml; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "Nada mudou em infra/wazuh; o teste de ponta a ponta fica para o push na main."
+            echo "Nada mudou em infra/wazuh nem em infra/node; o teste de ponta a ponta fica para o push na main."
           fi
       - name: Correlações da AWS separadas por conta (wazuh-logtest)
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: bash scripts/test-rules.sh
-      - name: Subida, rotação de senha e verificações
+      - name: Wazuh do nó standard (subida, rotação de senha, verificações e atualização do manager)
+        # O teste sobe o compose do nó com o compose.wazuh.yaml, como o start.sh, com as senhas em /run/verax.
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: |
           sudo sysctl -w vm.max_map_count=262144
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /run/verax
           bash scripts/ci-test.sh
 
   prowler:

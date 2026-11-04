@@ -4,8 +4,9 @@
 #
 # Parte sempre dos arquivos originais da imagem (nunca do que já está no volume), para o resultado depender só da
 # imagem, do bundle e das senhas:
-# - internal_users.yml: só `admin`, `kibanaserver` e `verax_api_read`, com hash bcrypt das senhas recebidas por
-#   variável de ambiente. Os usuários de demonstração da imagem, de senha pública, deixam de existir;
+# - internal_users.yml: só `admin` e `verax_api_read`, com hash bcrypt das senhas recebidas por variável de ambiente.
+#   Os usuários de demonstração da imagem, de senha pública, deixam de existir, e o `kibanaserver` também: não há
+#   dashboard (fase 2, PR-W1);
 # - roles.yml: os papéis da imagem mais o `verax_api_read` (só leitura em wazuh-alerts-*);
 # - roles_mapping.yml: o mapeamento mínimo do bundle, sem os mapeamentos de demonstração.
 set -euo pipefail
@@ -33,14 +34,13 @@ bcrypt() {
 }
 
 admin_hash=$(bcrypt INDEXER_ADMIN_PASSWORD)
-dashboard_hash=$(bcrypt INDEXER_DASHBOARD_PASSWORD)
 api_read_hash=$(bcrypt INDEXER_API_READ_PASSWORD)
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 cp "$image_dir"/*.yml "$work/"
-sed -e "s|__ADMIN_HASH__|$admin_hash|" -e "s|__DASHBOARD_HASH__|$dashboard_hash|" \
-  -e "s|__API_READ_HASH__|$api_read_hash|" /verax/internal_users.yml.tmpl >"$work/internal_users.yml"
+sed -e "s|__ADMIN_HASH__|$admin_hash|" -e "s|__API_READ_HASH__|$api_read_hash|" \
+  /verax/internal_users.yml.tmpl >"$work/internal_users.yml"
 # Quebra de linha antes: o arquivo da imagem pode não terminar com uma.
 {
   echo
@@ -53,4 +53,4 @@ install -d -m 0700 -o 1000 -g 1000 "$out"
 install -m 0600 -o 1000 -g 1000 "$work"/*.yml "$out/"
 # Repositório de snapshots (T4.9): também só do indexer.
 install -d -m 0700 -o 1000 -g 1000 /out/snapshots
-echo "Configuração de segurança do indexer gerada (admin, kibanaserver e verax_api_read)."
+echo "Configuração de segurança do indexer gerada (admin e verax_api_read)."

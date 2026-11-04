@@ -176,14 +176,14 @@ log "Senhas (Secrets Manager)"
 secret=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$WAZUH_SECRET_ARN" \
   --query SecretString --output text)
 INDEXER_ADMIN_PASSWORD=$(jq -er .indexer_admin <<<"$secret")
-INDEXER_DASHBOARD_PASSWORD=$(jq -er .indexer_dashboard <<<"$secret")
+# O campo indexer_dashboard do segredo sobra do dashboard, que saiu (fase 2, PR-W1): não é lido.
 WAZUH_API_PASSWORD=$(jq -er .wazuh_api <<<"$secret")
 # O usuário de leitura da API tem segredo próprio: a API lê só esse, nunca as senhas de administração.
 secret=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$WAZUH_API_READ_SECRET_ARN" \
   --query SecretString --output text)
 INDEXER_API_READ_PASSWORD=$(jq -er .password <<<"$secret")
 unset secret
-export INDEXER_ADMIN_PASSWORD INDEXER_DASHBOARD_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+export INDEXER_ADMIN_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
 export INDEXER_HEAP=${INDEXER_HEAP:-4g}
 # Nome DNS privado do indexer no certificado e publicação da porta 9200 (só no endereço liberado pelo Terraform:
 # 127.0.0.1 enquanto nenhum security group da API estiver autorizado).
@@ -197,8 +197,8 @@ imds_status() {
   docker exec "$1" curl -s -m 3 -o /dev/null -w '%{http_code}' -X PUT \
     -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token || true
 }
-if [[ $(imds_status verax-wazuh-wazuh.indexer-1) != 000 || $(imds_status verax-wazuh-wazuh.dashboard-1) != 000 ]]; then
-  log "ERRO: indexer ou dashboard alcançam o IMDS"
+if [[ $(imds_status verax-wazuh-wazuh.indexer-1) != 000 ]]; then
+  log "ERRO: o indexer alcança o IMDS"
   exit 1
 fi
 if [[ $(imds_status verax-wazuh-wazuh.manager-1) != 200 ]]; then

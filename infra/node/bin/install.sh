@@ -92,6 +92,24 @@ install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" /opt/verax/bin/
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
+# Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, o gerador da
+# configuração do manager e a limpeza diária dos alertas antigos). O nó da Verax (lean) não recebe nada disso.
+standard=false
+if [[ ${NODE_PROFILE:-lean} == standard ]]; then standard=true; fi
+if $standard; then
+  [[ -f $here/wazuh/scripts/lib-passwords.sh ]] ||
+    { echo 'Falta o Wazuh no pacote (pasta wazuh/): no perfil standard, instale pelo deploy.sh.' >&2; exit 2; }
+  install -m 0640 "$here/compose.wazuh.yaml" /opt/verax/compose.wazuh.yaml
+  # Os arquivos são montados nos contêineres, e o usuário do indexer (uid 1000) lê alguns: leitura para todos. Nenhum
+  # é segredo (estão no repositório).
+  rm -rf /opt/verax/wazuh
+  cp -R "$here/wazuh" /opt/verax/wazuh
+  chown -R root:root /opt/verax/wazuh
+  find /opt/verax/wazuh -type d -exec chmod 0755 {} +
+  find /opt/verax/wazuh -type f -exec chmod 0644 {} +
+  install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" /opt/verax/bin/
+  install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer /etc/systemd/system/
+fi
 
 echo '== Pastas de dados'
 install -d -m 0750 /var/lib/verax
@@ -127,6 +145,24 @@ generate postgres-migrator 40
 generate postgres-app 40
 generate better-auth-secret 48
 generate csrf-secret 48
+# Senhas do Wazuh (standard): admin do indexer, wazuh-wui da API do manager e o usuário só leitura da API e do worker.
+# O generate() acima só emite letras e dígitos, e os componentes do Wazuh exigem também `.` ou `-`
+# (scripts/lib-passwords.sh do pacote do Wazuh, o mesmo formato que o start.sh confere a cada partida).
+if $standard; then
+  # shellcheck source=SCRIPTDIR/../../wazuh/scripts/lib-passwords.sh
+  source "$here/wazuh/scripts/lib-passwords.sh"
+  generate_wazuh() { # <arquivo>
+    local file=/var/lib/verax/secrets/$1 value
+    if [[ ! -s $file ]]; then
+      value=$(new_wazuh_password)
+      printf '%s' "$value" >"$file"
+    fi
+    chmod 0600 "$file"
+  }
+  generate_wazuh wazuh-indexer-admin
+  generate_wazuh wazuh-api
+  generate_wazuh wazuh-indexer-read
+fi
 
 echo '== Imagens (pelo digest conferido)'
 # O Docker baixa do registro com a identidade da VM (só leitura).
@@ -143,6 +179,7 @@ systemctl daemon-reload
 systemctl enable verax-node.service verax-backup.timer >/dev/null
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
+if $standard; then systemctl enable --now verax-wazuh-alerts.timer >/dev/null; fi
 systemctl --no-pager --lines=0 status verax-node.service || true
 if [[ ! -s /run/verax/cloudflared.env ]]; then
   echo 'AVISO: o nó subiu sem o túnel do Cloudflare (o cofre do token ainda não tem valor). Grave o token e rode:' \

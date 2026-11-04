@@ -89,7 +89,8 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
 ## Perfis de nó (`lean` e `standard`)
 
 _(fase 2: o módulo, os perfis e o ambiente de homologação estão no código, em `infra/gcp/modules/node` e
-`infra/gcp/envs/`; falta o apply da homologação. O Wazuh no `standard` vem no PR-W1.)_
+`infra/gcp/envs/`, e o Wazuh do `standard` está no pacote do nó, em `infra/node/compose.wazuh.yaml` (PR-W1); falta o
+apply da homologação e o aceite nela.)_
 
 O perfil é uma variável do Terraform (`node_profile`) e do pacote do nó (`NODE_PROFILE`). Ele define a VM, o disco,
 o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos contêineres.
@@ -333,7 +334,8 @@ soma o Cloud NAT e o IP reservado dele (US$ 0,005/h, cerca de R$ 20), Pub/Sub, s
 1. **Fundação:** esta revisão; plano do nó e medidor de uso; módulo Terraform do nó com os perfis e o IP reservado do
    NAT, mais o nó de homologação em São Paulo; conexão de projeto GCP de cliente. O agendador do worker, o cursor dos
    coletores e o estado da conexão já estão feitos.
-2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado.
+2. **Wazuh no nó** (perfil `standard`) e leitura do indexer pela API, com chave estável do achado. **Feito no
+   código** (PR-W1 e PR-W2); o aceite depende da homologação no ar.
 3. **Cofre e AWS:** cofre de credenciais; template do usuário IAM; chave no painel; entrega da chave ao Wazuh, com
    recarga sem parar o painel; checagem da conexão, das fontes e da idade da chave; medidor da ingestão; regras
    críticas da AWS com títulos em português.

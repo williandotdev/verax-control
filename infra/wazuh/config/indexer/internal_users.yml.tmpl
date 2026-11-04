@@ -1,6 +1,7 @@
 ---
 # Usuários internos do indexer (T4.2). Os hashes são preenchidos pelo scripts/init-security.sh a partir das
-# senhas do Secrets Manager; este modelo nunca tem senha nem hash real.
+# senhas recebidas (no nó, as geradas na VM; no EC2, as do Secrets Manager); este modelo nunca tem senha nem hash
+# real. Sem dashboard (fase 2, PR-W1), sem o usuário de serviço dele (kibanaserver).
 _meta:
   type: 'internalusers'
   config_version: 2
@@ -10,12 +11,7 @@ admin:
   reserved: true
   backend_roles:
     - 'admin'
-  description: 'Administração do indexer e acesso ao dashboard'
-
-kibanaserver:
-  hash: '__DASHBOARD_HASH__'
-  reserved: true
-  description: 'Usuário de serviço do dashboard'
+  description: 'Administração do indexer (o filebeat do manager grava os alertas com ele)'
 
 verax_api_read:
   hash: '__API_READ_HASH__'
