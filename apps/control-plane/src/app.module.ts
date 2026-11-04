@@ -2,6 +2,7 @@ import { type DynamicModule, Module, type ModuleMetadata } from '@nestjs/common'
 import { APP_FILTER } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import { AuditModule } from './audit/audit.module.js';
+import { CheckoutModule } from './checkout/checkout.module.js';
 import type { Clock } from './common/clock.js';
 import { type AppConfig, ConfigModule } from './common/config/config.module.js';
 import type { Role } from './common/config/env.schema.js';
@@ -10,6 +11,7 @@ import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/log
 import type { DocumentStore } from './firestore/document-store.js';
 import { FirestoreModule } from './firestore/firestore.module.js';
 import { HealthModule } from './health/health.module.js';
+import type { StripeApiOptions } from './stripe/stripe-client.js';
 import { TenantsModule } from './tenants/tenants.module.js';
 
 export interface AppModuleOptions {
@@ -17,6 +19,8 @@ export interface AppModuleOptions {
   documentStore: DocumentStore;
   clock?: Clock;
   logger?: LoggerParamsOptions;
+  /** Só nos testes: a API da Stripe num servidor falso em 127.0.0.1 (em produção, o padrão do SDK). */
+  stripeApi?: StripeApiOptions;
 }
 
 /**
@@ -24,10 +28,10 @@ export interface AppModuleOptions {
  * webhook, CP-03 a CP-05) e o `cp-worker` as internas (passos, tick e reconcile, CP-07 e CP-11). O outro papel
  * nem carrega o módulo, então a rota não existe nele.
  */
-function modulesFor(role: Role): NonNullable<ModuleMetadata['imports']> {
+function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
   switch (role) {
     case 'public':
-      return [];
+      return [CheckoutModule.register({ stripeApi: options.stripeApi })];
     case 'worker':
       return [];
   }
@@ -45,7 +49,7 @@ export class AppModule {
         AuditModule,
         TenantsModule,
         HealthModule,
-        ...modulesFor(config.ROLE),
+        ...modulesFor(config.ROLE, options),
       ],
       providers: [{ provide: APP_FILTER, useClass: AllExceptionsFilter }],
     };
