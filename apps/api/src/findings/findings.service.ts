@@ -60,7 +60,7 @@ const detailSelect = {
   ...findingSelect,
   triagedAt: true,
   source: true,
-  sourceEventId: true,
+  rawEventId: true,
   ruleId: true,
   ruleLevel: true,
   mitreTechniques: true,
@@ -206,10 +206,14 @@ export class FindingsService {
     };
   }
 
-  /** Falha do indexer não derruba o detalhe: o achado aparece sem o evento bruto, e o erro vai para o log. */
+  /**
+   * Falha do indexer não derruba o detalhe: o achado aparece sem o evento bruto, e o erro vai para o log. Achado sem
+   * ID do alerta (GCP) não tem evento bruto guardado.
+   */
   private async readRawEvent(row: DetailRow): Promise<Record<string, unknown> | null> {
+    if (row.rawEventId === null) return null;
     try {
-      return await this.rawEvents.read(row.source, row.sourceEventId);
+      return await this.rawEvents.read(row.source, row.rawEventId);
     } catch (error) {
       this.logger.warn({ findingId: row.id, error: (error as Error).name }, 'evento bruto indisponível');
       return null;

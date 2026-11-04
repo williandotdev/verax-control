@@ -17,10 +17,12 @@ const HOUR = 3_600_000;
 /** Leitor de evento bruto controlado pelo teste: devolve o evento, nada ou falha. */
 class FakeRawEvents implements RawEventReader {
   mode: 'event' | 'missing' | 'error' = 'event';
-  read(source: string, sourceEventId: string): Promise<Record<string, unknown> | null> {
+  reads = 0;
+  read(source: string, rawEventId: string): Promise<Record<string, unknown> | null> {
+    this.reads += 1;
     if (this.mode === 'error') return Promise.reject(new Error('indexer fora do ar'));
     if (this.mode === 'missing') return Promise.resolve(null);
-    return Promise.resolve({ id: sourceEventId, source, data: { aws: { eventName: 'StopLogging' } } });
+    return Promise.resolve({ id: rawEventId, source, data: { aws: { eventName: 'StopLogging' } } });
   }
 }
 
@@ -69,7 +71,8 @@ describe('achados (T5.4 e T5.5)', () => {
         tenantId,
         accountId: '111122223333',
         source: 'wazuh',
-        sourceEventId: randomUUID(),
+        sourceEventId: `wazuh/111122223333/cloudtrail:${randomUUID()}:80202`,
+        rawEventId: `1793527200.${randomUUID().slice(0, 6)}`,
         logSource: 'cloudtrail',
         occurredAt: new Date(),
         severity: 'high',
@@ -174,7 +177,7 @@ describe('achados (T5.4 e T5.5)', () => {
         ruleLevel: 10,
         mitreTechniques: ['T1562.008'],
         comments: [],
-        rawEvent: { id: finding.sourceEventId, source: 'wazuh' },
+        rawEvent: { id: finding.rawEventId, source: 'wazuh' },
       });
     });
 
@@ -210,6 +213,21 @@ describe('achados (T5.4 e T5.5)', () => {
       rawEvents.mode = 'error';
       expect(await rawEventOf()).toBeNull();
       rawEvents.mode = 'event';
+    });
+
+    it('achado sem id do alerta (a GCP não guarda o evento bruto) nem consulta o indexer', async () => {
+      const finding = await insertFinding(tenantA, {
+        source: 'gcp',
+        sourceEventId: `vx-projeto-demo/${randomUUID()}`,
+        rawEventId: null,
+        logSource: 'gcp_audit',
+      });
+      const before = rawEvents.reads;
+      const detail = findingDetailSchema.parse(
+        (await call(readerA).get(`/v1/findings/${finding.id}`).expect(200)).body,
+      );
+      expect(detail.rawEvent).toBeNull();
+      expect(rawEvents.reads).toBe(before);
     });
   });
 

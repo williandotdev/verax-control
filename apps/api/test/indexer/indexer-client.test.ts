@@ -4,11 +4,19 @@ import { createServer, type Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { pino } from 'pino';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { buildPinoOptions } from '../../src/common/logger/logger.options.js';
 import { alertsAfter, ALERTS_INDEX, type AlertSearch } from '../../src/indexer/alert-queries.js';
 import { IndexerClient, IndexerError } from '../../src/indexer/indexer.client.js';
 import { loadIndexerConfig } from '../../src/indexer/indexer.config.js';
-import type { IndexerCredentials, IndexerSecrets } from '../../src/indexer/indexer-secrets.js';
+import {
+  indexerSecretsFor,
+  type IndexerCredentials,
+  type IndexerSecrets,
+} from '../../src/indexer/indexer-secrets.js';
+import { Scheduler } from '../../src/worker/scheduler.js';
+import { LogCapture } from '../support/log-capture.js';
 
 // "Indexer" HTTPS local com uma CA descartável: o teste exercita TLS, autenticação, timeout e rotação de senha
 // sem depender de um OpenSearch de verdade (o Wazuh real é testado no infra/wazuh).
@@ -270,5 +278,81 @@ describe('cliente do indexer (T5.1)', () => {
     } as AlertSearch;
     await expect(indexer.search(textQuery)).rejects.toThrow(/query_string/);
     expect(received).toHaveLength(0);
+  });
+});
+
+describe('cliente do indexer no nó (fase 2, PR-W2)', () => {
+  /** Como o worker e a API montam o cliente no nó: modo `node`, credencial do ambiente e CA do volume. */
+  function nodeClient(password = OLD_PASSWORD, caFile = 'ca.pem'): IndexerClient {
+    const config = loadIndexerConfig({
+      NODE_ENV: 'production',
+      INDEXER_URL: `https://localhost:${port}`,
+      INDEXER_TIMEOUT_MS: '1000',
+      INDEXER_AUTH: 'node',
+      INDEXER_USERNAME: 'verax_api_read',
+      INDEXER_PASSWORD: password,
+      INDEXER_CA_FILE: join(dir, caFile),
+    });
+    return new IndexerClient(config, indexerSecretsFor(config));
+  }
+
+  it('lê os alertas com a credencial do ambiente e TLS validado pela CA do arquivo', async () => {
+    await expect(nodeClient().search(alertsAfter({ cursor: null }))).resolves.toHaveLength(1);
+    expect(received[0]?.authorization).toBe(
+      `Basic ${Buffer.from(`verax_api_read:${OLD_PASSWORD}`).toString('base64')}`,
+    );
+  });
+
+  it('recusa um indexer cujo certificado não foi assinado pela CA do volume', async () => {
+    await expect(nodeClient(OLD_PASSWORD, 'other.pem').search(alertsAfter({ cursor: null }))).rejects.toThrow(
+      /TLS/,
+    );
+    expect(received).toHaveLength(0);
+  });
+
+  it('senha recusada, erro do indexer e CA ausente vão para o log só pelo tipo, sem a credencial', async () => {
+    const wrongPassword = 'senha-errada-do-indexer-2222222222';
+    failWith = 500;
+    const capture = new LogCapture();
+    const logger = pino(buildPinoOptions({ LOG_LEVEL: 'debug' }), capture);
+    const errors: unknown[] = [];
+    // As três falhas pelo mesmo caminho do worker: cada uma é uma tarefa do agendador.
+    const failing = (name: string, client: IndexerClient) => ({
+      name,
+      intervalMs: 60_000,
+      budgetMs: 10_000,
+      run: () =>
+        client.search(alertsAfter({ cursor: null })).catch((error: unknown) => {
+          errors.push(error);
+          throw error;
+        }),
+    });
+    const scheduler = new Scheduler(
+      [
+        failing('senha-recusada', nodeClient(wrongPassword)),
+        failing('indexer-com-erro', nodeClient()),
+        failing('sem-ca', nodeClient(OLD_PASSWORD, 'ainda-nao-existe.pem')),
+      ],
+      logger,
+    );
+    scheduler.start();
+    await vi.waitFor(() => expect(errors).toHaveLength(3), { timeout: 5000 });
+    await scheduler.stop();
+    // O que um descuido registraria: o próprio erro, serializado pelo logger.
+    for (const error of errors) logger.error({ err: error }, 'falha no indexer');
+
+    const failures = capture.entries().filter((entry) => entry['msg'] === 'tarefa falhou');
+    expect(failures.map((entry) => entry['error'])).toEqual(['IndexerError', 'IndexerError', 'IndexerError']);
+    for (const secret of [
+      OLD_PASSWORD,
+      wrongPassword,
+      Buffer.from(`verax_api_read:${OLD_PASSWORD}`).toString('base64'),
+      Buffer.from(`verax_api_read:${wrongPassword}`).toString('base64'),
+      'Basic ',
+    ]) {
+      expect(capture.text).not.toContain(secret);
+    }
+    // A senha errada foi enviada e recusada duas vezes (com a renovação): o teste passou pelo indexer de verdade.
+    expect(received.filter((request) => request.authorization.length > 0).length).toBeGreaterThanOrEqual(3);
   });
 });
