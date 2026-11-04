@@ -12,6 +12,11 @@
 #    com o gcloud simulado (um cofre por arquivo). Sem TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai exatamente
 #    como antes do Turnstile (e o cofre nem é lido); com a chave do site, a chave secreta vem do cofre, e as duas só
 #    entram juntas.
+# 3. Os agentes do Wazuh (WAZUH_AGENTS): desligados, o standard sai byte a byte como sem a linha; ligados, a API recebe
+#    o endereço, o cliente, as faixas, o limite, a CA e a senha de registro (só ela), o worker o caminho da lista e o
+#    cliente; no lean, sem o IP, o cliente, a senha ou o certificado, ou com um valor fora do formato, o render para
+#    sem escrever nada. E o projeto do Compose (start.sh down, com o Docker simulado): o compose.wazuh-agents.yaml só
+#    entra no standard com o interruptor.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -95,7 +100,7 @@ docker() {
   esac
 }
 
-env_files() { (cd "$run" && find . -maxdepth 1 -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' '); }
+env_files() { [[ -d $run ]] || return 0; (cd "$run" && find . -maxdepth 1 -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' '); }
 file_size() { wc -c <"$1" | tr -d ' '; }
 # O render num processo à parte, com as variáveis dadas no lugar das do node.conf (como um node.conf editado depois
 # da instalação). Devolve o código de saída dele; a saída de erro vai para $work/render.err.
@@ -186,6 +191,86 @@ expect "o manager recebe a senha do filebeat e a da API dele, e nada mais" "INDE
   "$(cut -d= -f1 "$run/wazuh-manager.env" | tr '\n' ' ' | sed 's/ $//')"
 expect "o tópico do sink também no standard, só na API" '1 0' \
   "$(grep -c GCP_SINK_TOPIC_PREFIX "$run/api.env") $(grep -c GCP_SINK_TOPIC_PREFIX "$run/worker.env" || true)"
+
+echo "== agentes do Wazuh: desligados, os arquivos de ambiente do standard saem byte a byte como sem o interruptor"
+# O standard de antes (sem a linha no node.conf) contra WAZUH_AGENTS=false: os mesmos arquivos, o mesmo conteúdo.
+snapshot() { (cd "$run" && for file in $(find . -maxdepth 1 -type f | LC_ALL=C sort); do
+  printf '## %s\n' "$file"
+  cat "$file"
+done); }
+rm -rf "$run"
+render_with WAZUH_AGENTS= 2>/dev/null
+before=$(snapshot)
+rm -rf "$run"
+render_with WAZUH_AGENTS=false 2>/dev/null
+expect "WAZUH_AGENTS=false dá exatamente o standard de sempre" 0 \
+  "$(diff <(echo "$before") <(snapshot) | wc -l | tr -d ' ')"
+expect "nenhuma variável dos agentes em arquivo nenhum" 0 "$(cat "$run"/*.env | grep -c '^WAZUH_AGENTS' || true)"
+expect "api.env do standard: as variáveis de sempre, na ordem de sempre" \
+  'NODE_ENV LOG_LEVEL PORT WEB_ORIGIN API_ORIGIN TRUST_PROXY_HOPS BETTER_AUTH_SECRET CSRF_SECRET MAIL_TRANSPORT MAIL_FROM PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE GCP_SINK_TOPIC_PREFIX DATABASE_URL' \
+  "$(cut -d= -f1 "$run/api.env" | tr '\n' ' ' | sed 's/ $//')"
+expect "worker.env do standard: as variáveis de sempre, na ordem de sempre" \
+  'NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE DATABASE_URL' \
+  "$(cut -d= -f1 "$run/worker.env" | tr '\n' ' ' | sed 's/ $//')"
+
+echo "== agentes do Wazuh: ligados no standard"
+# O que o install.sh gera: a senha de registro (letras e dígitos) e o certificado do registro (aqui, só o conteúdo).
+agents_certs=$work/agents
+mkdir -p "$agents_certs"
+for name in ca.crt manager.crt manager.key; do printf 'conteudo-de-%s\n' "$name" >"$agents_certs/$name"; done
+enrollment=$(head -c 96 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-32)
+printf '%s' "$enrollment" >"$secrets/wazuh-agents-enrollment"
+tenant=018f2c1e-0000-7000-8000-00000000a001
+agents_on=(WAZUH_AGENTS=true WAZUH_AGENTS_ADDRESS=203.0.113.10 "WAZUH_AGENTS_TENANT=$tenant")
+rm -rf "$run"
+status=0
+render_with "${agents_on[@]}" WAZUH_AGENTS_SOURCES=198.51.100.0/28,192.0.2.15/32 WAZUH_AGENTS_MAX=40 || status=$?
+expect "o render passa" 0 "$status"
+expect "os mesmos arquivos do standard (nenhum arquivo de ambiente novo)" \
+  'api.env bootstrap.env cloudflared.env db-bootstrap.env memory.env migrate.env postgres.env wazuh-manager.env wazuh-security.env worker.env ' \
+  "$(env_files)"
+expect "a API recebe o endereço, o cliente, as faixas, o limite, a CA em base64 e a senha, nessa ordem" \
+  "WAZUH_AGENTS='true';WAZUH_AGENTS_ADDRESS='203.0.113.10';WAZUH_AGENTS_TENANT='$tenant';WAZUH_AGENTS_SOURCES='198.51.100.0/28,192.0.2.15/32';WAZUH_AGENTS_MAX='40';WAZUH_AGENTS_CA='$(base64 -w0 "$agents_certs/ca.crt")';WAZUH_AGENTS_ENROLLMENT_PASSWORD='$enrollment';" \
+  "$(grep '^WAZUH_AGENTS' "$run/api.env" | tr '\n' ';')"
+expect "o worker recebe só o caminho da lista e o cliente" \
+  "WAZUH_AGENTS_FILE='/run/wazuh-agents/agents.json';WAZUH_AGENTS_TENANT='$tenant';" \
+  "$(grep '^WAZUH_AGENTS' "$run/worker.env" | tr '\n' ';')"
+expect "a senha de registro só no api.env (o manager a lê do arquivo, pelo gerador)" 'api.env' \
+  "$(cd "$run" && grep -l -F "$enrollment" ./*.env | sed 's|^\./||' | tr '\n' ' ' | sed 's/ $//')"
+expect "a senha de registro não sai na tela" 0 "$(grep -c -F "$enrollment" "$work/render.err" || true)"
+rm -rf "$run"
+render_with "${agents_on[@]}" 2>/dev/null
+expect "sem as faixas e sem o limite, as duas linhas ficam de fora" 0 \
+  "$(grep -cE '^WAZUH_AGENTS_(SOURCES|MAX)=' "$run/api.env" || true)"
+
+echo "== agentes do Wazuh: o que o render recusa, sem escrever nada"
+refused() { # <descrição> <trecho da mensagem> <CHAVE=valor...>
+  local label=$1 message=$2 status=0
+  shift 2
+  rm -rf "$run"
+  render_with "$@" || status=$?
+  expect "$label: o render para" 1 "$status"
+  expect "$label: a mensagem diz o motivo" 1 "$(grep -c -F "$message" "$work/render.err")"
+  expect "$label: nenhum arquivo de ambiente" '' "$(env_files)"
+}
+refused "lean" 'WAZUH_AGENTS=true só no perfil standard' NODE_PROFILE=lean "${agents_on[@]}"
+refused "valor que não é true nem false" 'WAZUH_AGENTS inválido' WAZUH_AGENTS=sim
+refused "sem o IP dos agentes" 'WAZUH_AGENTS_ADDRESS inválido' WAZUH_AGENTS=true "WAZUH_AGENTS_TENANT=$tenant"
+refused "IP com máscara" 'WAZUH_AGENTS_ADDRESS inválido' "${agents_on[@]}" WAZUH_AGENTS_ADDRESS=203.0.113.10/32
+refused "sem o cliente" 'WAZUH_AGENTS_TENANT inválido' WAZUH_AGENTS=true WAZUH_AGENTS_ADDRESS=203.0.113.10
+refused "faixa larga demais" 'WAZUH_AGENTS_SOURCES inválido' "${agents_on[@]}" WAZUH_AGENTS_SOURCES=0.0.0.0/0
+refused "limite acima de 500" 'WAZUH_AGENTS_MAX inválido' "${agents_on[@]}" WAZUH_AGENTS_MAX=501
+mv "$secrets/wazuh-agents-enrollment" "$work/enrollment.bak"
+refused "sem a senha de registro (install.sh não rodou)" "Falta $secrets/wazuh-agents-enrollment" "${agents_on[@]}"
+mv "$work/enrollment.bak" "$secrets/wazuh-agents-enrollment"
+mv "$agents_certs/manager.key" "$work/key.bak"
+refused "sem a chave do certificado do registro" "Falta $agents_certs/manager.key" "${agents_on[@]}"
+mv "$work/key.bak" "$agents_certs/manager.key"
+printf 'senha com espaço e aspas %s' "'" >"$secrets/wazuh-agents-enrollment"
+refused "senha de registro fora do formato" 'deve ter de 32 a 64 letras e dígitos' "${agents_on[@]}"
+expect "a senha fora do formato não sai na mensagem" 0 "$(grep -c 'senha com espaço' "$work/render.err" || true)"
+printf '%s' "$enrollment" >"$secrets/wazuh-agents-enrollment"
+NODE_PROFILE=standard
 
 echo "== Turnstile: o api.env byte a byte, com o start.sh rodando como na VM (start.sh render)"
 # Num subshell, com a própria raiz, o próprio gcloud (um cofre por arquivo) e as próprias funções; para no primeiro
@@ -353,6 +438,35 @@ if render_env; then fail "o render deveria recusar o valor com quebra de linha";
 grep -q 'vazio ou com quebra de linha' "$root/out" || fail "sem a mensagem da quebra de linha: $(cat "$root/out")"
 
 echo "ok     Turnstile: todos os cenários passaram"
+
+# --- Agentes do Wazuh: o projeto do Compose que o start.sh monta (start.sh down, com o Docker simulado) -----------
+# O compose.wazuh-agents.yaml (as portas 1514 e 1515 do manager) só entra no standard com WAZUH_AGENTS=true; sem a
+# linha, o projeto é o de sempre. No lean, o interruptor não traz o Wazuh (o render recusa a combinação, na parte 1).
+cat >"$work/bin/docker" <<'EOF'
+#!/bin/bash
+echo "docker $*" >>"$VAULT/docker.log"
+EOF
+chmod +x "$work/bin/docker"
+compose_files() { # <cenário> <pasta> <CHAVE=valor...>: os -f do `docker compose` que o `down` chamou
+  new_root "$1" "$2"
+  node_conf "${@:3}"
+  env -i PATH="$work/bin:$PATH" VAULT="$root/vault" "$BASH" "$root/start.sh" down >"$root/out" 2>&1 ||
+    fail "o down falhou: $(cat "$root/out")"
+  grep -oE ' -f [^ ]+' "$root/vault/docker.log" | sed 's/^ -f //' | tr '\n' ' ' | sed 's/ $//'
+}
+[ "$(compose_files "standard sem os agentes" compose-standard NODE_PROFILE=standard)" = \
+  "/opt/verax/compose.yaml /opt/verax/compose.wazuh.yaml" ] || fail "o projeto do standard mudou"
+[ "$(compose_files "standard com WAZUH_AGENTS=false" compose-desligado NODE_PROFILE=standard WAZUH_AGENTS=false)" = \
+  "/opt/verax/compose.yaml /opt/verax/compose.wazuh.yaml" ] || fail "WAZUH_AGENTS=false mudou o projeto"
+[ "$(compose_files "standard com os agentes" compose-agentes NODE_PROFILE=standard WAZUH_AGENTS=true)" = \
+  "/opt/verax/compose.yaml /opt/verax/compose.wazuh.yaml /opt/verax/compose.wazuh-agents.yaml" ] ||
+  fail "o arquivo dos agentes não entrou no projeto"
+[ "$(compose_files "agentes e cofre" compose-agentes-cofre NODE_PROFILE=standard WAZUH_AGENTS=true CREDENTIALS_VAULT=true)" = \
+  "/opt/verax/compose.yaml /opt/verax/compose.wazuh.yaml /opt/verax/compose.wazuh-agents.yaml /opt/verax/compose.vault.yaml" ] ||
+  fail "o projeto com os agentes e o cofre mudou"
+[ "$(compose_files "lean com o interruptor" compose-lean NODE_PROFILE=lean WAZUH_AGENTS=true)" = \
+  "/opt/verax/compose.yaml" ] || fail "o lean ganhou arquivo do Wazuh"
+echo "ok     agentes: o projeto do Compose só muda com o interruptor, no standard"
 )
 
 if ((failures > 0)); then

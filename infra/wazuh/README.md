@@ -20,6 +20,7 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 | `scripts/render-manager-config.py` | Gera o `ossec.conf` do manager e os arquivos da AWS a partir das contas.                |
 | `scripts/lib-passwords.sh`         | Formato, geração e conferência das senhas.                                              |
 | `scripts/smoke-test.sh`            | Verificações de segurança, no fim de toda subida.                                       |
+| `scripts/test-agents.sh`           | Agentes nas instâncias do cliente: manager avulso, sem rede (opcional, desligado).      |
 | `scripts/ci-test.sh`               | Teste de ponta a ponta do nó: instalação, rotação de senha, verificações e atualização. |
 | `docker-compose.yml`               | EC2: os dois serviços, mais os jobs de inicialização. Imagens fixadas por digest.       |
 | `scripts/deploy.sh`                | EC2: sobe ou reaplica a stack.                                                          |
@@ -49,7 +50,8 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 - **TLS sempre ligado:** HTTPS no indexer (só TLS 1.2 com cifras ECDHE-GCM) e entre os componentes, com verificação
   completa do certificado (filebeat).
 - **Nada exposto.** O manager não publica nenhuma porta; sem agentes, o registro (authd) fica desligado e o remoted
-  escuta só no loopback do contêiner (sem o bloco `<remote>`, o Wazuh 4.14 não sobe nenhum daemon). No nó, o indexer
+  escuta só no loopback do contêiner (sem o bloco `<remote>`, o Wazuh 4.14 não sobe nenhum daemon). Os agentes nas
+  instâncias do cliente são a única exceção, desligada por padrão (seção "Agentes nas instâncias do cliente"). No nó, o indexer
   também não publica porta; no EC2, só em `127.0.0.1` do host, até um security group da API ser autorizado.
 - **Mapeamento de papéis mínimo.** Os mapeamentos de demonstração do indexer ficam de fora, inclusive o
   `own_index` para todos os usuários, que daria a qualquer usuário escrita num índice com o nome dele. A
@@ -96,6 +98,18 @@ metadados (`verax-metadata-guard`, antes do Docker e exigida por ele) não aceit
   aplicação, a soma dos limites fica em cerca de 6 GiB, numa VM de 8 GB (o CI confere).
 - **Alertas antigos:** o `verax-wazuh-alerts.timer` apaga todo dia os `logs/alerts/**/*.gz` do manager com mais de
   7 dias (o Wazuh os guarda sem prazo).
+
+### Agentes nas instâncias do cliente (opcional)
+
+Com `WAZUH_AGENTS=true` no `node.conf` (só no `standard`; desenho em `docs/ARQUITETURA.md`, roteiro em
+`docs/runbooks/onboarding-cliente.md`, seção 6), o `infra/node/compose.wazuh-agents.yaml` entra no projeto: o manager
+publica a 1514/tcp e a 1515/tcp, e o gerador recebe `config/manager/agents/` e a senha de registro. O
+`render-manager-config.py` troca no `ossec.conf` os blocos `<remote>`, `<auth>`, `<active-response>` e
+`<vulnerability-detection>` pelos de `agents/ossec-agents.conf` (registro só com senha e com o certificado do nó,
+resposta ativa desligada) e escreve o `etc/authd.pass` e o `etc/shared/default/agent.conf`. O
+`scripts/test-agents.sh` confere tudo num manager avulso, sem rede: o certificado do registro, a configuração aceita
+por cada daemon e pelo `verify-agent-conf`, o registro pela 1515 (sem senha, com a senha errada e num grupo que não
+existe, recusado; com a senha certa, registrado) e a lista dos agentes pelo `infra/node/bin/wazuh-agents-export.sh`.
 
 ### Ler os alertas sem o dashboard
 

@@ -76,6 +76,18 @@ variable "stalled_subscription_hours" {
   default     = 24
 }
 
+variable "wazuh_agents" {
+  description = "Agentes do Wazuh nas instâncias de teste: IP fixo de entrada nas portas TCP 1514 e 1515 (o módulo explica). Falso por padrão; liga junto com WAZUH_AGENTS=true no node.conf."
+  type        = bool
+  default     = false
+}
+
+variable "wazuh_agents_sources" {
+  description = "Faixas de IP de saída das instâncias de teste que podem chegar às portas dos agentes (IPv4 de /16 a /32). Vazia: nenhuma regra de entrada."
+  type        = list(string)
+  default     = []
+}
+
 variable "images_project_id" {
   description = "Projeto onde fica o registro das imagens do nó (o do nó da Verax, que o GitHub Actions já publica). A VM de homologação ganha só leitura nele."
   type        = string

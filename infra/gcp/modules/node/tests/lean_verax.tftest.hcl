@@ -156,6 +156,17 @@ run "nat_e_extras_desligados" {
     error_message = "O nó da Verax ganhou o alerta de fila parada, desligado em envs/verax."
   }
 
+  # Sem os agentes do Wazuh (`wazuh_agents` fica no padrão, falso, em envs/verax; o lean nem os aceita): nenhum IP de
+  # entrada, regra de encaminhamento ou regra de firewall nova.
+  assert {
+    condition = (
+      length(google_compute_address.agents) == 0 && length(google_compute_target_instance.agents) == 0 &&
+      length(google_compute_forwarding_rule.agents) == 0 && length(google_compute_firewall.agents) == 0 &&
+      output.wazuh_agents == null
+    )
+    error_message = "O nó da Verax ganhou recursos dos agentes do Wazuh."
+  }
+
   # Sem projeto de cliente (envs/verax não passa `customer_projects`): os tópicos e as assinaturas são os dos projetos
   # monitorados, como antes, e nenhuma identidade de fora publica neles.
   assert {
