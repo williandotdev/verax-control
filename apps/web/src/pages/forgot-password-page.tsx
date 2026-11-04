@@ -25,7 +25,8 @@ export function ForgotPasswordPage() {
   // Turnstile só com a chave do site vinda da API; sem ela, o formulário é o de sempre.
   const clientConfig = useAuthClientConfig();
   const siteKey = clientConfig.data?.turnstileSiteKey ?? null;
-  const turnstile = useTurnstile(siteKey, 'password-reset');
+  // Depois do envio, o formulário sai da tela: sem a chave, o hook remove o widget e para de acompanhar o tema.
+  const turnstile = useTurnstile(sent ? null : siteKey, 'password-reset');
   const waitingTurnstile = clientConfig.isPending || (siteKey !== null && turnstile.token === undefined);
 
   async function onSubmit(event: FormEvent) {

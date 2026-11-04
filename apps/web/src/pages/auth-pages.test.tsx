@@ -421,6 +421,12 @@ describe('Turnstile (chave do site vinda da API)', { timeout: FORM_TIMEOUT }, ()
     expect(await screen.findByRole('status')).toHaveTextContent(RESET_REQUESTED_MESSAGE);
     expect(sent).toEqual(['token-de-teste-1']);
     expect(sentAfter).toEqual(['token-de-teste-2']);
+
+    // Enviado, o formulário sai da tela e o widget sai junto: trocar o tema não o redesenha num contêiner solto.
+    expect(stub.remove).toHaveBeenCalledWith('widget-1');
+    document.documentElement.dataset['theme'] = 'dark';
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(stub.render).toHaveBeenCalledOnce();
   });
 });
 

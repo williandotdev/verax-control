@@ -43,26 +43,50 @@ declare global {
   }
 }
 
+/** Quanto esperar pelo script da Cloudflare (rede lenta, bloqueio de extensão): passou, a tela mostra o aviso. */
+export const TURNSTILE_SCRIPT_TIMEOUT_MS = 15_000;
+
 let loading: Promise<TurnstileApi> | undefined;
 
-/** Carrega o script uma vez por página. Resolve quando a Cloudflare chama o `onload` (a API pronta para desenhar). */
+/**
+ * Carrega o script uma vez por página. Resolve quando a Cloudflare chama o `onload` (a API pronta para desenhar);
+ * rejeita se o script falhar ou não chegar no prazo, e aí a chamada seguinte tenta de novo.
+ */
 export function loadTurnstile(): Promise<TurnstileApi> {
   if (window.turnstile) return Promise.resolve(window.turnstile);
   loading ??= new Promise<TurnstileApi>((resolve, reject) => {
-    const fail = (): void => {
-      loading = undefined;
-      delete window.veraxTurnstileOnload;
-      reject(new Error('o script do Turnstile não carregou'));
-    };
-    window.veraxTurnstileOnload = () => {
-      delete window.veraxTurnstileOnload;
-      if (window.turnstile) resolve(window.turnstile);
-      else fail();
-    };
     const script = document.createElement('script');
+    let settled = false;
+    const timer = window.setTimeout(
+      () => fail('o script do Turnstile não carregou a tempo'),
+      TURNSTILE_SCRIPT_TIMEOUT_MS,
+    );
+    // Cada carga termina uma vez só: o erro ou o `onload` que chegar depois do prazo não mexe numa carga seguinte.
+    function settle(): boolean {
+      if (settled) return false;
+      settled = true;
+      window.clearTimeout(timer);
+      delete window.veraxTurnstileOnload;
+      return true;
+    }
+    function fail(reason: string): void {
+      if (!settle()) return;
+      loading = undefined;
+      script.remove();
+      reject(new Error(reason));
+    }
+    window.veraxTurnstileOnload = () => {
+      if (!settle()) return;
+      if (window.turnstile) {
+        resolve(window.turnstile);
+      } else {
+        loading = undefined;
+        reject(new Error('o script do Turnstile carregou sem a API'));
+      }
+    };
     script.src = TURNSTILE_SCRIPT_URL;
     script.async = true;
-    script.addEventListener('error', fail);
+    script.addEventListener('error', () => fail('o script do Turnstile não carregou'));
     document.head.append(script);
   });
   return loading;
@@ -129,7 +153,10 @@ export function useTurnstile(siteKey: string | null | undefined, action: string)
         'response-field': false,
         'refresh-expired': 'auto',
         callback: (value) => {
-          if (!cancelled) setToken(value);
+          if (cancelled) return;
+          setToken(value);
+          // Depois de um erro, a Cloudflare tenta de novo sozinha: o token que chega apaga o aviso.
+          setStatus('ready');
         },
         'expired-callback': () => {
           if (!cancelled) setToken(undefined);

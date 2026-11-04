@@ -281,6 +281,7 @@ homologação):
 ```bash
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-smtp-password --data-file=- && unset VALOR
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-cloudflare-tunnel-token --data-file=- && unset VALOR
+# Só com `turnstile_secret = true` no main.tf (a homologação); sem o cofre, o comando falha e nada muda.
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add verax-node-turnstile-secret-key --data-file=- && unset VALOR
 ```
 

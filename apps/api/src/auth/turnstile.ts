@@ -9,8 +9,21 @@ import type { AppConfig } from '../common/config/config.module.js';
  */
 export const TURNSTILE_TOKEN_HEADER = 'x-turnstile-token';
 
-/** Rotas do Better Auth com o desafio: as que qualquer pessoa, sem sessão, chama a partir de um formulário. */
-export const TURNSTILE_PATHS: ReadonlySet<string> = new Set(['/sign-in/email', '/request-password-reset']);
+/**
+ * Rotas do Better Auth com o desafio (as que qualquer pessoa, sem sessão, chama a partir de um formulário) e a
+ * `action` com que o painel desenha o widget em cada uma. O siteverify devolve a `action` do token: um token
+ * resolvido no widget do login não vale no pedido de redefinição, nem o contrário.
+ */
+export const TURNSTILE_ACTIONS: ReadonlyMap<string, string> = new Map([
+  ['/sign-in/email', 'login'],
+  ['/request-password-reset', 'password-reset'],
+]);
+
+/**
+ * Chave de site real da Cloudflare (`0x…`): o `hostname` do siteverify precisa ser o do painel. As de teste (`1x…`,
+ * `2x…`, `3x…`) respondem com um hostname fictício, e a conferência não se aplica.
+ */
+const REAL_SITE_KEY = /^0x/;
 
 /** O siteverify responde em bem menos que isso; passou, a API recusa o login (fecha, não abre). */
 export const TURNSTILE_SITEVERIFY_TIMEOUT_MS = 5_000;
@@ -23,7 +36,7 @@ export const TURNSTILE_REQUIRED = {
   code: 'TURNSTILE_REQUIRED',
   message: 'Conclua a verificação de segurança e tente de novo',
 };
-/** Token recusado pela Cloudflare (inválido, vencido ou já usado). */
+/** Token recusado pela Cloudflare (inválido, vencido ou já usado), ou de outro formulário ou outro site. */
 export const TURNSTILE_FAILED = {
   code: 'TURNSTILE_FAILED',
   message: 'A verificação de segurança não foi aceita. Tente de novo',
@@ -42,14 +55,25 @@ const siteverifyResponse = z.object({
   'error-codes': z.array(z.string().max(100)).max(20).default([]),
   challenge_ts: z.string().max(100).optional(),
   hostname: z.string().max(253).optional(),
+  action: z.string().max(100).optional(),
 });
 
 export interface TurnstileVerifier {
-  /** Confere o token do widget. Nunca lança: cada saída vira uma resposta própria no hook da autenticação. */
-  verify(token: string | null | undefined, remoteIp: string | undefined): Promise<TurnstileOutcome>;
+  /**
+   * Confere o token do widget. `expectedAction` é a `action` do widget da rota (`TURNSTILE_ACTIONS`): um token de
+   * outro formulário é recusado. Nunca lança: cada saída vira uma resposta própria no hook da autenticação.
+   */
+  verify(
+    token: string | null | undefined,
+    remoteIp: string | undefined,
+    expectedAction: string,
+  ): Promise<TurnstileOutcome>;
 }
 
-type TurnstileConfig = Pick<AppConfig, 'TURNSTILE_SECRET_KEY' | 'TURNSTILE_SITEVERIFY_URL'>;
+type TurnstileConfig = Pick<
+  AppConfig,
+  'TURNSTILE_SECRET_KEY' | 'TURNSTILE_SITE_KEY' | 'TURNSTILE_SITEVERIFY_URL' | 'WEB_ORIGIN'
+>;
 type TurnstileLogger = Pick<PinoLogger, 'warn' | 'error'>;
 
 /** Só o nome e o código do erro de rede: a mensagem poderia trazer a URL ou o corpo da requisição. */
@@ -70,9 +94,13 @@ export function createTurnstileVerifier(
 ): TurnstileVerifier | undefined {
   const { TURNSTILE_SECRET_KEY: secret, TURNSTILE_SITEVERIFY_URL: url } = config;
   if (typeof secret !== 'string') return undefined;
+  // Com uma chave real, o token só vale se foi resolvido numa página do painel (o `WEB_ORIGIN` deste nó).
+  const expectedHostname = REAL_SITE_KEY.test(config.TURNSTILE_SITE_KEY ?? '')
+    ? new URL(config.WEB_ORIGIN).hostname
+    : undefined;
 
   return {
-    async verify(token, remoteIp) {
+    async verify(token, remoteIp, expectedAction) {
       if (typeof token !== 'string' || token.length === 0) return 'required';
       if (token.length > TURNSTILE_TOKEN_MAX_LENGTH) {
         logger.warn(
@@ -89,6 +117,8 @@ export function createTurnstileVerifier(
           headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify({ secret, response: token, ...(remoteIp ? { remoteip: remoteIp } : {}) }),
           signal: AbortSignal.timeout(TURNSTILE_SITEVERIFY_TIMEOUT_MS),
+          // A chave secreta vai no corpo: nenhum redirecionamento a leva a outro lugar (cai no `catch`: 503).
+          redirect: 'error',
         });
       } catch (error) {
         logger.error(
@@ -113,9 +143,26 @@ export function createTurnstileVerifier(
         );
         return 'unavailable';
       }
-      if (!parsed.data.success) {
+      const { success, action, hostname } = parsed.data;
+      if (!success) {
         logger.warn(
           { turnstile: { outcome: 'failed', errorCodes: parsed.data['error-codes'] } },
+          'token do Turnstile recusado',
+        );
+        return 'failed';
+      }
+      // Token de outro formulário (a `action` vem do widget que o gerou, não do painel que o mandou).
+      if (action !== undefined && action !== expectedAction) {
+        logger.warn(
+          { turnstile: { outcome: 'failed', reason: 'action-mismatch', action, expectedAction } },
+          'token do Turnstile recusado',
+        );
+        return 'failed';
+      }
+      // Token resolvido fora do painel (outro site com a mesma chave, ou `WEB_ORIGIN` errado neste nó).
+      if (expectedHostname !== undefined && hostname !== expectedHostname) {
+        logger.warn(
+          { turnstile: { outcome: 'failed', reason: 'hostname-mismatch', hostname, expectedHostname } },
           'token do Turnstile recusado',
         );
         return 'failed';

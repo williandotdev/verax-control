@@ -155,9 +155,14 @@ header `X-Turnstile-Token`; a API o confere no `siteverify` da Cloudflare (com o
 (`TURNSTILE_REQUIRED` / `TURNSTILE_FAILED`, mensagem genérica, sem gastar tentativa); com o `siteverify` fora do ar,
 503 genérico: a porta fecha, nunca abre. A chave secreta fica no cofre `<prefixo>-turnstile-secret-key` do Secret
 Manager e a chave do site (pública) no `node.conf`; sem as duas, o desafio fica desligado e a API avisa na partida
-(`Turnstile desligado`). O painel descobre a chave do site em `GET /v1/auth/client-config` (público, com cache curto)
-e, sem ela, os formulários são os de sempre. A CSP do painel abre só `script-src` e `frame-src` para
-`https://challenges.cloudflare.com`. O token não vai para o log nem para a auditoria; a recusa, sim.
+(`Turnstile desligado`). O `siteverify` também diz a `action` do widget que gerou o token e o `hostname` da página: a
+API exige a `action` da rota (`login` ou `password-reset`; um token do login não vale no pedido de redefinição) e,
+com uma chave de site real, o `hostname` do `WEB_ORIGIN`; a chamada não segue redirecionamento (a chave secreta vai
+no corpo). O painel descobre a chave do site em `GET /v1/auth/client-config` (público e sem limite por IP: devolve um
+valor constante lido da configuração em memória, com `Cache-Control: public, max-age=300`, que o navegador e o
+Cloudflare na frente da API reaproveitam) e, sem ela, os formulários são os de sempre. A CSP do painel abre só
+`script-src` e `frame-src` para `https://challenges.cloudflare.com`. O token não vai para o log nem para a
+auditoria; a recusa, sim.
 
 ## Contas monitoradas por provedor
 

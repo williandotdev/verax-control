@@ -25,9 +25,10 @@ const LEAK = { secretKey: 'leak-ts-secret-1', token: 'leak-ts-token-2' };
 // Chave de site de teste da Cloudflare (sempre passa); só o formato importa aqui, o siteverify é o falso.
 const SITE_KEY = '1x00000000000000000000AA';
 
-type SiteverifyMode = 'ok' | 'fail' | 'error' | 'garbage' | 'hang';
+type SiteverifyMode = 'ok' | 'fail' | 'error' | 'garbage' | 'hang' | 'redirect';
 
 interface SiteverifyCall {
+  url: string | undefined;
   headers: Record<string, string | string[] | undefined>;
   body: Record<string, unknown>;
 }
@@ -38,6 +39,8 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
   let siteverify: Server;
   let mode: SiteverifyMode = 'ok';
   let calls: SiteverifyCall[] = [];
+  /** O que o siteverify falso diz sobre o token aceito: a `action` do widget que o gerou e o hostname da página. */
+  let solved: { action?: string; hostname?: string } = {};
   const hanging: ServerResponse[] = [];
   let app: NestExpressApplication;
   let prisma: PrismaService;
@@ -48,9 +51,20 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
       let raw = '';
       incoming.on('data', (chunk: Buffer) => (raw += chunk.toString()));
       incoming.on('end', () => {
-        calls.push({ headers: incoming.headers, body: JSON.parse(raw) as Record<string, unknown> });
+        calls.push({
+          url: incoming.url,
+          headers: incoming.headers,
+          body: JSON.parse(raw) as Record<string, unknown>,
+        });
         if (mode === 'hang') {
           hanging.push(response);
+          return;
+        }
+        if (mode === 'redirect' && incoming.url === '/siteverify') {
+          // 307 preserva método e corpo: quem o seguisse levaria a chave secreta ao outro endereço, que aceita tudo.
+          response.statusCode = 307;
+          response.setHeader('location', '/siteverify-redirecionado');
+          response.end();
           return;
         }
         response.setHeader('content-type', 'application/json');
@@ -69,6 +83,7 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
               challenge_ts: '2026-11-04T12:00:00.000Z',
               hostname: 'localhost',
               metadata: { ignorado: true },
+              ...solved,
             }),
           );
         }
@@ -97,6 +112,7 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
   beforeEach(() => {
     mode = 'ok';
     calls = [];
+    solved = {};
   });
 
   const withToken = (test: request.Test, token = LEAK.token) => test.set(TURNSTILE_TOKEN_HEADER, token);
@@ -215,6 +231,41 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
       expect(event).toMatchObject({ action: 'auth.sign_in', outcome: 'failure', statusCode: 503 });
     });
 
+    it('siteverify redireciona: 503 sem seguir (a chave secreta não vai a outro endereço)', async () => {
+      mode = 'redirect';
+      const user = await createUser(app);
+      const response = await withToken(signInRequest(app, user.email, user.password)).expect(503);
+      expect(response.body).toMatchObject({ code: 'TURNSTILE_UNAVAILABLE' });
+      expect(calls.map((call) => call.url)).toEqual(['/siteverify']);
+      expect(hasSessionCookie(cookieHeader(response.headers['set-cookie']))).toBe(false);
+    });
+
+    it('token resolvido no widget do "esqueci a senha" não vale no login: 400 genérico, com o motivo só no log', async () => {
+      solved = { action: 'password-reset' };
+      const user = await createUser(app);
+      const response = await withToken(signInRequest(app, user.email, user.password)).expect(400);
+      expect(response.body).toEqual(expect.objectContaining({ code: 'TURNSTILE_FAILED' }));
+      expect(JSON.stringify(response.body)).not.toMatch(/action|password-reset/);
+      expect(hasSessionCookie(cookieHeader(response.headers['set-cookie']))).toBe(false);
+      // Antes da senha: nenhuma tentativa gasta, e a recusa entra na trilha como as outras.
+      expect(await prisma.loginAttempt.findUnique({ where: { email: user.email } })).toBeNull();
+      const event = await prisma.auditLog.findFirstOrThrow({
+        where: { requestId: response.headers['x-request-id'] },
+      });
+      expect(event).toMatchObject({ action: 'auth.sign_in', outcome: 'denied', statusCode: 400 });
+      expect(capture.text).toContain('action-mismatch');
+
+      // A action do próprio login passa.
+      solved = { action: 'login' };
+      await withToken(signInRequest(app, user.email, user.password)).expect(200);
+    });
+
+    it('com chave de site de teste, o hostname do siteverify não é conferido', async () => {
+      solved = { hostname: 'outro.example' };
+      const user = await createUser(app);
+      await withToken(signInRequest(app, user.email, user.password)).expect(200);
+    });
+
     it('siteverify sem resposta: 5 s e 503 (fecha, não abre)', async () => {
       mode = 'hang';
       const user = await createUser(app);
@@ -275,6 +326,18 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
       const user = await createUser(app);
       await withToken(requestReset(user.email)).expect(503);
       expect(mailbox.to(user.email)).toHaveLength(0);
+    });
+
+    it('token resolvido no widget do login não vale aqui: 400 e nada é enviado; com a action certa, o pedido segue', async () => {
+      solved = { action: 'login' };
+      const user = await createUser(app);
+      const failed = await withToken(requestReset(user.email)).expect(400);
+      expect(failed.body).toMatchObject({ code: 'TURNSTILE_FAILED' });
+      expect(mailbox.to(user.email)).toHaveLength(0);
+
+      solved = { action: 'password-reset' };
+      await withToken(requestReset(user.email)).expect(200);
+      await expect.poll(() => mailbox.to(user.email).length, { timeout: 5_000 }).toBe(1);
     });
   });
 

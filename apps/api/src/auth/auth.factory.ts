@@ -28,8 +28,8 @@ import { passwordLinkMail } from './password-links.js';
 import { temporaryPasswordExpired } from './temporary-password.js';
 import {
   createTurnstileVerifier,
+  TURNSTILE_ACTIONS,
   TURNSTILE_FAILED,
-  TURNSTILE_PATHS,
   TURNSTILE_REQUIRED,
   TURNSTILE_TOKEN_HEADER,
   TURNSTILE_UNAVAILABLE,
@@ -112,10 +112,12 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
     headers?: Headers | undefined;
     body?: unknown;
   }): Promise<void> {
-    if (!turnstile || !TURNSTILE_PATHS.has(ctx.path)) return;
+    const expectedAction = TURNSTILE_ACTIONS.get(ctx.path);
+    if (!turnstile || expectedAction === undefined) return;
     const outcome = await turnstile.verify(
       ctx.headers?.get(TURNSTILE_TOKEN_HEADER),
       ctx.headers?.get(CLIENT_IP_HEADER) ?? undefined,
+      expectedAction,
     );
     if (outcome === 'ok') return;
     const refusal = TURNSTILE_REFUSALS[outcome];
