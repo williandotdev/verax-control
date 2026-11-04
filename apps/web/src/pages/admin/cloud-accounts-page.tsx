@@ -4,6 +4,9 @@ import {
   cloudAccountCreateSchema,
   cloudAccountUpdateSchema,
   type CloudProvider,
+  gcpSinkCommand,
+  gcpSinkIdentityCommand,
+  normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
 } from '@verax/shared';
 import { Copy, ExternalLink } from 'lucide-react';
@@ -243,7 +246,7 @@ function CreateAccount() {
             ? 'Falta o cliente criar o conector nela.'
             : 'Falta configurar a leitura no nó.'}
         </p>
-        <ProviderSteps account={create.data} />
+        <ProviderSteps account={create.data} canWrite />
       </div>
     );
   }
@@ -303,7 +306,7 @@ function CreateAccount() {
           />
           <Field
             label="Assinatura do Pub/Sub (opcional)"
-            hint="O nome da assinatura, se ela estiver no próprio projeto, ou o nome completo (projects/<projeto>/subscriptions/<nome>), se estiver noutro. Pode ser informada depois."
+            hint="O nome da assinatura, se ela estiver no próprio projeto, ou o nome completo (projects/<projeto>/subscriptions/<nome>), se estiver noutro. Num projeto de cliente, deixe em branco: a Verax informa depois do sink."
             value={values.pubsubSubscription}
             onChange={set('pubsubSubscription')}
             error={errors['pubsubSubscription']}
@@ -372,7 +375,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           O ExternalId só aparece para quem configura o conector.
         </p>
       ) : (
-        <ProviderSteps account={account} />
+        <ProviderSteps account={account} canWrite={canWrite} />
       )}
       {canWrite && account.provider !== 'aws' && <EditSource account={account} />}
       {canWrite && (
@@ -434,34 +437,136 @@ function EditSource({ account }: { account: CloudAccount }) {
   );
 }
 
-function ProviderSteps({ account }: { account: CloudAccount }) {
-  if (account.provider === 'gcp') return <GcpSteps account={account} />;
+function ProviderSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  if (account.provider === 'gcp') return <GcpSteps account={account} canWrite={canWrite} />;
   if (account.provider === 'cloudflare') return <CloudflareSteps account={account} />;
   return <ConnectorSteps account={account} />;
 }
 
-/** O que configurar no projeto da GCP: o nó lê uma assinatura do Pub/Sub, sem chave de conta de serviço. */
-function GcpSteps({ account }: { account: CloudAccount }) {
+/** No nó que não informa o próprio tópico (ambiente local), o comando sai com este no lugar. */
+const SINK_TOPIC_PLACEHOLDER = 'projects/PROJETO-DO-NO/topics/TOPICO-DO-NO';
+
+/**
+ * O que configurar no projeto da GCP do cliente: um sink que só copia os eventos de segurança para o tópico do nó. A
+ * Verax não recebe nenhum papel no projeto, e nenhuma chave de conta de serviço é criada. A identidade do sink, que o
+ * cliente cola aqui, é a única que a Verax deixa publicar no tópico.
+ */
+function GcpSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  const command = gcpSinkCommand(account.accountId, account.sinkTopic ?? SINK_TOPIC_PLACEHOLDER);
   return (
     <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
       <h3 id="conector-passos" className="text-sm font-semibold">
         Leitura do projeto {account.accountId}
       </h3>
-      <ol className="list-decimal space-y-2 pl-5 text-sm">
-        <li>
-          No projeto, crie um coletor de logs (sink) do Cloud Logging que publique só os eventos de segurança
-          num tópico do Pub/Sub, e uma assinatura nesse tópico.
+      <p className="text-sm text-muted-foreground">
+        O projeto só envia uma cópia dos eventos de segurança para o nó do Verax: ninguém da Verax ganha
+        acesso a ele, os logs originais não mudam e nenhuma chave de conta de serviço é criada.
+      </p>
+      <ol className="list-decimal space-y-3 pl-5 text-sm">
+        <li className="space-y-2">
+          <p>
+            No Cloud Shell do projeto, com permissão para criar coletores de logs (papel{' '}
+            <code className="font-mono text-xs">roles/logging.configWriter</code> ou dono do projeto), rode:
+          </p>
+          <CommandBlock command={command} label="Copiar o comando do sink" />
+          {!account.sinkTopic && (
+            <p className="text-xs text-muted-foreground">
+              Este nó não informa o próprio tópico: troque {SINK_TOPIC_PLACEHOLDER} pelo tópico que a Verax
+              passar.
+            </p>
+          )}
+        </li>
+        <li className="space-y-2">
+          <p>
+            O comando termina mostrando a identidade do coletor (sink), que acaba em
+            @gcp-sa-logging.iam.gserviceaccount.com; este comando a mostra de novo:
+          </p>
+          <CommandBlock
+            command={gcpSinkIdentityCommand(account.accountId)}
+            label="Copiar o comando que mostra a identidade do sink"
+          />
+          <p>{canWrite ? 'Cole a identidade aqui:' : 'Quem administra as contas cola a identidade aqui.'}</p>
+          {canWrite ? (
+            <SinkIdentityForm account={account} />
+          ) : (
+            <p className="break-all font-mono text-xs">
+              {account.sinkWriterIdentity ?? 'ainda não informada'}
+            </p>
+          )}
         </li>
         <li>
-          Dê à conta de serviço do nó do Verax a permissão de assinante nessa assinatura e a de revisor de
-          segurança no projeto. Nenhuma chave de conta de serviço é criada: o nó usa a identidade da própria
-          VM.
-        </li>
-        <li>
-          Informe aqui o nome da assinatura. A conexão muda para "Conectada" quando o primeiro evento chegar.
+          A Verax libera a publicação no tópico só para essa identidade e informa a assinatura do Pub/Sub. A
+          conexão muda para "Conectada" quando o primeiro evento chegar.
         </li>
       </ol>
     </section>
+  );
+}
+
+/** Comando pronto, com o botão de copiar: quebra a linha na tela, mas a cópia é o texto exato. */
+function CommandBlock({ command, label }: { command: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => void navigator.clipboard?.writeText(command).then(() => setCopied(true));
+  return (
+    <div className="space-y-1">
+      <pre className="whitespace-pre-wrap break-all rounded bg-foreground/5 p-2 font-mono text-xs">
+        <code>{command}</code>
+      </pre>
+      <Button type="button" variant="ghost" size="sm" onClick={copy} aria-label={label}>
+        <Copy aria-hidden />
+        {copied ? 'Copiado' : 'Copiar'}
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * A identidade do sink que o cliente colou. Não é segredo: é a quem o Terraform do nó dá a publicação no tópico. O
+ * aviso do gcloud (entre crases) ou só o e-mail viram a forma completa antes de conferir.
+ */
+function SinkIdentityForm({ account }: { account: CloudAccount }) {
+  const [value, setValue] = useState(account.sinkWriterIdentity ?? '');
+  const [error, setError] = useState<string>();
+  const update = useUpdateCloudAccount(account.id);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const input = cloudAccountUpdateSchema.safeParse({
+      sinkWriterIdentity: value.trim() ? normalizeSinkWriterIdentity(value) : null,
+    });
+    if (!input.success) {
+      setError(Object.values(fieldErrors(input.error))[0]);
+      return;
+    }
+    setError(undefined);
+    update.mutate(input.data, {
+      onSuccess: (saved) => setValue(saved.sinkWriterIdentity ?? ''),
+    });
+  };
+
+  return (
+    <form onSubmit={submit} noValidate className="space-y-2">
+      <Field
+        label="Identidade do sink"
+        hint="Como o comando mostra: serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com."
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        error={error}
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <FormError error={update.error} />
+      {update.isSuccess && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {update.data.sinkWriterIdentity
+            ? 'Identidade salva. A Verax libera a publicação no tópico só para ela.'
+            : 'Identidade apagada.'}
+        </p>
+      )}
+      <Button type="submit" variant="secondary" disabled={update.isPending}>
+        Salvar identidade
+      </Button>
+    </form>
   );
 }
 

@@ -7,7 +7,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { api } from '@/lib/api';
 import { createQueryClient } from '@/lib/query-client';
-import { DEMO_ACCOUNTS, demoMe } from '@/mocks/fixtures';
+import { DEMO_ACCOUNTS, DEMO_SINK_TOPIC_PREFIX, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
 
@@ -280,14 +280,15 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(await within(sheet).findByRole('alert')).toBeInTheDocument();
   });
 
-  it('projeto da GCP: sem ExternalId nem papel, com os passos da assinatura do Pub/Sub', async () => {
+  it('projeto da GCP: sem ExternalId nem papel; o comando do sink aponta para o tópico do nó, sem dar acesso à Verax', async () => {
     renderAt('/cadastros/contas');
-    // A assinatura no próprio projeto aparece só pelo ID; a API guarda o nome completo.
+    // Projeto de cliente: a assinatura fica no projeto do nó e aparece pelo nome completo.
     const gcpRow = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
       candidate.textContent?.includes(DEMO_ACCOUNTS.alfaGcp),
     ) as HTMLElement;
-    expect(gcpRow).toHaveTextContent('verax-logs-seguranca');
-    expect(gcpRow).not.toHaveTextContent('projects/');
+    expect(gcpRow).toHaveTextContent(
+      `projects/verax-nos-demo/subscriptions/verax-demo-security-${DEMO_ACCOUNTS.alfaGcp}`,
+    );
     await userEvent.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
     const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
     await userEvent.selectOptions(within(sheet).getByLabelText('Provedor'), 'gcp');
@@ -298,17 +299,70 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       /ID de projeto da GCP inválido/,
     );
     await userEvent.clear(within(sheet).getByLabelText('ID do projeto da GCP'));
-    await userEvent.type(within(sheet).getByLabelText('ID do projeto da GCP'), 'verax-soc-prod');
-    await userEvent.type(within(sheet).getByLabelText('Assinatura do Pub/Sub (opcional)'), 'verax-logs');
+    await userEvent.type(within(sheet).getByLabelText('ID do projeto da GCP'), 'cliente-soc-prod');
     await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
     expect(await within(sheet).findByRole('status')).toHaveTextContent(
-      'Projeto da GCP verax-soc-prod cadastrado. Falta configurar a leitura no nó.',
+      'Projeto da GCP cliente-soc-prod cadastrado. Falta configurar a leitura no nó.',
     );
     expect(
-      within(sheet).getByRole('heading', { name: 'Leitura do projeto verax-soc-prod' }),
+      within(sheet).getByRole('heading', { name: 'Leitura do projeto cliente-soc-prod' }),
     ).toBeInTheDocument();
-    expect(within(sheet).getByText(/Nenhuma chave de conta de serviço é criada/)).toBeInTheDocument();
+    // O comando só cria o sink no projeto do cliente, apontando para o tópico do nó; nada de papel para a Verax.
+    const command = within(sheet).getByText(/^gcloud logging sinks create/);
+    expect(command).toHaveTextContent(`pubsub.googleapis.com/${DEMO_SINK_TOPIC_PREFIX}cliente-soc-prod`);
+    expect(command).toHaveTextContent('--project=cliente-soc-prod');
+    expect(command).toHaveTextContent('log_id("cloudaudit.googleapis.com/activity")');
+    expect(command).not.toHaveTextContent('AND NOT');
+    expect(within(sheet).getByText(/^gcloud logging sinks describe/)).toHaveTextContent(
+      '--project=cliente-soc-prod',
+    );
+    expect(within(sheet).getByText(/nenhuma chave de conta de serviço é criada/)).toBeInTheDocument();
+    expect(within(sheet).queryByText(/revisor de segurança/)).not.toBeInTheDocument();
     expect(within(sheet).queryByText(/^vx-/)).not.toBeInTheDocument();
+  });
+
+  it('projeto da GCP: o admin cola a identidade do sink (como o gcloud mostra); a inválida é recusada', async () => {
+    renderAt('/cadastros/contas');
+    await userEvent.click(await screen.findByRole('button', { name: 'Cadastrar conta' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Cadastrar conta' });
+    await userEvent.selectOptions(within(sheet).getByLabelText('Provedor'), 'gcp');
+    await userEvent.type(within(sheet).getByLabelText('ID do projeto da GCP'), 'cliente-loja-prod');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Cadastrar conta' }));
+    const field = await within(sheet).findByLabelText('Identidade do sink');
+    // Uma conta de serviço comum não é a identidade de um sink.
+    await userEvent.type(field, 'serviceAccount:coletor@cliente-loja-prod.iam.gserviceaccount.com');
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar identidade' }));
+    expect(field).toHaveAccessibleDescription(/identidade do sink inválida/);
+    // Colada do aviso do gcloud, entre crases: vira a forma completa.
+    await userEvent.clear(field);
+    await userEvent.type(
+      field,
+      '`serviceAccount:service-210987654321@gcp-sa-logging.iam.gserviceaccount.com`',
+    );
+    await userEvent.click(within(sheet).getByRole('button', { name: 'Salvar identidade' }));
+    expect(
+      await within(sheet).findByText('Identidade salva. A Verax libera a publicação no tópico só para ela.'),
+    ).toBeInTheDocument();
+    expect(field).toHaveValue('serviceAccount:service-210987654321@gcp-sa-logging.iam.gserviceaccount.com');
+  });
+
+  it('projeto da GCP: quem só lê vê o comando e a identidade, sem o campo', async () => {
+    renderAt('/cadastros/contas', { me: demoMe('leitura') });
+    const row = (await rowsOf('Contas cloud do cliente')).find((candidate) =>
+      candidate.textContent?.includes(DEMO_ACCOUNTS.alfaGcp),
+    ) as HTMLElement;
+    await userEvent.click(
+      within(row).getByRole('button', { name: (name) => name.includes(DEMO_ACCOUNTS.alfaGcp) }),
+    );
+    const sheet = await screen.findByRole('dialog', { name: `Projeto da GCP ${DEMO_ACCOUNTS.alfaGcp}` });
+    expect(within(sheet).getByText(/^gcloud logging sinks create/)).toHaveTextContent(
+      `${DEMO_SINK_TOPIC_PREFIX}${DEMO_ACCOUNTS.alfaGcp}`,
+    );
+    expect(
+      within(sheet).getByText('serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com'),
+    ).toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Identidade do sink')).not.toBeInTheDocument();
+    expect(within(sheet).queryByLabelText('Assinatura do Pub/Sub')).not.toBeInTheDocument();
   });
 
   it('Cloudflare: zonas na tabela; o token fica no nó; as zonas mudam no detalhe', async () => {

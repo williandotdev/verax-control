@@ -61,13 +61,40 @@ variable "subnet_cidr" {
 }
 
 variable "monitored_projects" {
-  description = "Projetos cujos logs de segurança vão para o nó. Em cada um, um coletor (sink) só copia; nada existente muda."
+  description = "Projetos cujos logs de segurança vão para o nó, com o sink criado por este Terraform (é preciso ser dono deles: os da Verax e os de teste). Em cada um, um coletor (sink) só copia; nada existente muda. Projeto de cliente vai em `customer_projects`."
   type        = list(string)
   default     = []
 
   validation {
     condition     = alltrue([for project in var.monitored_projects : can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", project))])
     error_message = "Cada item precisa ser um ID de projeto da GCP."
+  }
+}
+
+variable "customer_projects" {
+  description = "Projetos GCP de clientes, pelo ID, cada um com a identidade de escrita (`writer_identity`) do sink que o próprio cliente criou no projeto dele apontando para o tópico do nó (o comando pronto de Contas cloud; a identidade é a que ele colou no painel). Para cada um, o nó ganha tópico e assinatura, e só essa identidade pode publicar no tópico. Nada é criado nem concedido no projeto do cliente. Ex.: { \"projeto-do-cliente\" = { writer_identity = \"serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com\" } }."
+  type = map(object({
+    writer_identity = string
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for project in keys(var.customer_projects) : can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", project))])
+    error_message = "Cada chave precisa ser um ID de projeto da GCP."
+  }
+
+  # Só o agente do Cloud Logging do projeto do cliente (`service-<número do projeto>@gcp-sa-logging`), que a GCP cria
+  # para o sink. Uma conta de serviço comum, uma pessoa, a identidade compartilhada antiga (cloud-logs@system) ou o
+  # agente de uma pasta ou organização daria a publicação no tópico a quem não é o sink daquele projeto. A API aceita a
+  # mesma regra (packages/shared); um teste confere que as duas continuam iguais.
+  validation {
+    condition     = alltrue([for project in values(var.customer_projects) : can(regex("^serviceAccount:service-[0-9]+@gcp-sa-logging\\.iam\\.gserviceaccount\\.com$", project.writer_identity))])
+    error_message = "A writer_identity é a identidade do sink do cliente, como o gcloud mostra: serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com."
+  }
+
+  validation {
+    condition     = length(setintersection(keys(var.customer_projects), var.monitored_projects)) == 0
+    error_message = "Um projeto fica em monitored_projects (o Terraform cria o sink nele) ou em customer_projects (o cliente cria), nunca nos dois."
   }
 }
 

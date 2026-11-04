@@ -114,6 +114,52 @@ gcloud compute instances stop verax-homolog --zone southamerica-east1-b --projec
 gcloud compute instances start verax-homolog --zone southamerica-east1-b --project PROJETO_DOS_NOS
 ```
 
+## Projeto de cliente: o sink é do cliente
+
+O módulo aceita dois tipos de projeto, com o mesmo tópico e a mesma assinatura (`<prefixo>-security-<projeto>`, no
+projeto do nó):
+
+- **`monitored_projects`:** projetos de que você é dono (os da Verax e os de teste). O Terraform cria o sink neles.
+- **`customer_projects`:** projetos de clientes. **A Verax não recebe nenhum papel no projeto do cliente**, e o
+  Terraform não cria nada lá. O próprio cliente cria o sink com o comando pronto de Contas cloud (que aponta para o
+  tópico do nó) e cola no painel a identidade do sink, que a GCP criou para ele
+  (`serviceAccount:service-<número do projeto>@gcp-sa-logging.iam.gserviceaccount.com`). Essa identidade vai para o
+  `terraform.tfvars`:
+
+  ```hcl
+  customer_projects = {
+    "projeto-do-cliente-123" = { writer_identity = "serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com" }
+  }
+  ```
+
+  Para cada projeto, o `plan` mostra só três coisas, todas no projeto do nó: o tópico, a assinatura e a permissão
+  `roles/pubsub.publisher` no tópico, só para essa identidade. O módulo recusa qualquer outra identidade (uma conta de
+  serviço comum, uma pessoa, a identidade compartilhada antiga `cloud-logs@system`, o agente de uma pasta ou
+  organização) e recusa um projeto que esteja nas duas listas. A API aceita a mesma regra no campo "Identidade do
+  sink"; um teste da API confere que as duas continuam iguais, e que o filtro do comando do painel é o
+  `security_log_filter` de `logs.tf` sem a exclusão das leituras do nó.
+
+O roteiro inteiro, do cadastro no painel à assinatura informada, está em `docs/runbooks/onboarding-cliente.md`
+(seção 5). O que conferir depois do `apply`, com um projeto de teste de **outra organização** na homologação (é o teste
+do "sem papel para a Verax"): peça ao dono do projeto uma ação de administração qualquer (ou o `sinks update` abaixo),
+e leia a assinatura um minuto depois; e confira que só a identidade do sink publica no tópico.
+
+```bash
+# No projeto do cliente (quem roda é o dono dele; a Verax não tem acesso):
+gcloud logging sinks update verax-control-security --project PROJETO_DO_CLIENTE \
+  --description="Eventos de segurança para o Verax Control (só cópia; os logs originais não mudam)."
+# No projeto dos nós:
+gcloud pubsub subscriptions pull verax-homolog-security-PROJETO_DO_CLIENTE --project PROJETO_DOS_NOS --limit=3
+gcloud pubsub topics get-iam-policy verax-homolog-security-PROJETO_DO_CLIENTE --project PROJETO_DOS_NOS \
+  --format='value(bindings)'   # só roles/pubsub.publisher para serviceAccount:service-...@gcp-sa-logging...
+```
+
+A permissão fica no projeto do nó, para uma identidade de fora da organização da Verax: se a organização da Verax
+ligar a restrição de domínio (_Domain Restricted Sharing_, `iam.allowedPolicyMemberDomains`), é esse `apply` que
+falha, e o projeto dos nós precisa de exceção. A restrição do lado do cliente não interfere: nada é concedido lá. Para
+encerrar um cliente, tire o projeto de `customer_projects` e aplique: o tópico e a assinatura somem, com as mensagens
+que ainda não foram lidas.
+
 ## Passo 1: ferramentas e login
 
 No terminal (Git Bash ou PowerShell), confira as versões:
@@ -175,7 +221,8 @@ cp terraform.tfvars.example terraform.tfvars
   e os operadores nos acessos da VM, e `terraform state show 'google_billing_budget.project[0]'` mostra a conta
   (`billing_account`) e o valor (`units`).
 - **`envs/homolog-sp`:** `project_id` (projeto dos nós de clientes) e `images_project_id` (projeto da Verax, onde
-  está o registro das imagens). O resto tem padrão e está explicado no arquivo e em `variables.tf`.
+  está o registro das imagens). O resto tem padrão e está explicado no arquivo e em `variables.tf`; um projeto de
+  cliente entra em `customer_projects` (seção "Projeto de cliente: o sink é do cliente").
 
 O `terraform.tfvars` fica só na sua máquina: o `.gitignore` não deixa ele entrar no repositório.
 
@@ -477,5 +524,5 @@ expirarem.
 
 Com a base no ar, o próximo passo é o pacote do nó (`infra/node/`): instalar a API, o banco e o túnel na VM. O
 roteiro está em `docs/runbooks/no-verax.md`; no `node.conf`, `NODE_PROFILE` é o perfil do ambiente (`lean` no nó da
-Verax, `standard` na homologação). Cada projeto monitorado entra em Contas cloud com a assinatura que aparece em
-`terraform output pubsub_subscriptions`.
+Verax, `standard` na homologação). Cada projeto, monitorado ou de cliente, entra em Contas cloud com a assinatura que
+aparece em `terraform output pubsub_subscriptions`.

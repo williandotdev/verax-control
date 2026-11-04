@@ -66,6 +66,35 @@ arquitetura (`docs/ARQUITETURA.md`).
 4. Cadastre o cliente, a conta e os usuários no painel. Cada usuário nasce com uma senha temporária, que aparece
    uma vez: repasse por um canal seguro. No primeiro login, a pessoa troca a senha e cadastra o MFA.
 
+## 5. Projeto GCP do cliente (sem acesso ao projeto)
+
+Um projeto da GCP entra sem que a Verax ganhe nenhum papel nele: o cliente cria um coletor de logs (_sink_) que só
+copia os eventos de segurança para um tópico do Pub/Sub no projeto do nó, e o nó lê a assinatura desse tópico. Nenhuma
+chave de conta de serviço é criada em lugar nenhum, e nada que já existe no projeto do cliente muda.
+
+1. **No painel (Contas cloud), cadastre o projeto da GCP** pelo ID, com a assinatura em branco. O painel mostra o
+   comando `gcloud logging sinks create` pronto, com o filtro de segurança e o tópico do nó
+   (`projects/<projeto-do-nó>/topics/<prefixo>-security-<projeto>`). O tópico ainda não existe nesse momento; o sink
+   pode ser criado antes dele.
+2. **O cliente roda o comando** no Cloud Shell do projeto, como dono dele ou com `roles/logging.configWriter`. O
+   gcloud responde com a identidade do sink (`serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com`);
+   o segundo comando do painel a mostra de novo. Quem administra as contas cola a identidade no painel, no campo
+   "Identidade do sink". Ela não é segredo: é só quem vai poder publicar no tópico.
+3. **No Terraform do nó**, acrescente o projeto e a identidade em `customer_projects`, no `terraform.tfvars` do
+   ambiente (`infra/gcp/envs/<ambiente>`), e rode `plan` e `apply`. O plano cria só três coisas, todas no projeto do
+   nó: o tópico, a assinatura e a permissão de publicar no tópico, só para essa identidade. Nada no projeto do
+   cliente (`infra/gcp/GUIA.md`, "Projeto de cliente: o sink é do cliente").
+4. **Informe a assinatura no painel:** `terraform output pubsub_subscriptions` mostra
+   `projects/<projeto-do-nó>/subscriptions/<prefixo>-security-<projeto>`; cole no campo "Assinatura do Pub/Sub" da
+   conta. A conexão muda para "Conectada" quando o primeiro evento chegar.
+5. **Confira:** uma ação de administração no projeto do cliente aparece na assinatura em um minuto, e
+   `gcloud pubsub topics get-iam-policy` do tópico mostra só a identidade do sink como publicadora (comandos no GUIA).
+
+A permissão fica no projeto do nó, para uma identidade de fora dele: se a organização da Verax tiver restrição de
+domínio (_Domain Restricted Sharing_), é ela que precisa de exceção, nunca a do cliente. Para encerrar, tire o projeto
+de `customer_projects` e aplique (o tópico e a assinatura somem, com as mensagens que ainda não foram lidas) e desative
+a conta no painel; o cliente apaga o sink quando quiser (`gcloud logging sinks delete verax-control-security`).
+
 ## Publicar uma versão nova do diagnóstico
 
 1. Altere o script, os testes e a constante `VERSION` em `infra/diagnostico/diagnostico_aws.py`, num PR.

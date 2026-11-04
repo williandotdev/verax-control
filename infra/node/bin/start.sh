@@ -122,6 +122,10 @@ render() {
   for key in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
     if [[ -n ${!key:-} ]]; then plan+=("$key=${!key}"); fi
   done
+  # Tópico do nó para o sink de um projeto GCP de cliente: Contas cloud monta o comando do sink com ele. É o nome que
+  # o módulo do Terraform dá ao tópico de cada projeto (`<prefixo>-security-<projeto>`, no projeto do nó; o prefixo é
+  # o mesmo dos cofres), sem o projeto no fim. Não é segredo. Um teste da API confere que os dois continuam iguais.
+  local sink_topic="GCP_SINK_TOPIC_PREFIX=projects/$VERAX_GCP_PROJECT/topics/$VERAX_SECRET_PREFIX-security-"
   # TRUST_PROXY_HOPS=1: um proxy confiável na frente da API, o Cloudflare (o cloudflared só repassa).
   write_env api.env \
     NODE_ENV=production LOG_LEVEL=info PORT=3000 \
@@ -131,6 +135,7 @@ render() {
     "CSRF_SECRET=$csrf_key" \
     "${mail[@]}" \
     "${plan[@]}" \
+    "$sink_topic" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \

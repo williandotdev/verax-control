@@ -89,6 +89,68 @@ const pubsubSubscriptionSchema = z.string().max(320).refine(isPubsubSubscription
   error: 'assinatura inválida: use projects/<projeto>/subscriptions/<nome>',
 });
 
+/**
+ * Identidade de escrita (`writerIdentity`) do sink que o cliente cria no projeto dele com o comando de Contas cloud:
+ * o agente do Cloud Logging daquele projeto, que a própria GCP cria (`service-<número do projeto>@gcp-sa-logging`).
+ * Não é segredo. É ela que ganha, no Terraform do nó, a permissão de publicar só no tópico do projeto
+ * (`customer_projects` em `infra/gcp/modules/node/variables.tf`, com a mesma regra; um teste confere). Uma conta de
+ * serviço comum, uma pessoa, a identidade compartilhada antiga (`cloud-logs@system`) ou o agente de uma pasta ou
+ * organização dariam a publicação a quem não é o sink daquele projeto.
+ */
+export const SINK_WRITER_IDENTITY_PATTERN =
+  /^serviceAccount:service-[0-9]+@gcp-sa-logging\.iam\.gserviceaccount\.com$/;
+
+export const sinkWriterIdentitySchema = z.string().max(128).regex(SINK_WRITER_IDENTITY_PATTERN, {
+  error:
+    'identidade do sink inválida: use serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com',
+});
+
+/**
+ * A identidade como o gcloud mostra (entre crases, no aviso do `sinks create`) ou só o e-mail dela vira a forma
+ * completa, `serviceAccount:<e-mail>`, que é a que o IAM aceita. Outro tipo (`user:`, `group:`) fica como está, e o
+ * schema recusa.
+ */
+export function normalizeSinkWriterIdentity(value: string): string {
+  const trimmed = value.replace(/^[\s`'"]+|[\s`'"]+$/g, '');
+  return trimmed.includes(':') ? trimmed : `serviceAccount:${trimmed}`;
+}
+
+/**
+ * Filtro do sink de um projeto de cliente: os eventos de segurança do `security_log_filter` de
+ * `infra/gcp/modules/node/logs.tf` (auditoria e bloqueios do Cloud Armor), sem a exclusão das leituras do próprio nó,
+ * que acontecem no projeto do nó e nunca no do cliente. Um teste confere que os dois continuam iguais.
+ */
+export const GCP_SINK_LOG_FILTER = [
+  'log_id("cloudaudit.googleapis.com/activity") OR',
+  'log_id("cloudaudit.googleapis.com/system_event") OR',
+  'log_id("cloudaudit.googleapis.com/policy") OR',
+  'log_id("cloudaudit.googleapis.com/data_access") OR',
+  '(resource.type="http_load_balancer" AND jsonPayload.enforcedSecurityPolicy.outcome="DENY")',
+].join('\n');
+
+/** Nome do sink que o comando cria no projeto do cliente. */
+export const GCP_SINK_NAME = 'verax-control-security';
+
+/**
+ * Comando que o cliente roda no Cloud Shell do projeto dele: um sink que só copia os eventos de segurança para o
+ * tópico do nó (`projects/<projeto-do-nó>/topics/<nome>`). A Verax não recebe nenhum papel no projeto do cliente. Os
+ * valores entram no comando sem escape: o projeto e o tópico chegam aqui já validados (só letras, números, hífen e
+ * barra), e o filtro não tem aspa simples.
+ */
+export function gcpSinkCommand(projectId: string, topic: string): string {
+  return [
+    `gcloud logging sinks create ${GCP_SINK_NAME} pubsub.googleapis.com/${topic} \\`,
+    `  --project=${projectId} \\`,
+    "  --description='Eventos de segurança para o Verax Control (só cópia; os logs originais não mudam).' \\",
+    `  --log-filter='${GCP_SINK_LOG_FILTER}'`,
+  ].join('\n');
+}
+
+/** Mostra só a identidade do sink criado, para colar no painel. */
+export function gcpSinkIdentityCommand(projectId: string): string {
+  return `gcloud logging sinks describe ${GCP_SINK_NAME} --project=${projectId} --format='value(writerIdentity)'`;
+}
+
 /** Nome de domínio (zona do Cloudflare), conferido rótulo a rótulo, sem regex aninhada. */
 export function isDomainName(name: string): boolean {
   if (name.length > 253) return false;
@@ -132,7 +194,8 @@ const bucketsSchema = z.strictObject({
 /**
  * Conta cloud do cliente (T3.3), com os campos do provedor. Não há campo de credencial em nenhum deles:
  * - AWS: a Verax só assume o papel de leitura com o ExternalId, gerado pelo servidor e nunca aceito do request;
- * - GCP: o nó lê a assinatura com a identidade dele, sem chave de conta de serviço;
+ * - GCP: o nó lê a assinatura com a identidade dele, sem chave de conta de serviço. A identidade do sink do cliente
+ *   não é credencial: é só quem pode publicar no tópico do nó;
  * - Cloudflare: o token somente leitura fica no cofre de segredos do nó, nunca no cadastro.
  */
 export const cloudAccountCreateSchema = z.discriminatedUnion('provider', [
@@ -147,6 +210,8 @@ export const cloudAccountCreateSchema = z.discriminatedUnion('provider', [
     provider: z.literal('gcp'),
     accountId: gcpProjectIdSchema,
     pubsubSubscription: pubsubSubscriptionSchema.nullable().optional(),
+    /** Projeto de cliente: a identidade do sink que ele criou com o comando do painel. Pode chegar depois. */
+    sinkWriterIdentity: sinkWriterIdentitySchema.nullable().optional(),
   }),
   z.strictObject({
     provider: z.literal('cloudflare'),
@@ -162,6 +227,7 @@ export const cloudAccountUpdateSchema = z
     regions: regionsSchema.optional(),
     buckets: bucketsSchema.optional(),
     pubsubSubscription: pubsubSubscriptionSchema.nullable().optional(),
+    sinkWriterIdentity: sinkWriterIdentitySchema.nullable().optional(),
     zones: zonesSchema.optional(),
     status: z.enum(CLOUD_ACCOUNT_STATUSES).optional(),
   })
@@ -170,7 +236,7 @@ export type CloudAccountUpdate = z.infer<typeof cloudAccountUpdateSchema>;
 
 const PROVIDER_FIELDS: Record<CloudProvider, readonly string[]> = {
   aws: ['regions', 'buckets', 'status'],
-  gcp: ['pubsubSubscription', 'status'],
+  gcp: ['pubsubSubscription', 'sinkWriterIdentity', 'status'],
   cloudflare: ['zones', 'status'],
 };
 
@@ -202,6 +268,13 @@ export const cloudAccountSchema = z.strictObject({
   }),
   /** GCP: assinatura do Pub/Sub lida pelo nó; null antes de configurada e nos demais. */
   pubsubSubscription: z.string().nullable(),
+  /**
+   * GCP: tópico do nó para onde o sink do cliente publica (`projects/<projeto-do-nó>/topics/<nome>`), o do comando
+   * pronto. Null nos demais provedores e no nó que não informa o próprio tópico (ambiente local).
+   */
+  sinkTopic: z.string().nullable(),
+  /** GCP: identidade do sink que o cliente criou e colou no painel; null antes disso e nos demais. Não é segredo. */
+  sinkWriterIdentity: z.string().nullable(),
   /** Cloudflare: zonas (domínios) monitoradas. Vazio nos demais. */
   zones: z.array(z.string()),
   status: z.enum(CLOUD_ACCOUNT_STATUSES),
