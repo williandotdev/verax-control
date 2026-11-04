@@ -12,13 +12,18 @@ resource "google_artifact_registry_repository" "control_plane" {
   format        = "DOCKER"
 
   docker_config {
-    # Uma versão publicada nunca é sobrescrita: os serviços rodam sempre pelo digest.
-    immutable_tags = true
+    # Tags mutáveis, de propósito. Com tags imutáveis, a política de limpeza não apaga artefato com tag (documentação
+    # das políticas de limpeza do Artifact Registry), e como o workflow publica cada versão com a tag do commit, a
+    # política "apagar-antigas" abaixo não apagaria nada: o registro guardaria todas as versões, contra a estimativa
+    # de custo. A imutabilidade acrescentaria pouco: os serviços rodam sempre pelo digest (run.tf; o workflow implanta
+    # o digest que acabou de publicar, não a tag), e quem pode mover uma tag (`artifactregistry.writer`) já pode
+    # implantar qualquer imagem (`run.developer`, identities.tf). O teste em tests/servicos.tftest.hcl prende isto.
+    immutable_tags = false
   }
 
   # Guarda as 3 versões mais recentes de cada imagem (a que está no ar e duas para voltar; é a conta da estimativa de
-  # custo) e apaga o resto depois de 30 dias, para o registro não crescer sem limite. Uma versão apagada se recria a
-  # partir do commit (o workflow publica por SHA).
+  # custo) e apaga o resto depois de 30 dias, com tag e tudo, para o registro não crescer sem limite. Uma versão
+  # apagada se recria a partir do commit (o workflow publica por SHA).
   cleanup_policy_dry_run = false
   cleanup_policies {
     id     = "manter-recentes"

@@ -111,10 +111,22 @@ run "primeira_subida_sem_servicos" {
   assert {
     condition = (
       google_artifact_registry_repository.control_plane.repository_id == "verax-control-plane" &&
-      google_artifact_registry_repository.control_plane.docker_config[0].immutable_tags &&
-      one([for policy in google_artifact_registry_repository.control_plane.cleanup_policies : policy.most_recent_versions[0].keep_count if policy.action == "KEEP"]) == 3
+      one([for policy in google_artifact_registry_repository.control_plane.cleanup_policies : policy.most_recent_versions[0].keep_count if policy.action == "KEEP"]) == 3 &&
+      one([for policy in google_artifact_registry_repository.control_plane.cleanup_policies : policy.condition[0].older_than if policy.action == "DELETE"]) == "2592000s"
     )
-    error_message = "O registro das imagens do plano de controle, com tags imutáveis e as 3 versões mais recentes guardadas (a conta da estimativa de custo)."
+    error_message = "O registro das imagens do plano de controle: as 3 versões mais recentes de cada imagem ficam (a conta da estimativa de custo) e o resto sai depois de 30 dias."
+  }
+
+  # Com tags imutáveis, o Artifact Registry não apaga artefato com tag (documentação das políticas de limpeza), e uma
+  # política DELETE que alcance versões com tag vira letra morta: o registro guardaria todas as versões. O workflow
+  # publica com a tag do commit; então, ou as tags são mutáveis (o desenho de images.tf), ou a limpeza só apaga o que
+  # não tem tag (`tag_state = "UNTAGGED"`). As duas coisas juntas, nunca.
+  assert {
+    condition = (
+      !try(google_artifact_registry_repository.control_plane.docker_config[0].immutable_tags, false) ||
+      alltrue([for policy in google_artifact_registry_repository.control_plane.cleanup_policies : try(policy.condition[0].tag_state, "") == "UNTAGGED" if policy.action == "DELETE"])
+    )
+    error_message = "Tags imutáveis com uma política DELETE que alcança versões com tag: a limpeza não apagaria nada e o registro cresceria sem limite, contra a estimativa de custo (3 versões por imagem)."
   }
 }
 
