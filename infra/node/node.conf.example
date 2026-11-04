@@ -14,3 +14,10 @@ MAIL_FROM=nao-responda@exemplo.com.br
 # SMTP_USER=nao-responda@exemplo.com.br
 SYNC_SOURCES=gcp
 BACKUP_BUCKET=projeto-do-no-verax-node-backups
+# Plano do nó: essencial, profissional, enterprise ou interno (o nó da própria Verax, sem limite). Os ajustes trocam um
+# limite do plano (extras contratados); no enterprise, os quatro são obrigatórios; no interno, nenhum é aceito.
+PLAN=interno
+# PLAN_MAX_CLOUD_ACCOUNTS=3
+# PLAN_MAX_USERS=5
+# PLAN_MONTHLY_GIB=15
+# PLAN_HISTORY_DAYS=90

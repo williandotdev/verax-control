@@ -115,7 +115,7 @@ run_api() { # <nome> <arquivo da CA>
     -v "$certs:/certs:ro" \
     -e NODE_ENV=production -e WEB_ORIGIN=https://painel.exemplo.com.br -e TRUST_PROXY_HOPS=1 \
     -e API_ORIGIN=https://api.exemplo.com.br -e BETTER_AUTH_SECRET="$auth_secret" -e CSRF_SECRET="$csrf_secret" \
-    -e MAIL_TRANSPORT=ses -e MAIL_FROM=nao-responda@exemplo.com.br -e AWS_REGION=sa-east-1 \
+    -e MAIL_TRANSPORT=ses -e MAIL_FROM=nao-responda@exemplo.com.br -e AWS_REGION=sa-east-1 -e PLAN=interno \
     -e DATABASE_URL="$(database_url verax_app "$app_password" "$2")" \
     "$image" >/dev/null
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { nodePlan } from './env.schema.js';
 import { ConfigValidationError, loadConfig, loadWorkerConfig } from './load-config.js';
 
 const validEnv = {
@@ -19,6 +20,14 @@ const validProductionEnv = {
   DATABASE_URL: 'postgresql://verax:secret@db.internal:5432/verax?sslmode=verify-full',
   MAIL_TRANSPORT: 'ses',
   TRUST_PROXY_HOPS: '1',
+  PLAN: 'essencial',
+};
+
+const enterpriseOverrides = {
+  PLAN_MAX_CLOUD_ACCOUNTS: '40',
+  PLAN_MAX_USERS: '30',
+  PLAN_MONTHLY_GIB: '250',
+  PLAN_HISTORY_DAYS: '730',
 };
 
 function problemsOf(env: NodeJS.ProcessEnv): readonly string[] {
@@ -153,6 +162,74 @@ describe('loadConfig', () => {
     }
   });
 
+  describe('plano do nó (fase 2)', () => {
+    it('em produção, PLAN é obrigatório', () => {
+      const { PLAN: _plan, ...withoutPlan } = validProductionEnv;
+      expect(problemsOf(withoutPlan)).toEqual(['PLAN: obrigatória e não definida']);
+      expect(loadConfig(validProductionEnv).PLAN).toBe('essencial');
+    });
+
+    it('fora de produção, sem PLAN, o plano é o interno (sem limite)', () => {
+      const config = loadConfig(validEnv);
+      expect(config.PLAN).toBe('interno');
+      expect(nodePlan(config).limits).toEqual({
+        maxCloudAccounts: null,
+        maxUsers: null,
+        monthlyGib: null,
+        historyDays: null,
+      });
+    });
+
+    it('enterprise sem os quatro ajustes é recusado', () => {
+      expect(problemsOf({ ...validProductionEnv, PLAN: 'enterprise' })).toEqual([
+        'PLAN_MAX_CLOUD_ACCOUNTS: obrigatória e não definida',
+        'PLAN_MAX_USERS: obrigatória e não definida',
+        'PLAN_MONTHLY_GIB: obrigatória e não definida',
+        'PLAN_HISTORY_DAYS: obrigatória e não definida',
+      ]);
+      const { PLAN_HISTORY_DAYS: _days, ...threeOfFour } = enterpriseOverrides;
+      expect(problemsOf({ ...validProductionEnv, PLAN: 'enterprise', ...threeOfFour })).toEqual([
+        'PLAN_HISTORY_DAYS: obrigatória e não definida',
+      ]);
+    });
+
+    it('enterprise com os quatro ajustes: os limites vêm do ambiente', () => {
+      const config = loadConfig({ ...validProductionEnv, PLAN: 'enterprise', ...enterpriseOverrides });
+      expect(nodePlan(config)).toEqual({
+        id: 'enterprise',
+        label: 'Enterprise',
+        limits: { maxCloudAccounts: 40, maxUsers: 30, monthlyGib: 250, historyDays: 730 },
+      });
+    });
+
+    it('ajuste no Essencial troca só o limite informado (extra de contas)', () => {
+      const config = loadConfig({ ...validProductionEnv, PLAN_MAX_CLOUD_ACCOUNTS: '4' });
+      expect(nodePlan(config).limits).toEqual({
+        maxCloudAccounts: 4,
+        maxUsers: 5,
+        monthlyGib: 15,
+        historyDays: 90,
+      });
+    });
+
+    it('plano desconhecido, ajuste inválido e ajuste no interno são recusados', () => {
+      expect(problemsOf({ ...validProductionEnv, PLAN: 'gratis' })).toEqual([
+        'PLAN: plano desconhecido: use essencial, profissional, enterprise ou interno',
+      ]);
+      expect(problemsOf({ ...validProductionEnv, PLAN_HISTORY_DAYS: '7' })).toEqual([
+        'PLAN_HISTORY_DAYS: deve ser um número inteiro de 30 a 3650',
+      ]);
+      for (const value of ['', 'dez', '2.5', '-1']) {
+        expect(problemsOf({ ...validProductionEnv, PLAN_MAX_USERS: value })).toEqual([
+          'PLAN_MAX_USERS: deve ser um número inteiro de 1 a 1000',
+        ]);
+      }
+      expect(problemsOf({ ...validEnv, PLAN: 'interno', PLAN_MAX_USERS: '10' })).toEqual([
+        'PLAN_MAX_USERS: não se aplica ao plano interno, que não tem limite',
+      ]);
+    });
+  });
+
   it('nunca inclui o valor recebido na mensagem de erro', () => {
     const secret = 'S3nh4-Sup3r-S3cr3t4';
     let message = '';
@@ -182,6 +259,7 @@ describe('configuração do worker do sync (T5.3)', () => {
     try {
       loadWorkerConfig({
         NODE_ENV: 'production',
+        PLAN: 'profissional',
         DATABASE_URL: `postgresql://verax:${secret}@db.internal:5432/verax`,
       });
       expect.unreachable();
@@ -204,6 +282,22 @@ describe('configuração do worker do sync (T5.3)', () => {
     expect(() => loadWorkerConfig({ ...workerEnv, SYNC_SOURCES: 'gcp,splunk' })).toThrow(
       ConfigValidationError,
     );
+  });
+
+  it('plano: a mesma regra da API (obrigatório em produção, enterprise com os quatro ajustes)', () => {
+    const production = {
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgresql://verax:x@db.internal:5432/verax?sslmode=verify-full',
+    };
+    expect(() => loadWorkerConfig(production)).toThrow('PLAN: obrigatória e não definida');
+    expect(loadWorkerConfig({ ...production, PLAN: 'profissional' }).PLAN).toBe('profissional');
+    expect(loadWorkerConfig(workerEnv).PLAN).toBe('interno');
+    expect(() => loadWorkerConfig({ ...production, PLAN: 'enterprise' })).toThrow(
+      'PLAN_MONTHLY_GIB: obrigatória e não definida',
+    );
+    expect(
+      nodePlan(loadWorkerConfig({ ...production, PLAN: 'enterprise', ...enterpriseOverrides })).limits,
+    ).toEqual({ maxCloudAccounts: 40, maxUsers: 30, monthlyGib: 250, historyDays: 730 });
   });
 
   it.each(['5', '7200', 'um minuto'])('intervalo fora da faixa é recusado: %s', (value) => {

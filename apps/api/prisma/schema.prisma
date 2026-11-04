@@ -98,6 +98,7 @@ model Tenant {
   postureScans       PostureScan[]
   postureFailures    PostureFailure[]
   inventorySnapshots InventorySnapshot[]
+  ingestUsage        IngestUsage[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -615,4 +616,21 @@ model InventorySnapshot {
 
   @@unique([tenantId, accountId, collectedAt])
   @@index([tenantId, accountId, collectedAt(sort: Desc)])
+}
+
+/// Volume de log lido por cliente, mês e fonte (fase 2, PR-03): a medida dos GiB por mês do plano. Gravado pelo
+/// `UsageMeter` dos coletores, sempre depois da confirmação da leitura (o lote que falha antes não conta). A regra é
+/// uma só: os bytes UTF-8 de cada registro como a fonte entrega, já descompactado, contando todos os registros lidos,
+/// inclusive os que nenhuma regra acusa. Uma reentrega da fonte pode contar duas vezes ("uso justo").
+model IngestUsage {
+  tenantId String   @db.Uuid
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// Primeiro dia do mês no calendário de Brasília (a virada é às 03:00 UTC).
+  month    DateTime @db.Date
+  /// Fonte do volume: `gcp` (Pub/Sub), `aws` (Wazuh) ou `cloudflare`.
+  source   String   @db.VarChar(16)
+  bytes    BigInt
+  events   BigInt
+
+  @@id([tenantId, month, source])
 }
