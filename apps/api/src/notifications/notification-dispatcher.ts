@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ESCALATION_CONFIRM_PATH,
+  ESCALATION_CONFIRMATION_TTL_HOURS,
+  ESCALATION_UNSUBSCRIBE_PATH,
   INCIDENT_NOTICE_ROLES,
   NOTICE_CATCH_UP_HOURS,
   NOTICE_DIGEST_ITEMS,
@@ -9,9 +12,22 @@ import { SyncLease } from '../alerts/finding-store.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
-import type { NotificationKind, Prisma, UserRole } from '../generated/prisma/client.js';
+import {
+  discardEscalationTokens,
+  escalationLink,
+  mintEscalationTokens,
+} from '../escalation/escalation-tokens.js';
+import type { EscalationDelivery, NotificationKind, Prisma, UserRole } from '../generated/prisma/client.js';
 import type { MailTransport } from '../mail/mail.types.js';
-import { type DigestItem, digestMail, type NoticeMail, noticeMail } from '../mail/templates.js';
+import {
+  type DigestItem,
+  digestMail,
+  escalationConfirmationMail,
+  type EscalationNotice,
+  escalationNoticeMail,
+  type NoticeMail,
+  noticeMail,
+} from '../mail/templates.js';
 import type { UsageNotices } from './usage-notices.js';
 
 /** Nome da tarefa do agendador e da concessão no banco (`SyncState`). */
@@ -46,6 +62,8 @@ export const NOTICE_RECIPIENT_ROLES: Readonly<Record<NotificationKind, readonly 
   critical_finding: INCIDENT_NOTICE_ROLES,
   aws_ingestion_stalled: ['admin_cliente'],
   plan_usage: ['admin_cliente'],
+  // O pedido de confirmação vai só ao contato de escalonamento, que não é pessoa do cliente.
+  escalation_confirmation: [],
 };
 
 /**
@@ -63,6 +81,17 @@ export interface NoticePerson {
   role: UserRole;
   incidentEmails: boolean;
 }
+
+/**
+ * Os avisos que também vão ao contato de escalonamento confirmado (D8): só os críticos, de incidente (aberto ou que
+ * subiu para crítico) e de achado crítico. O volume do plano, a coleta parada e os avisos altos, nunca.
+ */
+export function reachesEscalationContact(row: { kind: NotificationKind; severity: string | null }): boolean {
+  return INCIDENT_NOTICE_KINDS.has(row.kind) && row.severity === 'critical';
+}
+
+/** E-mails ao contato de escalonamento numa hora cheia. Ele não recebe resumo: o que passa disso ele não recebe. */
+export const ESCALATION_HOURLY_LIMIT = NOTICE_HOURLY_LIMIT;
 
 /** A pessoa recebe o tipo: o papel que ele pede e, nos de incidente, a preferência ligada. */
 export function receives(kind: NotificationKind, person: NoticePerson): boolean {
@@ -104,6 +133,11 @@ export interface NotificationReport {
   /** Entregas (uma por pessoa e aviso) que foram para o resumo da hora ou para o de retomada, em vez do e-mail avulso. */
   folded: number;
   digests: DigestReport;
+  /**
+   * O contato de escalonamento nos avisos críticos (D8): e-mails que saíram, avisos que ele não recebeu por passar do
+   * limite da hora e avisos com 24 h ou mais na fila (ele não recebe resumo nem retomada).
+   */
+  escalation: { sent: number; limited: number; stale: number };
   /** Tipo do erro do cálculo do volume do plano, quando ele falhou (a entrega seguiu). */
   usageError?: string;
 }
@@ -143,6 +177,8 @@ const DUE_SELECT = {
   attempts: true,
   deliveredUserIds: true,
   digestedUserIds: true,
+  escalationGeneration: true,
+  escalationDelivery: true,
   createdAt: true,
 } as const satisfies Prisma.NotificationSelect;
 type DueNotice = Prisma.NotificationGetPayload<{ select: typeof DUE_SELECT }>;
@@ -182,6 +218,25 @@ const asNoticePerson = (row: PersonRow): NoticePerson => ({
   role: row.role,
   incidentEmails: row.notificationPreference?.incidentEmails ?? true,
 });
+
+/** O contato de escalonamento no cadastro do cliente, lido na hora do envio (o endereço nunca vai para a fila). */
+const ESCALATION_CONTACT_SELECT = {
+  status: true,
+  escalationName: true,
+  escalationEmail: true,
+  escalationState: true,
+  escalationGeneration: true,
+} as const satisfies Prisma.TenantSelect;
+
+/** O que aconteceu com o contato num aviso: a decisão gravada, ou o tipo do erro do envio (nova tentativa). */
+type ContactOutcome = EscalationDelivery | { error: string };
+
+/** O contato confirmado, que recebe os avisos críticos. */
+interface EscalationRecipient {
+  name: string;
+  email: string;
+  generation: number;
+}
 
 type Outcome = 'sent' | 'retrying' | 'failed' | 'skipped';
 
@@ -331,6 +386,7 @@ export class NotificationDispatcher {
       skipped: 0,
       folded: 0,
       digests: { due: 0, sent: 0, retrying: 0, failed: 0, skipped: 0 },
+      escalation: { sent: 0, limited: 0, stale: 0 },
     };
     const startedAt = this.now();
     if (!(await this.lease.acquire(startedAt))) return { ...report, status: 'locked' };
@@ -382,11 +438,12 @@ export class NotificationDispatcher {
   /** Uma tentativa de um aviso. */
   private async deliver(
     row: DueNotice,
-    report: Pick<NotificationReport, 'folded'>,
+    report: Pick<NotificationReport, 'folded' | 'escalation'>,
     signal?: AbortSignal,
   ): Promise<Outcome> {
     const db = this.prisma.forTenant(row.tenantId);
     if (this.mailer === null) return this.skip(row, 'mail_disabled');
+    if (row.kind === 'escalation_confirmation') return this.deliverConfirmation(row, this.mailer, signal);
     const people = await db.user.findMany({
       where: { role: { in: [...NOTICE_RECIPIENT_ROLES[row.kind]] }, ...ACTIVE_PERSON },
       select: PERSON_SELECT,
@@ -395,7 +452,14 @@ export class NotificationDispatcher {
     const recipients = people.filter((person) => receives(row.kind, asNoticePerson(person)));
     // Quem já recebeu, avulso ou no resumo, numa tentativa anterior conta como entregue (abaixo, `sent`).
     const handled = new Set([...row.deliveredUserIds, ...row.digestedUserIds]);
-    if (recipients.length === 0 && handled.size === 0) {
+    // O contato de escalonamento ainda sem decisão neste aviso (só nos críticos, confirmado, com o cliente ativo).
+    const contact = row.escalationDelivery === null ? await this.escalationContactFor(row) : null;
+    if (
+      recipients.length === 0 &&
+      handled.size === 0 &&
+      row.escalationDelivery === null &&
+      contact === null
+    ) {
       // Havia quem recebesse, mas todos desligaram os avisos de incidente.
       return this.skip(row, people.length > 0 ? 'opted_out' : 'no_recipients');
     }
@@ -410,6 +474,8 @@ export class NotificationDispatcher {
     const startedSending = performance.now();
     let firstError: string | null = null;
     let attempted = 0;
+    let timedOut = false;
+    const pastBudget = () => attempted > 0 && performance.now() - startedSending >= this.deliveryBudgetMs;
     for (const recipient of recipients) {
       if (handled.has(recipient.id)) continue;
       // Interrompida no meio (orçamento da tarefa, parada do worker): a tentativa é gravada com o recuo e a interrupção
@@ -435,8 +501,9 @@ export class NotificationDispatcher {
         report.folded += 1;
         continue;
       }
-      if (attempted > 0 && performance.now() - startedSending >= this.deliveryBudgetMs) {
+      if (pastBudget()) {
         firstError ??= 'delivery_timeout';
+        timedOut = true;
         break;
       }
       attempted += 1;
@@ -450,7 +517,174 @@ export class NotificationDispatcher {
       // Conta na hora em que o e-mail saiu de fato: o envio que começou às 13:59 e terminou às 14:00 é da hora das 14h.
       await this.recordSent(row, recipient.id, hourStartOf(this.now()));
     }
+    // O contato de escalonamento vem depois das pessoas, com o mesmo prazo e a mesma interrupção.
+    if (contact !== null && !timedOut) {
+      // Quem é contato e também pessoa do cliente que recebe este aviso não recebe o mesmo e-mail duas vezes.
+      const sameAsPerson = recipients.some(
+        (person) => person.email.trim().toLowerCase() === contact.email.trim().toLowerCase(),
+      );
+      if (!sameAsPerson) {
+        if (signal?.aborted) {
+          await this.finishAttempt(row, errorKind(signal.reason));
+          signal.throwIfAborted();
+        }
+        const outcome = await this.deliverToContact(row, contact, notice as EscalationNotice, pastBudget());
+        if (typeof outcome === 'string') report.escalation[outcome] += 1;
+        else firstError ??= outcome.error;
+        // Só o contato receberia, e ele ficou de fora (limite da hora ou aviso velho): o aviso não sai para ninguém.
+        if (
+          (outcome === 'limited' || outcome === 'stale') &&
+          firstError === null &&
+          recipients.length === 0 &&
+          handled.size === 0
+        ) {
+          return this.close(row, 'skipped', `escalation_${outcome}`);
+        }
+      }
+    }
     return this.finishAttempt(row, firstError);
+  }
+
+  /**
+   * O contato de escalonamento deste aviso, lido do cadastro na hora do envio: só nos avisos críticos, com o contato
+   * confirmado e o cliente ativo. Quem aguarda a confirmação ou se descadastrou não recebe nada.
+   */
+  private async escalationContactFor(row: DueNotice): Promise<EscalationRecipient | null> {
+    if (!reachesEscalationContact(row)) return null;
+    const tenant = await this.prisma.forTenant(row.tenantId).tenant.findUnique({
+      where: { id: row.tenantId },
+      select: ESCALATION_CONTACT_SELECT,
+    });
+    if (
+      tenant?.status !== 'active' ||
+      tenant.escalationState !== 'confirmed' ||
+      tenant.escalationEmail === null ||
+      tenant.escalationName === null
+    ) {
+      return null;
+    }
+    return {
+      name: tenant.escalationName,
+      email: tenant.escalationEmail,
+      generation: tenant.escalationGeneration,
+    };
+  }
+
+  /**
+   * O aviso crítico para o contato de escalonamento (D8). Ele não recebe resumo: o aviso com 24 h ou mais na fila fica
+   * de fora (`stale`, as pessoas recebem a retomada), e do 6º e-mail da hora em diante também (`limited`). Cada e-mail
+   * leva um link de descadastro novo (só o hash fica no banco). A decisão fica no aviso, e a nova tentativa não repete o
+   * e-mail para ele. Devolve o que aconteceu ou o erro (o do envio, ou `delivery_timeout` quando o prazo do aviso acabou).
+   */
+  private async deliverToContact(
+    row: DueNotice,
+    contact: EscalationRecipient,
+    notice: EscalationNotice,
+    pastBudget: boolean,
+  ): Promise<ContactOutcome> {
+    const mailer = this.mailer as NoticeMailer;
+    const db = this.prisma.forTenant(row.tenantId);
+    const decidedAt = this.now();
+    if (decidedAt.getTime() - row.createdAt.getTime() >= NOTICE_CATCH_UP_MS) {
+      await this.markContact(row, 'stale', decidedAt);
+      return 'stale';
+    }
+    const hourStart = hourStartOf(decidedAt);
+    const sentThisHour = await db.notification.count({
+      where: {
+        escalationDelivery: 'sent',
+        escalationDeliveredAt: { gte: hourStart, lt: new Date(hourStart.getTime() + HOUR_MS) },
+      },
+    });
+    if (sentThisHour >= ESCALATION_HOURLY_LIMIT) {
+      await this.markContact(row, 'limited', decidedAt);
+      return 'limited';
+    }
+    if (pastBudget) return { error: 'delivery_timeout' };
+    const { unsubscribe } = await mintEscalationTokens(
+      db,
+      row.tenantId,
+      contact.generation,
+      ['unsubscribe'],
+      decidedAt,
+    );
+    try {
+      await mailer.transport.send(
+        escalationNoticeMail(
+          contact.email,
+          contact.name,
+          notice,
+          escalationLink(mailer.webOrigin, ESCALATION_UNSUBSCRIBE_PATH, unsubscribe),
+        ),
+      );
+    } catch (error) {
+      await discardEscalationTokens(db, [unsubscribe]);
+      // Só o tipo: a mensagem do servidor de e-mail pode citar o endereço.
+      return { error: errorKind(error) };
+    }
+    await this.markContact(row, 'sent', this.now());
+    return 'sent';
+  }
+
+  /** O que aconteceu com o contato neste aviso, e quando: a nova tentativa não decide de novo. */
+  private async markContact(row: DueNotice, delivery: EscalationDelivery, at: Date): Promise<void> {
+    await this.prisma.forTenant(row.tenantId).notification.update({
+      where: { id: row.id },
+      data: { escalationDelivery: delivery, escalationDeliveredAt: at },
+      select: { id: true },
+    });
+  }
+
+  /**
+   * O pedido de confirmação ao contato de escalonamento (D8). O endereço vem do cadastro na hora do envio, e o pedido só
+   * sai se ainda é o da geração atual, com o contato aguardando e o cliente ativo (senão, `superseded` ou
+   * `tenant_inactive`). Os links (confirmar, de uso único, e descadastrar) nascem aqui, só com o hash no banco; se o
+   * e-mail não sai, eles saem também. Mesmas tentativas, recuo e `failed` dos avisos.
+   */
+  private async deliverConfirmation(
+    row: DueNotice,
+    mailer: NoticeMailer,
+    signal?: AbortSignal,
+  ): Promise<Outcome> {
+    const db = this.prisma.forTenant(row.tenantId);
+    const tenant = await db.tenant.findUnique({
+      where: { id: row.tenantId },
+      select: ESCALATION_CONTACT_SELECT,
+    });
+    if (tenant?.status !== 'active') return this.close(row, 'skipped', 'tenant_inactive');
+    if (
+      tenant.escalationState !== 'pending' ||
+      tenant.escalationGeneration !== row.escalationGeneration ||
+      tenant.escalationEmail === null ||
+      tenant.escalationName === null
+    ) {
+      return this.close(row, 'skipped', 'superseded');
+    }
+    if (signal?.aborted) {
+      await this.finishAttempt(row, errorKind(signal.reason));
+      signal.throwIfAborted();
+    }
+    const tokens = await mintEscalationTokens(
+      db,
+      row.tenantId,
+      tenant.escalationGeneration,
+      ['confirm', 'unsubscribe'],
+      this.now(),
+    );
+    try {
+      await mailer.transport.send(
+        escalationConfirmationMail(tenant.escalationEmail, tenant.escalationName, {
+          confirmLink: escalationLink(mailer.webOrigin, ESCALATION_CONFIRM_PATH, tokens.confirm),
+          unsubscribeLink: escalationLink(mailer.webOrigin, ESCALATION_UNSUBSCRIBE_PATH, tokens.unsubscribe),
+          validHours: ESCALATION_CONFIRMATION_TTL_HOURS,
+        }),
+      );
+    } catch (error) {
+      await discardEscalationTokens(db, [tokens.confirm, tokens.unsubscribe]);
+      // Só o tipo: a mensagem do servidor de e-mail pode citar o endereço.
+      return this.finishAttempt(row, errorKind(error));
+    }
+    return this.finishAttempt(row, null);
   }
 
   /** O e-mail avulso saiu: a pessoa fica no aviso e conta na hora dela, juntos. */

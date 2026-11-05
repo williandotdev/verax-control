@@ -64,10 +64,11 @@ describe('menu e cabeçalho por papel', () => {
       'Usuários',
       ...shared,
       'Plano e uso',
+      'Escalonamento',
       'Auditoria',
       'Alertas sem dono',
     ],
-    admin_cliente: [...operation, 'Usuários', ...shared, 'Plano e uso', 'Auditoria'],
+    admin_cliente: [...operation, 'Usuários', ...shared, 'Plano e uso', 'Escalonamento', 'Auditoria'],
     analista_cliente: [...operation, ...shared],
     leitura: [...operation, ...shared],
   };

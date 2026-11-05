@@ -1,11 +1,17 @@
 import 'reflect-metadata';
 import { randomInt, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FindingDraft } from '../src/alerts/finding-draft.js';
 import { FindingStore, SyncLease } from '../src/alerts/finding-store.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { TenantScopeViolation } from '../src/common/prisma/tenant-scope.js';
+import {
+  escalationContactUpdate,
+  queueEscalationConfirmation,
+} from '../src/escalation/escalation-contact-store.js';
+import { escalationTokenHash, mintEscalationTokens } from '../src/escalation/escalation-tokens.js';
 import type { UserRole, UserStatus } from '../src/generated/prisma/client.js';
 import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
 import type { MailMessage, MailTransport } from '../src/mail/mail.types.js';
@@ -1316,6 +1322,512 @@ describe('avisos por e-mail (outbox)', () => {
               userId: personA.id,
               hourStart: new Date(hourStart.getTime() + 2 * HOUR),
               noticeIds: [digest.noticeIds[0] as string],
+            },
+          }),
+        ).rejects.toThrow();
+      });
+    });
+  });
+
+  describe('contato de escalonamento (D8): só os críticos, depois da confirmação, com o descadastro em todo e-mail', () => {
+    const HOUR = 3_600_000;
+    const nextHour = () => new Date(hourStartOf(new Date()).getTime() + HOUR + 5 * 60_000);
+    const contactAddress = () => `escalonamento-${randomUUID()}@cliente.example`;
+    const CONFIRM_LINK = /\/escalonamento\/confirmar#token=([A-Za-z0-9_-]{43})/;
+    const UNSUBSCRIBE_LINK = /\/escalonamento\/descadastrar#token=([A-Za-z0-9_-]{43})/;
+    const linkToken = (message: MailMessage | undefined, pattern: RegExp): string => {
+      const found = pattern.exec(message?.text ?? '')?.[1];
+      if (found === undefined) throw new Error('link não encontrado no e-mail');
+      return found;
+    };
+    const publicLink = (path: 'confirm' | 'unsubscribe', token: string) =>
+      request(app.getHttpServer())
+        .post(`/v1/public/escalation-contact/${path}`)
+        .set('Origin', TEST_WEB_ORIGIN)
+        .send({ token });
+    const tenantRow = (tenantId: string) =>
+      prisma.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { escalationState: true, escalationGeneration: true },
+      });
+
+    /** Cliente com o contato gravado direto no banco, já no estado pedido (geração 1). */
+    async function contactTenant(
+      name: string,
+      state: 'pending' | 'confirmed' | 'unsubscribed',
+      email = contactAddress(),
+      contactName = 'Contato de teste',
+    ): Promise<{ tenantId: string; email: string }> {
+      const now = new Date();
+      const { id } = await prisma.tenant.create({
+        data: {
+          name,
+          escalationName: contactName,
+          escalationEmail: email,
+          escalationState: state,
+          escalationGeneration: 1,
+          escalationConfirmedAt: state === 'confirmed' ? now : null,
+          escalationUnsubscribedAt: state === 'unsubscribed' ? now : null,
+        },
+        select: { id: true },
+      });
+      return { tenantId: id, email };
+    }
+
+    it('o pedido de confirmação sai do worker com os dois links (só o hash no banco), e confirmar liga os avisos críticos', async () => {
+      const { tenantId, email } = await contactTenant(
+        'Cliente demo A (confirmação)',
+        'pending',
+        undefined,
+        '<b>Ana</b> & Cia',
+      );
+      const admin = await member(tenantId, 'admin_cliente');
+      await queueEscalationConfirmation(prisma.forTenant(tenantId), 1, new Date());
+      // Aguardando a confirmação: o aviso crítico vai para a pessoa, e nada para o contato.
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect(mailbox.to(email).map((message) => message.subject)).toEqual([
+        'Confirme o contato de escalonamento no Verax Control',
+      ]);
+      const request1 = mailbox.to(email)[0] as MailMessage;
+      expect(request1.html).toContain('<p>Olá, &lt;b&gt;Ana&lt;/b&gt; &amp; Cia.</p>');
+      const confirmToken = linkToken(request1, CONFIRM_LINK);
+      const unsubscribeToken = linkToken(request1, UNSUBSCRIBE_LINK);
+      expect(request1.text).toContain(`${TEST_WEB_ORIGIN}/escalonamento/confirmar#token=${confirmToken}`);
+      const notices = await noticesOf(tenantId);
+      expect(notices.find((notice) => notice.kind === 'escalation_confirmation')).toMatchObject({
+        status: 'sent',
+        escalationGeneration: 1,
+        dedupeKey: 'escalation-confirmation:1',
+        deliveredUserIds: [],
+      });
+      expect(notices.find((notice) => notice.kind === 'critical_finding')).toMatchObject({
+        status: 'sent',
+        deliveredUserIds: [admin.id],
+        escalationDelivery: null,
+      });
+      // No banco, só o SHA-256 de cada link; nenhum endereço na fila.
+      const tokens = await prisma.forTenant(tenantId).escalationContactToken.findMany();
+      expect(
+        tokens
+          .map(({ tokenHash, purpose, generation }) => ({ tokenHash, purpose, generation }))
+          .sort((a, b) => a.purpose.localeCompare(b.purpose)),
+      ).toEqual([
+        { tokenHash: escalationTokenHash(confirmToken), purpose: 'confirm', generation: 1 },
+        { tokenHash: escalationTokenHash(unsubscribeToken), purpose: 'unsubscribe', generation: 1 },
+      ]);
+      expect(JSON.stringify(await noticesOf(tenantId))).not.toContain(email);
+
+      await publicLink('confirm', confirmToken).expect(200, { status: 'confirmed' });
+      expect(await tenantRow(tenantId)).toEqual({ escalationState: 'confirmed', escalationGeneration: 1 });
+      // Uso único.
+      const reused = await publicLink('confirm', confirmToken).expect(400);
+      expect(reused.body).toMatchObject({
+        code: 'ESCALATION_LINK_INVALID',
+        message: 'Link inválido ou vencido',
+      });
+
+      // Confirmado: o próximo aviso crítico chega a ele, com um link de descadastro novo, uma vez só.
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const report = await dispatcher(mailbox, soon()).runOnce();
+      expect(report.escalation.sent).toBeGreaterThanOrEqual(1);
+      const notice = mailbox.to(email)[1] as MailMessage;
+      expect(notice.subject).toBe('Achado de severidade crítica no Verax Control');
+      expect(notice.text).not.toContain('Minha conta');
+      expect(linkToken(notice, UNSUBSCRIBE_LINK)).not.toBe(unsubscribeToken);
+      expect((await noticesOf(tenantId)).at(-1)).toMatchObject({
+        status: 'sent',
+        escalationDelivery: 'sent',
+      });
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(email)).toHaveLength(2);
+    });
+
+    it('só os avisos críticos chegam ao contato: o incidente alto, o volume do plano e a coleta parada, nunca', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (só críticos)', 'confirmed');
+      const admin = await member(tenantId, 'admin_cliente');
+      const sourceIp = ip();
+      const finding = draft(tenantId, {
+        severity: 'high',
+        sourceIp,
+        actorUser: 'arn:aws:iam::111111111111:user/usuario-ficticio',
+        accessKeyId: 'DEMOKEYID0000EXAMPLE',
+        resource: 's3:bucket-ficticio-de-relatorios',
+      });
+      await persist(finding);
+      await persist(
+        draft(tenantId, { ...finding, sourceEventId: `teste-avisos/${randomUUID()}`, severity: 'critical' }),
+      );
+      await persist(draft(tenantId, { severity: 'critical', sourceIp: ip() }));
+      await prisma.forTenant(tenantId).notification.createMany({
+        data: [
+          {
+            tenantId,
+            kind: 'plan_usage',
+            dedupeKey: 'usage:2026-11:100',
+            usageMonth: new Date('2026-11-01T00:00:00.000Z'),
+            usagePercent: 100,
+          },
+          { tenantId, kind: 'aws_ingestion_stalled', dedupeKey: `aws-stalled:${randomUUID()}` },
+        ],
+      });
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      const received = mailbox.to(email);
+      expect(received.map((message) => message.subject).sort()).toEqual([
+        'Incidente de severidade crítica aberto no Verax Control',
+        'Incidente subiu para severidade crítica no Verax Control',
+      ]);
+      for (const message of received) {
+        const all = `${message.subject}\n${message.text}\n${message.html}`;
+        for (const value of [
+          sourceIp,
+          finding.actorUser,
+          finding.accessKeyId,
+          finding.resource,
+          finding.accountId,
+          finding.title,
+          finding.region,
+          finding.eventName,
+          admin.email,
+        ]) {
+          expect(all).not.toContain(value as string);
+        }
+        expect(message.text).toMatch(UNSUBSCRIBE_LINK);
+      }
+      const byKind = (await noticesOf(tenantId)).map(({ kind, severity, escalationDelivery }) => ({
+        kind,
+        severity,
+        escalationDelivery,
+      }));
+      expect(byKind).toEqual(
+        expect.arrayContaining([
+          { kind: 'incident_opened', severity: 'high', escalationDelivery: null },
+          { kind: 'incident_escalated', severity: 'critical', escalationDelivery: 'sent' },
+          { kind: 'incident_opened', severity: 'critical', escalationDelivery: 'sent' },
+          { kind: 'plan_usage', severity: null, escalationDelivery: null },
+          { kind: 'aws_ingestion_stalled', severity: null, escalationDelivery: null },
+        ]),
+      );
+    });
+
+    it('aguardando ou descadastrado não recebe; o descadastro pelo link do aviso é idempotente e vale para o próximo', async () => {
+      const pending = await contactTenant('Cliente demo A (aguardando)', 'pending');
+      const unsubscribed = await contactTenant('Cliente demo A (descadastrado)', 'unsubscribed');
+      const active = await contactTenant('Cliente demo A (descadastro pelo aviso)', 'confirmed');
+      const admin = await member(active.tenantId, 'admin_cliente');
+      for (const { tenantId } of [pending, unsubscribed, active]) {
+        await persist(draft(tenantId, { severity: 'critical' }));
+      }
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(pending.email)).toEqual([]);
+      expect(mailbox.to(unsubscribed.email)).toEqual([]);
+      // Só o contato receberia: sem ele, ninguém.
+      expect((await noticesOf(pending.tenantId))[0]).toMatchObject({
+        status: 'skipped',
+        lastError: 'no_recipients',
+      });
+
+      const token = linkToken(mailbox.to(active.email)[0], UNSUBSCRIBE_LINK);
+      const first = await publicLink('unsubscribe', token).expect(200, { status: 'unsubscribed' });
+      await publicLink('unsubscribe', token).expect(200, { status: 'unsubscribed' });
+      expect(await tenantRow(active.tenantId)).toEqual({
+        escalationState: 'unsubscribed',
+        escalationGeneration: 1,
+      });
+      // A mudança entra uma vez na trilha do cliente, com ator anônimo; o segundo clique não grava nada.
+      const trail = await prisma.auditLog.findMany({
+        where: { tenantId: active.tenantId, action: 'escalation_contact.unsubscribe' },
+      });
+      expect(trail).toEqual([
+        expect.objectContaining({
+          actorType: 'anonymous',
+          outcome: 'success',
+          resourceType: 'tenant',
+          resourceId: active.tenantId,
+          requestId: first.headers['x-request-id'],
+          before: { status: 'confirmed' },
+          after: { status: 'unsubscribed' },
+        }),
+      ]);
+      expect(JSON.stringify(trail)).not.toContain(token);
+
+      await persist(draft(active.tenantId, { severity: 'critical' }));
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(active.email)).toHaveLength(1);
+      expect(mailbox.to(admin.email)).toHaveLength(2);
+    });
+
+    it('o contato não recebe resumo: 5 e-mails por hora, do 6º em diante nada (limited), e o aviso velho fica de fora (stale)', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (limite do contato)', 'confirmed');
+      const admin = await member(tenantId, 'admin_cliente');
+      for (let index = 0; index < 7; index += 1) await persist(draft(tenantId, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      const at = nextHour();
+      const hourStart = hourStartOf(at);
+      const report = await dispatcher(mailbox, at).runOnce();
+      expect(report.escalation.limited).toBeGreaterThanOrEqual(2);
+      expect(mailbox.to(email)).toHaveLength(5);
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      expect((await noticesOf(tenantId)).map((notice) => notice.escalationDelivery)).toEqual([
+        'sent',
+        'sent',
+        'sent',
+        'sent',
+        'sent',
+        'limited',
+        'limited',
+      ]);
+      // A hora fecha: o resumo vai só para a pessoa.
+      await dispatcher(mailbox, new Date(hourStart.getTime() + HOUR)).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(6);
+      expect(mailbox.to(email)).toHaveLength(5);
+      const digests = await prisma.forTenant(tenantId).notificationDigest.findMany();
+      expect(digests.map((digest) => digest.userId)).toEqual([admin.id]);
+
+      // Só o contato, acima do limite: o aviso não sai para ninguém. Com 24 h ou mais na fila, também não.
+      const only = await contactTenant('Cliente demo A (só o contato)', 'confirmed');
+      for (let index = 0; index < 6; index += 1)
+        await persist(draft(only.tenantId, { severity: 'critical' }));
+      await dispatcher(mailbox, at).runOnce();
+      expect(mailbox.to(only.email)).toHaveLength(5);
+      expect((await noticesOf(only.tenantId)).at(-1)).toMatchObject({
+        status: 'skipped',
+        lastError: 'escalation_limited',
+        escalationDelivery: 'limited',
+      });
+      const old = await contactTenant('Cliente demo A (aviso velho)', 'confirmed');
+      await persist(draft(old.tenantId, { severity: 'critical' }));
+      await prisma
+        .forTenant(old.tenantId)
+        .notification.updateMany({ data: { createdAt: new Date(Date.now() - 25 * HOUR) } });
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(old.email)).toEqual([]);
+      expect((await noticesOf(old.tenantId))[0]).toMatchObject({
+        status: 'skipped',
+        lastError: 'escalation_stale',
+        escalationDelivery: 'stale',
+      });
+    });
+
+    it('contato que também é pessoa do cliente que recebe o aviso: um e-mail só', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (contato e pessoa)');
+      const admin = await member(tenantId, 'admin_cliente');
+      await prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          escalationName: 'Contato',
+          escalationEmail: admin.email.toUpperCase(),
+          escalationState: 'confirmed',
+          escalationGeneration: 1,
+          escalationConfirmedAt: new Date(),
+        },
+      });
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect(mailbox.to(admin.email.toUpperCase())).toEqual([]);
+      expect((await noticesOf(tenantId))[0]).toMatchObject({ status: 'sent', escalationDelivery: null });
+    });
+
+    it('falha do envio ao contato: recua, a nova tentativa vai só para ele, e o link do e-mail que falhou sai do banco', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (falha do contato)', 'confirmed');
+      const admin = await member(tenantId, 'admin_cliente');
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      const failingForContact: MailTransport = {
+        send: (message) =>
+          message.to === email ? Promise.reject(new Error(`550 <${email}>`)) : mailbox.send(message),
+      };
+      const start = soon();
+      await dispatcher(failingForContact, start).runOnce();
+      const [retrying] = await noticesOf(tenantId);
+      expect(retrying).toMatchObject({
+        status: 'pending',
+        attempts: 1,
+        lastError: 'Error',
+        deliveredUserIds: [admin.id],
+        escalationDelivery: null,
+      });
+      expect(retrying?.nextAttemptAt.getTime()).toBe(start.getTime() + NOTIFICATION_RETRY_DELAYS_MS[0]!);
+      expect(await prisma.forTenant(tenantId).escalationContactToken.count()).toBe(0);
+
+      await dispatcher(mailbox, new Date(start.getTime() + 61_000)).runOnce();
+      expect(mailbox.to(email)).toHaveLength(1);
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect((await noticesOf(tenantId))[0]).toMatchObject({
+        status: 'sent',
+        attempts: 2,
+        escalationDelivery: 'sent',
+      });
+      expect(await prisma.forTenant(tenantId).escalationContactToken.count()).toBe(1);
+    });
+
+    it('pedido de confirmação: o endereço trocado antes do envio sai como superseded, e sem e-mail no nó fica mail_disabled', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (troca antes do envio)', 'pending');
+      const db = prisma.forTenant(tenantId);
+      await queueEscalationConfirmation(db, 1, new Date(Date.now() - 10 * 60_000));
+      const replacement = contactAddress();
+      const { data } = escalationContactUpdate(
+        { escalationEmail: email, escalationState: 'pending' },
+        { name: 'Contato novo', email: replacement },
+      );
+      const row = await db.tenant.update({
+        where: { id: tenantId },
+        data,
+        select: { escalationGeneration: true },
+      });
+      expect(row.escalationGeneration).toBe(2);
+      await queueEscalationConfirmation(db, 2, new Date());
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(email)).toEqual([]);
+      expect(mailbox.to(replacement).map((message) => message.subject)).toEqual([
+        'Confirme o contato de escalonamento no Verax Control',
+      ]);
+      expect(
+        (await noticesOf(tenantId)).map(({ escalationGeneration, status, lastError }) => ({
+          escalationGeneration,
+          status,
+          lastError,
+        })),
+      ).toEqual([
+        { escalationGeneration: 1, status: 'skipped', lastError: 'superseded' },
+        { escalationGeneration: 2, status: 'sent', lastError: null },
+      ]);
+      // O link da geração anterior não vale; o da atual confirma.
+      const stale = await mintEscalationTokens(db, tenantId, 1, ['confirm'], new Date());
+      await publicLink('confirm', stale.confirm).expect(400);
+      await publicLink('confirm', linkToken(mailbox.to(replacement)[0], CONFIRM_LINK)).expect(200);
+
+      const quiet = await contactTenant('Cliente demo A (pedido sem e-mail)', 'pending');
+      await queueEscalationConfirmation(prisma.forTenant(quiet.tenantId), 1, new Date());
+      await dispatcher(null, soon()).runOnce();
+      expect(await noticesOf(quiet.tenantId)).toEqual([
+        expect.objectContaining({ status: 'skipped', lastError: 'mail_disabled' }),
+      ]);
+      expect(await prisma.forTenant(quiet.tenantId).escalationContactToken.count()).toBe(0);
+    });
+
+    it('nenhum endereço do contato nem link no log do worker, nem com a mensagem do servidor citando o endereço', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (log do contato)', 'confirmed');
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const pending = await contactTenant('Cliente demo A (log da confirmação)', 'pending');
+      await queueEscalationConfirmation(prisma.forTenant(pending.tenantId), 1, new Date());
+      const lines: string[] = [];
+      const capture = (level: string) => (fields: object, message: string) =>
+        lines.push(JSON.stringify({ level, ...fields, message }));
+      const failing: MailTransport = {
+        send: (message) =>
+          Promise.reject(new Error(`550 5.1.1 <${message.to}>: Recipient address rejected ${message.text}`)),
+      };
+      const task = dispatcher(failing, soon());
+      const scheduler = new Scheduler(
+        [
+          {
+            name: NOTIFICATIONS_TASK,
+            intervalMs: 3_600_000,
+            budgetMs: 60_000,
+            run: (signal) => task.runOnce(signal),
+          },
+        ],
+        { info: capture('info'), warn: capture('warn'), error: capture('error') },
+      );
+      scheduler.start();
+      await expect.poll(() => lines.length, { timeout: 20_000 }).toBeGreaterThan(0);
+      await scheduler.stop();
+      const log = lines.join('\n');
+      expect(log).toContain('"escalation"');
+      expect(log).not.toContain(email);
+      expect(log).not.toContain(pending.email);
+      expect(log).not.toContain('@');
+      expect(log).not.toContain('#token=');
+      expect((await noticesOf(tenantId))[0]).toMatchObject({ status: 'pending', lastError: 'Error' });
+    });
+
+    describe('isolamento por cliente (A/B)', () => {
+      it('o contato de A não recebe os avisos de B, o link de B não mexe em A, e o escopo de B não alcança os links de A', async () => {
+        const a = await contactTenant('Cliente demo A (contato A/B)', 'confirmed');
+        const b = await contactTenant('Cliente demo B (contato A/B)', 'confirmed');
+        await persist(draft(b.tenantId, { severity: 'critical' }));
+        const mailbox = new MemoryMailTransport();
+        await dispatcher(mailbox, soon()).runOnce();
+        expect(mailbox.to(a.email)).toEqual([]);
+        expect(mailbox.to(b.email)).toHaveLength(1);
+
+        await publicLink('unsubscribe', linkToken(mailbox.to(b.email)[0], UNSUBSCRIBE_LINK)).expect(200);
+        expect((await tenantRow(b.tenantId)).escalationState).toBe('unsubscribed');
+        expect((await tenantRow(a.tenantId)).escalationState).toBe('confirmed');
+
+        const { confirm } = await mintEscalationTokens(
+          prisma.forTenant(a.tenantId),
+          a.tenantId,
+          1,
+          ['confirm'],
+          new Date(),
+        );
+        const asB = prisma.forTenant(b.tenantId).escalationContactToken;
+        expect(await asB.findMany({ where: { tokenHash: escalationTokenHash(confirm) } })).toEqual([]);
+        expect((await asB.deleteMany({ where: { tokenHash: escalationTokenHash(confirm) } })).count).toBe(0);
+        expect(() =>
+          asB.create({
+            data: {
+              tenantId: a.tenantId,
+              tokenHash: escalationTokenHash(randomUUID()),
+              purpose: 'unsubscribe',
+              generation: 1,
+              expiresAt: new Date(Date.now() + HOUR),
+            },
+          }),
+        ).toThrow(TenantScopeViolation);
+        expect(
+          await prisma.escalationContactToken.count({ where: { tokenHash: escalationTokenHash(confirm) } }),
+        ).toBe(1);
+        // O banco recusa o que o Prisma não descreve: estado sem endereço, geração zero no link, hash fora do formato.
+        await expect(
+          prisma.tenant.create({
+            data: { name: 'Cliente demo A (sem endereço)', escalationState: 'pending' },
+          }),
+        ).rejects.toThrow();
+        await expect(
+          prisma.escalationContactToken.create({
+            data: {
+              tenantId: a.tenantId,
+              tokenHash: escalationTokenHash(randomUUID()),
+              purpose: 'confirm',
+              generation: 0,
+              expiresAt: new Date(Date.now() + HOUR),
+            },
+          }),
+        ).rejects.toThrow();
+        await expect(
+          prisma.escalationContactToken.create({
+            data: {
+              tenantId: a.tenantId,
+              tokenHash: 'Z'.repeat(64),
+              purpose: 'confirm',
+              generation: 1,
+              expiresAt: new Date(Date.now() + HOUR),
+            },
+          }),
+        ).rejects.toThrow();
+        await expect(
+          prisma.forTenant(a.tenantId).notification.create({
+            data: {
+              tenantId: a.tenantId,
+              kind: 'plan_usage',
+              dedupeKey: `usage:2026-10:80:${randomUUID()}`,
+              usageMonth: new Date('2026-10-01T00:00:00.000Z'),
+              usagePercent: 80,
+              escalationDelivery: 'sent',
+              escalationDeliveredAt: new Date(),
             },
           }),
         ).rejects.toThrow();

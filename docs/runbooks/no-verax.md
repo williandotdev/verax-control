@@ -69,6 +69,13 @@ dela. Cada pessoa recebe até 5 e-mails avulsos por hora: do 6º aviso da hora e
 quando a hora fecha (até 10 itens e "e mais N"). Aviso com mais de 24 horas na fila (o worker parado, o e-mail
 falhando) não sai sozinho: vem no resumo de retomada.
 
+O contato de escalonamento do cadastro do cliente (D8) recebe só os avisos críticos, depois de confirmar o endereço
+pelo link do e-mail de confirmação, que o worker manda ao cadastrar ou trocar o endereço (ou quando alguém pede de novo
+pelo painel). Ele não recebe resumo: do 6º e-mail da hora em diante, e nos avisos com mais de 24 horas na fila, ele
+fica de fora. Cada e-mail a ele tem o link para deixar de receber; as páginas dos links são públicas, no painel
+(`/escalonamento/confirmar` e `/escalonamento/descadastrar`), e chamam a API em `/v1/public/escalation-contact/...`,
+com limite por IP.
+
 O plano do nó também fica no `node.conf`: o da Verax é `PLAN=interno`, sem limite. A instalação recusa um `node.conf`
 sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do plano precisa ganhar a linha
 `PLAN=interno` antes do próximo deploy. O bootstrap grava o rótulo do plano no cadastro do cliente do nó.
@@ -337,6 +344,20 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   - Uma falha do servidor volta depois de 1, 5, 15 e 60 min; na quinta, o aviso (ou o resumo) fica `failed` e não sai
     mais. Corrija o SMTP (senha, remetente) como acima: os próximos avisos saem normalmente, e os que ficaram presos
     mais de 24 horas chegam juntos, no resumo de retomada.
+- **O contato de escalonamento não recebe.**
+  - A situação dele aparece no cadastro do cliente (e em Administração → Escalonamento): só o "Confirmado" recebe, e
+    só os avisos críticos. "Aguardando confirmação" mostra o último e-mail de confirmação (na fila, enviado, falhou ou
+    não saiu); "Reenviar confirmação" põe outro na fila (no mínimo 5 minutos depois do anterior) e invalida os links
+    antigos. "Descadastrado" é ele que saiu pelo link: volte só se ele pedir, com "Reenviar confirmação".
+  - Na fila, o pedido de confirmação é o tipo `escalation_confirmation` (`skipped` com `superseded` é o pedido de um
+    endereço que já foi trocado; com `tenant_inactive`, o cliente desativado). Nos avisos críticos, a coluna
+    `escalationDelivery` diz o que houve com o contato (`sent`; `limited`, passou de 5 e-mails na hora; `stale`, o
+    aviso tinha mais de 24 horas; nulo, ele não recebia aquele aviso), sem o endereço:
+    `... -c 'SELECT kind, severity, status, "escalationDelivery", "escalationDeliveredAt" FROM "Notification" WHERE "escalationDelivery" IS NOT NULL ORDER BY "createdAt" DESC LIMIT 20'`.
+  - Quem é contato e também pessoa do cliente que recebe aquele aviso recebe um e-mail só, o de pessoa (com a dica de
+    Minha conta).
+  - O link "inválido ou vencido" é o de confirmação usado, com mais de 72 horas ou de um endereço anterior, ou o de
+    descadastro de um endereço anterior: peça a confirmação de novo. A página não diz qual dos casos, de propósito.
 - **A API não sobe por causa de um segredo.** `systemctl status verax-node` diz qual cofre está vazio. Grave o valor
   e reinicie.
 - **Sem o token do túnel.** Enquanto o cofre não tiver valor, o nó sobe sem o `cloudflared`: banco, API e coleta

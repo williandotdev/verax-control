@@ -870,7 +870,8 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
 _(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
-preferência de cada pessoa e o resumo por hora)_
+preferência de cada pessoa e o resumo por hora. D8: o contato de escalonamento, com a confirmação do endereço e o
+descadastro)_
 
 O nó avisa por e-mail, sem depender de quem está com o painel aberto. O aviso passa por uma fila de saída (_outbox_) no
 Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dentro da transação que grava o achado.
@@ -878,15 +879,17 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
 - **Quando nasce um aviso**, sempre com uma chave de deduplicação única por cliente (o mesmo fato avisa uma vez só,
   por mais que seja relido):
 
-  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe       |
-  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ----------------- |
-  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista¹ |
-  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista¹ |
-  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista¹ |
-  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin        |
-  | `aws_ingestion_stalled` | com conta AWS conectada, os eventos da AWS parados há mais de 2 h (PR-V6)     | `aws-stalled:<começo>`       | só o admin        |
+  | Tipo                      | Quando                                                                        | Chave                               | Quem recebe                   |
+  | ------------------------- | ----------------------------------------------------------------------------- | ----------------------------------- | ----------------------------- |
+  | `incident_opened`         | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>`        | admin e analista¹; o contato² |
+  | `incident_escalated`      | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>`        | admin e analista¹; o contato² |
+  | `critical_finding`        | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`                      | admin e analista¹; o contato² |
+  | `plan_usage`              | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`         | só o admin                    |
+  | `aws_ingestion_stalled`   | com conta AWS conectada, os eventos da AWS parados há mais de 2 h (PR-V6)     | `aws-stalled:<começo>`              | só o admin                    |
+  | `escalation_confirmation` | o contato de escalonamento ganha um endereço novo ou a confirmação é pedida   | `escalation-confirmation:<geração>` | só o contato                  |
 
   ¹ Quem não desligou os avisos de incidente em Minha conta (PR-17', abaixo).
+  ² O contato de escalonamento confirmado, só nos de severidade crítica (abaixo).
 
   Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
   GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
@@ -937,19 +940,64 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     incidente não recebe os que estavam reunidos (`no_items`);
   - a interrupção no meio de um aviso grava a tentativa como antes, e quem já foi para o resumo fica guardado: não é
     reunido de novo.
-- **Contato de escalonamento (D8):** o contato do cadastro do cliente não recebe e-mail automático. O endereço só tem o
-  formato conferido (ninguém confirmou que a caixa é da pessoa), ele não entra no painel para deixar de receber, e a
-  fila e o resumo contam pessoas pelo id de usuário. Fica para um PR próprio (confirmação do endereço, descadastro e o
-  estado de entrega dele).
+- **Contato de escalonamento (D8; `apps/api/src/escalation/`):** o contato do cadastro do cliente (nome, e-mail e
+  telefone) não é usuário: não tem login, MFA nem Minha conta. Por isso ele só recebe e-mail depois de confirmar que a
+  caixa é dele, recebe só os críticos e sai por um link em qualquer e-mail.
+  - **Quem muda:** a equipe da Verax, no cadastro de clientes (`PATCH /v1/tenants/:id`, auditado como `tenant.update`),
+    e quem administra o cliente, na tela Administração → **Escalonamento** (`GET` e `PUT /v1/escalation-contact`,
+    sempre o cliente da sessão, permissões `escalation_contact:read` e `:write`, auditado como
+    `escalation_contact.update` com o contato anterior e o novo). Nos nós de clientes, o cadastro é feito pelo próprio
+    cliente, sem a Verax no meio. Analista e leitura não veem nem mudam.
+  - **Estados** (`Tenant.escalationState`): `pending` (aguardando confirmação), `confirmed` e `unsubscribed`. Endereço
+    novo (sem diferença de maiúsculas) volta a `pending`, sobe a geração (`escalationGeneration`), apaga os links das
+    gerações anteriores e põe o pedido `escalation_confirmation` na fila, na mesma transação; mudar só o nome ou o
+    telefone não mexe em nada disso. Os contatos que já existiam antes deste controle começam em `pending`, sem pedido
+    na fila: quem administra pede a confirmação pelo painel.
+  - **Pedir a confirmação de novo** (`POST /v1/escalation-contact/confirmation` e, para a Verax,
+    `POST /v1/tenants/:id/escalation-contact/confirmation`, auditados como `escalation_contact.resend`): só com o
+    contato aguardando ou descadastrado (o confirmado recebe 409 `ESCALATION_CONTACT_CONFIRMED`; sem contato, 409
+    `ESCALATION_CONTACT_MISSING`). Sobe a geração, e os links anteriores deixam de valer. Entre dois pedidos do mesmo
+    cliente, no mínimo 5 min (`ESCALATION_CONFIRMATION_INTERVAL_MINUTES`): a fila segura o novo até lá e encerra os
+    pendentes das gerações anteriores (`superseded`). Trocas seguidas viram um e-mail só, para o último endereço.
+  - **O e-mail de confirmação** sai pelo worker, como os avisos (mesmas tentativas, recuo e `failed`). O endereço vem
+    do cadastro na hora do envio; o pedido de uma geração que já não é a atual, com o contato fora de `pending` ou com
+    o cliente desativado sai como `skipped` (`superseded` ou `tenant_inactive`). Os dois links (confirmar, de uso único
+    e 72 h; descadastrar, um ano) nascem no envio: 32 bytes aleatórios, e no banco só o SHA-256
+    (`EscalationContactToken`, com o cliente, a finalidade, a geração e a validade). Se o e-mail não sai, os links saem
+    do banco. O texto diz o que ele vai receber e que, sem a confirmação, nada mais chega.
+  - **Os links** levam o valor no fragmento (`<painel>/escalonamento/confirmar#token=...` e `/descadastrar`), que
+    nenhum servidor vê. A página pública do painel o tira da barra de endereço e pede um clique (um verificador de links
+    do e-mail que abre o endereço sozinho não confirma nem descadastra) antes do `POST` em
+    `/v1/public/escalation-contact/confirm` ou `/unsubscribe`, com `{ token }` no corpo. As rotas são públicas, mas só
+    aceitam a origem do painel e JSON, e têm limite por IP (10 em 15 min, somadas as duas, `PublicLinkAttempt`, o mesmo
+    interruptor das rotas de autenticação). Confirmar exige o link de confirmação, dentro da validade, da geração
+    atual, com o contato aguardando; apaga todos os links de confirmação do cliente. Descadastrar exige o link de
+    descadastro da geração atual e é idempotente (o segundo clique responde o mesmo). Qualquer outro caso recebe a
+    mesma recusa (400 `ESCALATION_LINK_INVALID`, "Link inválido ou vencido"), e a resposta nunca diz o cliente nem o
+    endereço. Só a mudança de estado entra na trilha do cliente (ator anônimo, `escalation_contact.confirm` e
+    `.unsubscribe`); a recusa e o segundo clique ficam fora dela, como as recusas anônimas dos guards (a rota é
+    `@SelfManaged` por isso, e o meta-teste de rotas a lista).
+  - **O que ele recebe:** os avisos de severidade crítica (`incident_opened` e `incident_escalated` críticos e
+    `critical_finding`), nunca os altos, o volume do plano nem a coleta parada. Na entrega do aviso, depois das
+    pessoas, com o mesmo prazo, a mesma interrupção e o mesmo recuo, o contato é lido do cadastro: só o `confirmed`, com
+    o cliente ativo. A decisão fica no aviso (`escalationDelivery`, com a hora), e a nova tentativa não repete o e-mail:
+    `sent`; `limited`, do 6º e-mail da hora em diante (ele não recebe resumo, então o que passa disso ele não recebe,
+    e as pessoas continuam com o resumo); ou `stale`, o aviso com 24 h ou mais na fila (as pessoas recebem a retomada).
+    Se só o contato receberia e ficou de fora, o aviso fecha `skipped` (`escalation_limited` ou `escalation_stale`).
+    Quem é contato e também pessoa do cliente que recebe aquele aviso recebe um e-mail só (o de pessoa).
+  - **O e-mail ao contato:** o mesmo título e o mesmo texto fixos do aviso das pessoas, o link do painel (com login) e,
+    no lugar da dica de Minha conta, o link de descadastro, novo a cada e-mail (só o hash fica no banco).
 - **O que o e-mail diz:** assunto fixo por tipo e severidade (sem CR nem LF), um texto fixo e o link do painel
   (`${WEB_ORIGIN}/incidentes/<id>`, `/achados?achado=<id>`, `/cadastros/contas` ou `/cadastros/plano`). Nenhum IP, usuário,
   chave, recurso, conta, título de regra ou região: o e-mail pode ser encaminhado, e os detalhes ficam atrás do login
   com MFA. O nome de quem recebe vai escapado no HTML. Nos avisos de incidente, o fecho diz como deixar de receber
   (Minha conta).
 - **Nada de endereço no log nem na fila:** a fila e o resumo guardam só o id de quem recebeu (ou de quem foi para o
-  resumo); o log do worker leva só as contagens da execução (`folded` e `digests` incluídos).
-- **Isolamento e expurgo:** `Notification`, `NotificationPreference` e `NotificationDigest` entram no escopo do cliente
-  (`TENANT_SCOPED_MODELS`). A chave estrangeira do achado inclui o cliente, um gatilho confere o cliente do incidente,
+  resumo) e, do contato de escalonamento, só a decisão; o log do worker leva só as contagens da execução (`folded`,
+  `digests` e `escalation` incluídos). Os links do contato não vão para o log da API nem para a trilha.
+- **Isolamento e expurgo:** `Notification`, `NotificationPreference`, `NotificationDigest` e `EscalationContactToken`
+  entram no escopo do cliente (`TENANT_SCOPED_MODELS`); a busca do link pelo hash, na rota pública, é a única sem
+  escopo, e tudo o que vem depois vai pelo escopo do cliente do link. A chave estrangeira do achado inclui o cliente, um gatilho confere o cliente do incidente,
   e outro confere que a pessoa da preferência e do resumo é do mesmo cliente (a equipe da Verax, sem cliente, nunca
   passa). Apagar o incidente ou o achado apaga o aviso junto, e o expurgo diário (seção "Expurgo do histórico") apaga
   os avisos resolvidos e as horas de avisos (o resumo resolvido e a hora só de contagem) sem mudança há 90 dias.
@@ -1040,17 +1088,17 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 - **O que sai** (o corte é o prazo mais um dia de folga, para o relatório do período sair completo; o próprio corte
   fica):
 
-  | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                    |
-  | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                               |
-  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                         |
-  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                         |
-  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                |
-  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                  |
-  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo |
-  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas)                                                                                                                                                                                                                      |
-  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                                                          |
-  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                      |
+  | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                       |
+  | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                                  |
+  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                            |
+  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                            |
+  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                   |
+  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                     |
+  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo    |
+  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas). Os links do contato de escalonamento (D8) não passam por aqui: os vencidos saem a cada e-mail novo ao contato, e os de um endereço anterior na troca; o limite por IP dos links, na chamada seguinte, depois de um dia |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                                                             |
+  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                         |
 
 - **Imutabilidade (revisão linha a linha):** a trilha de auditoria e os comentários dos achados continuam só INSERT,
   com uma exceção estreita. UPDATE e TRUNCATE ficam sempre bloqueados pelos triggers. DELETE só passa no trigger com a

@@ -7,6 +7,7 @@ import {
   NOTIFICATION_MAX_ATTEMPTS,
   NOTIFICATION_RETRY_DELAYS_MS,
   noticeOf,
+  reachesEscalationContact,
   receives,
 } from './notification-dispatcher.js';
 
@@ -28,7 +29,27 @@ describe('despachante dos avisos (PR-16)', () => {
       critical_finding: ['admin_cliente', 'analista_cliente'],
       aws_ingestion_stalled: ['admin_cliente'],
       plan_usage: ['admin_cliente'],
+      // O pedido de confirmação vai só ao contato de escalonamento (D8).
+      escalation_confirmation: [],
     });
+  });
+
+  it('o contato de escalonamento (D8) recebe só os avisos críticos de incidente e de achado', () => {
+    const reaches = (kind: Parameters<typeof reachesEscalationContact>[0]['kind'], severity: string | null) =>
+      reachesEscalationContact({ kind, severity });
+    expect(reaches('incident_opened', 'critical')).toBe(true);
+    expect(reaches('incident_escalated', 'critical')).toBe(true);
+    expect(reaches('critical_finding', 'critical')).toBe(true);
+    expect(reaches('incident_opened', 'high')).toBe(false);
+    expect(reaches('incident_escalated', 'high')).toBe(false);
+    expect(reaches('plan_usage', null)).toBe(false);
+    expect(reaches('aws_ingestion_stalled', null)).toBe(false);
+    expect(reaches('escalation_confirmation', null)).toBe(false);
+  });
+
+  it('o pedido de confirmação não tem texto de aviso nem entra em resumo', () => {
+    expect(() => noticeOf({ ...empty, kind: 'escalation_confirmation' }, origin)).toThrow(RangeError);
+    expect(receives('escalation_confirmation', { role: 'admin_cliente', incidentEmails: true })).toBe(false);
   });
 
   it('o link de cada tipo no painel, a partir da origem (com ou sem a barra no fim)', () => {
