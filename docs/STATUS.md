@@ -4572,3 +4572,16 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
 - **Reproduzido** num manager avulso (`test-api-users.sh`, seção nova 5, num contêiner Linux com usuário comum): o script chamado logo depois de um `docker restart`, com a porta fechada, dá exatamente o `ConnectionRefusedError` do CI com o script de antes; com a correção, espera (17 s aqui) e segue. A senha errada do `wazuh-wui` (401) e uma CA que não confere param na hora (menos de 10 s), e com a CA de volta tudo segue como antes.
 - **Testes:** `test-api-users.sh` (47 verificações, 5 novas; as 4 da seção nova falham com o script de antes); shellcheck v0.9.0 (`-x -S style infra/wazuh/scripts/*.sh`, como o `iac.yml`) limpo; `prettier --check` limpo. O `ci-test.sh` inteiro roda no CI.
 - **Riscos:** com a API fora do ar de verdade, o `wazuh-up` agora espera até 3 min antes de parar com o motivo (antes parava na hora).
+
+## Decisão do responsável: a entrada do `cp-worker` aberta, só com IAM ⚠️ altera `infra/`
+
+- **Pedido:** decisão de 04/11/2026 ("Entrada aberta, só com IAM"), confirmada em 05/11/2026: o `cp-worker` aceita a
+  URL `run.app` (`worker_ingress = "INGRESS_TRAFFIC_ALL"`, agora o padrão), para o `cp-public` chamar a revelação da
+  senha (CP-05) e o console do responsável chamar as operações dele (CP-07 e CP-11). A barreira é o IAM: só quem tem
+  `run.invoker` no serviço o chama (cp-invoker, cp-public, owner_principals e, com o console, o cp-admin), nunca
+  `allUsers` nem `allAuthenticatedUsers`, e o app confere `aud`, prazo e o e-mail por rota.
+- **Arquivos:** `infra/gcp/envs/control-plane/{variables.tf,run.tf,terraform.tfvars.example}`,
+  `tests/identidades.tftest.hcl` (o padrão agora é `INGRESS_TRAFFIC_ALL`; a asserção de nenhum acesso anônimo continua),
+  `infra/gcp/GUIA.md` (a decisão registrada e as operações do responsável pelo console).
+- **Testes:** `terraform fmt`, `validate` e `terraform test` do `envs/control-plane` (30 casos) passando.
+- **Aplicação:** o `envs/control-plane` ainda não foi aplicado; vale no primeiro `apply`.
