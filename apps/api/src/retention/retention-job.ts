@@ -228,6 +228,52 @@ function notificationsOf(db: Prisma.TransactionClient): NotificationDelegate | u
   return (db as unknown as { notification?: NotificationDelegate }).notification;
 }
 
+/*
+ * Travas de linha do expurgo de achados e incidentes. A triagem pela API (status do achado, comentário, status e
+ * responsável do incidente) não toma o lock dos coletores; sem estas travas, uma triagem confirmada entre a conferência
+ * e o DELETE seria apagada junto. Por isso cada lote, na própria transação:
+ * 1. trava com `SELECT ... FOR UPDATE` as linhas que vai apagar (os incidentes e os achados deles, ou os achados soltos),
+ *    só pelo ID e pelo cliente. Uma triagem em curso nessas linhas faz o lote esperar o fim dela; uma que chega depois
+ *    espera o lote. Um comentário novo também espera: a chave estrangeira dele trava o achado (`FOR KEY SHARE`), o que
+ *    conflita com o `FOR UPDATE`;
+ * 2. só então refaz a conferência completa, numa consulta nova. Em READ COMMITTED cada comando tem o próprio retrato,
+ *    então ela vê toda triagem e todo comentário confirmados antes da trava, e a linha que deixou de valer fica.
+ * Conferir de novo só no DELETE não bastaria: o Postgres reavalia, na linha alterada, só as condições sobre a própria
+ * tabela, e não as que dependem de outras (os comentários, os achados do incidente); e no incidente o DELETE vem depois
+ * dos achados dele, que já teriam saído.
+ *
+ * A ordem é sempre incidente e depois achado. A API trava uma linha só por transação (um achado ou um incidente), então
+ * não há ciclo de espera com ela; os coletores entram pelo lock do cliente, que o expurgo toma antes.
+ */
+async function lockIncidentRows(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  ids: readonly string[],
+): Promise<void> {
+  await tx.$executeRaw`
+    SELECT 1 FROM "Incident"
+    WHERE "id" = ANY(${[...ids]}::uuid[]) AND "tenantId" = ${tenantId}::uuid
+    ORDER BY "id" FOR UPDATE`;
+}
+
+async function lockFindingRows(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  rows: { ids: readonly string[] } | { incidentIds: readonly string[] },
+): Promise<void> {
+  if ('ids' in rows) {
+    await tx.$executeRaw`
+      SELECT 1 FROM "Finding"
+      WHERE "id" = ANY(${[...rows.ids]}::uuid[]) AND "tenantId" = ${tenantId}::uuid
+      ORDER BY "id" FOR UPDATE`;
+  } else {
+    await tx.$executeRaw`
+      SELECT 1 FROM "Finding"
+      WHERE "incidentId" = ANY(${[...rows.incidentIds]}::uuid[]) AND "tenantId" = ${tenantId}::uuid
+      ORDER BY "id" FOR UPDATE`;
+  }
+}
+
 /** Apaga os comentários dos achados pela função controlada do banco (a aplicação não tem DELETE na tabela). */
 async function purgeComments(tx: Prisma.TransactionClient, findingIds: readonly string[]): Promise<number> {
   let deleted = 0;
@@ -443,20 +489,22 @@ export class RetentionJob {
   /**
    * Laço comum de lotes: busca as chaves de um lote (fora de transação), confere o tempo e apaga. Termina quando a
    * busca volta vazia, quando o tempo acaba ou quando um lote não apaga nada (as linhas buscadas deixaram de valer).
+   * `record` soma o lote assim que ele é confirmado: se a execução parar depois (parada do worker, erro num lote
+   * seguinte), a trilha da falha conta o que já saiu.
    */
   private async inBatches<K>(
     run: RunBudget,
     fetch: () => Promise<K[]>,
     remove: (keys: K[]) => Promise<number>,
-  ): Promise<number> {
-    let total = 0;
+    record: (deleted: number) => void,
+  ): Promise<void> {
     for (;;) {
       const keys = await fetch();
-      if (keys.length === 0 || !run.canStartBatch()) return total;
+      if (keys.length === 0 || !run.canStartBatch()) return;
       const deleted = await remove(keys);
-      total += deleted;
+      record(deleted);
       await run.afterBatch();
-      if (deleted === 0) return total;
+      if (deleted === 0) return;
     }
   }
 
@@ -504,8 +552,12 @@ export class RetentionJob {
       async (tx) => {
         // O lock dos coletores: nenhum achado novo entra num destes incidentes enquanto o lote sai.
         await lockTenantFindings(tx, tenantId);
+        // As linhas do lote, travadas antes da conferência final (ver `lockRows`): primeiro os incidentes, depois os
+        // achados deles, sempre nesta ordem.
+        await lockIncidentRows(tx, tenantId, ids);
+        await lockFindingRows(tx, tenantId, { incidentIds: ids });
         const db = scopeToTenant(tx, tenantId);
-        // De novo, sob o lock: o incidente pode ter ganhado achado ou mudado depois da busca.
+        // De novo, com as linhas travadas: a consulta vê toda triagem, mudança ou comentário já confirmado.
         const incidents = await db.incident.findMany({
           where: { id: { in: [...ids] }, ...incidentExpired(cutoff) },
           select: { id: true, findings: { select: { id: true } } },
@@ -562,7 +614,7 @@ export class RetentionJob {
     run: RunBudget,
   ): Promise<void> {
     const db = this.prisma.forTenant(tenantId);
-    counts.findings += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (
@@ -577,8 +629,9 @@ export class RetentionJob {
         const deleted = await this.prisma.$transaction(
           async (tx) => {
             await lockTenantFindings(tx, tenantId);
+            await lockFindingRows(tx, tenantId, { ids });
             const scoped = scopeToTenant(tx, tenantId);
-            // De novo, sob o lock: o achado pode ter mudado ou ganhado comentário depois da busca.
+            // De novo, com as linhas travadas: a consulta vê toda triagem ou comentário já confirmado.
             const doomed = (
               await scoped.finding.findMany({
                 where: { id: { in: ids }, ...looseFindingExpired(cutoff) },
@@ -594,6 +647,9 @@ export class RetentionJob {
         );
         counts.comments += deleted.comments;
         return deleted.findings;
+      },
+      (deleted) => {
+        counts.findings += deleted;
       },
     );
   }
@@ -612,7 +668,7 @@ export class RetentionJob {
     );
     if (keep.length === 0) return;
     const expired: Prisma.PostureScanWhereInput = { scannedAt: { lt: cutoff }, NOT: { OR: keep } };
-    counts.postureFailures += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (
@@ -624,8 +680,11 @@ export class RetentionJob {
         ).map((row) => row.id),
       async (ids) =>
         (await db.postureFailure.deleteMany({ where: { id: { in: ids }, scan: expired } })).count,
+      (deleted) => {
+        counts.postureFailures += deleted;
+      },
     );
-    counts.postureScans += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (
@@ -637,6 +696,9 @@ export class RetentionJob {
           })
         ).map((row) => row.id),
       async (ids) => (await db.postureScan.deleteMany({ where: { id: { in: ids }, ...expired } })).count,
+      (deleted) => {
+        counts.postureScans += deleted;
+      },
     );
   }
 
@@ -654,7 +716,7 @@ export class RetentionJob {
     );
     if (keep.length === 0) return;
     const expired: Prisma.InventorySnapshotWhereInput = { collectedAt: { lt: cutoff }, NOT: { OR: keep } };
-    counts.inventorySnapshots += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (
@@ -667,6 +729,9 @@ export class RetentionJob {
         ).map((row) => row.id),
       async (ids) =>
         (await db.inventorySnapshot.deleteMany({ where: { id: { in: ids }, ...expired } })).count,
+      (deleted) => {
+        counts.inventorySnapshots += deleted;
+      },
     );
   }
 
@@ -686,7 +751,7 @@ export class RetentionJob {
       status: { in: ['sent', 'failed', 'skipped'] },
       updatedAt: { lt: cutoff },
     };
-    counts.notifications += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (
@@ -698,13 +763,16 @@ export class RetentionJob {
           })
         ).map((row) => row.id),
       async (ids) => (await notifications.deleteMany({ where: { ...where, id: { in: ids } } })).count,
+      (deleted) => {
+        counts.notifications += deleted;
+      },
     );
   }
 
   /** 4. Fila sem dono (dado de sistema, só a Verax vê). */
   private async purgeUnowned(cutoff: Date, system: SystemPurgeCounts, run: RunBudget): Promise<void> {
     const where: Prisma.UnownedAlertWhereInput = { createdAt: { lt: cutoff } };
-    system.unownedAlerts += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (
@@ -717,6 +785,9 @@ export class RetentionJob {
         ).map((row) => row.id),
       async (ids) =>
         (await this.prisma.unownedAlert.deleteMany({ where: { id: { in: ids }, ...where } })).count,
+      (deleted) => {
+        system.unownedAlerts += deleted;
+      },
     );
   }
 
@@ -729,15 +800,18 @@ export class RetentionJob {
     const take = this.batch;
 
     const sessions: Prisma.SessionWhereInput = { expiresAt: { lt: cutoff } };
-    system.sessions += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (await db.session.findMany({ where: sessions, select: { id: true }, take })).map((row) => row.id),
       async (ids) => (await db.session.deleteMany({ where: { id: { in: ids }, ...sessions } })).count,
+      (deleted) => {
+        system.sessions += deleted;
+      },
     );
 
     const verifications: Prisma.VerificationWhereInput = { expiresAt: { lt: cutoff } };
-    system.verifications += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (await db.verification.findMany({ where: verifications, select: { id: true }, take })).map(
@@ -745,6 +819,9 @@ export class RetentionJob {
         ),
       async (ids) =>
         (await db.verification.deleteMany({ where: { id: { in: ids }, ...verifications } })).count,
+      (deleted) => {
+        system.verifications += deleted;
+      },
     );
 
     // A tentativa conta por 15 minutos e o bloqueio dura 15: passado um dia de ambos, a linha não decide mais nada.
@@ -752,7 +829,7 @@ export class RetentionJob {
       firstFailureAt: { lt: cutoff },
       OR: [{ lockedUntil: null }, { lockedUntil: { lt: cutoff } }],
     };
-    system.loginAttempts += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (await db.loginAttempt.findMany({ where: attempts, select: { email: true }, take })).map(
@@ -760,10 +837,13 @@ export class RetentionJob {
         ),
       async (emails) =>
         (await db.loginAttempt.deleteMany({ where: { email: { in: emails }, ...attempts } })).count,
+      (deleted) => {
+        system.loginAttempts += deleted;
+      },
     );
 
     const codes: Prisma.UsedTotpCodeWhereInput = { usedAt: { lt: cutoff } };
-    system.usedTotpCodes += await this.inBatches(
+    await this.inBatches(
       run,
       () => db.usedTotpCode.findMany({ where: codes, select: { userId: true, code: true }, take }),
       async (keys) =>
@@ -772,15 +852,21 @@ export class RetentionJob {
             where: { AND: [codes, { OR: keys.map(({ userId, code }) => ({ userId, code })) }] },
           })
         ).count,
+      (deleted) => {
+        system.usedTotpCodes += deleted;
+      },
     );
 
     // O limite por IP guarda a última requisição em milissegundos (Better Auth).
     const limits: Prisma.RateLimitWhereInput = { lastRequest: { lt: BigInt(cutoff.getTime()) } };
-    system.rateLimits += await this.inBatches(
+    await this.inBatches(
       run,
       async () =>
         (await db.rateLimit.findMany({ where: limits, select: { id: true }, take })).map((row) => row.id),
       async (ids) => (await db.rateLimit.deleteMany({ where: { id: { in: ids }, ...limits } })).count,
+      (deleted) => {
+        system.rateLimits += deleted;
+      },
     );
   }
 

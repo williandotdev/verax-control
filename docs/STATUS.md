@@ -3760,7 +3760,8 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - o corte do histórico é o prazo do plano mais um dia de folga (o relatório do período sai completo, e a diferença
     entre o relógio do worker e o do banco nunca bate no piso); o próprio corte fica;
   - a remoção de achados e incidentes toma o mesmo lock por cliente dos coletores (`lockTenantFindings`, extraído de
-    `FindingStore.persist`) e confere de novo, sob o lock, se cada linha ainda vale;
+    `FindingStore.persist`), trava as linhas do lote com `SELECT ... FOR UPDATE` (incidentes e depois os achados deles)
+    e só então confere de novo, numa consulta nova, se cada linha ainda vale (ver a correção depois da revisão, abaixo);
   - um incidente cujo achado é o original de uma recorrência que fica (em outro incidente ou solta) espera ela sair;
   - **carência:** quando o plano diminui o prazo, o anterior continua por 30 dias, contados da primeira execução que viu
     a redução; aumentar vale na hora e cancela a redução;
@@ -3851,3 +3852,24 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
     tudo, como antes;
   - a pendência 6 do `PLANO.md` (prazo de retenção) foi decidida na prática pela tabela de planos (90 e 365 dias); pela
     regra 9, o `PLANO.md` não foi editado, e o registro da decisão fica com o responsável.
+
+  Depois da revisão do PR #80 (CI e Codex, 3 correções):
+  - **Triagem pela API no meio do lote (Codex):** a triagem do achado, o comentário e a mudança do incidente não tomam o
+    lock dos coletores, então uma escrita confirmada entre a conferência e o DELETE era apagada junto. Agora cada lote
+    trava as próprias linhas com `SELECT ... FOR UPDATE` (só pelo ID e pelo cliente) e refaz a conferência completa numa
+    consulta nova: em READ COMMITTED, ela vê tudo o que foi confirmado antes da trava, e a escrita que chega depois
+    espera o lote (o comentário também, porque a chave estrangeira dele trava o achado com `FOR KEY SHARE`). Conferir
+    só no DELETE não bastaria: o Postgres reavalia, na linha alterada, só as condições sobre a própria tabela, não as
+    que dependem de comentários ou dos achados do incidente, e o incidente sai depois dos achados dele. A API trava uma
+    linha só por transação, e o expurgo trava sempre incidente antes de achado, então não há ciclo de espera; o caminho
+    da API não ganhou nenhuma trava nova.
+  - **Contagem do lote confirmado (Codex):** as fases somavam as contagens só no fim; uma parada do worker ou um erro
+    depois de lotes já confirmados deixava a trilha da falha com zero. Agora toda fase soma depois de cada lote
+    confirmado.
+  - **CI:** o `tenants.test.ts` procurava o cliente dele só na primeira página de 100 (por nome), e os clientes dos
+    testes novos passaram desse número. A versão que percorre todas as páginas é a mesma do PR #78 (Cloudflare), copiada
+    sem mudança, para os dois ramos se juntarem sem conflito.
+  - **Testes novos (5):** com uma escrita da API aberta em outra conexão, o lote para na trava e a escrita é confirmada;
+    nada sai, nos quatro casos (triagem de achado solto, comentário em achado solto, triagem do incidente, triagem de um
+    achado do incidente); e a parada do worker logo depois do primeiro lote confirmado deixa `deleted.findings = 1` na
+    trilha da falha. Mutação conferida: sem as travas e sem a soma por lote, os cinco falham.

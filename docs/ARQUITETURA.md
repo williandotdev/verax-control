@@ -625,6 +625,10 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   concessão do banco (uma réplica por vez), em lotes de 500 linhas por transação, com pausa entre eles e no máximo
   10 minutos por execução. O que sobrar fica para o dia seguinte. A parada do worker interrompe entre dois lotes, e o
   dia roda de novo na próxima partida.
+- **Triagem ao mesmo tempo:** cada lote de achados e incidentes toma o lock por cliente dos coletores e trava com
+  `SELECT ... FOR UPDATE` as linhas que vai apagar (incidentes e depois os achados deles), e só então confere de novo,
+  numa consulta nova. Uma triagem, mudança de incidente ou comentário em curso faz o lote esperar e é vista na
+  conferência; uma que chega depois espera o lote. Assim nada que a API confirmou sai junto.
 - **O que sai** (o corte é o prazo mais um dia de folga, para o relatório do período sair completo; o próprio corte
   fica):
 

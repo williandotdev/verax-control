@@ -1,7 +1,8 @@
 import 'reflect-metadata';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import pg from 'pg';
+import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { SyncLease } from '../src/alerts/finding-store.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { Prisma } from '../src/generated/prisma/client.js';
@@ -702,6 +703,148 @@ describe('expurgo diário do histórico (PR-19)', () => {
       expect(state).toMatchObject({ lastSuccessAt: null, lastError: 'AbortError', leaseOwner: null });
       const [record] = await purgeTrail(tenantId);
       expect(record).toMatchObject({ outcome: 'failure', after: { complete: false, error: 'AbortError' } });
+    });
+  });
+
+  describe('triagem pela API ao mesmo tempo que o lote (concorrência)', () => {
+    /**
+     * Uma escrita da API numa transação aberta em outra conexão, como a do `FindingsService` ou do `IncidentsService`:
+     * ela segura a linha até `commit`.
+     */
+    async function openWrite(
+      sql: string,
+      params: unknown[],
+    ): Promise<{ pid: number; commit(): Promise<void> }> {
+      const client = new pg.Client({ connectionString: inject('testDatabaseUrl') });
+      await client.connect();
+      const { pid } = only((await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows);
+      await client.query('BEGIN');
+      await client.query(sql, params);
+      return {
+        pid,
+        commit: async () => {
+          try {
+            await client.query('COMMIT');
+          } finally {
+            await client.end();
+          }
+        },
+      };
+    }
+
+    /** Espera o expurgo ficar parado na linha que a escrita segura (até 15 s). */
+    async function waitUntilBlockedBy(pid: number): Promise<void> {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const { blocked } = only(
+          await prisma.$queryRaw<{ blocked: number }[]>`
+            SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))`,
+        );
+        if (blocked > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('o expurgo não chegou a esperar a escrita da API');
+    }
+
+    /**
+     * O lote busca a linha antiga, a triagem chega com a transação aberta, o lote para na trava da linha, a triagem é
+     * confirmada e só então o lote confere de novo: nada do que a triagem tocou sai.
+     */
+    it.each([
+      [
+        'triagem de um achado solto',
+        async (tenantId: string) => {
+          const finding = await insertFinding(tenantId, daysBefore(today(), 200));
+          return {
+            findings: [finding],
+            incident: null,
+            sql: `UPDATE "Finding" SET status = 'resolved', "updatedAt" = now() WHERE id = $1`,
+            params: [finding],
+          };
+        },
+      ],
+      [
+        'comentário num achado solto',
+        async (tenantId: string, authorId: string) => {
+          const finding = await insertFinding(tenantId, daysBefore(today(), 200));
+          return {
+            findings: [finding],
+            incident: null,
+            sql: `INSERT INTO "FindingComment" (id, "tenantId", "findingId", "authorId", body)
+                  VALUES (gen_random_uuid(), $1, $2, $3, 'decisão tomada agora')`,
+            params: [tenantId, finding, authorId],
+          };
+        },
+      ],
+      [
+        'triagem do incidente',
+        async (tenantId: string) => {
+          const incident = await insertIncident(tenantId, [
+            daysBefore(today(), 200),
+            daysBefore(today(), 150),
+          ]);
+          return {
+            findings: incident.findings,
+            incident: incident.id,
+            sql: `UPDATE "Incident" SET status = 'investigating', "updatedAt" = now() WHERE id = $1`,
+            params: [incident.id],
+          };
+        },
+      ],
+      [
+        'triagem de um achado do incidente',
+        async (tenantId: string) => {
+          const incident = await insertIncident(tenantId, [
+            daysBefore(today(), 200),
+            daysBefore(today(), 150),
+          ]);
+          return {
+            findings: incident.findings,
+            incident: incident.id,
+            sql: `UPDATE "Finding" SET status = 'legitimate', "updatedAt" = now() WHERE id = $1`,
+            params: [incident.findings[1]],
+          };
+        },
+      ],
+    ])('escrita da API confirmada no meio do lote (%s): nada do que ela tocou sai', async (_name, setup) => {
+      const { tenantId, authorId } = await customer('corrida');
+      const { findings, incident, sql, params } = await setup(tenantId, authorId);
+      const write = await openWrite(sql, params);
+
+      const running = job([tenantId]).maybeRun(today());
+      await waitUntilBlockedBy(write.pid);
+      await write.commit();
+
+      expect(await running).toMatchObject({ status: 'done', deleted: { incidents: 0, findings: 0 } });
+      expect((await findingsLeft(findings)).sort()).toEqual([...findings].sort());
+      if (incident !== null) expect(await incidentExists(incident)).toBe(true);
+    });
+
+    it('a trilha da execução interrompida conta o lote que já tinha sido confirmado', async () => {
+      const { tenantId } = await customer('lote confirmado');
+      const now = today();
+      const ids: string[] = [];
+      for (let index = 0; index < 3; index += 1)
+        ids.push(await insertFinding(tenantId, daysBefore(now, 200)));
+      const stop = new AbortController();
+      let reads = 0;
+      // A segunda leitura do relógio é a do primeiro lote: a parada chega com ele em curso, e a execução para logo
+      // depois que ele é confirmado.
+      const clock = () => {
+        reads += 1;
+        if (reads === 2) stop.abort(new DOMException('o worker está parando', 'AbortError'));
+        return reads;
+      };
+
+      await expect(
+        job([tenantId], { batch: 1, clock, maxRunMs: 1000 }).maybeRun(now, stop.signal),
+      ).rejects.toThrow(/parando/);
+      expect(await findingsLeft(ids)).toHaveLength(2);
+      const [record] = await purgeTrail(tenantId);
+      expect(record).toMatchObject({
+        outcome: 'failure',
+        after: { complete: false, error: 'AbortError', deleted: { findings: 1 } },
+      });
     });
   });
 
