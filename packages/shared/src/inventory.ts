@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { awsAccountIdSchema, cloudAccountRefSchema } from './cloud-accounts.js';
+import { awsAccountIdSchema, cloudAccountRefSchema, isAwsRegion } from './cloud-accounts.js';
 import { withPagination } from './pagination.js';
 
 /**
@@ -119,23 +119,82 @@ export const assetListQuerySchema = withPagination({
 });
 export type AssetListQuery = z.infer<typeof assetListQuerySchema>;
 
+/** A conta root de uma conta, com o risco: gravada no retrato e devolvida na visão geral. */
+export const inventoryRootSchema = z.strictObject({
+  mfaEnabled: z.boolean(),
+  accessKeysPresent: z.boolean(),
+  risk: z.enum(ASSET_RISKS),
+  reasons: z.array(z.enum(RISK_REASONS)).max(RISK_REASONS.length),
+});
+export type InventoryRoot = z.infer<typeof inventoryRootSchema>;
+
+/**
+ * As partes da coleta do inventário (fase 2, PR-14'), cada uma lida (ou recusada) por inteiro: a conta root, o IAM
+ * (usuários e chaves), o S3 e, em cada região monitorada, as instâncias do EC2 e os security groups.
+ */
+export const INVENTORY_SECTIONS = ['root', 'iam', 's3', 'ec2', 'sg'] as const;
+export type InventorySection = (typeof INVENTORY_SECTIONS)[number];
+
+/** O código de uma parte em que itens vieram fora do formato do contrato e ficaram de fora do retrato. */
+export const INVENTORY_INVALID_ITEMS = 'invalid_items';
+
+/** Até onde vai a lista de partes com erro de um retrato: 3 globais e 2 por região (até 40), com folga. */
+export const MAX_INVENTORY_ERRORS = 100;
+
+/** O código do erro de uma parte: o nome do erro da AWS (`AccessDenied`, `UnauthorizedOperation`), sem mensagem. */
+export function isInventoryErrorCode(value: string): boolean {
+  return /^[A-Za-z0-9._]{1,64}$/.test(value);
+}
+
+/**
+ * Uma parte que não entrou inteira no retrato: recusada pela AWS (permissão, SCP, região desligada) ou com itens fora
+ * do formato (`invalid_items`). A coleta continua nas outras partes, e o retrato fica marcado como parcial.
+ */
+export const inventorySectionErrorSchema = z.strictObject({
+  section: z.enum(INVENTORY_SECTIONS),
+  /** A região das partes regionais (`ec2`, `sg`); null nas globais e num item sem região válida. */
+  region: z.string().max(32).refine(isAwsRegion, { error: 'região AWS inválida' }).nullable(),
+  code: z.string().refine(isInventoryErrorCode, { error: 'código fora do formato' }),
+});
+export type InventorySectionError = z.infer<typeof inventorySectionErrorSchema>;
+
+/** O que vai para `InventorySnapshot.errors`: `parte:código` ou, com região, `parte:região:código`. */
+export function inventoryErrorValue(error: InventorySectionError): string {
+  return error.region === null
+    ? `${error.section}:${error.code}`
+    : `${error.section}:${error.region}:${error.code}`;
+}
+
+/** A parte, a região e o código de um valor de `InventorySnapshot.errors`; null para um valor fora do formato. */
+export function parseInventoryError(value: string): InventorySectionError | null {
+  if (value.length > 128) return null;
+  const parts = value.split(':');
+  const candidate =
+    parts.length === 2
+      ? { section: parts[0], region: null, code: parts[1] }
+      : parts.length === 3
+        ? { section: parts[0], region: parts[1], code: parts[2] }
+        : null;
+  const parsed = inventorySectionErrorSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
+}
+
 const kindCount = z.strictObject({ total: z.number().int().min(0), atRisk: z.number().int().min(0) });
 
-/** Visão geral: a conta root de cada conta e quantos itens de cada tipo há, e quantos com risco. */
+/**
+ * Visão geral: a conta root de cada conta e quantos itens de cada tipo há, e quantos com risco. Cada conta traz o
+ * horário do retrato mais recente e se ele é parcial: as partes que não entraram (`errors`) e se alguma passou do teto
+ * de itens por tipo (`truncated`). Sem retrato, `collectedAt` e `root` vêm nulos, sem erro.
+ */
 export const inventorySummarySchema = z.strictObject({
   accounts: z
     .array(
       z.strictObject({
         accountId: awsAccountIdSchema,
         collectedAt: z.iso.datetime().nullable(),
-        root: z
-          .strictObject({
-            mfaEnabled: z.boolean(),
-            accessKeysPresent: z.boolean(),
-            risk: z.enum(ASSET_RISKS),
-            reasons: z.array(z.enum(RISK_REASONS)),
-          })
-          .nullable(),
+        root: inventoryRootSchema.nullable(),
+        errors: z.array(inventorySectionErrorSchema).max(MAX_INVENTORY_ERRORS),
+        truncated: z.boolean(),
       }),
     )
     .max(200),

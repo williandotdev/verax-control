@@ -196,7 +196,8 @@ export class NotificationDispatcher {
       for (const row of due) {
         signal?.throwIfAborted();
         report[await this.deliver(row, signal)] += 1;
-        await this.lease.renew();
+        // A concessão venceu e outra réplica a tomou: os avisos que faltam são dela (sem isso, sairiam duas vezes).
+        if (!(await this.lease.renew())) break;
       }
       await this.prisma.syncState.update({
         where: { name: NOTIFICATIONS_TASK },

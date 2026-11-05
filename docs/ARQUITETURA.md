@@ -69,8 +69,9 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
   e retoma dele depois de uma parada. As leituras registradas no CloudTrail não são descartadas, porque alimentam as
   detecções de reconhecimento; as da própria Verax, vindas do IP do nó, recebem uma regra de nível 0.
 
-- **Configuração da AWS (Ativos e Postura):** o worker lê pelo mesmo papel, só pelas ações de leitura da política,
-  com cerca de 18 checagens de postura nativas. Sem Prowler.
+- **Configuração da AWS (Ativos e Postura):** o worker lê pelo mesmo papel, só pelas ações de leitura da política:
+  o inventário de Ativos uma vez por dia por conta (feito no PR-14', seção "Ativos e Postura da AWS") e cerca de 18
+  checagens de postura nativas (PR-15'). Sem Prowler.
 - **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O cliente cria o sink com o
   comando pronto de Contas cloud e cola no painel a identidade dele; o Terraform do nó (`customer_projects`) deixa só
   essa identidade publicar no tópico do projeto, sem nada no nível do projeto do nó (que isso basta é o que o teste
@@ -466,6 +467,52 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 | Ruído no CloudTrail e no medidor (cerca de 1.700 entradas por dia por conta, estimativa)                                                 | Medir no teste prático; se pesar, intervalo de 10 min ou descontar do medidor                                                                                                                                                                                                                       |
 | Bucket de organização legível inteiro                                                                                                    | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente                                                                                                                                                                                                                         |
 | Na saída do cliente, o papel segue na conta dele                                                                                         | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                     |
+
+## Ativos e Postura da AWS
+
+_(fase 2: o inventário de Ativos está feito no código (PR-14'); a postura nativa, com cerca de 18 checagens, é o
+PR-15', na mesma coleta)_
+
+As duas telas só cobrem contas AWS: a postura filtra `provider: 'aws'` (a de GCP e Cloudflare não existe), e o cliente
+sem conta AWS vê "em breve" em Postura e em Ativos.
+
+**Inventário (tarefa `aws-inventory` do worker, `apps/api/src/inventory/`):**
+
+- **Quem e quando:** as contas AWS ativas já verificadas ao menos uma vez (`ingestFrom`), conectadas ou com erro só de
+  bucket (ou `aws_token_stale`, que é do host). Nunca as em "aguardando", nem as com erro na entrada do papel, que
+  esperam a conferência da conexão voltar a conectada. A tarefa olha as contas a cada 5 min; a que nunca coletou entra
+  na volta seguinte, e a que coletou, quando a última coleta bem-sucedida tem mais de 24 h, mais um sorteio de até 1 h
+  (para as contas de um nó não coletarem todas na mesma hora). No máximo 5 contas por volta, as mais atrasadas
+  primeiro, uma de cada vez. O agendamento fica no banco (`CollectorCursor`, fluxo `aws_inventory`): uma partida nova
+  do worker não refaz os inventários. A concessão `SyncState('aws-inventory')` deixa um worker por vez: ela é
+  renovada durante a coleta (a cada terço da validade de 15 min) e conferida de novo, com a linha presa, na transação
+  que grava o retrato. Perdida (venceu e outra réplica a tomou), a execução para sem gravar e sem mexer no cursor
+  (`lease_lost` no relatório).
+- **Sessão:** a mesma `WebIdentityCredentials` da conferência da conexão (`credentialsFor`), sem chave e sem
+  ExternalId: a entrada no papel vem primeiro (recusada, nenhuma outra chamada) e é dividida com o `aws-check` (uma por
+  hora por conta). Os clientes do SDK pedem outra sessão ao provedor numa coleta longa. O `assumeReadOnlyRole` do
+  conector antigo saiu.
+- **Coleta** (`collectInventory`): só List, Get e Describe da política `PosturaEAtivos` do template. A conta root
+  (`GetAccountSummary`), os usuários IAM com console, MFA e chaves (com o último uso), os buckets (política, ACL e
+  bloqueio de acesso público, cada bucket pelo S3 da região dele, sem redirecionamento) e, só nas regiões cadastradas
+  (sem `DescribeRegions`), instâncias e security groups. No máximo 2 chamadas do IAM ao mesmo tempo (é global e
+  dividido com a automação do cliente), modo adaptativo de novas tentativas e teto de 1.000 itens por tipo. Na ordem
+  de uma centena de chamadas por conta por dia (20 usuários, 15 buckets e 2 regiões dão cerca de 120).
+- **Coleta parcial:** cada parte (root, IAM, S3 e, por região, EC2 e security groups) entra inteira ou fica de fora. A
+  recusa da AWS (permissão, SCP, região desligada) e outro erro que não passa sozinho deixam a parte de fora, com o
+  nome do erro em `InventorySnapshot.errors` (`ec2:us-east-1:UnauthorizedOperation`, nunca a mensagem), e o retrato é
+  gravado. A mesma regra vale para cada leitura de um bucket (a política, a ACL e o bloqueio): a recusa deixa a
+  configuração dele "não lida" e entra em `errors` (`s3:AccessDenied`); o bucket que sumiu entre a listagem e a
+  leitura fica de fora. Uma falha passageira (limite, 5xx, rede), a sessão perdida no meio ou nenhuma parte lida param
+  a coleta sem gravar nada, inclusive numa leitura de bucket: o retrato anterior continua na tela, e a tarefa recua
+  (30 min, dobrando, até 6 h). Nenhuma parte lida (`inventory_refused`) também descarta a sessão guardada da conta.
+- **Retrato** (`snapshot-mapper.ts`): os itens no formato do contrato (`assetSchemas`), com o risco das regras v1, cada
+  um conferido pelo zod antes de gravar. Um item fora do formato fica de fora, é contado e marca a parte dele
+  (`iam:invalid_items`). `truncated` diz que uma parte passou do teto. A gravação é pelo escopo do cliente da conta, só
+  se a conta ainda é a mesma (ativa e AWS), e a chave única com o início da coleta (`collectedAt`) a torna idempotente.
+- **Painel:** a visão geral de Ativos traz `errors` e `truncated` de cada conta, e a faixa "Coleta parcial" diz o que
+  ficou de fora (o resto continua nas abas). Nada da conta vai para o log do worker: o relatório da tarefa só tem
+  contagens e códigos.
 
 ## SOC da própria Verax (fontes da GCP)
 
@@ -1229,7 +1276,8 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
    Wazuh pelo token do Google, com recarga sem parar o painel; checagem da conexão e das fontes; medidor da ingestão;
    regras críticas da AWS com títulos em português. O template espera o teste prático na conta AWS de teste.
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
-5. **Ativos e Postura da AWS** pelo papel de leitura do cliente.
+5. **Ativos e Postura da AWS** pelo papel de leitura do cliente. **Ativos feito no código** (PR-14', inventário
+   nativo uma vez por dia); a postura nativa é o PR-15'.
 6. **Compromissos do plano:** avisos por e-mail (feito no código no PR-16, com os avisos de 80% e 100% do volume),
    limites do plano, expurgo do histórico e 365 dias nas telas.
 7. **Versão do nó reproduzível e ensaio geral.** É o portão da fase 3: um nó nasce do zero só com `terraform apply` e

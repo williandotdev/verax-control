@@ -41,21 +41,22 @@ export function combinedScore(
 }
 
 /**
- * Postura do cliente da sessão (T5.8), a partir das varreduras gravadas pelo job do Prowler: a nota de cada conta,
- * a evolução e as checagens reprovadas na última varredura. Conta sem varredura aparece com nota vazia.
+ * Postura do cliente da sessão (T5.8), a partir das varreduras gravadas: a nota de cada conta AWS, a evolução e as
+ * checagens reprovadas na última varredura. Conta sem varredura aparece com nota vazia. Só as contas AWS: a postura de
+ * GCP e Cloudflare ainda não existe, e o cliente sem conta AWS vê "em breve" no painel (PR-14').
  */
 @Injectable()
 export class PostureService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** A varredura mais recente de cada conta ativa (as contas sem varredura ficam de fora do mapa). */
+  /** A varredura mais recente de cada conta AWS ativa (as contas sem varredura ficam de fora do mapa). */
   async latestScans(): Promise<{ accounts: string[]; latest: Map<string, ScanRow> }> {
     const db = this.prisma.scoped();
     const accounts = (
       await db.cloudAccount.findMany({
-        where: { status: 'active' },
+        where: { status: 'active', provider: 'aws' },
         select: { accountId: true },
-        orderBy: [{ provider: 'asc' }, { accountId: 'asc' }],
+        orderBy: { accountId: 'asc' },
       })
     ).map((account) => account.accountId);
     const latest = new Map<string, ScanRow>();

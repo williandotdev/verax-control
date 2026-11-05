@@ -137,14 +137,52 @@ describe('Postura cloud', () => {
     ).toBeInTheDocument();
   });
 
-  it('cliente sem varredura ainda', async () => {
+  it('conta AWS sem varredura ainda: o aviso sem citar ferramenta nem prometer prazo', async () => {
+    renderAt('/postura');
+    server.use(
+      http.get(`${API_URL}/v1/posture`, () =>
+        HttpResponse.json({
+          score: null,
+          warningBelow: 70,
+          accounts: [
+            {
+              accountId: DEMO_ACCOUNTS.alfaProducao,
+              score: null,
+              scannedAt: null,
+              passed: 0,
+              failed: 0,
+              failedBySeverity: { critical: 0, high: 0, medium: 0, low: 0, informational: 0 },
+              history: [],
+            },
+          ],
+        }),
+      ),
+    );
+    expect(await screen.findByText('Ainda sem varredura')).toBeInTheDocument();
+    const main = screen.getByRole('heading', { level: 1, name: 'Postura cloud' }).closest('section');
+    expect(main).toHaveTextContent('A nota aparece depois da primeira conferência de cada conta.');
+    expect(main).not.toHaveTextContent(/Prowler|minutos|24 horas/);
+    expect(screen.queryByText(/em breve/)).not.toBeInTheDocument();
+  });
+
+  it('cliente sem conta AWS (só GCP ou Cloudflare): "em breve", sem cartão nem tabela', async () => {
     renderAt('/postura');
     server.use(
       http.get(`${API_URL}/v1/posture`, () =>
         HttpResponse.json({ score: null, warningBelow: 70, accounts: [] }),
       ),
     );
-    expect(await screen.findByText('Ainda sem varredura')).toBeInTheDocument();
+    expect(await screen.findByText('Postura de GCP e Cloudflare: em breve')).toBeInTheDocument();
+    expect(screen.getByText(/ainda não tem conta AWS ativa/)).toBeInTheDocument();
+    expect(screen.queryByText('Ainda sem varredura')).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('nenhum texto da tela cita o Prowler', async () => {
+    renderAt('/postura?severidade=critical');
+    await userEvent.click(await screen.findByRole('button', { name: /Usuário root sem MFA/ }));
+    await screen.findByRole('dialog', { name: 'Usuário root sem MFA' });
+    expect(document.body).not.toHaveTextContent(/Prowler/);
   });
 
   it('admin_verax sem cliente escolhido é orientado a escolher um', async () => {

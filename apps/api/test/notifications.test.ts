@@ -590,6 +590,38 @@ describe('avisos por e-mail (outbox)', () => {
         await other.release();
       }
     });
+
+    it('concessão perdida no meio da execução: os avisos que faltam ficam para quem a tomou', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (concessão perdida)');
+      const admin = await member(tenantId, 'admin_cliente');
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const laterTenant = await createTenant(app, 'Cliente demo B (concessão perdida)');
+      const later = await member(laterTenant, 'admin_cliente');
+      await persist(draft(laterTenant, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      // Outra réplica toma a concessão (a desta venceu) enquanto o primeiro aviso sai.
+      const stealing: MailTransport = {
+        send: async (message) => {
+          await mailbox.send(message);
+          if (message.to === admin.email) {
+            await prisma.syncState.update({
+              where: { name: NOTIFICATIONS_TASK },
+              data: { leaseOwner: 'outra-replica', leaseUntil: new Date(Date.now() + 60_000) },
+            });
+          }
+        },
+      };
+      try {
+        await dispatcher(stealing, soon()).runOnce();
+      } finally {
+        await new SyncLease(prisma, NOTIFICATIONS_TASK, 'outra-replica', 60_000).release();
+      }
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect(mailbox.to(later.email)).toEqual([]);
+      expect(await noticesOf(laterTenant)).toEqual([
+        expect.objectContaining({ status: 'pending', attempts: 0 }),
+      ]);
+    });
   });
 
   describe('volume do plano: 80% e 100% do mês, uma vez cada, só para quem administra', () => {

@@ -31,7 +31,10 @@ const SEVERITY_NAMES: Record<PostureSeverity, { one: string; many: string }> = {
   informational: { one: 'Informativa', many: 'Informativas' },
 };
 
-/** Postura cloud (T7.10): nota por conta com a evolução, e as checagens reprovadas com o passo de correção. */
+/**
+ * Postura cloud (T7.10): nota por conta AWS com a evolução, e as checagens reprovadas com o passo de correção. Cliente
+ * sem conta AWS vê "em breve" (a postura de GCP e Cloudflare ainda não existe).
+ */
 export function PosturePage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
@@ -79,6 +82,17 @@ export function PosturePage() {
       </PostureShell>
     );
   }
+  // A postura é só das contas AWS (a API filtra): sem nenhuma, o cliente só tem GCP ou Cloudflare, ainda sem postura.
+  if (overview.data.accounts.length === 0) {
+    return (
+      <PostureShell>
+        <EmptyState
+          title="Postura de GCP e Cloudflare: em breve"
+          description="Esta tela confere hoje a configuração das contas AWS, e este cliente ainda não tem conta AWS ativa. Cadastre uma em Contas cloud para ver a nota."
+        />
+      </PostureShell>
+    );
+  }
   // Sem varredura é nenhuma conta com data de varredura. Uma varredura só com checagens informativas, manuais ou
   // silenciadas não gera nota, mas os resultados dela continuam visíveis.
   if (overview.data.accounts.every((item) => item.scannedAt === null)) {
@@ -86,7 +100,7 @@ export function PosturePage() {
       <PostureShell>
         <EmptyState
           title="Ainda sem varredura"
-          description="O Prowler confere a configuração das contas uma vez por dia. A primeira nota aparece em até 24 horas depois de conectar a conta."
+          description="A configuração das contas AWS é conferida uma vez por dia, pelo papel somente leitura. A nota aparece depois da primeira conferência de cada conta."
         />
       </PostureShell>
     );
@@ -297,7 +311,7 @@ function CheckDetail({ check }: { check: PostureCheck }) {
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            O Prowler não informou o passo de correção desta checagem.
+            O passo de correção desta checagem não foi informado.
           </p>
         )}
       </section>
@@ -332,8 +346,8 @@ function PostureShell({ children }: { children: ReactNode }) {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Postura cloud</h1>
         <p className="text-sm text-muted-foreground">
-          A configuração das contas AWS, conferida pelo Prowler todo dia. A nota é a taxa de aprovação das
-          checagens, ponderada pela gravidade.
+          A configuração das contas AWS, conferida todo dia pelo papel somente leitura. A nota é a taxa de
+          aprovação das checagens, ponderada pela gravidade.
         </p>
       </header>
       {children}
