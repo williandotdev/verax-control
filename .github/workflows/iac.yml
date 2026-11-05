@@ -70,7 +70,9 @@ jobs:
         # firewall, conta de serviço, VM, disco, snapshot, cofres, tópicos, sinks e bucket), o script de boot byte a byte
         # e a VM depois da manutenção do swap; e os acessos dos operadores quando a VM é recriada. O nó de cliente como o
         # envs/tenant o chama: só nomes vx-<slug>, o cofre da conta de suporte só com a gravação da VM, os atributos de
-        # convidado e as chaves verax-* dos metadados; desligados (o padrão), os nós que já existem não mudam. Não
+        # convidado e as chaves verax-* dos metadados; desligados (o padrão), os nós que já existem não mudam. A
+        # instalação sem operador (PR-N7): desligada, o script de boot é o de antes, byte a byte; ligada, o script leva o
+        # de sempre, o instalador, o verificador e as chaves de release de infra/node, e nada mais muda nos metadados. Não
         # substitui o `plan` contra o estado real (GUIA.md), que confere tudo. O provider simulado não fala com a GCP.
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
@@ -153,6 +155,17 @@ jobs:
           done
           shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
           bash "$test"
+      - name: Instalação sem operador (boot-install.sh e o script de boot do módulo, com o metadata e o release falsos)
+        # Os cenários de tests/boot-install-test.sh, sem root e sem nuvem: o release montado no teste (o manifesto pelo
+        # node-release.sh, assinado com uma chave gerada ali) e conferido pelo verify-release.sh de verdade; o install.sh
+        # com os digests do manifesto e o node.conf byte a byte; verax/ready e verax/error; o boot seguinte sem baixar
+        # nada e sem aplicar uma versão nova; metadados hostis (comando, aspas, quebra de linha, fora do formato) e
+        # ausentes recusados antes de qualquer download; SHA-256 errado, pacote trocado, assinatura de outra chave,
+        # manifesto adulterado ou de outra versão; o túnel que chega depois; o modelo do Terraform de ponta a ponta. O
+        # modelo também passa no shellcheck como está (as interpolações ficam entre aspas simples ou em heredoc).
+        run: |
+          shellcheck -x -S style infra/gcp/modules/node/unattended.sh.tftpl
+          bash infra/node/tests/boot-install-test.sh
       - name: start.sh (arquivos de ambiente, bootstrap e pull das imagens, com o Compose, o Docker e o gcloud simulados)
         # Os cenários de tests/start-test.sh, sem root e sem Docker: os arquivos que o `render` escreve nos dois perfis
         # (bootstrap.env vazio; as variáveis do indexer só no standard), o `bootstrap`, o `pull_images` e o tópico do
