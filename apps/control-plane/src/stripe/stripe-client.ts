@@ -172,6 +172,19 @@ export interface StripeClient {
     taxId: { type: 'br_cnpj'; value: string },
     idempotencyKey: string,
   ): Promise<TaxIdResult>;
+  /**
+   * O boleto de uma fatura, para a página de status de quem pagou com boleto (plano §4g): a página do boleto
+   * (`hosted_voucher_url` do PaymentIntent, pela expansão dos pagamentos da fatura) e a da fatura. Lidas na hora e
+   * nunca guardadas. Exige leitura de Invoices e de PaymentIntents na chave restrita.
+   */
+  retrieveBoletoLinks(invoiceId: string): Promise<BoletoLinks>;
+}
+
+/** O que a página de status mostra de um boleto em aberto. */
+export interface BoletoLinks {
+  invoiceStatus: string | null;
+  voucherUrl: string | null;
+  invoiceUrl: string | null;
 }
 
 export const STRIPE_CLIENT = Symbol('STRIPE_CLIENT');
@@ -419,6 +432,22 @@ export class SdkStripeClient implements StripeClient {
     }
     await this.stripe.customers.createTaxId(customerId, taxId, { idempotencyKey });
     return 'created';
+  }
+
+  async retrieveBoletoLinks(invoiceId: string): Promise<BoletoLinks> {
+    const invoice = await this.stripe.invoices.retrieve(invoiceId, {
+      expand: ['payments.data.payment.payment_intent'],
+    });
+    const voucherUrl =
+      (invoice.payments?.data ?? [])
+        .map((payment) => payment.payment.payment_intent)
+        .map((intent) =>
+          typeof intent === 'object' && intent !== null
+            ? (intent.next_action?.boleto_display_details?.hosted_voucher_url ?? null)
+            : null,
+        )
+        .find((url) => url !== null) ?? null;
+    return { invoiceStatus: invoice.status, voucherUrl, invoiceUrl: invoice.hosted_invoice_url ?? null };
   }
 }
 

@@ -355,6 +355,19 @@ run "service_env_nao_muda_o_que_o_terraform_deriva" {
   expect_failures = [var.service_env]
 }
 
+# A conta que o worker aceita na revelação (CP-05) é a do cp-public, derivada: ninguém a troca pelo mapa do worker.
+run "worker_env_nao_muda_a_conta_da_revelacao" {
+  command = plan
+
+  variables {
+    worker_env = {
+      PUBLIC_SA_EMAIL = "outra@projeto-exemplo.iam.gserviceaccount.com"
+    }
+  }
+
+  expect_failures = [var.worker_env]
+}
+
 run "service_env_nao_leva_smtp" {
   command = plan
 
@@ -413,8 +426,8 @@ run "worker_aberto_so_por_escolha" {
   }
 
   assert {
-    condition     = google_cloud_run_v2_service.worker[0].ingress == "INGRESS_TRAFFIC_ALL" && length(google_cloud_run_v2_service_iam_member.worker_invokers) == 1
-    error_message = "Com INGRESS_TRAFFIC_ALL, o cp-worker continua só com o IAM (a cp-invoker; sem responsável, ninguém mais)."
+    condition     = google_cloud_run_v2_service.worker[0].ingress == "INGRESS_TRAFFIC_ALL" && sort(keys(google_cloud_run_v2_service_iam_member.worker_invokers)) == tolist(["invoker", "public"])
+    error_message = "Com INGRESS_TRAFFIC_ALL, o cp-worker continua só com o IAM (a cp-invoker e o cp-public; sem responsável, ninguém mais)."
   }
 }
 
