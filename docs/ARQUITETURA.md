@@ -1259,7 +1259,7 @@ e não muda nada.
 - **Segredos:** `vx-<slug>-admin-bootstrap` (revelado uma vez ao cliente pelo `cp-worker`) e
   `vx-<slug>-support-bootstrap` (só o responsável lê e destrói com o `gcloud`; `docs/runbooks/onboarding-cliente.md`,
   item 7). A VM só tem `secretVersionAdder` nos dois: grava e não lê de volta.
-- **Estado do nó nos guest attributes:** a tarefa `node-status` do worker (`NODE_STATUS=true` e `NODE_VERSION` no
+- **Estado do nó nos guest attributes:** a tarefa `node-status` do worker (`NODE_STATUS=true` e `VERAX_NODE_COMMIT` no
   `worker.env`, escritos pelo `start.sh` no modo cliente) grava a cada 5 min, por `PUT` no servidor de metadados com
   `Metadata-Flavor: Google`, `verax/version` (o commit instalado), `verax/accounts-connected` (contas ativas
   conectadas), `verax/last-event-at` (o evento mais recente em ISO 8601 UTC, ou `none`) e `verax/disk-free` (porcentagem
