@@ -1,6 +1,9 @@
+import { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import { EC2Client } from '@aws-sdk/client-ec2';
+import { GuardDutyClient } from '@aws-sdk/client-guardduty';
 import { IAMClient } from '@aws-sdk/client-iam';
 import { S3Client } from '@aws-sdk/client-s3';
+import { S3ControlClient } from '@aws-sdk/client-s3-control';
 import {
   type InventorySection,
   type InventorySectionError,
@@ -49,12 +52,19 @@ import {
 type Sender<T extends { send: unknown }> = Pick<T, 'send'>;
 type SdkClient<T extends { send: unknown }> = Sender<T> & { destroy?: () => void };
 
-/** Os clientes de uma coleta, já com a sessão do papel. Os testes trocam por falsos. */
+/**
+ * Os clientes de uma coleta, já com a sessão do papel. Os testes trocam por falsos. O CloudTrail, o GuardDuty e o S3
+ * Control são só das leituras da postura nativa (PR-15', `posture/posture-reads.ts`), na mesma coleta.
+ */
 export interface InventoryClients {
   iam(): Sender<IAMClient>;
   /** O S3 da região do bucket; `null` é a região de partida (a listagem). */
   s3(region: string | null): Sender<S3Client>;
   ec2(region: string): Sender<EC2Client>;
+  /** O bloqueio de acesso público da conta (`GetPublicAccessBlock` do S3 Control), pela região de partida. */
+  s3control(): Sender<S3ControlClient>;
+  cloudtrail(region: string): Sender<CloudTrailClient>;
+  guardduty(region: string): Sender<GuardDutyClient>;
 }
 
 /** Cria os clientes da AWS de uma conta: o provedor da sessão e a região de partida (a primeira monitorada). */
@@ -65,6 +75,9 @@ export type InventoryClientFactory = (
   iam(): SdkClient<IAMClient>;
   s3(region: string): SdkClient<S3Client>;
   ec2(region: string): SdkClient<EC2Client>;
+  s3control(region: string): SdkClient<S3ControlClient>;
+  cloudtrail(region: string): SdkClient<CloudTrailClient>;
+  guardduty(region: string): SdkClient<GuardDutyClient>;
 };
 
 /** Chamadas do IAM ao mesmo tempo, no máximo (o pedido da frente de inventário: o IAM é global e é do cliente também). */
@@ -91,6 +104,9 @@ export const sdkInventoryClients: InventoryClientFactory = (credentials, homeReg
       ...INVENTORY_CLIENT_OPTIONS,
     }),
   ec2: (region) => new EC2Client({ region, credentials, ...INVENTORY_CLIENT_OPTIONS }),
+  s3control: (region) => new S3ControlClient({ region, credentials, ...INVENTORY_CLIENT_OPTIONS }),
+  cloudtrail: (region) => new CloudTrailClient({ region, credentials, ...INVENTORY_CLIENT_OPTIONS }),
+  guardduty: (region) => new GuardDutyClient({ region, credentials, ...INVENTORY_CLIENT_OPTIONS }),
 });
 
 /** Uma fila de no máximo `max` tarefas ao mesmo tempo; quem termina passa a vez direto para o próximo da fila. */
@@ -167,6 +183,18 @@ export class InventoryRunClients implements InventoryClients {
     return this.#get(`ec2:${region}`, () => this.factory.ec2(region));
   }
 
+  s3control(): Sender<S3ControlClient> {
+    return this.#get('s3control', () => this.factory.s3control(this.homeRegion));
+  }
+
+  cloudtrail(region: string): Sender<CloudTrailClient> {
+    return this.#get(`cloudtrail:${region}`, () => this.factory.cloudtrail(region));
+  }
+
+  guardduty(region: string): Sender<GuardDutyClient> {
+    return this.#get(`guardduty:${region}`, () => this.factory.guardduty(region));
+  }
+
   destroy(): void {
     for (const client of this.#cache.values()) client.destroy?.();
     this.#cache.clear();
@@ -198,8 +226,8 @@ export class InventoryUnavailable extends Error {
   }
 }
 
-/** O nome do erro como vai para o retrato; fora do formato, `Unknown`. */
-function codeOf(name: string): string {
+/** O nome do erro como vai para o retrato (e para a varredura de postura); fora do formato, `Unknown`. */
+export function codeOf(name: string): string {
   return isInventoryErrorCode(name) ? name : 'Unknown';
 }
 

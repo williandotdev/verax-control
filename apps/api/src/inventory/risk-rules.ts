@@ -1,3 +1,4 @@
+import { DATABASE_PORTS } from '@verax/shared';
 import type {
   BucketInfo,
   Ec2Instance,
@@ -46,7 +47,6 @@ export const KEY_MAX_AGE_DAYS = 90;
 export const KEY_UNUSED_DAYS = 90;
 
 const ADMIN_PORTS = [22, 3389];
-const DATABASE_PORTS = [1433, 1521, 3306, 5432, 5984, 6379, 9200, 9300, 11211, 27017];
 const WEB_PORTS = [80, 443];
 const ICMP = new Set(['icmp', '1', 'icmpv6', '58']);
 
@@ -121,8 +121,8 @@ export function instanceRisk(instance: Ec2Instance): AssessedRisk {
 
 /**
  * Bucket público: política pública que o bloqueio do bucket não restringe, ou ACL pública que ele não ignora. Fica
- * "alto", e não "crítico", porque o bloqueio no nível da conta não é lido aqui (exigiria o cliente do S3 Control,
- * fora da lista aprovada); a postura nativa (PR-15') confere esse caso.
+ * "alto", e não "crítico", porque o bloqueio no nível da conta não entra no retrato; a postura nativa (PR-15', a
+ * checagem `s3_bucket_public_access`) junta os dois.
  */
 export function bucketRisk(bucket: BucketInfo): AssessedRisk {
   const block = bucket.publicAccessBlock;

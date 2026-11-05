@@ -121,7 +121,8 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * A tarefa `aws-check` (a cada 30 s) responde o "Verificar" das contas AWS e, sem pedido, confere de novo cada conta já
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
  * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`), e com ela entra a tarefa `aws-inventory`
- * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14').
+ * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
+ * da mesma coleta, PR-15').
  *
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
@@ -230,8 +231,8 @@ async function main(): Promise<void> {
       budgetMs: SYNC_BUDGET_MS,
       run: (signal) => notifications.runOnce(signal),
     });
-    // Inventário da AWS (Ativos): só com a identidade do nó, pela mesma sessão da conferência. Os clientes do IAM, do
-    // EC2 e do S3 só são carregados aqui.
+    // Inventário e postura da AWS (Ativos e Postura): só com a identidade do nó, pela mesma sessão da conferência. Os
+    // clientes do IAM, do EC2, do S3, do S3 Control, do CloudTrail e do GuardDuty só são carregados aqui.
     if (aws.credentials !== null) {
       const inventory = await import('./inventory/inventory-job.js');
       const { sdkInventoryClients } = await import('./inventory/inventory.js');

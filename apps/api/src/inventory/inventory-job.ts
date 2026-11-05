@@ -7,6 +7,8 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { type PostureScanData, toPostureScan } from '../posture/native-posture.js';
+import { collectPostureReads } from '../posture/posture-reads.js';
 import {
   collectInventory,
   type InventoryClientFactory,
@@ -79,8 +81,12 @@ export interface AwsInventoryReport {
   stale: number;
   /** Coletas que não terminaram: nada gravado, com recuo. */
   failed: number;
-  /** Itens recusados pelo contrato nos retratos gravados. */
+  /** Itens recusados pelo contrato nos retratos gravados e resultados recusados pelo zod nas varreduras gravadas. */
   droppedItems: number;
+  /** Varreduras de postura gravadas (na mesma transação do retrato; a mesma coleta, PR-15'). */
+  postureScans: number;
+  /** Das gravadas, quantas têm alguma leitura recusada (checagens não lidas, fora da nota). */
+  posturePartial: number;
   /** Os códigos das coletas que não terminaram. */
   failures?: Record<string, number>;
 }
@@ -143,9 +149,9 @@ function failureCode(error: unknown): string {
 }
 
 /**
- * Tarefa `aws-inventory` do worker (fase 2, PR-14'): o inventário nativo da AWS (a tela Ativos), pelo papel de leitura
- * sem chave, com a mesma sessão da conferência da conexão (`WebIdentityCredentials`, uma entrada no papel por hora por
- * conta).
+ * Tarefa `aws-inventory` do worker (fase 2, PR-14' e PR-15'): o inventário nativo da AWS (a tela Ativos) e a postura
+ * nativa (a tela Postura) numa coleta só, pelo papel de leitura sem chave, com a mesma sessão da conferência da conexão
+ * (`WebIdentityCredentials`, uma entrada no papel por hora por conta).
  *
  * - **Quem entra:** as contas AWS ativas já verificadas ao menos uma vez (`ingestFrom`), conectadas ou com erro só num
  *   bucket de log. Nunca as em "aguardando" (reativada, com outra lista de buckets ou com "Verificar" pendente), nem as
@@ -158,10 +164,15 @@ function failureCode(error: unknown): string {
  *   Uma parte recusada entra no retrato como coleta parcial; uma falha passageira, a sessão perdida no meio ou tudo
  *   recusado param a coleta, sem gravar nada, e o retrato anterior continua na tela. Tudo recusado também descarta a
  *   sessão guardada (uma sessão revogada no console não fica em uso até vencer).
- * - **A gravação:** o retrato (`toSnapshot`, cada item conferido pelo contrato) entra numa transação pelo escopo do
- *   cliente da conta, só se a conta ainda é a mesma (ativa, AWS, do mesmo cliente) e se a concessão ainda é deste
- *   worker (conferida e renovada na própria transação, que prende a linha dela); a chave única com o início da coleta
- *   torna a gravação idempotente. A conexão da conta não muda aqui: ela é da conferência.
+ * - **A postura** (`collectPostureReads` e `toPostureScan`): as poucas leituras próprias dela (a política de senha, o
+ *   bloqueio de acesso público da conta, o EBS e o GuardDuty por região, as trilhas), com a mesma política de falha, e
+ *   as 18 checagens do catálogo sobre o que a coleta leu. Uma leitura recusada deixa as checagens dela "não lidas",
+ *   fora da nota.
+ * - **A gravação:** o retrato (`toSnapshot`, cada item conferido pelo contrato) e a varredura de postura (com as
+ *   reprovações, cada resultado conferido pelo zod) entram numa transação pelo escopo do cliente da conta, só se a
+ *   conta ainda é a mesma (ativa, AWS, do mesmo cliente) e se a concessão ainda é deste worker (conferida e renovada na
+ *   própria transação, que prende a linha dela); as chaves únicas com o início da coleta tornam a gravação idempotente.
+ *   A conexão da conta não muda aqui: ela é da conferência.
  * - **A concessão** é renovada durante a coleta, a cada terço da validade. Perdida (venceu e outra réplica a tomou), o
  *   sinal da execução é abortado: as chamadas param, nada é gravado e o cursor fica como estava.
  *
@@ -231,6 +242,8 @@ export class AwsInventorySync {
       stale: 0,
       failed: 0,
       droppedItems: 0,
+      postureScans: 0,
+      posturePartial: 0,
     };
     const startedAt = this.now();
     if (!(await this.lease.acquire(startedAt))) return { ...report, status: 'locked' };
@@ -340,8 +353,11 @@ export class AwsInventorySync {
         now: startedAt,
         signal,
       });
+      // A postura nativa sai da mesma coleta: as leituras próprias dela, depois as regras sobre o inventário.
+      const reads = await collectPostureReads({ accountId: row.accountId, regions }, clients, { signal });
       const snapshot = toSnapshot(inventory);
-      const result = await this.persist(row, snapshot);
+      const posture = toPostureScan(inventory, reads);
+      const { result, postureRecorded } = await this.persist(row, snapshot, posture);
       if (result === 'lost') {
         ownership.abort(new InventoryLeaseLost());
         signal.throwIfAborted();
@@ -355,6 +371,11 @@ export class AwsInventorySync {
         report.collected += 1;
         if (snapshot.errors.length > 0 || snapshot.truncated) report.partial += 1;
         report.droppedItems += Object.values(snapshot.dropped).reduce((sum, count) => sum + count, 0);
+      }
+      if (postureRecorded) {
+        report.postureScans += 1;
+        if (posture.errors.length > 0) report.posturePartial += 1;
+        report.droppedItems += posture.dropped;
       }
       await this.cursors.advance(
         this.keyOf(row),
@@ -381,21 +402,24 @@ export class AwsInventorySync {
   }
 
   /**
-   * Grava o retrato pelo escopo do cliente da conta, se a concessão ainda é deste worker (conferida e renovada na própria
-   * transação: a linha dela fica presa até o fim, e outra réplica não a toma no meio) e se a conta ainda é a que foi
-   * lida (ativa, AWS, do mesmo cliente). A chave única (cliente, conta e início da coleta) torna a gravação idempotente.
+   * Grava o retrato e a varredura de postura numa transação só, pelo escopo do cliente da conta, se a concessão ainda é
+   * deste worker (conferida e renovada na própria transação: a linha dela fica presa até o fim, e outra réplica não a
+   * toma no meio) e se a conta ainda é a que foi lida (ativa, AWS, do mesmo cliente). As chaves únicas (cliente, conta
+   * e início da coleta) tornam as duas gravações idempotentes: a varredura que já existe não ganha outra nem
+   * reprovações repetidas.
    */
   private persist(
     row: AccountRow,
     snapshot: InventorySnapshotData,
-  ): Promise<'recorded' | 'duplicate' | 'stale' | 'lost'> {
+    posture: PostureScanData,
+  ): Promise<{ result: 'recorded' | 'duplicate' | 'stale' | 'lost'; postureRecorded: boolean }> {
     return this.prisma.$transaction(async (tx) => {
-      if (!(await this.lease.holdIn(tx))) return 'lost';
+      if (!(await this.lease.holdIn(tx))) return { result: 'lost', postureRecorded: false };
       const db = scopeToTenant(tx, row.tenantId);
       const current = await db.cloudAccount.count({
         where: { id: row.id, provider: 'aws', status: 'active', accountId: row.accountId },
       });
-      if (current === 0) return 'stale';
+      if (current === 0) return { result: 'stale', postureRecorded: false };
       const { count } = await db.inventorySnapshot.createMany({
         data: [
           {
@@ -410,7 +434,49 @@ export class AwsInventorySync {
         ],
         skipDuplicates: true,
       });
-      return count === 1 ? 'recorded' : 'duplicate';
+      const postureRecorded = await this.persistPosture(db, row, posture);
+      return { result: count === 1 ? 'recorded' : 'duplicate', postureRecorded };
     });
+  }
+
+  /** A varredura e as reprovações dela, na transação do retrato. Devolve se a varredura foi gravada agora. */
+  private async persistPosture(
+    db: Prisma.TransactionClient,
+    row: AccountRow,
+    posture: PostureScanData,
+  ): Promise<boolean> {
+    const { summary } = posture;
+    const [scan] = await db.postureScan.createManyAndReturn({
+      data: [
+        {
+          tenantId: row.tenantId,
+          accountId: posture.accountId,
+          scannedAt: posture.scannedAt,
+          score: summary.score,
+          weightPassed: summary.weightPassed,
+          weightTotal: summary.weightTotal,
+          passed: summary.passed,
+          failed: summary.failed,
+          failedCritical: summary.failedBySeverity.critical,
+          failedHigh: summary.failedBySeverity.high,
+          failedMedium: summary.failedBySeverity.medium,
+          failedLow: summary.failedBySeverity.low,
+          failedInformational: summary.failedBySeverity.informational,
+          unknown: summary.manual,
+          checks: posture.checks,
+          errors: posture.errors,
+        },
+      ],
+      skipDuplicates: true,
+      select: { id: true },
+    });
+    if (scan === undefined) return false;
+    if (posture.failures.length > 0) {
+      await db.postureFailure.createMany({
+        data: posture.failures.map((failure) => ({ ...failure, tenantId: row.tenantId, scanId: scan.id })),
+        skipDuplicates: true,
+      });
+    }
+    return true;
   }
 }
