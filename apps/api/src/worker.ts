@@ -29,8 +29,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * laço. A concessão no banco garante um worker por vez em cada fonte, mesmo com mais de uma réplica. SIGTERM ou SIGINT
  * esperam as execuções em curso terminarem, e elas liberam a concessão.
  *
- * A fonte `cloudflare` (auditoria das contas do Cloudflare) roda no mesmo intervalo, e cada conta é lida a cada
- * `CLOUDFLARE_AUDIT_INTERVAL_SECONDS` (o cursor de cada conta guarda a próxima leitura). Ela exige o cofre.
+ * A fonte `cloudflare` (auditoria das contas do Cloudflare e, pelo GraphQL, os eventos de segurança das zonas) roda no
+ * mesmo intervalo: a auditoria de cada conta a cada `CLOUDFLARE_AUDIT_INTERVAL_SECONDS`, e os eventos em janelas de
+ * 15 min, cada uma lida 5 min depois de fechar (o cursor de cada fluxo guarda a próxima leitura). Ela exige o cofre.
  *
  * Com os agentes do Wazuh ligados no nó, entra a tarefa `wazuh-agents`, que grava a lista dos agentes exportada pelo host.
  *
@@ -65,8 +66,8 @@ async function main(): Promise<void> {
         };
       }
       if (source === 'cloudflare') {
-        // Auditoria do Cloudflare: o token de cada conta vem do cofre do nó, aberto só aqui (a configuração exige as
-        // chaves privadas para esta fonte).
+        // Auditoria e eventos de segurança do Cloudflare: o token de cada conta vem do cofre do nó, aberto só aqui (a
+        // configuração exige as chaves privadas para esta fonte).
         const keyring = loaded.credentialsKeyring;
         if (keyring === null)
           throw new Error('SYNC_SOURCES: a fonte cloudflare exige o cofre de credenciais');

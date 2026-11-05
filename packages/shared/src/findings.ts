@@ -18,10 +18,18 @@ export type FindingStatus = (typeof FINDING_STATUSES)[number];
 
 /** Origem do alerta na AWS, lida pelo Wazuh. */
 /**
- * Fontes de log: as da AWS (lidas pelo Wazuh), a auditoria da GCP (lida do Pub/Sub pelo próprio nó) e a auditoria do
- * Cloudflare (lida pela API dele, com o token do cofre do nó).
+ * Fontes de log: as da AWS (lidas pelo Wazuh), a auditoria da GCP (lida do Pub/Sub pelo próprio nó) e, do Cloudflare
+ * (lidos pela API dele, com o token do cofre do nó), a auditoria da conta e os eventos de segurança das zonas (WAF,
+ * limite de taxa, DDoS).
  */
-export const FINDING_SOURCES = ['cloudtrail', 'guardduty', 'waf', 'gcp_audit', 'cloudflare_audit'] as const;
+export const FINDING_SOURCES = [
+  'cloudtrail',
+  'guardduty',
+  'waf',
+  'gcp_audit',
+  'cloudflare_audit',
+  'cloudflare_waf',
+] as const;
 export type FindingSource = (typeof FINDING_SOURCES)[number];
 
 /** Períodos do filtro, em horas. */

@@ -14,6 +14,7 @@ export const FINDING_SOURCE_LABELS: Readonly<Record<FindingSource, string>> = {
   waf: 'WAF',
   gcp_audit: 'GCP (auditoria)',
   cloudflare_audit: 'Cloudflare (auditoria)',
+  cloudflare_waf: 'Cloudflare (eventos de segurança)',
 };
 
 export const FINDING_PERIOD_LABELS: Readonly<Record<FindingPeriod, string>> = {

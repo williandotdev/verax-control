@@ -62,6 +62,8 @@ function uniqueKey(key: CursorKey) {
  * - `due` lista os cursores do fluxo com a hora de rodar já chegada, de contas ativas;
  * - `advance` registra uma leitura bem-sucedida: o cursor anda (nunca volta), as falhas zeram e a próxima leitura é
  *   marcada;
+ * - `note` grava só a continuação (o estado que precisa ficar antes de um pedido à fonte, como o orçamento de consultas
+ *   dos eventos de segurança do Cloudflare);
  * - `fail` registra uma falha sem mexer na posição: guarda só o tipo do erro e marca a próxima leitura com recuo.
  */
 export class CollectorCursors {
@@ -118,6 +120,22 @@ export class CollectorCursors {
     await this.prisma.collectorCursor.updateMany({
       where: { ...uniqueKey(key), nextRunAt: { lt: until } },
       data: { nextRunAt: until },
+    });
+  }
+
+  /**
+   * Grava só a continuação, sem registrar sucesso nem falha e sem mexer na posição nem na próxima leitura: para o
+   * estado que o coletor precisa guardar antes de um pedido à fonte (o orçamento de consultas do token, gasto antes de
+   * a resposta chegar), que uma falha ou uma parada no meio não pode perder.
+   */
+  async note(key: CursorKey, continuation: string | null): Promise<void> {
+    if (continuation !== null && continuation.length > CONTINUATION_MAX) {
+      throw new RangeError(`continuação maior que ${CONTINUATION_MAX} caracteres`);
+    }
+    await this.prisma.collectorCursor.update({
+      where: { cloudAccountId_stream_region: uniqueKey(key) },
+      data: { continuation },
+      select: { id: true },
     });
   }
 

@@ -26,8 +26,8 @@ export interface FindingDraft {
   ruleLevel: number;
   /** Descrição da regra (o resumo em português vem do dicionário da T7.9). */
   title: string;
-  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit` ou `cloudflare_audit`. */
-  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit';
+  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit` ou `cloudflare_waf`. */
+  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'cloudflare_waf';
   eventName: string | null;
   region: string | null;
   resource: string | null;

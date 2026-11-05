@@ -68,7 +68,7 @@ export function connectionHint(
 
 /**
  * O que o código do erro de coleta do Cloudflare quer dizer, quando há uma explicação para quem administra a conta
- * (fase 2, PR-12). Os demais códigos aparecem só como tipo do erro. Os que param a coleta
+ * (fase 2, PR-12 e PR-13). Os demais códigos aparecem só como tipo do erro. Os que param a coleta
  * (`isCloudflareBlockingError`) pedem outro token.
  */
 const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
@@ -84,6 +84,10 @@ const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
   zone_not_found: 'Uma das zonas cadastradas não existe nesta conta do Cloudflare. Confira a lista de zonas.',
   zones_forbidden:
     'O token não lista as zonas da conta (falta a permissão Zone: Read). A auditoria continua sendo lida.',
+  security_events_forbidden:
+    'O token não lê os eventos de segurança das zonas (falta a permissão Analytics: Read). A auditoria continua sendo lida, e o Verax confere de novo a cada hora.',
+  security_events_not_entitled:
+    'O plano das zonas desta conta não dá acesso aos eventos de segurança pela API do Cloudflare. A auditoria continua sendo lida, e o Verax confere de novo a cada hora.',
 };
 
 /** O que fazer diante do erro da coleta de uma conta do Cloudflare; null para um código sem explicação. */

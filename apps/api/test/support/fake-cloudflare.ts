@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { createServer, type Server, type ServerResponse } from 'node:http';
+import { createHash, randomBytes } from 'node:crypto';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 /** Valores no formato do Cloudflare, gerados na hora: nenhum token, ID ou conta real no repositório. */
@@ -13,7 +13,53 @@ export const fakeCloudflare = {
   legacyToken: () => randomBytes(30).toString('base64url'),
   /** A Global API Key antiga: 37 hexadecimais minúsculos. */
   globalApiKey: () => randomBytes(19).toString('hex').slice(0, 37),
+  /** ID da zona (o `zoneTag` do GraphQL): 32 hexadecimais derivados da conta e do nome, únicos por conta. */
+  zoneTag: (accountId: string, name: string) =>
+    createHash('sha256').update(`${accountId}|${name}`).digest('hex').slice(0, 32),
 };
+
+/** Os limites de uma zona no nó `settings` (os do exemplo da documentação, por padrão). */
+export interface FakeZoneLimits {
+  enabled: boolean;
+  maxDuration: number;
+  maxPageSize: number;
+  notOlderThan: number;
+}
+
+export const DEFAULT_ZONE_LIMITS: FakeZoneLimits = {
+  enabled: true,
+  maxDuration: 259_200,
+  maxPageSize: 10_000,
+  notOlderThan: 2_678_400,
+};
+
+/** Um evento de segurança da zona (a contagem já agregada daquele minuto). */
+export interface FakeSecurityEvent {
+  at: string;
+  action: string;
+  source: string;
+  ip: string;
+  host?: string;
+  path?: string;
+  count?: number;
+}
+
+/** Zona com eventos de segurança: a conta dona, o nome, os limites (`null`: sem o nó) e os eventos. */
+export interface FakeSecurityZone {
+  accountId: string;
+  name: string;
+  limits: FakeZoneLimits | null;
+  events: FakeSecurityEvent[];
+}
+
+/** Um pedido ao GraphQL, já lido: a operação (pelo nome da consulta), as variáveis e o `limit` do primeiro nó. */
+export interface FakeGraphqlRequest {
+  operation: 'settings' | 'events' | 'paths' | 'unknown';
+  query: string;
+  variables: Record<string, unknown>;
+  limit: number | null;
+  authorization: string | undefined;
+}
 
 /** Como o Cloudflare falso trata um token. */
 export interface FakeToken {
@@ -34,6 +80,10 @@ export interface FakeToken {
   hang?: boolean;
   /** Sem `Zone Read`: a lista de zonas responde 403. */
   zoneRead?: boolean;
+  /** Sem `Analytics Read`: o GraphQL responde 403. */
+  analyticsRead?: boolean;
+  /** Zonas que o GraphQL deixa o token ler (as outras somem da resposta); sem a lista, as da conta do token. */
+  analyticsZones?: string[];
 }
 
 /** Uma resposta roteirizada da auditoria. Sem corpo, o corpo de erro repete o token (que nunca pode ir para o log). */
@@ -82,10 +132,30 @@ export class FakeCloudflareServer {
   readonly expiredCursors = new Set<string>();
   /** Zonas de cada conta. */
   readonly zones = new Map<string, string[]>();
+  /** Eventos de segurança de cada zona, pelo `zoneTag`. */
+  readonly securityZones = new Map<string, FakeSecurityZone>();
+  /** Respostas roteirizadas, uma por pedido ao GraphQL, antes da resposta normal. */
+  readonly graphqlScript: FakeResponse[] = [];
+  /** Os pedidos ao GraphQL, na ordem. */
+  readonly graphqlRequests: FakeGraphqlRequest[] = [];
   baseUrl = '';
 
   async start(): Promise<void> {
     this.server = createServer((request, response) => {
+      if (request.method === 'POST') {
+        const chunks: Buffer[] = [];
+        request.on('data', (chunk: Buffer) => chunks.push(chunk));
+        request.on('end', () => this.handle(request, response, Buffer.concat(chunks).toString('utf8')));
+        return;
+      }
+      this.handle(request, response, '');
+    });
+    await new Promise<void>((resolve) => this.server?.listen(0, '127.0.0.1', resolve));
+    this.baseUrl = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+  }
+
+  private handle(request: IncomingMessage, response: ServerResponse, body: string): void {
+    {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
       const authorization = request.headers.authorization;
       this.requests.push({
@@ -105,12 +175,12 @@ export class FakeCloudflareServer {
         response.statusCode = status;
         response.end(body);
       };
-      const verify = /^\/(?:accounts\/([0-9a-f]{32})|user)\/tokens\/verify$/.exec(url.pathname);
+      const verify = verifyPathOf(url.pathname);
       if (verify) {
         if (token?.verifyStatus)
           return send(token.verifyStatus, JSON.stringify({ success: false, errors: [] }));
         if (token?.verifyBody !== undefined) return send(200, token.verifyBody);
-        const accountPath = verify[1];
+        const accountPath = verify.accountId;
         const owns =
           token !== undefined &&
           (accountPath === undefined
@@ -134,8 +204,8 @@ export class FakeCloudflareServer {
           }),
         );
       }
-      const audit = /^\/accounts\/([0-9a-f]{32})\/logs\/audit$/.exec(url.pathname);
-      if (audit) {
+      const audit = accountPathOf(url.pathname, ['logs', 'audit']);
+      if (audit !== null) {
         // O coletor pede em ordem (`direction`); a leitura de prova da conferência do token, não.
         const scripted = url.searchParams.has('direction') ? this.auditScript.shift() : undefined;
         const delayMs = scripted?.delayMs;
@@ -167,7 +237,7 @@ export class FakeCloudflareServer {
           );
         }
         if (!token) return send(401, INVALID_TOKEN);
-        const accountId = audit[1] ?? '';
+        const accountId = audit;
         if (!token.auditAccounts?.includes(accountId)) {
           return send(
             403,
@@ -199,10 +269,181 @@ export class FakeCloudflareServer {
         }
         return send(200, this.zonesPage(url.searchParams));
       }
+      if (url.pathname === '/graphql' && request.method === 'POST') {
+        const parsed = parseGraphql(body);
+        this.graphqlRequests.push({ ...parsed, authorization });
+        const scripted = this.graphqlScript.shift();
+        const delayMs = scripted?.delayMs;
+        const deliver =
+          delayMs === undefined
+            ? send
+            : (status: number, text: string) => {
+                const timer = setTimeout(() => {
+                  this.timers.delete(timer);
+                  if (!response.destroyed) send(status, text);
+                }, delayMs);
+                this.timers.add(timer);
+              };
+        if (scripted && scripted.pass !== true) {
+          if (scripted.hang) {
+            this.hanging.push(response);
+            return;
+          }
+          for (const [name, header] of Object.entries(scripted.headers ?? {}))
+            response.setHeader(name, header);
+          return send(
+            scripted.status,
+            scripted.body ?? JSON.stringify({ data: null, errors: [{ message: `Erro da origem ${value}` }] }),
+          );
+        }
+        if (!token) return send(401, INVALID_TOKEN);
+        if (token.analyticsRead === false) {
+          return send(
+            403,
+            JSON.stringify({ data: null, errors: [{ message: `not authorized for that account ${value}` }] }),
+          );
+        }
+        return deliver(200, this.graphqlResponse(token, parsed));
+      }
       return send(404, JSON.stringify({ success: false, errors: [{ code: 7003, message: 'No route' }] }));
+    }
+  }
+
+  /** A resposta do GraphQL como a API daria: só as zonas pedidas que o token lê, com o nó da operação. */
+  private graphqlResponse(token: FakeToken, request: ReturnType<typeof parseGraphql>): string {
+    const tags = Array.isArray(request.variables['zoneTags'])
+      ? (request.variables['zoneTags'] as string[])
+      : [];
+    const readable = tags.filter((tag) => {
+      const zone = this.securityZones.get(tag);
+      if (zone === undefined) return false;
+      return token.analyticsZones ? token.analyticsZones.includes(tag) : zone.accountId === token.accountId;
     });
-    await new Promise<void>((resolve) => this.server?.listen(0, '127.0.0.1', resolve));
-    this.baseUrl = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+    const time = (name: string) => {
+      const value = request.variables[name];
+      return typeof value === 'string' ? Date.parse(value) : Number.NaN;
+    };
+    if (request.operation === 'settings') {
+      return JSON.stringify({
+        data: {
+          viewer: {
+            zones: readable.map((tag) => ({
+              zoneTag: tag,
+              settings: { firewallEventsAdaptiveGroups: this.securityZones.get(tag)?.limits ?? null },
+            })),
+          },
+        },
+        errors: null,
+      });
+    }
+    const blocked = readable.find((tag) => this.securityZones.get(tag)?.limits?.enabled === false);
+    if (blocked !== undefined) {
+      return JSON.stringify({
+        data: null,
+        errors: [
+          { message: `zone '${blocked}' does not have access to the path`, path: ['viewer', 'zones', '0'] },
+        ],
+      });
+    }
+    const since = time('since');
+    const until = time('until');
+    const limit = request.limit ?? 100;
+    const inside = (event: FakeSecurityEvent, from: number, to: number) => {
+      const at = Date.parse(event.at);
+      return at >= from && at < to;
+    };
+    if (request.operation === 'paths') {
+      const ips = new Set(
+        Array.isArray(request.variables['clientIPs']) ? (request.variables['clientIPs'] as string[]) : [],
+      );
+      return JSON.stringify({
+        data: {
+          viewer: {
+            zones: readable.map((tag) => {
+              const groups = new Map<string, { count: number; dimensions: Record<string, string | null> }>();
+              for (const event of this.securityZones.get(tag)?.events ?? []) {
+                if (!inside(event, since, until) || !ips.has(event.ip)) continue;
+                const key = [event.ip, event.source, event.path ?? ''].join('|');
+                const group = groups.get(key) ?? {
+                  count: 0,
+                  dimensions: {
+                    clientIP: event.ip,
+                    source: event.source,
+                    clientRequestPath: event.path ?? null,
+                  },
+                };
+                group.count += event.count ?? 1;
+                groups.set(key, group);
+              }
+              return { zoneTag: tag, paths: sortGroups([...groups.values()]).slice(0, limit) };
+            }),
+          },
+        },
+        errors: null,
+      });
+    }
+    const baselineSince = time('baselineSince');
+    return JSON.stringify({
+      data: {
+        viewer: {
+          zones: readable.map((tag) => {
+            const events = this.securityZones.get(tag)?.events ?? [];
+            const groups = new Map<string, { count: number; dimensions: Record<string, string | null> }>();
+            for (const event of events) {
+              if (!inside(event, since, until)) continue;
+              const key = [event.action, event.source, event.ip, event.host ?? ''].join('|');
+              const group = groups.get(key) ?? {
+                count: 0,
+                dimensions: {
+                  action: event.action,
+                  source: event.source,
+                  clientIP: event.ip,
+                  clientRequestHTTPHost: event.host ?? null,
+                },
+              };
+              group.count += event.count ?? 1;
+              groups.set(key, group);
+            }
+            const baseline = events
+              .filter((event) => inside(event, baselineSince, since))
+              .reduce((sum, event) => sum + (event.count ?? 1), 0);
+            return {
+              zoneTag: tag,
+              events: sortGroups([...groups.values()]).slice(0, limit),
+              ...(!Number.isNaN(baselineSince) && { baseline: [{ count: baseline }] }),
+            };
+          }),
+        },
+      },
+      errors: null,
+    });
+  }
+
+  /** Uma zona da conta, na lista de zonas (REST) e no GraphQL, e o `zoneTag` dela. */
+  addSecurityZone(
+    accountId: string,
+    name: string,
+    { limits = DEFAULT_ZONE_LIMITS }: { limits?: FakeZoneLimits | null } = {},
+  ): string {
+    const tag = fakeCloudflare.zoneTag(accountId, name);
+    this.zones.set(accountId, [...(this.zones.get(accountId) ?? []), name]);
+    this.securityZones.set(tag, { accountId, name, limits, events: [] });
+    return tag;
+  }
+
+  addSecurityEvents(zoneTag: string, ...events: FakeSecurityEvent[]): void {
+    const zone = this.securityZones.get(zoneTag);
+    if (zone === undefined) throw new Error('zona desconhecida no Cloudflare falso');
+    zone.events.push(...events);
+  }
+
+  /** Pedidos ao GraphQL com o token (e da operação, quando informada). */
+  graphqlReads(token?: string, operation?: FakeGraphqlRequest['operation']): FakeGraphqlRequest[] {
+    return this.graphqlRequests.filter(
+      (request) =>
+        (token === undefined || request.authorization === `Bearer ${token}`) &&
+        (operation === undefined || request.operation === operation),
+    );
   }
 
   /**
@@ -265,8 +506,8 @@ export class FakeCloudflareServer {
       success: true,
       errors: [],
       messages: [],
-      result: slice.map((name, index) => ({
-        id: `${(page * 1000 + index).toString(16).padStart(32, '0')}`,
+      result: slice.map((name) => ({
+        id: fakeCloudflare.zoneTag(accountId, name),
         name,
         status: 'active',
         paused: false,
@@ -321,4 +562,73 @@ export class FakeCloudflareServer {
     this.server?.closeAllConnections();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));
   }
+}
+
+/** O corpo de um pedido ao GraphQL: a operação pelo nome da consulta, as variáveis e o primeiro `limit` literal. */
+function parseGraphql(body: string): Omit<FakeGraphqlRequest, 'authorization'> {
+  let json: { query?: unknown; variables?: unknown } = {};
+  try {
+    json = JSON.parse(body) as typeof json;
+  } catch {
+    json = {};
+  }
+  const query = typeof json.query === 'string' ? json.query : '';
+  const variables =
+    typeof json.variables === 'object' && json.variables !== null
+      ? (json.variables as Record<string, unknown>)
+      : {};
+  const operation = query.includes('VeraxSecuritySettings')
+    ? 'settings'
+    : query.includes('VeraxSecurityEvents')
+      ? 'events'
+      : query.includes('VeraxRateLimitPaths')
+        ? 'paths'
+        : 'unknown';
+  return { operation, query, variables, limit: firstLimit(query) };
+}
+
+/** Grupos em ordem decrescente de contagem (e pelas dimensões, no empate, para a ordem ser estável). */
+function sortGroups<T extends { count: number; dimensions: Record<string, string | null> }>(
+  groups: T[],
+): T[] {
+  return groups.sort(
+    (a, b) => b.count - a.count || JSON.stringify(a.dimensions).localeCompare(JSON.stringify(b.dimensions)),
+  );
+}
+
+/** 32 hexadecimais minúsculos (ID de conta do Cloudflare), sem regex. */
+function isHex32(value: string | undefined): value is string {
+  if (value?.length !== 32) return false;
+  for (const char of value) {
+    if (!((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f'))) return false;
+  }
+  return true;
+}
+
+/** `/accounts/<conta>/<resto>`: a conta, quando o caminho é esse; senão, `null`. Por partes, sem regex. */
+function accountPathOf(pathname: string, rest: readonly string[]): string | null {
+  const [empty, accounts, accountId, ...tail] = pathname.split('/');
+  if (empty !== '' || accounts !== 'accounts' || !isHex32(accountId)) return null;
+  if (tail.length !== rest.length || tail.some((part, index) => part !== rest[index])) return null;
+  return accountId;
+}
+
+/** O verify de conta (`/accounts/<conta>/tokens/verify`) ou de usuário (`/user/tokens/verify`). */
+function verifyPathOf(pathname: string): { accountId: string | undefined } | null {
+  if (pathname === '/user/tokens/verify') return { accountId: undefined };
+  const accountId = accountPathOf(pathname, ['tokens', 'verify']);
+  return accountId === null ? null : { accountId };
+}
+
+/** O primeiro `limit: <número>` literal da consulta (o do nó dos eventos). */
+function firstLimit(query: string): number | null {
+  const marker = 'limit: ';
+  const at = query.indexOf(marker);
+  if (at < 0) return null;
+  let digits = '';
+  for (const char of query.slice(at + marker.length)) {
+    if (char < '0' || char > '9') break;
+    digits += char;
+  }
+  return digits === '' ? null : Number(digits);
 }
