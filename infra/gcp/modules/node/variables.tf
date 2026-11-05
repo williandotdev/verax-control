@@ -142,6 +142,54 @@ variable "bootstrap_secret" {
   default     = true
 }
 
+variable "support_bootstrap_secret" {
+  description = "Cria o cofre `support-bootstrap`, onde a VM grava a senha temporária da conta de suporte da Verax numa instalação sem SSH (CP-10). A VM só grava (`secretVersionAdder`), e este Terraform não dá acesso a mais ninguém: quem lê é o responsável, com as permissões dele no projeto. Fica fora do `admin-bootstrap` porque a revelação ao cliente (CP-05) lê a versão `latest` daquele cofre. Falso por padrão: os nós que já existem não mudam."
+  type        = bool
+  default     = false
+}
+
+variable "guest_attributes" {
+  description = "Liga os atributos de convidado da VM (`enable-guest-attributes` nos metadados): o worker do nó grava o próprio estado no espaço `verax/` e o plano de controle lê pela API do Compute, sem entrar na VM. Falso por padrão: os nós que já existem não mudam."
+  type        = bool
+  default     = false
+}
+
+variable "install_config" {
+  description = "Liga a configuração do nó nos metadados da VM, para a instalação sem operador (PR-N7) e o bootstrap das contas do cliente (CP-10): as chaves `verax-*` de `install_metadata` e as que só o módulo conhece (`node_derived_values`, em node.tf). Falso por padrão: nenhuma chave `verax-*`, e os metadados ficam como antes."
+  type        = bool
+  default     = false
+}
+
+variable "install_metadata" {
+  description = "Chaves `verax-*` que o ambiente põe nos metadados da VM com `install_config`: o envs/tenant manda as do cliente (plano, versão, endereços, e-mails e nome; a lista está em node.tf e em docs/ARQUITETURA.md). Nada aqui é segredo; os e-mails e o nome do cliente são dados de cadastro, que ficam nos metadados enquanto o nó existir. O formato de cada valor é conferido no ambiente; aqui, o nome das chaves e que nenhum valor tem caractere de controle. Vazio (o padrão) sem `install_config`."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for key in keys(var.install_metadata) :
+      can(regex("^verax-[a-z0-9]+(-[a-z0-9]+)*$", key)) && !contains([
+        "verax-config-version", "verax-node-profile", "verax-secret-prefix", "verax-credentials-vault",
+        "verax-backup-bucket", "verax-node-sa-unique-id",
+      ], key)
+    ])
+    error_message = "As chaves de install_metadata começam com verax-, em minúsculas, e não repetem as que o módulo acrescenta (verax-config-version, verax-node-profile, verax-secret-prefix, verax-credentials-vault, verax-backup-bucket, verax-node-sa-unique-id)."
+  }
+
+  # As duas andam juntas: as chaves do ambiente sem as do módulo (ou o contrário) deixariam a instalação pela metade.
+  validation {
+    condition     = var.install_config == (length(var.install_metadata) > 0)
+    error_message = "install_metadata é preenchida se, e só se, install_config for verdadeiro."
+  }
+
+  # O valor vai para os metadados e de lá para o node.conf: uma quebra de linha (ou outro caractere de controle) num
+  # valor viraria outra linha, outra variável, no arquivo. Vazio é "não definido" (um limite do plano que não veio).
+  validation {
+    condition     = alltrue([for value in values(var.install_metadata) : length(value) <= 400 && !can(regex("[[:cntrl:]]", value))])
+    error_message = "Cada valor de install_metadata tem até 400 caracteres, sem quebra de linha nem outro caractere de controle."
+  }
+}
+
 variable "turnstile_secret" {
   description = "Cria o cofre `turnstile-secret-key` (chave secreta do Cloudflare Turnstile, que o nó lê para conferir o desafio do login). Falso por padrão: o nó da Verax, já no ar, liga numa mudança no lugar."
   type        = bool
