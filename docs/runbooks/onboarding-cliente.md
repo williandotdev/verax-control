@@ -84,7 +84,16 @@ Na reunião:
    chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
    `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe. Cada pessoa pode
    desligar os avisos de incidente em **Minha conta** (no cabeçalho), e a coluna "Recebe alertas" de Usuários mostra
-   quem recebe; o contato de escalonamento do cadastro do cliente não recebe e-mail automático.
+   quem recebe.
+
+   **Contato de escalonamento (D8).** O contato do cadastro do cliente recebe só os avisos críticos (incidente crítico
+   e achado crítico), e só depois de confirmar o endereço pelo link de um e-mail que o nó manda ao cadastrar ou trocar
+   o endereço (o link vale 72 horas e uma vez). Cada aviso a ele traz o link para deixar de receber. A situação
+   ("Aguardando confirmação", "Confirmado" ou "Descadastrado") aparece no cadastro do cliente, para a Verax, e em
+   **Administração → Escalonamento**, para o administrador do cliente, que também troca o contato por ali; os dois têm
+   "Reenviar confirmação" (o e-mail não chegou, o link venceu, ou o contato se descadastrou e pediu para voltar). Com o
+   e-mail desligado no nó, o pedido de confirmação não sai, e a tela diz isso. Os contatos cadastrados antes deste
+   controle começam aguardando a confirmação, sem e-mail: peça a confirmação pelo painel quando o SMTP estiver ligado.
 
    **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
    usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para

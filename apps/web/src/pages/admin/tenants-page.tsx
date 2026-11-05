@@ -19,6 +19,8 @@ import {
   useUpdateTenant,
 } from '@/features/admin/admin-api';
 import { AdminShell, FormError } from '@/features/admin/admin-ui';
+import { useRequestTenantEscalationConfirmation } from '@/features/escalation/escalation-api';
+import { EscalationContactStatus } from '@/features/escalation/escalation-contact-status';
 import { fieldErrors } from '@/features/admin/forms';
 import { TENANT_STATUS_LABELS } from '@/features/admin/labels';
 import { TemporaryPasswordNotice } from '@/features/admin/temporary-password';
@@ -104,9 +106,11 @@ export function TenantsPage() {
 
 function ExistingTenant({ id, onDone }: { id: string; onDone: () => void }) {
   const tenant = useTenant(id);
+  // Fica fora do formulário, que é recriado a cada versão do cadastro: o aviso do pedido sobrevive à releitura.
+  const resend = useRequestTenantEscalationConfirmation(id);
   if (tenant.isError) return <ErrorState error={tenant.error} onRetry={() => void tenant.refetch()} />;
   if (!tenant.data) return <LoadingState rows={6} label="Carregando o cliente" />;
-  return <TenantForm key={tenant.data.updatedAt} tenant={tenant.data} onDone={onDone} />;
+  return <TenantForm key={tenant.data.updatedAt} tenant={tenant.data} onDone={onDone} resend={resend} />;
 }
 
 interface TenantValues {
@@ -123,9 +127,11 @@ interface TenantValues {
 function TenantForm({
   tenant,
   onDone,
+  resend,
 }: {
   tenant?: NonNullable<ReturnType<typeof useTenant>['data']>;
   onDone: () => void;
+  resend?: ReturnType<typeof useRequestTenantEscalationConfirmation>;
 }) {
   const [values, setValues] = useState<TenantValues>({
     name: tenant?.name ?? '',
@@ -206,7 +212,14 @@ function TenantForm({
       <Field label="Plano" value={values.plan} onChange={set('plan')} error={errors['plan']} maxLength={60} />
       <fieldset className="space-y-3 rounded-md border p-3">
         <legend className="px-1 text-sm font-medium">Contato de escalonamento</legend>
-        <p className="text-xs text-muted-foreground">Quem a Verax aciona num incidente grave.</p>
+        <p className="text-xs text-muted-foreground">
+          Quem a Verax e o cliente acionam num incidente grave. O endereço recebe um e-mail para confirmar e,
+          só depois disso, os avisos críticos, cada um com o link para deixar de receber. Trocar o e-mail pede
+          uma nova confirmação.
+        </p>
+        {tenant?.escalationContact && resend && (
+          <EscalationContactStatus contact={tenant.escalationContact} resend={resend} />
+        )}
         <Field
           label="Nome do contato"
           value={values.contactName}

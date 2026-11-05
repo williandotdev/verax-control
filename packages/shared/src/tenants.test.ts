@@ -97,7 +97,15 @@ describe('primeiro administrador do cliente', () => {
       status: 'active',
       cnpj: '11222333000181',
       plan: 'Essencial',
-      escalationContact: { name: 'Ana', email: 'ana@cliente.example', phone: null },
+      escalationContact: {
+        name: 'Ana',
+        email: 'ana@cliente.example',
+        phone: null,
+        status: 'pending',
+        confirmedAt: null,
+        unsubscribedAt: null,
+        confirmationEmail: { status: 'queued', at: '2026-11-04T12:00:00.000Z' },
+      },
       createdAt: '2026-11-04T12:00:00.000Z',
       updatedAt: '2026-11-04T12:00:00.000Z',
     };

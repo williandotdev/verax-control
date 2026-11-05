@@ -80,37 +80,52 @@ enum TenantStatus {
 
 /// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
 /// causa dos clientes criados antes do cadastro completo.
+/// Contato de escalonamento do cliente (D8): aguardando confirmação, confirmado ou descadastrado pelo link do e-mail.
+enum EscalationContactState {
+  pending
+  confirmed
+  unsubscribed
+}
+
 model Tenant {
-  id                 String                   @id @default(uuid(7)) @db.Uuid
-  name               String                   @db.VarChar(120)
+  id                       String                   @id @default(uuid(7)) @db.Uuid
+  name                     String                   @db.VarChar(120)
   /// 14 caracteres, sem máscara (numérico ou alfanumérico).
-  cnpj               String?                  @unique @db.VarChar(14)
-  plan               String?                  @db.VarChar(60)
-  escalationName     String?                  @db.VarChar(120)
-  escalationEmail    String?                  @db.VarChar(254)
-  escalationPhone    String?                  @db.VarChar(20)
-  status             TenantStatus             @default(active)
-  createdAt          DateTime                 @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime                 @updatedAt @db.Timestamptz(3)
-  users              User[]
-  cloudAccounts      CloudAccount[]
-  protectedResources ProtectedResource[]
-  alertExceptions    AlertException[]
-  findings           Finding[]
-  findingComments    FindingComment[]
-  incidents          Incident[]
-  postureScans       PostureScan[]
-  postureFailures    PostureFailure[]
-  inventorySnapshots InventorySnapshot[]
-  ingestUsage        IngestUsage[]
-  ingestHealth       IngestHealth[]
-  cloudCredentials   CloudCredential[]
-  wazuhAgents        WazuhAgent[]
-  notifications      Notification[]
-  notificationPrefs  NotificationPreference[]
-  noticeDigests      NotificationDigest[]
+  cnpj                     String?                  @unique @db.VarChar(14)
+  plan                     String?                  @db.VarChar(60)
+  escalationName           String?                  @db.VarChar(120)
+  escalationEmail          String?                  @db.VarChar(254)
+  escalationPhone          String?                  @db.VarChar(20)
+  /// Estado do contato de escalonamento (D8): nulo sem contato. Endereço novo começa em `pending`, e só o `confirmed`
+  /// recebe os avisos críticos.
+  escalationState          EscalationContactState?
+  /// Sobe a cada endereço novo e a cada confirmação pedida de novo: os links dos e-mails anteriores deixam de valer.
+  escalationGeneration     Int                      @default(0)
+  escalationConfirmedAt    DateTime?                @db.Timestamptz(3)
+  escalationUnsubscribedAt DateTime?                @db.Timestamptz(3)
+  status                   TenantStatus             @default(active)
+  createdAt                DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                 @updatedAt @db.Timestamptz(3)
+  users                    User[]
+  cloudAccounts            CloudAccount[]
+  protectedResources       ProtectedResource[]
+  alertExceptions          AlertException[]
+  findings                 Finding[]
+  findingComments          FindingComment[]
+  incidents                Incident[]
+  postureScans             PostureScan[]
+  postureFailures          PostureFailure[]
+  inventorySnapshots       InventorySnapshot[]
+  ingestUsage              IngestUsage[]
+  ingestHealth             IngestHealth[]
+  cloudCredentials         CloudCredential[]
+  wazuhAgents              WazuhAgent[]
+  notifications            Notification[]
+  notificationPrefs        NotificationPreference[]
+  noticeDigests            NotificationDigest[]
+  escalationTokens         EscalationContactToken[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
-  activeSessions     Session[]
+  activeSessions           Session[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -851,6 +866,16 @@ enum NotificationKind {
   critical_finding
   aws_ingestion_stalled
   plan_usage
+  /// O pedido de confirmação ao contato de escalonamento (D8): o worker gera o link de uso único no envio.
+  escalation_confirmation
+}
+
+/// O contato de escalonamento e um aviso crítico (D8): recebeu (`sent`), não recebeu porque passou do limite de e-mails
+/// da hora (`limited`; ele não recebe resumo) ou porque o aviso tinha 24 h ou mais na fila (`stale`).
+enum EscalationDelivery {
+  sent
+  limited
+  stale
 }
 
 /// Estado do aviso na fila de saída: `skipped` é o que não sai (nó sem e-mail, ninguém para receber, aviso de 80%
@@ -868,38 +893,44 @@ enum NotificationStatus {
 /// aviso só, por mais que seja relido. Os destinatários não ficam aqui: são resolvidos no envio, e só o id de quem já
 /// recebeu fica guardado (a nova tentativa não repete o e-mail). Nenhum endereço de e-mail é gravado.
 model Notification {
-  id               String             @id @default(uuid(7)) @db.Uuid
-  tenantId         String             @db.Uuid
-  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  kind             NotificationKind
+  id                    String              @id @default(uuid(7)) @db.Uuid
+  tenantId              String              @db.Uuid
+  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind                  NotificationKind
   /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`.
-  dedupeKey        String             @db.VarChar(128)
+  dedupeKey             String              @db.VarChar(128)
   /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
-  severity         FindingSeverity?
+  severity              FindingSeverity?
   /// Incidente do aviso; um gatilho no banco confere que é do mesmo cliente. Apagar o incidente apaga o aviso.
-  incidentId       String?            @db.Uuid
-  incident         Incident?          @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  incidentId            String?             @db.Uuid
+  incident              Incident?           @relation(fields: [incidentId], references: [id], onDelete: Cascade)
   /// Achado crítico fora de incidente. A chave estrangeira inclui o cliente.
-  findingId        String?            @db.Uuid
-  finding          Finding?           @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  findingId             String?             @db.Uuid
+  finding               Finding?            @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
   /// Volume do plano: o mês (primeiro dia, calendário de Brasília) e a faixa alcançada (80 ou 100).
-  usageMonth       DateTime?          @db.Date
-  usagePercent     Int?               @db.SmallInt
-  status           NotificationStatus @default(pending)
+  usageMonth            DateTime?           @db.Date
+  usagePercent          Int?                @db.SmallInt
+  status                NotificationStatus  @default(pending)
   /// Tentativas de envio feitas (no máximo 5; recuo de 1, 5, 15 e 60 min entre elas).
-  attempts         Int                @default(0) @db.SmallInt
-  nextAttemptAt    DateTime           @default(now()) @db.Timestamptz(3)
+  attempts              Int                 @default(0) @db.SmallInt
+  nextAttemptAt         DateTime            @default(now()) @db.Timestamptz(3)
   /// Tipo do último erro do envio, ou o motivo de `skipped` (`mail_disabled`, `no_recipients`, `superseded`). Nunca a
   /// mensagem do servidor, que pode citar o endereço.
-  lastError        String?            @db.VarChar(64)
+  lastError             String?             @db.VarChar(64)
   /// Usuários que já receberam este aviso (o id, nunca o e-mail).
-  deliveredUserIds String[]           @default([])
+  deliveredUserIds      String[]            @default([])
   /// Usuários para quem o aviso entrou no resumo da hora ou no de retomada (`NotificationDigest`), em vez do e-mail
   /// avulso (fase 2, PR-17'). O id, nunca o e-mail.
-  digestedUserIds  String[]           @default([])
-  sentAt           DateTime?          @db.Timestamptz(3)
-  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+  digestedUserIds       String[]            @default([])
+  /// `escalation_confirmation`: a geração do endereço que o e-mail confirma (`Tenant.escalationGeneration`).
+  escalationGeneration  Int?
+  /// Avisos críticos: o que aconteceu com o contato de escalonamento (nulo enquanto não decidido, ou se ele não recebe
+  /// este aviso). Como os ids de usuário acima, a nova tentativa não repete o e-mail para ele.
+  escalationDelivery    EscalationDelivery?
+  escalationDeliveredAt DateTime?           @db.Timestamptz(3)
+  sentAt                DateTime?           @db.Timestamptz(3)
+  createdAt             DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime            @updatedAt @db.Timestamptz(3)
 
   @@unique([tenantId, dedupeKey])
   @@index([status, nextAttemptAt])
@@ -955,4 +986,36 @@ model NotificationDigest {
   @@unique([tenantId, userId, hourStart])
   @@index([status, nextAttemptAt])
   @@index([userId])
+}
+
+/// Para que serve o link do e-mail do contato de escalonamento (D8).
+enum EscalationTokenPurpose {
+  confirm
+  unsubscribe
+}
+
+/// Link de um e-mail ao contato de escalonamento (D8): confirmar o endereço (uso único, 72 h) ou deixar de receber (um
+/// ano, idempotente). Só o SHA-256 do valor fica aqui; o valor existe só no e-mail. Vale para a geração do endereço em
+/// que nasceu: um endereço novo ou uma confirmação pedida de novo apaga os links anteriores.
+model EscalationContactToken {
+  /// SHA-256, em hexadecimal, do valor do link.
+  tokenHash  String                 @id @db.Char(64)
+  tenantId   String                 @db.Uuid
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  purpose    EscalationTokenPurpose
+  generation Int
+  expiresAt  DateTime               @db.Timestamptz(3)
+  createdAt  DateTime               @default(now()) @db.Timestamptz(3)
+
+  @@index([tenantId, generation])
+}
+
+/// Limite por IP das rotas públicas dos links do contato de escalonamento (D8), em janela fixa. Sem dado de cliente.
+model PublicLinkAttempt {
+  /// `escalation-link:<ip>`.
+  key         String   @id @db.VarChar(100)
+  count       Int
+  windowStart DateTime @db.Timestamptz(3)
+
+  @@index([windowStart])
 }

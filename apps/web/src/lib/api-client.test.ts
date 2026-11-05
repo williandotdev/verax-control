@@ -71,6 +71,23 @@ describe('ApiClient', () => {
     expect((call(0).init.headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
   });
 
+  it('as rotas públicas (os links do contato de escalonamento) também não pedem token CSRF nem levam ao login', async () => {
+    const onUnauthorized = vi.fn();
+    const { client, call, fetchMock } = setup(
+      [json(400, { code: 'ESCALATION_LINK_INVALID', message: 'x' })],
+      {
+        onUnauthorized,
+      },
+    );
+    await expect(client.post('/v1/public/escalation-contact/confirm', { token: 't' })).rejects.toMatchObject({
+      status: 400,
+      code: 'ESCALATION_LINK_INVALID',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((call(0).init.headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
   it('headers a mais da chamada vão junto (o token do Turnstile no login), sem tirar os de sempre', async () => {
     const { client, call } = setup([json(200, {})]);
     await client.post('/v1/auth/sign-in/email', { email: 'a@b.example' }, undefined, {

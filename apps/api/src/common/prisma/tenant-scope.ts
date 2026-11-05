@@ -23,6 +23,7 @@ export const TENANT_SCOPED_MODELS = [
   'notification',
   'notificationPreference',
   'notificationDigest',
+  'escalationContactToken',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

@@ -13,16 +13,24 @@ import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
+import {
+  type ConfirmationNotice,
+  ESCALATION_SELECT,
+  escalationContactCreate,
+  escalationContactUpdate,
+  latestConfirmation,
+  lockTenantRow,
+  queueEscalationConfirmation,
+  restartEscalationConfirmation,
+  toEscalationContact,
+} from '../escalation/escalation-contact-store.js';
 import { UsersService } from '../users/users.service.js';
 
 const tenantSelect = {
-  id: true,
+  ...ESCALATION_SELECT,
   name: true,
   cnpj: true,
   plan: true,
-  escalationName: true,
-  escalationEmail: true,
-  escalationPhone: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -30,37 +38,27 @@ const tenantSelect = {
 
 type TenantRow = Prisma.TenantGetPayload<{ select: typeof tenantSelect }>;
 
-export function toTenant(row: TenantRow): Tenant {
+/** O cadastro como a API devolve, com o estado do contato de escalonamento e o último e-mail de confirmação dele. */
+export function toTenant(row: TenantRow, confirmation: ConfirmationNotice | null): Tenant {
   return {
     id: row.id,
     name: row.name,
     status: row.status,
     cnpj: row.cnpj,
     plan: row.plan,
-    escalationContact:
-      row.escalationName !== null && row.escalationEmail !== null
-        ? { name: row.escalationName, email: row.escalationEmail, phone: row.escalationPhone }
-        : null,
+    escalationContact: toEscalationContact(row, confirmation),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
 }
 
-function toData(input: Omit<TenantCreate, 'firstAdmin'> | TenantUpdate): Prisma.TenantUpdateInput {
-  const contact = input.escalationContact;
+/** Os campos cadastrais da alteração. O contato de escalonamento tem regra própria (`escalationContactUpdate`). */
+function toData(input: TenantUpdate): Prisma.TenantUpdateInput {
   return {
     name: input.name,
     cnpj: input.cnpj,
     plan: input.plan,
     ...('status' in input ? { status: input.status } : {}),
-    // O contato é substituído inteiro: telefone omitido vira vazio.
-    ...(contact
-      ? {
-          escalationName: contact.name,
-          escalationEmail: contact.email,
-          escalationPhone: contact.phone ?? null,
-        }
-      : {}),
   };
 }
 
@@ -74,6 +72,9 @@ const CNPJ_TAKEN = 'Já existe um cliente com este CNPJ';
 /**
  * Cadastro de clientes (T3.1). Operação global da Verax: só `admin_verax` chega aqui (permissões
  * `tenants:*`), sem escopo de cliente. Cada registro de auditoria entra na trilha do próprio cliente.
+ *
+ * O contato de escalonamento (D8) segue as regras de `escalation/escalation-contact-store.ts`: endereço novo volta a
+ * aguardar a confirmação, e o e-mail dela entra na fila de saída, na mesma transação da requisição.
  */
 @Injectable()
 export class TenantsService {
@@ -98,7 +99,7 @@ export class TenantsService {
   }
 
   async get(id: string): Promise<Tenant> {
-    return toTenant(await this.find(id));
+    return this.toFullTenant(await this.find(id));
   }
 
   /**
@@ -107,18 +108,20 @@ export class TenantsService {
    * a conta não puder ser criada (e-mail já usado), o cliente também não é.
    */
   async create(input: TenantCreate): Promise<TenantCreated> {
-    const { firstAdmin, ...fields } = input;
+    const { firstAdmin, escalationContact, ...fields } = input;
     let row: TenantRow;
     try {
       row = await this.prisma.db().tenant.create({
-        data: toData(fields) as Prisma.TenantCreateInput,
+        data: { ...fields, ...escalationContactCreate(escalationContact) },
         select: tenantSelect,
       });
     } catch (error) {
       if (isUniqueViolation(error)) throw new ApiError(HttpStatus.CONFLICT, CNPJ_TAKEN);
       throw error;
     }
-    const tenant = toTenant(row);
+    // O contato nasce aguardando a confirmação: o e-mail dela entra na fila junto com o cadastro.
+    await queueEscalationConfirmation(this.prisma.forTenant(row.id), row.escalationGeneration, new Date());
+    const tenant = await this.toFullTenant(row);
     const { user, ...temporary } = await this.users.provision(tenant.id, {
       ...firstAdmin,
       role: 'admin_cliente',
@@ -142,18 +145,28 @@ export class TenantsService {
   }
 
   async update(id: string, input: TenantUpdate): Promise<Tenant> {
-    const before = toTenant(await this.find(id));
+    // A linha fica travada até o fim da requisição antes da leitura: a troca do contato é decidida sobre o endereço e a
+    // geração de agora (`lockTenantRow`).
+    await lockTenantRow(this.prisma.db(), id);
+    const found = await this.find(id);
+    const before = await this.toFullTenant(found);
+    const contact = input.escalationContact ? escalationContactUpdate(found, input.escalationContact) : null;
     let row: TenantRow;
     try {
-      row = await this.prisma
-        .db()
-        .tenant.update({ where: { id }, data: toData(input), select: tenantSelect });
+      row = await this.prisma.db().tenant.update({
+        where: { id },
+        data: { ...toData(input), ...contact?.data },
+        select: tenantSelect,
+      });
     } catch (error) {
       if (isUniqueViolation(error)) throw new ApiError(HttpStatus.CONFLICT, CNPJ_TAKEN);
       throw error;
     }
+    if (contact?.restart) {
+      await queueEscalationConfirmation(this.prisma.forTenant(id), row.escalationGeneration, new Date());
+    }
     if (before.status === 'active' && row.status === 'inactive') await this.revokeAccess(id);
-    const after = toTenant(row);
+    const after = await this.toFullTenant(row);
     this.audit.describe({
       action:
         row.status === before.status
@@ -168,9 +181,30 @@ export class TenantsService {
     return after;
   }
 
+  /**
+   * Pede de novo a confirmação do contato de escalonamento (D8), com o mesmo endereço: o e-mail não chegou, o link
+   * venceu, ou o contato se descadastrou e pediu para voltar. Os links anteriores deixam de valer.
+   */
+  async requestEscalationConfirmation(id: string): Promise<Tenant> {
+    await lockTenantRow(this.prisma.db(), id);
+    await this.find(id);
+    const db = this.prisma.forTenant(id);
+    const { before } = await restartEscalationConfirmation(db, id, new Date());
+    const tenant = await this.toFullTenant(await this.find(id));
+    this.audit.describe({
+      action: 'escalation_contact.resend',
+      resourceType: 'tenant',
+      resourceId: id,
+      tenantId: id,
+      before: toEscalationContact(before, await latestConfirmation(db, before.escalationGeneration)),
+      after: tenant.escalationContact,
+    });
+    return tenant;
+  }
+
   /** Exclusão lógica: o cliente fica inativo, e ninguém dele continua logado. */
   async deactivate(id: string): Promise<void> {
-    const before = toTenant(await this.find(id));
+    const before = await this.toFullTenant(await this.find(id));
     const row = await this.prisma
       .db()
       .tenant.update({ where: { id }, data: { status: 'inactive' }, select: tenantSelect });
@@ -181,8 +215,17 @@ export class TenantsService {
       resourceId: id,
       tenantId: id,
       before,
-      after: toTenant(row),
+      after: await this.toFullTenant(row),
     });
+  }
+
+  /** O cadastro com o último pedido de confirmação do contato, lido pelo escopo do próprio cliente. */
+  private async toFullTenant(row: TenantRow): Promise<Tenant> {
+    const confirmation =
+      row.escalationState === null
+        ? null
+        : await latestConfirmation(this.prisma.forTenant(row.id), row.escalationGeneration);
+    return toTenant(row, confirmation);
   }
 
   private async find(id: string): Promise<TenantRow> {

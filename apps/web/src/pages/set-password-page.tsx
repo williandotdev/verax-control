@@ -9,16 +9,7 @@ import {
   resetPassword,
 } from '@/features/auth/auth-api';
 import { AuthShell, FormError } from '@/features/auth/auth-shell';
-
-/**
- * Lê o token do fragmento da URL (`#token=…`) uma única vez e o apaga da barra de endereço, para ele não
- * ficar no histórico nem aparecer em captura de tela. O fragmento nunca é enviado a servidor nenhum.
- */
-function takeTokenFromFragment(): string | undefined {
-  const token = new URLSearchParams(window.location.hash.slice(1)).get('token') ?? undefined;
-  if (window.location.hash) window.history.replaceState(window.history.state, '', window.location.pathname);
-  return token;
-}
+import { takeTokenFromFragment } from '@/lib/fragment-token';
 
 /** Contas novas nascem com senha temporária; o link por e-mail serve só para redefinir a senha. */
 const COPY = {
