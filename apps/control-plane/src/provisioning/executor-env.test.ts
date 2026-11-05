@@ -8,6 +8,7 @@ import {
   isTenantEmail,
   isTenantName,
   nodeTenantName,
+  purgeExecutorEnv,
 } from './executor-env.js';
 import { subnetCidrOf } from './provisioning-store.js';
 
@@ -29,6 +30,39 @@ const input: ExecutorInput = {
   supportEmail: 'suporte@verax.example',
   imagesRepository: 'ghcr.io/williandotdev/verax-control',
 };
+
+describe('a ação de cada tipo de execução (CP-11)', () => {
+  it('apply só no provisionamento; destroy só na Exclusão 1 (a única que apaga a conta do nó)', () => {
+    expect(executorEnv({ ...input, kind: 'resume' })[1]).toEqual({ name: 'RUN_KIND', value: 'resume' });
+    const destroy = executorEnv({ ...input, action: 'destroy', kind: 'delete' });
+    expect(destroy.slice(0, 2)).toEqual([
+      { name: 'EXECUTOR_ACTION', value: 'destroy' },
+      { name: 'RUN_KIND', value: 'delete' },
+    ]);
+    for (const [action, kind] of [
+      ['destroy', 'provision'],
+      ['destroy', 'resume'],
+      ['apply', 'delete'],
+      ['apply', 'crypto_destroy'],
+      ['destroy', 'crypto_destroy'],
+    ] as const) {
+      expect(() => executorEnv({ ...input, action, kind })).toThrow(
+        new ExecutorInputError('EXECUTOR_ACTION'),
+      );
+    }
+  });
+
+  it('a Exclusão 2 leva só o endereço: nenhum dado do cliente', () => {
+    expect(purgeExecutorEnv({ runId: input.runId, slug: 'cliente-demo-a' })).toEqual([
+      { name: 'EXECUTOR_ACTION', value: 'purge' },
+      { name: 'RUN_KIND', value: 'crypto_destroy' },
+      { name: 'RUN_ID', value: input.runId },
+      { name: 'TENANT_SLUG', value: 'cliente-demo-a' },
+    ]);
+    expect(() => purgeExecutorEnv({ runId: 'x', slug: 'cliente-demo-a' })).toThrow(ExecutorInputError);
+    expect(() => purgeExecutorEnv({ runId: input.runId, slug: 'cl--iente' })).toThrow(ExecutorInputError);
+  });
+});
 
 describe('variáveis da execução do Job', () => {
   it('a lista inteira, na ordem, com os limites como texto (o entrypoint e o envs/tenant leem assim)', () => {

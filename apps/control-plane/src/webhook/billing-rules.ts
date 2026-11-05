@@ -48,10 +48,14 @@ export function resumeStateOf(tenant: Tenant): ResumeState | undefined {
   return undefined;
 }
 
-/** Sem os campos da inadimplência (de volta ao normal): só fica o `paidUntil`. */
-function clearDelinquency(billing: Tenant['billing'], paidUntil: Date | undefined): Tenant['billing'] {
+/** Sem os campos da inadimplência (de volta ao normal): só ficam o `paidUntil` e o modo de cobrança. */
+export function clearDelinquency(billing: Tenant['billing'], paidUntil: Date | undefined): Tenant['billing'] {
   const next = paidUntil ?? billing?.paidUntil;
-  return next === undefined ? undefined : { paidUntil: next };
+  const kept = {
+    ...(billing?.mode === undefined ? {} : { mode: billing.mode }),
+    ...(next === undefined ? {} : { paidUntil: next }),
+  };
+  return Object.keys(kept).length === 0 ? undefined : kept;
 }
 
 /** Cliente cancelado sem nunca ter provisionado nada: o subdomínio pode voltar a ser reservado. */
@@ -80,10 +84,13 @@ export function enterProvisioning(
   };
 }
 
-/** Cancelado (plano §4d): `exportUntil` e `deleteAfter` em +30 dias, `cryptoDestroyAfter` em +97 dias. */
+/**
+ * Cancelado (plano §4d): `exportUntil` e `deleteAfter` em +30 dias, `cryptoDestroyAfter` em +97 dias, contados de
+ * `ctx.at` (o evento da Stripe, ou o vencimento dos 30 dias sem pagar no `tick`, CP-11).
+ */
 export function cancelTenant(
   tenant: TenantRecord,
-  ctx: DecisionContext,
+  ctx: Omit<DecisionContext, 'eventId'> & { eventId?: string },
   reason: string,
   extra?: (tenant: Tenant) => Tenant,
 ): TenantChange | undefined {
@@ -131,13 +138,15 @@ function withSubscription(tenant: Tenant, subscription: SubscriptionSnapshot): T
  * `customer.subscription.*` (plano §4b): a assinatura relida decide. Encerrada → `canceled`; `unpaid` → `suspended`
  * (de `active`, `past_due` ou `waiting_customer_connection`); qualquer outra coisa só atualiza os campos da Stripe
  * (status, período, `cancel_at`, itens). Troca de preço não muda o plano: fica registrada nos itens e vira item de
- * suporte (quem decide é o processador, depois da transação).
+ * suporte (quem decide é o processador, depois da transação). Um cliente excluído (`deleted`) não volta a ganhar campos
+ * da Stripe: depois da Exclusão 2 ele é o registro mínimo (CP-11).
  */
 export function subscriptionChange(
   tenant: TenantRecord,
   subscription: SubscriptionSnapshot,
   ctx: DecisionContext,
 ): TenantChange | undefined {
+  if (tenant.state === 'deleted') return undefined;
   const sync = (current: Tenant): Tenant => withSubscription(current, subscription);
   if (ENDED_SUBSCRIPTION.has(subscription.status)) {
     return cancelTenant(tenant, ctx, 'subscription_ended', sync) ?? syncOnly(ctx, sync);
@@ -186,7 +195,9 @@ function syncOnly(ctx: DecisionContext, mutate: (tenant: Tenant) => Tenant): Ten
 export function isDelinquent(tenant: Tenant): boolean {
   return (
     tenant.state === 'past_due' ||
-    (tenant.state === 'suspended' && tenant.billing?.suspendedReason !== 'fraud_review')
+    (tenant.state === 'suspended' &&
+      tenant.billing?.suspendedReason !== 'fraud_review' &&
+      tenant.billing?.suspendedReason !== 'owner')
   );
 }
 

@@ -1117,17 +1117,17 @@ do preço configurável, documentos internos.
 
 ### Peças
 
-| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                           | Não faz                                                                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                 | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)     |
-| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                     | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                   |
-| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export`)                                                                         | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                  |
-| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás do IAP ligado direto no Cloud Run (sem balanceador)         | Console do responsável: as telas (`apps/console`) e a API das tabelas de preços e dos modelos de custo (rascunho, checagem, publicação), simulador de DRE                                                     | Só o responsável entra (IAP); o app confere de novo o JWT assinado do IAP; nenhum segredo, nem a chave da Stripe  |
-| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                               | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                               |
-| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h) | Nunca guarda segredo, senha, cartão, token do túnel nem corpo bruto do webhook                                    |
-| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                             | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                          |
-| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie; manifesto da versão e bundle do painel                                                                       | —                                                                                                                 |
-| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                  | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado |
+| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                                                 | Não faz                                                                                                           |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                                       | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)     |
+| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                                           | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                   |
+| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e `reactivate`), chamadas pelo console (`cp-admin`) | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                  |
+| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás do IAP ligado direto no Cloud Run (sem balanceador)         | Console do responsável: as telas (`apps/console`) e a API das tabelas de preços e dos modelos de custo (rascunho, checagem, publicação), simulador de DRE                                                                           | Só o responsável entra (IAP); o app confere de novo o JWT assinado do IAP; nenhum segredo, nem a chave da Stripe  |
+| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                                                     | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                               |
+| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h)                       | Nunca guarda segredo, senha, cartão, token do túnel nem corpo bruto do webhook                                    |
+| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                                                   | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                          |
+| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie; manifesto da versão e bundle do painel                                                                                             | —                                                                                                                 |
+| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                                        | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado |
 
 ### Identidades
 
@@ -1165,17 +1165,17 @@ grava a transição em `tenants/{id}/transitions` e a auditoria em `auditLog`. O
 que decide é relido na API; `event.id` é único (`stripeEvents`). Os passos do provisionamento usam uma trava por
 tenant (`lock{owner, expiresAt}`, 20 min renovados; vencida, é tomada), que os campos de cobrança nunca disputam.
 
-| Estado                        | Entra quando                                                                                                      | Ação                                                                                                   |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `pending`                     | `checkout.session.completed`: a reserva do subdomínio vira tenant                                                 | Cartão pago segue direto; boleto espera a compensação                                                  |
-| `provisioning`                | `invoice.paid` do 1.º ciclo ou `checkout.session.async_payment_succeeded`                                         | Enfileira o `preflight`; 10 passos idempotentes, um por task                                           |
-| `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)   | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado |
-| `waiting_customer_connection` | Passo `access.ready`                                                                                              | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez               |
-| `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                 | Monitoramento normal                                                                                   |
-| `past_due`                    | `invoice.payment_failed` numa renovação                                                                           | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar  |
-| `suspended`                   | Assinatura `unpaid`, carência vencida, disputa ou alerta de fraude (decisão humana)                               | VM parada (`instances.stop`); disco e snapshots ficam; `invoice.paid` reativa                          |
-| `canceled`                    | `customer.subscription.deleted`, reembolso integral na garantia, boleto do 1.º ciclo vencido ou 30 dias sem pagar | VM parada; exportação sob pedido por 30 dias; relógios de D+30 e D+97                                  |
-| `deleted`                     | `tick` com `deleteAfter` vencido, ou `delete-now` pelo responsável                                                | Exclusão em dois tempos (abaixo)                                                                       |
+| Estado                        | Entra quando                                                                                                                                                               | Ação                                                                                                    |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `pending`                     | `checkout.session.completed`: a reserva do subdomínio vira tenant                                                                                                          | Cartão pago segue direto; boleto espera a compensação                                                   |
+| `provisioning`                | `invoice.paid` do 1.º ciclo ou `checkout.session.async_payment_succeeded`                                                                                                  | Enfileira o `preflight`; 10 passos idempotentes, um por task                                            |
+| `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)                                                            | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado  |
+| `waiting_customer_connection` | Passo `access.ready`                                                                                                                                                       | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez                |
+| `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                                                                          | Monitoramento normal                                                                                    |
+| `past_due`                    | `invoice.payment_failed` numa renovação                                                                                                                                    | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar   |
+| `suspended`                   | Assinatura `unpaid`, carência vencida (`tick`), disputa ou alerta de fraude (decisão humana); no contrato direto, só o responsável                                         | VM parada (`node.stop`); disco e snapshots ficam; `invoice.paid` (ou o responsável) reativa e liga a VM |
+| `canceled`                    | `customer.subscription.deleted`, reembolso integral na garantia, boleto do 1.º ciclo vencido, 30 dias suspenso sem pagar (`tick`, D+37) ou o responsável (contrato direto) | VM parada; exportação sob pedido por 30 dias; relógios de D+30 e D+97                                   |
+| `deleted`                     | `tick` com `deleteAfter` vencido, ou `delete-now` pelo responsável                                                                                                         | Exclusão em dois tempos (abaixo)                                                                        |
 
 ### Página de status e revelação única da senha (CP-05)
 
@@ -1531,8 +1531,9 @@ release); usuário sem privilégio. O `entrypoint.sh` (`bash -p`):
 2. confere cada variável com a mesma regra do cp-worker (`executor-env.ts`) e do `envs/tenant` (a terceira conferência),
    sem nunca mostrar o valor; os valores chegam ao Terraform só por `TF_VAR_*`;
 3. `init` com `bucket=<TFSTATE_BUCKET>` e `prefix=tenants/<slug>` e o lock só leitura; `plan -out`; `show -json`;
-4. **recusa o plano** que apaga, recria ou esquece a conta de serviço do nó fora da exclusão do cliente (acima, em
-   "Exclusão em dois tempos"), e um plano que não dá para ler;
+4. **recusa o plano** que apaga, recria ou esquece a conta de serviço do nó fora da exclusão do cliente, e um plano que
+   não dá para ler; a ação é amarrada ao tipo da execução (`apply` em `provision`/`resume`, `destroy` em `delete`,
+   `purge` em `crypto_destroy`; a Exclusão 1 e a 2 estão em "Exclusão em dois tempos", CP-11);
 5. `apply` do plano conferido; as saídas da lista fixa do `envs/tenant` em `outputs.json`;
 6. grava `result.json` (`succeeded`, `invalid`, `refused` ou `failed`, com o código) e `outputs.json` em
    `runs/<slug>/<runId>/<execução>/` no bucket do estado, com o token da conta do Job pelo servidor de metadados num
@@ -1558,40 +1559,112 @@ sozinho; só uma versão nova (com o CP-09) resolve, e esperar esconderia do res
 com o cliente numa página "preparando" para sempre. Parar avisa na hora e não custa nada (nenhuma VM criada); depois
 da versão nova, `NODE_RELEASE` e o `resume`.
 
+### Ciclo de vida depois da venda: suspensão, reativação, cancelamento (CP-11)
+
+O relógio é o `tick` (`POST /internal/tick`, Cloud Scheduler a cada hora, token da cp-invoker; código em
+`apps/control-plane/src/lifecycle`). Cada parte decide de novo dentro da transação de cada cliente (`lifecycle-rules.ts`,
+regras puras), e a falha de uma não impede as outras (`event=tick_section_failed`):
+
+| Parte              | Quem                                                                                                   | O que faz                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `grace`            | `past_due` com `billing.graceUntil` vencido (D+7), cobrança pela Stripe                                | `suspended` (`grace_expired`), `unpaidSince` = o fim da carência                                                                                           |
+| `unpaid`           | `suspended` por `unpaid`/`grace_expired` há 30 dias (D+37), cobrança pela Stripe                       | A assinatura cancelada na Stripe (`cancel-unpaid-<tenantId>`, idempotente) e `canceled` com os prazos contados de D+37. Suspenso por `fraud_review`, nunca |
+| `contract_end`     | Contrato direto com `lifecycle.cancelScheduledFor` vencido                                             | `canceled` com essa data (o responsável a marcou)                                                                                                          |
+| `deletion`         | `canceled` com `lifecycle.deleteAfter` vencido                                                         | Exclusão 1 (abaixo)                                                                                                                                        |
+| `crypto_destroy`   | `deleted` com a Exclusão 1 terminada e `cryptoDestroyAfter` vencido                                    | Exclusão 2 (abaixo)                                                                                                                                        |
+| `deletion_redrive` | Exclusão em andamento, sem erro                                                                        | O passo atual de volta na fila (o mesmo id de task: o Cloud Tasks recusa o repetido)                                                                       |
+| `node_power`       | `suspended`/`canceled` com VM e sem `lifecycle.nodeStoppedAt`; `nodeStoppedAt` num estado de VM ligada | `node.stop` ou `node.start`                                                                                                                                |
+| `activation`       | `waiting_customer_connection` com `verax/accounts-connected >= 1` no nó                                | `active`                                                                                                                                                   |
+| `reveal_email`     | O plano B da revelação (CP-05)                                                                         | `RevealEmailService.dispatchDue`                                                                                                                           |
+
+**A VM (`node.stop` e `node.start`, fila `lifecycle`):** cada pedido é uma task com execução própria; o passo relê o
+cliente e só age se o estado ainda pede (uma task atrasada não para a VM de quem voltou a pagar), confere que o
+subdomínio é dele (`slugs/{slug}`) e usa só o `cpNodeLifecycle` (`instances.get/stop/start`, VMs `vx-*`). Parar consulta
+a cada 30 s até `TERMINATED` e grava `lifecycle.nodeStoppedAt`; ligar espera `RUNNING` e o `/health` da API pelo túnel,
+e só então apaga `nodeStoppedAt`. O disco e os snapshots ficam. O webhook (CP-04) pede o passo na hora da transição
+(suspenso ou cancelado → parar; `suspended` → `active`/`waiting_customer_connection` → ligar), sem derrubar a entrega se a
+fila falhar; o `tick` repete o pedido enquanto a VM não chega lá. O `tick` religa só a VM que ele mesmo parou
+(`nodeStoppedAt`): uma VM parada à mão pelo responsável num cliente ativo fica parada.
+
+**Contrato direto (`billing.mode = contract`):** cliente criado pelo responsável no console, sem assinatura na Stripe
+(sem o campo, `stripe`). O relógio nunca o suspende, cancela nem exclui por falta de evento da Stripe (`grace` e `unpaid`
+o ignoram, mesmo com os campos forjados). Suspender, reativar e cancelar (agora, ou numa data futura de até 2 anos, o fim
+do contrato; data no passado é recusada, para não encurtar o prazo da exclusão) são operações do responsável; o
+cancelamento segue os mesmos D+30 e D+97. Num cliente da Stripe, as três respondem 409 `stripe_managed`.
+
+**Operações do responsável no cp-worker:** `POST /internal/tenants/:id/{resume,delete-now,export,cancel,suspend,reactivate}`.
+Quem chama é o console do responsável (`cp-admin`, atrás do IAP), com o token de identidade da conta dele (audiência
+`WORKER_URL`; a conta é `ADMIN_SA_EMAIL`) e quem agiu no corpo (`actor`, o e-mail que o IAP deu ao console, conferido
+contra `OWNER_PRINCIPALS`), ou um responsável direto (`OWNER_PRINCIPALS`). Nunca a cp-invoker nem o cp-public, e o
+console nunca repassa o token de quem está no navegador. Todas são auditadas como `owner:<e-mail>` e, menos a exportação
+e o `resume`, pedem o subdomínio do cliente de novo (`confirmSlug`): um id trocado não age no cliente errado. O cliente
+HTTP que o console usa é `apps/control-plane/src/admin/worker-owner-client.ts`.
+
+**Exportação sob pedido (`export`):** de um cliente `canceled` dentro de `exportUntil` (30 dias); o responsável diz qual
+backup (`postgres/verax-<AAAAMMDD>T<HHMMSS>Z.dump`, o nome do `backup.sh`), e o plano de controle **nunca lista o
+bucket**: confere o objeto com um `HEAD` por um link assinado de 60 s e devolve um link V4 de 24 h (`GET`), assinado pelo
+`signBlob` da conta `EXPORT_SIGNER_SA_EMAIL` (nenhuma chave no plano de controle). O bucket é sempre o deste cliente
+(`<projeto-dos-nos>-vx-<slug>-backups`). O link é a credencial: nunca vai a log, à auditoria (que guarda o objeto e o
+prazo) nem ao Firestore. Sem a conta configurada, 503: hoje o plano de controle não alcança backup de cliente nenhum
+(decisão do responsável no GUIA, "O ciclo de vida (CP-11)").
+
 ### Exclusão em dois tempos
 
-| Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                                              |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
-| D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                                       |
+Só existe a partir de `canceled`, por dois caminhos: o `tick` com `deleteAfter` vencido e o `delete-now` do responsável
+(que adianta `deleteAfter` e fecha a exportação, mas não mexe em `cryptoDestroyAfter`: os backups saem pela retenção do
+bucket, contada do último backup). A tabela de transições só tem `canceled` → `deleted`, o motor dos passos ignora
+cliente fora de `deleted` (`not_deleting`), e o executor amarra a ação ao tipo da execução. O cliente entra em `deleted`
+no começo da Exclusão 1 (a página de status passa a responder 404) e `lifecycle.run` guarda o passo; uma falha
+definitiva para a execução com o código (`lifecycle.run.lastError`, linha `event=deletion_failed`), e o `delete-now`
+recomeça do primeiro passo da mesma fase (todos reconhecem o que já foi apagado). Quem nunca provisionou (sem
+`provisioning.runId`; o subdomínio dele pode ser de outro cliente agora) é excluído só no Firestore. Com recursos fora,
+o subdomínio tem de ser do cliente (`slugs/{slug}`), senão a exclusão para com `slug_not_owned` sem tocar em nada.
 
-**Feito no CP-07 (executor do Terraform):** o `entrypoint.sh` recusa, antes do `apply`, todo plano que apague, recrie
-ou esqueça `module.node.google_service_account.node` (no plano em JSON, uma ação `delete` ou `forget` nesse endereço,
-com ou sem índice, sozinha ou num `delete` + `create` em qualquer ordem), a menos que a execução seja da exclusão do
-cliente (`RUN_KIND` `delete` na Exclusão 1 ou `crypto_destroy` na Exclusão 2, CP-11); um `destroy` fora delas também é
-recusado. A conta recriada ganha outro ID único, e o papel de leitura na AWS do cliente deixaria de aceitar o nó
-(seção "Por que papel sem chave"); a recusa para a execução sem `apply` (`result.json` `refused`/`node_sa_replacement`)
-e o cp-worker leva o cliente a `provisioning_failed` com `terraform_refused:node_sa_replacement`, o que avisa a Verax.
-É a proteção que substitui o `prevent_destroy`, que não muda por variável e impediria a própria exclusão.
+| Momento              | Passos (fila `lifecycle`)                                                                                      | O que acontece                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D+30 do cancelamento | `deletion.terraform`, `deletion.terraform_wait`, `deletion.cloudflare`, `deletion.firebase`, `deletion.record` | **Exclusão 1:** o executor com `EXECUTOR_ACTION=destroy`, `RUN_KIND=delete` (abaixo): VM, conta de serviço do nó, rede, NAT, tópicos e assinaturas, os cofres `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password` e as permissões; o disco, os snapshots dele e o IP do NAT pela API. O túnel `vx-<slug>` e os registros de DNS só dos nomes do cliente (`api-<slug>.<zona>`, `<slug>.control...` e abaixo dele). O domínio e o site `vxc-<slug>-<hex>` do Firebase. Ficam o bucket de backups e o cofre `credentials-key`. O registro de exclusão por e-mail ao admin (sem SMTP, segue sem ele: `event=deletion_record_unsent`); o cliente perde `adminEmail`, `access` e os recursos que a Exclusão 2 não usa (`lifecycle.deletedAt`) |
+| D+97 do cancelamento | `crypto.destroy_key`, `crypto.purge`, `crypto.purge_wait`, `crypto.finish`                                     | **Exclusão 2 (cripto-destruição):** o cp-worker destrói todas as versões de `vx-<slug>-credentials-key` (`cpSecretVersionDestroyer`: lista e destrói, sem ler) e confere que nenhuma ficou viva (`lifecycle.cryptoDestroyedAt`); o executor com `EXECUTOR_ACTION=purge`, `RUN_KIND=crypto_destroy` apaga o cofre, o bucket de backups (só vazio) e `tenants/<slug>/default.tfstate`. O tenant vira registro mínimo (`lifecycle.purgedAt`): ficam `slug`, `company`, `stripe.customerId`, `billing.mode` (se houver), `lifecycle`, o que foi vendido (`configuration`, `limits`, `pricing`), o aceite dos textos (`consent`) e as faturas por 5 anos                                                                                                                     |
 
-**A fazer no CP-11 (Exclusão 1 com o `envs/tenant`):** antes do `destroy`, um `apply` com `deletion_protection =
-false` e, então, `terraform state rm` destes endereços, que ficam fora do `destroy`:
+**O executor na Exclusão 1 (`entrypoint.sh`, `destroy` só com `RUN_KIND=delete`):** `init`; `state list`; com a VM no
+estado, tira a proteção dela pela API (`instances.setDeletionProtection`; nada de `apply`, que num estado pela metade
+criaria de novo o que já saiu) e espera valer; `terraform state rm` destes endereços, só dos que estão no estado:
 
-- `module.node.google_compute_disk.node` e `module.node.google_compute_address.nat[0]` (os dois com `prevent_destroy`,
-  que faria o `destroy` falhar): o disco é apagado pela API depois que a VM sai (e os snapshots, que o
-  `KEEP_AUTO_SNAPSHOTS` mantém), e o IP do NAT é liberado pela API;
-- `module.node.google_storage_bucket.backups` (com `force_destroy = false`), que fica até a Exclusão 2;
+- `module.node.google_compute_disk.node` e `module.node.google_compute_address.nat[0]` (`prevent_destroy`);
+- `module.node.google_storage_bucket.backups` (`force_destroy = false`), que fica até a Exclusão 2;
 - `module.node.google_secret_manager_secret.node_written["credentials-key"]` e
-  `google_secret_manager_secret_iam_member.worker_credentials_key`: o cofre e a permissão do `cp-worker` de destruir
-  as versões ficam até a Exclusão 2. Sem tirar a permissão do estado, o `destroy` a apagaria, e o `cp-worker` não
-  conseguiria cripto-destruir a chave em D+97.
+  `google_secret_manager_secret_iam_member.worker_credentials_key`: o cofre e a permissão do `cp-worker` de destruir as
+  versões ficam até a Exclusão 2 (sem tirar a permissão do estado, o `destroy` a apagaria).
 
-Na Exclusão 2, depois de destruir as versões, o cofre e o bucket são apagados, e `tenants/<slug>/` sai do bucket do
-estado; as versões antigas do estado (com o e-mail do admin nos metadados da VM) saem 30 dias depois, pela retenção do
-bucket do estado. O bucket de backups é versionado: um backup sai 90 dias depois de gravado e a versão anterior mais 30
-dias depois, então ele só fica vazio cerca de 120 dias depois do último backup. Em D+97 ainda há objetos, e nem o
-`cp-terraform` nem o `cp-worker` apagam objeto lá; o CP-11 decide entre esperar a retenção ou dar a permissão para
-esvaziá-lo.
+Então `plan -destroy`, conferido: só `delete` (e `no-op`/`read`) e nenhum dos endereços acima, senão
+`destroy_plan_unexpected` sem `apply`; `apply`; e, pela API, o disco `vx-<slug>` (espera sumir), os snapshots de
+`sourceDisk` igual ao dele (todas as páginas de `snapshots.list` do projeto, conferidos um a um: o snapshot de outro
+cliente, mesmo com o nome começando igual, e o de um disco de mesmo nome em outra zona ficam) e o IP `vx-<slug>-nat-ip`.
+Um 404 em qualquer um conta como feito: repetir a Exclusão 1 inteira não dá erro. A conta de serviço do nó só pode ser
+apagada aqui; num `apply` (só `provision` e `resume`) a recusa `node_sa_replacement` do CP-07 continua. Era a proteção que
+substitui o `prevent_destroy`, que não muda por variável e impediria a própria exclusão.
+
+**O executor na Exclusão 2 (`purge`, só com `RUN_KIND=crypto_destroy`):** recebe só o endereço (slug e execução; nenhuma
+`TF_VAR_*`, nenhum dado do cliente); `init` e `state list`, que tem de estar vazio (senão `state_not_empty`: a Exclusão 1
+não terminou); apaga pela API `vx-<slug>-credentials-key`, o bucket `<projeto>-vx-<slug>-backups` (com objetos, 409 →
+`backups_bucket_not_empty`: o cp-worker tenta de novo uma vez por dia, por até 14 dias, e então para e avisa) e
+`tenants/<slug>/default.tfstate` do bucket do estado (as versões antigas, com o e-mail do admin nos metadados da VM, saem
+30 dias depois pela retenção daquele bucket). Os papéis são os do `cp-terraform` que já existiam (`cpSecretsProvisioner`,
+`cpBucketsProvisioner`, os `compute.*Admin`, `objectAdmin` no bucket do estado): nenhum objeto de backup é lido nem
+apagado pelo plano de controle.
+
+**O bucket de backups e o D+97 (a contradição que o PR-20 anotou, resolvida pelas regras do `backups.tf`):** cada backup
+é um objeto novo (`postgres/verax-<data>.dump`), nunca sobrescrito. A regra `age = 90` não tem `with_state` (o provider
+manda a condição sem `isLive`), então vale para a versão viva e para a não corrente, e a idade conta da criação ("the age
+of an object is unaffected by the object becoming a noncurrent version", documentação do ciclo de vida do Cloud
+Storage). Aos 90 dias a versão viva vira não corrente e, na passada seguinte, a mesma regra a apaga; ela fica então 7
+dias na exclusão reversível. A regra `days_since_noncurrent_time = 30` nunca é a que vale aqui (só valeria para um
+objeto sobrescrito, e encurtaria). **O prazo real é 90 + 7 dias mais o atraso do ciclo de vida, que é assíncrono e sem
+prazo garantido pelo Google (na prática até cerca de um dia por passada, e são duas): cerca de 99 dias depois do backup,
+não 120.** Num cancelamento, a VM para no cancelamento (`node.stop`), então o último backup é do dia do cancelamento e
+tudo sai até cerca de D+99; em D+97 o bucket já não deve ter versão viva nem não corrente (a exclusão dele passa), só
+cópias na exclusão reversível, que somem até cerca de D+99. Se a VM não parar (o `node.stop` falhando), a Exclusão 1 a
+destrói em D+30, e o limite passa a D+30+99. Nada aqui mudou a retenção do bucket; `docs/retencao-de-dados.md` diz o
+mesmo e recomenda o texto do site.
 
 Retenção do resto: `auditLog` 24 meses, `stripeEvents` 90 dias, `provisioningRuns` 180 dias, tokens e reservas pelo
 próprio prazo, tudo por TTL do Firestore. Nunca gravado: dado de cartão, senha temporária (lida do Secret Manager e

@@ -25,6 +25,9 @@ import {
   transitionSchema,
 } from './tenant.schema.js';
 
+/** Os prazos que o `tick` varre junto com o estado (os índices compostos de `collections.ts`). */
+export type DueField = 'billing.graceUntil' | 'lifecycle.deleteAfter' | 'lifecycle.cryptoDestroyAfter';
+
 /** Quem pediu a operação, para a auditoria. */
 export interface AuditContext {
   actor: string;
@@ -274,6 +277,56 @@ export class TenantStore {
   /** O cliente da assinatura da Stripe. */
   async findByStripeSubscription(subscriptionId: string): Promise<TenantRecord | undefined> {
     return this.findOne('stripe.subscriptionId', subscriptionId);
+  }
+
+  /**
+   * Os clientes num estado, para o `tick` (CP-11). Com `due`, só os que têm o prazo (`billing.graceUntil`,
+   * `lifecycle.deleteAfter` ou `lifecycle.cryptoDestroyAfter`) até `due.at`, pelo índice composto (estado, prazo) de
+   * `collections.ts`; sem, a igualdade pelo índice simples. Até `limit` por chamada (o `tick` seguinte pega o resto).
+   */
+  async listInState(
+    state: TenantState,
+    options: { due?: { field: DueField; at: Date }; limit?: number } = {},
+  ): Promise<TenantRecord[]> {
+    const where = [
+      { field: 'state', op: '==' as const, value: state },
+      ...(options.due === undefined
+        ? []
+        : [{ field: options.due.field, op: '<=' as const, value: options.due.at }]),
+    ];
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      where,
+      ...(options.due === undefined ? {} : { orderBy: { field: options.due.field } }),
+      limit: options.limit ?? 500,
+    });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+    }));
+  }
+
+  /** Os contratos diretos com o cancelamento marcado até `at` (`lifecycle.cancelScheduledFor`, índice simples). */
+  async listCancelScheduled(at: Date, limit = 500): Promise<TenantRecord[]> {
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      where: [{ field: 'lifecycle.cancelScheduledFor', op: '<=', value: at }],
+      limit,
+    });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+    }));
+  }
+
+  /** Os clientes cuja VM o plano de controle parou (`lifecycle.nodeStoppedAt`), em qualquer estado. */
+  async listNodeStopped(limit = 500): Promise<TenantRecord[]> {
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      where: [{ field: 'lifecycle.nodeStoppedAt', op: '>=', value: new Date(0) }],
+      limit,
+    });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+    }));
   }
 
   /** O documento `slugs/{slug}`, se existir. */
