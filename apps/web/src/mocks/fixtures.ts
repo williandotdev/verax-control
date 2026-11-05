@@ -49,6 +49,15 @@ export const DEMO_ACCOUNTS = {
 } as const;
 
 /**
+ * Os buckets do GuardDuty e do WAF da conta AWS de produção da demonstração, além da trilha (`trilha-<conta>`, que toda
+ * conta AWS da demonstração tem). Nomes fictícios.
+ */
+export const DEMO_ALFA_MORE_BUCKETS = {
+  guardduty: `guardduty-${DEMO_ACCOUNTS.alfaProducao}`,
+  waf: 'aws-waf-logs-loja-alfa',
+} as const;
+
+/**
  * Tópico do nó da demonstração para o sink de projeto GCP de cliente, sem o projeto no fim (o que o start.sh informa à
  * API no nó). Projeto e prefixo fictícios.
  */
