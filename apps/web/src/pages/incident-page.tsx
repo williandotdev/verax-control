@@ -1,4 +1,4 @@
-import { type IncidentDetail, INCIDENT_STATUSES, type IncidentStatus } from '@verax/shared';
+import { agentIdOfRef, type IncidentDetail, INCIDENT_STATUSES, type IncidentStatus } from '@verax/shared';
 import { ArrowLeft } from 'lucide-react';
 import { Link, useParams } from 'react-router';
 import { SeverityBadge } from '@/components/security/severity-badge';
@@ -6,7 +6,7 @@ import { Timeline } from '@/components/security/timeline';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { SelectField } from '@/components/ui/select-field';
-import { FINDING_SOURCE_LABELS } from '@/features/findings/labels';
+import { FINDING_SOURCE_LABELS, findingOriginId } from '@/features/findings/labels';
 import { IncidentStatusBadge } from '@/features/incidents/incident-status-badge';
 import { useIncident, useIncidentAssignees, useUpdateIncident } from '@/features/incidents/incidents-api';
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
@@ -67,7 +67,11 @@ export function IncidentPage() {
 function IncidentView({ incident, canWrite }: { incident: IncidentDetail; canWrite: boolean }) {
   const keys = parseKeys(incident.keys);
   const assets: [string, string[]][] = [
-    ['Contas', incident.accounts],
+    // Nos alertas das instâncias, a origem é o agente do Wazuh (`agente 001`).
+    [
+      incident.accounts.some((origin) => agentIdOfRef(origin) !== null) ? 'Contas e agentes' : 'Contas',
+      incident.accounts.map(findingOriginId),
+    ],
     ['Recursos', incident.resources],
     ['Usuários', keys.user ?? []],
     ['Chaves de acesso', keys.key ?? []],

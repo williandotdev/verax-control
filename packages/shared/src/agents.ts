@@ -82,6 +82,23 @@ export type AgentStatus = (typeof AGENT_STATUSES)[number];
 /** Id do agente no manager do nó: três dígitos ou mais (o 000 é o próprio manager e nunca aparece). */
 export const WAZUH_AGENT_ID_PATTERN = /^\d{3,6}$/;
 
+/**
+ * Origem de um achado que veio de um agente (alerta da instância do cliente): `agent:<id>`, no lugar da conta. Os
+ * dois-pontos não aparecem em nenhum identificador de conta (12 dígitos da AWS, projeto da GCP, 32 hexadecimais do
+ * Cloudflare), então um agente nunca se confunde com uma conta.
+ */
+export const WAZUH_AGENT_REF_PATTERN = /^agent:\d{3,6}$/;
+export const wazuhAgentRefSchema = z.string().regex(WAZUH_AGENT_REF_PATTERN, { error: 'agente inválido' });
+
+export function wazuhAgentRef(agentId: string): string {
+  return `agent:${agentId}`;
+}
+
+/** O id do agente de uma origem `agent:<id>`; null quando a origem é uma conta. */
+export function agentIdOfRef(ref: string): string | null {
+  return WAZUH_AGENT_REF_PATTERN.test(ref) ? ref.slice('agent:'.length) : null;
+}
+
 /** Texto vindo da instância (nome, sistema, IP): limitado e sem caractere de controle. */
 const instanceText = (max: number) =>
   z

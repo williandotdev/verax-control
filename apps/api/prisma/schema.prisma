@@ -498,6 +498,14 @@ enum UnownedReason {
   conflicting_accounts
   unknown_account
   source_mismatch
+  /// Alertas dos agentes do Wazuh nas instâncias do cliente: agentes desligados no worker do nó.
+  agents_disabled
+  /// O id do agente não está na lista do cliente do nó.
+  unknown_agent
+  /// O id do agente está na lista, com outro nome.
+  agent_name_mismatch
+  /// O alerta do agente cita uma conta AWS cadastrada em outro cliente.
+  agent_account_conflict
 }
 
 /// Alerta que o sync não atribuiu a nenhum cliente (T5.2): na dúvida, o alerta não é de ninguém. Sem `tenantId`

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import type { FindingSeverity } from '@verax/shared';
+import { type FindingSeverity, wazuhAgentRef } from '@verax/shared';
+import type { WazuhAgentAlert } from './agent-alert.js';
+import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
@@ -13,8 +15,12 @@ export { FINDING_SEVERITIES, type FindingSeverity } from '@verax/shared';
 
 export interface FindingDraft {
   tenantId: string;
+  /** A conta de onde veio o evento ou, nos alertas das instâncias, o agente (`agent:<id>`). */
   accountId: string;
-  /** Sistema de origem: o Wazuh (contas AWS) ou a própria leitura dos logs da GCP e do Cloudflare. */
+  /**
+   * Sistema de origem: o Wazuh (contas AWS e agentes nas instâncias do cliente) ou a própria leitura dos logs da GCP e
+   * do Cloudflare.
+   */
   source: 'wazuh' | 'gcp' | 'cloudflare';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
   sourceEventId: string;
@@ -26,8 +32,8 @@ export interface FindingDraft {
   ruleLevel: number;
   /** Descrição da regra (o resumo em português vem do dicionário da T7.9). */
   title: string;
-  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit` ou `cloudflare_audit`. */
-  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit';
+  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit` ou `wazuh_agent`. */
+  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'wazuh_agent';
   eventName: string | null;
   region: string | null;
   resource: string | null;
@@ -155,5 +161,54 @@ export function toFindingDraft(
     mitreTactics: unique(alert.rule.mitre.tactics),
     mitreTechniques: unique(alert.rule.mitre.ids),
     ...(recurrence && { recurrence }),
+  };
+}
+
+/**
+ * Chave do achado de um agente do Wazuh: `wazuh/agent:<id>/alert:<id do alerta>:<regra>`. O log da instância não traz
+ * um id próprio em todas as fontes (FIM, SCA, syslog, Windows), então vale o id do alerta, que é o mesmo a cada
+ * releitura do documento no indexer (a sobreposição da leitura não duplica). A origem `agent:` nunca se confunde com
+ * uma conta (os dois-pontos), e o agente é do cliente do nó: a chave de um agente nunca cai na de outro cliente. Um id
+ * que passaria do tamanho da chave entra pelo resumo SHA-256, como na chave das contas.
+ */
+export function agentFindingKey(alert: Pick<WazuhAgentAlert, 'id' | 'agent' | 'rule'>): string {
+  const origin = wazuhAgentRef(alert.agent.id);
+  const key = `wazuh/${origin}/alert:${alert.id}:${alert.rule.id}`;
+  if (key.length <= MAX_EVENT_ID) return key;
+  const digest = createHash('sha256').update(alert.id).digest('hex').slice(0, 40);
+  return `wazuh/${origin}/alert:sha256-${digest}:${alert.rule.id}`;
+}
+
+/**
+ * Achado de um alerta de agente, com o dono decidido por `resolveAgentAlertOwner`. A origem é o agente
+ * (`agent:<id>`), e o recurso é a instância (`host:<nome do agente na lista>`): é por ele que os achados da mesma
+ * instância se agrupam num incidente. A severidade vem do nível da regra, como nas demais fontes; o MITRE, da regra.
+ * O IP e o usuário vêm do log da instância, só para mostrar e agrupar.
+ */
+export function toAgentFindingDraft(
+  alert: WazuhAgentAlert,
+  owner: Extract<AgentAlertOwner, { status: 'owned' }>,
+): FindingDraft {
+  return {
+    tenantId: owner.tenantId,
+    accountId: wazuhAgentRef(owner.agentId),
+    source: 'wazuh',
+    sourceEventId: agentFindingKey(alert),
+    rawEventId: alert.id,
+    occurredAt: alert.timestamp,
+    severity: severityOfLevel(alert.rule.level),
+    ruleId: alert.rule.id,
+    ruleLevel: alert.rule.level,
+    title: alert.rule.description,
+    logSource: 'wazuh_agent',
+    eventName: alert.decoder ?? null,
+    region: null,
+    resource: `host:${owner.agentName}`,
+    actorUser: alert.user ?? null,
+    actorType: null,
+    accessKeyId: null,
+    sourceIp: alert.sourceIp ?? null,
+    mitreTactics: unique(alert.rule.mitre.tactics),
+    mitreTechniques: unique(alert.rule.mitre.ids),
   };
 }
