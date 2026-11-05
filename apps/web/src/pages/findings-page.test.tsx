@@ -147,7 +147,9 @@ describe('Achados', () => {
     expect(within(panel).getByLabelText('Novo comentário')).toHaveValue('');
   });
 
-  it('a triagem aparece na Torre: um achado a menos sem triagem', async () => {
+  // Percorre Torre → Achados → triagem → Torre (três telas e o painel de detalhe): leva cerca de 4,7 s sozinho, perto do
+  // limite padrão de 5 s, e estourava no CI com a máquina carregada.
+  it('a triagem aparece na Torre: um achado a menos sem triagem', { timeout: 15_000 }, async () => {
     const router = renderAt('/');
     expect(await screen.findByText('5 achados altos ou críticos sem triagem')).toBeInTheDocument();
     await router.navigate('/achados?status=new&severidade=high');

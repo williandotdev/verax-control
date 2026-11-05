@@ -4705,3 +4705,10 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
   passa a usar `deletionTenantName` (`lifecycle/deletion-steps.ts`), que corta em 120 sem partir caractere só para as
   variáveis do `destroy`, para um cliente gravado antes do limite (até 200) ainda poder ser excluído. Teste em
   `deletion-tenant-name.test.ts`.
+
+## Correção: teste "a triagem aparece na Torre" estourava o tempo no CI
+
+- **O que acontecia:** o teste de `apps/web/src/pages/findings-page.test.tsx` percorre a Torre, os Achados, a triagem e
+  volta à Torre; leva cerca de 4,7 s sozinho, perto do limite padrão de 5 s do Vitest, e falhou por tempo em vários PRs
+  com o executor carregado.
+- **Correção:** só esse teste ganha `timeout: 15_000`, como o de login em `auth-pages.test.tsx`. Nenhuma asserção mudou.
