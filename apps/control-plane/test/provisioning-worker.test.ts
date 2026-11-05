@@ -735,6 +735,25 @@ describe('cp-worker: provisionamento (CP-07)', () => {
       expect(cloud.requests).toHaveLength(0);
     });
 
+    it('razão social acima de 120 (cliente gravado antes do limite): tenant_name_invalid no preflight, sem cortar', async () => {
+      const tenant = await paidTenant();
+      // O checkout e o customer.updated recusam desde o limite; a leitura do cliente ainda aceita o que veio antes.
+      const legalName = `Cliente Demo A ${'ã'.repeat(106)}`;
+      expect(legalName).toHaveLength(121);
+      await tenants.change(tenant.id, () => ({
+        reason: 'teste',
+        audit: { actor: 'system' },
+        allowLegalNameChange: true,
+        mutate: (current) => ({ ...current, company: { ...current.company, legalName } }),
+      }));
+      await drain();
+      const failed = await tenants.require(tenant.id);
+      expect(failed.state).toBe('provisioning_failed');
+      expect(failed.provisioning?.lastError?.code).toBe('tenant_name_invalid');
+      expect(failed.company.legalName).toBe(legalName);
+      expect(cloud.requests).toHaveLength(0);
+    });
+
     it('cliente suspenso no meio (disputa, CP-04): o passo seguinte não faz nada e não enfileira', async () => {
       const tenant = await paidTenant();
       await drain(undefined, { limit: 2 });

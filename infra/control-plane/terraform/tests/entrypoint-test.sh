@@ -287,7 +287,7 @@ run_entrypoint
 check 'plano que não é JSON: recusado sem apply' bash -c "test $status -eq 3 && ! grep -q '^apply ' '$fake/calls'"
 
 # --- 3. Variáveis fora do formato: recusadas antes do terraform, sem o valor na saída ---------------------------------
-long_name=$(printf 'a%.0s' $(seq 1 201))
+long_name=$(printf 'a%.0s' $(seq 1 121))
 bad_values=(
   "EXECUTOR_ACTION=plan"
   "RUN_KIND=manual"
@@ -348,8 +348,11 @@ reset
 run_entrypoint PLAN=profissional PLAN_MAX_CLOUD_ACCOUNTS= PLAN_MAX_USERS= PLAN_MONTHLY_GIB= PLAN_HISTORY_DAYS=
 check 'profissional sem limites: aplicado (o nó usa os do plano)' test "$status" -eq 0
 reset
-run_entrypoint "BOOTSTRAP_TENANT_NAME=$(printf 'ã%.0s' $(seq 1 200))"
-check 'nome com 200 caracteres acentuados (400 bytes): aceito' test "$status" -eq 0
+run_entrypoint "BOOTSTRAP_TENANT_NAME=$(printf 'ã%.0s' $(seq 1 120))"
+check 'nome com 120 caracteres acentuados (240 bytes, o limite do checkout e do nó): aceito' test "$status" -eq 0
+reset
+run_entrypoint "BOOTSTRAP_TENANT_NAME=$(printf 'ã%.0s' $(seq 1 121))"
+check 'nome com 121 caracteres acentuados: recusado' test "$status" -eq 2
 reset
 run_entrypoint IMAGES_REPOSITORY=us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control
 check 'Artifact Registry do projeto da Verax: aceito' test "$status" -eq 0

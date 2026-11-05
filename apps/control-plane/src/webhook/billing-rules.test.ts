@@ -257,6 +257,27 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
     expect(customerChange(tenant('deleted'), customer({}), CTX)).toBeUndefined();
   });
 
+  it('customer.updated: a razão social segue o limite do checkout (120); acima, a anterior fica', () => {
+    const longest = `Cliente Demo A ${'ã'.repeat(105)}`;
+    const named = (businessName: string): CustomerSnapshot => ({
+      id: 'cus_fake_1',
+      livemode: false,
+      deleted: false,
+      email: 'admin@cliente-demo-a.example',
+      businessName,
+    });
+    expect(
+      apply(tenant('active'), customerChange(tenant('active'), named(` ${longest} `), CTX)),
+    ).toMatchObject({
+      company: { legalName: longest },
+    });
+    expect(
+      apply(tenant('active'), customerChange(tenant('active'), named(`${longest}x`), CTX)),
+    ).toMatchObject({
+      company: { legalName: 'Cliente Demo A Ltda' },
+    });
+  });
+
   it('garantia: reembolso integral até 7 dias da contratação', () => {
     const t = tenant('active');
     const full = { amount: 100_000, amountRefunded: 100_000, refunded: true };

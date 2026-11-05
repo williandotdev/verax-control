@@ -14,7 +14,7 @@ import { FindingStore, SyncLease, type UnownedRecord } from './finding-store.js'
 import {
   agentSyncPage,
   cursorFromSort,
-  DEFAULT_SYNC_SETTINGS,
+  DEFAULT_AGENT_SYNC_SETTINGS,
   type SyncSettings,
   syncWindowStart,
 } from './sync-query.js';
@@ -38,6 +38,11 @@ export interface AgentSyncReport {
   deferred: number;
   /** Alertas do próprio manager (`agent.id` 000): são do sync da AWS. */
   skipped: number;
+  /**
+   * Alertas abaixo do nível mínimo dos agentes (`AGENT_MIN_LEVEL`): a consulta já os deixa de fora, e a regra se
+   * repete em cada alerta lido, como a do manager. Não viram achado nem vão para a fila.
+   */
+  belowLevel: number;
   lastProcessedAt: string | null;
 }
 
@@ -66,7 +71,7 @@ function unownedRecord(
  * 1. pega a concessão própria (um worker por vez; ela vence sozinha se o worker morrer);
  * 2. monta a lista dos agentes do cliente do nó, as contas AWS cadastradas, as exceções e a lista de proteção;
  * 3. lê o indexer a partir do último alerta processado, menos a sobreposição, página a página pelo cursor, só os
- *    alertas que não vieram do manager (`agentSyncPage`);
+ *    alertas que não vieram do manager, do nível 7 para cima (`agentSyncPage`, `AGENT_MIN_LEVEL`);
  * 4. decide o dono de cada alerta (`resolveAgentAlertOwner`). Com dono, grava o achado do cliente do nó, sem duplicar
  *    e já aplicando a exceção e o agrupamento (`FindingStore`, o mesmo da AWS). Sem dono, o alerta vai para a fila que
  *    só `admin_verax` vê. O alerta recente de um agente que a lista ainda não conhece fica para a próxima execução;
@@ -91,7 +96,7 @@ export class AgentAlertSync {
     options: AlertSyncOptions = {},
   ) {
     this.name = options.name ?? AGENT_ALERT_SYNC;
-    this.settings = options.settings ?? DEFAULT_SYNC_SETTINGS;
+    this.settings = options.settings ?? DEFAULT_AGENT_SYNC_SETTINGS;
     this.maxPages = options.maxPages ?? 100;
     this.store = new FindingStore(
       prisma,
@@ -117,6 +122,7 @@ export class AgentAlertSync {
       incidentsJoined: 0,
       deferred: 0,
       skipped: 0,
+      belowLevel: 0,
       lastProcessedAt: null,
     };
     if (!(await this.lease.acquire(now))) return { ...report, status: 'locked' };
@@ -201,6 +207,11 @@ export class AgentAlertSync {
       return;
     }
     const alert = parsed.alert;
+    // A página já pede o nível mínimo (`agentSyncPage`); conferido de novo aqui, como o `agent.id`.
+    if (alert.rule.level < this.settings.minLevel) {
+      report.belowLevel += 1;
+      return;
+    }
     const owner = resolveAgentAlertOwner(alert, directory, now);
     if (owner.status === 'deferred') {
       report.deferred += 1;

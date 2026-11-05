@@ -222,16 +222,20 @@ variable "bootstrap_support_email" {
 }
 
 variable "bootstrap_tenant_name" {
-  description = "Nome do cliente no nó (o nome da empresa do checkout): de 2 a 200 caracteres, sem espaço nas pontas e sem caractere de controle, a mesma regra do checkout (apps/control-plane/src/checkout/checkout.schema.ts). Texto livre (`verax-tenant-name` nos metadados): a instalação trata como dado."
+  description = "Nome do cliente no nó (o nome da empresa do checkout): de 2 a 120 caracteres, o limite do nó (`Tenant.name` é `VarChar(120)`), sem espaço nas pontas e sem caractere de controle, a mesma regra do checkout (`companyNameSchema`, em apps/control-plane/src/tenants/tenant.schema.ts). Chega inteiro, sem corte. Texto livre (`verax-tenant-name` nos metadados): a instalação trata como dado."
   type        = string
 
   validation {
+    condition     = length(var.bootstrap_tenant_name) >= 2 && length(var.bootstrap_tenant_name) <= 120
+    error_message = "Nome do cliente com tamanho inválido: de 2 a 120 caracteres, o limite do nó e do checkout."
+  }
+
+  validation {
     condition = (
-      length(var.bootstrap_tenant_name) >= 2 && length(var.bootstrap_tenant_name) <= 200 &&
       trimspace(var.bootstrap_tenant_name) == var.bootstrap_tenant_name &&
       !can(regex("[[:cntrl:]]", var.bootstrap_tenant_name))
     )
-    error_message = "Nome do cliente inválido: de 2 a 200 caracteres, sem espaço nas pontas e sem quebra de linha nem outro caractere de controle."
+    error_message = "Nome do cliente inválido: sem espaço nas pontas e sem quebra de linha nem outro caractere de controle."
   }
 }
 
