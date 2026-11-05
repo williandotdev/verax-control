@@ -589,9 +589,12 @@ revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os 
   vencido ou a fila recusar, nada foi mostrado: a marcação é desfeita (`access.reveal_reverted`) e o cliente tenta de
   novo. Depois da revelação o `cs_` não vale mais.
 - **Quem chama o quê no `cp-worker`:** o ingresso exige token de identidade do Google com `run.invoker` (cp-invoker,
-  cp-public e o responsável); o app confere emissor, `aud = WORKER_URL`, prazo e o e-mail por rota. O token do
-  `cp-public` (`PUBLIC_SA_EMAIL`) só vale na revelação; o da cp-invoker e o do responsável, só nos passos
-  (`POST /internal/steps/<passo>`). A chamada do `cp-public` sai pela internet, então a revelação depende da decisão
+  cp-public e o responsável). O app tira a identidade do cabeçalho que o Cloud Run conferiu (o
+  `X-Serverless-Authorization` quando houver, senão o `Authorization`; os dois juntos são recusados, porque com os dois
+  o Cloud Run só confere o primeiro), confere de novo a assinatura com as chaves públicas do Google (sem assinatura, só
+  no `X-Serverless-Authorization`, onde o Cloud Run a remove depois de conferir), o emissor, `aud = WORKER_URL`, o prazo
+  e o e-mail por rota. O token do `cp-public` (`PUBLIC_SA_EMAIL`) só vale na revelação; o da cp-invoker e o do
+  responsável, só nos passos (`POST /internal/steps/<passo>`). A chamada do `cp-public` sai pela internet, então a revelação depende da decisão
   sobre a entrada do `cp-worker` no GUIA ("Revelação da senha e a entrada do cp-worker"); até lá, ela responde 503.
 - **Plano B por e-mail:** 48 h depois de o cliente entrar em `waiting_customer_connection` sem ver a senha (e antes das
   72 h em que ela vence), o `tick` do CP-11 chama `RevealEmailService.dispatchDue`, que enfileira o passo

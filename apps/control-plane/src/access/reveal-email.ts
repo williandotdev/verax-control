@@ -24,13 +24,37 @@ const DATE_FORMAT = new Intl.DateTimeFormat('pt-BR', {
   timeZone: 'America/Sao_Paulo',
 });
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+/** Caracteres com significado no HTML do e-mail (texto e valor de atributo). */
+const HTML_SPECIAL_CHARACTERS = ['&', '<', '>', '"', "'"] as const;
+
+/**
+ * O que entra no corpo HTML são só valores montados pelo próprio plano de controle: os dois endereços (o painel, de
+ * `tenantUrls`, e o link, da página de status com o valor em base64url) e a data formatada. Em vez de escapar à mão,
+ * o e-mail é recusado (a task repete e o responsável vê o erro) se algum deles trouxer um caractere especial de HTML,
+ * e os endereços precisam ser https.
+ */
+export class UnsafeEmailValueError extends TypeError {
+  constructor() {
+    super('valor impróprio para o HTML do e-mail do plano B');
+    this.name = 'UnsafeEmailValueError';
+  }
+}
+
+function htmlText(value: string): string {
+  if (HTML_SPECIAL_CHARACTERS.some((character) => value.includes(character)))
+    throw new UnsafeEmailValueError();
+  return value;
+}
+
+function htmlUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new UnsafeEmailValueError();
+  }
+  if (url.protocol !== 'https:') throw new UnsafeEmailValueError();
+  return htmlText(value);
 }
 
 export interface RevealEmailInput {
@@ -46,16 +70,18 @@ export interface RevealEmailInput {
  */
 export function buildRevealEmail(input: RevealEmailInput): MailMessage {
   const until = `${DATE_FORMAT.format(input.linkExpiresAt)} (horário de Brasília)`;
+  const panelUrl = htmlUrl(input.panelUrl);
+  const link = htmlUrl(input.link);
   const subject = 'Seu Verax Control está pronto: veja o acesso do administrador';
   const text = [
     'Olá,',
     '',
-    `O seu ambiente do Verax Control está pronto em ${input.panelUrl}.`,
+    `O seu ambiente do Verax Control está pronto em ${panelUrl}.`,
     '',
     'A senha temporária do primeiro administrador ainda não foi vista. Para vê-la, abra o link abaixo. Ele funciona',
     `uma vez e vale até ${until}:`,
     '',
-    input.link,
+    link,
     '',
     'A senha aparece uma única vez, na página, e não vai por e-mail. No primeiro acesso ao painel você troca a senha',
     'e cadastra a verificação em duas etapas.',
@@ -66,10 +92,10 @@ export function buildRevealEmail(input: RevealEmailInput): MailMessage {
   ].join('\n');
   const html = [
     '<p>Olá,</p>',
-    `<p>O seu ambiente do Verax Control está pronto em <a href="${escapeHtml(input.panelUrl)}">${escapeHtml(input.panelUrl)}</a>.</p>`,
+    `<p>O seu ambiente do Verax Control está pronto em <a href="${panelUrl}">${panelUrl}</a>.</p>`,
     '<p>A senha temporária do primeiro administrador ainda não foi vista. Para vê-la, abra o link abaixo. Ele funciona',
-    `uma vez e vale até ${escapeHtml(until)}:</p>`,
-    `<p><a href="${escapeHtml(input.link)}">Ver o acesso do administrador</a></p>`,
+    `uma vez e vale até ${htmlText(until)}:</p>`,
+    `<p><a href="${link}">Ver o acesso do administrador</a></p>`,
     '<p>A senha aparece uma única vez, na página, e não vai por e-mail. No primeiro acesso ao painel você troca a',
     'senha e cadastra a verificação em duas etapas.</p>',
     '<p>Se você não contratou o Verax Control, ignore esta mensagem.</p>',

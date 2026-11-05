@@ -1,6 +1,13 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module.js';
+import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
+import {
+  GoogleIdTokenKeySource,
+  ID_TOKEN_KEY_SOURCE,
+  type IdTokenKeySource,
+  IdentityTokenVerifier,
+} from '../internal/identity-token.js';
 import { InternalAccessController } from '../internal/internal-access.controller.js';
 import { InternalStepsController } from '../internal/internal-steps.controller.js';
 import { STEP_HANDLERS, type StepHandler } from '../internal/step-handler.js';
@@ -23,6 +30,8 @@ export interface AccessWorkerModuleOptions {
   bootstrapSecrets?: BootstrapSecrets;
   /** Só nos testes: o envio em memória (em produção, o SMTP da configuração). */
   mailSender?: MailSender;
+  /** Só nos testes: as chaves de um "Google" gerado no teste (em produção, os certificados públicos do Google). */
+  idTokenKeys?: IdTokenKeySource;
 }
 
 /**
@@ -61,6 +70,17 @@ export class AccessWorkerModule {
           provide: STEP_HANDLERS,
           useFactory: (...handlers: StepHandler[]): StepHandler[] => handlers,
           inject: [DestroyBootstrapStep, RevealEmailStep],
+        },
+        {
+          provide: ID_TOKEN_KEY_SOURCE,
+          useFactory: (clock: Clock): IdTokenKeySource =>
+            options.idTokenKeys ?? new GoogleIdTokenKeySource(clock),
+          inject: [CLOCK],
+        },
+        {
+          provide: IdentityTokenVerifier,
+          useFactory: (keys: IdTokenKeySource, clock: Clock) => new IdentityTokenVerifier(keys, clock),
+          inject: [ID_TOKEN_KEY_SOURCE, CLOCK],
         },
         WorkerCallerGuard,
       ],

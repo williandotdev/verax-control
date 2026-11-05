@@ -197,16 +197,16 @@ export function describeAccessStoreContract(name: string, factory: () => Promise
       expect(await h.access.resolve(link.value, 'email_reveal')).toBeUndefined();
 
       h.clock.advance(MINUTE_MS);
-      expect(await h.access.revertReveal(claim, 'secret_not_found')).toBe(true);
+      expect(await h.access.revertReveal(claim, 'bootstrap_not_found')).toBe(true);
       expect((await h.tenants.require(waiting.id)).access?.passwordRevealedAt).toBeUndefined();
       expect(await h.access.resolve(link.value, 'email_reveal')).toBeDefined();
       expect((await h.audit.listForTenant(waiting.id)).at(-1)).toMatchObject({
         actor: 'system',
         action: 'access.reveal_reverted',
-        details: { reason: 'secret_not_found', via: 'email_reveal' },
+        details: { reason: 'bootstrap_not_found', via: 'email_reveal' },
       });
       // Desfazer de novo (ou uma revelação mais nova) não mexe em nada.
-      expect(await h.access.revertReveal(claim, 'secret_not_found')).toBe(false);
+      expect(await h.access.revertReveal(claim, 'bootstrap_not_found')).toBe(false);
       const again = await h.access.claimReveal(link.value, 'email_reveal');
       expect(await h.access.revertReveal(claim, 'velha')).toBe(false);
       expect((await h.tenants.require(waiting.id)).access?.passwordRevealedAt).toEqual(again.revealedAt);

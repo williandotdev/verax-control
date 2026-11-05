@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, type KeyObject, randomBytes, sign } from 'node:crypto';
 import type { PinoLogger } from 'nestjs-pino';
 import {
   AlreadyRevealedError,
@@ -12,6 +12,7 @@ import {
   parseBootstrapPayload,
 } from '../../src/access/bootstrap-secrets.js';
 import { PasswordExpiredError, type RevealService } from '../../src/access/reveal.service.js';
+import type { IdTokenKeySource } from '../../src/internal/identity-token.js';
 import type { MailMessage, MailSender } from '../../src/mail/mail-sender.js';
 import {
   type RevealedAccessView,
@@ -140,8 +141,8 @@ function base64url(value: unknown): string {
 }
 
 /**
- * Um token de identidade do Google como o Cloud Run o entrega ao contêiner depois de conferi-lo na entrada: as
- * declarações em claro e a assinatura removida. Montado no teste, nunca um token real.
+ * Um token de identidade do Google como o Cloud Run o entrega no `X-Serverless-Authorization`, depois de conferi-lo
+ * na entrada: as declarações em claro e a assinatura removida. Montado no teste, nunca um token real.
  */
 export function fakeIdentityToken(claims: {
   email: string;
@@ -161,6 +162,58 @@ export function fakeIdentityToken(claims: {
     sub: '000000000000000000000',
   });
   return `${header}.${payload}.SIGNATURE_REMOVED_BY_GOOGLE`;
+}
+
+/**
+ * Um "Google" de mentira para os tokens de identidade das rotas internas: um par RSA gerado no teste, a chave pública
+ * em PEM por `kid` (o formato dos certificados de https://www.googleapis.com/oauth2/v1/certs) e tokens RS256
+ * assinados com ela, como os das tasks, do Scheduler e do cp-public. Os prazos usam o relógio do sistema, que é o que a
+ * `google-auth-library` confere. Nenhuma chave nem token fixo entra no repositório; nada fala com o Google.
+ */
+export class TestGoogleIdentity implements IdTokenKeySource {
+  readonly kid = `teste-${randomBytes(4).toString('hex')}`;
+  private readonly privateKey: KeyObject;
+  private readonly publicPem: string;
+
+  constructor() {
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    this.privateKey = privateKey;
+    this.publicPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  }
+
+  keys(): Promise<Readonly<Record<string, string>>> {
+    return Promise.resolve({ [this.kid]: this.publicPem });
+  }
+
+  /** Um token assinado; `payload` troca o que o teste quiser estragar; `signer` assina com outra chave. */
+  token(options: {
+    email: string;
+    aud: string;
+    payload?: Record<string, unknown>;
+    header?: Record<string, unknown>;
+    signer?: KeyObject;
+  }): string {
+    const now = Math.floor(Date.now() / 1000);
+    const signed = `${base64url({ alg: 'RS256', typ: 'JWT', kid: this.kid, ...options.header })}.${base64url({
+      iss: 'https://accounts.google.com',
+      aud: options.aud,
+      email: options.email,
+      email_verified: true,
+      sub: '000000000000000000000',
+      iat: now,
+      exp: now + 3600,
+      ...options.payload,
+    })}`;
+    const signature = sign('sha256', Buffer.from(signed), options.signer ?? this.privateKey).toString(
+      'base64url',
+    );
+    return `${signed}.${signature}`;
+  }
+
+  /** Outra chave, que o "Google" não conhece: o token assinado com ela tem a assinatura inválida. */
+  static otherSigner(): KeyObject {
+    return generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+  }
 }
 
 /** Um logger que não escreve nada, para os serviços montados à mão fora de um app Nest. */

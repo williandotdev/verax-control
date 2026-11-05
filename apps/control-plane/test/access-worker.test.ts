@@ -16,6 +16,7 @@ import {
   fakeTemporaryPassword,
   MemoryBootstrapSecrets,
   MemoryMailSender,
+  TestGoogleIdentity,
 } from './support/access-fakes.js';
 import { tenantIn } from './support/access-store-contract.js';
 import { createApp } from './support/create-app.js';
@@ -42,6 +43,7 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
   const queue = new MemoryStepQueue();
   const secrets = new MemoryBootstrapSecrets();
   const mail = new MemoryMailSender();
+  const google = new TestGoogleIdentity();
   const audit = new AuditService(documents, clock);
   const tenants = new TenantStore(documents, clock, audit);
   const access = new AccessStore(documents, clock, audit);
@@ -58,6 +60,7 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
       stepQueue: queue,
       bootstrapSecrets: secrets,
       mailSender: mail,
+      idTokenKeys: google,
       capture,
       env: {
         LOG_LEVEL: 'debug',
@@ -82,9 +85,16 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
     queue.clear();
   });
 
-  function bearer(email: string, options: { aud?: string; exp?: number } = {}): string {
-    const exp = options.exp ?? Math.floor(clock.now().getTime() / 1000) + 3600;
-    return `Bearer ${fakeIdentityToken({ email, aud: options.aud ?? WORKER_URL, exp })}`;
+  /** O token assinado pelo "Google" do teste, como o das tasks e o do cp-public (prazos no relógio do sistema). */
+  function bearer(email: string, options: { aud?: string; expired?: boolean } = {}): string {
+    const now = Math.floor(Date.now() / 1000);
+    const payload = options.expired === true ? { iat: now - 7200, exp: now - 3600 } : {};
+    return `Bearer ${google.token({ email, aud: options.aud ?? WORKER_URL, payload })}`;
+  }
+
+  /** O token como o Cloud Run o entrega no X-Serverless-Authorization: a assinatura removida depois de conferida. */
+  function stripped(email: string): string {
+    return `Bearer ${fakeIdentityToken({ email, aud: WORKER_URL, exp: Math.floor(clock.now().getTime() / 1000) + 3600 })}`;
   }
 
   async function waitingTenant(): Promise<{ tenant: TenantRecord; password: string; cookie: string }> {
@@ -129,7 +139,7 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
         .expect(401);
       await request(server)
         .post('/internal/access/reveal')
-        .set('Authorization', bearer(PUBLIC_SA, { exp: Math.floor(clock.now().getTime() / 1000) - 1 }))
+        .set('Authorization', bearer(PUBLIC_SA, { expired: true }))
         .send(body)
         .expect(401);
       // A task (cp-invoker) e o responsável não pedem revelação; o cp-public não dispara passo.
@@ -145,6 +155,57 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
       expect(queue.tasks).toEqual([]);
       const refused = capture.entries().filter((entry) => entry['event'] === 'worker_caller_refused');
       expect(refused.length).toBeGreaterThanOrEqual(7);
+    });
+
+    it('a identidade sai do cabeçalho que o Cloud Run conferiu: os dois juntos → 401; sem assinatura, só no X-Serverless-Authorization', async () => {
+      const { tenant, cookie } = await waitingTenant();
+      const server = app.getHttpServer();
+      const body = { kind: 'cookie', token: cookie };
+
+      // Uma task (cp-invoker, token verdadeiro no X-Serverless-Authorization, o que o Cloud Run confere) com um token
+      // forjado do cp-public no Authorization: recusado, sem chegar ao e-mail de nenhum dos dois.
+      const ambiguous = await request(server)
+        .post('/internal/access/reveal')
+        .set('X-Serverless-Authorization', stripped(INVOKER))
+        .set('Authorization', stripped(PUBLIC_SA))
+        .send(body)
+        .expect(401);
+      expect(ambiguous.body).toMatchObject({ code: 'unauthenticated' });
+      // O token forjado sozinho no Authorization (sem assinatura, ou assinado por outra chave): recusado.
+      await request(server)
+        .post('/internal/access/reveal')
+        .set('Authorization', stripped(PUBLIC_SA))
+        .send(body)
+        .expect(401);
+      await request(server)
+        .post('/internal/access/reveal')
+        .set(
+          'Authorization',
+          `Bearer ${google.token({ email: PUBLIC_SA, aud: WORKER_URL, signer: TestGoogleIdentity.otherSigner() })}`,
+        )
+        .send(body)
+        .expect(401);
+      // O X-Serverless-Authorization sozinho vale pela identidade dele: a cp-invoker não revela; o cp-public, sim.
+      await request(server)
+        .post('/internal/access/reveal')
+        .set('X-Serverless-Authorization', stripped(INVOKER))
+        .send(body)
+        .expect(403);
+      expect((await tenants.require(tenant.id)).access).toBeUndefined();
+      await request(server)
+        .post('/internal/access/reveal')
+        .set('X-Serverless-Authorization', stripped(PUBLIC_SA))
+        .send(body)
+        .expect(200);
+      expect((await tenants.require(tenant.id)).access?.passwordRevealedAt).toEqual(START);
+
+      const reasons = capture
+        .entries()
+        .filter((entry) => entry['event'] === 'worker_caller_refused')
+        .map((entry) => entry['reason']);
+      expect(reasons).toEqual(
+        expect.arrayContaining(['ambiguous_credentials', 'signature_missing', 'invalid']),
+      );
     });
 
     it('as rotas internas ficam fora do /v1, e as públicas não existem no worker', async () => {
@@ -270,9 +331,9 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
       const reverted = (await audit.listForTenant(missing.tenant.id)).at(-1);
       expect(reverted).toMatchObject({
         action: 'access.reveal_reverted',
-        details: { reason: 'secret_not_found' },
+        details: { reason: 'bootstrap_not_found' },
       });
-      expect(capture.text).toContain('reveal_secret_unavailable');
+      expect(capture.text).toContain('reveal_bootstrap_unavailable');
       expect(capture.text).toContain('reveal_password_expired');
       expect(capture.text).toContain('reveal_destroy_not_enqueued');
     });

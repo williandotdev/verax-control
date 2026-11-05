@@ -29,6 +29,8 @@ export interface CreateAppOptions {
   revealGateway?: Parameters<typeof AppModule.register>[1]['revealGateway'];
   bootstrapSecrets?: Parameters<typeof AppModule.register>[1]['bootstrapSecrets'];
   mailSender?: Parameters<typeof AppModule.register>[1]['mailSender'];
+  /** As chaves de um "Google" gerado no teste (`TestGoogleIdentity`), para os tokens das rotas internas. */
+  idTokenKeys?: Parameters<typeof AppModule.register>[1]['idTokenKeys'];
   /** A API da Stripe no servidor falso (`fake-stripe.ts`). */
   stripeApi?: StripeApiOptions;
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
@@ -59,6 +61,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         revealGateway: options.revealGateway,
         bootstrapSecrets: options.bootstrapSecrets,
         mailSender: options.mailSender,
+        idTokenKeys: options.idTokenKeys,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
         iapKeySource: options.iapKeySource,

@@ -90,10 +90,10 @@ export class RevealService {
       registerLiveSecret(credentials.password);
     } catch (error) {
       const reason =
-        error instanceof BootstrapUnavailableError ? `secret_${error.reason}` : 'secret_read_failed';
+        error instanceof BootstrapUnavailableError ? `bootstrap_${error.reason}` : 'bootstrap_read_failed';
       // Só o código do erro: a mensagem do Secret Manager cita o nome do segredo (com o slug e o projeto).
       this.logger.error(
-        { event: 'reveal_secret_unavailable', tenantId, reason, grpcCode: grpcCodeOf(error) },
+        { event: 'reveal_bootstrap_unavailable', tenantId, reason, grpcCode: grpcCodeOf(error) },
         'senha inicial indisponível; revelação desfeita',
       );
       await this.undo(claim, reason, context);
