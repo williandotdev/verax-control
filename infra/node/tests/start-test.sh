@@ -13,7 +13,8 @@
 #    como antes do Turnstile (e o cofre nem é lido); com a chave do site, a chave secreta vem do cofre, e as duas só
 #    entram juntas. Os valores do papel de leitura sem chave da AWS (NODE_SA_UNIQUE_ID e AWS_WEB_IDENTITY_AUDIENCE)
 #    entram depois do IP de saída e antes do Turnstile; sem eles, o api.env é o de referência, byte a byte. O worker.env
-#    sem o e-mail também é o de referência; com o SMTP, ganha o bloco do e-mail da API e a origem do painel (PR-16).
+#    recebe o IP e os dois valores depois do indexer (PR-V5'); sem as linhas, também sai byte a byte como antes. Sem o
+#    e-mail, o worker.env é o de referência; com o SMTP, ganha o bloco do e-mail da API e a origem do painel (PR-16).
 # 3. Os agentes do Wazuh (WAZUH_AGENTS): desligados, o standard sai byte a byte como sem a linha; ligados, a API recebe
 #    o endereço, o cliente, as faixas, o limite, a CA e a senha de registro (só ela), o worker o caminho da lista e o
 #    cliente; no lean, sem o IP, o cliente, a senha ou o certificado, ou com um valor fora do formato, o render para
@@ -149,37 +150,40 @@ expect "o render avisa e segue" 0 "$status"
 expect "nenhum tópico que a API recusaria" 0 "$(grep -c GCP_SINK_TOPIC_PREFIX "$run/api.env" || true)"
 expect "o aviso" 1 "$(grep -c 'fora do formato' "$work/render.err")"
 
-echo "== IP de saída do nó: só na API, e só no formato que o install.sh e a API aceitam"
-expect "sem a linha no node.conf (o exemplo), nada" 0 "$(grep -c NODE_EGRESS_IPS "$run/api.env" || true)"
+echo "== IP de saída do nó: na API e no worker, e só no formato que o install.sh, a API e o worker aceitam"
+expect "sem a linha no node.conf (o exemplo), nada" 0 \
+  "$(cat "$run/api.env" "$run/worker.env" | grep -c NODE_EGRESS_IPS || true)"
 render_with NODE_EGRESS_IPS=203.0.113.10/32,198.51.100.7/32
 expect "a API recebe os IPs (o filtro de IP recomendado para o token do Cloudflare)" 1 \
   "$(grep -c "^NODE_EGRESS_IPS='203.0.113.10/32,198.51.100.7/32'$" "$run/api.env")"
-expect "o worker não os recebe (não os usa)" 0 "$(grep -c NODE_EGRESS_IPS "$run/worker.env" || true)"
+expect "o worker também (o aws:SourceIp da simulação da permissão demais, PR-V5')" 1 \
+  "$(grep -c "^NODE_EGRESS_IPS='203.0.113.10/32,198.51.100.7/32'$" "$run/worker.env")"
 status=0
 render_with NODE_EGRESS_IPS=203.0.113.10/24 || status=$?
-expect "fora do formato: o render avisa e segue, sem a variável que a API recusaria" '0 0 1' \
-  "$status $(grep -c NODE_EGRESS_IPS "$run/api.env" || true) $(grep -c 'NODE_EGRESS_IPS fora do formato' "$work/render.err")"
+expect "fora do formato: o render avisa e segue, sem a variável que a API e o worker recusariam" '0 0 1' \
+  "$status $(cat "$run/api.env" "$run/worker.env" | grep -c NODE_EGRESS_IPS || true) $(grep -c 'NODE_EGRESS_IPS fora do formato' "$work/render.err")"
 
-echo "== papel de leitura sem chave da AWS: o ID da conta de serviço do nó e o audience, só na API e só no formato"
+echo "== papel de leitura sem chave da AWS: o ID da conta de serviço do nó e o audience, na API e no worker, só no formato"
 render 2>"$work/render.err"
 expect "sem as linhas no node.conf (o exemplo, só com elas comentadas), nada" 0 \
-  "$(grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$run/api.env" || true)"
+  "$(cat "$run/api.env" "$run/worker.env" | grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE || true)"
 expect "e nenhum aviso sobre elas" 0 "$(grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$work/render.err" || true)"
 render_with NODE_SA_UNIQUE_ID=123456789012345678901 AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
 expect "a API recebe o ID da conta de serviço (o NodeServiceAccountId da pilha)" 1 \
   "$(grep -c "^NODE_SA_UNIQUE_ID='123456789012345678901'$" "$run/api.env")"
 expect "a API recebe o audience (o Audience da pilha)" 1 \
   "$(grep -c "^AWS_WEB_IDENTITY_AUDIENCE='https://control.veraxsistemas.com.br/aws-reader'$" "$run/api.env")"
-expect "o worker não os recebe (a conferência real, que os usa, vem no PR-V5')" 0 \
-  "$(grep -c -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$run/worker.env" || true)"
+expect "o worker recebe os dois (a conferência real da conexão, PR-V5')" 2 \
+  "$(grep -c -e "^NODE_SA_UNIQUE_ID='123456789012345678901'$" \
+    -e "^AWS_WEB_IDENTITY_AUDIENCE='https://control.veraxsistemas.com.br/aws-reader'$" "$run/worker.env")"
 render_with NODE_SA_UNIQUE_ID=123456789012345678901
 expect "só o ID: o audience fica de fora (vale o padrão do template)" '1 0' \
   "$(grep -c '^NODE_SA_UNIQUE_ID=' "$run/api.env") $(grep -c AWS_WEB_IDENTITY_AUDIENCE "$run/api.env" || true)"
 for bad_id in 12345678901234567890 1234567890123456789012 conta-do-no@exemplo; do
   status=0
   render_with "NODE_SA_UNIQUE_ID=$bad_id" || status=$?
-  expect "ID fora do formato ($bad_id): o render avisa e segue, sem a variável que a API recusaria" '0 0 1' \
-    "$status $(grep -c NODE_SA_UNIQUE_ID "$run/api.env" || true) $(grep -c 'NODE_SA_UNIQUE_ID fora do formato' "$work/render.err")"
+  expect "ID fora do formato ($bad_id): o render avisa e segue, sem a variável que a API e o worker recusariam" '0 0 1' \
+    "$status $(cat "$run/api.env" "$run/worker.env" | grep -c NODE_SA_UNIQUE_ID || true) $(grep -c 'NODE_SA_UNIQUE_ID fora do formato' "$work/render.err")"
 done
 for bad_audience in http://control.veraxsistemas.com.br/aws-reader 'https://control.veraxsistemas.com.br/*' \
   https://Control.veraxsistemas.com.br https://control.veraxsistemas.com.br:8443/aws-reader \
@@ -187,7 +191,7 @@ for bad_audience in http://control.veraxsistemas.com.br/aws-reader 'https://cont
   status=0
   render_with "AWS_WEB_IDENTITY_AUDIENCE=$bad_audience" || status=$?
   expect "audience fora do formato (${bad_audience:0:60}): o render avisa e segue, sem a variável" '0 0 1' \
-    "$status $(grep -c AWS_WEB_IDENTITY_AUDIENCE "$run/api.env" || true) $(grep -c 'AWS_WEB_IDENTITY_AUDIENCE fora do formato' "$work/render.err")"
+    "$status $(cat "$run/api.env" "$run/worker.env" | grep -c AWS_WEB_IDENTITY_AUDIENCE || true) $(grep -c 'AWS_WEB_IDENTITY_AUDIENCE fora do formato' "$work/render.err")"
 done
 
 echo "== lean: pull_images --base baixa só a imagem que falta"
@@ -391,6 +395,7 @@ render_env() {
 }
 
 api_env() { cat "$root/run/verax/api.env"; }
+worker_env() { cat "$root/run/verax/worker.env"; }
 
 # O api.env do nó da Verax, como o start.sh o monta com o node.conf de exemplo e sem o Turnstile. Qualquer diferença
 # aqui é uma mudança no nó no ar.
@@ -408,6 +413,19 @@ MAIL_TRANSPORT='none'
 MAIL_FROM='nao-responda@exemplo.com.br'
 PLAN='interno'
 GCP_SINK_TOPIC_PREFIX='projects/projeto-do-no/topics/verax-node-security-'
+DATABASE_URL='postgresql://verax_app:interno-postgres-app@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt'
+EOF
+)
+
+# O worker.env do nó da Verax, como o start.sh o monta com o node.conf de exemplo. Sem as linhas do papel de leitura
+# da AWS, ele não muda (PR-V5').
+worker_baseline=$(
+  cat <<'EOF'
+NODE_ENV='production'
+LOG_LEVEL='info'
+SYNC_SOURCES='gcp'
+SYNC_INTERVAL_SECONDS='60'
+PLAN='interno'
 DATABASE_URL='postgresql://verax_app:interno-postgres-app@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt'
 EOF
 )
@@ -437,6 +455,8 @@ new_root "sem TURNSTILE_SITE_KEY no node.conf" sem-chave
 render_env || fail "o render falhou: $(cat "$root/out")"
 [ "$(api_env)" = "$baseline" ] || fail "o api.env mudou sem o Turnstile:
 $(diff <(echo "$baseline") <(api_env) || true)"
+[ "$(worker_env)" = "$worker_baseline" ] || fail "o worker.env mudou sem as linhas do papel da AWS:
+$(diff <(echo "$worker_baseline") <(worker_env) || true)"
 [ ! -s "$root/out" ] || fail "o render avisou algo com tudo no lugar: $(cat "$root/out")"
 grep -q 'turnstile' "$root/vault/log" && fail "leu o cofre do Turnstile sem a chave do site no node.conf"
 [ "$(cat "$root/vault/log")" = "gcloud secrets versions access latest --project projeto-do-no --secret verax-node-cloudflare-tunnel-token" ] ||
@@ -444,23 +464,9 @@ grep -q 'turnstile' "$root/vault/log" && fail "leu o cofre do Turnstile sem a ch
 [ "$(cat "$root/run/verax/cloudflared.env")" = "TUNNEL_TOKEN='token-do-tunel'" ] || fail "o cloudflared.env mudou"
 
 # --- Avisos por e-mail (PR-16): o worker.env -----------------------------------------------------------------------
-# Sem o e-mail (MAIL_TRANSPORT=none, o node.conf de exemplo do cenário acima), o worker.env é o de antes, byte a byte.
-# Com o SMTP, o worker recebe o mesmo bloco da API e a origem do painel (o link dos avisos), logo antes do plano; a
-# senha da caixa vai só para a API e o worker, e o api.env só troca o bloco do e-mail.
-worker_env() { cat "$root/run/verax/worker.env"; }
-worker_baseline=$(
-  cat <<'EOF'
-NODE_ENV='production'
-LOG_LEVEL='info'
-SYNC_SOURCES='gcp'
-SYNC_INTERVAL_SECONDS='60'
-PLAN='interno'
-DATABASE_URL='postgresql://verax_app:interno-postgres-app@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt'
-EOF
-)
-[ "$(worker_env)" = "$worker_baseline" ] || fail "o worker.env mudou sem o e-mail:
-$(diff <(echo "$worker_baseline") <(worker_env) || true)"
-
+# Sem o e-mail (MAIL_TRANSPORT=none, o node.conf de exemplo do cenário acima), o worker.env é o de referência, byte a
+# byte (conferido acima). Com o SMTP, o worker recebe o mesmo bloco da API e a origem do painel (o link dos avisos),
+# logo antes do plano; a senha da caixa vai só para a API e o worker, e o api.env só troca o bloco do e-mail.
 new_root "e-mail ligado (SMTP)" smtp
 node_conf MAIL_TRANSPORT=smtp SMTP_HOST=smtp.exemplo.com SMTP_PORT=465 SMTP_USER=nao-responda@exemplo.com.br
 printf 'senha-ficticia-da-caixa\n' >"$root/vault/verax-node-smtp-password"
@@ -528,8 +534,11 @@ with_aws_reader=${with_turnstile_and_egress/TURNSTILE_SITE_KEY=/$aws_reader_line
 [ "$(api_env)" = "$with_aws_reader" ] || fail "o api.env com o papel da AWS saiu diferente:
 $(diff <(echo "$with_aws_reader") <(api_env) || true)"
 grep -qi 'aviso' "$root/out" && fail "avisou com tudo configurado: $(cat "$root/out")"
-grep -q -e NODE_SA_UNIQUE_ID -e AWS_WEB_IDENTITY_AUDIENCE "$root/run/verax/worker.env" &&
-  fail "o worker recebeu os valores do papel da AWS (só a API os usa neste PR)"
+# O worker recebe o IP e os dois valores na mesma ordem, depois do plano (e do indexer, no standard), e nada do
+# Turnstile.
+worker_with_aws_reader=${worker_baseline/DATABASE_URL=/$egress_line$'\n'$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(worker_env)" = "$worker_with_aws_reader" ] || fail "o worker.env com o papel da AWS saiu diferente:
+$(diff <(echo "$worker_with_aws_reader") <(worker_env) || true)"
 grep -q -e 'node-sa' -e 'aws' "$root/vault/log" && fail "leu um cofre por causa do papel da AWS: $(cat "$root/vault/log")"
 
 # Só com os dois valores (sem o IP de saída nem o Turnstile): o resto do api.env continua o de referência.
@@ -539,6 +548,24 @@ render_env || fail "o render falhou: $(cat "$root/out")"
 only_aws_reader=${baseline/DATABASE_URL=/$aws_reader_lines$'\n'DATABASE_URL=}
 [ "$(api_env)" = "$only_aws_reader" ] || fail "o api.env só com o papel da AWS saiu diferente:
 $(diff <(echo "$only_aws_reader") <(api_env) || true)"
+worker_only_aws_reader=${worker_baseline/DATABASE_URL=/$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(worker_env)" = "$worker_only_aws_reader" ] || fail "o worker.env só com o papel da AWS saiu diferente:
+$(diff <(echo "$worker_only_aws_reader") <(worker_env) || true)"
+
+# E-mail (PR-16) e papel de leitura da AWS (PR-V5') juntos: no worker.env, o bloco do e-mail e a origem do painel antes
+# do plano, o IP e os dois valores do papel antes do banco; no api.env, o bloco do e-mail no lugar de sempre.
+new_root "e-mail e papel de leitura da AWS" smtp-papel-aws
+node_conf MAIL_TRANSPORT=smtp SMTP_HOST=smtp.exemplo.com SMTP_PORT=465 SMTP_USER=nao-responda@exemplo.com.br \
+  NODE_EGRESS_IPS=203.0.113.10/32 NODE_SA_UNIQUE_ID=123456789012345678901 \
+  AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
+printf 'senha-ficticia-da-caixa\n' >"$root/vault/verax-node-smtp-password"
+render_env || fail "o render falhou: $(cat "$root/out")"
+api_mail_aws=${api_with_mail/DATABASE_URL=/$egress_line$'\n'$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(api_env)" = "$api_mail_aws" ] || fail "o api.env com o e-mail e o papel da AWS saiu diferente:
+$(diff <(echo "$api_mail_aws") <(api_env) || true)"
+worker_mail_aws=${worker_with_mail/DATABASE_URL=/$egress_line$'\n'$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(worker_env)" = "$worker_mail_aws" ] || fail "o worker.env com o e-mail e o papel da AWS saiu diferente:
+$(diff <(echo "$worker_mail_aws") <(worker_env) || true)"
 
 # --- Sem permissão no cofre (ou outro erro do gcloud): a partida para -----------------------------------------------
 new_root "cofre sem permissão" negado

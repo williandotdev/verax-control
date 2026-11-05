@@ -34,13 +34,15 @@ PLAN=interno
 NODE_PROFILE=lean
 # IP de saída do nó com /32 (`terraform output nat_ip` no perfil standard), separados por vírgula: é o `NodeEgressIps` da
 # pilha do papel de leitura na AWS do cliente (o papel só aceita o nó vindo dele) e o filtro de IP recomendado para o
-# token do Cloudflare (Contas cloud o mostra; o start.sh o passa à API). Vazio no nó da Verax, que sai pelo IP automático
-# do NAT.
+# token do Cloudflare (Contas cloud o mostra; o start.sh o passa à API e ao worker, que o usa na simulação diária da
+# permissão demais do papel). Vazio no nó da Verax, que sai pelo IP automático do NAT.
 NODE_EGRESS_IPS=
 # NODE_EGRESS_IPS=203.0.113.10/32
 # Papel de leitura sem chave da AWS (nó de cliente, opcional): o ID único da conta de serviço do nó no Google, 21 dígitos
 # (`terraform output node_service_account_unique_id`, ou a saída `service_account_unique_id` do módulo), que Contas cloud
-# mostra para a pilha do cliente (`NodeServiceAccountId`). Não é segredo. Sem a linha, a tela pede o valor à Verax.
+# mostra para a pilha do cliente (`NodeServiceAccountId`). Não é segredo. Com ela, o worker confere a conexão de verdade
+# (e, na partida, que o token do nó é desta conta de serviço); sem ela, a tela pede o valor à Verax, e o "Verificar"
+# responde que o nó não confere a conexão.
 # NODE_SA_UNIQUE_ID=123456789012345678901
 # O audience do token que o nó pede ao Google (`Audience` da pilha). Sem a linha, vale o padrão do template; troque só
 # num nó que precise de outro, porque a pilha de todo cliente do nó precisa ter o mesmo valor.
