@@ -27,12 +27,21 @@ import { UsageMeter } from '../usage/usage-meter.js';
 import { cloudflareEventId, invalidEntryId, isCloudflareAccountId, parseAuditEntry } from './audit-entry.js';
 import { CloudflareApiError, CloudflareClient } from './cloudflare.client.js';
 import { detect, toCloudflareFindingDraft } from './cloudflare-rules.js';
+import {
+  CLOUDFLARE_SECURITY_STREAM,
+  CloudflareSecurityEvents,
+  type CloudflareSecurityEventsOptions,
+} from './cloudflare-security-sync.js';
 import { CloudflareTokenCheck } from './cloudflare-token-check.js';
 
 export const CLOUDFLARE_SYNC = 'cloudflare';
-/** Fluxos do cursor de cada conta: a auditoria e a conferência de hora em hora (token e zonas). */
+/**
+ * Fluxos do cursor de cada conta: a auditoria, a conferência de hora em hora (token e zonas) e os eventos de segurança
+ * das zonas (`CLOUDFLARE_SECURITY_STREAM`, PR-13).
+ */
 export const CLOUDFLARE_AUDIT_STREAM = 'cloudflare_audit';
 export const CLOUDFLARE_CHECK_STREAM = 'cloudflare_check';
+export { CLOUDFLARE_SECURITY_STREAM };
 
 /** Intervalo da auditoria de cada conta (o laço do worker continua no `SYNC_INTERVAL_SECONDS`). */
 export const CLOUDFLARE_AUDIT_INTERVAL_MS = 5 * 60 * 1000;
@@ -96,6 +105,8 @@ export interface CloudflareAuditSyncOptions {
   tenantIds?: readonly string[];
   groupingWindowMinutes?: number;
   grouping?: IncidentGrouping;
+  /** Os eventos de segurança (GraphQL) e os limites deles; `false` desliga o fluxo (os testes só da auditoria). */
+  securityEvents?: false | CloudflareSecurityEventsOptions;
 }
 
 /** Contagens de uma execução (vão para o log do agendador; nenhum dado de cliente nem nome com "token"). */
@@ -125,6 +136,27 @@ export interface CloudflareSyncReport {
   outOfScope: number;
   incidentsOpened: number;
   incidentsJoined: number;
+  /** Eventos de segurança: janelas lidas inteiras, consultas GraphQL e linhas (grupos) lidas. */
+  securityWindows: number;
+  securityQueries: number;
+  securityGroups: number;
+  /** Zonas e janelas que bateram no limite de linhas (as contagens viram piso). */
+  securityTruncated: number;
+  /** IPs acima do limite que entraram num achado de resumo (o teto por regra, zona e janela). */
+  securityFolded: number;
+  /** Zonas fora da leitura: sem o conjunto de dados no plano, sem permissão ou além das 50. */
+  securitySkippedZones: number;
+  /** Lotes de zonas cuja janela já tinha saído da retenção do Cloudflare. */
+  securityExpired: number;
+  /** Leituras dos eventos que pararam no orçamento de consultas do token. */
+  budgetWaits: number;
+}
+
+/** As chaves dos cursores de uma conta (sem os eventos de segurança quando o fluxo está desligado). */
+interface StreamKeys {
+  audit: CursorKey;
+  check: CursorKey;
+  security: CursorKey | null;
 }
 
 interface AccountRow {
@@ -226,12 +258,16 @@ function decodeContinuation(text: string | null): AuditWindow | null {
  *    e, se uma regra casa, achado do cliente da conta, com a exceção e o incidente na mesma transação. A chave
  *    `cf/<conta>/<id>` é única: reler a sobreposição não duplica.
  * 5. Depois de avançar o cursor, o volume lido (os bytes de cada página) vai para o medidor de uso (`cloudflare`).
+ * 6. **Eventos de segurança** (fluxo `cloudflare_security`, PR-13, em `CloudflareSecurityEvents`): as janelas de
+ *    15 min das zonas pelo GraphQL, com o mesmo token, depois da auditoria (uma falha passageira dela não os impede).
  *
  * Estado da conexão (o cartão em Contas cloud): a leitura bem-sucedida conecta a conta, mesmo sem evento (o
  * Cloudflare é lido por API); falha da origem fica em erro com o código (`rate_limited`, `timeout`, `http_503`...), e
- * o cursor recua. O 429 (limite do token inteiro) adia os dois fluxos da conta até o `retry-after`, venha da
- * auditoria ou da conferência. Toda escrita da conexão confere, sob o lock da credencial, que o token
- * guardado ainda é o que foi usado: um token trocado no meio da leitura nunca herda o erro do anterior.
+ * o cursor recua. Com mais de um problema, vale o da auditoria nesta leitura, depois o da conferência e depois o dos
+ * eventos (que fica guardado no cursor deles até a próxima leitura). O 429 (limite do token inteiro) adia os três
+ * fluxos da conta até o `retry-after`, venha de qualquer um deles. Toda escrita da conexão confere, sob o lock da
+ * credencial, que o token guardado ainda é o que foi usado: um token trocado no meio da leitura nunca herda o erro do
+ * anterior.
  */
 export class CloudflareAuditSync {
   private readonly name: string;
@@ -245,6 +281,7 @@ export class CloudflareAuditSync {
   private readonly store: FindingStore;
   private readonly lease: SyncLease;
   private readonly cursors: CollectorCursors;
+  private readonly security: CloudflareSecurityEvents | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -273,6 +310,17 @@ export class CloudflareAuditSync {
       options.leaseMs ?? 5 * 60 * 1000,
     );
     this.cursors = new CollectorCursors(prisma);
+    this.security =
+      options.securityEvents === false
+        ? null
+        : new CloudflareSecurityEvents(
+            prisma,
+            this.client,
+            this.store,
+            this.cursors,
+            this.lease,
+            options.securityEvents,
+          );
   }
 
   async runOnce(now: Date = new Date(), signal?: AbortSignal): Promise<CloudflareSyncReport> {
@@ -294,6 +342,14 @@ export class CloudflareAuditSync {
       outOfScope: 0,
       incidentsOpened: 0,
       incidentsJoined: 0,
+      securityWindows: 0,
+      securityQueries: 0,
+      securityGroups: 0,
+      securityTruncated: 0,
+      securityFolded: 0,
+      securitySkippedZones: 0,
+      securityExpired: 0,
+      budgetWaits: 0,
     };
     if (!(await this.lease.acquire(now))) return { ...report, status: 'locked' };
     let firstError: string | null = null;
@@ -368,13 +424,19 @@ export class CloudflareAuditSync {
       report.blocked += 1;
       return;
     }
-    const auditKey: CursorKey = { cloudAccountId: account.id, stream: CLOUDFLARE_AUDIT_STREAM };
-    const checkKey: CursorKey = { cloudAccountId: account.id, stream: CLOUDFLARE_CHECK_STREAM };
-    const audit = await this.cursors.read(auditKey, now);
-    const check = await this.cursors.read(checkKey, now);
+    const keys: StreamKeys = {
+      audit: { cloudAccountId: account.id, stream: CLOUDFLARE_AUDIT_STREAM },
+      check: { cloudAccountId: account.id, stream: CLOUDFLARE_CHECK_STREAM },
+      security:
+        this.security === null ? null : { cloudAccountId: account.id, stream: CLOUDFLARE_SECURITY_STREAM },
+    };
+    const audit = await this.cursors.read(keys.audit, now);
+    const check = await this.cursors.read(keys.check, now);
+    const security = keys.security === null ? null : await this.cursors.read(keys.security, now);
     const auditDue = audit.nextRunAt.getTime() <= now.getTime();
     const checkDue = check.nextRunAt.getTime() <= now.getTime();
-    if (!auditDue && !checkDue) {
+    const securityDue = security !== null && security.nextRunAt.getTime() <= now.getTime();
+    if (!auditDue && !checkDue && !securityDue) {
       report.notDue += 1;
       return;
     }
@@ -406,60 +468,110 @@ export class CloudflareAuditSync {
 
     let checkError =
       check.lastErrorKind !== null && CHECK_ERRORS.has(check.lastErrorKind) ? check.lastErrorKind : null;
+    let checkDone = false;
     if (checkDue) {
-      const outcome = await this.check(session, checkKey, context);
+      const outcome = await this.check(session, keys.check, context);
       if (outcome.kind === 'blocked') {
         report.blocked += 1;
         await this.markConnection(account, ciphertext, errorState(outcome.code));
         return;
       }
       if (outcome.kind === 'rate_limited') {
-        // O limite vale para o token inteiro: a auditoria também espera, esteja ou não na hora dela.
+        // O limite vale para o token inteiro: a auditoria e os eventos também esperam, estejam ou não na hora.
         report.failedAccounts += 1;
-        await this.cursors.postpone(auditKey, outcome.retryAt);
+        await this.postpone(keys, 'check', outcome.retryAt);
         await this.markConnection(account, ciphertext, errorState('rate_limited'));
         return;
       }
-      if (outcome.kind === 'done') checkError = outcome.checkError;
-      if (!auditDue && outcome.kind === 'done') {
-        if (checkError !== null) {
-          await this.markConnection(account, ciphertext, errorState(checkError));
-        } else if (account.connection === 'error' && CHECK_ERRORS.has(account.connectionError ?? '')) {
-          // O problema das zonas foi resolvido no cadastro ou no Cloudflare.
-          await this.markConnection(account, ciphertext, { connection: 'connected', connectionError: null });
-        }
+      if (outcome.kind === 'done') {
+        checkError = outcome.checkError;
+        checkDone = true;
       }
     }
-    if (!auditDue) return;
 
-    try {
-      await this.readAudit(session, audit, auditKey, context);
-    } catch (error) {
-      if (!(error instanceof CloudflareApiError)) throw error;
-      report.failedAccounts += 1;
-      await this.sourceFailed(session, { audit: auditKey, check: checkKey }, error, now);
+    // Auditoria: a falha que para a coleta e o 429 encerram a conta aqui; a passageira segue para os eventos.
+    let collected = false;
+    let sourceError: string | null = null;
+    if (auditDue) {
+      try {
+        await this.readAudit(session, audit, keys.audit, context);
+        collected = true;
+      } catch (error) {
+        if (!(error instanceof CloudflareApiError)) throw error;
+        report.failedAccounts += 1;
+        await this.sourceFailed(keys, error, now);
+        if (isCloudflareBlockingError(error.code) || error.code === 'rate_limited') {
+          await this.markConnection(account, ciphertext, errorState(error.code));
+          return;
+        }
+        sourceError = error.code;
+      }
+    }
+
+    // Eventos de segurança: o estado guardado (permissão, plano, falha em recuo) vale até a próxima leitura deles.
+    let securityError =
+      security !== null && security.failures > 0 && security.lastErrorKind !== null
+        ? security.lastErrorKind
+        : null;
+    if (securityDue && this.security !== null && keys.security !== null) {
+      const outcome = await this.security.read(account, token, security, keys.security, context);
+      switch (outcome.kind) {
+        case 'blocked':
+          report.blocked += 1;
+          await this.markConnection(account, ciphertext, errorState(outcome.code));
+          return;
+        case 'rate_limited':
+          report.failedAccounts += 1;
+          await this.postpone(keys, 'security', outcome.retryAt);
+          await this.markConnection(account, ciphertext, errorState('rate_limited'));
+          return;
+        case 'failed':
+          report.failedAccounts += 1;
+          securityError = outcome.code;
+          break;
+        case 'status':
+          securityError = outcome.code;
+          break;
+        case 'done':
+          collected = true;
+          securityError = null;
+          break;
+      }
+    }
+
+    // Conexão: o erro da auditoria nesta leitura, depois o da conferência, depois o dos eventos.
+    const final = sourceError ?? checkError ?? securityError;
+    if (!auditDue && !securityDue) {
+      // Só a conferência rodou: a conexão muda só pelo que ela confere.
+      if (!checkDone) return;
+      if (final !== null) {
+        await this.markConnection(account, ciphertext, errorState(final));
+      } else if (account.connection === 'error' && CHECK_ERRORS.has(account.connectionError ?? '')) {
+        // O problema das zonas foi resolvido no cadastro ou no Cloudflare.
+        await this.markConnection(account, ciphertext, { connection: 'connected', connectionError: null });
+      }
       return;
     }
-    await this.markConnection(
-      account,
-      ciphertext,
-      checkError === null
-        ? { connection: 'connected', connectionError: null, lastCollectedAt: now }
-        : { ...errorState(checkError), lastCollectedAt: now },
-    );
+    await this.markConnection(account, ciphertext, {
+      ...(final === null ? { connection: 'connected', connectionError: null } : errorState(final)),
+      ...(collected && { lastCollectedAt: now }),
+    });
+  }
+
+  /** O 429 vale para o token inteiro: os outros fluxos da conta esperam o mesmo prazo, sem contar falha. */
+  private async postpone(keys: StreamKeys, from: keyof StreamKeys, until: Date): Promise<void> {
+    for (const stream of ['audit', 'check', 'security'] as const) {
+      const key = keys[stream];
+      if (stream !== from && key !== null) await this.cursors.postpone(key, until);
+    }
   }
 
   /**
-   * Falha da origem na auditoria: a conexão fica em erro com o código. 401 e 403 param a coleta até o token ser
-   * trocado (nenhuma nova tentativa); 429 espera o `retry-after`, na auditoria e na conferência (o limite é do token
+   * Falha da origem na auditoria (quem chama põe a conexão em erro com o código). 401 e 403 param a coleta até o token
+   * ser trocado (nenhuma nova tentativa); 429 espera o `retry-after`, em todos os fluxos da conta (o limite é do token
    * inteiro); o resto recua o cursor (1 min, dobrando, até 1 h).
    */
-  private async sourceFailed(
-    session: Session,
-    keys: { audit: CursorKey; check: CursorKey },
-    error: CloudflareApiError,
-    now: Date,
-  ): Promise<void> {
+  private async sourceFailed(keys: StreamKeys, error: CloudflareApiError, now: Date): Promise<void> {
     if (isCloudflareBlockingError(error.code)) {
       await this.cursors.fail(keys.audit, error, now, {
         retryAt: new Date(now.getTime() + this.auditIntervalMs),
@@ -467,11 +579,10 @@ export class CloudflareAuditSync {
     } else if (error.code === 'rate_limited') {
       const retryAt = new Date(now.getTime() + (error.retryAfterMs ?? RATE_LIMIT_WAIT_MS));
       await this.cursors.fail(keys.audit, error, now, { retryAt });
-      await this.cursors.postpone(keys.check, retryAt);
+      await this.postpone(keys, 'audit', retryAt);
     } else {
       await this.cursors.fail(keys.audit, error, now);
     }
-    await this.markConnection(session.account, session.ciphertext, errorState(error.code));
   }
 
   /** Conferência de hora em hora: o token (verify e leitura de prova) e, com zonas cadastradas, a lista das zonas. */
