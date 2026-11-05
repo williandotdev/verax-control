@@ -3,6 +3,8 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CheckoutStore } from '../checkout/checkout-store.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { isUlid, newUlid } from '../common/ulid.js';
+import { mayHaveNode } from '../lifecycle/lifecycle-rules.js';
+import { nodePowerAfterTransition, requestNodePower } from '../lifecycle/node-power-request.js';
 import { FIRST_PROVISIONING_STEP, STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import {
   type CheckoutSessionSnapshot,
@@ -662,12 +664,34 @@ export class StripeEventProcessor {
     tenantId: string,
     decide: (current: TenantRecord) => TenantChange | undefined,
   ): Promise<TenantChangeResult | undefined> {
+    let result: TenantChangeResult;
     try {
-      return await this.tenants.change(tenantId, decide);
+      result = await this.tenants.change(tenantId, decide);
     } catch (error) {
       if (!(error instanceof InvalidTransitionError)) throw error;
       this.attention(ctx, 'transition_refused', tenantId);
       return undefined;
+    }
+    await this.requestNodePowerAfter(result);
+    return result;
+  }
+
+  /**
+   * A VM acompanha a transição (CP-11): suspenso ou cancelado → `node.stop`; reativado (`invoice.paid` de um suspenso)
+   * → `node.start`. Só pede (o passo no cp-worker relê o estado antes de agir) e nunca derruba a entrega: se a fila
+   * falhar, o `tick` da hora seguinte pede de novo, pelo `lifecycle.nodeStoppedAt`.
+   */
+  private async requestNodePowerAfter(result: TenantChangeResult): Promise<void> {
+    if (!result.transitioned || !mayHaveNode(result.tenant)) return;
+    const step = nodePowerAfterTransition(result.before.state, result.tenant.state);
+    if (step === undefined) return;
+    try {
+      await requestNodePower(this.queue, this.clock, result.tenant.id, step);
+    } catch {
+      this.logger.warn(
+        { event: 'node_power_enqueue_failed', tenantId: result.tenant.id, step },
+        'pedido de parar ou ligar a VM não entrou na fila: o tick repete',
+      );
     }
   }
 

@@ -21,11 +21,36 @@ export const EXECUTOR_ACTIONS = ['apply', 'destroy'] as const;
 export type ExecutorAction = (typeof EXECUTOR_ACTIONS)[number];
 
 /**
- * O tipo da execução (plano §3, `provisioningRuns.kind`). Só `delete` e `crypto_destroy` (a exclusão do cliente, CP-11)
- * podem destruir ou recriar a conta de serviço do nó; o `entrypoint.sh` recusa o resto antes do `apply`.
+ * O tipo da execução (plano §3, `provisioningRuns.kind`). O `entrypoint.sh` amarra a ação ao tipo (CP-11): `apply` só
+ * em `provision` e `resume`; `destroy` (a Exclusão 1, a única que apaga a conta de serviço do nó) só em `delete`; e
+ * `purge` (a Exclusão 2: o cofre `credentials-key`, o bucket de backups e o estado) só em `crypto_destroy`.
  */
 export const RUN_KINDS = ['provision', 'resume', 'delete', 'crypto_destroy'] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
+
+/** A ação de cada tipo de execução, a mesma tabela do `entrypoint.sh`. */
+export const ACTION_OF_KIND: Readonly<Record<RunKind, ExecutorAction | 'purge'>> = {
+  provision: 'apply',
+  resume: 'apply',
+  delete: 'destroy',
+  crypto_destroy: 'purge',
+};
+
+/**
+ * As variáveis da Exclusão 2 (`EXECUTOR_ACTION=purge`, `RUN_KIND=crypto_destroy`): só o endereço (o slug e a execução).
+ * O executor deriva dele os nomes que apaga (`vx-<slug>-credentials-key`, `<projeto>-vx-<slug>-backups` e
+ * `tenants/<slug>/default.tfstate`) e não recebe dado pessoal nenhum (o e-mail do admin já saiu na Exclusão 1).
+ */
+export function purgeExecutorEnv(input: { runId: string; slug: string }): { name: string; value: string }[] {
+  check(isUlid(input.runId), 'RUN_ID');
+  check(isSlug(input.slug), 'TENANT_SLUG');
+  return [
+    { name: 'EXECUTOR_ACTION', value: 'purge' },
+    { name: 'RUN_KIND', value: 'crypto_destroy' },
+    { name: 'RUN_ID', value: input.runId },
+    { name: 'TENANT_SLUG', value: input.slug },
+  ];
+}
 
 export interface ExecutorInput {
   action: ExecutorAction;
@@ -144,6 +169,8 @@ function check(ok: boolean, variable: string): void {
 export function executorEnv(input: ExecutorInput): { name: string; value: string }[] {
   check((EXECUTOR_ACTIONS as readonly string[]).includes(input.action), 'EXECUTOR_ACTION');
   check((RUN_KINDS as readonly string[]).includes(input.kind), 'RUN_KIND');
+  // A ação é a do tipo (a Exclusão 1 destrói; nenhuma outra execução destrói): a mesma recusa do entrypoint.sh.
+  check(ACTION_OF_KIND[input.kind] === input.action, 'EXECUTOR_ACTION');
   check(isUlid(input.runId), 'RUN_ID');
   check(isSlug(input.slug), 'TENANT_SLUG');
   check(['essencial', 'profissional', 'enterprise'].includes(input.plan), 'PLAN');
