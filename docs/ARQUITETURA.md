@@ -1511,9 +1511,13 @@ outro projeto, que é global no Firebase, sorteia outro). `provisioningRuns/{run
 andamento (a execução do Job, as consultas, o código), nunca segredo, por 180 dias.
 
 **`resume` do responsável:** `POST /internal/tenants/:id/resume`, só para `OWNER_PRINCIPALS` (nem a cp-invoker nem o
-cp-public), em `provisioning_failed` ou parado em `provisioning`; auditado como `owner:<e-mail>`. Num nó já criado, o
-`preflight` mantém a versão que ele tem (uma versão nova nos metadados não é instalada, e o `node.wait_ready` esperaria
-para sempre).
+cp-public), em `provisioning_failed` ou parado em `provisioning`; auditado como `owner:<e-mail>`. **A versão do nó fica
+presa no primeiro `apply`:** o `terraform.apply` grava `provisioning.nodeVersion` e `provisioning.nodeVersionPinnedAt`
+no cliente antes de disparar o Job, e daí em diante o `preflight` usa essa versão, mesmo com outro `NODE_RELEASE`. Um
+`apply` que criou a VM e falhou depois (ou cujas saídas não chegaram) não grava `resources.instanceName`, mas a VM pode
+já estar instalando aquela versão; trocar pela nova só mudaria os metadados (a instalação não atualiza sozinha), e o
+`node.wait_ready` esperaria uma versão que nunca chega. Sem nenhum `apply` começado (uma parada no `preflight`, no
+túnel ou no bundle do painel), o `resume` usa a versão da configuração.
 
 **O executor (`infra/control-plane/terraform`):** a imagem oficial `hashicorp/terraform:1.17.1` pelo digest do índice,
 sem `git` e `openssh`, com `bash`, `curl` e `jq` do Alpine; o provider `google` do lock do tenant espelhado no build

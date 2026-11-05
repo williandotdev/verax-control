@@ -32,6 +32,7 @@ const PUBLIC_SA = 'cp-public@projeto-exemplo.iam.gserviceaccount.com';
 const OWNER = 'responsavel@exemplo.example';
 const START = new Date('2026-11-05T12:00:00.000Z');
 const RELEASE = 'node-v1.2.3';
+const NEXT_RELEASE = 'node-v1.3.0';
 const NODES = 'projeto-dos-nos-demo';
 const ZONE = 'southamerica-east1-b';
 const TFSTATE = 'projeto-dos-nos-demo-tfstate';
@@ -68,12 +69,16 @@ describe('cp-worker: provisionamento (CP-07)', () => {
   const tenants = new TenantStore(documents, clock, audit);
   const runs = new ProvisioningStore(documents, clock);
   let app: NestExpressApplication;
+  /**
+   * O mesmo cp-worker depois de o responsável trocar `NODE_RELEASE` e implantar de novo: o mesmo Firestore, a mesma
+   * fila e as mesmas APIs falsas. (O nestjs-pino guarda o logger do primeiro app: os logs deste vão para o `capture`.)
+   */
+  let appNext: NestExpressApplication;
   let cursor = 0;
   let slugSequence = 0;
 
-  beforeAll(async () => {
-    await cloud.start();
-    app = await createApp({
+  async function workerApp(release: string): Promise<NestExpressApplication> {
+    const worker = await createApp({
       role: 'worker',
       clock,
       documentStore: documents,
@@ -107,7 +112,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         TASKS_QUEUE_PROVISIONING: 'provisioning',
         TASKS_QUEUE_LIFECYCLE: 'lifecycle',
         RELEASE_BUCKET: RELEASES,
-        NODE_RELEASE: RELEASE,
+        NODE_RELEASE: release,
         MAIL_FROM_NODES: 'nao-responda@verax.example',
         BOOTSTRAP_SUPPORT_EMAIL: SUPPORT,
         CLOUDFLARE_API_TOKEN: cloud.cloudflareToken,
@@ -116,24 +121,33 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         FIREBASE_PANEL_PROJECTS: 'paineis-demo-1,paineis-demo-2',
       },
     });
-    await app.listen(0, '127.0.0.1');
+    await worker.listen(0, '127.0.0.1');
+    return worker;
+  }
+
+  beforeAll(async () => {
+    await cloud.start();
+    app = await workerApp(RELEASE);
+    appNext = await workerApp(NEXT_RELEASE);
   });
 
   afterAll(async () => {
     await app.close();
+    await appNext.close();
     await cloud.stop();
   });
 
   /** O release da versão no bucket: o manifesto assinado com a chave do teste e, por padrão, o bundle do painel. */
-  function publishRelease(options: { panel?: boolean } = {}): void {
+  function publishRelease(options: { panel?: boolean; release?: string } = {}): void {
+    const release = options.release ?? RELEASE;
     const bundle = panelBundle();
     const manifest = manifestFor(
-      RELEASE,
-      options.panel === false ? {} : { panel: { url: panelUrl(RELEASE), sha256: sha256(bundle) } },
+      release,
+      options.panel === false ? {} : { panel: { url: panelUrl(release), sha256: sha256(bundle) } },
     );
-    cloud.objects.set(`${RELEASES}/${RELEASE}/manifest.json`, manifest);
-    cloud.objects.set(`${RELEASES}/${RELEASE}/manifest.json.sig`, releaseKey.sign(manifest));
-    cloud.objects.set(`${RELEASES}/${RELEASE}/panel-abcdef0123456789abcdef0123456789abcdef01.tar.gz`, bundle);
+    cloud.objects.set(`${RELEASES}/${release}/manifest.json`, manifest);
+    cloud.objects.set(`${RELEASES}/${release}/manifest.json.sig`, releaseKey.sign(manifest));
+    cloud.objects.set(`${RELEASES}/${release}/panel-abcdef0123456789abcdef0123456789abcdef01.tar.gz`, bundle);
   }
 
   beforeEach(() => {
@@ -173,8 +187,9 @@ describe('cp-worker: provisionamento (CP-07)', () => {
   async function deliver(
     task: MemoryQueuedTask,
     retryCount = 0,
+    target: NestExpressApplication = app,
   ): Promise<{ status: number; outcome?: string }> {
-    const response = await request(app.getHttpServer())
+    const response = await request(target.getHttpServer())
       .post(`/internal/steps/${task.step}`)
       .set('Authorization', bearer(INVOKER))
       .set('X-CloudTasks-TaskRetryCount', String(retryCount))
@@ -196,7 +211,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
    */
   async function drain(
     hook: Hook = () => undefined,
-    options: { twice?: boolean; limit?: number } = {},
+    options: { twice?: boolean; limit?: number; target?: NestExpressApplication } = {},
   ): Promise<Delivered[]> {
     const delivered: Delivered[] = [];
     for (let count = 0; count < (options.limit ?? 300); count += 1) {
@@ -206,10 +221,10 @@ describe('cp-worker: provisionamento (CP-07)', () => {
       if (task.scheduleAt !== undefined && task.scheduleAt.getTime() > clock.now().getTime())
         clock.set(task.scheduleAt);
       await hook(task);
-      const result = await deliver(task);
+      const result = await deliver(task, 0, options.target);
       delivered.push({ step: task.step, poll: task.poll, ...result });
       if (options.twice === true) {
-        const again = await deliver(task);
+        const again = await deliver(task, 0, options.target);
         delivered.push({ step: task.step, poll: task.poll, ...again });
       }
     }
@@ -219,7 +234,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
   /** A VM e o Job de um cliente que dá certo: o `apply` termina, a instalação grava `verax/ready` e o cofre. */
   function healthyNode(
     tenant: TenantRecord,
-    options: { readyAfterPolls?: number; domainActiveAfterPolls?: number } = {},
+    options: { readyAfterPolls?: number; domainActiveAfterPolls?: number; installed?: string } = {},
   ): (task: MemoryQueuedTask) => void {
     const slug = tenant.slug;
     const instance = `${NODES}/${ZONE}/vx-${slug}`;
@@ -240,7 +255,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         cloud.guestAttributes.set(
           instance,
           new Map([
-            ['ready', RELEASE],
+            ['ready', options.installed ?? RELEASE],
             ['version', 'abc'],
           ]),
         );
@@ -729,6 +744,73 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         { step: 'firebase.site', poll: undefined, status: 200, outcome: 'not_provisioning' },
       ]);
       expect(queue.tasks.length).toBe(cursor);
+    });
+  });
+
+  describe('a versão do nó presa no primeiro apply (revisão do PR #90)', () => {
+    /** O responsável chama o `resume` no cp-worker indicado. */
+    async function resume(tenantId: string, target: NestExpressApplication): Promise<void> {
+      await request(target.getHttpServer())
+        .post(`/internal/tenants/${tenantId}/resume`)
+        .set('Authorization', bearer(OWNER))
+        .expect(200);
+    }
+
+    function executionVersions(): (string | undefined)[] {
+      return [...cloud.executions.values()].map(
+        (execution) => execution.env.find((entry) => entry.name === 'NODE_VERSION')?.value,
+      );
+    }
+
+    it('apply parcial (VM criada, sem saídas) → NODE_RELEASE muda → o resume mantém a versão presa e o nó fica pronto', async () => {
+      publishRelease({ release: NEXT_RELEASE });
+      const tenant = await paidTenant();
+      // O Terraform cria a VM (ela instala a versão pedida) e falha depois: as duas execuções terminam sem saídas.
+      await drain((task) => {
+        if (task.step === 'terraform.wait' && (task.poll ?? 0) >= 1) {
+          for (const execution of cloud.executions.values()) execution.state = 'failed';
+        }
+      });
+      const failed = await tenants.require(tenant.id);
+      expect(failed.provisioning?.lastError?.code).toBe('terraform_failed');
+      expect(failed.resources?.instanceName).toBeUndefined();
+      expect(failed.provisioning?.nodeVersion).toBe(RELEASE);
+      expect(failed.provisioning?.nodeVersionPinnedAt).toBeInstanceOf(Date);
+
+      // O responsável troca NODE_RELEASE, implanta de novo e retoma: o nó continua na versão que já tem.
+      await resume(tenant.id, appNext);
+      const delivered = await drain(healthyNode(tenant, { installed: RELEASE }), { target: appNext });
+      expect(delivered.every((entry) => entry.status === 200)).toBe(true);
+      const final = await tenants.require(tenant.id);
+      expect(final.state).toBe('waiting_customer_connection');
+      expect(final.provisioning?.nodeVersion).toBe(RELEASE);
+      expect(final.provisioning?.nodeVersionPinnedAt).toEqual(failed.provisioning?.nodeVersionPinnedAt);
+      expect(executionVersions()).toEqual([RELEASE, RELEASE, RELEASE]);
+      expect((await runs.getRun(final.provisioning?.runId ?? ''))?.release?.release).toBe(RELEASE);
+      expect(
+        capture
+          .entries()
+          .find((entry) => entry.event === 'node_release_pinned' && entry.tenantId === tenant.id),
+      ).toMatchObject({ nodeVersion: RELEASE, nodeRelease: NEXT_RELEASE });
+    });
+
+    it('sem nenhum apply começado (parou antes, no bundle do painel), o resume usa a versão nova', async () => {
+      publishRelease({ panel: false });
+      publishRelease({ release: NEXT_RELEASE });
+      const tenant = await paidTenant();
+      await drain();
+      const failed = await tenants.require(tenant.id);
+      expect(failed.provisioning?.lastError?.code).toBe('panel_bundle_missing');
+      expect(failed.provisioning?.nodeVersionPinnedAt).toBeUndefined();
+      expect(cloud.executions.size).toBe(0);
+
+      await resume(tenant.id, appNext);
+      await drain(healthyNode(tenant, { installed: NEXT_RELEASE }), { target: appNext });
+      const final = await tenants.require(tenant.id);
+      expect(final.state).toBe('waiting_customer_connection');
+      expect(final.provisioning?.nodeVersion).toBe(NEXT_RELEASE);
+      expect(final.provisioning?.nodeVersionPinnedAt).toBeInstanceOf(Date);
+      expect(executionVersions()).toEqual([NEXT_RELEASE]);
     });
   });
 

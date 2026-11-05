@@ -148,6 +148,13 @@ export const tenantSchema = z.strictObject({
       attempts: z.number().int().min(0),
       lastError: z.strictObject({ code: z.string().max(64), at: z.date() }).optional(),
       nodeVersion: z.string().max(64).optional(),
+      /**
+       * Quando a versão do nó (`nodeVersion`) ficou presa: o `terraform.apply` grava antes de disparar o primeiro Job
+       * (CP-07). Daí em diante pode existir uma VM com essa versão instalada, mesmo que o `apply` tenha falhado depois,
+       * e uma versão nova nos metadados não seria instalada (PR-N7): o `resume` mantém a presa, mesmo com outro
+       * `NODE_RELEASE`.
+       */
+      nodeVersionPinnedAt: z.date().optional(),
     })
     .optional(),
   /** Apagado em `deleted`. */

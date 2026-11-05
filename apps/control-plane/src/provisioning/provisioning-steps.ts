@@ -4,6 +4,7 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { z } from 'zod';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepContext, StepInput } from '../internal/step-handler.js';
+import { TenantStore } from '../tenants/tenant-store.js';
 import type { Tenant, TenantRecord } from '../tenants/tenant.schema.js';
 import type { DesiredDnsRecord } from './cloudflare-api.js';
 import {
@@ -134,8 +135,9 @@ abstract class BaseStep implements ProvisioningStep {
 /**
  * Configuração completa (senão `provisioning_disabled`, sem enfileirar nada), o que foi vendido cabe no nó, o manifesto
  * da versão conferido (assinatura e campos), a faixa de rede, o projeto do Firebase com vaga e os nomes. Nada é criado
- * fora do Firestore. Num `resume` depois de a VM existir, a versão é a que o nó já tem (uma versão nova nos metadados
- * não é instalada, PR-N7, e o `node.wait_ready` esperaria para sempre).
+ * fora do Firestore. Num `resume` depois de um `apply` começado (a VM pode existir, mesmo sem saídas gravadas), a
+ * versão é a presa no cliente (`pinnedNodeVersion`), e não a de um `NODE_RELEASE` novo: uma versão nova nos metadados
+ * não é instalada (PR-N7), e o `node.wait_ready` esperaria para sempre.
  */
 @Injectable()
 export class PreflightStep extends BaseStep {
@@ -175,11 +177,14 @@ export class PreflightStep extends BaseStep {
 
     const kind: RunKind = (tenant.provisioning?.attempts ?? 0) > 0 ? 'resume' : 'provision';
     await this.store.ensureRun(runId, tenant.id, kind);
-    const nodeCreated = tenant.resources?.instanceName !== undefined;
-    const nodeVersion =
-      nodeCreated && tenant.provisioning?.nodeVersion !== undefined
-        ? tenant.provisioning.nodeVersion
-        : settings.nodeRelease;
+    const nodeVersion = pinnedNodeVersion(tenant) ?? settings.nodeRelease;
+    if (nodeVersion !== settings.nodeRelease) {
+      // O responsável trocou a versão depois de um `apply` deste cliente: a VM pode já ter a anterior instalada.
+      this.logger.info(
+        { event: 'node_release_pinned', tenantId: tenant.id, nodeVersion, nodeRelease: settings.nodeRelease },
+        'versão do nó mantida',
+      );
+    }
     const release = await readReleaseManifest(
       this.apis.storage,
       settings.releaseBucket,
@@ -216,6 +221,19 @@ export class PreflightStep extends BaseStep {
     }
     throw new DefinitiveStepError('firebase_pool_full');
   }
+}
+
+/**
+ * A versão do nó que não pode mais mudar: a de um cliente cujo `apply` já começou (o `terraform.apply` a prende antes
+ * de disparar o Job) ou cuja VM já está registrada. Um `apply` que criou a VM e falhou depois (ou cujas saídas não
+ * chegaram) não grava `resources.instanceName`, mas a VM pode estar instalando aquela versão; trocar pela de um
+ * `NODE_RELEASE` novo só mudaria os metadados (a instalação não atualiza sozinha, PR-N7), e o `node.wait_ready`
+ * esperaria uma versão que nunca chega. Sem nenhum `apply` começado, `undefined`: vale a versão da configuração.
+ */
+export function pinnedNodeVersion(tenant: Tenant): string | undefined {
+  const pinned =
+    tenant.provisioning?.nodeVersionPinnedAt !== undefined || tenant.resources?.instanceName !== undefined;
+  return pinned ? tenant.provisioning?.nodeVersion : undefined;
 }
 
 /**
@@ -420,6 +438,7 @@ export class TerraformApplyStep extends BaseStep {
     @Inject(APP_CONFIG) config: AppConfig,
     @Inject(PROVISIONING_APIS) apis: ProvisioningApis,
     private readonly store: ProvisioningStore,
+    private readonly tenants: TenantStore,
   ) {
     super(engine, config, apis);
   }
@@ -427,6 +446,7 @@ export class TerraformApplyStep extends BaseStep {
   async execute(stepRun: StepRun): Promise<StepOutcome> {
     const recorded = stepRun.step.outputs?.execution;
     if (typeof recorded !== 'string') {
+      await this.pinNodeVersion(stepRun);
       const execution = await startApply(this.config, this.apis, stepRun);
       await this.store.updateStep(stepRun.runId, this.name, (current, now) => ({
         ...(current ?? this.store.newStep(now)),
@@ -435,6 +455,44 @@ export class TerraformApplyStep extends BaseStep {
       }));
     }
     return { kind: 'next', delayMs: WAITS.terraform.everyMs };
+  }
+
+  /**
+   * Prende a versão desta execução no cliente antes de o Job existir (`pinnedNodeVersion`): se o `apply` criar a VM e
+   * falhar depois, o `resume` instala a mesma versão, e não a de um `NODE_RELEASE` trocado no meio. Já presa, tem de
+   * ser a da execução (o `preflight` a escolheu assim); outra é estado inconsistente, e nada é aplicado.
+   */
+  private async pinNodeVersion({ tenant, run, runId, now, requestId }: StepRun): Promise<void> {
+    const version = releaseOf(run).release;
+    const pinned = pinnedNodeVersion(tenant);
+    if (pinned !== undefined && pinned !== version) throw new DefinitiveStepError('node_version_conflict');
+    const result = await this.tenants.change(tenant.id, (current) => {
+      if (current.state !== 'provisioning' || current.provisioning?.runId !== runId) return undefined;
+      if (
+        current.provisioning.nodeVersionPinnedAt !== undefined &&
+        current.provisioning.nodeVersion === version
+      ) {
+        return undefined;
+      }
+      return {
+        reason: 'provisioning_node_version_pinned',
+        audit: { actor: 'system', requestId },
+        mutate: (t) => ({
+          ...t,
+          provisioning: {
+            ...(t.provisioning ?? { attempts: 0 }),
+            nodeVersion: version,
+            nodeVersionPinnedAt: t.provisioning?.nodeVersionPinnedAt ?? now,
+          },
+        }),
+      };
+    });
+    const current = result.tenant;
+    if (current.state !== 'provisioning' || current.provisioning?.runId !== runId) {
+      // Suspenso, cancelado ou retomado em outra execução entre a leitura e agora: nada de Job; a repetição da task
+      // vê o estado novo e para.
+      throw new Error('cliente fora desta execução do provisionamento');
+    }
   }
 }
 

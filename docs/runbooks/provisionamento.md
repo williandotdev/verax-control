@@ -56,6 +56,12 @@ que ainda chegarem são ignoradas (`stale_run`). O `resume` também tira do luga
 (por exemplo, os que o webhook deixou no `preflight` antes de existir o worker). Num cliente fora de
 `provisioning_failed` e `provisioning`, responde 409.
 
+**A versão do nó não muda num `resume` depois de um `apply`:** o `terraform.apply` prende a versão no cliente
+(`provisioning.nodeVersion` e `nodeVersionPinnedAt`) antes de disparar o Job, porque a VM pode existir mesmo com o
+`apply` falhando. Trocar `NODE_RELEASE` e retomar não muda a versão desse cliente (o log diz `node_release_pinned`);
+a atualização de um nó já criado é pelo `deploy.sh` (onboarding, item 8). Só um cliente que parou antes de qualquer
+`apply` (no `preflight`, no túnel ou no bundle do painel) recebe a versão nova.
+
 ## 4. O que nunca fazer
 
 - Mudar `tenants/<id>` à mão para "pular" um passo: os passos seguintes dependem do que os anteriores gravaram.
