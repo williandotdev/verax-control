@@ -41,9 +41,14 @@ describe('matriz de permissões', () => {
       'admin_verax',
       'admin_cliente',
     ]);
-    expect(Object.keys(PERMISSIONS).filter((permission) => permission.startsWith('plan:'))).toEqual([
+    expect(Object.keys(PERMISSIONS).filter((permission) => permission.startsWith('plan'))).toEqual([
       'plan:read',
+      'plan_history:read',
     ]);
+  });
+
+  it('histórico do plano: todos os papéis leem (os filtros de período de achados e relatórios são de todos)', () => {
+    for (const role of ROLES) expect(hasPermission(role, 'plan_history:read')).toBe(true);
   });
 
   it('todo papel referenciado na matriz existe', () => {

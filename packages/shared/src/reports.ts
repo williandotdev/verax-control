@@ -7,6 +7,7 @@ import {
   type FindingSeverity,
   type FindingStatus,
 } from './findings.js';
+import { HISTORY_PERIOD_DAYS, type HistoryPeriod, historyPeriodStart } from './history.js';
 import { INCIDENT_STATUSES, type IncidentStatus } from './incidents.js';
 import { authorSchema, type Author } from './protected-resources.js';
 
@@ -33,9 +34,15 @@ export const MITRE_TACTICS = [
   { id: 'TA0040', name: 'Impact' },
 ] as const;
 
-export const REPORT_PERIODS = ['7d', '30d', '90d'] as const;
+/** Períodos dos relatórios. A API recusa o mais longo que o histórico do plano do nó (PR-20): `12m` só com 365 dias. */
+export const REPORT_PERIODS = ['7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
 export type ReportPeriod = (typeof REPORT_PERIODS)[number];
-export const REPORT_PERIOD_DAYS: Readonly<Record<ReportPeriod, number>> = { '7d': 7, '30d': 30, '90d': 90 };
+export const REPORT_PERIOD_DAYS: Readonly<Record<ReportPeriod, number>> = {
+  '7d': HISTORY_PERIOD_DAYS['7d'],
+  '30d': HISTORY_PERIOD_DAYS['30d'],
+  '90d': HISTORY_PERIOD_DAYS['90d'],
+  '12m': HISTORY_PERIOD_DAYS['12m'],
+};
 
 export const REPORT_KINDS = [
   'summary',
@@ -83,11 +90,11 @@ export const summaryReportSchema = z.strictObject({
   meanTimeToResolveMinutes: minutes,
   /**
    * Achados por dia (UTC) e severidade, do mais antigo ao mais recente: todo dia que o período toca, com as duas
-   * pontas, então 90 dias têm 91 linhas.
+   * pontas, então 90 dias têm 91 linhas, e 12 meses, 366.
    */
   daily: z
     .array(z.strictObject({ date: z.iso.date(), ...severityCounts.shape }))
-    .max(REPORT_PERIOD_DAYS['90d'] + 1),
+    .max(REPORT_PERIOD_DAYS['12m'] + 1),
 });
 export type SummaryReport = z.infer<typeof summaryReportSchema>;
 
@@ -250,8 +257,7 @@ export interface ReportWindow {
 }
 
 export function reportWindow(period: ReportPeriod, now: Date): ReportWindow {
-  const from = new Date(now.getTime() - REPORT_PERIOD_DAYS[period] * 24 * 60 * 60 * 1000);
-  return { period, from: from.toISOString(), to: now.toISOString() };
+  return { period, from: historyPeriodStart(period, now).toISOString(), to: now.toISOString() };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

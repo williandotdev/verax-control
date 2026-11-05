@@ -86,6 +86,7 @@ describe('achados', () => {
     });
     expect(findingListQuerySchema.safeParse({ ordem: 'asc' }).success).toBe(false);
     expect(findingListQuerySchema.safeParse({ period: '1y' }).success).toBe(false);
+    expect(findingListQuerySchema.parse({ period: '12m' })).toMatchObject({ period: '12m' });
   });
 
   it('comentário aceita quebra de linha e recusa vazio e caractere de controle', () => {
