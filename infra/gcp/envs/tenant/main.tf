@@ -56,6 +56,9 @@ module "node" {
     verax-web-origin              = var.web_origin
     verax-api-origin              = var.api_origin
     verax-mail-from               = var.mail_from
+    verax-smtp-host               = var.smtp_host
+    verax-smtp-port               = var.smtp_port
+    verax-smtp-user               = var.smtp_user
     verax-tenant-name             = var.bootstrap_tenant_name
     verax-admin-email             = var.bootstrap_admin_email
     verax-support-email           = var.bootstrap_support_email

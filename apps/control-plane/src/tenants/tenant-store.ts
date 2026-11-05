@@ -276,6 +276,21 @@ export class TenantStore {
     return this.findOne('stripe.subscriptionId', subscriptionId);
   }
 
+  /**
+   * Os clientes cujo nó recebeu a senha da caixa de envio dos nós (`resources.nodeMailPasswordAt`), para a recópia na
+   * troca da senha. Uma desigualdade num campo só: o índice simples do Firestore basta. Até `limit` documentos.
+   */
+  async listWithNodeMail(limit = 1000): Promise<TenantRecord[]> {
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      where: [{ field: 'resources.nodeMailPasswordAt', op: '>', value: new Date(0) }],
+      limit,
+    });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+    }));
+  }
+
   /** O documento `slugs/{slug}`, se existir. */
   async getSlug(slug: string): Promise<SlugDocument | undefined> {
     return this.readSlug(this.store, slug);

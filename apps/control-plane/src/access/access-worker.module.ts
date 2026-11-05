@@ -13,6 +13,7 @@ import { InternalStepsController } from '../internal/internal-steps.controller.j
 import { STEP_HANDLERS, type StepHandler } from '../internal/step-handler.js';
 import { WorkerCallerGuard } from '../internal/worker-caller.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
+import { NodeMailSyncController } from '../provisioning/node-mail.js';
 import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
 import {
   PROVISIONING_STEP_HANDLERS,
@@ -48,7 +49,8 @@ export interface AccessWorkerModuleOptions {
  * tasks e o responsável) e o gatilho do plano B para o `tick` do CP-11 (`RevealEmailService.dispatchDue`). Só o
  * `cp-worker` registra este módulo: a conta dele é a que lê e destrói o `admin-bootstrap` e manda e-mail. Desde o
  * CP-07, também os passos do provisionamento (`ProvisioningModule`) na mesma lista de passos, e o `resume` do
- * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda.
+ * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda, como a recópia da senha do e-mail dos nós
+ * (`POST /internal/nodes/smtp-password/sync`).
  */
 @Module({})
 export class AccessWorkerModule {
@@ -56,7 +58,12 @@ export class AccessWorkerModule {
     return {
       module: AccessWorkerModule,
       imports: [AuditModule, TenantsModule, AccessModule, ProvisioningModule.forRoot(options.provisioning)],
-      controllers: [InternalAccessController, InternalStepsController, ProvisioningResumeController],
+      controllers: [
+        InternalAccessController,
+        InternalStepsController,
+        ProvisioningResumeController,
+        NodeMailSyncController,
+      ],
       providers: [
         {
           provide: BOOTSTRAP_SECRETS,

@@ -15,7 +15,7 @@ variable "region" {
 }
 
 variable "services_enabled" {
-  description = "Cria os serviços do Cloud Run (cp-public e cp-worker), o Job cp-terraform, os jobs do Scheduler e o rewrite do Hosting. Deixe false na primeira subida: o Cloud Run recusa subir com um segredo sem versão, e os cinco segredos nascem vazios. Depois de gravá-los (GUIA, plano de controle, passo 4), mude para true e aplique de novo."
+  description = "Cria os serviços do Cloud Run (cp-public e cp-worker), o Job cp-terraform, os jobs do Scheduler e o rewrite do Hosting. Deixe false na primeira subida: o Cloud Run recusa subir com um segredo montado sem versão, e os cinco segredos montados nascem vazios (a senha da caixa dos nós, `cp-nodes-smtp-password`, não é montada e pode ficar vazia). Depois de gravá-los (GUIA, plano de controle, passo 4), mude para true e aplique de novo."
   type        = bool
   default     = false
 }
@@ -108,7 +108,7 @@ variable "service_env" {
 }
 
 variable "worker_env" {
-  description = "Variáveis de ambiente só do cp-worker (plano, seção 2.5: e-mail e provisionamento), por cima de `service_env` e dos padrões de SMTP em run.tf. O cp-public não as recebe. Ex.: { SMTP_USER = \"nao-responda@exemplo.com\", MAIL_FROM = \"Verax Control <nao-responda@exemplo.com>\", MAIL_FROM_NODES = \"nao-responda@exemplo.com\", NODE_RELEASE = \"v1.2.3\", PROVISIONING_ENABLED = \"true\" }."
+  description = "Variáveis de ambiente só do cp-worker (plano, seção 2.5: e-mail e provisionamento), por cima de `service_env` e dos padrões de SMTP em run.tf. O cp-public não as recebe. O e-mail dos nós de clientes (`SMTP_HOST_NODES`, `SMTP_PORT_NODES`, `SMTP_USER_NODES`, com a senha no segredo `cp-nodes-smtp-password`) é opcional. Ex.: { SMTP_USER = \"nao-responda@exemplo.com\", MAIL_FROM = \"Verax Control <nao-responda@exemplo.com>\", MAIL_FROM_NODES = \"avisos@exemplo.com\", SMTP_HOST_NODES = \"smtp.exemplo.com\", SMTP_USER_NODES = \"avisos@exemplo.com\", NODE_RELEASE = \"v1.2.3\", PROVISIONING_ENABLED = \"true\" }."
   type        = map(string)
   default     = {}
 

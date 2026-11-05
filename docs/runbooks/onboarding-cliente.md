@@ -369,6 +369,9 @@ prováveis:
   Registry pela limpeza de 30 dias (`docs/ARQUITETURA.md`, "Instalação sem operador", origem das imagens);
 - `tunnel_token_missing`: o token do túnel não chegou ao cofre `vx-<slug>-cloudflare-tunnel-token` em 60 minutos.
   Grave-o e reinicie a VM;
+- `smtp_password_missing`: com o e-mail do nó (as chaves `verax-smtp-*` nos metadados), a senha da caixa de envio não
+  chegou ao cofre `vx-<slug>-smtp-password` em 60 minutos. O `resume` do provisionamento grava de novo
+  (`docs/runbooks/provisionamento.md`); depois, reinicie a VM;
 - `customer_bootstrap_failed`: o item 7 ("Quando o serviço falha").
 
 **Tentar de novo:** corrigido o motivo (no Terraform do tenant ou no cofre), reinicie a VM

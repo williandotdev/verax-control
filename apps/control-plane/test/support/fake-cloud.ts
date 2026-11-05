@@ -555,6 +555,25 @@ export class FakeCloud {
       });
       return;
     }
+    // A versão `latest` é a criada por último: desativada ou destruída, 400 FAILED_PRECONDITION (como a API real).
+    if (
+      (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+)\/versions\/latest:access$/.exec(
+        url.pathname,
+      )) !== null &&
+      method === 'GET'
+    ) {
+      const versions = this.secretVersions.get(`${match[1]}/${match[2]}`) ?? [];
+      const latest = versions.at(-1);
+      if (latest === undefined) this.send(res, 404, { error: { status: 'NOT_FOUND' } });
+      else if (latest.state !== 'ENABLED') this.send(res, 400, { error: { status: 'FAILED_PRECONDITION' } });
+      else {
+        this.send(res, 200, {
+          name: `projects/${match[1]}/secrets/${match[2]}/versions/${versions.length}`,
+          payload: { data: Buffer.from(latest.payload, 'utf8').toString('base64') },
+        });
+      }
+      return;
+    }
     if (
       (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+)\/versions\/latest$/.exec(
         url.pathname,

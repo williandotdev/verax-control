@@ -32,7 +32,7 @@ output "service_account_unique_id" {
 }
 
 output "secrets" {
-  description = "Os cofres do nó, pelo nome curto (o ID no Secret Manager do projeto dos nós): os que vêm de fora (`cloudflare-tunnel-token`, gravado pelo cp-worker; `smtp-password`) e os que a VM grava (`credentials-key`, `admin-bootstrap` e `support-bootstrap`)."
+  description = "Os cofres do nó, pelo nome curto (o ID no Secret Manager do projeto dos nós): os que vêm de fora (`cloudflare-tunnel-token` e, com o e-mail do nó, `smtp-password`, gravados pelo cp-worker) e os que a VM grava (`credentials-key`, `admin-bootstrap` e `support-bootstrap`)."
   value       = tomap(merge(module.node.secrets, module.node.node_written_secrets))
 }
 

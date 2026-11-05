@@ -66,6 +66,8 @@ re_worker_sa='^cp-worker@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com
 re_ghcr='^ghcr\.io/[a-z0-9-]{1,39}/[a-z0-9._-]{1,100}$'
 re_artifact_registry='^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}$'
 re_token='^[A-Za-z0-9._~+/=-]{16,4096}$'
+re_smtp_port='^[1-9][0-9]{0,4}$'
+re_smtp_user='^[A-Za-z0-9][A-Za-z0-9@._+-]{0,253}$'
 
 # O token da conta do Job (servidor de metadados do Cloud Run) num arquivo de cabeçalho 0600; nunca em argumento.
 auth_header() {
@@ -137,6 +139,20 @@ is_origin() { # <valor>
   done
 }
 
+# O servidor de envio do nó: um nome de domínio em minúsculas, dois rótulos ou mais, até 253 caracteres (a regra de
+# executor-env.ts, do envs/tenant e do boot-install.sh).
+is_smtp_host() { # <valor>
+  local value=$1 label
+  local -a labels
+  ((${#value} <= 253)) || return 1
+  [[ $value != *. && $value != .* ]] || return 1
+  IFS=. read -r -a labels <<<"$value"
+  ((${#labels[@]} >= 2)) || return 1
+  for label in "${labels[@]}"; do
+    [[ $label =~ $re_label ]] || return 1
+  done
+}
+
 limit_in() { # <valor> <mín> <máx>
   [[ $1 =~ $re_limit ]] || return 1
   (($1 >= $2 && $1 <= $3))
@@ -201,7 +217,7 @@ for name in NODES_PROJECT_ID NODES_REGION NODES_ZONE CP_WORKER_SA EXECUTOR_ACTIO
   [[ -n ${!name-} ]] || invalid "$name"
   [[ $name == BOOTSTRAP_TENANT_NAME || ${!name} =~ ^[[:graph:]]+$ ]] || invalid "$name"
 done
-for name in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
+for name in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS SMTP_HOST SMTP_PORT SMTP_USER; do
   [[ -z ${!name-} || ${!name} =~ ^[[:graph:]]+$ ]] || invalid "$name"
 done
 [[ $EXECUTOR_ACTION == apply || $EXECUTOR_ACTION == destroy ]] || invalid EXECUTOR_ACTION
@@ -233,6 +249,13 @@ if ! is_mail "$BOOTSTRAP_SUPPORT_EMAIL" true || [[ ${BOOTSTRAP_SUPPORT_EMAIL,,} 
 fi
 is_tenant_name "$BOOTSTRAP_TENANT_NAME" || invalid BOOTSTRAP_TENANT_NAME
 [[ $IMAGES_REPOSITORY =~ $re_ghcr || $IMAGES_REPOSITORY =~ $re_artifact_registry ]] || invalid IMAGES_REPOSITORY
+# O e-mail do nó: as três juntas (o nó com MAIL_TRANSPORT=smtp) ou nenhuma (none). A senha nunca chega aqui: o cp-worker
+# a grava no cofre do nó.
+if [[ -n ${SMTP_HOST-} || -n ${SMTP_PORT-} || -n ${SMTP_USER-} ]]; then
+  is_smtp_host "${SMTP_HOST-}" || invalid SMTP_HOST
+  if [[ ! ${SMTP_PORT-} =~ $re_smtp_port ]] || ((10#$SMTP_PORT > 65535)); then invalid SMTP_PORT; fi
+  [[ ${SMTP_USER-} =~ $re_smtp_user ]] || invalid SMTP_USER
+fi
 
 # Destruir é só da exclusão do cliente (o CP-11 acrescenta antes o `state rm` do disco, do IP do NAT, do bucket de
 # backups e do cofre da chave; docs/ARQUITETURA.md, "Exclusão em dois tempos").
@@ -257,6 +280,7 @@ export TF_VAR_web_origin=$WEB_ORIGIN TF_VAR_api_origin=$API_ORIGIN TF_VAR_mail_f
 export TF_VAR_subnet_cidr=$SUBNET_CIDR TF_VAR_bootstrap_admin_email=$BOOTSTRAP_ADMIN_EMAIL
 export TF_VAR_bootstrap_tenant_name=$BOOTSTRAP_TENANT_NAME TF_VAR_bootstrap_support_email=$BOOTSTRAP_SUPPORT_EMAIL
 export TF_VAR_control_plane_sa=$CP_WORKER_SA TF_VAR_images_repository=$IMAGES_REPOSITORY
+export TF_VAR_smtp_host=${SMTP_HOST-} TF_VAR_smtp_port=${SMTP_PORT-} TF_VAR_smtp_user=${SMTP_USER-}
 
 # A saída do Terraform vai para o arquivo; numa falha, só as linhas de erro, cortadas.
 tf() { # <etapa> <subcomando> <argumentos...>

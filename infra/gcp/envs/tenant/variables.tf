@@ -39,7 +39,7 @@ variable "zone" {
 
 # De cada execução (TENANT_SLUG, PLAN, NODE_VERSION, NODE_PACKAGE_SHA256, WEB_ORIGIN, API_ORIGIN, MAIL_FROM,
 # SUBNET_CIDR, BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_TENANT_NAME, CP_WORKER_SA e IMAGES_PROJECT_ID), mais o e-mail da
-# conta de suporte (CP-10) e os limites do plano.
+# conta de suporte (CP-10), os limites do plano e o servidor de envio do nó (SMTP_HOST, SMTP_PORT e SMTP_USER).
 
 variable "slug" {
   description = "Subdomínio do cliente. Todo recurso do nó leva o prefixo `vx-<slug>` (a VM, a conta de serviço, a rede, os cofres). Mesma regra do plano de controle (apps/control-plane/src/tenants/tenant.schema.ts): 3 a 16 caracteres, para `vx-<slug>` caber nos nomes da GCP. Nunca muda na vida do nó: outro slug é outro nó (e outra conta de serviço, que a AWS do cliente não aceita)."
@@ -180,6 +180,50 @@ variable "mail_from" {
   }
 }
 
+# O e-mail do nó (SMTP_HOST, SMTP_PORT e SMTP_USER do executor; `SMTP_*_NODES` do plano de controle): a caixa de envio
+# comum aos nós de clientes, de qualquer provedor SMTP com TLS. As três juntas ou nenhuma: vazias (o padrão), o nó nasce
+# com `MAIL_TRANSPORT=none`. A senha nunca passa por aqui: o cp-worker a grava no cofre `smtp-password` do nó
+# (control_plane.tf), e o nó a lê na partida. Os formatos são os do `boot-install.sh` (cada valor vira uma linha do
+# node.conf, que o nó lê com `source`).
+
+variable "smtp_host" {
+  description = "Servidor de envio do nó (SMTP_HOST): o nome, em minúsculas, sem porta. Vazio: o nó sem e-mail."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.smtp_host == "" || (length(var.smtp_host) <= 253 && can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", var.smtp_host)))
+    error_message = "smtp_host é vazio ou o nome do servidor, em minúsculas (ex.: smtp.exemplo.com), sem porta."
+  }
+
+  validation {
+    condition     = (var.smtp_host == "") == (var.smtp_port == "") && (var.smtp_host == "") == (var.smtp_user == "")
+    error_message = "smtp_host, smtp_port e smtp_user vão juntos: os três preenchidos (o nó com e-mail) ou os três vazios."
+  }
+}
+
+variable "smtp_port" {
+  description = "Porta do servidor de envio (SMTP_PORT), de 1 a 65535: 465 (TLS desde o início) ou outra com STARTTLS obrigatório. A GCP bloqueia a saída pela 25. Vazio: o nó sem e-mail."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.smtp_port == "" || (can(regex("^[1-9][0-9]{0,4}$", var.smtp_port)) && try(tonumber(var.smtp_port) <= 65535, false))
+    error_message = "smtp_port é vazio ou um número inteiro de 1 a 65535."
+  }
+}
+
+variable "smtp_user" {
+  description = "Usuário do servidor de envio (SMTP_USER): letras, números e @ . _ + - (até 254), começando por letra ou número. Vazio: o nó sem e-mail."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.smtp_user == "" || can(regex("^[A-Za-z0-9][A-Za-z0-9@._+-]{0,253}$", var.smtp_user))
+    error_message = "smtp_user é vazio ou tem só letras, números e @ . _ + - (até 254), começando por letra ou número."
+  }
+}
+
 variable "subnet_cidr" {
   description = "Faixa da rede própria do nó, alocada pelo plano de controle (`10.<n>.0.0/24`, um contador). Cada nó tem a própria rede, sem ligação com a dos outros."
   type        = string
@@ -236,7 +280,7 @@ variable "bootstrap_tenant_name" {
 }
 
 variable "control_plane_sa" {
-  description = "Conta do cp-worker (CP_WORKER_SA do Job): ganha, só nos cofres deste nó, a leitura e a destruição da senha temporária do primeiro admin, a gravação do token do túnel e a destruição das versões da chave do cofre de credenciais (control_plane.tf). Só a conta `cp-worker` é aceita: dar isso a outra conta do plano de controle (o cp-public, o cp-terraform) abriria a senha do admin a quem não a revela."
+  description = "Conta do cp-worker (CP_WORKER_SA do Job): ganha, só nos cofres deste nó, a leitura e a destruição da senha temporária do primeiro admin, a gravação do token do túnel (e, com o e-mail do nó, a da senha da caixa de envio) e a destruição das versões da chave do cofre de credenciais (control_plane.tf). Só a conta `cp-worker` é aceita: dar isso a outra conta do plano de controle (o cp-public, o cp-terraform) abriria a senha do admin a quem não a revela."
   type        = string
 
   validation {

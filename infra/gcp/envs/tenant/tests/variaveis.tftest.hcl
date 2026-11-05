@@ -425,3 +425,161 @@ run "recusa_artifact_registry_sem_projeto_valido" {
 
   expect_failures = [var.images_repository]
 }
+
+# O e-mail do nó: as três juntas ou nenhuma, nos formatos que a instalação sem operador escreve no node.conf.
+run "aceita_o_e_mail_do_no" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "65535"
+    smtp_user = "avisos+nos_1@verax.example"
+  }
+
+  assert {
+    condition     = module.node.install_metadata["verax-smtp-port"] == "65535"
+    error_message = "O e-mail do nó, nos formatos aceitos, foi recusado."
+  }
+}
+
+run "recusa_e_mail_do_no_pela_metade" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "465"
+  }
+
+  expect_failures = [var.smtp_host]
+}
+
+run "recusa_usuario_sem_servidor" {
+  command = plan
+
+  variables {
+    smtp_port = "465"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_host]
+}
+
+run "recusa_servidor_com_maiuscula" {
+  command = plan
+
+  variables {
+    smtp_host = "SMTP.caixa-exemplo.example"
+    smtp_port = "465"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_host]
+}
+
+run "recusa_servidor_com_porta" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example:465"
+    smtp_port = "465"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_host]
+}
+
+run "recusa_servidor_com_comando" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.example;touch pwned"
+    smtp_port = "465"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_host]
+}
+
+run "recusa_servidor_sem_dominio" {
+  command = plan
+
+  variables {
+    smtp_host = "localhost"
+    smtp_port = "465"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_host]
+}
+
+run "recusa_porta_zero" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "0"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_port]
+}
+
+run "recusa_porta_acima_de_65535" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "65536"
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_port]
+}
+
+run "recusa_porta_que_nao_e_numero" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "465 "
+    smtp_user = "avisos@verax.example"
+  }
+
+  expect_failures = [var.smtp_port]
+}
+
+run "recusa_usuario_com_apostrofo" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "465"
+    smtp_user = "o'neil@verax.example"
+  }
+
+  expect_failures = [var.smtp_user]
+}
+
+run "recusa_usuario_com_espaco" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "465"
+    smtp_user = "avisos verax"
+  }
+
+  expect_failures = [var.smtp_user]
+}
+
+run "recusa_usuario_que_comeca_com_hifen" {
+  command = plan
+
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "465"
+    smtp_user = "-avisos"
+  }
+
+  expect_failures = [var.smtp_user]
+}

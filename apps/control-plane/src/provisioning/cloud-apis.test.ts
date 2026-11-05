@@ -266,6 +266,28 @@ describe('clientes REST do provisionamento', () => {
       expect(await secrets.latestVersionState('nos-demo', 'vx-a-cloudflare-tunnel-token')).toBe('ENABLED');
     });
 
+    it('Secret Manager: o conteúdo da mais nova; sem versão ou com ela desativada, nada; erro sem o conteúdo', async () => {
+      const secrets = new SecretVersionsApi(tokens, fetch, cloud.endpoints.secretManager);
+      expect(await secrets.accessLatest('cp-demo', 'cp-nodes-smtp-password')).toBeUndefined();
+      cloud.secretVersions.set('cp-demo/cp-nodes-smtp-password', [
+        { payload: 'senha-antiga-ficticia', state: 'ENABLED' },
+        { payload: 'senha-nova-ficticia', state: 'ENABLED' },
+      ]);
+      expect(await secrets.accessLatest('cp-demo', 'cp-nodes-smtp-password')).toBe('senha-nova-ficticia');
+      expect(cloud.requests.at(-1)?.path).toBe(
+        '/secrets/v1/projects/cp-demo/secrets/cp-nodes-smtp-password/versions/latest:access',
+      );
+      cloud.secretVersions.get('cp-demo/cp-nodes-smtp-password')?.push({ payload: 'x', state: 'DISABLED' });
+      expect(await secrets.accessLatest('cp-demo', 'cp-nodes-smtp-password')).toBeUndefined();
+      cloud.failNext('cp-nodes-smtp-password', 403, { body: { error: { status: 'PERMISSION_DENIED' } } });
+      const error = (await secrets
+        .accessLatest('cp-demo', 'cp-nodes-smtp-password')
+        .catch((caught: unknown) => caught)) as CloudApiError;
+      expect(error).toBeInstanceOf(CloudApiError);
+      expect(error.denied).toBe(true);
+      expect(error.message).not.toContain('senha');
+    });
+
     it('sem o token certo, o falso recusa (401): a conta do serviço é conferida em toda chamada', async () => {
       const wrong = new StorageApi(
         { token: () => Promise.resolve('ya29.outro') },

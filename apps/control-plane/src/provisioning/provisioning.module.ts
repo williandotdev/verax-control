@@ -3,6 +3,7 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepHandler } from '../internal/step-handler.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
+import { NodeMailSyncService } from './node-mail.js';
 import { ProvisioningEngine } from './provisioning-engine.js';
 import { ProvisioningResumeService } from './provisioning-resume.js';
 import {
@@ -14,10 +15,10 @@ import {
 import { PROVISIONING_STEP_CLASSES } from './provisioning-steps.js';
 import { ProvisioningStore } from './provisioning-store.js';
 
-/** Os dez passos do provisionamento, para a lista `STEP_HANDLERS` do cp-worker. */
+/** Os passos do provisionamento, para a lista `STEP_HANDLERS` do cp-worker. */
 export const PROVISIONING_STEP_HANDLERS = Symbol('PROVISIONING_STEP_HANDLERS');
 
-/** Avisa na partida, só pelos nomes, que o provisionamento está desligado ou incompleto. */
+/** Avisa na partida, só pelos nomes, que o provisionamento está desligado ou incompleto, ou os nós sem e-mail. */
 @Injectable()
 class ProvisioningStartupCheck implements OnModuleInit {
   constructor(
@@ -27,7 +28,15 @@ class ProvisioningStartupCheck implements OnModuleInit {
 
   onModuleInit(): void {
     const result = resolveProvisioningSettings(this.config);
-    if (result.ready) return;
+    if (result.ready) {
+      if (result.settings.nodeMail === undefined) {
+        this.logger.warn(
+          { event: 'node_mail_disabled' },
+          'e-mail dos nós desligado: sem SMTP_HOST_NODES, os nós novos nascem com MAIL_TRANSPORT=none',
+        );
+      }
+      return;
+    }
     this.logger.warn(
       { event: 'provisioning_unconfigured', missing: result.missing },
       'provisionamento desligado: o preflight para cada cliente com provisioning_disabled até a configuração existir',
@@ -42,8 +51,9 @@ export interface ProvisioningModuleOptions {
 
 /**
  * O provisionamento (CP-07), só no cp-worker: os passos 1 a 10 do plano §4c (`provisioning-steps.ts`), o motor que os
- * encadeia (`provisioning-engine.ts`), o repositório das execuções e o `resume` do responsável. O controlador do
- * `resume` fica no módulo das rotas internas (`AccessWorkerModule`), junto da guarda de quem chama.
+ * encadeia (`provisioning-engine.ts`), o repositório das execuções, o `resume` do responsável e a recópia da senha do
+ * e-mail dos nós (`node-mail.ts`). Os controladores dos dois ficam no módulo das rotas internas (`AccessWorkerModule`),
+ * junto da guarda de quem chama.
  */
 @Module({})
 export class ProvisioningModule {
@@ -55,6 +65,7 @@ export class ProvisioningModule {
         ProvisioningStore,
         ProvisioningEngine,
         ProvisioningResumeService,
+        NodeMailSyncService,
         ProvisioningStartupCheck,
         { provide: PROVISIONING_APIS, useFactory: () => createProvisioningApis(options.apis) },
         ...PROVISIONING_STEP_CLASSES,
@@ -64,7 +75,12 @@ export class ProvisioningModule {
           inject: [...PROVISIONING_STEP_CLASSES],
         },
       ],
-      exports: [PROVISIONING_STEP_HANDLERS, ProvisioningResumeService, ProvisioningStore],
+      exports: [
+        PROVISIONING_STEP_HANDLERS,
+        ProvisioningResumeService,
+        NodeMailSyncService,
+        ProvisioningStore,
+      ],
     };
   }
 }

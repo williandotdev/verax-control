@@ -63,6 +63,11 @@ e-mail da API e o `WEB_ORIGIN` (o link do aviso); sem o SMTP, o `worker.env` fic
 fila como `skipped` (ligar o e-mail depois não dispara os antigos). O e-mail não leva IP, usuário, chave, recurso nem
 conta: só o tipo, a severidade e o link do painel.
 
+Nos nós de clientes criados pelo plano de controle, ninguém edita o `node.conf`: o e-mail vem da caixa comum aos nós
+(`SMTP_*_NODES` e o segredo `cp-nodes-smtp-password` do plano de controle), que a instalação sem operador escreve no
+`node.conf` e cuja senha o plano de controle grava no `vx-<slug>-smtp-password` (`infra/gcp/GUIA.md`, "O provisionamento
+(CP-07)", item 3; a troca da senha em `docs/runbooks/provisionamento.md`).
+
 Cada pessoa escolhe, em Minha conta (no cabeçalho do painel), se recebe os avisos de incidente por e-mail; a lista de
 Usuários mostra a escolha na coluna "Recebe alertas", só para ler (PR-17'). Os avisos do volume do plano não dependem
 dela. Cada pessoa recebe até 5 e-mails avulsos por hora: do 6º aviso da hora em diante, eles chegam num resumo só,

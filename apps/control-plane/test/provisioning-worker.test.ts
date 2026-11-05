@@ -39,6 +39,15 @@ const TFSTATE = 'projeto-dos-nos-demo-tfstate';
 const RELEASES = 'projeto-exemplo-releases';
 const SUPPORT = 'suporte@verax.example';
 const HOUR_MS = 60 * MINUTE_MS;
+/** O projeto do plano de controle (o das filas e do Job), onde fica o cofre da senha da caixa dos nós. */
+const CONTROL_PLANE = 'projeto-exemplo-cp';
+const NODE_MAIL_ENV = {
+  SMTP_HOST_NODES: 'smtp.caixa-exemplo.example',
+  SMTP_PORT_NODES: '587',
+  SMTP_USER_NODES: 'avisos@verax.example',
+};
+/** A senha fictícia da caixa dos nós (longa o bastante para a máscara do logger). */
+const NODE_MAILBOX_VALUE = 'caixa-dos-nos-ficticia-1';
 
 /**
  * O provisionamento (CP-07) pelo cp-worker inteiro: as tasks entregues por `POST /internal/steps/<passo>` com o token da
@@ -74,10 +83,15 @@ describe('cp-worker: provisionamento (CP-07)', () => {
    * fila e as mesmas APIs falsas. (O nestjs-pino guarda o logger do primeiro app: os logs deste vão para o `capture`.)
    */
   let appNext: NestExpressApplication;
+  /** O mesmo cp-worker com o e-mail dos nós configurado (`SMTP_*_NODES`). */
+  let appMail: NestExpressApplication;
   let cursor = 0;
   let slugSequence = 0;
 
-  async function workerApp(release: string): Promise<NestExpressApplication> {
+  async function workerApp(
+    release: string,
+    extraEnv: Record<string, string> = {},
+  ): Promise<NestExpressApplication> {
     const worker = await createApp({
       role: 'worker',
       clock,
@@ -119,6 +133,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         CLOUDFLARE_ACCOUNT_ID: '0'.repeat(32),
         CLOUDFLARE_ZONE_ID: '1'.repeat(32),
         FIREBASE_PANEL_PROJECTS: 'paineis-demo-1,paineis-demo-2',
+        ...extraEnv,
       },
     });
     await worker.listen(0, '127.0.0.1');
@@ -129,11 +144,13 @@ describe('cp-worker: provisionamento (CP-07)', () => {
     await cloud.start();
     app = await workerApp(RELEASE);
     appNext = await workerApp(NEXT_RELEASE);
+    appMail = await workerApp(RELEASE, NODE_MAIL_ENV);
   });
 
   afterAll(async () => {
     await app.close();
     await appNext.close();
+    await appMail.close();
     await cloud.stop();
   });
 
@@ -330,7 +347,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
   }
 
   describe('do zero a waiting_customer_connection', () => {
-    it('os dez passos em ordem: túnel, site, Job, cofre do túnel, VM pronta, saúde, certificado e a senha no cofre', async () => {
+    it('os passos em ordem: túnel, site, Job, cofre do túnel, VM pronta, saúde, certificado e a senha no cofre', async () => {
       const tenant = await paidTenant();
       const delivered = await drain(healthyNode(tenant));
       const slug = tenant.slug;
@@ -342,6 +359,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         'firebase.site',
         'terraform.apply',
         'terraform.wait',
+        'secrets.smtp_password',
         'secrets.tunnel_token',
         'node.wait_ready',
         'node.health',
@@ -424,7 +442,15 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         BOOTSTRAP_TENANT_NAME: tenant.company.legalName,
         BOOTSTRAP_SUPPORT_EMAIL: SUPPORT,
         IMAGES_REPOSITORY: 'ghcr.io/williandotdev/verax-control',
+        // Sem SMTP_HOST_NODES, o nó nasce sem e-mail: as três vazias, e nada no cofre da senha da caixa.
+        SMTP_HOST: '',
+        SMTP_PORT: '',
+        SMTP_USER: '',
       });
+      expect(cloud.secretVersions.has(`${NODES}/vx-${slug}-smtp-password`)).toBe(false);
+      expect(cloud.count('GET', 'cp-nodes-smtp-password')).toBe(0);
+      expect(final.resources?.nodeMailPasswordAt).toBeUndefined();
+      expect(capture.text).toContain('node_mail_disabled');
 
       // O token do túnel foi para o cofre do nó, uma versão.
       expect(cloud.secretVersions.get(`${NODES}/vx-${slug}-cloudflare-tunnel-token`)).toEqual([
@@ -811,6 +837,206 @@ describe('cp-worker: provisionamento (CP-07)', () => {
       expect(final.provisioning?.nodeVersion).toBe(NEXT_RELEASE);
       expect(final.provisioning?.nodeVersionPinnedAt).toBeInstanceOf(Date);
       expect(executionVersions()).toEqual([NEXT_RELEASE]);
+    });
+  });
+
+  describe('e-mail dos nós (SMTP_*_NODES e cp-nodes-smtp-password)', () => {
+    const vaultKey = `${CONTROL_PLANE}/cp-nodes-smtp-password`;
+
+    function storeNodePassword(payload = NODE_MAILBOX_VALUE, state = 'ENABLED'): void {
+      const versions = cloud.secretVersions.get(vaultKey) ?? [];
+      versions.push({ payload, state });
+      cloud.secretVersions.set(vaultKey, versions);
+    }
+
+    /** A senha da caixa não aparece no log, em documento nenhum do Firestore, na fila nem nas variáveis do Job. */
+    function expectPasswordNowhere(password: string): void {
+      expect(capture.text).not.toContain(password);
+      expect(documents.text).not.toContain(password);
+      expect(queue.tasks.map((task) => JSON.stringify(task)).join('')).not.toContain(password);
+      for (const execution of cloud.executions.values()) {
+        expect(JSON.stringify(execution.env)).not.toContain(password);
+      }
+    }
+
+    it('configurado: o servidor, a porta e o usuário no Job; a senha copiada para o cofre do nó antes do token do túnel', async () => {
+      storeNodePassword();
+      const tenant = await paidTenant();
+      const delivered = await drain(healthyNode(tenant), { target: appMail });
+      const slug = tenant.slug;
+      expect(delivered.every((entry) => entry.status === 200)).toBe(true);
+      const final = await tenants.require(tenant.id);
+      expect(final.state).toBe('waiting_customer_connection');
+
+      const [execution] = [...cloud.executions.values()];
+      const env = Object.fromEntries((execution?.env ?? []).map((entry) => [entry.name, entry.value]));
+      expect(env).toMatchObject({
+        SMTP_HOST: 'smtp.caixa-exemplo.example',
+        SMTP_PORT: '587',
+        SMTP_USER: 'avisos@verax.example',
+      });
+      expect(Object.keys(env).filter((name) => /PASSWORD/.test(name))).toEqual([]);
+
+      // Uma versão no cofre do nó, com a senha como está no cofre do plano de controle; nada lido de volta.
+      expect(cloud.secretVersions.get(`${NODES}/vx-${slug}-smtp-password`)).toEqual([
+        { payload: NODE_MAILBOX_VALUE, state: 'ENABLED' },
+      ]);
+      expect(cloud.count('GET', `vx-${slug}-smtp-password`)).toBe(0);
+      // A senha vai para o cofre do nó logo depois do apply, antes do token do túnel (a instalação a espera).
+      const writes = cloud.requests
+        .filter((entry) => entry.method === 'POST' && entry.path.endsWith(':addVersion'))
+        .map((entry) => entry.path.split('/').at(-1));
+      expect(writes).toEqual([
+        `vx-${slug}-smtp-password:addVersion`,
+        `vx-${slug}-cloudflare-tunnel-token:addVersion`,
+      ]);
+      expect(final.resources?.nodeMailPasswordAt).toBeInstanceOf(Date);
+      expect((await runs.getRun(final.provisioning?.runId ?? ''))?.nodeMail).toEqual({
+        host: 'smtp.caixa-exemplo.example',
+        port: 587,
+        user: 'avisos@verax.example',
+      });
+      expect(capture.text).toContain('node_smtp_password_copied');
+      expectPasswordNowhere(NODE_MAILBOX_VALUE);
+      expectNoSecretsStored();
+    });
+
+    it('a senha que termina numa quebra de linha (o echo de quem gravou) vai sem ela, como o start.sh a leria', async () => {
+      storeNodePassword(`${NODE_MAILBOX_VALUE}\n`);
+      const tenant = await paidTenant();
+      await drain(healthyNode(tenant), { target: appMail });
+      expect((await tenants.require(tenant.id)).state).toBe('waiting_customer_connection');
+      expect(cloud.secretVersions.get(`${NODES}/vx-${tenant.slug}-smtp-password`)?.[0]?.payload).toBe(
+        NODE_MAILBOX_VALUE,
+      );
+    });
+
+    it('configurado sem a senha no cofre: smtp_password_missing no preflight, sem criar nada', async () => {
+      const tenant = await paidTenant();
+      await drain(undefined, { target: appMail });
+      const final = await tenants.require(tenant.id);
+      expect(final.state).toBe('provisioning_failed');
+      expect(final.provisioning?.lastError?.code).toBe('smtp_password_missing');
+      expect(final.provisioning?.step).toBe('preflight');
+      expect(cloud.tunnels.size).toBe(0);
+      expect(cloud.executions.size).toBe(0);
+      expect(cloud.count('POST', '/sites')).toBe(0);
+    });
+
+    it.each([
+      ['com aspa simples', "senha'ficticia-da-caixa"],
+      ['com espaço', 'senha ficticia da caixa'],
+      ['com quebra de linha no meio', 'senha\nficticia-da-caixa'],
+    ])(
+      'a senha %s (o start.sh não a aceitaria): smtp_password_invalid no preflight, sem a senha no log',
+      async (_case, password) => {
+        storeNodePassword(password);
+        const tenant = await paidTenant();
+        await drain(undefined, { target: appMail });
+        const final = await tenants.require(tenant.id);
+        expect(final.provisioning?.lastError?.code).toBe('smtp_password_invalid');
+        expect(cloud.executions.size).toBe(0);
+        expectPasswordNowhere(password);
+      },
+    );
+
+    it('a última versão desativada entre o preflight e a cópia: smtp_password_missing, sem gravar no nó', async () => {
+      storeNodePassword();
+      const tenant = await paidTenant();
+      await drain(
+        (task) => {
+          healthyNode(tenant)(task);
+          if (task.step === 'secrets.smtp_password') storeNodePassword('versao-desativada-1', 'DISABLED');
+        },
+        { target: appMail },
+      );
+      const final = await tenants.require(tenant.id);
+      expect(final.state).toBe('provisioning_failed');
+      expect(final.provisioning?.lastError?.code).toBe('smtp_password_missing');
+      expect(final.provisioning?.step).toBe('secrets.smtp_password');
+      expect(cloud.secretVersions.has(`${NODES}/vx-${tenant.slug}-smtp-password`)).toBe(false);
+    });
+
+    it('o cofre do nó recusa a gravação (sem o secretVersionAdder): secretmanager_denied', async () => {
+      storeNodePassword();
+      const tenant = await paidTenant();
+      cloud.failNext(`vx-${tenant.slug}-smtp-password:addVersion`, 403, {
+        body: { error: { status: 'PERMISSION_DENIED' } },
+      });
+      await drain(healthyNode(tenant), { target: appMail });
+      const final = await tenants.require(tenant.id);
+      expect(final.provisioning?.lastError?.code).toBe('secretmanager_denied');
+      expect(final.provisioning?.step).toBe('secrets.smtp_password');
+      expectPasswordNowhere(NODE_MAILBOX_VALUE);
+    });
+
+    describe('recópia na troca da senha (POST /internal/nodes/smtp-password/sync)', () => {
+      const path = '/internal/nodes/smtp-password/sync';
+
+      it('só o responsável; a senha nova vai para o cofre de cada nó com e-mail, com a auditoria de quem pediu', async () => {
+        storeNodePassword();
+        const withMail = await paidTenant();
+        await drain(healthyNode(withMail), { target: appMail });
+        const withoutMail = await paidTenant();
+        await drain(healthyNode(withoutMail));
+        expect((await tenants.require(withoutMail.id)).resources?.nodeMailPasswordAt).toBeUndefined();
+        const copiedAt = (await tenants.require(withMail.id)).resources?.nodeMailPasswordAt;
+
+        const rotated = 'caixa-dos-nos-ficticia-2';
+        storeNodePassword(rotated);
+        clock.set(new Date(clock.now().getTime() + HOUR_MS));
+        const server = appMail.getHttpServer();
+        await request(server).post(path).set('Authorization', bearer(INVOKER)).expect(403);
+        await request(server).post(path).set('Authorization', bearer(PUBLIC_SA)).expect(403);
+        const response = await request(server).post(path).set('Authorization', bearer(OWNER)).expect(200);
+        const body = response.body as { updated: number; failed: string[]; skipped: number };
+        expect(body.failed).toEqual([]);
+        expect(body.updated).toBeGreaterThanOrEqual(1);
+        expect(JSON.stringify(response.body)).not.toContain(rotated);
+
+        expect(cloud.secretVersions.get(`${NODES}/vx-${withMail.slug}-smtp-password`)?.at(-1)).toEqual({
+          payload: rotated,
+          state: 'ENABLED',
+        });
+        expect(cloud.secretVersions.has(`${NODES}/vx-${withoutMail.slug}-smtp-password`)).toBe(false);
+        const after = (await tenants.require(withMail.id)).resources?.nodeMailPasswordAt;
+        expect(after?.getTime()).toBeGreaterThan(copiedAt?.getTime() ?? Number.POSITIVE_INFINITY);
+        const audit = documents.writes.find(
+          (write) => write.startsWith('auditLog/') && write.includes('node_smtp_password_synced'),
+        );
+        expect(audit).toContain(`owner:${OWNER}`);
+        expectPasswordNowhere(rotated);
+        expectPasswordNowhere(NODE_MAILBOX_VALUE);
+      });
+
+      it('um cofre que recusa entra na lista de falhas e não para os outros', async () => {
+        storeNodePassword();
+        const first = await paidTenant();
+        await drain(healthyNode(first), { target: appMail });
+        const second = await paidTenant();
+        await drain(healthyNode(second), { target: appMail });
+        cloud.failNext(`vx-${first.slug}-smtp-password:addVersion`, 403, {
+          body: { error: { status: 'PERMISSION_DENIED' } },
+        });
+        const response = await request(appMail.getHttpServer())
+          .post(path)
+          .set('Authorization', bearer(OWNER))
+          .expect(200);
+        const body = response.body as { updated: number; failed: string[] };
+        expect(body.failed).toEqual([first.id]);
+        expect(cloud.secretVersions.get(`${NODES}/vx-${second.slug}-smtp-password`)).toHaveLength(2);
+        expect(capture.text).toContain('node_smtp_password_sync_failed');
+      });
+
+      it('sem o e-mail dos nós configurado: 409; sem a senha no cofre: 409, e nada é gravado', async () => {
+        await request(app.getHttpServer()).post(path).set('Authorization', bearer(OWNER)).expect(409);
+        const response = await request(appMail.getHttpServer())
+          .post(path)
+          .set('Authorization', bearer(OWNER))
+          .expect(409);
+        expect((response.body as { code?: string }).code).toBe('smtp_password_missing');
+        expect(cloud.count('POST', ':addVersion')).toBe(0);
+      });
     });
   });
 

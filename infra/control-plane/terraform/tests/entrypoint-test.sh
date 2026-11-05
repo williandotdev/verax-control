@@ -122,6 +122,10 @@ base_env=(
   "BOOTSTRAP_TENANT_NAME=$tenant_name"
   "BOOTSTRAP_SUPPORT_EMAIL=$support"
   "IMAGES_REPOSITORY=ghcr.io/williandotdev/verax-control"
+  # Sem o e-mail do nó, o cp-worker manda as três vazias (executor-env.ts).
+  "SMTP_HOST="
+  "SMTP_PORT="
+  "SMTP_USER="
   "FAKE_TERRAFORM_DIR=$fake"
 )
 
@@ -212,6 +216,7 @@ expected_vars=(
   "TF_VAR_bootstrap_support_email=$support"
   "TF_VAR_control_plane_sa=cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
   "TF_VAR_images_repository=ghcr.io/williandotdev/verax-control"
+  "TF_VAR_smtp_host=" "TF_VAR_smtp_port=" "TF_VAR_smtp_user="
 )
 missing=0
 for var in "${expected_vars[@]}"; do grep -qxF "$var" "$fake/env-plan" || missing=1; done
@@ -353,6 +358,53 @@ check 'nome com 200 caracteres acentuados (400 bytes): aceito' test "$status" -e
 reset
 run_entrypoint IMAGES_REPOSITORY=us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control
 check 'Artifact Registry do projeto da Verax: aceito' test "$status" -eq 0
+
+# O e-mail do nó: as três juntas chegam ao Terraform byte a byte; uma sem as outras é recusada pelo nome da que falta.
+smtp_ok=(SMTP_HOST=smtp.caixa-exemplo.example SMTP_PORT=65535 SMTP_USER=avisos+nos_1@verax.example)
+reset
+run_entrypoint "${smtp_ok[@]}"
+check 'e-mail do nó: aplicado' test "$status" -eq 0
+missing=0
+for var in TF_VAR_smtp_host=smtp.caixa-exemplo.example TF_VAR_smtp_port=65535 TF_VAR_smtp_user=avisos+nos_1@verax.example; do
+  grep -qxF "$var" "$fake/env-plan" || missing=1
+done
+check 'e-mail do nó: o servidor, a porta e o usuário chegam como TF_VAR_smtp_*, byte a byte' test "$missing" -eq 0
+# Cada valor fora do formato, com os outros dois válidos: recusado pelo nome, sem o valor na saída.
+smtp_bad=(
+  "SMTP_HOST=SMTP.Caixa-Exemplo.example"
+  "SMTP_HOST=smtp.caixa-exemplo.example:465"
+  "SMTP_HOST=smtp.caixa-exemplo.example\$(touch /tmp/invadido)"
+  "SMTP_HOST=localhost"
+  "SMTP_HOST=smtp.caixa-exemplo.example
+smtp.outro.example"
+  "SMTP_PORT=0"
+  "SMTP_PORT=65536"
+  "SMTP_PORT=0465"
+  "SMTP_PORT=465 "
+  "SMTP_USER=o'neil@verax.example"
+  "SMTP_USER=-avisos"
+  "SMTP_USER=avisos verax"
+)
+for assignment in "${smtp_bad[@]}"; do
+  name=${assignment%%=*}
+  value=${assignment#*=}
+  reset
+  run_entrypoint "${smtp_ok[@]}" "$assignment"
+  label="$name fora do formato ($(printf '%q' "$value" | cut -c1-40))"
+  check "$label: sai com 2, sem terraform" bash -c "test $status -eq 2 && test ! -e '$fake/calls'"
+  check "$label: result.json invalid/input_invalid" result_is invalid input_invalid
+  check "$label: a saída cita a variável e não o valor" names_not_value "$output" "$name" "$value"
+done
+for case in "SMTP_USER|SMTP_HOST=smtp.caixa-exemplo.example SMTP_PORT=465" \
+  "SMTP_HOST|SMTP_PORT=465 SMTP_USER=avisos@verax.example" \
+  "SMTP_PORT|SMTP_HOST=smtp.caixa-exemplo.example SMTP_USER=avisos@verax.example"; do
+  IFS='|' read -r missing_name assignments <<<"$case"
+  read -r -a assignments <<<"$assignments"
+  reset
+  run_entrypoint "${assignments[@]}"
+  check "e-mail do nó sem $missing_name: recusado (2) sem terraform" bash -c "test $status -eq 2 && test ! -e '$fake/calls'"
+  check "e-mail do nó sem $missing_name: a saída cita $missing_name" grep -q "variável fora do formato: $missing_name" <<<"$output"
+done
 
 # --- 4. Nada muda o executor por fora --------------------------------------------------------------------------------
 for assignment in TF_LOG=TRACE TF_CLI_ARGS_apply=-target=x TF_VAR_deletion_protection=false \

@@ -13,6 +13,7 @@ export const PROVISIONING_PROGRESS: readonly { step: string; etaMinutes: number 
   { step: 'firebase.site', etaMinutes: 28 },
   { step: 'terraform.apply', etaMinutes: 25 },
   { step: 'terraform.wait', etaMinutes: 22 },
+  { step: 'secrets.smtp_password', etaMinutes: 19 },
   { step: 'secrets.tunnel_token', etaMinutes: 18 },
   { step: 'node.wait_ready', etaMinutes: 15 },
   { step: 'node.health', etaMinutes: 5 },
