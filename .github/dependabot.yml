@@ -67,6 +67,8 @@ updates:
       - /infra/gcp/envs/verax
       - /infra/gcp/envs/homolog-sp
       - /infra/gcp/envs/control-plane
+      - /infra/gcp/envs/nodes-platform
+      - /infra/gcp/envs/tenant
     schedule:
       interval: weekly
       day: monday

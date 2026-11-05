@@ -1,6 +1,6 @@
 # Guia: os nós e o plano de controle do Verax Control na GCP com Terraform
 
-Este guia sobe ou altera a infraestrutura dos nós e do plano de controle na GCP. Há quatro ambientes, cada um com o
+Este guia sobe ou altera a infraestrutura dos nós e do plano de controle na GCP. Há seis ambientes, cada um com o
 próprio estado:
 
 - **`envs/verax`:** o SOC da própria Verax, no perfil `lean`. A primeira subida foi feita em 03/11/2026, quando o
@@ -13,9 +13,14 @@ próprio estado:
 - **`envs/release`:** a chave de release do nó no Cloud KMS, que assina o manifesto de cada versão (preparação do
   modo próprio, fase 3, SH-02), e a federação que só deixa o workflow `Versão do nó` usá-la. Fica no projeto do nó da
   Verax, nunca no do plano de controle. Ainda não foi aplicado. O passo a passo está em `docs/runbooks/versao-no.md`.
+- **`envs/nodes-platform`:** o que vale para o projeto dos nós de clientes inteiro (fase 3, CP-06): as APIs, o
+  orçamento, o bucket do estado e as permissões do plano de controle nesse projeto. Aplicado por você, uma vez. Ainda
+  não foi aplicado. Tem a própria seção, "O projeto dos nós e o nó de cada cliente".
+- **`envs/tenant`:** o nó de um cliente, um estado por cliente, aplicado pelo plano de controle (o executor
+  Terraform). Você só roda o `plan` de aceite num projeto de teste (mesma seção).
 
-Os dois primeiros chamam o mesmo módulo, `modules/node`. Na fase 3, cada cliente ganha um ambiente igual ao de
-homologação, aplicado pelo plano de controle.
+`envs/verax`, `envs/homolog-sp` e `envs/tenant` chamam o mesmo módulo, `modules/node`. Na fase 3, cada cliente ganha
+um `envs/tenant` igual à homologação (perfil `standard`), aplicado pelo plano de controle.
 
 ## Antes de começar: 5 ideias do Terraform
 
@@ -41,8 +46,11 @@ infra/gcp/
 ├── envs/homolog-sp/       nó de homologação em São Paulo (standard): APIs, orçamento e o módulo
 ├── envs/control-plane/    plano de controle (fase 3): Cloud Run, Firestore, filas, relógio, segredos, Hosting e
 │                          federação com o GitHub, sem módulo (veja "O plano de controle")
-└── envs/release/          chave de release do nó (Cloud KMS) e a federação do workflow Versão do nó, sem módulo
-                           (docs/runbooks/versao-no.md)
+├── envs/release/          chave de release do nó (Cloud KMS) e a federação do workflow Versão do nó, sem módulo
+│                          (docs/runbooks/versao-no.md)
+├── envs/nodes-platform/   projeto dos nós de clientes: APIs, orçamento, bucket do estado e as permissões do plano de
+│                          controle, sem módulo (veja "O projeto dos nós e o nó de cada cliente")
+└── envs/tenant/           o nó de um cliente (standard, prefixo vx-<slug>), aplicado pelo plano de controle
 ```
 
 O que vale para o projeto inteiro fica no ambiente: as APIs, o orçamento e, no da Verax, o registro das imagens e a
@@ -83,6 +91,13 @@ Todo nó criado pelo módulo, nos dois perfis, também tem:
 
 O `envs/verax/main.tf` desliga esses quatro só para o nó da Verax, que já está no ar, não mudar nada neste PR (veja
 "O nó da Verax ainda usa o script antigo"). Os três últimos são só um `true` no `main.tf` quando você quiser.
+
+Três interruptores do módulo existem só para o nó de cliente e ficam desligados no nó da Verax e na homologação (os
+padrões não mudam nada): o cofre **`support-bootstrap`** (`support_bootstrap_secret`: a senha temporária da conta de
+suporte da Verax, que a VM grava e só você lê), os **atributos de convidado** (`guest_attributes`: a VM publica o
+próprio estado no espaço `verax/`) e a **configuração do nó nos metadados** (`install_config` com `install_metadata`:
+as chaves `verax-*` que a instalação sem operador lê). O `envs/tenant` liga os três; `docs/ARQUITETURA.md` ("O nó de
+cada cliente") tem a lista das chaves.
 
 ## O nó da Verax: o que tem
 
@@ -129,6 +144,10 @@ Fora do projeto dos nós de clientes, este ambiente cria só três coisas: essa 
 projeto de `monitored_projects`, um sink que só copia (`verax-homolog-security`, com a própria identidade de escrita,
 criada pela GCP); e, com `billing_account_id` preenchido, o orçamento na conta de faturamento. Liste em
 `monitored_projects` só projetos de teste.
+
+O projeto dos nós ganha as APIs, o bucket do estado e o próprio orçamento pelo `envs/nodes-platform` (seção "O projeto
+dos nós e o nó de cada cliente"). Com o orçamento lá, deixe vazio o `billing_account_id` da homologação: os dois
+vigiariam o mesmo projeto.
 
 **Custo:** o de um nó `standard` ligado o mês todo (VM, 60 GB de disco, snapshots, NAT, IP e o resto; estime na
 [calculadora da Google Cloud](https://cloud.google.com/products/calculator)). Parada, sobram o disco, os snapshots e o
@@ -258,7 +277,9 @@ gcloud storage buckets create gs://PROJETO_DOS_NOS-tfstate --project PROJETO_DOS
 gcloud storage buckets update gs://PROJETO_DOS_NOS-tfstate --versioning
 ```
 
-É o único recurso criado fora do Terraform: ele precisa existir antes de o Terraform começar.
+É o único recurso criado fora do Terraform: ele precisa existir antes de o Terraform começar. No projeto dos nós, o
+`envs/nodes-platform` o adota no primeiro `apply` e passa a manter as configurações dele (seção "O projeto dos nós e
+o nó de cada cliente"); os comandos acima continuam sendo o jeito de criá-lo.
 
 ## Passo 3: as variáveis
 
@@ -622,12 +643,12 @@ liga, se um dia valer o custo.
 | 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                    |
 | Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
-Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): os papéis no projeto dos nós de
-clientes (`nodes_project_id`, depois do `envs/nodes-platform`; no lugar de `secretmanager.admin` e `storage.admin` do
-plano entram dois papéis personalizados, `cpSecretsProvisioner` e `cpBucketsProvisioner`, que criam cofres e buckets
-sem ler o conteúdo de nenhum), a gravação da política do registro de imagens do nó (`images_project_id`), a leitura
-do bucket de releases (`release_bucket`) e o `firebasehosting.admin` nos projetos do pool dos painéis dos clientes
-(`firebase_panel_projects`; nunca neste projeto).
+Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): a gravação da política do
+registro de imagens do nó (`images_project_id`), a leitura do bucket de releases (`release_bucket`) e o
+`firebasehosting.admin` nos projetos do pool dos painéis dos clientes (`firebase_panel_projects`; nunca neste
+projeto). As permissões no projeto dos nós de clientes (os papéis do `cp-terraform`, o ciclo de vida das VMs para o
+`cp-worker` e o bucket do estado) ficam no `envs/nodes-platform` desde o CP-06; aqui, `nodes_project_id` só vira as
+variáveis dos serviços e do Job.
 
 ### Passo 1: login, projeto e bucket do estado
 
@@ -784,7 +805,8 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
   `TRUST_PROXY_HOPS` (o Terraform não decide quantos proxies o serviço confia; é do app, CP-01); `worker_env` (só o
   `cp-worker`) com o remetente e o usuário do SMTP; na primeira venda, `nodes_project_id`, `images_project_id`,
   `release_bucket` e, em `worker_env`, `NODE_RELEASE` e `PROVISIONING_ENABLED = "true"` (itens 15 a 17; o projeto dos
-  nós e o bucket do estado dele vêm do `envs/nodes-platform`). As chaves que o Terraform deriva de outras variáveis, os
+  nós, o bucket do estado dele e as permissões lá vêm do `envs/nodes-platform`, aplicado com
+  `control_plane_project_id` depois deste ambiente). As chaves que o Terraform deriva de outras variáveis, os
   segredos, `ROLE` e `NODE_ENV` são recusados nos dois mapas; `SMTP_*` e `MAIL_FROM*` só entram em `worker_env`.
 
 ### Operações do responsável no `cp-worker`
@@ -799,8 +821,8 @@ exemplo) é decisão do CP-11.
 ### Revelação da senha e a entrada do `cp-worker` (decisão pendente, CP-05)
 
 A senha temporária do primeiro admin fica no segredo `vx-<slug>-admin-bootstrap` do projeto dos nós, e só o
-`cp-worker` tem acesso a ele (por tenant, concedido pelo `envs/tenant` do CP-06: `secretAccessor` e
-`secretVersionManager` para a conta em `CP_WORKER_SA`). Na revelação, o `cp-public` (que atende o site) chama
+`cp-worker` tem acesso a ele (por tenant, concedido pelo `envs/tenant`: `secretAccessor` e `secretVersionManager` para
+a conta em `CP_WORKER_SA`). Na revelação, o `cp-public` (que atende o site) chama
 `POST <WORKER_URL>/internal/access/reveal` com o token de identidade da própria conta, e o `cp-worker` marca, lê,
 enfileira a destruição da versão e devolve a senha. Para isso o `cp-public` tem `run.invoker` no `cp-worker` (run.tf), e
 o worker só aceita o token dele nessa rota.
@@ -829,10 +851,10 @@ responde 503 com o código `reveal_unavailable`.
   `POST /internal/access/reveal` (`PUBLIC_SA_EMAIL`): um `cp-public` comprometido pode pedir a revelação (que marca a
   senha como mostrada uma vez por cliente, fica na auditoria e destrói a versão: o cliente veria "senha já mostrada"),
   mas não dispara passo nenhum e não lê o segredo por conta própria.
-- **`cp-terraform`** não lê segredo nem backup de tenant nenhum: no projeto dos nós, cria cofres e buckets
-  (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin` ele ainda poderia
-  se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo `envs/nodes-platform`)
-  vigia.
+- **`cp-terraform`** não lê segredo nem backup de tenant nenhum: no projeto dos nós (`envs/nodes-platform`), cria
+  cofres e buckets (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin`
+  ele ainda poderia se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo
+  `envs/nodes-platform`) vigia.
 - **`cp-admin`** (com `admin_enabled`) só lê e grava o Firestore: nenhum segredo, nem a chave da Stripe, e nenhum
   token para chamar o `cp-worker`. Só o agente do IAP o invoca, e só quem está em `owner_principals` passa pelo IAP;
   o app ainda confere o JWT do IAP em toda requisição, inclusive nas telas.
@@ -852,6 +874,122 @@ responde 503 com o código `reveal_unavailable`.
   cópia, para essa vez); o banco do Firestore tem a proteção da GCP e, no Terraform, só sai do estado
   (`deletion_policy = "ABANDON"`): para apagá-lo, desligue a proteção no console e apague por lá. As APIs continuam
   ligadas e o bucket do estado fica.
+
+## O projeto dos nós e o nó de cada cliente (`envs/nodes-platform` e `envs/tenant`)
+
+Na fase 3, cada cliente tem o próprio nó no projeto dos nós de clientes (o mesmo projeto da homologação), criado pelo
+plano de controle sem operador. São dois ambientes:
+
+- **`envs/nodes-platform`**, um só, aplicado por você: o que vale para o projeto inteiro.
+- **`envs/tenant`**, um por cliente, com o estado em `tenants/<slug>/` no bucket do estado, aplicado pelo executor
+  Terraform do plano de controle (o Job `cp-terraform`). Você não aplica nenhum `envs/tenant` à mão: só roda o `plan`
+  de aceite, num projeto de teste.
+
+O desenho completo (as variáveis, as permissões do `cp-worker` em cada cofre e os contratos com a instalação sem
+operador: o cofre da conta de suporte, os atributos de convidado e as chaves `verax-*` dos metadados da VM) está em
+`docs/ARQUITETURA.md`, "O nó de cada cliente".
+
+### O que o `envs/nodes-platform` cria
+
+| Recurso                                     | Para quê                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 11 APIs                                     | As mesmas da homologação, que os nós usam. O executor não liga API nenhuma. Nenhuma é desligada no destroy.                                                                                                                                                                                                                                                                                                  |
+| Bucket `<projeto>-tfstate`                  | O do passo 2, adotado no primeiro `apply` (o bloco `import` de `state.tf`): acesso uniforme (a concessão condicionada do `cp-worker` exige), sem acesso público, versionado, versões anteriores apagadas 30 dias depois e os `outputs.json` de `runs/` depois de 180 dias. Protegido contra `destroy`.                                                                                                       |
+| Orçamento (opcional)                        | O projeto inteiro (todos os nós e a homologação), com e-mail em 50%, 90% e 100% e na previsão de 100%.                                                                                                                                                                                                                                                                                                       |
+| Permissões do plano de controle (opcionais) | Só com `control_plane_project_id`: os 12 papéis do `cp-terraform` (10 predefinidos, `cpSecretsProvisioner` e `cpBucketsProvisioner`), o `objectAdmin` dele no bucket do estado, o `cpNodeLifecycle` do `cp-worker` (parar, ligar e ler os atributos só das VMs `vx-*`), a leitura dele em `runs/` e o papel `cpSecretVersionDestroyer`, que cada tenant concede ao `cp-worker` só no `credentials-key` dele. |
+
+Até o CP-06, essas permissões ficavam no `envs/control-plane` (`cross_project.tf`). Se você já aplicou o
+`envs/control-plane` com `nodes_project_id` preenchido, o próximo `plan` dele mostra os papéis e as concessões do
+projeto dos nós saindo (`to destroy`): é a mudança para cá. Aplique primeiro o `envs/control-plane` e só depois o
+`envs/nodes-platform`: um papel personalizado apagado fica 7 dias como "excluído", e o provider o recupera ao criar de
+novo com o mesmo nome; na ordem inversa, o `apply` daqui para com `already exists and must be imported`. Se o
+`envs/control-plane` nunca foi aplicado com `nodes_project_id`, não há nada para mover.
+
+### Passo a passo
+
+1. **Antes:** o projeto dos nós existe, com faturamento, e o bucket do estado foi criado (passo 2). Para as
+   permissões do plano de controle, o `envs/control-plane` já foi aplicado (as contas `cp-terraform` e `cp-worker`
+   precisam existir). O mesmo login do passo 1, com `SEU_PROJETO` = o projeto dos nós.
+2. **Variáveis:**
+
+   ```bash
+   cd infra/gcp/envs/nodes-platform
+   cp terraform.tfvars.example terraform.tfvars
+   ```
+
+   `project_id` é obrigatório; `control_plane_project_id` liga as permissões do plano de controle; `billing_account_id`
+   e `monthly_budget`, o orçamento. Com o orçamento aqui, deixe vazio o `billing_account_id` da homologação: os dois
+   vigiariam o mesmo projeto, e o aviso chegaria duas vezes (se a homologação já tiver o dela, o `plan` dela mostra o
+   orçamento saindo, e é isso mesmo).
+
+3. **`init`, `plan` e `apply`:**
+
+   ```bash
+   terraform init -backend-config="bucket=PROJETO_DOS_NOS-tfstate"
+   terraform plan -out=plano.tfplan
+   terraform apply plano.tfplan
+   ```
+
+   O primeiro `plan` mostra `google_storage_bucket.tfstate will be imported` e também `updated in-place` (os rótulos e
+   as regras de retenção, que o passo 2 não cria), e termina com
+   `Plan: 1 to import, 11 to add, 1 to change, 0 to destroy.` (12 a adicionar com orçamento; 19 a mais com
+   `control_plane_project_id`), com `data.google_project.this will be read during apply` enquanto alguma API for
+   ligada. Nada para destruir: um
+   `must be replaced` no bucket (a região dele diferente de `region`) é erro, e o `prevent_destroy` para o `apply`. Um
+   bucket que não existe faz o `plan` parar no `import`: crie-o (passo 2) e repita.
+
+4. **Conferir:**
+
+   ```bash
+   gcloud storage buckets describe gs://PROJETO_DOS_NOS-tfstate \
+     --format="value(uniform_bucket_level_access,versioning_enabled)"   # True e True
+   gcloud iam roles list --project PROJETO_DOS_NOS --format="value(name)"   # os quatro cp*
+   ```
+
+### O nó de cada cliente (`envs/tenant`)
+
+O executor Terraform roda, para cada cliente, o `init` com
+`-backend-config="bucket=<projeto-dos-nos>-tfstate" -backend-config="prefix=tenants/<slug>"` e o `plan`/`apply` com as
+variáveis dele (CP-07). O ambiente cria o nó no perfil `standard` com o prefixo `vx-<slug>` em todo recurso, liga o
+cofre da conta de suporte, os atributos de convidado e a configuração nos metadados da VM, dá à conta da VM a leitura
+do registro das imagens e dá ao `cp-worker` só o que ele faz nos cofres daquele nó. As variáveis recusam o que estiver
+fora do formato antes de criar qualquer coisa.
+
+**`plan` de aceite num projeto de teste** (o aceite do CP-06; nunca no projeto dos nós com clientes): com o
+`envs/nodes-platform` aplicado nesse projeto de teste (as APIs e o bucket do estado),
+
+```bash
+cd infra/gcp/envs/tenant
+cp terraform.tfvars.example terraform.tfvars   # o projeto de teste, a conta cp-worker e o projeto das imagens
+terraform init -backend-config="bucket=PROJETO_DE_TESTE-tfstate" -backend-config="prefix=tenants/demo-a"
+terraform plan
+```
+
+O `plan` termina com `Plan: 34 to add, 0 to change, 0 to destroy.`: 29 recursos `module.node.*` e 5 permissões (4 do
+`cp-worker` nos cofres e a leitura do registro das imagens). Todo nome que aparece começa com `vx-demo-a` (o bucket de
+backups é `PROJETO_DE_TESTE-vx-demo-a-backups`), os metadados da VM têm `enable-guest-attributes` e as chaves `verax-*`,
+e nenhum recurso fica fora do prefixo. Não aplique: o `plan` só olha. Depois, apague o `terraform.tfvars` e a pasta
+`.terraform`.
+
+**Mudanças de rotina** (versão nova, outro plano, outros limites, o nome do cliente) são `update in-place` na VM
+(metadados). Um `plan` de tenant que recrie ou apague `module.node.google_service_account.node` fora da exclusão do
+cliente é erro: a AWS do cliente deixaria de aceitar o nó, e o executor recusa (CP-07).
+
+**Exclusão do cliente:** o disco e o IP do NAT têm `prevent_destroy`, e o `credentials-key` e o bucket de backups
+ficam até a Exclusão 2. O que o executor faz antes do `destroy` (desligar a proteção da VM e tirar esses endereços do
+estado) está em `docs/ARQUITETURA.md`, "Exclusão em dois tempos".
+
+**Cotas:** cada nó tem a própria rede VPC, roteador, NAT e IP externo reservado. Num projeto novo, as cotas de redes
+VPC por projeto, de endereços IP externos estáticos e de CPUs em `southamerica-east1` são pequenas e acabam antes de
+qualquer outra coisa. Na primeira venda, confira no console (IAM e administrador, Cotas, filtrando pelo projeto dos
+nós) e peça aumento antes de chegar perto do limite, contando a homologação.
+
+### Mudar ou desfazer
+
+- **Mudar algo** no `envs/nodes-platform`: edite o `terraform.tfvars` e repita o `plan` e o `apply`.
+- **Desfazer:** o bucket do estado tem `prevent_destroy` e guarda o estado de todos os clientes: nunca o apague com
+  clientes no ar. As APIs continuam ligadas depois de um `destroy`. Um `envs/tenant` só é desfeito pelo plano de
+  controle, na exclusão do cliente.
 
 ## Escolhas de segurança desta base
 

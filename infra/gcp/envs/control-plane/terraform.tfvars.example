@@ -50,8 +50,9 @@ project_id = "projeto-exemplo"
 # cloudflare_account_id = "00000000000000000000000000000000"
 # cloudflare_zone_id    = "00000000000000000000000000000000"
 
-# Na primeira venda: o projeto dos nós de clientes (depois do envs/nodes-platform), o registro das imagens do nó (projeto
-# do nó da Verax) e o bucket de releases. Cada um liga só as concessões dele (cross_project.tf).
+# Na primeira venda: o projeto dos nós de clientes (as variáveis do Job; as permissões lá são do envs/nodes-platform), o
+# registro das imagens do nó (projeto do nó da Verax) e o bucket de releases. Os dois últimos ligam só as concessões
+# deles (cross_project.tf).
 # nodes_project_id  = "projeto-dos-nos-123"
 # nodes_zone        = "southamerica-east1-b"
 # images_project_id = "projeto-do-no-verax-123"

@@ -141,7 +141,7 @@ variable "cloudflare_zone_id" {
 }
 
 variable "nodes_project_id" {
-  description = "Projeto dos nós de clientes (criado na primeira venda). Vazio: nada é concedido lá. Preenchido: os papéis da seção 2.2 do plano para cp-terraform e cp-worker nesse projeto e no bucket do estado dele (cross_project.tf). Exige o envs/nodes-platform aplicado antes (bucket do estado e APIs)."
+  description = "Projeto dos nós de clientes (criado na primeira venda): NODES_PROJECT_ID e TFSTATE_BUCKET (`<projeto>-tfstate`) dos serviços e do Job. Os papéis do cp-terraform e do cp-worker nesse projeto e no bucket do estado dele ficam no envs/nodes-platform (com `control_plane_project_id` = este projeto), aplicado antes do primeiro provisionamento."
   type        = string
   default     = ""
 
