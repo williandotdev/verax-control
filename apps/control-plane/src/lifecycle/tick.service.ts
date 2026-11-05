@@ -7,6 +7,8 @@ import { ProvisioningStore } from '../provisioning/provisioning-store.js';
 import { STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { STRIPE_CLIENT, type StripeClient } from '../stripe/stripe-client.js';
 import { TenantStore } from '../tenants/tenant-store.js';
+import type { TenantRecord } from '../tenants/tenant.schema.js';
+import { GRACE_PERIOD_MS } from '../webhook/billing-rules.js';
 import { DeletionEngine } from './deletion-engine.js';
 import { DeletionService } from './deletion.service.js';
 import {
@@ -38,6 +40,20 @@ export type TickSummary = Record<TickSection, number> & { failed: TickSection[] 
 
 const ACCOUNTS_PATTERN = /^[0-9]{1,6}$/;
 const SYSTEM = { actor: 'system' } as const;
+/** Assinatura que ainda cobra uma dívida (a única que o `tick` cancela) e a já encerrada (só a transição). */
+const DELINQUENT_SUBSCRIPTIONS = new Set(['past_due', 'unpaid']);
+const ENDED_SUBSCRIPTIONS = new Set(['canceled', 'incomplete_expired']);
+
+/** O status da Stripe no motivo do log: só letras e sublinhado. */
+function statusLabel(status: string): string {
+  return /^[a-z_]{1,32}$/.test(status) ? status : 'other';
+}
+
+/** Ainda suspenso por falta de pagamento, com os 30 dias vencidos. */
+function unpaidCancelIsDue(tenant: TenantRecord, now: Date): boolean {
+  const due = unpaidCancelDueAt(tenant);
+  return due !== undefined && due.getTime() <= now.getTime();
+}
 
 /**
  * O `tick` horário (`POST /internal/tick`, Cloud Scheduler, plano §4b e §4d), o relógio do ciclo de vida. Em ordem:
@@ -114,37 +130,76 @@ export class TickService {
     return count;
   }
 
-  /** D+37: a assinatura é cancelada na Stripe (idempotente) antes da transição; sem a Stripe configurada, espera. */
+  /**
+   * D+37: quem ficou 30 dias suspenso por falta de pagamento tem a assinatura cancelada na Stripe (idempotente) antes da
+   * transição. Cancelar é destrutivo e a transição não o desfaz: um cliente que pagou perto de D+37 (o `invoice.paid`
+   * já processado, ou ainda a caminho) não pode perder a assinatura. Por isso, logo antes de cancelar, tudo é conferido
+   * de novo (`unpaidCancelCheck`); qualquer dúvida pula o cliente nesta passada (`event=unpaid_cancel_skipped`).
+   */
   private async unpaid(now: Date): Promise<number> {
     let count = 0;
-    for (const tenant of await this.tenants.listInState('suspended')) {
-      const due = unpaidCancelDueAt(tenant);
-      if (due === undefined || due.getTime() > now.getTime()) continue;
-      const subscriptionId = tenant.stripe?.subscriptionId;
-      if (subscriptionId !== undefined) {
-        if (this.stripe === null) {
-          this.logger.warn(
-            { event: 'tick_stripe_unconfigured', tenantId: tenant.id },
-            'sem a chave da Stripe',
-          );
-          continue;
-        }
-        const subscription = await this.stripe.retrieveSubscription(subscriptionId);
-        if (subscription.status !== 'canceled' && subscription.status !== 'incomplete_expired') {
-          await this.stripe.cancelSubscription(subscriptionId, `cancel-unpaid-${tenant.id}`);
-        }
+    for (const listed of await this.tenants.listInState('suspended')) {
+      if (!unpaidCancelIsDue(listed, now)) continue;
+      const check = await this.unpaidCancelCheck(listed.id, now);
+      if (check.kind === 'skip') {
+        this.logger.info(
+          { event: 'unpaid_cancel_skipped', tenantId: listed.id, reason: check.reason },
+          'cancelamento por falta de pagamento adiado',
+        );
+        continue;
       }
-      const result = await this.tenants.change(tenant.id, (current) =>
+      if (check.kind === 'cancel' && this.stripe !== null) {
+        await this.stripe.cancelSubscription(check.subscriptionId, `cancel-unpaid-${listed.id}`);
+      }
+      const result = await this.tenants.change(listed.id, (current) =>
         unpaidCancelChange(current, now, SYSTEM),
       );
       if (!result.transitioned) continue;
       count += 1;
       this.logger.info(
-        { event: 'tenant_canceled_unpaid', tenantId: tenant.id },
+        { event: 'tenant_canceled_unpaid', tenantId: listed.id },
         'cancelado por falta de pagamento',
       );
     }
     return count;
+  }
+
+  /**
+   * A conferência antes do cancelamento por falta de pagamento: o cliente relido ainda está suspenso por falta de
+   * pagamento e no prazo; a assinatura relida na Stripe está `past_due` ou `unpaid` (já encerrada: só a transição, sem
+   * chamada); há fatura em aberto (`open` ou `uncollectible`) há mais que a carência; e o cliente, relido de novo
+   * depois das leituras da Stripe, continua igual. Uma fatura paga no meio deixa a assinatura `active` e nenhuma fatura
+   * em aberto, e o cliente é pulado.
+   */
+  private async unpaidCancelCheck(
+    tenantId: string,
+    now: Date,
+  ): Promise<
+    { kind: 'cancel'; subscriptionId: string } | { kind: 'ended' } | { kind: 'skip'; reason: string }
+  > {
+    const tenant = await this.tenants.get(tenantId);
+    if (tenant === undefined || !unpaidCancelIsDue(tenant, now)) return { kind: 'skip', reason: 'not_due' };
+    const subscriptionId = tenant.stripe?.subscriptionId;
+    if (subscriptionId === undefined) return { kind: 'skip', reason: 'no_subscription' };
+    if (this.stripe === null) return { kind: 'skip', reason: 'stripe_unconfigured' };
+    const subscription = await this.stripe.retrieveSubscription(subscriptionId);
+    if (ENDED_SUBSCRIPTIONS.has(subscription.status)) return { kind: 'ended' };
+    if (!DELINQUENT_SUBSCRIPTIONS.has(subscription.status)) {
+      return { kind: 'skip', reason: `subscription_${statusLabel(subscription.status)}` };
+    }
+    const owingSince = await this.stripe.oldestOutstandingInvoiceAt(subscriptionId);
+    if (owingSince === undefined) return { kind: 'skip', reason: 'no_outstanding_invoice' };
+    if (now.getTime() - owingSince.getTime() < GRACE_PERIOD_MS)
+      return { kind: 'skip', reason: 'debt_too_recent' };
+    const again = await this.tenants.get(tenantId);
+    if (
+      again === undefined ||
+      !unpaidCancelIsDue(again, now) ||
+      again.stripe?.subscriptionId !== subscriptionId
+    ) {
+      return { kind: 'skip', reason: 'changed_meanwhile' };
+    }
+    return { kind: 'cancel', subscriptionId };
   }
 
   /**
@@ -189,8 +244,9 @@ export class TickService {
    */
   private async redrive(): Promise<number> {
     let count = 0;
-    for (const tenant of await this.tenants.listInState('deleted')) {
+    for (const tenant of await this.tenants.listWithLifecycleRun()) {
       const run = tenant.lifecycle?.run;
+      if (tenant.state !== 'deleted') continue;
       if (run === undefined || run.lastError !== undefined) continue;
       const step = await this.runs.getStep(run.runId, run.step);
       if (step?.status === 'running') continue;
@@ -200,7 +256,10 @@ export class TickService {
     return count;
   }
 
-  /** A VM que deveria estar parada e não foi (ainda), e a que o plano de controle parou de quem voltou a pagar. */
+  /**
+   * A VM que deveria estar parada e não foi (ainda), e a que o plano de controle parou, ou mandou parar, de quem voltou a
+   * pagar (`nodeStoppedAt` ou `nodeStopRequestedAt` num estado de VM ligada: o pedido de ligar pode ter se perdido).
+   */
   private async nodePower(): Promise<number> {
     let count = 0;
     for (const state of NODE_STOPPED_STATES) {

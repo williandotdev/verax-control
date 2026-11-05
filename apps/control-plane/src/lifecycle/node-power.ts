@@ -53,7 +53,7 @@ abstract class NodePowerBase implements StepHandler {
   async run(input: StepInput, context: StepContext): Promise<string> {
     const tenant = await this.tenants.get(input.tenantId);
     if (tenant === undefined) return 'unknown_tenant';
-    if (!this.wanted.includes(tenant.state)) return 'not_needed';
+    if (!this.wanted.includes(tenant.state)) return this.notWanted(tenant);
     if (!mayHaveNode(tenant)) return 'no_node';
     const project = tenant.resources?.nodesProject;
     const zone = tenant.resources?.zone;
@@ -87,6 +87,11 @@ abstract class NodePowerBase implements StepHandler {
       );
       throw new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Indisponível', 'step_retry');
     }
+  }
+
+  /** O estado do cliente já não pede este passo (mudou depois do pedido). */
+  protected notWanted(_tenant: TenantRecord): Promise<string> {
+    return Promise.resolve('not_needed');
   }
 
   protected abstract act(
@@ -145,12 +150,66 @@ export class NodeStopStep extends NodePowerBase {
     const instance = `vx-${tenant.slug}`;
     const status = await this.apis.compute.instanceStatus(project, zone, instance);
     if (status === undefined || STOPPED.has(status)) return this.stopped(tenant, status, context);
-    if (status === 'RUNNING') await this.apis.compute.setPower(project, zone, instance, 'stop');
-    else if (!SETTLING.has(status)) return 'unexpected_status';
+    if (status === 'RUNNING') {
+      // O pedido fica gravado antes de ir à Google: se o cliente for reativado no meio da parada, quem vier depois (este
+      // passo, o `node.start` ou o `tick`) sabe que a VM pode estar parada por nós e a liga de novo.
+      if (!(await this.markStopRequested(tenant, context))) return this.notWanted(await this.reload(tenant));
+      await this.apis.compute.setPower(project, zone, instance, 'stop');
+    } else if (!SETTLING.has(status)) {
+      return 'unexpected_status';
+    }
     return this.again(tenant, input, NODE_POWER_WAITS.stopPolls);
   }
 
-  /** Grava `nodeStoppedAt`; se o cliente foi reativado no meio, pede para ligar de novo. */
+  /**
+   * O cliente voltou a pagar depois do pedido de parar. Se a parada foi pedida por nós (`nodeStopRequestedAt`), a VM
+   * pode estar parando ou parada: pede o `node.start` (que espera a parada terminar e liga). Se o pedido falhar, a task
+   * repete, e o `tick` também religa quem tem o pedido gravado num estado de VM ligada.
+   */
+  protected override async notWanted(tenant: TenantRecord): Promise<string> {
+    if (tenant.lifecycle?.nodeStopRequestedAt === undefined || !NODE_RUNNING_STATES.includes(tenant.state)) {
+      return 'not_needed';
+    }
+    try {
+      await requestNodePower(this.queue, this.clock, tenant.id, NODE_START_STEP);
+    } catch {
+      this.logger.warn(
+        { event: 'node_power_retry', tenantId: tenant.id, step: this.name, reason: 'start_enqueue_failed' },
+        'vai repetir',
+      );
+      throw new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Indisponível', 'step_retry');
+    }
+    return 'reactivated_meanwhile';
+  }
+
+  /** Grava `nodeStopRequestedAt` se o cliente ainda pede a VM parada; `false` se o estado mudou. */
+  private async markStopRequested(tenant: TenantRecord, context: StepContext): Promise<boolean> {
+    const now = this.clock.now();
+    const result = await this.tenants.change(tenant.id, (current) => {
+      if (
+        !NODE_STOPPED_STATES.includes(current.state) ||
+        current.lifecycle?.nodeStopRequestedAt !== undefined
+      ) {
+        return undefined;
+      }
+      return {
+        reason: 'node_stop_requested',
+        audit: { actor: 'system', requestId: context.requestId },
+        mutate: (t) => ({ ...t, lifecycle: { ...t.lifecycle, nodeStopRequestedAt: now } }),
+      };
+    });
+    return NODE_STOPPED_STATES.includes(result.tenant.state);
+  }
+
+  private async reload(tenant: TenantRecord): Promise<TenantRecord> {
+    return (await this.tenants.get(tenant.id)) ?? tenant;
+  }
+
+  /**
+   * A VM está parada: grava `nodeStoppedAt` (no estado que pede a VM parada, ou em qualquer estado quando a parada foi
+   * pedida por nós: é o que deixa o `tick` religá-la se o cliente voltou a pagar no meio). Reativado no meio, pede o
+   * `node.start`.
+   */
   private async stopped(
     tenant: TenantRecord,
     status: string | undefined,
@@ -158,19 +217,16 @@ export class NodeStopStep extends NodePowerBase {
   ): Promise<string> {
     const now = this.clock.now();
     const result = await this.tenants.change(tenant.id, (current) => {
-      if (!NODE_STOPPED_STATES.includes(current.state) || current.lifecycle?.nodeStoppedAt !== undefined) {
-        return undefined;
-      }
+      const ours =
+        NODE_STOPPED_STATES.includes(current.state) || current.lifecycle?.nodeStopRequestedAt !== undefined;
+      if (!ours || current.lifecycle?.nodeStoppedAt !== undefined) return undefined;
       return {
         reason: status === undefined ? 'node_missing_on_stop' : 'node_stopped',
         audit: { actor: 'system', requestId: context.requestId },
         mutate: (t) => ({ ...t, lifecycle: { ...t.lifecycle, nodeStoppedAt: now } }),
       };
     });
-    if (NODE_RUNNING_STATES.includes(result.tenant.state)) {
-      await requestNodePower(this.queue, this.clock, tenant.id, NODE_START_STEP);
-      return 'reactivated_meanwhile';
-    }
+    if (NODE_RUNNING_STATES.includes(result.tenant.state)) return this.notWanted(result.tenant);
     if (result.changed) this.logger.info({ event: 'node_stopped', tenantId: tenant.id }, 'VM parada');
     return status === undefined ? 'no_instance' : 'stopped';
   }
@@ -231,14 +287,19 @@ export class NodeStartStep extends NodePowerBase {
 
   private async started(tenant: TenantRecord, context: StepContext): Promise<string> {
     const result = await this.tenants.change(tenant.id, (current) => {
-      if (!NODE_RUNNING_STATES.includes(current.state) || current.lifecycle?.nodeStoppedAt === undefined) {
-        return undefined;
-      }
+      const marked =
+        current.lifecycle?.nodeStoppedAt !== undefined ||
+        current.lifecycle?.nodeStopRequestedAt !== undefined;
+      if (!NODE_RUNNING_STATES.includes(current.state) || !marked) return undefined;
       return {
         reason: 'node_started',
         audit: { actor: 'system', requestId: context.requestId },
         mutate: (t) => {
-          const { nodeStoppedAt: _cleared, ...lifecycle } = t.lifecycle ?? {};
+          const {
+            nodeStoppedAt: _cleared,
+            nodeStopRequestedAt: _requested,
+            ...lifecycle
+          } = t.lifecycle ?? {};
           return { ...t, lifecycle };
         },
       };

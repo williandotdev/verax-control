@@ -237,7 +237,9 @@ export function minimalRecord(tenant: Tenant, now: Date): Tenant {
     stripe,
     ...rest
   } = tenant;
-  const { run: _run, ...lifecycle } = tenant.lifecycle ?? {};
+  // O prazo da Exclusão 2 sai com ela: o `tick` consulta `cryptoDestroyAfter` vencido, e um cliente já terminado
+  // nunca mais pode ocupar a página dessa consulta. Ficam os carimbos do que aconteceu.
+  const { run: _run, cryptoDestroyAfter: _done, ...lifecycle } = tenant.lifecycle ?? {};
   const mode = tenant.billing?.mode;
   return {
     ...rest,

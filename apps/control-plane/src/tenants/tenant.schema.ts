@@ -250,6 +250,12 @@ export const tenantSchema = z.strictObject({
        * a VM que ele mesmo parou, e nunca uma parada à mão pelo responsável.
        */
       nodeStoppedAt: z.date().optional(),
+      /**
+       * O plano de controle pediu à Google para parar a VM (antes da chamada, CP-11) e ela ainda não foi confirmada
+       * parada e religada. Com ele, um cliente reativado no meio da parada é religado (pelo passo ou pelo `tick`), mesmo
+       * que o pedido de ligar se perca.
+       */
+      nodeStopRequestedAt: z.date().optional(),
       /** Contrato direto: o cancelamento marcado pelo responsável para uma data futura (o `tick` cancela nela). */
       cancelScheduledFor: z.date().optional(),
       run: lifecycleRunSchema.optional(),

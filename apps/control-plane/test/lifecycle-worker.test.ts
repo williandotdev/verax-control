@@ -12,6 +12,7 @@ import { MemoryStepQueue } from '../src/queue/memory-step-queue.js';
 import { stepTaskBody } from '../src/queue/step-queue.js';
 import { TenantStore } from '../src/tenants/tenant-store.js';
 import type { Tenant, TenantRecord, TenantState } from '../src/tenants/tenant.schema.js';
+import { minimalRecord } from '../src/lifecycle/lifecycle-rules.js';
 import { cancelTenant } from '../src/webhook/billing-rules.js';
 import { MemoryMailSender, TestGoogleIdentity } from './support/access-fakes.js';
 import { createApp } from './support/create-app.js';
@@ -440,9 +441,50 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
   // --- D+7 e D+37 ----------------------------------------------------------------------------------------------------
 
   describe('inadimplência: D+7 suspende, D+37 cancela', () => {
+    /**
+     * A dívida como a Stripe a mostra: a renovação de START em aberto e a assinatura no estado dado (`past_due` no
+     * começo, `unpaid` quando o Smart Retries desiste).
+     */
+    function owing(seeded: Seeded, status = 'unpaid'): Record<string, unknown> {
+      const subscription = stripe.subscriptions.get(seeded.subscriptionId);
+      if (subscription !== undefined) subscription['status'] = status;
+      return stripe.addInvoice({
+        customer: String(subscription?.['customer']),
+        subscription: seeded.subscriptionId,
+        subscriptionMetadata: {},
+        status: 'open',
+        billingReason: 'subscription_cycle',
+        amountPaid: 0,
+        periodStart: START,
+        periodEnd: at(30),
+      });
+    }
+
+    /** Suspenso por falta de pagamento desde D+7 (como a carência vencida deixa). */
+    async function suspendedUnpaid(slug: string): Promise<Seeded> {
+      const seeded = await provisioned(slug);
+      await tenants.transition(seeded.tenant.id, {
+        to: 'suspended',
+        reason: 'teste',
+        audit: SYSTEM,
+        mutate: (t) => ({
+          ...t,
+          billing: {
+            pastDueSince: START,
+            graceUntil: at(7),
+            unpaidSince: at(7),
+            suspendedReason: 'grace_expired',
+            resumeState: 'active',
+          },
+        }),
+      });
+      return seeded;
+    }
+
     it('relógio falso em D+7 e D+37: carência vencida suspende e para a VM; 30 dias sem pagar cancelam na Stripe', async () => {
       const seeded = await provisioned('inad-a');
       const id = seeded.tenant.id;
+      owing(seeded, 'past_due');
       await tenants.transition(id, {
         to: 'past_due',
         reason: 'teste',
@@ -493,6 +535,75 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       expect(stripe.calls('DELETE', `/v1/subscriptions/${seeded.subscriptionId}`)).toHaveLength(1);
     });
 
+    it('pagou perto de D+37 e o invoice.paid ainda não chegou (assinatura active, nada em aberto): não cancela', async () => {
+      const seeded = await suspendedUnpaid('pagou-a');
+      // Nenhuma fatura em aberto, e a assinatura relida já está `active`: só o webhook ainda não reativou o cliente.
+      const summary = await tick(at(37));
+      expect(summary).toMatchObject({ unpaid: 0 });
+      expect(stripe.calls('DELETE', `/v1/subscriptions/${seeded.subscriptionId}`)).toHaveLength(0);
+      expect((await reload(seeded.tenant.id)).state).toBe('suspended');
+      expect(
+        capture
+          .entries()
+          .some((e) => e.event === 'unpaid_cancel_skipped' && e.reason === 'subscription_active'),
+      ).toBe(true);
+    });
+
+    it('pagou perto de D+37 e a Stripe ainda mostra past_due, mas sem fatura em aberto: não cancela', async () => {
+      const seeded = await suspendedUnpaid('pagou-b');
+      const invoice = owing(seeded, 'past_due');
+      invoice['status'] = 'paid';
+      await tick(at(37));
+      expect(stripe.calls('DELETE', `/v1/subscriptions/${seeded.subscriptionId}`)).toHaveLength(0);
+      expect((await reload(seeded.tenant.id)).state).toBe('suspended');
+      expect(capture.entries().some((e) => e.reason === 'no_outstanding_invoice')).toBe(true);
+    });
+
+    it('o invoice.paid chega durante o tick (depois da consulta dos suspensos): não cancela', async () => {
+      const seeded = await suspendedUnpaid('pagou-c');
+      const invoice = owing(seeded, 'unpaid');
+      const gate = stripe.hold(`GET /v1/subscriptions/${seeded.subscriptionId}`);
+      clock.set(at(37));
+      const running = request(app.getHttpServer())
+        .post('/internal/tick')
+        .set('Authorization', bearer(INVOKER))
+        .send({});
+      const pendingTick = running.then((response) => response);
+      await gate.reached;
+      // O cliente pagou: a fatura quitada e o webhook (CP-04) o reativou enquanto o tick esperava a Stripe.
+      invoice['status'] = 'paid';
+      const subscription = stripe.subscriptions.get(seeded.subscriptionId);
+      if (subscription !== undefined) subscription['status'] = 'active';
+      await tenants.transition(seeded.tenant.id, {
+        to: 'active',
+        reason: 'invoice_paid',
+        audit: SYSTEM,
+        mutate: (t) => ({ ...t, billing: undefined }),
+      });
+      gate.release();
+      expect((await pendingTick).status).toBe(200);
+      expect(stripe.calls('DELETE', `/v1/subscriptions/${seeded.subscriptionId}`)).toHaveLength(0);
+      expect((await reload(seeded.tenant.id)).state).toBe('active');
+    });
+
+    it('dívida de verdade (unpaid, fatura em aberto desde D0) ainda cancela em D+37; recente demais, não', async () => {
+      const genuine = await suspendedUnpaid('deve-a');
+      owing(genuine, 'unpaid');
+      const recent = await suspendedUnpaid('deve-b');
+      const fresh = owing(recent, 'unpaid');
+      // A única fatura em aberto do segundo é de 2 dias atrás: não passou da carência.
+      (fresh['status_transitions'] as Record<string, unknown>)['finalized_at'] = Math.floor(
+        at(35).getTime() / 1000,
+      );
+      const summary = await tick(at(37));
+      expect(summary).toMatchObject({ unpaid: 1 });
+      expect(stripe.calls('DELETE', `/v1/subscriptions/${genuine.subscriptionId}`)).toHaveLength(1);
+      expect((await reload(genuine.tenant.id)).state).toBe('canceled');
+      expect(stripe.calls('DELETE', `/v1/subscriptions/${recent.subscriptionId}`)).toHaveLength(0);
+      expect((await reload(recent.tenant.id)).state).toBe('suspended');
+      expect(capture.entries().some((e) => e.reason === 'debt_too_recent')).toBe(true);
+    });
+
     it('suspenso por fraude nunca é cancelado pelo relógio, nem com unpaidSince antigo', async () => {
       const seeded = await provisioned('fraude-a');
       await tenants.transition(seeded.tenant.id, {
@@ -541,6 +652,58 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       probe.api = true;
       await drain();
       expect((await reload(id)).lifecycle?.nodeStoppedAt).toBeUndefined();
+    });
+
+    /** Suspenso com a VM no ar, e a primeira consulta do `node.stop` já entregue (a parada pedida à Google). */
+    async function stopRequested(slug: string): Promise<Seeded> {
+      const seeded = await provisioned(slug);
+      await tenants.transition(seeded.tenant.id, {
+        to: 'suspended',
+        reason: 'teste',
+        audit: SYSTEM,
+        mutate: (t) => ({
+          ...t,
+          billing: { suspendedReason: 'unpaid', unpaidSince: START, resumeState: 'active' },
+        }),
+      });
+      await tick(at(0, HOUR_MS));
+      const [first] = await drain({ limit: 1 });
+      expect(first).toMatchObject({ step: 'node.stop', status: 200, outcome: 'waiting' });
+      expect(cloud.instances.get(seeded.instance)?.status).toBe('STOPPING');
+      expect((await reload(seeded.tenant.id)).lifecycle?.nodeStopRequestedAt).toBeInstanceOf(Date);
+      // O `invoice.paid` reativa o cliente antes da consulta seguinte do `node.stop`; o pedido de ligar não chega.
+      await tenants.transition(seeded.tenant.id, {
+        to: 'active',
+        reason: 'invoice_paid',
+        audit: SYSTEM,
+        mutate: (t) => ({ ...t, billing: undefined }),
+      });
+      return seeded;
+    }
+
+    it('reativado entre o pedido de parar e a consulta seguinte: o node.stop pede para ligar, e a VM volta', async () => {
+      const seeded = await stopRequested('meio-a');
+      const delivered = await drain();
+      expect(delivered[0]).toMatchObject({ step: 'node.stop', outcome: 'reactivated_meanwhile' });
+      expect(cloud.instances.get(seeded.instance)?.status).toBe('RUNNING');
+      const lifecycle = (await reload(seeded.tenant.id)).lifecycle;
+      expect(lifecycle?.nodeStoppedAt).toBeUndefined();
+      expect(lifecycle?.nodeStopRequestedAt).toBeUndefined();
+    });
+
+    it('...e o pedido de ligar se perde: o tick religa quem tem a parada pedida num estado de VM ligada', async () => {
+      const seeded = await stopRequested('meio-b');
+      queue.failNext(new Error('fila fora do ar'));
+      const [retry] = await drain();
+      expect(retry).toMatchObject({ step: 'node.stop', status: 503 });
+      expect(pending('node.start', seeded.tenant.id)).toHaveLength(0);
+      // O Cloud Tasks desistiu da task: a VM parou, e o cliente pagante só volta pelo tick.
+      cloud.instances.set(seeded.instance, { status: 'TERMINATED' });
+      const summary = await tick(at(0, 3 * HOUR_MS));
+      expect(summary).toMatchObject({ node_power: 1 });
+      await drain();
+      expect(cloud.instances.get(seeded.instance)?.status).toBe('RUNNING');
+      expect((await reload(seeded.tenant.id)).lifecycle?.nodeStopRequestedAt).toBeUndefined();
     });
 
     it('um node.stop atrasado para um cliente ativo não faz nada', async () => {
@@ -739,6 +902,33 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       expect(tenant.lifecycle?.purgedAt).toBeInstanceOf(Date);
       expect(clock.now().getTime()).toBeGreaterThanOrEqual(at(97).getTime() + PURGE_RETRY.everyMs);
       expect(executionsOf('bucket-a', 'purge')).toHaveLength(2);
+    });
+
+    it('mais clientes já purgados que uma página da consulta não impedem a Exclusão 2 dos seguintes', async () => {
+      const target = await provisioned('pagina-a');
+      clock.set(at(1));
+      await cancel(target.tenant.id);
+      await tick(at(31));
+      await drain();
+      const afterDeletion = await reload(target.tenant.id);
+      expect(afterDeletion.lifecycle?.cryptoDestroyAfter).toEqual(at(98));
+      // 501 clientes que já terminaram a Exclusão 2 (o registro mínimo, pela mesma função do passo), com um prazo
+      // anterior ao deste: com o prazo mantido no registro, eles ocupariam a página inteira da consulta do `tick`.
+      const { id: _id, ...base } = afterDeletion;
+      const finished = minimalRecord(
+        { ...base, lifecycle: { ...base.lifecycle, cryptoDestroyAfter: at(97), cryptoDestroyedAt: at(97) } },
+        at(97),
+      );
+      expect(finished.lifecycle?.cryptoDestroyAfter).toBeUndefined();
+      await documents.inner.runTransaction((tx) => {
+        for (let index = 0; index < 501; index += 1) {
+          tx.set('tenants', newUlid(at(97).getTime() + index), { ...finished });
+        }
+        return Promise.resolve();
+      });
+      const summary = await tick(at(98));
+      expect(summary).toMatchObject({ crypto_destroy: 1 });
+      expect(pending('crypto.destroy_key', target.tenant.id)).toHaveLength(1);
     });
 
     it('cliente que nunca provisionou: excluído só no Firestore, sem nenhuma chamada externa', async () => {

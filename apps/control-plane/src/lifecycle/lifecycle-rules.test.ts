@@ -179,6 +179,8 @@ describe('regras do ciclo de vida (CP-11)', () => {
     );
     expect(minimal.stripe).toEqual({ livemode: false, customerId: 'cus_demo' });
     expect(minimal.lifecycle).toMatchObject({ purgedAt: days(97), cryptoDestroyedAt: days(97) });
+    // O prazo sai com a Exclusão 2: o `tick` só consulta quem ainda tem trabalho.
+    expect(minimal.lifecycle?.cryptoDestroyAfter).toBeUndefined();
   });
 
   it('a VM acompanha a transição: para ao suspender ou cancelar, liga ao sair da suspensão', () => {

@@ -317,16 +317,40 @@ export class TenantStore {
     }));
   }
 
-  /** Os clientes cuja VM o plano de controle parou (`lifecycle.nodeStoppedAt`), em qualquer estado. */
-  async listNodeStopped(limit = 500): Promise<TenantRecord[]> {
+  /**
+   * Os clientes com uma execução da exclusão em andamento ou parada (`lifecycle.run`, índice simples): só os que ainda
+   * têm trabalho, nunca os milhares já terminados.
+   */
+  async listWithLifecycleRun(limit = 500): Promise<TenantRecord[]> {
     const docs = await this.store.query(COLLECTIONS.tenants, {
-      where: [{ field: 'lifecycle.nodeStoppedAt', op: '>=', value: new Date(0) }],
+      where: [{ field: 'lifecycle.run.startedAt', op: '>=', value: new Date(0) }],
       limit,
     });
     return docs.map((doc) => ({
       id: doc.id,
       ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
     }));
+  }
+
+  /**
+   * Os clientes cuja VM o plano de controle parou ou mandou parar (`lifecycle.nodeStoppedAt` ou
+   * `lifecycle.nodeStopRequestedAt`), em qualquer estado: duas consultas de índice simples, sem repetição.
+   */
+  async listNodeStopped(limit = 500): Promise<TenantRecord[]> {
+    const found = new Map<string, TenantRecord>();
+    for (const field of ['lifecycle.nodeStoppedAt', 'lifecycle.nodeStopRequestedAt']) {
+      const docs = await this.store.query(COLLECTIONS.tenants, {
+        where: [{ field, op: '>=', value: new Date(0) }],
+        limit,
+      });
+      for (const doc of docs) {
+        found.set(doc.id, {
+          id: doc.id,
+          ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+        });
+      }
+    }
+    return [...found.values()];
   }
 
   /** O documento `slugs/{slug}`, se existir. */
