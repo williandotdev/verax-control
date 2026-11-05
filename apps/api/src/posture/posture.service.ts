@@ -1,17 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  Paginated,
-  PostureAccount,
-  PostureCheck,
-  PostureCheckListQuery,
-  PostureOverview,
+import {
+  type Paginated,
+  type PostureAccount,
+  type PostureCheck,
+  type PostureCheckListQuery,
+  type PostureOverview,
+  postureHistoryDays,
 } from '@verax/shared';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { PlanService } from '../plan/plan.service.js';
 import { DEFAULT_TOWER_THRESHOLDS } from '../tower/tower-rules.js';
 
-const HISTORY_DAYS = 90;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const scanSelect = {
   id: true,
@@ -46,7 +48,10 @@ export function combinedScore(
  */
 @Injectable()
 export class PostureService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly plan: PlanService,
+  ) {}
 
   /** A varredura mais recente de cada conta ativa (as contas sem varredura ficam de fora do mapa). */
   async latestScans(): Promise<{ accounts: string[]; latest: Map<string, ScanRow> }> {
@@ -72,7 +77,9 @@ export class PostureService {
 
   async overview(now = new Date()): Promise<PostureOverview> {
     const { accounts, latest } = await this.latestScans();
-    const since = new Date(now.getTime() - HISTORY_DAYS * 24 * 60 * 60 * 1000);
+    // A evolução segue o histórico do plano (PR-20): 90 dias no Essencial, 365 no Profissional, até 365.
+    const historyDays = postureHistoryDays(this.plan.historyDays);
+    const since = new Date(now.getTime() - historyDays * DAY_MS);
     const db = this.prisma.scoped();
     const items: PostureAccount[] = [];
     for (const accountId of accounts) {
@@ -99,7 +106,7 @@ export class PostureService {
           low: scan?.failedLow ?? 0,
           informational: scan?.failedInformational ?? 0,
         },
-        history: [...byDay].map(([date, score]) => ({ date, score })).slice(-HISTORY_DAYS),
+        history: [...byDay].map(([date, score]) => ({ date, score })).slice(-historyDays),
       });
     }
     return {

@@ -23,6 +23,11 @@ export interface MockState {
   pendingCode?: boolean;
   /** Chave do site do Turnstile que a configuração pública devolve. Sem informar, vem do `localStorage` (ou nada). */
   turnstileSiteKey?: string | null;
+  /**
+   * Histórico do plano do nó, como o ajuste `PLAN_HISTORY_DAYS` (`null` é sem limite). Sem informar, o do plano da
+   * demonstração (Profissional, 365 dias).
+   */
+  historyDays?: number | null;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;

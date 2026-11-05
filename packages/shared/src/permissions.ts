@@ -48,6 +48,8 @@ export const PERMISSIONS = {
   'agents:enroll': ADMINS,
   // Plano do nó e uso do cliente (fase 2, PR-18): só leitura, para quem administra.
   'plan:read': ADMINS,
+  // Só o histórico do plano (fase 2, PR-20): os filtros de período de achados e relatórios são de todos os papéis.
+  'plan_history:read': ALL,
   // Exclusivas da Verax
   'session:switch_tenant': VERAX,
   'unowned_alerts:read': VERAX,

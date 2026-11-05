@@ -639,10 +639,36 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
 - **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte.
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
   mostra uma faixa a partir de 80%; o aviso por e-mail de 80% e 100% é do PR-16.
-- **Histórico:** `historyDays` é o prazo do expurgo (PR-19).
+- **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
 - **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido (rótulo e os quatro limites) e o uso
   do cliente da sessão (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
   → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
+
+### Histórico nas telas (PR-20)
+
+As telas não prometem mais do que o banco guarda. Os filtros de período de achados, auditoria e relatórios têm
+`24h`, `7d`, `30d`, `90d` e `12m` (365 dias; os relatórios começam em `7d`), com os dias de cada um em
+`HISTORY_PERIOD_DAYS` (`packages/shared/src/history.ts`).
+
+- **Recusa na API:** o período mais longo que o histórico do plano é recusado com 400, o código
+  `PERIOD_BEYOND_PLAN_HISTORY` e a mensagem "Seu plano guarda 90 dias de histórico. Escolha um período menor ou fale
+  com a Verax para ampliar." (`assertPeriodWithinHistory`, `apps/api/src/plan/plan-history.ts`, chamada pelos
+  controllers de `GET /v1/findings`, `GET /v1/audit` e `GET /v1/reports/:kind`). No Essencial, `12m` é recusado; no
+  Profissional e no Interno (sem limite), aceito; um ajuste do Enterprise abaixo de 90 dias recusa também `90d`. A
+  auditoria segue a mesma regra, embora a trilha fique ao menos 13 meses: o filtro é o do plano em todas as telas.
+- **`GET /v1/plan/history`** (permissão nova `plan_history:read`, todos os papéis): só `{ historyDays }`, o mesmo
+  para toda sessão, sem dado de cliente (a Verax lê sem escolher cliente). O `GET /v1/plan` continua só dos
+  administradores; o histórico saiu à parte porque os filtros de achados e relatórios são de todos os papéis.
+- **Painel** (`apps/web/src/features/plan/plan-history.ts`): cada seletor de período mostra só os períodos que cabem
+  no histórico. Enquanto o plano não chega (ou se a leitura falha), só os que todo plano tem (até 30 dias, o piso dos
+  ajustes); um período da URL que não cabe é ignorado e nunca vai para a API, e um período da URL além do piso espera
+  o plano chegar, em vez de pedir outro antes.
+- **Postura:** a evolução da nota segue o histórico do plano, até 365 pontos (`postureHistoryDays`): 90 no Essencial,
+  365 no Profissional; sem limite ou acima de 365 dias, os últimos 365.
+- **Textos:** o detalhe do achado diz "Evento bruto do log disponível por 30 dias" (`RAW_EVENT_RETENTION_DAYS`, a
+  retenção do índice do Wazuh) e, com o plano conhecido, quantos dias os dados do achado ficam; "Plano e uso" diz o que
+  o histórico guarda, que a trilha fica ao menos 13 meses e o evento bruto 30 dias. Os prazos para a Privacidade e o
+  DPA do site estão em [`retencao-de-dados.md`](retencao-de-dados.md).
 
 ## Expurgo do histórico
 
@@ -694,8 +720,10 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 - **Carência quando o plano diminui:** o job guarda o prazo aplicado (`RetentionState`). Quando o plano pede um prazo
   menor (do Profissional para o Essencial, por exemplo), o anterior continua valendo por 30 dias, contados da primeira
   execução que viu a redução, para o cliente exportar; depois, vale o novo. Aumentar vale na hora e cancela a redução.
-- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer.
-  O texto da Privacidade e do DPA sobre isso fica para o PR-20.
+- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer:
+  eliminação em até D + 97 dias (90 do ciclo de vida do bucket e 7 de exclusão reversível), com D o dia em que saiu do
+  banco. A conta, a frase para a Privacidade e o DPA e o que o ensaio geral confere estão em
+  [`retencao-de-dados.md`](retencao-de-dados.md).
 
 ## Custo por nó
 

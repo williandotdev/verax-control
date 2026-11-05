@@ -131,6 +131,34 @@ describe('Relatórios', () => {
     await waitFor(() => expect(router.state.location.search).toBe('?aba=deteccoes&periodo=7d'));
   });
 
+  it('12 meses no Profissional (a demonstração): o resumo tem os 366 dias que o período toca', async () => {
+    const router = renderAt('/relatorios');
+    await rowsOf('Achados por severidade');
+    await screen.findByRole('option', { name: 'Últimos 12 meses' });
+    await userEvent.selectOptions(screen.getByLabelText('Período'), '12m');
+    await waitFor(() => expect(router.state.location.search).toBe('?periodo=12m'));
+    await waitFor(() =>
+      expect(screen.queryByText(/Atualizando para o período escolhido/)).not.toBeInTheDocument(),
+    );
+    await userEvent.click(await screen.findByText('Ver tabela'));
+    expect(await rowsOf('Achados por dia')).toHaveLength(366);
+  });
+
+  it('Essencial (90 dias): sem 12 meses; o 12m da URL vira o padrão de 30 dias', async () => {
+    renderAt('/relatorios?periodo=12m', { me: demoMe('leitura'), historyDays: 90 });
+    await rowsOf('Achados por severidade');
+    await screen.findByRole('option', { name: 'Últimos 90 dias' });
+    const select = screen.getByLabelText('Período');
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Últimos 7 dias', 'Últimos 30 dias', 'Últimos 90 dias']);
+    expect(select).toHaveValue('30d');
+    await userEvent.click(await screen.findByText('Ver tabela'));
+    expect(await rowsOf('Achados por dia')).toHaveLength(31);
+  });
+
   it('exporta a tabela em CSV, no navegador', async () => {
     const created = vi.fn((_blob: Blob) => 'blob:relatorio');
     Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() });
@@ -153,6 +181,7 @@ describe('Relatórios', () => {
         if (new URL(request.url).searchParams.get('period') === '90d') await delay('infinite');
       }),
     );
+    await screen.findByRole('option', { name: 'Últimos 90 dias' });
     await userEvent.selectOptions(screen.getByLabelText('Período'), '90d');
     expect(await screen.findByText(/Atualizando para o período escolhido/)).toBeInTheDocument();
     expect(await rowsOf('Achados por severidade')).toHaveLength(4);

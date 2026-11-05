@@ -19,6 +19,7 @@ import { API_URL } from '@/lib/env';
 import type { AdminStore } from './admin';
 import type { MockState } from './handlers';
 import { type IncidentState, incidentSummaries } from './incidents-handlers';
+import { demoPeriodRefusal } from './plan-handlers';
 
 const url = (path: string): string => `${API_URL}${path}`;
 const MINUTE = 60_000;
@@ -106,6 +107,8 @@ export function createReportHandlers(
       const kind = REPORT_KINDS.find((value) => value === params['kind']);
       const query = reportQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
       if (!kind || !query.success) return problem(400, 'Relatório inválido');
+      const refusal = demoPeriodRefusal(state, query.data.period);
+      if (refusal) return refusal;
 
       const now = new Date();
       const window = reportWindow(query.data.period, now);

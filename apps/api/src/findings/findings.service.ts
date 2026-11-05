@@ -6,9 +6,9 @@ import {
   type FindingCommentCreate,
   type FindingDetail,
   type FindingListQuery,
-  type FindingPeriod,
   type FindingSource,
   type FindingStatusUpdate,
+  historyPeriodStart,
   type Paginated,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
@@ -18,13 +18,6 @@ import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { RAW_EVENT_READER, type RawEventReader } from './raw-events.js';
-
-const PERIOD_HOURS = {
-  '24h': 24,
-  '7d': 24 * 7,
-  '30d': 24 * 30,
-  '90d': 24 * 90,
-} as const satisfies Record<FindingPeriod, number>;
 
 /** O detalhe mostra os 500 comentários mais recentes, o limite do contrato; a contagem traz o total. */
 const MAX_COMMENTS = 500;
@@ -123,7 +116,7 @@ export class FindingsService {
       ...(query.status && { status: query.status }),
       ...(query.accountId && { accountId: query.accountId }),
       ...(query.period && {
-        occurredAt: { gte: new Date(now.getTime() - PERIOD_HOURS[query.period] * 3_600_000) },
+        occurredAt: { gte: historyPeriodStart(query.period, now) },
       }),
     };
     const db = this.prisma.scoped();

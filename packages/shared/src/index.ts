@@ -7,6 +7,7 @@ export * from './aws-reader.js';
 export * from './cloud-accounts.js';
 export * from './cloud-credentials.js';
 export * from './findings.js';
+export * from './history.js';
 export * from './incidents.js';
 export * from './inventory.js';
 export * from './pagination.js';
