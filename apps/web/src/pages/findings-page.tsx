@@ -14,6 +14,7 @@ import {
   FINDING_PERIOD_LABELS,
   FINDING_SOURCE_LABELS,
   FINDING_STATUS_LABELS,
+  findingOriginId,
 } from '@/features/findings/labels';
 import {
   FINDING_FILTER_PARAMS,
@@ -85,7 +86,8 @@ export function FindingsPage() {
     {
       key: 'conta',
       header: 'Conta',
-      cell: (row) => <span className="font-mono text-xs">{row.accountId}</span>,
+      // Nos alertas das instâncias, a origem é o agente do Wazuh (`agente 001`).
+      cell: (row) => <span className="font-mono text-xs">{findingOriginId(row.accountId)}</span>,
     },
     { key: 'origem', header: 'Origem', cell: (row) => FINDING_SOURCE_LABELS[row.source] },
     {

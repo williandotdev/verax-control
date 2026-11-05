@@ -3422,3 +3422,117 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - **429 vale para o token inteiro:** um 429 na conferência de hora em hora só adiava a auditoria se ela estivesse na hora, e um 429 na auditoria não adiava a conferência. Agora o 429 de qualquer um dos dois adia os dois fluxos da conta até o `retry-after` (`CollectorCursors.postpone`: só adia, sem contar falha nem apagar o erro guardado da conferência das zonas). Testes nos dois sentidos (a auditoria fora da hora adiada pelo 429 da conferência, e a conferência adiada pelo 429 da auditoria), sem nenhuma chamada antes do prazo. Sem a correção, cada um cai;
   - o Cloudflare falso passou a amarrar o cursor à conta (dois testes com a mesma janela e o mesmo deslocamento geravam o mesmo cursor, e o "vencido" de um valia para o outro) e ganhou respostas lentas (`pass` com `delayMs`);
   - `CollectorCursors.postpone` com teste próprio (`collector-cursor.test.ts`: só adia, sem falha nem erro); mutações conferidas (gravar só no fim do laço, tirar o adiamento num sentido e no outro): cada uma derruba o seu teste; suíte da API inteira sobre a `main` mesclada (84 arquivos, 1173 testes; o `cloud-credential-intake` caiu com o 0xC0000409 do Vitest no Windows e passou sozinho, 17 de 17); `pnpm typecheck`, ESLint com `--max-warnings=0`, `prettier --check apps packages docs`; Semgrep com a imagem e as opções do CI nos arquivos do PR: 0 achados (e o `audit-entry.ts` de antes acusa o mesmo `prototype-pollution-loop` do CI).
+
+## Fase 2, pedido de 04/11/2026: alertas dos agentes do Wazuh viram achados do cliente do nó ⚠️ migration nova (só valores do enum da fila sem dono)
+
+- **Pedido:** a pendência do PR #59 ("os alertas dos agentes chegam ao indexer, mas o sync de achados só atribui alerta a
+  cliente pela conta AWS"). Na verdade, eles nem eram lidos: a página do sync da AWS só traz `data.integration: aws`, e
+  os alertas dos agentes ficavam no indexer, fora dos achados e da fila. Agora viram achados do cliente do nó, com as
+  telas de sempre. Desenho em `docs/ARQUITETURA.md`, "Atribuição dos alertas dos agentes".
+- **Dois caminhos que nunca se cruzam** (`alerts/agent-alert.ts`, `alerts/sync-query.ts`): quem gerou o alerta é o
+  `agent.id`, que o manager grava pela conexão (a chave) de cada agente, e não pelo log. `000` é o manager (o aws-s3, as
+  contas AWS) e segue só pelo sync da AWS, que não muda de regra; qualquer outro id segue só pela tarefa nova
+  `wazuh-agent-alerts`. A partição vale na consulta (a página da AWS ganhou `agent.id = 000`; a dos agentes,
+  `must_not agent.id = 000`, o filtro novo `notEquals` do construtor de consultas, sempre estruturado) e de novo em cada
+  alerta lido (`isAgentAlert`, nos dois syncs; o outro conta como `skipped`). **Refinamento do pedido:** um agente pode
+  mandar um log igual ao do aws-s3 (o log é de quem usa a instância), e antes o sync da AWS o atribuiria pelo bucket e
+  pela conta; agora ele só pode virar achado da própria instância.
+- **Regra do dono** (`alerts/agent-owner.ts`, a única função que decide): do cliente do nó só com os agentes ligados no
+  worker (`WAZUH_AGENTS_FILE` e `WAZUH_AGENTS_TENANT`, sempre juntos), com o id do agente na lista do cliente do nó
+  (`WazuhAgent`, lida pelo escopo dele) **e** o mesmo nome, e sem conta AWS de outro cliente citada no log (`data.aws`,
+  pelos campos e conferências do sync da AWS; conta de outro cliente, ativa ou não, ou cadastrada nos dois). O nome
+  sozinho nunca decide. Na dúvida, fila sem dono com motivo novo: `agents_disabled`, `unknown_agent`,
+  `agent_name_mismatch` e `agent_account_conflict` (`invalid_alert` para o fora do formato), e o agente (`agent:<id>`)
+  junto das contas citadas.
+- **Lista atrasada:** o host exporta a lista a cada minuto e o worker a grava a cada minuto; o primeiro alerta de um
+  agente recém-registrado chega antes dela. O alerta recente (menos de 3 min) de um agente que a lista não conhece, com a
+  lista mais antiga que ele, espera a próxima execução (`deferred`), em vez de encher a fila; a sobreposição de 10 min o
+  relê. Passada a espera, ou com a lista mais nova que o alerta, vai para a fila.
+- **O achado** (`toAgentFindingDraft`): `source='wazuh'`, `logSource='wazuh_agent'`, origem `agent:<id>` no lugar da
+  conta, recurso `host:<nome na lista>`, severidade pelo nível da regra, MITRE da regra, decoder em `eventName` e, do log,
+  só `data.srcip` e o usuário (`srcuser`, `dstuser` ou o `targetUserName` do Windows), conferidos no formato. Chave
+  única `wazuh/agent:<id>/alert:<id do alerta>:<regra>` (o log da instância não tem id próprio em todas as fontes; o id
+  do alerta se repete a cada releitura). Regra limitada a 6 dígitos (as colunas). Exceção, incidente e evento bruto
+  (pelo id do alerta, saneado) pelo caminho de sempre (`FindingStore`, `IndexerRawEvents`). A cobertura das contas não
+  muda: agente não é conta.
+- **Contrato** (`packages/shared`): `FINDING_SOURCES` ganhou `wazuh_agent`; a origem do achado e as do incidente aceitam
+  `agent:<id>` (`findingOriginSchema`; os dois-pontos não aparecem em nenhum identificador de conta, então nunca se
+  confunde com conta). O filtro da lista de achados continua só por conta. `UNOWNED_REASONS` com os quatro motivos.
+- **Painel:** "Agente (instância)" como origem; na tabela de achados, no detalhe ("Agente (instância) · agente 001",
+  "Regra (agente do Wazuh)"), no incidente ("Contas e agentes") e no resumo ("no agente 001"), a origem aparece como
+  agente; na fila sem dono, os quatro motivos com o que fazer, e o agente aparece como "Agente de instância", sem o
+  atalho de cadastrar conta. Mock: dois achados do agente `api-producao-01` da Alfa (médio e baixo, fora de incidente:
+  a conta da Torre não muda) e um alerta de agente fora da lista na fila.
+- **Worker:** a fonte `wazuh` vira duas tarefas, `wazuh` e `wazuh-agent-alerts`, com estado e concessão próprios
+  (`SyncState('wazuh-agent-alerts')`): uma instância barulhenta não atrasa os achados das contas. A tarefa nova roda
+  mesmo com os agentes desligados (alerta de agente vira `agents_disabled`, em vez de sumir).
+- **Migration** `20261108120000_unowned_agent_reasons`: só `ALTER TYPE "UnownedReason" ADD VALUE` (quatro valores). O
+  teste da migration do PR-V3' (`aws-keyless-migration.test.ts`) dizia "é a última", o que qualquer migration nova
+  derruba; passou a conferir o que o nome dele promete: nenhuma migration seguinte mexe no ExternalId nem no enum do
+  cofre. Nada muda em `infra/`, `.github/` nem nas permissões.
+- **Arquivos:**
+  - API: `apps/api/src/alerts/{agent-alert.ts,agent-owner.ts,agent-alert-sync.ts}` (novos),
+    `apps/api/src/alerts/{alert-sync.ts,finding-draft.ts,sync-query.ts,wazuh-alert.ts}`,
+    `apps/api/src/indexer/alert-queries.ts`, `apps/api/src/worker.ts`,
+    `apps/api/prisma/{schema.prisma,migrations/20261108120000_unowned_agent_reasons}`;
+  - testes da API: `apps/api/test/alerts/{agent-alert.test.ts,agent-fixtures.ts}` e `apps/api/test/support/fake-indexer.ts`
+    (novos; o indexer falso saiu do `alert-sync.test.ts`), `apps/api/test/{agents.test.ts,alert-sync.test.ts}`,
+    `apps/api/test/alerts/finding-draft.test.ts`, `apps/api/test/indexer/alert-queries.test.ts`,
+    `apps/api/test/aws-keyless-migration.test.ts`;
+  - compartilhado: `packages/shared/src/{agents,findings,incidents,unowned-alerts}.ts` e os testes deles;
+  - painel: `apps/web/src/features/{findings/labels.ts,findings/finding-panel.tsx,incidents/narrative.ts,unowned/labels.ts}`,
+    `apps/web/src/pages/{findings-page,incident-page,incidents-page,unowned-alerts-page}.tsx`, os testes de
+    `findings-page`, `incidents-page` e `unowned-alerts-page`, `apps/web/src/mocks/{findings-fixtures,unowned-handlers}.ts`;
+  - documentação: `docs/{ARQUITETURA.md,STATUS.md}`.
+- **Dependências:** nenhuma.
+- **Testes:**
+  - unitários da API (`test/alerts/agent-alert.test.ts`, 13): quem gerou (000, sem o campo, qualquer outro); a leitura
+    (campos, horário, FIM, Windows, IP e usuário fora do formato, contas da AWS no log, regra de 7 dígitos, agente 000,
+    nome com controle ou longo, horário inválido); o dono (da lista, desligado, fora da lista, nome trocado, o nome de
+    um agente da lista com o id de outro, conflito com conta de outro cliente ou cadastrada nos dois, conta do próprio
+    cliente ou de ninguém, conta fora do formato, a espera pela lista e o fim dela, a espera menor que a
+    sobreposição); os motivos iguais no banco e no contrato; o achado campo a campo; a chave estável e com resumo
+    SHA-256; as duas páginas (`finding-draft.test.ts`) e o `notEquals` (`alert-queries.test.ts`);
+  - integração com o banco (`test/agents.test.ts`, 10 novos, no mesmo arquivo da tarefa `wazuh-agents` porque a lista
+    dos agentes é global no banco de teste): achado do cliente do nó lido pela API com o contrato e **A/B** (o B não vê
+    nem pelo id); releitura sem duplicar nem desfazer a triagem (no mesmo sync e num novo); fora da lista, nome trocado
+    e o agente de B com o nó de A na fila; agentes desligados; **nó de B** só atribui o agente de B; conflito com a conta
+    de B e a conta do próprio A sem conflito; **os dois syncs no mesmo indexer**: o alerta do manager só vira achado da
+    conta, e o do agente com cara de AWS (bucket e conta de A) só vira achado da instância, nunca os dois; a espera pela
+    lista e o achado na execução seguinte; incidente da mesma instância lido pela API (origem `agent:<id>`, recurso,
+    404 para o B); exceção por `host:<nome>`. Em `alert-sync.test.ts`, o sync da AWS pula o alerta de agente com bucket
+    e conta de A (`skipped`, sem achado nem fila);
+  - compartilhado: origem `agent:<id>` (ida e volta, nada que pareça conta: `agent-001x` é um projeto da GCP válido, por
+    isso os dois-pontos), achado e incidente com agente, fila com os motivos e o filtro por agente;
+  - painel: achado do agente na tabela e no detalhe, a frase da origem no resumo do incidente, o agente na fila sem
+    dono (situação, sem "Cadastrar conta", filtro pela URL);
+  - suítes: API inteira com o banco descartável (Postgres 18): 87 arquivos, 1224 testes (o `cloud-credential-intake`
+    caiu com o 0xC0000409 do Vitest no Windows e passou sozinho, 17 de 17); `packages/shared` (17 arquivos, 226);
+    painel (34 arquivos, 402); `pnpm typecheck`, ESLint da raiz com `--max-warnings=0` e
+    `prettier --check apps packages docs` sem erros; `prisma migrate diff` do banco migrado contra o `schema.prisma`
+    sem diferença (só a tabela-sonda dos testes).
+- **Definição de pronto:** critérios ✔ · testes, com o negativo A/B ✔ · lint, tipos e formatação ✔ · nenhuma
+  dependência ✔ · regras de segurança ✔ (na dúvida, de ninguém; nada do log decide o dono; entrada do indexer validada
+  com zod; consulta estruturada; isolamento pelo escopo do cliente; nada do evento bruto na fila nem no achado; dados
+  fictícios) · **aceite:** depende de ligar os agentes na homologação.
+- **O que testar manualmente (homologação com os agentes ligados):** com um agente Linux instalado pela tela, provocar
+  uma força bruta no SSH (algumas tentativas com usuário inexistente) e alterar um arquivo monitorado (o FIM roda a cada
+  12 h, ou reiniciar o agente); em até 2 min, os achados aparecem em Achados com a origem "Agente (instância)" e
+  `host:<nome>`, e o detalhe traz o evento bruto; no journal do worker, a tarefa `wazuh-agent-alerts` com `created`; a
+  fila sem dono sem alertas de agente (depois do registro, nenhum `unknown_agent`); com o `WAZUH_AGENTS_FILE` tirado do
+  ambiente do worker, o alerta seguinte cai como "Agentes desligados no nó".
+- **Riscos e pendências:**
+  - **volume:** com o nível mínimo de sempre (5), o primeiro SCA de cada instância (centenas de checagens com falha,
+    nível 7) e as alterações de arquivo depois de uma atualização de pacotes viram muitos achados médios. Eles se juntam
+    num incidente por instância (o recurso `host:<nome>`), mas a lista de achados enche; o cliente pode criar exceção
+    pela regra e pela instância. Um nível mínimo próprio para os agentes, ou regras do SCA em resumo, é decisão de
+    produto e ficou de fora;
+  - os formatos dos alertas (sshd, FIM, Windows) foram conferidos na documentação e no padrão do Wazuh 4.14, não num
+    agente real deste nó: é o portão da homologação;
+  - a espera pela lista cobre o atraso normal (até uns 2 min). Com a exportação do host parada por mais de 3 min, os
+    alertas dos agentes novos vão para a fila (`unknown_agent`) e não voltam sozinhos quando a lista volta (como já
+    acontece com as contas AWS cadastradas depois do alerta);
+  - um alerta na espera numa execução cortada pelo teto de páginas (atraso grande) pode sair da sobreposição antes de
+    ser relido; só acontece com um atraso de leitura de mais de 10 min e alertas de menos de 3 min ao mesmo tempo;
+  - o cartão da Torre para a fila continua com o texto "alertas de conta não cadastrada", que agora também conta os
+    alertas de agente sem dono (para o `admin_verax`).

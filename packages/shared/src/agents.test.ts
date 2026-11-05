@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_PACKAGE_KINDS,
+  agentIdOfRef,
   agentInstallSchema,
   agentSchema,
   WAZUH_AGENT_PACKAGES,
   WAZUH_AGENT_VERSION,
+  wazuhAgentRef,
+  wazuhAgentRefSchema,
 } from './agents.js';
 
 const agent = {
@@ -38,6 +41,23 @@ describe('agentes do Wazuh', () => {
     expect(agentSchema.safeParse({ ...agent, agentId: '1' }).success).toBe(false);
     expect(agentSchema.safeParse({ ...agent, status: 'removed' }).success).toBe(false);
     expect(agentSchema.safeParse({ ...agent, extra: true }).success).toBe(false);
+  });
+
+  it('a origem `agent:<id>` dos achados dos agentes: ida e volta, e nada que pareça conta', () => {
+    expect(wazuhAgentRef('001')).toBe('agent:001');
+    expect(wazuhAgentRefSchema.safeParse('agent:001').success).toBe(true);
+    expect(agentIdOfRef('agent:123456')).toBe('123456');
+    for (const ref of [
+      '111122223333',
+      'verax-prod-123',
+      'agent:',
+      'agent:1',
+      'agent:0011223',
+      'xagent:001',
+    ]) {
+      expect(agentIdOfRef(ref)).toBeNull();
+      expect(wazuhAgentRefSchema.safeParse(ref).success).toBe(false);
+    }
   });
 
   it('as instruções: a senha de registro só no formato do install.sh, ou nula', () => {

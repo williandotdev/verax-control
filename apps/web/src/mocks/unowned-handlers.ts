@@ -23,7 +23,8 @@ export const DEMO_UNKNOWN_ACCOUNTS = { forgotten: '210987654321', partner: '1357
 
 /**
  * Fila fictícia: uma conta esquecida que gera muitos alertas (a que falta cadastrar), uma conta de parceiro, um
- * bucket da Beta cadastrado na conta errada e os casos raros (sem conta, contas conflitantes, formato inválido).
+ * bucket da Beta cadastrado na conta errada, um agente do Wazuh fora da lista do nó e os casos raros (sem conta,
+ * contas conflitantes, formato inválido).
  */
 export function demoUnownedAlerts(now: Date = new Date()): UnownedAlert[] {
   let index = 0;
@@ -65,6 +66,7 @@ export function demoUnownedAlerts(now: Date = new Date()): UnownedAlert[] {
     alert(4 * 24 * 60, 'unknown_source', [DEMO_ACCOUNTS.alfaHomologacao], accessDenied),
     alert(12 * 60, 'no_account', [], ['80210', 6, 'AWS GuardDuty: atividade suspeita sem conta no evento']),
     alert(2 * 24 * 60, 'not_aws', [], null),
+    alert(5 * 60, 'unknown_agent', ['agent:017'], ['5712', 10, 'sshd: força bruta com usuário inexistente']),
     alert(40 * 24 * 60, 'invalid_alert', [], null),
   ];
 }

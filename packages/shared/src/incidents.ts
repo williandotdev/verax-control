@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { cloudAccountRefSchema } from './cloud-accounts.js';
-import { FINDING_SEVERITIES, findingSchema } from './findings.js';
+import { FINDING_SEVERITIES, findingOriginSchema, findingSchema } from './findings.js';
 import { withPagination } from './pagination.js';
 import { authorSchema } from './protected-resources.js';
 
@@ -40,7 +39,8 @@ export const incidentSchema = z.strictObject({
   firstSeenAt: z.iso.datetime(),
   lastSeenAt: z.iso.datetime(),
   keys: z.array(correlationKeySchema).min(1).max(200),
-  accounts: z.array(cloudAccountRefSchema).min(1).max(50),
+  /** Contas e, nos alertas das instâncias, agentes (`agent:<id>`) dos achados do incidente. */
+  accounts: z.array(findingOriginSchema).min(1).max(50),
   resources: z.array(z.string().max(2048)).max(200),
   mitreTactics: z.array(z.string().max(100)).max(20),
   assignee: authorSchema.nullable(),

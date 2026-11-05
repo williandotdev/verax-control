@@ -8,69 +8,12 @@ import { parseWazuhAlert } from '../src/alerts/wazuh-alert.js';
 import { IncidentGrouping, protectedItemsOf } from '../src/incidents/incident-grouping.js';
 import { DEFAULT_SYNC_SETTINGS } from '../src/alerts/sync-query.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
-import type { AlertSearch } from '../src/indexer/alert-queries.js';
-import type { AlertHit } from '../src/indexer/indexer.client.js';
 import { cloudTrailAlert, guardDutyAlert, portProbeAlerts, wafAlert, withAws } from './alerts/fixtures.js';
 import { createTenant, createUser } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
+import { FakeIndexer, wazuhTime } from './support/fake-indexer.js';
 
 const MINUTE = 60_000;
-
-/** Horário no formato que o Wazuh grava (fuso sem dois-pontos). */
-function wazuhTime(at: Date): string {
-  return at.toISOString().replace('Z', '+0000');
-}
-
-/**
- * Indexer falso com a mesma semântica do real: só alertas a partir de `since`, em ordem de horário e id, depois do
- * cursor (exclusivo) e no tamanho de página pedido. Os filtros de fonte e nível são do indexer e não entram aqui.
- */
-class FakeIndexer implements AlertSearchClient {
-  requests: AlertSearch[] = [];
-  failWith: Error | null = null;
-  /** Falha só a partir desta chamada (1 é a primeira): simula o indexer caindo no meio de uma execução. */
-  failFromCall: number | null = null;
-
-  constructor(private readonly documents: Record<string, unknown>[]) {}
-
-  search(request: AlertSearch): Promise<AlertHit[]> {
-    this.requests.push(request);
-    if (this.failWith) return Promise.reject(this.failWith);
-    if (this.failFromCall !== null && this.requests.length >= this.failFromCall) {
-      return Promise.reject(new Error('indexer caiu no meio'));
-    }
-    const body = request.body as {
-      size: number;
-      search_after?: [string, string];
-      query: { bool: { filter: { range?: { timestamp: { gte: string } } }[] } };
-    };
-    const since = body.query.bool.filter.find((clause) => clause.range)?.range?.timestamp.gte;
-    const sortOf = (doc: Record<string, unknown>): [number, string] => [
-      Date.parse(String(doc['timestamp']).replace(/([+-]\d\d)(\d\d)$/, '$1:$2')),
-      String(doc['id']),
-    ];
-    const after = body.search_after ? [Date.parse(body.search_after[0]), body.search_after[1]] : null;
-    const hits = this.documents
-      .map((doc) => ({ doc, sort: sortOf(doc) }))
-      .filter(({ sort }) => since === undefined || sort[0] >= Date.parse(since))
-      .filter(
-        ({ sort }) =>
-          after === null ||
-          sort[0] > (after[0] as number) ||
-          (sort[0] === after[0] && sort[1] > (after[1] as string)),
-      )
-      .sort((a, b) => a.sort[0] - b.sort[0] || a.sort[1].localeCompare(b.sort[1]))
-      .slice(0, body.size);
-    return Promise.resolve(
-      hits.map(({ doc, sort }) => ({
-        index: 'wazuh-alerts-4.x-2026.11.03',
-        id: randomUUID(),
-        sort,
-        source: doc,
-      })),
-    );
-  }
-}
 
 describe('sync de alertas para achados (T5.3)', () => {
   let app: NestExpressApplication;
@@ -209,6 +152,20 @@ describe('sync de alertas para achados (T5.3)', () => {
       where: { sourceEventId: String(doc['id']) },
     });
     expect(['source_mismatch', 'unknown_account']).toContain(queued.reason);
+  });
+
+  it('alerta de agente com cara de evento da AWS (bucket e conta de A) não passa por este sync', async () => {
+    // O log de uma instância é de quem a usa: um agente pode mandar um JSON igual ao do módulo aws-s3.
+    const forged = { ...trailAlertA(5), agent: { id: '001', name: 'web-01' } };
+    const manager = trailAlertA(4);
+    const report = await syncFor(new FakeIndexer([forged, manager])).runOnce();
+    expect(report).toMatchObject({ read: 2, created: 1, skipped: 1, unowned: 0 });
+    expect(await prisma.finding.findUnique({ where: byKey(forged) })).toBeNull();
+    expect(await prisma.unownedAlert.count({ where: { sourceEventId: String(forged['id']) } })).toBe(0);
+    expect(await prisma.finding.findUniqueOrThrow({ where: byKey(manager) })).toMatchObject({
+      tenantId: tenantA,
+      accountId: accountA,
+    });
   });
 
   it('exceção em vigor: o achado já nasce legítimo, e a exceção conta o uso', async () => {

@@ -22,6 +22,12 @@ describe('incidentes', () => {
     expect(incidentSchema.safeParse({ ...incident, assignee: null }).success).toBe(true);
   });
 
+  it('entre as origens, o agente do Wazuh de uma instância do cliente (`agent:<id>`), ao lado das contas', () => {
+    const accounts = ['111122223333', 'agent:001'];
+    expect(incidentSchema.parse({ ...incident, accounts }).accounts).toEqual(accounts);
+    expect(incidentSchema.safeParse({ ...incident, accounts: ['agent:x'] }).success).toBe(false);
+  });
+
   it.each([
     ['nota acima de 100', { riskScore: 101 }],
     ['incidente sem achado', { findingCount: 0 }],
