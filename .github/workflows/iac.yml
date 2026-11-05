@@ -375,25 +375,46 @@ jobs:
           grep -qxF 'if [[ ${WAZUH_AGENTS:-false} == true ]]; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi' \
             infra/node/bin/wazuh-apply.sh
       - name: Redes do Wazuh no standard (indexer só nas internas; manager fora da rede do banco e da rede da API)
-        # Duas redes internas: `wazuh` (indexer e manager) e `wazuh-read` (indexer, API e worker). A API nunca divide
-        # rede com o manager, que processa log de fora como root: numa rede só, ele chegaria à API por dentro, fora do
-        # Cloudflare, e forjaria o X-Forwarded-For em que ela confia (TRUST_PROXY_HOPS=1). Com os agentes ligados
-        # (compose.wazuh-agents.yaml), as mesmas redes: nem a API nem o worker falam com o manager (a lista dos agentes
-        # vem do host, num arquivo só leitura).
+        # Duas redes internas: `wazuh` (indexer, manager e worker) e `wazuh-read` (indexer, API e worker). A API nunca
+        # divide rede com o manager, que processa log de fora como root: numa rede só, ele chegaria à API por dentro,
+        # fora do Cloudflare, e forjaria o X-Forwarded-For em que ela confia (TRUST_PROXY_HOPS=1). O worker, que não abre
+        # porta, entra na `wazuh` só para ler os contadores da API do manager (PR-V6, usuário verax_stats): é a única rede
+        # que ele divide com o manager, e a dos agentes não muda isso (a lista dos agentes vem do host, num arquivo só
+        # leitura). Com os agentes ligados (compose.wazuh-agents.yaml), as mesmas redes.
         run: |
           for extra in '' infra/node/compose.wazuh-agents.yaml; do
             docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
               --env-file images.env --profile setup config --format json | jq -e '
+                def shared($a; $b): (.services[$a].networks | keys) - ((.services[$a].networks | keys)
+                  - (.services[$b].networks | keys));
                 .networks.wazuh.internal == true and .networks."wazuh-read".internal == true
                 and (.networks."wazuh-egress".internal // false) == false
                 and (.services."wazuh.indexer".networks | keys) == ["wazuh", "wazuh-read"]
                 and (.services."wazuh.manager".networks | keys) == ["wazuh", "wazuh-egress"]
                 and (.services.api.networks | keys) == ["verax", "wazuh-read"]
-                and (.services.worker.networks | keys) == ["verax", "wazuh-read"]
+                and (.services.worker.networks | keys) == ["verax", "wazuh", "wazuh-read"]
                 and .services.worker.networks.verax.ipv4_address == "172.30.53.10"
-                and (((.services.api.networks | keys) - ((.services.api.networks | keys)
-                  - (.services."wazuh.manager".networks | keys))) | length) == 0'
+                and (.services.worker.ports // []) == []
+                and shared("api"; "wazuh.manager") == []
+                and shared("worker"; "wazuh.manager") == ["wazuh"]'
           done
+      - name: API do manager com o certificado da CA do nó (o mesmo script, só leitura, no nó e no EC2)
+        # PR-V6: o init da imagem roda os .sh de /entrypoint-scripts antes dos daemons; o manager-api-tls.sh põe nele o
+        # par do manager (CA própria, nome wazuh.manager), que o worker confere. Só o manager o monta, só leitura.
+        run: |
+          expected='[["wazuh.manager","/entrypoint-scripts/verax-api-tls.sh",true]]'
+          for extra in '' infra/node/compose.wazuh-agents.yaml infra/node/compose.vault.yaml; do
+            docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
+              --env-file images.env --profile setup config --format json | jq -e --argjson expected "$expected" '
+                [.services | to_entries[] | .key as $service | (.value.volumes // [])[]
+                  | select((.source // "") | endswith("/wazuh/scripts/manager-api-tls.sh"))
+                  | [$service, .target, (.read_only // false)]] == $expected'
+          done
+          INDEXER_ADMIN_PASSWORD=ficticia INDEXER_FILEBEAT_PASSWORD=ficticia WAZUH_API_PASSWORD=ficticia \
+            INDEXER_API_READ_PASSWORD=ficticia docker compose -f infra/wazuh/docker-compose.yml config --format json |
+            jq -e --argjson expected "$expected" '[.services | to_entries[] | .key as $service | (.value.volumes // [])[]
+              | select((.source // "") | endswith("/scripts/manager-api-tls.sh"))
+              | [$service, .target, (.read_only // false)]] == $expected'
       - name: AWS sem chave no Wazuh (a pasta do token só no manager e no gerador; a dos sinais só no worker; a lista pelo banco)
         # PR-V4': a pasta /run/verax/wazuh-aws (os profiles e o token do Google) é montada só leitura no manager e com
         # escrita só no gerador; a pasta dos sinais sem segredo, com escrita só no worker, no caminho que o start.sh
@@ -540,6 +561,14 @@ jobs:
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: bash scripts/test-agents.sh
+      - name: API do manager com a CA do nó e o usuário verax_stats do medidor (sem rede e sem porta)
+        # PR-V6, num manager avulso: o certificado autoassinado de antes trocado pelo par do manager na partida seguinte
+        # (conferido com a CA e o nome wazuh.manager; par adulterado recusado); o init-api-users.sh cria, mantém e
+        # acerta o verax_stats só com manager:read (idempotente, troca de senha, alterações por fora desfeitas); e o
+        # contrato dos contadores do analysisd que a tarefa wazuh-usage lê.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-api-users.sh
       - name: Wazuh do nó standard (subida, rotação de senha, verificações e atualização do manager)
         # O teste sobe o compose do nó com o compose.wazuh.yaml, como o start.sh, com as senhas em /run/verax.
         if: steps.changes.outputs.run == 'true'

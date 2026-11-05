@@ -103,6 +103,7 @@ model Tenant {
   postureFailures    PostureFailure[]
   inventorySnapshots InventorySnapshot[]
   ingestUsage        IngestUsage[]
+  ingestHealth       IngestHealth[]
   cloudCredentials   CloudCredential[]
   wazuhAgents        WazuhAgent[]
   notifications      Notification[]
@@ -718,6 +719,44 @@ model IngestUsage {
   @@id([tenantId, month, source])
 }
 
+/// Contadores do analysisd do Wazuh do nó na última leitura da tarefa `wazuh-usage` (fase 2, PR-V6;
+/// `src/usage/wazuh-usage.ts`): a base da diferença que o medidor soma na leitura seguinte. Uma linha (`id` =
+/// `wazuh-analysisd`). Dado de sistema, sem `tenantId`: o contador é do nó inteiro (o analysisd não separa por cliente),
+/// e o escopo do cliente recusa o model.
+model WazuhCounter {
+  id            String   @id @db.VarChar(32)
+  /// Partida do analysisd que deu estes contadores (o `uptime` da API do manager). Outra partida: os contadores
+  /// recomeçaram do zero.
+  startedAt     DateTime @db.Timestamptz(3)
+  /// `metrics.bytes.received`: bytes recebidos pelo analysisd desde a partida (tudo o que ele lê).
+  bytesReceived BigInt
+  /// `…decoded_breakdown.modules_breakdown.aws`: eventos do módulo da AWS desde a partida.
+  awsEvents     BigInt
+  /// Hora da leitura.
+  readAt        DateTime @db.Timestamptz(3)
+  /// Por que a última leitura não foi medida para ninguém: `multiple_tenants` (mais de um cliente no Wazuh do nó; o nó
+  /// atende um cliente só). Null quando foi medida, ou quando não há cliente a medir.
+  meterBlocked  String?  @db.VarChar(32)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Saúde da ingestão de uma fonte do cliente (fase 2, PR-V6): a última vez que o contador de eventos dela andou. Hoje só
+/// `aws` (os eventos do módulo da AWS no analysisd do Wazuh do nó), gravada pela tarefa `wazuh-usage`. A Torre mostra
+/// "Sem logs novos da AWS" quando o cliente tem conta AWS conectada e o contador está parado há mais de 2 horas.
+model IngestHealth {
+  tenantId         String    @db.Uuid
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  source           String    @db.VarChar(16)
+  /// A última vez que o contador de eventos da fonte andou, ou o começo da observação (a primeira leitura com conta
+  /// conectada). Null: o cliente não tem conta da fonte conectada, e não há o que observar.
+  lastProgressAt   DateTime? @db.Timestamptz(3)
+  /// A parada já avisada (o `lastProgressAt` dela): o aviso `aws_ingestion_stalled` sai uma vez por parada.
+  stallNotifiedFor DateTime? @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([tenantId, source])
+}
+
 /// Tipo da credencial guardada no cofre do nó: o token só de leitura do Cloudflare. A chave de acesso da AWS
 /// (`aws_access_key`, do PR-V1) saiu no PR-V3': a AWS é lida pelo papel sem chave.
 enum CloudCredentialKind {
@@ -822,7 +861,7 @@ model Notification {
   tenantId         String             @db.Uuid
   tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   kind             NotificationKind
-  /// `incident:<id>:<severidade>`, `finding:<id>` ou `usage:<AAAA-MM>:<80|100>`.
+  /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`.
   dedupeKey        String             @db.VarChar(128)
   /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
   severity         FindingSeverity?

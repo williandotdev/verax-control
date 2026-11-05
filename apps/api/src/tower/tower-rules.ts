@@ -26,12 +26,35 @@ export interface TowerThresholds {
   postureWarning: number;
   /** Conta sem sinal de vida (evento ou coleta, conforme o provedor) há mais horas que isto aparece como silenciosa. */
   silentAfterHours: number;
+  /**
+   * Com conta AWS conectada, o contador de eventos da AWS do Wazuh do nó parado há mais horas que isto: "Sem logs novos
+   * da AWS" (PR-V6). O mesmo prazo vale para o aviso por e-mail da tarefa `wazuh-usage`.
+   */
+  awsStalledAfterHours: number;
 }
 
 export const DEFAULT_TOWER_THRESHOLDS: Readonly<TowerThresholds> = {
   postureWarning: 70,
   silentAfterHours: 24,
+  awsStalledAfterHours: 2,
 };
+
+/**
+ * Desde quando o cliente está sem logs novos da AWS (fase 2, PR-V6), ou null. Vale só com conta AWS conectada e a saúde
+ * da ingestão observada (`IngestHealth.lastProgressAt`, a última vez que os eventos do módulo da AWS andaram no
+ * analysisd, ou o começo da observação): parada há mais de `awsStalledAfterHours` horas, devolve esse momento. A regra é
+ * uma só para a Torre e para o aviso por e-mail.
+ */
+export function awsLogsStalledSince(
+  input: { awsConnected: boolean; lastProgressAt: Date | null },
+  now: Date,
+  thresholds: TowerThresholds = DEFAULT_TOWER_THRESHOLDS,
+): Date | null {
+  if (!input.awsConnected || input.lastProgressAt === null) return null;
+  const stalled =
+    now.getTime() - input.lastProgressAt.getTime() > thresholds.awsStalledAfterHours * 60 * 60 * 1000;
+  return stalled ? input.lastProgressAt : null;
+}
 
 export function trafficLight(
   input: { openIncidents: Readonly<Record<FindingSeverity, number>>; postureScore: number | null },

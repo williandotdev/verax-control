@@ -163,6 +163,9 @@ services:
       - filebeat-etc:/etc/filebeat
       - filebeat-var:/var/lib/filebeat
       - certs-manager:/etc/ssl/verax:ro
+      # A API do manager com o par do manager (da CA própria, nome wazuh.manager), instalado a cada partida pelo init
+      # da imagem, antes dos daemons (fase 2, PR-V6; o mesmo do nó). O smoke test confere com a CA.
+      - ./scripts/manager-api-tls.sh:/entrypoint-scripts/verax-api-tls.sh:ro
       # O init da imagem copia /wazuh-config-mount para /var/ossec a cada partida (etc/ossec.conf gerado).
       - manager-config:/wazuh-config-mount:ro
       - manager-aws:/root/.aws:ro

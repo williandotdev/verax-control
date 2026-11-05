@@ -26,8 +26,10 @@ MAX_BYTES=4194304
 FIELDS=id,name,ip,registerIP,os.name,os.version,os.platform,version,status,lastKeepAlive,dateAdd,group
 # A lista sem o próprio manager (id 000), em ordem de id, no máximo 500 (o painel limita o nó a menos que isso).
 QUERY="select=$FIELDS&limit=500&sort=%2Bid&q=id%21%3D000"
-API=https://localhost:55000
-API_CA=/var/ossec/api/configuration/ssl/server.crt
+# A API do manager pelo loopback de dentro do contêiner, com o certificado conferido com a CA do nó e o nome
+# wazuh.manager (o par do manager que o manager-api-tls.sh instala na API, PR-V6).
+API=https://wazuh.manager:55000
+API_TLS=(--cacert /etc/ssl/verax/root-ca.pem --resolve wazuh.manager:55000:127.0.0.1)
 
 manager_container() {
   docker ps --quiet --filter label=com.docker.compose.project=verax \
@@ -47,7 +49,7 @@ export_agents() {
   fi
   password=$(cat "$secrets/wazuh-api")
   token=$(printf 'user = "wazuh-wui:%s"\n' "$password" |
-    manager_exec curl -sS -m 20 --fail -K - --cacert "$API_CA" -X POST "$API/security/user/authenticate?raw=true") || {
+    manager_exec curl -sS -m 20 --fail -K - "${API_TLS[@]}" -X POST "$API/security/user/authenticate?raw=true") || {
     echo 'A API do manager recusou o login do wazuh-wui ou não respondeu.' >&2
     return 1
   }
@@ -59,7 +61,7 @@ export_agents() {
   install -d -m 0750 -o 0 -g "$WORKER_UID" "$out"
   file=$(mktemp "$out/.agents.XXXXXX")
   if ! printf 'header = "Authorization: Bearer %s"\n' "$token" |
-    manager_exec curl -sS -m 30 --fail -K - --cacert "$API_CA" --max-filesize "$MAX_BYTES" "$API/agents?$QUERY" |
+    manager_exec curl -sS -m 30 --fail -K - "${API_TLS[@]}" --max-filesize "$MAX_BYTES" "$API/agents?$QUERY" |
     head -c "$((MAX_BYTES + 1))" >"$file"; then
     rm -f "$file"
     echo 'A API do manager não devolveu a lista dos agentes.' >&2

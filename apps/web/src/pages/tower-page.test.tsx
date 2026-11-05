@@ -100,6 +100,60 @@ describe('Torre', () => {
     );
   });
 
+  it('sem logs novos da AWS (PR-V6): o aviso com o tempo parado e o caminho para Contas cloud', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    const tower = demoTower(beta ?? '', { includeUnowned: false });
+    server.use(
+      http.get(`${API_URL}/v1/tower`, () =>
+        HttpResponse.json({
+          ...tower,
+          coverage: {
+            ...tower.coverage,
+            awsLogsStalledSince: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
+            awsStalledAfterHours: 2,
+          },
+        }),
+      ),
+    );
+    const coverage = await screen.findByRole('region', { name: 'Cobertura' });
+    const warning = within(coverage).getByText('Sem logs novos da AWS:').closest('p');
+    expect(warning).toHaveTextContent(
+      'Sem logs novos da AWS: a coleta das contas AWS conectadas está parada há 3 horas. Confira a conexão e a coleta em Contas cloud.',
+    );
+    expect(within(coverage).getByRole('link', { name: 'Contas cloud' })).toHaveAttribute(
+      'href',
+      '/cadastros/contas',
+    );
+    // O medidor parado é só da equipe da Verax: sem o campo, nada.
+    expect(within(coverage).queryByText(/Medidor da AWS parado/)).toBeNull();
+  });
+
+  it('sem parada (ou de um nó de antes do PR-V6, sem os campos), nenhum aviso da AWS', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    const tower = demoTower(beta ?? '', { includeUnowned: false });
+    server.use(
+      http.get(`${API_URL}/v1/tower`, () =>
+        HttpResponse.json({ ...tower, coverage: { ...tower.coverage, awsLogsStalledSince: null } }),
+      ),
+    );
+    const coverage = await screen.findByRole('region', { name: 'Cobertura' });
+    expect(within(coverage).queryByText(/Sem logs novos da AWS/)).toBeNull();
+  });
+
+  it('a equipe da Verax vê o medidor da AWS parado por mais de um cliente no nó', async () => {
+    renderTower({ me: adminOn(alfa) });
+    const tower = demoTower(alfa ?? '', { includeUnowned: true });
+    server.use(
+      http.get(`${API_URL}/v1/tower`, () =>
+        HttpResponse.json({ ...tower, coverage: { ...tower.coverage, awsMeterBlocked: true } }),
+      ),
+    );
+    const coverage = await screen.findByRole('region', { name: 'Cobertura' });
+    expect(
+      within(coverage).getByText(/Medidor da AWS parado neste nó: há mais de um cliente no Wazuh dele/),
+    ).toBeInTheDocument();
+  });
+
   it('resumo MITRE ATT&CK: as 14 táticas dos últimos 30 dias, cada uma levando ao relatório', async () => {
     renderTower({ me: demoMe('analista_cliente') });
     const mitre = await screen.findByRole('region', { name: 'MITRE ATT&CK' });

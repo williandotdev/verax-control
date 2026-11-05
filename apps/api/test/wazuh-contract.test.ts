@@ -10,6 +10,7 @@ import {
 import { describe, expect, it } from 'vitest';
 import { AWS_TOKEN_STALE_AFTER_MS, WAZUH_SIGNAL_FILES } from '../src/aws/wazuh-config.js';
 import { toWazuhSources, wazuhDate } from '../src/aws/wazuh-sources.js';
+import { ANALYSISD_STATS_PATH, WAZUH_STATS_ACCOUNT } from '../src/usage/wazuh-stats.js';
 
 const repoPath = (path: string) => new URL(`../../../${path}`, import.meta.url);
 const repoFile = (path: string) => readFileSync(repoPath(path), 'utf8');
@@ -130,5 +131,60 @@ describe("AWS sem chave no Wazuh do nó: o template, o gerador, o host e o worke
     expect(timer).toContain('OnUnitActiveSec=10min\n');
     expect(timer).toContain('OnBootSec=30s\n');
     expect(AWS_TOKEN_STALE_AFTER_MS).toBe(40 * 60 * 1000);
+  });
+});
+
+/**
+ * Contrato do medidor e da saúde da ingestão (fase 2, PR-V6): o usuário da API do manager que o init-api-users.sh cria,
+ * o certificado que o manager-api-tls.sh põe na API, o worker.env que o start.sh escreve, o Compose que leva o worker à
+ * rede do manager e o cliente da tarefa wazuh-usage têm de falar o mesmo.
+ */
+describe('medidor do Wazuh: o host, o manager e o worker dizem o mesmo (PR-V6)', () => {
+  const initUsers = repoFile('infra/wazuh/scripts/init-api-users.sh');
+  const apiTls = repoFile('infra/wazuh/scripts/manager-api-tls.sh');
+  const startSh = repoFile('infra/node/bin/start.sh');
+  const installSh = repoFile('infra/node/bin/install.sh');
+  const composeWazuh = repoFile('infra/node/compose.wazuh.yaml');
+
+  it('o usuário, o papel e a política: só manager:read, e o worker entra com o mesmo nome', () => {
+    expect(initUsers).toContain(
+      "ADMIN, USER, ROLE, POLICY = 'wazuh-wui', 'verax_stats', 'verax_stats', 'verax_stats_manager_read'",
+    );
+    expect(initUsers).toContain(
+      "RULES = {'actions': ['manager:read'], 'resources': ['*:*:*'], 'effect': 'allow'}",
+    );
+    expect(WAZUH_STATS_ACCOUNT).toBe('verax_stats');
+    // A conferência do script é a leitura da tarefa.
+    expect(initUsers).toContain(`send('GET', '${ANALYSISD_STATS_PATH}', token=token)`);
+  });
+
+  it('a API do manager pelo nome do certificado e com a CA do volume público, nos dois lados', () => {
+    expect(apiTls).toMatch(/^name=wazuh\.manager$/m);
+    expect(initUsers).toContain("HOST, PORT, CA = 'wazuh.manager', 55000, '/etc/ssl/verax/root-ca.pem'");
+    expect(startSh).toContain('WAZUH_API_URL=https://wazuh.manager:55000');
+    expect(startSh).toContain('WAZUH_API_CA_FILE=/etc/verax/wazuh/root-ca.pem');
+    expect(startSh).toContain('"WAZUH_STATS_PASSWORD=$WAZUH_STATS_PASSWORD"');
+    expect(composeWazuh).toContain(
+      "volumes: ['certs-public:/etc/verax/wazuh:ro', '/run/verax/wazuh-signal:/run/wazuh-signal']",
+    );
+    expect(composeWazuh).toContain(
+      '      - ./wazuh/scripts/manager-api-tls.sh:/entrypoint-scripts/verax-api-tls.sh:ro\n',
+    );
+    // O worker entra na rede do manager; a API, não.
+    const block = (service: string) => {
+      const start = composeWazuh.indexOf(`\n  ${service}:\n`);
+      return composeWazuh.slice(start, composeWazuh.indexOf('\n\n', start + 1));
+    };
+    expect(block('worker')).toContain('\n    networks: [wazuh-read, wazuh]\n');
+    expect(block('api')).toContain('\n    networks: [wazuh-read]\n');
+  });
+
+  it('a senha do verax_stats: o install.sh a gera, o start.sh a confere e a entrega só ao worker e ao script', () => {
+    expect(installSh).toContain('generate_wazuh wazuh-api-stats');
+    expect(startSh).toContain('WAZUH_STATS_PASSWORD=$(internal_secret wazuh-api-stats)');
+    expect(startSh).toContain(
+      'write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"',
+    );
+    expect(startSh).toContain('bash "$wazuh/scripts/init-api-users.sh"');
   });
 });
