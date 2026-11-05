@@ -14,6 +14,11 @@ import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js'
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
+import {
+  NODE_STATUS_BUDGET_MS,
+  NODE_STATUS_INTERVAL_MS,
+  NodeStatusReporter,
+} from './node-status/node-status.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -39,6 +44,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  *
  * A tarefa `aws-check` responde o "Verificar" das contas AWS (a cada 30 s, só quando há pedido pendente). Até o PR-V5',
  * a conferência é a `UnavailableAwsConnectionChecker`: o pedido vira o código `check_unavailable`, sem chamar a AWS.
+ *
+ * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
+ * publica o estado do nó nos guest attributes da VM para o plano de controle.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -116,6 +124,16 @@ async function main(): Promise<void> {
   }
 
   const logger = pino(buildPinoOptions(config));
+  // Estado do nó nos guest attributes (nó de cliente): o worker é o único contêiner que alcança o servidor de metadados.
+  if (config.nodeStatus !== null) {
+    const reporter = new NodeStatusReporter(prisma, { version: config.nodeStatus.version, logger });
+    tasks.push({
+      name: 'node-status',
+      intervalMs: NODE_STATUS_INTERVAL_MS,
+      budgetMs: NODE_STATUS_BUDGET_MS,
+      run: (signal) => reporter.runOnce(signal),
+    });
+  }
   const scheduler = new Scheduler(tasks, logger);
   const stopRequested = new Promise<void>((resolve) => {
     process.once('SIGTERM', () => resolve());
