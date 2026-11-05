@@ -47,6 +47,7 @@ const PAGES: [string, string | RegExp][] = [
   ['/cadastros/protecao', 'Lista de proteção'],
   ['/cadastros/excecoes', 'Exceções'],
   ['/cadastros/plano', 'Plano e uso'],
+  ['/cadastros/escalonamento', 'Contato de escalonamento'],
   ['/auditoria', 'Auditoria'],
   ['/alertas-sem-dono', 'Alertas sem dono'],
   ['/minha-conta', 'Minha conta'],

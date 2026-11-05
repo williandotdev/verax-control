@@ -71,7 +71,7 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
     expect(probeViolations).toEqual([]);
   });
 
-  it('só o health check, a autenticação e a configuração pública do login são públicos; o resto exige sessão', () => {
+  it('só o health check, a autenticação, a configuração pública do login e os links do contato de escalonamento são públicos; o resto exige sessão', () => {
     const isTestProbe = (route: string): boolean => /^(Broken|Probe)Controller./.test(route);
     const policies = listRoutePolicies(app).filter((policy) => !isTestProbe(policy.route));
 
@@ -83,11 +83,21 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
     ).toEqual([
       'AuthClientConfigController.read',
       'AuthController.handle',
+      'EscalationLinksController.confirm',
+      'EscalationLinksController.unsubscribe',
       'HealthController.live',
       'HealthController.ready',
     ]);
-    expect(policies.filter((policy) => policy.selfManaged).map((policy) => policy.route)).toEqual([
+    // Os links do contato (D8) gravam a própria auditoria: só a mudança de estado, nunca a recusa anônima.
+    expect(
+      policies
+        .filter((policy) => policy.selfManaged)
+        .map((policy) => policy.route)
+        .sort(),
+    ).toEqual([
       'AuthController.handle',
+      'EscalationLinksController.confirm',
+      'EscalationLinksController.unsubscribe',
     ]);
     // Antes do MFA, a sessão só alcança a identidade e o token CSRF (o cadastro do MFA é do Better Auth).
     expect(
