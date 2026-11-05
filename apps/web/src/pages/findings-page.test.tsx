@@ -159,7 +159,11 @@ describe('Achados', () => {
     await within(panel).findByText('Em análise');
     await userEvent.keyboard('{Escape}');
     await router.navigate('/');
-    expect(await screen.findByText('4 achados altos ou críticos sem triagem')).toBeInTheDocument();
+    // A Torre volta pela consulta nova (o pulso, o minigráfico e a saúde da coleta a mais para desenhar): cerca de
+    // 0,5 a 1 s aqui, mais no CI, além do 1 s padrão da busca.
+    expect(
+      await screen.findByText('4 achados altos ou críticos sem triagem', undefined, { timeout: 5_000 }),
+    ).toBeInTheDocument();
   });
 
   it('papel de leitura vê o detalhe, mas não muda status nem comenta', async () => {

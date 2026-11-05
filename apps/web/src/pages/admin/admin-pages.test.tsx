@@ -616,7 +616,8 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     // A terceira coluna é a da conexão.
     const badge = (id: string) => within(rowOf(id)).getAllByRole('cell')[2];
     expect(badge(DEMO_ACCOUNTS.alfaProducao)).toHaveTextContent(/^Conectada$/);
-    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Conectada$/);
+    // As leituras da assinatura da GCP da demonstração falham (a coleta parada da Torre).
+    expect(badge(DEMO_ACCOUNTS.alfaGcp)).toHaveTextContent(/^Erro$/);
     expect(badge(DEMO_ACCOUNTS.alfaHomologacao)).toHaveTextContent(/^Erro$/);
     expect(badge(DEMO_ACCOUNTS.alfaCloudflare)).toHaveTextContent(/^Aguardando$/);
 
@@ -642,7 +643,8 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       within(row).getByRole('button', { name: (name) => name.includes(DEMO_ACCOUNTS.alfaGcp) }),
     );
     const sheet = await screen.findByRole('dialog', { name: `Projeto da GCP ${DEMO_ACCOUNTS.alfaGcp}` });
-    expect(within(sheet).getByText('A última leitura deu certo.')).toBeInTheDocument();
+    // As leituras da assinatura da demonstração falham há 3 horas (a coleta parada da Torre).
+    expect(within(sheet).getByText(/^A última leitura falhou\./)).toHaveTextContent('PermissionDenied');
     // A GCP entrega por evento: a leitura vazia da assinatura não conecta a conta.
     expect(within(sheet).getByText(/Conectada" quando o primeiro evento chegar/)).toBeInTheDocument();
     const field = within(sheet).getByLabelText('Assinatura do Pub/Sub');

@@ -40,7 +40,14 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/',
     target: [tour('torre-semaforo')],
     title: 'Torre: está tudo bem?',
-    body: 'A Torre é a tela de entrada. O semáforo fica vermelho com incidente crítico aberto e amarelo com incidente alto aberto ou nota de postura abaixo do limite, sempre com o motivo. Mais abaixo ficam os incidentes abertos, a nota de postura e a cobertura das contas.',
+    body: 'A Torre é a tela de entrada. O semáforo fica vermelho com incidente crítico aberto e amarelo com incidente alto aberto, nota de postura abaixo do limite ou coleta parada, sempre com o motivo. No verde, ele mostra a prova de que a coleta está andando.',
+  },
+  {
+    id: 'torre-pulso',
+    path: '/',
+    target: [tour('torre-pulso')],
+    title: 'Pulso da operação',
+    body: 'O que a operação fez nas últimas 24 horas: achados por hora, quantos eram esperados, o tempo até detectar, os agentes online e os eventos lidos no mês. Mais abaixo, a Saúde da coleta mostra cada fonte, se ela está coletando e o último dado.',
   },
   {
     id: 'torre-decisoes',

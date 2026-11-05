@@ -126,6 +126,8 @@ export function createHandlers(state: MockState) {
           unownedAlerts: recentUnowned(),
           ...towerCounts(state.me.scopeTenantId),
           mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
+          // O pulso das últimas 24 horas acompanha os achados do mock (e a triagem feita nas outras telas).
+          findings: findings.get(state.me.scopeTenantId) ?? [],
         }),
       );
     }),

@@ -1,15 +1,19 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/lib/api-client';
 import { BrandLockup, VeraxSymbol, VeraxWordmark } from './brand/logo';
+import { StatTile } from './charts/stat-tile';
 import { CatalogPage } from '@/pages/catalog/catalog-page';
 import { DataTable } from './data-table';
 import { DecisionCard } from './security/decision-card';
+import { COLLECTION_STATE_STYLES } from '@/design/collection';
 import { scoreSeverity } from '@/design/score';
 import { ScoreMeter } from './security/score-meter';
 import { Semaphore } from './security/semaphore';
 import { SeverityBadge } from './security/severity-badge';
+import { SourceHealthRow } from './security/source-health';
 import { Timeline } from './security/timeline';
 import { EmptyState, ErrorState, LoadingState } from './states';
 
@@ -232,13 +236,97 @@ describe('estados', () => {
   });
 });
 
+describe('SourceHealthRow', () => {
+  const now = new Date('2026-11-05T12:00:00.000Z');
+
+  it('cada estado com ícone e rótulo em texto (não só a cor), e o último dado de quem tem', () => {
+    const { container } = render(
+      <ul>
+        <li>
+          <SourceHealthRow
+            name="AWS"
+            description="CloudTrail, GuardDuty e WAF"
+            state="collecting"
+            lastDataAt="2026-11-05T11:58:00.000Z"
+            note="último alerta há 3 dias"
+            now={now}
+          />
+        </li>
+        <li>
+          <SourceHealthRow
+            name="Cloudflare"
+            state="delayed"
+            lastDataAt="2026-11-05T11:15:00.000Z"
+            now={now}
+          />
+        </li>
+        <li>
+          <SourceHealthRow name="GCP" state="stalled" lastDataAt="2026-11-05T06:00:00.000Z" now={now} />
+        </li>
+        <li>
+          <SourceHealthRow name="Agentes" state="waiting" lastDataAt={null} now={now} />
+        </li>
+        <li>
+          <SourceHealthRow
+            name="Postura"
+            state="not_configured"
+            lastDataAt="2026-11-05T11:00:00.000Z"
+            now={now}
+          />
+        </li>
+      </ul>,
+    );
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.map((row) => row.textContent)).toEqual([
+      'AWSColetandoCloudTrail, GuardDuty e WAFúltimo dado há 2 minutosúltimo alerta há 3 dias',
+      'CloudflareAtrasadaúltimo dado há 45 minutos',
+      'GCPParadaúltimo dado há 6 horas',
+      'AgentesAguardando o primeiro dado',
+      // A não configurada não mostra horário nenhum.
+      'PosturaNão configurada',
+    ]);
+    // Um ícone de forma própria por estado, escondido do leitor de tela (o rótulo diz o estado).
+    expect(container.querySelectorAll('svg[aria-hidden="true"]')).toHaveLength(5);
+    expect(COLLECTION_STATE_STYLES.collecting.tone).toBe('text-ok');
+    expect(COLLECTION_STATE_STYLES.stalled.tone).toBe('text-high');
+  });
+});
+
+describe('StatTile', () => {
+  it('rótulo como título do cartão, valor, detalhe e o link do detalhe à parte do gráfico', () => {
+    render(
+      <MemoryRouter>
+        <StatTile
+          label="Agentes online"
+          value="3 de 5"
+          detail="2 agentes sem conexão agora"
+          link={{ to: '/cadastros/agentes', label: 'Ver agentes' }}
+        />
+      </MemoryRouter>,
+    );
+    const tile = screen.getByRole('region', { name: 'Agentes online' });
+    expect(tile).toHaveTextContent('Agentes online3 de 52 agentes sem conexão agoraVer agentes');
+    expect(within(tile).getByRole('link', { name: 'Ver agentes' })).toHaveAttribute(
+      'href',
+      '/cadastros/agentes',
+    );
+  });
+});
+
 describe('catálogo', () => {
   it('mostra todos os componentes de segurança', () => {
-    render(<CatalogPage />);
+    // O cartão de número tem link: o catálogo vive dentro do roteador do painel.
+    render(
+      <MemoryRouter>
+        <CatalogPage />
+      </MemoryRouter>,
+    );
     for (const name of [
       'Semáforo',
       'Selo de severidade',
       'Medidor de nota',
+      'Cartão de número com minigráfico',
+      'Saúde da fonte',
       'Card de decisão',
       'Tabela com filtro e paginação',
       'Linha do tempo',
