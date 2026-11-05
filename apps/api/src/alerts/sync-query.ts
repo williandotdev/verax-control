@@ -1,4 +1,5 @@
 import { alertsAfter, type AlertCursor, type AlertSearch } from '../indexer/alert-queries.js';
+import { MANAGER_AGENT_ID } from './agent-alert.js';
 import { AWS_SOURCES } from './wazuh-alert.js';
 
 /**
@@ -39,7 +40,11 @@ export function syncWindowStart(lastProcessedAt: string | null, now: Date, setti
   return new Date(start).toISOString();
 }
 
-/** Uma página: só alertas do módulo aws-s3, das fontes coletadas, a partir do nível mínimo. */
+/**
+ * Uma página: só alertas do módulo aws-s3, das fontes coletadas, a partir do nível mínimo, e só os do próprio manager
+ * (`agent.id` 000), onde o módulo roda. Um alerta de agente numa instância do cliente com cara de evento da AWS (o log
+ * é de quem usa a instância) fica com o sync dos agentes (`agentSyncPage`), nunca com este.
+ */
 export function syncPage(
   windowStart: string,
   cursor: AlertCursor | null,
@@ -52,6 +57,28 @@ export function syncPage(
     filters: [
       { field: 'data.integration', equals: 'aws' },
       { field: 'data.aws.source', oneOf: AWS_SOURCES },
+      { field: 'rule.level', atLeast: settings.minLevel },
+      { field: 'agent.id', equals: MANAGER_AGENT_ID },
+    ],
+  });
+}
+
+/**
+ * Uma página dos alertas dos agentes nas instâncias do cliente: tudo o que não veio do manager (`agent.id` diferente
+ * de 000), de qualquer módulo, a partir do nível mínimo. As duas páginas nunca trazem o mesmo alerta: a da AWS só lê
+ * os do manager, e esta só os outros.
+ */
+export function agentSyncPage(
+  windowStart: string,
+  cursor: AlertCursor | null,
+  settings: SyncSettings,
+): AlertSearch {
+  return alertsAfter({
+    cursor,
+    since: windowStart,
+    size: settings.pageSize,
+    filters: [
+      { field: 'agent.id', notEquals: MANAGER_AGENT_ID },
       { field: 'rule.level', atLeast: settings.minLevel },
     ],
   });

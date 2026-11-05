@@ -10,8 +10,12 @@ import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
 /**
  * Achados fictícios da demonstração, coerentes com a Torre: o cliente Alfa tem exatamente 5 achados altos ou
  * críticos novos fora de incidente, e grupos de achados que formam os incidentes (mesma chave, mesmo IP, mesma
- * instância). Endereços IP das faixas reservadas para documentação (RFC 5737) e IDs de exemplo da AWS.
+ * instância). Endereços IP das faixas reservadas para documentação (RFC 5737) e IDs de exemplo da AWS. O Alfa tem
+ * também dois achados de um agente do Wazuh numa instância dele (origem `agent:001`, a `api-producao-01`).
  */
+
+/** O agente do Wazuh da instância `api-producao-01` do Alfa (o mesmo da tela Agentes). */
+export const DEMO_AGENT_ORIGIN = 'agent:001';
 
 export const DEMO_INCIDENTS = {
   chaveComprometida: '018f2c1e-0000-7000-8000-0000000a0001',
@@ -424,6 +428,37 @@ const ALFA_FINDINGS: Template[] = [
     techniques: ['T1580'],
     account: DEMO_ACCOUNTS.alfaHomologacao,
   },
+  // Agente do Wazuh na instância api-producao-01 (alertas das instâncias do cliente).
+  {
+    title: 'Arquivo de sistema alterado: /etc/sudoers',
+    source: 'wazuh_agent',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 140,
+    ruleId: '550',
+    ruleLevel: 7,
+    eventName: 'syscheck_integrity_changed',
+    resource: 'host:api-producao-01',
+    tactics: ['Impact'],
+    techniques: ['T1565.001'],
+    account: DEMO_AGENT_ORIGIN,
+  },
+  {
+    title: 'Tentativa de login no SSH com usuário inexistente',
+    source: 'wazuh_agent',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 165,
+    ruleId: '5710',
+    ruleLevel: 5,
+    eventName: 'sshd',
+    resource: 'host:api-producao-01',
+    user: 'admin',
+    ip: '198.51.100.88',
+    tactics: ['Credential Access'],
+    techniques: ['T1110.001'],
+    account: DEMO_AGENT_ORIGIN,
+  },
 ];
 
 const BETA_FINDINGS: Template[] = [
@@ -487,6 +522,19 @@ const id = (prefix: number, index: number): string =>
 const iso = (now: Date, minutes: number): string => new Date(now.getTime() - minutes * 60_000).toISOString();
 
 function rawEvent(t: Template, account: string, at: string): Record<string, unknown> {
+  if (t.source === 'wazuh_agent') {
+    // O alerta do agente como o indexer o guarda, já sem o log bruto (o detalhe tira o `full_log`).
+    const host = (t.resource ?? '').replace(/^host:/, '');
+    return {
+      timestamp: at,
+      agent: { id: account.replace(/^agent:/, ''), name: host },
+      rule: { id: t.ruleId, level: t.ruleLevel, description: t.title },
+      decoder: { name: t.eventName },
+      ...(t.eventName === 'sshd'
+        ? { location: '/var/log/auth.log', data: { srcip: t.ip, srcuser: t.user } }
+        : { location: 'syscheck', syscheck: { path: '/etc/sudoers', event: 'modified' } }),
+    };
+  }
   if (t.source === 'guardduty') {
     return {
       schemaVersion: '2.0',

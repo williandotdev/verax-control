@@ -52,6 +52,30 @@ describe('consultas aos alertas (T5.1)', () => {
     ]);
   });
 
+  it('"diferente de" vira term no must_not, sem mudar o filtro; sem ele, a consulta não ganha must_not', () => {
+    const { body } = alertsAfter({
+      cursor: null,
+      filters: [
+        { field: 'agent.id', notEquals: '000' },
+        { field: 'rule.level', atLeast: 5 },
+      ],
+    });
+    expect(body['query']).toEqual({
+      bool: {
+        filter: [{ range: { 'rule.level': { gte: 5 } } }],
+        must_not: [{ term: { 'agent.id': '000' } }],
+      },
+    });
+    expect(() => assertStructuredQuery(body)).not.toThrow();
+    const plain = alertsAfter({ cursor: null, filters: [{ field: 'rule.level', atLeast: 5 }] });
+    expect(Object.keys((plain.body['query'] as { bool: object }).bool)).toEqual(['filter']);
+    // A mesma régua dos outros filtros: campo fora da lista e valor com controle são recusados.
+    const forced = { field: 'full_log', notEquals: 'x' } as unknown as AlertFilter;
+    expect(() => alertsAfter({ cursor: null, filters: [forced] })).toThrow(/não permitido/);
+    const control: AlertFilter = { field: 'agent.id', notEquals: 'a\nb' };
+    expect(() => alertsAfter({ cursor: null, filters: [control] })).toThrow(RangeError);
+  });
+
   it('texto vindo de fora vira valor literal de term, nunca sintaxe de busca', () => {
     const malicious = '*) OR (_exists_:data) OR rule.level:>0';
     const { body } = alertsAfter({ cursor: null, filters: [{ field: 'rule.id', equals: malicious }] });

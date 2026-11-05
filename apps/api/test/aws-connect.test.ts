@@ -269,6 +269,24 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`).send({ status: 'active' }).expect(200);
       expect((await rowOf(account.id)).checkRequestedAt).toBeNull();
     });
+
+    it('outra lista de buckets descarta o pedido pendente (era da lista antiga); a mesma lista o mantém', async () => {
+      const account = await awsAccount(adminA, { cloudtrail: bucket() });
+      const asked = await requested(adminA, account.id);
+      await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`)
+        .send({ buckets: { cloudtrail: account.buckets.cloudtrail } })
+        .expect(200);
+      expect((await rowOf(account.id)).checkRequestedAt).toEqual(asked);
+      const changed = await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`)
+        .send({ buckets: { waf: `aws-waf-logs-${randomInt(1_000_000, 9_999_999)}` } })
+        .expect(200);
+      expect(changed.body).toMatchObject({ connection: 'waiting', checkRequestedAt: null });
+      // A tarefa não confere mais esta conta: o cliente atualiza a pilha e pede de novo.
+      const checker = new FakeAwsChecker();
+      await new AwsCheck(prisma, checker).runOnce();
+      expect(checker.callsFor(account.accountId)).toEqual([]);
+      expect(await rowOf(account.id)).toMatchObject({ connection: 'waiting', checkRequestedAt: null });
+    });
   });
 
   describe('a tarefa aws-check do worker', () => {

@@ -5,7 +5,14 @@ import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { agentInstallSchema, agentListSchema } from '@verax/shared';
+import {
+  agentInstallSchema,
+  agentListSchema,
+  findingDetailSchema,
+  findingSchema,
+  incidentDetailSchema,
+  paginatedSchema,
+} from '@verax/shared';
 import { Logger } from 'nestjs-pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -16,12 +23,21 @@ import {
   readAgentsFeed,
   WazuhAgentsSync,
 } from '../src/agents/agents-sync.js';
+import { parseAgentAlert } from '../src/alerts/agent-alert.js';
+import { AgentAlertSync } from '../src/alerts/agent-alert-sync.js';
+import { AlertSync } from '../src/alerts/alert-sync.js';
+import { agentFindingKey, wazuhFindingKey } from '../src/alerts/finding-draft.js';
+import { parseWazuhAlert } from '../src/alerts/wazuh-alert.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
+import { type AgentAlertOptions, agentAlert, fimAlert } from './alerts/agent-fixtures.js';
+import { cloudTrailAlert } from './alerts/fixtures.js';
 import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
+import { FakeIndexer, wazuhTime } from './support/fake-indexer.js';
 import { LogCapture } from './support/log-capture.js';
 
 const DAY = 24 * 3_600_000;
+const MINUTE = 60_000;
 /** CA pública de teste (só o certificado; a chave foi descartada ao gerar). */
 const CA = readFileSync(new URL('./fixtures/agents-ca.crt', import.meta.url), 'utf8');
 // Senha de registro gerada a cada execução: 32 hexadecimais, letras e dígitos como a do install.sh.
@@ -367,6 +383,327 @@ describe('agentes do Wazuh nas instâncias do cliente', () => {
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  /**
+   * Alertas dos agentes (tarefa `wazuh-agent-alerts` do worker). Ficam neste arquivo porque a lista dos agentes
+   * (`WazuhAgent`) e a hora dela são globais no banco de teste, e a tarefa `wazuh-agents` acima tira da lista quem não
+   * é do cliente do nó: em outro arquivo, rodando em paralelo, os agentes deste teste sumiriam no meio.
+   */
+  describe('alertas dos agentes viram achados do cliente do nó (tarefa wazuh-agent-alerts do worker)', () => {
+    const app01 = agentId(11);
+    const app02 = agentId(12);
+    const bApp = agentId(13);
+    const lateAgent = agentId(14);
+    const accountA = String(randomInt(100_000_000_000, 999_999_999_999));
+    const accountB = String(randomInt(100_000_000_000, 999_999_999_999));
+    const trailA = `trilha-agentes-a-${randomInt(1e6, 9e6)}`;
+    const findingPage = paginatedSchema(findingSchema);
+
+    /** Alerta do agente app-01 do cliente A, `minutesAgo` minutos atrás, com id próprio. */
+    const alertOf = (minutesAgo: number, options: AgentAlertOptions = {}) =>
+      agentAlert({
+        id: `${Date.now()}.${randomInt(1e6, 9e6)}`,
+        timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
+        agentId: app01,
+        agentName: 'app-01',
+        ...options,
+      });
+    const syncFor = (documents: Record<string, unknown>[], tenantId: string | null = tenantA) =>
+      new AgentAlertSync(prisma, new FakeIndexer(documents), tenantId, {
+        name: `teste-${randomUUID().slice(0, 8)}`,
+      });
+    const keyOf = (document: Record<string, unknown>) => {
+      const parsed = parseAgentAlert(document);
+      if (!parsed.ok) throw new Error('fixture inválida');
+      return { source_sourceEventId: { source: 'wazuh', sourceEventId: agentFindingKey(parsed.alert) } };
+    };
+    const queuedOf = (document: Record<string, unknown>) =>
+      prisma.unownedAlert.findUnique({
+        where: { source_sourceEventId: { source: 'wazuh', sourceEventId: String(document['id']) } },
+      });
+    const markListed = (at: Date) =>
+      prisma.syncState.upsert({
+        where: { name: AGENTS_SYNC_STATE },
+        create: { name: AGENTS_SYNC_STATE, lastProcessedAt: at },
+        update: { lastProcessedAt: at },
+      });
+
+    beforeAll(async () => {
+      await prisma.wazuhAgent.createMany({
+        data: [
+          { tenantId: tenantA, agentId: app01, name: 'app-01', status: 'active' },
+          { tenantId: tenantA, agentId: app02, name: 'app-02', status: 'active' },
+          { tenantId: tenantB, agentId: bApp, name: 'b-app-01', status: 'active' },
+        ],
+      });
+      await prisma.cloudAccount.create({
+        data: { tenantId: tenantA, accountId: accountA, regions: ['sa-east-1'], cloudtrailBucket: trailA },
+      });
+      await prisma.cloudAccount.create({
+        data: { tenantId: tenantB, accountId: accountB, regions: ['sa-east-1'] },
+      });
+      // A lista do manager é mais nova que os alertas: nenhum espera por ela (salvo no teste da espera).
+      await markListed(new Date());
+    });
+
+    afterAll(async () => {
+      await prisma.wazuhAgent.deleteMany({ where: { agentId: { in: [app01, app02, bApp, lateAgent] } } });
+    });
+
+    it('agente da lista do cliente do nó: vira achado dele, com a instância, e só ele o vê (A/B)', async () => {
+      const document = alertOf(20);
+      const report = await syncFor([document]).runOnce();
+      expect(report).toMatchObject({
+        status: 'done',
+        read: 1,
+        created: 1,
+        unowned: 0,
+        deferred: 0,
+        skipped: 0,
+      });
+
+      const finding = await prisma.finding.findUniqueOrThrow({ where: keyOf(document) });
+      expect(finding).toMatchObject({
+        tenantId: tenantA,
+        accountId: `agent:${app01}`,
+        source: 'wazuh',
+        rawEventId: document['id'],
+        logSource: 'wazuh_agent',
+        severity: 'high',
+        status: 'new',
+        ruleId: '5712',
+        ruleLevel: 10,
+        eventName: 'sshd',
+        region: null,
+        resource: 'host:app-01',
+        actorUser: 'admin',
+        sourceIp: '203.0.113.9',
+        mitreTactics: ['Credential Access'],
+        mitreTechniques: ['T1110'],
+      });
+      expect(await queuedOf(document)).toBeNull();
+
+      // O painel lê o achado pelo contrato de sempre, com o agente como origem.
+      const detail = findingDetailSchema.parse(
+        (await get(`/v1/findings/${finding.id}`, adminA.cookie).expect(200)).body,
+      );
+      expect(detail).toMatchObject({
+        accountId: `agent:${app01}`,
+        source: 'wazuh_agent',
+        resource: 'host:app-01',
+      });
+      const pageA = findingPage.parse(
+        (await get('/v1/findings?pageSize=100', adminA.cookie).expect(200)).body,
+      );
+      expect(pageA.items.map((item) => item.id)).toContain(finding.id);
+      // B nunca vê o achado do agente de A, nem pelo id.
+      await get(`/v1/findings/${finding.id}`, adminB.cookie).expect(404);
+      const pageB = findingPage.parse(
+        (await get('/v1/findings?pageSize=100', adminB.cookie).expect(200)).body,
+      );
+      expect(pageB.items.map((item) => item.id)).not.toContain(finding.id);
+    });
+
+    it('reler a janela não duplica e não desfaz a triagem', async () => {
+      const document = alertOf(18, { data: { srcip: '198.51.100.30' } });
+      const sync = syncFor([document]);
+      await sync.runOnce();
+      await prisma.finding.update({ where: keyOf(document), data: { status: 'resolved' } });
+
+      expect(await sync.runOnce()).toMatchObject({ read: 1, created: 0, duplicates: 1, unowned: 0 });
+      expect(await syncFor([document]).runOnce()).toMatchObject({ created: 0, duplicates: 1 });
+      expect((await prisma.finding.findUniqueOrThrow({ where: keyOf(document) })).status).toBe('resolved');
+      expect(await prisma.finding.count({ where: { rawEventId: String(document['id']) } })).toBe(1);
+    });
+
+    it('na dúvida, de ninguém: agente fora da lista, nome trocado e o agente de outro cliente vão para a fila', async () => {
+      const unknown = alertOf(16, { agentId: agentId(19), agentName: 'fantasma' });
+      const renamed = alertOf(16, { agentId: app02, agentName: 'app-01' });
+      const ofB = alertOf(16, { agentId: bApp, agentName: 'b-app-01' });
+      const report = await syncFor([unknown, renamed, ofB]).runOnce();
+      expect(report).toMatchObject({ read: 3, created: 0, unowned: 3, deferred: 0 });
+
+      expect(await queuedOf(unknown)).toMatchObject({
+        reason: 'unknown_agent',
+        accounts: [`agent:${agentId(19)}`],
+        ruleId: '5712',
+        ruleLevel: 10,
+      });
+      expect(await queuedOf(renamed)).toMatchObject({
+        reason: 'agent_name_mismatch',
+        accounts: [`agent:${app02}`],
+      });
+      // O nó é de A: o agente registrado para B não é do cliente do nó.
+      expect(await queuedOf(ofB)).toMatchObject({ reason: 'unknown_agent', accounts: [`agent:${bApp}`] });
+      for (const document of [unknown, renamed, ofB]) {
+        expect(await prisma.finding.count({ where: { rawEventId: String(document['id']) } })).toBe(0);
+      }
+      // A fila não guarda o log bruto.
+      expect(JSON.stringify(await queuedOf(unknown))).not.toContain('Invalid user');
+    });
+
+    it('agentes desligados no worker (sem o cliente do nó): nem o agente da lista vira achado', async () => {
+      const document = alertOf(15);
+      expect(await syncFor([document], null).runOnce()).toMatchObject({ created: 0, unowned: 1 });
+      expect(await queuedOf(document)).toMatchObject({
+        reason: 'agents_disabled',
+        accounts: [`agent:${app01}`],
+      });
+      expect(await prisma.finding.findUnique({ where: keyOf(document) })).toBeNull();
+    });
+
+    it('o nó de B só atribui o agente de B: o de A vai para a fila (A/B)', async () => {
+      const ofA = alertOf(14);
+      const ofB = alertOf(14, { agentId: bApp, agentName: 'b-app-01', data: { srcip: '198.51.100.40' } });
+      const report = await syncFor([ofA, ofB], tenantB).runOnce();
+      expect(report).toMatchObject({ created: 1, unowned: 1 });
+      expect(await prisma.finding.findUniqueOrThrow({ where: keyOf(ofB) })).toMatchObject({
+        tenantId: tenantB,
+        accountId: `agent:${bApp}`,
+      });
+      expect(await queuedOf(ofA)).toMatchObject({ reason: 'unknown_agent' });
+      expect(await prisma.finding.findUnique({ where: keyOf(ofA) })).toBeNull();
+    });
+
+    it('conta AWS de outro cliente citada no alerta do agente: conflito; a do próprio cliente não muda nada', async () => {
+      const conflict = alertOf(13, { data: { srcip: '198.51.100.50', aws: { aws_account_id: accountB } } });
+      const own = alertOf(13, { data: { srcip: '198.51.100.51', aws: { aws_account_id: accountA } } });
+      const report = await syncFor([conflict, own]).runOnce();
+      expect(report).toMatchObject({ created: 1, unowned: 1 });
+      expect(await queuedOf(conflict)).toMatchObject({
+        reason: 'agent_account_conflict',
+        accounts: [`agent:${app01}`, accountB],
+      });
+      expect(await prisma.finding.findUnique({ where: keyOf(conflict) })).toBeNull();
+      expect(await prisma.finding.findUniqueOrThrow({ where: keyOf(own) })).toMatchObject({
+        tenantId: tenantA,
+      });
+    });
+
+    it('o alerta do manager fica com o sync da AWS, e o do agente com cara de AWS, com o dos agentes: nunca os dois', async () => {
+      const at = (minutesAgo: number) => ({
+        id: `${Date.now()}.${randomInt(1e6, 9e6)}`,
+        timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
+      });
+      const manager = { ...cloudTrailAlert({ account: accountA, bucket: trailA }), ...at(12) };
+      // O mesmo tipo de evento da AWS, mandado pelo agente app-01 como log da instância.
+      const forged = {
+        ...cloudTrailAlert({ account: accountA, bucket: trailA }),
+        ...at(12),
+        agent: { id: app01, name: 'app-01' },
+      };
+      const indexer = new FakeIndexer([manager, forged]);
+      const name = () => `teste-${randomUUID().slice(0, 8)}`;
+
+      const aws = await new AlertSync(prisma, indexer, { name: name() }).runOnce();
+      expect(aws).toMatchObject({ read: 2, created: 1, unowned: 0, skipped: 1 });
+      const agents = await new AgentAlertSync(prisma, indexer, tenantA, { name: name() }).runOnce();
+      expect(agents).toMatchObject({ read: 2, created: 1, unowned: 0, skipped: 1 });
+
+      const awsKey = (document: Record<string, unknown>) => {
+        const parsed = parseWazuhAlert(document);
+        if (!parsed.ok) throw new Error(parsed.reason);
+        return {
+          source_sourceEventId: { source: 'wazuh', sourceEventId: wazuhFindingKey(parsed.alert, accountA) },
+        };
+      };
+      expect(await prisma.finding.findUniqueOrThrow({ where: awsKey(manager) })).toMatchObject({
+        tenantId: tenantA,
+        accountId: accountA,
+        logSource: 'cloudtrail',
+      });
+      expect(await prisma.finding.findUnique({ where: awsKey(forged) })).toBeNull();
+      expect(await prisma.finding.findUniqueOrThrow({ where: keyOf(forged) })).toMatchObject({
+        tenantId: tenantA,
+        accountId: `agent:${app01}`,
+        logSource: 'wazuh_agent',
+      });
+      expect(await prisma.finding.count({ where: { rawEventId: String(forged['id']) } })).toBe(1);
+      expect(await prisma.finding.count({ where: { rawEventId: String(manager['id']) } })).toBe(1);
+    });
+
+    it('lista atrás do alerta: o alerta recente do agente novo espera; com ele na lista, a próxima execução o grava', async () => {
+      await markListed(new Date(Date.now() - 10 * MINUTE));
+      try {
+        const document = alertOf(0.5, {
+          agentId: lateAgent,
+          agentName: 'app-03',
+          data: { srcip: '198.51.100.60' },
+        });
+        const sync = syncFor([document]);
+        expect(await sync.runOnce()).toMatchObject({ read: 1, created: 0, unowned: 0, deferred: 1 });
+        expect(await queuedOf(document)).toBeNull();
+
+        await prisma.wazuhAgent.create({
+          data: { tenantId: tenantA, agentId: lateAgent, name: 'app-03', status: 'active' },
+        });
+        await markListed(new Date());
+        // A sobreposição relê o alerta.
+        expect(await sync.runOnce()).toMatchObject({ read: 1, created: 1, deferred: 0, unowned: 0 });
+        expect(await prisma.finding.findUniqueOrThrow({ where: keyOf(document) })).toMatchObject({
+          tenantId: tenantA,
+          resource: 'host:app-03',
+        });
+        expect(await queuedOf(document)).toBeNull();
+      } finally {
+        await markListed(new Date());
+      }
+    });
+
+    it('achados da mesma instância viram um incidente do cliente do nó, com o agente entre as origens', async () => {
+      const options = {
+        agentId: app02,
+        agentName: 'app-02',
+        data: { srcip: '198.51.100.71', srcuser: 'deploy' },
+      };
+      const first = alertOf(11, options);
+      const second = fimAlert({
+        id: `${Date.now()}.${randomInt(1e6, 9e6)}`,
+        timestamp: wazuhTime(new Date(Date.now() - 10 * MINUTE)),
+        agentId: app02,
+        agentName: 'app-02',
+      });
+      const report = await syncFor([first, second]).runOnce();
+      expect(report).toMatchObject({ created: 2, incidentsOpened: 1, incidentsJoined: 1 });
+
+      const { incidentId } = await prisma.finding.findUniqueOrThrow({ where: keyOf(second) });
+      expect(incidentId).not.toBeNull();
+      const incident = incidentDetailSchema.parse(
+        (await get(`/v1/incidents/${incidentId}`, adminA.cookie).expect(200)).body,
+      );
+      expect(incident.accounts).toEqual([`agent:${app02}`]);
+      expect(incident.resources).toEqual(['host:app-02']);
+      expect(incident.findings.map((item) => item.source)).toEqual(['wazuh_agent', 'wazuh_agent']);
+      await get(`/v1/incidents/${incidentId}`, adminB.cookie).expect(404);
+    });
+
+    it('exceção do cliente pela instância: o achado já nasce legítimo, e a exceção conta o uso', async () => {
+      const exception = await prisma.alertException.create({
+        data: {
+          tenantId: tenantA,
+          ruleId: '550',
+          field: 'resource',
+          value: 'host:app-01',
+          reason: 'Atualização de pacotes programada',
+          createdById: adminA.id,
+        },
+      });
+      const document = fimAlert({
+        id: `${Date.now()}.${randomInt(1e6, 9e6)}`,
+        timestamp: wazuhTime(new Date(Date.now() - 9 * MINUTE)),
+        agentId: app01,
+        agentName: 'app-01',
+      });
+      expect(await syncFor([document]).runOnce()).toMatchObject({ created: 1, excepted: 1 });
+      expect(await prisma.finding.findUniqueOrThrow({ where: keyOf(document) })).toMatchObject({
+        status: 'legitimate',
+        exceptionId: exception.id,
+      });
+      expect(await prisma.alertException.findUniqueOrThrow({ where: { id: exception.id } })).toMatchObject({
+        matchedCount: 1,
+      });
     });
   });
 });
