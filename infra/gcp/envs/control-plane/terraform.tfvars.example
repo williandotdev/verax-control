@@ -18,10 +18,10 @@ project_id = "projeto-exemplo"
 # (docs/runbooks/console-do-responsavel.md).
 # admin_enabled = true
 
-# Entrada do cp-worker: INGRESS_TRAFFIC_ALL quando for chamar as operações do responsável da sua máquina. A revelação
-# da senha na página de status também depende dela (o cp-public chama o cp-worker): ver o GUIA, "Revelação da senha e
-# a entrada do cp-worker", antes de decidir.
-# worker_ingress = "INGRESS_TRAFFIC_ALL"
+# Entrada do cp-worker: INGRESS_TRAFFIC_ALL é o padrão (a revelação da senha e o console dependem dela; a barreira é o
+# IAM). Só para fechar a entrada de novo (a revelação passa a responder 503): ver o GUIA, "Revelação da senha e a
+# entrada do cp-worker".
+# worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
 # Variáveis dos dois serviços que são suas (plano, seção 2.5), por cima dos padrões de run.tf. As versões dos aceites
 # têm de ser as das páginas publicadas no site. TRUST_PROXY_HOPS (quantos proxies o serviço confia para achar o IP do

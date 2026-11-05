@@ -365,8 +365,8 @@ run "ninguem_anonimo_no_worker_nem_no_job" {
   }
 
   assert {
-    condition     = google_cloud_run_v2_service.worker[0].ingress == "INGRESS_TRAFFIC_INTERNAL_ONLY"
-    error_message = "Por padrão, o cp-worker só recebe tráfego de dentro do projeto."
+    condition     = google_cloud_run_v2_service.worker[0].ingress == "INGRESS_TRAFFIC_ALL"
+    error_message = "Por padrão, o cp-worker aceita a URL run.app (decisão do responsável): a barreira é o IAM, conferido acima (nada de allUsers nem allAuthenticatedUsers)."
   }
 
   assert {

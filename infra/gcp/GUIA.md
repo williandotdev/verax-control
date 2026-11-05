@@ -821,15 +821,13 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
 
 ### Operações do responsável no `cp-worker`
 
-Por padrão o `cp-worker` só recebe tráfego de dentro do projeto (Cloud Tasks e Cloud Scheduler), além do IAM. Para
-chamar `resume` (CP-07, já existe), a recópia da senha do e-mail dos nós (`POST /internal/nodes/smtp-password/sync`),
-`delete-now` ou `export` (CP-11) da sua máquina, mude `worker_ingress = "INGRESS_TRAFFIC_ALL"` no
-`terraform.tfvars` e faça o `apply` (uma mudança no lugar); o IAM continua exigindo o token de identidade de quem está
-em `owner_principals`. Volte para `INGRESS_TRAFFIC_INTERNAL_ONLY` depois. O `aud` de um token de usuário do gcloud não
-é a URL do serviço: como o worker aceita o responsável (impersonação de uma conta de serviço com `--audiences`, por
-exemplo) é decisão do CP-11.
+O `cp-worker` aceita a URL `run.app` (`worker_ingress = "INGRESS_TRAFFIC_ALL"`, o padrão), mas só com o token de
+identidade do Google de quem tem `run.invoker` nele. As operações do responsável (`resume` do CP-07, a recópia da senha
+do e-mail dos nós em `POST /internal/nodes/smtp-password/sync`, `delete-now` e `export` do CP-11) são botões do console
+(`cp-admin`, atrás do IAP), que chama o worker com a identidade da própria conta de serviço; o worker aceita essa conta
+só nas rotas do responsável.
 
-### Revelação da senha e a entrada do `cp-worker` (decisão pendente, CP-05)
+### Revelação da senha e a entrada do `cp-worker` (decidido: entrada aberta, só com IAM)
 
 A senha temporária do primeiro admin fica no segredo `vx-<slug>-admin-bootstrap` do projeto dos nós, e só o
 `cp-worker` tem acesso a ele (por tenant, concedido pelo `envs/tenant`: `secretAccessor` e `secretVersionManager` para
@@ -838,8 +836,9 @@ a conta em `CP_WORKER_SA`). Na revelação, o `cp-public` (que atende o site) ch
 enfileira a destruição da versão e devolve a senha. Para isso o `cp-public` tem `run.invoker` no `cp-worker` (run.tf), e
 o worker só aceita o token dele nessa rota.
 
-Essa chamada sai de um serviço do Cloud Run pela internet. Com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` (o
-padrão) a entrada do `cp-worker` a recusa, e a revelação responde 503 ao site. Há duas saídas, e a escolha é sua:
+Essa chamada sai de um serviço do Cloud Run pela internet. Com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` a
+entrada do `cp-worker` a recusaria, e a revelação responderia 503 ao site. Havia duas saídas; a escolhida, em
+04/11/2026, foi a 1, que virou o padrão:
 
 1. **`worker_ingress = "INGRESS_TRAFFIC_ALL"`:** o `cp-worker` fica alcançável pela internet, mas só com token de
    identidade do Google de quem tem `run.invoker` nele (cp-invoker, cp-public e `owner_principals`); qualquer outra
@@ -850,8 +849,8 @@ padrão) a entrada do `cp-worker` a recusa, e a revelação responde 503 ao site
    tráfego pela VPC e Cloud NAT para a Stripe): a chamada passa a contar como interna. Sai do nível gratuito (NAT) e
    acrescenta rede, sub-rede e NAT a este ambiente.
 
-Enquanto nenhuma das duas for aplicada, o resto da página de status funciona (claim, estado, boleto) e a revelação
-responde 503 com o código `reveal_unavailable`.
+Com `INGRESS_TRAFFIC_INTERNAL_ONLY` de volta (por escolha no `terraform.tfvars`), o resto da página de status continua
+funcionando (claim, estado, boleto) e a revelação responde 503 com o código `reveal_unavailable`.
 
 ### Quem pode o quê (a fronteira de confiança)
 

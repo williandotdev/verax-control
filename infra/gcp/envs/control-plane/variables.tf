@@ -56,9 +56,9 @@ variable "admin_image" {
 }
 
 variable "worker_ingress" {
-  description = "Entrada do cp-worker. INGRESS_TRAFFIC_INTERNAL_ONLY (padrão): só o Cloud Tasks e o Cloud Scheduler deste projeto chegam nele, e ainda com o IAM. Para as operações do responsável a partir da sua máquina (resume, delete-now, export, com `gcloud auth print-identity-token`), mude para INGRESS_TRAFFIC_ALL: o IAM continua exigindo o token de identidade."
+  description = "Entrada do cp-worker. INGRESS_TRAFFIC_ALL (padrão, decisão do responsável de 04/11/2026): alcançável pela URL run.app, mas só com token de identidade do Google de quem tem run.invoker nele (cp-invoker, cp-public, cp-admin e owner_principals); o Cloud Run recusa o resto antes do contêiner, e o app confere aud, prazo e o e-mail por rota. É o que deixa o cp-public chamar a revelação da senha (CP-05) e o console do responsável chamar as operações dele. INGRESS_TRAFFIC_INTERNAL_ONLY fecha a entrada a tudo que não for do projeto (Cloud Tasks e Cloud Scheduler) e desliga a revelação (503)."
   type        = string
-  default     = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  default     = "INGRESS_TRAFFIC_ALL"
 
   validation {
     condition     = contains(["INGRESS_TRAFFIC_INTERNAL_ONLY", "INGRESS_TRAFFIC_ALL"], var.worker_ingress)
