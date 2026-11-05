@@ -153,6 +153,24 @@ Na reunião:
    - cliente sem conta AWS: Postura e Ativos mostram "em breve" (GCP e Cloudflare ainda não têm postura nem
      inventário).
 
+   **Postura (nativa):** sai da mesma coleta do inventário (a mesma tarefa, a mesma sessão, a mesma hora), com o
+   catálogo próprio de 18 checagens (IAM, política de senha, security groups, EC2 e EBS, S3, CloudTrail e GuardDuty).
+   Além do que o inventário já leu, são cerca de 10 leituras a mais por conta e por dia no CloudTrail do cliente
+   (`GetAccountPasswordPolicy`, `GetPublicAccessBlock` do S3 Control, `GetEbsEncryptionByDefault`, `ListDetectors`,
+   `GetDetector`, `DescribeTrails` e `GetTrailStatus`), todas já na política do papel. O que o operador vê:
+   - em **Postura cloud**, a nota de cada conta, a tabela **O que a nota confere** (cada checagem aprovada,
+     reprovada, não lida ou não se aplica) e o que corrigir, com o comando da CLI já com o recurso;
+   - a faixa **Varredura parcial** diz que leitura a AWS recusou em qual conta (`AccessDenied`,
+     `UnauthorizedOperation`: política do papel ou SCP; `AuthFailure`: região desligada). As checagens que dependem dela
+     ficam **não lidas**: fora da nota e nunca aprovadas, então a nota não sobe por falta de leitura. Peça ao cliente
+     para conferir a política do papel e as SCPs; a próxima varredura tenta de novo. Uma trilha da organização vista da
+     conta-membro pode ter o estado recusado (`TrailNotFoundException` ou `AccessDeniedException`): sem outra trilha
+     multirregião gravando na conta, a checagem do CloudTrail fica não lida, não reprovada;
+   - varredura parada: é a mesma tarefa e o mesmo cursor do inventário (acima). Uma falha passageira numa leitura da
+     postura para a coleta inteira, sem gravar nem o retrato nem a varredura, e a tarefa recua do mesmo jeito;
+   - no relatório da tarefa (o log do worker), `postureScans` e `posturePartial` contam as varreduras gravadas e as
+     parciais, sem nenhum dado da conta.
+
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.
 

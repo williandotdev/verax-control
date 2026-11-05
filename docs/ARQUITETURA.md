@@ -70,8 +70,8 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
   detecções de reconhecimento; as da própria Verax, vindas do IP do nó, recebem uma regra de nível 0.
 
 - **Configuração da AWS (Ativos e Postura):** o worker lê pelo mesmo papel, só pelas ações de leitura da política:
-  o inventário de Ativos uma vez por dia por conta (feito no PR-14', seção "Ativos e Postura da AWS") e cerca de 18
-  checagens de postura nativas (PR-15'). Sem Prowler.
+  o inventário de Ativos e as 18 checagens de postura nativas, numa coleta só, uma vez por dia por conta (PR-14' e
+  PR-15', seção "Ativos e Postura da AWS"). Sem Prowler.
 - **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O cliente cria o sink com o
   comando pronto de Contas cloud e cola no painel a identidade dele; o Terraform do nó (`customer_projects`) deixa só
   essa identidade publicar no tópico do projeto, sem nada no nível do projeto do nó (que isso basta é o que o teste
@@ -470,8 +470,8 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 
 ## Ativos e Postura da AWS
 
-_(fase 2: o inventário de Ativos está feito no código (PR-14'); a postura nativa, com cerca de 18 checagens, é o
-PR-15', na mesma coleta)_
+_(fase 2: o inventário de Ativos (PR-14') e a postura nativa com 18 checagens (PR-15') estão feitos no código, numa
+coleta só; falta o teste prático na conta AWS de teste)_
 
 As duas telas só cobrem contas AWS: a postura filtra `provider: 'aws'` (a de GCP e Cloudflare não existe), e o cliente
 sem conta AWS vê "em breve" em Postura e em Ativos.
@@ -513,6 +513,47 @@ sem conta AWS vê "em breve" em Postura e em Ativos.
 - **Painel:** a visão geral de Ativos traz `errors` e `truncated` de cada conta, e a faixa "Coleta parcial" diz o que
   ficou de fora (o resto continua nas abas). Nada da conta vai para o log do worker: o relatório da tarefa só tem
   contagens e códigos.
+
+**Postura nativa (a mesma tarefa, `apps/api/src/posture/`; o catálogo em `packages/shared/src/posture-catalog.ts`):**
+
+- **Catálogo:** 18 checagens com texto em português escrito por nós e os IDs e as severidades do Prowler Hub (a nota
+  segue a mesma escala). A das portas de banco é a única com ID próprio no mesmo formato (o Prowler tem uma por
+  banco).
+
+  | Parte                  | Checagens                                                                                                          |
+  | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+  | Root                   | MFA no root (crítica); root sem chave de acesso (crítica)                                                          |
+  | IAM                    | MFA nos usuários com console (alta); chave ativa trocada em até 90 dias e usada nos últimos 90 (médias)            |
+  | Política de senha      | no mínimo 14 caracteres; sem reúso das 24 últimas (médias)                                                         |
+  | Security groups        | nada aberto para a internet em todas as portas (crítica), no SSH, no RDP e nas portas de banco (altas)             |
+  | EC2 e EBS              | IMDSv2 obrigatório (alta); criptografia padrão do EBS em cada região (alta)                                        |
+  | S3                     | nenhum bucket público (crítica); bloqueio de acesso público no bucket ou na conta (alta); bloqueio da conta (alta) |
+  | CloudTrail e GuardDuty | uma trilha multirregião gravando (alta); GuardDuty ligado em cada região monitorada (alta)                         |
+
+- **Leituras:** a maior parte sai do que o inventário leu. As próprias da postura (`posture-reads.ts`) são poucas e
+  todas já estão nas políticas `PosturaEAtivos` e `ValidarFontes` do template, sem mudança nele:
+  `GetAccountPasswordPolicy`, o `GetPublicAccessBlock` do S3 Control (o bloqueio da conta, o único cliente novo,
+  `@aws-sdk/client-s3-control`), por região `GetEbsEncryptionByDefault`, `ListDetectors` e `GetDetector`, e
+  `DescribeTrails` com `GetTrailStatus` das trilhas multirregião até achar uma gravando. Com duas regiões, cerca de 10
+  chamadas a mais por conta por dia.
+- **Resultados e nota** (`native-posture.ts`): um resultado por recurso (usuário, chave, grupo, instância, bucket), por
+  região (EBS e GuardDuty) ou da conta, como o Prowler: aprovado, reprovado ou não lido. Sem recurso a conferir, a
+  checagem não se aplica. **A leitura recusada (permissão, SCP, região desligada) deixa a checagem "não lida"
+  naquele escopo: fora da nota e nunca aprovada.** No S3, a lógica é de três valores: um bloqueio lido que decide
+  sozinho (o do bucket ou o da conta) vale mesmo com outra leitura recusada. A nota é a de sempre (`summarizePosture`,
+  crítica 10, alta 5, média 2, baixa 1). A falha passageira em qualquer leitura da postura para a coleta inteira, como
+  no inventário (nem retrato nem varredura).
+- **Gravação:** a varredura (`PostureScan`, com `scannedAt` igual ao `collectedAt` do retrato) e as reprovações
+  (`PostureFailure`) entram na mesma transação do retrato, com a mesma conferência da concessão e da conta, e as
+  chaves únicas tornam a gravação idempotente. A varredura guarda também os resultados não lidos (`unknown`), cada
+  checagem com as contagens (`checks`, conferido pelo contrato ao gravar e ao ler) e as leituras recusadas (`errors`,
+  `parte[:região]:código`). Cada resultado passa pelo zod antes; o fora do formato fica de fora e marca a parte com
+  `invalid_items`. O expurgo do PR-19 não mudou: a varredura sai pelo `scannedAt`, com as reprovações, e a mais
+  recente de cada conta fica.
+- **Painel:** a tela de Postura explica que a nota usa o catálogo próprio, mostra a faixa "Varredura parcial" (as
+  leituras recusadas, por conta) e a tabela "O que a nota confere", com a situação de cada checagem (aprovada,
+  reprovada, não lida, não se aplica), somada nas contas ou de uma conta pelo filtro. A faixa de Ativos continua só
+  com as partes do inventário.
 
 ## SOC da própria Verax (fontes da GCP)
 
@@ -1217,8 +1258,8 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
    Wazuh pelo token do Google, com recarga sem parar o painel; checagem da conexão e das fontes; medidor da ingestão;
    regras críticas da AWS com títulos em português. O template espera o teste prático na conta AWS de teste.
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
-5. **Ativos e Postura da AWS** pelo papel de leitura do cliente. **Ativos feito no código** (PR-14', inventário
-   nativo uma vez por dia); a postura nativa é o PR-15'.
+5. **Ativos e Postura da AWS** pelo papel de leitura do cliente. **Feito no código**: o inventário nativo (PR-14') e
+   a postura nativa com 18 checagens (PR-15'), numa coleta só, uma vez por dia; falta o teste prático.
 6. **Compromissos do plano:** avisos por e-mail, limites do plano, expurgo do histórico e 365 dias nas telas.
 7. **Versão do nó reproduzível e ensaio geral.** É o portão da fase 3: um nó nasce do zero só com `terraform apply` e
    a versão publicada, sem SSH e sem operador.

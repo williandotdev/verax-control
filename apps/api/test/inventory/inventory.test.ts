@@ -1,4 +1,7 @@
+import type { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import type { EC2Client } from '@aws-sdk/client-ec2';
+import type { GuardDutyClient } from '@aws-sdk/client-guardduty';
+import type { S3ControlClient } from '@aws-sdk/client-s3-control';
 import { describe, expect, it } from 'vitest';
 import { AwsConnectionError } from '../../src/aws/web-identity.js';
 import { MAX_ITEMS, collectBuckets, collectIamUsers } from '../../src/inventory/collectors.js';
@@ -410,6 +413,9 @@ describe('clientes da coleta: sinal, limite do IAM e fechamento', () => {
         iam: () => timed,
         s3: () => fakeS3().client,
         ec2: () => ({}) as EC2Client,
+        s3control: () => ({}) as S3ControlClient,
+        cloudtrail: () => ({}) as CloudTrailClient,
+        guardduty: () => ({}) as GuardDutyClient,
       },
       'sa-east-1',
       new AbortController().signal,

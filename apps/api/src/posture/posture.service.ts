@@ -1,10 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  Paginated,
-  PostureAccount,
-  PostureCheck,
-  PostureCheckListQuery,
-  PostureOverview,
+import {
+  MAX_POSTURE_CHECKS,
+  MAX_POSTURE_ERRORS,
+  type Paginated,
+  type PostureAccount,
+  type PostureCheck,
+  type PostureCheckListQuery,
+  type PostureCheckSummary,
+  postureCheckResultSchema,
+  postureCheckStatus,
+  type PostureOverview,
+  type PostureSectionError,
+  parsePostureError,
 } from '@verax/shared';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
@@ -27,6 +34,9 @@ const scanSelect = {
   failedMedium: true,
   failedLow: true,
   failedInformational: true,
+  unknown: true,
+  checks: true,
+  errors: true,
 } as const satisfies Prisma.PostureScanSelect;
 
 type ScanRow = Prisma.PostureScanGetPayload<{ select: typeof scanSelect }>;
@@ -41,9 +51,27 @@ export function combinedScore(
 }
 
 /**
- * Postura do cliente da sessão (T5.8), a partir das varreduras gravadas: a nota de cada conta AWS, a evolução e as
- * checagens reprovadas na última varredura. Conta sem varredura aparece com nota vazia. Só as contas AWS: a postura de
- * GCP e Cloudflare ainda não existe, e o cliente sem conta AWS vê "em breve" no painel (PR-14').
+ * As checagens do catálogo gravadas na varredura, conferidas de novo pelo contrato (uma fora do formato não vai para a
+ * tela), com a situação de cada uma.
+ */
+function checksOf(value: Prisma.JsonValue | undefined): PostureCheckSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_POSTURE_CHECKS).flatMap((item) => {
+    const parsed = postureCheckResultSchema.safeParse(item);
+    return parsed.success ? [{ ...parsed.data, status: postureCheckStatus(parsed.data) }] : [];
+  });
+}
+
+/** As leituras recusadas gravadas, conferidas pelo contrato (o valor fora do formato não vai para a tela). */
+function errorsOf(values: readonly string[] | undefined): PostureSectionError[] {
+  return (values ?? []).flatMap((value) => parsePostureError(value) ?? []).slice(0, MAX_POSTURE_ERRORS);
+}
+
+/**
+ * Postura do cliente da sessão (T5.8), a partir das varreduras gravadas pela tarefa `aws-inventory` (o catálogo nativo
+ * do PR-15'): a nota de cada conta AWS, a evolução, cada checagem do catálogo com a situação, as leituras recusadas e
+ * as checagens reprovadas na última varredura. Conta sem varredura aparece com nota vazia. Só as contas AWS: a postura
+ * de GCP e Cloudflare ainda não existe, e o cliente sem conta AWS vê "em breve" no painel (PR-14').
  */
 @Injectable()
 export class PostureService {
@@ -93,6 +121,7 @@ export class PostureService {
         scannedAt: scan?.scannedAt.toISOString() ?? null,
         passed: scan?.passed ?? 0,
         failed: scan?.failed ?? 0,
+        unknown: scan?.unknown ?? 0,
         failedBySeverity: {
           critical: scan?.failedCritical ?? 0,
           high: scan?.failedHigh ?? 0,
@@ -101,6 +130,8 @@ export class PostureService {
           informational: scan?.failedInformational ?? 0,
         },
         history: [...byDay].map(([date, score]) => ({ date, score })).slice(-HISTORY_DAYS),
+        checks: checksOf(scan?.checks),
+        errors: errorsOf(scan?.errors),
       });
     }
     return {

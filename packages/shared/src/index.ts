@@ -14,6 +14,7 @@ export * from './permissions.js';
 export * from './plan-usage.js';
 export * from './plans.js';
 export * from './posture.js';
+export * from './posture-catalog.js';
 export * from './protected-resources.js';
 export * from './reports.js';
 export * from './session.js';

@@ -239,6 +239,43 @@ test.describe('revisão de UX (modo mock)', () => {
     });
   }
 
+  // A postura nativa (PR-15'): a produção da demonstração tem o EC2 de us-east-1 negado pela SCP fictícia, então a
+  // varredura é parcial e as checagens de EC2 de lá ficam "não lidas"; o catálogo mostra a situação de cada checagem.
+  // Nos dois temas, no computador e no celular (a tabela do catálogo rola por dentro).
+  for (const theme of ['light', 'dark'] as const) {
+    for (const [device, width] of [
+      ['computador', 1280],
+      ['celular', 360],
+    ] as const) {
+      test(`Postura com varredura parcial e o catálogo (${theme === 'light' ? 'claro' : 'escuro'}, ${device}): sem violação de acessibilidade`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: 800 });
+        await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
+        await open(page, '/postura', 'Postura cloud');
+        const band = page.getByRole('region', { name: 'Varredura parcial' });
+        await expect(band).toContainText('Conta 111122223333');
+        await expect(band.getByRole('listitem')).toContainText([
+          'Instâncias EC2 em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',
+          'Security groups em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',
+          'Criptografia padrão do EBS em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',
+        ]);
+        const catalog = page.getByRole('table', { name: 'Checagens do catálogo na última varredura' });
+        await expect(catalog.getByRole('row')).toHaveCount(19);
+        await expect(
+          catalog.getByRole('row', {
+            name: /Nenhum security group aberto para a internet em todas as portas/,
+          }),
+        ).toContainText('Não lida');
+        await expect(page.locator('body')).not.toContainText('Prowler');
+        expect(await violations(page)).toEqual([]);
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+        ).toBeLessThanOrEqual(1);
+      });
+    }
+  }
+
   // Um cliente novo, sem conta AWS: Postura e Ativos dizem "em breve" (PR-14'). A troca de cliente e a navegação são
   // pelo painel: recarregar a página recomeçaria a demonstração, sem o cliente novo.
   test('cliente sem conta AWS: Postura e Ativos "em breve", sem violação de acessibilidade', async ({

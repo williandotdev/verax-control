@@ -44,7 +44,7 @@ describe('Torre', () => {
 
     const status = await screen.findByRole('status', { name: /Situação: Crítico/ });
     expect(status).toHaveTextContent(
-      '1 incidente crítico aberto, 2 incidentes altos abertos e nota de postura 64, abaixo de 70.',
+      '1 incidente crítico aberto, 2 incidentes altos abertos e nota de postura 69, abaixo de 70.',
     );
 
     const decisions = screen.getByRole('region', { name: 'Decisões pendentes' });
@@ -58,7 +58,7 @@ describe('Torre', () => {
       '/incidentes?severidade=critical',
     );
     expect(screen.getByRole('link', { name: 'Alto: 2 incidentes abertos' })).toBeInTheDocument();
-    expect(screen.getByRole('meter', { name: 'Nota de postura' })).toHaveAttribute('aria-valuenow', '64');
+    expect(screen.getByRole('meter', { name: 'Nota de postura' })).toHaveAttribute('aria-valuenow', '69');
   });
 
   it('cobertura: conectadas, última coleta, último evento e as contas silenciosas, sem eventos no período', async () => {
@@ -176,7 +176,7 @@ describe('frase do semáforo', () => {
         reasons: ['low_posture'],
         openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
       }),
-    ).toBe('nota de postura 64, abaixo de 70.');
+    ).toBe('nota de postura 69, abaixo de 70.');
   });
 
   it('um incidente alto no singular', () => {
