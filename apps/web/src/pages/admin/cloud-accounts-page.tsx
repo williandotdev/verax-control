@@ -52,6 +52,7 @@ import { fieldErrors } from '@/features/admin/forms';
 import {
   ACCOUNT_NOUNS,
   AWS_READER_GUIDE_URL,
+  awsCollectionErrorHint,
   awsConnectionErrorHint,
   cloudflareConnectionErrorHint,
   CONNECTION_LABELS,
@@ -246,6 +247,30 @@ function ConnectionBadge({ account }: { account: CloudAccount }) {
   );
 }
 
+/**
+ * AWS: o aviso da coleta pelo Wazuh do nó (o token do Google do host, a configuração do manager), ao lado da conexão e à
+ * parte dela: a conta pode estar conectada e a coleta do nó ter um problema. Sem aviso, nada aparece.
+ */
+function CollectionWarning({ account }: { account: CloudAccount }) {
+  const hint = awsCollectionErrorHint(account.collectionError);
+  if (account.provider !== 'aws' || hint === null) return null;
+  const { icon: Icon, tone } = SEVERITY_STYLES.medium;
+  return (
+    <>
+      <dt className="text-muted-foreground">Coleta no nó</dt>
+      <dd className="space-y-0.5">
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-sm">
+          <Icon aria-hidden className={cn('size-4', tone)} />
+          Aviso
+        </span>
+        <p className="text-xs text-muted-foreground">
+          {hint} Tipo do aviso: <code className="font-mono">{account.collectionError}</code>.
+        </p>
+      </dd>
+    </>
+  );
+}
+
 interface CreateValues {
   provider: CloudProvider;
   accountId: string;
@@ -425,6 +450,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
             )}
           </p>
         </dd>
+        <CollectionWarning account={account} />
         <dt className="text-muted-foreground">Última coleta</dt>
         <dd>{account.lastCollectedAt ? formatRelative(account.lastCollectedAt) : 'nenhuma ainda'}</dd>
         <dt className="text-muted-foreground">Último evento</dt>

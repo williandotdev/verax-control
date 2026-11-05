@@ -1,0 +1,19 @@
+# Aplica a configuração do manager do Wazuh (perfil standard; fase 2, PR-V4'; infra/node/bin/wazuh-apply.sh): as contas
+# AWS conectadas viram o ossec.conf, as regras e os profiles, e só o manager reinicia, e só quando a configuração muda.
+# Pelo verax-wazuh-apply.path (o worker gravou uma geração nova) e pelo verax-wazuh-apply.timer (a cada 15 min).
+#
+# No máximo 5 partidas em 5 min: contas mudando sem parar não reiniciam o manager em laço. Passado o limite, a partida
+# pelo .path é recusada e ele para (unit-start-limit-hit); o timer aplica o que mudou e arma o .path de novo (o
+# ExecStartPre, que não faz nada com ele já no ar). O After= deixa a partida do Wazuh (verax-wazuh) terminar antes.
+[Unit]
+Description=Verax Control - configuracao do manager do Wazuh (contas AWS)
+After=verax-wazuh.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/systemctl --no-block start verax-wazuh-apply.path
+ExecStart=/opt/verax/bin/wazuh-apply.sh
+# A lista e o gerador (dois jobs do Compose) e, no pior caso, dois reinícios do manager com até 180 s de espera cada.
+TimeoutStartSec=600

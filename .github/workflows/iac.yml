@@ -172,6 +172,15 @@ jobs:
         # versão nenhuma (cada aviso com a saída certa), o segredo inexistente, a rede fora do ar e um conteúdo que não
         # é chave, na versão corrente e numa antiga. Roda sem root e sem tocar na máquina.
         run: bash infra/node/tests/vault-test.sh
+      - name: AWS sem chave no Wazuh (aws-token.sh e wazuh-apply.sh com o metadata, o Compose e o Docker simulados)
+        # Cenários de tests/wazuh-apply-test.sh: o token do Google vai para a pasta do manager por troca atômica (0600,
+        # nunca na saída), com o audience do node.conf ou o padrão da pilha, e um metadata fora do ar ou um token fora do
+        # formato não estragam o anterior; a lista do CLI vai inteira para o gerador, com o IP de saída; o manager só
+        # reinicia quando o hash muda e está no ar; sem o healthcheck, a configuração anterior volta (com o gerador de
+        # verdade, junto com os profiles da AWS dela, sem tocar no token), e a que falhou não é tentada de novo; um erro
+        # do CLI nunca vira "nenhuma conta"; o sinal `applied` diz ok ou error com a geração. Roda sem root e sem tocar
+        # na máquina.
+        run: bash infra/node/tests/wazuh-apply-test.sh
       - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
         # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Com o cofre de credenciais,
         # nos dois, mais o compose.vault.yaml (o start.sh o soma em toda chamada). Os arquivos de /run/verax são os
@@ -271,13 +280,23 @@ jobs:
           units=$RUNNER_TEMP/units
           install -d "$units/verax-node.service.d"
           install -m 0644 infra/node/systemd/*.service infra/node/systemd/*.timer \
-            infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer \
+            infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer infra/node/systemd/wazuh/*.path \
             infra/node/systemd/wazuh-agents/*.service infra/node/systemd/wazuh-agents/*.timer "$units/"
           install -m 0644 infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf "$units/verax-node.service.d/"
           printf '[Unit]\nDescription=Docker (simulado)\n[Service]\nExecStart=/bin/true\n' >"$units/docker.service"
           sudo install -d /opt/verax/bin
           sudo install -m 0755 infra/node/bin/*.sh /opt/verax/bin/
-          systemd-analyze verify --man=no "$units"/*.service "$units"/*.timer
+          systemd-analyze verify --man=no "$units"/*.service "$units"/*.timer "$units"/*.path
+          # A configuração do manager (PR-V4'): o .path olha a geração que o worker grava, o limite de partidas fica no
+          # serviço que ele dispara (e o timer o arma de novo), e o token do Google renova a cada 10 min.
+          wazuh=infra/node/systemd/wazuh
+          grep -qx 'PathChanged=/run/verax/wazuh-signal/generation' "$wazuh/verax-wazuh-apply.path"
+          grep -qx 'Unit=verax-wazuh-apply.service' "$wazuh/verax-wazuh-apply.path"
+          grep -qx 'StartLimitIntervalSec=300' "$wazuh/verax-wazuh-apply.service"
+          grep -qx 'StartLimitBurst=5' "$wazuh/verax-wazuh-apply.service"
+          grep -qx 'OnUnitActiveSec=15min' "$wazuh/verax-wazuh-apply.timer"
+          grep -qx 'OnBootSec=30s' "$wazuh/verax-aws-token.timer"
+          grep -qx 'OnUnitActiveSec=10min' "$wazuh/verax-aws-token.timer"
       - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard, com e sem o cofre; com os agentes, só 1514 e 1515)
         # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
         # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
@@ -362,6 +381,29 @@ jobs:
                 and (((.services.api.networks | keys) - ((.services.api.networks | keys)
                   - (.services."wazuh.manager".networks | keys))) | length) == 0'
           done
+      - name: AWS sem chave no Wazuh (a pasta do token só no manager e no gerador; a dos sinais só no worker; a lista pelo banco)
+        # PR-V4': a pasta /run/verax/wazuh-aws (os profiles e o token do Google) é montada só leitura no manager e com
+        # escrita só no gerador; a pasta dos sinais sem segredo, com escrita só no worker, no caminho que o start.sh
+        # põe no worker.env; o job wazuh-sources (o CLI da API que imprime a lista das contas) só na rede do banco, sem
+        # porta, só no perfil setup e com o ambiente do worker. No standard, com e sem os agentes e o cofre; o lean não
+        # monta nenhuma das duas pastas.
+        run: |
+          grep -qxF 'WAZUH_SIGNAL_MOUNT=/run/wazuh-signal' infra/node/bin/start.sh
+          for extra in '' infra/node/compose.wazuh-agents.yaml infra/node/compose.vault.yaml; do
+            docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
+              --env-file images.env --profile setup config --format json | jq -e '
+                def mounts($source): [.services | to_entries[] | .key as $service | (.value.volumes // [])[]
+                  | select(.source == $source) | [$service, .target, (.read_only // false)]] | sort;
+                mounts("/run/verax/wazuh-aws") == [["manager-config", "/out/aws", false], ["wazuh.manager", "/root/.aws", true]]
+                and mounts("/run/verax/wazuh-signal") == [["worker", "/run/wazuh-signal", false]]
+                and (.services."wazuh-sources" | (.networks | keys) == ["verax"] and .profiles == ["setup"]
+                  and .command == ["node", "dist/cli/wazuh-sources.js"] and (.ports // []) == [])'
+          done
+          # O Compose junta o arquivo de ambiente no `environment` da configuração: o do worker, conferido no arquivo.
+          awk '/^  wazuh-sources:$/,/^$/' infra/node/compose.wazuh.yaml | grep -qx '    env_file: /run/verax/worker.env'
+          docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --format json | jq -e '
+            [.services[] | (.volumes // [])[] | select(.source | IN("/run/verax/wazuh-aws", "/run/verax/wazuh-signal"))]
+            | length == 0'
       - name: Cofre de credenciais (as chaves privadas chegam ao worker por arquivo só leitura, e só a ele)
         # O ambiente de um contêiner fica gravado no disco (configuração do Docker); o conteúdo de um volume montado,
         # não. O compose.vault.yaml monta só no worker, só leitura, a pasta que o start.sh escreve em /run/verax/vault
@@ -465,10 +507,18 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "Nada mudou em infra/wazuh nem em infra/node; o teste de ponta a ponta fica para o push na main."
           fi
-      - name: Correlações da AWS separadas por conta (wazuh-logtest)
+      - name: Regras locais da AWS (correlações por conta e o papel de leitura do nó, no wazuh-logtest)
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: bash scripts/test-rules.sh
+      - name: Profiles da AWS sem chave no manager (boto3 da imagem, sem rede, com a troca no STS interceptada)
+        # O gerador escreve um profile por conta (papel derivado, token do Google do host, STS da região); o boto3 da
+        # imagem usa o provedor de web identity (method), mesmo com as variáveis de outro papel no ambiente; a troca vai ao
+        # STS da região, sem assinatura, com o papel, a sessão e o token certos; o S3 assina com a sessão. Nada sai do
+        # contêiner (--network none): uma atualização do Wazuh que mude o boto3 derruba este passo.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-aws-profile.sh
       - name: Agentes do Wazuh no manager (certificado, configuração, registro com senha e lista; sem rede e sem porta)
         # Um manager avulso, sem rede: o certificado do registro (CA dos agentes, IP no CN e no SAN, refeito com outro
         # IP), o ossec.conf no modo dos agentes aceito por cada daemon, o agent.conf sem comando remoto aceito pelo

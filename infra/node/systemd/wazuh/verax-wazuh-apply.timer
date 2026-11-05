@@ -1,0 +1,11 @@
+# A cada 15 min, contados da última aplicação (pelo .path ou por este timer): cobre um sinal perdido e o .path parado
+# pelo limite de partidas.
+[Unit]
+Description=Verax Control - configuracao do manager do Wazuh a cada 15 min
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

@@ -30,6 +30,20 @@ export type CloudflareBlockingError = (typeof CLOUDFLARE_BLOCKING_ERRORS)[number
 export function isCloudflareBlockingError(code: string | null): code is CloudflareBlockingError {
   return code !== null && (CLOUDFLARE_BLOCKING_ERRORS as readonly string[]).includes(code);
 }
+
+/**
+ * Avisos da coleta da AWS pelo Wazuh do nó (fase 2, PR-V4'), gravados em `CloudAccount.collectionError` pela tarefa
+ * `wazuh-config` do worker. Ficam à parte da conexão (`connectionError`, que só a tarefa `aws-check` grava): são do nó
+ * inteiro, e não da conta do cliente, e não mudam a conexão nem o aviso dela.
+ * - `aws_token_stale`: o host não renova o token do Google há mais de 40 minutos, e a coleta pode parar;
+ * - `wazuh_apply_failed`: a configuração nova do manager não subiu no nó, e ele segue lendo com a anterior.
+ */
+export const AWS_COLLECTION_ERROR_CODES = ['aws_token_stale', 'wazuh_apply_failed'] as const;
+export type AwsCollectionErrorCode = (typeof AWS_COLLECTION_ERROR_CODES)[number];
+
+export function isAwsCollectionErrorCode(code: string | null): code is AwsCollectionErrorCode {
+  return code !== null && (AWS_COLLECTION_ERROR_CODES as readonly string[]).includes(code);
+}
 /** Fontes de log que o Wazuh lê de buckets S3 da conta do cliente (T4.4 a T4.6). */
 export const LOG_SOURCES = ['cloudtrail', 'guardduty', 'waf'] as const;
 export type LogSource = (typeof LOG_SOURCES)[number];
@@ -450,6 +464,11 @@ export const cloudAccountSchema = z.strictObject({
     .string()
     .regex(/^[A-Za-z0-9_.:-]{1,64}$/)
     .nullable(),
+  /**
+   * AWS: um aviso da coleta pelo Wazuh do nó, à parte da conexão (`AWS_COLLECTION_ERROR_CODES`), gravado pela tarefa
+   * `wazuh-config` do worker; null sem aviso e nos demais provedores. Opcional para o painel ler um nó de antes dele.
+   */
+  collectionError: z.enum(AWS_COLLECTION_ERROR_CODES).nullable().optional(),
   /**
    * AWS: quando um administrador pediu "Verificar" e o worker ainda não respondeu (a conexão fica em `waiting`). Null
    * sem pedido pendente e nos demais provedores.
