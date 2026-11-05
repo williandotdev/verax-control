@@ -12,6 +12,10 @@
 # No fim, confere como o worker vai usar: o verax_stats entra, lê os contadores do analysisd e é recusado fora do
 # `manager:read` (o estado do cluster).
 #
+# Espera a API ficar pronta (até 3 min por chamada, pausas de 1 s a 10 s): o healthcheck do manager só vê o processo da
+# API, e a porta abre segundos depois (o CI pegou isso numa recriação do manager). Só o que é a API subindo é esperado; a
+# senha recusada, a permissão negada e o TLS que não confere param na hora.
+#
 # Tudo pela API do manager com o wazuh-wui (o administrador que o init da imagem cria com API_PASSWORD), de dentro do
 # contêiner do manager, pelo loopback e com o TLS conferido com a CA do nó e o nome wazuh.manager (o certificado que o
 # manager-api-tls.sh instala). As duas senhas vão pela entrada padrão do Python do manager, nunca por argumento nem
@@ -56,12 +60,27 @@ def auth_headers(token=None, credentials=None):
     return headers
 
 
-def send(method, path, token=None, credentials=None, body=None):
-    headers = auth_headers(token, credentials)
-    payload = None
-    if body is not None:
-        payload = json.dumps(body)
-        headers['Content-Type'] = 'application/json'
+# A API ainda subindo: o healthcheck do Compose só vê o processo dela (wazuh-control status), e a porta abre segundos
+# depois, então o `compose up --wait` pode devolver o manager antes de a API atender. Cada chamada espera por ela, com
+# prazo e pausas crescentes: a conexão recusada (o pedido nem chegou: vale para qualquer chamada) e, nas chamadas que
+# podem se repetir sem efeito (as leituras e o login), a conexão cortada, o tempo esgotado e o 5xx. O resto para na hora,
+# como antes: 401 e 403 (a senha ou a permissão), qualquer outra resposta e o TLS que não confere com a CA.
+WAIT_SECONDS = 180
+REFUSED = (ConnectionRefusedError,)
+INTERRUPTED = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TimeoutError,
+               http.client.RemoteDisconnected, ssl.SSLEOFError)
+RETRY_STATUS = (500, 502, 503, 504)
+
+
+class NotReady(Exception):
+    """A API não ficou pronta dentro do prazo."""
+
+    def __init__(self, cause):
+        super().__init__(cause)
+        self.cause = cause
+
+
+def attempt(method, path, headers, payload):
     connection = Connection(HOST, PORT, context=context, timeout=30)
     try:
         connection.request(method, path, body=payload, headers=headers)
@@ -69,6 +88,32 @@ def send(method, path, token=None, credentials=None, body=None):
         return response.status, response.read(1048576)
     finally:
         connection.close()
+
+
+def send(method, path, token=None, credentials=None, body=None):
+    headers = auth_headers(token, credentials)
+    payload = None
+    if body is not None:
+        payload = json.dumps(body)
+        headers['Content-Type'] = 'application/json'
+    repeatable = method == 'GET' or path.startswith('/security/user/authenticate')
+    deadline = time.monotonic() + WAIT_SECONDS
+    pause = 1.0
+    while True:
+        try:
+            status, raw = attempt(method, path, headers, payload)
+        except REFUSED + INTERRUPTED as error:
+            if not (isinstance(error, REFUSED) or repeatable):
+                raise
+            if time.monotonic() + pause > deadline:
+                raise NotReady(type(error).__name__) from None
+        else:
+            if not (repeatable and status in RETRY_STATUS):
+                return status, raw
+            if time.monotonic() + pause > deadline:
+                raise NotReady('HTTP %s' % status)
+        time.sleep(pause)
+        pause = min(pause * 2, 10.0)
 
 
 def login(user, password):
@@ -180,6 +225,12 @@ try:
     main()
 except Failure as error:
     sys.stderr.write('init-api-users: %s\n' % error)
+    sys.exit(1)
+except NotReady as error:
+    sys.stderr.write('init-api-users: a API do manager não ficou pronta em %d s (%s)\n' % (WAIT_SECONDS, error.cause))
+    sys.exit(1)
+except ssl.SSLCertVerificationError:
+    sys.stderr.write('init-api-users: o certificado da API do manager não confere com a CA do nó e o nome %s\n' % HOST)
     sys.exit(1)
 except (OSError, http.client.HTTPException) as error:
     # Rede ou TLS (ssl.SSLError é um OSError): só o tipo do erro.
