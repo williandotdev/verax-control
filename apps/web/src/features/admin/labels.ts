@@ -1,11 +1,13 @@
 import {
   type AlertExceptionField,
+  AWS_BUCKET_ERROR_CODES,
   type AwsConnectionErrorCode,
   type CloudAccount,
   type CloudAccountConnection,
   type CloudProvider,
   type CredentialStatus,
-  isAwsConnectionErrorCode,
+  type LogSource,
+  parseAwsConnectionError,
   type ProtectedResourceType,
   type TenantStatus,
   type UserStatus,
@@ -47,17 +49,20 @@ export const CONNECTION_LABELS: Readonly<Record<CloudAccountConnection, string>>
 
 /**
  * O que o selo quer dizer em cada provedor: na AWS, a entrada no papel de leitura sem chave (o "Verificar" pendente ou
- * o resultado dele); na GCP e no Cloudflare, a leitura do nó.
+ * o resultado dele); na GCP e no Cloudflare, a leitura do nó. A conta AWS que já entrou no papel uma vez (com
+ * `ingestFrom`) e voltou a aguardar mudou de buckets (ou foi reativada): a pilha pode precisar do `LogBucketArns` novo.
  */
 export function connectionHint(
-  account: Pick<CloudAccount, 'provider' | 'connection' | 'checkRequestedAt'>,
+  account: Pick<CloudAccount, 'provider' | 'connection' | 'checkRequestedAt' | 'ingestFrom'>,
 ): string {
   const { provider, connection } = account;
   if (connection === 'connected') return 'A última leitura deu certo.';
   if (provider === 'aws') {
-    if (connection === 'error') return 'A última tentativa de entrar no papel de leitura falhou.';
-    return account.checkRequestedAt !== null
-      ? 'Verificando: o Verax está entrando no papel de leitura da conta.'
+    if (connection === 'error') return 'A última conferência do papel de leitura falhou.';
+    if (account.checkRequestedAt !== null)
+      return 'Verificando: o Verax está entrando no papel de leitura da conta.';
+    return account.ingestFrom
+      ? 'Aguardando uma nova verificação: se os buckets mudaram, atualize a pilha na conta; depois, clique em Verificar.'
       : 'Aguardando o papel de leitura: crie a pilha na conta e clique em Verificar.';
   }
   if (connection === 'error') return 'A última leitura falhou.';
@@ -95,34 +100,57 @@ export function cloudflareConnectionErrorHint(code: string): string | null {
 
 /**
  * O que fazer diante de cada erro da conexão da AWS (os códigos que a tarefa `aws-check` do worker grava). Nenhum
- * repete a mensagem da AWS: só o que conferir.
+ * repete a mensagem da AWS: só o que conferir. Os avisos (trilha, export, permissão demais e STS da região) dizem que a
+ * coleta continua. Os de bucket começam em minúscula: vêm depois do bucket (`awsConnectionErrorHint`).
  */
 export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode, string>> = {
   trust_denied:
     'A AWS recusou a entrada no papel. Confira se a pilha verax-control-reader terminou de ser criada nesta conta e se o ID da conta de serviço, o IP de saída e o audience são os desta tela. Um papel feito pelo assistente "Web identity → Google" do console nunca aceita o nó, e uma SCP ou RCP que negue a federação do Google também barra.',
   token_invalid:
     'A AWS recusou o token do nó. Tente de novo em alguns minutos; se continuar, fale com a Verax.',
-  idp_unavailable:
-    'O Google não respondeu ao emitir ou conferir o token do nó. Tente de novo em alguns minutos.',
+  idp_unavailable: 'O Google não respondeu à AWS ao conferir o token do nó. Tente de novo em alguns minutos.',
   region_disabled:
-    'O STS da região está desligado nesta conta. Religue-o no console do IAM (Account settings) ou fale com a Verax.',
+    'O STS da região da conta está desligado. O Verax entrou pelo de us-east-1, mas a coleta usa o da região: religue-o no console do IAM (Account settings, Security Token Service) ou fale com a Verax.',
   account_mismatch: 'O papel respondeu de outra conta AWS. Confira o ID da conta cadastrada.',
-  bucket_missing: 'Um bucket cadastrado não existe nesta conta. Confira os buckets com a Verax.',
+  bucket_missing: 'não existe nesta conta. Confira o nome do bucket com a Verax.',
   bucket_denied:
-    'O papel não lê um dos buckets cadastrados. Confira se o ARN de cada bucket está em LogBucketArns da pilha (atualize a pilha) e, num bucket de outra conta, a política do bucket.',
+    'o papel não lista ou não lê os objetos. Confira se o ARN dele está em LogBucketArns da pilha (atualize a pilha) e, num bucket de outra conta, a política do bucket.',
   kms_denied:
-    'O papel não decifra os logs de um bucket. Informe a chave KMS do bucket em LogKmsKeyArns e atualize a pilha.',
+    'o papel não decifra os logs do bucket. Informe a chave KMS dele em LogKmsKeyArns e atualize a pilha; numa chave de outra conta, a política da chave precisa citar o papel.',
+  trail_not_logging:
+    'Nenhuma trilha ligada grava no bucket do CloudTrail cadastrado. Confira no CloudTrail se a trilha está ativa (Logging: On) e se o destino é esse bucket. Os outros logs continuam sendo lidos.',
+  guardduty_export_missing:
+    'O GuardDuty não exporta os achados para o bucket cadastrado. Confira em GuardDuty, Settings, se a exportação de achados está ativa, com destino nesse bucket e a chave KMS. Os outros logs continuam sendo lidos.',
+  excess_permissions:
+    'O papel verax-control-reader tem permissão além da leitura: uma política foi anexada a ele ou o limite de permissões foi tirado. Desfaça a mudança (ou atualize a pilha) para o papel voltar ao mínimo. A coleta continua.',
+  metadata_unavailable:
+    'O nó não conseguiu pedir o próprio token ao Google. Tente de novo em alguns minutos; se continuar, fale com a Verax.',
   aws_unavailable: 'A AWS não respondeu a tempo. Tente de novo em alguns minutos.',
-  check_unavailable: 'Este nó ainda não confere a conexão sozinho. A Verax confere com você.',
+  check_unavailable:
+    'O nó não concluiu a conferência (ou ainda não confere a conexão sozinho). Tente de novo em alguns minutos; se continuar, fale com a Verax.',
   aws_token_stale:
     'O nó não renova o próprio token do Google há mais de 40 minutos, e a coleta pode parar. Fale com a Verax.',
   wazuh_apply_failed:
     'O nó não conseguiu aplicar a configuração nova da coleta da AWS e segue lendo com a anterior. Fale com a Verax.',
 };
 
-/** O que fazer diante do erro da conexão de uma conta AWS; null para um código que não é da AWS. */
-export function awsConnectionErrorHint(code: string): string | null {
-  return isAwsConnectionErrorCode(code) ? AWS_CONNECTION_ERROR_HINTS[code] : null;
+/** O bucket de cada fonte, no começo da explicação de um erro de bucket (`bucket_denied:waf`). */
+const BUCKET_LABELS: Readonly<Record<LogSource, string>> = {
+  cloudtrail: 'Bucket do CloudTrail',
+  guardduty: 'Bucket do export do GuardDuty',
+  waf: 'Bucket do WAF',
+};
+
+/**
+ * O que fazer diante do erro (ou do aviso) da conexão de uma conta AWS; null para um código que não é da AWS. Um erro
+ * de bucket diz de qual fonte é o bucket (`kms_denied:guardduty`); sem a fonte, de um dos buckets cadastrados.
+ */
+export function awsConnectionErrorHint(value: string): string | null {
+  const parsed = parseAwsConnectionError(value);
+  if (parsed === null) return null;
+  const hint = AWS_CONNECTION_ERROR_HINTS[parsed.code];
+  if (!(AWS_BUCKET_ERROR_CODES as readonly string[]).includes(parsed.code)) return hint;
+  return `${parsed.source === null ? 'Um dos buckets cadastrados' : BUCKET_LABELS[parsed.source]}: ${hint}`;
 }
 
 /** Situação do token guardado no cofre, pela validade. */

@@ -1,4 +1,10 @@
-import type { CorrelationKind, Finding, Incident, IncidentDetail } from '@verax/shared';
+import {
+  agentIdOfRef,
+  type CorrelationKind,
+  type Finding,
+  type Incident,
+  type IncidentDetail,
+} from '@verax/shared';
 import { SEVERITY_STYLES } from '@/design/severity';
 import { formatList, plural } from '@/lib/format';
 
@@ -115,14 +121,26 @@ function subject(keys: Keys): string {
   return details.length > 0 ? `${main}, ${details.join(', ')},` : main;
 }
 
+/**
+ * Onde aconteceu: as contas e, nos alertas das instâncias do cliente, os agentes do Wazuh (origem `agent:<id>`), cada
+ * grupo com o próprio artigo (`na conta 1111...`, `nos agentes 001 e 002`).
+ */
+export function originsPhrase(origins: readonly string[]): string {
+  const accounts = origins.filter((origin) => agentIdOfRef(origin) === null);
+  const agents = origins.map(agentIdOfRef).filter((agentId): agentId is string => agentId !== null);
+  const parts: string[] = [];
+  if (accounts.length === 1) parts.push(`na conta ${accounts[0]}`);
+  if (accounts.length > 1) parts.push(`nas contas ${formatList(accounts)}`);
+  if (agents.length === 1) parts.push(`no agente ${agents[0]}`);
+  if (agents.length > 1) parts.push(`nos agentes ${formatList(agents)}`);
+  return parts.join(' e ');
+}
+
 /** Resumo do incidente em português: quem, o que fez (na ordem), quando, onde e quão grave. */
 export function incidentSummary(incident: IncidentDetail): string {
   const keys = parseKeys(incident.keys);
   const actions = [...new Set(incident.findings.map(describeFinding))];
-  const accounts =
-    incident.accounts.length === 1
-      ? `na conta ${incident.accounts[0]}`
-      : `nas contas ${formatList(incident.accounts)}`;
+  const accounts = originsPhrase(incident.accounts);
   const first = time.format(new Date(incident.firstSeenAt));
   const last = time.format(new Date(incident.lastSeenAt));
   const period = first === last ? `em ${first}` : `entre ${first} e ${last}`;

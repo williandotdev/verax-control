@@ -39,8 +39,13 @@ output "secrets" {
 }
 
 output "node_written_secrets" {
-  description = "Segredos que a própria VM grava (chave do cofre de credenciais e senha temporária do primeiro admin)."
+  description = "Segredos que a própria VM grava: a chave do cofre de credenciais e as senhas temporárias do primeiro admin e, com `support_bootstrap_secret`, da conta de suporte."
   value       = { for key, secret in google_secret_manager_secret.node_written : key => secret.secret_id }
+}
+
+output "install_metadata" {
+  description = "Metadados da VM para a instalação sem operador e para o plano de controle: as chaves `verax-*` (com `install_config`: as de `install_metadata` e as que o módulo acrescenta) e o `enable-guest-attributes` de `guest_attributes` (node.tf). Vazio com os dois desligados. Sem o script de boot e sem as chaves de segurança, que todo nó tem."
+  value       = merge(var.install_metadata, local.node_derived_metadata, local.guest_attributes_metadata)
 }
 
 output "nat_ip" {

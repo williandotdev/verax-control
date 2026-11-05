@@ -247,13 +247,6 @@ run "cp_terraform" {
 
   assert {
     condition = (
-      length(google_project_iam_member.terraform_nodes) == 0 &&
-      length(google_project_iam_custom_role.secrets_provisioner) == 0 &&
-      length(google_project_iam_custom_role.buckets_provisioner) == 0 &&
-      length(google_storage_bucket_iam_member.terraform_state) == 0 &&
-      length(google_storage_bucket_iam_member.worker_runs) == 0 &&
-      length(google_project_iam_custom_role.node_lifecycle) == 0 &&
-      length(google_project_iam_member.worker_node_lifecycle) == 0 &&
       length(google_project_iam_custom_role.images_access_granter) == 0 &&
       length(google_artifact_registry_repository_iam_member.terraform_images) == 0 &&
       length(google_storage_bucket_iam_member.worker_releases) == 0
@@ -389,84 +382,16 @@ run "projeto_dos_nos_preenchido" {
     release_bucket    = "projeto-exemplo-releases"
   }
 
+  # As permissões no projeto dos nós (os papéis do cp-terraform, o cpNodeLifecycle do cp-worker e o bucket do estado)
+  # estão no envs/nodes-platform desde o CP-06 (tests/plataforma.tftest.hcl de lá). Daqui, o projeto dos nós só vira as
+  # variáveis do Job e dos serviços: nenhuma concessão, nenhum papel personalizado naquele projeto.
   assert {
     condition = (
-      keys(google_project_iam_member.terraform_nodes) == [
-        "cpBucketsProvisioner",
-        "cpSecretsProvisioner",
-        "roles/compute.instanceAdmin.v1",
-        "roles/compute.networkAdmin",
-        "roles/compute.securityAdmin",
-        "roles/compute.storageAdmin",
-        "roles/iam.serviceAccountAdmin",
-        "roles/iam.serviceAccountUser",
-        "roles/monitoring.alertPolicyEditor",
-        "roles/monitoring.notificationChannelEditor",
-        "roles/pubsub.admin",
-        "roles/resourcemanager.projectIamAdmin",
-      ] &&
-      alltrue([for member in google_project_iam_member.terraform_nodes : member.project == "projeto-exemplo-nos" && member.member == "serviceAccount:cp-terraform@projeto-exemplo.iam.gserviceaccount.com"]) &&
-      google_project_iam_member.terraform_nodes["cpSecretsProvisioner"].role == google_project_iam_custom_role.secrets_provisioner[0].id &&
-      google_project_iam_member.terraform_nodes["cpBucketsProvisioner"].role == google_project_iam_custom_role.buckets_provisioner[0].id
+      length([for member in google_project_iam_member.worker_hosting_admin : member if member.project == "projeto-exemplo-nos"]) == 0 &&
+      length([for role in google_project_iam_custom_role.images_access_granter : role if role.project == "projeto-exemplo-nos"]) == 0 &&
+      contains([for env in google_cloud_run_v2_job.terraform[0].template[0].template[0].containers[0].env : "${env.name}=${env.value}"], "TFSTATE_BUCKET=projeto-exemplo-nos-tfstate")
     )
-    error_message = "Os 12 papéis do cp-terraform no projeto dos nós: os 10 predefinidos da seção 2.2 e os dois personalizados no lugar de secretmanager.admin e storage.admin."
-  }
-
-  assert {
-    condition = (
-      !contains([for member in google_project_iam_member.terraform_nodes : member.role], "roles/secretmanager.admin") &&
-      !contains([for member in google_project_iam_member.terraform_nodes : member.role], "roles/storage.admin")
-    )
-    error_message = "secretmanager.admin e storage.admin no projeto dos nós deixariam o cp-terraform ler os segredos e os backups de todos os tenants."
-  }
-
-  assert {
-    condition = (
-      google_project_iam_custom_role.secrets_provisioner[0].project == "projeto-exemplo-nos" &&
-      google_project_iam_custom_role.secrets_provisioner[0].role_id == "cpSecretsProvisioner" &&
-      google_project_iam_custom_role.secrets_provisioner[0].permissions == toset([
-        "secretmanager.secrets.create", "secretmanager.secrets.delete", "secretmanager.secrets.get", "secretmanager.secrets.list",
-        "secretmanager.secrets.update", "secretmanager.secrets.getIamPolicy", "secretmanager.secrets.setIamPolicy",
-        "secretmanager.versions.list",
-      ]) &&
-      alltrue([for permission in google_project_iam_custom_role.secrets_provisioner[0].permissions : !contains(["secretmanager.versions.access", "secretmanager.versions.add", "secretmanager.versions.destroy"], permission)])
-    )
-    error_message = "cpSecretsProvisioner: o cofre e a política de acesso, nunca ler, gravar ou destruir versão."
-  }
-
-  assert {
-    condition = (
-      google_project_iam_custom_role.buckets_provisioner[0].project == "projeto-exemplo-nos" &&
-      google_project_iam_custom_role.buckets_provisioner[0].role_id == "cpBucketsProvisioner" &&
-      google_project_iam_custom_role.buckets_provisioner[0].permissions == toset([
-        "storage.buckets.create", "storage.buckets.delete", "storage.buckets.get", "storage.buckets.list",
-        "storage.buckets.update", "storage.buckets.getIamPolicy", "storage.buckets.setIamPolicy",
-      ]) &&
-      alltrue([for permission in google_project_iam_custom_role.buckets_provisioner[0].permissions : !startswith(permission, "storage.objects.")])
-    )
-    error_message = "cpBucketsProvisioner: o bucket e a política de acesso, nenhum storage.objects.*."
-  }
-
-  assert {
-    condition = (
-      google_storage_bucket_iam_member.terraform_state[0].bucket == "projeto-exemplo-nos-tfstate" &&
-      google_storage_bucket_iam_member.terraform_state[0].role == "roles/storage.objectAdmin" &&
-      google_storage_bucket_iam_member.worker_runs[0].bucket == "projeto-exemplo-nos-tfstate" &&
-      google_storage_bucket_iam_member.worker_runs[0].role == "roles/storage.objectViewer" &&
-      google_storage_bucket_iam_member.worker_runs[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/projeto-exemplo-nos-tfstate/objects/runs/\")"
-    )
-    error_message = "No bucket do estado: o executor grava tudo (a única leitura de objeto que ele tem no projeto dos nós); o cp-worker lê só runs/."
-  }
-
-  assert {
-    condition = (
-      google_project_iam_custom_role.node_lifecycle[0].project == "projeto-exemplo-nos" &&
-      google_project_iam_custom_role.node_lifecycle[0].permissions == toset(["compute.instances.get", "compute.instances.start", "compute.instances.stop", "compute.instances.getGuestAttributes"]) &&
-      google_project_iam_member.worker_node_lifecycle[0].role == google_project_iam_custom_role.node_lifecycle[0].id &&
-      google_project_iam_member.worker_node_lifecycle[0].member == "serviceAccount:cp-worker@projeto-exemplo.iam.gserviceaccount.com" &&
-      strcontains(google_project_iam_member.worker_node_lifecycle[0].condition[0].expression, "startsWith(\"vx-\")")
-    )
-    error_message = "O cp-worker para, liga e lê só as VMs vx-* do projeto dos nós, pelo papel cpNodeLifecycle com condição."
+    error_message = "O envs/control-plane voltou a conceder algo no projeto dos nós, ou o Job perdeu o bucket do estado."
   }
 
   assert {

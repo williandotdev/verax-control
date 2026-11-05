@@ -64,10 +64,13 @@ Na reunião:
    NODE_SA_UNIQUE_ID=<o ID único da conta de serviço, 21 dígitos>
    # AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader   # só para trocar o padrão
    ```
-   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax. O IP de saída também entra nas
-   regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível 12), e
-   o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer` e o
-   `verax-wazuh-apply.timer` aparecem em `systemctl list-timers`, e o `verax-wazuh-apply.path` está ativo.
+   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax, e o worker não confere a conexão
+   (o "Verificar" responde `check_unavailable`). Na partida, o worker confere que o token do Google do nó é dessa
+   conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
+   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora. O IP de saída também entra
+   nas regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível
+   12), e o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer` e
+   o `verax-wazuh-apply.timer` aparecem em `systemctl list-timers`, e o `verax-wazuh-apply.path` está ativo.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -77,29 +80,47 @@ Na reunião:
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
-6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta e as regiões. O detalhe da conta mostra o passo
-   a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
+6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
+   no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
+   da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da
+   pilha). O painel confere as regras de nome do S3 e recusa um bucket que já é de outro cliente. Depois do cadastro,
+   a lista muda no detalhe da conta, em **Buckets de log** (quem só lê vê a lista, sem o formulário). O detalhe mostra
+   o passo a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
    - **Baixar o template:** o painel serve o próprio `verax-control-reader.yaml` do repositório, sem nada preenchido;
    - no CloudFormation, _Create stack_ → _Upload a template file_, a pilha `verax-control-reader` com os três valores
-     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), os ARNs dos
-     buckets em `LogBucketArns` e as chaves KMS em `LogKmsKeyArns`; a tela também traz o comando da CLI;
-   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel e leia os buckets. A resposta chega em até
-     30 s, ou em até 10 min se o papel recém-criado ainda não valer no IAM, e cada erro diz o que conferir (pilha
-     ainda não criada, valor errado, papel feito pelo assistente "Web identity → Google" do console, SCP ou RCP).
+     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), o
+     `LogBucketArns` com os ARNs dos buckets cadastrados e as chaves KMS em `LogKmsKeyArns`; a tela também traz o
+     comando da CLI, que cria a pilha ou atualiza a que já existe;
+   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel, confira a conta e leia 1 byte de um
+     objeto de cada bucket (o que prova também a chave KMS). Na mesma verificação, ele confere se uma trilha ligada
+     grava no bucket do CloudTrail, se o GuardDuty exporta para o bucket dele e se o papel não ganhou permissão além
+     da leitura. A resposta chega em até 30 s; se o papel recém-criado ainda não valer no IAM, o worker tenta de novo,
+     espaçado, por até 10 min. Cada erro diz o que conferir (pilha ainda não criada, valor errado, papel feito pelo
+     assistente "Web identity → Google" do console, SCP ou RCP, bucket sem acesso, com qual fonte, ou chave KMS).
+   - **Depois de conectada,** o worker confere sozinho a cada 15 min, e as conferências da trilha, do export e da
+     permissão demais uma vez por dia. Trilha parada, export ausente, permissão demais ou STS da região desligado
+     aparecem como **aviso**: a conta continua conectada e a coleta segue. Um erro (papel recusado, bucket sem acesso)
+     aparece na conta, e ela volta a conectada sozinha quando o cliente corrige.
 
-   Os buckets da conta ainda não têm campo no painel: vão pela API (`PATCH /v1/cloud-accounts/:id`, com `buckets`).
-   **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`), e a
-   conta não ganha o início da coleta (`ingestFrom`), que é o que a põe no Wazuh do nó: a coleta da AWS começa com o
-   PR-V5'. Depois dele, confira com o cliente, no CloudTrail da conta dele, as entradas `AssumeRoleWithWebIdentity`
-   com o ID da conta de serviço do nó.
+   **Mudar os buckets depois:** salve a lista nova em **Buckets de log**. Se os nomes mudaram, o painel avisa que falta
+   atualizar a pilha (o `LogBucketArns` e o comando da CLI já trazem a lista nova; um bucket novo com SSE-KMS pede
+   também a chave em `LogKmsKeyArns`), a conexão volta a "Aguardando" e um "Verificar" pendente é descartado. Nada é
+   conferido na AWS sozinho enquanto a conta aguarda: depois de atualizar a pilha, o cliente clica em **Verificar
+   conexão**, e a conferência de 15 em 15 min volta com a conta conectada. Trocar só a fonte de um bucket (os mesmos
+   nomes) não mexe na pilha nem na conexão.
+
+   Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
+   conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
 
    **Coleta (PR-V4'):** na primeira verificação bem-sucedida, a conta entra no Wazuh do nó em até 1 min (só o manager
-   reinicia; o painel segue no ar), lendo os logs desde o dia anterior. Um bucket cadastrado depois é lido desde esse
-   mesmo dia: avise o cliente se o bucket novo tiver meses de log, porque a leitura conta no medidor do plano. No nó,
-   `journalctl -u verax-wazuh-apply` mostra cada aplicação e `cat /run/verax/wazuh-signal/applied` o último resultado.
-   No painel, `aws_token_stale` (o nó não renova o token do Google) e `wazuh_apply_failed` (a configuração nova não
-   subiu e o manager segue com a anterior) são do nó, não da conta do cliente: veja o journal do `verax-aws-token` ou
-   do `verax-wazuh-apply`.
+   reinicia; o painel segue no ar), lendo os logs desde o dia anterior. Editar os buckets não tira a conta do Wazuh: o
+   bucket novo entra em seguida, e um bucket cadastrado depois é lido desde esse mesmo dia (avise o cliente se o bucket
+   novo tiver meses de log, porque a leitura conta no medidor do plano). No CloudTrail do cliente, a coleta aparece
+   como a sessão `verax-control-reader/verax-control-wazuh`. No nó, `journalctl -u verax-wazuh-apply` mostra cada
+   aplicação e `cat /run/verax/wazuh-signal/applied` o último resultado. No painel, o estado da coleta aparece ao lado
+   da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
+   Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
+   segue com a anterior; veja o do `verax-wazuh-apply`).
 
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.

@@ -82,7 +82,7 @@ export type ParsedAlert =
   { ok: true; alert: WazuhAwsAlert } | { ok: false; reason: 'invalid_alert' | 'not_aws'; id: string | null };
 
 const isoTimestamp = z.iso.datetime({ offset: true });
-const ALERT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+export const ALERT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const ACCOUNT_ID = /^\d{12}$/;
 const ACCESS_KEY_ID = /^(AKIA|ASIA|AROA|AIDA)[A-Z0-9]{12,124}$/;
 const BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
@@ -97,16 +97,19 @@ export function normalizeTimestamp(value: string): string | null {
 
 const shortList = (max: number) => z.array(z.string().max(max)).max(64).default([]);
 
+/** A regra que casou, como o Wazuh grava em todo alerta (o mesmo formato nos alertas dos agentes). */
+export const alertRuleSchema = z.object({
+  id: z.string().regex(/^\d{1,9}$/),
+  level: z.number().int().min(0).max(16),
+  description: z.string().min(1).max(2048),
+  groups: shortList(128),
+  mitre: z.object({ id: shortList(32), tactic: shortList(128), technique: shortList(256) }).optional(),
+});
+
 const envelopeSchema = z.object({
   id: z.string().regex(ALERT_ID),
   timestamp: z.string().max(64),
-  rule: z.object({
-    id: z.string().regex(/^\d{1,9}$/),
-    level: z.number().int().min(0).max(16),
-    description: z.string().min(1).max(2048),
-    groups: shortList(128),
-    mitre: z.object({ id: shortList(32), tactic: shortList(128), technique: shortList(256) }).optional(),
-  }),
+  rule: alertRuleSchema,
   data: z
     .object({
       integration: z.string().max(64).optional(),
@@ -119,7 +122,7 @@ const envelopeSchema = z.object({
  * Lê um caminho no evento. Numa lista, segue o primeiro item (o wodle transforma listas de um item em objeto). Só
  * lê: cada passo pega a propriedade própria pelo descritor, sem passar pelo protótipo nem chamar getter.
  */
-function at(value: unknown, ...path: string[]): unknown {
+export function at(value: unknown, ...path: string[]): unknown {
   let current = value;
   for (const key of path) {
     if (Array.isArray(current)) current = current[0];
@@ -139,28 +142,29 @@ function hasControlCharacter(value: string): boolean {
 }
 
 /** Texto curto e sem caractere de controle; qualquer outra coisa vira ausente. */
-function text(value: unknown, max = 256): string | undefined {
+export function text(value: unknown, max = 256): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= max && !hasControlCharacter(value)
     ? value
     : undefined;
 }
 
 /**
- * Texto curto que bate com um dos padrões deste arquivo. Os padrões são lineares (ancorados, com classes de
- * caracteres e quantificadores limitados, sem aninhamento), e o texto já chega com no máximo `max` caracteres.
+ * Texto curto que bate com um dos padrões deste arquivo (ou do `agent-alert.ts`). Os padrões são lineares (ancorados,
+ * com classes de caracteres e quantificadores limitados, sem aninhamento), e o texto já chega com no máximo `max`
+ * caracteres.
  */
-function matching(value: unknown, pattern: RegExp, max = 256): string | undefined {
+export function matching(value: unknown, pattern: RegExp, max = 256): string | undefined {
   // nosemgrep: ajinabraham.njsscan.dos.regex_dos.regex_dos
   const found = text(value, max);
   return found !== undefined && pattern.test(found) ? found : undefined;
 }
 
-function ip(value: unknown): string | undefined {
+export function ip(value: unknown): string | undefined {
   const found = text(value, 64);
   return found !== undefined && isIP(found) !== 0 ? found : undefined;
 }
 
-function firstOf<T>(...values: (T | undefined)[]): T | undefined {
+export function firstOf<T>(...values: (T | undefined)[]): T | undefined {
   return values.find((value) => value !== undefined);
 }
 
@@ -224,7 +228,7 @@ function parseArn(value: string): Arn | null {
  * Contas citadas no evento, pelos campos de cada fonte. Um campo presente fora do formato invalida a lista (`null`):
  * o alerta vai para a fila sem dono em vez de ser atribuído por um campo que sobrou.
  */
-function accountsOf(source: AwsSource, aws: Record<string, unknown>): string[] | null {
+export function accountsOf(source: AwsSource, aws: Record<string, unknown>): string[] | null {
   const plain: unknown[] = [];
   const arns: { value: unknown; service: string }[] = [];
   if (source === 'cloudtrail') {

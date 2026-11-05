@@ -117,11 +117,12 @@ O papel não tem nenhuma permissão de escrita, e o teste do template falha se a
   Sem o ID e o IP, a pilha não é criada.
 
 - Escolha os logs que o Verax Control vai ler. O relatório do diagnóstico somente leitura (`infra/diagnostico/`)
-  lista as fontes que existem na conta. Para cada uma, informe o ARN do bucket em `LogBucketArns` (exemplo:
-  `arn:aws:s3:::empresa-cloudtrail-logs`) e, se o bucket usar SSE-KMS, a chave em `LogKmsKeyArns`
-  (`aws s3api get-bucket-encryption --bucket <nome>`; chave comum ou multirregião, `key/mrk-...`). O export do
-  GuardDuty sempre usa uma chave KMS. Para o WAF, informe o bucket `aws-waf-logs-*` que já recebe o log. Vários
-  valores vão separados por vírgula.
+  lista as fontes que existem na conta. Cadastre os buckets no painel, em Contas cloud → a conta AWS → **Buckets de
+  log**: um por fonte (o bucket da trilha do CloudTrail, o do export do GuardDuty e o `aws-waf-logs-*` que já recebe o
+  log do WAF), pelo nome ou pelo ARN. O painel confere as regras de nome do S3 e mostra o `LogBucketArns` pronto, com
+  o ARN de cada um (exemplo: `arn:aws:s3:::empresa-cloudtrail-logs`). Se um bucket usar SSE-KMS, informe a chave em
+  `LogKmsKeyArns` (`aws s3api get-bucket-encryption --bucket <nome>`; chave comum ou multirregião, `key/mrk-...`). O
+  export do GuardDuty sempre usa uma chave KMS. Vários valores vão separados por vírgula.
 
 ## Como criar a pilha
 
@@ -134,13 +135,16 @@ GuardDuty, use a região do detector.
 2. No console da AWS, abra o CloudFormation → _Create stack_ → _With new resources (standard)_ → _Upload a template
    file_, escolha o arquivo e avance. O console guarda o arquivo num bucket `cf-templates-…` que ele cria na sua
    conta: é o comportamento padrão do CloudFormation.
-3. Dê o nome `verax-control-reader` à pilha e preencha os três valores do painel, os buckets e as chaves dos logs e,
-   se quiser, os opcionais.
+3. Dê o nome `verax-control-reader` à pilha e preencha os três valores do painel, o `LogBucketArns` que o painel
+   mostra, as chaves dos logs e, se quiser, os opcionais.
 4. Avance até a revisão, marque _I acknowledge that AWS CloudFormation might create IAM resources with custom names_
    e clique em _Submit_. A pilha fica pronta em 1 ou 2 minutos.
 5. Volte ao painel do Verax Control e clique em **Verificar conexão**, na conta (Contas cloud → AWS). O Verax entra no
-   papel e lê um objeto de cada bucket cadastrado; logo depois da criação da pilha, o papel pode levar alguns minutos
-   para valer, e ele tenta de novo por até 10 minutos. Não há nada para copiar ou colar.
+   papel e lê 1 byte de um objeto de cada bucket cadastrado; logo depois da criação da pilha, o papel pode levar alguns
+   minutos para valer, e ele tenta de novo por até 10 minutos. Não há nada para copiar ou colar. Depois, ele confere
+   sozinho a cada 15 minutos e, uma vez por dia, a trilha, o export do GuardDuty e se o papel ganhou permissão além da
+   leitura (`SimulatePrincipalPolicy` no próprio papel). Todas as chamadas são de leitura e aparecem no CloudTrail da
+   conta, na sessão `verax-control-reader/verax-control-worker`.
 
 **Pela CLI** (ou no AWS CloudShell, com o arquivo enviado pelo menu _Actions_ → _Upload file_). O template tem cerca
 de 32 KB, abaixo do limite de 51.200 bytes do CloudFormation, e vai direto, sem bucket. Os valores abaixo são
@@ -156,8 +160,12 @@ aws cloudformation deploy --stack-name verax-control-reader \
     LogKmsKeyArns=arn:aws:kms:sa-east-1:111111111111:key/00000000-0000-0000-0000-000000000000
 ```
 
-Para incluir ou tirar um bucket depois, atualize a pilha (_Update stack_ → _Use existing template_ no console, ou o
-mesmo comando com os valores novos): só as políticas mudam, e o nó continua entrando.
+Para incluir ou tirar um bucket depois, mude a lista no painel (**Buckets de log**, na conta) e atualize a pilha com o
+`LogBucketArns` novo que o painel mostra (_Update stack_ → _Use existing template_ no console, ou o comando do painel,
+que cria ou atualiza a pilha e leva sempre o `LogBucketArns`, vazio quando não há bucket): só as políticas mudam, e o
+nó continua entrando. Ao salvar outra lista, a conexão volta a "Aguardando" e o painel não confere nada sozinho:
+depois de atualizar a pilha, clique em **Verificar conexão**. Um bucket novo com SSE-KMS também pede a chave dele em
+`LogKmsKeyArns`.
 
 ## Como desconectar
 
@@ -191,15 +199,16 @@ O padrão é não. Com eles, a pilha cria recursos novos, e nada que já existe 
 
 Os buckets criados são privados, versionados, com retenção de `LogRetentionDays` dias (365 por padrão) e log de
 acesso num terceiro bucket (saída `AccessLogsBucketArn`). O nome dos três é gerado pelo CloudFormation (começa com o
-nome da pilha). O papel já lê os dois de log: cadastre no painel as saídas `TrailBucketArn` e `GuardDutyBucketArn`.
+nome da pilha). O papel já lê os dois de log: cadastre no painel (**Buckets de log**) as saídas `TrailBucketArn` e
+`GuardDutyBucketArn`; o campo aceita o ARN como a saída mostra.
 
 Se uma opção for desligada ou a pilha apagada, a trilha e o export param, mas os buckets e a chave ficam na conta, com
 os logs. Ligar a opção de novo, ou recriar a pilha, cria buckets e chave novos (por isso o nome não é fixo: a criação
 nunca esbarra num bucket que ficou); cadastre as saídas novas no painel e apague os buckets antigos quando não
 precisar mais dos logs deles.
 
-O WAF aceita um só destino de log por Web ACL, e a pilha nunca o troca: informe em `LogBucketArns` o bucket que já
-recebe o log.
+O WAF aceita um só destino de log por Web ACL, e a pilha nunca o troca: cadastre no painel o bucket que já recebe o
+log (`aws-waf-logs-*`, exigência da AWS para o log direto no S3); ele vai no `LogBucketArns` com os outros.
 
 ## Bucket com logs de várias contas
 

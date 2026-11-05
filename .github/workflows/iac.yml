@@ -58,7 +58,8 @@ jobs:
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
-            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane infra/gcp/envs/release; do
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane infra/gcp/envs/release \
+            infra/gcp/envs/nodes-platform infra/gcp/envs/tenant; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
@@ -67,8 +68,10 @@ jobs:
       - name: Testes do módulo do nó (provider simulado, sem credenciais)
         # Os dois perfis; no nó da Verax, os nomes e os valores que recriariam algo no ar se mudassem (rede, NAT,
         # firewall, conta de serviço, VM, disco, snapshot, cofres, tópicos, sinks e bucket), o script de boot byte a byte
-        # e a VM depois da manutenção do swap; e os acessos dos operadores quando a VM é recriada. Não substitui o `plan`
-        # contra o estado real (GUIA.md), que confere tudo. O provider simulado não fala com a GCP.
+        # e a VM depois da manutenção do swap; e os acessos dos operadores quando a VM é recriada. O nó de cliente como o
+        # envs/tenant o chama: só nomes vx-<slug>, o cofre da conta de suporte só com a gravação da VM, os atributos de
+        # convidado e as chaves verax-* dos metadados; desligados (o padrão), os nós que já existem não mudam. Não
+        # substitui o `plan` contra o estado real (GUIA.md), que confere tudo. O provider simulado não fala com a GCP.
         env:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: |
@@ -81,16 +84,24 @@ jobs:
         # no cp-worker nem no Job, zero instâncias mínimas, a imagem que o workflow troca sem o Terraform desfazer, a
         # primeira subida sem os serviços, o Firestore e os alertas. Chave de release: ECDSA P-256 em software, protegida
         # contra exclusão, só `cloudkms.signer` para a conta do workflow e o token aceito só do workflow Versão do nó.
-        # O `init` sem backend é o da validação, acima.
+        # Projeto dos nós: o bucket do estado adotado, com o acesso uniforme, e os papéis do cp-terraform e do cp-worker
+        # um a um. Nó de cliente: as permissões do cp-worker exatamente nos cofres do plano (nada no support-bootstrap,
+        # nenhuma leitura da chave do cofre), as saídas sem dado pessoal, a conta de serviço que não é recriada e o que
+        # as variáveis recusam. O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
           terraform -chdir=infra/gcp/envs/verax test
           terraform -chdir=infra/gcp/envs/control-plane test
           terraform -chdir=infra/gcp/envs/release test
-          # Os segredos do plano de controle nascem vazios: nenhuma versão de segredo (regional ou não) passa pelo
-          # Terraform. Só a declaração do recurso conta; um comentário que cite o nome não dispara.
-          if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' infra/gcp/envs/control-plane/*.tf; then
-            echo "O plano de controle não grava versão de segredo pelo Terraform (secrets.tf)." >&2
+          terraform -chdir=infra/gcp/envs/nodes-platform test
+          terraform -chdir=infra/gcp/envs/tenant test
+          # Os segredos do plano de controle e os dos nós nascem vazios: nenhuma versão de segredo (regional ou não) passa
+          # pelo Terraform, nem pelo estado de um tenant. Só a declaração do recurso conta; um comentário que cite o nome
+          # não dispara.
+          if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' \
+            infra/gcp/envs/control-plane/*.tf infra/gcp/envs/tenant/*.tf infra/gcp/envs/nodes-platform/*.tf \
+            infra/gcp/modules/node/*.tf; then
+            echo "Nem o plano de controle nem os nós gravam versão de segredo pelo Terraform." >&2
             exit 1
           fi
       - name: tflint

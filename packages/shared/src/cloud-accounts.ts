@@ -70,13 +70,80 @@ export function isAwsRegion(name: string): boolean {
 
 const regionSchema = z.string().max(32).refine(isAwsRegion, { error: 'região AWS inválida' });
 
-/** Regras de nome de bucket do S3: 3 a 63 caracteres, minúsculas, números, ponto e hífen, sem formato de IP. */
-const bucketSchema = z
-  .string()
-  .regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/, { error: 'nome de bucket S3 inválido' })
-  .refine((name) => !/^\d+\.\d+\.\d+\.\d+$/.test(name) && !name.includes('..'), {
-    error: 'nome de bucket S3 inválido',
-  });
+/**
+ * O logging do WAF direto para o S3 só grava em bucket com este prefixo (exigência da AWS); é o `aws-waf-logs-*` que o
+ * template cita em `LogBucketArns`.
+ */
+export const WAF_LOG_BUCKET_PREFIX = 'aws-waf-logs-';
+
+/** Começos e fins de nome que a AWS reserva (access points, Multi-Region Access Points, directory e table buckets). */
+const RESERVED_BUCKET_PREFIXES = ['xn--', 'sthree-', 'amzn-s3-demo-'] as const;
+const RESERVED_BUCKET_SUFFIXES = ['-s3alias', '--ol-s3', '.mrap', '--x-s3', '--table-s3'] as const;
+
+function isBucketLowerAlnum(char: string): boolean {
+  return (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9');
+}
+
+/** Quatro grupos de dígitos separados por ponto: o formato de IP que o S3 recusa como nome. */
+function looksLikeIpAddress(name: string): boolean {
+  const parts = name.split('.');
+  return parts.length === 4 && parts.every((part) => /^\d+$/.test(part));
+}
+
+/**
+ * O que está errado no nome de um bucket de uso geral do S3, em português, ou null se ele segue as regras da AWS
+ * (https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html): 3 a 63 caracteres; só minúsculas,
+ * números, ponto e hífen; começa e termina com letra ou número; sem dois pontos seguidos; sem formato de IP; sem os
+ * começos e fins reservados. Conferido caractere a caractere, sem regex sobre o texto inteiro. Os buckets antigos de
+ * us-east-1 com maiúscula ou sublinhado (de antes de 2018) ficam de fora, como no `AllowedPattern` do template.
+ */
+export function bucketNameProblem(name: string): string | null {
+  if (name.length < 3 || name.length > 63) return 'O nome do bucket tem de 3 a 63 caracteres.';
+  for (const char of name) {
+    if (!isBucketLowerAlnum(char) && char !== '.' && char !== '-') {
+      return 'Use só letras minúsculas, números, ponto (.) e hífen (-) no nome do bucket.';
+    }
+  }
+  if (!isBucketLowerAlnum(name.charAt(0)) || !isBucketLowerAlnum(name.charAt(name.length - 1))) {
+    return 'O nome do bucket começa e termina com letra minúscula ou número.';
+  }
+  if (name.includes('..')) return 'O nome do bucket não pode ter dois pontos seguidos.';
+  if (looksLikeIpAddress(name)) return 'O nome do bucket não pode ter o formato de um endereço IP.';
+  const prefix = RESERVED_BUCKET_PREFIXES.find((reserved) => name.startsWith(reserved));
+  if (prefix) return `O começo ${prefix} é reservado pela AWS e não serve para um bucket de log.`;
+  const suffix = RESERVED_BUCKET_SUFFIXES.find((reserved) => name.endsWith(reserved));
+  if (suffix) return `O fim ${suffix} é reservado pela AWS e não serve para um bucket de log.`;
+  return null;
+}
+
+/** Nome de bucket de uso geral do S3 (`bucketNameProblem`), com a mensagem do que está errado. */
+const bucketSchema = z.string().superRefine((name, ctx) => {
+  const problem = bucketNameProblem(name);
+  if (problem !== null) ctx.addIssue({ code: 'custom', message: problem });
+});
+
+/** O ARN de um bucket: `arn:<partição>:s3:::`, com a partição de minúsculas e hífen (`aws`, `aws-cn`, `aws-us-gov`). */
+function bucketArnPrefixLength(value: string): number {
+  const marker = ':s3:::';
+  if (!value.startsWith('arn:')) return 0;
+  const end = value.indexOf(marker);
+  if (end <= 'arn:'.length) return 0;
+  for (const char of value.slice('arn:'.length, end)) {
+    if (!(char >= 'a' && char <= 'z') && char !== '-') return 0;
+  }
+  return end + marker.length;
+}
+
+/**
+ * O que o cliente cola no campo do bucket vira o nome: sem os espaços das pontas, sem o `s3://` ou o ARN
+ * (`arn:aws:s3:::`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da pilha e o `LogBucketArns` mostram) e sem
+ * uma barra no fim. Nada além disso muda: maiúscula, caminho ou outro texto ficam, e o schema recusa com a mensagem.
+ */
+export function normalizeBucketName(value: string): string {
+  let name = value.trim();
+  name = name.startsWith('s3://') ? name.slice('s3://'.length) : name.slice(bucketArnPrefixLength(name));
+  return name.endsWith('/') ? name.slice(0, -1) : name;
+}
 
 /**
  * Assinatura do Pub/Sub de onde o nó lê os logs do projeto (o coletor do Cloud Logging publica no tópico dela),
@@ -206,15 +273,57 @@ const regionsSchema = z
   .max(40)
   .refine((regions) => new Set(regions).size === regions.length, { error: 'região repetida' });
 
+/**
+ * Buckets de log da conta AWS: no máximo um por fonte (`LOG_SOURCES`), então três no total; uma fonte que não está no
+ * objeto não muda, e `null` tira o bucket dela. O objeto é estrito: outra fonte, uma lista ou um prefixo são recusados.
+ * O mesmo bucket em duas fontes da mesma conta vale (uma trilha e o export do GuardDuty num bucket central, em pastas
+ * diferentes); em outro cliente, a API recusa (`assertOriginsFree`).
+ */
 const bucketsSchema = z.strictObject({
   cloudtrail: bucketSchema.nullable().optional(),
   guardduty: bucketSchema.nullable().optional(),
-  // O logging do WAF só grava em bucket com este prefixo (exigência da AWS).
   waf: bucketSchema
-    .refine((name) => name.startsWith('aws-waf-logs-'), { error: 'o bucket do WAF começa com aws-waf-logs-' })
+    .refine((name) => name.startsWith(WAF_LOG_BUCKET_PREFIX), {
+      error: `O bucket do WAF começa com ${WAF_LOG_BUCKET_PREFIX}: a AWS só grava o log do WAF num bucket com esse começo.`,
+    })
     .nullable()
     .optional(),
 });
+
+/** Os buckets de log de uma conta AWS por fonte (null: a fonte sem bucket), como a API devolve. */
+export type LogBuckets = Readonly<Record<LogSource, string | null>>;
+
+/**
+ * Os nomes dos buckets da conta, sem repetir, na ordem das fontes: o que vai em `LogBucketArns` e o que o "Verificar"
+ * lê.
+ */
+export function logBucketNames(buckets: LogBuckets): string[] {
+  return [...new Set(LOG_SOURCES.map((source) => buckets[source]).filter((name) => name !== null))];
+}
+
+/**
+ * Se dois conjuntos de buckets têm os mesmos nomes, qualquer que seja a fonte de cada um. É o que a pilha (o
+ * `LogBucketArns`) e o "Verificar" (um objeto de cada bucket) enxergam: trocar só a fonte de um bucket não pede
+ * atualizar a pilha nem verificar de novo.
+ */
+export function sameLogBucketNames(a: LogBuckets, b: LogBuckets): boolean {
+  const before = new Set(logBucketNames(a));
+  const after = logBucketNames(b);
+  return before.size === after.length && after.every((name) => before.has(name));
+}
+
+/** Os buckets depois de uma alteração: a fonte que não veio fica como estava; `null` tira o bucket. */
+export function mergeLogBuckets(
+  current: LogBuckets,
+  update: Partial<Record<LogSource, string | null>> | undefined,
+): LogBuckets {
+  const merged: Record<LogSource, string | null> = { ...current };
+  for (const source of LOG_SOURCES) {
+    const value = update?.[source];
+    if (value !== undefined) merged[source] = value;
+  }
+  return merged;
+}
 
 /**
  * Conta cloud do cliente (T3.3), com os campos do provedor. Não há campo de credencial em nenhum deles:
@@ -333,8 +442,9 @@ export const cloudAccountSchema = z.strictObject({
    */
   connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS),
   /**
-   * Tipo do último erro de coleta (`AccessDenied`; na AWS, os códigos de `AWS_CONNECTION_ERROR_CODES`), só em
-   * `error`. Nunca a mensagem nem segredo.
+   * Tipo do último erro de coleta (`AccessDenied`; na AWS, os códigos de `AWS_CONNECTION_ERROR_CODES`), em `error`.
+   * Na AWS, também em `connected`, com um aviso que não para a coleta (`AWS_CONNECTION_WARNING_CODES`). Nunca a
+   * mensagem nem segredo.
    */
   connectionError: z
     .string()

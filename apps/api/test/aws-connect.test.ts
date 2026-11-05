@@ -269,6 +269,24 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`).send({ status: 'active' }).expect(200);
       expect((await rowOf(account.id)).checkRequestedAt).toBeNull();
     });
+
+    it('outra lista de buckets descarta o pedido pendente (era da lista antiga); a mesma lista o mantém', async () => {
+      const account = await awsAccount(adminA, { cloudtrail: bucket() });
+      const asked = await requested(adminA, account.id);
+      await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`)
+        .send({ buckets: { cloudtrail: account.buckets.cloudtrail } })
+        .expect(200);
+      expect((await rowOf(account.id)).checkRequestedAt).toEqual(asked);
+      const changed = await write(adminA, 'patch', `/v1/cloud-accounts/${account.id}`)
+        .send({ buckets: { waf: `aws-waf-logs-${randomInt(1_000_000, 9_999_999)}` } })
+        .expect(200);
+      expect(changed.body).toMatchObject({ connection: 'waiting', checkRequestedAt: null });
+      // A tarefa não confere mais esta conta: o cliente atualiza a pilha e pede de novo.
+      const checker = new FakeAwsChecker();
+      await new AwsCheck(prisma, checker).runOnce();
+      expect(checker.callsFor(account.accountId)).toEqual([]);
+      expect(await rowOf(account.id)).toMatchObject({ connection: 'waiting', checkRequestedAt: null });
+    });
   });
 
   describe('a tarefa aws-check do worker', () => {
@@ -282,13 +300,15 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
 
       const report = await new AwsCheck(prisma, checker, { now: () => now }).runOnce();
       expect(report).toEqual({ pending: 1, connected: 1, failed: 0, retrying: 0, stale: 0 });
-      // A conferência recebe a conta cadastrada e os buckets sem repetir; nada de ExternalId nem de chave.
+      // A conferência recebe a conta cadastrada e o bucket de cada fonte (o pedido confere também as diárias); nada de
+      // ExternalId nem de chave.
       expect(checker.callsFor(account.accountId)).toEqual([
         {
           cloudAccountId: account.id,
           accountId: account.accountId,
           regions: ['sa-east-1', 'us-east-1'],
-          buckets: [trail, waf],
+          buckets: { cloudtrail: trail, guardduty: trail, waf },
+          daily: true,
         },
       ]);
       expect(await rowOf(account.id)).toMatchObject({
@@ -460,7 +480,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       expect((await rowOf(newer.id)).checkRequestedAt).not.toBeNull();
     });
 
-    it('a conferência deste PR (antes do PR-V5) responde check_unavailable na hora, sem tentar de novo', async () => {
+    it('sem o ID da conta de serviço do nó, a conferência responde check_unavailable na hora, sem tentar de novo', async () => {
       const account = await awsAccount(adminA);
       await requested(adminA, account.id);
       expect(await new AwsCheck(prisma, new UnavailableAwsConnectionChecker()).runOnce()).toMatchObject({

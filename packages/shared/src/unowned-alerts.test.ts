@@ -34,4 +34,27 @@ describe('fila de alertas sem dono', () => {
     expect(unownedAlertSchema.parse(alert)).toEqual(alert);
     expect(unownedAlertSchema.safeParse({ ...alert, fullLog: '{}' }).success).toBe(false);
   });
+
+  it('o alerta de agente sem dono: o motivo e o agente (`agent:<id>`) junto das contas, e o filtro por agente', () => {
+    const alert = {
+      id: '018f2c1e-0000-7000-8000-0000000c0002',
+      source: 'wazuh',
+      reason: 'agent_account_conflict',
+      accounts: ['agent:001', '444455556666'],
+      occurredAt: '2026-11-03T11:59:00.000Z',
+      ruleId: '5712',
+      ruleLevel: 10,
+      title: 'sshd: brute force trying to get access to the system. Non existent user.',
+      createdAt: '2026-11-03T12:00:00.000Z',
+    };
+    expect(unownedAlertSchema.parse(alert)).toEqual(alert);
+    for (const reason of [
+      'agents_disabled',
+      'unknown_agent',
+      'agent_name_mismatch',
+      'agent_account_conflict',
+    ]) {
+      expect(unownedAlertListQuerySchema.safeParse({ reason, account: 'agent:001' }).success).toBe(true);
+    }
+  });
 });

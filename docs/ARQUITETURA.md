@@ -328,17 +328,24 @@ pede ao Google). Mudá-la exige atualizar a pilha de todos os clientes do nó.
    - **"Verificar"** (`POST /v1/cloud-accounts/:id/aws/verify`, `cloud_accounts:write`, 202): grava o pedido
      (`checkRequestedAt`) e volta a conexão para `waiting`, sem erro; um pedido pendente não é renovado. A API não
      alcança o metadata e não assume o papel. A tarefa `aws-check` do worker (a cada 30 s) confere cada pedido pela
-     interface `AwsConnectionChecker` e grava `connected` ou `error` com o código (`trust_denied`, `token_invalid`,
-     `idp_unavailable`, `region_disabled`, `account_mismatch`, `bucket_missing`, `bucket_denied`, `kms_denied`,
-     `aws_unavailable`, `check_unavailable`), com auditoria (`cloud_account.aws_check`) na trilha do cliente. Um erro
-     que pode passar deixa o pedido pendente por até 10 min (o papel recém-criado pode levar segundos para valer). O
-     resultado só vale para o pedido conferido: a conta desativada no meio o descarta. O painel relê a conta a cada 5 s
-     enquanto o pedido está pendente e mostra o que conferir em cada erro.
+     interface `AwsConnectionChecker`, com as conferências diárias (passo 3), e grava `connected` (com um aviso, se
+     houver) ou `error` com o código, com auditoria (`cloud_account.aws_check`) na trilha do cliente. Um erro que pode
+     passar deixa o pedido pendente por até 10 min (o papel recém-criado pode levar segundos para valer), com as
+     tentativas espaçadas: 30 s, 1 min, 2 min e depois a cada 4 min, no máximo 6 conferências por clique (cada uma é
+     uma linha no CloudTrail do cliente). O resultado só vale para o pedido conferido: a conta desativada no meio o
+     descarta. O painel relê a conta a cada 5 s enquanto o pedido está pendente e mostra o que conferir em cada erro e
+     em cada aviso.
    - **Início da coleta (`ingestFrom`):** na primeira verificação bem-sucedida, o dia anterior, gravado uma vez só. É
      o `only_logs_after` que o gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do
      bucket.
-   - **Até o PR-V5',** a conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem
-     chamar a AWS nem o metadata: o fluxo funciona de ponta a ponta, e o PR-V5' só troca a classe no `worker.ts`.
+   - **Buckets de log no painel:** no máximo um por fonte (CloudTrail, GuardDuty e WAF), no cadastro e no detalhe da
+     conta (`cloud_accounts:write`; quem só lê vê a lista). Outra lista de nomes volta a conexão para `waiting` e
+     descarta um "Verificar" pendente, sem chamar a AWS: o cliente atualiza o `LogBucketArns` da pilha e pede a
+     verificação. Trocar só a fonte de um bucket não muda nada disso, e o `ingestFrom` fica (um bucket incluído
+     depois herda o dia da conta).
+   - **Nó sem a própria identidade:** sem `NODE_SA_UNIQUE_ID` no `worker.env` (o nó da Verax, o ambiente local), a
+     conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem chamar a AWS nem o
+     metadata, e o SDK da AWS nem é carregado no worker.
 2. **Coletar (PR-V4', feito):** o manager do Wazuh do nó lê os buckets de cada conta conectada com o papel, sem chave.
    - **O token, no host:** o `infra/node/bin/aws-token.sh` (root, `verax-aws-token.timer`: 30 s depois do boot e a
      cada 10 min; o `start.sh wazuh-up` também o roda antes de subir o manager) pede ao servidor de metadados o token
@@ -374,19 +381,61 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
    - **Os sinais, sem segredo**, em `/run/verax/wazuh-signal` (root e o grupo do worker, 1770; montada com escrita só
      no worker, em `WAZUH_SIGNAL_DIR`): a tarefa `wazuh-config` do worker (a cada 30 s) grava a `generation` (o SHA-256
      da lista que o CLI imprime) só quando ela muda; o host grava `applied` (`{generation, status ok|error, at}`) e
-     `aws-token` (`{tokenAt}`), e o bit t impede que o worker troque os dois. O worker marca as contas conectadas com
-     `aws_token_stale` (token sem renovar há mais de 40 min) ou `wazuh_apply_failed` (a lista de agora não foi
-     aplicada) e as devolve a "conectada" quando o problema passa, com auditoria (`cloud_account.aws_collection`) na
-     trilha de cada cliente. O erro da própria conta (o papel, um bucket) e a verificação pendente valem mais.
+     `aws-token` (`{tokenAt}`), e o bit t impede que o worker troque os dois. O worker grava em cada conta que o
+     manager lê o aviso da coleta, `aws_token_stale` (token sem renovar há mais de 40 min) ou `wazuh_apply_failed` (a
+     lista de agora não foi aplicada), e o tira quando o problema passa (e da conta que saiu da coleta), com auditoria
+     (`cloud_account.aws_collection`) na trilha de cada cliente.
+   - **Um campo para cada tarefa:** o aviso da coleta fica em `CloudAccount.collectionError` (só conta AWS e só os dois
+     códigos, por CHECK), que só a tarefa `wazuh-config` grava; a conexão (`connection` e `connectionError`, com o
+     aviso dela) é só da tarefa `aws-check` (passo 3). Com um campo só, as duas se desfariam a cada conferência (com
+     auditoria), e tirar o aviso da coleta apagaria um aviso diário da conferência até o dia seguinte. A API devolve
+     os dois, e o painel mostra a coleta numa linha própria, "Coleta no nó", ao lado da conexão.
    - **Regras locais** (`verax_reader_rules.xml`, gerado do modelo com o IP de saída do nó): as leituras e a entrada no
      papel vindas do IP do nó, nível 0 (100200 e 100201); a sessão do papel ou o token usados de outro IP, nível 12
      com MITRE T1078.004 (100202 e 100203); qualquer alteração no papel ou nas duas políticas da pilha, nível 5 (100204
      e 100205). Sem o `NODE_EGRESS_IPS` no `node.conf`, só as de alteração.
-3. **Conferir (PR-V5'):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e confere a
-   conta (`GetCallerIdentity`) e a leitura de cada bucket: é a implementação real do `AwsConnectionChecker` do PR-V3',
-   que passa a rodar também a cada 15 min, sem pedido. Uma vez por dia, simula a permissão demais
-   (só avisa) e confere se a trilha e o export do GuardDuty apontam para os buckets cadastrados. Erros próprios: papel
-   recusado, Google fora do ar, token inválido, STS regional desligado e token do host sem renovar.
+3. **Conferir (PR-V5', feito):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e
+   confere a conta e a leitura de cada bucket: é a `WebIdentityAwsConnectionChecker`
+   (`apps/api/src/aws/web-identity-checker.ts`), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. Toda chamada
+   é de leitura e cai no CloudTrail do cliente.
+   - **Entrada no papel** (`aws/web-identity.ts`, `WebIdentityCredentials`): o token do Google pelo metadata
+     (`audience` do nó, `format=standard`, 3 s de prazo), trocado no STS da primeira região da conta
+     (`AssumeRoleWithWebIdentity`, sem assinatura, `RoleSessionName` `verax-control-worker`, 1 hora). As quatro partes
+     da sessão são conferidas com zod e ficam num objeto que não vira JSON nem log, guardado por conta até faltarem
+     5 min para vencer: uma entrada no papel por hora, dividida por todos os clientes do SDK (o inventário do PR-14'
+     usa o mesmo provedor, `credentialsFor`). O token nunca vai para log nem erro, e o logger oculta qualquer JWT e o
+     segredo e o token da sessão enquanto ela vale. Se o cliente desligou o STS da região (`RegionDisabled`), a troca é
+     repetida em us-east-1 (que não pode ser desligado), e a conta fica conectada com o aviso `region_disabled`: o
+     Wazuh usa o STS da região.
+   - **A cada conferência** (o "Verificar" e, sem pedido, a cada 15 min para as contas já verificadas, conectadas ou
+     com erro): `GetCallerIdentity` (a sessão tem de ser `assumed-role/verax-control-reader/verax-control-worker` da
+     conta cadastrada, ou `account_mismatch`) e, em cada bucket cadastrado (sem repetir), `ListObjectsV2` com
+     `MaxKeys=1` e `GetObject` de 1 byte (`Range: bytes=0-0`) do primeiro objeto, que prova o KMS quando o objeto é
+     cifrado com ele. Os erros de bucket levam a fonte: `bucket_missing:<fonte>`, `bucket_denied:<fonte>` e
+     `kms_denied:<fonte>` (`cloudtrail`, `guardduty` ou `waf`). Um objeto arquivado ou vazio não é erro. A negação
+     explícita na política do papel só passa como o `LogObjectPrefix` quando o objeto listado é dos logs de outra conta
+     (`AWSLogs/[<org>/]<outra conta>/`): o worker lê então o primeiro objeto desta conta no mesmo formato, e a negação
+     dele (ou do objeto desta conta logo de início) é `bucket_denied:<fonte>`.
+   - **Uma vez por dia** (e em todo "Verificar"), avisos que não param a coleta: `trail_not_logging` (nenhuma trilha
+     ligada grava no bucket do CloudTrail: `DescribeTrails` com as de outras regiões e de organização, e
+     `GetTrailStatus` só das que gravam nele), `guardduty_export_missing` (nenhum detector publica no bucket do
+     GuardDuty: `ListDetectors`, `ListPublishingDestinations` e `DescribePublishingDestination`) e
+     `excess_permissions` (`SimulatePrincipalPolicy` no próprio papel, com o IP de saída do nó em `aws:SourceIp`, numa
+     amostra de escrita, IAM, STS, KMS fora do S3 e leitura fora da política; sem o `NODE_EGRESS_IPS` no worker, a
+     simulação fica de fora). A trilha e o export são procurados nas regiões monitoradas até o primeiro encontrado.
+   - **O que vai para a conta:** um erro vira `error` com o código; sem erro, a conta fica `connected` com o aviso de
+     maior prioridade em `connectionError` (`region_disabled`, `trail_not_logging`, `guardduty_export_missing`,
+     `excess_permissions`), que a API só devolve na AWS. Sem pedido, só uma mudança é gravada (com auditoria); um erro
+     que pode passar numa conta conectada é tentado de novo, espaçado, por até 10 min antes de virar o erro dela, e a
+     conta corrigida pelo cliente volta a conectada sozinha. A conta que voltou a aguardar (outra lista de buckets,
+     reativação) fica fora até o "Verificar". O agendamento (15 min, diárias, tentativas) fica na memória do worker:
+     numa partida nova, tudo é conferido de novo.
+   - **Na partida do worker:** o `sub` do token do Google (decodificado sem rede) tem de ser o `NODE_SA_UNIQUE_ID`;
+     senão, um erro no log com os dois IDs (nenhum é segredo, nunca o token): as pilhas criadas com o valor do painel
+     recusam o nó.
+   - Erros próprios: `trust_denied`, `token_invalid`, `idp_unavailable`, `metadata_unavailable` (o metadata do nó),
+     `region_disabled` e `aws_unavailable`; o token do host sem renovar (`aws_token_stale`) é um aviso da coleta, no
+     campo dela (`collectionError`, passo 2).
 4. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
    sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
 
@@ -408,7 +457,7 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 | O worker grava na pasta dos sinais, no tmpfs do host                                                                                     | Só sinal sem segredo; o bit t impede que ele troque os arquivos do host, que nunca leem o que ele grava (a geração só dispara o `.path`, com limite de partidas)                                                                                                                                    |
 | O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                             | Impacto baixo; documentado                                                                                                                                                                                                                                                                          |
 | O IP do NAT muda e a coleta para                                                                                                         | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                                                                                                                                 |
-| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com uma amostra de escrita, IAM, KMS e leitura fora da política, e aviso na Torre. Permissão a mais fora da amostra não é detectada                                                                                                                             |
+| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                              |
 | O cliente cria o papel pelo assistente do console e põe o audience no `aud`                                                              | Template e Terraform prontos; o README avisa; a mensagem de papel recusado explica                                                                                                                                                                                                                  |
 | RCP de perímetro de dados do cliente nega a federação do Google                                                                          | O cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção (decisão dele); texto pronto no onboarding                                                                                                                                                                              |
 | STS de sa-east-1 desligado pelo cliente                                                                                                  | O worker cai para us-east-1; no Wazuh, o erro instrui a religar                                                                                                                                                                                                                                     |
@@ -560,11 +609,51 @@ worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente d
   remoted e o analysisd pesam pouco; o que pode pesar é a detecção de vulnerabilidades (o banco do feed da CTI e as
   varreduras). O ensaio da homologação mede: se passar, o caminho é subir o manager e baixar o heap do indexer, ou o
   plano B da VM.
-- **Alertas dos agentes:** chegam ao indexer como os outros, mas o sync de achados atribui alerta a cliente só pela
-  conta AWS (os dos agentes caem na fila sem dono). Atribuí-los ao cliente do nó é a próxima etapa.
+- **Alertas dos agentes:** chegam ao indexer como os outros e viram achados do cliente do nó pelas regras da seção
+  abaixo.
 - **Fora desta entrega:** o agente com o cloudflared de cada instância (túnel TCP, sem IP de entrada, mas um processo
   a mais em cada máquina do cliente e um token por instância) e a VPN para o Enterprise (rede privada até o nó, sem
   porta na internet).
+
+### Atribuição dos alertas dos agentes (`apps/api/src/alerts/agent-*.ts`)
+
+Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `admin_verax` vê, com o motivo.
+
+- **Dois caminhos que nunca se cruzam.** Quem gerou o alerta é o `agent.id`, que o manager grava pela conexão de cada
+  agente (a chave dele), e não pelo conteúdo do log. `000` é o próprio manager, onde o módulo aws-s3 lê as contas AWS:
+  esses alertas seguem só pelo sync da AWS (`wazuh`), pela regra de sempre (o bucket de origem e a conta, que precisam
+  concordar). Qualquer outro id é um agente, e o alerta segue só pelo sync dos agentes (`wazuh-agent-alerts`). A
+  partição vale na consulta (`agent.id` igual a `000` na página da AWS e diferente na dos agentes) e de novo em cada
+  alerta lido (`isAgentAlert`): um alerta nunca é atribuído pelos dois caminhos. Um agente que mande um log igual ao do
+  aws-s3 (o log da instância é de quem a usa) não vira achado de conta AWS: vira, no máximo, achado da própria
+  instância.
+- **O alerta do agente é do cliente do nó só quando, ao mesmo tempo:**
+  1. os agentes estão ligados no worker (`WAZUH_AGENTS_FILE` e `WAZUH_AGENTS_TENANT`, sempre juntos). Sem eles, o
+     alerta vai para a fila (`agents_disabled`);
+  2. o id do agente está na lista do cliente do nó (`WazuhAgent`, que o worker grava a partir da API do manager), com o
+     mesmo nome. Fora da lista, `unknown_agent`; na lista com outro nome, `agent_name_mismatch`. O nome sozinho nunca
+     decide: quem registra o agente escolhe o nome;
+  3. nenhuma conta AWS citada no log (`data.aws`, pelos mesmos campos e conferências do sync da AWS) está cadastrada em
+     outro cliente, ativa ou não (`agent_account_conflict`). A conta do próprio cliente, ou de cliente nenhum, não muda
+     nada. Campo de conta fora do formato invalida o alerta (`invalid_alert`), como no sync da AWS.
+- **A lista chega com atraso:** o host a exporta a cada minuto, e o worker a grava a cada minuto. O alerta de um agente
+  que a lista não conhece (ou conhece com outro nome) espera a próxima execução, sem ir para a fila, quando é recente
+  (menos de 3 min) e a lista é mais antiga que ele: a sobreposição da leitura (10 min) o relê. Passada a espera, ou com
+  a lista mais nova que o alerta, vai para a fila.
+- **O achado:** `source='wazuh'`, `logSource='wazuh_agent'` (o painel mostra "Agente (instância)"), origem
+  `agent:<id>` no lugar da conta (os dois-pontos não aparecem em nenhum identificador de conta, e o contrato aceita os
+  dois formatos), recurso `host:<nome do agente na lista>`, severidade pelo nível da regra (12 ou mais crítica, 10
+  alta, 7 média, abaixo baixa), MITRE da regra e, do log, só o IP (`data.srcip`) e o usuário (`srcuser`, `dstuser` ou
+  o `targetUserName` do Windows), conferidos no formato e usados só para mostrar e agrupar. A chave única é
+  `wazuh/agent:<id>/alert:<id do alerta>:<regra>`: o log da instância não tem um id próprio em todas as fontes, e o id
+  do alerta é o mesmo a cada releitura do documento (reler a janela não duplica). O detalhe busca o evento bruto no
+  indexer pelo id do alerta, saneado como os outros.
+- **O mesmo tratamento dos outros achados:** exceção do cliente (por regra e usuário, IP ou recurso, como
+  `host:web-01`) e agrupamento em incidente (os achados da mesma instância se juntam pelo recurso), na mesma transação,
+  pelo `FindingStore` de sempre. A cobertura das contas (último evento, conta silenciosa) não muda: agente não é conta.
+- **Leitura separada:** a tarefa `wazuh-agent-alerts` tem estado e concessão próprios no `SyncState`, com as mesmas
+  regras de leitura do sync da AWS (nível 5 ou mais, sobreposição de 10 min, cursor, até 100 páginas). Uma instância
+  barulhenta não atrasa os achados das contas, e o caminho da AWS não muda.
 
 ## Custo por nó
 
@@ -625,12 +714,16 @@ do preço configurável, documentos internos.
 
 - **`cp-public`:** lê e escreve no Firestore, enfileira tasks e lê as chaves da Stripe e do cookie. Nada mais.
 - **`cp-worker`:** Firestore, tasks, execução do Job, Firebase Hosting nos projetos do pool, leitura do bucket de
-  releases e, no projeto dos nós, um papel personalizado que só para, liga e lê atributos de VMs cujo nome começa com
-  `vx-`. Por tenant, o Terraform concede: adicionar a versão do token do túnel; ler uma vez e destruir a versão do
-  `admin-bootstrap`; destruir versões de `credentials-key`. Nunca ler o cofre de credenciais.
-- **`cp-terraform`:** os papéis de criar e destruir os recursos do módulo `node` no projeto dos nós (o mais sensível é
-  `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado pelo projeto isolado, pela imagem fixada e
-  por alerta em `SetIamPolicy` fora da lista). Não lê Stripe, Cloudflare nem Firestore.
+  releases e, no projeto dos nós (`envs/nodes-platform`), um papel personalizado que só para, liga e lê atributos de
+  VMs cujo nome começa com `vx-` (`cpNodeLifecycle`) e a leitura de `runs/` no bucket do estado. Por tenant, o
+  `envs/tenant` concede, cada permissão num cofre só: adicionar a versão do token do túnel (`secretVersionAdder`); ler
+  uma vez e destruir a versão do `admin-bootstrap` (`secretAccessor` e `secretVersionManager`); listar e destruir as
+  versões de `credentials-key` (`cpSecretVersionDestroyer`, sem ler nem gravar). Nunca ler o cofre de credenciais, e
+  nada no `support-bootstrap`.
+- **`cp-terraform`:** os papéis de criar e destruir os recursos do módulo `node` no projeto dos nós
+  (`envs/nodes-platform`; o mais sensível é `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado
+  pelo projeto isolado, pela imagem fixada e por alerta em `SetIamPolicy` fora da lista). Cofres e buckets por papéis
+  personalizados que não alcançam o conteúdo. Não lê Stripe, Cloudflare nem Firestore.
 - **`cp-deployer`:** Workload Identity Federation para o environment `control-plane` da `main`; publica a imagem e
   troca a imagem dos serviços (`run.developer` em cada serviço e no Job, nunca no projeto; `iam.serviceAccountUser`
   nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
@@ -705,14 +798,102 @@ revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os 
   envia a servidor nenhum) e marca `access.revealEmailSentAt`. O e-mail nunca leva a senha.
 - **Contrato com o bootstrap do nó (CP-10):** cada versão de `admin-bootstrap` é um JSON com exatamente `email`,
   `password` (16 a 256 caracteres) e `expiresAt` (ISO 8601 com fuso). O segredo guarda só o admin do cliente: a senha
-  de outra conta (a de suporte) vai para outro segredo, senão a `latest` a mostraria ao cliente.
+  de outra conta (a de suporte) vai para outro segredo, `vx-<slug>-support-bootstrap` (seção seguinte), senão a
+  `latest` a mostraria ao cliente.
+
+### O nó de cada cliente: `envs/tenant` e `envs/nodes-platform` (CP-06)
+
+O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:
+
+- **`nodes-platform`**, um só, aplicado pelo responsável: as APIs, o orçamento, o bucket do estado
+  `<projeto-dos-nos>-tfstate` (criado à mão antes do primeiro `init` e adotado pelo primeiro `apply`, com acesso
+  uniforme, versionamento, versões antigas por 30 dias e `runs/` por 180 dias) e as permissões do plano de controle
+  nesse projeto: os papéis do `cp-terraform` (os 10 predefinidos, `cpSecretsProvisioner` e `cpBucketsProvisioner`), o
+  `objectAdmin` dele no bucket do estado, o `cpNodeLifecycle` do `cp-worker` com a condição `vx-*`, a leitura dele em
+  `runs/` e o papel `cpSecretVersionDestroyer` (só `versions.destroy`, `versions.get` e `versions.list`), que o tenant
+  concede por cofre. Até o CP-06 essas permissões ficavam no `envs/control-plane`; o bucket e as concessões nele agora
+  estão no mesmo estado.
+- **`tenant`**, um por cliente, aplicado pelo `cp-terraform` com estado em `tenants/<slug>/`: o módulo `node` no perfil
+  `standard` com o prefixo `vx-<slug>` em todo recurso (a VM, a conta de serviço, a rede, o NAT e o IP dele, o disco,
+  os cofres; o bucket de backups é `<projeto>-vx-<slug>-backups`), a leitura do registro das imagens para a conta da VM
+  e as permissões do `cp-worker` nos cofres daquele nó (seção "Identidades"). As variáveis são as do Job (projeto,
+  região e zona) e as de cada execução: `slug`, `plan` (essencial, profissional ou enterprise; `interno` é recusado),
+  os quatro limites opcionais (`plan_max_cloud_accounts`, `plan_max_users`, `plan_monthly_gib`, `plan_history_days`,
+  obrigatórios no enterprise), `node_version` (`node-vX.Y.Z`), `node_package_sha256`, `web_origin`, `api_origin`,
+  `mail_from`, `subnet_cidr` (uma /24 em 10.0.0.0/8), `bootstrap_admin_email`, `bootstrap_tenant_name`,
+  `bootstrap_support_email` (a conta de suporte da Verax, CP-10),
+  `control_plane_sa` (só a conta `cp-worker@...`), `images_project_id` e `deletion_protection`. As saídas, que vão para
+  o `outputs.json`, não têm dado pessoal: `name_prefix`, `instance_name`, `zone`, `nat_ip`, `service_account_email`,
+  `service_account_unique_id`, `secrets` (o nome de cada cofre) e `backups_bucket`.
+
+Os três contratos do nó com a instalação sem operador (PR-N7) e com o bootstrap do admin (CP-10) são interruptores
+do módulo, desligados por padrão (o nó da Verax e a homologação não mudam) e ligados pelo `tenant`:
+
+1. **Cofres que a VM grava** (`support_bootstrap_secret`):
+
+   | Cofre                               | Quem grava                                                        | Quem lê (pelo Terraform)                                       |
+   | ----------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- |
+   | `vx-<slug>-credentials-key`         | a VM, na instalação                                               | a VM; o `cp-worker` só lista e destrói as versões (Exclusão 2) |
+   | `vx-<slug>-admin-bootstrap`         | a VM (JSON do contrato acima)                                     | o `cp-worker`, uma vez, na revelação, e destrói a versão       |
+   | `vx-<slug>-support-bootstrap`       | a VM (a senha da conta de suporte)                                | ninguém: só o responsável, com as permissões dele no projeto   |
+   | `vx-<slug>-cloudflare-tunnel-token` | o `cp-worker` (passo `secrets.tunnel_token`)                      | a VM                                                           |
+   | `vx-<slug>-smtp-password`           | ninguém pelo plano de controle, por enquanto (pendência do CP-07) | a VM                                                           |
+
+   No `support-bootstrap`, a única permissão do Terraform é `secretVersionAdder` para a conta da VM.
+
+2. **Atributos de convidado** (`guest_attributes`): metadado `enable-guest-attributes = "TRUE"`. O worker do nó grava
+   no espaço `verax/` (`verax/version`, `verax/accounts-connected`, `verax/last-event-at`, `verax/disk-free` pelo
+   CP-10; `verax/ready` e `verax/error` pela instalação), e o `cp-worker` lê com `getGuestAttributes`
+   (`cpNodeLifecycle`). Só o worker fala com o servidor de metadados dentro da VM.
+
+3. **Configuração nos metadados da VM** (`install_config` e `install_metadata`): a instalação lê cada chave em
+   `instance/attributes/<chave>` do servidor de metadados e monta o `node.conf` e as contas do cliente. As 20 chaves
+   existem sempre; valor vazio é "não definido" (a instalação não escreve a linha). Nada é segredo; os e-mails e o
+   nome do cliente são dados de cadastro, que ficam nos metadados enquanto o nó existir, e a instalação os trata como
+   dado (nunca os interpreta num shell). O projeto vem de `project/project-id`. O IP de saída (`NODE_EGRESS_IPS`)
+   fica de fora: o checkov 3.4.0 não avalia os metadados da VM com uma referência ao IP reservado do NAT, e deixaria
+   de conferir as chaves de segurança dela; a instalação o descobre pela própria saída ou o recebe do plano de controle
+   (saída `nat_ip`), decisão do PR-N7. O ID único da conta da VM também está no `sub` do token de identidade que ela
+   pede ao servidor de metadados.
+
+   | Chave                           | No nó                                         | De onde vem               |
+   | ------------------------------- | --------------------------------------------- | ------------------------- |
+   | `verax-config-version`          | (versão deste contrato, `1`)                  | o módulo                  |
+   | `verax-node-profile`            | `NODE_PROFILE`                                | o módulo (`standard`)     |
+   | `verax-secret-prefix`           | `VERAX_SECRET_PREFIX`                         | o módulo (`vx-<slug>`)    |
+   | `verax-credentials-vault`       | `CREDENTIALS_VAULT`                           | o módulo (`true`)         |
+   | `verax-backup-bucket`           | `BACKUP_BUCKET`                               | o módulo                  |
+   | `verax-node-sa-unique-id`       | `NODE_SA_UNIQUE_ID`                           | o módulo                  |
+   | `verax-images-repository`       | `IMAGES_REPOSITORY`                           | o `tenant` (`images_*`)   |
+   | `verax-node-version`            | a versão a instalar (`node-vX.Y.Z`)           | `node_version`            |
+   | `verax-node-package-sha256`     | o SHA-256 do pacote, conferido antes          | `node_package_sha256`     |
+   | `verax-plan`                    | `PLAN`                                        | `plan`                    |
+   | `verax-plan-max-cloud-accounts` | `PLAN_MAX_CLOUD_ACCOUNTS` (vazio: o do plano) | `plan_max_cloud_accounts` |
+   | `verax-plan-max-users`          | `PLAN_MAX_USERS` (vazio: o do plano)          | `plan_max_users`          |
+   | `verax-plan-monthly-gib`        | `PLAN_MONTHLY_GIB` (vazio: o do plano)        | `plan_monthly_gib`        |
+   | `verax-plan-history-days`       | `PLAN_HISTORY_DAYS` (vazio: o do plano)       | `plan_history_days`       |
+   | `verax-web-origin`              | `WEB_ORIGIN`                                  | `web_origin`              |
+   | `verax-api-origin`              | `API_ORIGIN`                                  | `api_origin`              |
+   | `verax-mail-from`               | `MAIL_FROM`                                   | `mail_from`               |
+   | `verax-tenant-name`             | o nome do cliente no nó (CP-10)               | `bootstrap_tenant_name`   |
+   | `verax-admin-email`             | o primeiro admin do cliente (CP-10)           | `bootstrap_admin_email`   |
+   | `verax-support-email`           | a conta de suporte da Verax (CP-10)           | `bootstrap_support_email` |
+
+   O Terraform é dono dos metadados da VM inteiros: uma chave gravada fora dele (o `verax-renew-admin-password` do
+   plano, por exemplo) some no `apply` seguinte do tenant, a menos que entre como variável.
+
+**Cota de redes:** o módulo cria uma rede VPC, um roteador, um NAT e um IP externo reservado por nó. As cotas do
+projeto dos nós (redes VPC por projeto, endereços IP externos estáticos e CPUs em `southamerica-east1`) são baixas num
+projeto novo e limitam o número de clientes antes do resto: conferir no console (IAM e administrador, Cotas) na
+primeira venda e pedir aumento antes de chegar perto, contando a homologação. Uma rede compartilhada entre os nós é
+mudança do módulo numa fase seguinte, quando passar de cerca de 10 clientes.
 
 ### Exclusão em dois tempos
 
-| Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                         |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
-| D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                  |
+| Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
+| D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                                       |
 
 **A fazer no CP-07 (executor do Terraform):** recusar, antes do `apply`, todo plano que recrie ou apague
 `module.node.google_service_account.node` (no plano em JSON, uma ação `delete` nesse endereço, sozinha ou num
@@ -720,6 +901,25 @@ revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os 
 `crypto_destroy` na Exclusão 2). A conta recriada ganha outro ID único, e o papel de leitura na AWS do cliente
 deixaria de aceitar o nó (seção "Por que papel sem chave"); a recusa para a execução sem `apply` e avisa a Verax. É a
 proteção que substitui o `prevent_destroy`, que não muda por variável e impediria a própria exclusão.
+
+**A fazer no CP-11 (Exclusão 1 com o `envs/tenant`):** antes do `destroy`, um `apply` com `deletion_protection =
+false` e, então, `terraform state rm` destes endereços, que ficam fora do `destroy`:
+
+- `module.node.google_compute_disk.node` e `module.node.google_compute_address.nat[0]` (os dois com `prevent_destroy`,
+  que faria o `destroy` falhar): o disco é apagado pela API depois que a VM sai (e os snapshots, que o
+  `KEEP_AUTO_SNAPSHOTS` mantém), e o IP do NAT é liberado pela API;
+- `module.node.google_storage_bucket.backups` (com `force_destroy = false`), que fica até a Exclusão 2;
+- `module.node.google_secret_manager_secret.node_written["credentials-key"]` e
+  `google_secret_manager_secret_iam_member.worker_credentials_key`: o cofre e a permissão do `cp-worker` de destruir
+  as versões ficam até a Exclusão 2. Sem tirar a permissão do estado, o `destroy` a apagaria, e o `cp-worker` não
+  conseguiria cripto-destruir a chave em D+97.
+
+Na Exclusão 2, depois de destruir as versões, o cofre e o bucket são apagados, e `tenants/<slug>/` sai do bucket do
+estado; as versões antigas do estado (com o e-mail do admin nos metadados da VM) saem 30 dias depois, pela retenção do
+bucket do estado. O bucket de backups é versionado: um backup sai 90 dias depois de gravado e a versão anterior mais 30
+dias depois, então ele só fica vazio cerca de 120 dias depois do último backup. Em D+97 ainda há objetos, e nem o
+`cp-terraform` nem o `cp-worker` apagam objeto lá; o CP-11 decide entre esperar a retenção ou dar a permissão para
+esvaziá-lo.
 
 Retenção do resto: `auditLog` 24 meses, `stripeEvents` 90 dias, `provisioningRuns` 180 dias, tokens e reservas pelo
 próprio prazo, tudo por TTL do Firestore. Nunca gravado: dado de cartão, senha temporária (lida do Secret Manager e
