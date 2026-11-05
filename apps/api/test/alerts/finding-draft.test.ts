@@ -3,6 +3,7 @@ import { AccountDirectory, resolveAlertOwner } from '../../src/alerts/alert-owne
 import { findingSeverity, toFindingDraft, wazuhFindingKey } from '../../src/alerts/finding-draft.js';
 import { sanitizeRawAlert } from '../../src/alerts/raw-alert.js';
 import {
+  agentSyncPage,
   DEFAULT_SYNC_SETTINGS,
   cursorFromSort,
   syncPage,
@@ -326,10 +327,27 @@ describe('leitura incremental (T5.3)', () => {
           { term: { 'data.integration': 'aws' } },
           { terms: { 'data.aws.source': ['cloudtrail', 'guardduty', 'waf'] } },
           { range: { 'rule.level': { gte: 5 } } },
+          // Só os do manager, onde o módulo aws-s3 roda: um agente com log de cara da AWS fica de fora.
+          { term: { 'agent.id': '000' } },
         ],
       },
     });
     expect(page.body['size']).toBe(500);
+    expect(() => assertStructuredQuery(page.body)).not.toThrow();
+  });
+
+  it('página dos agentes: tudo o que não veio do manager, a partir do nível mínimo; nunca o mesmo alerta da AWS', () => {
+    const page = agentSyncPage('2026-11-01T11:20:00.000Z', null, DEFAULT_SYNC_SETTINGS);
+    expect(page.body['query']).toEqual({
+      bool: {
+        filter: [
+          { range: { timestamp: { gte: '2026-11-01T11:20:00.000Z' } } },
+          { range: { 'rule.level': { gte: 5 } } },
+        ],
+        must_not: [{ term: { 'agent.id': '000' } }],
+      },
+    });
+    expect(page.body['sort']).toEqual([{ timestamp: 'asc' }, { id: 'asc' }]);
     expect(() => assertStructuredQuery(page.body)).not.toThrow();
   });
 

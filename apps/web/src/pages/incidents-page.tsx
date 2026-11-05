@@ -1,4 +1,4 @@
-import { FINDING_SEVERITIES, type Incident, INCIDENT_STATUSES } from '@verax/shared';
+import { agentIdOfRef, FINDING_SEVERITIES, type Incident, INCIDENT_STATUSES } from '@verax/shared';
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { SelectField } from '@/components/ui/select-field';
 import { SEVERITY_STYLES } from '@/design/severity';
+import { findingOriginLabel } from '@/features/findings/labels';
 import { IncidentStatusBadge } from '@/features/incidents/incident-status-badge';
 import { useIncidents } from '@/features/incidents/incidents-api';
 import { INCIDENT_FILTER_PARAMS, INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
@@ -76,8 +77,10 @@ export function IncidentsPage() {
           <span className="block text-xs text-muted-foreground">
             {plural(row.findingCount, 'achado', 'achados')} ·{' '}
             {row.accounts.length === 1
-              ? `conta ${row.accounts[0]}`
-              : plural(row.accounts.length, 'conta', 'contas')}
+              ? findingOriginLabel(row.accounts[0] ?? '')
+              : row.accounts.some((origin) => agentIdOfRef(origin) !== null)
+                ? plural(row.accounts.length, 'origem', 'origens')
+                : plural(row.accounts.length, 'conta', 'contas')}
           </span>
         </div>
       ),

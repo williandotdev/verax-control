@@ -65,6 +65,16 @@ run "standard" {
     error_message = "Os metadados de segurança da VM (OS Login, chaves de projeto e console serial) mudaram."
   }
 
+  # Sem `install_metadata` e sem `guest_attributes` (os padrões, como na homologação), nenhuma chave nova: só as de
+  # segurança e o script de boot. É o que mantém a homologação igual depois do CP-06.
+  assert {
+    condition = (
+      toset(keys(google_compute_instance.node.metadata)) == toset(["block-project-ssh-keys", "enable-oslogin", "serial-port-enable", "startup-script"]) &&
+      length(output.install_metadata) == 0
+    )
+    error_message = "Os padrões de install_metadata e guest_attributes acrescentaram chaves aos metadados da VM."
+  }
+
   assert {
     condition = (
       keys(google_secret_manager_secret.node_written) == ["admin-bootstrap", "credentials-key"] &&

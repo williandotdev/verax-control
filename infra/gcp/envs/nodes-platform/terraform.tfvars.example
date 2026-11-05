@@ -1,0 +1,16 @@
+# Copie para `terraform.tfvars` (que o git ignora) e preencha. Nada daqui vai para o repositório.
+
+# ID do projeto da GCP dos nós de clientes (o da homologação).
+project_id = "projeto-dos-nos-123"
+
+# Região dos nós e do bucket do estado (a do bucket criado no passo 2 do GUIA.md).
+# region = "southamerica-east1"
+
+# Projeto do plano de controle (envs/control-plane, já aplicado): as contas cp-terraform e cp-worker ganham os papéis
+# deste projeto. Vazio: só APIs, bucket do estado e orçamento.
+# control_plane_project_id = "projeto-do-plano-de-controle-123"
+
+# Alerta de orçamento do projeto inteiro (opcional): conta de faturamento e valor mensal, na moeda dela. Com ele aqui,
+# deixe vazio o billing_account_id da homologação (o mesmo projeto).
+# billing_account_id = "000000-000000-000000"
+# monthly_budget     = 300

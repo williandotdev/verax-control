@@ -1,5 +1,6 @@
 import { pino } from 'pino';
 import { WazuhAgentsSync } from './agents/agents-sync.js';
+import { AgentAlertSync } from './alerts/agent-alert-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
@@ -29,6 +30,10 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * laço. A concessão no banco garante um worker por vez em cada fonte, mesmo com mais de uma réplica. SIGTERM ou SIGINT
  * esperam as execuções em curso terminarem, e elas liberam a concessão.
  *
+ * A fonte `wazuh` vira duas tarefas, cada uma com estado e concessão próprios: `wazuh` (os alertas do manager, das
+ * contas AWS) e `wazuh-agent-alerts` (os dos agentes nas instâncias do cliente, atribuídos ao cliente do nó só com os
+ * agentes ligados; desligados, vão para a fila sem dono).
+ *
  * A fonte `cloudflare` (auditoria das contas do Cloudflare e, pelo GraphQL, os eventos de segurança das zonas) roda no
  * mesmo intervalo: a auditoria de cada conta a cada `CLOUDFLARE_AUDIT_INTERVAL_SECONDS`, e os eventos em janelas de
  * 15 min, cada uma lida 5 min depois de fechar (o cursor de cada fluxo guarda a próxima leitura). Ela exige o cofre.
@@ -54,16 +59,25 @@ async function main(): Promise<void> {
     config = loaded;
     prisma = new PrismaService(config);
     const intervalMs = config.SYNC_INTERVAL_SECONDS * 1000;
-    tasks = config.SYNC_SOURCES.map((source): ScheduledTask => {
+    const agentsTenantId = config.wazuhAgents?.tenantId ?? null;
+    tasks = config.SYNC_SOURCES.flatMap((source): ScheduledTask[] => {
       if (source === 'wazuh') {
         const indexerConfig = loadIndexerConfig();
         const indexer = new IndexerClient(indexerConfig, indexerSecretsFor(indexerConfig));
-        return {
-          name: 'wazuh',
-          intervalMs,
-          budgetMs: SYNC_BUDGET_MS,
-          run: () => new AlertSync(prisma, indexer).runOnce(),
-        };
+        return [
+          {
+            name: 'wazuh',
+            intervalMs,
+            budgetMs: SYNC_BUDGET_MS,
+            run: () => new AlertSync(prisma, indexer).runOnce(),
+          },
+          {
+            name: 'wazuh-agent-alerts',
+            intervalMs,
+            budgetMs: SYNC_BUDGET_MS,
+            run: () => new AgentAlertSync(prisma, indexer, agentsTenantId).runOnce(),
+          },
+        ];
       }
       if (source === 'cloudflare') {
         // Auditoria e eventos de segurança do Cloudflare: o token de cada conta vem do cofre do nó, aberto só aqui (a
@@ -74,16 +88,18 @@ async function main(): Promise<void> {
         const cloudflare = new CloudflareAuditSync(prisma, keyring, {
           auditIntervalMs: loaded.CLOUDFLARE_AUDIT_INTERVAL_SECONDS * 1000,
         });
-        return {
-          name: 'cloudflare',
-          intervalMs,
-          budgetMs: SYNC_BUDGET_MS,
-          run: (signal) => cloudflare.runOnce(new Date(), signal),
-        };
+        return [
+          {
+            name: 'cloudflare',
+            intervalMs,
+            budgetMs: SYNC_BUDGET_MS,
+            run: (signal) => cloudflare.runOnce(new Date(), signal),
+          },
+        ];
       }
       // Auditoria da GCP: o token vem da identidade da VM do nó, sem chave.
       const sync = new GcpAuditSync(prisma, new PubsubRestReader(new MetadataTokenProvider()));
-      return { name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() };
+      return [{ name: 'gcp', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => sync.runOnce() }];
     });
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf): a lista que o host exporta do
     // manager, no mesmo intervalo das fontes.

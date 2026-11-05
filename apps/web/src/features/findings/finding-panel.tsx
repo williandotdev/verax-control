@@ -22,7 +22,7 @@ import {
   useFinding,
   useUpdateFindingStatus,
 } from './findings-api';
-import { FINDING_SOURCE_LABELS } from './labels';
+import { FINDING_SOURCE_LABELS, findingOriginLabel } from './labels';
 
 /** Detalhe do achado num painel lateral (T7.7): evento bruto, status, comentários e exceção. */
 export function FindingPanel({ id, onClose }: { id: string | null; onClose: () => void }) {
@@ -36,7 +36,7 @@ export function FindingPanel({ id, onClose }: { id: string | null; onClose: () =
       title={finding.data?.title ?? 'Achado'}
       description={
         finding.data
-          ? `${FINDING_SOURCE_LABELS[finding.data.source]} · conta ${finding.data.accountId}`
+          ? `${FINDING_SOURCE_LABELS[finding.data.source]} · ${findingOriginLabel(finding.data.accountId)}`
           : undefined
       }
     >
@@ -51,11 +51,12 @@ export function FindingPanel({ id, onClose }: { id: string | null; onClose: () =
   );
 }
 
-/** De onde vem a regra do achado, quando não é a do Wazuh (logs da AWS). */
+/** De onde vem a regra do achado, quando não é a do Wazuh para os logs da AWS. */
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
   gcp_audit: 'Regra (auditoria da GCP)',
   cloudflare_audit: 'Regra (auditoria do Cloudflare)',
   cloudflare_waf: 'Regra (eventos de segurança do Cloudflare)',
+  wazuh_agent: 'Regra (agente do Wazuh)',
 };
 
 function FindingDetailView({ finding }: { finding: FindingDetail }) {
@@ -77,7 +78,7 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
     ],
     ['IP de origem', finding.actor.ip],
     [
-      // Os alertas da AWS vêm das regras do Wazuh; os da GCP e do Cloudflare, das regras do próprio nó.
+      // Os alertas da AWS e dos agentes vêm das regras do Wazuh; os da GCP e do Cloudflare, das regras do próprio nó.
       RULE_LABELS[finding.source] ?? 'Regra (logs da AWS)',
       `${finding.ruleId} (nível ${finding.ruleLevel})`,
     ],
