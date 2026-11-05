@@ -1,0 +1,28 @@
+# Primeiro acesso do nó de cliente (modo cliente, CUSTOMER_MODE=true no node.conf; fase 3, CP-10): o administrador do
+# cliente e a conta de suporte da Verax, com as senhas temporárias gravadas no Secret Manager (`start.sh
+# customer-bootstrap`). Depois do verax-node: o banco e as migrations já estão no ar. Idempotente: roda a cada partida
+# do nó e, depois da primeira vez, não gera senha nenhuma. O nó da Verax não recebe este serviço (o install.sh só o
+# instala no modo cliente).
+#
+# Serviço separado de propósito: uma falha (o Secret Manager ou o servidor de metadados fora do ar, um metadado que
+# falta) fica aqui, com o motivo no journal, e o painel, o worker e o Wazuh seguem no ar. O systemd tenta de novo a cada
+# minuto, até dez partidas em uma hora; depois, `systemctl restart verax-customer-bootstrap` (ou o restart do nó) tenta
+# outra vez. A senha que já foi gerada e não chegou ao cofre fica no tmpfs (/run/verax, só root) e vai antes de tudo na
+# tentativa seguinte.
+[Unit]
+Description=Verax Control - primeiro acesso do no de cliente (senhas no Secret Manager)
+Requires=verax-node.service
+After=verax-node.service
+StartLimitIntervalSec=3600
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/verax/bin/start.sh customer-bootstrap
+Restart=on-failure
+RestartSec=60
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

@@ -64,7 +64,10 @@ Na reunião:
    NODE_SA_UNIQUE_ID=<o ID único da conta de serviço, 21 dígitos>
    # AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader   # só para trocar o padrão
    ```
-   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax.
+   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax, e o worker não confere a conexão
+   (o "Verificar" responde `check_unavailable`). Na partida, o worker confere que o token do Google do nó é dessa
+   conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
+   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -85,18 +88,26 @@ Na reunião:
      do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), o
      `LogBucketArns` com os ARNs dos buckets cadastrados e as chaves KMS em `LogKmsKeyArns`; a tela também traz o
      comando da CLI, que cria a pilha ou atualiza a que já existe;
-   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel e leia os buckets. A resposta chega em até
-     30 s, ou em até 10 min se o papel recém-criado ainda não valer no IAM, e cada erro diz o que conferir (pilha
-     ainda não criada, valor errado, papel feito pelo assistente "Web identity → Google" do console, SCP ou RCP).
+   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel, confira a conta e leia 1 byte de um
+     objeto de cada bucket (o que prova também a chave KMS). Na mesma verificação, ele confere se uma trilha ligada
+     grava no bucket do CloudTrail, se o GuardDuty exporta para o bucket dele e se o papel não ganhou permissão além
+     da leitura. A resposta chega em até 30 s; se o papel recém-criado ainda não valer no IAM, o worker tenta de novo,
+     espaçado, por até 10 min. Cada erro diz o que conferir (pilha ainda não criada, valor errado, papel feito pelo
+     assistente "Web identity → Google" do console, SCP ou RCP, bucket sem acesso, com qual fonte, ou chave KMS).
+   - **Depois de conectada,** o worker confere sozinho a cada 15 min, e as conferências da trilha, do export e da
+     permissão demais uma vez por dia. Trilha parada, export ausente, permissão demais ou STS da região desligado
+     aparecem como **aviso**: a conta continua conectada e a coleta segue. Um erro (papel recusado, bucket sem acesso)
+     aparece na conta, e ela volta a conectada sozinha quando o cliente corrige.
 
    **Mudar os buckets depois:** salve a lista nova em **Buckets de log**. Se os nomes mudaram, o painel avisa que falta
    atualizar a pilha (o `LogBucketArns` e o comando da CLI já trazem a lista nova; um bucket novo com SSE-KMS pede
    também a chave em `LogKmsKeyArns`), a conexão volta a "Aguardando" e um "Verificar" pendente é descartado. Nada é
-   conferido na AWS sozinho: depois de atualizar a pilha, o cliente clica em **Verificar conexão**. Trocar só a fonte de
-   um bucket (os mesmos nomes) não mexe na pilha nem na conexão.
-   **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`): confira
-   com o cliente no CloudTrail da conta dele, depois que o nó começar a ler (PR-V4'), as entradas
-   `AssumeRoleWithWebIdentity` com o ID da conta de serviço do nó.
+   conferido na AWS sozinho enquanto a conta aguarda: depois de atualizar a pilha, o cliente clica em **Verificar
+   conexão**, e a conferência de 15 em 15 min volta com a conta conectada. Trocar só a fonte de um bucket (os mesmos
+   nomes) não mexe na pilha nem na conexão.
+
+   Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
+   conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
 
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.
@@ -187,6 +198,69 @@ para); depois `wazuh_agents = false` (e sem faixas) no Terraform e `apply`, que 
 encaminhamento e o IP fixo: religar dá outro IP, e os agentes precisam ser reinstalados com ele. A senha de registro
 fica no disco do nó e no volume `manager-etc` (`/var/ossec/etc/authd.pass`), sem uso; apague os dois se o desligamento
 for definitivo. Os agentes das instâncias continuam instalados até o cliente desinstalá-los.
+
+## 7. Nó criado pelo plano de controle: primeiro acesso e conta de suporte (fase 3)
+
+No nó de cliente que o plano de controle cria (`CUSTOMER_MODE=true` no `node.conf`), o primeiro acesso não passa pelo
+cadastro do item 4: o serviço `verax-customer-bootstrap` roda depois de cada partida do nó, lê dos metadados da VM o
+nome do cliente (`verax-tenant-name`), o e-mail do administrador do cliente (`verax-admin-email`) e o da conta de
+suporte da Verax (`verax-support-email`), cria o cliente com o plano do nó, o administrador do cliente e uma conta
+`admin_verax` de suporte, cada conta com a sua senha temporária (72 horas; troca e MFA no primeiro login), e grava cada
+senha como versão de um segredo do Secret Manager no projeto dos nós:
+
+- `vx-<slug>-admin-bootstrap`: a do administrador do cliente, que a página de status revela **uma vez** ao cliente e
+  depois destrói (plano de controle, CP-05);
+- `vx-<slug>-support-bootstrap`: a da conta de suporte, que **só o responsável** lê.
+
+A VM só acrescenta versões nesses dois segredos e não lê nenhum deles de volta. Nenhuma senha aparece na tela, no
+journal ou na auditoria. Da segunda partida em diante, nada muda e nenhuma senha nova é gerada.
+
+**Ler a senha da conta de suporte** (o login é o `verax-support-email` do nó), com a sua conta de responsável:
+
+```bash
+gcloud secrets versions access latest --secret vx-<slug>-support-bootstrap --project <projeto-dos-nos>
+```
+
+A saída é o JSON `{"email": ..., "password": ..., "expiresAt": ...}`. Entre no painel do cliente com ela, troque a
+senha e cadastre o MFA; depois **destrua** as versões, para a senha não ficar guardada fora do nó:
+
+```bash
+gcloud secrets versions list vx-<slug>-support-bootstrap --project <projeto-dos-nos> --filter='state!=DESTROYED'
+gcloud secrets versions destroy <versão> --secret vx-<slug>-support-bootstrap --project <projeto-dos-nos>
+```
+
+A destruição é permanente (sem recuperação), e a VM continua podendo gravar uma versão nova. Um terminal compartilhado
+ou gravado não é lugar para o primeiro comando: a senha aparece na tela de quem o roda.
+
+**Senha nova** (vencida antes do primeiro login, ou perdida): entre na VM pelo IAP e rode, como root,
+
+```bash
+sudo BOOTSTRAP_RENEW_SUPPORT_PASSWORD=true /opt/verax/bin/start.sh customer-bootstrap
+```
+
+e leia a versão nova como acima. A senha anterior e as sessões abertas da conta deixam de valer; o MFA continua. A do
+administrador do cliente segue o mesmo caminho com `BOOTSTRAP_RENEW_ADMIN_PASSWORD=true` (a versão nova de
+`admin-bootstrap` só chega ao cliente se a revelação ainda não aconteceu; depois dela, o caminho é o "Esqueci minha
+senha" do painel ou uma senha temporária gerada pela conta de suporte em Usuários).
+
+**Quando o serviço falha** (`systemctl status verax-customer-bootstrap`, motivo no `journalctl -u
+verax-customer-bootstrap`): ele tenta de novo a cada minuto, até dez vezes em uma hora. Os motivos esperados são um
+metadado que falta na VM, a VM sem permissão no segredo (`PERMISSION_DENIED`: confira o Terraform do tenant) ou o
+Secret Manager fora do ar. Uma senha já gerada que não chegou ao cofre fica em `/run/verax/customer-bootstrap` (memória,
+só root) e vai antes de qualquer outra na próxima tentativa; se a VM reiniciar antes disso, ela se perde, e o caminho é
+pedir a senha nova acima. Corrigido o motivo: `sudo systemctl restart verax-customer-bootstrap`.
+
+**Estado do nó para o plano de controle:** no mesmo modo, o worker publica a cada 5 minutos, nos atributos de convidado
+(_guest attributes_) da VM, `verax/version` (o commit instalado), `verax/accounts-connected` (contas ativas conectadas),
+`verax/last-event-at` (o evento mais recente, em ISO 8601 UTC, ou `none`) e `verax/disk-free` (porcentagem livre do
+disco de dados). Para conferir:
+
+```bash
+gcloud compute instances get-guest-attributes vx-<slug> --zone <zona> --project <projeto-dos-nos> --query-path=verax/
+```
+
+Com os atributos de convidado desligados na VM (`enable-guest-attributes`), o worker avisa uma vez no log e não publica
+nada.
 
 ## Publicar uma versão nova do diagnóstico
 

@@ -425,6 +425,67 @@ describe('configuração do worker do sync (T5.3)', () => {
       ConfigValidationError,
     );
   });
+
+  it("PR-V5': o ID da conta de serviço, o audience e o IP de saída do nó, opcionais e com as regras da API", () => {
+    const plain = loadWorkerConfig(workerEnv);
+    expect(plain.NODE_SA_UNIQUE_ID).toBeUndefined();
+    expect(plain.AWS_WEB_IDENTITY_AUDIENCE).toBeUndefined();
+    expect(plain.NODE_EGRESS_IPS).toBeUndefined();
+    const configured = loadWorkerConfig({
+      ...workerEnv,
+      NODE_SA_UNIQUE_ID: '123456789012345678901',
+      AWS_WEB_IDENTITY_AUDIENCE: 'https://control.veraxsistemas.com.br/aws-reader',
+      NODE_EGRESS_IPS: '203.0.113.10/32,198.51.100.7/32',
+    });
+    expect(configured).toMatchObject({
+      NODE_SA_UNIQUE_ID: '123456789012345678901',
+      AWS_WEB_IDENTITY_AUDIENCE: 'https://control.veraxsistemas.com.br/aws-reader',
+      NODE_EGRESS_IPS: ['203.0.113.10/32', '198.51.100.7/32'],
+    });
+    for (const [key, value, problem] of [
+      [
+        'NODE_SA_UNIQUE_ID',
+        '12345678901234567890',
+        'deve ser o ID único da conta de serviço do nó (21 dígitos)',
+      ],
+      ['AWS_WEB_IDENTITY_AUDIENCE', 'http://control.veraxsistemas.com.br/aws-reader', 'deve ser https://'],
+      ['NODE_EGRESS_IPS', '203.0.113.10/24', 'use IPv4 com /32'],
+    ] as const) {
+      expect(() => loadWorkerConfig({ ...workerEnv, [key]: value }), key).toThrow(problem);
+    }
+  });
+
+  describe('estado do nó nos guest attributes (fase 3, CP-10)', () => {
+    const commit = 'a'.repeat(40);
+
+    it('sem as variáveis (o nó da Verax), a tarefa node-status não existe', () => {
+      const config = loadWorkerConfig(workerEnv);
+      expect(config.nodeStatus).toBeNull();
+      expect(config).not.toHaveProperty('NODE_STATUS');
+      expect(config).not.toHaveProperty('NODE_VERSION');
+      expect(
+        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'false', NODE_VERSION: commit }).nodeStatus,
+      ).toBeNull();
+    });
+
+    it('NODE_STATUS=true com a versão: a tarefa recebe o commit', () => {
+      expect(
+        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true', NODE_VERSION: commit }).nodeStatus,
+      ).toEqual({ version: commit });
+    });
+
+    it('NODE_STATUS=true sem a versão, versão fora do formato ou interruptor inválido: recusado', () => {
+      expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true' })).toThrow(
+        'NODE_VERSION: obrigatória e não definida',
+      );
+      expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true', NODE_VERSION: 'v1.2.3' })).toThrow(
+        'NODE_VERSION: deve ser o commit instalado',
+      );
+      expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'sim', NODE_VERSION: commit })).toThrow(
+        'NODE_STATUS: use true ou false',
+      );
+    });
+  });
 });
 
 describe('cofre de credenciais no ambiente (fase 2)', () => {

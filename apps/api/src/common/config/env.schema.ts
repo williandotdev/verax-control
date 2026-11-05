@@ -150,6 +150,33 @@ const egressIpsFromEnv = z
       .max(16),
   );
 
+/**
+ * Papel de leitura sem chave da AWS (fase 2), na API e no worker. Nenhum é segredo, e o start.sh escreve cada um só
+ * quando o node.conf tem a linha (e só no formato):
+ * - `NODE_EGRESS_IPS`, os IPs de saída do nó (o IP fixo do NAT, no perfil standard): o `NodeEgressIps` da pilha da
+ *   AWS e o filtro de IP recomendado para o token do Cloudflare; sem ele, a tela pede o IP à Verax. No worker, o
+ *   `aws:SourceIp` da simulação da permissão demais (PR-V5'), que fica de fora sem ele;
+ * - `NODE_SA_UNIQUE_ID`, o ID único da conta de serviço do nó no Google (21 dígitos, `terraform output`): o
+ *   `NodeServiceAccountId` que Contas cloud mostra (PR-V3'; sem ele, a tela o pede à Verax). No worker, liga a
+ *   conferência real da conexão (PR-V5'), e o `sub` do token do nó é conferido com ele na partida;
+ * - `AWS_WEB_IDENTITY_AUDIENCE`, o audience do token; sem ele, vale o padrão do template (`AWS_READER_AUDIENCE`).
+ */
+const awsReaderEnvShape = {
+  NODE_EGRESS_IPS: egressIpsFromEnv.optional(),
+  NODE_SA_UNIQUE_ID: z
+    .string()
+    .refine(isNodeServiceAccountId, { error: 'deve ser o ID único da conta de serviço do nó (21 dígitos)' })
+    .optional(),
+  AWS_WEB_IDENTITY_AUDIENCE: z
+    .string()
+    .max(MAX_AUDIENCE_LENGTH)
+    .refine(isWebIdentityAudience, {
+      error:
+        'deve ser https://<host>[/<caminho>], só com minúsculas no host e sem porta, consulta ou curinga',
+    })
+    .optional(),
+};
+
 /** Plano e ajustes, como ficam depois da validação do ambiente. */
 interface PlanEnv {
   NODE_ENV: 'development' | 'test' | 'production';
@@ -302,26 +329,7 @@ const apiEnvSchema = z
       })
       .optional(),
     ...planEnvShape,
-    // IPs de saída do nó (o IP fixo do NAT, no perfil standard): o `NodeEgressIps` da pilha da AWS e o filtro de IP
-    // recomendado para o token do Cloudflare. O start.sh escreve quando o node.conf tem a linha; sem ela, a tela pede
-    // o IP à Verax.
-    NODE_EGRESS_IPS: egressIpsFromEnv.optional(),
-    // Papel de leitura sem chave da AWS (fase 2, PR-V3'): o ID único da conta de serviço do nó no Google (21 dígitos,
-    // `terraform output`) e o audience do token, os valores que Contas cloud mostra para a pilha do cliente. Nenhum é
-    // segredo. O start.sh escreve só quando o node.conf tem a linha; sem o ID, a tela o pede à Verax; sem o audience,
-    // vale o padrão do template (`AWS_READER_AUDIENCE`).
-    NODE_SA_UNIQUE_ID: z
-      .string()
-      .refine(isNodeServiceAccountId, { error: 'deve ser o ID único da conta de serviço do nó (21 dígitos)' })
-      .optional(),
-    AWS_WEB_IDENTITY_AUDIENCE: z
-      .string()
-      .max(MAX_AUDIENCE_LENGTH)
-      .refine(isWebIdentityAudience, {
-        error:
-          'deve ser https://<host>[/<caminho>], só com minúsculas no host e sem porta, consulta ou curinga',
-      })
-      .optional(),
+    ...awsReaderEnvShape,
     // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola.
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),
     CREDENTIALS_KEY_VERSION: keyVersionFromEnv.optional(),
@@ -482,6 +490,9 @@ const workerEnvObjectSchema = z
      */
     CLOUDFLARE_AUDIT_INTERVAL_SECONDS: z.coerce.number().int().min(60).max(3600).default(300),
     ...planEnvShape,
+    // Conexão da AWS pelo papel de leitura sem chave (PR-V5'): com o ID da conta de serviço do nó, a tarefa aws-check
+    // confere de verdade (token do Google, STS e S3); sem ele, responde `check_unavailable`.
+    ...awsReaderEnvShape,
     // Cofre de credenciais (fase 2): o arquivo com as chaves privadas de todas as versões ativas (uma por linha,
     // `<versão>:<PEM em base64>`), montado só leitura no worker, e a versão corrente. Só o worker decifra.
     CREDENTIALS_PRIVATE_KEYS_FILE: z.string().min(1, { error: 'deve ser o caminho do arquivo' }).optional(),
@@ -489,11 +500,29 @@ const workerEnvObjectSchema = z
     // Agentes do Wazuh (WAZUH_AGENTS=true no node.conf): o arquivo da lista que o host exporta do manager e o cliente
     // do nó, a quem os agentes pertencem. Sempre juntos.
     ...workerAgentsEnvShape,
+    // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
+    // publica a versão, as contas conectadas, o último evento e o disco livre. NODE_VERSION é o commit instalado (o de
+    // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).
+    NODE_STATUS: z
+      .enum(['true', 'false'], { error: 'use true ou false' })
+      .default('false')
+      .transform((value) => value === 'true'),
+    NODE_VERSION: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/, { error: 'deve ser o commit instalado (40 caracteres hexadecimais)' })
+      .optional(),
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
+    if (env.NODE_STATUS && env.NODE_VERSION === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['NODE_VERSION'],
+        message: 'obrigatória com NODE_STATUS=true (a versão publicada nos guest attributes)',
+      });
+    }
     if (env.SYNC_SOURCES.includes('cloudflare') && env.CREDENTIALS_PRIVATE_KEYS_FILE === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -517,6 +546,8 @@ const workerEnvObjectSchema = z
         CREDENTIALS_KEY_CURRENT,
         WAZUH_AGENTS_FILE,
         WAZUH_AGENTS_TENANT,
+        NODE_STATUS,
+        NODE_VERSION,
         ...env
       },
       ctx,
@@ -531,7 +562,9 @@ const workerEnvObjectSchema = z
         );
       }
       const wazuhAgents = wazuhAgentsFeedOf({ WAZUH_AGENTS_FILE, WAZUH_AGENTS_TENANT });
-      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents };
+      // A tarefa `node-status` só existe com o interruptor (e a versão, que o superRefine exige com ele).
+      const nodeStatus = NODE_STATUS && NODE_VERSION !== undefined ? { version: NODE_VERSION } : null;
+      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus };
     },
   );
 

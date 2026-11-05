@@ -6,6 +6,9 @@
 #   start.sh wazuh-up    perfil standard, depois do `up` (verax-wazuh.service): sobe o Wazuh (indexer e manager)
 #   start.sh wazuh-down  para o indexer e o manager
 #   start.sh bootstrap   primeiro admin, cliente e contas (variáveis BOOTSTRAP_*; ver docs/runbooks/no-verax.md)
+#   start.sh customer-bootstrap
+#                        modo cliente (CUSTOMER_MODE=true; verax-customer-bootstrap.service): o primeiro acesso do nó
+#                        de cliente, com as entradas dos metadados da VM e as senhas gravadas no Secret Manager
 #   start.sh render      só monta os arquivos de ambiente (o que o up faz antes de subir; usado pelo teste do pacote)
 #
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
@@ -48,6 +51,33 @@ WORKER_KEYS=$WORKER_VAULT/worker-keys
 WORKER_VAULT_MOUNT=/run/vault
 WORKER_KEYS_MOUNT=$WORKER_VAULT_MOUNT/worker-keys
 WORKER_UID=1000
+# Modo cliente (fase 3, CP-10; CUSTOMER_MODE=true no node.conf; sem a linha, false): o nó de cliente que o plano de
+# controle cria, sem SSH. O `customer-bootstrap` lê dos metadados da VM as entradas do primeiro acesso, roda o
+# node-bootstrap no modo customer e grava cada senha nova como versão de um segredo do Secret Manager; o worker publica o
+# estado do nó nos guest attributes (NODE_STATUS e NODE_VERSION no worker.env). O nó da Verax não liga: nada disso roda,
+# e os arquivos de ambiente saem como antes.
+customer() { [[ ${CUSTOMER_MODE:-false} == true ]]; }
+# Entradas do primeiro acesso: a chave nos metadados da instância (gravada pelo Terraform do tenant) e a variável do
+# node-bootstrap que ela vira. É o único lugar do host com esses nomes; as três são obrigatórias. Nenhuma é segredo.
+CUSTOMER_BOOTSTRAP_INPUTS=(
+  verax-tenant-name=BOOTSTRAP_TENANT_NAME
+  verax-admin-email=BOOTSTRAP_ADMIN_EMAIL
+  verax-support-email=BOOTSTRAP_SUPPORT_EMAIL
+)
+# As senhas novas: cada uma é um arquivo `<nome>.json` (o JSON do contrato com o plano de controle) que o node-bootstrap
+# deixa na pasta do tmpfs montada no contêiner dele, e o nome é o sufixo do segredo `<prefixo>-<nome>`: `admin-bootstrap`
+# (o plano de controle revela uma vez ao cliente) e `support-bootstrap` (a conta de suporte da Verax, que só o
+# responsável lê). A pasta é `$run/customer-bootstrap`, do usuário do contêiner (o `node` da imagem da API, o mesmo do
+# worker), dentro de /run/verax (0700, só root).
+CUSTOMER_SECRETS=(admin-bootstrap support-bootstrap)
+CUSTOMER_PAYLOADS_MOUNT=/run/verax-bootstrap
+BOOTSTRAP_UID=$WORKER_UID
+# Servidor de metadados da VM e API do Secret Manager (o teste do pacote troca pelos falsos), e a versão instalada.
+metadata_url=http://metadata.google.internal/computeMetadata/v1
+secretmanager_url=https://secretmanager.googleapis.com/v1
+images_env=/etc/verax/images.env
+# Espera base entre as tentativas de gravar no Secret Manager, em segundos (cresce a cada tentativa).
+retry_pause=5
 compose() { # [--base] <argumentos do compose...>; --base: sem o compose.wazuh.yaml (a pilha da aplicação)
   local files=(-f /opt/verax/compose.yaml) env_files=(--env-file /etc/verax/images.env)
   if [[ ${1:-} == --base ]]; then
@@ -343,6 +373,24 @@ render() {
       return 1
       ;;
   esac
+  # Modo cliente: o worker publica o estado do nó nos guest attributes, com a versão instalada (o commit que o
+  # install.sh grava em /etc/verax/images.env). Conferido antes de qualquer arquivo ser escrito. Sem a linha, nada muda.
+  local node_status=() version
+  case ${CUSTOMER_MODE:-false} in
+    true)
+      version=$(sed -n 's/^NODE_VERSION=//p' "$images_env" 2>/dev/null | tail -n 1) || version=''
+      if [[ ! $version =~ ^[0-9a-f]{40}$ ]]; then
+        echo "NODE_VERSION ausente ou fora do formato em $images_env: rode o deploy.sh (ou o install.sh na VM) de novo." >&2
+        return 1
+      fi
+      node_status=(NODE_STATUS=true "NODE_VERSION=$version")
+      ;;
+    false) ;;
+    *)
+      echo 'CUSTOMER_MODE inválido em /etc/verax/node.conf: use true ou false.' >&2
+      return 1
+      ;;
+  esac
   mkdir -p "$run"
   chmod 0700 "$run"
   if standard; then
@@ -493,13 +541,20 @@ render() {
     "${agents_api[@]}" \
     "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
+  # O worker recebe os mesmos valores do papel de leitura da AWS, já conferidos acima (PR-V5'): com o ID da conta de
+  # serviço, a conferência real da conexão (o token do Google com o audience, o STS e os buckets) e a do `sub` do token
+  # na partida; com o IP de saída, a simulação da permissão demais. Sem as linhas no node.conf, o worker.env sai como
+  # antes, e o "Verificar" responde que o nó não confere a conexão.
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "${plan[@]}" \
     "${indexer[@]}" \
+    "${egress[@]}" \
+    "${aws_reader[@]}" \
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \
+    "${node_status[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
   # Túnel: com o cofre ainda sem valor, o nó sobe sem o cloudflared (banco, API e coleta já rodam) e avisa; gravado o
   # token, `sudo systemctl restart verax-node` liga o túnel. Qualquer outro erro na leitura (permissão, rede, valor
@@ -646,15 +701,168 @@ bootstrap() {
   return "$status"
 }
 
+# Um atributo dos metadados da instância (o servidor de metadados é local: três tentativas). Sai com 3 quando a chave
+# não existe (404) e com 1 em qualquer outro erro. Valor vazio, com quebra de linha ou maior que 254 caracteres é
+# recusado. Nada aqui é segredo, mas o valor (um e-mail, o nome do cliente) não vai para a tela.
+metadata_attribute() { # <chave>
+  local response='' status attempt value
+  for attempt in 1 2 3; do
+    if response=$(curl -sS --max-time 5 -H 'Metadata-Flavor: Google' -w '\n%{http_code}' \
+      "$metadata_url/instance/attributes/$1" 2>/dev/null); then
+      break
+    fi
+    response=''
+    if ((attempt < 3)); then sleep "$retry_pause"; fi
+  done
+  status=${response##*$'\n'}
+  case $status in
+    200) ;;
+    404) return 3 ;;
+    *)
+      echo "Falha ao ler o metadado $1 da VM (HTTP ${status:-sem resposta})." >&2
+      return 1
+      ;;
+  esac
+  value=${response%$'\n'*}
+  if [[ -z $value || $value == *$'\n'* || $value == *$'\r'* ]] || ((${#value} > 254)); then
+    echo "Metadado $1 da VM vazio, com quebra de linha ou longo demais." >&2
+    return 1
+  fi
+  printf '%s' "$value"
+}
+
+# O cabeçalho Authorization com o token da conta de serviço da VM (servidor de metadados), num arquivo da pasta dada
+# (0600 pelo umask, no tmpfs): o token nunca passa por argumento de comando.
+vm_token_header() { # <pasta>
+  local token
+  curl -sS --max-time 10 -o "$1/token.json" -H 'Metadata-Flavor: Google' \
+    "$metadata_url/instance/service-accounts/default/token" 2>/dev/null || return 1
+  token=$(sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1/token.json")
+  rm -f "$1/token.json"
+  if [[ ! $token =~ ^[A-Za-z0-9._~+/=-]+$ ]] || ((${#token} < 16 || ${#token} > 4096)); then return 1; fi
+  printf 'Authorization: Bearer %s\n' "$token" >"$1/auth"
+}
+
+# Grava o conteúdo como versão nova do segredo `<prefixo>-<nome>`, pela API REST do Secret Manager, com a identidade da
+# VM. A VM só tem `secretVersionAdder` nesses segredos: grava e não lê de volta. O conteúdo vai para o corpo do pedido
+# por um arquivo 0600 numa pasta de /run/verax (tmpfs, só root), nunca por argumento de comando (a lista de processos),
+# variável de ambiente ou tela; o token, idem. Tenta de novo, até 5 vezes e com espera crescente, a falha de rede, o
+# 429 e o 5xx (o pedido repetido depois de uma resposta perdida grava o mesmo conteúdo outra vez: a `latest` não muda);
+# qualquer outro erro (permissão, segredo que não existe) para na hora. Do erro, só o código e o status do Google
+# (`PERMISSION_DENIED`, `NOT_FOUND`), nunca o corpo.
+secret_add_version() { # <nome> <conteúdo>
+  local secret=$VERAX_SECRET_PREFIX-$1 work code reason attempt
+  work=$(mktemp -d "$run/.secret-add.XXXXXX")
+  { printf '{"payload":{"data":"'; printf '%s' "$2" | base64 -w0; printf '"}}'; } >"$work/body"
+  for attempt in 1 2 3 4 5; do
+    code=000
+    if vm_token_header "$work"; then
+      code=$(curl -sS --max-time 30 -o "$work/response" -w '%{http_code}' -X POST -H @"$work/auth" \
+        -H 'Content-Type: application/json' --data-binary @"$work/body" \
+        "$secretmanager_url/projects/$VERAX_GCP_PROJECT/secrets/$secret:addVersion" 2>/dev/null) || code=000
+    fi
+    case $code in
+      200)
+        rm -rf "$work"
+        return 0
+        ;;
+      000 | 429 | 5??) ;;
+      *) break ;;
+    esac
+    if ((attempt < 5)); then sleep $((retry_pause * attempt)); fi
+  done
+  reason=$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([A-Z_]*\)".*/\1/p' "$work/response" 2>/dev/null |
+    head -n 1) || reason=''
+  rm -rf "$work"
+  echo "Falha ao gravar a versão do segredo $secret no Secret Manager (HTTP $code${reason:+, $reason})." >&2
+  return 1
+}
+
+# As senhas que o node-bootstrap deixou na pasta, cada uma para o seu segredo; o arquivo sai só depois de o Secret
+# Manager confirmar (numa falha, fica no tmpfs para a próxima execução). A pasta é do usuário do contêiner: um arquivo
+# que não seja regular (um link para outro arquivo do host, por exemplo) ou fora do formato do contrato é recusado sem
+# ser enviado.
+push_customer_secrets() { # <pasta>
+  local dir=$1 name file content
+  local shape='^\{"email":"[^"]{3,254}","password":"[^"]{16,}","expiresAt":"[^"]{20,40}"\}$'
+  for name in "${CUSTOMER_SECRETS[@]}"; do
+    file=$dir/$name.json
+    [[ -e $file || -L $file ]] || continue
+    if [[ -L $file || ! -f $file ]]; then
+      echo "$file não é um arquivo comum: nada foi gravado no Secret Manager. Apague-o e rode de novo." >&2
+      return 1
+    fi
+    content=$(<"$file")
+    if [[ ! $content =~ $shape ]] || ((${#content} > 1024)); then
+      echo "$file fora do formato do contrato: nada foi gravado no Secret Manager." >&2
+      return 1
+    fi
+    secret_add_version "$name" "$content" || return 1
+    rm -f "$file"
+    echo "Senha nova gravada no Secret Manager ($VERAX_SECRET_PREFIX-$name)."
+  done
+}
+
+# Modo cliente: o primeiro acesso do nó (verax-customer-bootstrap.service, depois do verax-node). Lê dos metadados da VM
+# o nome do cliente, o e-mail do administrador do cliente e o da conta de suporte, roda o node-bootstrap no modo
+# customer (as entradas vão por variável de ambiente do `compose run`, nunca pelo bootstrap.env, que não aceita aspas
+# simples num nome, nem por argumento) e grava cada senha nova no Secret Manager. Idempotente: depois da primeira vez,
+# nenhuma senha sai, a não ser a pedido (BOOTSTRAP_RENEW_ADMIN_PASSWORD ou BOOTSTRAP_RENEW_SUPPORT_PASSWORD=true no
+# ambiente de quem roda). Uma senha que não chegou ao cofre vai antes de qualquer outra: sem isso, o bootstrap não roda.
+customer_bootstrap() {
+  if ! customer; then
+    echo 'O customer-bootstrap só existe no modo cliente (CUSTOMER_MODE=true em /etc/verax/node.conf).' >&2
+    return 2
+  fi
+  if [[ ! -f $run/api.env || ! -f $run/bootstrap.env ]]; then
+    echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
+    return 1
+  fi
+  local dir=$run/customer-bootstrap pair key variable value status inputs=() lock
+  # Uma execução por vez: o serviço e quem roda à mão (o pedido de senha nova) não geram senha ao mesmo tempo.
+  exec {lock}>"$run/.customer-bootstrap.lock"
+  if ! flock -w 600 "$lock"; then
+    echo 'Outro customer-bootstrap está rodando há mais de 10 minutos: tente de novo depois.' >&2
+    return 1
+  fi
+  install -d -m 0700 -o "$BOOTSTRAP_UID" -g "$BOOTSTRAP_UID" "$dir"
+  rm -f "$dir"/.*.tmp
+  push_customer_secrets "$dir" || return 1
+  for pair in "${CUSTOMER_BOOTSTRAP_INPUTS[@]}"; do
+    key=${pair%%=*}
+    variable=${pair#*=}
+    status=0
+    value=$(metadata_attribute "$key") || status=$?
+    if ((status == 3)); then
+      echo "Falta o metadado $key na VM: o Terraform do nó de cliente o grava." >&2
+      return 1
+    elif ((status != 0)); then
+      return 1
+    fi
+    local -x "$variable=$value"
+    inputs+=(-e "$variable")
+  done
+  local -x BOOTSTRAP_MODE=customer
+  local -x BOOTSTRAP_RENEW_ADMIN_PASSWORD=${BOOTSTRAP_RENEW_ADMIN_PASSWORD:-false}
+  local -x BOOTSTRAP_RENEW_SUPPORT_PASSWORD=${BOOTSTRAP_RENEW_SUPPORT_PASSWORD:-false}
+  status=0
+  compose --profile setup run --rm -T -v "$dir:$CUSTOMER_PAYLOADS_MOUNT" -e BOOTSTRAP_MODE \
+    -e BOOTSTRAP_RENEW_ADMIN_PASSWORD -e BOOTSTRAP_RENEW_SUPPORT_PASSWORD "${inputs[@]}" bootstrap || status=$?
+  # O que foi gerado vai para o cofre mesmo se o bootstrap falhou depois.
+  push_customer_secrets "$dir" || return 1
+  return "$status"
+}
+
 case ${1:-} in
   up) up ;;
   down) down ;;
   wazuh-up) wazuh_up ;;
   wazuh-down) wazuh_down ;;
   bootstrap) bootstrap ;;
+  customer-bootstrap) customer_bootstrap ;;
   render) render ;;
   *)
-    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|render" >&2
+    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|render" >&2
     exit 2
     ;;
 esac
