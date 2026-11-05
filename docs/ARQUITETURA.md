@@ -373,8 +373,8 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      execução do módulo).
    - **A aplicação:** o `infra/node/bin/wazuh-apply.sh` lê a lista (numa variável: um erro do CLI nunca vira "nenhuma
      conta"), passa ao gerador e só reinicia o manager quando o hash muda e ele está no ar. Espera o healthcheck por até
-     180 s; sem ele, a configuração anterior (guardada pelo gerador em `.prev`, que o init da imagem não copia) volta e
-     o manager reinicia com ela, e a que falhou não é tentada de novo enquanto for a mesma. Indexer, banco, API e painel
+     180 s; sem ele, a configuração anterior volta junto com os profiles da AWS dela (o gerador guarda os dois em `.prev`,
+     que o init da imagem não copia, e o token do Google não entra na troca), e o manager reinicia com ela, e a que falhou não é tentada de novo enquanto for a mesma. Indexer, banco, API e painel
      seguem no ar. Roda pelo `verax-wazuh-apply.path` (o worker gravou uma geração nova), pelo timer de 15 min e pelo
      `wazuh-up`, uma execução por vez (`flock`), com no máximo 5 partidas em 5 min (o timer cobre o resto e arma o
      `.path` de novo).

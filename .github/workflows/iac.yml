@@ -176,9 +176,10 @@ jobs:
         # Cenários de tests/wazuh-apply-test.sh: o token do Google vai para a pasta do manager por troca atômica (0600,
         # nunca na saída), com o audience do node.conf ou o padrão da pilha, e um metadata fora do ar ou um token fora do
         # formato não estragam o anterior; a lista do CLI vai inteira para o gerador, com o IP de saída; o manager só
-        # reinicia quando o hash muda e está no ar; sem o healthcheck, a configuração anterior volta, e a que falhou não
-        # é tentada de novo; um erro do CLI nunca vira "nenhuma conta"; o sinal `applied` diz ok ou error com a geração.
-        # Roda sem root e sem tocar na máquina.
+        # reinicia quando o hash muda e está no ar; sem o healthcheck, a configuração anterior volta (com o gerador de
+        # verdade, junto com os profiles da AWS dela, sem tocar no token), e a que falhou não é tentada de novo; um erro
+        # do CLI nunca vira "nenhuma conta"; o sinal `applied` diz ok ou error com a geração. Roda sem root e sem tocar
+        # na máquina.
         run: bash infra/node/tests/wazuh-apply-test.sh
       - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
         # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Com o cofre de credenciais,

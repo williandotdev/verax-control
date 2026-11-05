@@ -188,8 +188,9 @@ com o IP de saída do nó em `VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manage
   outro papel. Só as chaves de uma lista fixa, nunca `credential_process`, e não há arquivo `credentials`.
 
 O gerador imprime só o hash da configuração que o manager lê ao subir: o `wazuh-apply.sh` reinicia o manager só quando
-ele muda e, se o manager não ficar saudável em 180 s, devolve a configuração anterior (guardada em `<config>/.prev`,
-que o init da imagem não copia) com `VERAX_MANAGER_CONFIG_ROLLBACK=1`. O `scripts/test-aws-profile.sh` (no CI) confere
+ele muda e, se o manager não ficar saudável em 180 s, devolve a configuração anterior com os profiles dela (guardados
+juntos em `<config>/.prev`, que o init da imagem não copia; o token do Google fica como o host o deixou) com
+`VERAX_MANAGER_CONFIG_ROLLBACK=1`. O `scripts/test-aws-profile.sh` (no CI) confere
 na imagem, sem rede, que o boto3 do manager entra no papel por esses profiles.
 
 **EC2 legado.** O fluxo antigo do EC2 (o papel `VeraxControlReadOnly` com `ExternalId`, pela credencial da instância)

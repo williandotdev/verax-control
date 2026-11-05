@@ -23,9 +23,14 @@ que o manager lê ao subir (o ossec.conf e as regras), que o wazuh-apply.sh comp
 o resumo vai para a saída de erro. A ordem da lista não muda nada (as contas saem em ordem de ID), e um campo que só
 vai para os profiles (a região) não muda o hash: o boto3 relê o /root/.aws/config a cada execução do módulo.
 
-Antes de trocar a configuração por uma diferente, a que estava fica em <config>/.prev (o init da imagem copia
-<config>/*, e o * não pega o que começa com ponto). Com VERAX_MANAGER_CONFIG_ROLLBACK=1, o gerador só devolve a
-anterior ao lugar e imprime o hash dela: é o que o wazuh-apply.sh faz quando o manager não fica saudável com a nova.
+Antes de trocar a configuração por uma diferente, a que estava fica em <config>/.prev, junto com os profiles que iam
+com ela, numa troca só (o init da imagem copia <config>/*, e o * não pega o que começa com ponto). Os profiles que
+acompanham a configuração de agora ficam também em <config>/.aws-config, no volume: a pasta da AWS é memória e some
+na partida do nó, e a cópia em .prev precisa deles mesmo assim. Com VERAX_MANAGER_CONFIG_ROLLBACK=1, o gerador só
+devolve a anterior ao lugar, com os profiles dela, e imprime o hash: é o que o wazuh-apply.sh faz quando o manager não
+fica saudável com a nova. Sem os profiles de antes, um bucket lido por outra conta na configuração anterior (o
+GuardDuty ou o WAF compartilhado) apontaria para um profile que não existe mais. O token do Google, na mesma pasta,
+nunca é tocado: o host o renova sozinho.
 
 Agentes nas instâncias do cliente (WAZUH_AGENTS=true no node.conf do nó; desligado por padrão). Só com as duas
 variáveis do compose.wazuh-agents.yaml, VERAX_AGENTS_CONFIG (a pasta config/manager/agents) e VERAX_AGENTS_ENROLLMENT
@@ -112,6 +117,11 @@ AUTHD_PASS = os.path.join("etc", "authd.pass")
 SHARED_AGENT_CONF = os.path.join("etc", "shared", "default", "agent.conf")
 PREVIOUS = ".prev"
 ROLLBACK_VARIABLE = "VERAX_MANAGER_CONFIG_ROLLBACK"
+# Os profiles da AWS: o arquivo que o manager lê (na pasta da AWS) e o registro dos que acompanham a configuração de
+# <config>/etc, no volume (na raiz e, na cópia, dentro de .prev). Nenhum é segredo nem entra no hash.
+AWS_CONFIG = "config"
+PROFILES_RECORD = ".aws-config"
+PREVIOUS_PROFILES = "aws-config"
 
 
 class InvalidSources(ValueError):
@@ -424,8 +434,37 @@ def install_tree(config_dir, files, current):
             os.rmdir(directory)
 
 
-def keep_previous(config_dir, current):
-    """A configuração que estava, em <config>/.prev/etc (só root): trocada inteira, nunca misturada com a de antes."""
+def read_optional(path):
+    """O conteúdo em bytes, ou None sem o arquivo."""
+    try:
+        with open(path, "rb") as file:
+            return file.read()
+    except FileNotFoundError:
+        return None
+
+
+def install_profiles(config_dir, aws_dir, profiles):
+    """Os profiles no arquivo que o manager lê e no registro do volume, cada um por troca atômica e só se mudou.
+
+    None: não havia profiles com aquela configuração (um volume de antes do registro); os dois arquivos saem. Só o
+    arquivo dos profiles: o token do Google, na mesma pasta, fica como está.
+    """
+    for path in (os.path.join(config_dir, PROFILES_RECORD), os.path.join(aws_dir, AWS_CONFIG)):
+        if profiles is None:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        elif read_optional(path) != profiles:
+            write_atomically(path, profiles, 0o600)
+
+
+def keep_previous(config_dir, current, profiles):
+    """A configuração que estava, em <config>/.prev/etc, e os profiles dela, em <config>/.prev/aws-config (só root).
+
+    A pasta é montada ao lado e trocada inteira de uma vez: a configuração e os profiles de antes sempre juntos, nunca
+    misturados com os de uma troca anterior.
+    """
     for name in os.listdir(config_dir):
         # O que sobrou de uma troca interrompida.
         if name.startswith(PREVIOUS + "-"):
@@ -434,6 +473,8 @@ def keep_previous(config_dir, current):
     try:
         for relative, content in current.items():
             write_atomically(os.path.join(staging, relative), content, 0o600)
+        if profiles is not None:
+            write_atomically(os.path.join(staging, PREVIOUS_PROFILES), profiles, 0o600)
         previous = os.path.join(config_dir, PREVIOUS)
         if os.path.isdir(previous):
             shutil.rmtree(previous)
@@ -443,14 +484,16 @@ def keep_previous(config_dir, current):
         raise
 
 
-def rollback(config_dir):
-    previous = read_tree(os.path.join(config_dir, PREVIOUS))
+def rollback(config_dir, aws_dir):
+    previous_dir = os.path.join(config_dir, PREVIOUS)
+    previous = read_tree(previous_dir)
     if not previous:
         print("ERRO: não há configuração anterior para restaurar.", file=sys.stderr)
         return 1
     install_tree(config_dir, previous, read_tree(config_dir))
+    install_profiles(config_dir, aws_dir, read_optional(os.path.join(previous_dir, PREVIOUS_PROFILES)))
     print(tree_hash(previous))
-    print("Configuração anterior do manager restaurada.", file=sys.stderr)
+    print("Configuração anterior do manager restaurada, com os profiles da AWS dela.", file=sys.stderr)
     return 0
 
 
@@ -465,7 +508,7 @@ def remove_credentials_file(aws_dir):
 
 def main(base_config, config_dir, aws_dir, rules_dir=None):
     if os.environ.get(ROLLBACK_VARIABLE) == "1":
-        return rollback(config_dir)
+        return rollback(config_dir, aws_dir)
     try:
         sources = validate(sys.stdin.read().strip() or "[]")
         ips = node_egress_ips()
@@ -504,16 +547,11 @@ def main(base_config, config_dir, aws_dir, rules_dir=None):
     changed = current != files
     if changed:
         if current:
-            keep_previous(config_dir, current)
+            # Os profiles que iam com a configuração de agora vêm do registro no volume, e não da pasta da AWS, que
+            # some na partida do nó.
+            keep_previous(config_dir, current, read_optional(os.path.join(config_dir, PROFILES_RECORD)))
         install_tree(config_dir, files, current)
-    aws_path = os.path.join(aws_dir, "config")
-    try:
-        with open(aws_path, encoding="utf-8") as file:
-            same_profiles = file.read() == aws_config
-    except FileNotFoundError:
-        same_profiles = False
-    if not same_profiles:
-        write_atomically(aws_path, aws_config, 0o600)
+    install_profiles(config_dir, aws_dir, aws_config.encode("utf-8"))
     remove_credentials_file(aws_dir)
     # A raiz do volume nasce 0755; fechada, para só o root listar o diretório. Num diretório, o bit x é o de
     # entrar nele: 0700 (só o dono) é o mais restrito que funciona, ao contrário do que a regra supõe para arquivos.

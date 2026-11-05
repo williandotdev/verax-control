@@ -16,7 +16,8 @@
 # wazuh-apply.sh: a lista do CLI vai inteira para o gerador, com o IP de saída do node.conf; a geração é o SHA-256
 # dela; o manager só reinicia quando o hash muda e está no ar; sem o healthcheck, a configuração anterior volta e o
 # manager reinicia com ela, e a mesma configuração não é tentada outra vez; um erro do CLI nunca vira "nenhuma conta";
-# o sinal `applied` diz ok ou error com a geração.
+# o sinal `applied` diz ok ou error com a geração. Num cenário, o gerador é o de verdade (python3): a volta traz os
+# profiles da AWS junto com a configuração, e o token do Google fica como o host o deixou.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -65,14 +66,24 @@ case " $* " in
   *' run --rm -T wazuh-sources '*)
     [[ ! -f $state/sources.fail ]] || { echo 'Error: P1001 (simulado)' >&2; exit 1; }
     cat "$state/sources" ;;
+  # O gerador: o hash do cenário, ou o gerador de verdade ($state/generator, com o volume numa pasta do cenário e a
+  # pasta dos profiles do nó simulado).
   *' VERAX_MANAGER_CONFIG_ROLLBACK=1 manager-config '*)
     echo rollback >>"$state/events"
-    cat "$state/previous" 2>/dev/null || true ;;
+    if [[ -x $state/generator ]]; then
+      VERAX_MANAGER_CONFIG_ROLLBACK=1 "$state/generator" </dev/null
+    else
+      cat "$state/previous" 2>/dev/null || true
+    fi ;;
   *' run --rm -T -e VERAX_NODE_EGRESS_IPS='*' manager-config '*)
     cat >"$state/render.in"
     printf '%s\n' "$*" | grep -oE 'VERAX_NODE_EGRESS_IPS=[^ ]*' >"$state/render.egress"
     [[ ! -f $state/render.fail ]] || { echo 'ERRO: lista de contas AWS (simulado)' >&2; exit 1; }
-    cat "$state/hash" ;;
+    if [[ -x $state/generator ]]; then
+      VERAX_NODE_EGRESS_IPS=$(cut -d= -f2- "$state/render.egress") "$state/generator" <"$state/render.in"
+    else
+      cat "$state/hash"
+    fi ;;
   *' ps --status running --quiet wazuh.manager '*)
     if [[ -f $state/running ]]; then echo manager-id; fi ;;
   *' ps --quiet wazuh.manager '*)
@@ -262,6 +273,47 @@ echo healthy >"$state/health.seq"
 : >"$state/events"
 expect "uma configuração diferente é tentada, e a marca da que falhou sai" '0 restart ausente' \
   "$(code_of wazuh-apply) $(events) $([[ -f $run/wazuh-apply/failed ]] && echo marcada || echo ausente)"
+
+echo "== wazuh-apply.sh com o gerador de verdade: a volta traz os profiles da AWS junto com a configuração"
+# A e B com o mesmo bucket do GuardDuty (lido pelo profile da A); a lista nova só com a B, e o manager não fica
+# saudável. A configuração anterior volta com os profiles dela (o bucket precisa do profile da A), nos dois caminhos da
+# volta: depois do reinício e na mesma configuração tentada de novo (sem reiniciar: o manager que roda a anterior relê
+# os profiles a cada execução do módulo). O token do Google, renovado pelo host no meio, nunca é tocado.
+command -v python3 >/dev/null || { echo 'falta python3 (o gerador de verdade)' >&2; exit 2; }
+SHARED='"guarddutyBucket":"guardduty-da-organizacao"'
+SOURCES_A='{"accountId":"111122223333","region":"sa-east-1","onlyLogsAfter":"2026-NOV-01",'$SHARED'}'
+SOURCES_B='{"accountId":"444455556666","region":"us-east-1","onlyLogsAfter":"2026-OCT-15",'$SHARED'}'
+scenario
+cat >"$state/generator" <<EOF
+#!/bin/bash
+exec python3 "$here/../wazuh/scripts/render-manager-config.py" "$here/../wazuh/config/manager/ossec.conf" \\
+  "$state/volume" "$run/wazuh-aws" "$here/../wazuh/config/manager/rules"
+EOF
+chmod +x "$state/generator"
+touch "$state/running"
+printf '[%s,%s]\n' "$SOURCES_A" "$SOURCES_B" >"$state/sources"
+echo healthy >"$state/health.seq"
+expect "A e B: aplicada com o gerador de verdade" '0 restart' "$(code_of wazuh-apply) $(events)"
+profiles_ab=$(cat "$run/wazuh-aws/config")
+running_ab=$(cat "$run/wazuh-apply/running")
+expect "  os profiles da A e da B" '2' "$(grep -c '^\[profile verax-' "$run/wazuh-aws/config")"
+printf 'token.de.teste\n' >"$run/wazuh-aws/google-id-token"
+printf '[%s]\n' "$SOURCES_B" >"$state/sources"
+printf 'unhealthy\nhealthy\n' >"$state/health.seq"
+: >"$state/events"
+printf 'token.renovado\n' >"$run/wazuh-aws/google-id-token"
+expect "só a B, e o manager não fica saudável: a anterior volta" '1 restart rollback restart' \
+  "$(code_of wazuh-apply) $(events)"
+expect "  com os profiles dela (os da A e da B), e o hash dela roda" 'igual igual' \
+  "$(same "$profiles_ab" "$(cat "$run/wazuh-aws/config")") $(same "$running_ab" "$(cat "$run/wazuh-apply/running")")"
+expect "  o bucket compartilhado volta ao profile da A, que existe" 'verax-111122223333 1' \
+  "$(grep -oE '<aws_profile>verax-111122223333</aws_profile>' "$state/volume/etc/ossec.conf" | sed 's/<[^>]*>//g') $(
+    grep -c '^\[profile verax-111122223333\]$' "$run/wazuh-aws/config")"
+expect "  o token que o host renovou fica" 'token.renovado' "$(cat "$run/wazuh-aws/google-id-token")"
+: >"$state/events"
+expect "a mesma lista de novo: a anterior volta sem reiniciar, de novo com os profiles dela" '1 rollback igual' \
+  "$(code_of wazuh-apply) $(events) $(same "$profiles_ab" "$(cat "$run/wazuh-aws/config")")"
+expect "  e o token segue o do host" 'token.renovado' "$(cat "$run/wazuh-aws/google-id-token")"
 
 echo "== wazuh-apply.sh: o CLI ou o gerador falham, e a configuração fica como está"
 scenario

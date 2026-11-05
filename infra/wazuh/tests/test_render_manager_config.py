@@ -344,8 +344,88 @@ class AtomicAndRollbackTest(unittest.TestCase):
                 self.assertEqual(back.code, 0, back.stderr)
                 self.assertEqual(back.ossec_conf, old_conf)
                 self.assertEqual(back.stdout, old_hash)
-                # Nada da pasta .prev vai para o manager: o init da imagem copia <config>/*.
-                self.assertEqual(sorted(path.name for path in back.config_dir.iterdir()), [".prev", "etc"])
+                # Nada da pasta .prev nem do registro dos profiles vai para o manager: o init da imagem copia
+                # <config>/*, que não pega o que começa com ponto.
+                self.assertEqual(
+                    sorted(path.name for path in back.config_dir.iterdir()), [".aws-config", ".prev", "etc"]
+                )
+
+    @staticmethod
+    def referenced_profiles(conf):
+        return set(re.findall(r"<aws_profile>([^<]+)</aws_profile>", conf))
+
+    @staticmethod
+    def defined_profiles(aws_config):
+        parser = configparser.ConfigParser()
+        parser.read_string(aws_config)
+        return {section.removeprefix("profile ") for section in parser.sections()}
+
+    def test_the_rollback_brings_back_the_profiles_of_a_shared_bucket(self):
+        # A e B com o mesmo bucket do GuardDuty (lido pela A); a nova só com a B (o bucket passa ao profile da B, e o da
+        # A sai). A volta precisa trazer o profile da A junto com o ossec.conf que o usa.
+        shared = {"guarddutyBucket": "guardduty-da-organizacao"}
+        with tempfile.TemporaryDirectory() as root:
+            with Run([account_a(**shared), account_b(**shared)], root=root) as first:
+                old_conf, old_profiles, old_hash = first.ossec_conf, first.aws_config, first.stdout
+                token = first.aws_dir / "google-id-token"
+                token.write_text("token.de.teste", encoding="utf-8")
+            with Run([account_b(**shared)], root=root) as second:
+                self.assertEqual(self.defined_profiles(second.aws_config), {"verax-444455556666"})
+                self.assertEqual(
+                    (second.config_dir / ".prev" / "aws-config").read_text(encoding="utf-8"), old_profiles
+                )
+                # O host renova o token enquanto isso.
+                token.write_text("token.renovado", encoding="utf-8")
+            with Run("", root=root, env={"VERAX_MANAGER_CONFIG_ROLLBACK": "1"}) as back:
+                self.assertEqual(back.code, 0, back.stderr)
+                self.assertEqual((back.ossec_conf, back.stdout), (old_conf, old_hash))
+                self.assertEqual(back.aws_config, old_profiles)
+                self.assertEqual((back.config_dir / ".aws-config").read_text(encoding="utf-8"), old_profiles)
+                self.assertIn("verax-111122223333", self.referenced_profiles(back.ossec_conf))
+                self.assertLessEqual(
+                    self.referenced_profiles(back.ossec_conf), self.defined_profiles(back.aws_config)
+                )
+                # O token não é dos profiles: fica o que o host gravou por último.
+                self.assertEqual(token.read_text(encoding="utf-8"), "token.renovado")
+                if os.name != "nt":
+                    self.assertEqual(stat.S_IMODE((back.aws_dir / "config").stat().st_mode), 0o600)
+
+    def test_the_profiles_of_the_previous_config_survive_the_node_restart(self):
+        # A pasta da AWS é memória: na partida do nó ela volta vazia, e os profiles da configuração de antes vêm do
+        # registro no volume. Uma troca só de região (sem mudar o hash) também atualiza o registro.
+        shared = {"wafBucket": "aws-waf-logs-da-organizacao"}
+        with tempfile.TemporaryDirectory() as root:
+            with Run([account_a(**shared), account_b(**shared)], root=root):
+                pass
+            with Run([account_a(**shared, region="us-east-2"), account_b(**shared)], root=root) as region:
+                self.assertIn("sem mudança", region.stderr)
+                self.assertFalse((region.config_dir / ".prev").exists())
+                profiles = region.aws_config
+                self.assertIn("region = us-east-2", profiles)
+                (region.aws_dir / "config").unlink()
+            with Run([account_b(**shared)], root=root):
+                pass
+            with Run("", root=root, env={"VERAX_MANAGER_CONFIG_ROLLBACK": "1"}) as back:
+                self.assertEqual(back.code, 0, back.stderr)
+                self.assertEqual(back.aws_config, profiles)
+                self.assertLessEqual(
+                    self.referenced_profiles(back.ossec_conf), self.defined_profiles(back.aws_config)
+                )
+
+    def test_a_previous_config_without_profiles_comes_back_without_the_new_ones(self):
+        # Um volume de antes do registro: a configuração anterior volta sem os profiles da que falhou.
+        with tempfile.TemporaryDirectory() as root:
+            with Run([account_b()], root=root) as first:
+                (first.config_dir / ".aws-config").unlink()
+                token = first.aws_dir / "google-id-token"
+                token.write_text("token.de.teste", encoding="utf-8")
+            with Run([account_a(), account_b()], root=root) as second:
+                self.assertFalse((second.config_dir / ".prev" / "aws-config").exists())
+            with Run("", root=root, env={"VERAX_MANAGER_CONFIG_ROLLBACK": "1"}) as back:
+                self.assertEqual(back.code, 0, back.stderr)
+                self.assertFalse((back.aws_dir / "config").exists())
+                self.assertFalse((back.config_dir / ".aws-config").exists())
+                self.assertEqual(token.read_text(encoding="utf-8"), "token.de.teste")
 
     def test_rollback_without_a_previous_config_fails(self):
         with tempfile.TemporaryDirectory() as root:
