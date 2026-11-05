@@ -56,7 +56,16 @@ mkdir -p "$work/certs-in/verax"
 cp scripts/init-certs.sh "$work/certs-in/verax/"
 (cd "$work/certs-in" && tar --mode=u=rwX,go=rX -cf - verax) | docker cp - "$CERTS:/"
 docker start -a "$CERTS" >/dev/null
-docker cp "$CERTS:/out/manager" "$work/manager-certs"
+# O conteúdo da pasta por um tar, e não `docker cp` da pasta: ela é 0500 e os arquivos 0400 (como o init-certs.sh os
+# deixa para o manager), e, sem root (o runner do CI), o `docker cp` cria a pasta com esse modo e não consegue escrever
+# os arquivos dentro dela. O tar só aplica o modo da pasta no fim; depois, a cópia de quem roda fica gravável por ele
+# (só a cópia de trabalho do teste: no manager, o script instala com o dono e o modo da API).
+mkdir -p "$work/manager-certs"
+docker cp "$CERTS:/out/manager/." - | tar -x -C "$work/manager-certs"
+expect "par do manager emitido para o manager (0400 dele, como no volume)" '400 400 400' \
+  "$(cd "$work/manager-certs" && stat -c '%a' root-ca.pem wazuh.manager-key.pem wazuh.manager.pem | tr '\n' ' ' |
+    sed 's/ $//')"
+chmod -R u+rwX "$work/manager-certs"
 expect "par do manager emitido" 'root-ca.pem wazuh.manager-key.pem wazuh.manager.pem ' \
   "$(cd "$work/manager-certs" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | tr '\n' ' ')"
 

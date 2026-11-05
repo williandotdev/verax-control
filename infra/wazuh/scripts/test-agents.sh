@@ -116,7 +116,13 @@ mkdir -p "$work/node-certs-in/verax"
 cp scripts/init-certs.sh "$work/node-certs-in/verax/"
 (cd "$work/node-certs-in" && tar --mode=u=rw,go=r -cf - verax) | docker cp - "$NODE_CERTS:/"
 docker start -a "$NODE_CERTS" >/dev/null
-docker cp "$NODE_CERTS:/out/manager" "$work/node-certs"
+# O conteúdo da pasta por um tar, e não `docker cp` da pasta: ela é 0500 e os arquivos 0400 (como o init-certs.sh os
+# deixa para o manager), e, sem root (o runner do CI), o `docker cp` cria a pasta com esse modo e não consegue escrever
+# os arquivos dentro dela. O tar só aplica o modo da pasta no fim; depois, a cópia de quem roda fica gravável por ele
+# (só a cópia de trabalho do teste: no manager, o script instala com o dono e o modo da API).
+mkdir -p "$work/node-certs"
+docker cp "$NODE_CERTS:/out/manager/." - | tar -x -C "$work/node-certs"
+chmod -R u+rwX "$work/node-certs"
 mkdir -p "$work/manager-in/etc/ssl" "$work/manager-in/entrypoint-scripts"
 cp -R "$work/node-certs" "$work/manager-in/etc/ssl/verax"
 cp scripts/manager-api-tls.sh "$work/manager-in/entrypoint-scripts/verax-api-tls.sh"

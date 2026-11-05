@@ -24,7 +24,7 @@ manager_exec() { # <comando...>, no contêiner do manager, com a entrada padrão
 
 # O programa vai por argumento (não tem segredo); as senhas, pela entrada padrão.
 read -r -d '' PROGRAM <<'PY' || true
-import base64, http.client, json, socket, ssl, sys
+import base64, http.client, json, socket, ssl, sys, time
 
 HOST, PORT, CA = 'wazuh.manager', 55000, '/etc/ssl/verax/root-ca.pem'
 ADMIN, USER, ROLE, POLICY = 'wazuh-wui', 'verax_stats', 'verax_stats', 'verax_stats_manager_read'
@@ -156,6 +156,12 @@ def main():
     if role['id'] not in (user.get('roles') or []):
         call(admin, 'POST', '/security/users/%s/roles?role_ids=%s' % (user['id'], role['id']))
         changes.append('papel ligado ao usuário')
+
+    # Uma mudança no usuário, no papel ou na política invalida os tokens emitidos até o segundo dela, inclusive (a API
+    # guarda o instante em segundos e só aceita token emitido depois dele: wazuh/rbac/orm.py, is_token_valid). Um login
+    # no mesmo segundo da última mudança entra, mas o token é recusado (401) em seguida: espera o segundo virar.
+    if changes:
+        time.sleep(1.5)
 
     # Como o worker vai usar: entra, lê os contadores do analysisd e não passa do manager:read.
     token = login(USER, stats_password)

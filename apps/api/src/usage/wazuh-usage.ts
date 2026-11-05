@@ -34,6 +34,11 @@ export interface CounterDelta {
   events: number;
   /** Primeira leitura (sem base): vira só a base, sem medir. */
   first: boolean;
+  /**
+   * A base foi gravada (ou marcada) com o volume ambíguo (`meterBlocked`): parte do intervalo desde ela pode ser de
+   * outro cliente, e a leitura vira só a base, como a primeira.
+   */
+  ambiguous: boolean;
   /** O analysisd reiniciou (outra partida, ou um contador caiu): a leitura vale inteira. */
   restarted: boolean;
 }
@@ -43,11 +48,15 @@ export interface CounterDelta {
  * partida nova (o `uptime` mudou) ou com um contador menor que a base (o analysisd reiniciou entre as duas leituras), os
  * contadores recomeçaram do zero, e o valor inteiro é o que chegou desde então. Sem base (a primeira leitura do nó, ou
  * de um nó que acabou de ganhar esta tarefa), nada é medido: o que o analysisd contou antes pode ser de outro mês, e a
- * dúvida fica a favor do cliente. O que chega entre a última leitura e um reinício também se perde (o contador some com
- * o processo).
+ * dúvida fica a favor do cliente. Com a base ambígua (gravada, ou marcada numa leitura que falhou, enquanto havia mais
+ * de um cliente), também não: o intervalo desde ela não dá para separar, e a leitura de agora é a base nova. O que chega
+ * entre a última leitura e um reinício também se perde (o contador some com o processo).
  */
-export function counterDelta(base: CounterBase | null, current: AnalysisdCounters): CounterDelta {
-  if (base === null) return { bytes: 0, events: 0, first: true, restarted: false };
+export function counterDelta(
+  base: (CounterBase & { meterBlocked?: string | null }) | null,
+  current: AnalysisdCounters,
+): CounterDelta {
+  if (base === null) return { bytes: 0, events: 0, first: true, ambiguous: false, restarted: false };
   const newStart = base.startedAt.getTime() !== current.startedAt.getTime();
   const previousBytes = Number(base.bytesReceived);
   const previousEvents = Number(base.awsEvents);
@@ -56,8 +65,14 @@ export function counterDelta(base: CounterBase | null, current: AnalysisdCounter
     bytes: restarted ? current.bytesReceived : current.bytesReceived - previousBytes,
     events: restarted ? current.awsEvents : current.awsEvents - previousEvents,
     first: false,
+    ambiguous: (base.meterBlocked ?? null) !== null,
     restarted,
   };
+}
+
+/** A diferença vale para o medidor: há base, e ela não é ambígua. */
+export function chargeable(delta: CounterDelta): boolean {
+  return !delta.first && !delta.ambiguous;
 }
 
 /** De quem é o volume do analysisd: de ninguém, de um cliente só, ou ambíguo. */
@@ -98,8 +113,8 @@ export interface WazuhUsageReport {
   /** A leitura dos contadores: ok, ou o tipo do problema. */
   read: 'ok' | WazuhApiErrorKind;
   /**
-   * `recorded` (somado ao cliente), `baseline` (primeira leitura, só a base), `no_tenant` (nenhum cliente com conta
-   * AWS), `multiple_tenants` (ambíguo, não medido) ou `not_read`.
+   * `recorded` (somado ao cliente), `baseline` (só a base: a primeira leitura, ou a primeira depois de um intervalo
+   * ambíguo), `no_tenant` (nenhum cliente com conta AWS), `multiple_tenants` (ambíguo, não medido) ou `not_read`.
    */
   meter: 'recorded' | 'baseline' | 'no_tenant' | 'multiple_tenants' | 'not_read';
   restarted: boolean;
@@ -148,7 +163,10 @@ export interface WazuhUsageOptions {
  *    rearmam o aviso. Sem a leitura (o manager fora do ar), a saúde é avaliada com o que já se sabe: o prazo corre.
  *
  * Um cliente por nó: com mais de um (`meterOwner`), a leitura vira só a base, `meterBlocked` fica gravado (a Torre da
- * equipe da Verax mostra) e o log avisa a cada execução; a saúde dos envolvidos é limpa (nada a afirmar).
+ * equipe da Verax mostra) e o log avisa a cada execução. A ambiguidade fica gravada na base mesmo quando a leitura
+ * falha, e a leitura seguinte a uma base ambígua também vira só a base: o volume de um intervalo em que havia mais de um
+ * cliente nunca é cobrado de quem sobrar. A saúde de todo cliente que não é o dono de agora (ambíguo, sem conta AWS
+ * ativa, ou que saiu do nó) é limpa: nada a afirmar, e uma conta que volte começa uma observação nova.
  */
 export class WazuhUsage {
   private readonly now: () => Date;
@@ -224,28 +242,55 @@ export class WazuhUsage {
         delta = await this.saveBase(tx, base, counters, owner, now);
         report.restarted = delta.restarted;
         report.meter = meterOutcome(owner, delta);
-        if (owner.kind === 'single' && !delta.first) {
+        if (owner.kind === 'single' && chargeable(delta)) {
           const meter = new UsageMeter();
           meter.add(owner.tenantId, 'aws', delta.bytes, delta.events, now);
           await meter.flushIn(tx);
           report.bytes = delta.bytes;
           report.events = delta.events;
         }
+      } else if (owner.kind === 'multiple' && base !== null) {
+        // Sem a leitura, a ambiguidade não pode se perder: a base fica marcada, e a próxima leitura bem-sucedida vira
+        // só a base nova, mesmo que já sobre um cliente (o volume desde a base pode ser de qualquer um deles).
+        await tx.wazuhCounter.updateMany({
+          where: { id: this.counterId },
+          data: { meterBlocked: METER_BLOCKED_MULTIPLE_TENANTS },
+        });
       }
+      await this.clearHealthOfOthers(tx, owner);
       if (owner.kind === 'single') {
         const health = await this.updateHealth(tx, owner, delta, now);
         report.health = health.state;
         report.stallNotices = health.notices;
-      } else if (owner.kind === 'multiple') {
-        for (const tenantId of owner.tenantIds) {
-          await scopeToTenant(tx, tenantId).ingestHealth.updateMany({
-            where: { source: 'aws' },
-            data: { lastProgressAt: null, stallNotifiedFor: null },
-          });
-        }
       }
       return report;
     });
+  }
+
+  /**
+   * Limpa a saúde de todo cliente que não é o dono de agora: com mais de um cliente, todos; sem dono (o último cliente
+   * desativou a última conta AWS), quem tinha a observação; com um dono, quem saiu do nó. Uma conta que volte (o mesmo
+   * cliente ou outro) começa uma observação nova, sem uma parada antiga que avise na hora.
+   */
+  private async clearHealthOfOthers(tx: Prisma.TransactionClient, owner: MeterOwner): Promise<void> {
+    // Busca de sistema, entre todos os clientes do nó; cada gravação vai pelo escopo do próprio cliente.
+    const stale = await tx.ingestHealth.findMany({
+      where: {
+        source: 'aws',
+        OR: [{ lastProgressAt: { not: null } }, { stallNotifiedFor: { not: null } }],
+        AND: [
+          ...(owner.kind === 'single' ? [{ tenantId: { not: owner.tenantId } }] : []),
+          ...(this.tenantIds !== undefined ? [{ tenantId: { in: [...this.tenantIds] } }] : []),
+        ],
+      },
+      select: { tenantId: true },
+    });
+    for (const { tenantId } of stale) {
+      await scopeToTenant(tx, tenantId).ingestHealth.updateMany({
+        where: { source: 'aws' },
+        data: { lastProgressAt: null, stallNotifiedFor: null },
+      });
+    }
   }
 
   /**
@@ -254,7 +299,7 @@ export class WazuhUsage {
    */
   private async saveBase(
     tx: Prisma.TransactionClient,
-    base: (CounterBase & { readAt: Date }) | null,
+    base: (CounterBase & { readAt: Date; meterBlocked: string | null }) | null,
     counters: AnalysisdCounters,
     owner: MeterOwner,
     now: Date,
@@ -291,7 +336,8 @@ export class WazuhUsage {
   ): Promise<{ state: IngestHealthState; notices: number }> {
     const db = scopeToTenant(tx, owner.tenantId);
     const row = await db.ingestHealth.findFirst({ where: { source: 'aws' } });
-    const progressed = delta !== null && delta.events > 0;
+    // A diferença ambígua não diz de quem são os eventos: não conta como andamento (a observação já foi limpa).
+    const progressed = delta !== null && chargeable(delta) && delta.events > 0;
     let lastProgressAt: Date | null = null;
     if (owner.awsConnected) lastProgressAt = progressed || !row?.lastProgressAt ? now : row.lastProgressAt;
     const since = awsLogsStalledSince(
@@ -330,5 +376,5 @@ export class WazuhUsage {
 function meterOutcome(owner: MeterOwner, delta: CounterDelta): WazuhUsageReport['meter'] {
   if (owner.kind === 'none') return 'no_tenant';
   if (owner.kind === 'multiple') return 'multiple_tenants';
-  return delta.first ? 'baseline' : 'recorded';
+  return chargeable(delta) ? 'recorded' : 'baseline';
 }

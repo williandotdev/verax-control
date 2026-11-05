@@ -211,13 +211,17 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
     expect(JSON.stringify(warnings)).not.toContain(tenantA);
     expect(JSON.stringify(warnings)).not.toContain(tenantB);
 
-    // B sai do nó: o que chegou enquanto era ambíguo não é de A; só o que vem depois.
+    // B sai do nó: a primeira leitura depois da base ambígua é só a base nova (o intervalo desde a última leitura ainda
+    // pode ter volume de B); só o que vem depois é de A.
     await prisma.cloudAccount.update({ where: { id: intruder.id }, data: { status: 'inactive' } });
     stats.advance(1_000, 1);
     clock.tick(5 * MINUTE);
-    expect(await usage.runOnce()).toMatchObject({ meter: 'recorded', bytes: 1_000, events: 1 });
+    expect(await usage.runOnce()).toMatchObject({ meter: 'baseline', bytes: 0, events: 0 });
+    stats.advance(300, 1);
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ meter: 'recorded', bytes: 300, events: 1 });
     expect(await usageOf(tenantA)).toEqual([
-      { month: '2026-11-01', source: 'aws', bytes: 3_000n, events: 3n },
+      { month: '2026-11-01', source: 'aws', bytes: 2_300n, events: 3n },
     ]);
     expect(await usageOf(tenantB)).toEqual([]);
     expect(
@@ -232,6 +236,90 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
     expect(await withAgents.usage.runOnce()).toMatchObject({ meter: 'multiple_tenants' });
     // Sem conta AWS nenhuma, não há o que medir como aws.
     expect(await task([tenantB], clock).usage.runOnce()).toMatchObject({ meter: 'no_tenant' });
+  });
+
+  it('A/B: a leitura que falha com dois clientes marca a base; o que veio no meio nunca é cobrado de quem sobra', async () => {
+    const tenantA = await createTenant(app, 'Cliente Demo A (ambíguo sem leitura)');
+    const tenantB = await createTenant(app, 'Cliente Demo B (ambíguo sem leitura)');
+    await awsAccount(tenantA);
+    const clock = new Clock(new Date('2026-11-09T12:00:00.000Z'));
+    const { usage, stats, counterId } = task([tenantA, tenantB], clock);
+    stats.advance(5_000, 5);
+    await usage.runOnce();
+    expect(
+      (await prisma.wazuhCounter.findUniqueOrThrow({ where: { id: counterId } })).meterBlocked,
+    ).toBeNull();
+
+    // B entra, 1.000 bytes chegam e a leitura falha: a ambiguidade fica gravada na base, mesmo sem contadores novos.
+    const intruder = await awsAccount(tenantB);
+    stats.advance(1_000, 1);
+    stats.failure = 'timeout';
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ read: 'timeout', meter: 'not_read' });
+    expect(await prisma.wazuhCounter.findUniqueOrThrow({ where: { id: counterId } })).toMatchObject({
+      bytesReceived: 5_000n,
+      meterBlocked: 'multiple_tenants',
+    });
+
+    // B sai antes da próxima leitura bem-sucedida, e mais 100 bytes chegam: os 1.100 desde a base não vão para A.
+    await prisma.cloudAccount.update({ where: { id: intruder.id }, data: { status: 'inactive' } });
+    stats.failure = null;
+    stats.advance(100, 1);
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ read: 'ok', meter: 'baseline', bytes: 0, events: 0 });
+    expect(await usageOf(tenantA)).toEqual([]);
+    expect(await usageOf(tenantB)).toEqual([]);
+    expect(await prisma.wazuhCounter.findUniqueOrThrow({ where: { id: counterId } })).toMatchObject({
+      bytesReceived: 6_100n,
+      meterBlocked: null,
+    });
+    // Da base nova em diante, A volta a ser medido.
+    stats.advance(40, 1);
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ meter: 'recorded', bytes: 40, events: 1 });
+    expect(await usageOf(tenantA)).toEqual([{ month: '2026-11-01', source: 'aws', bytes: 40n, events: 1n }]);
+  });
+
+  it('saúde: sem conta AWS ativa, a observação some; a conta que volta começa do zero, sem aviso na hora', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (última conta desativada)');
+    const account = await awsAccount(tenant);
+    const clock = new Clock(new Date('2026-11-09T08:00:00.000Z'));
+    const { usage } = task([tenant], clock);
+    await usage.runOnce();
+    clock.tick(2 * HOUR + 5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ health: 'stalled', stallNotices: 1 });
+    const stalledSince = new Date('2026-11-09T08:00:00.000Z');
+    expect(await healthOf(tenant)).toEqual({ lastProgressAt: stalledSince, stallNotifiedFor: stalledSince });
+
+    // O cliente desativa a última conta AWS: ninguém é dono do volume, e a observação dele é limpa.
+    await prisma.cloudAccount.update({ where: { id: account.id }, data: { status: 'inactive' } });
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ meter: 'no_tenant', health: 'not_evaluated' });
+    expect(await healthOf(tenant)).toEqual({ lastProgressAt: null, stallNotifiedFor: null });
+
+    // Horas depois, a conta volta: uma observação nova, sem a parada antiga nem um aviso imediato.
+    clock.tick(6 * HOUR);
+    await prisma.cloudAccount.update({ where: { id: account.id }, data: { status: 'active' } });
+    expect(await usage.runOnce()).toMatchObject({ health: 'waiting', stallNotices: 0 });
+    expect(await healthOf(tenant)).toEqual({ lastProgressAt: clock.at, stallNotifiedFor: null });
+    expect(await noticesOf(tenant)).toHaveLength(1);
+  });
+
+  it('saúde: o cliente que sai do nó perde a observação, e o que fica segue a dele', async () => {
+    const tenantA = await createTenant(app, 'Cliente Demo A (troca de dono)');
+    const tenantB = await createTenant(app, 'Cliente Demo B (troca de dono)');
+    const accountA = await awsAccount(tenantA);
+    const clock = new Clock(new Date('2026-11-09T08:00:00.000Z'));
+    const { usage } = task([tenantA, tenantB], clock);
+    await usage.runOnce();
+    expect(await healthOf(tenantA)).not.toEqual({ lastProgressAt: null, stallNotifiedFor: null });
+
+    await prisma.cloudAccount.update({ where: { id: accountA.id }, data: { status: 'inactive' } });
+    await awsAccount(tenantB);
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ health: 'waiting' });
+    expect(await healthOf(tenantA)).toEqual({ lastProgressAt: null, stallNotifiedFor: null });
+    expect(await healthOf(tenantB)).toEqual({ lastProgressAt: clock.at, stallNotifiedFor: null });
   });
 
   it('saúde: parada há mais de 2 h vira um aviso por parada; os eventos de volta rearmam', async () => {

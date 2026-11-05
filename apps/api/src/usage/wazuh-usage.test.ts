@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { awsStallDedupeKey, awsStallNotice } from '../notifications/ingestion-notices.js';
-import { counterDelta, meterOwner } from './wazuh-usage.js';
+import { chargeable, counterDelta, meterOwner } from './wazuh-usage.js';
 
 const started = new Date('2026-11-09T10:00:00.000Z');
 const base = (bytes: number, events: number, startedAt = started) => ({
@@ -20,12 +20,14 @@ describe('diferença dos contadores do analysisd (PR-V6)', () => {
       bytes: 3_500,
       events: 7,
       first: false,
+      ambiguous: false,
       restarted: false,
     });
     expect(counterDelta(base(1_000, 10), reading(1_000, 10))).toEqual({
       bytes: 0,
       events: 0,
       first: false,
+      ambiguous: false,
       restarted: false,
     });
   });
@@ -36,6 +38,7 @@ describe('diferença dos contadores do analysisd (PR-V6)', () => {
       bytes: 300,
       events: 2,
       first: false,
+      ambiguous: false,
       restarted: true,
     });
     expect(counterDelta(base(1_000, 10), reading(5_000, 40, later))).toMatchObject({
@@ -50,6 +53,7 @@ describe('diferença dos contadores do analysisd (PR-V6)', () => {
       bytes: 200,
       events: 12,
       first: false,
+      ambiguous: false,
       restarted: true,
     });
     expect(counterDelta(base(1_000, 10), reading(1_500, 3))).toMatchObject({ bytes: 1_500, events: 3 });
@@ -60,8 +64,20 @@ describe('diferença dos contadores do analysisd (PR-V6)', () => {
       bytes: 0,
       events: 0,
       first: true,
+      ambiguous: false,
       restarted: false,
     });
+    expect(chargeable(counterDelta(null, reading(9_999, 99)))).toBe(false);
+  });
+
+  it('base ambígua (gravada ou marcada com mais de um cliente): a diferença não vale para o medidor', () => {
+    const blocked = { ...base(1_000, 10), meterBlocked: 'multiple_tenants' };
+    const delta = counterDelta(blocked, reading(2_100, 12));
+    expect(delta).toEqual({ bytes: 1_100, events: 2, first: false, ambiguous: true, restarted: false });
+    expect(chargeable(delta)).toBe(false);
+    expect(chargeable(counterDelta({ ...base(1_000, 10), meterBlocked: null }, reading(2_100, 12)))).toBe(
+      true,
+    );
   });
 
   it('volume acima de 32 bits', () => {
