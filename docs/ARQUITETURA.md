@@ -395,7 +395,8 @@ O pacote do nó está em `infra/node/`, com o roteiro em `docs/runbooks/no-verax
 aberta: Postgres com TLS, papéis e migrations, API, worker e o túnel do Cloudflare. As imagens vêm do registro do
 projeto, fixadas pelo digest. O nó não depende de e-mail: toda conta nasce com uma senha temporária, que a pessoa
 troca no primeiro login antes de cadastrar o MFA (decisão de 03/11/2026). Se o e-mail for ligado (SMTP com TLS), ele
-serve só para a redefinição de senha pelo link.
+serve para a redefinição de senha pelo link e para os avisos de incidente e de volume do plano (seção "Avisos por
+e-mail").
 
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
@@ -571,6 +572,60 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
 - **Leitura separada:** a tarefa `wazuh-agent-alerts` tem estado e concessão próprios no `SyncState`, com as mesmas
   regras de leitura do sync da AWS (nível 5 ou mais, sobreposição de 10 min, cursor, até 100 páginas). Uma instância
   barulhenta não atrasa os achados das contas, e o caminho da AWS não muda.
+
+## Avisos por e-mail (`apps/api/src/notifications/`)
+
+_(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado)_
+
+O nó avisa por e-mail, sem depender de quem está com o painel aberto. O aviso passa por uma fila de saída (_outbox_) no
+Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dentro da transação que grava o achado.
+
+- **Quando nasce um aviso**, sempre com uma chave de deduplicação única por cliente (o mesmo fato avisa uma vez só,
+  por mais que seja relido):
+
+  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe      |
+  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ---------------- |
+  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista |
+  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista |
+  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista |
+  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin       |
+  | `aws_ingestion_stalled` | a coleta da AWS para (tipo e texto prontos; quem emite é o medidor do PR-V6)  | a definir no PR-V6           | só o admin       |
+
+  Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
+  GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
+  (`IncidentGrouping.place`) devolve a severidade do incidente antes e depois do achado; a junção que não muda a
+  severidade não avisa. O achado com exceção (esperado) nunca avisa.
+
+- **Volume do plano:** a cada execução, a tarefa soma o uso do mês de cada cliente (`IngestUsage`, o medidor do PR-03,
+  no mês do calendário de Brasília) e compara com o limite do plano do nó (`PLAN` e `PLAN_MONTHLY_GIB`; o GiB é 2^30
+  bytes). Cada faixa avisa uma vez por mês. Num salto direto para 100%, o aviso de 80% nasce `skipped` (`superseded`) e
+  sai um e-mail só. O aviso só informa: acima de 100%, a coleta, os achados e os incidentes continuam. O plano
+  `interno` (nó da Verax) não tem limite, e nada é calculado.
+- **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
+  - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
+    senha pendente, do papel que o tipo pede, com o cliente ativo. `leitura` não recebe (decisão D8); a equipe da Verax
+    não é do cliente;
+  - um e-mail por pessoa, pelo mesmo transporte da API (`mailTransport`, SMTP com TLS no nó). O id de quem já recebeu
+    fica no aviso, e a nova tentativa não repete o e-mail;
+  - falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
+    do erro fica gravado (a resposta do servidor pode citar o endereço);
+  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped`. Ligar o e-mail depois
+    não dispara os avisos antigos;
+  - uma falha no cálculo do volume não segura os avisos de incidente.
+- **O que o e-mail diz:** assunto fixo por tipo e severidade (sem CR nem LF), um texto fixo e o link do painel
+  (`${WEB_ORIGIN}/incidentes/<id>`, `/achados?achado=<id>`, `/cadastros/contas` ou a Torre). Nenhum IP, usuário,
+  chave, recurso, conta, título de regra ou região: o e-mail pode ser encaminhado, e os detalhes ficam atrás do login
+  com MFA. O nome de quem recebe vai escapado no HTML.
+- **Nada de endereço no log nem na fila:** a tabela guarda só o id de quem recebeu; o log do worker leva só as
+  contagens da execução.
+- **Isolamento:** `Notification` entra no escopo do cliente (`TENANT_SCOPED_MODELS`). A chave estrangeira do achado
+  inclui o cliente, e um gatilho confere o cliente do incidente. Apagar o incidente ou o achado (o expurgo do PR-19)
+  apaga o aviso junto.
+- **Configuração:** o worker recebe o mesmo bloco de e-mail da API (`MAIL_TRANSPORT`, `MAIL_FROM`, `SMTP_*`) e a
+  origem do painel (`WEB_ORIGIN`), que o `start.sh` escreve no `worker.env` só com `MAIL_TRANSPORT=smtp` no
+  `node.conf`. Sem o e-mail, o `worker.env` não muda, e o worker sobe com `none`. Nos nós de clientes, o SMTP é o da
+  Verax (decisão D-16, sem SES).
 
 ## Custo por nó
 
@@ -956,7 +1011,8 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
    regras críticas da AWS com títulos em português. O template espera o teste prático na conta AWS de teste.
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
 5. **Ativos e Postura da AWS** pelo papel de leitura do cliente.
-6. **Compromissos do plano:** avisos por e-mail, limites do plano, expurgo do histórico e 365 dias nas telas.
+6. **Compromissos do plano:** avisos por e-mail (feito no código no PR-16, com os avisos de 80% e 100% do volume),
+   limites do plano, expurgo do histórico e 365 dias nas telas.
 7. **Versão do nó reproduzível e ensaio geral.** É o portão da fase 3: um nó nasce do zero só com `terraform apply` e
    a versão publicada, sem SSH e sem operador.
 

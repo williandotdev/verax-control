@@ -5,6 +5,7 @@ import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
+import { nodePlan } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
@@ -15,6 +16,13 @@ import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js'
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
+import { mailTransport } from './mail/mail.module.js';
+import {
+  NOTIFICATIONS_INTERVAL_MS,
+  NOTIFICATIONS_TASK,
+  NotificationDispatcher,
+} from './notifications/notification-dispatcher.js';
+import { UsageNotices } from './notifications/usage-notices.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -44,6 +52,10 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  *
  * A tarefa `aws-check` responde o "Verificar" das contas AWS (a cada 30 s, só quando há pedido pendente). Até o PR-V5',
  * a conferência é a `UnavailableAwsConnectionChecker`: o pedido vira o código `check_unavailable`, sem chamar a AWS.
+ *
+ * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
+ * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
+ * ficam `skipped`.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -115,6 +127,21 @@ async function main(): Promise<void> {
       budgetMs: SYNC_BUDGET_MS,
       run: (signal) => awsCheck.runOnce(signal),
     });
+    // Avisos por e-mail: o transporte da mesma fábrica da API. A configuração já exigiu o remetente e a origem do painel
+    // com o e-mail ligado.
+    const mailer =
+      config.MAIL_TRANSPORT === 'none'
+        ? null
+        : { transport: mailTransport(config), webOrigin: config.WEB_ORIGIN as string };
+    const notifications = new NotificationDispatcher(prisma, mailer, {
+      usage: new UsageNotices(prisma, nodePlan(config).limits.monthlyGib),
+    });
+    tasks.push({
+      name: NOTIFICATIONS_TASK,
+      intervalMs: NOTIFICATIONS_INTERVAL_MS,
+      budgetMs: SYNC_BUDGET_MS,
+      run: (signal) => notifications.runOnce(signal),
+    });
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
       const rekey = new CredentialRekey(prisma, keyring);
@@ -143,6 +170,8 @@ async function main(): Promise<void> {
       intervalSeconds: config.SYNC_INTERVAL_SECONDS,
       tasks: tasks.map((task) => task.name),
       plan: config.PLAN,
+      // Só o tipo do transporte dos avisos, nunca o servidor, o usuário ou o remetente.
+      mailTransport: config.MAIL_TRANSPORT,
       // Só a versão corrente da chave do cofre (null sem o cofre), nunca a chave.
       vaultKeyVersion: config.credentialsKeyring?.current ?? null,
     },

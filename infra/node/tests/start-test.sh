@@ -12,7 +12,8 @@
 #    com o gcloud simulado (um cofre por arquivo). Sem TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai exatamente
 #    como antes do Turnstile (e o cofre nem é lido); com a chave do site, a chave secreta vem do cofre, e as duas só
 #    entram juntas. Os valores do papel de leitura sem chave da AWS (NODE_SA_UNIQUE_ID e AWS_WEB_IDENTITY_AUDIENCE)
-#    entram depois do IP de saída e antes do Turnstile; sem eles, o api.env é o de referência, byte a byte.
+#    entram depois do IP de saída e antes do Turnstile; sem eles, o api.env é o de referência, byte a byte. O worker.env
+#    sem o e-mail também é o de referência; com o SMTP, ganha o bloco do e-mail da API e a origem do painel (PR-16).
 # 3. Os agentes do Wazuh (WAZUH_AGENTS): desligados, o standard sai byte a byte como sem a linha; ligados, a API recebe
 #    o endereço, o cliente, as faixas, o limite, a CA e a senha de registro (só ela), o worker o caminho da lista e o
 #    cliente; no lean, sem o IP, o cliente, a senha ou o certificado, ou com um valor fora do formato, o render para
@@ -441,6 +442,46 @@ grep -q 'turnstile' "$root/vault/log" && fail "leu o cofre do Turnstile sem a ch
 [ "$(cat "$root/vault/log")" = "gcloud secrets versions access latest --project projeto-do-no --secret verax-node-cloudflare-tunnel-token" ] ||
   fail "chamadas ao gcloud diferentes das de antes: $(cat "$root/vault/log")"
 [ "$(cat "$root/run/verax/cloudflared.env")" = "TUNNEL_TOKEN='token-do-tunel'" ] || fail "o cloudflared.env mudou"
+
+# --- Avisos por e-mail (PR-16): o worker.env -----------------------------------------------------------------------
+# Sem o e-mail (MAIL_TRANSPORT=none, o node.conf de exemplo do cenário acima), o worker.env é o de antes, byte a byte.
+# Com o SMTP, o worker recebe o mesmo bloco da API e a origem do painel (o link dos avisos), logo antes do plano; a
+# senha da caixa vai só para a API e o worker, e o api.env só troca o bloco do e-mail.
+worker_env() { cat "$root/run/verax/worker.env"; }
+worker_baseline=$(
+  cat <<'EOF'
+NODE_ENV='production'
+LOG_LEVEL='info'
+SYNC_SOURCES='gcp'
+SYNC_INTERVAL_SECONDS='60'
+PLAN='interno'
+DATABASE_URL='postgresql://verax_app:interno-postgres-app@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt'
+EOF
+)
+[ "$(worker_env)" = "$worker_baseline" ] || fail "o worker.env mudou sem o e-mail:
+$(diff <(echo "$worker_baseline") <(worker_env) || true)"
+
+new_root "e-mail ligado (SMTP)" smtp
+node_conf MAIL_TRANSPORT=smtp SMTP_HOST=smtp.exemplo.com SMTP_PORT=465 SMTP_USER=nao-responda@exemplo.com.br
+printf 'senha-ficticia-da-caixa\n' >"$root/vault/verax-node-smtp-password"
+render_env || fail "o render falhou: $(cat "$root/out")"
+mail_lines="MAIL_TRANSPORT='smtp'
+MAIL_FROM='nao-responda@exemplo.com.br'
+SMTP_HOST='smtp.exemplo.com'
+SMTP_PORT='465'
+SMTP_USER='nao-responda@exemplo.com.br'
+SMTP_PASSWORD='senha-ficticia-da-caixa'"
+api_with_mail=${baseline/MAIL_TRANSPORT=\'none\'$'\n'MAIL_FROM=\'nao-responda@exemplo.com.br\'/$mail_lines}
+[ "$(api_env)" = "$api_with_mail" ] || fail "o api.env com o SMTP saiu diferente:
+$(diff <(echo "$api_with_mail") <(api_env) || true)"
+worker_with_mail=${worker_baseline/PLAN=/$mail_lines$'\n'WEB_ORIGIN=\'https://cliente.control.exemplo.com.br\'$'\n'PLAN=}
+[ "$(worker_env)" = "$worker_with_mail" ] || fail "o worker.env com o SMTP saiu diferente:
+$(diff <(echo "$worker_with_mail") <(worker_env) || true)"
+[ "$(cd "$root/run/verax" && grep -l -F 'senha-ficticia-da-caixa' ./*.env | LC_ALL=C sort | tr '\n' ' ')" = \
+  "./api.env ./worker.env " ] || fail "a senha da caixa foi para outro arquivo de ambiente"
+grep -q 'senha-ficticia' "$root/out" && fail "a senha da caixa saiu na tela"
+grep -q -- '--secret verax-node-smtp-password' "$root/vault/log" || fail "não leu o cofre da senha da caixa"
+echo "ok     avisos por e-mail: o worker.env sem o e-mail é o de antes; com o SMTP, o bloco da API e a origem do painel"
 
 # --- Chave do site no node.conf e cofre ainda sem valor ------------------------------------------------------------
 new_root "chave do site sem a secreta no cofre" cofre-vazio

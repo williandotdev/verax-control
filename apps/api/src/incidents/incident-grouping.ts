@@ -1,3 +1,4 @@
+import type { FindingSeverity } from '../alerts/finding-draft.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import {
   type CorrelationKey,
@@ -45,7 +46,22 @@ export function protectedItemsOf(items: readonly { type: string; identifier: str
   return set;
 }
 
-export type GroupingResult = 'joined' | 'opened' | 'none';
+/**
+ * Onde o achado ficou: o resultado, o incidente e a severidade dele depois e antes do achado (`previousSeverity` só na
+ * junção). É o que decide os avisos por e-mail (`notifications/finding-notices.ts`): abrir alto ou crítico, ou subir
+ * para alto ou crítico.
+ */
+export type IncidentPlacement =
+  | { outcome: 'none'; incidentId: null; severity: null; previousSeverity: null }
+  | { outcome: 'opened'; incidentId: string; severity: FindingSeverity; previousSeverity: null }
+  | { outcome: 'joined'; incidentId: string; severity: FindingSeverity; previousSeverity: FindingSeverity };
+
+const NOT_PLACED: IncidentPlacement = {
+  outcome: 'none',
+  incidentId: null,
+  severity: null,
+  previousSeverity: null,
+};
 
 /** Cliente do banco já no escopo de um cliente; o sync passa o da transação que grava o achado. */
 type ScopedDb = Prisma.TransactionClient;
@@ -59,7 +75,11 @@ export class IncidentGrouping {
   constructor(private readonly windowMinutes = DEFAULT_GROUPING_WINDOW_MINUTES) {}
 
   /** Põe um achado novo num incidente aberto com chave em comum, abre um novo ou deixa só como achado. */
-  async place(db: ScopedDb, findingId: string, protectedItems: ReadonlySet<string>): Promise<GroupingResult> {
+  async place(
+    db: ScopedDb,
+    findingId: string,
+    protectedItems: ReadonlySet<string>,
+  ): Promise<IncidentPlacement> {
     const finding = await db.finding.findUniqueOrThrow({ where: { id: findingId }, select: groupingSelect });
     const windowMs = this.windowMinutes * 60 * 1000;
     const at = finding.occurredAt.getTime();
@@ -69,7 +89,7 @@ export class IncidentGrouping {
         firstSeenAt: { lte: new Date(at + windowMs) },
         lastSeenAt: { gte: new Date(at - windowMs) },
       },
-      select: { id: true, tenantId: true, keys: true, firstSeenAt: true, lastSeenAt: true },
+      select: { id: true, tenantId: true, keys: true, firstSeenAt: true, lastSeenAt: true, severity: true },
     });
     const plan = planIncident(
       toIncidentFinding(finding),
@@ -82,25 +102,24 @@ export class IncidentGrouping {
       this.windowMinutes,
     );
 
-    if (plan.action === 'none') return 'none';
+    if (plan.action === 'none') return NOT_PLACED;
     if (plan.action === 'join') {
-      await db.finding.update({ where: { id: findingId }, data: { incidentId: plan.incidentId } });
-      const findings = await db.finding.findMany({
-        where: { incidentId: plan.incidentId },
-        select: groupingSelect,
-      });
-      await db.incident.update({
-        where: { id: plan.incidentId },
-        data: summaryData(findings, protectedItems),
-      });
-      return 'joined';
+      const { incidentId } = plan;
+      const previousSeverity = candidates.find((candidate) => candidate.id === incidentId)?.severity;
+      if (previousSeverity === undefined) throw new Error('incidente da junção fora dos candidatos');
+      await db.finding.update({ where: { id: findingId }, data: { incidentId } });
+      const findings = await db.finding.findMany({ where: { incidentId }, select: groupingSelect });
+      const data = summaryData(findings, protectedItems);
+      await db.incident.update({ where: { id: incidentId }, data });
+      return { outcome: 'joined', incidentId, severity: data.severity, previousSeverity };
     }
+    const data = summaryData([finding], protectedItems);
     const incident = await db.incident.create({
-      data: summaryData([finding], protectedItems) as Prisma.IncidentUncheckedCreateInput,
+      data: data as Prisma.IncidentUncheckedCreateInput,
       select: { id: true },
     });
     await db.finding.update({ where: { id: findingId }, data: { incidentId: incident.id } });
-    return 'opened';
+    return { outcome: 'opened', incidentId: incident.id, severity: data.severity, previousSeverity: null };
   }
 }
 

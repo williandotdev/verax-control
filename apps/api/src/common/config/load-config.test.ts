@@ -420,6 +420,81 @@ describe('configuração do worker do sync (T5.3)', () => {
     ).toEqual({ maxCloudAccounts: 40, maxUsers: 30, monthlyGib: 250, historyDays: 730 });
   });
 
+  describe('e-mail dos avisos (PR-16)', () => {
+    const production = {
+      NODE_ENV: 'production',
+      PLAN: 'essencial',
+      DATABASE_URL: 'postgresql://verax:x@db.internal:5432/verax?sslmode=verify-full',
+    };
+    const smtp = {
+      MAIL_TRANSPORT: 'smtp',
+      MAIL_FROM: 'nao-responda@exemplo.com.br',
+      SMTP_HOST: 'smtp.exemplo.com',
+      SMTP_USER: 'nao-responda@exemplo.com.br',
+      SMTP_PASSWORD: 'senha-de-aplicativo-ficticia',
+      WEB_ORIGIN: 'https://cliente.control.exemplo.com.br',
+    };
+
+    it('sem as variáveis (o worker.env do nó sem e-mail), o e-mail fica desligado', () => {
+      expect(loadWorkerConfig(production)).toMatchObject({ MAIL_TRANSPORT: 'none' });
+      expect(loadWorkerConfig(production).MAIL_FROM).toBeUndefined();
+      expect(loadWorkerConfig(production).WEB_ORIGIN).toBeUndefined();
+    });
+
+    it('SMTP: o mesmo bloco da API, mais a origem do painel; porta 465 por padrão', () => {
+      expect(loadWorkerConfig({ ...production, ...smtp })).toMatchObject({
+        MAIL_TRANSPORT: 'smtp',
+        SMTP_HOST: 'smtp.exemplo.com',
+        SMTP_PORT: 465,
+        WEB_ORIGIN: 'https://cliente.control.exemplo.com.br',
+      });
+    });
+
+    it('com o e-mail ligado, o servidor, o remetente e a origem do painel são obrigatórios', () => {
+      const { SMTP_PASSWORD: _password, MAIL_FROM: _from, WEB_ORIGIN: _origin, ...partial } = smtp;
+      let problems: readonly string[] = [];
+      try {
+        loadWorkerConfig({ ...production, ...partial });
+      } catch (error) {
+        problems = (error as ConfigValidationError).problems;
+      }
+      expect(problems).toEqual(
+        expect.arrayContaining([
+          'SMTP_PASSWORD: obrigatória e não definida',
+          'MAIL_FROM: obrigatória e não definida',
+          'WEB_ORIGIN: obrigatória e não definida',
+        ]),
+      );
+    });
+
+    it('em produção: nada de caixa local nem de origem http; nunca mostra a senha', () => {
+      expect(() => loadWorkerConfig({ ...production, ...smtp, MAIL_TRANSPORT: 'dev-mailbox' })).toThrow(
+        'MAIL_TRANSPORT: deve ser ses, smtp ou none em produção',
+      );
+      expect(() =>
+        loadWorkerConfig({ ...production, ...smtp, WEB_ORIGIN: 'http://cliente.control.exemplo.com.br' }),
+      ).toThrow('WEB_ORIGIN: deve usar https em produção');
+      try {
+        loadWorkerConfig({ ...production, ...smtp, SMTP_HOST: 'servidor inválido' });
+        expect.unreachable();
+      } catch (error) {
+        expect((error as Error).message).toContain('SMTP_HOST: nome de servidor inválido');
+        expect((error as Error).message).not.toContain(smtp.SMTP_PASSWORD);
+      }
+    });
+
+    it('fora de produção, a caixa local também vale para o worker', () => {
+      expect(
+        loadWorkerConfig({
+          ...workerEnv,
+          MAIL_TRANSPORT: 'dev-mailbox',
+          MAIL_FROM: 'nao-responda@verax.example',
+          WEB_ORIGIN: 'http://localhost:5173',
+        }),
+      ).toMatchObject({ MAIL_TRANSPORT: 'dev-mailbox', WEB_ORIGIN: 'http://localhost:5173' });
+    });
+  });
+
   it.each(['5', '7200', 'um minuto'])('intervalo fora da faixa é recusado: %s', (value) => {
     expect(() => loadWorkerConfig({ ...workerEnv, SYNC_INTERVAL_SECONDS: value })).toThrow(
       ConfigValidationError,

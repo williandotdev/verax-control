@@ -7,8 +7,8 @@ VERAX_SECRET_PREFIX=verax-node
 IMAGES_REPOSITORY=us-east1-docker.pkg.dev/projeto-do-no/verax-control
 WEB_ORIGIN=https://cliente.control.exemplo.com.br
 API_ORIGIN=https://api-cliente.exemplo.com.br
-# E-mail opcional: contas nascem com senha temporária. Com MAIL_TRANSPORT=smtp, a redefinição de senha pelo link
-# também funciona (a senha da caixa fica no cofre `<prefixo>-smtp-password`).
+# E-mail opcional: contas nascem com senha temporária. Com MAIL_TRANSPORT=smtp, a redefinição de senha pelo link e os
+# avisos por e-mail do worker também funcionam (a senha da caixa fica no cofre `<prefixo>-smtp-password`).
 MAIL_TRANSPORT=none
 MAIL_FROM=nao-responda@exemplo.com.br
 # SMTP_HOST=smtp.exemplo.com

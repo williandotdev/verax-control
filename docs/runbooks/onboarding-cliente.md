@@ -73,7 +73,10 @@ Na reunião:
    primeiro login, a pessoa troca a senha e cadastra o MFA. Se a senha se perder ou vencer, selecione o cliente no
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
-   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
+   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele. Os avisos
+   por e-mail (incidente alto ou crítico, achado crítico e, só para administradores, 80% e 100% do volume do plano)
+   chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
+   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe.
 6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
    no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
    da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da
