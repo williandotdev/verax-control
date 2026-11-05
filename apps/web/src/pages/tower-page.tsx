@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   FINDING_SEVERITIES,
+  type CollectionSourceHealth,
   type PendingDecisionKind,
   type TowerPulse,
   type TowerSummary,
@@ -349,9 +350,19 @@ function NothingToDecide({ summary }: { summary: TowerSummary }) {
 }
 
 /**
+ * O último evento de uma fonte de contas cloud, à parte do último dado: na AWS, o último alerta; na GCP e no
+ * Cloudflare, a última entrada. Nas outras fontes e nas não configuradas, nada.
+ */
+function lastEventNote(source: CollectionSourceHealth): string | undefined {
+  if (source.lastEventAt === undefined || source.state === 'not_configured') return undefined;
+  const what = source.source === 'aws' ? 'último alerta' : 'último evento';
+  return `${what} ${source.lastEventAt ? formatRelative(source.lastEventAt) : 'nenhum ainda'}`;
+}
+
+/**
  * "Saúde da coleta" (OP-02, no lugar da "Cobertura"): uma linha por fonte, com o estado e o último dado que prova a
- * coleta (a AWS pelo andamento dos eventos no Wazuh do nó, com o último alerta à parte), as não configuradas por
- * último. Num nó de antes do OP-02 (sem as fontes), as datas de antes.
+ * coleta (a AWS pelo andamento dos eventos no Wazuh do nó, a GCP e o Cloudflare pela leitura bem-sucedida, com o
+ * último evento à parte), as não configuradas por último. Num nó de antes do OP-02 (sem as fontes), as datas de antes.
  */
 function CollectionHealth({ summary }: { summary: TowerSummary }) {
   const { coverage } = summary;
@@ -385,11 +396,7 @@ function CollectionHealth({ summary }: { summary: TowerSummary }) {
                   description={label.description}
                   state={source.state}
                   lastDataAt={source.lastDataAt}
-                  note={
-                    source.source === 'aws' && source.state !== 'not_configured'
-                      ? `último alerta ${source.lastAlertAt ? formatRelative(source.lastAlertAt) : 'nenhum ainda'}`
-                      : undefined
-                  }
+                  note={lastEventNote(source)}
                 />
               </li>
             );
@@ -416,8 +423,8 @@ function CollectionHealth({ summary }: { summary: TowerSummary }) {
       </p>
       {/*
         A API decide quem é silenciosa: na AWS, a conta sem alerta e, conectada, sem os eventos andando no Wazuh do nó
-        (OP-01); na GCP, a sem evento (a leitura vazia não prova que os logs chegam); no Cloudflare, a sem coleta nem
-        evento. Em todos os casos, ela está sem eventos no período.
+        (OP-01); na GCP e no Cloudflare, a sem leitura bem-sucedida nem evento (o projeto calmo, lido, não entra).
+        Em todos os casos, ela está sem eventos no período.
       */}
       {coverage.silentAccounts.length > 0 && (
         <p className={`mt-3 flex items-start gap-2 rounded-md border p-2 text-sm ${surface}`}>

@@ -90,11 +90,17 @@ const COLLECTION_WINDOWS: Readonly<
   Record<CollectionSource, { delayedAfterMinutes: number; stalledAfterMinutes: number }>
 > = {
   aws: { delayedAfterMinutes: 30, stalledAfterMinutes: 120 },
-  gcp: { delayedAfterMinutes: 12 * 60, stalledAfterMinutes: 24 * 60 },
+  gcp: { delayedAfterMinutes: 15, stalledAfterMinutes: 60 },
   cloudflare: { delayedAfterMinutes: 30, stalledAfterMinutes: 120 },
   agents: { delayedAfterMinutes: 15, stalledAfterMinutes: 60 },
   posture: { delayedAfterMinutes: 26 * 60, stalledAfterMinutes: 50 * 60 },
 };
+
+/**
+ * Há quantos minutos as leituras da assinatura da GCP da Alfa falham na demonstração (a permissão de leitura foi tirada
+ * no projeto do nó): a conta está com erro, e a última leitura bem-sucedida foi há esse tempo (`mocks/admin.ts`).
+ */
+export const DEMO_GCP_FAILING_MINUTES = 3 * 60;
 
 /**
  * Os agentes da Alfa na demonstração (`demoAgents`, em `mocks/agents-handlers.ts`): 3 ativos de 5 registrados, o
@@ -104,9 +110,10 @@ export const DEMO_TOWER_AGENTS = { online: 3, total: 5, lastKeepAliveMinutes: 0.
 
 /**
  * A saúde da coleta de cada cliente fictício, como as contas da demonstração (`mocks/admin.ts`). Na Alfa, a AWS anda no
- * Wazuh há 2 min (o último alerta é o da produção, há 3 min), o projeto da GCP está sem entrada nenhuma há 30 horas
- * (parada), o Cloudflare aguarda a primeira leitura e os agentes e a postura coletam. Na Beta, tudo o que ela tem
- * coleta: a AWS (calma, o último alerta há quase 7 horas) e a postura; GCP, Cloudflare e agentes ela não tem.
+ * Wazuh há 2 min (o último alerta é o da produção, há 3 min), as leituras da assinatura da GCP falham há 3 horas
+ * (parada: a última leitura bem-sucedida foi há 3 horas, e a última entrada, pouco antes), o Cloudflare aguarda a
+ * primeira leitura e os agentes e a postura coletam. Na Beta, tudo o que ela tem coleta: a AWS (calma, o último alerta
+ * há quase 7 horas) e a postura; GCP, Cloudflare e agentes ela não tem.
  */
 function demoSources(alfa: boolean, now: Date): CollectionSourceHealth[] {
   const at = (minutes: number | null) => (minutes === null ? null : minutesAgo(now, minutes));
@@ -124,14 +131,16 @@ function demoSources(alfa: boolean, now: Date): CollectionSourceHealth[] {
   });
   return alfa
     ? [
-        source('aws', 'collecting', 2, { lastAlertAt: at(3) }),
-        source('gcp', 'stalled', 30 * 60),
-        source('cloudflare', 'waiting', null),
+        source('aws', 'collecting', 2, { lastEventAt: at(3) }),
+        source('gcp', 'stalled', DEMO_GCP_FAILING_MINUTES, {
+          lastEventAt: at(DEMO_GCP_FAILING_MINUTES + 10),
+        }),
+        source('cloudflare', 'waiting', null, { lastEventAt: null }),
         source('agents', 'collecting', DEMO_TOWER_AGENTS.lastKeepAliveMinutes),
         source('posture', 'collecting', 6 * 60),
       ]
     : [
-        source('aws', 'collecting', 2, { lastAlertAt: at(400) }),
+        source('aws', 'collecting', 2, { lastEventAt: at(400) }),
         source('gcp', 'not_configured', null),
         source('cloudflare', 'not_configured', null),
         source('agents', 'not_configured', null),
@@ -230,19 +239,16 @@ export function demoTower(
     ].filter((decision) => decision.count > 0),
     openIncidents: open,
     posture: { score, scannedAt: minutesAgo(now, alfa ? 6 * 60 : 7 * 60), warningBelow },
-    // Como as contas da demonstração (`mocks/admin.ts`): na Alfa, produção e GCP conectadas, a homologação com erro
-    // há 30 horas, a GCP sem entrada há 30 horas e o Cloudflare aguardando a primeira leitura.
+    // Como as contas da demonstração (`mocks/admin.ts`): na Alfa, a produção conectada, a homologação com erro há 30
+    // horas, a GCP com as leituras falhando há 3 horas (não é silenciosa ainda: o prazo é de 24 horas) e o Cloudflare
+    // aguardando a primeira leitura.
     coverage: {
       ...(alfa
         ? {
-            connectedAccounts: 2,
+            connectedAccounts: 1,
             lastCollectedAt: minutesAgo(now, 1),
             lastEventAt: minutesAgo(now, 3),
-            silentAccounts: [
-              DEMO_ACCOUNTS.alfaHomologacao,
-              DEMO_ACCOUNTS.alfaCloudflare,
-              DEMO_ACCOUNTS.alfaGcp,
-            ],
+            silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao, DEMO_ACCOUNTS.alfaCloudflare],
           }
         : {
             connectedAccounts: 1,

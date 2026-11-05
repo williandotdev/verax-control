@@ -151,7 +151,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         connection: 'connected',
         lastCollectedAt: collected,
       });
-      // GCP lida agora há pouco, mas nunca recebeu evento: a leitura vazia não é sinal de vida.
+      // GCP lida agora há pouco, sem entrada nenhuma ainda: a assinatura lida é o sinal de vida (OP-02).
       const empty = await gcp({ lastCollectedAt: new Date(Date.now() - 5 * 60_000) });
       // GCP com erro e o último evento há dois dias: silenciosa e fora das conectadas.
       const stalled = await gcp({
@@ -172,35 +172,37 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         connectedAccounts: 2,
         lastCollectedAt: empty.lastCollectedAt?.toISOString(),
         lastEventAt: event.toISOString(),
-        silentAccounts: [empty.accountId, stalled.accountId].sort(),
+        silentAccounts: [stalled.accountId],
         silentAfterHours: 24,
         // PR-V6: sem a saúde da ingestão gravada (nenhuma leitura do Wazuh do nó), nada a afirmar.
         awsLogsStalledSince: null,
         awsStalledAfterHours: 2,
-        // OP-01 e OP-02: o último dado é a leitura do Cloudflare (a mais recente), à parte do último evento.
-        lastDataAt: collected.toISOString(),
+        // OP-01 e OP-02: o último dado é a leitura da GCP (a mais recente), à parte do último evento.
+        lastDataAt: empty.lastCollectedAt?.toISOString(),
         sources: [
           // Sem a observação do Wazuh do nó, só o alerta prova que os logs chegaram: há 2 horas, a fonte está parada.
           {
             source: 'aws',
             state: 'stalled',
             lastDataAt: event.toISOString(),
-            lastAlertAt: event.toISOString(),
+            lastEventAt: event.toISOString(),
             delayedAfterMinutes: 30,
             stalledAfterMinutes: 120,
           },
-          // O último evento da GCP é o do projeto com erro, há dois dias: a fonte está parada.
+          // A assinatura do projeto vazio foi lida há 5 min: a fonte coleta. A última entrada é a do projeto com erro.
           {
             source: 'gcp',
-            state: 'stalled',
-            lastDataAt: stalled.lastEventAt?.toISOString(),
-            delayedAfterMinutes: 720,
-            stalledAfterMinutes: 1440,
+            state: 'collecting',
+            lastDataAt: empty.lastCollectedAt?.toISOString(),
+            lastEventAt: stalled.lastEventAt?.toISOString(),
+            delayedAfterMinutes: 15,
+            stalledAfterMinutes: 60,
           },
           {
             source: 'cloudflare',
             state: 'delayed',
             lastDataAt: collected.toISOString(),
+            lastEventAt: null,
             delayedAfterMinutes: 30,
             stalledAfterMinutes: 120,
           },
@@ -221,7 +223,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         ],
       });
       expect(summary.coverage.silentAccounts).not.toContain(accountId);
-      // A GCP parada deixa a Torre amarela (decisão de 05/11/2026).
+      // A AWS parada (sem a observação do Wazuh, o alerta de 2 horas atrás) deixa a Torre amarela (05/11/2026).
       expect(summary).toMatchObject({ light: 'yellow', reasons: ['collection_stalled'] });
     });
 
@@ -317,7 +319,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         source: 'aws',
         state: 'collecting',
         lastDataAt: progress.toISOString(),
-        lastAlertAt: null,
+        lastEventAt: null,
         delayedAfterMinutes: 30,
         stalledAfterMinutes: 120,
       });
@@ -325,6 +327,53 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
       expect(summary.coverage.sources?.find((source) => source.source === 'posture')).toMatchObject({
         state: 'collecting',
       });
+    });
+
+    it('projeto da GCP calmo, com a assinatura lida e sem entrada há 3 dias: coletando, não silencioso, verde; leituras falhando param', async () => {
+      const { tenantId, get } = await setup();
+      // Sem assinatura do Pub/Sub, para o sync da GCP de outro arquivo de teste não ler esta conta.
+      const project = await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: `vx-calmo-${randomInt(1e6, 9e6)}`,
+          regions: [],
+          connection: 'connected',
+          lastCollectedAt: new Date(Date.now() - MINUTE),
+          lastEventAt: new Date(Date.now() - 3 * DAY),
+        },
+      });
+      const quiet = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(quiet).toMatchObject({ light: 'green', reasons: [] });
+      expect(quiet.coverage.silentAccounts).not.toContain(project.accountId);
+      expect(quiet.coverage.sources?.find((source) => source.source === 'gcp')).toEqual({
+        source: 'gcp',
+        state: 'collecting',
+        lastDataAt: project.lastCollectedAt?.toISOString(),
+        lastEventAt: project.lastEventAt?.toISOString(),
+        delayedAfterMinutes: 15,
+        stalledAfterMinutes: 60,
+      });
+
+      // As leituras falham há 20 min (a falha não grava a coleta): atrasada; há 2 horas: parada e amarelo.
+      await prisma.cloudAccount.update({
+        where: { id: project.id },
+        data: {
+          connection: 'error',
+          connectionError: 'PermissionDenied',
+          lastCollectedAt: new Date(Date.now() - 20 * MINUTE),
+        },
+      });
+      const late = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(late).toMatchObject({ light: 'green', reasons: [] });
+      expect(late.coverage.sources?.find((source) => source.source === 'gcp')?.state).toBe('delayed');
+      await prisma.cloudAccount.update({
+        where: { id: project.id },
+        data: { lastCollectedAt: new Date(Date.now() - 2 * HOUR) },
+      });
+      const stalled = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(stalled).toMatchObject({ light: 'yellow', reasons: ['collection_stalled'] });
+      expect(stalled.coverage.sources?.find((source) => source.source === 'gcp')?.state).toBe('stalled');
     });
 
     it('A/B: a coleta parada de um cliente deixa só a Torre dele amarela; fonte não configurada nunca para', async () => {

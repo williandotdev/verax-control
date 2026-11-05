@@ -63,7 +63,7 @@ describe('Torre', () => {
     expect(screen.getByRole('meter', { name: 'Nota de postura' })).toHaveAttribute('aria-valuenow', '69');
   });
 
-  it('saúde da coleta: cada fonte com o estado e o último dado, o último alerta da AWS à parte e as silenciosas', async () => {
+  it('saúde da coleta: cada fonte com o estado e o último dado, o último evento à parte e as silenciosas', async () => {
     renderTower({ me: demoMe('analista_cliente') });
     const health = await screen.findByRole('region', { name: 'Saúde da coleta' });
     expect(within(health).getByText(/^Coleta ativa em 3 de 5 fontes, último dado/)).toBeInTheDocument();
@@ -78,11 +78,15 @@ describe('Torre', () => {
     const [aws, gcp, cloudflare] = rows;
     // OP-01: o último dado da AWS é o andamento dos eventos no Wazuh; o último alerta vai à parte.
     expect(aws).toHaveTextContent(/^AWSColetando.*último dado há 2 minutosúltimo alerta há 3 minutos$/);
-    expect(gcp).toHaveTextContent(/^GCPParada.*último dado ontem$/);
-    expect(cloudflare).toHaveTextContent('Aguardando o primeiro dado');
-    expect(within(health).getByText('2 contas conectadas')).toBeInTheDocument();
-    expect(within(health).getByText(/3 contas sem eventos há mais de 24 horas/)).toHaveTextContent(
-      `${DEMO_ACCOUNTS.alfaHomologacao}, ${DEMO_ACCOUNTS.alfaCloudflare} e ${DEMO_ACCOUNTS.alfaGcp}`,
+    // A GCP pela última leitura bem-sucedida da assinatura (as leituras falham há 3 horas), com a última entrada à parte.
+    expect(gcp).toHaveTextContent(/^GCPParada.*último dado há 3 horasúltimo evento há 3 horas$/);
+    expect(cloudflare).toHaveTextContent(
+      /^CloudflareAguardando o primeiro dado.*último evento nenhum ainda$/,
+    );
+    expect(within(health).getByText('1 conta conectada')).toBeInTheDocument();
+    // A GCP com as leituras falhando há 3 horas ainda não é silenciosa (24 horas).
+    expect(within(health).getByText(/2 contas sem eventos há mais de 24 horas/)).toHaveTextContent(
+      `${DEMO_ACCOUNTS.alfaHomologacao} e ${DEMO_ACCOUNTS.alfaCloudflare}`,
     );
     expect(within(health).getByRole('link', { name: 'Ver contas' })).toHaveAttribute(
       'href',

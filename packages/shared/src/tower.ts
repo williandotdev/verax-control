@@ -59,10 +59,12 @@ export const collectionSourceHealthSchema = z
     /** O último dado que prova a coleta da fonte (a regra de cada uma está em `tower-rules.ts`); null sem nenhum. */
     lastDataAt: z.iso.datetime().nullable(),
     /**
-     * Só na AWS: o último alerta (nível 5 ou mais) recebido de uma conta. O alerta não é o sinal de vida: uma conta
-     * calma passa dias sem alerta, com os eventos andando no Wazuh do nó.
+     * Nas fontes de contas cloud (AWS, GCP e Cloudflare): o último evento recebido de uma conta, à parte do último dado.
+     * Na AWS é o último alerta (nível 5 ou mais); na GCP, a última entrada do Pub/Sub; no Cloudflare, a última entrada
+     * da auditoria. O evento não é o sinal de vida: uma conta ou um projeto calmo passa dias sem evento com a coleta
+     * saudável. Ausente nas outras fontes.
      */
-    lastAlertAt: z.iso.datetime().nullable().optional(),
+    lastEventAt: z.iso.datetime().nullable().optional(),
     /** Sem dado novo há mais que isto, a fonte fica atrasada; há mais que `stalledAfterMinutes`, parada. */
     delayedAfterMinutes: z.number().int().positive(),
     stalledAfterMinutes: z.number().int().positive(),
@@ -137,8 +139,8 @@ export const towerSummarySchema = z.strictObject({
     lastEventAt: z.iso.datetime().nullable(),
     /**
      * Contas ativas sem sinal de vida há mais de `silentAfterHours` horas (ou que nunca deram sinal). Na AWS, o
-     * evento ou, com a conta conectada, o andamento dos eventos da AWS no Wazuh do nó (OP-01); na GCP, o evento; no
-     * Cloudflare, a coleta ou o evento.
+     * evento ou, com a conta conectada, o andamento dos eventos da AWS no Wazuh do nó (OP-01); na GCP e no
+     * Cloudflare, a leitura bem-sucedida ou o evento (um projeto calmo passa dias sem entrada com a coleta saudável).
      */
     silentAccounts: z.array(cloudAccountRefSchema).max(500),
     silentAfterHours: z.number().int().positive(),

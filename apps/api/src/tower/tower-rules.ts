@@ -59,8 +59,9 @@ export const DEFAULT_TOWER_THRESHOLDS: Readonly<TowerThresholds> = {
     // O wodle lê os buckets a cada 5 min, a tarefa `wazuh-usage` lê os contadores a cada 5 min, e a própria conferência
     // da conexão (a cada 15 min) põe eventos no CloudTrail: numa conta conectada, o contador anda várias vezes por hora.
     aws: { delayedAfterMinutes: 30, stalledAfterMinutes: AWS_STALLED_AFTER_HOURS * HOUR_MINUTES },
-    // A auditoria de um projeto calmo pode passar a noite sem entrada nenhuma: o prazo é o da conta silenciosa.
-    gcp: { delayedAfterMinutes: 12 * HOUR_MINUTES, stalledAfterMinutes: 24 * HOUR_MINUTES },
+    // A assinatura é lida a cada minuto (`SYNC_INTERVAL_SECONDS`), com ou sem entrada: a leitura bem-sucedida é o dado.
+    // Um projeto calmo passa dias sem entrada de auditoria; só as leituras que deixam de dar certo atrasam e param.
+    gcp: { delayedAfterMinutes: 15, stalledAfterMinutes: HOUR_MINUTES },
     // A auditoria é lida a cada 5 min e os eventos de segurança, em janelas de 15 min: a leitura vale como dado.
     cloudflare: { delayedAfterMinutes: 30, stalledAfterMinutes: 2 * HOUR_MINUTES },
     // O manager recebe o keepalive dos agentes em segundos, e a lista chega ao banco a cada minuto.
@@ -154,18 +155,14 @@ function earliest(times: readonly (string | null)[]): string | null {
 }
 
 /**
- * O sinal de vida mais recente da conta, que depende de como o provedor entrega os logs (ver `coverage`). A AWS e a GCP
- * entregam por evento: uma leitura vazia não prova que os logs chegam (sink apagado, trilha parada).
+ * O sinal de vida mais recente da conta, que depende de como o provedor é lido (ver `coverage`). Em nenhum o evento é
+ * exigido: uma conta ou um projeto calmo passa dias sem evento com a coleta saudável.
  */
 function lastSignOfLife(account: AccountActivity, awsLastProgressAt: string | null): string | null {
-  switch (account.provider) {
-    case 'aws':
-      return latest([account.lastEventAt, account.connection === 'connected' ? awsLastProgressAt : null]);
-    case 'gcp':
-      return account.lastEventAt;
-    default:
-      return latest([account.lastCollectedAt, account.lastEventAt]);
+  if (account.provider === 'aws') {
+    return latest([account.lastEventAt, account.connection === 'connected' ? awsLastProgressAt : null]);
   }
+  return latest([account.lastCollectedAt, account.lastEventAt]);
 }
 
 /**
@@ -176,10 +173,10 @@ function lastSignOfLife(account: AccountActivity, awsLastProgressAt: string | nu
  *   GuardDuty de baixa gravidade) têm nível 3 no Wazuh e nunca viram alerta: antes do OP-01, só o alerta contava, e a
  *   conta calma aparecia "sem eventos há mais de 24 horas" justamente com a coleta saudável. O contador é do nó, então
  *   vale para cada conta AWS conectada do cliente; a conta com erro de conexão depende do próprio alerta;
- * - **GCP** (entregue pelo Pub/Sub): só o último evento (toda entrada lida, com ou sem regra). Uma conta lida sem erro,
- *   mas sem evento, fica silenciosa;
- * - **Cloudflare e os demais coletados por API**: o mais recente entre a última coleta e o último evento. A leitura
- *   bem-sucedida prova que a conta está acessível, mesmo sem evento.
+ * - **GCP** (Pub/Sub) e **Cloudflare** (API): o mais recente entre a última leitura bem-sucedida e o último evento. O
+ *   sink só encaminha auditoria e as negações do Cloud Armor, e um projeto calmo passa dias sem entrada nenhuma: exigir
+ *   o evento (como antes do OP-02) deixava silencioso o projeto com a assinatura lida a cada minuto. A conta só fica
+ *   silenciosa quando as leituras deixam de dar certo (a leitura que falha não grava `lastCollectedAt`).
  */
 export function coverage(
   accounts: readonly AccountActivity[],
@@ -219,8 +216,8 @@ export interface SourceHealth {
   source: CollectionSource;
   state: CollectionState;
   lastDataAt: string | null;
-  /** Só na AWS: o último alerta, à parte do último dado. */
-  lastAlertAt?: string | null;
+  /** Nas fontes de contas cloud: o último evento (na AWS, o último alerta), à parte do último dado. */
+  lastEventAt?: string | null;
   delayedAfterMinutes: number;
   stalledAfterMinutes: number;
 }
@@ -247,9 +244,11 @@ function stateOf(
  * conexão dela e entre as contas silenciosas. O último dado de cada fonte:
  * - **AWS:** o mais recente entre o andamento dos eventos da AWS no Wazuh do nó (`IngestHealth.lastProgressAt`; no
  *   começo da observação é a hora em que ela começou) e o último alerta de uma conta AWS (o alerta também prova que os
- *   logs chegaram). O último alerta vai à parte (`lastAlertAt`). O prazo de parada é o de "Sem logs novos da AWS";
- * - **GCP:** o último evento de um projeto (toda entrada do Pub/Sub, com ou sem regra);
- * - **Cloudflare:** a última leitura bem-sucedida ou o último evento de uma conta;
+ *   logs chegaram). O último alerta vai à parte (`lastEventAt`). O prazo de parada é o de "Sem logs novos da AWS";
+ * - **GCP:** a última leitura bem-sucedida da assinatura de um projeto (a cada minuto, com ou sem entrada) ou a última
+ *   entrada. A última entrada vai à parte (`lastEventAt`): um projeto calmo passa dias sem auditoria nova, e a fonte só
+ *   atrasa e para quando as leituras deixam de dar certo;
+ * - **Cloudflare:** a última leitura bem-sucedida ou o último evento de uma conta, com o último evento à parte;
  * - **agentes:** o keepalive mais recente de um agente registrado;
  * - **postura e inventário:** o mais antigo entre a última varredura de postura e o último retrato do inventário (as
  *   duas leituras têm de andar), ou o que existir.
@@ -263,18 +262,30 @@ export function collectionHealth(
   const aws = of('aws');
   const gcp = of('gcp');
   const cloudflare = of('cloudflare');
-  const awsLastAlertAt = latest(aws.map((account) => account.lastEventAt));
+  const lastRead = (accounts: readonly AccountActivity[]) =>
+    latest(accounts.flatMap((account) => [account.lastCollectedAt, account.lastEventAt]));
+  const lastEvent = (accounts: readonly AccountActivity[]) =>
+    latest(accounts.map((account) => account.lastEventAt));
   const posture =
     signals.lastPostureScanAt !== null && signals.lastInventoryAt !== null
       ? earliest([signals.lastPostureScanAt, signals.lastInventoryAt])
       : latest([signals.lastPostureScanAt, signals.lastInventoryAt]);
 
-  const facts: Record<CollectionSource, { configured: boolean; lastDataAt: string | null }> = {
-    aws: { configured: aws.length > 0, lastDataAt: latest([signals.awsLastProgressAt, awsLastAlertAt]) },
-    gcp: { configured: gcp.length > 0, lastDataAt: latest(gcp.map((account) => account.lastEventAt)) },
+  // `lastEventAt`: o último evento das fontes de contas cloud, à parte do dado (ausente nas outras fontes).
+  const facts: Record<
+    CollectionSource,
+    { configured: boolean; lastDataAt: string | null; lastEventAt?: string | null }
+  > = {
+    aws: {
+      configured: aws.length > 0,
+      lastDataAt: latest([signals.awsLastProgressAt, lastEvent(aws)]),
+      lastEventAt: lastEvent(aws),
+    },
+    gcp: { configured: gcp.length > 0, lastDataAt: lastRead(gcp), lastEventAt: lastEvent(gcp) },
     cloudflare: {
       configured: cloudflare.length > 0,
-      lastDataAt: latest(cloudflare.flatMap((account) => [account.lastCollectedAt, account.lastEventAt])),
+      lastDataAt: lastRead(cloudflare),
+      lastEventAt: lastEvent(cloudflare),
     },
     agents: { configured: signals.agents.registered > 0, lastDataAt: signals.agents.lastKeepAliveAt },
     posture: { configured: aws.length > 0, lastDataAt: posture },
@@ -282,14 +293,14 @@ export function collectionHealth(
 
   return COLLECTION_SOURCES.map((source) => {
     const window = thresholds.collection[source];
-    const { configured, lastDataAt } = facts[source];
+    const { configured, lastDataAt, lastEventAt } = facts[source];
     // Uma fonte que o cliente não tem não mostra dado nenhum (o retrato de uma conta já desativada, por exemplo).
     const shown = configured ? lastDataAt : null;
     return {
       source,
       state: stateOf(configured, shown, window, now),
       lastDataAt: shown,
-      ...(source === 'aws' && { lastAlertAt: configured ? awsLastAlertAt : null }),
+      ...(lastEventAt !== undefined && { lastEventAt: configured ? lastEventAt : null }),
       delayedAfterMinutes: window.delayedAfterMinutes,
       stalledAfterMinutes: window.stalledAfterMinutes,
     };

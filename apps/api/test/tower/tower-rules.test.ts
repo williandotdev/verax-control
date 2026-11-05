@@ -105,25 +105,33 @@ describe('cobertura da Torre (T5.10 e fase 2)', () => {
     expect(coverage([wazuh], now)).toMatchObject({ connectedAccounts: 1, silentAccounts: [] });
   });
 
-  it('GCP (entregue por evento): coleta recente com evento antigo, ou sem evento nenhum, deixa a conta silenciosa', () => {
-    const stale = account('vx-projeto-antigo', {
+  it('GCP (assinatura lida a cada minuto): o projeto calmo, lido sem erro e sem entrada há dias, não fica silencioso', () => {
+    // A auditoria de um projeto calmo passa dias sem entrada: a leitura bem-sucedida é o sinal de vida (OP-02).
+    const quiet = account('vx-projeto-calmo', {
       provider: 'gcp',
       connection: 'connected',
       lastCollectedAt: '2026-11-02T11:58:00.000Z',
-      lastEventAt: '2026-11-01T09:00:00.000Z',
+      lastEventAt: '2026-10-30T09:00:00.000Z',
     });
-    // Lida sem erro, mas nunca recebeu evento: a leitura vazia não prova que os logs chegam.
+    // Lida sem erro e sem nenhuma entrada ainda: a assinatura funciona.
     const empty = account('vx-projeto-vazio', {
       provider: 'gcp',
       lastCollectedAt: '2026-11-02T11:58:00.000Z',
     });
-    expect(coverage([stale, empty], now)).toEqual({
+    // As leituras falham há dois dias (a falha não grava a coleta): silenciosa.
+    const failing = account('vx-projeto-sem-acesso', {
+      provider: 'gcp',
+      connection: 'error',
+      lastCollectedAt: '2026-10-31T11:00:00.000Z',
+      lastEventAt: '2026-10-31T10:00:00.000Z',
+    });
+    expect(coverage([quiet, empty, failing], now)).toEqual({
       connectedAccounts: 1,
       lastCollectedAt: '2026-11-02T11:58:00.000Z',
-      lastEventAt: '2026-11-01T09:00:00.000Z',
-      silentAccounts: ['vx-projeto-antigo', 'vx-projeto-vazio'],
+      lastEventAt: '2026-10-31T10:00:00.000Z',
+      silentAccounts: ['vx-projeto-sem-acesso'],
     });
-    // A AWS segue a mesma regra: a coleta não conta, só o evento.
+    // A AWS não tem coleta por conta: a coleta não conta, só o alerta e o andamento no Wazuh.
     const aws = account('111122223333', { lastCollectedAt: '2026-11-02T11:58:00.000Z' });
     expect(coverage([aws], now).silentAccounts).toEqual(['111122223333']);
   });
@@ -324,7 +332,7 @@ describe('saúde da coleta por fonte (OP-02)', () => {
       source: 'aws',
       state: 'collecting',
       lastDataAt: minutesAgo(4),
-      lastAlertAt: minutesAgo(3 * 24 * 60),
+      lastEventAt: minutesAgo(3 * 24 * 60),
       delayedAfterMinutes: 30,
       stalledAfterMinutes: 120,
     });
@@ -343,7 +351,7 @@ describe('saúde da coleta por fonte (OP-02)', () => {
     expect(health({ accounts: [account('aws', { connection: 'waiting' })] })['aws']).toMatchObject({
       state: 'waiting',
       lastDataAt: null,
-      lastAlertAt: null,
+      lastEventAt: null,
     });
   });
 
@@ -353,16 +361,43 @@ describe('saúde da coleta por fonte (OP-02)', () => {
     );
   });
 
-  it('GCP pelo evento (12 h e 24 h); Cloudflare pela leitura ou pelo evento (30 min e 2 h)', () => {
-    const gcp = (minutes: number) =>
+  it('GCP pela leitura bem-sucedida da assinatura (15 min e 1 h), com a última entrada à parte', () => {
+    // Projeto calmo: a assinatura lida há 1 min, sem entrada nenhuma há 3 dias. Continua coletando.
+    const quiet = health({
+      accounts: [account('gcp', { lastCollectedAt: minutesAgo(1), lastEventAt: minutesAgo(3 * 24 * 60) })],
+    })['gcp'];
+    expect(quiet).toEqual({
+      source: 'gcp',
+      state: 'collecting',
+      lastDataAt: minutesAgo(1),
+      lastEventAt: minutesAgo(3 * 24 * 60),
+      delayedAfterMinutes: 15,
+      stalledAfterMinutes: 60,
+    });
+    // Nunca recebeu entrada, mas a assinatura é lida: coletando, sem último evento.
+    expect(health({ accounts: [account('gcp', { lastCollectedAt: minutesAgo(1) })] })['gcp']).toMatchObject({
+      state: 'collecting',
+      lastEventAt: null,
+    });
+    // As leituras deixam de dar certo (a falha não grava `lastCollectedAt`): atrasada, depois parada.
+    const failing = (minutes: number) =>
       health({
-        accounts: [account('gcp', { lastCollectedAt: minutesAgo(1), lastEventAt: minutesAgo(minutes) })],
+        accounts: [
+          account('gcp', {
+            connection: 'error',
+            lastCollectedAt: minutesAgo(minutes),
+            lastEventAt: minutesAgo(3 * 24 * 60),
+          }),
+        ],
       })['gcp']?.state;
-    expect([gcp(60), gcp(13 * 60), gcp(25 * 60)]).toEqual(['collecting', 'delayed', 'stalled']);
-    // A leitura vazia da GCP não é dado.
-    expect(health({ accounts: [account('gcp', { lastCollectedAt: minutesAgo(1) })] })['gcp']?.state).toBe(
-      'waiting',
-    );
+    expect([failing(14), failing(16), failing(60), failing(61)]).toEqual([
+      'collecting',
+      'delayed',
+      'delayed',
+      'stalled',
+    ]);
+    // Nunca lida com sucesso: aguardando.
+    expect(health({ accounts: [account('gcp', { connection: 'waiting' })] })['gcp']?.state).toBe('waiting');
 
     const cloudflare = (collected: number | null, event: number | null) =>
       health({
@@ -373,7 +408,11 @@ describe('saúde da coleta por fonte (OP-02)', () => {
           }),
         ],
       })['cloudflare'];
-    expect(cloudflare(4, null)).toMatchObject({ state: 'collecting', lastDataAt: minutesAgo(4) });
+    expect(cloudflare(4, null)).toMatchObject({
+      state: 'collecting',
+      lastDataAt: minutesAgo(4),
+      lastEventAt: null,
+    });
     expect(cloudflare(45, null)?.state).toBe('delayed');
     expect(cloudflare(200, 10)).toMatchObject({ state: 'collecting', lastDataAt: minutesAgo(10) });
     expect(cloudflare(200, null)?.state).toBe('stalled');

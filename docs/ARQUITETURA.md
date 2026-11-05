@@ -989,12 +989,16 @@ da Verax.
   | Fonte                | Configurada com   | Último dado (prova de vida)                                                       | Atrasada / parada |
   | -------------------- | ----------------- | --------------------------------------------------------------------------------- | ----------------- |
   | AWS                  | conta AWS ativa   | o andamento dos eventos da AWS no Wazuh do nó (`IngestHealth`) ou o último alerta | 30 min / 2 h      |
-  | GCP                  | projeto ativo     | a última entrada do Pub/Sub (com ou sem regra)                                    | 12 h / 24 h       |
+  | GCP                  | projeto ativo     | a última leitura bem-sucedida da assinatura (a cada minuto) ou a última entrada   | 15 min / 1 h      |
   | Cloudflare           | conta ativa       | a última leitura bem-sucedida ou a última entrada                                 | 30 min / 2 h      |
   | Agentes              | agente registrado | o keepalive mais recente                                                          | 15 min / 1 h      |
   | Postura e inventário | conta AWS ativa   | a mais antiga entre a última varredura e o último retrato (as duas têm de andar)  | 26 h / 50 h       |
 
-  O prazo de parada da AWS é o mesmo de "Sem logs novos da AWS" e do aviso `aws_ingestion_stalled` (PR-V6).
+  O prazo de parada da AWS é o mesmo de "Sem logs novos da AWS" e do aviso `aws_ingestion_stalled` (PR-V6). **Nenhuma
+  fonte exige evento para estar viva:** uma conta ou um projeto calmo passa dias sem evento com a coleta saudável, e só
+  a leitura que deixa de dar certo atrasa e para a fonte. O último evento das fontes de contas cloud aparece à parte,
+  na linha de cada uma (`lastEventAt`: na AWS, o último alerta; na GCP, a última entrada do Pub/Sub; no Cloudflare, a
+  última entrada da auditoria).
 
 - **Sinal de vida da AWS (OP-01):** o índice `wazuh-alerts-*` é de alertas, não de tráfego. Os eventos comuns de uma
   conta calma (CloudTrail genérico, bloqueio do WAF, GuardDuty de baixa gravidade) têm nível 3 no Wazuh e nunca viram
@@ -1006,6 +1010,15 @@ da Verax.
   do próprio alerta. No começo da observação, `lastProgressAt` é a hora em que ela começou: por até 30 min, a fonte pode
   aparecer coletando antes do primeiro evento de fato. O resumo leva `coverage.lastDataAt` (o último dado entre todas
   as fontes) e `coverage.sources`; `lastEventAt` continua o mesmo campo, com a semântica dita.
+- **Sinal de vida da GCP (OP-02, revisão):** o sink só encaminha auditoria (atividade de administração, sistema,
+  política e acesso a dados, onde ligado) e as negações do Cloud Armor, e um projeto calmo passa dias sem entrada
+  nenhuma. Com a última entrada como prova, a Torre do nó da Verax ficaria amarela com a coleta saudável. A prova é a
+  **última leitura bem-sucedida da assinatura** (`CloudAccount.lastCollectedAt`, que o sync grava a cada leitura sem
+  erro, com ou sem entrada; a leitura que falha só grava o erro na conexão), sem migration. A tarefa lê a cada minuto
+  (`SYNC_INTERVAL_SECONDS`): atrasada com 15 min sem leitura bem-sucedida, parada com 1 h. A conta silenciosa da GCP
+  segue a mesma regra (a leitura ou o evento, como no Cloudflare). O selo da conexão em Contas cloud não muda: a conta
+  da GCP só passa a "Conectada" com o primeiro evento. O que se perde é o aviso de um sink apagado com a assinatura
+  ainda lida: a última entrada, à parte na linha da GCP, mostra há quanto tempo nada chega.
 - **Pulso da operação:** uma faixa de cartões de número, com o que já existe, sem coleta nova:
   - os **achados** das últimas 24 horas cheias (da hora cheia de 23 horas atrás até agora, pelo índice
     `(tenantId, occurredAt desc)`), quantos chegaram esperados por exceção e o minigráfico por hora. O total e os
