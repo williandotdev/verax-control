@@ -214,6 +214,29 @@ Cada origem de log (bucket, assinatura, identidade do sink ou zona) pertence a u
 buckets: é o que permite atribuir cada alerta ao cliente certo. A identidade do sink, além disso, é de um projeto só,
 mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
 
+### Regras de detecção: faixas de ID e títulos
+
+Cada regra tem um ID numa faixa própria, e o ID vai para o achado (`ruleId`), para as exceções e para os relatórios.
+A escala de nível é a mesma em todas: 12 ou mais é crítica, 10 alta, 7 média e abaixo disso baixa.
+
+| Faixa           | Onde roda                                                               | O quê                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 80200 a 80499   | Wazuh do nó (`0350-amazon_rules.xml`, do próprio Wazuh)                 | CloudTrail, GuardDuty e WAF; as correlações 80252, 80255 e 80443 sobrescritas para contar por conta (`verax_aws_rules.xml`)    |
+| 100200 a 100299 | Wazuh do nó (`verax_reader_rules.xml`, gerado do modelo com o IP do nó) | O papel de leitura da Verax no CloudTrail do cliente (PR-V4', passo "Coletar")                                                 |
+| 100300 a 100399 | Wazuh do nó (`verax_aws_critical_rules.xml`)                            | Regras críticas da AWS no CloudTrail do cliente (PR-V7): root, administrador, CloudTrail, GuardDuty, S3, grupo de segurança... |
+| 990101 a 990199 | Worker, sem Wazuh (`apps/api/src/gcp/gcp-rules.ts`)                     | Auditoria da GCP                                                                                                               |
+| 990201 a 990299 | Não usada                                                               | Era a do coletor próprio do CloudTrail, que saiu do plano; o subconjunto crítico do catálogo dela virou a faixa 100300         |
+| 990301 a 990399 | Worker, sem Wazuh (`apps/api/src/cloudflare/cloudflare-rules.ts`)       | Auditoria do Cloudflare                                                                                                        |
+
+**O título do achado é fixo e em português.** Nas regras do worker, é o da tabela de regras. Nas do Wazuh, a
+descrição cita campos do evento (o nome da chamada, o IP, o bucket) e, nas regras do próprio Wazuh, é em inglês: o
+título vem do dicionário `apps/api/src/alerts/aws-rule-titles.ts`, que cobre toda regra local com nível acima de 0
+(1002xx, 1003xx e as correlações sobrescritas) e o login com falha do Wazuh (80254). Sem título no dicionário (o
+GuardDuty, cujo título vem da própria AWS, e o CloudTrail genérico), fica a descrição, como nos alertas dos agentes
+nas instâncias do cliente (regras do próprio Wazuh). Um teste confere que toda regra local que pode virar achado tem
+título e que nenhum título leva campo do evento: é o título, e não a descrição, que o aviso por e-mail (PR-16) pode
+usar.
+
 ## Cofre de credenciais
 
 _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e
@@ -403,6 +426,13 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      papel vindas do IP do nó, nível 0 (100200 e 100201); a sessão do papel ou o token usados de outro IP, nível 12
      com MITRE T1078.004 (100202 e 100203); qualquer alteração no papel ou nas duas políticas da pilha, nível 5 (100204
      e 100205). Sem o `NODE_EGRESS_IPS` no `node.conf`, só as de alteração.
+   - **Regras críticas** (`verax_aws_critical_rules.xml`, 100300 a 100324, PR-V7): o subconjunto crítico do catálogo
+     da AWS (root, permissão de administrador, papel aberto a qualquer conta, CloudTrail e GuardDuty desligados, bucket
+     e snapshot públicos, grupo de segurança aberto para a internet, domínio, organização) e o WAF desligado ou
+     alterado, com MITRE e o título em português do dicionário (seção "Regras de detecção"). Só o que aconteceu (sem
+     `errorCode`); filhas da mesma cadeia do CloudTrail das regras do papel. O papel de leitura só lê, e nenhuma delas
+     casa leitura: as leituras do nó seguem no nível 0. Uma alteração crítica vale sobre a regra do papel (o Wazuh tenta
+     primeiro a irmã de nível mais alto).
 3. **Conferir (PR-V5', feito):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e
    confere a conta e a leitura de cada bucket: é a `WebIdentityAwsConnectionChecker`
    (`apps/api/src/aws/web-identity-checker.ts`), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. Toda chamada
@@ -819,10 +849,36 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
   quando ligados).
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
   mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
-- **Histórico:** `historyDays` é o prazo do expurgo (PR-19).
+- **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
 - **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido (rótulo e os quatro limites) e o uso
   do cliente da sessão (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
   → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
+
+### Histórico nas telas (PR-20)
+
+As telas não prometem mais do que o banco guarda. Os filtros de período de achados, auditoria e relatórios têm
+`24h`, `7d`, `30d`, `90d` e `12m` (365 dias; os relatórios começam em `7d`), com os dias de cada um em
+`HISTORY_PERIOD_DAYS` (`packages/shared/src/history.ts`).
+
+- **Recusa na API:** o período mais longo que o histórico do plano é recusado com 400, o código
+  `PERIOD_BEYOND_PLAN_HISTORY` e a mensagem "Seu plano guarda 90 dias de histórico. Escolha um período menor ou fale
+  com a Verax para ampliar." (`assertPeriodWithinHistory`, `apps/api/src/plan/plan-history.ts`, chamada pelos
+  controllers de `GET /v1/findings`, `GET /v1/audit` e `GET /v1/reports/:kind`). No Essencial, `12m` é recusado; no
+  Profissional e no Interno (sem limite), aceito; um ajuste do Enterprise abaixo de 90 dias recusa também `90d`. A
+  auditoria segue a mesma regra, embora a trilha fique ao menos 13 meses: o filtro é o do plano em todas as telas.
+- **`GET /v1/plan/history`** (permissão nova `plan_history:read`, todos os papéis): só `{ historyDays }`, o mesmo
+  para toda sessão, sem dado de cliente (a Verax lê sem escolher cliente). O `GET /v1/plan` continua só dos
+  administradores; o histórico saiu à parte porque os filtros de achados e relatórios são de todos os papéis.
+- **Painel** (`apps/web/src/features/plan/plan-history.ts`): cada seletor de período mostra só os períodos que cabem
+  no histórico. Enquanto o plano não chega (ou se a leitura falha), só os que todo plano tem (até 30 dias, o piso dos
+  ajustes); um período da URL que não cabe é ignorado e nunca vai para a API, e um período da URL além do piso espera
+  o plano chegar, em vez de pedir outro antes.
+- **Postura:** a evolução da nota segue o histórico do plano, até 365 pontos (`postureHistoryDays`): 90 no Essencial,
+  365 no Profissional; sem limite ou acima de 365 dias, os últimos 365.
+- **Textos:** o detalhe do achado diz "Evento bruto do log disponível por 30 dias" (`RAW_EVENT_RETENTION_DAYS`, a
+  retenção do índice do Wazuh) e, com o plano conhecido, quantos dias os dados do achado ficam; "Plano e uso" diz o que
+  o histórico guarda, que a trilha fica ao menos 13 meses e o evento bruto 30 dias. Os prazos para a Privacidade e o
+  DPA do site estão em [`retencao-de-dados.md`](retencao-de-dados.md).
 
 ## Expurgo do histórico
 
@@ -874,8 +930,10 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 - **Carência quando o plano diminui:** o job guarda o prazo aplicado (`RetentionState`). Quando o plano pede um prazo
   menor (do Profissional para o Essencial, por exemplo), o anterior continua valendo por 30 dias, contados da primeira
   execução que viu a redução, para o cliente exportar; depois, vale o novo. Aumentar vale na hora e cancela a redução.
-- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer.
-  O texto da Privacidade e do DPA sobre isso fica para o PR-20.
+- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer:
+  eliminação em até D + 97 dias (90 do ciclo de vida do bucket e 7 de exclusão reversível), com D o dia em que saiu do
+  banco. A conta, a frase para a Privacidade e o DPA e o que o ensaio geral confere estão em
+  [`retencao-de-dados.md`](retencao-de-dados.md).
 
 ## Custo por nó
 

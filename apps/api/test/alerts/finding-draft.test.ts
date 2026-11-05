@@ -121,6 +121,28 @@ describe('de alerta a achado (T5.3)', () => {
     expect(unkeyed).toMatchObject({ nativeId: undefined, lastSeenAt: '2026-11-01T09:55:00.000Z' });
     expect(toFindingDraft(unkeyed, owner)).not.toHaveProperty('recurrence');
   });
+
+  it('a regra com título fixo dá o título em português, sem os campos que a descrição cita (PR-V7)', () => {
+    const owner = { owned: true, tenantId: ALFA.tenantId, accountId: ALFA.accountId } as const;
+    const critical = alertOf(
+      cloudTrailAlert({
+        eventName: 'StopLogging',
+        level: 12,
+        rule: { id: '100310', description: 'Verax Control: CloudTrail parado ou apagado (StopLogging).' },
+      }),
+    );
+    expect(toFindingDraft(critical, owner)).toMatchObject({
+      ruleId: '100310',
+      severity: 'critical',
+      title: 'CloudTrail parado ou apagado',
+      eventName: 'StopLogging',
+    });
+    // O login com falha (a regra padrão da fixture) também tem título; o GuardDuty segue com a descrição.
+    expect(toFindingDraft(alertOf(cloudTrailAlert()), owner).title).toBe('Login no console com falha');
+    expect(toFindingDraft(alertOf(guardDutyAlert()), owner).title).toBe(
+      'AWS GuardDuty: AWS_API_CALL - Credenciais usadas de fora da AWS.',
+    );
+  });
 });
 
 describe('chave estável do achado (fase 2, PR-W2)', () => {

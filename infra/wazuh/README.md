@@ -10,23 +10,23 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
   `infra/terraform/modules/wazuh` envia por um bucket privado. Fora do caminho atual (`docs/ARQUITETURA.md`); as
   seções marcadas "EC2" valem só para ele.
 
-| Arquivo                            | Papel                                                                                   |
-| ---------------------------------- | --------------------------------------------------------------------------------------- |
-| `config/`                          | Configuração do manager (`ossec.conf` e regras locais) e do indexer.                    |
-| `scripts/init-certs.sh`            | Emite os certificados TLS com uma CA própria, uma vez.                                  |
-| `scripts/init-security.sh`         | Gera os usuários internos do indexer com o hash das senhas.                             |
-| `scripts/security-admin.sh`        | Aplica a configuração de segurança no indexer (securityadmin).                          |
-| `scripts/configure-indexer.sh`     | Retenção, 1 shard por índice de alertas e snapshot diário.                              |
-| `scripts/render-manager-config.py` | Gera o `ossec.conf` do manager e os arquivos da AWS a partir das contas.                |
-| `scripts/lib-passwords.sh`         | Formato, geração e conferência das senhas.                                              |
-| `scripts/smoke-test.sh`            | Verificações de segurança, no fim de toda subida.                                       |
-| `scripts/test-agents.sh`           | Agentes nas instâncias do cliente: manager avulso, sem rede (opcional, desligado).      |
-| `scripts/test-rules.sh`            | Regras locais da AWS no `wazuh-logtest`: correlações por conta e o papel de leitura.    |
-| `scripts/test-aws-profile.sh`      | Profiles da AWS sem chave no boto3 da imagem, sem rede (a troca no STS interceptada).   |
-| `scripts/ci-test.sh`               | Teste de ponta a ponta do nó: instalação, rotação de senha, verificações e atualização. |
-| `docker-compose.yml`               | EC2: os dois serviços, mais os jobs de inicialização. Imagens fixadas por digest.       |
-| `scripts/deploy.sh`                | EC2: sobe ou reaplica a stack.                                                          |
-| `scripts/bootstrap-host.sh`        | EC2: disco de dados, Docker, senhas do Secrets Manager e deploy.                        |
+| Arquivo                            | Papel                                                                                               |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `config/`                          | Configuração do manager (`ossec.conf` e regras locais) e do indexer.                                |
+| `scripts/init-certs.sh`            | Emite os certificados TLS com uma CA própria, uma vez.                                              |
+| `scripts/init-security.sh`         | Gera os usuários internos do indexer com o hash das senhas.                                         |
+| `scripts/security-admin.sh`        | Aplica a configuração de segurança no indexer (securityadmin).                                      |
+| `scripts/configure-indexer.sh`     | Retenção, 1 shard por índice de alertas e snapshot diário.                                          |
+| `scripts/render-manager-config.py` | Gera o `ossec.conf` do manager e os arquivos da AWS a partir das contas.                            |
+| `scripts/lib-passwords.sh`         | Formato, geração e conferência das senhas.                                                          |
+| `scripts/smoke-test.sh`            | Verificações de segurança, no fim de toda subida.                                                   |
+| `scripts/test-agents.sh`           | Agentes nas instâncias do cliente: manager avulso, sem rede (opcional, desligado).                  |
+| `scripts/test-rules.sh`            | Regras locais da AWS no `wazuh-logtest`: correlações por conta, papel de leitura e regras críticas. |
+| `scripts/test-aws-profile.sh`      | Profiles da AWS sem chave no boto3 da imagem, sem rede (a troca no STS interceptada).               |
+| `scripts/ci-test.sh`               | Teste de ponta a ponta do nó: instalação, rotação de senha, verificações e atualização.             |
+| `docker-compose.yml`               | EC2: os dois serviços, mais os jobs de inicialização. Imagens fixadas por digest.                   |
+| `scripts/deploy.sh`                | EC2: sobe ou reaplica a stack.                                                                      |
+| `scripts/bootstrap-host.sh`        | EC2: disco de dados, Docker, senhas do Secrets Manager e deploy.                                    |
 
 ## O que muda em relação ao single-node oficial
 
@@ -195,8 +195,9 @@ com o IP de saída do nó em `VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manage
 - o `ossec.conf` do manager, com o módulo `aws-s3`: um bucket por fonte de cada conta, cada um só lido
   (`remove_from_bucket` em `no`), o WAF sem as requisições liberadas, e um bucket do GuardDuty ou do WAF listado por
   mais de uma conta lido uma vez só (pelo papel da conta de menor ID, desde a data mais antiga);
-- as regras locais, inclusive `verax_reader_rules.xml`, do modelo `config/manager/rules/verax_reader_rules.xml.tmpl`
-  com o IP do nó (leitura do próprio nó, nível 0; a sessão de outro IP, nível 12; alteração do papel, nível 5);
+- as regras locais: as correlações por conta e as regras críticas como estão no bundle, e `verax_reader_rules.xml`, do
+  modelo `config/manager/rules/verax_reader_rules.xml.tmpl` com o IP do nó (leitura do próprio nó, nível 0; a sessão
+  de outro IP, nível 12; alteração do papel, nível 5);
 - o `/root/.aws/config`, com um profile por conta que entra em `arn:aws:iam::<conta>:role/verax/verax-control-reader`
   (`AssumeRoleWithWebIdentity`) com o token de `/root/.aws/google-id-token`, que o host renova a cada 10 min
   (`infra/node/bin/aws-token.sh`). O ARN do papel é derivado do ID da conta, para a lista não conseguir apontar para
@@ -216,9 +217,37 @@ não existe mais: o gerador recusa a lista com `externalId`, e o deploy do EC2 s
 eventos de qualquer conta: três logins com falha num cliente e três noutro disparavam "Possible break in attempt"
 (80255) no segundo. O `config/manager/rules/verax_aws_rules.xml` sobrescreve essas regras (80252, 80255 e 80443)
 para contarem só eventos da mesma conta (no WAF, da mesma Web ACL). O gerador instala o arquivo junto com o
-`ossec.conf`. O `scripts/test-rules.sh` confere o efeito no `wazuh-logtest` (também o das regras do papel de leitura)
-e falha se uma versão nova do Wazuh trouxer outra correlação da AWS que ainda não foi avaliada, ou outra regra na
-cadeia do CloudTrail de que as regras do papel não sejam filhas.
+`ossec.conf`. O `scripts/test-rules.sh` confere o efeito no `wazuh-logtest` (também o das regras do papel de leitura
+e o das regras críticas) e falha se uma versão nova do Wazuh trouxer outra correlação da AWS que ainda não foi
+avaliada, ou outra regra na cadeia do CloudTrail de que as regras do papel e as críticas não sejam filhas.
+
+**Regras críticas da AWS (fase 2, PR-V7).** O `config/manager/rules/verax_aws_critical_rules.xml` (100300 a 100324)
+traz o subconjunto crítico do catálogo da AWS no CloudTrail do cliente, mais o WAF desligado ou alterado:
+
+| Regras          | Nível   | O que detecta                                                                                       | MITRE        |
+| --------------- | ------- | --------------------------------------------------------------------------------------------------- | ------------ |
+| 100300 e 100301 | 10 e 12 | Login no console com a conta root, com e sem MFA                                                    | T1078.004    |
+| 100302          | 8       | Login no console de um usuário IAM sem MFA (o SSO fica de fora)                                     | T1078.004    |
+| 100303 e 100304 | 12 e 10 | Chave de acesso criada pela root para ela mesma e para um usuário IAM                               | T1098.001    |
+| 100305 a 100307 | 12      | Permissão de administrador: `AdministratorAccess`/`IAMFullAccess` ou `Action` e `Resource` `"*"`    | T1098.003    |
+| 100308 e 100309 | 12      | Papel que qualquer conta assume (confiança para `"*"` sem `Condition`)                              | T1098.003    |
+| 100310          | 12      | CloudTrail parado ou apagado                                                                        | T1562.008    |
+| 100311 a 100313 | 12      | GuardDuty desligado ou silenciado (detector, administradora, IPs confiáveis, exportação, arquivar)  | T1562.001    |
+| 100314          | 12      | Bucket S3 aberto ao público (política sem `Condition`, ACL para AllUsers ou AuthenticatedUsers)     | T1530, T1537 |
+| 100315 a 100318 | 10 e 12 | Grupo de segurança aberto para a internet; 12 com todo o tráfego ou porta de administração ou banco | T1562.007    |
+| 100319          | 12      | Snapshot do EBS ou do RDS, ou AMI, compartilhado publicamente                                       | T1537        |
+| 100320          | 12      | Domínio transferido, destravado ou com DNS trocado                                                  | T1584.001    |
+| 100321          | 12      | Conta saiu da organização ou política da organização removida                                       | T1484        |
+| 100322 e 100323 | 10 e 7  | WAF desligado, desassociado ou sem log; regras do WAF alteradas                                     | T1562.008/7  |
+| 100324          | 10      | A conta root usada para alterar a conta (a mais genérica; a específica vale no empate)              | T1078.004    |
+
+Só contam o que aconteceu: o evento com `errorCode` fica com as regras do Wazuh. Cada regra é filha da mesma cadeia
+do CloudTrail que as do papel de leitura (ou de outra regra crítica que ela refina), e entre irmãs o Wazuh tenta a de
+nível mais alto primeiro: a alteração crítica vale sobre a do papel e sobre a da root. O papel de leitura do nó só lê,
+e nenhuma regra crítica casa leitura. O título em português de cada regra, fixo, está no dicionário da API
+(`apps/api/src/alerts/aws-rule-titles.ts`), e a descrição de cada regra começa por ele; os padrões que olham a
+política, o grupo de segurança e o snapshot estão explicados no comentário do arquivo. O XML do Wazuh recusa o
+conteúdo de um elemento com 2.048 caracteres ou mais, e o `test-rules.sh` confere o tamanho.
 
 ## Retenção e backup
 
@@ -303,9 +332,10 @@ que a imagem nova traz para os volumes persistentes (wodles, integrations, activ
 ficar escondido por eles, e o marcador do módulo da AWS tem de continuar lá. Quando o Dependabot subir a versão,
 `UPGRADE_FROM` passa a ser a que estava em produção.
 
-As correlações por conta têm um teste próprio, mais leve (só um manager avulso): `bash scripts/test-rules.sh`. No Git
-Bash do Windows, rode antes `export MSYS_NO_PATHCONV=1`; o `ci-test.sh` precisa de um shell Linux (o caminho
-`/run/verax` é o do host do Docker).
+As regras locais da AWS têm um teste próprio, mais leve (só um manager avulso): `bash scripts/test-rules.sh`. No
+Windows, rode-o num contêiner Linux com o Docker do host (por exemplo, `debian:12` com o socket do Docker e o binário
+do `docker:cli` montados): no Git Bash, o `docker cp` não acha as pastas temporárias do script. O `ci-test.sh` também
+precisa de um shell Linux (o caminho `/run/verax` é o do host do Docker).
 
 ## Riscos conhecidos
 

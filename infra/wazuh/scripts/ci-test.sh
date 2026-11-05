@@ -289,6 +289,9 @@ expect "conta B: 1 bucket com o profile dela" 1 \
 # O efeito das regras (correlação só dentro da mesma conta) é testado no scripts/test-rules.sh; aqui, a instalação.
 expect "correlações por conta instaladas como no repositório" "$(sha256sum <config/manager/rules/verax_aws_rules.xml | cut -c1-64)" \
   "$(docker exec "$manager" sha256sum /var/ossec/etc/rules/verax_aws_rules.xml | cut -c1-64)"
+expect "regras críticas da AWS instaladas como no repositório" \
+  "$(sha256sum <config/manager/rules/verax_aws_critical_rules.xml | cut -c1-64)" \
+  "$(docker exec "$manager" sha256sum /var/ossec/etc/rules/verax_aws_critical_rules.xml | cut -c1-64)"
 expect "regras do papel de leitura com o IP do nó (as duas do próprio nó e as duas de fora dele)" 4 \
   "$(manager_file_count '203\\.0\\.113\\.10' /var/ossec/etc/rules/verax_reader_rules.xml)"
 expect "analysisd carregou as regras" 0 "$(manager_file_count 'Error loading the rules' /var/ossec/logs/ossec.log)"

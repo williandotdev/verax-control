@@ -4,6 +4,7 @@ import type { AlertCursor, AlertSearch } from '../indexer/alert-queries.js';
 import type { AlertHit } from '../indexer/indexer.client.js';
 import { isAgentAlert } from './agent-alert.js';
 import { AccountDirectory, type RegisteredAwsAccount, resolveAlertOwner } from './alert-owner.js';
+import { awsAlertTitle } from './aws-rule-titles.js';
 import { type ActiveException, matchingException } from './exception-match.js';
 import { toFindingDraft } from './finding-draft.js';
 import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from './finding-store.js';
@@ -80,7 +81,7 @@ function unownedRecord(
     occurredAt: alert ? new Date(alert.timestamp) : null,
     ruleId: alert?.rule.id ?? null,
     ruleLevel: alert?.rule.level ?? null,
-    title: alert?.rule.description ?? null,
+    title: alert ? awsAlertTitle(alert.rule) : null,
   };
 }
 

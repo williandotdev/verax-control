@@ -120,7 +120,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [inMain('relatorios-abas')],
     permission: 'reports:read',
     title: 'Relatórios',
-    body: 'Para quem quer analisar a fundo: resumo do período, MITRE ATT&CK, detecções, entidades, incidentes, cobertura das fontes e exceções. Escolha 7, 30 ou 90 dias e exporte as tabelas em CSV.',
+    body: 'Para quem quer analisar a fundo: resumo do período, MITRE ATT&CK, detecções, entidades, incidentes, cobertura das fontes e exceções. Escolha o período, até o histórico do seu plano (12 meses no Profissional), e exporte as tabelas em CSV.',
   },
   {
     id: 'alertas-sem-dono',
