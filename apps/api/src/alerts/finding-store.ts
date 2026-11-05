@@ -7,12 +7,13 @@ import type {
   UnownedReason as DbUnownedReason,
 } from '../generated/prisma/client.js';
 import { type IncidentGrouping, protectedItemsOf } from '../incidents/incident-grouping.js';
+import { enqueueNotices, findingNotices } from '../notifications/finding-notices.js';
 import type { ActiveException } from './exception-match.js';
 import type { FindingDraft } from './finding-draft.js';
 
 /**
- * Gravação comum aos syncs de alertas (Wazuh e GCP): o achado, o uso da exceção, o incidente, a fila sem dono, o
- * último evento de cada conta e a concessão que deixa um worker por vez. Cada sync só decide de onde vêm os eventos e
+ * Gravação comum aos syncs de alertas (Wazuh e GCP): o achado, o uso da exceção, o incidente, os avisos por e-mail, a
+ * fila sem dono, o último evento de cada conta e a concessão que deixa um worker por vez. Cada sync só decide de onde vêm os eventos e
  * como cada um vira achado.
  */
 
@@ -145,10 +146,13 @@ export class FindingStore {
     });
   }
 
-  /** Depois de gravar o achado: o uso da exceção ou o incidente. */
+  /**
+   * Depois de gravar o achado: o uso da exceção, ou o incidente e os avisos por e-mail que ele gera (incidente alto ou
+   * crítico aberto, incidente que sobe para alto ou crítico, achado crítico fora de incidente), na mesma transação.
+   */
   private async settle(
     db: ScopedDb,
-    draft: Pick<FindingDraft, 'source'>,
+    draft: Pick<FindingDraft, 'tenantId' | 'source' | 'severity'>,
     sourceEventId: string,
     exception: ActiveException | null,
     protectedItems: ReadonlySet<string>,
@@ -166,7 +170,12 @@ export class FindingStore {
       where: { source_sourceEventId: { source: draft.source, sourceEventId } },
       select: { id: true },
     });
-    return this.grouping.place(db, id, protectedItems);
+    const placement = await this.grouping.place(db, id, protectedItems);
+    await enqueueNotices(
+      db,
+      findingNotices({ tenantId: draft.tenantId, id, severity: draft.severity }, placement),
+    );
+    return placement.outcome;
   }
 
   /**
