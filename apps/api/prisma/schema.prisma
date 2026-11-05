@@ -668,7 +668,9 @@ model PostureFailure {
 }
 
 /// Retrato do inventário de uma conta (T5.9): os itens de cada tipo, já com o risco, como JSON validado pelo
-/// contrato compartilhado ao gravar e ao ler. Gravado pelo job de inventário; o mais recente de cada conta vale.
+/// contrato compartilhado ao gravar e ao ler. Gravado pela tarefa `aws-inventory` do worker (fase 2, PR-14',
+/// `src/inventory/inventory-job.ts`); o mais recente de cada conta vale. `collectedAt` é o início da coleta, e a
+/// chave única com ele torna a gravação idempotente.
 model InventorySnapshot {
   id          String   @id @default(uuid(7)) @db.Uuid
   tenantId    String   @db.Uuid
@@ -679,6 +681,12 @@ model InventorySnapshot {
   root        Json?
   /// Itens por tipo: `users`, `keys`, `instances`, `buckets`, `security-groups`.
   items       Json
+  /// Coleta parcial (PR-14'): as partes que não entraram, `parte:código` ou `parte:região:código`
+  /// (`ec2:sa-east-1:UnauthorizedOperation`, `iam:invalid_items`), só o nome do erro da AWS, nunca a mensagem. Vazio
+  /// numa coleta completa.
+  errors      String[] @default([])
+  /// Alguma parte passou do teto de itens por tipo (1.000): os itens além dele não estão no retrato.
+  truncated   Boolean  @default(false)
   createdAt   DateTime @default(now()) @db.Timestamptz(3)
 
   @@unique([tenantId, accountId, collectedAt])

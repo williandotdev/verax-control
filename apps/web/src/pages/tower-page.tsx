@@ -190,9 +190,7 @@ function Posture({ posture }: { posture: TowerSummary['posture'] }) {
         </Link>
       </CardHeader>
       {posture.score === null ? (
-        <p className="text-sm text-muted-foreground">
-          Ainda sem varredura de postura. A primeira roda em até 24 horas depois de conectar a conta.
-        </p>
+        <p className="text-sm text-muted-foreground">Ainda sem varredura de postura das contas AWS.</p>
       ) : (
         <div className="space-y-2">
           <ScoreMeter

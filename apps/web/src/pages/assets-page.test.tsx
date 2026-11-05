@@ -1,13 +1,16 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { InventorySummary } from '@verax/shared';
+import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { bucketPublic, describeRule } from '@/features/inventory/labels';
+import { bucketPublic, describeRule, describeSectionError } from '@/features/inventory/labels';
 import { api } from '@/lib/api';
+import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
-import { demoMe } from '@/mocks/fixtures';
+import { DEMO_ACCOUNTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
 import { routes } from '@/routes/router';
 
@@ -118,6 +121,102 @@ describe('Ativos e identidades', () => {
   it('admin_verax sem cliente escolhido é orientado a escolher um', async () => {
     renderAt('/ativos', { me: demoMe('admin_verax') });
     expect(await screen.findByText('Escolha um cliente')).toBeInTheDocument();
+  });
+});
+
+describe('Ativos: coleta parcial e "em breve" (PR-14)', () => {
+  const empty = { total: 0, atRisk: 0 };
+  const counts = { users: empty, keys: empty, instances: empty, buckets: empty, 'security-groups': empty };
+  const account = (changes: Partial<InventorySummary['accounts'][number]> = {}) => ({
+    accountId: DEMO_ACCOUNTS.beta,
+    collectedAt: new Date().toISOString(),
+    root: { mfaEnabled: true, accessKeysPresent: false, risk: 'none', reasons: [] },
+    errors: [],
+    truncated: false,
+    ...changes,
+  });
+  const summaryWith = (accounts: object[]) =>
+    http.get(`${API_URL}/v1/assets`, () => HttpResponse.json({ accounts, counts }));
+
+  it('a faixa diz o que ficou de fora em cada conta, e o resto continua nas abas', async () => {
+    renderAt('/ativos');
+    const band = await screen.findByRole('region', { name: 'Coleta parcial' });
+    expect(band).toHaveTextContent(`Conta ${DEMO_ACCOUNTS.alfaProducao}`);
+    const items = within(band)
+      .getAllByRole('listitem')
+      .map((item) => item.textContent);
+    expect(items).toContain('Instâncias EC2 em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).');
+    expect(items).toContain('Security groups em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).');
+    // A outra conta do cliente veio inteira: não aparece na faixa.
+    expect(band).not.toHaveTextContent(DEMO_ACCOUNTS.alfaHomologacao);
+    expect(band).toHaveTextContent('política do papel verax-control-reader');
+    expect(await rowsOf('Usuários IAM')).toHaveLength(9);
+  });
+
+  it('o teto de itens e os itens fora do formato também viram coleta parcial', async () => {
+    renderAt('/ativos');
+    server.use(
+      summaryWith([
+        account({ truncated: true, errors: [{ section: 'iam', region: null, code: 'invalid_items' }] }),
+      ]),
+    );
+    const band = await screen.findByRole('region', { name: 'Coleta parcial' });
+    expect(band).toHaveTextContent(
+      'Usuários IAM e chaves de acesso: itens fora do formato esperado ficaram de fora.',
+    );
+    expect(band).toHaveTextContent('Alguma parte passou do teto de 1.000 itens por tipo');
+  });
+
+  it('retrato completo: sem a faixa', async () => {
+    renderAt('/ativos');
+    server.use(summaryWith([account()]));
+    expect(await screen.findByRole('tab', { name: /Usuários IAM/ })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Coleta parcial' })).not.toBeInTheDocument();
+  });
+
+  it('cliente sem conta AWS (só GCP ou Cloudflare): "em breve", sem abas', async () => {
+    renderAt('/ativos');
+    server.use(summaryWith([]));
+    expect(await screen.findByText('Ativos de GCP e Cloudflare: em breve')).toBeInTheDocument();
+    expect(screen.getByText(/ainda não tem conta AWS ativa/)).toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+  });
+
+  it('conta AWS que ainda não foi inventariada: o aviso, sem prometer prazo em minutos', async () => {
+    renderAt('/ativos');
+    server.use(summaryWith([account({ collectedAt: null, root: null })]));
+    expect(await screen.findByText('Ainda sem inventário')).toBeInTheDocument();
+    const page = screen.getByRole('heading', { level: 1, name: 'Ativos e identidades' }).closest('section');
+    expect(page).toHaveTextContent('depois que a conexão dela é verificada em Contas cloud');
+    expect(page).not.toHaveTextContent(/minutos|Prowler/);
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+  });
+});
+
+describe('parte que ficou de fora do inventário', () => {
+  it.each([
+    [
+      { section: 'iam', region: null, code: 'AccessDenied' },
+      'Usuários IAM e chaves de acesso: a AWS recusou a leitura (AccessDenied)',
+    ],
+    [
+      { section: 'ec2', region: 'sa-east-1', code: 'UnauthorizedOperation' },
+      'Instâncias EC2 em sa-east-1: a AWS recusou a leitura (UnauthorizedOperation)',
+    ],
+    [
+      { section: 'sg', region: 'ap-east-1', code: 'AuthFailure' },
+      'Security groups em ap-east-1: a região não aceitou a sessão, desligada ou fora do opt-in (AuthFailure)',
+    ],
+    [
+      { section: 's3', region: null, code: 'invalid_items' },
+      'Buckets S3: itens fora do formato esperado ficaram de fora',
+    ],
+    [
+      { section: 'root', region: null, code: 'InvalidParameterValue' },
+      'Conta root: a leitura falhou (InvalidParameterValue)',
+    ],
+  ] as const)('%o vira o texto da faixa', (error, text) => {
+    expect(describeSectionError(error)).toBe(text);
   });
 });
 

@@ -4,16 +4,19 @@ import {
   type AssetKind,
   type AssetListQuery,
   assetSchemas,
-  inventorySummarySchema,
+  inventoryErrorValue,
+  inventoryRootSchema,
+  type InventorySectionError,
   type InventorySummary,
+  MAX_INVENTORY_ERRORS,
   type Paginated,
+  parseInventoryError,
 } from '@verax/shared';
 import type { z } from 'zod';
 import { toPaginated } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 
 const RISK_ORDER = ['critical', 'high', 'medium', 'low', 'none'] as const;
-const rootSchema = inventorySummarySchema.shape.accounts.element.shape.root;
 
 type Asset = z.infer<(typeof assetSchemas)[AssetKind]>;
 
@@ -27,6 +30,19 @@ function itemsOf(snapshotItems: unknown, kind: AssetKind): Asset[] {
   });
 }
 
+/** As partes que não entraram no retrato, conferidas pelo contrato: um valor fora do formato não vai para a tela. */
+function errorsOf(values: readonly string[] | undefined): InventorySectionError[] {
+  const seen = new Set<string>();
+  const errors: InventorySectionError[] = [];
+  for (const value of values ?? []) {
+    const parsed = parseInventoryError(value);
+    if (parsed === null || seen.has(inventoryErrorValue(parsed))) continue;
+    seen.add(inventoryErrorValue(parsed));
+    errors.push(parsed);
+  }
+  return errors.slice(0, MAX_INVENTORY_ERRORS);
+}
+
 /** Nome que ordena os itens de mesmo risco. */
 function labelOf(asset: Asset): string {
   if ('userName' in asset && 'arn' in asset) return asset.userName;
@@ -37,8 +53,9 @@ function labelOf(asset: Asset): string {
 }
 
 /**
- * Ativos e identidades do cliente da sessão (T5.9), a partir do retrato mais recente de cada conta AWS ativa,
- * gravado pelo job de inventário. Conta sem retrato aparece sem dados.
+ * Ativos e identidades do cliente da sessão (T5.9), a partir do retrato mais recente de cada conta AWS ativa, gravado
+ * pela tarefa `aws-inventory` do worker (PR-14'). Conta sem retrato aparece sem dados; o retrato parcial traz as partes
+ * que não entraram (`errors`) e se alguma passou do teto de itens (`truncated`), para a faixa de "coleta parcial".
  */
 @Injectable()
 export class AssetsService {
@@ -56,7 +73,7 @@ export class AssetsService {
         accountId,
         snapshot: await db.inventorySnapshot.findFirst({
           where: { accountId },
-          select: { collectedAt: true, root: true, items: true },
+          select: { collectedAt: true, root: true, items: true, errors: true, truncated: true },
           orderBy: [{ collectedAt: 'desc' }, { id: 'desc' }],
         }),
       })),
@@ -78,11 +95,13 @@ export class AssetsService {
     }
     return {
       accounts: snapshots.map(({ accountId, snapshot }) => {
-        const root = rootSchema.safeParse(snapshot?.root ?? null);
+        const root = inventoryRootSchema.safeParse(snapshot?.root ?? null);
         return {
           accountId,
           collectedAt: snapshot?.collectedAt.toISOString() ?? null,
           root: root.success ? root.data : null,
+          errors: errorsOf(snapshot?.errors),
+          truncated: snapshot?.truncated ?? false,
         };
       }),
       counts,

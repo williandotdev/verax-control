@@ -327,8 +327,9 @@ function defaultSts(region: string): Pick<STSClient, 'send'> {
 }
 
 /**
- * Provedor de sessões no papel de leitura, uma por conta, para qualquer cliente do SDK (`credentialsFor`). Exportado
- * para o inventário (PR-14'), que deixa o `assumeReadOnlyRole` do conector antigo.
+ * Provedor de sessões no papel de leitura, uma por conta, para qualquer cliente do SDK (`credentialsFor`). A conferência
+ * da conexão e o inventário (PR-14', `inventory/inventory-job.ts`) dividem a mesma instância e, com ela, a sessão de
+ * cada conta.
  */
 export class WebIdentityCredentials {
   readonly #sessions = new Map<string, ReaderSession>();
