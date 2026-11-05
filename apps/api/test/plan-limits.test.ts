@@ -13,10 +13,12 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FindingDraft } from '../src/alerts/finding-draft.js';
 import { FindingStore } from '../src/alerts/finding-store.js';
+import { CloudAccountsService } from '../src/cloud-accounts/cloud-accounts.service.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
 import { assertWithinPlan } from '../src/plan/plan-limits.js';
 import { UsageMeter, usageMonth } from '../src/usage/usage-meter.js';
+import { UsersService } from '../src/users/users.service.js';
 import { createSignedInUser, createTenant, createUser, withCsrf } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import type { TestSession } from './support/tenant-isolation.js';
@@ -68,6 +70,69 @@ function findingDraft(tenantId: string): FindingDraft {
     mitreTactics: [],
     mitreTechniques: [],
   };
+}
+
+/** Quanto o teste espera, com a primeira requisição parada, para ver se as outras andam sem ela. */
+const HOLD_MS = 2_500;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Para a primeira requisição que ler um recurso pelo service (o `find`, que lê o status) logo depois da leitura, até
+ * `release`: é a janela em que outra requisição poderia mudar a vaga entre a decisão e a gravação desta. As chamadas
+ * seguintes passam direto.
+ */
+function holdFirstRead(service: { prototype: object }) {
+  const target = service.prototype as { find: (...args: unknown[]) => Promise<unknown> };
+  const original = target.find;
+  let reached = () => {};
+  let release = () => {};
+  const wasReached = new Promise<void>((resolve) => (reached = resolve));
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  target.find = async function (this: unknown, ...args: unknown[]) {
+    target.find = original;
+    const row = await original.apply(this, args);
+    reached();
+    await gate;
+    return row;
+  };
+  return {
+    reached: wasReached,
+    release,
+    restore: () => {
+      target.find = original;
+    },
+  };
+}
+
+/** Dispara a requisição do supertest na hora (ela só sai no `then`). */
+const start = (test: request.Test): Promise<request.Response> => test.then((response) => response);
+
+/**
+ * A corrida da revisão: a reativação de um recurso ainda ativo para logo depois de ler o status; enquanto isso, a
+ * desativação dele e uma criação. Sem o lock do plano antes da leitura, as duas passam na frente, a criação pega a
+ * vaga liberada e a reativação, ao gravar, devolve o recurso: acima do limite. Devolve os status das três (na ordem
+ * reativação, desativação e criação) e se as duas outras terminaram com a primeira parada.
+ */
+async function interleave(
+  service: { prototype: object },
+  requests: Record<'reactivate' | 'deactivate' | 'create', () => request.Test>,
+): Promise<{ statuses: number[]; ranAhead: boolean }> {
+  const hold = holdFirstRead(service);
+  try {
+    const reactivate = start(requests.reactivate());
+    await hold.reached;
+    const others = [start(requests.deactivate()), start(requests.create())];
+    const ranAhead = await Promise.race([
+      Promise.allSettled(others).then(() => true),
+      sleep(HOLD_MS).then(() => false),
+    ]);
+    hold.release();
+    const responses = await Promise.all([reactivate, ...others]);
+    return { statuses: responses.map((response) => response.status), ranAhead };
+  } finally {
+    hold.restore();
+  }
 }
 
 describe('limites do plano (fase 2, PR-18)', () => {
@@ -207,6 +272,28 @@ describe('limites do plano (fase 2, PR-18)', () => {
       }
     });
 
+    it('reativar, desativar e criar ao mesmo tempo no limite: o status é lido sob o lock, e o limite vale', async () => {
+      const { tenantId, admin } = await freshTenant();
+      const [held = ''] = await fillAccounts(admin, MAX_ACCOUNTS);
+      const outcome = await interleave(CloudAccountsService, {
+        // A reativação de uma conta que ainda está ativa para logo depois de ler o status...
+        reactivate: () => call(admin).patch(`/v1/cloud-accounts/${held}`, { status: 'active' }),
+        // ... e, enquanto isso, a desativação da mesma conta e uma conta nova.
+        deactivate: () => call(admin).delete(`/v1/cloud-accounts/${held}`),
+        create: () => call(admin).post('/v1/cloud-accounts', newAccount(1)),
+      });
+      // Ninguém passou do limite, e a desativação, que veio depois da reativação, vale: a conta termina inativa.
+      expect(await prisma.cloudAccount.count({ where: { tenantId, status: 'active' } })).toBeLessThanOrEqual(
+        MAX_ACCOUNTS,
+      );
+      expect((await prisma.cloudAccount.findUniqueOrThrow({ where: { id: held } })).status).toBe('inactive');
+      expect(outcome.statuses.slice(0, 2)).toEqual([200, 204]);
+      // A criação passa se vier depois da desativação, e é recusada se vier antes.
+      expect([201, 409]).toContain(outcome.statuses[2]);
+      // Foi o lock que garantiu: a desativação e a criação esperaram a reativação terminar.
+      expect(outcome.ranAhead).toBe(false);
+    });
+
     it('A/B: o cliente B no limite não tira vaga do A', async () => {
       const a = await freshTenant('Cliente Demo A');
       const b = await freshTenant('Cliente Demo B');
@@ -306,6 +393,28 @@ describe('limites do plano (fase 2, PR-18)', () => {
       ]);
       expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
       expect(await prisma.user.count({ where: { tenantId } })).toBe(MAX_USERS);
+    });
+
+    it('reativar, desativar e criar ao mesmo tempo no limite: o status é lido sob o lock, e o limite vale', async () => {
+      const { tenantId, admin } = await freshTenant();
+      const created: string[] = [];
+      for (let count = 1; count < MAX_USERS; count += 1) {
+        const response = await call(admin).post('/v1/users', newUser()).expect(201);
+        created.push((response.body as { user: { id: string } }).user.id);
+      }
+      const [held = ''] = created;
+      const outcome = await interleave(UsersService, {
+        reactivate: () => call(admin).patch(`/v1/users/${held}`, { status: 'active' }),
+        deactivate: () => call(admin).delete(`/v1/users/${held}`),
+        create: () => call(admin).post('/v1/users', newUser()),
+      });
+      expect(
+        await prisma.user.count({ where: { tenantId, status: { in: ['invited', 'active'] } } }),
+      ).toBeLessThanOrEqual(MAX_USERS);
+      expect((await prisma.user.findUniqueOrThrow({ where: { id: held } })).status).toBe('disabled');
+      expect(outcome.statuses.slice(0, 2)).toEqual([200, 204]);
+      expect([201, 409]).toContain(outcome.statuses[2]);
+      expect(outcome.ranAhead).toBe(false);
     });
 
     it('o cliente novo nasce com o primeiro administrador num nó com plano', async () => {

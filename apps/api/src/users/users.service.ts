@@ -141,6 +141,9 @@ export class UsersService {
   }
 
   async update(auth: RequestAuth, id: string, input: UserUpdate): Promise<User> {
+    // Ativar ou desativar ocupa ou libera uma vaga do plano: o lock vem antes da leitura do usuário, e a decisão tomada
+    // sobre o status lido vale até a gravação (uma desativação ao mesmo tempo espera, ou já foi confirmada e é lida).
+    if (input.status !== undefined) await this.plan.lockSeats('users', auth.scopeTenantId as string);
     const before = toUser(await this.find(id));
     if (id === auth.userId) throw new ApiError(HttpStatus.FORBIDDEN, SELF);
     if (input.status === 'active' && before.status === 'invited') {
@@ -166,6 +169,8 @@ export class UsersService {
 
   /** Desativa (exclusão lógica): o usuário perde as sessões na hora e não entra mais. */
   async deactivate(auth: RequestAuth, id: string): Promise<void> {
+    // Libera uma vaga do plano: sob o mesmo lock da criação e da reativação, lido e gravado na mesma transação.
+    await this.plan.lockSeats('users', auth.scopeTenantId as string);
     const before = toUser(await this.find(id));
     if (id === auth.userId) throw new ApiError(HttpStatus.FORBIDDEN, SELF);
     const row = await this.prisma

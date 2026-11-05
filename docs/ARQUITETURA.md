@@ -622,13 +622,16 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
   Descer de plano com o uso acima do novo limite não desativa nem apaga nada: só a próxima criação é recusada, e o
   painel mostra "acima do limite do plano".
 - **Onde a vaga é conferida:** `assertWithinPlan` (`apps/api/src/plan/plan-limits.ts`), sempre na transação que grava,
-  sob `pg_advisory_xact_lock(hashtext('verax:plan:<vaga>:<cliente>'))`. Duas criações simultâneas no limite menos 1
-  terminam com uma aceita. O lock do plano vem antes dos das origens de log (as contas cloud), sempre na mesma ordem.
-  Os pontos:
-  - cadastro e reativação de conta cloud (`POST` e `PATCH /v1/cloud-accounts`);
-  - cadastro e reativação de usuário (`POST` e `PATCH /v1/users`), inclusive o primeiro administrador de um cliente
-    novo (`POST /v1/tenants`, que sempre tem vaga);
-  - as contas da GCP do bootstrap do nó: no limite, a conta fica de fora (`plan-limit`) e o resto do bootstrap segue.
+  sob `pg_advisory_xact_lock(hashtext('verax:plan:<vaga>:<cliente>'))` (`lockPlanSeats`). Duas criações simultâneas no
+  limite menos 1 terminam com uma aceita. Toda escrita que muda o status (ativar ou desativar, inclusive o `DELETE`)
+  pega o mesmo lock **antes** de ler o recurso: a decisão tomada sobre o status lido vale até a gravação, e uma
+  desativação que corre junto com uma reativação e uma criação não deixa as duas usarem a mesma vaga. O lock do plano
+  vem antes dos das origens de log e da credencial (as contas cloud), sempre na mesma ordem. Os pontos:
+  - cadastro, reativação e desativação de conta cloud (`POST`, `PATCH` e `DELETE /v1/cloud-accounts`);
+  - cadastro, reativação e desativação de usuário (`POST`, `PATCH` e `DELETE /v1/users`), inclusive o primeiro
+    administrador de um cliente novo (`POST /v1/tenants`, que sempre tem vaga);
+  - o bootstrap do nó: as contas da GCP (no limite, a conta fica de fora com `plan-limit`, e o resto segue) e, no modo
+    `customer`, o `admin_cliente` (no limite, um e-mail novo é recusado; o primeiro sempre tem vaga).
 - **Recusa:** 409 com o código `PLAN_LIMIT_REACHED` e a mensagem que diz o limite ("Seu plano permite até 3 contas
   cloud ativas. Desative uma conta ou fale com a Verax para ampliar."), na trilha do cliente como falha, com a ação de
   sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).

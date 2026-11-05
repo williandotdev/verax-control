@@ -16,6 +16,7 @@ import { AuditService } from '../common/audit/audit.service.js';
 import { nodePlan } from '../common/config/env.schema.js';
 import { loadConfig } from '../common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from '../common/config/load-env-file.js';
+import { requestContext } from '../common/context/request-context.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import { registerLiveSecret, sanitize } from '../common/logger/sanitize.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
@@ -510,6 +511,44 @@ function checkAccount(
 }
 
 /**
+ * Cria a conta, ainda sem acesso (`invited`). O `admin_cliente` pede vaga no plano, como no painel (PR-18): a checagem e
+ * a criação na mesma transação, sob o lock das vagas do cliente (`provisionUser` grava pela transação do contexto). O
+ * primeiro usuário sempre tem vaga; um e-mail novo num cliente já cheio é recusado, com a tentativa na auditoria. A
+ * conta de suporte é da Verax e não ocupa vaga.
+ */
+async function provisionCustomerAccount(
+  prisma: PrismaService,
+  auth: Auth,
+  audit: AuditService,
+  plan: ResolvedPlan,
+  spec: CustomerAccountSpec,
+  tenantId: string | null,
+): Promise<string> {
+  const user = { email: spec.email, name: spec.name, role: spec.role, tenantId, status: 'invited' as const };
+  if (spec.role !== 'admin_cliente' || tenantId === null) return (await provisionUser(auth, user)).id;
+  const created = await prisma.$transaction(async (tx) => {
+    try {
+      await assertWithinPlan(tx, plan, 'users', tenantId);
+    } catch (error) {
+      if (error instanceof PlanLimitReached) return null;
+      throw error;
+    }
+    return requestContext.run({ tx }, () => provisionUser(auth, user));
+  });
+  if (created) return created.id;
+  await audit.write(prisma, {
+    actor: { type: 'system', tenantId },
+    action: 'user.create',
+    outcome: 'failure',
+    statusCode: 409,
+    resourceType: 'user',
+  });
+  throw new CustomerBootstrapRefusal(
+    `O plano do nó não tem vaga para a ${spec.label}: desative um usuário pelo painel ou amplie o plano (PLAN_MAX_USERS).`,
+  );
+}
+
+/**
  * Cria a conta ou gera a senha dela, quando é o caso. A senha entra na máscara do logger assim que `setTemporaryPassword`
  * a devolve, antes de qualquer outro `await` (lá dentro, só o hash vai para o banco, e nada é logado), e vai direto para
  * o arquivo da pasta de saída; a auditoria registra só o estado da conta.
@@ -518,6 +557,7 @@ async function ensureCustomerAccount(
   prisma: PrismaService,
   auth: Auth,
   audit: AuditService,
+  plan: ResolvedPlan,
   sink: PayloadSink,
   spec: CustomerAccountSpec,
   existing: ExistingAccount | null,
@@ -528,13 +568,7 @@ async function ensureCustomerAccount(
   let outcome: CustomerAccountOutcome;
   if (!existing) {
     // Sem acesso até a senha temporária ser gravada: se o processo cair no meio, a próxima execução a gera.
-    ({ id } = await provisionUser(auth, {
-      email: spec.email,
-      name: spec.name,
-      role: spec.role,
-      tenantId,
-      status: 'invited',
-    }));
+    id = await provisionCustomerAccount(prisma, auth, audit, plan, spec, tenantId);
     outcome = 'created';
   } else {
     id = existing.id;
@@ -615,6 +649,7 @@ export async function bootstrapCustomerNode(
     prisma,
     auth,
     audit,
+    plan,
     sink,
     admin,
     existingAdmin,
@@ -624,6 +659,7 @@ export async function bootstrapCustomerNode(
     prisma,
     auth,
     audit,
+    plan,
     sink,
     support,
     existingSupport,

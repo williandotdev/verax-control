@@ -6,7 +6,7 @@ import { nodePlan } from '../common/config/env.schema.js';
 import { requestContext } from '../common/context/request-context.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { usageMonth } from '../usage/usage-meter.js';
-import { assertWithinPlan, countSeats, PlanLimitReached } from './plan-limits.js';
+import { assertWithinPlan, countSeats, lockPlanSeats, PlanLimitReached } from './plan-limits.js';
 
 /** Recurso da trilha de auditoria de cada vaga, para a recusa sair com a mesma área das outras operações. */
 const SEAT_RESOURCE: Readonly<Record<PlanSeat, string>> = {
@@ -42,22 +42,36 @@ export class PlanService {
   }
 
   /**
+   * Trava as vagas do cliente na transação da requisição de escrita (`lockPlanSeats`), antes de ler o status do
+   * recurso: toda escrita que pode ativar ou desativar uma conta ou um usuário chama isto primeiro, e a leitura que vem
+   * depois já enxerga a mudança de vaga que outra requisição confirmou.
+   */
+  async lockSeats(seat: PlanSeat, tenantId: string): Promise<void> {
+    await lockPlanSeats(this.writeTransaction(), this.plan, seat, tenantId);
+  }
+
+  /**
    * Confere a vaga do cliente na transação da requisição de escrita (`assertWithinPlan`). Na recusa, a tentativa entra
    * na trilha do cliente com a ação e a área de sempre (`cloud_account.create`, `user.update`...), e o
    * `AuditInterceptor` a grava como falha 409, com a alteração desfeita.
    */
   async assertWithinPlan(seat: PlanSeat, tenantId: string, attempt: PlanAttempt): Promise<void> {
-    if (!requestContext.getStore()?.tx) {
-      throw new Error('a vaga do plano só é conferida numa requisição de escrita');
-    }
+    const tx = this.writeTransaction();
     try {
-      await assertWithinPlan(this.prisma.db(), this.plan, seat, tenantId);
+      await assertWithinPlan(tx, this.plan, seat, tenantId);
     } catch (error) {
       if (error instanceof PlanLimitReached) {
         this.audit.describe({ ...attempt, resourceType: SEAT_RESOURCE[seat], tenantId });
       }
       throw error;
     }
+  }
+
+  /** A transação da requisição de escrita: fora dela, o lock do plano não valeria até a gravação. */
+  private writeTransaction() {
+    const tx = requestContext.getStore()?.tx;
+    if (!tx) throw new Error('a vaga do plano só é conferida numa requisição de escrita');
+    return tx;
   }
 
   /**

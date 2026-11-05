@@ -42,15 +42,37 @@ export function countSeats(scoped: Prisma.TransactionClient, seat: PlanSeat): Pr
 }
 
 /**
- * Confere se o cliente ainda tem vaga no plano antes de criar ou reativar uma conta cloud ou um usuário (fase 2,
- * PR-18). Sem limite (plano `interno`), não faz nada.
+ * Trava as vagas de um cliente na transação: `pg_advisory_xact_lock(hashtext('verax:plan:<vaga>:<cliente>'))`, o mesmo
+ * padrão das origens de log em `cloud-accounts.service.ts`. Sem limite (plano `interno`), não trava nada. Devolve o
+ * limite.
  *
- * Roda sob `pg_advisory_xact_lock(hashtext('verax:plan:<vaga>:<cliente>'))`, o mesmo padrão das origens de log em
- * `cloud-accounts.service.ts`: duas criações simultâneas no limite menos 1 terminam com uma aceita, porque a segunda
- * só conta depois que a primeira confirma (ou desfaz). Por isso `db` tem de ser a transação que vai gravar a conta ou
- * o usuário (a da requisição, `PrismaService.db()`, ou a de um `$transaction`): fora de uma transação, o lock seria
- * solto logo depois de pego. Quem chama pega este lock antes de qualquer outro (as origens de log, a credencial), para
- * a ordem dos locks ser sempre a mesma.
+ * Toda escrita que ocupa ou libera uma vaga pega este lock antes de ler o status do recurso: criar, ativar e desativar.
+ * Assim a decisão (a conta já está ativa? há vaga?) vale até o commit: uma desativação que corre junto com uma
+ * reativação e uma criação não deixa as duas passarem com a mesma vaga. Por isso `db` tem de ser a transação que vai
+ * gravar (a da requisição, `PrismaService.db()`, ou a de um `$transaction`): fora de uma transação, o lock seria solto
+ * logo depois de pego. O lock é reentrante na mesma transação, e quem chama o pega antes de qualquer outro (as origens
+ * de log, a credencial), para a ordem dos locks ser sempre a mesma.
+ */
+export async function lockPlanSeats(
+  db: Prisma.TransactionClient,
+  plan: ResolvedPlan,
+  seat: PlanSeat,
+  tenantId: string,
+): Promise<number | null> {
+  const limit = plan.limits[PLAN_SEAT_LIMIT[seat]];
+  if (limit === null) return null;
+  // O cliente base do Prisma conecta e desconecta; a transação, não (`$connect` está fora do `TransactionClient`).
+  if (typeof (db as { $connect?: unknown }).$connect === 'function') {
+    throw new Error('as vagas do plano só são travadas na transação que grava a conta ou o usuário');
+  }
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:plan:${LOCK_NAME[seat]}:${tenantId}`}))`;
+  return limit;
+}
+
+/**
+ * Confere se o cliente ainda tem vaga no plano antes de criar ou reativar uma conta cloud ou um usuário (fase 2,
+ * PR-18), sob o lock de `lockPlanSeats`: duas criações simultâneas no limite menos 1 terminam com uma aceita, porque a
+ * segunda só conta depois que a primeira confirma (ou desfaz). Sem limite (plano `interno`), não faz nada.
  */
 export async function assertWithinPlan(
   db: Prisma.TransactionClient,
@@ -58,13 +80,8 @@ export async function assertWithinPlan(
   seat: PlanSeat,
   tenantId: string,
 ): Promise<void> {
-  const limit = plan.limits[PLAN_SEAT_LIMIT[seat]];
+  const limit = await lockPlanSeats(db, plan, seat, tenantId);
   if (limit === null) return;
-  // O cliente base do Prisma conecta e desconecta; a transação, não (`$connect` está fora do `TransactionClient`).
-  if (typeof (db as { $connect?: unknown }).$connect === 'function') {
-    throw new Error('assertWithinPlan precisa da transação que grava a conta ou o usuário');
-  }
-  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:plan:${LOCK_NAME[seat]}:${tenantId}`}))`;
   if ((await countSeats(scopeToTenant(db, tenantId), seat)) >= limit) {
     throw new PlanLimitReached(seat, limit);
   }

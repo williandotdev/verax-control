@@ -289,6 +289,9 @@ export class CloudAccountsService {
   }
 
   async update(auth: RequestAuth, id: string, input: CloudAccountUpdate): Promise<CloudAccount> {
+    // Ativar ou desativar ocupa ou libera uma vaga do plano: o lock vem antes da leitura da conta, e a decisão tomada
+    // sobre o status lido vale até a gravação (uma desativação ao mesmo tempo espera, ou já foi confirmada e é lida).
+    if (input.status !== undefined) await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const beforeRow = await this.find(id);
     // Cada campo só existe num provedor: recusar, em vez de ignorar, evita achar que algo foi gravado.
     const foreign = fieldsOutsideProvider(beforeRow.provider, input);
@@ -347,7 +350,9 @@ export class CloudAccountsService {
    * "aguardando": parada, a conta não está conectada nem com erro. A credencial do cofre é apagada junto (D-13):
    * reativar pede colar de novo.
    */
-  async deactivate(id: string): Promise<void> {
+  async deactivate(auth: RequestAuth, id: string): Promise<void> {
+    // Libera uma vaga do plano: sob o mesmo lock da criação e da reativação, lido e gravado na mesma transação.
+    await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const before = await this.find(id);
     await this.wipeCredential(id);
     const row = await this.prisma.scoped().cloudAccount.update({
