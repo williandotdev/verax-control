@@ -9,6 +9,7 @@ import {
   GOOGLE_ENDPOINTS,
   type GoogleEndpoints,
   type JobRef,
+  IamCredentialsApi,
   RunJobsApi,
   SecretVersionsApi,
   StorageApi,
@@ -158,6 +159,13 @@ export interface ProvisioningApis {
   storage: StorageApi;
   runJobs: RunJobsApi;
   secrets: SecretVersionsApi;
+  /** A assinatura do link da exportação (CP-11), pela conta `EXPORT_SIGNER_SA_EMAIL`. */
+  iam: IamCredentialsApi;
+  /**
+   * O endereço do Cloud Storage para o link assinado e o `fetch` que confere o objeto por ele (sem token: o link é a
+   * credencial). Em produção, `https://storage.googleapis.com`.
+   */
+  signedStorage: { base: string; fetchFn: typeof fetch };
   probe: TenantProbe;
   /** As chaves públicas de release com que o manifesto é conferido (as do repositório; outras só nos testes). */
   releaseKeys: Readonly<Record<string, string>>;
@@ -196,6 +204,8 @@ export function createProvisioningApis(options: ProvisioningApiOptions = {}): Pr
     storage: new StorageApi(tokens, fetchFn, endpoints.storage),
     runJobs: new RunJobsApi(tokens, fetchFn, endpoints.run),
     secrets: new SecretVersionsApi(tokens, fetchFn, endpoints.secretManager),
+    iam: new IamCredentialsApi(tokens, fetchFn, endpoints.iamCredentials),
+    signedStorage: { base: endpoints.storage, fetchFn },
     probe: options.probe ?? new HttpsTenantProbe(),
     releaseKeys: options.releaseKeys ?? RELEASE_PUBLIC_KEYS,
   };

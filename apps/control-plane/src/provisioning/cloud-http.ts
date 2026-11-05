@@ -16,7 +16,7 @@ import { GoogleAuth } from 'google-auth-library';
  */
 
 export type CloudService =
-  'cloudflare' | 'firebase' | 'compute' | 'storage' | 'run' | 'secretmanager' | 'tenant';
+  'cloudflare' | 'firebase' | 'compute' | 'storage' | 'run' | 'secretmanager' | 'iamcredentials' | 'tenant';
 
 /** Token de acesso OAuth do Google da conta do serviço (no Cloud Run, a `cp-worker`, pelo servidor de metadados). */
 export interface AccessTokenSource {
