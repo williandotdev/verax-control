@@ -11,7 +11,14 @@ import type { RequestAuth } from '../common/auth/request-auth.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { combinedScore, PostureService } from '../posture/posture.service.js';
 import { ReportsService } from '../reports/reports.service.js';
-import { coverage, DEFAULT_TOWER_THRESHOLDS, pendingDecisions, trafficLight } from './tower-rules.js';
+import { WAZUH_COUNTER_ID } from '../usage/wazuh-usage.js';
+import {
+  awsLogsStalledSince,
+  coverage,
+  DEFAULT_TOWER_THRESHOLDS,
+  pendingDecisions,
+  trafficLight,
+} from './tower-rules.js';
 
 /** O resumo MITRE ATT&CK da Torre olha os últimos 30 dias, com as mesmas contas do relatório MITRE desse período. */
 const MITRE_PERIOD = '30d';
@@ -71,6 +78,21 @@ export class TowerService {
       thresholds,
     );
 
+    // Saúde da ingestão da AWS (PR-V6): com conta AWS conectada, a última vez que os eventos da AWS andaram no Wazuh do
+    // nó, gravada pela tarefa `wazuh-usage` no escopo do cliente. Sem a linha (nó sem o Wazuh, ou a tarefa ainda não
+    // leu), nada a afirmar.
+    const awsConnected = accounts.some(
+      (account) => account.provider === 'aws' && account.connection === 'connected',
+    );
+    const health = awsConnected
+      ? await db.ingestHealth.findFirst({ where: { source: 'aws' }, select: { lastProgressAt: true } })
+      : null;
+    const stalledSince = awsLogsStalledSince(
+      { awsConnected, lastProgressAt: health?.lastProgressAt ?? null },
+      now,
+      thresholds,
+    );
+
     const includeUnowned = hasPermission(auth.role, 'unowned_alerts:read');
     const [unassignedIncidents, untriagedFindings, unownedAlerts] = await Promise.all([
       db.incident.count({ where: { status: { not: 'resolved' }, assigneeId: null } }),
@@ -89,6 +111,15 @@ export class TowerService {
     const { tactics } = await this.reports.mitre(reportWindow(MITRE_PERIOD, now));
     const mitre = { periodDays: REPORT_PERIOD_DAYS[MITRE_PERIOD], tactics };
 
+    // O medidor da AWS parado por mais de um cliente no Wazuh do nó é do nó, não de um cliente: só a equipe da Verax vê
+    // (como a fila sem dono), e o aviso não cita cliente nenhum.
+    const meterVisible = hasPermission(auth.role, 'tenants:read');
+    const counter = meterVisible
+      ? await this.prisma
+          .db()
+          .wazuhCounter.findUnique({ where: { id: WAZUH_COUNTER_ID }, select: { meterBlocked: true } })
+      : null;
+
     const { light, reasons } = trafficLight({ openIncidents, postureScore }, thresholds);
     return {
       light,
@@ -99,7 +130,13 @@ export class TowerService {
       ),
       openIncidents,
       posture: { score: postureScore, scannedAt, warningBelow: thresholds.postureWarning },
-      coverage: { ...cover, silentAfterHours: thresholds.silentAfterHours },
+      coverage: {
+        ...cover,
+        silentAfterHours: thresholds.silentAfterHours,
+        awsLogsStalledSince: stalledSince?.toISOString() ?? null,
+        awsStalledAfterHours: thresholds.awsStalledAfterHours,
+        ...(meterVisible && { awsMeterBlocked: counter?.meterBlocked != null }),
+      },
       mitre,
       generatedAt: now.toISOString(),
     };

@@ -245,9 +245,10 @@ generate postgres-app 40
 generate better-auth-secret 48
 generate csrf-secret 48
 # Senhas do Wazuh (standard): admin do indexer, wazuh_filebeat (o filebeat do manager, só escrita dos alertas),
-# wazuh-wui da API do manager e o usuário só leitura da API e do worker. O generate() acima só emite letras e dígitos,
-# e os componentes do Wazuh exigem também `.` ou `-` (scripts/lib-passwords.sh do pacote do Wazuh, o mesmo formato que
-# o start.sh confere a cada partida).
+# wazuh-wui da API do manager, o usuário só leitura do indexer para a API e o worker e o verax_stats da API do manager
+# (só manager:read; o medidor do worker, PR-V6; num nó de antes, nasce no próximo deploy, como qualquer uma que falte). O
+# generate() acima só emite letras e dígitos, e os componentes do Wazuh exigem também `.` ou `-`
+# (scripts/lib-passwords.sh do pacote do Wazuh, o mesmo formato que o start.sh confere a cada partida).
 if $standard; then
   # shellcheck source=SCRIPTDIR/../../wazuh/scripts/lib-passwords.sh
   source "$here/wazuh/scripts/lib-passwords.sh"
@@ -263,6 +264,7 @@ if $standard; then
   generate_wazuh wazuh-indexer-filebeat
   generate_wazuh wazuh-api
   generate_wazuh wazuh-indexer-read
+  generate_wazuh wazuh-api-stats
 fi
 # Agentes: a senha de registro do nó (o authd confere; o painel a mostra só aos administradores), só letras e dígitos
 # para caber sem escape no comando de instalação do Linux e do Windows; e o certificado do registro, com o IP fixo dos

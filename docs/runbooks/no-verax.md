@@ -72,7 +72,8 @@ limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` 
 
 No perfil `standard` (homologação e nós de clientes), o mesmo pacote sobe também o Wazuh (manager e indexer, sem
 dashboard), num serviço próprio, o `verax-wazuh`, depois do `verax-node`: o `deploy.sh` leva junto a configuração de
-`infra/wazuh`, o `install.sh` gera as quatro senhas dele em `/var/lib/verax/secrets`, e o serviço espera o Wazuh ficar
+`infra/wazuh`, o `install.sh` gera as cinco senhas dele em `/var/lib/verax/secrets` (num nó de antes do PR-V6, a quinta,
+`wazuh-api-stats`, nasce no próximo deploy; sem ela, o `start.sh` para e aponta o `install.sh`), e o serviço espera o Wazuh ficar
 saudável (alguns minutos, mais na primeira vez, que baixa as imagens); uma falha dele não derruba a aplicação nem o
 backup. O que roda, como conferir e como ler os alertas estão em `infra/wazuh/README.md`, seção "Nó de cliente". Nesse
 perfil, use `SYNC_SOURCES=gcp,wazuh` no `node.conf`. O nó da Verax (`lean`) não recebe nada disso.
