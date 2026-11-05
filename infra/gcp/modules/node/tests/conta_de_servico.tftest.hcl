@@ -58,7 +58,8 @@ run "cria_o_no" {
 }
 
 # Tudo o que muda na vida de um nó sem mudar de nome nem de projeto: o tamanho da VM e do disco, quem opera, os projetos
-# monitorados e de clientes, os cofres, o alerta e a proteção da VM. Nenhum recria a conta.
+# monitorados e de clientes, os cofres, o alerta, a proteção da VM, os atributos de convidado e a configuração nos
+# metadados (o que o envs/tenant liga e muda a cada versão ou troca de plano). Nenhum recria a conta.
 run "mudancas_de_rotina_nao_recriam_a_conta" {
   command = plan
 
@@ -71,10 +72,24 @@ run "mudancas_de_rotina_nao_recriam_a_conta" {
     pubsub_storage_in_region   = false
     credentials_vault          = false
     bootstrap_secret           = false
+    support_bootstrap_secret   = true
+    guest_attributes           = true
     turnstile_secret           = true
     alert_email                = "alertas@example.com"
     stalled_subscription_hours = 48
     deletion_protection        = false
+    install_config             = true
+    install_metadata = {
+      verax-plan                    = "enterprise"
+      verax-plan-max-cloud-accounts = "15"
+      verax-plan-max-users          = "15"
+      verax-plan-monthly-gib        = "60"
+      verax-plan-history-days       = "365"
+      verax-node-version            = "node-v1.2.3"
+      verax-tenant-name             = "Cliente Demo A"
+      verax-admin-email             = "admin@cliente-demo-a.example.com"
+      verax-support-email           = "suporte@example.com"
+    }
   }
 
   assert {
