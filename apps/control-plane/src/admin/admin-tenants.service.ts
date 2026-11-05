@@ -6,6 +6,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
+import { equalValues } from '../firestore/document-store.js';
 import type { RateLimitRule, TokenBucketLimiter } from '../common/http/rate-limiter.js';
 import { isUlid, ULID_PATTERN } from '../common/ulid.js';
 import { type OwnerContext, PricingTableStore } from '../pricing/pricing-store.js';
@@ -599,27 +600,52 @@ export class AdminTenantsService {
     return outcome;
   }
 
-  /** O mesmo envio de novo (a mesma chave): o mesmo cliente, ou 409 se a chave já criou outro. */
+  /**
+   * O pedido que a chave já criou, conferido inteiro contra o cliente gravado (que é o pedido normalizado): o modo, o
+   * subdomínio, a razão social, o CNPJ, o e-mail e a configuração levada à tabela da cotação original (a mesma versão
+   * publicada, que não muda). Qualquer diferença é outro cadastro com a mesma chave: 409, sem mexer no cliente.
+   */
+  private async sameRequest(existing: TenantRecord, request: DirectTenantRequest): Promise<boolean> {
+    if (
+      billingModeOf(existing) !== 'contract' ||
+      existing.slug !== request.slug ||
+      existing.company.legalName !== request.companyName ||
+      existing.company.cnpj !== request.cnpj ||
+      existing.adminEmail !== request.adminEmail
+    ) {
+      return false;
+    }
+    const table = await this.tables.get(existing.pricing.priceTableVersion);
+    if (table === undefined || table.status === 'draft') return false;
+    const outcome = quote(request.configuration, table.content);
+    return (
+      outcome.kind === 'quote' &&
+      equalValues(outcome.quote.configuration, existing.configuration) &&
+      equalValues(outcome.quote.limits, existing.limits)
+    );
+  }
+
+  /** O mesmo envio de novo (a mesma chave): o mesmo cliente, ou 409 se a chave já criou outro pedido. */
   private async replay(
     existing: TenantRecord,
     request: DirectTenantRequest,
     owner: OwnerContext,
   ): Promise<DirectTenantCreated> {
-    const same =
-      billingModeOf(existing) === 'contract' &&
-      existing.slug === request.slug &&
-      existing.company.cnpj === request.cnpj &&
-      existing.adminEmail === request.adminEmail;
-    if (!same) {
+    if (!(await this.sameRequest(existing, request))) {
       await this.refuseCreate(owner, 'idempotency_conflict', request.slug);
       throw new ApiError(
         HttpStatus.CONFLICT,
-        'Este cadastro já foi usado para outro cliente. Recarregue a página para começar um cadastro novo.',
+        'Este cadastro já foi usado com outros dados. Recarregue a página para começar um cadastro novo.',
         'idempotency_conflict',
       );
     }
     let provisioning: ProvisioningRequestOutcome;
-    if (existing.state === 'pending') {
+    // Em `pending`, o pedido ao worker não chegou; parado no `preflight`, ele pode ter mudado o estado e falhado ao
+    // enfileirar a task. Nos dois casos o `provision` de novo resolve: o worker garante a task pelo id determinístico.
+    const stillStarting =
+      existing.state === 'pending' ||
+      (existing.state === 'provisioning' && existing.provisioning?.step === FIRST_PROVISIONING_STEP);
+    if (stillStarting) {
       provisioning = await this.startAfterCreate(existing, owner);
     } else if (existing.provisioning?.runId === undefined) {
       provisioning = { started: false, failure: 'not_allowed' };

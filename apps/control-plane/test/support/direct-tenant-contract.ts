@@ -328,14 +328,29 @@ export function describeDirectTenantContract(
       expect(queue.tasks).toHaveLength(1);
     });
 
-    it('a mesma chave com outro cliente é recusada (409), e nada muda', async () => {
+    it('a mesma chave com outro pedido é recusada (409), e nada muda', async () => {
       const request = directRequest();
-      await service.create(request, OWNER);
-      await expectApiError(
-        service.create({ ...request, cnpj: '22.333.444/0001-81' }, OWNER),
-        409,
-        'idempotency_conflict',
-      );
+      const created = await service.create(request, OWNER);
+      const original = await tenants.require(created.id);
+      const changed: Record<string, unknown>[] = [
+        { ...request, cnpj: '22.333.444/0001-81' },
+        { ...request, companyName: 'Outro Nome Demo Ltda' },
+        { ...request, adminEmail: 'outro@cliente-demo-a.example' },
+        // Outra configuração (3 contas em vez das 2 incluídas): outro contrato, não a repetição deste.
+        {
+          ...request,
+          configuration: { ...(request['configuration'] as Record<string, unknown>), cloudAccounts: 3 },
+        },
+        {
+          ...request,
+          configuration: { ...(request['configuration'] as Record<string, unknown>), support: 'priority' },
+        },
+      ];
+      for (const body of changed) {
+        await expectApiError(service.create(body, OWNER), 409, 'idempotency_conflict');
+      }
+      // O cliente gravado continua o do primeiro pedido.
+      expect(await tenants.require(created.id)).toEqual(original);
       // A chave de um cliente da Stripe (o id dele) também não vira cadastro de contrato.
       const paid = await tenantIn(tenants, 'cliente-pago-b', 'pending');
       await expectApiError(
@@ -345,8 +360,44 @@ export function describeDirectTenantContract(
       );
       expect((await tenants.require(paid.id)).state).toBe('pending');
       expect((await auditActions()).filter((entry) => entry.action === 'tenant.create_refused')).toHaveLength(
-        2,
+        6,
       );
+    });
+
+    it('o mesmo envio de novo com o cliente parado no preflight (a fila falhou) pede o provision de novo e põe a task', async () => {
+      const request = directRequest();
+      // O worker muda o estado para `provisioning` e falha ao enfileirar o `preflight`.
+      queue.failNext(new Error('fila fora do ar'));
+      const first = await service.create(request, OWNER);
+      expect(first.provisioning).toEqual({ started: false, failure: 'worker_unavailable' });
+      const stuck = await tenants.require(first.id);
+      expect(stuck).toMatchObject({ state: 'provisioning', provisioning: { step: 'preflight' } });
+      expect(queue.tasks).toHaveLength(0);
+
+      const again = await service.create(request, OWNER);
+      expect(again).toMatchObject({
+        id: first.id,
+        replayed: true,
+        provisioning: { started: true, runId: stuck.provisioning?.runId, step: 'preflight' },
+      });
+      expect(queue.tasks.map((task) => [task.step, task.runId])).toEqual([
+        ['preflight', stuck.provisioning?.runId],
+      ]);
+      expect(worker.calls.map((call) => call.operation)).toEqual(['provision', 'provision']);
+      // Depois do preflight, a repetição só devolve a execução, sem pedir nada ao worker.
+      await tenants.change(first.id, () => ({
+        reason: 'teste',
+        audit: { actor: 'system' },
+        mutate: (tenant) => ({
+          ...tenant,
+          provisioning: { ...(tenant.provisioning ?? { attempts: 0 }), step: 'cloudflare.tunnel' },
+        }),
+      }));
+      expect((await service.create(request, OWNER)).provisioning).toMatchObject({
+        started: true,
+        step: 'cloudflare.tunnel',
+      });
+      expect(worker.calls).toHaveLength(2);
     });
 
     it('subdomínio de outro cliente, reservado ou da lista da Verax: 409, nada gravado', async () => {

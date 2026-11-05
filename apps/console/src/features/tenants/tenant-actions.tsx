@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { ApiError, tenantsApi } from '@/lib/api';
 import type { TenantAction, TenantActionResult, TenantActions, TenantDetail } from '@/lib/api-types';
 import { errorMessage } from '@/lib/errors';
-import { formatDateTime } from '@/lib/format';
+import { formatDateTime, startOfDayInBrasilia } from '@/lib/format';
 import { ConfirmBySlug } from './confirm-by-slug';
 import { WORKER_FAILURE_MESSAGES } from './labels';
 import { useInvalidateTenants } from './queries';
@@ -149,11 +149,9 @@ function doneMessage(result: TenantActionResult): string {
   }
 }
 
-/** A data (`<input type="date">`, no horário deste navegador) como ISO; vazio é "agora". */
+/** A data (`<input type="date">`) como o começo daquele dia no horário de Brasília; vazio é "agora". */
 function cancelAtOf(day: string): string | undefined {
-  if (day === '') return undefined;
-  const date = new Date(`${day}T00:00`);
-  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  return day === '' ? undefined : startOfDayInBrasilia(day);
 }
 
 /**
@@ -251,8 +249,7 @@ export function TenantActionButtons({
                 aria-describedby={`${ids}-cancelar-em-dica`}
               />
               <p id={`${ids}-cancelar-em-dica`} className="text-xs text-muted-foreground">
-                Vazio: agora. Uma data marca o cancelamento para o começo daquele dia (horário deste
-                navegador).
+                Vazio: agora. Uma data marca o cancelamento para o começo daquele dia (horário de Brasília).
               </p>
             </div>
           )}

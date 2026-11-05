@@ -209,7 +209,9 @@ describe('clientes', () => {
     await user.type(within(lifecycle).getByLabelText('Backup'), 'postgres/verax-20261105T030000Z.dump');
     await user.type(within(lifecycle).getByLabelText(/Digite o subdomínio/), 'contrato-ativo');
     await user.click(within(lifecycle).getByRole('button', { name: 'Confirmar: exportar dados' }));
-    const link = await within(lifecycle).findByRole('link', { name: /storage\.googleapis\.com/ });
+    const link = await within(lifecycle).findByRole('link', {
+      name: /^https:\/\/storage\.googleapis\.com\/projeto-dos-nos-demo-vx-contrato-ativo-backups\//,
+    });
     expect(link.getAttribute('href')).toMatch(/^https:\/\//);
 
     await user.click(within(lifecycle).getByRole('button', { name: 'Apagar agora…' }));
