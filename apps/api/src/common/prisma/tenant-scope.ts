@@ -17,6 +17,7 @@ export const TENANT_SCOPED_MODELS = [
   'postureFailure',
   'inventorySnapshot',
   'ingestUsage',
+  'ingestHealth',
   'cloudCredential',
   'wazuhAgent',
   'notification',

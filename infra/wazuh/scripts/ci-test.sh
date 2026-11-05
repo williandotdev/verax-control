@@ -9,8 +9,9 @@
 # próprio (verax-wazuh-ci), apagado com os volumes no começo e no fim. Nunca rode num nó: o teste recusa onde houver
 # /etc/verax/node.conf.
 #
-# 1. instalação nova com senhas aleatórias e sem contas AWS → smoke test;
-# 2. rotação das quatro senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
+# 1. instalação nova com senhas aleatórias e sem contas AWS → o usuário verax_stats da API do manager
+#    (init-api-users.sh) → smoke test;
+# 2. rotação das cinco senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
 # 3. filebeat do manager gravando no indexer com TLS verificado e com o usuário wazuh_filebeat (só escrita): um alerta
 #    posto no alerts.json chega ao índice do dia pelo pipeline do módulo, com o template do Wazuh instalado por ele;
 # 4. contas AWS sem chave (fase 2, PR-V4'): módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da
@@ -21,7 +22,9 @@
 #    módulo falha ao ler o arquivo do token, antes de qualquer chamada à AWS;
 # 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente;
 # 6. acesso como a API e o worker fazem (INDEXER_AUTH=node): da rede `wazuh-read`, pelo nome do serviço, com a CA do
-#    volume público dos certificados;
+#    volume público dos certificados; e à API do manager como o worker faz (PR-V6): da rede `wazuh`, pelo nome
+#    wazuh.manager, com a mesma CA e o verax_stats, que lê os contadores do analysisd; da rede da API (`wazuh-read`), o
+#    manager não é alcançado;
 # 7. retenção e backup: política de 30 dias ligada aos índices novos, 1 shard por índice de alertas, snapshot diário
 #    guardado 7 dias e o teste de restauração (snapshot, índice apagado, restauração com e sem renomear, mesma contagem);
 # 8. perfil do nó: limites de memória, CPU e processos, capabilities, log local, heap travado, tempo de parada, redes
@@ -103,7 +106,8 @@ new_passwords() {
   INDEXER_FILEBEAT_PASSWORD=$(new_wazuh_password)
   WAZUH_API_PASSWORD=$(new_wazuh_password)
   INDEXER_API_READ_PASSWORD=$(new_wazuh_password)
-  export INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+  WAZUH_STATS_PASSWORD=$(new_wazuh_password)
+  export INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD WAZUH_STATS_PASSWORD
 }
 
 # Mesmo formato do write_env do start.sh: CHAVE='valor', só para quem roda.
@@ -117,7 +121,8 @@ write_env() { # <arquivo> <CHAVE=valor...>
 # A sequência do wazuh_up do start.sh. A diferença é a lista de contas: no nó, o wazuh-apply.sh a lê do banco (o CLI
 # wazuh-sources); aqui, a do arquivo, com um IP de saída de documentação para as regras do papel de leitura.
 wazuh_up() { # <lista de contas AWS>
-  check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+  check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD \
+    WAZUH_STATS_PASSWORD
   write_env wazuh-security.env "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" \
     "INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD"
   write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
@@ -128,6 +133,7 @@ wazuh_up() { # <lista de contas AWS>
   bash "$bundle/scripts/configure-indexer.sh"
   docker compose --profile setup run --rm -T -e VERAX_NODE_EGRESS_IPS=203.0.113.10/32 manager-config <"$1"
   docker compose up --detach --wait --wait-timeout 900 wazuh.manager
+  bash "$bundle/scripts/init-api-users.sh"
   bash "$bundle/scripts/smoke-test.sh"
 }
 
@@ -137,10 +143,10 @@ wazuh_up /dev/null
 expect "sem contas, sem módulo aws-s3" 0 "$(manager_file_count '<wodle name="aws-s3">' /var/ossec/etc/ossec.conf)"
 
 old_admin=$INDEXER_ADMIN_PASSWORD old_filebeat=$INDEXER_FILEBEAT_PASSWORD old_api=$WAZUH_API_PASSWORD
-old_api_read=$INDEXER_API_READ_PASSWORD
+old_api_read=$INDEXER_API_READ_PASSWORD old_stats=$WAZUH_STATS_PASSWORD
 new_passwords
 
-echo "== Rotação das quatro senhas, com duas contas AWS"
+echo "== Rotação das cinco senhas, com duas contas AWS"
 wazuh_up tests/fixtures/aws-sources.example.json
 
 echo "== Depois da rotação"
@@ -151,9 +157,14 @@ expect "wazuh_filebeat antigo recusado" 401 \
   "$(code_as wazuh.indexer wazuh_filebeat "$old_filebeat" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
 expect "verax_api_read antigo recusado" 401 \
   "$(code_as wazuh.indexer verax_api_read "$old_api_read" --cacert "$indexer_ca" https://wazuh.indexer:9200/)"
+# A API do manager com o par do manager, da CA do nó (manager-api-tls.sh): conferida pelo nome wazuh.manager.
+manager_api_tls=(--cacert /etc/ssl/verax/root-ca.pem --resolve wazuh.manager:55000:127.0.0.1)
 expect "wazuh-wui antigo recusado" 401 \
-  "$(code_as wazuh.manager wazuh-wui "$old_api" -X POST --cacert /var/ossec/api/configuration/ssl/server.crt \
-    https://localhost:55000/security/user/authenticate)"
+  "$(code_as wazuh.manager wazuh-wui "$old_api" -X POST "${manager_api_tls[@]}" \
+    https://wazuh.manager:55000/security/user/authenticate)"
+expect "verax_stats antigo recusado" 401 \
+  "$(code_as wazuh.manager verax_stats "$old_stats" -X POST "${manager_api_tls[@]}" \
+    https://wazuh.manager:55000/security/user/authenticate)"
 
 echo "== Filebeat do manager: usuário só de escrita, TLS verificado e um alerta de ponta a ponta"
 manager=$(container wazuh.manager)
@@ -199,7 +210,7 @@ echo "       tentativas do harvester registradas no log: $(manager_file_count 'I
 indexer_admin GET '/_cat/indices/wazuh-states-*?h=index' </dev/null
 expect "nenhum índice wazuh-states-* criado pelo manager" '' "${response_body//[[:space:]]/}"
 
-echo "== Acesso como a API e o worker (rede wazuh-read, nome do serviço e CA do volume público)"
+echo "== Acesso como a API e o worker (redes wazuh-read e wazuh, nome do serviço e CA do volume público)"
 indexer_image=$(docker inspect --format '{{.Config.Image}}' "$(container wazuh.indexer)")
 indexer_ip_of() { # <rede>
   docker inspect --format "{{(index .NetworkSettings.Networks \"$1\").IPAddress}}" "$(container wazuh.indexer)"
@@ -216,6 +227,32 @@ expect "pelo nome do serviço, com a CA do volume público" 200 \
   "$(as_app 'https://wazuh.indexer:9200/wazuh-alerts-*/_search?size=0')"
 expect "por outro nome, o TLS recusa" 000 \
   "$(as_app --resolve "outro-nome.exemplo.internal:9200:$indexer_ip" https://outro-nome.exemplo.internal:9200/)"
+# A API do manager como o worker a chama (tarefa wazuh-usage, PR-V6): da rede `wazuh`, pelo nome wazuh.manager, com a CA
+# do volume público e o verax_stats (as credenciais e o token vão pela entrada padrão do curl).
+manager_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"${project}_wazuh\").IPAddress}}" \
+  "$(container wazuh.manager)")
+on_network() { # <rede> <curl args...>: o corpo da resposta, do curl num contêiner só nessa rede
+  local network=$1
+  shift
+  docker run --rm -i --network "${project}_$network" -v "${project}_certs-public:/etc/verax/wazuh:ro" \
+    --entrypoint curl "$indexer_image" -s -m 10 -K - --cacert /etc/verax/wazuh/root-ca.pem "$@" || true
+}
+stats_token=$(printf 'user = "verax_stats:%s"\n' "$WAZUH_STATS_PASSWORD" |
+  on_network wazuh -X POST 'https://wazuh.manager:55000/security/user/authenticate?raw=true')
+expect "worker: o verax_stats entra pelo nome do serviço, com a CA do volume público" 1 \
+  "$([[ $stats_token =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] && echo 1 || echo 0)"
+expect "worker: lê os contadores do analysisd" '.*"name": ?"wazuh-analysisd".*"bytes": ?\{"received": ?[0-9]+\}.*' \
+  "$(printf 'header = "Authorization: Bearer %s"\n' "$stats_token" |
+    on_network wazuh 'https://wazuh.manager:55000/manager/daemons/stats?daemons_list=wazuh-analysisd')"
+expect "worker: por outro nome, o TLS recusa" 000 \
+  "$(printf '' | on_network wazuh -o /dev/null -w '%{http_code}' --resolve "outro-nome.exemplo.internal:55000:$manager_ip" \
+    https://outro-nome.exemplo.internal:55000/)"
+# A API do Verax Control fica só na `wazuh-read`: dali, o manager não existe (nem pelo nome, nem pelo endereço).
+expect "da rede da API, o manager não é alcançado pelo nome" 000 \
+  "$(printf '' | on_network wazuh-read -o /dev/null -w '%{http_code}' https://wazuh.manager:55000/)"
+expect "da rede da API, o manager não é alcançado pelo endereço" 000 \
+  "$(printf '' | on_network wazuh-read -o /dev/null -w '%{http_code}' --resolve "wazuh.manager:55000:$manager_ip" \
+    https://wazuh.manager:55000/)"
 
 echo "== Contas AWS (papel de leitura sem chave)"
 expect "um bucket por fonte" 4 "$(manager_file_count '<bucket type="(cloudtrail|guardduty|waf)">' /var/ossec/etc/ossec.conf)"

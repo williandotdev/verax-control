@@ -270,6 +270,33 @@ function Coverage({ coverage }: { coverage: TowerSummary['coverage'] }) {
           </span>
         </p>
       )}
+      {/*
+        A API decide a parada (PR-V6): com conta AWS conectada, os eventos da AWS no Wazuh do nó sem andar há mais de
+        `awsStalledAfterHours` horas. O momento é o da última vez que andaram (ou o começo da observação).
+      */}
+      {coverage.awsLogsStalledSince && (
+        <p className={`mt-3 flex items-start gap-2 rounded-md border p-2 text-sm ${surface}`}>
+          <WarningIcon aria-hidden className={`mt-0.5 size-4 shrink-0 ${tone}`} />
+          <span className="min-w-0">
+            <strong>Sem logs novos da AWS:</strong> a coleta das contas AWS conectadas está parada{' '}
+            {formatRelative(coverage.awsLogsStalledSince)}. Confira a conexão e a coleta em{' '}
+            <Link className="underline underline-offset-2" to="/cadastros/contas">
+              Contas cloud
+            </Link>
+            .
+          </span>
+        </p>
+      )}
+      {/* Só a equipe da Verax recebe o campo: é do nó, não de um cliente. */}
+      {coverage.awsMeterBlocked && (
+        <p className={`mt-3 flex items-start gap-2 rounded-md border p-2 text-sm ${surface}`}>
+          <WarningIcon aria-hidden className={`mt-0.5 size-4 shrink-0 ${tone}`} />
+          <span className="min-w-0">
+            Medidor da AWS parado neste nó: há mais de um cliente no Wazuh dele, e o nó atende um cliente só.
+            O volume não é medido para ninguém até sobrar um.
+          </span>
+        </p>
+      )}
     </Card>
   );
 }

@@ -1,0 +1,101 @@
+{
+  "data": {
+    "affected_items": [
+      {
+        "uptime": "2026-11-05T07:18:18+00:00",
+        "timestamp": "2026-11-05T07:18:59+00:00",
+        "name": "wazuh-analysisd",
+        "metrics": {
+          "bytes": { "received": 978815 },
+          "events": {
+            "processed": 384,
+            "received": 992,
+            "received_breakdown": {
+              "decoded_breakdown": {
+                "agent": 0,
+                "agentless": 0,
+                "dbsync": 606,
+                "integrations_breakdown": { "virustotal": 0 },
+                "modules_breakdown": {
+                  "aws": 3,
+                  "azure": 0,
+                  "ciscat": 0,
+                  "command": 0,
+                  "docker": 0,
+                  "gcp": 0,
+                  "github": 0,
+                  "logcollector_breakdown": { "eventchannel": 0, "eventlog": 0, "macos": 0, "others": 6 },
+                  "office365": 0,
+                  "ms-graph": 0,
+                  "oscap": 0,
+                  "osquery": 0,
+                  "rootcheck": 2,
+                  "sca": 372,
+                  "syscheck": 2,
+                  "syscollector": 0,
+                  "upgrade": 0,
+                  "vulnerability": 0
+                },
+                "monitor": 1,
+                "remote": 0,
+                "syslog": 0
+              },
+              "dropped_breakdown": {
+                "agent": 0,
+                "agentless": 0,
+                "dbsync": 0,
+                "integrations_breakdown": { "virustotal": 0 },
+                "modules_breakdown": {
+                  "aws": 0,
+                  "azure": 0,
+                  "ciscat": 0,
+                  "command": 0,
+                  "docker": 0,
+                  "gcp": 0,
+                  "github": 0,
+                  "logcollector_breakdown": { "eventchannel": 0, "eventlog": 0, "macos": 0, "others": 0 },
+                  "office365": 0,
+                  "ms-graph": 0,
+                  "oscap": 0,
+                  "osquery": 0,
+                  "rootcheck": 0,
+                  "sca": 0,
+                  "syscheck": 0,
+                  "syscollector": 0,
+                  "upgrade": 0,
+                  "vulnerability": 0
+                },
+                "monitor": 0,
+                "remote": 0,
+                "syslog": 0
+              }
+            },
+            "written_breakdown": { "alerts": 186, "archives": 0, "firewall": 0, "fts": 0, "stats": 0 }
+          },
+          "queues": {
+            "alerts": { "size": 16384, "usage": 0 },
+            "archives": { "size": 16384, "usage": 0 },
+            "dbsync": { "size": 16384, "usage": 0 },
+            "eventchannel": { "size": 16384, "usage": 0 },
+            "firewall": { "size": 16384, "usage": 0 },
+            "fts": { "size": 16384, "usage": 0 },
+            "hostinfo": { "size": 16384, "usage": 0 },
+            "others": { "size": 16384, "usage": 0 },
+            "processed": { "size": 16384, "usage": 0 },
+            "rootcheck": { "size": 16384, "usage": 0 },
+            "sca": { "size": 16384, "usage": 0 },
+            "stats": { "size": 16384, "usage": 0 },
+            "syscheck": { "size": 16384, "usage": 0 },
+            "syscollector": { "size": 16384, "usage": 0 },
+            "upgrade": { "size": 16384, "usage": 0 }
+          }
+        }
+      }
+    ],
+    "total_affected_items": 1,
+    "total_failed_items": 0,
+    "failed_items": []
+  },
+  "message": "Statistical information for each daemon was successfully read",
+  "error": 0
+}

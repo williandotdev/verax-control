@@ -173,6 +173,9 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         lastEventAt: event.toISOString(),
         silentAccounts: [empty.accountId, stalled.accountId].sort(),
         silentAfterHours: 24,
+        // PR-V6: sem a saúde da ingestão gravada (nenhuma leitura do Wazuh do nó), nada a afirmar.
+        awsLogsStalledSince: null,
+        awsStalledAfterHours: 2,
       });
       expect(summary.coverage.silentAccounts).not.toContain(accountId);
     });

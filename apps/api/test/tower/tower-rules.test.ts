@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   type AccountActivity,
+  awsLogsStalledSince,
   coverage,
+  DEFAULT_TOWER_THRESHOLDS,
   pendingDecisions,
   trafficLight,
 } from '../../src/tower/tower-rules.js';
@@ -43,7 +45,7 @@ describe('semáforo da Torre (T5.10, pendência 9)', () => {
   });
 
   it('o corte de postura vem da configuração', () => {
-    const thresholds = { postureWarning: 80, silentAfterHours: 24 };
+    const thresholds = { ...DEFAULT_TOWER_THRESHOLDS, postureWarning: 80 };
     expect(trafficLight({ openIncidents: none, postureScore: 75 }, thresholds).light).toBe('yellow');
   });
 });
@@ -156,9 +158,9 @@ describe('cobertura da Torre (T5.10 e fase 2)', () => {
       account('111122223333', { connection: 'connected', lastEventAt: '2026-11-02T09:00:00.000Z' }),
     ];
     expect(coverage(accounts, now).silentAccounts).toEqual([]);
-    expect(coverage(accounts, now, { postureWarning: 70, silentAfterHours: 2 }).silentAccounts).toEqual([
-      '111122223333',
-    ]);
+    expect(
+      coverage(accounts, now, { ...DEFAULT_TOWER_THRESHOLDS, silentAfterHours: 2 }).silentAccounts,
+    ).toEqual(['111122223333']);
   });
 });
 
@@ -172,5 +174,34 @@ describe('decisões pendentes da Torre (T5.10)', () => {
       { kind: 'unassigned_incident', count: 2 },
       { kind: 'unowned_alert', count: 5 },
     ]);
+  });
+});
+
+describe('saúde da ingestão da AWS na Torre (fase 2, PR-V6)', () => {
+  const now = new Date('2026-11-09T12:00:00.000Z');
+  const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 60 * 60 * 1000);
+
+  it('com conta conectada, parada há mais de 2 h: desde a última vez que os eventos andaram', () => {
+    expect(DEFAULT_TOWER_THRESHOLDS.awsStalledAfterHours).toBe(2);
+    expect(awsLogsStalledSince({ awsConnected: true, lastProgressAt: hoursAgo(3) }, now)).toEqual(
+      hoursAgo(3),
+    );
+    expect(
+      awsLogsStalledSince({ awsConnected: true, lastProgressAt: new Date(hoursAgo(2).getTime() - 1) }, now),
+    ).toEqual(new Date(hoursAgo(2).getTime() - 1));
+  });
+
+  it('até 2 h exatas, sem conta conectada ou sem observação: nada a mostrar', () => {
+    expect(awsLogsStalledSince({ awsConnected: true, lastProgressAt: hoursAgo(2) }, now)).toBeNull();
+    expect(awsLogsStalledSince({ awsConnected: true, lastProgressAt: hoursAgo(1) }, now)).toBeNull();
+    expect(awsLogsStalledSince({ awsConnected: false, lastProgressAt: hoursAgo(5) }, now)).toBeNull();
+    expect(awsLogsStalledSince({ awsConnected: true, lastProgressAt: null }, now)).toBeNull();
+  });
+
+  it('o prazo vem da configuração', () => {
+    const thresholds = { ...DEFAULT_TOWER_THRESHOLDS, awsStalledAfterHours: 6 };
+    expect(
+      awsLogsStalledSince({ awsConnected: true, lastProgressAt: hoursAgo(3) }, now, thresholds),
+    ).toBeNull();
   });
 });
