@@ -337,6 +337,11 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
    - **Início da coleta (`ingestFrom`):** na primeira verificação bem-sucedida, o dia anterior, gravado uma vez só. É
      o `only_logs_after` que o gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do
      bucket.
+   - **Buckets de log no painel:** no máximo um por fonte (CloudTrail, GuardDuty e WAF), no cadastro e no detalhe da
+     conta (`cloud_accounts:write`; quem só lê vê a lista). Outra lista de nomes volta a conexão para `waiting` e
+     descarta um "Verificar" pendente, sem chamar a AWS: o cliente atualiza o `LogBucketArns` da pilha e pede a
+     verificação. Trocar só a fonte de um bucket não muda nada disso, e o `ingestFrom` fica (um bucket incluído
+     depois herda o dia da conta).
    - **Até o PR-V5',** a conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem
      chamar a AWS nem o metadata: o fluxo funciona de ponta a ponta, e o PR-V5' só troca a classe no `worker.ts`.
 2. **Coletar (PR-V4'):** um timer do host renova a cada 10 min o token do Google (`format=standard`, sem o projeto
