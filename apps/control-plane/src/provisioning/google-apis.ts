@@ -25,6 +25,8 @@ export interface GoogleEndpoints {
   storage: string;
   run: string;
   secretManager: string;
+  /** IAM Service Account Credentials (`signBlob`), para o link assinado da exportação (CP-11). */
+  iamCredentials: string;
 }
 
 export const GOOGLE_ENDPOINTS: GoogleEndpoints = {
@@ -34,6 +36,7 @@ export const GOOGLE_ENDPOINTS: GoogleEndpoints = {
   storage: 'https://storage.googleapis.com',
   run: 'https://run.googleapis.com/v2',
   secretManager: 'https://secretmanager.googleapis.com/v1',
+  iamCredentials: 'https://iamcredentials.googleapis.com/v1',
 };
 
 /** A base comum: o token do Google em cada chamada e o serviço no erro. */
@@ -45,7 +48,7 @@ class GoogleApi {
   ) {}
 
   protected async call(
-    method: 'GET' | 'POST' | 'PATCH',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     operation: string,
     url: string,
     options: { json?: unknown; bytes?: Uint8Array; contentType?: string; maxResponseBytes?: number } = {},
@@ -312,6 +315,33 @@ export class FirebaseHostingApi extends GoogleApi {
       desiredRecords: sets.flatMap((set) => set.records ?? []),
     };
   }
+
+  /**
+   * Apaga o domínio próprio do site (Exclusão 1, CP-11). Já ausente (404) conta como feito: devolve `false`. O Firebase
+   * guarda o domínio apagado por um tempo antes de esquecê-lo, mas ele deixa de ser servido na hora.
+   */
+  async deleteCustomDomain(project: string, siteId: string, domain: string): Promise<boolean> {
+    const response = await this.call(
+      'DELETE',
+      'domain_delete',
+      `${this.endpoints.firebaseHosting}/projects/${project}/sites/${siteId}/customDomains/${domain}`,
+    );
+    if (response.status === 404) return false;
+    expectOk(this.service, 'domain_delete', response);
+    return true;
+  }
+
+  /** Apaga o site do painel (Exclusão 1, CP-11). Já ausente (404) conta como feito: devolve `false`. */
+  async deleteSite(project: string, siteId: string): Promise<boolean> {
+    const response = await this.call(
+      'DELETE',
+      'site_delete',
+      `${this.endpoints.firebaseHosting}/projects/${project}/sites/${siteId}`,
+    );
+    if (response.status === 404) return false;
+    expectOk(this.service, 'site_delete', response);
+    return true;
+  }
 }
 
 // --- Compute: guest attributes ----------------------------------------------------------------------------------
@@ -333,7 +363,12 @@ const guestAttributesSchema = z.object({
     .optional(),
 });
 
-/** `instances.getGuestAttributes` com o `cpNodeLifecycle` do cp-worker (só VMs `vx-*`). */
+const instanceSchema = z.object({ status: z.string().regex(/^[A-Z_]{1,40}$/) });
+
+/**
+ * `instances.getGuestAttributes`, `instances.get`, `instances.stop` e `instances.start` com o `cpNodeLifecycle` do
+ * cp-worker (só VMs `vx-*`).
+ */
 export class ComputeApi extends GoogleApi {
   constructor(
     tokens: AccessTokenSource,
@@ -357,6 +392,35 @@ export class ComputeApi extends GoogleApi {
       if (item.namespace === undefined || item.namespace === 'verax') values.set(item.key, item.value);
     }
     return values;
+  }
+
+  /** O estado da VM (`RUNNING`, `STOPPING`, `TERMINATED`...), ou `undefined` se ela não existe (404). */
+  async instanceStatus(project: string, zone: string, instance: string): Promise<string | undefined> {
+    const response = await this.call(
+      'GET',
+      'instance_get',
+      `${this.base}/projects/${project}/zones/${zone}/instances/${instance}`,
+    );
+    if (response.status === 404) return undefined;
+    return this.parse('instance_get', response, instanceSchema).status;
+  }
+
+  /**
+   * Para ou liga a VM (`instances.stop`/`instances.start`, o `cpNodeLifecycle` do cp-worker, só nas VMs `vx-*`). A
+   * operação é assíncrona: quem chama consulta o estado depois. O disco e os snapshots ficam.
+   */
+  async setPower(project: string, zone: string, instance: string, action: 'stop' | 'start'): Promise<void> {
+    const operation = action === 'stop' ? 'instance_stop' : 'instance_start';
+    expectOk(
+      this.service,
+      operation,
+      await this.call(
+        'POST',
+        operation,
+        `${this.base}/projects/${project}/zones/${zone}/instances/${instance}/${action}`,
+        { json: {} },
+      ),
+    );
   }
 }
 
@@ -526,5 +590,104 @@ export class SecretVersionsApi extends GoogleApi {
     );
     if (response.status === 404) return undefined;
     return this.parse('version_get', response, versionStateSchema).state;
+  }
+
+  /**
+   * As versões do cofre (o número e o estado, nunca o conteúdo), com `versions.list` (o `cpSecretVersionDestroyer` no
+   * `credentials-key`, CP-11). Cofre inexistente (404): `undefined`.
+   */
+  async listVersions(project: string, secretId: string): Promise<SecretVersionInfo[] | undefined> {
+    const versions: SecretVersionInfo[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < 20; page += 1) {
+      const url = new URL(`${this.base}/projects/${project}/secrets/${secretId}/versions`);
+      url.searchParams.set('pageSize', '100');
+      if (pageToken !== undefined) url.searchParams.set('pageToken', pageToken);
+      const response = await this.call('GET', 'versions_list', url.toString());
+      if (response.status === 404) return undefined;
+      const parsed = this.parse('versions_list', response, versionListSchema);
+      for (const version of parsed.versions ?? []) {
+        const id = version.name.split('/').at(-1) ?? '';
+        if (!version.name.startsWith(`projects/`) || !/^[0-9]{1,10}$/.test(id)) {
+          throw invalidResponse(this.service, 'versions_list');
+        }
+        versions.push({ id, state: version.state ?? 'STATE_UNSPECIFIED' });
+      }
+      pageToken = parsed.nextPageToken === '' ? undefined : parsed.nextPageToken;
+      if (pageToken === undefined) return versions;
+    }
+    throw invalidResponse(this.service, 'versions_list');
+  }
+
+  /** Destrói uma versão (permanente: o conteúdo some). Já destruída (400 `FAILED_PRECONDITION`) conta como feito. */
+  async destroyVersion(project: string, secretId: string, versionId: string): Promise<void> {
+    if (!/^[0-9]{1,10}$/.test(versionId)) throw new TypeError('versão inválida');
+    const response = await this.call(
+      'POST',
+      'version_destroy',
+      `${this.base}/projects/${project}/secrets/${secretId}/versions/${versionId}:destroy`,
+      { json: {} },
+    );
+    if (response.status === 404) return;
+    if (response.status === 400 && errorReasonOf(response.body) === 'FAILED_PRECONDITION') return;
+    expectOk(this.service, 'version_destroy', response);
+  }
+}
+
+export interface SecretVersionInfo {
+  /** O número da versão (`1`, `2`...). */
+  id: string;
+  state: string;
+}
+
+const versionListSchema = z.object({
+  versions: z
+    .array(
+      z.object({
+        name: z.string().max(300),
+        state: z
+          .string()
+          .regex(/^[A-Z_]{1,40}$/)
+          .optional(),
+      }),
+    )
+    .max(100)
+    .optional(),
+  nextPageToken: z.string().max(2000).optional(),
+});
+
+// --- IAM Service Account Credentials ---------------------------------------------------------------------------
+
+const signBlobSchema = z.object({
+  keyId: z.string().max(100).optional(),
+  signedBlob: z.string().regex(/^[A-Za-z0-9+/]+={0,2}$/),
+});
+
+/**
+ * `serviceAccounts.signBlob` (https://docs.cloud.google.com/iam/docs/reference/credentials/rest): a assinatura RSA
+ * SHA-256 de um texto com a chave gerenciada pelo Google de uma conta de serviço, sem chave nenhuma fora do Google. É
+ * o que assina o link de download da exportação (CP-11), com a conta `EXPORT_SIGNER_SA_EMAIL`.
+ */
+export class IamCredentialsApi extends GoogleApi {
+  constructor(
+    tokens: AccessTokenSource,
+    fetchFn: typeof fetch = fetch,
+    private readonly base: string = GOOGLE_ENDPOINTS.iamCredentials,
+  ) {
+    super('iamcredentials', tokens, fetchFn);
+  }
+
+  async signBlob(serviceAccount: string, payload: Buffer): Promise<Buffer> {
+    const parsed = this.parse(
+      'sign_blob',
+      await this.call(
+        'POST',
+        'sign_blob',
+        `${this.base}/projects/-/serviceAccounts/${encodeURIComponent(serviceAccount)}:signBlob`,
+        { json: { payload: payload.toString('base64') } },
+      ),
+      signBlobSchema,
+    );
+    return Buffer.from(parsed.signedBlob, 'base64');
   }
 }

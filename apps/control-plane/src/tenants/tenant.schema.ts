@@ -50,6 +50,36 @@ export function isReservableSlug(value: string): boolean {
 /** CNPJ no formato alfanumérico da Receita (12 posições `[A-Z0-9]` e 2 dígitos). O DV é conferido no checkout. */
 export const cnpjSchema = z.string().regex(/^[A-Z0-9]{12}[0-9]{2}$/, { error: 'CNPJ inválido' });
 
+/**
+ * O nome do cliente (a razão social): até 120 caracteres em todo lugar (decisão do responsável, 05/11/2026), o limite
+ * do nó (`Tenant.name` é `VarChar(120)`, e os schemas de cliente de `packages/shared` param em 120). O checkout, o
+ * `customer.updated` da Stripe, o executor Terraform e o `envs/tenant` aceitam o mesmo, e o nó recebe o nome inteiro.
+ */
+export const COMPANY_NAME_MAX_LENGTH = 120;
+
+/** Sem caracteres de controle (quebra de linha, tabulação, NUL): o nome vai a e-mail, painel e nota fiscal. */
+function hasNoControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * A razão social como o checkout e o `customer.updated` a aceitam: sem espaço nas pontas, de 2 a 120 caracteres e sem
+ * caractere de controle. Contada como o zod e o nó a contam (o `length` do JS, em unidades UTF-16): nunca passa de 120
+ * pontos de código, a conta do executor (`isTenantName`, `entrypoint.sh`), nem de 120 caracteres do Terraform.
+ */
+export const companyNameSchema = z
+  .string()
+  .trim()
+  .min(2, { error: 'nome da empresa curto demais: no mínimo 2 caracteres' })
+  .max(COMPANY_NAME_MAX_LENGTH, {
+    error: `nome da empresa longo demais: no máximo ${COMPANY_NAME_MAX_LENGTH} caracteres`,
+  })
+  .refine(hasNoControlCharacters, { error: 'caracteres inválidos' });
+
 const shortText = z.string().min(1).max(200);
 /** Id de objeto da Stripe (`cus_...`, `sub_...`, `in_...`, `evt_...`): letras, números e sublinhado. */
 export const stripeIdSchema = z.string().regex(/^[A-Za-z0-9_]{3,255}$/);
@@ -69,15 +99,47 @@ export type SubscriptionItem = z.infer<typeof subscriptionItemSchema>;
 
 /**
  * Por que o cliente está suspenso (plano §4b e §4d): `unpaid` (a assinatura ficou não paga), `grace_expired` (a
- * carência de 7 dias venceu, pelo `tick` do CP-11) e `fraud_review` (contestação ou alerta de fraude: decisão
- * humana; um pagamento não reativa sozinho).
+ * carência de 7 dias venceu, pelo `tick` do CP-11), `fraud_review` (contestação ou alerta de fraude: decisão
+ * humana; um pagamento não reativa sozinho) e `owner` (o responsável suspendeu um cliente de contrato direto, CP-11:
+ * só ele reativa).
  */
-export const SUSPENSION_REASONS = ['unpaid', 'grace_expired', 'fraud_review'] as const;
+export const SUSPENSION_REASONS = ['unpaid', 'grace_expired', 'fraud_review', 'owner'] as const;
 export type SuspensionReason = (typeof SUSPENSION_REASONS)[number];
+
+/**
+ * Como o cliente é cobrado: `stripe` (o checkout do site, o padrão quando o campo falta) ou `contract` (contrato
+ * direto, criado pelo responsável no console, sem assinatura na Stripe; as faturas correm por fora). O relógio do
+ * `tick` nunca suspende, cancela nem exclui um cliente `contract` por falta de evento da Stripe: para ele, suspensão,
+ * cancelamento (com data) e reativação são só operações do responsável (CP-11).
+ */
+export const BILLING_MODES = ['stripe', 'contract'] as const;
+export type BillingMode = (typeof BILLING_MODES)[number];
 
 /** Para onde o cliente volta quando a inadimplência acaba: o estado em que estava antes dela. */
 export const RESUME_STATES = ['active', 'waiting_customer_connection'] as const;
 export type ResumeState = (typeof RESUME_STATES)[number];
+
+/**
+ * As duas execuções da exclusão (plano §4d; docs/ARQUITETURA.md, "Exclusão em dois tempos"): `delete` é a Exclusão 1
+ * (D+30, ou o `delete-now` do responsável) e `crypto_destroy`, a Exclusão 2 (D+97). Os mesmos nomes do `RUN_KIND` do
+ * executor Terraform, o único lugar em que a conta de serviço do nó pode ser apagada.
+ */
+export const LIFECYCLE_RUN_KINDS = ['delete', 'crypto_destroy'] as const;
+export type LifecycleRunKind = (typeof LIFECYCLE_RUN_KINDS)[number];
+
+/** Quem pediu a Exclusão 1: o relógio (`tick`, `deleteAfter` vencido) ou o responsável (`delete-now`). */
+export const DELETION_REQUESTERS = ['schedule', 'owner'] as const;
+export type DeletionRequester = (typeof DELETION_REQUESTERS)[number];
+
+/** A execução da exclusão em andamento: o passo atual e, se parou, o código (o `delete-now` recomeça). */
+export const lifecycleRunSchema = z.strictObject({
+  kind: z.enum(LIFECYCLE_RUN_KINDS),
+  runId: z.string().regex(ULID_PATTERN),
+  step: z.string().max(64),
+  startedAt: z.date(),
+  lastError: z.strictObject({ code: z.string().max(64), at: z.date() }).optional(),
+});
+export type LifecycleRun = z.infer<typeof lifecycleRunSchema>;
 
 /** Trava por cliente dos passos do provisionamento: dono (`runId`) e vencimento (plano §4c). */
 export const lockSchema = z.strictObject({
@@ -103,6 +165,11 @@ export const tenantSchema = z.strictObject({
   limits: nodeLimitsSchema,
   pricing: orderPricingSchema,
   priceId: stripeId.optional(),
+  /**
+   * A razão social entra pelo checkout e pelo `customer.updated`, ambos com `companyNameSchema` (até 120). A leitura
+   * ainda aceita até 200, o limite antigo, para um cliente gravado antes continuar legível; o provisionamento o recusa
+   * com `tenant_name_invalid` (`isTenantName`), em vez de cortar o nome.
+   */
   company: z.strictObject({ legalName: shortText, cnpj: cnpjSchema }),
   /** Apagado em `deleted`. */
   adminEmail: z.email().optional(),
@@ -131,6 +198,8 @@ export const tenantSchema = z.strictObject({
     .optional(),
   billing: z
     .strictObject({
+      /** Ausente é `stripe` (`billingModeOf`). Quem cria o cliente de contrato direto (o console) grava `contract`. */
+      mode: z.enum(BILLING_MODES).optional(),
       paidUntil: z.date().optional(),
       pastDueSince: z.date().optional(),
       graceUntil: z.date().optional(),
@@ -194,14 +263,43 @@ export const tenantSchema = z.strictObject({
       revealEmailSentAt: z.date().optional(),
     })
     .optional(),
+  /**
+   * O ciclo de vida depois do cancelamento (plano §4d, CP-11). Os prazos (`exportUntil`, `deleteAfter`,
+   * `cryptoDestroyAfter`) são gravados no cancelamento e contam dele; os carimbos dizem o que já aconteceu. Fica no
+   * registro mínimo depois da Exclusão 2.
+   */
   lifecycle: z
     .strictObject({
       canceledAt: z.date().optional(),
       exportUntil: z.date().optional(),
       deleteAfter: z.date().optional(),
+      /** A Exclusão 1 terminou: recursos do nó, túnel, DNS e site apagados; e-mail e acesso apagados do cliente. */
       deletedAt: z.date().optional(),
       cryptoDestroyAfter: z.date().optional(),
+      /** As versões de `vx-<slug>-credentials-key` foram destruídas (Exclusão 2). */
       cryptoDestroyedAt: z.date().optional(),
+      deletionRequestedAt: z.date().optional(),
+      deletionRequestedBy: z.enum(DELETION_REQUESTERS).optional(),
+      /** O e-mail do registro de exclusão saiu (fica ausente se o SMTP não estava configurado). */
+      deletionRecordSentAt: z.date().optional(),
+      /** O bucket de backups foi apagado (Exclusão 2, quando a retenção dele já o esvaziou). */
+      backupsBucketDeletedAt: z.date().optional(),
+      /** A Exclusão 2 terminou: o cliente é o registro mínimo (plano §3). */
+      purgedAt: z.date().optional(),
+      /**
+       * A VM foi parada pelo plano de controle (suspensão ou cancelamento) e ainda não foi religada: o `tick` religa só
+       * a VM que ele mesmo parou, e nunca uma parada à mão pelo responsável.
+       */
+      nodeStoppedAt: z.date().optional(),
+      /**
+       * O plano de controle pediu à Google para parar a VM (antes da chamada, CP-11) e ela ainda não foi confirmada
+       * parada e religada. Com ele, um cliente reativado no meio da parada é religado (pelo passo ou pelo `tick`), mesmo
+       * que o pedido de ligar se perca.
+       */
+      nodeStopRequestedAt: z.date().optional(),
+      /** Contrato direto: o cancelamento marcado pelo responsável para uma data futura (o `tick` cancela nela). */
+      cancelScheduledFor: z.date().optional(),
+      run: lifecycleRunSchema.optional(),
     })
     .optional(),
   lock: lockSchema.optional(),
@@ -301,4 +399,9 @@ export function isSlugFree(current: SlugDocument | undefined, now: Date): boolea
   if (current === undefined || current.state === 'released') return true;
   if (current.state === 'taken') return false;
   return current.expiresAt !== undefined && current.expiresAt.getTime() <= now.getTime();
+}
+
+/** Como o cliente é cobrado; sem o campo, `stripe` (todo cliente do checkout). */
+export function billingModeOf(tenant: Pick<Tenant, 'billing'>): BillingMode {
+  return tenant.billing?.mode ?? 'stripe';
 }

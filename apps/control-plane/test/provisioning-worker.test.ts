@@ -41,10 +41,13 @@ const SUPPORT = 'suporte@verax.example';
 const HOUR_MS = 60 * MINUTE_MS;
 /** O projeto do plano de controle (o das filas e do Job), onde fica o cofre da senha da caixa dos nós. */
 const CONTROL_PLANE = 'projeto-exemplo-cp';
+/** A conta do console do responsável (`cp-admin`), que chama as operações do responsável em nome de quem entrou nele. */
+const CONSOLE_SA = 'cp-admin@projeto-exemplo.iam.gserviceaccount.com';
 const NODE_MAIL_ENV = {
   SMTP_HOST_NODES: 'smtp.caixa-exemplo.example',
   SMTP_PORT_NODES: '587',
   SMTP_USER_NODES: 'avisos@verax.example',
+  ADMIN_SA_EMAIL: CONSOLE_SA,
 };
 /** A senha fictícia da caixa dos nós (longa o bastante para a máscara do logger). */
 const NODE_MAILBOX_VALUE = 'caixa-dos-nos-ficticia-1';
@@ -770,6 +773,25 @@ describe('cp-worker: provisionamento (CP-07)', () => {
       expect(cloud.requests).toHaveLength(0);
     });
 
+    it('razão social acima de 120 (cliente gravado antes do limite): tenant_name_invalid no preflight, sem cortar', async () => {
+      const tenant = await paidTenant();
+      // O checkout e o customer.updated recusam desde o limite; a leitura do cliente ainda aceita o que veio antes.
+      const legalName = `Cliente Demo A ${'ã'.repeat(106)}`;
+      expect(legalName).toHaveLength(121);
+      await tenants.change(tenant.id, () => ({
+        reason: 'teste',
+        audit: { actor: 'system' },
+        allowLegalNameChange: true,
+        mutate: (current) => ({ ...current, company: { ...current.company, legalName } }),
+      }));
+      await drain();
+      const failed = await tenants.require(tenant.id);
+      expect(failed.state).toBe('provisioning_failed');
+      expect(failed.provisioning?.lastError?.code).toBe('tenant_name_invalid');
+      expect(failed.company.legalName).toBe(legalName);
+      expect(cloud.requests).toHaveLength(0);
+    });
+
     it('cliente suspenso no meio (disputa, CP-04): o passo seguinte não faz nada e não enfileira', async () => {
       const tenant = await paidTenant();
       await drain(undefined, { limit: 2 });
@@ -1131,6 +1153,37 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         expect(body.complete).toBe(false);
         expect(cloud.secretVersions.get(`${NODES}/vx-${second.slug}-smtp-password`)).toHaveLength(2);
         expect(capture.text).toContain('node_smtp_password_sync_failed');
+      });
+
+      it('pelo console do responsável: só com quem agiu, e esse alguém em OWNER_PRINCIPALS (a auditoria leva o nome)', async () => {
+        storeNodePassword();
+        const [tenant] = await tenantsWithMail(1, 'console');
+        if (tenant === undefined) throw new Error('sem cliente');
+        const server = appMail.getHttpServer();
+        const writes = cloud.count('POST', ':addVersion');
+        await request(server).post(path).set('Authorization', bearer(CONSOLE_SA)).send({}).expect(403);
+        await request(server)
+          .post(path)
+          .set('Authorization', bearer(CONSOLE_SA))
+          .send({ actor: 'outra-pessoa@verax.example' })
+          .expect(403);
+        await request(server)
+          .post(path)
+          .set('Authorization', bearer(CONSOLE_SA))
+          .send({ actor: OWNER, extra: true })
+          .expect(400);
+        expect(cloud.count('POST', ':addVersion')).toBe(writes);
+        const response = await request(server)
+          .post(path)
+          .set('Authorization', bearer(CONSOLE_SA))
+          .send({ actor: OWNER })
+          .expect(200);
+        expect((response.body as SyncBody).complete).toBe(true);
+        expect(lastVersion(tenant.slug)).toBe(NODE_MAILBOX_VALUE);
+        const audit = documents.writes.filter(
+          (write) => write.startsWith('auditLog/') && write.includes('node_smtp_password_synced'),
+        );
+        expect(audit.at(-1)).toContain(`owner:${OWNER}`);
       });
 
       it('sem o e-mail dos nós configurado: 409; sem a senha no cofre: 409, e nada é gravado', async () => {

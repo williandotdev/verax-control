@@ -9,7 +9,7 @@ import {
   isSubnetCidr,
   isTenantEmail,
   isTenantName,
-  nodeTenantName,
+  purgeExecutorEnv,
 } from './executor-env.js';
 import { subnetCidrOf } from './provisioning-store.js';
 
@@ -31,6 +31,39 @@ const input: ExecutorInput = {
   supportEmail: 'suporte@verax.example',
   imagesRepository: 'ghcr.io/williandotdev/verax-control',
 };
+
+describe('a ação de cada tipo de execução (CP-11)', () => {
+  it('apply só no provisionamento; destroy só na Exclusão 1 (a única que apaga a conta do nó)', () => {
+    expect(executorEnv({ ...input, kind: 'resume' })[1]).toEqual({ name: 'RUN_KIND', value: 'resume' });
+    const destroy = executorEnv({ ...input, action: 'destroy', kind: 'delete' });
+    expect(destroy.slice(0, 2)).toEqual([
+      { name: 'EXECUTOR_ACTION', value: 'destroy' },
+      { name: 'RUN_KIND', value: 'delete' },
+    ]);
+    for (const [action, kind] of [
+      ['destroy', 'provision'],
+      ['destroy', 'resume'],
+      ['apply', 'delete'],
+      ['apply', 'crypto_destroy'],
+      ['destroy', 'crypto_destroy'],
+    ] as const) {
+      expect(() => executorEnv({ ...input, action, kind })).toThrow(
+        new ExecutorInputError('EXECUTOR_ACTION'),
+      );
+    }
+  });
+
+  it('a Exclusão 2 leva só o endereço: nenhum dado do cliente', () => {
+    expect(purgeExecutorEnv({ runId: input.runId, slug: 'cliente-demo-a' })).toEqual([
+      { name: 'EXECUTOR_ACTION', value: 'purge' },
+      { name: 'RUN_KIND', value: 'crypto_destroy' },
+      { name: 'RUN_ID', value: input.runId },
+      { name: 'TENANT_SLUG', value: 'cliente-demo-a' },
+    ]);
+    expect(() => purgeExecutorEnv({ runId: 'x', slug: 'cliente-demo-a' })).toThrow(ExecutorInputError);
+    expect(() => purgeExecutorEnv({ runId: input.runId, slug: 'cl--iente' })).toThrow(ExecutorInputError);
+  });
+});
 
 describe('variáveis da execução do Job', () => {
   it('a lista inteira, na ordem, com os limites como texto (o entrypoint e o envs/tenant leem assim)', () => {
@@ -96,6 +129,8 @@ describe('variáveis da execução do Job', () => {
     ['BOOTSTRAP_ADMIN_EMAIL', { adminEmail: 'admin@cliente\n.example' }],
     ['BOOTSTRAP_TENANT_NAME', { tenantName: ' Cliente' }],
     ['BOOTSTRAP_TENANT_NAME', { tenantName: 'Cliente\nDemo' }],
+    // Um cliente gravado antes do limite de 120: nunca chega ao Job.
+    ['BOOTSTRAP_TENANT_NAME', { tenantName: 'a'.repeat(121) }],
     ['BOOTSTRAP_SUPPORT_EMAIL', { supportEmail: "O'NEIL+TI@CLIENTE-DEMO-A.EXAMPLE" }],
     ['IMAGES_REPOSITORY', { imagesRepository: 'docker.io/williandotdev/verax-control' }],
     ['SMTP_HOST', { nodeMail: { host: 'SMTP.caixa-exemplo.example', port: 465, user: 'avisos' } }],
@@ -136,8 +171,6 @@ describe('variáveis da execução do Job', () => {
     expect(isTenantEmail('.a@a.example')).toBe(false);
     expect(isTenantEmail('a..b@a.example')).toBe(false);
     expect(isTenantEmail('a@a.e')).toBe(false);
-    expect(isTenantName('ã'.repeat(200))).toBe(true);
-    expect(isTenantName('ã'.repeat(201))).toBe(false);
     expect(isNodeSmtpHost('smtp.caixa-exemplo.example')).toBe(true);
     expect(isNodeSmtpHost('smtp-.example')).toBe(false);
     expect(isNodeSmtpHost(`${'a'.repeat(63)}.example`)).toBe(true);
@@ -161,13 +194,14 @@ describe('variáveis da execução do Job', () => {
     expect(isTenantName('Cliente ')).toBe(false);
   });
 
-  it('o nome do cliente no nó: até 120 caracteres, sem cortar no meio de um acento nem deixar espaço no fim', () => {
-    expect(nodeTenantName('Cliente Demo A')).toBe('Cliente Demo A');
-    const long = `${'Ação '.repeat(30)}Ltda.`;
-    const name = nodeTenantName(long);
-    expect([...name].length).toBeLessThanOrEqual(120);
-    expect(name).toBe(name.trimEnd());
-    expect(long.startsWith(name)).toBe(true);
+  it('o nome do cliente no nó: de 2 a 120 caracteres, o limite do checkout e do nó, sem corte', () => {
+    expect(isTenantName('ã'.repeat(120))).toBe(true);
+    expect(isTenantName('ã'.repeat(121))).toBe(false);
+    expect(isTenantName('Cliente Demo A')).toBe(true);
+    expect(isTenantName('A')).toBe(false);
+    // O nó conta como o zod (unidades UTF-16): 60 emojis são 120 e passam; 61 são 122 e param aqui, e não no nó.
+    expect(isTenantName('\u{1F600}'.repeat(60))).toBe(true);
+    expect(isTenantName('\u{1F600}'.repeat(61))).toBe(false);
   });
 
   it('a faixa de rede do contador: dois octetos do meio', () => {

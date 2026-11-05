@@ -314,11 +314,36 @@ run "recusa_nome_com_espaco_nas_pontas" {
   expect_failures = [var.bootstrap_tenant_name]
 }
 
-run "recusa_nome_de_201_caracteres" {
+# O limite do checkout e do nó (`Tenant.name` é `VarChar(120)`): 120 caracteres acentuados (240 bytes) passam e chegam
+# inteiros aos metadados da VM, sem corte.
+run "aceita_nome_de_120_caracteres" {
   command = plan
 
   variables {
-    bootstrap_tenant_name = join("", [for index in range(201) : "a"])
+    bootstrap_tenant_name = join("", [for index in range(120) : "ã"])
+  }
+
+  assert {
+    condition     = module.node.install_metadata["verax-tenant-name"] == join("", [for index in range(120) : "ã"])
+    error_message = "Um nome de 120 caracteres (o limite do checkout) foi recusado ou não chegou inteiro aos metadados."
+  }
+}
+
+run "recusa_nome_de_121_caracteres" {
+  command = plan
+
+  variables {
+    bootstrap_tenant_name = join("", [for index in range(121) : "a"])
+  }
+
+  expect_failures = [var.bootstrap_tenant_name]
+}
+
+run "recusa_nome_de_1_caractere" {
+  command = plan
+
+  variables {
+    bootstrap_tenant_name = "A"
   }
 
   expect_failures = [var.bootstrap_tenant_name]

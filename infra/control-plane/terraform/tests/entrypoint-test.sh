@@ -37,12 +37,16 @@ production_lines=(
   'readonly cli_config=/opt/verax/terraform.rc'
   'readonly metadata_token_url=http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
   'readonly storage_upload_url=https://storage.googleapis.com/upload/storage/v1/b'
+  'readonly storage_api_url=https://storage.googleapis.com/storage/v1/b'
+  'readonly compute_url=https://compute.googleapis.com/compute/v1'
+  'readonly secretmanager_url=https://secretmanager.googleapis.com/v1'
   'readonly work_parent=/tmp'
 )
 for line in "${production_lines[@]}"; do
   check "produção: $line" grep -qxF "$line" "$entrypoint"
 done
-check 'produção: o envio ao bucket só por HTTPS' test "$(grep -c -- "--proto '=https'" "$entrypoint")" -eq 1
+check 'produção: toda chamada às APIs do Google só por HTTPS (uma função só)' \
+  test "$(grep -c -- "--proto '=https'" "$entrypoint")" -eq 1
 check 'produção: o token só pelo servidor de metadados, em HTTP local' test "$(grep -c -- "--proto '=http'" "$entrypoint")" -eq 1
 check 'produção: bash -p (sem BASH_ENV nem funções do ambiente)' test "$(head -n 1 "$entrypoint")" = '#!/bin/bash -p'
 check 'produção: nada de eval nem source' bash -c "! grep -nE '(^|[^[:alnum:]_])(eval|source)[[:space:]]' '$entrypoint'"
@@ -77,13 +81,16 @@ sed \
   -e "s|^readonly cli_config=.*|readonly cli_config=$root/terraform.rc|" \
   -e "s|^readonly metadata_token_url=.*|readonly metadata_token_url=http://127.0.0.1:$port/token|" \
   -e "s|^readonly storage_upload_url=.*|readonly storage_upload_url=http://127.0.0.1:$port/upload/storage/v1/b|" \
+  -e "s|^readonly storage_api_url=.*|readonly storage_api_url=http://127.0.0.1:$port/storage/v1/b|" \
+  -e "s|^readonly compute_url=.*|readonly compute_url=http://127.0.0.1:$port/compute/v1|" \
+  -e "s|^readonly secretmanager_url=.*|readonly secretmanager_url=http://127.0.0.1:$port/secretmanager/v1|" \
   -e "s|^readonly work_parent=.*|readonly work_parent=$work_parent|" \
   -e "s|--proto '=https'|--proto '=http'|" \
   "$entrypoint" >"$root/entrypoint.sh"
 chmod 0755 "$root/entrypoint.sh"
 mkdir -p "$root/tenant"
-check 'a cópia do teste troca só os valores de produção (7 linhas)' \
-  test "$(diff "$entrypoint" "$root/entrypoint.sh" | grep -c '^>')" -eq 7
+check 'a cópia do teste troca só os valores de produção (10 linhas)' \
+  test "$(diff "$entrypoint" "$root/entrypoint.sh" | grep -c '^>')" -eq 10
 
 slug=cliente-demo-a
 run_id=01JBTESTE0000000000000RVN1
@@ -156,7 +163,8 @@ outputs_fixture() {
 }
 
 reset() {
-  rm -rf -- "$state/uploads" "$state/requests.jsonl" "$state/fail-upload" "$fake"/calls "$fake"/env-plan "$fake"/fail-*
+  rm -rf -- "$state/uploads" "$state/requests.jsonl" "$state/fail-upload" "$state/fail-api" "$state/cloud.json" \
+    "$fake"/calls "$fake"/env-plan "$fake"/env-init "$fake"/state "$fake"/fail-*
   printf '%s' "$token" >"$state/token"
   plan_with module.node.google_service_account.node '["create"]'
   outputs_fixture
@@ -263,21 +271,202 @@ plan_with "module.outro.google_service_account.node" '["delete","create"]'
 run_entrypoint
 check 'outra conta de serviço recriada (não a do nó): aplicado' test "$status" -eq 0
 
-# A exclusão do cliente (CP-11) pode apagar a conta: o apply da Exclusão 1 e o destroy.
+# A ação amarrada ao tipo (CP-11): apply só no provisionamento, destroy só na Exclusão 1, purge só na Exclusão 2.
+for pair in apply:delete apply:crypto_destroy destroy:provision destroy:resume destroy:crypto_destroy purge:provision \
+  purge:resume purge:delete; do
+  reset
+  plan_with "$sa" '["delete"]'
+  run_entrypoint "EXECUTOR_ACTION=${pair%%:*}" "RUN_KIND=${pair#*:}"
+  check "$pair: recusado (action_refused) antes de qualquer terraform" \
+    bash -c "test $status -eq 3 && test ! -e '$fake/calls'"
+  check "$pair: result.json refused/action_refused" result_is refused action_refused
+done
+
+# --- 2b. Exclusão 1 (destroy, RUN_KIND=delete) -----------------------------------------------------------------------
+project=projeto-exemplo-nos
+disk_source="https://www.googleapis.com/compute/v1/projects/$project/zones/southamerica-east1-b/disks/vx-$slug"
+other_source="https://www.googleapis.com/compute/v1/projects/$project/zones/southamerica-east1-b/disks/vx-$slug-2"
+kept_addresses=(
+  'module.node.google_compute_disk.node'
+  'module.node.google_compute_address.nat[0]'
+  'module.node.google_storage_bucket.backups'
+  'module.node.google_secret_manager_secret.node_written["credentials-key"]'
+  'google_secret_manager_secret_iam_member.worker_credentials_key'
+)
+# O estado e o projeto de um cliente com tudo no ar, mais o de outro cliente (`<slug>-2`, mesmo prefixo) e um snapshot
+# de um disco de mesmo nome em outra zona: nada disso pode ser apagado.
+tenant_world() {
+  printf '%s\n' 'module.node.google_compute_instance.node' 'module.node.google_service_account.node' \
+    'module.node.google_secret_manager_secret_iam_member.node_written_adder["credentials-key"]' \
+    "${kept_addresses[@]}" >"$fake/state"
+  jq -n --arg slug "$slug" --arg source "$disk_source" --arg other "$other_source" --arg project "$project" '{
+    pageSize: 2,
+    instances: {("vx-" + $slug): {deletionProtection: true}, ("vx-" + $slug + "-2"): {deletionProtection: true}},
+    disks: ["vx-" + $slug, "vx-" + $slug + "-2"],
+    snapshots: [
+      {name: ("vx-" + $slug + "-snap-1"), sourceDisk: $source},
+      {name: ("vx-" + $slug + "-2-snap-1"), sourceDisk: $other},
+      {name: ("vx-" + $slug + "-snap-2"), sourceDisk: $source},
+      {name: ("vx-" + $slug + "-snap-zona"), sourceDisk: ($source | sub("southamerica-east1-b"; "southamerica-east1-c"))},
+      {name: ("vx-" + $slug + "-snap-3"), sourceDisk: $source}
+    ],
+    addresses: ["vx-" + $slug + "-nat-ip", "vx-" + $slug + "-2-nat-ip"],
+    secrets: ["vx-" + $slug + "-credentials-key", "vx-" + $slug + "-2-credentials-key"],
+    buckets: {($project + "-vx-" + $slug + "-backups"): {objects: 0}, ($project + "-vx-" + $slug + "-2-backups"): {objects: 3}},
+    objects: ["tenants/" + $slug + "/default.tfstate", "tenants/" + $slug + "-2/default.tfstate"]
+  }' >"$state/cloud.json"
+}
+destroy_plan() { # <ações de um recurso a mais, em JSON> [endereço]
+  jq -n --arg address "${2:-module.node.google_compute_instance.node}" --argjson actions "$1" '{
+    format_version: "1.2",
+    resource_changes: [
+      {address: "module.node.google_service_account.node", change: {actions: ["delete"]}},
+      {address: $address, change: {actions: $actions}}
+    ]
+  }' >"$fake/plan.json"
+}
+cloud() { jq -rc "$1" "$state/cloud.json"; }
+api_calls() { jq -r 'select(.query != null) | "\(.method) \(.path)"' "$state/requests.jsonl" 2>/dev/null; }
+
 reset
-plan_with "$sa" '["delete","create"]'
-run_entrypoint RUN_KIND=delete
-check 'RUN_KIND=delete: a conta recriada não é recusada' test "$status" -eq 0
-reset
-plan_with "$sa" '["delete"]'
+tenant_world
+destroy_plan '["delete"]'
 run_entrypoint RUN_KIND=delete EXECUTOR_ACTION=destroy
-check 'destroy na exclusão: plan -destroy e apply, sem output' \
-  bash -c "test $status -eq 0 && grep -q -- '^plan .*-destroy' '$fake/calls' && ! grep -q '^output ' '$fake/calls'"
-check 'destroy na exclusão: result.json succeeded/destroy_done' result_is succeeded destroy_done
+check 'destroy: sai com 0' test "$status" -eq 0
+check 'destroy: result.json succeeded/destroy_done' result_is succeeded destroy_done
+check 'destroy: init, state list, os cinco state rm, plan -destroy, show e apply, nessa ordem (sem output)' \
+  test "$(cut -d' ' -f1,2 "$fake/calls" | tr '\n' '|')" = \
+  'init -no-color|state list|state rm|state rm|state rm|state rm|state rm|plan -no-color|show -json|apply -no-color|'
+removed=0
+for address in "${kept_addresses[@]}"; do grep -qxF "state rm -lock-timeout=5m $address" "$fake/calls" && removed=$((removed + 1)); done
+check 'destroy: exatamente os endereços da lista saem do estado' test "$removed" -eq 5
+check 'destroy: o resto fica no estado para o destroy (a conta do nó, a VM, a permissão da VM no cofre)' \
+  test "$(wc -l <"$fake/state")" -eq 3
+check 'destroy: plan com -destroy' grep -q -- '^plan .*-destroy' "$fake/calls"
+check 'destroy: a proteção da VM sai pela API antes do plan' \
+  test "$(api_calls | head -n 1)" = "POST /compute/v1/projects/$project/zones/southamerica-east1-b/instances/vx-$slug/setDeletionProtection"
+check 'destroy: o disco do cliente apagado, o do outro cliente não' test "$(cloud '.disks')" = "[\"vx-$slug-2\"]"
+check 'destroy: só os snapshots do disco do cliente (de todas as páginas), nem o do outro, nem o de outra zona' \
+  test "$(cloud '[.snapshots[].name]')" = "[\"vx-$slug-2-snap-1\",\"vx-$slug-snap-zona\"]"
+check 'destroy: o IP do NAT do cliente liberado, o do outro não' test "$(cloud '.addresses')" = "[\"vx-$slug-2-nat-ip\"]"
+check 'destroy: o cofre credentials-key e o bucket de backups ficam (Exclusão 2)' \
+  test "$(cloud '[(.secrets | length), (.buckets | length)] | map(tostring) | join(",")')" = '2,2'
+check 'destroy: toda chamada à API com o token só no cabeçalho' \
+  test "$(jq -r 'select(.query != null) | .authorization' "$state/requests.jsonl" | sort -u)" = "Bearer $token"
+check 'destroy: nenhum token, e-mail ou nome do cliente na saída' no_secrets_in_output
+
+# Repetir a Exclusão 1 depois de terminada (estado vazio, tudo já apagado): sem erro, sem tirar nada do estado.
 reset
-run_entrypoint EXECUTOR_ACTION=destroy
-check 'destroy fora da exclusão: recusado antes de qualquer terraform' bash -c "test $status -eq 3 && test ! -e '$fake/calls'"
-check 'destroy fora da exclusão: result.json refused/action_refused' result_is refused action_refused
+tenant_world
+destroy_plan '["delete"]'
+run_entrypoint RUN_KIND=delete EXECUTOR_ACTION=destroy
+cp "$state/cloud.json" "$root/cloud-after.json"
+rm -f "$state/requests.jsonl" "$fake/calls"
+: >"$fake/state"
+jq -n '{format_version: "1.2", resource_changes: []}' >"$fake/plan.json"
+run_entrypoint RUN_KIND=delete EXECUTOR_ACTION=destroy
+check 'destroy de novo: sai com 0, sem state rm e sem tirar a proteção de VM nenhuma' \
+  bash -c "test $status -eq 0 && ! grep -q '^state rm' '$fake/calls' && ! grep -q setDeletionProtection '$state/requests.jsonl'"
+check 'destroy de novo: as chamadas que apagam acham 404 e seguem' \
+  bash -c "diff -q '$root/cloud-after.json' '$state/cloud.json' >/dev/null"
+
+# O plano da exclusão só apaga, e nunca o que saiu do estado.
+for case in 'module.node.google_compute_instance.node|["create"]' 'module.node.google_compute_instance.node|["update"]' \
+  'module.node.google_compute_instance.node|["delete","create"]' 'module.node.google_compute_disk.node|["delete"]' \
+  'module.node.google_storage_bucket.backups|["delete"]'; do
+  IFS='|' read -r address actions <<<"$case"
+  reset
+  tenant_world
+  destroy_plan "$actions" "$address"
+  run_entrypoint RUN_KIND=delete EXECUTOR_ACTION=destroy
+  check "destroy com $address $actions: recusado sem apply" \
+    bash -c "test $status -eq 3 && ! grep -q '^apply ' '$fake/calls'"
+  check "destroy com $address $actions: result.json refused/destroy_plan_unexpected" result_is refused destroy_plan_unexpected
+  check "destroy com $address $actions: o disco e os snapshots não foram tocados" \
+    test "$(cloud '[(.disks | length), (.snapshots | length)] | join(",")')" = '2,5'
+done
+
+# A API recusa apagar o disco (ainda preso à VM): falha comum (o cp-worker repete uma vez).
+reset
+tenant_world
+jq '.diskInUse = true' "$state/cloud.json" >"$state/cloud.tmp" && mv "$state/cloud.tmp" "$state/cloud.json"
+destroy_plan '["delete"]'
+run_entrypoint RUN_KIND=delete EXECUTOR_ACTION=destroy
+check 'disco preso: sai com 4' test "$status" -eq 4
+check 'disco preso: result.json failed/cleanup_failed' result_is failed cleanup_failed
+check 'disco preso: nenhum snapshot apagado' test "$(cloud '.snapshots | length')" -eq 5
+reset
+tenant_world
+printf '{"method": "POST", "contains": "setDeletionProtection", "status": 403}' >"$state/fail-api"
+destroy_plan '["delete"]'
+run_entrypoint RUN_KIND=delete EXECUTOR_ACTION=destroy
+check 'sem permissão para tirar a proteção: sai com 4 antes de tirar algo do estado' \
+  bash -c "test $status -eq 4 && ! grep -q '^state rm' '$fake/calls'"
+check 'sem permissão para tirar a proteção: result.json failed/deletion_protection_failed' \
+  result_is failed deletion_protection_failed
+
+# --- 2c. Exclusão 2 (purge, RUN_KIND=crypto_destroy) -----------------------------------------------------------------
+# Só o endereço e as variáveis fixas do Job: nenhuma do cliente.
+purge_env=(
+  "PATH=/usr/bin:/bin"
+  "HOME=/home/executor"
+  "TFSTATE_BUCKET=projeto-exemplo-nos-tfstate"
+  "NODES_PROJECT_ID=$project"
+  "NODES_REGION=southamerica-east1"
+  "NODES_ZONE=southamerica-east1-b"
+  "CP_WORKER_SA=cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
+  "CLOUD_RUN_EXECUTION=$execution"
+  "EXECUTOR_ACTION=purge"
+  "RUN_KIND=crypto_destroy"
+  "RUN_ID=$run_id"
+  "TENANT_SLUG=$slug"
+  "FAKE_TERRAFORM_DIR=$fake"
+)
+run_purge() {
+  status=0
+  output=$(env -i "${purge_env[@]}" "$@" "$root/entrypoint.sh" 2>&1) || status=$?
+}
+reset
+tenant_world
+: >"$fake/state"
+run_purge
+check 'purge: sai com 0' test "$status" -eq 0
+check 'purge: result.json succeeded/purge_done' result_is succeeded purge_done
+check 'purge: só init e state list (nenhum plan nem apply)' \
+  test "$(cut -d' ' -f1,2 "$fake/calls" | tr '\n' '|')" = 'init -no-color|state list|'
+check 'purge: nenhuma TF_VAR_* chega ao Terraform' bash -c "! grep -q '^TF_VAR_' '$fake/env-init'"
+check 'purge: o cofre, o bucket e o estado do cliente apagados; os do outro cliente ficam' \
+  test "$(cloud '[.secrets, (.buckets | keys), .objects] | flatten | join(",")')" = \
+  "vx-$slug-2-credentials-key,$project-vx-$slug-2-backups,tenants/$slug-2/default.tfstate"
+check 'purge: nada de Compute (a VM e o disco são da Exclusão 1)' \
+  bash -c "! grep -q '/compute/' '$state/requests.jsonl'"
+check 'purge: nenhuma listagem de bucket' bash -c "! jq -e 'select(.method == \"GET\" and (.path | contains(\"/storage/\")))' '$state/requests.jsonl' >/dev/null"
+reset
+tenant_world
+: >"$fake/state"
+jq ".buckets[\"$project-vx-$slug-backups\"].objects = 2" "$state/cloud.json" >"$state/cloud.tmp" &&
+  mv "$state/cloud.tmp" "$state/cloud.json"
+run_purge
+check 'purge com o bucket de backups ainda com objetos: sai com 4' test "$status" -eq 4
+check 'purge com o bucket de backups ainda com objetos: failed/backups_bucket_not_empty' \
+  result_is failed backups_bucket_not_empty
+check 'purge com o bucket ainda com objetos: o estado do cliente fica para a próxima tentativa' \
+  test "$(cloud '.objects | length')" -eq 2
+reset
+tenant_world
+printf '%s\n' 'module.node.google_compute_instance.node' >"$fake/state"
+run_purge
+check 'purge com o estado ainda com recursos (a Exclusão 1 não terminou): recusado, nada apagado' \
+  bash -c "test $status -eq 3 && ! grep -q DELETE '$state/requests.jsonl'"
+check 'purge com o estado ainda com recursos: result.json refused/state_not_empty' result_is refused state_not_empty
+reset
+run_purge TENANT_SLUG=cl--iente
+check 'purge com o slug fora do formato: sai com 2 sem gravar nada' \
+  bash -c "test $status -eq 2 && test ! -e '$state/requests.jsonl'"
+reset
+run_purge NODES_PROJECT_ID=Projeto_Errado
+check 'purge com o projeto fora do formato: recusado (2) antes de qualquer chamada' \
+  bash -c "test $status -eq 2 && ! grep -q DELETE '$state/requests.jsonl' 2>/dev/null"
 
 # Um plano que não dá para ler não passa.
 reset
@@ -292,7 +481,7 @@ run_entrypoint
 check 'plano que não é JSON: recusado sem apply' bash -c "test $status -eq 3 && ! grep -q '^apply ' '$fake/calls'"
 
 # --- 3. Variáveis fora do formato: recusadas antes do terraform, sem o valor na saída ---------------------------------
-long_name=$(printf 'a%.0s' $(seq 1 201))
+long_name=$(printf 'a%.0s' $(seq 1 121))
 bad_values=(
   "EXECUTOR_ACTION=plan"
   "RUN_KIND=manual"
@@ -353,8 +542,11 @@ reset
 run_entrypoint PLAN=profissional PLAN_MAX_CLOUD_ACCOUNTS= PLAN_MAX_USERS= PLAN_MONTHLY_GIB= PLAN_HISTORY_DAYS=
 check 'profissional sem limites: aplicado (o nó usa os do plano)' test "$status" -eq 0
 reset
-run_entrypoint "BOOTSTRAP_TENANT_NAME=$(printf 'ã%.0s' $(seq 1 200))"
-check 'nome com 200 caracteres acentuados (400 bytes): aceito' test "$status" -eq 0
+run_entrypoint "BOOTSTRAP_TENANT_NAME=$(printf 'ã%.0s' $(seq 1 120))"
+check 'nome com 120 caracteres acentuados (240 bytes, o limite do checkout e do nó): aceito' test "$status" -eq 0
+reset
+run_entrypoint "BOOTSTRAP_TENANT_NAME=$(printf 'ã%.0s' $(seq 1 121))"
+check 'nome com 121 caracteres acentuados: recusado' test "$status" -eq 2
 reset
 run_entrypoint IMAGES_REPOSITORY=us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control
 check 'Artifact Registry do projeto da Verax: aceito' test "$status" -eq 0

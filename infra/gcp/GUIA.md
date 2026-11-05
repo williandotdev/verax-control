@@ -821,11 +821,31 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
 
 ### Operações do responsável no `cp-worker`
 
-O `cp-worker` aceita a URL `run.app` (`worker_ingress = "INGRESS_TRAFFIC_ALL"`, o padrão), mas só com o token de
-identidade do Google de quem tem `run.invoker` nele. As operações do responsável (`resume` do CP-07, a recópia da senha
-do e-mail dos nós em `POST /internal/nodes/smtp-password/sync`, `delete-now` e `export` do CP-11) são botões do console
-(`cp-admin`, atrás do IAP), que chama o worker com a identidade da própria conta de serviço; o worker aceita essa conta
-só nas rotas do responsável.
+As operações do responsável (`resume`, a recópia da senha do e-mail dos nós em
+`POST /internal/nodes/smtp-password/sync`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e
+`reactivate`; CP-07 e CP-11) são chamadas pelo **console do responsável** (`cp-admin`, atrás do IAP): o console chama
+o `cp-worker` com o token de identidade da conta `cp-admin` (audiência `WORKER_URL`) e manda no corpo o seu e-mail, que
+o IAP deu a ele; o worker aceita a conta do console só nessas rotas (`ADMIN_SA_EMAIL`) e confere que o e-mail está em
+`owner_principals`. O token de quem está no navegador nunca sai do console. Para isso, o `envs/control-plane` precisa
+(o PR do console liga, junto com os botões): `run.invoker` da conta `cp-admin` no `cp-worker`, `ADMIN_SA_EMAIL` no
+ambiente do worker e `WORKER_URL` no do `cp-admin`. A entrada do `cp-worker` já aceita a chamada de outro serviço
+(`worker_ingress = "INGRESS_TRAFFIC_ALL"`, o padrão; a mesma decisão da revelação, abaixo).
+
+Sem o console, direto da sua máquina, o worker ainda aceita uma conta em `owner_principals`, mas o token precisa ter
+`aud = WORKER_URL`, e o `gcloud` só emite isso para conta de serviço: crie uma conta só para isso (sem papel nenhum),
+ponha-a em `owner_principals` e use a impersonação:
+
+```bash
+gcloud iam service-accounts create cp-operador --project <projeto-da-verax> --display-name "Operações do responsável"
+gcloud iam service-accounts add-iam-policy-binding cp-operador@<projeto-da-verax>.iam.gserviceaccount.com \
+  --member user:<seu-e-mail> --role roles/iam.serviceAccountOpenIdTokenCreator --project <projeto-da-verax>
+# owner_principals = ["user:<seu-e-mail>", "serviceAccount:cp-operador@<projeto-da-verax>.iam.gserviceaccount.com"]
+TOKEN=$(gcloud auth print-identity-token --impersonate-service-account cp-operador@<projeto-da-verax>.iam.gserviceaccount.com \
+  --audiences "$WORKER_URL" --include-email)
+```
+
+A auditoria registra então `owner:cp-operador@...` (e o Cloud Audit Logs, quem pediu o token). A entrada do
+`cp-worker` aceita a URL `run.app` (`INGRESS_TRAFFIC_ALL`, o padrão), e o IAM continua exigindo o token.
 
 ### Revelação da senha e a entrada do `cp-worker` (decidido: entrada aberta, só com IAM)
 
@@ -1173,6 +1193,60 @@ Um cliente de teste nasce do zero e chega a `waiting_customer_connection` sem op
    `provisioning_failed` com `provisioning_disabled` e nenhuma task nova; ligue de novo, chame o `resume` e ele segue.
 6. Desfaça como na Exclusão 1 (seção do `envs/tenant`, acima, passo 7 do aceite da instalação), e apague à mão o
    túnel, os registros de DNS e o site do Firebase do cliente de teste (o CP-11 automatiza).
+
+## O ciclo de vida (CP-11): suspensão, reativação, cancelamento e exclusão
+
+O `tick` (o job `tick` do Cloud Scheduler, a cada hora, que já existe) suspende quem passou da carência, cancela na
+Stripe quem ficou 30 dias suspenso sem pagar, para e liga as VMs, leva `waiting_customer_connection` a `active` e faz as
+duas exclusões (D+30 e D+97). O desenho está na ARQUITETURA ("Ciclo de vida depois da venda" e "Exclusão em dois
+tempos") e o que fazer quando algo para, em `docs/runbooks/ciclo-de-vida.md` (com o aceite manual). Nada novo foi criado
+no Terraform: o `cp-worker` já tem a chave da Stripe, o `cpNodeLifecycle` no projeto dos nós e, por tenant, o
+`cpSecretVersionDestroyer` no `credentials-key`; o `cp-terraform` já tem os papéis que a exclusão usa.
+
+### O que você configura
+
+1. **Nada para o relógio:** o `tick` roda com o que o CP-07 já pede. Sem `PROVISIONING_ENABLED` (ou com o grupo
+   incompleto), a Exclusão 1 de um cliente que provisionou para com `provisioning_disabled` (ela usa o Cloudflare, o
+   Firebase e o Job) e o responsável é avisado; suspender e cancelar continuam.
+2. **A chave restrita da Stripe** precisa de escrita em Subscriptions (já pedida no CP-03): o `tick` cancela a
+   assinatura em D+37.
+3. **As operações do responsável pelo console** (seção "Operações do responsável no `cp-worker`", acima).
+4. **Exportação sob pedido (decisão sua; desligada até lá):** o link assinado de um backup exige uma conta que leia os
+   backups. Para o plano de controle não ler backup de cliente nenhum, ele assina como uma conta à parte, que só lê
+   objeto (sem listar), e o `cp-worker` só pode assinar como ela (não pode pegar o token dela):
+
+   ```bash
+   # No projeto da Verax: a conta que assina, sem chave e sem papel no projeto.
+   gcloud iam service-accounts create cp-exportador --project <projeto-da-verax> --display-name "Exportação sob pedido"
+   gcloud iam roles create cpExportSigner --project <projeto-da-verax> --title "Assina o link da exportação" \
+     --permissions iam.serviceAccounts.signBlob
+   gcloud iam service-accounts add-iam-policy-binding cp-exportador@<projeto-da-verax>.iam.gserviceaccount.com \
+     --member serviceAccount:cp-worker@<projeto-da-verax>.iam.gserviceaccount.com \
+     --role projects/<projeto-da-verax>/roles/cpExportSigner --project <projeto-da-verax>
+   gcloud services enable iamcredentials.googleapis.com --project <projeto-da-verax>
+   # No projeto dos nós: ler objeto só nos buckets de backups dos clientes (vx-*), sem listar.
+   gcloud iam roles create cpBackupExportReader --project <projeto-dos-nos> --title "Lê um backup pelo nome" \
+     --permissions storage.objects.get
+   gcloud projects add-iam-policy-binding <projeto-dos-nos> \
+     --member serviceAccount:cp-exportador@<projeto-da-verax>.iam.gserviceaccount.com \
+     --role projects/<projeto-dos-nos>/roles/cpBackupExportReader \
+     --condition='title=Só backups dos clientes,expression=resource.name.startsWith("projects/_/buckets/<projeto-dos-nos>-vx-")'
+   ```
+
+   e `EXPORT_SIGNER_SA_EMAIL = "cp-exportador@<projeto-da-verax>.iam.gserviceaccount.com"` em `worker_env`. Quem tem o
+   `cpExportSigner` (o `cp-worker`) consegue um link para qualquer backup de cliente cujo nome conheça: é o que a
+   exportação precisa, e cada assinatura fica no Cloud Audit Logs (ligue o registro de acesso a dados do IAM
+   Credentials, se quiser vê-las). Sem esses passos, `export` responde 503 e o caminho é você mesmo:
+   `gcloud storage sign-url gs://<bucket>/<objeto> --duration 24h --impersonate-service-account <uma conta sua>`. Os
+   passos acima viram Terraform num PR seguinte, se você aprovar o desenho.
+
+### Mudar ou desfazer
+
+- O `tick` pode ser pausado sem perder nada: `gcloud scheduler jobs pause tick --location <região>`. Pausado, ninguém é
+  suspenso, cancelado ou excluído pelo relógio (os prazos esperam) e o plano B da revelação também para; `resume` do job
+  faz tudo o que venceu na passada seguinte.
+- Um cliente de contrato direto (`billing.mode = contract`) nunca é tocado pelo relógio da Stripe; só pelas operações do
+  console e pelo cancelamento que você marcar.
 
 ## Escolhas de segurança desta base
 

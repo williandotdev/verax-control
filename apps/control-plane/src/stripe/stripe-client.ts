@@ -160,6 +160,11 @@ export interface StripeClient {
    * inadimplência: ela prova só que aquela fatura foi paga, não que não há outra em aberto.
    */
   hasOutstandingInvoices(subscriptionId: string): Promise<boolean>;
+  /**
+   * Desde quando a assinatura deve: a finalização (ou a criação) da fatura em aberto mais antiga (`open` ou
+   * `uncollectible`), ou `undefined` sem nenhuma. O `tick` (CP-11) só cancela por falta de pagamento quem ainda deve.
+   */
+  oldestOutstandingInvoiceAt(subscriptionId: string): Promise<Date | undefined>;
   retrieveCharge(id: string): Promise<ChargeSnapshot>;
   retrieveDispute(id: string): Promise<PaymentRiskSnapshot>;
   retrieveEarlyFraudWarning(id: string): Promise<PaymentRiskSnapshot>;
@@ -364,6 +369,18 @@ export class SdkStripeClient implements StripeClient {
       periodEnd: ends.length === 0 ? null : fromUnix(Math.max(...ends)),
       hostedInvoiceUrl: invoice.hosted_invoice_url ?? null,
     };
+  }
+
+  async oldestOutstandingInvoiceAt(subscriptionId: string): Promise<Date | undefined> {
+    let oldest: number | undefined;
+    for (const status of OUTSTANDING_INVOICE_STATUSES) {
+      const page = await this.stripe.invoices.list({ subscription: subscriptionId, status, limit: 100 });
+      for (const invoice of page.data) {
+        const at = invoice.status_transitions?.finalized_at ?? invoice.created;
+        if (typeof at === 'number' && (oldest === undefined || at < oldest)) oldest = at;
+      }
+    }
+    return oldest === undefined ? undefined : new Date(oldest * 1000);
   }
 
   async hasOutstandingInvoices(subscriptionId: string): Promise<boolean> {

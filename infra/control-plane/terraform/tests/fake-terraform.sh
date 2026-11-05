@@ -21,7 +21,23 @@ if [[ -e $dir/fail-$subcommand ]]; then
   exit 1
 fi
 case $subcommand in
-  init) echo 'Terraform has been successfully initialized!' ;;
+  init)
+    env | grep -E '^TF_' | sort >"$dir/env-init"
+    echo 'Terraform has been successfully initialized!'
+    ;;
+  # O estado do cenário: um endereço por linha em `state` (CP-11: `state list` e `state rm` antes do destroy).
+  state)
+    case $1 in
+      list) if [[ -e $dir/state ]]; then cat "$dir/state"; fi ;;
+      rm)
+        address=${*: -1}
+        grep -vxF -- "$address" "$dir/state" >"$dir/state.new" || true
+        mv "$dir/state.new" "$dir/state"
+        printf 'Removed %s\n' "$address"
+        ;;
+      *) exit 64 ;;
+    esac
+    ;;
   plan)
     env | grep -E '^TF_' | sort >"$dir/env-plan"
     for arg in "$@"; do

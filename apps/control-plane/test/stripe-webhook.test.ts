@@ -804,6 +804,58 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       expect(await invoices.list(p.tenantId)).toHaveLength(1);
     });
 
+    it('a VM acompanha (CP-11): unpaid pede node.stop, o pagamento pede node.start; sem VM, nada', async () => {
+      const p = await activeTenant();
+      const withoutVm = await activeTenant('cliente-sem-vm');
+      await tenants.change(p.tenantId, () => ({
+        reason: 'teste',
+        audit: { actor: 'system' },
+        mutate: (t) => ({
+          ...t,
+          provisioning: { ...(t.provisioning ?? { attempts: 0 }), nodeVersionPinnedAt: clock.now() },
+          resources: {
+            nodesProject: 'projeto-dos-nos-demo',
+            zone: 'southamerica-east1-b',
+            instanceName: 'vx-x',
+          },
+        }),
+      }));
+      const before = queue.tasks.length;
+      for (const tenant of [p, withoutVm]) {
+        const subscription = fake.subscriptions.get(tenant.subscriptionId);
+        if (subscription !== undefined) subscription['status'] = 'unpaid';
+        await send('customer.subscription.updated', tenant.subscriptionId);
+        expect((await tenants.require(tenant.tenantId)).state).toBe('suspended');
+      }
+      const lifecycle = (): string[] =>
+        queue.tasks.slice(before).map((task) => `${task.queue}:${task.step}:${task.tenantId}`);
+      expect(lifecycle()).toEqual([`lifecycle:node.stop:${p.tenantId}`]);
+
+      const invoice = renewalInvoice(p, 'paid');
+      const subscription = fake.subscriptions.get(p.subscriptionId);
+      if (subscription !== undefined) subscription['status'] = 'active';
+      await send('invoice.paid', String(invoice['id']));
+      expect((await tenants.require(p.tenantId)).state).toBe('active');
+      expect(lifecycle()).toEqual([
+        `lifecycle:node.stop:${p.tenantId}`,
+        `lifecycle:node.start:${p.tenantId}`,
+      ]);
+
+      // A fila fora do ar não derruba a entrega: o tick da hora seguinte pede de novo.
+      const other = await activeTenant('cliente-fila-x');
+      await tenants.change(other.tenantId, () => ({
+        reason: 'teste',
+        audit: { actor: 'system' },
+        mutate: (t) => ({ ...t, resources: { instanceName: 'vx-y' } }),
+      }));
+      const otherSubscription = fake.subscriptions.get(other.subscriptionId);
+      if (otherSubscription !== undefined) otherSubscription['status'] = 'canceled';
+      queue.failNext(new Error('fila fora do ar'));
+      const id = await send('customer.subscription.deleted', other.subscriptionId);
+      expect(await outcome(id)).toBe('applied');
+      expect((await tenants.require(other.tenantId)).state).toBe('canceled');
+    });
+
     it('quem nunca conectou volta a waiting_customer_connection', async () => {
       const p = await purchase({ paymentStatus: 'paid' });
       await send('checkout.session.completed', p.sessionId);

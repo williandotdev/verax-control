@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, createSign, createVerify, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { gunzipSync } from 'node:zlib';
@@ -57,6 +57,13 @@ function hex(bytes: number): string {
   return randomBytes(bytes).toString('hex');
 }
 
+function rfc3986(value: string): string {
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
 export class FakeCloud {
   readonly googleToken = `ya29.teste-${hex(24)}`;
   readonly cloudflareToken = `cf-teste-${hex(20)}`;
@@ -74,6 +81,12 @@ export class FakeCloud {
   readonly executions = new Map<string, FakeExecution>();
   readonly guestAttributes = new Map<string, Map<string, string>>();
   readonly secretVersions = new Map<string, { payload: string; state: string }[]>();
+  /** VMs (`<projeto>/<zona>/<nome>`) e o estado do Compute; `stop`/`start` passam por STOPPING/STAGING numa consulta. */
+  readonly instances = new Map<string, { status: string }>();
+  /** A chave da conta que assina (`signBlob`): os testes conferem o link assinado com a pública. */
+  readonly signer = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  /** Os pedidos por link assinado que chegaram (método, caminho, assinatura válida ou não). */
+  readonly signedRequests: { method: string; path: string; valid: boolean }[] = [];
   /** Como o domínio novo nasce (o teste muda depois). */
   newDomain: () => FakeDomain = () => ({
     hostState: 'HOST_UNHOSTED',
@@ -111,6 +124,7 @@ export class FakeCloud {
       storage: `${this.base}/storage`,
       run: `${this.base}/run/v2`,
       secretManager: `${this.base}/secrets/v1`,
+      iamCredentials: `${this.base}/iam/v1`,
     };
   }
 
@@ -150,12 +164,14 @@ export class FakeCloud {
       this.executions,
       this.guestAttributes,
       this.secretVersions,
+      this.instances,
       this.versions,
       this.blobs,
     ] as Map<unknown, unknown>[]) {
       map.clear();
     }
     this.foreignSites.clear();
+    this.signedRequests.length = 0;
   }
 
   /** O total de chamadas por método e trecho de caminho. */
@@ -189,6 +205,11 @@ export class FakeCloud {
       authorized,
       body: raw.toString('latin1'),
     });
+    if (url.searchParams.has('X-Goog-Signature') && url.pathname.startsWith('/storage/')) {
+      // Um link assinado V4: sem token, a credencial é a assinatura (conferida aqui por conta própria).
+      this.signedStorageRoute(method, url, req.headers.host ?? '', res);
+      return;
+    }
     if (!authorized) {
       this.send(res, 401, { error: { status: 'UNAUTHENTICATED' } });
       return;
@@ -213,11 +234,67 @@ export class FakeCloud {
     if (cloudflare) this.cloudflareRoute(method, url, json, res);
     else if (url.pathname.startsWith('/firebase/')) this.firebaseRoute(method, url, json, res);
     else if (url.pathname.startsWith('/upload/')) this.uploadRoute(method, url, raw, res);
-    else if (url.pathname.startsWith('/compute/')) this.computeRoute(url, res);
+    else if (url.pathname.startsWith('/compute/')) this.computeRoute(method, url, res);
     else if (url.pathname.startsWith('/storage/')) this.storageRoute(url, res);
     else if (url.pathname.startsWith('/run/')) this.runRoute(method, url, json, res);
     else if (url.pathname.startsWith('/secrets/')) this.secretsRoute(method, url, json, res);
+    else if (url.pathname.startsWith('/iam/')) this.iamRoute(method, url, json, res);
     else this.send(res, 404);
+  }
+
+  // --- Links assinados e IAM Credentials ------------------------------------------------------------------------------
+
+  /** O texto que a conta assinaria para este pedido, montado de novo a partir do que chegou (V4, `host` só). */
+  stringToSignOf(method: string, url: URL, host: string): string {
+    const query = [...url.searchParams.entries()]
+      .filter(([key]) => key !== 'X-Goog-Signature')
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([key, value]) => `${rfc3986(key)}=${rfc3986(value)}`)
+      .join('&');
+    const canonical = [method, url.pathname, query, `host:${host}\n`, 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+    const scope = (url.searchParams.get('X-Goog-Credential') ?? '').split('/').slice(1).join('/');
+    return [
+      'GOOG4-RSA-SHA256',
+      url.searchParams.get('X-Goog-Date') ?? '',
+      scope,
+      createHash('sha256').update(canonical).digest('hex'),
+    ].join('\n');
+  }
+
+  private signedStorageRoute(method: string, url: URL, host: string, res: ServerResponse): void {
+    const verifier = createVerify('RSA-SHA256');
+    verifier.update(this.stringToSignOf(method, url, host));
+    const signature = Buffer.from(url.searchParams.get('X-Goog-Signature') ?? '', 'hex');
+    const valid = verifier.verify(this.signer.publicKey, signature);
+    this.signedRequests.push({ method, path: url.pathname, valid });
+    if (!valid) {
+      this.send(res, 403, { error: { status: 'SIGNATURE_DOES_NOT_MATCH' } });
+      return;
+    }
+    const [bucket, ...rest] = url.pathname.replace(/^\/storage\//, '').split('/');
+    const object = this.objects.get(`${bucket ?? ''}/${rest.map(decodeURIComponent).join('/')}`);
+    if (object === undefined) {
+      this.send(res, 404);
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': object.length });
+    res.end(method === 'HEAD' ? undefined : object);
+  }
+
+  private iamRoute(method: string, url: URL, json: () => Record<string, unknown>, res: ServerResponse): void {
+    const match = /^\/iam\/v1\/projects\/-\/serviceAccounts\/([^/]+):signBlob$/.exec(url.pathname);
+    if (match === null || method !== 'POST') {
+      this.send(res, 404);
+      return;
+    }
+    const raw = json().payload;
+    const payload = Buffer.from(typeof raw === 'string' ? raw : '', 'base64');
+    const signer = createSign('RSA-SHA256');
+    signer.update(payload);
+    this.send(res, 200, {
+      keyId: hex(8),
+      signedBlob: signer.sign(this.signer.privateKey).toString('base64'),
+    });
   }
 
   // --- Cloudflare ----------------------------------------------------------------------------------------------------
@@ -257,6 +334,19 @@ export class FakeCloud {
       return;
     }
     if (
+      (match = /^\/accounts\/[0-9a-f]{32}\/cfd_tunnel\/([0-9a-f-]+)(\/connections)?$/.exec(path)) !== null &&
+      method === 'DELETE'
+    ) {
+      const id = match[1] ?? '';
+      if (!this.tunnels.has(id)) {
+        this.send(res, 404, { success: false, errors: [{ code: 1003 }] });
+        return;
+      }
+      if (match[2] === undefined) this.tunnels.delete(id);
+      ok({ id });
+      return;
+    }
+    if (
       (match = /^\/accounts\/[0-9a-f]{32}\/cfd_tunnel\/([0-9a-f-]+)\/(configurations|token)$/.exec(path)) !==
       null
     ) {
@@ -276,7 +366,11 @@ export class FakeCloud {
       if (method === 'GET') {
         const type = url.searchParams.get('type');
         const name = url.searchParams.get('name');
-        ok([...this.dns.values()].filter((record) => record.type === type && record.name === name));
+        ok(
+          [...this.dns.values()].filter(
+            (record) => (type === null || record.type === type) && record.name === name,
+          ),
+        );
         return;
       }
       const body = json();
@@ -297,6 +391,19 @@ export class FakeCloud {
       }
       this.dns.set(record.id, record);
       ok(record);
+      return;
+    }
+    if (
+      (match = /^\/zones\/[0-9a-f]{32}\/dns_records\/([0-9a-f]{32})$/.exec(path)) !== null &&
+      (method === 'GET' || method === 'DELETE')
+    ) {
+      const existing = this.dns.get(match[1] ?? '');
+      if (existing === undefined) {
+        this.send(res, 404, { success: false, errors: [{ code: 81044 }] });
+        return;
+      }
+      if (method === 'DELETE') this.dns.delete(existing.id);
+      ok(method === 'DELETE' ? { id: existing.id } : existing);
       return;
     }
     if (
@@ -347,6 +454,11 @@ export class FakeCloud {
     }
     if ((match = /^\/projects\/([a-z0-9-]+)\/sites\/([a-z0-9-]+)$/.exec(path)) !== null) {
       const ours = this.sites.get(match[1] ?? '')?.has(match[2] ?? '') === true;
+      if (method === 'DELETE') {
+        if (ours) this.sites.get(match[1] ?? '')?.delete(match[2] ?? '');
+        this.send(res, ours ? 200 : 404, ours ? {} : { error: { status: 'NOT_FOUND' } });
+        return;
+      }
       if (ours) this.send(res, 200, { name: path.slice(1) });
       else
         this.send(res, this.foreignSites.has(match[2] ?? '') ? 403 : 404, { error: { status: 'NOT_FOUND' } });
@@ -372,6 +484,11 @@ export class FakeCloud {
       const domain = this.domains.get(`${site}/${match[3] ?? ''}`);
       if (domain === undefined) {
         this.send(res, 404, { error: { status: 'NOT_FOUND' } });
+        return;
+      }
+      if (method === 'DELETE') {
+        this.domains.delete(`${site}/${match[3] ?? ''}`);
+        this.send(res, 200, { name: `operations/${hex(4)}` });
         return;
       }
       this.send(res, 200, {
@@ -467,7 +584,35 @@ export class FakeCloud {
 
   // --- Compute, Storage, Run, Secret Manager --------------------------------------------------------------------------
 
-  private computeRoute(url: URL, res: ServerResponse): void {
+  private computeRoute(method: string, url: URL, res: ServerResponse): void {
+    const instance =
+      /^\/compute\/v1\/projects\/([a-z0-9-]+)\/zones\/([a-z0-9-]+)\/instances\/([a-z0-9-]+)(\/stop|\/start)?$/.exec(
+        url.pathname,
+      );
+    if (instance !== null) {
+      const key = `${instance[1]}/${instance[2]}/${instance[3]}`;
+      const vm = this.instances.get(key);
+      if (vm === undefined) {
+        this.send(res, 404, { error: { status: 'NOT_FOUND' } });
+        return;
+      }
+      if (instance[4] === undefined && method === 'GET') {
+        const shown = vm.status;
+        // A operação assíncrona termina na consulta seguinte.
+        if (vm.status === 'STOPPING') vm.status = 'TERMINATED';
+        if (vm.status === 'STAGING') vm.status = 'RUNNING';
+        this.send(res, 200, { name: instance[3], status: shown });
+        return;
+      }
+      if (method === 'POST' && instance[4] === '/stop') vm.status = 'STOPPING';
+      else if (method === 'POST' && instance[4] === '/start') vm.status = 'STAGING';
+      else {
+        this.send(res, 404);
+        return;
+      }
+      this.send(res, 200, { name: `operation-${hex(4)}`, status: 'RUNNING' });
+      return;
+    }
     const match =
       /^\/compute\/v1\/projects\/([a-z0-9-]+)\/zones\/([a-z0-9-]+)\/instances\/([a-z0-9-]+)\/getGuestAttributes$/.exec(
         url.pathname,
@@ -582,6 +727,48 @@ export class FakeCloud {
       const latest = this.secretVersions.get(`${match[1]}/${match[2]}`)?.at(-1);
       if (latest === undefined) this.send(res, 404, { error: { status: 'NOT_FOUND' } });
       else this.send(res, 200, { name: url.pathname, state: latest.state });
+      return;
+    }
+    if (
+      (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+)\/versions$/.exec(
+        url.pathname,
+      )) !== null &&
+      method === 'GET'
+    ) {
+      const list = this.secretVersions.get(`${match[1]}/${match[2]}`);
+      if (list === undefined) {
+        this.send(res, 404, { error: { status: 'NOT_FOUND' } });
+        return;
+      }
+      this.send(res, 200, {
+        versions: list
+          .map((version, index) => ({
+            name: `projects/${match?.[1]}/secrets/${match?.[2]}/versions/${index + 1}`,
+            state: version.state,
+          }))
+          .reverse(),
+      });
+      return;
+    }
+    if (
+      (match =
+        /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+)\/versions\/([0-9]+):destroy$/.exec(
+          url.pathname,
+        )) !== null &&
+      method === 'POST'
+    ) {
+      const version = this.secretVersions.get(`${match[1]}/${match[2]}`)?.[Number(match[3]) - 1];
+      if (version === undefined) {
+        this.send(res, 404, { error: { status: 'NOT_FOUND' } });
+        return;
+      }
+      if (version.state === 'DESTROYED') {
+        this.send(res, 400, { error: { status: 'FAILED_PRECONDITION' } });
+        return;
+      }
+      version.state = 'DESTROYED';
+      version.payload = '';
+      this.send(res, 200, { name: url.pathname, state: 'DESTROYED' });
       return;
     }
     this.send(res, 404);

@@ -380,6 +380,14 @@ const envShape = {
   MAIL_FROM: mailbox.optional(),
   // Nunca vai a log: só a métrica de alerta cita "owner".
   OWNER_ALERT_EMAIL: email.optional(),
+  // A conta que assina o link da exportação sob pedido (CP-11) com `signBlob`: só `storage.objects.get` nos backups
+  // dos nós, e o cp-worker só assina como ela (GUIA, "Exportação sob pedido"). Sem ela, a exportação responde 503: o
+  // plano de controle não alcança os backups de nenhum cliente até o responsável decidir criar a conta.
+  EXPORT_SIGNER_SA_EMAIL: serviceAccountEmail.optional(),
+  // A conta do console do responsável (`cp-admin`, CP-11): o cp-worker aceita o token dela só nas operações do
+  // responsável (`delete-now`, `export`, `resume`, cancelar, suspender e reativar um contrato direto), com quem agiu no
+  // corpo. O console usa `WORKER_URL` para chamar.
+  ADMIN_SA_EMAIL: serviceAccountEmail.optional(),
 };
 
 export type EnvKey = keyof typeof envShape;
@@ -404,6 +412,7 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
         'SMTP_USER',
         'MAIL_FROM',
         'BOOTSTRAP_SUPPORT_EMAIL',
+        'EXPORT_SIGNER_SA_EMAIL',
         'SMTP_HOST_NODES',
         'SMTP_USER_NODES',
       ],

@@ -12,6 +12,11 @@ import { InternalAccessController } from '../internal/internal-access.controller
 import { InternalStepsController } from '../internal/internal-steps.controller.js';
 import { STEP_HANDLERS, type StepHandler } from '../internal/step-handler.js';
 import { WorkerCallerGuard } from '../internal/worker-caller.js';
+import {
+  LIFECYCLE_CONTROLLERS,
+  LIFECYCLE_PROVIDERS,
+  LIFECYCLE_STEP_CLASSES,
+} from '../lifecycle/lifecycle.module.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
 import { NodeMailSyncController } from '../provisioning/node-mail.js';
 import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
@@ -63,6 +68,7 @@ export class AccessWorkerModule {
         InternalStepsController,
         ProvisioningResumeController,
         NodeMailSyncController,
+        ...LIFECYCLE_CONTROLLERS,
       ],
       providers: [
         {
@@ -83,14 +89,21 @@ export class AccessWorkerModule {
         RevealEmailService,
         DestroyBootstrapStep,
         RevealEmailStep,
+        ...LIFECYCLE_PROVIDERS,
         {
           provide: STEP_HANDLERS,
           useFactory: (
             destroy: StepHandler,
             revealEmail: StepHandler,
             provisioning: readonly StepHandler[],
-          ): StepHandler[] => [destroy, revealEmail, ...provisioning],
-          inject: [DestroyBootstrapStep, RevealEmailStep, PROVISIONING_STEP_HANDLERS],
+            ...lifecycle: StepHandler[]
+          ): StepHandler[] => [destroy, revealEmail, ...provisioning, ...lifecycle],
+          inject: [
+            DestroyBootstrapStep,
+            RevealEmailStep,
+            PROVISIONING_STEP_HANDLERS,
+            ...LIFECYCLE_STEP_CLASSES,
+          ],
         },
         {
           provide: ID_TOKEN_KEY_SOURCE,

@@ -62,7 +62,8 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
         WebhookModule,
       ];
     case 'worker':
-      return [];
+      // O `tick` (CP-11) cancela na Stripe a assinatura de quem passou 30 dias suspenso sem pagar.
+      return [StripeModule.forRoot({ stripeApi: options.stripeApi })];
     case 'admin':
       return [AdminModule.forRoot({ iapKeySource: options.iapKeySource })];
   }

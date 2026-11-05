@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   HttpCode,
   HttpStatus,
@@ -12,12 +13,13 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { z } from 'zod';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { isNodeSmtpPassword } from '../common/config/env.schema.js';
 import { ApiError } from '../common/http/api-error.js';
 import { registerLiveSecret } from '../common/logger/sanitize.js';
-import { WorkerCallerGuard, WorkerCallers, workerCallerOf } from '../internal/worker-caller.js';
+import { ownerActorOf, WorkerCallerGuard, WorkerCallers } from '../internal/worker-caller.js';
 import { TenantStore } from '../tenants/tenant-store.js';
 import { slugSchema, type TenantState } from '../tenants/tenant.schema.js';
 import { CloudApiError } from './cloud-http.js';
@@ -232,27 +234,37 @@ function requestIdOf(req: Request): string | undefined {
   return typeof id === 'string' ? id : undefined;
 }
 
+const syncBodySchema = z.strictObject({ actor: z.email().max(254).optional() });
+
 /**
- * `POST /internal/nodes/smtp-password/sync[?after=<subdomínio>]`: só o responsável (`OWNER_PRINCIPALS`), como o
- * `resume`. Responde com as contagens, os ids dos clientes cujo cofre recusou a gravação, `complete` e, quando o tempo
- * da chamada acabou com clientes pela frente, `next` (o `after` da chamada seguinte). A senha nunca sai.
+ * `POST /internal/nodes/smtp-password/sync[?after=<subdomínio>]`: o responsável, direto (`OWNER_PRINCIPALS`) ou pelo
+ * console (`cp-admin`, `ADMIN_SA_EMAIL`, com quem agiu em `{actor}`), como o `resume`. Responde com as contagens, os ids
+ * dos clientes cujo cofre recusou a gravação, `complete` e, quando o tempo da chamada acabou com clientes pela frente,
+ * `next` (o `after` da chamada seguinte). A senha nunca sai.
  */
 @Controller('internal/nodes')
 @UseGuards(WorkerCallerGuard)
-@WorkerCallers('owner')
+@WorkerCallers('owner', 'console')
 export class NodeMailSyncController {
-  constructor(private readonly sync: NodeMailSyncService) {}
+  constructor(
+    private readonly sync: NodeMailSyncService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
   @Post('smtp-password/sync')
   @HttpCode(HttpStatus.OK)
-  async syncPassword(@Req() req: Request, @Query('after') after?: unknown): Promise<NodeMailSyncResult> {
+  async syncPassword(
+    @Req() req: Request,
+    @Body() body: unknown,
+    @Query('after') after?: unknown,
+  ): Promise<NodeMailSyncResult> {
     if (after !== undefined && (typeof after !== 'string' || !slugSchema.safeParse(after).success)) {
       throw new ApiError(HttpStatus.BAD_REQUEST, 'Cursor inválido', 'invalid_cursor');
     }
-    return this.sync.sync(
-      `owner:${workerCallerOf(req) ?? 'desconhecido'}`,
-      typeof after === 'string' ? after : undefined,
-      requestIdOf(req),
-    );
+    const parsed = syncBodySchema.safeParse(body ?? {});
+    if (!parsed.success) throw new ApiError(HttpStatus.BAD_REQUEST, 'Pedido inválido', 'invalid_request');
+    const actor = ownerActorOf(req, this.config, parsed.data.actor);
+    if (actor === undefined) throw new ApiError(HttpStatus.FORBIDDEN, 'Sem permissão', 'actor_not_owner');
+    return this.sync.sync(actor, typeof after === 'string' ? after : undefined, requestIdOf(req));
   }
 }

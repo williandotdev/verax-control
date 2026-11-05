@@ -1,9 +1,17 @@
+import { createVerify } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { FakeCloud } from '../../test/support/fake-cloud.js';
 import { scrubString } from '../common/logger/sanitize.js';
 import { CloudApiError } from './cloud-http.js';
 import { CloudflareApi } from './cloudflare-api.js';
-import { ComputeApi, FirebaseHostingApi, RunJobsApi, SecretVersionsApi, StorageApi } from './google-apis.js';
+import {
+  ComputeApi,
+  FirebaseHostingApi,
+  IamCredentialsApi,
+  RunJobsApi,
+  SecretVersionsApi,
+  StorageApi,
+} from './google-apis.js';
 
 const ACCOUNT = '0'.repeat(32);
 const ZONE = '1'.repeat(32);
@@ -298,6 +306,97 @@ describe('clientes REST do provisionamento', () => {
       expect(error.status).toBe(401);
       expect(error.denied).toBe(true);
       expect(error.message).not.toContain('ya29');
+    });
+  });
+
+  describe('ciclo de vida (CP-11)', () => {
+    it('Compute: o estado da VM, parar e ligar; VM inexistente é undefined', async () => {
+      const compute = new ComputeApi(tokens, fetch, cloud.endpoints.compute);
+      expect(await compute.instanceStatus('nos-demo', 'southamerica-east1-b', 'vx-a')).toBeUndefined();
+      cloud.instances.set('nos-demo/southamerica-east1-b/vx-a', { status: 'RUNNING' });
+      await compute.setPower('nos-demo', 'southamerica-east1-b', 'vx-a', 'stop');
+      expect(await compute.instanceStatus('nos-demo', 'southamerica-east1-b', 'vx-a')).toBe('STOPPING');
+      expect(await compute.instanceStatus('nos-demo', 'southamerica-east1-b', 'vx-a')).toBe('TERMINATED');
+      await compute.setPower('nos-demo', 'southamerica-east1-b', 'vx-a', 'start');
+      expect(cloud.count('POST', '/instances/vx-a/start')).toBe(1);
+      expect(cloud.requests.every((request) => request.authorized)).toBe(true);
+    });
+
+    it('Secret Manager: lista as versões (número e estado, sem conteúdo) e destrói; repetir não é erro', async () => {
+      const secrets = new SecretVersionsApi(tokens, fetch, cloud.endpoints.secretManager);
+      expect(await secrets.listVersions('nos-demo', 'vx-a-credentials-key')).toBeUndefined();
+      cloud.secretVersions.set('nos-demo/vx-a-credentials-key', [
+        { payload: 'conteudo-1', state: 'DISABLED' },
+        { payload: 'conteudo-2', state: 'ENABLED' },
+      ]);
+      const versions = await secrets.listVersions('nos-demo', 'vx-a-credentials-key');
+      expect(versions).toEqual([
+        { id: '2', state: 'ENABLED' },
+        { id: '1', state: 'DISABLED' },
+      ]);
+      await secrets.destroyVersion('nos-demo', 'vx-a-credentials-key', '2');
+      await secrets.destroyVersion('nos-demo', 'vx-a-credentials-key', '2');
+      await secrets.destroyVersion('nos-demo', 'vx-a-credentials-key', '9');
+      expect(cloud.secretVersions.get('nos-demo/vx-a-credentials-key')?.map((v) => v.state)).toEqual([
+        'DISABLED',
+        'DESTROYED',
+      ]);
+      await expect(secrets.destroyVersion('nos-demo', 'vx-a-credentials-key', '../1')).rejects.toThrow(
+        TypeError,
+      );
+      expect(cloud.requests.some((request) => request.path.includes(':access'))).toBe(false);
+    });
+
+    it('Firebase: apaga o domínio e o site; já apagados (404) contam como feitos', async () => {
+      cloud.sites.set('paineis-demo', new Set(['vxc-a-abc123']));
+      cloud.domains.set('vxc-a-abc123/a.control.example.com', {
+        hostState: 'HOST_ACTIVE',
+        ownershipState: 'OWNERSHIP_ACTIVE',
+        certState: 'CERT_ACTIVE',
+        desired: [],
+      });
+      expect(await firebase.deleteCustomDomain('paineis-demo', 'vxc-a-abc123', 'a.control.example.com')).toBe(
+        true,
+      );
+      expect(await firebase.deleteCustomDomain('paineis-demo', 'vxc-a-abc123', 'a.control.example.com')).toBe(
+        false,
+      );
+      expect(await firebase.deleteSite('paineis-demo', 'vxc-a-abc123')).toBe(true);
+      expect(await firebase.deleteSite('paineis-demo', 'vxc-a-abc123')).toBe(false);
+    });
+
+    it('Cloudflare: apaga o túnel (as conexões antes) e um registro pelo id; ausentes contam como feitos', async () => {
+      const tunnel = await cloudflare.createTunnel('vx-cliente-demo-a');
+      await cloudflare.deleteTunnel(tunnel?.id ?? '');
+      await cloudflare.deleteTunnel(tunnel?.id ?? '');
+      expect(await cloudflare.findTunnel('vx-cliente-demo-a')).toBeUndefined();
+      const deletes = cloud.requests
+        .filter((r) => r.method === 'DELETE')
+        .map((r) => r.path.split('/').at(-1));
+      expect(deletes.slice(0, 2)).toEqual(['connections', tunnel?.id]);
+      const id = await cloudflare.ensureDnsRecord(
+        { type: 'A', name: 'a.control.example.com', content: '203.0.113.10', proxied: false },
+        'teste',
+      );
+      expect((await cloudflare.listDnsRecordsByName('a.control.example.com')).map((r) => r.id)).toEqual([id]);
+      expect((await cloudflare.getDnsRecord(id))?.name).toBe('a.control.example.com');
+      await cloudflare.deleteDnsRecord(id);
+      await cloudflare.deleteDnsRecord(id);
+      expect(await cloudflare.getDnsRecord(id)).toBeUndefined();
+      await expect(cloudflare.deleteDnsRecord('../zones')).rejects.toThrow(TypeError);
+      await expect(cloudflare.deleteTunnel('../../accounts')).rejects.toThrow(TypeError);
+    });
+
+    it('IAM Credentials: signBlob devolve a assinatura RSA SHA-256 da conta, sem chave fora do Google', async () => {
+      const iam = new IamCredentialsApi(tokens, fetch, cloud.endpoints.iamCredentials);
+      const payload = Buffer.from('texto a assinar');
+      const signature = await iam.signBlob('cp-exporter@projeto-exemplo.iam.gserviceaccount.com', payload);
+      const verifier = createVerify('RSA-SHA256');
+      verifier.update(payload);
+      expect(verifier.verify(cloud.signer.publicKey, signature)).toBe(true);
+      expect(cloud.requests.at(-1)?.path).toContain(
+        'cp-exporter%40projeto-exemplo.iam.gserviceaccount.com:signBlob',
+      );
     });
   });
 });
