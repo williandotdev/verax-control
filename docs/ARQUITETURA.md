@@ -598,16 +598,17 @@ A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
 ## Logs do Cloudflare
 
-_(fase 2: a auditoria está no código, no PR-12; os eventos de segurança vêm no PR-13)_
+_(fase 2: a auditoria está no código desde o PR-12, e os eventos de segurança, desde o PR-13)_
 
 O Cloudflare é lido pela API dele, por um coletor nativo no worker, sem o Wazuh. Vale para o nó da Verax e para os
 nós de clientes:
 
 - **Auditoria da conta** (audit logs v2), com cursor por conta (detalhes abaixo);
-- **Eventos de segurança do WAF**, pela API GraphQL de analytics, em janelas de 15 min. O Cloudflare amostra esses
-  eventos, então as contagens são aproximadas. Ele guarda os eventos por uma janela que vale por zona e depende do
-  plano (`notOlderThan`, de até 31 dias). Uma parada do nó mais curta que essa janela não perde dados; numa parada
-  mais longa, o que passou da janela se perde.
+- **Eventos de segurança das zonas** (WAF, regras próprias, limite de taxa, DDoS de camada 7, bots), pela API GraphQL
+  de analytics, em janelas de 15 min (detalhes abaixo). O Cloudflare amostra esses eventos, então as contagens são
+  aproximadas. Ele os guarda por um prazo que vale por zona (`notOlderThan`; a documentação diz ao menos 31 dias em
+  todos os planos). Uma parada do nó mais curta que esse prazo não perde dados; numa parada mais longa, o que passou
+  dele se perde.
 
 As regras são próprias (faixa 9903xx), com título em português e MITRE. O token é de conta, **só de leitura**, com
 três permissões: `Account Settings: Read` (a auditoria da conta), `Zone: Read` (a lista de zonas) e `Analytics: Read`
@@ -655,6 +656,63 @@ voltar depois como modo completo, sem amostragem.
   o Cloudflare com aquele token até um admin colar outro (o que recomeça a conexão), e o cartão explica o motivo. Toda
   escrita da conexão confere, sob o lock da credencial, que o token guardado ainda é o usado na leitura.
 - **Medidor:** os bytes de cada página lida entram no uso do cliente (`IngestUsage`, fonte `cloudflare`), depois de o
+  cursor avançar.
+
+### Eventos de segurança (`apps/api/src/cloudflare/`, PR-13)
+
+- **Onde roda:** na mesma tarefa `cloudflare` do worker, como o terceiro fluxo de cada conta (`CollectorCursor`
+  `cloudflare_security`), com o mesmo token do cofre e o mesmo cliente HTTP (host fixo). Uma conta por vez: a
+  conferência, a auditoria e os eventos nunca disputam o token.
+- **O que lê:** `POST /graphql`, o conjunto de dados `firewallEventsAdaptiveGroups`, agregado por `clientIP`, `action`,
+  `source` e `clientRequestHTTPHost`, em ordem decrescente de contagem. As zonas vêm de `GET /zones` da conta
+  (`Zone: Read`), filtradas pela lista cadastrada (vazia é todas, até 50). Antes, o nó `settings` de cada zona diz se o
+  plano dá o conjunto de dados (`enabled`), o maior intervalo por consulta (`maxDuration`), o máximo de linhas
+  (`maxPageSize`) e até onde se pode voltar (`notOlderThan`).
+- **Janelas e consultas:** janelas de 15 min alinhadas em UTC, lidas 5 min depois de fechar; a primeira leitura pega
+  24 h, e cada execução recupera no máximo 24 h, nunca antes da retenção da zona (com 15 min de folga). Cada janela é
+  lida em lotes de até 10 zonas (`zoneTag_in`), uma consulta por lote, com até 1000 linhas por zona (ou o
+  `maxPageSize`, se menor) e, no mesmo pedido, o total das 24 h anteriores (a base da regra de pico, dentro do
+  `maxDuration`). Os valores vão nas variáveis da consulta; só o limite de linhas entra como literal inteiro conferido.
+  A resposta 200 com `errors[]` é erro, mesmo com parte dos dados.
+- **Cursor:** cada lote é gravado inteiro (achados, exceção e incidente) antes do pedido seguinte; o progresso da
+  janela fica na continuação do cursor, e o cursor vai para o fim da janela só quando o último lote dela está gravado.
+  Uma falha no meio (da origem, do banco, do orçamento de tempo) recomeça do lote que não terminou, mesmo na primeira
+  leitura e mesmo depois de outra janela fechar, e a chave única do achado não deixa a releitura duplicar. Lida a última janela, a próxima leitura é quando a seguinte fechar há 5 min.
+- **Orçamento de consultas:** o Cloudflare aceita 300 consultas GraphQL a cada 5 min por token, e cada zona de cada nó
+  conta uma. O coletor se limita a 250: o gasto fica em baldes de um minuto na continuação do cursor, gravado antes de
+  cada envio (também das novas tentativas do cliente em 5xx, rede e tempo esgotado), e vale a soma dos últimos 6
+  minutos (qualquer intervalo de 5 min cabe neles). Sem orçamento, a
+  execução para e marca a próxima leitura para quando ele voltar.
+- **Falhas e conexão:** o 429 (do HTTP ou a mensagem "rate limiter budget depleted" no corpo) esvazia o orçamento e
+  adia os três fluxos da conta até o `retry-after` (5 min sem ele); o 429 da auditoria ou da conferência também adia os
+  eventos. O 401 para a coleta, como na auditoria. Token sem `Analytics: Read` (`security_events_forbidden`), plano
+  sem o conjunto de dados em nenhuma zona (`security_events_not_entitled`) e token sem `Zone: Read`
+  (`zones_forbidden`) ficam no cartão da conta, sem parar a auditoria, e o fluxo confere de novo a cada hora (sem laço
+  de erro). Uma zona sem acesso não esconde as outras: o lote recusado é conferido zona a zona, e só as zonas com o
+  conjunto de dados são lidas. A janela além da retenção (`cannot request data older than`) é pulada. Resposta fora do
+  formato (zod), zona que não foi pedida ou repetida e erro desconhecido recusam a resposta inteira, e o cursor recua.
+  As mensagens de erro do GraphQL só servem para escolher o código; nada delas vai para o log ou para o banco.
+- **Regras (990330 a 990335)** e agregação, em `cloudflare-security-rules.ts` (ação e origem comparadas só por letras e
+  números em minúsculas, porque o GraphQL e o Logpush escrevem diferente):
+
+  | ID     | Nível  | Casa com                                                                                      |
+  | ------ | ------ | --------------------------------------------------------------------------------------------- |
+  | 990330 | 7 / 10 | um IP com 500 bloqueios ou mais na janela (10 a partir de 5000), sem os da proteção DDoS      |
+  | 990331 | 7      | um IP barrado 20 vezes ou mais pelo WAF gerenciado (bloqueio ou desafio)                      |
+  | 990332 | 7 / 10 | limite de taxa disparado por um IP; 10 quando foi contra rota de login                        |
+  | 990333 | 10     | 1000 requisições ou mais mitigadas pela proteção DDoS de camada 7 na zona                     |
+  | 990334 | 7      | 500 eventos ou mais na zona e 10 vezes a média por janela das 24 h anteriores                 |
+  | 990335 | 4      | um IP com 50 desafios resolvidos ou mais e 90% de acerto (**desligada**: ligar com dado real) |
+
+  Uma rajada nunca vira um achado por requisição: cada regra vira no máximo um achado por zona, IP e janela, com a
+  contagem no nome do evento (`6000 requisições bloqueadas em 15 min`). Por regra, zona e janela, só os 10 IPs com
+  mais eventos têm achado próprio; os demais acima do limite viram um achado de resumo. A rota de login da 990332 vem
+  de uma consulta a mais (os IPs com limite disparado e as rotas deles), só quando a janela teve limite de taxa; se ela
+  falhar ou o orçamento não cobrir, o achado sai com o nível 7. O achado é do cliente da conta (`source='cloudflare'`,
+  `logSource='cloudflare_waf'`, chave `cf/<conta>/sec:<sha256(regra|zona|IP|início da janela)[0..40]>`), com a zona
+  em `resource` e o IP em `sourceIp`, e passa pela exceção do cliente (por IP ou pela zona) e pelo incidente.
+
+- **Medidor:** os bytes de cada resposta GraphQL e as linhas lidas entram no uso do cliente (`cloudflare`), depois de o
   cursor avançar.
 
 ## Agentes nas instâncias do cliente

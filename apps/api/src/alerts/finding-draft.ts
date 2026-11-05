@@ -36,8 +36,8 @@ export interface FindingDraft {
    * regra; nos agentes, a descrição. O resumo do incidente em português vem do dicionário da T7.9.
    */
   title: string;
-  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit` ou `wazuh_agent`. */
-  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'wazuh_agent';
+  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`. */
+  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'cloudflare_waf' | 'wazuh_agent';
   eventName: string | null;
   region: string | null;
   resource: string | null;

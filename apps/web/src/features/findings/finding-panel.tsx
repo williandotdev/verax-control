@@ -57,6 +57,7 @@ export function FindingPanel({ id, onClose }: { id: string | null; onClose: () =
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
   gcp_audit: 'Regra (auditoria da GCP)',
   cloudflare_audit: 'Regra (auditoria do Cloudflare)',
+  cloudflare_waf: 'Regra (eventos de segurança do Cloudflare)',
   wazuh_agent: 'Regra (agente do Wazuh)',
 };
 

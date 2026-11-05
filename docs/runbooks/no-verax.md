@@ -102,7 +102,7 @@ e as privadas ao worker, num arquivo em memória (`/run/verax/vault/worker-keys`
 nunca por variável de ambiente (o Docker grava o ambiente dos contêineres no disco). A parada (`start.sh down`) apaga
 a pasta.
 
-### Coleta do Cloudflare (auditoria da conta)
+### Coleta do Cloudflare (auditoria da conta e eventos de segurança)
 
 O coletor da auditoria do Cloudflare roda no worker e lê o token guardado no cofre, então pede o cofre ligado (acima).
 Para ligar, acrescente `cloudflare` às fontes do `node.conf` (`SYNC_SOURCES=gcp,cloudflare` no nó da Verax,
@@ -122,6 +122,13 @@ do painel (só leitura; filtro de IP do token com o IP de saída do nó).
   por exemplo). Reative a versão (seção abaixo) ou peça para colarem o token de novo.
 - **`rate_limited`:** o Cloudflare limitou o token (1200 requisições a cada 5 minutos, somando tudo que usa o mesmo
   token); o coletor espera o `retry-after`. Se repetir, confira se o mesmo token não está em uso em outro lugar.
+- **Eventos de segurança (GraphQL, PR-13):** rodam na mesma tarefa, sem configuração a mais. No `report`,
+  `securityWindows` (janelas de 15 min lidas), `securityQueries` (consultas GraphQL; o coletor gasta no máximo 250 a
+  cada 5 min por token, e `budgetWaits` conta as vezes que parou nesse limite) e `securitySkippedZones`. No cartão,
+  `security_events_forbidden` (o token sem `Analytics: Read`), `security_events_not_entitled` (nenhuma zona com os
+  eventos no plano) e `zones_forbidden` (sem `Zone: Read`) não param a auditoria, e o fluxo confere de novo a cada
+  hora. Nada a fazer no nó: o admin do cliente ajusta o token no Cloudflare (o link do painel já marca as três
+  permissões) e cola de novo, se preciso.
 
 ### Chave do cofre: trocar, reativar ou gravar de novo
 
