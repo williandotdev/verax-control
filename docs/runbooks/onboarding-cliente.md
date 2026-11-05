@@ -74,17 +74,26 @@ Na reunião:
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
-6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta e as regiões. O detalhe da conta mostra o passo
-   a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
+6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
+   no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
+   da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da
+   pilha). O painel confere as regras de nome do S3 e recusa um bucket que já é de outro cliente. Depois do cadastro,
+   a lista muda no detalhe da conta, em **Buckets de log** (quem só lê vê a lista, sem o formulário). O detalhe mostra
+   o passo a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
    - **Baixar o template:** o painel serve o próprio `verax-control-reader.yaml` do repositório, sem nada preenchido;
    - no CloudFormation, _Create stack_ → _Upload a template file_, a pilha `verax-control-reader` com os três valores
-     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), os ARNs dos
-     buckets em `LogBucketArns` e as chaves KMS em `LogKmsKeyArns`; a tela também traz o comando da CLI;
+     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), o
+     `LogBucketArns` com os ARNs dos buckets cadastrados e as chaves KMS em `LogKmsKeyArns`; a tela também traz o
+     comando da CLI, que cria a pilha ou atualiza a que já existe;
    - **Verificar conexão:** o painel pede ao worker do nó que entre no papel e leia os buckets. A resposta chega em até
      30 s, ou em até 10 min se o papel recém-criado ainda não valer no IAM, e cada erro diz o que conferir (pilha
      ainda não criada, valor errado, papel feito pelo assistente "Web identity → Google" do console, SCP ou RCP).
 
-   Os buckets da conta ainda não têm campo no painel: vão pela API (`PATCH /v1/cloud-accounts/:id`, com `buckets`).
+   **Mudar os buckets depois:** salve a lista nova em **Buckets de log**. Se os nomes mudaram, o painel avisa que falta
+   atualizar a pilha (o `LogBucketArns` e o comando da CLI já trazem a lista nova; um bucket novo com SSE-KMS pede
+   também a chave em `LogKmsKeyArns`), a conexão volta a "Aguardando" e um "Verificar" pendente é descartado. Nada é
+   conferido na AWS sozinho: depois de atualizar a pilha, o cliente clica em **Verificar conexão**. Trocar só a fonte de
+   um bucket (os mesmos nomes) não mexe na pilha nem na conexão.
    **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`): confira
    com o cliente no CloudTrail da conta dele, depois que o nó começar a ler (PR-V4'), as entradas
    `AssumeRoleWithWebIdentity` com o ID da conta de serviço do nó.
