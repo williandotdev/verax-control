@@ -3,9 +3,13 @@
 # (infra/node copiada para a VM pelo deploy.sh). Pode rodar de novo: o que já existe (dados, certificados, senhas)
 # fica como está.
 #   install.sh --version <commit> --api-digest <sha256:...> --migrate-digest <sha256:...> [--config <node.conf>]
-# Os digests chegam já conferidos pelo deploy.sh (atestação de origem do workflow Imagens do nó, na main): a VM não
-# confia em tag do registro, só no conteúdo exato (o digest é o hash da imagem).
-# --config  configuração do nó (só na primeira vez; depois fica em /etc/verax/node.conf)
+#              [--release node-vX.Y.Z]
+# Os digests chegam já conferidos pelo deploy.sh (atestação de origem do workflow Imagens do nó, na main) ou pela
+# instalação sem operador (boot-install.sh: o manifesto assinado da versão): a VM não confia em tag do registro, só no
+# conteúdo exato (o digest é o hash da imagem).
+# --config   configuração do nó (só na primeira vez; depois fica em /etc/verax/node.conf)
+# --release  a versão do release do GitHub de onde o pacote veio (a instalação sem operador). Vai para o images.env como
+#            NODE_RELEASE, ao lado do commit (NODE_VERSION). O deploy.sh não passa: sem ela, o images.env é o de sempre.
 set -euo pipefail
 umask 077
 
@@ -14,18 +18,25 @@ version=''
 api_digest=''
 migrate_digest=''
 config=''
+release=''
 while (($#)); do
   case $1 in
     --version) version=$2; shift 2 ;;
     --api-digest) api_digest=$2; shift 2 ;;
     --migrate-digest) migrate_digest=$2; shift 2 ;;
     --config) config=$2; shift 2 ;;
+    --release) release=$2; shift 2 ;;
     *) echo "Opção desconhecida: $1" >&2; exit 2 ;;
   esac
 done
 [[ $version =~ ^[0-9a-f]{40}$ ]] || { echo 'Informe --version com o commit (40 caracteres hexadecimais).' >&2; exit 2; }
 [[ $api_digest =~ ^sha256:[0-9a-f]{64}$ && $migrate_digest =~ ^sha256:[0-9a-f]{64}$ ]] ||
   { echo 'Informe --api-digest e --migrate-digest (sha256:...), conferidos pelo deploy.sh.' >&2; exit 2; }
+# O formato das tags do workflow Versão do nó (scripts/node-release.sh).
+if [[ -n $release && ! $release =~ ^node-v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$ ]]; then
+  echo 'Informe --release no formato node-vX.Y.Z.' >&2
+  exit 2
+fi
 [[ $(id -u) == 0 ]] || { echo 'Rode como root.' >&2; exit 2; }
 
 echo '== Docker Engine (repositório oficial, chave conferida)'
@@ -290,12 +301,16 @@ if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then
 fi
 
 echo '== Imagens (pelo digest conferido)'
-# O Docker baixa do registro com a identidade da VM (só leitura).
-gcloud auth configure-docker "${IMAGES_REPOSITORY%%/*}" --quiet >/dev/null 2>&1
+# O Docker baixa do registro com a identidade da VM (só leitura). O GHCR (as mesmas imagens, com o mesmo digest,
+# públicas desde o SH-02) é anônimo: o ajudante do gcloud mandaria a credencial do Google para lá, e o pull falharia.
+if [[ $IMAGES_REPOSITORY != ghcr.io/* ]]; then
+  gcloud auth configure-docker "${IMAGES_REPOSITORY%%/*}" --quiet >/dev/null 2>&1
+fi
 {
   echo "API_IMAGE=$IMAGES_REPOSITORY/api@$api_digest"
   echo "MIGRATE_IMAGE=$IMAGES_REPOSITORY/migrate@$migrate_digest"
   echo "NODE_VERSION=$version"
+  if [[ -n $release ]]; then echo "NODE_RELEASE=$release"; fi
 } >/etc/verax/images.env
 chmod 0640 /etc/verax/images.env
 
@@ -336,4 +351,4 @@ if [[ ! -s /run/verax/cloudflared.env ]]; then
   echo 'AVISO: o nó subiu sem o túnel do Cloudflare (o cofre do token ainda não tem valor). Grave o token e rode:' \
     'sudo systemctl restart verax-node'
 fi
-echo "Nó na versão $version."
+echo "Nó na versão $version${release:+ ($release)}."

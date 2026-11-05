@@ -31,8 +31,23 @@ locals {
 
   # Nó novo: o script do módulo vai na chave `startup-script` dos metadados, que muda sem recriar a VM. O nó criado
   # antes do módulo mantém o `metadata_startup_script` dele (veja `legacy_startup_script`).
+  #
+  # Instalação sem operador (`unattended_install`, PR-N7; só o envs/tenant liga): o script é o unattended.sh.tftpl, que
+  # leva o mesmo script de boot (swap cifrado e kernel) e mais o instalador, o verificador do manifesto e as chaves
+  # públicas de release do pacote do nó (infra/node, no mesmo repositório), e instala o nó a partir do release assinado
+  # da versão dos metadados. Desligada (o padrão), a chave `startup-script` é exatamente a de antes.
+  prepare_script = templatefile("${path.module}/startup.sh.tftpl", { node_profile = var.node_profile })
+  node_package   = "${path.module}/../../../node"
+  release_keys   = sort(fileset("${local.node_package}/keys", "release-*.pem"))
+  unattended_script = templatefile("${path.module}/unattended.sh.tftpl", {
+    node_profile = var.node_profile
+    prepare      = base64encode(local.prepare_script)
+    installer    = base64encode(file("${local.node_package}/bin/boot-install.sh"))
+    verifier     = base64encode(file("${local.node_package}/bin/verify-release.sh"))
+    release_keys = join("\n", [for name in local.release_keys : "${name} ${base64encode(file("${local.node_package}/keys/${name}"))}"])
+  })
   startup_metadata = var.legacy_startup_script == null ? {
-    startup-script = templatefile("${path.module}/startup.sh.tftpl", { node_profile = var.node_profile })
+    startup-script = var.unattended_install ? local.unattended_script : local.prepare_script
   } : {}
 
   # Atributos de convidado (`guest_attributes`): o worker do nó grava o próprio estado no espaço `verax/` pelo
@@ -244,6 +259,11 @@ resource "google_compute_instance" "node" {
     precondition {
       condition     = contains(local.profile.machine_types, local.machine_type)
       error_message = "Tamanho de VM fora do perfil: lean aceita e2-micro, e2-small e e2-medium; standard aceita e2-standard-2 e e2-standard-4."
+    }
+    # Sem chave de release, a instalação sem operador recusaria todo manifesto.
+    precondition {
+      condition     = !var.unattended_install || length(local.release_keys) > 0
+      error_message = "A instalação sem operador precisa de ao menos uma chave pública de release em infra/node/keys (release-*.pem)."
     }
   }
 }

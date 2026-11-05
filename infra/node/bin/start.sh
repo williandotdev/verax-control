@@ -9,6 +9,8 @@
 #   start.sh customer-bootstrap
 #                        modo cliente (CUSTOMER_MODE=true; verax-customer-bootstrap.service): o primeiro acesso do nó
 #                        de cliente, com as entradas dos metadados da VM e as senhas gravadas no Secret Manager
+#   start.sh tunnel      depois de um `up` sem o token do túnel: relê só o cofre do token e, com valor, sobe o
+#                        cloudflared (sai com 3 enquanto o cofre não tem valor); a instalação sem operador o usa
 #   start.sh render      só monta os arquivos de ambiente (o que o up faz antes de subir; usado pelo teste do pacote)
 #
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
@@ -687,6 +689,23 @@ up() {
   fi
 }
 
+# Só o túnel, depois de um `up` que subiu sem ele (o cofre do token ainda vazio): no nó de cliente, o plano de controle
+# grava o token minutos depois de a VM nascer, e a instalação sem operador (boot-install.sh, PR-N7) chama este comando a
+# cada 60 s até ele subir. Relê o cofre como o render e, com valor, reescreve o cloudflared.env e sobe só o cloudflared
+# (`--no-deps`: a API, o worker e o Wazuh ficam como estão; o `restart` do verax-node pararia tudo, o Wazuh junto). Sai
+# com 3 enquanto o cofre não tem valor e com 1 em qualquer outro erro, como o external_secret.
+tunnel() {
+  if [[ ! -f $run/memory.env || ! -f $run/api.env ]]; then
+    echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
+    return 1
+  fi
+  local token status=0
+  token=$(external_secret cloudflare-tunnel-token) || status=$?
+  if ((status != 0)); then return "$status"; fi
+  write_env cloudflared.env "TUNNEL_TOKEN=$token"
+  compose up --detach --no-deps cloudflared
+}
+
 # A parada tira as chaves do cofre da memória junto com os contêineres, mesmo que o Compose falhe, e também o token do
 # Google, os profiles da AWS e os sinais do Wazuh: sem a pasta dos profiles, o aws-token.sh e o wazuh-apply.sh não fazem
 # nada até o próximo wazuh-up. O resto de /run/verax, os arquivos de ambiente, fica e é reescrito na próxima partida,
@@ -886,9 +905,10 @@ case ${1:-} in
   wazuh-down) wazuh_down ;;
   bootstrap) bootstrap ;;
   customer-bootstrap) customer_bootstrap ;;
+  tunnel) tunnel ;;
   render) render ;;
   *)
-    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|render" >&2
+    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|tunnel|render" >&2
     exit 2
     ;;
 esac
