@@ -1,9 +1,10 @@
+import { GIB_BYTES } from '@verax/shared';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { usageMonth } from '../usage/usage-meter.js';
 
-/** O GiB do plano: 2^30 bytes, a mesma régua do medidor (`IngestUsage.bytes`). */
-export const BYTES_PER_GIB = 1024n ** 3n;
+/** O GiB do plano: 2^30 bytes, a mesma régua do medidor e da página "Plano e uso" (`GIB_BYTES`). */
+export const BYTES_PER_GIB = BigInt(GIB_BYTES);
 
 /** Faixas do volume mensal que avisam por e-mail, uma vez por mês cada. */
 export const USAGE_THRESHOLDS = [80, 100] as const;

@@ -47,7 +47,7 @@ describe('despachante dos avisos (PR-16)', () => {
       kind: 'plan_usage',
       percent: 100,
       month,
-      link: `${origin}/`,
+      link: `${origin}/cadastros/plano`,
     });
   });
 

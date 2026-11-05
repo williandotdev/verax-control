@@ -108,7 +108,7 @@ function noticeContent(notice: NoticeMail): { subject: string; lines: string[]; 
               `O volume de logs lido em ${month} chegou ao limite mensal do plano.`,
               'A coleta, os achados e os incidentes continuam normalmente. Para ajustar o plano, fale com a Verax.',
             ],
-            action: 'Abrir o painel',
+            action: 'Ver o plano e uso',
           }
         : {
             subject: `80% do volume mensal do plano no ${PRODUCT_NAME}`,
@@ -116,7 +116,7 @@ function noticeContent(notice: NoticeMail): { subject: string; lines: string[]; 
               `O volume de logs lido em ${month} chegou a 80% do limite mensal do plano.`,
               'A coleta continua normalmente.',
             ],
-            action: 'Abrir o painel',
+            action: 'Ver o plano e uso',
           };
     }
   }

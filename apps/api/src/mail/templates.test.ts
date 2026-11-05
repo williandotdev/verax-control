@@ -11,8 +11,18 @@ const notices: NoticeMail[] = [
   { kind: 'incident_escalated', severity: 'critical', link: incidentLink },
   { kind: 'critical_finding', link: `${origin}/achados?achado=018f2c1e-0000-7000-8000-0000000000f1` },
   { kind: 'aws_ingestion_stalled', link: `${origin}/cadastros/contas` },
-  { kind: 'plan_usage', percent: 80, month: new Date('2026-11-01T00:00:00.000Z'), link: `${origin}/` },
-  { kind: 'plan_usage', percent: 100, month: new Date('2026-11-01T00:00:00.000Z'), link: `${origin}/` },
+  {
+    kind: 'plan_usage',
+    percent: 80,
+    month: new Date('2026-11-01T00:00:00.000Z'),
+    link: `${origin}/cadastros/plano`,
+  },
+  {
+    kind: 'plan_usage',
+    percent: 100,
+    month: new Date('2026-11-01T00:00:00.000Z'),
+    link: `${origin}/cadastros/plano`,
+  },
 ];
 
 describe('e-mail dos avisos (PR-16)', () => {

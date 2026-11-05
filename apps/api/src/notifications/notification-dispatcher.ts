@@ -107,7 +107,12 @@ export function noticeOf(
       return { kind: row.kind, link: link('/cadastros/contas') };
     case 'plan_usage':
       if (row.usageMonth === null || (row.usagePercent !== 80 && row.usagePercent !== 100)) break;
-      return { kind: row.kind, percent: row.usagePercent, month: row.usageMonth, link: link('/') };
+      return {
+        kind: row.kind,
+        percent: row.usagePercent,
+        month: row.usageMonth,
+        link: link('/cadastros/plano'),
+      };
   }
   throw new RangeError('aviso sem o alvo do tipo');
 }
