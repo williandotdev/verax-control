@@ -349,6 +349,27 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(sessionsBefore);
   });
 
+  it('nome da empresa até 120 caracteres, o limite do nó: o de 120 entra inteiro na reserva, o de 121 é recusado', async () => {
+    const longest = `Cliente Demo A ${'ã'.repeat(105)}`;
+    expect(longest).toHaveLength(120);
+    // Os espaços nas pontas saem antes da contagem.
+    await checkout(order({ companyName: `  ${longest}  ` })).expect(201);
+    expect((await slugDocument('cliente-demo-a'))?.['order']).toMatchObject({
+      company: { legalName: longest },
+    });
+    const sessionsBefore = fake.calls('POST', '/v1/checkout/sessions').length;
+
+    const tooLong = await checkout(order({ slug: 'cliente-demo-b', companyName: `${longest}x` })).expect(400);
+
+    expect(tooLong.body).toMatchObject({
+      statusCode: 400,
+      code: 'invalid_request',
+      message: 'Dados do pedido inválidos: companyName.',
+    });
+    expect(await slugDocument('cliente-demo-b')).toBeUndefined();
+    expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(sessionsBefore);
+  });
+
   it('pedido fora do formato: 400 citando só os campos conhecidos; preço, plano ou itens vindos do site são recusados', async () => {
     const cases: [Record<string, unknown>, string][] = [
       [order({ quoteId: 'nao-e-uma-cotacao' }), 'Dados do pedido inválidos: quoteId.'],

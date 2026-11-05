@@ -1,16 +1,7 @@
 import { z } from 'zod';
 import { ULID_PATTERN } from '../common/ulid.js';
-import { slugSchema } from '../tenants/tenant.schema.js';
+import { companyNameSchema, slugSchema } from '../tenants/tenant.schema.js';
 import { CNPJ_INPUT_MAX_LENGTH, isValidCnpj, normalizeCnpj } from './cnpj.js';
-
-/** Sem caracteres de controle (quebra de linha, tabulação, NUL): o nome vai a e-mail, painel e nota fiscal. */
-function hasNoControlCharacters(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0x20 || code === 0x7f) return false;
-  }
-  return true;
-}
 
 const versionSchema = z.string().min(1).max(64);
 
@@ -19,16 +10,12 @@ const versionSchema = z.string().min(1).max(64);
  * com o CNPJ normalizado (sem a máscara, letras em maiúsculas) e conferido pelos dígitos verificadores. O preço vem
  * só da cotação gravada (`quoteId`, de `POST /v1/public/quote`): nenhum campo de preço, plano ou item é aceito. O
  * subdomínio é conferido só no formato aqui; a lista reservada responde como "indisponível" (409), igual à consulta.
- * As versões do aceite são comparadas com as vigentes no serviço depois da validação (409 `terms_outdated`).
+ * As versões do aceite são comparadas com as vigentes no serviço depois da validação (409 `terms_outdated`). O nome da
+ * empresa vai até 120 caracteres, o limite do nó (`companyNameSchema`): o que passa aqui chega inteiro ao nó.
  */
 export const checkoutRequestSchema = z.strictObject({
   quoteId: z.string().max(64).regex(ULID_PATTERN),
-  companyName: z
-    .string()
-    .trim()
-    .min(2)
-    .max(200)
-    .refine(hasNoControlCharacters, { error: 'caracteres inválidos' }),
+  companyName: companyNameSchema,
   cnpj: z
     .string()
     .max(CNPJ_INPUT_MAX_LENGTH)

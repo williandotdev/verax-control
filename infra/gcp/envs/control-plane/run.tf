@@ -275,9 +275,9 @@ resource "google_cloud_run_v2_service" "worker" {
 # token da cp-invoker). O app separa as rotas por quem chama (`internal/worker-caller.ts`): o token do cp-public só
 # vale em `POST /internal/access/reveal`, e o da cp-invoker não vale nela.
 #
-# A chamada do cp-public chega pela URL `run.app` do worker, de fora de uma rede VPC: com `worker_ingress` em
-# INGRESS_TRAFFIC_INTERNAL_ONLY (o padrão) a entrada a recusa e a revelação responde 503. Decisão do responsável no
-# GUIA ("Revelação da senha e a entrada do cp-worker").
+# A chamada do cp-public chega pela URL `run.app` do worker, de fora de uma rede VPC: por isso `worker_ingress` é
+# INGRESS_TRAFFIC_ALL por padrão (decisão do responsável de 04/11/2026, no GUIA, "Revelação da senha e a entrada do
+# cp-worker"). A barreira é este IAM: só quem está aqui chama o serviço, e o app ainda confere o e-mail por rota.
 resource "google_cloud_run_v2_service_iam_member" "worker_invokers" {
   for_each = var.services_enabled ? merge(
     { invoker = local.invoker_member, public = local.public_member },

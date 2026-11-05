@@ -855,17 +855,25 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
 - **O achado:** `source='wazuh'`, `logSource='wazuh_agent'` (o painel mostra "Agente (instância)"), origem
   `agent:<id>` no lugar da conta (os dois-pontos não aparecem em nenhum identificador de conta, e o contrato aceita os
   dois formatos), recurso `host:<nome do agente na lista>`, severidade pelo nível da regra (12 ou mais crítica, 10
-  alta, 7 média, abaixo baixa), MITRE da regra e, do log, só o IP (`data.srcip`) e o usuário (`srcuser`, `dstuser` ou
-  o `targetUserName` do Windows), conferidos no formato e usados só para mostrar e agrupar. A chave única é
-  `wazuh/agent:<id>/alert:<id do alerta>:<regra>`: o log da instância não tem um id próprio em todas as fontes, e o id
-  do alerta é o mesmo a cada releitura do documento (reler a janela não duplica). O detalhe busca o evento bruto no
-  indexer pelo id do alerta, saneado como os outros.
+  alta, 7 média; abaixo de 7 não vira achado, pelo "Nível mínimo dos agentes" abaixo), MITRE da regra e, do log, só o
+  IP (`data.srcip`) e o usuário (`srcuser`, `dstuser` ou o `targetUserName` do Windows), conferidos no formato e
+  usados só para mostrar e agrupar. A chave única é `wazuh/agent:<id>/alert:<id do alerta>:<regra>`: o log da
+  instância não tem um id próprio em todas as fontes, e o id do alerta é o mesmo a cada releitura do documento (reler
+  a janela não duplica). O detalhe busca o evento bruto no indexer pelo id do alerta, saneado como os outros.
 - **O mesmo tratamento dos outros achados:** exceção do cliente (por regra e usuário, IP ou recurso, como
   `host:web-01`) e agrupamento em incidente (os achados da mesma instância se juntam pelo recurso), na mesma transação,
   pelo `FindingStore` de sempre. A cobertura das contas (último evento, conta silenciosa) não muda: agente não é conta.
-- **Leitura separada:** a tarefa `wazuh-agent-alerts` tem estado e concessão próprios no `SyncState`, com as mesmas
-  regras de leitura do sync da AWS (nível 5 ou mais, sobreposição de 10 min, cursor, até 100 páginas). Uma instância
+- **Leitura separada:** a tarefa `wazuh-agent-alerts` tem estado e concessão próprios no `SyncState`, com as regras de
+  leitura do sync da AWS (sobreposição de 10 min, cursor, até 100 páginas) e um nível mínimo próprio. Uma instância
   barulhenta não atrasa os achados das contas, e o caminho da AWS não muda.
+- **Nível mínimo dos agentes: 7** (`AGENT_MIN_LEVEL`, decisão do responsável de 05/11/2026), contra 5 da AWS. Os
+  níveis 5 e 6 de uma instância são rotina que só encheria a lista de achados (o arquivo novo do FIM depois de uma
+  atualização de pacotes, regra 554; o resumo do SCA, 19003; a conexão SSH malformada de um robô, 5706): ficam no
+  indexer (que guarda do nível 5 para cima) e não viram achado nem vão para a fila. A consulta pede o nível ao
+  indexer, e o sync confere de novo em cada alerta lido (`belowLevel` no relatório da execução), como faz com o
+  `agent.id`. A checagem do SCA com falha (19007), o arquivo alterado ou apagado (550 e 553) e o pacote instalado
+  (2902) são nível 7 no Wazuh 4.14 e continuam virando achado médio: o primeiro SCA de cada instância ainda gera um
+  achado por checagem com falha, juntos no incidente da instância.
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
@@ -1332,8 +1340,9 @@ O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:
   região e zona) e as de cada execução: `slug`, `plan` (essencial, profissional ou enterprise; `interno` é recusado),
   os quatro limites opcionais (`plan_max_cloud_accounts`, `plan_max_users`, `plan_monthly_gib`, `plan_history_days`,
   obrigatórios no enterprise), `node_version` (`node-vX.Y.Z`), `node_package_sha256`, `web_origin`, `api_origin`,
-  `mail_from`, `subnet_cidr` (uma /24 em 10.0.0.0/8), `bootstrap_admin_email`, `bootstrap_tenant_name`,
-  `bootstrap_support_email` (a conta de suporte da Verax, CP-10),
+  `mail_from`, `subnet_cidr` (uma /24 em 10.0.0.0/8), `bootstrap_admin_email`, `bootstrap_tenant_name` (de 2 a 120
+  caracteres, a regra do checkout e o limite do `Tenant.name` do nó), `bootstrap_support_email` (a conta de suporte da
+  Verax, CP-10),
   `control_plane_sa` (só a conta `cp-worker@...`), `images_repository` (o registro das imagens do Verax: o GHCR por
   padrão desde o CP-07, ou o Artifact Registry, que só então ganha a leitura da conta da VM) e `deletion_protection`.
   As saídas, que vão para
@@ -1670,7 +1679,10 @@ só define a forma dos documentos e as regras.
   (honrada até vencer, mesmo com outra tabela publicada), confere cada preço na Stripe (ativo, em BRL, mensal ou
   avulso, com o valor da tabela, e a soma igual ao total) e abre a sessão com um item por componente; a implantação, se
   o modo tiver, entra como item avulso, só na primeira fatura. A reserva guarda a configuração, os limites do nó e o
-  preço cotado (versão, cotação, mensal e implantação), que o webhook copia para o cliente.
+  preço cotado (versão, cotação, mensal e implantação), que o webhook copia para o cliente. O nome da empresa vai de 2
+  a 120 caracteres (`companyNameSchema`), o limite do `Tenant.name` do nó, e a mesma regra vale no `customer.updated`
+  da Stripe, no executor Terraform e no `envs/tenant`: o nome chega inteiro ao nó, sem corte. Um cliente gravado antes
+  desse limite, com um nome maior, para no `preflight` com `tenant_name_invalid`.
 - **Checagem de publicação** (no console): antes de publicar uma tabela, o motor percorre a grade inteira de
   configurações vendáveis com o modelo de custos vigente (cartão e a alíquota padrão) e recusa a publicação se alguma
   ficar com margem de contribuição abaixo da mínima, se acrescentar uma unidade baixar o preço ou se o "a partir de"

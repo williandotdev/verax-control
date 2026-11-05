@@ -3,7 +3,9 @@ import { AccountDirectory, resolveAlertOwner } from '../../src/alerts/alert-owne
 import { findingSeverity, toFindingDraft, wazuhFindingKey } from '../../src/alerts/finding-draft.js';
 import { sanitizeRawAlert } from '../../src/alerts/raw-alert.js';
 import {
+  AGENT_MIN_LEVEL,
   agentSyncPage,
+  DEFAULT_AGENT_SYNC_SETTINGS,
   DEFAULT_SYNC_SETTINGS,
   cursorFromSort,
   syncPage,
@@ -358,19 +360,25 @@ describe('leitura incremental (T5.3)', () => {
     expect(() => assertStructuredQuery(page.body)).not.toThrow();
   });
 
-  it('página dos agentes: tudo o que não veio do manager, a partir do nível mínimo; nunca o mesmo alerta da AWS', () => {
-    const page = agentSyncPage('2026-11-01T11:20:00.000Z', null, DEFAULT_SYNC_SETTINGS);
+  it('página dos agentes: tudo o que não veio do manager, do nível 7 para cima; nunca o mesmo alerta da AWS', () => {
+    const page = agentSyncPage('2026-11-01T11:20:00.000Z', null, DEFAULT_AGENT_SYNC_SETTINGS);
     expect(page.body['query']).toEqual({
       bool: {
         filter: [
           { range: { timestamp: { gte: '2026-11-01T11:20:00.000Z' } } },
-          { range: { 'rule.level': { gte: 5 } } },
+          { range: { 'rule.level': { gte: 7 } } },
         ],
         must_not: [{ term: { 'agent.id': '000' } }],
       },
     });
     expect(page.body['sort']).toEqual([{ timestamp: 'asc' }, { id: 'asc' }]);
     expect(() => assertStructuredQuery(page.body)).not.toThrow();
+  });
+
+  it('nível mínimo próprio dos agentes (7); o da AWS continua 5, e o resto das regras de leitura é o mesmo', () => {
+    expect(AGENT_MIN_LEVEL).toBe(7);
+    expect(DEFAULT_SYNC_SETTINGS.minLevel).toBe(5);
+    expect(DEFAULT_AGENT_SYNC_SETTINGS).toEqual({ ...DEFAULT_SYNC_SETTINGS, minLevel: AGENT_MIN_LEVEL });
   });
 
   it('o cursor vem da ordenação devolvida pelo indexer (horário em ms e id)', () => {

@@ -588,9 +588,10 @@ describe('agentes do Wazuh nas instâncias do cliente', () => {
         timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
       });
       const manager = { ...cloudTrailAlert({ account: accountA, bucket: trailA }), ...at(12) };
-      // O mesmo tipo de evento da AWS, mandado pelo agente app-01 como log da instância.
+      // O mesmo tipo de evento da AWS, mandado pelo agente app-01 como log da instância (nível 8: acima do mínimo
+      // dos agentes, 7, para o sync deles o atribuir).
       const forged = {
-        ...cloudTrailAlert({ account: accountA, bucket: trailA }),
+        ...cloudTrailAlert({ account: accountA, bucket: trailA, level: 8 }),
         ...at(12),
         agent: { id: app01, name: 'app-01' },
       };
@@ -622,6 +623,62 @@ describe('agentes do Wazuh nas instâncias do cliente', () => {
       });
       expect(await prisma.finding.count({ where: { rawEventId: String(forged['id']) } })).toBe(1);
       expect(await prisma.finding.count({ where: { rawEventId: String(manager['id']) } })).toBe(1);
+    });
+
+    it('nível mínimo dos agentes: o nível 6 fica de fora (nem achado nem fila) e o 7 vira achado; a AWS segue do 5', async () => {
+      const at = (minutesAgo: number) => ({
+        id: `${Date.now()}.${randomInt(1e6, 9e6)}`,
+        timestamp: wazuhTime(new Date(Date.now() - minutesAgo * MINUTE)),
+      });
+      // Conexão SSH malformada de um robô de varredura (regra 5706, nível 6), do agente da lista e de um fora dela.
+      const scan = { id: '5706', level: 6, description: 'sshd: insecure connection attempt (scan).' };
+      const six = alertOf(12, { rule: scan, mitre: null, data: { srcip: '198.51.100.80' } });
+      const sixUnknown = alertOf(12, {
+        agentId: agentId(18),
+        agentName: 'fantasma-6',
+        rule: scan,
+        mitre: null,
+        data: { srcip: '198.51.100.81' },
+      });
+      // Arquivo monitorado alterado (regra 550, nível 7).
+      const seven = fimAlert({ ...at(12), agentId: app01, agentName: 'app-01' });
+      // Login no console da AWS com falha (80254, nível 5), lido pelo manager.
+      const aws = { ...cloudTrailAlert({ account: accountA, bucket: trailA, level: 5 }), ...at(12) };
+      const indexer = new FakeIndexer([six, sixUnknown, seven, aws]);
+      const name = () => `teste-${randomUUID().slice(0, 8)}`;
+      const levelFilterOf = (request: (typeof indexer.requests)[number] | undefined) =>
+        (request?.body['query'] as { bool: { filter: Record<string, unknown>[] } }).bool.filter.find(
+          (clause) => JSON.stringify(clause).includes('rule.level'),
+        );
+
+      const agents = await new AgentAlertSync(prisma, indexer, tenantA, { name: name() }).runOnce();
+      expect(agents).toMatchObject({ read: 4, created: 1, unowned: 0, belowLevel: 2, skipped: 1 });
+      // O indexer recebe o nível 7 na consulta; o indexer falso não filtra, e a conferência em cada alerta segura.
+      expect(levelFilterOf(indexer.requests.at(-1))).toEqual({ range: { 'rule.level': { gte: 7 } } });
+      expect(await prisma.finding.findUnique({ where: keyOf(six) })).toBeNull();
+      expect(await prisma.finding.findUnique({ where: keyOf(sixUnknown) })).toBeNull();
+      expect(await queuedOf(six)).toBeNull();
+      expect(await queuedOf(sixUnknown)).toBeNull();
+      expect(await prisma.finding.findUniqueOrThrow({ where: keyOf(seven) })).toMatchObject({
+        tenantId: tenantA,
+        accountId: `agent:${app01}`,
+        ruleId: '550',
+        ruleLevel: 7,
+        severity: 'medium',
+      });
+
+      const awsReport = await new AlertSync(prisma, indexer, { name: name() }).runOnce();
+      expect(awsReport).toMatchObject({ read: 4, created: 1, unowned: 0, skipped: 3 });
+      expect(levelFilterOf(indexer.requests.at(-1))).toEqual({ range: { 'rule.level': { gte: 5 } } });
+      const parsed = parseWazuhAlert(aws);
+      if (!parsed.ok) throw new Error(parsed.reason);
+      expect(
+        await prisma.finding.findUniqueOrThrow({
+          where: {
+            source_sourceEventId: { source: 'wazuh', sourceEventId: wazuhFindingKey(parsed.alert, accountA) },
+          },
+        }),
+      ).toMatchObject({ tenantId: tenantA, accountId: accountA, ruleLevel: 5, severity: 'low' });
     });
 
     it('lista atrás do alerta: o alerta recente do agente novo espera; com ele na lista, a próxima execução o grava', async () => {
