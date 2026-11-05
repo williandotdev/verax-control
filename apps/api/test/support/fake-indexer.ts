@@ -11,8 +11,9 @@ export function wazuhTime(at: Date): string {
 /**
  * Indexer falso com a mesma semântica do real: só alertas a partir de `since`, em ordem de horário e id, depois do
  * cursor (exclusivo) e no tamanho de página pedido. Os filtros de fonte, nível e agente são do indexer e não entram
- * aqui: cada sync confere de novo se o alerta é do manager ou de um agente (`isAgentAlert`), e é isso que os testes
- * com os dois syncs no mesmo indexer provam.
+ * aqui: cada sync confere de novo se o alerta é do manager ou de um agente (`isAgentAlert`), e o dos agentes confere
+ * também o nível mínimo dele (`AGENT_MIN_LEVEL`); é isso que os testes com os dois syncs no mesmo indexer provam. Os
+ * filtros pedidos ficam em `requests`, para o teste conferir a consulta.
  */
 export class FakeIndexer implements AlertSearchClient {
   requests: AlertSearch[] = [];

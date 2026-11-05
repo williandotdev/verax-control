@@ -13,6 +13,9 @@ import {
 export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
 
 const cloudflareId = z.string().regex(/^[0-9a-f-]{32,36}$/);
+/** Ids que vão no caminho de uma chamada que apaga: só o formato do Cloudflare, nada que mude o caminho. */
+const TUNNEL_ID = /^[0-9a-f-]{32,36}$/;
+const DNS_RECORD_ID = /^[0-9a-f]{32}$/;
 
 const envelope = <T extends z.ZodType>(result: T) => z.object({ success: z.literal(true), result });
 
@@ -144,6 +147,56 @@ export class CloudflareApi {
     );
   }
 
+  /** Os registros com o nome exato na zona, de qualquer tipo (Exclusão 1, CP-11). */
+  async listDnsRecordsByName(name: string): Promise<DnsRecord[]> {
+    const url = new URL(`${this.base}/zones/${this.settings.zoneId}/dns_records`);
+    url.searchParams.set('name', name);
+    url.searchParams.set('per_page', '100');
+    return this.parse(
+      'dns_list',
+      expectOk('cloudflare', 'dns_list', await this.call('GET', 'dns_list', url.toString())),
+      z.array(dnsRecordSchema),
+    );
+  }
+
+  /** O registro pelo id; `undefined` se já não existe. */
+  async getDnsRecord(recordId: string): Promise<DnsRecord | undefined> {
+    if (!DNS_RECORD_ID.test(recordId)) throw new TypeError('id de registro inválido');
+    const response = await this.call(
+      'GET',
+      'dns_get',
+      `${this.base}/zones/${this.settings.zoneId}/dns_records/${recordId}`,
+    );
+    if (response.status === 404) return undefined;
+    return this.parse('dns_get', expectOk('cloudflare', 'dns_get', response), dnsRecordSchema);
+  }
+
+  /** Apaga o registro pelo id. Já ausente (404) conta como feito. */
+  async deleteDnsRecord(recordId: string): Promise<void> {
+    if (!DNS_RECORD_ID.test(recordId)) throw new TypeError('id de registro inválido');
+    const response = await this.call(
+      'DELETE',
+      'dns_delete',
+      `${this.base}/zones/${this.settings.zoneId}/dns_records/${recordId}`,
+    );
+    if (response.status === 404) return;
+    expectOk('cloudflare', 'dns_delete', response);
+  }
+
+  /**
+   * Apaga o túnel (Exclusão 1, CP-11): primeiro as conexões que o Cloudflare ainda lembra (a VM já foi destruída, mas
+   * o registro de uma conexão pode demorar a cair), depois o túnel. Já ausente (404) conta como feito.
+   */
+  async deleteTunnel(tunnelId: string): Promise<void> {
+    if (!TUNNEL_ID.test(tunnelId)) throw new TypeError('id de túnel inválido');
+    const base = `${this.base}/accounts/${this.settings.accountId}/cfd_tunnel/${tunnelId}`;
+    const connections = await this.call('DELETE', 'tunnel_connections_delete', `${base}/connections`);
+    if (connections.status !== 404) expectOk('cloudflare', 'tunnel_connections_delete', connections);
+    const response = await this.call('DELETE', 'tunnel_delete', base);
+    if (response.status === 404) return;
+    expectOk('cloudflare', 'tunnel_delete', response);
+  }
+
   /**
    * Garante o registro: igual, nada a fazer; mesmo nome e tipo com outro conteúdo, num CNAME (um nome só aceita um),
    * atualiza; senão cria. "Já existe" na criação relê. Devolve o id do registro.
@@ -206,7 +259,7 @@ export class CloudflareApi {
   }
 
   private call(
-    method: 'GET' | 'POST' | 'PUT',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     operation: string,
     url: string,
     json?: unknown,

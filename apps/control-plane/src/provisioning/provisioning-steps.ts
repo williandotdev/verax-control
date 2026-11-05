@@ -7,14 +7,7 @@ import type { StepContext, StepInput } from '../internal/step-handler.js';
 import { TenantStore } from '../tenants/tenant-store.js';
 import type { Tenant, TenantRecord } from '../tenants/tenant.schema.js';
 import type { DesiredDnsRecord } from './cloudflare-api.js';
-import {
-  executorEnv,
-  isTenantEmail,
-  isTenantName,
-  limitsFitNode,
-  nodeTenantName,
-  type RunKind,
-} from './executor-env.js';
+import { executorEnv, isTenantEmail, isTenantName, limitsFitNode, type RunKind } from './executor-env.js';
 import { isExecutionName } from './google-apis.js';
 import { MAX_BUNDLE_BYTES, openPanelBundle, siteHostingConfig } from './panel-bundle.js';
 import {
@@ -172,8 +165,9 @@ export class PreflightStep extends BaseStep {
     ) {
       throw new DefinitiveStepError('admin_email_invalid');
     }
-    if (!isTenantName(nodeTenantName(tenant.company.legalName)))
-      throw new DefinitiveStepError('tenant_name_invalid');
+    // O checkout e o `customer.updated` já limitam a 120 (o nó recebe o nome inteiro, sem corte); só um cliente
+    // gravado antes do limite chega aqui com mais, e para com o código, em vez de chegar ao executor ou ao nó.
+    if (!isTenantName(tenant.company.legalName)) throw new DefinitiveStepError('tenant_name_invalid');
 
     const kind: RunKind = (tenant.provisioning?.attempts ?? 0) > 0 ? 'resume' : 'provision';
     await this.store.ensureRun(runId, tenant.id, kind);
@@ -524,7 +518,7 @@ async function startApply(
     mailFrom: settings.mailFromNodes,
     subnetCidr: required(tenant.resources?.subnetCidr),
     adminEmail: required(tenant.adminEmail),
-    tenantName: nodeTenantName(tenant.company.legalName),
+    tenantName: tenant.company.legalName,
     supportEmail: settings.supportEmail,
     imagesRepository: settings.imagesRepository,
   });

@@ -225,8 +225,8 @@ describe('cp-worker: revelação única, destruição e plano B (CP-05)', () => 
       const { tenant } = await waitingTenant();
       const done = await step(DESTROY_BOOTSTRAP_STEP, tenant.id, OWNER).expect(200);
       expect(done.body).toEqual({ step: DESTROY_BOOTSTRAP_STEP, outcome: 'not_revealed' });
-      // `preflight` e os outros passos do provisionamento existem desde o CP-07; o do CP-11 ainda não.
-      await step('node.stop', tenant.id).expect(404);
+      // Os passos do provisionamento (CP-07) e do ciclo de vida (CP-11) existem; um nome que não é passo, não.
+      await step('reconcile.subscriptions', tenant.id).expect(404);
       await request(app.getHttpServer())
         .post(`/internal/steps/${DESTROY_BOOTSTRAP_STEP}`)
         .set('Authorization', bearer(INVOKER))

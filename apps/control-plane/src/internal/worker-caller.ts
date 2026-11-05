@@ -22,14 +22,39 @@ import { IdentityTokenVerifier, selectValidatedCredential } from './identity-tok
  * - `public`: só a conta do cp-public (`PUBLIC_SA_EMAIL`): a revelação da senha. Um cp-public comprometido não
  *   dispara passo nenhum, e uma task não pede revelação;
  * - `owner`: só o responsável (`OWNER_PRINCIPALS`): as operações dele, como o `resume` do provisionamento (CP-07).
- *   Nem a cp-invoker nem o cp-public: uma task ou o Scheduler não retomam um cliente que falhou.
+ *   Nem a cp-invoker nem o cp-public: uma task ou o Scheduler não retomam um cliente que falhou;
+ * - `console`: só a conta do console do responsável (`ADMIN_SA_EMAIL`, o `cp-admin` atrás do IAP), que chama as
+ *   operações do responsável em nome de quem entrou no console (CP-11). O console nunca repassa o token de quem está
+ *   no navegador: a credencial é o token da conta dele, e quem agiu vai no corpo (`actor`), conferido contra
+ *   `OWNER_PRINCIPALS` (`ownerActorOf`).
  */
-export type WorkerCallerGroup = 'tasks' | 'public' | 'owner';
+export type WorkerCallerGroup = 'tasks' | 'public' | 'owner' | 'console';
 
 /** O e-mail de quem chamou, em minúsculas, que a guarda deixa na requisição para a auditoria (`owner:<e-mail>`). */
 export function workerCallerOf(request: Request): string | undefined {
   const caller = (request as Request & { workerCaller?: unknown }).workerCaller;
   return typeof caller === 'string' ? caller : undefined;
+}
+
+/**
+ * Quem agiu numa operação do responsável, para a auditoria: chamada direta de um responsável (`OWNER_PRINCIPALS`), o
+ * próprio e-mail do token; chamada do console (`ADMIN_SA_EMAIL`), o `actor` do corpo, que tem de estar em
+ * `OWNER_PRINCIPALS` (o console já conferiu o JWT do IAP dele). `undefined` quando o console não diz quem agiu, ou diz
+ * alguém que não é responsável: a rota recusa (403).
+ */
+export function ownerActorOf(
+  request: Request,
+  config: AppConfig,
+  actor: string | undefined,
+): string | undefined {
+  const caller = workerCallerOf(request);
+  if (caller === undefined) return undefined;
+  const owners = new Set((config.OWNER_PRINCIPALS ?? []).map((email) => email.toLowerCase()));
+  if (owners.has(caller)) return `owner:${caller}`;
+  const consoleAccount = config.ADMIN_SA_EMAIL?.toLowerCase();
+  if (consoleAccount === undefined || caller !== consoleAccount || actor === undefined) return undefined;
+  const who = actor.toLowerCase();
+  return owners.has(who) ? `owner:${who}` : undefined;
 }
 
 const WORKER_CALLERS_KEY = 'verax:workerCallers';
@@ -46,6 +71,8 @@ export function allowedCallers(config: AppConfig, groups: readonly WorkerCallerG
       emails.push(config.WORKER_SA_EMAIL, config.SCHEDULER_SA_EMAIL, ...(config.OWNER_PRINCIPALS ?? []));
     } else if (group === 'owner') {
       emails.push(...(config.OWNER_PRINCIPALS ?? []));
+    } else if (group === 'console') {
+      emails.push(config.ADMIN_SA_EMAIL);
     } else {
       emails.push(config.PUBLIC_SA_EMAIL);
     }
