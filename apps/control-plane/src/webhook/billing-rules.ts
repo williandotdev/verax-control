@@ -7,7 +7,13 @@ import type {
   SubscriptionSnapshot,
 } from '../stripe/stripe-client.js';
 import type { AuditContext, TenantChange } from '../tenants/tenant-store.js';
-import type { ResumeState, Tenant, TenantRecord, TenantState } from '../tenants/tenant.schema.js';
+import {
+  companyNameSchema,
+  type ResumeState,
+  type Tenant,
+  type TenantRecord,
+  type TenantState,
+} from '../tenants/tenant.schema.js';
 
 /**
  * As regras da máquina de estados do webhook (plano §4b e §4d), puras: recebem o cliente relido dentro da transação
@@ -304,20 +310,12 @@ export function fraudReviewChange(tenant: TenantRecord, ctx: DecisionContext): T
   }
 }
 
-/** Sem caracteres de controle: o nome vai a e-mail, painel e nota fiscal. */
-function isPrintable(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    if (code < 0x20 || code === 0x7f) return false;
-  }
-  return true;
-}
-
 const emailSchema = z.email().max(254);
 
 /**
  * `customer.updated` (plano §4b): o e-mail e a razão social do Customer passam para o cliente (o CNPJ não muda: é o
- * que foi conferido no checkout). Valor fora do formato é ignorado; cliente `deleted` não volta a ter e-mail.
+ * que foi conferido no checkout). Valor fora do formato é ignorado, inclusive a razão social acima de 120 caracteres
+ * (a regra do checkout, `companyNameSchema`); cliente `deleted` não volta a ter e-mail.
  */
 export function customerChange(
   tenant: TenantRecord,
@@ -326,10 +324,9 @@ export function customerChange(
 ): TenantChange | undefined {
   if (tenant.state === 'deleted') return undefined;
   const email = customer.email?.trim();
-  const name = customer.businessName?.trim();
   const nextEmail = email !== undefined && emailSchema.safeParse(email).success ? email : undefined;
-  const nextName =
-    name !== undefined && name.length >= 2 && name.length <= 200 && isPrintable(name) ? name : undefined;
+  const name = companyNameSchema.safeParse(customer.businessName);
+  const nextName = name.success ? name.data : undefined;
   return {
     reason: 'customer_synced',
     eventId: ctx.eventId,

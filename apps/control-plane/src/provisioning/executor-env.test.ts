@@ -7,7 +7,6 @@ import {
   isSubnetCidr,
   isTenantEmail,
   isTenantName,
-  nodeTenantName,
   purgeExecutorEnv,
 } from './executor-env.js';
 import { subnetCidrOf } from './provisioning-store.js';
@@ -112,6 +111,8 @@ describe('variáveis da execução do Job', () => {
     ['BOOTSTRAP_ADMIN_EMAIL', { adminEmail: 'admin@cliente\n.example' }],
     ['BOOTSTRAP_TENANT_NAME', { tenantName: ' Cliente' }],
     ['BOOTSTRAP_TENANT_NAME', { tenantName: 'Cliente\nDemo' }],
+    // Um cliente gravado antes do limite de 120: nunca chega ao Job.
+    ['BOOTSTRAP_TENANT_NAME', { tenantName: 'a'.repeat(121) }],
     ['BOOTSTRAP_SUPPORT_EMAIL', { supportEmail: "O'NEIL+TI@CLIENTE-DEMO-A.EXAMPLE" }],
     ['IMAGES_REPOSITORY', { imagesRepository: 'docker.io/williandotdev/verax-control' }],
   ])('%s fora do formato: recusado citando só o nome', (variable, change) => {
@@ -140,18 +141,17 @@ describe('variáveis da execução do Job', () => {
     expect(isTenantEmail('.a@a.example')).toBe(false);
     expect(isTenantEmail('a..b@a.example')).toBe(false);
     expect(isTenantEmail('a@a.e')).toBe(false);
-    expect(isTenantName('ã'.repeat(200))).toBe(true);
-    expect(isTenantName('ã'.repeat(201))).toBe(false);
     expect(isTenantName('Cliente ')).toBe(false);
   });
 
-  it('o nome do cliente no nó: até 120 caracteres, sem cortar no meio de um acento nem deixar espaço no fim', () => {
-    expect(nodeTenantName('Cliente Demo A')).toBe('Cliente Demo A');
-    const long = `${'Ação '.repeat(30)}Ltda.`;
-    const name = nodeTenantName(long);
-    expect([...name].length).toBeLessThanOrEqual(120);
-    expect(name).toBe(name.trimEnd());
-    expect(long.startsWith(name)).toBe(true);
+  it('o nome do cliente no nó: de 2 a 120 caracteres, o limite do checkout e do nó, sem corte', () => {
+    expect(isTenantName('ã'.repeat(120))).toBe(true);
+    expect(isTenantName('ã'.repeat(121))).toBe(false);
+    expect(isTenantName('Cliente Demo A')).toBe(true);
+    expect(isTenantName('A')).toBe(false);
+    // O nó conta como o zod (unidades UTF-16): 60 emojis são 120 e passam; 61 são 122 e param aqui, e não no nó.
+    expect(isTenantName('\u{1F600}'.repeat(60))).toBe(true);
+    expect(isTenantName('\u{1F600}'.repeat(61))).toBe(false);
   });
 
   it('a faixa de rede do contador: dois octetos do meio', () => {

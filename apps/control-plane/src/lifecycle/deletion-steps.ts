@@ -5,7 +5,8 @@ import { AuditService } from '../audit/audit.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepContext, StepInput } from '../internal/step-handler.js';
 import { MAIL_SENDER, type MailSender, MailUnavailableError } from '../mail/mail-sender.js';
-import { executorEnv, nodeTenantName, purgeExecutorEnv } from '../provisioning/executor-env.js';
+import { executorEnv, purgeExecutorEnv } from '../provisioning/executor-env.js';
+import { COMPANY_NAME_MAX_LENGTH } from '../tenants/tenant.schema.js';
 import { isExecutionName } from '../provisioning/google-apis.js';
 import { DefinitiveStepError, MAX_TASK_ATTEMPTS } from '../provisioning/provisioning-engine.js';
 import {
@@ -30,6 +31,20 @@ import { afterDeletion, minimalRecord } from './lifecycle-rules.js';
 const DAY_MS = 24 * 60 * 60_000;
 
 /** A Exclusão 2 espera o bucket de backups esvaziar pela retenção (uma nova tentativa por dia, por até 14 dias). */
+/**
+ * O nome do cliente nas variáveis do `destroy`. O `envs/tenant` recusa mais de 120 caracteres, e um cliente gravado antes
+ * do limite (até 200) ainda tem de poder ser excluído: aqui o nome é cortado em 120, sem partir um caractere, porque no
+ * `destroy` ele só preenche a variável (nenhum recurso novo recebe o nome).
+ */
+export function deletionTenantName(legalName: string): string {
+  let name = '';
+  for (const char of legalName) {
+    if (name.length + char.length > COMPANY_NAME_MAX_LENGTH) break;
+    name += char;
+  }
+  return name.trimEnd();
+}
+
 export const PURGE_RETRY = { everyMs: DAY_MS, maxDays: 14 } as const;
 
 /** Códigos de recusa do executor que não mudam numa nova execução (`result.json`). */
@@ -132,7 +147,7 @@ async function destroyEnv(
     mailFrom: settings.mailFromNodes,
     subnetCidr,
     adminEmail,
-    tenantName: nodeTenantName(tenant.company.legalName),
+    tenantName: deletionTenantName(tenant.company.legalName),
     supportEmail: settings.supportEmail,
     imagesRepository: settings.imagesRepository,
   });

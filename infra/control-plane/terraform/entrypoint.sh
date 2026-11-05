@@ -177,14 +177,15 @@ limit_in() { # <valor> <mín> <máx>
   (($1 >= $2 && $1 <= $3))
 }
 
-# Nome do cliente: de 2 a 200 caracteres (pontos de código, contados pelo jq em UTF-8), sem caractere de controle e sem
-# espaço nas pontas (os do `trimspace` do Terraform, o `unicode.IsSpace` do Go, mais o U+FEFF do `trim` do JS).
+# Nome do cliente: de 2 a 120 caracteres (pontos de código, contados pelo jq em UTF-8; 120 é o limite do checkout e do
+# nó, `Tenant.name`), sem caractere de controle e sem espaço nas pontas (os do `trimspace` do Terraform, o
+# `unicode.IsSpace` do Go, mais o U+FEFF do `trim` do JS).
 is_tenant_name() { # <valor>
   jq -en --arg v "$1" '
     [9, 10, 11, 12, 13, 32, 133, 160, 5760, 8192, 8193, 8194, 8195, 8196, 8197, 8198, 8199, 8200, 8201, 8202, 8232,
       8233, 8239, 8287, 12288, 65279] as $spaces
     | ($v | explode) as $c
-    | ($c | length) >= 2 and ($c | length) <= 200 and ($c | all(. >= 32 and . != 127))
+    | ($c | length) >= 2 and ($c | length) <= 120 and ($c | all(. >= 32 and . != 127))
       and ($spaces | index($c[0]) | not) and ($spaces | index($c[-1]) | not)' >/dev/null 2>&1
 }
 
