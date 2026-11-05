@@ -125,7 +125,7 @@ describe('avisos por e-mail (outbox)', () => {
 
   describe('gravação junto com o achado (todos os coletores passam por aqui)', () => {
     it('incidente alto aberto gera 1 aviso; reler o mesmo achado gera 0', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (aviso ao abrir)');
+      const tenantId = await createTenant(app, 'Cliente demo A (aviso ao abrir)');
       const finding = draft(tenantId, { severity: 'high', sourceIp: ip() });
       expect(await persist(finding)).toBe('opened');
       const incident = await prisma.forTenant(tenantId).incident.findFirstOrThrow({ select: { id: true } });
@@ -147,7 +147,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('médio que sobe para alto gera 1, alto que sobe para crítico gera mais 1; junção sem mudança gera 0', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (aviso ao subir)');
+      const tenantId = await createTenant(app, 'Cliente demo A (aviso ao subir)');
       const sourceIp = ip();
       expect(await persist(draft(tenantId, { severity: 'medium', sourceIp }))).toBe('opened');
       expect(await noticesOf(tenantId)).toEqual([]);
@@ -173,7 +173,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('crítico sem chave (fora de incidente) gera 1, pelo achado; alto sem chave gera 0', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (crítico sem chave)');
+      const tenantId = await createTenant(app, 'Cliente demo A (crítico sem chave)');
       const critical = draft(tenantId, { severity: 'critical' });
       expect(await persist(critical)).toBe('none');
       expect(await persist(draft(tenantId, { severity: 'high' }))).toBe('none');
@@ -195,7 +195,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('incidente crítico aberto gera 1 aviso de abertura, e não de subida', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (crítico ao abrir)');
+      const tenantId = await createTenant(app, 'Cliente demo A (crítico ao abrir)');
       expect(await persist(draft(tenantId, { severity: 'critical', sourceIp: ip() }))).toBe('opened');
       expect((await noticesOf(tenantId)).map(({ kind, severity }) => ({ kind, severity }))).toEqual([
         { kind: 'incident_opened', severity: 'critical' },
@@ -205,8 +205,8 @@ describe('avisos por e-mail (outbox)', () => {
 
   describe('entrega', () => {
     it('só administradores e analistas ativos do cliente, com MFA e sem troca de senha pendente; nada de B', async () => {
-      const tenantA = await createTenant(app, 'Cliente Demo A (destinatários)');
-      const tenantB = await createTenant(app, 'Cliente Demo B (destinatários)');
+      const tenantA = await createTenant(app, 'Cliente demo A (destinatários)');
+      const tenantB = await createTenant(app, 'Cliente demo B (destinatários)');
       const admin = await member(tenantA, 'admin_cliente', { name: 'Ana' });
       const analyst = await member(tenantA, 'analista_cliente');
       const excluded = [
@@ -271,7 +271,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('achado crítico: link para o achado no painel', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (link do achado)');
+      const tenantId = await createTenant(app, 'Cliente demo A (link do achado)');
       const analyst = await member(tenantId, 'analista_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
       const [notice] = await noticesOf(tenantId);
@@ -283,7 +283,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('MAIL_TRANSPORT=none: o aviso fica skipped, sem nenhum envio', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (sem e-mail)');
+      const tenantId = await createTenant(app, 'Cliente demo A (sem e-mail)');
       await member(tenantId, 'admin_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
       const report = await dispatcher(null, soon()).runOnce();
@@ -294,10 +294,10 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('ninguém para receber (só leitura, ou o cliente desativado): skipped', async () => {
-      const onlyReaders = await createTenant(app, 'Cliente Demo A (só leitura)');
+      const onlyReaders = await createTenant(app, 'Cliente demo A (só leitura)');
       await member(onlyReaders, 'leitura');
       await persist(draft(onlyReaders, { severity: 'critical' }));
-      const inactive = await createTenant(app, 'Cliente Demo A (desativado)');
+      const inactive = await createTenant(app, 'Cliente demo A (desativado)');
       const admin = await member(inactive, 'admin_cliente');
       await persist(draft(inactive, { severity: 'critical' }));
       await prisma.tenant.update({ where: { id: inactive }, data: { status: 'inactive' } });
@@ -313,7 +313,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('falha do transporte: nova tentativa depois de 1, 5, 15 e 60 min, e failed na quinta; só o tipo do erro fica', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (falha do envio)');
+      const tenantId = await createTenant(app, 'Cliente demo A (falha do envio)');
       const admin = await member(tenantId, 'admin_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
       const [notice] = await noticesOf(tenantId);
@@ -353,7 +353,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('falha só para uma pessoa: a nova tentativa vai só para ela', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (falha parcial)');
+      const tenantId = await createTenant(app, 'Cliente demo A (falha parcial)');
       const admin = await member(tenantId, 'admin_cliente');
       const analyst = await member(tenantId, 'analista_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
@@ -377,7 +377,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('nenhum e-mail no log do worker, nem com a mensagem do servidor citando o endereço', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (log)');
+      const tenantId = await createTenant(app, 'Cliente demo A (log)');
       const admin = await member(tenantId, 'admin_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
       const lines: string[] = [];
@@ -410,7 +410,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('quem recebeu numa tentativa e depois saiu do cliente: o aviso termina sent, sem repetir o e-mail', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (saiu depois)');
+      const tenantId = await createTenant(app, 'Cliente demo A (saiu depois)');
       const admin = await member(tenantId, 'admin_cliente');
       const analyst = await member(tenantId, 'analista_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
@@ -435,7 +435,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('uma falha no cálculo do volume não segura os avisos de incidente', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (volume falhou)');
+      const tenantId = await createTenant(app, 'Cliente demo A (volume falhou)');
       const admin = await member(tenantId, 'admin_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
       const broken = {
@@ -477,7 +477,7 @@ describe('avisos por e-mail (outbox)', () => {
       dispatcher(mailbox, now, { usage: new UsageNotices(prisma, monthlyGib) }).runOnce();
 
     it('80% uma vez, depois 100% uma vez; o mês seguinte começa de novo', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (volume)');
+      const tenantId = await createTenant(app, 'Cliente demo A (volume)');
       const admin = await member(tenantId, 'admin_cliente');
       const analyst = await member(tenantId, 'analista_cliente');
       const mailbox = new MemoryMailTransport();
@@ -522,7 +522,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('salto direto para 100%: sai só o aviso de 100%, e o de 80% fica coberto', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (salto)');
+      const tenantId = await createTenant(app, 'Cliente demo A (salto)');
       const admin = await member(tenantId, 'admin_cliente');
       const mailbox = new MemoryMailTransport();
       await addUsage(tenantId, gib(2), at('2031-05'));
@@ -540,7 +540,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('acima de 100%, nada deixa de ser gravado: o medidor soma e os achados entram', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (acima do limite)');
+      const tenantId = await createTenant(app, 'Cliente demo A (acima do limite)');
       await member(tenantId, 'admin_cliente');
       await addUsage(tenantId, gib(3), at('2031-06'));
       await run(new MemoryMailTransport(), at('2031-06'));
@@ -556,15 +556,15 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('plano sem limite de volume (interno): nenhum aviso', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (interno)');
+      const tenantId = await createTenant(app, 'Cliente demo A (interno)');
       await addUsage(tenantId, gib(500), at('2031-07'));
       expect((await run(new MemoryMailTransport(), at('2031-07'), null)).usageNotices).toBe(0);
       expect(await noticesOf(tenantId)).toEqual([]);
     });
 
     it('A/B: o volume de B nunca avisa A', async () => {
-      const tenantA = await createTenant(app, 'Cliente Demo A (volume A/B)');
-      const tenantB = await createTenant(app, 'Cliente Demo B (volume A/B)');
+      const tenantA = await createTenant(app, 'Cliente demo A (volume A/B)');
+      const tenantB = await createTenant(app, 'Cliente demo B (volume A/B)');
       const adminA = await member(tenantA, 'admin_cliente');
       const adminB = await member(tenantB, 'admin_cliente');
       await addUsage(tenantA, gib(0.1), at('2031-08'));
@@ -579,8 +579,8 @@ describe('avisos por e-mail (outbox)', () => {
 
   describe('isolamento por cliente (A/B)', () => {
     it('o escopo de B não lê nem altera o aviso de A, e não grava aviso em A', async () => {
-      const tenantA = await createTenant(app, 'Cliente Demo A (escopo)');
-      const tenantB = await createTenant(app, 'Cliente Demo B (escopo)');
+      const tenantA = await createTenant(app, 'Cliente demo A (escopo)');
+      const tenantB = await createTenant(app, 'Cliente demo B (escopo)');
       await persist(draft(tenantA, { severity: 'critical' }));
       const [notice] = await noticesOf(tenantA);
       if (notice === undefined) throw new Error('aviso não gravado');
@@ -599,8 +599,8 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('o banco recusa aviso de B apontando para o incidente ou o achado de A, e alvo fora do tipo', async () => {
-      const tenantA = await createTenant(app, 'Cliente Demo A (banco)');
-      const tenantB = await createTenant(app, 'Cliente Demo B (banco)');
+      const tenantA = await createTenant(app, 'Cliente demo A (banco)');
+      const tenantB = await createTenant(app, 'Cliente demo B (banco)');
       await persist(draft(tenantA, { severity: 'high', sourceIp: ip() }));
       const incident = await prisma.forTenant(tenantA).incident.findFirstOrThrow({ select: { id: true } });
       const finding = await prisma.forTenant(tenantA).finding.findFirstOrThrow({ select: { id: true } });
@@ -659,7 +659,7 @@ describe('avisos por e-mail (outbox)', () => {
     });
 
     it('apagar o incidente apaga o aviso (o expurgo não é barrado pela fila)', async () => {
-      const tenantId = await createTenant(app, 'Cliente Demo A (expurgo)');
+      const tenantId = await createTenant(app, 'Cliente demo A (expurgo)');
       await persist(draft(tenantId, { severity: 'high', sourceIp: ip() }));
       const incident = await prisma.forTenant(tenantId).incident.findFirstOrThrow({ select: { id: true } });
       expect(await noticesOf(tenantId)).toHaveLength(1);

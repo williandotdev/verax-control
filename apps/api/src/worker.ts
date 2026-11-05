@@ -19,6 +19,11 @@ import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
 import { mailTransport } from './mail/mail.module.js';
 import {
+  NODE_STATUS_BUDGET_MS,
+  NODE_STATUS_INTERVAL_MS,
+  NodeStatusReporter,
+} from './node-status/node-status.js';
+import {
   NOTIFICATIONS_INTERVAL_MS,
   NOTIFICATIONS_TASK,
   NotificationDispatcher,
@@ -102,6 +107,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
  * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
  * ficam `skipped`.
+ *
+ * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
+ * publica o estado do nó nos guest attributes da VM para o plano de controle.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -203,6 +211,17 @@ async function main(): Promise<void> {
         intervalMs: CREDENTIAL_REKEY_INTERVAL_MS,
         budgetMs: SYNC_BUDGET_MS,
         run: (signal) => rekey.runOnce(signal),
+      });
+    }
+    // Estado do nó nos guest attributes (nó de cliente): o worker é o único contêiner que alcança o servidor de
+    // metadados.
+    if (config.nodeStatus !== null) {
+      const reporter = new NodeStatusReporter(prisma, { version: config.nodeStatus.version, logger });
+      tasks.push({
+        name: 'node-status',
+        intervalMs: NODE_STATUS_INTERVAL_MS,
+        budgetMs: NODE_STATUS_BUDGET_MS,
+        run: (signal) => reporter.runOnce(signal),
       });
     }
   } catch (error) {

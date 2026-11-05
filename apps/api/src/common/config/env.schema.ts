@@ -536,6 +536,17 @@ const workerEnvObjectSchema = z
     MAIL_FROM: mailFromEnv.optional(),
     ...mailServerEnvShape,
     WEB_ORIGIN: webOriginFromEnv.optional(),
+    // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
+    // publica a versão, as contas conectadas, o último evento e o disco livre. NODE_VERSION é o commit instalado (o de
+    // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).
+    NODE_STATUS: z
+      .enum(['true', 'false'], { error: 'use true ou false' })
+      .default('false')
+      .transform((value) => value === 'true'),
+    NODE_VERSION: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/, { error: 'deve ser o commit instalado (40 caracteres hexadecimais)' })
+      .optional(),
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
@@ -560,6 +571,13 @@ const workerEnvObjectSchema = z
     }
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
+    if (env.NODE_STATUS && env.NODE_VERSION === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['NODE_VERSION'],
+        message: 'obrigatória com NODE_STATUS=true (a versão publicada nos guest attributes)',
+      });
+    }
     if (env.SYNC_SOURCES.includes('cloudflare') && env.CREDENTIALS_PRIVATE_KEYS_FILE === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -583,6 +601,8 @@ const workerEnvObjectSchema = z
         CREDENTIALS_KEY_CURRENT,
         WAZUH_AGENTS_FILE,
         WAZUH_AGENTS_TENANT,
+        NODE_STATUS,
+        NODE_VERSION,
         ...env
       },
       ctx,
@@ -597,7 +617,9 @@ const workerEnvObjectSchema = z
         );
       }
       const wazuhAgents = wazuhAgentsFeedOf({ WAZUH_AGENTS_FILE, WAZUH_AGENTS_TENANT });
-      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents };
+      // A tarefa `node-status` só existe com o interruptor (e a versão, que o superRefine exige com ele).
+      const nodeStatus = NODE_STATUS && NODE_VERSION !== undefined ? { version: NODE_VERSION } : null;
+      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus };
     },
   );
 

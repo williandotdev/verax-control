@@ -67,3 +67,10 @@ WAZUH_AGENTS=false
 # WAZUH_AGENTS_TENANT=00000000-0000-7000-8000-000000000001
 # WAZUH_AGENTS_SOURCES=198.51.100.0/28,192.0.2.15/32
 # WAZUH_AGENTS_MAX=50
+# Modo cliente (fase 3): o nó de cliente que o plano de controle cria, sem SSH. Com true, o primeiro acesso roda sozinho
+# depois de cada partida (verax-customer-bootstrap.service): o start.sh lê dos metadados da VM o nome do cliente
+# (`verax-tenant-name`), o e-mail do administrador do cliente (`verax-admin-email`) e o da conta de suporte da Verax
+# (`verax-support-email`), cria as contas com senha temporária e grava cada senha no Secret Manager
+# (`<prefixo>-admin-bootstrap` e `<prefixo>-support-bootstrap`, criados pelo Terraform do tenant); e o worker publica o
+# estado do nó nos guest attributes da VM (`verax/*`). Sem a linha, vale false: o nó da Verax não muda.
+CUSTOMER_MODE=false
