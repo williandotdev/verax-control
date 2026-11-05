@@ -82,7 +82,9 @@ Na reunião:
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele. Os avisos
    por e-mail (incidente alto ou crítico, achado crítico e, só para administradores, 80% e 100% do volume do plano)
    chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
-   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe.
+   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe. Cada pessoa pode
+   desligar os avisos de incidente em **Minha conta** (no cabeçalho), e a coluna "Recebe alertas" de Usuários mostra
+   quem recebe; o contato de escalonamento do cadastro do cliente não recebe e-mail automático.
 
    **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
    usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para

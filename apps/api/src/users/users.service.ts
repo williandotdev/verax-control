@@ -28,6 +28,8 @@ const userSelect = {
   status: true,
   twoFactorEnabled: true,
   mustChangePassword: true,
+  // A preferência de aviso da pessoa (fase 2, PR-17'): o administrador só vê; quem muda é a própria pessoa.
+  notificationPreference: { select: { incidentEmails: true } },
   createdAt: true,
 } as const satisfies Prisma.UserSelect;
 
@@ -43,6 +45,8 @@ function toUser(row: UserRow): User {
     status: row.status,
     mfaEnabled: row.twoFactorEnabled,
     mustChangePassword: row.mustChangePassword,
+    // Sem linha, vale o padrão: recebe.
+    incidentEmails: row.notificationPreference?.incidentEmails ?? true,
     createdAt: row.createdAt.toISOString(),
   };
 }

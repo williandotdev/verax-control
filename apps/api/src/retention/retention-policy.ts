@@ -28,7 +28,8 @@ export const UNOWNED_RETENTION_DAYS = 90;
 /**
  * Avisos por e-mail já resolvidos (enviados, com falha ou pulados; PR-16): 90 dias desde a última mudança. Ficam o
  * bastante para a chave de deduplicação (`usage:<AAAA-MM>:80`, por exemplo) não deixar o mesmo aviso sair de novo. O
- * aviso pendente nunca sai, e o de um incidente ou achado que sai vai junto com ele (chave estrangeira em cascata).
+ * aviso pendente nunca sai, e o de um incidente ou achado que sai vai junto com ele (chave estrangeira em cascata). As
+ * horas de avisos de cada pessoa (a contagem e o resumo, PR-17') seguem o mesmo prazo, e o resumo pendente também fica.
  */
 export const NOTIFICATION_RETENTION_DAYS = 90;
 /**

@@ -49,6 +49,7 @@ const PAGES: [string, string | RegExp][] = [
   ['/cadastros/plano', 'Plano e uso'],
   ['/auditoria', 'Auditoria'],
   ['/alertas-sem-dono', 'Alertas sem dono'],
+  ['/minha-conta', 'Minha conta'],
 ];
 
 async function open(page: Page, path: string, heading: string | RegExp) {

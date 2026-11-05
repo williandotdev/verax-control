@@ -72,9 +72,12 @@ export class UsageNotices {
     for (const { tenantId, _sum } of totals) {
       const rows = usageNoticeRows(tenantId, month, _sum.bytes ?? 0n, limitBytes);
       if (rows.length === 0) continue;
-      const { count } = await this.prisma
-        .forTenant(tenantId)
-        .notification.createMany({ data: rows, skipDuplicates: true });
+      // O aviso nasce na hora da conferência, o mesmo relógio que escolheu o mês (e que diz se ele está velho para o
+      // resumo de retomada, PR-17').
+      const { count } = await this.prisma.forTenant(tenantId).notification.createMany({
+        data: rows.map((row) => ({ ...row, createdAt: now })),
+        skipDuplicates: true,
+      });
       created += count;
     }
     return created;

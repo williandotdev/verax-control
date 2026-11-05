@@ -511,6 +511,50 @@ describe('expurgo diário do histórico (PR-19)', () => {
       },
     );
 
+    it("horas de avisos (PR-17'): o resumo resolvido e a hora só de contagem saem com 90 dias; o pendente e o recente ficam", async () => {
+      const { tenantId, authorId } = await customer('resumos');
+      const now = today();
+      let hour = 0;
+      const insert = async (status: 'sent' | 'failed' | 'skipped' | 'pending' | null, updatedAt: Date) =>
+        (
+          await prisma.notificationDigest.create({
+            data: {
+              tenantId,
+              userId: authorId,
+              hourStart: new Date(Date.UTC(2026, 0, 1, (hour += 1))),
+              status,
+              // A hora só de contagem não reúne aviso; o resumo reúne (o CHECK da migration).
+              noticeIds: status === null ? [] : [randomUUID()],
+              nextAttemptAt: status === null ? null : updatedAt,
+              individualSent: 5,
+              createdAt: updatedAt,
+              updatedAt,
+            },
+            select: { id: true },
+          })
+        ).id;
+      const gone = [
+        await insert('sent', daysBefore(now, 91)),
+        await insert('skipped', daysBefore(now, 120)),
+        await insert('failed', daysBefore(now, 200)),
+        await insert(null, daysBefore(now, 95)),
+      ];
+      const kept = [
+        await insert('pending', daysBefore(now, 200)),
+        await insert('sent', daysBefore(now, 89)),
+        await insert(null, daysBefore(now, 10)),
+      ];
+
+      expect(await job([tenantId]).maybeRun(now)).toMatchObject({
+        status: 'done',
+        deleted: { noticeDigests: 4 },
+      });
+      expect(await prisma.notificationDigest.count({ where: { id: { in: gone } } })).toBe(0);
+      expect(await prisma.notificationDigest.count({ where: { id: { in: kept } } })).toBe(3);
+      const [record] = await purgeTrail(tenantId);
+      expect(record?.after).toMatchObject({ deleted: { notifications: 0, noticeDigests: 4 } });
+    });
+
     it('plano interno (sem limite): o histórico e a auditoria ficam; inventário e operação seguem', async () => {
       const { tenantId } = await customer('interno');
       const now = today();
@@ -566,6 +610,7 @@ describe('expurgo diário do histórico (PR-19)', () => {
             postureFailures: 0,
             inventorySnapshots: 0,
             notifications: 0,
+            noticeDigests: 0,
             auditLogs: 0,
           },
         },
