@@ -10,6 +10,7 @@ import { TenantScopeViolation } from '../src/common/prisma/tenant-scope.js';
 import {
   escalationContactUpdate,
   queueEscalationConfirmation,
+  restartEscalationConfirmation,
 } from '../src/escalation/escalation-contact-store.js';
 import { escalationTokenHash, mintEscalationTokens } from '../src/escalation/escalation-tokens.js';
 import type { UserRole, UserStatus } from '../src/generated/prisma/client.js';
@@ -1668,6 +1669,51 @@ describe('avisos por e-mail (outbox)', () => {
         escalationDelivery: 'sent',
       });
       expect(await prisma.forTenant(tenantId).escalationContactToken.count()).toBe(1);
+    });
+
+    it('o intervalo entre dois e-mails de confirmação conta da entrega de fato: o pedido entregue com atraso não abre espaço para outro logo depois, e o worker adia sem descartar (revisão do PR #97)', async () => {
+      const { tenantId, email } = await contactTenant('Cliente demo A (intervalo da confirmação)', 'pending');
+      const db = prisma.forTenant(tenantId);
+      const minutes = (count: number) => count * 60_000;
+      // 12:00 o pedido; o worker parado só o entrega às 12:10.
+      const requestedAt = new Date(Date.now() - minutes(30));
+      const at = (minute: number) => new Date(requestedAt.getTime() + minutes(minute));
+      await queueEscalationConfirmation(db, 1, requestedAt);
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, at(10)).runOnce();
+      expect(mailbox.to(email)).toHaveLength(1);
+      expect((await noticesOf(tenantId))[0]).toMatchObject({ status: 'sent', sentAt: at(10) });
+
+      // 12:11 alguém pede de novo: o pedido novo só sai às 12:15 (cinco minutos depois da entrega, não do pedido).
+      await restartEscalationConfirmation(db, tenantId, at(11));
+      const resent = (await noticesOf(tenantId)).at(-1);
+      expect(resent).toMatchObject({ escalationGeneration: 2, status: 'pending', attempts: 0 });
+      expect(resent?.nextAttemptAt).toEqual(at(15));
+      await dispatcher(mailbox, at(12)).runOnce();
+      expect(mailbox.to(email)).toHaveLength(1);
+
+      // Os dois se cruzaram (o pedido entrou na fila antes de a entrega anterior ser gravada): o worker confere de novo
+      // no envio e adia o pedido até o fim do intervalo, sem gastar tentativa e sem descartá-lo.
+      await db.notification.update({ where: { id: resent?.id as string }, data: { nextAttemptAt: at(11) } });
+      const report = await dispatcher(mailbox, at(12)).runOnce();
+      expect(report.postponed).toBeGreaterThanOrEqual(1);
+      expect(mailbox.to(email)).toHaveLength(1);
+      expect((await noticesOf(tenantId)).at(-1)).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        lastError: null,
+        nextAttemptAt: at(15),
+      });
+      expect(await db.escalationContactToken.count({ where: { generation: 2 } })).toBe(0);
+
+      // Passado o intervalo, sai.
+      await dispatcher(mailbox, at(15)).runOnce();
+      expect(mailbox.to(email)).toHaveLength(2);
+      expect((await noticesOf(tenantId)).at(-1)).toMatchObject({
+        status: 'sent',
+        attempts: 1,
+        sentAt: at(15),
+      });
     });
 
     it('pedido de confirmação: o endereço trocado antes do envio sai como superseded, e sem e-mail no nó fica mail_disabled', async () => {

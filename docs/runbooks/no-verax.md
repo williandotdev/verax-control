@@ -347,8 +347,9 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
 - **O contato de escalonamento não recebe.**
   - A situação dele aparece no cadastro do cliente (e em Administração → Escalonamento): só o "Confirmado" recebe, e
     só os avisos críticos. "Aguardando confirmação" mostra o último e-mail de confirmação (na fila, enviado, falhou ou
-    não saiu); "Reenviar confirmação" põe outro na fila (no mínimo 5 minutos depois do anterior) e invalida os links
-    antigos. "Descadastrado" é ele que saiu pelo link: volte só se ele pedir, com "Reenviar confirmação".
+    não saiu); "Reenviar confirmação" põe outro na fila (no mínimo 5 minutos depois do último e-mail de confirmação que
+    saiu de fato; o worker adia o que chegar antes disso, sem descartar) e invalida os links antigos. "Descadastrado"
+    é ele que saiu pelo link: volte só se ele pedir, com "Reenviar confirmação".
   - Na fila, o pedido de confirmação é o tipo `escalation_confirmation` (`skipped` com `superseded` é o pedido de um
     endereço que já foi trocado; com `tenant_inactive`, o cliente desativado). Nos avisos críticos, a coluna
     `escalationDelivery` diz o que houve com o contato (`sent`; `limited`, passou de 5 e-mails na hora; `stale`, o

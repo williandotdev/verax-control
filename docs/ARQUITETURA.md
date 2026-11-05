@@ -960,13 +960,20 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     novo (sem diferença de maiúsculas) volta a `pending`, sobe a geração (`escalationGeneration`), apaga os links das
     gerações anteriores e põe o pedido `escalation_confirmation` na fila, na mesma transação; mudar só o nome ou o
     telefone não mexe em nada disso. Os contatos que já existiam antes deste controle começam em `pending`, sem pedido
-    na fila: quem administra pede a confirmação pelo painel.
+    na fila: quem administra pede a confirmação pelo painel. Toda troca e todo pedido travam antes a linha do cliente
+    (`SELECT ... FOR NO KEY UPDATE`, a mesma trava do `UPDATE`) e só então leem o contato: duas requisições ao mesmo
+    tempo nunca decidem sobre um endereço que a outra já trocou (sem isso, uma troca só de nome que leu A gravaria A de
+    volta depois da troca para B, sem recomeçar a confirmação, e o link mandado a B confirmaria A).
   - **Pedir a confirmação de novo** (`POST /v1/escalation-contact/confirmation` e, para a Verax,
     `POST /v1/tenants/:id/escalation-contact/confirmation`, auditados como `escalation_contact.resend`): só com o
     contato aguardando ou descadastrado (o confirmado recebe 409 `ESCALATION_CONTACT_CONFIRMED`; sem contato, 409
-    `ESCALATION_CONTACT_MISSING`). Sobe a geração, e os links anteriores deixam de valer. Entre dois pedidos do mesmo
-    cliente, no mínimo 5 min (`ESCALATION_CONFIRMATION_INTERVAL_MINUTES`): a fila segura o novo até lá e encerra os
-    pendentes das gerações anteriores (`superseded`). Trocas seguidas viram um e-mail só, para o último endereço.
+    `ESCALATION_CONTACT_MISSING`). Sobe a geração, e os links anteriores deixam de valer. Entre dois e-mails de
+    confirmação do mesmo cliente, no mínimo 5 min (`ESCALATION_CONFIRMATION_INTERVAL_MINUTES`), contados do último que
+    **saiu de fato** (o `sentAt`), não do pedido: um pedido entregue com atraso (o worker parado, a fila atrasada, as
+    novas tentativas) não abre espaço para outro logo em seguida. A fila segura o novo até lá e encerra os pendentes
+    das gerações anteriores (`superseded`), e o worker confere o intervalo de novo no envio: dentro dele, o pedido volta
+    para a fila até o fim do intervalo, sem gastar tentativa e sem ser descartado (`postponed` no relatório da tarefa).
+    Trocas seguidas viram um e-mail só, para o último endereço.
   - **O e-mail de confirmação** sai pelo worker, como os avisos (mesmas tentativas, recuo e `failed`). O endereço vem
     do cadastro na hora do envio; o pedido de uma geração que já não é a atual, com o contato fora de `pending` ou com
     o cliente desativado sai como `skipped` (`superseded` ou `tenant_inactive`). Os dois links (confirmar, de uso único

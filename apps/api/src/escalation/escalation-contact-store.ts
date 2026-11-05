@@ -17,8 +17,11 @@ import type { NotificationStatus, Prisma } from '../generated/prisma/client.js';
  *   anteriores deixam de valer, e os registros deles saem) e o e-mail de confirmação entra na fila de saída
  *   (`escalation_confirmation`), que o worker entrega. Mudar só o nome ou o telefone não mexe na confirmação.
  * - Pedir a confirmação de novo (aguardando ou descadastrado) faz o mesmo, com o mesmo endereço.
- * - Entre dois e-mails de confirmação do mesmo cliente, no mínimo `ESCALATION_CONFIRMATION_INTERVAL_MINUTES`: a fila
- *   segura o novo até lá, e o worker só manda o da geração atual. Várias trocas seguidas viram um e-mail só.
+ * - Entre dois e-mails de confirmação do mesmo cliente, no mínimo `ESCALATION_CONFIRMATION_INTERVAL_MINUTES`, contados
+ *   do último que saiu de fato: a fila segura o novo até lá, o worker confere de novo no envio (e adia, sem descartar),
+ *   e só manda o da geração atual. Várias trocas seguidas viram um e-mail só.
+ * - Toda troca e todo pedido travam antes a linha do cliente (`lockTenantRow`) e só então leem o contato: duas
+ *   requisições ao mesmo tempo não decidem sobre um endereço que a outra já trocou.
  */
 export const ESCALATION_SELECT = {
   id: true,
@@ -57,6 +60,48 @@ const EMAIL_STATUS: Readonly<Record<NotificationStatus, EscalationConfirmationEm
 /** Código e mensagem das recusas de "pedir a confirmação de novo". */
 export const ESCALATION_CONTACT_MISSING = 'ESCALATION_CONTACT_MISSING';
 export const ESCALATION_CONTACT_CONFIRMED = 'ESCALATION_CONTACT_CONFIRMED';
+
+/**
+ * Trava a linha do cliente até o fim da transação da requisição, antes de ler o contato e decidir a transição. Sem isso,
+ * uma troca só de nome que leu o endereço A gravaria A de volta depois de outra requisição trocar para B e subir a
+ * geração, sem recomeçar a confirmação nem invalidar os links de B, e o link de confirmação mandado a B confirmaria A.
+ * `FOR NO KEY UPDATE` é a mesma trava do `UPDATE` da linha: serializa as trocas e as confirmações, sem segurar quem só
+ * grava dados com chave estrangeira para o cliente (achados, avisos, trilha). Recebe o cliente do banco sem escopo (o
+ * da transação da requisição), porque o escopo não aceita SQL.
+ */
+export async function lockTenantRow(tx: Prisma.TransactionClient, tenantId: string): Promise<void> {
+  await tx.$queryRaw`SELECT 1 FROM "Tenant" WHERE id = ${tenantId}::uuid FOR NO KEY UPDATE`;
+}
+
+const CONFIRMATION_INTERVAL_MS = ESCALATION_CONFIRMATION_INTERVAL_MINUTES * 60_000;
+
+/**
+ * Quando o último e-mail de confirmação do cliente saiu de fato (o `sentAt`, gravado pelo worker), de qualquer geração.
+ * O pedido que ainda está na fila não conta: o intervalo é entre e-mails entregues, não entre pedidos.
+ */
+export async function lastConfirmationSentAt(
+  db: Prisma.TransactionClient,
+  exceptId?: string,
+): Promise<Date | null> {
+  const last = await db.notification.findFirst({
+    where: {
+      kind: 'escalation_confirmation',
+      status: 'sent',
+      sentAt: { not: null },
+      ...(exceptId === undefined ? {} : { id: { not: exceptId } }),
+    },
+    orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
+    select: { sentAt: true },
+  });
+  return last?.sentAt ?? null;
+}
+
+/** O primeiro instante em que outro e-mail de confirmação do cliente pode sair: agora, ou o intervalo depois do último. */
+export function nextConfirmationAt(lastSentAt: Date | null, now: Date): Date {
+  if (lastSentAt === null) return now;
+  const allowed = new Date(lastSentAt.getTime() + CONFIRMATION_INTERVAL_MS);
+  return allowed > now ? allowed : now;
+}
 
 /** O mesmo endereço, sem diferença de maiúsculas nem de espaço nas pontas. */
 export function sameAddress(a: string | null, b: string): boolean {
@@ -157,8 +202,10 @@ export function escalationContactCreate(
 
 /**
  * Depois de gravar a geração nova: apaga os links das gerações anteriores, encerra os pedidos de confirmação delas que
- * ainda estavam na fila e põe o novo, no mínimo `ESCALATION_CONFIRMATION_INTERVAL_MINUTES` depois do último pedido do
- * cliente. Nenhum endereço entra na fila: o worker lê o do cadastro na hora do envio.
+ * ainda estavam na fila e põe o novo, no mínimo `ESCALATION_CONFIRMATION_INTERVAL_MINUTES` depois do último e-mail de
+ * confirmação que saiu de fato (um pedido entregue com atraso, depois de o worker ficar parado, não abre espaço para
+ * outro logo em seguida). O worker confere o intervalo de novo no envio. Nenhum endereço entra na fila: o worker lê o do
+ * cadastro na hora do envio.
  */
 export async function queueEscalationConfirmation(
   db: Prisma.TransactionClient,
@@ -170,22 +217,13 @@ export async function queueEscalationConfirmation(
     where: { kind: 'escalation_confirmation', status: 'pending', escalationGeneration: { lt: generation } },
     data: { status: 'skipped', lastError: 'superseded' },
   });
-  const last = await db.notification.findFirst({
-    where: { kind: 'escalation_confirmation' },
-    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    select: { createdAt: true },
-  });
-  const earliest =
-    last === null
-      ? now
-      : new Date(last.createdAt.getTime() + ESCALATION_CONFIRMATION_INTERVAL_MINUTES * 60_000);
   await db.notification.create({
     data: {
       kind: 'escalation_confirmation',
       dedupeKey: `escalation-confirmation:${generation}`,
       escalationGeneration: generation,
       createdAt: now,
-      nextAttemptAt: earliest > now ? earliest : now,
+      nextAttemptAt: nextConfirmationAt(await lastConfirmationSentAt(db), now),
     } as Prisma.NotificationUncheckedCreateInput,
     select: { id: true },
   });
@@ -193,7 +231,8 @@ export async function queueEscalationConfirmation(
 
 /**
  * Pede a confirmação de novo, com o mesmo endereço: só para quem está aguardando (o e-mail não chegou, o link venceu) ou
- * se descadastrou e pediu para voltar. Quem já confirmou não recebe outro pedido.
+ * se descadastrou e pediu para voltar. Quem já confirmou não recebe outro pedido. Quem chama trava antes a linha do
+ * cliente (`lockTenantRow`).
  */
 export async function restartEscalationConfirmation(
   db: Prisma.TransactionClient,

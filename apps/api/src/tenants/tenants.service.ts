@@ -19,6 +19,7 @@ import {
   escalationContactCreate,
   escalationContactUpdate,
   latestConfirmation,
+  lockTenantRow,
   queueEscalationConfirmation,
   restartEscalationConfirmation,
   toEscalationContact,
@@ -144,6 +145,9 @@ export class TenantsService {
   }
 
   async update(id: string, input: TenantUpdate): Promise<Tenant> {
+    // A linha fica travada até o fim da requisição antes da leitura: a troca do contato é decidida sobre o endereço e a
+    // geração de agora (`lockTenantRow`).
+    await lockTenantRow(this.prisma.db(), id);
     const found = await this.find(id);
     const before = await this.toFullTenant(found);
     const contact = input.escalationContact ? escalationContactUpdate(found, input.escalationContact) : null;
@@ -182,6 +186,7 @@ export class TenantsService {
    * venceu, ou o contato se descadastrou e pediu para voltar. Os links anteriores deixam de valer.
    */
   async requestEscalationConfirmation(id: string): Promise<Tenant> {
+    await lockTenantRow(this.prisma.db(), id);
     await this.find(id);
     const db = this.prisma.forTenant(id);
     const { before } = await restartEscalationConfirmation(db, id, new Date());

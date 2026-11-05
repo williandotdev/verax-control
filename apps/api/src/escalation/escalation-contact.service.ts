@@ -6,6 +6,7 @@ import {
   ESCALATION_SELECT,
   type EscalationRow,
   escalationContactUpdate,
+  lockTenantRow,
   queueEscalationConfirmation,
   readEscalationContact,
   restartEscalationConfirmation,
@@ -32,7 +33,7 @@ export class EscalationContactService {
   /** Troca o contato. Endereço novo volta a aguardar a confirmação, e o e-mail dela entra na fila. */
   async update(input: EscalationContactInput): Promise<EscalationContactResponse> {
     const db = this.prisma.scoped();
-    const found = await this.current(db);
+    const found = await this.locked(db);
     const before = await readEscalationContact(db, found);
     const { data, restart } = escalationContactUpdate(found, input);
     const row = await db.tenant.update({ where: { id: found.id }, data, select: ESCALATION_SELECT });
@@ -51,7 +52,7 @@ export class EscalationContactService {
   /** Pede a confirmação de novo (aguardando ou descadastrado), com o mesmo endereço. */
   async requestConfirmation(): Promise<EscalationContactResponse> {
     const db = this.prisma.scoped();
-    const found = await this.current(db);
+    const found = await this.locked(db);
     const before = await readEscalationContact(db, found);
     const { after } = await restartEscalationConfirmation(db, found.id, new Date());
     const contact = await readEscalationContact(db, after);
@@ -68,5 +69,15 @@ export class EscalationContactService {
   /** O cadastro do próprio cliente: o escopo só alcança essa linha. */
   private current(db: ReturnType<PrismaService['scoped']>): Promise<EscalationRow> {
     return db.tenant.findFirstOrThrow({ select: ESCALATION_SELECT });
+  }
+
+  /**
+   * O cadastro do próprio cliente, lido depois de travar a linha até o fim da requisição (`lockTenantRow`): a transição
+   * é decidida sobre o endereço e a geração de agora, nunca sobre o que outra requisição já trocou.
+   */
+  private async locked(db: ReturnType<PrismaService['scoped']>): Promise<EscalationRow> {
+    const { id } = await db.tenant.findFirstOrThrow({ select: { id: true } });
+    await lockTenantRow(this.prisma.db(), id);
+    return this.current(db);
   }
 }

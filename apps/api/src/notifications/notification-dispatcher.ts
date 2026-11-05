@@ -12,6 +12,7 @@ import { SyncLease } from '../alerts/finding-store.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
+import { lastConfirmationSentAt, nextConfirmationAt } from '../escalation/escalation-contact-store.js';
 import {
   discardEscalationTokens,
   escalationLink,
@@ -130,6 +131,11 @@ export interface NotificationReport {
   failed: number;
   /** Não sai: nó sem e-mail ou ninguém para receber. */
   skipped: number;
+  /**
+   * Pedidos de confirmação ao contato de escalonamento adiados no envio: outro e-mail de confirmação do mesmo cliente
+   * saiu há menos de `ESCALATION_CONFIRMATION_INTERVAL_MINUTES` (o pedido volta para a fila, sem gastar tentativa).
+   */
+  postponed: number;
   /** Entregas (uma por pessoa e aviso) que foram para o resumo da hora ou para o de retomada, em vez do e-mail avulso. */
   folded: number;
   digests: DigestReport;
@@ -239,6 +245,8 @@ interface EscalationRecipient {
 }
 
 type Outcome = 'sent' | 'retrying' | 'failed' | 'skipped';
+/** O fim de um aviso numa execução: os de sempre e o pedido de confirmação adiado pelo intervalo. */
+type NoticeOutcome = Outcome | 'postponed';
 
 /** O fim de uma tentativa (do aviso ou do resumo): `sent`, o recuo, ou `failed` na quinta. */
 function attemptResult(
@@ -384,6 +392,7 @@ export class NotificationDispatcher {
       retrying: 0,
       failed: 0,
       skipped: 0,
+      postponed: 0,
       folded: 0,
       digests: { due: 0, sent: 0, retrying: 0, failed: 0, skipped: 0 },
       escalation: { sent: 0, limited: 0, stale: 0 },
@@ -440,7 +449,7 @@ export class NotificationDispatcher {
     row: DueNotice,
     report: Pick<NotificationReport, 'folded' | 'escalation'>,
     signal?: AbortSignal,
-  ): Promise<Outcome> {
+  ): Promise<NoticeOutcome> {
     const db = this.prisma.forTenant(row.tenantId);
     if (this.mailer === null) return this.skip(row, 'mail_disabled');
     if (row.kind === 'escalation_confirmation') return this.deliverConfirmation(row, this.mailer, signal);
@@ -638,14 +647,16 @@ export class NotificationDispatcher {
   /**
    * O pedido de confirmação ao contato de escalonamento (D8). O endereço vem do cadastro na hora do envio, e o pedido só
    * sai se ainda é o da geração atual, com o contato aguardando e o cliente ativo (senão, `superseded` ou
-   * `tenant_inactive`). Os links (confirmar, de uso único, e descadastrar) nascem aqui, só com o hash no banco; se o
+   * `tenant_inactive`). O intervalo entre dois e-mails de confirmação do cliente é conferido de novo aqui, contra o
+   * último que saiu de fato: dentro dele, o pedido é adiado até o fim do intervalo (`postponed`), sem gastar tentativa e
+   * sem ser descartado. Os links (confirmar, de uso único, e descadastrar) nascem aqui, só com o hash no banco; se o
    * e-mail não sai, eles saem também. Mesmas tentativas, recuo e `failed` dos avisos.
    */
   private async deliverConfirmation(
     row: DueNotice,
     mailer: NoticeMailer,
     signal?: AbortSignal,
-  ): Promise<Outcome> {
+  ): Promise<NoticeOutcome> {
     const db = this.prisma.forTenant(row.tenantId);
     const tenant = await db.tenant.findUnique({
       where: { id: row.tenantId },
@@ -659,6 +670,18 @@ export class NotificationDispatcher {
       tenant.escalationName === null
     ) {
       return this.close(row, 'skipped', 'superseded');
+    }
+    // Outro e-mail de confirmação do cliente saiu há pouco (um pedido entregue com atraso, ou dois que se cruzaram):
+    // este espera o fim do intervalo, na fila.
+    const now = this.now();
+    const allowedAt = nextConfirmationAt(await lastConfirmationSentAt(db, row.id), now);
+    if (allowedAt > now) {
+      await db.notification.update({
+        where: { id: row.id },
+        data: { nextAttemptAt: allowedAt },
+        select: { id: true },
+      });
+      return 'postponed';
     }
     if (signal?.aborted) {
       await this.finishAttempt(row, errorKind(signal.reason));

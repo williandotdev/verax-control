@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import {
   ESCALATION_CONFIRMATION_INTERVAL_MINUTES,
@@ -8,9 +8,10 @@ import {
   tenantSchema,
 } from '@verax/shared';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { escalationTokenHash, mintEscalationTokens } from '../src/escalation/escalation-tokens.js';
+import pg from 'pg';
 import type { EscalationTokenPurpose } from '../src/generated/prisma/client.js';
 import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
@@ -253,6 +254,13 @@ describe('contato de escalonamento (D8)', () => {
         .expect(200);
       const { confirm: old } = await linksOf(tenantA, ['confirm']);
       const generation = (await contactRow(tenantA)).escalationGeneration;
+      // O pedido anterior saiu agora (como o worker grava): o novo só sai depois do intervalo, contado da entrega.
+      const deliveredAt = new Date();
+      const [delivered] = (await confirmations(tenantA)).slice(-1);
+      await prisma.forTenant(tenantA).notification.update({
+        where: { id: delivered?.id as string },
+        data: { status: 'sent', sentAt: deliveredAt, attempts: 1 },
+      });
       const resent = await call(session('adminA')).post(`${PATH}/confirmation`).expect(200);
       expect(contactOf(resent)).toMatchObject({ status: 'pending' });
       expect((await contactRow(tenantA)).escalationGeneration).toBe(generation + 1);
@@ -262,10 +270,10 @@ describe('contato de escalonamento (D8)', () => {
         resourceId: tenantA,
       });
       await publicLink('confirm', old as string).expect(400);
-      const [previous, latest] = (await confirmations(tenantA)).slice(-2);
+      const [latest] = (await confirmations(tenantA)).slice(-1);
       expect(latest?.escalationGeneration).toBe(generation + 1);
       expect(latest?.nextAttemptAt.getTime()).toBeGreaterThanOrEqual(
-        (previous?.createdAt.getTime() ?? 0) + ESCALATION_CONFIRMATION_INTERVAL_MINUTES * 60_000,
+        deliveredAt.getTime() + ESCALATION_CONFIRMATION_INTERVAL_MINUTES * 60_000,
       );
 
       // Confirmado: não há o que pedir de novo.
@@ -498,6 +506,125 @@ describe('contato de escalonamento (D8)', () => {
       await server.get('/v1/public/escalation-contact/confirm').expect(404);
       expect((await contactRow(tenantId)).escalationState).toBe('pending');
     });
+  });
+
+  describe('trocas ao mesmo tempo (revisão do PR #97)', () => {
+    /**
+     * Outra requisição trocando o endereço numa transação aberta em outra conexão, como a do `PUT` de outra pessoa: troca
+     * para B, sobe a geração e já tem o link de confirmação mandado a B, e segura a linha até `commit`.
+     */
+    async function openAddressChange(
+      tenantId: string,
+      email: string,
+      tokenHash: string,
+    ): Promise<{ pid: number; commit(): Promise<void> }> {
+      const client = new pg.Client({ connectionString: inject('testDatabaseUrl') });
+      await client.connect();
+      const { rows } = await client.query<{ pid: number }>('SELECT pg_backend_pid() AS pid');
+      const pid = rows[0]?.pid as number;
+      await client.query('BEGIN');
+      const changed = await client.query<{ generation: number }>(
+        `UPDATE "Tenant" SET "escalationEmail" = $2, "escalationState" = 'pending', "escalationConfirmedAt" = NULL,
+           "escalationGeneration" = "escalationGeneration" + 1, "updatedAt" = now()
+         WHERE id = $1 RETURNING "escalationGeneration" AS generation`,
+        [tenantId, email],
+      );
+      await client.query(
+        `INSERT INTO "EscalationContactToken" ("tokenHash", "tenantId", purpose, generation, "expiresAt")
+         VALUES ($1, $2, 'confirm', $3, now() + interval '1 hour')`,
+        [tokenHash, tenantId, changed.rows[0]?.generation],
+      );
+      return {
+        pid,
+        commit: async () => {
+          try {
+            await client.query('COMMIT');
+          } finally {
+            await client.end();
+          }
+        },
+      };
+    }
+
+    /** Espera a requisição da API ficar parada na linha que a outra conexão segura (até 15 s). */
+    async function waitUntilBlockedBy(pid: number): Promise<void> {
+      const deadline = Date.now() + 15_000;
+      while (Date.now() < deadline) {
+        const [row] = await prisma.$queryRaw<{ blocked: number }[]>`
+          SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE ${pid}::int = ANY(pg_blocking_pids(pid))`;
+        if ((row?.blocked ?? 0) > 0) return;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      throw new Error('a requisição não chegou a esperar a outra troca');
+    }
+
+    /** Contato A confirmado, como estava antes das duas requisições. */
+    async function confirmedContact(tenantId: string, email: string): Promise<number> {
+      const row = await prisma.tenant.update({
+        where: { id: tenantId },
+        data: {
+          escalationName: 'Ana',
+          escalationEmail: email,
+          escalationState: 'confirmed',
+          escalationConfirmedAt: new Date(),
+          escalationUnsubscribedAt: null,
+          escalationGeneration: { increment: 1 },
+        },
+        select: { escalationGeneration: true },
+      });
+      return row.escalationGeneration;
+    }
+
+    it.each([
+      [
+        'a tela do administrador do cliente (PUT /v1/escalation-contact)',
+        () => tenantA,
+        (email: string) => call(session('adminA')).put(PATH, { name: 'Ana Lima', email }),
+      ],
+      [
+        'o cadastro de clientes da Verax (PATCH /v1/tenants/:id)',
+        () => tenantB,
+        (email: string) =>
+          call(session('verax')).patch(`/v1/tenants/${tenantB}`, {
+            escalationContact: { name: 'Ana Lima', email },
+          }),
+      ],
+    ])(
+      '%s: a troca só de nome que leu o endereço A espera a troca para B e recomeça a confirmação; o link de B nunca confirma A',
+      async (_label, tenantOf, rename) => {
+        const tenantId = tenantOf();
+        const emailA = address('corrida-a');
+        const emailB = address('corrida-b');
+        const generation = await confirmedContact(tenantId, emailA);
+        const tokenB = randomBytes(32).toString('base64url');
+        seen.push(tokenB);
+
+        const change = await openAddressChange(tenantId, emailB, escalationTokenHash(tokenB));
+        // A troca só de nome sai com o endereço A; sem a trava, ela leria A e gravaria A de volta sem recomeçar nada.
+        const renaming = (async () => rename(emailA))();
+        await waitUntilBlockedBy(change.pid);
+        await change.commit();
+        expect((await renaming).status).toBe(200);
+
+        const row = await contactRow(tenantId);
+        expect(row).toMatchObject({
+          escalationEmail: emailA,
+          escalationName: 'Ana Lima',
+          escalationState: 'pending',
+          escalationConfirmedAt: null,
+        });
+        // A geração subiu de novo depois da de B: os links de B deixaram de valer, e o pedido novo vai para A.
+        expect(row.escalationGeneration).toBe(generation + 2);
+        expect(
+          await prisma.escalationContactToken.count({ where: { tokenHash: escalationTokenHash(tokenB) } }),
+        ).toBe(0);
+        await publicLink('confirm', tokenB).expect(400);
+        expect((await contactRow(tenantId)).escalationState).toBe('pending');
+        expect((await confirmations(tenantId)).at(-1)).toMatchObject({
+          escalationGeneration: generation + 2,
+        });
+      },
+    );
   });
 
   describe('isolamento por cliente (A/B)', () => {
