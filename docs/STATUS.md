@@ -4585,3 +4585,73 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
   `infra/gcp/GUIA.md` (a decisão registrada e as operações do responsável pelo console).
 - **Testes:** `terraform fmt`, `validate` e `terraform test` do `envs/control-plane` (30 casos) passando.
 - **Aplicação:** o `envs/control-plane` ainda não foi aplicado; vale no primeiro `apply`.
+
+## Decisões do responsável de 05/11/2026: alertas dos agentes a partir do nível 7 e nome do cliente até 120 ⚠️ altera `infra/`
+
+- **Pedido:** duas decisões aprovadas hoje, que fecham pendências abertas: o volume dos alertas dos agentes (riscos do
+  PR #74, "um nível mínimo próprio para os agentes") e o nome do cliente (120 no nó, 200 no checkout e no Terraform,
+  cortado no CP-07; pendência do CP-06 e decisão do CP-07).
+- **Alertas dos agentes a partir do nível 7** (`apps/api/src/alerts/`): `AGENT_MIN_LEVEL = 7` e
+  `DEFAULT_AGENT_SYNC_SETTINGS` (`sync-query.ts`, com o porquê no comentário), o padrão do `AgentAlertSync`. A consulta
+  dos agentes pede `rule.level >= 7` ao indexer, e o sync confere de novo em cada alerta lido, como faz com o
+  `agent.id`: o abaixo conta em `belowLevel` (campo novo do relatório) e não vira achado nem vai para a fila. O sync da
+  AWS (o manager) continua no 5; o indexer continua guardando do 5 para cima.
+- **Nome do cliente até 120 em todo lugar:** `companyNameSchema` (novo, `tenants/tenant.schema.ts`: de 2 a 120, sem
+  espaço nas pontas nem controle, com as mensagens em português) no checkout e no `customer.updated` (que tinha a
+  própria regra, com 200); `isTenantName` do executor com 120 (o máximo contado em unidades UTF-16, como o zod do
+  checkout e o `node-bootstrap` contam); o `entrypoint.sh` do executor com 120; o `bootstrap_tenant_name` do
+  `envs/tenant` com 120, em duas validações (tamanho e formato), cada uma com a sua mensagem. **O corte do CP-07
+  (`nodeTenantName`) saiu:** o nó recebe a razão social inteira. **Defesa mantida:** a leitura do cliente e da reserva
+  continua aceitando até 200 (um documento gravado antes não fica ilegível), e o `preflight` para esse cliente com
+  `tenant_name_invalid`, sem cortar; o `executorEnv` recusa de novo antes do Job. O site ainda não tem o formulário do
+  checkout (o botão leva ao contato), então não há contrato do site a mudar aqui.
+- **Arquivos:** API: `apps/api/src/alerts/{sync-query.ts,agent-alert-sync.ts}`, testes
+  `apps/api/test/{agents.test.ts,alerts/finding-draft.test.ts,support/fake-indexer.ts}`; plano de controle:
+  `apps/control-plane/src/{tenants/tenant.schema.ts,checkout/checkout.schema.ts,webhook/billing-rules.ts,provisioning/executor-env.ts,provisioning/provisioning-steps.ts}`,
+  testes `src/{tenants/tenant.schema,webhook/billing-rules,provisioning/executor-env}.test.ts` e
+  `test/{checkout,provisioning-worker}.test.ts`; **`infra/` (revisar linha a linha):**
+  `infra/control-plane/terraform/{entrypoint.sh,tests/entrypoint-test.sh}`,
+  `infra/gcp/envs/tenant/{variables.tf,tests/variaveis.tftest.hcl}`; documentação: `docs/ARQUITETURA.md` (agentes:
+  "Nível mínimo dos agentes"; checkout; variáveis do `envs/tenant`), `docs/runbooks/provisionamento.md`
+  (`tenant_name_invalid`) e este registro.
+- **Dependências:** nenhuma.
+- **Testes:**
+  - API (Postgres 18 descartável): o nível 6 de um agente da lista e de um fora dela não vira achado nem vai para a
+    fila, o FIM de nível 7 vira achado médio, a consulta leva `gte: 7`, e no mesmo indexer o sync da AWS grava o
+    CloudTrail de nível 5 com a consulta em `gte: 5` (`agents.test.ts`); a página dos agentes em `gte: 7` e as regras de
+    leitura iguais às da AWS fora o nível (`finding-draft.test.ts`). O teste dos dois syncs no mesmo indexer passou a
+    usar o nível 8 no alerta de agente com cara de AWS (o 5 de antes agora fica abaixo do mínimo). Suíte inteira: 121
+    arquivos, 1738 testes (o `findings.test.ts` caiu com o 0xC0000409 do Vitest no Windows e passou sozinho, 24 de 24);
+  - plano de controle (emulador do Firestore): `companyNameSchema` (120 com acento e aspas passa, os espaços das pontas
+    saem antes da contagem, 121, 1, quebra de linha, tabulação, NUL e DEL recusados com a mensagem em português; o
+    checkout usa a mesma regra); o checkout pela API (120 entra inteiro na reserva, 121 é 400 citando só
+    `companyName`, sem reserva nem sessão); o `customer.updated` (120 entra, 121 fica a anterior); `isTenantName` (120
+    e 121; 60 e 61 emojis, 120 e 122 unidades UTF-16) e o `executorEnv` com 121; o cp-worker com um cliente antigo de
+    121: `provisioning_failed` com `tenant_name_invalid` no `preflight`, nome intacto, nenhuma chamada à nuvem. Suíte
+    inteira: 60 arquivos, 674 testes;
+  - `envs/tenant`: `terraform fmt -check`, `init -backend=false -lockfile=readonly`, `validate` e `terraform test` com
+    45 casos (eram 43: 120 acentuados aceitos e inteiros nos metadados da VM, 121 e 1 recusados); tflint 0.65.0 em
+    `infra/gcp` sem avisos;
+  - executor: `entrypoint-test.sh` num Ubuntu 24.04 sem root, 204 verificações (120 acentuados aceitos; 121 acentuados
+    e 121 ASCII recusados com 2); shellcheck (imagem `koalaman/shellcheck:latest`, `-x -S style`) limpo;
+  - Semgrep 1.183.0 com as regras do `security.yml` nos 9 arquivos de código tocados (fora os testes): 0 achados;
+    `tsc --noEmit` da API e do plano de controle, ESLint `--max-warnings=0` e `prettier --check` nos arquivos tocados.
+- **Definição de pronto:** decisões implementadas ✔ · testes, inclusive os negativos (nível 6 fora; 121 recusado em
+  cada camada) ✔ · lint, tipos e formatação ✔ · nenhuma dependência ✔ · regras de segurança ✔ (consulta estruturada;
+  entrada da Stripe e do site validada por schema; nada de dado real; nenhum `apply`).
+- **O que testar manualmente:** na homologação com os agentes ligados, um alerta de nível 6 (uma conexão SSH
+  malformada, regra 5706) não aparece em Achados e um arquivo monitorado alterado (550) aparece como médio; no
+  journal do worker, `belowLevel` na tarefa `wazuh-agent-alerts`.
+- **Riscos e pendências:**
+  - **o nível 7 não segura o primeiro SCA:** conferido nas regras do Wazuh 4.14.9 da imagem do manager: a checagem do
+    SCA com falha (19007), o arquivo alterado ou apagado (550 e 553) e o pacote instalado (2902) são nível 7 e
+    continuam virando achado médio (o primeiro SCA de cada instância ainda gera um por checagem com falha, juntos no
+    incidente da instância). O nível 7 tira o arquivo novo do FIM (554), o resumo do SCA abaixo de 80% (19003), a
+    mudança de checagem para "não aplicável" (19012 e 19013) e o resto dos níveis 5 e 6. Para o SCA não encher a
+    lista, seria o nível 8 ou uma regra local que baixe a 19007 (decisão do responsável);
+  - o mock do painel ainda tem um achado de agente de nível 5 (regra 5710, baixo), que não acontece mais; ajustar no
+    próximo PR do painel;
+  - o mínimo de 2: o Terraform conta grafemas, e o checkout, unidades UTF-16. Um nome de 2 unidades que formem um
+    grafema só (letra com acento combinante) passaria no checkout e pararia no `envs/tenant`. Improvável; ficou como
+    estava;
+  - quando o site ganhar o formulário do checkout, o campo do nome da empresa deve limitar a 120 (`maxlength`).

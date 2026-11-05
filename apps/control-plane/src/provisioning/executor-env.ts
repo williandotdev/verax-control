@@ -5,6 +5,7 @@ import {
   NODE_RELEASE_PATTERN,
 } from '../common/config/env.schema.js';
 import { isUlid } from '../common/ulid.js';
+import { COMPANY_NAME_MAX_LENGTH } from '../tenants/tenant.schema.js';
 
 /**
  * As variáveis de cada execução do Job `cp-terraform` (plano §4c, passo 4), que o cp-worker manda em
@@ -101,10 +102,21 @@ export function isTenantEmail(value: string): boolean {
   return isMailAddress(value);
 }
 
-/** Nome do cliente no nó: de 2 a 200 caracteres (pontos de código), sem espaço nas pontas e sem controle. */
+/**
+ * Nome do cliente no nó: de 2 a 120 caracteres (`COMPANY_NAME_MAX_LENGTH`, o `Tenant.name` do nó), sem espaço nas
+ * pontas e sem controle. O mínimo em pontos de código, como o `entrypoint.sh`; o máximo em unidades UTF-16 (o `length`
+ * do JS), como o checkout e o `node-bootstrap` do nó contam: o que passa aqui nunca é recusado pelo executor (até 120
+ * pontos de código), pelo `envs/tenant` nem pelo nó. É a conferência de defesa do provisionamento: o checkout e o
+ * `customer.updated` já limitam a 120, e só um cliente gravado antes do limite chega aqui com mais
+ * (`tenant_name_invalid`).
+ */
 export function isTenantName(value: string): boolean {
-  const length = [...value].length;
-  return length >= 2 && length <= 200 && value.trim() === value && !CONTROL_PATTERN.test(value);
+  return (
+    [...value].length >= 2 &&
+    value.length <= COMPANY_NAME_MAX_LENGTH &&
+    value.trim() === value &&
+    !CONTROL_PATTERN.test(value)
+  );
 }
 
 function inRange(value: number, [min, max]: readonly [number, number]): boolean {
@@ -176,17 +188,4 @@ export function executorEnv(input: ExecutorInput): { name: string; value: string
     if (name.startsWith('PLAN_') && value !== '') check(LIMIT_PATTERN.test(value), name);
   }
   return env.map(([name, value]) => ({ name, value }));
-}
-
-/**
- * O nome do cliente no nó: o nó guarda até 120 caracteres (`Tenant.name`, `VarChar(120)`, CP-10), e o checkout aceita
- * até 200. Uma razão social mais longa é cortada em 120 pontos de código (sem espaço no fim) só no nó, que a usa como
- * rótulo; a razão social inteira continua no plano de controle e na Stripe.
- */
-export const NODE_TENANT_NAME_MAX = 120;
-export function nodeTenantName(legalName: string): string {
-  const points = [...legalName.trim()];
-  return points.length <= NODE_TENANT_NAME_MAX
-    ? points.join('')
-    : points.slice(0, NODE_TENANT_NAME_MAX).join('').trimEnd();
 }

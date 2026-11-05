@@ -50,6 +50,36 @@ export function isReservableSlug(value: string): boolean {
 /** CNPJ no formato alfanumérico da Receita (12 posições `[A-Z0-9]` e 2 dígitos). O DV é conferido no checkout. */
 export const cnpjSchema = z.string().regex(/^[A-Z0-9]{12}[0-9]{2}$/, { error: 'CNPJ inválido' });
 
+/**
+ * O nome do cliente (a razão social): até 120 caracteres em todo lugar (decisão do responsável, 05/11/2026), o limite
+ * do nó (`Tenant.name` é `VarChar(120)`, e os schemas de cliente de `packages/shared` param em 120). O checkout, o
+ * `customer.updated` da Stripe, o executor Terraform e o `envs/tenant` aceitam o mesmo, e o nó recebe o nome inteiro.
+ */
+export const COMPANY_NAME_MAX_LENGTH = 120;
+
+/** Sem caracteres de controle (quebra de linha, tabulação, NUL): o nome vai a e-mail, painel e nota fiscal. */
+function hasNoControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/**
+ * A razão social como o checkout e o `customer.updated` a aceitam: sem espaço nas pontas, de 2 a 120 caracteres e sem
+ * caractere de controle. Contada como o zod e o nó a contam (o `length` do JS, em unidades UTF-16): nunca passa de 120
+ * pontos de código, a conta do executor (`isTenantName`, `entrypoint.sh`), nem de 120 caracteres do Terraform.
+ */
+export const companyNameSchema = z
+  .string()
+  .trim()
+  .min(2, { error: 'nome da empresa curto demais: no mínimo 2 caracteres' })
+  .max(COMPANY_NAME_MAX_LENGTH, {
+    error: `nome da empresa longo demais: no máximo ${COMPANY_NAME_MAX_LENGTH} caracteres`,
+  })
+  .refine(hasNoControlCharacters, { error: 'caracteres inválidos' });
+
 const shortText = z.string().min(1).max(200);
 /** Id de objeto da Stripe (`cus_...`, `sub_...`, `in_...`, `evt_...`): letras, números e sublinhado. */
 export const stripeIdSchema = z.string().regex(/^[A-Za-z0-9_]{3,255}$/);
@@ -103,6 +133,11 @@ export const tenantSchema = z.strictObject({
   limits: nodeLimitsSchema,
   pricing: orderPricingSchema,
   priceId: stripeId.optional(),
+  /**
+   * A razão social entra pelo checkout e pelo `customer.updated`, ambos com `companyNameSchema` (até 120). A leitura
+   * ainda aceita até 200, o limite antigo, para um cliente gravado antes continuar legível; o provisionamento o recusa
+   * com `tenant_name_invalid` (`isTenantName`), em vez de cortar o nome.
+   */
   company: z.strictObject({ legalName: shortText, cnpj: cnpjSchema }),
   /** Apagado em `deleted`. */
   adminEmail: z.email().optional(),
