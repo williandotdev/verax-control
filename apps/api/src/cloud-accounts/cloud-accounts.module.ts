@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { CloudflareTokenCheck } from '../cloudflare/cloudflare-token-check.js';
 import { CredentialIntakeService } from '../credentials/credential-intake.service.js';
+import { PlanModule } from '../plan/plan.module.js';
 import { CloudAccountsController } from './cloud-accounts.controller.js';
 import { CloudAccountsService } from './cloud-accounts.service.js';
 import { CloudCredentialsController } from './cloud-credentials.controller.js';
 
 @Module({
+  imports: [PlanModule],
   controllers: [CloudAccountsController, CloudCredentialsController],
   providers: [
     CloudAccountsService,
