@@ -148,7 +148,7 @@ export function invalidEntryId(accountId: string, value: unknown): string {
  * Caminho da API chamado (`raw.uri`) em partes: sem a query, sem esquema e host, e sem o prefixo da versão
  * (`/client/v4`, da API pública, e `/api/v4`, o que o painel usa). Nenhuma regex: só cortes de texto.
  */
-export function pathSegments(entry: Pick<AuditEntry, 'raw'>): string[] {
+export function pathSegments(entry: { raw?: { uri?: string | undefined } | undefined }): string[] {
   let path = entry.raw?.uri ?? '';
   for (const separator of ['?', '#']) {
     const at = path.indexOf(separator);
@@ -188,7 +188,10 @@ export type HttpVerb = 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'GET' | 'OTHER';
  * O método da chamada: o `raw.method` ou, sem ele, o tipo da ação (`create`, `update`, `delete`, `view`). Sem nenhum
  * dos dois, `OTHER`, que nenhuma regra de mudança aceita.
  */
-export function verbOf(entry: Pick<AuditEntry, 'raw' | 'action'>): HttpVerb {
+export function verbOf(entry: {
+  raw?: { method?: string | undefined } | undefined;
+  action: { type?: string | undefined };
+}): HttpVerb {
   const method = entry.raw?.method?.toUpperCase();
   if (
     method === 'POST' ||
@@ -217,20 +220,26 @@ export function verbOf(entry: Pick<AuditEntry, 'raw' | 'action'>): HttpVerb {
  * A ação aconteceu: o resultado não é `failure` e, quando há o status HTTP, ele não é de erro. As regras de mudança só
  * contam o que de fato mudou (a auditoria v2 não registra as respostas 4xx, mas o campo existe).
  */
-export function succeeded(entry: Pick<AuditEntry, 'raw' | 'action'>): boolean {
+export function succeeded(entry: {
+  raw?: { status_code?: number | undefined } | undefined;
+  action: { result?: string | undefined };
+}): boolean {
   if (entry.action.result?.toLowerCase() === 'failure') return false;
   const status = entry.raw?.status_code;
   return status === undefined || status < 400;
 }
 
-/** Campo de um JSON livre, por caminho, sem supor o formato. */
+/**
+ * Campo de um JSON livre, por caminho, sem supor o formato. Só lê chaves próprias do objeto (`Object.hasOwn`): um
+ * caminho com `__proto__` ou `constructor` não alcança o protótipo. Só leitura; nada é gravado no objeto.
+ */
 export function field(value: unknown, ...keys: string[]): unknown {
-  let current = value;
-  for (const key of keys) {
-    if (typeof current !== 'object' || current === null || Array.isArray(current)) return undefined;
-    current = (current as Record<string, unknown>)[key];
+  const [key, ...rest] = keys;
+  if (key === undefined) return value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || !Object.hasOwn(value, key)) {
+    return undefined;
   }
-  return current;
+  return field((value as Record<string, unknown>)[key], ...rest);
 }
 
 /** Lista de um JSON livre (vazia quando não é lista). */

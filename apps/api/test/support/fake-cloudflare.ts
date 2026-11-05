@@ -42,6 +42,10 @@ export interface FakeResponse {
   headers?: Record<string, string>;
   body?: string;
   hang?: boolean;
+  /** Responde como a API responderia (a página normal), sem roteiro de erro; com `delayMs`, devagar. */
+  pass?: boolean;
+  /** Espera antes de responder a página normal (com `pass`). */
+  delayMs?: number;
 }
 
 export interface FakeRequest {
@@ -68,6 +72,8 @@ export class FakeCloudflareServer {
   readonly requests: FakeRequest[] = [];
   private server: Server | undefined;
   private readonly hanging: ServerResponse[] = [];
+  /** Respostas lentas ainda por sair (a parada do servidor as cancela). */
+  private readonly timers = new Set<NodeJS.Timeout>();
   /** Auditoria de cada conta: a entrada (como a API devolve, ou fora do formato) e o horário do filtro. */
   readonly auditLogs = new Map<string, { at: string; entry: unknown }[]>();
   /** Respostas roteirizadas, uma por pedido do coletor à auditoria, antes da resposta normal (429, 5xx, sem resposta). */
@@ -132,7 +138,19 @@ export class FakeCloudflareServer {
       if (audit) {
         // O coletor pede em ordem (`direction`); a leitura de prova da conferência do token, não.
         const scripted = url.searchParams.has('direction') ? this.auditScript.shift() : undefined;
-        if (scripted) {
+        const delayMs = scripted?.delayMs;
+        // Resposta normal, mas devagar: o corpo só sai depois da espera (se o cliente ainda estiver ouvindo).
+        const deliver =
+          delayMs === undefined
+            ? send
+            : (status: number, body: string) => {
+                const timer = setTimeout(() => {
+                  this.timers.delete(timer);
+                  if (!response.destroyed) send(status, body);
+                }, delayMs);
+                this.timers.add(timer);
+              };
+        if (scripted && scripted.pass !== true) {
           if (scripted.hang) {
             this.hanging.push(response);
             return;
@@ -166,7 +184,7 @@ export class FakeCloudflareServer {
             JSON.stringify({ success: false, errors: [{ code: 1003, message: 'Bad cursor' }] }),
           );
         }
-        return send(200, page);
+        return deliver(200, page);
       }
       if (url.pathname === '/zones') {
         if (!token) return send(401, INVALID_TOKEN);
@@ -189,8 +207,8 @@ export class FakeCloudflareServer {
 
   /**
    * A auditoria da conta, filtrada por `since` (inclusive) e `before` (exclusive), em ordem crescente, `limit` por
-   * página e um `cursor` opaco (o deslocamento e a janela em base64url). Sem `since` ou `before`, ou com um cursor de
-   * outra janela, `null` (400), como a API, que exige os dois.
+   * página e um `cursor` opaco (a conta, o deslocamento e a janela em base64url). Sem `since` ou `before`, ou com um
+   * cursor de outra conta ou de outra janela, `null` (400), como a API, que exige os dois.
    */
   private auditPage(accountId: string, query: URLSearchParams): string | null {
     const since = Date.parse(query.get('since') ?? '');
@@ -202,11 +220,13 @@ export class FakeCloudflareServer {
     if (cursor) {
       try {
         const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as {
+          a: string;
           o: number;
           s: number;
           b: number;
         };
-        if (decoded.s !== since || decoded.b !== before || this.expiredCursors.has(cursor)) return null;
+        const sameQuery = decoded.a === accountId && decoded.s === since && decoded.b === before;
+        if (!sameQuery || this.expiredCursors.has(cursor)) return null;
         offset = decoded.o;
       } catch {
         return null;
@@ -222,7 +242,9 @@ export class FakeCloudflareServer {
     const nextOffset = offset + slice.length;
     const next =
       nextOffset < window.length
-        ? Buffer.from(JSON.stringify({ o: nextOffset, s: since, b: before })).toString('base64url')
+        ? Buffer.from(JSON.stringify({ a: accountId, o: nextOffset, s: since, b: before })).toString(
+            'base64url',
+          )
         : '';
     return JSON.stringify({
       success: true,
@@ -294,6 +316,7 @@ export class FakeCloudflareServer {
   }
 
   async stop(): Promise<void> {
+    for (const timer of this.timers) clearTimeout(timer);
     for (const response of this.hanging) response.destroy();
     this.server?.closeAllConnections();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));

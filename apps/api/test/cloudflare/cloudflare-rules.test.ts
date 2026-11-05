@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   auditEntrySchema,
   cloudflareEventId,
+  field,
   invalidEntryId,
   parseAuditEntry,
   pathMatches,
@@ -545,6 +546,19 @@ describe('regras da auditoria do Cloudflare (990301 a 990324)', () => {
     expect(pathMatches(segments, 'zones/*/rulesets/*')).toBe(false);
     expect(pathMatches(segments, 'accounts/*/rulesets/*/rules/*')).toBe(false);
     expect(pathSegments({ raw: undefined })).toEqual([]);
+  });
+
+  it('o corpo é lido só pelas chaves próprias: nada do protótipo, nem por __proto__ ou constructor', () => {
+    expect(field({ settings: { enforce_twofactor: false } }, 'settings', 'enforce_twofactor')).toBe(false);
+    expect(field({}, 'constructor')).toBeUndefined();
+    expect(field({}, 'toString')).toBeUndefined();
+    expect(field({ a: 1 }, '__proto__', 'constructor')).toBeUndefined();
+    expect(field([{ a: 1 }], '0', 'a')).toBeUndefined();
+    expect(field('texto', 'length')).toBeUndefined();
+    expect(field({ a: { b: 2 } })).toEqual({ a: { b: 2 } });
+    // Um "__proto__" que veio no JSON é chave própria (JSON.parse não toca no protótipo) e é lido como dado.
+    expect(field(JSON.parse('{"__proto__": {"enabled": false}}'), '__proto__', 'enabled')).toBe(false);
+    expect(({} as Record<string, unknown>)['enabled']).toBeUndefined();
   });
 });
 

@@ -409,9 +409,10 @@ voltar depois como modo completo, sem amostragem.
   token dela, e cada uma tem dois cursores (`CollectorCursor`): `cloudflare_audit` e `cloudflare_check`.
 - **Janela:** a cada `CLOUDFLARE_AUDIT_INTERVAL_SECONDS` (5 min por padrão; o laço da tarefa segue o
   `SYNC_INTERVAL_SECONDS`), de `cursor - 10 min` até `agora - 1 min`. A primeira leitura pega 7 dias, e nenhuma volta
-  mais de 30 dias. Lida a janela inteira, o cursor vai para o fim dela; cortada no teto de páginas, a continuação (o
-  cursor do Cloudflare e a janela) fica gravada e a próxima execução, logo em seguida, segue dela. Uma continuação
-  recusada (400) recomeça a janela pelo cursor.
+  mais de 30 dias. Cada página processada é gravada antes do pedido da seguinte: a continuação (o cursor do Cloudflare
+  e a janela) e o uso medido. Uma execução cortada no meio (orçamento de tempo, parada do worker, falha numa página
+  adiante) ou no teto de páginas não perde o que já leu, e a próxima, logo em seguida, segue dela. Lida a janela
+  inteira, o cursor vai para o fim dela. Uma continuação recusada (400) recomeça a janela pelo cursor.
 - **Cada entrada:** validada com zod, uma a uma (texto longo é cortado, `request` e `response` são lidos pelas regras e
   descartados; nada do evento bruto é gravado). A inválida vai para a fila sem dono (`invalid_alert`) sem parar o lote;
   a que diz ser de outra conta, também (`source_mismatch`, ou `no_account` sem conta). A da conta conta como atividade
@@ -427,8 +428,9 @@ voltar depois como modo completo, sem amostragem.
   zona cadastrada que não existe deixa a conexão em erro (`zone_not_found`), e o token sem `Zone: Read`, também
   (`zones_forbidden`), sem parar a auditoria.
 - **Falhas e conexão:** 5xx, rede e tempo esgotado (20 s por tentativa) são tentados de novo duas vezes na mesma
-  execução; depois, o cursor recua (1 min, dobrando, até 1 h). O 429 nunca é repetido: o cursor espera o
-  `retry-after` (5 min sem ele). O cartão da conta mostra o código (`rate_limited`, `timeout`, `http_503`...).
+  execução; depois, o cursor recua (1 min, dobrando, até 1 h). O 429 nunca é repetido: o limite é do token inteiro,
+  então os dois fluxos da conta (auditoria e conferência) esperam o `retry-after` (5 min sem ele), venha o 429 de
+  qualquer um deles. O cartão da conta mostra o código (`rate_limited`, `timeout`, `http_503`...).
   **Token recusado (401), sem acesso à auditoria (403), vencido ou desativado** param a coleta: o worker não chama mais
   o Cloudflare com aquele token até um admin colar outro (o que recomeça a conexão), e o cartão explica o motivo. Toda
   escrita da conexão confere, sob o lock da credencial, que o token guardado ainda é o usado na leitura.

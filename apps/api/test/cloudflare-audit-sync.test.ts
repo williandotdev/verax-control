@@ -470,6 +470,106 @@ describe('coletor da auditoria do Cloudflare (banco real e Cloudflare falso)', (
     expect(await accountRow(account.id)).toMatchObject({ connection: 'connected', connectionError: null });
   });
 
+  it('429 na conferência adia também a auditoria (o limite é do token inteiro), mesmo fora da hora dela', async () => {
+    const account = await newAccount(tenantA);
+    const value = cloudflare.readableAccountToken(account.accountId, { verifyStatus: 429 });
+    await store(account, value);
+    // A auditoria só estaria na hora daqui a 1 minuto; a conferência, já.
+    await prisma.collectorCursor.create({
+      data: { cloudAccountId: account.id, stream: CLOUDFLARE_AUDIT_STREAM, nextRunAt: at(1) },
+    });
+    const report = await syncFor().runOnce(NOW);
+    expect(report.failedAccounts).toBe(1);
+    expect(await cursorOf(account.id, CLOUDFLARE_CHECK_STREAM)).toMatchObject({
+      lastErrorKind: 'rate_limited',
+      nextRunAt: at(5),
+    });
+    // A auditoria espera o mesmo prazo, sem contar uma falha dela.
+    expect(await cursorOf(account.id)).toMatchObject({ nextRunAt: at(5), failures: 0, lastErrorKind: null });
+    expect(await accountRow(account.id)).toMatchObject({
+      connection: 'error',
+      connectionError: 'rate_limited',
+    });
+    const calls = callsWith(value);
+    expect(await syncFor().runOnce(at(2))).toMatchObject({ notDue: 1, pages: 0 });
+    expect(callsWith(value)).toBe(calls);
+  });
+
+  it('429 na auditoria adia também a conferência de hora em hora', async () => {
+    const { account, value } = await readyAccount(tenantA);
+    // A conferência estaria na hora em 3 minutos.
+    await prisma.collectorCursor.updateMany({
+      where: { cloudAccountId: account.id, stream: CLOUDFLARE_CHECK_STREAM },
+      data: { nextRunAt: at(3) },
+    });
+    cloudflare.auditScript.push({ status: 429, headers: { 'retry-after': '1200' } });
+    await syncFor().runOnce(NOW);
+    expect(await cursorOf(account.id)).toMatchObject({ lastErrorKind: 'rate_limited', nextRunAt: at(20) });
+    expect(await cursorOf(account.id, CLOUDFLARE_CHECK_STREAM)).toMatchObject({
+      nextRunAt: at(20),
+      lastErrorKind: null,
+      failures: 0,
+    });
+    const calls = callsWith(value);
+    expect(await syncFor().runOnce(at(10))).toMatchObject({ notDue: 1, pages: 0 });
+    expect(callsWith(value)).toBe(calls);
+  });
+
+  it('página lenta cortada pelo orçamento de tempo: as páginas já processadas ficam gravadas e a execução seguinte segue delas', async () => {
+    const { account, value, entry } = await readyAccount(tenantA);
+    const uri = `/accounts/${account.accountId}/members`;
+    cloudflare.addAudit(
+      account.accountId,
+      ...Array.from({ length: 7 }, (_, index) => ({
+        at: iso(-30 + index),
+        entry: entry({ id: `lento-${index}`, time: iso(-30 + index), method: 'POST', uri, zone: null }),
+      })),
+    );
+    // As duas primeiras páginas respondem já; a terceira demora mais que o orçamento que sobra.
+    cloudflare.auditScript.push(
+      { status: 200, pass: true },
+      { status: 200, pass: true },
+      { status: 200, pass: true, delayMs: 5_000 },
+    );
+    const budget = new AbortController();
+    /** O agendador estoura o orçamento enquanto a terceira página ainda não voltou. */
+    class BudgetClient extends CloudflareClient {
+      private calls = 0;
+      override auditPage(...args: Parameters<CloudflareClient['auditPage']>) {
+        this.calls += 1;
+        if (this.calls === 3) {
+          setTimeout(
+            () => budget.abort(new DOMException('a tarefa passou do orçamento de tempo', 'TimeoutError')),
+            100,
+          );
+        }
+        return super.auditPage(...args);
+      }
+    }
+    const client = new BudgetClient({ baseUrl: cloudflare.baseUrl, timeoutMs: 10_000, retryDelaysMs: [] });
+    await expect(syncFor({ client, maxPages: 5 }).runOnce(NOW, budget.signal)).rejects.toMatchObject({
+      name: 'TimeoutError',
+    });
+    expect(cloudflare.auditReads(value)).toHaveLength(3);
+    // As duas páginas processadas ficaram: os achados, a continuação (com a próxima leitura já) e o uso medido.
+    expect((await findingsOf(account.accountId)).map((finding) => finding.sourceEventId)).toEqual(
+      [0, 1, 2, 3].map((index) => `cf/${account.accountId}/lento-${index}`),
+    );
+    const cut = await cursorOf(account.id);
+    expect(cut).toMatchObject({ cursorAt: at(-27), nextRunAt: NOW });
+    expect(cut.continuation).not.toBeNull();
+    const usage = await prisma.ingestUsage.findFirstOrThrow({
+      where: { tenantId: tenantA, source: 'cloudflare' },
+    });
+    expect(usage.events).toBe(4n);
+
+    // A execução seguinte segue da continuação (com o cursor do Cloudflare), sem reler nem duplicar.
+    const next = await syncFor({ maxPages: 5 }).runOnce(at(1));
+    expect(next).toMatchObject({ read: 3, created: 3, duplicates: 0 });
+    expect(cloudflare.auditReads(value)[3]?.query.get('cursor')).toBeTruthy();
+    expect(await cursorOf(account.id)).toMatchObject({ continuation: null, cursorAt: at(-1) });
+  });
+
   it('tempo esgotado: três tentativas, erro "timeout" e recuo de 1 minuto; a leitura seguinte reconecta', async () => {
     const { account, value } = await readyAccount(tenantA);
     cloudflare.auditScript.push(

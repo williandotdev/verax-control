@@ -109,6 +109,18 @@ export class CollectorCursors {
     return cursor;
   }
 
+  /**
+   * Adia a próxima leitura até `until`, sem registrar falha nem mexer na posição: para quando outro fluxo da mesma
+   * credencial recebeu da fonte um pedido de espera (o limite de requisições vale para o token inteiro). Só adia; uma
+   * leitura já marcada para depois fica como está.
+   */
+  async postpone(key: CursorKey, until: Date): Promise<void> {
+    await this.prisma.collectorCursor.updateMany({
+      where: { ...uniqueKey(key), nextRunAt: { lt: until } },
+      data: { nextRunAt: until },
+    });
+  }
+
   async fail(
     key: CursorKey,
     error: unknown,

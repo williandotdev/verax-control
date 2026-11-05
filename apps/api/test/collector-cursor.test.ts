@@ -197,6 +197,29 @@ describe('cursor dos coletores (fase 2)', () => {
     expect(recovered).toMatchObject({ failures: 0, lastErrorKind: null, cursorAt: position });
   });
 
+  it('adiar: só empurra a próxima leitura para depois, sem contar falha nem mexer no erro e na posição', async () => {
+    const key: CursorKey = { cloudAccountId: await newAccount(), stream: 'cloudflare_check' };
+    const now = new Date('2026-11-04T12:00:00.000Z');
+    await cursors.read(key, now);
+    await cursors.fail(key, Object.assign(new Error('x'), { name: 'zone_not_found' }), now, {
+      retryAt: new Date(now.getTime() + 60 * MINUTE),
+    });
+    await cursors.postpone(key, new Date(now.getTime() + 20 * MINUTE));
+    // Já marcada para depois do prazo: fica como está.
+    expect(await cursors.read(key, now)).toMatchObject({
+      nextRunAt: new Date(now.getTime() + 60 * MINUTE),
+      failures: 1,
+      lastErrorKind: 'zone_not_found',
+    });
+    await cursors.postpone(key, new Date(now.getTime() + 90 * MINUTE));
+    expect(await cursors.read(key, now)).toMatchObject({
+      nextRunAt: new Date(now.getTime() + 90 * MINUTE),
+      failures: 1,
+      lastErrorKind: 'zone_not_found',
+      cursorAt: null,
+    });
+  });
+
   it('o recuo padrão: 1 min na primeira falha, dobrando, até 1 h', () => {
     expect([1, 2, 3, 4, 5, 6, 7, 50].map((failures) => backoffDelay(failures) / MINUTE)).toEqual([
       1, 2, 4, 8, 16, 32, 60, 60,

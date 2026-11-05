@@ -218,8 +218,9 @@ function decodeContinuation(text: string | null): AuditWindow | null {
  *    das zonas da conta (`Zone Read`): uma zona cadastrada que não existe deixa a conexão em erro (`zone_not_found`).
  * 3. **Auditoria** (fluxo `cloudflare_audit`, a cada 5 min): `since = cursor - 10 min` (a primeira leitura, 7 dias),
  *    `before = agora - 1 min`, em ordem crescente, 500 por página, seguindo o `cursor` da resposta, no máximo 20
- *    páginas. Lida a janela inteira, o cursor vai para o `before`; cortada no teto, a continuação (o cursor do
- *    Cloudflare e a janela) fica gravada, e a próxima execução segue dela, sem reler a sobreposição.
+ *    páginas. Cada página processada é gravada antes do pedido da seguinte (a continuação: o cursor do Cloudflare e a
+ *    janela), então uma execução cortada no meio (orçamento de tempo, parada do worker) não perde as páginas lidas, e
+ *    a próxima segue dela, sem reler a sobreposição. Lida a janela inteira, o cursor vai para o `before`.
  * 4. Cada entrada passa pelo zod. A inválida vai para a fila sem dono (`invalid_alert`) e as outras seguem; a de
  *    outra conta (`account.id` diferente) também (`source_mismatch`). A da conta vira atividade dela (`lastEventAt`)
  *    e, se uma regra casa, achado do cliente da conta, com a exceção e o incidente na mesma transação. A chave
@@ -228,7 +229,8 @@ function decodeContinuation(text: string | null): AuditWindow | null {
  *
  * Estado da conexão (o cartão em Contas cloud): a leitura bem-sucedida conecta a conta, mesmo sem evento (o
  * Cloudflare é lido por API); falha da origem fica em erro com o código (`rate_limited`, `timeout`, `http_503`...), e
- * o cursor recua (o `retry-after` no 429). Toda escrita da conexão confere, sob o lock da credencial, que o token
+ * o cursor recua. O 429 (limite do token inteiro) adia os dois fluxos da conta até o `retry-after`, venha da
+ * auditoria ou da conferência. Toda escrita da conexão confere, sob o lock da credencial, que o token
  * guardado ainda é o que foi usado: um token trocado no meio da leitura nunca herda o erro do anterior.
  */
 export class CloudflareAuditSync {
@@ -412,13 +414,9 @@ export class CloudflareAuditSync {
         return;
       }
       if (outcome.kind === 'rate_limited') {
-        // O limite vale para o token inteiro: a auditoria também espera.
+        // O limite vale para o token inteiro: a auditoria também espera, esteja ou não na hora dela.
         report.failedAccounts += 1;
-        if (auditDue) {
-          await this.cursors.fail(auditKey, new CloudflareSyncError('rate_limited'), now, {
-            retryAt: outcome.retryAt,
-          });
-        }
+        await this.cursors.postpone(auditKey, outcome.retryAt);
         await this.markConnection(account, ciphertext, errorState('rate_limited'));
         return;
       }
@@ -439,7 +437,7 @@ export class CloudflareAuditSync {
     } catch (error) {
       if (!(error instanceof CloudflareApiError)) throw error;
       report.failedAccounts += 1;
-      await this.sourceFailed(session, auditKey, error, now);
+      await this.sourceFailed(session, { audit: auditKey, check: checkKey }, error, now);
       return;
     }
     await this.markConnection(
@@ -453,21 +451,25 @@ export class CloudflareAuditSync {
 
   /**
    * Falha da origem na auditoria: a conexão fica em erro com o código. 401 e 403 param a coleta até o token ser
-   * trocado (nenhuma nova tentativa); 429 espera o `retry-after`; o resto recua o cursor (1 min, dobrando, até 1 h).
+   * trocado (nenhuma nova tentativa); 429 espera o `retry-after`, na auditoria e na conferência (o limite é do token
+   * inteiro); o resto recua o cursor (1 min, dobrando, até 1 h).
    */
   private async sourceFailed(
     session: Session,
-    key: CursorKey,
+    keys: { audit: CursorKey; check: CursorKey },
     error: CloudflareApiError,
     now: Date,
   ): Promise<void> {
     if (isCloudflareBlockingError(error.code)) {
-      await this.cursors.fail(key, error, now, { retryAt: new Date(now.getTime() + this.auditIntervalMs) });
+      await this.cursors.fail(keys.audit, error, now, {
+        retryAt: new Date(now.getTime() + this.auditIntervalMs),
+      });
     } else if (error.code === 'rate_limited') {
-      const wait = error.retryAfterMs ?? RATE_LIMIT_WAIT_MS;
-      await this.cursors.fail(key, error, now, { retryAt: new Date(now.getTime() + wait) });
+      const retryAt = new Date(now.getTime() + (error.retryAfterMs ?? RATE_LIMIT_WAIT_MS));
+      await this.cursors.fail(keys.audit, error, now, { retryAt });
+      await this.cursors.postpone(keys.check, retryAt);
     } else {
-      await this.cursors.fail(key, error, now);
+      await this.cursors.fail(keys.audit, error, now);
     }
     await this.markConnection(session.account, session.ciphertext, errorState(error.code));
   }
@@ -625,22 +627,26 @@ export class CloudflareAuditSync {
       await this.lease.renew();
       const done = page.cursor === null || page.entries.length === 0 || page.cursor === next;
       next = done ? null : page.cursor;
-      if (next === null || pages >= this.maxPages) break;
+      // Cada página processada inteira fica gravada antes de pedir a seguinte: uma execução cortada no meio (orçamento
+      // de tempo, parada do worker, falha da origem numa página adiante) não perde as páginas já lidas.
+      // - Janela lida inteira: o cursor vai para o fim dela, e a próxima leitura é no intervalo.
+      // - Ainda há página: a continuação (o cursor do Cloudflare e a janela) fica gravada, com a próxima leitura já;
+      //   o cursor fica no evento mais recente processado (se a continuação não couber, é dele que recomeça).
+      await this.cursors.advance(
+        key,
+        next === null
+          ? {
+              cursorAt: window.before,
+              continuation: null,
+              nextRunAt: new Date(now.getTime() + this.auditIntervalMs),
+            }
+          : { cursorAt: newest ?? undefined, continuation: encodeContinuation(next, window), nextRunAt: now },
+        now,
+      );
+      // Mede só depois de o cursor andar: uma escrita por cliente e mês, a cada página.
+      await usage.flush(this.prisma);
+      if (next === null || pages >= this.maxPages) return;
     }
-    // Janela lida inteira: o cursor vai para o fim dela. Cortada no teto: a continuação fica para a próxima execução,
-    // que roda já; o cursor fica no evento mais recente processado (se a continuação não couber, é dele que recomeça).
-    const continuation = next === null ? null : encodeContinuation(next, window);
-    await this.cursors.advance(
-      key,
-      {
-        cursorAt: next === null ? window.before : (newest ?? undefined),
-        continuation,
-        nextRunAt: next === null ? new Date(now.getTime() + this.auditIntervalMs) : now,
-      },
-      now,
-    );
-    // Mede só depois de o cursor andar: uma escrita por cliente e mês.
-    await usage.flush(this.prisma);
   }
 
   /** Uma entrada: validação, dono, zona monitorada, regra e gravação. Devolve o horário dela, quando válida. */
