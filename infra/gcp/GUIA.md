@@ -779,7 +779,10 @@ do IAP à primeira publicação, está em `docs/runbooks/console-do-responsavel.
    mostra **11 recursos a criar, mais 1 por pessoa em `owner_principals`**: a API do IAP, a conta `cp-admin`, o
    `datastore.user` dela, o agente de serviço do IAP, o serviço `cp-admin` (com a imagem de exemplo do Google), o
    `run.invoker` do agente, o `iap.httpsResourceAccessor` de cada responsável, o `run.developer` e o `actAs` de quem
-   implanta, o alerta de margem e a métrica e o alerta dos acessos recusados.
+   implanta, o alerta de margem e a métrica e o alerta dos acessos recusados. Com `services_enabled = true`, mais 1
+   recurso a criar e 1 a mudar no lugar: o `run.invoker` da conta `cp-admin` só no `cp-worker`
+   (`admin_worker_invoker`, para os botões dos clientes) e o `cp-worker` com `ADMIN_SA_EMAIL` (uma revisão nova); o
+   `cp-admin` já nasce com `WORKER_URL`.
 3. `terraform output admin` traz o endereço e o `aud` do IAP (`/projects/<número>/locations/<região>/services/cp-admin`,
    que o Terraform já passa ao serviço em `IAP_AUDIENCE`).
 4. Acrescente `CP_ADMIN_SERVICE` ao environment `control-plane` (passo 7) e rode o workflow: ele implanta o `cp-admin`
@@ -818,10 +821,13 @@ As operações do responsável (`resume`, `delete-now`, `export` e, no contrato 
 `reactivate`; CP-07 e CP-11) são chamadas pelo **console do responsável** (`cp-admin`, atrás do IAP): o console chama
 o `cp-worker` com o token de identidade da conta `cp-admin` (audiência `WORKER_URL`) e manda no corpo o seu e-mail, que
 o IAP deu a ele; o worker aceita a conta do console só nessas rotas (`ADMIN_SA_EMAIL`) e confere que o e-mail está em
-`owner_principals`. O token de quem está no navegador nunca sai do console. Para isso, o `envs/control-plane` precisa
-(o PR do console liga, junto com os botões): `run.invoker` da conta `cp-admin` no `cp-worker`, `ADMIN_SA_EMAIL` no
-ambiente do worker e `WORKER_URL` no do `cp-admin`. A entrada do `cp-worker` já aceita a chamada de outro serviço
-(`worker_ingress = "INGRESS_TRAFFIC_ALL"`, o padrão; a mesma decisão da revelação, abaixo).
+`owner_principals`. O token de quem está no navegador nunca sai do console. O mesmo caminho serve ao início do
+provisionamento de um cliente de contrato direto (`provision`, o cadastro pelo console). Com `admin_enabled` e
+`services_enabled`, o `envs/control-plane` dá à conta `cp-admin` `run.invoker` só no `cp-worker` (`admin.tf`), põe
+`ADMIN_SA_EMAIL` no ambiente do worker e `WORKER_URL` no do `cp-admin`; nada a configurar além disso. A entrada do
+`cp-worker` já aceita a chamada de outro serviço (`worker_ingress = "INGRESS_TRAFFIC_ALL"`, o padrão; a mesma decisão
+da revelação, abaixo). Se voltar para `INGRESS_TRAFFIC_INTERNAL_ONLY`, o console mostra "o cp-worker não respondeu" em
+cada operação, e um cliente de contrato direto cadastrado fica em `pending` até o "Iniciar provisionamento" passar.
 
 Sem o console, direto da sua máquina, o worker ainda aceita uma conta em `owner_principals`, mas o token precisa ter
 `aud = WORKER_URL`, e o `gcloud` só emite isso para conta de serviço: crie uma conta só para isso (sem papel nenhum),
@@ -877,9 +883,13 @@ funcionando (claim, estado, boleto) e a revelação responde 503 com o código `
   cofres e buckets (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin`
   ele ainda poderia se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo
   `envs/nodes-platform`) vigia.
-- **`cp-admin`** (com `admin_enabled`) só lê e grava o Firestore: nenhum segredo, nem a chave da Stripe, e nenhum
-  token para chamar o `cp-worker`. Só o agente do IAP o invoca, e só quem está em `owner_principals` passa pelo IAP;
-  o app ainda confere o JWT do IAP em toda requisição, inclusive nas telas.
+- **`cp-admin`** (com `admin_enabled`) lê e grava o Firestore (as tabelas, os modelos, os clientes e a auditoria) e,
+  com os serviços no ar, invoca o `cp-worker` com a própria conta (`run.invoker` só nele): nenhum segredo, nem a chave
+  da Stripe, e nenhum `actAs` na cp-invoker (não enfileira nada). O worker aceita essa conta só nas operações do
+  responsável e sempre com um e-mail de `owner_principals` no corpo: um `cp-admin` comprometido pode criar um cliente
+  de contrato direto e pedir as operações (o limite por responsável e a auditoria valem), mas não dispara passo
+  nenhum nem lê segredo. Só o agente do IAP o invoca, e só quem está em `owner_principals` passa pelo IAP; o app ainda
+  confere o JWT do IAP em toda requisição, inclusive nas telas.
 - **`cp-deployer`** é `run.developer` nos dois serviços e no Job: além de publicar revisões, muda qualquer atributo
   deles, apaga-os e executa o Job. Não há papel predefinido mais estreito que sirva ao `gcloud run deploy`. Na
   prática, quem controla a `main` com o environment `control-plane` controla a imagem do `cp-worker` e, por ele, o

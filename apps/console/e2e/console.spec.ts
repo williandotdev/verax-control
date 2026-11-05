@@ -5,7 +5,7 @@ import { expect, type Page, type TestInfo, test } from '@playwright/test';
 import { mockAdminApi } from './mock-api';
 
 /**
- * As três telas do console no navegador, nos dois temas: sem violação do axe (WCAG 2.2 AA), sem violação da CSP do
+ * As telas do console no navegador, nos dois temas: sem violação do axe (WCAG 2.2 AA), sem violação da CSP do
  * cp-admin e navegáveis pelo teclado. As capturas (com a tabela e o modelo FICTÍCIOS) vão para `CONSOLE_SCREENSHOTS`,
  * quando definida, ou para a pasta do teste.
  */
@@ -70,6 +70,54 @@ for (const theme of THEMES) {
       await page.getByRole('button', { name: 'Confirmar a publicação' }).click();
       await expect(page.getByRole('region', { name: 'Publicação recusada pela checagem' })).toBeVisible();
       await audit(page, testInfo, `tabela-de-precos-recusada-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
+    test('clientes: a lista, o contrato direto com a cotação e a confirmação, e a linha do tempo de quem parou', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme);
+      await page.goto('/clientes');
+      await expect(page.getByRole('row', { name: /Cliente Demo A Ltda/ })).toContainText(
+        'Provisionamento parou',
+      );
+      await audit(page, testInfo, `clientes-${theme}`);
+
+      await page.getByRole('link', { name: 'Novo cliente (contrato direto)' }).click();
+      await expect(page.getByLabel('Contas de nuvem')).toHaveValue('2');
+      await page.getByLabel('Razão social').fill('Cliente Demo D Ltda');
+      await page.getByLabel('CNPJ').fill('11.222.333/0001-81');
+      await page.getByLabel('E-mail do administrador do cliente').fill('admin@cliente-demo-d.example');
+      await page.getByLabel('Subdomínio').fill('cliente-demo-d');
+      await page.getByRole('button', { name: 'Calcular a cotação' }).click();
+      await expect(page.getByRole('region', { name: 'Cotação de referência' })).toContainText('R$ 1.000,00');
+      await page.getByRole('button', { name: 'Revisar e confirmar…' }).click();
+      await page.getByLabel(/Digite o subdomínio/).fill('cliente-demo-d');
+      await expect(page.getByRole('button', { name: 'Criar e provisionar' })).toBeEnabled();
+      await audit(page, testInfo, `cliente-novo-${theme}`);
+      await page.getByRole('button', { name: 'Criar e provisionar' }).click();
+      await expect(page.getByText('Cliente criado. O provisionamento começou.')).toBeVisible();
+      await audit(page, testInfo, `cliente-criado-${theme}`);
+
+      await page.goto('/clientes/01JC0000000000000000000A01');
+      const provisioning = page.getByRole('region', { name: 'Provisionamento' });
+      await expect(provisioning).toContainText('cloudflare_denied');
+      await provisioning.getByRole('button', { name: 'Retomar provisionamento…' }).click();
+      await expect(
+        provisioning.getByRole('button', { name: 'Confirmar: retomar provisionamento' }),
+      ).toBeDisabled();
+      await audit(page, testInfo, `cliente-parado-${theme}`);
+
+      // Um contrato direto ativo: cancelar no fim do contrato, com a data e a confirmação.
+      await page.goto('/clientes/01JC0000000000000000000D01');
+      const lifecycle = page.getByRole('region', { name: 'Ciclo de vida' });
+      await lifecycle.getByRole('button', { name: 'Cancelar contrato…' }).click();
+      await lifecycle.getByLabel('Cancelar em').fill('2027-01-31');
+      await lifecycle.getByLabel(/Digite o subdomínio/).fill('contrato-ativo');
+      await lifecycle.getByRole('button', { name: 'Confirmar: cancelar contrato' }).click();
+      await expect(lifecycle.getByText(/Cancelamento marcado para 31\/01\/2027/)).toBeVisible();
+      await lifecycle.getByRole('button', { name: 'Suspender…' }).click();
+      await audit(page, testInfo, `cliente-ciclo-de-vida-${theme}`);
       expect(violations).toEqual([]);
     });
 

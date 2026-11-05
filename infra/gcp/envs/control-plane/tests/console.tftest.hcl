@@ -1,6 +1,7 @@
 # O console do responsável (admin.tf): o cp-admin com o IAP direto no Cloud Run, só o agente do IAP como invocador,
-# só os responsáveis passando pelo IAP, a conta própria só com o Firestore e sem segredo, as variáveis que o app
-# confere (IAP_AUDIENCE e OWNER_PRINCIPALS), a implantação pelo workflow e os dois alertas. Sem `admin_enabled`, nada
+# só os responsáveis passando pelo IAP, a conta própria com o Firestore e, com os serviços no ar, `run.invoker` só no
+# cp-worker (as operações do responsável), sem segredo, as variáveis que o app confere (IAP_AUDIENCE, OWNER_PRINCIPALS
+# e WORKER_URL; no worker, ADMIN_SA_EMAIL), a implantação pelo workflow e os dois alertas. Sem `admin_enabled`, nada
 # disso existe.
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
@@ -99,9 +100,15 @@ run "sem_console_por_padrao" {
       length(google_logging_metric.admin_auth_failed) == 0 &&
       length(google_monitoring_alert_policy.admin_auth_failed) == 0 &&
       !contains(keys(google_monitoring_alert_policy.log), "pricing_margin_alert") &&
-      !contains(keys(google_service_account_iam_member.deployer_acts_as), "admin")
+      !contains(keys(google_service_account_iam_member.deployer_acts_as), "admin") &&
+      length(google_cloud_run_v2_service_iam_member.admin_worker_invoker) == 0
     )
-    error_message = "Sem admin_enabled, nem o serviço, nem a conta, nem o IAP, nem os alertas do console."
+    error_message = "Sem admin_enabled, nem o serviço, nem a conta, nem o IAP, nem os alertas do console, nem o run.invoker dele no cp-worker."
+  }
+
+  assert {
+    condition     = !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "ADMIN_SA_EMAIL")
+    error_message = "Sem o console, o cp-worker não recebe ADMIN_SA_EMAIL: nenhuma conta de console é aceita nas rotas do responsável."
   }
 
   assert {
@@ -158,9 +165,10 @@ run "console_atras_do_iap" {
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "NODE_ENV"]) == "production" &&
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "IAP_AUDIENCE"]) == "/projects/123456789012/locations/southamerica-east1/services/cp-admin" &&
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "OWNER_PRINCIPALS"]) == "responsavel@example.com,socia@example.com" &&
-      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "FIRESTORE_DATABASE"]) == "(default)"
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "FIRESTORE_DATABASE"]) == "(default)" &&
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "WORKER_URL"]) == "https://cp-worker-123456789012.southamerica-east1.run.app"
     )
-    error_message = "ROLE=admin, produção, o aud do IAP no formato do Cloud Run (/projects/<número>/locations/<região>/services/cp-admin) e os e-mails dos responsáveis."
+    error_message = "ROLE=admin, produção, o aud do IAP no formato do Cloud Run (/projects/<número>/locations/<região>/services/cp-admin), os e-mails dos responsáveis e a URL do cp-worker (a audiência do token do console)."
   }
 
   assert {
@@ -168,10 +176,10 @@ run "console_atras_do_iap" {
       alltrue([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : length(env.value_source) == 0]) &&
       length([
         for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name
-        if can(regex("^(STRIPE_|SITE_|TASKS_|WORKER_|SMTP_|MAIL_|COOKIE_|CLOUDFLARE_|NODES_|PROVISIONING_)", env.name))
+        if can(regex("^(STRIPE_|SITE_|TASKS_|WORKER_SA_|SCHEDULER_|PUBLIC_SA_|ADMIN_SA_|SMTP_|MAIL_|COOKIE_|CLOUDFLARE_|NODES_|PROVISIONING_)", env.name))
       ]) == 0
     )
-    error_message = "O cp-admin não monta segredo nenhum (nem a chave da Stripe) e não recebe as variáveis do site, das filas, do e-mail nem do provisionamento."
+    error_message = "O cp-admin não monta segredo nenhum (nem a chave da Stripe) e não recebe as variáveis do site, das filas, das contas que o worker aceita, do e-mail nem do provisionamento (só WORKER_URL, a audiência)."
   }
 
   assert {
@@ -181,7 +189,13 @@ run "console_atras_do_iap" {
       !contains([for member in google_secret_manager_secret_iam_member.readers : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com") &&
       !contains([for member in google_service_account_iam_member.invoker_token_users : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com")
     )
-    error_message = "A conta cp-admin só lê e grava o Firestore: nenhum segredo e nenhum token para chamar o cp-worker."
+    error_message = "A conta cp-admin lê e grava o Firestore: nenhum segredo e nenhum actAs na cp-invoker (o console não enfileira nada)."
+  }
+
+  # Sem os serviços (services_enabled = false), o cp-worker não existe, e nem o run.invoker do console nele.
+  assert {
+    condition     = length(google_cloud_run_v2_service_iam_member.admin_worker_invoker) == 0
+    error_message = "Sem o cp-worker, nenhuma permissão do console nele."
   }
 
   assert {
@@ -281,4 +295,58 @@ run "console_exige_responsavel" {
   }
 
   expect_failures = [var.admin_enabled]
+}
+
+# Com os serviços no ar: o console invoca o cp-worker com a própria conta (só `run.invoker`, só no cp-worker), e o
+# worker recebe o e-mail dela para aceitá-la só nas operações do responsável.
+run "console_chama_o_worker_com_a_propria_conta" {
+  variables {
+    services_enabled = true
+    admin_enabled    = true
+    owner_principals = ["user:responsavel@example.com"]
+  }
+
+  assert {
+    condition = (
+      google_cloud_run_v2_service_iam_member.admin_worker_invoker[0].name == "cp-worker" &&
+      google_cloud_run_v2_service_iam_member.admin_worker_invoker[0].location == "southamerica-east1" &&
+      google_cloud_run_v2_service_iam_member.admin_worker_invoker[0].role == "roles/run.invoker" &&
+      google_cloud_run_v2_service_iam_member.admin_worker_invoker[0].member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"
+    )
+    error_message = "O cp-admin é run.invoker do cp-worker, com a conta própria."
+  }
+
+  assert {
+    condition = (
+      !contains([for member in google_cloud_run_v2_service_iam_member.public_invoker : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com") &&
+      !contains([for member in google_cloud_run_v2_service_iam_member.worker_invokers : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com") &&
+      !contains([for member in google_cloud_run_v2_job_iam_member.worker_runner : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com") &&
+      !contains([for member in google_project_iam_member.admin : member.role], "roles/run.invoker") &&
+      sort(keys(google_cloud_run_v2_service_iam_member.worker_invokers)) == tolist(["invoker", "public", "user:responsavel@example.com"])
+    )
+    error_message = "Só no cp-worker: nem no cp-public, nem no Job, nem no projeto; os outros invocadores do worker não mudam."
+  }
+
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "ADMIN_SA_EMAIL"]) == "cp-admin@projeto-exemplo.iam.gserviceaccount.com" &&
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "ADMIN_SA_EMAIL") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "ADMIN_SA_EMAIL")
+    )
+    error_message = "ADMIN_SA_EMAIL só no cp-worker, com a conta do console."
+  }
+}
+
+# A conta do console no worker é derivada: o responsável não a escolhe por variável.
+run "admin_sa_email_nao_vem_de_variavel" {
+  command = plan
+
+  variables {
+    services_enabled = true
+    worker_env = {
+      ADMIN_SA_EMAIL = "outra@projeto-exemplo.iam.gserviceaccount.com"
+    }
+  }
+
+  expect_failures = [var.worker_env]
 }

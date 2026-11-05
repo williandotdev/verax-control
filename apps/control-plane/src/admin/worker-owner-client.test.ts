@@ -48,19 +48,25 @@ describe('cliente do console para as operações do responsável no cp-worker (C
 
   it('cada operação no caminho e com o corpo dela', async () => {
     const h = harness(() => Response.json({}));
+    await h.client.provision(TENANT, 'cliente-demo-a', OWNER);
     await h.client.resume(TENANT, OWNER);
     await h.client.exportLink(TENANT, 'postgres/verax-20261115T063000Z.dump', OWNER);
     await h.client.cancel(TENANT, 'cliente-demo-a', OWNER, new Date('2027-01-31T00:00:00Z'));
     await h.client.suspend(TENANT, 'cliente-demo-a', OWNER);
     await h.client.reactivate(TENANT, 'cliente-demo-a', OWNER);
     expect(h.calls.map((c) => c.url.split('/').at(-1))).toEqual([
+      'provision',
       'resume',
       'export',
       'cancel',
       'suspend',
       'reactivate',
     ]);
-    expect(JSON.parse(h.calls[2]?.init.body as string)).toEqual({
+    expect(JSON.parse(h.calls[0]?.init.body as string)).toEqual({
+      confirmSlug: 'cliente-demo-a',
+      actor: OWNER,
+    });
+    expect(JSON.parse(h.calls[3]?.init.body as string)).toEqual({
       confirmSlug: 'cliente-demo-a',
       actor: OWNER,
       at: '2027-01-31T00:00:00.000Z',

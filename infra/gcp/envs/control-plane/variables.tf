@@ -39,7 +39,7 @@ variable "terraform_image" {
 }
 
 variable "admin_enabled" {
-  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com o IAP ligado direto no Cloud Run, a conta cp-admin (só Firestore, nenhum segredo), o acesso pelo IAP só para owner_principals, a implantação pelo workflow e os dois alertas do console. Exige owner_principals. Num projeto sem organização, crie antes o cliente OAuth do IAP (docs/runbooks/console-do-responsavel.md)."
+  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com o IAP ligado direto no Cloud Run, a conta cp-admin (Firestore e, com services_enabled, run.invoker só no cp-worker para as operações do responsável; nenhum segredo), o acesso pelo IAP só para owner_principals, a implantação pelo workflow e os dois alertas do console. Exige owner_principals. Num projeto sem organização, crie antes o cliente OAuth do IAP (docs/runbooks/console-do-responsavel.md)."
   type        = bool
   default     = false
 
@@ -88,7 +88,7 @@ locals {
   # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
   # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
   # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
-  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
 }
 
 variable "service_env" {
@@ -98,7 +98,7 @@ variable "service_env" {
 
   validation {
     condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
-    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
   }
 
   validation {

@@ -5,6 +5,7 @@ import type { StepHandler } from '../internal/step-handler.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
 import { ProvisioningEngine } from './provisioning-engine.js';
 import { ProvisioningResumeService } from './provisioning-resume.js';
+import { ProvisioningStartService } from './provisioning-start.js';
 import {
   createProvisioningApis,
   PROVISIONING_APIS,
@@ -42,8 +43,9 @@ export interface ProvisioningModuleOptions {
 
 /**
  * O provisionamento (CP-07), só no cp-worker: os passos 1 a 10 do plano §4c (`provisioning-steps.ts`), o motor que os
- * encadeia (`provisioning-engine.ts`), o repositório das execuções e o `resume` do responsável. O controlador do
- * `resume` fica no módulo das rotas internas (`AccessWorkerModule`), junto da guarda de quem chama.
+ * encadeia (`provisioning-engine.ts`), o repositório das execuções, o `resume` do responsável e o início do
+ * provisionamento de um cliente de contrato direto (`provisioning-start.ts`). Os controladores dessas duas operações
+ * ficam no módulo das rotas internas (`AccessWorkerModule`), junto da guarda de quem chama.
  */
 @Module({})
 export class ProvisioningModule {
@@ -55,6 +57,7 @@ export class ProvisioningModule {
         ProvisioningStore,
         ProvisioningEngine,
         ProvisioningResumeService,
+        ProvisioningStartService,
         ProvisioningStartupCheck,
         { provide: PROVISIONING_APIS, useFactory: () => createProvisioningApis(options.apis) },
         ...PROVISIONING_STEP_CLASSES,
@@ -65,7 +68,13 @@ export class ProvisioningModule {
         },
       ],
       // As APIs e o repositório das execuções também servem ao ciclo de vida (CP-11): parar e ligar a VM, a exclusão.
-      exports: [PROVISIONING_STEP_HANDLERS, ProvisioningResumeService, ProvisioningStore, PROVISIONING_APIS],
+      exports: [
+        PROVISIONING_STEP_HANDLERS,
+        ProvisioningResumeService,
+        ProvisioningStartService,
+        ProvisioningStore,
+        PROVISIONING_APIS,
+      ],
     };
   }
 }

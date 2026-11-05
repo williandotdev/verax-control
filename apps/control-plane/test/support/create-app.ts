@@ -39,6 +39,8 @@ export interface CreateAppOptions {
   stepQueue?: StepQueue;
   /** As chaves do "IAP" do console (`iap-test-keys.ts`): uma chave ES256 gerada no teste, nunca as do Google. */
   iapKeySource?: IapKeySource;
+  /** O cliente do console para o cp-worker (o HTTP com um "Google" de teste até o worker local, ou um dublê). */
+  workerOwnerClient?: Parameters<typeof AppModule.register>[1]['workerOwnerClient'];
   /**
    * Só com `role: 'admin'`: a pasta com os arquivos do console. Sem ela, nenhuma (`null`): o teste não depende de um
    * build do `apps/console` que pode ou não existir na máquina.
@@ -73,6 +75,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
         iapKeySource: options.iapKeySource,
+        workerOwnerClient: options.workerOwnerClient,
       }),
     ],
   }).compile();

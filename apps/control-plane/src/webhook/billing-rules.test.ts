@@ -176,6 +176,15 @@ describe('regras da máquina de estados do webhook (plano §4b e §4d)', () => {
     expect(apply(suspended as TenantRecord, paid)?.billing).toEqual({
       paidUntil: new Date(AT.getTime() + 30 * DAY_MS),
     });
+    // O modo de cobrança gravado (`billing.mode`) sobrevive à limpeza da inadimplência.
+    const withMode = {
+      ...(suspended as TenantRecord),
+      billing: { ...suspended?.billing, mode: 'stripe' as const },
+    };
+    expect(apply(withMode, invoicePaidChange(withMode, invoice(), CTX, RUN_ID, true))?.billing).toEqual({
+      mode: 'stripe',
+      paidUntil: new Date(AT.getTime() + 30 * DAY_MS),
+    });
   });
 
   it('fraud_review suspende até durante o provisionamento, e o pagamento não reativa', () => {

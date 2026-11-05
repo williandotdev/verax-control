@@ -11,6 +11,9 @@ import {
   PricingTableNewPage,
 } from '@/features/pricing-tables/pricing-table-pages';
 import { SimulatorPage } from '@/features/simulator/simulator-page';
+import { NewTenantPage } from '@/features/tenants/new-tenant-page';
+import { TenantDetailPage } from '@/features/tenants/tenant-detail-page';
+import { TenantListPage } from '@/features/tenants/tenant-list-page';
 import { NotFoundPage } from './not-found-page';
 
 export const routes: RouteObject[] = [
@@ -25,6 +28,9 @@ export const routes: RouteObject[] = [
       { path: 'tabelas-de-preco/novo', element: <PricingTableNewPage /> },
       { path: 'tabelas-de-preco/:version', element: <PricingTableEditorPage /> },
       { path: 'simulador', element: <SimulatorPage /> },
+      { path: 'clientes', element: <TenantListPage /> },
+      { path: 'clientes/novo', element: <NewTenantPage /> },
+      { path: 'clientes/:id', element: <TenantDetailPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

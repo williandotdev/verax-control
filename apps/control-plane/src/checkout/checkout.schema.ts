@@ -6,6 +6,19 @@ import { CNPJ_INPUT_MAX_LENGTH, isValidCnpj, normalizeCnpj } from './cnpj.js';
 const versionSchema = z.string().min(1).max(64);
 
 /**
+ * Os campos do cadastro do cliente, com as mesmas regras e os mesmos limites no checkout do site e no cadastro de um
+ * cliente de contrato direto pelo console do responsável (`admin/admin-tenants.schema.ts`). A razão social é o
+ * `companyNameSchema` de `tenant.schema.ts` (até 120, o limite do nó).
+ */
+export const cnpjInputSchema = z
+  .string()
+  .max(CNPJ_INPUT_MAX_LENGTH)
+  .transform(normalizeCnpj)
+  .refine(isValidCnpj, { error: 'CNPJ inválido' });
+export const adminEmailSchema = z.string().trim().max(254).pipe(z.email());
+export const slugInputSchema = z.string().max(64).pipe(slugSchema);
+
+/**
  * Corpo de `POST /v1/public/checkout` (plano §4a, com o preço configurável): estrito (campo desconhecido é recusado),
  * com o CNPJ normalizado (sem a máscara, letras em maiúsculas) e conferido pelos dígitos verificadores. O preço vem
  * só da cotação gravada (`quoteId`, de `POST /v1/public/quote`): nenhum campo de preço, plano ou item é aceito. O
@@ -16,13 +29,9 @@ const versionSchema = z.string().min(1).max(64);
 export const checkoutRequestSchema = z.strictObject({
   quoteId: z.string().max(64).regex(ULID_PATTERN),
   companyName: companyNameSchema,
-  cnpj: z
-    .string()
-    .max(CNPJ_INPUT_MAX_LENGTH)
-    .transform(normalizeCnpj)
-    .refine(isValidCnpj, { error: 'CNPJ inválido' }),
-  adminEmail: z.string().trim().max(254).pipe(z.email()),
-  slug: z.string().max(64).pipe(slugSchema),
+  cnpj: cnpjInputSchema,
+  adminEmail: adminEmailSchema,
+  slug: slugInputSchema,
   consent: z.strictObject({ terms: versionSchema, privacy: versionSchema, dpa: versionSchema }),
 });
 

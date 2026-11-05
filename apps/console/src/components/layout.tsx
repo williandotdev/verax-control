@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Calculator, Receipt, ShieldCheck, Wallet } from 'lucide-react';
+import { Calculator, Receipt, ShieldCheck, Users, Wallet } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -9,6 +9,7 @@ const NAVIGATION = [
   { to: '/modelos-de-custo', label: 'Modelos de custo', icon: Wallet },
   { to: '/tabelas-de-preco', label: 'Tabelas de preço', icon: Receipt },
   { to: '/simulador', label: 'Simulador de DRE', icon: Calculator },
+  { to: '/clientes', label: 'Clientes', icon: Users },
 ] as const;
 
 /** Quem está no console: o e-mail que o IAP confirmou (`GET /v1/admin/me`). */
@@ -25,7 +26,7 @@ function SignedInAs() {
   );
 }
 
-/** Moldura do console: cabeçalho na faixa da marca, menu das três telas e o conteúdo. */
+/** Moldura do console: cabeçalho na faixa da marca, menu das telas e o conteúdo. */
 export function Layout() {
   return (
     <div className="min-h-screen">

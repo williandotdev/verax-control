@@ -28,6 +28,7 @@ import {
 } from '../pricing/pricing.schema.js';
 import { type GuardReport, runPublishGuard } from '../pricing/publish-guard.js';
 import type { ContactReason } from '../pricing/quote.js';
+import { invalidRequest, parseBody } from './validation.js';
 
 const createBodySchema = z.strictObject({ version: versionIdSchema, content: z.unknown() });
 const updateBodySchema = z.strictObject({ content: z.unknown() });
@@ -65,21 +66,8 @@ export type SimulationResult =
       taxRate: { id: string; label: string; rate: number };
     };
 
-/** 400 com o caminho e a mensagem de cada problema (o console mostra ao lado do campo). Nunca o valor recebido. */
-function invalid(error: ZodError): ApiError {
-  return new ApiError(HttpStatus.BAD_REQUEST, 'Dados inválidos.', 'invalid_request', {
-    issues: error.issues.slice(0, 50).map((issue) => ({
-      path: issue.path.map(String).join('.') || '(raiz)',
-      message: issue.message,
-    })),
-  });
-}
-
-function parse<T extends z.ZodType>(schema: T, body: unknown): z.infer<T> {
-  const result = schema.safeParse(body ?? {});
-  if (!result.success) throw invalid(result.error);
-  return result.data;
-}
+const invalid = invalidRequest;
+const parse = parseBody;
 
 function requireVersion(version: string): string {
   const result = versionIdSchema.safeParse(version);

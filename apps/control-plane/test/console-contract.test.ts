@@ -1,6 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { z } from 'zod';
 import type * as Console from '../../console/src/lib/api-types.js';
+import type {
+  DirectTenantCreated,
+  DirectTenantPreview,
+  directTenantRequestSchema,
+  TenantAction,
+  TenantActionResult,
+  tenantActionSchemas,
+  TenantDetail,
+  TenantList,
+} from '../src/admin/admin-tenants.schema.js';
 import type { AdminSession } from '../src/admin/admin-session.controller.js';
 import type { PublishResult, SimulationResult } from '../src/admin/admin-pricing.service.js';
 import { CONSOLE_CSP } from '../src/admin/console-assets.js';
@@ -39,12 +50,23 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<AdminSession>().toEqualTypeOf<Console.AdminSession>();
     expectTypeOf<Json<VersionedRecord<PriceTable>>>().toExtend<Console.VersionedRecord<Console.PriceTable>>();
     expectTypeOf<Json<VersionedRecord<CostModel>>>().toExtend<Console.VersionedRecord<Console.CostModel>>();
+    // Os clientes: a lista, o detalhe com a linha do tempo, a cotação de referência, o cadastro e as operações.
+    expectTypeOf<Json<TenantList>>().toEqualTypeOf<Console.TenantList>();
+    expectTypeOf<Json<TenantDetail>>().toEqualTypeOf<Console.TenantDetail>();
+    expectTypeOf<Json<DirectTenantPreview>>().toEqualTypeOf<Console.DirectTenantPreview>();
+    expectTypeOf<Json<DirectTenantCreated>>().toEqualTypeOf<Console.DirectTenantCreated>();
+    expectTypeOf<TenantActionResult>().toEqualTypeOf<Console.TenantActionResult>();
+    expectTypeOf<TenantAction>().toEqualTypeOf<Console.TenantAction>();
   });
 
   it('o que as telas mandam cabe no que a API aceita', () => {
     expectTypeOf<Console.PriceTable>().toExtend<PriceTableInput>();
     expectTypeOf<Console.CostModel>().toExtend<CostModelInput>();
     expectTypeOf<Console.ConfigurationInput>().toEqualTypeOf<ConfigurationInput>();
+    expectTypeOf<Console.DirectTenantRequest>().toExtend<z.input<typeof directTenantRequestSchema>>();
+    expectTypeOf<Required<Console.TenantActionRequest>>().toExtend<
+      z.input<(typeof tenantActionSchemas)['export']>
+    >();
   });
 
   it('o vite preview dos testes de navegador do console manda a mesma CSP do cp-admin', () => {

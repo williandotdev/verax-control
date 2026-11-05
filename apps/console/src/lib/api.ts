@@ -1,12 +1,21 @@
 import type {
   AdminSession,
   CheckResult,
+  ConfigurationInput,
   CostModel,
+  DirectTenantCreated,
+  DirectTenantPreview,
+  DirectTenantRequest,
   GuardReport,
   PriceTable,
   PublishResult,
   SimulationRequest,
   SimulationResult,
+  TenantAction,
+  TenantActionRequest,
+  TenantActionResult,
+  TenantDetail,
+  TenantList,
   ValidationIssue,
   VersionedRecord,
   VersionSummary,
@@ -154,4 +163,17 @@ export const api = {
     ),
   simulate: (body: SimulationRequest): Promise<SimulationResult> =>
     request('POST', `${BASE}/dre/simulate`, body),
+};
+
+const TENANTS = `${BASE}/tenants`;
+
+/** Os clientes: a lista, o detalhe, a cotação de referência, o cadastro de contrato direto e as operações. */
+export const tenantsApi = {
+  list: (): Promise<TenantList> => request('GET', TENANTS),
+  get: (id: string): Promise<TenantDetail> => request('GET', `${TENANTS}/${encodeURIComponent(id)}`),
+  preview: (configuration: ConfigurationInput): Promise<DirectTenantPreview> =>
+    request('POST', `${TENANTS}/preview`, { configuration }),
+  create: (body: DirectTenantRequest): Promise<DirectTenantCreated> => request('POST', TENANTS, body),
+  act: (id: string, action: TenantAction, body: TenantActionRequest): Promise<TenantActionResult> =>
+    request('POST', `${TENANTS}/${encodeURIComponent(id)}/${action}`, body),
 };

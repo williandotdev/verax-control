@@ -317,3 +317,202 @@ export interface ValidationIssue {
   path: string;
   message: string;
 }
+
+// --- Clientes (contrato direto e a linha do tempo do provisionamento) ----------------------------------------------
+
+export type TenantState =
+  | 'pending'
+  | 'provisioning'
+  | 'provisioning_failed'
+  | 'waiting_customer_connection'
+  | 'active'
+  | 'past_due'
+  | 'suspended'
+  | 'canceled'
+  | 'deleted';
+
+/** `stripe`: o checkout do site e a assinatura; `contract`: contrato direto, criado aqui, sem Stripe. */
+export type BillingMode = 'stripe' | 'contract';
+
+/** Os passos do provisionamento, na ordem. */
+export type ProvisioningStepName =
+  | 'preflight'
+  | 'cloudflare.tunnel'
+  | 'firebase.site'
+  | 'terraform.apply'
+  | 'terraform.wait'
+  | 'secrets.tunnel_token'
+  | 'node.wait_ready'
+  | 'node.health'
+  | 'panel.domain_wait'
+  | 'access.ready';
+
+export type RunKind = 'provision' | 'resume' | 'delete' | 'crypto_destroy';
+
+/** As duas fases da exclusão (CP-11). */
+export type LifecycleRunKind = 'delete' | 'crypto_destroy';
+
+export type SuspensionReason = 'unpaid' | 'grace_expired' | 'fraud_review' | 'owner';
+
+/** O que o provisionamento ainda não sabe criar. */
+export type NodeFitProblem = 'mode' | 'size' | 'agents' | 'limits';
+
+/** Uma linha da lista de clientes. */
+export interface TenantListItem {
+  id: string;
+  slug: string;
+  companyName: string;
+  state: TenantState;
+  stateUpdatedAt: string;
+  billingMode: BillingMode;
+  size: SizeId;
+  step?: string;
+  lastErrorCode?: string;
+  createdAt: string;
+}
+
+/** `GET /v1/admin/tenants`. */
+export interface TenantList {
+  tenants: TenantListItem[];
+  unreadable: number;
+  limit: number;
+}
+
+export type TimelineStepStatus = 'pending' | 'running' | 'waiting' | 'done' | 'failed';
+
+export interface TimelineStep {
+  name: ProvisioningStepName;
+  status: TimelineStepStatus;
+  attempts: number;
+  startedAt?: string;
+  waitingSince?: string;
+  finishedAt?: string;
+  errorCode?: string;
+}
+
+export interface TenantTransitionView {
+  from: TenantState | null;
+  to: TenantState;
+  reason: string;
+  at: string;
+}
+
+export interface OrderPricing {
+  priceTableVersion: string;
+  quoteId: string;
+  monthlyTotal: number;
+  setupTotal: number;
+}
+
+/** `GET /v1/admin/tenants/:id`. */
+export interface TenantDetail {
+  id: string;
+  slug: string;
+  state: TenantState;
+  stateUpdatedAt: string;
+  createdAt: string;
+  billingMode: BillingMode;
+  company: { legalName: string; cnpj: string };
+  adminEmail?: string;
+  configuration: Configuration;
+  limits: NodeLimits;
+  pricing: OrderPricing;
+  urls: { panelUrl: string; apiUrl: string };
+  provisioning?: {
+    runId?: string;
+    step?: string;
+    attempts: number;
+    lastError?: { code: string; at: string };
+    nodeVersion?: string;
+  };
+  run?: {
+    runId: string;
+    kind: RunKind;
+    startedAt: string;
+    finishedAt?: string;
+    outcome?: 'succeeded' | 'failed';
+    failureCode?: string;
+    release?: string;
+  };
+  timeline: TimelineStep[];
+  access: { passwordRevealedAt?: string; revealEmailSentAt?: string };
+  lifecycle: TenantLifecycleView;
+  transitions: TenantTransitionView[];
+  actions: TenantActions;
+}
+
+/** O ciclo de vida depois da venda (CP-11): os prazos e o que já aconteceu. */
+export interface TenantLifecycleView {
+  suspendedReason?: SuspensionReason;
+  canceledAt?: string;
+  cancelScheduledFor?: string;
+  exportUntil?: string;
+  deleteAfter?: string;
+  deletedAt?: string;
+  cryptoDestroyAfter?: string;
+  cryptoDestroyedAt?: string;
+  purgedAt?: string;
+  nodeStoppedAt?: string;
+  run?: { kind: LifecycleRunKind; step: string; startedAt: string; lastError?: { code: string; at: string } };
+}
+
+/** O que o console oferece agora para o cliente (a API e o cp-worker conferem de novo). */
+export type TenantActions = Record<
+  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export',
+  boolean
+>;
+
+/** As operações do responsável (`POST /v1/admin/tenants/:id/<operação>`). */
+export type TenantAction = 'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'delete-now' | 'export';
+
+/** `POST /v1/admin/tenants/preview`. */
+export type DirectTenantPreview =
+  | { priceTableVersion: string; contactUs: true; reason: ContactReason }
+  | { priceTableVersion: string; contactUs: false; quote: Quote; problems: NodeFitProblem[] };
+
+/**
+ * O pedido ao cp-worker depois do cadastro. Sem sucesso, o código: `worker_unavailable`, `worker_refused`,
+ * `worker_unconfigured` ou um do worker (`not_allowed`...).
+ */
+export type ProvisioningRequestOutcome =
+  { started: true; runId: string; step: string } | { started: false; failure: string };
+
+/** O que o console manda em `POST /v1/admin/tenants`. */
+export interface DirectTenantRequest {
+  idempotencyKey: string;
+  companyName: string;
+  cnpj: string;
+  adminEmail: string;
+  slug: string;
+  configuration: ConfigurationInput;
+  confirmSlug: string;
+}
+
+/** `POST /v1/admin/tenants`. */
+export interface DirectTenantCreated {
+  id: string;
+  slug: string;
+  replayed: boolean;
+  provisioning: ProvisioningRequestOutcome;
+}
+
+/** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */
+export type TenantActionResult =
+  | { action: 'start' | 'resume'; runId: string; step: string }
+  | { action: 'cancel'; result: 'canceled'; deleteAfter?: string; cryptoDestroyAfter?: string }
+  | { action: 'cancel'; result: 'scheduled'; cancelAt: string }
+  | { action: 'suspend' | 'reactivate'; state: TenantState }
+  | {
+      action: 'delete-now';
+      deletion: 'started' | 'restarted' | 'in_progress' | 'deleted' | 'purged';
+      phase?: LifecycleRunKind;
+    }
+  /** O link assinado (24 h) de um backup: mostrado uma vez, nunca guardado. */
+  | { action: 'export'; url: string; expiresAt: string; object: string };
+
+/** O corpo de cada operação: o subdomínio digitado e, no cancelamento, a data; na exportação, o backup. */
+export interface TenantActionRequest {
+  confirmSlug: string;
+  at?: string;
+  object?: string;
+}

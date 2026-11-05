@@ -6,6 +6,7 @@ import { forgetLiveSecret, registerLiveSecret } from '../common/logger/sanitize.
 import { MAIL_SENDER, type MailSender, MailUnavailableError } from '../mail/mail-sender.js';
 import { STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { TenantStore } from '../tenants/tenant-store.js';
+import { billingModeOf } from '../tenants/tenant.schema.js';
 import {
   type AccessAuditContext,
   AccessStore,
@@ -32,7 +33,8 @@ export interface RevealEmailDispatch {
 /**
  * Plano B da revelação (plano §4c, passo 9): 48 h depois de o cliente entrar em `waiting_customer_connection` sem ver
  * a senha, um e-mail com um link de uso único (`statusTokens` do tipo `email_reveal`, 24 h) para a página de status.
- * O e-mail nunca leva a senha. Duas metades:
+ * O e-mail nunca leva a senha. Para um cliente de contrato direto (criado no console, sem checkout), o mesmo e-mail é o
+ * caminho principal: o motor do provisionamento o enfileira assim que o ambiente fica pronto. Duas metades:
  * - `dispatchDue`, que o `tick` horário do CP-11 chama: acha os clientes no prazo e enfileira um passo por cliente;
  * - `send`, o passo `access.reveal_email` no cp-worker: confere de novo, cria o link, envia e marca
  *   `access.revealEmailSentAt` (só depois de enviar: uma falha do SMTP faz a task repetir, e o link criado e não
@@ -82,7 +84,10 @@ export class RevealEmailService {
     if (tenant.access?.revealEmailSentAt !== undefined) return 'already_sent';
     if (tenant.state !== REVEAL_STATE || tenant.adminEmail === undefined) return 'not_waiting';
     const waitingMs = this.clock.now().getTime() - tenant.stateUpdatedAt.getTime();
-    if (waitingMs < REVEAL_EMAIL_AFTER_MS || waitingMs >= REVEAL_EMAIL_UNTIL_MS) return 'window_closed';
+    // O cliente de contrato direto recebe o e-mail assim que o ambiente fica pronto (é o caminho dele até a senha); o
+    // da Stripe, só depois de 48 h sem revelar (o plano B). O fim da janela é o mesmo: a senha temporária vence em 72 h.
+    const after = billingModeOf(tenant) === 'contract' ? 0 : REVEAL_EMAIL_AFTER_MS;
+    if (waitingMs < after || waitingMs >= REVEAL_EMAIL_UNTIL_MS) return 'window_closed';
 
     const link = await this.access.mint(tenantId, 'email_reveal', 'system', context);
     // O link é uma credencial: fica fora de qualquer linha de log enquanto o envio estiver em andamento.

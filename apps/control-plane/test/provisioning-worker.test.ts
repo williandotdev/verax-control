@@ -10,7 +10,8 @@ import { MemoryStepQueue } from '../src/queue/memory-step-queue.js';
 import { stepTaskBody } from '../src/queue/step-queue.js';
 import { TenantStore } from '../src/tenants/tenant-store.js';
 import type { TenantRecord } from '../src/tenants/tenant.schema.js';
-import { TestGoogleIdentity } from './support/access-fakes.js';
+import { MemoryMailSender, TestGoogleIdentity } from './support/access-fakes.js';
+import { demoTenant } from './support/tenant-store-contract.js';
 import { tenantIn } from './support/access-store-contract.js';
 import { createApp } from './support/create-app.js';
 import { FakeCloud } from './support/fake-cloud.js';
@@ -68,6 +69,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
   const audit = new AuditService(documents, clock);
   const tenants = new TenantStore(documents, clock, audit);
   const runs = new ProvisioningStore(documents, clock);
+  const mail = new MemoryMailSender();
   let app: NestExpressApplication;
   /**
    * O mesmo cp-worker depois de o responsável trocar `NODE_RELEASE` e implantar de novo: o mesmo Firestore, a mesma
@@ -84,6 +86,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
       documentStore: documents,
       stepQueue: queue,
       idTokenKeys: google,
+      mailSender: mail,
       capture,
       provisioning: {
         apis: {
@@ -119,6 +122,12 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         CLOUDFLARE_ACCOUNT_ID: '0'.repeat(32),
         CLOUDFLARE_ZONE_ID: '1'.repeat(32),
         FIREBASE_PANEL_PROJECTS: 'paineis-demo-1,paineis-demo-2',
+        // O e-mail "ambiente pronto" (o do cliente de contrato direto sai na hora): o envio é o dublê em memória.
+        SITE_SUCCESS_URL: 'https://veraxsistemas.com.br/checkout/sucesso?cs={CHECKOUT_SESSION_ID}',
+        SMTP_HOST: 'smtp.exemplo.example',
+        SMTP_USER: 'nao-responda@verax.example',
+        SMTP_PASSWORD: 'senha-smtp-de-teste',
+        MAIL_FROM: 'Verax Control <nao-responda@verax.example>',
       },
     });
     await worker.listen(0, '127.0.0.1');
@@ -160,6 +169,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
     });
     publishRelease();
     queue.clear();
+    mail.sent.length = 0;
     cursor = 0;
     clock.set(START);
     probe.api = true;
@@ -888,6 +898,101 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         .post(`/internal/tenants/${tenant.id}/resume`)
         .set('Authorization', bearer(OWNER))
         .expect(409);
+    });
+  });
+  describe('cliente de contrato direto (console do responsável)', () => {
+    /** Um cliente criado pelo console: `billing.mode = contract`, sem Stripe nem aceite, esperando em `pending`. */
+    async function contractTenant(): Promise<TenantRecord> {
+      slugSequence += 1;
+      const { consent: _consent, stripe: _stripe, ...base } = demoTenant(`contrato-${slugSequence}`);
+      return tenants.create(
+        { ...base, billing: { mode: 'contract' } },
+        { reason: 'contract_created', audit: { actor: `owner:${OWNER}` } },
+      );
+    }
+
+    it('os mesmos dez passos de um cliente pago e, pronto, o e-mail com o link de uso único na hora (sem esperar 48 h)', async () => {
+      const tenant = await contractTenant();
+      const started = await request(app.getHttpServer())
+        .post(`/internal/tenants/${tenant.id}/provision`)
+        .set('Authorization', bearer(OWNER))
+        .send({ confirmSlug: tenant.slug })
+        .expect(200);
+      expect(started.body).toMatchObject({ step: 'preflight' });
+
+      const delivered = await drain(healthyNode(tenant));
+      expect(delivered.every((entry) => entry.status === 200)).toBe(true);
+      expect([...new Set(delivered.map((entry) => entry.step))]).toEqual([
+        'preflight',
+        'cloudflare.tunnel',
+        'firebase.site',
+        'terraform.apply',
+        'terraform.wait',
+        'secrets.tunnel_token',
+        'node.wait_ready',
+        'node.health',
+        'panel.domain_wait',
+        'access.ready',
+        'access.reveal_email',
+      ]);
+      const final = await tenants.require(tenant.id);
+      expect(final.state).toBe('waiting_customer_connection');
+      expect(final.billing).toEqual({ mode: 'contract' });
+      expect(final.access?.revealEmailSentAt).toEqual(clock.now());
+      // O Job recebeu o mesmo pedido de um cliente pago: nada de modo de cobrança no Terraform.
+      const [execution] = [...cloud.executions.values()];
+      expect(execution?.env.map((entry) => entry.name)).not.toContain('BILLING_MODE');
+
+      expect(mail.sent).toHaveLength(1);
+      const [message] = mail.sent;
+      expect(message?.to).toBe(tenant.adminEmail);
+      expect(message?.text).toContain(`https://${tenant.slug}.control.veraxsistemas.com.br`);
+      expect(message?.text).toMatch(
+        /https:\/\/veraxsistemas\.com\.br\/checkout\/sucesso#acesso=[A-Za-z0-9_-]{43}/,
+      );
+      expect(`${message?.text}${message?.html}`.toLowerCase()).not.toMatch(/senha:|password/);
+      expect(queue.inQueue('lifecycle').map((task) => task.taskId)).toEqual([
+        `access_reveal_email-${tenant.id}`,
+      ]);
+
+      // Uma entrega repetida do último passo não manda outro e-mail.
+      const lastStep = queue.tasks.find((task) => task.step === 'access.ready');
+      expect(lastStep).toBeDefined();
+      if (lastStep !== undefined)
+        expect(await deliver(lastStep)).toEqual({ status: 200, outcome: 'not_provisioning' });
+      await drain();
+      expect(mail.sent).toHaveLength(1);
+    });
+
+    it('o e-mail na fila falhou na primeira entrega do último passo: a repetição dele o põe', async () => {
+      const tenant = await contractTenant();
+      await request(app.getHttpServer())
+        .post(`/internal/tenants/${tenant.id}/provision`)
+        .set('Authorization', bearer(OWNER))
+        .send({ confirmSlug: tenant.slug })
+        .expect(200);
+      const hook = healthyNode(tenant);
+      let failed = false;
+      await drain(async (task) => {
+        hook(task);
+        if (task.step === 'access.ready' && (task.poll ?? 0) === 0 && !failed) {
+          failed = true;
+          queue.failNext(new Error('fila fora do ar'));
+          const result = await deliver(task);
+          expect(result.status).toBeGreaterThanOrEqual(500);
+        }
+      });
+      expect((await tenants.require(tenant.id)).state).toBe('waiting_customer_connection');
+      expect(failed).toBe(true);
+      expect(mail.sent.map((message) => message.to)).toEqual([tenant.adminEmail]);
+    });
+
+    it('um cliente pago continua sem o e-mail na hora (o plano B é de 48 h, pelo tick)', async () => {
+      const tenant = await paidTenant();
+      await drain(healthyNode(tenant));
+      expect((await tenants.require(tenant.id)).state).toBe('waiting_customer_connection');
+      expect(queue.inQueue('lifecycle')).toHaveLength(0);
+      expect(mail.sent).toHaveLength(0);
     });
   });
 });
