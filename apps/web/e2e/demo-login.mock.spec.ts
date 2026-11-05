@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
 import { skipDemoTour } from './demo-tour';
@@ -144,7 +145,7 @@ test.describe('login da demonstração (modo mock)', () => {
     await page.getByRole('button', { name: 'Entrar' }).click();
 
     await expect(page).toHaveURL(/\/trocar-senha$/);
-    const password = 'uma-senha-nova-bem-longa';
+    const password = `nova-${randomUUID()}`;
     await page.getByLabel('Senha temporária', { exact: true }).fill('senha-temporaria-demonstracao');
     await page.getByLabel('Nova senha', { exact: true }).fill(password);
     await page.getByLabel('Confirme a nova senha', { exact: true }).fill(password);
