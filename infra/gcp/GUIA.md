@@ -92,12 +92,14 @@ Todo nó criado pelo módulo, nos dois perfis, também tem:
 O `envs/verax/main.tf` desliga esses quatro só para o nó da Verax, que já está no ar, não mudar nada neste PR (veja
 "O nó da Verax ainda usa o script antigo"). Os três últimos são só um `true` no `main.tf` quando você quiser.
 
-Três interruptores do módulo existem só para o nó de cliente e ficam desligados no nó da Verax e na homologação (os
+Quatro interruptores do módulo existem só para o nó de cliente e ficam desligados no nó da Verax e na homologação (os
 padrões não mudam nada): o cofre **`support-bootstrap`** (`support_bootstrap_secret`: a senha temporária da conta de
 suporte da Verax, que a VM grava e só você lê), os **atributos de convidado** (`guest_attributes`: a VM publica o
-próprio estado no espaço `verax/`) e a **configuração do nó nos metadados** (`install_config` com `install_metadata`:
-as chaves `verax-*` que a instalação sem operador lê). O `envs/tenant` liga os três; `docs/ARQUITETURA.md` ("O nó de
-cada cliente") tem a lista das chaves.
+próprio estado no espaço `verax/`), a **configuração do nó nos metadados** (`install_config` com `install_metadata`:
+as chaves `verax-*` que a instalação sem operador lê) e a **instalação sem operador** (`unattended_install`: o script
+de boot instala o nó a partir do release assinado da versão nos metadados e grava `verax/ready`; desligada, o script de
+boot é o de sempre, byte a byte). O `envs/tenant` liga os quatro; `docs/ARQUITETURA.md` ("O nó de cada cliente" e
+"Instalação sem operador") tem a lista das chaves e o que a instalação confere.
 
 ## O nó da Verax: o que tem
 
@@ -951,9 +953,13 @@ novo com o mesmo nome; na ordem inversa, o `apply` daqui para com `already exist
 O executor Terraform roda, para cada cliente, o `init` com
 `-backend-config="bucket=<projeto-dos-nos>-tfstate" -backend-config="prefix=tenants/<slug>"` e o `plan`/`apply` com as
 variáveis dele (CP-07). O ambiente cria o nó no perfil `standard` com o prefixo `vx-<slug>` em todo recurso, liga o
-cofre da conta de suporte, os atributos de convidado e a configuração nos metadados da VM, dá à conta da VM a leitura
-do registro das imagens e dá ao `cp-worker` só o que ele faz nos cofres daquele nó. As variáveis recusam o que estiver
-fora do formato antes de criar qualquer coisa.
+cofre da conta de suporte, os atributos de convidado, a configuração nos metadados da VM e a instalação sem operador,
+dá à conta da VM a leitura do registro das imagens e dá ao `cp-worker` só o que ele faz nos cofres daquele nó. As
+variáveis recusam o que estiver fora do formato antes de criar qualquer coisa.
+
+O script de boot leva o instalador, o verificador do manifesto e as chaves públicas de release de `infra/node` (o
+módulo os lê no `plan`): o executor precisa do repositório com `infra/node` ao lado de `infra/gcp`, não só da pasta
+do Terraform.
 
 **`plan` de aceite num projeto de teste** (o aceite do CP-06; nunca no projeto dos nós com clientes): com o
 `envs/nodes-platform` aplicado nesse projeto de teste (as APIs e o bucket do estado),
@@ -971,9 +977,59 @@ backups é `PROJETO_DE_TESTE-vx-demo-a-backups`), os metadados da VM têm `enabl
 e nenhum recurso fica fora do prefixo. Não aplique: o `plan` só olha. Depois, apague o `terraform.tfvars` e a pasta
 `.terraform`.
 
+**Aceite da instalação sem operador (PR-N7)**, num projeto de teste com o `envs/nodes-platform` e o
+`envs/control-plane` aplicados (a conta `cp-worker` precisa existir) e um release `node-vX.Y.Z` promovido (Actions →
+Versão do nó). O nó nasce só com o `terraform apply`, sem SSH:
+
+1. **A versão e o SHA-256**, conferidos como em `docs/runbooks/versao-no.md` ("Conferir uma versão à mão"): baixe o
+   manifesto e a assinatura do release, rode o `infra/node/bin/verify-release.sh` (tem de dizer `OK`) e use o
+   `package.sha256` dele. A imagem da API e a das migrations desse release precisam estar no Artifact Registry
+   (`gcloud artifacts docker images list <registro>/api --include-tags`): a limpeza apaga as versões com mais de 30
+   dias que não estão entre as 3 mais recentes (`docs/ARQUITETURA.md`, "Instalação sem operador").
+2. **O `terraform.tfvars`** do `envs/tenant` com um slug de teste (`homolog`, por exemplo), `node_version` e
+   `node_package_sha256` do passo 1, e-mails e nome fictícios do cliente e o seu e-mail de suporte. Depois,
+   `terraform init` (como no `plan` de aceite, acima, com `prefix=tenants/homolog`), `terraform plan`
+   (`Plan: 34 to add`, a chave `startup-script` com o texto do `unattended.sh.tftpl`) e `terraform apply`.
+3. **O token do túnel**, em até 60 minutos depois do `apply` (é o que o passo `secrets.tunnel_token` do plano de
+   controle faz): crie um túnel de teste no Cloudflare apontando `api-homolog` para `http://api:3000` e grave o token
+   com `printf '%s' "$TOKEN" | gcloud secrets versions add vx-homolog-cloudflare-tunnel-token --data-file=-`.
+4. **Espere `verax/ready`** (até cerca de 40 minutos; o Wazuh é o mais demorado):
+
+   ```bash
+   gcloud compute instances get-guest-attributes vx-homolog --zone southamerica-east1-b --query-path=verax/
+   gcloud compute instances get-serial-port-output vx-homolog --zone southamerica-east1-b | grep 'verax-boot:'
+   ```
+
+   O primeiro mostra `verax/ready` com a versão (ou `verax/error` com o código; a tabela está na ARQUITETURA). O
+   segundo é o diagnóstico sem SSH: cada passo da instalação, sem nenhum valor pessoal.
+
+5. **Confira, ainda sem SSH:** `gcloud secrets versions list vx-homolog-admin-bootstrap` e
+   `... vx-homolog-support-bootstrap` com uma versão cada; `curl https://api-homolog.<domínio>/health` pelo túnel;
+   `verax/version` (o commit do manifesto) e os outros atributos do worker em até 5 minutos.
+6. **Reinicie** (`gcloud compute instances reset vx-homolog --zone southamerica-east1-b`): `verax/ready` volta com a
+   mesma versão, e a saída serial não mostra `Baixando` (nada baixado nem instalado de novo). Troque a `node_version`
+   e o `node_package_sha256` por outros no `terraform.tfvars`, aplique (`1 to change`, só os metadados) e reinicie: a
+   saída serial avisa que a atualização não é automática, e o `verax/ready` continua o de antes.
+7. **Desfaça** como na Exclusão 1 do cliente (`docs/ARQUITETURA.md`, "Exclusão em dois tempos"), num teste sem dado a
+   guardar:
+
+   ```bash
+   # deletion_protection = false no terraform.tfvars, e então:
+   terraform apply
+   terraform state rm module.node.google_compute_disk.node 'module.node.google_compute_address.nat[0]'
+   gcloud storage rm --recursive 'gs://PROJETO_DE_TESTE-vx-homolog-backups/**'   # se o nó já gravou um backup
+   terraform destroy
+   gcloud compute disks delete vx-homolog --zone southamerica-east1-b
+   gcloud compute addresses delete vx-homolog-nat-ip --region southamerica-east1
+   ```
+
+   O disco e o IP do NAT têm `prevent_destroy` e saem à mão, depois. Por fim, apague o túnel de teste no Cloudflare.
+
 **Mudanças de rotina** (versão nova, outro plano, outros limites, o nome do cliente) são `update in-place` na VM
 (metadados). Um `plan` de tenant que recrie ou apague `module.node.google_service_account.node` fora da exclusão do
-cliente é erro: a AWS do cliente deixaria de aceitar o nó, e o executor recusa (CP-07).
+cliente é erro: a AWS do cliente deixaria de aceitar o nó, e o executor recusa (CP-07). Uma `node_version` nova não é
+instalada sozinha num nó que já existe: a atualização é pelo `deploy.sh`, com o `/etc/verax/node.conf` que a
+instalação escreveu (`docs/runbooks/onboarding-cliente.md`, item 8).
 
 **Exclusão do cliente:** o disco e o IP do NAT têm `prevent_destroy`, e o `credentials-key` e o bucket de backups
 ficam até a Exclusão 2. O que o executor faz antes do `destroy` (desligar a proteção da VM e tirar esses endereços do

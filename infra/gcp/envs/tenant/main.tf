@@ -32,6 +32,12 @@ module "node" {
   # O estado do nó para o plano de controle (o `tick` e o `node.wait_ready` leem com o `cpNodeLifecycle`).
   guest_attributes = true
 
+  # A instalação sem operador (PR-N7): o script de boot baixa o release da versão de `node_version`, confere a
+  # assinatura do manifesto e o SHA-256 do pacote, instala e grava `verax/ready` (ou `verax/error`). O executor do
+  # plano de controle (CP-07) precisa do pacote do nó do repositório ao lado do infra/gcp: o script de boot leva o
+  # instalador, o verificador e as chaves públicas de release de infra/node.
+  unattended_install = true
+
   # A configuração do nó nos metadados da VM, para a instalação sem operador (PR-N7) e as contas do cliente (CP-10):
   # as chaves do contrato (modules/node/node.tf), cada uma com uma variável já conferida. Só referências diretas, para
   # o checkov avaliar os metadados da VM (as chaves de segurança, CKV_GCP_32).

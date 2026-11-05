@@ -190,6 +190,20 @@ variable "install_metadata" {
   }
 }
 
+variable "unattended_install" {
+  description = "Instalação sem operador (PR-N7): o script de boot instala o nó a partir do release assinado da versão nos metadados (`verax-node-version`), confere a assinatura do manifesto e o SHA-256 do pacote, escreve o node.conf do modo cliente com as chaves `verax-*` e grava `verax/ready` ou `verax/error` nos atributos de convidado. Exige a configuração nos metadados, os atributos de convidado e os cofres das senhas temporárias, só no perfil standard e sem `legacy_startup_script`. Falso por padrão: o script de boot dos nós que já existem não muda, byte a byte."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.unattended_install || (
+      var.install_config && var.guest_attributes && var.bootstrap_secret && var.support_bootstrap_secret &&
+      var.node_profile == "standard" && var.legacy_startup_script == null
+    )
+    error_message = "unattended_install exige install_config, guest_attributes, bootstrap_secret e support_bootstrap_secret ligados, o perfil standard e nenhum legacy_startup_script."
+  }
+}
+
 variable "turnstile_secret" {
   description = "Cria o cofre `turnstile-secret-key` (chave secreta do Cloudflare Turnstile, que o nó lê para conferir o desafio do login). Falso por padrão: o nó da Verax, já no ar, liga numa mudança no lugar."
   type        = bool

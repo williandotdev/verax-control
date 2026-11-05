@@ -1,0 +1,50 @@
+#!/bin/bash
+# Script de boot do nó com a instalação sem operador (PR-N7; `unattended_install`, ligado no envs/tenant). Roda a cada
+# boot da VM. Tudo o que ele executa veio do Terraform, nestes metadados, e não da internet: o script de boot de todo nó
+# do módulo (startup.sh.tftpl: swap cifrado e ajustes do kernel), o instalador (infra/node/bin/boot-install.sh), o
+# verificador do manifesto da versão (infra/node/bin/verify-release.sh) e as chaves públicas de release
+# (infra/node/keys/release-*.pem). Cada um vai em base64 para a memória (/run/verax-boot, só root), e o instalador roda
+# de lá. O que ele baixa do release do GitHub só é executado depois de conferido: a assinatura do manifesto com essas
+# chaves e o SHA-256 do pacote com o manifesto.
+#
+# Modelo do Terraform (templatefile): as interpolações são o perfil, entre aspas simples, e os quatro textos em base64,
+# cada um num heredoc com o delimitador entre aspas (o bash não interpreta nada neles). O resto do script não usa chave
+# logo depois de cifrão nem de porcentagem, que o Terraform tentaria interpretar.
+set -euo pipefail
+umask 077
+
+# shellcheck disable=SC2016 # o Terraform troca o texto entre as aspas pelo perfil antes de o script chegar à VM
+profile='${node_profile}'
+boot=/run/verax-boot
+
+# Uma execução por vez: uma segunda (o script de boot rodado à mão durante a instalação) sai sem mexer na que está
+# rodando. A trava segue com o instalador (o exec mantém o descritor aberto) até ele terminar.
+exec 9>"$boot.lock"
+if ! flock -n 9; then
+  echo 'verax-boot: a instalação sem operador já está rodando.' >&2
+  exit 0
+fi
+
+rm -rf "$boot"
+install -d -m 0700 "$boot" "$boot/trust" "$boot/trust/bin" "$boot/trust/keys"
+base64 -d >"$boot/prepare.sh" <<'VERAX_PREPARE'
+${prepare}
+VERAX_PREPARE
+base64 -d >"$boot/boot-install.sh" <<'VERAX_INSTALLER'
+${installer}
+VERAX_INSTALLER
+base64 -d >"$boot/trust/bin/verify-release.sh" <<'VERAX_VERIFIER'
+${verifier}
+VERAX_VERIFIER
+# Uma chave por linha: o nome do arquivo e a chave pública em base64.
+while read -r name data; do
+  if [[ ! $name =~ ^release-[A-Za-z0-9._-]+\.pem$ || ! $data =~ ^[A-Za-z0-9+/]+=*$ ]]; then
+    echo 'verax-boot: chave de release fora do formato no script de boot.' >&2
+    exit 1
+  fi
+  base64 -d <<<"$data" >"$boot/trust/keys/$name"
+done <<'VERAX_RELEASE_KEYS'
+${release_keys}
+VERAX_RELEASE_KEYS
+
+exec bash "$boot/boot-install.sh" --boot-dir "$boot" --profile "$profile"

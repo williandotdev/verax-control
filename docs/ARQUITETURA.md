@@ -1148,9 +1148,8 @@ do módulo, desligados por padrão (o nó da Verax e a homologação não mudam)
    nome do cliente são dados de cadastro, que ficam nos metadados enquanto o nó existir, e a instalação os trata como
    dado (nunca os interpreta num shell). O projeto vem de `project/project-id`. O IP de saída (`NODE_EGRESS_IPS`)
    fica de fora: o checkov 3.4.0 não avalia os metadados da VM com uma referência ao IP reservado do NAT, e deixaria
-   de conferir as chaves de segurança dela; a instalação o descobre pela própria saída ou o recebe do plano de controle
-   (saída `nat_ip`), decisão do PR-N7. O ID único da conta da VM também está no `sub` do token de identidade que ela
-   pede ao servidor de metadados.
+   de conferir as chaves de segurança dela; a instalação o descobre pela própria saída (seção seguinte, PR-N7). O ID
+   único da conta da VM também está no `sub` do token de identidade que ela pede ao servidor de metadados.
 
    | Chave                           | No nó                                         | De onde vem               |
    | ------------------------------- | --------------------------------------------- | ------------------------- |
@@ -1183,6 +1182,128 @@ projeto dos nós (redes VPC por projeto, endereços IP externos estáticos e CPU
 projeto novo e limitam o número de clientes antes do resto: conferir no console (IAM e administrador, Cotas) na
 primeira venda e pedir aumento antes de chegar perto, contando a homologação. Uma rede compartilhada entre os nós é
 mudança do módulo numa fase seguinte, quando passar de cerca de 10 clientes.
+
+### Instalação sem operador (PR-N7)
+
+O nó de cliente se instala sozinho no primeiro boot, sem SSH, a partir do release assinado da versão que o Terraform
+pôs nos metadados. É o interruptor `unattended_install` do módulo (desligado por padrão; o `envs/tenant` liga; exige
+os três contratos acima, os dois cofres das senhas e o perfil `standard`). Desligado, a chave `startup-script` é o
+`startup.sh.tftpl` de sempre, byte a byte: o nó da Verax (que nem usa o script do módulo) e a homologação não mudam.
+
+**Cadeia de confiança.** Tudo o que roda antes de o release ser conferido vem do Terraform, nos metadados da VM (quem
+escreve os metadados já manda na VM): o script de boot (`unattended.sh.tftpl`) leva, em base64, o script de boot de
+todo nó (swap cifrado e kernel), o instalador (`infra/node/bin/boot-install.sh`), o verificador do manifesto
+(`infra/node/bin/verify-release.sh`, o do SH-02) e as chaves públicas de release (`infra/node/keys/release-*.pem`). Ele
+os escreve em `/run/verax-boot` (tmpfs, 0700) e roda o instalador de lá, uma execução por vez (`flock`). Do GitHub vêm
+só dados, conferidos nesta ordem antes de qualquer execução: a assinatura do `manifest.json` com aquelas chaves, depois
+os campos do manifesto, depois o SHA-256 do pacote (que tem de ser o mesmo nos metadados e no manifesto assinado).
+Só então o `install.sh` do pacote roda. As imagens são as do manifesto, pelo digest: a API e as migrations com os
+digests de `images.api` e `images.migrate` (o `install.sh` recebe `--api-digest` e `--migrate-digest`), e as de
+terceiros pelo digest dos compose do pacote, que o instalador confere serem exatamente as de `thirdPartyImages`.
+O executor do plano de controle (CP-07) precisa ter o `infra/node` ao lado do `infra/gcp`: o módulo lê esses
+arquivos no `plan`.
+
+**O que a instalação faz, na primeira vez** (o marcador `/var/lib/verax/boot/installed` ainda não existe):
+
+1. apaga `verax/ready` e `verax/error` (o plano de controle só vê `ready` quando o nó estiver de pé neste boot) e roda
+   o script de boot de todo nó (swap cifrado e kernel);
+2. lê as chaves `verax-*` (tabela acima) e o projeto, e confere cada valor antes de usar: só ASCII visível, tamanho
+   máximo e uma expressão regular por campo (as do `envs/tenant`, do `install.sh` e do `node-release.sh`). O
+   `verax-config-version` tem de ser `1` e o `verax-node-profile` tem de ser o perfil do script de boot. Nome do cliente
+   e e-mails (CP-10) só têm a presença conferida, e nada deles vai para a tela, para variável do instalador nem para
+   guest attribute. O `MAIL_FROM` com apóstrofo, que o `envs/tenant` aceita, é recusado: o arquivo de ambiente do
+   `start.sh` não o comporta;
+3. instala o `jq` pelo apt, se faltar (pacote do Debian), baixa `manifest.json` e `manifest.json.sig` do release
+   `verax-node-version` do GitHub (só HTTPS, também nos redirecionamentos, com teto de tamanho) e confere a assinatura;
+4. confere o manifesto: `schema` 1, `kind`, `release` igual à versão pedida, `version` (o commit), a URL do pacote do
+   próprio release, `package.sha256` igual ao dos metadados e as duas imagens do Verax no GHCR pelo digest;
+5. baixa o pacote, confere o SHA-256, confere que só há caminhos dentro de `verax-node/` e abre;
+6. descobre o IP de saída (abaixo) e escreve o `node.conf` do modo cliente só com valores conferidos; cada linha passa
+   de novo por um formato sem nada que o `source` do `install.sh` e do `start.sh` interprete (letras, dígitos e
+   `@._+:/,-`);
+7. roda o `install.sh` do pacote com o commit, os dois digests, `--release <versão>` e o `node.conf` (com o apt
+   esperando a trava, em vez de falhar, só nessa execução) e grava o marcador.
+
+**Em todo boot, depois:** espera o `verax-node`, o `verax-wazuh` e o `verax-customer-bootstrap` (o primeiro acesso do
+CP-10, que grava a senha no `admin-bootstrap`) ficarem ativos; se o `start.sh up` subiu sem o token do túnel (o
+`cloudflared.env` vazio), relê o cofre a cada 60 s por até 60 min com o `start.sh tunnel`, que sobe só o
+`cloudflared`; e grava `verax/ready=<versão>`. Uma falha grava `verax/error=<código>` e o boot seguinte tenta de novo.
+A saída do instalador vai para o journal e para a saída serial da VM (`gcloud compute instances
+get-serial-port-output`), sem nenhum valor pessoal: é o diagnóstico sem SSH.
+
+**Versão.** O `node-vX.Y.Z` (a tag do release, o `verax-node-version` dos metadados e o `release` do manifesto) e o
+commit (o `version` do manifesto) convivem: o `install.sh` grava em `/etc/verax/images.env` o `NODE_VERSION` (o commit,
+como sempre: é o que o `start.sh` confere, o `env.schema.ts` aceita e o worker publica em `verax/version`) e, só quando
+recebe `--release`, o `NODE_RELEASE`. O `verax/ready` é o `NODE_RELEASE` (o que o plano de controle pediu e compara no
+`node.wait_ready`); num nó atualizado depois pelo `deploy.sh`, que não passa `--release`, vira o commit. O nó da Verax
+e o `deploy.sh` não mudam: sem `--release`, o `images.env` é o de antes, linha a linha.
+
+**Atualização não é automática.** Instalado o nó, uma versão diferente nos metadados (um `apply` do tenant com outra
+`node_version`) só aparece no log do boot; nada é baixado nem instalado. Instalar sozinho, num reboot qualquer, rodaria
+migrations sem backup, sem janela e sem volta (o que o SH-06 desenha). A atualização continua com o `deploy.sh`, pelo
+operador, com o `node.conf` que a instalação escreveu (`/etc/verax/node.conf` da VM). Um nó instalado só pelo
+`deploy.sh` (sem o marcador) também não é tocado. Uma instalação que parou no meio (o marcador `installing`) é refeita
+do começo no boot seguinte: o `install.sh` pode rodar de novo.
+
+**Valores que a instalação decide** (não estão nos metadados):
+
+- `NODE_EGRESS_IPS`: o IP de saída com `/32`, perguntado a `https://checkip.amazonaws.com` (só HTTPS), que responde o
+  IP de origem como a AWS o vê. É esse IP que a AWS compara com o `aws:SourceIp` da pilha do papel de leitura, e todo
+  o tráfego do nó `standard` sai pelo IP reservado do NAT. Um valor fora do formato (ou nenhum) para a instalação
+  (`egress_ip_unknown`); um valor errado só faria a AWS recusar o nó (a pilha libera um IP só, e entrar no papel ainda
+  exige o token da conta da VM). Alternativas descartadas: a API do Compute (uma permissão nova da VM no projeto dos
+  nós inteiro, porque endereço não aceita IAM por recurso) e uma segunda aplicação do tenant com a saída `nat_ip`;
+- `MAIL_TRANSPORT=none`: ninguém grava o `smtp-password` de um tenant (contas com senha temporária);
+- `SYNC_SOURCES=gcp,wazuh,cloudflare` (sem `cloudflare` se o cofre de credenciais estiver desligado);
+- `WAZUH_AGENTS=false` e `CUSTOMER_MODE=true`.
+
+**Códigos de `verax/error`** (só o código; o motivo fica na saída serial):
+
+| Código                      | Quando                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `metadata_missing`          | uma chave `verax-*` (ou o projeto) falta ou, no CP-10, está vazia               |
+| `metadata_invalid`          | um valor fora do formato, o contrato ou o perfil errado, enterprise sem limites |
+| `metadata_unavailable`      | o servidor de metadados não respondeu                                           |
+| `prepare_failed`            | o script de boot de todo nó (swap cifrado e kernel) falhou                      |
+| `dependencies_failed`       | o `jq` não instalou                                                             |
+| `release_download_failed`   | o manifesto, a assinatura ou o pacote não baixaram                              |
+| `release_signature_invalid` | a assinatura não fecha com as chaves de release                                 |
+| `release_verifier_failed`   | o verificador não rodou (chave fora do formato, arquivo ausente)                |
+| `release_manifest_invalid`  | o manifesto assinado é de outra versão ou está fora do formato                  |
+| `package_sha256_mismatch`   | o SHA-256 dos metadados não é o do manifesto, ou o pacote baixado não fecha     |
+| `package_invalid`           | o pacote não abre, tem caminho fora, ou imagens de terceiros fora do manifesto  |
+| `egress_ip_unknown`         | o IP de saída não foi descoberto                                                |
+| `install_failed`            | o `install.sh` falhou                                                           |
+| `node_start_failed`         | o `verax-node` não subiu                                                        |
+| `wazuh_start_failed`        | o `verax-wazuh` não subiu                                                       |
+| `customer_bootstrap_failed` | o primeiro acesso do cliente falhou de vez (ou não terminou no prazo)           |
+| `tunnel_token_missing`      | o token do túnel não chegou ao cofre em 60 min                                  |
+| `install_state_invalid`     | o nó instalado perdeu o `/etc/verax/images.env`                                 |
+
+**Origem das imagens do Verax.** O `envs/tenant` manda `verax-images-repository` com o Artifact Registry do projeto da
+Verax (CP-06), e o `install.sh` baixa de lá pelo digest do manifesto (o mesmo nos dois registros). O `install.sh` e a
+instalação aceitam também `ghcr.io/<dono>/<repositório>` (o do próprio manifesto), sem o ajudante de credenciais do
+`gcloud`. **Risco:** a limpeza do Artifact Registry (`envs/verax/images.tf`) apaga, depois de 30 dias, toda versão que
+não está entre as 3 mais recentes nem marcada `no-`; um release promovido há mais tempo pode não estar mais lá, e a
+instalação de um cliente novo nessa versão para em `install_failed`. Saídas, decisão do responsável: apontar o tenant
+para o GHCR (público e sem limpeza; uma linha no `envs/tenant`) ou marcar as imagens de cada release com uma tag `no-`
+no Artifact Registry (mais uma permissão no workflow de release).
+
+**Imagens de terceiros: pela origem, sem espelho (decisão em aberto).** O plano da fase 2 previa espelhar no Artifact
+Registry as imagens do Wazuh, do PostgreSQL e do cloudflared, para o nó gerenciado não depender do Docker Hub. O SH-02
+decidiu baixá-las da origem pelo digest (o manifesto as lista assim), e este passo segue essa decisão:
+
+- **a favor do espelho:** o Docker Hub limita o pull anônimo por IP e pode estar fora do ar no boot de um cliente (as
+  quatro imagens de terceiros vêm de lá; cada nó tem o próprio IP de saída e baixa cada uma uma vez, bem abaixo do
+  limite, e o `start.sh` não baixa de novo o que já está no disco);
+- **contra:** o armazenamento pago no Artifact Registry (o manager e o indexer do Wazuh têm cerca de 2,7 e 2,6 GB
+  descompactados, por versão), um workflow e uma permissão a mais para copiar, e a redistribuição de imagem GPL
+  (Wazuh), cujas obrigações não foram verificadas.
+
+O espelho não muda o manifesto (o digest é o mesmo), só o registro de onde os compose baixam.
+
+**Ainda fora:** observar o metadado `verax-renew-admin-password` (o Terraform é dono dos metadados: precisa virar
+variável do tenant) e as partes do modo próprio (código de ativação, chave do nó).
 
 ### Exclusão em dois tempos
 
@@ -1275,10 +1396,10 @@ Preparação do modo próprio (o nó na nuvem do cliente, que vem depois do port
 GCP da Verax precisa baixar as imagens sem login e saber, sem o `gh` e sem falar com a Verax, que a versão foi
 publicada por ela. O roteiro e os passos únicos do responsável estão em `docs/runbooks/versao-no.md`.
 
-| Imagem                                      | Nó gerenciado (GCP da Verax)                            | Nó na nuvem do cliente                                   |
-| ------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- |
-| API e migrations (do Verax)                 | Artifact Registry privado, pelo `deploy.sh`             | GHCR público (`ghcr.io/williandotdev/verax-control/...`) |
-| Wazuh, PostgreSQL e cloudflared (terceiros) | Registro de origem, pelo digest dos compose (como hoje) | Registro de origem, pelo digest dos compose              |
+| Imagem                                      | Nó gerenciado (GCP da Verax)                                                                             | Nó na nuvem do cliente                                   |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| API e migrations (do Verax)                 | Artifact Registry privado, pelo `deploy.sh` ou pelo digest do manifesto (instalação sem operador, PR-N7) | GHCR público (`ghcr.io/williandotdev/verax-control/...`) |
+| Wazuh, PostgreSQL e cloudflared (terceiros) | Registro de origem, pelo digest dos compose (como hoje)                                                  | Registro de origem, pelo digest dos compose              |
 
 - **O mesmo digest nos dois registros.** O workflow `Imagens do nó` publica no Artifact Registry e, num job separado
   (o único com `packages: write`), copia o manifesto byte a byte para o GHCR com
@@ -1303,7 +1424,10 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
   Registry para o nó gerenciado não depender do Docker Hub. Para o nó na nuvem do cliente, a proposta do modo próprio
   troca isso por "terceiros pela origem, pelo digest", para a Verax não redistribuir imagem GPL a terceiros. Este
   passo segue a proposta e não espelha nada; o manifesto já descreve as imagens de terceiros pelo digest, então um
-  espelho privado só para os nós gerenciados, se o N7 o mantiver, não muda o manifesto.
+  espelho privado só para os nós gerenciados não mudaria o manifesto. O PR-N7 manteve a origem e deixou o espelho
+  como decisão em aberto ("Instalação sem operador", acima).
+- **Quem usa o manifesto hoje:** a instalação sem operador do nó de cliente (PR-N7), com as chaves que o Terraform
+  põe no script de boot.
 
 ## Ordem de execução
 
