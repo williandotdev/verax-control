@@ -79,7 +79,10 @@ Na reunião:
    primeiro login, a pessoa troca a senha e cadastra o MFA. Se a senha se perder ou vencer, selecione o cliente no
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
-   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
+   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele. Os avisos
+   por e-mail (incidente alto ou crítico, achado crítico e, só para administradores, 80% e 100% do volume do plano)
+   chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
+   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe.
 
    **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
    usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para
@@ -135,6 +138,23 @@ Na reunião:
    da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
    Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
    segue com a anterior; veja o do `verax-wazuh-apply`).
+   **Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
+   IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
+   vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,
+   na casa de uma centena por conta e por dia). A conta com erro na entrada do papel não é inventariada até voltar a
+   conectada; erro só de bucket não atrapalha. O que o operador vê:
+   - em **Ativos e identidades**, a faixa **Coleta parcial** diz que parte ficou de fora em qual conta e o código da
+     AWS (`AccessDenied`, `UnauthorizedOperation`: a política do papel foi mexida ou uma SCP da organização nega o
+     serviço ou a região; `AuthFailure`: região desligada ou fora do opt-in). O resto do inventário vale. Peça ao
+     cliente para conferir a política do papel (a pilha atual) e as SCPs; a próxima coleta, em até 24 h, tenta de
+     novo;
+   - inventário parado (a data "Inventário atualizado há…" fica velha): no banco do nó, `SyncState` com o nome
+     `aws-inventory` (último erro da tarefa) e `CollectorCursor` do fluxo `aws_inventory` da conta (`lastErrorKind`,
+     `failures` e `nextRunAt`). `aws_unavailable` é a AWS fora ou limitando (tenta de novo em 30 min, dobrando até
+     6 h); `inventory_refused`, nenhuma parte lida (sessão revogada no console ou política sem as leituras de Ativos);
+     um código de conexão (`trust_denied`, `token_invalid`) aparece também em Contas cloud;
+   - cliente sem conta AWS: Postura e Ativos mostram "em breve" (GCP e Cloudflare ainda não têm postura nem
+     inventário).
 
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.

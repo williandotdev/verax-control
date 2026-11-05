@@ -69,8 +69,9 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
   e retoma dele depois de uma parada. As leituras registradas no CloudTrail não são descartadas, porque alimentam as
   detecções de reconhecimento; as da própria Verax, vindas do IP do nó, recebem uma regra de nível 0.
 
-- **Configuração da AWS (Ativos e Postura):** o worker lê pelo mesmo papel, só pelas ações de leitura da política,
-  com cerca de 18 checagens de postura nativas. Sem Prowler.
+- **Configuração da AWS (Ativos e Postura):** o worker lê pelo mesmo papel, só pelas ações de leitura da política:
+  o inventário de Ativos uma vez por dia por conta (feito no PR-14', seção "Ativos e Postura da AWS") e cerca de 18
+  checagens de postura nativas (PR-15'). Sem Prowler.
 - **GCP do cliente:** o sink do projeto do cliente publica num tópico do projeto do nó. O cliente cria o sink com o
   comando pronto de Contas cloud e cola no painel a identidade dele; o Terraform do nó (`customer_projects`) deixa só
   essa identidade publicar no tópico do projeto, sem nada no nível do projeto do nó (que isso basta é o que o teste
@@ -205,6 +206,29 @@ credenciais"). Um admin cola o token no painel; ele nunca volta pela API e nunca
 Cada origem de log (bucket, assinatura, identidade do sink ou zona) pertence a um só cliente, como já valia para os
 buckets: é o que permite atribuir cada alerta ao cliente certo. A identidade do sink, além disso, é de um projeto só,
 mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
+
+### Regras de detecção: faixas de ID e títulos
+
+Cada regra tem um ID numa faixa própria, e o ID vai para o achado (`ruleId`), para as exceções e para os relatórios.
+A escala de nível é a mesma em todas: 12 ou mais é crítica, 10 alta, 7 média e abaixo disso baixa.
+
+| Faixa           | Onde roda                                                               | O quê                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 80200 a 80499   | Wazuh do nó (`0350-amazon_rules.xml`, do próprio Wazuh)                 | CloudTrail, GuardDuty e WAF; as correlações 80252, 80255 e 80443 sobrescritas para contar por conta (`verax_aws_rules.xml`)    |
+| 100200 a 100299 | Wazuh do nó (`verax_reader_rules.xml`, gerado do modelo com o IP do nó) | O papel de leitura da Verax no CloudTrail do cliente (PR-V4', passo "Coletar")                                                 |
+| 100300 a 100399 | Wazuh do nó (`verax_aws_critical_rules.xml`)                            | Regras críticas da AWS no CloudTrail do cliente (PR-V7): root, administrador, CloudTrail, GuardDuty, S3, grupo de segurança... |
+| 990101 a 990199 | Worker, sem Wazuh (`apps/api/src/gcp/gcp-rules.ts`)                     | Auditoria da GCP                                                                                                               |
+| 990201 a 990299 | Não usada                                                               | Era a do coletor próprio do CloudTrail, que saiu do plano; o subconjunto crítico do catálogo dela virou a faixa 100300         |
+| 990301 a 990399 | Worker, sem Wazuh (`apps/api/src/cloudflare/cloudflare-rules.ts`)       | Auditoria do Cloudflare                                                                                                        |
+
+**O título do achado é fixo e em português.** Nas regras do worker, é o da tabela de regras. Nas do Wazuh, a
+descrição cita campos do evento (o nome da chamada, o IP, o bucket) e, nas regras do próprio Wazuh, é em inglês: o
+título vem do dicionário `apps/api/src/alerts/aws-rule-titles.ts`, que cobre toda regra local com nível acima de 0
+(1002xx, 1003xx e as correlações sobrescritas) e o login com falha do Wazuh (80254). Sem título no dicionário (o
+GuardDuty, cujo título vem da própria AWS, e o CloudTrail genérico), fica a descrição, como nos alertas dos agentes
+nas instâncias do cliente (regras do próprio Wazuh). Um teste confere que toda regra local que pode virar achado tem
+título e que nenhum título leva campo do evento: é o título, e não a descrição, que o aviso por e-mail (PR-16) pode
+usar.
 
 ## Cofre de credenciais
 
@@ -395,6 +419,13 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      papel vindas do IP do nó, nível 0 (100200 e 100201); a sessão do papel ou o token usados de outro IP, nível 12
      com MITRE T1078.004 (100202 e 100203); qualquer alteração no papel ou nas duas políticas da pilha, nível 5 (100204
      e 100205). Sem o `NODE_EGRESS_IPS` no `node.conf`, só as de alteração.
+   - **Regras críticas** (`verax_aws_critical_rules.xml`, 100300 a 100324, PR-V7): o subconjunto crítico do catálogo
+     da AWS (root, permissão de administrador, papel aberto a qualquer conta, CloudTrail e GuardDuty desligados, bucket
+     e snapshot públicos, grupo de segurança aberto para a internet, domínio, organização) e o WAF desligado ou
+     alterado, com MITRE e o título em português do dicionário (seção "Regras de detecção"). Só o que aconteceu (sem
+     `errorCode`); filhas da mesma cadeia do CloudTrail das regras do papel. O papel de leitura só lê, e nenhuma delas
+     casa leitura: as leituras do nó seguem no nível 0. Uma alteração crítica vale sobre a regra do papel (o Wazuh tenta
+     primeiro a irmã de nível mais alto).
 3. **Conferir (PR-V5', feito):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e
    confere a conta e a leitura de cada bucket: é a `WebIdentityAwsConnectionChecker`
    (`apps/api/src/aws/web-identity-checker.ts`), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. Toda chamada
@@ -467,6 +498,52 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 | Bucket de organização legível inteiro                                                                                                    | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente                                                                                                                                                                                                                         |
 | Na saída do cliente, o papel segue na conta dele                                                                                         | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                     |
 
+## Ativos e Postura da AWS
+
+_(fase 2: o inventário de Ativos está feito no código (PR-14'); a postura nativa, com cerca de 18 checagens, é o
+PR-15', na mesma coleta)_
+
+As duas telas só cobrem contas AWS: a postura filtra `provider: 'aws'` (a de GCP e Cloudflare não existe), e o cliente
+sem conta AWS vê "em breve" em Postura e em Ativos.
+
+**Inventário (tarefa `aws-inventory` do worker, `apps/api/src/inventory/`):**
+
+- **Quem e quando:** as contas AWS ativas já verificadas ao menos uma vez (`ingestFrom`), conectadas ou com erro só de
+  bucket (ou `aws_token_stale`, que é do host). Nunca as em "aguardando", nem as com erro na entrada do papel, que
+  esperam a conferência da conexão voltar a conectada. A tarefa olha as contas a cada 5 min; a que nunca coletou entra
+  na volta seguinte, e a que coletou, quando a última coleta bem-sucedida tem mais de 24 h, mais um sorteio de até 1 h
+  (para as contas de um nó não coletarem todas na mesma hora). No máximo 5 contas por volta, as mais atrasadas
+  primeiro, uma de cada vez. O agendamento fica no banco (`CollectorCursor`, fluxo `aws_inventory`): uma partida nova
+  do worker não refaz os inventários. A concessão `SyncState('aws-inventory')` deixa um worker por vez: ela é
+  renovada durante a coleta (a cada terço da validade de 15 min) e conferida de novo, com a linha presa, na transação
+  que grava o retrato. Perdida (venceu e outra réplica a tomou), a execução para sem gravar e sem mexer no cursor
+  (`lease_lost` no relatório).
+- **Sessão:** a mesma `WebIdentityCredentials` da conferência da conexão (`credentialsFor`), sem chave e sem
+  ExternalId: a entrada no papel vem primeiro (recusada, nenhuma outra chamada) e é dividida com o `aws-check` (uma por
+  hora por conta). Os clientes do SDK pedem outra sessão ao provedor numa coleta longa. O `assumeReadOnlyRole` do
+  conector antigo saiu.
+- **Coleta** (`collectInventory`): só List, Get e Describe da política `PosturaEAtivos` do template. A conta root
+  (`GetAccountSummary`), os usuários IAM com console, MFA e chaves (com o último uso), os buckets (política, ACL e
+  bloqueio de acesso público, cada bucket pelo S3 da região dele, sem redirecionamento) e, só nas regiões cadastradas
+  (sem `DescribeRegions`), instâncias e security groups. No máximo 2 chamadas do IAM ao mesmo tempo (é global e
+  dividido com a automação do cliente), modo adaptativo de novas tentativas e teto de 1.000 itens por tipo. Na ordem
+  de uma centena de chamadas por conta por dia (20 usuários, 15 buckets e 2 regiões dão cerca de 120).
+- **Coleta parcial:** cada parte (root, IAM, S3 e, por região, EC2 e security groups) entra inteira ou fica de fora. A
+  recusa da AWS (permissão, SCP, região desligada) e outro erro que não passa sozinho deixam a parte de fora, com o
+  nome do erro em `InventorySnapshot.errors` (`ec2:us-east-1:UnauthorizedOperation`, nunca a mensagem), e o retrato é
+  gravado. A mesma regra vale para cada leitura de um bucket (a política, a ACL e o bloqueio): a recusa deixa a
+  configuração dele "não lida" e entra em `errors` (`s3:AccessDenied`); o bucket que sumiu entre a listagem e a
+  leitura fica de fora. Uma falha passageira (limite, 5xx, rede), a sessão perdida no meio ou nenhuma parte lida param
+  a coleta sem gravar nada, inclusive numa leitura de bucket: o retrato anterior continua na tela, e a tarefa recua
+  (30 min, dobrando, até 6 h). Nenhuma parte lida (`inventory_refused`) também descarta a sessão guardada da conta.
+- **Retrato** (`snapshot-mapper.ts`): os itens no formato do contrato (`assetSchemas`), com o risco das regras v1, cada
+  um conferido pelo zod antes de gravar. Um item fora do formato fica de fora, é contado e marca a parte dele
+  (`iam:invalid_items`). `truncated` diz que uma parte passou do teto. A gravação é pelo escopo do cliente da conta, só
+  se a conta ainda é a mesma (ativa e AWS), e a chave única com o início da coleta (`collectedAt`) a torna idempotente.
+- **Painel:** a visão geral de Ativos traz `errors` e `truncated` de cada conta, e a faixa "Coleta parcial" diz o que
+  ficou de fora (o resto continua nas abas). Nada da conta vai para o log do worker: o relatório da tarefa só tem
+  contagens e códigos.
+
 ## SOC da própria Verax (fontes da GCP)
 
 A base do nó da Verax na GCP está em `infra/gcp/envs/verax`, pelo módulo `infra/gcp/modules/node`, com o passo a
@@ -479,7 +556,8 @@ O pacote do nó está em `infra/node/`, com o roteiro em `docs/runbooks/no-verax
 aberta: Postgres com TLS, papéis e migrations, API, worker e o túnel do Cloudflare. As imagens vêm do registro do
 projeto, fixadas pelo digest. O nó não depende de e-mail: toda conta nasce com uma senha temporária, que a pessoa
 troca no primeiro login antes de cadastrar o MFA (decisão de 03/11/2026). Se o e-mail for ligado (SMTP com TLS), ele
-serve só para a redefinição de senha pelo link.
+serve para a redefinição de senha pelo link e para os avisos de incidente e de volume do plano (seção "Avisos por
+e-mail").
 
 A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
@@ -656,6 +734,64 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
   regras de leitura do sync da AWS (nível 5 ou mais, sobreposição de 10 min, cursor, até 100 páginas). Uma instância
   barulhenta não atrasa os achados das contas, e o caminho da AWS não muda.
 
+## Avisos por e-mail (`apps/api/src/notifications/`)
+
+_(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado)_
+
+O nó avisa por e-mail, sem depender de quem está com o painel aberto. O aviso passa por uma fila de saída (_outbox_) no
+Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dentro da transação que grava o achado.
+
+- **Quando nasce um aviso**, sempre com uma chave de deduplicação única por cliente (o mesmo fato avisa uma vez só,
+  por mais que seja relido):
+
+  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe      |
+  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ---------------- |
+  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista |
+  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista |
+  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista |
+  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin       |
+  | `aws_ingestion_stalled` | a coleta da AWS para (tipo e texto prontos; quem emite é o medidor do PR-V6)  | a definir no PR-V6           | só o admin       |
+
+  Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
+  GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
+  (`IncidentGrouping.place`) devolve a severidade do incidente antes e depois do achado; a junção que não muda a
+  severidade não avisa. O achado com exceção (esperado) nunca avisa.
+
+- **Volume do plano:** a cada execução, a tarefa soma o uso do mês de cada cliente (`IngestUsage`, o medidor do PR-03,
+  no mês do calendário de Brasília) e compara com o limite do plano do nó (`PLAN` e `PLAN_MONTHLY_GIB`; o GiB é 2^30
+  bytes). Cada faixa avisa uma vez por mês. Num salto direto para 100%, o aviso de 80% nasce `skipped` (`superseded`) e
+  sai um e-mail só. O aviso só informa: acima de 100%, a coleta, os achados e os incidentes continuam. O plano
+  `interno` (nó da Verax) não tem limite, e nada é calculado.
+- **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
+  - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
+    senha pendente, do papel que o tipo pede, com o cliente ativo. `leitura` não recebe (decisão D8); a equipe da Verax
+    não é do cliente;
+  - um e-mail por pessoa, pelo mesmo transporte da API (`mailTransport`, SMTP com TLS no nó). O id de quem já recebeu
+    fica no aviso, e a nova tentativa não repete o e-mail;
+  - falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
+    do erro fica gravado (a resposta do servidor pode citar o endereço);
+  - a tentativa que não chega a todos também conta, com o mesmo recuo, e quem já recebeu fica guardado: o prazo de
+    envio de um aviso numa execução (1 min) esgotado (`delivery_timeout`, e o lote segue para o aviso seguinte) ou a
+    execução interrompida no meio (orçamento de 5 min da tarefa ou parada do worker: a tentativa é gravada antes de a
+    interrupção subir). Um aviso preso volta para o fim da fila e chega ao `failed` na quinta, sem segurar os outros;
+  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped`. Ligar o e-mail depois
+    não dispara os avisos antigos;
+  - uma falha no cálculo do volume não segura os avisos de incidente.
+- **O que o e-mail diz:** assunto fixo por tipo e severidade (sem CR nem LF), um texto fixo e o link do painel
+  (`${WEB_ORIGIN}/incidentes/<id>`, `/achados?achado=<id>`, `/cadastros/contas` ou `/cadastros/plano`). Nenhum IP, usuário,
+  chave, recurso, conta, título de regra ou região: o e-mail pode ser encaminhado, e os detalhes ficam atrás do login
+  com MFA. O nome de quem recebe vai escapado no HTML.
+- **Nada de endereço no log nem na fila:** a tabela guarda só o id de quem recebeu; o log do worker leva só as
+  contagens da execução.
+- **Isolamento e expurgo:** `Notification` entra no escopo do cliente (`TENANT_SCOPED_MODELS`). A chave estrangeira do
+  achado inclui o cliente, e um gatilho confere o cliente do incidente. Apagar o incidente ou o achado apaga o aviso
+  junto, e o expurgo diário (seção "Expurgo do histórico") apaga os avisos resolvidos sem mudança há 90 dias.
+- **Configuração:** o worker recebe o mesmo bloco de e-mail da API (`MAIL_TRANSPORT`, `MAIL_FROM`, `SMTP_*`) e a
+  origem do painel (`WEB_ORIGIN`), que o `start.sh` escreve no `worker.env` só com `MAIL_TRANSPORT=smtp` no
+  `node.conf`. Sem o e-mail, o `worker.env` não muda, e o worker sobe com `none`. Nos nós de clientes, o SMTP é o da
+  Verax (decisão D-16, sem SES).
+
 ## Plano do nó: limites e uso
 
 Cada nó tem um plano (fase 2, PR-03 e PR-18). Quem vale é o ambiente: `PLAN` e os ajustes `PLAN_*` do `node.conf`,
@@ -683,11 +819,37 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
   sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
 - **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte.
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
-  mostra uma faixa a partir de 80%; o aviso por e-mail de 80% e 100% é do PR-16.
-- **Histórico:** `historyDays` é o prazo do expurgo (PR-19).
+  mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
+- **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
 - **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido (rótulo e os quatro limites) e o uso
   do cliente da sessão (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
   → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
+
+### Histórico nas telas (PR-20)
+
+As telas não prometem mais do que o banco guarda. Os filtros de período de achados, auditoria e relatórios têm
+`24h`, `7d`, `30d`, `90d` e `12m` (365 dias; os relatórios começam em `7d`), com os dias de cada um em
+`HISTORY_PERIOD_DAYS` (`packages/shared/src/history.ts`).
+
+- **Recusa na API:** o período mais longo que o histórico do plano é recusado com 400, o código
+  `PERIOD_BEYOND_PLAN_HISTORY` e a mensagem "Seu plano guarda 90 dias de histórico. Escolha um período menor ou fale
+  com a Verax para ampliar." (`assertPeriodWithinHistory`, `apps/api/src/plan/plan-history.ts`, chamada pelos
+  controllers de `GET /v1/findings`, `GET /v1/audit` e `GET /v1/reports/:kind`). No Essencial, `12m` é recusado; no
+  Profissional e no Interno (sem limite), aceito; um ajuste do Enterprise abaixo de 90 dias recusa também `90d`. A
+  auditoria segue a mesma regra, embora a trilha fique ao menos 13 meses: o filtro é o do plano em todas as telas.
+- **`GET /v1/plan/history`** (permissão nova `plan_history:read`, todos os papéis): só `{ historyDays }`, o mesmo
+  para toda sessão, sem dado de cliente (a Verax lê sem escolher cliente). O `GET /v1/plan` continua só dos
+  administradores; o histórico saiu à parte porque os filtros de achados e relatórios são de todos os papéis.
+- **Painel** (`apps/web/src/features/plan/plan-history.ts`): cada seletor de período mostra só os períodos que cabem
+  no histórico. Enquanto o plano não chega (ou se a leitura falha), só os que todo plano tem (até 30 dias, o piso dos
+  ajustes); um período da URL que não cabe é ignorado e nunca vai para a API, e um período da URL além do piso espera
+  o plano chegar, em vez de pedir outro antes.
+- **Postura:** a evolução da nota segue o histórico do plano, até 365 pontos (`postureHistoryDays`): 90 no Essencial,
+  365 no Profissional; sem limite ou acima de 365 dias, os últimos 365.
+- **Textos:** o detalhe do achado diz "Evento bruto do log disponível por 30 dias" (`RAW_EVENT_RETENTION_DAYS`, a
+  retenção do índice do Wazuh) e, com o plano conhecido, quantos dias os dados do achado ficam; "Plano e uso" diz o que
+  o histórico guarda, que a trilha fica ao menos 13 meses e o evento bruto 30 dias. Os prazos para a Privacidade e o
+  DPA do site estão em [`retencao-de-dados.md`](retencao-de-dados.md).
 
 ## Expurgo do histórico
 
@@ -739,8 +901,10 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 - **Carência quando o plano diminui:** o job guarda o prazo aplicado (`RetentionState`). Quando o plano pede um prazo
   menor (do Profissional para o Essencial, por exemplo), o anterior continua valendo por 30 dias, contados da primeira
   execução que viu a redução, para o cliente exportar; depois, vale o novo. Aumentar vale na hora e cancela a redução.
-- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer.
-  O texto da Privacidade e do DPA sobre isso fica para o PR-20.
+- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer:
+  eliminação em até D + 97 dias (90 do ciclo de vida do bucket e 7 de exclusão reversível), com D o dia em que saiu do
+  banco. A conta, a frase para a Privacidade e o DPA e o que o ensaio geral confere estão em
+  [`retencao-de-dados.md`](retencao-de-dados.md).
 
 ## Custo por nó
 
@@ -1294,8 +1458,10 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
    Wazuh pelo token do Google, com recarga sem parar o painel; checagem da conexão e das fontes; medidor da ingestão;
    regras críticas da AWS com títulos em português. O template espera o teste prático na conta AWS de teste.
 4. **Cloudflare:** token no cofre, auditoria e eventos de segurança.
-5. **Ativos e Postura da AWS** pelo papel de leitura do cliente.
-6. **Compromissos do plano:** avisos por e-mail, limites do plano, expurgo do histórico e 365 dias nas telas.
+5. **Ativos e Postura da AWS** pelo papel de leitura do cliente. **Ativos feito no código** (PR-14', inventário
+   nativo uma vez por dia); a postura nativa é o PR-15'.
+6. **Compromissos do plano:** avisos por e-mail (feito no código no PR-16, com os avisos de 80% e 100% do volume),
+   limites do plano, expurgo do histórico e 365 dias nas telas.
 7. **Versão do nó reproduzível e ensaio geral.** É o portão da fase 3: um nó nasce do zero só com `terraform apply` e
    a versão publicada, sem SSH e sem operador.
 

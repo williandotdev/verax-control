@@ -242,6 +242,60 @@ export function nodePlan(env: Omit<PlanEnv, 'NODE_ENV'> & { PLAN: PlanId }): Res
   return resolvePlan(env.PLAN, planOverridesOf(env));
 }
 
+/** Transportes de e-mail: SES ou SMTP autenticado em produção, `none` no nó sem e-mail, caixa local em desenvolvimento. */
+const MAIL_TRANSPORTS = ['ses', 'smtp', 'none', 'dev-mailbox'] as const;
+
+/** A origem do painel (`WEB_ORIGIN`): o endereço dos links da API e dos avisos por e-mail do worker. */
+const webOriginFromEnv = z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' });
+
+/** O e-mail de envio (`MAIL_FROM`). */
+const mailFromEnv = z.email({ error: 'deve ser um e-mail válido' });
+
+/**
+ * O servidor de envio, parte comum à API e ao worker (o mesmo transporte, `mail/mail.module.ts`): a região do SES e o
+ * SMTP (só com MAIL_TRANSPORT=smtp), sempre com TLS. A senha é de aplicativo e vem do cofre de segredos do nó.
+ */
+const mailServerEnvShape = {
+  AWS_REGION: z
+    .string()
+    .regex(/^[a-z]{2}-[a-z]+-[0-9]$/, { error: 'região AWS inválida' })
+    .default('sa-east-1'),
+  SMTP_HOST: z
+    .string()
+    .regex(/^[a-z0-9.-]+$/i, { error: 'nome de servidor inválido' })
+    .optional(),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASSWORD: z.string().min(1).optional(),
+  // Pasta da caixa local. Vazio: `.dev-mailbox` na raiz do monorepo.
+  DEV_MAILBOX_DIR: z.string().optional(),
+};
+
+interface MailEnv {
+  NODE_ENV: 'development' | 'test' | 'production';
+  MAIL_TRANSPORT: (typeof MAIL_TRANSPORTS)[number];
+  SMTP_HOST?: string | undefined;
+  SMTP_USER?: string | undefined;
+  SMTP_PASSWORD?: string | undefined;
+}
+
+/** Regras do e-mail comuns à API e ao worker: a caixa local nunca em produção; o SMTP com servidor, usuário e senha. */
+function checkMailEnv(env: MailEnv, ctx: z.RefinementCtx): void {
+  if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT === 'dev-mailbox') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MAIL_TRANSPORT'],
+      message: 'deve ser ses, smtp ou none em produção',
+    });
+  }
+  if (env.MAIL_TRANSPORT === 'smtp') {
+    for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD'] as const) {
+      if (!env[key])
+        ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com MAIL_TRANSPORT=smtp' });
+    }
+  }
+}
+
 /** TLS com verificação de certificado e de hostname até o banco (regra 5: nada de TLS sem validação). */
 export function requiresVerifiedTls(databaseUrl: string): boolean {
   try {
@@ -265,7 +319,7 @@ const apiEnvSchema = z
     // Em produção, atrás do ALB, precisa ser pelo menos 1 (com 0, todo mundo teria o IP do ALB e dividiria o
     // mesmo limite de tentativas). Mais que o número real de proxies deixaria o cliente forjar o próprio IP.
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
-    WEB_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
+    WEB_ORIGIN: webOriginFromEnv,
     API_ORIGIN: z.url({ protocol: /^https?$/, error: 'deve ser uma URL http(s) válida' }),
     // Assina os cookies de sessão e cifra o segredo do TOTP. Gerado por `pnpm setup:env` (256 bits).
     BETTER_AUTH_SECRET: z
@@ -286,22 +340,9 @@ const apiEnvSchema = z
     // E-mail (T2.6): só a redefinição de senha pelo link usa (contas novas nascem com senha temporária). SES ou SMTP
     // autenticado em produção, ou `none` no nó sem e-mail (quem esquece a senha pede uma temporária ao administrador);
     // caixa local em desenvolvimento (links nunca vão para o log).
-    MAIL_TRANSPORT: z.enum(['ses', 'smtp', 'none', 'dev-mailbox']).default('dev-mailbox'),
-    MAIL_FROM: z.email({ error: 'deve ser um e-mail válido' }),
-    AWS_REGION: z
-      .string()
-      .regex(/^[a-z]{2}-[a-z]+-[0-9]$/, { error: 'região AWS inválida' })
-      .default('sa-east-1'),
-    // SMTP (só com MAIL_TRANSPORT=smtp): sempre com TLS. A senha é de aplicativo e vem do cofre de segredos do nó.
-    SMTP_HOST: z
-      .string()
-      .regex(/^[a-z0-9.-]+$/i, { error: 'nome de servidor inválido' })
-      .optional(),
-    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
-    SMTP_USER: z.string().min(1).optional(),
-    SMTP_PASSWORD: z.string().min(1).optional(),
-    // Pasta da caixa local. Vazio: `.dev-mailbox` na raiz do monorepo.
-    DEV_MAILBOX_DIR: z.string().optional(),
+    MAIL_TRANSPORT: z.enum(MAIL_TRANSPORTS).default('dev-mailbox'),
+    MAIL_FROM: mailFromEnv,
+    ...mailServerEnvShape,
     DATABASE_URL: z
       .string({ error: 'obrigatória' })
       .regex(/^postgres(ql)?:\/\/.+/, { error: 'deve ser uma URL postgresql://' }),
@@ -374,19 +415,7 @@ const apiEnvSchema = z
         message: 'deve ficar ligado em produção',
       });
     }
-    if (env.NODE_ENV === 'production' && env.MAIL_TRANSPORT === 'dev-mailbox') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['MAIL_TRANSPORT'],
-        message: 'deve ser ses, smtp ou none em produção',
-      });
-    }
-    if (env.MAIL_TRANSPORT === 'smtp') {
-      for (const key of ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD'] as const) {
-        if (!env[key])
-          ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com MAIL_TRANSPORT=smtp' });
-      }
-    }
+    checkMailEnv(env, ctx);
     if (env.NODE_ENV === 'production' && env.TRUST_PROXY_HOPS === 0) {
       ctx.addIssue({
         code: 'custom',
@@ -456,9 +485,9 @@ export const envSchema = z.preprocess(refusePrivateKeyVariables, apiEnvSchema);
 export type Env = z.infer<typeof envSchema>;
 
 /**
- * Variáveis do worker do sync de alertas (T5.3): só o banco, o log, o intervalo, o plano e o arquivo das chaves
- * privadas do cofre de credenciais. Nada de autenticação, e-mail nem origens, porque o worker não atende requisição. O
- * indexer tem configuração própria (`loadIndexerConfig`).
+ * Variáveis do worker do sync de alertas (T5.3): o banco, o log, o intervalo, o plano, o arquivo das chaves privadas do
+ * cofre de credenciais e o e-mail dos avisos (fase 2, PR-16). Nada de autenticação, porque o worker não atende
+ * requisição. O indexer tem configuração própria (`loadIndexerConfig`).
  */
 const workerEnvObjectSchema = z
   .object({
@@ -500,6 +529,13 @@ const workerEnvObjectSchema = z
     // Agentes do Wazuh (WAZUH_AGENTS=true no node.conf): o arquivo da lista que o host exporta do manager e o cliente
     // do nó, a quem os agentes pertencem. Sempre juntos.
     ...workerAgentsEnvShape,
+    // Avisos por e-mail (fase 2, PR-16): o mesmo transporte da API, mais a origem do painel para os links. Sem
+    // MAIL_TRANSPORT (o nó sem e-mail, que o start.sh deixa sem nenhuma dessas linhas), `none`: os avisos ficam na fila
+    // como `skipped`. Com o e-mail ligado, o remetente e a origem do painel são obrigatórios.
+    MAIL_TRANSPORT: z.enum(MAIL_TRANSPORTS).default('none'),
+    MAIL_FROM: mailFromEnv.optional(),
+    ...mailServerEnvShape,
+    WEB_ORIGIN: webOriginFromEnv.optional(),
     // Wazuh no nó (perfil standard, PR-V4'): a pasta dos sinais sem segredo entre o worker e o host (a geração das
     // contas AWS, a aplicação no manager e o token do Google). Com ela, entra a tarefa `wazuh-config`.
     WAZUH_SIGNAL_DIR: z
@@ -520,6 +556,25 @@ const workerEnvObjectSchema = z
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
+    checkMailEnv(env, ctx);
+    if (env.MAIL_TRANSPORT !== 'none') {
+      for (const key of ['MAIL_FROM', 'WEB_ORIGIN'] as const) {
+        if (env[key] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: 'obrigatória com o e-mail ligado (MAIL_TRANSPORT)',
+          });
+        }
+      }
+    }
+    if (
+      env.NODE_ENV === 'production' &&
+      env.WEB_ORIGIN !== undefined &&
+      !env.WEB_ORIGIN.startsWith('https://')
+    ) {
+      ctx.addIssue({ code: 'custom', path: ['WEB_ORIGIN'], message: 'deve usar https em produção' });
+    }
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
     if (env.NODE_STATUS && env.NODE_VERSION === undefined) {

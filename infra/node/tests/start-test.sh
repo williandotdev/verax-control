@@ -13,7 +13,8 @@
 #    como antes do Turnstile (e o cofre nem é lido); com a chave do site, a chave secreta vem do cofre, e as duas só
 #    entram juntas. Os valores do papel de leitura sem chave da AWS (NODE_SA_UNIQUE_ID e AWS_WEB_IDENTITY_AUDIENCE)
 #    entram depois do IP de saída e antes do Turnstile; sem eles, o api.env é o de referência, byte a byte. O worker.env
-#    recebe o IP e os dois valores depois do indexer (PR-V5'); sem as linhas, também sai byte a byte como antes.
+#    recebe o IP e os dois valores depois do indexer (PR-V5'); sem as linhas, também sai byte a byte como antes. Sem o
+#    e-mail, o worker.env é o de referência; com o SMTP, ganha o bloco do e-mail da API e a origem do painel (PR-16).
 # 3. Os agentes do Wazuh (WAZUH_AGENTS): desligados, o standard sai byte a byte como sem a linha; ligados, a API recebe
 #    o endereço, o cliente, as faixas, o limite, a CA e a senha de registro (só ela), o worker o caminho da lista e o
 #    cliente; no lean, sem o IP, o cliente, a senha ou o certificado, ou com um valor fora do formato, o render para
@@ -468,6 +469,32 @@ grep -q 'turnstile' "$root/vault/log" && fail "leu o cofre do Turnstile sem a ch
   fail "chamadas ao gcloud diferentes das de antes: $(cat "$root/vault/log")"
 [ "$(cat "$root/run/verax/cloudflared.env")" = "TUNNEL_TOKEN='token-do-tunel'" ] || fail "o cloudflared.env mudou"
 
+# --- Avisos por e-mail (PR-16): o worker.env -----------------------------------------------------------------------
+# Sem o e-mail (MAIL_TRANSPORT=none, o node.conf de exemplo do cenário acima), o worker.env é o de referência, byte a
+# byte (conferido acima). Com o SMTP, o worker recebe o mesmo bloco da API e a origem do painel (o link dos avisos),
+# logo antes do plano; a senha da caixa vai só para a API e o worker, e o api.env só troca o bloco do e-mail.
+new_root "e-mail ligado (SMTP)" smtp
+node_conf MAIL_TRANSPORT=smtp SMTP_HOST=smtp.exemplo.com SMTP_PORT=465 SMTP_USER=nao-responda@exemplo.com.br
+printf 'senha-ficticia-da-caixa\n' >"$root/vault/verax-node-smtp-password"
+render_env || fail "o render falhou: $(cat "$root/out")"
+mail_lines="MAIL_TRANSPORT='smtp'
+MAIL_FROM='nao-responda@exemplo.com.br'
+SMTP_HOST='smtp.exemplo.com'
+SMTP_PORT='465'
+SMTP_USER='nao-responda@exemplo.com.br'
+SMTP_PASSWORD='senha-ficticia-da-caixa'"
+api_with_mail=${baseline/MAIL_TRANSPORT=\'none\'$'\n'MAIL_FROM=\'nao-responda@exemplo.com.br\'/$mail_lines}
+[ "$(api_env)" = "$api_with_mail" ] || fail "o api.env com o SMTP saiu diferente:
+$(diff <(echo "$api_with_mail") <(api_env) || true)"
+worker_with_mail=${worker_baseline/PLAN=/$mail_lines$'\n'WEB_ORIGIN=\'https://cliente.control.exemplo.com.br\'$'\n'PLAN=}
+[ "$(worker_env)" = "$worker_with_mail" ] || fail "o worker.env com o SMTP saiu diferente:
+$(diff <(echo "$worker_with_mail") <(worker_env) || true)"
+[ "$(cd "$root/run/verax" && grep -l -F 'senha-ficticia-da-caixa' ./*.env | LC_ALL=C sort | tr '\n' ' ')" = \
+  "./api.env ./worker.env " ] || fail "a senha da caixa foi para outro arquivo de ambiente"
+grep -q 'senha-ficticia' "$root/out" && fail "a senha da caixa saiu na tela"
+grep -q -- '--secret verax-node-smtp-password' "$root/vault/log" || fail "não leu o cofre da senha da caixa"
+echo "ok     avisos por e-mail: o worker.env sem o e-mail é o de antes; com o SMTP, o bloco da API e a origem do painel"
+
 # --- Chave do site no node.conf e cofre ainda sem valor ------------------------------------------------------------
 new_root "chave do site sem a secreta no cofre" cofre-vazio
 node_conf TURNSTILE_SITE_KEY=1x00000000000000000000AA
@@ -530,6 +557,21 @@ $(diff <(echo "$only_aws_reader") <(api_env) || true)"
 worker_only_aws_reader=${worker_baseline/DATABASE_URL=/$aws_reader_lines$'\n'DATABASE_URL=}
 [ "$(worker_env)" = "$worker_only_aws_reader" ] || fail "o worker.env só com o papel da AWS saiu diferente:
 $(diff <(echo "$worker_only_aws_reader") <(worker_env) || true)"
+
+# E-mail (PR-16) e papel de leitura da AWS (PR-V5') juntos: no worker.env, o bloco do e-mail e a origem do painel antes
+# do plano, o IP e os dois valores do papel antes do banco; no api.env, o bloco do e-mail no lugar de sempre.
+new_root "e-mail e papel de leitura da AWS" smtp-papel-aws
+node_conf MAIL_TRANSPORT=smtp SMTP_HOST=smtp.exemplo.com SMTP_PORT=465 SMTP_USER=nao-responda@exemplo.com.br \
+  NODE_EGRESS_IPS=203.0.113.10/32 NODE_SA_UNIQUE_ID=123456789012345678901 \
+  AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader
+printf 'senha-ficticia-da-caixa\n' >"$root/vault/verax-node-smtp-password"
+render_env || fail "o render falhou: $(cat "$root/out")"
+api_mail_aws=${api_with_mail/DATABASE_URL=/$egress_line$'\n'$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(api_env)" = "$api_mail_aws" ] || fail "o api.env com o e-mail e o papel da AWS saiu diferente:
+$(diff <(echo "$api_mail_aws") <(api_env) || true)"
+worker_mail_aws=${worker_with_mail/DATABASE_URL=/$egress_line$'\n'$aws_reader_lines$'\n'DATABASE_URL=}
+[ "$(worker_env)" = "$worker_mail_aws" ] || fail "o worker.env com o e-mail e o papel da AWS saiu diferente:
+$(diff <(echo "$worker_mail_aws") <(worker_env) || true)"
 
 # --- Sem permissão no cofre (ou outro erro do gcloud): a partida para -----------------------------------------------
 new_root "cofre sem permissão" negado

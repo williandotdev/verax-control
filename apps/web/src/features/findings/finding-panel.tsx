@@ -4,6 +4,7 @@ import {
   type FindingStatus,
   FINDING_STATUSES,
   type Permission,
+  RAW_EVENT_RETENTION_DAYS,
 } from '@verax/shared';
 import { type FormEvent, useId, useState } from 'react';
 import { Link } from 'react-router';
@@ -12,6 +13,7 @@ import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
+import { usePlanHistory } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, formatTimestamp } from '@/lib/format';
@@ -132,17 +134,40 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
 
       <details className="rounded-md border">
         <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Evento bruto</summary>
+        <RawEventRetention />
         {finding.rawEvent ? (
-          <pre className="max-h-96 overflow-auto border-t bg-foreground/[0.03] p-3 text-xs">
+          // Rola por dentro: o foco pelo teclado deixa ler o evento inteiro sem mouse.
+          <pre
+            role="region"
+            aria-label="Evento bruto do log"
+            tabIndex={0}
+            className="max-h-96 overflow-auto border-t bg-foreground/[0.03] p-3 text-xs"
+          >
             {JSON.stringify(finding.rawEvent, null, 2)}
           </pre>
         ) : (
           <p className="border-t p-3 text-sm text-muted-foreground">
-            O evento bruto já saiu da retenção de 90 dias do indexer.
+            O evento bruto deste achado não está disponível.
           </p>
         )}
       </details>
     </>
+  );
+}
+
+/**
+ * Quanto tempo o evento bruto fica (a retenção do índice do Wazuh) e, com o plano conhecido, quanto tempo ficam os
+ * dados do achado, que seguem o histórico do plano.
+ */
+function RawEventRetention() {
+  const history = usePlanHistory();
+  const days = history.data?.historyDays;
+  return (
+    <p className="border-t px-3 py-2 text-xs text-muted-foreground">
+      Evento bruto do log disponível por {RAW_EVENT_RETENTION_DAYS} dias.
+      {typeof days === 'number' &&
+        ` Os dados do achado acima ficam pelo histórico do plano, de ${days} dias.`}
+    </p>
   );
 }
 

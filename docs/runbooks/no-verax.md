@@ -55,6 +55,14 @@ O nó não precisa de e-mail (`MAIL_TRANSPORT=none` no `node.conf`): toda conta 
 entregue a quem a criou. Para ligar também a redefinição de senha pelo link, use `MAIL_TRANSPORT=smtp` com os dados
 da caixa de envio e grave a senha dela no cofre `verax-node-smtp-password`.
 
+Com `MAIL_TRANSPORT=smtp`, o worker também envia os avisos por e-mail (PR-16): incidente alto ou crítico aberto,
+incidente que sobe para alto ou crítico e achado crítico fora de incidente, para os administradores e analistas do
+cliente (ativos, com MFA e sem troca de senha pendente); e 80% e 100% do volume mensal do plano, só para os
+administradores (o plano `interno` não tem limite e não avisa). O `start.sh` escreve no `worker.env` o mesmo bloco de
+e-mail da API e o `WEB_ORIGIN` (o link do aviso); sem o SMTP, o `worker.env` fica como antes, e os avisos ficam na
+fila como `skipped` (ligar o e-mail depois não dispara os antigos). O e-mail não leva IP, usuário, chave, recurso nem
+conta: só o tipo, a severidade e o link do painel.
+
 O plano do nó também fica no `node.conf`: o da Verax é `PLAN=interno`, sem limite. A instalação recusa um `node.conf`
 sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do plano precisa ganhar a linha
 `PLAN=interno` antes do próximo deploy. O bootstrap grava o rótulo do plano no cadastro do cliente do nó.
@@ -296,6 +304,15 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   - "535 Authentication Failed" é senha errada ou revogada: grave outra no cofre e reinicie com
     `sudo systemctl restart verax-node`.
   - O remetente (`MAIL_FROM`) precisa ser a caixa autenticada ou um alias dela.
+- **O aviso de incidente não chega.**
+  - No log do worker (`logs --tail 100 worker`), a tarefa `notifications` roda a cada minuto e mostra só as contagens
+    (`sent`, `retrying`, `failed`, `skipped`), nunca o endereço. O `mailTransport` do "worker iniciado" precisa ser
+    `smtp`.
+  - A situação de cada aviso fica na tabela `Notification`, com o tipo do último erro em `lastError` (`skipped` com
+    `mail_disabled` é o nó sem e-mail; com `no_recipients`, ninguém do cliente com o papel, ativo e com MFA). Na VM:
+    `sudo docker compose ... exec -T postgres psql -U verax -d verax -c 'SELECT kind, status, attempts, "lastError", "createdAt" FROM "Notification" ORDER BY "createdAt" DESC LIMIT 20'`.
+  - Uma falha do servidor volta depois de 1, 5, 15 e 60 min; na quinta, o aviso fica `failed` e não sai mais. Corrija o
+    SMTP (senha, remetente) como acima: os próximos avisos saem normalmente.
 - **A API não sobe por causa de um segredo.** `systemctl status verax-node` diz qual cofre está vazio. Grave o valor
   e reinicie.
 - **Sem o token do túnel.** Enquanto o cofre não tiver valor, o nó sobe sem o `cloudflared`: banco, API e coleta

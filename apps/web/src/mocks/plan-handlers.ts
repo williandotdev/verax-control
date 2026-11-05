@@ -1,9 +1,14 @@
 import {
   GIB_BYTES,
+  type HistoryPeriod,
+  PERIOD_BEYOND_HISTORY_CODE,
+  periodBeyondHistoryMessage,
+  periodFitsHistory,
   PLAN_LIMIT_REACHED_CODE,
   PLAN_SEAT_LIMIT,
   type PlanSeat,
   type PlanUsage,
+  planHistorySchema,
   planLimitMessage,
   planUsageSchema,
   type ResolvedPlan,
@@ -25,6 +30,23 @@ const problem = (status: number, message: string, code?: string) =>
  * no nó de verdade, o painel só mostra: os limites vêm da configuração, nunca da tela.
  */
 export const DEMO_PLAN: ResolvedPlan = resolvePlan('profissional');
+
+/** O plano do nó da demonstração, com o ajuste de histórico do estado, se houver (como o `PLAN_HISTORY_DAYS`). */
+export function demoNodePlan(state: Pick<MockState, 'historyDays'>): ResolvedPlan {
+  return state.historyDays === undefined
+    ? DEMO_PLAN
+    : { ...DEMO_PLAN, limits: { ...DEMO_PLAN.limits, historyDays: state.historyDays } };
+}
+
+/** A recusa da API (400 `PERIOD_BEYOND_PLAN_HISTORY`) do período além do histórico do plano; senão, nada. */
+export function demoPeriodRefusal(
+  state: Pick<MockState, 'historyDays'>,
+  period: HistoryPeriod | undefined,
+): Response | null {
+  const days = demoNodePlan(state).limits.historyDays;
+  if (period === undefined || days === null || periodFitsHistory(period, days)) return null;
+  return problem(400, periodBeyondHistoryMessage(days), PERIOD_BEYOND_HISTORY_CODE);
+}
 
 const [ALFA, BETA] = DEMO_TENANTS;
 
@@ -57,10 +79,15 @@ export function demoPlanRefusal(store: AdminStore, tenantId: string, seat: PlanS
 }
 
 /** O `GET /v1/plan` da demonstração, com as contas e os usuários do estado do mock. */
-export function demoPlanUsage(store: AdminStore, tenantId: string, now: Date = new Date()): PlanUsage {
-  const included = (DEMO_PLAN.limits.monthlyGib ?? 0) * GIB_BYTES;
+export function demoPlanUsage(
+  store: AdminStore,
+  tenantId: string,
+  now: Date = new Date(),
+  plan: ResolvedPlan = DEMO_PLAN,
+): PlanUsage {
+  const included = (plan.limits.monthlyGib ?? 0) * GIB_BYTES;
   return planUsageSchema.parse({
-    plan: DEMO_PLAN,
+    plan,
     usage: {
       cloudAccounts: demoSeatsUsed(store, tenantId, 'cloudAccounts'),
       users: demoSeatsUsed(store, tenantId, 'users'),
@@ -79,7 +106,15 @@ export function createPlanHandlers(state: MockState, store: AdminStore) {
       if (!state.me.scopeTenantId) {
         return problem(409, 'Selecione um cliente para continuar', 'TENANT_REQUIRED');
       }
-      return HttpResponse.json(demoPlanUsage(store, state.me.scopeTenantId));
+      return HttpResponse.json(demoPlanUsage(store, state.me.scopeTenantId, new Date(), demoNodePlan(state)));
+    }),
+    // Só o histórico (PR-20): todos os papéis, sem cliente escolhido (é do nó).
+    http.get(url('/v1/plan/history'), () => {
+      if (!state.me) return problem(401, 'Não autenticado');
+      if (!state.me.permissions.includes('plan_history:read')) return problem(403, 'Sem permissão');
+      return HttpResponse.json(
+        planHistorySchema.parse({ historyDays: demoNodePlan(state).limits.historyDays }),
+      );
     }),
   ];
 }

@@ -453,6 +453,10 @@ render() {
     mail=(MAIL_TRANSPORT=smtp "MAIL_FROM=$MAIL_FROM" "SMTP_HOST=$SMTP_HOST" "SMTP_PORT=$SMTP_PORT"
       "SMTP_USER=$SMTP_USER" "SMTP_PASSWORD=$smtp_password")
   fi
+  # Avisos por e-mail (PR-16): com o e-mail ligado, o worker recebe o mesmo bloco e a origem do painel (o link dos
+  # avisos). Sem ele, nada entra no worker.env, que sai como antes, e o worker deixa os avisos como `skipped`.
+  local mail_worker=()
+  if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then mail_worker=("${mail[@]}" "WEB_ORIGIN=$WEB_ORIGIN"); fi
   # Plano do nó, o mesmo na API e no worker. Os ajustes só entram quando definidos no node.conf; a API e o worker
   # conferem a combinação na partida (no enterprise, os quatro são obrigatórios).
   local plan=("PLAN=${PLAN:?defina PLAN em /etc/verax/node.conf}") key
@@ -564,6 +568,7 @@ render() {
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
+    "${mail_worker[@]}" \
     "${plan[@]}" \
     "${indexer[@]}" \
     "${egress[@]}" \
