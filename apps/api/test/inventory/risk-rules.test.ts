@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BucketInfo, IamUser, SecurityGroupInfo } from '../../src/inventory/collectors.js';
 import {
+  accessKeyRisk,
   bucketRisk,
   iamUserRisk,
   instanceRisk,
@@ -45,6 +46,40 @@ function bucket(overrides: Partial<BucketInfo> = {}): BucketInfo {
 }
 
 describe('risco dos ativos (T5.9)', () => {
+  it('chave de acesso (aba Chaves, PR-14): a mesma regra do usuário, chave por chave; inativa não tem risco', () => {
+    const key = (overrides: object) => ({
+      id: 'AKIAEXEMPLO000000001',
+      status: 'Active' as const,
+      createdAt: daysAgo(10),
+      lastUsedAt: daysAgo(1),
+      ...overrides,
+    });
+    expect(accessKeyRisk(key({}), NOW)).toEqual({ risk: 'none', reasons: [] });
+    expect(accessKeyRisk(key({ createdAt: daysAgo(200) }), NOW)).toEqual({
+      risk: 'medium',
+      reasons: ['old_access_key'],
+    });
+    expect(accessKeyRisk(key({ createdAt: daysAgo(200), lastUsedAt: daysAgo(120) }), NOW)).toEqual({
+      risk: 'medium',
+      reasons: ['old_access_key', 'unused_access_key'],
+    });
+    // Nunca usada conta da criação: a nova não é "parada".
+    expect(accessKeyRisk(key({ lastUsedAt: null }), NOW)).toEqual({ risk: 'none', reasons: [] });
+    expect(
+      accessKeyRisk(key({ status: 'Inactive', createdAt: daysAgo(500), lastUsedAt: null }), NOW),
+    ).toEqual({
+      risk: 'none',
+      reasons: [],
+    });
+    // O usuário soma os motivos das chaves dele.
+    expect(
+      iamUserRisk(
+        user({ accessKeys: [key({ createdAt: daysAgo(200) }), key({ lastUsedAt: daysAgo(100) })] }),
+        NOW,
+      ),
+    ).toEqual({ risk: 'medium', reasons: ['old_access_key', 'unused_access_key'] });
+  });
+
   it('root sem MFA ou com chave de acesso é crítico', () => {
     expect(rootRisk({ mfaEnabled: true, accessKeysPresent: false })).toEqual({ risk: 'none', reasons: [] });
     expect(rootRisk({ mfaEnabled: false, accessKeysPresent: true })).toEqual({

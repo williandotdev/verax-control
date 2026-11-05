@@ -26,10 +26,14 @@ export function fakeClient<T extends { send: unknown }>(handlers: Record<string,
   return { client: { send }, calls };
 }
 
-/** Erro como os do SDK: o nome é o código da AWS, e a mensagem traz detalhes que não podem vazar. */
-export function awsError(name: string): Error {
-  const error = new Error(
-    `${name}: User arn:aws:iam::111122223333:role/x is not authorized (detalhe-interno)`,
+/**
+ * Erro como os do SDK: o nome é o código da AWS, a resposta tem o código HTTP (`$metadata`, que separa a recusa da
+ * falha passageira) e a mensagem traz detalhes que não podem vazar.
+ */
+export function awsError(name: string, status = 400): Error {
+  const error = Object.assign(
+    new Error(`${name}: User arn:aws:iam::111122223333:role/x is not authorized (detalhe-interno)`),
+    { $metadata: { httpStatusCode: status } },
   );
   error.name = name;
   return error;

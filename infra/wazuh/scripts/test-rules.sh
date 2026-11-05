@@ -1,21 +1,36 @@
 #!/usr/bin/env bash
-# Testa as correlações da AWS por conta (config/manager/rules/verax_aws_rules.xml) no wazuh-logtest de um manager
-# avulso, sem indexer, na mesma imagem da compose. Usado no CI (iac.yml) e localmente; precisa só de Docker.
+# Testa as regras locais da AWS no wazuh-logtest de um manager avulso, sem indexer e sem rede, na mesma imagem da
+# compose. Usado no CI (iac.yml) e localmente; precisa só de Docker. Os arquivos entram no contêiner por `docker cp`.
 #
-# Um Wazuh atende todos os clientes, então eventos de contas diferentes não podem somar numa correlação:
+# Correlações por conta (config/manager/rules/verax_aws_rules.xml). Um Wazuh atende todos os clientes, então eventos
+# de contas diferentes não podem somar numa correlação:
 # 1. logins com falha (80255), objetos apagados (80252) e bloqueios do WAF (80443) divididos entre duas contas não
 #    disparam a correlação; completando o limite numa conta só, ela dispara com a conta certa;
 # 2. a correlação genérica de falhas de autenticação (40111) não pega eventos da AWS;
 # 3. guarda de versão: toda regra de frequência dos arquivos da AWS do Wazuh está tratada aqui ou é de uma fonte que
 #    a Verax não coleta. Uma versão nova com outra correlação derruba o teste até ela ser avaliada.
+#
+# Papel de leitura (verax_reader_rules.xml, que o render-manager-config.py gera do modelo com o IP de saída do nó; fase
+# 2, PR-V4'), com os eventos como o módulo aws-s3 os entrega:
+# 4. a leitura do próprio nó e a entrada dele no papel, vindas do IP do nó: nível 0 (100200 e 100201), também quando o
+#    evento desce pela cadeia de erro do Wazuh (80202, 80203, 80250); uma escrita da própria sessão não é silenciada;
+# 5. a mesma sessão ou a entrada no papel de outro IP: nível 12 com MITRE T1078.004 (100202 e 100203), também acima da
+#    regra de alteração do papel; uma chamada que um serviço da AWS faz em nome da sessão (origem sem IP) não;
+# 6. alterar o papel ou as políticas da pilha: nível 5 (100204 e 100205); outro papel ou outra política, não;
+# 7. sem o IP do nó, só as regras de alteração (nenhuma leitura do nó vira nível 12);
+# 8. guarda de versão: as mães das regras do papel são a cadeia do CloudTrail do Wazuh, nem mais nem menos.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE=$(grep -m1 -oE 'wazuh/wazuh-manager:[^[:space:]]+' docker-compose.yml)
 NAME="verax-rules-test-$$"
+RENDER="verax-rules-render-$$"
 ACCOUNT_A=111122223333
 ACCOUNT_B=444455556666
 ATTACKER_IP=203.0.113.50
+# IPs de saída do nó (RFC 5737), como o NODE_EGRESS_IPS do node.conf.
+NODE_IP=203.0.113.10
+NODE_IP_2=198.51.100.20
 
 # Correlações dos arquivos da AWS do Wazuh e o motivo de cada uma estar resolvida.
 declare -A KNOWN_FREQUENCY_RULES=(
@@ -39,7 +54,11 @@ expect() { # <descrição> <esperado> <obtido>
   fi
 }
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+work=$(mktemp -d)
+cleanup() {
+  docker rm -f "$NAME" "$RENDER" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
 trap cleanup EXIT
 
 # --- eventos como o módulo aws-s3 os entrega ao analysisd ---
@@ -80,10 +99,27 @@ fired() { # <regra> <saída do logtest>: contas em que a regra disparou, em orde
   awk -v rule="$1" '$1 == rule { print $2 }' <<<"$2" | paste -sd' ' -
 }
 
+# As regras como o gerador as escreve para o manager, com o IP de saída do nó dado (vazio: sem a variável no node.conf).
+mkdir -p "$work/render-in/verax"
+cp scripts/render-manager-config.py config/manager/ossec.conf "$work/render-in/verax/"
+cp -R config/manager/rules "$work/render-in/verax/"
+render_rules() { # <VERAX_NODE_EGRESS_IPS> <pasta de saída>
+  docker rm -f "$RENDER" >/dev/null 2>&1 || true
+  docker create --name "$RENDER" -i --network none -e "VERAX_NODE_EGRESS_IPS=$1" \
+    --entrypoint /var/ossec/framework/python/bin/python3 "$IMAGE" \
+    /verax/render-manager-config.py /verax/ossec.conf /out/config /out/aws /verax/rules >/dev/null
+  docker cp "$work/render-in/verax" "$RENDER:/verax"
+  echo '[]' | docker start -ai "$RENDER" >/dev/null
+  docker cp "$RENDER:/out/config/etc/rules" "$2"
+}
+render_rules "$NODE_IP/32,$NODE_IP_2/32" "$work/rules"
+render_rules '' "$work/rules-sem-ip"
+
 echo "== Manager avulso ($IMAGE)"
-docker run -d --name "$NAME" \
-  -v "$PWD/config/manager/rules/verax_aws_rules.xml:/var/ossec/etc/rules/verax_aws_rules.xml:ro" \
-  "$IMAGE" >/dev/null
+docker create --name "$NAME" --network none "$IMAGE" >/dev/null
+docker cp "$work/rules/verax_aws_rules.xml" "$NAME:/var/ossec/etc/rules/verax_aws_rules.xml"
+docker cp "$work/rules/verax_reader_rules.xml" "$NAME:/var/ossec/etc/rules/verax_reader_rules.xml"
+docker start "$NAME" >/dev/null
 for _ in $(seq 1 90); do
   docker exec "$NAME" test -S /var/ossec/queue/sockets/logtest 2>/dev/null && break
   sleep 2
@@ -128,8 +164,107 @@ found=$(docker exec "$NAME" sh -c "cd /var/ossec/ruleset/rules && cat ${AWS_RULE
 known=$(printf '%s\n' "${!KNOWN_FREQUENCY_RULES[@]}" | sort -u | paste -sd' ' -)
 expect "toda correlação da AWS foi avaliada" "$known" "$found"
 
+# --- papel de leitura (verax_reader_rules.xml) ---
+
+# Quem chama, como o CloudTrail registra: a sessão do papel (o nó, ou quem tiver a credencial dela), a mesma sessão
+# por um serviço da AWS (o KMS chamado pelo S3), a entrada no papel com o token do Google e um usuário do cliente.
+CUSTOMER_IP=198.51.100.77
+ROLE_ARN="arn:aws:iam::$ACCOUNT_A:role/verax/verax-control-reader"
+identity() { # <sessao|servico|web|usuario>
+  local session="\"type\":\"AssumedRole\",\"principalId\":\"EXEMPLOPRINCIPAL:verax-control-wazuh\",\"arn\":\"arn:aws:sts::$ACCOUNT_A:assumed-role/verax-control-reader/verax-control-wazuh\",\"accountId\":\"$ACCOUNT_A\",\"sessionContext\":{\"sessionIssuer\":{\"type\":\"Role\",\"arn\":\"$ROLE_ARN\",\"userName\":\"verax-control-reader\"}}"
+  case $1 in
+    sessao) printf '{%s}' "$session" ;;
+    servico) printf '{%s,"invokedBy":"s3.amazonaws.com"}' "$session" ;;
+    web) printf '{"type":"WebIdentityUser","principalId":"accounts.google.com:123456789012345678901:123456789012345678901","userName":"123456789012345678901","identityProvider":"accounts.google.com"}' ;;
+    usuario) printf '{"type":"IAMUser","accountId":"%s","userName":"admin-do-cliente","arn":"arn:aws:iam::%s:user/admin-do-cliente"}' "$ACCOUNT_A" "$ACCOUNT_A" ;;
+  esac
+}
+reader_event() { # <identidade> <origem> <eventSource> <eventName> <requestParameters> [errorCode]
+  local error=''
+  if [[ -n ${6:-} ]]; then error=",\"errorCode\":\"$6\",\"errorMessage\":\"negado\""; fi
+  printf '{"integration":"aws","aws":{"log_info":{"aws_account_alias":"","log_file":"AWSLogs/%s/CloudTrail/sa-east-1/2026/11/01/t.json.gz","s3bucket":"trilha-%s"},"eventVersion":"1.08","userIdentity":%s,"eventTime":"2026-11-01T10:00:00Z","eventSource":"%s","eventName":"%s","awsRegion":"sa-east-1","sourceIPAddress":"%s","requestParameters":%s%s,"eventType":"AwsApiCall","recipientAccountId":"%s","source":"cloudtrail","aws_account_id":"%s"}}\n' \
+    "$ACCOUNT_A" "$ACCOUNT_A" "$(identity "$1")" "$3" "$4" "$2" "$5" "$error" "$ACCOUNT_A" "$ACCOUNT_A"
+}
+assume='{"roleArn":"'"$ROLE_ARN"'","roleSessionName":"verax-control-wazuh"}'
+role='{"roleName":"verax-control-reader"}'
+
+# Por evento, "<regra> <nível> <MITRE>" (- sem MITRE).
+logtest_levels() {
+  docker exec -i "$NAME" /var/ossec/bin/wazuh-logtest 2>&1 | awk '
+    function flush() { if (rule != "") print rule, level, (mitre == "" ? "-" : mitre); rule = ""; level = ""; mitre = "" }
+    /\*\*Phase 1:/ { flush() }
+    /^[[:space:]]+id: / { rule = $2 }
+    /^[[:space:]]+level: / { level = $2 }
+    /^[[:space:]]+mitre\.id: / { mitre = $2 }
+    END { flush() }' | tr -d "'[]"
+}
+
+# <descrição> <resultado esperado> <evento>: os eventos vão juntos para uma sessão do logtest, na ordem.
+cases=()
+check() { cases+=("$1|$2|$3"); }
+run_cases() {
+  local out index=0 entry
+  out=$(for entry in "${cases[@]}"; do printf '%s\n' "${entry##*|}"; done | logtest_levels)
+  for entry in "${cases[@]}"; do
+    index=$((index + 1))
+    IFS='|' read -r description expected _ <<<"$entry"
+    expect "$description" "$expected" "$(sed -n "${index}p" <<<"$out")"
+  done
+  cases=()
+}
+
+echo "== Papel de leitura: o nó, de dentro e de fora do IP dele, e as alterações do papel (100200 a 100205)"
+check "leitura do nó pelo IP dele: nível 0" '100200 0 -' "$(reader_event sessao "$NODE_IP" s3.amazonaws.com GetObject '{"bucketName":"trilha"}')"
+check "leitura do nó pelo segundo IP dele: nível 0" '100200 0 -' "$(reader_event sessao "$NODE_IP_2" s3.amazonaws.com ListObjects '{"bucketName":"trilha"}')"
+check "leitura negada do nó, pela cadeia de erro do Wazuh (80250): nível 0" '100200 0 -' \
+  "$(reader_event sessao "$NODE_IP" iam.amazonaws.com ListUsers '{}' AccessDenied)"
+check "o nó entra no papel com o token, pelo IP dele: nível 0" '100201 0 -' \
+  "$(reader_event web "$NODE_IP" sts.amazonaws.com AssumeRoleWithWebIdentity "$assume")"
+check "a sessão do nó usada de outro IP: nível 12, T1078.004" '100202 12 T1078.004' \
+  "$(reader_event sessao "$ATTACKER_IP" s3.amazonaws.com GetObject '{"bucketName":"trilha"}')"
+check "o token do nó usado de outro IP (recusado pela confiança): nível 12, T1078.004" '100203 12 T1078.004' \
+  "$(reader_event web "$ATTACKER_IP" sts.amazonaws.com AssumeRoleWithWebIdentity "$assume" AccessDenied)"
+check "a sessão alterando o papel de outro IP: o nível 12 vale sobre o de alteração" '100202 12 T1078.004' \
+  "$(reader_event sessao "$ATTACKER_IP" iam.amazonaws.com DeleteRole "$role" AccessDenied)"
+check "um serviço da AWS em nome da sessão (origem sem IP): não é nível 12" '80200 0 -' \
+  "$(reader_event servico s3.amazonaws.com kms.amazonaws.com Decrypt '{}')"
+check "escrita da própria sessão pelo IP do nó (negada): não é silenciada" '100204 5 -' \
+  "$(reader_event sessao "$NODE_IP" iam.amazonaws.com UpdateAssumeRolePolicy "$role" AccessDenied)"
+check "o cliente troca a confiança do papel: nível 5" '100204 5 -' \
+  "$(reader_event usuario "$CUSTOMER_IP" iam.amazonaws.com UpdateAssumeRolePolicy "$role")"
+check "o cliente troca o limite de permissões do papel: nível 5" '100204 5 -' \
+  "$(reader_event usuario "$CUSTOMER_IP" iam.amazonaws.com PutRolePermissionsBoundary "$role")"
+check "o cliente muda a política de negação da pilha: nível 5" '100205 5 -' \
+  "$(reader_event usuario "$CUSTOMER_IP" iam.amazonaws.com CreatePolicyVersion \
+    '{"policyArn":"arn:aws:iam::'"$ACCOUNT_A"':policy/verax/VeraxControlGuardrails"}')"
+check "o cliente troca a confiança de outro papel: fora das regras do papel" '80202 3 -' \
+  "$(reader_event usuario "$CUSTOMER_IP" iam.amazonaws.com UpdateAssumeRolePolicy '{"roleName":"outro-papel"}')"
+run_cases
+
+echo "== Papel de leitura sem o IP do nó no node.conf: só as regras de alteração"
+docker cp "$work/rules-sem-ip/verax_reader_rules.xml" "$NAME:/var/ossec/etc/rules/verax_reader_rules.xml"
+check "leitura do nó: fora das regras do papel" '80200 0 -' \
+  "$(reader_event sessao "$NODE_IP" s3.amazonaws.com GetObject '{"bucketName":"trilha"}')"
+check "a sessão de outro IP: sem o IP do nó, nenhum nível 12" '80200 0 -' \
+  "$(reader_event sessao "$ATTACKER_IP" s3.amazonaws.com GetObject '{"bucketName":"trilha"}')"
+check "a alteração do papel continua" '100204 5 -' \
+  "$(reader_event usuario "$CUSTOMER_IP" iam.amazonaws.com UpdateAssumeRolePolicy "$role")"
+run_cases
+
+echo "== Guarda de versão: as mães das regras do papel são a cadeia do CloudTrail do Wazuh"
+# As regras da cadeia (as de grupo aws_cloudtrail, sem as de frequência) e as mães declaradas no modelo, menos a base
+# do módulo (80200). Uma versão nova do Wazuh com outra regra nessa cadeia derruba o teste até o modelo ser revisto.
+chain=$(docker exec "$NAME" cat /var/ossec/ruleset/rules/0350-amazon_rules.xml | awk '
+  /<rule id=/ { match($0, /id="[0-9]+"/); id = substr($0, RSTART + 4, RLENGTH - 5); frequency = ($0 ~ /frequency=/) }
+  /<group>.*aws_cloudtrail/ && !frequency { print id }' | sort -u | paste -sd' ' -)
+template=config/manager/rules/verax_reader_rules.xml.tmpl
+parents=$(grep -oE '<if_sid>[^<]+' "$template" | sort -u)
+expect "as seis regras com as mesmas mães" '6 1' "$(grep -c '<if_sid>' "$template") $(grep -c . <<<"$parents")"
+expect "as mães são a base do módulo e a cadeia do CloudTrail" "$chain" \
+  "$(tr ',' '\n' <<<"${parents//<if_sid>/}" | tr -d ' ' | grep -vx 80200 | sort -u | paste -sd' ' -)"
+
 if ((failures > 0)); then
   echo "$failures verificação(ões) falharam."
   exit 1
 fi
-echo "Correlações da AWS separadas por conta."
+echo "Correlações da AWS separadas por conta e regras do papel de leitura no nível certo."

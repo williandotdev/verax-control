@@ -8,6 +8,7 @@ import {
   type CloudAccountUpdate,
   credentialStatus,
   fieldsOutsideProvider,
+  isAwsCollectionErrorCode,
   isAwsConnectionWarningCode,
   LOG_SOURCES,
   type LogBuckets,
@@ -41,6 +42,7 @@ const accountSelect = {
   lastEventAt: true,
   connection: true,
   connectionError: true,
+  collectionError: true,
   lastCollectedAt: true,
   checkRequestedAt: true,
   ingestFrom: true,
@@ -125,6 +127,11 @@ function toAccount(row: AccountRow, node: NodeFacts): CloudAccount {
       row.connection === 'error' ||
       (aws && row.connection === 'connected' && isAwsConnectionWarningCode(row.connectionError))
         ? row.connectionError
+        : null,
+    // AWS: o aviso da coleta pelo Wazuh do nó (PR-V4'), à parte da conexão; só a tarefa wazuh-config o grava.
+    collectionError:
+      aws && row.status === 'active' && isAwsCollectionErrorCode(row.collectionError)
+        ? row.collectionError
         : null,
     checkRequestedAt: aws ? (row.checkRequestedAt?.toISOString() ?? null) : null,
     ingestFrom: aws ? isoDate(row.ingestFrom) : null,

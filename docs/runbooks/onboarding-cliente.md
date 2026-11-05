@@ -67,7 +67,10 @@ Na reunião:
    Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax, e o worker não confere a conexão
    (o "Verificar" responde `check_unavailable`). Na partida, o worker confere que o token do Google do nó é dessa
    conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
-   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora.
+   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora. O IP de saída também entra
+   nas regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível
+   12), e o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer` e
+   o `verax-wazuh-apply.timer` aparecem em `systemctl list-timers`, e o `verax-wazuh-apply.path` está ativo.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -122,6 +125,33 @@ Na reunião:
 
    Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
    conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
+
+   **Coleta (PR-V4'):** na primeira verificação bem-sucedida, a conta entra no Wazuh do nó em até 1 min (só o manager
+   reinicia; o painel segue no ar), lendo os logs desde o dia anterior. Editar os buckets não tira a conta do Wazuh: o
+   bucket novo entra em seguida, e um bucket cadastrado depois é lido desde esse mesmo dia (avise o cliente se o bucket
+   novo tiver meses de log, porque a leitura conta no medidor do plano). No CloudTrail do cliente, a coleta aparece
+   como a sessão `verax-control-reader/verax-control-wazuh`. No nó, `journalctl -u verax-wazuh-apply` mostra cada
+   aplicação e `cat /run/verax/wazuh-signal/applied` o último resultado. No painel, o estado da coleta aparece ao lado
+   da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
+   Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
+   segue com a anterior; veja o do `verax-wazuh-apply`).
+   **Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
+   IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
+   vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,
+   na casa de uma centena por conta e por dia). A conta com erro na entrada do papel não é inventariada até voltar a
+   conectada; erro só de bucket não atrapalha. O que o operador vê:
+   - em **Ativos e identidades**, a faixa **Coleta parcial** diz que parte ficou de fora em qual conta e o código da
+     AWS (`AccessDenied`, `UnauthorizedOperation`: a política do papel foi mexida ou uma SCP da organização nega o
+     serviço ou a região; `AuthFailure`: região desligada ou fora do opt-in). O resto do inventário vale. Peça ao
+     cliente para conferir a política do papel (a pilha atual) e as SCPs; a próxima coleta, em até 24 h, tenta de
+     novo;
+   - inventário parado (a data "Inventário atualizado há…" fica velha): no banco do nó, `SyncState` com o nome
+     `aws-inventory` (último erro da tarefa) e `CollectorCursor` do fluxo `aws_inventory` da conta (`lastErrorKind`,
+     `failures` e `nextRunAt`). `aws_unavailable` é a AWS fora ou limitando (tenta de novo em 30 min, dobrando até
+     6 h); `inventory_refused`, nenhuma parte lida (sessão revogada no console ou política sem as leituras de Ativos);
+     um código de conexão (`trust_denied`, `token_invalid`) aparece também em Contas cloud;
+   - cliente sem conta AWS: Postura e Ativos mostram "em breve" (GCP e Cloudflare ainda não têm postura nem
+     inventário).
 
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.
