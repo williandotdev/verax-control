@@ -145,6 +145,13 @@ if [[ ${WAZUH_AGENTS:-false} == true ]]; then
     exit 2
   fi
 fi
+# Modo cliente (CUSTOMER_MODE=true; sem a linha, false): o nó de cliente criado pelo plano de controle, com o primeiro
+# acesso pelos metadados da VM (verax-customer-bootstrap.service) e o estado do nó nos guest attributes. O nó da Verax
+# não liga, e nada muda nele.
+[[ ${CUSTOMER_MODE:-false} =~ ^(true|false)$ ]] ||
+  { echo 'CUSTOMER_MODE inválido em /etc/verax/node.conf: use true ou false.' >&2; exit 2; }
+customer=false
+if [[ ${CUSTOMER_MODE:-false} == true ]]; then customer=true; fi
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
 # O complemento do cofre de credenciais fica instalado sempre; o start.sh só o usa com CREDENTIALS_VAULT=true.
 install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
@@ -178,6 +185,16 @@ if $standard; then
     install -m 0750 "$here/bin/wazuh-agents-certs.sh" "$here/bin/wazuh-agents-export.sh" /opt/verax/bin/
     install -m 0644 "$here"/systemd/wazuh-agents/*.service "$here"/systemd/wazuh-agents/*.timer /etc/systemd/system/
   fi
+fi
+# Modo cliente: o serviço do primeiro acesso e o complemento que o verax-node usa para subi-lo junto (Wants). Sem o
+# interruptor, nada disso é instalado; o complemento de uma instalação anterior sai, e o serviço é desativado abaixo.
+if $customer; then
+  install -m 0644 "$here/systemd/customer/verax-customer-bootstrap.service" /etc/systemd/system/
+  install -d -m 0755 /etc/systemd/system/verax-node.service.d
+  install -m 0644 "$here/systemd/customer/verax-node.service.d/customer.conf" \
+    /etc/systemd/system/verax-node.service.d/customer.conf
+elif [[ -f /etc/systemd/system/verax-node.service.d/customer.conf ]]; then
+  rm -f /etc/systemd/system/verax-node.service.d/customer.conf
 fi
 
 echo '== Pastas de dados'
@@ -286,6 +303,12 @@ systemctl daemon-reload
 # já no ar, ela só entra em vigor (o restart do verax-node a exige).
 systemctl enable verax-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
 if $standard; then systemctl enable verax-wazuh.service >/dev/null; fi
+# Modo cliente: o primeiro acesso sobe com o nó (o restart abaixo o dispara pelo complemento) e a cada boot.
+if $customer; then
+  systemctl enable verax-customer-bootstrap.service >/dev/null
+elif [[ -f /etc/systemd/system/verax-customer-bootstrap.service ]]; then
+  systemctl disable verax-customer-bootstrap.service >/dev/null 2>&1 || true
+fi
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
 # Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
@@ -303,6 +326,7 @@ elif [[ -f /etc/systemd/system/verax-wazuh-agents.timer ]]; then
 fi
 systemctl --no-pager --lines=0 status verax-node.service || true
 if $standard; then systemctl --no-pager --lines=0 status verax-wazuh.service || true; fi
+if $customer; then systemctl --no-pager --lines=0 status verax-customer-bootstrap.service || true; fi
 if [[ ! -s /run/verax/cloudflared.env ]]; then
   echo 'AVISO: o nó subiu sem o túnel do Cloudflare (o cofre do token ainda não tem valor). Grave o token e rode:' \
     'sudo systemctl restart verax-node'

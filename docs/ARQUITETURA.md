@@ -813,6 +813,51 @@ revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os 
   de outra conta (a de suporte) vai para outro segredo, `vx-<slug>-support-bootstrap` (seção seguinte), senão a
   `latest` a mostraria ao cliente.
 
+### Primeiro acesso do nó de cliente e estado do nó (CP-10)
+
+O nó que o plano de controle cria liga o **modo cliente** (`CUSTOMER_MODE=true` no `node.conf`). O nó da Verax não liga
+e não muda nada.
+
+- **Entradas:** três metadados da instância, gravados pelo Terraform do tenant: `verax-tenant-name`,
+  `verax-admin-email` e `verax-support-email`. O mapa chave → variável fica num lugar só do `start.sh`
+  (`CUSTOMER_BOOTSTRAP_INPUTS`). Nenhum é segredo; o plano do cliente é o `PLAN` do `node.conf`, como sempre.
+- **Quem roda:** o serviço `verax-customer-bootstrap` (depois do `verax-node`, a cada partida) chama
+  `start.sh customer-bootstrap`. O host lê os metadados e roda o `node-bootstrap` com `BOOTSTRAP_MODE=customer`; as
+  entradas vão pelo ambiente do `compose run`, nunca por argumento nem pelo `bootstrap.env`, que não aceita aspas
+  simples num nome. O CLI cria o cliente (com o rótulo do plano), o `admin_cliente` e um `admin_verax` de suporte, pelo
+  mesmo caminho de toda conta (`provisionUser` + `setTemporaryPassword`), com a auditoria de sistema (o cliente e o admin
+  na trilha do cliente; a conta de suporte, global, fora dela). Tudo é conferido antes da primeira escrita: e-mail de
+  outro cliente ou de outro papel, e conta desativada com pedido de senha, param sem criar nada. Idempotente e mais
+  estrito que o bootstrap do nó da Verax: conta que já tem senha não ganha outra, mesmo antes do primeiro login (a senha
+  está no cofre, à espera da revelação), a não ser a pedido (`BOOTSTRAP_RENEW_ADMIN_PASSWORD` ou
+  `BOOTSTRAP_RENEW_SUPPORT_PASSWORD`).
+- **Onde a senha passa:** gerada no contêiner do bootstrap, entra na máscara do logger antes do próximo `await` e vai
+  direto para um arquivo 0600 (`<nome>.json`, o JSON do contrato) numa pasta de `/run/verax` (tmpfs, 0700 de root)
+  montada só nele. Nunca vai para a saída padrão, o log, a auditoria, uma mensagem de erro ou um argumento de comando.
+  O host lê o arquivo (recusa link e conteúdo fora do formato), pede o token da conta de serviço da VM ao servidor de
+  metadados e grava a versão pela API REST do Secret Manager (`:addVersion`), com o token e o corpo em arquivos 0600 do
+  tmpfs; tenta de novo a falha de rede, o 429 e o 5xx, e para no resto. O arquivo sai só depois de o Secret Manager
+  confirmar; numa falha, fica no tmpfs e vai antes de qualquer outra senha na próxima tentativa (o serviço tenta a cada
+  minuto). **Por que no host:** o contêiner da API e o do bootstrap não alcançam o servidor de metadados (a guarda do
+  `metadata-guard.sh` só libera o worker), e levar a senha ao worker seria um caminho a mais; o host já é root, tem a
+  identidade da VM e é quem lia a linha marcada do bootstrap do nó da Verax.
+- **Segredos:** `vx-<slug>-admin-bootstrap` (revelado uma vez ao cliente pelo `cp-worker`) e
+  `vx-<slug>-support-bootstrap` (só o responsável lê e destrói com o `gcloud`; `docs/runbooks/onboarding-cliente.md`,
+  item 7). A VM só tem `secretVersionAdder` nos dois: grava e não lê de volta.
+- **Estado do nó nos guest attributes:** a tarefa `node-status` do worker (`NODE_STATUS=true` e `NODE_VERSION` no
+  `worker.env`, escritos pelo `start.sh` no modo cliente) grava a cada 5 min, por `PUT` no servidor de metadados com
+  `Metadata-Flavor: Google`, `verax/version` (o commit instalado), `verax/accounts-connected` (contas ativas
+  conectadas), `verax/last-event-at` (o evento mais recente em ISO 8601 UTC, ou `none`) e `verax/disk-free` (porcentagem
+  livre do disco de dados, inteiro de 0 a 100). Só agregados, nada que identifique cliente, conta ou pessoa. O worker é o
+  único contêiner com acesso ao servidor de metadados. O disco é medido pelo `statfs` da CA do banco, um arquivo de
+  `/var/lib/verax` já montado só leitura no worker: dá o espaço do sistema de arquivos onde ficam o banco, os backups e
+  os volumes do Docker, sem montagem nova. Com os atributos desligados na VM (403 ou 404 no `PUT`; a documentação da GCP
+  não fixa o código), a tarefa avisa uma vez e para no primeiro `PUT` de cada execução, sem ler o banco.
+  **Ritmo:** a GCP pede no máximo uma rajada de 3 consultas por segundo nos guest attributes (e 10 por minuto por VM) e
+  pode descartar atributos que estão sendo gravados acima disso; todo `PUT` do processo passa por um ritmo único
+  (`WritePacer`, 500 ms entre um começo e o seguinte), então nenhuma janela de 1 s tem mais de 3. São 4 gravações a
+  cada 5 min, menos de 1 por minuto.
+
 ### O nó de cada cliente: `envs/tenant` e `envs/nodes-platform` (CP-06)
 
 O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:
