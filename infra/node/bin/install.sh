@@ -87,12 +87,25 @@ done
   { echo 'VERAX_GCP_PROJECT inválido em /etc/verax/node.conf: use o ID do projeto (6 a 30 caracteres, minúsculas, números e hífen).' >&2; exit 2; }
 [[ $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]] ||
   { echo 'VERAX_SECRET_PREFIX inválido em /etc/verax/node.conf: use o name_prefix do Terraform do nó (4 a 19 caracteres: minúsculas, números e hífen, começando com letra).' >&2; exit 2; }
-# IP de saída do nó (o IP fixo do Cloud NAT), que a política IAM da AWS do cliente libera: um ou mais IPv4 com /32,
-# separados por vírgula. Opcional até a chave da AWS chegar ao painel; quando presente, o formato é conferido aqui.
+# IP de saída do nó (o IP fixo do Cloud NAT), que o papel de leitura da AWS do cliente libera: um ou mais IPv4 com /32,
+# separados por vírgula. Opcional (o nó da Verax não tem); quando presente, o formato é conferido aqui.
 octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
 egress_ip="$octet(\\.$octet){3}/32"
 if [[ -n ${NODE_EGRESS_IPS:-} && ! $NODE_EGRESS_IPS =~ ^$egress_ip(,$egress_ip)*$ ]]; then
   echo 'NODE_EGRESS_IPS inválido em /etc/verax/node.conf: use IPv4 com /32, separados por vírgula.' >&2
+  exit 2
+fi
+# Papel de leitura sem chave da AWS (opcionais): o ID único da conta de serviço do nó (21 dígitos) e o audience do token
+# (https, host em minúsculas, caminho sem curinga), as mesmas regras do template (`NodeServiceAccountId` e `Audience`) e
+# da API.
+if [[ -n ${NODE_SA_UNIQUE_ID:-} && ! $NODE_SA_UNIQUE_ID =~ ^[0-9]{21}$ ]]; then
+  echo 'NODE_SA_UNIQUE_ID inválido em /etc/verax/node.conf: use o ID único da conta de serviço do nó (21 dígitos).' >&2
+  exit 2
+fi
+audience_pattern='^https://[a-z0-9.-]+(/[A-Za-z0-9._-]+)*$'
+if [[ -n ${AWS_WEB_IDENTITY_AUDIENCE:-} ]] &&
+  { ((${#AWS_WEB_IDENTITY_AUDIENCE} > 256)) || [[ ! $AWS_WEB_IDENTITY_AUDIENCE =~ $audience_pattern ]]; }; then
+  echo 'AWS_WEB_IDENTITY_AUDIENCE inválido em /etc/verax/node.conf: use https://<host>[/<caminho>], sem curinga.' >&2
   exit 2
 fi
 # Chave do site do Cloudflare Turnstile (opcional; liga o desafio no login do painel). Um dígito, `x` e de 20 a 40
@@ -101,7 +114,7 @@ if [[ -n ${TURNSTILE_SITE_KEY:-} && ! $TURNSTILE_SITE_KEY =~ ^[0-9]x[0-9A-Za-z_-
   echo 'TURNSTILE_SITE_KEY inválida em /etc/verax/node.conf: use a chave do site do widget (ex.: 0x4AAAAAAA...).' >&2
   exit 2
 fi
-# Cofre de credenciais (a chave da AWS e o token do Cloudflare colados no painel): true só no nó com o segredo
+# Cofre de credenciais (o token do Cloudflare colado no painel): true só no nó com o segredo
 # `credentials-key` (`credentials_vault` no Terraform). Sem a linha, vale false: o nó da Verax não muda.
 [[ ${CREDENTIALS_VAULT:-false} =~ ^(true|false)$ ]] ||
   { echo 'CREDENTIALS_VAULT inválido em /etc/verax/node.conf: use true ou false.' >&2; exit 2; }

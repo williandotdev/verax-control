@@ -193,6 +193,13 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
       );
     });
 
+    it('GET /v1/admin/me devolve só o e-mail conferido no JWT (o cabeçalho do console)', async () => {
+      const me = await call('get', '/v1/admin/me', ownerToken(OWNER.toUpperCase())).expect(200);
+      expect(me.body).toEqual({ email: OWNER });
+      await call('get', '/v1/admin/me', null).expect(401);
+      await call('get', '/v1/admin/me', ownerToken(STRANGER)).expect(403);
+    });
+
     it('as rotas públicas e o webhook não existem no cp-admin', async () => {
       await call('get', '/v1/public/pricing').expect(404);
       await send('post', '/v1/public/quote', {}).expect(404);
@@ -223,8 +230,13 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
           version: 'custos-teste-v1',
           status: 'published',
           current: true,
+          publishedBy: OWNER,
+          updatedBy: OWNER,
         }) as unknown,
       ]);
+      // A lista é só o resumo: o conteúdo (custos) fica na leitura da versão.
+      expect(JSON.stringify(list.body)).not.toContain('brlPerUsd');
+      expect(published.body).toMatchObject({ publishedBy: OWNER, updatedBy: OWNER });
       expect(await auditActions()).toEqual(['costs.draft.created', 'costs.published']);
     });
 
@@ -421,6 +433,9 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
           },
           quote: { configuration: { size: 'P' }, monthlyTotal: 128_000 },
         },
+        // As metas e a alíquota do modelo usado, para o console marcar a margem e nomear o imposto.
+        margins: { minimum: 0.25, alert: 0.35 },
+        taxRate: { id: 'teste_a', label: 'Alíquota de teste A', rate: 0.1 },
       });
     });
 
@@ -449,6 +464,7 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
         taxRateId: 'teste_b',
       }).expect(200);
       expect(draft.body).toMatchObject({
+        taxRate: { id: 'teste_b', label: 'Alíquota de teste B', rate: 0.2 },
         dre: {
           taxRateId: 'teste_b',
           paymentMethod: 'boleto',
@@ -462,6 +478,7 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
         priceTableVersion: 'teste-v1',
       }).expect(200);
       expect(contact.body).toMatchObject({ contactUs: true, reason: 'agents_above_max' });
+      expect(contact.body).not.toHaveProperty('margins');
 
       const unknownTax = await send('post', '/v1/admin/dre/simulate', {
         configuration,

@@ -1,4 +1,9 @@
 import {
+  AWS_READER_AUDIENCE,
+  AWS_READER_STACK_NAME,
+  AWS_READER_TEMPLATE_FILE,
+  awsLogBucketArns,
+  awsReaderDeployCommand,
   CLOUD_PROVIDERS,
   type CloudAccount,
   cloudAccountCreateSchema,
@@ -7,6 +12,7 @@ import {
   cloudCredentialInputSchema,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   cloudflareTokenTemplateUrl,
+  cloudFormationConsoleUrl,
   type CloudProvider,
   daysUntilExpiry,
   gcpSinkCommand,
@@ -14,7 +20,7 @@ import {
   normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
 } from '@verax/shared';
-import { Copy, ExternalLink } from 'lucide-react';
+import { Copy, Download, ExternalLink } from 'lucide-react';
 import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
@@ -28,14 +34,16 @@ import {
   useCloudCredential,
   useCreateCloudAccount,
   useUpdateCloudAccount,
+  useVerifyAwsAccount,
 } from '@/features/admin/admin-api';
 import { AdminShell, ConfirmButton, FormError, SelectInput } from '@/features/admin/admin-ui';
+import { AWS_READER_TEMPLATE_URL } from '@/features/admin/aws-reader-template';
 import { fieldErrors } from '@/features/admin/forms';
 import {
   ACCOUNT_NOUNS,
+  AWS_READER_GUIDE_URL,
+  awsConnectionErrorHint,
   CONNECTION_LABELS,
-  CONNECTOR_GUIDE_URL,
-  CONNECTOR_TEMPLATE_URL,
   connectionHint,
   CREDENTIAL_STATUS_LABELS,
   PROVIDER_LABELS,
@@ -44,7 +52,7 @@ import { useMe } from '@/features/session/session';
 import { ApiRequestError } from '@/lib/api-client';
 import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errors';
-import { formatDate, formatRelative, plural } from '@/lib/format';
+import { formatDate, formatDay, formatRelative, plural } from '@/lib/format';
 
 const NEW = 'nova';
 const PROVIDER_OPTIONS = CLOUD_PROVIDERS.map((provider) => ({
@@ -88,8 +96,9 @@ const MISSING_SCOPE: Readonly<Record<CloudProvider, string>> = {
 
 /**
  * Contas cloud (T7.3): AWS, GCP e Cloudflare. Cadastrar, ver o que configurar em cada provedor e acompanhar a
- * conexão. O cadastro não pede credencial; o token do Cloudflare tem formulário próprio no detalhe da conta e vai
- * cifrado para o cofre do nó (fase 2).
+ * conexão. O cadastro não pede credencial: na AWS, o cliente cria o papel de leitura sem chave com o template e clica
+ * em "Verificar"; o token do Cloudflare tem formulário próprio no detalhe da conta e vai cifrado para o cofre do nó
+ * (fase 2).
  */
 export function CloudAccountsPage() {
   const { data: me } = useMe();
@@ -148,7 +157,7 @@ export function CloudAccountsPage() {
   return (
     <AdminShell
       title="Contas cloud"
-      description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê. O token do Cloudflare fica cifrado no cofre do nó, nunca no cadastro."
+      description="Contas AWS, projetos da GCP e contas do Cloudflare monitorados. O Verax Control só lê: na AWS, por um papel de leitura sem chave; o token do Cloudflare fica cifrado no cofre do nó, nunca no cadastro."
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Cadastrar conta</Button>}
     >
       <DataTable
@@ -253,7 +262,7 @@ function CreateAccount() {
           {ACCOUNT_NOUNS[create.data.provider].noun} {create.data.accountId}{' '}
           {ACCOUNT_NOUNS[create.data.provider].registered}.{' '}
           {create.data.provider === 'aws'
-            ? 'Falta o cliente criar o conector nela.'
+            ? 'Falta criar o papel de leitura nela e verificar.'
             : create.data.provider === 'cloudflare'
               ? 'Falta colar o token de leitura do Cloudflare.'
               : 'Falta configurar a leitura no nó.'}
@@ -345,7 +354,7 @@ function CreateAccount() {
       )}
       <FormError error={create.error} />
       <Button type="submit" disabled={create.isPending}>
-        {values.provider === 'aws' ? 'Cadastrar e gerar o ExternalId' : 'Cadastrar conta'}
+        Cadastrar conta
       </Button>
     </form>
   );
@@ -360,7 +369,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
         <dd className="space-y-0.5">
           <ConnectionBadge account={account} />
           <p className="text-xs text-muted-foreground">
-            {connectionHint(account.provider, account.connection)}
+            {connectionHint(account)}
             {account.connection === 'error' && account.connectionError && (
               <>
                 {' '}
@@ -375,20 +384,14 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
         <dd>{account.lastEventAt ? formatRelative(account.lastEventAt) : 'nenhum ainda'}</dd>
         <dt className="text-muted-foreground">{SCOPE_LABELS[account.provider]}</dt>
         <dd className="break-all">{scopeOf(account) ?? MISSING_SCOPE[account.provider]}</dd>
-        {account.roleArn && (
+        {account.readerRoleArn && (
           <>
             <dt className="text-muted-foreground">Papel de leitura</dt>
-            <dd className="break-all font-mono text-xs">{account.roleArn}</dd>
+            <dd className="break-all font-mono text-xs">{account.readerRoleArn}</dd>
           </>
         )}
       </dl>
-      {account.provider === 'aws' && !account.externalId ? (
-        <p className="text-sm text-muted-foreground">
-          O ExternalId só aparece para quem configura o conector.
-        </p>
-      ) : (
-        <ProviderSteps account={account} canWrite={canWrite} />
-      )}
+      <ProviderSteps account={account} canWrite={canWrite} />
       {canWrite && account.provider !== 'aws' && <EditSource account={account} />}
       {canWrite && (
         <div className="space-y-2">
@@ -452,7 +455,7 @@ function EditSource({ account }: { account: CloudAccount }) {
 function ProviderSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   if (account.provider === 'gcp') return <GcpSteps account={account} canWrite={canWrite} />;
   if (account.provider === 'cloudflare') return <CloudflareSteps account={account} canWrite={canWrite} />;
-  return <ConnectorSteps account={account} />;
+  return <AwsSteps account={account} canWrite={canWrite} />;
 }
 
 /** No nó que não informa o próprio tópico (ambiente local), o comando sai com este no lugar. */
@@ -901,57 +904,220 @@ function CloudflareTokenForm({
   );
 }
 
-/** O que o cliente faz na conta AWS dele: o template do conector com o ExternalId desta conta. */
-function ConnectorSteps({ account }: { account: CloudAccount }) {
+/** Um valor da pilha, com o nome do parâmetro no template e o botão de copiar; sem valor, o que fazer. */
+function StackValue({
+  label,
+  parameter,
+  value,
+  missing,
+  hint,
+}: {
+  label: string;
+  parameter: string;
+  value: string | null;
+  missing: string;
+  hint?: string;
+}) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
-    if (!account.externalId) return;
-    void navigator.clipboard?.writeText(account.externalId).then(() => setCopied(true));
+    if (value !== null) void navigator.clipboard?.writeText(value).then(() => setCopied(true));
   };
   return (
-    <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
-      <h3 id="conector-passos" className="text-sm font-semibold">
-        Conector na conta {account.accountId}
-      </h3>
-      <ol className="list-decimal space-y-2 pl-5 text-sm">
-        <li>
-          Baixe o{' '}
-          <a
-            href={CONNECTOR_TEMPLATE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 underline"
-          >
-            template do conector
-            <ExternalLink aria-hidden className="size-3.5" />
-          </a>{' '}
-          e siga o{' '}
-          <a
-            href={CONNECTOR_GUIDE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 underline"
-          >
-            passo a passo
-            <ExternalLink aria-hidden className="size-3.5" />
-          </a>
-          .
-        </li>
-        <li>
-          No CloudFormation da conta, crie a pilha com este ExternalId (é secreto: envie ao cliente por um
-          canal seguro):
-          <div className="mt-1 flex items-center gap-2">
-            <code className="break-all rounded bg-foreground/5 px-2 py-1 font-mono text-xs">
-              {account.externalId}
-            </code>
-            <Button type="button" variant="ghost" size="sm" onClick={copy} aria-label="Copiar o ExternalId">
+    <>
+      <dt className="text-muted-foreground">
+        {label} <code className="font-mono text-xs">({parameter})</code>
+      </dt>
+      <dd className="space-y-1">
+        {value === null ? (
+          <p className="text-critical-text">{missing}</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="break-all rounded bg-foreground/5 px-2 py-1 font-mono text-xs">{value}</code>
+            <Button type="button" variant="ghost" size="sm" onClick={copy} aria-label={`Copiar: ${label}`}>
               <Copy aria-hidden />
               {copied ? 'Copiado' : 'Copiar'}
             </Button>
           </div>
+        )}
+        {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      </dd>
+    </>
+  );
+}
+
+/**
+ * Conectar AWS (fase 2, PR-V3'): o papel de leitura sem chave. O cliente baixa o template (o arquivo revisado do
+ * repositório, que o painel serve), cria a pilha no console da AWS com os três valores do nó e clica em "Verificar".
+ * Nada é colado aqui: não há chave nem ExternalId, e nenhum dos valores é segredo.
+ */
+function AwsSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  const buckets = [account.buckets.cloudtrail, account.buckets.guardduty, account.buckets.waf].filter(
+    (name): name is string => name !== null,
+  );
+  const bucketArns = awsLogBucketArns(buckets).join(',');
+  const audience = account.webIdentityAudience ?? AWS_READER_AUDIENCE;
+  const egressIps = account.egressIps.length > 0 ? account.egressIps.join(',') : null;
+  const command = awsReaderDeployCommand({
+    nodeServiceAccountId: account.nodeServiceAccountId,
+    egressIps: account.egressIps,
+    audience,
+    buckets,
+  });
+  return (
+    <section aria-labelledby="conector-passos" className="space-y-3 rounded-md border p-3">
+      <h3 id="conector-passos" className="text-sm font-semibold">
+        Conectar a conta {account.accountId}
+      </h3>
+      <p className="text-sm text-muted-foreground">
+        O Verax lê a conta por um papel IAM somente leitura, sem chave: não há nada para criar, copiar ou
+        guardar. Só o nó do Verax entra no papel, com um token de até 1 hora que o Google assina, e só a
+        partir do IP de saída do nó.
+      </p>
+      <ol className="list-decimal space-y-3 pl-5 text-sm">
+        <li className="space-y-2">
+          <p>
+            <a
+              href={AWS_READER_TEMPLATE_URL}
+              download={AWS_READER_TEMPLATE_FILE}
+              className="inline-flex items-center gap-1 font-medium underline"
+            >
+              <Download aria-hidden className="size-3.5" />
+              Baixar o template ({AWS_READER_TEMPLATE_FILE})
+            </a>
+          </p>
+          <p className="text-xs text-muted-foreground">
+            É o arquivo revisado do repositório, sem nada preenchido. O que a pilha cria e o que o papel pode
+            fazer estão no{' '}
+            <a
+              href={AWS_READER_GUIDE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 underline"
+            >
+              passo a passo
+              <ExternalLink aria-hidden className="size-3.5" />
+            </a>
+            .
+          </p>
         </li>
-        <li>A conexão muda para "Conectada" quando o primeiro evento da conta chegar.</li>
+        <li className="space-y-2">
+          <p>
+            No console da AWS, abra o{' '}
+            <a
+              href={cloudFormationConsoleUrl(account.regions[0])}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 underline"
+            >
+              CloudFormation
+              <ExternalLink aria-hidden className="size-3.5" />
+            </a>{' '}
+            em <span lang="en">Create stack</span> → <span lang="en">Upload a template file</span>, envie o
+            arquivo e dê o nome <code className="font-mono text-xs">{AWS_READER_STACK_NAME}</code> à pilha.
+            Preencha os três valores do nó (nenhum é segredo):
+          </p>
+          <dl className="grid grid-cols-1 gap-y-1.5">
+            <StackValue
+              label="ID da conta de serviço do nó"
+              parameter="NodeServiceAccountId"
+              value={account.nodeServiceAccountId}
+              missing="Este nó ainda não informa o ID. Peça à Verax antes de criar a pilha."
+            />
+            <StackValue
+              label="IP de saída do nó"
+              parameter="NodeEgressIps"
+              value={egressIps}
+              missing="Este nó ainda não informa o IP. Peça à Verax antes de criar a pilha."
+            />
+            <StackValue
+              label="Audience"
+              parameter="Audience"
+              value={audience}
+              missing=""
+              hint="Já vem preenchido no template: só confira."
+            />
+          </dl>
+          {bucketArns ? (
+            <>
+              <p>
+                Em <code className="font-mono text-xs">LogBucketArns</code>, os buckets de log cadastrados:
+              </p>
+              <CommandBlock command={bucketArns} label="Copiar os ARNs dos buckets de log" />
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Nenhum bucket de log cadastrado: informe em{' '}
+              <code className="font-mono text-xs">LogBucketArns</code> os buckets do CloudTrail, do export do
+              GuardDuty e do WAF que o Verax vai ler.
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Se os buckets usam SSE-KMS (o export do GuardDuty sempre usa), informe também as chaves em{' '}
+            <code className="font-mono text-xs">LogKmsKeyArns</code>. Na revisão, marque a confirmação do IAM
+            (recursos com nomes personalizados) e crie a pilha: leva 1 ou 2 minutos.
+          </p>
+          <details className="space-y-1">
+            <summary className="cursor-pointer">Prefere a CLI?</summary>
+            <p className="text-xs text-muted-foreground">
+              No terminal ou no AWS CloudShell, na pasta do arquivo baixado:
+            </p>
+            <CommandBlock command={command} label="Copiar o comando da CLI" />
+          </details>
+        </li>
+        <li className="space-y-2">
+          <AwsVerify account={account} canWrite={canWrite} />
+        </li>
       </ol>
+      <p className="text-xs text-muted-foreground">
+        Para desconectar: desative o monitoramento aqui e apague a pilha{' '}
+        <code className="font-mono text-xs">{AWS_READER_STACK_NAME}</code>. Para cortar na hora as sessões já
+        emitidas (cada uma vale até 1 hora), use <span lang="en">Revoke active sessions</span> no papel. Não
+        há chave para apagar.
+      </p>
     </section>
+  );
+}
+
+/**
+ * "Verificar": o pedido vai para o worker, o único processo do nó que entra no papel; a tela relê a conta enquanto ele
+ * não responde (`useCloudAccountList`) e mostra o resultado, com o que fazer em cada erro.
+ */
+function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
+  const verify = useVerifyAwsAccount(account.id);
+  const pending = account.checkRequestedAt !== null;
+  const active = account.status === 'active';
+  const errorHint =
+    account.connection === 'error' && account.connectionError
+      ? (awsConnectionErrorHint(account.connectionError) ?? `Erro: ${account.connectionError}.`)
+      : null;
+  return (
+    <>
+      <p>
+        Criada a pilha, clique em Verificar: o Verax entra no papel e lê um objeto de cada bucket cadastrado.
+      </p>
+      {canWrite && active && (
+        <Button type="button" onClick={() => verify.mutate()} disabled={pending || verify.isPending}>
+          {pending ? 'Verificando…' : 'Verificar conexão'}
+        </Button>
+      )}
+      {canWrite && !active && <p>Reative o monitoramento para verificar a conta.</p>}
+      {!canWrite && <p className="text-muted-foreground">Quem administra as contas pede a verificação.</p>}
+      <FormError error={verify.error} />
+      <div role="status" className="text-sm">
+        {pending ? (
+          <p>
+            Verificação pedida {formatRelative(account.checkRequestedAt ?? '')}. Logo depois de criar a pilha,
+            o papel pode levar alguns minutos para valer: o Verax tenta de novo por até 10 minutos.
+          </p>
+        ) : account.connection === 'connected' ? (
+          <p>
+            Conectada: o Verax entrou no papel de leitura.
+            {account.ingestFrom && <> Os logs são lidos a partir de {formatDay(account.ingestFrom)}.</>}
+          </p>
+        ) : errorHint ? (
+          <p className="text-critical-text">{errorHint} Corrija e clique em Verificar de novo.</p>
+        ) : null}
+      </div>
+    </>
   );
 }

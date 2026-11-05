@@ -13,6 +13,16 @@ export function formatDate(value: string | Date): string {
   return Number.isNaN(date.getTime()) ? '—' : dateFormatter.format(date);
 }
 
+/**
+ * Um dia do calendário (`AAAA-MM-DD`, sem hora nem fuso) como "03/11/2026". Pelas partes: como data, ele seria a
+ * meia-noite UTC, e no fuso de Brasília apareceria o dia anterior.
+ */
+export function formatDay(value: string): string {
+  const [year, month, day, ...rest] = value.split('-');
+  if (rest.length > 0 || year?.length !== 4 || month?.length !== 2 || day?.length !== 2) return '—';
+  return `${day}/${month}/${year}`;
+}
+
 const relative = new Intl.RelativeTimeFormat('pt-BR', { numeric: 'auto' });
 const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
   ['day', 86_400],

@@ -38,6 +38,23 @@ variable "terraform_image" {
   default     = "us-docker.pkg.dev/cloudrun/container/job"
 }
 
+variable "admin_enabled" {
+  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com o IAP ligado direto no Cloud Run, a conta cp-admin (só Firestore, nenhum segredo), o acesso pelo IAP só para owner_principals, a implantação pelo workflow e os dois alertas do console. Exige owner_principals. Num projeto sem organização, crie antes o cliente OAuth do IAP (docs/runbooks/console-do-responsavel.md)."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.admin_enabled || length(var.owner_principals) > 0
+    error_message = "O console só abre para quem está em owner_principals (e o app não sobe sem OWNER_PRINCIPALS): preencha owner_principals antes de admin_enabled = true."
+  }
+}
+
+variable "admin_image" {
+  description = "Imagem do cp-admin (a mesma do cp-public, com ROLE=admin). Mesma regra do public_image: a de exemplo do Google só na primeira subida; o workflow troca, e o Terraform não mexe mais nela."
+  type        = string
+  default     = "us-docker.pkg.dev/cloudrun/container/hello"
+}
+
 variable "worker_ingress" {
   description = "Entrada do cp-worker. INGRESS_TRAFFIC_INTERNAL_ONLY (padrão): só o Cloud Tasks e o Cloud Scheduler deste projeto chegam nele, e ainda com o IAM. Para as operações do responsável a partir da sua máquina (resume, delete-now, export, com `gcloud auth print-identity-token`), mude para INGRESS_TRAFFIC_ALL: o IAM continua exigindo o token de identidade."
   type        = string
@@ -50,7 +67,7 @@ variable "worker_ingress" {
 }
 
 variable "owner_principals" {
-  description = "Quem opera o plano de controle além das contas de serviço: pode chamar o cp-worker (run.invoker) e entra em OWNER_PRINCIPALS, que o worker confere no token. Ex.: [\"user:voce@exemplo.com\"]. Só user: e serviceAccount:, porque o worker compara o e-mail do token; grupo não tem e-mail no token."
+  description = "Quem opera o plano de controle além das contas de serviço: pode chamar o cp-worker (run.invoker), entra em OWNER_PRINCIPALS, que o worker e o console conferem no token, e, com admin_enabled, é quem passa pelo IAP do console (iap.httpsResourceAccessor no cp-admin). Ex.: [\"user:voce@exemplo.com\"]. Só user: e serviceAccount:, porque o worker compara o e-mail do token; grupo não tem e-mail no token."
   type        = list(string)
   default     = []
 

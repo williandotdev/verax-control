@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Testa a imagem do plano de controle como ela roda no Cloud Run (CP-01): produção, raiz só leitura, sem
 # capabilities, sem ganho de privilégio e usuário sem privilégio. Numa rede Docker isolada (sem internet), confere:
-# - com ROLE=public e com ROLE=worker, o processo sobe e /health responde 200;
+# - com ROLE=public, ROLE=worker e ROLE=admin, o processo sobe e /health responde 200;
+# - com ROLE=admin, as telas do console estão na imagem (/app/console) e nem elas nem a API abrem sem o JWT do IAP;
 # - o processo não é root e a raiz do contêiner não aceita escrita;
 # - sem ROLE o processo não sobe, e a mensagem cita só o nome da variável;
 # - um valor inválido de segredo não aparece na mensagem de erro.
@@ -23,7 +24,7 @@ expect() { # <descrição> <esperado (regex)> <obtido>
 }
 
 cleanup() {
-  docker rm -f "$run_id-public" "$run_id-worker" >/dev/null 2>&1 || true
+  docker rm -f "$run_id-public" "$run_id-worker" "$run_id-admin" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -35,14 +36,23 @@ hardened=(--network "$network" --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16
   --security-opt no-new-privileges:true -e NODE_ENV=production)
 
 # Requisição de dentro da rede isolada, pelo Node da própria imagem (a rede não tem saída para o host).
-probe() { # <contêiner>
-  docker exec "$1" node -e "fetch('http://127.0.0.1:8080/health').then(r => console.log(r.status)).catch(() => console.log(0))"
+probe() { # <contêiner> [caminho]
+  docker exec "$1" node -e "fetch('http://127.0.0.1:8080${2:-/health}').then(r => console.log(r.status)).catch(() => console.log(0))"
 }
 
-for role in public worker; do
+# O admin exige o `aud` do IAP e a lista de responsáveis (fictícios: número de projeto e e-mail de exemplo).
+role_env() { # <papel>
+  if [[ $1 == admin ]]; then
+    printf '%s\n' -e IAP_AUDIENCE=/projects/111111111111/locations/southamerica-east1/services/cp-admin \
+      -e OWNER_PRINCIPALS=responsavel@example.com
+  fi
+}
+
+for role in public worker admin; do
   name=$run_id-$role
   echo "== ROLE=$role"
-  docker run -d --name "$name" "${hardened[@]}" -e ROLE="$role" "$image" >/dev/null
+  mapfile -t extra < <(role_env "$role")
+  docker run -d --name "$name" "${hardened[@]}" -e ROLE="$role" "${extra[@]}" "$image" >/dev/null
   for _ in {1..30}; do
     [[ $(probe "$name" 2>/dev/null || true) == 200 ]] && break
     sleep 2
@@ -51,6 +61,12 @@ for role in public worker; do
   expect "processo sem root ($role)" 1000 "$(docker exec "$name" id -u)"
   expect "raiz só leitura ($role)" 1 "$(docker exec "$name" sh -c 'touch /app/x 2>/dev/null && echo 0 || echo 1')"
 done
+
+echo "== Console do responsável (ROLE=admin)"
+expect "telas do console na imagem" 0 "$(docker exec "$run_id-admin" sh -c 'test -f /app/console/index.html && echo 0 || echo 1')"
+expect "sem source map no console" 0 "$(docker exec "$run_id-admin" sh -c 'ls /app/console/assets | grep -c "\.map$" || true')"
+expect "tela sem o JWT do IAP" 401 "$(probe "$run_id-admin" /)"
+expect "API do console sem o JWT do IAP" 401 "$(probe "$run_id-admin" /v1/admin/me)"
 
 echo "== Configuração inválida"
 output=$(docker run --rm "${hardened[@]}" "$image" 2>&1 || true)

@@ -180,8 +180,10 @@ const envShape = {
   SCHEDULER_SA_EMAIL: serviceAccountEmail.optional(),
   OWNER_PRINCIPALS: list(email).optional(),
   // Console do responsável (cp-admin, só ROLE=admin, obrigatória nele): o `aud` que o IAP põe no JWT assinado do
-  // cabeçalho `x-goog-iap-jwt-assertion` (o serviço do Cloud Run com o IAP ligado). O e-mail do JWT precisa estar em
-  // OWNER_PRINCIPALS, também obrigatória no admin.
+  // cabeçalho `x-goog-iap-jwt-assertion` (o serviço do Cloud Run com o IAP ligado). Para o IAP no Cloud Run, o formato
+  // é `/projects/<número>/locations/<região>/services/<nome>` (documentação dos cabeçalhos assinados do IAP, conferida
+  // em 04/11/2026); o Terraform (admin.tf) o monta. O e-mail do JWT precisa estar em OWNER_PRINCIPALS, também
+  // obrigatória no admin.
   IAP_AUDIENCE: z
     .string()
     .max(300)

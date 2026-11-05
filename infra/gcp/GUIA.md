@@ -618,6 +618,7 @@ liga, se um dia valer o custo.
 | Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
 | Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                   |
 | Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                            |
+| Console do responsável `cp-admin` (opcional)              | Só com `admin_enabled = true` (passo 8): o terceiro serviço da mesma imagem (`ROLE=admin`), com o IAP ligado direto no Cloud Run, 0 a 1 instância; a conta `cp-admin` só com o Firestore e sem segredo; só o agente do IAP invoca, e só `owner_principals` passa pelo IAP. Mais os alertas de margem e de acessos recusados.                                                                                                                   |
 | 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                    |
 | Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
@@ -742,6 +743,24 @@ na `main`, mesmo que o environment fique aberto por engano.
 | `CP_PUBLIC_SERVICE`     | `github_environment.CP_PUBLIC_SERVICE`    | `cp-public`                                                       |
 | `CP_WORKER_SERVICE`     | `github_environment.CP_WORKER_SERVICE`    | `cp-worker`                                                       |
 | `CP_TERRAFORM_JOB`      | `github_environment.CP_TERRAFORM_JOB`     | `cp-terraform`                                                    |
+| `CP_ADMIN_SERVICE`      | `github_environment.CP_ADMIN_SERVICE`     | `cp-admin` (só com `admin_enabled`; sem ela, o console fica fora) |
+
+### Passo 8: o console do responsável (`cp-admin`)
+
+O console das tabelas de preço, dos modelos de custo e do simulador de DRE. O passo a passo inteiro, do cliente OAuth
+do IAP à primeira publicação, está em `docs/runbooks/console-do-responsavel.md`; aqui, só o Terraform:
+
+1. Num projeto **sem organização**, crie antes o cliente OAuth do IAP (seção 1 do runbook): não há API para isso, e o
+   segredo dele nunca passa pelo Terraform.
+2. Preencha `owner_principals` (a validação recusa `admin_enabled` sem ela) e mude `admin_enabled = true`. O `plan`
+   mostra **11 recursos a criar, mais 1 por pessoa em `owner_principals`**: a API do IAP, a conta `cp-admin`, o
+   `datastore.user` dela, o agente de serviço do IAP, o serviço `cp-admin` (com a imagem de exemplo do Google), o
+   `run.invoker` do agente, o `iap.httpsResourceAccessor` de cada responsável, o `run.developer` e o `actAs` de quem
+   implanta, o alerta de margem e a métrica e o alerta dos acessos recusados.
+3. `terraform output admin` traz o endereço e o `aud` do IAP (`/projects/<número>/locations/<região>/services/cp-admin`,
+   que o Terraform já passa ao serviço em `IAP_AUDIENCE`).
+4. Acrescente `CP_ADMIN_SERVICE` ao environment `control-plane` (passo 7) e rode o workflow: ele implanta o `cp-admin`
+   junto, sem tráfego, e só o promove com a revisão pronta (a sonda de partida em `/health` não passa pelo IAP).
 
 ### O que continua manual
 
@@ -814,6 +833,9 @@ responde 503 com o código `reveal_unavailable`.
   (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin` ele ainda poderia
   se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo `envs/nodes-platform`)
   vigia.
+- **`cp-admin`** (com `admin_enabled`) só lê e grava o Firestore: nenhum segredo, nem a chave da Stripe, e nenhum
+  token para chamar o `cp-worker`. Só o agente do IAP o invoca, e só quem está em `owner_principals` passa pelo IAP;
+  o app ainda confere o JWT do IAP em toda requisição, inclusive nas telas.
 - **`cp-deployer`** é `run.developer` nos dois serviços e no Job: além de publicar revisões, muda qualquer atributo
   deles, apaga-os e executa o Job. Não há papel predefinido mais estreito que sirva ao `gcloud run deploy`. Na
   prática, quem controla a `main` com o environment `control-plane` controla a imagem do `cp-worker` e, por ele, o

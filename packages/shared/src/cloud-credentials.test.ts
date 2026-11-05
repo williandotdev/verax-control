@@ -2,7 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { cloudAccountSchema } from './cloud-accounts.js';
 import {
+  CLOUD_CREDENTIAL_KINDS,
   CLOUDFLARE_TOKEN_FORMAT_MESSAGE,
+  CREDENTIAL_KIND_PROVIDERS,
   CLOUDFLARE_TOKEN_PERMISSIONS,
   cloudCredentialInputSchema,
   cloudCredentialStatusSchema,
@@ -68,9 +70,11 @@ describe('credencial colada no painel (fase 2, PR-11)', () => {
     expect(messages.join(' ')).not.toContain(token);
   });
 
-  it('o corpo é estrito: tipo fora da lista (a chave da AWS ainda não), campo a mais ou faltando', () => {
+  it('o corpo é estrito: tipo fora da lista (a chave da AWS saiu: o papel não tem chave), campo a mais ou faltando', () => {
     const token = legacyToken();
     expect(issuesOf({ kind: 'aws_access_key', token })).not.toEqual([]);
+    expect(CLOUD_CREDENTIAL_KINDS).toEqual(['cloudflare_api_token']);
+    expect(CREDENTIAL_KIND_PROVIDERS).toEqual({ cloudflare_api_token: 'cloudflare' });
     expect(issuesOf({ kind: 'cloudflare_api_token', token, accountId: 'outra' })).not.toEqual([]);
     expect(issuesOf({ kind: 'cloudflare_api_token' })).not.toEqual([]);
     expect(issuesOf({ token })).not.toEqual([]);
@@ -104,14 +108,16 @@ describe('credencial colada no painel (fase 2, PR-11)', () => {
       expect(cloudCredentialStatusSchema.safeParse({ ...status, ...extra }).success).toBe(false);
     }
     expect(cloudCredentialStatusSchema.safeParse({ ...status, keyIdSuffix: 'a1f' }).success).toBe(false);
+    expect(cloudCredentialStatusSchema.safeParse({ ...status, kind: 'aws_access_key' }).success).toBe(false);
     expect(
       cloudAccountSchema.safeParse({
         id: '018f2c1e-0000-7000-8000-0000000c0005',
         provider: 'cloudflare',
         accountId: 'd0e0000000000000000000000000a1fa',
         regions: [],
-        roleArn: null,
-        externalId: null,
+        readerRoleArn: null,
+        nodeServiceAccountId: null,
+        webIdentityAudience: null,
         buckets: { cloudtrail: null, guardduty: null, waf: null },
         pubsubSubscription: null,
         sinkTopic: null,
@@ -122,6 +128,8 @@ describe('credencial colada no painel (fase 2, PR-11)', () => {
         status: 'active',
         connection: 'waiting',
         connectionError: null,
+        checkRequestedAt: null,
+        ingestFrom: null,
         lastCollectedAt: null,
         createdAt: '2026-11-01T00:00:00.000Z',
         updatedAt: '2026-11-01T00:00:00.000Z',

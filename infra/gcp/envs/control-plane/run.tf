@@ -17,23 +17,22 @@ locals {
   owner_emails = [for principal in var.owner_principals : split(":", principal)[1]]
 
   # Padrões seguros das variáveis da seção 2.5 do plano que valem para os dois serviços; `var.service_env` substitui ou
-  # acrescenta. Nada de segredo. O que fica fora (versões dos aceites, URL do Portal, versão do nó, remetente e
-  # usuário do SMTP) é do responsável e entra pelo terraform.tfvars; a validação na partida do serviço avisa o que
-  # falta. `TRUST_PROXY_HOPS` não tem padrão aqui: quantos proxies o serviço confia é decisão do app (CP-01); se o
-  # schema dele exigir um valor, ele entra em `service_env`.
+  # acrescenta. Nada de segredo. Os preços não são variáveis: saem da tabela de preços publicada no Firestore, pelo
+  # console do responsável (os antigos `STRIPE_PRICE_LOOKUP_*` saíram daqui). O que fica fora (versões dos aceites, URL
+  # do Portal, versão do nó, remetente e usuário do SMTP) é do responsável e entra pelo terraform.tfvars; a validação
+  # na partida do serviço avisa o que falta. `TRUST_PROXY_HOPS` não tem padrão aqui: quantos proxies o serviço confia
+  # é decisão do app (CP-01); se o schema dele exigir um valor, ele entra em `service_env`.
   service_env_defaults = {
-    NODE_ENV                         = "production"
-    LOG_LEVEL                        = "info"
-    SITE_ORIGINS                     = "https://veraxsistemas.com.br,https://www.veraxsistemas.com.br"
-    SITE_SUCCESS_URL                 = "https://veraxsistemas.com.br/checkout/sucesso?cs={CHECKOUT_SESSION_ID}"
-    SITE_CANCEL_URL                  = "https://veraxsistemas.com.br/#planos"
-    STRIPE_LIVE                      = "false"
-    STRIPE_PRICE_LOOKUP_ESSENCIAL    = "verax_control_essencial_mensal"
-    STRIPE_PRICE_LOOKUP_PROFISSIONAL = "verax_control_profissional_mensal"
-    PROVISIONING_ENABLED             = "false"
-    CLOUDFLARE_ZONE_NAME             = "veraxsistemas.com.br"
-    PANEL_DOMAIN_SUFFIX              = "control.veraxsistemas.com.br"
-    API_DOMAIN_PREFIX                = "api-"
+    NODE_ENV             = "production"
+    LOG_LEVEL            = "info"
+    SITE_ORIGINS         = "https://veraxsistemas.com.br,https://www.veraxsistemas.com.br"
+    SITE_SUCCESS_URL     = "https://veraxsistemas.com.br/checkout/sucesso?cs={CHECKOUT_SESSION_ID}"
+    SITE_CANCEL_URL      = "https://veraxsistemas.com.br/#planos"
+    STRIPE_LIVE          = "false"
+    PROVISIONING_ENABLED = "false"
+    CLOUDFLARE_ZONE_NAME = "veraxsistemas.com.br"
+    PANEL_DOMAIN_SUFFIX  = "control.veraxsistemas.com.br"
+    API_DOMAIN_PREFIX    = "api-"
   }
 
   # Só do cp-worker: quem manda e-mail é ele (só ele lê `cp-smtp-password`). O cp-public não recebe variável de SMTP.

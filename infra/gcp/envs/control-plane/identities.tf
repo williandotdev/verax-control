@@ -1,5 +1,5 @@
 # As cinco identidades do plano de controle (plano, seção 2.2, mais a `cp-invoker` da revisão), sem chave JSON em
-# lugar nenhum: três contas de execução (uma por peça), a conta que só serve de token para chamar o cp-worker e a
+# lugar nenhum (a sexta, `cp-admin`, do console do responsável, fica em admin.tf e só existe com `admin_enabled`): três contas de execução (uma por peça), a conta que só serve de token para chamar o cp-worker e a
 # conta que o GitHub Actions usa para implantar, pela federação de identidade. Cada papel vale no menor recurso
 # possível (a fila, o segredo, o Job, a conta), nunca no projeto quando dá para evitar.
 
@@ -126,14 +126,17 @@ resource "google_project_iam_custom_role" "job_runner" {
   depends_on = [google_project_service.apis]
 }
 
-# Quem implanta age como as três contas de execução (uma revisão nova do serviço roda com a conta dele). Não age
-# como a cp-invoker: nenhum serviço roda com ela.
+# Quem implanta age como as contas de execução (uma revisão nova do serviço roda com a conta dele): as três de sempre
+# e a do cp-admin, quando ele existe (admin.tf). Não age como a cp-invoker: nenhum serviço roda com ela.
 resource "google_service_account_iam_member" "deployer_acts_as" {
-  for_each = {
-    public    = google_service_account.public.name
-    worker    = google_service_account.worker.name
-    terraform = google_service_account.terraform.name
-  }
+  for_each = merge(
+    {
+      public    = google_service_account.public.name
+      worker    = google_service_account.worker.name
+      terraform = google_service_account.terraform.name
+    },
+    { for account in google_service_account.admin : "admin" => account.name },
+  )
 
   service_account_id = each.value
   role               = "roles/iam.serviceAccountUser"

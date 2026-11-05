@@ -57,6 +57,15 @@ export const DEMO_SINK_TOPIC_PREFIX = 'projects/verax-nos-demo/topics/verax-demo
 /** IP de saída do nó da demonstração (faixa reservada para documentação, RFC 5737). */
 export const DEMO_EGRESS_IPS = ['203.0.113.10/32'];
 
+/** ID único da conta de serviço do nó da demonstração (fictício, 21 dígitos): o `NodeServiceAccountId` da pilha. */
+export const DEMO_NODE_SERVICE_ACCOUNT_ID = '123456789012345678901';
+
+/**
+ * Quanto o "worker" da demonstração leva para responder o "Verificar" da AWS: a tela mostra "Verificando…" e relê a
+ * conta até a resposta.
+ */
+export const DEMO_AWS_CHECK_DELAY_MS = 1_500;
+
 /** Fim do ID do token do Cloudflare guardado na demonstração (fictício). */
 export const DEMO_CLOUDFLARE_TOKEN_SUFFIX = 'c0de';
 

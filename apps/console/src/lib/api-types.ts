@@ -1,0 +1,319 @@
+/**
+ * As formas que a API do console (`/v1/admin/...`, `apps/control-plane/src/admin`) devolve e aceita, como chegam no
+ * JSON (datas em texto ISO). Espelham os tipos do plano de controle; o teste de contrato
+ * `apps/control-plane/test/console-contract.test.ts` falha no `pnpm typecheck` se um dos dois lados mudar sem o outro.
+ *
+ * Valores em centavos de real (`amount`, `fixed`, `hourlyCost`, `monthly`...), custos de nuvem em dólares e taxas entre
+ * 0 e 1. Este arquivo não importa nada: o teste de contrato o lê do plano de controle.
+ */
+
+export type DeploymentMode = 'managed' | 'self_hosted';
+export type SizeId = 'P' | 'M' | 'G';
+export type SupportLevel = 'standard' | 'priority';
+export type PaymentMethod = 'card' | 'boleto';
+export type ComponentId =
+  'environment' | 'cloud_accounts' | 'volume' | 'agents' | 'history' | 'priority_support' | 'setup';
+export type ContactReason =
+  | 'cloud_accounts_above_max'
+  | 'volume_above_max'
+  | 'agents_above_max'
+  | 'history_above_max'
+  | 'above_largest_size';
+export type VersionStatus = 'draft' | 'published' | 'retired';
+
+export interface Priced {
+  amount: number;
+  lookupKey: string;
+}
+
+export interface SizeRule {
+  size: SizeId;
+  maxCloudAccounts: number;
+  maxMonthlyGib: number;
+  maxAgents: number;
+  description: string;
+}
+
+export interface ModePricing {
+  environment: Partial<Record<SizeId, Priced>>;
+  setup?: Priced;
+}
+
+/** As seis respostas do cliente (a entrada da cotação e do simulador). */
+export interface ConfigurationInput {
+  mode: DeploymentMode;
+  cloudAccounts: number;
+  monthlyGib: number;
+  agents: number;
+  historyDays: number;
+  support: SupportLevel;
+}
+
+/** A configuração já normalizada para a tabela, com o porte calculado. */
+export interface Configuration extends ConfigurationInput {
+  size: SizeId;
+}
+
+export interface Preset {
+  id: string;
+  label: string;
+  configuration: ConfigurationInput;
+}
+
+/** O conteúdo de uma tabela de preços (o que o responsável edita). */
+export interface PriceTable {
+  currency: 'brl';
+  interval: 'month';
+  sizing: { sizes: SizeRule[] };
+  modes: { managed: ModePricing; self_hosted: ModePricing };
+  cloudAccounts: { included: number; max: number; additional: Priced };
+  volume: { includedMonthlyGib: number; bands: { monthlyGib: number; amount: number; lookupKey: string }[] };
+  agents: { packSize: number; maxPacks: number; pack: Priced };
+  history: { includedDays: number; extended: { days: number; amount: number; lookupKey: string }[] };
+  prioritySupport: Priced;
+  users: { max: number };
+  presets?: Preset[];
+}
+
+/** O conteúdo de um modelo de custos (confidencial: só no Firestore e neste console). */
+export interface CostModel {
+  currency: 'brl';
+  exchange: { brlPerUsd: number; quotedOn: string; cloudBuffer: number };
+  infrastructure: {
+    sizes: Partial<Record<SizeId, { vmUsdPerMonth: number; diskGb: number; snapshotGib: number }>>;
+    diskUsdPerGibMonth: number;
+    snapshotUsdPerGibMonth: number;
+    natUsdPerVmMonth: number;
+    natIpUsdPerMonth: number;
+    otherUsdPerNodeMonth: number;
+    ingestionUsdPerGib: number;
+    agents: { entryUsdPerMonth: number; diskBaseGb: number; diskPerAgentGb: number };
+  };
+  paymentFees: { card: { rate: number; fixed: number }; boleto: { fixed: number }; billingRate: number };
+  taxes: { rates: { id: string; label: string; rate: number }[]; defaultRateId: string };
+  refundReserveRate: number;
+  support: {
+    hourlyCost: number;
+    hours: {
+      baseManaged: number;
+      baseSelfHosted: number;
+      perAdditionalAccount: number;
+      perAgentPack: number;
+      prioritySupport: number;
+      perVolumeBand: { monthlyGib: number; hours: number }[];
+      setupManaged: number;
+      setupPriorityExtra: number;
+      setupSelfHosted: number;
+    };
+  };
+  fixedCosts: { items: { name: string; monthly: number }[]; allocationCustomers: number };
+  margins: { minimum: number; alert: number };
+  customerCloudEstimateSpread: number;
+  sources?: { item: string; url: string; checkedOn: string }[];
+}
+
+/** Resumo da checagem guardado na versão publicada. */
+export interface PublishCheck {
+  priceTableVersion: string;
+  costModelVersion: string;
+  ok: boolean;
+  checkedConfigurations: number;
+  belowMinimum: number;
+  belowAlert: number;
+  worstMargin: number | null;
+  minimumMargin: number;
+  alertMargin: number;
+  at: string;
+}
+
+/** Uma linha da lista de versões. */
+export interface VersionSummary {
+  version: string;
+  status: VersionStatus;
+  current: boolean;
+  effectiveFrom?: string;
+  publishedAt?: string;
+  publishedBy?: string;
+  retiredAt?: string;
+  supersededBy?: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface VersionedRecord<C> {
+  version: string;
+  status: VersionStatus;
+  content: C;
+  effectiveFrom?: string;
+  publishedAt?: string;
+  publishedBy?: string;
+  retiredAt?: string;
+  supersededBy?: string;
+  publishCheck?: PublishCheck;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface GuardConfiguration {
+  configuration: Configuration;
+  monthlyTotal: number;
+  contributionMargin: number;
+  contributionMarginRatio: number;
+}
+
+export interface GuardScenario {
+  taxRateId: string;
+  paymentMethod: PaymentMethod;
+  worst: GuardConfiguration | null;
+}
+
+export interface MonotonicityViolation {
+  from: Configuration;
+  to: Configuration;
+  fromTotal: number;
+  toTotal: number;
+}
+
+/** O relatório da checagem de publicação (a grade inteira no cartão e na alíquota padrão). */
+export interface GuardReport {
+  ok: boolean;
+  problems: string[];
+  paymentMethod: PaymentMethod;
+  taxRateId: string;
+  minimumMargin: number;
+  alertMargin: number;
+  checkedConfigurations: number;
+  contactUsConfigurations: number;
+  belowMinimum: { count: number; configurations: GuardConfiguration[] };
+  belowAlert: { count: number; configurations: GuardConfiguration[] };
+  worst: GuardConfiguration[];
+  worstByMode: Partial<Record<DeploymentMode, GuardConfiguration>>;
+  worstBySize: Partial<Record<SizeId, GuardConfiguration>>;
+  otherScenarios: GuardScenario[];
+  monotonicity: { violations: number; examples: MonotonicityViolation[] };
+  startingAt: Partial<Record<DeploymentMode, number>>;
+  gridMinimum: Partial<Record<DeploymentMode, number>>;
+}
+
+/** `POST .../check`. */
+export interface CheckResult {
+  costModelVersion: string;
+  report: GuardReport;
+}
+
+/** `POST .../publish` aprovado: o resumo da versão e o relatório (nulo no modelo de custos sem tabela vigente). */
+export interface PublishResult {
+  version: string;
+  status: VersionStatus;
+  effectiveFrom?: string;
+  publishedAt?: string;
+  publishedBy?: string;
+  retiredAt?: string;
+  supersededBy?: string;
+  updatedAt: string;
+  updatedBy: string;
+  report: GuardReport | null;
+}
+
+export interface QuoteLineItem {
+  component: ComponentId;
+  variant: string;
+  lookupKey: string;
+  quantity: number;
+  unitAmount: number;
+  amount: number;
+  recurring: boolean;
+}
+
+export interface NodeLimits {
+  maxCloudAccounts: number;
+  monthlyGib: number;
+  historyDays: number;
+  maxAgents: number;
+  maxUsers: number;
+}
+
+export interface Quote {
+  configuration: Configuration;
+  sizeDescription: string;
+  lineItems: QuoteLineItem[];
+  monthlyTotal: number;
+  setupTotal: number;
+  firstInvoiceTotal: number;
+  limits: NodeLimits;
+  included: { cloudAccounts: number; monthlyGib: number; historyDays: number; users: number };
+  agentPacks: number;
+}
+
+export interface DreLines {
+  grossRevenue: number;
+  taxes: number;
+  refundReserve: number;
+  netRevenue: number;
+  infrastructure: number;
+  paymentFees: number;
+  support: number;
+  contributionMargin: number;
+  contributionMarginRatio: number;
+  contributionMarginNetRatio: number;
+  fixedCosts: number;
+  result: number;
+  resultRatio: number;
+}
+
+export interface SetupDre {
+  revenue: number;
+  taxes: number;
+  refundReserve: number;
+  paymentFees: number;
+  supportHours: number;
+  support: number;
+  contributionMargin: number;
+  contributionMarginRatio: number | null;
+}
+
+export interface DreResult {
+  quote: Quote;
+  paymentMethod: PaymentMethod;
+  taxRateId: string;
+  supportHours: number;
+  monthly: DreLines;
+  setup: SetupDre;
+  twelveMonths: { grossRevenue: number; contributionMargin: number; result: number };
+  customerCloudEstimate: { monthly: number; low: number; high: number } | null;
+}
+
+/** `POST /v1/admin/dre/simulate`. */
+export type SimulationResult =
+  | { contactUs: true; reason: ContactReason; priceTableVersion: string; costModelVersion: string }
+  | {
+      contactUs: false;
+      priceTableVersion: string;
+      costModelVersion: string;
+      dre: DreResult;
+      margins: { minimum: number; alert: number };
+      taxRate: { id: string; label: string; rate: number };
+    };
+
+export interface SimulationRequest {
+  configuration: ConfigurationInput;
+  paymentMethod: PaymentMethod;
+  priceTableVersion?: string;
+  costModelVersion?: string;
+  taxRateId?: string;
+  discountRate?: number;
+  allocationCustomers?: number;
+}
+
+/** `GET /v1/admin/me`. */
+export interface AdminSession {
+  email: string;
+}
+
+/** Um problema de validação (`details.issues` no 400): o caminho do campo e a mensagem. */
+export interface ValidationIssue {
+  path: string;
+  message: string;
+}

@@ -47,16 +47,23 @@ const simulateBodySchema = z.strictObject({
   allocationCustomers: z.number().int().min(1).max(100_000).optional(),
 });
 
-export interface PublishResult {
-  version: string;
-  status: string;
-  effectiveFrom?: Date;
-  report: GuardReport | null;
-}
+/** A versão publicada (o resumo, como na lista) e o relatório da checagem que a acompanhou. */
+export type PublishResult = Omit<VersionSummary, 'current'> & { report: GuardReport | null };
 
+/**
+ * A DRE simulada. Junto com ela vão as metas de margem e a alíquota do modelo de custos usado, para o console marcar
+ * o que fica abaixo da mínima ou do alerta e nomear o imposto sem ler o modelo de novo (só no console, nunca em log).
+ */
 export type SimulationResult =
   | { contactUs: true; reason: ContactReason; priceTableVersion: string; costModelVersion: string }
-  | { contactUs: false; priceTableVersion: string; costModelVersion: string; dre: DreResult };
+  | {
+      contactUs: false;
+      priceTableVersion: string;
+      costModelVersion: string;
+      dre: DreResult;
+      margins: { minimum: number; alert: number };
+      taxRate: { id: string; label: string; rate: number };
+    };
 
 /** 400 com o caminho e a mensagem de cada problema (o console mostra ao lado do campo). Nunca o valor recebido. */
 function invalid(error: ZodError): ApiError {
@@ -119,9 +126,11 @@ function summaryOf(record: VersionedRecord<unknown>): Omit<VersionSummary, 'curr
     status: record.status,
     ...(record.effectiveFrom === undefined ? {} : { effectiveFrom: record.effectiveFrom }),
     ...(record.publishedAt === undefined ? {} : { publishedAt: record.publishedAt }),
+    ...(record.publishedBy === undefined ? {} : { publishedBy: record.publishedBy }),
     ...(record.retiredAt === undefined ? {} : { retiredAt: record.retiredAt }),
     ...(record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
     updatedAt: record.updatedAt,
+    updatedBy: record.updatedBy,
   };
 }
 
@@ -314,7 +323,17 @@ export class AdminPricingService {
     }
     const versions = { priceTableVersion: table.version, costModelVersion: model.version };
     if (outcome.kind === 'contact_us') return { contactUs: true, reason: outcome.reason, ...versions };
-    return { contactUs: false, ...versions, dre: outcome.dre };
+    const { taxRateId } = outcome.dre;
+    const tax = model.content.taxes.rates.find((candidate) => candidate.id === taxRateId);
+    // A DRE só sai com uma alíquota do modelo (`dre` confere); sem ela, o modelo é inconsistente.
+    if (tax === undefined) throw new TypeError(`alíquota ausente do modelo: ${taxRateId}`);
+    return {
+      contactUs: false,
+      ...versions,
+      dre: outcome.dre,
+      margins: { minimum: model.content.margins.minimum, alert: model.content.margins.alert },
+      taxRate: { id: tax.id, label: tax.label, rate: tax.rate },
+    };
   }
 
   private async create<C>(
