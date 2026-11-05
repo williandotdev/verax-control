@@ -1,10 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
 import { authErrorMessage, safeRedirect, verifyRecoveryCode, verifyTotp } from '@/features/auth/auth-api';
 import { AuthShell, FormError } from '@/features/auth/auth-shell';
+import { DemoCodeHint } from '@/features/demo-login/entry';
 
 /** Segundo passo do login: código do aplicativo autenticador ou um código de recuperação. */
 export function MfaVerifyPage() {
@@ -16,6 +18,7 @@ export function MfaVerifyPage() {
   const [code, setCode] = useState('');
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const submitRef = useRef<HTMLButtonElement>(null);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -32,6 +35,15 @@ export function MfaVerifyPage() {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  // Só na demonstração (modo `mock`): preenche o código de exemplo e leva o foco ao "Verificar", sem enviar.
+  function fillDemoCode(demoCode: string) {
+    flushSync(() => {
+      setCode(demoCode);
+      setError(undefined);
+    });
+    submitRef.current?.focus();
   }
 
   return (
@@ -65,6 +77,7 @@ export function MfaVerifyPage() {
           />
         )}
         <Button
+          ref={submitRef}
           type="submit"
           className="w-full"
           disabled={submitting || (useRecovery ? code.trim().length === 0 : code.length !== 6)}
@@ -87,6 +100,7 @@ export function MfaVerifyPage() {
         <Link to="/login" className="block text-center text-sm text-muted-foreground underline">
           Voltar ao login
         </Link>
+        {!useRecovery && <DemoCodeHint onFill={fillDemoCode} />}
       </form>
     </AuthShell>
   );

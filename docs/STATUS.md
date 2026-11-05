@@ -4572,3 +4572,38 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
 - **Reproduzido** num manager avulso (`test-api-users.sh`, seção nova 5, num contêiner Linux com usuário comum): o script chamado logo depois de um `docker restart`, com a porta fechada, dá exatamente o `ConnectionRefusedError` do CI com o script de antes; com a correção, espera (17 s aqui) e segue. A senha errada do `wazuh-wui` (401) e uma CA que não confere param na hora (menos de 10 s), e com a CA de volta tudo segue como antes.
 - **Testes:** `test-api-users.sh` (47 verificações, 5 novas; as 4 da seção nova falham com o script de antes); shellcheck v0.9.0 (`-x -S style infra/wazuh/scripts/*.sh`, como o `iac.yml`) limpo; `prettier --check` limpo. O `ci-test.sh` inteiro roda no CI.
 - **Riscos:** com a API fora do ar de verdade, o `wazuh-up` agora espera até 3 min antes de parar com o motivo (antes parava na hora).
+
+## Demonstração: abre no login, com botões que preenchem o acesso de exemplo
+
+- **Pedido:** no login da demonstração, um botão que preenche o usuário e a senha de teste, e a demonstração abrindo deslogada por padrão.
+- **Abre no login** (`src/mocks/demo-session.ts`):
+  - toda visita começa na tela de login (antes, já começava dentro do painel, como admin_verax);
+  - `localStorage['verax.mock.session'] = 'logged-in'` mantém o começo dentro do painel. O projeto `mock` do Playwright grava a chave pelo `storageState`, então os testes das telas não mudaram; quem desenvolve no `dev:mock` também pode usá-la (README);
+  - a sessão aberta na aba fica marcada no `sessionStorage`, como o cookie do painel real: um F5 não desloga; fechar a aba ou "Sair", sim;
+  - o `createHandlers` passou a exigir o estado (os testes unitários já passavam o deles).
+- **Para onde o login leva:** o login com o acesso de demonstração entra no que a demonstração abria antes: o papel de `verax.mock.role`, por padrão admin_verax com o Cliente Demo Alfa. Antes, entrava como analista do cliente.
+  - Vale também para o código de recuperação e para o primeiro acesso com a senha temporária, depois da troca e do MFA, que segue funcionando (e2e de ponta a ponta).
+  - O teste do tour pelo login (14 passos) agora define o papel `analista_cliente` explicitamente.
+- **Botões** (`src/features/demo-login`):
+  - "Preencher acesso de demonstração" no login, dentro do quadro do acesso de exemplo (o texto do quadro continua);
+  - "Preencher código de demonstração" no código do MFA, só no modo do aplicativo;
+  - preenchem sem enviar e levam o foco ao "Entrar" ou ao "Verificar"; uma região de status, só para leitor de tela, avisa o preenchimento.
+- **Fora do build de produção:** o quadro e os botões vêm de um `import()` que só existe no modo `mock`, como o tour. Antes, o quadro com as credenciais ia para o bundle de produção (escondido só em tempo de execução). Agora o `dist` do `build` não tem as credenciais nem o texto dos botões (conferido).
+- **Correção no caminho** (`App.tsx`):
+  - **Sintoma:** no modo estrito do React (desenvolvimento, `dev:mock` e e2e), abrir uma tela interna sem sessão deixava a página em "Abrindo o painel…", com a URL já em `/login`.
+  - **Causa:** o inicializador do `useState` roda duas vezes, e o 401 navegava o roteador descartado.
+  - **Correção:** a ligação foi para um `useLayoutEffect` com o roteador montado.
+  - **Produção:** não era afetada.
+  - **Teste:** um novo, que falha com o código anterior.
+- **Testes:**
+  - tipos, ESLint (`--max-warnings=0`) e Prettier limpos;
+  - 483 unitários do painel. Os novos: `demo-session.test.ts`, `demo-login.test.tsx` e o modo estrito em `App.test.tsx`;
+  - 117 e2e da demonstração, 7 deles novos em `demo-login.mock.spec.ts`: abre no login; preencher pelo teclado; admin_verax com o Alfa; o tour na primeira visita e o "Fazer o tour" depois do login; F5; sair e entrar de novo; primeiro acesso completo; axe nos dois temas; celular;
+  - `build:demo` e `build` com a varredura do bundle limpa.
+- **Dependências:** nenhuma.
+- **O que testar manualmente:** numa aba anônima do `dev:mock`:
+  1. A página abre no login.
+  2. Preencher, "Entrar", preencher o código e "Verificar" levam à Torre do admin da Verax com o Alfa e o tour.
+  3. F5 mantém a sessão.
+  4. "Sair" e entrar de novo funcionam.
+  5. Repetir nos dois temas e no celular.

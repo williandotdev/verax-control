@@ -73,6 +73,8 @@ test.describe('tour guiado (modo mock)', () => {
   }) => {
     test.setTimeout(90_000);
     const errors = collectErrors(page);
+    // O login entra com o papel de `verax.mock.role` (padrão: admin_verax): aqui, o tour da analista do cliente.
+    await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
     await page.goto('/login');
     await page.getByLabel('E-mail').fill('analista@demo.verax.local');
     await page.getByLabel('Senha', { exact: true }).fill('senha-de-demonstracao');

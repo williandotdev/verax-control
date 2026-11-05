@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { meSchema } from '@verax/shared';
-import { type FormEvent, useState } from 'react';
+import { type FormEvent, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { Field } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
@@ -9,9 +10,9 @@ import { AuthShell, FormError, FormNotice } from '@/features/auth/auth-shell';
 import { useAuthClientConfig } from '@/features/auth/client-config';
 import { useTurnstile } from '@/features/auth/turnstile';
 import { TurnstileWidget } from '@/features/auth/turnstile-widget';
+import { type DemoSignIn, DemoLoginHint } from '@/features/demo-login/entry';
 import { ME_QUERY_KEY } from '@/features/session/session';
 import { api } from '@/lib/api';
-import { DemoLoginHint } from '@/components/demo-banner';
 
 interface LoginState {
   from?: unknown;
@@ -27,6 +28,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const submitRef = useRef<HTMLButtonElement>(null);
   // Turnstile só com a chave do site vinda da API; sem ela, o formulário é o de sempre.
   const clientConfig = useAuthClientConfig();
   const siteKey = clientConfig.data?.turnstileSiteKey ?? null;
@@ -65,6 +67,16 @@ export function LoginPage() {
     }
   }
 
+  // Só na demonstração (modo `mock`): preenche o acesso de exemplo e leva o foco ao "Entrar", sem enviar.
+  function fillDemoAccess(access: DemoSignIn) {
+    flushSync(() => {
+      setEmail(access.email);
+      setPassword(access.password);
+      setError(undefined);
+    });
+    submitRef.current?.focus();
+  }
+
   return (
     <AuthShell
       title="Entrar"
@@ -93,6 +105,7 @@ export function LoginPage() {
           <TurnstileWidget containerRef={turnstile.containerRef} status={turnstile.status} />
         )}
         <Button
+          ref={submitRef}
           type="submit"
           className="w-full"
           disabled={submitting || !email || !password || waitingTurnstile}
@@ -102,7 +115,7 @@ export function LoginPage() {
         <Link to="/esqueci-senha" className="block text-center text-sm underline">
           Esqueci a senha
         </Link>
-        <DemoLoginHint />
+        <DemoLoginHint onFill={fillDemoAccess} />
       </form>
     </AuthShell>
   );
