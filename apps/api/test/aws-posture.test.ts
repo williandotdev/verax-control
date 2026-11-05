@@ -277,6 +277,37 @@ describe('postura nativa da AWS na tarefa aws-inventory (fase 2, PR-15)', () => 
     ]);
   });
 
+  it('teto de itens: a parte cortada deixa as checagens dela não lidas e a varredura parcial, com o motivo', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (postura, teto)');
+    const account = await verifiedAccount(tenant);
+    const groups = Array.from({ length: 1001 }, (_, index) => ({
+      GroupId: `sg-${index.toString(16).padStart(17, '0')}`,
+      IpPermissions: [],
+    }));
+    const { sync } = setup([tenant], {
+      behavior: {
+        [account.accountId]: {
+          ec2: { 'us-east-1': { DescribeSecurityGroupsCommand: () => ({ SecurityGroups: groups }) } },
+        },
+      },
+    });
+    expect(await sync.runOnce()).toMatchObject({
+      collected: 1,
+      partial: 1,
+      postureScans: 1,
+      posturePartial: 1,
+    });
+    const [scan] = await scansOf(account.accountId);
+    expect(scan?.errors).toEqual(['sg:us-east-1:truncated']);
+    const get = await reader(tenant);
+    const [item] = postureOverviewSchema.parse((await get('/v1/posture').expect(200)).body).accounts;
+    expect(item?.errors).toEqual([{ section: 'sg', region: 'us-east-1', code: 'truncated' }]);
+    const check = item?.checks.find(
+      (entry) => entry.checkId === 'ec2_securitygroup_allow_ingress_from_internet_to_all_ports',
+    );
+    expect(check).toMatchObject({ unknown: 1, failed: 0, status: 'unknown' });
+  });
+
   it('falha passageira numa leitura da postura: nem o retrato nem a varredura são gravados, e a tarefa recua', async () => {
     const tenant = await createTenant(app, 'Cliente Demo A (postura, falha)');
     const account = await verifiedAccount(tenant);

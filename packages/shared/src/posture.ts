@@ -50,8 +50,15 @@ export const REGIONAL_POSTURE_SECTIONS: ReadonlySet<PostureSection> = new Set<Po
 export const MAX_POSTURE_ERRORS = 200;
 
 /**
- * Uma leitura que a AWS recusou numa varredura (permissão, SCP, região desligada) ou com itens fora do formato
- * (`invalid_items`): as checagens que dependem dela ficam "não lidas" naquele escopo, fora da nota.
+ * O código de uma parte do inventário que passou do teto de itens por tipo (1.000): os itens além dele não foram
+ * conferidos, e as checagens dela não podem sair aprovadas naquele escopo.
+ */
+export const POSTURE_TRUNCATED = 'truncated';
+
+/**
+ * Uma leitura que a AWS recusou numa varredura (permissão, SCP, região desligada), com itens fora do formato
+ * (`invalid_items`) ou cortada pelo teto de itens (`truncated`): as checagens que dependem dela ficam "não lidas"
+ * naquele escopo, fora da nota (com o teto, uma reprovação achada nos itens conferidos continua valendo).
  */
 export const postureSectionErrorSchema = z.strictObject({
   section: z.enum(POSTURE_SECTIONS),

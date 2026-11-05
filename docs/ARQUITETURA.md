@@ -598,10 +598,14 @@ sem conta AWS vê "em breve" em Postura e em Ativos.
 - **Resultados e nota** (`native-posture.ts`): um resultado por recurso (usuário, chave, grupo, instância, bucket), por
   região (EBS e GuardDuty) ou da conta, como o Prowler: aprovado, reprovado ou não lido. Sem recurso a conferir, a
   checagem não se aplica. **A leitura recusada (permissão, SCP, região desligada) deixa a checagem "não lida"
-  naquele escopo: fora da nota e nunca aprovada.** No S3, a lógica é de três valores: um bloqueio lido que decide
-  sozinho (o do bucket ou o da conta) vale mesmo com outra leitura recusada. A nota é a de sempre (`summarizePosture`,
-  crítica 10, alta 5, média 2, baixa 1). A falha passageira em qualquer leitura da postura para a coleta inteira, como
-  no inventário (nem retrato nem varredura).
+  naquele escopo: fora da nota e nunca aprovada.** A parte do inventário que passou do teto de 1.000 itens também:
+  ela ganha um resultado não lido no escopo cortado, então a checagem dela só sai aprovada se tudo foi conferido (uma
+  reprovação achada nos itens conferidos continua reprovando), e a varredura sai parcial com o motivo
+  (`sg:sa-east-1:truncated`). No S3, as travas valem trava a trava, combinando o bucket e a conta (o S3 aplica a mais
+  restritiva das duas: ignorar ACLs no bucket e restringir buckets públicos na conta protegem), com lógica de três
+  valores: uma trava lida que decide sozinha vale mesmo com outra leitura recusada. A nota é a de sempre
+  (`summarizePosture`, crítica 10, alta 5, média 2, baixa 1). A falha passageira em qualquer leitura da postura para a
+  coleta inteira, como no inventário (nem retrato nem varredura).
 - **Gravação:** a varredura (`PostureScan`, com `scannedAt` igual ao `collectedAt` do retrato) e as reprovações
   (`PostureFailure`) entram na mesma transação do retrato, com a mesma conferência da concessão e da conta, e as
   chaves únicas tornam a gravação idempotente. A varredura guarda também os resultados não lidos (`unknown`), cada

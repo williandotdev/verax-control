@@ -182,7 +182,9 @@ Na reunião:
      ficam **não lidas**: fora da nota e nunca aprovadas, então a nota não sobe por falta de leitura. Peça ao cliente
      para conferir a política do papel e as SCPs; a próxima varredura tenta de novo. Uma trilha da organização vista da
      conta-membro pode ter o estado recusado (`TrailNotFoundException` ou `AccessDeniedException`): sem outra trilha
-     multirregião gravando na conta, a checagem do CloudTrail fica não lida, não reprovada;
+     multirregião gravando na conta, a checagem do CloudTrail fica não lida, não reprovada. O código `truncated` é o
+     teto de 1.000 itens por tipo (security groups de uma região, buckets, usuários, instâncias): os itens além dele não
+     foram conferidos, e as checagens deles ficam não lidas (uma reprovação achada nos conferidos continua valendo);
    - varredura parada: é a mesma tarefa e o mesmo cursor do inventário (acima). Uma falha passageira numa leitura da
      postura para a coleta inteira, sem gravar nem o retrato nem a varredura, e a tarefa recua do mesmo jeito;
    - no relatório da tarefa (o log do worker), `postureScans` e `posturePartial` contam as varreduras gravadas e as

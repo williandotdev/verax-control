@@ -5,6 +5,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { describePostureError } from '@/features/posture/labels';
 import { api } from '@/lib/api';
 import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
@@ -104,6 +105,15 @@ describe('Postura cloud', () => {
     ]);
     expect(band).toHaveTextContent('nunca contam como aprovadas');
     expect(band).not.toHaveTextContent(DEMO_ACCOUNTS.alfaHomologacao);
+  });
+
+  it('a varredura parcial pelo teto de itens diz que os itens além dele não foram conferidos', () => {
+    expect(describePostureError({ section: 'sg', region: 'sa-east-1', code: 'truncated' })).toBe(
+      'Security groups em sa-east-1: passou do teto de 1.000 itens, e os itens além dele não foram conferidos',
+    );
+    expect(describePostureError({ section: 's3', region: null, code: 'truncated' })).toBe(
+      'Buckets S3: passou do teto de 1.000 itens, e os itens além dele não foram conferidos',
+    );
   });
 
   it('o catálogo: as 18 checagens com a situação, somadas nas contas ou de uma conta só', async () => {

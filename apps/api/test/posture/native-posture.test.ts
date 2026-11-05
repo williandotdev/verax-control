@@ -470,6 +470,129 @@ describe('postura nativa da AWS: o catálogo (PR-15)', () => {
     expect(statusOf(listing, 's3_account_level_public_access_blocks')).toBe('pass');
   });
 
+  it('S3: as travas efetivas combinam o bucket e a conta, trava a trava (a mais restritiva vale)', () => {
+    type Block = { ignorePublicAcls: boolean; restrictPublicBuckets: boolean };
+    const block = ({ ignorePublicAcls, restrictPublicBuckets }: Block) => ({
+      blockPublicAcls: false,
+      ignorePublicAcls,
+      blockPublicPolicy: false,
+      restrictPublicBuckets,
+    });
+    /** Um bucket público pela política e pela ACL, com o bloqueio dele e o da conta dados. */
+    const mixed = (bucketBlock: Block | null, accountBlock: PostureReads['accountPublicAccessBlock']) =>
+      scanWith((inventory, reads) => {
+        const bucket = firstBucket(inventory);
+        bucket.policyPublic = true;
+        bucket.aclPublic = true;
+        bucket.publicAccessBlock = bucketBlock === null ? null : block(bucketBlock);
+        reads.accountPublicAccessBlock = accountBlock;
+      });
+    const onAccount = (flags: Block) => ({ ok: true, value: block(flags) }) as const;
+    // Ignorar ACLs no bucket e restringir buckets públicos na conta: protegido (e o contrário também).
+    for (const scan of [
+      mixed(
+        { ignorePublicAcls: true, restrictPublicBuckets: false },
+        onAccount({ ignorePublicAcls: false, restrictPublicBuckets: true }),
+      ),
+      mixed(
+        { ignorePublicAcls: false, restrictPublicBuckets: true },
+        onAccount({ ignorePublicAcls: true, restrictPublicBuckets: false }),
+      ),
+    ]) {
+      expect(statusOf(scan, 's3_bucket_level_public_access_block')).toBe('pass');
+      expect(statusOf(scan, 's3_bucket_public_access')).toBe('pass');
+      // A conta sozinha não tem as duas travas: a checagem da conta continua reprovada.
+      expect(statusOf(scan, 's3_account_level_public_access_blocks')).toBe('fail');
+    }
+    // Só uma das travas em qualquer nível: sem proteção, e o bucket fica público pela outra porta.
+    const half = mixed(
+      { ignorePublicAcls: true, restrictPublicBuckets: false },
+      onAccount({ ignorePublicAcls: true, restrictPublicBuckets: false }),
+    );
+    expect(statusOf(half, 's3_bucket_level_public_access_block')).toBe('fail');
+    expect(statusOf(half, 's3_bucket_public_access')).toBe('fail');
+    // A trava que falta no bucket está na conta, mas a conta não foi lida: não lida (nunca aprovada nem reprovada).
+    const unread = mixed({ ignorePublicAcls: true, restrictPublicBuckets: false }, denied);
+    expect(statusOf(unread, 's3_bucket_level_public_access_block')).toBe('unknown');
+    expect(statusOf(unread, 's3_bucket_public_access')).toBe('unknown');
+    // As duas travas no bucket decidem sozinhas, mesmo com a conta não lida.
+    const own = mixed({ ignorePublicAcls: true, restrictPublicBuckets: true }, denied);
+    expect(statusOf(own, 's3_bucket_level_public_access_block')).toBe('pass');
+    expect(statusOf(own, 's3_bucket_public_access')).toBe('pass');
+  });
+
+  it('teto de itens: os grupos além do teto não deixam aprovar; a reprovação achada continua; a varredura sai parcial', () => {
+    const sgChecks = [
+      'ec2_securitygroup_allow_ingress_from_internet_to_all_ports',
+      'ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_22',
+      'ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_3389',
+      'ec2_securitygroup_allow_ingress_from_internet_to_database_ports',
+    ];
+    const safe = scanWith((inventory) => {
+      inventory.truncated = ['sg:sa-east-1'];
+    });
+    for (const id of sgChecks) {
+      expect(safe.checks.find((item) => item.checkId === id)).toMatchObject({
+        passed: 1,
+        failed: 0,
+        unknown: 1,
+      });
+      expect(statusOf(safe, id)).toBe('unknown');
+    }
+    expect(safe.errors).toEqual(['sg:sa-east-1:truncated']);
+    expect(parsePostureError('sg:sa-east-1:truncated')).toEqual({
+      section: 'sg',
+      region: 'sa-east-1',
+      code: 'truncated',
+    });
+    // O teto não afeta o que não depende dos grupos.
+    expect(statusOf(safe, 'ec2_instance_imdsv2_enabled')).toBe('pass');
+    expect(safe.summary.manual).toBe(4);
+    // Um grupo com SSH aberto entre os conferidos: reprovada mesmo com o teto.
+    const open = scanWith((inventory) => {
+      setRule('tcp', 22, 22)(inventory, goodReads());
+      inventory.truncated = ['sg:sa-east-1'];
+    });
+    expect(statusOf(open, 'ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_22')).toBe('fail');
+    expect(statusOf(open, 'ec2_securitygroup_allow_ingress_from_internet_to_all_ports')).toBe('unknown');
+  });
+
+  it('teto de itens nos buckets, no IAM e nas instâncias: cada parte afeta só as checagens dela', () => {
+    const buckets = scanWith((inventory) => {
+      inventory.truncated = ['s3'];
+    });
+    expect(statusOf(buckets, 's3_bucket_public_access')).toBe('unknown');
+    expect(statusOf(buckets, 's3_bucket_level_public_access_block')).toBe('unknown');
+    expect(statusOf(buckets, 's3_account_level_public_access_blocks')).toBe('pass');
+    expect(buckets.errors).toEqual(['s3:truncated']);
+    // Um bucket público entre os conferidos: reprovada mesmo com o teto.
+    const publicBucket = scanWith((inventory, reads) => {
+      noBlocks(inventory, reads);
+      firstBucket(inventory).policyPublic = true;
+      inventory.truncated = ['s3'];
+    });
+    expect(statusOf(publicBucket, 's3_bucket_public_access')).toBe('fail');
+
+    const users = scanWith((inventory) => {
+      inventory.truncated = ['iam'];
+    });
+    for (const id of [
+      'iam_user_mfa_enabled_console_access',
+      'iam_rotate_access_key_90_days',
+      'iam_user_accesskey_unused',
+    ]) {
+      expect(statusOf(users, id)).toBe('unknown');
+    }
+    expect(statusOf(users, 'iam_root_mfa_enabled')).toBe('pass');
+
+    const instances = scanWith((inventory) => {
+      inventory.truncated = ['ec2:sa-east-1', 'lua:sa-east-1', 'sg:lua-1'];
+    });
+    expect(statusOf(instances, 'ec2_instance_imdsv2_enabled')).toBe('unknown');
+    // Partes ou regiões fora do formato ficam de fora (não viram erro inventado).
+    expect(instances.errors).toEqual(['ec2:sa-east-1:truncated']);
+  });
+
   it('a varredura parcial: uma região recusada fica não lida, a outra continua valendo', () => {
     const scan = scanWith((inventory, reads) => {
       inventory.regions = ['sa-east-1', 'us-east-1'];
@@ -784,6 +907,24 @@ describe('postura nativa da AWS: a conta fictícia de ponta a ponta (PR-15)', ()
       { signal: controller.signal },
     );
     await expect(reads).rejects.toThrow('parada do worker');
+  });
+
+  it('o teto da coleta: 1.000 grupos seguros e o aberto além do teto não aprovam as checagens dos grupos', async () => {
+    const groups = Array.from({ length: 1001 }, (_, index) => ({
+      GroupId: `sg-${index.toString(16).padStart(17, '0')}`,
+      GroupName: `grupo-${index}`,
+      IpPermissions: index === 1000 ? [{ IpProtocol: '-1', IpRanges: [{ CidrIp: '0.0.0.0/0' }] }] : [],
+    }));
+    const { inventory, reads } = await collect({
+      ec2: { 'sa-east-1': { DescribeSecurityGroupsCommand: () => ({ SecurityGroups: groups }) } },
+    });
+    expect(inventory.truncated).toEqual(['sg:sa-east-1']);
+    const scan = toPostureScan(inventory, reads);
+    expect(statusOf(scan, 'ec2_securitygroup_allow_ingress_from_internet_to_all_ports')).toBe('unknown');
+    expect(statusOf(scan, 'ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_3389')).toBe('unknown');
+    // O SSH de us-east-1 (a conta fictícia) continua reprovando.
+    expect(statusOf(scan, 'ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_22')).toBe('fail');
+    expect(scan.errors).toEqual(['sg:sa-east-1:truncated']);
   });
 
   it('a conta sem política de senha reprova as duas checagens de senha (vale a padrão da AWS)', async () => {

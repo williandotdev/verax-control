@@ -6,6 +6,7 @@ import {
   type InventorySection,
   type InventorySectionError,
   type OpenRule,
+  POSTURE_TRUNCATED,
   type RiskReason,
 } from '@verax/shared';
 import type { Severity } from '@/design/severity';
@@ -97,6 +98,9 @@ const REGION_CODES: ReadonlySet<string> = new Set([
 export function describeReadError(label: string, region: string | null, code: string): string {
   const where = region === null ? label : `${label} em ${region}`;
   if (code === INVENTORY_INVALID_ITEMS) return `${where}: itens fora do formato esperado ficaram de fora`;
+  if (code === POSTURE_TRUNCATED) {
+    return `${where}: passou do teto de ${INVENTORY_ITEM_CAP.toLocaleString('pt-BR')} itens, e os itens além dele não foram conferidos`;
+  }
   if (REFUSED_CODES.has(code)) return `${where}: a AWS recusou a leitura (${code})`;
   if (REGION_CODES.has(code)) {
     return `${where}: a região não aceitou a sessão, desligada ou fora do opt-in (${code})`;

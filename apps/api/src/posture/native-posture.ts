@@ -7,12 +7,14 @@ import {
   NATIVE_POSTURE_CHECKS,
   type NativePostureCheck,
   POSTURE_CHECK_ID,
+  POSTURE_SECTIONS,
   POSTURE_SEVERITIES,
   type PostureCheckResult,
   postureCheckResultSchema,
   postureErrorValue,
   type PostureSection,
   type PostureSectionError,
+  POSTURE_TRUNCATED,
   REGIONAL_POSTURE_SECTIONS,
 } from '@verax/shared';
 import { z } from 'zod';
@@ -37,6 +39,10 @@ import {
  * não lido (`manual`). A leitura recusada deixa a checagem não lida naquele escopo (uma região, a conta, um bucket):
  * fora da nota e nunca aprovada. Sem recurso a conferir, a checagem não se aplica (nenhum resultado). A nota é a de
  * sempre (`summarizePosture`: crítica 10, alta 5, média 2, baixa 1, só aprovadas e reprovadas).
+ *
+ * Uma parte do inventário que passou do teto de itens (1.000 por tipo) deixa a checagem dela com um resultado não lido
+ * naquele escopo, além dos itens conferidos: sem reprovação entre eles, a checagem fica não lida, nunca aprovada, e a
+ * varredura sai parcial (`parte[:região]:truncated`).
  *
  * Cada resultado passa pelo zod antes de entrar: um fora do formato (um nome que a AWS mudou, um texto grande demais)
  * fica de fora, é contado e marca a leitura dele com `invalid_items`.
@@ -225,23 +231,33 @@ function bucketCheck(passes: (bucket: BucketInfo, reads: PostureReads) => Tri): 
 }
 
 /**
- * Público: a política pública que nenhum bloqueio (do bucket ou da conta) restringe, ou a ACL pública que nenhum
- * ignora. Uma leitura recusada que poderia mudar a resposta deixa o bucket não lido.
+ * A trava que vale para o bucket: a do bucket ou a da conta. O S3 aplica a combinação mais restritiva das duas, trava a
+ * trava (https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html): ligada em
+ * qualquer um dos níveis, vale; não lida num nível e desligada no outro, fica não lida.
+ */
+function effectiveFlag(bucket: BucketInfo, reads: PostureReads, flag: BlockFlag): Tri {
+  return or(bucketFlag(bucket, flag), accountFlag(reads, flag));
+}
+
+/**
+ * Público: a política pública que a trava efetiva de restringir buckets públicos não segura, ou a ACL pública que a de
+ * ignorar ACLs públicas não ignora. Uma leitura recusada que poderia mudar a resposta deixa o bucket não lido.
  */
 function bucketNotPublic(bucket: BucketInfo, reads: PostureReads): Tri {
-  const restricted = or(
-    bucketFlag(bucket, 'restrictPublicBuckets'),
-    accountFlag(reads, 'restrictPublicBuckets'),
-  );
-  const ignored = or(bucketFlag(bucket, 'ignorePublicAcls'), accountFlag(reads, 'ignorePublicAcls'));
+  const restricted = effectiveFlag(bucket, reads, 'restrictPublicBuckets');
+  const ignored = effectiveFlag(bucket, reads, 'ignorePublicAcls');
   return not(or(and(bucket.policyPublic, not(restricted)), and(bucket.aclPublic, not(ignored))));
 }
 
-/** O bucket protegido pelo bloqueio dele ou pelo da conta (ignorar ACLs públicas e restringir buckets públicos). */
+/**
+ * Protegido pelo bloqueio: as duas travas que neutralizam o acesso público (ignorar ACLs públicas e restringir buckets
+ * públicos) valendo, cada uma combinada entre o bucket e a conta. A do bucket com uma trava e a da conta com a outra
+ * também protegem.
+ */
 function bucketBlocked(bucket: BucketInfo, reads: PostureReads): Tri {
-  return or(
-    and(bucketFlag(bucket, 'ignorePublicAcls'), bucketFlag(bucket, 'restrictPublicBuckets')),
-    and(accountFlag(reads, 'ignorePublicAcls'), accountFlag(reads, 'restrictPublicBuckets')),
+  return and(
+    effectiveFlag(bucket, reads, 'ignorePublicAcls'),
+    effectiveFlag(bucket, reads, 'restrictPublicBuckets'),
   );
 }
 
@@ -373,9 +389,39 @@ export interface PostureScanData {
   dropped: number;
 }
 
-/** As leituras recusadas da coleta: as do inventário e as da postura. */
+/**
+ * As partes do inventário que passaram do teto de itens (`AccountInventory.truncated`: `iam`, `s3`, `ec2:<região>`,
+ * `sg:<região>`), com a região das regionais. Os itens além do teto não foram conferidos.
+ */
+function truncatedScopes(inventory: AccountInventory): { section: PostureSection; region: string | null }[] {
+  return inventory.truncated.flatMap((entry) => {
+    const [section = '', region = null] = entry.split(':');
+    const known = POSTURE_SECTIONS.find((candidate) => candidate === section);
+    if (known === undefined || (region !== null && !isAwsRegion(region))) return [];
+    return [{ section: known, region }];
+  });
+}
+
+/**
+ * Um resultado não lido em cada escopo cortado pelo teto da parte de que a checagem depende: sem reprovação entre os
+ * itens conferidos, a checagem não pode ser aprovada (os itens além do teto ficaram de fora); uma reprovação achada
+ * continua reprovando.
+ */
+function truncatedResults(context: Context, section: PostureSection): [Outcome, Subject][] {
+  return truncatedScopes(context.inventory)
+    .filter((scope) => scope.section === section)
+    .map((scope) => [
+      'manual',
+      scope.region === null
+        ? account(`${section}:${POSTURE_TRUNCATED}`)
+        : inRegion(scope.region, `${section}:${POSTURE_TRUNCATED}`),
+    ]);
+}
+
+/** As leituras recusadas da coleta (as do inventário e as da postura) e as partes cortadas pelo teto de itens. */
 function readErrors(inventory: AccountInventory, reads: PostureReads): PostureSectionError[] {
   const errors: PostureSectionError[] = inventory.errors.map((error) => ({ ...error }));
+  for (const scope of truncatedScopes(inventory)) errors.push({ ...scope, code: POSTURE_TRUNCATED });
   if (!reads.passwordPolicy.ok)
     errors.push({ section: 'password_policy', region: null, code: reads.passwordPolicy.code });
   if (!reads.accountPublicAccessBlock.ok)
@@ -403,7 +449,7 @@ export function toPostureScan(inventory: AccountInventory, reads: PostureReads):
     const evaluate = EVALUATORS[check.id];
     if (evaluate === undefined) continue;
     const counts = { passed: 0, failed: 0, unknown: 0 };
-    for (const raw of evaluate(context)) {
+    for (const raw of [...evaluate(context), ...truncatedResults(context, check.section)]) {
       const candidate = toResult(check, inventory.accountId, raw);
       const parsed = resultSchema.safeParse(candidate);
       if (!parsed.success) {
