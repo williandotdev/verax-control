@@ -87,7 +87,6 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
             ? fakeCloudflare.accountId()
             : String(randomInt(100_000_000_000, 999_999_999_999)),
         regions: provider === 'aws' ? ['sa-east-1'] : [],
-        externalId: provider === 'aws' ? 'x'.repeat(43) : null,
         connection: 'error',
         connectionError: 'TokenInvalido',
       },
@@ -177,7 +176,7 @@ describe('credencial colada no painel: token do Cloudflare no cofre (fase 2, PR-
     expect(scrubString(token)).toBe(token);
     const opened = open(keyring, credentialBinding(account, 'cloudflare_api_token'), row.ciphertext);
     expect(opened).toBeInstanceOf(CloudflareToken);
-    expect((opened as CloudflareToken).value()).toBe(token);
+    expect(opened.value()).toBe(token);
 
     // Na trilha, só tipo, sufixo e validade.
     const entry = await entryOf(response);

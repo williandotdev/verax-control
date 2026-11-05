@@ -1,17 +1,16 @@
-import { randomBytes } from 'node:crypto';
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
+  AWS_READER_AUDIENCE,
+  awsReaderRoleArn,
   type CloudAccount,
   type CloudAccountCreate,
   type CloudAccountListQuery,
   type CloudAccountUpdate,
   credentialStatus,
   fieldsOutsideProvider,
-  hasPermission,
   LOG_SOURCES,
   type LogSource,
   type Paginated,
-  readOnlyRoleArn,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
@@ -28,7 +27,6 @@ const accountSelect = {
   provider: true,
   accountId: true,
   regions: true,
-  externalId: true,
   cloudtrailBucket: true,
   guarddutyBucket: true,
   wafBucket: true,
@@ -39,6 +37,8 @@ const accountSelect = {
   connection: true,
   connectionError: true,
   lastCollectedAt: true,
+  checkRequestedAt: true,
+  ingestFrom: true,
   status: true,
   createdAt: true,
   updatedAt: true,
@@ -56,25 +56,30 @@ const BUCKET_COLUMN = {
   waf: 'wafBucket',
 } as const satisfies Record<LogSource, keyof AccountRow>;
 
-/** O ExternalId sai do CSPRNG: 256 bits em base64url (43 caracteres, no formato que a AWS aceita). */
-function newExternalId(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-/** O que vem da configuração do nó, igual para todas as contas. */
+/** O que vem da configuração do nó, igual para todas as contas. Nada disso é segredo. */
 interface NodeFacts {
   /** Começo do nome dos tópicos do nó (`GCP_SINK_TOPIC_PREFIX`). */
   sinkTopicPrefix?: string | undefined;
   /** IPs de saída do nó (`NODE_EGRESS_IPS`). */
   egressIps: readonly string[];
+  /** ID único da conta de serviço do nó no Google (`NODE_SA_UNIQUE_ID`); null quando o nó não informa. */
+  serviceAccountId: string | null;
+  /** Audience do token do nó (`AWS_WEB_IDENTITY_AUDIENCE`, ou o padrão do template). */
+  audience: string;
+}
+
+/** O dia de uma coluna `DATE` (o Prisma a devolve como meia-noite UTC): `AAAA-MM-DD`. */
+function isoDate(day: Date | null): string | null {
+  return day === null ? null : day.toISOString().slice(0, 10);
 }
 
 /**
  * Como a conta sai da API. Com o prefixo dos tópicos do nó, o projeto da GCP ganha o tópico do comando do sink; sem
- * ele (ambiente local), o tópico fica null. A conta do Cloudflare leva os IPs de saída do nó, o filtro de IP
- * recomendado para o token.
+ * ele (ambiente local), o tópico fica null. A conta AWS leva os três valores do nó que a pilha do papel de leitura pede
+ * (o ID da conta de serviço, o audience e os IPs de saída) e o ARN do papel, derivado do ID; a do Cloudflare, os IPs de
+ * saída, o filtro de IP recomendado para o token. Nenhum ExternalId: o papel não tem.
  */
-function toAccount(row: AccountRow, revealExternalId: boolean, node: NodeFacts): CloudAccount {
+function toAccount(row: AccountRow, node: NodeFacts): CloudAccount {
   const aws = row.provider === 'aws';
   const gcp = row.provider === 'gcp';
   const { credential } = row;
@@ -83,8 +88,9 @@ function toAccount(row: AccountRow, revealExternalId: boolean, node: NodeFacts):
     provider: row.provider,
     accountId: row.accountId,
     regions: aws ? row.regions : [],
-    roleArn: aws ? readOnlyRoleArn(row.accountId) : null,
-    externalId: aws && revealExternalId ? row.externalId : null,
+    readerRoleArn: aws ? awsReaderRoleArn(row.accountId) : null,
+    nodeServiceAccountId: aws ? node.serviceAccountId : null,
+    webIdentityAudience: aws ? node.audience : null,
     buckets: { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket },
     pubsubSubscription: row.pubsubSubscription,
     sinkTopic: gcp && node.sinkTopicPrefix ? `${node.sinkTopicPrefix}${row.accountId}` : null,
@@ -100,11 +106,13 @@ function toAccount(row: AccountRow, revealExternalId: boolean, node: NodeFacts):
           status: credentialStatus(credential.expiresAt),
         }
       : null,
-    egressIps: row.provider === 'cloudflare' ? [...node.egressIps] : [],
+    egressIps: gcp ? [] : [...node.egressIps],
     status: row.status,
-    // Gravados pelo coletor da conta: só o worker escreve, nunca o request.
+    // Gravados pelo coletor da conta: só o worker escreve, nunca o request. O "Verificar" da AWS só pede.
     connection: row.connection,
     connectionError: row.connection === 'error' ? row.connectionError : null,
+    checkRequestedAt: aws ? (row.checkRequestedAt?.toISOString() ?? null) : null,
+    ingestFrom: aws ? isoDate(row.ingestFrom) : null,
     lastCollectedAt: row.lastCollectedAt?.toISOString() ?? null,
     // Gravado pelo sync de alertas (T5.3).
     lastEventAt: row.lastEventAt?.toISOString() ?? null,
@@ -134,13 +142,23 @@ function isUniqueViolation(error: unknown): boolean {
 const NOT_FOUND = 'Conta não encontrada';
 
 /**
- * A conexão recomeça (outra fonte, credencial nova ou removida, conta desativada ou reativada): aguardando, sem erro. A
- * última coleta é história.
+ * A conexão recomeça (outra fonte, credencial nova ou removida, conta desativada ou reativada): aguardando, sem erro e
+ * sem "Verificar" pendente (a AWS pede de novo). A última coleta é história.
  */
 export const RESET_CONNECTION = {
   connection: 'waiting',
   connectionError: null,
+  checkRequestedAt: null,
 } as const satisfies Prisma.CloudAccountUpdateInput;
+
+/** O que a trilha guarda do "Verificar": a conexão antes e depois do pedido. */
+function checkState(row: Pick<AccountRow, 'connection' | 'connectionError' | 'checkRequestedAt'>) {
+  return {
+    connection: row.connection,
+    connectionError: row.connectionError,
+    checkRequestedAt: row.checkRequestedAt?.toISOString() ?? null,
+  };
+}
 
 /** Dados próprios de cada provedor no cadastro. Os campos dos outros provedores ficam vazios. */
 function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCreateInput {
@@ -150,7 +168,7 @@ function providerData(input: CloudAccountCreate): Prisma.CloudAccountUncheckedCr
   } as Prisma.CloudAccountUncheckedCreateInput;
   switch (input.provider) {
     case 'aws':
-      return { ...base, regions: input.regions, externalId: newExternalId(), ...bucketData(input.buckets) };
+      return { ...base, regions: input.regions, ...bucketData(input.buckets) };
     case 'gcp':
       return {
         ...base,
@@ -173,8 +191,9 @@ interface LogOrigins {
 
 /**
  * Contas cloud dos clientes (T3.3): AWS, GCP e Cloudflare, pelo escopo da sessão. Nenhuma credencial entra pelo
- * cadastro: o schema é estrito; na AWS, a Verax só assume o papel de leitura com o ExternalId gerado aqui. A
- * credencial de leitura (o token do Cloudflare) tem rota própria e vai cifrada para o cofre
+ * cadastro: o schema é estrito; na AWS, o nó entra no papel de leitura sem chave que o cliente cria com o template
+ * (o ARN é derivado do ID da conta, sem chave nem ExternalId), e o "Verificar" pede ao worker que confira. A
+ * credencial de leitura do Cloudflare (o token) tem rota própria e vai cifrada para o cofre
  * (`credentials/credential-intake.service.ts`); a conta mostra só os metadados dela (`keyStatus`).
  *
  * Duas garantias que vinculam os alertas ao cliente certo (T5.2): o ID da conta é único por provedor, e cada
@@ -187,12 +206,21 @@ export class CloudAccountsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
-    @Inject(APP_CONFIG) config: Pick<AppConfig, 'GCP_SINK_TOPIC_PREFIX' | 'NODE_EGRESS_IPS'>,
+    @Inject(APP_CONFIG)
+    config: Pick<
+      AppConfig,
+      'GCP_SINK_TOPIC_PREFIX' | 'NODE_EGRESS_IPS' | 'NODE_SA_UNIQUE_ID' | 'AWS_WEB_IDENTITY_AUDIENCE'
+    >,
   ) {
-    this.node = { sinkTopicPrefix: config.GCP_SINK_TOPIC_PREFIX, egressIps: config.NODE_EGRESS_IPS ?? [] };
+    this.node = {
+      sinkTopicPrefix: config.GCP_SINK_TOPIC_PREFIX,
+      egressIps: config.NODE_EGRESS_IPS ?? [],
+      serviceAccountId: config.NODE_SA_UNIQUE_ID ?? null,
+      audience: config.AWS_WEB_IDENTITY_AUDIENCE ?? AWS_READER_AUDIENCE,
+    };
   }
 
-  async list(auth: RequestAuth, query: CloudAccountListQuery): Promise<Paginated<CloudAccount>> {
+  async list(query: CloudAccountListQuery): Promise<Paginated<CloudAccount>> {
     const where: Prisma.CloudAccountWhereInput = query.status ? { status: query.status } : {};
     const db = this.prisma.scoped();
     const [rows, total] = await Promise.all([
@@ -205,14 +233,14 @@ export class CloudAccountsService {
       db.cloudAccount.count({ where }),
     ]);
     return toPaginated(
-      rows.map((row) => toAccount(row, canSeeExternalId(auth), this.node)),
+      rows.map((row) => toAccount(row, this.node)),
       total,
       query,
     );
   }
 
-  async get(auth: RequestAuth, id: string): Promise<CloudAccount> {
-    return toAccount(await this.find(id), canSeeExternalId(auth), this.node);
+  async get(id: string): Promise<CloudAccount> {
+    return toAccount(await this.find(id), this.node);
   }
 
   async create(auth: RequestAuth, input: CloudAccountCreate): Promise<CloudAccount> {
@@ -227,13 +255,12 @@ export class CloudAccountsService {
       }
       throw error;
     }
-    const account = toAccount(row, true, this.node);
-    // O ExternalId não vai para a auditoria: quem lê a trilha não precisa dele.
+    const account = toAccount(row, this.node);
     this.audit.describe({
       action: 'cloud_account.create',
       resourceType: 'cloud_account',
       resourceId: row.id,
-      after: { ...account, externalId: undefined },
+      after: account,
     });
     return account;
   }
@@ -266,13 +293,13 @@ export class CloudAccountsService {
       },
       select: accountSelect,
     });
-    const after = toAccount(row, true, this.node);
+    const after = toAccount(row, this.node);
     this.audit.describe({
       action: 'cloud_account.update',
       resourceType: 'cloud_account',
       resourceId: id,
-      before: { ...toAccount(beforeRow, false, this.node), externalId: undefined },
-      after: { ...after, externalId: undefined },
+      before: toAccount(beforeRow, this.node),
+      after,
     });
     return after;
   }
@@ -294,9 +321,40 @@ export class CloudAccountsService {
       action: 'cloud_account.deactivate',
       resourceType: 'cloud_account',
       resourceId: id,
-      before: { ...toAccount(before, false, this.node), externalId: undefined },
-      after: { ...toAccount(row, false, this.node), externalId: undefined },
+      before: toAccount(before, this.node),
+      after: toAccount(row, this.node),
     });
+  }
+
+  /**
+   * "Verificar" a conta AWS (fase 2, PR-V3'): grava o pedido e volta a conexão para "aguardando", sem erro. Quem
+   * confere é a tarefa `aws-check` do worker (`aws/aws-check.ts`), o único processo do nó que alcança o metadata da
+   * GCP: a API não emite o token do Google nem entra no papel. Um pedido ainda pendente não é renovado: a verificação
+   * em curso continua valendo, e clicar de novo não adia a resposta nem gera outra entrada no papel do cliente.
+   */
+  async requestAwsCheck(id: string): Promise<CloudAccount> {
+    this.audit.describe({
+      action: 'cloud_account.aws_verify',
+      resourceType: 'cloud_account',
+      resourceId: id,
+    });
+    const before = await this.find(id);
+    if (before.provider !== 'aws') {
+      throw new ApiError(HttpStatus.BAD_REQUEST, 'Só uma conta AWS é verificada assim.');
+    }
+    if (before.status !== 'active') {
+      throw new ApiError(HttpStatus.BAD_REQUEST, 'Reative o monitoramento antes de verificar a conta.');
+    }
+    const row =
+      before.checkRequestedAt !== null
+        ? before
+        : await this.prisma.scoped().cloudAccount.update({
+            where: { id },
+            data: { connection: 'waiting', connectionError: null, checkRequestedAt: new Date() },
+            select: accountSelect,
+          });
+    this.audit.describe({ before: checkState(before), after: checkState(row) });
+    return toAccount(row, this.node);
   }
 
   /**
@@ -411,8 +469,4 @@ export class CloudAccountsService {
       }
     }
   }
-}
-
-function canSeeExternalId(auth: RequestAuth): boolean {
-  return hasPermission(auth.role, 'cloud_accounts:write');
 }

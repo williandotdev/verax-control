@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, test } from '@playwright/test';
 import { skipDemoTour } from './demo-tour';
@@ -16,6 +18,15 @@ const GCP_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0004';
 /** A conta do Cloudflare da demonstração (`account(5, ...)`), com o token guardado perto de vencer. */
 const CLOUDFLARE_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0005';
 const CLOUDFLARE_DIALOG = 'Conta do Cloudflare d0e0000000000000000000000000a1fa';
+/** A conta AWS conectada da demonstração (`account(1, ...)`) e a recusada (`account(2, ...)`, `trust_denied`). */
+const AWS_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0001';
+const AWS_DIALOG = 'Conta AWS 111122223333';
+const AWS_REFUSED_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0002';
+const AWS_REFUSED_DIALOG = 'Conta AWS 444455556666';
+/** O template revisado, no repositório: o painel tem de servir exatamente este arquivo. */
+const READER_TEMPLATE = fileURLToPath(
+  new URL('../../../infra/cloudformation/verax-control-reader.yaml', import.meta.url),
+);
 
 const PAGES: [string, string | RegExp][] = [
   ['/', 'Torre'],
@@ -113,6 +124,8 @@ test.describe('revisão de UX (modo mock)', () => {
     [`/cadastros/contas?conta=${GCP_ACCOUNT}`, 'Projeto da GCP loja-alfa-demo'],
     // Conta do Cloudflare: o link do token, o IP de saída e o cartão do token com o aviso de vencimento.
     [`/cadastros/contas?conta=${CLOUDFLARE_ACCOUNT}`, CLOUDFLARE_DIALOG],
+    // Conta AWS: o papel de leitura sem chave, com o template, os três valores do nó e o resultado da verificação.
+    [`/cadastros/contas?conta=${AWS_ACCOUNT}`, AWS_DIALOG],
   ] as const) {
     test(`painel de detalhe ${path}: sem violação de acessibilidade`, async ({ page }) => {
       await page.goto(path);
@@ -150,6 +163,40 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
     await card.getByRole('button', { name: 'Confirmar remoção' }).click();
     await expect(sheet.getByLabel('Token de API do Cloudflare')).toBeFocused();
+    expect(await violations(page)).toEqual([]);
+  });
+
+  test('Conectar AWS: o template baixado é o do repositório, byte a byte, com o nome do arquivo', async ({
+    page,
+  }) => {
+    await page.goto(`/cadastros/contas?conta=${AWS_ACCOUNT}`);
+    const sheet = page.getByRole('dialog', { name: AWS_DIALOG });
+    const link = sheet.getByRole('link', { name: /Baixar o template/ });
+    await expect(link).toHaveAttribute('download', 'verax-control-reader.yaml');
+    const [download] = await Promise.all([page.waitForEvent('download'), link.click()]);
+    expect(download.suggestedFilename()).toBe('verax-control-reader.yaml');
+    const saved = readFileSync(await download.path());
+    expect(saved.equals(readFileSync(READER_TEMPLATE))).toBe(true);
+  });
+
+  test('Conectar AWS: o erro, a CLI, a verificação pendente e o resultado sem violação de acessibilidade', async ({
+    page,
+  }) => {
+    await page.goto(`/cadastros/contas?conta=${AWS_REFUSED_ACCOUNT}`);
+    const sheet = page.getByRole('dialog', { name: AWS_REFUSED_DIALOG });
+    const status = sheet.getByRole('status');
+    await expect(status).toContainText('A AWS recusou a entrada no papel');
+    // O comando da CLI, aberto.
+    await sheet.getByText('Prefere a CLI?').click();
+    await expect(sheet.getByText(/^aws cloudformation deploy/)).toBeVisible();
+    expect(await violations(page)).toEqual([]);
+    // Verificar: pendente (o botão desliga e o estado vem pela região de status), depois o resultado.
+    await sheet.getByRole('button', { name: 'Verificar conexão' }).click();
+    await expect(status).toContainText('Verificação pedida');
+    await expect(sheet.getByRole('button', { name: 'Verificando…' })).toBeDisabled();
+    expect(await violations(page)).toEqual([]);
+    await expect(status).toContainText('A AWS recusou a entrada no papel', { timeout: 15_000 });
+    await expect(sheet.getByRole('button', { name: 'Verificar conexão' })).toBeEnabled();
     expect(await violations(page)).toEqual([]);
   });
 

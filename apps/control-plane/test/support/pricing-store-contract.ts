@@ -173,6 +173,9 @@ export function describePricingStoreContract(
         ['teste-v2', 'published', true],
         ['teste-v1', 'retired', false],
       ]);
+      // Quem publicou e quem editou por último vão no resumo (a lista do console), sem o conteúdo.
+      expect(list[0]).toMatchObject({ publishedBy: OWNER.email, updatedBy: OWNER.email });
+      expect(list[0]).not.toHaveProperty('content');
     });
 
     it('publicação agendada: a vigente continua até a data da nova, que então passa a valer', async () => {

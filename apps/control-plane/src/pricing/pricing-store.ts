@@ -133,15 +133,18 @@ export class EffectiveFromError extends Error {
   }
 }
 
+/** O resumo de uma versão na lista do console: estado, vigência e quem publicou e editou por último (o e-mail do IAP). */
 export interface VersionSummary {
   version: string;
   status: VersionStatus;
   current: boolean;
   effectiveFrom?: Date;
   publishedAt?: Date;
+  publishedBy?: string;
   retiredAt?: Date;
   supersededBy?: string;
   updatedAt: Date;
+  updatedBy: string;
 }
 
 /** Teto de diferenças guardadas na auditoria de uma edição (o resto vira só a contagem). */
@@ -221,9 +224,11 @@ export class VersionedStore<C> {
         current: record.version === current?.version,
         ...(record.effectiveFrom === undefined ? {} : { effectiveFrom: record.effectiveFrom }),
         ...(record.publishedAt === undefined ? {} : { publishedAt: record.publishedAt }),
+        ...(record.publishedBy === undefined ? {} : { publishedBy: record.publishedBy }),
         ...(record.retiredAt === undefined ? {} : { retiredAt: record.retiredAt }),
         ...(record.supersededBy === undefined ? {} : { supersededBy: record.supersededBy }),
         updatedAt: record.updatedAt,
+        updatedBy: record.updatedBy,
       }));
   }
 

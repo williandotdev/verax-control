@@ -16,8 +16,13 @@
 #   - cp-public (CP-04), `error({ event: "stripe_webhook_failed", eventId, eventType, attempt, failure })`: o
 #     processamento de um evento falhou e a Stripe vai repetir a entrega (500). Uma falha isolada se resolve sozinha;
 #     a mesma por horas é configuração (chave, fila) ou a Stripe fora.
-# O `tenantId`, o `requestId`, o `day`, o `reason` e o tipo e o id do evento viram rótulos do incidente; nada mais do
-# log entra no e-mail (e os logs nunca têm e-mail, CNPJ ou razão social).
+#   - cp-admin (console do responsável, só com `admin_enabled`), `warn({ event: "pricing_margin_alert",
+#     priceTableVersion, costModelVersion })`: um modelo de custos publicado deixou a tabela de preços vigente abaixo da
+#     margem mínima em alguma configuração (a publicação do modelo não é bloqueada; a tabela não muda sozinha);
+#   - cp-admin, `warn({ event: "admin_auth_failed", reason })`: o JWT do IAP faltou, não confere ou é de quem não é
+#     responsável. Atrás do IAP isso não acontece no uso normal; o alerta é por repetição (abaixo), não por linha.
+# O `tenantId`, o `requestId`, o `day`, o `reason`, as versões e o tipo e o id do evento viram rótulos do incidente;
+# nada mais do log entra no e-mail (e os logs nunca têm e-mail, CNPJ ou razão social).
 
 resource "google_monitoring_notification_channel" "email" {
   count = var.alert_email == "" ? 0 : 1
@@ -69,8 +74,21 @@ locals {
   }
 }
 
+locals {
+  # Os alertas do console só existem com ele (admin.tf).
+  admin_log_alerts = {
+    pricing_margin_alert = {
+      service      = "cp-admin"
+      event        = "pricing_margin_alert"
+      display_name = "Plano de controle: a tabela de preços vigente ficou abaixo da margem mínima"
+      labels       = { price_table = "EXTRACT(jsonPayload.priceTableVersion)", cost_model = "EXTRACT(jsonPayload.costModelVersion)" }
+      runbook      = "Um modelo de custos novo foi publicado e, com ele, alguma configuração da tabela de preços vigente (rótulo `price_table`) ficou com margem de contribuição abaixo da mínima do modelo (rótulo `cost_model`). Ninguém é cobrado diferente: a tabela não muda sozinha. Abra o console (Tabelas de preço, a vigente, Novo rascunho a partir desta versão), confira o relatório da checagem e publique uma tabela ajustada, ou corrija o modelo de custos num rascunho novo. Passo a passo em docs/runbooks/console-do-responsavel.md."
+    }
+  }
+}
+
 resource "google_monitoring_alert_policy" "log" {
-  for_each = local.log_alerts
+  for_each = merge(local.log_alerts, var.admin_enabled ? local.admin_log_alerts : {})
 
   display_name          = each.value.display_name
   combiner              = "OR"
@@ -95,6 +113,79 @@ resource "google_monitoring_alert_policy" "log" {
   documentation {
     mime_type = "text/markdown"
     content   = each.value.runbook
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# Acessos recusados repetidos no console (`admin_auth_failed` no cp-admin). Atrás do IAP, uma recusa no app quer dizer
+# que algo passou pelo IAP sem um JWT válido de responsável: o IAP desligado ou contornado, o `IAP_AUDIENCE` errado
+# depois de uma mudança, as chaves do Google fora do ar, ou alguém com acesso ao IAP que não está em
+# OWNER_PRINCIPALS. Uma linha solta pode ser um soluço na leitura das chaves; três ou mais em 10 minutos abrem o
+# incidente. Por isso esta é a exceção à regra do arquivo: uma métrica de log (contador, com o motivo como rótulo),
+# porque a condição por linha de log não conta repetições. São poucos pontos por mês, dentro da cota gratuita do
+# Cloud Monitoring.
+resource "google_logging_metric" "admin_auth_failed" {
+  count = var.admin_enabled ? 1 : 0
+
+  name        = "cp_admin_auth_failed"
+  description = "Acessos recusados pelo console do responsável (cp-admin): JWT do IAP ausente, inválido ou de quem não é responsável."
+  filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-admin\" AND jsonPayload.event=\"admin_auth_failed\""
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key         = "reason"
+      value_type  = "STRING"
+      description = "O motivo da recusa (missing, invalid, not_owner, keys_unavailable...)."
+    }
+  }
+
+  label_extractors = {
+    reason = "EXTRACT(jsonPayload.reason)"
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_monitoring_alert_policy" "admin_auth_failed" {
+  count = var.admin_enabled ? 1 : 0
+
+  display_name          = "Plano de controle: acessos recusados repetidos no console do responsável"
+  combiner              = "OR"
+  notification_channels = google_monitoring_notification_channel.email[*].id
+
+  conditions {
+    display_name = "admin_auth_failed no cp-admin: 3 ou mais em 10 minutos"
+
+    condition_threshold {
+      filter          = "resource.type=\"cloud_run_revision\" AND metric.type=\"logging.googleapis.com/user/${google_logging_metric.admin_auth_failed[0].name}\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 2
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  alert_strategy {
+    auto_close = "604800s"
+  }
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "O console do responsável (cp-admin) recusou 3 ou mais requisições em 10 minutos (rótulo `reason` da métrica cp_admin_auth_failed). Atrás do IAP isso não acontece no uso normal. Confira, nesta ordem: o IAP continua ligado no cp-admin (`iap_enabled` no Terraform; no console da GCP, Cloud Run, cp-admin, Segurança); o `IAP_AUDIENCE` do serviço bate com `terraform output admin`; quem tem `roles/iap.httpsResourceAccessor` no cp-admin está em `owner_principals`; `keys_unavailable` repetido é a leitura das chaves públicas do IAP falhando. Nenhum dado do console sai sem o JWT de um responsável. Passo a passo em docs/runbooks/console-do-responsavel.md."
   }
 
   depends_on = [google_project_service.apis]

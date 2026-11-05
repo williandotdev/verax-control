@@ -35,7 +35,6 @@ describe('cursor dos coletores (fase 2)', () => {
         tenantId,
         accountId: String(randomInt(100_000_000_000, 999_999_999_999)),
         regions: ['sa-east-1'],
-        externalId: 'x'.repeat(43),
         status,
       },
     });

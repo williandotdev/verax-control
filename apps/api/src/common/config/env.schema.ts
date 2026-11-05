@@ -1,4 +1,8 @@
 import {
+  isNodeEgressIp,
+  isNodeServiceAccountId,
+  isWebIdentityAudience,
+  MAX_AUDIENCE_LENGTH,
   PLAN_LIMIT_BOUNDS,
   PLAN_LIMIT_KEYS,
   type PlanId,
@@ -130,27 +134,10 @@ function readPrivateKeysFile(path: string): string {
   }
 }
 
-/** Um octeto do IPv4: 0 a 255, sem zero à esquerda. Caractere a caractere, sem expressão regular. */
-function isOctet(octet: string): boolean {
-  if (octet.length < 1 || octet.length > 3 || (octet.length > 1 && octet.startsWith('0'))) return false;
-  for (let index = 0; index < octet.length; index += 1) {
-    const code = octet.charCodeAt(index);
-    if (code < 48 || code > 57) return false;
-  }
-  return Number(octet) <= 255;
-}
-
-/** IPv4 com /32, conferido por partes: `203.0.113.10/32`. */
-function isEgressIp(value: string): boolean {
-  const [address = '', prefix, ...rest] = value.split('/');
-  if (prefix !== '32' || rest.length > 0) return false;
-  const octets = address.split('.');
-  return octets.length === 4 && octets.every(isOctet);
-}
-
 /**
- * IPs de saída do nó (o IP fixo do Cloud NAT, `NODE_EGRESS_IPS` no `node.conf`), separados por vírgula. Contas cloud
- * os mostra como o filtro de IP recomendado para o token do Cloudflare. Não é segredo.
+ * IPs de saída do nó (o IP fixo do Cloud NAT, `NODE_EGRESS_IPS` no `node.conf`), separados por vírgula, cada um IPv4
+ * com /32 conferido por partes (`isNodeEgressIp`). Contas cloud os mostra como o `NodeEgressIps` da pilha da AWS e o
+ * filtro de IP recomendado para o token do Cloudflare. Não é segredo.
  */
 const egressIpsFromEnv = z
   .string()
@@ -158,7 +145,7 @@ const egressIpsFromEnv = z
   .transform((value) => value.split(',').map((ip) => ip.trim()))
   .pipe(
     z
-      .array(z.string().refine(isEgressIp, { error: 'use IPv4 com /32, separados por vírgula' }))
+      .array(z.string().refine(isNodeEgressIp, { error: 'use IPv4 com /32, separados por vírgula' }))
       .min(1)
       .max(16),
   );
@@ -315,9 +302,26 @@ const apiEnvSchema = z
       })
       .optional(),
     ...planEnvShape,
-    // IPs de saída do nó (o IP fixo do NAT, no perfil standard): o filtro de IP recomendado para o token do
-    // Cloudflare. O start.sh escreve quando o node.conf tem a linha; sem ela, a tela recomenda o filtro sem o IP.
+    // IPs de saída do nó (o IP fixo do NAT, no perfil standard): o `NodeEgressIps` da pilha da AWS e o filtro de IP
+    // recomendado para o token do Cloudflare. O start.sh escreve quando o node.conf tem a linha; sem ela, a tela pede
+    // o IP à Verax.
     NODE_EGRESS_IPS: egressIpsFromEnv.optional(),
+    // Papel de leitura sem chave da AWS (fase 2, PR-V3'): o ID único da conta de serviço do nó no Google (21 dígitos,
+    // `terraform output`) e o audience do token, os valores que Contas cloud mostra para a pilha do cliente. Nenhum é
+    // segredo. O start.sh escreve só quando o node.conf tem a linha; sem o ID, a tela o pede à Verax; sem o audience,
+    // vale o padrão do template (`AWS_READER_AUDIENCE`).
+    NODE_SA_UNIQUE_ID: z
+      .string()
+      .refine(isNodeServiceAccountId, { error: 'deve ser o ID único da conta de serviço do nó (21 dígitos)' })
+      .optional(),
+    AWS_WEB_IDENTITY_AUDIENCE: z
+      .string()
+      .max(MAX_AUDIENCE_LENGTH)
+      .refine(isWebIdentityAudience, {
+        error:
+          'deve ser https://<host>[/<caminho>], só com minúsculas no host e sem porta, consulta ou curinga',
+      })
+      .optional(),
     // Cofre de credenciais (fase 2): só a chave pública corrente, para cifrar o que o admin cola.
     CREDENTIALS_PUBLIC_KEY: z.string().optional(),
     CREDENTIALS_KEY_VERSION: keyVersionFromEnv.optional(),

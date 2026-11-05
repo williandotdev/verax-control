@@ -1,0 +1,130 @@
+@import 'tailwindcss';
+
+/*
+ * Console do responsável: os mesmos tokens do painel (apps/web/src/index.css, T6.2), copiados para o console ser um
+ * app à parte, servido pelo cp-admin atrás do IAP. Nomes de papel (fundo, tinta, severidade), nunca de cor, e os dois
+ * modos escolhidos à mão; o contraste e a separação das severidades foram validados lá (texto discreto >= 4,5:1 em
+ * todas as superfícies; severidade nunca só como cor). Mudou lá, muda aqui.
+ */
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *, .brand-surface, .brand-surface *));
+
+:root {
+  color-scheme: light;
+  --background: #f5f7fb;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --foreground: #13233c;
+  --muted-foreground: #4a5b77;
+  /* Texto discreto (metadados, legendas): >= 4,5:1 sobre todas as superfícies do tema. */
+  --subtle-foreground: #637087;
+  --border: #dfe5ee;
+  --border-strong: #b9c3d4;
+  --gridline: #e6ebf2;
+  --primary: #315add;
+  --primary-hover: #2848b8;
+  --primary-foreground: #ffffff;
+  --ring: #426dff;
+  --brand: #09152c;
+
+  --severity-critical: #b42318;
+  --critical-text: #b42318;
+  --severity-high: #e8743b;
+  --severity-medium: #f7c948;
+  --severity-low: #2a78d6;
+  --severity-ok: #0e9f8e;
+}
+
+/* A faixa da marca usa os tokens do modo escuro em qualquer tema (o `--brand` fica de fora: é o fundo dela). */
+[data-theme='dark'],
+.brand-surface {
+  color-scheme: dark;
+  --background: #09152c;
+  --surface: #101f3b;
+  --surface-raised: #142543;
+  --foreground: #f5f7fb;
+  --muted-foreground: #bfcbdf;
+  --subtle-foreground: #99a9c3;
+  --border: rgb(255 255 255 / 0.12);
+  --border-strong: #3a4e74;
+  --gridline: #1d2e4f;
+  --primary: #86a7ff;
+  --primary-hover: #a9c2ff;
+  --primary-foreground: #09152c;
+  --ring: #86a7ff;
+
+  --severity-critical: #d32f2f;
+  --critical-text: #f87171;
+  --severity-high: #fb9b4f;
+  --severity-medium: #ffe07a;
+  --severity-low: #3987e5;
+  --severity-ok: #0e9f8e;
+}
+
+[data-theme='dark'] {
+  --brand: #071126;
+}
+
+.brand-surface {
+  background-color: var(--brand);
+  color: var(--foreground);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-gridline: var(--gridline);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+
+  --color-critical: var(--severity-critical);
+  --color-critical-text: var(--critical-text);
+  --color-high: var(--severity-high);
+  --color-medium: var(--severity-medium);
+  --color-low: var(--severity-low);
+  --color-ok: var(--severity-ok);
+
+  /* O raio dos painéis grandes do site (--radius). Com moderação: tabelas, selos e campos ficam como estão. */
+  --radius-panel: 20px;
+
+  --font-sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, monospace;
+}
+
+@layer base {
+  /* Borda e foco leem os tokens direto (e não os `--color-*`, resolvidos uma vez na raiz): assim valem também
+     dentro da faixa da marca, que troca os tokens só no trecho dela. */
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

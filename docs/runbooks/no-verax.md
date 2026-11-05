@@ -78,7 +78,7 @@ mostraria um tópico que não existe. A instalação recusa o projeto e o prefix
 `node.conf` for editado depois e sair dele, a API sobe sem o tópico e o painel mostra o comando com o tópico a
 preencher.
 
-O cofre de credenciais (`CREDENTIALS_VAULT`, para a chave da AWS e o token do Cloudflare colados no painel) fica
+O cofre de credenciais (`CREDENTIALS_VAULT`, para o token do Cloudflare colado no painel) fica
 desligado no nó da Verax: sem a linha no `node.conf`, vale `false`, nada é lido do Secret Manager e a API e o worker
 sobem como antes. Ligar pede, nesta ordem: o segredo `verax-node-credentials-key` (`credentials_vault = true` em
 `infra/gcp/envs/verax/main.tf` e um `apply`), `CREDENTIALS_VAULT=true` no `node.conf` e um deploy. Na instalação, o

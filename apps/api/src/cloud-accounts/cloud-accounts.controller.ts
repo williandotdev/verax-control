@@ -29,7 +29,10 @@ import { CloudAccountsService } from './cloud-accounts.service.js';
 
 const accountIdSchema = z.uuid();
 
-/** Contas cloud do cliente da sessão (T3.3). Todos leem; administradores cadastram e alteram. */
+/**
+ * Contas cloud do cliente da sessão (T3.3). Todos leem; administradores cadastram, alteram e pedem a verificação da
+ * conta AWS.
+ */
 @Controller('cloud-accounts')
 export class CloudAccountsController {
   constructor(private readonly accounts: CloudAccountsService) {}
@@ -37,16 +40,15 @@ export class CloudAccountsController {
   @Get()
   @RequirePermission('cloud_accounts:read')
   list(
-    @Req() request: Request,
     @Query({ schema: cloudAccountListQuerySchema }) query: CloudAccountListQuery,
   ): Promise<Paginated<CloudAccount>> {
-    return this.accounts.list(request.auth as RequestAuth, query);
+    return this.accounts.list(query);
   }
 
   @Get(':id')
   @RequirePermission('cloud_accounts:read')
-  get(@Req() request: Request, @Param('id', { schema: accountIdSchema }) id: string): Promise<CloudAccount> {
-    return this.accounts.get(request.auth as RequestAuth, id);
+  get(@Param('id', { schema: accountIdSchema }) id: string): Promise<CloudAccount> {
+    return this.accounts.get(id);
   }
 
   @Post()
@@ -73,5 +75,17 @@ export class CloudAccountsController {
   @RequirePermission('cloud_accounts:write')
   deactivate(@Param('id', { schema: accountIdSchema }) id: string): Promise<void> {
     return this.accounts.deactivate(id);
+  }
+
+  /**
+   * "Verificar" a conta AWS (fase 2, PR-V3'): pede ao worker que confira a entrada no papel de leitura sem chave e a
+   * leitura dos buckets. Responde na hora (202) com a conta, a conexão em "aguardando" e o pedido pendente
+   * (`checkRequestedAt`); o painel acompanha pela conta até o worker gravar "conectada" ou o código do erro.
+   */
+  @Post(':id/aws/verify')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @RequirePermission('cloud_accounts:write')
+  verifyAws(@Param('id', { schema: accountIdSchema }) id: string): Promise<CloudAccount> {
+    return this.accounts.requestAwsCheck(id);
   }
 }

@@ -1,11 +1,14 @@
-import type {
-  AlertExceptionField,
-  CloudAccountConnection,
-  CloudProvider,
-  CredentialStatus,
-  ProtectedResourceType,
-  TenantStatus,
-  UserStatus,
+import {
+  type AlertExceptionField,
+  type AwsConnectionErrorCode,
+  type CloudAccount,
+  type CloudAccountConnection,
+  type CloudProvider,
+  type CredentialStatus,
+  isAwsConnectionErrorCode,
+  type ProtectedResourceType,
+  type TenantStatus,
+  type UserStatus,
 } from '@verax/shared';
 
 export const TENANT_STATUS_LABELS: Readonly<Record<TenantStatus, string>> = {
@@ -42,13 +45,20 @@ export const CONNECTION_LABELS: Readonly<Record<CloudAccountConnection, string>>
   error: 'Erro',
 };
 
-/** O que o selo quer dizer em cada provedor: na AWS, o papel do conector; na GCP e no Cloudflare, a leitura do nó. */
-export function connectionHint(provider: CloudProvider, connection: CloudAccountConnection): string {
+/**
+ * O que o selo quer dizer em cada provedor: na AWS, a entrada no papel de leitura sem chave (o "Verificar" pendente ou
+ * o resultado dele); na GCP e no Cloudflare, a leitura do nó.
+ */
+export function connectionHint(
+  account: Pick<CloudAccount, 'provider' | 'connection' | 'checkRequestedAt'>,
+): string {
+  const { provider, connection } = account;
   if (connection === 'connected') return 'A última leitura deu certo.';
   if (provider === 'aws') {
-    return connection === 'error'
-      ? 'A última tentativa de assumir o papel de leitura falhou.'
-      : 'Aguardando o conector: a conta conecta quando o primeiro evento chegar.';
+    if (connection === 'error') return 'A última tentativa de entrar no papel de leitura falhou.';
+    return account.checkRequestedAt !== null
+      ? 'Verificando: o Verax está entrando no papel de leitura da conta.'
+      : 'Aguardando o papel de leitura: crie a pilha na conta e clique em Verificar.';
   }
   if (connection === 'error') return 'A última leitura falhou.';
   return provider === 'gcp'
@@ -57,11 +67,11 @@ export function connectionHint(provider: CloudProvider, connection: CloudAccount
 }
 
 /**
- * O que o código do erro de coleta quer dizer, quando há uma explicação para quem administra a conta (Cloudflare,
- * fase 2). Os demais códigos aparecem só como tipo do erro. Os que param a coleta (`isCloudflareBlockingError`) pedem
- * outro token.
+ * O que o código do erro de coleta do Cloudflare quer dizer, quando há uma explicação para quem administra a conta
+ * (fase 2, PR-12). Os demais códigos aparecem só como tipo do erro. Os que param a coleta
+ * (`isCloudflareBlockingError`) pedem outro token.
  */
-const CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
+const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
   credential_rejected: 'O Cloudflare recusou o token (inválido ou revogado).',
   credential_forbidden:
     'O token não lê a auditoria desta conta: falta a permissão Account Settings: Read nesta conta, ou o filtro de IP do token não libera o IP de saída do nó.',
@@ -76,8 +86,41 @@ const CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
     'O token não lista as zonas da conta (falta a permissão Zone: Read). A auditoria continua sendo lida.',
 };
 
-export function connectionErrorHint(code: string): string | null {
-  return Object.hasOwn(CONNECTION_ERROR_HINTS, code) ? (CONNECTION_ERROR_HINTS[code] ?? null) : null;
+/** O que fazer diante do erro da coleta de uma conta do Cloudflare; null para um código sem explicação. */
+export function cloudflareConnectionErrorHint(code: string): string | null {
+  return Object.hasOwn(CLOUDFLARE_CONNECTION_ERROR_HINTS, code)
+    ? (CLOUDFLARE_CONNECTION_ERROR_HINTS[code] ?? null)
+    : null;
+}
+
+/**
+ * O que fazer diante de cada erro da conexão da AWS (os códigos que a tarefa `aws-check` do worker grava). Nenhum
+ * repete a mensagem da AWS: só o que conferir.
+ */
+export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode, string>> = {
+  trust_denied:
+    'A AWS recusou a entrada no papel. Confira se a pilha verax-control-reader terminou de ser criada nesta conta e se o ID da conta de serviço, o IP de saída e o audience são os desta tela. Um papel feito pelo assistente "Web identity → Google" do console nunca aceita o nó, e uma SCP ou RCP que negue a federação do Google também barra.',
+  token_invalid:
+    'A AWS recusou o token do nó. Tente de novo em alguns minutos; se continuar, fale com a Verax.',
+  idp_unavailable:
+    'O Google não respondeu ao emitir ou conferir o token do nó. Tente de novo em alguns minutos.',
+  region_disabled:
+    'O STS da região está desligado nesta conta. Religue-o no console do IAM (Account settings) ou fale com a Verax.',
+  account_mismatch: 'O papel respondeu de outra conta AWS. Confira o ID da conta cadastrada.',
+  bucket_missing: 'Um bucket cadastrado não existe nesta conta. Confira os buckets com a Verax.',
+  bucket_denied:
+    'O papel não lê um dos buckets cadastrados. Confira se o ARN de cada bucket está em LogBucketArns da pilha (atualize a pilha) e, num bucket de outra conta, a política do bucket.',
+  kms_denied:
+    'O papel não decifra os logs de um bucket. Informe a chave KMS do bucket em LogKmsKeyArns e atualize a pilha.',
+  aws_unavailable: 'A AWS não respondeu a tempo. Tente de novo em alguns minutos.',
+  check_unavailable: 'Este nó ainda não confere a conexão sozinho. A Verax confere com você.',
+  aws_token_stale:
+    'O nó não renova o próprio token do Google há mais de 40 minutos, e a coleta pode parar. Fale com a Verax.',
+};
+
+/** O que fazer diante do erro da conexão de uma conta AWS; null para um código que não é da AWS. */
+export function awsConnectionErrorHint(code: string): string | null {
+  return isAwsConnectionErrorCode(code) ? AWS_CONNECTION_ERROR_HINTS[code] : null;
 }
 
 /** Situação do token guardado no cofre, pela validade. */
@@ -104,8 +147,9 @@ export const EXCEPTION_FIELD_LABELS: Readonly<Record<AlertExceptionField, string
   resource: 'Recurso',
 };
 
-/** Repositório público do conector: o cliente baixa o template e lê o passo a passo. */
-export const CONNECTOR_TEMPLATE_URL =
-  'https://github.com/williandotdev/verax-control/blob/main/infra/cloudformation/verax-control-connector.yaml';
-export const CONNECTOR_GUIDE_URL =
+/**
+ * O passo a passo do papel de leitura sem chave, no repositório público: o que a pilha cria, o que o papel pode fazer,
+ * a CLI e como desconectar. O template em si o painel serve (`aws-reader-template.ts`).
+ */
+export const AWS_READER_GUIDE_URL =
   'https://github.com/williandotdev/verax-control/blob/main/infra/cloudformation/README.md';

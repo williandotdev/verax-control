@@ -158,6 +158,33 @@ describe('loadConfig', () => {
     }
   });
 
+  it('papel de leitura sem chave da AWS: o ID da conta de serviço do nó e o audience, opcionais e conferidos', () => {
+    const plain = loadConfig(validEnv);
+    expect(plain.NODE_SA_UNIQUE_ID).toBeUndefined();
+    expect(plain.AWS_WEB_IDENTITY_AUDIENCE).toBeUndefined();
+    const configured = loadConfig({
+      ...validProductionEnv,
+      NODE_SA_UNIQUE_ID: '123456789012345678901',
+      AWS_WEB_IDENTITY_AUDIENCE: 'https://control.veraxsistemas.com.br/aws-reader',
+    });
+    expect(configured.NODE_SA_UNIQUE_ID).toBe('123456789012345678901');
+    expect(configured.AWS_WEB_IDENTITY_AUDIENCE).toBe('https://control.veraxsistemas.com.br/aws-reader');
+    for (const value of ['12345678901234567890', '1234567890123456789012', 'conta-do-no@exemplo.iam']) {
+      expect(problemsOf({ ...validEnv, NODE_SA_UNIQUE_ID: value })).toEqual([
+        'NODE_SA_UNIQUE_ID: deve ser o ID único da conta de serviço do nó (21 dígitos)',
+      ]);
+    }
+    for (const value of [
+      'http://control.veraxsistemas.com.br/aws-reader',
+      'https://control.veraxsistemas.com.br/*',
+      'https://control.veraxsistemas.com.br:8443/aws-reader',
+    ]) {
+      expect(problemsOf({ ...validEnv, AWS_WEB_IDENTITY_AUDIENCE: value })).toEqual([
+        'AWS_WEB_IDENTITY_AUDIENCE: deve ser https://<host>[/<caminho>], só com minúsculas no host e sem porta, consulta ou curinga',
+      ]);
+    }
+  });
+
   it('converte PORT para número', () => {
     expect(loadConfig({ ...validEnv, PORT: '8080' }).PORT).toBe(8080);
   });

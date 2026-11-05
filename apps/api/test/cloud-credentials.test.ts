@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { generateKeyPairSync, type KeyObject, randomBytes, randomInt } from 'node:crypto';
+import { generateKeyPairSync, type KeyObject, randomBytes } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { pino } from 'pino';
 import request from 'supertest';
@@ -20,7 +20,6 @@ import {
   credentialBinding,
   open,
   seal,
-  StaticAwsCredentials,
   type VaultSecret,
 } from '../src/credentials/credential-vault.js';
 import type { CloudProvider } from '../src/generated/prisma/enums.js';
@@ -32,10 +31,7 @@ import { LogCapture } from './support/log-capture.js';
 // Chaves e segredos gerados na hora: nenhum valor real nem fixo no repositório.
 const pem64 = (key: KeyObject, type: 'spki' | 'pkcs8') =>
   Buffer.from(key.export({ type, format: 'pem' })).toString('base64');
-const awsAccountId = () => String(randomInt(100_000_000_000, 999_999_999_999));
 const cloudflareAccountId = () => randomBytes(16).toString('hex');
-const accessKeyId = () => `AKIA${randomBytes(8).toString('hex').toUpperCase()}`;
-const awsSecret = () => randomBytes(30).toString('base64');
 const cloudflareToken = () => randomBytes(30).toString('base64url');
 
 function vaultErrorOf(action: () => unknown): string {
@@ -71,22 +67,17 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
   /** Contas criadas por cada teste: as credenciais delas saem no fim do teste (a recifragem varre a tabela toda). */
   const created: string[] = [];
 
-  async function newAccount(tenantId: string, provider: 'aws' | 'cloudflare' = 'aws'): Promise<Account> {
+  /** Uma conta do Cloudflare: o único provedor com credencial no cofre (a AWS é lida pelo papel sem chave). */
+  async function newAccount(tenantId: string): Promise<Account> {
     const account = await prisma.forTenant(tenantId).cloudAccount.create({
-      data: {
-        tenantId,
-        provider,
-        accountId: provider === 'aws' ? awsAccountId() : cloudflareAccountId(),
-        regions: provider === 'aws' ? ['sa-east-1'] : [],
-        externalId: provider === 'aws' ? randomBytes(32).toString('base64url') : null,
-      },
+      data: { tenantId, provider: 'cloudflare', accountId: cloudflareAccountId(), regions: [] },
       select: { id: true, tenantId: true, provider: true, accountId: true },
     });
     created.push(account.id);
     return account;
   }
 
-  /** Grava a credencial como a tela do PR-V3 vai gravar: cifrada com a pública, pelo escopo do cliente. */
+  /** Grava a credencial como a tela grava (PR-11'): cifrada com a pública, pelo escopo do cliente. */
   async function store(account: Account, secret: VaultSecret, publicKey = publicV1) {
     const binding = credentialBinding(account, secret.kind);
     const sealed = seal(publicKey, binding, secret);
@@ -97,7 +88,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
         kind: secret.kind,
         ciphertext: sealed.ciphertext,
         keyVersion: sealed.keyVersion,
-        keyIdSuffix: secret instanceof StaticAwsCredentials ? secret.keyIdSuffix : 'a1b2',
+        keyIdSuffix: 'a1b2',
         verifiedAt: new Date(),
       },
     });
@@ -150,8 +141,8 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     const accountA = await newAccount(tenantA);
     const accountB = await newAccount(tenantB);
     const freeAccountB = await newAccount(tenantB);
-    await store(accountA, new StaticAwsCredentials(accessKeyId(), awsSecret()));
-    const storedB = await store(accountB, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+    await store(accountA, new CloudflareToken(cloudflareToken()));
+    const storedB = await store(accountB, new CloudflareToken(cloudflareToken()));
     const scopedA = prisma.forTenant(tenantA).cloudCredential;
 
     expect(
@@ -171,7 +162,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
         data: {
           tenantId: tenantB,
           cloudAccountId: freeAccountB.id,
-          kind: 'aws_access_key',
+          kind: 'cloudflare_api_token',
           ciphertext: storedB.ciphertext,
           keyVersion: 1,
           keyIdSuffix: 'ZZZZ',
@@ -187,7 +178,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
           create: {
             cloudAccountId,
             tenantId: tenantA,
-            kind: 'aws_access_key',
+            kind: 'cloudflare_api_token',
             ciphertext: storedB.ciphertext,
             keyVersion: 1,
             keyIdSuffix: 'ZZZZ',
@@ -211,13 +202,13 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     const accountB = await newAccount(tenantB);
     const { ciphertext } = seal(
       publicV1,
-      credentialBinding(accountA, 'aws_access_key'),
-      new StaticAwsCredentials(accessKeyId(), awsSecret()),
+      credentialBinding(accountA, 'cloudflare_api_token'),
+      new CloudflareToken(cloudflareToken()),
     );
     const row = {
       cloudAccountId: accountA.id,
       tenantId: tenantA,
-      kind: 'aws_access_key' as const,
+      kind: 'cloudflare_api_token' as const,
       ciphertext,
       keyVersion: 1,
       keyIdSuffix: 'WXYZ',
@@ -245,7 +236,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
 
   it('a credencial não sai pela API de contas cloud, nem para o admin do próprio cliente', async () => {
     const account = await newAccount(tenantA);
-    const { ciphertext } = await store(account, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+    const { ciphertext } = await store(account, new CloudflareToken(cloudflareToken()));
     const admin = await createSignedInUser(app, { role: 'admin_cliente', tenantId: tenantA });
     const server = request(app.getHttpServer());
     for (const path of ['/v1/cloud-accounts', `/v1/cloud-accounts/${account.id}`]) {
@@ -257,13 +248,13 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
 
   it('recifragem: v1 para v2 em todos os clientes, pelo escopo de cada um, com auditoria na trilha dele', async () => {
     const accountA = await newAccount(tenantA);
-    const accountB = await newAccount(tenantB, 'cloudflare');
+    const accountB = await newAccount(tenantB);
     const current = await newAccount(tenantB);
-    const secret = awsSecret();
+    const secret = cloudflareToken();
     const token = cloudflareToken();
-    const storedA = await store(accountA, new StaticAwsCredentials(accessKeyId(), secret));
+    const storedA = await store(accountA, new CloudflareToken(secret));
     const storedB = await store(accountB, new CloudflareToken(token));
-    await store(current, new StaticAwsCredentials(accessKeyId(), awsSecret()), bothCurrentV2.publicKey());
+    await store(current, new CloudflareToken(cloudflareToken()), bothCurrentV2.publicKey());
     const before = await rowOf(accountA.id);
 
     const report = await new CredentialRekey(prisma, bothCurrentV2).runOnce();
@@ -276,10 +267,8 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     expect(rowA.updatedAt.getTime()).toBeGreaterThanOrEqual(before.updatedAt.getTime());
     expect(rowB).toMatchObject({ tenantId: tenantB, kind: 'cloudflare_api_token', keyVersion: 2 });
     // A v1 pode sair do Secret Manager: tudo abre só com a v2, e nada abre mais só com a v1.
-    expect(
-      (open(onlyV2, storedA.binding, rowA.ciphertext) as StaticAwsCredentials).identity().secretAccessKey,
-    ).toBe(secret);
-    expect((open(onlyV2, storedB.binding, rowB.ciphertext) as CloudflareToken).value()).toBe(token);
+    expect(open(onlyV2, storedA.binding, rowA.ciphertext).value()).toBe(secret);
+    expect(open(onlyV2, storedB.binding, rowB.ciphertext).value()).toBe(token);
     expect(vaultErrorOf(() => open(onlyV1, storedA.binding, rowA.ciphertext))).toBe('key_version_missing');
 
     const audit = await prisma.auditLog.findMany({
@@ -315,20 +304,20 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
   it('A/B: a linha copiada para a conta de outro cliente não abre, e a recifragem não a conserta', async () => {
     const accountA = await newAccount(tenantA);
     const accountB = await newAccount(tenantB);
-    const storedA = await store(accountA, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+    const storedA = await store(accountA, new CloudflareToken(cloudflareToken()));
     // Quem tem o banco copia o texto de A para a linha da conta de B (a linha em si é válida para B).
     await prisma.cloudCredential.create({
       data: {
         cloudAccountId: accountB.id,
         tenantId: tenantB,
-        kind: 'aws_access_key',
+        kind: 'cloudflare_api_token',
         ciphertext: storedA.ciphertext,
         keyVersion: 1,
         keyIdSuffix: 'ZZZZ',
         verifiedAt: new Date(),
       },
     });
-    const bindingB = credentialBinding(accountB, 'aws_access_key');
+    const bindingB = credentialBinding(accountB, 'cloudflare_api_token');
     expect(vaultErrorOf(() => open(onlyV1, bindingB, storedA.ciphertext))).toBe('decrypt_failed');
 
     const report = await new CredentialRekey(prisma, bothCurrentV2).runOnce();
@@ -343,8 +332,8 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
   it('versão da chave ausente e texto adulterado: a recifragem falha fechado e não mexe na linha', async () => {
     const missing = await newAccount(tenantA);
     const tampered = await newAccount(tenantB);
-    const storedMissing = await store(missing, new StaticAwsCredentials(accessKeyId(), awsSecret()));
-    const storedTampered = await store(tampered, new StaticAwsCredentials(accessKeyId(), awsSecret()));
+    const storedMissing = await store(missing, new CloudflareToken(cloudflareToken()));
+    const storedTampered = await store(tampered, new CloudflareToken(cloudflareToken()));
     const body = Buffer.from(storedTampered.ciphertext.slice(3), 'base64');
     body[10] = (body[10] ?? 0) ^ 0x80;
     const tamperedText = `v1:${body.toString('base64')}`;
@@ -378,10 +367,10 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
 
   it('log-capture: a recifragem pelo agendador não põe segredo nem texto cifrado no log', async () => {
     const accountA = await newAccount(tenantA);
-    const accountB = await newAccount(tenantB, 'cloudflare');
-    const secret = awsSecret();
+    const accountB = await newAccount(tenantB);
+    const secret = cloudflareToken();
     const token = cloudflareToken();
-    const storedA = await store(accountA, new StaticAwsCredentials(accessKeyId(), secret));
+    const storedA = await store(accountA, new CloudflareToken(secret));
     const storedB = await store(accountB, new CloudflareToken(token));
 
     const capture = new LogCapture();
@@ -403,7 +392,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     await scheduler.stop();
 
     // Depois de decifrados no processo, os segredos somem até de uma mensagem que os repita sem nome de campo.
-    logger.error({ detail: { reason: `a AWS recusou ${secret}` } }, `o Cloudflare recusou ${token}`);
+    logger.error({ detail: { reason: `a origem recusou ${secret}` } }, `o Cloudflare recusou ${token}`);
     const rows = [await rowOf(accountA.id), await rowOf(accountB.id)];
     const text = capture.text;
     for (const value of [
@@ -431,10 +420,10 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
       (a, b) => (a.id < b.id ? -1 : 1),
     );
     const [first, second, third] = accounts as [Account, Account, Account];
-    const secrets = [awsSecret(), awsSecret(), awsSecret()] as const;
-    const storedFirst = await store(first, new StaticAwsCredentials(accessKeyId(), secrets[0]), publicV2);
-    const storedSecond = await store(second, new StaticAwsCredentials(accessKeyId(), secrets[1]));
-    const storedThird = await store(third, new StaticAwsCredentials(accessKeyId(), secrets[2]));
+    const secrets = [cloudflareToken(), cloudflareToken(), cloudflareToken()] as const;
+    const storedFirst = await store(first, new CloudflareToken(secrets[0]), publicV2);
+    const storedSecond = await store(second, new CloudflareToken(secrets[1]));
+    const storedThird = await store(third, new CloudflareToken(secrets[2]));
 
     const capture = new LogCapture();
     const logger = pino(buildPinoOptions({ LOG_LEVEL: 'trace' }), capture);
@@ -482,10 +471,7 @@ describe('cofre de credenciais no banco (CloudCredential)', () => {
     });
     const rowFirst = await rowOf(first.id);
     expect(rowFirst).toMatchObject({ tenantId: tenantA, keyVersion: 3 });
-    expect(
-      (open(allCurrent3, storedFirst.binding, rowFirst.ciphertext) as StaticAwsCredentials).identity()
-        .secretAccessKey,
-    ).toBe(secrets[0]);
+    expect(open(allCurrent3, storedFirst.binding, rowFirst.ciphertext).value()).toBe(secrets[0]);
     // Uma entrada de auditoria por linha recifrada (duas na primeira execução, uma na segunda), nenhuma pela falha.
     const audit = await prisma.auditLog.findMany({
       where: { action: 'cloud_credential.rekey', resourceId: { in: accounts.map((account) => account.id) } },

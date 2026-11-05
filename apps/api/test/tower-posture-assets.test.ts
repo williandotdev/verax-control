@@ -28,7 +28,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
     const tenantId = await createTenant(app, `Cliente ${randomInt(1e6, 9e6)}`);
     const accountId = String(randomInt(100_000_000_000, 999_999_999_999));
     await prisma.cloudAccount.create({
-      data: { tenantId, accountId, regions: ['sa-east-1'], externalId: 'x'.repeat(43) },
+      data: { tenantId, accountId, regions: ['sa-east-1'] },
     });
     const user =
       role === 'admin_verax'
@@ -131,7 +131,6 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
             tenantId: owner,
             accountId: String(randomInt(100_000_000_000, 999_999_999_999)),
             regions: ['sa-east-1'],
-            externalId: 'x'.repeat(43),
             ...data,
           },
         });
@@ -141,7 +140,6 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
           provider: 'gcp',
           accountId: `vx-torre-${randomInt(1e6, 9e6)}`,
           regions: [],
-          externalId: null,
           ...data,
         });
       // Cloudflare lida sem erro, sem nenhum evento: a leitura bem-sucedida já é sinal de vida.
@@ -149,7 +147,6 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         provider: 'cloudflare',
         accountId: randomUUID().replace(/-/g, ''),
         regions: [],
-        externalId: null,
         connection: 'connected',
         lastCollectedAt: collected,
       });
@@ -288,7 +285,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
       const { tenantId, accountId, get } = await setup();
       const other = String(randomInt(100_000_000_000, 999_999_999_999));
       await prisma.cloudAccount.create({
-        data: { tenantId, accountId: other, regions: ['sa-east-1'], externalId: 'y'.repeat(43) },
+        data: { tenantId, accountId: other, regions: ['sa-east-1'] },
       });
       // 9/10 (90) e 1/30 (3): média das notas daria 47; os pesos dão 10/40 = 25.
       await insertScan(tenantId, accountId, new Date(Date.now() - HOUR), { passed: 9, total: 10 });

@@ -47,7 +47,7 @@ describe('relatórios e resumo MITRE da Torre', () => {
     tenantA = await createTenant(app, 'Cliente A (relatórios)');
     tenantB = await createTenant(app, 'Cliente B (relatórios)');
     await prisma.cloudAccount.create({
-      data: { tenantId: tenantA, accountId: account, regions: ['sa-east-1'], externalId: 'x'.repeat(43) },
+      data: { tenantId: tenantA, accountId: account, regions: ['sa-east-1'] },
     });
     const reader = await createSignedInUser(app, { role: 'leitura', tenantId: tenantA });
     get = (path: string) => request(app.getHttpServer()).get(path).set('Cookie', reader.cookie);

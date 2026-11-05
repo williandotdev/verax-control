@@ -16,7 +16,7 @@ export const CREDENTIAL_REKEY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const CREDENTIAL_REKEY_BATCH = 500;
 
 /**
- * Lock transacional por conta cloud: a recifragem e a troca da credencial pelo painel (PR-V3) nunca gravam a mesma
+ * Lock transacional por conta cloud: a recifragem e a troca da credencial pelo painel (PR-11') nunca gravam a mesma
  * linha ao mesmo tempo. Só vale dentro de uma transação.
  */
 export async function lockCredential(tx: Prisma.TransactionClient, cloudAccountId: string): Promise<void> {

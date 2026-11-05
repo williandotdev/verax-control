@@ -1,6 +1,6 @@
 output "github_environment" {
   description = "Variáveis do environment `control-plane` do GitHub (Settings → Environments → control-plane → Environment variables), para o workflow de implantação do plano de controle (CP-01). Nenhuma é segredo."
-  value = {
+  value = merge({
     GCP_WIF_PROVIDER     = google_iam_workload_identity_pool_provider.github.name
     GCP_DEPLOYER_SA      = google_service_account.deployer.email
     GCP_PROJECT_ID       = var.project_id
@@ -10,7 +10,10 @@ output "github_environment" {
     CP_PUBLIC_SERVICE    = "cp-public"
     CP_WORKER_SERVICE    = "cp-worker"
     CP_TERRAFORM_JOB     = "cp-terraform"
-  }
+    },
+    # Só com admin_enabled: sem ela no environment, o workflow não implanta o console do responsável.
+    var.admin_enabled ? { CP_ADMIN_SERVICE = local.admin_service_name } : {},
+  )
 }
 
 output "cloudflare_dns_records" {
@@ -30,14 +33,23 @@ output "cloudflare_dns_records" {
 }
 
 output "service_accounts" {
-  description = "As cinco contas do plano de controle. A `invoker` é a do token das tasks e do Scheduler (WORKER_SA_EMAIL e SCHEDULER_SA_EMAIL): só chama o cp-worker."
+  description = "As contas do plano de controle. A `invoker` é a do token das tasks e do Scheduler (WORKER_SA_EMAIL e SCHEDULER_SA_EMAIL): só chama o cp-worker. A `admin` (console do responsável) é nula sem admin_enabled."
   value = {
     public    = google_service_account.public.email
     worker    = google_service_account.worker.email
     terraform = google_service_account.terraform.email
     invoker   = google_service_account.invoker.email
     deployer  = google_service_account.deployer.email
+    admin     = one(google_service_account.admin[*].email)
   }
+}
+
+output "admin" {
+  description = "O console do responsável: o endereço (abre no navegador, com o login do Google pelo IAP) e o `aud` que o app confere no JWT do IAP (IAP_AUDIENCE). Nulo sem admin_enabled."
+  value = var.admin_enabled ? {
+    url          = google_cloud_run_v2_service.admin[0].uri
+    iap_audience = local.admin_iap_audience
+  } : null
 }
 
 output "secrets" {
