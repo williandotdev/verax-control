@@ -165,6 +165,13 @@ export const tenantSchema = z.strictObject({
       siteId: z.string().max(64).optional(),
       panelDomainActive: z.boolean().optional(),
       tfstatePrefix: z.string().max(128).optional(),
+      /**
+       * O ID único da conta de serviço do nó (saída do Terraform, CP-07): é por ele que o papel de leitura na AWS do
+       * cliente aceita o nó. Guardado para a frota (CP-12) notar uma conta recriada, o que o executor recusa.
+       */
+      serviceAccountUniqueId: z.string().max(32).optional(),
+      /** O bucket de backups do nó (exportação sob pedido e Exclusão 2, CP-11). */
+      backupsBucket: z.string().max(80).optional(),
     })
     .optional(),
   /** Apagado em `deleted`. */

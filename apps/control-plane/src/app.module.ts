@@ -36,6 +36,8 @@ export interface AppModuleOptions {
   mailSender?: AccessWorkerModuleOptions['mailSender'];
   /** Só nos testes: as chaves dos tokens de identidade (em produção, os certificados públicos do Google). */
   idTokenKeys?: AccessWorkerModuleOptions['idTokenKeys'];
+  /** Só nos testes: as APIs do provisionamento (CP-07) num servidor falso e a sonda em memória. */
+  provisioning?: AccessWorkerModuleOptions['provisioning'];
   /** Só nos testes: a API da Stripe num servidor falso em 127.0.0.1 (em produção, o padrão do SDK). */
   stripeApi?: StripeApiOptions;
   /** Só nos testes: a fila de passos em memória (em produção, o Cloud Tasks pela configuração). */
@@ -79,6 +81,7 @@ function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<Mo
         bootstrapSecrets: options.bootstrapSecrets,
         mailSender: options.mailSender,
         idTokenKeys: options.idTokenKeys,
+        provisioning: options.provisioning,
       }),
     ];
   }

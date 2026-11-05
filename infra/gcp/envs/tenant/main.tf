@@ -9,8 +9,10 @@
 # desligada são mudanças no lugar.
 
 locals {
-  name_prefix       = "vx-${var.slug}"
-  images_repository = "${var.images_location}-docker.pkg.dev/${var.images_project_id}/${var.images_repository_id}"
+  name_prefix = "vx-${var.slug}"
+  # O Artifact Registry (`<região>-docker.pkg.dev/<projeto>/<registro>`), quando é ele o registro das imagens: a conta
+  # da VM precisa de leitura nele. O GHCR é público e não pede nada.
+  images_artifact_registry = try(regex("^([a-z0-9-]+)-docker\\.pkg\\.dev/([^/]+)/([^/]+)$", var.images_repository), null)
 }
 
 module "node" {
@@ -50,7 +52,7 @@ module "node" {
     verax-plan-history-days       = var.plan_history_days
     verax-node-version            = var.node_version
     verax-node-package-sha256     = var.node_package_sha256
-    verax-images-repository       = local.images_repository
+    verax-images-repository       = var.images_repository
     verax-web-origin              = var.web_origin
     verax-api-origin              = var.api_origin
     verax-mail-from               = var.mail_from
@@ -60,13 +62,15 @@ module "node" {
   }
 }
 
-# A VM baixa as imagens do registro do projeto da Verax, só com leitura (como na homologação). São só as imagens do
-# código aberto: nenhum dado de cliente passa por lá. O executor grava esta permissão pelo `cpImagesAccessGranter`
-# (envs/control-plane/cross_project.tf).
+# Com o Artifact Registry do projeto da Verax, a VM baixa as imagens de lá, só com leitura (como na homologação). São só
+# as imagens do código aberto: nenhum dado de cliente passa por lá. O executor grava esta permissão pelo
+# `cpImagesAccessGranter` (envs/control-plane/cross_project.tf). Com o GHCR (o padrão), nada a conceder.
 resource "google_artifact_registry_repository_iam_member" "node_reader" {
-  project    = var.images_project_id
-  location   = var.images_location
-  repository = var.images_repository_id
+  count = local.images_artifact_registry == null ? 0 : 1
+
+  project    = local.images_artifact_registry[1]
+  location   = local.images_artifact_registry[0]
+  repository = local.images_artifact_registry[2]
   role       = "roles/artifactregistry.reader"
   member     = "serviceAccount:${module.node.service_account_email}"
 }

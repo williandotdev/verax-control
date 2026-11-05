@@ -77,7 +77,7 @@ export class CloudTasksStepQueue implements StepQueue {
     return {
       parent,
       task: {
-        name: `${parent}/tasks/${stepTaskId(task.step, task.runId)}`,
+        name: `${parent}/tasks/${stepTaskId(task.step, task.runId, task.poll)}`,
         httpRequest: {
           httpMethod: 'POST',
           url,
@@ -95,7 +95,7 @@ export class CloudTasksStepQueue implements StepQueue {
 
   async enqueue(task: StepTask): Promise<EnqueuedStep> {
     const request = this.buildRequest(task);
-    const taskId = stepTaskId(task.step, task.runId);
+    const taskId = stepTaskId(task.step, task.runId, task.poll);
     this.api ??= this.load();
     let api: CloudTasksApi;
     try {

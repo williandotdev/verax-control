@@ -245,26 +245,23 @@ variable "control_plane_sa" {
   }
 }
 
-variable "images_project_id" {
-  description = "Projeto do registro das imagens do nó (o do nó da Verax, envs/verax). A conta da VM ganha só leitura nele, como na homologação."
+# De onde a VM baixa a API e as migrations (IMAGES_REPOSITORY do executor, `NODE_IMAGES_REPOSITORY` do plano de
+# controle), pelo digest do manifesto assinado: os mesmos dois formatos que a instalação sem operador aceita
+# (`boot-install.sh`). Decisão do CP-07, à espera do responsável: o GHCR público por padrão. A limpeza do Artifact
+# Registry (envs/verax/images.tf) apaga, depois de 30 dias, as versões fora das 3 mais recentes, e um cliente novo numa
+# versão mais antiga pararia em `install_failed`; o GHCR não tem limpeza e não pede login.
+variable "images_repository" {
+  description = "Registro das imagens do Verax para a VM: `ghcr.io/<dono>/<repositório>` (público, sem login; o do manifesto) ou `<região>-docker.pkg.dev/<projeto>/<registro>` (o Artifact Registry do projeto da Verax; a conta da VM ganha só leitura nele, como na homologação)."
   type        = string
+  default     = "ghcr.io/williandotdev/verax-control"
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.images_project_id))
-    error_message = "ID de projeto da GCP inválido (6 a 30 caracteres, minúsculas, números e hífen)."
+    condition = (
+      can(regex("^ghcr\\.io/[a-z0-9-]{1,39}/[a-z0-9._-]{1,100}$", var.images_repository)) ||
+      can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}$", var.images_repository))
+    )
+    error_message = "images_repository é ghcr.io/<dono>/<repositório> ou <região>-docker.pkg.dev/<projeto>/<registro>."
   }
-}
-
-variable "images_location" {
-  description = "Região do registro das imagens (a mesma padrão do envs/control-plane)."
-  type        = string
-  default     = "us-east1"
-}
-
-variable "images_repository_id" {
-  description = "Nome do registro das imagens (o mesmo padrão do envs/control-plane)."
-  type        = string
-  default     = "verax-control"
 }
 
 variable "deletion_protection" {

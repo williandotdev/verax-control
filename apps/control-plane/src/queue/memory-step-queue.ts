@@ -27,7 +27,7 @@ export class MemoryStepQueue implements StepQueue {
       this.failure = undefined;
       return Promise.reject(error);
     }
-    const taskId = stepTaskId(task.step, task.runId);
+    const taskId = stepTaskId(task.step, task.runId, task.poll);
     if (this.tasks.some((queued) => queued.queue === task.queue && queued.taskId === taskId)) {
       return Promise.resolve({ taskId, created: false });
     }

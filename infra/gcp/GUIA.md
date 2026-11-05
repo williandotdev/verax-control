@@ -805,16 +805,17 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
 - **GitHub:** o environment (passo 7).
 - **Serviços:** `service_env` (os dois serviços) com as versões dos aceites, a URL do Portal e, se o app exigir,
   `TRUST_PROXY_HOPS` (o Terraform não decide quantos proxies o serviço confia; é do app, CP-01); `worker_env` (só o
-  `cp-worker`) com o remetente e o usuário do SMTP; na primeira venda, `nodes_project_id`, `images_project_id`,
-  `release_bucket` e, em `worker_env`, `NODE_RELEASE` e `PROVISIONING_ENABLED = "true"` (itens 15 a 17; o projeto dos
-  nós, o bucket do estado dele e as permissões lá vêm do `envs/nodes-platform`, aplicado com
+  `cp-worker`) com o remetente e o usuário do SMTP; na primeira venda, `nodes_project_id`, `release_bucket`,
+  `firebase_panel_projects`, `cloudflare_account_id`, `cloudflare_zone_id` (e `images_project_id` só se os nós forem
+  usar o Artifact Registry) e, em `worker_env`, o que a seção "O provisionamento (CP-07)", abaixo, lista (itens 15 a
+  17; o projeto dos nós, o bucket do estado dele e as permissões lá vêm do `envs/nodes-platform`, aplicado com
   `control_plane_project_id` depois deste ambiente). As chaves que o Terraform deriva de outras variáveis, os
   segredos, `ROLE` e `NODE_ENV` são recusados nos dois mapas; `SMTP_*` e `MAIL_FROM*` só entram em `worker_env`.
 
 ### Operações do responsável no `cp-worker`
 
 Por padrão o `cp-worker` só recebe tráfego de dentro do projeto (Cloud Tasks e Cloud Scheduler), além do IAM. Para
-chamar `resume`, `delete-now` ou `export` da sua máquina (CP-11), mude `worker_ingress = "INGRESS_TRAFFIC_ALL"` no
+chamar `resume` (CP-07, já existe), `delete-now` ou `export` (CP-11) da sua máquina, mude `worker_ingress = "INGRESS_TRAFFIC_ALL"` no
 `terraform.tfvars` e faça o `apply` (uma mudança no lugar); o IAM continua exigindo o token de identidade de quem está
 em `owner_principals`. Volte para `INGRESS_TRAFFIC_INTERNAL_ONLY` depois. O `aud` de um token de usuário do gcloud não
 é a URL do serviço: como o worker aceita o responsável (impersonação de uma conta de serviço com `--audiences`, por
@@ -954,25 +955,26 @@ O executor Terraform roda, para cada cliente, o `init` com
 `-backend-config="bucket=<projeto-dos-nos>-tfstate" -backend-config="prefix=tenants/<slug>"` e o `plan`/`apply` com as
 variáveis dele (CP-07). O ambiente cria o nó no perfil `standard` com o prefixo `vx-<slug>` em todo recurso, liga o
 cofre da conta de suporte, os atributos de convidado, a configuração nos metadados da VM e a instalação sem operador,
-dá à conta da VM a leitura do registro das imagens e dá ao `cp-worker` só o que ele faz nos cofres daquele nó. As
-variáveis recusam o que estiver fora do formato antes de criar qualquer coisa.
+dá ao `cp-worker` só o que ele faz nos cofres daquele nó e, só com o Artifact Registry como registro das imagens
+(`images_repository`; o padrão é o GHCR público, que não pede nada), dá à conta da VM a leitura dele. As variáveis
+recusam o que estiver fora do formato antes de criar qualquer coisa.
 
 O script de boot leva o instalador, o verificador do manifesto e as chaves públicas de release de `infra/node` (o
-módulo os lê no `plan`): o executor precisa do repositório com `infra/node` ao lado de `infra/gcp`, não só da pasta
-do Terraform.
+módulo os lê no `plan`): a imagem do executor (`infra/control-plane/terraform`) leva `infra/node` ao lado de
+`infra/gcp`.
 
 **`plan` de aceite num projeto de teste** (o aceite do CP-06; nunca no projeto dos nós com clientes): com o
 `envs/nodes-platform` aplicado nesse projeto de teste (as APIs e o bucket do estado),
 
 ```bash
 cd infra/gcp/envs/tenant
-cp terraform.tfvars.example terraform.tfvars   # o projeto de teste, a conta cp-worker e o projeto das imagens
+cp terraform.tfvars.example terraform.tfvars   # o projeto de teste e a conta cp-worker
 terraform init -backend-config="bucket=PROJETO_DE_TESTE-tfstate" -backend-config="prefix=tenants/demo-a"
 terraform plan
 ```
 
-O `plan` termina com `Plan: 34 to add, 0 to change, 0 to destroy.`: 29 recursos `module.node.*` e 5 permissões (4 do
-`cp-worker` nos cofres e a leitura do registro das imagens). Todo nome que aparece começa com `vx-demo-a` (o bucket de
+O `plan` termina com `Plan: 33 to add, 0 to change, 0 to destroy.`: 29 recursos `module.node.*` e as 4 permissões do
+`cp-worker` nos cofres (34, com a leitura do registro, se `images_repository` for o Artifact Registry). Todo nome que aparece começa com `vx-demo-a` (o bucket de
 backups é `PROJETO_DE_TESTE-vx-demo-a-backups`), os metadados da VM têm `enable-guest-attributes` e as chaves `verax-*`,
 e nenhum recurso fica fora do prefixo. Não aplique: o `plan` só olha. Depois, apague o `terraform.tfvars` e a pasta
 `.terraform`.
@@ -983,13 +985,14 @@ Versão do nó). O nó nasce só com o `terraform apply`, sem SSH:
 
 1. **A versão e o SHA-256**, conferidos como em `docs/runbooks/versao-no.md` ("Conferir uma versão à mão"): baixe o
    manifesto e a assinatura do release, rode o `infra/node/bin/verify-release.sh` (tem de dizer `OK`) e use o
-   `package.sha256` dele. A imagem da API e a das migrations desse release precisam estar no Artifact Registry
+   `package.sha256` dele. Com o GHCR (o padrão desde o CP-07), as imagens do manifesto estão lá; só se
+   `images_repository` for o Artifact Registry, confira que a API e as migrations desse release ainda estão nele
    (`gcloud artifacts docker images list <registro>/api --include-tags`): a limpeza apaga as versões com mais de 30
    dias que não estão entre as 3 mais recentes (`docs/ARQUITETURA.md`, "Instalação sem operador").
 2. **O `terraform.tfvars`** do `envs/tenant` com um slug de teste (`homolog`, por exemplo), `node_version` e
    `node_package_sha256` do passo 1, e-mails e nome fictícios do cliente e o seu e-mail de suporte. Depois,
    `terraform init` (como no `plan` de aceite, acima, com `prefix=tenants/homolog`), `terraform plan`
-   (`Plan: 34 to add`, a chave `startup-script` com o texto do `unattended.sh.tftpl`) e `terraform apply`.
+   (`Plan: 33 to add` com o GHCR, a chave `startup-script` com o texto do `unattended.sh.tftpl`) e `terraform apply`.
 3. **O token do túnel**, em até 60 minutos depois do `apply` (é o que o passo `secrets.tunnel_token` do plano de
    controle faz): crie um túnel de teste no Cloudflare apontando `api-homolog` para `http://api:3000` e grave o token
    com `printf '%s' "$TOKEN" | gcloud secrets versions add vx-homolog-cloudflare-tunnel-token --data-file=-`.
@@ -1046,6 +1049,97 @@ nós) e peça aumento antes de chegar perto do limite, contando a homologação.
 - **Desfazer:** o bucket do estado tem `prevent_destroy` e guarda o estado de todos os clientes: nunca o apague com
   clientes no ar. As APIs continuam ligadas depois de um `destroy`. Um `envs/tenant` só é desfeito pelo plano de
   controle, na exclusão do cliente.
+
+## O provisionamento (CP-07): o executor e o que configurar
+
+Com o projeto dos nós no ar, o `cp-worker` leva cada cliente pago do `preflight` ao `waiting_customer_connection`
+sozinho: túnel e DNS no Cloudflare, site e domínio no Firebase, o `envs/tenant` pelo Job `cp-terraform`, o token do
+túnel no cofre do nó, a VM pronta, a saúde, o certificado e a senha no cofre. Os passos, o que para de vez e o
+executor estão em `docs/ARQUITETURA.md` ("Provisionamento: os passos e o executor Terraform"); o que fazer quando um
+cliente para em `provisioning_failed` está em `docs/runbooks/provisionamento.md`. Enquanto `PROVISIONING_ENABLED` não
+for `true`, todo cliente pago para no `preflight` com `provisioning_disabled`, sem laço, e espera o `resume`.
+
+### O que você configura (na primeira venda)
+
+1. **A imagem do executor no Job.** O CI só monta, varre (Trivy) e testa a imagem (`infra/control-plane/terraform`);
+   nenhum workflow a publica ainda. De um checkout limpo da `main`, com o `docker` autenticado no registro do plano de
+   controle (`gcloud auth configure-docker southamerica-east1-docker.pkg.dev`):
+
+   ```bash
+   REGISTRO=southamerica-east1-docker.pkg.dev/<projeto-da-verax>/verax-control-plane
+   docker build -f infra/control-plane/terraform/Dockerfile -t "$REGISTRO/terraform-executor:$(git rev-parse HEAD)" .
+   docker push "$REGISTRO/terraform-executor:$(git rev-parse HEAD)"   # anote o digest que o push mostra
+   gcloud run jobs update cp-terraform --project <projeto-da-verax> --region southamerica-east1 \
+     --image "$REGISTRO/terraform-executor@sha256:<digest>"
+   ```
+
+   O Terraform ignora a imagem do Job (`ignore_changes`), então o `apply` seguinte não a desfaz. Uma versão nova do
+   lock do `envs/tenant` (o Dependabot) entra na imagem no build seguinte; publique de novo depois de mesclar.
+
+2. **O release no bucket de releases.** O `preflight` lê `<versão>/manifest.json` e `manifest.json.sig` de
+   `release_bucket` (e confere a assinatura com as chaves de `infra/node/keys`); o `firebase.site` lê o bundle do
+   painel da mesma pasta. Para cada versão que for vender:
+
+   ```bash
+   gh release download node-vX.Y.Z --repo williandotdev/verax-control -D /tmp/rel \
+     -p manifest.json -p manifest.json.sig -p 'panel-*.tar.gz'
+   bash infra/node/bin/verify-release.sh /tmp/rel/manifest.json /tmp/rel/manifest.json.sig   # tem de dizer OK
+   gcloud storage cp /tmp/rel/* gs://<release_bucket>/node-vX.Y.Z/
+   ```
+
+   O `panel-*.tar.gz` e o campo `panel` do manifesto vêm com o CP-09. Até lá, o provisionamento para no
+   `firebase.site` com `panel_bundle_missing`, antes de criar qualquer coisa no Firebase ou na GCP.
+
+3. **As variáveis.** No `terraform.tfvars` do `envs/control-plane`: `nodes_project_id`, `release_bucket`,
+   `firebase_panel_projects`, `cloudflare_account_id` e `cloudflare_zone_id` (e `images_project_id` só com o Artifact
+   Registry, abaixo). Em `worker_env`:
+
+   ```hcl
+   worker_env = {
+     # ...o SMTP de antes...
+     PROVISIONING_ENABLED    = "true"
+     NODE_RELEASE            = "node-vX.Y.Z"               # a versão do passo 2
+     MAIL_FROM_NODES         = "nao-responda@<domínio>"    # só o endereço, sem nome e sem apóstrofo
+     BOOTSTRAP_SUPPORT_EMAIL = "<a conta de suporte>"      # a conta admin_verax de suporte em cada nó (CP-10)
+     # NODE_IMAGES_REPOSITORY = "us-east1-docker.pkg.dev/<projeto-do-no-verax>/verax-control"  # só para o Artifact Registry
+   }
+   ```
+
+   O `cp-cloudflare-api-token` (passo 4 do plano de controle) é o token com `Account > Cloudflare Tunnel > Edit` e
+   `Zone > DNS > Edit` na zona. A partida do `cp-worker` recusa o grupo incompleto ou fora do formato e cita só o nome
+   da variável. Depois, `terraform apply` (só as variáveis dos serviços mudam).
+
+4. **Decisão sua: o registro das imagens dos nós.** O padrão é o GHCR público (`ghcr.io/williandotdev/verax-control`):
+   sem login, sem limpeza, nenhuma permissão. O Artifact Registry do projeto da Verax também serve
+   (`NODE_IMAGES_REPOSITORY` e `images_project_id`), mas a limpeza dele apaga, depois de 30 dias, as versões fora das 3
+   mais recentes, e um cliente novo numa versão mais antiga não instalaria.
+5. **Chamar o `resume`.** É uma rota só sua (`POST <WORKER_URL>/internal/tenants/<id>/resume`, `OWNER_PRINCIPALS`), e
+   o worker confere `aud = WORKER_URL` no token: um token de usuário do gcloud não serve (veja "Operações do
+   responsável no `cp-worker`", acima, e o runbook).
+
+### Aceite (manual, num projeto de teste)
+
+Um cliente de teste nasce do zero e chega a `waiting_customer_connection` sem operador:
+
+1. Com o `envs/nodes-platform` e o `envs/control-plane` aplicados no projeto de teste, a imagem do executor no Job, o
+   release (com o bundle do painel, depois do CP-09) no bucket e as variáveis acima, compre no sandbox da Stripe com o
+   cartão de teste (o fluxo do CP-03 e do CP-04).
+2. Acompanhe: no log do `cp-worker`, uma linha `event=step_done` por passo; em `tenants/<id>`, `provisioning.step`
+   andando; na página de status, a lista dos passos. Em cerca de 30 a 60 minutos (mais o certificado do domínio, que
+   pode levar horas), o cliente chega a `waiting_customer_connection` e a página oferece "Mostrar acesso".
+3. Confira sem SSH: o túnel `vx-<slug>` e o CNAME `api-<slug>` (com proxy) no Cloudflare, e os registros do painel
+   (sem proxy); o site `vxc-<slug>-<hex>` com o domínio `<slug>.control...` no projeto do pool;
+   `gcloud run jobs executions list --job cp-terraform --region southamerica-east1` com uma execução concluída e
+   `runs/<slug>/<runId>/<execução>/result.json` (`succeeded`) e `outputs.json` no bucket do estado;
+   `gcloud compute instances get-guest-attributes vx-<slug> --zone southamerica-east1-b --query-path=verax/` com
+   `verax/ready` igual a `NODE_RELEASE`; `curl https://api-<slug>.<domínio>/health`; o painel abre em
+   `https://<slug>.control.<domínio>` e a revelação mostra a senha uma vez.
+4. Confira que nada sensível ficou para trás: o log do Job só tem o resumo do plano (nenhum e-mail ou nome); em
+   `provisioningRuns/<runId>/steps`, nenhum token; o `vx-<slug>-cloudflare-tunnel-token` com uma versão.
+5. Uma falha de propósito: com `PROVISIONING_ENABLED = "false"` num segundo cliente de teste, ele para em
+   `provisioning_failed` com `provisioning_disabled` e nenhuma task nova; ligue de novo, chame o `resume` e ele segue.
+6. Desfaça como na Exclusão 1 (seção do `envs/tenant`, acima, passo 7 do aceite da instalação), e apague à mão o
+   túnel, os registros de DNS e o site do Firebase do cliente de teste (o CP-11 automatiza).
 
 ## Escolhas de segurança desta base
 

@@ -84,6 +84,65 @@ const documentVersion = z
 const releaseVersion = documentVersion;
 
 /**
+ * Versão do nó que o provisionamento instala: o release `node-vX.Y.Z` do manifesto assinado (`scripts/node-release.sh`),
+ * o mesmo formato da variável `node_version` do `envs/tenant` e do `boot-install.sh` (PR-N7).
+ */
+export const NODE_RELEASE_PATTERN = /^node-v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$/;
+export function isNodeRelease(value: string): boolean {
+  return NODE_RELEASE_PATTERN.test(value);
+}
+
+const MAIL_LOCAL_BODY = /^[A-Za-z0-9_+.'-]*$/;
+const MAIL_LOCAL_END = /^[A-Za-z0-9_+-]$/;
+const MAIL_DOMAIN_LABEL = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+const MAIL_TOP_LABEL = /^[A-Za-z]{2,}$/;
+
+/**
+ * O e-mail na forma do `z.email()` do zod 4 e das `validation` do `envs/tenant` (a expressão
+ * `^[A-Za-z0-9_'+.-]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$`, sem ponto no começo nem dois pontos
+ * seguidos), conferida por partes, sem quantificador aninhado: a parte local, cada rótulo do domínio e o último, só de
+ * letras. O apóstrofo é aceito aqui; `isNodeMailAddress` o recusa.
+ */
+export function isMailAddress(value: string): boolean {
+  if (value.length > 254 || value.startsWith('.') || value.includes('..')) return false;
+  const at = value.indexOf('@');
+  if (at <= 0 || at !== value.lastIndexOf('@')) return false;
+  const local = value.slice(0, at);
+  const labels = value.slice(at + 1).split('.');
+  const top = labels.pop();
+  return (
+    MAIL_LOCAL_BODY.test(local) &&
+    MAIL_LOCAL_END.test(local.slice(-1)) &&
+    labels.length >= 1 &&
+    labels.every((label) => MAIL_DOMAIN_LABEL.test(label)) &&
+    top !== undefined &&
+    MAIL_TOP_LABEL.test(top)
+  );
+}
+
+/**
+ * Remetente dos e-mails do nó (MAIL_FROM do node.conf): só o endereço, sem "Nome <...>" e sem apóstrofo, que a
+ * instalação sem operador recusa (o arquivo de ambiente do `start.sh` não o comporta; `re_mail` do `boot-install.sh`).
+ */
+export function isNodeMailAddress(value: string): boolean {
+  return !value.includes("'") && isMailAddress(value);
+}
+
+/**
+ * Registro das imagens do Verax (API e migrations) que o nó do cliente usa, pelo digest do manifesto: o GHCR público
+ * do repositório (`ghcr.io/<dono>/<repositório>`, sem login e sem limpeza) ou o Artifact Registry do projeto da Verax
+ * (`<região>-docker.pkg.dev/<projeto>/<registro>`). Os mesmos dois formatos do `boot-install.sh` e do `envs/tenant`.
+ */
+const GHCR_REPOSITORY_PATTERN = /^ghcr\.io\/[a-z0-9-]{1,39}\/[a-z0-9._-]{1,100}$/;
+const ARTIFACT_REGISTRY_PATTERN =
+  /^[a-z0-9-]+-docker\.pkg\.dev\/[a-z][a-z0-9-]{4,28}[a-z0-9]\/[a-z0-9-]{1,63}$/;
+export function isNodeImagesRepository(value: string): boolean {
+  return GHCR_REPOSITORY_PATTERN.test(value) || ARTIFACT_REGISTRY_PATTERN.test(value);
+}
+/** O padrão (decisão do CP-07, à espera do responsável): o GHCR público deste repositório, que o PR-N7 já aceita. */
+export const DEFAULT_NODE_IMAGES_REPOSITORY = 'ghcr.io/williandotdev/verax-control';
+
+/**
  * Chaves da Stripe: a chave restrita (`rk_`) é a esperada; a completa (`sk_`) passa no formato, mas o responsável
  * foi orientado a não usá-la (plano §9). O trecho `test`/`live` decide o modo e é conferido com `STRIPE_LIVE`.
  */
@@ -94,17 +153,33 @@ const stripeWebhookSecret = z
   .string()
   .regex(/^whsec_[A-Za-z0-9]{8,}$/, { error: 'segredo de webhook da Stripe em formato inválido' });
 
-/** Variáveis que passam a ser obrigatórias com `PROVISIONING_ENABLED=true` (plano §2.5). */
+/**
+ * Variáveis que passam a ser obrigatórias com `PROVISIONING_ENABLED=true` (plano §2.5), em qualquer papel. Desde o
+ * CP-07, `IMAGES_PROJECT_ID` não está mais aqui: o registro das imagens do nó é `NODE_IMAGES_REPOSITORY` (com padrão),
+ * e o projeto do Artifact Registry só importa a quem escolher ele.
+ */
 export const PROVISIONING_REQUIRED = [
   'NODES_PROJECT_ID',
   'NODES_REGION',
   'NODES_ZONE',
   'TFSTATE_BUCKET',
   'TERRAFORM_JOB_NAME',
-  'IMAGES_PROJECT_ID',
   'RELEASE_BUCKET',
   'NODE_RELEASE',
   'MAIL_FROM_NODES',
+] as const;
+
+/**
+ * As que só o cp-worker precisa para provisionar (CP-07): o token e a zona do Cloudflare (túnel e DNS), os projetos do
+ * Firebase dos painéis e o e-mail da conta de suporte da Verax em cada nó (CP-10). Conferidas na partida só no papel
+ * worker com `PROVISIONING_ENABLED=true`: o cp-public nunca recebe o token do Cloudflare (`ROLE_ONLY`).
+ */
+export const PROVISIONING_WORKER_REQUIRED = [
+  'CLOUDFLARE_API_TOKEN',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_ZONE_ID',
+  'FIREBASE_PANEL_PROJECTS',
+  'BOOTSTRAP_SUPPORT_EMAIL',
 ] as const;
 
 const envShape = {
@@ -192,17 +267,38 @@ const envShape = {
     })
     .optional(),
 
-  // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida.
+  // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida
+  // (`PROVISIONING_REQUIRED` e, no worker, `PROVISIONING_WORKER_REQUIRED`). Desligado, o passo `preflight` termina o
+  // cliente em `provisioning_failed` com `provisioning_disabled`, sem enfileirar mais nada; o `resume` do responsável
+  // retoma depois de ligar.
   PROVISIONING_ENABLED: boolean('false'),
   NODES_PROJECT_ID: gcpProjectId.optional(),
   NODES_REGION: gcpRegion.optional(),
   NODES_ZONE: gcpZone.optional(),
   TFSTATE_BUCKET: gcsBucket.optional(),
   TERRAFORM_JOB_NAME: gcpResourceName.optional(),
+  // Projeto do Artifact Registry das imagens do nó (o `cpImagesAccessGranter` do envs/control-plane). O
+  // provisionamento não a usa: o registro de cada nó é `NODE_IMAGES_REPOSITORY`.
   IMAGES_PROJECT_ID: gcpProjectId.optional(),
+  // Bucket de releases: `<NODE_RELEASE>/manifest.json`, a assinatura e o bundle do painel (o `preflight` e o
+  // `firebase.site` leem; a assinatura é conferida com as chaves de release de `infra/node/keys`).
   RELEASE_BUCKET: gcsBucket.optional(),
+  // Com o provisionamento ligado, precisa ser `node-vX.Y.Z` (`NODE_RELEASE_PATTERN`).
   NODE_RELEASE: releaseVersion.optional(),
+  // Com o provisionamento ligado, precisa ser só o endereço, sem apóstrofo (`NODE_MAIL_PATTERN`).
   MAIL_FROM_NODES: mailbox.optional(),
+  // De onde cada nó de cliente baixa a API e as migrations (decisão do CP-07, à espera do responsável): o GHCR público
+  // por padrão. O Artifact Registry do projeto da Verax apaga, depois de 30 dias, as versões fora das 3 mais recentes,
+  // e um cliente novo numa versão mais antiga não instalaria.
+  NODE_IMAGES_REPOSITORY: z
+    .string()
+    .refine(isNodeImagesRepository, {
+      error: 'deve ser ghcr.io/<dono>/<repositório> ou <região>-docker.pkg.dev/<projeto>/<registro>',
+    })
+    .default(DEFAULT_NODE_IMAGES_REPOSITORY),
+  // A conta de suporte da Verax em cada nó de cliente (CP-10): `bootstrap_support_email` do envs/tenant. Só o
+  // cp-worker a recebe.
+  BOOTSTRAP_SUPPORT_EMAIL: email.optional(),
 
   // Cloudflare e Firebase (CP-07).
   CLOUDFLARE_API_TOKEN: z.string().min(1).optional(),
@@ -250,7 +346,7 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
     public: { secrets: ['STRIPE_WEBHOOK_SECRET', 'COOKIE_KEY'], settings: [] },
     worker: {
       secrets: ['SMTP_PASSWORD', 'CLOUDFLARE_API_TOKEN'],
-      settings: ['SMTP_HOST', 'SMTP_USER', 'MAIL_FROM'],
+      settings: ['SMTP_HOST', 'SMTP_USER', 'MAIL_FROM', 'BOOTSTRAP_SUPPORT_EMAIL'],
     },
     admin: { secrets: [], settings: ['IAP_AUDIENCE'] },
   };
@@ -311,10 +407,29 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
     }
   }
   if (env.PROVISIONING_ENABLED) {
-    for (const key of PROVISIONING_REQUIRED) {
+    const required: readonly EnvKey[] =
+      env.ROLE === 'worker'
+        ? [...PROVISIONING_REQUIRED, ...PROVISIONING_WORKER_REQUIRED]
+        : PROVISIONING_REQUIRED;
+    for (const key of required) {
       if (env[key] === undefined) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com PROVISIONING_ENABLED=true' });
       }
+    }
+    // O que vai para o Terraform do nó tem o formato do envs/tenant e da instalação sem operador.
+    if (env.NODE_RELEASE !== undefined && !isNodeRelease(env.NODE_RELEASE)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['NODE_RELEASE'],
+        message: 'com PROVISIONING_ENABLED=true, deve ser a versão do nó (node-vX.Y.Z)',
+      });
+    }
+    if (env.MAIL_FROM_NODES !== undefined && !isNodeMailAddress(env.MAIL_FROM_NODES)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_FROM_NODES'],
+        message: 'com PROVISIONING_ENABLED=true, deve ser só o endereço, sem nome e sem apóstrofo',
+      });
     }
   }
   // Segredo de outro papel: recusado. (As variáveis comuns de outro papel já saíram em `loadConfig`.)

@@ -38,7 +38,6 @@ variables {
   bootstrap_tenant_name   = "Cliente Demo A"
   bootstrap_support_email = "suporte@example.com"
   control_plane_sa        = "cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
-  images_project_id       = "projeto-exemplo-imagens"
 }
 
 run "nasce_o_no_do_cliente" {
@@ -75,7 +74,7 @@ run "nasce_o_no_do_cliente" {
       verax-credentials-vault       = "true"
       verax-backup-bucket           = "projeto-exemplo-nos-vx-demo-a-backups"
       verax-node-sa-unique-id       = "123456789012345678901"
-      verax-images-repository       = "us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control"
+      verax-images-repository       = "ghcr.io/williandotdev/verax-control"
       verax-node-version            = "node-v1.2.3"
       verax-node-package-sha256     = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
       verax-plan                    = "profissional"
@@ -156,16 +155,35 @@ run "permissoes_do_cp_worker" {
   }
 }
 
-run "leitura_do_registro_das_imagens" {
+# O registro das imagens (decisão do CP-07): por padrão o GHCR público, que não pede permissão nenhuma; com o Artifact
+# Registry do projeto da Verax, a conta da VM ganha só leitura nele, e nada mais.
+run "imagens_do_ghcr_por_padrao" {
+  assert {
+    condition     = length(google_artifact_registry_repository_iam_member.node_reader) == 0
+    error_message = "Com o GHCR (o padrão), o tenant não deveria conceder leitura em registro nenhum."
+  }
+}
+
+run "leitura_do_artifact_registry_quando_e_ele" {
+  variables {
+    images_repository = "us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control"
+  }
+
   assert {
     condition = (
-      google_artifact_registry_repository_iam_member.node_reader.project == "projeto-exemplo-imagens" &&
-      google_artifact_registry_repository_iam_member.node_reader.location == "us-east1" &&
-      google_artifact_registry_repository_iam_member.node_reader.repository == "verax-control" &&
-      google_artifact_registry_repository_iam_member.node_reader.role == "roles/artifactregistry.reader" &&
-      google_artifact_registry_repository_iam_member.node_reader.member == "serviceAccount:vx-demo-a@projeto-exemplo-nos.iam.gserviceaccount.com"
+      length(google_artifact_registry_repository_iam_member.node_reader) == 1 &&
+      google_artifact_registry_repository_iam_member.node_reader[0].project == "projeto-exemplo-imagens" &&
+      google_artifact_registry_repository_iam_member.node_reader[0].location == "us-east1" &&
+      google_artifact_registry_repository_iam_member.node_reader[0].repository == "verax-control" &&
+      google_artifact_registry_repository_iam_member.node_reader[0].role == "roles/artifactregistry.reader" &&
+      google_artifact_registry_repository_iam_member.node_reader[0].member == "serviceAccount:vx-demo-a@projeto-exemplo-nos.iam.gserviceaccount.com"
     )
     error_message = "A conta da VM do cliente não lê só o registro das imagens do nó."
+  }
+
+  assert {
+    condition     = module.node.install_metadata["verax-images-repository"] == "us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control"
+    error_message = "O registro escolhido não chegou aos metadados da VM."
   }
 }
 

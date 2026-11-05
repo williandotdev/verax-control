@@ -20,9 +20,17 @@ import { IdentityTokenVerifier, selectValidatedCredential } from './identity-tok
  * - `tasks`: as tasks e o Scheduler (`WORKER_SA_EMAIL` e `SCHEDULER_SA_EMAIL`, a cp-invoker) e o responsável
  *   (`OWNER_PRINCIPALS`): os passos, o `tick` e o `reconcile`;
  * - `public`: só a conta do cp-public (`PUBLIC_SA_EMAIL`): a revelação da senha. Um cp-public comprometido não
- *   dispara passo nenhum, e uma task não pede revelação.
+ *   dispara passo nenhum, e uma task não pede revelação;
+ * - `owner`: só o responsável (`OWNER_PRINCIPALS`): as operações dele, como o `resume` do provisionamento (CP-07).
+ *   Nem a cp-invoker nem o cp-public: uma task ou o Scheduler não retomam um cliente que falhou.
  */
-export type WorkerCallerGroup = 'tasks' | 'public';
+export type WorkerCallerGroup = 'tasks' | 'public' | 'owner';
+
+/** O e-mail de quem chamou, em minúsculas, que a guarda deixa na requisição para a auditoria (`owner:<e-mail>`). */
+export function workerCallerOf(request: Request): string | undefined {
+  const caller = (request as Request & { workerCaller?: unknown }).workerCaller;
+  return typeof caller === 'string' ? caller : undefined;
+}
 
 const WORKER_CALLERS_KEY = 'verax:workerCallers';
 
@@ -36,6 +44,8 @@ export function allowedCallers(config: AppConfig, groups: readonly WorkerCallerG
   for (const group of groups) {
     if (group === 'tasks') {
       emails.push(config.WORKER_SA_EMAIL, config.SCHEDULER_SA_EMAIL, ...(config.OWNER_PRINCIPALS ?? []));
+    } else if (group === 'owner') {
+      emails.push(...(config.OWNER_PRINCIPALS ?? []));
     } else {
       emails.push(config.PUBLIC_SA_EMAIL);
     }
@@ -92,6 +102,7 @@ export class WorkerCallerGuard implements CanActivate {
       );
       throw new ApiError(HttpStatus.FORBIDDEN, 'Sem permissão', 'forbidden');
     }
+    (request as Request & { workerCaller?: string }).workerCaller = email;
     return true;
   }
 }
