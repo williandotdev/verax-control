@@ -11,6 +11,7 @@ import { GetCallerIdentityCommand, STSClient } from '@aws-sdk/client-sts';
 import {
   AWS_CONNECTION_WARNING_CODES,
   type AwsConnectionWarningCode,
+  awsAccountIdSchema,
   awsReaderRoleArn,
   isAwsRegion,
   isNodeEgressIp,
@@ -57,9 +58,9 @@ import {
  *   `fetchGoogleIdToken` (`metadata_unavailable`);
  * - `NoSuchBucket`: `bucket_missing:<fonte>`; `AccessDenied` na listagem: `bucket_denied:<fonte>`;
  * - no `GetObject`, `KMS.*` ou `AccessDenied` que cita o KMS: `kms_denied:<fonte>`; `AccessDenied` por negação
- *   explícita na política do papel (o prefixo opcional `LogObjectPrefix`: o primeiro objeto é de outra conta do
- *   bucket da organização) não é erro; outro `AccessDenied`: `bucket_denied:<fonte>`; objeto arquivado, vazio ou
- *   apagado entre as duas chamadas também não;
+ *   explícita na política do papel só não é erro quando é o prefixo opcional `LogObjectPrefix` (o primeiro objeto é
+ *   dos logs de outra conta do bucket da organização, e o primeiro desta conta é lido); senão, e em outro
+ *   `AccessDenied`: `bucket_denied:<fonte>`; objeto arquivado, vazio ou apagado entre as duas chamadas não é erro;
  * - tempo esgotado, 5xx e limite: `aws_unavailable` (pode passar); qualquer outro: `check_unavailable` (pode passar).
  * Uma falha depois da entrada no papel descarta a sessão guardada da conta: a próxima conferência entra de novo (uma
  * sessão revogada pelo "Revoke active sessions" não fica em uso até vencer).
@@ -196,31 +197,67 @@ function listErrorOf(error: unknown, source: LogSource): AwsConnectionError {
 }
 
 /**
- * O `GetObject` de 1 byte falhou: o erro da conta, ou null quando a falha não diz nada sobre o acesso (o objeto foi
- * arquivado, está vazio, sumiu entre a listagem e a leitura, ou fica fora do prefixo do papel).
+ * O `GetObject` de 1 byte falhou: o erro da conta; `not_provable` quando a falha não diz nada sobre o acesso (o objeto
+ * foi arquivado, está vazio ou sumiu entre a listagem e a leitura); ou `denied_explicitly`, a negação explícita na
+ * política do papel, que só vale como o prefixo da pilha para os logs de outra conta (`#readBucket` decide).
  */
-function readErrorOf(error: unknown, source: LogSource): AwsConnectionError | null {
+function readErrorOf(
+  error: unknown,
+  source: LogSource,
+): AwsConnectionError | 'not_provable' | 'denied_explicitly' {
   const name = awsErrorName(error);
   if (name.startsWith('KMS.')) return new AwsConnectionError('kms_denied', false, source);
   switch (name) {
     case 'NoSuchKey':
     case 'InvalidObjectState':
     case 'InvalidRange':
-      return null;
+      return 'not_provable';
     case 'NoSuchBucket':
       return new AwsConnectionError('bucket_missing', false, source);
     case 'AccessDenied': {
-      // A mensagem só é lida aqui, para separar o KMS do resto; nunca vai para o log nem para a conta.
-      const message = messageOf(error);
-      if (/\bkms\b|ciphertext|master key/i.test(message)) {
+      // A mensagem só é lida aqui, para separar o KMS e a negação explícita do resto; nunca vai para o log nem para a
+      // conta. O KMS aparece como a ação (`kms:Decrypt`) ou no texto antigo do S3 ("ciphertext", "master key").
+      const message = messageOf(error).toLowerCase();
+      if (['kms:', 'ciphertext', 'master key'].some((mark) => message.includes(mark))) {
         return new AwsConnectionError('kms_denied', false, source);
       }
-      if (/explicit deny in an identity-based policy/i.test(message)) return null;
+      if (message.includes('explicit deny in an identity-based policy')) return 'denied_explicitly';
       return new AwsConnectionError('bucket_denied', false, source);
     }
     default:
       return unexpected(error);
   }
+}
+
+/** A listagem do primeiro objeto (de um prefixo, se houver). */
+function firstObjectCommand(bucket: string, prefix: string | undefined): ListObjectsV2Command {
+  return new ListObjectsV2Command({
+    Bucket: bucket,
+    MaxKeys: 1,
+    ...(prefix !== undefined && { Prefix: prefix }),
+  });
+}
+
+/** A leitura de 1 byte de um objeto: prova o acesso ao objeto e, cifrado com SSE-KMS, à chave. */
+function firstByteCommand(bucket: string, key: string): GetObjectCommand {
+  return new GetObjectCommand({ Bucket: bucket, Key: key, Range: 'bytes=0-0' });
+}
+
+/**
+ * O prefixo dos logs desta conta no formato da AWS, quando o objeto é dos logs de outra conta: de
+ * `[<prefixo>/]AWSLogs/[<org>/]<outra conta>/…`, o `[<prefixo>/]AWSLogs/[<org>/]<esta conta>/`. Null quando o objeto é
+ * desta conta ou não está nesse formato (nada indica o prefixo da pilha).
+ */
+export function ownLogPrefix(key: string, accountId: string): string | null {
+  const parts = key.split('/');
+  const logs = parts.indexOf('AWSLogs');
+  if (logs < 0) return null;
+  // Trilha de organização: `AWSLogs/<id da organização>/<conta>/`.
+  const owner = parts[logs + 1]?.startsWith('o-') === true ? logs + 2 : logs + 1;
+  const ownerAccount = parts[owner];
+  if (ownerAccount === undefined || ownerAccount === accountId) return null;
+  if (!awsAccountIdSchema.safeParse(ownerAccount).success) return null;
+  return [...parts.slice(0, owner), accountId, ''].join('/');
 }
 
 /** Esvazia o corpo de 1 byte do `GetObject`, para a conexão voltar ao pool. O conteúdo é descartado. */
@@ -318,7 +355,8 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
       entered = true;
       clients = new CheckClients(this.#clients, session.credentials.identity());
       await this.#callerIdentity(target.accountId, clients.sts(session.stsRegion), signal);
-      for (const bucket of bucketsOf(target)) await this.#readBucket(bucket, clients.s3(region), signal);
+      const s3 = clients.s3(region);
+      for (const bucket of bucketsOf(target)) await this.#readBucket(s3, bucket, target.accountId, signal);
       const warnings: AwsConnectionWarningCode[] = session.regionFallback ? ['region_disabled'] : [];
       if (!target.daily) return { ok: true, warnings };
       const daily = await this.#daily(target, clients, signal);
@@ -357,29 +395,68 @@ export class WebIdentityAwsConnectionChecker implements AwsConnectionChecker {
     }
   }
 
-  async #readBucket(bucket: BucketToCheck, s3: SdkClient<S3Client>, signal: AbortSignal): Promise<void> {
+  /**
+   * A leitura de um bucket: o primeiro objeto e 1 byte dele. Uma negação explícita na política do papel só é aceita
+   * como o prefixo da pilha (`LogObjectPrefix`) quando o objeto é dos logs de outra conta (`AWSLogs/[<org>/]<conta>/`,
+   * num bucket de organização): aí o worker procura o primeiro objeto desta conta, no mesmo formato, e lê 1 byte dele.
+   * Negado também, ou com o objeto desta conta (ou fora do formato da AWS) negado logo de início, é `bucket_denied`:
+   * uma política que negue todos os logs não passa como prefixo. Sem objeto desta conta ainda, não há o que provar.
+   */
+  async #readBucket(
+    s3: SdkClient<S3Client>,
+    bucket: BucketToCheck,
+    accountId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    // Bucket vazio: a listagem está provada; o KMS fica para quando houver objeto.
+    const first = await this.#firstKey(s3, bucket, undefined, signal);
+    if (first === null || (await this.#readFirstByte(s3, bucket, first, signal)) === 'read') return;
+    const ownPrefix = ownLogPrefix(first, accountId);
+    if (ownPrefix === null) throw new AwsConnectionError('bucket_denied', false, bucket.source);
+    const own = await this.#firstKey(s3, bucket, ownPrefix, signal);
+    if (own === null) return;
+    if ((await this.#readFirstByte(s3, bucket, own, signal)) === 'denied_explicitly') {
+      throw new AwsConnectionError('bucket_denied', false, bucket.source);
+    }
+  }
+
+  /** O primeiro objeto do bucket (ou do prefixo), ou null sem objeto. A falha da listagem é o erro da conta. */
+  async #firstKey(
+    s3: SdkClient<S3Client>,
+    bucket: BucketToCheck,
+    prefix: string | undefined,
+    signal: AbortSignal,
+  ): Promise<string | null> {
     let listed: { Contents?: { Key?: string }[] | undefined };
     try {
-      listed = await s3.send(new ListObjectsV2Command({ Bucket: bucket.name, MaxKeys: 1 }), {
-        abortSignal: signal,
-      });
+      listed = await s3.send(firstObjectCommand(bucket.name, prefix), { abortSignal: signal });
     } catch (error) {
       if (signal.aborted) throw error;
       throw listErrorOf(error, bucket.source);
     }
-    // Bucket vazio: a listagem está provada; o KMS fica para quando houver objeto.
     const key = keySchema.safeParse(listed.Contents?.[0]?.Key);
-    if (!key.success) return;
+    return key.success ? key.data : null;
+  }
+
+  /**
+   * O `GetObject` de 1 byte: lido (ou nada a provar com este objeto), ou negado explicitamente pela política do papel
+   * (quem chama decide se é o prefixo da pilha). Qualquer outra falha é o erro da conta.
+   */
+  async #readFirstByte(
+    s3: SdkClient<S3Client>,
+    bucket: BucketToCheck,
+    key: string,
+    signal: AbortSignal,
+  ): Promise<'read' | 'denied_explicitly'> {
     try {
-      const object = await s3.send(
-        new GetObjectCommand({ Bucket: bucket.name, Key: key.data, Range: 'bytes=0-0' }),
-        { abortSignal: signal },
-      );
+      const object = await s3.send(firstByteCommand(bucket.name, key), { abortSignal: signal });
       await discard(object.Body);
+      return 'read';
     } catch (error) {
       if (signal.aborted) throw error;
       const failure = readErrorOf(error, bucket.source);
-      if (failure !== null) throw failure;
+      if (failure instanceof AwsConnectionError) throw failure;
+      return failure === 'denied_explicitly' ? failure : 'read';
     }
   }
 

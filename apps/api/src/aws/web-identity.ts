@@ -2,6 +2,7 @@ import { AssumeRoleWithWebIdentityCommand, STSClient } from '@aws-sdk/client-sts
 import {
   AWS_READER_ROLE_NAME,
   type AwsConnectionErrorCode,
+  awsAccountIdSchema,
   awsReaderRoleArn,
   isAwsRegion,
   isWebIdentityAudience,
@@ -388,7 +389,7 @@ export class WebIdentityCredentials {
   }
 
   async #assume(accountId: string, region: string, signal?: AbortSignal): Promise<ReaderSession> {
-    if (!/^\d{12}$/.test(accountId)) throw new Error('conta AWS fora do formato');
+    if (!awsAccountIdSchema.safeParse(accountId).success) throw new Error('conta AWS fora do formato');
     const home = isAwsRegion(region) ? region : STS_FALLBACK_REGION;
     const token = await this.#idToken(signal);
     const command = new AssumeRoleWithWebIdentityCommand({

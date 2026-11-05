@@ -7,6 +7,7 @@ import {
   type AwsCheckClients,
   EXCESS_PERMISSION_RESOURCE,
   EXCESS_PERMISSION_SAMPLE,
+  ownLogPrefix,
   WebIdentityAwsConnectionChecker,
 } from '../../src/aws/web-identity-checker.js';
 import { WebIdentityCredentials } from '../../src/aws/web-identity.js';
@@ -268,7 +269,7 @@ describe('conferência real da conexão da AWS (PR-V5)', () => {
     }
   });
 
-  it('a leitura de 1 byte: KMS recusado é kms_denied; fora do prefixo, arquivado ou vazio não é erro', async () => {
+  it('a leitura de 1 byte: KMS recusado é kms_denied; negado no objeto desta conta é bucket_denied; arquivado ou vazio não é erro', async () => {
     const kmsMessage =
       'User: arn:aws:sts::111122223333:assumed-role/verax-control-reader/verax-control-worker is not authorized to perform: kms:Decrypt on resource: arn:aws:kms:sa-east-1:111122223333:key/exemplo because no identity-based policy allows the kms:Decrypt action';
     const cases: [Error, { code: string; retryable: boolean } | null][] = [
@@ -286,9 +287,10 @@ describe('conferência real da conexão da AWS (PR-V5)', () => {
         awsError(
           'AccessDenied',
           403,
-          'User: arn:aws:sts::111122223333:assumed-role/verax-control-reader/verax-control-worker is not authorized to perform: s3:GetObject on resource: "arn:aws:s3:::achados/AWSLogs/444455556666/x" with an explicit deny in an identity-based policy',
+          'User: arn:aws:sts::111122223333:assumed-role/verax-control-reader/verax-control-worker is not authorized to perform: s3:GetObject on resource: "arn:aws:s3:::achados/AWSLogs/111122223333/x" with an explicit deny in an identity-based policy',
         ),
-        null,
+        // O objeto listado é desta conta (`AWSLogs/111122223333/…`): a negação explícita não é o prefixo da pilha.
+        { code: 'bucket_denied', retryable: false },
       ],
       [awsError('AccessDenied', 403, 'Access Denied'), { code: 'bucket_denied', retryable: false }],
       [awsError('InvalidObjectState', 403), null],
@@ -313,6 +315,107 @@ describe('conferência real da conexão da AWS (PR-V5)', () => {
         expect(outcome, label).toEqual({ ok: false, ...expected, source: 'guardduty' });
       else expect(outcome, label).toEqual({ ok: false, ...expected });
     }
+  });
+
+  describe('negação explícita do GetObject: só o prefixo da pilha (LogObjectPrefix) num bucket de organização passa', () => {
+    const explicitDeny = (key: string) =>
+      awsError(
+        'AccessDenied',
+        403,
+        `User: arn:aws:sts::${ACCOUNT}:assumed-role/verax-control-reader/verax-control-worker is not authorized to perform: s3:GetObject on resource: "arn:aws:s3:::${TRAIL_BUCKET}/${key}" with an explicit deny in an identity-based policy`,
+      );
+    const otherKey = `org/AWSLogs/o-exemplo123/${OTHER_ACCOUNT}/CloudTrail/sa-east-1/2026/11/04/outra.json.gz`;
+    const ownPrefix = `org/AWSLogs/o-exemplo123/${ACCOUNT}/`;
+    const ownKey = `${ownPrefix}CloudTrail/sa-east-1/2026/11/04/esta.json.gz`;
+    /** O bucket da trilha da organização: o primeiro objeto é de outra conta, e a política do papel o nega. */
+    const orgBucket = ({
+      own,
+      ownRead,
+    }: {
+      own: boolean;
+      ownRead: 'ok' | 'denied';
+    }): Record<string, Handler> => ({
+      ListObjectsV2Command: (input, region) => {
+        if (input.Bucket !== TRAIL_BUCKET) return HEALTHY.ListObjectsV2Command?.(input, region);
+        if (input.Prefix === undefined) return { Contents: [{ Key: otherKey }] };
+        return input.Prefix === ownPrefix && own ? { Contents: [{ Key: ownKey }] } : { KeyCount: 0 };
+      },
+      GetObjectCommand: (input, region) => {
+        if (input.Bucket !== TRAIL_BUCKET) return HEALTHY.GetObjectCommand?.(input, region);
+        if (input.Key === ownKey && ownRead === 'ok') return HEALTHY.GetObjectCommand?.(input, region);
+        return Promise.reject(explicitDeny(String(input.Key)));
+      },
+    });
+    const trailCalls = (calls: Call[]) =>
+      calls.filter((call) => call.input.Bucket === TRAIL_BUCKET).map((call) => [call.command, call.input]);
+
+    it('o objeto de outra conta negado leva ao primeiro objeto desta conta, no mesmo formato; lido, a conta conecta', async () => {
+      const { checker, calls } = setup({ handlers: orgBucket({ own: true, ownRead: 'ok' }) });
+      expect(await checker.check(target(), signal)).toEqual({ ok: true, warnings: [] });
+      expect(trailCalls(calls)).toEqual([
+        ['ListObjectsV2Command', { Bucket: TRAIL_BUCKET, MaxKeys: 1 }],
+        ['GetObjectCommand', { Bucket: TRAIL_BUCKET, Key: otherKey, Range: 'bytes=0-0' }],
+        ['ListObjectsV2Command', { Bucket: TRAIL_BUCKET, MaxKeys: 1, Prefix: ownPrefix }],
+        ['GetObjectCommand', { Bucket: TRAIL_BUCKET, Key: ownKey, Range: 'bytes=0-0' }],
+      ]);
+    });
+
+    it('o objeto desta conta também negado: bucket_denied (uma política que nega todos os logs não passa como prefixo)', async () => {
+      const { checker } = setup({ handlers: orgBucket({ own: true, ownRead: 'denied' }) });
+      expect(await checker.check(target(), signal)).toEqual({
+        ok: false,
+        code: 'bucket_denied',
+        retryable: false,
+        source: 'cloudtrail',
+      });
+    });
+
+    it('sem objeto desta conta no bucket ainda, não há o que provar: a conta conecta', async () => {
+      const { checker, calls } = setup({ handlers: orgBucket({ own: false, ownRead: 'ok' }) });
+      expect(await checker.check(target(), signal)).toEqual({ ok: true, warnings: [] });
+      expect(trailCalls(calls).map(([command]) => command)).toEqual([
+        'ListObjectsV2Command',
+        'GetObjectCommand',
+        'ListObjectsV2Command',
+      ]);
+    });
+
+    it('fora do formato AWSLogs da AWS, a negação explícita é bucket_denied, sem outra listagem', async () => {
+      const { checker, calls } = setup({
+        handlers: {
+          ListObjectsV2Command: (input, region) =>
+            input.Bucket === TRAIL_BUCKET
+              ? { Contents: [{ Key: 'exportados/2026/11/04/logs.json.gz' }] }
+              : HEALTHY.ListObjectsV2Command?.(input, region),
+          GetObjectCommand: (input, region) =>
+            input.Bucket === TRAIL_BUCKET
+              ? Promise.reject(explicitDeny(String(input.Key)))
+              : HEALTHY.GetObjectCommand?.(input, region),
+        },
+      });
+      expect(await checker.check(target(), signal)).toEqual({
+        ok: false,
+        code: 'bucket_denied',
+        retryable: false,
+        source: 'cloudtrail',
+      });
+      expect(trailCalls(calls).map(([command]) => command)).toEqual([
+        'ListObjectsV2Command',
+        'GetObjectCommand',
+      ]);
+    });
+
+    it('o prefixo desta conta sai do objeto de outra conta (com ou sem organização e prefixo); o desta conta, nada', () => {
+      expect(ownLogPrefix(`AWSLogs/${OTHER_ACCOUNT}/GuardDuty/sa-east-1/x.jsonl.gz`, ACCOUNT)).toBe(
+        `AWSLogs/${ACCOUNT}/`,
+      );
+      expect(ownLogPrefix(otherKey, ACCOUNT)).toBe(ownPrefix);
+      expect(ownLogPrefix(`AWSLogs/${ACCOUNT}/CloudTrail/x.json.gz`, ACCOUNT)).toBeNull();
+      expect(ownLogPrefix(`AWSLogs/o-exemplo123/${ACCOUNT}/CloudTrail/x.json.gz`, ACCOUNT)).toBeNull();
+      expect(ownLogPrefix('AWSLogs/nao-e-conta/x.json.gz', ACCOUNT)).toBeNull();
+      expect(ownLogPrefix('AWSLogs', ACCOUNT)).toBeNull();
+      expect(ownLogPrefix('logs/2026/x.json.gz', ACCOUNT)).toBeNull();
+    });
   });
 
   it('bucket vazio: a listagem basta, sem GetObject', async () => {

@@ -370,8 +370,10 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
      conta cadastrada, ou `account_mismatch`) e, em cada bucket cadastrado (sem repetir), `ListObjectsV2` com
      `MaxKeys=1` e `GetObject` de 1 byte (`Range: bytes=0-0`) do primeiro objeto, que prova o KMS quando o objeto é
      cifrado com ele. Os erros de bucket levam a fonte: `bucket_missing:<fonte>`, `bucket_denied:<fonte>` e
-     `kms_denied:<fonte>` (`cloudtrail`, `guardduty` ou `waf`). Um objeto fora do `LogObjectPrefix` (negação explícita
-     na política do papel), arquivado ou vazio não é erro.
+     `kms_denied:<fonte>` (`cloudtrail`, `guardduty` ou `waf`). Um objeto arquivado ou vazio não é erro. A negação
+     explícita na política do papel só passa como o `LogObjectPrefix` quando o objeto listado é dos logs de outra conta
+     (`AWSLogs/[<org>/]<outra conta>/`): o worker lê então o primeiro objeto desta conta no mesmo formato, e a negação
+     dele (ou do objeto desta conta logo de início) é `bucket_denied:<fonte>`.
    - **Uma vez por dia** (e em todo "Verificar"), avisos que não param a coleta: `trail_not_logging` (nenhuma trilha
      ligada grava no bucket do CloudTrail: `DescribeTrails` com as de outras regiões e de organização, e
      `GetTrailStatus` só das que gravam nele), `guardduty_export_missing` (nenhum detector publica no bucket do
