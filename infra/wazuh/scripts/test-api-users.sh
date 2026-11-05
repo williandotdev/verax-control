@@ -15,7 +15,9 @@
 #    run_as ligado são desfeitos; com a senha errada do wazuh-wui, nada muda; nenhuma senha na saída;
 # 4. o contrato da tarefa wazuh-usage: a resposta dos contadores tem a partida do analysisd, os bytes recebidos e os
 #    eventos do módulo da AWS, e um evento no formato do módulo (o cabeçalho 1:Wazuh-AWS: na fila do analysisd) conta
-#    em modules_breakdown.aws e nos bytes. Com STATS_SAMPLE, a resposta é gravada nesse arquivo.
+#    em modules_breakdown.aws e nos bytes. Com STATS_SAMPLE, a resposta é gravada nesse arquivo;
+# 5. a API ainda subindo: o init-api-users.sh chamado logo depois de um `docker restart` do manager, com a porta da API
+#    fechada, espera a API e segue; a senha errada do wazuh-wui (401) e o TLS que não confere com a CA param na hora.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -294,6 +296,37 @@ expect "três eventos do módulo da AWS contados" 3 "$((events_after - events))"
 expect "os bytes deles contados (o analysisd soma tudo o que recebe)" 1 "$((bytes_after - bytes >= 3 * 100 ? 1 : 0))"
 expect "a mesma partida do analysisd" igual "$([[ $started == "$started_after" ]] && echo igual || echo "$started_after")"
 if [[ -n ${STATS_SAMPLE:-} ]]; then cp "$work/stats.json" "$STATS_SAMPLE"; fi
+
+echo "== A API ainda abrindo a porta (o manager reiniciando)"
+# O healthcheck do Compose só olha o processo da API (wazuh-control status), e a porta abre segundos depois: o `compose
+# up --wait` do wazuh-up e do ci-test.sh pode devolver o manager "saudável" antes de a API atender (foi o que falhou no
+# CI, numa recriação do manager). Aqui o pior caso: o script roda logo depois do `docker restart`, com a porta fechada, e
+# tem de esperar a API e seguir.
+docker restart "$MANAGER" >/dev/null
+# shellcheck disable=SC2016 # expandido pelo awk do contêiner
+port_now=$(on_manager awk '$4 == "0A" && $2 ~ /:D6D8$/' /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)
+began=$(date +%s)
+restarted=$(init_users "$api_password" "$stats_rotated")
+waited=$(($(date +%s) - began))
+expect "a porta da API fechada quando o script começou" fechada "$([[ -z $port_now ]] && echo fechada || echo aberta)"
+expect "o script espera a API abrir e segue (nada mudou)" \
+  '0 init-api-users: verax_stats só com manager:read \(nada mudou\)\.' "$restarted"
+echo "       esperou $waited s pela API"
+# O que não é a API subindo continua parando na hora, sem esperar: a senha errada (401) e o TLS que não confere.
+began=$(date +%s)
+wrong=$(init_users "Errada.Senha-do-wazuh-wui-000000000AAaa" "$stats_rotated")
+expect "senha errada do wazuh-wui (401): para na hora, sem esperar" \
+  '1 init-api-users: a API do manager recusou o login do wazuh-wui [0-9]' "$wrong $(($(date +%s) - began))"
+on_manager sh -c 'cp -a /etc/ssl/verax /tmp/verax-ok && openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -subj /CN=outra-ca -keyout /tmp/outra-ca.key -out /etc/ssl/verax/root-ca.pem 2>/dev/null'
+began=$(date +%s)
+tls=$(init_users "$api_password" "$stats_rotated")
+took=$(($(date +%s) - began))
+on_manager sh -c 'rm -rf /etc/ssl/verax && mv /tmp/verax-ok /etc/ssl/verax'
+expect "TLS que não confere com a CA: para na hora, sem esperar" \
+  '1 init-api-users: o certificado da API do manager não confere com a CA do nó.* [0-9]' "$tls $took"
+expect "e, com a CA de volta, tudo como antes" '0 init-api-users: verax_stats só com manager:read \(nada mudou\)\.' \
+  "$(init_users "$api_password" "$stats_rotated")"
 
 if ((failures > 0)); then
   echo "$failures verificação(ões) falharam." >&2

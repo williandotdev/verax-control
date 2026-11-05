@@ -603,13 +603,13 @@ const workerEnvObjectSchema = z
     // Com eles, entra a tarefa `wazuh-usage` (o medidor da AWS e a saúde da ingestão).
     ...wazuhApiEnvShape,
     // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
-    // publica a versão, as contas conectadas, o último evento e o disco livre. NODE_VERSION é o commit instalado (o de
+    // publica a versão, as contas conectadas, o último evento e o disco livre. VERAX_NODE_COMMIT é o commit instalado (o de
     // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).
     NODE_STATUS: z
       .enum(['true', 'false'], { error: 'use true ou false' })
       .default('false')
       .transform((value) => value === 'true'),
-    NODE_VERSION: z
+    VERAX_NODE_COMMIT: z
       .string()
       .regex(/^[0-9a-f]{40}$/, { error: 'deve ser o commit instalado (40 caracteres hexadecimais)' })
       .optional(),
@@ -638,10 +638,10 @@ const workerEnvObjectSchema = z
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
     checkTogether(env, WAZUH_API_KEYS, ctx);
-    if (env.NODE_STATUS && env.NODE_VERSION === undefined) {
+    if (env.NODE_STATUS && env.VERAX_NODE_COMMIT === undefined) {
       ctx.addIssue({
         code: 'custom',
-        path: ['NODE_VERSION'],
+        path: ['VERAX_NODE_COMMIT'],
         message: 'obrigatória com NODE_STATUS=true (a versão publicada nos guest attributes)',
       });
     }
@@ -669,7 +669,7 @@ const workerEnvObjectSchema = z
         WAZUH_AGENTS_FILE,
         WAZUH_AGENTS_TENANT,
         NODE_STATUS,
-        NODE_VERSION,
+        VERAX_NODE_COMMIT,
         WAZUH_API_URL,
         WAZUH_API_CA_FILE,
         WAZUH_STATS_PASSWORD,
@@ -688,7 +688,8 @@ const workerEnvObjectSchema = z
       }
       const wazuhAgents = wazuhAgentsFeedOf({ WAZUH_AGENTS_FILE, WAZUH_AGENTS_TENANT });
       // A tarefa `node-status` só existe com o interruptor (e a versão, que o superRefine exige com ele).
-      const nodeStatus = NODE_STATUS && NODE_VERSION !== undefined ? { version: NODE_VERSION } : null;
+      const nodeStatus =
+        NODE_STATUS && VERAX_NODE_COMMIT !== undefined ? { version: VERAX_NODE_COMMIT } : null;
       // A tarefa `wazuh-usage` só existe com os três (o superRefine exige todos ou nenhum); a senha não fica solta.
       const wazuhApi =
         WAZUH_API_URL !== undefined && WAZUH_API_CA_FILE !== undefined && WAZUH_STATS_PASSWORD !== undefined
