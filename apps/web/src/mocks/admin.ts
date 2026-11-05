@@ -289,8 +289,10 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
             { connection: 'error', collectedMinutes: 30 * 60, error: 'trust_denied' },
             30 * 60,
           ),
-          // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó.
-          account(4, DEMO_ACCOUNTS.alfaGcp, [], { connection: 'connected', collectedMinutes: 1 }, 12, {
+          // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó. A
+          // assinatura é lida a cada minuto, mas nenhuma entrada chega há 30 horas (o sink foi apagado no projeto): é a
+          // coleta parada da Torre (OP-02).
+          account(4, DEMO_ACCOUNTS.alfaGcp, [], { connection: 'connected', collectedMinutes: 1 }, 30 * 60, {
             provider: 'gcp',
             pubsubSubscription: `${DEMO_SINK_TOPIC_PREFIX.replace('/topics/', '/subscriptions/')}${DEMO_ACCOUNTS.alfaGcp}`,
             sinkWriterIdentity: 'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com',
@@ -312,7 +314,17 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       ],
       [
         beta,
-        [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'], { connection: 'connected', collectedMinutes: 1 }, 1)],
+        // Conta calma: o último alerta é o do achado mais recente da Beta, há quase 7 horas, e os eventos da AWS andam no
+        // Wazuh do nó (a Torre mostra "Tudo calmo", OP-01).
+        [
+          account(
+            3,
+            DEMO_ACCOUNTS.beta,
+            ['sa-east-1'],
+            { connection: 'connected', collectedMinutes: 1 },
+            400,
+          ),
+        ],
       ],
     ]),
     protectedResources: new Map([

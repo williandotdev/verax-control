@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDay, formatList, formatRelative, formatTimestamp, plural } from './format';
+import { formatDay, formatDuration, formatList, formatRelative, formatTimestamp, plural } from './format';
 
 const now = new Date('2026-11-02T13:00:00.000Z');
 
@@ -29,6 +29,20 @@ describe('formatação', () => {
     expect(formatList(['a'])).toBe('a');
     expect(formatList(['a', 'b'])).toBe('a e b');
     expect(formatList(['a', 'b', 'c'])).toBe('a, b e c');
+  });
+
+  it.each([
+    [-5, '0 s'],
+    [45, '45 s'],
+    [89, '1 min'],
+    [240, '4 min'],
+    [3_599, '1 h'],
+    [4_800, '1 h 20 min'],
+    [7_200, '2 h'],
+    [86_400, '1 dia'],
+    [3 * 86_400 + 600, '3 dias'],
+  ])('duração de %s segundos', (seconds, expected) => {
+    expect(formatDuration(seconds)).toBe(expected);
   });
 
   it('plural', () => {

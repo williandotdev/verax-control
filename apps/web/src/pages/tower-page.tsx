@@ -2,15 +2,21 @@ import { useQuery } from '@tanstack/react-query';
 import {
   FINDING_SEVERITIES,
   type PendingDecisionKind,
+  type TowerPulse,
   type TowerSummary,
   towerSummarySchema,
 } from '@verax/shared';
+import { CircleCheck } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router';
+import { formatCompact, formatHour } from '@/components/charts/chart-utils';
+import { MiniBars } from '@/components/charts/mini-bars';
+import { StatTile } from '@/components/charts/stat-tile';
 import { DecisionCard } from '@/components/security/decision-card';
 import { ScoreMeter } from '@/components/security/score-meter';
 import { Semaphore } from '@/components/security/semaphore';
 import { SeverityBadge } from '@/components/security/severity-badge';
+import { SourceHealthRow } from '@/components/security/source-health';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { Card, CardHeader, CardTitle } from '@/components/ui/card';
 import { DEFAULT_THRESHOLDS } from '@/design/score';
@@ -18,7 +24,14 @@ import { MitreGrid } from '@/features/reports/mitre-grid';
 import { type Severity, SEVERITY_STYLES } from '@/design/severity';
 import { useMe } from '@/features/session/session';
 import { api } from '@/lib/api';
-import { formatList, formatRelative, plural } from '@/lib/format';
+import { formatDuration, formatList, formatRelative, plural } from '@/lib/format';
+import {
+  allCollecting,
+  COLLECTION_SOURCE_LABELS,
+  collectionProof,
+  proofSentence,
+  stalledPhrase,
+} from './tower-collection';
 import { towerReason } from './tower-reason';
 
 /** A Torre responde, em segundos, "está tudo bem?" e "o que preciso decidir agora?" (T7.6). */
@@ -77,12 +90,13 @@ function TowerContent({ summary }: { summary: TowerSummary }) {
       <Card data-tour="torre-semaforo">
         <Semaphore state={summary.light} reason={towerReason(summary)} />
       </Card>
+      {summary.pulse && <Pulse pulse={summary.pulse} />}
       <div className="grid gap-6 lg:grid-cols-3">
         <PendingDecisions summary={summary} />
         <div className="space-y-6">
           <OpenIncidents counts={summary.openIncidents} />
           <Posture posture={summary.posture} />
-          <Coverage coverage={summary.coverage} />
+          <CollectionHealth summary={summary} />
         </div>
       </div>
       <Mitre mitre={summary.mitre} />
@@ -128,10 +142,7 @@ function PendingDecisions({ summary }: { summary: TowerSummary }) {
         Decisões pendentes
       </h2>
       {summary.pendingDecisions.length === 0 ? (
-        <EmptyState
-          title="Nenhuma decisão pendente"
-          description="Tudo o que pedia uma decisão já foi tratado."
-        />
+        <NothingToDecide summary={summary} />
       ) : (
         <div className="grid gap-3 md:grid-cols-2">
           {summary.pendingDecisions.map((decision) => {
@@ -231,34 +242,182 @@ function Mitre({ mitre }: { mitre: TowerSummary['mitre'] }) {
   );
 }
 
-function Coverage({ coverage }: { coverage: TowerSummary['coverage'] }) {
-  const { icon: WarningIcon, tone, surface } = SEVERITY_STYLES.medium;
+const HOUR_MS = 3_600_000;
+
+/**
+ * "Pulso da operação" (OP-02): o que a operação fez nas últimas 24 horas, com os dados que já existem. Uma fonte que o
+ * cliente não tem (nenhum agente, nenhum volume no mês) some, em vez de aparecer como zero.
+ */
+function Pulse({ pulse }: { pulse: TowerPulse }) {
+  const since = Date.parse(pulse.since);
+  const hours = pulse.findings.hourly.map((_, index) => formatHour(new Date(since + index * HOUR_MS)));
+  const { total, expected } = pulse.findings;
+  const events = pulse.monthEvents.sources;
+  const totalEvents = events.reduce((sum, source) => sum + source.events, 0);
   return (
-    <Card aria-labelledby="torre-cobertura">
+    <section data-tour="torre-pulso" aria-labelledby="torre-pulso" className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h2 id="torre-pulso" className="text-lg font-semibold">
+          Pulso da operação
+        </h2>
+        <p className="text-sm text-muted-foreground">Últimas 24 horas, a cada hora cheia</p>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <StatTile
+          label="Achados nas últimas 24 h"
+          value={formatCompact(total)}
+          detail={
+            expected === 0
+              ? 'Nenhum esperado por exceção'
+              : `${plural(expected, 'esperado', 'esperados')} por exceção`
+          }
+          link={{ to: '/achados?periodo=24h', label: 'Ver achados' }}
+        >
+          <MiniBars
+            title="Achados por hora nas últimas 24 horas"
+            values={pulse.findings.hourly}
+            labels={hours}
+            unit={{ one: 'achado', many: 'achados' }}
+          />
+        </StatTile>
+        <StatTile
+          label="Tempo até detectar"
+          value={pulse.timeToDetectSeconds === null ? '—' : formatDuration(pulse.timeToDetectSeconds)}
+          detail={
+            pulse.timeToDetectSeconds === null
+              ? 'Nenhum achado nas últimas 24 horas.'
+              : 'Mediana de 24 h, da hora do evento ao achado. Inclui o atraso de entrega da fonte.'
+          }
+        />
+        {pulse.agents && (
+          <StatTile
+            label="Agentes online"
+            value={`${pulse.agents.online} de ${pulse.agents.total}`}
+            detail={
+              pulse.agents.online === pulse.agents.total
+                ? 'Todos conectados ao Wazuh do nó'
+                : plural(
+                    pulse.agents.total - pulse.agents.online,
+                    'agente sem conexão agora',
+                    'agentes sem conexão agora',
+                  )
+            }
+            link={{ to: '/cadastros/agentes', label: 'Ver agentes' }}
+          />
+        )}
+        {events.length > 0 && (
+          <StatTile
+            label="Eventos lidos no mês"
+            value={formatCompact(totalEvents)}
+            detail={events
+              .map(
+                (source) => `${COLLECTION_SOURCE_LABELS[source.source].name} ${formatCompact(source.events)}`,
+              )
+              .join(' · ')}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Nada para decidir: com todas as fontes coletando, a Torre afirma que está tudo calmo e mostra a prova (OP-02); sem
+ * a prova ou com a coleta parada, o estado vazio de sempre, que diz o que falta.
+ */
+function NothingToDecide({ summary }: { summary: TowerSummary }) {
+  const proof = collectionProof(summary);
+  const done = 'Tudo o que pedia uma decisão já foi tratado.';
+  if (proof !== null && allCollecting(proof)) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-lg border bg-surface p-8 text-center">
+        <CircleCheck aria-hidden className={`size-6 ${SEVERITY_STYLES.ok.tone}`} />
+        <p className="font-medium">Tudo calmo: nada para decidir agora</p>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          {done} {proofSentence(proof)}
+        </p>
+      </div>
+    );
+  }
+  const description =
+    proof === null
+      ? done
+      : proof.stalled.length > 0
+        ? `${done} Mas há ${stalledPhrase(proof)}: veja a Saúde da coleta.`
+        : `${done} ${proofSentence(proof)}`;
+  return <EmptyState title="Nenhuma decisão pendente" description={description} />;
+}
+
+/**
+ * "Saúde da coleta" (OP-02, no lugar da "Cobertura"): uma linha por fonte, com o estado e o último dado que prova a
+ * coleta (a AWS pelo andamento dos eventos no Wazuh do nó, com o último alerta à parte), as não configuradas por
+ * último. Num nó de antes do OP-02 (sem as fontes), as datas de antes.
+ */
+function CollectionHealth({ summary }: { summary: TowerSummary }) {
+  const { coverage } = summary;
+  const { icon: WarningIcon, tone, surface } = SEVERITY_STYLES.medium;
+  const proof = collectionProof(summary);
+  const sources = coverage.sources
+    ? [
+        ...coverage.sources.filter((source) => source.state !== 'not_configured'),
+        ...coverage.sources.filter((source) => source.state === 'not_configured'),
+      ]
+    : null;
+  return (
+    <Card data-tour="torre-coleta" aria-labelledby="torre-coleta">
       <CardHeader>
-        <CardTitle id="torre-cobertura">Cobertura</CardTitle>
+        <div>
+          <CardTitle id="torre-coleta">Saúde da coleta</CardTitle>
+          {proof && <p className="text-sm text-muted-foreground">{proofSentence(proof)}</p>}
+        </div>
+        <Link to="/cadastros/contas" className="shrink-0 text-sm underline">
+          Ver contas
+        </Link>
       </CardHeader>
-      <dl className="space-y-1 text-sm">
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">Contas conectadas</dt>
-          <dd className="font-medium tabular-nums">{coverage.connectedAccounts}</dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">Última coleta</dt>
-          <dd className="font-medium">
-            {coverage.lastCollectedAt ? formatRelative(coverage.lastCollectedAt) : 'nenhuma ainda'}
-          </dd>
-        </div>
-        <div className="flex justify-between gap-3">
-          <dt className="text-muted-foreground">Último evento recebido</dt>
-          <dd className="font-medium">
-            {coverage.lastEventAt ? formatRelative(coverage.lastEventAt) : 'nenhum ainda'}
-          </dd>
-        </div>
-      </dl>
+      {sources ? (
+        <ul className="divide-y">
+          {sources.map((source) => {
+            const label = COLLECTION_SOURCE_LABELS[source.source];
+            return (
+              <li key={source.source}>
+                <SourceHealthRow
+                  name={label.name}
+                  description={label.description}
+                  state={source.state}
+                  lastDataAt={source.lastDataAt}
+                  note={
+                    source.source === 'aws' && source.state !== 'not_configured'
+                      ? `último alerta ${source.lastAlertAt ? formatRelative(source.lastAlertAt) : 'nenhum ainda'}`
+                      : undefined
+                  }
+                />
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <dl className="space-y-1 text-sm">
+          <div className="flex justify-between gap-3">
+            <dt className="text-muted-foreground">Última coleta</dt>
+            <dd className="font-medium">
+              {coverage.lastCollectedAt ? formatRelative(coverage.lastCollectedAt) : 'nenhuma ainda'}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-muted-foreground">Último evento recebido</dt>
+            <dd className="font-medium">
+              {coverage.lastEventAt ? formatRelative(coverage.lastEventAt) : 'nenhum ainda'}
+            </dd>
+          </div>
+        </dl>
+      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        {plural(coverage.connectedAccounts, 'conta conectada', 'contas conectadas')}
+      </p>
       {/*
-        A API decide quem é silenciosa: na AWS e na GCP, a conta sem evento no período (a leitura vazia não prova que
-        os logs chegam); no Cloudflare, a sem coleta nem evento. Em todos os casos, ela está sem eventos no período.
+        A API decide quem é silenciosa: na AWS, a conta sem alerta e, conectada, sem os eventos andando no Wazuh do nó
+        (OP-01); na GCP, a sem evento (a leitura vazia não prova que os logs chegam); no Cloudflare, a sem coleta nem
+        evento. Em todos os casos, ela está sem eventos no período.
       */}
       {coverage.silentAccounts.length > 0 && (
         <p className={`mt-3 flex items-start gap-2 rounded-md border p-2 text-sm ${surface}`}>

@@ -1,11 +1,15 @@
 import {
+  type CollectionSource,
+  type CollectionSourceHealth,
   type Me,
   meSchema,
   mitreTactics,
+  PULSE_HOURS,
   permissionsOf,
   type Role,
   type TenantSummary,
   tenantSummarySchema,
+  type TowerPulse,
   type TowerSummary,
   towerSummarySchema,
 } from '@verax/shared';
@@ -81,11 +85,110 @@ export const DEMO_CLOUDFLARE_TOKEN_SUFFIX = 'c0de';
 const minutesAgo = (now: Date, minutes: number): string =>
   new Date(now.getTime() - minutes * 60_000).toISOString();
 
+/** Prazos de cada fonte da "Saúde da coleta", os mesmos da API (`DEFAULT_TOWER_THRESHOLDS.collection`). */
+const COLLECTION_WINDOWS: Readonly<
+  Record<CollectionSource, { delayedAfterMinutes: number; stalledAfterMinutes: number }>
+> = {
+  aws: { delayedAfterMinutes: 30, stalledAfterMinutes: 120 },
+  gcp: { delayedAfterMinutes: 12 * 60, stalledAfterMinutes: 24 * 60 },
+  cloudflare: { delayedAfterMinutes: 30, stalledAfterMinutes: 120 },
+  agents: { delayedAfterMinutes: 15, stalledAfterMinutes: 60 },
+  posture: { delayedAfterMinutes: 26 * 60, stalledAfterMinutes: 50 * 60 },
+};
+
+/**
+ * Os agentes da Alfa na demonstração (`demoAgents`, em `mocks/agents-handlers.ts`): 3 ativos de 5 registrados, o
+ * keepalive mais recente há 0,4 min. O teste da Torre confere que batem.
+ */
+export const DEMO_TOWER_AGENTS = { online: 3, total: 5, lastKeepAliveMinutes: 0.4 } as const;
+
+/**
+ * A saúde da coleta de cada cliente fictício, como as contas da demonstração (`mocks/admin.ts`). Na Alfa, a AWS anda no
+ * Wazuh há 2 min (o último alerta é o da produção, há 3 min), o projeto da GCP está sem entrada nenhuma há 30 horas
+ * (parada), o Cloudflare aguarda a primeira leitura e os agentes e a postura coletam. Na Beta, tudo o que ela tem
+ * coleta: a AWS (calma, o último alerta há quase 7 horas) e a postura; GCP, Cloudflare e agentes ela não tem.
+ */
+function demoSources(alfa: boolean, now: Date): CollectionSourceHealth[] {
+  const at = (minutes: number | null) => (minutes === null ? null : minutesAgo(now, minutes));
+  const source = (
+    name: CollectionSource,
+    state: CollectionSourceHealth['state'],
+    lastDataMinutes: number | null,
+    extra: Partial<CollectionSourceHealth> = {},
+  ): CollectionSourceHealth => ({
+    source: name,
+    state,
+    lastDataAt: at(lastDataMinutes),
+    ...extra,
+    ...COLLECTION_WINDOWS[name],
+  });
+  return alfa
+    ? [
+        source('aws', 'collecting', 2, { lastAlertAt: at(3) }),
+        source('gcp', 'stalled', 30 * 60),
+        source('cloudflare', 'waiting', null),
+        source('agents', 'collecting', DEMO_TOWER_AGENTS.lastKeepAliveMinutes),
+        source('posture', 'collecting', 6 * 60),
+      ]
+    : [
+        source('aws', 'collecting', 2, { lastAlertAt: at(400) }),
+        source('gcp', 'not_configured', null),
+        source('cloudflare', 'not_configured', null),
+        source('agents', 'not_configured', null),
+        source('posture', 'collecting', 7 * 60),
+      ];
+}
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * O "Pulso da operação" da demonstração: os achados das últimas 24 horas cheias saem dos achados do mock (os legítimos
+ * fazem o papel dos esperados por exceção, que o mock não tem); o tempo até detectar, os agentes e os eventos do mês
+ * são fixos.
+ */
+function demoPulse(
+  alfa: boolean,
+  findings: readonly { occurredAt: string; status: string }[],
+  now: Date,
+): TowerPulse {
+  const since = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS - (PULSE_HOURS - 1) * HOUR_MS;
+  const hourly = Array.from({ length: PULSE_HOURS }, () => 0);
+  let expected = 0;
+  for (const finding of findings) {
+    const index = Math.floor((Date.parse(finding.occurredAt) - since) / HOUR_MS);
+    if (index < 0 || index >= PULSE_HOURS || Date.parse(finding.occurredAt) > now.getTime()) continue;
+    hourly[index] = (hourly[index] ?? 0) + 1;
+    if (finding.status === 'legitimate') expected += 1;
+  }
+  const total = hourly.reduce((sum, value) => sum + value, 0);
+  return {
+    since: new Date(since).toISOString(),
+    findings: { total, expected, hourly },
+    timeToDetectSeconds: total === 0 ? null : alfa ? 4 * 60 : 3 * 60,
+    agents: alfa ? { online: DEMO_TOWER_AGENTS.online, total: DEMO_TOWER_AGENTS.total } : null,
+    monthEvents: {
+      month: usageMonthOf(now),
+      sources: alfa
+        ? [
+            { source: 'aws', events: 1_204_331 },
+            { source: 'gcp', events: 80_120 },
+          ]
+        : [{ source: 'aws', events: 412_906 }],
+    },
+  };
+}
+
+/** O mês do medidor no calendário de Brasília (UTC-3 o ano todo): `AAAA-MM`. */
+function usageMonthOf(now: Date): string {
+  return new Date(now.getTime() - 3 * HOUR_MS).toISOString().slice(0, 7);
+}
+
 /**
  * Torre de cada cliente fictício. A Alfa tem o que mostrar numa apresentação (incidente crítico, decisões
- * pendentes, postura baixa e uma conta silenciosa); a Beta está tranquila, para comparar. As contagens de achados e
- * incidentes vêm do estado do mock, para a Torre acompanhar a triagem feita nas outras telas; o semáforo segue a
- * regra da T5.10 (vermelho com incidente crítico aberto; amarelo com alto aberto ou postura abaixo de 70).
+ * pendentes, postura baixa, contas silenciosas e a coleta da GCP parada); a Beta está tranquila, para comparar ("Tudo
+ * calmo", com a prova da coleta). As contagens de achados e incidentes vêm do estado do mock, para a Torre acompanhar a
+ * triagem feita nas outras telas; o semáforo segue a regra da API (vermelho com incidente crítico aberto; amarelo com
+ * alto aberto, postura abaixo de 70 ou coleta parada).
  */
 export function demoTower(
   tenantId: string,
@@ -97,6 +200,8 @@ export function demoTower(
     openIncidents?: TowerSummary['openIncidents'];
     unassignedIncidents?: number;
     mitre?: TowerSummary['mitre'];
+    /** Os achados do cliente no mock, para o pulso das últimas 24 horas. */
+    findings?: readonly { occurredAt: string; status: string }[];
     now?: Date;
   },
 ): TowerSummary {
@@ -108,10 +213,12 @@ export function demoTower(
   // A mesma nota da postura da demonstração (`mocks/posture.ts`, o teste da tela de postura confere).
   const score = alfa ? 69 : 92;
   const warningBelow = 70;
+  const sources = demoSources(alfa, now);
   const reasons = [
     ...(open.critical > 0 ? ['critical_incident' as const] : []),
     ...(open.high > 0 ? ['high_incident' as const] : []),
     ...(score < warningBelow ? ['low_posture' as const] : []),
+    ...(sources.some((source) => source.state === 'stalled') ? ['collection_stalled' as const] : []),
   ];
   return towerSummarySchema.parse({
     light: reasons.includes('critical_incident') ? 'red' : reasons.length > 0 ? 'yellow' : 'green',
@@ -124,22 +231,32 @@ export function demoTower(
     openIncidents: open,
     posture: { score, scannedAt: minutesAgo(now, alfa ? 6 * 60 : 7 * 60), warningBelow },
     // Como as contas da demonstração (`mocks/admin.ts`): na Alfa, produção e GCP conectadas, a homologação com erro
-    // há 30 horas e o Cloudflare aguardando a primeira leitura.
-    coverage: alfa
-      ? {
-          connectedAccounts: 2,
-          lastCollectedAt: minutesAgo(now, 1),
-          lastEventAt: minutesAgo(now, 3),
-          silentAccounts: [DEMO_ACCOUNTS.alfaHomologacao, DEMO_ACCOUNTS.alfaCloudflare],
-          silentAfterHours: 24,
-        }
-      : {
-          connectedAccounts: 1,
-          lastCollectedAt: minutesAgo(now, 1),
-          lastEventAt: minutesAgo(now, 1),
-          silentAccounts: [],
-          silentAfterHours: 24,
-        },
+    // há 30 horas, a GCP sem entrada há 30 horas e o Cloudflare aguardando a primeira leitura.
+    coverage: {
+      ...(alfa
+        ? {
+            connectedAccounts: 2,
+            lastCollectedAt: minutesAgo(now, 1),
+            lastEventAt: minutesAgo(now, 3),
+            silentAccounts: [
+              DEMO_ACCOUNTS.alfaHomologacao,
+              DEMO_ACCOUNTS.alfaCloudflare,
+              DEMO_ACCOUNTS.alfaGcp,
+            ],
+          }
+        : {
+            connectedAccounts: 1,
+            lastCollectedAt: minutesAgo(now, 1),
+            lastEventAt: minutesAgo(now, 400),
+            silentAccounts: [],
+          }),
+      silentAfterHours: 24,
+      awsLogsStalledSince: null,
+      awsStalledAfterHours: 2,
+      lastDataAt: minutesAgo(now, alfa ? DEMO_TOWER_AGENTS.lastKeepAliveMinutes : 2),
+      sources,
+    },
+    pulse: demoPulse(alfa, options.findings ?? [], now),
     mitre: options.mitre ?? { periodDays: 30, tactics: mitreTactics([], []) },
     generatedAt: now.toISOString(),
   });

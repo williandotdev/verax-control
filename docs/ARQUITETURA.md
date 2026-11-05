@@ -496,7 +496,9 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      eventos de volta rearmam. Sem a leitura (o manager fora do ar), o prazo corre do mesmo jeito. O contador é do nó,
      então a parada é do cliente, não de uma conta: com duas contas conectadas, uma parada só aparece quando as duas
      param. A observação de quem não é o dono de agora (mais de um cliente, nenhuma conta AWS ativa, ou o cliente que
-     saiu do nó) é limpa: a conta que volta começa uma observação nova, sem a parada antiga nem um aviso na hora.
+     saiu do nó) é limpa: a conta que volta começa uma observação nova, sem a parada antiga nem um aviso na hora. Desde
+     o OP-01, o mesmo andamento é o sinal de vida das contas AWS conectadas e o último dado da fonte na Torre (seção
+     "Torre: semáforo, saúde da coleta e pulso da operação").
 5. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
    sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
 
@@ -957,6 +959,71 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   origem do painel (`WEB_ORIGIN`), que o `start.sh` escreve no `worker.env` só com `MAIL_TRANSPORT=smtp` no
   `node.conf`. Sem o e-mail, o `worker.env` não muda, e o worker sobe com `none`. Nos nós de clientes, o SMTP é o da
   Verax (decisão D-16, sem SES).
+
+## Torre: semáforo, saúde da coleta e pulso da operação
+
+_(T5.10 e T7.6; a saúde da coleta e o pulso são a fase P1 da "Operação ao vivo", OP-01 e OP-02, de 05/11/2026)_
+
+`GET /v1/tower` (`apps/api/src/tower/`) responde, para o cliente da sessão, "está tudo bem?" e "o que decidir agora?".
+As regras ficam em `tower-rules.ts`, e o contrato em `packages/shared/src/tower.ts`. O painel consulta a cada 60 s
+(TanStack Query, sem consulta com a aba em segundo plano). Tudo é lido pelo escopo do cliente (`prisma.scoped()`), com
+o teste negativo A/B; só a fila sem dono e o medidor parado do nó, que não são de cliente nenhum, vão só para a equipe
+da Verax.
+
+- **Semáforo** (pendência 9, com a coleta parada aprovada em 05/11/2026):
+  - **vermelho** com incidente crítico aberto;
+  - **amarelo** com incidente alto aberto, nota de postura abaixo de 70 ou **coleta parada** (`collection_stalled`):
+    uma fonte configurada sem dado novo há mais que o prazo de parada dela. Silêncio não é segurança: sem isso, o verde
+    de um cliente cuja coleta parou mentiria. Fonte **não configurada** (o cliente sem Cloudflare, sem agentes) ou
+    ainda **sem nenhum dado** (conta recém-cadastrada) nunca deixa a Torre amarela;
+  - **verde** nos demais casos. No verde, a frase traz a prova: "Tudo calmo. (...) Coleta ativa em 4 de 4 fontes,
+    último dado há 2 minutos" só quando todas as fontes configuradas coletam; com uma atrasada ou aguardando, a mesma
+    prova, sem o "Tudo calmo". O cartão de decisões vazio faz o mesmo ("Tudo calmo: nada para decidir agora", ou o
+    estado vazio que aponta a fonte parada).
+  - Os limites ficam na configuração (`DEFAULT_TOWER_THRESHOLDS`): postura 70; conta silenciosa 24 h; e, por fonte,
+    os prazos de atrasada e de parada.
+- **Saúde da coleta** (no lugar da antiga "Cobertura"): uma linha por fonte, com o estado (coletando, atrasada, parada,
+  aguardando o primeiro dado, não configurada) e o último dado que prova a coleta. O estado é da fonte: basta uma conta
+  entregando, e a conta com problema aparece na conexão dela (Contas cloud) e entre as silenciosas.
+
+  | Fonte                | Configurada com   | Último dado (prova de vida)                                                       | Atrasada / parada |
+  | -------------------- | ----------------- | --------------------------------------------------------------------------------- | ----------------- |
+  | AWS                  | conta AWS ativa   | o andamento dos eventos da AWS no Wazuh do nó (`IngestHealth`) ou o último alerta | 30 min / 2 h      |
+  | GCP                  | projeto ativo     | a última entrada do Pub/Sub (com ou sem regra)                                    | 12 h / 24 h       |
+  | Cloudflare           | conta ativa       | a última leitura bem-sucedida ou a última entrada                                 | 30 min / 2 h      |
+  | Agentes              | agente registrado | o keepalive mais recente                                                          | 15 min / 1 h      |
+  | Postura e inventário | conta AWS ativa   | a mais antiga entre a última varredura e o último retrato (as duas têm de andar)  | 26 h / 50 h       |
+
+  O prazo de parada da AWS é o mesmo de "Sem logs novos da AWS" e do aviso `aws_ingestion_stalled` (PR-V6).
+
+- **Sinal de vida da AWS (OP-01):** o índice `wazuh-alerts-*` é de alertas, não de tráfego. Os eventos comuns de uma
+  conta calma (CloudTrail genérico, bloqueio do WAF, GuardDuty de baixa gravidade) têm nível 3 no Wazuh e nunca viram
+  alerta (`log_alert_level` 5), então o `lastEventAt` de uma conta AWS é o **último alerta**, não o último dado. Antes do
+  OP-01, uma conta calma e saudável aparecia "sem eventos há mais de 24 horas". Agora, com a conta conectada, o
+  andamento dos eventos do módulo da AWS no analysisd (`IngestHealth.lastProgressAt`, a cada 5 min) também é sinal de
+  vida da conta e é o último dado da fonte; o último alerta aparece à parte, na linha da AWS. O contador é do nó (o
+  analysisd não separa contas), então vale para cada conta AWS conectada do cliente; a conta com erro de conexão depende
+  do próprio alerta. No começo da observação, `lastProgressAt` é a hora em que ela começou: por até 30 min, a fonte pode
+  aparecer coletando antes do primeiro evento de fato. O resumo leva `coverage.lastDataAt` (o último dado entre todas
+  as fontes) e `coverage.sources`; `lastEventAt` continua o mesmo campo, com a semântica dita.
+- **Pulso da operação:** uma faixa de cartões de número, com o que já existe, sem coleta nova:
+  - os **achados** das últimas 24 horas cheias (da hora cheia de 23 horas atrás até agora, pelo índice
+    `(tenantId, occurredAt desc)`), quantos chegaram esperados por exceção e o minigráfico por hora. O total e os
+    esperados são contagens exatas; as horas e a mediana vêm dos 5.000 mais recentes;
+  - o **tempo até detectar**: a mediana de `createdAt − occurredAt` desses achados, que inclui o atraso de entrega da
+    fonte;
+  - os **agentes online** (ativos) de registrados;
+  - os **eventos lidos no mês** pelo medidor (`IngestUsage`), só AWS e GCP: o Cloudflare mede entradas de auditoria e
+    linhas agregadas, não eventos.
+    Uma fonte que o cliente não tem (nenhum agente, nenhum volume) some, em vez de aparecer como zero.
+- **Contrato entre painel e nó:** os campos novos (`coverage.lastDataAt`, `coverage.sources` e `pulse`) são opcionais,
+  e o painel sem eles mostra a Torre de antes (as datas da cobertura, sem a faixa). O schema é estrito, então um painel
+  de antes recusa a resposta de um nó novo (o motivo `collection_stalled` e os campos novos): painel e nós sobem juntos,
+  como em toda mudança do contrato.
+- **Interface:** os gráficos são SVG próprio, sem biblioteca (`components/charts/`): o cartão de número (`StatTile`) e o
+  minigráfico por hora (`MiniBars`, na rampa neutra validada, com setas, mouse e toque e a mesma tabela de "Ver
+  tabela"); a linha de saúde da fonte (`SourceHealthRow`) usa ícone de forma própria e rótulo, com o tom de "ok" em
+  coletando, o de médio em atrasada e o de alto em parada. Todos estão no `/catalogo`.
 
 ## Plano do nó: limites e uso
 

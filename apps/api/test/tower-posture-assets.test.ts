@@ -13,6 +13,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { Prisma } from '../src/generated/prisma/client.js';
+import { usageMonth } from '../src/usage/usage-meter.js';
 import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
 import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 
@@ -48,7 +49,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         .expect(200);
     }
     const get = (path: string) => request(app.getHttpServer()).get(path).set('Cookie', cookie);
-    return { tenantId, accountId, get };
+    return { tenantId, accountId, get, userId: user.id };
   }
 
   async function insertScan(
@@ -176,8 +177,52 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         // PR-V6: sem a saúde da ingestão gravada (nenhuma leitura do Wazuh do nó), nada a afirmar.
         awsLogsStalledSince: null,
         awsStalledAfterHours: 2,
+        // OP-01 e OP-02: o último dado é a leitura do Cloudflare (a mais recente), à parte do último evento.
+        lastDataAt: collected.toISOString(),
+        sources: [
+          // Sem a observação do Wazuh do nó, só o alerta prova que os logs chegaram: há 2 horas, a fonte está parada.
+          {
+            source: 'aws',
+            state: 'stalled',
+            lastDataAt: event.toISOString(),
+            lastAlertAt: event.toISOString(),
+            delayedAfterMinutes: 30,
+            stalledAfterMinutes: 120,
+          },
+          // O último evento da GCP é o do projeto com erro, há dois dias: a fonte está parada.
+          {
+            source: 'gcp',
+            state: 'stalled',
+            lastDataAt: stalled.lastEventAt?.toISOString(),
+            delayedAfterMinutes: 720,
+            stalledAfterMinutes: 1440,
+          },
+          {
+            source: 'cloudflare',
+            state: 'delayed',
+            lastDataAt: collected.toISOString(),
+            delayedAfterMinutes: 30,
+            stalledAfterMinutes: 120,
+          },
+          {
+            source: 'agents',
+            state: 'not_configured',
+            lastDataAt: null,
+            delayedAfterMinutes: 15,
+            stalledAfterMinutes: 60,
+          },
+          {
+            source: 'posture',
+            state: 'waiting',
+            lastDataAt: null,
+            delayedAfterMinutes: 1560,
+            stalledAfterMinutes: 3000,
+          },
+        ],
       });
       expect(summary.coverage.silentAccounts).not.toContain(accountId);
+      // A GCP parada deixa a Torre amarela (decisão de 05/11/2026).
+      expect(summary).toMatchObject({ light: 'yellow', reasons: ['collection_stalled'] });
     });
 
     it('incidente crítico aberto sem responsável e achado alto sem triagem: vermelho, com as decisões', async () => {
@@ -247,6 +292,205 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
           .pendingDecisions.map((d) => d.kind);
       expect(await kinds(client.get)).not.toContain('unowned_alert');
       expect(await kinds(verax.get)).toContain('unowned_alert');
+    });
+  });
+
+  describe('Torre: saúde da coleta e pulso da operação (OP-01 e OP-02)', () => {
+    const MINUTE = 60_000;
+    const agentNumber = () => String(randomInt(10_000_000, 99_999_999));
+
+    it('conta AWS calma, sem alerta, com os eventos andando no Wazuh: coleta ativa, não silenciosa, verde', async () => {
+      const { tenantId, accountId, get } = await setup();
+      await prisma.cloudAccount.updateMany({ where: { tenantId }, data: { connection: 'connected' } });
+      const progress = new Date(Date.now() - 4 * MINUTE);
+      await prisma.forTenant(tenantId).ingestHealth.create({
+        data: { tenantId, source: 'aws', lastProgressAt: progress },
+      });
+      await insertScan(tenantId, accountId, new Date(Date.now() - HOUR), { passed: 9, total: 10 });
+      const summary = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
+      expect(summary).toMatchObject({
+        light: 'green',
+        reasons: [],
+        coverage: { silentAccounts: [], lastEventAt: null, lastDataAt: progress.toISOString() },
+      });
+      expect(summary.coverage.sources?.find((source) => source.source === 'aws')).toEqual({
+        source: 'aws',
+        state: 'collecting',
+        lastDataAt: progress.toISOString(),
+        lastAlertAt: null,
+        delayedAfterMinutes: 30,
+        stalledAfterMinutes: 120,
+      });
+      // Sem inventário, a postura vale pela varredura.
+      expect(summary.coverage.sources?.find((source) => source.source === 'posture')).toMatchObject({
+        state: 'collecting',
+      });
+    });
+
+    it('A/B: a coleta parada de um cliente deixa só a Torre dele amarela; fonte não configurada nunca para', async () => {
+      const a = await setup();
+      const b = await setup();
+      // A: Cloudflare lido pela última vez há 3 horas (o token recusado, por exemplo).
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId: a.tenantId,
+          provider: 'cloudflare',
+          accountId: randomUUID().replace(/-/g, ''),
+          regions: [],
+          connection: 'error',
+          lastCollectedAt: new Date(Date.now() - 3 * HOUR),
+        },
+      });
+      // B: o Cloudflare lido agora; a conta AWS de B cadastrada, sem dado ainda (aguarda).
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId: b.tenantId,
+          provider: 'cloudflare',
+          accountId: randomUUID().replace(/-/g, ''),
+          regions: [],
+          connection: 'connected',
+          lastCollectedAt: new Date(),
+        },
+      });
+      const towerA = towerSummarySchema.parse((await a.get('/v1/tower').expect(200)).body);
+      const towerB = towerSummarySchema.parse((await b.get('/v1/tower').expect(200)).body);
+      expect(towerA).toMatchObject({ light: 'yellow', reasons: ['collection_stalled'] });
+      expect(towerA.coverage.sources?.map((source) => [source.source, source.state])).toEqual([
+        ['aws', 'waiting'],
+        ['gcp', 'not_configured'],
+        ['cloudflare', 'stalled'],
+        ['agents', 'not_configured'],
+        ['posture', 'waiting'],
+      ]);
+      expect(towerB).toMatchObject({ light: 'green', reasons: [] });
+      expect(towerB.coverage.sources?.find((source) => source.source === 'cloudflare')?.state).toBe(
+        'collecting',
+      );
+    });
+
+    it('pulso: achados de 24 h por hora, esperados, tempo até detectar, agentes e eventos do mês, só do cliente', async () => {
+      const a = await setup();
+      const b = await setup();
+      const finding = (
+        tenantId: string,
+        accountId: string,
+        occurredAt: Date,
+        createdAt: Date,
+        exceptionId: string | null = null,
+      ) =>
+        prisma.finding.create({
+          data: {
+            tenantId,
+            accountId,
+            source: 'wazuh',
+            sourceEventId: randomUUID(),
+            logSource: 'cloudtrail',
+            occurredAt,
+            createdAt,
+            severity: 'low',
+            ruleId: '80202',
+            ruleLevel: 5,
+            title: 'Evento de teste',
+            mitreTactics: [],
+            mitreTechniques: [],
+            exceptionId,
+          },
+        });
+      const exception = await prisma.alertException.create({
+        data: {
+          tenantId: a.tenantId,
+          ruleId: '80202',
+          field: 'user',
+          value: `deploy-${randomInt(1e6, 9e6)}`,
+          reason: 'Rotina conhecida',
+          createdById: a.userId,
+        },
+      });
+      const now = Date.now();
+      await finding(a.tenantId, a.accountId, new Date(now - 30 * MINUTE), new Date(now - 28 * MINUTE));
+      await finding(a.tenantId, a.accountId, new Date(now - 3 * HOUR), new Date(now - 3 * HOUR + 4 * MINUTE));
+      await finding(
+        a.tenantId,
+        a.accountId,
+        new Date(now - 5 * HOUR),
+        new Date(now - 5 * HOUR + 10 * MINUTE),
+        exception.id,
+      );
+      // Fora da janela de 24 horas.
+      await finding(a.tenantId, a.accountId, new Date(now - 30 * HOUR), new Date(now - 30 * HOUR));
+      // De B: nunca na Torre de A.
+      for (let index = 0; index < 4; index += 1) {
+        await finding(b.tenantId, b.accountId, new Date(now - HOUR), new Date(now - HOUR));
+      }
+      await prisma.wazuhAgent.createMany({
+        data: [
+          {
+            tenantId: a.tenantId,
+            agentId: agentNumber(),
+            name: 'web-01',
+            status: 'active',
+            lastKeepAliveAt: new Date(),
+          },
+          {
+            tenantId: a.tenantId,
+            agentId: agentNumber(),
+            name: 'web-02',
+            status: 'disconnected',
+            lastKeepAliveAt: new Date(now - 26 * HOUR),
+          },
+          {
+            tenantId: b.tenantId,
+            agentId: agentNumber(),
+            name: 'b-01',
+            status: 'active',
+            lastKeepAliveAt: new Date(),
+          },
+        ],
+      });
+      const month = usageMonth(new Date());
+      await prisma.ingestUsage.createMany({
+        data: [
+          { tenantId: a.tenantId, month, source: 'aws', bytes: 1_000n, events: 1_204n },
+          { tenantId: a.tenantId, month, source: 'cloudflare', bytes: 500n, events: 9n },
+          { tenantId: b.tenantId, month, source: 'gcp', bytes: 1_000n, events: 77n },
+        ],
+      });
+
+      const summary = towerSummarySchema.parse((await a.get('/v1/tower').expect(200)).body);
+      const pulse = summary.pulse;
+      expect(pulse?.findings).toMatchObject({ total: 3, expected: 1 });
+      expect(pulse?.findings.hourly.reduce((sum, value) => sum + value, 0)).toBe(3);
+      // Mediana de 2, 4 e 10 minutos.
+      expect(pulse?.timeToDetectSeconds).toBe(240);
+      expect(pulse?.agents).toEqual({ online: 1, total: 2 });
+      // Só a AWS e a GCP; o Cloudflare mede entradas, não eventos.
+      expect(pulse?.monthEvents).toEqual({
+        month: month.toISOString().slice(0, 7),
+        sources: [{ source: 'aws', events: 1_204 }],
+      });
+      expect(summary.coverage.sources?.find((source) => source.source === 'agents')).toMatchObject({
+        state: 'collecting',
+      });
+
+      const other = towerSummarySchema.parse((await b.get('/v1/tower').expect(200)).body).pulse;
+      expect(other).toMatchObject({
+        findings: { total: 4, expected: 0 },
+        timeToDetectSeconds: 0,
+        agents: { online: 1, total: 1 },
+        monthEvents: { sources: [{ source: 'gcp', events: 77 }] },
+      });
+    });
+
+    it('cliente sem achado, agente nem uso: pulso vazio, sem agentes e sem eventos do mês', async () => {
+      const { get } = await setup();
+      const pulse = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body).pulse;
+      expect(pulse).toMatchObject({
+        findings: { total: 0, expected: 0 },
+        timeToDetectSeconds: null,
+        agents: null,
+        monthEvents: { sources: [] },
+      });
+      expect(pulse?.findings.hourly).toEqual(Array.from({ length: 24 }, () => 0));
     });
   });
 

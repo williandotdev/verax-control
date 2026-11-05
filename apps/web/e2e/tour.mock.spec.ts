@@ -84,17 +84,17 @@ test.describe('tour guiado (modo mock)', () => {
     const dialog = page.getByRole('dialog', { name: 'Torre: está tudo bem?' });
     await expect(dialog).toBeVisible();
     // A analista do cliente não vê as telas da Verax nem as de administração: o tour dela é mais curto.
-    await expect(dialog.getByText('Passo 1 de 14')).toBeVisible();
+    await expect(dialog.getByText('Passo 1 de 15')).toBeVisible();
 
     const seen = await walkTour(page);
-    expect(seen).toEqual(Array.from({ length: 14 }, (_, index) => index + 1));
+    expect(seen).toEqual(Array.from({ length: 15 }, (_, index) => index + 1));
     expect(await page.evaluate((key) => window.localStorage.getItem(key), TOUR_STORAGE_KEY)).toBe(
       JSON.stringify({ seen: true, open: false, step: null }),
     );
     expect(errors).toEqual([]);
   });
 
-  test('admin da Verax: cada um dos 18 passos destaca o alvo na tela dele, sem <style> injetado', async ({
+  test('admin da Verax: cada um dos 19 passos destaca o alvo na tela dele, sem <style> injetado', async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -115,7 +115,7 @@ test.describe('tour guiado (modo mock)', () => {
       // CSP de produção (style-src 'self'): nada de <style> na página além do CSS do próprio Vite em desenvolvimento.
       await expect(page.locator('style:not([data-vite-dev-id])')).toHaveCount(0);
     });
-    expect(seen).toHaveLength(18);
+    expect(seen).toHaveLength(19);
     expect(errors).toEqual([]);
   });
 
@@ -169,14 +169,14 @@ test.describe('tour guiado (modo mock)', () => {
     await page.getByRole('note').getByRole('button', { name: 'Fazer o tour' }).click();
 
     // O incidente de maior nota do cliente Beta, com o resumo em destaque (e não uma tela de "não encontrado").
-    expect((await currentStep(page))[0]).toBe(6);
+    expect((await currentStep(page))[0]).toBe(7);
     expect(new URL(page.url()).pathname).toMatch(/^\/incidentes\/018f2c1e-0000-7000-8000-0000000b000\d$/);
     await expect(backdrop(page)).toHaveAttribute('data-spotlight', 'sim');
 
     await card(page).getByRole('button', { name: 'Próximo' }).click();
-    expect((await currentStep(page))[0]).toBe(7);
-    await card(page).getByRole('button', { name: 'Próximo' }).click();
     expect((await currentStep(page))[0]).toBe(8);
+    await card(page).getByRole('button', { name: 'Próximo' }).click();
+    expect((await currentStep(page))[0]).toBe(9);
     const finding = new URL(page.url()).searchParams.get('achado');
     expect(finding).not.toBeNull();
     expect(finding).not.toBe('018f2c1e-0000-7000-8000-000000001001');
@@ -192,16 +192,16 @@ test.describe('tour guiado (modo mock)', () => {
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await launcher.click();
-    expect(await currentStep(page)).toEqual([1, 18]);
+    expect(await currentStep(page)).toEqual([1, 19]);
     await card(page).getByRole('button', { name: 'Próximo' }).click();
-    expect(await currentStep(page)).toEqual([2, 18]);
+    expect(await currentStep(page)).toEqual([2, 19]);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(launcher).toBeFocused();
 
     // Retoma de onde parou.
     await launcher.click();
-    expect(await currentStep(page)).toEqual([2, 18]);
+    expect(await currentStep(page)).toEqual([2, 19]);
     await card(page).getByRole('button', { name: 'Pular' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
   });

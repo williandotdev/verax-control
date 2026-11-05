@@ -52,6 +52,116 @@ describe('resumo da Torre', () => {
     ).toThrow();
   });
 
+  describe('saúde da coleta e pulso da operação (OP-01 e OP-02)', () => {
+    const sources = [
+      {
+        source: 'aws',
+        state: 'collecting',
+        lastDataAt: '2026-11-02T12:57:00.000Z',
+        lastAlertAt: '2026-10-30T08:00:00.000Z',
+        delayedAfterMinutes: 30,
+        stalledAfterMinutes: 120,
+      },
+      {
+        source: 'gcp',
+        state: 'stalled',
+        lastDataAt: '2026-11-01T09:00:00.000Z',
+        delayedAfterMinutes: 720,
+        stalledAfterMinutes: 1440,
+      },
+      {
+        source: 'cloudflare',
+        state: 'not_configured',
+        lastDataAt: null,
+        delayedAfterMinutes: 30,
+        stalledAfterMinutes: 120,
+      },
+      {
+        source: 'agents',
+        state: 'waiting',
+        lastDataAt: null,
+        delayedAfterMinutes: 15,
+        stalledAfterMinutes: 60,
+      },
+      {
+        source: 'posture',
+        state: 'delayed',
+        lastDataAt: '2026-11-01T06:00:00.000Z',
+        delayedAfterMinutes: 1560,
+        stalledAfterMinutes: 3000,
+      },
+    ] as const;
+    const pulse = {
+      since: '2026-11-01T14:00:00.000Z',
+      findings: { total: 3, expected: 1, hourly: [...Array<number>(21).fill(0), 1, 0, 2] },
+      timeToDetectSeconds: 240,
+      agents: { online: 3, total: 5 },
+      monthEvents: {
+        month: '2026-11',
+        sources: [
+          { source: 'aws', events: 1_204_331 },
+          { source: 'gcp', events: 80_120 },
+        ],
+      },
+    } as const;
+    const full = {
+      ...summary,
+      light: 'yellow',
+      reasons: ['high_incident', 'collection_stalled'],
+      coverage: { ...summary.coverage, lastDataAt: '2026-11-02T12:57:00.000Z', sources },
+      pulse,
+    };
+
+    it('aceita as fontes, o último dado e o pulso, todos opcionais (um nó de antes não manda)', () => {
+      expect(towerSummarySchema.parse(full)).toEqual(full);
+      // Sem os campos novos, o resumo de antes continua válido: o painel novo lê um nó antigo.
+      expect(towerSummarySchema.parse(summary)).toEqual(summary);
+      // Agentes ausentes e um mês sem volume.
+      const quiet = {
+        ...full,
+        coverage: { ...full.coverage, lastDataAt: null },
+        pulse: {
+          ...pulse,
+          timeToDetectSeconds: null,
+          agents: null,
+          monthEvents: { month: '2026-11', sources: [] },
+        },
+      };
+      expect(towerSummarySchema.safeParse(quiet).success).toBe(true);
+    });
+
+    it.each([
+      [
+        'fonte desconhecida',
+        { coverage: { ...full.coverage, sources: [{ ...sources[0], source: 'azure' }] } },
+      ],
+      ['estado desconhecido', { coverage: { ...full.coverage, sources: [{ ...sources[0], state: 'ok' }] } }],
+      ['fonte repetida', { coverage: { ...full.coverage, sources: [sources[0], sources[0]] } }],
+      [
+        'prazo de atraso depois do de parada',
+        { coverage: { ...full.coverage, sources: [{ ...sources[0], delayedAfterMinutes: 200 }] } },
+      ],
+      ['último dado fora do formato', { coverage: { ...full.coverage, lastDataAt: 'agora' } }],
+      ['hora a menos no pulso', { pulse: { ...pulse, findings: { ...pulse.findings, hourly: [0] } } }],
+      ['mais esperados que achados', { pulse: { ...pulse, findings: { ...pulse.findings, expected: 4 } } }],
+      ['mais agentes online que registrados', { pulse: { ...pulse, agents: { online: 6, total: 5 } } }],
+      ['nenhum agente registrado como objeto', { pulse: { ...pulse, agents: { online: 0, total: 0 } } }],
+      [
+        'eventos do Cloudflare (não são eventos de log)',
+        {
+          pulse: {
+            ...pulse,
+            monthEvents: { month: '2026-11', sources: [{ source: 'cloudflare', events: 1 }] },
+          },
+        },
+      ],
+      ['tempo até detectar negativo', { pulse: { ...pulse, timeToDetectSeconds: -1 } }],
+      ['campo a mais no pulso', { pulse: { ...pulse, extra: true } }],
+    ])('recusa %s', (_name, change) => {
+      expect(towerSummarySchema.safeParse({ ...full, ...change }).success).toBe(false);
+    });
+  });
+
   it('aceita a conta nova, sem varredura, coleta nem evento', () => {
     const fresh = {
       ...summary,

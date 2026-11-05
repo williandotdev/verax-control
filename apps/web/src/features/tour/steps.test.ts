@@ -20,11 +20,12 @@ describe('percurso do tour', () => {
     }
   });
 
-  it.each(ROLES)('%s: de 12 a 18 passos, só por telas que o papel abre', (role) => {
+  // O pulso da operação (OP-02) é o 19º passo do admin da Verax.
+  it.each(ROLES)('%s: de 12 a 19 passos, só por telas que o papel abre', (role) => {
     const permissions = permissionsOf(role);
     const steps = tourStepsFor(permissions);
     expect(steps.length).toBeGreaterThanOrEqual(12);
-    expect(steps.length).toBeLessThanOrEqual(18);
+    expect(steps.length).toBeLessThanOrEqual(19);
     for (const step of steps.filter((candidate) => candidate.path)) {
       const permission = routePermission(step.path ?? '');
       expect(permission, step.id).toBeDefined();
