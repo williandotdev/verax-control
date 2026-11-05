@@ -13,6 +13,11 @@ project_id = "projeto-exemplo"
 # relógio e o rewrite do Hosting.
 # services_enabled = true
 
+# Console do responsável (cp-admin, atrás do IAP): tabelas de preço, modelos de custo e simulador de DRE. Exige
+# owner_principals (só eles passam pelo IAP). Num projeto sem organização, crie antes o cliente OAuth do IAP
+# (docs/runbooks/console-do-responsavel.md).
+# admin_enabled = true
+
 # Entrada do cp-worker: INGRESS_TRAFFIC_ALL só quando for chamar as operações do responsável da sua máquina.
 # worker_ingress = "INGRESS_TRAFFIC_ALL"
 

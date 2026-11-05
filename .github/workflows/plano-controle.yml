@@ -1,20 +1,24 @@
 name: Plano de controle
 
-# Publica a imagem do plano de controle no Artifact Registry e implanta os dois serviços do Cloud Run (cp-public e
-# cp-worker: a mesma imagem, com ROLE diferente) no projeto da Verax.
+# Publica a imagem do plano de controle no Artifact Registry e implanta os serviços do Cloud Run (cp-public, cp-worker
+# e, quando existe, cp-admin, o console do responsável atrás do IAP: a mesma imagem, com ROLE diferente) no projeto da
+# Verax. O cp-admin é opcional: sem `CP_ADMIN_SERVICE` no environment (a saída `github_environment` só a traz com
+# `admin_enabled` no Terraform), ele fica de fora e o resto implanta igual.
 #
 # Divisão com o Terraform (infra/gcp/envs/control-plane; GUIA, seção "O plano de controle"):
 # - o Terraform é dono dos serviços e de tudo o que há neles: conta de serviço, variáveis de ambiente, segredos,
-#   IAM, escala, timeout, sonda de partida em /health, ingress; e também dos índices compostos e das políticas de
-#   TTL do Firestore. Este workflow nunca cria um serviço: se algum dos dois não existir, o job para antes do build
-#   e aponta o passo do GUIA (services_enabled = true);
+#   IAM, escala, timeout, sonda de partida em /health, ingress, IAP; e também dos índices compostos e das políticas
+#   de TTL do Firestore. Este workflow nunca cria um serviço: se algum deles não existir, o job para antes do build
+#   e aponta o passo do GUIA (services_enabled = true, admin_enabled = true);
 # - o workflow é dono só da imagem em execução. `gcloud run deploy --image` cria uma revisão nova copiando o resto
 #   do template; ROLE e NODE_ENV vão junto como cinto de segurança (os mesmos valores do Terraform, que ignora
 #   `image`, `traffic`, `client` e `client_version`). Nada mais é passado, para os dois não brigarem.
 #
 # A revisão nova nasce sem tráfego e etiquetada; o gcloud só termina quando a sonda de partida (do Terraform)
-# passa. Depois, a prova: o /health no endereço etiquetado do cp-public e a condição Ready da revisão nos dois. Só
-# então o tráfego vai para a revisão nova; qualquer falha antes disso deixa a revisão anterior servindo.
+# passa. Depois, a prova: o /health no endereço etiquetado do cp-public e a condição Ready da revisão em todos (no
+# cp-worker, só IAM, e no cp-admin, atrás do IAP, o endereço não responde a um curl sem login: a condição Ready depende
+# da sonda em /health). Só então o tráfego vai para a revisão nova; qualquer falha antes disso deixa a revisão anterior
+# servindo.
 #
 # Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `control-plane`,
 # que só aceita a `main` (molde do painel.yml). As variáveis do environment são a saída `github_environment` do
@@ -25,6 +29,8 @@ on:
     branches: [main]
     paths:
       - 'apps/control-plane/**'
+      - 'apps/console/**'
+      - 'scripts/scan-bundle.mjs'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
@@ -55,7 +61,7 @@ jobs:
       attestations: write
     steps:
       # As variáveis do environment só existem dentro do job: a checagem fica num passo. Falta alguma, nada roda.
-      # Os nomes são os da saída `github_environment` do Terraform.
+      # Os nomes são os da saída `github_environment` do Terraform. `CP_ADMIN_SERVICE` é opcional (o console).
       - name: Conferir a configuração
         id: config
         env:
@@ -66,6 +72,7 @@ jobs:
           CP_IMAGES_REPOSITORY: ${{ vars.CP_IMAGES_REPOSITORY }}
           CP_PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
           CP_WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+          CP_ADMIN_SERVICE: ${{ vars.CP_ADMIN_SERVICE }}
         run: |
           ready=true
           for name in GCP_WIF_PROVIDER GCP_DEPLOYER_SA GCP_PROJECT_ID GCP_REGION CP_IMAGES_REPOSITORY CP_PUBLIC_SERVICE CP_WORKER_SERVICE; do
@@ -75,6 +82,9 @@ jobs:
             fi
           done
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          if [ -z "$CP_ADMIN_SERVICE" ]; then
+            echo "::notice::CP_ADMIN_SERVICE não configurada: o console do responsável (cp-admin) fica de fora desta implantação."
+          fi
       - if: steps.config.outputs.ready == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,11 +110,12 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
           WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+          ADMIN_SERVICE: ${{ vars.CP_ADMIN_SERVICE }}
         run: |
           set -euo pipefail
-          for service in "$PUBLIC_SERVICE" "$WORKER_SERVICE"; do
+          for service in "$PUBLIC_SERVICE" "$WORKER_SERVICE" ${ADMIN_SERVICE:+"$ADMIN_SERVICE"}; do
             if ! gcloud run services describe "$service" --project "$PROJECT" --region "$REGION" --format 'value(metadata.name)' >/dev/null; then
-              echo "::error::o serviço $service não existe em $REGION: aplique infra/gcp/envs/control-plane com services_enabled = true (infra/gcp/GUIA.md, passo 5) antes de implantar. O workflow não cria serviços."
+              echo "::error::o serviço $service não existe em $REGION: aplique infra/gcp/envs/control-plane com services_enabled = true (e admin_enabled = true, para o cp-admin; infra/gcp/GUIA.md, passo 5) antes de implantar. O workflow não cria serviços."
               exit 1
             fi
             echo "$service: existe"
@@ -137,7 +148,7 @@ jobs:
       # Só a imagem (mais ROLE e NODE_ENV, iguais aos do Terraform). Conta de serviço, variáveis, segredos, escala,
       # timeout, sonda e rótulos vêm do template que já está no serviço: o gcloud os preserva quando não são
       # informados, e o Terraform continua dono deles.
-      - name: Implantar sem tráfego (cp-public e cp-worker)
+      - name: Implantar sem tráfego (cp-public, cp-worker e cp-admin)
         if: steps.config.outputs.ready == 'true'
         env:
           PROJECT: ${{ vars.GCP_PROJECT_ID }}
@@ -146,6 +157,7 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
           WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+          ADMIN_SERVICE: ${{ vars.CP_ADMIN_SERVICE }}
         run: |
           set -euo pipefail
           image="$REPOSITORY/control-plane@$DIGEST"
@@ -156,6 +168,8 @@ jobs:
           }
           deploy "$PUBLIC_SERVICE" public
           deploy "$WORKER_SERVICE" worker
+          # O IAP é do serviço (Terraform, `iap_enabled`): uma revisão nova pelo gcloud não o desliga.
+          if [ -n "$ADMIN_SERVICE" ]; then deploy "$ADMIN_SERVICE" admin; fi
       - name: Conferir o /health da revisão candidata
         if: steps.config.outputs.ready == 'true'
         env:
@@ -163,6 +177,7 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
           WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+          ADMIN_SERVICE: ${{ vars.CP_ADMIN_SERVICE }}
         run: |
           set -euo pipefail
           describe() { gcloud run services describe "$1" --project "$PROJECT" --region "$REGION" --format json; }
@@ -170,8 +185,9 @@ jobs:
           url=$(describe "$PUBLIC_SERVICE" | jq -er --arg tag "$CANDIDATE_TAG" '.status.traffic[] | select(.tag == $tag) | .url')
           curl -fsS --retry 5 --retry-all-errors "$url/health" | grep -q '"status":"ok"'
           echo "$PUBLIC_SERVICE: /health respondeu na revisão candidata"
-          # cp-worker é só IAM: a prova é a condição Ready da revisão, que depende da sonda de partida em /health.
-          for service in "$WORKER_SERVICE" "$PUBLIC_SERVICE"; do
+          # cp-worker é só IAM, e cp-admin fica atrás do IAP: a prova é a condição Ready da revisão, que depende da
+          # sonda de partida em /health (a sonda não passa pelo IAP).
+          for service in "$WORKER_SERVICE" "$PUBLIC_SERVICE" ${ADMIN_SERVICE:+"$ADMIN_SERVICE"}; do
             revision=$(describe "$service" | jq -er --arg tag "$CANDIDATE_TAG" '.status.traffic[] | select(.tag == $tag) | .revisionName')
             gcloud run revisions describe "$revision" --project "$PROJECT" --region "$REGION" --format json |
               jq -e '.status.conditions[] | select(.type == "Ready") | .status == "True"' >/dev/null
@@ -184,9 +200,10 @@ jobs:
           REGION: ${{ vars.GCP_REGION }}
           PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
           WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+          ADMIN_SERVICE: ${{ vars.CP_ADMIN_SERVICE }}
         run: |
           set -euo pipefail
-          for service in "$PUBLIC_SERVICE" "$WORKER_SERVICE"; do
+          for service in "$PUBLIC_SERVICE" "$WORKER_SERVICE" ${ADMIN_SERVICE:+"$ADMIN_SERVICE"}; do
             gcloud run services update-traffic "$service" --project "$PROJECT" --region "$REGION" --to-latest --quiet
             echo "$service: tráfego na revisão nova"
           done
@@ -196,9 +213,13 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           PUBLIC_SERVICE: ${{ vars.CP_PUBLIC_SERVICE }}
           WORKER_SERVICE: ${{ vars.CP_WORKER_SERVICE }}
+          ADMIN_SERVICE: ${{ vars.CP_ADMIN_SERVICE }}
         run: |
           {
             echo "### Plano de controle implantado (versão \`$GITHUB_SHA\`)"
             echo "- Imagem: \`$DIGEST\`"
             echo "- Serviços: \`$PUBLIC_SERVICE\` e \`$WORKER_SERVICE\`, promovidos depois do /health"
+            if [ -n "$ADMIN_SERVICE" ]; then
+              echo "- Console do responsável: \`$ADMIN_SERVICE\` (atrás do IAP), promovido com a revisão pronta"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
