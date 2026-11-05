@@ -65,7 +65,7 @@ const TIMEOUT_MS = 5_000;
 
 /** Os valores publicados: agregados do nó, nunca dado de cliente (nome, ID de conta, e-mail ou evento). */
 export interface NodeStatusValues {
-  /** O commit instalado (`NODE_VERSION`). */
+  /** O commit instalado (`VERAX_NODE_COMMIT`). */
   version: string;
   /** Contas cloud ativas com a coleta conectada. */
   accountsConnected: number;

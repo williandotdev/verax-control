@@ -837,7 +837,7 @@ metadata verax-support-email suporte@verax.example
 # --- O nó da Verax (sem CUSTOMER_MODE): nada do modo cliente ------------------------------------------------------
 new_root "nó da Verax: worker.env sem o estado do nó" verax
 start render || fail "o render falhou: $(cat "$root/out")"
-grep -q -e NODE_STATUS -e NODE_VERSION "$root/run/verax/worker.env" && fail "o worker.env ganhou o estado do nó"
+grep -q -e NODE_STATUS -e VERAX_NODE_COMMIT "$root/run/verax/worker.env" && fail "o worker.env ganhou o estado do nó"
 verax_worker=$(cat "$root/run/verax/worker.env")
 verax_api=$(cat "$root/run/verax/api.env")
 if start customer-bootstrap; then fail "o customer-bootstrap rodou fora do modo cliente"; fi
@@ -852,7 +852,7 @@ start render || fail "o render falhou: $(cat "$root/out")"
 new_root "modo cliente: render" render CUSTOMER_MODE=true
 start render || fail "o render falhou: $(cat "$root/out")"
 [[ "$(cat "$root/run/verax/api.env")" == "$verax_api" ]] || fail "o api.env mudou no modo cliente"
-status_lines="NODE_STATUS='true'"$'\n'"NODE_VERSION='$commit'"
+status_lines="NODE_STATUS='true'"$'\n'"VERAX_NODE_COMMIT='$commit'"
 expected_worker=${verax_worker/DATABASE_URL=/$status_lines$'\n'DATABASE_URL=}
 [[ "$(cat "$root/run/verax/worker.env")" == "$expected_worker" ]] ||
   fail "worker.env inesperado: $(diff <(echo "$expected_worker") "$root/run/verax/worker.env" || true)"
@@ -873,7 +873,7 @@ NODE_EGRESS_IPS='203.0.113.10/32'
 NODE_SA_UNIQUE_ID='123456789012345678901'
 AWS_WEB_IDENTITY_AUDIENCE='https://control.veraxsistemas.com.br/aws-reader'
 NODE_STATUS='true'
-NODE_VERSION='$commit'
+VERAX_NODE_COMMIT='$commit'
 DATABASE_URL='postgresql://verax_app:interno-postgres-app@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt'
 EOF
 )
