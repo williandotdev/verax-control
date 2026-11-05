@@ -29,6 +29,8 @@ enum AuditOutcome {
 }
 
 /// Trilha de auditoria imutável (T1.3): só INSERT. Um trigger no banco bloqueia UPDATE, DELETE e TRUNCATE.
+/// A única exceção é o expurgo diário (fase 2, PR-19): o DELETE de registro com mais de 13 meses, só pela função
+/// `verax_purge_audit_log` (migration `20261109120000_history_retention`). O papel da aplicação não tem DELETE.
 /// Os IDs de ator e cliente não têm chave estrangeira de propósito: o registro sobrevive à exclusão do
 /// usuário ou do cliente.
 model AuditLog {
@@ -52,6 +54,8 @@ model AuditLog {
   @@index([actorId, occurredAt(sort: Desc)])
   @@index([resourceType, resourceId])
   @@index([requestId])
+  /// Expurgo pela idade, em todos os registros (os sem cliente não usam o índice por cliente).
+  @@index([occurredAt])
 }
 
 /// Papéis do painel (T2.4). `admin_verax` é da Verax e não pertence a cliente; os demais pertencem a um.
@@ -475,7 +479,9 @@ model Finding {
 }
 
 /// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da
-/// decisão. A chave estrangeira inclui o cliente, então um comentário nunca aponta para achado de outro cliente.
+/// decisão. A única exceção é o expurgo diário (fase 2, PR-19), que leva o comentário junto com o achado antigo, só
+/// pela função `verax_purge_finding_comments` e só com mais de 30 dias. O papel da aplicação não tem DELETE.
+/// A chave estrangeira inclui o cliente, então um comentário nunca aponta para achado de outro cliente.
 model FindingComment {
   id        String   @id @default(uuid(7)) @db.Uuid
   tenantId  String   @db.Uuid
@@ -548,6 +554,19 @@ model SyncState {
   updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
 }
 
+/// Prazo de histórico do expurgo diário (fase 2, PR-19; `src/retention/`), uma linha por tarefa (`id` é o nome dela no
+/// `SyncState`, `retention`). O prazo vem do plano do nó; quando o plano diminui, o expurgo continua com o prazo
+/// anterior por 30 dias (carência para exportar) e só então passa ao novo. Dado de sistema, sem `tenantId`: o prazo é
+/// do nó, e o escopo do cliente recusa o model.
+model RetentionState {
+  id           String    @id @db.VarChar(32)
+  /// Dias de histórico que o expurgo aplica; null é sem limite (plano interno).
+  appliedDays  Int?
+  /// Desde quando o plano pede um prazo menor que o aplicado; null sem redução pendente. A carência conta daqui.
+  pendingSince DateTime? @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+}
+
 enum IncidentStatus {
   open
   investigating
@@ -583,6 +602,8 @@ model Incident {
 
   @@index([tenantId, status])
   @@index([tenantId, riskScore(sort: Desc)])
+  /// Expurgo diário: incidentes sem atividade antes do corte.
+  @@index([tenantId, lastSeenAt])
 }
 
 /// Uma varredura de postura (T5.8) de uma conta: a nota e as contagens. As checagens reprovadas ficam em
