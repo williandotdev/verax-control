@@ -57,6 +57,8 @@ async function seed(): Promise<void> {
           plan: 'Demonstração',
           escalationName: 'Contato de demonstração',
           escalationEmail: 'contato@cliente-demo.example',
+          // Aguardando a confirmação, sem pedido na fila (D8): o seed não manda e-mail.
+          escalationState: 'pending',
         },
       });
     }

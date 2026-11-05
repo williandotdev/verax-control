@@ -53,6 +53,10 @@ export const PERMISSIONS = {
   // não recebe avisos dos clientes.
   'notification_preferences:read': ALL,
   'notification_preferences:write': OPERATORS,
+  // Contato de escalonamento do próprio cliente (D8): quem administra o cliente lê, troca e pede a confirmação de novo.
+  // A equipe da Verax também muda pelo cadastro de clientes (`tenants:write`).
+  'escalation_contact:read': ADMINS,
+  'escalation_contact:write': ADMINS,
   // Só o histórico do plano (fase 2, PR-20): os filtros de período de achados e relatórios são de todos os papéis.
   'plan_history:read': ALL,
   // Exclusivas da Verax
