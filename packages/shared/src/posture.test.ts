@@ -5,6 +5,7 @@ import {
   type PostureCheck,
   postureCheckListQuerySchema,
   postureCheckSchema,
+  postureHistoryDays,
   postureOverviewSchema,
 } from './posture.js';
 
@@ -44,6 +45,19 @@ describe('postura', () => {
     expect(
       postureAccountSchema.safeParse({ ...account, score: null, scannedAt: null, history: [] }).success,
     ).toBe(true);
+  });
+
+  it('a evolução segue o histórico do plano, até 365 dias', () => {
+    expect(postureHistoryDays(90)).toBe(90);
+    expect(postureHistoryDays(365)).toBe(365);
+    expect(postureHistoryDays(730)).toBe(365);
+    expect(postureHistoryDays(null)).toBe(365);
+    const days = Array.from({ length: 366 }, (_, index) => ({
+      date: new Date(Date.UTC(2025, 10, 3 + index)).toISOString().slice(0, 10),
+      score: 50,
+    }));
+    expect(postureAccountSchema.safeParse({ ...account, history: days.slice(1) }).success).toBe(true);
+    expect(postureAccountSchema.safeParse({ ...account, history: days }).success).toBe(false);
   });
 
   it.each([

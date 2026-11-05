@@ -15,6 +15,7 @@ import type { Request } from 'express';
 import { z } from 'zod';
 import { RequirePermission } from '../auth/decorators.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { PlanService } from '../plan/plan.service.js';
 import { FindingsService } from './findings.service.js';
 
 const findingIdSchema = z.uuid();
@@ -22,11 +23,15 @@ const findingIdSchema = z.uuid();
 /** Achados do cliente da sessão (T5.4 e T5.5). Todos leem; quem faz triagem muda o status e comenta. */
 @Controller('findings')
 export class FindingsController {
-  constructor(private readonly findings: FindingsService) {}
+  constructor(
+    private readonly findings: FindingsService,
+    private readonly plan: PlanService,
+  ) {}
 
   @Get()
   @RequirePermission('findings:read')
   list(@Query({ schema: findingListQuerySchema }) query: FindingListQuery): Promise<Paginated<Finding>> {
+    this.plan.assertPeriodWithinHistory(query.period);
     return this.findings.list(query);
   }
 

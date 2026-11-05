@@ -1,11 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { PlanSeat, PlanUsage, ResolvedPlan } from '@verax/shared';
+import type { HistoryPeriod, PlanHistory, PlanSeat, PlanUsage, ResolvedPlan } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { nodePlan } from '../common/config/env.schema.js';
 import { requestContext } from '../common/context/request-context.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { usageMonth } from '../usage/usage-meter.js';
+import { assertPeriodWithinHistory } from './plan-history.js';
 import { assertWithinPlan, countSeats, lockPlanSeats, PlanLimitReached } from './plan-limits.js';
 
 /** Recurso da trilha de auditoria de cada vaga, para a recusa sair com a mesma área das outras operações. */
@@ -39,6 +40,21 @@ export class PlanService {
     >,
   ) {
     this.plan = nodePlan(config);
+  }
+
+  /** Dias de histórico do plano (`null` é sem limite): o prazo do expurgo e o alcance dos filtros de período. */
+  get historyDays(): number | null {
+    return this.plan.limits.historyDays;
+  }
+
+  /** `GET /v1/plan/history`: só o histórico do plano, o mesmo para toda sessão (nenhum dado de cliente). */
+  history(): PlanHistory {
+    return { historyDays: this.historyDays };
+  }
+
+  /** Recusa (400) o período do filtro mais longo que o histórico do plano (achados, auditoria e relatórios). */
+  assertPeriodWithinHistory(period: HistoryPeriod | undefined): void {
+    assertPeriodWithinHistory(this.plan, period);
   }
 
   /**

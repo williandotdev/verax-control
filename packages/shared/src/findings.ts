@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { wazuhAgentRefSchema } from './agents.js';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
+import type { HistoryPeriod } from './history.js';
 import { withPagination } from './pagination.js';
 import { authorSchema } from './protected-resources.js';
 
@@ -40,8 +41,11 @@ export const findingOriginSchema = z.union([cloudAccountRefSchema, wazuhAgentRef
   error: 'origem inválida',
 });
 
-/** Períodos do filtro, em horas. */
-export const FINDING_PERIODS = ['24h', '7d', '30d', '90d'] as const;
+/**
+ * Períodos do filtro (os dias de cada um em `HISTORY_PERIOD_DAYS`). A API recusa o período mais longo que o histórico
+ * do plano do nó (PR-20): `12m` só no plano com 365 dias ou mais.
+ */
+export const FINDING_PERIODS = ['24h', '7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
 export type FindingPeriod = (typeof FINDING_PERIODS)[number];
 
 export const findingListQuerySchema = withPagination({
