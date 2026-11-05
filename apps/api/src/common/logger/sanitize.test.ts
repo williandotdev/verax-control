@@ -77,6 +77,18 @@ describe('scrubString', () => {
     expect(scrubString('usuário entrou no cliente piloto')).toBe('usuário entrou no cliente piloto');
   });
 
+  it('oculta um JWT (o token do Google do nó) solto no texto ou num parâmetro, e não confunde texto com pontos', () => {
+    const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    const jwt = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ sub: '123456789012345678901' })}.${randomBytes(64).toString('base64url')}`;
+    expect(scrubString(`token ${jwt} recusado`)).toBe(`token ${REDACTED} recusado`);
+    expect(scrubString(`WebIdentityToken=${jwt}&Version=2011-06-15`)).toBe(
+      `WebIdentityToken=${REDACTED}&Version=2011-06-15`,
+    );
+    expect(scrubString('arquivo verax.control.reader.yaml e v1.2.3')).toBe(
+      'arquivo verax.control.reader.yaml e v1.2.3',
+    );
+  });
+
   it('oculta o segredo de uma linha do arquivo credentials da AWS copiada para o texto', () => {
     const secret = randomBytes(30).toString('base64');
     const text = scrubString(

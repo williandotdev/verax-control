@@ -300,13 +300,15 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
 
       const report = await new AwsCheck(prisma, checker, { now: () => now }).runOnce();
       expect(report).toEqual({ pending: 1, connected: 1, failed: 0, retrying: 0, stale: 0 });
-      // A conferência recebe a conta cadastrada e os buckets sem repetir; nada de ExternalId nem de chave.
+      // A conferência recebe a conta cadastrada e o bucket de cada fonte (o pedido confere também as diárias); nada de
+      // ExternalId nem de chave.
       expect(checker.callsFor(account.accountId)).toEqual([
         {
           cloudAccountId: account.id,
           accountId: account.accountId,
           regions: ['sa-east-1', 'us-east-1'],
-          buckets: [trail, waf],
+          buckets: { cloudtrail: trail, guardduty: trail, waf },
+          daily: true,
         },
       ]);
       expect(await rowOf(account.id)).toMatchObject({
@@ -478,7 +480,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       expect((await rowOf(newer.id)).checkRequestedAt).not.toBeNull();
     });
 
-    it('a conferência deste PR (antes do PR-V5) responde check_unavailable na hora, sem tentar de novo', async () => {
+    it('sem o ID da conta de serviço do nó, a conferência responde check_unavailable na hora, sem tentar de novo', async () => {
       const account = await awsAccount(adminA);
       await requested(adminA, account.id);
       expect(await new AwsCheck(prisma, new UnavailableAwsConnectionChecker()).runOnce()).toMatchObject({

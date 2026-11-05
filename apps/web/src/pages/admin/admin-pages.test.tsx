@@ -469,6 +469,81 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(command).toHaveTextContent('NodeEgressIps=IP_DE_SAIDA_DO_NO/32');
   });
 
+  describe('AWS (PR-V5): avisos e erros da conferência do worker', () => {
+    const created = '2026-11-01T00:00:00.000Z';
+    /** Uma conta AWS já verificada, com o estado da conexão dado. */
+    const awsAccount = (id: string, accountId: string, connection: string, connectionError: string) =>
+      cloudAccountSchema.parse({
+        id,
+        provider: 'aws',
+        accountId,
+        regions: ['sa-east-1'],
+        readerRoleArn: awsReaderRoleArn(accountId),
+        nodeServiceAccountId: DEMO_NODE_SERVICE_ACCOUNT_ID,
+        webIdentityAudience: AWS_READER_AUDIENCE,
+        buckets: {
+          cloudtrail: `trilha-${accountId}`,
+          guardduty: null,
+          waf: `aws-waf-logs-loja-${accountId}`,
+        },
+        pubsubSubscription: null,
+        sinkTopic: null,
+        sinkWriterIdentity: null,
+        zones: [],
+        keyStatus: null,
+        egressIps: [],
+        status: 'active',
+        connection,
+        connectionError,
+        checkRequestedAt: null,
+        ingestFrom: '2026-10-31',
+        lastCollectedAt: null,
+        lastEventAt: null,
+        createdAt: created,
+        updatedAt: created,
+      });
+    const listing = (account: ReturnType<typeof awsAccount>) => [
+      http.get(`${API_URL}/v1/cloud-accounts`, () =>
+        HttpResponse.json({ items: [account], page: 1, pageSize: 20, total: 1 }),
+      ),
+    ];
+
+    it('conectada com aviso: o que conferir e que a coleta continua, com o tipo do aviso no detalhe', async () => {
+      const warned = awsAccount(
+        '018f2c1e-0000-7000-8000-0000000c0ffe',
+        '999988887777',
+        'connected',
+        'excess_permissions',
+      );
+      renderAt(`/cadastros/contas?conta=${warned.id}`, undefined, undefined, listing(warned));
+      const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988887777' });
+      expect(within(sheet).getByText(/^Conectada: o Verax entrou no papel de leitura/)).toBeInTheDocument();
+      expect(
+        within(sheet).getByText(/^Aviso: O papel verax-control-reader tem permissão além da leitura/),
+      ).toHaveTextContent('A coleta continua.');
+      expect(within(sheet).getByText(/^A última leitura deu certo./)).toHaveTextContent(
+        'Tipo do aviso: excess_permissions.',
+      );
+    });
+
+    it('erro de bucket: diz de qual fonte é o bucket', async () => {
+      const broken = awsAccount(
+        '018f2c1e-0000-7000-8000-0000000c0ffd',
+        '999988886666',
+        'error',
+        'bucket_denied:waf',
+      );
+      renderAt(`/cadastros/contas?conta=${broken.id}`, undefined, undefined, listing(broken));
+      const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988886666' });
+      expect(
+        within(sheet).getByText(/^Bucket do WAF: o papel não lista ou não lê os objetos/),
+      ).toHaveTextContent('Corrija e clique em Verificar de novo.');
+      expect(within(sheet).getByText(/A última conferência do papel de leitura falhou/)).toHaveTextContent(
+        'Tipo do erro: bucket_denied:waf.',
+      );
+    });
+  });
+
   it('selo da conexão: Conectada, Erro ou Aguardando; o detalhe mostra a última coleta e o tipo do erro', async () => {
     renderAt('/cadastros/contas');
     const rows = await rowsOf('Contas cloud do cliente');
@@ -486,9 +561,9 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       }),
     );
     const sheet = await screen.findByRole('dialog', { name: `Conta AWS ${DEMO_ACCOUNTS.alfaHomologacao}` });
-    expect(
-      within(sheet).getByText(/A última tentativa de entrar no papel de leitura falhou/),
-    ).toHaveTextContent('Tipo do erro: trust_denied.');
+    expect(within(sheet).getByText(/A última conferência do papel de leitura falhou/)).toHaveTextContent(
+      'Tipo do erro: trust_denied.',
+    );
     expect(within(sheet).getByText('Última coleta').nextElementSibling).toHaveTextContent('ontem');
     expect(within(sheet).getByText('Último evento').nextElementSibling).toHaveTextContent('ontem');
   });

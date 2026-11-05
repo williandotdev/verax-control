@@ -541,11 +541,17 @@ render() {
     "${agents_api[@]}" \
     "${vault_api[@]}" \
     "DATABASE_URL=$(database_url verax_app "$app")"
+  # O worker recebe os mesmos valores do papel de leitura da AWS, já conferidos acima (PR-V5'): com o ID da conta de
+  # serviço, a conferência real da conexão (o token do Google com o audience, o STS e os buckets) e a do `sub` do token
+  # na partida; com o IP de saída, a simulação da permissão demais. Sem as linhas no node.conf, o worker.env sai como
+  # antes, e o "Verificar" responde que o nó não confere a conexão.
   write_env worker.env \
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "${plan[@]}" \
     "${indexer[@]}" \
+    "${egress[@]}" \
+    "${aws_reader[@]}" \
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \
     "${node_status[@]}" \

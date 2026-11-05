@@ -1,17 +1,23 @@
 import { describe, expect, it } from 'vitest';
+import { cloudAccountSchema } from './cloud-accounts.js';
 import {
+  AWS_BUCKET_ERROR_CODES,
   AWS_CONNECTION_ERROR_CODES,
+  AWS_CONNECTION_WARNING_CODES,
   AWS_READER_AUDIENCE,
+  awsConnectionErrorValue,
   awsLogBucketArns,
   awsReaderDeployCommand,
   awsReaderRoleArn,
   cloudFormationConsoleUrl,
   isAwsConnectionErrorCode,
+  isAwsConnectionWarningCode,
   isNodeEgressIp,
   isNodeServiceAccountId,
   isWebIdentityAudience,
   NODE_EGRESS_IPS_PLACEHOLDER,
   NODE_SERVICE_ACCOUNT_ID_PLACEHOLDER,
+  parseAwsConnectionError,
 } from './aws-reader.js';
 
 // Valores fictícios: conta de documentação da AWS, ID de conta de serviço inventado e IPs de documentação (RFC 5737).
@@ -83,6 +89,54 @@ describe('papel de leitura sem chave (PR-V3)', () => {
     expect(AWS_CONNECTION_ERROR_CODES).toContain('check_unavailable');
     expect(isAwsConnectionErrorCode('region_disabled')).toBe(true);
     expect(isAwsConnectionErrorCode('AccessDenied')).toBe(false);
+  });
+
+  it('PR-V5: os códigos da conferência real, e os avisos (a conta continua conectada) são códigos dela', () => {
+    for (const code of [
+      'trail_not_logging',
+      'guardduty_export_missing',
+      'excess_permissions',
+      'metadata_unavailable',
+    ]) {
+      expect(isAwsConnectionErrorCode(code)).toBe(true);
+    }
+    for (const code of AWS_CONNECTION_WARNING_CODES) expect(isAwsConnectionErrorCode(code)).toBe(true);
+    expect(AWS_CONNECTION_WARNING_CODES[0]).toBe('region_disabled');
+    expect(isAwsConnectionWarningCode('excess_permissions')).toBe(true);
+    expect(isAwsConnectionWarningCode('trust_denied')).toBe(false);
+    expect(isAwsConnectionWarningCode(null)).toBe(false);
+    expect(isAwsConnectionWarningCode('toString')).toBe(false);
+  });
+
+  it('erro de bucket com a fonte: gravado como código:fonte, lido de volta, e cabe no connectionError da conta', () => {
+    expect(awsConnectionErrorValue('bucket_denied', 'cloudtrail')).toBe('bucket_denied:cloudtrail');
+    expect(awsConnectionErrorValue('kms_denied', 'guardduty')).toBe('kms_denied:guardduty');
+    // Só os erros de bucket levam a fonte.
+    expect(awsConnectionErrorValue('trust_denied', 'waf')).toBe('trust_denied');
+    expect(awsConnectionErrorValue('bucket_missing')).toBe('bucket_missing');
+    for (const code of AWS_BUCKET_ERROR_CODES) {
+      for (const source of ['cloudtrail', 'guardduty', 'waf'] as const) {
+        const value = awsConnectionErrorValue(code, source);
+        expect(parseAwsConnectionError(value)).toEqual({ code, source });
+        expect(cloudAccountSchema.shape.connectionError.safeParse(value).success).toBe(true);
+      }
+    }
+    expect(parseAwsConnectionError('bucket_denied')).toEqual({ code: 'bucket_denied', source: null });
+    expect(parseAwsConnectionError('excess_permissions')).toEqual({
+      code: 'excess_permissions',
+      source: null,
+    });
+    for (const value of [
+      'bucket_denied:outra',
+      'trust_denied:waf',
+      'bucket_denied:waf:extra',
+      'AccessDenied',
+      'credential_rejected',
+      ':waf',
+      '',
+    ]) {
+      expect(parseAwsConnectionError(value)).toBeNull();
+    }
   });
 
   it('LogBucketArns: um ARN por bucket cadastrado, sem repetir', () => {
