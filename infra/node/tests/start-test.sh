@@ -702,9 +702,15 @@ cat >"$work/bin/curl" <<EOF
 printf '%s\n' "\$*" >>"$state/curl-argv.log"
 exec "$real_curl" "\$@"
 EOF
-# Secret Manager pelo gcloud (o render lê o cofre do túnel): nenhum cofre tem valor.
+# Secret Manager pelo gcloud (o render lê o cofre do túnel e, com o e-mail ligado, o da senha da caixa): só o cofre com
+# um arquivo em $STATE/vault tem valor; os outros, nenhum.
 cat >"$work/bin/gcloud" <<'EOF'
 #!/bin/bash
+name=${*: -1}
+if [[ -n ${STATE:-} && -f $STATE/vault/$name ]]; then
+  cat "$STATE/vault/$name"
+  exit 0
+fi
 echo "ERROR: (gcloud.secrets.versions.access) NOT_FOUND: Secret not found or has no versions." >&2
 exit 1
 EOF
@@ -856,6 +862,36 @@ status_lines="NODE_STATUS='true'"$'\n'"VERAX_NODE_COMMIT='$commit'"
 expected_worker=${verax_worker/DATABASE_URL=/$status_lines$'\n'DATABASE_URL=}
 [[ "$(cat "$root/run/verax/worker.env")" == "$expected_worker" ]] ||
   fail "worker.env inesperado: $(diff <(echo "$expected_worker") "$root/run/verax/worker.env" || true)"
+# Com o e-mail do nó (o node.conf que a instalação sem operador escreve com as chaves `verax-smtp-*` dos metadados): a
+# senha da caixa vem do cofre do nó, com a identidade da VM, e vai só para o api.env e o worker.env, com o mesmo bloco
+# do nó da Verax (PR-16); o estado do nó continua logo antes do banco. Sem a senha no cofre, a partida para (é por isso
+# que a instalação a espera antes de subir o nó).
+new_root "modo cliente: e-mail ligado" render-smtp CUSTOMER_MODE=true MAIL_TRANSPORT=smtp \
+  SMTP_HOST=smtp.caixa-exemplo.example SMTP_PORT=587 SMTP_USER=avisos@verax.example
+mkdir -p "$state/vault"
+printf 'senha-ficticia-da-caixa\n' >"$state/vault/verax-node-smtp-password"
+start render || fail "o render falhou: $(cat "$root/out")"
+mail_lines="MAIL_TRANSPORT='smtp'
+MAIL_FROM='nao-responda@exemplo.com.br'
+SMTP_HOST='smtp.caixa-exemplo.example'
+SMTP_PORT='587'
+SMTP_USER='avisos@verax.example'
+SMTP_PASSWORD='senha-ficticia-da-caixa'"
+expected_api=${verax_api/MAIL_TRANSPORT=\'none\'$'\n'MAIL_FROM=\'nao-responda@exemplo.com.br\'/$mail_lines}
+[[ "$(cat "$root/run/verax/api.env")" == "$expected_api" ]] ||
+  fail "api.env inesperado: $(diff <(echo "$expected_api") "$root/run/verax/api.env" || true)"
+expected_worker=${verax_worker/PLAN=/$mail_lines$'\n'WEB_ORIGIN=\'https://cliente.control.exemplo.com.br\'$'\n'PLAN=}
+expected_worker=${expected_worker/DATABASE_URL=/$status_lines$'\n'DATABASE_URL=}
+[[ "$(cat "$root/run/verax/worker.env")" == "$expected_worker" ]] ||
+  fail "worker.env inesperado: $(diff <(echo "$expected_worker") "$root/run/verax/worker.env" || true)"
+[[ "$(cd "$root/run/verax" && grep -l -F 'senha-ficticia-da-caixa' ./*.env | LC_ALL=C sort | tr '\n' ' ')" == \
+  "./api.env ./worker.env " ]] || fail "a senha da caixa foi para outro arquivo de ambiente"
+grep -q 'senha-ficticia' "$root/out" && fail "a senha da caixa saiu na tela"
+grep -q 'senha-ficticia' "$state/curl-argv.log" && fail "a senha da caixa foi para um argumento de comando"
+rm "$state/vault/verax-node-smtp-password"
+if start render; then fail "subiu com o e-mail ligado e o cofre da senha vazio"; fi
+grep -q 'verax-node-smtp-password ainda sem valor' "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+rm -rf "$state/vault"
 # Com os valores do nó de cliente da conferência da AWS (PR-V5'), o worker.env inteiro, byte a byte: o IP de saída e o
 # papel de leitura depois do plano, o estado do nó logo antes do banco.
 new_root "modo cliente: worker.env com o papel de leitura da AWS" render-aws CUSTOMER_MODE=true \

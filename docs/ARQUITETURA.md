@@ -925,7 +925,8 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     envio de um aviso numa execução (1 min) esgotado (`delivery_timeout`, e o lote segue para o aviso seguinte) ou a
     execução interrompida no meio (orçamento de 5 min da tarefa ou parada do worker: a tentativa é gravada antes de a
     interrupção subir). Um aviso preso volta para o fim da fila e chega ao `failed` na quinta, sem segurar os outros;
-  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped` (`mail_disabled`,
+  - sem e-mail no nó (`MAIL_TRANSPORT=none`; no nó de cliente, sem o e-mail dos nós configurado no plano de controle,
+    seção "O e-mail dos nós de clientes") ou sem ninguém para receber, o aviso fica `skipped` (`mail_disabled`,
     `no_recipients`, ou `opted_out` quando havia quem recebesse e todos desligaram). Ligar o e-mail depois não dispara os
     avisos antigos;
   - uma falha no cálculo do volume não segura os avisos de incidente.
@@ -1278,10 +1279,13 @@ do preço configurável, documentos internos.
 - **`cp-worker`:** Firestore, tasks, execução do Job, Firebase Hosting nos projetos do pool, leitura do bucket de
   releases e, no projeto dos nós (`envs/nodes-platform`), um papel personalizado que só para, liga e lê atributos de
   VMs cujo nome começa com `vx-` (`cpNodeLifecycle`) e a leitura de `runs/` no bucket do estado. Por tenant, o
-  `envs/tenant` concede, cada permissão num cofre só: adicionar a versão do token do túnel (`secretVersionAdder`); ler
-  uma vez e destruir a versão do `admin-bootstrap` (`secretAccessor` e `secretVersionManager`); listar e destruir as
-  versões de `credentials-key` (`cpSecretVersionDestroyer`, sem ler nem gravar). Nunca ler o cofre de credenciais, e
-  nada no `support-bootstrap`.
+  `envs/tenant` concede, cada permissão num cofre só: adicionar a versão do token do túnel (`secretVersionAdder`); com
+  o e-mail do nó, adicionar a versão da senha da caixa de envio no `smtp-password` (`secretVersionAdder`, sem ler de
+  volta); ler uma vez e destruir a versão do `admin-bootstrap` (`secretAccessor` e `secretVersionManager`); listar e
+  destruir as versões de `credentials-key` (`cpSecretVersionDestroyer`, sem ler nem gravar). Nunca ler o cofre de
+  credenciais, e nada no `support-bootstrap`. No projeto do plano de controle, lê os segredos que monta (a chave da
+  Stripe, o token do Cloudflare e a senha do SMTP dele) e, pela API, a senha da caixa de envio dos nós
+  (`cp-nodes-smtp-password`, nunca montada como variável).
 - **`cp-terraform`:** os papéis de criar e destruir os recursos do módulo `node` no projeto dos nós
   (`envs/nodes-platform`; o mais sensível é `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado
   pelo projeto isolado, pela imagem fixada e por alerta em `SetIamPolicy` fora da lista). Cofres e buckets por papéis
@@ -1429,7 +1433,8 @@ O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:
   obrigatórios no enterprise), `node_version` (`node-vX.Y.Z`), `node_package_sha256`, `web_origin`, `api_origin`,
   `mail_from`, `subnet_cidr` (uma /24 em 10.0.0.0/8), `bootstrap_admin_email`, `bootstrap_tenant_name` (de 2 a 120
   caracteres, a regra do checkout e o limite do `Tenant.name` do nó), `bootstrap_support_email` (a conta de suporte da
-  Verax, CP-10),
+  Verax, CP-10), `smtp_host`, `smtp_port` e `smtp_user` (o e-mail do nó: os três ou nenhum; vazios, o nó sem
+  e-mail),
   `control_plane_sa` (só a conta `cp-worker@...`), `images_repository` (o registro das imagens do Verax: o GHCR por
   padrão desde o CP-07, ou o Artifact Registry, que só então ganha a leitura da conta da VM) e `deletion_protection`.
   As saídas, que vão para
@@ -1441,13 +1446,13 @@ do módulo, desligados por padrão (o nó da Verax e a homologação não mudam)
 
 1. **Cofres que a VM grava** (`support_bootstrap_secret`):
 
-   | Cofre                               | Quem grava                                                      | Quem lê (pelo Terraform)                                       |
-   | ----------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
-   | `vx-<slug>-credentials-key`         | a VM, na instalação                                             | a VM; o `cp-worker` só lista e destrói as versões (Exclusão 2) |
-   | `vx-<slug>-admin-bootstrap`         | a VM (JSON do contrato acima)                                   | o `cp-worker`, uma vez, na revelação, e destrói a versão       |
-   | `vx-<slug>-support-bootstrap`       | a VM (a senha da conta de suporte)                              | ninguém: só o responsável, com as permissões dele no projeto   |
-   | `vx-<slug>-cloudflare-tunnel-token` | o `cp-worker` (passo `secrets.tunnel_token`)                    | a VM                                                           |
-   | `vx-<slug>-smtp-password`           | ninguém (o nó sobe com `MAIL_TRANSPORT=none`; decisão pendente) | a VM                                                           |
+   | Cofre                               | Quem grava                                                        | Quem lê (pelo Terraform)                                       |
+   | ----------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- |
+   | `vx-<slug>-credentials-key`         | a VM, na instalação                                               | a VM; o `cp-worker` só lista e destrói as versões (Exclusão 2) |
+   | `vx-<slug>-admin-bootstrap`         | a VM (JSON do contrato acima)                                     | o `cp-worker`, uma vez, na revelação, e destrói a versão       |
+   | `vx-<slug>-support-bootstrap`       | a VM (a senha da conta de suporte)                                | ninguém: só o responsável, com as permissões dele no projeto   |
+   | `vx-<slug>-cloudflare-tunnel-token` | o `cp-worker` (passo `secrets.tunnel_token`)                      | a VM                                                           |
+   | `vx-<slug>-smtp-password`           | o `cp-worker`, com o e-mail do nó (passo `secrets.smtp_password`) | a VM, na partida (`start.sh`)                                  |
 
    No `support-bootstrap`, a única permissão do Terraform é `secretVersionAdder` para a conta da VM.
 
@@ -1457,7 +1462,7 @@ do módulo, desligados por padrão (o nó da Verax e a homologação não mudam)
    (`cpNodeLifecycle`). Só o worker fala com o servidor de metadados dentro da VM.
 
 3. **Configuração nos metadados da VM** (`install_config` e `install_metadata`): a instalação lê cada chave em
-   `instance/attributes/<chave>` do servidor de metadados e monta o `node.conf` e as contas do cliente. As 20 chaves
+   `instance/attributes/<chave>` do servidor de metadados e monta o `node.conf` e as contas do cliente. As 23 chaves
    existem sempre; valor vazio é "não definido" (a instalação não escreve a linha). Nada é segredo; os e-mails e o
    nome do cliente são dados de cadastro, que ficam nos metadados enquanto o nó existir, e a instalação os trata como
    dado (nunca os interpreta num shell). O projeto vem de `project/project-id`. O IP de saída (`NODE_EGRESS_IPS`)
@@ -1484,6 +1489,9 @@ do módulo, desligados por padrão (o nó da Verax e a homologação não mudam)
    | `verax-web-origin`              | `WEB_ORIGIN`                                  | `web_origin`              |
    | `verax-api-origin`              | `API_ORIGIN`                                  | `api_origin`              |
    | `verax-mail-from`               | `MAIL_FROM`                                   | `mail_from`               |
+   | `verax-smtp-host`               | `SMTP_HOST` (vazio: `MAIL_TRANSPORT=none`)    | `smtp_host`               |
+   | `verax-smtp-port`               | `SMTP_PORT`                                   | `smtp_port`               |
+   | `verax-smtp-user`               | `SMTP_USER`                                   | `smtp_user`               |
    | `verax-tenant-name`             | o nome do cliente no nó (CP-10)               | `bootstrap_tenant_name`   |
    | `verax-admin-email`             | o primeiro admin do cliente (CP-10)           | `bootstrap_admin_email`   |
    | `verax-support-email`           | a conta de suporte da Verax (CP-10)           | `bootstrap_support_email` |
@@ -1535,7 +1543,11 @@ chaves públicas de release): o módulo lê esses arquivos no `plan`.
 6. descobre o IP de saída (abaixo) e escreve o `node.conf` do modo cliente só com valores conferidos; cada linha passa
    de novo por um formato sem nada que o `source` do `install.sh` e do `start.sh` interprete (letras, dígitos e
    `@._+:/,-`);
-7. roda o `install.sh` do pacote com o commit, os dois digests, `--release <versão>` e o `node.conf` (com o apt
+7. com o e-mail do nó (as três chaves `verax-smtp-*`), espera a senha da caixa de envio chegar ao cofre
+   `vx-<slug>-smtp-password`, a cada 60 s por até 60 min (`smtp_password_missing` depois disso): o `start.sh` não sobe
+   sem ela, e o plano de controle a grava logo depois do `apply`. Confere só que a versão `latest` abre (o gcloud com
+   a identidade da VM e `--format=value(name)`, a saída descartada): a senha não passa pela instalação;
+8. roda o `install.sh` do pacote com o commit, os dois digests, `--release <versão>` e o `node.conf` (com o apt
    esperando a trava, em vez de falhar, só nessa execução) e grava o marcador.
 
 **Em todo boot, depois:** espera o `verax-node`, o `verax-wazuh` e o `verax-customer-bootstrap` (o primeiro acesso do
@@ -1567,7 +1579,10 @@ do começo no boot seguinte: o `install.sh` pode rodar de novo.
   (`egress_ip_unknown`); um valor errado só faria a AWS recusar o nó (a pilha libera um IP só, e entrar no papel ainda
   exige o token da conta da VM). Alternativas descartadas: a API do Compute (uma permissão nova da VM no projeto dos
   nós inteiro, porque endereço não aceita IAM por recurso) e uma segunda aplicação do tenant com a saída `nat_ip`;
-- `MAIL_TRANSPORT=none`: ninguém grava o `smtp-password` de um tenant (contas com senha temporária);
+- `MAIL_TRANSPORT`: `smtp` com `SMTP_HOST`, `SMTP_PORT` e `SMTP_USER` quando as três chaves `verax-smtp-*` têm valor
+  (uma sem as outras é `metadata_invalid`); `none` quando estão vazias, como antes (contas com senha temporária,
+  avisos por e-mail pulados). A senha nunca está nos metadados nem no `node.conf`: o `start.sh` a lê do cofre na
+  partida;
 - `SYNC_SOURCES=gcp,wazuh,cloudflare` (sem `cloudflare` se o cofre de credenciais estiver desligado);
 - `WAZUH_AGENTS=false` e `CUSTOMER_MODE=true`.
 
@@ -1592,6 +1607,7 @@ do começo no boot seguinte: o `install.sh` pode rodar de novo.
 | `wazuh_start_failed`        | o `verax-wazuh` não subiu                                                       |
 | `customer_bootstrap_failed` | o primeiro acesso do cliente falhou de vez (ou não terminou no prazo)           |
 | `tunnel_token_missing`      | o token do túnel não chegou ao cofre em 60 min                                  |
+| `smtp_password_missing`     | com o e-mail do nó, a senha da caixa de envio não chegou ao cofre em 60 min     |
 | `install_state_invalid`     | o nó instalado perdeu o `/etc/verax/images.env`                                 |
 
 **Origem das imagens do Verax.** O `envs/tenant` manda `verax-images-repository` com o registro da variável
@@ -1627,18 +1643,19 @@ Do pagamento ao ambiente pronto, sem operador: o webhook (CP-04) põe o cliente 
 enfileira o `preflight`; cada passo é uma task `POST /internal/steps/<passo>` com `{tenantId, runId}` (e, nos que
 esperam, o número da consulta, `poll`) e o token da cp-invoker; o código fica em `apps/control-plane/src/provisioning`.
 
-| Passo                  | O que faz                                                                                                                                                                                                                                                                                                                                                            | Para de vez com                                                                                          |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `preflight`            | Configuração completa; o que foi vendido cabe no nó (modo gerenciado, porte P, sem agentes, limites nas faixas do `envs/tenant`); o manifesto da versão no bucket de releases, com a assinatura conferida pelas chaves de `infra/node/keys`; a faixa de rede (contador `counters/subnets`); o projeto do Firebase com vaga (36 sites); os nomes (`vxc-<slug>-<hex>`) | `provisioning_disabled`, `configuration_unsupported`, `release_manifest_*`, `firebase_pool_full`         |
-| `cloudflare.tunnel`    | O túnel `vx-<slug>` gerenciado pelo Cloudflare, o ingresso `api-<slug>` → `http://api:3000` (o resto 404) e o CNAME com proxy para `<id>.cfargotunnel.com`                                                                                                                                                                                                           | `cloudflare_denied` (token), `cloudflare_rejected`                                                       |
-| `firebase.site`        | O site, o bundle do painel (CP-09) conferido pelo SHA-256 do manifesto e publicado com a CSP do cliente (o marcador `{tenant}` trocado), o domínio `<slug>.control...` e os registros que o Firebase pede, sem proxy                                                                                                                                                 | `panel_bundle_missing`, `panel_bundle_sha256_mismatch`, `panel_bundle_invalid`, `firebase_site_conflict` |
-| `terraform.apply`      | Dispara o Job `cp-terraform` (`jobs.run` com as variáveis do cliente; a execução fica no documento do passo, uma só por entrega)                                                                                                                                                                                                                                     | `executor_input_invalid`                                                                                 |
-| `terraform.wait`       | Consulta a execução a cada 30 s; concluída, lê `runs/<slug>/<runId>/<execução>/outputs.json` e guarda os recursos; falhou, repete o `apply` uma vez; passou de 35 min, conta como falha                                                                                                                                                                              | `terraform_refused:<código>`, `terraform_failed`, `terraform_outputs_invalid`                            |
-| `secrets.tunnel_token` | Lê o token do túnel no Cloudflare e o grava como versão de `vx-<slug>-cloudflare-tunnel-token`; o token vive só na memória do passo, na máscara do logger                                                                                                                                                                                                            | `secretmanager_denied`                                                                                   |
-| `node.wait_ready`      | Lê os guest attributes a cada 60 s: `verax/ready` igual à versão pedida (mesmo com um `verax/error` antigo) segue; `verax/error` para; aviso em 40 min (`node_ready_slow`), prazo de 90 min (a releitura do cofre do túnel vai até 60 min e o Wazuh tem até 40 min de partida, PR-N7)                                                                                | `node_error:<código>`, `ready_timeout`                                                                   |
-| `node.health`          | `GET /health` e `/health/ready` na API pelo túnel e o HSTS do painel em `https://<site>.web.app`, 10 tentativas de 30 s                                                                                                                                                                                                                                              | `health_failed`                                                                                          |
-| `panel.domain_wait`    | O domínio a cada 2 min, criando os registros que o Firebase passar a pedir (só nomes dentro do domínio do painel do cliente), até `CERT_ACTIVE` e `HOST_ACTIVE`; aviso em 2 h (`panel_domain_slow`; a página de status já diz "o endereço está sendo emitido"), prazo de 24 h                                                                                        | `domain_timeout`                                                                                         |
-| `access.ready`         | A versão mais nova do `admin-bootstrap` habilitada (o estado, sem ler a senha) → `waiting_customer_connection`; o e-mail "ambiente pronto" é o plano B do CP-05 (48 h)                                                                                                                                                                                               | `bootstrap_missing`                                                                                      |
+| Passo                   | O que faz                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Para de vez com                                                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `preflight`             | Configuração completa; o que foi vendido cabe no nó (modo gerenciado, porte P, sem agentes, limites nas faixas do `envs/tenant`); o manifesto da versão no bucket de releases, com a assinatura conferida pelas chaves de `infra/node/keys`; o e-mail do nó (com `SMTP_HOST_NODES`, a senha em `cp-nodes-smtp-password` no formato que o nó aceita; sem ele, o aviso `node_mail_disabled`); a faixa de rede (contador `counters/subnets`); o projeto do Firebase com vaga (36 sites); os nomes (`vxc-<slug>-<hex>`) | `provisioning_disabled`, `configuration_unsupported`, `release_manifest_*`, `smtp_password_missing`, `smtp_password_invalid`, `firebase_pool_full` |
+| `cloudflare.tunnel`     | O túnel `vx-<slug>` gerenciado pelo Cloudflare, o ingresso `api-<slug>` → `http://api:3000` (o resto 404) e o CNAME com proxy para `<id>.cfargotunnel.com`                                                                                                                                                                                                                                                                                                                                                          | `cloudflare_denied` (token), `cloudflare_rejected`                                                                                                 |
+| `firebase.site`         | O site, o bundle do painel (CP-09) conferido pelo SHA-256 do manifesto e publicado com a CSP do cliente (o marcador `{tenant}` trocado), o domínio `<slug>.control...` e os registros que o Firebase pede, sem proxy                                                                                                                                                                                                                                                                                                | `panel_bundle_missing`, `panel_bundle_sha256_mismatch`, `panel_bundle_invalid`, `firebase_site_conflict`                                           |
+| `terraform.apply`       | Dispara o Job `cp-terraform` (`jobs.run` com as variáveis do cliente; a execução fica no documento do passo, uma só por entrega)                                                                                                                                                                                                                                                                                                                                                                                    | `executor_input_invalid`                                                                                                                           |
+| `terraform.wait`        | Consulta a execução a cada 30 s; concluída, lê `runs/<slug>/<runId>/<execução>/outputs.json` e guarda os recursos; falhou, repete o `apply` uma vez; passou de 35 min, conta como falha                                                                                                                                                                                                                                                                                                                             | `terraform_refused:<código>`, `terraform_failed`, `terraform_outputs_invalid`                                                                      |
+| `secrets.smtp_password` | Com o e-mail do nó nesta execução, lê a senha da caixa de envio em `cp-nodes-smtp-password` (projeto do plano de controle) e a grava como versão de `vx-<slug>-smtp-password`; sem o e-mail, não faz nada. A senha vive só na memória do passo, na máscara do logger                                                                                                                                                                                                                                                | `smtp_password_missing`, `smtp_password_invalid`, `secretmanager_denied`                                                                           |
+| `secrets.tunnel_token`  | Lê o token do túnel no Cloudflare e o grava como versão de `vx-<slug>-cloudflare-tunnel-token`; o token vive só na memória do passo, na máscara do logger                                                                                                                                                                                                                                                                                                                                                           | `secretmanager_denied`                                                                                                                             |
+| `node.wait_ready`       | Lê os guest attributes a cada 60 s: `verax/ready` igual à versão pedida (mesmo com um `verax/error` antigo) segue; `verax/error` para; aviso em 40 min (`node_ready_slow`), prazo de 90 min (a releitura do cofre do túnel vai até 60 min e o Wazuh tem até 40 min de partida, PR-N7)                                                                                                                                                                                                                               | `node_error:<código>`, `ready_timeout`                                                                                                             |
+| `node.health`           | `GET /health` e `/health/ready` na API pelo túnel e o HSTS do painel em `https://<site>.web.app`, 10 tentativas de 30 s                                                                                                                                                                                                                                                                                                                                                                                             | `health_failed`                                                                                                                                    |
+| `panel.domain_wait`     | O domínio a cada 2 min, criando os registros que o Firebase passar a pedir (só nomes dentro do domínio do painel do cliente), até `CERT_ACTIVE` e `HOST_ACTIVE`; aviso em 2 h (`panel_domain_slow`; a página de status já diz "o endereço está sendo emitido"), prazo de 24 h                                                                                                                                                                                                                                       | `domain_timeout`                                                                                                                                   |
+| `access.ready`          | A versão mais nova do `admin-bootstrap` habilitada (o estado, sem ler a senha) → `waiting_customer_connection`; o e-mail "ambiente pronto" é o plano B do CP-05 (48 h)                                                                                                                                                                                                                                                                                                                                              | `bootstrap_missing`                                                                                                                                |
 
 **O motor (`provisioning-engine.ts`), para todo passo:** relê o cliente (fora de `provisioning`, ou de outra execução
 depois de um `resume`, termina sem fazer nada e sem enfileirar); confere a ordem (um passo já passado só garante o
@@ -1690,9 +1707,54 @@ linhas `Error:` cortadas. O cp-worker só repete uma execução que falhou sem r
 **Configuração (cp-worker):** com `PROVISIONING_ENABLED=true`, a partida exige o grupo do projeto dos nós
 (`NODES_*`, `TFSTATE_BUCKET`, `TERRAFORM_JOB_NAME`, `RELEASE_BUCKET`, `NODE_RELEASE` no formato `node-vX.Y.Z`,
 `MAIL_FROM_NODES` só com o endereço e sem apóstrofo) e, no worker, o Cloudflare, o pool do Firebase e
-`BOOTSTRAP_SUPPORT_EMAIL`. `NODE_IMAGES_REPOSITORY` tem padrão (o GHCR). O Job mora no projeto e na região do plano de
-controle (`TASKS_PROJECT_ID` e `TASKS_LOCATION`). Os endereços das APIs são constantes do código, nunca variáveis: um
-endereço trocado por variável levaria o token da conta do serviço junto.
+`BOOTSTRAP_SUPPORT_EMAIL`. `NODE_IMAGES_REPOSITORY` tem padrão (o GHCR). O e-mail dos nós (`SMTP_HOST_NODES`,
+`SMTP_PORT_NODES`, `SMTP_USER_NODES`) é opcional (abaixo, "O e-mail dos nós de clientes"). O Job mora no projeto e na
+região do plano de controle (`TASKS_PROJECT_ID` e `TASKS_LOCATION`). Os endereços das APIs são constantes do código,
+nunca variáveis: um endereço trocado por variável levaria o token da conta do serviço junto.
+
+**O e-mail dos nós de clientes.** Uma caixa de envio comum a todos os nós gerenciados, de qualquer provedor SMTP com
+TLS (465, ou outra porta com STARTTLS obrigatório; a GCP bloqueia a saída pela 25), para os avisos por e-mail (PR-16 e
+PR-17') e o "esqueci minha senha" de cada nó:
+
+- **o que o responsável configura uma vez:** em `worker_env`, `SMTP_HOST_NODES`, `SMTP_PORT_NODES` (padrão 465) e
+  `SMTP_USER_NODES` (o servidor e o usuário andam juntos; a partida do cp-worker recusa um sem o outro), com o
+  remetente `MAIL_FROM_NODES` de sempre; e a senha como versão do segredo `cp-nodes-smtp-password` do projeto do
+  plano de controle (o `envs/control-plane` cria o cofre vazio e dá ao `cp-worker` só a leitura dele). O segredo não
+  é montado como variável: o cp-worker o lê pela API do Secret Manager na hora de copiar (sempre a `latest`, sem
+  revisão nova do serviço), e o cofre vazio não impede o serviço de subir;
+- **uma caixa à parte da do plano de controle** (`cp-smtp-password`, a dos e-mails de cobrança, de "ambiente pronto"
+  e do plano B da revelação): a senha dos nós fica no cofre de cada nó de cliente, que a VM lê, e um nó comprometido
+  não deve levar a caixa que manda a revelação aos clientes (nem, com uma senha de aplicativo que abre IMAP, a caixa
+  de entrada dela); o limite de envio de uma não esgota o da outra, e cada uma troca de senha sozinha. Nada impede
+  usar a mesma conta nas duas, mas não é o recomendado;
+- **no provisionamento:** o `preflight` decide o e-mail da execução e guarda o servidor, a porta e o usuário no
+  `provisioningRuns/{runId}` (`nodeMail`; nunca a senha), depois de conferir que a senha está no cofre e no formato
+  que o nó aceita (`isNodeSmtpPassword`: 1 a 512 caracteres de ASCII visível, sem aspa simples, que o arquivo de
+  ambiente do `start.sh` não comporta; uma quebra de linha no fim sai, como no `start.sh`). Sem a senha,
+  `smtp_password_missing` antes de criar qualquer coisa: um nó criado com o e-mail ligado e sem a senha não sobe, e um
+  criado sem o e-mail não o ganha depois. O `terraform.apply` manda `SMTP_HOST`, `SMTP_PORT` e `SMTP_USER` ao Job
+  (vazias sem o e-mail), que o `entrypoint.sh` e o `envs/tenant` conferem de novo e põem nos metadados
+  (`verax-smtp-*`); com o e-mail, o `envs/tenant` dá ao `cp-worker` o `secretVersionAdder` no `smtp-password` do nó,
+  e o passo `secrets.smtp_password` grava a senha lá logo depois do `apply` (antes do token do túnel), marcando
+  `resources.nodeMailPasswordAt` no cliente. A instalação espera essa versão antes de subir o nó (seção "Instalação
+  sem operador");
+- **sem o e-mail configurado**, o provisionamento segue e o nó nasce com `MAIL_TRANSPORT=none` (os avisos ficam
+  `skipped`); a partida do cp-worker e o `preflight` de cada cliente avisam no log (`node_mail_disabled`);
+- **troca da senha (rotação):** o responsável cria a senha nova no provedor sem revogar a antiga, grava uma versão
+  nova em `cp-nodes-smtp-password` e chama `POST /internal/nodes/smtp-password/sync` (só `OWNER_PRINCIPALS`, como o
+  `resume`): o cp-worker varre todos os clientes em páginas, pelo subdomínio (único e imutável: a ordem não muda com
+  as gravações da própria varredura), grava a `latest` no cofre de cada um com `resources.nodeMailPasswordAt` (menos
+  os excluídos) e atualiza o campo com a auditoria `owner:<e-mail>`. Cada chamada tem um orçamento de 10 minutos,
+  abaixo do prazo do Cloud Run: esgotado com clientes pela frente, responde `complete: false` e `next`, e o
+  responsável continua com `?after=<next>`. `complete: true` só quando a varredura chegou ao fim e nenhum cofre
+  recusou (os ids dos que recusaram vêm em `failed`): uma troca pela metade nunca responde como concluída. O nó lê o
+  cofre na partida: a senha nova vale no próximo reinício do `verax-node` ou da VM (o deploy de uma versão também
+  reinicia); só depois de uma recópia completa e de todos reiniciarem a antiga pode ser revogada
+  (`docs/runbooks/provisionamento.md`, "Trocar a senha do e-mail dos nós");
+- **limites:** só a senha chega a um nó que já existe. Um servidor, uma porta ou um usuário novos valem só para os nós
+  criados depois (o `node.conf` é escrito na instalação, e a instalação não roda de novo); um nó criado sem o e-mail
+  também continua sem ele. Mudar isso num nó existente é o caminho de atualização (o `deploy.sh` com o `node.conf`
+  ajustado, ou o atualizador do SH-06).
 
 **Bundle do painel ausente (CP-09 ainda não feito):** o contrato que o `firebase.site` lê é `panel: {url, sha256}` no
 manifesto, como `package` (o arquivo `panel-<commit>.tar.gz` do release, num tar ustar com `dist/` e o

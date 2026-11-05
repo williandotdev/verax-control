@@ -128,6 +128,39 @@ export function isNodeMailAddress(value: string): boolean {
   return !value.includes("'") && isMailAddress(value);
 }
 
+const HOST_LABEL = /^[a-z0-9-]{1,63}$/;
+
+/**
+ * Servidor de envio dos nós de clientes (`SMTP_HOST_NODES`): um nome de domínio em minúsculas, com dois rótulos ou
+ * mais, cada um de 1 a 63 caracteres sem hífen nas pontas, até 253 no total. A mesma regra do `envs/tenant`
+ * (`smtp_host`) e do `boot-install.sh` (`verax-smtp-host`), conferida por partes, sem quantificador aninhado.
+ */
+export function isNodeSmtpHost(value: string): boolean {
+  if (value.length > 253) return false;
+  const labels = value.split('.');
+  return (
+    labels.length >= 2 &&
+    labels.every((label) => HOST_LABEL.test(label) && !label.startsWith('-') && !label.endsWith('-'))
+  );
+}
+
+/** Usuário do servidor de envio dos nós (`SMTP_USER_NODES`): o que cabe numa linha do node.conf, sem aspas nem espaço. */
+const NODE_SMTP_USER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9@._+-]{0,253}$/;
+export function isNodeSmtpUser(value: string): boolean {
+  return NODE_SMTP_USER_PATTERN.test(value);
+}
+
+/**
+ * Senha da caixa de envio dos nós (o conteúdo de `cp-nodes-smtp-password`), conferida antes de ir para o cofre de cada
+ * nó: de 1 a 512 caracteres, só ASCII visível e sem aspa simples. O `start.sh` do nó a escreve entre aspas simples no
+ * arquivo de ambiente da API e do worker e recusa aspa simples e quebra de linha: uma senha fora disso deixaria o nó sem
+ * subir. Nunca vai para erro nem log.
+ */
+const NODE_SMTP_PASSWORD_PATTERN = /^[\x21-\x26\x28-\x7e]{1,512}$/;
+export function isNodeSmtpPassword(value: string): boolean {
+  return NODE_SMTP_PASSWORD_PATTERN.test(value);
+}
+
 /**
  * Registro das imagens do Verax (API e migrations) que o nó do cliente usa, pelo digest do manifesto: o GHCR público
  * do repositório (`ghcr.io/<dono>/<repositório>`, sem login e sem limpeza) ou o Artifact Registry do projeto da Verax
@@ -287,6 +320,26 @@ const envShape = {
   NODE_RELEASE: releaseVersion.optional(),
   // Com o provisionamento ligado, precisa ser só o endereço, sem apóstrofo (`NODE_MAIL_PATTERN`).
   MAIL_FROM_NODES: mailbox.optional(),
+  // E-mail dos nós de clientes (avisos e "esqueci minha senha"): a caixa de envio comum a todos os nós gerenciados, de
+  // qualquer provedor SMTP com TLS. Opcional: sem o servidor, os nós nascem com `MAIL_TRANSPORT=none` (o `preflight`
+  // avisa no log). Com ele, o usuário é obrigatório, e a senha fica no cofre `cp-nodes-smtp-password` do projeto do
+  // plano de controle (lido pela API do Secret Manager na hora de copiar para o cofre de cada nó, nunca montado como
+  // variável). Uma caixa à parte da do plano de controle (`SMTP_*`): a senha fica em cada nó de cliente, e a do plano de
+  // controle manda os e-mails de cobrança e o plano B da revelação.
+  SMTP_HOST_NODES: z
+    .string()
+    .refine(isNodeSmtpHost, { error: 'deve ser o nome do servidor, em minúsculas (smtp.exemplo.com)' })
+    .optional(),
+  SMTP_PORT_NODES: z.coerce
+    .number({ error: 'deve ser uma porta de 1 a 65535' })
+    .int({ error: 'deve ser uma porta de 1 a 65535' })
+    .min(1, { error: 'deve ser uma porta de 1 a 65535' })
+    .max(65535, { error: 'deve ser uma porta de 1 a 65535' })
+    .default(465),
+  SMTP_USER_NODES: z
+    .string()
+    .refine(isNodeSmtpUser, { error: 'deve ter só letras, números e @ . _ + - (até 254)' })
+    .optional(),
   // De onde cada nó de cliente baixa a API e as migrations (decisão do CP-07, à espera do responsável): o GHCR público
   // por padrão. O Artifact Registry do projeto da Verax apaga, depois de 30 dias, as versões fora das 3 mais recentes,
   // e um cliente novo numa versão mais antiga não instalaria.
@@ -354,7 +407,15 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
     public: { secrets: ['STRIPE_WEBHOOK_SECRET', 'COOKIE_KEY'], settings: [] },
     worker: {
       secrets: ['SMTP_PASSWORD', 'CLOUDFLARE_API_TOKEN'],
-      settings: ['SMTP_HOST', 'SMTP_USER', 'MAIL_FROM', 'BOOTSTRAP_SUPPORT_EMAIL', 'EXPORT_SIGNER_SA_EMAIL'],
+      settings: [
+        'SMTP_HOST',
+        'SMTP_USER',
+        'MAIL_FROM',
+        'BOOTSTRAP_SUPPORT_EMAIL',
+        'EXPORT_SIGNER_SA_EMAIL',
+        'SMTP_HOST_NODES',
+        'SMTP_USER_NODES',
+      ],
     },
     admin: { secrets: [], settings: ['IAP_AUDIENCE'] },
   };
@@ -472,6 +533,12 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
         ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com SMTP_HOST' });
       }
     }
+  }
+  // O e-mail dos nós: o servidor e o usuário andam juntos (a senha fica no cofre e é conferida no `preflight`).
+  if (env.ROLE === 'worker' && (env.SMTP_HOST_NODES === undefined) !== (env.SMTP_USER_NODES === undefined)) {
+    const missing = env.SMTP_HOST_NODES === undefined ? 'SMTP_HOST_NODES' : 'SMTP_USER_NODES';
+    const other = missing === 'SMTP_HOST_NODES' ? 'SMTP_USER_NODES' : 'SMTP_HOST_NODES';
+    ctx.addIssue({ code: 'custom', path: [missing], message: `obrigatória com ${other}` });
   }
 });
 

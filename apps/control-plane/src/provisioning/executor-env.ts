@@ -2,6 +2,8 @@ import {
   isMailAddress,
   isNodeImagesRepository,
   isNodeMailAddress,
+  isNodeSmtpHost,
+  isNodeSmtpUser,
   NODE_RELEASE_PATTERN,
 } from '../common/config/env.schema.js';
 import { isUlid } from '../common/ulid.js';
@@ -15,7 +17,9 @@ import { COMPANY_NAME_MAX_LENGTH } from '../tenants/tenant.schema.js';
  * (`job_env` em `envs/control-plane/run.tf`) e não vão aqui.
  *
  * Nada de segredo: o nome do cliente e os e-mails são dados de cadastro, que o Terraform põe nos metadados da VM. O
- * Cloud Run guarda as variáveis na execução (`executions.get`), visíveis a quem lê o Job no projeto da Verax.
+ * Cloud Run guarda as variáveis na execução (`executions.get`), visíveis a quem lê o Job no projeto da Verax. Do e-mail
+ * dos nós vão só o servidor, a porta e o usuário: a senha nunca passa pelo Job nem pelo Terraform (o cp-worker a copia
+ * para o cofre do nó, passo `secrets.smtp_password`).
  */
 export const EXECUTOR_ACTIONS = ['apply', 'destroy'] as const;
 export type ExecutorAction = (typeof EXECUTOR_ACTIONS)[number];
@@ -70,6 +74,8 @@ export interface ExecutorInput {
   tenantName: string;
   supportEmail: string;
   imagesRepository: string;
+  /** A caixa de envio dos nós (`SMTP_*_NODES`); sem ela, as três variáveis vão vazias e o nó nasce sem e-mail. */
+  nodeMail?: { host: string; port: number; user: string };
 }
 
 const SLUG_PATTERN = /^[a-z][a-z0-9-]{1,14}[a-z0-9]$/;
@@ -78,6 +84,7 @@ const HOST_LABEL_CHARS = /^[a-z0-9-]{1,63}$/;
 /** Uma /24 em 10.0.0.0/8 pelo endereço da rede, sem zero à esquerda (o `cidrhost` do envs/tenant não aceita 10.08). */
 const SUBNET_PATTERN = /^10\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.0\/24$/;
 const LIMIT_PATTERN = /^[1-9][0-9]{0,5}$/;
+const PORT_PATTERN = /^[1-9][0-9]{0,4}$/;
 // Faixa de controle: o C0 inteiro e o DEL (o `[[:cntrl:]]` do `envs/tenant`).
 // eslint-disable-next-line no-control-regex -- é exatamente a faixa de controle que a regra recusa
 const CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
@@ -162,6 +169,11 @@ function check(ok: boolean, variable: string): void {
   if (!ok) throw new ExecutorInputError(variable);
 }
 
+/** A porta do servidor de envio: de 1 a 65535, só dígitos e sem zero à esquerda (a regra do `envs/tenant`). */
+export function isSmtpPort(value: string): boolean {
+  return PORT_PATTERN.test(value) && Number(value) <= 65535;
+}
+
 /**
  * A lista `env` do `overrides` do Job, conferida variável a variável (`ExecutorInputError` cita só o nome). A ordem é
  * fixa, para o teste comparar a lista inteira.
@@ -189,6 +201,12 @@ export function executorEnv(input: ExecutorInput): { name: string; value: string
     'BOOTSTRAP_SUPPORT_EMAIL',
   );
   check(isNodeImagesRepository(input.imagesRepository), 'IMAGES_REPOSITORY');
+  const mail = input.nodeMail;
+  if (mail !== undefined) {
+    check(isNodeSmtpHost(mail.host), 'SMTP_HOST');
+    check(Number.isInteger(mail.port) && isSmtpPort(String(mail.port)), 'SMTP_PORT');
+    check(isNodeSmtpUser(mail.user), 'SMTP_USER');
+  }
   const limit = (value: number | undefined): string => (value === undefined ? '' : String(value));
   const env: [string, string][] = [
     ['EXECUTOR_ACTION', input.action],
@@ -210,6 +228,9 @@ export function executorEnv(input: ExecutorInput): { name: string; value: string
     ['BOOTSTRAP_TENANT_NAME', input.tenantName],
     ['BOOTSTRAP_SUPPORT_EMAIL', input.supportEmail],
     ['IMAGES_REPOSITORY', input.imagesRepository],
+    ['SMTP_HOST', mail?.host ?? ''],
+    ['SMTP_PORT', mail === undefined ? '' : String(mail.port)],
+    ['SMTP_USER', mail?.user ?? ''],
   ];
   for (const [name, value] of env) {
     if (name.startsWith('PLAN_') && value !== '') check(LIMIT_PATTERN.test(value), name);

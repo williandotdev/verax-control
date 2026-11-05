@@ -15,8 +15,24 @@ import {
   StorageApi,
 } from './google-apis.js';
 
+/**
+ * A caixa de envio comum aos nós de clientes (`SMTP_HOST_NODES`, `SMTP_PORT_NODES` e `SMTP_USER_NODES`): nada de
+ * segredo. A senha fica no cofre `NODE_MAIL_VAULT` do projeto do plano de controle e só é lida na hora de
+ * copiar para o cofre de cada nó.
+ */
+export interface NodeMailSettings {
+  host: string;
+  port: number;
+  user: string;
+}
+
+/** O cofre da senha da caixa de envio dos nós, no projeto do plano de controle (envs/control-plane/secrets.tf). */
+export const NODE_MAIL_VAULT = 'cp-nodes-smtp-password';
+
 /** O que o provisionamento precisa da configuração, já conferido (plano §2.5, grupos "Provisionamento" e "Cloudflare"). */
 export interface ProvisioningSettings {
+  /** O projeto do plano de controle (o das filas e do Job), onde fica o cofre da senha da caixa dos nós. */
+  controlPlaneProject: string;
   nodesProject: string;
   nodesRegion: string;
   nodesZone: string;
@@ -28,6 +44,8 @@ export interface ProvisioningSettings {
   mailFromNodes: string;
   imagesRepository: string;
   supportEmail: string;
+  /** Sem `SMTP_HOST_NODES`, `undefined`: os nós nascem com `MAIL_TRANSPORT=none`. */
+  nodeMail?: NodeMailSettings;
   cloudflare: { accountId: string; zoneId: string; apiToken: string; zoneName: string };
   panelDomainSuffix: string;
   apiDomainPrefix: string;
@@ -91,6 +109,7 @@ export function resolveProvisioningSettings(config: AppConfig): ProvisioningSett
   return {
     ready: true,
     settings: {
+      controlPlaneProject: c.TASKS_PROJECT_ID,
       nodesProject: c.NODES_PROJECT_ID,
       nodesRegion: c.NODES_REGION,
       nodesZone: c.NODES_ZONE,
@@ -101,6 +120,10 @@ export function resolveProvisioningSettings(config: AppConfig): ProvisioningSett
       mailFromNodes: c.MAIL_FROM_NODES,
       imagesRepository: c.NODE_IMAGES_REPOSITORY,
       supportEmail: c.BOOTSTRAP_SUPPORT_EMAIL,
+      // O servidor e o usuário andam juntos (a partida do cp-worker recusa um sem o outro, `env.schema.ts`).
+      ...(c.SMTP_HOST_NODES !== undefined && c.SMTP_USER_NODES !== undefined
+        ? { nodeMail: { host: c.SMTP_HOST_NODES, port: c.SMTP_PORT_NODES, user: c.SMTP_USER_NODES } }
+        : {}),
       cloudflare: {
         accountId: c.CLOUDFLARE_ACCOUNT_ID,
         zoneId: c.CLOUDFLARE_ZONE_ID,

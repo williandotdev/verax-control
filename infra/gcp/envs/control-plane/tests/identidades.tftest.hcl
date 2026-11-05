@@ -188,8 +188,8 @@ run "cp_worker" {
     condition = sort([
       for key, member in google_secret_manager_secret_iam_member.readers : key
       if member.member == "serviceAccount:cp-worker@projeto-exemplo.iam.gserviceaccount.com"
-    ]) == tolist(["cp-cloudflare-api-token/worker", "cp-smtp-password/worker", "cp-stripe-secret-key/worker"])
-    error_message = "O cp-worker lê a chave da Stripe, o token do Cloudflare e a senha do SMTP, e nada mais (nem o cookie, nem o webhook)."
+    ]) == tolist(["cp-cloudflare-api-token/worker", "cp-nodes-smtp-password/worker", "cp-smtp-password/worker", "cp-stripe-secret-key/worker"])
+    error_message = "O cp-worker lê a chave da Stripe, o token do Cloudflare, a senha do SMTP e a da caixa dos nós, e nada mais (nem o cookie, nem o webhook)."
   }
 
   assert {

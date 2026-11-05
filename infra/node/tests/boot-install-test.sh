@@ -7,8 +7,8 @@
 # tests/fake-gcp.py, em HTTP no 127.0.0.1. O release é montado aqui: um pacote falso (os compose de verdade e um
 # install.sh que só anota o que recebeu), o manifesto pelo scripts/node-release.sh (o mesmo do workflow Versão do nó) e a
 # assinatura com uma chave P-256 gerada neste teste (nenhuma chave privada fica no repositório nem sobrevive ao teste),
-# conferida pelo bin/verify-release.sh de verdade. O systemctl, o apt-get, o script de preparo da VM e o start.sh do
-# nó instalado são simulados. O instalador roda como na VM (um processo à parte), com as linhas dos caminhos e das
+# conferida pelo bin/verify-release.sh de verdade. O systemctl, o apt-get, o gcloud (a consulta ao cofre da senha do
+# e-mail), o script de preparo da VM e o start.sh do nó instalado são simulados. O instalador roda como na VM (um processo à parte), com as linhas dos caminhos e das
 # esperas trocadas pelas do teste (o teste confere que cada uma existe uma vez só, e os valores de produção).
 #
 # Cenários: a primeira instalação (o install.sh com os digests do manifesto, o node.conf byte a byte, `verax/ready` e
@@ -17,8 +17,9 @@
 # falham; o preparo da VM que falha; metadados hostis (comando, aspas, quebra de linha, controle, fora do ASCII,
 # formato, tamanho) e ausentes; SHA-256 errado nos metadados e pacote trocado no release; assinatura de outra chave,
 # manifesto adulterado depois da assinatura, manifesto assinado de outra versão, sem digest ou com outras imagens de
-# terceiros; o release fora do ar; o IP de saída que não vem; o túnel que chega depois (e o que não chega); o GHCR; e o
-# script de boot do módulo de ponta a ponta, com a trava de uma execução por vez.
+# terceiros; o release fora do ar; o IP de saída que não vem; o túnel que chega depois (e o que não chega); o e-mail do
+# nó (o node.conf com o SMTP, a senha que chega ao cofre depois ou não chega, metadados do SMTP hostis e pela metade); o
+# GHCR; e o script de boot do módulo de ponta a ponta, com a trava de uma execução por vez.
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,7 +50,8 @@ trap cleanup EXIT
 # Cada linha trocada existe uma vez só (uma linha renomeada faria a troca não acontecer em silêncio), e os valores de
 # produção são os esperados: só HTTPS, o release deste repositório e o servidor de metadados da VM.
 for name in metadata_url release_base download_proto egress_ip_url etc_dir state_dir node_run opt_bin retry_pause \
-  poll_pause tunnel_pause tunnel_tries attribute_pause node_timeout wazuh_timeout customer_timeout; do
+  poll_pause tunnel_pause tunnel_tries mail_pause mail_tries attribute_pause node_timeout wazuh_timeout \
+  customer_timeout; do
   [[ $(grep -c "^$name=" "$installer") == 1 ]] || fail "a linha $name= não aparece uma vez só no instalador"
 done
 grep -qx "download_proto='=https'" "$installer" || fail "o instalador baixa sem exigir HTTPS"
@@ -59,6 +61,9 @@ grep -qx 'metadata_url=http://metadata.google.internal/computeMetadata/v1' "$ins
 grep -qx 'egress_ip_url=https://checkip.amazonaws.com' "$installer" || fail "egress_ip_url mudou"
 if ! grep -qx 'tunnel_pause=60' "$installer" || ! grep -qx 'tunnel_tries=60' "$installer"; then
   fail "a releitura do túnel não é a cada 60 s por 60 min"
+fi
+if ! grep -qx 'mail_pause=60' "$installer" || ! grep -qx 'mail_tries=60' "$installer"; then
+  fail "a espera da senha do e-mail não é a cada 60 s por 60 min"
 fi
 # Nada de eval, source ou expansão de texto vindo de fora no instalador.
 if grep -nE '^[^#]*\b(eval|source)\b' "$installer" | grep -v 'cmp -s' >/dev/null; then
@@ -185,6 +190,33 @@ EOF
 stub apt-get <<'EOF'
 echo "apt-get $*" >>"$root/calls.log"
 EOF
+# gcloud: só a espera da senha do e-mail (`secrets versions access latest`). Responde com os códigos de
+# $root/mail-codes, um por chamada (o último se repete; sem o arquivo, 0): 0 abre a versão, 3 é o cofre ainda sem versão
+# (NOT_FOUND) e 1 é outro erro (PERMISSION_DENIED). Como o de verdade, com `--format=value(name)` imprime só o nome da
+# versão; sem ele, imprimiria a senha (o teste confere que ela nunca aparece).
+stub gcloud <<'EOF'
+echo "gcloud $*" >>"$root/calls.log"
+codes=($(cat "$root/mail-codes" 2>/dev/null || echo 0))
+code=${codes[0]}
+if ((${#codes[@]} > 1)); then printf '%s ' "${codes[@]:1}" >"$root/mail-codes"; fi
+case $code in
+  0)
+    if [[ " $* " == *' --format=value(name) '* ]]; then
+      echo 'projects/projeto-exemplo-nos/secrets/vx-demo-a-smtp-password/versions/1'
+    else
+      echo 'senha-ficticia-da-caixa-de-envio'
+    fi
+    ;;
+  3)
+    echo 'ERROR: (gcloud.secrets.versions.access) NOT_FOUND: Secret [projects/projeto-exemplo-nos/secrets/vx-demo-a-smtp-password] not found or has no versions.' >&2
+    exit 1
+    ;;
+  *)
+    echo "ERROR: (gcloud.secrets.versions.access) PERMISSION_DENIED: Permission 'secretmanager.versions.access' denied." >&2
+    exit 1
+    ;;
+esac
+EOF
 
 # Os metadados de um nó de cliente válido (os do envs/tenant, fictícios). O nome do cliente e os e-mails são dados
 # pessoais: o teste confere que nenhum aparece na saída nem nos guest attributes.
@@ -201,7 +233,8 @@ set_metadata() {
     "verax-node-package-sha256=$good_sha" \
     verax-images-repository=us-east1-docker.pkg.dev/projeto-exemplo-imagens/verax-control \
     verax-web-origin=https://demo-a.control.example.com verax-api-origin=https://api-demo-a.example.com \
-    verax-mail-from=nao-responda@example.com verax-plan=profissional verax-plan-max-cloud-accounts= \
+    verax-mail-from=nao-responda@example.com verax-smtp-host= verax-smtp-port= verax-smtp-user= \
+    verax-plan=profissional verax-plan-max-cloud-accounts= \
     verax-plan-max-users= verax-plan-monthly-gib= verax-plan-history-days= verax-credentials-vault=true \
     verax-backup-bucket=projeto-exemplo-nos-vx-demo-a-backups verax-node-sa-unique-id=123456789012345678901 \
     "verax-tenant-name=$tenant_name" "verax-admin-email=$admin_email" "verax-support-email=$support_email"; do
@@ -236,6 +269,7 @@ EOF
     -e "s|^opt_bin=.*|opt_bin=$root/opt/verax/bin|" \
     -e 's|^retry_pause=.*|retry_pause=0|' -e 's|^poll_pause=.*|poll_pause=0|' -e 's|^tunnel_pause=.*|tunnel_pause=0|' \
     -e 's|^tunnel_tries=.*|tunnel_tries=3|' -e 's|^attribute_pause=.*|attribute_pause=0|' \
+    -e 's|^mail_pause=.*|mail_pause=0|' -e 's|^mail_tries=.*|mail_tries=3|' \
     -e 's|^node_timeout=.*|node_timeout=1|' -e 's|^wazuh_timeout=.*|wazuh_timeout=1|' \
     -e 's|^customer_timeout=.*|customer_timeout=1|' \
     "$installer" >"$root/boot/boot-install.sh"
@@ -279,7 +313,8 @@ downloads() { grep -c '^GET /\(releases\|objects\)/' "$gcp/requests.log" || true
 # Metadata-Flavor, a pasta de trabalho apagada e no máximo 3 gravações de guest attribute.
 common_checks() {
   local value
-  for value in "$admin_email" "$support_email" 'Filhos' 'nao-responda@example.com'; do
+  for value in "$admin_email" "$support_email" 'Filhos' 'nao-responda@example.com' 'avisos@verax.example' \
+    'senha-ficticia-da-caixa-de-envio'; do
     if grep -qF "$value" "$root/out" || grep -rqF "$value" "$gcp/guest-attributes" 2>/dev/null; then
       fail "a saída ou um guest attribute traz um valor dos metadados: $value"
     fi
@@ -366,6 +401,8 @@ grep -q '^APT_CONFIG=.*/apt.conf DEBIAN_FRONTEND=noninteractive$' "$root/install
 [[ $(grep -oE '^GET /objects/[^ ]+' "$gcp/requests.log" | tr '\n' ' ') == "GET /objects/$tag/manifest.json GET /objects/$tag/manifest.json.sig GET /objects/$tag/verax-node.tar.gz " ]] ||
   fail "ordem dos downloads: $(grep -oE '^GET /objects/[^ ]+' "$gcp/requests.log")"
 grep -q 'Assinatura do manifesto conferida (OK release-teste)' "$root/out" || fail "a assinatura não foi conferida"
+# Sem o e-mail do nó, o cofre da senha nem é consultado.
+! grep -q '^gcloud' "$root/calls.log" || fail "consultou o cofre da senha do e-mail sem o e-mail ligado"
 
 # --- Boot seguinte -------------------------------------------------------------------------------------------------
 scenario="boot seguinte: nada é baixado nem instalado"
@@ -492,6 +529,134 @@ if boot; then fail "seguiu sem o túnel"; fi
 expect_error tunnel_token_missing
 [[ $(grep -c '^start.sh tunnel$' "$root/calls.log") == 3 ]] || fail "não tentou as 3 vezes do teste"
 
+# --- E-mail do nó ----------------------------------------------------------------------------------------------------
+# Com as três chaves `verax-smtp-*`, o node.conf liga o SMTP (a senha fica no cofre, nunca no arquivo nem na saída), e
+# a instalação espera a senha chegar ao cofre antes de rodar o install.sh (o start.sh não subiria sem ela).
+set_smtp() { # <servidor> <porta> <usuário>
+  meta verax-smtp-host "$1"
+  meta verax-smtp-port "$2"
+  meta verax-smtp-user "$3"
+}
+expected_conf_smtp=${expected_conf/MAIL_TRANSPORT=none/MAIL_TRANSPORT=smtp}
+expected_conf_smtp=${expected_conf_smtp/MAIL_FROM=nao-responda@example.com/MAIL_FROM=nao-responda@example.com
+SMTP_HOST=smtp.caixa-exemplo.example
+SMTP_PORT=587
+SMTP_USER=avisos@verax.example}
+mail_probe='gcloud secrets versions access latest --project projeto-exemplo-nos --secret vx-demo-a-smtp-password --format=value(name)'
+
+scenario="e-mail do nó: o node.conf com o SMTP, e a senha conferida no cofre antes do install.sh"
+set_metadata
+set_smtp smtp.caixa-exemplo.example 587 avisos@verax.example
+new_root
+boot || fail "saiu com erro: $(cat "$root/out")"
+expect_ready "$tag"
+[[ $(cat "$root/etc/verax/node.conf") == "$expected_conf_smtp" ]] || fail "node.conf: $(cat "$root/etc/verax/node.conf")"
+[[ $(grep '^gcloud' "$root/calls.log") == "$mail_probe" ]] || fail "consulta ao cofre: $(grep '^gcloud' "$root/calls.log")"
+[[ $(grep -E '^(gcloud|install)' "$root/calls.log" | tr '\n' ' ') == "$mail_probe install " ]] ||
+  fail "o cofre não foi conferido antes do install.sh: $(cat "$root/calls.log")"
+(
+  set -u
+  # shellcheck source=/dev/null
+  source "$root/etc/verax/node.conf"
+  [[ $MAIL_TRANSPORT == smtp && $SMTP_HOST == smtp.caixa-exemplo.example && $SMTP_PORT == 587 &&
+    $SMTP_USER == avisos@verax.example && -z ${SMTP_PASSWORD:-} ]]
+) || fail "o node.conf lido com source não dá o SMTP"
+grep -qi 'senha\|password' "$root/etc/verax/node.conf" && fail "o node.conf leva a senha"
+
+scenario="e-mail do nó: o boot seguinte não consulta o cofre de novo (o start.sh lê a senha na partida)"
+: >"$root/calls.log"
+boot || fail "saiu com erro: $(cat "$root/out")"
+expect_ready "$tag"
+! grep -q '^gcloud' "$root/calls.log" || fail "consultou o cofre num nó já instalado"
+
+scenario="e-mail do nó: a senha chega na terceira leitura"
+new_root
+echo '3 3 0' >"$root/mail-codes"
+boot || fail "saiu com erro: $(cat "$root/out")"
+expect_ready "$tag"
+[[ $(grep -c '^gcloud' "$root/calls.log") == 3 && $(installs) == 1 ]] || fail "leituras: $(grep -c '^gcloud' "$root/calls.log")"
+grep -q 'Esperando a senha da caixa de envio' "$root/out" || fail "não avisou da espera"
+
+scenario="e-mail do nó: uma leitura falha (permissão) e a seguinte abre"
+new_root
+echo '1 0' >"$root/mail-codes"
+boot || fail "saiu com erro: $(cat "$root/out")"
+expect_ready "$tag"
+grep -q 'a leitura do cofre da senha da caixa de envio falhou (saída 1)' "$root/out" || fail "não avisou da falha"
+
+scenario="e-mail do nó: a senha não chega no prazo (smtp_password_missing, nada instalado)"
+new_root
+echo 3 >"$root/mail-codes"
+if boot; then fail "seguiu sem a senha"; fi
+expect_error smtp_password_missing
+[[ $(grep -c '^gcloud' "$root/calls.log") == 3 && $(installs) == 0 ]] || fail "tentou de menos ou instalou"
+[[ -e $root/var/lib/verax/boot/installing && ! -e $root/var/lib/verax/boot/installed ]] || fail "marcadores"
+# O boot seguinte tenta de novo, e a senha agora está lá.
+echo 0 >"$root/mail-codes"
+boot || fail "a nova tentativa falhou: $(cat "$root/out")"
+expect_ready "$tag"
+[[ $(installs) == 1 ]] || fail "não instalou na nova tentativa"
+
+scenario="e-mail do nó: a porta 465 e um usuário que não é e-mail"
+set_metadata
+set_smtp smtp.caixa-exemplo.example 465 apikey
+new_root
+boot || fail "saiu com erro: $(cat "$root/out")"
+expect_ready "$tag"
+if ! grep -qx 'SMTP_PORT=465' "$root/etc/verax/node.conf" || ! grep -qx 'SMTP_USER=apikey' "$root/etc/verax/node.conf"; then
+  fail "node.conf: $(cat "$root/etc/verax/node.conf")"
+fi
+
+# Cada valor fora do formato, com os outros dois válidos, e uma chave sem as outras: metadata_invalid antes de
+# qualquer download, sem node.conf e sem consultar o cofre.
+# shellcheck disable=SC2016 # os valores são texto literal: o teste confere que nada deles é executado
+smtp_hostile=(
+  'verax-smtp-host=SMTP.caixa-exemplo.example'
+  'verax-smtp-host=smtp.caixa-exemplo.example:587'
+  'verax-smtp-host=smtp.caixa-exemplo.example;touch pwned'
+  'verax-smtp-host=$(touch pwned).example'
+  'verax-smtp-host=localhost'
+  'verax-smtp-host=-smtp.caixa-exemplo.example'
+  "verax-smtp-host=smtp.caixa-exemplo.example"$'\n'"SMTP_HOST=smtp.intruso.example"
+  "verax-smtp-host=smtp.caixa-exemplo.example"$'\n'
+  "verax-smtp-host=$(printf 'a%.0s' {1..250}).example"
+  'verax-smtp-port=0'
+  'verax-smtp-port=65536'
+  'verax-smtp-port=0587'
+  'verax-smtp-port=587 '
+  'verax-smtp-port=99999'
+  "verax-smtp-user=o'neil@verax.example"
+  'verax-smtp-user=avisos verax'
+  'verax-smtp-user=-avisos'
+  'verax-smtp-user=avisos@verax.example`id`'
+  "verax-smtp-user=$(printf 'a%.0s' {1..255})"
+)
+for case in "${smtp_hostile[@]}"; do
+  key=${case%%=*}
+  value=${case#*=}
+  scenario="e-mail do nó hostil: $key=$(printf '%q' "$value" | head -c 80)"
+  set_metadata
+  set_smtp smtp.caixa-exemplo.example 587 avisos@verax.example
+  meta "$key" "$value"
+  new_root
+  if boot; then fail "aceitou"; fi
+  expect_error metadata_invalid
+  [[ $(downloads) == 0 && $(installs) == 0 && ! -e $root/etc/verax/node.conf ]] || fail "baixou, instalou ou escreveu"
+  ! grep -q '^gcloud' "$root/calls.log" || fail "consultou o cofre"
+done
+for keep in verax-smtp-host verax-smtp-port verax-smtp-user; do
+  scenario="e-mail do nó pela metade: só $keep"
+  set_metadata
+  set_smtp smtp.caixa-exemplo.example 587 avisos@verax.example
+  for key in verax-smtp-host verax-smtp-port verax-smtp-user; do
+    if [[ $key != "$keep" ]]; then meta "$key" ''; fi
+  done
+  new_root
+  if boot; then fail "aceitou"; fi
+  expect_error metadata_invalid
+  [[ $(downloads) == 0 && $(installs) == 0 ]] || fail "baixou ou instalou"
+done
+
 # --- Metadados hostis e ausentes ------------------------------------------------------------------------------------
 # Cada caso: a chave e o valor; o instalador para com metadata_invalid antes de baixar qualquer coisa, sem rodar o
 # install.sh nem escrever o node.conf, e nada do valor é executado.
@@ -578,7 +743,8 @@ for line in PLAN=enterprise PLAN_MAX_CLOUD_ACCOUNTS=15 PLAN_MAX_USERS=20 PLAN_MO
   grep -qx "$line" "$root/etc/verax/node.conf" || fail "$line não foi para o node.conf"
 done
 
-for key in verax-plan verax-support-email verax-tenant-name verax-node-sa-unique-id verax-config-version; do
+for key in verax-plan verax-support-email verax-tenant-name verax-node-sa-unique-id verax-config-version \
+  verax-smtp-host; do
   scenario="metadado ausente: $key"
   set_metadata
   rm "$gcp/attributes/$key"

@@ -248,6 +248,12 @@ export const tenantSchema = z.strictObject({
       serviceAccountUniqueId: z.string().max(32).optional(),
       /** O bucket de backups do nó (exportação sob pedido e Exclusão 2, CP-11). */
       backupsBucket: z.string().max(80).optional(),
+      /**
+       * Quando a senha da caixa de envio dos nós foi copiada para o cofre deste nó pela última vez (o passo
+       * `secrets.smtp_password` e a recópia da troca de senha). Sem o campo, o nó não tem e-mail (`MAIL_TRANSPORT=none`)
+       * e fica fora da recópia.
+       */
+      nodeMailPasswordAt: z.date().optional(),
     })
     .optional(),
   /** Apagado em `deleted`. */

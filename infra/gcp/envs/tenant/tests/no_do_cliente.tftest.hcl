@@ -64,7 +64,8 @@ run "nasce_o_no_do_cliente" {
     error_message = "Os cofres do nó do cliente não são os cinco vx-<slug>-*, com o support-bootstrap."
   }
 
-  # Os contratos 2 e 3 com o PR-N7 e o CP-10: atributos de convidado ligados e cada variável na chave `verax-*` dela.
+  # Os contratos 2 e 3 com o PR-N7 e o CP-10: atributos de convidado ligados e cada variável na chave `verax-*` dela. Sem
+  # o e-mail do nó, as três chaves do SMTP existem vazias (a instalação escreve MAIL_TRANSPORT=none).
   assert {
     condition = module.node.install_metadata == tomap({
       enable-guest-attributes       = "TRUE"
@@ -85,6 +86,9 @@ run "nasce_o_no_do_cliente" {
       verax-web-origin              = "https://demo-a.control.example.com"
       verax-api-origin              = "https://api-demo-a.example.com"
       verax-mail-from               = "nao-responda@example.com"
+      verax-smtp-host               = ""
+      verax-smtp-port               = ""
+      verax-smtp-user               = ""
       verax-tenant-name             = "Cliente Demo A"
       verax-admin-email             = "admin@cliente-demo-a.example.com"
       verax-support-email           = "suporte@example.com"
@@ -103,8 +107,14 @@ run "nasce_o_no_do_cliente" {
   }
 }
 
-# As permissões do cp-worker, uma a uma: exatamente estas quatro, cada uma num cofre só, e nenhuma no projeto.
+# As permissões do cp-worker, uma a uma: exatamente estas quatro, cada uma num cofre só, e nenhuma no projeto. Sem o
+# e-mail do nó, nenhuma no `smtp-password`.
 run "permissoes_do_cp_worker" {
+  assert {
+    condition     = length(google_secret_manager_secret_iam_member.worker_smtp_password) == 0
+    error_message = "Sem o e-mail do nó, o cp-worker não deveria gravar no smtp-password."
+  }
+
   assert {
     condition = toset(concat(
       [for member in google_secret_manager_secret_iam_member.worker_admin_bootstrap : "${member.secret_id} ${member.role} ${member.member}"],
@@ -155,6 +165,60 @@ run "permissoes_do_cp_worker" {
   }
 }
 
+# O e-mail do nó: o servidor, a porta e o usuário nas chaves `verax-smtp-*` dos metadados (nunca a senha, que o cp-worker
+# grava no cofre), e o cp-worker só grava no `smtp-password`, sem ler de volta.
+run "e_mail_do_no" {
+  variables {
+    smtp_host = "smtp.caixa-exemplo.example"
+    smtp_port = "587"
+    smtp_user = "avisos@verax.example"
+  }
+
+  assert {
+    condition = (
+      module.node.install_metadata["verax-smtp-host"] == "smtp.caixa-exemplo.example" &&
+      module.node.install_metadata["verax-smtp-port"] == "587" &&
+      module.node.install_metadata["verax-smtp-user"] == "avisos@verax.example" &&
+      length([for key in keys(module.node.install_metadata) : key if can(regex("(?i)pass|senha", key))]) == 0
+    )
+    error_message = "O servidor, a porta e o usuário do e-mail do nó não chegaram aos metadados, ou uma chave de senha apareceu lá."
+  }
+
+  assert {
+    condition = (
+      length(google_secret_manager_secret_iam_member.worker_smtp_password) == 1 &&
+      google_secret_manager_secret_iam_member.worker_smtp_password[0].secret_id == "vx-demo-a-smtp-password" &&
+      google_secret_manager_secret_iam_member.worker_smtp_password[0].role == "roles/secretmanager.secretVersionAdder" &&
+      google_secret_manager_secret_iam_member.worker_smtp_password[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
+      google_secret_manager_secret_iam_member.worker_smtp_password[0].project == "projeto-exemplo-nos"
+    )
+    error_message = "Com o e-mail do nó, o cp-worker só grava (secretVersionAdder) no smtp-password deste nó."
+  }
+
+  # Ler, continua só o admin-bootstrap; o support-bootstrap, nunca.
+  assert {
+    condition = alltrue([
+      for member in concat(
+        values(google_secret_manager_secret_iam_member.worker_admin_bootstrap),
+        google_secret_manager_secret_iam_member.worker_smtp_password,
+        [google_secret_manager_secret_iam_member.worker_tunnel_token, google_secret_manager_secret_iam_member.worker_credentials_key],
+      ) :
+      member.secret_id != output.secrets["support-bootstrap"] &&
+      (member.role != "roles/secretmanager.secretAccessor" || member.secret_id == output.secrets["admin-bootstrap"])
+    ])
+    error_message = "Com o e-mail do nó, o cp-worker passou a ler outro cofre além do admin-bootstrap, ou ganhou acesso ao support-bootstrap."
+  }
+
+  # As saídas continuam sem o usuário da caixa.
+  assert {
+    condition = alltrue([
+      for value in concat(values(output.secrets), [output.name_prefix, output.instance_name, output.zone, output.backups_bucket, output.service_account_email]) :
+      !strcontains(value, "avisos@verax.example") && !strcontains(value, "smtp.caixa-exemplo.example")
+    ])
+    error_message = "Uma saída do tenant leva o servidor ou o usuário do e-mail do nó."
+  }
+}
+
 # O registro das imagens (decisão do CP-07): por padrão o GHCR público, que não pede permissão nenhuma; com o Artifact
 # Registry do projeto da Verax, a conta da VM ganha só leitura nele, e nada mais.
 run "imagens_do_ghcr_por_padrao" {
@@ -202,6 +266,9 @@ run "mudancas_de_rotina_nao_recriam_a_conta" {
     node_package_sha256     = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
     bootstrap_tenant_name   = "Cliente Demo A Ltda."
     deletion_protection     = false
+    smtp_host               = "smtp.caixa-exemplo.example"
+    smtp_port               = "465"
+    smtp_user               = "avisos@verax.example"
   }
 
   assert {
