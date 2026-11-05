@@ -11,6 +11,7 @@ import { createFindingHandlers } from './findings-handlers';
 import { createIncidentHandlers, incidentSummaries, initialIncidents } from './incidents-handlers';
 import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
+import { createPlanHandlers } from './plan-handlers';
 import { createPostureHandlers } from './posture';
 import { createUnownedHandlers, demoUnownedAlerts } from './unowned-handlers';
 
@@ -111,6 +112,7 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createAuditHandlers(state),
     ...createUnownedHandlers(state, admin, unowned),
     ...createAgentsHandlers(state),
+    ...createPlanHandlers(state, admin),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)

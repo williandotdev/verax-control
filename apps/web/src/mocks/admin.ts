@@ -55,6 +55,7 @@ import {
   DEMO_TENANTS,
 } from './fixtures';
 import type { MockState } from './handlers';
+import { demoPlanRefusal } from './plan-handlers';
 
 /**
  * Cadastros do modo mock (E3), num estado só: clientes, usuários, contas cloud, lista de proteção e exceções. As
@@ -556,6 +557,9 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!scope.ok) return scope.error;
       const input = userCreateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      // Como a API: a conta nova pede vaga no plano do nó.
+      const refusal = demoPlanRefusal(store, scope.tenantId, 'users');
+      if (refusal) return refusal;
       const users = listOf(store.users, scope.tenantId);
       const email = input.data.email.trim().toLowerCase();
       if ([...store.users.values()].flat().some((user) => user.email === email))
@@ -582,6 +586,11 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (user.id === scope.me.userId) return problem(403, 'Ninguém altera o próprio acesso');
       const input = userUpdateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      // Reativar ocupa de novo uma vaga do plano.
+      if (input.data.status === 'active' && user.status === 'disabled') {
+        const refusal = demoPlanRefusal(store, scope.tenantId, 'users');
+        if (refusal) return refusal;
+      }
       Object.assign(user, input.data);
       return HttpResponse.json(user);
     }),
@@ -615,6 +624,9 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!scope.ok) return scope.error;
       const input = cloudAccountCreateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      // Como a API: a conta nova pede vaga no plano do nó.
+      const refusal = demoPlanRefusal(store, scope.tenantId, 'cloudAccounts');
+      if (refusal) return refusal;
       const all = [...store.accounts.values()].flat();
       if (
         all.some(
@@ -673,6 +685,11 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!input.success) return problem(400, 'Dados inválidos');
       const foreign = fieldsOutsideProvider(account.provider, input.data);
       if (foreign.length > 0) return problem(400, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
+      // Reativar ocupa de novo uma vaga do plano.
+      if (input.data.status === 'active' && account.status !== 'active') {
+        const refusal = demoPlanRefusal(store, scope.tenantId, 'cloudAccounts');
+        if (refusal) return refusal;
+      }
       const { buckets, ...rest } = input.data;
       if (buckets) {
         const taken = bucketOfAnotherTenant(store, scope.tenantId, mergeLogBuckets(NO_BUCKETS, buckets));

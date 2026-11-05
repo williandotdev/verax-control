@@ -18,6 +18,7 @@ import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
+import { PlanService } from '../plan/plan.service.js';
 
 const userSelect = {
   id: true,
@@ -60,12 +61,16 @@ function isUniqueViolation(error: unknown): boolean {
  *
  * A conta nasce com uma senha temporária, devolvida uma vez a quem criou (nunca gravada em texto nem na auditoria);
  * no primeiro login, a pessoa troca a senha e cadastra o MFA.
+ *
+ * Criar e reativar um usuário pedem vaga no plano do nó (fase 2, PR-18): contam os convidados e os ativos do cliente,
+ * desativar libera a vaga, e a equipe da Verax (`admin_verax`) nunca conta.
  */
 @Injectable()
 export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
+    private readonly plan: PlanService,
     @Inject(AUTH) private readonly auth: Auth,
   ) {}
 
@@ -106,6 +111,7 @@ export class UsersService {
    * usuário: é o da sessão ou o que a Verax acabou de criar. Quem chama descreve a auditoria.
    */
   async provision(tenantId: string, input: UserCreate): Promise<UserCreated> {
+    await this.plan.assertWithinPlan('users', tenantId, { action: 'user.create' });
     const email = input.email.trim().toLowerCase();
     // O e-mail é único na plataforma inteira.
     if (await this.prisma.db().user.findUnique({ where: { email }, select: { id: true } })) {
@@ -135,10 +141,20 @@ export class UsersService {
   }
 
   async update(auth: RequestAuth, id: string, input: UserUpdate): Promise<User> {
+    // Ativar ou desativar ocupa ou libera uma vaga do plano: o lock vem antes da leitura do usuário, e a decisão tomada
+    // sobre o status lido vale até a gravação (uma desativação ao mesmo tempo espera, ou já foi confirmada e é lida).
+    if (input.status !== undefined) await this.plan.lockSeats('users', auth.scopeTenantId as string);
     const before = toUser(await this.find(id));
     if (id === auth.userId) throw new ApiError(HttpStatus.FORBIDDEN, SELF);
     if (input.status === 'active' && before.status === 'invited') {
       throw new ApiError(HttpStatus.CONFLICT, 'Conta ainda sem senha: gere uma senha temporária');
+    }
+    // Reativar ocupa de novo uma vaga do plano; quem já está ativo não pede outra.
+    if (input.status === 'active' && before.status === 'disabled') {
+      await this.plan.assertWithinPlan('users', auth.scopeTenantId as string, {
+        action: 'user.update',
+        resourceId: id,
+      });
     }
     const row = await this.prisma.scoped().user.update({
       where: { id },
@@ -153,6 +169,8 @@ export class UsersService {
 
   /** Desativa (exclusão lógica): o usuário perde as sessões na hora e não entra mais. */
   async deactivate(auth: RequestAuth, id: string): Promise<void> {
+    // Libera uma vaga do plano: sob o mesmo lock da criação e da reativação, lido e gravado na mesma transação.
+    await this.plan.lockSeats('users', auth.scopeTenantId as string);
     const before = toUser(await this.find(id));
     if (id === auth.userId) throw new ApiError(HttpStatus.FORBIDDEN, SELF);
     const row = await this.prisma

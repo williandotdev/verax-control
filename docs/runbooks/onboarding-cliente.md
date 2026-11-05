@@ -80,6 +80,20 @@ Na reunião:
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
+
+   **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
+   usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para
+   os administradores. No limite:
+   - o cadastro e a reativação de uma conta ou de um usuário são recusados com "Seu plano permite até N …" (409
+     `PLAN_LIMIT_REACHED`), e a tentativa fica na auditoria do cliente;
+   - o bootstrap do nó mostra `Conta GCP <projeto>: plan-limit.` para a conta que ficou de fora, e segue com o resto.
+
+   O caminho é o cliente desativar uma conta ou um usuário (a vaga volta na hora) ou ampliar o plano: troque o ajuste
+   no `node.conf` (`PLAN_MAX_CLOUD_ACCOUNTS` ou `PLAN_MAX_USERS`, de 1 a 1000) e rode o `deploy.sh`, porque a API lê o
+   plano na partida. Uma conta da GCP que ficou de fora no bootstrap entra rodando o bootstrap de novo. Descer de plano
+   não desativa nada: o painel mostra "acima do limite do plano", e só os próximos cadastros são recusados. O volume
+   do mês acima do plano não bloqueia nada: a coleta continua e nenhum log é descartado.
+
 6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
    no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
    da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da

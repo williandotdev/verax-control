@@ -28,6 +28,7 @@ test.describe('estrutura e navegação (modo mock)', () => {
       'Agentes',
       'Lista de proteção',
       'Exceções',
+      'Plano e uso',
       'Auditoria',
       'Alertas sem dono',
     ]);

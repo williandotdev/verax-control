@@ -285,6 +285,43 @@ describe('bootstrap do nó: primeiro admin, cliente e contas da GCP', () => {
     );
   });
 
+  it('respeita o limite de contas do plano: a conta acima fica de fora, com a recusa na auditoria; desativar libera a vaga', async () => {
+    const plan = resolvePlan('essencial');
+    const max = plan.limits.maxCloudAccounts as number;
+    const tenantName = `Cliente Demo A (limite ${randomUUID().slice(0, 8)})`;
+    const projects = Array.from({ length: max + 1 }, () => randomProject());
+    const env = input({
+      BOOTSTRAP_TENANT_NAME: tenantName,
+      BOOTSTRAP_GCP_ACCOUNTS: projects
+        .map((project) => `${project}=projects/projeto-no/subscriptions/seguranca-${project}`)
+        .join(','),
+    });
+    const first = await bootstrap(env, plan);
+    expect(first.accounts).toEqual(
+      projects.map((project, index) => ({ project, outcome: index < max ? 'created' : 'plan-limit' })),
+    );
+    const tenant = await prisma.tenant.findFirstOrThrow({ where: { name: tenantName } });
+    expect(await prisma.cloudAccount.count({ where: { tenantId: tenant.id } })).toBe(max);
+    expect(
+      await prisma.auditLog.findMany({
+        where: { tenantId: tenant.id, action: 'cloud_account.create', outcome: 'failure' },
+        select: { actorType: true, statusCode: true, resourceType: true },
+      }),
+    ).toEqual([{ actorType: 'system', statusCode: 409, resourceType: 'cloud_account' }]);
+
+    // Uma conta desativada pelo painel abre a vaga: a próxima execução cria a que ficou de fora.
+    await prisma.cloudAccount.updateMany({
+      where: { tenantId: tenant.id, accountId: projects[0] },
+      data: { status: 'inactive' },
+    });
+    const second = await bootstrap(env, plan);
+    expect(second.accounts.map((account) => account.outcome)).toEqual([
+      ...Array.from({ length: max }, () => 'exists'),
+      'created',
+    ]);
+    expect(await prisma.cloudAccount.count({ where: { tenantId: tenant.id, status: 'active' } })).toBe(max);
+  });
+
   it.each([
     { BOOTSTRAP_ADMIN_EMAIL: 'não é e-mail' },
     {

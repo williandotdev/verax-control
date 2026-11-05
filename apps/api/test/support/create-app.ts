@@ -48,6 +48,8 @@ export interface CreateAppOptions {
   awsReader?: { serviceAccountId?: string; audience?: string };
   /** Agentes do Wazuh ligados no nó (as variáveis WAZUH_AGENTS_* que o start.sh escreve); sem informar, desligados. */
   wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
+  /** Plano do nó (`PLAN` e os ajustes `PLAN_*`, como o start.sh escreve); sem informar, o padrão fora de produção (`interno`). */
+  plan?: Record<'PLAN' | `PLAN_${string}`, string>;
 }
 
 /**
@@ -85,6 +87,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       AWS_WEB_IDENTITY_AUDIENCE: options.awsReader.audience,
     }),
     ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
+    ...options.plan,
   });
   const builder = Test.createTestingModule({
     imports: [

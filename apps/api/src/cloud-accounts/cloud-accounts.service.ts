@@ -25,6 +25,7 @@ import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { lockCredential } from '../credentials/credential-rekey.js';
 import { Prisma } from '../generated/prisma/client.js';
+import { PlanService } from '../plan/plan.service.js';
 
 const accountSelect = {
   id: true,
@@ -220,6 +221,9 @@ interface LogOrigins {
  *
  * Duas garantias que vinculam os alertas ao cliente certo (T5.2): o ID da conta é único por provedor, e cada
  * origem de log (bucket, assinatura do Pub/Sub, identidade do sink, zona do Cloudflare) pertence a um só cliente.
+ *
+ * Criar e reativar uma conta pedem vaga no plano do nó (fase 2, PR-18): só as contas ativas contam, e desativar libera
+ * a vaga. O lock do plano vem antes dos locks das origens, sempre na mesma ordem.
  */
 @Injectable()
 export class CloudAccountsService {
@@ -228,6 +232,7 @@ export class CloudAccountsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
+    private readonly plan: PlanService,
     @Inject(APP_CONFIG)
     config: Pick<
       AppConfig,
@@ -267,6 +272,9 @@ export class CloudAccountsService {
 
   async create(auth: RequestAuth, input: CloudAccountCreate): Promise<CloudAccount> {
     const db = this.prisma.scoped();
+    await this.plan.assertWithinPlan('cloudAccounts', auth.scopeTenantId as string, {
+      action: 'cloud_account.create',
+    });
     await this.assertOriginsFree(auth, input);
     let row: AccountRow;
     try {
@@ -288,11 +296,21 @@ export class CloudAccountsService {
   }
 
   async update(auth: RequestAuth, id: string, input: CloudAccountUpdate): Promise<CloudAccount> {
+    // Ativar ou desativar ocupa ou libera uma vaga do plano: o lock vem antes da leitura da conta, e a decisão tomada
+    // sobre o status lido vale até a gravação (uma desativação ao mesmo tempo espera, ou já foi confirmada e é lida).
+    if (input.status !== undefined) await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const beforeRow = await this.find(id);
     // Cada campo só existe num provedor: recusar, em vez de ignorar, evita achar que algo foi gravado.
     const foreign = fieldsOutsideProvider(beforeRow.provider, input);
     if (foreign.length > 0) {
       throw new ApiError(HttpStatus.BAD_REQUEST, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
+    }
+    // Reativar ocupa de novo uma vaga do plano; a conta que já está ativa não pede outra.
+    if (input.status === 'active' && beforeRow.status !== 'active') {
+      await this.plan.assertWithinPlan('cloudAccounts', auth.scopeTenantId as string, {
+        action: 'cloud_account.update',
+        resourceId: id,
+      });
     }
     await this.assertOriginsFree(auth, input, id);
     // Outra assinatura é outra fonte, e a conta desativada ou reativada recomeça: a conexão volta a "aguardando" até
@@ -339,7 +357,9 @@ export class CloudAccountsService {
    * "aguardando": parada, a conta não está conectada nem com erro. A credencial do cofre é apagada junto (D-13):
    * reativar pede colar de novo.
    */
-  async deactivate(id: string): Promise<void> {
+  async deactivate(auth: RequestAuth, id: string): Promise<void> {
+    // Libera uma vaga do plano: sob o mesmo lock da criação e da reativação, lido e gravado na mesma transação.
+    await this.plan.lockSeats('cloudAccounts', auth.scopeTenantId as string);
     const before = await this.find(id);
     await this.wipeCredential(id);
     const row = await this.prisma.scoped().cloudAccount.update({
