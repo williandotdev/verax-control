@@ -1,0 +1,412 @@
+<!--
+  Verax Control: regras críticas da AWS no CloudTrail do cliente (fase 2, PR-V7), faixa 100300 a 100399.
+
+  O subconjunto crítico do catálogo da AWS (o primeiro lote, o de nível crítico, mais as outras de nível 12) e as duas
+  do WAF pelo CloudTrail (desligado e alterado). Os níveis são a escala do produto: 12 ou mais é crítica, 10 alta, 7
+  média, abaixo baixa. O título em português de cada regra (fixo, sem campo do evento) está no dicionário da API
+  (apps/api/src/alerts/aws-rule-titles.ts), e a descrição de cada uma começa por ele; a descrição pode citar campos do
+  evento, o título não. Duas regras do catálogo já existem no Wazuh e só ganham o título: o login com falha (80254) e a
+  força bruta no console (80255, separada por conta em verax_aws_rules.xml). Os números 9902xx nos comentários abaixo
+  são os do catálogo do plano da fase 2, que previa um coletor próprio do CloudTrail no worker; essa faixa não é usada.
+
+  Como as regras casam:
+  - cada uma é filha da regra base do módulo (80200) e de cada regra da cadeia do CloudTrail do Wazuh 4.14.9 (as
+    mesmas mães das regras do papel de leitura): o evento chega a ela em qualquer profundidade, esteja ou não na lista
+    aws-eventnames. As que refinam outra (o root sem MFA, a chave do root para um usuário, as portas do grupo de
+    segurança) são filhas só dela. O scripts/test-rules.sh confere as mães e falha se uma versão nova do Wazuh trouxer
+    outra regra nessa cadeia;
+  - só o que aconteceu: o evento com errorCode (a tentativa negada) não casa e fica com as regras do Wazuh (80203 e
+    80250). O Wazuh não sabe testar a falta de um campo, então a conferência é no evento inteiro: o texto
+    "errorCode": só aparece como chave (num valor, as aspas vêm escapadas);
+  - entre irmãs, o Wazuh tenta primeiro as de nível 0 e depois as de nível mais alto; no empate, a ordem dos arquivos
+    (este vem antes do verax_reader_rules.xml). Por isso uma alteração crítica vale sobre a regra do papel de leitura
+    que também casaria (a 100204, de nível 5, ou a 100202, de mesmo nível), e o root usado para alterar a conta (100324,
+    a mais genérica) fica por último;
+  - o papel de leitura do nó (verax-control-reader, sessões verax-control-wazuh e verax-control-worker) só lê, e
+    nenhuma regra daqui casa leitura: as leituras dele seguem silenciadas pela 100200 (nível 0). Uma escrita dele que
+    de fato aconteça (a política de negação da pilha quebrada) não é silenciada.
+
+  Padrões que olham o conteúdo (políticas, grupos de segurança, snapshots), em PCRE2:
+  - (?(DEFINE)...) define dois trechos usados pelo resto: (?1) é um objeto JSON inteiro, com chaves balanceadas e
+    cada string como unidade (uma chave dentro de uma string, como em ${aws:username}, não conta); (?2) avança só pelo
+    nível de cima do objeto atual, pulando os objetos de dentro. Assim "{(?=(?2)X)(?=(?2)Y)" quer dizer "um objeto que
+    tem X e Y no próprio nível", em qualquer ordem, e uma chave de outro objeto (outra declaração, outro item) não
+    conta;
+  - a política vem como texto no CloudTrail (policyDocument, assumeRolePolicyDocument): o padrão olha o campo. A
+    política do bucket, as ACLs, os grupos de segurança e os snapshots vêm como objeto: o padrão olha o evento inteiro,
+    como o módulo aws-s3 o entrega (as listas de um item já viram o próprio item);
+  - o limite do Wazuh para o conteúdo de um elemento do XML é de 2.047 caracteres: o scripts/test-rules.sh confere.
+-->
+<group name="verax_aws_critical,">
+
+  <!-- Login no console (signin): a conta root (990201 e 990202 do catálogo) e o usuário IAM sem MFA (990205). -->
+
+  <rule id="100300" level="10">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^signin\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^ConsoleLogin$</field>
+    <field name="aws.userIdentity.type" type="pcre2">^Root$</field>
+    <field name="aws.responseElements.ConsoleLogin" type="pcre2">^Success$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: Login no console com a conta root ($(aws.sourceIPAddress)).</description>
+    <mitre>
+      <id>T1078.004</id>
+    </mitre>
+  </rule>
+
+  <!-- Sem o campo MFAUsed (o Wazuh não testa a falta), fica a 100300. -->
+  <rule id="100301" level="12">
+    <if_sid>100300</if_sid>
+    <field name="aws.additionalEventData.MFAUsed" type="pcre2">^(?!Yes$)</field>
+    <options>no_full_log</options>
+    <description>Verax Control: Login no console com a conta root sem MFA ($(aws.sourceIPAddress)).</description>
+    <mitre>
+      <id>T1078.004</id>
+    </mitre>
+  </rule>
+
+  <!-- Só o usuário IAM: quem entra pelo IAM Identity Center (SSO) ou por SAML é AssumedRole. -->
+  <rule id="100302" level="8">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^signin\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^ConsoleLogin$</field>
+    <field name="aws.userIdentity.type" type="pcre2">^IAMUser$</field>
+    <field name="aws.responseElements.ConsoleLogin" type="pcre2">^Success$</field>
+    <field name="aws.additionalEventData.MFAUsed" type="pcre2">^No$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: Login no console sem MFA ($(aws.userIdentity.userName)).</description>
+    <mitre>
+      <id>T1078.004</id>
+    </mitre>
+  </rule>
+
+  <!-- Chave de acesso da conta root (990204). Sem invokedBy: um serviço da AWS agindo em nome da conta não conta. -->
+
+  <rule id="100303" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^CreateAccessKey$</field>
+    <field name="aws.userIdentity.type" type="pcre2">^Root$</field>
+    <match type="pcre2" negate="yes">"(?:errorCode|invokedBy)"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Chave de acesso criada para a conta root.</description>
+    <mitre>
+      <id>T1098.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Com userName, a chave é de um usuário IAM, não da root. -->
+  <rule id="100304" level="10">
+    <if_sid>100303</if_sid>
+    <field name="aws.requestParameters.userName" type="pcre2">.</field>
+    <options>no_full_log</options>
+    <description>Verax Control: Chave de acesso criada pela conta root para um usuário IAM ($(aws.requestParameters.userName)).</description>
+    <mitre>
+      <id>T1098.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Permissão de administrador (990211): a política gerenciada da AWS, ou uma declaração Allow com Action e
+       Resource "*" numa política do usuário, do papel ou do grupo, ou numa versão nova que vira a padrão. -->
+
+  <rule id="100305" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^Attach(?:User|Role|Group)Policy$</field>
+    <field name="aws.requestParameters.policyArn" type="pcre2">^arn:aws[a-z-]*:iam::aws:policy/(?:AdministratorAccess|IAMFullAccess)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Permissão de administrador concedida ($(aws.eventName) com $(aws.requestParameters.policyArn)).</description>
+    <mitre>
+      <id>T1098.003</id>
+    </mitre>
+  </rule>
+
+  <rule id="100306" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^Put(?:User|Role|Group)Policy$</field>
+    <field name="aws.requestParameters.policyDocument" type="pcre2">(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"Effect"\s*:\s*"Allow")(?=(?2)"Action"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*"))(?=(?2)"Resource"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*"))</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Permissão de administrador concedida ($(aws.eventName) com Action e Resource "*").</description>
+    <mitre>
+      <id>T1098.003</id>
+    </mitre>
+  </rule>
+
+  <rule id="100307" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^CreatePolicyVersion$</field>
+    <field name="aws.requestParameters.setAsDefault" type="pcre2">^true$</field>
+    <field name="aws.requestParameters.policyDocument" type="pcre2">(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"Effect"\s*:\s*"Allow")(?=(?2)"Action"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*"))(?=(?2)"Resource"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*"))</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Permissão de administrador concedida (versão padrão de $(aws.requestParameters.policyArn) com Action e Resource "*").</description>
+    <mitre>
+      <id>T1098.003</id>
+    </mitre>
+  </rule>
+
+  <!-- Papel que qualquer conta pode assumir (990213): na confiança, uma declaração Allow para "*" ou {"AWS": "*"} sem
+       Condition. -->
+
+  <rule id="100308" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^UpdateAssumeRolePolicy$</field>
+    <field name="aws.requestParameters.policyDocument" type="pcre2">(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"Effect"\s*:\s*"Allow")(?=(?2)"Principal"\s*:\s*(?:"\*"|\{(?2)"AWS"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*")))(?!(?2)"Condition"\s*:)</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Papel IAM que qualquer conta pode assumir ($(aws.requestParameters.roleName)).</description>
+    <mitre>
+      <id>T1098.003</id>
+    </mitre>
+  </rule>
+
+  <rule id="100309" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^CreateRole$</field>
+    <field name="aws.requestParameters.assumeRolePolicyDocument" type="pcre2">(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"Effect"\s*:\s*"Allow")(?=(?2)"Principal"\s*:\s*(?:"\*"|\{(?2)"AWS"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*")))(?!(?2)"Condition"\s*:)</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Papel IAM que qualquer conta pode assumir ($(aws.requestParameters.roleName), criado).</description>
+    <mitre>
+      <id>T1098.003</id>
+    </mitre>
+  </rule>
+
+  <!-- Registro e detecção desligados: o CloudTrail (990217) e o GuardDuty (990219). -->
+
+  <rule id="100310" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^cloudtrail\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:StopLogging|DeleteTrail|DeleteEventDataStore|StopEventDataStoreIngestion)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: CloudTrail parado ou apagado ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.008</id>
+    </mitre>
+  </rule>
+
+  <!-- A lista de IPs confiáveis (IPSet) e o destino da exportação também calam o GuardDuty: o export é o que o nó
+       lê. -->
+  <rule id="100311" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^guardduty\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:DeleteDetector|DisassociateFromMasterAccount|DisassociateFromAdministratorAccount|DisassociateMembers|CreateIPSet|UpdateIPSet|DeletePublishingDestination|UpdatePublishingDestination)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: GuardDuty desligado ou silenciado ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+  <rule id="100312" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^guardduty\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^UpdateDetector$</field>
+    <field name="aws.requestParameters.enable" type="pcre2">^false$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: GuardDuty desligado ou silenciado (detector desligado).</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Filtro que arquiva os achados sozinho. -->
+  <rule id="100313" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^guardduty\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:CreateFilter|UpdateFilter)$</field>
+    <field name="aws.requestParameters.action" type="pcre2">^ARCHIVE$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: GuardDuty desligado ou silenciado (filtro que arquiva $(aws.requestParameters.name)).</description>
+    <mitre>
+      <id>T1562.001</id>
+    </mitre>
+  </rule>
+
+  <!-- Bucket aberto ao público (990224): na política, uma declaração Allow para "*" ou {"AWS": "*"} sem Condition; na
+       ACL, uma permissão para AllUsers ou AuthenticatedUsers (qualquer conta da AWS), ou a ACL pronta pública. -->
+  <rule id="100314" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^s3\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:PutBucketPolicy|PutBucketAcl)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <regex type="pcre2">(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))(?:\{(?=(?2)"Effect"\s*:\s*"Allow")(?=(?2)"Principal"\s*:\s*(?:"\*"|\{(?2)"AWS"\s*:\s*(?:"\*"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"\*")))(?!(?2)"Condition"\s*:)|"URI"\s*:\s*"https?://acs\.amazonaws\.com/groups/global/(?:AllUsers|AuthenticatedUsers)"|"x-amz-acl"\s*:\s*(?:\[\s*)?"(?:public-read|public-read-write|authenticated-read)")</regex>
+    <options>no_full_log</options>
+    <description>Verax Control: Bucket S3 aberto ao público ($(aws.requestParameters.bucketName)).</description>
+    <mitre>
+      <id>T1530</id>
+      <id>T1537</id>
+    </mitre>
+  </rule>
+
+  <!-- Grupo de segurança aberto para a internet (990226 e 990227): uma regra de entrada para 0.0.0.0/0 ou ::/0. Cada
+       regra é um objeto no evento: o item do pedido do AuthorizeSecurityGroupIngress (as faixas em ipRanges e
+       ipv6Ranges), o item da resposta (securityGroupRuleSet, uma faixa por item) e a regra do
+       ModifySecurityGroupRules (chaves com maiúscula; por isso o (?i)). Protocolo, portas e faixa contam só dentro
+       do mesmo objeto: a 22 para a rede interna e a 443 para a internet não é a 22 aberta.
+       - 100315, nível 10: todo o tráfego (protocolo -1) ou TCP/UDP em qualquer porta que não seja só a 80 ou só a
+         443;
+       - 100316 a 100318, nível 12, filhas dela: todo o tráfego, uma faixa de portas que inclui uma porta de
+         administração remota (22, 445, 2375 e 3389) ou de banco de dados (1433, 1521, 3306, 5432, 6379, 9200, 11211 e
+         27017). "Inclui a porta P" é fromPort de 0 a P e toPort de P em diante, cada lado escrito como faixa numérica.
+       O ModifySecurityGroupRules não diz se a regra é de entrada ou de saída: editar uma regra de saída aberta para a
+       internet também casa (risco anotado no docs/STATUS.md). -->
+
+  <rule id="100315" level="10">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^ec2\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:AuthorizeSecurityGroupIngress|ModifySecurityGroupRules)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <regex type="pcre2">(?i)(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?:(?=(?2)"ipProtocol"\s*:\s*"(?:-1|all)")|(?=(?2)"ipProtocol"\s*:\s*"(?:tcp|udp|6|17)")(?=(?2)"fromPort"\s*:)(?!(?=(?2)"fromPort"\s*:\s*80\b)(?=(?2)"toPort"\s*:\s*80\b))(?!(?=(?2)"fromPort"\s*:\s*443\b)(?=(?2)"toPort"\s*:\s*443\b)))(?=(?2)(?:"cidrIp(?:v4|v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"|"ip(?:v6)?Ranges"\s*:\s*\{(?2)"items"\s*:\s*(?:\[(?:[^{}"\]]|"(?:[^"\\]|\\.)*"|(?1))*?)?\{(?2)"cidrIp(?:v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"))</regex>
+    <options>no_full_log</options>
+    <description>Verax Control: Grupo de segurança aberto para a internet ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.007</id>
+    </mitre>
+  </rule>
+
+  <rule id="100316" level="12">
+    <if_sid>100315</if_sid>
+    <regex type="pcre2">(?i)(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"ipProtocol"\s*:\s*"(?:-1|all)")(?=(?2)(?:"cidrIp(?:v4|v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"|"ip(?:v6)?Ranges"\s*:\s*\{(?2)"items"\s*:\s*(?:\[(?:[^{}"\]]|"(?:[^"\\]|\\.)*"|(?1))*?)?\{(?2)"cidrIp(?:v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"))</regex>
+    <options>no_full_log</options>
+    <description>Verax Control: Grupo de segurança aberto para a internet em todas as portas ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.007</id>
+    </mitre>
+  </rule>
+
+  <rule id="100317" level="12">
+    <if_sid>100315</if_sid>
+    <regex type="pcre2">(?i)(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"ipProtocol"\s*:\s*"(?:tcp|udp|6|17)")(?:(?=(?2)"fromPort"\s*:\s*(?:\d|1\d|2[0-2])\b)(?=(?2)"toPort"\s*:\s*(?:2[2-9]|[3-9]\d|[1-9]\d{2}|[1-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-3]\d{2}|4(?:[0-3]\d|4[0-5]))\b)(?=(?2)"toPort"\s*:\s*(?:4(?:4[5-9]|[5-9]\d)|[5-9]\d{2}|[1-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|1\d{3}|2(?:[0-2]\d{2}|3(?:[0-6]\d|7[0-5])))\b)(?=(?2)"toPort"\s*:\s*(?:2(?:3(?:7[5-9]|[8-9]\d)|[4-9]\d{2})|[3-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-2]\d{3}|3(?:[0-2]\d{2}|3[0-8]\d))\b)(?=(?2)"toPort"\s*:\s*(?:3(?:3(?:89|9\d)|[4-9]\d{2})|[4-9]\d{3}|[1-9]\d{4})\b))(?=(?2)(?:"cidrIp(?:v4|v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"|"ip(?:v6)?Ranges"\s*:\s*\{(?2)"items"\s*:\s*(?:\[(?:[^{}"\]]|"(?:[^"\\]|\\.)*"|(?1))*?)?\{(?2)"cidrIp(?:v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"))</regex>
+    <options>no_full_log</options>
+    <description>Verax Control: Grupo de segurança aberto para a internet em porta de administração remota ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.007</id>
+    </mitre>
+  </rule>
+
+  <rule id="100318" level="12">
+    <if_sid>100315</if_sid>
+    <regex type="pcre2">(?i)(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))\{(?=(?2)"ipProtocol"\s*:\s*"(?:tcp|udp|6|17)")(?:(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|1(?:[0-3]\d{2}|4(?:[0-2]\d|3[0-3])))\b)(?=(?2)"toPort"\s*:\s*(?:1(?:4(?:3[3-9]|[4-9]\d)|[5-9]\d{2})|[2-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|1(?:[0-4]\d{2}|5(?:[0-1]\d|2[0-1])))\b)(?=(?2)"toPort"\s*:\s*(?:1(?:5(?:2[1-9]|[3-9]\d)|[6-9]\d{2})|[2-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-2]\d{3}|3(?:[0-2]\d{2}|30[0-6]))\b)(?=(?2)"toPort"\s*:\s*(?:3(?:3(?:0[6-9]|[1-9]\d)|[4-9]\d{2})|[4-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-4]\d{3}|5(?:[0-3]\d{2}|4(?:[0-2]\d|3[0-2])))\b)(?=(?2)"toPort"\s*:\s*(?:5(?:4(?:3[2-9]|[4-9]\d)|[5-9]\d{2})|[6-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-5]\d{3}|6(?:[0-2]\d{2}|3[0-7]\d))\b)(?=(?2)"toPort"\s*:\s*(?:6(?:3(?:79|[8-9]\d)|[4-9]\d{2})|[7-9]\d{3}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-8]\d{3}|9(?:[0-1]\d{2}|200))\b)(?=(?2)"toPort"\s*:\s*(?:9[2-9]\d{2}|[1-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|1(?:0\d{3}|1(?:[0-1]\d{2}|2(?:0\d|1[0-1]))))\b)(?=(?2)"toPort"\s*:\s*(?:1(?:1(?:2(?:1[1-9]|[2-9]\d)|[3-9]\d{2})|[2-9]\d{3})|[2-9]\d{4})\b)|(?=(?2)"fromPort"\s*:\s*(?:\d|[1-9]\d|[1-9]\d{2}|[1-9]\d{3}|1\d{4}|2(?:[0-6]\d{3}|70(?:0\d|1[0-7])))\b)(?=(?2)"toPort"\s*:\s*(?:2(?:7(?:0(?:1[7-9]|[2-9]\d)|[1-9]\d{2})|[8-9]\d{3})|[3-9]\d{4})\b))(?=(?2)(?:"cidrIp(?:v4|v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"|"ip(?:v6)?Ranges"\s*:\s*\{(?2)"items"\s*:\s*(?:\[(?:[^{}"\]]|"(?:[^"\\]|\\.)*"|(?1))*?)?\{(?2)"cidrIp(?:v6)?"\s*:\s*"(?:0\.0\.0\.0/0|::/0)"))</regex>
+    <options>no_full_log</options>
+    <description>Verax Control: Grupo de segurança aberto para a internet em porta de banco de dados ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.007</id>
+    </mitre>
+  </rule>
+
+  <!-- Snapshot ou imagem pública (990229): o grupo "all" acrescentado à permissão do snapshot do EBS ou da AMI, ou o
+       valor "all" no atributo restore do snapshot do RDS. -->
+  <rule id="100319" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^(?:ec2|rds)\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:ModifySnapshotAttribute|ModifyImageAttribute|ModifyDBSnapshotAttribute|ModifyDBClusterSnapshotAttribute)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <regex type="pcre2">(?(DEFINE)(\{(?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*\})((?:[^{}"]|"(?:[^"\\]|\\.)*"|(?1))*?))(?:"(?:createVolumePermission|launchPermission)"\s*:\s*\{(?2)"add"\s*:\s*\{(?2)"items"\s*:\s*(?:\[(?:[^{}"\]]|"(?:[^"\\]|\\.)*"|(?1))*?)?\{(?2)"group"\s*:\s*"all"|"valuesToAdd"\s*:\s*(?:"all"|\[\s*(?:"(?:[^"\\]|\\.)*"\s*,\s*)*"all"))</regex>
+    <options>no_full_log</options>
+    <description>Verax Control: Snapshot ou imagem compartilhada publicamente ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1537</id>
+    </mitre>
+  </rule>
+
+  <!-- Domínio (990232) e organização (990238). O Wazuh 4.14.9 não conhece a T1666 do catálogo (Modify Cloud Resource
+       Hierarchy): fica a T1484, a das regras de política da organização na GCP. -->
+
+  <rule id="100320" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^route53domains\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:TransferDomainToAnotherAwsAccount|DisableDomainTransferLock|UpdateDomainNameservers)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Domínio transferido, destravado ou com DNS trocado ($(aws.requestParameters.domainName)).</description>
+    <mitre>
+      <id>T1584.001</id>
+    </mitre>
+  </rule>
+
+  <rule id="100321" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^organizations\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:LeaveOrganization|DetachPolicy|DeletePolicy|DisablePolicyType)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Conta saiu da organização ou política da organização removida ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1484</id>
+    </mitre>
+  </rule>
+
+  <!-- WAF pelo CloudTrail (as duas do C8 do plano): desligado, desassociado ou sem log (nível 10) e regras alteradas
+       (nível 7). O WAF clássico (waf e waf-regional) entra junto. -->
+
+  <rule id="100322" level="10">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^waf(?:v2|-regional)?\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:DeleteWebACL|DisassociateWebACL|DeleteLoggingConfiguration)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: WAF desligado, desassociado ou sem log ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.008</id>
+    </mitre>
+  </rule>
+
+  <rule id="100323" level="7">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^waf(?:v2|-regional)?\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:UpdateWebACL|UpdateRuleGroup|DeleteRuleGroup|UpdateIPSet)$</field>
+    <match type="pcre2" negate="yes">"errorCode"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Regras do WAF alteradas ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1562.007</id>
+    </mitre>
+  </rule>
+
+  <!-- A conta root usada para alterar a conta (990203): qualquer escrita (readOnly false) da root, fora o login e sem
+       invokedBy. A mais genérica, por último: no empate de nível, a regra específica vale. -->
+  <rule id="100324" level="10">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.userIdentity.type" type="pcre2">^Root$</field>
+    <field name="aws.readOnly" type="pcre2">^false$</field>
+    <field name="aws.eventName" type="pcre2">^(?!ConsoleLogin$)</field>
+    <match type="pcre2" negate="yes">"(?:errorCode|invokedBy)"\s*:</match>
+    <options>no_full_log</options>
+    <description>Verax Control: Conta root usada para alterar a conta ($(aws.eventName)).</description>
+    <mitre>
+      <id>T1078.004</id>
+    </mitre>
+  </rule>
+
+</group>

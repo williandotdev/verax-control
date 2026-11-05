@@ -23,13 +23,13 @@ import { formatDuration, PERIOD_LABELS, REPORT_TABS, TACTIC_LABELS } from '@/fea
 import { MitreGrid } from '@/features/reports/mitre-grid';
 import { ReportContext } from '@/features/reports/report-context';
 import { ReportSection, ReportTable } from '@/features/reports/report-table';
+import { usePeriodFilter } from '@/features/plan/plan-history';
 import { useReport } from '@/features/reports/reports-api';
 import { useMe } from '@/features/session/session';
 import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
 import { cn } from '@/lib/cn';
 import { formatTimestamp } from '@/lib/format';
 
-const PERIOD_OPTIONS = REPORT_PERIODS.map((period) => ({ value: period, label: PERIOD_LABELS[period] }));
 const FINDINGS = { one: 'achado', many: 'achados' };
 /** Os gráficos ficam sobre a superfície dos cartões: é contra ela que as cores foram validadas. */
 const CHART_FRAME = 'rounded-md border bg-surface p-3';
@@ -56,7 +56,9 @@ export function ReportsPage() {
   const scope = me?.scopeTenantId ?? null;
   const [params, setParams] = useSearchParams();
   const tab = REPORT_TABS.find((item) => item.slug === params.get('aba')) ?? REPORT_TABS[0];
-  const period = REPORT_PERIODS.find((value) => value === params.get('periodo')) ?? '30d';
+  // O período da URL só vale se couber no histórico do plano; senão, o padrão (30 dias, que todo plano tem).
+  const periods = usePeriodFilter(REPORT_PERIODS, params.get('periodo'));
+  const period = periods.period ?? '30d';
   const update = (changes: Record<string, string | null>) =>
     setParams((previous) => {
       const next = new URLSearchParams(previous);
@@ -81,7 +83,7 @@ export function ReportsPage() {
           label="Período"
           value={period}
           onChange={(value) => update({ periodo: value === '30d' ? null : value })}
-          options={PERIOD_OPTIONS}
+          options={periods.options.map((value) => ({ value, label: PERIOD_LABELS[value] }))}
         />
       </header>
       {scope === null ? (
@@ -110,7 +112,8 @@ export function ReportsPage() {
             ))}
           </Tabs.List>
           <Tabs.Content value={tab?.slug ?? 'resumo'} className="pt-4 focus:outline-none">
-            {tab && <ReportView key={tab.kind} kind={tab.kind} period={period} />}
+            {tab && periods.waiting && <LoadingState rows={6} label="Carregando o período" />}
+            {tab && !periods.waiting && <ReportView key={tab.kind} kind={tab.kind} period={period} />}
           </Tabs.Content>
         </Tabs.Root>
       )}

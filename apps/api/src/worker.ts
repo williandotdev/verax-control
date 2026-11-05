@@ -19,11 +19,18 @@ import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js'
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
+import { mailTransport } from './mail/mail.module.js';
 import {
   NODE_STATUS_BUDGET_MS,
   NODE_STATUS_INTERVAL_MS,
   NodeStatusReporter,
 } from './node-status/node-status.js';
+import {
+  NOTIFICATIONS_INTERVAL_MS,
+  NOTIFICATIONS_TASK,
+  NotificationDispatcher,
+} from './notifications/notification-dispatcher.js';
+import { UsageNotices } from './notifications/usage-notices.js';
 import {
   RETENTION_BUDGET_MS,
   RETENTION_CHECK_INTERVAL_MS,
@@ -114,6 +121,10 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14', e a postura nativa sai
  * da mesma coleta, PR-15').
  *
+ * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
+ * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
+ * ficam `skipped`.
+ *
  * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
  * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google.
  *
@@ -200,6 +211,21 @@ async function main(): Promise<void> {
         periodic: await awsCheck.recheck(signal),
       }),
     });
+    // Avisos por e-mail: o transporte da mesma fábrica da API. A configuração já exigiu o remetente e a origem do painel
+    // com o e-mail ligado.
+    const mailer =
+      config.MAIL_TRANSPORT === 'none'
+        ? null
+        : { transport: mailTransport(config), webOrigin: config.WEB_ORIGIN as string };
+    const notifications = new NotificationDispatcher(prisma, mailer, {
+      usage: new UsageNotices(prisma, nodePlan(config).limits.monthlyGib),
+    });
+    tasks.push({
+      name: NOTIFICATIONS_TASK,
+      intervalMs: NOTIFICATIONS_INTERVAL_MS,
+      budgetMs: SYNC_BUDGET_MS,
+      run: (signal) => notifications.runOnce(signal),
+    });
     // Inventário e postura da AWS (Ativos e Postura): só com a identidade do nó, pela mesma sessão da conferência. Os
     // clientes do IAM, do EC2, do S3, do S3 Control, do CloudTrail e do GuardDuty só são carregados aqui.
     if (aws.credentials !== null) {
@@ -272,6 +298,8 @@ async function main(): Promise<void> {
       intervalSeconds: config.SYNC_INTERVAL_SECONDS,
       tasks: tasks.map((task) => task.name),
       plan: config.PLAN,
+      // Só o tipo do transporte dos avisos, nunca o servidor, o usuário ou o remetente.
+      mailTransport: config.MAIL_TRANSPORT,
       // Só a versão corrente da chave do cofre (null sem o cofre), nunca a chave.
       vaultKeyVersion: config.credentialsKeyring?.current ?? null,
     },

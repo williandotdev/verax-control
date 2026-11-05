@@ -105,6 +105,7 @@ model Tenant {
   ingestUsage        IngestUsage[]
   cloudCredentials   CloudCredential[]
   wazuhAgents        WazuhAgent[]
+  notifications      Notification[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -469,6 +470,7 @@ model Finding {
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
+  notifications   Notification[]
 
   @@unique([source, sourceEventId])
   /// Alvo da chave composta dos comentários e das recorrências: só apontam para achado do mesmo cliente.
@@ -600,6 +602,7 @@ model Incident {
   createdAt       DateTime        @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
   findings        Finding[]
+  notifications   Notification[]
 
   @@index([tenantId, status])
   @@index([tenantId, riskScore(sort: Desc)])
@@ -794,4 +797,65 @@ model WazuhAgent {
 
   @@unique([agentId])
   @@index([tenantId, name])
+}
+
+/// Tipo do aviso por e-mail (fase 2, PR-16). `aws_ingestion_stalled` já existe para a tarefa do medidor da AWS (PR-V6),
+/// que ainda não o emite.
+enum NotificationKind {
+  incident_opened
+  incident_escalated
+  critical_finding
+  aws_ingestion_stalled
+  plan_usage
+}
+
+/// Estado do aviso na fila de saída: `skipped` é o que não sai (nó sem e-mail, ninguém para receber, aviso de 80%
+/// coberto pelo de 100%); `failed`, o que falhou em todas as tentativas.
+enum NotificationStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+/// Aviso por e-mail na fila de saída (outbox; fase 2, PR-16). Nasce na mesma transação do fato que o gera (o achado e o
+/// incidente, em `FindingStore`; o volume do mês, na tarefa `notifications`) e o worker entrega
+/// (`notifications/notification-dispatcher.ts`). A chave de deduplicação, única por cliente, faz o mesmo fato gerar um
+/// aviso só, por mais que seja relido. Os destinatários não ficam aqui: são resolvidos no envio, e só o id de quem já
+/// recebeu fica guardado (a nova tentativa não repete o e-mail). Nenhum endereço de e-mail é gravado.
+model Notification {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  tenantId         String             @db.Uuid
+  tenant           Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind             NotificationKind
+  /// `incident:<id>:<severidade>`, `finding:<id>` ou `usage:<AAAA-MM>:<80|100>`.
+  dedupeKey        String             @db.VarChar(128)
+  /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
+  severity         FindingSeverity?
+  /// Incidente do aviso; um gatilho no banco confere que é do mesmo cliente. Apagar o incidente apaga o aviso.
+  incidentId       String?            @db.Uuid
+  incident         Incident?          @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  /// Achado crítico fora de incidente. A chave estrangeira inclui o cliente.
+  findingId        String?            @db.Uuid
+  finding          Finding?           @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  /// Volume do plano: o mês (primeiro dia, calendário de Brasília) e a faixa alcançada (80 ou 100).
+  usageMonth       DateTime?          @db.Date
+  usagePercent     Int?               @db.SmallInt
+  status           NotificationStatus @default(pending)
+  /// Tentativas de envio feitas (no máximo 5; recuo de 1, 5, 15 e 60 min entre elas).
+  attempts         Int                @default(0) @db.SmallInt
+  nextAttemptAt    DateTime           @default(now()) @db.Timestamptz(3)
+  /// Tipo do último erro do envio, ou o motivo de `skipped` (`mail_disabled`, `no_recipients`, `superseded`). Nunca a
+  /// mensagem do servidor, que pode citar o endereço.
+  lastError        String?            @db.VarChar(64)
+  /// Usuários que já receberam este aviso (o id, nunca o e-mail).
+  deliveredUserIds String[]           @default([])
+  sentAt           DateTime?          @db.Timestamptz(3)
+  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, dedupeKey])
+  @@index([status, nextAttemptAt])
+  @@index([incidentId])
+  @@index([findingId])
 }

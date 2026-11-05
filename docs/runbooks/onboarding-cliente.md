@@ -79,7 +79,10 @@ Na reunião:
    primeiro login, a pessoa troca a senha e cadastra o MFA. Se a senha se perder ou vencer, selecione o cliente no
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
-   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
+   temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele. Os avisos
+   por e-mail (incidente alto ou crítico, achado crítico e, só para administradores, 80% e 100% do volume do plano)
+   chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
+   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe.
 
    **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
    usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para

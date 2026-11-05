@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { cloudAccountRefSchema, isAwsRegion } from './cloud-accounts.js';
+import { HISTORY_PERIOD_DAYS } from './history.js';
 import { isInventoryErrorCode } from './inventory.js';
 import { withPagination } from './pagination.js';
 
@@ -122,6 +123,14 @@ export const postureCheckSummarySchema = z.strictObject({
 });
 export type PostureCheckSummary = z.infer<typeof postureCheckSummarySchema>;
 
+/** Teto da evolução da nota: o maior período das telas (12 meses). */
+export const POSTURE_HISTORY_MAX_DAYS = HISTORY_PERIOD_DAYS['12m'];
+
+/** Dias da evolução da nota: o histórico do plano (`null` é sem limite), até o teto de 365. */
+export function postureHistoryDays(historyDays: number | null): number {
+  return Math.min(historyDays ?? POSTURE_HISTORY_MAX_DAYS, POSTURE_HISTORY_MAX_DAYS);
+}
+
 export const postureAccountSchema = z.strictObject({
   accountId: cloudAccountRefSchema,
   /** Nota da última varredura; null antes da primeira. */
@@ -138,8 +147,11 @@ export const postureAccountSchema = z.strictObject({
     low: count,
     informational: count,
   }),
-  /** Uma nota por dia de varredura, do mais antigo ao mais recente (até 90 dias). */
-  history: z.array(z.strictObject({ date: z.iso.date(), score })).max(90),
+  /**
+   * Uma nota por dia de varredura, do mais antigo ao mais recente, pelo histórico do plano do nó (PR-20): 90 dias no
+   * Essencial, 365 no Profissional. Sem limite (Interno) ou acima de 365 dias, os últimos 365.
+   */
+  history: z.array(z.strictObject({ date: z.iso.date(), score })).max(POSTURE_HISTORY_MAX_DAYS),
   /** As checagens do catálogo na última varredura, com a situação de cada uma (vazio antes da primeira). */
   checks: z.array(postureCheckSummarySchema).max(MAX_POSTURE_CHECKS),
   /** As leituras recusadas na última varredura: a varredura é parcial quando há alguma. */

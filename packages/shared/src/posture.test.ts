@@ -11,6 +11,7 @@ import {
   postureCheckStatus,
   postureCheckSummarySchema,
   postureErrorValue,
+  postureHistoryDays,
   postureOverviewSchema,
   postureSectionErrorSchema,
 } from './posture.js';
@@ -90,6 +91,19 @@ describe('postura', () => {
         errors: Array.from({ length: MAX_POSTURE_ERRORS + 1 }, () => account.errors[0]),
       }).success,
     ).toBe(false);
+  });
+
+  it('a evolução segue o histórico do plano, até 365 dias', () => {
+    expect(postureHistoryDays(90)).toBe(90);
+    expect(postureHistoryDays(365)).toBe(365);
+    expect(postureHistoryDays(730)).toBe(365);
+    expect(postureHistoryDays(null)).toBe(365);
+    const days = Array.from({ length: 366 }, (_, index) => ({
+      date: new Date(Date.UTC(2025, 10, 3 + index)).toISOString().slice(0, 10),
+      score: 50,
+    }));
+    expect(postureAccountSchema.safeParse({ ...account, history: days.slice(1) }).success).toBe(true);
+    expect(postureAccountSchema.safeParse({ ...account, history: days }).success).toBe(false);
   });
 
   it.each([

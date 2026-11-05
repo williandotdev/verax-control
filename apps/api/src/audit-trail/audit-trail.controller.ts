@@ -10,12 +10,16 @@ import type { Request } from 'express';
 import { z } from 'zod';
 import { RequirePermission } from '../auth/decorators.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { PlanService } from '../plan/plan.service.js';
 import { AuditTrailService } from './audit-trail.service.js';
 
 /** Trilha de auditoria (tela Auditoria): os administradores leem; ninguém altera nem apaga. */
 @Controller('audit')
 export class AuditTrailController {
-  constructor(private readonly trail: AuditTrailService) {}
+  constructor(
+    private readonly trail: AuditTrailService,
+    private readonly plan: PlanService,
+  ) {}
 
   @Get()
   @RequirePermission('audit:read')
@@ -23,6 +27,8 @@ export class AuditTrailController {
     @Req() request: Request,
     @Query({ schema: auditListQuerySchema }) query: AuditListQuery,
   ): Promise<Paginated<AuditEntry>> {
+    // A trilha fica ao menos 13 meses (PR-19), mas o filtro segue o histórico do plano, como nas outras telas.
+    this.plan.assertPeriodWithinHistory(query.period);
     return this.trail.list(request.auth as RequestAuth, query);
   }
 

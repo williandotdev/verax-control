@@ -104,6 +104,8 @@ describe('Plano e uso', () => {
       String(Math.round(ratio * 100)),
     );
     expect(tile('Histórico')).toHaveTextContent(`${limits.historyDays} dias`);
+    expect(tile('Histórico')).toHaveTextContent('A trilha de auditoria fica ao menos 13 meses');
+    expect(tile('Histórico')).toHaveTextContent('o evento bruto do log, 30 dias');
 
     const band = screen.getByText(/O volume do mês já chegou a/).closest('[role="status"]') as HTMLElement;
     expect(band).toHaveTextContent(`${formatPercent(ratio)} do incluído no plano (${limits.monthlyGib} GiB)`);
