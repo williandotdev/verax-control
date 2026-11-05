@@ -4706,6 +4706,13 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
   variáveis do `destroy`, para um cliente gravado antes do limite (até 200) ainda poder ser excluído. Teste em
   `deletion-tenant-name.test.ts`.
 
+## Correção: teste "a triagem aparece na Torre" estourava o tempo no CI
+
+- **O que acontecia:** o teste de `apps/web/src/pages/findings-page.test.tsx` percorre a Torre, os Achados, a triagem e
+  volta à Torre; leva cerca de 4,7 s sozinho, perto do limite padrão de 5 s do Vitest, e falhou por tempo em vários PRs
+  com o executor carregado.
+- **Correção:** só esse teste ganha `timeout: 15_000`, como o de login em `auth-pages.test.tsx`. Nenhuma asserção mudou.
+
 ## Fase 2, D8: contato de escalonamento com confirmação do endereço e descadastro ⚠️ migration nova, rotas públicas novas e mudança no meta-teste de rotas (`@Public` e `@SelfManaged`)
 
 - **Pedido:** o contato de escalonamento (decisão D8) que o PR-16 e o PR-17' deixaram de fora, num PR próprio, com a confirmação do endereço e o link de descadastro aprovados pelo responsável: o contato recebe só os avisos críticos, nada sai antes da confirmação, trocar o endereço recomeça a confirmação, todo e-mail a ele tem o descadastro, a fila guarda a entrega dele sem o endereço, e ele nunca recebe resumo.
