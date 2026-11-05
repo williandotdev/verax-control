@@ -403,6 +403,61 @@ describe('eventos de segurança do Cloudflare (banco real e GraphQL falso)', () 
     expect(await accountRow(account.id)).toMatchObject({ connection: 'connected', connectionError: null });
   });
 
+  it('primeira leitura que parou no meio da primeira janela: depois da virada dos 15 min, segue da mesma janela', async () => {
+    const { account, value, tags } = await readyAccount(tenantA, {
+      zones: ['a.exemplo.com.br', 'b.exemplo.com.br'],
+    });
+    const [first = '', second = ''] = tags;
+    cloudflare.addSecurityEvents(
+      first,
+      events(-62, { action: 'block', source: 'waf', ip: '198.51.100.32', count: 50 }),
+    );
+    cloudflare.addSecurityEvents(
+      second,
+      events(-61, { action: 'block', source: 'waf', ip: '198.51.100.33', count: 50 }),
+    );
+    // Limites (um pedido por zona), o primeiro lote da janela 11:15 e, no segundo, 5xx nas três tentativas.
+    cloudflare.graphqlScript.push(
+      { status: 200, pass: true },
+      { status: 200, pass: true },
+      { status: 200, pass: true },
+      { status: 503 },
+      { status: 503 },
+      { status: 503 },
+    );
+    expect(await syncFor({}, { zonesPerQuery: 1 }).runOnce(NOW)).toMatchObject({
+      failedAccounts: 1,
+      created: 1,
+    });
+    expect(await cursorOf(account.id)).toMatchObject({ cursorAt: null });
+
+    // A nova tentativa só sai às 12:35, depois da virada: a última janela fechada passou de 12:15 para 12:30, e a
+    // primeira leitura recalculada começaria em 11:30. Ela segue da janela de 11:15, do lote que faltou.
+    await prisma.collectorCursor.updateMany({
+      where: { cloudAccountId: account.id, stream: CLOUDFLARE_SECURITY_STREAM },
+      data: { nextRunAt: at(15) },
+    });
+    const before = eventReads(value).length;
+    const resumed = await syncFor({}, { zonesPerQuery: 1 }).runOnce(at(15));
+    expect(resumed).toMatchObject({ failedAccounts: 0, created: 1, duplicates: 0, securityWindows: 5 });
+    const reads = eventReads(value).slice(before);
+    expect(reads[0]?.variables).toMatchObject({ zoneTags: [second], since: '2026-11-04T11:15:00Z' });
+    // A janela de 11:15 foi lida uma vez por zona: a primeira na execução anterior, a segunda agora.
+    const firstWindow = eventReads(value).filter(
+      (read) =>
+        read.variables['since'] === '2026-11-04T11:15:00Z' && read.authorization === `Bearer ${value}`,
+    );
+    expect(firstWindow.filter((read) => (read.variables['zoneTags'] as string[])[0] === first)).toHaveLength(
+      1,
+    );
+    expect(reads.filter((read) => read.variables['since'] === '2026-11-04T11:15:00Z')).toHaveLength(1);
+    expect((await findingsOf(account.accountId)).map((finding) => finding.sourceIp)).toEqual([
+      '198.51.100.32',
+      '198.51.100.33',
+    ]);
+    expect(await cursorOf(account.id)).toMatchObject({ cursorAt: at(10), nextRunAt: at(30) });
+  });
+
   it('falha no meio da gravação do lote: nada do lote se perde, e a releitura não duplica o que ficou', async () => {
     const { account, tags } = await readyAccount(tenantA);
     const [zone = ''] = tags;
@@ -493,6 +548,40 @@ describe('eventos de segurança do Cloudflare (banco real e GraphQL falso)', () 
     expect(cloudflare.graphqlReads(value)).toHaveLength(0);
     expect(await syncFor().runOnce(at(10))).toMatchObject({ notDue: 1 });
     expect(cloudflare.graphqlReads(value)).toHaveLength(0);
+  });
+
+  it('cada nova tentativa do cliente cobra o orçamento: sem ele, a execução para antes de passar do limite', async () => {
+    const { account, value } = await readyAccount(tenantA);
+    // 5 unidades: os limites (1) e duas tentativas dos eventos (2 nós cada); a terceira não cabe.
+    const options = { budgetUnits: 5 };
+    cloudflare.graphqlScript.push(
+      { status: 200, pass: true },
+      { status: 0, hang: true },
+      { status: 0, hang: true },
+      { status: 0, hang: true },
+    );
+    const report = await syncFor({}, options).runOnce(NOW);
+    expect(report).toMatchObject({
+      securityQueries: 3,
+      budgetWaits: 1,
+      failedAccounts: 0,
+      securityWindows: 0,
+    });
+    // Só três envios: a terceira tentativa do cliente nem saiu.
+    expect(cloudflare.graphqlReads(value)).toHaveLength(3);
+    const cut = await cursorOf(account.id);
+    const state = decodeState(cut.continuation);
+    expect(state.budget.reduce((sum, [, units]) => sum + units, 0)).toBe(5);
+    expect(state.progress).toMatchObject({ windowStart: at(-65), done: 0 });
+    expect(cut).toMatchObject({ cursorAt: null, nextRunAt: at(6) });
+    // A tentativa que não saiu fica no roteiro do Cloudflare falso: tira, para a execução seguinte ler normalmente.
+    cloudflare.graphqlScript.length = 0;
+
+    expect(await syncFor({}, options).runOnce(at(5))).toMatchObject({ notDue: 1 });
+    const next = await syncFor({}, options).runOnce(at(6));
+    expect(next).toMatchObject({ failedAccounts: 0 });
+    expect(eventReads(value).at(2)?.variables['since']).toBe('2026-11-04T11:15:00Z');
+    expect(await accountRow(account.id)).toMatchObject({ connection: 'connected' });
   });
 
   it('orçamento de consultas do token: para no limite e segue quando ele volta, sem passar dele', async () => {

@@ -594,6 +594,31 @@ describe('cliente GraphQL (servidor falso)', () => {
     expect(await codeOf(client.graphql(token, settingsRequest([zone])))).toBe('graphql_rejected');
   });
 
+  it('o gancho de cada envio roda antes de toda tentativa; se ele recusar, nada sai', async () => {
+    const attempts: number[] = [];
+    const before = cloudflare.graphqlReads(value).length;
+    cloudflare.graphqlScript.push({ status: 502 }, { status: 503 });
+    await client.graphql(token, settingsRequest([zone]), undefined, {
+      beforeAttempt: (attempt) => {
+        attempts.push(attempt);
+        return Promise.resolve();
+      },
+    });
+    expect(attempts).toEqual([0, 1, 2]);
+    expect(cloudflare.graphqlReads(value).length - before).toBe(3);
+
+    // Recusado antes da segunda tentativa (o orçamento acabou): só o primeiro envio sai, e o erro do gancho sobe.
+    const refused = new Error('sem orçamento');
+    cloudflare.graphqlScript.push({ status: 502 });
+    const sent = cloudflare.graphqlReads(value).length;
+    await expect(
+      client.graphql(token, settingsRequest([zone]), undefined, {
+        beforeAttempt: (attempt) => (attempt === 0 ? Promise.resolve() : Promise.reject(refused)),
+      }),
+    ).rejects.toBe(refused);
+    expect(cloudflare.graphqlReads(value).length - sent).toBe(1);
+  });
+
   it('401, 429 com o retry-after, 5xx tentado de novo e resposta fora do formato', async () => {
     cloudflare.graphqlScript.push({ status: 401 });
     expect(await codeOf(client.graphql(token, settingsRequest([zone])))).toBe('credential_rejected');

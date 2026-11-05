@@ -5,7 +5,12 @@ import type { CollectorCursor, CollectorCursors, CursorKey } from '../collectors
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { CloudflareToken } from '../credentials/credential-vault.js';
 import { UsageMeter } from '../usage/usage-meter.js';
-import { CloudflareApiError, type CloudflareClient } from './cloudflare.client.js';
+import {
+  CloudflareApiError,
+  type CloudflareClient,
+  type GraphqlRequest,
+  type GraphqlResult,
+} from './cloudflare.client.js';
 import {
   CLOUDFLARE_SECURITY_RULES,
   detectWindow,
@@ -60,6 +65,14 @@ export const SECURITY_STATUS_RETRY_MS = 60 * 60 * 1000;
 
 /** Espera depois de um 429 sem `retry-after`: o Cloudflare bloqueia o token por 5 minutos. */
 const GRAPHQL_RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
+
+/** O orçamento acabou antes de um envio (a primeira tentativa ou uma nova): nada foi enviado. */
+class BudgetExhausted extends Error {
+  constructor(readonly at: Date) {
+    super('orçamento de consultas do token esgotado');
+    this.name = 'BudgetExhausted';
+  }
+}
 
 /** Estado do fluxo guardado só pelo código (o nome do erro, como os da API). */
 class SecurityStatus extends Error {
@@ -267,12 +280,31 @@ export class CloudflareSecurityEvents {
     await read.usage.flush(this.prisma);
   }
 
-  /** Gasta o orçamento de uma consulta e grava o gasto antes de fazê-la; sem orçamento, quando ele volta. */
+  /** Gasta o orçamento de um envio e grava o gasto antes dele; sem orçamento, quando ele volta. */
   private async spend(read: Read, units: number): Promise<Wait | null> {
     if (!read.budget.take(units, read.clock())) return { wait: read.budget.availableAt(units, read.clock()) };
     await this.cursors.note(read.key, this.encode(read));
     read.context.report.securityQueries += 1;
     return null;
+  }
+
+  /**
+   * Uma consulta GraphQL com o orçamento cobrado antes de cada envio, inclusive das novas tentativas do cliente (5xx,
+   * rede, tempo esgotado): cada envio é uma consulta no limite do Cloudflare. Sem orçamento para o envio, nada sai, e
+   * a espera volta para quem consultou (o que já foi gravado fica).
+   */
+  private async query(read: Read, units: number, request: GraphqlRequest): Promise<GraphqlResult | Wait> {
+    try {
+      return await this.client.graphql(read.token, request, read.context.signal, {
+        beforeAttempt: async () => {
+          const wait = await this.spend(read, units);
+          if (wait !== null) throw new BudgetExhausted(wait.wait);
+        },
+      });
+    } catch (error) {
+      if (error instanceof BudgetExhausted) return { wait: error.at };
+      throw error;
+    }
   }
 
   private async waitBudget(read: Read, wait: Wait): Promise<SecurityOutcome> {
@@ -304,7 +336,10 @@ export class CloudflareSecurityEvents {
 
     const retention = Math.max(...usable.map((zone) => (limits.get(zone.tag) ?? NO_ACCESS).notOlderThan));
     const floor = windowCeil(new Date(now.getTime() - retention * 1000 + SECURITY_RETENTION_MARGIN_MS));
-    const from = cursor.cursorAt ?? new Date(lastEnd.getTime() - this.firstReadMs);
+    // Sem cursor, é a primeira leitura. Se ela parou no meio da primeira janela, segue dessa janela (o progresso
+    // gravado), e não de uma recalculada pelo horário de agora, que pularia as zonas que faltavam. A retenção vale igual.
+    const from =
+      cursor.cursorAt ?? read.state.progress?.windowStart ?? new Date(lastEnd.getTime() - this.firstReadMs);
     let start = windowCeil(new Date(Math.max(from.getTime(), floor.getTime())));
     const runEnd = new Date(
       Math.min(lastEnd.getTime(), start.getTime() + this.maxWindowsPerRun * SECURITY_WINDOW_MS),
@@ -352,14 +387,10 @@ export class CloudflareSecurityEvents {
   }
 
   private async settingsOf(read: Read, tags: readonly string[]): Promise<Map<string, ZoneLimits> | Wait> {
-    const wait = await this.spend(read, tags.length);
-    if (wait !== null) return wait;
     try {
-      const { data, bytes } = await this.client.graphql(
-        read.token,
-        settingsRequest(tags),
-        read.context.signal,
-      );
+      const result = await this.query(read, tags.length, settingsRequest(tags));
+      if (isWait(result)) return result;
+      const { data, bytes } = result;
       read.usage.add(read.account.tenantId, 'cloudflare', bytes, 0, read.context.now);
       const parsed = parseSettings(data, tags);
       if (parsed === null) throw new CloudflareApiError('bad_response', 200);
@@ -409,12 +440,10 @@ export class CloudflareSecurityEvents {
       const batch = batches[index] ?? [];
       read.state.progress = { windowStart, done: index, layout };
       const query = this.eventsQuery(batch, limits, windowStart, windowEnd, now);
-      const wait = await this.spend(read, batch.length * eventsQueryNodes(query));
-      if (wait !== null) {
-        // O que já foi gravado fica; a próxima execução segue deste lote.
-        return wait;
-      }
-      const results = await this.queryEvents(read, query);
+      const results = await this.queryEvents(read, query, batch.length * eventsQueryNodes(query));
+      // Sem orçamento (no primeiro envio ou numa nova tentativa): o que já foi gravado fica, e a próxima execução
+      // segue deste lote.
+      if (isWait(results)) return results;
       if (results !== null) {
         const login = await this.loginIps(read, results, query, limits);
         await this.persist(read, batch, results, query, login);
@@ -457,11 +486,16 @@ export class CloudflareSecurityEvents {
     };
   }
 
-  /** Os eventos do lote; `null` quando a janela já saiu da retenção (o lote é pulado). */
-  private async queryEvents(read: Read, query: EventsQuery): Promise<ZoneEvents[] | null> {
+  /** Os eventos do lote; `null` quando a janela já saiu da retenção (o lote é pulado); a espera, sem orçamento. */
+  private async queryEvents(
+    read: Read,
+    query: EventsQuery,
+    units: number,
+  ): Promise<ZoneEvents[] | null | Wait> {
     let result;
     try {
-      result = await this.client.graphql(read.token, eventsRequest(query), read.context.signal);
+      result = await this.query(read, units, eventsRequest(query));
+      if (isWait(result)) return result;
     } catch (error) {
       if (error instanceof CloudflareApiError && error.code === 'security_events_expired') {
         read.context.report.securityExpired += 1;
@@ -499,10 +533,11 @@ export class CloudflareSecurityEvents {
       ...zoneTags.map((tag) => (limits.get(tag) ?? NO_ACCESS).maxPageSize),
     );
     const pathsQuery = { zoneTags, since: query.since, until: query.until, clientIPs: ips, limit };
-    if ((await this.spend(read, zoneTags.length)) !== null) return byZone;
     let paths: Map<string, PathGroup[]> | null;
     try {
-      const result = await this.client.graphql(read.token, pathsRequest(pathsQuery), read.context.signal);
+      const result = await this.query(read, zoneTags.length, pathsRequest(pathsQuery));
+      // Sem orçamento para ela: o achado sai com o nível das outras rotas.
+      if (isWait(result)) return byZone;
       paths = parsePaths(result.data, pathsQuery);
       if (paths !== null) {
         const rows = [...paths.values()].reduce((sum, rowsOf) => sum + rowsOf.length, 0);

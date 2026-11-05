@@ -179,6 +179,11 @@ export interface GraphqlRequest {
   variables: Record<string, unknown>;
 }
 
+export interface GraphqlOptions {
+  /** Antes de cada envio (a primeira tentativa e as novas): o orçamento de consultas do token é cobrado aqui. */
+  beforeAttempt?: (attempt: number) => Promise<void>;
+}
+
 export interface GraphqlResult {
   /** O `data` da resposta, ainda sem validar. */
   data: unknown;
@@ -312,14 +317,18 @@ export class CloudflareClient {
    * dos dados: o código vem das mensagens (`graphqlErrorCode`), que nunca saem daqui. 400 e 403 também são
    * classificados pelas mensagens do corpo (lido até 64 KiB), sem guardar nada dele; 401 é o token recusado; 429, o
    * limite do token (com o `retry-after`); 5xx, rede e tempo esgotado são tentados de novo, como no GET.
+   *
+   * `beforeAttempt` roda antes de cada envio, inclusive das novas tentativas: cada uma é uma consulta no limite do
+   * Cloudflare, e quem consulta cobra o orçamento dela ali. Se o gancho lançar, nada é enviado e o erro sobe como está.
    */
   async graphql(
     token: CloudflareToken,
     request: GraphqlRequest,
     signal?: AbortSignal,
+    { beforeAttempt }: GraphqlOptions = {},
   ): Promise<GraphqlResult> {
     const body = JSON.stringify(request);
-    const { text, bytes } = await this.send('POST', '/graphql', null, body, token, signal);
+    const { text, bytes } = await this.send('POST', '/graphql', null, body, token, signal, beforeAttempt);
     const envelope = graphqlEnvelopeSchema.safeParse(parseJson(text));
     if (!envelope.success) throw new CloudflareApiError('bad_response', 200);
     const errors = envelope.data.errors ?? [];
@@ -347,7 +356,10 @@ export class CloudflareClient {
     return this.send('GET', path, query, null, token, signal);
   }
 
-  /** Pedido com novas tentativas nas falhas passageiras. O sinal do agendador interrompe também a espera. */
+  /**
+   * Pedido com novas tentativas nas falhas passageiras. O sinal do agendador interrompe também a espera. O gancho
+   * `beforeAttempt` roda antes de cada envio (a primeira tentativa e as seguintes).
+   */
   private async send(
     method: 'GET' | 'POST',
     path: string,
@@ -355,9 +367,11 @@ export class CloudflareClient {
     body: string | null,
     token: CloudflareToken,
     signal: AbortSignal | undefined,
+    beforeAttempt?: (attempt: number) => Promise<void>,
   ): Promise<{ text: string; bytes: number }> {
     for (let attempt = 0; ; attempt += 1) {
       signal?.throwIfAborted();
+      await beforeAttempt?.(attempt);
       try {
         return await this.once(method, path, query, body, token, signal);
       } catch (error) {

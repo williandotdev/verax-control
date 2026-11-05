@@ -523,11 +523,12 @@ voltar depois como modo completo, sem amostragem.
   A resposta 200 com `errors[]` é erro, mesmo com parte dos dados.
 - **Cursor:** cada lote é gravado inteiro (achados, exceção e incidente) antes do pedido seguinte; o progresso da
   janela fica na continuação do cursor, e o cursor vai para o fim da janela só quando o último lote dela está gravado.
-  Uma falha no meio (da origem, do banco, do orçamento de tempo) recomeça do lote que não terminou, e a chave única do
-  achado não deixa a releitura duplicar. Lida a última janela, a próxima leitura é quando a seguinte fechar há 5 min.
+  Uma falha no meio (da origem, do banco, do orçamento de tempo) recomeça do lote que não terminou, mesmo na primeira
+  leitura e mesmo depois de outra janela fechar, e a chave única do achado não deixa a releitura duplicar. Lida a última janela, a próxima leitura é quando a seguinte fechar há 5 min.
 - **Orçamento de consultas:** o Cloudflare aceita 300 consultas GraphQL a cada 5 min por token, e cada zona de cada nó
   conta uma. O coletor se limita a 250: o gasto fica em baldes de um minuto na continuação do cursor, gravado antes de
-  cada consulta, e vale a soma dos últimos 6 minutos (qualquer intervalo de 5 min cabe neles). Sem orçamento, a
+  cada envio (também das novas tentativas do cliente em 5xx, rede e tempo esgotado), e vale a soma dos últimos 6
+  minutos (qualquer intervalo de 5 min cabe neles). Sem orçamento, a
   execução para e marca a próxima leitura para quando ele voltar.
 - **Falhas e conexão:** o 429 (do HTTP ou a mensagem "rate limiter budget depleted" no corpo) esvazia o orçamento e
   adia os três fluxos da conta até o `retry-after` (5 min sem ele); o 429 da auditoria ou da conferência também adia os
