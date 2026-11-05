@@ -62,7 +62,7 @@ WAZUH_SIGNAL_MOUNT=/run/wazuh-signal
 # Modo cliente (fase 3, CP-10; CUSTOMER_MODE=true no node.conf; sem a linha, false): o nó de cliente que o plano de
 # controle cria, sem SSH. O `customer-bootstrap` lê dos metadados da VM as entradas do primeiro acesso, roda o
 # node-bootstrap no modo customer e grava cada senha nova como versão de um segredo do Secret Manager; o worker publica o
-# estado do nó nos guest attributes (NODE_STATUS e NODE_VERSION no worker.env). O nó da Verax não liga: nada disso roda,
+# estado do nó nos guest attributes (NODE_STATUS e VERAX_NODE_COMMIT no worker.env). O nó da Verax não liga: nada disso roda,
 # e os arquivos de ambiente saem como antes.
 customer() { [[ ${CUSTOMER_MODE:-false} == true ]]; }
 # Entradas do primeiro acesso: a chave nos metadados da instância (gravada pelo Terraform do tenant) e a variável do
@@ -401,7 +401,7 @@ render() {
         echo "NODE_VERSION ausente ou fora do formato em $images_env: rode o deploy.sh (ou o install.sh na VM) de novo." >&2
         return 1
       fi
-      node_status=(NODE_STATUS=true "NODE_VERSION=$version")
+      node_status=(NODE_STATUS=true "VERAX_NODE_COMMIT=$version")
       ;;
     false) ;;
     *)
