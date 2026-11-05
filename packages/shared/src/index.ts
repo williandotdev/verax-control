@@ -10,6 +10,7 @@ export * from './findings.js';
 export * from './history.js';
 export * from './incidents.js';
 export * from './inventory.js';
+export * from './notification-preferences.js';
 export * from './pagination.js';
 export * from './permissions.js';
 export * from './plan-usage.js';

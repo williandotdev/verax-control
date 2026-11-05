@@ -37,6 +37,8 @@ import {
   RETENTION_TASK,
   RetentionJob,
 } from './retention/retention-job.js';
+import { WazuhStatsClient } from './usage/wazuh-stats.js';
+import { WAZUH_USAGE_INTERVAL_MS, WAZUH_USAGE_TASK, WazuhUsage } from './usage/wazuh-usage.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -126,7 +128,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * ficam `skipped`.
  *
  * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
- * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google.
+ * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google. Com a API do
+ * manager (`WAZUH_API_URL`, a CA e a senha do verax_stats), a tarefa `wazuh-usage` (a cada 5 min) mede o volume da AWS
+ * pelos contadores do analysisd e acompanha a saúde da ingestão (a Torre e o aviso `aws_ingestion_stalled`).
  *
  * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
  * publica o estado do nó nos guest attributes da VM para o plano de controle.
@@ -249,6 +253,25 @@ async function main(): Promise<void> {
         intervalMs: WAZUH_CONFIG_INTERVAL_MS,
         budgetMs: SYNC_BUDGET_MS,
         run: (signal) => wazuhConfig.runOnce(signal),
+      });
+    }
+    // Medidor da AWS e saúde da ingestão (perfil standard, PR-V6): os contadores do analysisd pela API do manager, com o
+    // usuário verax_stats (só manager:read) e o TLS conferido com a CA do nó.
+    if (config.wazuhApi !== null) {
+      const stats = new WazuhStatsClient({
+        url: config.wazuhApi.url,
+        caFile: config.wazuhApi.caFile,
+        password: config.wazuhApi.password(),
+      });
+      const usage = new WazuhUsage(prisma, stats, {
+        logger,
+        agentsTenantId: config.wazuhAgents?.tenantId ?? null,
+      });
+      tasks.push({
+        name: WAZUH_USAGE_TASK,
+        intervalMs: WAZUH_USAGE_INTERVAL_MS,
+        budgetMs: SYNC_BUDGET_MS,
+        run: (signal) => usage.runOnce(signal),
       });
     }
 

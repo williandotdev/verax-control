@@ -274,6 +274,31 @@ describe('Usuários (T7.2)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(sheet).getByText(/Ninguém altera o próprio acesso/)).toBeInTheDocument();
     expect(within(sheet).queryByRole('button', { name: 'Gerar senha temporária' })).not.toBeInTheDocument();
     expect(within(sheet).queryByLabelText('Papel')).not.toBeInTheDocument();
+    // Os próprios avisos por e-mail, só em Minha conta.
+    expect(within(sheet).getByRole('link', { name: 'Minha conta' })).toHaveAttribute('href', '/minha-conta');
+  });
+
+  it("coluna Recebe alertas (PR-17'): o papel e a escolha de cada pessoa, só para ler", async () => {
+    const state: MockState = { me: demoMe('admin_cliente', { userId: 'demo-marina.alves' }) };
+    renderAt('/cadastros/usuarios', state);
+    const table = await screen.findByRole('table', { name: 'Usuários do cliente' });
+    expect(within(table).getByRole('columnheader', { name: 'Recebe alertas' })).toBeInTheDocument();
+    const rows = await rowsOf('Usuários do cliente');
+    const alertsOf = (name: string) => {
+      const row = rows.find((candidate) => candidate.textContent?.includes(name));
+      return within(row as HTMLElement)
+        .getAllByRole('cell')
+        .at(-1)?.textContent;
+    };
+    expect(alertsOf('Marina Alves')).toBe('Sim');
+    expect(alertsOf('Ana Souza')).toBe('Sim');
+    expect(alertsOf('João Lima')).toBe('Não (desligou)');
+    expect(alertsOf('Diretoria')).toBe('Não (papel)');
+    // Nada para mudar a escolha de outra pessoa: nem na linha, nem no detalhe.
+    expect(within(table).queryByRole('checkbox')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /João Lima/ }));
+    const sheet = await screen.findByRole('dialog', { name: 'João Lima' });
+    expect(within(sheet).queryByRole('checkbox')).not.toBeInTheDocument();
   });
 
   it('o mock recusa como a API: a própria conta (403), conta desativada (409) e sem permissão (403)', async () => {

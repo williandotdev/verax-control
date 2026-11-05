@@ -130,14 +130,21 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
   processos de um OOM; o heap travado não vai para ele.
 - **Redes no `standard`:**
   - `verax`: Postgres, API, worker e cloudflared;
-  - `wazuh`, interna: indexer e manager. O indexer não tem porta publicada nem rota para fora;
+  - `wazuh`, interna: indexer, manager e worker. O indexer não tem porta publicada nem rota para fora; o worker (que
+    não abre porta) entra só para ler os contadores da API do manager (PR-V6, usuário `verax_stats`);
   - `wazuh-read`, interna: indexer, API e worker, que só leem. A API nunca divide rede com o manager, que processa
     log de fora como root: numa rede só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o
-    `X-Forwarded-For` em que ela confia;
+    `X-Forwarded-For` em que ela confia (o CI exige que a API e o manager não dividam rede nenhuma);
   - `wazuh-egress`: só o manager, para a saída ao S3 e ao STS. O manager não alcança o Postgres.
 - **Usuários do indexer no `standard`:** o filebeat do manager grava com `wazuh_filebeat` (só escrita em
   `wazuh-alerts-*`); a API e o worker leem com `verax_api_read`; a senha do `admin` não fica em nenhum contêiner que
   fica no ar (os scripts usam o certificado admin).
+- **API do manager no `standard` (PR-V6):** o certificado é o par do manager da CA própria do Wazuh (nome
+  `wazuh.manager`), que o `manager-api-tls.sh` põe nela a cada partida do contêiner, antes dos daemons; quem a chama
+  confere com a CA (o worker, pelo volume público; o host, pelo loopback com o nome). Usuários: `wazuh-wui`
+  (administrador, só o host e os scripts) e `verax_stats` (só `manager:read`, o worker), criado e acertado pelo
+  `init-api-users.sh` no `start.sh wazuh-up`, pela API, de forma idempotente. A senha do `verax_stats` é a quinta do
+  Wazuh, gerada pelo `install.sh`, e não chega ao manager.
 - **Serviços do systemd:** nos dois perfis, `verax-metadata-guard` (a guarda do servidor de metadados, antes do Docker
   e exigida por ele: sem ela o Docker não sobe, e ela não aceita `stop` nem `restart` manual) e `verax-node` (a
   aplicação, que exige a guarda); no `standard`, também `verax-wazuh` (o Wazuh, depois da aplicação, que o
@@ -468,7 +475,29 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
    - Erros próprios: `trust_denied`, `token_invalid`, `idp_unavailable`, `metadata_unavailable` (o metadata do nó),
      `region_disabled` e `aws_unavailable`; o token do host sem renovar (`aws_token_stale`) é um aviso da coleta, no
      campo dela (`collectionError`, passo 2).
-4. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
+4. **Medir e acompanhar (PR-V6, feito):** a tarefa `wazuh-usage` do worker (`apps/api/src/usage/wazuh-usage.ts`, a
+   cada 5 min) lê os contadores do analysisd do Wazuh do nó (`GET /manager/daemons/stats?daemons_list=wazuh-analysisd`,
+   usuário `verax_stats`, TLS conferido com a CA e o nome `wazuh.manager`, resposta conferida com zod).
+   - **Medidor:** soma ao uso do cliente (`IngestUsage`, fonte `aws`) a diferença desde a leitura anterior dos bytes
+     recebidos pelo analysisd (`metrics.bytes.received`, tudo o que ele lê) e dos eventos do módulo da AWS
+     (`…modules_breakdown.aws`). Numa partida nova do analysisd (o `uptime` mudou) ou com um contador menor que a base,
+     soma o valor inteiro. A base (`WazuhCounter`, dado de sistema) e o uso entram na mesma transação, com a base
+     conferida: outra execução no meio desfaz esta. A primeira leitura de um nó vira só a base (a dúvida a favor do
+     cliente), e o que chega entre a última leitura e um reinício do analysisd se perde.
+   - **Um cliente por nó:** os clientes com conta AWS ativa (e o dos agentes do Wazuh, ligados) são os donos possíveis
+     do volume. Com mais de um, a leitura vira só a base, `WazuhCounter.meterBlocked` fica `multiple_tenants`, o log
+     avisa a cada execução (só a contagem de clientes) e a Torre da equipe da Verax mostra "Medidor da AWS parado";
+     nenhum cliente vê isso. A ambiguidade fica gravada na base também quando a leitura falha, e a primeira leitura
+     depois de uma base ambígua é só a base nova: o volume de um intervalo em que havia mais de um cliente nunca é
+     cobrado de quem sobra (revisão do PR #87).
+   - **Saúde (`IngestHealth`, no escopo do cliente):** com conta AWS conectada, a última vez que os eventos da AWS
+     andaram (ou o começo da observação). Parada há mais de 2 h, a Torre mostra "Sem logs novos da AWS" e um aviso
+     `aws_ingestion_stalled` vai para a fila de saída (PR-16), uma vez por parada (chave `aws-stalled:<começo>`); os
+     eventos de volta rearmam. Sem a leitura (o manager fora do ar), o prazo corre do mesmo jeito. O contador é do nó,
+     então a parada é do cliente, não de uma conta: com duas contas conectadas, uma parada só aparece quando as duas
+     param. A observação de quem não é o dono de agora (mais de um cliente, nenhuma conta AWS ativa, ou o cliente que
+     saiu do nó) é limpa: a conta que volta começa uma observação nova, sem a parada antiga nem um aviso na hora.
+5. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
    sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
 
 **Riscos residuais e mitigação:**
@@ -683,7 +712,7 @@ ambiente e o projeto do Compose saem byte a byte como antes e o nó não publica
 ```
 instância do cliente (agente) ──TCP 1514 e 1515──► IP fixo de entrada (regra de encaminhamento da GCP, só das faixas
                                                     do cliente) ──► VM do nó, sem IP externo ──► Docker ──► manager
-host do nó (timer, a cada minuto) ──docker exec──► API do manager (localhost:55000) ──► /run/verax/wazuh-agents/agents.json
+host do nó (timer, a cada minuto) ──docker exec──► API do manager (wazuh.manager:55000) ──► /run/verax/wazuh-agents/agents.json
 worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente do nó) ──► API ──► painel (Agentes)
 ```
 
@@ -715,9 +744,10 @@ worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente d
   estado (as detecções viram alertas). Os pacotes do script são os oficiais da versão do manager, conferidos pelo
   SHA-512 publicado pela Wazuh numa pasta temporária própria (`mktemp -d` no Linux; no Windows, nome aleatório e ACL
   só de Administradores e SYSTEM), apagada no fim, sem acrescentar repositório.
-- **Como o painel sabe dos agentes sem falar com o manager:** nem a API nem o worker dividem rede com ele. O host, que
-  já fala com o contêiner do manager pelo Docker, pede a lista à API dele (`localhost:55000`, usuário `wazuh-wui`, a
-  senha pela entrada padrão do curl) a cada minuto, só com os campos do painel, e grava o arquivo em `/run/verax`
+- **Como o painel sabe dos agentes sem falar com o manager:** a API não divide rede com ele, e o worker só lê os
+  contadores do analysisd (`verax_stats`, PR-V6). O host, que já fala com o contêiner do manager pelo Docker, pede a
+  lista à API dele (`wazuh.manager:55000` pelo loopback, TLS conferido com a CA do nó, usuário `wazuh-wui`, a senha
+  pela entrada padrão do curl) a cada minuto, só com os campos do painel, e grava o arquivo em `/run/verax`
   (memória), com teto de tamanho. O worker o lê montado só leitura, confere cada campo com zod (a resposta é entrada
   não confiável), grava em `WazuhAgent` no cliente do nó (`WAZUH_AGENTS_TENANT`) e tira o que saiu do manager; a API lê
   pelo escopo da sessão. O indexer não serve: sem o dashboard, ninguém grava o estado dos agentes em
@@ -777,7 +807,8 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
-_(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado)_
+_(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
+preferência de cada pessoa e o resumo por hora)_
 
 O nó avisa por e-mail, sem depender de quem está com o painel aberto. O aviso passa por uma fila de saída (_outbox_) no
 Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dentro da transação que grava o achado.
@@ -785,13 +816,15 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
 - **Quando nasce um aviso**, sempre com uma chave de deduplicação única por cliente (o mesmo fato avisa uma vez só,
   por mais que seja relido):
 
-  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe      |
-  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ---------------- |
-  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista |
-  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista |
-  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista |
-  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin       |
-  | `aws_ingestion_stalled` | a coleta da AWS para (tipo e texto prontos; quem emite é o medidor do PR-V6)  | a definir no PR-V6           | só o admin       |
+  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe       |
+  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ----------------- |
+  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista¹ |
+  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista¹ |
+  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista¹ |
+  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin        |
+  | `aws_ingestion_stalled` | com conta AWS conectada, os eventos da AWS parados há mais de 2 h (PR-V6)     | `aws-stalled:<começo>`       | só o admin        |
+
+  ¹ Quem não desligou os avisos de incidente em Minha conta (PR-17', abaixo).
 
   Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
   GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
@@ -805,9 +838,10 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   `interno` (nó da Verax) não tem limite, e nada é calculado.
 - **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
   - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - os resumos das horas que fecharam saem antes dos avisos novos (abaixo);
   - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
-    senha pendente, do papel que o tipo pede, com o cliente ativo. `leitura` não recebe (decisão D8); a equipe da Verax
-    não é do cliente;
+    senha pendente, do papel que o tipo pede, com o cliente ativo e, nos três avisos de incidente, com a preferência
+    ligada. `leitura` não recebe (decisão D8); a equipe da Verax não é do cliente;
   - um e-mail por pessoa, pelo mesmo transporte da API (`mailTransport`, SMTP com TLS no nó). O id de quem já recebeu
     fica no aviso, e a nova tentativa não repete o e-mail;
   - falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
@@ -816,18 +850,47 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     envio de um aviso numa execução (1 min) esgotado (`delivery_timeout`, e o lote segue para o aviso seguinte) ou a
     execução interrompida no meio (orçamento de 5 min da tarefa ou parada do worker: a tentativa é gravada antes de a
     interrupção subir). Um aviso preso volta para o fim da fila e chega ao `failed` na quinta, sem segurar os outros;
-  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped`. Ligar o e-mail depois
-    não dispara os avisos antigos;
+  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped` (`mail_disabled`,
+    `no_recipients`, ou `opted_out` quando havia quem recebesse e todos desligaram). Ligar o e-mail depois não dispara os
+    avisos antigos;
   - uma falha no cálculo do volume não segura os avisos de incidente.
+- **Preferência de aviso (PR-17', `NotificationPreference`):** cada pessoa escolhe, em Minha conta
+  (`GET` e `PUT /v1/notification-preferences`, corpo estrito `{ incidentEmails }`), se recebe os avisos de incidente e
+  de achado crítico. Sem linha, recebe. Só a própria pessoa muda a dela (a rota não recebe id), a mudança entra na
+  trilha (`user.notification_preference`, com o estado anterior e o novo), e a lista de Usuários mostra a coluna
+  "Recebe alertas" só para ler. `leitura` e a equipe da Verax leem `eligible: false`, e a mudança é recusada (403). Os
+  avisos do volume do plano e da coleta parada não dependem dela: sem eles, ninguém do cliente saberia que a coleta
+  parou ou que o plano encheu.
+- **Resumo por hora (PR-17', `NotificationDigest`):** uma linha por pessoa e hora cheia (UTC, que bate com a de
+  Brasília) conta os e-mails avulsos da hora. Até 5 saem avulsos; do 6º aviso da hora em diante, o aviso entra no
+  resumo da pessoa (o id do aviso na linha e a pessoa em `digestedUserIds` do aviso, na mesma transação), e o resumo
+  sai uma vez, quando a hora fecha, com até 10 itens (os críticos primeiro, depois na ordem da fila) e "e mais N" com
+  o link do painel. O resumo não conta na hora seguinte, e a contagem recomeça a cada hora.
+  - **retomada:** o aviso com 24 h ou mais na fila (o worker parado, o e-mail falhando) nunca sai avulso: entra no
+    resumo da hora, que vira "Retomada dos avisos atrasados";
+  - **as mesmas regras do aviso:** assunto fixo, os títulos fixos dos tipos, a hora de cada item e o link do painel,
+    nada do achado, HTML escapado; 1, 5, 15 e 60 min de recuo e `failed` na quinta; a concessão de sempre (os resumos
+    saem na mesma tarefa, até 20 por execução, e param se outra réplica a toma). A pessoa e a preferência são
+    conferidas de novo no envio: quem perdeu o acesso não recebe (`no_recipients`), e quem desligou os avisos de
+    incidente não recebe os que estavam reunidos (`no_items`);
+  - a interrupção no meio de um aviso grava a tentativa como antes, e quem já foi para o resumo fica guardado: não é
+    reunido de novo.
+- **Contato de escalonamento (D8):** o contato do cadastro do cliente não recebe e-mail automático. O endereço só tem o
+  formato conferido (ninguém confirmou que a caixa é da pessoa), ele não entra no painel para deixar de receber, e a
+  fila e o resumo contam pessoas pelo id de usuário. Fica para um PR próprio (confirmação do endereço, descadastro e o
+  estado de entrega dele).
 - **O que o e-mail diz:** assunto fixo por tipo e severidade (sem CR nem LF), um texto fixo e o link do painel
   (`${WEB_ORIGIN}/incidentes/<id>`, `/achados?achado=<id>`, `/cadastros/contas` ou `/cadastros/plano`). Nenhum IP, usuário,
   chave, recurso, conta, título de regra ou região: o e-mail pode ser encaminhado, e os detalhes ficam atrás do login
-  com MFA. O nome de quem recebe vai escapado no HTML.
-- **Nada de endereço no log nem na fila:** a tabela guarda só o id de quem recebeu; o log do worker leva só as
-  contagens da execução.
-- **Isolamento e expurgo:** `Notification` entra no escopo do cliente (`TENANT_SCOPED_MODELS`). A chave estrangeira do
-  achado inclui o cliente, e um gatilho confere o cliente do incidente. Apagar o incidente ou o achado apaga o aviso
-  junto, e o expurgo diário (seção "Expurgo do histórico") apaga os avisos resolvidos sem mudança há 90 dias.
+  com MFA. O nome de quem recebe vai escapado no HTML. Nos avisos de incidente, o fecho diz como deixar de receber
+  (Minha conta).
+- **Nada de endereço no log nem na fila:** a fila e o resumo guardam só o id de quem recebeu (ou de quem foi para o
+  resumo); o log do worker leva só as contagens da execução (`folded` e `digests` incluídos).
+- **Isolamento e expurgo:** `Notification`, `NotificationPreference` e `NotificationDigest` entram no escopo do cliente
+  (`TENANT_SCOPED_MODELS`). A chave estrangeira do achado inclui o cliente, um gatilho confere o cliente do incidente,
+  e outro confere que a pessoa da preferência e do resumo é do mesmo cliente (a equipe da Verax, sem cliente, nunca
+  passa). Apagar o incidente ou o achado apaga o aviso junto, e o expurgo diário (seção "Expurgo do histórico") apaga
+  os avisos resolvidos e as horas de avisos (o resumo resolvido e a hora só de contagem) sem mudança há 90 dias.
 - **Configuração:** o worker recebe o mesmo bloco de e-mail da API (`MAIL_TRANSPORT`, `MAIL_FROM`, `SMTP_*`) e a
   origem do painel (`WEB_ORIGIN`), que o `start.sh` escreve no `worker.env` só com `MAIL_TRANSPORT=smtp` no
   `node.conf`. Sem o e-mail, o `worker.env` não muda, e o worker sobe com `none`. Nos nós de clientes, o SMTP é o da
@@ -858,7 +921,9 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
 - **Recusa:** 409 com o código `PLAN_LIMIT_REACHED` e a mensagem que diz o limite ("Seu plano permite até 3 contas
   cloud ativas. Desative uma conta ou fale com a Verax para ampliar."), na trilha do cliente como falha, com a ação de
   sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
-- **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte.
+- **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte
+  (`aws` pela tarefa `wazuh-usage`, PR-V6: os bytes que o analysisd do nó recebe, que incluem os dos agentes do Wazuh
+  quando ligados).
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
   mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
 - **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
@@ -913,17 +978,17 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 - **O que sai** (o corte é o prazo mais um dia de folga, para o relatório do período sair completo; o próprio corte
   fica):
 
-  | Dado                                                                     | Regra                                                                                                                                                                                                                                                      |
-  | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira |
-  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                           |
-  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                           |
-  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                  |
-  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                    |
-  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. Entra quando a fila de saída (PR-16) estiver no código      |
-  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas)                                                                                                                                                                                        |
-  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                            |
-  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                        |
+  | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                    |
+  | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                               |
+  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                         |
+  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                         |
+  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                |
+  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                  |
+  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo |
+  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas)                                                                                                                                                                                                                      |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                                                          |
+  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                      |
 
 - **Imutabilidade (revisão linha a linha):** a trilha de auditoria e os comentários dos achados continuam só INSERT,
   com uma exceção estreita. UPDATE e TRUNCATE ficam sempre bloqueados pelos triggers. DELETE só passa no trigger com a
@@ -1189,9 +1254,8 @@ do módulo, desligados por padrão (o nó da Verax e a homologação não mudam)
    nome do cliente são dados de cadastro, que ficam nos metadados enquanto o nó existir, e a instalação os trata como
    dado (nunca os interpreta num shell). O projeto vem de `project/project-id`. O IP de saída (`NODE_EGRESS_IPS`)
    fica de fora: o checkov 3.4.0 não avalia os metadados da VM com uma referência ao IP reservado do NAT, e deixaria
-   de conferir as chaves de segurança dela; a instalação o descobre pela própria saída ou o recebe do plano de controle
-   (saída `nat_ip`), decisão do PR-N7. O ID único da conta da VM também está no `sub` do token de identidade que ela
-   pede ao servidor de metadados.
+   de conferir as chaves de segurança dela; a instalação o descobre pela própria saída (seção seguinte, PR-N7). O ID
+   único da conta da VM também está no `sub` do token de identidade que ela pede ao servidor de metadados.
 
    | Chave                           | No nó                                         | De onde vem               |
    | ------------------------------- | --------------------------------------------- | ------------------------- |
@@ -1224,6 +1288,128 @@ projeto dos nós (redes VPC por projeto, endereços IP externos estáticos e CPU
 projeto novo e limitam o número de clientes antes do resto: conferir no console (IAM e administrador, Cotas) na
 primeira venda e pedir aumento antes de chegar perto, contando a homologação. Uma rede compartilhada entre os nós é
 mudança do módulo numa fase seguinte, quando passar de cerca de 10 clientes.
+
+### Instalação sem operador (PR-N7)
+
+O nó de cliente se instala sozinho no primeiro boot, sem SSH, a partir do release assinado da versão que o Terraform
+pôs nos metadados. É o interruptor `unattended_install` do módulo (desligado por padrão; o `envs/tenant` liga; exige
+os três contratos acima, os dois cofres das senhas e o perfil `standard`). Desligado, a chave `startup-script` é o
+`startup.sh.tftpl` de sempre, byte a byte: o nó da Verax (que nem usa o script do módulo) e a homologação não mudam.
+
+**Cadeia de confiança.** Tudo o que roda antes de o release ser conferido vem do Terraform, nos metadados da VM (quem
+escreve os metadados já manda na VM): o script de boot (`unattended.sh.tftpl`) leva, em base64, o script de boot de
+todo nó (swap cifrado e kernel), o instalador (`infra/node/bin/boot-install.sh`), o verificador do manifesto
+(`infra/node/bin/verify-release.sh`, o do SH-02) e as chaves públicas de release (`infra/node/keys/release-*.pem`). Ele
+os escreve em `/run/verax-boot` (tmpfs, 0700) e roda o instalador de lá, uma execução por vez (`flock`). Do GitHub vêm
+só dados, conferidos nesta ordem antes de qualquer execução: a assinatura do `manifest.json` com aquelas chaves, depois
+os campos do manifesto, depois o SHA-256 do pacote (que tem de ser o mesmo nos metadados e no manifesto assinado).
+Só então o `install.sh` do pacote roda. As imagens são as do manifesto, pelo digest: a API e as migrations com os
+digests de `images.api` e `images.migrate` (o `install.sh` recebe `--api-digest` e `--migrate-digest`), e as de
+terceiros pelo digest dos compose do pacote, que o instalador confere serem exatamente as de `thirdPartyImages`.
+O executor do plano de controle (CP-07) precisa ter o `infra/node` ao lado do `infra/gcp`: o módulo lê esses
+arquivos no `plan`.
+
+**O que a instalação faz, na primeira vez** (o marcador `/var/lib/verax/boot/installed` ainda não existe):
+
+1. apaga `verax/ready` e `verax/error` (o plano de controle só vê `ready` quando o nó estiver de pé neste boot) e roda
+   o script de boot de todo nó (swap cifrado e kernel);
+2. lê as chaves `verax-*` (tabela acima) e o projeto, e confere cada valor antes de usar: só ASCII visível, tamanho
+   máximo e uma expressão regular por campo (as do `envs/tenant`, do `install.sh` e do `node-release.sh`). O
+   `verax-config-version` tem de ser `1` e o `verax-node-profile` tem de ser o perfil do script de boot. Nome do cliente
+   e e-mails (CP-10) só têm a presença conferida, e nada deles vai para a tela, para variável do instalador nem para
+   guest attribute. O `MAIL_FROM` com apóstrofo, que o `envs/tenant` aceita, é recusado: o arquivo de ambiente do
+   `start.sh` não o comporta;
+3. instala o `jq` pelo apt, se faltar (pacote do Debian), baixa `manifest.json` e `manifest.json.sig` do release
+   `verax-node-version` do GitHub (só HTTPS, também nos redirecionamentos, com teto de tamanho) e confere a assinatura;
+4. confere o manifesto: `schema` 1, `kind`, `release` igual à versão pedida, `version` (o commit), a URL do pacote do
+   próprio release, `package.sha256` igual ao dos metadados e as duas imagens do Verax no GHCR pelo digest;
+5. baixa o pacote, confere o SHA-256, confere que só há caminhos dentro de `verax-node/` e abre;
+6. descobre o IP de saída (abaixo) e escreve o `node.conf` do modo cliente só com valores conferidos; cada linha passa
+   de novo por um formato sem nada que o `source` do `install.sh` e do `start.sh` interprete (letras, dígitos e
+   `@._+:/,-`);
+7. roda o `install.sh` do pacote com o commit, os dois digests, `--release <versão>` e o `node.conf` (com o apt
+   esperando a trava, em vez de falhar, só nessa execução) e grava o marcador.
+
+**Em todo boot, depois:** espera o `verax-node`, o `verax-wazuh` e o `verax-customer-bootstrap` (o primeiro acesso do
+CP-10, que grava a senha no `admin-bootstrap`) ficarem ativos; se o `start.sh up` subiu sem o token do túnel (o
+`cloudflared.env` vazio), relê o cofre a cada 60 s por até 60 min com o `start.sh tunnel`, que sobe só o
+`cloudflared`; e grava `verax/ready=<versão>`. Uma falha grava `verax/error=<código>` e o boot seguinte tenta de novo.
+A saída do instalador vai para o journal e para a saída serial da VM (`gcloud compute instances
+get-serial-port-output`), sem nenhum valor pessoal: é o diagnóstico sem SSH.
+
+**Versão.** O `node-vX.Y.Z` (a tag do release, o `verax-node-version` dos metadados e o `release` do manifesto) e o
+commit (o `version` do manifesto) convivem: o `install.sh` grava em `/etc/verax/images.env` o `NODE_VERSION` (o commit,
+como sempre: é o que o `start.sh` confere, o `env.schema.ts` aceita e o worker publica em `verax/version`) e, só quando
+recebe `--release`, o `NODE_RELEASE`. O `verax/ready` é o `NODE_RELEASE` (o que o plano de controle pediu e compara no
+`node.wait_ready`); num nó atualizado depois pelo `deploy.sh`, que não passa `--release`, vira o commit. O nó da Verax
+e o `deploy.sh` não mudam: sem `--release`, o `images.env` é o de antes, linha a linha.
+
+**Atualização não é automática.** Instalado o nó, uma versão diferente nos metadados (um `apply` do tenant com outra
+`node_version`) só aparece no log do boot; nada é baixado nem instalado. Instalar sozinho, num reboot qualquer, rodaria
+migrations sem backup, sem janela e sem volta (o que o SH-06 desenha). A atualização continua com o `deploy.sh`, pelo
+operador, com o `node.conf` que a instalação escreveu (`/etc/verax/node.conf` da VM). Um nó instalado só pelo
+`deploy.sh` (sem o marcador) também não é tocado. Uma instalação que parou no meio (o marcador `installing`) é refeita
+do começo no boot seguinte: o `install.sh` pode rodar de novo.
+
+**Valores que a instalação decide** (não estão nos metadados):
+
+- `NODE_EGRESS_IPS`: o IP de saída com `/32`, perguntado a `https://checkip.amazonaws.com` (só HTTPS), que responde o
+  IP de origem como a AWS o vê. É esse IP que a AWS compara com o `aws:SourceIp` da pilha do papel de leitura, e todo
+  o tráfego do nó `standard` sai pelo IP reservado do NAT. Um valor fora do formato (ou nenhum) para a instalação
+  (`egress_ip_unknown`); um valor errado só faria a AWS recusar o nó (a pilha libera um IP só, e entrar no papel ainda
+  exige o token da conta da VM). Alternativas descartadas: a API do Compute (uma permissão nova da VM no projeto dos
+  nós inteiro, porque endereço não aceita IAM por recurso) e uma segunda aplicação do tenant com a saída `nat_ip`;
+- `MAIL_TRANSPORT=none`: ninguém grava o `smtp-password` de um tenant (contas com senha temporária);
+- `SYNC_SOURCES=gcp,wazuh,cloudflare` (sem `cloudflare` se o cofre de credenciais estiver desligado);
+- `WAZUH_AGENTS=false` e `CUSTOMER_MODE=true`.
+
+**Códigos de `verax/error`** (só o código; o motivo fica na saída serial):
+
+| Código                      | Quando                                                                          |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `metadata_missing`          | uma chave `verax-*` (ou o projeto) falta ou, no CP-10, está vazia               |
+| `metadata_invalid`          | um valor fora do formato, o contrato ou o perfil errado, enterprise sem limites |
+| `metadata_unavailable`      | o servidor de metadados não respondeu                                           |
+| `prepare_failed`            | o script de boot de todo nó (swap cifrado e kernel) falhou                      |
+| `dependencies_failed`       | o `jq` não instalou                                                             |
+| `release_download_failed`   | o manifesto, a assinatura ou o pacote não baixaram                              |
+| `release_signature_invalid` | a assinatura não fecha com as chaves de release                                 |
+| `release_verifier_failed`   | o verificador não rodou (chave fora do formato, arquivo ausente)                |
+| `release_manifest_invalid`  | o manifesto assinado é de outra versão ou está fora do formato                  |
+| `package_sha256_mismatch`   | o SHA-256 dos metadados não é o do manifesto, ou o pacote baixado não fecha     |
+| `package_invalid`           | o pacote não abre, tem caminho fora, ou imagens de terceiros fora do manifesto  |
+| `egress_ip_unknown`         | o IP de saída não foi descoberto                                                |
+| `install_failed`            | o `install.sh` falhou                                                           |
+| `node_start_failed`         | o `verax-node` não subiu                                                        |
+| `wazuh_start_failed`        | o `verax-wazuh` não subiu                                                       |
+| `customer_bootstrap_failed` | o primeiro acesso do cliente falhou de vez (ou não terminou no prazo)           |
+| `tunnel_token_missing`      | o token do túnel não chegou ao cofre em 60 min                                  |
+| `install_state_invalid`     | o nó instalado perdeu o `/etc/verax/images.env`                                 |
+
+**Origem das imagens do Verax.** O `envs/tenant` manda `verax-images-repository` com o Artifact Registry do projeto da
+Verax (CP-06), e o `install.sh` baixa de lá pelo digest do manifesto (o mesmo nos dois registros). O `install.sh` e a
+instalação aceitam também `ghcr.io/<dono>/<repositório>` (o do próprio manifesto), sem o ajudante de credenciais do
+`gcloud`. **Risco:** a limpeza do Artifact Registry (`envs/verax/images.tf`) apaga, depois de 30 dias, toda versão que
+não está entre as 3 mais recentes nem marcada `no-`; um release promovido há mais tempo pode não estar mais lá, e a
+instalação de um cliente novo nessa versão para em `install_failed`. Saídas, decisão do responsável: apontar o tenant
+para o GHCR (público e sem limpeza; uma linha no `envs/tenant`) ou marcar as imagens de cada release com uma tag `no-`
+no Artifact Registry (mais uma permissão no workflow de release).
+
+**Imagens de terceiros: pela origem, sem espelho (decisão em aberto).** O plano da fase 2 previa espelhar no Artifact
+Registry as imagens do Wazuh, do PostgreSQL e do cloudflared, para o nó gerenciado não depender do Docker Hub. O SH-02
+decidiu baixá-las da origem pelo digest (o manifesto as lista assim), e este passo segue essa decisão:
+
+- **a favor do espelho:** o Docker Hub limita o pull anônimo por IP e pode estar fora do ar no boot de um cliente (as
+  quatro imagens de terceiros vêm de lá; cada nó tem o próprio IP de saída e baixa cada uma uma vez, bem abaixo do
+  limite, e o `start.sh` não baixa de novo o que já está no disco);
+- **contra:** o armazenamento pago no Artifact Registry (o manager e o indexer do Wazuh têm cerca de 2,7 e 2,6 GB
+  descompactados, por versão), um workflow e uma permissão a mais para copiar, e a redistribuição de imagem GPL
+  (Wazuh), cujas obrigações não foram verificadas.
+
+O espelho não muda o manifesto (o digest é o mesmo), só o registro de onde os compose baixam.
+
+**Ainda fora:** observar o metadado `verax-renew-admin-password` (o Terraform é dono dos metadados: precisa virar
+variável do tenant) e as partes do modo próprio (código de ativação, chave do nó).
 
 ### Exclusão em dois tempos
 
@@ -1316,10 +1502,10 @@ Preparação do modo próprio (o nó na nuvem do cliente, que vem depois do port
 GCP da Verax precisa baixar as imagens sem login e saber, sem o `gh` e sem falar com a Verax, que a versão foi
 publicada por ela. O roteiro e os passos únicos do responsável estão em `docs/runbooks/versao-no.md`.
 
-| Imagem                                      | Nó gerenciado (GCP da Verax)                            | Nó na nuvem do cliente                                   |
-| ------------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------- |
-| API e migrations (do Verax)                 | Artifact Registry privado, pelo `deploy.sh`             | GHCR público (`ghcr.io/williandotdev/verax-control/...`) |
-| Wazuh, PostgreSQL e cloudflared (terceiros) | Registro de origem, pelo digest dos compose (como hoje) | Registro de origem, pelo digest dos compose              |
+| Imagem                                      | Nó gerenciado (GCP da Verax)                                                                             | Nó na nuvem do cliente                                   |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| API e migrations (do Verax)                 | Artifact Registry privado, pelo `deploy.sh` ou pelo digest do manifesto (instalação sem operador, PR-N7) | GHCR público (`ghcr.io/williandotdev/verax-control/...`) |
+| Wazuh, PostgreSQL e cloudflared (terceiros) | Registro de origem, pelo digest dos compose (como hoje)                                                  | Registro de origem, pelo digest dos compose              |
 
 - **O mesmo digest nos dois registros.** O workflow `Imagens do nó` publica no Artifact Registry e, num job separado
   (o único com `packages: write`), copia o manifesto byte a byte para o GHCR com
@@ -1344,7 +1530,10 @@ publicada por ela. O roteiro e os passos únicos do responsável estão em `docs
   Registry para o nó gerenciado não depender do Docker Hub. Para o nó na nuvem do cliente, a proposta do modo próprio
   troca isso por "terceiros pela origem, pelo digest", para a Verax não redistribuir imagem GPL a terceiros. Este
   passo segue a proposta e não espelha nada; o manifesto já descreve as imagens de terceiros pelo digest, então um
-  espelho privado só para os nós gerenciados, se o N7 o mantiver, não muda o manifesto.
+  espelho privado só para os nós gerenciados não mudaria o manifesto. O PR-N7 manteve a origem e deixou o espelho
+  como decisão em aberto ("Instalação sem operador", acima).
+- **Quem usa o manifesto hoje:** a instalação sem operador do nó de cliente (PR-N7), com as chaves que o Terraform
+  põe no script de boot.
 
 ## Ordem de execução
 

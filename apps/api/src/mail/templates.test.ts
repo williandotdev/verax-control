@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type NoticeMail, noticeMail } from './templates.js';
+import { type DigestItem, type DigestMail, digestMail, type NoticeMail, noticeMail } from './templates.js';
 
 const origin = 'https://cliente.control.exemplo.com.br';
 const incidentLink = `${origin}/incidentes/018f2c1e-0000-7000-8000-0000000000c1`;
@@ -75,10 +75,27 @@ describe('e-mail dos avisos (PR-16)', () => {
         'Por segurança, os detalhes (contas, recursos, IPs e identidades) aparecem só no painel, depois do login com MFA.',
         `Ver o incidente: ${incidentLink}`,
         'Você recebe este aviso por ter acesso a este cliente no Verax Control.',
+        'Para não receber mais os avisos de incidente por e-mail, desligue a opção em Minha conta, no painel.',
         'Verax Control',
       ].join('\n\n'),
     );
     expect(message.html).toContain(`<a href="${incidentLink}">Ver o incidente</a>`);
+  });
+
+  it("como deixar de receber só nos avisos que a preferência controla (PR-17')", () => {
+    const hint = 'desligue a opção em Minha conta';
+    const texts = notices.map((notice) => noticeMail('pessoa@cliente.example', 'Ana', notice).text);
+    // Incidente aberto (alto e crítico), incidente que subiu (alto e crítico) e achado crítico; não o plano nem a coleta.
+    expect(texts.map((text) => text.includes(hint))).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
   });
 
   it('volume do plano: o mês por extenso e a coleta que continua', () => {
@@ -89,5 +106,109 @@ describe('e-mail dos avisos (PR-16)', () => {
     const hundred = noticeMail('admin@cliente.example', 'Ana', notices[7] as NoticeMail);
     expect(hundred.text).toContain('chegou ao limite mensal do plano');
     expect(hundred.text).toContain('A coleta, os achados e os incidentes continuam normalmente.');
+  });
+});
+
+describe("resumo por hora e de retomada (PR-17')", () => {
+  /** 14:00 em Brasília (17:00 UTC) de 05/11/2026. */
+  const hourStart = new Date('2026-11-05T17:00:00.000Z');
+  const item = (notice: NoticeMail, minute: number): DigestItem => ({
+    notice,
+    at: new Date(hourStart.getTime() + minute * 60_000),
+  });
+  const digest = (overrides: Partial<DigestMail> = {}): DigestMail => ({
+    catchUp: false,
+    hourStart,
+    items: [item(notices[1] as NoticeMail, 7), item(notices[4] as NoticeMail, 32)],
+    total: 2,
+    panelLink: `${origin}/`,
+    ...overrides,
+  });
+
+  it('assunto fixo: o resumo da hora e o de retomada, numa linha só', () => {
+    expect(digestMail('pessoa@cliente.example', 'Ana', digest()).subject).toBe(
+      'Resumo dos avisos da hora no Verax Control',
+    );
+    const catchUp = digestMail(
+      'pessoa@cliente.example',
+      'Ana\r\nBcc: x@exemplo.com',
+      digest({ catchUp: true }),
+    );
+    expect(catchUp.subject).toBe('Retomada dos avisos atrasados no Verax Control');
+    expect(catchUp.to).toBe('pessoa@cliente.example');
+  });
+
+  it('a hora no horário de Brasília, cada item com a hora e o link, e nada do achado', () => {
+    const message = digestMail('pessoa@cliente.example', 'Ana', digest());
+    expect(message.text).toBe(
+      [
+        'Olá, Ana.',
+        'Você recebeu 5 avisos por e-mail das 14h às 15h de 05/11/2026 (horário de Brasília). Para não lotar a sua caixa, os avisos seguintes dessa hora vieram reunidos aqui: 2 avisos no total.',
+        [
+          `- 05/11/2026, 14:07 · Incidente de severidade crítica aberto: ${incidentLink}`,
+          `- 05/11/2026, 14:32 · Achado de severidade crítica: ${origin}/achados?achado=018f2c1e-0000-7000-8000-0000000000f1`,
+        ].join('\n'),
+        'Por segurança, os detalhes (contas, recursos, IPs e identidades) aparecem só no painel, depois do login com MFA.',
+        'Você recebe este resumo por ter acesso a este cliente no Verax Control.',
+        'Para não receber mais os avisos de incidente por e-mail, desligue a opção em Minha conta, no painel.',
+        'Verax Control',
+      ].join('\n\n'),
+    );
+    expect(message.html).toContain(
+      `<li>05/11/2026, 14:07 · <a href="${incidentLink}">Incidente de severidade crítica aberto</a></li>`,
+    );
+    expect(message.text).not.toContain('E mais');
+  });
+
+  it('passa da lista: "e mais N", com o link do painel', () => {
+    const message = digestMail('pessoa@cliente.example', 'Ana', digest({ total: 13 }));
+    expect(message.text).toContain('13 avisos no total');
+    expect(message.text).toContain(`E mais 11 avisos neste resumo. Veja todos no painel: ${origin}/`);
+    expect(message.html).toContain(
+      `<p>E mais 11 avisos neste resumo. <a href="${origin}/">Ver no painel</a></p>`,
+    );
+    expect(digestMail('pessoa@cliente.example', 'Ana', digest({ total: 3 })).text).toContain(
+      'E mais 1 aviso neste resumo.',
+    );
+  });
+
+  it('retomada: diz que o envio atrasou mais de 24 h, sem a hora do resumo', () => {
+    const message = digestMail('pessoa@cliente.example', 'Ana', digest({ catchUp: true, total: 40 }));
+    expect(message.text).toContain(
+      'O envio dos avisos por e-mail ficou atrasado por mais de 24 horas. Para não mandar um e-mail por aviso antigo, os avisos desta retomada vieram reunidos aqui: 40 avisos no total.',
+    );
+    expect(message.text).not.toContain('horário de Brasília');
+  });
+
+  it('HTML escapado: o nome de quem recebe e os links', () => {
+    const message = digestMail('pessoa@cliente.example', "<img src=x onerror=alert(1)> & 'Bia'", {
+      ...digest(),
+      items: [item({ kind: 'critical_finding', link: `${origin}/achados?achado=1&x="><script>` }, 1)],
+      total: 12,
+      panelLink: `${origin}/"><script>`,
+    });
+    expect(message.html).toContain('<p>Olá, &lt;img src=x onerror=alert(1)&gt; &amp; &#39;Bia&#39;.</p>');
+    expect(message.html).not.toContain('<img');
+    expect(message.html).not.toContain('<script>');
+    expect(message.html).toContain(`href="${origin}/achados?achado=1&amp;x=&quot;&gt;&lt;script&gt;"`);
+    expect(message.html).toContain(`href="${origin}/&quot;&gt;&lt;script&gt;"`);
+  });
+
+  it('sem aviso de incidente na lista (só o volume do plano): sem a linha da preferência', () => {
+    const message = digestMail(
+      'admin@cliente.example',
+      'Ana',
+      digest({ items: [item(notices[7] as NoticeMail, 3)], total: 1 }),
+    );
+    expect(message.text).toContain('1 aviso no total');
+    expect(message.text).toContain('Volume mensal do plano atingido');
+    expect(message.text).not.toContain('Minha conta');
+  });
+
+  it('perto da meia-noite de Brasília: das 23h às 0h', () => {
+    const late = new Date('2026-11-06T02:00:00.000Z');
+    expect(digestMail('pessoa@cliente.example', 'Ana', digest({ hourStart: late })).text).toContain(
+      'das 23h às 0h de 05/11/2026 (horário de Brasília)',
+    );
   });
 });

@@ -1,4 +1,6 @@
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import { scopeToTenant } from '../common/prisma/tenant-scope.js';
+import type { Prisma } from '../generated/prisma/client.js';
 
 /**
  * Medidor de uso (fase 2, PR-03): o volume de log lido por cliente, mês e fonte, que mede os GiB por mês do plano.
@@ -14,8 +16,9 @@ import type { PrismaService } from '../common/prisma/prisma.service.js';
  *
  * Fontes:
  * - `gcp`: o sync da auditoria da GCP mede o `data` de cada mensagem do Pub/Sub (`base64Bytes`), depois do ack;
- * - `aws`: virá da tarefa `wazuh-usage` (PR-V6), pela diferença do `bytes.received` do analysisd do Wazuh do nó, que
- *   já é o total lido. Ela chama `add(tenantId, 'aws', bytes, events)` com a diferença e grava com `flush`;
+ * - `aws`: a tarefa `wazuh-usage` (PR-V6, `wazuh-usage.ts`), pela diferença do `bytes.received` do analysisd do Wazuh
+ *   do nó, que já é o total lido, e dos eventos do módulo da AWS. Ela chama `add(tenantId, 'aws', bytes, events)` com a
+ *   diferença e grava com `flushIn`, na mesma transação da base da diferença seguinte;
  * - `cloudflare`: virá do coletor nativo, com `utf8Bytes` do corpo de cada resposta, depois de avançar o cursor.
  *
  * Uma reentrega da fonte (uma mensagem confirmada que volta) conta duas vezes: fica como "uso justo" nos Termos.
@@ -81,8 +84,21 @@ export class UsageMeter {
    * falha no meio não conta duas vezes.
    */
   async flush(prisma: PrismaService): Promise<void> {
+    await this.write((tenantId) => prisma.forTenant(tenantId));
+  }
+
+  /**
+   * O mesmo `flush`, dentro de uma transação do chamador (cada escrita no escopo do próprio cliente): a escrita do uso
+   * vale junto com o resto da transação. Se ela desfizer, este medidor já não serve (o que foi escrito saiu dele):
+   * descarte-o e meça de novo a partir do que ficou no banco.
+   */
+  async flushIn(tx: Prisma.TransactionClient): Promise<void> {
+    await this.write((tenantId) => scopeToTenant(tx, tenantId));
+  }
+
+  private async write(clientFor: (tenantId: string) => Prisma.TransactionClient): Promise<void> {
     for (const [key, { tenantId, month, source, bytes, events }] of this.tallies) {
-      await prisma.forTenant(tenantId).ingestUsage.upsert({
+      await clientFor(tenantId).ingestUsage.upsert({
         where: { tenantId_month_source: { tenantId, month, source } },
         create: { tenantId, month, source, bytes: BigInt(bytes), events: BigInt(events) },
         update: { bytes: { increment: BigInt(bytes) }, events: { increment: BigInt(events) } },

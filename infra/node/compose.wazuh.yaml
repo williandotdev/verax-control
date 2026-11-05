@@ -5,13 +5,15 @@
 # Parte de infra/wazuh/docker-compose.yml (mesmas imagens, scripts e healthchecks; o CI confere que os digests são os
 # mesmos), com estas mudanças:
 # - sem o dashboard, sem porta publicada do indexer e sem IP fixo no manager;
-# - redes do nó, todas fora da rede `verax` do banco: `wazuh` (interna, sem rota para fora) só com o indexer e o
-#   manager; `wazuh-read` (interna) com o indexer, a API e o worker, que só leem; e `wazuh-egress` só com o manager
-#   (saída para o S3 e o STS). O manager processa log de fora como root e não divide rede com a API: numa rede só, ele
-#   chegaria a `http://api:3000` por dentro, fora do Cloudflare, e forjaria o `X-Forwarded-For` em que a API confia
-#   (TRUST_PROXY_HOPS=1). O desenho da seção 2.1 do plano tinha uma rede só; a separação é um endurecimento deliberado
-#   (docs/STATUS.md, PR-W1). Nenhum contêiner do Wazuh alcança o servidor de metadados da VM (guarda em
-#   infra/node/bin/metadata-guard.sh, conferida no fim do `start.sh wazuh-up`);
+# - redes do nó, todas fora da rede `verax` do banco: `wazuh` (interna, sem rota para fora) com o indexer, o manager e
+#   o worker (que lê só os contadores da API do manager, PR-V6); `wazuh-read` (interna) com o indexer, a API e o worker,
+#   que só leem; e `wazuh-egress` só com o manager (saída para o S3 e o STS). O manager processa log de fora como root e
+#   não divide rede com a API: numa rede só, ele chegaria a `http://api:3000` por dentro, fora do Cloudflare, e
+#   forjaria o `X-Forwarded-For` em que a API confia (TRUST_PROXY_HOPS=1). O desenho da seção 2.1 do plano tinha uma
+#   rede só; a separação é um endurecimento deliberado (docs/STATUS.md, PR-W1). O worker não abre porta nenhuma. Nenhum
+#   contêiner do Wazuh alcança o servidor de metadados da VM (guarda em infra/node/bin/metadata-guard.sh, conferida no
+#   fim do `start.sh wazuh-up`);
+# - a API do manager com o par do manager, da CA própria (manager-api-tls.sh, PR-V6), e não com o autoassinado dela;
 # - AWS sem chave (PR-V4'): o diretório /run/verax/wazuh-aws (memória do host, só root), só leitura no manager em
 #   /root/.aws, no lugar do volume manager-aws: os profiles que o gerador escreve e o token do Google que o host renova
 #   (infra/node/bin/aws-token.sh). Nenhum outro contêiner o monta;
@@ -207,6 +209,10 @@ services:
       - filebeat-etc:/etc/filebeat
       - filebeat-var:/var/lib/filebeat
       - certs-manager:/etc/ssl/verax:ro
+      # A API do manager (55000) com o par do manager, da CA própria e com o nome wazuh.manager, no lugar do
+      # autoassinado que ela geraria (PR-V6): o init da imagem roda o script a cada partida, antes dos daemons. O worker
+      # confere com a CA do volume público.
+      - ./wazuh/scripts/manager-api-tls.sh:/entrypoint-scripts/verax-api-tls.sh:ro
       # O init da imagem copia /wazuh-config-mount para /var/ossec a cada partida (etc/ossec.conf gerado).
       - manager-config:/wazuh-config-mount:ro
       - /run/verax/wazuh-aws:/root/.aws:ro
@@ -230,8 +236,11 @@ services:
   # O worker também monta, com escrita, a pasta dos sinais do Wazuh (WAZUH_SIGNAL_DIR no worker.env; tarefa
   # wazuh-config): grava a `generation` (as contas mudaram) e lê o `applied` e o `aws-token` do host. Nada nela é
   # segredo, e o bit t da pasta impede que ele troque os arquivos do host. A pasta dos profiles e do token, não.
+  # E entra na rede `wazuh`, a do manager (PR-V6), só para a API dele (https://wazuh.manager:55000, TLS conferido com a
+  # CA do volume público), com o usuário verax_stats, que só lê (manager:read): a tarefa wazuh-usage lê os contadores do
+  # analysisd. O worker não abre porta; a API continua sem rede nenhuma em comum com o manager (o CI confere).
   worker:
-    networks: [wazuh-read]
+    networks: [wazuh-read, wazuh]
     volumes: ['certs-public:/etc/verax/wazuh:ro', '/run/verax/wazuh-signal:/run/wazuh-signal']
 
 networks:

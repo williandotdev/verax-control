@@ -9,6 +9,8 @@
 #   start.sh customer-bootstrap
 #                        modo cliente (CUSTOMER_MODE=true; verax-customer-bootstrap.service): o primeiro acesso do nó
 #                        de cliente, com as entradas dos metadados da VM e as senhas gravadas no Secret Manager
+#   start.sh tunnel      depois de um `up` sem o token do túnel: relê só o cofre do token e, com valor, sobe o
+#                        cloudflared (sai com 3 enquanto o cofre não tem valor); a instalação sem operador o usa
 #   start.sh render      só monta os arquivos de ambiente (o que o up faz antes de subir; usado pelo teste do pacote)
 #
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
@@ -295,13 +297,14 @@ write_env() { # <arquivo> <CHAVE=valor...>
   done
 }
 
-# Standard: as quatro senhas do Wazuh (admin do indexer, wazuh_filebeat do manager, wazuh-wui da API do manager e o
-# usuário só leitura verax_api_read), geradas pelo install.sh. Conferidas antes de qualquer arquivo ser escrito: num
-# nó que passou a standard sem rodar o install.sh de novo, a falta é dita com todas as letras, e nada sobe pela metade.
-# Formato que todos os componentes aceitam e senhas diferentes entre si (scripts/lib-passwords.sh).
+# Standard: as cinco senhas do Wazuh (admin do indexer, wazuh_filebeat do manager, wazuh-wui da API do manager, o
+# usuário só leitura verax_api_read do indexer e o verax_stats da API do manager, só com manager:read, para o medidor do
+# worker), geradas pelo install.sh. Conferidas antes de qualquer arquivo ser escrito: num nó que passou a standard (ou
+# que veio de uma versão sem a do verax_stats) sem rodar o install.sh de novo, a falta é dita com todas as letras, e
+# nada sobe pela metade. Formato que todos os componentes aceitam e senhas diferentes entre si (scripts/lib-passwords.sh).
 wazuh_passwords() {
   local name
-  for name in wazuh-indexer-admin wazuh-indexer-filebeat wazuh-api wazuh-indexer-read; do
+  for name in wazuh-indexer-admin wazuh-indexer-filebeat wazuh-api wazuh-indexer-read wazuh-api-stats; do
     if [[ ! -s $secrets/$name ]]; then
       echo "Falta $secrets/$name: o perfil standard precisa das senhas do Wazuh, que o install.sh gera. Rode o" \
         "deploy.sh (ou o install.sh na VM) de novo antes de subir o nó." >&2
@@ -314,7 +317,9 @@ wazuh_passwords() {
   INDEXER_FILEBEAT_PASSWORD=$(internal_secret wazuh-indexer-filebeat)
   WAZUH_API_PASSWORD=$(internal_secret wazuh-api)
   INDEXER_API_READ_PASSWORD=$(internal_secret wazuh-indexer-read)
-  check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
+  WAZUH_STATS_PASSWORD=$(internal_secret wazuh-api-stats)
+  check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD \
+    WAZUH_STATS_PASSWORD
 }
 
 # Agentes (WAZUH_AGENTS=true): o que o node.conf diz e o que o install.sh gerou, conferidos antes de qualquer arquivo
@@ -426,7 +431,9 @@ render() {
   # Standard: cada contêiner do Wazuh recebe só as senhas que usa (o security-init, as três que ele transforma em hash;
   # o manager, a do filebeat e a da API dele). A senha do admin do indexer não chega a nenhum contêiner que fica no
   # ar. A API e o worker leem o indexer do próprio nó com o usuário só leitura e a CA do volume público dos
-  # certificados. O worker recebe também a pasta dos sinais do Wazuh (a tarefa wazuh-config, PR-V4').
+  # certificados. O worker recebe também a pasta dos sinais do Wazuh (a tarefa wazuh-config, PR-V4') e a API do manager
+  # com o usuário verax_stats, só manager:read, e a mesma CA (a tarefa wazuh-usage, PR-V6). A senha do verax_stats não
+  # vai para o manager: o init-api-users.sh a entrega pela API dele, no wazuh-up.
   local indexer=() wazuh_worker=()
   if standard; then
     write_env wazuh-security.env "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" \
@@ -434,7 +441,8 @@ render() {
     write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
     indexer=(INDEXER_URL=https://wazuh.indexer:9200 INDEXER_AUTH=node INDEXER_USERNAME=verax_api_read
       "INDEXER_PASSWORD=$INDEXER_API_READ_PASSWORD" INDEXER_CA_FILE=/etc/verax/wazuh/root-ca.pem)
-    wazuh_worker=("WAZUH_SIGNAL_DIR=$WAZUH_SIGNAL_MOUNT")
+    wazuh_worker=("WAZUH_SIGNAL_DIR=$WAZUH_SIGNAL_MOUNT" WAZUH_API_URL=https://wazuh.manager:55000
+      WAZUH_API_CA_FILE=/etc/verax/wazuh/root-ca.pem "WAZUH_STATS_PASSWORD=$WAZUH_STATS_PASSWORD")
   fi
 
   write_env postgres.env POSTGRES_USER=verax "POSTGRES_PASSWORD=$master" POSTGRES_DB=verax
@@ -642,13 +650,17 @@ wazuh_up() {
     echo 'AVISO: o token do Google para a AWS não foi renovado agora; o verax-aws-token.timer tenta de novo.' >&2
   /opt/verax/bin/wazuh-apply.sh
   compose up --detach --wait --wait-timeout 900 wazuh.manager
+  # O usuário verax_stats da API do manager (só manager:read), que o worker usa no medidor (PR-V6): criado ou acertado
+  # pela API, com o wazuh-wui; idempotente. Uma falha para a partida, como o smoke test.
+  WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD WAZUH_STATS_PASSWORD=$WAZUH_STATS_PASSWORD \
+    bash "$wazuh/scripts/init-api-users.sh"
   # Com os agentes, o smoke test espera só a 1514 e a 1515 publicadas no manager e confere o registro (certificado do IP
   # dos agentes e senha errada recusada); sem eles, nenhuma porta.
   local agents_address=''
   if agents; then agents_address=$WAZUH_AGENTS_ADDRESS; fi
   INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD \
     WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD \
-    WAZUH_AGENTS_ADDRESS=$agents_address bash "$wazuh/scripts/smoke-test.sh"
+    WAZUH_STATS_PASSWORD=$WAZUH_STATS_PASSWORD WAZUH_AGENTS_ADDRESS=$agents_address bash "$wazuh/scripts/smoke-test.sh"
   # A guarda do metadata vale para o Wazuh (no molde do teste do EC2, infra/wazuh/scripts/bootstrap-host.sh): sem
   # resposta (000) no manager e no indexer. Se algum alcançar, os dois param e a partida falha.
   local service status
@@ -690,6 +702,23 @@ up() {
   else
     compose rm --stop --force cloudflared >/dev/null 2>&1 || true
   fi
+}
+
+# Só o túnel, depois de um `up` que subiu sem ele (o cofre do token ainda vazio): no nó de cliente, o plano de controle
+# grava o token minutos depois de a VM nascer, e a instalação sem operador (boot-install.sh, PR-N7) chama este comando a
+# cada 60 s até ele subir. Relê o cofre como o render e, com valor, reescreve o cloudflared.env e sobe só o cloudflared
+# (`--no-deps`: a API, o worker e o Wazuh ficam como estão; o `restart` do verax-node pararia tudo, o Wazuh junto). Sai
+# com 3 enquanto o cofre não tem valor e com 1 em qualquer outro erro, como o external_secret.
+tunnel() {
+  if [[ ! -f $run/memory.env || ! -f $run/api.env ]]; then
+    echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
+    return 1
+  fi
+  local token status=0
+  token=$(external_secret cloudflare-tunnel-token) || status=$?
+  if ((status != 0)); then return "$status"; fi
+  write_env cloudflared.env "TUNNEL_TOKEN=$token"
+  compose up --detach --no-deps cloudflared
 }
 
 # A parada tira as chaves do cofre da memória junto com os contêineres, mesmo que o Compose falhe, e também o token do
@@ -891,9 +920,10 @@ case ${1:-} in
   wazuh-down) wazuh_down ;;
   bootstrap) bootstrap ;;
   customer-bootstrap) customer_bootstrap ;;
+  tunnel) tunnel ;;
   render) render ;;
   *)
-    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|render" >&2
+    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|tunnel|render" >&2
     exit 2
     ;;
 esac

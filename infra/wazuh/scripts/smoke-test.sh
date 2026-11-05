@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Confere a instalação do Wazuh (T4.2, T4.8 e fase 2, PR-W1): TLS obrigatório, senhas novas aceitas, senhas padrão e
-# usuários de demonstração recusados, usuário da API só com leitura dos alertas, usuário do filebeat só com escrita
-# neles, e nenhuma porta publicada além do previsto. Roda no fim do `start.sh wazuh-up` do nó de cliente e do deploy.sh
-# (EC2), e pode ser chamado sozinho, com as mesmas variáveis de senha. Fala com o projeto do Compose em vigor: o da
-# pasta (EC2) ou o das variáveis COMPOSE_* (nó e CI).
+# Confere a instalação do Wazuh (T4.2, T4.8 e fase 2, PR-W1 e PR-V6): TLS obrigatório (também na API do manager, com a
+# CA do nó), senhas novas aceitas, senhas padrão e usuários de demonstração recusados, usuário da API só com leitura dos
+# alertas, usuário do filebeat só com escrita neles, o verax_stats do medidor só com manager:read (com
+# WAZUH_STATS_PASSWORD, no nó) e nenhuma porta publicada além do previsto. Roda no fim do `start.sh wazuh-up` do nó de
+# cliente e do deploy.sh (EC2), e pode ser chamado sozinho, com as mesmas variáveis de senha. Fala com o projeto do
+# Compose em vigor: o da pasta (EC2) ou o das variáveis COMPOSE_* (nó e CI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=SCRIPTDIR/lib-indexer.sh
@@ -107,14 +108,33 @@ indexer_admin DELETE "/$smoke_index" </dev/null
 expect "índice de teste apagado (certificado admin)" 200 "$response_code"
 
 echo "API do manager"
+# O certificado da API é o par do manager, da CA própria (scripts/manager-api-tls.sh, PR-V6): conferido com a CA e o
+# nome wazuh.manager, pelo loopback de dentro do manager. Com o autoassinado de antes, tudo aqui dá 000.
+api_url=https://wazuh.manager:55000
+api_tls=(--cacert /etc/ssl/verax/root-ca.pem --resolve wazuh.manager:55000:127.0.0.1)
 api_code() {
-  curl_as wazuh.manager "$1" "$2" -o /dev/null -w '%{http_code}' -X POST \
-    --cacert /var/ossec/api/configuration/ssl/server.crt \
-    "https://localhost:55000/security/user/authenticate"
+  curl_as wazuh.manager "$1" "$2" -o /dev/null -w '%{http_code}' -X POST "${api_tls[@]}" \
+    "$api_url/security/user/authenticate"
 }
-expect "wazuh-wui com a senha nova" 200 "$(api_code wazuh-wui "$WAZUH_API_PASSWORD")"
+expect "wazuh-wui com a senha nova (TLS conferido com a CA do nó e o nome wazuh.manager)" 200 \
+  "$(api_code wazuh-wui "$WAZUH_API_PASSWORD")"
 expect "senha padrão recusada (wazuh-wui)" 401 "$(api_code wazuh-wui wazuh-wui)"
 expect "senha padrão recusada (wazuh)" 401 "$(api_code wazuh wazuh)"
+# O verax_stats (nó de cliente; o worker lê os contadores do analysisd com ele) só existe onde o init-api-users.sh roda:
+# o start.sh passa a senha dele. Só leitura dentro do manager:read; fora dele, recusado (nenhuma escrita é tentada).
+if [[ -n ${WAZUH_STATS_PASSWORD:-} ]]; then
+  echo "Usuário do medidor do worker (verax_stats)"
+  expect "verax_stats com a senha nova" 200 "$(api_code verax_stats "$WAZUH_STATS_PASSWORD")"
+  stats_token=$(printf 'user = "verax_stats:%s"\n' "$WAZUH_STATS_PASSWORD" |
+    in_service wazuh.manager curl -s -K - "${api_tls[@]}" -X POST "$api_url/security/user/authenticate?raw=true" || true)
+  stats_code() { # <caminho>: o código HTTP de um GET com o token do verax_stats (que vai pela entrada padrão)
+    printf 'header = "Authorization: Bearer %s"\n' "$stats_token" |
+      in_service wazuh.manager curl -s -K - -o /dev/null -w '%{http_code}' "${api_tls[@]}" "$api_url$1" || true
+  }
+  expect "lê os contadores do analysisd" 200 "$(stats_code '/manager/daemons/stats?daemons_list=wazuh-analysisd')"
+  expect "estado do cluster recusado (fora do manager:read)" 403 "$(stats_code /cluster/status)"
+  expect "regras recusadas (fora do manager:read)" 403 "$(stats_code '/rules?limit=1')"
+fi
 
 echo "Portas publicadas no host"
 published() { docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q "$1")"; }

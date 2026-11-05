@@ -165,18 +165,28 @@ gh attestation verify "oci://$(jq -r .images.api /tmp/versao/manifest.json)" --r
   --source-digest "$(jq -r .version /tmp/versao/manifest.json)" --deny-self-hosted-runners
 ```
 
+## Quem usa o release hoje: a instalação sem operador (PR-N7)
+
+O nó de cliente gerenciado se instala no primeiro boot a partir deste release (`docs/ARQUITETURA.md`, "Instalação sem
+operador"): o Terraform do tenant põe a versão (`node_version`) e o SHA-256 do pacote (`node_package_sha256`) nos
+metadados da VM, e o script de boot leva o verificador e as chaves de `infra/node/keys` do commit em que o Terraform
+rodou. A VM baixa `manifest.json`, `manifest.json.sig` e `verax-node.tar.gz` daqui, confere a assinatura antes de ler o
+manifesto e o SHA-256 antes de abrir o pacote, e instala com os digests do manifesto. Promover uma versão não muda
+nenhum nó no ar: os nós novos nascem na versão que o plano de controle mandar.
+
 ## Como o nó na nuvem do cliente vai usar (SH-05 e SH-06, a fazer)
 
 - **Instalação (SH-05):** o instalador clona a tag, confere o manifesto com as chaves dessa tag e o SHA-256 do pacote,
   e o `node.conf` leva `IMAGES_REPOSITORY=ghcr.io/williandotdev/verax-control`: o `install.sh` já monta
-  `$IMAGES_REPOSITORY/api@<digest>`. Falta ele pular o `gcloud auth configure-docker` quando o registro é o
-  `ghcr.io` (ajuste do PR-N7, proposta do modo próprio, seção 5.2).
+  `$IMAGES_REPOSITORY/api@<digest>` e, desde o PR-N7, não configura o ajudante do `gcloud` para o `ghcr.io` (o pull é
+  anônimo).
 - **Atualização (SH-06):** o par manifesto e assinatura chega pela renovação da licença. O host instala o verificador
   e as chaves do pacote em `/opt/verax`, confere a assinatura com eles, recusa uma `version` mais antiga que a
   instalada (sem pedido explícito de voltar), baixa o pacote e confere o SHA-256, puxa as imagens pelo digest (Verax
   no GHCR, terceiros na origem, tudo sem login) e roda o `install.sh` com os digests do manifesto.
-- **Gerenciado:** o nó da Verax e os nós de clientes na GCP da Verax continuam no Artifact Registry e no `deploy.sh`.
-  O manifesto também serve a eles (o mesmo digest), quando o CP-09 passar a guardá-lo no bucket de releases.
+- **Gerenciado:** o nó da Verax continua no Artifact Registry e no `deploy.sh`. Os nós de clientes na GCP da Verax se
+  instalam pelo release (acima), com as imagens do Verax no Artifact Registry pelo digest do manifesto, e se atualizam
+  pelo `deploy.sh`. A cópia do manifesto no bucket de releases fica para o CP-09.
 
 ## Troca e revogação da chave
 

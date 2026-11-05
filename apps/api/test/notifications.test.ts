@@ -10,6 +10,7 @@ import type { UserRole, UserStatus } from '../src/generated/prisma/client.js';
 import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
 import type { MailMessage, MailTransport } from '../src/mail/mail.types.js';
 import {
+  hourStartOf,
   NOTIFICATION_RETRY_DELAYS_MS,
   NOTIFICATIONS_TASK,
   NotificationDispatcher,
@@ -828,6 +829,497 @@ describe('avisos por e-mail (outbox)', () => {
       expect(await noticesOf(tenantId)).toHaveLength(1);
       await prisma.incident.delete({ where: { id: incident.id } });
       expect(await noticesOf(tenantId)).toEqual([]);
+    });
+  });
+
+  describe("preferência e resumo por hora (PR-17')", () => {
+    const HOUR = 3_600_000;
+    /** Cinco minutos depois da próxima hora cheia: os avisos de agora estão vencidos e longe das 24 h da retomada. */
+    const nextHour = () => new Date(hourStartOf(new Date()).getTime() + HOUR + 5 * 60_000);
+    const digestsOf = (tenantId: string) =>
+      prisma
+        .forTenant(tenantId)
+        .notificationDigest.findMany({ orderBy: [{ hourStart: 'asc' }, { id: 'asc' }] });
+    const optOut = (tenantId: string, userId: string) =>
+      prisma.forTenant(tenantId).notificationPreference.create({
+        data: { tenantId, userId, incidentEmails: false },
+      });
+    /** Avisos de achado crítico sem chave, um por achado, na ordem. */
+    async function criticals(tenantId: string, count: number): Promise<void> {
+      for (let index = 0; index < count; index += 1) await persist(draft(tenantId, { severity: 'critical' }));
+    }
+    const noticeById = (tenantId: string, id: string) =>
+      prisma.forTenant(tenantId).notification.findUniqueOrThrow({ where: { id } });
+    const isDigest = (message: MailMessage) =>
+      message.subject.startsWith('Resumo dos avisos') || message.subject.startsWith('Retomada dos avisos');
+
+    it('preferência desligada: a pessoa não recebe os avisos de incidente; todos desligados dá skipped (opted_out)', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (preferência)');
+      const admin = await member(tenantId, 'admin_cliente');
+      const analyst = await member(tenantId, 'analista_cliente');
+      await optOut(tenantId, analyst.id);
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect(mailbox.to(analyst.email)).toEqual([]);
+      expect(await noticesOf(tenantId)).toEqual([
+        expect.objectContaining({ status: 'sent', deliveredUserIds: [admin.id], digestedUserIds: [] }),
+      ]);
+
+      // A preferência ligada de novo vale para o próximo aviso; o admin desliga, e só o analista recebe.
+      await prisma.forTenant(tenantId).notificationPreference.update({
+        where: { userId: analyst.id },
+        data: { incidentEmails: true },
+      });
+      await optOut(tenantId, admin.id);
+      await persist(draft(tenantId, { severity: 'critical' }));
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect(mailbox.to(analyst.email)).toHaveLength(1);
+
+      // Os dois desligados: ninguém recebe, e o motivo diz por quê.
+      await prisma.forTenant(tenantId).notificationPreference.update({
+        where: { userId: analyst.id },
+        data: { incidentEmails: false },
+      });
+      await persist(draft(tenantId, { severity: 'critical' }));
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(
+        mailbox.messages.filter((message) => [admin.email, analyst.email].includes(message.to)),
+      ).toHaveLength(2);
+      expect((await noticesOf(tenantId)).at(-1)).toMatchObject({ status: 'skipped', lastError: 'opted_out' });
+    });
+
+    it('o volume do plano chega a quem administra mesmo com os avisos de incidente desligados', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (plano com preferência)');
+      const admin = await member(tenantId, 'admin_cliente');
+      await optOut(tenantId, admin.id);
+      await prisma.forTenant(tenantId).notification.create({
+        data: {
+          tenantId,
+          kind: 'plan_usage',
+          dedupeKey: 'usage:2026-11:80',
+          usageMonth: new Date('2026-11-01T00:00:00.000Z'),
+          usagePercent: 80,
+        },
+      });
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(admin.email).map((message) => message.subject)).toEqual([
+        '80% do volume mensal do plano no Verax Control',
+      ]);
+      expect(mailbox.to(admin.email)[0]?.text).not.toContain('Minha conta');
+    });
+
+    it('5 avulsos por hora; do 6º em diante, um resumo quando a hora fecha, com até 10 itens e "e mais N"', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (resumo)');
+      const admin = await member(tenantId, 'admin_cliente', { name: 'Ana' });
+      await criticals(tenantId, 17);
+      const notices = await noticesOf(tenantId);
+      const mailbox = new MemoryMailTransport();
+      const at = nextHour();
+      const hourStart = hourStartOf(at);
+
+      const report = await dispatcher(mailbox, at).runOnce();
+      expect(report.folded).toBeGreaterThanOrEqual(12);
+      // Os 5 primeiros saem avulsos; os 12 seguintes vão para o resumo da hora.
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      expect(mailbox.to(admin.email).every((message) => !isDigest(message))).toBe(true);
+      const after = await noticesOf(tenantId);
+      expect(after.every((notice) => notice.status === 'sent')).toBe(true);
+      expect(after.slice(0, 5).map((notice) => notice.deliveredUserIds)).toEqual(Array(5).fill([admin.id]));
+      expect(after.slice(5).map((notice) => notice.digestedUserIds)).toEqual(Array(12).fill([admin.id]));
+      expect(after.slice(5).every((notice) => notice.deliveredUserIds.length === 0)).toBe(true);
+      const [digest] = await digestsOf(tenantId);
+      expect(digest).toMatchObject({
+        userId: admin.id,
+        hourStart,
+        individualSent: 5,
+        noticeIds: notices.slice(5).map((notice) => notice.id),
+        catchUp: false,
+        status: 'pending',
+        attempts: 0,
+      });
+      expect(digest?.nextAttemptAt?.getTime()).toBe(hourStart.getTime() + HOUR);
+
+      // Antes de a hora fechar, nada sai.
+      await dispatcher(mailbox, new Date(hourStart.getTime() + HOUR - 1000)).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+
+      // A hora fechou: um resumo só, com 10 itens e "e mais 2".
+      const closed = new Date(hourStart.getTime() + HOUR);
+      const closing = await dispatcher(mailbox, closed).runOnce();
+      expect(closing.digests.sent).toBeGreaterThanOrEqual(1);
+      const sent = mailbox.to(admin.email).filter(isDigest);
+      expect(sent).toHaveLength(1);
+      const message = sent[0] as MailMessage;
+      expect(message.subject).toBe('Resumo dos avisos da hora no Verax Control');
+      expect(message.text).toContain('Olá, Ana.');
+      expect(message.text).toContain('12 avisos no total');
+      expect(message.text).toContain(
+        `E mais 2 avisos neste resumo. Veja todos no painel: ${TEST_WEB_ORIGIN}/`,
+      );
+      expect(message.html.match(/<li>/g)).toHaveLength(10);
+      // Os 10 primeiros da fila reunidos, cada um com o link do achado.
+      for (const notice of notices.slice(5, 15)) {
+        expect(message.text).toContain(`${TEST_WEB_ORIGIN}/achados?achado=${notice.findingId}`);
+      }
+      expect(message.text).not.toContain(`achado=${notices[15]?.findingId}`);
+      expect((await digestsOf(tenantId))[0]).toMatchObject({ status: 'sent', attempts: 1, lastError: null });
+
+      // Outra execução: nada sai de novo.
+      await dispatcher(mailbox, new Date(closed.getTime() + 60_000)).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(6);
+
+      // Na hora seguinte, a contagem recomeça: o próximo aviso sai avulso.
+      await criticals(tenantId, 1);
+      await dispatcher(mailbox, new Date(closed.getTime() + 2 * 60_000)).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(7);
+      expect(isDigest(mailbox.to(admin.email)[6] as MailMessage)).toBe(false);
+      expect(
+        (await digestsOf(tenantId)).map(({ hourStart: hour, individualSent }) => [hour, individualSent]),
+      ).toEqual([
+        [hourStart, 5],
+        [closed, 1],
+      ]);
+    });
+
+    it('a contagem é por pessoa: quem entrou na hora com menos e-mails ainda recebe avulso', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (contagem por pessoa)');
+      const admin = await member(tenantId, 'admin_cliente');
+      const analyst = await member(tenantId, 'analista_cliente');
+      await optOut(tenantId, analyst.id);
+      const mailbox = new MemoryMailTransport();
+      const at = nextHour();
+      await criticals(tenantId, 5);
+      await dispatcher(mailbox, at).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      expect(mailbox.to(analyst.email)).toEqual([]);
+
+      // O analista religa: o 6º aviso da hora vai para o resumo do admin e sai avulso para o analista.
+      await prisma.forTenant(tenantId).notificationPreference.update({
+        where: { userId: analyst.id },
+        data: { incidentEmails: true },
+      });
+      await criticals(tenantId, 1);
+      await dispatcher(mailbox, new Date(at.getTime() + 60_000)).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      expect(mailbox.to(analyst.email)).toHaveLength(1);
+      expect((await noticesOf(tenantId)).at(-1)).toMatchObject({
+        status: 'sent',
+        deliveredUserIds: [analyst.id],
+        digestedUserIds: [admin.id],
+      });
+    });
+
+    it('retomada: o aviso com mais de 24 h na fila não sai avulso; vem num resumo de retomada', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (retomada)');
+      const admin = await member(tenantId, 'admin_cliente');
+      await criticals(tenantId, 3);
+      const mailbox = new MemoryMailTransport();
+      // O worker volta 25 h depois.
+      const back = new Date(Date.now() + 25 * HOUR);
+      await dispatcher(mailbox, back).runOnce();
+      expect(mailbox.to(admin.email)).toEqual([]);
+      expect((await noticesOf(tenantId)).map((notice) => [notice.status, notice.digestedUserIds])).toEqual(
+        Array(3).fill(['sent', [admin.id]]),
+      );
+      const [digest] = await digestsOf(tenantId);
+      expect(digest).toMatchObject({ catchUp: true, individualSent: 0, status: 'pending' });
+      const hourEnd = hourStartOf(back).getTime() + HOUR;
+      expect(digest?.nextAttemptAt?.getTime()).toBe(hourEnd);
+      // Como o resumo da hora, o de retomada sai quando a hora fecha.
+      await dispatcher(mailbox, new Date(hourEnd - 1000)).runOnce();
+      expect(mailbox.to(admin.email)).toEqual([]);
+
+      await dispatcher(mailbox, new Date(hourEnd)).runOnce();
+      const [message] = mailbox.to(admin.email);
+      expect(mailbox.to(admin.email)).toHaveLength(1);
+      expect(message?.subject).toBe('Retomada dos avisos atrasados no Verax Control');
+      expect(message?.text).toContain('ficou atrasado por mais de 24 horas');
+      expect(message?.text).toContain('3 avisos no total');
+      expect(message?.html.match(/<li>/g)).toHaveLength(3);
+    });
+
+    it('no envio do resumo, a pessoa e a preferência são conferidas de novo', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (resumo conferido)');
+      const admin = await member(tenantId, 'admin_cliente');
+      const analyst = await member(tenantId, 'analista_cliente');
+      const mailbox = new MemoryMailTransport();
+      const at = nextHour();
+      await criticals(tenantId, 7);
+      await dispatcher(mailbox, at).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      expect(mailbox.to(analyst.email)).toHaveLength(5);
+
+      // Antes de a hora fechar, o analista desliga os avisos e o admin perde o MFA.
+      await optOut(tenantId, analyst.id);
+      await prisma.user.update({ where: { id: admin.id }, data: { twoFactorEnabled: false } });
+      await dispatcher(mailbox, new Date(hourStartOf(at).getTime() + HOUR)).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+      expect(mailbox.to(analyst.email)).toHaveLength(5);
+      const digests = await digestsOf(tenantId);
+      expect(digests.find((digest) => digest.userId === admin.id)).toMatchObject({
+        status: 'skipped',
+        lastError: 'no_recipients',
+      });
+      expect(digests.find((digest) => digest.userId === analyst.id)).toMatchObject({
+        status: 'skipped',
+        lastError: 'no_items',
+      });
+    });
+
+    it('o resumo que falha: recuo de 1, 5, 15 e 60 min e failed na quinta; só o tipo do erro, nada no log', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (resumo com falha)');
+      const admin = await member(tenantId, 'admin_cliente');
+      const mailbox = new MemoryMailTransport();
+      const at = nextHour();
+      await criticals(tenantId, 6);
+      await dispatcher(mailbox, at).runOnce();
+      expect(mailbox.to(admin.email)).toHaveLength(5);
+
+      let digestAttempts = 0;
+      const failing: MailTransport = {
+        send: (message) => {
+          if (message.to === admin.email && isDigest(message)) digestAttempts += 1;
+          return Promise.reject(new Error(`550 5.1.1 <${message.to}>: Recipient address rejected`));
+        },
+      };
+      const read = async () => (await digestsOf(tenantId))[0];
+      let when = new Date(hourStartOf(at).getTime() + HOUR);
+
+      // A primeira tentativa vai pelo agendador: o log leva só as contagens.
+      const lines: string[] = [];
+      const capture = (level: string) => (fields: object, message: string) =>
+        lines.push(JSON.stringify({ level, ...fields, message }));
+      const task = dispatcher(failing, when);
+      const scheduler = new Scheduler(
+        [
+          {
+            name: NOTIFICATIONS_TASK,
+            intervalMs: 3_600_000,
+            budgetMs: 60_000,
+            run: (signal) => task.runOnce(signal),
+          },
+        ],
+        { info: capture('info'), warn: capture('warn'), error: capture('error') },
+      );
+      scheduler.start();
+      await expect.poll(() => lines.length, { timeout: 20_000 }).toBeGreaterThan(0);
+      await scheduler.stop();
+      const log = lines.join('\n');
+      expect(log).toContain('"digests"');
+      expect(log).not.toContain(admin.email);
+      expect(log).not.toContain('@');
+
+      for (const [index, delay] of NOTIFICATION_RETRY_DELAYS_MS.entries()) {
+        const row = await read();
+        expect(row).toMatchObject({ status: 'pending', attempts: index + 1, lastError: 'Error' });
+        expect(row?.nextAttemptAt?.getTime()).toBe(when.getTime() + delay);
+        // Antes do recuo, nada.
+        await dispatcher(failing, new Date((row?.nextAttemptAt?.getTime() ?? 0) - 1000)).runOnce();
+        expect(digestAttempts).toBe(index + 1);
+        when = row?.nextAttemptAt as Date;
+        await dispatcher(failing, when).runOnce();
+      }
+      expect(await read()).toMatchObject({ status: 'failed', attempts: 5, lastError: 'Error', sentAt: null });
+      expect(digestAttempts).toBe(5);
+      await dispatcher(failing, new Date(when.getTime() + 24 * HOUR)).runOnce();
+      expect(digestAttempts).toBe(5);
+    });
+
+    it('interrompida no meio: quem foi para o resumo fica guardado, a tentativa é gravada, e ninguém é reunido de novo', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (resumo interrompido)');
+      // Três pessoas, na ordem em que o despachante atende (pelo id).
+      const people = [
+        await member(tenantId, 'analista_cliente'),
+        await member(tenantId, 'analista_cliente'),
+        await member(tenantId, 'analista_cliente'),
+      ].sort((x, y) => (x.id < y.id ? -1 : 1));
+      const [folded, sent, missing] = people as [Member, Member, Member];
+      // Na primeira hora, só a primeira recebe (as outras duas desligaram): ela chega aos 5 avulsos.
+      await optOut(tenantId, sent.id);
+      await optOut(tenantId, missing.id);
+      const mailbox = new MemoryMailTransport();
+      const at = nextHour();
+      await criticals(tenantId, 5);
+      await dispatcher(mailbox, at).runOnce();
+      expect(mailbox.to(folded.email)).toHaveLength(5);
+      await prisma.forTenant(tenantId).notificationPreference.updateMany({ data: { incidentEmails: true } });
+
+      // O 6º aviso: a primeira vai para o resumo, a segunda recebe avulso, e o orçamento estoura antes da terceira.
+      await criticals(tenantId, 1);
+      const sixth = (await noticesOf(tenantId)).at(-1);
+      if (sixth === undefined) throw new Error('aviso não gravado');
+      const controller = new AbortController();
+      const reason = new DOMException('a tarefa passou do orçamento de tempo', 'TimeoutError');
+      const transport: MailTransport = {
+        send: async (message) => {
+          await mailbox.send(message);
+          if (message.to === sent.email) controller.abort(reason);
+        },
+      };
+      const second = new Date(at.getTime() + 60_000);
+      await expect(dispatcher(transport, second).runOnce(controller.signal)).rejects.toBe(reason);
+      const interrupted = await noticeById(tenantId, sixth.id);
+      expect(interrupted).toMatchObject({
+        status: 'pending',
+        attempts: 1,
+        lastError: 'TimeoutError',
+        deliveredUserIds: [sent.id],
+        digestedUserIds: [folded.id],
+      });
+      expect(mailbox.to(missing.email)).toEqual([]);
+
+      // Depois do recuo, só quem faltava recebe; ninguém é reunido de novo no resumo.
+      await dispatcher(mailbox, interrupted.nextAttemptAt).runOnce();
+      expect(mailbox.to(missing.email)).toHaveLength(1);
+      expect(mailbox.to(sent.email)).toHaveLength(1);
+      expect(mailbox.to(folded.email)).toHaveLength(5);
+      expect(await noticeById(tenantId, sixth.id)).toMatchObject({ status: 'sent', attempts: 2 });
+      const digest = (await digestsOf(tenantId)).find((row) => row.userId === folded.id);
+      expect(digest?.noticeIds).toEqual([sixth.id]);
+    });
+
+    it('a execução que atravessa a virada da hora não passa de 5 avulsos por pessoa na hora nova, e o resumo da hora que fechou sai', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (virada da hora)');
+      const [first, second] = [
+        await member(tenantId, 'admin_cliente'),
+        await member(tenantId, 'analista_cliente'),
+      ];
+      const people = [first, second] as [Member, Member];
+      const hourStart = hourStartOf(nextHour());
+      const hourEnd = new Date(hourStart.getTime() + HOUR);
+      const inHour = (at: Date, start: Date) =>
+        at.getTime() >= start.getTime() && at.getTime() < start.getTime() + HOUR;
+
+      // O relógio da execução e cada e-mail com a hora em que terminou de sair. A virada acontece durante o primeiro
+      // envio para uma das duas pessoas, depois que a execução já começou (às 13:59:59 do exemplo da revisão).
+      let current = new Date(hourStart.getTime() + 30 * 60_000);
+      let crossOnSend = false;
+      const sent: { to: string; digest: boolean; at: Date }[] = [];
+      const transport: MailTransport = {
+        send: (message) => {
+          if (crossOnSend && people.some((person) => person.email === message.to)) {
+            current = new Date(hourEnd.getTime() + 5_000);
+            crossOnSend = false;
+          }
+          sent.push({ to: message.to, digest: isDigest(message), at: current });
+          return Promise.resolve();
+        },
+      };
+      const run = () => dispatcher(transport, current, { now: () => current }).runOnce();
+      const individualIn = (person: Member, start: Date) =>
+        sent.filter((mail) => mail.to === person.email && !mail.digest && inHour(mail.at, start)).length;
+
+      // Na primeira hora, só a primeira pessoa recebe: 5 avulsos e o 6º no resumo dessa hora.
+      await optOut(tenantId, second.id);
+      await criticals(tenantId, 6);
+      await run();
+      expect(individualIn(first, hourStart)).toBe(5);
+      await prisma.forTenant(tenantId).notificationPreference.update({
+        where: { userId: second.id },
+        data: { incidentEmails: true },
+      });
+
+      // Começa às 59:59 e atravessa a virada no primeiro envio.
+      await criticals(tenantId, 7);
+      current = new Date(hourEnd.getTime() - 1_000);
+      crossOnSend = true;
+      await run();
+      // Mais avisos na hora nova, numa execução seguinte: a contagem da hora nova já tem o que saiu depois da virada.
+      await criticals(tenantId, 3);
+      current = new Date(hourEnd.getTime() + 10 * 60_000);
+      await run();
+
+      for (const person of people) expect(individualIn(person, hourEnd)).toBeLessThanOrEqual(5);
+      // A segunda pessoa começou a hora nova do zero e chegou ao limite: 5 avulsos, o resto no resumo.
+      expect(individualIn(second, hourEnd)).toBe(5);
+      // O resumo da hora que fechou saiu na execução seguinte à virada, uma vez, para a primeira pessoa.
+      const closed = await prisma.forTenant(tenantId).notificationDigest.findFirstOrThrow({
+        where: { userId: first.id, hourStart },
+      });
+      expect(closed).toMatchObject({ individualSent: 5, status: 'sent', attempts: 1 });
+      expect(sent.filter((mail) => mail.to === first.email && mail.digest)).toHaveLength(1);
+
+      // Quando a hora nova fecha, saem os resumos dela; cada aviso chegou a cada pessoa uma vez, avulso ou no resumo.
+      current = new Date(hourEnd.getTime() + HOUR);
+      await run();
+      const notices = await noticesOf(tenantId);
+      expect(notices.every((notice) => notice.status === 'sent')).toBe(true);
+      for (const person of people) {
+        const handled = notices.filter(
+          (notice) =>
+            notice.deliveredUserIds.includes(person.id) || notice.digestedUserIds.includes(person.id),
+        );
+        const both = notices.filter(
+          (notice) =>
+            notice.deliveredUserIds.includes(person.id) && notice.digestedUserIds.includes(person.id),
+        );
+        expect(both).toEqual([]);
+        expect(handled).toHaveLength(person === first ? 16 : 10);
+      }
+      const digests = await prisma.forTenant(tenantId).notificationDigest.findMany({
+        where: { status: { not: null } },
+      });
+      expect(digests.every((digest) => digest.status === 'sent')).toBe(true);
+    });
+
+    describe('isolamento por cliente (A/B)', () => {
+      it('o escopo de B não lê nem altera a hora de avisos de A; o banco recusa pessoa de outro cliente', async () => {
+        const tenantA = await createTenant(app, 'Cliente demo A (resumo, escopo)');
+        const tenantB = await createTenant(app, 'Cliente demo B (resumo, escopo)');
+        const personA = await member(tenantA, 'admin_cliente');
+        const at = nextHour();
+        const hourStart = hourStartOf(at);
+        await criticals(tenantA, 6);
+        await dispatcher(new MemoryMailTransport(), at).runOnce();
+        const [digest] = await digestsOf(tenantA);
+        if (digest === undefined) throw new Error('resumo não gravado');
+
+        const asB = prisma.forTenant(tenantB).notificationDigest;
+        expect(await asB.findMany({ where: { id: digest.id } })).toEqual([]);
+        expect((await asB.updateMany({ where: { id: digest.id }, data: { status: 'skipped' } })).count).toBe(
+          0,
+        );
+        expect(() =>
+          asB.create({
+            data: { tenantId: tenantA, userId: personA.id, hourStart: new Date(hourStart.getTime() + HOUR) },
+          }),
+        ).toThrow(TenantScopeViolation);
+        expect((await prisma.notificationDigest.findUniqueOrThrow({ where: { id: digest.id } })).status).toBe(
+          'pending',
+        );
+        // Pela tabela, sem o escopo: a pessoa de A num resumo de B, ou alguém sem cliente, o banco recusa.
+        await expect(
+          prisma.notificationDigest.create({ data: { tenantId: tenantB, userId: personA.id, hourStart } }),
+        ).rejects.toThrow();
+        const verax = await member(null, 'admin_verax');
+        await expect(
+          prisma.notificationDigest.create({ data: { tenantId: tenantA, userId: verax.id, hourStart } }),
+        ).rejects.toThrow();
+        // Hora que não é cheia e resumo sem estado com aviso reunido: o banco recusa.
+        await expect(
+          prisma.notificationDigest.create({
+            data: {
+              tenantId: tenantA,
+              userId: personA.id,
+              hourStart: new Date(hourStart.getTime() + 60_000),
+            },
+          }),
+        ).rejects.toThrow();
+        await expect(
+          prisma.notificationDigest.create({
+            data: {
+              tenantId: tenantA,
+              userId: personA.id,
+              hourStart: new Date(hourStart.getTime() + 2 * HOUR),
+              noticeIds: [digest.noticeIds[0] as string],
+            },
+          }),
+        ).rejects.toThrow();
+      });
     });
   });
 });

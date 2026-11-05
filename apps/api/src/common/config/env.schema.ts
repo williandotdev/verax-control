@@ -91,6 +91,63 @@ function checkPair(
   ctx.addIssue({ code: 'custom', path: [missing], message: `obrigatória junto com ${present}` });
 }
 
+/** As variáveis de um grupo vêm todas juntas ou nenhuma: cada uma que falta é dita pelo nome. */
+function checkTogether(env: Record<string, unknown>, keys: readonly string[], ctx: z.RefinementCtx): void {
+  const present = keys.filter((key) => env[key] !== undefined);
+  if (present.length === 0 || present.length === keys.length) return;
+  for (const key of keys) {
+    if (env[key] === undefined) {
+      ctx.addIssue({ code: 'custom', path: [key], message: `obrigatória junto com ${present.join(', ')}` });
+    }
+  }
+}
+
+/**
+ * A API do manager do Wazuh do nó (perfil standard, PR-V6), como o worker a recebe do `start.sh`: o endereço (https,
+ * pelo nome do serviço na rede `wazuh`), a CA do volume público dos certificados (a mesma do indexer) e a senha do
+ * usuário `verax_stats`, que só tem `manager:read`. Os três juntos; com eles, entra a tarefa `wazuh-usage`.
+ */
+const wazuhApiEnvShape = {
+  WAZUH_API_URL: z
+    .url({ protocol: /^https$/, error: 'deve ser uma URL https:// (TLS obrigatório)' })
+    .optional(),
+  WAZUH_API_CA_FILE: z
+    .string()
+    .regex(/^\/[\w./-]+$/, { error: 'deve ser o caminho absoluto da CA do Wazuh' })
+    .optional(),
+  // A política de senha da API do Wazuh: de 8 a 64 caracteres (o install.sh gera 40).
+  WAZUH_STATS_PASSWORD: z
+    .string()
+    .min(8, { error: 'deve ter de 8 a 64 caracteres' })
+    .max(64, { error: 'deve ter de 8 a 64 caracteres' })
+    .optional(),
+};
+const WAZUH_API_KEYS = Object.keys(wazuhApiEnvShape);
+
+/**
+ * O acesso do worker à API do manager (a tarefa `wazuh-usage`). A senha fica num campo privado: não vira JSON (o que o
+ * logger serializa) nem aparece ao inspecionar o objeto; o worker ainda a registra como segredo vivo do logger.
+ */
+export class WazuhApiConfig {
+  readonly #password: string;
+
+  constructor(
+    readonly url: string,
+    readonly caFile: string,
+    password: string,
+  ) {
+    this.#password = password;
+  }
+
+  password(): string {
+    return this.#password;
+  }
+
+  toJSON(): { url: string; caFile: string } {
+    return { url: this.url, caFile: this.caFile };
+  }
+}
+
 /** A chave do cofre lida do ambiente; o erro vira um problema da configuração, sem o valor. */
 function vaultKey<T>(build: () => T, path: string, ctx: z.RefinementCtx): T | null {
   try {
@@ -542,6 +599,9 @@ const workerEnvObjectSchema = z
       .string()
       .regex(/^\/[\w./-]+$/, { error: 'deve ser o caminho absoluto da pasta dos sinais do Wazuh' })
       .optional(),
+    // API do manager do Wazuh do nó (perfil standard, PR-V6): o endereço, a CA e a senha do verax_stats, os três juntos.
+    // Com eles, entra a tarefa `wazuh-usage` (o medidor da AWS e a saúde da ingestão).
+    ...wazuhApiEnvShape,
     // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
     // publica a versão, as contas conectadas, o último evento e o disco livre. NODE_VERSION é o commit instalado (o de
     // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).
@@ -577,6 +637,7 @@ const workerEnvObjectSchema = z
     }
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
+    checkTogether(env, WAZUH_API_KEYS, ctx);
     if (env.NODE_STATUS && env.NODE_VERSION === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -609,6 +670,9 @@ const workerEnvObjectSchema = z
         WAZUH_AGENTS_TENANT,
         NODE_STATUS,
         NODE_VERSION,
+        WAZUH_API_URL,
+        WAZUH_API_CA_FILE,
+        WAZUH_STATS_PASSWORD,
         ...env
       },
       ctx,
@@ -625,7 +689,12 @@ const workerEnvObjectSchema = z
       const wazuhAgents = wazuhAgentsFeedOf({ WAZUH_AGENTS_FILE, WAZUH_AGENTS_TENANT });
       // A tarefa `node-status` só existe com o interruptor (e a versão, que o superRefine exige com ele).
       const nodeStatus = NODE_STATUS && NODE_VERSION !== undefined ? { version: NODE_VERSION } : null;
-      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus };
+      // A tarefa `wazuh-usage` só existe com os três (o superRefine exige todos ou nenhum); a senha não fica solta.
+      const wazuhApi =
+        WAZUH_API_URL !== undefined && WAZUH_API_CA_FILE !== undefined && WAZUH_STATS_PASSWORD !== undefined
+          ? new WazuhApiConfig(WAZUH_API_URL, WAZUH_API_CA_FILE, WAZUH_STATS_PASSWORD)
+          : null;
+      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus, wazuhApi };
     },
   );
 

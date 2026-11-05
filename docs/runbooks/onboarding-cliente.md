@@ -82,7 +82,9 @@ Na reunião:
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele. Os avisos
    por e-mail (incidente alto ou crítico, achado crítico e, só para administradores, 80% e 100% do volume do plano)
    chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
-   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe.
+   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe. Cada pessoa pode
+   desligar os avisos de incidente em **Minha conta** (no cabeçalho), e a coluna "Recebe alertas" de Usuários mostra
+   quem recebe; o contato de escalonamento do cadastro do cliente não recebe e-mail automático.
 
    **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
    usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para
@@ -138,6 +140,18 @@ Na reunião:
    da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
    Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
    segue com a anterior; veja o do `verax-wazuh-apply`).
+
+   **Medidor e saúde (PR-V6):** a cada 5 min, o worker lê os contadores do analysisd (usuário `verax_stats` da API do
+   manager, só leitura) e soma o volume no uso do cliente (fonte `aws`, a página Plano e uso). Com a conta conectada e os
+   eventos da AWS parados há mais de 2 h, a Torre do cliente mostra **Sem logs novos da AWS** e o administrador dele
+   recebe um e-mail (`aws_ingestion_stalled`, um por parada; os eventos de volta rearmam). O que conferir: a conexão e a
+   "Coleta no nó" no detalhe da conta, a trilha e o export ainda gravando no bucket (no console da AWS), e no nó as
+   linhas `aws-s3` do log do manager (como ler, em `infra/wazuh/README.md`, seção "Nó de cliente") e o log do worker
+   (`wazuh-usage` no relatório da tarefa: `read` diz se a API do manager respondeu). Um nó atende um cliente só: se a
+   Torre da equipe da Verax mostrar **Medidor da AWS parado neste nó**, há conta AWS ativa de mais de um cliente (ou os
+   agentes do Wazuh de outro cliente) no nó; tire a que sobra, e o medidor volta na leitura seguinte (o volume do
+   intervalo ambíguo não é medido para ninguém).
+
    **Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
    IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
    vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,
@@ -326,6 +340,43 @@ gcloud compute instances get-guest-attributes vx-<slug> --zone <zona> --project 
 
 Com os atributos de convidado desligados na VM (`enable-guest-attributes`), o worker avisa uma vez no log e não publica
 nada.
+
+## 8. Nó criado pelo plano de controle: instalação sem operador (fase 3, PR-N7)
+
+O nó de cliente se instala sozinho no primeiro boot: o script de boot baixa o release da versão dos metadados
+(`verax-node-version`), confere a assinatura do manifesto e o SHA-256 do pacote, escreve o `node.conf` do modo cliente
+com as chaves `verax-*`, roda o `install.sh` e espera o nó, o Wazuh, o primeiro acesso (item 7) e o túnel. Pronto, grava
+`verax/ready=<versão>`; numa falha, `verax/error=<código>` (a tabela dos códigos está em `docs/ARQUITETURA.md`,
+"Instalação sem operador"). O desenho e o aceite estão lá e no `infra/gcp/GUIA.md` ("O nó de cada cliente").
+
+**Diagnóstico sem SSH:**
+
+```bash
+gcloud compute instances get-guest-attributes vx-<slug> --zone <zona> --project <projeto-dos-nos> --query-path=verax/
+gcloud compute instances get-serial-port-output vx-<slug> --zone <zona> --project <projeto-dos-nos> | grep 'verax-boot:'
+```
+
+A saída serial tem cada passo da instalação e o motivo do erro, sem senha, e-mail ou nome do cliente. Os casos mais
+prováveis:
+
+- `release_download_failed` ou `package_sha256_mismatch`: a versão ou o SHA-256 do tenant não são os de um release
+  promovido. Confira o release e o manifesto (`docs/runbooks/versao-no.md`) e corrija as variáveis do tenant;
+- `release_signature_invalid`: o manifesto não fecha com as chaves de release do repositório (`infra/node/keys`) que o
+  Terraform pôs no script de boot. Não instale: é o caso que a assinatura existe para barrar;
+- `install_failed` com `manifest unknown` ou `not found` na saída serial: as imagens do release saíram do Artifact
+  Registry pela limpeza de 30 dias (`docs/ARQUITETURA.md`, "Instalação sem operador", origem das imagens);
+- `tunnel_token_missing`: o token do túnel não chegou ao cofre `vx-<slug>-cloudflare-tunnel-token` em 60 minutos.
+  Grave-o e reinicie a VM;
+- `customer_bootstrap_failed`: o item 7 ("Quando o serviço falha").
+
+**Tentar de novo:** corrigido o motivo (no Terraform do tenant ou no cofre), reinicie a VM
+(`gcloud compute instances reset vx-<slug> --zone <zona> --project <projeto-dos-nos>`). Uma instalação que não terminou
+é refeita do começo; uma que terminou não é refeita.
+
+**Atualizar o nó:** a versão nova nos metadados não é instalada sozinha (o boot só avisa). A atualização é pelo
+`deploy.sh` (`docs/runbooks/no-verax.md`), com o `node.conf` que a instalação escreveu: copie o `/etc/verax/node.conf`
+da VM pelo IAP e passe-o ao `deploy.sh` como de costume. Depois dela, `verax/ready` passa a mostrar o commit instalado
+(o `deploy.sh` não conhece a versão do release).
 
 ## Publicar uma versão nova do diagnóstico
 
