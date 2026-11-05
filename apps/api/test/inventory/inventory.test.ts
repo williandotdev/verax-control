@@ -10,7 +10,7 @@ import {
   InventoryUnavailable,
   inventoryRegions,
 } from '../../src/inventory/inventory.js';
-import { ACCOUNT, fakeAccount, fakeFactory, fakeIam, fakeS3 } from './fake-account.js';
+import { ACCOUNT, fakeAccount, fakeFactory, fakeIam, fakeS3, REFUSED_ACL } from './fake-account.js';
 import { awsError } from './fake-aws.js';
 
 const NOW = new Date('2026-11-02T12:00:00.000Z');
@@ -80,7 +80,7 @@ describe('coleta do inventário (T5.9)', () => {
   });
 
   it('S3: política e ACL públicas, bloqueio ausente e leitura recusada, cada bucket pelo S3 da região dele', async () => {
-    const { clients, calls } = fakeAccount();
+    const { clients, calls } = fakeAccount({ s3: REFUSED_ACL });
     const { buckets } = await collectBuckets((region) => clients.s3(region));
     expect(buckets).toEqual([
       {
@@ -250,6 +250,91 @@ describe('inventário da conta pela sessão sem chave (PR-14)', () => {
     await expect(
       collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW }),
     ).rejects.toMatchObject({ name: 'inventory_refused', code: 'inventory_refused' });
+  });
+
+  it('leitura recusada num bucket (a ACL): entra na coleta parcial, e o bucket fica com o motivo', async () => {
+    const { clients } = fakeAccount({ s3: REFUSED_ACL });
+    const inventory = await collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW });
+    expect(inventory.errors).toEqual([{ section: 's3', region: null, code: 'AccessDenied' }]);
+    expect(inventory.buckets.find((bucket) => bucket.name === 'restrito')).toMatchObject({
+      aclPublic: null,
+      unreadable: ['GetBucketAcl: AccessDenied'],
+    });
+    // Os outros buckets e as outras partes foram lidos.
+    expect(inventory.buckets).toHaveLength(3);
+    expect(inventory.users).toHaveLength(2);
+  });
+
+  it('falha passageira numa leitura de bucket (limite, 5xx, rede): a coleta para, sem retrato com a configuração desconhecida', async () => {
+    for (const failure of [
+      () => {
+        throw awsError('SlowDown', 503);
+      },
+      refuse('InternalError', 500),
+      () => {
+        throw Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+      },
+    ]) {
+      const { clients } = fakeAccount({
+        s3: {
+          GetBucketPolicyStatusCommand: (input) => {
+            if (input['Bucket'] === 'dados') failure();
+            return { PolicyStatus: { IsPublic: false } };
+          },
+        },
+      });
+      await expect(
+        collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW }),
+      ).rejects.toMatchObject({ code: 'aws_unavailable' });
+    }
+  });
+
+  it('falha passageira num bucket: nenhum bucket novo começa depois dela', async () => {
+    const names = Array.from({ length: 12 }, (_, n) => `bucket-${n}`);
+    const { clients, calls } = fakeAccount({
+      s3: {
+        ListBucketsCommand: () => ({ Buckets: names.map((Name) => ({ Name, BucketRegion: 'sa-east-1' })) }),
+        GetBucketAclCommand: (input) => {
+          if (input['Bucket'] === 'bucket-0') throw awsError('SlowDown', 503);
+          return { Grants: [] };
+        },
+      },
+    });
+    await expect(
+      collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW }),
+    ).rejects.toMatchObject({ code: 'aws_unavailable' });
+    const touched = new Set(calls().flatMap((call) => (call.service === 's3' ? [call.input['Bucket']] : [])));
+    touched.delete(undefined);
+    expect(touched.size).toBeLessThan(names.length);
+    // A coleta parou no S3: nada do EC2 foi chamado.
+    expect(calls().filter((call) => call.service === 'ec2')).toEqual([]);
+  });
+
+  it('a sessão que cai numa leitura de bucket para a coleta com o código da conexão', async () => {
+    const { clients } = fakeAccount({
+      s3: {
+        GetPublicAccessBlockCommand: () => {
+          throw new AwsConnectionError('token_invalid', false);
+        },
+      },
+    });
+    await expect(
+      collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW }),
+    ).rejects.toMatchObject({ code: 'token_invalid' });
+  });
+
+  it('o bucket que sumiu entre a listagem e a leitura (NoSuchBucket) fica de fora, sem erro', async () => {
+    const { clients } = fakeAccount({
+      s3: {
+        GetBucketAclCommand: (input) => {
+          if (input['Bucket'] === 'dados') throw awsError('NoSuchBucket', 404);
+          return { Grants: [] };
+        },
+      },
+    });
+    const inventory = await collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW });
+    expect(inventory.buckets.map((bucket) => bucket.name)).toEqual(['site-publico', 'restrito']);
+    expect(inventory.errors).toEqual([]);
   });
 
   it('a sessão que cai no meio (o provedor não renova) para a coleta com o código da conexão', async () => {

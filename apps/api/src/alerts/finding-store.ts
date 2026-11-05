@@ -298,11 +298,22 @@ export class SyncLease {
     return count === 1;
   }
 
-  async renew(): Promise<void> {
-    await this.prisma.syncState.updateMany({
+  /** Renova a concessão. False se ela não é mais deste worker (venceu e outra réplica a tomou). */
+  async renew(): Promise<boolean> {
+    return this.holdIn(this.prisma);
+  }
+
+  /**
+   * Confere e renova a concessão no cliente dado. Numa transação, a linha fica presa até o fim dela: outra réplica não
+   * toma a concessão entre a conferência e a gravação que vem depois (o inventário da AWS, PR-14'). False se ela não é
+   * mais deste worker.
+   */
+  async holdIn(db: Pick<Prisma.TransactionClient, 'syncState'>): Promise<boolean> {
+    const { count } = await db.syncState.updateMany({
       where: { name: this.name, leaseOwner: this.owner },
       data: { leaseUntil: new Date(Date.now() + this.leaseMs) },
     });
+    return count === 1;
   }
 
   async release(): Promise<void> {

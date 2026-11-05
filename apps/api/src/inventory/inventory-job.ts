@@ -24,7 +24,11 @@ export const AWS_INVENTORY_STREAM = 'aws_inventory';
 export const AWS_INVENTORY_TICK_MS = 5 * 60 * 1000;
 /** Orçamento de uma execução (algumas contas, uma de cada vez). */
 export const AWS_INVENTORY_BUDGET_MS = 30 * 60 * 1000;
-/** Validade da concessão, renovada depois de cada conta. */
+/**
+ * Validade da concessão. Ela é renovada durante a coleta, a cada terço da validade (e depois de cada conta), e conferida
+ * de novo na transação que grava o retrato: uma coleta mais longa que a validade não deixa outra réplica coletar a
+ * mesma conta ao mesmo tempo.
+ */
 export const AWS_INVENTORY_LEASE_MS = 15 * 60 * 1000;
 /** Uma coleta por conta a cada 24 h... */
 export const AWS_INVENTORY_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -54,7 +58,11 @@ export type InventoryCredentials = Pick<WebIdentityCredentials, 'session' | 'cre
 
 /** Contagens de uma execução (vão para o log do agendador; nenhum dado de cliente nem da AWS). */
 export interface AwsInventoryReport {
-  status: 'done' | 'locked';
+  /**
+   * `locked`: outra réplica tem a concessão; `lease_lost`: a concessão venceu durante a execução e outra réplica a
+   * tomou, e a execução parou sem gravar o retrato em curso (o estado da tarefa fica para a outra).
+   */
+  status: 'done' | 'locked' | 'lease_lost';
   /** Contas AWS ativas e já verificadas, conectadas ou com erro. */
   accounts: number;
   /** Com um erro de conexão que impede a entrada no papel: esperam a conferência da conexão. */
@@ -103,6 +111,14 @@ const ACCOUNT_SELECT = {
 } as const satisfies Prisma.CloudAccountSelect;
 type AccountRow = Prisma.CloudAccountGetPayload<{ select: typeof ACCOUNT_SELECT }>;
 
+/** A concessão não é mais deste worker: a execução para, e o retrato em curso não é gravado. */
+class InventoryLeaseLost extends Error {
+  constructor() {
+    super('inventário da AWS: concessão perdida');
+    this.name = 'InventoryLeaseLost';
+  }
+}
+
 /** Uma coleta que não terminou, guardada no cursor só pelo código (o nome do erro). */
 class InventoryRunError extends Error {
   constructor(code: string) {
@@ -143,8 +159,11 @@ function failureCode(error: unknown): string {
  *   recusado param a coleta, sem gravar nada, e o retrato anterior continua na tela. Tudo recusado também descarta a
  *   sessão guardada (uma sessão revogada no console não fica em uso até vencer).
  * - **A gravação:** o retrato (`toSnapshot`, cada item conferido pelo contrato) entra numa transação pelo escopo do
- *   cliente da conta, só se a conta ainda é a mesma (ativa, AWS, do mesmo cliente); a chave única com o início da coleta
+ *   cliente da conta, só se a conta ainda é a mesma (ativa, AWS, do mesmo cliente) e se a concessão ainda é deste
+ *   worker (conferida e renovada na própria transação, que prende a linha dela); a chave única com o início da coleta
  *   torna a gravação idempotente. A conexão da conta não muda aqui: ela é da conferência.
+ * - **A concessão** é renovada durante a coleta, a cada terço da validade. Perdida (venceu e outra réplica a tomou), o
+ *   sinal da execução é abortado: as chamadas param, nada é gravado e o cursor fica como estava.
  *
  * Nada da conta vai para o log: o relatório só tem contagens e códigos. As credenciais ficam no provedor.
  */
@@ -159,6 +178,8 @@ export class AwsInventorySync {
   private readonly jitterMs: number;
   private readonly backoff: Backoff;
   private readonly tenantFilter: Prisma.CloudAccountWhereInput;
+  /** De quanto em quanto tempo a concessão é renovada durante a execução: um terço da validade. */
+  private readonly renewEveryMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -181,6 +202,7 @@ export class AwsInventorySync {
       throw new Error('o lote do aws-inventory precisa ser um inteiro positivo');
     this.name = name;
     this.lease = new SyncLease(prisma, name, owner, leaseMs);
+    this.renewEveryMs = Math.max(250, Math.floor(leaseMs / 3));
     this.cursors = new CollectorCursors(prisma);
     this.now = now;
     this.random = random;
@@ -212,6 +234,10 @@ export class AwsInventorySync {
     };
     const startedAt = this.now();
     if (!(await this.lease.acquire(startedAt))) return { ...report, status: 'locked' };
+    // A concessão perdida aborta este sinal, junto com o do agendador: as chamadas à AWS e a gravação param.
+    const ownership = new AbortController();
+    const active = AbortSignal.any([signal, ownership.signal]);
+    const keeper = setInterval(() => void this.keepLease(ownership), this.renewEveryMs);
     let firstError: string | null = null;
     try {
       const rows = await this.prisma.cloudAccount.findMany({
@@ -240,11 +266,12 @@ export class AwsInventorySync {
       due.sort((a, b) => a.nextRunAt - b.nextRunAt);
       report.notDue += Math.max(0, due.length - this.batch);
       for (const { row } of due.slice(0, this.batch)) {
-        signal.throwIfAborted();
-        const failed = await this.collectOne(row, report, signal);
+        active.throwIfAborted();
+        const failed = await this.collectOne(row, report, active, ownership);
         firstError ??= failed;
-        await this.lease.renew();
+        await this.keepLease(ownership);
       }
+      active.throwIfAborted();
       await this.prisma.syncState.update({
         where: { name: this.name },
         data: {
@@ -255,6 +282,8 @@ export class AwsInventorySync {
       });
       return report;
     } catch (error) {
+      // Outra réplica tomou a concessão: a execução para aqui, e o estado da tarefa é dela agora.
+      if (ownership.signal.aborted && !signal.aborted) return { ...report, status: 'lease_lost' };
       // Só o tipo do erro: a mensagem de um erro do banco pode carregar dado.
       await this.prisma.syncState.update({
         where: { name: this.name },
@@ -262,7 +291,22 @@ export class AwsInventorySync {
       });
       throw error;
     } finally {
+      clearInterval(keeper);
+      // Só solta se ainda for deste worker (a de outra réplica fica).
       await this.lease.release();
+    }
+  }
+
+  /**
+   * Renova a concessão. Perdida (venceu e outra réplica a tomou), aborta a execução. Uma falha do banco fica para a
+   * renovação seguinte: a gravação confere a concessão de novo, na transação.
+   */
+  private async keepLease(ownership: AbortController): Promise<void> {
+    if (ownership.signal.aborted) return;
+    try {
+      if (!(await this.lease.renew())) ownership.abort(new InventoryLeaseLost());
+    } catch {
+      // O banco fora agora: a próxima renovação, ou a gravação, decide.
     }
   }
 
@@ -270,11 +314,15 @@ export class AwsInventorySync {
     return { cloudAccountId: row.id, stream: AWS_INVENTORY_STREAM };
   }
 
-  /** A coleta de uma conta. Devolve o código da falha (ou null), para o estado da tarefa. */
+  /**
+   * A coleta de uma conta. Devolve o código da falha (ou null), para o estado da tarefa. O sinal é o da execução (o do
+   * agendador e o da concessão); abortado, a coleta para sem gravar e sem mexer no cursor.
+   */
   private async collectOne(
     row: AccountRow,
     report: AwsInventoryReport,
     signal: AbortSignal,
+    ownership: AbortController,
   ): Promise<string | null> {
     const startedAt = this.now();
     const regions = inventoryRegions(row.regions);
@@ -294,6 +342,10 @@ export class AwsInventorySync {
       });
       const snapshot = toSnapshot(inventory);
       const result = await this.persist(row, snapshot);
+      if (result === 'lost') {
+        ownership.abort(new InventoryLeaseLost());
+        signal.throwIfAborted();
+      }
       if (result === 'stale') {
         report.stale += 1;
         return null;
@@ -329,14 +381,16 @@ export class AwsInventorySync {
   }
 
   /**
-   * Grava o retrato pelo escopo do cliente da conta, se a conta ainda é a que foi lida (ativa, AWS, do mesmo cliente).
-   * A chave única (cliente, conta e início da coleta) torna a gravação idempotente.
+   * Grava o retrato pelo escopo do cliente da conta, se a concessão ainda é deste worker (conferida e renovada na própria
+   * transação: a linha dela fica presa até o fim, e outra réplica não a toma no meio) e se a conta ainda é a que foi
+   * lida (ativa, AWS, do mesmo cliente). A chave única (cliente, conta e início da coleta) torna a gravação idempotente.
    */
   private persist(
     row: AccountRow,
     snapshot: InventorySnapshotData,
-  ): Promise<'recorded' | 'duplicate' | 'stale'> {
+  ): Promise<'recorded' | 'duplicate' | 'stale' | 'lost'> {
     return this.prisma.$transaction(async (tx) => {
+      if (!(await this.lease.holdIn(tx))) return 'lost';
       const db = scopeToTenant(tx, row.tenantId);
       const current = await db.cloudAccount.count({
         where: { id: row.id, provider: 'aws', status: 'active', accountId: row.accountId },

@@ -2,7 +2,7 @@ import { assetSchemas, inventoryRootSchema, parseInventoryError } from '@verax/s
 import { describe, expect, it } from 'vitest';
 import { collectInventory, type AccountInventory } from '../../src/inventory/inventory.js';
 import { toSnapshot } from '../../src/inventory/snapshot-mapper.js';
-import { ACCOUNT, fakeAccount } from './fake-account.js';
+import { ACCOUNT, fakeAccount, REFUSED_ACL } from './fake-account.js';
 import { awsError } from './fake-aws.js';
 
 const NOW = new Date('2026-11-02T12:00:00.000Z');
@@ -100,10 +100,10 @@ describe('retrato do inventário no formato do contrato (PR-14)', () => {
       expect.objectContaining({ name: 'dados', aclPublic: true, publicAccessBlocked: false, risk: 'high' }),
       expect.objectContaining({
         name: 'restrito',
-        aclPublic: null,
+        aclPublic: false,
         publicAccessBlocked: true,
-        risk: 'low',
-        reasons: ['bucket_unreadable'],
+        risk: 'none',
+        reasons: [],
       }),
     ]);
     expect(snapshot.items['security-groups']).toContainEqual(
@@ -222,6 +222,22 @@ describe('retrato do inventário no formato do contrato (PR-14)', () => {
     expect(snapshot.items.users).toEqual([]);
     expect(snapshot.items.instances).toHaveLength(4);
     expect(JSON.stringify(snapshot)).not.toContain('detalhe-interno');
+  });
+
+  it('leitura recusada num bucket: o retrato sai parcial (s3:AccessDenied) e o bucket fica "não lido"', async () => {
+    const { clients } = fakeAccount({ s3: REFUSED_ACL });
+    const snapshot = toSnapshot(
+      await collectInventory({ accountId: ACCOUNT, regions: REGIONS }, clients, { now: NOW }),
+    );
+    expect(snapshot.errors).toEqual(['s3:AccessDenied']);
+    expect(snapshot.items.buckets).toContainEqual(
+      expect.objectContaining({
+        name: 'restrito',
+        aclPublic: null,
+        risk: 'low',
+        reasons: ['bucket_unreadable'],
+      }),
+    );
   });
 
   it('sem a conta root (parte recusada): root nulo', () => {

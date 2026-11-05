@@ -7,8 +7,9 @@ import { awsError, type FakeClient, fakeClient } from './fake-aws.js';
 /**
  * Uma conta AWS fictícia para o inventário (`111122223333`), com os clientes falsos de `fake-aws.ts`: dois usuários IAM
  * em duas páginas (a `ana`, com console e sem MFA; o `bot`, só com uma chave), três buckets (um com política pública,
- * um com ACL pública e um com a ACL recusada) e, em cada região, uma instância com IMDSv1 e IP público, outra com
- * IMDSv2 na segunda página, e um security group com SSH aberto para a internet.
+ * um com ACL pública e um, sem região na listagem, com o bloqueio de acesso público ligado) e, em cada região, uma
+ * instância com IMDSv1 e IP público, outra com IMDSv2 na segunda página, e um security group com SSH aberto para a
+ * internet. A conta inteira é lida sem recusa; `REFUSED_ACL` recusa a ACL do bucket `restrito`.
  */
 
 export const ACCOUNT = '111122223333';
@@ -101,6 +102,16 @@ export function fakeEc2(region: string, overrides: Handlers = {}): FakeClient<EC
   });
 }
 
+/** A ACL de cada bucket da conta fictícia: a do `dados` libera leitura para todos. */
+function aclOf(input: Record<string, unknown>): unknown {
+  return {
+    Grants:
+      input['Bucket'] === 'dados'
+        ? [{ Grantee: { Type: 'Group', URI: 'http://acs.amazonaws.com/groups/global/AllUsers' } }]
+        : [],
+  };
+}
+
 export function fakeS3(overrides: Handlers = {}): FakeClient<S3Client> {
   return fakeClient<S3Client>({
     ListBucketsCommand: () => ({
@@ -114,15 +125,7 @@ export function fakeS3(overrides: Handlers = {}): FakeClient<S3Client> {
       if (input['Bucket'] === 'dados') throw awsError('NoSuchBucketPolicy', 404);
       return { PolicyStatus: { IsPublic: input['Bucket'] === 'site-publico' } };
     },
-    GetBucketAclCommand: (input) => {
-      if (input['Bucket'] === 'restrito') throw awsError('AccessDenied', 403);
-      return {
-        Grants:
-          input['Bucket'] === 'dados'
-            ? [{ Grantee: { Type: 'Group', URI: 'http://acs.amazonaws.com/groups/global/AllUsers' } }]
-            : [],
-      };
-    },
+    GetBucketAclCommand: aclOf,
     GetPublicAccessBlockCommand: (input) => {
       if (input['Bucket'] !== 'restrito') throw awsError('NoSuchPublicAccessBlockConfiguration', 404);
       return {
@@ -137,6 +140,14 @@ export function fakeS3(overrides: Handlers = {}): FakeClient<S3Client> {
     ...overrides,
   });
 }
+
+/** A ACL do bucket `restrito` recusada pela AWS (uma leitura de bucket que não passa sozinha). */
+export const REFUSED_ACL: Handlers = {
+  GetBucketAclCommand: (input) => {
+    if (input['Bucket'] === 'restrito') throw awsError('AccessDenied', 403);
+    return aclOf(input);
+  },
+};
 
 /** Uma chamada de qualquer cliente da conta, com o serviço e a região dele. */
 export interface AccountCall {

@@ -35,7 +35,7 @@ import {
 } from '../src/inventory/inventory-job.js';
 import { TemporaryCredentials } from '../src/inventory/read-only-session.js';
 import { Scheduler } from '../src/worker/scheduler.js';
-import { fakeAccount, type FakeAccountOptions } from './inventory/fake-account.js';
+import { fakeAccount, type FakeAccountOptions, REFUSED_ACL } from './inventory/fake-account.js';
 import { awsError, fakeClient } from './inventory/fake-aws.js';
 import { createSignedInUser, createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
@@ -443,6 +443,133 @@ describe('tarefa aws-inventory: inventário nativo da AWS pelo papel sem chave (
     expect(await cursorOf(refusedAll.id)).toMatchObject({ failures: 1, lastErrorKind: 'inventory_refused' });
     const state = await prisma.syncState.findUniqueOrThrow({ where: { name } });
     expect(state.lastError).toBe('trust_denied');
+  });
+
+  it('leitura de bucket: a recusa vira coleta parcial; a falha passageira não grava e recua', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (inventário, buckets)');
+    const refused = await verifiedAccount(tenant);
+    const throttled = await verifiedAccount(tenant);
+    const { sync } = setup([tenant], {
+      behavior: {
+        [refused.accountId]: { s3: REFUSED_ACL },
+        [throttled.accountId]: {
+          s3: {
+            GetPublicAccessBlockCommand: () => {
+              throw awsError('SlowDown', 503);
+            },
+          },
+        },
+      },
+    });
+    expect(await sync.runOnce()).toMatchObject({
+      collected: 1,
+      partial: 1,
+      failed: 1,
+      failures: { aws_unavailable: 1 },
+    });
+    const [snapshot] = await snapshotsOf(refused.accountId);
+    expect(snapshot?.errors).toEqual(['s3:AccessDenied']);
+    expect(await snapshotsOf(throttled.accountId)).toEqual([]);
+    expect(await cursorOf(throttled.id)).toMatchObject({ failures: 1, lastErrorKind: 'aws_unavailable' });
+  });
+
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const leaseOf = (name: string) => prisma.syncState.findUniqueOrThrow({ where: { name } });
+
+  it('a concessão é renovada durante a coleta de uma conta (a cada terço da validade)', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (inventário, concessão)');
+    const account = await verifiedAccount(tenant);
+    const seen: number[] = [];
+    let name = '';
+    const { sync, name: leaseName } = setup([tenant], {
+      leaseMs: 900,
+      behavior: {
+        [account.accountId]: {
+          s3: {
+            ListBucketsCommand: async () => {
+              // Uma coleta mais longa que a validade da concessão.
+              await pause(450);
+              seen.push((await leaseOf(name)).leaseUntil?.getTime() ?? 0);
+              await pause(750);
+              seen.push((await leaseOf(name)).leaseUntil?.getTime() ?? 0);
+              return { Buckets: [] };
+            },
+          },
+        },
+      },
+    });
+    name = leaseName;
+    expect(await sync.runOnce()).toMatchObject({ status: 'done', collected: 1 });
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBeGreaterThan(seen[0] ?? Number.MAX_SAFE_INTEGER);
+    expect(await snapshotsOf(account.accountId)).toHaveLength(1);
+  });
+
+  it('concessão tomada por outra réplica no meio da coleta: a coleta para, nada é gravado e o cursor fica', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (inventário, concessão perdida)');
+    const account = await verifiedAccount(tenant);
+    let name = '';
+    const {
+      sync,
+      name: leaseName,
+      calls,
+    } = setup([tenant], {
+      leaseMs: 900,
+      behavior: {
+        [account.accountId]: {
+          s3: {
+            ListBucketsCommand: async () => {
+              // A concessão venceu e outra réplica a tomou; a renovação seguinte descobre.
+              await prisma.syncState.update({
+                where: { name },
+                data: { leaseOwner: 'outra-replica', leaseUntil: new Date(Date.now() + HOUR) },
+              });
+              await pause(700);
+              return { Buckets: [{ Name: 'depois-da-perda', BucketRegion: 'sa-east-1' }] };
+            },
+          },
+        },
+      },
+    });
+    name = leaseName;
+    expect(await sync.runOnce()).toMatchObject({ status: 'lease_lost', collected: 0, failed: 0 });
+    expect(await snapshotsOf(account.accountId)).toEqual([]);
+    // Nenhuma chamada depois da perda: nem os buckets listados, nem o EC2.
+    const after = calls.filter((call) => call.accountId === account.accountId);
+    expect(after.map((call) => call.command)).not.toContain('GetBucketAclCommand');
+    expect(after.filter((call) => call.service === 'ec2')).toEqual([]);
+    // O cursor não mudou (nem sucesso nem falha), e a concessão e o estado ficam com a outra réplica.
+    expect(await cursorOf(account.id)).toMatchObject({ failures: 0, lastErrorKind: null, nextRunAt: START });
+    expect(await leaseOf(name)).toMatchObject({ leaseOwner: 'outra-replica', lastError: null });
+  });
+
+  it('concessão tomada logo antes da gravação: a transação confere e não grava', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (inventário, concessão na gravação)');
+    const account = await verifiedAccount(tenant);
+    let name = '';
+    const { sync, name: leaseName } = setup([tenant], {
+      behavior: {
+        [account.accountId]: {
+          ec2: {
+            'us-east-1': {
+              // A última chamada da coleta: a renovação periódica (a cada 5 min) não chega a ver a troca.
+              DescribeSecurityGroupsCommand: async () => {
+                await prisma.syncState.update({
+                  where: { name },
+                  data: { leaseOwner: 'outra-replica', leaseUntil: new Date(Date.now() + HOUR) },
+                });
+                return { SecurityGroups: [] };
+              },
+            },
+          },
+        },
+      },
+    });
+    name = leaseName;
+    expect(await sync.runOnce()).toMatchObject({ status: 'lease_lost', collected: 0 });
+    expect(await snapshotsOf(account.accountId)).toEqual([]);
+    expect(await cursorOf(account.id)).toMatchObject({ failures: 0, nextRunAt: START });
+    expect((await leaseOf(name)).leaseOwner).toBe('outra-replica');
   });
 
   it('a conta desativada no meio da coleta: o retrato é descartado', async () => {

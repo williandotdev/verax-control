@@ -12,7 +12,6 @@ import {
   AwsConnectionError,
   type AwsCredentialProvider,
   awsErrorName,
-  isTransientAwsError,
   STS_FALLBACK_REGION,
 } from '../aws/web-identity.js';
 import {
@@ -21,6 +20,7 @@ import {
   collectInstances,
   collectRootAccount,
   collectSecurityGroups,
+  isPermanentFailure,
   type BucketInfo,
   type Ec2Instance,
   type IamUser,
@@ -34,9 +34,11 @@ import {
  * cliente: as regiões são as monitoradas na conta (sem `DescribeRegions`), e o IAM, global e dividido com a automação
  * do próprio cliente, recebe no máximo 2 chamadas ao mesmo tempo.
  *
- * Cada parte (a conta root, o IAM, o S3 e, por região, o EC2 e os security groups) é lida por inteiro ou fica de fora:
+ * Cada parte (a conta root, o IAM, o S3 e, por região, o EC2 e os security groups) é lida por inteiro ou fica de fora
+ * (a política é `isPermanentFailure`, em `collectors.ts`, a mesma das leituras de cada bucket):
  * - **recusada** pela AWS (permissão, SCP da organização, região desligada) ou com outro erro que não passa sozinho: vai
- *   para `errors` com o nome do erro (nunca a mensagem), e o resto segue: o retrato sai parcial;
+ *   para `errors` com o nome do erro (nunca a mensagem), e o resto segue: o retrato sai parcial. Uma leitura recusada
+ *   num bucket (a ACL, a política ou o bloqueio) também entra em `errors` (`s3:AccessDenied`), além do motivo do bucket;
  * - **falha passageira** (limite, 5xx, rede, já com as novas tentativas do SDK) ou a sessão que caiu no meio: a coleta
  *   inteira para (`InventoryUnavailable`), nada é gravado e a tarefa tenta de novo mais tarde. Um retrato com uma parte
  *   vazia por um tropeço da AWS apagaria da tela o que o anterior tinha;
@@ -196,27 +198,17 @@ export class InventoryUnavailable extends Error {
   }
 }
 
-/**
- * Recusas da AWS: permissão negada (pela política do papel ou por uma SCP), região que não aceita a sessão (desligada,
- * opt-in) ou o serviço indisponível para a conta. Não passam sozinhas: a parte fica de fora e o resto segue.
- */
-const REFUSED_CODES: ReadonlySet<string> = new Set([
-  'AccessDenied',
-  'AccessDeniedException',
-  'UnauthorizedOperation',
-  'UnauthorizedAccess',
-  'AuthFailure',
-  'OptInRequired',
-  'InvalidClientTokenId',
-  'UnrecognizedClientException',
-  'AllAccessDisabled',
-  'Blocked',
-]);
-
 /** O nome do erro como vai para o retrato; fora do formato, `Unknown`. */
-function sectionCode(error: unknown): string {
-  const name = awsErrorName(error);
+function codeOf(name: string): string {
   return isInventoryErrorCode(name) ? name : 'Unknown';
+}
+
+/** Os códigos das leituras recusadas nos buckets (`GetBucketAcl: AccessDenied`), sem repetir. */
+function bucketReadCodes(buckets: readonly BucketInfo[]): string[] {
+  const codes = buckets.flatMap((bucket) =>
+    bucket.unreadable.map((entry) => codeOf(entry.slice(entry.indexOf(': ') + 2))),
+  );
+  return [...new Set(codes)];
 }
 
 /** As regiões monitoradas da conta, válidas e sem repetir, na ordem do cadastro. */
@@ -262,10 +254,8 @@ export async function collectInventory(
       signal?.throwIfAborted();
       // A sessão não renovou no meio da coleta: a conferência da conexão mostra o porquê.
       if (error instanceof AwsConnectionError) throw error;
-      const code = sectionCode(error);
-      if (!REFUSED_CODES.has(code) && isTransientAwsError(error))
-        throw new InventoryUnavailable('aws_unavailable');
-      inventory.errors.push({ section: name, region, code });
+      if (!isPermanentFailure(error)) throw new InventoryUnavailable('aws_unavailable');
+      inventory.errors.push({ section: name, region, code: codeOf(awsErrorName(error)) });
       return null;
     }
   }
@@ -280,6 +270,9 @@ export async function collectInventory(
   if (s3 !== null) {
     inventory.buckets = s3.buckets;
     if (s3.truncated) inventory.truncated.push('s3');
+    // A configuração de um bucket que a AWS recusou fica desconhecida: o retrato é parcial, e a faixa diz por quê.
+    for (const code of bucketReadCodes(s3.buckets))
+      inventory.errors.push({ section: 's3', region: null, code });
   }
   for (const region of inventory.regions) {
     const ec2 = clients.ec2(region);
