@@ -1,5 +1,14 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { REDACTED, isSensitiveKey, sanitize, scrubString } from './sanitize.js';
+import {
+  forgetLiveSecret,
+  MIN_LIVE_SECRET_LENGTH,
+  REDACTED,
+  isSensitiveKey,
+  registerLiveSecret,
+  sanitize,
+  scrubString,
+} from './sanitize.js';
 
 /** Chaves e tokens falsos montados em partes, para o gitleaks não os ver como reais. */
 const STRIPE_TEST_KEY = ['sk', 'test', 'chaveFalsa1234567890'].join('_');
@@ -154,5 +163,29 @@ describe('sanitize', () => {
 
   it('não despeja conteúdo binário', () => {
     expect(sanitize({ body: Buffer.from('segredo') })).toEqual({ body: '[Binary]' });
+  });
+});
+
+describe('segredos vivos (registerLiveSecret)', () => {
+  /** Gerado no teste: um valor sem formato conhecido, como a senha temporária do primeiro admin. */
+  const live = (): string => randomBytes(18).toString('base64url');
+
+  it('oculta o valor registrado em qualquer texto e em qualquer campo, até ser esquecido', () => {
+    const value = live();
+    registerLiveSecret(value);
+    try {
+      expect(scrubString(`falha ao entregar ${value} ao site`)).toBe(`falha ao entregar ${REDACTED} ao site`);
+      expect(JSON.stringify(sanitize({ detail: { note: `x${value}y` } }))).not.toContain(value);
+    } finally {
+      forgetLiveSecret(value);
+    }
+    expect(scrubString(`depois: ${value}`)).toBe(`depois: ${value}`);
+  });
+
+  it('ignora valores curtos, para não ocultar pedaços de texto comum', () => {
+    const short = live().slice(0, MIN_LIVE_SECRET_LENGTH - 1);
+    registerLiveSecret(short);
+    expect(scrubString(`texto ${short}`)).toBe(`texto ${short}`);
+    forgetLiveSecret(short);
   });
 });
