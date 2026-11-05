@@ -102,4 +102,34 @@ describe('modelos de custo', () => {
     // Publicada, a versão vira só leitura.
     await waitFor(() => expect(screen.getByLabelText('Câmbio (R$ por US$)')).toBeDisabled());
   });
+
+  it('importar um arquivo com a forma errada mostra os problemas nos caminhos, sem derrubar a tela', async () => {
+    const { user } = renderConsole('/modelos-de-custo/novo');
+    await waitFor(() => expect(screen.getByLabelText('Câmbio (R$ por US$)')).toHaveValue('2'));
+    const file = new File(
+      [
+        JSON.stringify({
+          taxes: { rates: [null, { id: 'teste_a', label: 'A', rate: 0.1 }] },
+          fixedCosts: { items: [null, { name: 'Fixo de teste', monthly: 1_000 }], allocationCustomers: 2 },
+          sources: { item: 'x' },
+        }),
+      ],
+      'modelo.json',
+      { type: 'application/json' },
+    );
+    await user.upload(screen.getByLabelText('Ou importar um arquivo JSON'), file);
+
+    const summary = await screen.findByRole('alert');
+    expect(summary).toHaveTextContent('O arquivo importado não tem a forma esperada');
+    expect(summary).toHaveTextContent('taxes.rates.0: esperado um objeto, recebido null');
+    expect(summary).toHaveTextContent('fixedCosts.items.0: esperado um objeto, recebido null');
+    expect(summary).toHaveTextContent('sources: esperada uma lista, recebido object');
+    // O formulário continua de pé: a prévia soma só o item válido, e a alíquota válida vira opção.
+    expect(screen.getByText(/^Total: R\$\s10,00 por mês · R\$\s5,00 por cliente$/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Alíquota padrão')).toHaveTextContent('A (teste_a)');
+    expect(screen.getByLabelText('Começar de')).toHaveDisplayValue('Arquivo importado');
+    // O item nulo sai pelo botão da lista.
+    await user.click(screen.getByRole('button', { name: 'Tirar alíquota 1' }));
+    expect(screen.getAllByLabelText('Identificador')[0]).toHaveValue('teste_a');
+  });
 });

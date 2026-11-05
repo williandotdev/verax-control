@@ -12,13 +12,28 @@ function isContainer(value: unknown): value is Record<string, unknown> | unknown
   return typeof value === 'object' && value !== null;
 }
 
+/** Chaves que mexeriam no protótipo dos objetos: nenhum campo do console tem esses nomes, e o caminho as recusa. */
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
+function isUnsafe(segment: string | number): boolean {
+  return typeof segment === 'string' && UNSAFE_KEYS.has(segment);
+}
+
+function assertSafe(segment: string | number): void {
+  if (isUnsafe(segment)) throw new TypeError(`caminho inválido: ${segment}`);
+}
+
+/**
+ * O valor no caminho, ou `undefined` se algum trecho faltar, não for objeto ou lista, ou for uma chave do protótipo.
+ * Só propriedades próprias: um documento importado com `__proto__` ou um caminho para `constructor` nunca chega ao
+ * protótipo.
+ */
 export function getAt(root: unknown, path: Path): unknown {
-  let current: unknown = root;
-  for (const segment of path) {
-    if (!isContainer(current)) return undefined;
-    current = (current as Record<string | number, unknown>)[segment];
-  }
-  return current;
+  if (path.length === 0) return root;
+  const [head, ...rest] = path;
+  if (head === undefined || isUnsafe(head) || !isContainer(root) || !Object.hasOwn(root, head))
+    return undefined;
+  return getAt((root as Record<string | number, unknown>)[head], rest);
 }
 
 function isEmptyRecord(value: unknown): boolean {
@@ -33,15 +48,17 @@ function isEmptyRecord(value: unknown): boolean {
 export function setAt(root: unknown, path: Path, value: unknown): unknown {
   if (path.length === 0) return value;
   const [head, ...rest] = path;
+  if (head === undefined) return value;
+  assertSafe(head);
   if (typeof head === 'number') {
     const list = Array.isArray(root) ? [...(root as unknown[])] : [];
-    list[head] = setAt(list[head], rest, value);
+    list[head] = setAt(getAt(list, [head]), rest, value);
     return list;
   }
   const record: Record<string, unknown> = isContainer(root) && !Array.isArray(root) ? { ...root } : {};
-  const next = setAt(record[head as string], rest, value);
-  if (next === undefined || (rest.length > 0 && isEmptyRecord(next))) delete record[head as string];
-  else record[head as string] = next;
+  const next = setAt(getAt(record, [head]), rest, value);
+  if (next === undefined || (rest.length > 0 && isEmptyRecord(next))) delete record[head];
+  else record[head] = next;
   return record;
 }
 

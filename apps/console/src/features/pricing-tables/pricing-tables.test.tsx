@@ -100,4 +100,42 @@ describe('tabelas de preço', () => {
       `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-v1`,
     );
   });
+
+  it('com a confirmação aberta, uma alteração feita depois bloqueia a publicação (ela levaria o salvo)', async () => {
+    const { user, state } = renderConsole('/tabelas-de-preco/teste-v3');
+    await user.click(await screen.findByRole('button', { name: 'Publicar…' }));
+    const confirm = screen.getByRole('button', { name: 'Confirmar a publicação' });
+    expect(confirm).toBeEnabled();
+    const amount = screen.getByLabelText('Suporte prioritário (R$)');
+    await user.clear(amount);
+    await user.type(amount, '1,00');
+    expect(confirm).toBeDisabled();
+    await user.click(confirm);
+    expect(state['pricing-tables'].get('teste-v3')?.status).toBe('draft');
+    expect(amount).toHaveValue('1,00');
+    // Salvo, a confirmação volta a valer (e publicaria o que foi salvo).
+    await user.click(screen.getByRole('button', { name: 'Salvar rascunho' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirmar a publicação' })).toBeEnabled());
+  });
+
+  it('importar na versão um arquivo com a forma errada aponta os caminhos e mantém a tela', async () => {
+    const { user } = renderConsole('/tabelas-de-preco/teste-v3');
+    await screen.findByLabelText('Contas incluídas');
+    const file = new File(
+      [
+        JSON.stringify({
+          content: { sizing: { sizes: [null] }, modes: 'x', presets: [{ configuration: null }] },
+        }),
+      ],
+      'tabela.json',
+      { type: 'application/json' },
+    );
+    await user.upload(screen.getByLabelText('Importar JSON'), file);
+    const summary = await screen.findByRole('alert');
+    expect(summary).toHaveTextContent('modes: esperado um objeto, recebido string');
+    expect(summary).toHaveTextContent('sizing.sizes.0: esperado um objeto, recebido null');
+    expect(summary).toHaveTextContent('presets.0.configuration: esperado um objeto, recebido null');
+    expect(screen.getByLabelText('Ambiente porte P (R$)')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Publicar…' })).toBeDisabled();
+  });
 });

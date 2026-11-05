@@ -45,6 +45,9 @@ export function PublishPanel({
   const [error, setError] = useState<unknown>(undefined);
 
   async function publish(): Promise<void> {
+    // A publicação leva o rascunho salvo, não o que está na tela: com alteração não salva (editada ou importada depois
+    // de abrir a confirmação), ela publicaria outro conteúdo, e a releitura descartaria as alterações.
+    if (blockedReason !== undefined || busy) return;
     setBusy(true);
     setError(undefined);
     setResult(undefined);
@@ -104,7 +107,7 @@ export function PublishPanel({
             ajuste vira outro rascunho.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void publish()} disabled={busy}>
+            <Button onClick={() => void publish()} disabled={busy || blockedReason !== undefined}>
               {busy ? 'Publicando…' : 'Confirmar a publicação'}
             </Button>
             <Button variant="secondary" onClick={() => setOpen(false)} disabled={busy}>

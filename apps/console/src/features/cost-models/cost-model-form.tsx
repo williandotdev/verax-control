@@ -2,8 +2,10 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useDraftValue, useField, useSetter } from '@/form/form-context';
 import { Grid, ListEditor, NumberField, Section, SelectField, TextField } from '@/form/fields';
-import type { CostModel, SizeId } from '@/lib/api-types';
+import { recordsAt } from '@/features/versions/shape';
+import type { SizeId } from '@/lib/api-types';
 import { formatCents } from '@/lib/numbers';
+import { getAt } from '@/lib/paths';
 import { nodeCostBySize } from './node-cost';
 
 const SIZES: readonly SizeId[] = ['P', 'M', 'G'];
@@ -93,11 +95,19 @@ function NodeCostPreview() {
   );
 }
 
+/**
+ * O total dos custos fixos e o rateio, na hora. O rascunho pode vir de um arquivo importado com a forma errada (um
+ * item nulo, a lista como objeto): a prévia só soma os itens que são objetos com valor numérico, e o problema aparece
+ * no campo (`shape.ts`), em vez de derrubar a tela.
+ */
 function FixedCostPreview() {
-  const value = useDraftValue() as Partial<CostModel> | undefined;
-  const items = value?.fixedCosts?.items ?? [];
-  const customers = value?.fixedCosts?.allocationCustomers;
-  const total = items.reduce((sum, item) => sum + (typeof item.monthly === 'number' ? item.monthly : 0), 0);
+  const draft = useDraftValue();
+  const items = recordsAt(draft, ['fixedCosts', 'items']);
+  const customers = getAt(draft, ['fixedCosts', 'allocationCustomers']);
+  const total = items.reduce(
+    (sum, item) => sum + (typeof item['monthly'] === 'number' ? item['monthly'] : 0),
+    0,
+  );
   return (
     <p className="text-sm text-muted-foreground tabular-nums">
       Total: {formatCents(total)} por mês
@@ -108,11 +118,12 @@ function FixedCostPreview() {
   );
 }
 
+/** As alíquotas do rascunho que têm identificador viram as opções da padrão (item sem forma de objeto fica de fora). */
 function TaxDefault() {
-  const rates = useField(['taxes', 'rates']).value;
-  const options = (Array.isArray(rates) ? rates : []).flatMap((rate: unknown) => {
-    const id = (rate as { id?: unknown }).id;
-    const label = (rate as { label?: unknown }).label;
+  const draft = useDraftValue();
+  const options = recordsAt(draft, ['taxes', 'rates']).flatMap((rate) => {
+    const id = rate['id'];
+    const label = rate['label'];
     return typeof id === 'string'
       ? [{ value: id, label: typeof label === 'string' ? `${label} (${id})` : id }]
       : [];

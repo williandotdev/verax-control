@@ -23,4 +23,15 @@ describe('caminhos no rascunho', () => {
     expect(getAt(doc, ['rates'])).toEqual([{ id: 'a' }, { id: 'b' }]);
     expect(getAt(removeAt(doc, ['rates'], 0), ['rates'])).toEqual([{ id: 'b' }]);
   });
+
+  it('só segue propriedades próprias e recusa as chaves do protótipo', () => {
+    const imported = JSON.parse('{"__proto__": {"poluido": true}, "a": {"b": 1}}') as unknown;
+    expect(getAt(imported, ['__proto__', 'poluido'])).toBeUndefined();
+    expect(getAt(imported, ['a', 'b'])).toBe(1);
+    expect(getAt({}, ['constructor'])).toBeUndefined();
+    expect(getAt({ a: 1 }, ['toString'])).toBeUndefined();
+    expect(() => setAt({}, ['__proto__', 'poluido'], true)).toThrow(TypeError);
+    expect(() => setAt({}, ['constructor', 'prototype'], 1)).toThrow(TypeError);
+    expect(({} as Record<string, unknown>)['poluido']).toBeUndefined();
+  });
 });

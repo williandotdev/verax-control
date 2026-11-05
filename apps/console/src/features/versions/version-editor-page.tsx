@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { DraftForm } from '@/form/draft-form';
 import { ErrorSummary } from '@/form/error-summary';
+import { FormErrorBoundary } from '@/form/form-error-boundary';
 import { ApiError, api } from '@/lib/api';
 import type { PublishCheck, ValidationIssue, VersionedRecord } from '@/lib/api-types';
 import { formatDateTime } from '@/lib/format';
@@ -16,6 +17,7 @@ import { downloadJson, ImportError, readJsonContent } from './json-file';
 import type { KindConfig } from './kinds';
 import { PublishPanel } from './publish-panel';
 import { invalidateVersions, useVersion, useVersions } from './queries';
+import { shapeIssues } from './shape';
 
 function Meta({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -67,6 +69,8 @@ export function VersionEditorPage({
   const [draft, setDraft] = useState<unknown>(undefined);
   const [base, setBase] = useState<string | undefined>(undefined);
   const [issues, setIssues] = useState<readonly ValidationIssue[]>([]);
+  /** Os problemas vêm do arquivo importado (conferidos na tela) ou da API (na gravação). */
+  const [issuesFromImport, setIssuesFromImport] = useState(false);
   const [saveError, setSaveError] = useState<unknown>(undefined);
   const [notice, setNotice] = useState<string | undefined>(
     (location.state as { created?: boolean } | null)?.created === true ? 'Rascunho criado.' : undefined,
@@ -108,6 +112,7 @@ export function VersionEditorPage({
       setIssues([]);
       setNotice('Rascunho salvo.');
     } catch (caught) {
+      setIssuesFromImport(false);
       if (caught instanceof ApiError && caught.issues.length > 0) setIssues(caught.issues);
       else setSaveError(caught);
     } finally {
@@ -119,9 +124,12 @@ export function VersionEditorPage({
     if (file === undefined) return;
     setImportError(undefined);
     try {
-      setDraft(await readJsonContent(file));
-      setIssues([]);
-      setNotice('Arquivo importado no formulário: confira e salve.');
+      const content = await readJsonContent(file);
+      const found = shapeIssues(config.kind, content);
+      setDraft(content);
+      setIssues(found);
+      setIssuesFromImport(true);
+      setNotice(found.length === 0 ? 'Arquivo importado no formulário: confira e salve.' : undefined);
     } catch (caught) {
       setImportError(caught instanceof ImportError ? caught.message : 'Não foi possível ler o arquivo.');
     }
@@ -219,7 +227,15 @@ export function VersionEditorPage({
         )}
       </header>
 
-      <ErrorSummary issues={issues} />
+      <ErrorSummary
+        issues={issues}
+        {...(issuesFromImport
+          ? {
+              title:
+                'O arquivo importado não tem a forma esperada: corrija ou tire os itens apontados antes de gravar.',
+            }
+          : {})}
+      />
       {saveError !== undefined && <ErrorState error={saveError} />}
       {notice !== undefined && (
         <p role="status" className="text-sm font-medium">
@@ -228,9 +244,16 @@ export function VersionEditorPage({
       )}
 
       {draft !== undefined && (
-        <DraftForm value={draft} onChange={setDraft} issues={issues} readOnly={!editable}>
-          <Form />
-        </DraftForm>
+        <FormErrorBoundary
+          onReset={() => {
+            setDraft(structuredClone(data.content));
+            setIssues([]);
+          }}
+        >
+          <DraftForm value={draft} onChange={setDraft} issues={issues} readOnly={!editable}>
+            <Form />
+          </DraftForm>
+        </FormErrorBoundary>
       )}
 
       {editable && (

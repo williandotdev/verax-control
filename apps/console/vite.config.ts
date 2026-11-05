@@ -27,5 +27,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    // As telas digitam campo a campo; com as suítes do monorepo rodando juntas (pre-push e CI), 5 s não bastam.
+    testTimeout: 20_000,
   },
 });

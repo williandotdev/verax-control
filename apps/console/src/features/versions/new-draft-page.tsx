@@ -5,11 +5,13 @@ import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { DraftForm } from '@/form/draft-form';
 import { ErrorSummary } from '@/form/error-summary';
+import { FormErrorBoundary } from '@/form/form-error-boundary';
 import { ApiError, api } from '@/lib/api';
 import type { ValidationIssue } from '@/lib/api-types';
 import { ImportError, readJsonContent } from './json-file';
 import { type KindConfig, suggestVersion } from './kinds';
 import { invalidateVersions, useVersion, useVersions } from './queries';
+import { shapeIssues } from './shape';
 
 const BLANK = '__em-branco__';
 const IMPORTED = '__arquivo__';
@@ -54,6 +56,8 @@ export function NewDraftPage({ config, Form }: { config: KindConfig; Form: Compo
   }
 
   const [issues, setIssues] = useState<readonly ValidationIssue[]>([]);
+  /** Os problemas vêm do arquivo importado (conferidos na tela) ou da API (na gravação). */
+  const [issuesFromImport, setIssuesFromImport] = useState(false);
   const [error, setError] = useState<unknown>(undefined);
   const [importError, setImportError] = useState<string | undefined>(undefined);
   const [saving, setSaving] = useState(false);
@@ -70,6 +74,7 @@ export function NewDraftPage({ config, Form }: { config: KindConfig; Form: Compo
         state: { created: true },
       });
     } catch (caught) {
+      setIssuesFromImport(false);
       if (caught instanceof ApiError && caught.issues.length > 0) setIssues(caught.issues);
       else {
         setIssues([]);
@@ -84,10 +89,12 @@ export function NewDraftPage({ config, Form }: { config: KindConfig; Form: Compo
     if (file === undefined) return;
     setImportError(undefined);
     try {
-      setDraft(await readJsonContent(file));
+      const content = await readJsonContent(file);
+      setDraft(content);
       setChosenSource(IMPORTED);
       setLoadedFrom(IMPORTED);
-      setIssues([]);
+      setIssues(shapeIssues(config.kind, content));
+      setIssuesFromImport(true);
     } catch (caught) {
       setImportError(caught instanceof ImportError ? caught.message : 'Não foi possível ler o arquivo.');
     }
@@ -186,16 +193,32 @@ export function NewDraftPage({ config, Form }: { config: KindConfig; Form: Compo
         </div>
       </section>
 
-      <ErrorSummary issues={issues} />
+      <ErrorSummary
+        issues={issues}
+        {...(issuesFromImport
+          ? {
+              title:
+                'O arquivo importado não tem a forma esperada: corrija ou tire os itens apontados antes de gravar.',
+            }
+          : {})}
+      />
       {error !== undefined && <ErrorState error={error} />}
       {sourceRecord.isError && <ErrorState error={sourceRecord.error} />}
 
       {draft === undefined ? (
         <LoadingState label="Preparando o rascunho" />
       ) : (
-        <DraftForm value={draft} onChange={setDraft} issues={issues} readOnly={false}>
-          <Form />
-        </DraftForm>
+        <FormErrorBoundary
+          onReset={() => {
+            setChosenSource(BLANK);
+            setLoadedFrom(undefined);
+            setIssues([]);
+          }}
+        >
+          <DraftForm value={draft} onChange={setDraft} issues={issues} readOnly={false}>
+            <Form />
+          </DraftForm>
+        </FormErrorBoundary>
       )}
 
       <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t bg-background/95 py-3">
