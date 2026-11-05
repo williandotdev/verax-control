@@ -251,6 +251,60 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     expect((await auditOf(connectedA.id)).at(-1)?.after).toEqual({ collectionError: null });
   });
 
+  it('o host nem leu a lista (erro sem geração): o aviso vai para as contas elegíveis (A/B); o erro de uma lista antiga, não; a próxima aplicação certa o tira', async () => {
+    const tenantA = await createTenant(app, 'Cliente Demo A (lista não lida)');
+    const tenantB = await createTenant(app, 'Cliente Demo B (lista não lida)');
+    const accountA = await awsAccount(tenantA);
+    const accountB = await awsAccount(tenantB, { connection: 'waiting' });
+    // Fora da coleta (sem a primeira verificação): não ganha o aviso do nó.
+    const notCollected = await awsAccount(tenantA, { ingestFrom: null, connection: 'waiting' });
+    const dir = await signalDir();
+    const task = new WazuhConfig(prisma, dir, { tenantIds: [tenantA, tenantB] });
+    await tokenAt(dir, new Date());
+
+    // O erro de uma lista antiga não diz nada da de agora: aguardando, sem aviso.
+    await applied(dir, 'b'.repeat(64), 'error');
+    expect(await task.runOnce()).toMatchObject({ accounts: 2, state: 'pending', marked: 0 });
+    expect((await rowOf(accountA.id)).collectionError).toBeNull();
+
+    // O CLI falhou no host: nenhuma lista chega ao manager, nem a de agora.
+    await applied(dir, null, 'error');
+    expect(await task.runOnce()).toMatchObject({ state: 'wazuh_apply_failed', marked: 2, cleared: 0 });
+    for (const account of [accountA, accountB]) {
+      expect((await rowOf(account.id)).collectionError).toBe('wazuh_apply_failed');
+    }
+    expect((await rowOf(notCollected.id)).collectionError).toBeNull();
+    // A conexão fica como estava, e cada conta tem a entrada na trilha do próprio cliente.
+    expect(await rowOf(accountB.id)).toMatchObject({ connection: 'waiting', connectionError: null });
+    expect((await auditOf(accountA.id)).map((entry) => entry.tenantId)).toEqual([tenantA]);
+    expect((await auditOf(accountB.id)).map((entry) => entry.tenantId)).toEqual([tenantB]);
+    expect(await task.runOnce()).toMatchObject({ marked: 0, cleared: 0 });
+    expect(await auditOf(accountA.id)).toHaveLength(1);
+
+    // A lista muda enquanto isso (um bucket novo): o erro sem geração segue valendo para a lista nova.
+    await prisma.cloudAccount.update({
+      where: { id: accountA.id },
+      data: { wafBucket: `aws-waf-logs-${bucket()}` },
+    });
+    expect(await task.runOnce()).toMatchObject({
+      generation: 'written',
+      state: 'wazuh_apply_failed',
+      marked: 0,
+    });
+    // O host aplica uma lista antiga: o aviso fica até o resultado da de agora.
+    await applied(dir, 'b'.repeat(64), 'ok');
+    expect(await task.runOnce()).toMatchObject({ state: 'pending', marked: 0, cleared: 0 });
+    expect((await rowOf(accountA.id)).collectionError).toBe('wazuh_apply_failed');
+
+    // A lista de agora aplicada: o aviso sai das duas, com auditoria.
+    await applied(dir, await generationOf([tenantA, tenantB]), 'ok');
+    expect(await task.runOnce()).toMatchObject({ state: 'ok', marked: 0, cleared: 2 });
+    for (const account of [accountA, accountB]) {
+      expect((await rowOf(account.id)).collectionError).toBeNull();
+    }
+    expect((await auditOf(accountA.id)).at(-1)?.after).toEqual({ collectionError: null });
+  });
+
   it("as duas tarefas não se desfazem: o aviso da conferência (PR-V5') e o da coleta convivem, e tirar um mantém o outro", async () => {
     const tenant = await createTenant(app, 'Cliente Demo A (duas tarefas)');
     const account = await awsAccount(tenant);
@@ -421,10 +475,12 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     await tokenAt(dir, new Date());
     expect(await task.runOnce()).toMatchObject({ state: 'pending', invalidSignals: 1, marked: 0 });
 
-    // Campo a mais, status desconhecido ou um arquivo grande demais: fora do formato.
+    // Campo a mais, status desconhecido, ok sem geração (o host só manda null com erro) ou um arquivo grande demais:
+    // fora do formato.
     for (const content of [
       JSON.stringify({ generation, status: 'error', at: '2026-11-04T12:00:00Z', extra: 1 }),
       JSON.stringify({ generation, status: 'talvez', at: '2026-11-04T12:00:00Z' }),
+      JSON.stringify({ generation: null, status: 'ok', at: '2026-11-04T12:00:00Z' }),
       JSON.stringify({ generation, status: 'error', at: '2026-11-04T12:00:00Z', pad: 'x'.repeat(5000) }),
     ]) {
       await writeFile(join(dir, 'applied'), content);

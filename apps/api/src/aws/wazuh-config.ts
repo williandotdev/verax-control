@@ -36,12 +36,19 @@ export const WAZUH_SIGNAL_FILES = {
 const SIGNAL_MAX_BYTES = 4096;
 
 const generationPattern = /^[0-9a-f]{64}$/;
-/** O resultado da última aplicação no host: a geração aplicada (null se a lista nem chegou ao gerador). */
-const appliedSchema = z.strictObject({
-  generation: z.string().regex(generationPattern).nullable(),
-  status: z.enum(['ok', 'error']),
-  at: z.iso.datetime(),
-});
+/**
+ * O resultado da última tentativa do host: a geração da lista que ele aplicou (ou tentou aplicar), ou null só com erro,
+ * quando a lista nem chegou ao gerador (o CLI `wazuh-sources` falhou no host).
+ */
+const appliedSchema = z.union([
+  z.strictObject({
+    generation: z.string().regex(generationPattern),
+    status: z.enum(['ok', 'error']),
+    at: z.iso.datetime(),
+  }),
+  z.strictObject({ generation: z.null(), status: z.literal('error'), at: z.iso.datetime() }),
+]);
+export type AppliedSignal = z.infer<typeof appliedSchema>;
 /** A última renovação do token do Google no host. Só a hora: o token nunca sai da pasta dele. */
 const tokenSchema = z.strictObject({ tokenAt: z.iso.datetime() });
 
@@ -83,6 +90,24 @@ export function wantedCollectionError(
   if (state === 'aws_token_stale' || state === 'wazuh_apply_failed') return state;
   if (state === 'pending' && current === 'wazuh_apply_failed') return 'wazuh_apply_failed';
   return null;
+}
+
+/**
+ * O resultado da aplicação da lista de agora, pelo último sinal `applied` do host (null: sem sinal, ou fora do formato).
+ *
+ * - O da geração de agora: ok ou error.
+ * - Error sem geração: o host nem leu a lista (o CLI falhou). Não é o resultado de uma lista antiga, e sim a tentativa
+ *   mais recente do host, que não leva lista nenhuma ao manager, nem a de agora: error, até a próxima tentativa dele
+ *   (pela geração nova ou pelo timer de 15 min) trazer outro sinal.
+ * - O de outra geração (uma lista antiga, aplicada antes de a de agora chegar ao host), ou nenhum: pending.
+ */
+export function applicationResult(
+  applied: AppliedSignal | null,
+  generation: string,
+): 'ok' | 'error' | 'pending' {
+  if (applied === null) return 'pending';
+  if (applied.generation === null) return 'error';
+  return applied.generation === generation ? applied.status : 'pending';
 }
 
 /** Um sinal do host fora do formato (grande demais, não é arquivo, não é JSON ou não segue o schema). */
@@ -138,8 +163,9 @@ interface CollectionRow {
  *   configuração do manager em segundos. Troca atômica (rename), como no host.
  * - Lê os dois sinais do host e grava, em cada conta que o manager lê, o aviso da coleta em `collectionError`, um campo
  *   só dela: `aws_token_stale` quando o token do Google não é renovado há mais de 40 min, e `wazuh_apply_failed` quando
- *   a aplicação da lista de agora deu erro. Resolvido o problema (token renovado; a lista de agora aplicada), o aviso
- *   sai. A conta que deixou a coleta (desativada) perde o aviso.
+ *   a aplicação da lista de agora deu erro, ou quando o host nem conseguiu ler a lista (o sinal com erro e sem geração;
+ *   `applicationResult`). Resolvido o problema (token renovado; a lista de agora aplicada), o aviso sai. A conta que
+ *   deixou a coleta (desativada) perde o aviso.
  * - Nunca toca na conexão (`connection` e `connectionError`), que só a tarefa `aws-check` grava (a conferência do papel,
  *   PR-V5'): os dois avisos são do nó inteiro, não da conta do cliente, e nenhuma das duas tarefas desfaz a outra.
  * - Cada mudança numa transação própria, pelo escopo do cliente da conta, só se o aviso ainda for o lido, com auditoria
@@ -185,10 +211,7 @@ export class WazuhConfig {
     // Sem o sinal do token (o host ainda não o renovou desde a partida), o prazo conta da partida do worker.
     const tokenAt = token !== null && token !== INVALID ? new Date(token.tokenAt) : this.startedAt;
     const stale = this.now().getTime() - tokenAt.getTime() > this.staleAfterMs;
-    const result =
-      applied !== null && applied !== INVALID && applied.generation === generation
-        ? applied.status
-        : 'pending';
+    const result = applicationResult(applied === INVALID ? null : applied, generation);
     const state: WazuhConfigReport['state'] = stale
       ? 'aws_token_stale'
       : result === 'error'
