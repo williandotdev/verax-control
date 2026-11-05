@@ -76,23 +76,30 @@ dos nós de clientes"). O nó lê a senha do cofre dele na partida, então a tro
    read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-nodes-smtp-password --project <projeto-da-verax> --data-file=- && unset VALOR
    ```
 
-3. **Copie para os nós** (o mesmo token do `resume`, acima):
+3. **Copie para os nós** (o mesmo token do `resume`, acima), até a resposta dizer `"complete": true`:
 
    ```bash
    curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "$WORKER_URL/internal/nodes/smtp-password/sync"
+   # Com "next" na resposta, o tempo da chamada acabou com clientes pela frente: continue de onde parou.
+   curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "$WORKER_URL/internal/nodes/smtp-password/sync?after=<next>"
    ```
 
-   A resposta traz `updated` (quantos cofres receberam a senha nova), `failed` (os ids dos clientes cujo cofre recusou;
-   o log `node_smtp_password_sync_failed` diz o motivo de cada um) e `skipped` (os já excluídos). Repetir é seguro: grava
-   a mesma `latest` de novo. Responde 409 com `node_mail_disabled` (sem `SMTP_HOST_NODES`) ou `smtp_password_missing`
-   (o cofre sem versão habilitada); a senha nunca sai na resposta nem no log. Cada cliente atualizado ganha
-   `resources.nodeMailPasswordAt` novo e um registro na trilha com `owner:<e-mail>`.
+   O cp-worker varre todos os clientes em páginas, pelo subdomínio (uma ordem que não muda no meio da varredura), e
+   para cada chamada em cerca de 10 minutos, abaixo do prazo do Cloud Run. A resposta traz `updated` (quantos cofres
+   receberam a senha nova nesta chamada), `failed` (os ids dos clientes cujo cofre recusou; o log
+   `node_smtp_password_sync_failed` diz o motivo de cada um), `skipped` (os já excluídos), `complete` e, quando há
+   clientes pela frente, `next` (o `after` da chamada seguinte). **`complete` só é `true` quando a varredura chegou ao
+   fim e nenhum cofre recusou**: com `next` ou com `failed`, a troca está pela metade (corrija o motivo e chame de novo
+   do começo, sem `after`; repetir é seguro, grava a mesma `latest`). Um erro (5xx, a conexão caiu) também é troca pela
+   metade. Responde 409 com `node_mail_disabled` (sem `SMTP_HOST_NODES`) ou `smtp_password_missing` (o cofre sem versão
+   habilitada) e 400 com um `after` fora do formato; a senha nunca sai na resposta nem no log. Cada cliente atualizado
+   ganha `resources.nodeMailPasswordAt` novo e um registro na trilha com `owner:<e-mail>`.
 
-4. **Reinicie os nós** numa hora calma: o `start.sh` só lê o cofre na partida. Sem SSH, `gcloud compute instances reset
-vx-<slug> --zone <zona> --project <projeto-dos-nos>` (a VM volta em minutos, e o Wazuh em até 40); um deploy de versão
-   nova também reinicia. Até lá, o nó continua com a senha antiga, que ainda vale.
-5. **Revogue a antiga** no provedor só depois de todos os nós reiniciarem, e desative as versões antigas do segredo
-   (`gcloud secrets versions disable <n> --secret cp-nodes-smtp-password`).
+4. **Reinicie os nós** numa hora calma: o `start.sh` só lê o cofre na partida. Sem SSH,
+   `gcloud compute instances reset vx-<slug> --zone <zona> --project <projeto-dos-nos>` (a VM volta em minutos, e o
+   Wazuh em até 40); um deploy de versão nova também reinicia. Até lá, o nó continua com a senha antiga, que ainda vale.
+5. **Revogue a antiga** no provedor só depois de uma recópia com `"complete": true` e de todos os nós reiniciarem, e
+   desative as versões antigas do segredo (`gcloud secrets versions disable <n> --secret cp-nodes-smtp-password`).
 
 Só a senha chega aos nós que já existem: um servidor, uma porta ou um usuário novos (`SMTP_*_NODES`) valem só para os
 nós criados depois. Num nó existente, isso é o caminho de atualização (o `deploy.sh` com o `node.conf` ajustado).

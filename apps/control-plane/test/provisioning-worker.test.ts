@@ -83,14 +83,20 @@ describe('cp-worker: provisionamento (CP-07)', () => {
    * fila e as mesmas APIs falsas. (O nestjs-pino guarda o logger do primeiro app: os logs deste vão para o `capture`.)
    */
   let appNext: NestExpressApplication;
-  /** O mesmo cp-worker com o e-mail dos nós configurado (`SMTP_*_NODES`). */
+  /**
+   * O mesmo cp-worker com o e-mail dos nós configurado (`SMTP_*_NODES`), com páginas de 2 clientes na recópia da senha
+   * (a varredura passa por várias páginas em toda chamada).
+   */
   let appMail: NestExpressApplication;
+  /** Idem, sem orçamento de tempo na recópia: cada chamada processa uma página e devolve o cursor da seguinte. */
+  let appMailPaged: NestExpressApplication;
   let cursor = 0;
   let slugSequence = 0;
 
   async function workerApp(
     release: string,
     extraEnv: Record<string, string> = {},
+    nodeMailSync: { pageSize?: number; budgetMs?: number } = {},
   ): Promise<NestExpressApplication> {
     const worker = await createApp({
       role: 'worker',
@@ -107,6 +113,7 @@ describe('cp-worker: provisionamento (CP-07)', () => {
           probe,
           releaseKeys: releaseKey.keys,
         },
+        nodeMailSync,
       },
       env: {
         LOG_LEVEL: 'debug',
@@ -144,13 +151,15 @@ describe('cp-worker: provisionamento (CP-07)', () => {
     await cloud.start();
     app = await workerApp(RELEASE);
     appNext = await workerApp(NEXT_RELEASE);
-    appMail = await workerApp(RELEASE, NODE_MAIL_ENV);
+    appMail = await workerApp(RELEASE, NODE_MAIL_ENV, { pageSize: 2 });
+    appMailPaged = await workerApp(RELEASE, NODE_MAIL_ENV, { pageSize: 2, budgetMs: 0 });
   });
 
   afterAll(async () => {
     await app.close();
     await appNext.close();
     await appMail.close();
+    await appMailPaged.close();
     await cloud.stop();
   });
 
@@ -972,6 +981,13 @@ describe('cp-worker: provisionamento (CP-07)', () => {
 
     describe('recópia na troca da senha (POST /internal/nodes/smtp-password/sync)', () => {
       const path = '/internal/nodes/smtp-password/sync';
+      interface SyncBody {
+        updated: number;
+        failed: string[];
+        skipped: number;
+        complete: boolean;
+        next?: string;
+      }
 
       it('só o responsável; a senha nova vai para o cofre de cada nó com e-mail, com a auditoria de quem pediu', async () => {
         storeNodePassword();
@@ -989,9 +1005,11 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         await request(server).post(path).set('Authorization', bearer(INVOKER)).expect(403);
         await request(server).post(path).set('Authorization', bearer(PUBLIC_SA)).expect(403);
         const response = await request(server).post(path).set('Authorization', bearer(OWNER)).expect(200);
-        const body = response.body as { updated: number; failed: string[]; skipped: number };
+        const body = response.body as SyncBody;
         expect(body.failed).toEqual([]);
         expect(body.updated).toBeGreaterThanOrEqual(1);
+        expect(body.complete).toBe(true);
+        expect(body.next).toBeUndefined();
         expect(JSON.stringify(response.body)).not.toContain(rotated);
 
         expect(cloud.secretVersions.get(`${NODES}/vx-${withMail.slug}-smtp-password`)?.at(-1)).toEqual({
@@ -1009,6 +1027,91 @@ describe('cp-worker: provisionamento (CP-07)', () => {
         expectPasswordNowhere(NODE_MAILBOX_VALUE);
       });
 
+      /** Clientes ativos com a senha já copiada (sem passar pelo provisionamento inteiro), com slugs desta rodada. */
+      async function tenantsWithMail(count: number, prefix: string): Promise<TenantRecord[]> {
+        const created: TenantRecord[] = [];
+        for (let index = 0; index < count; index += 1) {
+          const tenant = await tenantIn(tenants, `${prefix}-${index}`, 'active');
+          const marked = await tenants.change(tenant.id, () => ({
+            reason: 'teste',
+            audit: { actor: 'system' },
+            mutate: (current) => ({ ...current, resources: { nodeMailPasswordAt: clock.now() } }),
+          }));
+          created.push(marked.tenant);
+        }
+        return created;
+      }
+
+      function lastVersion(slug: string): string | undefined {
+        return cloud.secretVersions.get(`${NODES}/vx-${slug}-smtp-password`)?.at(-1)?.payload;
+      }
+
+      it('mais de uma página (páginas de 2): uma chamada varre todas e só então responde complete', async () => {
+        const withMail = await tenantsWithMail(5, 'pagina');
+        const gone = await tenantIn(tenants, 'pagina-excluido', 'deleted');
+        await tenants.change(gone.id, () => ({
+          reason: 'teste',
+          audit: { actor: 'system' },
+          mutate: (current) => ({ ...current, resources: { nodeMailPasswordAt: clock.now() } }),
+        }));
+        const noMail = await tenantIn(tenants, 'pagina-sem-email', 'active');
+        storeNodePassword('caixa-dos-nos-ficticia-3');
+        const queriesBefore = documents.queries.length;
+
+        const response = await request(appMail.getHttpServer())
+          .post(path)
+          .set('Authorization', bearer(OWNER))
+          .expect(200);
+        const body = response.body as SyncBody;
+        expect(body).toMatchObject({ failed: [], complete: true });
+        expect(body.next).toBeUndefined();
+        expect(body.updated).toBeGreaterThanOrEqual(5);
+        expect(body.skipped).toBeGreaterThanOrEqual(1);
+        for (const tenant of withMail) expect(lastVersion(tenant.slug)).toBe('caixa-dos-nos-ficticia-3');
+        expect(lastVersion(gone.slug)).toBeUndefined();
+        expect(lastVersion(noMail.slug)).toBeUndefined();
+        // Pelo menos 7 clientes em páginas de 2: quatro páginas ou mais, cada uma depois do slug da anterior.
+        const pages = documents.queries
+          .slice(queriesBefore)
+          .filter((query) => query.startsWith('tenants?') && query.includes('"orderBy":{"field":"slug"}'));
+        expect(pages.length).toBeGreaterThanOrEqual(4);
+        expect(pages.slice(1).every((query) => query.includes('"field":"slug","op":">"'))).toBe(true);
+      });
+
+      it('sem orçamento de tempo: cada chamada faz uma página e devolve next; complete só na última', async () => {
+        const withMail = await tenantsWithMail(5, 'cursor');
+        storeNodePassword('caixa-dos-nos-ficticia-4');
+        const server = appMailPaged.getHttpServer();
+        const cursors: string[] = [];
+        let body: SyncBody | undefined;
+        let after: string | undefined;
+        for (let call = 0; call < 200; call += 1) {
+          const response = await request(server)
+            .post(after === undefined ? path : `${path}?after=${after}`)
+            .set('Authorization', bearer(OWNER))
+            .expect(200);
+          body = response.body as SyncBody;
+          expect(body.failed).toEqual([]);
+          if (body.next === undefined) break;
+          // Uma chamada que para no meio nunca diz que terminou.
+          expect(body.complete).toBe(false);
+          cursors.push(body.next);
+          after = body.next;
+        }
+        expect(body?.complete).toBe(true);
+        expect(cursors.length).toBeGreaterThanOrEqual(2);
+        expect([...cursors].sort()).toEqual(cursors);
+        expect(new Set(cursors).size).toBe(cursors.length);
+        for (const tenant of withMail) expect(lastVersion(tenant.slug)).toBe('caixa-dos-nos-ficticia-4');
+        // Um cursor fora do formato é recusado antes de qualquer gravação.
+        const writes = cloud.count('POST', ':addVersion');
+        await request(server)
+          .post(`${path}?after=Nao%20E%20Slug`)
+          .set('Authorization', bearer(OWNER))
+          .expect(400);
+        expect(cloud.count('POST', ':addVersion')).toBe(writes);
+      });
+
       it('um cofre que recusa entra na lista de falhas e não para os outros', async () => {
         storeNodePassword();
         const first = await paidTenant();
@@ -1022,8 +1125,10 @@ describe('cp-worker: provisionamento (CP-07)', () => {
           .post(path)
           .set('Authorization', bearer(OWNER))
           .expect(200);
-        const body = response.body as { updated: number; failed: string[] };
+        const body = response.body as SyncBody;
         expect(body.failed).toEqual([first.id]);
+        // Com um cofre que recusou, a troca não está completa: a senha antiga ainda não pode ser revogada.
+        expect(body.complete).toBe(false);
         expect(cloud.secretVersions.get(`${NODES}/vx-${second.slug}-smtp-password`)).toHaveLength(2);
         expect(capture.text).toContain('node_smtp_password_sync_failed');
       });

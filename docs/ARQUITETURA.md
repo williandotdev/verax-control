@@ -1597,10 +1597,14 @@ PR-17') e o "esqueci minha senha" de cada nó:
   `skipped`); a partida do cp-worker e o `preflight` de cada cliente avisam no log (`node_mail_disabled`);
 - **troca da senha (rotação):** o responsável cria a senha nova no provedor sem revogar a antiga, grava uma versão
   nova em `cp-nodes-smtp-password` e chama `POST /internal/nodes/smtp-password/sync` (só `OWNER_PRINCIPALS`, como o
-  `resume`): o cp-worker grava a `latest` no cofre de cada cliente com `resources.nodeMailPasswordAt` (menos os
-  excluídos), atualiza o campo com a auditoria `owner:<e-mail>` e responde as contagens e os ids dos cofres que
-  recusaram. O nó lê o cofre na partida: a senha nova vale no próximo reinício do `verax-node` ou da VM (o deploy de
-  uma versão também reinicia); só depois de todos reiniciarem a antiga pode ser revogada
+  `resume`): o cp-worker varre todos os clientes em páginas, pelo subdomínio (único e imutável: a ordem não muda com
+  as gravações da própria varredura), grava a `latest` no cofre de cada um com `resources.nodeMailPasswordAt` (menos
+  os excluídos) e atualiza o campo com a auditoria `owner:<e-mail>`. Cada chamada tem um orçamento de 10 minutos,
+  abaixo do prazo do Cloud Run: esgotado com clientes pela frente, responde `complete: false` e `next`, e o
+  responsável continua com `?after=<next>`. `complete: true` só quando a varredura chegou ao fim e nenhum cofre
+  recusou (os ids dos que recusaram vêm em `failed`): uma troca pela metade nunca responde como concluída. O nó lê o
+  cofre na partida: a senha nova vale no próximo reinício do `verax-node` ou da VM (o deploy de uma versão também
+  reinicia); só depois de uma recópia completa e de todos reiniciarem a antiga pode ser revogada
   (`docs/runbooks/provisionamento.md`, "Trocar a senha do e-mail dos nós");
 - **limites:** só a senha chega a um nó que já existe. Um servidor, uma porta ou um usuário novos valem só para os nós
   criados depois (o `node.conf` é escrito na instalação, e a instalação não roda de novo); um nó criado sem o e-mail

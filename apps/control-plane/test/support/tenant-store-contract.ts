@@ -683,24 +683,35 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       expect(await h.store.findByStripeCustomer('cus_demo_x')).toBeUndefined();
     });
 
-    it('lista só os clientes cujo nó recebeu a senha da caixa de envio (resources.nodeMailPasswordAt)', async () => {
-      const withMail = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
-      const withoutMail = await h.store.create(demoTenant('cliente-demo-b', '22333444000181'), {
-        reason: 'teste',
-        audit: AUDIT,
-      });
-      await h.store.change(withoutMail.id, () => ({
-        reason: 'teste',
-        audit: AUDIT,
-        mutate: (tenant) => ({ ...tenant, resources: { namePrefix: 'vx-cliente-demo-b' } }),
-      }));
-      expect(await h.store.listWithNodeMail()).toEqual([]);
-      await h.store.change(withMail.id, () => ({
-        reason: 'node_smtp_password_copied',
+    it('páginas pelo subdomínio: ordem estável, o último slug é o cursor, e mudar um documento não muda a ordem', async () => {
+      // Criados fora da ordem alfabética, para a ordem vir do slug e não da criação.
+      for (const slug of [
+        'cliente-demo-c',
+        'cliente-demo-a',
+        'cliente-demo-e',
+        'cliente-demo-b',
+        'cliente-demo-d',
+      ]) {
+        await h.store.create(demoTenant(slug), { reason: 'teste', audit: AUDIT });
+      }
+      const slugsOf = (page: { slug: string }[]): string[] => page.map((tenant) => tenant.slug);
+      const first = await h.store.listPageBySlug(undefined, 2);
+      expect(slugsOf(first)).toEqual(['cliente-demo-a', 'cliente-demo-b']);
+      // Uma gravação no meio da varredura (a recópia marca o cliente) não tira ninguém do lugar.
+      const marked = first[0];
+      if (marked === undefined) throw new Error('página vazia');
+      await h.store.change(marked.id, () => ({
+        reason: 'node_smtp_password_synced',
         audit: AUDIT,
         mutate: (tenant) => ({ ...tenant, resources: { nodeMailPasswordAt: h.clock.now() } }),
       }));
-      expect((await h.store.listWithNodeMail()).map((tenant) => tenant.id)).toEqual([withMail.id]);
+      const second = await h.store.listPageBySlug('cliente-demo-b', 2);
+      expect(slugsOf(second)).toEqual(['cliente-demo-c', 'cliente-demo-d']);
+      expect(slugsOf(await h.store.listPageBySlug('cliente-demo-d', 2))).toEqual(['cliente-demo-e']);
+      expect(await h.store.listPageBySlug('cliente-demo-e', 2)).toEqual([]);
+      expect((await h.store.listPageBySlug(undefined, 10))[0]?.resources?.nodeMailPasswordAt).toEqual(
+        h.clock.now(),
+      );
     });
 
     it('devolve o subdomínio tomado pelo cliente (released), uma vez só; o de outro cliente não', async () => {

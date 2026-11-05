@@ -3,7 +3,7 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepHandler } from '../internal/step-handler.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
-import { NodeMailSyncService } from './node-mail.js';
+import { NODE_MAIL_SYNC_OPTIONS, type NodeMailSyncOptions, NodeMailSyncService } from './node-mail.js';
 import { ProvisioningEngine } from './provisioning-engine.js';
 import { ProvisioningResumeService } from './provisioning-resume.js';
 import {
@@ -47,6 +47,8 @@ class ProvisioningStartupCheck implements OnModuleInit {
 export interface ProvisioningModuleOptions {
   /** Só nos testes: as APIs num servidor falso em 127.0.0.1, o token falso e a sonda em memória. */
   apis?: ProvisioningApiOptions;
+  /** Só nos testes: páginas e orçamento de tempo menores na recópia da senha do e-mail dos nós. */
+  nodeMailSync?: Partial<NodeMailSyncOptions>;
 }
 
 /**
@@ -66,6 +68,7 @@ export class ProvisioningModule {
         ProvisioningEngine,
         ProvisioningResumeService,
         NodeMailSyncService,
+        { provide: NODE_MAIL_SYNC_OPTIONS, useValue: options.nodeMailSync ?? {} },
         ProvisioningStartupCheck,
         { provide: PROVISIONING_APIS, useFactory: () => createProvisioningApis(options.apis) },
         ...PROVISIONING_STEP_CLASSES,

@@ -9,10 +9,12 @@ import { MemoryDocumentStore } from '../../src/firestore/memory-document-store.j
 
 /**
  * O dublê em memória do Firestore que também guarda o texto de cada documento gravado (inclusive os sobrescritos e os
- * apagados depois), para o teste provar que nenhum segredo chegou ao banco em momento nenhum.
+ * apagados depois), para o teste provar que nenhum segredo chegou ao banco em momento nenhum, e cada consulta feita fora de
+ * transação (`<coleção>?<consulta em JSON>`), para o teste contar páginas.
  */
 export class RecordingDocumentStore implements DocumentStore {
   readonly writes: string[] = [];
+  readonly queries: string[] = [];
 
   constructor(readonly inner: MemoryDocumentStore = new MemoryDocumentStore()) {}
 
@@ -21,6 +23,7 @@ export class RecordingDocumentStore implements DocumentStore {
   }
 
   query(collection: string, query?: DocumentQuery): Promise<StoredDocument[]> {
+    this.queries.push(`${collection}?${JSON.stringify(query ?? {})}`);
     return this.inner.query(collection, query);
   }
 

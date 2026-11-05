@@ -277,12 +277,16 @@ export class TenantStore {
   }
 
   /**
-   * Os clientes cujo nó recebeu a senha da caixa de envio dos nós (`resources.nodeMailPasswordAt`), para a recópia na
-   * troca da senha. Uma desigualdade num campo só: o índice simples do Firestore basta. Até `limit` documentos.
+   * Uma página de todos os clientes em ordem de subdomínio, depois de `after` (exclusive), com até `limit` documentos:
+   * a varredura da recópia da senha do e-mail dos nós. O `slug` é único e nunca muda, então a ordem é estável e o
+   * último `slug` de uma página é o cursor da seguinte, mesmo com os documentos mudando no meio (a recópia regrava
+   * `resources.nodeMailPasswordAt`, que por isso não serve de cursor). Desigualdade e ordenação no mesmo campo: o
+   * índice simples do Firestore basta. Uma página mais curta que `limit` é a última.
    */
-  async listWithNodeMail(limit = 1000): Promise<TenantRecord[]> {
+  async listPageBySlug(after: string | undefined, limit: number): Promise<TenantRecord[]> {
     const docs = await this.store.query(COLLECTIONS.tenants, {
-      where: [{ field: 'resources.nodeMailPasswordAt', op: '>', value: new Date(0) }],
+      ...(after === undefined ? {} : { where: [{ field: 'slug', op: '>' as const, value: after }] }),
+      orderBy: { field: 'slug' },
       limit,
     });
     return docs.map((doc) => ({

@@ -1,4 +1,15 @@
-import { Controller, HttpCode, HttpStatus, Inject, Injectable, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Optional,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CLOCK, type Clock } from '../common/clock.js';
@@ -8,7 +19,7 @@ import { ApiError } from '../common/http/api-error.js';
 import { registerLiveSecret } from '../common/logger/sanitize.js';
 import { WorkerCallerGuard, WorkerCallers, workerCallerOf } from '../internal/worker-caller.js';
 import { TenantStore } from '../tenants/tenant-store.js';
-import type { TenantState } from '../tenants/tenant.schema.js';
+import { slugSchema, type TenantState } from '../tenants/tenant.schema.js';
 import { CloudApiError } from './cloud-http.js';
 import type { SecretVersionsApi } from './google-apis.js';
 import {
@@ -70,33 +81,59 @@ const STATES_WITH_NODE: ReadonlySet<TenantState> = new Set([
   'canceled',
 ]);
 
+/**
+ * A varredura da recópia: os clientes em páginas de `pageSize`, pelo subdomínio, e um orçamento de tempo por chamada
+ * (`budgetMs`), abaixo do prazo do cp-worker no Cloud Run (900 s), com folga para a última página. Esgotado o orçamento
+ * com páginas pela frente, a chamada responde `complete: false` e o cursor `next`, e o responsável chama de novo com
+ * `?after=<next>`. Os testes trocam os dois valores (`ProvisioningModuleOptions.nodeMailSync`).
+ */
+export interface NodeMailSyncOptions {
+  pageSize: number;
+  budgetMs: number;
+}
+export const NODE_MAIL_SYNC_DEFAULTS: NodeMailSyncOptions = { pageSize: 100, budgetMs: 10 * 60_000 };
+export const NODE_MAIL_SYNC_OPTIONS = Symbol('NODE_MAIL_SYNC_OPTIONS');
+
 export interface NodeMailSyncResult {
-  /** Nós cujo cofre recebeu a senha nova. */
+  /** Nós cujo cofre recebeu a senha nova nesta chamada. */
   updated: number;
   /** Os ids (ULID) dos clientes cujo cofre recusou a gravação: o log diz o motivo de cada um. */
   failed: string[];
   /** Clientes com a senha copiada antes, mas sem nó agora (`deleted`). */
   skipped: number;
+  /**
+   * `true` só quando a varredura chegou ao fim (sem `next`) e nenhum cofre recusou: só então a senha antiga pode ser
+   * revogada (depois de os nós reiniciarem). Uma recópia pela metade nunca responde `true`.
+   */
+  complete: boolean;
+  /** Com clientes pela frente: o subdomínio a passar em `?after=` na chamada seguinte. */
+  next?: string;
 }
 
 /**
  * A recópia da senha na troca (rotação): o responsável grava a senha nova em `cp-nodes-smtp-password` e chama esta
- * operação, que grava a versão `latest` no cofre de cada nó que já recebeu a senha (`resources.nodeMailPasswordAt`). O
- * nó lê o cofre na partida (`start.sh`): a senha nova vale no próximo reinício da VM ou do `verax-node`, e a antiga
- * precisa continuar válida no provedor até lá (docs/runbooks/provisionamento.md, "Trocar a senha do e-mail dos nós").
- * Só a senha: um servidor ou um usuário novo não chega aos nós que já existem (o `node.conf` é escrito na instalação).
+ * operação, que varre todos os clientes (em páginas, pelo subdomínio, a partir de `after`) e grava a versão `latest` no
+ * cofre de cada nó que já recebeu a senha (`resources.nodeMailPasswordAt`). O nó lê o cofre na partida (`start.sh`): a
+ * senha nova vale no próximo reinício da VM ou do `verax-node`, e a antiga precisa continuar válida no provedor até lá
+ * (docs/runbooks/provisionamento.md, "Trocar a senha do e-mail dos nós"). Só a senha: um servidor ou um usuário novo
+ * não chega aos nós que já existem (o `node.conf` é escrito na instalação). Repetir é seguro: grava a mesma `latest`.
  */
 @Injectable()
 export class NodeMailSyncService {
+  private readonly options: NodeMailSyncOptions;
+
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(PROVISIONING_APIS) private readonly apis: ProvisioningApis,
     private readonly tenants: TenantStore,
     @Inject(CLOCK) private readonly clock: Clock,
     @InjectPinoLogger(NodeMailSyncService.name) private readonly logger: PinoLogger,
-  ) {}
+    @Optional() @Inject(NODE_MAIL_SYNC_OPTIONS) options?: Partial<NodeMailSyncOptions>,
+  ) {
+    this.options = { ...NODE_MAIL_SYNC_DEFAULTS, ...options };
+  }
 
-  async sync(actor: string, requestId?: string): Promise<NodeMailSyncResult> {
+  async sync(actor: string, after?: string, requestId?: string): Promise<NodeMailSyncResult> {
     const resolved = resolveProvisioningSettings(this.config);
     if (!resolved.ready) {
       throw new ApiError(
@@ -113,54 +150,80 @@ export class NodeMailSyncService {
     if (!read.ok) {
       throw new ApiError(HttpStatus.CONFLICT, 'A senha do e-mail dos nós não está no cofre', read.reason);
     }
-    const result: NodeMailSyncResult = { updated: 0, failed: [], skipped: 0 };
-    for (const tenant of await this.tenants.listWithNodeMail()) {
-      if (!STATES_WITH_NODE.has(tenant.state)) {
-        result.skipped += 1;
-        continue;
+    const started = this.clock.now().getTime();
+    const failed: string[] = [];
+    let updated = 0;
+    let skipped = 0;
+    let cursor = after;
+    let next: string | undefined;
+    for (;;) {
+      const page = await this.tenants.listPageBySlug(cursor, this.options.pageSize);
+      for (const tenant of page) {
+        if (tenant.resources?.nodeMailPasswordAt === undefined) continue;
+        if (!STATES_WITH_NODE.has(tenant.state)) {
+          skipped += 1;
+          continue;
+        }
+        const copied = await this.copyTo(settings.nodesProject, tenant, read.password, actor, requestId);
+        if (copied) updated += 1;
+        else failed.push(tenant.id);
       }
-      try {
-        await this.apis.secrets.addVersion(
-          settings.nodesProject,
-          nodeSmtpPasswordSecret(tenant.slug),
-          read.password,
-        );
-      } catch (error) {
-        if (!(error instanceof CloudApiError)) throw error;
-        result.failed.push(tenant.id);
-        this.logger.warn(
-          {
-            event: 'node_smtp_password_sync_failed',
-            tenantId: tenant.id,
-            reason: `${error.service}_${error.status === 0 ? 'unreachable' : String(error.status)}`,
-          },
-          'senha do e-mail não chegou ao cofre do nó',
-        );
-        continue;
+      const last = page.at(-1);
+      if (last === undefined || page.length < this.options.pageSize) break;
+      cursor = last.slug;
+      if (this.clock.now().getTime() - started >= this.options.budgetMs) {
+        next = cursor;
+        break;
       }
-      // Na trilha do cliente, com quem pediu: quando o cofre do nó recebeu a senha nova.
-      const now = this.clock.now();
-      await this.tenants.change(tenant.id, (current) =>
-        STATES_WITH_NODE.has(current.state)
-          ? {
-              reason: 'node_smtp_password_synced',
-              audit: { actor, requestId },
-              mutate: (t) => ({ ...t, resources: { ...t.resources, nodeMailPasswordAt: now } }),
-            }
-          : undefined,
-      );
-      result.updated += 1;
     }
-    this.logger.info(
-      {
-        event: 'node_smtp_password_synced',
-        updated: result.updated,
-        failed: result.failed.length,
-        skipped: result.skipped,
-      },
-      'senha do e-mail dos nós copiada de novo',
+    const complete = next === undefined && failed.length === 0;
+    const line = {
+      event: 'node_smtp_password_synced',
+      updated,
+      failed: failed.length,
+      skipped,
+      complete,
+      continues: next !== undefined,
+    };
+    if (complete) this.logger.info(line, 'senha do e-mail dos nós copiada de novo');
+    else this.logger.warn(line, 'recópia da senha do e-mail dos nós incompleta');
+    return { updated, failed, skipped, complete, ...(next === undefined ? {} : { next }) };
+  }
+
+  /** Grava a senha no cofre de um nó e marca o cliente; `false` quando o Secret Manager recusa (o log diz o motivo). */
+  private async copyTo(
+    nodesProject: string,
+    tenant: { id: string; slug: string },
+    password: string,
+    actor: string,
+    requestId: string | undefined,
+  ): Promise<boolean> {
+    try {
+      await this.apis.secrets.addVersion(nodesProject, nodeSmtpPasswordSecret(tenant.slug), password);
+    } catch (error) {
+      if (!(error instanceof CloudApiError)) throw error;
+      this.logger.warn(
+        {
+          event: 'node_smtp_password_sync_failed',
+          tenantId: tenant.id,
+          reason: `${error.service}_${error.status === 0 ? 'unreachable' : String(error.status)}`,
+        },
+        'senha do e-mail não chegou ao cofre do nó',
+      );
+      return false;
+    }
+    // Na trilha do cliente, com quem pediu: quando o cofre do nó recebeu a senha nova.
+    const now = this.clock.now();
+    await this.tenants.change(tenant.id, (current) =>
+      STATES_WITH_NODE.has(current.state)
+        ? {
+            reason: 'node_smtp_password_synced',
+            audit: { actor, requestId },
+            mutate: (t) => ({ ...t, resources: { ...t.resources, nodeMailPasswordAt: now } }),
+          }
+        : undefined,
     );
-    return result;
+    return true;
   }
 }
 
@@ -170,8 +233,9 @@ function requestIdOf(req: Request): string | undefined {
 }
 
 /**
- * `POST /internal/nodes/smtp-password/sync`: só o responsável (`OWNER_PRINCIPALS`), como o `resume`. Responde com as
- * contagens e os ids dos clientes cujo cofre recusou a gravação; a senha nunca sai.
+ * `POST /internal/nodes/smtp-password/sync[?after=<subdomínio>]`: só o responsável (`OWNER_PRINCIPALS`), como o
+ * `resume`. Responde com as contagens, os ids dos clientes cujo cofre recusou a gravação, `complete` e, quando o tempo
+ * da chamada acabou com clientes pela frente, `next` (o `after` da chamada seguinte). A senha nunca sai.
  */
 @Controller('internal/nodes')
 @UseGuards(WorkerCallerGuard)
@@ -181,7 +245,14 @@ export class NodeMailSyncController {
 
   @Post('smtp-password/sync')
   @HttpCode(HttpStatus.OK)
-  async syncPassword(@Req() req: Request): Promise<NodeMailSyncResult> {
-    return this.sync.sync(`owner:${workerCallerOf(req) ?? 'desconhecido'}`, requestIdOf(req));
+  async syncPassword(@Req() req: Request, @Query('after') after?: unknown): Promise<NodeMailSyncResult> {
+    if (after !== undefined && (typeof after !== 'string' || !slugSchema.safeParse(after).success)) {
+      throw new ApiError(HttpStatus.BAD_REQUEST, 'Cursor inválido', 'invalid_cursor');
+    }
+    return this.sync.sync(
+      `owner:${workerCallerOf(req) ?? 'desconhecido'}`,
+      typeof after === 'string' ? after : undefined,
+      requestIdOf(req),
+    );
   }
 }
