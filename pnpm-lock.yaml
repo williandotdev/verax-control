@@ -63,6 +63,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: 3.1161.0
         version: 3.1161.0
+      '@aws-sdk/client-s3-control':
+        specifier: 3.1161.0
+        version: 3.1161.0
       '@aws-sdk/client-secrets-manager':
         specifier: 3.1161.0
         version: 3.1161.0
@@ -503,6 +506,10 @@ packages:
 
   '@aws-sdk/client-iam@3.1161.0':
     resolution: {integrity: sha512-K+ScrcbP0wWo1hovq55ZELg2Q4mK6EWZ1mMR3IV76g8Qqiljb16GYHEG4dtDfDiGInnOLvElp26BCsMzfhgzgA==}
+    engines: {node: '>=20.0.0'}
+
+  '@aws-sdk/client-s3-control@3.1161.0':
+    resolution: {integrity: sha512-2iiHQAyLkUzqjabBWXlnITHdaZciBL/MqHHgMY/nP22JaT9L7LSjOg6v6+6XcZrKBHqo2JpfhSpp7dcGo1GVTA==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/client-s3@3.1161.0':
@@ -2254,6 +2261,10 @@ packages:
 
   '@smithy/fetch-http-handler@5.8.0':
     resolution: {integrity: sha512-ycSJu3tFAQ4v04CBB0agqFMVsSQ1iG3yw+SpgxRqKfaURpQD4CZ8Wn0zPMmSnOuTpTh65Vz+EA0rMrw089wvkA==}
+    engines: {node: '>=18.0.0'}
+
+  '@smithy/middleware-apply-body-checksum@4.6.3':
+    resolution: {integrity: sha512-c2WI+satDWRRptxuczkq0ZqHqfWm5F7GP7aMS4wAjbs9MPxFwKcaVOsiFAlAB2wzclxCiumcVeCzluJxw6qmfw==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/node-http-handler@4.14.1':
@@ -5408,6 +5419,19 @@ snapshots:
       '@smithy/types': 4.19.0
       tslib: 2.9.1
 
+  '@aws-sdk/client-s3-control@3.1161.0':
+    dependencies:
+      '@aws-sdk/core': 3.979.1
+      '@aws-sdk/credential-provider-node': 3.972.92
+      '@aws-sdk/middleware-sdk-s3': 3.972.85
+      '@aws-sdk/types': 3.975.0
+      '@smithy/core': 3.38.1
+      '@smithy/fetch-http-handler': 5.8.0
+      '@smithy/middleware-apply-body-checksum': 4.6.3
+      '@smithy/node-http-handler': 4.14.1
+      '@smithy/types': 4.19.0
+      tslib: 2.9.1
+
   '@aws-sdk/client-s3@3.1161.0':
     dependencies:
       '@aws-sdk/checksums': 3.1002.1
@@ -7270,6 +7294,12 @@ snapshots:
       tslib: 2.9.1
 
   '@smithy/fetch-http-handler@5.8.0':
+    dependencies:
+      '@smithy/core': 3.38.1
+      '@smithy/types': 4.19.0
+      tslib: 2.9.1
+
+  '@smithy/middleware-apply-body-checksum@4.6.3':
     dependencies:
       '@smithy/core': 3.38.1
       '@smithy/types': 4.19.0

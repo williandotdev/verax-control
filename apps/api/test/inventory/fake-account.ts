@@ -1,6 +1,9 @@
+import type { CloudTrailClient } from '@aws-sdk/client-cloudtrail';
 import type { EC2Client } from '@aws-sdk/client-ec2';
+import type { GuardDutyClient } from '@aws-sdk/client-guardduty';
 import { NoSuchEntityException, type IAMClient } from '@aws-sdk/client-iam';
 import type { S3Client } from '@aws-sdk/client-s3';
+import type { S3ControlClient } from '@aws-sdk/client-s3-control';
 import type { InventoryClientFactory, InventoryClients } from '../../src/inventory/inventory.js';
 import { awsError, type FakeClient, fakeClient } from './fake-aws.js';
 
@@ -10,6 +13,10 @@ import { awsError, type FakeClient, fakeClient } from './fake-aws.js';
  * um com ACL pública e um, sem região na listagem, com o bloqueio de acesso público ligado) e, em cada região, uma
  * instância com IMDSv1 e IP público, outra com IMDSv2 na segunda página, e um security group com SSH aberto para a
  * internet. A conta inteira é lida sem recusa; `REFUSED_ACL` recusa a ACL do bucket `restrito`.
+ *
+ * Para a postura nativa (PR-15'): a política de senha com 8 caracteres e o reúso das 24 últimas proibido, o bloqueio de
+ * acesso público da conta não configurado, a criptografia padrão do EBS ligada em sa-east-1 e desligada em us-east-1,
+ * uma trilha multirregião gravando (de sa-east-1) e o GuardDuty ligado só em sa-east-1.
  */
 
 export const ACCOUNT = '111122223333';
@@ -48,6 +55,9 @@ export function fakeIam(overrides: Handlers = {}): FakeClient<IAMClient> {
           : [],
     }),
     GetAccessKeyLastUsedCommand: () => ({ AccessKeyLastUsed: { LastUsedDate: new Date('2026-10-30') } }),
+    GetAccountPasswordPolicyCommand: () => ({
+      PasswordPolicy: { MinimumPasswordLength: 8, PasswordReusePrevention: 24 },
+    }),
     ...overrides,
   });
 }
@@ -84,6 +94,7 @@ export function fakeEc2(region: string, overrides: Handlers = {}): FakeClient<EC
               },
             ],
           },
+    GetEbsEncryptionByDefaultCommand: () => ({ EbsEncryptionByDefault: region === 'sa-east-1' }),
     DescribeSecurityGroupsCommand: () => ({
       SecurityGroups: [
         {
@@ -141,6 +152,47 @@ export function fakeS3(overrides: Handlers = {}): FakeClient<S3Client> {
   });
 }
 
+/** O bloqueio de acesso público da conta (S3 Control): não configurado. */
+export function fakeS3Control(overrides: Handlers = {}): FakeClient<S3ControlClient> {
+  return fakeClient<S3ControlClient>({
+    GetPublicAccessBlockCommand: () => {
+      throw awsError('NoSuchPublicAccessBlockConfiguration', 404);
+    },
+    ...overrides,
+  });
+}
+
+/** A trilha multirregião `principal`, de sa-east-1, gravando. */
+export const TRAIL_ARN = `arn:aws:cloudtrail:sa-east-1:${ACCOUNT}:trail/principal`;
+
+export function fakeCloudTrail(overrides: Handlers = {}): FakeClient<CloudTrailClient> {
+  return fakeClient<CloudTrailClient>({
+    DescribeTrailsCommand: () => ({
+      trailList: [
+        { TrailARN: TRAIL_ARN, HomeRegion: 'sa-east-1', IsMultiRegionTrail: true },
+        {
+          TrailARN: `arn:aws:cloudtrail:us-east-1:${ACCOUNT}:trail/so-us-east-1`,
+          HomeRegion: 'us-east-1',
+          IsMultiRegionTrail: false,
+        },
+      ],
+    }),
+    GetTrailStatusCommand: () => ({ IsLogging: true }),
+    ...overrides,
+  });
+}
+
+/** O detector do GuardDuty: ligado em sa-east-1; nenhum nas outras regiões. */
+export const DETECTOR_ID = '12abc34d567e8fa901bc2d34e56789f0';
+
+export function fakeGuardDuty(region: string, overrides: Handlers = {}): FakeClient<GuardDutyClient> {
+  return fakeClient<GuardDutyClient>({
+    ListDetectorsCommand: () => ({ DetectorIds: region === 'sa-east-1' ? [DETECTOR_ID] : [] }),
+    GetDetectorCommand: () => ({ Status: 'ENABLED', ServiceRole: 'servico' }),
+    ...overrides,
+  });
+}
+
 /** A ACL do bucket `restrito` recusada pela AWS (uma leitura de bucket que não passa sozinha). */
 export const REFUSED_ACL: Handlers = {
   GetBucketAclCommand: (input) => {
@@ -151,7 +203,7 @@ export const REFUSED_ACL: Handlers = {
 
 /** Uma chamada de qualquer cliente da conta, com o serviço e a região dele. */
 export interface AccountCall {
-  service: 'iam' | 's3' | 'ec2';
+  service: 'iam' | 's3' | 'ec2' | 's3control' | 'cloudtrail' | 'guardduty';
   region: string | null;
   command: string;
   input: Record<string, unknown>;
@@ -162,6 +214,11 @@ export interface FakeAccountOptions {
   s3?: Handlers;
   /** Os handlers do EC2 de cada região (os que faltarem são os da conta fictícia). */
   ec2?: Record<string, Handlers>;
+  s3control?: Handlers;
+  /** Os do CloudTrail, os mesmos em todas as regiões (a região fica anotada na chamada). */
+  cloudtrail?: Handlers;
+  /** Os handlers do GuardDuty de cada região. */
+  guardduty?: Record<string, Handlers>;
 }
 
 /**
@@ -189,6 +246,9 @@ export function fakeAccount(options: FakeAccountOptions = {}): {
   const iam = record('iam', null, fakeIam(options.iam));
   const s3ByRegion = new Map<string | null, () => Pick<S3Client, 'send'>>();
   const ec2ByRegion = new Map<string, () => Pick<EC2Client, 'send'>>();
+  const s3control = record('s3control', null, fakeS3Control(options.s3control));
+  const cloudtrail = fakeCloudTrail(options.cloudtrail);
+  const guarddutyByRegion = new Map<string, () => Pick<GuardDutyClient, 'send'>>();
   return {
     clients: {
       iam,
@@ -205,6 +265,16 @@ export function fakeAccount(options: FakeAccountOptions = {}): {
         if (client === undefined) {
           client = record('ec2', region, fakeEc2(region, options.ec2?.[region]));
           ec2ByRegion.set(region, client);
+        }
+        return client();
+      },
+      s3control,
+      cloudtrail: (region) => record('cloudtrail', region, cloudtrail)(),
+      guardduty: (region) => {
+        let client = guarddutyByRegion.get(region);
+        if (client === undefined) {
+          client = record('guardduty', region, fakeGuardDuty(region, options.guardduty?.[region]));
+          guarddutyByRegion.set(region, client);
         }
         return client();
       },
@@ -243,6 +313,9 @@ export function fakeFactory(options: FakeAccountOptions = {}): {
       iam: () => withDestroy<IAMClient>(account.clients.iam()),
       s3: (region) => withDestroy<S3Client>(account.clients.s3(region)),
       ec2: (region) => withDestroy<EC2Client>(account.clients.ec2(region)),
+      s3control: () => withDestroy<S3ControlClient>(account.clients.s3control()),
+      cloudtrail: (region) => withDestroy<CloudTrailClient>(account.clients.cloudtrail(region)),
+      guardduty: (region) => withDestroy<GuardDutyClient>(account.clients.guardduty(region)),
     };
   };
   return { factory, calls: account.calls, destroyed: () => destroyed, homeRegions, signals };

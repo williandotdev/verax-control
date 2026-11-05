@@ -105,7 +105,8 @@ export function demoTower(
   const open =
     options.openIncidents ??
     (alfa ? { critical: 1, high: 2, medium: 3, low: 0 } : { critical: 0, high: 0, medium: 1, low: 0 });
-  const score = alfa ? 64 : 91;
+  // A mesma nota da postura da demonstração (`mocks/posture.ts`, o teste da tela de postura confere).
+  const score = alfa ? 69 : 92;
   const warningBelow = 70;
   const reasons = [
     ...(open.critical > 0 ? ['critical_incident' as const] : []),

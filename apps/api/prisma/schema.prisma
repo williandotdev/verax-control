@@ -617,7 +617,9 @@ model Incident {
 }
 
 /// Uma varredura de postura (T5.8) de uma conta: a nota e as contagens. As checagens reprovadas ficam em
-/// `PostureFailure`. Gravada pelo job que lê o relatório do Prowler.
+/// `PostureFailure`. Gravada pela tarefa `aws-inventory` do worker com o catálogo nativo (fase 2, PR-15',
+/// `src/posture/native-posture.ts`), na mesma transação do retrato do inventário; `scannedAt` é o início da coleta (o
+/// mesmo `collectedAt` do retrato).
 model PostureScan {
   id                  String           @id @default(uuid(7)) @db.Uuid
   tenantId            String           @db.Uuid
@@ -636,6 +638,15 @@ model PostureScan {
   failedMedium        Int
   failedLow           Int
   failedInformational Int
+  /// Resultados não lidos (fase 2, PR-15'): a AWS recusou a leitura de que a checagem depende. Ficam fora da nota e
+  /// nunca contam como aprovados.
+  unknown             Int              @default(0)
+  /// Cada checagem do catálogo nesta varredura (`postureCheckResultSchema`: ID, título, severidade e quantos recursos
+  /// aprovados, reprovados e não lidos), conferida pelo contrato ao gravar e ao ler. Vazia nas varreduras anteriores.
+  checks              Json             @default("[]")
+  /// As leituras recusadas (`parte:código` ou `parte:região:código`, só o nome do erro da AWS, nunca a mensagem):
+  /// a varredura é parcial quando há alguma. Vazia numa varredura completa.
+  errors              String[]         @default([])
   createdAt           DateTime         @default(now()) @db.Timestamptz(3)
   failures            PostureFailure[]
 

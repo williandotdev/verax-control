@@ -1,9 +1,6 @@
 import 'reflect-metadata';
 import { randomBytes, randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import type { EC2Client } from '@aws-sdk/client-ec2';
-import type { IAMClient } from '@aws-sdk/client-iam';
-import type { S3Client } from '@aws-sdk/client-s3';
 import type { STSClient } from '@aws-sdk/client-sts';
 import {
   accessKeyAssetSchema,
@@ -14,12 +11,7 @@ import {
 import { pino } from 'pino';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  AwsConnectionError,
-  type AwsCredentialProvider,
-  type ReaderSession,
-  WebIdentityCredentials,
-} from '../src/aws/web-identity.js';
+import { AwsConnectionError, WebIdentityCredentials } from '../src/aws/web-identity.js';
 import { buildPinoOptions } from '../src/common/logger/logger.options.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { Prisma } from '../src/generated/prisma/client.js';
@@ -31,89 +23,17 @@ import {
   AWS_INVENTORY_STREAM,
   AwsInventorySync,
   type AwsInventoryOptions,
-  type InventoryCredentials,
 } from '../src/inventory/inventory-job.js';
-import { TemporaryCredentials } from '../src/inventory/read-only-session.js';
 import { Scheduler } from '../src/worker/scheduler.js';
 import { fakeAccount, type FakeAccountOptions, REFUSED_ACL } from './inventory/fake-account.js';
 import { awsError, fakeClient } from './inventory/fake-aws.js';
+import { clockAt, FakeCredentials, factoryFor, factoryOf } from './inventory/fake-job.js';
 import { createSignedInUser, createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
 
 const HOUR = 3_600_000;
 const START = new Date('2026-11-05T10:00:00.000Z');
 const accountId = () => String(randomInt(100_000_000_000, 999_999_999_999));
-
-/** Um relógio do teste, que só anda quando o teste manda. */
-function clockAt(start: Date) {
-  let now = start;
-  return {
-    now: () => now,
-    advance: (ms: number) => {
-      now = new Date(now.getTime() + ms);
-    },
-  };
-}
-
-/**
- * O provedor falso das sessões: cada entrada no papel anotada, um erro programado por conta, e o provedor de cada conta
- * marcado com ela (a fábrica de clientes falsa descobre de que conta é a coleta).
- */
-class FakeCredentials implements InventoryCredentials {
-  readonly sessions: { accountId: string; region: string }[] = [];
-  readonly forgotten: string[] = [];
-  readonly failures = new Map<string, AwsConnectionError>();
-  readonly owners = new Map<AwsCredentialProvider, string>();
-
-  session(accountId: string, region: string): Promise<ReaderSession> {
-    this.sessions.push({ accountId, region });
-    const failure = this.failures.get(accountId);
-    if (failure !== undefined) return Promise.reject(failure);
-    return Promise.resolve({
-      credentials: new TemporaryCredentials({
-        accessKeyId: 'ASIAEXEMPLO000000000',
-        secretAccessKey: 'segredo-de-teste-da-sessao-0000',
-        sessionToken: 'token-de-teste-da-sessao-0000',
-      }),
-      stsRegion: region,
-      regionFallback: false,
-    });
-  }
-
-  credentialsFor(accountId: string): AwsCredentialProvider {
-    const provider: AwsCredentialProvider = () => Promise.reject(new Error('o falso não resolve credencial'));
-    this.owners.set(provider, accountId);
-    return provider;
-  }
-
-  forget(accountId: string): void {
-    this.forgotten.push(accountId);
-  }
-}
-
-/** A fábrica de clientes falsa: a conta fictícia de `fake-account.ts`, com o comportamento programado por conta AWS. */
-function factoryFor(
-  owners: (provider: AwsCredentialProvider) => string | undefined,
-  behavior: Record<string, FakeAccountOptions> = {},
-) {
-  const calls: { accountId: string; service: string; command: string }[] = [];
-  const factory: InventoryClientFactory = (credentials) => {
-    const owner = owners(credentials) ?? 'desconhecida';
-    const account = fakeAccount(behavior[owner] ?? {});
-    const traced = <T extends { send: unknown }>(service: string, client: Pick<T, 'send'>) => ({
-      send: ((command: { constructor: { name: string } }) => {
-        calls.push({ accountId: owner, service, command: command.constructor.name });
-        return (client as unknown as { send: (c: unknown) => Promise<unknown> }).send(command);
-      }) as unknown as T['send'],
-    });
-    return {
-      iam: () => traced<IAMClient>('iam', account.clients.iam()),
-      s3: (region) => traced<S3Client>('s3', account.clients.s3(region)),
-      ec2: (region) => traced<EC2Client>('ec2', account.clients.ec2(region)),
-    };
-  };
-  return { factory, calls };
-}
 
 describe('tarefa aws-inventory: inventário nativo da AWS pelo papel sem chave (fase 2, PR-14)', () => {
   let app: NestExpressApplication;
@@ -196,6 +116,9 @@ describe('tarefa aws-inventory: inventário nativo da AWS pelo papel sem chave (
       stale: 0,
       failed: 0,
       droppedItems: 0,
+      // A varredura de postura sai da mesma coleta (PR-15'; os testes dela estão em aws-posture.test.ts).
+      postureScans: 1,
+      posturePartial: 0,
     });
     // A sessão no papel pela primeira região monitorada (a mesma da conferência da conexão).
     expect(credentials.sessions).toEqual([{ accountId: account.accountId, region: 'sa-east-1' }]);
@@ -703,17 +626,12 @@ describe('tarefa aws-inventory: inventário nativo da AWS pelo papel sem chave (
           },
         },
       });
-      const signed = <T extends { send: unknown }>(client: Pick<T, 'send'>) => ({
-        send: (async (command: unknown) => {
+      return factoryOf(account.clients, (_service, client) => ({
+        send: async (command: unknown) => {
           resolved.push((await provider()).accessKeyId);
           return (client as unknown as { send: (c: unknown) => Promise<unknown> }).send(command);
-        }) as unknown as T['send'],
-      });
-      return {
-        iam: () => signed<IAMClient>(account.clients.iam()),
-        s3: (region) => signed<S3Client>(account.clients.s3(region)),
-        ec2: (region) => signed<EC2Client>(account.clients.ec2(region)),
-      };
+        },
+      }));
     };
     const sync = new AwsInventorySync(prisma, credentials, factory, {
       name: `inv-${randomInt(1e6, 9e6)}`,

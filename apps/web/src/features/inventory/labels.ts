@@ -6,6 +6,7 @@ import {
   type InventorySection,
   type InventorySectionError,
   type OpenRule,
+  POSTURE_TRUNCATED,
   type RiskReason,
 } from '@verax/shared';
 import type { Severity } from '@/design/severity';
@@ -91,19 +92,25 @@ const REGION_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Uma parte que ficou de fora do inventário, em português: "Instâncias EC2 em us-east-1: a AWS recusou a leitura
- * (UnauthorizedOperation)". O código da AWS vai junto, para quem confere a política ou a SCP.
+ * Uma leitura que não entrou (do inventário ou da postura), em português: "Instâncias EC2 em us-east-1: a AWS recusou
+ * a leitura (UnauthorizedOperation)". O código da AWS vai junto, para quem confere a política ou a SCP.
  */
-export function describeSectionError(error: InventorySectionError): string {
-  const label = INVENTORY_SECTION_LABELS[error.section];
-  const where = error.region === null ? label : `${label} em ${error.region}`;
-  if (error.code === INVENTORY_INVALID_ITEMS)
-    return `${where}: itens fora do formato esperado ficaram de fora`;
-  if (REFUSED_CODES.has(error.code)) return `${where}: a AWS recusou a leitura (${error.code})`;
-  if (REGION_CODES.has(error.code)) {
-    return `${where}: a região não aceitou a sessão, desligada ou fora do opt-in (${error.code})`;
+export function describeReadError(label: string, region: string | null, code: string): string {
+  const where = region === null ? label : `${label} em ${region}`;
+  if (code === INVENTORY_INVALID_ITEMS) return `${where}: itens fora do formato esperado ficaram de fora`;
+  if (code === POSTURE_TRUNCATED) {
+    return `${where}: passou do teto de ${INVENTORY_ITEM_CAP.toLocaleString('pt-BR')} itens, e os itens além dele não foram conferidos`;
   }
-  return `${where}: a leitura falhou (${error.code})`;
+  if (REFUSED_CODES.has(code)) return `${where}: a AWS recusou a leitura (${code})`;
+  if (REGION_CODES.has(code)) {
+    return `${where}: a região não aceitou a sessão, desligada ou fora do opt-in (${code})`;
+  }
+  return `${where}: a leitura falhou (${code})`;
+}
+
+/** Uma parte que ficou de fora do inventário, em português (ver `describeReadError`). */
+export function describeSectionError(error: InventorySectionError): string {
+  return describeReadError(INVENTORY_SECTION_LABELS[error.section], error.region, error.code);
 }
 
 /** O teto de itens por tipo do inventário (o mesmo da coleta). */
