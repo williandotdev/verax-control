@@ -18,6 +18,12 @@ export const NOTIFICATION_RETRY_DELAYS_MS: readonly number[] = [1, 5, 15, 60].ma
 export const NOTIFICATION_MAX_ATTEMPTS = NOTIFICATION_RETRY_DELAYS_MS.length + 1;
 /** Avisos por execução, os mais antigos primeiro. */
 export const NOTIFICATION_BATCH = 20;
+/**
+ * Tempo de envio de um aviso numa execução (as cinco do lote cabem no orçamento de 5 min da tarefa). Passado o prazo,
+ * quem falta fica para a próxima tentativa, com o recuo de sempre, e o lote segue para o aviso seguinte: um aviso com
+ * muitas pessoas ou um servidor lento não segura os outros.
+ */
+export const NOTIFICATION_DELIVERY_BUDGET_MS = 60_000;
 
 /**
  * Quem recebe cada tipo de aviso, entre as pessoas do cliente (decisão D8 da fase 2): administradores e analistas
@@ -63,6 +69,8 @@ export interface NotificationDispatcherOptions {
   owner?: string;
   leaseMs?: number;
   batch?: number;
+  /** Tempo de envio de um aviso numa execução (`NOTIFICATION_DELIVERY_BUDGET_MS`). */
+  deliveryBudgetMs?: number;
 }
 
 const DUE_SELECT = {
@@ -115,6 +123,10 @@ export function noticeOf(
  *   id de quem recebeu fica no aviso, e a nova tentativa não repete o e-mail para ela.
  * - Falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
  *   do erro fica gravado (a mensagem do servidor pode citar o endereço).
+ * - A tentativa que não chega a todos também conta, com o mesmo recuo, e quem já recebeu fica guardado: o prazo de
+ *   envio de um aviso esgotado (`delivery_timeout`, e o lote segue) ou a execução interrompida no meio (o orçamento da
+ *   tarefa ou a parada do worker: a tentativa é gravada antes de a interrupção subir). Assim, um aviso preso volta
+ *   para o fim da fila, não reenvia para ninguém e chega ao `failed` na quinta, sem segurar os avisos seguintes.
  * - Sem e-mail no nó (`MAIL_TRANSPORT=none`), ou sem ninguém para receber, o aviso fica `skipped`: ligar o e-mail
  *   depois não dispara os avisos antigos.
  * - Nada aqui vai para o log, além das contagens que o agendador registra.
@@ -124,6 +136,7 @@ export class NotificationDispatcher {
   private readonly now: () => Date;
   private readonly lease: SyncLease;
   private readonly batch: number;
+  private readonly deliveryBudgetMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -134,11 +147,14 @@ export class NotificationDispatcher {
       owner = `worker-${randomUUID()}`,
       leaseMs = 5 * 60 * 1000,
       batch = NOTIFICATION_BATCH,
+      deliveryBudgetMs = NOTIFICATION_DELIVERY_BUDGET_MS,
     }: NotificationDispatcherOptions = {},
   ) {
     if (!Number.isInteger(batch) || batch < 1)
       throw new Error('o lote dos avisos precisa ser um inteiro positivo');
+    if (!(deliveryBudgetMs >= 0)) throw new Error('o prazo de envio de um aviso não pode ser negativo');
     this.usage = usage;
+    this.deliveryBudgetMs = deliveryBudgetMs;
     this.now = now;
     this.lease = new SyncLease(prisma, NOTIFICATIONS_TASK, owner, leaseMs);
     this.batch = batch;
@@ -223,10 +239,23 @@ export class NotificationDispatcher {
       return this.close(row, 'failed', 'invalid_notice');
     }
     const delivered = new Set(row.deliveredUserIds);
+    const startedAt = performance.now();
     let firstError: string | null = null;
+    let attempted = 0;
     for (const recipient of recipients) {
       if (delivered.has(recipient.id)) continue;
-      signal?.throwIfAborted();
+      // Interrompida no meio (orçamento da tarefa, parada do worker): a tentativa é gravada com o recuo e a interrupção
+      // sobe depois. Sem isso, quem falta recomeçaria do zero a cada execução, sem recuo e sem chegar ao `failed`, e o
+      // aviso, sempre o mais antigo, seguraria os outros.
+      if (signal?.aborted) {
+        await this.finishAttempt(row, errorKind(signal.reason));
+        signal.throwIfAborted();
+      }
+      if (attempted > 0 && performance.now() - startedAt >= this.deliveryBudgetMs) {
+        firstError ??= 'delivery_timeout';
+        break;
+      }
+      attempted += 1;
       try {
         await this.mailer.transport.send(noticeMail(recipient.email, recipient.name, notice));
       } catch (error) {
@@ -240,7 +269,15 @@ export class NotificationDispatcher {
         select: { id: true },
       });
     }
+    return this.finishAttempt(row, firstError);
+  }
 
+  /**
+   * Fecha uma tentativa: `sent` sem erro; com erro, a próxima depois do recuo, ou `failed` na quinta. Quem já recebeu
+   * fica no aviso (gravado a cada envio).
+   */
+  private async finishAttempt(row: DueNotice, firstError: string | null): Promise<Outcome> {
+    const db = this.prisma.forTenant(row.tenantId);
     const attempts = row.attempts + 1;
     const now = this.now();
     if (firstError === null) {

@@ -648,6 +648,10 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     fica no aviso, e a nova tentativa não repete o e-mail;
   - falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
     do erro fica gravado (a resposta do servidor pode citar o endereço);
+  - a tentativa que não chega a todos também conta, com o mesmo recuo, e quem já recebeu fica guardado: o prazo de
+    envio de um aviso numa execução (1 min) esgotado (`delivery_timeout`, e o lote segue para o aviso seguinte) ou a
+    execução interrompida no meio (orçamento de 5 min da tarefa ou parada do worker: a tentativa é gravada antes de a
+    interrupção subir). Um aviso preso volta para o fim da fila e chega ao `failed` na quinta, sem segurar os outros;
   - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped`. Ligar o e-mail depois
     não dispara os avisos antigos;
   - uma falha no cálculo do volume não segura os avisos de incidente.

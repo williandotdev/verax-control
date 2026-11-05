@@ -434,6 +434,137 @@ describe('avisos por e-mail (outbox)', () => {
       ]);
     });
 
+    /** Duas pessoas do cliente, na ordem em que o despachante envia (pelo id). */
+    async function twoRecipients(tenantId: string): Promise<[Member, Member]> {
+      const people = [await member(tenantId, 'admin_cliente'), await member(tenantId, 'analista_cliente')];
+      const [first, second] = people.sort((x, y) => (x.id < y.id ? -1 : 1));
+      return [first as Member, second as Member];
+    }
+
+    const budgetExceeded = () => new DOMException('a tarefa passou do orçamento de tempo', 'TimeoutError');
+    const read = (tenantId: string, id: string) =>
+      prisma.forTenant(tenantId).notification.findUniqueOrThrow({ where: { id } });
+
+    it('interrompida no meio: grava a tentativa com o recuo, guarda quem recebeu e não reenvia', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (interrompida)');
+      const [first, second] = await twoRecipients(tenantId);
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const [notice] = await noticesOf(tenantId);
+      if (notice === undefined) throw new Error('aviso não gravado');
+      const mailbox = new MemoryMailTransport();
+      const controller = new AbortController();
+      const reason = budgetExceeded();
+      // O orçamento da tarefa estoura durante o envio para a primeira pessoa.
+      const slow: MailTransport = {
+        send: async (message) => {
+          await mailbox.send(message);
+          if (message.to === first.email) controller.abort(reason);
+        },
+      };
+      const at = soon();
+      await expect(dispatcher(slow, at).runOnce(controller.signal)).rejects.toBe(reason);
+
+      const interrupted = await read(tenantId, notice.id);
+      expect(interrupted).toMatchObject({
+        status: 'pending',
+        attempts: 1,
+        lastError: 'TimeoutError',
+        deliveredUserIds: [first.id],
+      });
+      expect(interrupted.nextAttemptAt.getTime()).toBe(at.getTime() + NOTIFICATION_RETRY_DELAYS_MS[0]!);
+      expect(mailbox.to(second.email)).toEqual([]);
+      const state = await prisma.syncState.findUniqueOrThrow({ where: { name: NOTIFICATIONS_TASK } });
+      expect(state).toMatchObject({ leaseOwner: null, lastError: 'TimeoutError' });
+
+      // Antes do recuo, nada; depois dele, só quem faltava recebe.
+      await dispatcher(mailbox, new Date(at.getTime() + 30_000)).runOnce();
+      expect(mailbox.to(second.email)).toEqual([]);
+      await dispatcher(mailbox, interrupted.nextAttemptAt).runOnce();
+      expect(mailbox.to(first.email)).toHaveLength(1);
+      expect(mailbox.to(second.email)).toHaveLength(1);
+      expect(await read(tenantId, notice.id)).toMatchObject({ status: 'sent', attempts: 2, lastError: null });
+    });
+
+    it('interrompida a cada execução: recua, termina failed na quinta e não segura o aviso seguinte', async () => {
+      const stuckTenant = await createTenant(app, 'Cliente demo A (aviso preso)');
+      const [stuck, waiting] = await twoRecipients(stuckTenant);
+      await persist(draft(stuckTenant, { severity: 'critical' }));
+      const [stuckNotice] = await noticesOf(stuckTenant);
+      if (stuckNotice === undefined) throw new Error('aviso não gravado');
+      // O aviso seguinte nasce depois: o preso é o mais antigo da fila.
+      const laterTenant = await createTenant(app, 'Cliente demo B (aviso seguinte)');
+      const later = await member(laterTenant, 'admin_cliente');
+      await persist(draft(laterTenant, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      let attemptsToStuck = 0;
+      /** Uma execução em que o envio para a primeira pessoa do aviso preso só falha depois do orçamento da tarefa. */
+      const run = (at: Date) => {
+        const controller = new AbortController();
+        const transport: MailTransport = {
+          send: (message) => {
+            if (message.to !== stuck.email) return mailbox.send(message);
+            attemptsToStuck += 1;
+            controller.abort(budgetExceeded());
+            return Promise.reject(new Error('timeout'));
+          },
+        };
+        return dispatcher(transport, at)
+          .runOnce(controller.signal)
+          .catch((error: unknown) => error);
+      };
+
+      let at = soon();
+      expect(await run(at)).toBeInstanceOf(DOMException);
+      // Na execução seguinte, o preso está no recuo, e o aviso seguinte sai.
+      await run(new Date(at.getTime() + 1000));
+      expect(mailbox.to(later.email)).toHaveLength(1);
+
+      for (const [index, delay] of NOTIFICATION_RETRY_DELAYS_MS.entries()) {
+        const row = await read(stuckTenant, stuckNotice.id);
+        expect(row).toMatchObject({ status: 'pending', attempts: index + 1, lastError: 'TimeoutError' });
+        expect(row.nextAttemptAt.getTime()).toBe(at.getTime() + delay);
+        at = row.nextAttemptAt;
+        await run(at);
+      }
+      const failed = await read(stuckTenant, stuckNotice.id);
+      expect(failed).toMatchObject({ status: 'failed', attempts: 5, deliveredUserIds: [] });
+      expect(attemptsToStuck).toBe(5);
+      expect(mailbox.to(waiting.email)).toEqual([]);
+      await run(new Date(at.getTime() + 24 * 60 * 60 * 1000));
+      expect(attemptsToStuck).toBe(5);
+    });
+
+    it('prazo de envio de um aviso esgotado: quem falta fica para a próxima tentativa, e o lote segue', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (prazo do aviso)');
+      const [first, second] = await twoRecipients(tenantId);
+      await persist(draft(tenantId, { severity: 'critical' }));
+      const [notice] = await noticesOf(tenantId);
+      if (notice === undefined) throw new Error('aviso não gravado');
+      const laterTenant = await createTenant(app, 'Cliente demo B (depois do prazo)');
+      const later = await member(laterTenant, 'admin_cliente');
+      await persist(draft(laterTenant, { severity: 'critical' }));
+      const mailbox = new MemoryMailTransport();
+      const at = soon();
+      // Prazo zero: cada aviso envia para uma pessoa só por execução.
+      await dispatcher(mailbox, at, { deliveryBudgetMs: 0 }).runOnce();
+      expect(mailbox.to(first.email)).toHaveLength(1);
+      expect(mailbox.to(second.email)).toEqual([]);
+      expect(mailbox.to(later.email)).toHaveLength(1);
+      const cut = await read(tenantId, notice.id);
+      expect(cut).toMatchObject({
+        status: 'pending',
+        attempts: 1,
+        lastError: 'delivery_timeout',
+        deliveredUserIds: [first.id],
+      });
+      expect(cut.nextAttemptAt.getTime()).toBe(at.getTime() + NOTIFICATION_RETRY_DELAYS_MS[0]!);
+
+      await dispatcher(mailbox, cut.nextAttemptAt).runOnce();
+      expect(mailbox.to(first.email)).toHaveLength(1);
+      expect(mailbox.to(second.email)).toHaveLength(1);
+      expect(await read(tenantId, notice.id)).toMatchObject({ status: 'sent', attempts: 2 });
+    });
+
     it('uma falha no cálculo do volume não segura os avisos de incidente', async () => {
       const tenantId = await createTenant(app, 'Cliente demo A (volume falhou)');
       const admin = await member(tenantId, 'admin_cliente');
