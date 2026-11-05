@@ -67,7 +67,10 @@ Na reunião:
    Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax, e o worker não confere a conexão
    (o "Verificar" responde `check_unavailable`). Na partida, o worker confere que o token do Google do nó é dessa
    conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
-   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora.
+   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora. O IP de saída também entra
+   nas regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível
+   12), e o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer` e
+   o `verax-wazuh-apply.timer` aparecem em `systemctl list-timers`, e o `verax-wazuh-apply.path` está ativo.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -77,6 +80,20 @@ Na reunião:
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
+
+   **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
+   usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para
+   os administradores. No limite:
+   - o cadastro e a reativação de uma conta ou de um usuário são recusados com "Seu plano permite até N …" (409
+     `PLAN_LIMIT_REACHED`), e a tentativa fica na auditoria do cliente;
+   - o bootstrap do nó mostra `Conta GCP <projeto>: plan-limit.` para a conta que ficou de fora, e segue com o resto.
+
+   O caminho é o cliente desativar uma conta ou um usuário (a vaga volta na hora) ou ampliar o plano: troque o ajuste
+   no `node.conf` (`PLAN_MAX_CLOUD_ACCOUNTS` ou `PLAN_MAX_USERS`, de 1 a 1000) e rode o `deploy.sh`, porque a API lê o
+   plano na partida. Uma conta da GCP que ficou de fora no bootstrap entra rodando o bootstrap de novo. Descer de plano
+   não desativa nada: o painel mostra "acima do limite do plano", e só os próximos cadastros são recusados. O volume
+   do mês acima do plano não bloqueia nada: a coleta continua e nenhum log é descartado.
+
 6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
    no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
    da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da
@@ -109,6 +126,15 @@ Na reunião:
    Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
    conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
 
+   **Coleta (PR-V4'):** na primeira verificação bem-sucedida, a conta entra no Wazuh do nó em até 1 min (só o manager
+   reinicia; o painel segue no ar), lendo os logs desde o dia anterior. Editar os buckets não tira a conta do Wazuh: o
+   bucket novo entra em seguida, e um bucket cadastrado depois é lido desde esse mesmo dia (avise o cliente se o bucket
+   novo tiver meses de log, porque a leitura conta no medidor do plano). No CloudTrail do cliente, a coleta aparece
+   como a sessão `verax-control-reader/verax-control-wazuh`. No nó, `journalctl -u verax-wazuh-apply` mostra cada
+   aplicação e `cat /run/verax/wazuh-signal/applied` o último resultado. No painel, o estado da coleta aparece ao lado
+   da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
+   Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
+   segue com a anterior; veja o do `verax-wazuh-apply`).
    **Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
    IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
    vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,

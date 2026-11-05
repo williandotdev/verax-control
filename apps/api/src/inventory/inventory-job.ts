@@ -44,13 +44,13 @@ export const AWS_INVENTORY_BATCH = 5;
 export const AWS_INVENTORY_BACKOFF: Readonly<Backoff> = { baseMs: 30 * 60 * 1000, maxMs: 6 * 60 * 60 * 1000 };
 
 /**
- * Os erros de uma conta com erro de conexão que não impedem a entrada no papel: um bucket de log com problema e o token
- * do host sem renovar (o do Wazuh, não o do worker). Com qualquer outro (a confiança recusada, o token do nó, a AWS
- * fora), a coleta espera a conferência da conexão voltar a "conectada", sem chamar a AWS.
+ * Os erros de uma conta com erro de conexão que não impedem a entrada no papel: um bucket de log com problema. Com
+ * qualquer outro (a confiança recusada, o token do nó, a AWS fora), a coleta espera a conferência da conexão voltar a
+ * "conectada", sem chamar a AWS. Os avisos da coleta do Wazuh (`collectionError`: o token do host sem renovar, a
+ * configuração do manager que não subiu) ficam em outro campo e não afetam o inventário.
  */
 const COLLECTABLE_ERRORS: ReadonlySet<AwsConnectionErrorCode> = new Set<AwsConnectionErrorCode>([
   ...AWS_BUCKET_ERROR_CODES,
-  'aws_token_stale',
 ]);
 
 /** O que a tarefa usa do provedor de sessões (o do worker, `WebIdentityCredentials`; um falso nos testes). */

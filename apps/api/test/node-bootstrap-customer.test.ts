@@ -427,6 +427,51 @@ describe('bootstrap do nó de cliente (modo customer, fase 3, CP-10)', () => {
     expect((await prisma.user.findUniqueOrThrow({ where: { email } })).status).toBe('disabled');
   });
 
+  it('o administrador do cliente pede vaga no plano (PR-18): com o cliente cheio, um e-mail novo é recusado e auditado', async () => {
+    const plan = resolvePlan('essencial');
+    const max = plan.limits.maxUsers as number;
+    const env = customerEnv();
+    const dir = newDir();
+    // A primeira conta sempre tem vaga.
+    expect((await run(env, { dir, plan })).code).toBe(0);
+    take(dir, 'admin-bootstrap');
+    take(dir, 'support-bootstrap');
+    const tenant = await prisma.tenant.findFirstOrThrow({ where: { name: env.BOOTSTRAP_TENANT_NAME } });
+    // O cliente completa as vagas pelo painel (a conta de suporte da Verax não ocupa nenhuma).
+    let last = '';
+    for (let count = 1; count < max; count += 1) {
+      last = (await createUser(app, { role: 'leitura', tenantId: tenant.id })).id;
+    }
+
+    // Outro e-mail para o administrador, com o cliente cheio: recusa, sem citar o e-mail nem o cliente.
+    const other = `Outro-${randomUUID()}@Cliente-Demo-A.example`;
+    const refused = await run({ ...env, BOOTSTRAP_ADMIN_EMAIL: other }, { dir, plan });
+    expect(refused.code).toBe(1);
+    expect(refused.err.join('\n')).toContain(
+      'O plano do nó não tem vaga para a conta do administrador do cliente',
+    );
+    expect(refused.err.join('\n')).not.toContain(other.toLowerCase());
+    expect(refused.err.join('\n')).not.toContain(env.BOOTSTRAP_TENANT_NAME);
+    expect(await prisma.user.count({ where: { email: other.toLowerCase() } })).toBe(0);
+    expect(files(dir)).toEqual([]);
+    expect(
+      await prisma.auditLog.findMany({
+        where: { tenantId: tenant.id, action: 'user.create', outcome: 'failure' },
+        select: { actorType: true, statusCode: true, resourceType: true },
+      }),
+    ).toEqual([{ actorType: 'system', statusCode: 409, resourceType: 'user' }]);
+
+    // Um usuário desativado libera a vaga: a mesma execução passa.
+    await prisma.user.update({ where: { id: last }, data: { status: 'disabled' } });
+    const accepted = await run({ ...env, BOOTSTRAP_ADMIN_EMAIL: other }, { dir, plan });
+    expect(accepted.code).toBe(0);
+    expect(await prisma.user.findUniqueOrThrow({ where: { email: other.toLowerCase() } })).toMatchObject({
+      role: 'admin_cliente',
+      tenantId: tenant.id,
+    });
+    take(dir, 'admin-bootstrap');
+  });
+
   it.each([
     [{ BOOTSTRAP_ADMIN_EMAIL: 'não é e-mail' }, 'BOOTSTRAP_ADMIN_EMAIL'],
     [{ BOOTSTRAP_SUPPORT_EMAIL: '' }, 'BOOTSTRAP_SUPPORT_EMAIL'],

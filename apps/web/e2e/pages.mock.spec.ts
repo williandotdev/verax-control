@@ -46,6 +46,7 @@ const PAGES: [string, string | RegExp][] = [
   ['/cadastros/agentes?sistema=windows', 'Agentes'],
   ['/cadastros/protecao', 'Lista de proteção'],
   ['/cadastros/excecoes', 'Exceções'],
+  ['/cadastros/plano', 'Plano e uso'],
   ['/auditoria', 'Auditoria'],
   ['/alertas-sem-dono', 'Alertas sem dono'],
 ];

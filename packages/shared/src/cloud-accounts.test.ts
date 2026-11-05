@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AWS_COLLECTION_ERROR_CODES,
   cloudAccountCreateSchema,
   cloudAccountRefSchema,
   cloudAccountSchema,
@@ -8,6 +9,7 @@ import {
   GCP_SINK_LOG_FILTER,
   gcpSinkCommand,
   gcpSinkIdentityCommand,
+  isAwsCollectionErrorCode,
   isAwsRegion,
   isDomainName,
   isPubsubSubscriptionName,
@@ -127,6 +129,21 @@ describe('estado da conexão (T7.3 e fase 2)', () => {
         roleArn: 'arn:aws:iam::111122223333:role/VeraxControlReadOnly',
       }).success,
     ).toBe(false);
+  });
+
+  it("aviso da coleta do nó (PR-V4'): só os códigos da coleta, à parte da conexão, e opcional (um nó de antes)", () => {
+    for (const code of AWS_COLLECTION_ERROR_CODES) {
+      expect(isAwsCollectionErrorCode(code)).toBe(true);
+      expect(cloudAccountSchema.safeParse({ ...account, collectionError: code }).success).toBe(true);
+    }
+    expect(cloudAccountSchema.safeParse({ ...account, collectionError: null }).success).toBe(true);
+    expect(cloudAccountSchema.safeParse(account).success).toBe(true);
+    // Um código da conexão (ou qualquer outro texto) não vale como aviso da coleta.
+    expect(cloudAccountSchema.safeParse({ ...account, collectionError: 'trail_not_logging' }).success).toBe(
+      false,
+    );
+    expect(isAwsCollectionErrorCode('trust_denied')).toBe(false);
+    expect(isAwsCollectionErrorCode(null)).toBe(false);
   });
 });
 

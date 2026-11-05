@@ -1,0 +1,12 @@
+# A cada 10 min: o token vale 1 hora, então sobram ao menos 50 min (cinco falhas seguidas) antes de a coleta parar. O
+# primeiro, 30 s depois do boot.
+[Unit]
+Description=Verax Control - renovacao do token do Google para a AWS a cada 10 min
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=10min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
