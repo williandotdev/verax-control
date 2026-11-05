@@ -61,6 +61,17 @@ export class TenantsController {
     return this.tenants.update(id, body);
   }
 
+  /**
+   * Pede de novo a confirmação do contato de escalonamento (D8): o e-mail entra na fila de saída, e os links anteriores
+   * deixam de valer. Só para o contato que aguarda a confirmação ou que se descadastrou.
+   */
+  @Post(':id/escalation-contact/confirmation')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('tenants:write')
+  requestEscalationConfirmation(@Param('id', { schema: tenantIdSchema }) id: string): Promise<Tenant> {
+    return this.tenants.requestEscalationConfirmation(id);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('tenants:write')

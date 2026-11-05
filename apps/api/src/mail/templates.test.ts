@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { type DigestItem, type DigestMail, digestMail, type NoticeMail, noticeMail } from './templates.js';
+import {
+  type DigestItem,
+  type DigestMail,
+  digestMail,
+  escalationConfirmationMail,
+  type EscalationNotice,
+  escalationNoticeMail,
+  type NoticeMail,
+  noticeMail,
+} from './templates.js';
 
 const origin = 'https://cliente.control.exemplo.com.br';
 const incidentLink = `${origin}/incidentes/018f2c1e-0000-7000-8000-0000000000c1`;
@@ -210,5 +219,90 @@ describe("resumo por hora e de retomada (PR-17')", () => {
     expect(digestMail('pessoa@cliente.example', 'Ana', digest({ hourStart: late })).text).toContain(
       'das 23h às 0h de 05/11/2026 (horário de Brasília)',
     );
+  });
+});
+
+describe('e-mails ao contato de escalonamento (D8)', () => {
+  const confirmLink = `${origin}/escalonamento/confirmar#token=${'c'.repeat(43)}`;
+  const unsubscribeLink = `${origin}/escalonamento/descadastrar#token=${'u'.repeat(43)}`;
+  const critical: EscalationNotice[] = [
+    { kind: 'incident_opened', severity: 'critical', link: incidentLink },
+    { kind: 'incident_escalated', severity: 'critical', link: incidentLink },
+    { kind: 'critical_finding', link: `${origin}/achados?achado=018f2c1e-0000-7000-8000-0000000000f1` },
+  ];
+
+  it('o pedido de confirmação: assunto fixo, o que ele vai receber, os dois links e a validade', () => {
+    const message = escalationConfirmationMail('contato@cliente.example', 'Ana', {
+      confirmLink,
+      unsubscribeLink,
+      validHours: 72,
+    });
+    expect(message.to).toBe('contato@cliente.example');
+    expect(message.subject).toBe('Confirme o contato de escalonamento no Verax Control');
+    expect(message.text).toBe(
+      [
+        'Olá, Ana.',
+        'Este endereço foi cadastrado como contato de escalonamento no Verax Control, o painel de segurança em nuvem da Verax. Se você confirmar, vai receber por e-mail só os avisos críticos (incidente de severidade crítica e achado crítico), sem detalhes: eles ficam no painel, para quem tem acesso.',
+        `Confirmar o endereço: ${confirmLink}`,
+        'O link vale por 72 horas e só pode ser usado uma vez. Se você não reconhece este cadastro, ignore esta mensagem: sem a confirmação, nada mais é enviado a este endereço.',
+        `Para não receber nem este pedido de novo, use o link: ${unsubscribeLink}`,
+        'Verax Control',
+      ].join('\n\n'),
+    );
+    expect(message.html).toContain(`<a href="${confirmLink}">Confirmar o endereço</a>`);
+    expect(message.html).toContain(`<a href="${unsubscribeLink}">Não quero receber estes avisos</a>`);
+  });
+
+  it('o aviso crítico: o título e o texto fixos do tipo, o link do painel e o de descadastro, sem a dica de Minha conta', () => {
+    const subjects = critical.map(
+      (notice) => escalationNoticeMail('contato@cliente.example', 'Ana', notice, unsubscribeLink).subject,
+    );
+    expect(subjects).toEqual([
+      'Incidente de severidade crítica aberto no Verax Control',
+      'Incidente subiu para severidade crítica no Verax Control',
+      'Achado de severidade crítica no Verax Control',
+    ]);
+    const message = escalationNoticeMail(
+      'contato@cliente.example',
+      'Ana',
+      critical[0] as EscalationNotice,
+      unsubscribeLink,
+    );
+    expect(message.text).toBe(
+      [
+        'Olá, Ana.',
+        'Um incidente de severidade crítica foi aberto.',
+        'Por segurança, os detalhes (contas, recursos, IPs e identidades) aparecem só no painel, depois do login com MFA.',
+        `Ver o incidente no painel (com login): ${incidentLink}`,
+        'Você recebe este e-mail por ser o contato de escalonamento cadastrado no Verax Control, que recebe só os avisos críticos.',
+        `Para não receber mais, use o link: ${unsubscribeLink}`,
+        'Verax Control',
+      ].join('\n\n'),
+    );
+    expect(message.text).not.toContain('Minha conta');
+    expect(message.html).toContain(`<a href="${unsubscribeLink}">Não quero mais receber estes avisos</a>`);
+  });
+
+  it('assunto numa linha só e HTML escapado no nome e nos links', () => {
+    const name = "<img src=x onerror=alert(1)>\r\nBcc: outra@exemplo.com & 'Bia'";
+    const hostile = `${origin}/escalonamento/descadastrar#token="><script>`;
+    for (const message of [
+      escalationConfirmationMail('contato@cliente.example', name, {
+        confirmLink: hostile,
+        unsubscribeLink: hostile,
+        validHours: 72,
+      }),
+      escalationNoticeMail('contato@cliente.example', name, critical[2] as EscalationNotice, hostile),
+    ]) {
+      // eslint-disable-next-line no-control-regex -- confere que nenhum caractere de controle chega ao assunto
+      expect(message.subject).not.toMatch(/[\u0000-\u001f\u007f]/);
+      expect(message.subject).not.toContain('Bcc');
+      expect(message.html).not.toContain('<img');
+      expect(message.html).not.toContain('<script>');
+      expect(message.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      expect(message.html).toContain(
+        `href="${origin}/escalonamento/descadastrar#token=&quot;&gt;&lt;script&gt;"`,
+      );
+    }
   });
 });

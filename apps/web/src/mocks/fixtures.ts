@@ -69,6 +69,11 @@ export const DEMO_SINK_TOPIC_PREFIX = 'projects/verax-nos-demo/topics/verax-demo
 
 /** IP de saída do nó da demonstração (faixa reservada para documentação, RFC 5737). */
 export const DEMO_EGRESS_IPS = ['203.0.113.10/32'];
+/**
+ * O link vencido da demonstração (D8): nas páginas públicas do contato de escalonamento, este token recebe a recusa da
+ * API; qualquer outro no formato confirma ou descadastra (a demonstração não manda e-mail).
+ */
+export const DEMO_EXPIRED_LINK_TOKEN = 'A'.repeat(43);
 
 /** ID único da conta de serviço do nó da demonstração (fictício, 21 dígitos): o `NodeServiceAccountId` da pilha. */
 export const DEMO_NODE_SERVICE_ACCOUNT_ID = '123456789012345678901';

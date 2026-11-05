@@ -14,6 +14,10 @@ import {
   cloudCredentialInputSchema,
   CREDENTIAL_KIND_PROVIDERS,
   credentialStatus,
+  type EscalationContact,
+  type EscalationContactInput,
+  escalationContactInputSchema,
+  escalationLinkSchema,
   fieldsOutsideProvider,
   INCIDENT_NOTICE_ROLES,
   type LogBuckets,
@@ -54,6 +58,7 @@ import {
   DEMO_AWS_CHECK_DELAY_MS,
   DEMO_CLOUDFLARE_TOKEN_SUFFIX,
   DEMO_EGRESS_IPS,
+  DEMO_EXPIRED_LINK_TOKEN,
   DEMO_GCP_FAILING_MINUTES,
   DEMO_NODE_SERVICE_ACCOUNT_ID,
   DEMO_SINK_TOPIC_PREFIX,
@@ -90,6 +95,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     cnpj: string,
     plan: string,
     contact: string,
+    /** O estado do contato de escalonamento (D8) na demonstração. */
+    contactStatus: EscalationContact['status'],
   ) =>
     tenantSchema.parse({
       id,
@@ -101,6 +108,14 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         name: contact,
         email: `${contact.split(' ')[0]?.toLowerCase()}@exemplo.com.br`,
         phone: '+55 11 4000-0000',
+        status: contactStatus,
+        confirmedAt: contactStatus === 'confirmed' ? at(30) : null,
+        unsubscribedAt: contactStatus === 'unsubscribed' ? at(5) : null,
+        // A confirmação pendente do Beta saiu há pouco; a do Alfa, há um mês; a do Inativo, antes do descadastro.
+        confirmationEmail: {
+          status: 'sent',
+          at: contactStatus === 'pending' ? at(0.05) : contactStatus === 'confirmed' ? at(30.01) : at(60),
+        },
       },
       createdAt: at(120),
       updatedAt: at(10),
@@ -239,8 +254,17 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         '12.ABC.345/01DE-35',
         'Monitoramento completo',
         'Marina Alves',
+        'confirmed',
       ),
-      tenant(beta, 'Cliente Demo Beta', 'active', '11.222.333/0001-81', 'Postura e alertas', 'Rafael Costa'),
+      tenant(
+        beta,
+        'Cliente Demo Beta',
+        'active',
+        '11.222.333/0001-81',
+        'Postura e alertas',
+        'Rafael Costa',
+        'pending',
+      ),
       tenant(
         inativo,
         'Cliente Demo Inativo',
@@ -248,6 +272,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         '45.997.418/0001-53',
         'Monitoramento completo',
         'Paula Reis',
+        'unsubscribed',
       ),
     ],
     users: new Map([
@@ -458,6 +483,45 @@ function demoPreferences(store: AdminStore, me: Me): NotificationPreferences {
   return { incidentEmails: store.noticePreferences.get(me.userId) ?? true, eligible: true };
 }
 
+/**
+ * Como a API (D8): o mesmo endereço (sem diferença de maiúsculas) só troca o nome e o telefone; um endereço novo volta a
+ * aguardar a confirmação, com o pedido na fila.
+ */
+function demoContact(
+  input: EscalationContactInput,
+  previous: EscalationContact | null,
+  now: Date = new Date(),
+): EscalationContact {
+  const fields = { name: input.name, email: input.email, phone: input.phone ?? null };
+  if (previous && previous.email.trim().toLowerCase() === input.email.trim().toLowerCase()) {
+    return { ...previous, ...fields };
+  }
+  return {
+    ...fields,
+    status: 'pending',
+    confirmedAt: null,
+    unsubscribedAt: null,
+    confirmationEmail: { status: 'queued', at: now.toISOString() },
+  };
+}
+
+/** Pedir a confirmação de novo, como a API: só aguardando ou descadastrado. */
+function demoResend(contact: EscalationContact | null): EscalationContact | Response {
+  if (contact === null) {
+    return problem(409, 'O cliente não tem contato de escalonamento', 'ESCALATION_CONTACT_MISSING');
+  }
+  if (contact.status === 'confirmed') {
+    return problem(409, 'O contato de escalonamento já confirmou o endereço', 'ESCALATION_CONTACT_CONFIRMED');
+  }
+  return {
+    ...contact,
+    status: 'pending',
+    confirmedAt: null,
+    unsubscribedAt: null,
+    confirmationEmail: { status: 'queued', at: new Date().toISOString() },
+  };
+}
+
 type Denied = { ok: false; error: Response };
 type Allowed = { ok: true; me: Me };
 type Scoped = { ok: true; me: Me; tenantId: string };
@@ -531,7 +595,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!input.success) return problem(400, 'Dados inválidos');
       if (store.tenants.some((tenant) => tenant.cnpj === input.data.cnpj))
         return problem(409, 'CNPJ já cadastrado');
-      const { firstAdmin, ...fields } = input.data;
+      const { firstAdmin, escalationContact, ...fields } = input.data;
       const email = firstAdmin.email.trim().toLowerCase();
       // Como na API: e-mail já usado em qualquer cliente recusa o cadastro inteiro, sem dizer de quem é.
       if ([...store.users.values()].flat().some((user) => user.email === email))
@@ -540,7 +604,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const tenant = tenantSchema.parse({
         id: newId(),
         ...fields,
-        escalationContact: { ...fields.escalationContact, phone: fields.escalationContact.phone ?? null },
+        escalationContact: demoContact(escalationContact, null),
         status: 'active',
         createdAt: now,
         updatedAt: now,
@@ -576,11 +640,64 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const { escalationContact, ...rest } = input.data;
       Object.assign(tenant, rest, {
         ...(escalationContact
-          ? { escalationContact: { ...escalationContact, phone: escalationContact.phone ?? null } }
+          ? { escalationContact: demoContact(escalationContact, tenant.escalationContact) }
           : {}),
         updatedAt: new Date().toISOString(),
       });
       return HttpResponse.json(tenant);
+    }),
+    // Pedir de novo a confirmação do contato (D8), pelo cadastro de clientes da Verax.
+    http.post(url('/v1/tenants/:id/escalation-contact/confirmation'), ({ params, request }) => {
+      const check = guard('tenants:write', request);
+      if (!check.ok) return check.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === params['id']);
+      if (!tenant) return problem(404, 'Cliente não encontrado');
+      const contact = demoResend(tenant.escalationContact);
+      if (contact instanceof Response) return contact;
+      Object.assign(tenant, { escalationContact: contact, updatedAt: new Date().toISOString() });
+      return HttpResponse.json(tenant);
+    }),
+
+    // --- Contato de escalonamento do cliente da sessão (D8): só administradores ---
+    http.get(url('/v1/escalation-contact'), () => {
+      const scope = scoped('escalation_contact:read');
+      if (!scope.ok) return scope.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === scope.tenantId);
+      return HttpResponse.json({ contact: tenant?.escalationContact ?? null });
+    }),
+    http.put(url('/v1/escalation-contact'), async ({ request }) => {
+      const scope = scoped('escalation_contact:write', request);
+      if (!scope.ok) return scope.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === scope.tenantId);
+      if (!tenant) return problem(404, 'Cliente não encontrado');
+      const input = escalationContactInputSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      tenant.escalationContact = demoContact(input.data, tenant.escalationContact);
+      tenant.updatedAt = new Date().toISOString();
+      return HttpResponse.json({ contact: tenant.escalationContact });
+    }),
+    http.post(url('/v1/escalation-contact/confirmation'), ({ request }) => {
+      const scope = scoped('escalation_contact:write', request);
+      if (!scope.ok) return scope.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === scope.tenantId);
+      if (!tenant) return problem(404, 'Cliente não encontrado');
+      const contact = demoResend(tenant.escalationContact);
+      if (contact instanceof Response) return contact;
+      tenant.escalationContact = contact;
+      tenant.updatedAt = new Date().toISOString();
+      return HttpResponse.json({ contact });
+    }),
+    // Os links do e-mail (públicos): a demonstração não manda e-mail, então qualquer token no formato vale, menos o
+    // vencido da demonstração, que recebe a mesma recusa da API.
+    http.post(url('/v1/public/escalation-contact/:action'), async ({ params, request }) => {
+      const action = params['action'];
+      if (action !== 'confirm' && action !== 'unsubscribe') return problem(404, 'Não encontrado');
+      const input = escalationLinkSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      if (input.data.token === DEMO_EXPIRED_LINK_TOKEN) {
+        return problem(400, 'Link inválido ou vencido', 'ESCALATION_LINK_INVALID');
+      }
+      return HttpResponse.json({ status: action === 'confirm' ? 'confirmed' : 'unsubscribed' });
     }),
 
     // --- Usuários do cliente (T3.2) ---

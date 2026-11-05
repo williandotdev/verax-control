@@ -2,6 +2,7 @@ import type { Permission } from '@verax/shared';
 import {
   Activity,
   BellOff,
+  BellRing,
   Boxes,
   Building2,
   ChartColumn,
@@ -59,6 +60,12 @@ export const NAVIGATION: NavGroup[] = [
       },
       { to: '/cadastros/excecoes', label: 'Exceções', icon: BellOff, permission: 'alert_exceptions:read' },
       { to: '/cadastros/plano', label: 'Plano e uso', icon: Gauge, permission: 'plan:read' },
+      {
+        to: '/cadastros/escalonamento',
+        label: 'Escalonamento',
+        icon: BellRing,
+        permission: 'escalation_contact:read',
+      },
       { to: '/auditoria', label: 'Auditoria', icon: ScrollText, permission: 'audit:read' },
     ],
   },

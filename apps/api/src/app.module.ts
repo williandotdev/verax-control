@@ -15,6 +15,7 @@ import { UndeclaredInputInterceptor } from './common/http/undeclared-input.inter
 import { AppValidationPipe } from './common/http/validation.pipe.js';
 import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/logger.options.js';
 import { PrismaModule } from './common/prisma/prisma.module.js';
+import { EscalationModule } from './escalation/escalation.module.js';
 import { FindingsModule } from './findings/findings.module.js';
 import type { RawEventReader } from './findings/raw-events.js';
 import { HealthModule } from './health/health.module.js';
@@ -68,6 +69,7 @@ export class AppModule {
         AgentsModule,
         PlanModule,
         NotificationsModule,
+        EscalationModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },
