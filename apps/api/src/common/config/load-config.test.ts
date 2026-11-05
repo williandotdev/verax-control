@@ -538,26 +538,36 @@ describe('configuração do worker do sync (T5.3)', () => {
       const config = loadWorkerConfig(workerEnv);
       expect(config.nodeStatus).toBeNull();
       expect(config).not.toHaveProperty('NODE_STATUS');
-      expect(config).not.toHaveProperty('NODE_VERSION');
+      expect(config).not.toHaveProperty('VERAX_NODE_COMMIT');
       expect(
-        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'false', NODE_VERSION: commit }).nodeStatus,
+        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'false', VERAX_NODE_COMMIT: commit }).nodeStatus,
       ).toBeNull();
+    });
+
+    it('o NODE_VERSION da imagem do Node.js (a versão do runtime) não é a do nó e não derruba o worker', () => {
+      // A imagem oficial do Node.js define NODE_VERSION (por exemplo, 24.22.2) no ambiente de todo contêiner; com esse
+      // nome para o commit, o worker parava na partida em todo nó.
+      const env = { ...workerEnv, NODE_VERSION: '24.22.2' };
+      expect(loadWorkerConfig(env).nodeStatus).toBeNull();
+      expect(loadWorkerConfig({ ...env, NODE_STATUS: 'true', VERAX_NODE_COMMIT: commit }).nodeStatus).toEqual(
+        { version: commit },
+      );
     });
 
     it('NODE_STATUS=true com a versão: a tarefa recebe o commit', () => {
       expect(
-        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true', NODE_VERSION: commit }).nodeStatus,
+        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true', VERAX_NODE_COMMIT: commit }).nodeStatus,
       ).toEqual({ version: commit });
     });
 
     it('NODE_STATUS=true sem a versão, versão fora do formato ou interruptor inválido: recusado', () => {
       expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true' })).toThrow(
-        'NODE_VERSION: obrigatória e não definida',
+        'VERAX_NODE_COMMIT: obrigatória e não definida',
       );
-      expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true', NODE_VERSION: 'v1.2.3' })).toThrow(
-        'NODE_VERSION: deve ser o commit instalado',
-      );
-      expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'sim', NODE_VERSION: commit })).toThrow(
+      expect(() =>
+        loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'true', VERAX_NODE_COMMIT: 'v1.2.3' }),
+      ).toThrow('VERAX_NODE_COMMIT: deve ser o commit instalado');
+      expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'sim', VERAX_NODE_COMMIT: commit })).toThrow(
         'NODE_STATUS: use true ou false',
       );
     });
