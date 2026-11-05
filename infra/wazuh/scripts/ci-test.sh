@@ -13,9 +13,12 @@
 # 2. rotação das quatro senhas, agora com duas contas AWS de exemplo → smoke test, e as senhas antigas recusadas;
 # 3. filebeat do manager gravando no indexer com TLS verificado e com o usuário wazuh_filebeat (só escrita): um alerta
 #    posto no alerts.json chega ao índice do dia pelo pipeline do módulo, com o template do Wazuh instalado por ele;
-# 4. contas AWS: módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da conta, profiles só para o
-#    root (no diretório em memória do host, só leitura no manager), ExternalId fora do ossec.conf e do ambiente do
-#    contêiner, correlações da AWS por conta instaladas (o efeito delas é testado no scripts/test-rules.sh);
+# 4. contas AWS sem chave (fase 2, PR-V4'): módulo aws-s3 aceito pelo manager, um bucket por fonte com o profile da
+#    conta, só leitura (remove_from_bucket no), profiles de web identity (papel derivado, token do Google do host, sem
+#    chave nem credential_process) só para o root (no diretório em memória do host, só leitura no manager), o boto3 do
+#    manager com o provedor de web identity, as correlações por conta e as regras do papel de leitura (com o IP do nó)
+#    instaladas e carregadas (o efeito delas é testado no scripts/test-rules.sh). Nenhum token é posto na pasta: o
+#    módulo falha ao ler o arquivo do token, antes de qualquer chamada à AWS;
 # 5. cada volume de certificado só com as próprias chaves, e a chave da CA inexistente;
 # 6. acesso como a API e o worker fazem (INDEXER_AUTH=node): da rede `wazuh-read`, pelo nome do serviço, com a CA do
 #    volume público dos certificados;
@@ -111,8 +114,8 @@ write_env() { # <arquivo> <CHAVE=valor...>
   for line in "${@:2}"; do printf "%s='%s'\n" "${line%%=*}" "${line#*=}" >>"$file"; done
 }
 
-# A sequência do wazuh_up do start.sh. A diferença é a lista de contas: no nó, o wazuh-apply.sh manda a lista vazia
-# (as chaves chegam no PR-V4); aqui, a do arquivo.
+# A sequência do wazuh_up do start.sh. A diferença é a lista de contas: no nó, o wazuh-apply.sh a lê do banco (o CLI
+# wazuh-sources); aqui, a do arquivo, com um IP de saída de documentação para as regras do papel de leitura.
 wazuh_up() { # <lista de contas AWS>
   check_wazuh_passwords INDEXER_ADMIN_PASSWORD INDEXER_FILEBEAT_PASSWORD WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD
   write_env wazuh-security.env "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" \
@@ -123,7 +126,7 @@ wazuh_up() { # <lista de contas AWS>
   docker compose up --detach --wait --wait-timeout 600 wazuh.indexer
   bash "$bundle/scripts/security-admin.sh"
   bash "$bundle/scripts/configure-indexer.sh"
-  docker compose --profile setup run --rm -T manager-config <"$1"
+  docker compose --profile setup run --rm -T -e VERAX_NODE_EGRESS_IPS=203.0.113.10/32 manager-config <"$1"
   docker compose up --detach --wait --wait-timeout 900 wazuh.manager
   bash "$bundle/scripts/smoke-test.sh"
 }
@@ -214,11 +217,22 @@ expect "pelo nome do serviço, com a CA do volume público" 200 \
 expect "por outro nome, o TLS recusa" 000 \
   "$(as_app --resolve "outro-nome.exemplo.internal:9200:$indexer_ip" https://outro-nome.exemplo.internal:9200/)"
 
-echo "== Contas AWS"
+echo "== Contas AWS (papel de leitura sem chave)"
 expect "um bucket por fonte" 4 "$(manager_file_count '<bucket type="(cloudtrail|guardduty|waf)">' /var/ossec/etc/ossec.conf)"
-expect "ExternalId fora do ossec.conf" 0 "$(manager_file_count 'exemplo-external-id' /var/ossec/etc/ossec.conf)"
-expect "ExternalId fora do ambiente do contêiner" 0 \
-  "$(docker inspect --format '{{json .Config.Env}}' "$manager" | grep -c 'exemplo-external-id' || true)"
+expect "todo bucket só lido (remove_from_bucket no)" 4 \
+  "$(manager_file_count '<remove_from_bucket>no</remove_from_bucket>' /var/ossec/etc/ossec.conf)"
+expect "nenhuma chave nem papel no ossec.conf" 0 \
+  "$(manager_file_count '<(access_key|secret_key|iam_role_arn|external_id)>' /var/ossec/etc/ossec.conf)"
+expect "profiles com o papel derivado de cada conta e o token do host" '2 2' \
+  "$(manager_file_count '^role_arn = arn:aws:iam::[0-9]{12}:role/verax/verax-control-reader$' /root/.aws/config) $(
+    manager_file_count '^web_identity_token_file = /root/.aws/google-id-token$' /root/.aws/config)"
+expect "nenhuma chave nem credential_process nos profiles, e nenhum arquivo credentials" '0 ausente' \
+  "$(manager_file_count 'credential_process|aws_access_key_id|aws_secret_access_key|external_id' /root/.aws/config) $(
+    docker exec "$manager" test -e /root/.aws/credentials && echo presente || echo ausente)"
+# O provedor só é montado: a credencial seria buscada na primeira chamada (e, sem o token, nem isso).
+expect "o boto3 do manager entra no papel pelo provedor de web identity" assume-role-with-web-identity \
+  "$(docker exec "$manager" /var/ossec/framework/python/bin/python3 -c \
+    'import boto3; print(boto3.Session(profile_name="verax-111122223333").get_credentials().method)' 2>/dev/null || true)"
 expect "profiles só para o root" 'root:700 root:600' \
   "$(docker exec "$manager" stat -c '%U:%a' /root/.aws /root/.aws/config | tr '\n' ' ' | sed 's/ $//')"
 expect "profiles no diretório em memória do host, só leitura no manager" '/run/verax/wazuh-aws:false' \
@@ -238,6 +252,8 @@ expect "conta B: 1 bucket com o profile dela" 1 \
 # O efeito das regras (correlação só dentro da mesma conta) é testado no scripts/test-rules.sh; aqui, a instalação.
 expect "correlações por conta instaladas como no repositório" "$(sha256sum <config/manager/rules/verax_aws_rules.xml | cut -c1-64)" \
   "$(docker exec "$manager" sha256sum /var/ossec/etc/rules/verax_aws_rules.xml | cut -c1-64)"
+expect "regras do papel de leitura com o IP do nó (as duas do próprio nó e as duas de fora dele)" 4 \
+  "$(manager_file_count '203\\.0\\.113\\.10' /var/ossec/etc/rules/verax_reader_rules.xml)"
 expect "analysisd carregou as regras" 0 "$(manager_file_count 'Error loading the rules' /var/ossec/logs/ossec.log)"
 expect "analysisd rodando como wazuh" wazuh "$(docker exec "$manager" ps -o user= -C wazuh-analysisd | head -n 1 | tr -d ' ')"
 

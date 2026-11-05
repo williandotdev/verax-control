@@ -255,8 +255,8 @@ a AWS não passa por ela)_
 
 ## Por que papel sem chave
 
-_(fase 2: o template está feito, no PR-V2', e o "Conectar AWS" do painel, no PR-V3'; o resto vem nos PRs V4' e V5',
-depois do teste prático na conta AWS de teste)_
+_(fase 2: o template está feito, no PR-V2'; o "Conectar AWS" do painel, no PR-V3'; a coleta pelo Wazuh do nó, no
+PR-V4'; a conferência real da conexão vem no PR-V5', depois do teste prático na conta AWS de teste)_
 
 **Decisão de 04/11/2026**, tomada pelo responsável pelo produto depois da proposta de conectar a AWS sem chave. Ela
 substitui a decisão do mesmo dia de ler com um usuário IAM com chave (PR-V2).
@@ -310,8 +310,8 @@ CloudFormation aceita sem bucket.
 
 **O audience** é uma constante do produto, `https://control.veraxsistemas.com.br/aws-reader`: o padrão do parâmetro
 `Audience` do template e o valor que o nó pede ao servidor de metadados da GCP. A linha opcional
-`AWS_WEB_IDENTITY_AUDIENCE` do `node.conf` a troca num nó (o painel mostra o valor do nó; o timer do token do PR-V4' o
-usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
+`AWS_WEB_IDENTITY_AUDIENCE` do `node.conf` a troca num nó (o painel mostra o valor do nó, e o `aws-token.sh` do host o
+pede ao Google). Mudá-la exige atualizar a pilha de todos os clientes do nó.
 
 **Ciclo da conexão:**
 
@@ -347,12 +347,54 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
    - **Nó sem a própria identidade:** sem `NODE_SA_UNIQUE_ID` no `worker.env` (o nó da Verax, o ambiente local), a
      conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem chamar a AWS nem o
      metadata, e o SDK da AWS nem é carregado no worker.
-2. **Coletar (PR-V4'):** um timer do host renova a cada 10 min o token do Google (`format=standard`, sem o projeto
-   nem a VM) num tmpfs (`/run/verax/wazuh-aws`, 0600), montado só leitura no manager. O gerador da configuração, o
-   único que escreve, grava o `ossec.conf` e o `config` com um profile por conta: o ARN do papel, derivado do ID da
-   conta, e `web_identity_token_file`. Não há arquivo `credentials` nem `<access_key>`, e o cano até o gerador não
-   leva segredo. Mudar contas ou buckets reinicia só o manager, com volta automática à configuração anterior se ele
-   não subir; indexer, API e painel seguem no ar.
+2. **Coletar (PR-V4', feito):** o manager do Wazuh do nó lê os buckets de cada conta conectada com o papel, sem chave.
+   - **O token, no host:** o `infra/node/bin/aws-token.sh` (root, `verax-aws-token.timer`: 30 s depois do boot e a
+     cada 10 min; o `start.sh wazuh-up` também o roda antes de subir o manager) pede ao servidor de metadados o token
+     com o audience do nó e `format=standard` (sem o projeto nem a VM), confere o formato e o grava por troca atômica
+     em `/run/verax/wazuh-aws/google-id-token` (tmpfs, 0600, root), a pasta montada só leitura no manager em
+     `/root/.aws`. Quem pede é o host: a guarda do metadata só filtra os contêineres, e o worker não ganha escrita na
+     pasta do manager. Uma falha mantém o token anterior, que vale 1 hora: renovar a cada 10 min deixa 50 min de
+     folga. Sem a pasta (o Wazuh fora do ar), não faz nada, e o `start.sh down` apaga a pasta.
+   - **A lista das contas:** o CLI `wazuh-sources` (imagem da API, ambiente do worker, rede do banco; job do
+     `compose.wazuh.yaml`) imprime as contas AWS ativas que já passaram pela verificação (`ingestFrom`) e têm bucket:
+     ID, primeira região, `only_logs_after` (o `ingestFrom`) e os buckets. A conexão de agora não conta: um erro, uma
+     edição de bucket (que volta a conta a "aguardando") ou os erros que a própria coleta grava não tiram a conta do
+     manager nem o reiniciam; desativar a conta, sim. Nenhum valor é segredo.
+   - **O gerador** (`render-manager-config.py`, job `manager-config`, sem rede), o único que escreve na pasta além do
+     token: um profile por conta em `/root/.aws/config`, só com as chaves de uma lista (`role_arn` derivado do ID,
+     `web_identity_token_file`, `role_session_name = verax-control-wazuh`, `region`, `sts_regional_endpoints =
+regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_process`, sem arquivo `credentials`,
+     sem `<access_key>`, `<secret_key>` nem `<iam_role_arn>` no `ossec.conf`. Cada bucket com `remove_from_bucket no`
+     (o papel também nega qualquer escrita nos logs), o WAF sem as requisições liberadas (`discard_regex` em
+     `ALLOW`). No CloudTrail, cada conta lê só a pasta dela (`aws_account_id`); um bucket do GuardDuty ou do WAF
+     listado por mais de uma conta é lido uma vez só, pelo papel da conta de menor ID e desde a data mais antiga entre
+     elas, para nenhum evento entrar duas vezes. Um bucket que entra depois herda o `ingestFrom` da conta: o Wazuh lê o
+     histórico dele desde o início da coleta da conta. O gerador imprime só o hash da configuração que o manager lê ao
+     subir (o `ossec.conf` e as regras); a região, que só vai para o profile, não o muda (o boto3 relê o arquivo a cada
+     execução do módulo).
+   - **A aplicação:** o `infra/node/bin/wazuh-apply.sh` lê a lista (numa variável: um erro do CLI nunca vira "nenhuma
+     conta"), passa ao gerador e só reinicia o manager quando o hash muda e ele está no ar. Espera o healthcheck por até
+     180 s; sem ele, a configuração anterior volta junto com os profiles da AWS dela (o gerador guarda os dois em `.prev`,
+     que o init da imagem não copia, e o token do Google não entra na troca), e o manager reinicia com ela, e a que falhou não é tentada de novo enquanto for a mesma. Indexer, banco, API e painel
+     seguem no ar. Roda pelo `verax-wazuh-apply.path` (o worker gravou uma geração nova), pelo timer de 15 min e pelo
+     `wazuh-up`, uma execução por vez (`flock`), com no máximo 5 partidas em 5 min (o timer cobre o resto e arma o
+     `.path` de novo).
+   - **Os sinais, sem segredo**, em `/run/verax/wazuh-signal` (root e o grupo do worker, 1770; montada com escrita só
+     no worker, em `WAZUH_SIGNAL_DIR`): a tarefa `wazuh-config` do worker (a cada 30 s) grava a `generation` (o SHA-256
+     da lista que o CLI imprime) só quando ela muda; o host grava `applied` (`{generation, status ok|error, at}`) e
+     `aws-token` (`{tokenAt}`), e o bit t impede que o worker troque os dois. O worker grava em cada conta que o
+     manager lê o aviso da coleta, `aws_token_stale` (token sem renovar há mais de 40 min) ou `wazuh_apply_failed` (a
+     lista de agora não foi aplicada), e o tira quando o problema passa (e da conta que saiu da coleta), com auditoria
+     (`cloud_account.aws_collection`) na trilha de cada cliente.
+   - **Um campo para cada tarefa:** o aviso da coleta fica em `CloudAccount.collectionError` (só conta AWS e só os dois
+     códigos, por CHECK), que só a tarefa `wazuh-config` grava; a conexão (`connection` e `connectionError`, com o
+     aviso dela) é só da tarefa `aws-check` (passo 3). Com um campo só, as duas se desfariam a cada conferência (com
+     auditoria), e tirar o aviso da coleta apagaria um aviso diário da conferência até o dia seguinte. A API devolve
+     os dois, e o painel mostra a coleta numa linha própria, "Coleta no nó", ao lado da conexão.
+   - **Regras locais** (`verax_reader_rules.xml`, gerado do modelo com o IP de saída do nó): as leituras e a entrada no
+     papel vindas do IP do nó, nível 0 (100200 e 100201); a sessão do papel ou o token usados de outro IP, nível 12
+     com MITRE T1078.004 (100202 e 100203); qualquer alteração no papel ou nas duas políticas da pilha, nível 5 (100204
+     e 100205). Sem o `NODE_EGRESS_IPS` no `node.conf`, só as de alteração.
 3. **Conferir (PR-V5', feito):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e
    confere a conta e a leitura de cada bucket: é a `WebIdentityAwsConnectionChecker`
    (`apps/api/src/aws/web-identity-checker.ts`), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. Toda chamada
@@ -393,7 +435,8 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
      senão, um erro no log com os dois IDs (nenhum é segredo, nunca o token): as pilhas criadas com o valor do painel
      recusam o nó.
    - Erros próprios: `trust_denied`, `token_invalid`, `idp_unavailable`, `metadata_unavailable` (o metadata do nó),
-     `region_disabled` e `aws_unavailable`; o token do host sem renovar (`aws_token_stale`) é do PR-V4'.
+     `region_disabled` e `aws_unavailable`; o token do host sem renovar (`aws_token_stale`) é um aviso da coleta, no
+     campo dela (`collectionError`, passo 2).
 4. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
    sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
 
@@ -410,7 +453,9 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
 | Quem emite ID token da conta de serviço do nó entra no papel (operador com `serviceAccountUser`; no plano de controle, o `cp-terraform`) | Precisa também sair pelo IP do NAT do nó; alertas em `SetIamPolicy` na conta de serviço, em `GenerateIdToken` e em VM criada com a conta de um nó (CP-12); nunca `serviceAccountOpenIdTokenCreator` no Terraform                                                                                    |
 | A conta de serviço do nó é apagada ou recriada, e o ID único muda                                                                        | `account_id` e `project` só do `name_prefix` e do `project_id`, com teste de que as mudanças de rotina não a recriam; o executor do plano de controle (CP-07) recusa recriá-la ou apagá-la fora da exclusão; restauração em até 30 dias com o mesmo ID; depois disso, cada cliente atualiza a pilha |
 | Google ou o metadata fora do ar (`IDPCommunicationError`, renovação do token falha)                                                      | O token tem 50 min de folga; o wodle retoma do marcador e não perde log; aviso de token sem renovar                                                                                                                                                                                                 |
-| A web identity pelo profile não funcionar no contêiner do manager                                                                        | Teste prático antes do PR-V4'; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora                                                                                                                                                                           |
+| A web identity pelo profile não funcionar no contêiner do manager                                                                        | O CI confere na imagem, sem rede, que o boto3 do manager usa o provedor de web identity e troca o token no STS da região com o papel certo; o teste prático na conta de teste confirma de ponta a ponta; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora |
+| Um bucket cadastrado depois do início da coleta é lido desde o `ingestFrom` da conta (histórico de semanas ou meses)                     | Aceito por ora: a leitura vai para o medidor de uso; um início por bucket fica para depois                                                                                                                                                                                                          |
+| O worker grava na pasta dos sinais, no tmpfs do host                                                                                     | Só sinal sem segredo; o bit t impede que ele troque os arquivos do host, que nunca leem o que ele grava (a geração só dispara o `.path`, com limite de partidas)                                                                                                                                    |
 | O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                             | Impacto baixo; documentado                                                                                                                                                                                                                                                                          |
 | O IP do NAT muda e a coleta para                                                                                                         | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                                                                                                                                 |
 | O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                              |

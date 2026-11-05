@@ -1,11 +1,12 @@
 import {
+  AWS_COLLECTION_ERROR_CODES,
   AWS_CONNECTION_ERROR_CODES,
   AWS_CONNECTION_WARNING_CODES,
   CLOUDFLARE_BLOCKING_ERRORS,
   isCloudflareBlockingError,
 } from '@verax/shared';
 import { describe, expect, it } from 'vitest';
-import { awsConnectionErrorHint, cloudflareConnectionErrorHint } from './labels';
+import { awsCollectionErrorHint, awsConnectionErrorHint, cloudflareConnectionErrorHint } from './labels';
 
 describe('explicação do erro de coleta (cartão da conta)', () => {
   it('todo erro que para a coleta do Cloudflare tem explicação', () => {
@@ -22,6 +23,18 @@ describe('explicação do erro de coleta (cartão da conta)', () => {
     expect(cloudflareConnectionErrorHint('toString')).toBeNull();
     expect(isCloudflareBlockingError('rate_limited')).toBe(false);
     expect(isCloudflareBlockingError(null)).toBe(false);
+  });
+});
+
+describe("aviso da coleta da AWS pelo Wazuh do nó (PR-V4')", () => {
+  it('todo aviso da coleta tem explicação, diz que é do nó e não vale como erro da conexão', () => {
+    for (const code of AWS_COLLECTION_ERROR_CODES) {
+      expect(awsCollectionErrorHint(code)).toMatch(/É do nó, não desta conta/);
+      expect(awsConnectionErrorHint(code)).toBeNull();
+    }
+    expect(awsCollectionErrorHint('trail_not_logging')).toBeNull();
+    expect(awsCollectionErrorHint(null)).toBeNull();
+    expect(awsCollectionErrorHint(undefined)).toBeNull();
   });
 });
 

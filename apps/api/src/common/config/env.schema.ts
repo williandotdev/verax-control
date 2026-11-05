@@ -297,7 +297,7 @@ function checkMailEnv(env: MailEnv, ctx: z.RefinementCtx): void {
 }
 
 /** TLS com verificação de certificado e de hostname até o banco (regra 5: nada de TLS sem validação). */
-function requiresVerifiedTls(databaseUrl: string): boolean {
+export function requiresVerifiedTls(databaseUrl: string): boolean {
   try {
     return new URL(databaseUrl).searchParams.get('sslmode') === 'verify-full';
   } catch {
@@ -536,6 +536,12 @@ const workerEnvObjectSchema = z
     MAIL_FROM: mailFromEnv.optional(),
     ...mailServerEnvShape,
     WEB_ORIGIN: webOriginFromEnv.optional(),
+    // Wazuh no nó (perfil standard, PR-V4'): a pasta dos sinais sem segredo entre o worker e o host (a geração das
+    // contas AWS, a aplicação no manager e o token do Google). Com ela, entra a tarefa `wazuh-config`.
+    WAZUH_SIGNAL_DIR: z
+      .string()
+      .regex(/^\/[\w./-]+$/, { error: 'deve ser o caminho absoluto da pasta dos sinais do Wazuh' })
+      .optional(),
     // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
     // publica a versão, as contas conectadas, o último evento e o disco livre. NODE_VERSION é o commit instalado (o de
     // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).

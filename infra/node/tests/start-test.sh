@@ -20,6 +20,8 @@
 #    cliente; no lean, sem o IP, o cliente, a senha ou o certificado, ou com um valor fora do formato, o render para
 #    sem escrever nada. E o projeto do Compose (start.sh down, com o Docker simulado): o compose.wazuh-agents.yaml só
 #    entra no standard com o interruptor.
+# 4. A AWS sem chave no Wazuh (PR-V4'): a pasta dos sinais só no worker do standard (WAZUH_SIGNAL_DIR), e a parada tira
+#    da memória o token do Google, os profiles e os sinais, sem apagar os arquivos de ambiente.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -127,6 +129,7 @@ expect "cloudflared.env vazio com o cofre sem valor (o gcloud respondeu NOT_FOUN
   "$(file_size "$run/cloudflared.env") $(grep -c 'sem o token do túnel.*sem o cloudflared' "$work/render.err")"
 expect "memória do lean" 1 "$(grep -c "^POSTGRES_MEM_LIMIT='256m'$" "$run/memory.env")"
 expect "no lean, nada do indexer na API nem no worker" 0 "$(cat "$run/api.env" "$run/worker.env" | grep -c INDEXER_ || true)"
+expect "no lean, nada dos sinais do Wazuh no worker" 0 "$(grep -c WAZUH_SIGNAL_DIR "$run/worker.env" || true)"
 expect "valores entre aspas simples (o Compose não interpreta \$)" 1 "$(grep -c "^PLAN='interno'$" "$run/api.env")"
 
 echo "== o tópico do sink de projeto de cliente: só na API, montado do projeto e do prefixo do node.conf de exemplo"
@@ -238,6 +241,9 @@ expect "o manager recebe a senha do filebeat e a da API dele, e nada mais" "INDE
   "$(cut -d= -f1 "$run/wazuh-manager.env" | tr '\n' ' ' | sed 's/ $//')"
 expect "o tópico do sink também no standard, só na API" '1 0' \
   "$(grep -c GCP_SINK_TOPIC_PREFIX "$run/api.env") $(grep -c GCP_SINK_TOPIC_PREFIX "$run/worker.env" || true)"
+expect "a pasta dos sinais do Wazuh só no worker (a que o compose.wazuh.yaml monta nele)" \
+  "0 WAZUH_SIGNAL_DIR='/run/wazuh-signal'" \
+  "$(grep -c WAZUH_SIGNAL_DIR "$run/api.env" || true) $(grep '^WAZUH_SIGNAL_DIR=' "$run/worker.env")"
 
 echo "== agentes do Wazuh: desligados, os arquivos de ambiente do standard saem byte a byte como sem o interruptor"
 # O standard de antes (sem a linha no node.conf) contra WAZUH_AGENTS=false: os mesmos arquivos, o mesmo conteúdo.
@@ -257,7 +263,7 @@ expect "api.env do standard: as variáveis de sempre, na ordem de sempre" \
   'NODE_ENV LOG_LEVEL PORT WEB_ORIGIN API_ORIGIN TRUST_PROXY_HOPS BETTER_AUTH_SECRET CSRF_SECRET MAIL_TRANSPORT MAIL_FROM PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE GCP_SINK_TOPIC_PREFIX DATABASE_URL' \
   "$(cut -d= -f1 "$run/api.env" | tr '\n' ' ' | sed 's/ $//')"
 expect "worker.env do standard: as variáveis de sempre, na ordem de sempre" \
-  'NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE DATABASE_URL' \
+  'NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE WAZUH_SIGNAL_DIR DATABASE_URL' \
   "$(cut -d= -f1 "$run/worker.env" | tr '\n' ' ' | sed 's/ $//')"
 
 echo "== agentes do Wazuh: ligados no standard"
@@ -613,6 +619,23 @@ compose_files() { # <cenário> <pasta> <CHAVE=valor...>: os -f do `docker compos
 [ "$(compose_files "lean com o interruptor" compose-lean NODE_PROFILE=lean WAZUH_AGENTS=true)" = \
   "/opt/verax/compose.yaml" ] || fail "o lean ganhou arquivo do Wazuh"
 echo "ok     agentes: o projeto do Compose só muda com o interruptor, no standard"
+
+# --- A parada tira da memória o token do Google, os profiles da AWS e os sinais do Wazuh (PR-V4') ---------------
+new_root "parada com o Wazuh" parada-wazuh
+node_conf NODE_PROFILE=standard
+mkdir -p "$root/run/verax/wazuh-aws" "$root/run/verax/wazuh-signal" "$root/run/verax/wazuh-apply"
+printf 'token.de.teste' >"$root/run/verax/wazuh-aws/google-id-token"
+printf '[profile verax-111122223333]\n' >"$root/run/verax/wazuh-aws/config"
+printf '{}\n' >"$root/run/verax/wazuh-signal/applied"
+printf 'hash\n' >"$root/run/verax/wazuh-apply/running"
+: >"$root/run/verax/api.env"
+env -i PATH="$work/bin:$PATH" VAULT="$root/vault" "$BASH" "$root/start.sh" down >"$root/out" 2>&1 ||
+  fail "o down falhou: $(cat "$root/out")"
+for dir in wazuh-aws wazuh-signal wazuh-apply; do
+  [ ! -e "$root/run/verax/$dir" ] || fail "o down deixou $dir na memória"
+done
+[ -e "$root/run/verax/api.env" ] || fail "o down apagou os arquivos de ambiente"
+echo "ok     parada: o token, os profiles e os sinais do Wazuh saem da memória; os arquivos de ambiente ficam"
 )
 
 echo "== Modo cliente (CUSTOMER_MODE): primeiro acesso pelos metadados da VM, senhas no Secret Manager e o worker.env"

@@ -1,0 +1,12 @@
+# O worker grava /run/verax/wazuh-signal/generation (um hash sem segredo das contas AWS conectadas, dos buckets e do
+# início da coleta) só quando ele muda: a configuração do manager é refeita em segundos, sem esperar o timer. O limite
+# de partidas fica no verax-wazuh-apply.service.
+[Unit]
+Description=Verax Control - geracao nova das contas AWS para o Wazuh
+
+[Path]
+PathChanged=/run/verax/wazuh-signal/generation
+Unit=verax-wazuh-apply.service
+
+[Install]
+WantedBy=paths.target
