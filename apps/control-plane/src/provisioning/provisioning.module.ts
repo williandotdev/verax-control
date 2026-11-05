@@ -64,7 +64,8 @@ export class ProvisioningModule {
           inject: [...PROVISIONING_STEP_CLASSES],
         },
       ],
-      exports: [PROVISIONING_STEP_HANDLERS, ProvisioningResumeService, ProvisioningStore],
+      // As APIs e o repositório das execuções também servem ao ciclo de vida (CP-11): parar e ligar a VM, a exclusão.
+      exports: [PROVISIONING_STEP_HANDLERS, ProvisioningResumeService, ProvisioningStore, PROVISIONING_APIS],
     };
   }
 }

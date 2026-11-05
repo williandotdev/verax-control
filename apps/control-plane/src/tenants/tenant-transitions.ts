@@ -13,7 +13,10 @@ import type { TenantState } from './tenant.schema.js';
  * - `waiting_customer_connection`: `active` quando o nó vê a 1.ª conta conectada; cobrança e disputa valem igual;
  * - `active` ↔ `past_due` ↔ `suspended`: inadimplência, carência e reativação por `invoice.paid`;
  * - `suspended` volta a `waiting_customer_connection` quando o cliente nunca chegou a conectar;
- * - `canceled` → `deleted` em D+30 (exclusão em dois tempos: a cripto-destruição em D+97 não muda o estado).
+ * - `canceled` → `deleted` em D+30 (exclusão em dois tempos: a cripto-destruição em D+97 não muda o estado). É a
+ *   única entrada de `deleted`, e só por dois caminhos (CP-11, `lifecycle/`): o `tick` com `deleteAfter` vencido e o
+ *   `delete-now` do responsável. Um cliente em qualquer outro estado nunca é excluído; o `tick` só cancela (D+37)
+ *   quem está suspenso por falta de pagamento há 30 dias.
  *
  * Disputa ou alerta de fraude durante o provisionamento (CP-04, plano §4b): `provisioning` e `provisioning_failed`
  * → `suspended` (motivo `fraud_review`, decisão humana). Regra para os passos (CP-07): um passo que relê o cliente

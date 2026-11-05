@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   HttpCode,
   HttpStatus,
@@ -11,10 +12,12 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { z } from 'zod';
 import { CLOCK, type Clock } from '../common/clock.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { isUlid, newUlid } from '../common/ulid.js';
-import { WorkerCallerGuard, WorkerCallers, workerCallerOf } from '../internal/worker-caller.js';
+import { ownerActorOf, WorkerCallerGuard, WorkerCallers } from '../internal/worker-caller.js';
 import { FIRST_PROVISIONING_STEP, STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { LockNotHeldError, TenantStore } from '../tenants/tenant-store.js';
 
@@ -81,28 +84,34 @@ function requestIdOf(req: Request): string | undefined {
   return typeof id === 'string' ? id : undefined;
 }
 
+const resumeBodySchema = z.strictObject({ actor: z.email().max(254).optional() });
+
 /**
- * `POST /internal/tenants/:tenantId/resume`: só o responsável (`OWNER_PRINCIPALS`), com o token de identidade dele
- * (`gcloud auth print-identity-token`). Nem as tasks nem o cp-public chamam.
+ * `POST /internal/tenants/:tenantId/resume`: o responsável, direto (`OWNER_PRINCIPALS`) ou pelo console (`cp-admin`,
+ * `ADMIN_SA_EMAIL`, com quem agiu em `{actor}`, CP-11). Nem as tasks nem o cp-public chamam.
  */
 @Controller('internal/tenants')
 @UseGuards(WorkerCallerGuard)
-@WorkerCallers('owner')
+@WorkerCallers('owner', 'console')
 export class ProvisioningResumeController {
-  constructor(private readonly resumes: ProvisioningResumeService) {}
+  constructor(
+    private readonly resumes: ProvisioningResumeService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
   @Post(':tenantId/resume')
   @HttpCode(HttpStatus.OK)
   async resume(
     @Param('tenantId') tenantId: string,
+    @Body() body: unknown,
     @Req() req: Request,
   ): Promise<{ runId: string; step: string }> {
     if (!isUlid(tenantId)) throw new ApiError(HttpStatus.NOT_FOUND, 'Não encontrado', 'not_found');
-    const outcome = await this.resumes.resume(
-      tenantId,
-      `owner:${workerCallerOf(req) ?? 'desconhecido'}`,
-      requestIdOf(req),
-    );
+    const parsed = resumeBodySchema.safeParse(body ?? {});
+    if (!parsed.success) throw new ApiError(HttpStatus.BAD_REQUEST, 'Pedido inválido', 'invalid_request');
+    const actor = ownerActorOf(req, this.config, parsed.data.actor);
+    if (actor === undefined) throw new ApiError(HttpStatus.FORBIDDEN, 'Sem permissão', 'actor_not_owner');
+    const outcome = await this.resumes.resume(tenantId, actor, requestIdOf(req));
     if (outcome.resumed) return { runId: outcome.runId, step: outcome.step };
     if (outcome.reason === 'not_found')
       throw new ApiError(HttpStatus.NOT_FOUND, 'Não encontrado', 'not_found');
