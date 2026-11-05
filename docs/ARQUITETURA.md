@@ -572,6 +572,36 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
   regras de leitura do sync da AWS (nível 5 ou mais, sobreposição de 10 min, cursor, até 100 páginas). Uma instância
   barulhenta não atrasa os achados das contas, e o caminho da AWS não muda.
 
+## Plano do nó: limites e uso
+
+Cada nó tem um plano (fase 2, PR-03 e PR-18). Quem vale é o ambiente: `PLAN` e os ajustes `PLAN_*` do `node.conf`,
+escritos pelo `start.sh` no `api.env` e no `worker.env`, sobre a tabela de `packages/shared/src/plans.ts`. A API lê o
+plano na partida (`apps/api/src/plan/plan.service.ts`); trocar de plano é trocar o `node.conf` e reiniciar. O painel só
+mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
+
+- **Vagas** (`packages/shared/src/plan-usage.ts`): contas cloud ativas (AWS, GCP e Cloudflare) e usuários do cliente
+  convidados ou ativos. A equipe da Verax (`admin_verax`) nunca conta. Criar e reativar pedem vaga; desativar libera.
+  Descer de plano com o uso acima do novo limite não desativa nem apaga nada: só a próxima criação é recusada, e o
+  painel mostra "acima do limite do plano".
+- **Onde a vaga é conferida:** `assertWithinPlan` (`apps/api/src/plan/plan-limits.ts`), sempre na transação que grava,
+  sob `pg_advisory_xact_lock(hashtext('verax:plan:<vaga>:<cliente>'))`. Duas criações simultâneas no limite menos 1
+  terminam com uma aceita. O lock do plano vem antes dos das origens de log (as contas cloud), sempre na mesma ordem.
+  Os pontos:
+  - cadastro e reativação de conta cloud (`POST` e `PATCH /v1/cloud-accounts`);
+  - cadastro e reativação de usuário (`POST` e `PATCH /v1/users`), inclusive o primeiro administrador de um cliente
+    novo (`POST /v1/tenants`, que sempre tem vaga);
+  - as contas da GCP do bootstrap do nó: no limite, a conta fica de fora (`plan-limit`) e o resto do bootstrap segue.
+- **Recusa:** 409 com o código `PLAN_LIMIT_REACHED` e a mensagem que diz o limite ("Seu plano permite até 3 contas
+  cloud ativas. Desative uma conta ou fale com a Verax para ampliar."), na trilha do cliente como falha, com a ação de
+  sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
+- **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte.
+  Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
+  mostra uma faixa a partir de 80%; o aviso por e-mail de 80% e 100% é do PR-16.
+- **Histórico:** `historyDays` é o prazo do expurgo (PR-19).
+- **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido (rótulo e os quatro limites) e o uso
+  do cliente da sessão (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
+  → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
+
 ## Custo por nó
 
 Valores ficam fora deste documento: o preço da nuvem muda, e preço, custo por cliente e margem são informação

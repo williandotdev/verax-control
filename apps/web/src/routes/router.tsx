@@ -5,6 +5,7 @@ import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { CloudAccountsPage } from '@/pages/admin/cloud-accounts-page';
 import { ExceptionsPage } from '@/pages/admin/exceptions-page';
+import { PlanPage } from '@/pages/admin/plan-page';
 import { ProtectedResourcesPage } from '@/pages/admin/protected-resources-page';
 import { TenantsPage } from '@/pages/admin/tenants-page';
 import { UsersPage } from '@/pages/admin/users-page';
@@ -56,6 +57,7 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/cadastros/agentes': AgentsPage,
   '/cadastros/protecao': ProtectedResourcesPage,
   '/cadastros/excecoes': ExceptionsPage,
+  '/cadastros/plano': PlanPage,
   '/auditoria': AuditPage,
   '/alertas-sem-dono': UnownedAlertsPage,
 };

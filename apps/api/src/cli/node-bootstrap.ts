@@ -10,7 +10,9 @@ import { nodePlan } from '../common/config/env.schema.js';
 import { loadConfig } from '../common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from '../common/config/load-env-file.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
+import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import { mailTransport } from '../mail/mail.module.js';
+import { assertWithinPlan, PlanLimitReached } from '../plan/plan-limits.js';
 
 /**
  * Primeira configuração de um nó, rodada na instalação (`docker compose run --rm api node dist/cli/node-bootstrap.js`):
@@ -77,7 +79,8 @@ export interface BootstrapResult {
   tenant: 'created' | 'exists' | 'skipped';
   /** Rótulo do plano em `Tenant.plan`: gravado agora (`set`) ou já igual (`unchanged`). */
   plan?: 'set' | 'unchanged';
-  accounts: { project: string; outcome: 'created' | 'exists' | 'other-tenant' }[];
+  /** `plan-limit`: o cliente já está no limite de contas do plano (PR-18); a conta não é criada. */
+  accounts: { project: string; outcome: 'created' | 'exists' | 'other-tenant' | 'plan-limit' }[];
 }
 
 /** O que o bootstrap faz, separado da leitura do ambiente para os testes. */
@@ -208,25 +211,44 @@ export async function bootstrapNode(
       accounts.push({ project, outcome: found.tenantId === tenant.id ? 'exists' : 'other-tenant' });
       continue;
     }
-    const created = await prisma.forTenant(tenant.id).cloudAccount.create({
-      data: {
-        tenantId: tenant.id,
-        provider: 'gcp',
-        accountId: project,
-        regions: [],
-        pubsubSubscription: subscription,
-      },
-      select: { id: true },
+    // A conta nova pede vaga no plano, como no painel (PR-18): a checagem e a criação na mesma transação, sob o lock do
+    // plano. No limite, a conta fica de fora (`plan-limit`, com a recusa na auditoria) e o resto do bootstrap segue.
+    const tenantId = tenant.id;
+    const outcome = await prisma.$transaction(async (tx) => {
+      try {
+        await assertWithinPlan(tx, plan, 'cloudAccounts', tenantId);
+      } catch (error) {
+        if (!(error instanceof PlanLimitReached)) throw error;
+        await audit.write(tx, {
+          actor: { ...system, tenantId },
+          action: 'cloud_account.create',
+          outcome: 'failure',
+          statusCode: error.getStatus(),
+          resourceType: 'cloud_account',
+        });
+        return 'plan-limit' as const;
+      }
+      const created = await scopeToTenant(tx, tenantId).cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscription,
+        },
+        select: { id: true },
+      });
+      await audit.write(tx, {
+        actor: { ...system, tenantId },
+        action: 'cloud_account.create',
+        outcome: 'success',
+        resourceType: 'cloud_account',
+        resourceId: created.id,
+        after: { provider: 'gcp', accountId: project, pubsubSubscription: subscription },
+      });
+      return 'created' as const;
     });
-    await audit.write(prisma, {
-      actor: { ...system, tenantId: tenant.id },
-      action: 'cloud_account.create',
-      outcome: 'success',
-      resourceType: 'cloud_account',
-      resourceId: created.id,
-      after: { provider: 'gcp', accountId: project, pubsubSubscription: subscription },
-    });
-    accounts.push({ project, outcome: 'created' });
+    accounts.push({ project, outcome });
   }
   return { admin, temporaryPassword, tenant: tenantOutcome, plan: planOutcome, accounts };
 }
