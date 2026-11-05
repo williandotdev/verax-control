@@ -9,6 +9,7 @@ import { PlanPage } from '@/pages/admin/plan-page';
 import { ProtectedResourcesPage } from '@/pages/admin/protected-resources-page';
 import { TenantsPage } from '@/pages/admin/tenants-page';
 import { UsersPage } from '@/pages/admin/users-page';
+import { AccountPage } from '@/pages/account-page';
 import { AgentsPage } from '@/pages/agents-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { AuditPage } from '@/pages/audit-page';
@@ -80,6 +81,15 @@ const detailPages: RouteObject[] = [
     element: (
       <RequirePermission permission="incidents:read">
         <IncidentPage />
+      </RequirePermission>
+    ),
+  },
+  // A própria conta, pelo link do cabeçalho (fase 2, PR-17').
+  {
+    path: 'minha-conta',
+    element: (
+      <RequirePermission permission="notification_preferences:read">
+        <AccountPage />
       </RequirePermission>
     ),
   },

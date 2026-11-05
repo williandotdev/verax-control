@@ -81,17 +81,17 @@ enum TenantStatus {
 /// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
 /// causa dos clientes criados antes do cadastro completo.
 model Tenant {
-  id                 String              @id @default(uuid(7)) @db.Uuid
-  name               String              @db.VarChar(120)
+  id                 String                   @id @default(uuid(7)) @db.Uuid
+  name               String                   @db.VarChar(120)
   /// 14 caracteres, sem máscara (numérico ou alfanumérico).
-  cnpj               String?             @unique @db.VarChar(14)
-  plan               String?             @db.VarChar(60)
-  escalationName     String?             @db.VarChar(120)
-  escalationEmail    String?             @db.VarChar(254)
-  escalationPhone    String?             @db.VarChar(20)
-  status             TenantStatus        @default(active)
-  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
+  cnpj               String?                  @unique @db.VarChar(14)
+  plan               String?                  @db.VarChar(60)
+  escalationName     String?                  @db.VarChar(120)
+  escalationEmail    String?                  @db.VarChar(254)
+  escalationPhone    String?                  @db.VarChar(20)
+  status             TenantStatus             @default(active)
+  createdAt          DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime                 @updatedAt @db.Timestamptz(3)
   users              User[]
   cloudAccounts      CloudAccount[]
   protectedResources ProtectedResource[]
@@ -107,6 +107,8 @@ model Tenant {
   cloudCredentials   CloudCredential[]
   wazuhAgents        WazuhAgent[]
   notifications      Notification[]
+  notificationPrefs  NotificationPreference[]
+  noticeDigests      NotificationDigest[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
   activeSessions     Session[]
 }
@@ -117,23 +119,23 @@ model Tenant {
 // ---------------------------------------------------------------------------------------------------
 
 model User {
-  id                         String              @id
-  name                       String              @db.VarChar(120)
-  email                      String              @unique @db.VarChar(254)
-  emailVerified              Boolean             @default(false)
+  id                         String                  @id
+  name                       String                  @db.VarChar(120)
+  email                      String                  @unique @db.VarChar(254)
+  emailVerified              Boolean                 @default(false)
   image                      String?
   role                       UserRole
-  tenantId                   String?             @db.Uuid
-  tenant                     Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  status                     UserStatus          @default(invited)
+  tenantId                   String?                 @db.Uuid
+  tenant                     Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status                     UserStatus              @default(invited)
   /// MFA (T2.2): sem ele, a sessão só alcança o cadastro do próprio MFA.
-  twoFactorEnabled           Boolean             @default(false)
+  twoFactorEnabled           Boolean                 @default(false)
   /// Senha temporária (criada pelo administrador): a sessão só alcança a troca de senha até a pessoa definir a dela.
-  mustChangePassword         Boolean             @default(false)
+  mustChangePassword         Boolean                 @default(false)
   /// Validade da senha temporária: depois disso, o login com ela não abre sessão.
-  temporaryPasswordExpiresAt DateTime?           @db.Timestamptz(3)
-  createdAt                  DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt                  DateTime            @updatedAt @db.Timestamptz(3)
+  temporaryPasswordExpiresAt DateTime?               @db.Timestamptz(3)
+  createdAt                  DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt                  DateTime                @updatedAt @db.Timestamptz(3)
   sessions                   Session[]
   accounts                   Account[]
   twoFactors                 TwoFactor[]
@@ -142,6 +144,9 @@ model User {
   alertExceptions            AlertException[]
   findingComments            FindingComment[]
   assignedIncidents          Incident[]
+  /// Preferência de aviso por e-mail (fase 2, PR-17'); sem linha, vale o padrão.
+  notificationPreference     NotificationPreference?
+  noticeDigests              NotificationDigest[]
 
   @@index([tenantId])
 }
@@ -878,6 +883,9 @@ model Notification {
   lastError        String?            @db.VarChar(64)
   /// Usuários que já receberam este aviso (o id, nunca o e-mail).
   deliveredUserIds String[]           @default([])
+  /// Usuários para quem o aviso entrou no resumo da hora ou no de retomada (`NotificationDigest`), em vez do e-mail
+  /// avulso (fase 2, PR-17'). O id, nunca o e-mail.
+  digestedUserIds  String[]           @default([])
   sentAt           DateTime?          @db.Timestamptz(3)
   createdAt        DateTime           @default(now()) @db.Timestamptz(3)
   updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
@@ -886,4 +894,54 @@ model Notification {
   @@index([status, nextAttemptAt])
   @@index([incidentId])
   @@index([findingId])
+}
+
+/// Preferência de aviso por e-mail de uma pessoa do cliente (fase 2, PR-17'). Só a própria pessoa a muda
+/// (`PUT /v1/notification-preferences`, auditado). Sem linha, vale o padrão: recebe. Um gatilho no banco confere que a
+/// pessoa é do mesmo cliente.
+model NotificationPreference {
+  userId         String   @id
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId       String   @db.Uuid
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// Avisos de incidente alto ou crítico e de achado crítico. Os do plano e da coleta da AWS não dependem dela.
+  incidentEmails Boolean  @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([tenantId])
+}
+
+/// Hora de avisos de uma pessoa (fase 2, PR-17'): uma linha por pessoa e hora cheia (UTC, que bate com a de Brasília).
+/// Conta os e-mails avulsos da hora; do 6º aviso em diante, o aviso entra em `noticeIds`, e o resumo sai uma vez,
+/// quando a hora fecha. O aviso com mais de 24 h na fila também vem para cá (`catchUp`, o resumo de retomada). Nenhum
+/// endereço de e-mail: a pessoa é resolvida no envio. Um gatilho no banco confere que ela é do mesmo cliente.
+model NotificationDigest {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  tenantId       String              @db.Uuid
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Começo da hora (minuto zero).
+  hourStart      DateTime            @db.Timestamptz(3)
+  /// E-mails avulsos que a pessoa recebeu nesta hora (o resumo não conta).
+  individualSent Int                 @default(0) @db.SmallInt
+  /// Avisos reunidos no resumo (ids de `Notification`), na ordem em que entraram.
+  noticeIds      String[]            @default([])
+  /// Algum aviso reunido tinha mais de 24 h na fila: o resumo é de retomada.
+  catchUp        Boolean             @default(false)
+  /// Nulo enquanto nada foi reunido (só a contagem); depois, como o aviso: `pending` até sair.
+  status         NotificationStatus?
+  attempts       Int                 @default(0) @db.SmallInt
+  /// Quando o resumo pode sair: o fim da hora, ou a próxima tentativa (recuo de 1, 5, 15 e 60 min).
+  nextAttemptAt  DateTime?           @db.Timestamptz(3)
+  /// Tipo do último erro do envio, ou o motivo de `skipped`. Nunca a mensagem do servidor.
+  lastError      String?             @db.VarChar(64)
+  sentAt         DateTime?           @db.Timestamptz(3)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, userId, hourStart])
+  @@index([status, nextAttemptAt])
+  @@index([userId])
 }

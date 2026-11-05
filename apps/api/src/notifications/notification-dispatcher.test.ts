@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  digestItems,
+  hourStartOf,
+  NOTICE_CATCH_UP_MS,
   NOTICE_RECIPIENT_ROLES,
   NOTIFICATION_MAX_ATTEMPTS,
   NOTIFICATION_RETRY_DELAYS_MS,
   noticeOf,
+  receives,
 } from './notification-dispatcher.js';
 
 const origin = 'https://cliente.control.exemplo.com.br';
@@ -67,5 +71,57 @@ describe('despachante dos avisos (PR-16)', () => {
         origin,
       ),
     ).toThrow(RangeError);
+  });
+});
+
+describe("preferência e resumo por hora (PR-17')", () => {
+  it('a preferência desliga só os avisos de incidente e de achado; o papel continua decidindo', () => {
+    const off = { role: 'analista_cliente', incidentEmails: false } as const;
+    const on = { role: 'analista_cliente', incidentEmails: true } as const;
+    const adminOff = { role: 'admin_cliente', incidentEmails: false } as const;
+    for (const kind of ['incident_opened', 'incident_escalated', 'critical_finding'] as const) {
+      expect(receives(kind, on)).toBe(true);
+      expect(receives(kind, off)).toBe(false);
+      expect(receives(kind, adminOff)).toBe(false);
+    }
+    // Plano e coleta: sempre para quem administra, com a preferência desligada ou não; nunca para o analista.
+    for (const kind of ['plan_usage', 'aws_ingestion_stalled'] as const) {
+      expect(receives(kind, adminOff)).toBe(true);
+      expect(receives(kind, on)).toBe(false);
+    }
+    expect(receives('incident_opened', { role: 'leitura', incidentEmails: true })).toBe(false);
+    expect(receives('incident_opened', { role: 'admin_verax', incidentEmails: true })).toBe(false);
+  });
+
+  it('a hora cheia (UTC, que bate com a de Brasília) e a retomada depois de 24 h', () => {
+    expect(hourStartOf(new Date('2026-11-05T17:59:59.999Z')).toISOString()).toBe('2026-11-05T17:00:00.000Z');
+    expect(hourStartOf(new Date('2026-11-05T18:00:00.000Z')).toISOString()).toBe('2026-11-05T18:00:00.000Z');
+    expect(NOTICE_CATCH_UP_MS).toBe(24 * 3_600_000);
+  });
+
+  it('itens do resumo: os críticos primeiro, cada grupo na ordem da fila; o aviso sem alvo fica de fora', () => {
+    const at = (minute: number) => new Date(Date.UTC(2026, 10, 5, 17, minute));
+    const row = (id: string, minute: number, target: Record<string, unknown>) => ({
+      ...empty,
+      ...target,
+      id,
+      createdAt: at(minute),
+    });
+    const items = digestItems(
+      [
+        row('a', 1, { kind: 'incident_opened', severity: 'high', incidentId }),
+        row('b', 2, { kind: 'plan_usage', usageMonth: new Date('2026-11-01'), usagePercent: 80 }),
+        row('c', 3, { kind: 'critical_finding', severity: 'critical', findingId }),
+        row('d', 4, { kind: 'incident_escalated', severity: 'critical', incidentId }),
+        row('e', 0, { kind: 'incident_opened', severity: 'critical' }),
+      ] as unknown as Parameters<typeof digestItems>[0],
+      origin,
+    );
+    expect(items.map(({ notice, at: when }) => [notice.kind, when.getUTCMinutes()])).toEqual([
+      ['critical_finding', 3],
+      ['incident_escalated', 4],
+      ['incident_opened', 1],
+      ['plan_usage', 2],
+    ]);
   });
 });
