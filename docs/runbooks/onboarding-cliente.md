@@ -64,7 +64,10 @@ Na reunião:
    NODE_SA_UNIQUE_ID=<o ID único da conta de serviço, 21 dígitos>
    # AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader   # só para trocar o padrão
    ```
-   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax.
+   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax. O IP de saída também entra nas
+   regras locais do Wazuh do nó (a leitura do próprio nó não vira alerta; a mesma sessão de outro IP vira nível 12), e
+   o audience é o que o host pede ao Google a cada 10 min. Depois do deploy, no nó, o `verax-aws-token.timer` e o
+   `verax-wazuh-apply.timer` aparecem em `systemctl list-timers`, e o `verax-wazuh-apply.path` está ativo.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -85,9 +88,18 @@ Na reunião:
      ainda não criada, valor errado, papel feito pelo assistente "Web identity → Google" do console, SCP ou RCP).
 
    Os buckets da conta ainda não têm campo no painel: vão pela API (`PATCH /v1/cloud-accounts/:id`, com `buckets`).
-   **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`): confira
-   com o cliente no CloudTrail da conta dele, depois que o nó começar a ler (PR-V4'), as entradas
-   `AssumeRoleWithWebIdentity` com o ID da conta de serviço do nó.
+   **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`), e a
+   conta não ganha o início da coleta (`ingestFrom`), que é o que a põe no Wazuh do nó: a coleta da AWS começa com o
+   PR-V5'. Depois dele, confira com o cliente, no CloudTrail da conta dele, as entradas `AssumeRoleWithWebIdentity`
+   com o ID da conta de serviço do nó.
+
+   **Coleta (PR-V4'):** na primeira verificação bem-sucedida, a conta entra no Wazuh do nó em até 1 min (só o manager
+   reinicia; o painel segue no ar), lendo os logs desde o dia anterior. Um bucket cadastrado depois é lido desde esse
+   mesmo dia: avise o cliente se o bucket novo tiver meses de log, porque a leitura conta no medidor do plano. No nó,
+   `journalctl -u verax-wazuh-apply` mostra cada aplicação e `cat /run/verax/wazuh-signal/applied` o último resultado.
+   No painel, `aws_token_stale` (o nó não renova o token do Google) e `wazuh_apply_failed` (a configuração nova não
+   subiu e o manager segue com a anterior) são do nó, não da conta do cliente: veja o journal do `verax-aws-token` ou
+   do `verax-wazuh-apply`.
 
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.

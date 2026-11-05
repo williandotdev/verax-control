@@ -1,0 +1,95 @@
+<!--
+  Verax Control: o papel de leitura (verax-control-reader) no CloudTrail do cliente (fase 2, PR-V4').
+
+  Modelo: o scripts/render-manager-config.py grava etc/rules/verax_reader_rules.xml a partir dele, com o IP de saída
+  do nó (NODE_EGRESS_IPS do node.conf) no lugar do marcador. Sem o IP, o bloco marcado (as regras por IP) sai: sem
+  saber de onde o nó chama, toda sessão do papel pareceria vir de fora.
+
+  O nó entra no papel de cada conta com o token do Google (AssumeRoleWithWebIdentity, sessão verax-control-wazuh no
+  Wazuh e verax-control-worker no worker) e lê os buckets, o KMS e a configuração. Tudo isso aparece no CloudTrail do
+  próprio cliente, que o nó lê:
+  - 100200 e 100201, nível 0: as leituras e a entrada no papel vindas do IP do nó. Não viram alerta nem achado (o
+    estado da conexão é o "Verificar" do painel). Só leitura: uma escrita da própria sessão, que a política
+    VeraxControlGuardrails nega, segue para as regras do Wazuh;
+  - 100202 e 100203, nível 12: a mesma sessão, ou a entrada no papel, vinda de outro IP. A confiança e a negação por
+    IP barram a chamada, mas a tentativa diz que um token ou uma sessão do nó vazou (MITRE T1078.004). Só origem com
+    formato de IP: uma chamada que um serviço da AWS faz em nome da sessão (o KMS pelo S3, por exemplo) traz o nome do
+    serviço no lugar do IP;
+  - 100204 e 100205, nível 5: qualquer alteração no papel (confiança, políticas, limite de permissões, apagar) ou nas
+    duas políticas gerenciadas da pilha, venha de quem vier: o cliente atualizando a pilha também aparece.
+
+  Cada regra é filha da regra base do módulo (80200) e de cada regra da cadeia do CloudTrail do Wazuh 4.14.9
+  (0350-amazon_rules.xml): a entrada fica certa em qualquer profundidade. O scripts/test-rules.sh confere o efeito no
+  wazuh-logtest e falha se uma versão nova do Wazuh trouxer outra regra nessa cadeia.
+-->
+<group name="verax_reader,">
+  <!-- verax:ip-rules -->
+
+  <rule id="100200" level="0">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.userIdentity.arn" type="pcre2">^arn:aws[a-z-]*:sts::\d{12}:assumed-role/verax-control-reader/[\w+=,.@-]+$</field>
+    <field name="aws.eventName" type="pcre2">^(?:Get|List|Describe|Head|Lookup|Search|Simulate|BatchGet)[A-Za-z0-9]*$|^Decrypt$</field>
+    <field name="aws.sourceIPAddress" type="pcre2">^(?:@NODE_EGRESS_IPS@)$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: leitura do próprio nó no papel verax-control-reader ($(aws.eventName)).</description>
+  </rule>
+
+  <rule id="100201" level="0">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventName" type="pcre2">^AssumeRoleWithWebIdentity$</field>
+    <field name="aws.requestParameters.roleArn" type="pcre2">^arn:aws[a-z-]*:iam::\d{12}:role/verax/verax-control-reader$</field>
+    <field name="aws.sourceIPAddress" type="pcre2">^(?:@NODE_EGRESS_IPS@)$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: o nó entrou no papel verax-control-reader com o token do Google.</description>
+  </rule>
+
+  <rule id="100202" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.userIdentity.arn" type="pcre2">^arn:aws[a-z-]*:sts::\d{12}:assumed-role/verax-control-reader/[\w+=,.@-]+$</field>
+    <field name="aws.sourceIPAddress" type="pcre2">^(?!(?:@NODE_EGRESS_IPS@)$)[0-9A-Fa-f:.]+$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: sessão do papel verax-control-reader usada fora do IP do nó ($(aws.sourceIPAddress)), possível credencial vazada.</description>
+    <mitre>
+      <id>T1078.004</id>
+    </mitre>
+  </rule>
+
+  <rule id="100203" level="12">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventName" type="pcre2">^AssumeRoleWithWebIdentity$</field>
+    <field name="aws.requestParameters.roleArn" type="pcre2">^arn:aws[a-z-]*:iam::\d{12}:role/verax/verax-control-reader$</field>
+    <field name="aws.sourceIPAddress" type="pcre2">^(?!(?:@NODE_EGRESS_IPS@)$)[0-9A-Fa-f:.]+$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: tentativa de entrar no papel verax-control-reader fora do IP do nó ($(aws.sourceIPAddress)), possível token vazado.</description>
+    <mitre>
+      <id>T1078.004</id>
+    </mitre>
+  </rule>
+
+  <!-- /verax:ip-rules -->
+
+  <rule id="100204" level="5">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:UpdateAssumeRolePolicy|PutRolePolicy|DeleteRolePolicy|AttachRolePolicy|DetachRolePolicy|PutRolePermissionsBoundary|DeleteRolePermissionsBoundary|UpdateRole|DeleteRole)$</field>
+    <field name="aws.requestParameters.roleName" type="pcre2">^verax-control-reader$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: papel de leitura verax-control-reader alterado ($(aws.eventName)).</description>
+  </rule>
+
+  <rule id="100205" level="5">
+    <if_sid>80200, 80202, 80203, 80250, 80251, 80253, 80254</if_sid>
+    <field name="aws.source" type="pcre2">^cloudtrail$</field>
+    <field name="aws.eventSource" type="pcre2">^iam\.amazonaws\.com$</field>
+    <field name="aws.eventName" type="pcre2">^(?:CreatePolicyVersion|SetDefaultPolicyVersion|DeletePolicyVersion|DeletePolicy)$</field>
+    <field name="aws.requestParameters.policyArn" type="pcre2">^arn:aws[a-z-]*:iam::\d{12}:policy/verax/VeraxControl(?:Reader|Guardrails)$</field>
+    <options>no_full_log</options>
+    <description>Verax Control: política do papel de leitura alterada ($(aws.eventName)).</description>
+  </rule>
+
+</group>

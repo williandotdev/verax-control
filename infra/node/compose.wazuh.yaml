@@ -12,8 +12,11 @@
 #   (TRUST_PROXY_HOPS=1). O desenho da seção 2.1 do plano tinha uma rede só; a separação é um endurecimento deliberado
 #   (docs/STATUS.md, PR-W1). Nenhum contêiner do Wazuh alcança o servidor de metadados da VM (guarda em
 #   infra/node/bin/metadata-guard.sh, conferida no fim do `start.sh wazuh-up`);
-# - credencial da AWS: o diretório /run/verax/wazuh-aws (memória do host, só root), só leitura no manager, no lugar do
-#   volume manager-aws;
+# - AWS sem chave (PR-V4'): o diretório /run/verax/wazuh-aws (memória do host, só root), só leitura no manager em
+#   /root/.aws, no lugar do volume manager-aws: os profiles que o gerador escreve e o token do Google que o host renova
+#   (infra/node/bin/aws-token.sh). Nenhum outro contêiner o monta;
+# - a lista das contas AWS vem do banco pelo job `wazuh-sources` (o CLI da API), e o worker troca sinais sem segredo com
+#   o host pela pasta /run/verax/wazuh-signal (infra/node/bin/wazuh-apply.sh);
 # - limites de memória, CPU e processos, nenhuma capability (o manager recebe só as que o init da imagem usa) e log com
 #   o driver local, como os contêineres da aplicação. A raiz só leitura não cabe nas imagens do Wazuh (o init delas
 #   grava em /var/ossec e /etc): o CI tem essa exceção só para o indexer e o manager.
@@ -66,8 +69,26 @@ services:
       - indexer-security:/out/security
       - indexer-snapshots:/out/snapshots
 
+  # A lista das contas AWS conectadas (fase 2, PR-V4'): o CLI da API lê o banco e a imprime, sem segredo nenhum (não
+  # existe chave da AWS). Imagem da API, ambiente do worker e rede `verax` (só o banco), endurecido como os jobs do
+  # compose.yaml. Só o wazuh-apply.sh o roda, e a saída vai para a entrada do manager-config.
+  wazuh-sources:
+    image: ${API_IMAGE:?}
+    command: ['node', 'dist/cli/wazuh-sources.js']
+    env_file: /run/verax/worker.env
+    networks: [verax]
+    volumes: ['/var/lib/verax/tls/ca.crt:/etc/verax/tls/ca.crt:ro']
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    tmpfs: ['/tmp:rw,noexec,nosuid,size=16m']
+    mem_limit: 192m
+    restart: 'no'
+    profiles: [setup]
+    logging: *wazuh-logging
+
   # A lista de contas chega pela entrada padrão (infra/node/bin/wazuh-apply.sh); o gerador é o único que escreve o
-  # ossec.conf e os arquivos da AWS do manager.
+  # ossec.conf, as regras locais e os profiles da AWS do manager (o token, na mesma pasta, é do host).
   manager-config:
     <<: *wazuh-job
     image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
@@ -206,9 +227,12 @@ services:
     volumes: ['certs-public:/etc/verax/wazuh:ro']
     cpu_shares: 2048
 
+  # O worker também monta, com escrita, a pasta dos sinais do Wazuh (WAZUH_SIGNAL_DIR no worker.env; tarefa
+  # wazuh-config): grava a `generation` (as contas mudaram) e lê o `applied` e o `aws-token` do host. Nada nela é
+  # segredo, e o bit t da pasta impede que ele troque os arquivos do host. A pasta dos profiles e do token, não.
   worker:
     networks: [wazuh-read]
-    volumes: ['certs-public:/etc/verax/wazuh:ro']
+    volumes: ['certs-public:/etc/verax/wazuh:ro', '/run/verax/wazuh-signal:/run/wazuh-signal']
 
 networks:
   wazuh:

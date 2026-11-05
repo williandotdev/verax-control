@@ -3,6 +3,7 @@ import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
+import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
@@ -39,6 +40,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  *
  * A tarefa `aws-check` responde o "Verificar" das contas AWS (a cada 30 s, só quando há pedido pendente). Até o PR-V5',
  * a conferência é a `UnavailableAwsConnectionChecker`: o pedido vira o código `check_unavailable`, sem chamar a AWS.
+ *
+ * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
+ * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -99,6 +103,17 @@ async function main(): Promise<void> {
       budgetMs: SYNC_BUDGET_MS,
       run: (signal) => awsCheck.runOnce(signal),
     });
+    // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o
+    // host devolve, pela pasta dos sinais (sem segredo; quem escreve a configuração do manager é só o gerador).
+    if (config.WAZUH_SIGNAL_DIR !== undefined) {
+      const wazuhConfig = new WazuhConfig(prisma, config.WAZUH_SIGNAL_DIR);
+      tasks.push({
+        name: 'wazuh-config',
+        intervalMs: WAZUH_CONFIG_INTERVAL_MS,
+        budgetMs: SYNC_BUDGET_MS,
+        run: (signal) => wazuhConfig.runOnce(signal),
+      });
+    }
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
       const rekey = new CredentialRekey(prisma, keyring);

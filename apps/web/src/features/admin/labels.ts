@@ -116,6 +116,8 @@ export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode,
   check_unavailable: 'Este nó ainda não confere a conexão sozinho. A Verax confere com você.',
   aws_token_stale:
     'O nó não renova o próprio token do Google há mais de 40 minutos, e a coleta pode parar. Fale com a Verax.',
+  wazuh_apply_failed:
+    'O nó não conseguiu aplicar a configuração nova da coleta da AWS e segue lendo com a anterior. Fale com a Verax.',
 };
 
 /** O que fazer diante do erro da conexão de uma conta AWS; null para um código que não é da AWS. */
