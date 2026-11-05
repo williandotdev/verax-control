@@ -1,4 +1,4 @@
-import { isAwsRegion } from './cloud-accounts.js';
+import { isAwsRegion, LOG_SOURCES, type LogSource } from './cloud-accounts.js';
 
 /**
  * Papel de leitura sem chave na conta AWS do cliente (fase 2, PR-V2' e PR-V3'; `docs/ARQUITETURA.md`, "Por que papel
@@ -94,15 +94,20 @@ export const MAX_NODE_EGRESS_IPS = 4;
 
 /**
  * Códigos de erro da conexão da AWS, gravados em `CloudAccount.connectionError` pela tarefa `aws-check` do worker
- * (fase 2: o "Verificar" do PR-V3'; a conferência real vem no PR-V5'). Só o código: nunca a mensagem da AWS.
+ * (fase 2: o "Verificar" do PR-V3' e a conferência real do PR-V5'). Só o código: nunca a mensagem da AWS.
  * - `trust_denied`: a AWS recusou a entrada no papel (pilha ainda não criada, ID da conta de serviço, IP ou audience
  *   diferentes dos do nó, papel feito pelo assistente do console, ou uma SCP ou RCP que nega a federação do Google);
  * - `token_invalid`: a AWS recusou o token do Google (vencido, malformado ou com claims recusadas);
- * - `idp_unavailable`: o Google ou o servidor de metadados do nó não responderam;
+ * - `idp_unavailable`: o Google não respondeu à AWS ao conferir o token;
  * - `region_disabled`: o STS da região está desligado na conta;
  * - `account_mismatch`: a sessão é de outra conta que não a cadastrada;
  * - `bucket_missing`, `bucket_denied` e `kms_denied`: um bucket cadastrado não existe, não pôde ser lido, ou a chave
- *   KMS dele não decifra para o papel;
+ *   KMS dele não decifra para o papel. Gravados com a fonte do bucket (`bucket_denied:cloudtrail`, ver
+ *   `awsConnectionErrorValue`);
+ * - `trail_not_logging`, `guardduty_export_missing` e `excess_permissions` (conferência diária, PR-V5'): nenhuma trilha
+ *   ativa grava no bucket do CloudTrail cadastrado, nenhum export do GuardDuty publica no bucket dele, ou o papel tem
+ *   permissão além da política. Avisos: a conta continua conectada (`AWS_CONNECTION_WARNING_CODES`);
+ * - `metadata_unavailable`: o nó não conseguiu pedir o próprio token ao servidor de metadados da GCP;
  * - `aws_unavailable`: a AWS não respondeu a tempo;
  * - `check_unavailable`: este nó ainda não confere a conexão sozinho;
  * - `aws_token_stale`: o token do host não é renovado há mais de 40 minutos (PR-V5').
@@ -116,6 +121,10 @@ export const AWS_CONNECTION_ERROR_CODES = [
   'bucket_missing',
   'bucket_denied',
   'kms_denied',
+  'trail_not_logging',
+  'guardduty_export_missing',
+  'excess_permissions',
+  'metadata_unavailable',
   'aws_unavailable',
   'check_unavailable',
   'aws_token_stale',
@@ -124,6 +133,54 @@ export type AwsConnectionErrorCode = (typeof AWS_CONNECTION_ERROR_CODES)[number]
 
 export function isAwsConnectionErrorCode(value: string): value is AwsConnectionErrorCode {
   return (AWS_CONNECTION_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/**
+ * Avisos da conexão da AWS (PR-V5'): a conferência passou, a coleta continua, e a conta fica conectada com o código
+ * em `connectionError`. Em ordem de prioridade (só um vai para a conta): o STS da região desligado (o nó entrou pelo
+ * de us-east-1, mas o Wazuh usa o da região), a trilha parada, o export do GuardDuty ausente e a permissão demais.
+ */
+export const AWS_CONNECTION_WARNING_CODES = [
+  'region_disabled',
+  'trail_not_logging',
+  'guardduty_export_missing',
+  'excess_permissions',
+] as const satisfies readonly AwsConnectionErrorCode[];
+export type AwsConnectionWarningCode = (typeof AWS_CONNECTION_WARNING_CODES)[number];
+
+export function isAwsConnectionWarningCode(value: string | null): value is AwsConnectionWarningCode {
+  return value !== null && (AWS_CONNECTION_WARNING_CODES as readonly string[]).includes(value);
+}
+
+/** Erros de um bucket cadastrado: gravados com a fonte dele (`bucket_denied:waf`). */
+export const AWS_BUCKET_ERROR_CODES = [
+  'bucket_missing',
+  'bucket_denied',
+  'kms_denied',
+] as const satisfies readonly AwsConnectionErrorCode[];
+export type AwsBucketErrorCode = (typeof AWS_BUCKET_ERROR_CODES)[number];
+
+function isAwsBucketErrorCode(value: string): value is AwsBucketErrorCode {
+  return (AWS_BUCKET_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/** O que vai para `CloudAccount.connectionError`: o código e, num erro de bucket, a fonte (`kms_denied:guardduty`). */
+export function awsConnectionErrorValue(code: AwsConnectionErrorCode, source?: LogSource): string {
+  return source !== undefined && isAwsBucketErrorCode(code) ? `${code}:${source}` : code;
+}
+
+/**
+ * O código e a fonte de um `connectionError` da AWS; null para um valor que não é da AWS. Aceita o código sozinho
+ * (um bucket sem fonte, como o PR-V3' gravava) e `código:fonte` só nos erros de bucket.
+ */
+export function parseAwsConnectionError(
+  value: string,
+): { code: AwsConnectionErrorCode; source: LogSource | null } | null {
+  const [code = '', source, ...rest] = value.split(':');
+  if (!isAwsConnectionErrorCode(code) || rest.length > 0) return null;
+  if (source === undefined) return { code, source: null };
+  if (!isAwsBucketErrorCode(code) || !(LOG_SOURCES as readonly string[]).includes(source)) return null;
+  return { code, source: source as LogSource };
 }
 
 /** No comando da CLI, no lugar do que o nó ainda não informa. */

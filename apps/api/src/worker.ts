@@ -1,9 +1,11 @@
-import { pino } from 'pino';
+import { AWS_READER_AUDIENCE } from '@verax/shared';
+import { type Logger, pino } from 'pino';
 import { WazuhAgentsSync } from './agents/agents-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
-import { UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
+import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
+import type { WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
@@ -23,6 +25,50 @@ import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
  */
 const SYNC_BUDGET_MS = 5 * 60 * 1000;
 
+/** A conferência da conexão da AWS e o que roda na partida (a conferência da identidade do nó). */
+interface AwsConnectionSetup {
+  checker: AwsConnectionChecker;
+  start(): Promise<void>;
+}
+
+/**
+ * Com o ID da conta de serviço do nó (`NODE_SA_UNIQUE_ID`), a conferência real (PR-V5'): o token do Google pelo
+ * metadata, o STS e os buckets. Só então o SDK da AWS é carregado: o nó sem a linha (o da Verax, o ambiente local) não
+ * paga a memória dele e responde `check_unavailable`, sem chamar a AWS nem o metadata. Na partida, o `sub` do token
+ * do nó é conferido com o ID (sem o token no log); sem `NODE_EGRESS_IPS`, a simulação da permissão demais fica de
+ * fora, e o log diz isso.
+ */
+async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): Promise<AwsConnectionSetup> {
+  const serviceAccountId = config.NODE_SA_UNIQUE_ID;
+  if (serviceAccountId === undefined) {
+    return { checker: new UnavailableAwsConnectionChecker(), start: () => Promise.resolve() };
+  }
+  const [identity, { WebIdentityAwsConnectionChecker }] = await Promise.all([
+    import('./aws/web-identity.js'),
+    import('./aws/web-identity-checker.js'),
+  ]);
+  const audience = config.AWS_WEB_IDENTITY_AUDIENCE ?? AWS_READER_AUDIENCE;
+  const idToken = (signal?: AbortSignal) => identity.fetchGoogleIdToken(audience, signal);
+  const credentials = new identity.WebIdentityCredentials({ audience, idToken, logger });
+  const checker = new WebIdentityAwsConnectionChecker({
+    credentials,
+    egressIps: config.NODE_EGRESS_IPS ?? [],
+    logger,
+  });
+  return {
+    checker,
+    start: async () => {
+      if (!checker.simulatesPermissions) {
+        logger.warn(
+          {},
+          'sem NODE_EGRESS_IPS no worker: a simulação da permissão demais da AWS fica de fora (o Deny de IP da pilha negaria tudo)',
+        );
+      }
+      identity.reportNodeIdentity(await identity.checkNodeIdentity(serviceAccountId, idToken), logger);
+    },
+  };
+}
+
 /**
  * Worker do Verax Control: o mesmo código da API num processo à parte, sem porta aberta. Cada fonte de `SYNC_SOURCES`
  * vira uma tarefa do agendador, a cada `SYNC_INTERVAL_SECONDS`; as tarefas rodam ao mesmo tempo, cada uma no próprio
@@ -37,8 +83,9 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
  * Com o cofre de credenciais (as chaves privadas num arquivo do tmpfs do nó, só no nó de cliente), entra também a tarefa diária
  * `credential-rekey`, que recifra com a versão corrente as credenciais guardadas com uma versão antiga da chave.
  *
- * A tarefa `aws-check` responde o "Verificar" das contas AWS (a cada 30 s, só quando há pedido pendente). Até o PR-V5',
- * a conferência é a `UnavailableAwsConnectionChecker`: o pedido vira o código `check_unavailable`, sem chamar a AWS.
+ * A tarefa `aws-check` (a cada 30 s) responde o "Verificar" das contas AWS e, sem pedido, confere de novo cada conta já
+ * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
+ * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`).
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -48,9 +95,12 @@ async function main(): Promise<void> {
   let config;
   let tasks: ScheduledTask[];
   let prisma: PrismaService;
+  let logger: Logger;
+  let aws: AwsConnectionSetup;
   try {
     const loaded = loadWorkerConfig();
     config = loaded;
+    logger = pino(buildPinoOptions(config));
     prisma = new PrismaService(config);
     const intervalMs = config.SYNC_INTERVAL_SECONDS * 1000;
     tasks = config.SYNC_SOURCES.map((source): ScheduledTask => {
@@ -90,14 +140,18 @@ async function main(): Promise<void> {
       const agents = new WazuhAgentsSync(prisma, config.wazuhAgents);
       tasks.push({ name: 'wazuh-agents', intervalMs, budgetMs: SYNC_BUDGET_MS, run: () => agents.runOnce() });
     }
-    // "Verificar" da AWS: a API só grava o pedido; o worker, o único contêiner com o metadata, responde. O PR-V5' troca
-    // a conferência pela real (token do Google, STS e S3).
-    const awsCheck = new AwsCheck(prisma, new UnavailableAwsConnectionChecker());
+    // Conexão da AWS: a API só grava o pedido do "Verificar"; o worker, o único contêiner com o metadata, responde e,
+    // sem pedido, confere de novo as contas já verificadas.
+    aws = await awsConnectionSetup(loaded, logger);
+    const awsCheck = new AwsCheck(prisma, aws.checker);
     tasks.push({
       name: 'aws-check',
       intervalMs: AWS_CHECK_INTERVAL_MS,
       budgetMs: SYNC_BUDGET_MS,
-      run: (signal) => awsCheck.runOnce(signal),
+      run: async (signal) => ({
+        requests: await awsCheck.runOnce(signal),
+        periodic: await awsCheck.recheck(signal),
+      }),
     });
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {
@@ -115,7 +169,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const logger = pino(buildPinoOptions(config));
   const scheduler = new Scheduler(tasks, logger);
   const stopRequested = new Promise<void>((resolve) => {
     process.once('SIGTERM', () => resolve());
@@ -132,6 +185,7 @@ async function main(): Promise<void> {
     },
     'worker iniciado',
   );
+  await aws.start();
   scheduler.start();
   await stopRequested;
   await scheduler.stop();

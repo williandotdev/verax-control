@@ -139,8 +139,11 @@ GuardDuty, use a região do detector.
 4. Avance até a revisão, marque _I acknowledge that AWS CloudFormation might create IAM resources with custom names_
    e clique em _Submit_. A pilha fica pronta em 1 ou 2 minutos.
 5. Volte ao painel do Verax Control e clique em **Verificar conexão**, na conta (Contas cloud → AWS). O Verax entra no
-   papel e lê um objeto de cada bucket cadastrado; logo depois da criação da pilha, o papel pode levar alguns minutos
-   para valer, e ele tenta de novo por até 10 minutos. Não há nada para copiar ou colar.
+   papel e lê 1 byte de um objeto de cada bucket cadastrado; logo depois da criação da pilha, o papel pode levar alguns
+   minutos para valer, e ele tenta de novo por até 10 minutos. Não há nada para copiar ou colar. Depois, ele confere
+   sozinho a cada 15 minutos e, uma vez por dia, a trilha, o export do GuardDuty e se o papel ganhou permissão além da
+   leitura (`SimulatePrincipalPolicy` no próprio papel). Todas as chamadas são de leitura e aparecem no CloudTrail da
+   conta, na sessão `verax-control-reader/verax-control-worker`.
 
 **Pela CLI** (ou no AWS CloudShell, com o arquivo enviado pelo menu _Actions_ → _Upload file_). O template tem cerca
 de 32 KB, abaixo do limite de 51.200 bytes do CloudFormation, e vai direto, sem bucket. Os valores abaixo são

@@ -328,28 +328,63 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
    - **"Verificar"** (`POST /v1/cloud-accounts/:id/aws/verify`, `cloud_accounts:write`, 202): grava o pedido
      (`checkRequestedAt`) e volta a conexão para `waiting`, sem erro; um pedido pendente não é renovado. A API não
      alcança o metadata e não assume o papel. A tarefa `aws-check` do worker (a cada 30 s) confere cada pedido pela
-     interface `AwsConnectionChecker` e grava `connected` ou `error` com o código (`trust_denied`, `token_invalid`,
-     `idp_unavailable`, `region_disabled`, `account_mismatch`, `bucket_missing`, `bucket_denied`, `kms_denied`,
-     `aws_unavailable`, `check_unavailable`), com auditoria (`cloud_account.aws_check`) na trilha do cliente. Um erro
-     que pode passar deixa o pedido pendente por até 10 min (o papel recém-criado pode levar segundos para valer). O
-     resultado só vale para o pedido conferido: a conta desativada no meio o descarta. O painel relê a conta a cada 5 s
-     enquanto o pedido está pendente e mostra o que conferir em cada erro.
+     interface `AwsConnectionChecker`, com as conferências diárias (passo 3), e grava `connected` (com um aviso, se
+     houver) ou `error` com o código, com auditoria (`cloud_account.aws_check`) na trilha do cliente. Um erro que pode
+     passar deixa o pedido pendente por até 10 min (o papel recém-criado pode levar segundos para valer), com as
+     tentativas espaçadas: 30 s, 1 min, 2 min e depois a cada 4 min, no máximo 6 conferências por clique (cada uma é
+     uma linha no CloudTrail do cliente). O resultado só vale para o pedido conferido: a conta desativada no meio o
+     descarta. O painel relê a conta a cada 5 s enquanto o pedido está pendente e mostra o que conferir em cada erro e
+     em cada aviso.
    - **Início da coleta (`ingestFrom`):** na primeira verificação bem-sucedida, o dia anterior, gravado uma vez só. É
      o `only_logs_after` que o gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do
      bucket.
-   - **Até o PR-V5',** a conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem
-     chamar a AWS nem o metadata: o fluxo funciona de ponta a ponta, e o PR-V5' só troca a classe no `worker.ts`.
+   - **Nó sem a própria identidade:** sem `NODE_SA_UNIQUE_ID` no `worker.env` (o nó da Verax, o ambiente local), a
+     conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem chamar a AWS nem o
+     metadata, e o SDK da AWS nem é carregado no worker.
 2. **Coletar (PR-V4'):** um timer do host renova a cada 10 min o token do Google (`format=standard`, sem o projeto
    nem a VM) num tmpfs (`/run/verax/wazuh-aws`, 0600), montado só leitura no manager. O gerador da configuração, o
    único que escreve, grava o `ossec.conf` e o `config` com um profile por conta: o ARN do papel, derivado do ID da
    conta, e `web_identity_token_file`. Não há arquivo `credentials` nem `<access_key>`, e o cano até o gerador não
    leva segredo. Mudar contas ou buckets reinicia só o manager, com volta automática à configuração anterior se ele
    não subir; indexer, API e painel seguem no ar.
-3. **Conferir (PR-V5'):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e confere a
-   conta (`GetCallerIdentity`) e a leitura de cada bucket: é a implementação real do `AwsConnectionChecker` do PR-V3',
-   que passa a rodar também a cada 15 min, sem pedido. Uma vez por dia, simula a permissão demais
-   (só avisa) e confere se a trilha e o export do GuardDuty apontam para os buckets cadastrados. Erros próprios: papel
-   recusado, Google fora do ar, token inválido, STS regional desligado e token do host sem renovar.
+3. **Conferir (PR-V5', feito):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e
+   confere a conta e a leitura de cada bucket: é a `WebIdentityAwsConnectionChecker`
+   (`apps/api/src/aws/web-identity-checker.ts`), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. Toda chamada
+   é de leitura e cai no CloudTrail do cliente.
+   - **Entrada no papel** (`aws/web-identity.ts`, `WebIdentityCredentials`): o token do Google pelo metadata
+     (`audience` do nó, `format=standard`, 3 s de prazo), trocado no STS da primeira região da conta
+     (`AssumeRoleWithWebIdentity`, sem assinatura, `RoleSessionName` `verax-control-worker`, 1 hora). As quatro partes
+     da sessão são conferidas com zod e ficam num objeto que não vira JSON nem log, guardado por conta até faltarem
+     5 min para vencer: uma entrada no papel por hora, dividida por todos os clientes do SDK (o inventário do PR-14'
+     usa o mesmo provedor, `credentialsFor`). O token nunca vai para log nem erro, e o logger oculta qualquer JWT e o
+     segredo e o token da sessão enquanto ela vale. Se o cliente desligou o STS da região (`RegionDisabled`), a troca é
+     repetida em us-east-1 (que não pode ser desligado), e a conta fica conectada com o aviso `region_disabled`: o
+     Wazuh usa o STS da região.
+   - **A cada conferência** (o "Verificar" e, sem pedido, a cada 15 min para as contas já verificadas, conectadas ou
+     com erro): `GetCallerIdentity` (a sessão tem de ser `assumed-role/verax-control-reader/verax-control-worker` da
+     conta cadastrada, ou `account_mismatch`) e, em cada bucket cadastrado (sem repetir), `ListObjectsV2` com
+     `MaxKeys=1` e `GetObject` de 1 byte (`Range: bytes=0-0`) do primeiro objeto, que prova o KMS quando o objeto é
+     cifrado com ele. Os erros de bucket levam a fonte: `bucket_missing:<fonte>`, `bucket_denied:<fonte>` e
+     `kms_denied:<fonte>` (`cloudtrail`, `guardduty` ou `waf`). Um objeto fora do `LogObjectPrefix` (negação explícita
+     na política do papel), arquivado ou vazio não é erro.
+   - **Uma vez por dia** (e em todo "Verificar"), avisos que não param a coleta: `trail_not_logging` (nenhuma trilha
+     ligada grava no bucket do CloudTrail: `DescribeTrails` com as de outras regiões e de organização, e
+     `GetTrailStatus` só das que gravam nele), `guardduty_export_missing` (nenhum detector publica no bucket do
+     GuardDuty: `ListDetectors`, `ListPublishingDestinations` e `DescribePublishingDestination`) e
+     `excess_permissions` (`SimulatePrincipalPolicy` no próprio papel, com o IP de saída do nó em `aws:SourceIp`, numa
+     amostra de escrita, IAM, STS, KMS fora do S3 e leitura fora da política; sem o `NODE_EGRESS_IPS` no worker, a
+     simulação fica de fora). A trilha e o export são procurados nas regiões monitoradas até o primeiro encontrado.
+   - **O que vai para a conta:** um erro vira `error` com o código; sem erro, a conta fica `connected` com o aviso de
+     maior prioridade em `connectionError` (`region_disabled`, `trail_not_logging`, `guardduty_export_missing`,
+     `excess_permissions`), que a API só devolve na AWS. Sem pedido, só uma mudança é gravada (com auditoria); um erro
+     que pode passar numa conta conectada é tentado de novo, espaçado, por até 10 min antes de virar o erro dela, e a
+     conta corrigida pelo cliente volta a conectada sozinha. O agendamento (15 min, diárias, tentativas) fica na
+     memória do worker: numa partida nova, tudo é conferido de novo.
+   - **Na partida do worker:** o `sub` do token do Google (decodificado sem rede) tem de ser o `NODE_SA_UNIQUE_ID`;
+     senão, um erro no log com os dois IDs (nenhum é segredo, nunca o token): as pilhas criadas com o valor do painel
+     recusam o nó.
+   - Erros próprios: `trust_denied`, `token_invalid`, `idp_unavailable`, `metadata_unavailable` (o metadata do nó),
+     `region_disabled` e `aws_unavailable`; o token do host sem renovar (`aws_token_stale`) é do PR-V4'.
 4. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
    sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
 
@@ -369,7 +404,7 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
 | A web identity pelo profile não funcionar no contêiner do manager                                                                        | Teste prático antes do PR-V4'; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora                                                                                                                                                                           |
 | O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                             | Impacto baixo; documentado                                                                                                                                                                                                                                                                          |
 | O IP do NAT muda e a coleta para                                                                                                         | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                                                                                                                                 |
-| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com uma amostra de escrita, IAM, KMS e leitura fora da política, e aviso na Torre. Permissão a mais fora da amostra não é detectada                                                                                                                             |
+| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                              |
 | O cliente cria o papel pelo assistente do console e põe o audience no `aud`                                                              | Template e Terraform prontos; o README avisa; a mensagem de papel recusado explica                                                                                                                                                                                                                  |
 | RCP de perímetro de dados do cliente nega a federação do Google                                                                          | O cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção (decisão dele); texto pronto no onboarding                                                                                                                                                                              |
 | STS de sa-east-1 desligado pelo cliente                                                                                                  | O worker cai para us-east-1; no Wazuh, o erro instrui a religar                                                                                                                                                                                                                                     |

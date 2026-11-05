@@ -4,10 +4,11 @@
  * Três camadas:
  * - por nome de chave, em qualquer profundidade: senha, token, cookie, Authorization, segredos AWS etc.;
  * - por padrão de valor, em qualquer string: `Bearer ...`, ID de chave de acesso AWS, a linha do segredo da AWS de um
- *   arquivo `credentials` e senha embutida em URL;
- * - por valor exato, em qualquer string: os segredos vivos, decifrados do cofre de credenciais neste processo
- *   (`registerLiveSecret`). Um segredo da AWS ou um token do Cloudflare não tem formato que o distinga de um texto
- *   qualquer, e uma mensagem de erro de terceiros pode repeti-lo sem nome de campo nenhum.
+ *   arquivo `credentials`, senha embutida em URL e qualquer JWT (o token do Google que o worker troca no STS);
+ * - por valor exato, em qualquer string: os segredos vivos, decifrados do cofre de credenciais neste processo, e o
+ *   segredo e o token das sessões do papel de leitura da AWS enquanto valem (`registerLiveSecret`). Um segredo da AWS
+ *   ou um token do Cloudflare não tem formato que o distinga de um texto qualquer, e uma mensagem de erro de terceiros
+ *   pode repeti-lo sem nome de campo nenhum.
  *
  * Na dúvida, a chave é ocultada: um campo inofensivo a menos no log é melhor que um segredo vazado. A exceção são
  * valores booleanos (`mustChangePassword: true`): um sim ou não não carrega segredo, e a auditoria precisa mostrar a
@@ -60,6 +61,9 @@ const VALUE_PATTERNS: readonly [RegExp, string][] = [
   [/(\baws_(?:secret_access_key|session_token)\s*=\s*)\S+/gi, `$1${REDACTED}`],
   // Senha embutida em URL, como postgresql://usuario:senha@host/banco.
   [/(\b[a-z][\w+.-]*:\/\/[^\s:/?#@]+:)[^\s@/?#]+@/gi, `$1${REDACTED}@`],
+  // JWT compacto (o ID token do Google do nó, que vale até 1 hora para entrar no papel de leitura da AWS do cliente;
+  // PR-V5'): três partes em base64url, a primeira um JSON (`{"` vira `eyJ`). Nenhuma parte tem ponto: tempo linear.
+  [/\beyJ[\w-]+\.[\w-]+\.[\w-]+/g, REDACTED],
 ];
 
 /**
