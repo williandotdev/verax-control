@@ -4706,6 +4706,13 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
   variáveis do `destroy`, para um cliente gravado antes do limite (até 200) ainda poder ser excluído. Teste em
   `deletion-tenant-name.test.ts`.
 
+## Correção: teste "a triagem aparece na Torre" estourava o tempo no CI
+
+- **O que acontecia:** o teste de `apps/web/src/pages/findings-page.test.tsx` percorre a Torre, os Achados, a triagem e
+  volta à Torre; leva cerca de 4,7 s sozinho, perto do limite padrão de 5 s do Vitest, e falhou por tempo em vários PRs
+  com o executor carregado.
+- **Correção:** só esse teste ganha `timeout: 15_000`, como o de login em `auth-pages.test.tsx`. Nenhuma asserção mudou.
+
 ## Fase 3, console: cliente de contrato direto e as operações do responsável ⚠️ altera `infra/`
 
 - **Pedido do responsável:** no console, subir o ambiente de um cliente negociado direto (sem o checkout): os dados do cliente, da empresa e do ambiente, e o provisionamento igual ao de uma compra, com muito cuidado na segurança; e os botões das operações do responsável (`resume` e, do CP-11, cancelar, suspender, reativar, apagar agora e exportar) no mesmo console. Usa os contratos do CP-11 (#93, já na `main`): `billing.mode`, o grupo `console` com `actor` no corpo, `worker-owner-client.ts` e `confirmSlug`; e o nome do cliente até 120 do #95. Nada aplicado, nenhum deploy; nenhum teste fala com GCP, Stripe, Cloudflare, Firebase ou GitHub.
