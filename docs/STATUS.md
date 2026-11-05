@@ -3620,3 +3620,133 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - **checkov frágil nos metadados:** a avaliação depende da forma da expressão (acima). Uma mudança futura nos metadados pode voltar a reprovar o CKV_GCP_32 no CI; os testes do módulo conferem os metadados exatos nos três usos, de qualquer jeito;
   - o `cp-terraform` tem `objectAdmin` no bucket do estado inteiro, que guarda também o estado do `nodes-platform` e da homologação; com o `projectIamAdmin` ele já alcançaria os dois de qualquer jeito (a vigilância é o alerta do CP-12);
   - fora deste PR: os agentes do Wazuh (`wazuh_agents` e as faixas) e os projetos GCP de cliente (`customer_projects`) no tenant, e os portes M e G (PC-09).
+
+## Fase 2, PR-19: expurgo diário do histórico pelo plano ⚠️ altera a imutabilidade da trilha de auditoria — revisão linha a linha
+
+- **Pedido:** o expurgo diário do histórico guardado no banco do nó, pelo prazo do plano (plano da fase 2, PR-19; plano
+  revisado, item 23). Só o Postgres do nó: nada na nuvem do cliente, nos buckets, nos logs na origem nem no índice do
+  Wazuh, que tem a retenção própria de 30 dias (ISM). Desenho em `docs/ARQUITETURA.md`, "Expurgo do histórico". O
+  período `12m` nas telas e os textos de retenção ficam para o PR-20.
+- **Imutabilidade (migration `20261109120000_history_retention`, revisar linha a linha):**
+  - os triggers da auditoria (`audit_log_reject_change`) e dos comentários (`finding_comment_reject_change`) continuam
+    bloqueando UPDATE e TRUNCATE sempre, para todo mundo, com a mesma mensagem de antes. DELETE só passa com as duas
+    condições ao mesmo tempo: a flag `verax.retention` ligada **e** o registro mais velho que o piso de idade,
+    conferido no banco linha a linha (13 meses na auditoria; 30 dias no comentário, o menor prazo que um plano aceita);
+  - `verax_purge_audit_log(p_cutoff, p_limit)` e `verax_purge_finding_comments(uuid[])`: `SECURITY DEFINER`, com o dono
+    que aplica as migrations (o `verax_migrator`, dono das tabelas), `search_path = pg_catalog, public, pg_temp`,
+    `TimeZone = UTC`, tabelas com schema. A própria função recusa corte mais novo que o piso (auditoria) e achado com
+    menos de 30 dias (comentários), e lote fora de 1 a 1000. Ela liga a flag com `set_config(..., true)` só em volta do
+    próprio DELETE e devolve o valor anterior logo depois; com erro, a transação desfaz a flag junto. A função de
+    auditoria devolve as contagens por cliente;
+  - o EXECUTE sai de PUBLIC na migration; o `db-bootstrap` repete o REVOKE a cada deploy e concede o EXECUTE só ao
+    papel da aplicação. O `db-bootstrap` também tira UPDATE, DELETE e TRUNCATE do papel da aplicação em
+    `FindingComment` (antes só o trigger segurava). O papel da aplicação continua sem DELETE direto na auditoria e agora
+    também nos comentários, nem com a flag ligada na sessão;
+  - índices novos: `AuditLog(occurredAt)` e `Incident(tenantId, lastSeenAt)`; tabela nova `RetentionState` (o prazo
+    aplicado e a carência; dado de sistema, sem `tenantId`, com CHECK de no mínimo 30 dias).
+- **Tarefa `retention` do worker** (`apps/api/src/retention/`):
+  - confere a cada 15 min; roda depois das 04:00 UTC, no máximo uma vez por dia (`SyncState('retention')`), com a
+    concessão do banco renovada a cada lote; lotes de 500 por transação, pausa de 100 ms e no máximo 10 min por
+    execução (o orçamento do agendador é de 12 min). Parar no tempo máximo conta o dia como feito, e o resto fica para
+    o dia seguinte; a parada do worker interrompe entre dois lotes e não conta o dia;
+  - ordem, cada cliente pelo próprio escopo (`forTenant`): incidentes sem atividade desde o corte (último achado, última
+    mudança e nenhum achado com evento, mudança ou comentário depois), inteiros, com os achados e os comentários; achados
+    soltos com a mesma regra e sem recorrência apontando para eles; postura (a varredura mais recente de cada conta
+    fica sempre; as reprovações saem em lotes antes das varreduras) e inventário (30 dias; o retrato mais recente de
+    cada conta fica); depois a fila sem dono (90 dias), as tabelas de operação (sessões, links, tentativas de login,
+    códigos TOTP usados e limite por IP, vencidos há mais de um dia) e a auditoria (13 meses, ou o histórico se for
+    maior), só pela função;
+  - o corte do histórico é o prazo do plano mais um dia de folga (o relatório do período sai completo, e a diferença
+    entre o relógio do worker e o do banco nunca bate no piso); o próprio corte fica;
+  - a remoção de achados e incidentes toma o mesmo lock por cliente dos coletores (`lockTenantFindings`, extraído de
+    `FindingStore.persist`) e confere de novo, sob o lock, se cada linha ainda vale;
+  - um incidente cujo achado é o original de uma recorrência que fica (em outro incidente ou solta) espera ela sair;
+  - **carência:** quando o plano diminui o prazo, o anterior continua por 30 dias, contados da primeira execução que viu
+    a redução; aumentar vale na hora e cancela a redução;
+  - **trilha:** `retention.purge` (ator sistema) na trilha de cada cliente, com o prazo em vigor e o do plano, o fim da
+    carência, os cortes e as contagens por tabela (nenhum conteúdo, nenhum ID), `complete` e, numa execução interrompida
+    ou com erro, `outcome=failure` com o tipo do erro (o que já saiu fica registrado); mais um registro global da Verax
+    com as tabelas sem cliente e a auditoria sem cliente;
+  - **avisos por e-mail (PR-16):** a pedido da coordenação, a fila de saída do PR-16 também entra: avisos enviados, com
+    falha ou pulados sem mudança há 90 dias saem (o pendente fica; o de um incidente ou achado que sai já vai pela
+    cascata), contados em `notifications`. O PR-16 ainda não está no `main`: a fase usa o model pelo client do escopo
+    e só roda quando ele existe (`notification` no client); o teste dela roda sozinho quando o model estiver lá.
+- **Decisões:**
+  - a auditoria nunca sai antes do histórico que ela descreve: o corte é o mais antigo entre 13 meses e o prazo do
+    plano; com histórico sem limite (plano `interno`, o nó da Verax), a auditoria fica (só sai o inventário, a fila sem
+    dono, os avisos resolvidos e as tabelas de operação);
+  - "tocado dentro do prazo fica": um achado solto triado ou comentado depois do corte fica, como o incidente;
+  - o `IngestUsage` (24 meses, evidência de cobrança) e as exceções vencidas ficam fora: não estão na lista do PR-19 e
+    são poucas linhas.
+- **Arquivos:**
+  - API: `apps/api/src/retention/{retention-job.ts,retention-policy.ts,retention-policy.test.ts}` (novos),
+    `apps/api/src/worker.ts`, `apps/api/src/cli/db-bootstrap.ts`, `apps/api/src/alerts/finding-store.ts`,
+    `apps/api/prisma/{schema.prisma,migrations/20261109120000_history_retention}`;
+  - testes: `apps/api/test/retention.test.ts` (novo) e `apps/api/test/db-bootstrap.test.ts`;
+  - CI (script, sem mudar workflow): `scripts/test-api-image.sh` ganhou três conferências na sequência real do deploy
+    (as funções pertencem ao `verax_migrator`; a aplicação não apaga comentários; o piso recusa corte novo);
+  - documentação: `docs/ARQUITETURA.md` (seção "Expurgo do histórico"), `docs/runbooks/no-verax.md` ("Expurgo diário
+    do histórico") e este arquivo.
+- **Dependências:** nenhuma.
+- **Testes:**
+  - unitários (`retention-policy.test.ts`, 16): janela das 04:00 UTC; meses como o Postgres (fim de mês, ano bissexto,
+    virada do ano); cortes do histórico, da auditoria (13 meses ou o histórico, se maior), do inventário, da fila, dos
+    avisos e da operação; prazo fora da faixa recusado; carência (primeira execução, aumento, redução com os 30 dias,
+    sem limite para limitado, cancelamento, nova redução sem reiniciar a contagem);
+  - integração com o banco (`test/retention.test.ts`, 19, um deles só com o model do PR-16): **limite do corte** (1 ms
+    antes sai, o corte exato fica) em achados, comentários, incidentes, auditoria e postura; **incidente com achado
+    recente fica inteiro**, o antigo sai com os achados e os comentários, e ficam o mudado, o comentado e o achado
+    triado depois do corte; cadeia de recorrência (a antiga sai inteira; o original de uma recorrência que fica,
+    fica, também em incidente); **fica a varredura e o retrato mais recentes de cada conta**; fila sem dono (90 dias);
+    tabelas de operação (sessão válida, sessão vencida há uma hora, bloqueio vigente, código TOTP e contador recentes
+    ficam); plano interno; **A/B** (o expurgo só de A não toca em nada de B nem grava na trilha de B; com os dois, cada
+    trilha conta só o próprio, sem nenhum ID); auditoria contada na trilha do próprio cliente e a sem cliente no
+    registro global; **antes das 04:00 espera, a segunda execução no mesmo dia não faz nada**, a de ontem não segura a
+    de hoje; concessão em outra réplica (`locked`, nada sai); **tempo máximo** (relógio falso: dois lotes, `partial`,
+    trilha com `complete: false`, o resto fica para o dia seguinte); parada do worker (o dia não conta, `AbortError` no
+    estado, trilha como falha); **carência** (365 → 90: o prazo de 365 continua, com o fim da carência na trilha; 30
+    dias depois, vale o de 90); avisos por e-mail resolvidos (roda quando o model existir); e direto no banco: **as
+    funções recusam corte novo demais** (agora, 13 meses menos uma hora, nulo) e lote fora da faixa; a função da
+    auditoria apaga do mais antigo, no tamanho do lote, conta por cliente, deixa o corte exato e desliga a flag;
+    **UPDATE e TRUNCATE bloqueados mesmo com a flag**, DELETE só com a flag e com mais de 13 meses; comentários: achado
+    novo recusa o lote, comentário recente faz o trigger recusar e nada sai, lote grande demais, UPDATE e TRUNCATE
+    bloqueados com a flag;
+  - `test/db-bootstrap.test.ts` (7 novos): **a aplicação sem UPDATE, DELETE e TRUNCATE em `FindingComment` e sem
+    DELETE ou UPDATE na auditoria, mesmo com a flag ligada na sessão**; a aplicação executa as funções e a própria
+    função recusa corte novo; nenhum outro papel executa (o papel das migrations do teste recebe `permission denied
+for function`; a ACL não tem PUBLIC); e a **sequência do deploy** num banco só do teste (bootstrap, `prisma migrate
+deploy` pelo papel das migrations, bootstrap): funções do papel das migrations, `SECURITY DEFINER`, `search_path`
+    fixo e EXECUTE só para o dono e a aplicação; o dono das funções é o das tabelas; a aplicação expurga a auditoria
+    antiga e os comentários antigos só pela função, com o recente e o DELETE direto recusados; nem o dono apaga
+    registro recente, altera ou trunca;
+  - conferido com mutações (desfeitas): sem o piso no trigger, sem a regra de atividade, sem a varredura mais recente,
+    sem o REVOKE em `FindingComment` e com o EXECUTE para PUBLIC, os testes acima falham;
+  - a migration aplicada por um papel sem superusuário (como no deploy) num banco descartável, com as funções e o
+    trigger exercitados à mão; o `scripts/test-api-image.sh` passou no shellcheck, e as três conferências novas foram
+    rodadas contra esse banco;
+  - suítes: API inteira com o Postgres 18 descartável: 90 arquivos, 1289 testes (1 pulado, o dos avisos); o
+    `audit.test.ts` caiu com o 0xC0000409 do Vitest no Windows e passou sozinho (19 de 19). `pnpm typecheck`, ESLint da
+    raiz com `--max-warnings=0` e `prettier --check .` sem erros; `prisma migrate diff` do banco migrado do zero contra
+    o `schema.prisma` sem diferença. O compartilhado e o painel não mudaram.
+- **Definição de pronto:** critérios ✔ · testes, com o negativo A/B ✔ · lint, tipos e formatação ✔ · nenhuma
+  dependência ✔ · regras de segurança ✔ (só `$queryRaw` e `$executeRaw` como tagged template; dado de cliente pelo
+  escopo; nada de conteúdo na trilha nem no log; dados fictícios) · **imutabilidade:** igual ou mais forte que antes,
+  fora o caminho estreito e testado do expurgo · **aceite:** o expurgo rodando no ensaio geral (PR-21).
+- **O que testar manualmente:** depois do deploy num nó, no journal do worker, a tarefa `retention` com `waiting` antes
+  das 04:00 UTC e, na primeira conferência depois, `done` com as contagens (no nó da Verax, plano `interno`, só
+  inventário, fila sem dono, avisos e operação); no dia seguinte, `already_ran` até as 04:00. Na tela Auditoria de um
+  cliente, o `retention.purge` com os cortes e as contagens. No banco, `\df+ verax_purge_*` mostra o dono
+  `verax_migrator`, `security definer` e o acesso só do `verax_app`.
+- **Riscos e pendências:**
+  - **PR-16:** a fase dos avisos fica desligada até o model `Notification` entrar no `main`; depois do merge, o teste
+    dela passa a rodar sozinho (conferir que roda e passa) e a interface estrutural pode dar lugar ao delegate tipado;
+  - a primeira execução num nó com muito histórico se reparte em vários dias pelo tempo máximo de 10 min;
+  - um comentário gravado entre a conferência e o DELETE de um lote faz o trigger recusar o lote inteiro: a execução
+    falha (fica no `SyncState` e na trilha como falha) e volta na conferência seguinte, quando o achado já não sai;
+  - um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer; o texto da
+    Privacidade e do DPA ("eliminação em até D + 97 dias") é do PR-20;
+  - o dono das tabelas, com a flag ligada na sessão, consegue apagar diretamente registro mais velho que o piso (é o
+    mesmo caminho da função); registro mais novo, nem ele, sem derrubar o trigger. O superusuário continua podendo
+    tudo, como antes;
+  - a pendência 6 do `PLANO.md` (prazo de retenção) foi decidida na prática pela tabela de planos (90 e 365 dias); pela
+    regra 9, o `PLANO.md` não foi editado, e o registro da decisão fica com o responsável.
