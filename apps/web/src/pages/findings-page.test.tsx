@@ -1,11 +1,13 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { delay, http, type RequestHandler } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { readFindingFilters } from '@/features/findings/filters';
 import { api } from '@/lib/api';
+import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
 import { DEMO_ACCOUNTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
@@ -19,8 +21,13 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-function renderAt(path: string, state: MockState = { me: demoMe('analista_cliente') }) {
-  server.use(...createHandlers(state));
+function renderAt(
+  path: string,
+  state: MockState = { me: demoMe('analista_cliente') },
+  /** Handlers que passam na frente dos da demonstração. */
+  overrides: RequestHandler[] = [],
+) {
+  server.use(...overrides, ...createHandlers(state));
   const router = createMemoryRouter(routes, { initialEntries: [path] });
   render(
     <QueryClientProvider client={createQueryClient()}>
@@ -72,6 +79,12 @@ describe('Achados', () => {
       '/incidentes/018f2c1e-0000-7000-8000-0000000a0001',
     );
     expect(within(panel).getByText(/"eventName": "StopLogging"/)).toBeInTheDocument();
+    // A retenção do evento bruto (o índice do Wazuh) e a dos dados do achado (o histórico do plano).
+    expect(
+      await within(panel).findByText(
+        'Evento bruto do log disponível por 30 dias. Os dados do achado acima ficam pelo histórico do plano, de 365 dias.',
+      ),
+    ).toBeInTheDocument();
 
     await userEvent.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -159,6 +172,68 @@ describe('Achados', () => {
   it('admin_verax sem cliente escolhido é orientado a escolher um', async () => {
     renderAt('/achados', { me: demoMe('admin_verax') });
     expect(await screen.findByText('Escolha um cliente')).toBeInTheDocument();
+  });
+});
+
+describe('período pelo histórico do plano', () => {
+  /** O parâmetro `period` de cada lista de achados pedida à API. */
+  function watchPeriods(): (string | null)[] {
+    const periods: (string | null)[] = [];
+    server.events.on('request:start', ({ request }) => {
+      const url = new URL(request.url);
+      if (url.pathname.endsWith('/v1/findings')) periods.push(url.searchParams.get('period'));
+    });
+    return periods;
+  }
+  afterEach(() => server.events.removeAllListeners());
+
+  const periodOptions = () =>
+    within(screen.getByLabelText('Período'))
+      .getAllByRole('option')
+      .map((option) => option.textContent);
+
+  it('Profissional (a demonstração): o analista tem 12 meses, e a lista filtra por ele', async () => {
+    const periods = watchPeriods();
+    const router = renderAt('/achados');
+    await table();
+    await screen.findByRole('option', { name: 'Últimos 12 meses' });
+    expect(periodOptions()).toEqual([
+      'Todo o histórico',
+      'Últimas 24 horas',
+      'Últimos 7 dias',
+      'Últimos 30 dias',
+      'Últimos 90 dias',
+      'Últimos 12 meses',
+    ]);
+    await userEvent.selectOptions(screen.getByLabelText('Período'), '12m');
+    await waitFor(() => expect(router.state.location.search).toBe('?periodo=12m'));
+    await waitFor(() => expect(periods).toContain('12m'));
+    expect(screen.getByLabelText('Período')).toHaveValue('12m');
+  });
+
+  it('Essencial (90 dias): sem 12 meses para a leitura; o 12m da URL é ignorado e nunca vai para a API', async () => {
+    const periods = watchPeriods();
+    renderAt('/achados?periodo=12m', { me: demoMe('leitura'), historyDays: 90 });
+    expect(await rows()).not.toHaveLength(0);
+    await waitFor(() => expect(periodOptions()).toContain('Últimos 90 dias'));
+    expect(periodOptions()).not.toContain('Últimos 12 meses');
+    expect(screen.getByLabelText('Período')).toHaveValue('');
+    expect(periods).toEqual([null]);
+  });
+
+  it('enquanto o plano não chega, só até 30 dias (o que todo plano tem)', async () => {
+    renderAt('/achados', undefined, [
+      http.get(`${API_URL}/v1/plan/history`, async () => {
+        await delay('infinite');
+      }),
+    ]);
+    await table();
+    expect(periodOptions()).toEqual([
+      'Todo o histórico',
+      'Últimas 24 horas',
+      'Últimos 7 dias',
+      'Últimos 30 dias',
+    ]);
   });
 });
 

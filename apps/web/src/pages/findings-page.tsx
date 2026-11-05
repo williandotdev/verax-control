@@ -21,6 +21,7 @@ import {
   type FindingFilterKey,
   readFindingFilters,
 } from '@/features/findings/filters';
+import { usePeriodFilter } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { formatRelative, formatTimestamp } from '@/lib/format';
 
@@ -31,9 +32,11 @@ export function FindingsPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
   const [params, setParams] = useSearchParams();
-  const filters = readFindingFilters(params);
+  // O período só vai para a API se couber no histórico do plano; o seletor só oferece os que cabem.
+  const periods = usePeriodFilter(FINDING_PERIODS, params.get(FINDING_FILTER_PARAMS.period));
+  const filters = { ...readFindingFilters(params), period: periods.period };
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
-  const findings = useFindings({ ...filters, page, pageSize: PAGE_SIZE }, scope !== null);
+  const findings = useFindings({ ...filters, page, pageSize: PAGE_SIZE }, scope !== null && !periods.waiting);
   const accounts = useCloudAccounts(scope !== null);
 
   const update = (changes: Record<string, string | null>, { keepPage = false } = {}) =>
@@ -173,7 +176,7 @@ export function FindingsPage() {
               onChange={(value) => setFilter('period', value)}
               options={[
                 { value: '', label: 'Todo o histórico' },
-                ...FINDING_PERIODS.map((period) => ({ value: period, label: FINDING_PERIOD_LABELS[period] })),
+                ...periods.options.map((period) => ({ value: period, label: FINDING_PERIOD_LABELS[period] })),
               ]}
             />
             {hasFilters && (

@@ -1,12 +1,16 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import type { AuditEntry, AuditEntryDetail, AuditListQuery, AuditPeriod, Paginated } from '@verax/shared';
+import {
+  type AuditEntry,
+  type AuditEntryDetail,
+  type AuditListQuery,
+  historyPeriodStart,
+  type Paginated,
+} from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
 import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma, UserRole } from '../generated/prisma/client.js';
-
-const PERIOD_HOURS: Readonly<Record<AuditPeriod, number>> = { '24h': 24, '7d': 168, '30d': 720, '90d': 2160 };
 
 const entrySelect = {
   id: true,
@@ -100,9 +104,7 @@ export class AuditTrailService {
       ...(query.outcome && { outcome: query.outcome }),
       ...(query.resourceType && { resourceType: query.resourceType }),
       ...(query.actorId && { actorType: 'user', actorId: query.actorId }),
-      ...(query.period && {
-        occurredAt: { gte: new Date(now.getTime() - PERIOD_HOURS[query.period] * 3_600_000) },
-      }),
+      ...(query.period && { occurredAt: { gte: historyPeriodStart(query.period, now) } }),
     };
     const [rows, total] = await Promise.all([
       trail.db.auditLog.findMany({

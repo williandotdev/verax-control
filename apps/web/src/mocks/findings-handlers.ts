@@ -5,15 +5,16 @@ import {
   findingCommentSchema,
   findingListQuerySchema,
   findingStatusUpdateSchema,
+  historyPeriodStart,
   type Permission,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { demoFindings } from './findings-fixtures';
 import type { MockState } from './handlers';
+import { demoPeriodRefusal } from './plan-handlers';
 
 const url = (path: string): string => `${API_URL}${path}`;
-const PERIOD_HOURS = { '24h': 24, '7d': 24 * 7, '30d': 24 * 30, '90d': 24 * 90 } as const;
 
 const problem = (status: number, message: string, code?: string) =>
   HttpResponse.json({ statusCode: status, message, ...(code ? { code } : {}) }, { status });
@@ -61,7 +62,9 @@ export function createFindingHandlers(
       const query = findingListQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
       if (!query.success) return problem(400, 'Filtro inválido');
       const { severity, status, accountId, period, page, pageSize } = query.data;
-      const since = period ? Date.now() - PERIOD_HOURS[period] * 3_600_000 : null;
+      const refusal = demoPeriodRefusal(state, period);
+      if (refusal) return refusal;
+      const since = period ? historyPeriodStart(period, new Date()).getTime() : null;
       const items = scope.findings.filter(
         (finding) =>
           (!severity || finding.severity === severity) &&

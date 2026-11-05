@@ -3,6 +3,7 @@ import { type FindingSeverity, wazuhAgentRef } from '@verax/shared';
 import type { WazuhAgentAlert } from './agent-alert.js';
 import type { AgentAlertOwner } from './agent-owner.js';
 import type { AlertOwner } from './alert-owner.js';
+import { awsAlertTitle } from './aws-rule-titles.js';
 import type { AwsSource, WazuhAwsAlert } from './wazuh-alert.js';
 
 /**
@@ -30,7 +31,10 @@ export interface FindingDraft {
   severity: FindingSeverity;
   ruleId: string;
   ruleLevel: number;
-  /** Descrição da regra (o resumo em português vem do dicionário da T7.9). */
+  /**
+   * Título do achado. Nas contas AWS, o fixo da regra (`AWS_RULE_TITLES`, fase 2, PR-V7) ou, sem ele, a descrição da
+   * regra; nos agentes, a descrição. O resumo do incidente em português vem do dicionário da T7.9.
+   */
   title: string;
   /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit`, `cloudflare_audit`, `cloudflare_waf` ou `wazuh_agent`. */
   logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit' | 'cloudflare_waf' | 'wazuh_agent';
@@ -149,7 +153,7 @@ export function toFindingDraft(
     severity: findingSeverity(alert),
     ruleId: alert.rule.id,
     ruleLevel: alert.rule.level,
-    title: alert.rule.description,
+    title: awsAlertTitle(alert.rule),
     logSource: alert.source,
     eventName: alert.eventName ?? null,
     region: alert.region ?? null,

@@ -82,7 +82,12 @@ describe('sync de alertas para achados (T5.3)', () => {
   });
 
   it('alerta com dono vira achado do cliente certo; sem dono e inválido vão para a fila', async () => {
-    const owned = trailAlertA(30, { sourceIp: '198.51.100.7', eventName: 'StopLogging', level: 12 });
+    const owned = trailAlertA(30, {
+      sourceIp: '198.51.100.7',
+      eventName: 'StopLogging',
+      level: 12,
+      rule: { id: '100310', description: 'Verax Control: CloudTrail parado ou apagado (StopLogging).' },
+    });
     const unknownBucket = withAws(trailAlertA(20), {
       log_info: { s3bucket: 'bucket-de-ninguem', log_file: `AWSLogs/${accountA}/x.gz` },
     });
@@ -109,12 +114,18 @@ describe('sync de alertas para achados (T5.3)', () => {
       eventName: 'StopLogging',
       sourceIp: '198.51.100.7',
       exceptionId: null,
+      // O título fixo da regra (fase 2, PR-V7), sem o que a descrição do Wazuh cita do evento.
+      ruleId: '100310',
+      title: 'CloudTrail parado ou apagado',
     });
     const queue = await prisma.unownedAlert.findMany({
       where: { sourceEventId: { in: [String(unknownBucket['id']), invalidId] } },
       orderBy: { sourceEventId: 'asc' },
     });
-    expect(queue.map((item) => item.reason).sort()).toEqual(['invalid_alert', 'unknown_source']);
+    expect(queue.map((item) => [item.reason, item.title]).sort()).toEqual([
+      ['invalid_alert', null],
+      ['unknown_source', 'Login no console com falha'],
+    ]);
     // A fila não guarda o evento bruto.
     expect(JSON.stringify(queue)).not.toContain('full_log');
 

@@ -38,4 +38,5 @@ export const FINDING_PERIOD_LABELS: Readonly<Record<FindingPeriod, string>> = {
   '7d': 'Últimos 7 dias',
   '30d': 'Últimos 30 dias',
   '90d': 'Últimos 90 dias',
+  '12m': 'Últimos 12 meses',
 };
