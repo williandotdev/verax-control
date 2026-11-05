@@ -22,6 +22,15 @@ export type PersistOutcome = 'duplicate' | 'excepted' | 'opened' | 'joined' | 'n
 type ScopedDb = Prisma.TransactionClient;
 
 /**
+ * Lock transacional dos achados de um cliente: a gravação dos coletores (`persist`) e o expurgo diário
+ * (`retention/retention-job.ts`) nunca mexem nos achados e incidentes do mesmo cliente ao mesmo tempo. Só vale dentro
+ * de uma transação.
+ */
+export async function lockTenantFindings(tx: Prisma.TransactionClient, tenantId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:findings:${tenantId}`}))`;
+}
+
+/**
  * Triado é todo status fora do inicial (`new`): investigando, legítimo e resolvido. É a mesma régua da triagem pela
  * API (`findings.service.ts`), que marca `triagedAt` na primeira saída de "novo"; o achado que já nasce legítimo pela
  * exceção também conta como triado, e a atividade nova dele vira outro achado esperado (a exceção conta o uso).
@@ -122,7 +131,7 @@ export class FindingStore {
     now: Date,
   ): Promise<PersistOutcome> {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:findings:${draft.tenantId}`}))`;
+      await lockTenantFindings(tx, draft.tenantId);
       const db = scopeToTenant(tx, draft.tenantId);
       const { count } = await db.finding.createMany({
         data: [findingRow(draft, exception)],

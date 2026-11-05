@@ -323,15 +323,16 @@ describe('cadastro de clientes (T3.1)', () => {
         pageSize: z.number(),
         total: z.number(),
       });
-      // O banco de teste é de todos os arquivos, e a lista sai por nome: o cliente daqui pode estar em qualquer página.
-      const seen: string[] = [];
-      for (let number = 1; ; number += 1) {
+      // A suíte inteira divide o banco e cria clientes em paralelo, e a ordem é pelo nome: o cliente deste arquivo
+      // pode não estar na primeira página. Todas as páginas seguem o contrato.
+      const ids: string[] = [];
+      for (let number = 1; number <= 50; number += 1) {
         const response = await admin().get(`/v1/tenants?pageSize=100&page=${number}`).expect(200);
         const page = pageSchema.parse(response.body);
-        seen.push(...page.items.map((tenant) => tenant.id));
+        ids.push(...page.items.map((tenant) => tenant.id));
         if (page.items.length === 0 || number * page.pageSize >= page.total) break;
       }
-      expect(seen).toContain(homeTenant);
+      expect(ids).toContain(homeTenant);
     });
 
     it('filtra por status', async () => {

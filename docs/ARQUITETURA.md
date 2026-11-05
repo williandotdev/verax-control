@@ -79,7 +79,8 @@ GCP do cliente: sink de log ──► tópico do Pub/Sub no projeto do nó (sem 
   `docs/runbooks/onboarding-cliente.md`, seção 5).
 - **Cloudflare:** coletor nativo no worker (seção "Logs do Cloudflare").
 - **Retenção:** o índice do Wazuh guarda 30 dias (alertas a partir do nível 5, 1 shard). Os achados ficam no Postgres
-  pelo prazo do plano (90 ou 365 dias), com os campos do evento; só o evento bruto do detalhe expira em 30 dias.
+  pelo prazo do plano (90 ou 365 dias), com os campos do evento; só o evento bruto do detalhe expira em 30 dias. O
+  expurgo diário do Postgres está na seção "Expurgo do histórico".
 - **Região:** os nós de clientes ficam em São Paulo (southamerica-east1). A leitura dos buckets sai da AWS pela
   internet, com custo na conta do cliente (seção "Custo por nó").
 - **Acesso:**
@@ -642,6 +643,59 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
 - **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido (rótulo e os quatro limites) e o uso
   do cliente da sessão (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
   → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
+
+## Expurgo do histórico
+
+_(fase 2, PR-19: a tarefa `retention` do worker, em `apps/api/src/retention/`, e a migration
+`20261109120000_history_retention`.)_
+
+O banco de cada nó guarda o histórico pelo prazo do plano (`PLAN` e `PLAN_HISTORY_DAYS`: 90 dias no Essencial, 365 no
+Profissional, sem limite no Interno). Uma vez por dia o worker apaga o que passou do prazo. O expurgo só mexe no
+Postgres do nó: nada na nuvem do cliente, nos buckets dele, nos logs na origem nem no índice do Wazuh, que tem a
+retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
+
+- **Agenda:** depois das 04:00 UTC (01:00 de Brasília), no máximo uma vez por dia (`SyncState('retention')`), com a
+  concessão do banco (uma réplica por vez), em lotes de 500 linhas por transação, com pausa entre eles e no máximo
+  10 minutos por execução. O que sobrar fica para o dia seguinte. A parada do worker interrompe entre dois lotes, e o
+  dia roda de novo na próxima partida.
+- **Triagem ao mesmo tempo:** cada lote de achados e incidentes toma o lock por cliente dos coletores e trava com
+  `SELECT ... FOR UPDATE` as linhas que vai apagar (incidentes e depois os achados deles), e só então confere de novo,
+  numa consulta nova. Uma triagem, mudança de incidente ou comentário em curso faz o lote esperar e é vista na
+  conferência; uma que chega depois espera o lote. Assim nada que a API confirmou sai junto.
+- **O que sai** (o corte é o prazo mais um dia de folga, para o relatório do período sair completo; o próprio corte
+  fica):
+
+  | Dado                                                                     | Regra                                                                                                                                                                                                                                                      |
+  | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira |
+  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                           |
+  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                           |
+  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                  |
+  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                    |
+  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. Entra quando a fila de saída (PR-16) estiver no código      |
+  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas)                                                                                                                                                                                        |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                            |
+  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                        |
+
+- **Imutabilidade (revisão linha a linha):** a trilha de auditoria e os comentários dos achados continuam só INSERT,
+  com uma exceção estreita. UPDATE e TRUNCATE ficam sempre bloqueados pelos triggers. DELETE só passa no trigger com a
+  flag `verax.retention` ligada **e** o registro mais velho que o piso de idade, conferido no banco linha a linha: 13
+  meses na auditoria e 30 dias nos comentários (o menor prazo que um plano aceita). Quem liga a flag, e só em volta
+  do próprio DELETE, são as funções `verax_purge_audit_log(corte, lote)` e `verax_purge_finding_comments(achados)`:
+  `SECURITY DEFINER`, com o papel das migrations (dono das tabelas) como dono, `search_path` fixo e o piso conferido
+  por elas mesmas, então um corte mais novo é recusado pelo banco, não só pela aplicação. O EXECUTE não é de PUBLIC:
+  o db-bootstrap concede só ao papel da aplicação, que continua sem DELETE direto nas duas tabelas (nem com a flag
+  ligada na sessão). Nem o dono das tabelas apaga um registro mais novo que o piso sem derrubar o trigger. Nenhum
+  endpoint altera ou apaga a auditoria (o critério da T1.3 continua valendo).
+- **Trilha do expurgo:** cada execução grava `retention.purge` (ator sistema) na trilha de cada cliente, com o prazo
+  em vigor, os cortes e as contagens por tabela, sem nenhum conteúdo, e um registro global da Verax com as tabelas sem
+  cliente. A trilha passa a dizer que, antes do corte, os registros saíram pela política. Uma execução interrompida
+  registra o que já saiu, como falha.
+- **Carência quando o plano diminui:** o job guarda o prazo aplicado (`RetentionState`). Quando o plano pede um prazo
+  menor (do Profissional para o Essencial, por exemplo), o anterior continua valendo por 30 dias, contados da primeira
+  execução que viu a redução, para o cliente exportar; depois, vale o novo. Aumentar vale na hora e cancela a redução.
+- **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer.
+  O texto da Privacidade e do DPA sobre isso fica para o PR-20.
 
 ## Custo por nó
 
