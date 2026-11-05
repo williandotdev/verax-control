@@ -8,6 +8,7 @@ import {
   type CloudAccountUpdate,
   credentialStatus,
   fieldsOutsideProvider,
+  isAwsConnectionWarningCode,
   LOG_SOURCES,
   type LogBuckets,
   type LogSource,
@@ -117,9 +118,14 @@ function toAccount(row: AccountRow, node: NodeFacts): CloudAccount {
       : null,
     egressIps: gcp ? [] : [...node.egressIps],
     status: row.status,
-    // Gravados pelo coletor da conta: só o worker escreve, nunca o request. O "Verificar" da AWS só pede.
+    // Gravados pelo coletor da conta: só o worker escreve, nunca o request. O "Verificar" da AWS só pede. Na AWS, uma
+    // conta conectada pode ter um aviso que não para a coleta (PR-V5': trilha, export, permissão demais, STS da região).
     connection: row.connection,
-    connectionError: row.connection === 'error' ? row.connectionError : null,
+    connectionError:
+      row.connection === 'error' ||
+      (aws && row.connection === 'connected' && isAwsConnectionWarningCode(row.connectionError))
+        ? row.connectionError
+        : null,
     checkRequestedAt: aws ? (row.checkRequestedAt?.toISOString() ?? null) : null,
     ingestFrom: aws ? isoDate(row.ingestFrom) : null,
     lastCollectedAt: row.lastCollectedAt?.toISOString() ?? null,

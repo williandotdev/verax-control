@@ -442,8 +442,9 @@ export const cloudAccountSchema = z.strictObject({
    */
   connection: z.enum(CLOUD_ACCOUNT_CONNECTIONS),
   /**
-   * Tipo do último erro de coleta (`AccessDenied`; na AWS, os códigos de `AWS_CONNECTION_ERROR_CODES`), só em
-   * `error`. Nunca a mensagem nem segredo.
+   * Tipo do último erro de coleta (`AccessDenied`; na AWS, os códigos de `AWS_CONNECTION_ERROR_CODES`), em `error`.
+   * Na AWS, também em `connected`, com um aviso que não para a coleta (`AWS_CONNECTION_WARNING_CODES`). Nunca a
+   * mensagem nem segredo.
    */
   connectionError: z
     .string()

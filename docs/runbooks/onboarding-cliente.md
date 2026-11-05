@@ -64,7 +64,10 @@ Na reunião:
    NODE_SA_UNIQUE_ID=<o ID único da conta de serviço, 21 dígitos>
    # AWS_WEB_IDENTITY_AUDIENCE=https://control.veraxsistemas.com.br/aws-reader   # só para trocar o padrão
    ```
-   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax.
+   Rode o `deploy.sh`. Sem as linhas, a tela da conta AWS pede os valores à Verax, e o worker não confere a conexão
+   (o "Verificar" responde `check_unavailable`). Na partida, o worker confere que o token do Google do nó é dessa
+   conta de serviço: se o log do worker disser que não é, corrija o `NODE_SA_UNIQUE_ID` antes de passar o valor ao
+   cliente. Sem o `NODE_EGRESS_IPS`, a conferência diária de permissão demais fica de fora.
 3. Crie os registros no Cloudflare (túnel da API) e o site do painel no Firebase Hosting.
 4. Cadastre o cliente no painel, em **Clientes → Novo cliente**, já com o primeiro administrador (nome e e-mail).
    A conta nasce junto com o cliente, como administrador do cliente, com uma senha temporária que aparece **uma
@@ -99,18 +102,26 @@ Na reunião:
      do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), o
      `LogBucketArns` com os ARNs dos buckets cadastrados e as chaves KMS em `LogKmsKeyArns`; a tela também traz o
      comando da CLI, que cria a pilha ou atualiza a que já existe;
-   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel e leia os buckets. A resposta chega em até
-     30 s, ou em até 10 min se o papel recém-criado ainda não valer no IAM, e cada erro diz o que conferir (pilha
-     ainda não criada, valor errado, papel feito pelo assistente "Web identity → Google" do console, SCP ou RCP).
+   - **Verificar conexão:** o painel pede ao worker do nó que entre no papel, confira a conta e leia 1 byte de um
+     objeto de cada bucket (o que prova também a chave KMS). Na mesma verificação, ele confere se uma trilha ligada
+     grava no bucket do CloudTrail, se o GuardDuty exporta para o bucket dele e se o papel não ganhou permissão além
+     da leitura. A resposta chega em até 30 s; se o papel recém-criado ainda não valer no IAM, o worker tenta de novo,
+     espaçado, por até 10 min. Cada erro diz o que conferir (pilha ainda não criada, valor errado, papel feito pelo
+     assistente "Web identity → Google" do console, SCP ou RCP, bucket sem acesso, com qual fonte, ou chave KMS).
+   - **Depois de conectada,** o worker confere sozinho a cada 15 min, e as conferências da trilha, do export e da
+     permissão demais uma vez por dia. Trilha parada, export ausente, permissão demais ou STS da região desligado
+     aparecem como **aviso**: a conta continua conectada e a coleta segue. Um erro (papel recusado, bucket sem acesso)
+     aparece na conta, e ela volta a conectada sozinha quando o cliente corrige.
 
    **Mudar os buckets depois:** salve a lista nova em **Buckets de log**. Se os nomes mudaram, o painel avisa que falta
    atualizar a pilha (o `LogBucketArns` e o comando da CLI já trazem a lista nova; um bucket novo com SSE-KMS pede
    também a chave em `LogKmsKeyArns`), a conexão volta a "Aguardando" e um "Verificar" pendente é descartado. Nada é
-   conferido na AWS sozinho: depois de atualizar a pilha, o cliente clica em **Verificar conexão**. Trocar só a fonte de
-   um bucket (os mesmos nomes) não mexe na pilha nem na conexão.
-   **Até o PR-V5'**, a verificação responde "este nó ainda não confere a conexão sozinho" (`check_unavailable`): confira
-   com o cliente no CloudTrail da conta dele, depois que o nó começar a ler (PR-V4'), as entradas
-   `AssumeRoleWithWebIdentity` com o ID da conta de serviço do nó.
+   conferido na AWS sozinho enquanto a conta aguarda: depois de atualizar a pilha, o cliente clica em **Verificar
+   conexão**, e a conferência de 15 em 15 min volta com a conta conectada. Trocar só a fonte de um bucket (os mesmos
+   nomes) não mexe na pilha nem na conexão.
+
+   Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
+   conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
 
    **Desconectar:** desative o monitoramento da conta no painel; o cliente usa "Revoke active sessions" no papel (corta
    as sessões já emitidas, de até 1 hora) e apaga a pilha. Não há chave para apagar.
