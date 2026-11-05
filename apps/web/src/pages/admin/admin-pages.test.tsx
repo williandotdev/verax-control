@@ -526,6 +526,46 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
       );
     });
 
+    it("aviso da coleta do nó (PR-V4'): ao lado da conexão e à parte dela, sem apagar o aviso da conferência", async () => {
+      const both = {
+        ...awsAccount(
+          '018f2c1e-0000-7000-8000-0000000c0ffc',
+          '999988885555',
+          'connected',
+          'trail_not_logging',
+        ),
+        collectionError: 'wazuh_apply_failed' as const,
+      };
+      renderAt(`/cadastros/contas?conta=${both.id}`, undefined, undefined, listing(both));
+      const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988885555' });
+      // A conexão segue conectada, com o aviso dela (a trilha).
+      expect(within(sheet).getByText(/^A última leitura deu certo./)).toHaveTextContent(
+        'Tipo do aviso: trail_not_logging.',
+      );
+      // A coleta do nó, numa linha própria, com o que fazer e o código.
+      expect(within(sheet).getByText('Coleta no nó')).toBeInTheDocument();
+      expect(
+        within(sheet).getByText(/^O nó não conseguiu aplicar a configuração nova da coleta/),
+      ).toHaveTextContent('É do nó, não desta conta: fale com a Verax. Tipo do aviso: wazuh_apply_failed.');
+    });
+
+    it('sem aviso da coleta, a linha da coleta no nó não aparece', async () => {
+      const clean = {
+        ...awsAccount(
+          '018f2c1e-0000-7000-8000-0000000c0ffb',
+          '999988884444',
+          'connected',
+          'trail_not_logging',
+        ),
+        connectionError: null,
+        collectionError: null,
+      };
+      renderAt(`/cadastros/contas?conta=${clean.id}`, undefined, undefined, listing(clean));
+      const sheet = await screen.findByRole('dialog', { name: 'Conta AWS 999988884444' });
+      expect(within(sheet).getByText(/^Conectada: o Verax entrou no papel de leitura/)).toBeInTheDocument();
+      expect(within(sheet).queryByText('Coleta no nó')).not.toBeInTheDocument();
+    });
+
     it('erro de bucket: diz de qual fonte é o bucket', async () => {
       const broken = awsAccount(
         '018f2c1e-0000-7000-8000-0000000c0ffd',

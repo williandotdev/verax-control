@@ -4,7 +4,15 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { type AwsConnectionWarningCode, cloudAccountSchema } from '@verax/shared';
+import request from 'supertest';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { AwsCheck } from '../src/aws/aws-check.js';
+import type {
+  AwsCheckOutcome,
+  AwsCheckTarget,
+  AwsConnectionChecker,
+} from '../src/aws/aws-connection-check.js';
 import { AWS_TOKEN_STALE_AFTER_MS, WazuhConfig } from '../src/aws/wazuh-config.js';
 import {
   findWazuhSourceRows,
@@ -15,12 +23,21 @@ import {
 import { wazuhSourcesLine } from '../src/cli/wazuh-sources.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { Prisma } from '../src/generated/prisma/client.js';
-import { createTenant } from './support/auth-helpers.js';
+import { createSignedInUser, createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
 
 const accountId = () => String(randomInt(100_000_000_000, 999_999_999_999));
 const bucket = (prefix = 'trilha') => `${prefix}-${randomInt(1_000_000, 9_999_999)}`;
 const MINUTE = 60_000;
+
+/** A conferência falsa do PR-V5': conectada, com os avisos diários que o caso pede. */
+class WarningChecker implements AwsConnectionChecker {
+  daily: AwsConnectionWarningCode[] = [];
+
+  check(target: AwsCheckTarget): Promise<AwsCheckOutcome> {
+    return Promise.resolve({ ok: true, ...(target.daily && { daily: { warnings: [...this.daily] } }) });
+  }
+}
 
 describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, PR-V4')", () => {
   let app: NestExpressApplication;
@@ -47,7 +64,7 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
   const rowOf = (id: string) =>
     prisma.cloudAccount.findUniqueOrThrow({
       where: { id },
-      select: { connection: true, connectionError: true },
+      select: { connection: true, connectionError: true, collectionError: true },
     });
 
   /** A pasta de sinais de um caso (no nó, /run/verax/wazuh-signal montada no worker). */
@@ -76,9 +93,9 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       `${JSON.stringify({ tokenAt: at.toISOString().replace(/\.\d{3}Z$/, 'Z') })}\n`,
     );
 
-  const auditOf = (id: string) =>
+  const auditOf = (id: string, action = 'cloud_account.aws_collection') =>
     prisma.auditLog.findMany({
-      where: { resourceId: id, action: 'cloud_account.aws_collection' },
+      where: { resourceId: id, action },
       orderBy: { occurredAt: 'asc' },
       select: { tenantId: true, actorType: true, before: true, after: true },
     });
@@ -131,10 +148,10 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     // O CLI lê todos os clientes do nó: as contas deste aparecem, as outras não.
     const line = await wazuhSourcesLine(prisma);
     expect(line).not.toContain('\n');
-    const printed = (JSON.parse(line) as { accountId: string }[]).map((source) => source.accountId);
+    const printed = (JSON.parse(line) as { accountId: string }[]).map((item) => item.accountId);
     expect(printed).toEqual(expect.arrayContaining([first.accountId, second.accountId]));
     for (const account of excluded) expect(printed).not.toContain(account.accountId);
-    expect(line).not.toMatch(/tenant|externalId|secret|connection/i);
+    expect(line).not.toMatch(/tenant|externalId|secret|connection|collection/i);
   });
 
   it('a geração: gravada só quando a lista muda, de uma vez, com o hash da lista que o CLI imprime', async () => {
@@ -167,13 +184,17 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     expect(await readFile(join(dir, 'generation'), 'utf8')).toBe(`${wazuhSourcesGeneration('[]')}\n`);
   });
 
-  it('erro ao aplicar a lista de agora: as contas conectadas mostram wazuh_apply_failed, cada uma na trilha do seu cliente (A/B)', async () => {
+  it('erro ao aplicar a lista de agora: o aviso vai para o campo da coleta de cada conta, na trilha de cada cliente (A/B), sem tocar na conexão', async () => {
     const tenantA = await createTenant(app, 'Cliente Demo A (aplicação)');
     const tenantB = await createTenant(app, 'Cliente Demo B (aplicação)');
     const connectedA = await awsAccount(tenantA);
     const waitingA = await awsAccount(tenantA, { connection: 'waiting' });
-    const connectedB = await awsAccount(tenantB);
+    const connectedB = await awsAccount(tenantB, {
+      connectionError: 'trail_not_logging',
+    });
     const deniedB = await awsAccount(tenantB, { connection: 'error', connectionError: 'bucket_denied' });
+    const all = [connectedA, waitingA, connectedB, deniedB];
+    const connectionBefore = await Promise.all(all.map((account) => rowOf(account.id)));
     const dir = await signalDir();
     const task = new WazuhConfig(prisma, dir, { tenantIds: [tenantA, tenantB] });
     await tokenAt(dir, new Date());
@@ -183,57 +204,125 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     expect(await task.runOnce()).toMatchObject({
       accounts: 4,
       state: 'wazuh_apply_failed',
-      marked: 2,
+      marked: 4,
       cleared: 0,
     });
-    for (const id of [connectedA.id, connectedB.id]) {
-      expect(await rowOf(id)).toEqual({ connection: 'error', connectionError: 'wazuh_apply_failed' });
+    // O aviso é do nó: vale para toda conta que o manager lê, e a conexão (e o aviso dela) fica como estava.
+    for (const [index, account] of all.entries()) {
+      expect(await rowOf(account.id)).toEqual({
+        connection: connectionBefore[index]?.connection,
+        connectionError: connectionBefore[index]?.connectionError,
+        collectionError: 'wazuh_apply_failed',
+      });
     }
-    // O erro da própria conta e a verificação pendente valem mais.
-    expect(await rowOf(waitingA.id)).toEqual({ connection: 'waiting', connectionError: null });
-    expect(await rowOf(deniedB.id)).toEqual({ connection: 'error', connectionError: 'bucket_denied' });
-    // Auditoria: ator sistema, na trilha do cliente de cada conta, e nada da conta de B na trilha de A.
+    // Auditoria: ator sistema, na trilha do cliente de cada conta, e nada das contas de B na trilha de A.
     expect(await auditOf(connectedA.id)).toEqual([
       {
         tenantId: tenantA,
         actorType: 'system',
-        before: { connection: 'connected', connectionError: null },
-        after: { connection: 'error', connectionError: 'wazuh_apply_failed' },
+        before: { collectionError: null },
+        after: { collectionError: 'wazuh_apply_failed' },
       },
     ]);
-    expect((await auditOf(connectedB.id)).map((entry) => entry.tenantId)).toEqual([tenantB]);
+    for (const account of [connectedB, deniedB]) {
+      expect((await auditOf(account.id)).map((entry) => entry.tenantId)).toEqual([tenantB]);
+    }
     expect(
       await prisma.auditLog.count({
         where: { tenantId: tenantA, resourceId: { in: [connectedB.id, deniedB.id] } },
       }),
     ).toBe(0);
-    expect(await auditOf(deniedB.id)).toEqual([]);
 
-    // A mesma execução de novo não muda nada nem audita de novo.
+    // A mesma execução de novo não grava nem audita de novo.
     expect(await task.runOnce()).toMatchObject({ marked: 0, cleared: 0 });
+    expect(await auditOf(connectedA.id)).toHaveLength(1);
 
-    // O resultado é de uma lista antiga (a de agora ainda não foi aplicada): o erro de antes fica.
+    // O resultado é de uma lista antiga (a de agora ainda não foi aplicada): o aviso de antes fica.
     await applied(dir, 'a'.repeat(64), 'ok');
     expect(await task.runOnce()).toMatchObject({ state: 'pending', marked: 0, cleared: 0 });
-    expect(await rowOf(connectedA.id)).toEqual({
-      connection: 'error',
-      connectionError: 'wazuh_apply_failed',
-    });
+    expect((await rowOf(connectedA.id)).collectionError).toBe('wazuh_apply_failed');
 
-    // A lista de agora aplicada: as duas voltam a "conectada".
+    // A lista de agora aplicada: o aviso sai das quatro, e a conexão segue como estava.
     await applied(dir, generation, 'ok');
-    expect(await task.runOnce()).toMatchObject({ state: 'ok', marked: 0, cleared: 2 });
-    for (const id of [connectedA.id, connectedB.id]) {
-      expect(await rowOf(id)).toEqual({ connection: 'connected', connectionError: null });
+    expect(await task.runOnce()).toMatchObject({ state: 'ok', marked: 0, cleared: 4 });
+    for (const [index, account] of all.entries()) {
+      expect(await rowOf(account.id)).toEqual({ ...connectionBefore[index], collectionError: null });
     }
-    expect(await rowOf(deniedB.id)).toEqual({ connection: 'error', connectionError: 'bucket_denied' });
-    expect((await auditOf(connectedA.id)).at(-1)?.after).toEqual({
-      connection: 'connected',
-      connectionError: null,
-    });
+    expect((await auditOf(connectedA.id)).at(-1)?.after).toEqual({ collectionError: null });
   });
 
-  it('token do Google parado há mais de 40 min: aws_token_stale, que vale mais que o erro de aplicação; renovado, volta', async () => {
+  it("as duas tarefas não se desfazem: o aviso da conferência (PR-V5') e o da coleta convivem, e tirar um mantém o outro", async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (duas tarefas)');
+    const account = await awsAccount(tenant);
+    const dir = await signalDir();
+    const checker = new WarningChecker();
+    const awsCheck = new AwsCheck(prisma, checker, {
+      tenantIds: [tenant],
+      recheckIntervalMs: 0,
+      dailyIntervalMs: 0,
+    });
+    const task = new WazuhConfig(prisma, dir, { tenantIds: [tenant] });
+    await tokenAt(dir, new Date());
+    const generation = await generationOf([tenant]);
+    const audits = async () => ({
+      check: (await auditOf(account.id, 'cloud_account.aws_check')).length,
+      collection: (await auditOf(account.id)).length,
+    });
+
+    // A conferência diária acha a trilha parada: aviso na conexão, que segue conectada.
+    checker.daily = ['trail_not_logging'];
+    await awsCheck.recheck();
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: 'trail_not_logging',
+      collectionError: null,
+    });
+
+    // A aplicação no host dá erro: o aviso da coleta entra ao lado, sem mexer no da conexão.
+    await applied(dir, generation, 'error');
+    await task.runOnce();
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: 'trail_not_logging',
+      collectionError: 'wazuh_apply_failed',
+    });
+
+    // Cada tarefa roda de novo, sem mudança: nenhuma desfaz a outra, e nada é gravado nem auditado.
+    const before = await audits();
+    await awsCheck.recheck();
+    await task.runOnce();
+    await awsCheck.recheck();
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: 'trail_not_logging',
+      collectionError: 'wazuh_apply_failed',
+    });
+    expect(await audits()).toEqual(before);
+
+    // A coleta se resolve: o aviso dela sai, e o da trilha fica (não espera a próxima conferência diária).
+    await applied(dir, generation, 'ok');
+    await task.runOnce();
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: 'trail_not_logging',
+      collectionError: null,
+    });
+
+    // O contrário: a coleta volta a falhar e a trilha é religada; a conferência tira o aviso dela, e o da coleta fica.
+    await applied(dir, generation, 'error');
+    await task.runOnce();
+    checker.daily = [];
+    await awsCheck.recheck();
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: null,
+      collectionError: 'wazuh_apply_failed',
+    });
+    // Cada mudança, uma entrada, de cada tarefa, na trilha do cliente.
+    expect(await audits()).toEqual({ check: before.check + 1, collection: before.collection + 2 });
+  });
+
+  it('token do Google parado há mais de 40 min: aws_token_stale, que vale mais que o erro de aplicação; renovado, sai', async () => {
     const tenant = await createTenant(app, 'Cliente Demo A (token)');
     const account = await awsAccount(tenant);
     const dir = await signalDir();
@@ -244,16 +333,20 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     await applied(dir, generation, 'error');
     await tokenAt(dir, new Date(now.getTime() - AWS_TOKEN_STALE_AFTER_MS - MINUTE));
     expect(await task.runOnce()).toMatchObject({ state: 'aws_token_stale', marked: 1 });
-    expect(await rowOf(account.id)).toEqual({ connection: 'error', connectionError: 'aws_token_stale' });
+    expect((await rowOf(account.id)).collectionError).toBe('aws_token_stale');
 
-    // Renovado, com a aplicação ainda em erro: troca para o erro de aplicação.
+    // Renovado, com a aplicação ainda em erro: troca para o aviso de aplicação.
     await tokenAt(dir, new Date(now.getTime() - 5 * MINUTE));
     expect(await task.runOnce()).toMatchObject({ state: 'wazuh_apply_failed', marked: 1 });
-    expect(await rowOf(account.id)).toEqual({ connection: 'error', connectionError: 'wazuh_apply_failed' });
+    expect((await rowOf(account.id)).collectionError).toBe('wazuh_apply_failed');
 
     await applied(dir, generation, 'ok');
     expect(await task.runOnce()).toMatchObject({ state: 'ok', cleared: 1 });
-    expect(await rowOf(account.id)).toEqual({ connection: 'connected', connectionError: null });
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: null,
+      collectionError: null,
+    });
   });
 
   it('sem nenhum sinal do token: só conta como parado 40 min depois da partida do worker', async () => {
@@ -263,7 +356,7 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
     const now = new Date('2026-11-04T12:00:00.000Z');
     const recent = new WazuhConfig(prisma, dir, { tenantIds: [tenant], now: () => now, startedAt: now });
     expect(await recent.runOnce()).toMatchObject({ state: 'pending', marked: 0 });
-    expect(await rowOf(account.id)).toEqual({ connection: 'connected', connectionError: null });
+    expect((await rowOf(account.id)).collectionError).toBeNull();
 
     const old = new WazuhConfig(prisma, dir, {
       tenantIds: [tenant],
@@ -271,6 +364,50 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       startedAt: new Date(now.getTime() - AWS_TOKEN_STALE_AFTER_MS - MINUTE),
     });
     expect(await old.runOnce()).toMatchObject({ state: 'aws_token_stale', marked: 1 });
+  });
+
+  it('a conta que sai da coleta perde o aviso, e a API só o devolve na conta AWS ativa', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (saída da coleta)');
+    const account = await awsAccount(tenant);
+    const dir = await signalDir();
+    const task = new WazuhConfig(prisma, dir, { tenantIds: [tenant] });
+    await tokenAt(dir, new Date());
+    await applied(dir, await generationOf([tenant]), 'error');
+    await task.runOnce();
+
+    // A API devolve o aviso a quem vê a conta, pelo schema compartilhado.
+    const user = await createSignedInUser(app, { role: 'leitura', tenantId: tenant });
+    const response = await request(app.getHttpServer())
+      .get(`/v1/cloud-accounts/${account.id}`)
+      .set('Cookie', user.cookie)
+      .expect(200);
+    expect(cloudAccountSchema.parse(response.body).collectionError).toBe('wazuh_apply_failed');
+
+    // Desativada, a conta sai da lista do manager e a próxima execução tira o aviso, com auditoria.
+    await prisma.cloudAccount.update({ where: { id: account.id }, data: { status: 'inactive' } });
+    expect(await task.runOnce()).toMatchObject({ accounts: 0, cleared: 1 });
+    expect((await rowOf(account.id)).collectionError).toBeNull();
+    expect((await auditOf(account.id)).at(-1)?.after).toEqual({ collectionError: null });
+  });
+
+  it('o banco só aceita o aviso da coleta na conta AWS, e só com os códigos dela', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo A (CHECK da coleta)');
+    const account = await awsAccount(tenant);
+    const gcp = await prisma.cloudAccount.create({
+      data: { tenantId: tenant, provider: 'gcp', accountId: `projeto-${randomInt(100_000, 999_999)}` },
+      select: { id: true },
+    });
+    await expect(
+      prisma.cloudAccount.update({ where: { id: gcp.id }, data: { collectionError: 'wazuh_apply_failed' } }),
+    ).rejects.toThrow(/CloudAccount_aws_collection_error_check/);
+    await expect(
+      prisma.cloudAccount.update({ where: { id: account.id }, data: { collectionError: 'trust_denied' } }),
+    ).rejects.toThrow(/CloudAccount_aws_collection_error_check/);
+    await prisma.cloudAccount.update({
+      where: { id: account.id },
+      data: { collectionError: 'aws_token_stale' },
+    });
+    expect((await rowOf(account.id)).collectionError).toBe('aws_token_stale');
   });
 
   it('sinais do host fora do formato são ignorados (contados), sem mexer nas contas', async () => {
@@ -293,6 +430,10 @@ describe("Wazuh do nó: a lista das contas AWS e a tarefa wazuh-config (fase 2, 
       await writeFile(join(dir, 'applied'), content);
       expect(await task.runOnce()).toMatchObject({ state: 'pending', invalidSignals: 1, marked: 0 });
     }
-    expect(await rowOf(account.id)).toEqual({ connection: 'connected', connectionError: null });
+    expect(await rowOf(account.id)).toEqual({
+      connection: 'connected',
+      connectionError: null,
+      collectionError: null,
+    });
   });
 });

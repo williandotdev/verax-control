@@ -8,9 +8,9 @@ import type { Prisma } from '../generated/prisma/client.js';
  * conta com o token que o Google assina para a conta de serviço dele, sem chave nem ExternalId.
  *
  * Entra a conta AWS ativa que passou pela verificação ao menos uma vez (`ingestFrom`, gravado uma vez só pela tarefa
- * `aws-check`) e que tem ao menos um bucket. A conexão de agora não conta: um erro passageiro, ou um dos que a própria
- * coleta grava (`aws_token_stale`, `wazuh_apply_failed`), não tira a conta do manager nem o reinicia. Desativar a conta,
- * sim. O papel nunca vai na lista: o gerador o deriva do ID.
+ * `aws-check`) e que tem ao menos um bucket. A conexão de agora não conta: um erro passageiro, uma edição de bucket (que
+ * volta a conta a "aguardando") ou o aviso que a própria coleta grava (`collectionError`) não tiram a conta do manager
+ * nem o reiniciam. Desativar a conta, sim. O papel nunca vai na lista: o gerador o deriva do ID.
  */
 export interface WazuhSource {
   accountId: string;
@@ -32,8 +32,8 @@ export const WAZUH_SOURCE_SELECT = {
   cloudtrailBucket: true,
   guarddutyBucket: true,
   wafBucket: true,
-  connection: true,
-  connectionError: true,
+  // O aviso da coleta, que só a tarefa wazuh-config grava; a conexão não entra (é da tarefa aws-check).
+  collectionError: true,
 } as const satisfies Prisma.CloudAccountSelect;
 export type WazuhSourceRow = Prisma.CloudAccountGetPayload<{ select: typeof WAZUH_SOURCE_SELECT }>;
 

@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import {
+  AWS_COLLECTION_ERROR_CODES,
+  AWS_CONNECTION_ERROR_CODES,
   AWS_READER_AUDIENCE,
   AWS_READER_ROLE_NAME,
   AWS_READER_ROLE_PATH,
@@ -78,8 +80,7 @@ describe("AWS sem chave no Wazuh do nó: o template, o gerador, o host e o worke
           cloudtrailBucket: 'trilha',
           guarddutyBucket: 'guardduty',
           wafBucket: 'aws-waf-logs-exemplo',
-          connection: 'connected',
-          connectionError: null,
+          collectionError: null,
         },
       ])[0] ?? {},
     );
@@ -109,6 +110,19 @@ describe("AWS sem chave no Wazuh do nó: o template, o gerador, o host e o worke
     }
     expect(composeWazuh).toContain("command: ['node', 'dist/cli/wazuh-sources.js']");
     expect(existsSync(repoPath('apps/api/src/cli/wazuh-sources.ts'))).toBe(true);
+  });
+
+  it('os avisos da coleta: os mesmos no painel, na API e no CHECK do banco, e fora da lista da conexão', () => {
+    const migration = repoFile(
+      'apps/api/prisma/migrations/20261109130000_aws_collection_error/migration.sql',
+    );
+    const checked = /"collectionError" IN \(([^)]+)\)/.exec(migration)?.[1];
+    expect(checked?.split(',').map((code) => code.trim().replace(/'/g, ''))).toEqual([
+      ...AWS_COLLECTION_ERROR_CODES,
+    ]);
+    for (const code of AWS_COLLECTION_ERROR_CODES) {
+      expect((AWS_CONNECTION_ERROR_CODES as readonly string[]).includes(code)).toBe(false);
+    }
   });
 
   it('o token é renovado a cada 10 min e só conta como parado depois de 40 (quatro renovações perdidas)', () => {

@@ -109,9 +109,10 @@ export const MAX_NODE_EGRESS_IPS = 4;
  *   permissão além da política. Avisos: a conta continua conectada (`AWS_CONNECTION_WARNING_CODES`);
  * - `metadata_unavailable`: o nó não conseguiu pedir o próprio token ao servidor de metadados da GCP;
  * - `aws_unavailable`: a AWS não respondeu a tempo;
- * - `check_unavailable`: este nó ainda não confere a conexão sozinho;
- * - `aws_token_stale`: o token do host não é renovado há mais de 40 minutos (a tarefa `wazuh-config`, PR-V4');
- * - `wazuh_apply_failed`: a configuração do manager do Wazuh com as contas não pôde ser aplicada no nó (PR-V4').
+ * - `check_unavailable`: este nó ainda não confere a conexão sozinho.
+ *
+ * Os avisos da coleta pelo Wazuh do nó (o token do Google do host sem renovar, a configuração do manager que não subiu)
+ * ficam à parte, em `CloudAccount.collectionError` (`AWS_COLLECTION_ERROR_CODES`, PR-V4').
  */
 export const AWS_CONNECTION_ERROR_CODES = [
   'trust_denied',
@@ -128,8 +129,6 @@ export const AWS_CONNECTION_ERROR_CODES = [
   'metadata_unavailable',
   'aws_unavailable',
   'check_unavailable',
-  'aws_token_stale',
-  'wazuh_apply_failed',
 ] as const;
 export type AwsConnectionErrorCode = (typeof AWS_CONNECTION_ERROR_CODES)[number];
 

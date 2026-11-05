@@ -286,6 +286,10 @@ model CloudAccount {
   connection         CloudAccountConnection @default(waiting)
   /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
   connectionError    String?                @db.VarChar(64)
+  /// AWS: aviso da coleta pelo Wazuh do nó (`aws_token_stale` ou `wazuh_apply_failed`, PR-V4'), à parte da conexão:
+  /// só a tarefa `wazuh-config` do worker o grava, e a conferência da conexão (`aws-check`) só grava `connectionError`.
+  /// Só conta AWS, e só os códigos da coleta (CHECK da migration).
+  collectionError    String?                @db.VarChar(64)
   /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
   /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
   lastCollectedAt    DateTime?              @db.Timestamptz(3)

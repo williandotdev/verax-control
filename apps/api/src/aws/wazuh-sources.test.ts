@@ -19,8 +19,7 @@ function row(overrides: Partial<WazuhSourceRow> = {}): WazuhSourceRow {
     cloudtrailBucket: 'verax-control-cloudtrail-111122223333-sa-east-1',
     guarddutyBucket: null,
     wafBucket: 'aws-waf-logs-verax-control-111122223333-sa-east-1',
-    connection: 'connected',
-    connectionError: null,
+    collectionError: null,
     ...overrides,
   };
 }
@@ -83,10 +82,10 @@ describe("lista das contas AWS para o Wazuh do nó (PR-V4')", () => {
       row({ ingestFrom: new Date('2026-11-02T00:00:00.000Z') }),
     ].map((variant) => wazuhSourcesGeneration(serializeWazuhSources(toWazuhSources([variant]))));
     expect(new Set([wazuhSourcesGeneration(line), ...changed]).size).toBe(4);
-    // A conexão de agora não muda a geração: o manager não reinicia por causa de um erro.
+    // O aviso da própria coleta não muda a geração: o manager não reinicia por causa dele.
     expect(
       wazuhSourcesGeneration(
-        serializeWazuhSources(toWazuhSources([row({ connection: 'error', connectionError: 'kms_denied' })])),
+        serializeWazuhSources(toWazuhSources([row({ collectionError: 'wazuh_apply_failed' })])),
       ),
     ).toBe(wazuhSourcesGeneration(line));
   });

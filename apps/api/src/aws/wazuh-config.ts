@@ -1,16 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AwsConnectionErrorCode } from '@verax/shared';
+import type { AwsCollectionErrorCode } from '@verax/shared';
 import { z } from 'zod';
 import { AuditService } from '../common/audit/audit.service.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
+import type { Prisma } from '../generated/prisma/client.js';
 import {
   findWazuhSourceRows,
   serializeWazuhSources,
   toWazuhSources,
-  type WazuhSourceRow,
   wazuhSourcesGeneration,
 } from './wazuh-sources.js';
 
@@ -21,13 +21,6 @@ export const WAZUH_CONFIG_INTERVAL_MS = 30_000;
  * ele vale 1 hora: passados 40 min, faltam menos de 20 para a coleta parar.
  */
 export const AWS_TOKEN_STALE_AFTER_MS = 40 * 60 * 1000;
-
-/** Os erros da coleta do nó inteiro (não de uma conta), os únicos que esta tarefa grava e apaga. */
-export const NODE_COLLECTION_ERRORS = [
-  'aws_token_stale',
-  'wazuh_apply_failed',
-] as const satisfies readonly AwsConnectionErrorCode[];
-export type NodeCollectionError = (typeof NODE_COLLECTION_ERRORS)[number];
 
 /**
  * Os arquivos da pasta de sinais (`/run/verax/wazuh-signal` no host, montada no worker em `WAZUH_SIGNAL_DIR`). O worker
@@ -58,11 +51,11 @@ export interface WazuhConfigReport {
   accounts: number;
   /** A geração foi gravada agora (a lista mudou) ou já estava lá. */
   generation: 'written' | 'unchanged';
-  /** A coleta no nó: ok, aguardando a aplicação da lista de agora, ou o erro do nó inteiro. */
-  state: 'ok' | 'pending' | NodeCollectionError;
-  /** Contas que passaram a mostrar o erro do nó. */
+  /** A coleta no nó: ok, aguardando a aplicação da lista de agora, ou o aviso do nó inteiro. */
+  state: 'ok' | 'pending' | AwsCollectionErrorCode;
+  /** Contas que passaram a mostrar um aviso da coleta (ou trocaram de aviso). */
   marked: number;
-  /** Contas que voltaram a "conectada". */
+  /** Contas que ficaram sem aviso da coleta (o problema passou, ou a conta saiu da coleta). */
   cleared: number;
   /** Sinais do host fora do formato (ignorados). */
   invalidSignals: number;
@@ -78,50 +71,17 @@ export interface WazuhConfigOptions {
   tenantIds?: readonly string[];
 }
 
-type Connection = Pick<WazuhSourceRow, 'connection' | 'connectionError'>;
-
-function isNodeCollectionError(code: string | null): code is NodeCollectionError {
-  return code !== null && (NODE_COLLECTION_ERRORS as readonly string[]).includes(code);
-}
-
 /**
- * O que a conta deve mostrar, ou null para deixá-la como está. Só a conta conectada recebe o erro do nó, e só o erro do
- * nó volta a "conectada": a que aguarda a verificação ou tem um erro dela mesma (o papel, um bucket) fica como está, e
- * o erro dela vale mais.
+ * O aviso da coleta que a conta deve mostrar: o do token parado (que vale mais) ou o da aplicação que deu erro. Enquanto
+ * a lista de agora não foi aplicada, o aviso de aplicação de antes fica até o resultado chegar; o do token, não (ele só
+ * depende do sinal do token).
  */
-export function nextConnection(
-  current: Connection,
-  wanted: NodeCollectionError | null,
-): { connection: 'connected' | 'error'; connectionError: NodeCollectionError | null } | null {
-  const nodeError =
-    current.connection === 'error' && isNodeCollectionError(current.connectionError)
-      ? current.connectionError
-      : null;
-  if (current.connection === 'connected') {
-    return wanted === null ? null : { connection: 'error', connectionError: wanted };
-  }
-  if (nodeError === null || nodeError === wanted) return null;
-  return wanted === null
-    ? { connection: 'connected', connectionError: null }
-    : { connection: 'error', connectionError: wanted };
-}
-
-/**
- * O erro do nó que a conta deve mostrar, pelo estado da coleta: o do token ou o da aplicação. Aguardando a aplicação
- * da lista de agora, o erro de aplicação de antes fica até o resultado chegar.
- */
-export function wantedError(
+export function wantedCollectionError(
   state: WazuhConfigReport['state'],
-  current: Connection,
-): NodeCollectionError | null {
+  current: string | null,
+): AwsCollectionErrorCode | null {
   if (state === 'aws_token_stale' || state === 'wazuh_apply_failed') return state;
-  if (
-    state === 'pending' &&
-    current.connection === 'error' &&
-    current.connectionError === 'wazuh_apply_failed'
-  ) {
-    return 'wazuh_apply_failed';
-  }
+  if (state === 'pending' && current === 'wazuh_apply_failed') return 'wazuh_apply_failed';
   return null;
 }
 
@@ -162,6 +122,13 @@ function parseSignal<T>(
   return parsed.success ? parsed.data : INVALID;
 }
 
+/** O que a tarefa lê de cada conta para gravar o aviso. */
+interface CollectionRow {
+  id: string;
+  tenantId: string;
+  collectionError: string | null;
+}
+
 /**
  * Tarefa `wazuh-config` do worker (fase 2, PR-V4'; só no nó com o Wazuh, com `WAZUH_SIGNAL_DIR`): a ponte, sem segredo,
  * entre as contas AWS do banco e a configuração do manager, que só o host aplica.
@@ -169,12 +136,14 @@ function parseSignal<T>(
  * - Grava a geração (o SHA-256 da lista que o CLI `wazuh-sources` imprime: contas, região, buckets e início da coleta)
  *   no arquivo `generation` da pasta de sinais, só quando ela muda: o `verax-wazuh-apply.path` do host reage e refaz a
  *   configuração do manager em segundos. Troca atômica (rename), como no host.
- * - Lê os dois sinais do host e grava, nas contas que o manager lê, o erro do nó inteiro: `aws_token_stale` quando o
- *   token do Google não é renovado há mais de 40 min, e `wazuh_apply_failed` quando a aplicação da lista de agora deu
- *   erro. Resolvido o problema (token renovado; a lista de agora aplicada), elas voltam a "conectada". Enquanto a lista
- *   de agora não foi aplicada, o `wazuh_apply_failed` de antes fica.
- * - Cada mudança de conta numa transação própria, pelo escopo do cliente da conta, só se a conexão ainda for a lida,
- *   com auditoria (`cloud_account.aws_collection`, ator sistema) na trilha do cliente.
+ * - Lê os dois sinais do host e grava, em cada conta que o manager lê, o aviso da coleta em `collectionError`, um campo
+ *   só dela: `aws_token_stale` quando o token do Google não é renovado há mais de 40 min, e `wazuh_apply_failed` quando
+ *   a aplicação da lista de agora deu erro. Resolvido o problema (token renovado; a lista de agora aplicada), o aviso
+ *   sai. A conta que deixou a coleta (desativada) perde o aviso.
+ * - Nunca toca na conexão (`connection` e `connectionError`), que só a tarefa `aws-check` grava (a conferência do papel,
+ *   PR-V5'): os dois avisos são do nó inteiro, não da conta do cliente, e nenhuma das duas tarefas desfaz a outra.
+ * - Cada mudança numa transação própria, pelo escopo do cliente da conta, só se o aviso ainda for o lido, com auditoria
+ *   (`cloud_account.aws_collection`, ator sistema) na trilha do cliente. Sem mudança, nada é gravado.
  *
  * O worker só escreve esse sinal sem segredo: quem escreve a configuração do manager e os profiles da AWS é só o gerador
  * (decisão R1 do plano), e o token do Google fica com o host.
@@ -234,12 +203,25 @@ export class WazuhConfig {
       cleared: 0,
       invalidSignals,
     };
-    for (const row of rows) {
+    // A conta que deixou a coleta (desativada, ou sem bucket) não mostra mais aviso dela.
+    const leftovers = await this.prisma.cloudAccount.findMany({
+      where: {
+        provider: 'aws',
+        collectionError: { not: null },
+        id: { notIn: rows.map((row) => row.id) },
+        ...(this.tenantIds !== undefined && { tenantId: { in: [...this.tenantIds] } }),
+      },
+      select: { id: true, tenantId: true, collectionError: true },
+    });
+    const changes: { row: CollectionRow; next: AwsCollectionErrorCode | null }[] = [
+      ...rows.map((row) => ({ row, next: wantedCollectionError(state, row.collectionError) })),
+      ...leftovers.map((row) => ({ row, next: null })),
+    ];
+    for (const { row, next } of changes) {
       signal.throwIfAborted();
-      const next = nextConnection(row, wantedError(state, row));
-      if (next === null || !(await this.record(row, next))) continue;
-      if (next.connection === 'error') report.marked += 1;
-      else report.cleared += 1;
+      if (row.collectionError === next || !(await this.record(row, next))) continue;
+      if (next === null) report.cleared += 1;
+      else report.marked += 1;
     }
     return report;
   }
@@ -266,23 +248,21 @@ export class WazuhConfig {
     return true;
   }
 
-  /** Grava a conexão nova, se ela ainda for a lida, com a auditoria na trilha do cliente. */
-  private record(
-    row: WazuhSourceRow,
-    next: { connection: 'connected' | 'error'; connectionError: NodeCollectionError | null },
-  ): Promise<boolean> {
+  /**
+   * Grava o aviso novo da coleta, se ainda for o lido (outra execução, ou a conta desativada no meio, descarta), com a
+   * auditoria na trilha do cliente. Só o campo da coleta: a conexão fica como está.
+   */
+  private record(row: CollectionRow, next: AwsCollectionErrorCode | null): Promise<boolean> {
     return this.prisma.$transaction(async (tx) => {
       const db = scopeToTenant(tx, row.tenantId);
-      const { count } = await db.cloudAccount.updateMany({
-        where: {
-          id: row.id,
-          provider: 'aws',
-          status: 'active',
-          connection: row.connection,
-          connectionError: row.connectionError,
-        },
-        data: next,
-      });
+      const where: Prisma.CloudAccountWhereInput = {
+        id: row.id,
+        provider: 'aws',
+        collectionError: row.collectionError,
+        // Um aviso só vai para conta ativa; tirar um aviso vale também para a desativada.
+        ...(next !== null && { status: 'active' }),
+      };
+      const { count } = await db.cloudAccount.updateMany({ where, data: { collectionError: next } });
       if (count === 0) return false;
       await this.audit.write(tx, {
         actor: { type: 'system', tenantId: row.tenantId },
@@ -290,8 +270,8 @@ export class WazuhConfig {
         outcome: 'success',
         resourceType: 'cloud_account',
         resourceId: row.id,
-        before: { connection: row.connection, connectionError: row.connectionError },
-        after: next,
+        before: { collectionError: row.collectionError },
+        after: { collectionError: next },
       });
       return true;
     });
