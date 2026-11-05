@@ -6,7 +6,7 @@ import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
-import type { WorkerEnv } from './common/config/env.schema.js';
+import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from './common/config/load-env-file.js';
 import { buildPinoOptions } from './common/logger/logger.options.js';
@@ -22,6 +22,12 @@ import {
   NODE_STATUS_INTERVAL_MS,
   NodeStatusReporter,
 } from './node-status/node-status.js';
+import {
+  RETENTION_BUDGET_MS,
+  RETENTION_CHECK_INTERVAL_MS,
+  RETENTION_TASK,
+  RetentionJob,
+} from './retention/retention-job.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -101,6 +107,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
  * publica o estado do nó nos guest attributes da VM para o plano de controle.
  *
+ * A tarefa `retention` (PR-19) é o expurgo diário do histórico no banco do nó, pelo prazo do plano (`PLAN` e
+ * `PLAN_HISTORY_DAYS`): confere a cada 15 min e roda uma vez por dia, depois das 04:00 UTC, por no máximo 10 min.
+ *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
 async function main(): Promise<void> {
@@ -177,6 +186,14 @@ async function main(): Promise<void> {
         requests: await awsCheck.runOnce(signal),
         periodic: await awsCheck.recheck(signal),
       }),
+    });
+    // Expurgo diário do histórico (só o banco do nó; o índice do Wazuh tem a retenção própria).
+    const retention = new RetentionJob(prisma, { historyDays: nodePlan(config).limits.historyDays });
+    tasks.push({
+      name: RETENTION_TASK,
+      intervalMs: RETENTION_CHECK_INTERVAL_MS,
+      budgetMs: RETENTION_BUDGET_MS,
+      run: (signal) => retention.maybeRun(new Date(), signal),
     });
     const keyring = config.credentialsKeyring;
     if (keyring !== null) {

@@ -46,6 +46,8 @@ export const PERMISSIONS = {
   // administra.
   'agents:read': ALL,
   'agents:enroll': ADMINS,
+  // Plano do nó e uso do cliente (fase 2, PR-18): só leitura, para quem administra.
+  'plan:read': ADMINS,
   // Exclusivas da Verax
   'session:switch_tenant': VERAX,
   'unowned_alerts:read': VERAX,

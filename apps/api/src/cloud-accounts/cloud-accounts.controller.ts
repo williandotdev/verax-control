@@ -73,8 +73,8 @@ export class CloudAccountsController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('cloud_accounts:write')
-  deactivate(@Param('id', { schema: accountIdSchema }) id: string): Promise<void> {
-    return this.accounts.deactivate(id);
+  deactivate(@Req() request: Request, @Param('id', { schema: accountIdSchema }) id: string): Promise<void> {
+    return this.accounts.deactivate(request.auth as RequestAuth, id);
   }
 
   /**

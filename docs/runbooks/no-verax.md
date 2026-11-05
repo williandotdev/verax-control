@@ -278,6 +278,22 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   Rode com a API e o worker parados (`docker compose ... stop api worker`) e reinicie o serviço depois:
   `sudo systemctl restart verax-node`.
 
+## Expurgo diário do histórico
+
+- O worker apaga do banco, uma vez por dia depois das 04:00 UTC (01:00 de Brasília), o que passou do prazo do plano
+  (tarefa `retention`; regras em `docs/ARQUITETURA.md`, seção "Expurgo do histórico"). Só o banco do nó: nada na
+  nuvem do cliente nem no índice do Wazuh.
+- No nó da Verax (`PLAN=interno`, sem limite), os achados, os incidentes, a postura e a auditoria ficam. Saem só o
+  inventário com mais de 30 dias (o retrato mais recente de cada conta fica), a fila sem dono com mais de 90 dias, os
+  avisos por e-mail já resolvidos com mais de 90 dias e as sessões, links e tentativas de login vencidos.
+- Para conferir a execução do dia, no log do worker (`logs --tail 200 worker`): a linha `tarefa concluída` com
+  `"task":"retention"` e o relatório (`done`, ou `partial` quando parou nos 10 minutos e o resto fica para o dia
+  seguinte; `waiting` e `already_ran` são as conferências de cada 15 minutos). Cada cliente ganha um `retention.purge`
+  na tela Auditoria, com os cortes e as contagens.
+- Ao trocar o plano por um de prazo menor, o prazo anterior continua valendo por 30 dias (carência para o cliente
+  exportar); o `retention.purge` mostra até quando.
+- Uma restauração de dump antigo traz de volta o que já tinha saído; o expurgo do dia seguinte apaga de novo.
+
 ## Problemas comuns
 
 - **Login com a senha temporária volta para a tela de entrada.** A senha venceu (72 horas): gere outra, pelo

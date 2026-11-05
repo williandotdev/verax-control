@@ -3722,6 +3722,210 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - **nome do cliente até 200 caracteres no CP-06 (o checkout aceita 200):** o `node-bootstrap` continua com 120, porque `Tenant.name` é `VarChar(120)` no banco e os schemas de cliente em `packages/shared` também param em 120; aceitar 200 só no CLI trocaria a recusa clara por um erro do banco. Um nome de 121 a 200 caracteres faz o `verax-customer-bootstrap` falhar com `BOOTSTRAP_TENANT_NAME` no journal. Fica para decidir: uma migration que leve `Tenant.name` (e os schemas) a 200, ou o checkout e o Terraform limitados a 120;
   - **com o CP-06:** os metadados `verax-tenant-name`, `verax-admin-email` e `verax-support-email` batem com os do `envs/tenant`, e o prefixo dos cofres vem de `verax-secret-prefix` (o `VERAX_SECRET_PREFIX` do `node.conf`). O `CUSTOMER_MODE=true` não está entre os metadados: quem monta o `node.conf` do nó de cliente (a instalação do PR-N7) precisa escrevê-lo. O `verax-node-version` do CP-06 é `node-vX.Y.Z`, e o `NODE_VERSION` que o `start.sh` lê do `images.env` (e o worker publica) hoje é o commit que o `install.sh` grava; se o PR-N7 trocar o formato, as duas conferências (`render` e `env.schema.ts`) precisam aceitá-lo.
 
+## Fase 2, PR-19: expurgo diário do histórico pelo plano ⚠️ altera a imutabilidade da trilha de auditoria — revisão linha a linha
+
+- **Pedido:** o expurgo diário do histórico guardado no banco do nó, pelo prazo do plano (plano da fase 2, PR-19; plano
+  revisado, item 23). Só o Postgres do nó: nada na nuvem do cliente, nos buckets, nos logs na origem nem no índice do
+  Wazuh, que tem a retenção própria de 30 dias (ISM). Desenho em `docs/ARQUITETURA.md`, "Expurgo do histórico". O
+  período `12m` nas telas e os textos de retenção ficam para o PR-20.
+- **Imutabilidade (migration `20261109120000_history_retention`, revisar linha a linha):**
+  - os triggers da auditoria (`audit_log_reject_change`) e dos comentários (`finding_comment_reject_change`) continuam
+    bloqueando UPDATE e TRUNCATE sempre, para todo mundo, com a mesma mensagem de antes. DELETE só passa com as duas
+    condições ao mesmo tempo: a flag `verax.retention` ligada **e** o registro mais velho que o piso de idade,
+    conferido no banco linha a linha (13 meses na auditoria; 30 dias no comentário, o menor prazo que um plano aceita);
+  - `verax_purge_audit_log(p_cutoff, p_limit)` e `verax_purge_finding_comments(uuid[])`: `SECURITY DEFINER`, com o dono
+    que aplica as migrations (o `verax_migrator`, dono das tabelas), `search_path = pg_catalog, public, pg_temp`,
+    `TimeZone = UTC`, tabelas com schema. A própria função recusa corte mais novo que o piso (auditoria) e achado com
+    menos de 30 dias (comentários), e lote fora de 1 a 1000. Ela liga a flag com `set_config(..., true)` só em volta do
+    próprio DELETE e devolve o valor anterior logo depois; com erro, a transação desfaz a flag junto. A função de
+    auditoria devolve as contagens por cliente;
+  - o EXECUTE sai de PUBLIC na migration; o `db-bootstrap` repete o REVOKE a cada deploy e concede o EXECUTE só ao
+    papel da aplicação. O `db-bootstrap` também tira UPDATE, DELETE e TRUNCATE do papel da aplicação em
+    `FindingComment` (antes só o trigger segurava). O papel da aplicação continua sem DELETE direto na auditoria e agora
+    também nos comentários, nem com a flag ligada na sessão;
+  - índices novos: `AuditLog(occurredAt)` e `Incident(tenantId, lastSeenAt)`; tabela nova `RetentionState` (o prazo
+    aplicado e a carência; dado de sistema, sem `tenantId`, com CHECK de no mínimo 30 dias).
+- **Tarefa `retention` do worker** (`apps/api/src/retention/`):
+  - confere a cada 15 min; roda depois das 04:00 UTC, no máximo uma vez por dia (`SyncState('retention')`), com a
+    concessão do banco renovada a cada lote; lotes de 500 por transação, pausa de 100 ms e no máximo 10 min por
+    execução (o orçamento do agendador é de 12 min). Parar no tempo máximo conta o dia como feito, e o resto fica para
+    o dia seguinte; a parada do worker interrompe entre dois lotes e não conta o dia;
+  - ordem, cada cliente pelo próprio escopo (`forTenant`): incidentes sem atividade desde o corte (último achado, última
+    mudança e nenhum achado com evento, mudança ou comentário depois), inteiros, com os achados e os comentários; achados
+    soltos com a mesma regra e sem recorrência apontando para eles; postura (a varredura mais recente de cada conta
+    fica sempre; as reprovações saem em lotes antes das varreduras) e inventário (30 dias; o retrato mais recente de
+    cada conta fica); depois a fila sem dono (90 dias), as tabelas de operação (sessões, links, tentativas de login,
+    códigos TOTP usados e limite por IP, vencidos há mais de um dia) e a auditoria (13 meses, ou o histórico se for
+    maior), só pela função;
+  - o corte do histórico é o prazo do plano mais um dia de folga (o relatório do período sai completo, e a diferença
+    entre o relógio do worker e o do banco nunca bate no piso); o próprio corte fica;
+  - a remoção de achados e incidentes toma o mesmo lock por cliente dos coletores (`lockTenantFindings`, extraído de
+    `FindingStore.persist`), trava as linhas do lote com `SELECT ... FOR UPDATE` (incidentes e depois os achados deles)
+    e só então confere de novo, numa consulta nova, se cada linha ainda vale (ver a correção depois da revisão, abaixo);
+  - um incidente cujo achado é o original de uma recorrência que fica (em outro incidente ou solta) espera ela sair;
+  - **carência:** quando o plano diminui o prazo, o anterior continua por 30 dias, contados da primeira execução que viu
+    a redução; aumentar vale na hora e cancela a redução;
+  - **trilha:** `retention.purge` (ator sistema) na trilha de cada cliente, com o prazo em vigor e o do plano, o fim da
+    carência, os cortes e as contagens por tabela (nenhum conteúdo, nenhum ID), `complete` e, numa execução interrompida
+    ou com erro, `outcome=failure` com o tipo do erro (o que já saiu fica registrado); mais um registro global da Verax
+    com as tabelas sem cliente e a auditoria sem cliente;
+  - **avisos por e-mail (PR-16):** a pedido da coordenação, a fila de saída do PR-16 também entra: avisos enviados, com
+    falha ou pulados sem mudança há 90 dias saem (o pendente fica; o de um incidente ou achado que sai já vai pela
+    cascata), contados em `notifications`. O PR-16 ainda não está no `main`: a fase usa o model pelo client do escopo
+    e só roda quando ele existe (`notification` no client); o teste dela roda sozinho quando o model estiver lá.
+- **Decisões:**
+  - a auditoria nunca sai antes do histórico que ela descreve: o corte é o mais antigo entre 13 meses e o prazo do
+    plano; com histórico sem limite (plano `interno`, o nó da Verax), a auditoria fica (só sai o inventário, a fila sem
+    dono, os avisos resolvidos e as tabelas de operação);
+  - "tocado dentro do prazo fica": um achado solto triado ou comentado depois do corte fica, como o incidente;
+  - o `IngestUsage` (24 meses, evidência de cobrança) e as exceções vencidas ficam fora: não estão na lista do PR-19 e
+    são poucas linhas.
+- **Arquivos:**
+  - API: `apps/api/src/retention/{retention-job.ts,retention-policy.ts,retention-policy.test.ts}` (novos),
+    `apps/api/src/worker.ts`, `apps/api/src/cli/db-bootstrap.ts`, `apps/api/src/alerts/finding-store.ts`,
+    `apps/api/prisma/{schema.prisma,migrations/20261109120000_history_retention}`;
+  - testes: `apps/api/test/retention.test.ts` (novo) e `apps/api/test/db-bootstrap.test.ts`;
+  - CI (script, sem mudar workflow): `scripts/test-api-image.sh` ganhou três conferências na sequência real do deploy
+    (as funções pertencem ao `verax_migrator`; a aplicação não apaga comentários; o piso recusa corte novo);
+  - documentação: `docs/ARQUITETURA.md` (seção "Expurgo do histórico"), `docs/runbooks/no-verax.md` ("Expurgo diário
+    do histórico") e este arquivo.
+- **Dependências:** nenhuma.
+- **Testes:**
+  - unitários (`retention-policy.test.ts`, 16): janela das 04:00 UTC; meses como o Postgres (fim de mês, ano bissexto,
+    virada do ano); cortes do histórico, da auditoria (13 meses ou o histórico, se maior), do inventário, da fila, dos
+    avisos e da operação; prazo fora da faixa recusado; carência (primeira execução, aumento, redução com os 30 dias,
+    sem limite para limitado, cancelamento, nova redução sem reiniciar a contagem);
+  - integração com o banco (`test/retention.test.ts`, 19, um deles só com o model do PR-16): **limite do corte** (1 ms
+    antes sai, o corte exato fica) em achados, comentários, incidentes, auditoria e postura; **incidente com achado
+    recente fica inteiro**, o antigo sai com os achados e os comentários, e ficam o mudado, o comentado e o achado
+    triado depois do corte; cadeia de recorrência (a antiga sai inteira; o original de uma recorrência que fica,
+    fica, também em incidente); **fica a varredura e o retrato mais recentes de cada conta**; fila sem dono (90 dias);
+    tabelas de operação (sessão válida, sessão vencida há uma hora, bloqueio vigente, código TOTP e contador recentes
+    ficam); plano interno; **A/B** (o expurgo só de A não toca em nada de B nem grava na trilha de B; com os dois, cada
+    trilha conta só o próprio, sem nenhum ID); auditoria contada na trilha do próprio cliente e a sem cliente no
+    registro global; **antes das 04:00 espera, a segunda execução no mesmo dia não faz nada**, a de ontem não segura a
+    de hoje; concessão em outra réplica (`locked`, nada sai); **tempo máximo** (relógio falso: dois lotes, `partial`,
+    trilha com `complete: false`, o resto fica para o dia seguinte); parada do worker (o dia não conta, `AbortError` no
+    estado, trilha como falha); **carência** (365 → 90: o prazo de 365 continua, com o fim da carência na trilha; 30
+    dias depois, vale o de 90); avisos por e-mail resolvidos (roda quando o model existir); e direto no banco: **as
+    funções recusam corte novo demais** (agora, 13 meses menos uma hora, nulo) e lote fora da faixa; a função da
+    auditoria apaga do mais antigo, no tamanho do lote, conta por cliente, deixa o corte exato e desliga a flag;
+    **UPDATE e TRUNCATE bloqueados mesmo com a flag**, DELETE só com a flag e com mais de 13 meses; comentários: achado
+    novo recusa o lote, comentário recente faz o trigger recusar e nada sai, lote grande demais, UPDATE e TRUNCATE
+    bloqueados com a flag;
+  - `test/db-bootstrap.test.ts` (7 novos): **a aplicação sem UPDATE, DELETE e TRUNCATE em `FindingComment` e sem
+    DELETE ou UPDATE na auditoria, mesmo com a flag ligada na sessão**; a aplicação executa as funções e a própria
+    função recusa corte novo; nenhum outro papel executa (o papel das migrations do teste recebe `permission denied
+for function`; a ACL não tem PUBLIC); e a **sequência do deploy** num banco só do teste (bootstrap, `prisma migrate
+deploy` pelo papel das migrations, bootstrap): funções do papel das migrations, `SECURITY DEFINER`, `search_path`
+    fixo e EXECUTE só para o dono e a aplicação; o dono das funções é o das tabelas; a aplicação expurga a auditoria
+    antiga e os comentários antigos só pela função, com o recente e o DELETE direto recusados; nem o dono apaga
+    registro recente, altera ou trunca;
+  - conferido com mutações (desfeitas): sem o piso no trigger, sem a regra de atividade, sem a varredura mais recente,
+    sem o REVOKE em `FindingComment` e com o EXECUTE para PUBLIC, os testes acima falham;
+  - a migration aplicada por um papel sem superusuário (como no deploy) num banco descartável, com as funções e o
+    trigger exercitados à mão; o `scripts/test-api-image.sh` passou no shellcheck, e as três conferências novas foram
+    rodadas contra esse banco;
+  - suítes: API inteira com o Postgres 18 descartável: 90 arquivos, 1289 testes (1 pulado, o dos avisos); o
+    `audit.test.ts` caiu com o 0xC0000409 do Vitest no Windows e passou sozinho (19 de 19). `pnpm typecheck`, ESLint da
+    raiz com `--max-warnings=0` e `prettier --check .` sem erros; `prisma migrate diff` do banco migrado do zero contra
+    o `schema.prisma` sem diferença. O compartilhado e o painel não mudaram.
+- **Definição de pronto:** critérios ✔ · testes, com o negativo A/B ✔ · lint, tipos e formatação ✔ · nenhuma
+  dependência ✔ · regras de segurança ✔ (só `$queryRaw` e `$executeRaw` como tagged template; dado de cliente pelo
+  escopo; nada de conteúdo na trilha nem no log; dados fictícios) · **imutabilidade:** igual ou mais forte que antes,
+  fora o caminho estreito e testado do expurgo · **aceite:** o expurgo rodando no ensaio geral (PR-21).
+- **O que testar manualmente:** depois do deploy num nó, no journal do worker, a tarefa `retention` com `waiting` antes
+  das 04:00 UTC e, na primeira conferência depois, `done` com as contagens (no nó da Verax, plano `interno`, só
+  inventário, fila sem dono, avisos e operação); no dia seguinte, `already_ran` até as 04:00. Na tela Auditoria de um
+  cliente, o `retention.purge` com os cortes e as contagens. No banco, `\df+ verax_purge_*` mostra o dono
+  `verax_migrator`, `security definer` e o acesso só do `verax_app`.
+- **Riscos e pendências:**
+  - **PR-16:** a fase dos avisos fica desligada até o model `Notification` entrar no `main`; depois do merge, o teste
+    dela passa a rodar sozinho (conferir que roda e passa) e a interface estrutural pode dar lugar ao delegate tipado;
+  - a primeira execução num nó com muito histórico se reparte em vários dias pelo tempo máximo de 10 min;
+  - um comentário gravado entre a conferência e o DELETE de um lote faz o trigger recusar o lote inteiro: a execução
+    falha (fica no `SyncState` e na trilha como falha) e volta na conferência seguinte, quando o achado já não sai;
+  - um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer; o texto da
+    Privacidade e do DPA ("eliminação em até D + 97 dias") é do PR-20;
+  - o dono das tabelas, com a flag ligada na sessão, consegue apagar diretamente registro mais velho que o piso (é o
+    mesmo caminho da função); registro mais novo, nem ele, sem derrubar o trigger. O superusuário continua podendo
+    tudo, como antes;
+  - a pendência 6 do `PLANO.md` (prazo de retenção) foi decidida na prática pela tabela de planos (90 e 365 dias); pela
+    regra 9, o `PLANO.md` não foi editado, e o registro da decisão fica com o responsável.
+
+  Depois da revisão do PR #80 (CI e Codex, 3 correções):
+  - **Triagem pela API no meio do lote (Codex):** a triagem do achado, o comentário e a mudança do incidente não tomam o
+    lock dos coletores, então uma escrita confirmada entre a conferência e o DELETE era apagada junto. Agora cada lote
+    trava as próprias linhas com `SELECT ... FOR UPDATE` (só pelo ID e pelo cliente) e refaz a conferência completa numa
+    consulta nova: em READ COMMITTED, ela vê tudo o que foi confirmado antes da trava, e a escrita que chega depois
+    espera o lote (o comentário também, porque a chave estrangeira dele trava o achado com `FOR KEY SHARE`). Conferir
+    só no DELETE não bastaria: o Postgres reavalia, na linha alterada, só as condições sobre a própria tabela, não as
+    que dependem de comentários ou dos achados do incidente, e o incidente sai depois dos achados dele. A API trava uma
+    linha só por transação, e o expurgo trava sempre incidente antes de achado, então não há ciclo de espera; o caminho
+    da API não ganhou nenhuma trava nova.
+  - **Contagem do lote confirmado (Codex):** as fases somavam as contagens só no fim; uma parada do worker ou um erro
+    depois de lotes já confirmados deixava a trilha da falha com zero. Agora toda fase soma depois de cada lote
+    confirmado.
+  - **CI:** o `tenants.test.ts` procurava o cliente dele só na primeira página de 100 (por nome), e os clientes dos
+    testes novos passaram desse número. A versão que percorre todas as páginas é a mesma do PR #78 (Cloudflare), copiada
+    sem mudança, para os dois ramos se juntarem sem conflito.
+  - **Testes novos (5):** com uma escrita da API aberta em outra conexão, o lote para na trava e a escrita é confirmada;
+    nada sai, nos quatro casos (triagem de achado solto, comentário em achado solto, triagem do incidente, triagem de um
+    achado do incidente); e a parada do worker logo depois do primeiro lote confirmado deixa `deleted.findings = 1` na
+    trilha da falha. Mutação conferida: sem as travas e sem a soma por lote, os cinco falham.
+
+## Fase 2, PR-18: limites do plano aplicados e a página "Plano e uso"
+
+- **Pedido:** o PR-18 do plano da fase 2 (item 22 do plano revisado): os limites do plano do nó (PR-03) aplicados na criação e na reativação de contas cloud e usuários, o `GET /v1/plan` e a página "Plano e uso". **Mudança desde o plano:** os avisos por e-mail de 80% e 100% do volume foram para o PR-16; este PR não depende dele e não cria aviso nenhum. Nada muda em `infra/`, `.github/`, `auth/`, nas migrations nem nas dependências.
+- **Vagas** (`packages/shared/src/plan-usage.ts`): contas cloud ativas (AWS, GCP e Cloudflare) e usuários do cliente convidados ou ativos; a equipe da Verax (`admin_verax`) nunca conta (o CHECK do banco já a deixa fora de qualquer cliente, e o filtro repete a regra). Criar e reativar pedem vaga; desativar libera. Descer de plano não desativa nem apaga nada: só a próxima criação é recusada. O mesmo arquivo traz o código `PLAN_LIMIT_REACHED`, a mensagem da recusa (`planLimitMessage`), `GIB_BYTES` (2³⁰), o limiar da faixa (`PLAN_VOLUME_WARNING_RATIO = 0.8`), a fração do volume (`planVolumeRatio`, que passa de 1 acima do plano) e o contrato do `GET /v1/plan`.
+- **Trava** (`apps/api/src/plan/plan-limits.ts`): `assertWithinPlan(db, plan, vaga, tenantId)` pega `pg_advisory_xact_lock(hashtext('verax:plan:<cloud_accounts|users>:<cliente>'))` e conta as vagas pelo escopo do cliente (`scopeToTenant`), no padrão das origens de log de `cloud-accounts.service.ts`. Sem limite (plano `interno`), não faz nada. Recusa o cliente base do Prisma (fora de uma transação, o lock seria solto logo depois de pego): a transação do Prisma 7 tem `$transaction` (aninhada), mas não `$connect`, e é por ele que a função distingue. O lock do plano vem antes dos das origens de log, sempre na mesma ordem. Toda escrita que muda o status (ativar ou desativar, inclusive o `DELETE`) pega o lock (`lockPlanSeats`, `PlanService.lockSeats`) antes de ler o recurso: ver a revisão do PR, abaixo.
+- **Pontos de aplicação:**
+  - `CloudAccountsService.create` e a reativação em `update` (`status: 'active'` numa conta que não está ativa; alterar a conta já ativa no limite continua valendo);
+  - `UsersService.provision` (o `POST /users` e o primeiro administrador de um cliente novo em `POST /tenants`, que sempre tem vaga) e a reativação em `update` (de `disabled` para `active`; trocar o papel de quem está ativo continua valendo);
+  - `cli/node-bootstrap.ts`, só no laço das contas da GCP (para o merge com o CP-10 ficar simples): a checagem e a criação numa `$transaction`; no limite, a conta fica de fora com o resultado novo `plan-limit` (a linha de sempre na saída: `Conta GCP <projeto>: plan-limit.`), a recusa vai para a auditoria (`cloud_account.create`, falha, 409, ator sistema) e o resto do bootstrap segue.
+- **Recusa:** 409 com `PLAN_LIMIT_REACHED` e "Seu plano permite até 3 contas cloud ativas. Desative uma conta ou fale com a Verax para ampliar." (ou "até 5 usuários…"). O `PlanService` descreve a tentativa só na recusa, com a ação de sempre (`cloud_account.create`, `cloud_account.update`, `user.create`, `user.update`), a área e, na reativação, o recurso; o `AuditInterceptor` desfaz a transação e grava a falha na trilha do cliente. As outras falhas dessas rotas continuam com a ação genérica de antes.
+- **`GET /v1/plan`** (`apps/api/src/plan/`, `PlanModule`): permissão nova `plan:read` = administradores (`packages/shared/src/permissions.ts`). Responde o plano resolvido (id, rótulo e os quatro limites, com os ajustes do ambiente, lido uma vez na partida) e o uso do cliente da sessão: contas ativas, usuários convidados ou ativos, o mês do calendário de Brasília (`AAAA-MM`) e os bytes lidos nele, somadas as fontes do medidor. Tudo pelo escopo: a Verax lê o cliente selecionado (sem cliente, 409 `TENANT_REQUIRED`).
+- **Volume acima de 100%:** nada é bloqueado nem descartado; nenhum coletor consulta o plano.
+- **Painel:** Administração → **Plano e uso** (`/cadastros/plano`, `apps/web/src/pages/admin/plan-page.tsx`), só para administradores e só leitura (nenhum botão nem campo): o plano e o mês de referência; quatro contadores (contas cloud, usuários, volume do mês e histórico), com barra (`role="meter"`, o valor no `aria-valuetext`; a cor só reforça o texto) e o estado em texto (vagas livres, "Limite do plano atingido", "Acima do limite do plano: nada foi desativado…"); a faixa a partir de 80% do volume ("a coleta continua… nenhum log é descartado"), mais forte acima de 100%; o plano sem limite mostra os números sem barra. Os limites vêm sempre da API (a configuração do nó), nunca digitados na tela.
+- **Demonstração** (`apps/web/src/mocks/plan-handlers.ts`): o nó da demonstração no Profissional da tabela de planos do repositório (`resolvePlan('profissional')`); as contas e os usuários vêm do estado do mock; a Alfa com 86% do volume (a faixa aparece) e a Beta com 23%. O mock recusa como a API (409 `PLAN_LIMIT_REACHED` no cadastro e na reativação de contas e usuários sem vaga).
+- **Arquivos:**
+  - compartilhado: `packages/shared/src/plan-usage.ts` e o teste (novos), `permissions.ts`, `permissions.test.ts`, `index.ts`;
+  - API: `apps/api/src/plan/{plan-limits.ts,plan.service.ts,plan.controller.ts,plan.module.ts}` (novos), `app.module.ts`, `cloud-accounts/{cloud-accounts.service.ts,cloud-accounts.module.ts}`, `users/{users.service.ts,users.module.ts}`, `cli/node-bootstrap.ts`;
+  - testes da API: `apps/api/test/plan-limits.test.ts` (novo), `node-bootstrap.test.ts`, `support/create-app.ts` (opção `plan`);
+  - painel: `apps/web/src/pages/admin/plan-page.tsx` e o teste, `features/plan/{plan-api.ts,plan-format.ts,plan-format.test.ts}`, `mocks/plan-handlers.ts` (novos), `mocks/{admin.ts,handlers.ts}`, `layout/navigation.ts`, `routes/router.tsx`, `layout/layout.test.tsx`, `e2e/plan.mock.spec.ts` (novo), `e2e/{layout,pages}.mock.spec.ts`;
+  - documentação: `docs/ARQUITETURA.md` (seção nova "Plano do nó: limites e uso"), `docs/runbooks/onboarding-cliente.md` (seção 4, "Limites do plano": a recusa, o `plan-limit` do bootstrap e como ampliar), `docs/STATUS.md`.
+- **Dependências:** nenhuma. Sem migration.
+- **Testes:**
+  - API, `test/plan-limits.test.ts` (14 com os dois da revisão abaixo, banco real, nó no Essencial com os limites lidos da tabela de planos): até o limite passa com AWS, GCP e Cloudflare, a conta seguinte recebe 409 com o código e a mensagem, nada é gravado e a falha fica na auditoria do cliente (ação, área, ator); desativar libera a vaga, reativar acima do limite é recusado e auditado (com o recurso), a conta ativa continua sendo alterada no limite e a reativação passa depois de outra desativada; **duas criações simultâneas no limite menos 1** (três rodadas de contas e uma de usuários): uma 201 e uma 409 (conferido por mutação: sem o lock, os dois testes caem); A/B das contas; usuários: o convidado conta, o desativado não, a Verax cadastra pelo cliente sem ocupar vaga, o seguinte é recusado pelo administrador do cliente e pela Verax (na trilha do cliente), e o `GET /v1/plan` não conta a Verax; desativar e reativar usuário, trocar o papel no limite; o primeiro administrador de um cliente novo num nó com plano; `GET /v1/plan` com o contrato, o mês corrente e todas as fontes, sem o mês anterior nem o outro cliente (**A/B**); analista e leitura 403, a Verax sem cliente 409 `TENANT_REQUIRED` e com cliente o uso dele, sem sessão 401; **acima de 100% do volume**, o achado é gravado (`FindingStore`) e o uso continua sendo medido (`UsageMeter`), e o plano mostra a fração acima de 1; `assertWithinPlan` sem limite não confere nada e, com limite, recusa o cliente fora de transação;
+  - API, `node-bootstrap.test.ts` (1 novo): com uma conta a mais que o limite, as do limite são criadas, a última sai `plan-limit` com a recusa na auditoria (ator sistema, 409); com uma desativada, a execução seguinte cria a que ficou de fora. Os testes de bootstrap de antes continuam (já rodavam no Essencial, abaixo do limite);
+  - compartilhado: contrato do `GET /v1/plan` (estrito, mês `AAAA-MM`, inteiros não negativos), a mensagem no singular e no plural, a fração em GiB e acima de 1, e `plan:read` só para administradores;
+  - painel: `plan-page.test.tsx` (9: no menu só para administradores, analista e leitura vão para "sem permissão"; o plano, os contadores, as barras e a faixa da Alfa; sem faixa abaixo de 80%; acima de 100%; vagas no limite e acima dele; plano sem limite; nenhum botão nem campo; a Verax sem cliente; o mock recusando com 409 e o desativado liberando a vaga), `plan-format.test.ts` (3) e o menu de cada papel (`layout.test.tsx`);
+  - e2e no modo mock (servidor do Vite numa porta própria, 5198, por uma configuração temporária fora do commit): `plan.mock.spec.ts` (5: contadores, barras e faixa sem violação de acessibilidade no claro e no escuro, no computador e no celular, sem rolagem horizontal; o analista sem o item e com "sem permissão"); a página entrou na lista de `pages.mock.spec.ts` (axe nos dois temas e o celular) e no menu de `layout.mock.spec.ts`; os 80 testes do projeto `mock` passaram;
+  - suítes: API inteira com o Postgres 18 descartável (89 arquivos, 1260 testes; em cada uma das duas execuções inteiras, um ou dois arquivos sem relação com este PR caíram com o 0xC0000409 do Vitest no Windows, o `cloud-accounts` numa e o `cloud-credential-intake` e o `indexer-client` na outra, e passaram sozinhos); `packages/shared` (19 arquivos, 283); painel (38 arquivos, 425); `pnpm typecheck`, ESLint da raiz com `--max-warnings=0` e `prettier --check .` sem erros.
+- **Decisões onde o pedido deixava margem:**
+  - a assinatura é `assertWithinPlan(db, plan, vaga, tenantId)`, e não só `(db, kind)`: o bootstrap não tem a injeção do Nest e passa o plano que já resolveu; na API, o `PlanService` passa o do ambiente e o cliente da sessão;
+  - a vaga é contada por cliente (a chave do lock também): cada nó de cliente atende um cliente só, e o único nó com vários clientes é o da Verax, no `interno`, sem limite;
+  - no bootstrap, a conta acima do limite não para a execução (o administrador e o cliente já foram gravados, e as outras contas seguem); a recusa vai para a auditoria como as do painel;
+  - a tentativa recusada é descrita só na recusa: descrever a ação antes da checagem trocaria a ação gravada das outras falhas dessas rotas (o teste do cadastro de cliente confere que a falha por e-mail repetido não sai como `user.create`);
+  - o "acima de 100%" foi provado na camada que grava (o `FindingStore` e o `UsageMeter`), e não rodando o sync da GCP: o sync lê todas as contas da GCP do banco de teste, que é o mesmo dos outros arquivos em paralelo, e mexeria na conexão das contas deles;
+  - a demonstração no Profissional, e não no Essencial: as contas e os usuários da Alfa já passam do Essencial, e os testes e o tour cadastram nela;
+  - ficaram de fora, por não estarem no PR-18 do plano: os contadores em linha em Usuários e Contas cloud ("2 de 3 contas do plano", com o botão "Adicionar" desligado, sugeridos no estudo da frente) e a "situação do e-mail" no `GET /v1/plan` (é do PR-16).
+- **Revisão do PR (Codex, "Serialize status reads with plan-seat changes") e merge do CP-10:**
+  - **o furo:** o `PATCH` com `status: 'active'` lia a conta (ou o usuário) sem lock; se ela ainda estava ativa, pulava a checagem. Uma desativação ao mesmo tempo liberava a vaga, uma criação a pegava, e o `PATCH` gravava a conta de volta como ativa: acima do limite. O `UsersService.update` tinha a mesma leitura sem lock;
+  - **a correção:** `lockPlanSeats` (o lock, separado da contagem; `assertWithinPlan` o usa) e `PlanService.lockSeats`. O `update` das contas e dos usuários, quando o corpo traz `status` (ativar ou desativar), e o `deactivate` dos dois (o `DELETE`) pegam o lock do plano **antes** de ler o recurso, na transação da requisição; a leitura vem depois e já enxerga a mudança confirmada por outra requisição, e a decisão vale até a gravação. O `DELETE /v1/cloud-accounts/:id` passou a receber a sessão (`request.auth`), como o de usuários, para saber o cliente. O lock é reentrante e continua antes dos das origens de log e da credencial. No plano `interno`, nada muda (sem limite, sem lock);
+  - **teste da corrida** (`plan-limits.test.ts`, um para contas e um para usuários, com o cliente no limite): a reativação de um recurso ainda ativo para logo depois da leitura (`find` segurado no teste); enquanto isso, a desativação dele e uma criação. Confere que ninguém passa do limite, que a desativação (que veio depois) vale, os status (200, 204 e 201 ou 409) e que as duas outras esperaram o lock. **Por mutação:** sem o lock no `update`, as contas terminam com 4 ativas num limite de 3 e o usuário termina ativo; sem o lock no `deactivate`, a conta e o usuário terminam ativos (a desativação perdida). Os dois testes caem nas duas mutações;
+  - **merge do CP-10 (#75):** os imports do `node-bootstrap.ts` (os dois ficam) e esta entrada depois da do CP-10. O laço das contas da GCP deste PR ficou no `bootstrapNode` de lá, sem mudança. O `admin_cliente` do modo `customer` (criado por `provisionUser`, fora do `UsersService`) passa por `assertWithinPlan(tx, plan, 'users', tenantId)` na mesma transação (`provisionUser` grava pela transação do contexto). O primeiro sempre tem vaga; um e-mail novo de administrador num cliente já cheio é recusado (`CustomerBootstrapRefusal`, sem citar o e-mail nem o cliente, com a tentativa na auditoria). Teste novo em `node-bootstrap-customer.test.ts` (recusa, auditoria, nenhum arquivo de senha, e passa depois de um usuário desativado; por mutação, sem a checagem, o teste cai). A conta de suporte da Verax não ocupa vaga;
+  - `tenants.test.ts`, "a listagem devolve só o resumo": procurava o cliente do arquivo só na primeira página (100, por nome) de um banco que é de todos os arquivos de teste; com os clientes dos testes novos (deste PR e do CP-10), ele saiu dela. O teste passou a percorrer as páginas;
+  - suítes depois da revisão e do merge: API inteira com o Postgres 18 descartável (94 arquivos, 1352 testes, numa execução sem nenhuma queda); `packages/shared` (19 arquivos, 285); painel (38 arquivos, 430); `pnpm typecheck`, ESLint da raiz com `--max-warnings=0` e `prettier --check .` sem erros;
+  - Semgrep com as configurações do `security.yml` (`p/default`, `p/typescript`, `p/nodejsscan`, `p/owasp-top-ten` e `.semgrep/rules.yaml`, a mesma imagem) nos 26 arquivos alterados que não são teste: 333 regras, 0 achados.
+- **Definição de pronto:** critérios ✔ · testes, com o negativo A/B ✔ · lint, tipos e formatação ✔ · nenhuma dependência ✔ · regras de segurança ✔ (autorização na API, com a permissão nova na matriz compartilhada; isolamento pelo escopo do cliente; `$executeRaw` só como tagged template; recusa sem citar outro cliente; nenhum valor comercial além da tabela de planos que já está no repositório) · **aceite:** depende do responsável.
+- **O que testar manualmente:** no nó de homologação com `PLAN=essencial` (ou um ajuste `PLAN_MAX_CLOUD_ACCOUNTS` pequeno): cadastrar contas até o limite e conferir a recusa com a mensagem e o registro em Auditoria; desativar uma e cadastrar de novo; abrir Administração → Plano e uso como administrador do cliente (os números batem com Contas cloud e Usuários) e como analista (sem o item no menu). No nó da Verax (`interno`), a página mostra "Sem limite no plano" e nada muda nos cadastros.
+- **Riscos e o que fica para outros PRs:**
+  - o plano é lido na partida da API: trocar o `node.conf` sem reiniciar não muda os limites (o roteiro manda rodar o `deploy.sh`);
+  - **PR-16:** os avisos de 80% e 100% podem usar `planVolumeRatio` e `PLAN_VOLUME_WARNING_RATIO`, para o e-mail e a faixa dispararem no mesmo ponto;
+  - **PR-19:** o prazo do expurgo é `nodePlan(config).limits.historyDays` (o mesmo do `PlanService`);
+  - a mensagem diz "fale com a Verax" sem link; na fase 3, o portal do cliente entra no lugar.
+
 ## Fase 2, PR-13: eventos de segurança do Cloudflare pelo GraphQL (regras 990330 a 990335)
 
 - **Pedido:** os eventos de segurança das zonas (WAF, regras próprias, limite de taxa, DDoS de camada 7, bots) lidos pelo worker com o token do cofre, pela API GraphQL de analytics (plano revisado da fase 2, Bloco D, item 17: "o token vem do cofre, no worker"; desenho em `fase2/plano.md`, PR-13, e `fase2/frente-cloudflare.md`, fora do repositório).
@@ -3788,4 +3992,4 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
 - **Revisão do PR #78 (dois apontamentos do Codex, corrigidos com testes que falham sem a correção):**
   - **primeira janela perdida depois da virada:** na primeira leitura de uma conta (sem cursor), uma falha no meio da primeira janela, tentada de novo depois de outra janela fechar, recalculava o começo pelo horário novo (de 11:15 para 11:30): o progresso gravado não valia mais, e as zonas que faltavam daquela janela nunca eram lidas. Agora, sem cursor e com progresso gravado, a leitura segue da janela do progresso (com o mesmo piso da retenção). Teste: falha no segundo lote da janela de 11:15, nova tentativa às 12:35 (a última janela fechada já é a de 12:15), e a janela de 11:15 lida uma vez por zona, com os dois achados;
   - **orçamento cobrado uma vez por consulta, com até três envios:** o cliente tenta de novo 5xx, rede e tempo esgotado (até três envios), e o orçamento era cobrado uma vez só, antes do primeiro. Agora `graphql()` recebe o gancho `beforeAttempt`, que roda antes de cada envio, e o coletor cobra e grava ali o orçamento de cada um (`CloudflareSecurityEvents.query`, nos limites, nos eventos e nas rotas); sem orçamento para um envio, nada sai, o progresso fica gravado e a próxima leitura é quando ele voltar. `securityQueries` passou a contar envios. Testes: no cliente, o gancho roda em toda tentativa e, recusado, nada sai; no coletor, com 5 unidades, os limites (1) e duas tentativas dos eventos com tempo esgotado (2 cada) gastam as 5, e a terceira tentativa não sai;
-  - mesclada a `main` de novo (#73, #74, #75, #76 e #77): `cloudflare_waf` e `wazuh_agent` nas fontes, as duas tarefas no worker e as entradas da `main` antes desta no `STATUS.md`; mutações conferidas (sem o progresso na primeira leitura; o orçamento cobrado uma vez por consulta): cada uma derruba o seu teste; suíte da API inteira com o banco real (Postgres 18 descartável): 95 arquivos, 1373 testes; `packages/shared` (280); painel (36 arquivos, 418 testes; o `reports-page.test.tsx` caiu uma vez sob carga e passou sozinho, 13 de 13, sem mudança no painel nesta rodada); `pnpm typecheck`, ESLint da raiz com `--max-warnings=0`, `prettier --check apps packages docs`; Semgrep com a imagem e as opções do CI nos arquivos do PR: 0 achados.
+  - mesclada a `main` de novo (#73, #74, #75, #76 e #77): `cloudflare_waf` e `wazuh_agent` nas fontes, as duas tarefas no worker e as entradas da `main` antes desta no `STATUS.md`; mutações conferidas (sem o progresso na primeira leitura; o orçamento cobrado uma vez por consulta): cada uma derruba o seu teste; depois de mesclar a `main` com o PR-18 e o PR-19: suíte da API inteira com o banco real (Postgres 18 descartável), 98 arquivos, 1435 testes e 1 pulado da `main` (na primeira rodada, um arquivo caiu sem asserção falha, a queda do Vitest no Windows, e a rodada seguinte passou inteira); `packages/shared` (285); painel (38 arquivos, 430 testes; antes da mesclagem, o `reports-page.test.tsx` caiu uma vez sob carga e passou sozinho, 13 de 13); `pnpm typecheck`, ESLint da raiz com `--max-warnings=0`, `prettier --check apps packages docs`; Semgrep com a imagem e as opções do CI nos arquivos do PR: 0 achados.

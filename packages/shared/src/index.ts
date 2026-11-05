@@ -11,6 +11,7 @@ export * from './incidents.js';
 export * from './inventory.js';
 export * from './pagination.js';
 export * from './permissions.js';
+export * from './plan-usage.js';
 export * from './plans.js';
 export * from './posture.js';
 export * from './protected-resources.js';

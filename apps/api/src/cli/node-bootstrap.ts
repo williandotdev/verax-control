@@ -16,11 +16,14 @@ import { AuditService } from '../common/audit/audit.service.js';
 import { nodePlan } from '../common/config/env.schema.js';
 import { loadConfig } from '../common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from '../common/config/load-env-file.js';
+import { requestContext } from '../common/context/request-context.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import { registerLiveSecret, sanitize } from '../common/logger/sanitize.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
+import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { UserRole } from '../generated/prisma/enums.js';
 import { mailTransport } from '../mail/mail.module.js';
+import { assertWithinPlan, PlanLimitReached } from '../plan/plan-limits.js';
 
 /**
  * Primeira configuração de um nó, rodada na instalação (`docker compose run --rm api node dist/cli/node-bootstrap.js`):
@@ -94,7 +97,8 @@ export interface BootstrapResult {
   tenant: 'created' | 'exists' | 'skipped';
   /** Rótulo do plano em `Tenant.plan`: gravado agora (`set`) ou já igual (`unchanged`). */
   plan?: 'set' | 'unchanged';
-  accounts: { project: string; outcome: 'created' | 'exists' | 'other-tenant' }[];
+  /** `plan-limit`: o cliente já está no limite de contas do plano (PR-18); a conta não é criada. */
+  accounts: { project: string; outcome: 'created' | 'exists' | 'other-tenant' | 'plan-limit' }[];
 }
 
 /**
@@ -243,25 +247,44 @@ export async function bootstrapNode(
       accounts.push({ project, outcome: found.tenantId === tenant.id ? 'exists' : 'other-tenant' });
       continue;
     }
-    const created = await prisma.forTenant(tenant.id).cloudAccount.create({
-      data: {
-        tenantId: tenant.id,
-        provider: 'gcp',
-        accountId: project,
-        regions: [],
-        pubsubSubscription: subscription,
-      },
-      select: { id: true },
+    // A conta nova pede vaga no plano, como no painel (PR-18): a checagem e a criação na mesma transação, sob o lock do
+    // plano. No limite, a conta fica de fora (`plan-limit`, com a recusa na auditoria) e o resto do bootstrap segue.
+    const tenantId = tenant.id;
+    const outcome = await prisma.$transaction(async (tx) => {
+      try {
+        await assertWithinPlan(tx, plan, 'cloudAccounts', tenantId);
+      } catch (error) {
+        if (!(error instanceof PlanLimitReached)) throw error;
+        await audit.write(tx, {
+          actor: { ...system, tenantId },
+          action: 'cloud_account.create',
+          outcome: 'failure',
+          statusCode: error.getStatus(),
+          resourceType: 'cloud_account',
+        });
+        return 'plan-limit' as const;
+      }
+      const created = await scopeToTenant(tx, tenantId).cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscription,
+        },
+        select: { id: true },
+      });
+      await audit.write(tx, {
+        actor: { ...system, tenantId },
+        action: 'cloud_account.create',
+        outcome: 'success',
+        resourceType: 'cloud_account',
+        resourceId: created.id,
+        after: { provider: 'gcp', accountId: project, pubsubSubscription: subscription },
+      });
+      return 'created' as const;
     });
-    await audit.write(prisma, {
-      actor: { ...system, tenantId: tenant.id },
-      action: 'cloud_account.create',
-      outcome: 'success',
-      resourceType: 'cloud_account',
-      resourceId: created.id,
-      after: { provider: 'gcp', accountId: project, pubsubSubscription: subscription },
-    });
-    accounts.push({ project, outcome: 'created' });
+    accounts.push({ project, outcome });
   }
   return { admin, temporaryPassword, tenant: tenantOutcome, plan: planOutcome, accounts };
 }
@@ -488,6 +511,44 @@ function checkAccount(
 }
 
 /**
+ * Cria a conta, ainda sem acesso (`invited`). O `admin_cliente` pede vaga no plano, como no painel (PR-18): a checagem e
+ * a criação na mesma transação, sob o lock das vagas do cliente (`provisionUser` grava pela transação do contexto). O
+ * primeiro usuário sempre tem vaga; um e-mail novo num cliente já cheio é recusado, com a tentativa na auditoria. A
+ * conta de suporte é da Verax e não ocupa vaga.
+ */
+async function provisionCustomerAccount(
+  prisma: PrismaService,
+  auth: Auth,
+  audit: AuditService,
+  plan: ResolvedPlan,
+  spec: CustomerAccountSpec,
+  tenantId: string | null,
+): Promise<string> {
+  const user = { email: spec.email, name: spec.name, role: spec.role, tenantId, status: 'invited' as const };
+  if (spec.role !== 'admin_cliente' || tenantId === null) return (await provisionUser(auth, user)).id;
+  const created = await prisma.$transaction(async (tx) => {
+    try {
+      await assertWithinPlan(tx, plan, 'users', tenantId);
+    } catch (error) {
+      if (error instanceof PlanLimitReached) return null;
+      throw error;
+    }
+    return requestContext.run({ tx }, () => provisionUser(auth, user));
+  });
+  if (created) return created.id;
+  await audit.write(prisma, {
+    actor: { type: 'system', tenantId },
+    action: 'user.create',
+    outcome: 'failure',
+    statusCode: 409,
+    resourceType: 'user',
+  });
+  throw new CustomerBootstrapRefusal(
+    `O plano do nó não tem vaga para a ${spec.label}: desative um usuário pelo painel ou amplie o plano (PLAN_MAX_USERS).`,
+  );
+}
+
+/**
  * Cria a conta ou gera a senha dela, quando é o caso. A senha entra na máscara do logger assim que `setTemporaryPassword`
  * a devolve, antes de qualquer outro `await` (lá dentro, só o hash vai para o banco, e nada é logado), e vai direto para
  * o arquivo da pasta de saída; a auditoria registra só o estado da conta.
@@ -496,6 +557,7 @@ async function ensureCustomerAccount(
   prisma: PrismaService,
   auth: Auth,
   audit: AuditService,
+  plan: ResolvedPlan,
   sink: PayloadSink,
   spec: CustomerAccountSpec,
   existing: ExistingAccount | null,
@@ -506,13 +568,7 @@ async function ensureCustomerAccount(
   let outcome: CustomerAccountOutcome;
   if (!existing) {
     // Sem acesso até a senha temporária ser gravada: se o processo cair no meio, a próxima execução a gera.
-    ({ id } = await provisionUser(auth, {
-      email: spec.email,
-      name: spec.name,
-      role: spec.role,
-      tenantId,
-      status: 'invited',
-    }));
+    id = await provisionCustomerAccount(prisma, auth, audit, plan, spec, tenantId);
     outcome = 'created';
   } else {
     id = existing.id;
@@ -593,6 +649,7 @@ export async function bootstrapCustomerNode(
     prisma,
     auth,
     audit,
+    plan,
     sink,
     admin,
     existingAdmin,
@@ -602,6 +659,7 @@ export async function bootstrapCustomerNode(
     prisma,
     auth,
     audit,
+    plan,
     sink,
     support,
     existingSupport,

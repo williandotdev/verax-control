@@ -99,11 +99,19 @@ applied=$(docker exec "$db" psql -U verax -d verax -tAc \
 expect "migrations aplicadas pelo papel das migrations" '[1-9][0-9]*' "$applied"
 expect "tabelas criadas pertencem ao papel das migrations" verax_migrator \
   "$(docker exec "$db" psql -U verax -d verax -tAc "select tableowner from pg_tables where tablename = 'AuditLog'")"
+# Expurgo (PR-19): as funções SECURITY DEFINER rodam com o dono delas, que tem de ser o das tabelas.
+expect "funções do expurgo pertencem ao papel das migrations" 'verax_migrator verax_migrator' \
+  "$(docker exec "$db" psql -U verax -d verax -tAc "select string_agg(pg_get_userbyid(proowner)::text, ' ') \
+    from pg_proc where proname in ('verax_purge_audit_log', 'verax_purge_finding_comments')")"
 as_app() { # <SQL>: roda como o papel da aplicação, dentro do contêiner do banco
   docker exec -e PGPASSWORD="$app_password" "$db" psql -h 127.0.0.1 -U verax_app -d verax -tAc "$1" 2>&1 || true
 }
 expect "aplicação não cria tabelas" '.*permission denied.*' "$(as_app 'create table invasora (id int)')"
 expect "aplicação não apaga a auditoria" '.*permission denied.*' "$(as_app 'delete from "AuditLog"')"
+expect "aplicação não apaga os comentários dos achados" '.*permission denied.*' \
+  "$(as_app 'delete from "FindingComment"')"
+expect "o expurgo da auditoria recusa corte mais novo que o piso" '.*piso de 13 meses.*' \
+  "$(as_app 'select * from verax_purge_audit_log(now(), 10)')"
 
 # Segredos da autenticação (E2) só deste teste; em produção vêm do Secrets Manager.
 auth_secret=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
