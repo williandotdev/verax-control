@@ -475,4 +475,40 @@ new_node sim
 if run install; then fail "o install.sh aceitou CREDENTIALS_VAULT=sim"; fi
 grep -q 'CREDENTIALS_VAULT inválido' "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
 
+# Modo cliente (CUSTOMER_MODE, fase 3): o install.sh instala e liga o serviço do primeiro acesso e o complemento do
+# verax-node que o sobe junto; sem o interruptor (o nó da Verax), nada disso existe, e desligado depois, sai.
+customer_unit=etc/systemd/system/verax-customer-bootstrap.service
+customer_dropin=etc/systemd/system/verax-node.service.d/customer.conf
+customer_mode() { # <valor>: troca a linha do node.conf do cenário (o exemplo já a tem, com false)
+  sed -i "s/^CUSTOMER_MODE=.*/CUSTOMER_MODE=$1/" "$root/node.conf"
+}
+for setting in absent false; do
+  scenario="modo cliente: nó da Verax (CUSTOMER_MODE $setting)"
+  new_node absent
+  if [[ $setting == absent ]]; then sed -i '/^CUSTOMER_MODE=/d' "$root/node.conf"; else customer_mode false; fi
+  run install || fail "install.sh falhou: $(cat "$state/out")"
+  [[ ! -e $root/$customer_unit && ! -e $root/$customer_dropin ]] || fail "o nó da Verax recebeu o serviço do modo cliente"
+  ! grep -q 'customer' "$state/systemctl.log" || fail "o systemctl mexeu no modo cliente: $(cat "$state/systemctl.log")"
+done
+scenario="modo cliente: ligado"
+new_node absent
+customer_mode true
+run install || fail "install.sh falhou: $(cat "$state/out")"
+cmp -s "$here/systemd/customer/verax-customer-bootstrap.service" "$root/$customer_unit" || fail "o serviço não foi instalado"
+cmp -s "$here/systemd/customer/verax-node.service.d/customer.conf" "$root/$customer_dropin" ||
+  fail "o complemento do verax-node não foi instalado"
+grep -qx 'systemctl enable verax-customer-bootstrap.service' "$state/systemctl.log" || fail "o serviço não foi ligado"
+grep -qx 'ExecStart=/opt/verax/bin/start.sh customer-bootstrap' "$here/systemd/customer/verax-customer-bootstrap.service" ||
+  fail "o serviço não chama o start.sh"
+scenario="modo cliente: desligado depois"
+customer_mode false
+run install || fail "install.sh falhou: $(cat "$state/out")"
+[[ ! -e $root/$customer_dropin ]] || fail "o complemento do verax-node ficou"
+grep -qx 'systemctl disable verax-customer-bootstrap.service' "$state/systemctl.log" || fail "o serviço não foi desligado"
+scenario="modo cliente: valor inválido"
+new_node absent
+customer_mode sim
+if run install; then fail "o install.sh aceitou CUSTOMER_MODE=sim"; fi
+grep -q 'CUSTOMER_MODE inválido' "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
+
 echo "vault-test: todos os cenários passaram"

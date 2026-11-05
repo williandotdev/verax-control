@@ -18,6 +18,11 @@ import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js'
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
+import {
+  NODE_STATUS_BUDGET_MS,
+  NODE_STATUS_INTERVAL_MS,
+  NodeStatusReporter,
+} from './node-status/node-status.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
 
 /**
@@ -95,6 +100,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  *
  * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
  * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google.
+ *
+ * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
+ * publica o estado do nó nos guest attributes da VM para o plano de controle.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -192,6 +200,17 @@ async function main(): Promise<void> {
         intervalMs: CREDENTIAL_REKEY_INTERVAL_MS,
         budgetMs: SYNC_BUDGET_MS,
         run: (signal) => rekey.runOnce(signal),
+      });
+    }
+    // Estado do nó nos guest attributes (nó de cliente): o worker é o único contêiner que alcança o servidor de
+    // metadados.
+    if (config.nodeStatus !== null) {
+      const reporter = new NodeStatusReporter(prisma, { version: config.nodeStatus.version, logger });
+      tasks.push({
+        name: 'node-status',
+        intervalMs: NODE_STATUS_INTERVAL_MS,
+        budgetMs: NODE_STATUS_BUDGET_MS,
+        run: (signal) => reporter.runOnce(signal),
       });
     }
   } catch (error) {
