@@ -104,9 +104,9 @@ export interface BootstrapResult {
  */
 async function ensureNodeTenant(
   prisma: PrismaService,
-  audit: AuditService,
   name: string,
   plan: ResolvedPlan,
+  audit: AuditService,
 ): Promise<{ tenant: { id: string }; outcome: 'created' | 'exists'; plan: 'set' | 'unchanged' }> {
   const system = { type: 'system' as const };
   const found = await prisma.tenant.findFirst({
@@ -230,7 +230,7 @@ export async function bootstrapNode(
     tenant,
     outcome: tenantOutcome,
     plan: planOutcome,
-  } = await ensureNodeTenant(prisma, audit, input.BOOTSTRAP_TENANT_NAME, plan);
+  } = await ensureNodeTenant(prisma, input.BOOTSTRAP_TENANT_NAME, plan, audit);
 
   const accounts: BootstrapResult['accounts'] = [];
   for (const { project, subscription } of input.BOOTSTRAP_GCP_ACCOUNTS) {
@@ -588,7 +588,7 @@ export async function bootstrapCustomerNode(
     tenant,
     outcome,
     plan: planOutcome,
-  } = await ensureNodeTenant(prisma, audit, input.BOOTSTRAP_TENANT_NAME, plan);
+  } = await ensureNodeTenant(prisma, input.BOOTSTRAP_TENANT_NAME, plan, audit);
   const adminOutcome = await ensureCustomerAccount(
     prisma,
     auth,

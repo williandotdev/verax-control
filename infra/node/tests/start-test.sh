@@ -559,12 +559,13 @@ script=$PWD/bin/start.sh
 example=$PWD/node.conf.example
 fake_gcp=$PWD/tests/fake-gcp.py
 
+# O cenário em curso fica em `step`, e não em `scenario` (o das outras partes, cada uma no próprio subshell).
 fail() {
-  echo "FALHOU ($scenario): $*" >&2
+  echo "FALHOU ($step): $*" >&2
   exit 1
 }
 
-scenario=ambiente
+step=ambiente
 command -v python3 >/dev/null || fail 'falta python3'
 work=$(readlink -f "$(mktemp -d)")
 server_pid=''
@@ -666,7 +667,7 @@ printf '{"email":"outro@verax.example","password":"segredo-interno-que-nao-pode-
 # Uma raiz nova por cenário: o node.conf de exemplo (sem comentários, com as linhas do cenário), as senhas internas, o
 # images.env com a versão e o start.sh com os caminhos e os dois endereços trocados (e sem espera entre as tentativas).
 new_root() { # <cenário> <pasta> [CHAVE=valor...]
-  scenario=$1
+  step=$1
   root=$work/root-$2
   mkdir -p "$root/etc/verax" "$root/var/lib/verax/secrets"
   grep -v -e '^#' -e '^$' "$example" >"$root/etc/verax/node.conf"
@@ -800,7 +801,7 @@ grep -q 'authorized=False' "$state/requests.log" && fail "pedido sem o token da 
 no_secret_leaks
 
 # --- De novo: nenhuma senha nova, nenhuma versão nova ------------------------------------------------------------
-scenario="modo cliente: de novo, nada novo"
+step="modo cliente: de novo, nada novo"
 : >"$state/requests.log"
 echo none >"$state/behavior"
 start customer-bootstrap || fail "o customer-bootstrap falhou: $(cat "$root/out")"
@@ -809,7 +810,7 @@ grep -q 'addVersion' "$state/requests.log" && fail "chamou o Secret Manager sem 
 grep -q 'Senha nova gravada' "$root/out" && fail "disse que gravou"
 
 # --- Pedido explícito de senha nova: passa para o contêiner --------------------------------------------------------
-scenario="modo cliente: senha nova a pedido"
+step="modo cliente: senha nova a pedido"
 echo admin >"$state/behavior"
 start customer-bootstrap BOOTSTRAP_RENEW_ADMIN_PASSWORD=true || fail "falhou: $(cat "$root/out")"
 grep -qx 'BOOTSTRAP_RENEW_ADMIN_PASSWORD=true' "$state/bootstrap-env" || fail "o pedido não chegou ao contêiner"

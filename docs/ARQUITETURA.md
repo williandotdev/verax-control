@@ -758,6 +758,10 @@ e não muda nada.
   `/var/lib/verax` já montado só leitura no worker: dá o espaço do sistema de arquivos onde ficam o banco, os backups e
   os volumes do Docker, sem montagem nova. Com os atributos desligados na VM (403 ou 404 no `PUT`; a documentação da GCP
   não fixa o código), a tarefa avisa uma vez e para no primeiro `PUT` de cada execução, sem ler o banco.
+  **Ritmo:** a GCP pede no máximo uma rajada de 3 consultas por segundo nos guest attributes (e 10 por minuto por VM) e
+  pode descartar atributos que estão sendo gravados acima disso; todo `PUT` do processo passa por um ritmo único
+  (`WritePacer`, 500 ms entre um começo e o seguinte), então nenhuma janela de 1 s tem mais de 3. São 4 gravações a
+  cada 5 min, menos de 1 por minuto.
 
 ### O nó de cada cliente: `envs/tenant` e `envs/nodes-platform` (CP-06)
 

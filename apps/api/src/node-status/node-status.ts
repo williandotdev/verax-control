@@ -1,10 +1,51 @@
 import { statfs } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Prisma } from '../generated/prisma/client.js';
 
 /** A cada 5 minutos: o plano de controle lê a frota pelos guest attributes (plano §4c e CP-12). */
 export const NODE_STATUS_INTERVAL_MS = 5 * 60 * 1000;
-/** Quatro PUTs no servidor de metadados da própria VM e duas consultas pequenas ao banco. */
+/** Quatro PUTs espaçados no servidor de metadados da própria VM e duas consultas pequenas ao banco. */
 export const NODE_STATUS_BUDGET_MS = 60 * 1000;
+
+/**
+ * Espaço mínimo entre dois PUTs nos guest attributes. A GCP pede que as consultas não passem de uma rajada de 3 por
+ * segundo (e de 10 por minuto por VM); acima disso, ela pode descartar atributos que estão sendo gravados
+ * (https://docs.cloud.google.com/compute/docs/metadata/manage-guest-attributes, "When to use guest attributes"). Com
+ * 500 ms entre um começo e o seguinte, nenhuma janela de 1 s tem mais de 3. A tarefa grava 4 atributos a cada 5 min
+ * (menos de 1 por minuto), e sobra espaço para os da instalação (`verax/ready` e `verax/error`).
+ */
+export const GUEST_ATTRIBUTE_SPACING_MS = 500;
+
+/**
+ * O ritmo dos PUTs: cada chamada reserva o próximo horário livre (pelo relógio monotônico) e espera até ele. A reserva
+ * vem antes da espera, então chamadas ao mesmo tempo também saem espaçadas. O sinal interrompe a espera.
+ */
+export class WritePacer {
+  private nextAt = Number.NEGATIVE_INFINITY;
+
+  constructor(
+    private readonly spacingMs: number = GUEST_ATTRIBUTE_SPACING_MS,
+    private readonly now: () => number = () => performance.now(),
+  ) {}
+
+  async wait(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const at = Math.max(this.now(), this.nextAt);
+    this.nextAt = at + this.spacingMs;
+    const pause = at - this.now();
+    if (pause <= 0) return;
+    try {
+      await delay(pause, undefined, { signal });
+    } catch (error) {
+      // O motivo do sinal (o do agendador), para a parada contar como interrupção, e não como falha.
+      if (signal.aborted) throw signal.reason;
+      throw error;
+    }
+  }
+}
+
+/** Um ritmo só por processo: o worker é o único que grava os guest attributes da VM, por qualquer instância da tarefa. */
+const processPacer = new WritePacer();
 
 /** Raiz dos guest attributes da VM no servidor de metadados. Só o worker o alcança (`metadata-guard.sh`). */
 export const GUEST_ATTRIBUTES_URL =
@@ -62,6 +103,8 @@ export interface NodeStatusOptions {
   fetch?: typeof fetch;
   statfs?: StatFs;
   timeoutMs?: number;
+  /** O ritmo dos PUTs; sem informar, o do processo (`GUEST_ATTRIBUTE_SPACING_MS`). */
+  pacer?: WritePacer;
 }
 
 /** O servidor de metadados respondeu com erro (o status vai para o log pelo nome do erro, nunca o corpo). */
@@ -84,7 +127,8 @@ export class GuestAttributeWriteError extends Error {
  * Só agregados, sem nada que identifique cliente, conta ou pessoa. O worker é o único contêiner que alcança o servidor
  * de metadados (a guarda do host), então a tarefa roda nele. Com os guest attributes desligados na VM (o padrão da GCP,
  * `enable-guest-attributes` fora dos metadados), o servidor recusa o primeiro PUT: a tarefa avisa uma vez no log e cada
- * execução seguinte para nesse PUT, sem ler o banco, até o atributo ser ligado.
+ * execução seguinte para nesse PUT, sem ler o banco, até o atributo ser ligado. Todo PUT passa pelo ritmo do processo
+ * (`WritePacer`): no máximo 3 por segundo, o limite da GCP.
  */
 export class NodeStatusReporter {
   private readonly baseUrl: string;
@@ -92,6 +136,7 @@ export class NodeStatusReporter {
   private readonly fetch: typeof fetch;
   private readonly statfs: StatFs;
   private readonly timeoutMs: number;
+  private readonly pacer: WritePacer;
   private disabledLogged = false;
 
   /**
@@ -107,6 +152,7 @@ export class NodeStatusReporter {
     this.fetch = options.fetch ?? fetch;
     this.statfs = options.statfs ?? statfs;
     this.timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
+    this.pacer = options.pacer ?? processPacer;
   }
 
   /** Os valores do momento, lidos do banco e do disco. */
@@ -159,10 +205,12 @@ export class NodeStatusReporter {
   }
 
   /**
-   * Um PUT por atributo, com o cabeçalho que o servidor de metadados exige e sem seguir redirecionamento. O corpo da
-   * resposta não é lido. 403 e 404 são os guest attributes desligados (a documentação da GCP não fixa o código).
+   * Um PUT por atributo, no ritmo do processo, com o cabeçalho que o servidor de metadados exige e sem seguir
+   * redirecionamento. O corpo da resposta não é lido. 403 e 404 são os guest attributes desligados (a documentação da
+   * GCP não fixa o código).
    */
   private async put(key: string, value: string, signal: AbortSignal): Promise<'ok' | 'disabled'> {
+    await this.pacer.wait(signal);
     const response = await this.fetch(`${this.baseUrl}/${NODE_STATUS_NAMESPACE}/${key}`, {
       method: 'PUT',
       headers: { 'Metadata-Flavor': 'Google', 'content-type': 'text/plain; charset=utf-8' },

@@ -3,13 +3,15 @@ import { randomInt } from 'node:crypto';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import {
+  GUEST_ATTRIBUTE_SPACING_MS,
   GuestAttributeWriteError,
   type NodeStatusSource,
   NodeStatusReporter,
   type StatFs,
+  WritePacer,
 } from '../src/node-status/node-status.js';
 import { createTenant } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
@@ -19,19 +21,33 @@ interface Received {
   path: string;
   headers: IncomingHttpHeaders;
   body: string;
+  /** Quando o pedido chegou, pelo relógio monotônico. */
+  at: number;
 }
 
+/** O limite da GCP para os guest attributes: no máximo 3 consultas em qualquer janela de 1 s. */
+const BURST_LIMIT = 3;
+const BURST_WINDOW_MS = 1000;
+
 /**
- * Servidor de metadados falso, em 127.0.0.1: guarda cada pedido (método, caminho, cabeçalhos e corpo) e responde com o
- * status do momento (200; 403 como a VM com os guest attributes desligados; 500; ou um redirecionamento).
+ * Servidor de metadados falso, em 127.0.0.1: guarda cada pedido (método, caminho, cabeçalhos, corpo e a hora em que
+ * chegou) e responde com o status do momento (200; 403 como a VM com os guest attributes desligados; 500; ou um
+ * redirecionamento). Confere o ritmo como a GCP pede: o pedido que faz mais de 3 caírem na mesma janela de 1 s conta
+ * como violação e recebe 429. A conta atravessa os testes (as execuções seguidas também entram nela).
  */
 class FakeMetadata {
   readonly received: Received[] = [];
   status = 200;
+  violations = 0;
+  private readonly arrivals: number[] = [];
   private server: Server | undefined;
 
   async start(): Promise<string> {
     this.server = createServer((request, response) => {
+      const at = performance.now();
+      this.arrivals.push(at);
+      const burst = this.arrivals.filter((other) => other > at - BURST_WINDOW_MS).length > BURST_LIMIT;
+      if (burst) this.violations += 1;
       const chunks: Buffer[] = [];
       request.on('data', (chunk: Buffer) => chunks.push(chunk));
       request.on('end', () => {
@@ -40,7 +56,12 @@ class FakeMetadata {
           path: request.url ?? '',
           headers: request.headers,
           body: Buffer.concat(chunks).toString('utf8'),
+          at,
         });
+        if (burst) {
+          response.writeHead(429).end();
+          return;
+        }
         if (this.status === 302) {
           response.writeHead(302, { location: 'http://127.0.0.1:9/outro' }).end();
           return;
@@ -146,6 +167,11 @@ describe('tarefa node-status do worker: estado do nó nos guest attributes (fase
   beforeEach(() => {
     metadata.received.length = 0;
     metadata.status = 200;
+  });
+
+  afterEach(() => {
+    // Nenhum teste passou do limite da GCP: nenhuma janela de 1 s com mais de 3 PUTs.
+    expect(metadata.violations).toBe(0);
   });
 
   afterAll(async () => {
@@ -283,6 +309,53 @@ describe('tarefa node-status do worker: estado do nó nos guest attributes (fase
     await reporter(prisma.forTenant(emptyTenant), { statfs: undefined, diskProbe: process.cwd() }).runOnce();
     expect(Number(metadata.attributes()['verax/disk-free'])).toBeGreaterThanOrEqual(0);
     expect(Number(metadata.attributes()['verax/disk-free'])).toBeLessThanOrEqual(100);
+  });
+
+  it('ritmo: os PUTs saem espaçados, também entre execuções seguidas, e nenhum segundo tem mais de 3', async () => {
+    await reporter(prisma.forTenant(tenantA)).runOnce();
+    await reporter(prisma.forTenant(tenantB)).runOnce();
+    expect(metadata.received).toHaveLength(8);
+    const gaps = metadata.received
+      .slice(1)
+      .map((item, index) => item.at - (metadata.received[index]?.at ?? 0));
+    // O espaço é medido no começo de cada PUT; na chegada, uma folga para o agendamento do processo.
+    for (const gap of gaps) expect(gap).toBeGreaterThan(GUEST_ATTRIBUTE_SPACING_MS - 100);
+    for (const item of metadata.received) {
+      const inWindow = metadata.received.filter((other) => other.at > item.at - 1000 && other.at <= item.at);
+      expect(inWindow.length).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it('o falso confere o limite: PUTs sem o ritmo passam de 3 por segundo e são recusados', async () => {
+    const unpaced = reporter(prisma.forTenant(tenantA), { pacer: new WritePacer(0) });
+    await expect(unpaced.runOnce()).rejects.toMatchObject({ status: 429 });
+    expect(metadata.violations).toBeGreaterThan(0);
+    // A violação era do teste: zera para o afterEach, e o próximo teste espera a janela passar.
+    metadata.violations = 0;
+    await new Promise((resolve) => setTimeout(resolve, BURST_WINDOW_MS));
+  });
+
+  it('o ritmo reserva o horário antes de esperar (chamadas ao mesmo tempo saem espaçadas) e respeita o sinal', async () => {
+    const pacer = new WritePacer(200);
+    const never = new AbortController().signal;
+    const started = performance.now();
+    const times: number[] = [];
+    await Promise.all(
+      [0, 1, 2].map(async () => {
+        await pacer.wait(never);
+        times.push(performance.now() - started);
+      }),
+    );
+    times.sort((a, b) => a - b);
+    expect(times[1]).toBeGreaterThanOrEqual(150);
+    expect(times[2]).toBeGreaterThanOrEqual(350);
+
+    const slow = new WritePacer(60_000);
+    await slow.wait(never);
+    const controller = new AbortController();
+    const waiting = slow.wait(controller.signal);
+    controller.abort(new DOMException('o worker está parando', 'AbortError'));
+    await expect(waiting).rejects.toThrow('o worker está parando');
   });
 
   it('o sinal do agendador (parada do worker, orçamento) interrompe a execução', async () => {
