@@ -3,16 +3,17 @@ import {
   type AuditEntryDetail,
   auditListQuerySchema,
   type AuditOutcome,
+  historyPeriodStart,
   type Role,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
 import type { MockState } from './handlers';
+import { demoPeriodRefusal } from './plan-handlers';
 
 const url = (path: string): string => `${API_URL}${path}`;
 const MINUTE = 60_000;
-const PERIOD_HOURS = { '24h': 24, '7d': 168, '30d': 720, '90d': 2160 } as const;
 
 const problem = (status: number, message: string, code?: string) =>
   HttpResponse.json({ statusCode: status, message, ...(code ? { code } : {}) }, { status });
@@ -270,7 +271,9 @@ export function createAuditHandlers(state: MockState, trail: MockAuditRecord[] =
       const query = auditListQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
       if (!query.success) return problem(400, 'Filtro inválido');
       const { page, pageSize, outcome, resourceType, actorId, period } = query.data;
-      const from = period ? new Date(Date.now() - PERIOD_HOURS[period] * 3_600_000).toISOString() : null;
+      const refusal = demoPeriodRefusal(state, period);
+      if (refusal) return refusal;
+      const from = period ? historyPeriodStart(period, new Date()).toISOString() : null;
       const items = scope.records
         .filter(
           (record) =>

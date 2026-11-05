@@ -311,6 +311,43 @@ gcloud compute instances get-guest-attributes vx-<slug> --zone <zona> --project 
 Com os atributos de convidado desligados na VM (`enable-guest-attributes`), o worker avisa uma vez no log e não publica
 nada.
 
+## 8. Nó criado pelo plano de controle: instalação sem operador (fase 3, PR-N7)
+
+O nó de cliente se instala sozinho no primeiro boot: o script de boot baixa o release da versão dos metadados
+(`verax-node-version`), confere a assinatura do manifesto e o SHA-256 do pacote, escreve o `node.conf` do modo cliente
+com as chaves `verax-*`, roda o `install.sh` e espera o nó, o Wazuh, o primeiro acesso (item 7) e o túnel. Pronto, grava
+`verax/ready=<versão>`; numa falha, `verax/error=<código>` (a tabela dos códigos está em `docs/ARQUITETURA.md`,
+"Instalação sem operador"). O desenho e o aceite estão lá e no `infra/gcp/GUIA.md` ("O nó de cada cliente").
+
+**Diagnóstico sem SSH:**
+
+```bash
+gcloud compute instances get-guest-attributes vx-<slug> --zone <zona> --project <projeto-dos-nos> --query-path=verax/
+gcloud compute instances get-serial-port-output vx-<slug> --zone <zona> --project <projeto-dos-nos> | grep 'verax-boot:'
+```
+
+A saída serial tem cada passo da instalação e o motivo do erro, sem senha, e-mail ou nome do cliente. Os casos mais
+prováveis:
+
+- `release_download_failed` ou `package_sha256_mismatch`: a versão ou o SHA-256 do tenant não são os de um release
+  promovido. Confira o release e o manifesto (`docs/runbooks/versao-no.md`) e corrija as variáveis do tenant;
+- `release_signature_invalid`: o manifesto não fecha com as chaves de release do repositório (`infra/node/keys`) que o
+  Terraform pôs no script de boot. Não instale: é o caso que a assinatura existe para barrar;
+- `install_failed` com `manifest unknown` ou `not found` na saída serial: as imagens do release saíram do Artifact
+  Registry pela limpeza de 30 dias (`docs/ARQUITETURA.md`, "Instalação sem operador", origem das imagens);
+- `tunnel_token_missing`: o token do túnel não chegou ao cofre `vx-<slug>-cloudflare-tunnel-token` em 60 minutos.
+  Grave-o e reinicie a VM;
+- `customer_bootstrap_failed`: o item 7 ("Quando o serviço falha").
+
+**Tentar de novo:** corrigido o motivo (no Terraform do tenant ou no cofre), reinicie a VM
+(`gcloud compute instances reset vx-<slug> --zone <zona> --project <projeto-dos-nos>`). Uma instalação que não terminou
+é refeita do começo; uma que terminou não é refeita.
+
+**Atualizar o nó:** a versão nova nos metadados não é instalada sozinha (o boot só avisa). A atualização é pelo
+`deploy.sh` (`docs/runbooks/no-verax.md`), com o `node.conf` que a instalação escreveu: copie o `/etc/verax/node.conf`
+da VM pelo IAP e passe-o ao `deploy.sh` como de costume. Depois dela, `verax/ready` passa a mostrar o commit instalado
+(o `deploy.sh` não conhece a versão do release).
+
 ## Publicar uma versão nova do diagnóstico
 
 1. Altere o script, os testes e a constante `VERSION` em `infra/diagnostico/diagnostico_aws.py`, num PR.

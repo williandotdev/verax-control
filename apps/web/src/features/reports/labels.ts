@@ -22,6 +22,7 @@ export const PERIOD_LABELS: Readonly<Record<ReportPeriod, string>> = {
   '7d': 'Últimos 7 dias',
   '30d': 'Últimos 30 dias',
   '90d': 'Últimos 90 dias',
+  '12m': 'Últimos 12 meses',
 };
 
 /** Abas do menu Relatórios: o caminho na URL (`?aba=`) e o título. */

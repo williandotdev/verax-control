@@ -106,6 +106,11 @@ if [[ $secret == *-credentials-key ]]; then
   esac
   exit 0
 fi
+# O token do túnel, quando o cenário o grava em $state/tunnel-token (o plano de controle gravando depois da partida).
+if [[ $secret == *-cloudflare-tunnel-token && -f $state/tunnel-token ]]; then
+  cat "$state/tunnel-token"
+  exit 0
+fi
 # Os outros segredos do nó (túnel e e-mail) ficam sem valor: o nó sobe sem o túnel, como na primeira vez.
 echo "ERROR: (gcloud.secrets.versions.access) NOT_FOUND: Secret [$name] not found or has no versions." >&2
 exit 1
@@ -167,13 +172,14 @@ new_node() { # <CREDENTIALS_VAULT: absent | true | false | outro valor>
   if [[ $1 != absent ]]; then echo "CREDENTIALS_VAULT=$1" >>"$root/node.conf"; fi
 }
 
-# Roda um script do pacote na raiz de teste; a saída fica em $state/out (stdout e stderr juntos).
+# Roda um script do pacote na raiz de teste; a saída fica em $state/out (stdout e stderr juntos). O install.sh recebe
+# os argumentos do deploy.sh e, depois deles, os do cenário (o --release da instalação sem operador).
 run() { # <install|start> [argumentos...]
   local script=$1
   shift
   if [[ $script == install ]]; then
     set -- --version "$(printf 'a%.0s' {1..40})" --api-digest "sha256:$(printf '1%.0s' {1..64})" \
-      --migrate-digest "sha256:$(printf '2%.0s' {1..64})" --config "$root/node.conf"
+      --migrate-digest "sha256:$(printf '2%.0s' {1..64})" --config "$root/node.conf" "$@"
     script=$root/pkg/bin/install.sh
   else
     script=$root/opt/verax/bin/start.sh
@@ -510,5 +516,68 @@ new_node absent
 customer_mode sim
 if run install; then fail "o install.sh aceitou CUSTOMER_MODE=sim"; fi
 grep -q 'CUSTOMER_MODE inválido' "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
+
+# Versão do release (PR-N7): o deploy.sh não passa --release, e o images.env é o de sempre (as três linhas); a
+# instalação sem operador passa, e ele ganha NODE_RELEASE no fim. Uma versão fora do formato para antes de tudo.
+images_lines="API_IMAGE=us-east1-docker.pkg.dev/projeto-do-no/verax-control/api@sha256:$(printf '1%.0s' {1..64})
+MIGRATE_IMAGE=us-east1-docker.pkg.dev/projeto-do-no/verax-control/migrate@sha256:$(printf '2%.0s' {1..64})
+NODE_VERSION=$(printf 'a%.0s' {1..40})"
+scenario="images.env sem --release (o deploy.sh): as três linhas de sempre"
+new_node absent
+run install || fail "install.sh falhou: $(cat "$state/out")"
+[[ $(cat "$root/etc/verax/images.env") == "$images_lines" ]] || fail "images.env: $(cat "$root/etc/verax/images.env")"
+grep -qx "Nó na versão $(printf 'a%.0s' {1..40})." "$state/out" || fail "a última linha mudou: $(tail -n 1 "$state/out")"
+grep -qx 'gcloud auth configure-docker us-east1-docker.pkg.dev --quiet' "$state/gcloud.log" ||
+  fail "o Docker não foi configurado para o Artifact Registry"
+scenario="images.env com --release (a instalação sem operador)"
+run install --release node-v1.2.3 || fail "install.sh falhou: $(cat "$state/out")"
+[[ $(cat "$root/etc/verax/images.env") == "$images_lines"$'\nNODE_RELEASE=node-v1.2.3' ]] ||
+  fail "images.env: $(cat "$root/etc/verax/images.env")"
+grep -qx "Nó na versão $(printf 'a%.0s' {1..40}) (node-v1.2.3)." "$state/out" || fail "a última linha: $(tail -n 1 "$state/out")"
+for bad in 'node-v1.2' 'v1.2.3' 'node-v1.2.3;id' 'node-v01.2.3'; do
+  scenario="--release fora do formato: $bad"
+  new_node absent
+  if run install --release "$bad"; then fail "o install.sh aceitou"; fi
+  grep -q 'Informe --release no formato node-vX.Y.Z' "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
+  [[ ! -e $state/systemctl.log && ! -e $root/etc/verax/images.env ]] || fail "o install.sh mexeu na máquina antes de parar"
+done
+scenario="imagens do GHCR: sem o ajudante de credenciais do gcloud"
+new_node absent
+sed -i 's|^IMAGES_REPOSITORY=.*|IMAGES_REPOSITORY=ghcr.io/dono-teste/verax-teste|' "$root/node.conf"
+run install || fail "install.sh falhou: $(cat "$state/out")"
+! grep -q 'configure-docker' "$state/gcloud.log" 2>/dev/null || fail "configurou o gcloud para o GHCR"
+grep -qx "API_IMAGE=ghcr.io/dono-teste/verax-teste/api@sha256:$(printf '1%.0s' {1..64})" "$root/etc/verax/images.env" ||
+  fail "images.env: $(cat "$root/etc/verax/images.env")"
+
+# Só o túnel (start.sh tunnel, PR-N7): antes do `up` para; com o cofre vazio sai com 3 sem subir nada; com o token,
+# reescreve só o cloudflared.env e sobe só o cloudflared, sem mexer nos outros arquivos nem nos outros contêineres.
+scenario="start.sh tunnel antes do up"
+new_node absent
+run install || fail "install.sh falhou: $(cat "$state/out")"
+if run start tunnel; then fail "seguiu sem os arquivos de ambiente"; fi
+grep -q "o 'start.sh up' (verax-node.service) vem antes" "$state/out" || fail "sem a mensagem: $(cat "$state/out")"
+scenario="start.sh tunnel com o cofre ainda vazio"
+run start up || fail "start.sh up falhou: $(cat "$state/out")"
+[[ ! -s $root/run/verax/cloudflared.env ]] || fail "o up gravou o túnel sem token"
+rm -f "$state/docker.log"
+status=0
+run start tunnel || status=$?
+[[ $status == 3 ]] || fail "saída $status, esperada 3: $(cat "$state/out")"
+[[ ! -e $state/docker.log && ! -s $root/run/verax/cloudflared.env ]] || fail "subiu algo sem o token"
+scenario="start.sh tunnel com o token"
+printf 'token-do-tunel-de-teste' >"$state/tunnel-token"
+cp "$root/run/verax/api.env" "$root/api.env.antes"
+cp "$root/run/verax/worker.env" "$root/worker.env.antes"
+run start tunnel || fail "start.sh tunnel falhou: $(cat "$state/out")"
+[[ $(cat "$root/run/verax/cloudflared.env") == "TUNNEL_TOKEN='token-do-tunel-de-teste'" ]] || fail "cloudflared.env"
+[[ $(stat -c %a "$root/run/verax/cloudflared.env") == 600 ]] || fail "cloudflared.env não é 0600"
+if [[ $(wc -l <"$state/docker.log") != 1 ]] || ! grep -q ' up --detach --no-deps cloudflared$' "$state/docker.log"; then
+  fail "o Docker fez mais que subir o cloudflared: $(cat "$state/docker.log")"
+fi
+if ! cmp -s "$root/run/verax/api.env" "$root/api.env.antes" ||
+  ! cmp -s "$root/run/verax/worker.env" "$root/worker.env.antes"; then
+  fail "o tunnel mexeu nos outros arquivos de ambiente"
+fi
+! grep -q 'token-do-tunel' "$state/out" "$state/docker.log" || fail "o token apareceu na saída ou nos argumentos"
 
 echo "vault-test: todos os cenários passaram"

@@ -53,6 +53,8 @@ export const PERMISSIONS = {
   // não recebe avisos dos clientes.
   'notification_preferences:read': ALL,
   'notification_preferences:write': OPERATORS,
+  // Só o histórico do plano (fase 2, PR-20): os filtros de período de achados e relatórios são de todos os papéis.
+  'plan_history:read': ALL,
   // Exclusivas da Verax
   'session:switch_tenant': VERAX,
   'unowned_alerts:read': VERAX,

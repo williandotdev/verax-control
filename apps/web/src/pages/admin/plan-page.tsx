@@ -1,4 +1,10 @@
-import { GIB_BYTES, PLAN_VOLUME_WARNING_RATIO, type PlanUsage, planVolumeRatio } from '@verax/shared';
+import {
+  GIB_BYTES,
+  PLAN_VOLUME_WARNING_RATIO,
+  type PlanUsage,
+  planVolumeRatio,
+  RAW_EVENT_RETENTION_DAYS,
+} from '@verax/shared';
 import { CircleAlert, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useId } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
@@ -233,7 +239,9 @@ function HistoryTile({ days }: { days: number | null }) {
   return (
     <Tile title="Histórico" titleId={id} value={days === null ? 'Sem limite' : plural(days, 'dia', 'dias')}>
       <p className="text-xs text-muted-foreground">
-        Por quanto tempo achados, incidentes e a trilha de auditoria ficam guardados.
+        Por quanto tempo achados, incidentes e a postura ficam guardados, e até onde vão os filtros de
+        período. A trilha de auditoria fica ao menos 13 meses; o evento bruto do log,{' '}
+        {RAW_EVENT_RETENTION_DAYS} dias.
       </p>
     </Tile>
   );
