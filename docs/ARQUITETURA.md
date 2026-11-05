@@ -206,6 +206,29 @@ Cada origem de log (bucket, assinatura, identidade do sink ou zona) pertence a u
 buckets: é o que permite atribuir cada alerta ao cliente certo. A identidade do sink, além disso, é de um projeto só,
 mesmo dentro do cliente: em outro projeto, daria a ele a publicação no tópico do primeiro.
 
+### Regras de detecção: faixas de ID e títulos
+
+Cada regra tem um ID numa faixa própria, e o ID vai para o achado (`ruleId`), para as exceções e para os relatórios.
+A escala de nível é a mesma em todas: 12 ou mais é crítica, 10 alta, 7 média e abaixo disso baixa.
+
+| Faixa           | Onde roda                                                               | O quê                                                                                                                          |
+| --------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 80200 a 80499   | Wazuh do nó (`0350-amazon_rules.xml`, do próprio Wazuh)                 | CloudTrail, GuardDuty e WAF; as correlações 80252, 80255 e 80443 sobrescritas para contar por conta (`verax_aws_rules.xml`)    |
+| 100200 a 100299 | Wazuh do nó (`verax_reader_rules.xml`, gerado do modelo com o IP do nó) | O papel de leitura da Verax no CloudTrail do cliente (PR-V4', passo "Coletar")                                                 |
+| 100300 a 100399 | Wazuh do nó (`verax_aws_critical_rules.xml`)                            | Regras críticas da AWS no CloudTrail do cliente (PR-V7): root, administrador, CloudTrail, GuardDuty, S3, grupo de segurança... |
+| 990101 a 990199 | Worker, sem Wazuh (`apps/api/src/gcp/gcp-rules.ts`)                     | Auditoria da GCP                                                                                                               |
+| 990201 a 990299 | Não usada                                                               | Era a do coletor próprio do CloudTrail, que saiu do plano; o subconjunto crítico do catálogo dela virou a faixa 100300         |
+| 990301 a 990399 | Worker, sem Wazuh (`apps/api/src/cloudflare/cloudflare-rules.ts`)       | Auditoria do Cloudflare                                                                                                        |
+
+**O título do achado é fixo e em português.** Nas regras do worker, é o da tabela de regras. Nas do Wazuh, a
+descrição cita campos do evento (o nome da chamada, o IP, o bucket) e, nas regras do próprio Wazuh, é em inglês: o
+título vem do dicionário `apps/api/src/alerts/aws-rule-titles.ts`, que cobre toda regra local com nível acima de 0
+(1002xx, 1003xx e as correlações sobrescritas) e o login com falha do Wazuh (80254). Sem título no dicionário (o
+GuardDuty, cujo título vem da própria AWS, e o CloudTrail genérico), fica a descrição, como nos alertas dos agentes
+nas instâncias do cliente (regras do próprio Wazuh). Um teste confere que toda regra local que pode virar achado tem
+título e que nenhum título leva campo do evento: é o título, e não a descrição, que o aviso por e-mail (PR-16) pode
+usar.
+
 ## Cofre de credenciais
 
 _(fase 2: a tabela, a cifra, a chave do nó e a recifragem estão no código, em `apps/api/src/credentials` e
@@ -395,6 +418,13 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
      papel vindas do IP do nó, nível 0 (100200 e 100201); a sessão do papel ou o token usados de outro IP, nível 12
      com MITRE T1078.004 (100202 e 100203); qualquer alteração no papel ou nas duas políticas da pilha, nível 5 (100204
      e 100205). Sem o `NODE_EGRESS_IPS` no `node.conf`, só as de alteração.
+   - **Regras críticas** (`verax_aws_critical_rules.xml`, 100300 a 100324, PR-V7): o subconjunto crítico do catálogo
+     da AWS (root, permissão de administrador, papel aberto a qualquer conta, CloudTrail e GuardDuty desligados, bucket
+     e snapshot públicos, grupo de segurança aberto para a internet, domínio, organização) e o WAF desligado ou
+     alterado, com MITRE e o título em português do dicionário (seção "Regras de detecção"). Só o que aconteceu (sem
+     `errorCode`); filhas da mesma cadeia do CloudTrail das regras do papel. O papel de leitura só lê, e nenhuma delas
+     casa leitura: as leituras do nó seguem no nível 0. Uma alteração crítica vale sobre a regra do papel (o Wazuh tenta
+     primeiro a irmã de nível mais alto).
 3. **Conferir (PR-V5', feito):** o worker, o único contêiner com metadata, pede o próprio token, assume o papel e
    confere a conta e a leitura de cada bucket: é a `WebIdentityAwsConnectionChecker`
    (`apps/api/src/aws/web-identity-checker.ts`), no lugar da `UnavailableAwsConnectionChecker` do PR-V3'. Toda chamada
