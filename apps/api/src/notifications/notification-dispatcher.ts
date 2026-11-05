@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import {
+  INCIDENT_NOTICE_ROLES,
+  NOTICE_CATCH_UP_HOURS,
+  NOTICE_DIGEST_ITEMS,
+  NOTICE_HOURLY_LIMIT,
+} from '@verax/shared';
 import { SyncLease } from '../alerts/finding-store.js';
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { NotificationKind, Prisma, UserRole } from '../generated/prisma/client.js';
 import type { MailTransport } from '../mail/mail.types.js';
-import { type NoticeMail, noticeMail } from '../mail/templates.js';
+import { type DigestItem, digestMail, type NoticeMail, noticeMail } from '../mail/templates.js';
 import type { UsageNotices } from './usage-notices.js';
 
 /** Nome da tarefa do agendador e da concessão no banco (`SyncState`). */
@@ -16,7 +23,7 @@ export const NOTIFICATION_RETRY_DELAYS_MS: readonly number[] = [1, 5, 15, 60].ma
   (minutes) => minutes * 60_000,
 );
 export const NOTIFICATION_MAX_ATTEMPTS = NOTIFICATION_RETRY_DELAYS_MS.length + 1;
-/** Avisos por execução, os mais antigos primeiro. */
+/** Avisos por execução, os mais antigos primeiro (e outros tantos resumos). */
 export const NOTIFICATION_BATCH = 20;
 /**
  * Tempo de envio de um aviso numa execução (as cinco do lote cabem no orçamento de 5 min da tarefa). Passado o prazo,
@@ -24,6 +31,9 @@ export const NOTIFICATION_BATCH = 20;
  * muitas pessoas ou um servidor lento não segura os outros.
  */
 export const NOTIFICATION_DELIVERY_BUDGET_MS = 60_000;
+/** Aviso com isto ou mais na fila não sai sozinho: entra no resumo de retomada (fase 2, PR-17'). */
+export const NOTICE_CATCH_UP_MS = NOTICE_CATCH_UP_HOURS * 3_600_000;
+const HOUR_MS = 3_600_000;
 
 /**
  * Quem recebe cada tipo de aviso, entre as pessoas do cliente (decisão D8 da fase 2): administradores e analistas
@@ -31,12 +41,51 @@ export const NOTIFICATION_DELIVERY_BUDGET_MS = 60_000;
  * com a Verax sobre o plano e quem mexe em Contas cloud). `leitura` não recebe; a equipe da Verax não é do cliente.
  */
 export const NOTICE_RECIPIENT_ROLES: Readonly<Record<NotificationKind, readonly UserRole[]>> = {
-  incident_opened: ['admin_cliente', 'analista_cliente'],
-  incident_escalated: ['admin_cliente', 'analista_cliente'],
-  critical_finding: ['admin_cliente', 'analista_cliente'],
+  incident_opened: INCIDENT_NOTICE_ROLES,
+  incident_escalated: INCIDENT_NOTICE_ROLES,
+  critical_finding: INCIDENT_NOTICE_ROLES,
   aws_ingestion_stalled: ['admin_cliente'],
   plan_usage: ['admin_cliente'],
 };
+
+/**
+ * Os tipos que a preferência da pessoa controla (`incidentEmails`, fase 2, PR-17'). Os do plano e da coleta da AWS vão
+ * sempre para quem administra: sem eles, ninguém do cliente saberia que a coleta parou ou que o plano encheu.
+ */
+export const INCIDENT_NOTICE_KINDS: ReadonlySet<NotificationKind> = new Set<NotificationKind>([
+  'incident_opened',
+  'incident_escalated',
+  'critical_finding',
+]);
+
+/** Uma pessoa do cliente, do ponto de vista do aviso: o papel e a preferência (sem linha, recebe). */
+export interface NoticePerson {
+  role: UserRole;
+  incidentEmails: boolean;
+}
+
+/** A pessoa recebe o tipo: o papel que ele pede e, nos de incidente, a preferência ligada. */
+export function receives(kind: NotificationKind, person: NoticePerson): boolean {
+  return (
+    NOTICE_RECIPIENT_ROLES[kind].includes(person.role) &&
+    (!INCIDENT_NOTICE_KINDS.has(kind) || person.incidentEmails)
+  );
+}
+
+/** Começo da hora cheia (UTC; Brasília, em UTC-3 o ano todo, tem as mesmas horas). */
+export function hourStartOf(at: Date): Date {
+  return new Date(Math.floor(at.getTime() / HOUR_MS) * HOUR_MS);
+}
+
+/** Contagens dos resumos de uma execução. */
+export interface DigestReport {
+  /** Resumos vencidos lidos nesta execução. */
+  due: number;
+  sent: number;
+  retrying: number;
+  failed: number;
+  skipped: number;
+}
 
 /** Contagens de uma execução (vão para o log do agendador; nenhum dado de cliente nem endereço). */
 export interface NotificationReport {
@@ -52,6 +101,9 @@ export interface NotificationReport {
   failed: number;
   /** Não sai: nó sem e-mail ou ninguém para receber. */
   skipped: number;
+  /** Entregas (uma por pessoa e aviso) que foram para o resumo da hora ou para o de retomada, em vez do e-mail avulso. */
+  folded: number;
+  digests: DigestReport;
   /** Tipo do erro do cálculo do volume do plano, quando ele falhou (a entrega seguiu). */
   usageError?: string;
 }
@@ -73,27 +125,97 @@ export interface NotificationDispatcherOptions {
   deliveryBudgetMs?: number;
 }
 
-const DUE_SELECT = {
-  id: true,
-  tenantId: true,
+const TARGET_SELECT = {
   kind: true,
   severity: true,
   incidentId: true,
   findingId: true,
   usageMonth: true,
   usagePercent: true,
+} as const satisfies Prisma.NotificationSelect;
+/** O que o texto e o link de um aviso usam. */
+type NoticeTarget = Prisma.NotificationGetPayload<{ select: typeof TARGET_SELECT }>;
+
+const DUE_SELECT = {
+  id: true,
+  tenantId: true,
+  ...TARGET_SELECT,
   attempts: true,
   deliveredUserIds: true,
+  digestedUserIds: true,
+  createdAt: true,
 } as const satisfies Prisma.NotificationSelect;
 type DueNotice = Prisma.NotificationGetPayload<{ select: typeof DUE_SELECT }>;
 
+const DIGEST_SELECT = {
+  id: true,
+  tenantId: true,
+  userId: true,
+  hourStart: true,
+  noticeIds: true,
+  catchUp: true,
+  attempts: true,
+} as const satisfies Prisma.NotificationDigestSelect;
+type DueDigest = Prisma.NotificationDigestGetPayload<{ select: typeof DIGEST_SELECT }>;
+
+/**
+ * Quem pode receber avisos do cliente: ativo, com MFA, sem troca de senha pendente, com o cliente ativo. O papel e a
+ * preferência dependem do tipo (`receives`).
+ */
+const ACTIVE_PERSON = {
+  status: 'active',
+  twoFactorEnabled: true,
+  mustChangePassword: false,
+  tenant: { is: { status: 'active' } },
+} as const satisfies Prisma.UserWhereInput;
+
+const PERSON_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  notificationPreference: { select: { incidentEmails: true } },
+} as const satisfies Prisma.UserSelect;
+type PersonRow = Prisma.UserGetPayload<{ select: typeof PERSON_SELECT }>;
+
+const asNoticePerson = (row: PersonRow): NoticePerson => ({
+  role: row.role,
+  incidentEmails: row.notificationPreference?.incidentEmails ?? true,
+});
+
 type Outcome = 'sent' | 'retrying' | 'failed' | 'skipped';
 
+/** O fim de uma tentativa (do aviso ou do resumo): `sent`, o recuo, ou `failed` na quinta. */
+function attemptResult(
+  previousAttempts: number,
+  firstError: string | null,
+  now: Date,
+): {
+  outcome: Exclude<Outcome, 'skipped'>;
+  data: {
+    status?: 'sent' | 'failed';
+    attempts: number;
+    sentAt?: Date;
+    nextAttemptAt?: Date;
+    lastError: string | null;
+  };
+} {
+  const attempts = previousAttempts + 1;
+  if (firstError === null) {
+    return { outcome: 'sent', data: { status: 'sent', attempts, sentAt: now, lastError: null } };
+  }
+  const delay = NOTIFICATION_RETRY_DELAYS_MS[attempts - 1];
+  if (attempts >= NOTIFICATION_MAX_ATTEMPTS || delay === undefined) {
+    return { outcome: 'failed', data: { status: 'failed', attempts, lastError: firstError } };
+  }
+  return {
+    outcome: 'retrying',
+    data: { attempts, nextAttemptAt: new Date(now.getTime() + delay), lastError: firstError },
+  };
+}
+
 /** O conteúdo do e-mail de um aviso, com o link no painel. O banco garante o alvo de cada tipo (CHECK da migration). */
-export function noticeOf(
-  row: Omit<DueNotice, 'id' | 'tenantId' | 'attempts' | 'deliveredUserIds'>,
-  webOrigin: string,
-): NoticeMail {
+export function noticeOf(row: NoticeTarget, webOrigin: string): NoticeMail {
   const link = (path: string) => new URL(path, webOrigin).href;
   switch (row.kind) {
     case 'incident_opened':
@@ -118,14 +240,45 @@ export function noticeOf(
 }
 
 /**
- * Tarefa `notifications` do worker (fase 2, PR-16): entrega os avisos da fila de saída (`Notification`) por e-mail.
+ * Os itens do resumo, os críticos primeiro (o incidente crítico e o achado crítico) e, em cada grupo, na ordem em que
+ * entraram na fila. Um aviso sem o alvo do tipo (o CHECK já impede) fica de fora.
+ */
+export function digestItems(
+  rows: readonly (NoticeTarget & { id: string; createdAt: Date })[],
+  webOrigin: string,
+): DigestItem[] {
+  const rank = (row: NoticeTarget) => (row.severity === 'critical' ? 0 : 1);
+  return [...rows]
+    .sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        a.createdAt.getTime() - b.createdAt.getTime() ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    )
+    .flatMap((row) => {
+      try {
+        return [{ notice: noticeOf(row, webOrigin), at: row.createdAt }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/**
+ * Tarefa `notifications` do worker (fase 2, PR-16 e PR-17'): entrega os avisos da fila de saída (`Notification`) por
+ * e-mail.
  *
  * - A cada 60 s, com a concessão `notifications` no banco (um worker por vez). Começa pelos avisos de volume do plano
- *   (`UsageNotices`), depois lê os avisos `pending` vencidos, os mais antigos primeiro (busca de sistema, entre todos
- *   os clientes); cada gravação vai pelo escopo do cliente do aviso.
+ *   (`UsageNotices`), depois os resumos das horas que fecharam e, por fim, os avisos `pending` vencidos, os mais
+ *   antigos primeiro (buscas de sistema, entre todos os clientes); cada gravação vai pelo escopo do cliente da linha.
  * - Os destinatários são resolvidos no envio, pelo escopo do cliente do aviso: pessoas ativas, com MFA, sem troca de
- *   senha pendente, do papel que o tipo pede (`NOTICE_RECIPIENT_ROLES`), com o cliente ativo. Um e-mail por pessoa; o
- *   id de quem recebeu fica no aviso, e a nova tentativa não repete o e-mail para ela.
+ *   senha pendente, do papel que o tipo pede (`NOTICE_RECIPIENT_ROLES`), com o cliente ativo e, nos avisos de
+ *   incidente, com a preferência ligada (`incidentEmails`, padrão sim). Um e-mail por pessoa; o id de quem recebeu
+ *   fica no aviso, e a nova tentativa não repete o e-mail para ela.
+ * - Resumo por hora (PR-17'): cada pessoa recebe até 5 e-mails avulsos por hora cheia. Do 6º aviso da hora em diante, o
+ *   aviso entra no resumo dela (`NotificationDigest`), que sai uma vez, quando a hora fecha, com até 10 itens e "e mais
+ *   N". O aviso com 24 h ou mais na fila nunca sai avulso: entra no resumo da hora, que vira de retomada. O resumo tem
+ *   as mesmas tentativas, o mesmo recuo e o mesmo `failed` do aviso, e a pessoa é conferida de novo no envio.
  * - Falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
  *   do erro fica gravado (a mensagem do servidor pode citar o endereço).
  * - A tentativa que não chega a todos também conta, com o mesmo recuo, e quem já recebeu fica guardado: o prazo de
@@ -174,6 +327,8 @@ export class NotificationDispatcher {
       retrying: 0,
       failed: 0,
       skipped: 0,
+      folded: 0,
+      digests: { due: 0, sent: 0, retrying: 0, failed: 0, skipped: 0 },
     };
     const startedAt = this.now();
     if (!(await this.lease.acquire(startedAt))) return { ...report, status: 'locked' };
@@ -186,18 +341,21 @@ export class NotificationDispatcher {
         signal?.throwIfAborted();
         usageError = errorKind(error);
       }
-      const due = await this.prisma.notification.findMany({
-        where: { status: 'pending', nextAttemptAt: { lte: startedAt } },
-        select: DUE_SELECT,
-        orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
-        take: this.batch,
-      });
-      report.due = due.length;
-      for (const row of due) {
-        signal?.throwIfAborted();
-        report[await this.deliver(row, signal)] += 1;
-        // A concessão venceu e outra réplica a tomou: os avisos que faltam são dela (sem isso, sairiam duas vezes).
-        if (!(await this.lease.renew())) break;
+      // Os resumos das horas que fecharam vão antes dos avisos novos: o que eles reúnem é mais antigo.
+      if (await this.deliverDigests(startedAt, report.digests, signal)) {
+        const due = await this.prisma.notification.findMany({
+          where: { status: 'pending', nextAttemptAt: { lte: startedAt } },
+          select: DUE_SELECT,
+          orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
+          take: this.batch,
+        });
+        report.due = due.length;
+        for (const row of due) {
+          signal?.throwIfAborted();
+          report[await this.deliver(row, startedAt, report, signal)] += 1;
+          // A concessão venceu e outra réplica a tomou: os avisos que faltam são dela (sem isso, sairiam duas vezes).
+          if (!(await this.lease.renew())) break;
+        }
       }
       await this.prisma.syncState.update({
         where: { name: NOTIFICATIONS_TASK },
@@ -220,22 +378,26 @@ export class NotificationDispatcher {
   }
 
   /** Uma tentativa de um aviso. */
-  private async deliver(row: DueNotice, signal?: AbortSignal): Promise<Outcome> {
+  private async deliver(
+    row: DueNotice,
+    startedAt: Date,
+    report: Pick<NotificationReport, 'folded'>,
+    signal?: AbortSignal,
+  ): Promise<Outcome> {
     const db = this.prisma.forTenant(row.tenantId);
     if (this.mailer === null) return this.skip(row, 'mail_disabled');
-    const recipients = await db.user.findMany({
-      where: {
-        role: { in: [...NOTICE_RECIPIENT_ROLES[row.kind]] },
-        status: 'active',
-        twoFactorEnabled: true,
-        mustChangePassword: false,
-        tenant: { is: { status: 'active' } },
-      },
-      select: { id: true, name: true, email: true },
+    const people = await db.user.findMany({
+      where: { role: { in: [...NOTICE_RECIPIENT_ROLES[row.kind]] }, ...ACTIVE_PERSON },
+      select: PERSON_SELECT,
       orderBy: { id: 'asc' },
     });
-    // Ninguém para receber: skipped. Quem já recebeu numa tentativa anterior conta como entregue (abaixo, `sent`).
-    if (recipients.length === 0 && row.deliveredUserIds.length === 0) return this.skip(row, 'no_recipients');
+    const recipients = people.filter((person) => receives(row.kind, asNoticePerson(person)));
+    // Quem já recebeu, avulso ou no resumo, numa tentativa anterior conta como entregue (abaixo, `sent`).
+    const handled = new Set([...row.deliveredUserIds, ...row.digestedUserIds]);
+    if (recipients.length === 0 && handled.size === 0) {
+      // Havia quem recebesse, mas todos desligaram os avisos de incidente.
+      return this.skip(row, people.length > 0 ? 'opted_out' : 'no_recipients');
+    }
 
     let notice: NoticeMail;
     try {
@@ -244,12 +406,22 @@ export class NotificationDispatcher {
       // Não acontece com o CHECK da migration; se acontecer, o aviso não trava a fila.
       return this.close(row, 'failed', 'invalid_notice');
     }
-    const delivered = new Set(row.deliveredUserIds);
-    const startedAt = performance.now();
+    const hourStart = hourStartOf(startedAt);
+    const stale = startedAt.getTime() - row.createdAt.getTime() >= NOTICE_CATCH_UP_MS;
+    // A hora de cada pessoa: quantos avulsos ela já recebeu e se o resumo da hora ainda aceita avisos.
+    const hours = new Map(
+      (
+        await db.notificationDigest.findMany({
+          where: { hourStart, userId: { in: recipients.map((person) => person.id) } },
+          select: { userId: true, individualSent: true, status: true },
+        })
+      ).map((hour) => [hour.userId, hour]),
+    );
+    const startedSending = performance.now();
     let firstError: string | null = null;
     let attempted = 0;
     for (const recipient of recipients) {
-      if (delivered.has(recipient.id)) continue;
+      if (handled.has(recipient.id)) continue;
       // Interrompida no meio (orçamento da tarefa, parada do worker): a tentativa é gravada com o recuo e a interrupção
       // sobe depois. Sem isso, quem falta recomeçaria do zero a cada execução, sem recuo e sem chegar ao `failed`, e o
       // aviso, sempre o mais antigo, seguraria os outros.
@@ -257,7 +429,17 @@ export class NotificationDispatcher {
         await this.finishAttempt(row, errorKind(signal.reason));
         signal.throwIfAborted();
       }
-      if (attempted > 0 && performance.now() - startedAt >= this.deliveryBudgetMs) {
+      const hour = hours.get(recipient.id);
+      const sentThisHour = hour?.individualSent ?? 0;
+      // O resumo da hora já saiu só se o relógio voltou: nesse caso raro, o aviso sai avulso.
+      const digestOpen = hour === undefined || hour.status === null || hour.status === 'pending';
+      if (digestOpen && (stale || sentThisHour >= NOTICE_HOURLY_LIMIT)) {
+        await this.fold(row, recipient.id, hourStart, stale);
+        hours.set(recipient.id, { userId: recipient.id, individualSent: sentThisHour, status: 'pending' });
+        report.folded += 1;
+        continue;
+      }
+      if (attempted > 0 && performance.now() - startedSending >= this.deliveryBudgetMs) {
         firstError ??= 'delivery_timeout';
         break;
       }
@@ -269,13 +451,75 @@ export class NotificationDispatcher {
         firstError ??= errorKind(error);
         continue;
       }
-      await db.notification.update({
-        where: { id: row.id },
-        data: { deliveredUserIds: { push: recipient.id } },
-        select: { id: true },
+      await this.recordSent(row, recipient.id, hourStart);
+      hours.set(recipient.id, {
+        userId: recipient.id,
+        individualSent: sentThisHour + 1,
+        status: hour?.status ?? null,
       });
     }
     return this.finishAttempt(row, firstError);
+  }
+
+  /** O e-mail avulso saiu: a pessoa fica no aviso e conta na hora dela, juntos. */
+  private async recordSent(row: DueNotice, userId: string, hourStart: Date): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const db = scopeToTenant(tx, row.tenantId);
+      await db.notification.update({
+        where: { id: row.id },
+        data: { deliveredUserIds: { push: userId } },
+        select: { id: true },
+      });
+      await db.notificationDigest.upsert({
+        where: { tenantId_userId_hourStart: { tenantId: row.tenantId, userId, hourStart } },
+        create: { tenantId: row.tenantId, userId, hourStart, individualSent: 1 },
+        update: { individualSent: { increment: 1 } },
+        select: { id: true },
+      });
+    });
+  }
+
+  /**
+   * O aviso entra no resumo da hora da pessoa (o de retomada, se ele está velho), e a pessoa fica no aviso como
+   * atendida, juntos. O resumo sai quando a hora fecha.
+   */
+  private async fold(row: DueNotice, userId: string, hourStart: Date, catchUp: boolean): Promise<void> {
+    const hourEnd = new Date(hourStart.getTime() + HOUR_MS);
+    await this.prisma.$transaction(async (tx) => {
+      const db = scopeToTenant(tx, row.tenantId);
+      const key = { tenantId_userId_hourStart: { tenantId: row.tenantId, userId, hourStart } };
+      const hour = await db.notificationDigest.findUnique({ where: key, select: { id: true, status: true } });
+      if (hour === null) {
+        await db.notificationDigest.create({
+          data: {
+            tenantId: row.tenantId,
+            userId,
+            hourStart,
+            noticeIds: [row.id],
+            catchUp,
+            status: 'pending',
+            nextAttemptAt: hourEnd,
+          },
+          select: { id: true },
+        });
+      } else {
+        await db.notificationDigest.update({
+          where: { id: hour.id },
+          data: {
+            noticeIds: { push: row.id },
+            ...(catchUp && { catchUp: true }),
+            // O primeiro aviso reunido abre o resumo, que sai quando a hora fecha.
+            ...(hour.status === null && { status: 'pending', nextAttemptAt: hourEnd }),
+          },
+          select: { id: true },
+        });
+      }
+      await db.notification.update({
+        where: { id: row.id },
+        data: { digestedUserIds: { push: userId } },
+        select: { id: true },
+      });
+    });
   }
 
   /**
@@ -283,35 +527,16 @@ export class NotificationDispatcher {
    * fica no aviso (gravado a cada envio).
    */
   private async finishAttempt(row: DueNotice, firstError: string | null): Promise<Outcome> {
-    const db = this.prisma.forTenant(row.tenantId);
-    const attempts = row.attempts + 1;
-    const now = this.now();
-    if (firstError === null) {
-      await db.notification.update({
-        where: { id: row.id },
-        data: { status: 'sent', attempts, sentAt: now, lastError: null },
-        select: { id: true },
-      });
-      return 'sent';
-    }
-    const delay = NOTIFICATION_RETRY_DELAYS_MS[attempts - 1];
-    if (attempts >= NOTIFICATION_MAX_ATTEMPTS || delay === undefined) {
-      await db.notification.update({
-        where: { id: row.id },
-        data: { status: 'failed', attempts, lastError: firstError },
-        select: { id: true },
-      });
-      return 'failed';
-    }
-    await db.notification.update({
+    const { outcome, data } = attemptResult(row.attempts, firstError, this.now());
+    await this.prisma.forTenant(row.tenantId).notification.update({
       where: { id: row.id },
-      data: { attempts, nextAttemptAt: new Date(now.getTime() + delay), lastError: firstError },
+      data,
       select: { id: true },
     });
-    return 'retrying';
+    return outcome;
   }
 
-  private skip(row: DueNotice, reason: 'mail_disabled' | 'no_recipients'): Promise<'skipped'> {
+  private skip(row: DueNotice, reason: 'mail_disabled' | 'no_recipients' | 'opted_out'): Promise<'skipped'> {
     return this.close(row, 'skipped', reason);
   }
 
@@ -323,5 +548,84 @@ export class NotificationDispatcher {
       select: { id: true },
     });
     return status;
+  }
+
+  /**
+   * Os resumos vencidos (a hora fechou, ou chegou a hora da nova tentativa), os mais antigos primeiro. False se a
+   * concessão foi perdida no meio: o resto da execução fica para quem a tomou.
+   */
+  private async deliverDigests(
+    startedAt: Date,
+    report: DigestReport,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const due = await this.prisma.notificationDigest.findMany({
+      where: { status: 'pending', nextAttemptAt: { lte: startedAt } },
+      select: DIGEST_SELECT,
+      orderBy: [{ nextAttemptAt: 'asc' }, { id: 'asc' }],
+      take: this.batch,
+    });
+    report.due = due.length;
+    for (const digest of due) {
+      signal?.throwIfAborted();
+      report[await this.deliverDigest(digest)] += 1;
+      if (!(await this.lease.renew())) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Uma tentativa de um resumo. A pessoa é conferida de novo (ativa, com MFA, do cliente ativo), e só entram os avisos
+   * que ela ainda recebe (o papel e a preferência de agora). Um e-mail só.
+   */
+  private async deliverDigest(row: DueDigest): Promise<Outcome> {
+    if (this.mailer === null) return this.closeDigest(row, 'mail_disabled');
+    const db = this.prisma.forTenant(row.tenantId);
+    const person = await db.user.findFirst({
+      where: { id: row.userId, ...ACTIVE_PERSON },
+      select: PERSON_SELECT,
+    });
+    if (person === null) return this.closeDigest(row, 'no_recipients');
+    const rows = await db.notification.findMany({
+      where: { id: { in: [...new Set(row.noticeIds)] } },
+      select: { id: true, createdAt: true, ...TARGET_SELECT },
+    });
+    const items = digestItems(
+      rows.filter((notice) => receives(notice.kind, asNoticePerson(person))),
+      this.mailer.webOrigin,
+    );
+    // Nada que a pessoa ainda receba: desligou os avisos de incidente, mudou de papel, ou os avisos saíram no expurgo.
+    if (items.length === 0) return this.closeDigest(row, 'no_items');
+    let firstError: string | null = null;
+    try {
+      await this.mailer.transport.send(
+        digestMail(person.email, person.name, {
+          catchUp: row.catchUp,
+          hourStart: row.hourStart,
+          items: items.slice(0, NOTICE_DIGEST_ITEMS),
+          total: items.length,
+          panelLink: new URL('/', this.mailer.webOrigin).href,
+        }),
+      );
+    } catch (error) {
+      // Só o tipo: a mensagem do servidor de e-mail pode citar o endereço de quem recebe.
+      firstError = errorKind(error);
+    }
+    const { outcome, data } = attemptResult(row.attempts, firstError, this.now());
+    await db.notificationDigest.update({ where: { id: row.id }, data, select: { id: true } });
+    return outcome;
+  }
+
+  /** Encerra o resumo sem envio, com o motivo. */
+  private async closeDigest(
+    row: DueDigest,
+    reason: 'mail_disabled' | 'no_recipients' | 'no_items',
+  ): Promise<'skipped'> {
+    await this.prisma.forTenant(row.tenantId).notificationDigest.update({
+      where: { id: row.id },
+      data: { status: 'skipped', lastError: reason },
+      select: { id: true },
+    });
+    return 'skipped';
   }
 }

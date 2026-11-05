@@ -20,6 +20,8 @@ export const TENANT_SCOPED_MODELS = [
   'cloudCredential',
   'wazuhAgent',
   'notification',
+  'notificationPreference',
+  'notificationDigest',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

@@ -15,10 +15,14 @@ import {
   CREDENTIAL_KIND_PROVIDERS,
   credentialStatus,
   fieldsOutsideProvider,
+  INCIDENT_NOTICE_ROLES,
   type LogBuckets,
   logBucketNames,
   type Me,
   mergeLogBuckets,
+  type NotificationPreferences,
+  notificationPreferencesUpdateSchema,
+  NOTICES_NOT_FOR_ROLE_MESSAGE,
   type Permission,
   type ProtectedResource,
   protectedResourceCreateSchema,
@@ -68,6 +72,8 @@ export interface AdminStore {
   accounts: Map<string, CloudAccount[]>;
   protectedResources: Map<string, ProtectedResource[]>;
   exceptions: Map<string, AlertException[]>;
+  /** A preferência de aviso por e-mail de quem entra na demonstração (pelo id da sessão; fase 2, PR-17'). */
+  noticePreferences: Map<string, boolean>;
 }
 
 const VERAX = { id: 'demo-equipe-verax', name: 'Equipe Verax' };
@@ -106,6 +112,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     mfaEnabled: boolean,
     days: number,
     mustChangePassword = false,
+    incidentEmails = true,
   ) =>
     userSchema.parse({
       id,
@@ -115,6 +122,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       status,
       mfaEnabled,
       mustChangePassword,
+      incidentEmails,
       createdAt: at(days),
     });
   const minutesBefore = (minutes: number | null) =>
@@ -247,7 +255,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         [
           user('demo-marina.alves', 'Marina Alves', 'admin_cliente', 'active', true, 100),
           user('demo-ana.souza', 'Ana Souza', 'analista_cliente', 'active', true, 90),
-          user('demo-joao.lima', 'João Lima', 'analista_cliente', 'active', true, 60),
+          // Desligou os avisos de incidente por e-mail (a coluna "Recebe alertas" mostra).
+          user('demo-joao.lima', 'João Lima', 'analista_cliente', 'active', true, 60, false, false),
           user('demo-diretoria', 'Diretoria', 'leitura', 'active', true, 50),
           // Criado ontem, com a senha temporária: ainda não entrou.
           user('demo-carlos.dev', 'Carlos Dev', 'leitura', 'active', false, 1, true),
@@ -256,6 +265,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       ],
       [beta, [user('demo-rafael.costa', 'Rafael Costa', 'admin_cliente', 'active', true, 80)]],
     ]),
+    noticePreferences: new Map(),
     accounts: new Map([
       [
         alfa,
@@ -416,6 +426,17 @@ const paginate = <T>(items: T[], page: number, pageSize: number) => {
 const queryOf = (request: Request) => Object.fromEntries(new URL(request.url).searchParams);
 const author = (me: Me) => ({ id: me.userId, name: me.email });
 
+/** Como a API: só administradores e analistas do cliente, no próprio cliente, recebem os avisos de incidente. */
+const receivesNotices = (me: Me) =>
+  me.tenantId !== null &&
+  me.tenantId === me.scopeTenantId &&
+  (INCIDENT_NOTICE_ROLES as readonly string[]).includes(me.role);
+
+function demoPreferences(store: AdminStore, me: Me): NotificationPreferences {
+  if (!receivesNotices(me)) return { incidentEmails: false, eligible: false };
+  return { incidentEmails: store.noticePreferences.get(me.userId) ?? true, eligible: true };
+}
+
 type Denied = { ok: false; error: Response };
 type Allowed = { ok: true; me: Me };
 type Scoped = { ok: true; me: Me; tenantId: string };
@@ -511,6 +532,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         status: 'active',
         mfaEnabled: false,
         mustChangePassword: true,
+        incidentEmails: true,
         createdAt: now,
       });
       store.tenants.push(tenant);
@@ -571,6 +593,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         status: 'active',
         mfaEnabled: false,
         mustChangePassword: true,
+        incidentEmails: true,
         createdAt: new Date().toISOString(),
       });
       users.push(user);
@@ -606,6 +629,27 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       target.mustChangePassword = true;
       target.status = 'active'; // conta do antigo convite, ainda sem senha, passa a ativa
       return HttpResponse.json(demoTemporaryPassword());
+    }),
+
+    // --- Preferência de aviso por e-mail da própria pessoa (fase 2, PR-17'): sempre a da sessão ---
+    http.get(url('/v1/notification-preferences'), () => {
+      const check = guard('notification_preferences:read');
+      if (!check.ok) return check.error;
+      return HttpResponse.json(demoPreferences(store, check.me));
+    }),
+    http.put(url('/v1/notification-preferences'), async ({ request }) => {
+      const check = guard('notification_preferences:write', request);
+      if (!check.ok) return check.error;
+      if (!receivesNotices(check.me))
+        return problem(403, NOTICES_NOT_FOR_ROLE_MESSAGE, 'NOTICES_NOT_FOR_ROLE');
+      const input = notificationPreferencesUpdateSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      store.noticePreferences.set(check.me.userId, input.data.incidentEmails);
+      // Quem está na lista de usuários com o id da sessão aparece com a escolha nova na coluna "Recebe alertas".
+      for (const user of [...store.users.values()].flat()) {
+        if (user.id === check.me.userId) user.incidentEmails = input.data.incidentEmails;
+      }
+      return HttpResponse.json(demoPreferences(store, check.me));
     }),
 
     // --- Contas cloud (T3.3) ---

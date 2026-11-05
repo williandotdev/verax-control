@@ -27,6 +27,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'user.update': 'Alterou usuário',
   'user.deactivate': 'Desativou usuário',
   'user.reset_mfa': 'Zerou o MFA de usuário',
+  'user.notification_preference': 'Mudou a própria preferência de avisos por e-mail',
   'cloud_account.create': 'Conectou conta cloud',
   'cloud_account.update': 'Alterou conta cloud',
   'cloud_account.deactivate': 'Desativou conta cloud',

@@ -48,6 +48,11 @@ export const PERMISSIONS = {
   'agents:enroll': ADMINS,
   // Plano do nó e uso do cliente (fase 2, PR-18): só leitura, para quem administra.
   'plan:read': ADMINS,
+  // Preferência de aviso por e-mail da própria pessoa (fase 2, PR-17'): todos leem a sua; mudar é de quem recebe os
+  // avisos de incidente (administradores e analistas). A equipe da Verax passa pela matriz, mas a API responde que ela
+  // não recebe avisos dos clientes.
+  'notification_preferences:read': ALL,
+  'notification_preferences:write': OPERATORS,
   // Exclusivas da Verax
   'session:switch_tenant': VERAX,
   'unowned_alerts:read': VERAX,

@@ -1,10 +1,11 @@
 import { ROLE_LABELS } from '@verax/shared';
-import { LogOut, Menu, X } from 'lucide-react';
+import { LogOut, Menu, UserRound, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { BrandLockup } from '@/components/brand/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
 import { useMe, useSignOut } from '@/features/session/session';
 import { cn } from '@/lib/cn';
 import { visibleNavigation } from './navigation';
@@ -125,6 +126,11 @@ export function AppLayout() {
               <p className="text-sm font-medium">{me.email}</p>
               <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
             </div>
+            {/* A própria conta e a preferência de aviso por e-mail (fase 2, PR-17'). */}
+            <Link to="/minha-conta" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+              <UserRound aria-hidden />
+              <span className="sr-only sm:not-sr-only">Minha conta</span>
+            </Link>
             <ThemeToggle />
             <Button
               variant="ghost"

@@ -39,6 +39,8 @@ export interface TenantPurgeCounts {
   postureFailures: number;
   inventorySnapshots: number;
   notifications: number;
+  /** Horas de avisos de cada pessoa (a contagem e o resumo do PR-17'). */
+  noticeDigests: number;
   auditLogs: number;
 }
 
@@ -74,6 +76,7 @@ export interface RetentionReport {
     postureFailures: number;
     inventorySnapshots: number;
     notifications: number;
+    noticeDigests: number;
     unownedAlerts: number;
     operational: number;
     auditLogs: number;
@@ -152,6 +155,7 @@ const emptyTenantCounts = (): TenantPurgeCounts => ({
   postureFailures: 0,
   inventorySnapshots: 0,
   notifications: 0,
+  noticeDigests: 0,
   auditLogs: 0,
 });
 
@@ -450,6 +454,7 @@ export class RetentionJob {
         postureFailures: totals.postureFailures,
         inventorySnapshots: totals.inventorySnapshots,
         notifications: totals.notifications,
+        noticeDigests: totals.noticeDigests,
         unownedAlerts: system.unownedAlerts,
         operational:
           system.sessions +
@@ -737,7 +742,8 @@ export class RetentionJob {
 
   /**
    * 3c. Avisos por e-mail resolvidos há mais de 90 dias (PR-16). O aviso de um incidente ou achado que saiu já foi
-   * junto, pela chave estrangeira em cascata; aqui saem os que sobram (volume do plano, pulados, com falha).
+   * junto, pela chave estrangeira em cascata; aqui saem os que sobram (volume do plano, pulados, com falha). Depois, as
+   * horas de avisos das pessoas (PR-17'), pelo mesmo prazo.
    */
   private async purgeNotifications(
     tenantId: string,
@@ -765,6 +771,29 @@ export class RetentionJob {
       async (ids) => (await notifications.deleteMany({ where: { ...where, id: { in: ids } } })).count,
       (deleted) => {
         counts.notifications += deleted;
+      },
+    );
+    // As horas de avisos de cada pessoa (PR-17'), pelo mesmo prazo: o resumo resolvido e a hora que só contou e-mails
+    // avulsos (sem resumo), sem mudança desde o corte. O resumo pendente fica, como o aviso pendente.
+    const digests = this.prisma.forTenant(tenantId).notificationDigest;
+    const digestWhere: Prisma.NotificationDigestWhereInput = {
+      OR: [{ status: { in: ['sent', 'failed', 'skipped'] } }, { status: null }],
+      updatedAt: { lt: cutoff },
+    };
+    await this.inBatches(
+      run,
+      async () =>
+        (
+          await digests.findMany({
+            where: digestWhere,
+            select: { id: true },
+            orderBy: { updatedAt: 'asc' },
+            take: this.batch,
+          })
+        ).map((row) => row.id),
+      async (ids) => (await digests.deleteMany({ where: { ...digestWhere, id: { in: ids } } })).count,
+      (deleted) => {
+        counts.noticeDigests += deleted;
       },
     );
   }

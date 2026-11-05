@@ -54,6 +54,11 @@ export const userSchema = z.strictObject({
   mfaEnabled: z.boolean(),
   /** Ainda com a senha temporária (não entrou nem trocou). */
   mustChangePassword: z.boolean(),
+  /**
+   * A preferência da própria pessoa para os avisos de incidente por e-mail (fase 2, PR-17'; padrão: sim). Só a pessoa a
+   * muda. Vale para os papéis que recebem avisos (`INCIDENT_NOTICE_ROLES`).
+   */
+  incidentEmails: z.boolean(),
   createdAt: z.iso.datetime(),
 });
 export type User = z.infer<typeof userSchema>;

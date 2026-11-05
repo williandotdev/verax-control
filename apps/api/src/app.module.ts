@@ -20,6 +20,7 @@ import type { RawEventReader } from './findings/raw-events.js';
 import { HealthModule } from './health/health.module.js';
 import { IncidentsModule } from './incidents/incidents.module.js';
 import { AssetsModule } from './inventory/assets.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
 import { PlanModule } from './plan/plan.module.js';
 import { PostureModule } from './posture/posture.module.js';
 import { ReportsModule } from './reports/reports.module.js';
@@ -66,6 +67,7 @@ export class AppModule {
         AlertExceptionsModule,
         AgentsModule,
         PlanModule,
+        NotificationsModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },
