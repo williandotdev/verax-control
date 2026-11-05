@@ -5,6 +5,7 @@ import { AgentAlertSync } from './alerts/agent-alert-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
+import type { WebIdentityCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
@@ -18,11 +19,18 @@ import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js'
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
+import { mailTransport } from './mail/mail.module.js';
 import {
   NODE_STATUS_BUDGET_MS,
   NODE_STATUS_INTERVAL_MS,
   NodeStatusReporter,
 } from './node-status/node-status.js';
+import {
+  NOTIFICATIONS_INTERVAL_MS,
+  NOTIFICATIONS_TASK,
+  NotificationDispatcher,
+} from './notifications/notification-dispatcher.js';
+import { UsageNotices } from './notifications/usage-notices.js';
 import {
   RETENTION_BUDGET_MS,
   RETENTION_CHECK_INTERVAL_MS,
@@ -41,6 +49,8 @@ const SYNC_BUDGET_MS = 5 * 60 * 1000;
 /** A conferência da conexão da AWS e o que roda na partida (a conferência da identidade do nó). */
 interface AwsConnectionSetup {
   checker: AwsConnectionChecker;
+  /** As sessões no papel de leitura (null sem a identidade do nó): a conferência e o inventário dividem as mesmas. */
+  credentials: WebIdentityCredentials | null;
   start(): Promise<void>;
 }
 
@@ -54,7 +64,11 @@ interface AwsConnectionSetup {
 async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): Promise<AwsConnectionSetup> {
   const serviceAccountId = config.NODE_SA_UNIQUE_ID;
   if (serviceAccountId === undefined) {
-    return { checker: new UnavailableAwsConnectionChecker(), start: () => Promise.resolve() };
+    return {
+      checker: new UnavailableAwsConnectionChecker(),
+      credentials: null,
+      start: () => Promise.resolve(),
+    };
   }
   const [identity, { WebIdentityAwsConnectionChecker }] = await Promise.all([
     import('./aws/web-identity.js'),
@@ -70,6 +84,7 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
   });
   return {
     checker,
+    credentials,
     start: async () => {
       if (!checker.simulatesPermissions) {
         logger.warn(
@@ -103,7 +118,12 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  *
  * A tarefa `aws-check` (a cada 30 s) responde o "Verificar" das contas AWS e, sem pedido, confere de novo cada conta já
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
- * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`).
+ * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`), e com ela entra a tarefa `aws-inventory`
+ * (a cada 5 min olha as contas; cada conta já verificada é inventariada uma vez por dia, PR-14').
+ *
+ * A tarefa `notifications` (a cada 60 s) entrega os avisos por e-mail da fila de saída, com o mesmo transporte da API
+ * (`MAIL_TRANSPORT`), e grava os avisos de 80% e 100% do volume mensal do plano. Sem e-mail no nó (`none`), os avisos
+ * ficam `skipped`.
  *
  * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
  * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google.
@@ -191,6 +211,35 @@ async function main(): Promise<void> {
         periodic: await awsCheck.recheck(signal),
       }),
     });
+    // Avisos por e-mail: o transporte da mesma fábrica da API. A configuração já exigiu o remetente e a origem do painel
+    // com o e-mail ligado.
+    const mailer =
+      config.MAIL_TRANSPORT === 'none'
+        ? null
+        : { transport: mailTransport(config), webOrigin: config.WEB_ORIGIN as string };
+    const notifications = new NotificationDispatcher(prisma, mailer, {
+      usage: new UsageNotices(prisma, nodePlan(config).limits.monthlyGib),
+    });
+    tasks.push({
+      name: NOTIFICATIONS_TASK,
+      intervalMs: NOTIFICATIONS_INTERVAL_MS,
+      budgetMs: SYNC_BUDGET_MS,
+      run: (signal) => notifications.runOnce(signal),
+    });
+    // Inventário da AWS (Ativos): só com a identidade do nó, pela mesma sessão da conferência. Os clientes do IAM, do
+    // EC2 e do S3 só são carregados aqui.
+    if (aws.credentials !== null) {
+      const inventory = await import('./inventory/inventory-job.js');
+      const { sdkInventoryClients } = await import('./inventory/inventory.js');
+      const sync = new inventory.AwsInventorySync(prisma, aws.credentials, sdkInventoryClients);
+      tasks.push({
+        name: 'aws-inventory',
+        intervalMs: inventory.AWS_INVENTORY_TICK_MS,
+        budgetMs: inventory.AWS_INVENTORY_BUDGET_MS,
+        run: (signal) => sync.runOnce(signal),
+      });
+    }
+
     // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o
     // host devolve, pela pasta dos sinais (sem segredo; quem escreve a configuração do manager é só o gerador).
     if (config.WAZUH_SIGNAL_DIR !== undefined) {
@@ -249,6 +298,8 @@ async function main(): Promise<void> {
       intervalSeconds: config.SYNC_INTERVAL_SECONDS,
       tasks: tasks.map((task) => task.name),
       plan: config.PLAN,
+      // Só o tipo do transporte dos avisos, nunca o servidor, o usuário ou o remetente.
+      mailTransport: config.MAIL_TRANSPORT,
       // Só a versão corrente da chave do cofre (null sem o cofre), nunca a chave.
       vaultKeyVersion: config.credentialsKeyring?.current ?? null,
     },
