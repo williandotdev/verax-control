@@ -73,6 +73,20 @@ describe('fila de passos no Cloud Tasks (CP-04)', () => {
     expect(request.task?.scheduleTime).toEqual({ seconds: at.getTime() / 1000 });
   });
 
+  it('a consulta de um passo que espera (CP-07): número no id da task e no corpo; fora da faixa, recusada', () => {
+    const queue = new CloudTasksStepQueue(SETTINGS, () => Promise.resolve(new RecordingApi()));
+    const polled = task({ step: 'node.wait_ready', poll: 3 });
+    const request = queue.buildRequest(polled);
+    expect(request.task?.name?.endsWith(`/tasks/node_wait_ready-${polled.runId}-p3`)).toBe(true);
+    expect(JSON.parse(Buffer.from(request.task?.httpRequest?.body as Uint8Array).toString('utf8'))).toEqual({
+      tenantId: polled.tenantId,
+      runId: polled.runId,
+      poll: 3,
+    });
+    expect(() => queue.buildRequest(task({ poll: 0 }))).toThrow(TypeError);
+    expect(() => queue.buildRequest(task({ poll: 1.5 }))).toThrow(TypeError);
+  });
+
   it('id repetido (ALREADY_EXISTS) não é erro: created=false; outro erro sobe', async () => {
     const api = new RecordingApi();
     const queue = new CloudTasksStepQueue(SETTINGS, () => Promise.resolve(api));

@@ -13,6 +13,12 @@ import { InternalStepsController } from '../internal/internal-steps.controller.j
 import { STEP_HANDLERS, type StepHandler } from '../internal/step-handler.js';
 import { WorkerCallerGuard } from '../internal/worker-caller.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
+import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
+import {
+  PROVISIONING_STEP_HANDLERS,
+  ProvisioningModule,
+  type ProvisioningModuleOptions,
+} from '../provisioning/provisioning.module.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
 import { DestroyBootstrapStep, RevealEmailStep } from './access-steps.js';
 import { AccessModule } from './access.module.js';
@@ -32,21 +38,25 @@ export interface AccessWorkerModuleOptions {
   mailSender?: MailSender;
   /** Só nos testes: as chaves de um "Google" gerado no teste (em produção, os certificados públicos do Google). */
   idTokenKeys?: IdTokenKeySource;
+  /** Só nos testes: as APIs do provisionamento (CP-07) num servidor falso e a sonda em memória. */
+  provisioning?: ProvisioningModuleOptions;
 }
 
 /**
  * O lado do cp-worker do acesso do cliente (CP-05): a revelação única (`POST /internal/access/reveal`, só para o
  * cp-public), os passos `secrets.destroy_bootstrap` e `access.reveal_email` (`POST /internal/steps/:name`, só para as
  * tasks e o responsável) e o gatilho do plano B para o `tick` do CP-11 (`RevealEmailService.dispatchDue`). Só o
- * `cp-worker` registra este módulo: a conta dele é a que lê e destrói o `admin-bootstrap` e manda e-mail.
+ * `cp-worker` registra este módulo: a conta dele é a que lê e destrói o `admin-bootstrap` e manda e-mail. Desde o
+ * CP-07, também os passos do provisionamento (`ProvisioningModule`) na mesma lista de passos, e o `resume` do
+ * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda.
  */
 @Module({})
 export class AccessWorkerModule {
   static forRoot(options: AccessWorkerModuleOptions = {}): DynamicModule {
     return {
       module: AccessWorkerModule,
-      imports: [AuditModule, TenantsModule, AccessModule],
-      controllers: [InternalAccessController, InternalStepsController],
+      imports: [AuditModule, TenantsModule, AccessModule, ProvisioningModule.forRoot(options.provisioning)],
+      controllers: [InternalAccessController, InternalStepsController, ProvisioningResumeController],
       providers: [
         {
           provide: BOOTSTRAP_SECRETS,
@@ -68,8 +78,12 @@ export class AccessWorkerModule {
         RevealEmailStep,
         {
           provide: STEP_HANDLERS,
-          useFactory: (...handlers: StepHandler[]): StepHandler[] => handlers,
-          inject: [DestroyBootstrapStep, RevealEmailStep],
+          useFactory: (
+            destroy: StepHandler,
+            revealEmail: StepHandler,
+            provisioning: readonly StepHandler[],
+          ): StepHandler[] => [destroy, revealEmail, ...provisioning],
+          inject: [DestroyBootstrapStep, RevealEmailStep, PROVISIONING_STEP_HANDLERS],
         },
         {
           provide: ID_TOKEN_KEY_SOURCE,

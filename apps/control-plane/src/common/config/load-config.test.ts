@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PROVISIONING_REQUIRED, ROLE_ONLY } from './env.schema.js';
+import { PROVISIONING_REQUIRED, PROVISIONING_WORKER_REQUIRED, ROLE_ONLY } from './env.schema.js';
 import { ConfigValidationError, loadConfig } from './load-config.js';
 
 const validEnv = { ROLE: 'public', NODE_ENV: 'development' };
@@ -196,13 +196,67 @@ describe('loadConfig (CP-01)', () => {
       TERRAFORM_JOB_NAME: 'cp-terraform',
       IMAGES_PROJECT_ID: 'projeto-da-verax-demo',
       RELEASE_BUCKET: 'projeto-da-verax-demo-releases',
-      NODE_RELEASE: 'v2026.11.0',
+      NODE_RELEASE: 'node-v1.2.3',
       MAIL_FROM_NODES: 'nao-responda@verax.example',
     };
     expect(loadConfig(complete).NODES_ZONE).toBe('southamerica-east1-b');
     expect(problemsOf({ ...complete, NODES_ZONE: 'southamerica-east1' })).toEqual([
       'NODES_ZONE: zona GCP inválida',
     ]);
+    // O que vai para o Terraform do nó (CP-07): a versão no formato do release e o remetente só com o endereço.
+    expect(problemsOf({ ...complete, NODE_RELEASE: 'v2026.11.0' })).toEqual([
+      'NODE_RELEASE: com PROVISIONING_ENABLED=true, deve ser a versão do nó (node-vX.Y.Z)',
+    ]);
+    for (const sender of ['Verax <nao-responda@verax.example>', "o'neil@verax.example"]) {
+      expect(problemsOf({ ...complete, MAIL_FROM_NODES: sender })).toEqual([
+        'MAIL_FROM_NODES: com PROVISIONING_ENABLED=true, deve ser só o endereço, sem nome e sem apóstrofo',
+      ]);
+    }
+    // Desligado, nada disso é conferido (o NODE_RELEASE antigo continua aceito).
+    expect(loadConfig({ ...validEnv, NODE_RELEASE: 'v2026.11.0' }).NODE_RELEASE).toBe('v2026.11.0');
+  });
+
+  it('no worker, o provisionamento ligado exige também o Cloudflare, o Firebase e a conta de suporte (CP-07)', () => {
+    const worker = {
+      ROLE: 'worker',
+      NODE_ENV: 'development',
+      PROVISIONING_ENABLED: 'true',
+      NODES_PROJECT_ID: 'projeto-dos-nos-demo',
+      NODES_REGION: 'southamerica-east1',
+      NODES_ZONE: 'southamerica-east1-b',
+      TFSTATE_BUCKET: 'projeto-dos-nos-demo-tfstate',
+      TERRAFORM_JOB_NAME: 'cp-terraform',
+      RELEASE_BUCKET: 'projeto-da-verax-demo-releases',
+      NODE_RELEASE: 'node-v1.2.3',
+      MAIL_FROM_NODES: 'nao-responda@verax.example',
+    };
+    expect(problemsOf(worker)).toEqual(
+      PROVISIONING_WORKER_REQUIRED.map((key) => `${key}: obrigatória e não definida`),
+    );
+    const complete = {
+      ...worker,
+      CLOUDFLARE_API_TOKEN: 'token-do-cloudflare-de-teste',
+      CLOUDFLARE_ACCOUNT_ID: '0'.repeat(32),
+      CLOUDFLARE_ZONE_ID: '1'.repeat(32),
+      FIREBASE_PANEL_PROJECTS: 'paineis-demo-1',
+      BOOTSTRAP_SUPPORT_EMAIL: 'suporte@verax.example',
+    };
+    const config = loadConfig(complete);
+    // O registro das imagens do nó: o GHCR público por padrão (decisão do CP-07); o Artifact Registry também serve.
+    expect(config.NODE_IMAGES_REPOSITORY).toBe('ghcr.io/williandotdev/verax-control');
+    expect(
+      loadConfig({
+        ...complete,
+        NODE_IMAGES_REPOSITORY: 'us-east1-docker.pkg.dev/projeto-demo/verax-control',
+      }).NODE_IMAGES_REPOSITORY,
+    ).toBe('us-east1-docker.pkg.dev/projeto-demo/verax-control');
+    expect(
+      problemsOf({ ...complete, NODE_IMAGES_REPOSITORY: 'docker.io/williandotdev/verax-control' }),
+    ).toEqual([
+      'NODE_IMAGES_REPOSITORY: deve ser ghcr.io/<dono>/<repositório> ou <região>-docker.pkg.dev/<projeto>/<registro>',
+    ]);
+    // A conta de suporte é só do worker: no public, sai com aviso, sem derrubar.
+    expect(warningsOf({ ...validEnv, BOOTSTRAP_SUPPORT_EMAIL: 'suporte@verax.example' })).toHaveLength(1);
   });
 
   it('listas separadas por vírgula: origens do site, projetos do Firebase e principais', () => {

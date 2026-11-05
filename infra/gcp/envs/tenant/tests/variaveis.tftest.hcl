@@ -20,7 +20,6 @@ variables {
   bootstrap_tenant_name   = "Cliente Demo A"
   bootstrap_support_email = "suporte@example.com"
   control_plane_sa        = "cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
-  images_project_id       = "projeto-exemplo-imagens"
 }
 
 # O que o checkout aceita passa: slug de 3 e de 16 caracteres, e-mail com `+` e apóstrofo, nome com acento, `&` e
@@ -394,4 +393,35 @@ run "recusa_zona_fora_da_regiao" {
   }
 
   expect_failures = [var.zone]
+}
+
+# O registro das imagens: só o GHCR ou o Artifact Registry, nos formatos que a instalação sem operador aceita.
+run "recusa_registro_de_outro_lugar" {
+  command = plan
+
+  variables {
+    images_repository = "docker.io/williandotdev/verax-control"
+  }
+
+  expect_failures = [var.images_repository]
+}
+
+run "recusa_registro_com_caminho_a_mais" {
+  command = plan
+
+  variables {
+    images_repository = "ghcr.io/williandotdev/verax-control/api"
+  }
+
+  expect_failures = [var.images_repository]
+}
+
+run "recusa_artifact_registry_sem_projeto_valido" {
+  command = plan
+
+  variables {
+    images_repository = "us-east1-docker.pkg.dev/Projeto/verax-control"
+  }
+
+  expect_failures = [var.images_repository]
 }

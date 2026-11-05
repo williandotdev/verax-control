@@ -141,7 +141,8 @@ jobs:
   control-plane-image:
     name: Imagem do plano de controle (build, Trivy e raiz só leitura)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # O executor Terraform (CP-07) baixa o provider no build e roda os testes do envs/tenant dentro da imagem.
+    timeout-minutes: 30
     env:
       # Mesmo binário e checksum do security.yml e do job da API.
       TRIVY_VERSION: 0.76.1
@@ -162,6 +163,23 @@ jobs:
         run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-control-plane:teste
       - name: Execução como no Cloud Run (os três papéis, raiz só leitura, console sem o IAP, configuração inválida)
         run: bash scripts/test-control-plane-image.sh verax-control-plane:teste
+      # Executor Terraform (CP-07): a imagem do Job cp-terraform. Só build e conferência aqui; nada é publicado nem
+      # implantado (o Job continua com a imagem que o responsável puser, infra/gcp/GUIA.md).
+      - name: 'Executor Terraform: shellcheck e cenários do entrypoint (Terraform, metadados e bucket simulados)'
+        # O entrypoint de produção conferido linha a linha (só os endereços trocados na cópia do teste): variáveis fora
+        # do formato e do ambiente recusadas antes do Terraform, a conta de serviço do nó que seria apagada ou recriada
+        # recusada antes do apply (com o plano em JSON de cada cenário), o resultado e as saídas no bucket com o token só
+        # no cabeçalho, e nada de e-mail, nome do cliente ou token na saída.
+        run: |
+          shellcheck -x -S style infra/control-plane/terraform/entrypoint.sh infra/control-plane/terraform/tests/*.sh \
+            scripts/test-terraform-executor-image.sh
+          bash infra/control-plane/terraform/tests/entrypoint-test.sh
+      - name: 'Executor Terraform: build'
+        run: docker build -f infra/control-plane/terraform/Dockerfile -t verax-terraform-executor:teste .
+      - name: 'Executor Terraform: Trivy'
+        run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-terraform-executor:teste
+      - name: 'Executor Terraform: como no Cloud Run Job (sem rede, raiz só leitura, provider do espelho, testes do envs/tenant)'
+        run: bash scripts/test-terraform-executor-image.sh verax-terraform-executor:teste
 
   e2e:
     name: Testes de navegador

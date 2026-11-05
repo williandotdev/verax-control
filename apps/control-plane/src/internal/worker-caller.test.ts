@@ -155,6 +155,8 @@ describe('allowedCallers', () => {
   it('separa as rotas: as tasks e o responsável num grupo, só o cp-public no outro', () => {
     expect([...allowedCallers(config, ['tasks'])].sort()).toEqual([INVOKER, 'dono@exemplo.example']);
     expect([...allowedCallers(config, ['public'])]).toEqual([PUBLIC_SA]);
+    // O `resume` do provisionamento (CP-07): só o responsável, nem a cp-invoker nem o cp-public.
+    expect([...allowedCallers(config, ['owner'])]).toEqual(['dono@exemplo.example']);
   });
 
   it('sem a configuração, ninguém', () => {

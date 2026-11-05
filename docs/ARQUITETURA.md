@@ -1286,7 +1286,9 @@ O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:
   obrigatórios no enterprise), `node_version` (`node-vX.Y.Z`), `node_package_sha256`, `web_origin`, `api_origin`,
   `mail_from`, `subnet_cidr` (uma /24 em 10.0.0.0/8), `bootstrap_admin_email`, `bootstrap_tenant_name`,
   `bootstrap_support_email` (a conta de suporte da Verax, CP-10),
-  `control_plane_sa` (só a conta `cp-worker@...`), `images_project_id` e `deletion_protection`. As saídas, que vão para
+  `control_plane_sa` (só a conta `cp-worker@...`), `images_repository` (o registro das imagens do Verax: o GHCR por
+  padrão desde o CP-07, ou o Artifact Registry, que só então ganha a leitura da conta da VM) e `deletion_protection`.
+  As saídas, que vão para
   o `outputs.json`, não têm dado pessoal: `name_prefix`, `instance_name`, `zone`, `nat_ip`, `service_account_email`,
   `service_account_unique_id`, `secrets` (o nome de cada cofre) e `backups_bucket`.
 
@@ -1295,13 +1297,13 @@ do módulo, desligados por padrão (o nó da Verax e a homologação não mudam)
 
 1. **Cofres que a VM grava** (`support_bootstrap_secret`):
 
-   | Cofre                               | Quem grava                                                        | Quem lê (pelo Terraform)                                       |
-   | ----------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- |
-   | `vx-<slug>-credentials-key`         | a VM, na instalação                                               | a VM; o `cp-worker` só lista e destrói as versões (Exclusão 2) |
-   | `vx-<slug>-admin-bootstrap`         | a VM (JSON do contrato acima)                                     | o `cp-worker`, uma vez, na revelação, e destrói a versão       |
-   | `vx-<slug>-support-bootstrap`       | a VM (a senha da conta de suporte)                                | ninguém: só o responsável, com as permissões dele no projeto   |
-   | `vx-<slug>-cloudflare-tunnel-token` | o `cp-worker` (passo `secrets.tunnel_token`)                      | a VM                                                           |
-   | `vx-<slug>-smtp-password`           | ninguém pelo plano de controle, por enquanto (pendência do CP-07) | a VM                                                           |
+   | Cofre                               | Quem grava                                                      | Quem lê (pelo Terraform)                                       |
+   | ----------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+   | `vx-<slug>-credentials-key`         | a VM, na instalação                                             | a VM; o `cp-worker` só lista e destrói as versões (Exclusão 2) |
+   | `vx-<slug>-admin-bootstrap`         | a VM (JSON do contrato acima)                                   | o `cp-worker`, uma vez, na revelação, e destrói a versão       |
+   | `vx-<slug>-support-bootstrap`       | a VM (a senha da conta de suporte)                              | ninguém: só o responsável, com as permissões dele no projeto   |
+   | `vx-<slug>-cloudflare-tunnel-token` | o `cp-worker` (passo `secrets.tunnel_token`)                    | a VM                                                           |
+   | `vx-<slug>-smtp-password`           | ninguém (o nó sobe com `MAIL_TRANSPORT=none`; decisão pendente) | a VM                                                           |
 
    No `support-bootstrap`, a única permissão do Terraform é `secretVersionAdder` para a conta da VM.
 
@@ -1368,8 +1370,8 @@ os campos do manifesto, depois o SHA-256 do pacote (que tem de ser o mesmo nos m
 Só então o `install.sh` do pacote roda. As imagens são as do manifesto, pelo digest: a API e as migrations com os
 digests de `images.api` e `images.migrate` (o `install.sh` recebe `--api-digest` e `--migrate-digest`), e as de
 terceiros pelo digest dos compose do pacote, que o instalador confere serem exatamente as de `thirdPartyImages`.
-O executor do plano de controle (CP-07) precisa ter o `infra/node` ao lado do `infra/gcp`: o módulo lê esses
-arquivos no `plan`.
+O executor do plano de controle (CP-07) leva o `infra/node` ao lado do `infra/gcp` (o instalador, o verificador e as
+chaves públicas de release): o módulo lê esses arquivos no `plan`.
 
 **O que a instalação faz, na primeira vez** (o marcador `/var/lib/verax/boot/installed` ainda não existe):
 
@@ -1448,14 +1450,16 @@ do começo no boot seguinte: o `install.sh` pode rodar de novo.
 | `tunnel_token_missing`      | o token do túnel não chegou ao cofre em 60 min                                  |
 | `install_state_invalid`     | o nó instalado perdeu o `/etc/verax/images.env`                                 |
 
-**Origem das imagens do Verax.** O `envs/tenant` manda `verax-images-repository` com o Artifact Registry do projeto da
-Verax (CP-06), e o `install.sh` baixa de lá pelo digest do manifesto (o mesmo nos dois registros). O `install.sh` e a
-instalação aceitam também `ghcr.io/<dono>/<repositório>` (o do próprio manifesto), sem o ajudante de credenciais do
-`gcloud`. **Risco:** a limpeza do Artifact Registry (`envs/verax/images.tf`) apaga, depois de 30 dias, toda versão que
-não está entre as 3 mais recentes nem marcada `no-`; um release promovido há mais tempo pode não estar mais lá, e a
-instalação de um cliente novo nessa versão para em `install_failed`. Saídas, decisão do responsável: apontar o tenant
-para o GHCR (público e sem limpeza; uma linha no `envs/tenant`) ou marcar as imagens de cada release com uma tag `no-`
-no Artifact Registry (mais uma permissão no workflow de release).
+**Origem das imagens do Verax.** O `envs/tenant` manda `verax-images-repository` com o registro da variável
+`images_repository`, e o `install.sh` baixa de lá pelo digest do manifesto (o mesmo nos dois registros). Desde o CP-07
+o padrão é o GHCR público do repositório (`ghcr.io/williandotdev/verax-control`, o do próprio manifesto), sem o
+ajudante de credenciais do `gcloud` e sem permissão nenhuma; o plano de controle manda o valor de
+`NODE_IMAGES_REPOSITORY` (com o mesmo padrão). O Artifact Registry do projeto da Verax continua aceito, e só com ele o
+tenant dá à conta da VM a leitura do registro. **Por que o GHCR (decisão do CP-07, a confirmar pelo responsável):** a
+limpeza do Artifact Registry (`envs/verax/images.tf`) apaga, depois de 30 dias, toda versão que não está entre as 3
+mais recentes nem marcada `no-`; um release promovido há mais tempo pode não estar mais lá, e a instalação de um
+cliente novo nessa versão pararia em `install_failed`. A outra saída seria marcar as imagens de cada release com uma
+tag `no-` no Artifact Registry (mais uma permissão no workflow de release).
 
 **Imagens de terceiros: pela origem, sem espelho (decisão em aberto).** O plano da fase 2 previa espelhar no Artifact
 Registry as imagens do Wazuh, do PostgreSQL e do cloudflared, para o nó gerenciado não depender do Docker Hub. O SH-02
@@ -1473,6 +1477,87 @@ O espelho não muda o manifesto (o digest é o mesmo), só o registro de onde os
 **Ainda fora:** observar o metadado `verax-renew-admin-password` (o Terraform é dono dos metadados: precisa virar
 variável do tenant) e as partes do modo próprio (código de ativação, chave do nó).
 
+### Provisionamento: os passos e o executor Terraform (CP-07)
+
+Do pagamento ao ambiente pronto, sem operador: o webhook (CP-04) põe o cliente em `provisioning` com um `runId` e
+enfileira o `preflight`; cada passo é uma task `POST /internal/steps/<passo>` com `{tenantId, runId}` (e, nos que
+esperam, o número da consulta, `poll`) e o token da cp-invoker; o código fica em `apps/control-plane/src/provisioning`.
+
+| Passo                  | O que faz                                                                                                                                                                                                                                                                                                                                                            | Para de vez com                                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `preflight`            | Configuração completa; o que foi vendido cabe no nó (modo gerenciado, porte P, sem agentes, limites nas faixas do `envs/tenant`); o manifesto da versão no bucket de releases, com a assinatura conferida pelas chaves de `infra/node/keys`; a faixa de rede (contador `counters/subnets`); o projeto do Firebase com vaga (36 sites); os nomes (`vxc-<slug>-<hex>`) | `provisioning_disabled`, `configuration_unsupported`, `release_manifest_*`, `firebase_pool_full`         |
+| `cloudflare.tunnel`    | O túnel `vx-<slug>` gerenciado pelo Cloudflare, o ingresso `api-<slug>` → `http://api:3000` (o resto 404) e o CNAME com proxy para `<id>.cfargotunnel.com`                                                                                                                                                                                                           | `cloudflare_denied` (token), `cloudflare_rejected`                                                       |
+| `firebase.site`        | O site, o bundle do painel (CP-09) conferido pelo SHA-256 do manifesto e publicado com a CSP do cliente (o marcador `{tenant}` trocado), o domínio `<slug>.control...` e os registros que o Firebase pede, sem proxy                                                                                                                                                 | `panel_bundle_missing`, `panel_bundle_sha256_mismatch`, `panel_bundle_invalid`, `firebase_site_conflict` |
+| `terraform.apply`      | Dispara o Job `cp-terraform` (`jobs.run` com as variáveis do cliente; a execução fica no documento do passo, uma só por entrega)                                                                                                                                                                                                                                     | `executor_input_invalid`                                                                                 |
+| `terraform.wait`       | Consulta a execução a cada 30 s; concluída, lê `runs/<slug>/<runId>/<execução>/outputs.json` e guarda os recursos; falhou, repete o `apply` uma vez; passou de 35 min, conta como falha                                                                                                                                                                              | `terraform_refused:<código>`, `terraform_failed`, `terraform_outputs_invalid`                            |
+| `secrets.tunnel_token` | Lê o token do túnel no Cloudflare e o grava como versão de `vx-<slug>-cloudflare-tunnel-token`; o token vive só na memória do passo, na máscara do logger                                                                                                                                                                                                            | `secretmanager_denied`                                                                                   |
+| `node.wait_ready`      | Lê os guest attributes a cada 60 s: `verax/ready` igual à versão pedida (mesmo com um `verax/error` antigo) segue; `verax/error` para; aviso em 40 min (`node_ready_slow`), prazo de 90 min (a releitura do cofre do túnel vai até 60 min e o Wazuh tem até 40 min de partida, PR-N7)                                                                                | `node_error:<código>`, `ready_timeout`                                                                   |
+| `node.health`          | `GET /health` e `/health/ready` na API pelo túnel e o HSTS do painel em `https://<site>.web.app`, 10 tentativas de 30 s                                                                                                                                                                                                                                              | `health_failed`                                                                                          |
+| `panel.domain_wait`    | O domínio a cada 2 min, criando os registros que o Firebase passar a pedir (só nomes dentro do domínio do painel do cliente), até `CERT_ACTIVE` e `HOST_ACTIVE`; aviso em 2 h (`panel_domain_slow`; a página de status já diz "o endereço está sendo emitido"), prazo de 24 h                                                                                        | `domain_timeout`                                                                                         |
+| `access.ready`         | A versão mais nova do `admin-bootstrap` habilitada (o estado, sem ler a senha) → `waiting_customer_connection`; o e-mail "ambiente pronto" é o plano B do CP-05 (48 h)                                                                                                                                                                                               | `bootstrap_missing`                                                                                      |
+
+**O motor (`provisioning-engine.ts`), para todo passo:** relê o cliente (fora de `provisioning`, ou de outra execução
+depois de um `resume`, termina sem fazer nada e sem enfileirar); confere a ordem (um passo já passado só garante o
+atual na fila; uma consulta já feita é ignorada); toma a trava do cliente (dono `runId`, 20 min); executa; grava o
+avanço no cliente antes de enfileirar o seguinte (se a fila falhar, a repetição enfileira o atual: o id da task é
+determinístico, `<passo>-<runId>` e `-p<n>` nas consultas). Erro repetível (rede, 408, 429, 5xx, a trava de outro dono)
+responde 503 e o Cloud Tasks repete com recuo; na última tentativa da fila (a 8.ª, `X-CloudTasks-TaskRetryCount`), vira
+`retries_exhausted`. Erro definitivo (401/403 é `<serviço>_denied`, outro 4xx `<serviço>_rejected`, e os da tabela)
+leva o cliente a `provisioning_failed` com o código em `provisioning.lastError`, solta a trava, não enfileira nada e
+escreve a linha `event=provisioning_failed` (cliente, passo e código) que o alerta do CP-12 vai procurar. Nada é
+desfeito numa falha: o `resume` recomeça do `preflight` com outro `runId`, e cada passo reconhece o que já existe
+(o túnel pelo nome, o site deste projeto, o domínio, os registros, o estado do Terraform; um 409 de um id de site de
+outro projeto, que é global no Firebase, sorteia outro). `provisioningRuns/{runId}` e `steps/{passo}` guardam o
+andamento (a execução do Job, as consultas, o código), nunca segredo, por 180 dias.
+
+**`resume` do responsável:** `POST /internal/tenants/:id/resume`, só para `OWNER_PRINCIPALS` (nem a cp-invoker nem o
+cp-public), em `provisioning_failed` ou parado em `provisioning`; auditado como `owner:<e-mail>`. **A versão do nó fica
+presa no primeiro `apply`:** o `terraform.apply` grava `provisioning.nodeVersion` e `provisioning.nodeVersionPinnedAt`
+no cliente antes de disparar o Job, e daí em diante o `preflight` usa essa versão, mesmo com outro `NODE_RELEASE`. Um
+`apply` que criou a VM e falhou depois (ou cujas saídas não chegaram) não grava `resources.instanceName`, mas a VM pode
+já estar instalando aquela versão; trocar pela nova só mudaria os metadados (a instalação não atualiza sozinha), e o
+`node.wait_ready` esperaria uma versão que nunca chega. Sem nenhum `apply` começado (uma parada no `preflight`, no
+túnel ou no bundle do painel), o `resume` usa a versão da configuração.
+
+**O executor (`infra/control-plane/terraform`):** a imagem oficial `hashicorp/terraform:1.17.1` pelo digest do índice,
+sem `git` e `openssh`, com `bash`, `curl` e `jq` do Alpine; o provider `google` do lock do tenant espelhado no build
+(`terraform providers mirror`; o `terraform.rc` só aceita o espelho, então nada é baixado em execução); o
+`envs/tenant`, o módulo do nó e o que ele lê de `infra/node` (o instalador, o verificador e as chaves públicas de
+release); usuário sem privilégio. O `entrypoint.sh` (`bash -p`):
+
+1. recusa argumento e variável que mude o Terraform, o Go, o shell, o curl ou as credenciais (`TF_*`, `GO*`, `GCE_*`,
+   `LD_*`, `BASH_ENV`, proxy, `CURL_*`, `SSL_CERT_*`, ...): quem pode disparar o Job com `overrides` (o cp-worker e o
+   `cp-deployer`, que tem `run.developer` no Job) só escolhe as variáveis do cliente;
+2. confere cada variável com a mesma regra do cp-worker (`executor-env.ts`) e do `envs/tenant` (a terceira conferência),
+   sem nunca mostrar o valor; os valores chegam ao Terraform só por `TF_VAR_*`;
+3. `init` com `bucket=<TFSTATE_BUCKET>` e `prefix=tenants/<slug>` e o lock só leitura; `plan -out`; `show -json`;
+4. **recusa o plano** que apaga, recria ou esquece a conta de serviço do nó fora da exclusão do cliente (acima, em
+   "Exclusão em dois tempos"), e um plano que não dá para ler;
+5. `apply` do plano conferido; as saídas da lista fixa do `envs/tenant` em `outputs.json`;
+6. grava `result.json` (`succeeded`, `invalid`, `refused` ou `failed`, com o código) e `outputs.json` em
+   `runs/<slug>/<runId>/<execução>/` no bucket do estado, com o token da conta do Job pelo servidor de metadados num
+   arquivo 0600, nunca em argumento.
+
+A saída do Terraform (que mostra os metadados da VM, com o e-mail do admin e o nome do cliente) fica num arquivo da
+pasta de trabalho, apagada no fim; o log do Job leva só o resumo do plano (quantos recursos por ação) e, numa falha, as
+linhas `Error:` cortadas. O cp-worker só repete uma execução que falhou sem recusa (`failed`), uma vez.
+
+**Configuração (cp-worker):** com `PROVISIONING_ENABLED=true`, a partida exige o grupo do projeto dos nós
+(`NODES_*`, `TFSTATE_BUCKET`, `TERRAFORM_JOB_NAME`, `RELEASE_BUCKET`, `NODE_RELEASE` no formato `node-vX.Y.Z`,
+`MAIL_FROM_NODES` só com o endereço e sem apóstrofo) e, no worker, o Cloudflare, o pool do Firebase e
+`BOOTSTRAP_SUPPORT_EMAIL`. `NODE_IMAGES_REPOSITORY` tem padrão (o GHCR). O Job mora no projeto e na região do plano de
+controle (`TASKS_PROJECT_ID` e `TASKS_LOCATION`). Os endereços das APIs são constantes do código, nunca variáveis: um
+endereço trocado por variável levaria o token da conta do serviço junto.
+
+**Bundle do painel ausente (CP-09 ainda não feito):** o contrato que o `firebase.site` lê é `panel: {url, sha256}` no
+manifesto, como `package` (o arquivo `panel-<commit>.tar.gz` do release, num tar ustar com `dist/` e o
+`dist-hosting.json` do build único do CP-08), e o arquivo na pasta da versão do bucket de releases. Sem o campo, o
+passo para com `panel_bundle_missing` antes de criar qualquer coisa no Firebase (o túnel, gratuito, já existe e é
+reaproveitado). **Por que parar, e não esperar:** o manifesto é imutável por versão, então o bundle não aparece
+sozinho; só uma versão nova (com o CP-09) resolve, e esperar esconderia do responsável um erro que só ele corrige,
+com o cliente numa página "preparando" para sempre. Parar avisa na hora e não custa nada (nenhuma VM criada); depois
+da versão nova, `NODE_RELEASE` e o `resume`.
+
 ### Exclusão em dois tempos
 
 | Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                                              |
@@ -1480,12 +1565,14 @@ variável do tenant) e as partes do modo próprio (código de ativação, chave 
 | D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
 | D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                                       |
 
-**A fazer no CP-07 (executor do Terraform):** recusar, antes do `apply`, todo plano que recrie ou apague
-`module.node.google_service_account.node` (no plano em JSON, uma ação `delete` nesse endereço, sozinha ou num
-`delete` + `create`), a menos que a execução seja da exclusão do cliente (CP-11: `delete` na Exclusão 1 ou
-`crypto_destroy` na Exclusão 2). A conta recriada ganha outro ID único, e o papel de leitura na AWS do cliente
-deixaria de aceitar o nó (seção "Por que papel sem chave"); a recusa para a execução sem `apply` e avisa a Verax. É a
-proteção que substitui o `prevent_destroy`, que não muda por variável e impediria a própria exclusão.
+**Feito no CP-07 (executor do Terraform):** o `entrypoint.sh` recusa, antes do `apply`, todo plano que apague, recrie
+ou esqueça `module.node.google_service_account.node` (no plano em JSON, uma ação `delete` ou `forget` nesse endereço,
+com ou sem índice, sozinha ou num `delete` + `create` em qualquer ordem), a menos que a execução seja da exclusão do
+cliente (`RUN_KIND` `delete` na Exclusão 1 ou `crypto_destroy` na Exclusão 2, CP-11); um `destroy` fora delas também é
+recusado. A conta recriada ganha outro ID único, e o papel de leitura na AWS do cliente deixaria de aceitar o nó
+(seção "Por que papel sem chave"); a recusa para a execução sem `apply` (`result.json` `refused`/`node_sa_replacement`)
+e o cp-worker leva o cliente a `provisioning_failed` com `terraform_refused:node_sa_replacement`, o que avisa a Verax.
+É a proteção que substitui o `prevent_destroy`, que não muda por variável e impediria a própria exclusão.
 
 **A fazer no CP-11 (Exclusão 1 com o `envs/tenant`):** antes do `destroy`, um `apply` com `deletion_protection =
 false` e, então, `terraform state rm` destes endereços, que ficam fora do `destroy`:

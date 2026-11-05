@@ -20,7 +20,9 @@ bootstrap_admin_email   = "admin@cliente-demo-a.example.com"
 bootstrap_tenant_name   = "Cliente Demo A"
 bootstrap_support_email = "suporte@example.com"
 control_plane_sa        = "cp-worker@projeto-do-plano-de-controle-123.iam.gserviceaccount.com"
-images_project_id       = "projeto-do-no-verax-123"
+# O registro das imagens: o padrão é o GHCR público (ghcr.io/williandotdev/verax-control). Para o Artifact Registry do
+# projeto da Verax:
+# images_repository     = "us-east1-docker.pkg.dev/projeto-do-no-verax-123/verax-control"
 
 # O plano configurável manda enterprise com os quatro limites.
 # plan                    = "enterprise"

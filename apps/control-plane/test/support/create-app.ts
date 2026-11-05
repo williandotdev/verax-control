@@ -31,6 +31,8 @@ export interface CreateAppOptions {
   mailSender?: Parameters<typeof AppModule.register>[1]['mailSender'];
   /** As chaves de um "Google" gerado no teste (`TestGoogleIdentity`), para os tokens das rotas internas. */
   idTokenKeys?: Parameters<typeof AppModule.register>[1]['idTokenKeys'];
+  /** As APIs do provisionamento (CP-07) num servidor falso em 127.0.0.1 e a sonda em memória. */
+  provisioning?: Parameters<typeof AppModule.register>[1]['provisioning'];
   /** A API da Stripe no servidor falso (`fake-stripe.ts`). */
   stripeApi?: StripeApiOptions;
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
@@ -67,6 +69,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         bootstrapSecrets: options.bootstrapSecrets,
         mailSender: options.mailSender,
         idTokenKeys: options.idTokenKeys,
+        provisioning: options.provisioning,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
         iapKeySource: options.iapKeySource,
