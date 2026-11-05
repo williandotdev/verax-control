@@ -104,7 +104,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [inMain('postura-contas')],
     permission: 'posture:read',
     title: 'Postura cloud',
-    body: 'O Prowler confere a configuração de cada conta AWS todo dia. Cada conta mostra a nota, a evolução e as checagens reprovadas; mais abaixo, o que corrigir, do mais grave ao menos grave, com o porquê e o passo a passo.',
+    body: 'A configuração de cada conta AWS é conferida todo dia pelo papel somente leitura. Cada conta mostra a nota, a evolução e as checagens reprovadas; mais abaixo, o que corrigir, do mais grave ao menos grave, com o porquê e o passo a passo.',
   },
   {
     id: 'ativos',

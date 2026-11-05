@@ -1,4 +1,13 @@
-import type { AssetKind, AssetRisk, BucketAsset, OpenRule, RiskReason } from '@verax/shared';
+import {
+  type AssetKind,
+  type AssetRisk,
+  type BucketAsset,
+  INVENTORY_INVALID_ITEMS,
+  type InventorySection,
+  type InventorySectionError,
+  type OpenRule,
+  type RiskReason,
+} from '@verax/shared';
 import type { Severity } from '@/design/severity';
 
 export const ASSET_KIND_LABELS: Readonly<Record<AssetKind, string>> = {
@@ -53,3 +62,49 @@ export function bucketPublic(bucket: Pick<BucketAsset, 'policyPublic' | 'aclPubl
   if (bucket.policyPublic === null && bucket.aclPublic === null) return null;
   return false;
 }
+
+/** As partes da coleta do inventário, como a faixa de coleta parcial as nomeia. */
+export const INVENTORY_SECTION_LABELS: Readonly<Record<InventorySection, string>> = {
+  root: 'Conta root',
+  iam: 'Usuários IAM e chaves de acesso',
+  s3: 'Buckets S3',
+  ec2: 'Instâncias EC2',
+  sg: 'Security groups',
+};
+
+/** Permissão negada pela política do papel ou por uma SCP da organização. */
+const REFUSED_CODES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'AccessDeniedException',
+  'UnauthorizedOperation',
+  'UnauthorizedAccess',
+  'AllAccessDisabled',
+  'Blocked',
+]);
+
+/** A região não aceitou a sessão: desligada na conta ou fora do opt-in. */
+const REGION_CODES: ReadonlySet<string> = new Set([
+  'AuthFailure',
+  'OptInRequired',
+  'InvalidClientTokenId',
+  'UnrecognizedClientException',
+]);
+
+/**
+ * Uma parte que ficou de fora do inventário, em português: "Instâncias EC2 em us-east-1: a AWS recusou a leitura
+ * (UnauthorizedOperation)". O código da AWS vai junto, para quem confere a política ou a SCP.
+ */
+export function describeSectionError(error: InventorySectionError): string {
+  const label = INVENTORY_SECTION_LABELS[error.section];
+  const where = error.region === null ? label : `${label} em ${error.region}`;
+  if (error.code === INVENTORY_INVALID_ITEMS)
+    return `${where}: itens fora do formato esperado ficaram de fora`;
+  if (REFUSED_CODES.has(error.code)) return `${where}: a AWS recusou a leitura (${error.code})`;
+  if (REGION_CODES.has(error.code)) {
+    return `${where}: a região não aceitou a sessão, desligada ou fora do opt-in (${error.code})`;
+  }
+  return `${where}: a leitura falhou (${error.code})`;
+}
+
+/** O teto de itens por tipo do inventário (o mesmo da coleta). */
+export const INVENTORY_ITEM_CAP = 1000;

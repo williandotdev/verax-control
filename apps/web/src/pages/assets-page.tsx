@@ -6,6 +6,7 @@ import {
   type BucketAsset,
   type IamUserAsset,
   type InstanceAsset,
+  type InventorySummary,
   type RiskReason,
   type SecurityGroupAsset,
 } from '@verax/shared';
@@ -23,6 +24,8 @@ import {
   ASSET_KIND_LABELS,
   bucketPublic,
   describeRule,
+  describeSectionError,
+  INVENTORY_ITEM_CAP,
   RISK_REASON_LABELS,
   RISK_SEVERITY,
 } from '@/features/inventory/labels';
@@ -33,7 +36,11 @@ import { formatList, formatRelative, plural } from '@/lib/format';
 const PAGE_SIZE = 20;
 const DAY = 86_400_000;
 
-/** Ativos e identidades (T7.11): uma aba por tipo, com o risco de cada item e o motivo. */
+/**
+ * Ativos e identidades (T7.11 e PR-14'): uma aba por tipo, com o risco de cada item e o motivo, a partir do inventário
+ * de cada conta AWS, refeito uma vez por dia pelo worker. Cliente sem conta AWS vê "em breve" (GCP e Cloudflare ainda
+ * não têm inventário), e o retrato parcial de uma conta ganha a faixa de coleta parcial.
+ */
 export function AssetsPage() {
   const { data: me } = useMe();
   const scope = me?.scopeTenantId ?? null;
@@ -84,6 +91,27 @@ export function AssetsPage() {
     );
   }
 
+  if (summary.data.accounts.length === 0) {
+    return (
+      <AssetsShell>
+        <EmptyState
+          title="Ativos de GCP e Cloudflare: em breve"
+          description="Esta tela mostra hoje o que existe nas contas AWS, e este cliente ainda não tem conta AWS ativa. Cadastre uma em Contas cloud: o inventário aparece aqui depois que a conexão dela for verificada."
+        />
+      </AssetsShell>
+    );
+  }
+  if (summary.data.accounts.every((item) => item.collectedAt === null)) {
+    return (
+      <AssetsShell>
+        <EmptyState
+          title="Ainda sem inventário"
+          description="O inventário de uma conta AWS sai depois que a conexão dela é verificada em Contas cloud, e é refeito uma vez por dia."
+        />
+      </AssetsShell>
+    );
+  }
+
   const roots = summary.data.accounts.filter((item) => item.root && item.root.risk !== 'none');
   const collected = summary.data.accounts
     .map((item) => item.collectedAt)
@@ -107,6 +135,8 @@ export function AssetsPage() {
           </span>
         </p>
       ))}
+
+      <PartialCollection accounts={summary.data.accounts} />
 
       <div className="flex flex-wrap items-end gap-2">
         <SelectField
@@ -192,7 +222,7 @@ function AssetTable({
     error: assets.error,
     onRetry: () => void assets.refetch(),
     emptyTitle: query.atRisk ? 'Nenhum ativo com risco' : 'Nenhum ativo deste tipo',
-    emptyDescription: 'O inventário é atualizado a cada varredura das contas.',
+    emptyDescription: 'O inventário de cada conta AWS é refeito uma vez por dia.',
   };
   const rows = assets.data?.items;
   switch (kind) {
@@ -420,14 +450,59 @@ const GROUP_COLUMNS: Column<SecurityGroupAsset>[] = [
   reasonsColumn(),
 ];
 
+/**
+ * A faixa de coleta parcial: as contas cujo retrato mais recente não tem tudo (uma parte recusada pela AWS, itens fora
+ * do formato ou o teto de itens). O resto do retrato continua nas abas.
+ */
+function PartialCollection({ accounts }: { accounts: InventorySummary['accounts'] }) {
+  const partial = accounts.filter((item) => item.errors.length > 0 || item.truncated);
+  if (partial.length === 0) return null;
+  const { icon: Icon, tone, surface } = SEVERITY_STYLES.medium;
+  return (
+    <section
+      aria-labelledby="ativos-coleta-parcial"
+      className={cn('space-y-2 rounded-md border p-3 text-sm', surface)}
+    >
+      <h2 id="ativos-coleta-parcial" className="flex items-center gap-2 font-semibold">
+        <Icon aria-hidden className={cn('size-4 shrink-0', tone)} />
+        Coleta parcial
+      </h2>
+      <ul className="space-y-2">
+        {partial.map((item) => (
+          <li key={item.accountId}>
+            <span className="font-medium">Conta {item.accountId}</span>
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              {item.errors.map((error) => (
+                <li key={`${error.section}:${error.region ?? ''}:${error.code}`}>
+                  {describeSectionError(error)}.
+                </li>
+              ))}
+              {item.truncated && (
+                <li>
+                  Alguma parte passou do teto de {INVENTORY_ITEM_CAP.toLocaleString('pt-BR')} itens por tipo:
+                  os itens além dele não aparecem.
+                </li>
+              )}
+            </ul>
+          </li>
+        ))}
+      </ul>
+      <p>
+        O que foi lido está nas abas. Uma recusa costuma vir da política do papel verax-control-reader ou de
+        uma SCP da organização; a próxima coleta, em até 24 horas, tenta de novo.
+      </p>
+    </section>
+  );
+}
+
 function AssetsShell({ children, updatedAt }: { children: ReactNode; updatedAt?: string | null }) {
   return (
     <section className="space-y-4">
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold">Ativos e identidades</h1>
         <p className="text-sm text-muted-foreground">
-          O que existe em cada conta AWS do cliente, lido pelo papel somente leitura, com o risco de cada
-          item.
+          O que existe em cada conta AWS do cliente, lido pelo papel somente leitura uma vez por dia, com o
+          risco de cada item.
           {updatedAt && ` Inventário atualizado ${formatRelative(updatedAt)}.`}
         </p>
       </header>

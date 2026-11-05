@@ -219,6 +219,61 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
   });
 
+  // A produção da demonstração tem o EC2 de us-east-1 negado por uma SCP: o retrato dela é parcial (PR-14').
+  for (const theme of ['light', 'dark'] as const) {
+    test(`Ativos com coleta parcial (${theme === 'light' ? 'claro' : 'escuro'}): a faixa diz o que ficou de fora, sem violação de acessibilidade`, async ({
+      page,
+    }) => {
+      await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
+      await open(page, '/ativos', 'Ativos e identidades');
+      const band = page.getByRole('region', { name: 'Coleta parcial' });
+      await expect(band).toContainText('Conta 111122223333');
+      await expect(band.getByRole('listitem')).toContainText([
+        'Instâncias EC2 em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',
+        'Security groups em us-east-1: a AWS recusou a leitura (UnauthorizedOperation).',
+      ]);
+      // O que foi lido continua nas abas.
+      await expect(page.getByRole('tab', { name: /Usuários IAM 9/ })).toBeVisible();
+      expect(await violations(page)).toEqual([]);
+    });
+  }
+
+  // Um cliente novo, sem conta AWS: Postura e Ativos dizem "em breve" (PR-14'). A troca de cliente e a navegação são
+  // pelo painel: recarregar a página recomeçaria a demonstração, sem o cliente novo.
+  test('cliente sem conta AWS: Postura e Ativos "em breve", sem violação de acessibilidade', async ({
+    page,
+  }) => {
+    await open(page, '/cadastros/clientes', 'Clientes');
+    await page.getByRole('button', { name: 'Novo cliente' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Novo cliente' });
+    await sheet.getByLabel('Nome', { exact: true }).fill('Cliente Novo Delta');
+    await sheet.getByLabel(/^CNPJ/).fill('45.723.174/0001-10');
+    await sheet.getByLabel('Plano').fill('Essencial');
+    await sheet.getByLabel('Nome do contato').fill('Gabriel Lima');
+    await sheet.getByLabel('E-mail do contato').fill('gabriel@exemplo.com.br');
+    await sheet.getByLabel('Nome do administrador').fill('Helena Prado');
+    await sheet.getByLabel('E-mail do administrador').fill('helena@exemplo.com.br');
+    await sheet.getByRole('button', { name: 'Cadastrar cliente' }).click();
+    await expect(sheet.getByRole('region', { name: 'Senha temporária de Helena Prado' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(sheet).toHaveCount(0);
+
+    await page.getByLabel('Cliente').selectOption({ label: 'Cliente Novo Delta' });
+    const menu = page.getByRole('navigation', { name: 'Menu principal' });
+    await menu.getByRole('link', { name: 'Postura cloud' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Postura cloud' })).toBeVisible();
+    await expect(page.getByText('Postura de GCP e Cloudflare: em breve')).toBeVisible();
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    expect(await violations(page)).toEqual([]);
+
+    await menu.getByRole('link', { name: 'Ativos e identidades' }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Ativos e identidades' })).toBeVisible();
+    await expect(page.getByText('Ativos de GCP e Cloudflare: em breve')).toBeVisible();
+    await expect(page.getByRole('tablist')).toHaveCount(0);
+    await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+    expect(await violations(page)).toEqual([]);
+  });
+
   // A troca da senha temporária só abre para a sessão de primeiro acesso: entra pela senha temporária da demonstração.
   test('/trocar-senha (primeiro acesso): sem violação de acessibilidade', async ({ page }) => {
     await page.goto('/login');

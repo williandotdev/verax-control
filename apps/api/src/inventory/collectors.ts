@@ -25,11 +25,12 @@ import {
 import { awsErrorCode } from './read-only-session.js';
 
 /**
- * Coleta do inventário de uma conta (T5.9), só com chamadas de leitura cobertas pelo papel VeraxControlReadOnly
- * (SecurityAudit + ViewOnlyAccess, T4.3). Os clientes chegam prontos, já com a credencial temporária da conta.
+ * Coleta do inventário de uma conta (T5.9 e PR-14'), só com as chamadas de leitura que a política do papel
+ * `verax-control-reader` permite (`PosturaEAtivos`, em `infra/cloudformation/verax-control-reader.yaml`). Os clientes
+ * chegam prontos, já com a sessão do papel e o limite de chamadas simultâneas do IAM (`inventory.ts`).
  *
  * Só sai o que a tela usa: nomes, IDs, datas e flags de configuração. Políticas, tags e conteúdo de recursos não são
- * lidos. Cada conta tem um teto de itens por tipo, para uma conta enorme não travar o job.
+ * lidos. Cada conta tem um teto de itens por tipo, para uma conta enorme não travar a tarefa.
  */
 
 export const MAX_ITEMS = 1000;
@@ -290,14 +291,21 @@ async function readBucket<T>(
   }
 }
 
-/** O cliente precisa de `followRegionRedirects`, porque os buckets ficam em regiões diferentes. */
+/**
+ * O cliente do S3 de cada região: a listagem vai pelo da região de partida (`null`), e as leituras de cada bucket pelo
+ * da região dele (a listagem paginada informa a região), sem passar por um redirecionamento, que seria uma chamada a
+ * mais no CloudTrail do cliente. Os clientes seguem o redirecionamento quando a região não vem na listagem.
+ */
+export type S3ForRegion = (region: string | null) => Sender<S3Client>;
+
 export async function collectBuckets(
-  s3: Sender<S3Client>,
+  s3For: S3ForRegion,
 ): Promise<{ buckets: BucketInfo[]; truncated: boolean }> {
   const listed: { name: string; region: string | null }[] = [];
+  const home = s3For(null);
   let token: string | undefined;
   do {
-    const page = await s3.send(new ListBucketsCommand({ ContinuationToken: token, MaxBuckets: 1000 }));
+    const page = await home.send(new ListBucketsCommand({ ContinuationToken: token, MaxBuckets: 1000 }));
     for (const bucket of page.Buckets ?? []) {
       if (bucket.Name !== undefined) listed.push({ name: bucket.Name, region: bucket.BucketRegion ?? null });
     }
@@ -305,6 +313,7 @@ export async function collectBuckets(
   } while (token !== undefined && listed.length < MAX_ITEMS);
 
   const buckets = await mapLimited(listed.slice(0, MAX_ITEMS), async ({ name, region }) => {
+    const s3 = s3For(region);
     const unreadable: string[] = [];
     const [policyPublic, aclPublic, publicAccessBlock] = await Promise.all([
       readBucket(
