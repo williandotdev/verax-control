@@ -63,6 +63,12 @@ e-mail da API e o `WEB_ORIGIN` (o link do aviso); sem o SMTP, o `worker.env` fic
 fila como `skipped` (ligar o e-mail depois não dispara os antigos). O e-mail não leva IP, usuário, chave, recurso nem
 conta: só o tipo, a severidade e o link do painel.
 
+Cada pessoa escolhe, em Minha conta (no cabeçalho do painel), se recebe os avisos de incidente por e-mail; a lista de
+Usuários mostra a escolha na coluna "Recebe alertas", só para ler (PR-17'). Os avisos do volume do plano não dependem
+dela. Cada pessoa recebe até 5 e-mails avulsos por hora: do 6º aviso da hora em diante, eles chegam num resumo só,
+quando a hora fecha (até 10 itens e "e mais N"). Aviso com mais de 24 horas na fila (o worker parado, o e-mail
+falhando) não sai sozinho: vem no resumo de retomada.
+
 O plano do nó também fica no `node.conf`: o da Verax é `PLAN=interno`, sem limite. A instalação recusa um `node.conf`
 sem `PLAN`, e a API e o worker não sobem sem ele. Um `node.conf` de antes do plano precisa ganhar a linha
 `PLAN=interno` antes do próximo deploy. O bootstrap grava o rótulo do plano no cadastro do cliente do nó.
@@ -72,7 +78,8 @@ limites de antes; sem a linha no `node.conf`, vale `lean`, então o `node.conf` 
 
 No perfil `standard` (homologação e nós de clientes), o mesmo pacote sobe também o Wazuh (manager e indexer, sem
 dashboard), num serviço próprio, o `verax-wazuh`, depois do `verax-node`: o `deploy.sh` leva junto a configuração de
-`infra/wazuh`, o `install.sh` gera as quatro senhas dele em `/var/lib/verax/secrets`, e o serviço espera o Wazuh ficar
+`infra/wazuh`, o `install.sh` gera as cinco senhas dele em `/var/lib/verax/secrets` (num nó de antes do PR-V6, a quinta,
+`wazuh-api-stats`, nasce no próximo deploy; sem ela, o `start.sh` para e aponta o `install.sh`), e o serviço espera o Wazuh ficar
 saudável (alguns minutos, mais na primeira vez, que baixa as imagens); uma falha dele não derruba a aplicação nem o
 backup. O que roda, como conferir e como ler os alertas estão em `infra/wazuh/README.md`, seção "Nó de cliente". Nesse
 perfil, use `SYNC_SOURCES=gcp,wazuh` no `node.conf`. O nó da Verax (`lean`) não recebe nada disso.
@@ -95,7 +102,7 @@ e as privadas ao worker, num arquivo em memória (`/run/verax/vault/worker-keys`
 nunca por variável de ambiente (o Docker grava o ambiente dos contêineres no disco). A parada (`start.sh down`) apaga
 a pasta.
 
-### Coleta do Cloudflare (auditoria da conta)
+### Coleta do Cloudflare (auditoria da conta e eventos de segurança)
 
 O coletor da auditoria do Cloudflare roda no worker e lê o token guardado no cofre, então pede o cofre ligado (acima).
 Para ligar, acrescente `cloudflare` às fontes do `node.conf` (`SYNC_SOURCES=gcp,cloudflare` no nó da Verax,
@@ -115,6 +122,13 @@ do painel (só leitura; filtro de IP do token com o IP de saída do nó).
   por exemplo). Reative a versão (seção abaixo) ou peça para colarem o token de novo.
 - **`rate_limited`:** o Cloudflare limitou o token (1200 requisições a cada 5 minutos, somando tudo que usa o mesmo
   token); o coletor espera o `retry-after`. Se repetir, confira se o mesmo token não está em uso em outro lugar.
+- **Eventos de segurança (GraphQL, PR-13):** rodam na mesma tarefa, sem configuração a mais. No `report`,
+  `securityWindows` (janelas de 15 min lidas), `securityQueries` (consultas GraphQL; o coletor gasta no máximo 250 a
+  cada 5 min por token, e `budgetWaits` conta as vezes que parou nesse limite) e `securitySkippedZones`. No cartão,
+  `security_events_forbidden` (o token sem `Analytics: Read`), `security_events_not_entitled` (nenhuma zona com os
+  eventos no plano) e `zones_forbidden` (sem `Zone: Read`) não param a auditoria, e o fluxo confere de novo a cada
+  hora. Nada a fazer no nó: o admin do cliente ajusta o token no Cloudflare (o link do painel já marca as três
+  permissões) e cola de novo, se preciso.
 
 ### Chave do cofre: trocar, reativar ou gravar de novo
 
@@ -309,10 +323,20 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
     (`sent`, `retrying`, `failed`, `skipped`), nunca o endereço. O `mailTransport` do "worker iniciado" precisa ser
     `smtp`.
   - A situação de cada aviso fica na tabela `Notification`, com o tipo do último erro em `lastError` (`skipped` com
-    `mail_disabled` é o nó sem e-mail; com `no_recipients`, ninguém do cliente com o papel, ativo e com MFA). Na VM:
-    `sudo docker compose ... exec -T postgres psql -U verax -d verax -c 'SELECT kind, status, attempts, "lastError", "createdAt" FROM "Notification" ORDER BY "createdAt" DESC LIMIT 20'`.
-  - Uma falha do servidor volta depois de 1, 5, 15 e 60 min; na quinta, o aviso fica `failed` e não sai mais. Corrija o
-    SMTP (senha, remetente) como acima: os próximos avisos saem normalmente.
+    `mail_disabled` é o nó sem e-mail; com `no_recipients`, ninguém do cliente com o papel, ativo e com MFA; com
+    `opted_out`, havia quem recebesse, mas todos desligaram os avisos de incidente em Minha conta). Na VM:
+    `sudo docker compose ... exec -T postgres psql -U verax -d verax -c 'SELECT kind, status, attempts, "lastError", cardinality("deliveredUserIds") AS avulsos, cardinality("digestedUserIds") AS no_resumo, "createdAt" FROM "Notification" ORDER BY "createdAt" DESC LIMIT 20'`.
+  - Aviso `sent` com a pessoa em `digestedUserIds` não saiu avulso: entrou no resumo da hora (a pessoa já tinha 5
+    e-mails nela) ou no de retomada (o aviso tinha mais de 24 horas). O resumo sai quando a hora fecha; a situação
+    dele fica na tabela `NotificationDigest` (`status` nulo é a hora só com a contagem dos avulsos):
+    `... -c 'SELECT "hourStart", "individualSent", cardinality("noticeIds") AS reunidos, "catchUp", status, attempts, "lastError" FROM "NotificationDigest" WHERE status IS NOT NULL ORDER BY "hourStart" DESC LIMIT 20'`.
+    `skipped` com `no_recipients` é a pessoa que perdeu o acesso antes do envio; com `no_items`, ela desligou os avisos
+    de incidente antes de a hora fechar. Nenhuma das duas tabelas guarda o endereço de e-mail.
+  - Quem diz que não recebe: confira em Usuários se a coluna "Recebe alertas" está "Sim" (o papel, a escolha da
+    pessoa), se a conta está ativa e com o MFA cadastrado. Só a própria pessoa religa os avisos, em Minha conta.
+  - Uma falha do servidor volta depois de 1, 5, 15 e 60 min; na quinta, o aviso (ou o resumo) fica `failed` e não sai
+    mais. Corrija o SMTP (senha, remetente) como acima: os próximos avisos saem normalmente, e os que ficaram presos
+    mais de 24 horas chegam juntos, no resumo de retomada.
 - **A API não sobe por causa de um segredo.** `systemctl status verax-node` diz qual cofre está vazio. Grave o valor
   e reinicie.
 - **Sem o token do túnel.** Enquanto o cofre não tiver valor, o nó sobe sem o `cloudflared`: banco, API e coleta

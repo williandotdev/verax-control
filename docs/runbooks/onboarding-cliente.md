@@ -82,7 +82,9 @@ Na reunião:
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele. Os avisos
    por e-mail (incidente alto ou crítico, achado crítico e, só para administradores, 80% e 100% do volume do plano)
    chegam só a quem já trocou a senha e cadastrou o MFA, e só com o e-mail ligado no nó (`MAIL_TRANSPORT=smtp` no
-   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe.
+   `node.conf`, com a senha da caixa no cofre `<prefixo>-smtp-password`); `leitura` não recebe. Cada pessoa pode
+   desligar os avisos de incidente em **Minha conta** (no cabeçalho), e a coluna "Recebe alertas" de Usuários mostra
+   quem recebe; o contato de escalonamento do cadastro do cliente não recebe e-mail automático.
 
    **Limites do plano.** O nó aplica o plano do `node.conf` (`PLAN` e os ajustes `PLAN_*`): contas cloud ativas e
    usuários convidados ou ativos (a equipe da Verax não conta). O uso aparece em **Administração → Plano e uso**, para
@@ -138,6 +140,18 @@ Na reunião:
    da conexão, e os dois avisos dele são do nó, não da conta do cliente: `aws_token_stale` (o nó não renova o token do
    Google; veja o journal do `verax-aws-token`) e `wazuh_apply_failed` (a configuração nova não subiu, e o manager
    segue com a anterior; veja o do `verax-wazuh-apply`).
+
+   **Medidor e saúde (PR-V6):** a cada 5 min, o worker lê os contadores do analysisd (usuário `verax_stats` da API do
+   manager, só leitura) e soma o volume no uso do cliente (fonte `aws`, a página Plano e uso). Com a conta conectada e os
+   eventos da AWS parados há mais de 2 h, a Torre do cliente mostra **Sem logs novos da AWS** e o administrador dele
+   recebe um e-mail (`aws_ingestion_stalled`, um por parada; os eventos de volta rearmam). O que conferir: a conexão e a
+   "Coleta no nó" no detalhe da conta, a trilha e o export ainda gravando no bucket (no console da AWS), e no nó as
+   linhas `aws-s3` do log do manager (como ler, em `infra/wazuh/README.md`, seção "Nó de cliente") e o log do worker
+   (`wazuh-usage` no relatório da tarefa: `read` diz se a API do manager respondeu). Um nó atende um cliente só: se a
+   Torre da equipe da Verax mostrar **Medidor da AWS parado neste nó**, há conta AWS ativa de mais de um cliente (ou os
+   agentes do Wazuh de outro cliente) no nó; tire a que sobra, e o medidor volta na leitura seguinte (o volume do
+   intervalo ambíguo não é medido para ninguém).
+
    **Ativos (inventário):** depois da primeira verificação bem-sucedida, o worker faz o inventário da conta (usuários
    IAM e chaves, buckets S3 e, nas regiões cadastradas, instâncias EC2 e security groups) em até 5 min, e depois uma
    vez por dia, pela mesma sessão do papel (as leituras aparecem no CloudTrail na mesma sessão `verax-control-worker`,

@@ -47,6 +47,18 @@ export const towerSummarySchema = z.strictObject({
      */
     silentAccounts: z.array(cloudAccountRefSchema).max(500),
     silentAfterHours: z.number().int().positive(),
+    /**
+     * Saúde da ingestão da AWS (fase 2, PR-V6): com conta AWS conectada, desde quando os eventos da AWS no Wazuh do nó
+     * estão parados, se for há mais de `awsStalledAfterHours` horas ("Sem logs novos da AWS"); null sem parada.
+     * Opcionais: um nó de antes do PR-V6 não manda.
+     */
+    awsLogsStalledSince: z.iso.datetime().nullable().optional(),
+    awsStalledAfterHours: z.number().int().positive().optional(),
+    /**
+     * Só para a equipe da Verax: o medidor da AWS do nó parado, porque há mais de um cliente no Wazuh dele (o nó atende
+     * um cliente só). Fora disso, ausente.
+     */
+    awsMeterBlocked: z.boolean().optional(),
   }),
   /** Táticas do MITRE ATT&CK nos achados e incidentes dos últimos `periodDays` dias, na ordem da cadeia de ataque. */
   mitre: z.strictObject({

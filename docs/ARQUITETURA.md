@@ -130,14 +130,21 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
   processos de um OOM; o heap travado não vai para ele.
 - **Redes no `standard`:**
   - `verax`: Postgres, API, worker e cloudflared;
-  - `wazuh`, interna: indexer e manager. O indexer não tem porta publicada nem rota para fora;
+  - `wazuh`, interna: indexer, manager e worker. O indexer não tem porta publicada nem rota para fora; o worker (que
+    não abre porta) entra só para ler os contadores da API do manager (PR-V6, usuário `verax_stats`);
   - `wazuh-read`, interna: indexer, API e worker, que só leem. A API nunca divide rede com o manager, que processa
     log de fora como root: numa rede só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o
-    `X-Forwarded-For` em que ela confia;
+    `X-Forwarded-For` em que ela confia (o CI exige que a API e o manager não dividam rede nenhuma);
   - `wazuh-egress`: só o manager, para a saída ao S3 e ao STS. O manager não alcança o Postgres.
 - **Usuários do indexer no `standard`:** o filebeat do manager grava com `wazuh_filebeat` (só escrita em
   `wazuh-alerts-*`); a API e o worker leem com `verax_api_read`; a senha do `admin` não fica em nenhum contêiner que
   fica no ar (os scripts usam o certificado admin).
+- **API do manager no `standard` (PR-V6):** o certificado é o par do manager da CA própria do Wazuh (nome
+  `wazuh.manager`), que o `manager-api-tls.sh` põe nela a cada partida do contêiner, antes dos daemons; quem a chama
+  confere com a CA (o worker, pelo volume público; o host, pelo loopback com o nome). Usuários: `wazuh-wui`
+  (administrador, só o host e os scripts) e `verax_stats` (só `manager:read`, o worker), criado e acertado pelo
+  `init-api-users.sh` no `start.sh wazuh-up`, pela API, de forma idempotente. A senha do `verax_stats` é a quinta do
+  Wazuh, gerada pelo `install.sh`, e não chega ao manager.
 - **Serviços do systemd:** nos dois perfis, `verax-metadata-guard` (a guarda do servidor de metadados, antes do Docker
   e exigida por ele: sem ela o Docker não sobe, e ela não aceita `stop` nem `restart` manual) e `verax-node` (a
   aplicação, que exige a guarda); no `standard`, também `verax-wazuh` (o Wazuh, depois da aplicação, que o
@@ -468,7 +475,29 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
    - Erros próprios: `trust_denied`, `token_invalid`, `idp_unavailable`, `metadata_unavailable` (o metadata do nó),
      `region_disabled` e `aws_unavailable`; o token do host sem renovar (`aws_token_stale`) é um aviso da coleta, no
      campo dela (`collectionError`, passo 2).
-4. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
+4. **Medir e acompanhar (PR-V6, feito):** a tarefa `wazuh-usage` do worker (`apps/api/src/usage/wazuh-usage.ts`, a
+   cada 5 min) lê os contadores do analysisd do Wazuh do nó (`GET /manager/daemons/stats?daemons_list=wazuh-analysisd`,
+   usuário `verax_stats`, TLS conferido com a CA e o nome `wazuh.manager`, resposta conferida com zod).
+   - **Medidor:** soma ao uso do cliente (`IngestUsage`, fonte `aws`) a diferença desde a leitura anterior dos bytes
+     recebidos pelo analysisd (`metrics.bytes.received`, tudo o que ele lê) e dos eventos do módulo da AWS
+     (`…modules_breakdown.aws`). Numa partida nova do analysisd (o `uptime` mudou) ou com um contador menor que a base,
+     soma o valor inteiro. A base (`WazuhCounter`, dado de sistema) e o uso entram na mesma transação, com a base
+     conferida: outra execução no meio desfaz esta. A primeira leitura de um nó vira só a base (a dúvida a favor do
+     cliente), e o que chega entre a última leitura e um reinício do analysisd se perde.
+   - **Um cliente por nó:** os clientes com conta AWS ativa (e o dos agentes do Wazuh, ligados) são os donos possíveis
+     do volume. Com mais de um, a leitura vira só a base, `WazuhCounter.meterBlocked` fica `multiple_tenants`, o log
+     avisa a cada execução (só a contagem de clientes) e a Torre da equipe da Verax mostra "Medidor da AWS parado";
+     nenhum cliente vê isso. A ambiguidade fica gravada na base também quando a leitura falha, e a primeira leitura
+     depois de uma base ambígua é só a base nova: o volume de um intervalo em que havia mais de um cliente nunca é
+     cobrado de quem sobra (revisão do PR #87).
+   - **Saúde (`IngestHealth`, no escopo do cliente):** com conta AWS conectada, a última vez que os eventos da AWS
+     andaram (ou o começo da observação). Parada há mais de 2 h, a Torre mostra "Sem logs novos da AWS" e um aviso
+     `aws_ingestion_stalled` vai para a fila de saída (PR-16), uma vez por parada (chave `aws-stalled:<começo>`); os
+     eventos de volta rearmam. Sem a leitura (o manager fora do ar), o prazo corre do mesmo jeito. O contador é do nó,
+     então a parada é do cliente, não de uma conta: com duas contas conectadas, uma parada só aparece quando as duas
+     param. A observação de quem não é o dono de agora (mais de um cliente, nenhuma conta AWS ativa, ou o cliente que
+     saiu do nó) é limpa: a conta que volta começa uma observação nova, sem a parada antiga nem um aviso na hora.
+5. **Desconectar:** o painel para a coleta e mostra os passos no console: "Revoke active sessions" no papel (corta as
    sessões já emitidas, de até 1 hora) e apagar a pilha. Não há chave para apagar.
 
 **Riscos residuais e mitigação:**
@@ -569,16 +598,17 @@ A infraestrutura da Verax roda na GCP. O nó da Verax coleta:
 
 ## Logs do Cloudflare
 
-_(fase 2: a auditoria está no código, no PR-12; os eventos de segurança vêm no PR-13)_
+_(fase 2: a auditoria está no código desde o PR-12, e os eventos de segurança, desde o PR-13)_
 
 O Cloudflare é lido pela API dele, por um coletor nativo no worker, sem o Wazuh. Vale para o nó da Verax e para os
 nós de clientes:
 
 - **Auditoria da conta** (audit logs v2), com cursor por conta (detalhes abaixo);
-- **Eventos de segurança do WAF**, pela API GraphQL de analytics, em janelas de 15 min. O Cloudflare amostra esses
-  eventos, então as contagens são aproximadas. Ele guarda os eventos por uma janela que vale por zona e depende do
-  plano (`notOlderThan`, de até 31 dias). Uma parada do nó mais curta que essa janela não perde dados; numa parada
-  mais longa, o que passou da janela se perde.
+- **Eventos de segurança das zonas** (WAF, regras próprias, limite de taxa, DDoS de camada 7, bots), pela API GraphQL
+  de analytics, em janelas de 15 min (detalhes abaixo). O Cloudflare amostra esses eventos, então as contagens são
+  aproximadas. Ele os guarda por um prazo que vale por zona (`notOlderThan`; a documentação diz ao menos 31 dias em
+  todos os planos). Uma parada do nó mais curta que esse prazo não perde dados; numa parada mais longa, o que passou
+  dele se perde.
 
 As regras são próprias (faixa 9903xx), com título em português e MITRE. O token é de conta, **só de leitura**, com
 três permissões: `Account Settings: Read` (a auditoria da conta), `Zone: Read` (a lista de zonas) e `Analytics: Read`
@@ -628,6 +658,63 @@ voltar depois como modo completo, sem amostragem.
 - **Medidor:** os bytes de cada página lida entram no uso do cliente (`IngestUsage`, fonte `cloudflare`), depois de o
   cursor avançar.
 
+### Eventos de segurança (`apps/api/src/cloudflare/`, PR-13)
+
+- **Onde roda:** na mesma tarefa `cloudflare` do worker, como o terceiro fluxo de cada conta (`CollectorCursor`
+  `cloudflare_security`), com o mesmo token do cofre e o mesmo cliente HTTP (host fixo). Uma conta por vez: a
+  conferência, a auditoria e os eventos nunca disputam o token.
+- **O que lê:** `POST /graphql`, o conjunto de dados `firewallEventsAdaptiveGroups`, agregado por `clientIP`, `action`,
+  `source` e `clientRequestHTTPHost`, em ordem decrescente de contagem. As zonas vêm de `GET /zones` da conta
+  (`Zone: Read`), filtradas pela lista cadastrada (vazia é todas, até 50). Antes, o nó `settings` de cada zona diz se o
+  plano dá o conjunto de dados (`enabled`), o maior intervalo por consulta (`maxDuration`), o máximo de linhas
+  (`maxPageSize`) e até onde se pode voltar (`notOlderThan`).
+- **Janelas e consultas:** janelas de 15 min alinhadas em UTC, lidas 5 min depois de fechar; a primeira leitura pega
+  24 h, e cada execução recupera no máximo 24 h, nunca antes da retenção da zona (com 15 min de folga). Cada janela é
+  lida em lotes de até 10 zonas (`zoneTag_in`), uma consulta por lote, com até 1000 linhas por zona (ou o
+  `maxPageSize`, se menor) e, no mesmo pedido, o total das 24 h anteriores (a base da regra de pico, dentro do
+  `maxDuration`). Os valores vão nas variáveis da consulta; só o limite de linhas entra como literal inteiro conferido.
+  A resposta 200 com `errors[]` é erro, mesmo com parte dos dados.
+- **Cursor:** cada lote é gravado inteiro (achados, exceção e incidente) antes do pedido seguinte; o progresso da
+  janela fica na continuação do cursor, e o cursor vai para o fim da janela só quando o último lote dela está gravado.
+  Uma falha no meio (da origem, do banco, do orçamento de tempo) recomeça do lote que não terminou, mesmo na primeira
+  leitura e mesmo depois de outra janela fechar, e a chave única do achado não deixa a releitura duplicar. Lida a última janela, a próxima leitura é quando a seguinte fechar há 5 min.
+- **Orçamento de consultas:** o Cloudflare aceita 300 consultas GraphQL a cada 5 min por token, e cada zona de cada nó
+  conta uma. O coletor se limita a 250: o gasto fica em baldes de um minuto na continuação do cursor, gravado antes de
+  cada envio (também das novas tentativas do cliente em 5xx, rede e tempo esgotado), e vale a soma dos últimos 6
+  minutos (qualquer intervalo de 5 min cabe neles). Sem orçamento, a
+  execução para e marca a próxima leitura para quando ele voltar.
+- **Falhas e conexão:** o 429 (do HTTP ou a mensagem "rate limiter budget depleted" no corpo) esvazia o orçamento e
+  adia os três fluxos da conta até o `retry-after` (5 min sem ele); o 429 da auditoria ou da conferência também adia os
+  eventos. O 401 para a coleta, como na auditoria. Token sem `Analytics: Read` (`security_events_forbidden`), plano
+  sem o conjunto de dados em nenhuma zona (`security_events_not_entitled`) e token sem `Zone: Read`
+  (`zones_forbidden`) ficam no cartão da conta, sem parar a auditoria, e o fluxo confere de novo a cada hora (sem laço
+  de erro). Uma zona sem acesso não esconde as outras: o lote recusado é conferido zona a zona, e só as zonas com o
+  conjunto de dados são lidas. A janela além da retenção (`cannot request data older than`) é pulada. Resposta fora do
+  formato (zod), zona que não foi pedida ou repetida e erro desconhecido recusam a resposta inteira, e o cursor recua.
+  As mensagens de erro do GraphQL só servem para escolher o código; nada delas vai para o log ou para o banco.
+- **Regras (990330 a 990335)** e agregação, em `cloudflare-security-rules.ts` (ação e origem comparadas só por letras e
+  números em minúsculas, porque o GraphQL e o Logpush escrevem diferente):
+
+  | ID     | Nível  | Casa com                                                                                      |
+  | ------ | ------ | --------------------------------------------------------------------------------------------- |
+  | 990330 | 7 / 10 | um IP com 500 bloqueios ou mais na janela (10 a partir de 5000), sem os da proteção DDoS      |
+  | 990331 | 7      | um IP barrado 20 vezes ou mais pelo WAF gerenciado (bloqueio ou desafio)                      |
+  | 990332 | 7 / 10 | limite de taxa disparado por um IP; 10 quando foi contra rota de login                        |
+  | 990333 | 10     | 1000 requisições ou mais mitigadas pela proteção DDoS de camada 7 na zona                     |
+  | 990334 | 7      | 500 eventos ou mais na zona e 10 vezes a média por janela das 24 h anteriores                 |
+  | 990335 | 4      | um IP com 50 desafios resolvidos ou mais e 90% de acerto (**desligada**: ligar com dado real) |
+
+  Uma rajada nunca vira um achado por requisição: cada regra vira no máximo um achado por zona, IP e janela, com a
+  contagem no nome do evento (`6000 requisições bloqueadas em 15 min`). Por regra, zona e janela, só os 10 IPs com
+  mais eventos têm achado próprio; os demais acima do limite viram um achado de resumo. A rota de login da 990332 vem
+  de uma consulta a mais (os IPs com limite disparado e as rotas deles), só quando a janela teve limite de taxa; se ela
+  falhar ou o orçamento não cobrir, o achado sai com o nível 7. O achado é do cliente da conta (`source='cloudflare'`,
+  `logSource='cloudflare_waf'`, chave `cf/<conta>/sec:<sha256(regra|zona|IP|início da janela)[0..40]>`), com a zona
+  em `resource` e o IP em `sourceIp`, e passa pela exceção do cliente (por IP ou pela zona) e pelo incidente.
+
+- **Medidor:** os bytes de cada resposta GraphQL e as linhas lidas entram no uso do cliente (`cloudflare`), depois de o
+  cursor avançar.
+
 ## Agentes nas instâncias do cliente
 
 _(no código, desligado por padrão em cada nó; o aceite depende da homologação no ar. Roteiro para ligar:
@@ -642,7 +729,7 @@ ambiente e o projeto do Compose saem byte a byte como antes e o nó não publica
 ```
 instância do cliente (agente) ──TCP 1514 e 1515──► IP fixo de entrada (regra de encaminhamento da GCP, só das faixas
                                                     do cliente) ──► VM do nó, sem IP externo ──► Docker ──► manager
-host do nó (timer, a cada minuto) ──docker exec──► API do manager (localhost:55000) ──► /run/verax/wazuh-agents/agents.json
+host do nó (timer, a cada minuto) ──docker exec──► API do manager (wazuh.manager:55000) ──► /run/verax/wazuh-agents/agents.json
 worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente do nó) ──► API ──► painel (Agentes)
 ```
 
@@ -674,9 +761,10 @@ worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente d
   estado (as detecções viram alertas). Os pacotes do script são os oficiais da versão do manager, conferidos pelo
   SHA-512 publicado pela Wazuh numa pasta temporária própria (`mktemp -d` no Linux; no Windows, nome aleatório e ACL
   só de Administradores e SYSTEM), apagada no fim, sem acrescentar repositório.
-- **Como o painel sabe dos agentes sem falar com o manager:** nem a API nem o worker dividem rede com ele. O host, que
-  já fala com o contêiner do manager pelo Docker, pede a lista à API dele (`localhost:55000`, usuário `wazuh-wui`, a
-  senha pela entrada padrão do curl) a cada minuto, só com os campos do painel, e grava o arquivo em `/run/verax`
+- **Como o painel sabe dos agentes sem falar com o manager:** a API não divide rede com ele, e o worker só lê os
+  contadores do analysisd (`verax_stats`, PR-V6). O host, que já fala com o contêiner do manager pelo Docker, pede a
+  lista à API dele (`wazuh.manager:55000` pelo loopback, TLS conferido com a CA do nó, usuário `wazuh-wui`, a senha
+  pela entrada padrão do curl) a cada minuto, só com os campos do painel, e grava o arquivo em `/run/verax`
   (memória), com teto de tamanho. O worker o lê montado só leitura, confere cada campo com zod (a resposta é entrada
   não confiável), grava em `WazuhAgent` no cliente do nó (`WAZUH_AGENTS_TENANT`) e tira o que saiu do manager; a API lê
   pelo escopo da sessão. O indexer não serve: sem o dashboard, ninguém grava o estado dos agentes em
@@ -736,7 +824,8 @@ Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `adm
 
 ## Avisos por e-mail (`apps/api/src/notifications/`)
 
-_(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado)_
+_(fase 2, PR-16: no código; o aceite é um achado crítico de teste no nó da Verax, com o SMTP ligado. PR-17': a
+preferência de cada pessoa e o resumo por hora)_
 
 O nó avisa por e-mail, sem depender de quem está com o painel aberto. O aviso passa por uma fila de saída (_outbox_) no
 Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dentro da transação que grava o achado.
@@ -744,13 +833,15 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
 - **Quando nasce um aviso**, sempre com uma chave de deduplicação única por cliente (o mesmo fato avisa uma vez só,
   por mais que seja relido):
 
-  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe      |
-  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ---------------- |
-  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista |
-  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista |
-  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista |
-  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin       |
-  | `aws_ingestion_stalled` | a coleta da AWS para (tipo e texto prontos; quem emite é o medidor do PR-V6)  | a definir no PR-V6           | só o admin       |
+  | Tipo                    | Quando                                                                        | Chave                        | Quem recebe       |
+  | ----------------------- | ----------------------------------------------------------------------------- | ---------------------------- | ----------------- |
+  | `incident_opened`       | um incidente abre alto ou crítico                                             | `incident:<id>:<severidade>` | admin e analista¹ |
+  | `incident_escalated`    | um incidente sobe para alto (de baixo ou médio) ou para crítico               | `incident:<id>:<severidade>` | admin e analista¹ |
+  | `critical_finding`      | um achado crítico fica fora de incidente (sem usuário, chave, IP nem recurso) | `finding:<id>`               | admin e analista¹ |
+  | `plan_usage`            | o volume do mês chega a 80% e a 100% do limite do plano                       | `usage:<AAAA-MM>:<80\|100>`  | só o admin        |
+  | `aws_ingestion_stalled` | com conta AWS conectada, os eventos da AWS parados há mais de 2 h (PR-V6)     | `aws-stalled:<começo>`       | só o admin        |
+
+  ¹ Quem não desligou os avisos de incidente em Minha conta (PR-17', abaixo).
 
   Os três primeiros nascem no `FindingStore`, na mesma transação do achado e do incidente: todo coletor (Wazuh, agentes,
   GCP, Cloudflare) ganha o aviso sem mudança, e uma falha no meio não deixa nem o achado nem o aviso. O agrupamento
@@ -764,9 +855,10 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   `interno` (nó da Verax) não tem limite, e nada é calculado.
 - **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
   - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
+  - os resumos das horas que fecharam saem antes dos avisos novos (abaixo);
   - resolve os destinatários na hora do envio, pelo escopo do cliente do aviso: pessoas `active`, com MFA, sem troca de
-    senha pendente, do papel que o tipo pede, com o cliente ativo. `leitura` não recebe (decisão D8); a equipe da Verax
-    não é do cliente;
+    senha pendente, do papel que o tipo pede, com o cliente ativo e, nos três avisos de incidente, com a preferência
+    ligada. `leitura` não recebe (decisão D8); a equipe da Verax não é do cliente;
   - um e-mail por pessoa, pelo mesmo transporte da API (`mailTransport`, SMTP com TLS no nó). O id de quem já recebeu
     fica no aviso, e a nova tentativa não repete o e-mail;
   - falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
@@ -775,18 +867,47 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
     envio de um aviso numa execução (1 min) esgotado (`delivery_timeout`, e o lote segue para o aviso seguinte) ou a
     execução interrompida no meio (orçamento de 5 min da tarefa ou parada do worker: a tentativa é gravada antes de a
     interrupção subir). Um aviso preso volta para o fim da fila e chega ao `failed` na quinta, sem segurar os outros;
-  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped`. Ligar o e-mail depois
-    não dispara os avisos antigos;
+  - sem e-mail no nó (`MAIL_TRANSPORT=none`) ou sem ninguém para receber, o aviso fica `skipped` (`mail_disabled`,
+    `no_recipients`, ou `opted_out` quando havia quem recebesse e todos desligaram). Ligar o e-mail depois não dispara os
+    avisos antigos;
   - uma falha no cálculo do volume não segura os avisos de incidente.
+- **Preferência de aviso (PR-17', `NotificationPreference`):** cada pessoa escolhe, em Minha conta
+  (`GET` e `PUT /v1/notification-preferences`, corpo estrito `{ incidentEmails }`), se recebe os avisos de incidente e
+  de achado crítico. Sem linha, recebe. Só a própria pessoa muda a dela (a rota não recebe id), a mudança entra na
+  trilha (`user.notification_preference`, com o estado anterior e o novo), e a lista de Usuários mostra a coluna
+  "Recebe alertas" só para ler. `leitura` e a equipe da Verax leem `eligible: false`, e a mudança é recusada (403). Os
+  avisos do volume do plano e da coleta parada não dependem dela: sem eles, ninguém do cliente saberia que a coleta
+  parou ou que o plano encheu.
+- **Resumo por hora (PR-17', `NotificationDigest`):** uma linha por pessoa e hora cheia (UTC, que bate com a de
+  Brasília) conta os e-mails avulsos da hora. Até 5 saem avulsos; do 6º aviso da hora em diante, o aviso entra no
+  resumo da pessoa (o id do aviso na linha e a pessoa em `digestedUserIds` do aviso, na mesma transação), e o resumo
+  sai uma vez, quando a hora fecha, com até 10 itens (os críticos primeiro, depois na ordem da fila) e "e mais N" com
+  o link do painel. O resumo não conta na hora seguinte, e a contagem recomeça a cada hora.
+  - **retomada:** o aviso com 24 h ou mais na fila (o worker parado, o e-mail falhando) nunca sai avulso: entra no
+    resumo da hora, que vira "Retomada dos avisos atrasados";
+  - **as mesmas regras do aviso:** assunto fixo, os títulos fixos dos tipos, a hora de cada item e o link do painel,
+    nada do achado, HTML escapado; 1, 5, 15 e 60 min de recuo e `failed` na quinta; a concessão de sempre (os resumos
+    saem na mesma tarefa, até 20 por execução, e param se outra réplica a toma). A pessoa e a preferência são
+    conferidas de novo no envio: quem perdeu o acesso não recebe (`no_recipients`), e quem desligou os avisos de
+    incidente não recebe os que estavam reunidos (`no_items`);
+  - a interrupção no meio de um aviso grava a tentativa como antes, e quem já foi para o resumo fica guardado: não é
+    reunido de novo.
+- **Contato de escalonamento (D8):** o contato do cadastro do cliente não recebe e-mail automático. O endereço só tem o
+  formato conferido (ninguém confirmou que a caixa é da pessoa), ele não entra no painel para deixar de receber, e a
+  fila e o resumo contam pessoas pelo id de usuário. Fica para um PR próprio (confirmação do endereço, descadastro e o
+  estado de entrega dele).
 - **O que o e-mail diz:** assunto fixo por tipo e severidade (sem CR nem LF), um texto fixo e o link do painel
   (`${WEB_ORIGIN}/incidentes/<id>`, `/achados?achado=<id>`, `/cadastros/contas` ou `/cadastros/plano`). Nenhum IP, usuário,
   chave, recurso, conta, título de regra ou região: o e-mail pode ser encaminhado, e os detalhes ficam atrás do login
-  com MFA. O nome de quem recebe vai escapado no HTML.
-- **Nada de endereço no log nem na fila:** a tabela guarda só o id de quem recebeu; o log do worker leva só as
-  contagens da execução.
-- **Isolamento e expurgo:** `Notification` entra no escopo do cliente (`TENANT_SCOPED_MODELS`). A chave estrangeira do
-  achado inclui o cliente, e um gatilho confere o cliente do incidente. Apagar o incidente ou o achado apaga o aviso
-  junto, e o expurgo diário (seção "Expurgo do histórico") apaga os avisos resolvidos sem mudança há 90 dias.
+  com MFA. O nome de quem recebe vai escapado no HTML. Nos avisos de incidente, o fecho diz como deixar de receber
+  (Minha conta).
+- **Nada de endereço no log nem na fila:** a fila e o resumo guardam só o id de quem recebeu (ou de quem foi para o
+  resumo); o log do worker leva só as contagens da execução (`folded` e `digests` incluídos).
+- **Isolamento e expurgo:** `Notification`, `NotificationPreference` e `NotificationDigest` entram no escopo do cliente
+  (`TENANT_SCOPED_MODELS`). A chave estrangeira do achado inclui o cliente, um gatilho confere o cliente do incidente,
+  e outro confere que a pessoa da preferência e do resumo é do mesmo cliente (a equipe da Verax, sem cliente, nunca
+  passa). Apagar o incidente ou o achado apaga o aviso junto, e o expurgo diário (seção "Expurgo do histórico") apaga
+  os avisos resolvidos e as horas de avisos (o resumo resolvido e a hora só de contagem) sem mudança há 90 dias.
 - **Configuração:** o worker recebe o mesmo bloco de e-mail da API (`MAIL_TRANSPORT`, `MAIL_FROM`, `SMTP_*`) e a
   origem do painel (`WEB_ORIGIN`), que o `start.sh` escreve no `worker.env` só com `MAIL_TRANSPORT=smtp` no
   `node.conf`. Sem o e-mail, o `worker.env` não muda, e o worker sobe com `none`. Nos nós de clientes, o SMTP é o da
@@ -817,7 +938,9 @@ mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
 - **Recusa:** 409 com o código `PLAN_LIMIT_REACHED` e a mensagem que diz o limite ("Seu plano permite até 3 contas
   cloud ativas. Desative uma conta ou fale com a Verax para ampliar."), na trilha do cliente como falha, com a ação de
   sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
-- **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte.
+- **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte
+  (`aws` pela tarefa `wazuh-usage`, PR-V6: os bytes que o analysisd do nó recebe, que incluem os dos agentes do Wazuh
+  quando ligados).
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
   mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
 - **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
@@ -872,17 +995,17 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 - **O que sai** (o corte é o prazo mais um dia de folga, para o relatório do período sair completo; o próprio corte
   fica):
 
-  | Dado                                                                     | Regra                                                                                                                                                                                                                                                      |
-  | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira |
-  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                           |
-  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                           |
-  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                  |
-  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                    |
-  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. Entra quando a fila de saída (PR-16) estiver no código      |
-  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas)                                                                                                                                                                                        |
-  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                            |
-  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                        |
+  | Dado                                                                     | Regra                                                                                                                                                                                                                                                                                    |
+  | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Incidentes                                                               | Saem inteiros, com os achados e os comentários, quando não tiveram atividade desde o corte: o último achado e a última mudança são anteriores a ele, e nenhum achado teve evento, mudança ou comentário depois. O que fica guarda a linha do tempo inteira                               |
+  | Achados soltos                                                           | Fora de incidente, sem atividade depois do corte e sem recorrência apontando para eles (a recorrência sai antes)                                                                                                                                                                         |
+  | Postura                                                                  | Varreduras e reprovações pelo prazo do plano; a varredura mais recente de cada conta fica sempre                                                                                                                                                                                         |
+  | Inventário                                                               | 30 dias; o retrato mais recente de cada conta fica sempre                                                                                                                                                                                                                                |
+  | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                  |
+  | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo |
+  | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas)                                                                                                                                                                                                                      |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                                                          |
+  | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                      |
 
 - **Imutabilidade (revisão linha a linha):** a trilha de auditoria e os comentários dos achados continuam só INSERT,
   com uma exceção estreita. UPDATE e TRUNCATE ficam sempre bloqueados pelos triggers. DELETE só passa no trigger com a

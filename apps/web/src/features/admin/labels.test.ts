@@ -19,6 +19,10 @@ describe('explicação do erro de coleta (cartão da conta)', () => {
   it('erros passageiros e de zona têm explicação; os outros códigos ficam só como tipo do erro', () => {
     expect(cloudflareConnectionErrorHint('rate_limited')).toMatch(/limitou/);
     expect(cloudflareConnectionErrorHint('zone_not_found')).toMatch(/zonas/);
+    // Eventos de segurança (PR-13): o estado explica que a auditoria segue.
+    expect(cloudflareConnectionErrorHint('security_events_forbidden')).toMatch(/Analytics: Read/);
+    expect(cloudflareConnectionErrorHint('security_events_not_entitled')).toMatch(/plano/);
+    expect(isCloudflareBlockingError('security_events_forbidden')).toBe(false);
     expect(cloudflareConnectionErrorHint('AccessDenied')).toBeNull();
     expect(cloudflareConnectionErrorHint('toString')).toBeNull();
     expect(isCloudflareBlockingError('rate_limited')).toBe(false);

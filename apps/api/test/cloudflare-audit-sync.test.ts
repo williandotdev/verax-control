@@ -67,6 +67,8 @@ describe('coletor da auditoria do Cloudflare (banco real e Cloudflare falso)', (
       tenantIds: [tenantA, tenantB],
       pageSize: 2,
       maxPages: 3,
+      // Os eventos de segurança (PR-13) têm o próprio arquivo; aqui, só a auditoria e a conferência.
+      securityEvents: false,
       ...options,
     });
   };
