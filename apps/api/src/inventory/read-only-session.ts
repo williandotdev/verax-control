@@ -17,11 +17,11 @@ export interface AwsCredentialIdentity {
  * As credenciais temporárias nunca são logadas nem gravadas: o objeto que as carrega se recusa a virar JSON ou texto
  * de log, e os erros citam só a conta e o código da AWS.
  *
- * TODO(PR-V5' e PR-14'): `assumeReadOnlyRole` é do conector antigo (`AssumeRole` com ExternalId, a partir de uma
- * credencial da Verax) e não tem mais quem a chame em produção: só `collectInventory`, que nenhum processo agenda, e os
- * testes. Nunca recebe chave de acesso (a da AWS saiu do cofre no PR-V3'), e o cadastro não tem mais ExternalId. O
- * PR-V5' traz o provedor de web identity (o token do Google trocado no STS pelo papel `/verax/verax-control-reader`,
- * `AssumeRoleWithWebIdentity`) e o PR-14' passa o inventário para ele; aí esta função, o `READ_ONLY_ROLE` e o
+ * TODO(PR-14'): `assumeReadOnlyRole` é do conector antigo (`AssumeRole` com ExternalId, a partir de uma credencial da
+ * Verax) e não tem mais quem a chame em produção: só `collectInventory`, que nenhum processo agenda, e os testes. Nunca
+ * recebe chave de acesso (a da AWS saiu do cofre no PR-V3'), e o cadastro não tem mais ExternalId. O provedor de web
+ * identity já existe (PR-V5', `aws/web-identity.ts`: `WebIdentityCredentials.credentialsFor(conta, região)`, que usa o
+ * `TemporaryCredentials` daqui); o PR-14' passa o inventário para ele, e aí esta função, o `READ_ONLY_ROLE` e o
  * `EXTERNAL_ID` saem.
  */
 
