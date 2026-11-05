@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { escalationContactInputSchema, escalationContactSchema } from './escalation-contact.js';
 import { withPagination } from './pagination.js';
 import { temporaryPasswordSchema } from './users.js';
 
@@ -35,27 +36,17 @@ export const cnpjSchema = z
   .transform((value) => value.replace(/[.\-/\s]/g, '').toUpperCase())
   .refine(isValidCnpj, { error: 'CNPJ inválido' });
 
-const escalationContactSchema = z.strictObject({
-  name: z.string().trim().min(1).max(120),
-  email: z.email().max(254),
-  // No máximo 20 caracteres, o tamanho da coluna no banco.
-  phone: z
-    .string()
-    .trim()
-    .max(20)
-    .regex(/^\+?[0-9][0-9 ()-]{7,19}$/, { error: 'telefone inválido' })
-    .nullable()
-    .optional(),
-});
-
 /** Dados cadastrais do cliente, comuns ao cadastro e à alteração. */
 const tenantFieldsSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   cnpj: cnpjSchema,
   /** Texto livre (premissa aprovada: o plano não define valores). */
   plan: z.string().trim().min(1).max(60),
-  /** Quem a Verax aciona num incidente grave. */
-  escalationContact: escalationContactSchema,
+  /**
+   * Quem a Verax e o cliente acionam num incidente grave (D8). Um endereço novo precisa ser confirmado pelo link do
+   * e-mail antes de receber qualquer aviso (`escalation-contact.ts`).
+   */
+  escalationContact: escalationContactInputSchema,
 });
 
 /**
@@ -94,9 +85,8 @@ export type TenantSummary = z.infer<typeof tenantSummarySchema>;
 export const tenantSchema = tenantSummarySchema.extend({
   cnpj: z.string().nullable(),
   plan: z.string().nullable(),
-  escalationContact: z
-    .strictObject({ name: z.string(), email: z.string(), phone: z.string().nullable() })
-    .nullable(),
+  /** O contato com o estado da confirmação e do descadastro. */
+  escalationContact: escalationContactSchema.nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });

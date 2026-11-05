@@ -284,3 +284,93 @@ export function digestMail(to: string, name: string, digest: DigestMail): MailMe
     ].join('\n'),
   };
 }
+
+/** Os avisos que chegam ao contato de escalonamento (D8): só os críticos, de incidente e de achado. */
+export type EscalationNotice = Extract<
+  NoticeMail,
+  { kind: 'incident_opened' | 'incident_escalated' | 'critical_finding' }
+>;
+
+/** Por que o contato recebe e como deixa de receber: o fecho fixo dos e-mails a ele. */
+function escalationClosing(unsubscribeLink: string): { text: string[]; html: string[] } {
+  const why = `Você recebe este e-mail por ser o contato de escalonamento cadastrado no ${PRODUCT_NAME}, que recebe só os avisos críticos.`;
+  const leave = 'Para não receber mais, use o link';
+  return {
+    text: [why, `${leave}: ${unsubscribeLink}`],
+    html: [
+      `<p>${escapeHtml(why)}</p>`,
+      `<p><a href="${escapeHtml(unsubscribeLink)}">${escapeHtml('Não quero mais receber estes avisos')}</a></p>`,
+    ],
+  };
+}
+
+/** O pedido de confirmação ao contato de escalonamento: os links vão escapados, e nada do cliente entra no texto. */
+export interface EscalationConfirmationMail {
+  confirmLink: string;
+  unsubscribeLink: string;
+  validHours: number;
+}
+
+/**
+ * O e-mail que pede ao contato de escalonamento (D8) para confirmar o endereço: o que ele vai receber, o link de
+ * confirmação (uso único) e o de descadastro. Sem a confirmação, nada mais sai para o endereço. Assunto fixo, HTML
+ * escapado, e nada do cliente, de incidente ou de conta.
+ */
+export function escalationConfirmationMail(
+  to: string,
+  name: string,
+  { confirmLink, unsubscribeLink, validHours }: EscalationConfirmationMail,
+): MailMessage {
+  const intro = `Este endereço foi cadastrado como contato de escalonamento no ${PRODUCT_NAME}, o painel de segurança em nuvem da Verax. Se você confirmar, vai receber por e-mail só os avisos críticos (incidente de severidade crítica e achado crítico), sem detalhes: eles ficam no painel, para quem tem acesso.`;
+  const action = 'Confirmar o endereço';
+  const validity = `O link vale por ${validHours} horas e só pode ser usado uma vez. Se você não reconhece este cadastro, ignore esta mensagem: sem a confirmação, nada mais é enviado a este endereço.`;
+  const leave = 'Para não receber nem este pedido de novo, use o link';
+  return {
+    to,
+    subject: singleLine(`Confirme o contato de escalonamento no ${PRODUCT_NAME}`),
+    text: [
+      `Olá, ${name}.`,
+      intro,
+      `${action}: ${confirmLink}`,
+      validity,
+      `${leave}: ${unsubscribeLink}`,
+      PRODUCT_NAME,
+    ].join('\n\n'),
+    html: [
+      `<p>Olá, ${escapeHtml(name)}.</p>`,
+      `<p>${escapeHtml(intro)}</p>`,
+      `<p><a href="${escapeHtml(confirmLink)}">${escapeHtml(action)}</a></p>`,
+      `<p>${escapeHtml(validity)}</p>`,
+      `<p><a href="${escapeHtml(unsubscribeLink)}">${escapeHtml('Não quero receber estes avisos')}</a></p>`,
+      `<p>${escapeHtml(PRODUCT_NAME)}</p>`,
+    ].join('\n'),
+  };
+}
+
+/**
+ * O aviso crítico para o contato de escalonamento (D8): o mesmo título e o mesmo texto fixo do aviso das pessoas, o link
+ * do painel (que pede login com MFA) e o link de descadastro, no lugar da dica de Minha conta (o contato não tem
+ * conta). Nada do achado, do incidente ou da conta; HTML escapado.
+ */
+export function escalationNoticeMail(
+  to: string,
+  name: string,
+  notice: EscalationNotice,
+  unsubscribeLink: string,
+): MailMessage {
+  const { title, lines, action } = noticeContent(notice);
+  const closing = escalationClosing(unsubscribeLink);
+  const panel = `${action} no painel (com login)`;
+  return {
+    to,
+    subject: singleLine(`${title} no ${PRODUCT_NAME}`),
+    text: [`Olá, ${name}.`, ...lines, `${panel}: ${notice.link}`, ...closing.text, PRODUCT_NAME].join('\n\n'),
+    html: [
+      `<p>Olá, ${escapeHtml(name)}.</p>`,
+      ...lines.map((line) => `<p>${escapeHtml(line)}</p>`),
+      `<p><a href="${escapeHtml(notice.link)}">${escapeHtml(panel)}</a></p>`,
+      ...closing.html,
+      `<p>${escapeHtml(PRODUCT_NAME)}</p>`,
+    ].join('\n'),
+  };
+}
