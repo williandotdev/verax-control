@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { nodePlan } from './env.schema.js';
 import { ConfigValidationError, loadConfig, loadWorkerConfig } from './load-config.js';
@@ -559,6 +560,54 @@ describe('configuração do worker do sync (T5.3)', () => {
       expect(() => loadWorkerConfig({ ...workerEnv, NODE_STATUS: 'sim', NODE_VERSION: commit })).toThrow(
         'NODE_STATUS: use true ou false',
       );
+    });
+  });
+
+  describe('API do manager do Wazuh para o medidor (fase 2, PR-V6)', () => {
+    const statsPhrase = 'senha-de-teste-do-medidor-1';
+    const api = {
+      WAZUH_API_URL: 'https://wazuh.manager:55000',
+      WAZUH_API_CA_FILE: '/etc/verax/wazuh/root-ca.pem',
+      WAZUH_STATS_PASSWORD: statsPhrase,
+    };
+
+    it('sem as variáveis (o nó da Verax, o lean), a tarefa wazuh-usage não existe', () => {
+      const config = loadWorkerConfig(workerEnv);
+      expect(config.wazuhApi).toBeNull();
+      expect(config).not.toHaveProperty('WAZUH_STATS_PASSWORD');
+    });
+
+    it('as três juntas: o endereço, a CA e a senha, que não vira JSON nem aparece ao inspecionar', () => {
+      const config = loadWorkerConfig({ ...workerEnv, ...api });
+      expect(config.wazuhApi?.url).toBe('https://wazuh.manager:55000');
+      expect(config.wazuhApi?.caFile).toBe('/etc/verax/wazuh/root-ca.pem');
+      expect(config.wazuhApi?.password()).toBe(statsPhrase);
+      expect(config).not.toHaveProperty('WAZUH_STATS_PASSWORD');
+      expect(JSON.stringify(config)).not.toContain(statsPhrase);
+      expect(inspect(config, { depth: 5 })).not.toContain(statsPhrase);
+    });
+
+    it('uma sem as outras, sem TLS, CA relativa ou senha fora da política do Wazuh: recusado sem o valor', () => {
+      for (const missing of Object.keys(api)) {
+        const partial: Record<string, string> = { ...workerEnv, ...api };
+        delete partial[missing];
+        expect(() => loadWorkerConfig(partial), missing).toThrow(`${missing}: obrigatória e não definida`);
+      }
+      expect(() =>
+        loadWorkerConfig({ ...workerEnv, ...api, WAZUH_API_URL: 'http://wazuh.manager:55000' }),
+      ).toThrow('WAZUH_API_URL: deve ser uma URL https://');
+      expect(() => loadWorkerConfig({ ...workerEnv, ...api, WAZUH_API_CA_FILE: 'root-ca.pem' })).toThrow(
+        'WAZUH_API_CA_FILE: deve ser o caminho absoluto',
+      );
+      for (const value of ['curta', 'x'.repeat(65)]) {
+        try {
+          loadWorkerConfig({ ...workerEnv, ...api, WAZUH_STATS_PASSWORD: value });
+          throw new Error('deveria ter recusado');
+        } catch (error) {
+          expect((error as Error).message).toContain('WAZUH_STATS_PASSWORD: deve ter de 8 a 64 caracteres');
+          expect((error as Error).message).not.toContain(value);
+        }
+      }
     });
   });
 });

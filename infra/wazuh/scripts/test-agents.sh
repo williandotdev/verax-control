@@ -11,8 +11,10 @@
 #    de cada daemon e o agent.conf no verify-agent-conf, sem comando remoto;
 # 4. o registro pela porta 1515, como o agente faz: o certificado confere com a CA e o IP dos agentes (e não com outro
 #    IP); sem senha, com a senha errada ou num grupo que não existe, recusado; com a senha certa, registrado;
-# 5. a lista dos agentes pelo infra/node/bin/wazuh-agents-export.sh, com a API do manager e o usuário wazuh-wui: só os
-#    campos que o painel mostra, sem o manager, sem a chave do agente, legível pelo grupo do worker.
+# 5. a lista dos agentes pelo infra/node/bin/wazuh-agents-export.sh, com a API do manager e o usuário wazuh-wui (o TLS
+#    conferido com a CA do nó e o nome wazuh.manager, como no Compose: o par do init-certs.sh em /etc/ssl/verax e o
+#    manager-api-tls.sh em /entrypoint-scripts): só os campos que o painel mostra, sem o manager, sem a chave do agente,
+#    legível pelo grupo do worker.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,6 +23,7 @@ IMAGE=$(grep -m1 -oE 'wazuh/wazuh-manager:[^[:space:]]+' docker-compose.yml)
 ADDRESS=203.0.113.10
 OTHER_ADDRESS=198.51.100.7
 CERTS="verax-agents-certs-$$"
+NODE_CERTS="verax-agents-node-certs-$$"
 RENDER="verax-agents-render-$$"
 MANAGER="verax-agents-manager-$$"
 
@@ -39,7 +42,7 @@ expect() { # <descrição> <esperado (regex)> <obtido>
 
 work=$(mktemp -d)
 cleanup() {
-  docker rm -f "$CERTS" "$RENDER" "$MANAGER" >/dev/null 2>&1 || true
+  docker rm -f "$CERTS" "$NODE_CERTS" "$RENDER" "$MANAGER" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -106,10 +109,28 @@ expect "authd.pass com a senha" "$enrollment" "$(cat "$work/config/etc/authd.pas
 expect "agent.conf do grupo default" 1 "$(grep -c '<wodle name="syscollector">' "$work/config/etc/shared/default/agent.conf")"
 
 echo "== Manager com os agentes (sem rede)"
-docker create --name "$MANAGER" --network none -e API_USERNAME=wazuh-wui -e "API_PASSWORD=$api_password" \
-  "$IMAGE" >/dev/null
+# Os certificados do nó (init-certs.sh, como o job certs-init) e o script que põe o par do manager na API.
+docker create --name "$NODE_CERTS" --network none --user root --entrypoint /bin/bash "$IMAGE" /verax/init-certs.sh \
+  >/dev/null
+mkdir -p "$work/node-certs-in/verax"
+cp scripts/init-certs.sh "$work/node-certs-in/verax/"
+(cd "$work/node-certs-in" && tar --mode=u=rw,go=r -cf - verax) | docker cp - "$NODE_CERTS:/"
+docker start -a "$NODE_CERTS" >/dev/null
+# O conteúdo da pasta por um tar, e não `docker cp` da pasta: ela é 0500 e os arquivos 0400 (como o init-certs.sh os
+# deixa para o manager), e, sem root (o runner do CI), o `docker cp` cria a pasta com esse modo e não consegue escrever
+# os arquivos dentro dela. O tar só aplica o modo da pasta no fim; depois, a cópia de quem roda fica gravável por ele
+# (só a cópia de trabalho do teste: no manager, o script instala com o dono e o modo da API).
+mkdir -p "$work/node-certs"
+docker cp "$NODE_CERTS:/out/manager/." - | tar -x -C "$work/node-certs"
+chmod -R u+rwX "$work/node-certs"
+mkdir -p "$work/manager-in/etc/ssl" "$work/manager-in/entrypoint-scripts"
+cp -R "$work/node-certs" "$work/manager-in/etc/ssl/verax"
+cp scripts/manager-api-tls.sh "$work/manager-in/entrypoint-scripts/verax-api-tls.sh"
+docker create --name "$MANAGER" --network none --hostname wazuh.manager -e API_USERNAME=wazuh-wui \
+  -e "API_PASSWORD=$api_password" "$IMAGE" >/dev/null
 docker cp "$work/config" "$MANAGER:/wazuh-config-mount"
 docker cp "$work/certs" "$MANAGER:/etc/ssl/verax-agents"
+(cd "$work/manager-in" && tar --mode=u=rwX,go=rX -cf - etc entrypoint-scripts) | docker cp - "$MANAGER:/"
 docker start "$MANAGER" >/dev/null
 # O wazuh-control sai com erro enquanto algum daemon não roda (o clusterd e o maild nunca rodam aqui): a saída é lida
 # inteira, e não pelo código. A API do manager é a última a subir (uns 2 a 3 min na primeira partida).

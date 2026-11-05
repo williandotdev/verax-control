@@ -64,7 +64,7 @@ for name in postgres-master postgres-migrator postgres-app better-auth-secret cs
 done
 # shellcheck source=SCRIPTDIR/../../wazuh/scripts/lib-passwords.sh
 source ../wazuh/scripts/lib-passwords.sh
-for name in wazuh-indexer-admin wazuh-indexer-filebeat wazuh-api wazuh-indexer-read; do
+for name in wazuh-indexer-admin wazuh-indexer-filebeat wazuh-api wazuh-indexer-read wazuh-api-stats; do
   value=$(new_wazuh_password)
   printf '%s' "$value" >"$secrets/$name"
 done
@@ -244,6 +244,15 @@ expect "o tópico do sink também no standard, só na API" '1 0' \
 expect "a pasta dos sinais do Wazuh só no worker (a que o compose.wazuh.yaml monta nele)" \
   "0 WAZUH_SIGNAL_DIR='/run/wazuh-signal'" \
   "$(grep -c WAZUH_SIGNAL_DIR "$run/api.env" || true) $(grep '^WAZUH_SIGNAL_DIR=' "$run/worker.env")"
+# O medidor do worker (PR-V6): a API do manager pelo nome do serviço, a CA do volume público e a senha do verax_stats,
+# a que o install.sh gerou. Só no worker: nem a API nem o manager a recebem.
+expect "a API do manager e a CA do volume público só no worker" \
+  "0 WAZUH_API_URL='https://wazuh.manager:55000' WAZUH_API_CA_FILE='/etc/verax/wazuh/root-ca.pem'" \
+  "$(grep -c '^WAZUH_API' "$run/api.env" || true) $(grep -E '^WAZUH_API_(URL|CA_FILE)=' "$run/worker.env" | tr '\n' ' ' |
+    sed 's/ $//')"
+expect "a senha do verax_stats só no worker, e é a do install.sh" "worker.env WAZUH_STATS_PASSWORD='$(cat "$secrets/wazuh-api-stats")'" \
+  "$(cd "$run" && grep -l "$(cat "$secrets/wazuh-api-stats")" ./*.env | sed 's|^\./||' | tr '\n' ' ' | sed 's/ $//') $(
+    grep '^WAZUH_STATS_PASSWORD=' "$run/worker.env")"
 
 echo "== agentes do Wazuh: desligados, os arquivos de ambiente do standard saem byte a byte como sem o interruptor"
 # O standard de antes (sem a linha no node.conf) contra WAZUH_AGENTS=false: os mesmos arquivos, o mesmo conteúdo.
@@ -263,7 +272,7 @@ expect "api.env do standard: as variáveis de sempre, na ordem de sempre" \
   'NODE_ENV LOG_LEVEL PORT WEB_ORIGIN API_ORIGIN TRUST_PROXY_HOPS BETTER_AUTH_SECRET CSRF_SECRET MAIL_TRANSPORT MAIL_FROM PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE GCP_SINK_TOPIC_PREFIX DATABASE_URL' \
   "$(cut -d= -f1 "$run/api.env" | tr '\n' ' ' | sed 's/ $//')"
 expect "worker.env do standard: as variáveis de sempre, na ordem de sempre" \
-  'NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE WAZUH_SIGNAL_DIR DATABASE_URL' \
+  'NODE_ENV LOG_LEVEL SYNC_SOURCES SYNC_INTERVAL_SECONDS PLAN INDEXER_URL INDEXER_AUTH INDEXER_USERNAME INDEXER_PASSWORD INDEXER_CA_FILE WAZUH_SIGNAL_DIR WAZUH_API_URL WAZUH_API_CA_FILE WAZUH_STATS_PASSWORD DATABASE_URL' \
   "$(cut -d= -f1 "$run/worker.env" | tr '\n' ' ' | sed 's/ $//')"
 
 echo "== agentes do Wazuh: ligados no standard"

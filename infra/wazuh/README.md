@@ -31,8 +31,14 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 ## O que muda em relação ao single-node oficial
 
 - **Nenhuma senha padrão.** As senhas de `admin` (indexer), `wazuh_filebeat` (o filebeat do manager), `wazuh-wui`
-  (API do manager) e `verax_api_read` (leitura da API do Verax Control) são geradas no nó pelo `install.sh` (no EC2,
-  pelo Terraform, no Secrets Manager). Os usuários de demonstração do indexer (`kibanaro`, `logstash`, `readall`,
+  (API do manager), `verax_api_read` (leitura da API do Verax Control) e, no nó, `verax_stats` (o medidor do worker na
+  API do manager, só `manager:read`) são geradas no nó pelo `install.sh` (no EC2, pelo Terraform, no Secrets Manager;
+  o EC2 não tem o `verax_stats`).
+- **A API do manager com a CA própria.** O `scripts/manager-api-tls.sh`, montado só leitura em `/entrypoint-scripts`,
+  roda a cada partida do manager, antes dos daemons, e põe na API o par do manager que o `init-certs.sh` emitiu (CA
+  própria, `serverAuth`, nome `wazuh.manager`), no lugar do autoassinado que ela geraria; um par que não confere (outra
+  CA, outro nome, chave de outro certificado) não entra. Quem chama a API confere com a CA: o worker pelo volume
+  público, o host e os scripts pelo loopback do manager com o nome (`--resolve wazuh.manager:55000:127.0.0.1`). Os usuários de demonstração do indexer (`kibanaro`, `logstash`, `readall`,
   `snapshotrestore`) não existem, e o outro usuário padrão da API (`wazuh`) recebe uma senha aleatória descartada.
 - **O manager não tem a senha do admin.** O filebeat grava os alertas com o usuário `wazuh_filebeat`, que só faz o que
   o filebeat faz (`config/indexer/roles-verax.yml`): gravar pelo `_bulk` em `wazuh-alerts-*`, criar o índice do dia,
@@ -77,18 +83,27 @@ o worker, o túnel e o backup diário seguem no ar. `sudo systemctl restart vera
 metadados (`verax-metadata-guard`, antes do Docker e exigida por ele) não aceita `stop` nem `restart`: reaplique-a pelo
 `restart` do `verax-node`.
 
-- **Redes:** `wazuh` (interna, sem rota para fora) só com o indexer e o manager; `wazuh-read` (interna) com o
-  indexer, a API e o worker; `wazuh-egress` só com o manager, para a saída ao S3 e ao STS. O manager não está na rede
-  do banco nem divide rede com a API (numa rede só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o
-  `X-Forwarded-For` em que ela confia). O `ci-test.sh` confere que o manager não alcança a `wazuh-read`.
-- **Senhas:** em `/var/lib/verax/secrets` (`wazuh-indexer-admin`, `wazuh-indexer-filebeat`, `wazuh-api` e
-  `wazuh-indexer-read`, 0600), geradas pelo `install.sh` no formato de `scripts/lib-passwords.sh` e conferidas pelo
+- **Redes:** `wazuh` (interna, sem rota para fora) com o indexer, o manager e o worker (só para a API do manager, com
+  o `verax_stats`; o worker não abre porta); `wazuh-read` (interna) com o indexer, a API e o worker; `wazuh-egress` só
+  com o manager, para a saída ao S3 e ao STS. O manager não está na rede do banco nem divide rede com a API (numa rede
+  só, ele chegaria à API por dentro, fora do Cloudflare, e forjaria o `X-Forwarded-For` em que ela confia). O
+  `ci-test.sh` confere que o manager não alcança a `wazuh-read` e que da `wazuh-read` o manager não existe.
+- **Senhas:** em `/var/lib/verax/secrets` (`wazuh-indexer-admin`, `wazuh-indexer-filebeat`, `wazuh-api`,
+  `wazuh-indexer-read` e `wazuh-api-stats`, 0600), geradas pelo `install.sh` no formato de `scripts/lib-passwords.sh` e conferidas pelo
   `start.sh` antes de escrever qualquer arquivo de ambiente (formato e senhas diferentes entre si; faltando alguma,
   o erro aponta para o `install.sh`). Cada contêiner recebe só as dele, por arquivos em `/run/verax` (memória, só
   root): o manager, a do `wazuh_filebeat` e a da API dele; o `security-init` (job, sem rede), as que transforma em
   hash. A do `admin` não fica em nenhum contêiner que fica no ar.
 - **API e worker:** leem o indexer com `verax_api_read` (`INDEXER_AUTH=node` no `api.env` e no `worker.env`), pelo nome
   `wazuh.indexer`, com a CA do volume `certs-public`, montado só leitura em `/etc/verax/wazuh`.
+- **Medidor (PR-V6):** o worker lê os contadores do analysisd na API do manager (`WAZUH_API_URL`,
+  `WAZUH_API_CA_FILE` e `WAZUH_STATS_PASSWORD` no `worker.env`; tarefa `wazuh-usage`, a cada 5 min) com o
+  `verax_stats`, que o `scripts/init-api-users.sh` cria e acerta pela API, com o `wazuh-wui`, no fim do `wazuh-up`
+  (idempotente: a política `verax_stats_manager_read` só com `manager:read`, o papel `verax_stats` só com ela, o
+  usuário só com o papel e sem `run_as`; a senha só é trocada quando a atual não entra). Num nó em ordem, o
+  `journalctl -u verax-wazuh` da última partida diz `init-api-users: verax_stats só com manager:read (nada mudou)`, e o
+  smoke test confere o `verax_stats` (lê os contadores, é recusado fora do `manager:read`); para acertar de novo,
+  `sudo systemctl restart verax-wazuh` (as senhas nunca vão para a linha de comando).
 - **Partida e parada:** o indexer e o manager têm `restart: unless-stopped` e 60 s para parar (`stop_grace_period`:
   o filebeat grava o registro do que já enviou e o indexer fecha o translog). As imagens, fixadas pelo digest, só são
   baixadas quando faltam: a lista vem de `compose config --images` com o perfil `setup` (o que exige todos os arquivos

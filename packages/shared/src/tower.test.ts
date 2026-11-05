@@ -25,6 +25,33 @@ describe('resumo da Torre', () => {
     expect(towerSummarySchema.parse(summary)).toEqual(summary);
   });
 
+  it('a saúde da ingestão da AWS (PR-V6): opcional (um nó de antes não manda), com a data da parada ou null', () => {
+    const stalled = {
+      ...summary,
+      coverage: {
+        ...summary.coverage,
+        awsLogsStalledSince: '2026-11-02T09:00:00.000Z',
+        awsStalledAfterHours: 2,
+        awsMeterBlocked: true,
+      },
+    };
+    expect(towerSummarySchema.parse(stalled)).toEqual(stalled);
+    const quiet = {
+      ...summary,
+      coverage: { ...summary.coverage, awsLogsStalledSince: null, awsStalledAfterHours: 2 },
+    };
+    expect(towerSummarySchema.parse(quiet)).toEqual(quiet);
+    expect(() =>
+      towerSummarySchema.parse({
+        ...summary,
+        coverage: { ...summary.coverage, awsLogsStalledSince: 'ontem' },
+      }),
+    ).toThrow();
+    expect(() =>
+      towerSummarySchema.parse({ ...summary, coverage: { ...summary.coverage, awsStalledAfterHours: 0 } }),
+    ).toThrow();
+  });
+
   it('aceita a conta nova, sem varredura, coleta nem evento', () => {
     const fresh = {
       ...summary,
