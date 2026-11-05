@@ -67,6 +67,33 @@ export function connectionHint(
 }
 
 /**
+ * O que o código do erro de coleta do Cloudflare quer dizer, quando há uma explicação para quem administra a conta
+ * (fase 2, PR-12). Os demais códigos aparecem só como tipo do erro. Os que param a coleta
+ * (`isCloudflareBlockingError`) pedem outro token.
+ */
+const CLOUDFLARE_CONNECTION_ERROR_HINTS: Readonly<Record<string, string>> = {
+  credential_rejected: 'O Cloudflare recusou o token (inválido ou revogado).',
+  credential_forbidden:
+    'O token não lê a auditoria desta conta: falta a permissão Account Settings: Read nesta conta, ou o filtro de IP do token não libera o IP de saída do nó.',
+  credential_expired: 'O token venceu.',
+  credential_disabled: 'O token foi desativado no Cloudflare.',
+  credential_unreadable: 'O nó não conseguiu abrir o token guardado. Cole o token de novo.',
+  rate_limited:
+    'O Cloudflare limitou as requisições deste token; a coleta volta depois da espera pedida por ele.',
+  timeout: 'O Cloudflare não respondeu a tempo; a coleta tenta de novo em instantes.',
+  zone_not_found: 'Uma das zonas cadastradas não existe nesta conta do Cloudflare. Confira a lista de zonas.',
+  zones_forbidden:
+    'O token não lista as zonas da conta (falta a permissão Zone: Read). A auditoria continua sendo lida.',
+};
+
+/** O que fazer diante do erro da coleta de uma conta do Cloudflare; null para um código sem explicação. */
+export function cloudflareConnectionErrorHint(code: string): string | null {
+  return Object.hasOwn(CLOUDFLARE_CONNECTION_ERROR_HINTS, code)
+    ? (CLOUDFLARE_CONNECTION_ERROR_HINTS[code] ?? null)
+    : null;
+}
+
+/**
  * O que fazer diante de cada erro da conexão da AWS (os códigos que a tarefa `aws-check` do worker grava). Nenhum
  * repete a mensagem da AWS: só o que conferir.
  */

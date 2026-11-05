@@ -14,8 +14,8 @@ export { FINDING_SEVERITIES, type FindingSeverity } from '@verax/shared';
 export interface FindingDraft {
   tenantId: string;
   accountId: string;
-  /** Sistema de origem: o Wazuh (contas AWS) ou a própria leitura dos logs da GCP. */
-  source: 'wazuh' | 'gcp';
+  /** Sistema de origem: o Wazuh (contas AWS) ou a própria leitura dos logs da GCP e do Cloudflare. */
+  source: 'wazuh' | 'gcp' | 'cloudflare';
   /** Chave do achado na origem: a mesma a cada releitura do mesmo evento (`wazuhFindingKey`, `gcpEventIdFor`). */
   sourceEventId: string;
   /** Só no Wazuh: o ID do alerta, por onde o detalhe busca o evento bruto no indexer. A GCP não guarda o evento. */
@@ -26,8 +26,8 @@ export interface FindingDraft {
   ruleLevel: number;
   /** Descrição da regra (o resumo em português vem do dicionário da T7.9). */
   title: string;
-  /** Fonte de log: `cloudtrail`, `guardduty`, `waf` ou `gcp_audit`. */
-  logSource: AwsSource | 'gcp_audit';
+  /** Fonte de log: `cloudtrail`, `guardduty`, `waf`, `gcp_audit` ou `cloudflare_audit`. */
+  logSource: AwsSource | 'gcp_audit' | 'cloudflare_audit';
   eventName: string | null;
   region: string | null;
   resource: string | null;
@@ -63,7 +63,14 @@ export function findingSeverity(
     if (alert.awsSeverity >= 4) return 'medium';
     return 'low';
   }
-  const level = alert.rule.level;
+  return severityOfLevel(alert.rule.level);
+}
+
+/**
+ * Severidade pelo nível da regra (a escala do Wazuh, usada também pelas regras próprias da GCP e do Cloudflare): 12 ou
+ * mais é crítica, 10 alta, 7 média e abaixo disso baixa.
+ */
+export function severityOfLevel(level: number): FindingSeverity {
   if (level >= 12) return 'critical';
   if (level >= 10) return 'high';
   if (level >= 7) return 'medium';

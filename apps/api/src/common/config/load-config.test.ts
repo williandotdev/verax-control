@@ -533,6 +533,25 @@ describe('cofre de credenciais no ambiente (fase 2)', () => {
     expect(JSON.stringify(config)).toContain('[chaves privadas do cofre]');
   });
 
+  it('fonte cloudflare: exige o cofre (o token só abre no worker); intervalo da auditoria de 1 a 60 min, 5 por padrão', () => {
+    expect(problemsOfWorker({ ...workerEnv, SYNC_SOURCES: 'gcp,cloudflare' })).toEqual([
+      'SYNC_SOURCES: a fonte cloudflare lê o token do cofre de credenciais: exige CREDENTIALS_PRIVATE_KEYS_FILE e CREDENTIALS_KEY_CURRENT',
+    ]);
+    const vault = { CREDENTIALS_PRIVATE_KEYS_FILE: keysFile, CREDENTIALS_KEY_CURRENT: '2' };
+    const config = loadWorkerConfig({ ...workerEnv, ...vault, SYNC_SOURCES: 'gcp,cloudflare' });
+    expect(config.SYNC_SOURCES).toEqual(['gcp', 'cloudflare']);
+    expect(config.CLOUDFLARE_AUDIT_INTERVAL_SECONDS).toBe(300);
+    expect(
+      loadWorkerConfig({ ...workerEnv, ...vault, CLOUDFLARE_AUDIT_INTERVAL_SECONDS: '600' })
+        .CLOUDFLARE_AUDIT_INTERVAL_SECONDS,
+    ).toBe(600);
+    for (const value of ['30', '7200', 'cinco']) {
+      expect(() => loadWorkerConfig({ ...workerEnv, CLOUDFLARE_AUDIT_INTERVAL_SECONDS: value })).toThrow(
+        ConfigValidationError,
+      );
+    }
+  });
+
   it('o worker recusa chave privada pelo ambiente: qualquer nome com PRIVATE_KEY, menos o caminho do arquivo', () => {
     // O ambiente do contêiner fica gravado no disco do nó (configuração do Docker) e nos snapshots dele. A mesma
     // régua da API, com a única exceção do caminho do arquivo.

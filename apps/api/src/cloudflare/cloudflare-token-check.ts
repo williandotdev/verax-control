@@ -32,7 +32,7 @@ type VerifiedToken = z.infer<typeof verifyResponseSchema>['result'];
 const auditProbeResponseSchema = z.object({ success: z.literal(true) });
 
 /** Só o host oficial ou, nos testes, um servidor falso em 127.0.0.1 por http. */
-function isAllowedBaseUrl(baseUrl: string): boolean {
+export function isAllowedBaseUrl(baseUrl: string): boolean {
   if (baseUrl === CLOUDFLARE_API_BASE_URL) return true;
   try {
     const url = new URL(baseUrl);
@@ -50,7 +50,7 @@ function verifyPath(owner: VerifyOwner, accountId: string): string {
 }
 
 /** RFC 3339 em segundos, como os exemplos da API de auditoria. */
-function rfc3339(date: Date): string {
+export function rfc3339(date: Date): string {
   return `${date.toISOString().slice(0, 19)}Z`;
 }
 

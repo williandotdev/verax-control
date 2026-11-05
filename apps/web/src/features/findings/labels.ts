@@ -13,6 +13,7 @@ export const FINDING_SOURCE_LABELS: Readonly<Record<FindingSource, string>> = {
   guardduty: 'GuardDuty',
   waf: 'WAF',
   gcp_audit: 'GCP (auditoria)',
+  cloudflare_audit: 'Cloudflare (auditoria)',
 };
 
 export const FINDING_PERIOD_LABELS: Readonly<Record<FindingPeriod, string>> = {

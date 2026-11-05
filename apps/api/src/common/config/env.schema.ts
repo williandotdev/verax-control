@@ -465,12 +465,22 @@ const workerEnvObjectSchema = z
      * De onde o worker lê, separado por vírgula: `wazuh` (alertas das contas AWS, pelo indexer) e `gcp` (auditoria da
      * GCP, pelas assinaturas do Pub/Sub cadastradas nas contas). O nó da Verax (perfil `lean`, sem Wazuh) usa só `gcp`;
      * o nó de cliente (perfil `standard`) usa `gcp,wazuh`, com o indexer do próprio nó (`INDEXER_AUTH=node`).
+     * `cloudflare` (auditoria das contas do Cloudflare, com o token guardado no cofre) exige o cofre de credenciais.
      */
     SYNC_SOURCES: z
       .string()
       .default('wazuh')
       .transform((value) => [...new Set(value.split(',').map((source) => source.trim()))])
-      .pipe(z.array(z.enum(['wazuh', 'gcp'], { error: 'fontes aceitas: wazuh e gcp' })).min(1)),
+      .pipe(
+        z
+          .array(z.enum(['wazuh', 'gcp', 'cloudflare'], { error: 'fontes aceitas: wazuh, gcp e cloudflare' }))
+          .min(1),
+      ),
+    /**
+     * Intervalo da auditoria de cada conta do Cloudflare (o laço da tarefa segue o `SYNC_INTERVAL_SECONDS`; a conta
+     * lida há menos que isso fica para a volta seguinte).
+     */
+    CLOUDFLARE_AUDIT_INTERVAL_SECONDS: z.coerce.number().int().min(60).max(3600).default(300),
     ...planEnvShape,
     // Cofre de credenciais (fase 2): o arquivo com as chaves privadas de todas as versões ativas (uma por linha,
     // `<versão>:<PEM em base64>`), montado só leitura no worker, e a versão corrente. Só o worker decifra.
@@ -484,6 +494,14 @@ const workerEnvObjectSchema = z
     checkPlanEnv(env, ctx);
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
+    if (env.SYNC_SOURCES.includes('cloudflare') && env.CREDENTIALS_PRIVATE_KEYS_FILE === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['SYNC_SOURCES'],
+        message:
+          'a fonte cloudflare lê o token do cofre de credenciais: exige CREDENTIALS_PRIVATE_KEYS_FILE e CREDENTIALS_KEY_CURRENT',
+      });
+    }
     if (env.NODE_ENV === 'production' && !requiresVerifiedTls(env.DATABASE_URL)) {
       ctx.addIssue({
         code: 'custom',
