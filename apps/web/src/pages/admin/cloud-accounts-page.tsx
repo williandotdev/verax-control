@@ -17,12 +17,13 @@ import {
   daysUntilExpiry,
   gcpSinkCommand,
   gcpSinkIdentityCommand,
+  isAwsConnectionWarningCode,
   isCloudflareBlockingError,
   logBucketNames,
   normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
 } from '@verax/shared';
-import { Copy, Download, ExternalLink } from 'lucide-react';
+import { Copy, Download, ExternalLink, TriangleAlert } from 'lucide-react';
 import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
@@ -217,7 +218,8 @@ const CONNECTION_SEVERITY = {
 /**
  * O erro da última coleta: no Cloudflare, a explicação (quando há uma) e, nos erros do token, que a coleta está parada
  * até outro token ser colado (o worker não chama mais o Cloudflare com ele); em todos, o código. Na AWS, a explicação
- * fica junto do "Verificar".
+ * fica junto do "Verificar", e uma conta conectada pode ter um aviso (que não para a coleta): o código aparece como
+ * tipo do aviso.
  */
 function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code: string }) {
   const cloudflare = account.provider === 'cloudflare';
@@ -226,7 +228,8 @@ function ConnectionErrorDetail({ account, code }: { account: CloudAccount; code:
   return (
     <>
       {hint && ` ${hint}`}
-      {stopped && ' A coleta está parada até um token válido ser colado abaixo.'} Tipo do erro:{' '}
+      {stopped && ' A coleta está parada até um token válido ser colado abaixo.'}{' '}
+      {account.connection === 'connected' ? 'Tipo do aviso:' : 'Tipo do erro:'}{' '}
       <code className="font-mono">{code}</code>.
     </>
   );
@@ -417,7 +420,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           <ConnectionBadge account={account} />
           <p className="text-xs text-muted-foreground">
             {connectionHint(account)}
-            {account.connection === 'error' && account.connectionError && (
+            {account.connectionError && (
               <ConnectionErrorDetail account={account} code={account.connectionError} />
             )}
           </p>
@@ -1133,7 +1136,8 @@ function AwsSteps({ account, canWrite }: { account: CloudAccount; canWrite: bool
 
 /**
  * "Verificar": o pedido vai para o worker, o único processo do nó que entra no papel; a tela relê a conta enquanto ele
- * não responde (`useCloudAccountList`) e mostra o resultado, com o que fazer em cada erro.
+ * não responde (`useCloudAccountList`) e mostra o resultado, com o que fazer em cada erro. Conectada, a conta pode ter
+ * um aviso das conferências do worker (trilha, export, permissão demais, STS da região), que não para a coleta.
  */
 function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
   const verify = useVerifyAwsAccount(account.id);
@@ -1143,10 +1147,16 @@ function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boo
     account.connection === 'error' && account.connectionError
       ? (awsConnectionErrorHint(account.connectionError) ?? `Erro: ${account.connectionError}.`)
       : null;
+  const warningHint =
+    account.connection === 'connected' && isAwsConnectionWarningCode(account.connectionError)
+      ? awsConnectionErrorHint(account.connectionError)
+      : null;
   return (
     <>
       <p>
-        Criada a pilha, clique em Verificar: o Verax entra no papel e lê um objeto de cada bucket cadastrado.
+        Criada a pilha, clique em Verificar: o Verax entra no papel e lê um byte de um objeto de cada bucket
+        cadastrado. Depois, ele confere sozinho a cada 15 minutos e, uma vez por dia, também a trilha do
+        CloudTrail, o export do GuardDuty e se o papel ganhou permissão além da leitura.
       </p>
       {canWrite && active && (
         <Button type="button" onClick={() => verify.mutate()} disabled={pending || verify.isPending}>
@@ -1163,10 +1173,20 @@ function AwsVerify({ account, canWrite }: { account: CloudAccount; canWrite: boo
             o papel pode levar alguns minutos para valer: o Verax tenta de novo por até 10 minutos.
           </p>
         ) : account.connection === 'connected' ? (
-          <p>
-            Conectada: o Verax entrou no papel de leitura.
-            {account.ingestFrom && <> Os logs são lidos a partir de {formatDay(account.ingestFrom)}.</>}
-          </p>
+          <>
+            <p>
+              Conectada: o Verax entrou no papel de leitura.
+              {account.ingestFrom && <> Os logs são lidos a partir de {formatDay(account.ingestFrom)}.</>}
+            </p>
+            {warningHint && (
+              <p className="mt-1 flex gap-1.5">
+                <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0 text-high" />
+                <span>
+                  Aviso: {warningHint} Corrija e clique em Verificar de novo, ou espere a próxima conferência.
+                </span>
+              </p>
+            )}
+          </>
         ) : errorHint ? (
           <p className="text-critical-text">{errorHint} Corrija e clique em Verificar de novo.</p>
         ) : null}
