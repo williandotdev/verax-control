@@ -1,11 +1,13 @@
 import {
   type AlertExceptionField,
   AWS_BUCKET_ERROR_CODES,
+  type AwsCollectionErrorCode,
   type AwsConnectionErrorCode,
   type CloudAccount,
   type CloudAccountConnection,
   type CloudProvider,
   type CredentialStatus,
+  isAwsCollectionErrorCode,
   type LogSource,
   parseAwsConnectionError,
   type ProtectedResourceType,
@@ -128,9 +130,23 @@ export const AWS_CONNECTION_ERROR_HINTS: Readonly<Record<AwsConnectionErrorCode,
   aws_unavailable: 'A AWS não respondeu a tempo. Tente de novo em alguns minutos.',
   check_unavailable:
     'O nó não concluiu a conferência (ou ainda não confere a conexão sozinho). Tente de novo em alguns minutos; se continuar, fale com a Verax.',
-  aws_token_stale:
-    'O nó não renova o próprio token do Google há mais de 40 minutos, e a coleta pode parar. Fale com a Verax.',
 };
+
+/**
+ * Os avisos da coleta pelo Wazuh do nó (a tarefa `wazuh-config` do worker, à parte da conexão): são do nó, não da conta
+ * do cliente, e quem resolve é a Verax.
+ */
+export const AWS_COLLECTION_ERROR_HINTS: Readonly<Record<AwsCollectionErrorCode, string>> = {
+  aws_token_stale:
+    'O nó não renova o próprio token do Google há mais de 40 minutos, e a leitura dos logs pode parar. É do nó, não desta conta: fale com a Verax.',
+  wazuh_apply_failed:
+    'O nó não conseguiu aplicar a configuração nova da coleta e segue lendo com a anterior. É do nó, não desta conta: fale com a Verax.',
+};
+
+/** O que dizer de um aviso da coleta da AWS; null para um código que não é dela. */
+export function awsCollectionErrorHint(code: string | null | undefined): string | null {
+  return code != null && isAwsCollectionErrorCode(code) ? AWS_COLLECTION_ERROR_HINTS[code] : null;
+}
 
 /** O bucket de cada fonte, no começo da explicação de um erro de bucket (`bucket_denied:waf`). */
 const BUCKET_LABELS: Readonly<Record<LogSource, string>> = {

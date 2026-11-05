@@ -158,8 +158,9 @@ install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" "$here/bin/metadata-guard.sh" /opt/verax/bin/
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
-# Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, o gerador da
-# configuração do manager e a limpeza diária dos alertas antigos). O nó da Verax (lean) não recebe nada disso.
+# Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, a aplicação da
+# configuração do manager com as contas AWS, a renovação do token do Google para a AWS e a limpeza diária dos alertas
+# antigos). O nó da Verax (lean) não recebe nada disso.
 standard=false
 if [[ ${NODE_PROFILE:-lean} == standard ]]; then standard=true; fi
 if $standard; then
@@ -173,8 +174,9 @@ if $standard; then
   chown -R root:root /opt/verax/wazuh
   find /opt/verax/wazuh -type d -exec chmod 0755 {} +
   find /opt/verax/wazuh -type f -exec chmod 0644 {} +
-  install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" /opt/verax/bin/
-  install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer /etc/systemd/system/
+  install -m 0750 "$here/bin/wazuh-apply.sh" "$here/bin/wazuh-alerts-cleanup.sh" "$here/bin/aws-token.sh" /opt/verax/bin/
+  install -m 0644 "$here"/systemd/wazuh/*.service "$here"/systemd/wazuh/*.timer "$here"/systemd/wazuh/*.path \
+    /etc/systemd/system/
   # O verax-node passa a querer (Wants) o verax-wazuh: o restart do nó o sobe de novo mesmo quando ele tinha falhado.
   install -d -m 0755 /etc/systemd/system/verax-node.service.d
   install -m 0644 "$here/systemd/wazuh/verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf
@@ -313,9 +315,12 @@ systemctl restart verax-node.service
 systemctl start verax-backup.timer
 # Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
 # `start` espera o Wazuh ficar saudável (nada acontece a mais se já estiver subindo).
+# O token do Google renovado a cada 10 min e a configuração do manager refeita quando o worker grava uma geração nova
+# das contas AWS (e a cada 15 min): os dois não fazem nada enquanto o Wazuh não estiver no ar.
 if $standard; then
   systemctl start verax-wazuh.service
-  systemctl enable --now verax-wazuh-alerts.timer >/dev/null
+  systemctl enable --now verax-wazuh-alerts.timer verax-aws-token.timer verax-wazuh-apply.timer \
+    verax-wazuh-apply.path >/dev/null
 fi
 # A lista dos agentes, depois do Wazuh no ar. Desligado o interruptor num nó que já o teve, o timer para (o script, se
 # rodar, só apaga a lista da memória).

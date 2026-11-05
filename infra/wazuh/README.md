@@ -21,6 +21,8 @@ Bundle do Wazuh single-node (manager e indexer 4.14.9, sem dashboard). Roda em d
 | `scripts/lib-passwords.sh`         | Formato, geração e conferência das senhas.                                              |
 | `scripts/smoke-test.sh`            | Verificações de segurança, no fim de toda subida.                                       |
 | `scripts/test-agents.sh`           | Agentes nas instâncias do cliente: manager avulso, sem rede (opcional, desligado).      |
+| `scripts/test-rules.sh`            | Regras locais da AWS no `wazuh-logtest`: correlações por conta e o papel de leitura.    |
+| `scripts/test-aws-profile.sh`      | Profiles da AWS sem chave no boto3 da imagem, sem rede (a troca no STS interceptada).   |
 | `scripts/ci-test.sh`               | Teste de ponta a ponta do nó: instalação, rotação de senha, verificações e atualização. |
 | `docker-compose.yml`               | EC2: os dois serviços, mais os jobs de inicialização. Imagens fixadas por digest.       |
 | `scripts/deploy.sh`                | EC2: sobe ou reaplica a stack.                                                          |
@@ -92,8 +94,9 @@ metadados (`verax-metadata-guard`, antes do Docker e exigida por ele) não aceit
   baixadas quando faltam: a lista vem de `compose config --images` com o perfil `setup` (o que exige todos os arquivos
   de ambiente, o `bootstrap.env` vazio incluído), `docker image inspect` decide antes do `pull`, e um erro na lista para
   a partida com o motivo no journal. A partida não depende do Docker Hub.
-- **Credencial da AWS:** o diretório `/run/verax/wazuh-aws` (memória do host, só root), só leitura no manager em
-  `/root/.aws`. Quem escreve nele é só o gerador (`manager-config`, sem rede).
+- **AWS sem chave:** o diretório `/run/verax/wazuh-aws` (memória do host, só root), só leitura no manager em
+  `/root/.aws`. Quem escreve nele é só o gerador (`manager-config`, sem rede: os profiles) e o host (o token do Google,
+  `infra/node/bin/aws-token.sh`). Seção "Contas AWS dos clientes", abaixo.
 - **Memória e CPU:** indexer com 3 GiB, heap de 1,5 GiB travado e 1,5 CPU; manager com 1,5 GiB e 1 CPU. Com a
   aplicação, a soma dos limites fica em cerca de 6 GiB, numa VM de 8 GB (o CI confere).
 - **Alertas antigos:** o `verax-wazuh-alerts.timer` apaga todo dia os `logs/alerts/**/*.gz` do manager com mais de
@@ -163,37 +166,44 @@ cliente"; no EC2:
 
 ## Contas AWS dos clientes (CloudTrail, GuardDuty e WAF)
 
-No nó de cliente, o manager sobe sem contas no PR-W1; a entrega das chaves de acesso pelo cofre do nó, com o gerador
-abaixo escrevendo `credentials` e `config` em `/run/verax/wazuh-aws`, vem no PR-V4. O que segue é o fluxo do EC2, com
-o papel e o `ExternalId`; as correlações por conta valem nos dois.
+No nó de cliente (fase 2, PR-V4'), o manager lê os buckets de cada conta com o papel de leitura sem chave
+(`verax-control-reader`, `infra/cloudformation`), com o token que o Google assina para a conta de serviço do nó. O
+desenho inteiro está em `docs/ARQUITETURA.md` ("Por que papel sem chave", passo "Coletar"); aqui, o que é deste bundle.
 
-A lista das contas conectadas fica no segredo `<nome>/wazuh-aws-sources` (saída `aws_sources_secret_arn` do
-Terraform), mantida pela API a partir do cadastro. Cada item traz a conta, o `ExternalId`, a região, a data de
-início (`onlyLogsAfter`, no formato `2026-NOV-01`) e os buckets que saem do stack do conector
-(`infra/cloudformation`). Um exemplo, com contas fictícias, está em `tests/fixtures/aws-sources.example.json`.
+A lista das contas vem do banco do nó: o CLI `wazuh-sources` da API imprime as contas AWS ativas que já passaram pela
+verificação e têm bucket, cada uma com a conta, a primeira região, a data de início (`onlyLogsAfter`, no formato
+`2026-NOV-01`) e os buckets. Nada nela é segredo. Um exemplo, com contas fictícias, está em
+`tests/fixtures/aws-sources.example.json`. O `infra/node/bin/wazuh-apply.sh` a passa ao gerador pela entrada padrão,
+com o IP de saída do nó em `VERAX_NODE_EGRESS_IPS`, e o `scripts/render-manager-config.py` valida a lista inteira
+(qualquer valor fora do formato para tudo, sem escrever nada) e gera:
 
-A cada deploy, o `scripts/render-manager-config.py` valida a lista inteira (qualquer valor fora do formato derruba o
-deploy) e gera:
+- o `ossec.conf` do manager, com o módulo `aws-s3`: um bucket por fonte de cada conta, cada um só lido
+  (`remove_from_bucket` em `no`), o WAF sem as requisições liberadas, e um bucket do GuardDuty ou do WAF listado por
+  mais de uma conta lido uma vez só (pelo papel da conta de menor ID, desde a data mais antiga);
+- as regras locais, inclusive `verax_reader_rules.xml`, do modelo `config/manager/rules/verax_reader_rules.xml.tmpl`
+  com o IP do nó (leitura do próprio nó, nível 0; a sessão de outro IP, nível 12; alteração do papel, nível 5);
+- o `/root/.aws/config`, com um profile por conta que entra em `arn:aws:iam::<conta>:role/verax/verax-control-reader`
+  (`AssumeRoleWithWebIdentity`) com o token de `/root/.aws/google-id-token`, que o host renova a cada 10 min
+  (`infra/node/bin/aws-token.sh`). O ARN do papel é derivado do ID da conta, para a lista não conseguir apontar para
+  outro papel. Só as chaves de uma lista fixa, nunca `credential_process`, e não há arquivo `credentials`.
 
-- o `ossec.conf` do manager, com o módulo `aws-s3` e um bucket por fonte de cada conta;
-- o `/root/.aws/config` do manager, com um profile por conta que assume
-  `arn:aws:iam::<conta>:role/VeraxControlReadOnly` com o `ExternalId` dela, usando a credencial da instância. O ARN
-  do papel é derivado do ID da conta, para a lista não conseguir apontar para outro papel.
+O gerador imprime só o hash da configuração que o manager lê ao subir: o `wazuh-apply.sh` reinicia o manager só quando
+ele muda e, se o manager não ficar saudável em 180 s, devolve a configuração anterior com os profiles dela (guardados
+juntos em `<config>/.prev`, que o init da imagem não copia; o token do Google fica como o host o deixou) com
+`VERAX_MANAGER_CONFIG_ROLLBACK=1`. O `scripts/test-aws-profile.sh` (no CI) confere
+na imagem, sem rede, que o boto3 do manager entra no papel por esses profiles.
 
-A lista chega ao gerador pela entrada padrão, a partir de um arquivo em tmpfs que o bootstrap apaga no fim: ela não
-passa por variável de ambiente, argumento nem configuração de contêiner. Depois de atualizar a lista, rode o
-documento de reaplicação.
+**EC2 legado.** O fluxo antigo do EC2 (o papel `VeraxControlReadOnly` com `ExternalId`, pela credencial da instância)
+não existe mais: o gerador recusa a lista com `externalId`, e o deploy do EC2 só sobe sem contas AWS
+(`WAZUH_AWS_SOURCES_FILE` ausente ou com `[]`).
 
 **Correlações por conta.** Um Wazuh atende todos os clientes, e as regras de frequência da AWS no Wazuh contam
 eventos de qualquer conta: três logins com falha num cliente e três noutro disparavam "Possible break in attempt"
 (80255) no segundo. O `config/manager/rules/verax_aws_rules.xml` sobrescreve essas regras (80252, 80255 e 80443)
 para contarem só eventos da mesma conta (no WAF, da mesma Web ACL). O gerador instala o arquivo junto com o
-`ossec.conf`. O `scripts/test-rules.sh` confere o efeito no `wazuh-logtest` e falha se uma versão nova do Wazuh
-trouxer outra correlação da AWS que ainda não foi avaliada.
-
-**Credencial da instância.** O manager precisa do IMDS (por isso o hop limit 2). O serviço `verax-imds-guard`
-libera o IMDS só para o IP fixo do manager (`172.30.250.10`); o indexer fica bloqueado. O bootstrap
-confere as duas coisas no fim de todo deploy e falha se o filtro não estiver valendo.
+`ossec.conf`. O `scripts/test-rules.sh` confere o efeito no `wazuh-logtest` (também o das regras do papel de leitura)
+e falha se uma versão nova do Wazuh trouxer outra correlação da AWS que ainda não foi avaliada, ou outra regra na
+cadeia do CloudTrail de que as regras do papel não sejam filhas.
 
 ## Retenção e backup
 

@@ -5,6 +5,7 @@ import { AgentAlertSync } from './alerts/agent-alert-sync.js';
 import { AlertSync } from './alerts/alert-sync.js';
 import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
+import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
@@ -103,6 +104,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * verificada a cada 15 min, com a trilha, o export do GuardDuty e a permissão demais uma vez por dia (PR-V5'). A
  * conferência real só liga com `NODE_SA_UNIQUE_ID` (`awsConnectionSetup`).
  *
+ * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
+ * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google.
+ *
  * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
  * publica o estado do nó nos guest attributes da VM para o plano de controle.
  *
@@ -186,6 +190,18 @@ async function main(): Promise<void> {
         periodic: await awsCheck.recheck(signal),
       }),
     });
+    // Wazuh do nó (perfil standard): a geração das contas AWS para o host aplicar no manager, e o estado da coleta que o
+    // host devolve, pela pasta dos sinais (sem segredo; quem escreve a configuração do manager é só o gerador).
+    if (config.WAZUH_SIGNAL_DIR !== undefined) {
+      const wazuhConfig = new WazuhConfig(prisma, config.WAZUH_SIGNAL_DIR);
+      tasks.push({
+        name: 'wazuh-config',
+        intervalMs: WAZUH_CONFIG_INTERVAL_MS,
+        budgetMs: SYNC_BUDGET_MS,
+        run: (signal) => wazuhConfig.runOnce(signal),
+      });
+    }
+
     // Expurgo diário do histórico (só o banco do nó; o índice do Wazuh tem a retenção própria).
     const retention = new RetentionJob(prisma, { historyDays: nodePlan(config).limits.historyDays });
     tasks.push({

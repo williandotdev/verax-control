@@ -76,6 +76,8 @@ describe(`migration ${MIGRATION}`, () => {
     it('sem o CHECK do ExternalId, com o das colunas da AWS, e o cofre só com o token do Cloudflare', async () => {
       expect(await checks(client)).toEqual([
         'CloudAccount_aws_check_fields_check',
+        // O do aviso da coleta pelo Wazuh do nó (PR-V4', migration 20261109130000_aws_collection_error).
+        'CloudAccount_aws_collection_error_check',
         'CloudAccount_gcp_sinkWriterIdentity_check',
       ]);
       expect(await enumValues(client, 'CloudCredentialKind')).toEqual(['cloudflare_api_token']);

@@ -51,6 +51,12 @@ WORKER_KEYS=$WORKER_VAULT/worker-keys
 WORKER_VAULT_MOUNT=/run/vault
 WORKER_KEYS_MOUNT=$WORKER_VAULT_MOUNT/worker-keys
 WORKER_UID=1000
+# Wazuh e AWS no standard (PR-V4'), em /run/verax (memória): a pasta dos profiles e do token do Google (montada só
+# leitura no manager, em /root/.aws), a dos sinais sem segredo entre o host e o worker (montada com escrita só no
+# worker, em WAZUH_SIGNAL_MOUNT, que o worker.env aponta) e a do estado do wazuh-apply.sh. O `down` apaga as três.
+WAZUH_AWS=$run/wazuh-aws
+WAZUH_SIGNAL=$run/wazuh-signal
+WAZUH_SIGNAL_MOUNT=/run/wazuh-signal
 # Modo cliente (fase 3, CP-10; CUSTOMER_MODE=true no node.conf; sem a linha, false): o nó de cliente que o plano de
 # controle cria, sem SSH. O `customer-bootstrap` lê dos metadados da VM as entradas do primeiro acesso, roda o
 # node-bootstrap no modo customer e grava cada senha nova como versão de um segredo do Secret Manager; o worker publica o
@@ -261,6 +267,13 @@ discard_worker_keys() {
   rm -rf "$WORKER_VAULT"
 }
 
+# A pasta dos sinais do Wazuh (standard): root:<grupo do worker> 1770. O worker grava nela a `generation` dele (as contas
+# AWS mudaram), e o bit t impede que ele troque ou apague os sinais do host (`aws-token` e `applied`), que ele só lê.
+# O aws-token.sh e o wazuh-apply.sh a criam do mesmo jeito.
+wazuh_signal_dir() {
+  install -d -m 1770 -o 0 -g "$WORKER_UID" "$WAZUH_SIGNAL"
+}
+
 database_url() { # <papel> <senha>
   printf 'postgresql://%s:%s@postgres:5432/verax?sslmode=verify-full&sslrootcert=/etc/verax/tls/ca.crt' "$1" "$2"
 }
@@ -413,14 +426,15 @@ render() {
   # Standard: cada contêiner do Wazuh recebe só as senhas que usa (o security-init, as três que ele transforma em hash;
   # o manager, a do filebeat e a da API dele). A senha do admin do indexer não chega a nenhum contêiner que fica no
   # ar. A API e o worker leem o indexer do próprio nó com o usuário só leitura e a CA do volume público dos
-  # certificados.
-  local indexer=()
+  # certificados. O worker recebe também a pasta dos sinais do Wazuh (a tarefa wazuh-config, PR-V4').
+  local indexer=() wazuh_worker=()
   if standard; then
     write_env wazuh-security.env "INDEXER_ADMIN_PASSWORD=$INDEXER_ADMIN_PASSWORD" \
       "INDEXER_FILEBEAT_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD"
     write_env wazuh-manager.env "INDEXER_PASSWORD=$INDEXER_FILEBEAT_PASSWORD" "API_PASSWORD=$WAZUH_API_PASSWORD"
     indexer=(INDEXER_URL=https://wazuh.indexer:9200 INDEXER_AUTH=node INDEXER_USERNAME=verax_api_read
       "INDEXER_PASSWORD=$INDEXER_API_READ_PASSWORD" INDEXER_CA_FILE=/etc/verax/wazuh/root-ca.pem)
+    wazuh_worker=("WAZUH_SIGNAL_DIR=$WAZUH_SIGNAL_MOUNT")
   fi
 
   write_env postgres.env POSTGRES_USER=verax "POSTGRES_PASSWORD=$master" POSTGRES_DB=verax
@@ -552,6 +566,7 @@ render() {
     "${indexer[@]}" \
     "${egress[@]}" \
     "${aws_reader[@]}" \
+    "${wazuh_worker[@]}" \
     "${agents_worker[@]}" \
     "${vault_worker[@]}" \
     "${node_status[@]}" \
@@ -608,13 +623,18 @@ wazuh_up() {
   if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then COMPOSE_FILE+=:/opt/verax/compose.vault.yaml; fi
   export COMPOSE_FILE
   export COMPOSE_ENV_FILES=/etc/verax/images.env,$run/memory.env
-  install -d -m 0700 "$run/wazuh-aws"
+  install -d -m 0700 "$WAZUH_AWS"
+  wazuh_signal_dir
   pull_images
   compose --profile setup run --rm certs-init
   compose --profile setup run --rm security-init
   compose up --detach --wait --wait-timeout 600 wazuh.indexer
   bash "$wazuh/scripts/security-admin.sh"
   bash "$wazuh/scripts/configure-indexer.sh"
+  # O token do Google antes do manager (o módulo da AWS roda ao subir). Uma falha não para o Wazuh: o timer tenta de
+  # novo em 10 min, o token anterior vale até 1 hora, e o worker avisa se ele envelhecer.
+  /opt/verax/bin/aws-token.sh ||
+    echo 'AVISO: o token do Google para a AWS não foi renovado agora; o verax-aws-token.timer tenta de novo.' >&2
   /opt/verax/bin/wazuh-apply.sh
   compose up --detach --wait --wait-timeout 900 wazuh.manager
   # Com os agentes, o smoke test espera só a 1514 e a 1515 publicadas no manager e confere o registro (certificado do IP
@@ -648,6 +668,9 @@ up() {
   # reafirmada, para uma partida sem reboot logo depois de uma atualização do script.
   /opt/verax/bin/metadata-guard.sh
   render
+  # Standard: a pasta dos sinais do Wazuh antes de o worker subir (o compose.wazuh.yaml a monta nele, com escrita). Sem
+  # ela, o Docker a criaria só para o root, e a tarefa wazuh-config do worker falharia até o wazuh-up.
+  if standard; then wazuh_signal_dir; fi
   # Só as imagens da aplicação: as do Wazuh ficam para o `wazuh-up`, e o painel não espera por elas.
   pull_images --base
   compose up --detach --wait postgres
@@ -664,12 +687,15 @@ up() {
   fi
 }
 
-# A parada tira as chaves do cofre da memória junto com os contêineres, mesmo que o Compose falhe (o resto de /run/verax,
-# os arquivos de ambiente, fica e é reescrito na próxima partida, como sempre foi).
+# A parada tira as chaves do cofre da memória junto com os contêineres, mesmo que o Compose falhe, e também o token do
+# Google, os profiles da AWS e os sinais do Wazuh: sem a pasta dos profiles, o aws-token.sh e o wazuh-apply.sh não fazem
+# nada até o próximo wazuh-up. O resto de /run/verax, os arquivos de ambiente, fica e é reescrito na próxima partida,
+# como sempre foi.
 down() {
   local status=0
   compose down || status=$?
   discard_worker_keys
+  rm -rf "$WAZUH_AWS" "$WAZUH_SIGNAL" "$run/wazuh-apply"
   return "$status"
 }
 
