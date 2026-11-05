@@ -37,7 +37,8 @@ pnpm lint
 pnpm typecheck
 pnpm db:migrate # cria uma migration nova a partir do schema.prisma (desenvolvimento)
 pnpm db:seed    # admin Verax e dois clientes fictícios (credenciais em SEED_ADMIN_* no .env)
-pnpm --filter @verax/web dev:mock   # painel sem a API, com dados fictícios (papel em localStorage verax.mock.role)
+pnpm --filter @verax/web dev:mock   # painel sem a API, com dados fictícios: abre no login (acesso de demonstração na tela);
+                                    # localStorage verax.mock.role = papel, verax.mock.session = 'logged-in' já entra
 pnpm --filter @verax/web test:e2e   # testes de navegador (Playwright + axe)
 ```
 
