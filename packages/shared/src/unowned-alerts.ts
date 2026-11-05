@@ -15,6 +15,15 @@ export const UNOWNED_REASONS = [
   'conflicting_accounts',
   'unknown_account',
   'source_mismatch',
+  // Alertas dos agentes do Wazuh nas instâncias do cliente (agent.id diferente de 000).
+  /** Os agentes não estão ligados no worker do nó (sem `WAZUH_AGENTS_FILE` e `WAZUH_AGENTS_TENANT`). */
+  'agents_disabled',
+  /** O id do agente não está na lista do cliente do nó. */
+  'unknown_agent',
+  /** O id do agente está na lista, mas com outro nome. */
+  'agent_name_mismatch',
+  /** O alerta do agente cita uma conta AWS cadastrada em outro cliente. */
+  'agent_account_conflict',
 ] as const;
 export type UnownedReason = (typeof UNOWNED_REASONS)[number];
 

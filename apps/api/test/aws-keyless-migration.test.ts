@@ -52,8 +52,13 @@ async function checks(client: pg.Client): Promise<string[]> {
 }
 
 describe(`migration ${MIGRATION}`, () => {
-  it('é a última e a única que mexe no ExternalId e no enum do cofre desde o PR-V1', () => {
-    expect(migrations.at(-1)).toBe(MIGRATION);
+  it('é a única que mexe no ExternalId e no enum do cofre desde o PR-V1: nenhuma depois dela toca neles', () => {
+    expect(migrations).toContain(MIGRATION);
+    // As migrations seguintes (a dos motivos da fila sem dono dos agentes, por exemplo) não podem mexer no que esta
+    // deixou: o ExternalId fora do cadastro e o cofre só com o token do Cloudflare.
+    for (const name of migrations.filter((candidate) => candidate > MIGRATION)) {
+      expect(sqlOf(name)).not.toMatch(/externalId|CloudCredential/i);
+    }
   });
 
   describe('banco novo (o banco de teste, migrado do zero)', () => {

@@ -22,6 +22,7 @@ import { API_URL } from '@/lib/env';
 import { createQueryClient } from '@/lib/query-client';
 import {
   DEMO_ACCOUNTS,
+  DEMO_ALFA_MORE_BUCKETS,
   DEMO_CLOUDFLARE_TOKEN_SUFFIX,
   DEMO_EGRESS_IPS,
   DEMO_NODE_SERVICE_ACCOUNT_ID,
@@ -334,7 +335,16 @@ describe('Contas cloud (T7.3)', { timeout: FORM_TIMEOUT }, () => {
     expect(within(steps).getByText(AWS_READER_AUDIENCE)).toBeInTheDocument();
     await user.click(within(steps).getByRole('button', { name: 'Copiar: ID da conta de serviço do nó' }));
     expect(await navigator.clipboard.readText()).toBe(DEMO_NODE_SERVICE_ACCOUNT_ID);
-    expect(within(steps).getByText(`arn:aws:s3:::trilha-${DEMO_ACCOUNTS.alfaProducao}`)).toBeInTheDocument();
+    // Os três buckets da conta (trilha, GuardDuty e WAF), na ordem das fontes.
+    expect(
+      within(steps).getByText(
+        [
+          `arn:aws:s3:::trilha-${DEMO_ACCOUNTS.alfaProducao}`,
+          `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.guardduty}`,
+          `arn:aws:s3:::${DEMO_ALFA_MORE_BUCKETS.waf}`,
+        ].join(','),
+      ),
+    ).toBeInTheDocument();
     expect(within(steps).getByRole('link', { name: /CloudFormation/ })).toHaveAttribute(
       'href',
       'https://console.aws.amazon.com/cloudformation/home?region=sa-east-1#/stacks/create',

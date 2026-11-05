@@ -3423,6 +3423,160 @@ Revisão linha a linha: `infra/` (Terraform do nó, pacote do nó e Wazuh), `.gi
   - o Cloudflare falso passou a amarrar o cursor à conta (dois testes com a mesma janela e o mesmo deslocamento geravam o mesmo cursor, e o "vencido" de um valia para o outro) e ganhou respostas lentas (`pass` com `delayMs`);
   - `CollectorCursors.postpone` com teste próprio (`collector-cursor.test.ts`: só adia, sem falha nem erro); mutações conferidas (gravar só no fim do laço, tirar o adiamento num sentido e no outro): cada uma derruba o seu teste; suíte da API inteira sobre a `main` mesclada (84 arquivos, 1173 testes; o `cloud-credential-intake` caiu com o 0xC0000409 do Vitest no Windows e passou sozinho, 17 de 17); `pnpm typecheck`, ESLint com `--max-warnings=0`, `prettier --check apps packages docs`; Semgrep com a imagem e as opções do CI nos arquivos do PR: 0 achados (e o `audit-entry.ts` de antes acusa o mesmo `prototype-pollution-loop` do CI).
 
+## Fase 2: buckets de log da conta AWS no painel (cadastro e alteração) ⚠️ altera `infra/cloudformation/README.md` (só texto)
+
+- **Pedido:** o primeiro risco do PR-V3' ("os buckets da conta AWS não têm campo no painel"; sem buckets, o PR-V4' não lê nada e o PR-V5' só confere o papel): o campo dos buckets no cadastro e na alteração da conta AWS, com a validação do schema compartilhado, o aviso de atualizar a pilha (`LogBucketArns`) e verificar de novo, o mock e a documentação. Nada foi chamado na AWS.
+- **Forma (sem mudança de contrato):** o schema já tinha `buckets` como objeto estrito com **no máximo um bucket por fonte** (`cloudtrail`, `guardduty`, `waf`), `null` tirando o bucket e a fonte ausente sem mudar. Ficou assim: as colunas, a tarefa `aws-check` e o PR-V4' leem as três fontes. O limite é a própria forma (três; outra fonte, uma lista ou dois nomes numa fonte dão 400). O schema não tem prefixo: o `LogObjectPrefix` continua só na pilha.
+- **Schema compartilhado (`packages/shared/src/cloud-accounts.ts`):**
+  - `bucketNameProblem`: as regras de nome do bucket de uso geral do S3, conferidas na documentação da AWS em 04/11/2026 (3 a 63 caracteres; minúsculas, números, ponto e hífen; começa e termina com letra ou número; sem `..`; sem formato de IP; sem os começos `xn--`, `sthree-` e `amzn-s3-demo-`; sem os fins `-s3alias`, `--ol-s3`, `.mrap`, `--x-s3` e `--table-s3`), caractere a caractere, cada problema com a sua mensagem em português (o painel mostra ao lado do campo). Antes, era uma regex com uma mensagem só e sem os começos e fins reservados;
+  - o WAF continua exigindo `aws-waf-logs-` (`WAF_LOG_BUCKET_PREFIX`), com a mensagem explicando a exigência da AWS;
+  - `normalizeBucketName` (o ARN `arn:<partição>:s3:::` ou o `s3://` colados viram o nome; uma barra no fim sai; o resto fica para o schema recusar), `logBucketNames`, `sameLogBucketNames` (os mesmos nomes, qualquer que seja a fonte) e `mergeLogBuckets` (a alteração sobre o que está gravado), usados pela API, pelo mock e pelo painel;
+  - `aws-reader.ts`: `awsLogBucketArns` usa a mesma regra de nome, e o comando da CLI leva **sempre** o `LogBucketArns`, vazio (`LogBucketArns=""`) quando a conta não tem bucket. O `aws cloudformation deploy` mantém o valor anterior de todo parâmetro que não recebe numa atualização (conferido no código do aws-cli: `merge_parameters` com `UsePreviousValue`, e `Key=` aceito como valor vazio): sem isso, tirar o último bucket no painel e rodar o comando de novo deixaria o papel lendo os buckets antigos.
+- **API (`cloud-accounts.service.ts`):** o `PATCH /v1/cloud-accounts/:id` já aceitava `buckets` com `cloud_accounts:write`, auditoria `cloud_account.update` com o antes e o depois, escopo do cliente (A/B dá 404) e a recusa do bucket de outro cliente (409, sem dizer de quem). Entrou só a decisão abaixo: **outra lista de nomes volta a conexão para `waiting`** (`RESET_CONNECTION`: sem erro e sem "Verificar" pendente), como a troca da assinatura do Pub/Sub. Repetir a lista ou trocar só a fonte de um bucket não mexe na conexão; o `ingestFrom` fica. Nada é pedido à AWS sozinho.
+- **Painel (Contas cloud):**
+  - **cadastro AWS:** "Buckets de log (opcional)", um grupo com "Adicionar bucket" (a linha nasce com a primeira fonte livre, e o foco vai para o nome), uma linha por bucket com o seletor da fonte (as fontes das outras linhas aparecem desligadas), o nome (com a dica de onde achar o bucket de cada fonte) e "Remover" (o foco volta para "Adicionar bucket"); sem fonte livre, "As três fontes já têm bucket." O erro de cada linha fica ao lado do nome (`aria-invalid` e `aria-describedby`, pelo `Field`): a linha sem nome, a fonte repetida e o que o schema recusou;
+  - **detalhe da conta AWS:** a seção "Buckets de log", antes do passo a passo. Quem administra altera a lista e salva; o envio com erro leva o foco ao primeiro nome com problema. Salva uma lista com outros nomes, o aviso (`role="status"`) diz o que falta: atualizar o `LogBucketArns` da pilha (o passo 2 e o comando da CLI já trazem a lista nova) e clicar em "Verificar conexão"; com os mesmos nomes, "a pilha não precisa mudar". O 409 aparece no formulário, com a mensagem da API. Quem só lê vê os três buckets por fonte, sem formulário;
+  - o passo 2 explica como atualizar a pilha que já existe (_Update stack_ → _Use existing template_, o `LogBucketArns` novo e o `LogKmsKeyArns` de um bucket novo com SSE-KMS) e que o comando da CLI cria ou atualiza; sem bucket, diz que o `LogBucketArns` fica vazio e onde os buckets entram;
+  - o selo "Aguardando" de uma conta AWS que já entrou no papel (`ingestFrom`) diz "Aguardando uma nova verificação: se os buckets mudaram, atualize a pilha na conta; depois, clique em Verificar."; o `SelectInput` aceita opção desligada.
+- **Mock (`dev:mock`):** o `PATCH` grava os buckets (antes os descartava), com a mesma regra da API para a conexão; o cadastro e a alteração recusam o bucket de outro cliente (409, com a mensagem da API). A conta de produção da demonstração ganhou o bucket do GuardDuty e o do WAF (`DEMO_ALFA_MORE_BUCKETS`, fictícios).
+- **Documentação:** `infra/cloudformation/README.md` (os buckets entram no painel, que mostra o `LogBucketArns`; como incluir ou tirar um bucket depois; as saídas `TrailBucketArn` e `GuardDutyBucketArn` coladas pelo ARN; o bucket do WAF), `docs/runbooks/onboarding-cliente.md` (seção 4, item 6: onde os buckets entram e o que fazer quando mudam; saiu o "vão pela API") e `docs/ARQUITETURA.md` (ciclo da conexão).
+- **Arquivos:** `packages/shared/src/{cloud-accounts.ts,aws-reader.ts,aws-reader.test.ts,cloud-accounts-buckets.test.ts}`; `apps/api/src/cloud-accounts/cloud-accounts.service.ts`; `apps/api/test/{aws-buckets.test.ts,aws-connect.test.ts}`; `apps/web/src/features/admin/{aws-log-buckets.ts,aws-log-buckets.test.ts,aws-log-buckets-editor.tsx,admin-ui.tsx,labels.ts}`, `apps/web/src/pages/admin/{cloud-accounts-page.tsx,cloud-accounts-buckets.test.tsx,admin-pages.test.tsx}`, `apps/web/src/mocks/{admin.ts,fixtures.ts}`, `apps/web/e2e/aws-buckets.mock.spec.ts`; `infra/cloudformation/README.md`; `docs/{STATUS.md,ARQUITETURA.md,runbooks/onboarding-cliente.md}`.
+- **Dependências:** nenhuma.
+- **Testes** (Postgres 18 descartável, sem `.env`):
+  - `packages/shared` (18 arquivos, 274 testes): `cloud-accounts-buckets.test.ts` (52: nomes válidos e cada regra recusada com a mensagem no caminho `buckets.<fonte>`, o nome enorme recusado pelo tamanho, as três fontes, o WAF, o mesmo bucket em duas fontes, outra fonte, lista, dois nomes numa fonte, prefixo, ARN no lugar do nome, a alteração, o que o cliente cola, os nomes da pilha, `sameLogBucketNames`, `mergeLogBuckets` e o `LogBucketArns` vazio no comando); `aws-reader.test.ts` atualizado;
+  - API: `aws-buckets.test.ts` (22: o cadastro com as três fontes e a trilha; as recusas com o campo do problema; incluir buckets numa conta conectada volta a aguardar, sem pedido, com o `ingestFrom` mantido e o antes e o depois na auditoria; tirar um bucket tira o erro antigo; a mesma lista e a fonte trocada não mexem; o bucket central em duas fontes; sete recusas na alteração sem mudar nada; buckets numa conta GCP; o bucket de outro cliente (409, sem o cliente na resposta); outra conta do mesmo cliente pode usar o mesmo bucket; A/B (404, a conta de B intacta, a tentativa na trilha de A); papéis (`admin_cliente` e `admin_verax` 200, `analista_cliente` e `leitura` 403 sem gravar, com a recusa na trilha); quem só lê vê os buckets) e `aws-connect.test.ts` (+1: outra lista descarta o "Verificar" pendente, e a tarefa não confere mais a conta; a mesma lista o mantém). Suíte inteira: 87 arquivos e 1.221 testes; o `cloud-credential-intake.test.ts` (não tocado) caiu uma vez com o 0xC0000409 do Vitest no Windows e passou sozinho (17);
+  - painel (Vitest, 36 arquivos, 410 testes): `aws-log-buckets.test.ts` (4: as linhas, o corpo com o nome normalizado, o erro de cada linha e os erros do resto do formulário) e `cloud-accounts-buckets.test.tsx` (7: os três buckets com as fontes desligadas no seletor; trocar o WAF com o foco ao remover, ao adicionar e no erro, o ARN colado, o aviso, o `LogBucketArns` e o comando novos, o selo "Aguardando" e nenhum "Verificar" pedido; os mesmos nomes; o 409; tirar todos, com o `LogBucketArns=""`; quem só lê; o cadastro com o erro da linha vazia e os buckets no passo a passo); `admin-pages.test.tsx` com os três ARNs da conta da demonstração;
+  - e2e do projeto `mock` (73, todos passando, numa porta própria): `aws-buckets.mock.spec.ts` (4), com o axe (WCAG 2.2 AA) em cada passo: a alteração nos dois temas, pelo teclado (remover, adicionar, o erro com o foco, salvar e o aviso), o cadastro com a linha vazia e a conta cadastrada, e quem só lê;
+  - `pnpm typecheck`, `eslint . --max-warnings=0`, `prettier --check apps packages docs infra .github` e `pnpm --filter @verax/web build:demo` (varredura do bundle sem achados).
+- **Decisões onde o pedido deixava margem:**
+  - **a conexão volta a `waiting` quando os nomes mudam**, e só aí: a verificação anterior ("Conectada" ou o erro, como `bucket_denied`) era de outra lista, a pilha precisa do `LogBucketArns` novo, e um "Verificar" pendente seria respondido com a lista antiga (o worker descarta o pedido apagado). Nenhuma chamada à AWS é disparada: o cliente atualiza a pilha e clica em "Verificar". O critério são os nomes (o que a pilha e a verificação leem), não a fonte de cada um;
+  - **o mesmo bucket em duas fontes da mesma conta vale** (uma trilha e o export do GuardDuty num bucket central, em pastas diferentes); **em outra conta do mesmo cliente continua aceito**, como a T5.2 decidiu e o teste "contas do mesmo cliente podem dividi-lo" fixa; em outro cliente, 409;
+  - um bucket por fonte e sem prefixo, porque é o que o schema, as colunas e o PR-V4' têm; o limite de buckets é a forma (três);
+  - o campo aceita o ARN e o `s3://` colados (o painel e as saídas da pilha mostram ARNs) e grava o nome;
+  - o `LogBucketArns` vai sempre no comando da CLI, vazio sem bucket (acima).
+- **Definição de pronto:** critérios ✔ · testes, com o negativo A/B ✔ · lint, tipos e formatação ✔ · nenhuma dependência ✔ · regras de segurança ✔ (autorização na API; o nome do bucket validado pelo zod antes de gravar e antes de entrar no comando da CLI; só valores fictícios: contas `111122223333` e `135792468024`, buckets `exemplo-*`, `trilha-<conta>` e `aws-waf-logs-loja-alfa`) · **aceite:** depende do responsável.
+- **O que testar manualmente:** no `dev:mock`, Contas cloud → a conta AWS 111122223333: remover o WAF, adicionar de novo pelo teclado, salvar um nome sem `aws-waf-logs-` (o erro no campo), colar um ARN válido e salvar (o aviso, o selo "Aguardando" e o `LogBucketArns` e o comando novos); salvar sem mudar nada; trocar o GuardDuty por `trilha-777788889999` (409); como `leitura`, ver a lista sem formulário; cadastrar uma conta AWS com buckets. Na homologação: o mesmo na conta AWS de teste e, com a pilha criada, atualizar o `LogBucketArns` pelo console (_Use existing template_) e pelo comando da CLI do painel, inclusive com a lista vazia.
+- **Riscos e pendências:**
+  - **para o PR-V4':** se o gerador da configuração do Wazuh usar `connection = 'connected'` para escolher as contas, trocar os buckets para a leitura de todos os buckets da conta até o "Verificar" (o `status` e o `ingestFrom` não mudam e servem melhor de critério). E a volta a `waiting` é leve: o primeiro evento da conta (`finding-store`) a marca "Conectada" de novo, como na GCP;
+  - **para o PR-V4':** um bucket incluído depois da primeira verificação herda o `ingestFrom` da conta, e o Wazuh leria o histórico dele desde aquele dia; uma data por bucket pediria uma coluna nova (fora do escopo). O mesmo bucket em duas contas do mesmo cliente não pode virar dois blocos `<bucket>` (leitura em dobro);
+  - o bucket do WAF segue exigindo `aws-waf-logs-` (a entrega direta no S3); o log do WAF que passa pelo Kinesis Data Firehose pode cair num bucket com qualquer nome e continua recusado (decisão anterior do schema, mantida);
+  - painel de build único e API de cada nó: um painel novo com um nó antigo grava os buckets (a rota não mudou), mas o nó antigo não volta a conexão para "Aguardando" (o aviso do painel aparece do mesmo jeito); atualizar os nós e o painel juntos;
+  - o caminho do console (_Update stack_ → _Use existing template_) e o `LogBucketArns=""` no `aws cloudformation deploy` não foram exercitados na AWS (nenhuma chamada nesta tarefa): o comportamento vem do código do aws-cli e da documentação do CloudFormation.
+
+## Fase 2, pedido de 04/11/2026: alertas dos agentes do Wazuh viram achados do cliente do nó ⚠️ migration nova (só valores do enum da fila sem dono)
+
+- **Pedido:** a pendência do PR #59 ("os alertas dos agentes chegam ao indexer, mas o sync de achados só atribui alerta a
+  cliente pela conta AWS"). Na verdade, eles nem eram lidos: a página do sync da AWS só traz `data.integration: aws`, e
+  os alertas dos agentes ficavam no indexer, fora dos achados e da fila. Agora viram achados do cliente do nó, com as
+  telas de sempre. Desenho em `docs/ARQUITETURA.md`, "Atribuição dos alertas dos agentes".
+- **Dois caminhos que nunca se cruzam** (`alerts/agent-alert.ts`, `alerts/sync-query.ts`): quem gerou o alerta é o
+  `agent.id`, que o manager grava pela conexão (a chave) de cada agente, e não pelo log. `000` é o manager (o aws-s3, as
+  contas AWS) e segue só pelo sync da AWS, que não muda de regra; qualquer outro id segue só pela tarefa nova
+  `wazuh-agent-alerts`. A partição vale na consulta (a página da AWS ganhou `agent.id = 000`; a dos agentes,
+  `must_not agent.id = 000`, o filtro novo `notEquals` do construtor de consultas, sempre estruturado) e de novo em cada
+  alerta lido (`isAgentAlert`, nos dois syncs; o outro conta como `skipped`). **Refinamento do pedido:** um agente pode
+  mandar um log igual ao do aws-s3 (o log é de quem usa a instância), e antes o sync da AWS o atribuiria pelo bucket e
+  pela conta; agora ele só pode virar achado da própria instância.
+- **Regra do dono** (`alerts/agent-owner.ts`, a única função que decide): do cliente do nó só com os agentes ligados no
+  worker (`WAZUH_AGENTS_FILE` e `WAZUH_AGENTS_TENANT`, sempre juntos), com o id do agente na lista do cliente do nó
+  (`WazuhAgent`, lida pelo escopo dele) **e** o mesmo nome, e sem conta AWS de outro cliente citada no log (`data.aws`,
+  pelos campos e conferências do sync da AWS; conta de outro cliente, ativa ou não, ou cadastrada nos dois). O nome
+  sozinho nunca decide. Na dúvida, fila sem dono com motivo novo: `agents_disabled`, `unknown_agent`,
+  `agent_name_mismatch` e `agent_account_conflict` (`invalid_alert` para o fora do formato), e o agente (`agent:<id>`)
+  junto das contas citadas.
+- **Lista atrasada:** o host exporta a lista a cada minuto e o worker a grava a cada minuto; o primeiro alerta de um
+  agente recém-registrado chega antes dela. O alerta recente (menos de 3 min) de um agente que a lista não conhece, com a
+  lista mais antiga que ele, espera a próxima execução (`deferred`), em vez de encher a fila; a sobreposição de 10 min o
+  relê. Passada a espera, ou com a lista mais nova que o alerta, vai para a fila.
+- **O achado** (`toAgentFindingDraft`): `source='wazuh'`, `logSource='wazuh_agent'`, origem `agent:<id>` no lugar da
+  conta, recurso `host:<nome na lista>`, severidade pelo nível da regra, MITRE da regra, decoder em `eventName` e, do log,
+  só `data.srcip` e o usuário (`srcuser`, `dstuser` ou o `targetUserName` do Windows), conferidos no formato. Chave
+  única `wazuh/agent:<id>/alert:<id do alerta>:<regra>` (o log da instância não tem id próprio em todas as fontes; o id
+  do alerta se repete a cada releitura). Regra limitada a 6 dígitos (as colunas). Exceção, incidente e evento bruto
+  (pelo id do alerta, saneado) pelo caminho de sempre (`FindingStore`, `IndexerRawEvents`). A cobertura das contas não
+  muda: agente não é conta.
+- **Contrato** (`packages/shared`): `FINDING_SOURCES` ganhou `wazuh_agent`; a origem do achado e as do incidente aceitam
+  `agent:<id>` (`findingOriginSchema`; os dois-pontos não aparecem em nenhum identificador de conta, então nunca se
+  confunde com conta). O filtro da lista de achados continua só por conta. `UNOWNED_REASONS` com os quatro motivos.
+- **Painel:** "Agente (instância)" como origem; na tabela de achados, no detalhe ("Agente (instância) · agente 001",
+  "Regra (agente do Wazuh)"), no incidente ("Contas e agentes") e no resumo ("no agente 001"), a origem aparece como
+  agente; na fila sem dono, os quatro motivos com o que fazer, e o agente aparece como "Agente de instância", sem o
+  atalho de cadastrar conta. Mock: dois achados do agente `api-producao-01` da Alfa (médio e baixo, fora de incidente:
+  a conta da Torre não muda) e um alerta de agente fora da lista na fila.
+- **Worker:** a fonte `wazuh` vira duas tarefas, `wazuh` e `wazuh-agent-alerts`, com estado e concessão próprios
+  (`SyncState('wazuh-agent-alerts')`): uma instância barulhenta não atrasa os achados das contas. A tarefa nova roda
+  mesmo com os agentes desligados (alerta de agente vira `agents_disabled`, em vez de sumir).
+- **Migration** `20261108120000_unowned_agent_reasons`: só `ALTER TYPE "UnownedReason" ADD VALUE` (quatro valores). O
+  teste da migration do PR-V3' (`aws-keyless-migration.test.ts`) dizia "é a última", o que qualquer migration nova
+  derruba; passou a conferir o que o nome dele promete: nenhuma migration seguinte mexe no ExternalId nem no enum do
+  cofre. Nada muda em `infra/`, `.github/` nem nas permissões.
+- **Arquivos:**
+  - API: `apps/api/src/alerts/{agent-alert.ts,agent-owner.ts,agent-alert-sync.ts}` (novos),
+    `apps/api/src/alerts/{alert-sync.ts,finding-draft.ts,sync-query.ts,wazuh-alert.ts}`,
+    `apps/api/src/indexer/alert-queries.ts`, `apps/api/src/worker.ts`,
+    `apps/api/prisma/{schema.prisma,migrations/20261108120000_unowned_agent_reasons}`;
+  - testes da API: `apps/api/test/alerts/{agent-alert.test.ts,agent-fixtures.ts}` e `apps/api/test/support/fake-indexer.ts`
+    (novos; o indexer falso saiu do `alert-sync.test.ts`), `apps/api/test/{agents.test.ts,alert-sync.test.ts}`,
+    `apps/api/test/alerts/finding-draft.test.ts`, `apps/api/test/indexer/alert-queries.test.ts`,
+    `apps/api/test/aws-keyless-migration.test.ts`;
+  - compartilhado: `packages/shared/src/{agents,findings,incidents,unowned-alerts}.ts` e os testes deles;
+  - painel: `apps/web/src/features/{findings/labels.ts,findings/finding-panel.tsx,incidents/narrative.ts,unowned/labels.ts}`,
+    `apps/web/src/pages/{findings-page,incident-page,incidents-page,unowned-alerts-page}.tsx`, os testes de
+    `findings-page`, `incidents-page` e `unowned-alerts-page`, `apps/web/src/mocks/{findings-fixtures,unowned-handlers}.ts`;
+  - documentação: `docs/{ARQUITETURA.md,STATUS.md}`.
+- **Dependências:** nenhuma.
+- **Testes:**
+  - unitários da API (`test/alerts/agent-alert.test.ts`, 13): quem gerou (000, sem o campo, qualquer outro); a leitura
+    (campos, horário, FIM, Windows, IP e usuário fora do formato, contas da AWS no log, regra de 7 dígitos, agente 000,
+    nome com controle ou longo, horário inválido); o dono (da lista, desligado, fora da lista, nome trocado, o nome de
+    um agente da lista com o id de outro, conflito com conta de outro cliente ou cadastrada nos dois, conta do próprio
+    cliente ou de ninguém, conta fora do formato, a espera pela lista e o fim dela, a espera menor que a
+    sobreposição); os motivos iguais no banco e no contrato; o achado campo a campo; a chave estável e com resumo
+    SHA-256; as duas páginas (`finding-draft.test.ts`) e o `notEquals` (`alert-queries.test.ts`);
+  - integração com o banco (`test/agents.test.ts`, 10 novos, no mesmo arquivo da tarefa `wazuh-agents` porque a lista
+    dos agentes é global no banco de teste): achado do cliente do nó lido pela API com o contrato e **A/B** (o B não vê
+    nem pelo id); releitura sem duplicar nem desfazer a triagem (no mesmo sync e num novo); fora da lista, nome trocado
+    e o agente de B com o nó de A na fila; agentes desligados; **nó de B** só atribui o agente de B; conflito com a conta
+    de B e a conta do próprio A sem conflito; **os dois syncs no mesmo indexer**: o alerta do manager só vira achado da
+    conta, e o do agente com cara de AWS (bucket e conta de A) só vira achado da instância, nunca os dois; a espera pela
+    lista e o achado na execução seguinte; incidente da mesma instância lido pela API (origem `agent:<id>`, recurso,
+    404 para o B); exceção por `host:<nome>`. Em `alert-sync.test.ts`, o sync da AWS pula o alerta de agente com bucket
+    e conta de A (`skipped`, sem achado nem fila);
+  - compartilhado: origem `agent:<id>` (ida e volta, nada que pareça conta: `agent-001x` é um projeto da GCP válido, por
+    isso os dois-pontos), achado e incidente com agente, fila com os motivos e o filtro por agente;
+  - painel: achado do agente na tabela e no detalhe, a frase da origem no resumo do incidente, o agente na fila sem
+    dono (situação, sem "Cadastrar conta", filtro pela URL);
+  - suítes: API inteira com o banco descartável (Postgres 18): 87 arquivos, 1224 testes (o `cloud-credential-intake`
+    caiu com o 0xC0000409 do Vitest no Windows e passou sozinho, 17 de 17); `packages/shared` (17 arquivos, 226);
+    painel (34 arquivos, 402); `pnpm typecheck`, ESLint da raiz com `--max-warnings=0` e
+    `prettier --check apps packages docs` sem erros; `prisma migrate diff` do banco migrado contra o `schema.prisma`
+    sem diferença (só a tabela-sonda dos testes).
+- **Definição de pronto:** critérios ✔ · testes, com o negativo A/B ✔ · lint, tipos e formatação ✔ · nenhuma
+  dependência ✔ · regras de segurança ✔ (na dúvida, de ninguém; nada do log decide o dono; entrada do indexer validada
+  com zod; consulta estruturada; isolamento pelo escopo do cliente; nada do evento bruto na fila nem no achado; dados
+  fictícios) · **aceite:** depende de ligar os agentes na homologação.
+- **O que testar manualmente (homologação com os agentes ligados):** com um agente Linux instalado pela tela, provocar
+  uma força bruta no SSH (algumas tentativas com usuário inexistente) e alterar um arquivo monitorado (o FIM roda a cada
+  12 h, ou reiniciar o agente); em até 2 min, os achados aparecem em Achados com a origem "Agente (instância)" e
+  `host:<nome>`, e o detalhe traz o evento bruto; no journal do worker, a tarefa `wazuh-agent-alerts` com `created`; a
+  fila sem dono sem alertas de agente (depois do registro, nenhum `unknown_agent`); com o `WAZUH_AGENTS_FILE` tirado do
+  ambiente do worker, o alerta seguinte cai como "Agentes desligados no nó".
+- **Riscos e pendências:**
+  - **volume:** com o nível mínimo de sempre (5), o primeiro SCA de cada instância (centenas de checagens com falha,
+    nível 7) e as alterações de arquivo depois de uma atualização de pacotes viram muitos achados médios. Eles se juntam
+    num incidente por instância (o recurso `host:<nome>`), mas a lista de achados enche; o cliente pode criar exceção
+    pela regra e pela instância. Um nível mínimo próprio para os agentes, ou regras do SCA em resumo, é decisão de
+    produto e ficou de fora;
+  - os formatos dos alertas (sshd, FIM, Windows) foram conferidos na documentação e no padrão do Wazuh 4.14, não num
+    agente real deste nó: é o portão da homologação;
+  - a espera pela lista cobre o atraso normal (até uns 2 min). Com a exportação do host parada por mais de 3 min, os
+    alertas dos agentes novos vão para a fila (`unknown_agent`) e não voltam sozinhos quando a lista volta (como já
+    acontece com as contas AWS cadastradas depois do alerta);
+  - um alerta na espera numa execução cortada pelo teto de páginas (atraso grande) pode sair da sobreposição antes de
+    ser relido; só acontece com um atraso de leitura de mais de 10 min e alertas de menos de 3 min ao mesmo tempo;
+  - o cartão da Torre para a fila continua com o texto "alertas de conta não cadastrada", que agora também conta os
+    alertas de agente sem dono (para o `admin_verax`).
+
 ## Fase 2, PR-V5': o worker confere a conexão da AWS sem chave ⚠️ altera `infra/node`, o logger (`common/logger`) e uma dependência nova
 
 - **Pedido:** a conferência real da conexão da AWS pelo papel de leitura sem chave (proposta "conectar a AWS do cliente sem chave", seções 2.3, 2.6, 2.7 e 6, e o item 12 do plano revisado sem a idade da chave, que sumiu com o desenho sem chave; ambos fora do repositório). A interface, a tarefa e o "Verificar" são do PR-V3' (#71). O token do host sem renovar (`aws_token_stale`) é do PR-V4'. Nada foi chamado na AWS nem na GCP: os testes usam clientes falsos e um STS falso na própria máquina.

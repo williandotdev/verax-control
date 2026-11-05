@@ -1,4 +1,4 @@
-import { isAwsRegion, LOG_SOURCES, type LogSource } from './cloud-accounts.js';
+import { bucketNameProblem, isAwsRegion, LOG_SOURCES, type LogSource } from './cloud-accounts.js';
 
 /**
  * Papel de leitura sem chave na conta AWS do cliente (fase 2, PR-V2' e PR-V3'; `docs/ARQUITETURA.md`, "Por que papel
@@ -198,18 +198,11 @@ export interface AwsReaderStackValues {
   buckets: readonly string[];
 }
 
-/** Nome de bucket do S3 como o cadastro aceita: minúsculas, números, ponto e hífen. */
-function isBucketName(name: string): boolean {
-  return (
-    name.length >= 3 &&
-    name.length <= 63 &&
-    every(name, (code, char) => isLowerAlnum(code) || '.-'.includes(char))
-  );
-}
-
-/** `LogBucketArns` da pilha: o ARN de cada bucket cadastrado, sem repetir. */
+/** `LogBucketArns` da pilha: o ARN de cada bucket cadastrado, sem repetir; um nome que o cadastro recusa fica de fora. */
 export function awsLogBucketArns(buckets: readonly string[]): string[] {
-  return [...new Set(buckets.filter(isBucketName))].map((name) => `arn:aws:s3:::${name}`);
+  return [...new Set(buckets.filter((name) => bucketNameProblem(name) === null))].map(
+    (name) => `arn:aws:s3:::${name}`,
+  );
 }
 
 /** Os IPs de saída que a pilha aceita: no formato e no máximo 4. Fora disso, nenhum (o comando leva o marcador). */
@@ -223,6 +216,10 @@ function stackEgressIps(egressIps: readonly string[]): string | null {
  * direto, sem bucket, porque cabe no `TemplateBody`). Todo valor é conferido antes de entrar no comando, que o cliente
  * cola no terminal dele: um valor fora do formato vira o marcador, nunca texto livre. As chaves KMS ficam de fora,
  * porque o cadastro não as tem.
+ *
+ * O mesmo comando atualiza a pilha que já existe: o `deploy` mantém o valor anterior de todo parâmetro que não recebe.
+ * Por isso o `LogBucketArns` vai sempre, vazio (`""`) quando a conta não tem bucket: sem ele, tirar o último bucket no
+ * painel e rodar o comando de novo deixaria o papel lendo os buckets antigos.
  */
 export function awsReaderDeployCommand(values: AwsReaderStackValues): string {
   const serviceAccount =
@@ -236,7 +233,7 @@ export function awsReaderDeployCommand(values: AwsReaderStackValues): string {
     `Audience=${audience}`,
   ];
   const arns = awsLogBucketArns(values.buckets);
-  if (arns.length > 0) overrides.push(`LogBucketArns=${arns.join(',')}`);
+  overrides.push(`LogBucketArns=${arns.length > 0 ? arns.join(',') : '""'}`);
   return [
     `aws cloudformation deploy --stack-name ${AWS_READER_STACK_NAME} \\`,
     `  --template-file ${AWS_READER_TEMPLATE_FILE} --capabilities CAPABILITY_NAMED_IAM \\`,

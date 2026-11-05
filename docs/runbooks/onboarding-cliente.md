@@ -77,12 +77,17 @@ Na reunião:
    seletor do topo e gere outra em Usuários.
 5. Com o cliente selecionado, cadastre as contas cloud e os demais usuários (cada um também nasce com uma senha
    temporária, repassada do mesmo jeito). O próprio administrador do cliente pode criar os usuários dele.
-6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta e as regiões. O detalhe da conta mostra o passo
-   a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
+6. **Conta AWS (Contas cloud → Cadastrar conta → AWS):** o ID da conta, as regiões e os **buckets de log** (opcionais
+   no cadastro): um por fonte, o da trilha do CloudTrail, o do export do GuardDuty e o do WAF (`aws-waf-logs-*`, exigência
+   da AWS), pelo nome ou pelo ARN (`arn:aws:s3:::<nome>`, como as saídas `TrailBucketArn` e `GuardDutyBucketArn` da
+   pilha). O painel confere as regras de nome do S3 e recusa um bucket que já é de outro cliente. Depois do cadastro,
+   a lista muda no detalhe da conta, em **Buckets de log** (quem só lê vê a lista, sem o formulário). O detalhe mostra
+   o passo a passo que o administrador do cliente segue no console da AWS dele (`infra/cloudformation/README.md`):
    - **Baixar o template:** o painel serve o próprio `verax-control-reader.yaml` do repositório, sem nada preenchido;
    - no CloudFormation, _Create stack_ → _Upload a template file_, a pilha `verax-control-reader` com os três valores
-     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), os ARNs dos
-     buckets em `LogBucketArns` e as chaves KMS em `LogKmsKeyArns`; a tela também traz o comando da CLI;
+     do nó que a tela mostra (o ID da conta de serviço, o IP de saída e o audience, que já vem preenchido), o
+     `LogBucketArns` com os ARNs dos buckets cadastrados e as chaves KMS em `LogKmsKeyArns`; a tela também traz o
+     comando da CLI, que cria a pilha ou atualiza a que já existe;
    - **Verificar conexão:** o painel pede ao worker do nó que entre no papel, confira a conta e leia 1 byte de um
      objeto de cada bucket (o que prova também a chave KMS). Na mesma verificação, ele confere se uma trilha ligada
      grava no bucket do CloudTrail, se o GuardDuty exporta para o bucket dele e se o papel não ganhou permissão além
@@ -94,7 +99,13 @@ Na reunião:
      aparecem como **aviso**: a conta continua conectada e a coleta segue. Um erro (papel recusado, bucket sem acesso)
      aparece na conta, e ela volta a conectada sozinha quando o cliente corrige.
 
-   Os buckets da conta ainda não têm campo no painel: vão pela API (`PATCH /v1/cloud-accounts/:id`, com `buckets`).
+   **Mudar os buckets depois:** salve a lista nova em **Buckets de log**. Se os nomes mudaram, o painel avisa que falta
+   atualizar a pilha (o `LogBucketArns` e o comando da CLI já trazem a lista nova; um bucket novo com SSE-KMS pede
+   também a chave em `LogKmsKeyArns`), a conexão volta a "Aguardando" e um "Verificar" pendente é descartado. Nada é
+   conferido na AWS sozinho enquanto a conta aguarda: depois de atualizar a pilha, o cliente clica em **Verificar
+   conexão**, e a conferência de 15 em 15 min volta com a conta conectada. Trocar só a fonte de um bucket (os mesmos
+   nomes) não mexe na pilha nem na conexão.
+
    Cada conferência aparece no CloudTrail do cliente: uma entrada `AssumeRoleWithWebIdentity` por hora (com o ID da
    conta de serviço do nó) e as leituras da sessão `verax-control-reader/verax-control-worker`, todas de leitura.
 

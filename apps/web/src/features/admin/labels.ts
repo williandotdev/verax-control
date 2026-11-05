@@ -49,17 +49,20 @@ export const CONNECTION_LABELS: Readonly<Record<CloudAccountConnection, string>>
 
 /**
  * O que o selo quer dizer em cada provedor: na AWS, a entrada no papel de leitura sem chave (o "Verificar" pendente ou
- * o resultado dele); na GCP e no Cloudflare, a leitura do nó.
+ * o resultado dele); na GCP e no Cloudflare, a leitura do nó. A conta AWS que já entrou no papel uma vez (com
+ * `ingestFrom`) e voltou a aguardar mudou de buckets (ou foi reativada): a pilha pode precisar do `LogBucketArns` novo.
  */
 export function connectionHint(
-  account: Pick<CloudAccount, 'provider' | 'connection' | 'checkRequestedAt'>,
+  account: Pick<CloudAccount, 'provider' | 'connection' | 'checkRequestedAt' | 'ingestFrom'>,
 ): string {
   const { provider, connection } = account;
   if (connection === 'connected') return 'A última leitura deu certo.';
   if (provider === 'aws') {
     if (connection === 'error') return 'A última conferência do papel de leitura falhou.';
-    return account.checkRequestedAt !== null
-      ? 'Verificando: o Verax está entrando no papel de leitura da conta.'
+    if (account.checkRequestedAt !== null)
+      return 'Verificando: o Verax está entrando no papel de leitura da conta.';
+    return account.ingestFrom
+      ? 'Aguardando uma nova verificação: se os buckets mudaram, atualize a pilha na conta; depois, clique em Verificar.'
       : 'Aguardando o papel de leitura: crie a pilha na conta e clique em Verificar.';
   }
   if (connection === 'error') return 'A última leitura falhou.';

@@ -19,6 +19,7 @@ import {
   gcpSinkIdentityCommand,
   isAwsConnectionWarningCode,
   isCloudflareBlockingError,
+  logBucketNames,
   normalizeSinkWriterIdentity,
   qualifyPubsubSubscription,
 } from '@verax/shared';
@@ -39,6 +40,13 @@ import {
   useVerifyAwsAccount,
 } from '@/features/admin/admin-api';
 import { AdminShell, ConfirmButton, FormError, SelectInput } from '@/features/admin/admin-ui';
+import {
+  type BucketRow,
+  bucketRowErrors,
+  bucketsFromRows,
+  withoutBucketErrors,
+} from '@/features/admin/aws-log-buckets';
+import { AwsLogBuckets, LogBucketsEditor } from '@/features/admin/aws-log-buckets-editor';
 import { AWS_READER_TEMPLATE_URL } from '@/features/admin/aws-reader-template';
 import { fieldErrors } from '@/features/admin/forms';
 import {
@@ -246,12 +254,17 @@ interface CreateValues {
   zones: string;
 }
 
-/** Monta o corpo do cadastro com só os campos do provedor escolhido. */
-function createInput(values: CreateValues) {
+/** Monta o corpo do cadastro com só os campos do provedor escolhido (na AWS, os buckets da lista, se houver). */
+function createInput(values: CreateValues, bucketRows: readonly BucketRow[]) {
   const accountId = values.accountId.trim();
   switch (values.provider) {
     case 'aws':
-      return { provider: 'aws', accountId, regions: splitList(values.regions) };
+      return {
+        provider: 'aws',
+        accountId,
+        regions: splitList(values.regions),
+        ...(bucketRows.length > 0 && { buckets: bucketsFromRows(bucketRows) }),
+      };
     case 'gcp':
       return {
         provider: 'gcp',
@@ -274,6 +287,8 @@ function CreateAccount() {
     zones: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [bucketRows, setBucketRows] = useState<BucketRow[]>([]);
+  const [bucketErrors, setBucketErrors] = useState<Record<number, string>>({});
   const create = useCreateCloudAccount();
   const set = (key: keyof CreateValues) => (event: { target: { value: string } }) =>
     setValues((current) => ({ ...current, [key]: event.target.value }));
@@ -297,12 +312,16 @@ function CreateAccount() {
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const input = cloudAccountCreateSchema.safeParse(createInput(values));
-    if (!input.success) {
-      setErrors(fieldErrors(input.error));
+    const input = cloudAccountCreateSchema.safeParse(createInput(values, bucketRows));
+    const schemaErrors = input.success ? {} : fieldErrors(input.error);
+    const rowErrors = values.provider === 'aws' ? bucketRowErrors(bucketRows, schemaErrors) : {};
+    if (!input.success || Object.keys(rowErrors).length > 0) {
+      setErrors(withoutBucketErrors(schemaErrors));
+      setBucketErrors(rowErrors);
       return;
     }
     setErrors({});
+    setBucketErrors({});
     create.mutate(input.data);
   };
 
@@ -316,6 +335,7 @@ function CreateAccount() {
         value={values.provider}
         onChange={(event) => {
           setErrors({});
+          setBucketErrors({});
           setValues({ ...values, provider: event.target.value as CloudProvider });
         }}
         options={PROVIDER_OPTIONS}
@@ -336,6 +356,13 @@ function CreateAccount() {
             value={values.regions}
             onChange={set('regions')}
             error={listError('regions')}
+          />
+          <LogBucketsEditor
+            rows={bucketRows}
+            onChange={setBucketRows}
+            errors={bucketErrors}
+            legend="Buckets de log (opcional)"
+            note="Pode deixar para depois: a lista muda no detalhe da conta."
           />
         </>
       )}
@@ -411,6 +438,7 @@ function AccountDetail({ account, canWrite }: { account: CloudAccount; canWrite:
           </>
         )}
       </dl>
+      {account.provider === 'aws' && <AwsLogBuckets account={account} canWrite={canWrite} />}
       <ProviderSteps account={account} canWrite={canWrite} />
       {canWrite && account.provider !== 'aws' && <EditSource account={account} />}
       {canWrite && (
@@ -971,9 +999,7 @@ function StackValue({
  * Nada é colado aqui: não há chave nem ExternalId, e nenhum dos valores é segredo.
  */
 function AwsSteps({ account, canWrite }: { account: CloudAccount; canWrite: boolean }) {
-  const buckets = [account.buckets.cloudtrail, account.buckets.guardduty, account.buckets.waf].filter(
-    (name): name is string => name !== null,
-  );
+  const buckets = logBucketNames(account.buckets);
   const bucketArns = awsLogBucketArns(buckets).join(',');
   const audience = account.webIdentityAudience ?? AWS_READER_AUDIENCE;
   const egressIps = account.egressIps.length > 0 ? account.egressIps.join(',') : null;
@@ -1066,9 +1092,10 @@ function AwsSteps({ account, canWrite }: { account: CloudAccount; canWrite: bool
             </>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Nenhum bucket de log cadastrado: informe em{' '}
-              <code className="font-mono text-xs">LogBucketArns</code> os buckets do CloudTrail, do export do
-              GuardDuty e do WAF que o Verax vai ler.
+              Nenhum bucket de log cadastrado nesta conta: o{' '}
+              <code className="font-mono text-xs">LogBucketArns</code> fica vazio, e o papel não lê nenhum
+              log. Os buckets do CloudTrail, do export do GuardDuty e do WAF que o Verax vai ler entram em
+              &ldquo;Buckets de log&rdquo;, no detalhe da conta.
             </p>
           )}
           <p className="text-xs text-muted-foreground">
@@ -1076,10 +1103,19 @@ function AwsSteps({ account, canWrite }: { account: CloudAccount; canWrite: bool
             <code className="font-mono text-xs">LogKmsKeyArns</code>. Na revisão, marque a confirmação do IAM
             (recursos com nomes personalizados) e crie a pilha: leva 1 ou 2 minutos.
           </p>
+          <p className="text-xs text-muted-foreground">
+            A pilha já existe e os buckets mudaram aqui? Atualize-a: no CloudFormation, selecione{' '}
+            <code className="font-mono text-xs">{AWS_READER_STACK_NAME}</code> →{' '}
+            <span lang="en">Update stack</span> → <span lang="en">Use existing template</span>, troque o{' '}
+            <code className="font-mono text-xs">LogBucketArns</code> pela lista acima (e o{' '}
+            <code className="font-mono text-xs">LogKmsKeyArns</code>, se um bucket novo usa SSE-KMS) e
+            confirme. Depois, clique em Verificar conexão.
+          </p>
           <details className="space-y-1">
             <summary className="cursor-pointer">Prefere a CLI?</summary>
             <p className="text-xs text-muted-foreground">
-              No terminal ou no AWS CloudShell, na pasta do arquivo baixado:
+              No terminal ou no AWS CloudShell, na pasta do arquivo baixado. O mesmo comando cria a pilha ou
+              atualiza a que já existe, com a lista de buckets desta tela:
             </p>
             <CommandBlock command={command} label="Copiar o comando da CLI" />
           </details>
