@@ -151,6 +151,13 @@ run "nat_e_extras_desligados" {
     error_message = "O nó da Verax ganhou os cofres novos, desligados em envs/verax."
   }
 
+  # Nem o cofre da conta de suporte, nem os atributos de convidado, nem a configuração nos metadados (CP-06): os três
+  # ficam nos padrões (desligados) em envs/verax. Os metadados inteiros são conferidos em `vm_e_script_de_boot`.
+  assert {
+    condition     = !contains(keys(google_secret_manager_secret.node_written), "support-bootstrap") && length(output.install_metadata) == 0
+    error_message = "O nó da Verax ganhou o cofre da conta de suporte, os atributos de convidado ou chaves verax-* nos metadados."
+  }
+
   assert {
     condition     = length(google_monitoring_alert_policy.stalled_subscription) == 0 && length(google_monitoring_notification_channel.email) == 0
     error_message = "O nó da Verax ganhou o alerta de fila parada, desligado em envs/verax."

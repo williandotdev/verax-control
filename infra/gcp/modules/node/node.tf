@@ -34,6 +34,62 @@ locals {
   startup_metadata = var.legacy_startup_script == null ? {
     startup-script = templatefile("${path.module}/startup.sh.tftpl", { node_profile = var.node_profile })
   } : {}
+
+  # Atributos de convidado (`guest_attributes`): o worker do nó grava o próprio estado no espaço `verax/` pelo
+  # servidor de metadados, e o plano de controle lê com `compute.instances.getGuestAttributes` (o papel `cpNodeLifecycle`
+  # do envs/nodes-platform, só nas VMs `vx-*`). Chaves: `verax/version`, `verax/accounts-connected`,
+  # `verax/last-event-at` e `verax/disk-free` (CP-10), `verax/ready` e `verax/error` (instalação, PR-N7). Mudar os
+  # metadados é uma mudança no lugar: a VM não é recriada.
+  guest_attributes_metadata = var.guest_attributes ? { enable-guest-attributes = "TRUE" } : {}
+
+  # A configuração do nó para a instalação sem operador: a VM lê cada chave com
+  # `curl -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/<chave>`
+  # e monta o node.conf (PR-N7) e as contas do cliente (CP-10). Os nomes são um contrato com o pacote do nó: mudar um
+  # deles exige mudar a instalação junto, e `verax-config-version` sobe quando o formato muda. Nada aqui é segredo.
+  # Os textos são dados (e-mails e nome do cliente, que o cliente digitou no checkout): a instalação nunca os
+  # interpreta num shell. Valor vazio é "não definido" (a instalação não escreve a linha).
+  #
+  # As que o ambiente manda em `install_metadata` (o envs/tenant manda todas; o formato de cada uma é conferido lá):
+  #   verax-plan                    PLAN
+  #   verax-plan-max-cloud-accounts PLAN_MAX_CLOUD_ACCOUNTS (vazio: o do plano; idem os três seguintes)
+  #   verax-plan-max-users          PLAN_MAX_USERS
+  #   verax-plan-monthly-gib        PLAN_MONTHLY_GIB
+  #   verax-plan-history-days       PLAN_HISTORY_DAYS
+  #   verax-node-version            a versão do pacote do nó (`node-vX.Y.Z`, o release do manifesto assinado)
+  #   verax-node-package-sha256     o SHA-256 do pacote dessa versão, conferido antes de instalar
+  #   verax-images-repository       IMAGES_REPOSITORY
+  #   verax-web-origin              WEB_ORIGIN
+  #   verax-api-origin              API_ORIGIN
+  #   verax-mail-from               MAIL_FROM
+  #   verax-tenant-name             o nome do cliente no nó (CP-10)
+  #   verax-admin-email             o e-mail do primeiro admin do cliente (CP-10)
+  #   verax-support-email           o e-mail da conta de suporte da Verax no nó (CP-10)
+  # As que só o módulo conhece, acrescentadas com `install_config`:
+  #   verax-config-version          versão deste contrato ("1")
+  #   verax-node-profile            NODE_PROFILE
+  #   verax-secret-prefix           VERAX_SECRET_PREFIX (o `name_prefix`, `vx-<slug>` no cliente; os cofres são
+  #                                 `<prefixo>-<nome>`)
+  #   verax-credentials-vault       CREDENTIALS_VAULT ("true" ou "false")
+  #   verax-backup-bucket           BACKUP_BUCKET
+  #   verax-node-sa-unique-id       NODE_SA_UNIQUE_ID (o ID único da conta de serviço da VM)
+  # O projeto não vai aqui: a VM o lê em `project/project-id`, no mesmo servidor de metadados. O IP de saída
+  # (NODE_EGRESS_IPS) também não: o checkov 3.4.0 não avalia os metadados com uma referência ao IP reservado do NAT
+  # (um recurso com `count`), em forma nenhuma das testadas. A instalação o descobre pela própria saída (todo o tráfego
+  # sai por esse IP) ou o recebe do plano de controle (a saída `nat_ip`), decisão do PR-N7.
+  #
+  # A forma é a que o checkov consegue avaliar nos três ambientes que chamam o módulo, para ele conferir as chaves de
+  # segurança dos metadados (CKV_GCP_32): o mapa do ambiente entra direto no `merge`, só com referências diretas; o do
+  # módulo é um literal só, ligado por uma variável booleana. Com `merge`, `for`, interpolação, `length`, um campo de
+  # objeto ou o IP do NAT ali, o checkov deixava os metadados da VM sem avaliar e reprovava a checagem.
+  node_derived_metadata = var.install_config ? local.node_derived_values : {}
+  node_derived_values = {
+    verax-config-version    = "1"
+    verax-node-profile      = var.node_profile
+    verax-secret-prefix     = var.name_prefix
+    verax-credentials-vault = tostring(var.credentials_vault)
+    verax-backup-bucket     = google_storage_bucket.backups.name
+    verax-node-sa-unique-id = google_service_account.node.unique_id
+  }
 }
 
 # Identidade da VM. Sem chave: a VM pega credenciais temporárias pelo servidor de metadados, e nenhuma chave JSON
@@ -169,7 +225,9 @@ resource "google_compute_instance" "node" {
     enable_integrity_monitoring = true
   }
 
-  metadata = merge({
+  # As chaves de segurança vêm depois da configuração do nó e dos atributos de convidado no `merge`: nenhuma delas é
+  # sobrescrita. Sem `install_metadata` e sem `guest_attributes` (os padrões), os metadados são os de antes.
+  metadata = merge(var.install_metadata, local.node_derived_metadata, local.guest_attributes_metadata, {
     # Login com a conta Google (OS Login), sem chaves SSH soltas no projeto, e sem console serial.
     enable-oslogin         = "TRUE"
     block-project-ssh-keys = "TRUE"

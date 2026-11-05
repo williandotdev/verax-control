@@ -631,12 +631,16 @@ do preço configurável, documentos internos.
 
 - **`cp-public`:** lê e escreve no Firestore, enfileira tasks e lê as chaves da Stripe e do cookie. Nada mais.
 - **`cp-worker`:** Firestore, tasks, execução do Job, Firebase Hosting nos projetos do pool, leitura do bucket de
-  releases e, no projeto dos nós, um papel personalizado que só para, liga e lê atributos de VMs cujo nome começa com
-  `vx-`. Por tenant, o Terraform concede: adicionar a versão do token do túnel; ler uma vez e destruir a versão do
-  `admin-bootstrap`; destruir versões de `credentials-key`. Nunca ler o cofre de credenciais.
-- **`cp-terraform`:** os papéis de criar e destruir os recursos do módulo `node` no projeto dos nós (o mais sensível é
-  `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado pelo projeto isolado, pela imagem fixada e
-  por alerta em `SetIamPolicy` fora da lista). Não lê Stripe, Cloudflare nem Firestore.
+  releases e, no projeto dos nós (`envs/nodes-platform`), um papel personalizado que só para, liga e lê atributos de
+  VMs cujo nome começa com `vx-` (`cpNodeLifecycle`) e a leitura de `runs/` no bucket do estado. Por tenant, o
+  `envs/tenant` concede, cada permissão num cofre só: adicionar a versão do token do túnel (`secretVersionAdder`); ler
+  uma vez e destruir a versão do `admin-bootstrap` (`secretAccessor` e `secretVersionManager`); listar e destruir as
+  versões de `credentials-key` (`cpSecretVersionDestroyer`, sem ler nem gravar). Nunca ler o cofre de credenciais, e
+  nada no `support-bootstrap`.
+- **`cp-terraform`:** os papéis de criar e destruir os recursos do módulo `node` no projeto dos nós
+  (`envs/nodes-platform`; o mais sensível é `projectIamAdmin`, para a SA de cada nó escrever logs e métricas; mitigado
+  pelo projeto isolado, pela imagem fixada e por alerta em `SetIamPolicy` fora da lista). Cofres e buckets por papéis
+  personalizados que não alcançam o conteúdo. Não lê Stripe, Cloudflare nem Firestore.
 - **`cp-deployer`:** Workload Identity Federation para o environment `control-plane` da `main`; publica a imagem e
   troca a imagem dos serviços (`run.developer` em cada serviço e no Job, nunca no projeto; `iam.serviceAccountUser`
   nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
@@ -711,8 +715,8 @@ revealAvailable, boletoUrl?}`. O passo e a estimativa só em `provisioning`; os 
   envia a servidor nenhum) e marca `access.revealEmailSentAt`. O e-mail nunca leva a senha.
 - **Contrato com o bootstrap do nó (CP-10):** cada versão de `admin-bootstrap` é um JSON com exatamente `email`,
   `password` (16 a 256 caracteres) e `expiresAt` (ISO 8601 com fuso). O segredo guarda só o admin do cliente: a senha
-  de outra conta (a de suporte) vai para outro segredo (`support-bootstrap`, no mesmo formato), senão a `latest` a
-  mostraria ao cliente.
+  de outra conta (a de suporte) vai para outro segredo, `vx-<slug>-support-bootstrap` (seção seguinte), senão a
+  `latest` a mostraria ao cliente.
 
 ### Primeiro acesso do nó de cliente e estado do nó (CP-10)
 
@@ -755,12 +759,99 @@ e não muda nada.
   os volumes do Docker, sem montagem nova. Com os atributos desligados na VM (403 ou 404 no `PUT`; a documentação da GCP
   não fixa o código), a tarefa avisa uma vez e para no primeiro `PUT` de cada execução, sem ler o banco.
 
+### O nó de cada cliente: `envs/tenant` e `envs/nodes-platform` (CP-06)
+
+O projeto dos nós tem dois tipos de ambiente do Terraform em `infra/gcp/envs/`:
+
+- **`nodes-platform`**, um só, aplicado pelo responsável: as APIs, o orçamento, o bucket do estado
+  `<projeto-dos-nos>-tfstate` (criado à mão antes do primeiro `init` e adotado pelo primeiro `apply`, com acesso
+  uniforme, versionamento, versões antigas por 30 dias e `runs/` por 180 dias) e as permissões do plano de controle
+  nesse projeto: os papéis do `cp-terraform` (os 10 predefinidos, `cpSecretsProvisioner` e `cpBucketsProvisioner`), o
+  `objectAdmin` dele no bucket do estado, o `cpNodeLifecycle` do `cp-worker` com a condição `vx-*`, a leitura dele em
+  `runs/` e o papel `cpSecretVersionDestroyer` (só `versions.destroy`, `versions.get` e `versions.list`), que o tenant
+  concede por cofre. Até o CP-06 essas permissões ficavam no `envs/control-plane`; o bucket e as concessões nele agora
+  estão no mesmo estado.
+- **`tenant`**, um por cliente, aplicado pelo `cp-terraform` com estado em `tenants/<slug>/`: o módulo `node` no perfil
+  `standard` com o prefixo `vx-<slug>` em todo recurso (a VM, a conta de serviço, a rede, o NAT e o IP dele, o disco,
+  os cofres; o bucket de backups é `<projeto>-vx-<slug>-backups`), a leitura do registro das imagens para a conta da VM
+  e as permissões do `cp-worker` nos cofres daquele nó (seção "Identidades"). As variáveis são as do Job (projeto,
+  região e zona) e as de cada execução: `slug`, `plan` (essencial, profissional ou enterprise; `interno` é recusado),
+  os quatro limites opcionais (`plan_max_cloud_accounts`, `plan_max_users`, `plan_monthly_gib`, `plan_history_days`,
+  obrigatórios no enterprise), `node_version` (`node-vX.Y.Z`), `node_package_sha256`, `web_origin`, `api_origin`,
+  `mail_from`, `subnet_cidr` (uma /24 em 10.0.0.0/8), `bootstrap_admin_email`, `bootstrap_tenant_name`,
+  `bootstrap_support_email` (a conta de suporte da Verax, CP-10),
+  `control_plane_sa` (só a conta `cp-worker@...`), `images_project_id` e `deletion_protection`. As saídas, que vão para
+  o `outputs.json`, não têm dado pessoal: `name_prefix`, `instance_name`, `zone`, `nat_ip`, `service_account_email`,
+  `service_account_unique_id`, `secrets` (o nome de cada cofre) e `backups_bucket`.
+
+Os três contratos do nó com a instalação sem operador (PR-N7) e com o bootstrap do admin (CP-10) são interruptores
+do módulo, desligados por padrão (o nó da Verax e a homologação não mudam) e ligados pelo `tenant`:
+
+1. **Cofres que a VM grava** (`support_bootstrap_secret`):
+
+   | Cofre                               | Quem grava                                                        | Quem lê (pelo Terraform)                                       |
+   | ----------------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- |
+   | `vx-<slug>-credentials-key`         | a VM, na instalação                                               | a VM; o `cp-worker` só lista e destrói as versões (Exclusão 2) |
+   | `vx-<slug>-admin-bootstrap`         | a VM (JSON do contrato acima)                                     | o `cp-worker`, uma vez, na revelação, e destrói a versão       |
+   | `vx-<slug>-support-bootstrap`       | a VM (a senha da conta de suporte)                                | ninguém: só o responsável, com as permissões dele no projeto   |
+   | `vx-<slug>-cloudflare-tunnel-token` | o `cp-worker` (passo `secrets.tunnel_token`)                      | a VM                                                           |
+   | `vx-<slug>-smtp-password`           | ninguém pelo plano de controle, por enquanto (pendência do CP-07) | a VM                                                           |
+
+   No `support-bootstrap`, a única permissão do Terraform é `secretVersionAdder` para a conta da VM.
+
+2. **Atributos de convidado** (`guest_attributes`): metadado `enable-guest-attributes = "TRUE"`. O worker do nó grava
+   no espaço `verax/` (`verax/version`, `verax/accounts-connected`, `verax/last-event-at`, `verax/disk-free` pelo
+   CP-10; `verax/ready` e `verax/error` pela instalação), e o `cp-worker` lê com `getGuestAttributes`
+   (`cpNodeLifecycle`). Só o worker fala com o servidor de metadados dentro da VM.
+
+3. **Configuração nos metadados da VM** (`install_config` e `install_metadata`): a instalação lê cada chave em
+   `instance/attributes/<chave>` do servidor de metadados e monta o `node.conf` e as contas do cliente. As 20 chaves
+   existem sempre; valor vazio é "não definido" (a instalação não escreve a linha). Nada é segredo; os e-mails e o
+   nome do cliente são dados de cadastro, que ficam nos metadados enquanto o nó existir, e a instalação os trata como
+   dado (nunca os interpreta num shell). O projeto vem de `project/project-id`. O IP de saída (`NODE_EGRESS_IPS`)
+   fica de fora: o checkov 3.4.0 não avalia os metadados da VM com uma referência ao IP reservado do NAT, e deixaria
+   de conferir as chaves de segurança dela; a instalação o descobre pela própria saída ou o recebe do plano de controle
+   (saída `nat_ip`), decisão do PR-N7. O ID único da conta da VM também está no `sub` do token de identidade que ela
+   pede ao servidor de metadados.
+
+   | Chave                           | No nó                                         | De onde vem               |
+   | ------------------------------- | --------------------------------------------- | ------------------------- |
+   | `verax-config-version`          | (versão deste contrato, `1`)                  | o módulo                  |
+   | `verax-node-profile`            | `NODE_PROFILE`                                | o módulo (`standard`)     |
+   | `verax-secret-prefix`           | `VERAX_SECRET_PREFIX`                         | o módulo (`vx-<slug>`)    |
+   | `verax-credentials-vault`       | `CREDENTIALS_VAULT`                           | o módulo (`true`)         |
+   | `verax-backup-bucket`           | `BACKUP_BUCKET`                               | o módulo                  |
+   | `verax-node-sa-unique-id`       | `NODE_SA_UNIQUE_ID`                           | o módulo                  |
+   | `verax-images-repository`       | `IMAGES_REPOSITORY`                           | o `tenant` (`images_*`)   |
+   | `verax-node-version`            | a versão a instalar (`node-vX.Y.Z`)           | `node_version`            |
+   | `verax-node-package-sha256`     | o SHA-256 do pacote, conferido antes          | `node_package_sha256`     |
+   | `verax-plan`                    | `PLAN`                                        | `plan`                    |
+   | `verax-plan-max-cloud-accounts` | `PLAN_MAX_CLOUD_ACCOUNTS` (vazio: o do plano) | `plan_max_cloud_accounts` |
+   | `verax-plan-max-users`          | `PLAN_MAX_USERS` (vazio: o do plano)          | `plan_max_users`          |
+   | `verax-plan-monthly-gib`        | `PLAN_MONTHLY_GIB` (vazio: o do plano)        | `plan_monthly_gib`        |
+   | `verax-plan-history-days`       | `PLAN_HISTORY_DAYS` (vazio: o do plano)       | `plan_history_days`       |
+   | `verax-web-origin`              | `WEB_ORIGIN`                                  | `web_origin`              |
+   | `verax-api-origin`              | `API_ORIGIN`                                  | `api_origin`              |
+   | `verax-mail-from`               | `MAIL_FROM`                                   | `mail_from`               |
+   | `verax-tenant-name`             | o nome do cliente no nó (CP-10)               | `bootstrap_tenant_name`   |
+   | `verax-admin-email`             | o primeiro admin do cliente (CP-10)           | `bootstrap_admin_email`   |
+   | `verax-support-email`           | a conta de suporte da Verax (CP-10)           | `bootstrap_support_email` |
+
+   O Terraform é dono dos metadados da VM inteiros: uma chave gravada fora dele (o `verax-renew-admin-password` do
+   plano, por exemplo) some no `apply` seguinte do tenant, a menos que entre como variável.
+
+**Cota de redes:** o módulo cria uma rede VPC, um roteador, um NAT e um IP externo reservado por nó. As cotas do
+projeto dos nós (redes VPC por projeto, endereços IP externos estáticos e CPUs em `southamerica-east1`) são baixas num
+projeto novo e limitam o número de clientes antes do resto: conferir no console (IAM e administrador, Cotas) na
+primeira venda e pedir aumento antes de chegar perto, contando a homologação. Uma rede compartilhada entre os nós é
+mudança do módulo numa fase seguinte, quando passar de cerca de 10 clientes.
+
 ### Exclusão em dois tempos
 
-| Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                         |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
-| D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                  |
+| Momento              | O que acontece                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D+30 do cancelamento | **Exclusão 1:** `terraform destroy` do ambiente do tenant, disco e snapshots, tópicos e assinaturas, túnel e seus registros de DNS, site e domínio do Firebase, segredos `admin-bootstrap`, `support-bootstrap`, `cloudflare-tunnel-token` e `smtp-password`. Ficam o bucket de backups (ciclo de 90 dias) e a chave `credentials-key`. `state=deleted`; e-mail de registro |
+| D+97 do cancelamento | **Exclusão 2 (cripto-destruição):** todas as versões de `credentials-key` destruídas, segredo e bucket apagados, estado do Terraform removido. O tenant vira registro mínimo: ficam `slug`, `company`, `stripe.customerId`, `lifecycle` e as faturas por 5 anos (obrigação fiscal); `adminEmail`, `resources` e `access` são apagados                                       |
 
 **A fazer no CP-07 (executor do Terraform):** recusar, antes do `apply`, todo plano que recrie ou apague
 `module.node.google_service_account.node` (no plano em JSON, uma ação `delete` nesse endereço, sozinha ou num
@@ -768,6 +859,25 @@ e não muda nada.
 `crypto_destroy` na Exclusão 2). A conta recriada ganha outro ID único, e o papel de leitura na AWS do cliente
 deixaria de aceitar o nó (seção "Por que papel sem chave"); a recusa para a execução sem `apply` e avisa a Verax. É a
 proteção que substitui o `prevent_destroy`, que não muda por variável e impediria a própria exclusão.
+
+**A fazer no CP-11 (Exclusão 1 com o `envs/tenant`):** antes do `destroy`, um `apply` com `deletion_protection =
+false` e, então, `terraform state rm` destes endereços, que ficam fora do `destroy`:
+
+- `module.node.google_compute_disk.node` e `module.node.google_compute_address.nat[0]` (os dois com `prevent_destroy`,
+  que faria o `destroy` falhar): o disco é apagado pela API depois que a VM sai (e os snapshots, que o
+  `KEEP_AUTO_SNAPSHOTS` mantém), e o IP do NAT é liberado pela API;
+- `module.node.google_storage_bucket.backups` (com `force_destroy = false`), que fica até a Exclusão 2;
+- `module.node.google_secret_manager_secret.node_written["credentials-key"]` e
+  `google_secret_manager_secret_iam_member.worker_credentials_key`: o cofre e a permissão do `cp-worker` de destruir
+  as versões ficam até a Exclusão 2. Sem tirar a permissão do estado, o `destroy` a apagaria, e o `cp-worker` não
+  conseguiria cripto-destruir a chave em D+97.
+
+Na Exclusão 2, depois de destruir as versões, o cofre e o bucket são apagados, e `tenants/<slug>/` sai do bucket do
+estado; as versões antigas do estado (com o e-mail do admin nos metadados da VM) saem 30 dias depois, pela retenção do
+bucket do estado. O bucket de backups é versionado: um backup sai 90 dias depois de gravado e a versão anterior mais 30
+dias depois, então ele só fica vazio cerca de 120 dias depois do último backup. Em D+97 ainda há objetos, e nem o
+`cp-terraform` nem o `cp-worker` apagam objeto lá; o CP-11 decide entre esperar a retenção ou dar a permissão para
+esvaziá-lo.
 
 Retenção do resto: `auditLog` 24 meses, `stripeEvents` 90 dias, `provisioningRuns` 180 dias, tokens e reservas pelo
 próprio prazo, tudo por TTL do Firestore. Nunca gravado: dado de cartão, senha temporária (lida do Secret Manager e
