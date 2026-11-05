@@ -1182,6 +1182,90 @@ describe('avisos por e-mail (outbox)', () => {
       expect(digest?.noticeIds).toEqual([sixth.id]);
     });
 
+    it('a execução que atravessa a virada da hora não passa de 5 avulsos por pessoa na hora nova, e o resumo da hora que fechou sai', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (virada da hora)');
+      const [first, second] = [
+        await member(tenantId, 'admin_cliente'),
+        await member(tenantId, 'analista_cliente'),
+      ];
+      const people = [first, second] as [Member, Member];
+      const hourStart = hourStartOf(nextHour());
+      const hourEnd = new Date(hourStart.getTime() + HOUR);
+      const inHour = (at: Date, start: Date) =>
+        at.getTime() >= start.getTime() && at.getTime() < start.getTime() + HOUR;
+
+      // O relógio da execução e cada e-mail com a hora em que terminou de sair. A virada acontece durante o primeiro
+      // envio para uma das duas pessoas, depois que a execução já começou (às 13:59:59 do exemplo da revisão).
+      let current = new Date(hourStart.getTime() + 30 * 60_000);
+      let crossOnSend = false;
+      const sent: { to: string; digest: boolean; at: Date }[] = [];
+      const transport: MailTransport = {
+        send: (message) => {
+          if (crossOnSend && people.some((person) => person.email === message.to)) {
+            current = new Date(hourEnd.getTime() + 5_000);
+            crossOnSend = false;
+          }
+          sent.push({ to: message.to, digest: isDigest(message), at: current });
+          return Promise.resolve();
+        },
+      };
+      const run = () => dispatcher(transport, current, { now: () => current }).runOnce();
+      const individualIn = (person: Member, start: Date) =>
+        sent.filter((mail) => mail.to === person.email && !mail.digest && inHour(mail.at, start)).length;
+
+      // Na primeira hora, só a primeira pessoa recebe: 5 avulsos e o 6º no resumo dessa hora.
+      await optOut(tenantId, second.id);
+      await criticals(tenantId, 6);
+      await run();
+      expect(individualIn(first, hourStart)).toBe(5);
+      await prisma.forTenant(tenantId).notificationPreference.update({
+        where: { userId: second.id },
+        data: { incidentEmails: true },
+      });
+
+      // Começa às 59:59 e atravessa a virada no primeiro envio.
+      await criticals(tenantId, 7);
+      current = new Date(hourEnd.getTime() - 1_000);
+      crossOnSend = true;
+      await run();
+      // Mais avisos na hora nova, numa execução seguinte: a contagem da hora nova já tem o que saiu depois da virada.
+      await criticals(tenantId, 3);
+      current = new Date(hourEnd.getTime() + 10 * 60_000);
+      await run();
+
+      for (const person of people) expect(individualIn(person, hourEnd)).toBeLessThanOrEqual(5);
+      // A segunda pessoa começou a hora nova do zero e chegou ao limite: 5 avulsos, o resto no resumo.
+      expect(individualIn(second, hourEnd)).toBe(5);
+      // O resumo da hora que fechou saiu na execução seguinte à virada, uma vez, para a primeira pessoa.
+      const closed = await prisma.forTenant(tenantId).notificationDigest.findFirstOrThrow({
+        where: { userId: first.id, hourStart },
+      });
+      expect(closed).toMatchObject({ individualSent: 5, status: 'sent', attempts: 1 });
+      expect(sent.filter((mail) => mail.to === first.email && mail.digest)).toHaveLength(1);
+
+      // Quando a hora nova fecha, saem os resumos dela; cada aviso chegou a cada pessoa uma vez, avulso ou no resumo.
+      current = new Date(hourEnd.getTime() + HOUR);
+      await run();
+      const notices = await noticesOf(tenantId);
+      expect(notices.every((notice) => notice.status === 'sent')).toBe(true);
+      for (const person of people) {
+        const handled = notices.filter(
+          (notice) =>
+            notice.deliveredUserIds.includes(person.id) || notice.digestedUserIds.includes(person.id),
+        );
+        const both = notices.filter(
+          (notice) =>
+            notice.deliveredUserIds.includes(person.id) && notice.digestedUserIds.includes(person.id),
+        );
+        expect(both).toEqual([]);
+        expect(handled).toHaveLength(person === first ? 16 : 10);
+      }
+      const digests = await prisma.forTenant(tenantId).notificationDigest.findMany({
+        where: { status: { not: null } },
+      });
+      expect(digests.every((digest) => digest.status === 'sent')).toBe(true);
+    });
+
     describe('isolamento por cliente (A/B)', () => {
       it('o escopo de B não lê nem altera a hora de avisos de A; o banco recusa pessoa de outro cliente', async () => {
         const tenantA = await createTenant(app, 'Cliente demo A (resumo, escopo)');

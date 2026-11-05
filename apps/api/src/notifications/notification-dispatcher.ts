@@ -278,7 +278,9 @@ export function digestItems(
  * - Resumo por hora (PR-17'): cada pessoa recebe até 5 e-mails avulsos por hora cheia. Do 6º aviso da hora em diante, o
  *   aviso entra no resumo dela (`NotificationDigest`), que sai uma vez, quando a hora fecha, com até 10 itens e "e mais
  *   N". O aviso com 24 h ou mais na fila nunca sai avulso: entra no resumo da hora, que vira de retomada. O resumo tem
- *   as mesmas tentativas, o mesmo recuo e o mesmo `failed` do aviso, e a pessoa é conferida de novo no envio.
+ *   as mesmas tentativas, o mesmo recuo e o mesmo `failed` do aviso, e a pessoa é conferida de novo no envio. A hora
+ *   é a do relógio em cada decisão, não a do começo da execução, e o e-mail avulso conta na hora em que terminou de
+ *   sair: uma execução que atravessa a virada não passa de 5 avulsos por pessoa na hora nova.
  * - Falha do envio: nova tentativa depois de 1, 5, 15 e 60 min; a quinta que falha deixa o aviso `failed`. Só o tipo
  *   do erro fica gravado (a mensagem do servidor pode citar o endereço).
  * - A tentativa que não chega a todos também conta, com o mesmo recuo, e quem já recebeu fica guardado: o prazo de
@@ -352,7 +354,7 @@ export class NotificationDispatcher {
         report.due = due.length;
         for (const row of due) {
           signal?.throwIfAborted();
-          report[await this.deliver(row, startedAt, report, signal)] += 1;
+          report[await this.deliver(row, report, signal)] += 1;
           // A concessão venceu e outra réplica a tomou: os avisos que faltam são dela (sem isso, sairiam duas vezes).
           if (!(await this.lease.renew())) break;
         }
@@ -380,7 +382,6 @@ export class NotificationDispatcher {
   /** Uma tentativa de um aviso. */
   private async deliver(
     row: DueNotice,
-    startedAt: Date,
     report: Pick<NotificationReport, 'folded'>,
     signal?: AbortSignal,
   ): Promise<Outcome> {
@@ -406,17 +407,6 @@ export class NotificationDispatcher {
       // Não acontece com o CHECK da migration; se acontecer, o aviso não trava a fila.
       return this.close(row, 'failed', 'invalid_notice');
     }
-    const hourStart = hourStartOf(startedAt);
-    const stale = startedAt.getTime() - row.createdAt.getTime() >= NOTICE_CATCH_UP_MS;
-    // A hora de cada pessoa: quantos avulsos ela já recebeu e se o resumo da hora ainda aceita avisos.
-    const hours = new Map(
-      (
-        await db.notificationDigest.findMany({
-          where: { hourStart, userId: { in: recipients.map((person) => person.id) } },
-          select: { userId: true, individualSent: true, status: true },
-        })
-      ).map((hour) => [hour.userId, hour]),
-    );
     const startedSending = performance.now();
     let firstError: string | null = null;
     let attempted = 0;
@@ -429,13 +419,19 @@ export class NotificationDispatcher {
         await this.finishAttempt(row, errorKind(signal.reason));
         signal.throwIfAborted();
       }
-      const hour = hours.get(recipient.id);
-      const sentThisHour = hour?.individualSent ?? 0;
+      // A hora de agora, a cada decisão (uma execução pode atravessar a virada da hora), e a contagem da pessoa nela,
+      // relida do banco: quantos avulsos já saíram nesta hora e se o resumo dela ainda aceita avisos.
+      const decidedAt = this.now();
+      const hourStart = hourStartOf(decidedAt);
+      const stale = decidedAt.getTime() - row.createdAt.getTime() >= NOTICE_CATCH_UP_MS;
+      const hour = await db.notificationDigest.findUnique({
+        where: { tenantId_userId_hourStart: { tenantId: row.tenantId, userId: recipient.id, hourStart } },
+        select: { individualSent: true, status: true },
+      });
       // O resumo da hora já saiu só se o relógio voltou: nesse caso raro, o aviso sai avulso.
-      const digestOpen = hour === undefined || hour.status === null || hour.status === 'pending';
-      if (digestOpen && (stale || sentThisHour >= NOTICE_HOURLY_LIMIT)) {
+      const digestOpen = hour === null || hour.status === null || hour.status === 'pending';
+      if (digestOpen && (stale || (hour?.individualSent ?? 0) >= NOTICE_HOURLY_LIMIT)) {
         await this.fold(row, recipient.id, hourStart, stale);
-        hours.set(recipient.id, { userId: recipient.id, individualSent: sentThisHour, status: 'pending' });
         report.folded += 1;
         continue;
       }
@@ -451,12 +447,8 @@ export class NotificationDispatcher {
         firstError ??= errorKind(error);
         continue;
       }
-      await this.recordSent(row, recipient.id, hourStart);
-      hours.set(recipient.id, {
-        userId: recipient.id,
-        individualSent: sentThisHour + 1,
-        status: hour?.status ?? null,
-      });
+      // Conta na hora em que o e-mail saiu de fato: o envio que começou às 13:59 e terminou às 14:00 é da hora das 14h.
+      await this.recordSent(row, recipient.id, hourStartOf(this.now()));
     }
     return this.finishAttempt(row, firstError);
   }

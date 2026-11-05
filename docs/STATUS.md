@@ -4303,3 +4303,7 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
   - só com o relógio para trás o resumo de uma hora já enviado receberia aviso novo: nesse caso o aviso sai avulso;
   - nós de clientes: o SMTP deles continua dependendo do `smtp-password` do tenant (CP-07 ou PR-N7), como no PR-16;
   - contato de escalonamento: fora, pelos motivos acima.
+
+  Depois da revisão do PR #89 (1 apontamento, corrigido): **a hora da contagem era a do começo da execução.** Uma execução que começava às 13:59 e enviava depois das 14:00 contava esses e-mails na hora das 13h, e a execução seguinte mandava mais 5 na mesma hora das 14h, passando do limite por pessoa.
+  - **Correção** (`notification-dispatcher.ts`): a hora vem do relógio a cada decisão (avulso, resumo ou retomada), com a contagem da pessoa relida do banco para aquela hora; o e-mail avulso conta na hora em que terminou de sair (o envio que começa às 13:59:59 e termina às 14:00 é da hora das 14h);
+  - **teste novo** (`test/notifications.test.ts`, 36 no arquivo): duas pessoas, uma execução que começa às 59:59 e vira a hora no primeiro envio, e outra 10 min depois. Ninguém passa de 5 avulsos na hora nova (a segunda pessoa fica com 5 exatos, e o resto vai para o resumo), o resumo da hora que fechou sai uma vez na execução seguinte, e cada aviso chega uma vez a cada pessoa, avulso ou no resumo. Conferido contra o despachante de antes (8 avulsos na hora nova) e por mutação (contar o envio na hora da decisão dá 6).
