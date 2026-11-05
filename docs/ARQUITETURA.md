@@ -337,6 +337,11 @@ usa). Mudá-la exige atualizar a pilha de todos os clientes do nó.
    - **Início da coleta (`ingestFrom`):** na primeira verificação bem-sucedida, o dia anterior, gravado uma vez só. É
      o `only_logs_after` que o gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do
      bucket.
+   - **Buckets de log no painel:** no máximo um por fonte (CloudTrail, GuardDuty e WAF), no cadastro e no detalhe da
+     conta (`cloud_accounts:write`; quem só lê vê a lista). Outra lista de nomes volta a conexão para `waiting` e
+     descarta um "Verificar" pendente, sem chamar a AWS: o cliente atualiza o `LogBucketArns` da pilha e pede a
+     verificação. Trocar só a fonte de um bucket não muda nada disso, e o `ingestFrom` fica (um bucket incluído
+     depois herda o dia da conta).
    - **Até o PR-V5',** a conferência é a `UnavailableAwsConnectionChecker`, que responde `check_unavailable` sem
      chamar a AWS nem o metadata: o fluxo funciona de ponta a ponta, e o PR-V5' só troca a classe no `worker.ts`.
 2. **Coletar (PR-V4'):** um timer do host renova a cada 10 min o token do Google (`format=standard`, sem o projeto
@@ -521,11 +526,51 @@ worker (lê o arquivo, só leitura) ──► Postgres (WazuhAgent, no cliente d
   remoted e o analysisd pesam pouco; o que pode pesar é a detecção de vulnerabilidades (o banco do feed da CTI e as
   varreduras). O ensaio da homologação mede: se passar, o caminho é subir o manager e baixar o heap do indexer, ou o
   plano B da VM.
-- **Alertas dos agentes:** chegam ao indexer como os outros, mas o sync de achados atribui alerta a cliente só pela
-  conta AWS (os dos agentes caem na fila sem dono). Atribuí-los ao cliente do nó é a próxima etapa.
+- **Alertas dos agentes:** chegam ao indexer como os outros e viram achados do cliente do nó pelas regras da seção
+  abaixo.
 - **Fora desta entrega:** o agente com o cloudflared de cada instância (túnel TCP, sem IP de entrada, mas um processo
   a mais em cada máquina do cliente e um token por instância) e a VPN para o Enterprise (rede privada até o nó, sem
   porta na internet).
+
+### Atribuição dos alertas dos agentes (`apps/api/src/alerts/agent-*.ts`)
+
+Na dúvida, o alerta não é de ninguém: vai para a fila sem dono, que só `admin_verax` vê, com o motivo.
+
+- **Dois caminhos que nunca se cruzam.** Quem gerou o alerta é o `agent.id`, que o manager grava pela conexão de cada
+  agente (a chave dele), e não pelo conteúdo do log. `000` é o próprio manager, onde o módulo aws-s3 lê as contas AWS:
+  esses alertas seguem só pelo sync da AWS (`wazuh`), pela regra de sempre (o bucket de origem e a conta, que precisam
+  concordar). Qualquer outro id é um agente, e o alerta segue só pelo sync dos agentes (`wazuh-agent-alerts`). A
+  partição vale na consulta (`agent.id` igual a `000` na página da AWS e diferente na dos agentes) e de novo em cada
+  alerta lido (`isAgentAlert`): um alerta nunca é atribuído pelos dois caminhos. Um agente que mande um log igual ao do
+  aws-s3 (o log da instância é de quem a usa) não vira achado de conta AWS: vira, no máximo, achado da própria
+  instância.
+- **O alerta do agente é do cliente do nó só quando, ao mesmo tempo:**
+  1. os agentes estão ligados no worker (`WAZUH_AGENTS_FILE` e `WAZUH_AGENTS_TENANT`, sempre juntos). Sem eles, o
+     alerta vai para a fila (`agents_disabled`);
+  2. o id do agente está na lista do cliente do nó (`WazuhAgent`, que o worker grava a partir da API do manager), com o
+     mesmo nome. Fora da lista, `unknown_agent`; na lista com outro nome, `agent_name_mismatch`. O nome sozinho nunca
+     decide: quem registra o agente escolhe o nome;
+  3. nenhuma conta AWS citada no log (`data.aws`, pelos mesmos campos e conferências do sync da AWS) está cadastrada em
+     outro cliente, ativa ou não (`agent_account_conflict`). A conta do próprio cliente, ou de cliente nenhum, não muda
+     nada. Campo de conta fora do formato invalida o alerta (`invalid_alert`), como no sync da AWS.
+- **A lista chega com atraso:** o host a exporta a cada minuto, e o worker a grava a cada minuto. O alerta de um agente
+  que a lista não conhece (ou conhece com outro nome) espera a próxima execução, sem ir para a fila, quando é recente
+  (menos de 3 min) e a lista é mais antiga que ele: a sobreposição da leitura (10 min) o relê. Passada a espera, ou com
+  a lista mais nova que o alerta, vai para a fila.
+- **O achado:** `source='wazuh'`, `logSource='wazuh_agent'` (o painel mostra "Agente (instância)"), origem
+  `agent:<id>` no lugar da conta (os dois-pontos não aparecem em nenhum identificador de conta, e o contrato aceita os
+  dois formatos), recurso `host:<nome do agente na lista>`, severidade pelo nível da regra (12 ou mais crítica, 10
+  alta, 7 média, abaixo baixa), MITRE da regra e, do log, só o IP (`data.srcip`) e o usuário (`srcuser`, `dstuser` ou
+  o `targetUserName` do Windows), conferidos no formato e usados só para mostrar e agrupar. A chave única é
+  `wazuh/agent:<id>/alert:<id do alerta>:<regra>`: o log da instância não tem um id próprio em todas as fontes, e o id
+  do alerta é o mesmo a cada releitura do documento (reler a janela não duplica). O detalhe busca o evento bruto no
+  indexer pelo id do alerta, saneado como os outros.
+- **O mesmo tratamento dos outros achados:** exceção do cliente (por regra e usuário, IP ou recurso, como
+  `host:web-01`) e agrupamento em incidente (os achados da mesma instância se juntam pelo recurso), na mesma transação,
+  pelo `FindingStore` de sempre. A cobertura das contas (último evento, conta silenciosa) não muda: agente não é conta.
+- **Leitura separada:** a tarefa `wazuh-agent-alerts` tem estado e concessão próprios no `SyncState`, com as mesmas
+  regras de leitura do sync da AWS (nível 5 ou mais, sobreposição de 10 min, cursor, até 100 páginas). Uma instância
+  barulhenta não atrasa os achados das contas, e o caminho da AWS não muda.
 
 ## Custo por nó
 

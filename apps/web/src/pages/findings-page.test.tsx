@@ -78,6 +78,20 @@ describe('Achados', () => {
     expect(router.state.location.search).toBe('?severidade=critical');
   });
 
+  it('achado de um agente do Wazuh: a origem é o agente, e o recurso, a instância', async () => {
+    renderAt('/achados?severidade=medium');
+    const button = await screen.findByRole('button', { name: /Arquivo de sistema alterado/ });
+    const row = button.closest('tr') as HTMLElement;
+    expect(row).toHaveTextContent('agente 001');
+    expect(row).toHaveTextContent('Agente (instância)');
+    await userEvent.click(button);
+    const panel = await screen.findByRole('dialog', { name: 'Arquivo de sistema alterado: /etc/sudoers' });
+    expect(within(panel).getByText('Agente (instância) · agente 001')).toBeInTheDocument();
+    expect(within(panel).getByText('host:api-producao-01')).toBeInTheDocument();
+    expect(within(panel).getByText('Regra (agente do Wazuh)')).toBeInTheDocument();
+    expect(within(panel).getByText(/"path": "\/etc\/sudoers"/)).toBeInTheDocument();
+  });
+
   it('mudar o status com comentário e, ao marcar legítimo, criar a exceção', async () => {
     renderAt('/achados?severidade=critical');
     await userEvent.click(await screen.findByRole('button', { name: /Tentativa de desligar a trilha/ }));

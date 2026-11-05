@@ -76,6 +76,19 @@ describe('Alertas sem dono', () => {
     await waitFor(async () => expect(await rowsOf('Alertas sem dono')).toHaveLength(1));
   });
 
+  it('agente do Wazuh fora da lista do nó: aparece como agente, sem o atalho de cadastrar conta', async () => {
+    const router = renderAt('/alertas-sem-dono');
+    const accounts = await rowsOf('Contas citadas nos alertas sem dono');
+    const agent = accounts.find((row) => row.textContent?.includes('agent:017')) as HTMLElement;
+    expect(agent).toHaveTextContent('Agente de instância');
+    expect(within(agent).queryByRole('link', { name: /Cadastrar conta/ })).not.toBeInTheDocument();
+    await userEvent.click(within(agent).getByRole('button', { name: 'Ver alertas do agente 017' }));
+    await waitFor(() => expect(router.state.location.search).toBe('?conta=agent%3A017&periodo=30d'));
+    expect(screen.getByText(/Só os alertas que citam o agente/)).toBeInTheDocument();
+    await waitFor(async () => expect(await rowsOf('Alertas sem dono')).toHaveLength(1));
+    expect((await rowsOf('Alertas sem dono'))[0]).toHaveTextContent('Agente fora da lista');
+  });
+
   it('conta vazia na URL conta como sem filtro', async () => {
     renderAt('/alertas-sem-dono?conta=');
     expect(await rowsOf('Alertas sem dono')).not.toHaveLength(0);

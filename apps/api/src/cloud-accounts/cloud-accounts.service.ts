@@ -9,8 +9,11 @@ import {
   credentialStatus,
   fieldsOutsideProvider,
   LOG_SOURCES,
+  type LogBuckets,
   type LogSource,
+  mergeLogBuckets,
   type Paginated,
+  sameLogBucketNames,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
@@ -68,6 +71,11 @@ interface NodeFacts {
   audience: string;
 }
 
+/** Os buckets de log gravados na conta, por fonte. */
+function bucketsOf(row: Pick<AccountRow, (typeof BUCKET_COLUMN)[LogSource]>): LogBuckets {
+  return { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket };
+}
+
 /** O dia de uma coluna `DATE` (o Prisma a devolve como meia-noite UTC): `AAAA-MM-DD`. */
 function isoDate(day: Date | null): string | null {
   return day === null ? null : day.toISOString().slice(0, 10);
@@ -91,7 +99,7 @@ function toAccount(row: AccountRow, node: NodeFacts): CloudAccount {
     readerRoleArn: aws ? awsReaderRoleArn(row.accountId) : null,
     nodeServiceAccountId: aws ? node.serviceAccountId : null,
     webIdentityAudience: aws ? node.audience : null,
-    buckets: { cloudtrail: row.cloudtrailBucket, guardduty: row.guarddutyBucket, waf: row.wafBucket },
+    buckets: bucketsOf(row),
     pubsubSubscription: row.pubsubSubscription,
     sinkTopic: gcp && node.sinkTopicPrefix ? `${node.sinkTopicPrefix}${row.accountId}` : null,
     sinkWriterIdentity: gcp ? row.sinkWriterIdentity : null,
@@ -142,8 +150,9 @@ function isUniqueViolation(error: unknown): boolean {
 const NOT_FOUND = 'Conta não encontrada';
 
 /**
- * A conexão recomeça (outra fonte, credencial nova ou removida, conta desativada ou reativada): aguardando, sem erro e
- * sem "Verificar" pendente (a AWS pede de novo). A última coleta é história.
+ * A conexão recomeça (outra fonte, como a assinatura do Pub/Sub ou a lista de buckets da AWS; credencial nova ou
+ * removida; conta desativada ou reativada): aguardando, sem erro e sem "Verificar" pendente (a AWS pede de novo). A
+ * última coleta é história.
  */
 export const RESET_CONNECTION = {
   connection: 'waiting',
@@ -274,9 +283,17 @@ export class CloudAccountsService {
     }
     await this.assertOriginsFree(auth, input, id);
     // Outra assinatura é outra fonte, e a conta desativada ou reativada recomeça: a conexão volta a "aguardando" até
-    // o coletor confirmar a leitura de novo.
+    // o coletor confirmar a leitura de novo. Na AWS, outra lista de buckets também: a pilha do cliente precisa do
+    // `LogBucketArns` novo, e o "Conectada" (ou o erro) da verificação anterior era de outra lista. A conexão volta a
+    // aguardar, um "Verificar" pendente é descartado (o worker compara o pedido) e nada é pedido à AWS sozinho: o
+    // cliente atualiza a pilha e clica em "Verificar". Trocar só a fonte de um bucket (os mesmos nomes) não muda nada
+    // disso. O `ingestFrom` fica: é o dia em que o nó entrou no papel pela primeira vez.
+    const bucketsChanged =
+      input.buckets !== undefined &&
+      !sameLogBucketNames(bucketsOf(beforeRow), mergeLogBuckets(bucketsOf(beforeRow), input.buckets));
     const sourceChanged =
-      input.pubsubSubscription !== undefined && input.pubsubSubscription !== beforeRow.pubsubSubscription;
+      bucketsChanged ||
+      (input.pubsubSubscription !== undefined && input.pubsubSubscription !== beforeRow.pubsubSubscription);
     const statusChanged = input.status !== undefined && input.status !== beforeRow.status;
     if (input.status === 'inactive') await this.wipeCredential(id);
     const row = await this.prisma.scoped().cloudAccount.update({

@@ -10,6 +10,7 @@ import {
   incidentRecommendation,
   incidentSummary,
   incidentTitle,
+  originsPhrase,
 } from '@/features/incidents/narrative';
 import { api } from '@/lib/api';
 import { createQueryClient } from '@/lib/query-client';
@@ -169,6 +170,17 @@ describe('narrativa', () => {
       /^O usuário joao\.lima, a partir do IP 203\.0\.113\.12, liberou uma porta num grupo de segurança\. 1 achado em /,
     );
     expect(incidentRecommendation(base)).toMatch(/^Confirme com o usuário/);
+  });
+
+  it('onde aconteceu: as contas e, nos alertas das instâncias, os agentes, cada um com o próprio artigo', () => {
+    expect(originsPhrase(['111122223333'])).toBe('na conta 111122223333');
+    expect(originsPhrase(['111122223333', '444455556666'])).toBe('nas contas 111122223333 e 444455556666');
+    expect(originsPhrase(['agent:001'])).toBe('no agente 001');
+    expect(originsPhrase(['111122223333', 'agent:001', 'agent:002'])).toBe(
+      'na conta 111122223333 e nos agentes 001 e 002',
+    );
+    const agentIncident = { ...base, accounts: ['agent:001'] };
+    expect(incidentSummary(agentIncident)).toMatch(/, no agente 001\. /);
   });
 
   it('só IP vira ataque; evento desconhecido usa o título do achado', () => {

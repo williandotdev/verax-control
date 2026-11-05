@@ -15,13 +15,17 @@ import {
   CREDENTIAL_KIND_PROVIDERS,
   credentialStatus,
   fieldsOutsideProvider,
+  type LogBuckets,
+  logBucketNames,
   type Me,
+  mergeLogBuckets,
   type Permission,
   type ProtectedResource,
   protectedResourceCreateSchema,
   protectedResourceListQuerySchema,
   protectedResourceSchema,
   protectedResourceUpdateSchema,
+  sameLogBucketNames,
   TEMPORARY_PASSWORD_HOURS,
   type Tenant,
   tenantCreatedSchema,
@@ -42,6 +46,7 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import {
   DEMO_ACCOUNTS,
+  DEMO_ALFA_MORE_BUCKETS,
   DEMO_AWS_CHECK_DELAY_MS,
   DEMO_CLOUDFLARE_TOKEN_SUFFIX,
   DEMO_EGRESS_IPS,
@@ -128,6 +133,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       | { provider: 'gcp'; pubsubSubscription: string; sinkWriterIdentity: string }
       | { provider: 'cloudflare'; zones: string[]; tokenExpiresInDays: number | null }
       | null = null,
+    /** AWS: os buckets do GuardDuty e do WAF, além da trilha (`trilha-<conta>`, que toda conta AWS da demonstração tem). */
+    moreBuckets: { guardduty?: string; waf?: string } = {},
   ) => {
     const cloudflare = other?.provider === 'cloudflare' ? other : null;
     const tokenExpiresAt =
@@ -145,7 +152,11 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       webIdentityAudience: other ? null : AWS_READER_AUDIENCE,
       buckets: other
         ? { cloudtrail: null, guardduty: null, waf: null }
-        : { cloudtrail: `trilha-${accountId}`, guardduty: null, waf: null },
+        : {
+            cloudtrail: `trilha-${accountId}`,
+            guardduty: moreBuckets.guardduty ?? null,
+            waf: moreBuckets.waf ?? null,
+          },
       pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
       sinkTopic: other?.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${accountId}` : null,
       sinkWriterIdentity: other?.provider === 'gcp' ? other.sinkWriterIdentity : null,
@@ -248,12 +259,15 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       [
         alfa,
         [
+          // A produção lê as três fontes: a trilha, o export do GuardDuty e o log do WAF.
           account(
             1,
             DEMO_ACCOUNTS.alfaProducao,
             ['sa-east-1', 'us-east-1'],
             { connection: 'connected', collectedMinutes: 1 },
             3,
+            null,
+            DEMO_ALFA_MORE_BUCKETS,
           ),
           // A homologação perdeu o acesso há 30 horas (a AWS recusou a entrada no papel): é a conta silenciosa da
           // Torre. Verificada de novo na demonstração, continua recusada.
@@ -352,6 +366,24 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       [beta, []],
     ]),
   };
+}
+
+const NO_BUCKETS: LogBuckets = { cloudtrail: null, guardduty: null, waf: null };
+
+/**
+ * Como a API (`assertOriginsFree`): um bucket de log é de um cliente só, em qualquer fonte. Devolve o primeiro dos
+ * buckets informados que já está numa conta de outro cliente.
+ */
+function bucketOfAnotherTenant(store: AdminStore, tenantId: string, buckets: LogBuckets): string | null {
+  const names = logBucketNames(buckets);
+  for (const [owner, accounts] of store.accounts) {
+    if (owner === tenantId) continue;
+    for (const account of accounts) {
+      const taken = names.find((name) => logBucketNames(account.buckets).includes(name));
+      if (taken) return taken;
+    }
+  }
+  return null;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -592,6 +624,10 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         return problem(409, 'Esta conta já está cadastrada');
       }
       const data = input.data;
+      if (data.provider === 'aws') {
+        const taken = bucketOfAnotherTenant(store, scope.tenantId, mergeLogBuckets(NO_BUCKETS, data.buckets));
+        if (taken) return problem(409, `O bucket ${taken} já está cadastrado em outro cliente`);
+      }
       const now = new Date().toISOString();
       const aws = data.provider === 'aws';
       const account = cloudAccountSchema.parse({
@@ -637,16 +673,23 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!input.success) return problem(400, 'Dados inválidos');
       const foreign = fieldsOutsideProvider(account.provider, input.data);
       if (foreign.length > 0) return problem(400, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
-      const { buckets: _buckets, ...rest } = input.data;
-      // Como a API: outra assinatura é outra fonte, e a conta desativada ou reativada recomeça; nos dois casos, a
-      // conexão volta a "aguardando".
+      const { buckets, ...rest } = input.data;
+      if (buckets) {
+        const taken = bucketOfAnotherTenant(store, scope.tenantId, mergeLogBuckets(NO_BUCKETS, buckets));
+        if (taken) return problem(409, `O bucket ${taken} já está cadastrado em outro cliente`);
+      }
+      const nextBuckets = mergeLogBuckets(account.buckets, buckets);
+      // Como a API: outra assinatura ou outra lista de buckets é outra fonte, e a conta desativada ou reativada
+      // recomeça; nos dois casos, a conexão volta a "aguardando" (e o "Verificar" pendente sai). Nada é verificado
+      // sozinho.
       const sourceChanged =
-        rest.pubsubSubscription !== undefined && rest.pubsubSubscription !== account.pubsubSubscription;
+        !sameLogBucketNames(account.buckets, nextBuckets) ||
+        (rest.pubsubSubscription !== undefined && rest.pubsubSubscription !== account.pubsubSubscription);
       const statusChanged = rest.status !== undefined && rest.status !== account.status;
       Object.assign(
         account,
         rest,
-        { updatedAt: new Date().toISOString() },
+        { buckets: { ...nextBuckets }, updatedAt: new Date().toISOString() },
         sourceChanged || statusChanged
           ? { connection: 'waiting', connectionError: null, checkRequestedAt: null }
           : {},
