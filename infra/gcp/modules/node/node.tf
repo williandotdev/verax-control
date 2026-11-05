@@ -76,6 +76,10 @@ locals {
   #   verax-web-origin              WEB_ORIGIN
   #   verax-api-origin              API_ORIGIN
   #   verax-mail-from               MAIL_FROM
+  #   verax-smtp-host               SMTP_HOST (com os dois seguintes, MAIL_TRANSPORT=smtp; os três vazios, none). A
+  #                                 senha nunca vem aqui: a VM a lê do cofre `<prefixo>-smtp-password` na partida
+  #   verax-smtp-port               SMTP_PORT
+  #   verax-smtp-user               SMTP_USER
   #   verax-tenant-name             o nome do cliente no nó (CP-10)
   #   verax-admin-email             o e-mail do primeiro admin do cliente (CP-10)
   #   verax-support-email           o e-mail da conta de suporte da Verax no nó (CP-10)

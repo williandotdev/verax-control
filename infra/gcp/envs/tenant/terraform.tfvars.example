@@ -30,3 +30,9 @@ control_plane_sa        = "cp-worker@projeto-do-plano-de-controle-123.iam.gservi
 # plan_max_users          = "15"
 # plan_monthly_gib        = "60"
 # plan_history_days       = "365"
+
+# O e-mail do nó (as três juntas; vazias, o nó sem e-mail). A senha não vai aqui: o cp-worker a grava no cofre
+# vx-<slug>-smtp-password.
+# smtp_host = "smtp.exemplo.com"
+# smtp_port = "465"
+# smtp_user = "avisos@exemplo.com"

@@ -1,11 +1,16 @@
-# Os cinco segredos do plano de controle (plano, seção 2.1). O Terraform cria só o "cofre" vazio de cada um: o valor
-# é gravado por você com o gcloud (GUIA, plano de controle, passo 4) e nunca passa pelo Terraform nem pelo estado
-# dele. Nenhum recurso de versão de segredo (regional ou não) existe neste ambiente, de propósito: o iac.yml confere
-# a declaração.
+# Os segredos do plano de controle (plano, seção 2.1): os cinco montados nos serviços e a senha da caixa de envio dos
+# nós. O Terraform cria só o "cofre" vazio de cada um: o valor é gravado por você com o gcloud (GUIA, plano de
+# controle, passo 4) e nunca passa pelo Terraform nem pelo estado dele. Nenhum recurso de versão de segredo (regional ou
+# não) existe neste ambiente, de propósito: o iac.yml confere a declaração.
 #
 # Cada serviço lê só os seus, cada um individualmente (plano, seção 2.2); a permissão vale só no segredo, nunca no
 # projeto. As chaves de teste e de produção da Stripe são valores diferentes do mesmo segredo, trocados por versão
 # (CP-13).
+#
+# `env = null`: o segredo não é montado como variável (run.tf). É o caso da senha da caixa de envio dos nós: o cp-worker
+# a lê pela API do Secret Manager só na hora de copiá-la para o cofre de cada nó (o passo `secrets.smtp_password` e a
+# recópia da troca de senha), sempre a versão `latest`, sem precisar de uma revisão nova do serviço; e o cofre pode
+# ficar vazio (o Cloud Run recusa subir com um segredo montado sem versão), com os nós nascendo sem e-mail.
 
 locals {
   # Cada segredo: a descrição, quem lê e o nome da variável de ambiente em que o Cloud Run o monta (run.tf).
@@ -29,6 +34,13 @@ locals {
       description = "Senha de aplicativo da caixa de envio no Zoho: e-mails de ambiente pronto, cobrança e plano B da revelação."
       readers     = ["worker"]
       env         = "SMTP_PASSWORD"
+    }
+    # Uma caixa à parte da do plano de controle: a senha vai para o cofre de cada nó de cliente (a VM a lê), e um nó
+    # comprometido não deve levar a caixa que manda a cobrança e o plano B da revelação.
+    "cp-nodes-smtp-password" = {
+      description = "Senha da caixa de envio comum aos nós de clientes (avisos e redefinição de senha): o cp-worker a copia para o cofre smtp-password de cada nó. Opcional: vazio, os nós nascem sem e-mail."
+      readers     = ["worker"]
+      env         = null
     }
     "cp-cookie-key" = {
       description = "Chave HMAC (32 bytes ou mais) do cookie __session da página de status."

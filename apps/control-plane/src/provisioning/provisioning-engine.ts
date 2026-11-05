@@ -28,6 +28,7 @@ export const PROVISIONING_STEPS = [
   'firebase.site',
   'terraform.apply',
   'terraform.wait',
+  'secrets.smtp_password',
   'secrets.tunnel_token',
   'node.wait_ready',
   'node.health',

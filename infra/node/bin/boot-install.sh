@@ -16,7 +16,9 @@
 #     do pacote, que tem de ser o mesmo dos metadados;
 #  3. baixa o pacote, confere o SHA-256, confere que as imagens de terceiros dos compose são as do manifesto (todas pelo
 #     digest), descobre o IP de saída do nó e escreve o node.conf do modo cliente (CUSTOMER_MODE=true);
-#  4. roda o install.sh do pacote conferido, com os digests do manifesto e a versão (--release).
+#  4. com o e-mail do nó nos metadados (`verax-smtp-*`), espera a senha da caixa de envio chegar ao cofre do nó (o plano
+#     de controle a grava logo depois do `apply`; o start.sh não sobe sem ela);
+#  5. roda o install.sh do pacote conferido, com os digests do manifesto e a versão (--release).
 # Em todo boot, depois: espera o nó, o Wazuh e o primeiro acesso do cliente (CP-10) ficarem no ar e o túnel subir (relê
 # o cofre do token a cada 60 s por até 60 min) e grava o guest attribute `verax/ready=<versão>`. Uma falha grava
 # `verax/error=<código>` (só o código: nenhum valor dos metadados) e sai com erro; o boot seguinte tenta de novo.
@@ -40,13 +42,15 @@ etc_dir=/etc/verax
 state_dir=/var/lib/verax/boot
 node_run=/run/verax
 opt_bin=/opt/verax/bin
-# Esperas, em segundos: entre tentativas, entre consultas ao systemd, entre leituras do cofre do túnel (60 vezes: 60
-# min, a exigência do plano de controle) e entre gravações de guest attributes (até 3 por segundo e 10 por minuto por
-# VM, somadas às do worker). Os prazos de cada serviço ficam acima do TimeoutStartSec dele.
+# Esperas, em segundos: entre tentativas, entre consultas ao systemd, entre leituras do cofre do túnel e do cofre da
+# senha do e-mail (60 vezes: 60 min, a exigência do plano de controle) e entre gravações de guest attributes (até 3 por
+# segundo e 10 por minuto por VM, somadas às do worker). Os prazos de cada serviço ficam acima do TimeoutStartSec dele.
 retry_pause=5
 poll_pause=10
 tunnel_pause=60
 tunnel_tries=60
+mail_pause=60
+mail_tries=60
 attribute_pause=1
 node_timeout=1500
 wazuh_timeout=2700
@@ -64,6 +68,11 @@ re_origin="^https://$re_label(\\.$re_label)+\$"
 # O e-mail do remetente sem o apóstrofo que o envs/tenant aceita: o arquivo de ambiente do start.sh (write_env) recusa
 # aspa simples, e o nó não subiria com ele.
 re_mail='^[A-Za-z0-9_+.-]*[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9-]*\.)+[A-Za-z]{2,}$'
+# O servidor, a porta e o usuário do e-mail do nó (os do envs/tenant e do plano de controle, `SMTP_*_NODES`): cada um
+# vira uma linha do node.conf.
+re_smtp_host="^$re_label(\\.$re_label)+\$"
+re_smtp_port='^[1-9][0-9]{0,4}$'
+re_smtp_user='^[A-Za-z0-9][A-Za-z0-9@._+-]{0,253}$'
 re_artifact_registry='^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}$'
 re_ghcr='^ghcr\.io/[a-z0-9-]{1,39}/[a-z0-9._-]{1,100}$'
 re_bucket='^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
@@ -81,7 +90,7 @@ manifest_file=''
 # A configuração lida dos metadados (read_config) e o que o manifesto conferido diz (fetch_release).
 cfg_project='' cfg_prefix='' cfg_release='' cfg_sha='' cfg_images='' cfg_web='' cfg_api='' cfg_mail='' cfg_plan=''
 cfg_max_accounts='' cfg_max_users='' cfg_monthly_gib='' cfg_history_days='' cfg_vault='' cfg_bucket='' cfg_sa_id=''
-cfg_egress='' cfg_sources=''
+cfg_egress='' cfg_sources='' cfg_smtp_host='' cfg_smtp_port='' cfg_smtp_user=''
 rel_commit='' rel_api_digest='' rel_migrate_digest=''
 
 log() { echo "verax-boot: $*"; }
@@ -187,6 +196,16 @@ read_config() {
   [[ $cfg_web != "$cfg_api" ]] || fail metadata_invalid "verax-web-origin e verax-api-origin são iguais."
   read_key cfg_mail instance/attributes/verax-mail-from "$re_mail" 254
   if [[ $cfg_mail == .* || $cfg_mail == *..* ]]; then fail metadata_invalid "o metadado verax-mail-from está fora do formato."; fi
+  # O e-mail do nó: o servidor, a porta e o usuário, os três ou nenhum (vazios: MAIL_TRANSPORT=none). A senha nunca vem
+  # dos metadados: o start.sh a lê do cofre `<prefixo>-smtp-password` na partida.
+  read_key cfg_smtp_host instance/attributes/verax-smtp-host "$re_smtp_host" 253 optional
+  read_key cfg_smtp_port instance/attributes/verax-smtp-port "$re_smtp_port" 5 optional
+  read_key cfg_smtp_user instance/attributes/verax-smtp-user "$re_smtp_user" 254 optional
+  if [[ -n $cfg_smtp_host || -n $cfg_smtp_port || -n $cfg_smtp_user ]]; then
+    [[ -n $cfg_smtp_host && -n $cfg_smtp_port && -n $cfg_smtp_user ]] ||
+      fail metadata_invalid "verax-smtp-host, verax-smtp-port e verax-smtp-user vão juntos (os três ou nenhum)."
+    ((10#$cfg_smtp_port <= 65535)) || fail metadata_invalid "o metadado verax-smtp-port está fora do formato."
+  fi
   read_key cfg_plan instance/attributes/verax-plan '^(essencial|profissional|enterprise)$' 16
   read_key cfg_max_accounts instance/attributes/verax-plan-max-cloud-accounts "$re_limit" 6 optional
   read_key cfg_max_users instance/attributes/verax-plan-max-users "$re_limit" 6 optional
@@ -335,9 +354,16 @@ write_node_conf() { # <arquivo>
     "IMAGES_REPOSITORY=$cfg_images"
     "WEB_ORIGIN=$cfg_web"
     "API_ORIGIN=$cfg_api"
-    # Sem e-mail de saída no nó de cliente (contas com senha temporária): ninguém grava o cofre smtp-password dele.
-    "MAIL_TRANSPORT=none"
-    "MAIL_FROM=$cfg_mail"
+  )
+  # O e-mail do nó: com o servidor nos metadados, SMTP (o plano de controle grava a senha no cofre smtp-password do nó,
+  # e o start.sh a lê de lá); sem ele, nenhum (contas com senha temporária, avisos por e-mail pulados), como antes.
+  if [[ -n $cfg_smtp_host ]]; then
+    lines+=("MAIL_TRANSPORT=smtp" "MAIL_FROM=$cfg_mail" "SMTP_HOST=$cfg_smtp_host" "SMTP_PORT=$cfg_smtp_port"
+      "SMTP_USER=$cfg_smtp_user")
+  else
+    lines+=("MAIL_TRANSPORT=none" "MAIL_FROM=$cfg_mail")
+  fi
+  lines+=(
     "SYNC_SOURCES=$cfg_sources"
     "BACKUP_BUCKET=$cfg_bucket"
     "PLAN=$cfg_plan"
@@ -364,6 +390,31 @@ write_node_conf() { # <arquivo>
   done
 }
 
+# A senha da caixa de envio, com o e-mail do nó ligado: o start.sh a lê do cofre `<prefixo>-smtp-password` em toda
+# partida e não sobe sem ela. O plano de controle a grava logo depois do `apply` (o passo `secrets.smtp_password`),
+# minutos depois de a VM nascer: a instalação espera a primeira versão (a cada 60 s, por até 60 min) antes de subir o
+# nó. Só confere que a versão `latest` abre, com a identidade da VM e o gcloud do Debian, como o start.sh; o gcloud
+# imprime só o nome da versão (`--format`), que vai para /dev/null: a senha não passa pela saída daqui.
+wait_mail_password() {
+  local try status
+  for ((try = 1; try <= mail_tries; try++)); do
+    status=0
+    gcloud secrets versions access latest --project "$cfg_project" --secret "$cfg_prefix-smtp-password" \
+      --format='value(name)' >/dev/null 2>"$work/mail.err" || status=$?
+    if ((status == 0)); then
+      log 'Senha da caixa de envio no cofre.'
+      return 0
+    fi
+    if ((try == 1)); then log 'Esperando a senha da caixa de envio chegar ao cofre (a cada minuto).'; fi
+    if ! grep -q 'NOT_FOUND' "$work/mail.err"; then
+      log "AVISO: a leitura do cofre da senha da caixa de envio falhou (saída $status); tentando de novo." >&2
+      head -c 2000 "$work/mail.err" | sed 's/^/  /' >&2
+    fi
+    if ((try < mail_tries)); then sleep "$mail_pause"; fi
+  done
+  return 1
+}
+
 # A primeira instalação (ou a que parou no meio: o marcador `installing` fica até o install.sh terminar).
 install_release() {
   local conf=$work/node.conf
@@ -380,6 +431,10 @@ install_release() {
   if [[ $profile == standard ]]; then cfg_sources+=,wazuh; fi
   if [[ $cfg_vault == true ]]; then cfg_sources+=,cloudflare; fi
   write_node_conf "$conf"
+  if [[ -n $cfg_smtp_host ]]; then
+    wait_mail_password ||
+      fail smtp_password_missing "a senha da caixa de envio não chegou ao cofre $cfg_prefix-smtp-password em 60 minutos."
+  fi
 
   log "Instalando $cfg_release (commit $rel_commit)."
   # O apt do install.sh espera a trava (o apt-daily do primeiro boot) em vez de falhar; só nesta execução.

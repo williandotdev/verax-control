@@ -335,6 +335,48 @@ describe('loadConfig (CP-01)', () => {
     ]);
   });
 
+  it('e-mail dos nós: opcional; o servidor e o usuário andam juntos, no formato do node.conf, só no worker', () => {
+    const config = loadConfig(cpWorkerEnv, () => undefined);
+    expect(config.SMTP_HOST_NODES).toBeUndefined();
+    expect(config.SMTP_PORT_NODES).toBe(465);
+    const nodes = {
+      ...cpWorkerEnv,
+      SMTP_HOST_NODES: 'smtp.caixa-exemplo.example',
+      SMTP_PORT_NODES: '587',
+      SMTP_USER_NODES: 'avisos@verax.example',
+    };
+    expect(loadConfig(nodes, () => undefined)).toMatchObject({
+      SMTP_HOST_NODES: 'smtp.caixa-exemplo.example',
+      SMTP_PORT_NODES: 587,
+      SMTP_USER_NODES: 'avisos@verax.example',
+    });
+    expect(problemsOf({ ...cpWorkerEnv, SMTP_HOST_NODES: 'smtp.caixa-exemplo.example' })).toEqual([
+      'SMTP_USER_NODES: obrigatória e não definida',
+    ]);
+    expect(problemsOf({ ...cpWorkerEnv, SMTP_USER_NODES: 'avisos@verax.example' })).toEqual([
+      'SMTP_HOST_NODES: obrigatória e não definida',
+    ]);
+    expect(
+      problemsOf({
+        ...nodes,
+        SMTP_HOST_NODES: 'SMTP.Caixa.example',
+        SMTP_PORT_NODES: '70000',
+        SMTP_USER_NODES: "o'neil@verax.example",
+      }),
+    ).toEqual([
+      'SMTP_HOST_NODES: deve ser o nome do servidor, em minúsculas (smtp.exemplo.com)',
+      'SMTP_PORT_NODES: deve ser uma porta de 1 a 65535',
+      'SMTP_USER_NODES: deve ter só letras, números e @ . _ + - (até 254)',
+    ]);
+    // No cp-public, ignoradas com aviso (como o SMTP do plano de controle).
+    expect(
+      warningsOf({ ...validEnv, SMTP_HOST_NODES: 'smtp.caixa-exemplo.example', SMTP_USER_NODES: 'avisos' }),
+    ).toEqual([
+      'SMTP_HOST_NODES: só o papel worker usa; ignorada no papel public',
+      'SMTP_USER_NODES: só o papel worker usa; ignorada no papel public',
+    ]);
+  });
+
   it('no worker, o segredo do webhook e a chave do cookie são recusados', () => {
     expect(
       problemsOf({ ...validProductionEnv, STRIPE_WEBHOOK_SECRET: webhookSecret, COOKIE_KEY: cookieKey }),

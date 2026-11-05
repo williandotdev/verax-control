@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { isNodeSmtpHost, isNodeSmtpPassword, isNodeSmtpUser } from '../common/config/env.schema.js';
 import {
   type ExecutorInput,
   executorEnv,
   ExecutorInputError,
   isOrigin,
+  isSmtpPort,
   isSubnetCidr,
   isTenantEmail,
   isTenantName,
@@ -85,7 +87,23 @@ describe('variáveis da execução do Job', () => {
       { name: 'BOOTSTRAP_TENANT_NAME', value: input.tenantName },
       { name: 'BOOTSTRAP_SUPPORT_EMAIL', value: input.supportEmail },
       { name: 'IMAGES_REPOSITORY', value: input.imagesRepository },
+      { name: 'SMTP_HOST', value: '' },
+      { name: 'SMTP_PORT', value: '' },
+      { name: 'SMTP_USER', value: '' },
     ]);
+  });
+
+  it('com o e-mail dos nós: o servidor, a porta e o usuário no fim da lista; nunca uma senha', () => {
+    const env = executorEnv({
+      ...input,
+      nodeMail: { host: 'smtp.caixa-exemplo.example', port: 587, user: 'avisos+nos@verax.example' },
+    });
+    expect(env.slice(-3)).toEqual([
+      { name: 'SMTP_HOST', value: 'smtp.caixa-exemplo.example' },
+      { name: 'SMTP_PORT', value: '587' },
+      { name: 'SMTP_USER', value: 'avisos+nos@verax.example' },
+    ]);
+    expect(env.map((entry) => entry.name).filter((name) => /PASSWORD|SECRET|TOKEN/.test(name))).toEqual([]);
   });
 
   it.each<[string, Partial<ExecutorInput>]>([
@@ -115,6 +133,18 @@ describe('variáveis da execução do Job', () => {
     ['BOOTSTRAP_TENANT_NAME', { tenantName: 'a'.repeat(121) }],
     ['BOOTSTRAP_SUPPORT_EMAIL', { supportEmail: "O'NEIL+TI@CLIENTE-DEMO-A.EXAMPLE" }],
     ['IMAGES_REPOSITORY', { imagesRepository: 'docker.io/williandotdev/verax-control' }],
+    ['SMTP_HOST', { nodeMail: { host: 'SMTP.caixa-exemplo.example', port: 465, user: 'avisos' } }],
+    ['SMTP_HOST', { nodeMail: { host: 'smtp;touch-x.example', port: 465, user: 'avisos' } }],
+    ['SMTP_HOST', { nodeMail: { host: 'localhost', port: 465, user: 'avisos' } }],
+    ['SMTP_PORT', { nodeMail: { host: 'smtp.caixa-exemplo.example', port: 0, user: 'avisos' } }],
+    ['SMTP_PORT', { nodeMail: { host: 'smtp.caixa-exemplo.example', port: 65_536, user: 'avisos' } }],
+    ['SMTP_PORT', { nodeMail: { host: 'smtp.caixa-exemplo.example', port: 46.5, user: 'avisos' } }],
+    [
+      'SMTP_USER',
+      { nodeMail: { host: 'smtp.caixa-exemplo.example', port: 465, user: "o'neil@verax.example" } },
+    ],
+    ['SMTP_USER', { nodeMail: { host: 'smtp.caixa-exemplo.example', port: 465, user: 'avisos verax' } }],
+    ['SMTP_USER', { nodeMail: { host: 'smtp.caixa-exemplo.example', port: 465, user: '-avisos' } }],
   ])('%s fora do formato: recusado citando só o nome', (variable, change) => {
     const call = (): unknown => executorEnv({ ...input, ...change });
     expect(call).toThrow(ExecutorInputError);
@@ -141,6 +171,26 @@ describe('variáveis da execução do Job', () => {
     expect(isTenantEmail('.a@a.example')).toBe(false);
     expect(isTenantEmail('a..b@a.example')).toBe(false);
     expect(isTenantEmail('a@a.e')).toBe(false);
+    expect(isNodeSmtpHost('smtp.caixa-exemplo.example')).toBe(true);
+    expect(isNodeSmtpHost('smtp-.example')).toBe(false);
+    expect(isNodeSmtpHost(`${'a'.repeat(63)}.example`)).toBe(true);
+    expect(isNodeSmtpHost(`${'a'.repeat(64)}.example`)).toBe(false);
+    expect(isNodeSmtpHost(`${'a.'.repeat(126)}ex`)).toBe(false);
+    expect(isSmtpPort('465')).toBe(true);
+    expect(isSmtpPort('65535')).toBe(true);
+    expect(isSmtpPort('0465')).toBe(false);
+    expect(isSmtpPort('65536')).toBe(false);
+    expect(isNodeSmtpUser('apikey')).toBe(true);
+    expect(isNodeSmtpUser('a'.repeat(254))).toBe(true);
+    expect(isNodeSmtpUser('a'.repeat(255))).toBe(false);
+    expect(isNodeSmtpPassword('Senha-ficticia_1!')).toBe(true);
+    expect(isNodeSmtpPassword('x'.repeat(512))).toBe(true);
+    expect(isNodeSmtpPassword('x'.repeat(513))).toBe(false);
+    expect(isNodeSmtpPassword("com'aspa")).toBe(false);
+    expect(isNodeSmtpPassword('com espaco')).toBe(false);
+    expect(isNodeSmtpPassword('quebra\n')).toBe(false);
+    expect(isNodeSmtpPassword('acentuação')).toBe(false);
+    expect(isNodeSmtpPassword('')).toBe(false);
     expect(isTenantName('Cliente ')).toBe(false);
   });
 
