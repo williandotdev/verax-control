@@ -820,8 +820,8 @@ o `cp-worker` com o token de identidade da conta `cp-admin` (audiência `WORKER_
 o IAP deu a ele; o worker aceita a conta do console só nessas rotas (`ADMIN_SA_EMAIL`) e confere que o e-mail está em
 `owner_principals`. O token de quem está no navegador nunca sai do console. Para isso, o `envs/control-plane` precisa
 (o PR do console liga, junto com os botões): `run.invoker` da conta `cp-admin` no `cp-worker`, `ADMIN_SA_EMAIL` no
-ambiente do worker e `WORKER_URL` no do `cp-admin`; e a entrada do `cp-worker` aceitar a chamada de outro serviço (a
-mesma decisão da revelação, abaixo).
+ambiente do worker e `WORKER_URL` no do `cp-admin`. A entrada do `cp-worker` já aceita a chamada de outro serviço
+(`worker_ingress = "INGRESS_TRAFFIC_ALL"`, o padrão; a mesma decisão da revelação, abaixo).
 
 Sem o console, direto da sua máquina, o worker ainda aceita uma conta em `owner_principals`, mas o token precisa ter
 `aud = WORKER_URL`, e o `gcloud` só emite isso para conta de serviço: crie uma conta só para isso (sem papel nenhum),
@@ -836,11 +836,10 @@ TOKEN=$(gcloud auth print-identity-token --impersonate-service-account cp-operad
   --audiences "$WORKER_URL" --include-email)
 ```
 
-A auditoria registra então `owner:cp-operador@...` (e o Cloud Audit Logs, quem pediu o token). Com
-`worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` (o padrão) a entrada recusa a chamada de fora do projeto: mude para
-`INGRESS_TRAFFIC_ALL` no `terraform.tfvars` e faça o `apply` (uma mudança no lugar); o IAM continua exigindo o token.
+A auditoria registra então `owner:cp-operador@...` (e o Cloud Audit Logs, quem pediu o token). A entrada do
+`cp-worker` aceita a URL `run.app` (`INGRESS_TRAFFIC_ALL`, o padrão), e o IAM continua exigindo o token.
 
-### Revelação da senha e a entrada do `cp-worker` (decisão pendente, CP-05)
+### Revelação da senha e a entrada do `cp-worker` (decidido: entrada aberta, só com IAM)
 
 A senha temporária do primeiro admin fica no segredo `vx-<slug>-admin-bootstrap` do projeto dos nós, e só o
 `cp-worker` tem acesso a ele (por tenant, concedido pelo `envs/tenant`: `secretAccessor` e `secretVersionManager` para
@@ -849,8 +848,9 @@ a conta em `CP_WORKER_SA`). Na revelação, o `cp-public` (que atende o site) ch
 enfileira a destruição da versão e devolve a senha. Para isso o `cp-public` tem `run.invoker` no `cp-worker` (run.tf), e
 o worker só aceita o token dele nessa rota.
 
-Essa chamada sai de um serviço do Cloud Run pela internet. Com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` (o
-padrão) a entrada do `cp-worker` a recusa, e a revelação responde 503 ao site. Há duas saídas, e a escolha é sua:
+Essa chamada sai de um serviço do Cloud Run pela internet. Com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` a
+entrada do `cp-worker` a recusaria, e a revelação responderia 503 ao site. Havia duas saídas; a escolhida, em
+04/11/2026, foi a 1, que virou o padrão:
 
 1. **`worker_ingress = "INGRESS_TRAFFIC_ALL"`:** o `cp-worker` fica alcançável pela internet, mas só com token de
    identidade do Google de quem tem `run.invoker` nele (cp-invoker, cp-public e `owner_principals`); qualquer outra
@@ -861,8 +861,8 @@ padrão) a entrada do `cp-worker` a recusa, e a revelação responde 503 ao site
    tráfego pela VPC e Cloud NAT para a Stripe): a chamada passa a contar como interna. Sai do nível gratuito (NAT) e
    acrescenta rede, sub-rede e NAT a este ambiente.
 
-Enquanto nenhuma das duas for aplicada, o resto da página de status funciona (claim, estado, boleto) e a revelação
-responde 503 com o código `reveal_unavailable`.
+Com `INGRESS_TRAFFIC_INTERNAL_ONLY` de volta (por escolha no `terraform.tfvars`), o resto da página de status continua
+funcionando (claim, estado, boleto) e a revelação responde 503 com o código `reveal_unavailable`.
 
 ### Quem pode o quê (a fronteira de confiança)
 
