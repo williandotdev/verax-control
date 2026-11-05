@@ -147,8 +147,8 @@ describe('Achados', () => {
     expect(within(panel).getByLabelText('Novo comentário')).toHaveValue('');
   });
 
-  // Abre a Torre duas vezes (com o pulso e a saúde da coleta) e a triagem no meio: uns 4,7 s sozinho no Windows, e
-  // passava dos 5 s padrão com a suíte em paralelo.
+  // Percorre Torre → Achados → triagem → Torre (três telas e o painel de detalhe): leva cerca de 4,7 s sozinho, perto do
+  // limite padrão de 5 s, e estourava no CI com a máquina carregada.
   it('a triagem aparece na Torre: um achado a menos sem triagem', { timeout: 15_000 }, async () => {
     const router = renderAt('/');
     expect(await screen.findByText('5 achados altos ou críticos sem triagem')).toBeInTheDocument();
@@ -159,7 +159,11 @@ describe('Achados', () => {
     await within(panel).findByText('Em análise');
     await userEvent.keyboard('{Escape}');
     await router.navigate('/');
-    expect(await screen.findByText('4 achados altos ou críticos sem triagem')).toBeInTheDocument();
+    // A Torre volta pela consulta nova (o pulso, o minigráfico e a saúde da coleta a mais para desenhar): cerca de
+    // 0,5 a 1 s aqui, mais no CI, além do 1 s padrão da busca.
+    expect(
+      await screen.findByText('4 achados altos ou críticos sem triagem', undefined, { timeout: 5_000 }),
+    ).toBeInTheDocument();
   });
 
   it('papel de leitura vê o detalhe, mas não muda status nem comenta', async () => {

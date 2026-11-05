@@ -323,13 +323,14 @@ function Pulse({ pulse }: { pulse: TowerPulse }) {
 }
 
 /**
- * Nada para decidir: com todas as fontes coletando, a Torre afirma que está tudo calmo e mostra a prova (OP-02); sem
- * a prova ou com a coleta parada, o estado vazio de sempre, que diz o que falta.
+ * Nada para decidir: com o semáforo verde e todas as fontes coletando, a Torre afirma que está tudo calmo e mostra a
+ * prova (OP-02). Fora disso, o estado vazio de sempre, que diz o que falta: um incidente crítico com responsável ou a
+ * postura baixa não pedem decisão, mas a Torre não está calma.
  */
 function NothingToDecide({ summary }: { summary: TowerSummary }) {
   const proof = collectionProof(summary);
   const done = 'Tudo o que pedia uma decisão já foi tratado.';
-  if (proof !== null && allCollecting(proof)) {
+  if (summary.light === 'green' && proof !== null && allCollecting(proof)) {
     return (
       <div className="flex flex-col items-center gap-2 rounded-lg border bg-surface p-8 text-center">
         <CircleCheck aria-hidden className={`size-6 ${SEVERITY_STYLES.ok.tone}`} />

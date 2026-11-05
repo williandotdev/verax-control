@@ -248,6 +248,52 @@ describe('Torre', () => {
     ).toBeInTheDocument();
   });
 
+  // Todas as fontes coletando e nada para decidir, mas o semáforo não está verde: um incidente crítico que já tem
+  // responsável, ou a postura abaixo do limite. A Torre não diz "Tudo calmo" ao lado da luz vermelha ou amarela.
+  it.each([
+    [
+      'incidente crítico com responsável (vermelho)',
+      {
+        light: 'red' as const,
+        reasons: ['critical_incident' as const],
+        openIncidents: { critical: 1, high: 0, medium: 1, low: 0 },
+      },
+      /Situação: Crítico/,
+    ],
+    [
+      'postura abaixo do limite (amarelo)',
+      {
+        light: 'yellow' as const,
+        reasons: ['low_posture' as const],
+        posture: { score: 55, scannedAt: new Date().toISOString(), warningBelow: 70 },
+      },
+      /Situação: Atenção/,
+    ],
+  ])(
+    'sem decisão pendente e com tudo coletando, mas com %s: o estado vazio neutro, sem "Tudo calmo"',
+    async (_name, change, situation) => {
+      renderTower({ me: demoMe('analista_cliente') });
+      server.use(
+        http.get(`${API_URL}/v1/tower`, () =>
+          HttpResponse.json({
+            ...demoTower(beta ?? '', { includeUnowned: false }),
+            pendingDecisions: [],
+            ...change,
+          }),
+        ),
+      );
+      expect(await screen.findByRole('status', { name: situation })).toBeInTheDocument();
+      const decisions = screen.getByRole('region', { name: 'Decisões pendentes' });
+      expect(within(decisions).getByText('Nenhuma decisão pendente')).toBeInTheDocument();
+      expect(
+        within(decisions).getByText(
+          'Tudo o que pedia uma decisão já foi tratado. Coleta ativa em 2 de 2 fontes, último dado há 2 minutos.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Tudo calmo/)).toBeNull();
+    },
+  );
+
   it('sem decisão pendente, mas com a coleta parada: não diz "Tudo calmo" e aponta a fonte parada', async () => {
     renderTower({ me: demoMe('analista_cliente') });
     server.use(
