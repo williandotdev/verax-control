@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import { describe, expect, it } from 'vitest';
 import { fakeIdentityToken, TestGoogleIdentity } from '../../test/support/access-fakes.js';
 import { FakeClock } from '../../test/support/fake-clock.js';
@@ -7,11 +8,12 @@ import {
   SERVERLESS_AUTHORIZATION_HEADER,
   selectValidatedCredential,
 } from './identity-token.js';
-import { allowedCallers } from './worker-caller.js';
+import { allowedCallers, ownerActorOf } from './worker-caller.js';
 
 const AUD = 'https://cp-worker-123456789012.southamerica-east1.run.app';
 const PUBLIC_SA = 'cp-public@demo-proj.iam.gserviceaccount.com';
 const INVOKER = 'cp-invoker@demo-proj.iam.gserviceaccount.com';
+const ADMIN_SA = 'cp-admin@demo-proj.iam.gserviceaccount.com';
 
 describe('selectValidatedCredential (o cabeçalho que o Cloud Run conferiu)', () => {
   it('com os dois cabeçalhos, a escolha é o X-Serverless-Authorization, e o pedido é ambíguo (recusado)', () => {
@@ -150,6 +152,7 @@ describe('allowedCallers', () => {
     SCHEDULER_SA_EMAIL: INVOKER,
     OWNER_PRINCIPALS: 'Dono@Exemplo.example',
     PUBLIC_SA_EMAIL: PUBLIC_SA,
+    ADMIN_SA_EMAIL: ADMIN_SA,
   });
 
   it('separa as rotas: as tasks e o responsável num grupo, só o cp-public no outro', () => {
@@ -157,10 +160,43 @@ describe('allowedCallers', () => {
     expect([...allowedCallers(config, ['public'])]).toEqual([PUBLIC_SA]);
     // O `resume` do provisionamento (CP-07): só o responsável, nem a cp-invoker nem o cp-public.
     expect([...allowedCallers(config, ['owner'])]).toEqual(['dono@exemplo.example']);
+    // A conta do console só entra nas rotas marcadas com `console`, nunca nos passos nem na revelação.
+    expect([...allowedCallers(config, ['owner', 'console'])].sort()).toEqual([
+      ADMIN_SA,
+      'dono@exemplo.example',
+    ]);
+    expect(allowedCallers(config, ['tasks']).has(ADMIN_SA)).toBe(false);
+    expect(allowedCallers(config, ['public']).has(ADMIN_SA)).toBe(false);
+    expect(allowedCallers(config, ['owner']).has(ADMIN_SA)).toBe(false);
   });
 
   it('sem a configuração, ninguém', () => {
     const empty = loadConfig({ ROLE: 'worker', NODE_ENV: 'test' });
     expect(allowedCallers(empty, ['tasks', 'public']).size).toBe(0);
+  });
+});
+
+describe('ownerActorOf (quem age numa operação do responsável, para a auditoria)', () => {
+  const config = loadConfig({
+    ROLE: 'worker',
+    NODE_ENV: 'test',
+    OWNER_PRINCIPALS: 'Dono@Exemplo.example,socia@exemplo.example',
+    ADMIN_SA_EMAIL: ADMIN_SA,
+  });
+  const requestFrom = (caller: string): Request => ({ workerCaller: caller }) as unknown as Request;
+
+  it('o console age em nome do responsável do corpo, e só se ele estiver em OWNER_PRINCIPALS', () => {
+    expect(ownerActorOf(requestFrom(ADMIN_SA), config, 'DONO@exemplo.example')).toBe(
+      'owner:dono@exemplo.example',
+    );
+    expect(ownerActorOf(requestFrom(ADMIN_SA), config, undefined)).toBeUndefined();
+    expect(ownerActorOf(requestFrom(ADMIN_SA), config, 'estranho@exemplo.example')).toBeUndefined();
+  });
+
+  it('o responsável direto age como ele mesmo: o corpo não escolhe o ator', () => {
+    expect(ownerActorOf(requestFrom('dono@exemplo.example'), config, 'socia@exemplo.example')).toBe(
+      'owner:dono@exemplo.example',
+    );
+    expect(ownerActorOf(requestFrom(INVOKER), config, 'dono@exemplo.example')).toBeUndefined();
   });
 });

@@ -84,6 +84,18 @@ export class UnconfiguredMailSender implements MailSender {
   }
 }
 
+/** O SMTP está completo na configuração (`SMTP_HOST`, usuário, senha e remetente): só no cp-worker. */
+export function mailSenderConfigured(
+  config: Pick<AppConfig, 'SMTP_HOST' | 'SMTP_USER' | 'SMTP_PASSWORD' | 'MAIL_FROM'>,
+): boolean {
+  return (
+    config.SMTP_HOST !== undefined &&
+    config.SMTP_USER !== undefined &&
+    config.SMTP_PASSWORD !== undefined &&
+    config.MAIL_FROM !== undefined
+  );
+}
+
 /** O envio da configuração: com `SMTP_HOST`, o schema já exigiu usuário, senha e remetente (só no worker). */
 export function mailSenderFor(config: AppConfig): MailSender {
   const { SMTP_HOST: host, SMTP_USER: user, SMTP_PASSWORD: password, MAIL_FROM: from } = config;

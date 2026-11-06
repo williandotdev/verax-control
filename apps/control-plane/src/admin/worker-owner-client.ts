@@ -8,12 +8,15 @@ import type { IdTokenSource } from '../status/id-token.js';
  * de quem está no navegador nunca sai do console. O worker confere a conta (`ADMIN_SA_EMAIL`) e que `actor` é um
  * responsável (`OWNER_PRINCIPALS`), e audita como `owner:<actor>`.
  */
-export type OwnerOperation = 'resume' | 'delete-now' | 'export' | 'cancel' | 'suspend' | 'reactivate';
+export type OwnerOperation =
+  'provision' | 'resume' | 'delete-now' | 'export' | 'cancel' | 'suspend' | 'reactivate';
 
 export type OwnerCallResult =
   { ok: true; status: number; body: Record<string, unknown> } | { ok: false; status: number; code: string };
 
 export interface WorkerOwnerClient {
+  /** O início do provisionamento de um cliente de contrato direto (`provisioning-start.ts`). */
+  provision(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult>;
   resume(tenantId: string, actor: string): Promise<OwnerCallResult>;
   deleteNow(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult>;
   exportLink(tenantId: string, object: string, actor: string): Promise<OwnerCallResult>;
@@ -36,6 +39,10 @@ export class HttpWorkerOwnerClient implements WorkerOwnerClient {
     const url = new URL(workerUrl);
     if (url.protocol !== 'https:' && url.hostname !== '127.0.0.1')
       throw new TypeError('WORKER_URL precisa ser https');
+  }
+
+  provision(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult> {
+    return this.call(tenantId, 'provision', { confirmSlug, actor });
   }
 
   resume(tenantId: string, actor: string): Promise<OwnerCallResult> {

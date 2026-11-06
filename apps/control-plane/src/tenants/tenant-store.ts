@@ -13,6 +13,7 @@ import {
 } from '../firestore/document-store.js';
 import { canTransition } from './tenant-transitions.js';
 import {
+  billingModeOf,
   isSlugFree,
   type SlugDocument,
   slugDocumentSchema,
@@ -233,6 +234,7 @@ export class TenantStore {
             slug: tenant.slug,
             size: tenant.configuration.size,
             priceTableVersion: tenant.pricing.priceTableVersion,
+            billingMode: billingModeOf(tenant),
             to: 'pending',
             reason: options.reason,
             eventId: options.eventId,
@@ -351,6 +353,25 @@ export class TenantStore {
       }
     }
     return [...found.values()];
+  }
+
+  /**
+   * Os clientes mais novos primeiro (o console do responsável), até `limit`. Um documento fora do formato não derruba
+   * a lista: sai em `unreadable` (só o id), para o responsável ver que existe e investigar.
+   */
+  async listRecent(limit: number): Promise<{ tenants: TenantRecord[]; unreadable: string[] }> {
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      orderBy: { field: 'createdAt', direction: 'desc' },
+      limit,
+    });
+    const tenants: TenantRecord[] = [];
+    const unreadable: string[] = [];
+    for (const { id, data } of docs) {
+      const parsed = tenantSchema.safeParse(data);
+      if (parsed.success) tenants.push({ id, ...parsed.data });
+      else unreadable.push(id);
+    }
+    return { tenants, unreadable };
   }
 
   /**

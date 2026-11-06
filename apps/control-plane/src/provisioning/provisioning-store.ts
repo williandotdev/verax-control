@@ -144,6 +144,13 @@ export class ProvisioningStore {
     return data === undefined ? undefined : parseDocument(stepDocumentSchema, collection, step, data);
   }
 
+  /** Os passos já tocados de uma execução, por nome (a linha do tempo do console do responsável). */
+  async listSteps(runId: string): Promise<Map<string, StepDocument>> {
+    const collection = COLLECTIONS.steps(runId);
+    const docs = await this.store.query(collection);
+    return new Map(docs.map(({ id, data }) => [id, parseDocument(stepDocumentSchema, collection, id, data)]));
+  }
+
   /**
    * Muda o documento do passo relido na transação; sem documento, `mutate` recebe `undefined` (a primeira entrega).
    * Devolve o documento gravado.

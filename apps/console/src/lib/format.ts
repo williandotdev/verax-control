@@ -14,6 +14,24 @@ export function formatDateTime(value: string | undefined): string {
   return Number.isNaN(date.getTime()) ? '—' : dateTime.format(date);
 }
 
+/** O fuso de Brasília: desde 2019 sem horário de verão, sempre 3 horas atrás do UTC (o `America/Sao_Paulo`). */
+const BRASILIA_OFFSET = '-03:00';
+const DAY_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+/**
+ * O começo de um dia escolhido no calendário (AAAA-MM-DD, o valor de um `<input type="date">`) no horário de Brasília,
+ * como ISO. Não depende do fuso do navegador nem do servidor: o dia que o responsável escolheu é o mesmo dia que as
+ * telas mostram (`formatDateTime`, sempre em São Paulo). `undefined` para texto que não é uma data.
+ */
+export function startOfDayInBrasilia(day: string): string | undefined {
+  if (!DAY_PATTERN.test(day)) return undefined;
+  const date = new Date(`${day}T00:00:00${BRASILIA_OFFSET}`);
+  // Um dia que não existe (31/02) não vira outro: a data em Brasília tem de ser a mesma que foi escolhida.
+  if (Number.isNaN(date.getTime())) return undefined;
+  const back = new Date(date.getTime() - 3 * 60 * 60_000).toISOString().slice(0, 10);
+  return back === day ? date.toISOString() : undefined;
+}
+
 /** Uma data sem hora (AAAA-MM-DD) como "04/11/2026". */
 export function formatDay(value: string | undefined): string {
   if (value === undefined) return '—';

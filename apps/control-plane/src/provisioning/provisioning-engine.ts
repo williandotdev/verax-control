@@ -1,11 +1,12 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { REVEAL_EMAIL_STEP } from '../access/reveal-email.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { ApiError } from '../common/http/api-error.js';
 import type { StepContext, StepHandler, StepInput } from '../internal/step-handler.js';
 import { STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { LockHeldError, LockNotHeldError, TenantStore } from '../tenants/tenant-store.js';
-import type { Tenant, TenantRecord } from '../tenants/tenant.schema.js';
+import { billingModeOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
 import { CloudApiError } from './cloud-http.js';
 import { ExecutorInputError } from './executor-env.js';
 import { PanelBundleError } from './panel-bundle.js';
@@ -36,6 +37,8 @@ export const PROVISIONING_STEPS = [
   'access.ready',
 ] as const;
 export type ProvisioningStepName = (typeof PROVISIONING_STEPS)[number];
+/** O último passo: o que leva o cliente a `waiting_customer_connection`. */
+const LAST_STEP: ProvisioningStepName = 'access.ready';
 
 /** A trava do cliente durante a execução (plano §4c: dono `runId`, 20 min, renovada a cada passo). */
 export const LOCK_TTL_MS = 20 * 60_000;
@@ -149,7 +152,12 @@ export class ProvisioningEngine {
   async run(step: ProvisioningStep, input: StepInput, context: StepContext): Promise<string> {
     const tenant = await this.tenants.get(input.tenantId);
     if (tenant === undefined) return 'unknown_tenant';
-    if (tenant.state !== 'provisioning') return 'not_provisioning';
+    if (tenant.state !== 'provisioning') {
+      // Entrega repetida do último passo de uma execução que já terminou: garante o e-mail de acesso de um cliente de
+      // contrato direto (se a fila falhou na primeira entrega, é esta repetição que o põe).
+      if (step.name === LAST_STEP) await this.ensureAccessEmail(tenant, input.runId);
+      return 'not_provisioning';
+    }
     if (tenant.provisioning?.runId !== input.runId) return 'stale_run';
     const current = tenant.provisioning.step ?? PROVISIONING_STEPS[0];
     const order = stepIndex(current) - stepIndex(step.name);
@@ -385,7 +393,35 @@ export class ProvisioningEngine {
     if (result.transitioned) {
       this.logger.info({ event: 'provisioning_finished', tenantId, runId }, 'ambiente pronto');
     }
+    await this.ensureAccessEmail(result.tenant, runId);
     return result.transitioned ? 'ready' : 'already_done';
+  }
+
+  /**
+   * O e-mail "ambiente pronto" de um cliente de contrato direto, assim que ele fica pronto: ele não passou pelo checkout,
+   * então não tem a página de status aberta, e o link de uso único do e-mail (`access.reveal_email`, CP-05) é o caminho
+   * da senha. Na fila `lifecycle`, com o mesmo id do plano B (`access_reveal_email-<tenantId>`): repetir não manda dois.
+   * Para os clientes da Stripe nada muda (o e-mail continua sendo o plano B de 48 h, pelo `tick`).
+   */
+  private async ensureAccessEmail(tenant: TenantRecord, runId: string): Promise<void> {
+    if (
+      billingModeOf(tenant) !== 'contract' ||
+      tenant.state !== 'waiting_customer_connection' ||
+      tenant.provisioning?.runId !== runId ||
+      tenant.access?.revealEmailSentAt !== undefined ||
+      tenant.access?.passwordRevealedAt !== undefined
+    ) {
+      return;
+    }
+    const { created } = await this.queue.enqueue({
+      queue: 'lifecycle',
+      step: REVEAL_EMAIL_STEP,
+      tenantId: tenant.id,
+      runId: tenant.id,
+    });
+    if (created) {
+      this.logger.info({ event: 'access_email_enqueued', tenantId: tenant.id }, 'e-mail de acesso na fila');
+    }
   }
 
   private async releaseLock(tenantId: string, runId: string): Promise<void> {

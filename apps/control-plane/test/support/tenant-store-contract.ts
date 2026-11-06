@@ -102,7 +102,13 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
         action: 'tenant.create',
         tenantId: created.id,
         requestId: 'req-demo-00001',
-        details: { slug: 'cliente-demo-a', size: 'P', priceTableVersion: 'teste-v1', to: 'pending' },
+        details: {
+          slug: 'cliente-demo-a',
+          size: 'P',
+          priceTableVersion: 'teste-v1',
+          billingMode: 'stripe',
+          to: 'pending',
+        },
         at: h.clock.now(),
       });
       expect(audit[0]?.expiresAt.getTime()).toBeGreaterThan(h.clock.now().getTime());

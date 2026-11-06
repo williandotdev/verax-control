@@ -9,6 +9,7 @@ import type {
 } from '@/lib/api-types';
 import { getAt } from '@/lib/paths';
 import { dre, guard, quote } from './fake-engine';
+import { createFakeTenants, type FakeTenantsState, handleTenantsRequest } from './fake-tenants';
 import { FICTITIOUS_OWNER, fictitiousCostModel, fictitiousPriceTable } from './fixtures';
 
 /**
@@ -30,6 +31,8 @@ export interface FakeAdminState {
   'cost-models': Map<string, VersionedRecord<CostModel>>;
   now: () => Date;
   email: string;
+  /** Os clientes (`fake-tenants.ts`). */
+  tenants: FakeTenantsState;
 }
 
 const DAY = 86_400_000;
@@ -49,6 +52,7 @@ export function createFakeState(options: { empty?: boolean; now?: () => Date } =
     'cost-models': new Map(),
     now,
     email: FICTITIOUS_OWNER,
+    tenants: options.empty === true ? { tenants: new Map(), workerDown: false } : createFakeTenants(now),
   };
   if (options.empty === true) return state;
   const at = (days: number): string => iso(new Date(now().getTime() - days * DAY));
@@ -214,6 +218,20 @@ export function handleAdminRequest(
     return { status: 200, body: { email: state.email } };
 
   if (method === 'POST' && first === 'dre' && second === 'simulate') return simulate(state, body);
+
+  if (first === 'tenants') {
+    const table = current(state['pricing-tables'], now);
+    return handleTenantsRequest(
+      state.tenants,
+      table?.content,
+      table?.version,
+      now,
+      method,
+      second,
+      third,
+      body,
+    );
+  }
 
   if (first !== 'pricing-tables' && first !== 'cost-models')
     return error(404, 'Recurso não encontrado', 'not_found');

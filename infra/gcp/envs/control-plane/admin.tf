@@ -8,7 +8,10 @@
 # serviço como o agente de serviço dele (`service-<número>@gcp-sa-iap.iam.gserviceaccount.com`), que é o único
 # `run.invoker` (nunca allUsers). O app confere de novo o JWT do IAP em toda requisição (`IAP_AUDIENCE`, que para o
 # IAP no Cloud Run é `/projects/<número>/locations/<região>/services/<nome>`, documentação dos cabeçalhos assinados do
-# IAP, e o e-mail em `OWNER_PRINCIPALS`). A conta do serviço só lê e grava o Firestore: nenhum segredo, nem a Stripe.
+# IAP, e o e-mail em `OWNER_PRINCIPALS`). A conta do serviço lê e grava o Firestore e, com os serviços no ar, invoca o
+# cp-worker (só `run.invoker` nele, abaixo): é assim que os botões "Iniciar provisionamento" e "Retomar
+# provisionamento" dos clientes chegam ao worker, com o token da própria conta e o e-mail do responsável no corpo (o
+# worker aceita essa conta só nas operações do responsável, `ADMIN_SA_EMAIL` em run.tf). Nenhum segredo, nem a Stripe.
 #
 # Projeto sem organização: o IAP precisa de um cliente OAuth próprio para contas de fora de uma organização, e esse
 # cliente não se cria por API. É um passo manual, uma vez (docs/runbooks/console-do-responsavel.md); o segredo do
@@ -22,13 +25,15 @@ locals {
   admin_iap_audience = "/projects/${data.google_project.this.number}/locations/${var.region}/services/${local.admin_service_name}"
 
   # Só o que o console usa: nenhuma variável do site, da Stripe, das filas ou do provisionamento (o app tira as de
-  # outro papel, mas aqui elas nem chegam), e nenhum segredo.
+  # outro papel, mas aqui elas nem chegam), e nenhum segredo. `WORKER_URL` é a audiência do token que o console pede
+  # ao servidor de metadados para chamar o cp-worker (a mesma URL determinística de run.tf).
   admin_env = {
     NODE_ENV           = "production"
     LOG_LEVEL          = "info"
     FIRESTORE_DATABASE = google_firestore_database.default.name
     IAP_AUDIENCE       = local.admin_iap_audience
     OWNER_PRINCIPALS   = join(",", local.owner_emails)
+    WORKER_URL         = local.worker_url
   }
 }
 
@@ -47,7 +52,8 @@ resource "google_service_account" "admin" {
   display_name = "Plano de controle: console do responsável atrás do IAP (cp-admin)"
 }
 
-# Só o Firestore (as tabelas de preço, os modelos de custo e a auditoria). Nenhum segredo, nenhuma fila, nada da Stripe.
+# Só o Firestore (as tabelas de preço, os modelos de custo, os clientes e a auditoria). Nenhum segredo, nenhuma fila, nada
+# da Stripe.
 resource "google_project_iam_member" "admin" {
   for_each = var.admin_enabled ? toset(["roles/datastore.user"]) : toset([])
 
@@ -163,4 +169,20 @@ resource "google_cloud_run_v2_service_iam_member" "admin_deployer" {
   location = var.region
   role     = "roles/run.developer"
   member   = local.deployer_member
+}
+
+# O console chama o cp-worker com o token da própria conta (aud = WORKER_URL) para as operações do responsável: o
+# início do provisionamento de um cliente de contrato direto e o `resume` (e, com o CP-11, `delete-now` e `export`). Só
+# `run.invoker` e só no cp-worker: nem no cp-public, nem no Job, nem no projeto, e nenhum `actAs` na cp-invoker (o
+# console não enfileira nada). O app do worker aceita esta conta só nas rotas marcadas com o grupo `console`, e sempre
+# com um responsável de `owner_principals` no corpo; nos passos e na revelação, recusa. Como as chamadas do cp-public,
+# esta sai pela internet: com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` a entrada do worker a recusa (GUIA,
+# "Operações do responsável no cp-worker").
+resource "google_cloud_run_v2_service_iam_member" "admin_worker_invoker" {
+  count = var.admin_enabled && var.services_enabled ? 1 : 0
+
+  name     = google_cloud_run_v2_service.worker[0].name
+  location = var.region
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.admin[0].email}"
 }

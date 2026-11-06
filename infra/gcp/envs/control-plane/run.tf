@@ -81,8 +81,14 @@ locals {
     if value != ""
   }
 
+  # Só do cp-worker, também derivado pelo Terraform: a conta do console (admin.tf), que o worker aceita só nas operações
+  # do responsável (`worker-caller.ts`, grupo `console`). Sem `admin_enabled`, vazio (não vai).
+  worker_env_infra = {
+    ADMIN_SA_EMAIL = var.admin_enabled ? google_service_account.admin[0].email : ""
+  }
+
   worker_env = {
-    for name, value in merge(local.service_env_defaults, local.worker_env_defaults, var.service_env, var.worker_env, local.service_env_infra) : name => value
+    for name, value in merge(local.service_env_defaults, local.worker_env_defaults, var.service_env, var.worker_env, local.service_env_infra, local.worker_env_infra) : name => value
     if value != ""
   }
 
@@ -274,7 +280,8 @@ resource "google_cloud_run_v2_service" "worker" {
 
 # Quem chama o cp-worker: a conta do token das tasks e do Scheduler (cp-invoker), o cp-public (CP-05: só para a
 # revelação da senha, que lê o `admin-bootstrap` do tenant com a identidade do cp-worker, a única com acesso a ele) e
-# o responsável. Nunca allUsers, e nem o próprio cp-worker (ele enfileira, mas quem o chama de volta é a task, com o
+# o responsável. Com `admin_enabled`, também o cp-admin (admin.tf, `admin_worker_invoker`), só nas operações do
+# responsável. Nunca allUsers, e nem o próprio cp-worker (ele enfileira, mas quem o chama de volta é a task, com o
 # token da cp-invoker). O app separa as rotas por quem chama (`internal/worker-caller.ts`): o token do cp-public só
 # vale em `POST /internal/access/reveal`, e o da cp-invoker não vale nela.
 #

@@ -3,6 +3,7 @@ import { APP_FILTER } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module.js';
 import type { IapKeySource } from './admin/iap-verifier.js';
+import type { WorkerOwnerClient } from './admin/worker-owner-client.js';
 import { AuditModule } from './audit/audit.module.js';
 import { AccessWorkerModule, type AccessWorkerModuleOptions } from './access/access-worker.module.js';
 import { CheckoutModule } from './checkout/checkout.module.js';
@@ -44,6 +45,8 @@ export interface AppModuleOptions {
   stepQueue?: StepQueue;
   /** Só nos testes: as chaves do "IAP" do console (em produção, as públicas do Google). */
   iapKeySource?: IapKeySource;
+  /** Só nos testes: o cliente do console para o cp-worker (em produção, HTTP com o token da conta do cp-admin). */
+  workerOwnerClient?: WorkerOwnerClient;
 }
 
 /**
@@ -65,7 +68,12 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
       // O `tick` (CP-11) cancela na Stripe a assinatura de quem passou 30 dias suspenso sem pagar.
       return [StripeModule.forRoot({ stripeApi: options.stripeApi })];
     case 'admin':
-      return [AdminModule.forRoot({ iapKeySource: options.iapKeySource })];
+      return [
+        AdminModule.forRoot({
+          iapKeySource: options.iapKeySource,
+          workerOwnerClient: options.workerOwnerClient,
+        }),
+      ];
   }
 }
 

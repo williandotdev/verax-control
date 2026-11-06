@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { demoTenant } from '../../test/support/tenant-store-contract.js';
 import { checkoutRequestSchema } from '../checkout/checkout.schema.js';
-import { COMPANY_NAME_MAX_LENGTH, companyNameSchema, isReservableSlug, slugSchema } from './tenant.schema.js';
+import {
+  billingModeOf,
+  COMPANY_NAME_MAX_LENGTH,
+  companyNameSchema,
+  isReservableSlug,
+  slugSchema,
+  tenantSchema,
+} from './tenant.schema.js';
 
 describe('nome da empresa (razão social)', () => {
   const longest = `Ação & "Filhos" ${'Comércio '.repeat(11)}Ltda.`;
@@ -58,5 +66,23 @@ describe('subdomínio do cliente', () => {
     expect(isReservableSlug('verax')).toBe(false);
     expect(isReservableSlug('cliente-demo-a')).toBe(true);
     expect(isReservableSlug('xn--abc')).toBe(false);
+  });
+});
+
+describe('modo de cobrança (billing.mode)', () => {
+  const at = new Date('2026-11-05T12:00:00.000Z');
+  const base = { ...demoTenant(), state: 'pending', stateUpdatedAt: at, createdAt: at, updatedAt: at };
+
+  it('sem o campo é stripe (os clientes de antes não mudam); contract é o contrato direto do console', () => {
+    expect(billingModeOf(tenantSchema.parse(base))).toBe('stripe');
+    const { consent: _consent, stripe: _stripe, ...contract } = base;
+    const parsed = tenantSchema.parse({ ...contract, billing: { mode: 'contract' } });
+    expect(billingModeOf(parsed)).toBe('contract');
+    expect(parsed.stripe).toBeUndefined();
+    expect(billingModeOf(tenantSchema.parse({ ...base, billing: { mode: 'stripe' } }))).toBe('stripe');
+  });
+
+  it('outro modo é recusado na leitura', () => {
+    expect(tenantSchema.safeParse({ ...base, billing: { mode: 'boleto' } }).success).toBe(false);
   });
 });

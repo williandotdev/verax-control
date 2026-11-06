@@ -20,6 +20,7 @@ import {
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
 import { NodeMailSyncController } from '../provisioning/node-mail.js';
 import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
+import { ProvisioningStartController } from '../provisioning/provisioning-start.js';
 import {
   PROVISIONING_STEP_HANDLERS,
   ProvisioningModule,
@@ -67,6 +68,7 @@ export class AccessWorkerModule {
         InternalAccessController,
         InternalStepsController,
         ProvisioningResumeController,
+        ProvisioningStartController,
         NodeMailSyncController,
         ...LIFECYCLE_CONTROLLERS,
       ],

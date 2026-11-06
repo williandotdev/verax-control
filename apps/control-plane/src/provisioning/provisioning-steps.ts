@@ -2,13 +2,16 @@ import { randomBytes } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { z } from 'zod';
+import { statusPageUrl } from '../access/reveal-email.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepContext, StepInput } from '../internal/step-handler.js';
+import { mailSenderConfigured } from '../mail/mail-sender.js';
 import { TenantStore } from '../tenants/tenant-store.js';
-import type { Tenant, TenantRecord } from '../tenants/tenant.schema.js';
+import { billingModeOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
 import type { DesiredDnsRecord } from './cloudflare-api.js';
-import { executorEnv, isTenantEmail, isTenantName, limitsFitNode, type RunKind } from './executor-env.js';
+import { executorEnv, isTenantEmail, isTenantName, type RunKind } from './executor-env.js';
 import { isExecutionName } from './google-apis.js';
+import { nodeFitProblems } from './node-fit.js';
 import { nodeSmtpPasswordSecret, readNodeSmtpPassword } from './node-mail.js';
 import { MAX_BUNDLE_BYTES, openPanelBundle, siteHostingConfig } from './panel-bundle.js';
 import {
@@ -169,6 +172,11 @@ export class PreflightStep extends BaseStep {
     // O checkout e o `customer.updated` já limitam a 120 (o nó recebe o nome inteiro, sem corte); só um cliente
     // gravado antes do limite chega aqui com mais, e para com o código, em vez de chegar ao executor ou ao nó.
     if (!isTenantName(tenant.company.legalName)) throw new DefinitiveStepError('tenant_name_invalid');
+    if (billingModeOf(tenant) === 'contract' && !accessEmailConfigured(this.config)) {
+      // O cliente de contrato direto só recebe o acesso pelo e-mail "ambiente pronto" (não passou pelo checkout, então
+      // não tem a página de status aberta): sem o SMTP do cp-worker ou a página de status, não adianta criar o nó.
+      throw new DefinitiveStepError('access_email_unconfigured');
+    }
 
     const kind: RunKind = (tenant.provisioning?.attempts ?? 0) > 0 ? 'resume' : 'provision';
     await this.store.ensureRun(runId, tenant.id, kind);
@@ -258,12 +266,19 @@ export function pinnedNodeVersion(tenant: Tenant): string | undefined {
 
 /**
  * O que o `envs/tenant` sabe criar hoje: o modo gerenciado, o porte P (perfil `standard`), sem agentes do Wazuh nas
- * instâncias do cliente (fora do CP-06) e com os limites nas faixas do nó. O resto para com `configuration_unsupported`
- * para o responsável decidir, em vez de entregar menos do que foi vendido.
+ * instâncias do cliente (fora do CP-06) e com os limites nas faixas do nó (`node-fit.ts`, a mesma regra do console). O
+ * resto para com `configuration_unsupported` para o responsável decidir, em vez de entregar menos do que foi vendido.
  */
 export function configurationFitsNode(tenant: Tenant): boolean {
-  const { mode, size } = tenant.configuration;
-  return mode === 'managed' && size === 'P' && tenant.limits.maxAgents === 0 && limitsFitNode(tenant.limits);
+  return nodeFitProblems(tenant.configuration, tenant.limits).length === 0;
+}
+
+/**
+ * O e-mail "ambiente pronto" sai: o SMTP do cp-worker está completo e a página de status do site existe (o link de uso
+ * único aponta para ela). É o único caminho do acesso de um cliente de contrato direto.
+ */
+export function accessEmailConfigured(config: AppConfig): boolean {
+  return mailSenderConfigured(config) && statusPageUrl(config.SITE_SUCCESS_URL) !== undefined;
 }
 
 // --- 2. cloudflare.tunnel -----------------------------------------------------------------------------------------

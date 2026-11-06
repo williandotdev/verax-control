@@ -6,6 +6,7 @@ import { TenantsModule } from '../tenants/tenants.module.js';
 import { NODE_MAIL_SYNC_OPTIONS, type NodeMailSyncOptions, NodeMailSyncService } from './node-mail.js';
 import { ProvisioningEngine } from './provisioning-engine.js';
 import { ProvisioningResumeService } from './provisioning-resume.js';
+import { ProvisioningStartService } from './provisioning-start.js';
 import {
   createProvisioningApis,
   PROVISIONING_APIS,
@@ -53,9 +54,10 @@ export interface ProvisioningModuleOptions {
 
 /**
  * O provisionamento (CP-07), só no cp-worker: os passos 1 a 10 do plano §4c (`provisioning-steps.ts`), o motor que os
- * encadeia (`provisioning-engine.ts`), o repositório das execuções, o `resume` do responsável e a recópia da senha do
- * e-mail dos nós (`node-mail.ts`). Os controladores dos dois ficam no módulo das rotas internas (`AccessWorkerModule`),
- * junto da guarda de quem chama.
+ * encadeia (`provisioning-engine.ts`), o repositório das execuções, o `resume` do responsável, o início do
+ * provisionamento de um cliente de contrato direto (`provisioning-start.ts`) e a recópia da senha do e-mail dos
+ * nós (`node-mail.ts`). Os controladores dessas operações ficam no módulo das rotas internas
+ * (`AccessWorkerModule`), junto da guarda de quem chama.
  */
 @Module({})
 export class ProvisioningModule {
@@ -67,6 +69,7 @@ export class ProvisioningModule {
         ProvisioningStore,
         ProvisioningEngine,
         ProvisioningResumeService,
+        ProvisioningStartService,
         NodeMailSyncService,
         { provide: NODE_MAIL_SYNC_OPTIONS, useValue: options.nodeMailSync ?? {} },
         ProvisioningStartupCheck,
@@ -82,6 +85,7 @@ export class ProvisioningModule {
       exports: [
         PROVISIONING_STEP_HANDLERS,
         ProvisioningResumeService,
+        ProvisioningStartService,
         NodeMailSyncService,
         ProvisioningStore,
         PROVISIONING_APIS,

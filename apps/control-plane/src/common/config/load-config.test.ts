@@ -257,6 +257,14 @@ describe('loadConfig (CP-01)', () => {
     ]);
     // A conta de suporte é só do worker: no public, sai com aviso, sem derrubar.
     expect(warningsOf({ ...validEnv, BOOTSTRAP_SUPPORT_EMAIL: 'suporte@verax.example' })).toHaveLength(1);
+    // A conta do console (o grupo `console` das operações do responsável): só uma conta de serviço.
+    expect(
+      loadConfig({ ...complete, ADMIN_SA_EMAIL: 'cp-admin@projeto-demo.iam.gserviceaccount.com' })
+        .ADMIN_SA_EMAIL,
+    ).toBe('cp-admin@projeto-demo.iam.gserviceaccount.com');
+    expect(problemsOf({ ...complete, ADMIN_SA_EMAIL: 'responsavel@verax.example' })).toEqual([
+      'ADMIN_SA_EMAIL: deve ser o e-mail de uma conta de serviço',
+    ]);
   });
 
   it('listas separadas por vírgula: origens do site, projetos do Firebase e principais', () => {

@@ -2,9 +2,10 @@
 
 O console é onde o responsável mantém o preço configurável do Verax Control: o **modelo de custos** (câmbio, nuvem por
 porte, tarifas, impostos, suporte, custos fixos e as metas de margem), a **tabela de preços** (regra de porte, preço e
-`lookup_key` da Stripe de cada componente, pacotes de partida) e o **simulador de DRE**. Os números vivem só no
-Firestore do plano de controle; o repositório (público) não tem nenhum, e o console também não: ele só mostra o que a
-API devolve.
+`lookup_key` da Stripe de cada componente, pacotes de partida), o **simulador de DRE** e os **clientes** (a lista, a
+linha do tempo do provisionamento, o cadastro de um contrato direto e as operações do responsável). Os números vivem
+só no Firestore do plano de controle; o repositório (público) não tem nenhum, e o console também não: ele só mostra o
+que a API devolve.
 
 O console é o serviço `cp-admin` do Cloud Run: a mesma imagem do plano de controle, com `ROLE=admin`, que serve as
 telas (`apps/console`) e a API `/v1/admin/...` na mesma origem, atrás do IAP ligado direto no serviço. Só quem está em
@@ -119,5 +120,47 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
   isso não acontece no uso normal. Confira se o IAP continua ligado no `cp-admin`, se o `IAP_AUDIENCE` bate com
   `terraform output admin` e quem tem acesso ao IAP do serviço.
 
+## 7. Clientes e contrato direto
+
+A tela **Clientes** lista os clientes (os do site e os de contrato direto, os mais novos primeiro) com o estado, a
+cobrança e, no provisionamento, o passo e o código de quem parou. O detalhe de um cliente mostra o contratado e o preço,
+a linha do tempo dos passos do provisionamento, o acesso do administrador (quando o e-mail saiu e quando a senha foi
+vista; nunca a senha), o ciclo de vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza
+sozinha.
+
+**Cadastrar um cliente de contrato direto** (um contrato negociado com você, sem o checkout do site e sem a Stripe):
+
+1. **Clientes → Novo cliente (contrato direto).** Preencha a razão social, o CNPJ, o e-mail do administrador do cliente
+   (o primeiro acesso ao painel; é ele que recebe o e-mail com o link para ver a senha) e o subdomínio.
+2. As seis respostas, como na calculadora do site, e **Calcular a cotação**: o preço de referência da tabela vigente,
+   o porte e, se houver, o que o provisionamento ainda não cria (hoje só o modo gerenciado, porte P, sem agentes). O
+   preço é só referência: a cobrança e a nota fiscal do contrato são suas, fora da Stripe.
+3. **Revisar e confirmar…**, digite o subdomínio e **Criar e provisionar**. A API confere tudo de novo; um problema
+   aparece ao lado do campo. Criado, o cliente vai a `provisioning` e o detalhe abre. Enviar duas vezes (clique duplo,
+   conexão que caiu) não cria dois: é o mesmo cadastro.
+4. Acompanhe a linha do tempo. Pronto (`waiting_customer_connection`), o administrador do cliente recebe na hora o
+   e-mail "ambiente pronto" com o link de uso único (24 h) para ver a senha temporária uma vez. Você não vê a senha nem o
+   link; se o cliente não receber, confira o SMTP do `cp-worker` e, com o link vencido, o caminho de uma senha nova
+   (`docs/runbooks/onboarding-cliente.md`, item 7).
+
+Se o detalhe disser "Cliente criado, mas o provisionamento não começou", o console não alcançou o `cp-worker` (a
+entrada dele, GUIA, "Operações do responsável no `cp-worker`"): corrija e use **Iniciar provisionamento…**.
+
+**As operações do responsável** (cada uma pede o subdomínio do cliente digitado, e a API e o `cp-worker` conferem de
+novo):
+
+| Botão                   | Quando aparece                                                     | O que faz                                                                                                          |
+| ----------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Iniciar provisionamento | Contrato direto em `pending`                                       | O `provision` no `cp-worker`: `provisioning` e o primeiro passo na fila                                            |
+| Retomar provisionamento | `provisioning_failed` ou parado em `provisioning`                  | Uma execução nova do `preflight` (`docs/runbooks/provisionamento.md`)                                              |
+| Suspender / Reativar    | Contrato direto ativo (ou esperando o cliente) / suspenso por você | A VM para / volta ao estado de antes e a VM liga                                                                   |
+| Cancelar contrato       | Contrato direto vivo                                               | Agora, ou numa data (o fim do contrato, até 2 anos); cancelado: exportação por 30 dias, exclusão em D+30 e D+97    |
+| Exportar dados          | Cliente cancelado, dentro de 30 dias                               | O link de 24 h de um backup (o nome vem do `gcloud storage ls`, `docs/runbooks/ciclo-de-vida.md`); aparece uma vez |
+| Apagar agora            | Cliente cancelado (ou uma exclusão que parou)                      | A Exclusão 1 agora, sem volta (`docs/runbooks/ciclo-de-vida.md`)                                                   |
+
+Num cliente da Stripe, suspender, reativar e cancelar seguem a assinatura (Portal do cliente ou Dashboard da Stripe); o
+console não os oferece. Os limites: 5 cadastros e 20 operações por hora por responsável.
+
 Tudo o que se grava no console vai à auditoria (`auditLog`) como `owner:<e-mail>`: rascunho criado e editado (com a
-diferença), publicação (com o resumo da checagem), aposentadoria e publicação recusada.
+diferença), publicação (com o resumo da checagem), aposentadoria e publicação recusada; o cadastro de um cliente, cada
+pedido ao `cp-worker` com o desfecho (`tenant.console_request`) e cada recusa.
