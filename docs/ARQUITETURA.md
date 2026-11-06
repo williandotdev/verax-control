@@ -1829,7 +1829,9 @@ cliente só aceita `customer` com `billing.mode = contract` e o modo `self_hoste
 
 - **Cadastro:** o pedido leva `hosting` e as outras cinco respostas (o modo da tabela sai do lugar: gerenciado na
   Verax, licença no cliente, `MODE_OF_HOSTING`); a cotação de referência é a da licença, e do que o provisionamento
-  exige só valem os limites que o próprio nó recusa (`node-fit.ts`). O cliente nasce direto em
+  exige valem os limites que o próprio nó recusa e os agentes nas instâncias (`node-fit.ts`: o guia de instalação no
+  cliente usa o `envs/tenant`, que não liga a entrada dos agentes; um contrato com agentes é 422
+  `configuration_unsupported` com o motivo no campo). O cliente nasce direto em
   `waiting_customer_install` (a transição de `null`, `contract_created_customer_hosted`), e o `cp-admin` **não chama o
   `cp-worker`**: nenhum passo, nenhuma fila, nenhum Terraform, nada no projeto dos nós, no Cloudflare nem no Firebase.
 - **Defesa em profundidade no `cp-worker`:** o `provision` e o `resume` recusam com 409 `customer_hosted`; o motor do

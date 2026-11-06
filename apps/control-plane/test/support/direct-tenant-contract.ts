@@ -785,26 +785,59 @@ export function describeDirectTenantContract(
       expect(queue.tasks).toEqual([]);
     });
 
-    it('no cliente: a cotação de referência é a da licença, e o que o provisionamento não cria não impede', async () => {
+    it('no cliente: a cotação de referência é a da licença; o porte não impede, os agentes sim', async () => {
       const configuration = {
         cloudAccounts: 6,
         monthlyGib: 10,
-        agents: 10,
+        agents: 0,
         historyDays: 30,
         support: 'standard',
       };
       const customer = await service.preview({ hosting: 'customer', configuration });
       expect(customer).toMatchObject({
         contactUs: false,
-        quote: { configuration: { mode: 'self_hosted', size: 'M', agents: 10 } },
+        quote: { configuration: { mode: 'self_hosted', size: 'M', agents: 0 } },
         problems: [],
       });
-      // Na Verax, a mesma configuração pede o porte M e agentes: o provisionamento ainda não cria.
-      const verax = await service.preview({ hosting: 'verax', configuration });
+      // Na Verax, a mesma configuração pede o porte M: o provisionamento ainda não cria.
+      const verax = await service.preview({
+        hosting: 'verax',
+        configuration: { ...configuration, agents: 10 },
+      });
       expect(verax).toMatchObject({
         quote: { configuration: { mode: 'managed', size: 'M' } },
         problems: ['size', 'agents'],
       });
+      // Agentes no cliente: o guia (envs/tenant) não liga a entrada deles; recusado com o motivo, nada gravado.
+      const withAgents = { ...configuration, agents: 10 };
+      expect(await service.preview({ hosting: 'customer', configuration: withAgents })).toMatchObject({
+        problems: ['agents'],
+      });
+      const refusedRequest = directRequest({
+        hosting: 'customer',
+        slug: 'cliente-agentes',
+        configuration: withAgents,
+      });
+      const refused = await expectApiError(
+        service.create(refusedRequest, OWNER),
+        422,
+        'configuration_unsupported',
+      );
+      expect(refused.message).toBe(
+        'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.',
+      );
+      expect(refused.details).toMatchObject({
+        problems: ['agents'],
+        issues: [
+          {
+            path: 'configuration.agents',
+            message:
+              'Agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0.',
+          },
+        ],
+      });
+      expect(await tenants.get(String(refusedRequest['idempotencyKey']))).toBeUndefined();
+      expect(await tenants.getSlug('cliente-agentes')).toBeUndefined();
       // O lugar é obrigatório, e o modo não vem mais na configuração (sai do lugar).
       await expectApiError(service.preview({ configuration }), 400, 'invalid_request');
       await expectApiError(
@@ -816,7 +849,7 @@ export function describeDirectTenantContract(
         directRequest({ hosting: 'customer', slug: 'cliente-porte-m', configuration }),
         OWNER,
       );
-      expect((await tenants.require(created.id)).configuration).toMatchObject({ size: 'M', agents: 10 });
+      expect((await tenants.require(created.id)).configuration).toMatchObject({ size: 'M', agents: 0 });
     });
 
     it('no cliente: o worker recusa provisionar, retomar e suspender, e nada vai à fila nem muda', async () => {
@@ -866,7 +899,7 @@ export function describeDirectTenantContract(
           configuration: {
             cloudAccounts: 3,
             monthlyGib: 50,
-            agents: 10,
+            agents: 0,
             historyDays: 180,
             support: 'standard',
           },
@@ -900,8 +933,7 @@ export function describeDirectTenantContract(
           { name: 'PLAN_MONTHLY_GIB', value: '50' },
           { name: 'PLAN_HISTORY_DAYS', value: '180' },
           { name: 'PLAN_MAX_USERS', value: '10' },
-          { name: 'WAZUH_AGENTS', value: 'true' },
-          { name: 'WAZUH_AGENTS_MAX', value: '10' },
+          { name: 'WAZUH_AGENTS', value: 'false' },
         ],
       });
       expect(worker.calls).toEqual([{ operation: 'installation', tenantId: created.id, actor: OWNER.email }]);

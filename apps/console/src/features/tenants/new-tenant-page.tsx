@@ -29,7 +29,7 @@ import { CONTACT_REASON_LABELS, configurationSummary, SUPPORT_LABELS } from '@/l
 import { formatCents, formatInteger } from '@/lib/numbers';
 import { newUlid } from '@/lib/ulid';
 import { ConfirmBySlug } from './confirm-by-slug';
-import { HOSTING_LABELS, PROBLEM_LABELS } from './labels';
+import { CUSTOMER_PROBLEM_LABELS, HOSTING_LABELS, PROBLEM_LABELS } from './labels';
 import { useInvalidateTenants } from './queries';
 import { QuoteSummary } from './quote-summary';
 
@@ -266,7 +266,7 @@ export function NewTenantPage() {
               path={['configuration', 'agents']}
               label="Agentes nas instâncias"
               kind="integer"
-              hint="Na infraestrutura da Verax, ainda não provisionados: deixe 0."
+              hint="Ainda não provisionados na Verax nem cobertos pelo guia de instalação no cliente: deixe 0."
             />
             <NumberField
               path={['configuration', 'historyDays']}
@@ -318,12 +318,12 @@ export function NewTenantPage() {
               <div role="alert" className="rounded-lg border border-critical/40 bg-critical/5 p-3 text-sm">
                 <p className="font-medium">
                   {customer
-                    ? 'O nó do cliente não aceita esta configuração:'
+                    ? 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente:'
                     : 'O provisionamento ainda não cria esta configuração:'}
                 </p>
                 <ul className="list-disc pl-5">
                   {currentPreview.problems.map((problem) => (
-                    <li key={problem}>{PROBLEM_LABELS[problem]}.</li>
+                    <li key={problem}>{(customer ? CUSTOMER_PROBLEM_LABELS : PROBLEM_LABELS)[problem]}.</li>
                   ))}
                 </ul>
               </div>

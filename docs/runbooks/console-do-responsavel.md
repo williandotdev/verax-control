@@ -144,9 +144,9 @@ do contrato direto usam os dois.
      (`docs/runbooks/instalacao-no-cliente.md`) e apaga o próprio ambiente no fim do contrato.
 3. As outras cinco respostas, como na calculadora do site, e **Calcular a cotação**: o preço de referência da tabela
    vigente no modo do lugar escolhido (o ambiente gerenciado na Verax; a licença, com a implantação dela, no cliente),
-   o porte e, se houver, o que o provisionamento ainda não cria (na Verax, hoje só porte P e sem agentes; no cliente,
-   só os limites fora das faixas do nó). O preço é só referência: a cobrança e a nota fiscal do contrato são suas,
-   fora da Stripe.
+   o porte e, se houver, o que ainda não se cria (na Verax, hoje só porte P e sem agentes; no cliente, qualquer
+   porte, mas sem agentes nas instâncias, que o guia de instalação ainda não cobre, e com os limites nas faixas do
+   nó). O preço é só referência: a cobrança e a nota fiscal do contrato são suas, fora da Stripe.
 4. **Revisar e confirmar…**, digite o subdomínio e **Criar e provisionar** (na Verax) ou **Criar o cliente** (no
    cliente). A API confere tudo de novo; um problema aparece ao lado do campo. Criado, o detalhe abre. Enviar duas
    vezes (clique duplo, conexão que caiu) não cria dois: é o mesmo cadastro.

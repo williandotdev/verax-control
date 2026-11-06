@@ -31,14 +31,13 @@ describe('nodeFitProblems (o que o envs/tenant sabe criar, a mesma regra do pref
 });
 
 describe('nodeFitProblems no ambiente do cliente (contrato direto, nada provisionado)', () => {
-  it('só os limites contam: o modo da licença, outro porte e agentes passam', () => {
-    const configuration = {
-      ...demoConfiguration(),
-      mode: 'self_hosted' as const,
-      size: 'G' as const,
-      agents: 10,
-    };
-    expect(nodeFitProblems(configuration, { ...demoLimits(), maxAgents: 10 }, 'customer')).toEqual([]);
+  it('o modo da licença e outro porte passam; agentes e limites fora das faixas, não', () => {
+    const configuration = { ...demoConfiguration(), mode: 'self_hosted' as const, size: 'G' as const };
+    expect(nodeFitProblems(configuration, demoLimits(), 'customer')).toEqual([]);
+    // Agentes: o guia no cliente (envs/tenant) não liga a entrada deles, então o contrato não seria instalável.
+    expect(
+      nodeFitProblems({ ...configuration, agents: 10 }, { ...demoLimits(), maxAgents: 10 }, 'customer'),
+    ).toEqual(['agents']);
     expect(
       nodeFitProblems(
         configuration,

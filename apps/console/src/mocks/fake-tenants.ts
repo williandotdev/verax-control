@@ -431,10 +431,12 @@ function problemsOf(
   hosting: Hosting,
 ): NodeFitProblem[] {
   const problems: NodeFitProblem[] = [];
-  // No cliente, nada é provisionado: só os limites contariam (sempre dentro das faixas na tabela FICTÍCIA).
-  if (hosting === 'customer') return problems;
-  if (configuration.mode !== 'managed') problems.push('mode');
-  if (configuration.size !== 'P') problems.push('size');
+  // No cliente, nada é provisionado: o porte não conta; os agentes, sim (o guia não liga a entrada deles), e os limites
+  // (sempre dentro das faixas na tabela FICTÍCIA).
+  if (hosting === 'verax') {
+    if (configuration.mode !== 'managed') problems.push('mode');
+    if (configuration.size !== 'P') problems.push('size');
+  }
   if (configuration.agents !== 0) problems.push('agents');
   return problems;
 }
@@ -836,7 +838,9 @@ function create(
   if (problems.length > 0) {
     return error(
       422,
-      'O provisionamento ainda não sabe criar esta configuração.',
+      hosting === 'customer'
+        ? 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.'
+        : 'O provisionamento ainda não sabe criar esta configuração.',
       'configuration_unsupported',
       {
         problems,

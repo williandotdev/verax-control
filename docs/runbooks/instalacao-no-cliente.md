@@ -66,8 +66,9 @@ dos nós e o nó de cada cliente", com estas diferenças:
    - `images_repository`: o padrão (`ghcr.io/williandotdev/verax-control`, público, sem login);
    - o resto como no `terraform.tfvars.example` (a faixa da rede `subnet_cidr`, o remetente `mail_from` e, se quiser
      e-mail no nó, o SMTP do próprio cliente).
-3. Agentes do Wazuh nas instâncias (se o contrato tiver): o `envs/tenant` ainda não liga; depois da instalação, siga
-   `docs/runbooks/onboarding-cliente.md`, item 6.
+3. **Agentes do Wazuh nas instâncias ainda não têm suporte na infraestrutura do cliente:** o `envs/tenant` não liga
+   a entrada deles (o `wazuh_agents` e as faixas de origem do módulo), e o console recusa um contrato no cliente com
+   agentes. O nó do cliente coleta pelas contas de nuvem conectadas no painel (AWS, GCP e Cloudflare), sem agentes.
 
 ## 3. Túnel, painel e primeiro acesso
 

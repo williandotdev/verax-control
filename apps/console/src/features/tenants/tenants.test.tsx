@@ -84,7 +84,7 @@ describe('clientes', () => {
     expect(router.state.location.pathname).toBe(`/clientes/${created?.id}`);
   });
 
-  it('o que o provisionamento não cria: o motivo na cotação, e a confirmação não abre; no cliente, passa', async () => {
+  it('o que não se instala: o motivo na cotação, e a confirmação não abre; no cliente, os agentes também não', async () => {
     const { user } = renderConsole('/clientes/novo');
     await waitFor(() => expect(screen.getByLabelText('Contas de nuvem')).toHaveValue('2'));
     await user.click(screen.getByRole('radio', { name: 'Infraestrutura da Verax' }));
@@ -94,14 +94,26 @@ describe('clientes', () => {
     const quote = await screen.findByRole('region', { name: 'Cotação de referência' });
     expect(within(quote).getByRole('alert')).toHaveTextContent('agentes nas instâncias do cliente');
     expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
-    // Mudar o lugar depois da cotação pede outra; no cliente, a licença e nada que o provisionamento precise.
+    // Mudar o lugar depois da cotação pede outra; no cliente, a licença, e os agentes ainda sem instalação pelo guia.
     await user.click(screen.getByRole('radio', { name: 'Infraestrutura do cliente' }));
     expect(screen.getByText('A configuração mudou: calcule a cotação de novo.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
     const license = await screen.findByRole('region', { name: 'Cotação de referência' });
     expect(license).toHaveTextContent('Licença na infraestrutura do cliente (porte P)');
     expect(license).toHaveTextContent('implantação R$ 1.000,00');
-    expect(within(license).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(license).getByRole('alert')).toHaveTextContent(
+      'agentes nas instâncias ainda não têm instalação no ambiente do cliente',
+    );
+    expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
+    // Sem agentes, o contrato no cliente passa.
+    await user.clear(screen.getByLabelText('Agentes nas instâncias'));
+    await user.type(screen.getByLabelText('Agentes nas instâncias'), '0');
+    await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('region', { name: 'Cotação de referência' })).queryByRole('alert'),
+      ).not.toBeInTheDocument(),
+    );
     expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeEnabled();
   });
 
@@ -310,7 +322,7 @@ describe('clientes', () => {
     expect(screen.getAllByText('Aguardando instalação pelo cliente').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Infraestrutura do cliente').length).toBeGreaterThan(0);
     // Nada de endereços nem de passos da Verax.
-    expect(screen.queryByText(/control\.veraxsistemas\.com\.br/)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('.control.veraxsistemas.com.br');
     expect(screen.queryByRole('region', { name: 'Provisionamento' })).not.toBeInTheDocument();
 
     const installation = screen.getByRole('region', { name: 'Instalação na infraestrutura do cliente' });

@@ -88,9 +88,12 @@ const PROBLEM_ISSUES: Readonly<Record<NodeFitProblem, (configuration: Configurat
     path: 'configuration',
     message: `Esta configuração pede o porte ${configuration.size}; o provisionamento cria só o porte P hoje.`,
   }),
-  agents: () => ({
+  agents: (configuration) => ({
     path: 'configuration.agents',
-    message: 'Agentes nas instâncias do cliente ainda não são provisionados: deixe 0.',
+    message:
+      configuration.mode === MODE_OF_HOSTING.customer
+        ? 'Agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0.'
+        : 'Agentes nas instâncias do cliente ainda não são provisionados: deixe 0.',
   }),
   limits: () => ({
     path: 'configuration',
@@ -604,7 +607,9 @@ export class AdminTenantsService {
       await this.refuseCreate(owner, 'configuration_unsupported', request.slug);
       throw new ApiError(
         HttpStatus.UNPROCESSABLE_ENTITY,
-        'O provisionamento ainda não sabe criar esta configuração.',
+        customer
+          ? 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.'
+          : 'O provisionamento ainda não sabe criar esta configuração.',
         'configuration_unsupported',
         { problems, issues: problems.map((problem) => PROBLEM_ISSUES[problem](quoted.configuration)) },
       );

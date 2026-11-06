@@ -74,6 +74,13 @@ export const PROBLEM_LABELS: Readonly<Record<NodeFitProblem, string>> = {
   limits: 'os limites ficam fora das faixas que o nó aceita',
 };
 
+/** O mesmo, com o ambiente na infraestrutura do cliente (nada é provisionado; o guia de instalação é o limite). */
+export const CUSTOMER_PROBLEM_LABELS: Readonly<Record<NodeFitProblem, string>> = {
+  ...PROBLEM_LABELS,
+  agents:
+    'agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0',
+};
+
 /**
  * O que fazer quando a operação não chegou ao fim no cp-worker. Nos 5xx a API devolve só o código (a mensagem é a
  * genérica), e é este texto que explica; nos outros, a mensagem da API já serve.

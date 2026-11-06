@@ -453,7 +453,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       }).expect(200);
       expect(agents.body).toMatchObject({ contactUs: false, problems: ['agents'] });
       await send('/v1/admin/tenants/preview', { hosting: 'verax', configuration: {} }).expect(400);
-      // No cliente, a cotação é a da licença, e os agentes não impedem (nada é provisionado).
+      // No cliente, a cotação é a da licença; agentes nas instâncias ainda não (o guia não liga a entrada deles).
       const customer = await send('/v1/admin/tenants/preview', {
         hosting: 'customer',
         configuration: { cloudAccounts: 2, monthlyGib: 10, agents: 5, historyDays: 30, support: 'standard' },
@@ -464,8 +464,20 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
           monthlyTotal: 60_000,
           setupTotal: 100_000,
         },
-        problems: [],
+        problems: ['agents'],
       });
+      const withAgents = directRequest({
+        hosting: 'customer',
+        configuration: { cloudAccounts: 2, monthlyGib: 10, agents: 5, historyDays: 30, support: 'standard' },
+      });
+      const refused = await send('/v1/admin/tenants', withAgents).expect(422);
+      expect(refused.body).toMatchObject({
+        code: 'configuration_unsupported',
+        message: 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.',
+        details: { problems: ['agents'], issues: [{ path: 'configuration.agents' }] },
+      });
+      expect(await tenants.get(String(withAgents['idempotencyKey']))).toBeUndefined();
+      expect(workerCalls).toHaveLength(0);
     });
 
     it('sem tabela de preços vigente, nada de cadastro (409)', async () => {
