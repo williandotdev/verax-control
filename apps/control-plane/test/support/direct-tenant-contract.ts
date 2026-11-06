@@ -631,7 +631,7 @@ export function describeDirectTenantContract(
       });
     });
 
-    it('o detalhe traz a linha do tempo dos dez passos na ordem, com o andamento de cada um', async () => {
+    it('o detalhe traz a linha do tempo dos passos na ordem, com o andamento de cada um', async () => {
       const created = await service.create(directRequest(), OWNER);
       const runId = (await tenants.require(created.id)).provisioning?.runId ?? '';
       await runs.ensureRun(runId, created.id, 'provision');
@@ -667,6 +667,7 @@ export function describeDirectTenantContract(
         ['firebase.site', 'pending', 0, undefined],
         ['terraform.apply', 'pending', 0, undefined],
         ['terraform.wait', 'pending', 0, undefined],
+        ['secrets.smtp_password', 'pending', 0, undefined],
         ['secrets.tunnel_token', 'pending', 0, undefined],
         ['node.wait_ready', 'pending', 0, undefined],
         ['node.health', 'pending', 0, undefined],

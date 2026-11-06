@@ -24,13 +24,14 @@ export const BILLING_LABELS: Readonly<Record<BillingMode, string>> = {
   contract: 'Contrato direto',
 };
 
-/** Os dez passos do provisionamento (CP-07), na linguagem da página de status. */
+/** Os passos do provisionamento (CP-07), na ordem e na linguagem da página de status. */
 export const STEP_LABELS: Readonly<Record<ProvisioningStepName, string>> = {
   preflight: 'Conferência inicial',
   'cloudflare.tunnel': 'Túnel e DNS no Cloudflare',
   'firebase.site': 'Site do painel no Firebase',
   'terraform.apply': 'Criação do nó (Terraform)',
   'terraform.wait': 'Espera da criação do nó',
+  'secrets.smtp_password': 'Senha do e-mail do nó no cofre',
   'secrets.tunnel_token': 'Token do túnel no cofre',
   'node.wait_ready': 'Instalação do nó',
   'node.health': 'Saúde da API e do painel',

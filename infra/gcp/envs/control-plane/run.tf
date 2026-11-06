@@ -35,7 +35,9 @@ locals {
     API_DOMAIN_PREFIX    = "api-"
   }
 
-  # Só do cp-worker: quem manda e-mail é ele (só ele lê `cp-smtp-password`). O cp-public não recebe variável de SMTP.
+  # Só do cp-worker: quem manda e-mail é ele (só ele lê `cp-smtp-password`). O cp-public não recebe variável de SMTP. O
+  # e-mail dos nós de clientes (`SMTP_HOST_NODES`, `SMTP_PORT_NODES`, `SMTP_USER_NODES`) não tem padrão: sem ele em
+  # `worker_env`, os nós nascem sem e-mail.
   worker_env_defaults = {
     SMTP_HOST = "smtp.zoho.com"
     SMTP_PORT = "465"
@@ -91,9 +93,10 @@ locals {
   }
 
   # Segredos montados como variável (lidos na partida da instância), por serviço: variável => segredo, a partir de
-  # quem lê cada um (secrets.tf). Os mesmos segredos que a conta do serviço tem permissão de ler, nem mais nem menos.
-  public_secret_env = { for id, secret in local.secrets : secret.env => id if contains(secret.readers, "public") }
-  worker_secret_env = { for id, secret in local.secrets : secret.env => id if contains(secret.readers, "worker") }
+  # quem lê cada um (secrets.tf). Os mesmos segredos que a conta do serviço tem permissão de ler, menos os lidos só pela
+  # API do Secret Manager (`env = null`: a senha da caixa de envio dos nós).
+  public_secret_env = { for id, secret in local.secrets : secret.env => id if contains(secret.readers, "public") && secret.env != null }
+  worker_secret_env = { for id, secret in local.secrets : secret.env => id if contains(secret.readers, "worker") && secret.env != null }
 
   # Variáveis fixas do Job; as de cada tenant chegam em `overrides` a cada execução (plano, 4c, passo 4). `CP_WORKER_SA`
   # é o cp-worker mesmo (não a cp-invoker): é a ele que o envs/tenant concede os papéis por tenant nos segredos do nó.

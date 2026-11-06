@@ -635,7 +635,7 @@ liga, se um dia valer o custo.
 | Firestore `(default)`                                     | Modo nativo, em São Paulo, protegido contra exclusão. Regras de segurança que negam tudo aos SDKs de cliente (só os serviços chegam, pelo IAM). Prazos (TTL em `expiresAt`) nas coleções com retenção do plano e os 4 índices compostos de `tenants`.                                                                                                                                                                                          |
 | 5 contas de serviço                                       | `cp-public`, `cp-worker`, `cp-terraform`, `cp-invoker` e `cp-deployer`, com os papéis da seção 2.2 do plano, cada um no menor recurso possível (a fila, o segredo, o Job). A `cp-invoker` é só o token das tasks e do Scheduler para chamar o `cp-worker`: ninguém age como o `cp-worker` além de quem implanta. O papel personalizado `cpJobRunner`; os agentes de serviço do Cloud Tasks e do Cloud Scheduler criados antes do primeiro uso. |
 | Pool e provedor de federação `cp-github`                  | O GitHub Actions implanta sem chave: só o token do environment `control-plane` do repositório, pelos IDs fixos do repositório e do dono, vindo de um `push` ou de um disparo manual na `main`, vira `cp-deployer`.                                                                                                                                                                                                                             |
-| 5 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key`. Gravados no passo 4, só na região. Logs de auditoria de acesso a dados do Secret Manager ligados no projeto (quem leu, gravou ou consultou a política de qual segredo).                                                                                                                                                    |
+| 6 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key` (montados nos serviços) e `cp-nodes-smtp-password` (a senha da caixa de envio dos nós de clientes, opcional, lida pelo `cp-worker` pela API). Gravados no passo 4, só na região. Logs de auditoria de acesso a dados do Secret Manager ligados no projeto (quem leu, gravou ou consultou a política de qual segredo).       |
 | Registro de imagens `verax-control-plane`                 | Imagens dos serviços e do executor Terraform, neste projeto e nesta região; `cp-deployer` publica. Ficam as 3 versões mais recentes de cada imagem (mais as publicadas nos últimos 30 dias). Tags mutáveis de propósito: com tags imutáveis, a limpeza não apaga versão com tag, e o registro cresceria sem limite.                                                                                                                            |
 | Cloud Run `cp-public`, `cp-worker` e o Job `cp-terraform` | Só com `services_enabled = true` (passo 5). 1 vCPU e 512 MiB, 0 a 2 e 0 a 1 instâncias, sonda de partida em `/health`; o Job com 2 GiB, 30 min e 1 tentativa. O worker só recebe tráfego de dentro do projeto, e só com token.                                                                                                                                                                                                                 |
 | Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
@@ -678,13 +678,15 @@ terraform plan -out=plano.tfplan
 terraform apply plano.tfplan
 ```
 
-A última linha do `plan` é **`Plan: 74 to add, 0 to change, 0 to destroy.`** (75 com orçamento, 76 com e-mail de
-alerta), sem nada para mudar ou destruir, e `data.google_project.this will be read during apply` (como na homologação:
-a leitura do projeto espera as APIs). Os serviços ficam para o passo 5: o Cloud Run recusa subir com um segredo sem
-versão, e os cinco nascem vazios. Erro de API "has not been used in project": a mesma propagação do passo 6 dos nós;
-espere 1 ou 2 minutos e repita o `plan` e o `apply`. Se o projeto já tiver logs de auditoria de acesso a dados do
-Secret Manager configurados à mão, importe antes (`terraform import google_project_iam_audit_config.secretmanager
-"SEU_PROJETO secretmanager.googleapis.com"`): o recurso é a configuração inteira desse serviço.
+A última linha do `plan` é **`Plan: 76 to add, 0 to change, 0 to destroy.`** (77 com orçamento, 78 com e-mail de
+alerta; eram 74 antes do cofre da senha da caixa dos nós e da leitura dele pelo `cp-worker`), sem nada para mudar ou
+destruir, e `data.google_project.this will be read during apply` (como na homologação: a leitura do projeto espera as
+APIs). Os serviços ficam para o passo 5: o Cloud Run recusa subir com um segredo sem versão, e os cinco montados
+nascem vazios. Erro de API "has not been used in project": a mesma propagação do passo 6 dos nós; espere 1 ou 2
+minutos e repita o `plan` e o `apply`. Se o projeto já tiver logs de auditoria de acesso a
+dados do Secret Manager configurados à mão, importe antes (`terraform import
+google_project_iam_audit_config.secretmanager "SEU_PROJETO secretmanager.googleapis.com"`): o recurso é a configuração
+inteira desse serviço.
 
 ### Passo 4: gravar os segredos
 
@@ -697,6 +699,8 @@ read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-stripe-w
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-cloudflare-api-token --data-file=- && unset VALOR
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-smtp-password --data-file=- && unset VALOR
 openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add cp-cookie-key --data-file=-
+# Opcional, só com o e-mail dos nós de clientes ("O provisionamento (CP-07)", item 3):
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-nodes-smtp-password --data-file=- && unset VALOR
 ```
 
 - **Chave da Stripe:** uma chave **restrita** (não a `sk_`), com escrita em Checkout Sessions, Customers,
@@ -713,9 +717,12 @@ openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add cp-cookie-key
   `veraxsistemas.com.br`, validade de 1 ano (item 13). Os IDs da conta e da zona vão no `terraform.tfvars`
   (`cloudflare_account_id`, `cloudflare_zone_id`), não são segredo.
 - **Senha do SMTP:** a senha de aplicativo da caixa de envio no Zoho, como no passo 7 dos nós.
+- **Senha da caixa dos nós (opcional):** a de uma caixa à parte, comum a todos os nós de clientes (avisos por e-mail e
+  "esqueci minha senha" de cada nó). Vazia, os nós nascem sem e-mail. Detalhes no item 3 de "O provisionamento
+  (CP-07)".
 
-Todos os cinco precisam ter versão antes do passo 5, mesmo que o provisionamento ainda esteja desligado: o Cloud Run
-monta os cinco na partida.
+Os cinco primeiros precisam ter versão antes do passo 5, mesmo que o provisionamento ainda esteja desligado: o Cloud
+Run monta os cinco na partida. O `cp-nodes-smtp-password` não é montado e pode ficar vazio.
 
 ### Passo 5: segunda subida (os serviços)
 
@@ -817,7 +824,8 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
 
 ### Operações do responsável no `cp-worker`
 
-As operações do responsável (`resume`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e
+As operações do responsável (`resume`, a recópia da senha do e-mail dos nós em
+`POST /internal/nodes/smtp-password/sync`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e
 `reactivate`; CP-07 e CP-11) são chamadas pelo **console do responsável** (`cp-admin`, atrás do IAP): o console chama
 o `cp-worker` com o token de identidade da conta `cp-admin` (audiência `WORKER_URL`) e manda no corpo o seu e-mail, que
 o IAP deu a ele; o worker aceita a conta do console só nessas rotas (`ADMIN_SA_EMAIL`) e confere que o e-mail está em
@@ -1003,10 +1011,11 @@ terraform plan
 ```
 
 O `plan` termina com `Plan: 33 to add, 0 to change, 0 to destroy.`: 29 recursos `module.node.*` e as 4 permissões do
-`cp-worker` nos cofres (34, com a leitura do registro, se `images_repository` for o Artifact Registry). Todo nome que aparece começa com `vx-demo-a` (o bucket de
-backups é `PROJETO_DE_TESTE-vx-demo-a-backups`), os metadados da VM têm `enable-guest-attributes` e as chaves `verax-*`,
-e nenhum recurso fica fora do prefixo. Não aplique: o `plan` só olha. Depois, apague o `terraform.tfvars` e a pasta
-`.terraform`.
+`cp-worker` nos cofres (34, com a leitura do registro, se `images_repository` for o Artifact Registry; mais 1, a
+gravação no `smtp-password`, com o e-mail do nó: `smtp_host`, `smtp_port` e `smtp_user`). Todo nome que aparece
+começa com `vx-demo-a` (o bucket de backups é `PROJETO_DE_TESTE-vx-demo-a-backups`), os metadados da VM têm
+`enable-guest-attributes` e as chaves `verax-*`, e nenhum recurso fica fora do prefixo. Não aplique: o `plan` só
+olha. Depois, apague o `terraform.tfvars` e a pasta `.terraform`.
 
 **Aceite da instalação sem operador (PR-N7)**, num projeto de teste com o `envs/nodes-platform` e o
 `envs/control-plane` aplicados (a conta `cp-worker` precisa existir) e um release `node-vX.Y.Z` promovido (Actions →
@@ -1024,7 +1033,10 @@ Versão do nó). O nó nasce só com o `terraform apply`, sem SSH:
    (`Plan: 33 to add` com o GHCR, a chave `startup-script` com o texto do `unattended.sh.tftpl`) e `terraform apply`.
 3. **O token do túnel**, em até 60 minutos depois do `apply` (é o que o passo `secrets.tunnel_token` do plano de
    controle faz): crie um túnel de teste no Cloudflare apontando `api-homolog` para `http://api:3000` e grave o token
-   com `printf '%s' "$TOKEN" | gcloud secrets versions add vx-homolog-cloudflare-tunnel-token --data-file=-`.
+   com `printf '%s' "$TOKEN" | gcloud secrets versions add vx-homolog-cloudflare-tunnel-token --data-file=-`. Com o
+   e-mail do nó (`smtp_host`, `smtp_port` e `smtp_user` no `terraform.tfvars`), grave também, no mesmo prazo, a senha
+   da caixa em `vx-homolog-smtp-password` (o que o passo `secrets.smtp_password` faz): a instalação espera por ela antes
+   de subir o nó, e para em `smtp_password_missing` depois de 60 minutos.
 4. **Espere `verax/ready`** (até cerca de 40 minutos; o Wazuh é o mais demorado):
 
    ```bash
@@ -1138,6 +1150,26 @@ for `true`, todo cliente pago para no `preflight` com `provisioning_disabled`, s
    `Zone > DNS > Edit` na zona. A partida do `cp-worker` recusa o grupo incompleto ou fora do formato e cita só o nome
    da variável. Depois, `terraform apply` (só as variáveis dos serviços mudam).
 
+   **O e-mail dos nós de clientes (opcional).** Sem ele, os nós nascem com `MAIL_TRANSPORT=none`: as contas têm senha
+   temporária, o "esqueci minha senha" não manda link e os avisos por e-mail ficam pulados; a partida do `cp-worker` e
+   cada `preflight` avisam no log (`node_mail_disabled`). Para ligar, uma caixa de envio comum a todos os nós, de
+   qualquer provedor SMTP com TLS (465, ou outra porta com STARTTLS; a GCP bloqueia a saída pela 25), **à parte da caixa
+   do plano de controle**: a senha vai para o cofre de cada nó de cliente, e um nó comprometido não deve levar a caixa
+   que manda a cobrança e o plano B da revelação. Em `worker_env`:
+
+   ```hcl
+   SMTP_HOST_NODES = "smtp.<provedor>"        # o nome do servidor, em minúsculas, sem porta
+   SMTP_PORT_NODES = "465"                    # padrão 465
+   SMTP_USER_NODES = "avisos@<domínio>"       # letras, números e @ . _ + -
+   MAIL_FROM_NODES = "avisos@<domínio>"       # o remetente que a caixa aceita
+   ```
+
+   e a senha no segredo `cp-nodes-smtp-password` (passo 4 do plano de controle; sem quebra de linha, só ASCII visível e
+   sem aspa simples, que o nó não aceita). O `preflight` confere a senha antes de criar qualquer coisa
+   (`smtp_password_missing` ou `smtp_password_invalid` no runbook); o cp-worker a copia para o cofre de cada nó novo.
+   Vale só para os nós criados depois: um nó que já existe não ganha o e-mail nem muda de servidor sozinho. Para trocar
+   a senha, veja `docs/runbooks/provisionamento.md`, "Trocar a senha do e-mail dos nós".
+
 4. **Decisão sua: o registro das imagens dos nós.** O padrão é o GHCR público (`ghcr.io/williandotdev/verax-control`):
    sem login, sem limpeza, nenhuma permissão. O Artifact Registry do projeto da Verax também serve
    (`NODE_IMAGES_REPOSITORY` e `images_project_id`), mas a limpeza dele apaga, depois de 30 dias, as versões fora das 3
@@ -1164,7 +1196,9 @@ Um cliente de teste nasce do zero e chega a `waiting_customer_connection` sem op
    `verax/ready` igual a `NODE_RELEASE`; `curl https://api-<slug>.<domínio>/health`; o painel abre em
    `https://<slug>.control.<domínio>` e a revelação mostra a senha uma vez.
 4. Confira que nada sensível ficou para trás: o log do Job só tem o resumo do plano (nenhum e-mail ou nome); em
-   `provisioningRuns/<runId>/steps`, nenhum token; o `vx-<slug>-cloudflare-tunnel-token` com uma versão.
+   `provisioningRuns/<runId>/steps`, nenhum token; o `vx-<slug>-cloudflare-tunnel-token` com uma versão. Com o e-mail
+   dos nós, o `vx-<slug>-smtp-password` também com uma versão, a linha `Senha da caixa de envio no cofre.` na saída
+   serial e, num achado crítico de teste, o aviso chegando (`docs/runbooks/no-verax.md`, "o aviso não chega").
 5. Uma falha de propósito: com `PROVISIONING_ENABLED = "false"` num segundo cliente de teste, ele para em
    `provisioning_failed` com `provisioning_disabled` e nenhuma task nova; ligue de novo, chame o `resume` e ele segue.
 6. Desfaça como na Exclusão 1 (seção do `envs/tenant`, acima, passo 7 do aceite da instalação), e apague à mão o

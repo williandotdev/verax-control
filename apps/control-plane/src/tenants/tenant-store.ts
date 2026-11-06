@@ -374,6 +374,25 @@ export class TenantStore {
     return { tenants, unreadable };
   }
 
+  /**
+   * Uma página de todos os clientes em ordem de subdomínio, depois de `after` (exclusive), com até `limit` documentos:
+   * a varredura da recópia da senha do e-mail dos nós. O `slug` é único e nunca muda, então a ordem é estável e o
+   * último `slug` de uma página é o cursor da seguinte, mesmo com os documentos mudando no meio (a recópia regrava
+   * `resources.nodeMailPasswordAt`, que por isso não serve de cursor). Desigualdade e ordenação no mesmo campo: o
+   * índice simples do Firestore basta. Uma página mais curta que `limit` é a última.
+   */
+  async listPageBySlug(after: string | undefined, limit: number): Promise<TenantRecord[]> {
+    const docs = await this.store.query(COLLECTIONS.tenants, {
+      ...(after === undefined ? {} : { where: [{ field: 'slug', op: '>' as const, value: after }] }),
+      orderBy: { field: 'slug' },
+      limit,
+    });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(tenantSchema, COLLECTIONS.tenants, doc.id, doc.data),
+    }));
+  }
+
   /** O documento `slugs/{slug}`, se existir. */
   async getSlug(slug: string): Promise<SlugDocument | undefined> {
     return this.readSlug(this.store, slug);

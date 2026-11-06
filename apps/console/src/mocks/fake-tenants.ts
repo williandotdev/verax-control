@@ -36,6 +36,7 @@ const STEPS: readonly ProvisioningStepName[] = [
   'firebase.site',
   'terraform.apply',
   'terraform.wait',
+  'secrets.smtp_password',
   'secrets.tunnel_token',
   'node.wait_ready',
   'node.health',
@@ -248,7 +249,7 @@ export function createFakeTenants(now: () => Date): FakeTenantsState {
           outcome: 'succeeded',
           release: 'node-v1.2.3',
         },
-        timeline: timeline(at, 10),
+        timeline: timeline(at, STEPS.length),
         access: { passwordRevealedAt: at(190) },
         transitions: [
           { from: null, to: 'pending', reason: 'checkout.session.completed', at: at(240) },
@@ -309,7 +310,7 @@ export function createFakeTenants(now: () => Date): FakeTenantsState {
           outcome: 'succeeded',
           release: 'node-v1.2.3',
         },
-        timeline: timeline(at, 10),
+        timeline: timeline(at, STEPS.length),
         access: { revealEmailSentAt: at(250), passwordRevealedAt: at(240) },
         transitions: [
           { from: null, to: 'pending', reason: 'contract_created', at: at(300) },

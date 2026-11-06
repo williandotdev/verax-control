@@ -526,11 +526,20 @@ export function isExecutionName(value: string): boolean {
 // --- Secret Manager -------------------------------------------------------------------------------------------------
 
 const versionStateSchema = z.object({ state: z.string().max(40).optional() });
+const accessedVersionSchema = z.object({
+  payload: z.object({
+    data: z
+      .string()
+      .max(48 * 1024)
+      .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  }),
+});
 
 /**
- * Secret Manager REST v1, só o que o provisionamento precisa: gravar uma versão no cofre do túnel (`secretVersionAdder`)
- * e ver o estado da versão mais nova do `admin-bootstrap` (`versions.get`, do `secretVersionManager`), sem ler o
- * conteúdo.
+ * Secret Manager REST v1, só o que o provisionamento precisa: gravar uma versão nos cofres do nó (o token do túnel e a
+ * senha da caixa de envio, `secretVersionAdder`), ver o estado da versão mais nova do `admin-bootstrap` (`versions.get`,
+ * do `secretVersionManager`), sem ler o conteúdo, e ler a senha da caixa de envio dos nós no cofre do plano de controle
+ * (`cp-nodes-smtp-password`, `secretAccessor`).
  */
 export class SecretVersionsApi extends GoogleApi {
   constructor(
@@ -552,6 +561,24 @@ export class SecretVersionsApi extends GoogleApi {
       },
     );
     expectOk(this.service, 'version_add', response);
+  }
+
+  /**
+   * O conteúdo da versão `latest` (a criada por último), em UTF-8. Sem versão nenhuma (404) ou com a última desativada
+   * ou destruída (`FAILED_PRECONDITION`), `undefined`. O conteúdo só sai daqui como valor de retorno: o erro de uma
+   * resposta fora do formato não cita o corpo, e o `dataCrc32c` é ignorado (o TLS já confere a integridade).
+   */
+  async accessLatest(project: string, secretId: string): Promise<string | undefined> {
+    const response = await this.call(
+      'GET',
+      'version_access',
+      `${this.base}/projects/${project}/secrets/${secretId}/versions/latest:access`,
+      { maxResponseBytes: 64 * 1024 },
+    );
+    if (response.status === 404) return undefined;
+    if (response.status === 400 && errorReasonOf(response.body) === 'FAILED_PRECONDITION') return undefined;
+    const data = this.parse('version_access', response, accessedVersionSchema).payload.data;
+    return Buffer.from(data, 'base64').toString('utf8');
   }
 
   /** O estado da versão `latest` (`ENABLED`, `DISABLED`, `DESTROYED`); sem versão nenhuma (404), `undefined`. */

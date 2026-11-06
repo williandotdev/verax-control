@@ -291,7 +291,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         actions: { start: false, resume: true, cancel: true, suspend: false, deleteNow: false },
         lifecycle: {},
       });
-      expect(detail.timeline).toHaveLength(10);
+      expect(detail.timeline).toHaveLength(11);
       expect(detail.timeline[0]).toEqual({ name: 'preflight', status: 'pending', attempts: 0 });
       await read('/v1/admin/tenants/nao-e-ulid').expect(404);
       // Nada do cadastro (nem o e-mail do admin, nem o CNPJ, nem a razão social) no log.

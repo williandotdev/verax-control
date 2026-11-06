@@ -147,7 +147,7 @@ describe('clientes', () => {
     expect(within(provisioning).getAllByRole('alert')[0]).toHaveTextContent('cloudflare_denied');
     expect(within(provisioning).getAllByRole('alert')[0]).toHaveTextContent('recusou a credencial');
     const steps = within(provisioning).getByRole('list', { name: 'Linha do tempo do provisionamento' });
-    expect(within(steps).getAllByRole('listitem')).toHaveLength(10);
+    expect(within(steps).getAllByRole('listitem')).toHaveLength(11);
     expect(within(steps).getAllByRole('listitem')[1]).toHaveTextContent('Parou');
     expect(screen.getByText('11.222.333/0001-81')).toBeInTheDocument();
 

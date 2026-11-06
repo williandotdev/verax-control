@@ -341,6 +341,7 @@ export type ProvisioningStepName =
   | 'firebase.site'
   | 'terraform.apply'
   | 'terraform.wait'
+  | 'secrets.smtp_password'
   | 'secrets.tunnel_token'
   | 'node.wait_ready'
   | 'node.health'

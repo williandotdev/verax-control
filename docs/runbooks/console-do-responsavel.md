@@ -124,7 +124,7 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
 
 A tela **Clientes** lista os clientes (os do site e os de contrato direto, os mais novos primeiro) com o estado, a
 cobrança e, no provisionamento, o passo e o código de quem parou. O detalhe de um cliente mostra o contratado e o preço,
-a linha do tempo dos dez passos do provisionamento, o acesso do administrador (quando o e-mail saiu e quando a senha foi
+a linha do tempo dos passos do provisionamento, o acesso do administrador (quando o e-mail saiu e quando a senha foi
 vista; nunca a senha), o ciclo de vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza
 sozinha.
 

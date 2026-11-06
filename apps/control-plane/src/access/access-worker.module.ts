@@ -18,6 +18,7 @@ import {
   LIFECYCLE_STEP_CLASSES,
 } from '../lifecycle/lifecycle.module.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
+import { NodeMailSyncController } from '../provisioning/node-mail.js';
 import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
 import { ProvisioningStartController } from '../provisioning/provisioning-start.js';
 import {
@@ -54,7 +55,8 @@ export interface AccessWorkerModuleOptions {
  * tasks e o responsável) e o gatilho do plano B para o `tick` do CP-11 (`RevealEmailService.dispatchDue`). Só o
  * `cp-worker` registra este módulo: a conta dele é a que lê e destrói o `admin-bootstrap` e manda e-mail. Desde o
  * CP-07, também os passos do provisionamento (`ProvisioningModule`) na mesma lista de passos, e o `resume` do
- * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda.
+ * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda, como a recópia da senha do e-mail dos nós
+ * (`POST /internal/nodes/smtp-password/sync`).
  */
 @Module({})
 export class AccessWorkerModule {
@@ -67,6 +69,7 @@ export class AccessWorkerModule {
         InternalStepsController,
         ProvisioningResumeController,
         ProvisioningStartController,
+        NodeMailSyncController,
         ...LIFECYCLE_CONTROLLERS,
       ],
       providers: [

@@ -9,8 +9,8 @@ project_id = "projeto-exemplo"
 # E-mail dos alertas (provisionamento com falha, assinatura inválida no webhook) e OWNER_ALERT_EMAIL.
 # alert_email = "voce@exemplo.com"
 
-# Segunda subida, depois de gravar os cinco segredos (GUIA, plano de controle, passo 4): sobe os serviços, o Job, o
-# relógio e o rewrite do Hosting.
+# Segunda subida, depois de gravar os cinco segredos montados nos serviços (GUIA, plano de controle, passo 4; a senha da
+# caixa dos nós, cp-nodes-smtp-password, pode ficar vazia): sobe os serviços, o Job, o relógio e o rewrite do Hosting.
 # services_enabled = true
 
 # Console do responsável (cp-admin, atrás do IAP): tabelas de preço, modelos de custo e simulador de DRE. Exige
@@ -36,11 +36,16 @@ project_id = "projeto-exemplo"
 # }
 
 # Variáveis só do cp-worker (e-mail e provisionamento); o cp-public não as recebe. SMTP_HOST e SMTP_PORT têm padrão
-# (Zoho, 465) em run.tf.
+# (Zoho, 465) em run.tf. O e-mail dos nós de clientes (SMTP_*_NODES) é opcional e de qualquer provedor SMTP com TLS: sem
+# ele, os nós nascem sem e-mail; com ele, grave a senha da caixa no segredo cp-nodes-smtp-password (GUIA, "O e-mail dos
+# nós de clientes"). Use uma caixa à parte da do plano de controle.
 # worker_env = {
 #   SMTP_USER            = "nao-responda@exemplo.com"
 #   MAIL_FROM            = "Verax Control <nao-responda@exemplo.com>"
-#   MAIL_FROM_NODES      = "nao-responda@exemplo.com"
+#   MAIL_FROM_NODES      = "avisos@exemplo.com"
+#   SMTP_HOST_NODES      = "smtp.exemplo.com"
+#   SMTP_PORT_NODES      = "465"
+#   SMTP_USER_NODES      = "avisos@exemplo.com"
 #   NODE_RELEASE         = "<versão promovida>"
 #   PROVISIONING_ENABLED = "true"
 # }

@@ -106,7 +106,7 @@ function createdNotice(
 }
 
 /**
- * Um cliente: quem é, como paga, o que contratou, a linha do tempo do provisionamento (os dez passos, com o código
+ * Um cliente: quem é, como paga, o que contratou, a linha do tempo do provisionamento (cada passo, com o código
  * de quem parou), o acesso do administrador e o histórico de estados; e as operações do responsável, com o subdomínio
  * digitado como confirmação. Enquanto provisiona, a página se atualiza sozinha.
  */

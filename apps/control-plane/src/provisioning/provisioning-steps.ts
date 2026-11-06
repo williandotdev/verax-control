@@ -12,6 +12,7 @@ import type { DesiredDnsRecord } from './cloudflare-api.js';
 import { executorEnv, isTenantEmail, isTenantName, type RunKind } from './executor-env.js';
 import { isExecutionName } from './google-apis.js';
 import { nodeFitProblems } from './node-fit.js';
+import { nodeSmtpPasswordSecret, readNodeSmtpPassword } from './node-mail.js';
 import { MAX_BUNDLE_BYTES, openPanelBundle, siteHostingConfig } from './panel-bundle.js';
 import {
   DefinitiveStepError,
@@ -193,14 +194,20 @@ export class PreflightStep extends BaseStep {
       nodeVersion,
       this.apis.releaseKeys,
     );
-    await this.store.updateRun(runId, (run) => ({ ...run, release }));
+    const nodeMail = await this.nodeMail(settings, tenant.id);
+    await this.store.updateRun(runId, (run) => ({ ...run, release, nodeMail }));
 
     const subnetCidr = tenant.resources?.subnetCidr ?? subnetCidrOf(await this.store.allocateSubnetNumber());
     const firebaseProject = tenant.resources?.firebaseProject ?? (await this.pickFirebaseProject(settings));
     const siteId = tenant.resources?.siteId ?? newSiteId(tenant.slug);
     return {
       kind: 'next',
-      outputs: { nodeVersion, commit: release.commit, panelBundle: release.panel !== undefined },
+      outputs: {
+        nodeVersion,
+        commit: release.commit,
+        panelBundle: release.panel !== undefined,
+        nodeMail: nodeMail !== undefined,
+      },
       patch: (current) => ({
         ...withResources({
           nodesProject: settings.nodesProject,
@@ -214,6 +221,25 @@ export class PreflightStep extends BaseStep {
         provisioning: { ...(current.provisioning ?? { attempts: 0 }), nodeVersion },
       }),
     };
+  }
+
+  /**
+   * O e-mail do nó desta execução. Sem `SMTP_HOST_NODES`, o nó nasce com `MAIL_TRANSPORT=none` e o provisionamento
+   * segue (o aviso `node_mail_disabled` vai ao log). Com ele, a senha tem de estar no cofre do plano de controle, no
+   * formato que o nó aceita, antes de qualquer recurso existir: um nó criado com o e-mail ligado e sem a senha não sobe,
+   * e um criado sem o e-mail não o ganha depois (o `node.conf` é escrito na instalação). A senha é só conferida aqui.
+   */
+  private async nodeMail(settings: ProvisioningSettings, tenantId: string): Promise<RunDocument['nodeMail']> {
+    if (settings.nodeMail === undefined) {
+      this.logger.warn(
+        { event: 'node_mail_disabled', tenantId },
+        'nó sem e-mail: SMTP_HOST_NODES não está configurado, os avisos por e-mail do nó ficam desligados',
+      );
+      return undefined;
+    }
+    const read = await readNodeSmtpPassword(this.apis.secrets, settings.controlPlaneProject);
+    if (!read.ok) throw new DefinitiveStepError(read.reason);
+    return { ...settings.nodeMail };
   }
 
   /** O primeiro projeto do pool (na ordem da configuração) com menos de 36 sites. */
@@ -536,6 +562,7 @@ async function startApply(
     tenantName: tenant.company.legalName,
     supportEmail: settings.supportEmail,
     imagesRepository: settings.imagesRepository,
+    ...(run?.nodeMail === undefined ? {} : { nodeMail: run.nodeMail }),
   });
   return apis.runJobs.run(settings.job, env);
 }
@@ -656,7 +683,52 @@ function parseOutputs(raw: Buffer, slug: string): z.infer<typeof terraformOutput
   return parsed.data;
 }
 
-// --- 6. secrets.tunnel_token ------------------------------------------------------------------------------------
+// --- 6. secrets.smtp_password -----------------------------------------------------------------------------------
+
+/**
+ * Com o e-mail do nó ligado nesta execução (`run.nodeMail`, decidido no `preflight`), lê a senha da caixa de envio dos
+ * nós no cofre do plano de controle (`cp-nodes-smtp-password`, `secretAccessor`) e a grava como versão nova de
+ * `vx-<slug>-smtp-password` (`secretVersionAdder`, a única permissão do cp-worker nesse cofre: não lê de volta). A
+ * instalação do nó espera essa versão antes de subir (`boot-install.sh`), por isso o passo vem logo depois do `apply`.
+ * Sem o e-mail, não faz nada. A senha vive só na memória deste passo (e na máscara do logger); uma repetição depois
+ * de gravar e antes de avançar grava de novo (uma versão a mais, inofensiva, como o token do túnel).
+ */
+@Injectable()
+export class NodeSmtpPasswordStep extends BaseStep {
+  readonly name = 'secrets.smtp_password';
+
+  constructor(
+    engine: ProvisioningEngine,
+    @Inject(APP_CONFIG) config: AppConfig,
+    @Inject(PROVISIONING_APIS) apis: ProvisioningApis,
+    @InjectPinoLogger(NodeSmtpPasswordStep.name) private readonly logger: PinoLogger,
+  ) {
+    super(engine, config, apis);
+  }
+
+  async execute({ tenant, run, now }: StepRun): Promise<StepOutcome> {
+    const settings = settingsOrFail(this.config);
+    if (run?.nodeMail === undefined) return { kind: 'next', outputs: { nodeMail: false } };
+    const read = await readNodeSmtpPassword(this.apis.secrets, settings.controlPlaneProject);
+    if (!read.ok) throw new DefinitiveStepError(read.reason);
+    await this.apis.secrets.addVersion(
+      settings.nodesProject,
+      nodeSmtpPasswordSecret(tenant.slug),
+      read.password,
+    );
+    this.logger.info(
+      { event: 'node_smtp_password_copied', tenantId: tenant.id },
+      'senha do e-mail no cofre do nó',
+    );
+    return {
+      kind: 'next',
+      outputs: { nodeMail: true },
+      patch: withResources({ nodeMailPasswordAt: now }),
+    };
+  }
+}
+
+// --- 7. secrets.tunnel_token ------------------------------------------------------------------------------------
 
 /**
  * Lê o token do túnel no Cloudflare e o grava como versão nova de `vx-<slug>-cloudflare-tunnel-token`
@@ -694,7 +766,7 @@ export class TunnelTokenStep extends BaseStep {
   }
 }
 
-// --- 7. node.wait_ready -----------------------------------------------------------------------------------------
+// --- 8. node.wait_ready -----------------------------------------------------------------------------------------
 
 /**
  * Lê os guest attributes da VM a cada 60 s: `verax/ready` igual à versão pedida → pronto (mesmo com um `verax/error`
@@ -736,7 +808,7 @@ export class NodeWaitReadyStep extends BaseStep {
   }
 }
 
-// --- 8. node.health ---------------------------------------------------------------------------------------------
+// --- 9. node.health ---------------------------------------------------------------------------------------------
 
 /** A API pelo túnel (`/health` e `/health/ready`) e o painel no endereço do Firebase com HSTS: 10 tentativas de 30 s. */
 @Injectable()
@@ -766,7 +838,7 @@ export class NodeHealthStep extends BaseStep {
   }
 }
 
-// --- 9. panel.domain_wait ---------------------------------------------------------------------------------------
+// --- 10. panel.domain_wait --------------------------------------------------------------------------------------
 
 /**
  * O domínio do painel a cada 2 min até o certificado e o host ficarem ativos (`CERT_ACTIVE` e `HOST_ACTIVE`), criando
@@ -818,7 +890,7 @@ export class PanelDomainWaitStep extends BaseStep {
   }
 }
 
-// --- 10. access.ready -------------------------------------------------------------------------------------------
+// --- 11. access.ready -------------------------------------------------------------------------------------------
 
 /**
  * Confirma que a senha temporária do primeiro admin está no cofre (`vx-<slug>-admin-bootstrap`, versão `latest`
@@ -849,13 +921,14 @@ export class AccessReadyStep extends BaseStep {
   }
 }
 
-/** Os dez passos, na ordem do plano. */
+/** Os onze passos, na ordem do plano (mais o `secrets.smtp_password`, do e-mail dos nós). */
 export const PROVISIONING_STEP_CLASSES = [
   PreflightStep,
   CloudflareTunnelStep,
   FirebaseSiteStep,
   TerraformApplyStep,
   TerraformWaitStep,
+  NodeSmtpPasswordStep,
   TunnelTokenStep,
   NodeWaitReadyStep,
   NodeHealthStep,

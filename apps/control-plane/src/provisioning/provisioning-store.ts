@@ -20,6 +20,17 @@ export const runReleaseSchema = z.strictObject({
   panel: z.strictObject({ object: z.string().max(200), sha256 }).optional(),
 });
 
+/**
+ * A caixa de envio que esta execução dá ao nó (servidor, porta e usuário; nunca a senha), decidida no `preflight`: o
+ * `terraform.apply` a põe nos metadados da VM e o `secrets.smtp_password` copia a senha só quando ela existe, os dois
+ * pela mesma decisão, mesmo que a configuração mude no meio da execução.
+ */
+export const runNodeMailSchema = z.strictObject({
+  host: z.string().max(253),
+  port: z.number().int().min(1).max(65535),
+  user: z.string().max(254),
+});
+
 /** Documento `provisioningRuns/{runId}` (plano §3). */
 export const runDocumentSchema = z.strictObject({
   tenantId: z.string().regex(ULID_PATTERN),
@@ -30,6 +41,8 @@ export const runDocumentSchema = z.strictObject({
   /** O código da falha definitiva (o mesmo de `tenant.provisioning.lastError.code`); nunca uma mensagem. */
   failureCode: z.string().max(64).optional(),
   release: runReleaseSchema.optional(),
+  /** Sem o campo, o nó desta execução nasce sem e-mail (`MAIL_TRANSPORT=none`). */
+  nodeMail: runNodeMailSchema.optional(),
   expiresAt: z.date(),
 });
 export type RunDocument = z.infer<typeof runDocumentSchema>;

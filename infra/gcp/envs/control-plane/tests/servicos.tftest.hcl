@@ -85,10 +85,10 @@ run "primeira_subida_sem_servicos" {
 
   assert {
     condition = (
-      keys(google_secret_manager_secret.cp) == ["cp-cloudflare-api-token", "cp-cookie-key", "cp-smtp-password", "cp-stripe-secret-key", "cp-stripe-webhook-secret"] &&
+      keys(google_secret_manager_secret.cp) == ["cp-cloudflare-api-token", "cp-cookie-key", "cp-nodes-smtp-password", "cp-smtp-password", "cp-stripe-secret-key", "cp-stripe-webhook-secret"] &&
       alltrue([for secret in google_secret_manager_secret.cp : secret.replication[0].user_managed[0].replicas[0].location == "southamerica-east1"])
     )
-    error_message = "Os cinco segredos do plano, guardados só na região."
+    error_message = "Os seis segredos do plano (os cinco montados e a senha da caixa dos nós), guardados só na região."
   }
 
   assert {
@@ -267,7 +267,7 @@ run "servicos_no_tamanho_do_plano" {
       sort([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name if length(env.value_source) > 0]) == tolist(["CLOUDFLARE_API_TOKEN", "SMTP_PASSWORD", "STRIPE_SECRET_KEY"]) &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value_source[0].secret_key_ref[0].secret if env.name == "CLOUDFLARE_API_TOKEN"]) == "cp-cloudflare-api-token"
     )
-    error_message = "cp-worker monta a chave da Stripe, o token do Cloudflare e a senha do SMTP; nunca o cookie nem o webhook."
+    error_message = "cp-worker monta a chave da Stripe, o token do Cloudflare e a senha do SMTP; nunca o cookie nem o webhook, e nem a senha da caixa dos nós (lida pela API do Secret Manager)."
   }
 
   assert {
