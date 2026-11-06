@@ -9,8 +9,11 @@ import { ApiError } from '../common/http/api-error.js';
 import { equalValues } from '../firestore/document-store.js';
 import type { RateLimitRule, TokenBucketLimiter } from '../common/http/rate-limiter.js';
 import { isUlid, ULID_PATTERN } from '../common/ulid.js';
+import { NODE_RELEASE_PATTERN } from '../common/config/env.schema.js';
+import { CONTRACT_CANCELABLE } from '../lifecycle/lifecycle-rules.js';
+import { nodeLimitsEnv } from '../pricing/node-limits.js';
 import { type OwnerContext, PricingTableStore } from '../pricing/pricing-store.js';
-import type { Configuration, PriceTable } from '../pricing/pricing.schema.js';
+import type { Configuration, ConfigurationInput, PriceTable } from '../pricing/pricing.schema.js';
 import { QuoteDailyLimitReachedError, QuoteStore } from '../pricing/quote-store.js';
 import { type ContactReason, quote } from '../pricing/quote.js';
 import { isTenantEmail, isTenantName } from '../provisioning/executor-env.js';
@@ -21,14 +24,17 @@ import { FIRST_PROVISIONING_STEP, isStepName } from '../queue/step-queue.js';
 import { SlugTakenError, TenantAlreadyExistsError, TenantStore } from '../tenants/tenant-store.js';
 import {
   billingModeOf,
+  type Hosting,
+  hostingOf,
   isReservableSlug,
   isSlugFree,
   LIFECYCLE_RUN_KINDS,
+  MODE_OF_HOSTING,
   type TenantRecord,
-  type TenantState,
   tenantStateSchema,
 } from '../tenants/tenant.schema.js';
 import {
+  type DirectConfiguration,
   type DirectTenantCreated,
   type DirectTenantPreview,
   type DirectTenantRequest,
@@ -40,6 +46,7 @@ import {
   type TenantActions,
   tenantActionSchemas,
   type TenantDetail,
+  type TenantInstallation,
   type TenantLifecycleView,
   type TenantList,
   type TenantListItem,
@@ -51,9 +58,13 @@ import type { OwnerCallResult, WorkerOwnerClient } from './worker-owner-client.j
 /** Quantos clientes a lista mostra (os mais novos primeiro). */
 export const TENANT_LIST_LIMIT = 200;
 
+/** O guia que o cliente segue para instalar o ambiente na infraestrutura dele (no repositório público). */
+export const INSTALL_GUIDE_PATH = 'docs/runbooks/instalacao-no-cliente.md';
+
 /**
- * Cadastros novos por responsável: o cadastro cria um nó pago na GCP. Um responsável negocia poucos contratos por dia;
- * uma sessão do IAP sequestrada não cria dezenas de nós. Em memória (o cp-admin tem no máximo uma instância).
+ * Cadastros novos por responsável: o cadastro na infraestrutura da Verax cria um nó pago. Um responsável negocia poucos
+ * contratos por dia; uma sessão do IAP sequestrada não cria dezenas de nós (nem dezenas de cadastros no cliente). Em
+ * memória (o cp-admin tem no máximo uma instância).
  */
 export const DIRECT_TENANT_CREATIONS: RateLimitRule = { capacity: 5, windowMs: 60 * 60_000 };
 /** As operações do responsável (iniciar, retomar, cancelar, suspender, reativar, apagar, exportar) por responsável. */
@@ -136,6 +147,31 @@ const WORKER_ERRORS: Readonly<Record<string, { status: HttpStatus; message: stri
     message:
       'Cliente da Stripe: o provisionamento começa com o pagamento, e o cancelamento e a suspensão seguem a assinatura (Portal ou Dashboard da Stripe).',
   },
+  customer_hosted: {
+    status: HttpStatus.CONFLICT,
+    message:
+      'O ambiente deste cliente roda na infraestrutura dele: a Verax não provisiona, não para, não liga nem apaga nada lá.',
+  },
+  not_customer_hosted: {
+    status: HttpStatus.CONFLICT,
+    message: 'O ambiente deste cliente roda na infraestrutura da Verax: não há instalação para enviar.',
+  },
+  release_unconfigured: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'O cp-worker está sem a versão do nó (RELEASE_BUCKET e NODE_RELEASE).',
+  },
+  release_manifest_missing: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'O manifesto da versão do nó não está no bucket de releases.',
+  },
+  release_manifest_invalid: {
+    status: HttpStatus.BAD_GATEWAY,
+    message: 'O manifesto da versão do nó foi recusado (assinatura ou formato).',
+  },
+  release_unavailable: {
+    status: HttpStatus.SERVICE_UNAVAILABLE,
+    message: 'O bucket de releases não respondeu.',
+  },
   not_canceled: {
     status: HttpStatus.CONFLICT,
     message: 'Só um cliente cancelado pode ser excluído ou ter os dados exportados.',
@@ -151,7 +187,14 @@ const WORKER_ERRORS: Readonly<Record<string, { status: HttpStatus; message: stri
 };
 
 /** Os 5xx do worker que têm significado próprio; qualquer outro é "o worker não respondeu". */
-const MEANINGFUL_5XX: ReadonlySet<string> = new Set(['export_unavailable', 'export_check_failed']);
+const MEANINGFUL_5XX: ReadonlySet<string> = new Set([
+  'export_unavailable',
+  'export_check_failed',
+  'release_unconfigured',
+  'release_manifest_missing',
+  'release_manifest_invalid',
+  'release_unavailable',
+]);
 
 /** O código estável de uma chamada ao worker que não deu certo. */
 export function workerFailureOf(result: { status: number; code: string }): string {
@@ -206,6 +249,42 @@ const RESULT_SCHEMAS = {
   }),
 } as const satisfies Record<TenantAction, z.ZodType>;
 
+/** Um endereço do release no GitHub (o worker os monta do manifesto assinado; aqui, conferidos de novo). */
+const githubUrl = z
+  .url({ protocol: /^https$/ })
+  .max(500)
+  .refine((url) => {
+    const parsed = new URL(url);
+    return parsed.hostname === 'github.com' && parsed.search === '' && parsed.hash === '';
+  });
+/** Uma imagem pelo digest: nunca uma tag sozinha. */
+const imageRef = z
+  .string()
+  .max(300)
+  .regex(/^[a-z0-9][A-Za-z0-9._/:-]{0,250}@sha256:[0-9a-f]{64}$/);
+/** O que o worker devolve da instalação no cliente (`installation.ts`), conferido antes de chegar ao console. */
+const INSTALLATION_SCHEMA = z.object({
+  release: z.string().regex(NODE_RELEASE_PATTERN),
+  commit: z.string().regex(/^[0-9a-f]{40}$/),
+  releasedAt: isoDate.optional(),
+  repositoryUrl: githubUrl,
+  releaseUrl: githubUrl,
+  manifestUrl: githubUrl,
+  signatureUrl: githubUrl,
+  package: z.object({ url: githubUrl, sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+  images: z.object({ api: imageRef, migrate: imageRef }),
+  thirdPartyImages: z.array(imageRef).min(1).max(20),
+  releaseKey: z.object({
+    name: z.string().regex(/^release-[a-z0-9-]{1,60}$/),
+    sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+});
+
+/** As respostas do contrato direto com o modo da tabela do lugar escolhido (a configuração que a cotação recebe). */
+export function configurationFor(hosting: Hosting, configuration: DirectConfiguration): ConfigurationInput {
+  return { ...configuration, mode: MODE_OF_HOSTING[hosting] };
+}
+
 function notFound(): ApiError {
   return new ApiError(HttpStatus.NOT_FOUND, 'Cliente não encontrado.', 'tenant_not_found');
 }
@@ -224,36 +303,34 @@ function rateLimited(): ApiError {
   );
 }
 
-const CANCELABLE: readonly TenantState[] = [
-  'pending',
-  'provisioning',
-  'provisioning_failed',
-  'waiting_customer_connection',
-  'active',
-  'past_due',
-  'suspended',
-];
-
-/** As operações que fazem sentido para o cliente agora (as regras são as do cp-worker, que confere de novo). */
+/**
+ * As operações que fazem sentido para o cliente agora (as regras são as do cp-worker, que confere de novo). Com o
+ * ambiente na infraestrutura do cliente, só cancelar e apagar (o registro do fim do contrato): nada de provisionar,
+ * suspender, reativar nem exportar, que agiriam na infraestrutura da Verax.
+ */
 export function availableActions(tenant: TenantRecord, now: Date): TenantActions {
   const contract = billingModeOf(tenant) === 'contract';
+  const verax = hostingOf(tenant) === 'verax';
   const lifecycle = tenant.lifecycle;
   return {
-    start: contract && tenant.state === 'pending',
-    resume: tenant.state === 'provisioning_failed' || tenant.state === 'provisioning',
-    cancel: contract && CANCELABLE.includes(tenant.state),
+    start: verax && contract && tenant.state === 'pending',
+    resume: verax && (tenant.state === 'provisioning_failed' || tenant.state === 'provisioning'),
+    cancel: contract && CONTRACT_CANCELABLE.includes(tenant.state),
     suspend:
+      verax &&
       contract &&
       (tenant.state === 'active' ||
         tenant.state === 'waiting_customer_connection' ||
         tenant.state === 'past_due'),
-    reactivate: contract && tenant.state === 'suspended' && tenant.billing?.suspendedReason === 'owner',
+    reactivate:
+      verax && contract && tenant.state === 'suspended' && tenant.billing?.suspendedReason === 'owner',
     deleteNow:
       tenant.state === 'canceled' ||
       (tenant.state === 'deleted' &&
         lifecycle?.purgedAt === undefined &&
         lifecycle?.run?.lastError !== undefined),
     export:
+      verax &&
       tenant.state === 'canceled' &&
       lifecycle?.exportUntil !== undefined &&
       lifecycle.exportUntil.getTime() > now.getTime(),
@@ -295,9 +372,15 @@ function lifecycleOf(tenant: TenantRecord): TenantLifecycleView {
  * O cadastro confere tudo de novo, com as regras do checkout e do provisionamento: os campos (os mesmos schemas), o
  * subdomínio (formato, lista reservada, livre), o nome e o e-mail como o nó os aceita, a tabela de preços vigente, a
  * cotação ("fale conosco" é recusado) e se o `envs/tenant` sabe criar o que foi pedido (`node-fit.ts`). Só então cria o
- * cliente em `pending` com `billing.mode = contract`, com o id da chave de idempotência, e pede ao worker o início do
- * provisionamento, que segue exatamente os passos de um cliente pago (CP-07). Toda escrita e toda recusa vão à
- * auditoria com `owner:<e-mail>`; os logs levam só ids, o subdomínio, o porte, as versões e os códigos.
+ * cliente com `billing.mode = contract` e o id da chave de idempotência. Onde o ambiente roda é escolha do responsável
+ * (`hosting`, decisão de 06/11/2026):
+ * - na infraestrutura da Verax: o cliente nasce em `pending` e o worker é chamado para o início do provisionamento, que
+ *   segue exatamente os passos de um cliente pago (CP-07);
+ * - na infraestrutura do cliente: a cotação de referência sai da tabela da licença (`self_hosted`), o cliente nasce em
+ *   `waiting_customer_install` e nada é pedido ao worker; o console mostra a versão e o guia para o cliente instalar
+ *   (`installation`), e o ciclo de vida só registra o fim do contrato.
+ * Toda escrita e toda recusa vão à auditoria com `owner:<e-mail>`; os logs levam só ids, o subdomínio, o porte, as
+ * versões e os códigos.
  */
 @Injectable()
 export class AdminTenantsService {
@@ -329,13 +412,16 @@ export class AdminTenantsService {
     if (!isUlid(tenantId)) throw notFound();
     const tenant = await this.tenants.get(tenantId);
     if (tenant === undefined) throw notFound();
+    const hosting = hostingOf(tenant);
     const runId = tenant.provisioning?.runId;
     const [run, steps, transitions] = await Promise.all([
       runId === undefined ? undefined : this.runs.getRun(runId),
       runId === undefined ? new Map<string, StepDocument>() : this.runs.listSteps(runId),
       this.tenants.listTransitions(tenantId),
     ]);
-    const timeline: TimelineStep[] = PROVISIONING_STEPS.map((name) => {
+    // O ambiente no cliente não tem provisionamento: nenhuma linha do tempo de passos que nunca vão rodar.
+    const names = hosting === 'customer' ? [] : PROVISIONING_STEPS;
+    const timeline: TimelineStep[] = names.map((name) => {
       const step = steps.get(name);
       if (step === undefined) return { name, status: 'pending', attempts: 0 };
       return {
@@ -356,12 +442,14 @@ export class AdminTenantsService {
       stateUpdatedAt: tenant.stateUpdatedAt,
       createdAt: tenant.createdAt,
       billingMode: billingModeOf(tenant),
+      hosting,
       company: { legalName: tenant.company.legalName, cnpj: tenant.company.cnpj },
       ...(tenant.adminEmail === undefined ? {} : { adminEmail: tenant.adminEmail }),
       configuration: tenant.configuration,
       limits: tenant.limits,
       pricing: tenant.pricing,
-      urls: tenantUrls(tenant.slug, this.config),
+      // Os endereços da Verax só valem para o ambiente na Verax: os do cliente, ele escolhe na instalação.
+      ...(hosting === 'verax' ? { urls: tenantUrls(tenant.slug, this.config) } : {}),
       ...(provisioning === undefined
         ? {}
         : {
@@ -401,12 +489,16 @@ export class AdminTenantsService {
     };
   }
 
-  /** A cotação de referência pela tabela vigente e o que o provisionamento ainda não sabe criar. Nada é gravado. */
+  /**
+   * A cotação de referência pela tabela vigente, no modo do lugar escolhido (a tabela do ambiente gerenciado na Verax,
+   * a da licença no cliente), e o que o provisionamento ainda não sabe criar. Nada é gravado.
+   */
   async preview(body: unknown): Promise<DirectTenantPreview> {
     const parsed = directTenantPreviewSchema.safeParse(body ?? {});
     if (!parsed.success) throw invalidRequest(parsed.error);
+    const { hosting, configuration } = parsed.data;
     const table = await this.currentTable();
-    const outcome = quote(parsed.data.configuration, table.content);
+    const outcome = quote(configurationFor(hosting, configuration), table.content);
     if (outcome.kind === 'contact_us') {
       return { priceTableVersion: table.version, contactUs: true, reason: outcome.reason };
     }
@@ -414,7 +506,47 @@ export class AdminTenantsService {
       priceTableVersion: table.version,
       contactUs: false,
       quote: outcome.quote,
-      problems: nodeFitProblems(outcome.quote.configuration, outcome.quote.limits),
+      problems: nodeFitProblems(outcome.quote.configuration, outcome.quote.limits, hosting),
+    };
+  }
+
+  /**
+   * O que o responsável manda ao cliente de contrato direto que instala o ambiente na infraestrutura dele: a versão do
+   * nó lida e conferida pelo cp-worker (o manifesto assinado do bucket de releases), o guia de instalação do
+   * repositório e as linhas do `node.conf` que o contrato define. Só leitura, sem nada gravado; o worker confere de novo
+   * que o ambiente é do cliente.
+   */
+  async installation(tenantId: string, owner: OwnerContext): Promise<TenantInstallation> {
+    if (!isUlid(tenantId)) throw notFound();
+    const tenant = await this.tenants.get(tenantId);
+    if (tenant === undefined) throw notFound();
+    if (hostingOf(tenant) !== 'customer') throw workerError('not_customer_hosted');
+    const worker = this.worker;
+    let result: OwnerCallResult;
+    if (worker === null) {
+      result = { ok: false, status: 503, code: 'worker_unconfigured' };
+    } else {
+      try {
+        result = await worker.installation(tenant.id, owner.email);
+      } catch {
+        result = { ok: false, status: 0, code: 'worker_unreachable' };
+      }
+    }
+    const checked = result.ok ? INSTALLATION_SCHEMA.safeParse(result.body) : undefined;
+    if (!result.ok || checked === undefined || !checked.success) {
+      const failure = workerFailureOf(result.ok ? { status: 502, code: 'worker_error' } : result);
+      this.logger.warn(
+        { event: 'admin_installation_failed', tenantId: tenant.id, failure, status: result.status },
+        'a versão para o cliente instalar não veio do cp-worker',
+      );
+      throw workerError(failure);
+    }
+    const { repositoryUrl, ...release } = checked.data;
+    return {
+      ...release,
+      thirdPartyImages: [...release.thirdPartyImages],
+      guideUrl: `${repositoryUrl}/blob/main/${INSTALL_GUIDE_PATH}`,
+      nodeConf: Object.entries(nodeLimitsEnv(tenant.limits)).map(([name, value]) => ({ name, value })),
     };
   }
 
@@ -426,6 +558,7 @@ export class AdminTenantsService {
       throw invalidRequest(parsed.error);
     }
     const request = parsed.data;
+    const customer = request.hosting === 'customer';
     if (request.confirmSlug !== request.slug) {
       await this.refuseCreate(owner, 'confirmation_mismatch', request.slug);
       throw workerError('confirmation_mismatch');
@@ -455,7 +588,7 @@ export class AdminTenantsService {
       throw slugUnavailable();
     }
     const table = await this.currentTable();
-    const outcome = quote(request.configuration, table.content);
+    const outcome = quote(configurationFor(request.hosting, request.configuration), table.content);
     if (outcome.kind === 'contact_us') {
       await this.refuseCreate(owner, 'configuration_contact_us', request.slug);
       throw new ApiError(
@@ -466,7 +599,7 @@ export class AdminTenantsService {
       );
     }
     const quoted = outcome.quote;
-    const problems = nodeFitProblems(quoted.configuration, quoted.limits);
+    const problems = nodeFitProblems(quoted.configuration, quoted.limits, request.hosting);
     if (problems.length > 0) {
       await this.refuseCreate(owner, 'configuration_unsupported', request.slug);
       throw new ApiError(
@@ -509,11 +642,14 @@ export class AdminTenantsService {
           company: { legalName: request.companyName, cnpj: request.cnpj },
           adminEmail: request.adminEmail,
           billing: { mode: 'contract' },
+          ...(customer ? { hosting: 'customer' as const } : {}),
         },
         {
           tenantId: request.idempotencyKey,
-          reason: 'contract_created',
+          reason: customer ? 'contract_created_customer_hosted' : 'contract_created',
           audit: { actor: `owner:${owner.email}`, requestId: owner.requestId },
+          // No cliente, nasce esperando a instalação dele: nunca passa por `pending` nem pelo provisionamento.
+          ...(customer ? { initialState: 'waiting_customer_install' as const } : {}),
         },
       );
     } catch (error) {
@@ -534,14 +670,18 @@ export class AdminTenantsService {
         tenantId: tenant.id,
         slug: tenant.slug,
         size: tenant.configuration.size,
+        hosting: request.hosting,
         priceTableVersion: table.version,
       },
       'cliente de contrato direto criado',
     );
+    // No cliente, nada é pedido ao cp-worker: nenhum passo, nenhuma fila, nenhum recurso na infraestrutura da Verax.
+    if (customer) return { id: tenant.id, slug: tenant.slug, replayed: false, hosting: 'customer' };
     return {
       id: tenant.id,
       slug: tenant.slug,
       replayed: false,
+      hosting: 'verax',
       provisioning: await this.startAfterCreate(tenant, owner),
     };
   }
@@ -601,13 +741,15 @@ export class AdminTenantsService {
   }
 
   /**
-   * O pedido que a chave já criou, conferido inteiro contra o cliente gravado (que é o pedido normalizado): o modo, o
-   * subdomínio, a razão social, o CNPJ, o e-mail e a configuração levada à tabela da cotação original (a mesma versão
-   * publicada, que não muda). Qualquer diferença é outro cadastro com a mesma chave: 409, sem mexer no cliente.
+   * O pedido que a chave já criou, conferido inteiro contra o cliente gravado (que é o pedido normalizado): o modo de
+   * cobrança, onde o ambiente roda, o subdomínio, a razão social, o CNPJ, o e-mail e a configuração levada à tabela da
+   * cotação original (a mesma versão publicada, que não muda). Qualquer diferença é outro cadastro com a mesma chave:
+   * 409, sem mexer no cliente.
    */
   private async sameRequest(existing: TenantRecord, request: DirectTenantRequest): Promise<boolean> {
     if (
       billingModeOf(existing) !== 'contract' ||
+      hostingOf(existing) !== request.hosting ||
       existing.slug !== request.slug ||
       existing.company.legalName !== request.companyName ||
       existing.company.cnpj !== request.cnpj ||
@@ -617,7 +759,7 @@ export class AdminTenantsService {
     }
     const table = await this.tables.get(existing.pricing.priceTableVersion);
     if (table === undefined || table.status === 'draft') return false;
-    const outcome = quote(request.configuration, table.content);
+    const outcome = quote(configurationFor(request.hosting, request.configuration), table.content);
     return (
       outcome.kind === 'quote' &&
       equalValues(outcome.quote.configuration, existing.configuration) &&
@@ -638,6 +780,14 @@ export class AdminTenantsService {
         'Este cadastro já foi usado com outros dados. Recarregue a página para começar um cadastro novo.',
         'idempotency_conflict',
       );
+    }
+    if (hostingOf(existing) === 'customer') {
+      // No cliente, a repetição só devolve o mesmo cliente: não há provisionamento para pedir de novo.
+      this.logger.info(
+        { event: 'contract_tenant_replayed', tenantId: existing.id },
+        'cadastro repetido: o mesmo cliente',
+      );
+      return { id: existing.id, slug: existing.slug, replayed: true, hosting: 'customer' };
     }
     let provisioning: ProvisioningRequestOutcome;
     // Em `pending`, o pedido ao worker não chegou; parado no `preflight`, ele pode ter mudado o estado e falhado ao
@@ -660,7 +810,7 @@ export class AdminTenantsService {
       { event: 'contract_tenant_replayed', tenantId: existing.id },
       'cadastro repetido: o mesmo cliente',
     );
-    return { id: existing.id, slug: existing.slug, replayed: true, provisioning };
+    return { id: existing.id, slug: existing.slug, replayed: true, hosting: 'verax', provisioning };
   }
 
   /** O pedido do início do provisionamento logo depois do cadastro: sem o worker, o cliente fica em `pending`. */
@@ -804,6 +954,7 @@ function listItemOf(tenant: TenantRecord): TenantListItem {
     state: tenant.state,
     stateUpdatedAt: tenant.stateUpdatedAt,
     billingMode: billingModeOf(tenant),
+    hosting: hostingOf(tenant),
     size: tenant.configuration.size,
     ...(provisioningState && tenant.provisioning?.step !== undefined
       ? { step: tenant.provisioning.step }

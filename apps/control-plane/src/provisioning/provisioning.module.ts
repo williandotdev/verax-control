@@ -3,6 +3,7 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepHandler } from '../internal/step-handler.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
+import { InstallationService } from './installation.js';
 import { NODE_MAIL_SYNC_OPTIONS, type NodeMailSyncOptions, NodeMailSyncService } from './node-mail.js';
 import { ProvisioningEngine } from './provisioning-engine.js';
 import { ProvisioningResumeService } from './provisioning-resume.js';
@@ -55,7 +56,8 @@ export interface ProvisioningModuleOptions {
 /**
  * O provisionamento (CP-07), só no cp-worker: os passos 1 a 10 do plano §4c (`provisioning-steps.ts`), o motor que os
  * encadeia (`provisioning-engine.ts`), o repositório das execuções, o `resume` do responsável, o início do
- * provisionamento de um cliente de contrato direto (`provisioning-start.ts`) e a recópia da senha do e-mail dos
+ * provisionamento de um cliente de contrato direto (`provisioning-start.ts`), a versão que o contrato direto com o
+ * ambiente na infraestrutura do cliente instala (`installation.ts`, só leitura) e a recópia da senha do e-mail dos
  * nós (`node-mail.ts`). Os controladores dessas operações ficam no módulo das rotas internas
  * (`AccessWorkerModule`), junto da guarda de quem chama.
  */
@@ -70,6 +72,7 @@ export class ProvisioningModule {
         ProvisioningEngine,
         ProvisioningResumeService,
         ProvisioningStartService,
+        InstallationService,
         NodeMailSyncService,
         { provide: NODE_MAIL_SYNC_OPTIONS, useValue: options.nodeMailSync ?? {} },
         ProvisioningStartupCheck,
@@ -86,6 +89,7 @@ export class ProvisioningModule {
         PROVISIONING_STEP_HANDLERS,
         ProvisioningResumeService,
         ProvisioningStartService,
+        InstallationService,
         NodeMailSyncService,
         ProvisioningStore,
         PROVISIONING_APIS,

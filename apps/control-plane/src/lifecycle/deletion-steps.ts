@@ -18,7 +18,12 @@ import {
 import { tenantHosts, WAITS } from '../provisioning/provisioning-steps.js';
 import { ProvisioningStore } from '../provisioning/provisioning-store.js';
 import { readReleaseManifest } from '../provisioning/release-manifest.js';
-import type { LifecycleRunKind, Tenant, TenantRecord } from '../tenants/tenant.schema.js';
+import {
+  hostingOf,
+  type LifecycleRunKind,
+  type Tenant,
+  type TenantRecord,
+} from '../tenants/tenant.schema.js';
 import {
   DeletionEngine,
   type DeletionOutcome,
@@ -426,6 +431,7 @@ export class DeletionRecordStep extends BaseDeletionStep {
         requestedBy: tenant.lifecycle?.deletionRequestedBy,
         recordSent: sent,
         provisioned: tenant.provisioning?.runId !== undefined,
+        hosting: hostingOf(tenant),
       },
     };
   }
@@ -440,6 +446,7 @@ export class DeletionRecordStep extends BaseDeletionStep {
           canceledAt: tenant.lifecycle?.canceledAt,
           deletedAt: now,
           cryptoDestroyAfter: tenant.lifecycle?.cryptoDestroyAfter,
+          hosting: hostingOf(tenant),
         }),
       );
       return true;

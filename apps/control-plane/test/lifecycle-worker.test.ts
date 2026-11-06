@@ -1272,6 +1272,91 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       expect((await reload(stripeTenant.tenant.id)).state).toBe('active');
     });
 
+    it('ambiente no cliente: nem forjando uma VM, nada toca a nuvem; cancelar, o relógio e o apagar agora só mexem no cadastro', async () => {
+      const seed = demoTenant('no-cliente-a');
+      const created = await tenants.create(
+        {
+          ...seed,
+          consent: undefined,
+          stripe: undefined,
+          billing: { mode: 'contract' },
+          hosting: 'customer',
+          configuration: { ...seed.configuration, mode: 'self_hosted' },
+        },
+        {
+          reason: 'contract_created_customer_hosted',
+          audit: SYSTEM,
+          initialState: 'waiting_customer_install',
+        },
+      );
+      const id = created.id;
+      // Forjado: uma execução e uma VM gravadas, que no cliente nunca existem. Nem assim o plano de controle age.
+      await tenants.change(id, () => ({
+        reason: 'teste',
+        audit: SYSTEM,
+        mutate: (t) => ({
+          ...t,
+          provisioning: { runId: newUlid(), attempts: 0 },
+          resources: {
+            nodesProject: NODES,
+            zone: ZONE,
+            instanceName: 'vx-no-cliente-a',
+            backupsBucket: `${NODES}-vx-no-cliente-a-backups`,
+          },
+        }),
+      }));
+      const path = `/internal/tenants/${id}`;
+      const confirm = { confirmSlug: 'no-cliente-a' };
+      for (const [operation, body, code] of [
+        ['provision', confirm, 'customer_hosted'],
+        ['resume', {}, 'customer_hosted'],
+        ['suspend', confirm, 'not_allowed'],
+      ] as const) {
+        const refused = await viaConsole(`${path}/${operation}`, body).expect(409);
+        expect(refused.body, operation).toMatchObject({ code });
+      }
+      expect((await reload(id)).state).toBe('waiting_customer_install');
+
+      // Cancelar só registra o fim do contrato: sem node.stop, sem janela de exportação.
+      await viaConsole(`${path}/cancel`, confirm).expect(200);
+      const canceled = await reload(id);
+      expect(canceled.state).toBe('canceled');
+      expect(canceled.lifecycle?.exportUntil).toBeUndefined();
+      await tick(at(1));
+      await drain();
+      expect(pending('node.stop')).toHaveLength(0);
+      expect(pending('node.start')).toHaveLength(0);
+      const exported = await viaConsole(`${path}/export`, { object: BACKUP }).expect(404);
+      expect(exported.body).toMatchObject({ code: 'no_backups' });
+
+      // Apagar agora: a Exclusão 1 só no Firestore, e o registro diz que o ambiente é do cliente.
+      const deletion = await viaConsole(`${path}/delete-now`, confirm).expect(200);
+      expect(deletion.body).toMatchObject({ deletion: 'started', phase: 'delete' });
+      await drain();
+      const deleted = await reload(id);
+      expect(deleted.state).toBe('deleted');
+      expect(deleted.lifecycle?.deletedAt).toBeInstanceOf(Date);
+      expect(deleted.adminEmail).toBeUndefined();
+      // Nenhuma janela de exportação aberta nem fechada: os dados nunca estiveram na Verax.
+      expect(deleted.lifecycle?.exportUntil).toBeUndefined();
+      expect(mail.sent).toHaveLength(1);
+      expect(mail.sent[0]?.to).toBe('admin@no-cliente-a.example');
+      expect(mail.sent[0]?.text).toContain('roda na infraestrutura da sua empresa');
+      expect(mail.sent[0]?.text).toContain('a Verax não tem acesso a ele e não apagou nada nele');
+      expect(mail.sent[0]?.text).not.toContain('Foram apagados');
+      const completed = (await audit.listForTenant(id)).find(
+        (entry) => entry.action === 'tenant.deletion_completed',
+      );
+      expect(completed?.details).toMatchObject({ hosting: 'customer', recordSent: true });
+
+      await tick(at(97));
+      await drain();
+      expect((await reload(id)).lifecycle?.purgedAt).toBeInstanceOf(Date);
+      // Nenhuma chamada a Cloudflare, Firebase, Compute, Storage, Secret Manager nem ao executor.
+      expect(cloud.requests).toHaveLength(0);
+      expect(cloud.executions.size).toBe(0);
+    });
+
     it('o console só passa com quem agiu sendo um responsável; a cp-invoker e o cp-public nunca', async () => {
       const seeded = await contract('console-a');
       await cancel(seeded.tenant.id);

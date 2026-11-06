@@ -1,8 +1,18 @@
-import { CircleCheck, CircleDashed, FilePen, LoaderCircle, OctagonAlert, CirclePause } from 'lucide-react';
+import {
+  Building2,
+  CircleCheck,
+  CircleDashed,
+  CirclePause,
+  FilePen,
+  Hourglass,
+  LoaderCircle,
+  OctagonAlert,
+  Server,
+} from 'lucide-react';
 import type { ReactNode } from 'react';
-import type { BillingMode, TenantState } from '@/lib/api-types';
+import type { BillingMode, Hosting, TenantState } from '@/lib/api-types';
 import { cn } from '@/lib/cn';
-import { BILLING_LABELS, STATE_LABELS } from './labels';
+import { BILLING_LABELS, HOSTING_LABELS, STATE_LABELS } from './labels';
 
 function Badge({ icon, children, className }: { icon: ReactNode; children: ReactNode; className?: string }) {
   return (
@@ -22,6 +32,7 @@ const STATE_ICONS: Readonly<Record<TenantState, ReactNode>> = {
   pending: <CircleDashed aria-hidden className="size-3.5" />,
   provisioning: <LoaderCircle aria-hidden className="size-3.5" />,
   provisioning_failed: <OctagonAlert aria-hidden className="size-3.5 text-critical" />,
+  waiting_customer_install: <Hourglass aria-hidden className="size-3.5" />,
   waiting_customer_connection: <CircleCheck aria-hidden className="size-3.5 text-ok" />,
   active: <CircleCheck aria-hidden className="size-3.5 text-ok" />,
   past_due: <OctagonAlert aria-hidden className="size-3.5 text-high" />,
@@ -40,6 +51,24 @@ export function TenantStateBadge({ state }: { state: TenantState }) {
       }
     >
       {STATE_LABELS[state]}
+    </Badge>
+  );
+}
+
+/** Onde o ambiente roda: na infraestrutura da Verax ou na do cliente (só contrato direto). */
+export function HostingBadge({ hosting }: { hosting: Hosting }) {
+  return (
+    <Badge
+      icon={
+        hosting === 'customer' ? (
+          <Building2 aria-hidden className="size-3.5" />
+        ) : (
+          <Server aria-hidden className="size-3.5" />
+        )
+      }
+      className={hosting === 'customer' ? 'border-primary/40' : undefined}
+    >
+      {HOSTING_LABELS[hosting]}
     </Badge>
   );
 }

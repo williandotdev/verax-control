@@ -202,6 +202,92 @@ export interface Option {
   label: string;
 }
 
+export interface RadioOption extends Option {
+  /** O que a escolha faz, abaixo do rótulo (ligado ao rádio por `aria-describedby`). */
+  description?: string;
+}
+
+/**
+ * Uma escolha obrigatória entre poucas opções, sem nenhuma marcada de início: um grupo de rádios com legenda, a
+ * descrição de cada opção e o problema que a API (ou a tela) aponta. O primeiro rádio tem o id do caminho, para o
+ * resumo de erros levar o foco até o grupo.
+ */
+export function RadioField({
+  path,
+  label,
+  options,
+  hint,
+}: {
+  path: Path;
+  label: string;
+  options: readonly RadioOption[];
+  hint?: string;
+}) {
+  const binding = useField(path);
+  const value = typeof binding.value === 'string' ? binding.value : '';
+  const errors = binding.issues;
+  const hintId = `${binding.id}-dica`;
+  const errorId = `${binding.id}-erro`;
+  const describedBy =
+    [hint === undefined ? undefined : hintId, errors.length === 0 ? undefined : errorId]
+      .filter(Boolean)
+      .join(' ') || undefined;
+  return (
+    <fieldset className="space-y-3 rounded-xl border bg-surface p-4" aria-describedby={describedBy}>
+      <legend className="px-1 text-base font-semibold">{label}</legend>
+      {hint !== undefined && (
+        <p id={hintId} className="-mt-2 text-sm text-muted-foreground">
+          {hint}
+        </p>
+      )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        {options.map((option, index) => {
+          const id = index === 0 ? binding.id : `${binding.id}-${option.value}`;
+          const descriptionId = `${id}-descricao`;
+          return (
+            <div
+              key={option.value}
+              className={cn(
+                'flex items-start gap-3 rounded-lg border border-border-strong bg-surface-raised p-3',
+                value === option.value && 'border-primary ring-1 ring-primary',
+              )}
+            >
+              <input
+                id={id}
+                type="radio"
+                name={binding.id}
+                value={option.value}
+                className="mt-1 size-4 accent-primary"
+                checked={value === option.value}
+                disabled={binding.readOnly}
+                required
+                aria-invalid={errors.length > 0 || undefined}
+                aria-describedby={option.description === undefined ? undefined : descriptionId}
+                onChange={() => binding.set(option.value)}
+              />
+              <div className="space-y-0.5">
+                <label htmlFor={id} className="text-sm font-medium">
+                  {option.label}
+                </label>
+                {option.description !== undefined && (
+                  <p id={descriptionId} className="text-xs text-muted-foreground">
+                    {option.description}
+                  </p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {errors.length > 0 && (
+        <p id={errorId} className="text-xs text-critical-text">
+          {errors.join(' · ')}
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
 /** Seletor nativo; a opção vazia (quando há) tira o valor do documento. */
 export function SelectField({
   path,

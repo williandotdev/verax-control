@@ -8,7 +8,7 @@ import { quote } from './quote.js';
 const table = priceTableSchema.parse(fictitiousPriceTable());
 
 describe('tabela pública (GET /v1/public/pricing)', () => {
-  it('só preços e regras: nenhum lookup_key, custo ou margem; a nuvem do cliente é "fale conosco" na v1', () => {
+  it('só preços e regras: nenhum lookup_key, custo ou margem; o ambiente no cliente nem aparece (contrato direto)', () => {
     const view = publicPricing('teste-v1', table);
 
     expect(view).toEqual({
@@ -27,7 +27,6 @@ describe('tabela pública (GET /v1/public/pricing)', () => {
           ],
           setupAmount: 0,
         },
-        { mode: 'self_hosted', sale: 'contact_us' },
       ],
       sizes: [
         { size: 'P', description: 'Porte de teste P', maxCloudAccounts: 5, maxMonthlyGib: 50, maxAgents: 10 },
@@ -65,7 +64,7 @@ describe('tabela pública (GET /v1/public/pricing)', () => {
       },
       prioritySupport: { amount: 30_000 },
       users: { max: 10 },
-      // O pacote de partida da nuvem do cliente fica de fora enquanto o modo é "fale conosco".
+      // O pacote de partida do ambiente no cliente fica de fora: o site só vende o da infraestrutura da Verax.
       presets: [
         {
           id: 'inicial',
@@ -81,7 +80,10 @@ describe('tabela pública (GET /v1/public/pricing)', () => {
         },
       ],
     });
-    expect(JSON.stringify(view)).not.toMatch(/lookupKey|vc_|cost|margin/i);
+    expect(JSON.stringify(view)).not.toMatch(/lookupKey|vc_|cost|margin|self_hosted/i);
+    // A tabela FICTÍCIA tem os preços da licença no cliente (o console os usa): nenhum deles chega aqui.
+    expect(table.modes.self_hosted.setup?.amount).toBe(100_000);
+    expect(view.modes.map((mode) => mode.mode)).toEqual(['managed']);
     expect(isSoldOnline('managed')).toBe(true);
     expect(isSoldOnline('self_hosted')).toBe(false);
   });
@@ -100,7 +102,7 @@ describe('tabela pública (GET /v1/public/pricing)', () => {
     );
     if (outcome.kind !== 'quote') throw new Error('sob consulta');
     expect(outcome.quote.lineItems.map((item) => describeLineItem(item, 'managed', 'P'))).toEqual([
-      'Ambiente gerenciado (porte P)',
+      'Ambiente na infraestrutura da Verax (porte P)',
       'Contas de nuvem adicionais',
       'Volume de logs até 50 GiB/mês',
       'Agentes nas instâncias (pacote de 10)',

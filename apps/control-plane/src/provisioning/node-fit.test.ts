@@ -30,6 +30,25 @@ describe('nodeFitProblems (o que o envs/tenant sabe criar, a mesma regra do pref
   });
 });
 
+describe('nodeFitProblems no ambiente do cliente (contrato direto, nada provisionado)', () => {
+  it('só os limites contam: o modo da licença, outro porte e agentes passam', () => {
+    const configuration = {
+      ...demoConfiguration(),
+      mode: 'self_hosted' as const,
+      size: 'G' as const,
+      agents: 10,
+    };
+    expect(nodeFitProblems(configuration, { ...demoLimits(), maxAgents: 10 }, 'customer')).toEqual([]);
+    expect(
+      nodeFitProblems(
+        configuration,
+        { ...demoLimits(), historyDays: NODE_LIMIT_RANGES.historyDays[0] - 1 },
+        'customer',
+      ),
+    ).toEqual(['limits']);
+  });
+});
+
 describe('accessEmailConfigured (o e-mail "ambiente pronto" do cliente de contrato direto)', () => {
   const base = { ROLE: 'worker', NODE_ENV: 'test' };
   const smtp = {

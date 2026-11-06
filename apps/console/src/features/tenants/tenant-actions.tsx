@@ -52,13 +52,20 @@ const ACTIONS: Readonly<Record<TenantAction, ActionConfig>> = {
     busy: 'Cancelando…',
     icon: <Ban aria-hidden />,
     danger: true,
-    describe: () => (
-      <p>
-        Agora, ou numa data futura (o fim do contrato, até 2 anos), que o relógio do plano de controle aplica.
-        Cancelado, a VM para, o cliente pode pedir a exportação por 30 dias e a exclusão vem em D+30 (a
-        cripto-destruição, em D+97).
-      </p>
-    ),
+    describe: (tenant) =>
+      tenant.hosting === 'customer' ? (
+        <p>
+          Agora, ou numa data futura (o fim do contrato, até 2 anos), que o relógio do plano de controle
+          aplica. Só registra o fim do contrato: nada é parado nem apagado no ambiente do cliente. Em D+30, a
+          Verax apaga o cadastro dela (o e-mail do administrador) e envia o registro de exclusão.
+        </p>
+      ) : (
+        <p>
+          Agora, ou numa data futura (o fim do contrato, até 2 anos), que o relógio do plano de controle
+          aplica. Cancelado, a VM para, o cliente pode pedir a exportação por 30 dias e a exclusão vem em D+30
+          (a cripto-destruição, em D+97).
+        </p>
+      ),
   },
   suspend: {
     flag: 'suspend',
@@ -86,13 +93,20 @@ const ACTIONS: Readonly<Record<TenantAction, ActionConfig>> = {
     busy: 'Pedindo a exclusão…',
     icon: <Trash2 aria-hidden />,
     danger: true,
-    describe: () => (
-      <p>
-        A Exclusão 1 agora, sem esperar D+30: a VM, o disco e os snapshots, o túnel e os registros de DNS, o
-        site do painel e os cofres saem. <strong>Não tem volta.</strong> A chave das credenciais e os backups
-        ficam até a cripto-destruição (D+97). Numa exclusão que parou, recomeça de onde der.
-      </p>
-    ),
+    describe: (tenant) =>
+      tenant.hosting === 'customer' ? (
+        <p>
+          Apaga agora o cadastro do cliente na Verax (o e-mail do administrador e o acesso), sem esperar D+30,
+          e envia o registro de exclusão. <strong>Não tem volta.</strong> Nada é apagado no ambiente do
+          cliente: quem apaga é o próprio cliente.
+        </p>
+      ) : (
+        <p>
+          A Exclusão 1 agora, sem esperar D+30: a VM, o disco e os snapshots, o túnel e os registros de DNS, o
+          site do painel e os cofres saem. <strong>Não tem volta.</strong> A chave das credenciais e os
+          backups ficam até a cripto-destruição (D+97). Numa exclusão que parou, recomeça de onde der.
+        </p>
+      ),
   },
   export: {
     flag: 'export',

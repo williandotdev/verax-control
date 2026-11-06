@@ -5,6 +5,7 @@ import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { PROVISIONING_APIS, type ProvisioningApis } from '../provisioning/provisioning-settings.js';
 import { TenantStore } from '../tenants/tenant-store.js';
+import { hostingOf } from '../tenants/tenant.schema.js';
 import { ownsSlug } from './node-power.js';
 import { signedUrl } from './signed-url.js';
 
@@ -62,6 +63,8 @@ export class ExportService {
     if (tenant === undefined) return { kind: 'not_found' };
     const now = this.clock.now();
     if (tenant.state !== 'canceled') return { kind: 'not_canceled' };
+    // O ambiente na infraestrutura do cliente nunca teve backup na Verax: nada a exportar (e nada é consultado).
+    if (hostingOf(tenant) === 'customer') return { kind: 'no_backups' };
     const until = tenant.lifecycle?.exportUntil;
     if (until === undefined || until.getTime() < now.getTime()) return { kind: 'window_closed' };
     if (!BACKUP_OBJECT_PATTERN.test(object)) return { kind: 'invalid_object' };

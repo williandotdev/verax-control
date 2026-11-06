@@ -54,6 +54,7 @@ describe('cliente do console para as operações do responsável no cp-worker (C
     await h.client.cancel(TENANT, 'cliente-demo-a', OWNER, new Date('2027-01-31T00:00:00Z'));
     await h.client.suspend(TENANT, 'cliente-demo-a', OWNER);
     await h.client.reactivate(TENANT, 'cliente-demo-a', OWNER);
+    await h.client.installation(TENANT, OWNER);
     expect(h.calls.map((c) => c.url.split('/').at(-1))).toEqual([
       'provision',
       'resume',
@@ -61,7 +62,10 @@ describe('cliente do console para as operações do responsável no cp-worker (C
       'cancel',
       'suspend',
       'reactivate',
+      'installation',
     ]);
+    // A leitura da instalação no cliente leva só quem agiu.
+    expect(JSON.parse(h.calls[6]?.init.body as string)).toEqual({ actor: OWNER });
     expect(JSON.parse(h.calls[0]?.init.body as string)).toEqual({
       confirmSlug: 'cliente-demo-a',
       actor: OWNER,

@@ -123,25 +123,45 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
 ## 7. Clientes e contrato direto
 
 A tela **Clientes** lista os clientes (os do site e os de contrato direto, os mais novos primeiro) com o estado, a
-cobrança e, no provisionamento, o passo e o código de quem parou. O detalhe de um cliente mostra o contratado e o preço,
-a linha do tempo dos passos do provisionamento, o acesso do administrador (quando o e-mail saiu e quando a senha foi
-vista; nunca a senha), o ciclo de vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza
-sozinha.
+cobrança, onde o ambiente roda e, no provisionamento, o passo e o código de quem parou. O detalhe de um cliente mostra
+o contratado e o preço, a linha do tempo dos passos do provisionamento (ou, no ambiente do cliente, o que mandar a ele
+para instalar), o acesso do administrador (quando o e-mail saiu e quando a senha foi vista; nunca a senha), o ciclo de
+vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza sozinha.
+
+**Pelo site, todo cliente roda na infraestrutura da Verax** (decisão de 06/11/2026: a calculadora e o checkout não
+oferecem mais o ambiente na nuvem do cliente). O ambiente na infraestrutura do cliente existe **só por contrato
+direto**, aqui. A tabela de preços continua com os preços dos dois modos: o simulador de DRE e a cotação de referência
+do contrato direto usam os dois.
 
 **Cadastrar um cliente de contrato direto** (um contrato negociado com você, sem o checkout do site e sem a Stripe):
 
 1. **Clientes → Novo cliente (contrato direto).** Preencha a razão social, o CNPJ, o e-mail do administrador do cliente
-   (o primeiro acesso ao painel; é ele que recebe o e-mail com o link para ver a senha) e o subdomínio.
-2. As seis respostas, como na calculadora do site, e **Calcular a cotação**: o preço de referência da tabela vigente,
-   o porte e, se houver, o que o provisionamento ainda não cria (hoje só o modo gerenciado, porte P, sem agentes). O
-   preço é só referência: a cobrança e a nota fiscal do contrato são suas, fora da Stripe.
-3. **Revisar e confirmar…**, digite o subdomínio e **Criar e provisionar**. A API confere tudo de novo; um problema
-   aparece ao lado do campo. Criado, o cliente vai a `provisioning` e o detalhe abre. Enviar duas vezes (clique duplo,
-   conexão que caiu) não cria dois: é o mesmo cadastro.
-4. Acompanhe a linha do tempo. Pronto (`waiting_customer_connection`), o administrador do cliente recebe na hora o
-   e-mail "ambiente pronto" com o link de uso único (24 h) para ver a senha temporária uma vez. Você não vê a senha nem o
-   link; se o cliente não receber, confira o SMTP do `cp-worker` e, com o link vencido, o caminho de uma senha nova
-   (`docs/runbooks/onboarding-cliente.md`, item 7).
+   (o primeiro acesso ao painel) e o subdomínio.
+2. **Onde o ambiente roda** (obrigatório, nada marcado de início):
+   - **Infraestrutura da Verax:** o provisionamento de sempre (o nó e o painel na Verax, com custo de nuvem); o
+     administrador recebe o e-mail com o link para ver a senha;
+   - **Infraestrutura do cliente:** nada é criado na Verax; o cliente instala a versão publicada com o guia
+     (`docs/runbooks/instalacao-no-cliente.md`) e apaga o próprio ambiente no fim do contrato.
+3. As outras cinco respostas, como na calculadora do site, e **Calcular a cotação**: o preço de referência da tabela
+   vigente no modo do lugar escolhido (o ambiente gerenciado na Verax; a licença, com a implantação dela, no cliente),
+   o porte e, se houver, o que o provisionamento ainda não cria (na Verax, hoje só porte P e sem agentes; no cliente,
+   só os limites fora das faixas do nó). O preço é só referência: a cobrança e a nota fiscal do contrato são suas,
+   fora da Stripe.
+4. **Revisar e confirmar…**, digite o subdomínio e **Criar e provisionar** (na Verax) ou **Criar o cliente** (no
+   cliente). A API confere tudo de novo; um problema aparece ao lado do campo. Criado, o detalhe abre. Enviar duas
+   vezes (clique duplo, conexão que caiu) não cria dois: é o mesmo cadastro.
+5. **Na Verax**, o cliente vai a `provisioning`: acompanhe a linha do tempo. Pronto (`waiting_customer_connection`), o
+   administrador do cliente recebe na hora o e-mail "ambiente pronto" com o link de uso único (24 h) para ver a senha
+   temporária uma vez. Você não vê a senha nem o link; se o cliente não receber, confira o SMTP do `cp-worker` e, com
+   o link vencido, o caminho de uma senha nova (`docs/runbooks/onboarding-cliente.md`, item 7).
+6. **No cliente**, o cliente nasce "Aguardando instalação pelo cliente" (`waiting_customer_install`), sem linha do
+   tempo. O detalhe mostra, em "Instalação na infraestrutura do cliente", o que mandar a ele: a versão do nó (a
+   vigente, lida e conferida pelo `cp-worker` no bucket de releases), os endereços do manifesto assinado, da
+   assinatura e do pacote, as imagens pelo digest, o guia de instalação, as linhas do plano no `node.conf` e a
+   **impressão digital da chave que assinou**: mande a impressão digital por um canal do contrato (fora do GitHub),
+   porque é ela que o cliente compara antes de confiar na primeira instalação. Se o painel disser que a versão não está
+   configurada, confira `release_bucket` e `NODE_RELEASE` (`worker_env`) no GUIA, "O provisionamento (CP-07)". A Verax
+   não vê a instalação do cliente: o estado fica "Aguardando instalação pelo cliente" até o fim do contrato.
 
 Se o detalhe disser "Cliente criado, mas o provisionamento não começou", o console não alcançou o `cp-worker` (a
 entrada dele, GUIA, "Operações do responsável no `cp-worker`"): corrija e use **Iniciar provisionamento…**.
@@ -151,7 +171,7 @@ novo):
 
 | Botão                   | Quando aparece                                                     | O que faz                                                                                                          |
 | ----------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| Iniciar provisionamento | Contrato direto em `pending`                                       | O `provision` no `cp-worker`: `provisioning` e o primeiro passo na fila                                            |
+| Iniciar provisionamento | Contrato direto na Verax em `pending`                              | O `provision` no `cp-worker`: `provisioning` e o primeiro passo na fila                                            |
 | Retomar provisionamento | `provisioning_failed` ou parado em `provisioning`                  | Uma execução nova do `preflight` (`docs/runbooks/provisionamento.md`)                                              |
 | Suspender / Reativar    | Contrato direto ativo (ou esperando o cliente) / suspenso por você | A VM para / volta ao estado de antes e a VM liga                                                                   |
 | Cancelar contrato       | Contrato direto vivo                                               | Agora, ou numa data (o fim do contrato, até 2 anos); cancelado: exportação por 30 dias, exclusão em D+30 e D+97    |
@@ -159,7 +179,11 @@ novo):
 | Apagar agora            | Cliente cancelado (ou uma exclusão que parou)                      | A Exclusão 1 agora, sem volta (`docs/runbooks/ciclo-de-vida.md`)                                                   |
 
 Num cliente da Stripe, suspender, reativar e cancelar seguem a assinatura (Portal do cliente ou Dashboard da Stripe); o
-console não os oferece. Os limites: 5 cadastros e 20 operações por hora por responsável.
+console não os oferece. **Com o ambiente no cliente**, só **Cancelar contrato** e, depois, **Apagar agora**: cancelar
+registra o fim do contrato (sem exportação, sem parar VM nenhuma) e apagar remove só o cadastro na Verax (o e-mail do
+administrador e o acesso), com o registro de exclusão ao administrador dizendo que o ambiente é dele e que quem apaga é
+ele. Iniciar, retomar, suspender, reativar e exportar não existem para ele, e o `cp-worker` recusa de novo
+(`customer_hosted`) se pedirem. Os limites: 5 cadastros e 20 operações por hora por responsável.
 
 Tudo o que se grava no console vai à auditoria (`auditLog`) como `owner:<e-mail>`: rascunho criado e editado (com a
 diferença), publicação (com o resumo da checagem), aposentadoria e publicação recusada; o cadastro de um cliente, cada

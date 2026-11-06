@@ -20,9 +20,12 @@ import { isUlid, newUlid } from '../common/ulid.js';
 import { ownerActorOf, WorkerCallerGuard, WorkerCallers } from '../internal/worker-caller.js';
 import { FIRST_PROVISIONING_STEP, STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { LockNotHeldError, TenantStore } from '../tenants/tenant-store.js';
+import { hostingOf } from '../tenants/tenant.schema.js';
+import { customerHostedError } from './provisioning-start.js';
 
 export type ResumeOutcome =
-  { resumed: true; runId: string; step: string } | { resumed: false; reason: 'not_found' | 'not_resumable' };
+  | { resumed: true; runId: string; step: string }
+  | { resumed: false; reason: 'not_found' | 'not_resumable' | 'customer_hosted' };
 
 /**
  * `resume` do responsável (plano §4b e §9 item 17): um cliente em `provisioning_failed` (ou parado em `provisioning`,
@@ -43,6 +46,8 @@ export class ProvisioningResumeService {
   async resume(tenantId: string, actor: string, requestId?: string): Promise<ResumeOutcome> {
     const tenant = await this.tenants.get(tenantId);
     if (tenant === undefined) return { resumed: false, reason: 'not_found' };
+    // O ambiente na infraestrutura do cliente nunca provisiona (nem chega a estes estados): recusa explícita.
+    if (hostingOf(tenant) === 'customer') return { resumed: false, reason: 'customer_hosted' };
     if (tenant.state !== 'provisioning_failed' && tenant.state !== 'provisioning') {
       return { resumed: false, reason: 'not_resumable' };
     }
@@ -115,6 +120,7 @@ export class ProvisioningResumeController {
     if (outcome.resumed) return { runId: outcome.runId, step: outcome.step };
     if (outcome.reason === 'not_found')
       throw new ApiError(HttpStatus.NOT_FOUND, 'Não encontrado', 'not_found');
+    if (outcome.reason === 'customer_hosted') throw customerHostedError();
     throw new ApiError(HttpStatus.CONFLICT, 'O cliente não está parado no provisionamento', 'not_resumable');
   }
 }

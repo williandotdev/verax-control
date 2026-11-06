@@ -125,7 +125,7 @@ describe('cp-public: tabela pública e cotação (preço configurável)', () => 
       lineItems: [
         {
           component: 'environment',
-          description: 'Ambiente gerenciado (porte P)',
+          description: 'Ambiente na infraestrutura da Verax (porte P)',
           quantity: 1,
           unitAmount: 100_000,
           amount: 100_000,
@@ -205,13 +205,33 @@ describe('cp-public: tabela pública e cotação (preço configurável)', () => 
     });
   });
 
-  it('sob consulta: na nuvem do cliente (v1) ou acima do que a tabela vende; nada é gravado', async () => {
-    const selfHosted = await quote({ ...CONFIGURATION, mode: 'self_hosted' }).expect(200);
-    expect(selfHosted.body).toEqual({
-      contactUs: true,
-      reason: 'self_hosted',
-      priceTableVersion: 'teste-v1',
+  it('o ambiente na infraestrutura do cliente não é vendido no site: 422 com a mensagem do contrato direto, nada gravado', async () => {
+    const selfHosted = await quote({ ...CONFIGURATION, mode: 'self_hosted' }).expect(422);
+    expect(selfHosted.body).toMatchObject({
+      code: 'mode_not_sold_online',
+      message:
+        'Pelo site, o Verax Control roda na infraestrutura da Verax. Para o ambiente na infraestrutura da sua empresa, fale com a Verax: é um contrato direto.',
     });
+    // Sem nome de provedor na mensagem: a infraestrutura da Verax pode mudar.
+    expect(JSON.stringify(selfHosted.body)).not.toMatch(/gcp|google|aws|amazon|nuvem do cliente/i);
+    // Qualquer que seja a tabela: sem nenhuma publicada, a recusa é a mesma (não é falta de preço).
+    documents.clear();
+    await quote({ ...CONFIGURATION, mode: 'self_hosted' }).expect(422);
+    expect(await documents.query(COLLECTIONS.quotes)).toHaveLength(0);
+    const refused = capture.entries().filter((entry) => entry['event'] === 'quote_mode_refused');
+    expect(refused.map((entry) => entry['mode'])).toEqual(['self_hosted', 'self_hosted']);
+    // A tabela pública não traz o modo, nem os preços nem o pacote de partida dele.
+    await seedPublishedTable(documents, fictitiousPriceTable(), {
+      effectiveFrom: new Date(START.getTime() - DAY_MS),
+    });
+    const catalog = await pricing().expect(200);
+    expect(JSON.stringify(catalog.body)).not.toContain('self_hosted');
+    expect((catalog.body as { modes: { mode: string }[] }).modes.map((mode) => mode.mode)).toEqual([
+      'managed',
+    ]);
+  });
+
+  it('sob consulta: acima do que a tabela vende; nada é gravado', async () => {
     const tooMany = await quote({ ...CONFIGURATION, agents: 41 }).expect(200);
     expect(tooMany.body).toEqual({
       contactUs: true,
@@ -220,7 +240,7 @@ describe('cp-public: tabela pública e cotação (preço configurável)', () => 
     });
     expect(await documents.query(COLLECTIONS.quotes)).toHaveLength(0);
     const funnel = capture.entries().filter((entry) => entry['event'] === 'quote_contact_us');
-    expect(funnel.map((entry) => entry['reason'])).toEqual(['self_hosted', 'agents_above_max']);
+    expect(funnel.map((entry) => entry['reason'])).toEqual(['agents_above_max']);
   });
 
   it('entrada fora do formato: 400 citando só os campos conhecidos; preço vindo do cliente é recusado', async () => {

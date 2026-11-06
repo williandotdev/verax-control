@@ -6,6 +6,7 @@ import type {
   DirectTenantCreated,
   TenantActionResult,
   TenantDetail,
+  TenantInstallation,
   TenantList,
 } from '../src/admin/admin-tenants.schema.js';
 import { IAP_JWT_HEADER } from '../src/admin/iap-verifier.js';
@@ -20,10 +21,12 @@ import { TestGoogleIdentity } from './support/access-fakes.js';
 import { tenantIn } from './support/access-store-contract.js';
 import { createApp } from './support/create-app.js';
 import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
+import { FakeCloud } from './support/fake-cloud.js';
 import { TestIap } from './support/iap-test-keys.js';
 import { LogCapture } from './support/log-capture.js';
 import { fictitiousPriceTable } from './support/pricing-fixtures.js';
 import { seedPublishedTable } from './support/pricing-seed.js';
+import { manifestFor, TestReleaseKey } from './support/release-fixtures.js';
 
 const START = new Date('2026-11-05T12:00:00.000Z');
 const AUDIENCE = '/projects/111111111111/locations/southamerica-east1/services/cp-admin';
@@ -34,6 +37,8 @@ const ADMIN_SA = 'cp-admin@projeto-exemplo.iam.gserviceaccount.com';
 const INVOKER = 'cp-invoker@projeto-exemplo.iam.gserviceaccount.com';
 const PUBLIC_SA = 'cp-public@projeto-exemplo.iam.gserviceaccount.com';
 const DAY_MS = 24 * 60 * MINUTE_MS;
+const RELEASES = 'projeto-exemplo-releases';
+const RELEASE = 'node-v1.2.3';
 
 interface WorkerCall {
   url: string;
@@ -56,6 +61,9 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
   const iap = new TestIap();
   const audit = new AuditService(documents, clock);
   const tenants = new TenantStore(documents, clock, audit);
+  /** As APIs da nuvem (só o bucket de releases pode ser lido nestes testes) e a chave de release dos testes. */
+  const cloud = new FakeCloud();
+  const releaseKey = new TestReleaseKey();
   /** O que o console mandou ao worker (para provar que o JWT do IAP nunca sai do cp-admin). */
   const workerCalls: WorkerCall[] = [];
   /** O worker fora do ar (rede) ou atrás da entrada do Cloud Run (o 404 em HTML de `INGRESS_TRAFFIC_INTERNAL_ONLY`). */
@@ -104,8 +112,8 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       cnpj: '11.222.333/0001-81',
       adminEmail: 'admin@cliente-demo-a.example',
       slug,
+      hosting: 'verax',
       configuration: {
-        mode: 'managed',
         cloudAccounts: 2,
         monthlyGib: 10,
         agents: 0,
@@ -134,6 +142,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
   };
 
   beforeAll(async () => {
+    await cloud.start();
     worker = await createApp({
       role: 'worker',
       clock,
@@ -141,7 +150,17 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       stepQueue: queue,
       idTokenKeys: google,
       capture,
+      provisioning: {
+        apis: {
+          googleEndpoints: cloud.endpoints,
+          cloudflareBase: cloud.cloudflareBase,
+          accessTokens: { token: () => Promise.resolve(cloud.googleToken) },
+          releaseKeys: releaseKey.keys,
+        },
+      },
       env: {
+        RELEASE_BUCKET: RELEASES,
+        NODE_RELEASE: RELEASE,
         LOG_LEVEL: 'debug',
         WORKER_URL,
         WORKER_SA_EMAIL: INVOKER,
@@ -174,6 +193,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
   afterAll(async () => {
     await admin.close();
     await worker.close();
+    await cloud.stop();
   });
 
   /** Cada teste numa hora própria: o limite de cadastros por responsável (5 por hora) não passa de um teste ao outro. */
@@ -185,6 +205,8 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
     documents.clear();
     queue.clear();
     workerCalls.length = 0;
+    cloud.requests.length = 0;
+    cloud.objects.clear();
     network.down = false;
     network.ingressBlocked = false;
     await seedPublishedTable(documents, fictitiousPriceTable(), {
@@ -308,7 +330,6 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
           adminEmail: 'sem-arroba',
           slug: 'X',
           configuration: {
-            mode: 'managed',
             cloudAccounts: -1,
             monthlyGib: 10,
             agents: 0,
@@ -336,7 +357,6 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         '/v1/admin/tenants',
         directRequest({
           configuration: {
-            mode: 'self_hosted',
             cloudAccounts: 2,
             monthlyGib: 10,
             agents: 10,
@@ -347,13 +367,29 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       ).expect(422);
       expect(unsupported.body).toMatchObject({
         code: 'configuration_unsupported',
-        details: { problems: ['mode', 'agents'] },
+        details: { problems: ['agents'] },
       });
-      const above = await send(
+      // O lugar é obrigatório, e o modo da tabela sai dele: nunca vem na configuração.
+      const { hosting: _hosting, ...withoutHosting } = directRequest();
+      const missing = await send('/v1/admin/tenants', withoutHosting).expect(400);
+      expect(missing.body).toMatchObject({ details: { issues: [{ path: 'hosting' }] } });
+      await send(
         '/v1/admin/tenants',
         directRequest({
           configuration: {
             mode: 'managed',
+            cloudAccounts: 2,
+            monthlyGib: 10,
+            agents: 0,
+            historyDays: 30,
+            support: 'standard',
+          },
+        }),
+      ).expect(400);
+      const above = await send(
+        '/v1/admin/tenants',
+        directRequest({
+          configuration: {
             cloudAccounts: 500,
             monthlyGib: 10,
             agents: 0,
@@ -370,7 +406,6 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         '/v1/admin/tenants',
         directRequest({
           configuration: {
-            mode: 'managed',
             cloudAccounts: 8,
             monthlyGib: 10,
             agents: 0,
@@ -385,14 +420,14 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       const refused = (await documents.query(COLLECTIONS.auditLog)).filter(
         (doc) => doc.data['action'] === 'tenant.create_refused',
       );
-      expect(refused.length).toBe(6);
+      expect(refused.length).toBe(8);
       expect(refused.every((doc) => doc.data['actor'] === `owner:${OWNER}`)).toBe(true);
     });
 
     it('a cotação de referência pela tabela vigente, com o que o provisionamento ainda não cria', async () => {
       const ok = await send('/v1/admin/tenants/preview', {
+        hosting: 'verax',
         configuration: {
-          mode: 'managed',
           cloudAccounts: 3,
           monthlyGib: 10,
           agents: 0,
@@ -407,8 +442,8 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         problems: [],
       });
       const agents = await send('/v1/admin/tenants/preview', {
+        hosting: 'verax',
         configuration: {
-          mode: 'managed',
           cloudAccounts: 2,
           monthlyGib: 10,
           agents: 5,
@@ -417,7 +452,20 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         },
       }).expect(200);
       expect(agents.body).toMatchObject({ contactUs: false, problems: ['agents'] });
-      await send('/v1/admin/tenants/preview', { configuration: { mode: 'managed' } }).expect(400);
+      await send('/v1/admin/tenants/preview', { hosting: 'verax', configuration: {} }).expect(400);
+      // No cliente, a cotação é a da licença, e os agentes não impedem (nada é provisionado).
+      const customer = await send('/v1/admin/tenants/preview', {
+        hosting: 'customer',
+        configuration: { cloudAccounts: 2, monthlyGib: 10, agents: 5, historyDays: 30, support: 'standard' },
+      }).expect(200);
+      expect(customer.body).toMatchObject({
+        quote: {
+          configuration: { mode: 'self_hosted', agents: 10 },
+          monthlyTotal: 60_000,
+          setupTotal: 100_000,
+        },
+        problems: [],
+      });
     });
 
     it('sem tabela de preços vigente, nada de cadastro (409)', async () => {
@@ -554,6 +602,114 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       expect(cancel.body).toMatchObject({ code: 'stripe_managed' });
       expect((await tenants.require(paid.id)).state).toBe('pending');
       expect(queue.tasks).toHaveLength(0);
+    });
+  });
+
+  describe('contrato direto com o ambiente na infraestrutura do cliente', () => {
+    function customerRequest(): Record<string, unknown> {
+      return directRequest({ hosting: 'customer' });
+    }
+
+    function publishRelease(): void {
+      const manifest = manifestFor(RELEASE);
+      cloud.objects.set(`${RELEASES}/${RELEASE}/manifest.json`, manifest);
+      cloud.objects.set(`${RELEASES}/${RELEASE}/manifest.json.sig`, releaseKey.sign(manifest));
+    }
+
+    it('o cadastro não chama o worker; o detalhe não tem passos nem endereços da Verax; iniciar e retomar são recusados', async () => {
+      const body = customerRequest();
+      const result = (await send('/v1/admin/tenants', body).expect(201)).body as DirectTenantCreated;
+      expect(result).toEqual({
+        id: body['idempotencyKey'],
+        slug: body['slug'],
+        replayed: false,
+        hosting: 'customer',
+      });
+      expect(workerCalls).toHaveLength(0);
+      expect(queue.tasks).toHaveLength(0);
+
+      const detail = (await read(`/v1/admin/tenants/${result.id}`).expect(200)).body as TenantDetail;
+      expect(detail).toMatchObject({
+        hosting: 'customer',
+        state: 'waiting_customer_install',
+        configuration: { mode: 'self_hosted' },
+        timeline: [],
+        actions: { start: false, resume: false, suspend: false, cancel: true, export: false },
+      });
+      expect(detail.urls).toBeUndefined();
+      const list = (await read('/v1/admin/tenants').expect(200)).body as TenantList;
+      expect(list.tenants.map((item) => [item.hosting, item.state])).toEqual([
+        ['customer', 'waiting_customer_install'],
+      ]);
+
+      // O worker recusa por conta própria, mesmo pedido pelo console (409 customer_hosted), e nada vai à fila.
+      const confirm = { confirmSlug: body['slug'] };
+      for (const action of ['start', 'resume']) {
+        const refused = await send(`/v1/admin/tenants/${result.id}/${action}`, confirm).expect(409);
+        expect(refused.body).toMatchObject({ code: 'customer_hosted' });
+      }
+      const direct = await internal(`/internal/tenants/${result.id}/provision`, OWNER, confirm).expect(409);
+      expect(direct.body).toMatchObject({ code: 'customer_hosted' });
+      expect((await tenants.require(result.id)).state).toBe('waiting_customer_install');
+      expect(queue.tasks).toHaveLength(0);
+
+      // Cancelar só registra o fim do contrato: nenhum pedido de parar VM, nenhuma chamada à nuvem.
+      const canceled = await send(`/v1/admin/tenants/${result.id}/cancel`, confirm).expect(200);
+      expect(canceled.body).toMatchObject({ action: 'cancel', result: 'canceled' });
+      expect((await tenants.require(result.id)).lifecycle?.exportUntil).toBeUndefined();
+      expect(queue.tasks).toHaveLength(0);
+      expect(cloud.requests).toEqual([]);
+    });
+
+    it('a instalação: o worker lê e confere o manifesto do bucket de releases, e o console devolve o guia e o node.conf', async () => {
+      publishRelease();
+      const body = customerRequest();
+      const { id } = (await send('/v1/admin/tenants', body).expect(201)).body as DirectTenantCreated;
+      const response = await read(`/v1/admin/tenants/${id}/installation`).expect(200);
+      const installation = response.body as TenantInstallation;
+      const github = 'https://github.com/williandotdev/verax-control';
+      expect(installation).toMatchObject({
+        release: RELEASE,
+        manifestUrl: `${github}/releases/download/${RELEASE}/manifest.json`,
+        signatureUrl: `${github}/releases/download/${RELEASE}/manifest.json.sig`,
+        guideUrl: `${github}/blob/main/docs/runbooks/instalacao-no-cliente.md`,
+        images: { api: `ghcr.io/williandotdev/verax-control/api@sha256:${'1'.repeat(64)}` },
+      });
+      expect(installation.nodeConf[0]).toEqual({ name: 'PLAN', value: 'enterprise' });
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      // O pedido ao worker: a rota de leitura, com o responsável no corpo e o token da conta do console.
+      expect(workerCalls.map((call) => [call.url, call.body])).toEqual([
+        [`${WORKER_URL}/internal/tenants/${id}/installation`, { actor: OWNER }],
+      ]);
+      // Só o bucket de releases foi lido: nada no projeto dos nós, no Cloudflare nem no Firebase.
+      expect(cloud.requests.length).toBeGreaterThan(0);
+      expect(cloud.requests.every((call) => call.method === 'GET' && call.path.includes(RELEASES))).toBe(
+        true,
+      );
+
+      // A assinatura de outra chave: recusado, e o console diz o código.
+      const manifest = manifestFor(RELEASE);
+      cloud.objects.set(`${RELEASES}/${RELEASE}/manifest.json.sig`, new TestReleaseKey().sign(manifest));
+      const tampered = await read(`/v1/admin/tenants/${id}/installation`).expect(502);
+      expect(tampered.body).toMatchObject({ code: 'release_manifest_invalid' });
+    });
+
+    it('a rota da instalação no worker: só o responsável (ou o console com ele em actor), e só para o ambiente no cliente', async () => {
+      publishRelease();
+      const { id } = (await send('/v1/admin/tenants', customerRequest()).expect(201))
+        .body as DirectTenantCreated;
+      const path = `/internal/tenants/${id}/installation`;
+      for (const caller of [INVOKER, PUBLIC_SA]) await internal(path, caller, {}).expect(403);
+      await internal(path, ADMIN_SA, {}).expect(403);
+      await internal(path, ADMIN_SA, { actor: STRANGER }).expect(403);
+      await internal(path, OWNER, { outro: 1 }).expect(400);
+      await internal(path, ADMIN_SA, { actor: OWNER }).expect(200);
+      await internal(`/internal/tenants/${newUlid()}/installation`, OWNER, {}).expect(404);
+      const verax = await created();
+      const refused = await internal(`/internal/tenants/${verax.id}/installation`, OWNER, {}).expect(409);
+      expect(refused.body).toMatchObject({ code: 'not_customer_hosted' });
+      const fromConsole = await read(`/v1/admin/tenants/${verax.id}/installation`).expect(409);
+      expect(fromConsole.body).toMatchObject({ code: 'not_customer_hosted' });
     });
   });
 

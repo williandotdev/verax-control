@@ -1,4 +1,4 @@
-import { createPublicKey, verify } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
 import { z } from 'zod';
 import { NODE_RELEASE_PATTERN } from '../common/config/env.schema.js';
 import type { StorageApi } from './google-apis.js';
@@ -140,4 +140,137 @@ export async function readReleaseManifest(
     throw new ReleaseManifestError('release_manifest_invalid');
   }
   return parseReleaseManifest(manifest, release);
+}
+
+// --- O que o responsável manda ao cliente que instala na própria infraestrutura (contrato direto) ---------------------
+
+const GHCR_IMAGE_PATTERN =
+  /^ghcr\.io\/[a-z0-9-]{1,39}\/[a-z0-9._-]{1,100}\/(api|migrate)@sha256:[0-9a-f]{64}$/;
+/**
+ * Uma imagem de terceiro sempre pelo digest: o nome (com registro e tag opcionais) e `@sha256:`. Mais solta que o
+ * `third_party_re` do `scripts/node-release.sh` (que já recusou o resto antes de assinar), sem repetição aninhada: o
+ * manifesto chega aqui só com a assinatura conferida, e esta forma só garante que nada sem digest vai ao console.
+ */
+const THIRD_PARTY_IMAGE_PATTERN = /^[a-z0-9][A-Za-z0-9._/:-]{0,250}@sha256:[0-9a-f]{64}$/;
+
+const detailsSchema = z.object({
+  release: z.string().regex(NODE_RELEASE_PATTERN),
+  version: commitSchema,
+  releasedAt: z.iso.datetime().optional(),
+  package: z.object({ url: z.url({ protocol: /^https$/ }).max(500), sha256: sha256Hex }),
+  images: z.object({
+    api: z.string().max(300).regex(GHCR_IMAGE_PATTERN),
+    migrate: z.string().max(300).regex(GHCR_IMAGE_PATTERN),
+  }),
+  thirdPartyImages: z.array(z.string().max(300).regex(THIRD_PARTY_IMAGE_PATTERN)).min(1).max(20),
+  notes: z.url({ protocol: /^https$/ }).max(500),
+});
+
+/**
+ * A versão do nó como o cliente a instala na infraestrutura dele (`docs/runbooks/instalacao-no-cliente.md`): o release
+ * do GitHub, o manifesto e a assinatura (que o `verify-release.sh` confere), o pacote com o SHA-256 e as imagens pelo
+ * digest (as do Verax no GHCR público, as de terceiros pela origem). Nada de segredo: tudo é público no release.
+ */
+export interface ReleaseDetails {
+  release: string;
+  commit: string;
+  releasedAt?: string;
+  /** `https://github.com/<dono>/<repositório>`, de onde saem os outros endereços. */
+  repositoryUrl: string;
+  releaseUrl: string;
+  manifestUrl: string;
+  signatureUrl: string;
+  package: { url: string; sha256: string };
+  images: { api: string; migrate: string };
+  thirdPartyImages: string[];
+  /**
+   * A chave de release que fechou a assinatura: o nome (o arquivo `infra/node/keys/<nome>.pem`) e o SHA-256 da pública
+   * em DER, a impressão digital que o cliente confere fora do GitHub antes de confiar na primeira instalação
+   * (`openssl pkey -pubin -in <nome>.pem -outform DER | openssl dgst -sha256`).
+   */
+  releaseKey?: { name: string; sha256: string };
+}
+
+/** O SHA-256 da chave pública em DER (SPKI): a impressão digital que o `openssl` também calcula. */
+export function releaseKeyFingerprint(pem: string): string {
+  return createHash('sha256')
+    .update(createPublicKey(pem).export({ type: 'spki', format: 'der' }))
+    .digest('hex');
+}
+
+/**
+ * O dono e o repositório de um endereço do release (`https://github.com/<dono>/<repositório>/releases/<resto>`), se
+ * ele for exatamente do release `release` no GitHub; senão, `undefined`.
+ */
+function releaseRepositoryOf(url: string, release: string, rest: readonly string[]): string | undefined {
+  const parsed = new URL(url);
+  if (parsed.hostname !== 'github.com' || parsed.search !== '' || parsed.hash !== '') return undefined;
+  const [empty, owner, repository, releases, ...tail] = parsed.pathname.split('/');
+  const shape =
+    empty === '' &&
+    owner !== undefined &&
+    isGithubName(owner) &&
+    repository !== undefined &&
+    isGithubName(repository) &&
+    releases === 'releases' &&
+    tail.length === rest.length &&
+    tail.every((segment, index) => segment === (rest[index] === '<release>' ? release : rest[index]));
+  return shape ? `${owner}/${repository}` : undefined;
+}
+
+/** Lê o manifesto já conferido com tudo o que o cliente precisa para instalar a versão; fora do formato, recusado. */
+export function parseReleaseDetails(manifest: Buffer, release: string): ReleaseDetails {
+  const info = parseReleaseManifest(manifest, release);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(manifest.toString('utf8'));
+  } catch {
+    throw new ReleaseManifestError('release_manifest_invalid');
+  }
+  const parsed = detailsSchema.safeParse(raw);
+  if (!parsed.success) throw new ReleaseManifestError('release_manifest_invalid');
+  const data = parsed.data;
+  const repository = releaseRepositoryOf(data.notes, release, ['tag', '<release>']);
+  if (
+    repository === undefined ||
+    releaseRepositoryOf(data.package.url, release, ['download', '<release>', 'verax-node.tar.gz']) !==
+      repository
+  ) {
+    throw new ReleaseManifestError('release_manifest_invalid');
+  }
+  const base = `https://github.com/${repository}`;
+  const download = `${base}/releases/download/${release}`;
+  return {
+    release,
+    commit: info.commit,
+    ...(data.releasedAt === undefined ? {} : { releasedAt: data.releasedAt }),
+    repositoryUrl: base,
+    releaseUrl: `${base}/releases/tag/${release}`,
+    manifestUrl: `${download}/${MANIFEST_OBJECT}`,
+    signatureUrl: `${download}/${SIGNATURE_OBJECT}`,
+    package: { url: data.package.url, sha256: info.packageSha256 },
+    images: { api: data.images.api, migrate: data.images.migrate },
+    thirdPartyImages: [...data.thirdPartyImages],
+  };
+}
+
+/** Baixa, confere a assinatura e lê o manifesto da versão no bucket de releases, com o que o cliente instala. */
+export async function readReleaseDetails(
+  storage: Pick<StorageApi, 'read'>,
+  bucket: string,
+  release: string,
+  keys: Readonly<Record<string, string>> = RELEASE_PUBLIC_KEYS,
+): Promise<ReleaseDetails> {
+  if (!NODE_RELEASE_PATTERN.test(release)) throw new ReleaseManifestError('release_manifest_invalid');
+  const manifest = await storage.read(bucket, `${release}/${MANIFEST_OBJECT}`, MAX_MANIFEST_BYTES);
+  const signature = await storage.read(bucket, `${release}/${SIGNATURE_OBJECT}`, MAX_SIGNATURE_BYTES);
+  if (manifest === undefined || signature === undefined)
+    throw new ReleaseManifestError('release_manifest_missing');
+  const keyName = verifyManifestSignature(manifest, signature, keys);
+  const pem = keyName === undefined ? undefined : keys[keyName];
+  if (keyName === undefined || pem === undefined) throw new ReleaseManifestError('release_manifest_invalid');
+  return {
+    ...parseReleaseDetails(manifest, release),
+    releaseKey: { name: keyName, sha256: releaseKeyFingerprint(pem) },
+  };
 }

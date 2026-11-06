@@ -1,12 +1,13 @@
 import type {
   AdminSession,
   CheckResult,
-  ConfigurationInput,
   CostModel,
+  DirectConfiguration,
   DirectTenantCreated,
   DirectTenantPreview,
   DirectTenantRequest,
   GuardReport,
+  Hosting,
   PriceTable,
   PublishResult,
   SimulationRequest,
@@ -15,6 +16,7 @@ import type {
   TenantActionRequest,
   TenantActionResult,
   TenantDetail,
+  TenantInstallation,
   TenantList,
   ValidationIssue,
   VersionedRecord,
@@ -171,8 +173,10 @@ const TENANTS = `${BASE}/tenants`;
 export const tenantsApi = {
   list: (): Promise<TenantList> => request('GET', TENANTS),
   get: (id: string): Promise<TenantDetail> => request('GET', `${TENANTS}/${encodeURIComponent(id)}`),
-  preview: (configuration: ConfigurationInput): Promise<DirectTenantPreview> =>
-    request('POST', `${TENANTS}/preview`, { configuration }),
+  preview: (hosting: Hosting, configuration: DirectConfiguration): Promise<DirectTenantPreview> =>
+    request('POST', `${TENANTS}/preview`, { hosting, configuration }),
+  installation: (id: string): Promise<TenantInstallation> =>
+    request('GET', `${TENANTS}/${encodeURIComponent(id)}/installation`),
   create: (body: DirectTenantRequest): Promise<DirectTenantCreated> => request('POST', TENANTS, body),
   act: (id: string, action: TenantAction, body: TenantActionRequest): Promise<TenantActionResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/${action}`, body),

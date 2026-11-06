@@ -114,6 +114,73 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       expect(audit[0]?.expiresAt.getTime()).toBeGreaterThan(h.clock.now().getTime());
     });
 
+    it('contrato direto no cliente: nasce em waiting_customer_install (transição de null), só vai a canceled', async () => {
+      const input: NewTenant = {
+        ...demoTenant('cliente-proprio'),
+        consent: undefined,
+        stripe: undefined,
+        billing: { mode: 'contract' },
+        hosting: 'customer',
+        configuration: { ...demoConfiguration(), mode: 'self_hosted' },
+      };
+      const created = await h.store.create(input, {
+        reason: 'contract_created_customer_hosted',
+        audit: { actor: 'owner:responsavel@verax.example' },
+        initialState: 'waiting_customer_install',
+      });
+
+      expect(created).toMatchObject({ state: 'waiting_customer_install', hosting: 'customer' });
+      expect(await h.store.listTransitions(created.id)).toEqual([
+        {
+          from: null,
+          to: 'waiting_customer_install',
+          reason: 'contract_created_customer_hosted',
+          at: h.clock.now(),
+        },
+      ]);
+      expect((await h.audit.listForTenant(created.id))[0]?.details).toMatchObject({
+        billingMode: 'contract',
+        hosting: 'customer',
+        to: 'waiting_customer_install',
+      });
+      // Nunca vai ao provisionamento: o ambiente é do cliente.
+      await expect(
+        h.store.transition(created.id, { to: 'provisioning', reason: 'x', audit: AUDIT }),
+      ).rejects.toBeInstanceOf(InvalidTransitionError);
+      const canceled = await h.store.transition(created.id, { to: 'canceled', reason: 'x', audit: AUDIT });
+      expect(canceled.state).toBe('canceled');
+    });
+
+    it('o ambiente no cliente só existe em contrato direto, com a licença da tabela; o estado de espera é só dele', async () => {
+      const contract: NewTenant = {
+        ...demoTenant('cliente-invalido'),
+        consent: undefined,
+        stripe: undefined,
+        billing: { mode: 'contract' },
+        configuration: { ...demoConfiguration(), mode: 'self_hosted' },
+      };
+      const refused: [NewTenant, 'pending' | 'waiting_customer_install'][] = [
+        // Cliente do site (Stripe) no cliente: nunca.
+        [
+          { ...demoTenant('cliente-invalido'), hosting: 'customer', configuration: contract.configuration },
+          'pending',
+        ],
+        // No cliente com o modo gerenciado da tabela.
+        [
+          { ...contract, hosting: 'customer', configuration: demoConfiguration() },
+          'waiting_customer_install',
+        ],
+        // Na Verax esperando a instalação do cliente.
+        [{ ...contract, configuration: demoConfiguration() }, 'waiting_customer_install'],
+      ];
+      for (const [input, initialState] of refused) {
+        await expect(
+          h.store.create(input, { reason: 'teste', audit: AUDIT, initialState }),
+        ).rejects.toThrow();
+      }
+      expect(await h.store.getSlug('cliente-invalido')).toBeUndefined();
+    });
+
     it('toma o subdomínio em slugs/{slug}: o segundo cliente com o mesmo slug é recusado e nada é gravado', async () => {
       const a = await h.store.create(demoTenant('cliente-demo-a'), { reason: 'teste', audit: AUDIT });
       expect(await h.store.getSlug('cliente-demo-a')).toEqual({
@@ -305,7 +372,7 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       expect((await h.store.get(id))?.state).toBe('past_due');
     });
 
-    it('a mutação não pode mexer em slug, company, consent, createdAt nem lock; cópia igual passa', async () => {
+    it('a mutação não pode mexer em slug, company, consent, hosting, createdAt nem lock; cópia igual passa', async () => {
       const { id } = await h.store.create(demoTenant(), { reason: 'teste', audit: AUDIT });
       await h.store.acquireLock(id, 'run-1', LOCK_TTL_MS);
       const changes: Record<(typeof IMMUTABLE_IN_TRANSITION)[number], (tenant: Tenant) => Tenant> = {
@@ -314,6 +381,7 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
         consent: (tenant) => ({ ...tenant, consent: undefined }),
         createdAt: (tenant) => ({ ...tenant, createdAt: new Date(0) }),
         lock: (tenant) => ({ ...tenant, lock: undefined }),
+        hosting: (tenant) => ({ ...tenant, hosting: 'customer' }),
       };
       for (const key of IMMUTABLE_IN_TRANSITION) {
         await expect(

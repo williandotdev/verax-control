@@ -4,8 +4,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CHECKOUT_DAILY_LIMIT, SLUG_RESERVATION_MS } from '../src/checkout/checkout-store.js';
 import { COLLECTIONS } from '../src/firestore/collections.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
-import type { ConfigurationInput, PriceTableInput } from '../src/pricing/pricing.schema.js';
-import { QUOTE_TTL_MS } from '../src/pricing/quote-store.js';
+import {
+  type ConfigurationInput,
+  type PriceTableInput,
+  priceTableSchema,
+} from '../src/pricing/pricing.schema.js';
+import { QUOTE_TTL_MS, QuoteStore } from '../src/pricing/quote-store.js';
+import { quote } from '../src/pricing/quote.js';
 import { STRIPE_API_VERSION } from '../src/stripe/stripe-client.js';
 import { createApp } from './support/create-app.js';
 import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
@@ -403,6 +408,23 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(expired.body).toMatchObject({ code: 'quote_outdated' });
     expect(await slugDocument('cliente-demo-c')).toBeUndefined();
     expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(1);
+  });
+
+  it('cotação do ambiente na infraestrutura do cliente (a de referência de um contrato direto): 422, sem reservar nem Stripe', async () => {
+    // O console grava a cotação de referência do contrato direto na mesma coleção; o site nunca a vende.
+    const outcome = quote(
+      { ...CONFIGURATION, mode: 'self_hosted' },
+      priceTableSchema.parse(fictitiousPriceTable()),
+    );
+    if (outcome.kind !== 'quote') throw new Error('sob consulta');
+    const stored = await new QuoteStore(documents, clock).create('teste-v1', outcome.quote);
+
+    const response = await checkout(order({ quoteId: stored.quoteId })).expect(422);
+
+    expect(response.body).toMatchObject({ code: 'mode_not_sold_online' });
+    expect(await slugDocument('cliente-demo-a')).toBeUndefined();
+    expect(fake.requests).toHaveLength(0);
+    expect(capture.entries().some((entry) => entry['event'] === 'checkout_mode_refused')).toBe(true);
   });
 
   it('cotação adulterada no banco (total diferente do recálculo pela tabela): 409 e alerta no log', async () => {

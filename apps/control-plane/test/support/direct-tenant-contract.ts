@@ -20,6 +20,9 @@ import { QuoteStore } from '../../src/pricing/quote-store.js';
 import { ProvisioningResumeService } from '../../src/provisioning/provisioning-resume.js';
 import { ProvisioningStartService } from '../../src/provisioning/provisioning-start.js';
 import { ProvisioningStore } from '../../src/provisioning/provisioning-store.js';
+import { InstallationService } from '../../src/provisioning/installation.js';
+import { releaseKeyFingerprint } from '../../src/provisioning/release-manifest.js';
+import type { ProvisioningApis } from '../../src/provisioning/provisioning-settings.js';
 import { MemoryStepQueue } from '../../src/queue/memory-step-queue.js';
 import { TenantStore } from '../../src/tenants/tenant-store.js';
 import { silentLogger } from './access-fakes.js';
@@ -27,6 +30,10 @@ import { tenantIn } from './access-store-contract.js';
 import { type FakeClock, MINUTE_MS } from './fake-clock.js';
 import { fictitiousPriceTable } from './pricing-fixtures.js';
 import { seedPublishedTable } from './pricing-seed.js';
+import { manifestFor, TestReleaseKey } from './release-fixtures.js';
+
+const RELEASES = 'projeto-exemplo-releases';
+const RELEASE = 'node-v1.2.3';
 
 export interface DirectTenantHarness {
   documents: DocumentStore;
@@ -86,6 +93,7 @@ class InProcessWorker implements WorkerOwnerClient {
     private readonly starts: ProvisioningStartService,
     private readonly resumes: ProvisioningResumeService,
     private readonly contracts: ContractService,
+    private readonly installations: InstallationService,
   ) {}
 
   private reached(operation: string, tenantId: string, actor: string): boolean {
@@ -101,6 +109,7 @@ class InProcessWorker implements WorkerOwnerClient {
       not_found: 404,
       confirmation_mismatch: 400,
       not_contract: 409,
+      customer_hosted: 409,
       not_allowed: 409,
     } as const;
     return refused(
@@ -114,6 +123,22 @@ class InProcessWorker implements WorkerOwnerClient {
     const outcome = await this.resumes.resume(tenantId, `owner:${actor}`);
     if (outcome.resumed) return ok({ runId: outcome.runId, step: outcome.step });
     return refused(outcome.reason === 'not_found' ? 404 : 409, outcome.reason);
+  }
+
+  async installation(tenantId: string, actor: string): Promise<OwnerCallResult> {
+    if (!this.reached('installation', tenantId, actor)) return refused(0, 'worker_unreachable');
+    const outcome = await this.installations.details(tenantId);
+    if (outcome.ok) return ok(JSON.parse(JSON.stringify(outcome.details)) as Record<string, unknown>);
+    const status = {
+      not_found: 404,
+      not_customer_hosted: 409,
+      not_allowed: 409,
+      release_unconfigured: 503,
+      release_manifest_missing: 503,
+      release_manifest_invalid: 502,
+      release_unavailable: 503,
+    } as const;
+    return refused(status[outcome.reason], outcome.reason);
   }
 
   async cancel(tenantId: string, confirmSlug: string, actor: string, at?: Date): Promise<OwnerCallResult> {
@@ -151,8 +176,8 @@ function directRequest(overrides: Record<string, unknown> = {}): Record<string, 
     cnpj: '11.222.333/0001-81',
     adminEmail: 'admin@cliente-demo-a.example',
     slug,
+    hosting: 'verax',
     configuration: {
-      mode: 'managed',
       cloudAccounts: 2,
       monthlyGib: 10,
       agents: 0,
@@ -195,6 +220,10 @@ export function describeDirectTenantContract(
     let limits: AdminTenantLimits;
     let service: AdminTenantsService;
     let config: AppConfig;
+    /** O bucket de releases do cp-worker (objeto → conteúdo) e a chave de release dos testes. */
+    let releases: Map<string, Buffer>;
+    let releaseKey: TestReleaseKey;
+    let workerConfig: AppConfig;
 
     async function auditActions(): Promise<{ actor: string; action: string; tenantId?: string }[]> {
       const docs = await h.documents.query(COLLECTIONS.auditLog, { orderBy: { field: 'at' } });
@@ -226,10 +255,30 @@ export function describeDirectTenantContract(
       tenants = new TenantStore(h.documents, h.clock, audit);
       runs = new ProvisioningStore(h.documents, h.clock);
       queue = new MemoryStepQueue();
+      releases = new Map();
+      releaseKey = new TestReleaseKey();
+      const manifest = manifestFor(RELEASE);
+      releases.set(`${RELEASE}/manifest.json`, manifest);
+      releases.set(`${RELEASE}/manifest.json.sig`, releaseKey.sign(manifest));
+      // Uma cópia sem o congelamento do loadConfig: um teste tira a versão do nó.
+      workerConfig = {
+        ...loadConfig({ ROLE: 'worker', NODE_ENV: 'test', RELEASE_BUCKET: RELEASES, NODE_RELEASE: RELEASE }),
+      };
+      // Só o bucket de releases: qualquer outra API da nuvem quebraria o teste (nada deve ser chamado).
+      const apis = {
+        storage: {
+          read: (bucket: string, object: string): Promise<Buffer | undefined> =>
+            Promise.resolve(bucket === RELEASES ? releases.get(object) : undefined),
+        },
+        get releaseKeys() {
+          return releaseKey.keys;
+        },
+      } as unknown as ProvisioningApis;
       worker = new InProcessWorker(
         new ProvisioningStartService(tenants, queue, h.clock, silentLogger()),
         new ProvisioningResumeService(tenants, queue, h.clock, silentLogger()),
         new ContractService(tenants, audit, queue, h.clock, silentLogger()),
+        new InstallationService(tenants, apis, workerConfig, silentLogger()),
       );
       limits = {
         creations: new TokenBucketLimiter(DIRECT_TENANT_CREATIONS, h.clock),
@@ -676,6 +725,212 @@ export function describeDirectTenantContract(
       ]);
       expect(detail.transitions.map((transition) => transition.to)).toEqual(['pending', 'provisioning']);
       await expectApiError(service.detail(newUlid()), 404, 'tenant_not_found');
+    });
+
+    // --- O ambiente na infraestrutura do cliente (decisão de 06/11/2026) -------------------------------------------
+
+    it('no cliente: nasce esperando a instalação, com a cotação da licença, sem pedir nada ao worker nem pôr task', async () => {
+      const request = directRequest({ hosting: 'customer', slug: 'cliente-proprio' });
+      const created = await service.create(request, OWNER);
+
+      expect(created).toEqual({
+        id: request['idempotencyKey'],
+        slug: 'cliente-proprio',
+        replayed: false,
+        hosting: 'customer',
+      });
+      const tenant = await tenants.require(created.id);
+      expect(tenant).toMatchObject({
+        state: 'waiting_customer_install',
+        hosting: 'customer',
+        billing: { mode: 'contract' },
+        // A tabela da licença no cliente (FICTÍCIA): o porte P e a implantação desse modo.
+        configuration: { mode: 'self_hosted', size: 'P', cloudAccounts: 2 },
+        pricing: { priceTableVersion: 'teste-v1', monthlyTotal: 50_000, setupTotal: 100_000 },
+      });
+      expect(tenant.provisioning).toBeUndefined();
+      expect(tenant.resources).toBeUndefined();
+      // Nada na fila, nenhuma chamada ao cp-worker: nenhum passo do provisionamento, nenhum Terraform.
+      expect(queue.tasks).toEqual([]);
+      expect(worker.calls).toEqual([]);
+      expect(await tenants.listTransitions(created.id)).toMatchObject([
+        { from: null, to: 'waiting_customer_install', reason: 'contract_created_customer_hosted' },
+      ]);
+      expect(await auditActions()).toEqual([
+        { actor: `owner:${OWNER.email}`, action: 'tenant.create', tenantId: created.id },
+      ]);
+
+      const detail = await service.detail(created.id);
+      expect(detail).toMatchObject({ hosting: 'customer', state: 'waiting_customer_install', timeline: [] });
+      expect(detail.urls).toBeUndefined();
+      expect(detail.actions).toEqual({
+        start: false,
+        resume: false,
+        cancel: true,
+        suspend: false,
+        reactivate: false,
+        deleteNow: false,
+        export: false,
+      });
+      expect((await service.list()).tenants[0]).toMatchObject({ id: created.id, hosting: 'customer' });
+
+      // O mesmo envio de novo: o mesmo cliente, sem worker; trocar o lugar com a mesma chave é outro cadastro (409).
+      expect(await service.create(request, OWNER)).toEqual({ ...created, replayed: true });
+      await expectApiError(
+        service.create({ ...request, hosting: 'verax' }, OWNER),
+        409,
+        'idempotency_conflict',
+      );
+      expect(worker.calls).toEqual([]);
+      expect(queue.tasks).toEqual([]);
+    });
+
+    it('no cliente: a cotação de referência é a da licença, e o que o provisionamento não cria não impede', async () => {
+      const configuration = {
+        cloudAccounts: 6,
+        monthlyGib: 10,
+        agents: 10,
+        historyDays: 30,
+        support: 'standard',
+      };
+      const customer = await service.preview({ hosting: 'customer', configuration });
+      expect(customer).toMatchObject({
+        contactUs: false,
+        quote: { configuration: { mode: 'self_hosted', size: 'M', agents: 10 } },
+        problems: [],
+      });
+      // Na Verax, a mesma configuração pede o porte M e agentes: o provisionamento ainda não cria.
+      const verax = await service.preview({ hosting: 'verax', configuration });
+      expect(verax).toMatchObject({
+        quote: { configuration: { mode: 'managed', size: 'M' } },
+        problems: ['size', 'agents'],
+      });
+      // O lugar é obrigatório, e o modo não vem mais na configuração (sai do lugar).
+      await expectApiError(service.preview({ configuration }), 400, 'invalid_request');
+      await expectApiError(
+        service.preview({ hosting: 'customer', configuration: { ...configuration, mode: 'self_hosted' } }),
+        400,
+        'invalid_request',
+      );
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-porte-m', configuration }),
+        OWNER,
+      );
+      expect((await tenants.require(created.id)).configuration).toMatchObject({ size: 'M', agents: 10 });
+    });
+
+    it('no cliente: o worker recusa provisionar, retomar e suspender, e nada vai à fila nem muda', async () => {
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-sem-no' }),
+        OWNER,
+      );
+      const confirm = { confirmSlug: 'cliente-sem-no' };
+      await expectApiError(service.act('start', created.id, confirm, OWNER), 409, 'customer_hosted');
+      await expectApiError(service.act('resume', created.id, confirm, OWNER), 409, 'customer_hosted');
+      await expectApiError(service.act('suspend', created.id, confirm, OWNER), 409, 'not_allowed');
+      expect((await tenants.require(created.id)).state).toBe('waiting_customer_install');
+      expect(queue.tasks).toEqual([]);
+    });
+
+    it('no cliente: cancelar só registra o fim do contrato, sem exportação nem pedido de parar VM', async () => {
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-fim' }),
+        OWNER,
+      );
+      const confirm = { confirmSlug: 'cliente-fim' };
+      const end = new Date(h.clock.now().getTime() + 30 * DAY_MS);
+      expect(await service.act('cancel', created.id, { ...confirm, at: end.toISOString() }, OWNER)).toEqual({
+        action: 'cancel',
+        result: 'scheduled',
+        cancelAt: end.toISOString(),
+      });
+
+      const now = await service.act('cancel', created.id, confirm, OWNER);
+      expect(now).toMatchObject({ action: 'cancel', result: 'canceled' });
+      const tenant = await tenants.require(created.id);
+      expect(tenant.state).toBe('canceled');
+      expect(tenant.lifecycle?.canceledAt).toEqual(h.clock.now());
+      // Sem janela de exportação: os dados nunca estiveram na Verax. O prazo só apaga o cadastro aqui.
+      expect(tenant.lifecycle?.exportUntil).toBeUndefined();
+      expect(tenant.lifecycle?.deleteAfter).toBeInstanceOf(Date);
+      // Nenhum node.stop (a VM é do cliente) e nenhuma outra task.
+      expect(queue.tasks).toEqual([]);
+      expect((await service.detail(created.id)).actions).toMatchObject({ deleteNow: true, export: false });
+    });
+
+    it('instalação no cliente: a versão conferida, os endereços do release, o guia e o node.conf do contrato', async () => {
+      const created = await service.create(
+        directRequest({
+          hosting: 'customer',
+          slug: 'cliente-instala',
+          configuration: {
+            cloudAccounts: 3,
+            monthlyGib: 50,
+            agents: 10,
+            historyDays: 180,
+            support: 'standard',
+          },
+        }),
+        OWNER,
+      );
+      const installation = await service.installation(created.id, OWNER);
+      const github = 'https://github.com/williandotdev/verax-control';
+      expect(installation).toEqual({
+        release: RELEASE,
+        commit: 'abcdef0123456789abcdef0123456789abcdef01',
+        releasedAt: '2026-11-05T12:00:00Z',
+        releaseUrl: `${github}/releases/tag/${RELEASE}`,
+        manifestUrl: `${github}/releases/download/${RELEASE}/manifest.json`,
+        signatureUrl: `${github}/releases/download/${RELEASE}/manifest.json.sig`,
+        guideUrl: `${github}/blob/main/docs/runbooks/instalacao-no-cliente.md`,
+        package: {
+          url: `${github}/releases/download/${RELEASE}/verax-node.tar.gz`,
+          sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        },
+        images: {
+          api: `ghcr.io/williandotdev/verax-control/api@sha256:${'1'.repeat(64)}`,
+          migrate: `ghcr.io/williandotdev/verax-control/migrate@sha256:${'2'.repeat(64)}`,
+        },
+        thirdPartyImages: [`postgres:18-alpine@sha256:${'3'.repeat(64)}`],
+        // A chave que fechou a assinatura (a dos testes) e a impressão digital dela, para conferir fora do GitHub.
+        releaseKey: { name: 'release-teste', sha256: releaseKeyFingerprint(releaseKey.publicPem) },
+        nodeConf: [
+          { name: 'PLAN', value: 'enterprise' },
+          { name: 'PLAN_MAX_CLOUD_ACCOUNTS', value: '3' },
+          { name: 'PLAN_MONTHLY_GIB', value: '50' },
+          { name: 'PLAN_HISTORY_DAYS', value: '180' },
+          { name: 'PLAN_MAX_USERS', value: '10' },
+          { name: 'WAZUH_AGENTS', value: 'true' },
+          { name: 'WAZUH_AGENTS_MAX', value: '10' },
+        ],
+      });
+      expect(worker.calls).toEqual([{ operation: 'installation', tenantId: created.id, actor: OWNER.email }]);
+      // Só leitura: nada gravado, nada na fila.
+      expect(queue.tasks).toEqual([]);
+      expect((await tenants.require(created.id)).state).toBe('waiting_customer_install');
+    });
+
+    it('instalação no cliente: só para o ambiente no cliente; versão ausente, assinatura de outra chave e worker fora', async () => {
+      const verax = await service.create(directRequest({ slug: 'cliente-na-verax' }), OWNER);
+      await expectApiError(service.installation(verax.id, OWNER), 409, 'not_customer_hosted');
+      await expectApiError(service.installation(newUlid(), OWNER), 404, 'tenant_not_found');
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-versao' }),
+        OWNER,
+      );
+
+      // A assinatura de outra chave (o manifesto trocado no bucket): recusado, nada chega à tela.
+      const manifest = releases.get(`${RELEASE}/manifest.json`) ?? Buffer.alloc(0);
+      releases.set(`${RELEASE}/manifest.json.sig`, new TestReleaseKey().sign(manifest));
+      await expectApiError(service.installation(created.id, OWNER), 502, 'release_manifest_invalid');
+      releases.delete(`${RELEASE}/manifest.json`);
+      await expectApiError(service.installation(created.id, OWNER), 503, 'release_manifest_missing');
+
+      Object.assign(workerConfig, { NODE_RELEASE: undefined });
+      await expectApiError(service.installation(created.id, OWNER), 503, 'release_unconfigured');
+      worker.down = true;
+      await expectApiError(service.installation(created.id, OWNER), 503, 'worker_unavailable');
+      await expectApiError(build(null).installation(created.id, OWNER), 503, 'worker_unconfigured');
     });
   });
 }
