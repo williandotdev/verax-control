@@ -31,7 +31,12 @@ interface RequestOptions<T> {
   body?: unknown;
   /** Schema zod da resposta. Toda resposta com corpo é validada antes de chegar à tela. */
   schema?: z.ZodType<T>;
+  /** Headers a mais da chamada (ex.: o token do Turnstile no login). */
+  headers?: Record<string, string>;
 }
+
+/** Opções que as chamadas de escrita aceitam além do corpo e do schema. */
+export type PostOptions = Pick<RequestOptions<unknown>, 'headers'>;
 
 export interface ApiClientHooks {
   /** Sessão ausente ou expirada: o painel leva ao login. */
@@ -43,6 +48,8 @@ export interface ApiClientHooks {
 }
 
 const UNSAFE: ReadonlySet<Method> = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+/** Rotas de escrita sem sessão: a autenticação e as públicas (sem token CSRF). */
+const SESSIONLESS_PREFIXES = ['/v1/auth/', '/v1/public/'] as const;
 
 interface ErrorBody {
   message?: unknown;
@@ -70,12 +77,16 @@ export class ApiClient {
     return this.request(path, { method: 'GET', schema });
   }
 
-  post<T>(path: string, body?: unknown, schema?: z.ZodType<T>): Promise<T> {
-    return this.request(path, { method: 'POST', body, schema });
+  post<T>(path: string, body?: unknown, schema?: z.ZodType<T>, options: PostOptions = {}): Promise<T> {
+    return this.request(path, { method: 'POST', body, schema, ...options });
   }
 
   patch<T>(path: string, body?: unknown, schema?: z.ZodType<T>): Promise<T> {
     return this.request(path, { method: 'PATCH', body, schema });
+  }
+
+  put<T>(path: string, body?: unknown, schema?: z.ZodType<T>): Promise<T> {
+    return this.request(path, { method: 'PUT', body, schema });
   }
 
   delete<T>(path: string, schema?: z.ZodType<T>): Promise<T> {
@@ -88,10 +99,17 @@ export class ApiClient {
   }
 
   async request<T>(path: string, options: RequestOptions<T> = {}, retried = false): Promise<T> {
+    // Build único aberto fora do endereço de um cliente: sem API resolvida, nenhuma chamada sai. O `main.tsx` nem
+    // monta o app nesse caso; esta é a segunda trava.
+    if (!this.baseUrl) throw new ApiRequestError(0, 'Endereço do painel não reconhecido');
     const method = options.method ?? 'GET';
-    const headers: Record<string, string> = { Accept: 'application/json' };
+    const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-    if (UNSAFE.has(method) && !path.startsWith('/v1/auth/')) headers['X-CSRF-Token'] = await this.csrf();
+    // As rotas de autenticação e as públicas (os links do contato de escalonamento) não usam a sessão: têm a checagem
+    // de origem própria, e pedir o token CSRF sem sessão daria 401.
+    if (UNSAFE.has(method) && !SESSIONLESS_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+      headers['X-CSRF-Token'] = await this.csrf();
+    }
 
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method,
@@ -107,7 +125,7 @@ export class ApiClient {
         return this.request(path, options, true);
       }
       // Nas rotas de autenticação, 401 é resposta do próprio fluxo (senha ou código errados), não sessão expirada.
-      const authRoute = path.startsWith('/v1/auth/');
+      const authRoute = SESSIONLESS_PREFIXES.some((prefix) => path.startsWith(prefix));
       if (error.status === 401 && !authRoute) this.hooks.onUnauthorized?.();
       if (error.code === 'MFA_REQUIRED' && !authRoute) this.hooks.onMfaRequired?.();
       // Este código só vem de sessão com senha temporária, inclusive nas rotas de autenticação (o cadastro do MFA

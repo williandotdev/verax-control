@@ -1,3 +1,4 @@
+import { BrandLockup, VeraxSymbol, VeraxWordmark } from '@/components/brand/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,7 +22,9 @@ const BASE_TOKENS = [
   ['border-strong', 'Borda forte', 'bg-border-strong'],
   ['gridline', 'Linha de grade', 'bg-gridline'],
   ['primary', 'Ação principal', 'bg-primary'],
+  ['primary-hover', 'Ação principal (hover)', 'bg-primary-hover'],
   ['ring', 'Foco', 'bg-ring'],
+  ['brand', 'Navy da marca', 'bg-brand'],
 ] as const;
 
 const SEVERITY_SWATCH: Record<(typeof SEVERITIES)[number], string> = {
@@ -56,6 +59,22 @@ export function CatalogPage() {
       </header>
 
       <CatalogSection
+        title="Marca"
+        description="A logo do site em SVG, na cor do texto em volta: a mesma nos dois temas e sobre o navy da marca."
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="brand-surface flex flex-col items-start justify-center gap-5 rounded-xl p-6">
+            <BrandLockup size="lg" />
+            <BrandLockup />
+          </div>
+          <Card className="flex items-center gap-6">
+            <VeraxWordmark label="Verax" className="h-8" />
+            <VeraxSymbol label="Símbolo da Verax" className="h-8 text-primary" />
+          </Card>
+        </div>
+      </CatalogSection>
+
+      <CatalogSection
         title="Cores de severidade"
         description="Sempre com ícone e rótulo; a cor nunca carrega o significado sozinha."
       >
@@ -88,7 +107,10 @@ export function CatalogPage() {
         </ul>
       </CatalogSection>
 
-      <CatalogSection title="Tipografia" description="Fonte do sistema em tudo, inclusive números grandes.">
+      <CatalogSection
+        title="Tipografia"
+        description="A pilha do site: Inter quando instalada, senão a do sistema. Em tudo, inclusive números grandes."
+      >
         <Card className="space-y-2">
           {TYPE_SCALE.map(([classes, label, size]) => (
             <p key={label} className={classes}>
@@ -115,7 +137,8 @@ export function CatalogPage() {
             <div>
               <CardTitle>Variações</CardTitle>
               <CardDescription>
-                Ação principal em tinta neutra, para não competir com as cores de severidade.
+                Ação principal no azul dos links do site, com o texto em AA nos dois temas. Severidade nunca
+                usa essa cor.
               </CardDescription>
             </div>
           </CardHeader>

@@ -16,6 +16,14 @@ export const TENANT_SCOPED_MODELS = [
   'postureScan',
   'postureFailure',
   'inventorySnapshot',
+  'ingestUsage',
+  'ingestHealth',
+  'cloudCredential',
+  'wazuhAgent',
+  'notification',
+  'notificationPreference',
+  'notificationDigest',
+  'escalationContactToken',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 

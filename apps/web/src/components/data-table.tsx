@@ -61,7 +61,7 @@ export function DataTable<T>({
   else if (rows.length === 0) body = <EmptyState title={emptyTitle} description={emptyDescription} />;
   else
     body = (
-      <div className="overflow-x-auto rounded-lg border">
+      <div data-tour="tabela" className="overflow-x-auto rounded-lg border">
         <table className="w-full text-sm">
           <caption className="sr-only">{caption}</caption>
           <thead className="bg-foreground/[0.03] text-left text-xs text-muted-foreground">
@@ -94,7 +94,11 @@ export function DataTable<T>({
 
   return (
     <div className="space-y-3">
-      {filters && <div className="flex flex-wrap items-end gap-2">{filters}</div>}
+      {filters && (
+        <div data-tour="filtros" className="flex flex-wrap items-end gap-2">
+          {filters}
+        </div>
+      )}
       {body}
       <nav
         aria-label="Paginação"

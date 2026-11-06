@@ -15,7 +15,7 @@ export function TenantSwitcher({ me }: { me: Me }) {
   const switchTenant = useSwitchTenant();
 
   return (
-    <div className="flex flex-col gap-1">
+    <div data-tour="seletor-cliente" className="flex flex-col gap-1">
       <label htmlFor={id} className="text-xs text-muted-foreground">
         Cliente
       </label>
@@ -36,7 +36,7 @@ export function TenantSwitcher({ me }: { me: Me }) {
         ))}
       </select>
       {switchTenant.error && (
-        <p role="alert" className="text-xs text-critical">
+        <p role="alert" className="text-xs text-critical-text">
           {errorMessage(switchTenant.error)}
         </p>
       )}

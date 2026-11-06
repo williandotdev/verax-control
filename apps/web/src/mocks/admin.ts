@@ -4,22 +4,39 @@ import {
   alertExceptionListQuerySchema,
   alertExceptionSchema,
   alertExceptionUpdateSchema,
+  AWS_READER_AUDIENCE,
+  awsReaderRoleArn,
   type CloudAccount,
   cloudAccountCreateSchema,
   cloudAccountListQuerySchema,
   cloudAccountSchema,
   cloudAccountUpdateSchema,
+  cloudCredentialInputSchema,
+  CREDENTIAL_KIND_PROVIDERS,
+  credentialStatus,
+  type EscalationContact,
+  type EscalationContactInput,
+  escalationContactInputSchema,
+  escalationLinkSchema,
   fieldsOutsideProvider,
+  INCIDENT_NOTICE_ROLES,
+  type LogBuckets,
+  logBucketNames,
   type Me,
+  mergeLogBuckets,
+  type NotificationPreferences,
+  notificationPreferencesUpdateSchema,
+  NOTICES_NOT_FOR_ROLE_MESSAGE,
   type Permission,
   type ProtectedResource,
   protectedResourceCreateSchema,
   protectedResourceListQuerySchema,
   protectedResourceSchema,
   protectedResourceUpdateSchema,
-  readOnlyRoleArn,
+  sameLogBucketNames,
   TEMPORARY_PASSWORD_HOURS,
   type Tenant,
+  tenantCreatedSchema,
   tenantCreateSchema,
   tenantListQuerySchema,
   tenantSchema,
@@ -35,8 +52,20 @@ import {
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
-import { DEMO_ACCOUNTS, DEMO_TENANTS } from './fixtures';
+import {
+  DEMO_ACCOUNTS,
+  DEMO_ALFA_MORE_BUCKETS,
+  DEMO_AWS_CHECK_DELAY_MS,
+  DEMO_CLOUDFLARE_TOKEN_SUFFIX,
+  DEMO_EGRESS_IPS,
+  DEMO_EXPIRED_LINK_TOKEN,
+  DEMO_GCP_FAILING_MINUTES,
+  DEMO_NODE_SERVICE_ACCOUNT_ID,
+  DEMO_SINK_TOPIC_PREFIX,
+  DEMO_TENANTS,
+} from './fixtures';
 import type { MockState } from './handlers';
+import { demoPlanRefusal } from './plan-handlers';
 
 /**
  * Cadastros do modo mock (E3), num estado só: clientes, usuários, contas cloud, lista de proteção e exceções. As
@@ -49,6 +78,8 @@ export interface AdminStore {
   accounts: Map<string, CloudAccount[]>;
   protectedResources: Map<string, ProtectedResource[]>;
   exceptions: Map<string, AlertException[]>;
+  /** A preferência de aviso por e-mail de quem entra na demonstração (pelo id da sessão; fase 2, PR-17'). */
+  noticePreferences: Map<string, boolean>;
 }
 
 const VERAX = { id: 'demo-equipe-verax', name: 'Equipe Verax' };
@@ -64,6 +95,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     cnpj: string,
     plan: string,
     contact: string,
+    /** O estado do contato de escalonamento (D8) na demonstração. */
+    contactStatus: EscalationContact['status'],
   ) =>
     tenantSchema.parse({
       id,
@@ -75,6 +108,14 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         name: contact,
         email: `${contact.split(' ')[0]?.toLowerCase()}@exemplo.com.br`,
         phone: '+55 11 4000-0000',
+        status: contactStatus,
+        confirmedAt: contactStatus === 'confirmed' ? at(30) : null,
+        unsubscribedAt: contactStatus === 'unsubscribed' ? at(5) : null,
+        // A confirmação pendente do Beta saiu há pouco; a do Alfa, há um mês; a do Inativo, antes do descadastro.
+        confirmationEmail: {
+          status: 'sent',
+          at: contactStatus === 'pending' ? at(0.05) : contactStatus === 'confirmed' ? at(30.01) : at(60),
+        },
       },
       createdAt: at(120),
       updatedAt: at(10),
@@ -87,6 +128,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
     mfaEnabled: boolean,
     days: number,
     mustChangePassword = false,
+    incidentEmails = true,
   ) =>
     userSchema.parse({
       id,
@@ -96,36 +138,78 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       status,
       mfaEnabled,
       mustChangePassword,
+      incidentEmails,
       createdAt: at(days),
     });
+  const minutesBefore = (minutes: number | null) =>
+    minutes === null ? null : new Date(now.getTime() - minutes * 60_000).toISOString();
   const account = (
     index: number,
     accountId: string,
     regions: string[],
-    connection: CloudAccount['connection'],
+    /** Estado da coleta e há quantos minutos foi a última coleta bem-sucedida. */
+    collection: {
+      connection: CloudAccount['connection'];
+      collectedMinutes: number | null;
+      error?: string;
+    },
     lastEventMinutes: number | null,
     other:
-      | { provider: 'gcp'; pubsubSubscription: string }
-      | { provider: 'cloudflare'; zones: string[] }
+      | { provider: 'gcp'; pubsubSubscription: string; sinkWriterIdentity: string }
+      | { provider: 'cloudflare'; zones: string[]; tokenExpiresInDays: number | null }
       | null = null,
-  ) =>
-    cloudAccountSchema.parse({
+    /** AWS: os buckets do GuardDuty e do WAF, além da trilha (`trilha-<conta>`, que toda conta AWS da demonstração tem). */
+    moreBuckets: { guardduty?: string; waf?: string } = {},
+  ) => {
+    const cloudflare = other?.provider === 'cloudflare' ? other : null;
+    const tokenExpiresAt =
+      cloudflare?.tokenExpiresInDays != null
+        ? new Date(now.getTime() + cloudflare.tokenExpiresInDays * 86_400_000).toISOString()
+        : null;
+    return cloudAccountSchema.parse({
       id: `018f2c1e-0000-7000-8000-0000000c${index.toString(16).padStart(4, '0')}`,
       provider: other?.provider ?? 'aws',
       accountId,
       regions: other ? [] : regions,
-      roleArn: other ? null : readOnlyRoleArn(accountId),
-      externalId: other ? null : `vx-${accountId}-0f3c9a1e7b2d4c6e8a0b1c2d3e4f5a6b`,
-      buckets: { cloudtrail: null, guardduty: null, waf: null },
+      // AWS: o papel de leitura sem chave, derivado do ID, e os três valores do nó para a pilha.
+      readerRoleArn: other ? null : awsReaderRoleArn(accountId),
+      nodeServiceAccountId: other ? null : DEMO_NODE_SERVICE_ACCOUNT_ID,
+      webIdentityAudience: other ? null : AWS_READER_AUDIENCE,
+      buckets: other
+        ? { cloudtrail: null, guardduty: null, waf: null }
+        : {
+            cloudtrail: `trilha-${accountId}`,
+            guardduty: moreBuckets.guardduty ?? null,
+            waf: moreBuckets.waf ?? null,
+          },
       pubsubSubscription: other?.provider === 'gcp' ? other.pubsubSubscription : null,
-      zones: other?.provider === 'cloudflare' ? other.zones : [],
+      sinkTopic: other?.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${accountId}` : null,
+      sinkWriterIdentity: other?.provider === 'gcp' ? other.sinkWriterIdentity : null,
+      zones: cloudflare ? cloudflare.zones : [],
+      // O token guardado no cofre: só os metadados, como a API devolve.
+      keyStatus: cloudflare
+        ? {
+            kind: 'cloudflare_api_token',
+            keyIdSuffix: DEMO_CLOUDFLARE_TOKEN_SUFFIX,
+            issuedAt: null,
+            expiresAt: tokenExpiresAt,
+            verifiedAt: at(0.05),
+            status: credentialStatus(tokenExpiresAt, now),
+          }
+        : null,
+      egressIps: other?.provider === 'gcp' ? [] : DEMO_EGRESS_IPS,
       status: 'active',
-      connection,
-      lastEventAt:
-        lastEventMinutes === null ? null : new Date(now.getTime() - lastEventMinutes * 60_000).toISOString(),
+      connection: collection.connection,
+      connectionError: collection.error ?? null,
+      checkRequestedAt: null,
+      // A conta AWS conectada lê os logs desde o dia anterior à primeira verificação.
+      ingestFrom: !other && collection.connection === 'connected' ? at(41).slice(0, 10) : null,
+      lastCollectedAt: minutesBefore(collection.collectedMinutes),
+      lastEventAt: minutesBefore(lastEventMinutes),
       createdAt: at(40),
       updatedAt: at(10),
     });
+  };
   const protectedItem = (id: string, type: ProtectedResource['type'], identifier: string, reason: string) =>
     protectedResourceSchema.parse({
       id,
@@ -170,8 +254,17 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         '12.ABC.345/01DE-35',
         'Monitoramento completo',
         'Marina Alves',
+        'confirmed',
       ),
-      tenant(beta, 'Cliente Demo Beta', 'active', '11.222.333/0001-81', 'Postura e alertas', 'Rafael Costa'),
+      tenant(
+        beta,
+        'Cliente Demo Beta',
+        'active',
+        '11.222.333/0001-81',
+        'Postura e alertas',
+        'Rafael Costa',
+        'pending',
+      ),
       tenant(
         inativo,
         'Cliente Demo Inativo',
@@ -179,6 +272,7 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         '45.997.418/0001-53',
         'Monitoramento completo',
         'Paula Reis',
+        'unsubscribed',
       ),
     ],
     users: new Map([
@@ -187,7 +281,8 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
         [
           user('demo-marina.alves', 'Marina Alves', 'admin_cliente', 'active', true, 100),
           user('demo-ana.souza', 'Ana Souza', 'analista_cliente', 'active', true, 90),
-          user('demo-joao.lima', 'João Lima', 'analista_cliente', 'active', true, 60),
+          // Desligou os avisos de incidente por e-mail (a coluna "Recebe alertas" mostra).
+          user('demo-joao.lima', 'João Lima', 'analista_cliente', 'active', true, 60, false, false),
           user('demo-diretoria', 'Diretoria', 'leitura', 'active', true, 50),
           // Criado ontem, com a senha temporária: ainda não entrou.
           user('demo-carlos.dev', 'Carlos Dev', 'leitura', 'active', false, 1, true),
@@ -196,23 +291,75 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       ],
       [beta, [user('demo-rafael.costa', 'Rafael Costa', 'admin_cliente', 'active', true, 80)]],
     ]),
+    noticePreferences: new Map(),
     accounts: new Map([
       [
         alfa,
         [
-          account(1, DEMO_ACCOUNTS.alfaProducao, ['sa-east-1', 'us-east-1'], 'ok', 3),
-          account(2, DEMO_ACCOUNTS.alfaHomologacao, ['sa-east-1'], 'ok', 30 * 60),
-          account(4, DEMO_ACCOUNTS.alfaGcp, [], 'ok', 12, {
-            provider: 'gcp',
-            pubsubSubscription: `projects/${DEMO_ACCOUNTS.alfaGcp}/subscriptions/verax-logs-seguranca`,
-          }),
-          account(5, DEMO_ACCOUNTS.alfaCloudflare, [], 'pending', null, {
-            provider: 'cloudflare',
-            zones: ['loja-alfa.example'],
-          }),
+          // A produção lê as três fontes: a trilha, o export do GuardDuty e o log do WAF.
+          account(
+            1,
+            DEMO_ACCOUNTS.alfaProducao,
+            ['sa-east-1', 'us-east-1'],
+            { connection: 'connected', collectedMinutes: 1 },
+            3,
+            null,
+            DEMO_ALFA_MORE_BUCKETS,
+          ),
+          // A homologação perdeu o acesso há 30 horas (a AWS recusou a entrada no papel): é a conta silenciosa da
+          // Torre. Verificada de novo na demonstração, continua recusada.
+          account(
+            2,
+            DEMO_ACCOUNTS.alfaHomologacao,
+            ['sa-east-1'],
+            { connection: 'error', collectedMinutes: 30 * 60, error: 'trust_denied' },
+            30 * 60,
+          ),
+          // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó. A
+          // permissão de leitura da assinatura foi tirada há 3 horas, e as leituras falham desde então: é a coleta parada
+          // da Torre (OP-02). A última entrada chegou pouco antes da última leitura bem-sucedida.
+          account(
+            4,
+            DEMO_ACCOUNTS.alfaGcp,
+            [],
+            { connection: 'error', collectedMinutes: DEMO_GCP_FAILING_MINUTES, error: 'PermissionDenied' },
+            DEMO_GCP_FAILING_MINUTES + 10,
+            {
+              provider: 'gcp',
+              pubsubSubscription: `${DEMO_SINK_TOPIC_PREFIX.replace('/topics/', '/subscriptions/')}${DEMO_ACCOUNTS.alfaGcp}`,
+              sinkWriterIdentity:
+                'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com',
+            },
+          ),
+          account(
+            5,
+            DEMO_ACCOUNTS.alfaCloudflare,
+            [],
+            { connection: 'waiting', collectedMinutes: null },
+            null,
+            // O token vence em 9 dias: o cartão mostra o aviso de troca.
+            {
+              provider: 'cloudflare',
+              zones: ['loja-alfa.example'],
+              tokenExpiresInDays: 9,
+            },
+          ),
         ],
       ],
-      [beta, [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'], 'ok', 1)]],
+      [
+        beta,
+        // Conta calma: o último alerta é o do achado mais recente da Beta, há quase 7 horas, e os eventos da AWS andam no
+        // Wazuh do nó (a Torre mostra "Tudo calmo", OP-01).
+        [
+          account(
+            3,
+            DEMO_ACCOUNTS.beta,
+            ['sa-east-1'],
+            { connection: 'connected', collectedMinutes: 1 },
+            400,
+          ),
+        ],
+      ],
     ]),
     protectedResources: new Map([
       [
@@ -278,6 +425,24 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
   };
 }
 
+const NO_BUCKETS: LogBuckets = { cloudtrail: null, guardduty: null, waf: null };
+
+/**
+ * Como a API (`assertOriginsFree`): um bucket de log é de um cliente só, em qualquer fonte. Devolve o primeiro dos
+ * buckets informados que já está numa conta de outro cliente.
+ */
+function bucketOfAnotherTenant(store: AdminStore, tenantId: string, buckets: LogBuckets): string | null {
+  const names = logBucketNames(buckets);
+  for (const [owner, accounts] of store.accounts) {
+    if (owner === tenantId) continue;
+    for (const account of accounts) {
+      const taken = names.find((name) => logBucketNames(account.buckets).includes(name));
+      if (taken) return taken;
+    }
+  }
+  return null;
+}
+
 const url = (path: string): string => `${API_URL}${path}`;
 const problem = (status: number, message: string, code?: string) =>
   HttpResponse.json({ statusCode: status, message, ...(code ? { code } : {}) }, { status });
@@ -307,9 +472,78 @@ const paginate = <T>(items: T[], page: number, pageSize: number) => {
 const queryOf = (request: Request) => Object.fromEntries(new URL(request.url).searchParams);
 const author = (me: Me) => ({ id: me.userId, name: me.email });
 
+/** Como a API: só administradores e analistas do cliente, no próprio cliente, recebem os avisos de incidente. */
+const receivesNotices = (me: Me) =>
+  me.tenantId !== null &&
+  me.tenantId === me.scopeTenantId &&
+  (INCIDENT_NOTICE_ROLES as readonly string[]).includes(me.role);
+
+function demoPreferences(store: AdminStore, me: Me): NotificationPreferences {
+  if (!receivesNotices(me)) return { incidentEmails: false, eligible: false };
+  return { incidentEmails: store.noticePreferences.get(me.userId) ?? true, eligible: true };
+}
+
+/**
+ * Como a API (D8): o mesmo endereço (sem diferença de maiúsculas) só troca o nome e o telefone; um endereço novo volta a
+ * aguardar a confirmação, com o pedido na fila.
+ */
+function demoContact(
+  input: EscalationContactInput,
+  previous: EscalationContact | null,
+  now: Date = new Date(),
+): EscalationContact {
+  const fields = { name: input.name, email: input.email, phone: input.phone ?? null };
+  if (previous && previous.email.trim().toLowerCase() === input.email.trim().toLowerCase()) {
+    return { ...previous, ...fields };
+  }
+  return {
+    ...fields,
+    status: 'pending',
+    confirmedAt: null,
+    unsubscribedAt: null,
+    confirmationEmail: { status: 'queued', at: now.toISOString() },
+  };
+}
+
+/** Pedir a confirmação de novo, como a API: só aguardando ou descadastrado. */
+function demoResend(contact: EscalationContact | null): EscalationContact | Response {
+  if (contact === null) {
+    return problem(409, 'O cliente não tem contato de escalonamento', 'ESCALATION_CONTACT_MISSING');
+  }
+  if (contact.status === 'confirmed') {
+    return problem(409, 'O contato de escalonamento já confirmou o endereço', 'ESCALATION_CONTACT_CONFIRMED');
+  }
+  return {
+    ...contact,
+    status: 'pending',
+    confirmedAt: null,
+    unsubscribedAt: null,
+    confirmationEmail: { status: 'queued', at: new Date().toISOString() },
+  };
+}
+
 type Denied = { ok: false; error: Response };
 type Allowed = { ok: true; me: Me };
 type Scoped = { ok: true; me: Me; tenantId: string };
+
+/**
+ * O "worker" da demonstração: responde o "Verificar" pendente há mais de `DEMO_AWS_CHECK_DELAY_MS`. A homologação da
+ * demonstração continua recusada (`trust_denied`); qualquer outra conta conecta e ganha o dia de início da coleta (o
+ * anterior), uma vez só, como a tarefa `aws-check`.
+ */
+function answerAwsCheck(account: CloudAccount, now: Date = new Date()): void {
+  if (account.checkRequestedAt === null) return;
+  if (now.getTime() - Date.parse(account.checkRequestedAt) < DEMO_AWS_CHECK_DELAY_MS) return;
+  const refused = account.accountId === DEMO_ACCOUNTS.alfaHomologacao;
+  const yesterday = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+  Object.assign(account, {
+    checkRequestedAt: null,
+    connection: refused ? 'error' : 'connected',
+    connectionError: refused ? 'trust_denied' : null,
+    ingestFrom: refused ? account.ingestFrom : (account.ingestFrom ?? yesterday),
+    updatedAt: now.toISOString(),
+  });
+}
 
 export function createAdminHandlers(state: MockState, store: AdminStore) {
   /** Permissão de leitura ou escrita (com CSRF) e, quando pedido, o cliente da sessão. */
@@ -353,6 +587,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const tenant = store.tenants.find((candidate) => candidate.id === params['id']);
       return tenant ? HttpResponse.json(tenant) : problem(404, 'Cliente não encontrado');
     }),
+    // O cliente nasce com o primeiro administrador (`admin_cliente`), com a senha temporária só nesta resposta.
     http.post(url('/v1/tenants'), async ({ request }) => {
       const check = guard('tenants:write', request);
       if (!check.ok) return check.error;
@@ -360,20 +595,40 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!input.success) return problem(400, 'Dados inválidos');
       if (store.tenants.some((tenant) => tenant.cnpj === input.data.cnpj))
         return problem(409, 'CNPJ já cadastrado');
+      const { firstAdmin, escalationContact, ...fields } = input.data;
+      const email = firstAdmin.email.trim().toLowerCase();
+      // Como na API: e-mail já usado em qualquer cliente recusa o cadastro inteiro, sem dizer de quem é.
+      if ([...store.users.values()].flat().some((user) => user.email === email))
+        return problem(409, 'Já existe um usuário com este e-mail');
       const now = new Date().toISOString();
       const tenant = tenantSchema.parse({
         id: newId(),
-        ...input.data,
-        escalationContact: {
-          ...input.data.escalationContact,
-          phone: input.data.escalationContact.phone ?? null,
-        },
+        ...fields,
+        escalationContact: demoContact(escalationContact, null),
         status: 'active',
         createdAt: now,
         updatedAt: now,
       });
+      const admin = userSchema.parse({
+        id: `demo-${email}`,
+        name: firstAdmin.name,
+        email,
+        role: 'admin_cliente',
+        status: 'active',
+        mfaEnabled: false,
+        mustChangePassword: true,
+        incidentEmails: true,
+        createdAt: now,
+      });
       store.tenants.push(tenant);
-      return HttpResponse.json(tenant, { status: 201 });
+      store.users.set(tenant.id, [admin]);
+      return HttpResponse.json(
+        tenantCreatedSchema.parse({
+          tenant,
+          firstAdmin: { id: admin.id, name: admin.name, email: admin.email, ...demoTemporaryPassword() },
+        }),
+        { status: 201 },
+      );
     }),
     http.patch(url('/v1/tenants/:id'), async ({ params, request }) => {
       const check = guard('tenants:write', request);
@@ -385,11 +640,64 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       const { escalationContact, ...rest } = input.data;
       Object.assign(tenant, rest, {
         ...(escalationContact
-          ? { escalationContact: { ...escalationContact, phone: escalationContact.phone ?? null } }
+          ? { escalationContact: demoContact(escalationContact, tenant.escalationContact) }
           : {}),
         updatedAt: new Date().toISOString(),
       });
       return HttpResponse.json(tenant);
+    }),
+    // Pedir de novo a confirmação do contato (D8), pelo cadastro de clientes da Verax.
+    http.post(url('/v1/tenants/:id/escalation-contact/confirmation'), ({ params, request }) => {
+      const check = guard('tenants:write', request);
+      if (!check.ok) return check.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === params['id']);
+      if (!tenant) return problem(404, 'Cliente não encontrado');
+      const contact = demoResend(tenant.escalationContact);
+      if (contact instanceof Response) return contact;
+      Object.assign(tenant, { escalationContact: contact, updatedAt: new Date().toISOString() });
+      return HttpResponse.json(tenant);
+    }),
+
+    // --- Contato de escalonamento do cliente da sessão (D8): só administradores ---
+    http.get(url('/v1/escalation-contact'), () => {
+      const scope = scoped('escalation_contact:read');
+      if (!scope.ok) return scope.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === scope.tenantId);
+      return HttpResponse.json({ contact: tenant?.escalationContact ?? null });
+    }),
+    http.put(url('/v1/escalation-contact'), async ({ request }) => {
+      const scope = scoped('escalation_contact:write', request);
+      if (!scope.ok) return scope.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === scope.tenantId);
+      if (!tenant) return problem(404, 'Cliente não encontrado');
+      const input = escalationContactInputSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      tenant.escalationContact = demoContact(input.data, tenant.escalationContact);
+      tenant.updatedAt = new Date().toISOString();
+      return HttpResponse.json({ contact: tenant.escalationContact });
+    }),
+    http.post(url('/v1/escalation-contact/confirmation'), ({ request }) => {
+      const scope = scoped('escalation_contact:write', request);
+      if (!scope.ok) return scope.error;
+      const tenant = store.tenants.find((candidate) => candidate.id === scope.tenantId);
+      if (!tenant) return problem(404, 'Cliente não encontrado');
+      const contact = demoResend(tenant.escalationContact);
+      if (contact instanceof Response) return contact;
+      tenant.escalationContact = contact;
+      tenant.updatedAt = new Date().toISOString();
+      return HttpResponse.json({ contact });
+    }),
+    // Os links do e-mail (públicos): a demonstração não manda e-mail, então qualquer token no formato vale, menos o
+    // vencido da demonstração, que recebe a mesma recusa da API.
+    http.post(url('/v1/public/escalation-contact/:action'), async ({ params, request }) => {
+      const action = params['action'];
+      if (action !== 'confirm' && action !== 'unsubscribe') return problem(404, 'Não encontrado');
+      const input = escalationLinkSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      if (input.data.token === DEMO_EXPIRED_LINK_TOKEN) {
+        return problem(400, 'Link inválido ou vencido', 'ESCALATION_LINK_INVALID');
+      }
+      return HttpResponse.json({ status: action === 'confirm' ? 'confirmed' : 'unsubscribed' });
     }),
 
     // --- Usuários do cliente (T3.2) ---
@@ -409,6 +717,9 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!scope.ok) return scope.error;
       const input = userCreateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      // Como a API: a conta nova pede vaga no plano do nó.
+      const refusal = demoPlanRefusal(store, scope.tenantId, 'users');
+      if (refusal) return refusal;
       const users = listOf(store.users, scope.tenantId);
       const email = input.data.email.trim().toLowerCase();
       if ([...store.users.values()].flat().some((user) => user.email === email))
@@ -420,6 +731,7 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         status: 'active',
         mfaEnabled: false,
         mustChangePassword: true,
+        incidentEmails: true,
         createdAt: new Date().toISOString(),
       });
       users.push(user);
@@ -435,6 +747,11 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (user.id === scope.me.userId) return problem(403, 'Ninguém altera o próprio acesso');
       const input = userUpdateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      // Reativar ocupa de novo uma vaga do plano.
+      if (input.data.status === 'active' && user.status === 'disabled') {
+        const refusal = demoPlanRefusal(store, scope.tenantId, 'users');
+        if (refusal) return refusal;
+      }
       Object.assign(user, input.data);
       return HttpResponse.json(user);
     }),
@@ -452,16 +769,36 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       return HttpResponse.json(demoTemporaryPassword());
     }),
 
+    // --- Preferência de aviso por e-mail da própria pessoa (fase 2, PR-17'): sempre a da sessão ---
+    http.get(url('/v1/notification-preferences'), () => {
+      const check = guard('notification_preferences:read');
+      if (!check.ok) return check.error;
+      return HttpResponse.json(demoPreferences(store, check.me));
+    }),
+    http.put(url('/v1/notification-preferences'), async ({ request }) => {
+      const check = guard('notification_preferences:write', request);
+      if (!check.ok) return check.error;
+      if (!receivesNotices(check.me))
+        return problem(403, NOTICES_NOT_FOR_ROLE_MESSAGE, 'NOTICES_NOT_FOR_ROLE');
+      const input = notificationPreferencesUpdateSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      store.noticePreferences.set(check.me.userId, input.data.incidentEmails);
+      // Quem está na lista de usuários com o id da sessão aparece com a escolha nova na coluna "Recebe alertas".
+      for (const user of [...store.users.values()].flat()) {
+        if (user.id === check.me.userId) user.incidentEmails = input.data.incidentEmails;
+      }
+      return HttpResponse.json(demoPreferences(store, check.me));
+    }),
+
     // --- Contas cloud (T3.3) ---
     http.get(url('/v1/cloud-accounts'), ({ request }) => {
       const scope = scoped('cloud_accounts:read');
       if (!scope.ok) return scope.error;
       const query = cloudAccountListQuerySchema.safeParse(queryOf(request));
       if (!query.success) return problem(400, 'Filtro inválido');
-      const canSeeExternalId = scope.me.permissions.includes('cloud_accounts:write');
-      const items = listOf(store.accounts, scope.tenantId)
-        .filter((account) => !query.data.status || account.status === query.data.status)
-        .map((account) => ({ ...account, externalId: canSeeExternalId ? account.externalId : null }));
+      const accounts = listOf(store.accounts, scope.tenantId);
+      for (const account of accounts) answerAwsCheck(account);
+      const items = accounts.filter((account) => !query.data.status || account.status === query.data.status);
       return HttpResponse.json(paginate(items, query.data.page, query.data.pageSize));
     }),
     http.post(url('/v1/cloud-accounts'), async ({ request }) => {
@@ -469,6 +806,9 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!scope.ok) return scope.error;
       const input = cloudAccountCreateSchema.safeParse(await body(request));
       if (!input.success) return problem(400, 'Dados inválidos');
+      // Como a API: a conta nova pede vaga no plano do nó.
+      const refusal = demoPlanRefusal(store, scope.tenantId, 'cloudAccounts');
+      if (refusal) return refusal;
       const all = [...store.accounts.values()].flat();
       if (
         all.some(
@@ -478,22 +818,37 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
         return problem(409, 'Esta conta já está cadastrada');
       }
       const data = input.data;
+      if (data.provider === 'aws') {
+        const taken = bucketOfAnotherTenant(store, scope.tenantId, mergeLogBuckets(NO_BUCKETS, data.buckets));
+        if (taken) return problem(409, `O bucket ${taken} já está cadastrado em outro cliente`);
+      }
       const now = new Date().toISOString();
-      const random = Array.from(crypto.getRandomValues(new Uint8Array(20)), (byte) =>
-        byte.toString(16).padStart(2, '0'),
-      ).join('');
+      const aws = data.provider === 'aws';
       const account = cloudAccountSchema.parse({
         id: newId(),
         provider: data.provider,
         accountId: data.accountId,
-        regions: data.provider === 'aws' ? data.regions : [],
-        roleArn: data.provider === 'aws' ? readOnlyRoleArn(data.accountId) : null,
-        externalId: data.provider === 'aws' ? `vx-${random}` : null,
-        buckets: { cloudtrail: null, guardduty: null, waf: null },
+        regions: aws ? data.regions : [],
+        readerRoleArn: aws ? awsReaderRoleArn(data.accountId) : null,
+        nodeServiceAccountId: aws ? DEMO_NODE_SERVICE_ACCOUNT_ID : null,
+        webIdentityAudience: aws ? AWS_READER_AUDIENCE : null,
+        buckets: {
+          cloudtrail: aws ? (data.buckets?.cloudtrail ?? null) : null,
+          guardduty: aws ? (data.buckets?.guardduty ?? null) : null,
+          waf: aws ? (data.buckets?.waf ?? null) : null,
+        },
         pubsubSubscription: data.provider === 'gcp' ? (data.pubsubSubscription ?? null) : null,
+        sinkTopic: data.provider === 'gcp' ? `${DEMO_SINK_TOPIC_PREFIX}${data.accountId}` : null,
+        sinkWriterIdentity: data.provider === 'gcp' ? (data.sinkWriterIdentity ?? null) : null,
         zones: data.provider === 'cloudflare' ? (data.zones ?? []) : [],
+        keyStatus: null,
+        egressIps: data.provider === 'gcp' ? [] : DEMO_EGRESS_IPS,
         status: 'active',
-        connection: 'pending',
+        connection: 'waiting',
+        connectionError: null,
+        checkRequestedAt: null,
+        ingestFrom: null,
+        lastCollectedAt: null,
         lastEventAt: null,
         createdAt: now,
         updatedAt: now,
@@ -512,9 +867,109 @@ export function createAdminHandlers(state: MockState, store: AdminStore) {
       if (!input.success) return problem(400, 'Dados inválidos');
       const foreign = fieldsOutsideProvider(account.provider, input.data);
       if (foreign.length > 0) return problem(400, `Campo que não existe nesta conta: ${foreign.join(', ')}`);
-      const { buckets: _buckets, ...rest } = input.data;
-      Object.assign(account, rest, { updatedAt: new Date().toISOString() });
+      // Reativar ocupa de novo uma vaga do plano.
+      if (input.data.status === 'active' && account.status !== 'active') {
+        const refusal = demoPlanRefusal(store, scope.tenantId, 'cloudAccounts');
+        if (refusal) return refusal;
+      }
+      const { buckets, ...rest } = input.data;
+      if (buckets) {
+        const taken = bucketOfAnotherTenant(store, scope.tenantId, mergeLogBuckets(NO_BUCKETS, buckets));
+        if (taken) return problem(409, `O bucket ${taken} já está cadastrado em outro cliente`);
+      }
+      const nextBuckets = mergeLogBuckets(account.buckets, buckets);
+      // Como a API: outra assinatura ou outra lista de buckets é outra fonte, e a conta desativada ou reativada
+      // recomeça; nos dois casos, a conexão volta a "aguardando" (e o "Verificar" pendente sai). Nada é verificado
+      // sozinho.
+      const sourceChanged =
+        !sameLogBucketNames(account.buckets, nextBuckets) ||
+        (rest.pubsubSubscription !== undefined && rest.pubsubSubscription !== account.pubsubSubscription);
+      const statusChanged = rest.status !== undefined && rest.status !== account.status;
+      Object.assign(
+        account,
+        rest,
+        { buckets: { ...nextBuckets }, updatedAt: new Date().toISOString() },
+        sourceChanged || statusChanged
+          ? { connection: 'waiting', connectionError: null, checkRequestedAt: null }
+          : {},
+        // Como a API: a conta desativada não guarda credencial.
+        rest.status === 'inactive' ? { keyStatus: null } : {},
+      );
       return HttpResponse.json(account);
+    }),
+    // "Verificar" a conta AWS, como a API: grava o pedido (a conexão volta a aguardar) e responde na hora (202); o
+    // pedido pendente não é renovado. Quem responde é o "worker" da demonstração, na leitura da lista.
+    http.post(url('/v1/cloud-accounts/:id/aws/verify'), ({ params, request }) => {
+      const scope = scoped('cloud_accounts:write', request);
+      if (!scope.ok) return scope.error;
+      const account = listOf(store.accounts, scope.tenantId).find(
+        (candidate) => candidate.id === params['id'],
+      );
+      if (!account) return problem(404, 'Conta não encontrada');
+      if (account.provider !== 'aws') return problem(400, 'Só uma conta AWS é verificada assim.');
+      if (account.status !== 'active') {
+        return problem(400, 'Reative o monitoramento antes de verificar a conta.');
+      }
+      if (account.checkRequestedAt === null) {
+        const now = new Date().toISOString();
+        Object.assign(account, {
+          connection: 'waiting',
+          connectionError: null,
+          checkRequestedAt: now,
+          updatedAt: now,
+        });
+      }
+      return HttpResponse.json(account, { status: 202 });
+    }),
+    // Credencial de leitura (token do Cloudflare). O mock não fala com o Cloudflare: todo token no formato é aceito,
+    // com um ID fictício, e nada do valor colado fica no estado (só o fim do ID, como na API).
+    http.put(url('/v1/cloud-accounts/:id/credential'), async ({ params, request }) => {
+      const scope = scoped('cloud_credentials:write', request);
+      if (!scope.ok) return scope.error;
+      const account = listOf(store.accounts, scope.tenantId).find(
+        (candidate) => candidate.id === params['id'],
+      );
+      if (!account) return problem(404, 'Conta não encontrada');
+      const input = cloudCredentialInputSchema.safeParse(await body(request));
+      if (!input.success) return problem(400, 'Dados inválidos');
+      if (CREDENTIAL_KIND_PROVIDERS[input.data.kind] !== account.provider) {
+        return problem(400, 'Este tipo de credencial não vale para esta conta.');
+      }
+      if (account.status !== 'active') return problem(400, 'Reative a conta antes de guardar a credencial.');
+      const tokenId = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+        byte.toString(16).padStart(2, '0'),
+      ).join('');
+      const now = new Date().toISOString();
+      Object.assign(account, {
+        keyStatus: {
+          kind: input.data.kind,
+          keyIdSuffix: tokenId.slice(-4),
+          issuedAt: null,
+          expiresAt: null,
+          verifiedAt: now,
+          status: 'active',
+        },
+        connection: 'waiting',
+        connectionError: null,
+        updatedAt: now,
+      });
+      return HttpResponse.json(account);
+    }),
+    http.delete(url('/v1/cloud-accounts/:id/credential'), ({ params, request }) => {
+      const scope = scoped('cloud_credentials:write', request);
+      if (!scope.ok) return scope.error;
+      const account = listOf(store.accounts, scope.tenantId).find(
+        (candidate) => candidate.id === params['id'],
+      );
+      if (!account) return problem(404, 'Conta não encontrada');
+      if (!account.keyStatus) return problem(404, 'Esta conta não tem credencial guardada.');
+      Object.assign(account, {
+        keyStatus: null,
+        connection: 'waiting',
+        connectionError: null,
+        updatedAt: new Date().toISOString(),
+      });
+      return new HttpResponse(null, { status: 204 });
     }),
 
     // --- Lista de proteção (T3.4) ---

@@ -6,10 +6,12 @@ import { AuditService } from '../src/common/audit/audit.service.js';
 import { REDACTED } from '../src/common/logger/sanitize.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import type { AuditLog } from '../src/generated/prisma/client.js';
-import { createApp } from './support/create-app.js';
+import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
+import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { LogCapture } from './support/log-capture.js';
 import {
   EXPLODE_AFTER_INSERT,
+  REFUSE_AFTER_INSERT,
   FORCE_AUDIT_FAILURE,
   WidgetProbeModule,
 } from './support/widget-probe.module.js';
@@ -150,6 +152,27 @@ describe('trilha de auditoria (T1.3)', () => {
       });
     });
 
+    it('recusa gravada (CommittedApiError): o erro sai depois do commit, com o que o handler gravou e um registro só', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/widgets-probe')
+        .send({ name: REFUSE_AFTER_INSERT })
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        message: 'Recusado, e a recusa ficou gravada',
+        code: 'PROBE_REFUSED',
+      });
+      expect(await widgetExists(REFUSE_AFTER_INSERT)).toBe(true);
+      const entries = await auditFor(response.headers['x-request-id']);
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        action: 'widget.create',
+        outcome: 'failure',
+        statusCode: 409,
+        after: { name: REFUSE_AFTER_INSERT },
+      });
+    });
+
     it('se a auditoria não pode ser gravada, a alteração também não é', async () => {
       const response = await request(app.getHttpServer())
         .post('/v1/widgets-probe')
@@ -189,6 +212,54 @@ describe('trilha de auditoria (T1.3)', () => {
   it('leituras não são auditadas', async () => {
     const response = await request(app.getHttpServer()).get('/v1/widgets-probe').expect(200);
     expect(await auditFor(response.headers['x-request-id'])).toHaveLength(0);
+  });
+
+  describe('registro adicional da mesma requisição (AuditContext.also)', () => {
+    let verax: { cookie: string; csrfToken: string; id: string };
+    let tenantId: string;
+
+    const post = (path: string) =>
+      request(app.getHttpServer())
+        .post(path)
+        .set('Cookie', verax.cookie)
+        .set('Origin', TEST_WEB_ORIGIN)
+        .set('X-CSRF-Token', verax.csrfToken);
+    const trails = (entries: AuditLog[]) => entries.map((entry) => [entry.action, entry.tenantId]).sort();
+
+    beforeAll(async () => {
+      // admin_verax com um cliente selecionado: a trilha do ator é nenhuma, a do escopo é a do cliente.
+      tenantId = await createTenant(app, 'Cliente do escopo (auditoria)');
+      const user = await createSignedInUser(app, { role: 'admin_verax' });
+      const csrf = await withCsrf(app, user.cookie);
+      verax = { cookie: csrf.cookie, csrfToken: csrf.token, id: user.id };
+      await post('/v1/session/tenant').send({ tenantId }).expect(200);
+    });
+
+    it('sem cliente próprio, segue a trilha do principal (a do escopo), e não a do ator', async () => {
+      const response = await post('/v1/widgets-probe/scoped/pair').send({}).expect(201);
+      const entries = await auditFor(response.headers['x-request-id']);
+      expect(trails(entries)).toEqual([
+        ['widget.pair', tenantId],
+        ['widget.pair_extra', tenantId],
+      ]);
+      for (const entry of entries) {
+        expect(entry).toMatchObject({
+          actorType: 'user',
+          actorId: verax.id,
+          outcome: 'success',
+          statusCode: 201,
+          requestId: response.headers['x-request-id'],
+        });
+      }
+    });
+
+    it('com `null` informado (operação global), o adicional fica fora da trilha do cliente', async () => {
+      const response = await post('/v1/widgets-probe/scoped/pair').send({ extraGlobal: true }).expect(201);
+      expect(trails(await auditFor(response.headers['x-request-id']))).toEqual([
+        ['widget.pair', tenantId],
+        ['widget.pair_extra', null],
+      ]);
+    });
   });
 
   describe('imutabilidade', () => {

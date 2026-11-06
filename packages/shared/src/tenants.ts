@@ -1,5 +1,7 @@
 import { z } from 'zod';
+import { escalationContactInputSchema, escalationContactSchema } from './escalation-contact.js';
 import { withPagination } from './pagination.js';
+import { temporaryPasswordSchema } from './users.js';
 
 export const TENANT_STATUSES = ['active', 'inactive'] as const;
 export type TenantStatus = (typeof TENANT_STATUSES)[number];
@@ -34,31 +36,35 @@ export const cnpjSchema = z
   .transform((value) => value.replace(/[.\-/\s]/g, '').toUpperCase())
   .refine(isValidCnpj, { error: 'CNPJ inválido' });
 
-const escalationContactSchema = z.strictObject({
-  name: z.string().trim().min(1).max(120),
-  email: z.email().max(254),
-  // No máximo 20 caracteres, o tamanho da coluna no banco.
-  phone: z
-    .string()
-    .trim()
-    .max(20)
-    .regex(/^\+?[0-9][0-9 ()-]{7,19}$/, { error: 'telefone inválido' })
-    .nullable()
-    .optional(),
-});
-
-/** Cadastro de cliente (T3.1). Só `admin_verax` cria e altera. */
-export const tenantCreateSchema = z.strictObject({
+/** Dados cadastrais do cliente, comuns ao cadastro e à alteração. */
+const tenantFieldsSchema = z.strictObject({
   name: z.string().trim().min(1).max(120),
   cnpj: cnpjSchema,
   /** Texto livre (premissa aprovada: o plano não define valores). */
   plan: z.string().trim().min(1).max(60),
-  /** Quem a Verax aciona num incidente grave. */
-  escalationContact: escalationContactSchema,
+  /**
+   * Quem a Verax e o cliente acionam num incidente grave (D8). Um endereço novo precisa ser confirmado pelo link do
+   * e-mail antes de receber qualquer aviso (`escalation-contact.ts`).
+   */
+  escalationContact: escalationContactInputSchema,
 });
+
+/**
+ * Primeiro usuário do cliente: nasce junto com o cadastro, como `admin_cliente`, com uma senha temporária. O papel
+ * não vem do corpo, e o cliente é o que está sendo criado.
+ */
+export const tenantFirstAdminSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120),
+  email: z.email().max(254),
+});
+export type TenantFirstAdmin = z.infer<typeof tenantFirstAdminSchema>;
+
+/** Cadastro de cliente (T3.1). Só `admin_verax` cria e altera; o primeiro administrador é criado na mesma requisição. */
+export const tenantCreateSchema = tenantFieldsSchema.extend({ firstAdmin: tenantFirstAdminSchema });
 export type TenantCreate = z.infer<typeof tenantCreateSchema>;
 
-export const tenantUpdateSchema = tenantCreateSchema
+/** Alteração parcial. O primeiro administrador não entra aqui: usuários do cliente mudam pela gestão de usuários. */
+export const tenantUpdateSchema = tenantFieldsSchema
   .partial()
   .extend({ status: z.enum(TENANT_STATUSES).optional() })
   .refine((update) => Object.keys(update).length > 0, { error: 'informe ao menos um campo' });
@@ -79,10 +85,24 @@ export type TenantSummary = z.infer<typeof tenantSummarySchema>;
 export const tenantSchema = tenantSummarySchema.extend({
   cnpj: z.string().nullable(),
   plan: z.string().nullable(),
-  escalationContact: z
-    .strictObject({ name: z.string(), email: z.string(), phone: z.string().nullable() })
-    .nullable(),
+  /** O contato com o estado da confirmação e do descadastro. */
+  escalationContact: escalationContactSchema.nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
 export type Tenant = z.infer<typeof tenantSchema>;
+
+/**
+ * Resposta do cadastro: o cliente e o primeiro administrador, com a senha temporária dele. Ela só aparece aqui (a
+ * leitura do cliente e a dos usuários nunca a devolvem), como no cadastro de usuários.
+ */
+export const tenantCreatedSchema = z.strictObject({
+  tenant: tenantSchema,
+  firstAdmin: z.strictObject({
+    id: z.string().min(1),
+    name: z.string(),
+    email: z.string(),
+    ...temporaryPasswordSchema.shape,
+  }),
+});
+export type TenantCreated = z.infer<typeof tenantCreatedSchema>;

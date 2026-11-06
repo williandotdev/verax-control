@@ -25,6 +25,8 @@ export type FilterValue = string | number;
 
 export type AlertFilter =
   | { field: FilterField; equals: FilterValue }
+  /** O campo diferente do valor (inclusive ausente): vira um `term` no `must_not`. */
+  | { field: FilterField; notEquals: FilterValue }
   | { field: FilterField; oneOf: readonly FilterValue[] }
   | { field: 'rule.level'; atLeast: number };
 
@@ -81,6 +83,7 @@ function filterClause(filter: AlertFilter): Record<string, unknown> {
     }
     return { terms: { [filter.field]: filter.oneOf.map(filterValue) } };
   }
+  if ('notEquals' in filter) return { term: { [filter.field]: filterValue(filter.notEquals) } };
   return { term: { [filter.field]: filterValue(filter.equals) } };
 }
 
@@ -99,18 +102,19 @@ export function alertsAfter(options: {
     throw new RangeError(`size precisa ser um inteiro de 1 a ${MAX_PAGE_SIZE}`);
   }
   const filter: Record<string, unknown>[] = [];
+  const mustNot: Record<string, unknown>[] = [];
   if (options.since !== undefined) {
     filter.push({ range: { timestamp: { gte: timestamp(options.since, 'since') } } });
   }
   for (const item of options.filters ?? []) {
-    filter.push(filterClause(item));
+    ('notEquals' in item ? mustNot : filter).push(filterClause(item));
   }
 
   const body: Record<string, unknown> = {
     size,
     track_total_hits: false,
     sort: [{ timestamp: 'asc' }, { id: 'asc' }],
-    query: { bool: { filter } },
+    query: { bool: { filter, ...(mustNot.length > 0 && { must_not: mustNot }) } },
   };
   if (options.cursor !== null) {
     if (!ALERT_ID.test(options.cursor.id)) {

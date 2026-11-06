@@ -26,6 +26,8 @@ export const PERMISSIONS = {
   'users:write': ADMINS,
   'cloud_accounts:read': ALL,
   'cloud_accounts:write': ADMINS,
+  // Colar, trocar e remover a credencial de leitura de uma conta (token do Cloudflare; fase 2, decisão D-4).
+  'cloud_credentials:write': ADMINS,
   'protected_resources:read': ALL,
   'protected_resources:write': ADMINS,
   'alert_exceptions:read': ALL,
@@ -40,6 +42,23 @@ export const PERMISSIONS = {
   'posture:read': ALL,
   'assets:read': ALL,
   'audit:read': ADMINS,
+  // Agentes do Wazuh nas instâncias do cliente: todos veem a lista e as instruções; a senha de registro, só quem
+  // administra.
+  'agents:read': ALL,
+  'agents:enroll': ADMINS,
+  // Plano do nó e uso do cliente (fase 2, PR-18): só leitura, para quem administra.
+  'plan:read': ADMINS,
+  // Preferência de aviso por e-mail da própria pessoa (fase 2, PR-17'): todos leem a sua; mudar é de quem recebe os
+  // avisos de incidente (administradores e analistas). A equipe da Verax passa pela matriz, mas a API responde que ela
+  // não recebe avisos dos clientes.
+  'notification_preferences:read': ALL,
+  'notification_preferences:write': OPERATORS,
+  // Contato de escalonamento do próprio cliente (D8): quem administra o cliente lê, troca e pede a confirmação de novo.
+  // A equipe da Verax também muda pelo cadastro de clientes (`tenants:write`).
+  'escalation_contact:read': ADMINS,
+  'escalation_contact:write': ADMINS,
+  // Só o histórico do plano (fase 2, PR-20): os filtros de período de achados e relatórios são de todos os papéis.
+  'plan_history:read': ALL,
   // Exclusivas da Verax
   'session:switch_tenant': VERAX,
   'unowned_alerts:read': VERAX,

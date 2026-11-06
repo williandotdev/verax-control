@@ -1,4 +1,9 @@
-import { type TenantSummary, tenantCreateSchema } from '@verax/shared';
+import {
+  TEMPORARY_PASSWORD_HOURS,
+  type TenantSummary,
+  tenantCreateSchema,
+  tenantUpdateSchema,
+} from '@verax/shared';
 import { type FormEvent, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
@@ -14,12 +19,15 @@ import {
   useUpdateTenant,
 } from '@/features/admin/admin-api';
 import { AdminShell, FormError } from '@/features/admin/admin-ui';
+import { useRequestTenantEscalationConfirmation } from '@/features/escalation/escalation-api';
+import { EscalationContactStatus } from '@/features/escalation/escalation-contact-status';
 import { fieldErrors } from '@/features/admin/forms';
 import { TENANT_STATUS_LABELS } from '@/features/admin/labels';
+import { TemporaryPasswordNotice } from '@/features/admin/temporary-password';
 
 const NEW = 'novo';
 
-/** Clientes (T7.1): listar, criar, editar e desativar. Só admin_verax (permissão `tenants:read`). */
+/** Clientes (T7.1): listar, criar (com o primeiro administrador), editar e desativar. Só admin_verax (`tenants:read`). */
 export function TenantsPage() {
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
@@ -61,7 +69,7 @@ export function TenantsPage() {
   return (
     <AdminShell
       title="Clientes"
-      description="Empresas atendidas pela Verax. Desativar um cliente bloqueia o acesso dos usuários dele, sem apagar o histórico."
+      description="Empresas atendidas pela Verax. Cada cliente nasce com o primeiro administrador dele. Desativar um cliente bloqueia o acesso dos usuários dele, sem apagar o histórico."
       needsTenant={false}
       action={<Button onClick={() => setOpen(NEW)}>Novo cliente</Button>}
     >
@@ -98,9 +106,11 @@ export function TenantsPage() {
 
 function ExistingTenant({ id, onDone }: { id: string; onDone: () => void }) {
   const tenant = useTenant(id);
+  // Fica fora do formulário, que é recriado a cada versão do cadastro: o aviso do pedido sobrevive à releitura.
+  const resend = useRequestTenantEscalationConfirmation(id);
   if (tenant.isError) return <ErrorState error={tenant.error} onRetry={() => void tenant.refetch()} />;
   if (!tenant.data) return <LoadingState rows={6} label="Carregando o cliente" />;
-  return <TenantForm key={tenant.data.updatedAt} tenant={tenant.data} onDone={onDone} />;
+  return <TenantForm key={tenant.data.updatedAt} tenant={tenant.data} onDone={onDone} resend={resend} />;
 }
 
 interface TenantValues {
@@ -110,14 +120,18 @@ interface TenantValues {
   contactName: string;
   contactEmail: string;
   contactPhone: string;
+  adminName: string;
+  adminEmail: string;
 }
 
 function TenantForm({
   tenant,
   onDone,
+  resend,
 }: {
   tenant?: NonNullable<ReturnType<typeof useTenant>['data']>;
   onDone: () => void;
+  resend?: ReturnType<typeof useRequestTenantEscalationConfirmation>;
 }) {
   const [values, setValues] = useState<TenantValues>({
     name: tenant?.name ?? '',
@@ -126,6 +140,8 @@ function TenantForm({
     contactName: tenant?.escalationContact?.name ?? '',
     contactEmail: tenant?.escalationContact?.email ?? '',
     contactPhone: tenant?.escalationContact?.phone ?? '',
+    adminName: '',
+    adminEmail: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const create = useCreateTenant();
@@ -134,9 +150,24 @@ function TenantForm({
   const set = (key: keyof TenantValues) => (event: { target: { value: string } }) =>
     setValues((current) => ({ ...current, [key]: event.target.value }));
 
+  // Cliente criado: no lugar do formulário, a senha temporária do primeiro administrador, uma única vez. Ao concluir
+  // (ou fechar o painel), ela some.
+  if (create.data) {
+    const { tenant: created, firstAdmin } = create.data;
+    return (
+      <TemporaryPasswordNotice
+        title={`Senha temporária de ${firstAdmin.name}`}
+        summary={`Cliente ${created.name} cadastrado. Conta de ${firstAdmin.name} (${firstAdmin.email}) criada como administrador do cliente.`}
+        password={firstAdmin}
+        hasMfa={false}
+        onDone={onDone}
+      />
+    );
+  }
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    const input = tenantCreateSchema.safeParse({
+    const fields = {
       name: values.name,
       cnpj: values.cnpj,
       plan: values.plan,
@@ -145,14 +176,27 @@ function TenantForm({
         email: values.contactEmail,
         phone: values.contactPhone.trim() || null,
       },
+    };
+    if (tenant) {
+      const input = tenantUpdateSchema.safeParse(fields);
+      if (!input.success) {
+        setErrors(fieldErrors(input.error));
+        return;
+      }
+      setErrors({});
+      update.mutate(input.data, { onSuccess: onDone });
+      return;
+    }
+    const input = tenantCreateSchema.safeParse({
+      ...fields,
+      firstAdmin: { name: values.adminName, email: values.adminEmail },
     });
     if (!input.success) {
       setErrors(fieldErrors(input.error));
       return;
     }
     setErrors({});
-    if (tenant) update.mutate(input.data, { onSuccess: onDone });
-    else create.mutate(input.data, { onSuccess: onDone });
+    create.mutate(input.data);
   };
 
   return (
@@ -168,7 +212,14 @@ function TenantForm({
       <Field label="Plano" value={values.plan} onChange={set('plan')} error={errors['plan']} maxLength={60} />
       <fieldset className="space-y-3 rounded-md border p-3">
         <legend className="px-1 text-sm font-medium">Contato de escalonamento</legend>
-        <p className="text-xs text-muted-foreground">Quem a Verax aciona num incidente grave.</p>
+        <p className="text-xs text-muted-foreground">
+          Quem a Verax e o cliente acionam num incidente grave. O endereço recebe um e-mail para confirmar e,
+          só depois disso, os avisos críticos, cada um com o link para deixar de receber. Trocar o e-mail pede
+          uma nova confirmação.
+        </p>
+        {tenant?.escalationContact && resend && (
+          <EscalationContactStatus contact={tenant.escalationContact} resend={resend} />
+        )}
         <Field
           label="Nome do contato"
           value={values.contactName}
@@ -190,6 +241,30 @@ function TenantForm({
           error={errors['escalationContact.phone']}
         />
       </fieldset>
+      {!tenant && (
+        <fieldset className="space-y-3 rounded-md border p-3">
+          <legend className="px-1 text-sm font-medium">Primeiro administrador</legend>
+          <p className="text-xs text-muted-foreground">
+            Quem vai administrar o painel do cliente e criar os outros usuários. A conta nasce com uma senha
+            temporária, que aparece uma única vez depois de cadastrar e vale por {TEMPORARY_PASSWORD_HOURS}{' '}
+            horas. Nenhum e-mail é enviado: você manda a senha à pessoa.
+          </p>
+          <Field
+            label="Nome do administrador"
+            value={values.adminName}
+            onChange={set('adminName')}
+            error={errors['firstAdmin.name']}
+            maxLength={120}
+          />
+          <Field
+            label="E-mail do administrador"
+            type="email"
+            value={values.adminEmail}
+            onChange={set('adminEmail')}
+            error={errors['firstAdmin.email']}
+          />
+        </fieldset>
+      )}
       <FormError error={create.error ?? update.error} />
       <div className="flex flex-wrap gap-2">
         <Button type="submit" disabled={busy}>

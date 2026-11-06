@@ -1,0 +1,12 @@
+# Configuração do Terraform no executor (TF_CLI_CONFIG_FILE, entrypoint.sh): os providers vêm só do espelho da imagem
+# (`terraform providers mirror` no build, com os hashes do .terraform.lock.hcl do envs/tenant). Sem o bloco `direct`,
+# nenhum provider é baixado da internet em execução; o `init -lockfile=readonly` confere o espelhado contra o lock.
+provider_installation {
+  filesystem_mirror {
+    path    = "/opt/verax/providers"
+    include = ["registry.terraform.io/hashicorp/google"]
+  }
+}
+
+# Sem a consulta de versão nova da HashiCorp (checkpoint) a cada comando.
+disable_checkpoint = true

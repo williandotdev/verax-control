@@ -28,6 +28,29 @@ describe('matriz de permissões', () => {
     expect(hasPermission('leitura', 'audit:read')).toBe(false);
   });
 
+  it('agentes: todos leem a lista e as instruções; só administradores veem a senha de registro', () => {
+    for (const role of ROLES) expect(hasPermission(role, 'agents:read')).toBe(true);
+    expect(ROLES.filter((role) => hasPermission(role, 'agents:enroll'))).toEqual([
+      'admin_verax',
+      'admin_cliente',
+    ]);
+  });
+
+  it('plano e uso: só administradores leem; ninguém escreve (o plano vem da configuração do nó)', () => {
+    expect(ROLES.filter((role) => hasPermission(role, 'plan:read'))).toEqual([
+      'admin_verax',
+      'admin_cliente',
+    ]);
+    expect(Object.keys(PERMISSIONS).filter((permission) => permission.startsWith('plan'))).toEqual([
+      'plan:read',
+      'plan_history:read',
+    ]);
+  });
+
+  it('histórico do plano: todos os papéis leem (os filtros de período de achados e relatórios são de todos)', () => {
+    for (const role of ROLES) expect(hasPermission(role, 'plan_history:read')).toBe(true);
+  });
+
   it('todo papel referenciado na matriz existe', () => {
     for (const roles of Object.values(PERMISSIONS)) {
       for (const role of roles) expect(isRole(role)).toBe(true);

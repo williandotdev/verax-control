@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { FindingSeverity } from '@verax/shared';
-import type { FindingDraft } from '../alerts/finding-draft.js';
+import { type FindingDraft, severityOfLevel } from '../alerts/finding-draft.js';
 import {
   type AuditLog,
   callerIp,
@@ -358,12 +357,7 @@ export function detect(log: AuditLog | undefined, rules: readonly GcpRule[] = GC
   return best;
 }
 
-export function severityOfLevel(level: number): FindingSeverity {
-  if (level >= 12) return 'critical';
-  if (level >= 10) return 'high';
-  if (level >= 7) return 'medium';
-  return 'low';
-}
+export { severityOfLevel };
 
 /** Região, quando o recurso diz (localização, região ou zona). */
 function regionOf(entry: LogEntry): string | null {

@@ -1,0 +1,11 @@
+# Renova o token do Google que o manager do Wazuh troca no STS da AWS de cada cliente (perfil standard; fase 2, PR-V4';
+# infra/node/bin/aws-token.sh), pelo verax-aws-token.timer. O `start.sh wazuh-up` também o renova antes de subir o
+# manager. Sem o Wazuh no ar (a pasta /run/verax/wazuh-aws só existe entre o wazuh-up e a parada do nó), o script sai
+# sem fazer nada, e o timer segue.
+[Unit]
+Description=Verax Control - token do Google para a AWS dos clientes (Wazuh)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/verax/bin/aws-token.sh
+TimeoutStartSec=60

@@ -1,4 +1,5 @@
 import {
+  INCIDENT_NOTICE_ROLES,
   ROLE_LABELS,
   TEMPORARY_PASSWORD_HOURS,
   TENANT_ROLES,
@@ -7,7 +8,7 @@ import {
   userCreateSchema,
 } from '@verax/shared';
 import { type FormEvent, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { Button } from '@/components/ui/button';
 import { Field } from '@/components/ui/field';
@@ -30,6 +31,17 @@ const ROLE_OPTIONS = TENANT_ROLES.map((role) => ({ value: role, label: ROLE_LABE
 
 /** Ainda com a senha temporária: não entrou nem trocou. Conta desativada não entra, então não conta. */
 const awaitingFirstAccess = (user: User) => user.mustChangePassword && user.status !== 'disabled';
+
+/**
+ * Recebe os avisos de incidente por e-mail (fase 2, PR-17'): o papel (D8) e a escolha da própria pessoa, que só ela
+ * muda, em Minha conta. Aqui é só leitura.
+ */
+function receivesAlerts(user: User): { receives: boolean; label: string } {
+  if (!INCIDENT_NOTICE_ROLES.includes(user.role)) return { receives: false, label: 'Não (papel)' };
+  return user.incidentEmails
+    ? { receives: true, label: 'Sim' }
+    : { receives: false, label: 'Não (desligou)' };
+}
 
 /** Usuários do cliente (T7.2): listar, criar com senha temporária, alterar papel, desativar e gerar senha nova. */
 export function UsersPage() {
@@ -79,12 +91,20 @@ export function UsersPage() {
       cell: (row) =>
         row.mfaEnabled ? 'Cadastrado' : <span className="text-muted-foreground">Pendente</span>,
     },
+    {
+      key: 'alertas',
+      header: 'Recebe alertas',
+      cell: (row) => {
+        const { receives, label } = receivesAlerts(row);
+        return receives ? label : <span className="text-muted-foreground">{label}</span>;
+      },
+    },
   ];
 
   return (
     <AdminShell
       title="Usuários"
-      description="Quem acessa o painel deste cliente. Toda conta nasce com uma senha temporária: no primeiro acesso, a pessoa troca a senha e cadastra o MFA."
+      description="Quem acessa o painel deste cliente. Toda conta nasce com uma senha temporária: no primeiro acesso, a pessoa troca a senha e cadastra o MFA. Os avisos por e-mail vão para administradores e analistas ativos, com MFA, e cada pessoa escolhe os dela em Minha conta."
       action={canWrite && <Button onClick={() => setOpen(NEW)}>Criar usuário</Button>}
     >
       <DataTable
@@ -195,9 +215,16 @@ function UserAccess({ user, isSelf, canWrite }: { user: User; isSelf: boolean; c
   const generate = useGenerateTemporaryPassword(user.id);
   if (isSelf) {
     return (
-      <p className="text-sm text-muted-foreground">
-        Ninguém altera o próprio acesso: peça a outro administrador.
-      </p>
+      <div className="space-y-2 text-sm">
+        <p className="text-muted-foreground">Ninguém altera o próprio acesso: peça a outro administrador.</p>
+        <p>
+          Os seus avisos por e-mail você escolhe em{' '}
+          <Link className="underline" to="/minha-conta">
+            Minha conta
+          </Link>
+          .
+        </p>
+      </div>
     );
   }
   const pending =

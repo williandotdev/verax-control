@@ -1,0 +1,747 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Verax Control - papel IAM somente leitura (verax-control-reader), sem chave: só o nó do Verax Control entra nele,
+  com um token de até 1 hora que o Google assina para a conta de serviço do nó, e só a partir do IP de saída do nó.
+  Duas políticas: a de leitura, que também é o limite de permissões do papel, e a de negação, que barra qualquer
+  chamada de fora do IP do nó, qualquer alteração de logs e qualquer ampliação do próprio acesso. A trilha do
+  CloudTrail e o export do GuardDuty só são criados se pedidos (o padrão é não). O WAF nunca é alterado.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Quem entra no papel (o nó do Verax Control; copie os valores do painel) }
+        Parameters: [NodeServiceAccountId, NodeEgressIps, Audience]
+      - Label: { default: Logs que o Verax Control lê (já existentes nesta conta) }
+        Parameters: [LogBucketArns, LogKmsKeyArns, LogObjectPrefix]
+      - Label: { default: 'Opcional: criar a trilha e o export do GuardDuty (o padrão é não)' }
+        Parameters: [CreateTrail, EnableGuardDutyExport, GuardDutyDetectorId, LogRetentionDays]
+    ParameterLabels:
+      NodeServiceAccountId: { default: ID da conta de serviço do nó (informado pelo painel) }
+      NodeEgressIps: { default: IP de saída do nó (informado pelo painel) }
+      Audience: { default: Audience do token do nó (já preenchido; confira com o painel) }
+      LogBucketArns: { default: Buckets S3 de log }
+      LogKmsKeyArns: { default: Chaves KMS dos buckets de log }
+      LogObjectPrefix: { default: Prefixo dos objetos (bucket com logs de várias contas) }
+      CreateTrail: { default: Criar uma trilha do CloudTrail }
+      EnableGuardDutyExport: { default: Exportar os findings do GuardDuty para S3 }
+      GuardDutyDetectorId: { default: ID do detector do GuardDuty já ativo }
+      LogRetentionDays: { default: Dias de retenção nos buckets criados }
+
+Parameters:
+  NodeServiceAccountId:
+    Type: String
+    Description: >-
+      ID único (21 dígitos) da conta de serviço do nó do Verax Control no Google, informado pelo painel. Não é segredo:
+      o papel só aceita um token que o Google assina para esta conta, e ninguém o forja. Obrigatório.
+    AllowedPattern: '^[0-9]{21}$'
+    ConstraintDescription: 21 dígitos, como 123456789012345678901.
+  NodeEgressIps:
+    Type: String
+    Description: >-
+      IP de saída do nó do Verax Control, com /32 (até 4, separados por vírgula), informado pelo painel. O papel só é
+      assumido a partir dele, e toda chamada à AWS feita com o papel de qualquer outro IP é negada. Obrigatório.
+    AllowedPattern: '^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/32(,(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}/32){0,3}$'
+    ConstraintDescription: de 1 a 4 IPv4 com /32, separados por vírgula e sem espaço, como 203.0.113.10/32.
+  Audience:
+    Type: String
+    Description: >-
+      O destinatário (audience) que o nó pede ao Google ao emitir o token. É o mesmo para todo cliente do Verax
+      Control: deixe o valor que já vem preenchido. Um token emitido para outro destino não entra no papel.
+    Default: https://control.veraxsistemas.com.br/aws-reader
+    AllowedPattern: '^https://[a-z0-9.-]+(/[A-Za-z0-9._-]+)*$'
+    ConstraintDescription: um endereço https sem curinga, como o que já vem preenchido.
+  LogBucketArns:
+    Type: CommaDelimitedList
+    Description: >-
+      ARNs dos buckets S3 de log já existentes que o papel lê (CloudTrail, export do GuardDuty e logs do WAF em
+      aws-waf-logs-*), separados por vírgula. Vazio não libera nenhum.
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-z-]*:s3:::[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    ConstraintDescription: 'arn:aws:s3:::<bucket>'
+  LogKmsKeyArns:
+    Type: CommaDelimitedList
+    Description: >-
+      ARNs das chaves KMS que cifram os buckets acima (SSE-KMS; o export do GuardDuty sempre usa uma), separados por
+      vírgula; chave comum ou multirregião (key/mrk-...). O papel só decifra pelo S3. Vazio se os buckets usam a
+      cifragem padrão do S3.
+    Default: ''
+    AllowedPattern: '^$|^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}|mrk-[a-f0-9]{32})$'
+    ConstraintDescription: 'arn:aws:kms:<região>:<conta>:key/<id>, com o id comum (UUID) ou multirregião (mrk-...)'
+  LogObjectPrefix:
+    Type: CommaDelimitedList
+    Description: >-
+      Opcional. Só para um bucket que recebe logs de várias contas (por exemplo, a trilha da organização): o papel só
+      lê, nos buckets informados acima, os objetos com um destes prefixos, terminados em / e separados por vírgula,
+      como AWSLogs/o-exemplo123/111111111111/,AWSLogs/111111111111/. Vazio libera os buckets inteiros.
+    Default: ''
+    AllowedPattern: '^$|^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*/$'
+    ConstraintDescription: segmentos com letras, números, _, . ou -, separados e terminados por /.
+  CreateTrail:
+    Type: String
+    Description: >-
+      true cria uma trilha multi-região com validação de integridade, num bucket e numa chave KMS novos desta pilha.
+      Use só se a conta não tiver trilha: uma segunda trilha dos mesmos eventos é cobrada pela AWS.
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+  EnableGuardDutyExport:
+    Type: String
+    Description: >-
+      true exporta os findings do detector informado abaixo (desta região) para um bucket e uma chave KMS novos desta
+      pilha. Não ativa o GuardDuty.
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+  GuardDutyDetectorId:
+    Type: String
+    Description: Só com o export ligado. ID do detector do GuardDuty já ativo nesta região (aws guardduty list-detectors).
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9]{32}$'
+    ConstraintDescription: 32 letras minúsculas ou números.
+  LogRetentionDays:
+    Type: Number
+    Description: Por quantos dias os logs ficam nos buckets criados por esta pilha. Não muda nenhum bucket existente.
+    Default: 365
+    MinValue: 90
+    MaxValue: 3650
+
+Rules:
+  # Quem entra é obrigatório: sem a conta de serviço, o papel não teria a quem confiar, e sem o IP, um token vazado
+  # entraria de qualquer lugar. Os padrões dos parâmetros já recusam o vazio; a regra é a segunda trava.
+  NoDaVeraxObrigatorio:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref NodeServiceAccountId, '']]
+        AssertDescription: Informe o ID da conta de serviço do nó (NodeServiceAccountId), que o painel mostra.
+      - Assert: !Not [!Equals [!Ref NodeEgressIps, '']]
+        AssertDescription: Informe o IP de saída do nó (NodeEgressIps), com /32.
+      - Assert: !Not [!Equals [!Ref Audience, '']]
+        AssertDescription: Deixe o audience (Audience) com o valor que já vem preenchido.
+  # Uma vírgula sobrando vira um item vazio: num prefixo, ele liberaria o bucket inteiro.
+  ListasSemItemVazio:
+    Assertions:
+      - Assert: !Or [!EachMemberEquals [!Ref LogBucketArns, ''], !Not [!Contains [!Ref LogBucketArns, '']]]
+        AssertDescription: LogBucketArns tem um item vazio (vírgula sobrando).
+      - Assert: !Or [!EachMemberEquals [!Ref LogKmsKeyArns, ''], !Not [!Contains [!Ref LogKmsKeyArns, '']]]
+        AssertDescription: LogKmsKeyArns tem um item vazio (vírgula sobrando).
+      - Assert:
+          !Or [!EachMemberEquals [!Ref LogObjectPrefix, ''], !Not [!Contains [!Ref LogObjectPrefix, '']]]
+        AssertDescription: LogObjectPrefix tem um item vazio (vírgula sobrando).
+  ExportPrecisaDoDetector:
+    RuleCondition: !Equals [!Ref EnableGuardDutyExport, 'true']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GuardDutyDetectorId, '']]
+        AssertDescription: >-
+          Para exportar os findings, informe o ID do detector do GuardDuty já ativo nesta região. A pilha não ativa o
+          GuardDuty.
+
+Conditions:
+  HasLogBuckets: !Not [!Equals [!Join ['', !Ref LogBucketArns], '']]
+  DecryptsLogBuckets: !And
+    - !Condition HasLogBuckets
+    - !Not [!Equals [!Join ['', !Ref LogKmsKeyArns], '']]
+  HasObjectPrefix: !Not [!Equals [!Join ['', !Ref LogObjectPrefix], '']]
+  CreatesTrail: !Equals [!Ref CreateTrail, 'true']
+  ExportsGuardDuty: !Equals [!Ref EnableGuardDutyExport, 'true']
+  CreatesLogBucket: !Or
+    - !Condition CreatesTrail
+    - !Condition ExportsGuardDuty
+
+Resources:
+  # --- Papel de leitura ---
+
+  # Leitura mínima. Também é o limite de permissões (PermissionsBoundary) do papel: uma política que alguém anexe
+  # depois não passa do que está aqui.
+  ReaderPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: VeraxControlReader
+      Path: /verax/
+      Description: Verax Control - leitura dos logs informados, conferência das fontes e configuração (Ativos e Postura).
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Os buckets e as chaves que o cliente informou, já existentes. O Wazuh do nó lista e lê os objetos;
+          # GetBucketLocation foi conferido no módulo aws-s3 do Wazuh 4.14.9.
+          - !If
+            - HasLogBuckets
+            - Sid: ListarBucketsDeLog
+              Effect: Allow
+              Action: [s3:ListBucket, s3:GetBucketLocation]
+              Resource: !Ref LogBucketArns
+            - !Ref AWS::NoValue
+          - !If
+            - HasLogBuckets
+            # Os objetos de cada bucket: <arn>/* para cada ARN da lista. Os prefixos opcionais ficam na negação.
+            - Sid: LerObjetosDeLog
+              Effect: Allow
+              Action: s3:GetObject
+              Resource: !Split [',', !Join ['', [!Join ['/*,', !Ref LogBucketArns], '/*']]]
+            - !Ref AWS::NoValue
+          - !If
+            - DecryptsLogBuckets
+            - Sid: DecifrarSoPeloS3
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Ref LogKmsKeyArns
+              Condition:
+                StringLike:
+                  kms:ViaService: 's3.*.amazonaws.com'
+            - !Ref AWS::NoValue
+          # Os buckets e a chave criados por esta pilha, se o cliente pediu a trilha ou o export.
+          - !If
+            - CreatesLogBucket
+            - Sid: ListarBucketsCriados
+              Effect: Allow
+              Action: [s3:ListBucket, s3:GetBucketLocation]
+              Resource:
+                - !If [CreatesTrail, !GetAtt TrailBucket.Arn, !Ref AWS::NoValue]
+                - !If [ExportsGuardDuty, !GetAtt GuardDutyBucket.Arn, !Ref AWS::NoValue]
+            - !Ref AWS::NoValue
+          - !If
+            - CreatesLogBucket
+            - Sid: LerObjetosCriados
+              Effect: Allow
+              Action: s3:GetObject
+              Resource:
+                - !If [CreatesTrail, !Sub '${TrailBucket.Arn}/*', !Ref AWS::NoValue]
+                - !If [ExportsGuardDuty, !Sub '${GuardDutyBucket.Arn}/*', !Ref AWS::NoValue]
+            - !Ref AWS::NoValue
+          - !If
+            - CreatesLogBucket
+            - Sid: DecifrarCriadosSoPeloS3
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: !GetAtt LogsKey.Arn
+              Condition:
+                StringEquals:
+                  kms:ViaService: !Sub 's3.${AWS::Region}.amazonaws.com'
+            - !Ref AWS::NoValue
+          # O Verax Control confere que o papel não tem permissão demais (só este papel, nunca outro principal).
+          - Sid: AutoInspecao
+            Effect: Allow
+            Action: iam:SimulatePrincipalPolicy
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/verax/verax-control-reader'
+          # Confere que a trilha e o export do GuardDuty gravam nos buckets cadastrados.
+          - Sid: ValidarFontes
+            Effect: Allow
+            Resource: '*'
+            Action:
+              - cloudtrail:DescribeTrails
+              - cloudtrail:GetTrailStatus
+              - guardduty:ListDetectors
+              - guardduty:GetDetector
+              - guardduty:ListPublishingDestinations
+              - guardduty:DescribePublishingDestination
+          # Ativos e Postura: usuários, chaves e MFA do IAM, instâncias e grupos de segurança do EC2, e a exposição dos
+          # buckets. Sem SecurityAudit e sem GenerateCredentialReport (que cria o relatório na conta).
+          - Sid: PosturaEAtivos
+            Effect: Allow
+            Resource: '*'
+            Action:
+              - iam:GetAccountSummary
+              - iam:GetAccountPasswordPolicy
+              - iam:ListUsers
+              - iam:ListAccessKeys
+              - iam:GetAccessKeyLastUsed
+              - iam:ListMFADevices
+              - iam:GetLoginProfile
+              - ec2:DescribeRegions
+              - ec2:DescribeInstances
+              - ec2:DescribeSecurityGroups
+              - ec2:GetEbsEncryptionByDefault
+              - s3:ListAllMyBuckets
+              - s3:GetBucketAcl
+              - s3:GetBucketPolicyStatus
+              - s3:GetBucketPublicAccessBlock
+              - s3:GetAccountPublicAccessBlock
+
+  # Negações explícitas: valem mesmo que alguém anexe outra política ao papel.
+  GuardrailsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: VeraxControlGuardrails
+      Path: /verax/
+      Description: Verax Control - nega chamadas de fora do IP do nó, alteração de logs e ampliação do próprio acesso.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # A sessão do papel só vale a partir do IP do nó, mesmo que as credenciais dela vazem. A leitura cifrada
+          # continua: o S3 decifra no KMS numa sessão de acesso encaminhada, que preserva o IP de quem chamou o S3. O
+          # GetCallerIdentity não passa por política e não pode ser negado (só revela a conta e o ARN da sessão).
+          - Sid: SoDoNoDaVerax
+            Effect: Deny
+            Action: '*'
+            Resource: '*'
+            Condition:
+              NotIpAddress:
+                aws:SourceIp: !Split [',', !Ref NodeEgressIps]
+          # Ações que poderiam apagar, desligar ou desviar logs e findings (a mesma lista do conector).
+          - Sid: NuncaAlterarLogs
+            Effect: Deny
+            Resource: '*'
+            Action:
+              - access-analyzer:Delete*
+              - access-analyzer:Update*
+              - cloudtrail:Create*
+              - cloudtrail:Delete*
+              - cloudtrail:Put*
+              - cloudtrail:Stop*
+              - cloudtrail:Update*
+              - guardduty:Archive*
+              - guardduty:Create*
+              - guardduty:Delete*
+              - guardduty:Disable*
+              - guardduty:Disassociate*
+              - guardduty:Update*
+              - inspector2:Delete*
+              - inspector2:Disable*
+              - inspector2:Update*
+              - kms:Delete*
+              - kms:Disable*
+              - kms:Put*
+              - kms:ScheduleKeyDeletion
+              - kms:Update*
+              - logs:Associate*
+              - logs:Create*
+              - logs:Delete*
+              - logs:Disassociate*
+              - logs:Put*
+              - logs:Tag*
+              - logs:Unmask
+              - logs:Untag*
+              - logs:Update*
+              - s3:Abort*
+              - s3:Bypass*
+              - s3:Create*
+              - s3:Delete*
+              - s3:Put*
+              - s3:Replicate*
+              - s3:Restore*
+              - s3:Update*
+              - securityhub:BatchImport*
+              - securityhub:BatchUpdate*
+              - securityhub:Delete*
+              - securityhub:Disable*
+              - securityhub:Update*
+              - wafv2:Delete*
+              - wafv2:Put*
+              - wafv2:Update*
+          # Nem o próprio papel: sem criar, trocar ou apagar chaves, usuários, políticas ou papéis (nem a confiança e o
+          # limite dele), sem passar papel a um serviço e sem assumir outro papel.
+          - Sid: NuncaAmpliarOProprioAcesso
+            Effect: Deny
+            Resource: '*'
+            Action:
+              - iam:Add*
+              - iam:Attach*
+              - iam:Create*
+              - iam:Delete*
+              - iam:Detach*
+              - iam:PassRole
+              - iam:Put*
+              - iam:Remove*
+              - iam:Set*
+              - iam:Update*
+              - iam:Upload*
+              - sts:AssumeRole
+              - sts:AssumeRoleWithSAML
+              - sts:AssumeRoleWithWebIdentity
+              - sts:GetFederationToken
+          # Com os prefixos, só os objetos que começam com um deles (arn:*:s3:::*/<prefixo>*, para cada prefixo). O IAM
+          # não cruza a lista de buckets com a de prefixos, então o * antes da / vale para qualquer bucket: um objeto com
+          # o prefixo mais adiante no nome também passa, e os logs gravados pela AWS nunca têm o caminho de outra conta
+          # assim. Os buckets criados por esta pilha são só desta conta e ficam fora da regra.
+          - !If
+            - HasObjectPrefix
+            - Sid: SoOsPrefixosInformados
+              Effect: Deny
+              Action: s3:GetObject
+              NotResource: !Split
+                - ','
+                - !Join
+                  - ''
+                  - - 'arn:*:s3:::*/'
+                    - !Join ['*,arn:*:s3:::*/', !Ref LogObjectPrefix]
+                    - '*'
+                    - !If [CreatesTrail, !Sub ',${TrailBucket.Arn}/*', '']
+                    - !If [ExportsGuardDuty, !Sub ',${GuardDutyBucket.Arn}/*', '']
+            - !Ref AWS::NoValue
+
+  # O papel que o nó assume. Sem chave: o nó troca no STS (AssumeRoleWithWebIdentity) um token de até 1 hora, que o
+  # Google assina para a conta de serviço dele, por uma sessão de até 1 hora. Nome e caminho fixos (por isso o
+  # CAPABILITY_NAMED_IAM): o ARN, arn:aws:iam::<conta>:role/verax/verax-control-reader, sai só do ID da conta.
+  ReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: verax-control-reader
+      Path: /verax/
+      Description: Verax Control - leitura dos logs e da configuração, só pelo nó do Verax Control, sem chave.
+      MaxSessionDuration: 3600
+      PermissionsBoundary: !Ref ReaderPolicy
+      ManagedPolicyArns:
+        - !Ref ReaderPolicy
+        - !Ref GuardrailsPolicy
+      # Escrita à mão, e não pelo assistente "Web identity / Google" do console, que grava o audience pedido ao
+      # Google em accounts.google.com:aud: no token de uma conta de serviço, a AWS lê essa chave do campo azp (o ID
+      # da conta), e um papel feito pelo assistente nunca aceitaria o nó. O Google é um provedor embutido na AWS:
+      # não há provedor OIDC a criar no IAM.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SoONoDaVerax
+            Effect: Allow
+            Principal:
+              Federated: accounts.google.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                # O campo azp do token, que numa conta de serviço é o ID único dela.
+                accounts.google.com:aud: !Ref NodeServiceAccountId
+                # O identificador estável da conta de serviço: recriada com o mesmo e-mail, ela ganha outro ID. Cada
+                # cliente tem o nó e a conta de serviço dele, e o sub de um não entra no papel de outro.
+                accounts.google.com:sub: !Ref NodeServiceAccountId
+                # O audience que o nó pede ao Google: um token emitido para outro destino não serve aqui.
+                accounts.google.com:oaud: !Ref Audience
+              # Só a partir do IP de saída do nó: um token vazado não entra de outro lugar.
+              IpAddress:
+                aws:SourceIp: !Split [',', !Ref NodeEgressIps]
+
+  # --- Opcional: trilha e export do GuardDuty (do conector T4.3) ---
+
+  LogsKey:
+    Type: AWS::KMS::Key
+    Condition: CreatesLogBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Verax Control - cifra a trilha do CloudTrail e o export do GuardDuty criados pela pilha
+      EnableKeyRotation: true
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AdministracaoPelaConta
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Sid: CloudTrailCifra
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              StringLike:
+                kms:EncryptionContext:aws:cloudtrail:arn: !Sub 'arn:${AWS::Partition}:cloudtrail:*:${AWS::AccountId}:trail/*'
+          - Sid: CloudTrailDescreveChave
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: kms:DescribeKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          - Sid: GuardDutyCifra
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: kms:GenerateDataKey
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*'
+
+  LogsKeyAlias:
+    Type: AWS::KMS::Alias
+    Condition: CreatesLogBucket
+    Properties:
+      AliasName: alias/verax-control-logs
+      TargetKeyId: !Ref LogsKey
+
+  # Log de acesso dos buckets de log (CIS: acesso ao bucket do CloudTrail registrado).
+  # Os três buckets ficam sem BucketName: o CloudFormation gera o nome, e as saídas da pilha o mostram. Como eles
+  # ficam na conta (Retain) quando a opção é desligada ou a pilha apagada, um nome fixo faria a criação seguinte
+  # falhar porque o bucket já existe.
+  AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreatesLogBucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: É o próprio destino dos logs de acesso; registrar o acesso a ele criaria um ciclo.
+    Properties:
+      # O log de acesso do S3 só é entregue em bucket com SSE-S3 (não aceita SSE-KMS).
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  AccessLogsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreatesLogBucket
+    Properties:
+      Bucket: !Ref AccessLogsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt AccessLogsBucket.Arn, !Sub '${AccessLogsBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: LogDeAcessoDosBucketsDaPilha
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${AccessLogsBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              # Só os buckets desta pilha, pelo ARN exato. A ordem é a do exemplo da AWS para o log de acesso: o bucket
+              # de origem nasce com o log configurado, e esta política vem depois.
+              ArnEquals:
+                aws:SourceArn:
+                  - !If [CreatesTrail, !GetAtt TrailBucket.Arn, !Ref AWS::NoValue]
+                  - !If [ExportsGuardDuty, !GetAtt GuardDutyBucket.Arn, !Ref AWS::NoValue]
+
+  TrailBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreatesTrail
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: cloudtrail/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LogsKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  TrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: CreatesTrail
+    Properties:
+      Bucket: !Ref TrailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt TrailBucket.Arn, !Sub '${TrailBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: CloudTrailConfereAcl
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt TrailBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/verax-control'
+          - Sid: CloudTrailGrava
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${TrailBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/verax-control'
+
+  # Falso positivo do Trivy (AWS-0015): o adaptador dele lê `KmsKeyId`, mas o esquema do CloudFormation exige
+  # `KMSKeyId`, que está definido abaixo com a chave da pilha (conferido em tests/test_reader.py).
+  # trivy:ignore:AWS-0015
+  Trail:
+    Type: AWS::CloudTrail::Trail
+    Condition: CreatesTrail
+    DependsOn: TrailBucketPolicy
+    Properties:
+      TrailName: verax-control
+      S3BucketName: !Ref TrailBucket
+      KMSKeyId: !GetAtt LogsKey.Arn
+      IsLogging: true
+      IsMultiRegionTrail: true
+      IncludeGlobalServiceEvents: true
+      EnableLogFileValidation: true
+
+  GuardDutyBucket:
+    Type: AWS::S3::Bucket
+    Condition: ExportsGuardDuty
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LoggingConfiguration:
+        DestinationBucketName: !Ref AccessLogsBucket
+        LogFilePrefix: guardduty/
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt LogsKey.Arn
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: retencao
+            Status: Enabled
+            ExpirationInDays: !Ref LogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  GuardDutyBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: ExportsGuardDuty
+    Properties:
+      Bucket: !Ref GuardDutyBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SomenteTLS
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource: [!GetAtt GuardDutyBucket.Arn, !Sub '${GuardDutyBucket.Arn}/*']
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: GuardDutyLocalizaBucket
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:GetBucketLocation
+            Resource: !GetAtt GuardDutyBucket.Arn
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*'
+          - Sid: GuardDutyGrava
+            Effect: Allow
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyBucket.Arn}/*'
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:guardduty:*:${AWS::AccountId}:detector/*'
+          - Sid: GuardDutySoComAChaveDaPilha
+            Effect: Deny
+            Principal:
+              Service: guardduty.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${GuardDutyBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt LogsKey.Arn
+
+  # Só o destino do detector que já existe: a pilha não ativa nem altera o GuardDuty.
+  GuardDutyExport:
+    Type: AWS::GuardDuty::PublishingDestination
+    Condition: ExportsGuardDuty
+    DependsOn: GuardDutyBucketPolicy
+    Metadata:
+      cfn-lint:
+        config:
+          # Falso positivo: o cfn-lint resolve o Ref pelo padrão vazio, mas com o export ligado a regra
+          # ExportPrecisaDoDetector recusa o ID vazio antes de criar qualquer recurso.
+          ignore_checks: [W1030]
+    Properties:
+      DetectorId: !Ref GuardDutyDetectorId
+      DestinationType: S3
+      DestinationProperties:
+        DestinationArn: !GetAtt GuardDutyBucket.Arn
+        KmsKeyArn: !GetAtt LogsKey.Arn
+
+Outputs:
+  RoleArn:
+    Description: >-
+      ARN do papel de leitura, sempre arn:aws:iam::<conta>:role/verax/verax-control-reader: o painel o deriva do ID da
+      conta e confere a conexão sozinho. Não há chave nem segredo a copiar.
+    Value: !GetAtt ReaderRole.Arn
+  TrailBucketArn:
+    Condition: CreatesTrail
+    Description: Bucket da trilha criada pela pilha (cadastre no painel).
+    Value: !GetAtt TrailBucket.Arn
+  GuardDutyBucketArn:
+    Condition: ExportsGuardDuty
+    Description: Bucket do export do GuardDuty criado pela pilha (cadastre no painel).
+    Value: !GetAtt GuardDutyBucket.Arn
+  LogsKeyArn:
+    Condition: CreatesLogBucket
+    Description: Chave KMS que cifra os buckets criados pela pilha.
+    Value: !GetAtt LogsKey.Arn
+  AccessLogsBucketArn:
+    Condition: CreatesLogBucket
+    Description: Bucket com o log de acesso dos buckets criados pela pilha (o papel não o lê).
+    Value: !GetAtt AccessLogsBucket.Arn

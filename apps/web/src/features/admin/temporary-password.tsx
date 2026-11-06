@@ -62,7 +62,7 @@ export function TemporaryPasswordNotice({
             {copy === 'copied' ? 'Copiada' : 'Copiar'}
           </Button>
         </div>
-        <p aria-live="polite" className={copy === 'failed' ? 'text-xs text-critical' : 'sr-only'}>
+        <p aria-live="polite" className={copy === 'failed' ? 'text-xs text-critical-text' : 'sr-only'}>
           {copy === 'copied' && 'Senha copiada.'}
           {copy === 'failed' && 'Não foi possível copiar. Selecione a senha e copie à mão.'}
         </p>

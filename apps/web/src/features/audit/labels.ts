@@ -27,9 +27,23 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'user.update': 'Alterou usuário',
   'user.deactivate': 'Desativou usuário',
   'user.reset_mfa': 'Zerou o MFA de usuário',
+  'user.notification_preference': 'Mudou a própria preferência de avisos por e-mail',
+  'escalation_contact.update': 'Trocou o contato de escalonamento',
+  'escalation_contact.resend': 'Pediu de novo a confirmação do contato de escalonamento',
+  'escalation_contact.confirm': 'O contato de escalonamento confirmou o endereço',
+  'escalation_contact.unsubscribe': 'O contato de escalonamento deixou de receber os avisos',
   'cloud_account.create': 'Conectou conta cloud',
   'cloud_account.update': 'Alterou conta cloud',
   'cloud_account.deactivate': 'Desativou conta cloud',
+  'cloud_account.aws_verify': 'Pediu a verificação da conta AWS',
+  'cloud_account.aws_check': 'Verificou a conta AWS (papel de leitura)',
+  'cloud_account.aws_collection': 'Atualizou o estado da coleta da conta AWS no nó',
+  'cloud_credential.set': 'Guardou a credencial de leitura da conta',
+  'cloud_credential.rotate': 'Trocou a credencial de leitura da conta',
+  'cloud_credential.remove': 'Removeu a credencial de leitura da conta',
+  'cloud_credential.wipe': 'Apagou a credencial da conta desativada',
+  'cloud_credential.refused': 'Credencial recusada pela origem',
+  'cloud_credential.rekey': 'Recifrou a credencial com a chave nova do nó',
   'protected_resource.create': 'Incluiu item na lista de proteção',
   'protected_resource.update': 'Alterou item da lista de proteção',
   'protected_resource.delete': 'Removeu item da lista de proteção',
@@ -39,6 +53,7 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'finding.status': 'Mudou o status de achado',
   'finding.comment': 'Comentou achado',
   'incident.update': 'Alterou incidente',
+  'agents.install_instructions.view': 'Viu as instruções de instalação dos agentes',
 };
 
 export function actionLabel(action: string): string {
@@ -60,6 +75,7 @@ export const AUDIT_RESOURCE_LABELS: Readonly<Record<AuditResourceType, string>> 
   alert_exception: 'Exceções',
   finding: 'Achados',
   incident: 'Incidentes',
+  wazuh_agents: 'Agentes',
 };
 
 export function resourceLabel(resourceType: string | null): string | null {
@@ -72,4 +88,5 @@ export const AUDIT_PERIOD_LABELS: Readonly<Record<AuditPeriod, string>> = {
   '7d': 'Últimos 7 dias',
   '30d': 'Últimos 30 dias',
   '90d': 'Últimos 90 dias',
+  '12m': 'Últimos 12 meses',
 };

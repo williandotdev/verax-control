@@ -1,6 +1,6 @@
 # Verax Control
 
-Painel de segurança para empresas com operação em nuvem. Ferramentas open source (Wazuh, Prowler) fazem a coleta e a detecção, a API transforma alertas em decisões e o painel mostra, em português claro, se está tudo bem e o que o gestor precisa decidir.
+Painel de segurança para empresas com operação em nuvem. O Wazuh (open source) e coletores próprios fazem a coleta e a detecção, a API transforma alertas em decisões e o painel mostra, em português claro, se está tudo bem e o que o gestor precisa decidir.
 
 ## Estrutura
 
@@ -37,10 +37,18 @@ pnpm lint
 pnpm typecheck
 pnpm db:migrate # cria uma migration nova a partir do schema.prisma (desenvolvimento)
 pnpm db:seed    # admin Verax e dois clientes fictícios (credenciais em SEED_ADMIN_* no .env)
-pnpm --filter @verax/web dev:mock   # painel sem a API, com dados fictícios (papel em localStorage verax.mock.role)
+pnpm --filter @verax/web dev:mock   # painel sem a API, com dados fictícios: abre no login (acesso de demonstração na tela);
+                                    # localStorage verax.mock.role = papel, verax.mock.session = 'logged-in' já entra
 pnpm --filter @verax/web test:e2e   # testes de navegador (Playwright + axe)
 ```
 
 ## Segurança
 
 Veja [SECURITY.md](SECURITY.md) para reportar vulnerabilidades.
+
+## Licença
+
+O código é público para leitura, revisão de segurança e auditoria, mas não é de código aberto: todos os direitos são
+reservados à Verax Sistemas. Usar, copiar, modificar, distribuir, executar para terceiros ou oferecer como serviço
+depende de contrato escrito. Os termos completos estão em [LICENSE](LICENSE); os componentes de terceiros seguem as
+licenças próprias deles.

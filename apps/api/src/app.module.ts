@@ -1,6 +1,7 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, DiscoveryModule } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
+import { AgentsModule } from './agents/agents.module.js';
 import { AlertExceptionsModule } from './alert-exceptions/alert-exceptions.module.js';
 import { AuditTrailModule } from './audit-trail/audit-trail.module.js';
 import { AuthModule } from './auth/auth.module.js';
@@ -14,11 +15,14 @@ import { UndeclaredInputInterceptor } from './common/http/undeclared-input.inter
 import { AppValidationPipe } from './common/http/validation.pipe.js';
 import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/logger.options.js';
 import { PrismaModule } from './common/prisma/prisma.module.js';
+import { EscalationModule } from './escalation/escalation.module.js';
 import { FindingsModule } from './findings/findings.module.js';
 import type { RawEventReader } from './findings/raw-events.js';
 import { HealthModule } from './health/health.module.js';
 import { IncidentsModule } from './incidents/incidents.module.js';
 import { AssetsModule } from './inventory/assets.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
+import { PlanModule } from './plan/plan.module.js';
 import { PostureModule } from './posture/posture.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { TowerModule } from './tower/tower.module.js';
@@ -62,6 +66,10 @@ export class AppModule {
         ReportsModule,
         ProtectedResourcesModule,
         AlertExceptionsModule,
+        AgentsModule,
+        PlanModule,
+        NotificationsModule,
+        EscalationModule,
       ],
       providers: [
         { provide: APP_PIPE, useClass: AppValidationPipe },

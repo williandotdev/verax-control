@@ -1,14 +1,18 @@
 import { useState } from 'react';
+import { MiniBars } from '@/components/charts/mini-bars';
+import { StatTile } from '@/components/charts/stat-tile';
 import { DataTable } from '@/components/data-table';
 import { DecisionCard } from '@/components/security/decision-card';
 import { ScoreMeter } from '@/components/security/score-meter';
 import { Semaphore } from '@/components/security/semaphore';
 import { SeverityBadge } from '@/components/security/severity-badge';
+import { SourceHealthRow } from '@/components/security/source-health';
 import { Timeline } from '@/components/security/timeline';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { Card } from '@/components/ui/card';
 import { SEVERITIES, type Severity } from '@/design/severity';
 import { ApiRequestError } from '@/lib/api-client';
+import { formatRelative } from '@/lib/format';
 import { CatalogSection } from './catalog-section';
 
 /** Dados fictícios só para o catálogo. */
@@ -31,6 +35,12 @@ const DEMO_FINDINGS: DemoFinding[] = Array.from({ length: 42 }, (_, index) => ({
 
 const PAGE_SIZE = 10;
 
+/** Achados por hora fictícios para o minigráfico do catálogo, das 0h às 23h. */
+const DEMO_HOURLY = [0, 0, 1, 0, 0, 0, 0, 2, 1, 0, 3, 1, 0, 0, 1, 0, 0, 2, 0, 0, 0, 1, 0, 0];
+const DEMO_HOURS = DEMO_HOURLY.map((_, hour) => `${String(hour).padStart(2, '0')}:00`);
+
+const minutesAgo = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
+
 export function ComponentsShowcase() {
   const [page, setPage] = useState(1);
   const rows = DEMO_FINDINGS.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -46,7 +56,10 @@ export function ComponentsShowcase() {
             <Semaphore state="yellow" reason="Postura abaixo de 70" />
           </Card>
           <Card>
-            <Semaphore state="green" reason="Nada pendente" />
+            <Semaphore
+              state="green"
+              reason="Tudo calmo. Coleta ativa em 4 de 4 fontes, último dado há 2 minutos."
+            />
           </Card>
         </div>
       </CatalogSection>
@@ -74,6 +87,61 @@ export function ComponentsShowcase() {
             <ScoreMeter score={23} />
           </Card>
         </div>
+      </CatalogSection>
+
+      <CatalogSection
+        title="Cartão de número com minigráfico"
+        description="Rótulo, valor compacto em pt-BR, uma linha de contexto e, quando há tendência, as colunas por hora na tinta neutra, com a hora atual em destaque. Setas, mouse e toque mostram cada hora; os números ficam em Ver tabela."
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatTile
+            label="Achados nas últimas 24 h"
+            value="12"
+            detail="9 esperados por exceção"
+            link={{ to: '/catalogo', label: 'Ver achados' }}
+          >
+            <MiniBars
+              title="Achados por hora (exemplo)"
+              values={DEMO_HOURLY}
+              labels={DEMO_HOURS}
+              unit={{ one: 'achado', many: 'achados' }}
+            />
+          </StatTile>
+          <StatTile label="Tempo até detectar" value="4 min" detail="Mediana de 24 h." />
+          <StatTile label="Agentes online" value="18 de 20" detail="2 agentes sem conexão agora" />
+          <StatTile label="Eventos lidos no mês" value="1,2 mi" detail="AWS 1,1 mi · GCP 80,1 mil" />
+        </div>
+      </CatalogSection>
+
+      <CatalogSection
+        title="Saúde da fonte"
+        description="Estado da coleta com ícone de forma própria e rótulo: coletando (ok), atrasada (médio), parada (alto); aguardando e não configurada na tinta discreta."
+      >
+        <Card>
+          <ul className="divide-y">
+            <li>
+              <SourceHealthRow
+                name="AWS"
+                description="CloudTrail, GuardDuty e WAF, pelo Wazuh"
+                state="collecting"
+                lastDataAt={minutesAgo(2)}
+                note={`último alerta ${formatRelative(minutesAgo(3 * 24 * 60))}`}
+              />
+            </li>
+            <li>
+              <SourceHealthRow name="Cloudflare" state="delayed" lastDataAt={minutesAgo(45)} />
+            </li>
+            <li>
+              <SourceHealthRow name="GCP" state="stalled" lastDataAt={minutesAgo(30 * 60)} />
+            </li>
+            <li>
+              <SourceHealthRow name="Agentes nas instâncias" state="waiting" lastDataAt={null} />
+            </li>
+            <li>
+              <SourceHealthRow name="Postura e inventário" state="not_configured" lastDataAt={null} />
+            </li>
+          </ul>
+        </Card>
       </CatalogSection>
 
       <CatalogSection title="Card de decisão">

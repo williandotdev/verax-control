@@ -1,15 +1,17 @@
-import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE, type Role, ROLES } from '@verax/shared';
+import { type Me, CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { createAdminHandlers, demoAdminStore } from './admin';
+import { createAgentsHandlers } from './agents-handlers';
 import { createAuditHandlers } from './audit-handlers';
 import { createAuthHandlers } from './auth-handlers';
-import { DEMO_TENANTS, demoMe, demoTower } from './fixtures';
+import { demoTower } from './fixtures';
 import { demoFindings } from './findings-fixtures';
 import { createFindingHandlers } from './findings-handlers';
 import { createIncidentHandlers, incidentSummaries, initialIncidents } from './incidents-handlers';
 import { createReportHandlers, demoMitre } from './reports-handlers';
 import { createInventoryHandlers } from './inventory';
+import { createPlanHandlers } from './plan-handlers';
 import { createPostureHandlers } from './posture';
 import { createUnownedHandlers, demoUnownedAlerts } from './unowned-handlers';
 
@@ -19,6 +21,13 @@ export interface MockState {
   /** Login com MFA: devolve só o desafio do código (padrão). */
   mfa?: boolean;
   pendingCode?: boolean;
+  /** Chave do site do Turnstile que a configuração pública devolve. Sem informar, vem do `localStorage` (ou nada). */
+  turnstileSiteKey?: string | null;
+  /**
+   * Histórico do plano do nó, como o ajuste `PLAN_HISTORY_DAYS` (`null` é sem limite). Sem informar, o do plano da
+   * demonstração (Profissional, 365 dias).
+   */
+  historyDays?: number | null;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;
@@ -36,27 +45,15 @@ const ALLOWED_WITH_TEMPORARY_PASSWORD = new Set([
   'POST /v1/auth/sign-in/email',
   'POST /v1/auth/request-password-reset',
   'POST /v1/auth/reset-password',
+  'GET /v1/auth/client-config',
 ]);
 
-function roleFromStorage(): Role {
-  const stored = typeof window === 'undefined' ? null : window.localStorage.getItem('verax.mock.role');
-  return (ROLES as readonly string[]).includes(stored ?? '') ? (stored as Role) : 'admin_verax';
-}
-
-/** O admin_verax da demonstração já começa com o primeiro cliente selecionado, para a Torre abrir com dados. */
-function defaultMe(): Me {
-  const role = roleFromStorage();
-  const first = DEMO_TENANTS[0]?.id ?? null;
-  return role === 'admin_verax'
-    ? demoMe(role, { activeTenantId: first, scopeTenantId: first })
-    : demoMe(role);
-}
-
 /**
- * Handlers do Mock Service Worker com o mesmo contrato da API. No modo `dev:mock`, o papel do usuário
- * fictício sai de `localStorage['verax.mock.role']` (padrão: admin_verax).
+ * Handlers do Mock Service Worker com o mesmo contrato da API. No navegador, o estado sai de `browserMockState()`
+ * (`demo-session.ts`): a demonstração começa fora da sessão, e quem entra recebe o papel de
+ * `localStorage['verax.mock.role']` (padrão: admin_verax). Os testes unitários passam o próprio estado.
  */
-export function createHandlers(state: MockState = { me: defaultMe() }) {
+export function createHandlers(state: MockState) {
   // Achados, incidentes e Torre compartilham o mesmo estado: a triagem aparece em todas as telas.
   const findings = demoFindings();
   const admin = demoAdminStore();
@@ -106,6 +103,8 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
     ...createReportHandlers(state, findings, incidents, admin),
     ...createAuditHandlers(state),
     ...createUnownedHandlers(state, admin, unowned),
+    ...createAgentsHandlers(state),
+    ...createPlanHandlers(state, admin),
     http.get(url('/v1/me'), () =>
       state.me
         ? HttpResponse.json(state.me)
@@ -127,6 +126,8 @@ export function createHandlers(state: MockState = { me: defaultMe() }) {
           unownedAlerts: recentUnowned(),
           ...towerCounts(state.me.scopeTenantId),
           mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
+          // O pulso das últimas 24 horas acompanha os achados do mock (e a triagem feita nas outras telas).
+          findings: findings.get(state.me.scopeTenantId) ?? [],
         }),
       );
     }),

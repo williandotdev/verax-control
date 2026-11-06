@@ -24,6 +24,8 @@ describe('auditoria', () => {
     });
     expect(auditListQuerySchema.safeParse({ resourceType: 'widget' }).success).toBe(false);
     expect(auditListQuerySchema.safeParse({ tenantId: 'x' }).success).toBe(false);
+    expect(auditListQuerySchema.parse({ period: '12m' })).toMatchObject({ period: '12m' });
+    expect(auditListQuerySchema.safeParse({ period: '1y' }).success).toBe(false);
   });
 
   it('detalhe com o estado anterior e o novo em JSON, nunca outra coisa', () => {

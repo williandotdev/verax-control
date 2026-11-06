@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { randomBytes, randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { cloudAccountSchema } from '@verax/shared';
+import { AWS_READER_AUDIENCE, cloudAccountSchema } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
@@ -36,7 +36,7 @@ describe('contas cloud (T3.3)', () => {
 
   const call = (session: TestSession) => {
     const server = request(app.getHttpServer());
-    const write = (method: 'post' | 'patch' | 'delete', path: string) =>
+    const write = (method: 'post' | 'patch' | 'put' | 'delete', path: string) =>
       server[method](path)
         .set('Cookie', session.cookie)
         .set('Origin', TEST_WEB_ORIGIN)
@@ -45,6 +45,7 @@ describe('contas cloud (T3.3)', () => {
       get: (path: string) => server.get(path).set('Cookie', session.cookie),
       post: (path: string, body: object) => write('post', path).send(body),
       patch: (path: string, body: object) => write('patch', path).send(body),
+      put: (path: string, body: object) => write('put', path).send(body),
       delete: (path: string) => write('delete', path),
     };
   };
@@ -78,12 +79,7 @@ describe('contas cloud (T3.3)', () => {
     createInTenantB: async () =>
       (
         await prisma.cloudAccount.create({
-          data: {
-            tenantId: tenantB,
-            accountId: accountId(),
-            regions: ['sa-east-1'],
-            externalId: 'x'.repeat(43),
-          },
+          data: { tenantId: tenantB, accountId: accountId(), regions: ['sa-east-1'] },
         })
       ).id,
     readDirect: (id) => prisma.cloudAccount.findUniqueOrThrow({ where: { id } }),
@@ -92,25 +88,40 @@ describe('contas cloud (T3.3)', () => {
   });
 
   describe('cadastro', () => {
-    it('gera o ExternalId no servidor, deriva o papel e audita sem o ExternalId', async () => {
+    it('AWS sem chave: deriva o papel de leitura do ID, sem ExternalId na conta, na linha nem na trilha', async () => {
       const body = newAccount({
         buckets: { cloudtrail: bucket(), waf: `aws-waf-logs-${randomInt(1e6, 9e6)}` },
       });
       const created = await call(adminA).post('/v1/cloud-accounts', body).expect(201);
       const account = cloudAccountSchema.parse(created.body);
-      expect(account.externalId).toMatch(/^[A-Za-z0-9_-]{43}$/);
-      expect(account.roleArn).toBe(`arn:aws:iam::${account.accountId}:role/VeraxControlReadOnly`);
+      expect(account.readerRoleArn).toBe(`arn:aws:iam::${account.accountId}:role/verax/verax-control-reader`);
+      expect(account).toMatchObject({ connection: 'waiting', checkRequestedAt: null, ingestFrom: null });
+      // Este nó (como o ambiente local) não informa o ID da conta de serviço nem o IP de saída: a tela os pede à Verax.
+      // O audience é o padrão do template.
+      expect(account).toMatchObject({
+        nodeServiceAccountId: null,
+        webIdentityAudience: AWS_READER_AUDIENCE,
+        egressIps: [],
+      });
       expect(account.buckets.guardduty).toBeNull();
+      expect(created.text).not.toMatch(/externalId|ExternalId|VeraxControlReadOnly/);
+      expect(
+        (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: account.id } })).externalId,
+      ).toBeNull();
 
       const entry = await entryOf(created);
       expect(entry).toMatchObject({ action: 'cloud_account.create', tenantId: tenantA });
-      expect(JSON.stringify(entry)).not.toContain(account.externalId as string);
+      expect(JSON.stringify(entry)).not.toMatch(/externalId/i);
     });
 
     it.each([
       ['ExternalId no corpo', { externalId: 'escolhido-pelo-cliente-0000000000000000' }],
-      ['chave de acesso', { accessKeyId: 'AKIAEXEMPLO0000000000', secretAccessKey: 'x'.repeat(40) }],
+      ['chave de acesso', { accessKeyId: 'chave-colada-no-cadastro', secretAccessKey: 'x'.repeat(40) }],
       ['papel escolhido', { roleArn: 'arn:aws:iam::123456789012:role/Admin' }],
+      ['papel de leitura escolhido', { readerRoleArn: 'arn:aws:iam::123456789012:role/Admin' }],
+      ['ID da conta de serviço do nó', { nodeServiceAccountId: '123456789012345678901' }],
+      ['pedido de verificação', { checkRequestedAt: '2026-11-04T12:00:00.000Z' }],
+      ['dia de início da coleta', { ingestFrom: '2020-01-01' }],
       ['cliente no corpo', { tenantId: '018f0000-0000-7000-8000-00000000000b' }],
       ['ID de conta curto', { accountId: '12345' }],
       ['região inválida', { regions: ['marte-1'] }],
@@ -167,7 +178,7 @@ describe('contas cloud (T3.3)', () => {
   });
 
   describe('GCP e Cloudflare', () => {
-    it('projeto da GCP: sem papel nem ExternalId; a assinatura do Pub/Sub fica gravada', async () => {
+    it('projeto da GCP: sem papel nem valores do papel da AWS; a assinatura do Pub/Sub fica gravada', async () => {
       const name = subscription();
       const created = await call(adminA)
         .post('/v1/cloud-accounts', { provider: 'gcp', accountId: gcpProject(), pubsubSubscription: name })
@@ -175,15 +186,19 @@ describe('contas cloud (T3.3)', () => {
       const account = cloudAccountSchema.parse(created.body);
       expect(account).toMatchObject({
         provider: 'gcp',
-        roleArn: null,
-        externalId: null,
+        readerRoleArn: null,
+        nodeServiceAccountId: null,
+        webIdentityAudience: null,
+        checkRequestedAt: null,
+        ingestFrom: null,
+        egressIps: [],
         regions: [],
         pubsubSubscription: name,
         zones: [],
+        // Sem GCP_SINK_TOPIC_PREFIX (como no ambiente local), sem tópico para o comando do sink.
+        sinkTopic: null,
+        sinkWriterIdentity: null,
       });
-      expect(
-        (await prisma.cloudAccount.findUniqueOrThrow({ where: { id: account.id } })).externalId,
-      ).toBeNull();
       expect(await entryOf(created)).toMatchObject({ action: 'cloud_account.create', tenantId: tenantA });
     });
 
@@ -194,11 +209,33 @@ describe('contas cloud (T3.3)', () => {
         .expect(201);
       expect(cloudAccountSchema.parse(created.body)).toMatchObject({
         provider: 'cloudflare',
-        roleArn: null,
-        externalId: null,
+        readerRoleArn: null,
+        nodeServiceAccountId: null,
+        webIdentityAudience: null,
         zones,
         pubsubSubscription: null,
+        // Sem credencial ainda, e sem NODE_EGRESS_IPS (como no ambiente local), sem IP para o filtro do token.
+        keyStatus: null,
+        egressIps: [],
       });
+    });
+
+    it('sem o cofre ligado no nó (como o nó da Verax), colar o token dá 409, sem chamar o Cloudflare nem gravar', async () => {
+      const created = await call(adminA)
+        .post('/v1/cloud-accounts', { provider: 'cloudflare', accountId: cloudflareAccount() })
+        .expect(201);
+      const id = (created.body as { id: string }).id;
+      // Formato válido, gerado na hora; a checagem do cofre vem antes de qualquer chamada para fora.
+      const token = randomBytes(30).toString('base64url');
+      const response = await call(adminA)
+        .put(`/v1/cloud-accounts/${id}/credential`, { kind: 'cloudflare_api_token', token })
+        .expect(409);
+      expect(response.body).toMatchObject({ code: 'CREDENTIAL_VAULT_DISABLED' });
+      expect(response.text).not.toContain(token);
+      expect(await prisma.cloudCredential.count({ where: { cloudAccountId: id } })).toBe(0);
+      await call(readerA)
+        .put(`/v1/cloud-accounts/${id}/credential`, { kind: 'cloudflare_api_token', token })
+        .expect(403);
     });
 
     it.each([
@@ -324,29 +361,34 @@ describe('contas cloud (T3.3)', () => {
         .expect(400);
     });
 
-    it('o banco recusa conta AWS sem ExternalId, mesmo fora da API', async () => {
+    it('o banco aceita conta AWS sem ExternalId (o papel sem chave não tem), e só a AWS tem verificação e início da coleta', async () => {
       await expect(
         prisma.cloudAccount.create({
           data: { tenantId: tenantA, provider: 'aws', accountId: accountId(), regions: [] },
         }),
-      ).rejects.toThrow();
-      await expect(
-        prisma.cloudAccount.create({
-          data: { tenantId: tenantA, provider: 'gcp', accountId: gcpProject(), regions: [] },
-        }),
-      ).resolves.toMatchObject({ externalId: null });
+      ).resolves.toMatchObject({ externalId: null, checkRequestedAt: null, ingestFrom: null });
+      for (const data of [
+        { checkRequestedAt: new Date() },
+        { ingestFrom: new Date('2026-11-03T00:00:00.000Z') },
+      ]) {
+        await expect(
+          prisma.cloudAccount.create({
+            data: { tenantId: tenantA, provider: 'gcp', accountId: gcpProject(), regions: [], ...data },
+          }),
+        ).rejects.toThrow();
+      }
     });
   });
 
   describe('leitura', () => {
-    it('leitura vê a conta, mas não o ExternalId; não cadastra nem altera', async () => {
+    it('leitura vê a conta e os valores do papel (nenhum é segredo); não cadastra nem altera', async () => {
       const created = cloudAccountSchema.parse(
         (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
       );
       const seen = await call(readerA).get(`/v1/cloud-accounts/${created.id}`).expect(200);
-      expect(seen.body).toMatchObject({ id: created.id, externalId: null });
+      expect(seen.body).toMatchObject({ id: created.id, readerRoleArn: created.readerRoleArn });
       const list = await call(readerA).get('/v1/cloud-accounts?pageSize=100').expect(200);
-      expect(JSON.stringify(list.body)).not.toContain(created.externalId as string);
+      expect(JSON.stringify(list.body)).not.toMatch(/externalId/i);
 
       await call(readerA).post('/v1/cloud-accounts', newAccount()).expect(403);
       await call(readerA)
@@ -398,6 +440,180 @@ describe('contas cloud (T3.3)', () => {
         before: { status: 'active' },
         after: { status: 'inactive' },
       });
+    });
+  });
+  describe('conexão (fase 2)', () => {
+    it('a API devolve a conexão: aguardando no cadastro, depois o que o coletor gravou', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      expect(created).toMatchObject({ connection: 'waiting', connectionError: null, lastCollectedAt: null });
+
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'error', connectionError: 'AccessDenied' },
+      });
+      const failed = await call(readerA).get(`/v1/cloud-accounts/${created.id}`).expect(200);
+      expect(cloudAccountSchema.parse(failed.body)).toMatchObject({
+        connection: 'error',
+        connectionError: 'AccessDenied',
+        lastCollectedAt: null,
+      });
+
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', connectionError: null, lastCollectedAt: at },
+      });
+      const list = await call(readerA).get('/v1/cloud-accounts?pageSize=100').expect(200);
+      const seen = (list.body as { items: { id: string }[] }).items.find((item) => item.id === created.id);
+      expect(seen).toMatchObject({
+        connection: 'connected',
+        connectionError: null,
+        lastCollectedAt: at.toISOString(),
+      });
+    });
+
+    it('ninguém grava a conexão pela API: só o coletor', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      await call(adminA)
+        .post('/v1/cloud-accounts', newAccount({ connection: 'connected' }))
+        .expect(400);
+      for (const body of [
+        { connection: 'connected' },
+        { connectionError: null },
+        { lastCollectedAt: '2026-11-03T12:00:00.000Z' },
+      ]) {
+        await call(adminA).patch(`/v1/cloud-accounts/${created.id}`, body).expect(400);
+      }
+      expect(
+        await prisma.cloudAccount.findUniqueOrThrow({
+          where: { id: created.id },
+          select: { connection: true, lastCollectedAt: true },
+        }),
+      ).toEqual({ connection: 'waiting', lastCollectedAt: null });
+    });
+
+    it('trocar a assinatura do Pub/Sub volta a conexão para aguardando; a mesma assinatura não muda nada', async () => {
+      const project = gcpProject();
+      const created = cloudAccountSchema.parse(
+        (
+          await call(adminA)
+            .post('/v1/cloud-accounts', {
+              provider: 'gcp',
+              accountId: project,
+              pubsubSubscription: subscription(project),
+            })
+            .expect(201)
+        ).body,
+      );
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      // Com evento já recebido: o sync da GCP de outro teste, rodando ao mesmo tempo no mesmo banco, lê todas as
+      // contas GCP ativas e mantém conectada a que já recebeu evento (a sem evento ele deixaria aguardando).
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', lastCollectedAt: at, lastEventAt: at },
+      });
+      // Confere a resposta da própria alteração, e não uma leitura depois: o sync pode gravar a conexão desta conta a
+      // qualquer momento.
+      const same = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { pubsubSubscription: created.pubsubSubscription })
+        .expect(200);
+      expect(same.body).toMatchObject({ connection: 'connected' });
+
+      const changed = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { pubsubSubscription: subscription(project) })
+        .expect(200);
+      // A última coleta continua: é história, não estado.
+      const account = cloudAccountSchema.parse(changed.body);
+      expect(account).toMatchObject({ connection: 'waiting', connectionError: null });
+      expect(account.lastCollectedAt).not.toBeNull();
+      expect(await entryOf(changed)).toMatchObject({
+        action: 'cloud_account.update',
+        before: { connection: 'connected' },
+        after: { connection: 'waiting' },
+      });
+    });
+
+    it('desativar e reativar a conta voltam a conexão para aguardando, com o antes e o depois na auditoria', async () => {
+      const created = cloudAccountSchema.parse(
+        (await call(adminA).post('/v1/cloud-accounts', newAccount()).expect(201)).body,
+      );
+      const at = new Date('2026-11-03T12:00:00.000Z');
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'connected', lastCollectedAt: at, lastEventAt: at },
+      });
+      const stored = () =>
+        prisma.cloudAccount.findUniqueOrThrow({
+          where: { id: created.id },
+          select: { status: true, connection: true, connectionError: true, lastCollectedAt: true },
+        });
+
+      // Desativada, a conta para de ser lida: nem conectada nem com erro. A última coleta é história.
+      const removed = await call(adminA).delete(`/v1/cloud-accounts/${created.id}`).expect(204);
+      expect(await stored()).toEqual({
+        status: 'inactive',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: at,
+      });
+      expect(await entryOf(removed)).toMatchObject({
+        action: 'cloud_account.deactivate',
+        before: { status: 'active', connection: 'connected' },
+        after: { status: 'inactive', connection: 'waiting' },
+      });
+
+      // Reativada, recomeça do zero, qualquer que fosse o estado gravado enquanto parada.
+      await prisma.cloudAccount.update({
+        where: { id: created.id },
+        data: { connection: 'error', connectionError: 'AccessDenied' },
+      });
+      const reactivated = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'active' })
+        .expect(200);
+      expect(cloudAccountSchema.parse(reactivated.body)).toMatchObject({
+        status: 'active',
+        connection: 'waiting',
+        connectionError: null,
+        lastCollectedAt: at.toISOString(),
+      });
+      expect(await entryOf(reactivated)).toMatchObject({
+        action: 'cloud_account.update',
+        before: { status: 'inactive', connection: 'error', connectionError: 'AccessDenied' },
+        after: { status: 'active', connection: 'waiting', connectionError: null },
+      });
+
+      // Desativar pela alteração também recomeça; repetir a situação atual, ou mudar só as regiões, não mexe.
+      await prisma.cloudAccount.update({ where: { id: created.id }, data: { connection: 'connected' } });
+      const unchanged = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'active', regions: ['eu-west-1'] })
+        .expect(200);
+      expect(unchanged.body).toMatchObject({ connection: 'connected' });
+      const paused = await call(adminA)
+        .patch(`/v1/cloud-accounts/${created.id}`, { status: 'inactive' })
+        .expect(200);
+      expect(paused.body).toMatchObject({ status: 'inactive', connection: 'waiting' });
+    });
+
+    it('isolamento: A não vê a conexão nem o erro das contas de B', async () => {
+      const ofB = await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantB,
+          accountId: accountId(),
+          regions: ['sa-east-1'],
+          connection: 'error',
+          connectionError: 'ErroDaContaDoClienteB',
+          lastCollectedAt: new Date('2026-11-03T11:00:00.000Z'),
+        },
+      });
+      const list = await call(adminA).get('/v1/cloud-accounts?pageSize=100').expect(200);
+      expect(JSON.stringify(list.body)).not.toContain('ErroDaContaDoClienteB');
+      await call(adminA).get(`/v1/cloud-accounts/${ofB.id}`).expect(404);
+      const own = await call(adminB).get(`/v1/cloud-accounts/${ofB.id}`).expect(200);
+      expect(own.body).toMatchObject({ connection: 'error', connectionError: 'ErroDaContaDoClienteB' });
     });
   });
 });

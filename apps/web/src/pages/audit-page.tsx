@@ -14,6 +14,7 @@ import { AuditActorName } from '@/features/audit/audit-actor';
 import { useAuditEntries } from '@/features/audit/audit-api';
 import { AuditOutcomeBadge } from '@/features/audit/audit-outcome-badge';
 import { AuditPanel } from '@/features/audit/audit-panel';
+import { usePeriodFilter } from '@/features/plan/plan-history';
 import {
   actionLabel,
   AUDIT_OUTCOME_LABELS,
@@ -39,13 +40,15 @@ export function AuditPage() {
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
   // Parâmetro vazio (`?pessoa=`) conta como ausente: a API recusaria a pessoa vazia.
   const actorId = params.get('pessoa') || undefined;
+  // O período só vai para a API se couber no histórico do plano; o seletor só oferece os que cabem.
+  const periods = usePeriodFilter(AUDIT_PERIODS, params.get('periodo'));
   const filters = {
-    period: pick(AUDIT_PERIODS, params.get('periodo')),
+    period: periods.period,
     resourceType: pick(AUDIT_RESOURCE_TYPES, params.get('area')),
     outcome: pick(AUDIT_OUTCOMES, params.get('resultado')),
   };
   const query: AuditListQuery = { ...filters, actorId, page, pageSize: PAGE_SIZE };
-  const entries = useAuditEntries(query);
+  const entries = useAuditEntries(query, !periods.waiting);
 
   const update = (changes: Record<string, string | null>, { keepPage = false } = {}) =>
     setParams((previous) => {
@@ -166,7 +169,7 @@ export function AuditPage() {
               onChange={(value) => update({ periodo: value || null })}
               options={[
                 { value: '', label: 'Todo o histórico' },
-                ...AUDIT_PERIODS.map((period) => ({ value: period, label: AUDIT_PERIOD_LABELS[period] })),
+                ...periods.options.map((period) => ({ value: period, label: AUDIT_PERIOD_LABELS[period] })),
               ]}
             />
             <SelectField

@@ -246,6 +246,15 @@ ephemeral "aws_secretsmanager_random_password" "indexer_dashboard" {
   require_each_included_type = true
 }
 
+# Usuário só de escrita do filebeat do manager (fase 2, PR-W1): o manager deixa de receber a senha do admin. Numa
+# instância de antes, aumente password_version para o campo existir no segredo antes de reaplicar o bundle.
+ephemeral "aws_secretsmanager_random_password" "indexer_filebeat" {
+  password_length            = 40
+  exclude_punctuation        = true
+  include_space              = false
+  require_each_included_type = true
+}
+
 ephemeral "aws_secretsmanager_random_password" "wazuh_api" {
   password_length            = 40
   exclude_punctuation        = true
@@ -258,6 +267,7 @@ resource "aws_secretsmanager_secret_version" "wazuh" {
   secret_string_wo = jsonencode({
     indexer_admin     = "Vc-${ephemeral.aws_secretsmanager_random_password.indexer_admin.random_password}"
     indexer_dashboard = "Vc-${ephemeral.aws_secretsmanager_random_password.indexer_dashboard.random_password}"
+    indexer_filebeat  = "Vc-${ephemeral.aws_secretsmanager_random_password.indexer_filebeat.random_password}"
     wazuh_api         = "Vc-${ephemeral.aws_secretsmanager_random_password.wazuh_api.random_password}"
   })
   secret_string_wo_version = var.password_version

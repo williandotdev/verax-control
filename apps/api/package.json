@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "description": "API do Verax Control (NestJS)",
+  "license": "SEE LICENSE IN ../../LICENSE",
   "type": "module",
   "scripts": {
     "prebuild": "prisma generate",
@@ -22,9 +23,12 @@
     "db:seed": "nest build && node dist/cli/seed.js"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudtrail": "3.1161.0",
     "@aws-sdk/client-ec2": "3.1161.0",
+    "@aws-sdk/client-guardduty": "3.1161.0",
     "@aws-sdk/client-iam": "3.1161.0",
     "@aws-sdk/client-s3": "3.1161.0",
+    "@aws-sdk/client-s3-control": "3.1161.0",
     "@aws-sdk/client-secrets-manager": "3.1161.0",
     "@aws-sdk/client-sesv2": "3.1161.0",
     "@aws-sdk/client-ssm": "3.1161.0",

@@ -18,10 +18,11 @@ function toSearch(query: AuditListQuery): string {
 }
 
 /** Trilha de auditoria que a sessão alcança, com os filtros na query string. */
-export function useAuditEntries(query: AuditListQuery) {
+export function useAuditEntries(query: AuditListQuery, enabled = true) {
   return useQuery({
     queryKey: ['audit', query],
     queryFn: () => api.get(`/v1/audit?${toSearch(query)}`, auditPageSchema),
+    enabled,
     placeholderData: keepPreviousData,
   });
 }

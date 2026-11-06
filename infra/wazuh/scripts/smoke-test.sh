@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Confere a instalação do Wazuh (T4.2 e T4.8): TLS obrigatório, senhas novas aceitas, senhas padrão e usuários de
-# demonstração recusados, usuário da API só com leitura dos alertas, e nenhuma porta publicada além do previsto. Roda no fim do deploy.sh e pode ser
-# chamado sozinho, com as mesmas variáveis de senha.
+# Confere a instalação do Wazuh (T4.2, T4.8 e fase 2, PR-W1 e PR-V6): TLS obrigatório (também na API do manager, com a
+# CA do nó), senhas novas aceitas, senhas padrão e usuários de demonstração recusados, usuário da API só com leitura dos
+# alertas, usuário do filebeat só com escrita neles, o verax_stats do medidor só com manager:read (com
+# WAZUH_STATS_PASSWORD, no nó) e nenhuma porta publicada além do previsto. Roda no fim do `start.sh wazuh-up` do nó de
+# cliente e do deploy.sh (EC2), e pode ser chamado sozinho, com as mesmas variáveis de senha. Fala com o projeto do
+# Compose em vigor: o da pasta (EC2) ou o das variáveis COMPOSE_* (nó e CI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=SCRIPTDIR/lib-indexer.sh
+source scripts/lib-indexer.sh
 
-: "${INDEXER_ADMIN_PASSWORD:?}" "${INDEXER_DASHBOARD_PASSWORD:?}" "${WAZUH_API_PASSWORD:?}"
-: "${INDEXER_API_READ_PASSWORD:?}"
+: "${INDEXER_ADMIN_PASSWORD:?}" "${INDEXER_FILEBEAT_PASSWORD:?}" "${WAZUH_API_PASSWORD:?}" "${INDEXER_API_READ_PASSWORD:?}"
 
 failures=0
 expect() { # <descrição> <esperado (regex)> <obtido>
@@ -30,10 +34,16 @@ curl_as() { # <serviço> <usuário> <senha> <curl args...>
 indexer_ca=/usr/share/wazuh-indexer/config/certs/root-ca.pem
 indexer_url=https://wazuh.indexer:9200
 indexer_code() { curl_as wazuh.indexer "$1" "$2" -o /dev/null -w '%{http_code}' --cacert "$indexer_ca" "$indexer_url$3"; }
+# code_as <usuário> <senha> <método> <caminho> [corpo]: só o código HTTP.
+code_as() {
+  local body=()
+  if [[ -n ${5:-} ]]; then body=(--data-binary "$5"); fi
+  curl_as wazuh.indexer "$1" "$2" -o /dev/null -w '%{http_code}' --cacert "$indexer_ca" -X "$3" \
+    -H 'Content-Type: application/json' "${body[@]}" "$indexer_url$4"
+}
 
 echo "Indexer"
 expect "admin com a senha nova" 200 "$(indexer_code admin "$INDEXER_ADMIN_PASSWORD" /)"
-expect "kibanaserver com a senha nova" 200 "$(indexer_code kibanaserver "$INDEXER_DASHBOARD_PASSWORD" /)"
 for default in admin:admin admin:SecretPassword kibanaserver:kibanaserver kibanaro:kibanaro logstash:logstash \
   readall:readall snapshotrestore:snapshotrestore; do
   expect "senha padrão recusada (${default%%:*})" 401 "$(indexer_code "${default%%:*}" "${default#*:}" /)"
@@ -47,54 +57,119 @@ top_level_keys() {
 }
 users=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
   "$indexer_url/_plugins/_security/api/internalusers" | top_level_keys)
-expect "só admin, kibanaserver e verax_api_read existem" 'admin kibanaserver verax_api_read ' "$users"
+expect "só admin, verax_api_read e wazuh_filebeat existem (sem dashboard, sem kibanaserver)" \
+  'admin verax_api_read wazuh_filebeat ' "$users"
 mappings=$(curl_as wazuh.indexer admin "$INDEXER_ADMIN_PASSWORD" --cacert "$indexer_ca" \
   "$indexer_url/_plugins/_security/api/rolesmapping" | top_level_keys)
-expect "só os mapeamentos de papel necessários (sem own_index para todos)" \
-  'all_access kibana_server manage_wazuh_index verax_api_read ' "$mappings"
+expect "só os mapeamentos de papel necessários (sem own_index para todos, sem os do dashboard)" \
+  'all_access verax_api_read wazuh_filebeat ' "$mappings"
 expect "HTTP sem TLS recusado" 000 "$(in_service wazuh.indexer curl -s -o /dev/null -w '%{http_code}' \
   http://wazuh.indexer:9200 || true)"
 expect "TLS 1.1 recusado" 000 "$(in_service wazuh.indexer curl -s -o /dev/null -w '%{http_code}' --tls-max 1.1 \
   --cacert "$indexer_ca" "$indexer_url" || true)"
 
 echo "Usuário da API do Verax Control (verax_api_read)"
-read_code() { # <método> <caminho> [corpo]
-  local body=()
-  if [[ -n ${3:-} ]]; then body=(--data "$3"); fi
-  curl_as wazuh.indexer verax_api_read "$INDEXER_API_READ_PASSWORD" -o /dev/null -w '%{http_code}' \
-    --cacert "$indexer_ca" -X "$1" -H 'Content-Type: application/json' "${body[@]}" "$indexer_url$2"
-}
+read_code() { code_as verax_api_read "$INDEXER_API_READ_PASSWORD" "$@"; }
 expect "busca nos alertas" 200 "$(read_code GET '/wazuh-alerts-*/_search?size=0')"
 expect "escrita nos alertas recusada" 403 "$(read_code POST /wazuh-alerts-4.x-verax-teste/_doc '{"teste":1}')"
 expect "índice com o próprio nome recusado" 403 "$(read_code PUT /verax_api_read)"
-expect "outros índices do Wazuh recusados" 403 "$(read_code GET '/wazuh-states-*/_search?size=0')"
+# Nome concreto, e não padrão: um padrão sem nenhum índice casando devolve 200 vazio, e sem a conexão do manager com o
+# indexer não existe índice wazuh-states-* (ela ficaria com o usuário do filebeat, que não cria esses índices).
+expect "outros índices do Wazuh recusados" 403 "$(read_code GET '/wazuh-states-vulnerabilities-verax/_search?size=0')"
 expect "índice de segurança recusado" 403 "$(read_code GET '/.opendistro_security/_search?size=0')"
 expect "informações do cluster recusadas" 403 "$(read_code GET /_cat/indices)"
 expect "configuração de segurança recusada" 403 "$(read_code GET /_plugins/_security/api/internalusers)"
 
+echo "Usuário do filebeat do manager (wazuh_filebeat): só escrita nos alertas"
+# O que o filebeat faz (config/indexer/roles-verax.yml) funciona; ler, apagar e tocar na segurança, não. Um manager
+# comprometido não apaga nem lê o que já indexou. O índice de teste é apagado em seguida com o certificado admin.
+filebeat_code() { code_as wazuh_filebeat "$INDEXER_FILEBEAT_PASSWORD" "$@"; }
+smoke_index=wazuh-alerts-4.x-verax-smoke
+expect "wazuh_filebeat com a senha nova" 200 "$(filebeat_code GET /)"
+# O corpo vai por argumento (a entrada padrão já leva a credencial, -K -) e termina em quebra de linha, como o _bulk exige.
+bulk=$(curl_as wazuh.indexer wazuh_filebeat "$INDEXER_FILEBEAT_PASSWORD" --cacert "$indexer_ca" -X POST \
+  -H 'Content-Type: application/x-ndjson' --data-binary $'{"index":{}}\n{"verax":"smoke"}\n' \
+  "$indexer_url/$smoke_index/_bulk")
+expect "grava pelo _bulk num índice novo de alertas (criado na hora)" '.*"errors":false.*' "$bulk"
+expect "template dos alertas (como o filebeat grava a cada partida)" 200 \
+  "$(filebeat_code PUT /_template/verax-smoke '{"index_patterns":["verax-smoke-*"],"order":0}')"
+indexer_admin DELETE /_template/verax-smoke </dev/null
+expect "leitura dos alertas recusada" 403 "$(filebeat_code GET "/$smoke_index/_search?size=0")"
+expect "apagar índice de alertas recusado" 403 "$(filebeat_code DELETE "/$smoke_index")"
+expect "apagar documentos recusado" 403 \
+  "$(filebeat_code POST "/$smoke_index/_delete_by_query" '{"query":{"match_all":{}}}')"
+expect "apagar o template do Wazuh recusado" 403 "$(filebeat_code DELETE /_template/wazuh)"
+expect "outros índices recusados" 403 "$(filebeat_code POST /wazuh-states-verax-smoke/_doc '{"teste":1}')"
+expect "índice de segurança recusado" 403 "$(filebeat_code GET '/.opendistro_security/_search?size=0')"
+expect "informações do cluster recusadas" 403 "$(filebeat_code GET /_cat/indices)"
+expect "configuração de segurança recusada" 403 "$(filebeat_code GET /_plugins/_security/api/internalusers)"
+expect "snapshots recusados" 403 "$(filebeat_code GET /_snapshot/verax-snapshots/_all)"
+indexer_admin DELETE "/$smoke_index" </dev/null
+expect "índice de teste apagado (certificado admin)" 200 "$response_code"
+
 echo "API do manager"
+# O certificado da API é o par do manager, da CA própria (scripts/manager-api-tls.sh, PR-V6): conferido com a CA e o
+# nome wazuh.manager, pelo loopback de dentro do manager. Com o autoassinado de antes, tudo aqui dá 000.
+api_url=https://wazuh.manager:55000
+api_tls=(--cacert /etc/ssl/verax/root-ca.pem --resolve wazuh.manager:55000:127.0.0.1)
 api_code() {
-  curl_as wazuh.manager "$1" "$2" -o /dev/null -w '%{http_code}' -X POST \
-    --cacert /var/ossec/api/configuration/ssl/server.crt \
-    "https://localhost:55000/security/user/authenticate"
+  curl_as wazuh.manager "$1" "$2" -o /dev/null -w '%{http_code}' -X POST "${api_tls[@]}" \
+    "$api_url/security/user/authenticate"
 }
-expect "wazuh-wui com a senha nova" 200 "$(api_code wazuh-wui "$WAZUH_API_PASSWORD")"
+expect "wazuh-wui com a senha nova (TLS conferido com a CA do nó e o nome wazuh.manager)" 200 \
+  "$(api_code wazuh-wui "$WAZUH_API_PASSWORD")"
 expect "senha padrão recusada (wazuh-wui)" 401 "$(api_code wazuh-wui wazuh-wui)"
 expect "senha padrão recusada (wazuh)" 401 "$(api_code wazuh wazuh)"
-
-echo "Dashboard"
-dashboard_ca=/usr/share/wazuh-dashboard/certs/root-ca.pem
-expect "login do admin" 200 "$(curl_as wazuh.dashboard admin "$INDEXER_ADMIN_PASSWORD" -o /dev/null \
-  -w '%{http_code}' --cacert "$dashboard_ca" https://wazuh.dashboard:5601/api/status)"
-expect "HTTP sem TLS recusado" '000|400' "$(in_service wazuh.dashboard curl -s -o /dev/null -w '%{http_code}' \
-  http://wazuh.dashboard:5601/api/status || true)"
+# O verax_stats (nó de cliente; o worker lê os contadores do analysisd com ele) só existe onde o init-api-users.sh roda:
+# o start.sh passa a senha dele. Só leitura dentro do manager:read; fora dele, recusado (nenhuma escrita é tentada).
+if [[ -n ${WAZUH_STATS_PASSWORD:-} ]]; then
+  echo "Usuário do medidor do worker (verax_stats)"
+  expect "verax_stats com a senha nova" 200 "$(api_code verax_stats "$WAZUH_STATS_PASSWORD")"
+  stats_token=$(printf 'user = "verax_stats:%s"\n' "$WAZUH_STATS_PASSWORD" |
+    in_service wazuh.manager curl -s -K - "${api_tls[@]}" -X POST "$api_url/security/user/authenticate?raw=true" || true)
+  stats_code() { # <caminho>: o código HTTP de um GET com o token do verax_stats (que vai pela entrada padrão)
+    printf 'header = "Authorization: Bearer %s"\n' "$stats_token" |
+      in_service wazuh.manager curl -s -K - -o /dev/null -w '%{http_code}' "${api_tls[@]}" "$api_url$1" || true
+  }
+  expect "lê os contadores do analysisd" 200 "$(stats_code '/manager/daemons/stats?daemons_list=wazuh-analysisd')"
+  expect "estado do cluster recusado (fora do manager:read)" 403 "$(stats_code /cluster/status)"
+  expect "regras recusadas (fora do manager:read)" 403 "$(stats_code '/rules?limit=1')"
+fi
 
 echo "Portas publicadas no host"
 published() { docker inspect --format '{{json .HostConfig.PortBindings}}' "$(docker compose ps -q "$1")"; }
-expect "manager sem nenhuma porta" '\{\}' "$(published wazuh.manager)"
-expect "dashboard só em 127.0.0.1" '.*"HostIp":"127\.0\.0\.1".*' "$(published wazuh.dashboard)"
-expect "indexer só no endereço configurado" ".*\"HostIp\":\"${INDEXER_PUBLISH_ADDRESS:-127.0.0.1}\".*" \
-  "$(published wazuh.indexer)"
+# Com os agentes nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; o start.sh passa o IP fixo deles), o
+# manager publica só a 1514/tcp e a 1515/tcp; sem eles, nenhuma porta.
+if [[ -n ${WAZUH_AGENTS_ADDRESS:-} ]]; then
+  expect "manager só com a 1514/tcp e a 1515/tcp (agentes)" \
+    '\{"1514/tcp":\[\{"HostIp":"[0-9.]*","HostPort":"1514"\}\],"1515/tcp":\[\{"HostIp":"[0-9.]*","HostPort":"1515"\}\]\}' \
+    "$(published wazuh.manager)"
+else
+  expect "manager sem nenhuma porta" '\{\}' "$(published wazuh.manager)"
+fi
+# No nó de cliente o indexer não publica porta (a API e o worker o alcançam pela rede interna do Docker); no EC2 ele
+# publica só no endereço liberado para a API (INDEXER_PUBLISH_ADDRESS, que o bootstrap-host.sh sempre define).
+if [[ -n ${INDEXER_PUBLISH_ADDRESS:-} ]]; then
+  expect "indexer só no endereço configurado" ".*\"HostIp\":\"${INDEXER_PUBLISH_ADDRESS}\".*" "$(published wazuh.indexer)"
+else
+  expect "indexer sem nenhuma porta" '\{\}' "$(published wazuh.indexer)"
+fi
+
+if [[ -n ${WAZUH_AGENTS_ADDRESS:-} ]]; then
+  echo "Registro dos agentes (porta 1515, de dentro do manager)"
+  # Como o agente faz: TLS conferido com a CA dos agentes e o IP fixo deles; uma senha errada nunca registra nada.
+  registration() { # <mensagem do agente>
+    printf '%s\n' "$1" | in_service wazuh.manager timeout 10 openssl s_client -quiet -connect 127.0.0.1:1515 \
+      -CAfile /etc/ssl/verax-agents/ca.crt -verify_ip "$WAZUH_AGENTS_ADDRESS" -verify_return_error 2>&1 || true
+  }
+  expect "certificado do registro confere com a CA dos agentes e o IP $WAZUH_AGENTS_ADDRESS" '.*verify return:1.*' \
+    "$(registration "OSSEC A:'verax-smoke'" | tr '\n' ' ')"
+  expect "senha errada recusada" '.*ERROR: Invalid password.*' \
+    "$(registration "OSSEC PASS: senha-errada-do-smoke-test-0000000000 OSSEC A:'verax-smoke'" | tr '\n' ' ')"
+  expect "resposta ativa desligada no manager e nos agentes" 1 \
+    "$(in_service wazuh.manager sed -n '/<active-response>/,/<\/active-response>/p' /var/ossec/etc/ossec.conf |
+      grep -c '<disabled>yes</disabled>' || true)"
+fi
 
 if ((failures > 0)); then
   echo "$failures verificação(ões) falharam." >&2

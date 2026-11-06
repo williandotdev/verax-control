@@ -4,7 +4,12 @@
  * A conta mestra do RDS (senha gerenciada pelo próprio RDS) só é usada aqui. Ela cria e mantém:
  * - o papel das migrations, dono do schema `public`, usado só pela tarefa de migrations;
  * - o papel da aplicação, só com SELECT, INSERT, UPDATE e DELETE nas tabelas: não cria nem altera objetos, não lê a
- *   tabela de migrations e não altera nem apaga a trilha de auditoria (barreira além do trigger de imutabilidade).
+ *   tabela de migrations e não altera nem apaga a trilha de auditoria nem os comentários dos achados (barreira além do
+ *   trigger de imutabilidade).
+ *
+ * O expurgo diário (fase 2, PR-19) apaga auditoria e comentários antigos só pelas funções `verax_purge_*`, que a
+ * migration cria com `SECURITY DEFINER` e sem EXECUTE para PUBLIC. Aqui o EXECUTE vai só para o papel da aplicação,
+ * porque o nome dele só é conhecido aqui.
  *
  * As senhas vêm das URLs de conexão de cada papel, gravadas pelo Terraform no Secrets Manager. Idempotente: o deploy
  * roda antes das migrations (para o papel delas existir) e depois (para as permissões valerem nas tabelas novas).
@@ -16,6 +21,15 @@ import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 
 const ROLE_NAME = /^verax_[a-z0-9_]{1,40}$/;
+
+/**
+ * Funções do expurgo (migration `20261109120000_history_retention`), pela assinatura. São constantes: nenhum nome vem
+ * de fora.
+ */
+export const RETENTION_FUNCTIONS = [
+  'public.verax_purge_audit_log(timestamptz, integer)',
+  'public.verax_purge_finding_comments(uuid[])',
+] as const;
 
 export interface RoleCredentials {
   role: string;
@@ -89,6 +103,12 @@ export async function bootstrapDatabase({
     const result = await client.query<{ found: string | null }>('SELECT to_regclass($1) AS found', [name]);
     return result.rows[0]?.found !== null && result.rows[0]?.found !== undefined;
   };
+  const functionExists = async (signature: string): Promise<boolean> => {
+    const result = await client.query<{ found: string | null }>('SELECT to_regprocedure($1) AS found', [
+      signature,
+    ]);
+    return result.rows[0]?.found !== null && result.rows[0]?.found !== undefined;
+  };
 
   await client.query('BEGIN');
   try {
@@ -128,6 +148,18 @@ export async function bootstrapDatabase({
     }
     if (await tableExists('public."AuditLog"')) {
       await client.query(`REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public."AuditLog" FROM ${appRole}`);
+    }
+    // Comentários dos achados: a mesma barreira da auditoria. Antes do expurgo só o trigger segurava o DELETE.
+    if (await tableExists('public."FindingComment"')) {
+      await client.query(`REVOKE UPDATE, DELETE, TRUNCATE ON TABLE public."FindingComment" FROM ${appRole}`);
+    }
+    // Expurgo: o EXECUTE sai de PUBLIC (a migration já tira; aqui fica garantido a cada deploy) e vai só para a
+    // aplicação. A função roda com o dono dela (o papel das migrations), com piso de idade conferido no banco.
+    for (const signature of RETENTION_FUNCTIONS) {
+      if (await functionExists(signature)) {
+        await client.query(`REVOKE ALL ON FUNCTION ${signature} FROM PUBLIC`);
+        await client.query(`GRANT EXECUTE ON FUNCTION ${signature} TO ${appRole}`);
+      }
     }
     await client.query('COMMIT');
   } catch (error) {

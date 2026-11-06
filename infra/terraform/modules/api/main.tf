@@ -909,6 +909,8 @@ resource "aws_ecs_task_definition" "api" {
       { name = "MAIL_TRANSPORT", value = "ses" },
       { name = "MAIL_FROM", value = var.mail_from },
       { name = "AWS_REGION", value = local.region },
+      # Implantação da Verax na AWS, com vários clientes no mesmo banco: os limites de plano são do nó de um cliente só.
+      { name = "PLAN", value = "interno" },
     ]
     secrets = [
       { name = "DATABASE_URL", valueFrom = local.db_secrets.app },

@@ -6,9 +6,9 @@ import {
   type FindingCommentCreate,
   type FindingDetail,
   type FindingListQuery,
-  type FindingPeriod,
   type FindingSource,
   type FindingStatusUpdate,
+  historyPeriodStart,
   type Paginated,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
@@ -18,13 +18,6 @@ import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { RAW_EVENT_READER, type RawEventReader } from './raw-events.js';
-
-const PERIOD_HOURS = {
-  '24h': 24,
-  '7d': 24 * 7,
-  '30d': 24 * 30,
-  '90d': 24 * 90,
-} as const satisfies Record<FindingPeriod, number>;
 
 /** O detalhe mostra os 500 comentários mais recentes, o limite do contrato; a contagem traz o total. */
 const MAX_COMMENTS = 500;
@@ -60,7 +53,7 @@ const detailSelect = {
   ...findingSelect,
   triagedAt: true,
   source: true,
-  sourceEventId: true,
+  rawEventId: true,
   ruleId: true,
   ruleLevel: true,
   mitreTechniques: true,
@@ -123,7 +116,7 @@ export class FindingsService {
       ...(query.status && { status: query.status }),
       ...(query.accountId && { accountId: query.accountId }),
       ...(query.period && {
-        occurredAt: { gte: new Date(now.getTime() - PERIOD_HOURS[query.period] * 3_600_000) },
+        occurredAt: { gte: historyPeriodStart(query.period, now) },
       }),
     };
     const db = this.prisma.scoped();
@@ -206,10 +199,14 @@ export class FindingsService {
     };
   }
 
-  /** Falha do indexer não derruba o detalhe: o achado aparece sem o evento bruto, e o erro vai para o log. */
+  /**
+   * Falha do indexer não derruba o detalhe: o achado aparece sem o evento bruto, e o erro vai para o log. Achado sem
+   * ID do alerta (GCP) não tem evento bruto guardado.
+   */
   private async readRawEvent(row: DetailRow): Promise<Record<string, unknown> | null> {
+    if (row.rawEventId === null) return null;
     try {
-      return await this.rawEvents.read(row.source, row.sourceEventId);
+      return await this.rawEvents.read(row.source, row.rawEventId);
     } catch (error) {
       this.logger.warn({ findingId: row.id, error: (error as Error).name }, 'evento bruto indisponível');
       return null;

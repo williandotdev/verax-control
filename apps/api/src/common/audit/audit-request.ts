@@ -27,6 +27,15 @@ export function withDetails(entry: RequestEntry, details: AuditDetails): Request
   return { ...entry, ...rest, actor: tenantId === undefined ? entry.actor : { ...entry.actor, tenantId } };
 }
 
+/**
+ * Registro adicional da mesma requisição (`AuditContext.also`): sem cliente próprio, entra na trilha do principal.
+ * `null` informado continua valendo como operação global da Verax.
+ */
+export function inheritTenant(main: AuditDetails, extra: AuditDetails): AuditDetails {
+  if (extra.tenantId !== undefined || main.tenantId === undefined) return extra;
+  return { ...extra, tenantId: main.tenantId };
+}
+
 /** Quem, o quê e de onde: a parte do registro de auditoria que vem da própria requisição. */
 export function requestEntry(request: Request & { id?: unknown }): RequestEntry {
   return {

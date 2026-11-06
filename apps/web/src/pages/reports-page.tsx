@@ -1,7 +1,17 @@
-import { FINDING_SEVERITIES, REPORT_PERIODS, type ReportKind, type ReportPeriod } from '@verax/shared';
+import {
+  FINDING_SEVERITIES,
+  FINDING_STATUSES,
+  type FindingStatus,
+  REPORT_PERIODS,
+  type ReportKind,
+  type ReportPeriod,
+} from '@verax/shared';
 import { Tabs } from 'radix-ui';
 import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
+import { INK_RAMP } from '@/components/charts/chart-utils';
+import { LineChart } from '@/components/charts/line-chart';
+import { PieChart } from '@/components/charts/pie-chart';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { Card } from '@/components/ui/card';
@@ -12,17 +22,33 @@ import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { formatDuration, PERIOD_LABELS, REPORT_TABS, TACTIC_LABELS } from '@/features/reports/labels';
 import { MitreGrid } from '@/features/reports/mitre-grid';
 import { ReportContext } from '@/features/reports/report-context';
-import { ReportTable } from '@/features/reports/report-table';
+import { ReportSection, ReportTable } from '@/features/reports/report-table';
+import { usePeriodFilter } from '@/features/plan/plan-history';
 import { useReport } from '@/features/reports/reports-api';
 import { useMe } from '@/features/session/session';
-import { SEVERITY_STYLES } from '@/design/severity';
+import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
 import { cn } from '@/lib/cn';
 import { formatTimestamp } from '@/lib/format';
 
-const PERIOD_OPTIONS = REPORT_PERIODS.map((period) => ({ value: period, label: PERIOD_LABELS[period] }));
+const FINDINGS = { one: 'achado', many: 'achados' };
+/** Os gráficos ficam sobre a superfície dos cartões: é contra ela que as cores foram validadas. */
+const CHART_FRAME = 'rounded-md border bg-surface p-3';
+/**
+ * Status do achado na pizza: a rampa de tinta, do novo (mais tinta, mais atenção pendente) ao resolvido. Status não é
+ * severidade, então não usa as cores dela.
+ */
+const STATUS_TONES: Readonly<Record<FindingStatus, (typeof INK_RAMP)[number]>> = {
+  new: INK_RAMP[0],
+  investigating: INK_RAMP[1],
+  legitimate: INK_RAMP[2],
+  resolved: INK_RAMP[3],
+};
+/** Na ordem do ciclo do achado (a mesma em todo período, para a cor seguir o status e não a posição). */
+const statusRows = (byStatus: Readonly<Record<FindingStatus, number>>) =>
+  FINDING_STATUSES.map((status) => ({ status, count: byStatus[status] }));
 
 /**
- * Relatórios para especialistas: as visões tradicionais de um SOC, por período, com exportação em CSV. A Torre
+ * Relatórios para especialistas: as visões tradicionais de uma operação de segurança, por período, com exportação em CSV. A Torre
  * continua sendo o ponto de partida; aqui fica o detalhe para quem quer analisar a fundo.
  */
 export function ReportsPage() {
@@ -30,7 +56,9 @@ export function ReportsPage() {
   const scope = me?.scopeTenantId ?? null;
   const [params, setParams] = useSearchParams();
   const tab = REPORT_TABS.find((item) => item.slug === params.get('aba')) ?? REPORT_TABS[0];
-  const period = REPORT_PERIODS.find((value) => value === params.get('periodo')) ?? '30d';
+  // O período da URL só vale se couber no histórico do plano; senão, o padrão (30 dias, que todo plano tem).
+  const periods = usePeriodFilter(REPORT_PERIODS, params.get('periodo'));
+  const period = periods.period ?? '30d';
   const update = (changes: Record<string, string | null>) =>
     setParams((previous) => {
       const next = new URLSearchParams(previous);
@@ -47,15 +75,15 @@ export function ReportsPage() {
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold">Relatórios</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            As visões clássicas de um SOC, para análise detalhada. Todas as tabelas podem ser exportadas em
-            CSV.
+            Para análise detalhada: resumo, MITRE ATT&CK, detecções, entidades, incidentes, cobertura e
+            exceções. Todas as tabelas podem ser exportadas em CSV.
           </p>
         </div>
         <SelectField
           label="Período"
           value={period}
           onChange={(value) => update({ periodo: value === '30d' ? null : value })}
-          options={PERIOD_OPTIONS}
+          options={periods.options.map((value) => ({ value, label: PERIOD_LABELS[value] }))}
         />
       </header>
       {scope === null ? (
@@ -68,7 +96,11 @@ export function ReportsPage() {
           value={tab?.slug ?? 'resumo'}
           onValueChange={(value) => update({ aba: value === 'resumo' ? null : value })}
         >
-          <Tabs.List aria-label="Relatório" className="flex flex-wrap gap-1 border-b">
+          <Tabs.List
+            data-tour="relatorios-abas"
+            aria-label="Relatório"
+            className="flex flex-wrap gap-1 border-b"
+          >
             {REPORT_TABS.map((item) => (
               <Tabs.Trigger
                 key={item.slug}
@@ -80,7 +112,8 @@ export function ReportsPage() {
             ))}
           </Tabs.List>
           <Tabs.Content value={tab?.slug ?? 'resumo'} className="pt-4 focus:outline-none">
-            {tab && <ReportView key={tab.kind} kind={tab.kind} period={period} />}
+            {tab && periods.waiting && <LoadingState rows={6} label="Carregando o período" />}
+            {tab && !periods.waiting && <ReportView key={tab.kind} kind={tab.kind} period={period} />}
           </Tabs.Content>
         </Tabs.Root>
       )}
@@ -182,20 +215,30 @@ function SummaryReportView({ period }: { period: ReportPeriod }) {
                 { header: 'Achados', cell: (row) => row.count, csv: (row) => row.count, align: 'right' },
               ]}
             />
-            <ReportTable
+            <ReportSection
               caption="Achados por status"
               file={'achados-por-status'}
-              rows={Object.entries(data.findings.byStatus).map(([status, count]) => ({ status, count }))}
-              rowKey={(row) => row.status}
-              columns={[
-                {
-                  header: 'Status',
-                  cell: (row) => statusLabel(row.status),
-                  csv: (row) => statusLabel(row.status),
-                },
-                { header: 'Achados', cell: (row) => row.count, csv: (row) => row.count, align: 'right' },
+              rows={statusRows(data.findings.byStatus)}
+              csv={[
+                { header: 'Status', csv: (row) => FINDING_STATUS_LABELS[row.status].label },
+                { header: 'Achados', csv: (row) => row.count },
               ]}
-            />
+            >
+              <PieChart
+                title="Achados por status"
+                className={CHART_FRAME}
+                unit={FINDINGS}
+                columns={{ category: 'Status', value: 'Achados' }}
+                empty="Nenhum achado no período."
+                slices={statusRows(data.findings.byStatus).map((row) => ({
+                  key: row.status,
+                  label: FINDING_STATUS_LABELS[row.status].label,
+                  icon: FINDING_STATUS_LABELS[row.status].icon,
+                  value: row.count,
+                  ...STATUS_TONES[row.status],
+                }))}
+              />
+            </ReportSection>
             <ReportTable
               caption="Achados por fonte"
               file={'achados-por-fonte'}
@@ -211,21 +254,33 @@ function SummaryReportView({ period }: { period: ReportPeriod }) {
               ]}
             />
           </div>
-          <ReportTable
+          <ReportSection
             caption="Achados por dia"
             file={'achados-por-dia'}
             rows={[...data.daily].reverse()}
-            rowKey={(row) => row.date}
-            columns={[
-              { header: 'Dia', cell: (row) => formatDay(row.date), csv: (row) => row.date },
+            csv={[
+              { header: 'Dia', csv: (row) => row.date },
               ...FINDING_SEVERITIES.map((severity) => ({
                 header: SEVERITY_STYLES[severity].label,
-                cell: (row: (typeof data.daily)[number]) => row[severity],
                 csv: (row: (typeof data.daily)[number]) => row[severity],
-                align: 'right' as const,
               })),
             ]}
-          />
+          >
+            <LineChart
+              title="Achados por dia"
+              className={CHART_FRAME}
+              rows={data.daily}
+              unit={FINDINGS}
+              empty="Nenhum achado no período."
+              series={FINDING_SEVERITIES.map((severity) => ({
+                key: severity,
+                label: SEVERITY_STYLES[severity].label,
+                icon: SEVERITY_STYLES[severity].icon,
+                iconClass: SEVERITY_STYLES[severity].tone,
+                ...SEVERITY_MARKS[severity],
+              }))}
+            />
+          </ReportSection>
         </>
       )}
     </Loaded>
@@ -560,12 +615,5 @@ const FIELD_LABELS: Readonly<Record<string, string>> = {
   resource: 'Recurso',
 };
 const fieldLabel = (field: string) => FIELD_LABELS[field] ?? field;
-const statusLabel = (status: string) =>
-  FINDING_STATUS_LABELS[status as keyof typeof FINDING_STATUS_LABELS]?.label ?? status;
 const sourceLabel = (source: string) =>
   FINDING_SOURCE_LABELS[source as keyof typeof FINDING_SOURCE_LABELS] ?? source;
-
-function formatDay(date: string): string {
-  const [year, month, day] = date.split('-');
-  return `${day}/${month}/${year}`;
-}

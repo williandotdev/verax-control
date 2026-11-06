@@ -22,6 +22,14 @@ export class ApiError extends HttpException {
   }
 }
 
+/**
+ * Recusa que fica gravada: o `AuditInterceptor` não desfaz a transação da requisição. Ele grava o registro da falha (com
+ * a ação e os estados que o service descreveu) no mesmo commit e só depois responde o erro. Serve para a recusa que
+ * outra requisição precisa enxergar assim que os locks desta forem soltos (o limite de tentativas da credencial colada
+ * conta com ela). Lance só antes de qualquer escrita do handler, ou quando o que ele já escreveu deve ficar.
+ */
+export class CommittedApiError extends ApiError {}
+
 /** Entrada que não passou na validação. Os problemas listados nunca repetem o valor recebido. */
 export class ValidationException extends HttpException {
   constructor(readonly issues: readonly ValidationIssue[]) {

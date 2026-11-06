@@ -6,14 +6,15 @@ import { TACTIC_LABELS } from './labels';
 
 /**
  * Intensidade pela quantidade de achados, num tom só e sutil: o número está sempre escrito, e o fundo nunca tira o
- * contraste do texto. Sem achado, a célula fica neutra.
+ * contraste do texto (>= 4,5:1 até sobre o fundo da página). Sem achado, a célula fica neutra. O tom é a tinta, e não
+ * o azul da ação principal: ao lado dos selos de severidade (na Torre), um fundo azul passaria por "baixo".
  */
 function intensity(findings: number, max: number): string {
   if (findings === 0 || max === 0) return 'bg-surface';
   const ratio = findings / max;
-  if (ratio > 0.66) return 'bg-primary/20 border-primary/50';
-  if (ratio > 0.33) return 'bg-primary/12 border-primary/40';
-  return 'bg-primary/6 border-primary/30';
+  if (ratio > 0.66) return 'bg-foreground/16 border-foreground/40';
+  if (ratio > 0.33) return 'bg-foreground/10 border-foreground/30';
+  return 'bg-foreground/5 border-foreground/20';
 }
 
 /** As 14 táticas do MITRE ATT&CK na ordem da cadeia de ataque, com achados, incidentes e a técnica mais vista. */

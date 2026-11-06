@@ -1,0 +1,38 @@
+# Só para o `plan` de aceite num projeto de teste (GUIA.md, "O nó de cada cliente"): em produção, quem aplica este
+# ambiente é o executor Terraform do plano de controle, com as variáveis de cada cliente. Copie para `terraform.tfvars`
+# (que o git ignora). Todos os valores abaixo são fictícios.
+
+# Fixas do executor (o projeto dos nós, a região e a zona).
+project_id              = "projeto-dos-nos-123"
+# region                = "southamerica-east1"
+# zone                  = "southamerica-east1-b"
+
+# De cada cliente.
+slug                    = "demo-a"
+plan                    = "profissional"
+node_version            = "node-v1.0.0"
+node_package_sha256     = "0000000000000000000000000000000000000000000000000000000000000000"
+web_origin              = "https://demo-a.control.example.com"
+api_origin              = "https://api-demo-a.example.com"
+mail_from               = "nao-responda@example.com"
+subnet_cidr             = "10.1.0.0/24"
+bootstrap_admin_email   = "admin@cliente-demo-a.example.com"
+bootstrap_tenant_name   = "Cliente Demo A"
+bootstrap_support_email = "suporte@example.com"
+control_plane_sa        = "cp-worker@projeto-do-plano-de-controle-123.iam.gserviceaccount.com"
+# O registro das imagens: o padrão é o GHCR público (ghcr.io/williandotdev/verax-control). Para o Artifact Registry do
+# projeto da Verax:
+# images_repository     = "us-east1-docker.pkg.dev/projeto-do-no-verax-123/verax-control"
+
+# O plano configurável manda enterprise com os quatro limites.
+# plan                    = "enterprise"
+# plan_max_cloud_accounts = "15"
+# plan_max_users          = "15"
+# plan_monthly_gib        = "60"
+# plan_history_days       = "365"
+
+# O e-mail do nó (as três juntas; vazias, o nó sem e-mail). A senha não vai aqui: o cp-worker a grava no cofre
+# vx-<slug>-smtp-password.
+# smtp_host = "smtp.exemplo.com"
+# smtp_port = "465"
+# smtp_user = "avisos@exemplo.com"

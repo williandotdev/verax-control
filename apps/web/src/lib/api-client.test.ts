@@ -71,6 +71,35 @@ describe('ApiClient', () => {
     expect((call(0).init.headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
   });
 
+  it('as rotas públicas (os links do contato de escalonamento) também não pedem token CSRF nem levam ao login', async () => {
+    const onUnauthorized = vi.fn();
+    const { client, call, fetchMock } = setup(
+      [json(400, { code: 'ESCALATION_LINK_INVALID', message: 'x' })],
+      {
+        onUnauthorized,
+      },
+    );
+    await expect(client.post('/v1/public/escalation-contact/confirm', { token: 't' })).rejects.toMatchObject({
+      status: 400,
+      code: 'ESCALATION_LINK_INVALID',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((call(0).init.headers as Record<string, string>)['X-CSRF-Token']).toBeUndefined();
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('headers a mais da chamada vão junto (o token do Turnstile no login), sem tirar os de sempre', async () => {
+    const { client, call } = setup([json(200, {})]);
+    await client.post('/v1/auth/sign-in/email', { email: 'a@b.example' }, undefined, {
+      headers: { 'X-Turnstile-Token': 'token-do-widget' },
+    });
+    expect(call(0).init.headers).toEqual({
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      'X-Turnstile-Token': 'token-do-widget',
+    });
+  });
+
   it('401 chama o login', async () => {
     const onUnauthorized = vi.fn();
     const { client } = setup([json(401, { message: 'Não autenticado' })], { onUnauthorized });
@@ -130,5 +159,13 @@ describe('ApiClient', () => {
   it('204 resolve sem corpo', async () => {
     const { client } = setup([json(200, { token: 't' }), new Response(null, { status: 204 })]);
     await expect(client.delete('/v1/x/1')).resolves.toBeUndefined();
+  });
+
+  it('sem API resolvida (build único fora do endereço de um cliente), nenhuma chamada sai', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const client = new ApiClient('', {}, fetchMock);
+    await expect(client.get('/v1/me')).rejects.toBeInstanceOf(ApiRequestError);
+    await expect(client.post('/v1/x', { a: 1 })).rejects.toBeInstanceOf(ApiRequestError);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

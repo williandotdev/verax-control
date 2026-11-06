@@ -1,9 +1,11 @@
 import { ROLE_LABELS } from '@verax/shared';
-import { LogOut, Menu, X } from 'lucide-react';
+import { LogOut, Menu, UserRound, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { BrandLockup } from '@/components/brand/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
 import { useMe, useSignOut } from '@/features/session/session';
 import { cn } from '@/lib/cn';
 import { visibleNavigation } from './navigation';
@@ -54,12 +56,13 @@ export function AppLayout() {
         id="menu-principal"
         data-open={menuOpen}
         className={cn(
-          'flex-col border-r bg-surface md:static md:flex',
+          // No navy da marca nos dois temas, como o cabeçalho do site (tokens do modo escuro, no index.css).
+          'brand-surface flex-col border-r md:static md:flex',
           menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-64 shadow-lg' : 'hidden',
         )}
       >
-        <div className="flex items-center justify-between px-5 py-4">
-          <span className="text-base font-semibold">Verax Control</span>
+        <div className="flex items-center justify-between gap-2 px-5 py-5">
+          <BrandLockup />
           <Button
             variant="ghost"
             size="icon"
@@ -99,6 +102,10 @@ export function AppLayout() {
       </aside>
 
       <div className="flex min-w-0 flex-col">
+        {/* No celular o menu lateral, que leva a marca, fica fechado: ela vai numa faixa no topo, como no site. */}
+        <div className="brand-surface px-4 py-3 md:hidden">
+          <BrandLockup />
+        </div>
         <header className="flex flex-wrap items-end justify-between gap-3 border-b bg-surface px-4 py-3 md:px-6">
           <div className="flex items-end gap-2">
             <Button
@@ -119,6 +126,11 @@ export function AppLayout() {
               <p className="text-sm font-medium">{me.email}</p>
               <p className="text-xs text-muted-foreground">{ROLE_LABELS[me.role]}</p>
             </div>
+            {/* A própria conta e a preferência de aviso por e-mail (fase 2, PR-17'). */}
+            <Link to="/minha-conta" className={buttonVariants({ variant: 'ghost', size: 'sm' })}>
+              <UserRound aria-hidden />
+              <span className="sr-only sm:not-sr-only">Minha conta</span>
+            </Link>
             <ThemeToggle />
             <Button
               variant="ghost"

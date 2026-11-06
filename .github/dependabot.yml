@@ -64,7 +64,11 @@ updates:
       - /infra/terraform/bootstrap
       - /infra/terraform/envs/staging
       - /infra/terraform/envs/production
-      - /infra/gcp
+      - /infra/gcp/envs/verax
+      - /infra/gcp/envs/homolog-sp
+      - /infra/gcp/envs/control-plane
+      - /infra/gcp/envs/nodes-platform
+      - /infra/gcp/envs/tenant
     schedule:
       interval: weekly
       day: monday
@@ -94,10 +98,12 @@ updates:
     commit-message:
       prefix: deps
 
-  # Imagens base fixadas por digest: API (apps/api/Dockerfile) e Prowler agendado (infra/prowler/Dockerfile).
+  # Imagens base fixadas por digest: API (apps/api/Dockerfile), plano de controle (apps/control-plane/Dockerfile) e
+  # Prowler agendado (infra/prowler/Dockerfile).
   - package-ecosystem: docker
     directories:
       - /apps/api
+      - /apps/control-plane
       - /infra/prowler
     schedule:
       interval: weekly

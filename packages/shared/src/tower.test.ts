@@ -11,6 +11,7 @@ const summary: TowerSummary = {
   posture: { score: 74, scannedAt: '2026-11-02T06:00:00.000Z', warningBelow: 70 },
   coverage: {
     connectedAccounts: 2,
+    lastCollectedAt: '2026-11-02T12:59:00.000Z',
     lastEventAt: '2026-11-02T12:58:00.000Z',
     silentAccounts: [],
     silentAfterHours: 24,
@@ -24,7 +25,145 @@ describe('resumo da Torre', () => {
     expect(towerSummarySchema.parse(summary)).toEqual(summary);
   });
 
-  it('aceita a conta nova, sem varredura nem evento', () => {
+  it('a saúde da ingestão da AWS (PR-V6): opcional (um nó de antes não manda), com a data da parada ou null', () => {
+    const stalled = {
+      ...summary,
+      coverage: {
+        ...summary.coverage,
+        awsLogsStalledSince: '2026-11-02T09:00:00.000Z',
+        awsStalledAfterHours: 2,
+        awsMeterBlocked: true,
+      },
+    };
+    expect(towerSummarySchema.parse(stalled)).toEqual(stalled);
+    const quiet = {
+      ...summary,
+      coverage: { ...summary.coverage, awsLogsStalledSince: null, awsStalledAfterHours: 2 },
+    };
+    expect(towerSummarySchema.parse(quiet)).toEqual(quiet);
+    expect(() =>
+      towerSummarySchema.parse({
+        ...summary,
+        coverage: { ...summary.coverage, awsLogsStalledSince: 'ontem' },
+      }),
+    ).toThrow();
+    expect(() =>
+      towerSummarySchema.parse({ ...summary, coverage: { ...summary.coverage, awsStalledAfterHours: 0 } }),
+    ).toThrow();
+  });
+
+  describe('saúde da coleta e pulso da operação (OP-01 e OP-02)', () => {
+    const sources = [
+      {
+        source: 'aws',
+        state: 'collecting',
+        lastDataAt: '2026-11-02T12:57:00.000Z',
+        lastEventAt: '2026-10-30T08:00:00.000Z',
+        delayedAfterMinutes: 30,
+        stalledAfterMinutes: 120,
+      },
+      {
+        source: 'gcp',
+        state: 'stalled',
+        lastDataAt: '2026-11-02T09:00:00.000Z',
+        lastEventAt: '2026-10-29T09:00:00.000Z',
+        delayedAfterMinutes: 15,
+        stalledAfterMinutes: 60,
+      },
+      {
+        source: 'cloudflare',
+        state: 'not_configured',
+        lastDataAt: null,
+        delayedAfterMinutes: 30,
+        stalledAfterMinutes: 120,
+      },
+      {
+        source: 'agents',
+        state: 'waiting',
+        lastDataAt: null,
+        delayedAfterMinutes: 15,
+        stalledAfterMinutes: 60,
+      },
+      {
+        source: 'posture',
+        state: 'delayed',
+        lastDataAt: '2026-11-01T06:00:00.000Z',
+        delayedAfterMinutes: 1560,
+        stalledAfterMinutes: 3000,
+      },
+    ] as const;
+    const pulse = {
+      since: '2026-11-01T14:00:00.000Z',
+      findings: { total: 3, expected: 1, hourly: [...Array<number>(21).fill(0), 1, 0, 2] },
+      timeToDetectSeconds: 240,
+      agents: { online: 3, total: 5 },
+      monthEvents: {
+        month: '2026-11',
+        sources: [
+          { source: 'aws', events: 1_204_331 },
+          { source: 'gcp', events: 80_120 },
+        ],
+      },
+    } as const;
+    const full = {
+      ...summary,
+      light: 'yellow',
+      reasons: ['high_incident', 'collection_stalled'],
+      coverage: { ...summary.coverage, lastDataAt: '2026-11-02T12:57:00.000Z', sources },
+      pulse,
+    };
+
+    it('aceita as fontes, o último dado e o pulso, todos opcionais (um nó de antes não manda)', () => {
+      expect(towerSummarySchema.parse(full)).toEqual(full);
+      // Sem os campos novos, o resumo de antes continua válido: o painel novo lê um nó antigo.
+      expect(towerSummarySchema.parse(summary)).toEqual(summary);
+      // Agentes ausentes e um mês sem volume.
+      const quiet = {
+        ...full,
+        coverage: { ...full.coverage, lastDataAt: null },
+        pulse: {
+          ...pulse,
+          timeToDetectSeconds: null,
+          agents: null,
+          monthEvents: { month: '2026-11', sources: [] },
+        },
+      };
+      expect(towerSummarySchema.safeParse(quiet).success).toBe(true);
+    });
+
+    it.each([
+      [
+        'fonte desconhecida',
+        { coverage: { ...full.coverage, sources: [{ ...sources[0], source: 'azure' }] } },
+      ],
+      ['estado desconhecido', { coverage: { ...full.coverage, sources: [{ ...sources[0], state: 'ok' }] } }],
+      ['fonte repetida', { coverage: { ...full.coverage, sources: [sources[0], sources[0]] } }],
+      [
+        'prazo de atraso depois do de parada',
+        { coverage: { ...full.coverage, sources: [{ ...sources[0], delayedAfterMinutes: 200 }] } },
+      ],
+      ['último dado fora do formato', { coverage: { ...full.coverage, lastDataAt: 'agora' } }],
+      ['hora a menos no pulso', { pulse: { ...pulse, findings: { ...pulse.findings, hourly: [0] } } }],
+      ['mais esperados que achados', { pulse: { ...pulse, findings: { ...pulse.findings, expected: 4 } } }],
+      ['mais agentes online que registrados', { pulse: { ...pulse, agents: { online: 6, total: 5 } } }],
+      ['nenhum agente registrado como objeto', { pulse: { ...pulse, agents: { online: 0, total: 0 } } }],
+      [
+        'eventos do Cloudflare (não são eventos de log)',
+        {
+          pulse: {
+            ...pulse,
+            monthEvents: { month: '2026-11', sources: [{ source: 'cloudflare', events: 1 }] },
+          },
+        },
+      ],
+      ['tempo até detectar negativo', { pulse: { ...pulse, timeToDetectSeconds: -1 } }],
+      ['campo a mais no pulso', { pulse: { ...pulse, extra: true } }],
+    ])('recusa %s', (_name, change) => {
+      expect(towerSummarySchema.safeParse({ ...full, ...change }).success).toBe(false);
+    });
+  });
+
+  it('aceita a conta nova, sem varredura, coleta nem evento', () => {
     const fresh = {
       ...summary,
       light: 'green',
@@ -33,7 +172,8 @@ describe('resumo da Torre', () => {
       openIncidents: { critical: 0, high: 0, medium: 0, low: 0 },
       posture: { score: null, scannedAt: null, warningBelow: 70 },
       coverage: {
-        connectedAccounts: 1,
+        connectedAccounts: 0,
+        lastCollectedAt: null,
         lastEventAt: null,
         silentAccounts: ['111122223333'],
         silentAfterHours: 24,

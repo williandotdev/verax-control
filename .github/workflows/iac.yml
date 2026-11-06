@@ -25,6 +25,8 @@ env:
   TFLINT_VERSION: 0.65.0
   TFLINT_SHA256: d4c545ed2e29d6338604b586f34f544f380f70f243aa72f7b484713835eaec61
   CHECKOV_IMAGE: bridgecrew/checkov:3.4.0@sha256:ece5efac4443084ca273072909985dce988a81e8cc94faa305aeda0df27c68f9
+  CFN_GUARD_VERSION: 3.2.1
+  CFN_GUARD_SHA256: 09c2b8cfd81d513374a8da89d4805dc55006a3da52bbf598e272022d4d198e94
   TF_IN_AUTOMATION: '1'
   TF_INPUT: '0'
 
@@ -55,12 +57,55 @@ jobs:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
-          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production infra/gcp; do
+          for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane infra/gcp/envs/release \
+            infra/gcp/envs/nodes-platform infra/gcp/envs/tenant; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
             echo "::endgroup::"
           done
+      - name: Testes do módulo do nó (provider simulado, sem credenciais)
+        # Os dois perfis; no nó da Verax, os nomes e os valores que recriariam algo no ar se mudassem (rede, NAT,
+        # firewall, conta de serviço, VM, disco, snapshot, cofres, tópicos, sinks e bucket), o script de boot byte a byte
+        # e a VM depois da manutenção do swap; e os acessos dos operadores quando a VM é recriada. O nó de cliente como o
+        # envs/tenant o chama: só nomes vx-<slug>, o cofre da conta de suporte só com a gravação da VM, os atributos de
+        # convidado e as chaves verax-* dos metadados; desligados (o padrão), os nós que já existem não mudam. A
+        # instalação sem operador (PR-N7): desligada, o script de boot é o de antes, byte a byte; ligada, o script leva o
+        # de sempre, o instalador, o verificador e as chaves de release de infra/node, e nada mais muda nos metadados. Não
+        # substitui o `plan` contra o estado real (GUIA.md), que confere tudo. O provider simulado não fala com a GCP.
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: |
+          terraform -chdir=infra/gcp/modules/node init -backend=false -lockfile=readonly
+          terraform -chdir=infra/gcp/modules/node test
+      - name: Testes dos ambientes (provider simulado, sem credenciais)
+        # Homologação: a primeira subida num projeto novo (o `plan` não lê o projeto antes de o `apply` ligar as APIs).
+        # Nó da Verax: o `terraform.tfvars` precisa de todas as variáveis da primeira subida (sem a conta de
+        # faturamento, o `plan` apaga o orçamento). Plano de controle: os papéis de cada conta um a um, nada anônimo
+        # no cp-worker nem no Job, zero instâncias mínimas, a imagem que o workflow troca sem o Terraform desfazer, a
+        # primeira subida sem os serviços, o Firestore e os alertas. Chave de release: ECDSA P-256 em software, protegida
+        # contra exclusão, só `cloudkms.signer` para a conta do workflow e o token aceito só do workflow Versão do nó.
+        # Projeto dos nós: o bucket do estado adotado, com o acesso uniforme, e os papéis do cp-terraform e do cp-worker
+        # um a um. Nó de cliente: as permissões do cp-worker exatamente nos cofres do plano (nada no support-bootstrap,
+        # nenhuma leitura da chave do cofre), as saídas sem dado pessoal, a conta de serviço que não é recriada e o que
+        # as variáveis recusam. O `init` sem backend é o da validação, acima.
+        run: |
+          terraform -chdir=infra/gcp/envs/homolog-sp test
+          terraform -chdir=infra/gcp/envs/verax test
+          terraform -chdir=infra/gcp/envs/control-plane test
+          terraform -chdir=infra/gcp/envs/release test
+          terraform -chdir=infra/gcp/envs/nodes-platform test
+          terraform -chdir=infra/gcp/envs/tenant test
+          # Os segredos do plano de controle e os dos nós nascem vazios: nenhuma versão de segredo (regional ou não) passa
+          # pelo Terraform, nem pelo estado de um tenant. Só a declaração do recurso conta; um comentário que cite o nome
+          # não dispara.
+          if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' \
+            infra/gcp/envs/control-plane/*.tf infra/gcp/envs/tenant/*.tf infra/gcp/envs/nodes-platform/*.tf \
+            infra/gcp/modules/node/*.tf; then
+            echo "Nem o plano de controle nem os nós gravam versão de segredo pelo Terraform." >&2
+            exit 1
+          fi
       - name: tflint
         # O token só evita o limite de requisições anônimas ao baixar o plugin da AWS, cuja assinatura o tflint confere.
         env:
@@ -70,10 +115,11 @@ jobs:
           tflint --init --config "$PWD/.tflint.hcl"
           tflint --recursive --config "$PWD/.tflint.hcl" --format compact
       - name: tflint (GCP)
+        # Um ambiente por pasta (envs/*) e o módulo do nó (modules/node).
         working-directory: infra/gcp
         run: |
           tflint --init --config "$PWD/.tflint.hcl"
-          tflint --config "$PWD/.tflint.hcl" --format compact
+          tflint --recursive --config "$PWD/.tflint.hcl" --format compact
 
   node:
     name: Pacote do nó (scripts e compose)
@@ -84,39 +130,383 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -x -S style infra/node/bin/*.sh
-      - name: Compose válida (arquivos de ambiente fictícios, como o start.sh monta na VM)
+        run: shellcheck -x -S style infra/node/bin/*.sh infra/node/tests/*.sh scripts/node-release.sh scripts/test-node-release.sh
+      - name: Versão do nó (verificador do host, pacote, manifesto e assinatura com o KMS simulado)
+        # Chaves descartáveis geradas no teste (nenhuma privada no repositório). O verificador recusa manifesto
+        # adulterado ou cortado, chave errada e assinatura cortada, sem gh e sem rede; o pacote sai igual byte a byte do
+        # mesmo commit; o manifesto só aceita imagem de terceiro fixada pelo digest; a assinatura só é gravada quando o
+        # KMS responde com a versão pedida da chave e ela fecha com as chaves do pacote.
+        run: |
+          bash infra/node/tests/verify-release-test.sh
+          bash scripts/test-node-release.sh
+      - name: Guarda do servidor de metadados (num espaço de nomes de rede próprio, sem tocar nas regras do runner)
+        # Antes do Docker (sem DOCKER-USER), reaplicada com tudo no lugar, regra antiga removida e a troca do conteúdo
+        # da cadeia numa transação só (sem -F/-A soltos): não há instante sem guarda com contêineres no ar.
+        run: sudo unshare -n bash infra/node/tests/metadata-guard-test.sh
+      - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
+        # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
+        # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e
+        # VM reiniciada no meio da limpeza. Roda sem root e sem tocar na máquina.
+        run: |
+          test=infra/gcp/modules/node/tests/startup-test.sh
+          shellcheck -x -S style infra/gcp/modules/node/startup.sh.tftpl "$test"
+          for profile in lean standard; do
+            bash "$test" render "$profile" >"$RUNNER_TEMP/startup-$profile.sh"
+          done
+          shellcheck -S style "$RUNNER_TEMP/startup-lean.sh" "$RUNNER_TEMP/startup-standard.sh"
+          bash "$test"
+      - name: Instalação sem operador (boot-install.sh e o script de boot do módulo, com o metadata e o release falsos)
+        # Os cenários de tests/boot-install-test.sh, sem root e sem nuvem: o release montado no teste (o manifesto pelo
+        # node-release.sh, assinado com uma chave gerada ali) e conferido pelo verify-release.sh de verdade; o install.sh
+        # com os digests do manifesto e o node.conf byte a byte; verax/ready e verax/error; o boot seguinte sem baixar
+        # nada e sem aplicar uma versão nova; metadados hostis (comando, aspas, quebra de linha, fora do formato) e
+        # ausentes recusados antes de qualquer download; SHA-256 errado, pacote trocado, assinatura de outra chave,
+        # manifesto adulterado ou de outra versão; o túnel que chega depois; o modelo do Terraform de ponta a ponta. O
+        # modelo também passa no shellcheck como está (as interpolações ficam entre aspas simples ou em heredoc).
+        run: |
+          shellcheck -x -S style infra/gcp/modules/node/unattended.sh.tftpl
+          bash infra/node/tests/boot-install-test.sh
+      - name: start.sh (arquivos de ambiente, bootstrap e pull das imagens, com o Compose, o Docker e o gcloud simulados)
+        # Os cenários de tests/start-test.sh, sem root e sem Docker: os arquivos que o `render` escreve nos dois perfis
+        # (bootstrap.env vazio; as variáveis do indexer só no standard), o `bootstrap`, o `pull_images` e o tópico do
+        # sink de projeto de cliente, que só vai para a API com o projeto e o prefixo do node.conf no formato do módulo
+        # (fora dele, a API sobe sem o tópico). E o Turnstile, com o api.env conferido byte a byte: sem
+        # TURNSTILE_SITE_KEY no node.conf, o nó da Verax sai como antes (e o cofre do Turnstile nem é lido); com a chave
+        # do site, a secreta vem do cofre (vazio: sobe sem o desafio e avisa; sem permissão ou com quebra de linha: a
+        # partida para). E os agentes do Wazuh: WAZUH_AGENTS=false dá o standard byte a byte; ligado, as variáveis da API
+        # (a senha de registro só nela) e do worker; no lean ou com algo faltando, a partida para sem escrever nada; o
+        # compose.wazuh-agents.yaml só entra no standard com o interruptor.
+        run: bash infra/node/tests/start-test.sh
+      - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
+        # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
+        # sem o arquivo das chaves nem o compose.vault.yaml), a primeira instalação de um nó de cliente (a chave nasce
+        # e vai direto para o Secret Manager; as privadas chegam ao worker só pelo arquivo do tmpfs, nunca pelo
+        # worker.env), a rotação com versões desativadas e destruídas, 101 versões, o cofre sem versão ativa e sem
+        # versão nenhuma (cada aviso com a saída certa), o segredo inexistente, a rede fora do ar e um conteúdo que não
+        # é chave, na versão corrente e numa antiga. Roda sem root e sem tocar na máquina.
+        run: bash infra/node/tests/vault-test.sh
+      - name: AWS sem chave no Wazuh (aws-token.sh e wazuh-apply.sh com o metadata, o Compose e o Docker simulados)
+        # Cenários de tests/wazuh-apply-test.sh: o token do Google vai para a pasta do manager por troca atômica (0600,
+        # nunca na saída), com o audience do node.conf ou o padrão da pilha, e um metadata fora do ar ou um token fora do
+        # formato não estragam o anterior; a lista do CLI vai inteira para o gerador, com o IP de saída; o manager só
+        # reinicia quando o hash muda e está no ar; sem o healthcheck, a configuração anterior volta (com o gerador de
+        # verdade, junto com os profiles da AWS dela, sem tocar no token), e a que falhou não é tentada de novo; um erro
+        # do CLI nunca vira "nenhuma conta"; o sinal `applied` diz ok ou error com a geração. Roda sem root e sem tocar
+        # na máquina.
+        run: bash infra/node/tests/wazuh-apply-test.sh
+      - name: Compose válida nos dois perfis (os arquivos de ambiente que o start.sh monta na VM, nem mais nem menos)
+        # lean: só o compose.yaml (o nó da Verax). standard: mais o compose.wazuh.yaml. Com o cofre de credenciais,
+        # nos dois, mais o compose.vault.yaml (o start.sh o soma em toda chamada). Os arquivos de /run/verax são os
+        # que o `render` do start.sh escreve (a lista vem do próprio script): um env_file do Compose sem o write_env
+        # correspondente falha aqui, e não só na VM (foi o caso do bootstrap.env, que o `config --images` do
+        # pull_images exigia e o render não escrevia). As duas últimas linhas são esse `config --images`, por perfil
+        # (só o nome do repositório; os digests mudam com o Dependabot).
         run: |
           sudo install -d -m 0755 /run/verax
-          for file in postgres db-bootstrap migrate api worker cloudflared bootstrap; do
-            echo "EXEMPLO=1" | sudo tee "/run/verax/$file.env" >/dev/null
-          done
+          awk '/^render\(\) \{/,/^\}/' infra/node/bin/start.sh | grep -oE 'write_env [a-z-]+\.env' | awk '{ print $2 }' | sort -u |
+            while read -r file; do echo "EXEMPLO=1" | sudo tee "/run/verax/$file" >/dev/null; done
           {
             echo "API_IMAGE=exemplo/api@sha256:$(printf '0%.0s' {1..64})"
             echo "MIGRATE_IMAGE=exemplo/migrate@sha256:$(printf '0%.0s' {1..64})"
           } >images.env
           docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --quiet
-      - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e no start.sh)
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml --env-file images.env \
+            --profile setup config --quiet
+          # Com o cofre de credenciais (CREDENTIALS_VAULT=true), o start.sh soma o compose.vault.yaml, nos dois perfis.
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml \
+            --env-file images.env --profile setup config --quiet
+          # Com os agentes do Wazuh (WAZUH_AGENTS=true, só no standard), o start.sh soma o compose.wazuh-agents.yaml, com
+          # e sem o cofre. As imagens são as mesmas.
+          agents=(-f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml)
+          docker compose "${agents[@]}" --env-file images.env --profile setup config --quiet
+          docker compose "${agents[@]}" -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
+          images() { docker compose "$@" --env-file images.env --profile setup config --images | sed 's/[@:].*//' | sort -u | tr '\n' ' '; }
+          test "$(images -f infra/node/compose.yaml)" = 'cloudflare/cloudflared exemplo/api exemplo/migrate postgres '
+          test "$(images -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)" = \
+            'cloudflare/cloudflared exemplo/api exemplo/migrate postgres wazuh/wazuh-indexer wazuh/wazuh-manager '
+          test "$(images "${agents[@]}")" = \
+            'cloudflare/cloudflared exemplo/api exemplo/migrate postgres wazuh/wazuh-indexer wazuh/wazuh-manager '
+      - name: Memória por perfil (sem as variáveis, o compose dá o lean do start.sh; o standard chega aos contêineres)
+        run: |
+          # As listas do start.sh viram os arquivos que ele escreve em /run/verax/memory.env.
+          # shellcheck source=/dev/null # só as duas linhas MEMORY_* do start.sh, filtradas pelo grep
+          source <(grep -E '^MEMORY_(LEAN|STANDARD)=\(' infra/node/bin/start.sh)
+          printf '%s\n' "${MEMORY_LEAN[@]}" >lean.env
+          printf '%s\n' "${MEMORY_STANDARD[@]}" >standard.env
+          render() { docker compose -f infra/node/compose.yaml --env-file images.env "$@" --profile setup config --format json; }
+          # O nó da Verax sem o arquivo (antes do perfil, ou antes do render) sobe com a mesma memória do lean.
+          diff <(render) <(render --env-file lean.env)
+          render --env-file standard.env | jq -e '.services
+            | .postgres.mem_limit == "536870912" and any(.postgres.command[]; . == "shared_buffers=128MB")
+              and .api.mem_limit == "402653184" and .api.environment.NODE_OPTIONS == "--max-old-space-size=256"
+              and .worker.mem_limit == "536870912" and .worker.environment.NODE_OPTIONS == "--max-old-space-size=384"'
+          # Standard com o Wazuh: indexer com 3 GiB e 1,5 CPU, manager com 1,5 GiB e 1 CPU, e a soma dos limites dos
+          # contêineres que ficam no ar cabe em 6 GiB (a VM tem 8 GB; o resto é do sistema e do cache de páginas). Os
+          # jobs de inicialização rodam um por vez (sequência do start.sh), e o maior deles (security-init, 512 MiB)
+          # pode coincidir com a pilha inteira no ar (reinício do verax-wazuh, ou um reboot abrupto em que o Docker
+          # restaurou o Wazuh antes do serviço): essa soma cabe em 6,5 GiB, abaixo dos 7,76 GiB da VM.
+          render -f infra/node/compose.wazuh.yaml --env-file standard.env | jq -e '.services
+            | ([.[] | select(.restart == "unless-stopped") | .mem_limit | tonumber] | add) as $up
+            | ([.[] | select(.restart == "no") | .mem_limit | tonumber] | max) as $job
+            | ."wazuh.indexer".mem_limit == "3221225472" and (."wazuh.indexer".cpus | tonumber) == 1.5
+              and ."wazuh.manager".mem_limit == "1610612736" and (."wazuh.manager".cpus | tonumber) == 1
+              and $up <= 6 * 1073741824 and ($up + $job) <= 6.5 * 1073741824'
+      - name: Só o worker alcança o servidor de metadados (IP e rede iguais no compose e na guarda)
         run: |
           grep -q 'subnet: 172.30.53.0/24' infra/node/compose.yaml
           grep -q 'ipv4_address: 172.30.53.10' infra/node/compose.yaml
-          grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/start.sh
-          grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/start.sh
-      - name: Nenhuma porta publicada e todo contêiner da aplicação endurecido
-        run: |
-          config=$(docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --format json)
-          if jq -e '[.services[] | select(.ports != null and (.ports | length) > 0)] | length > 0' <<<"$config" >/dev/null; then
-            echo "O nó não publica porta: o acesso é pelo túnel." >&2
+          grep -q '^NODE_SUBNET=172.30.53.0/24$' infra/node/bin/metadata-guard.sh
+          grep -q '^WORKER_IP=172.30.53.10$' infra/node/bin/metadata-guard.sh
+          # A guarda vale para o tráfego de qualquer rede de contêiner (as do Wazuh ficam fora de NODE_SUBNET): o salto
+          # para a cadeia não filtra a origem.
+          # shellcheck disable=SC2016 # o `$chain` é texto do script, não variável daqui
+          grep -qxF '  iptables -I DOCKER-USER 1 -d 169.254.169.254 -j "$chain"' infra/node/bin/metadata-guard.sh
+          if grep -qE 'iptables -[IA] DOCKER-USER -s' infra/node/bin/metadata-guard.sh; then
+            echo "A guarda do metadata não pode depender da rede de origem." >&2
             exit 1
           fi
-          jq -e '[.services | to_entries[] | select(.key != "postgres") | .value
-            | select(.read_only != true or (.cap_drop | index("ALL")) == null
-              or (.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+          # A guarda vale desde antes do Docker (o Docker a exige) e o verax-node a exige também.
+          grep -q '^RequiredBy=docker.service$' infra/node/systemd/verax-metadata-guard.service
+          grep -q '^Before=docker.service$' infra/node/systemd/verax-metadata-guard.service
+          grep -qE '^Requires=.*verax-metadata-guard.service' infra/node/systemd/verax-node.service
+          # E recusa stop e restart manuais: pelo Requires do Docker, levariam o Docker, o nó e o Wazuh junto.
+          grep -qx 'RefuseManualStop=yes' infra/node/systemd/verax-metadata-guard.service
+          grep -qx 'RefuseManualStart=yes' infra/node/systemd/verax-metadata-guard.service
+      - name: No standard, o restart do verax-node sobe o verax-wazuh de novo (drop-in com Wants); o lean não o conhece
+        run: |
+          dropin=infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf
+          test "$(grep -vE '^(#|$)' "$dropin" | tr '\n' ';')" = '[Unit];Wants=verax-wazuh.service;'
+          grep -qx 'Requires=verax-node.service' infra/node/systemd/wazuh/verax-wazuh.service
+          grep -qx 'After=verax-node.service' infra/node/systemd/wazuh/verax-wazuh.service
+          if grep -v '^#' infra/node/systemd/verax-node.service | grep -q 'verax-wazuh'; then
+            echo "O verax-node.service do lean não pode conhecer o verax-wazuh: o Wants fica no drop-in do standard." >&2
+            exit 1
+          fi
+          # O install.sh o instala no diretório do drop-in, só dentro do bloco do standard.
+          awk '/^if \$standard; then$/ { block = 1 } block { print } block && /^fi$/ { exit }' infra/node/bin/install.sh |
+            grep -q 'verax-node.service.d/wazuh.conf" /etc/systemd/system/verax-node.service.d/wazuh.conf$'
+      - name: Unidades do systemd (sintaxe e dependências, como ficam num nó standard, com o drop-in)
+        # As unidades, os timers e o drop-in do verax-node num diretório só, com os scripts onde o ExecStart os espera
+        # e um docker.service de mentira (o teste não depende do Docker do runner).
+        run: |
+          units=$RUNNER_TEMP/units
+          install -d "$units/verax-node.service.d"
+          install -m 0644 infra/node/systemd/*.service infra/node/systemd/*.timer \
+            infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer infra/node/systemd/wazuh/*.path \
+            infra/node/systemd/wazuh-agents/*.service infra/node/systemd/wazuh-agents/*.timer "$units/"
+          install -m 0644 infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf "$units/verax-node.service.d/"
+          printf '[Unit]\nDescription=Docker (simulado)\n[Service]\nExecStart=/bin/true\n' >"$units/docker.service"
+          sudo install -d /opt/verax/bin
+          sudo install -m 0755 infra/node/bin/*.sh /opt/verax/bin/
+          systemd-analyze verify --man=no "$units"/*.service "$units"/*.timer "$units"/*.path
+          # A configuração do manager (PR-V4'): o .path olha a geração que o worker grava, o limite de partidas fica no
+          # serviço que ele dispara (e o timer o arma de novo), e o token do Google renova a cada 10 min.
+          wazuh=infra/node/systemd/wazuh
+          grep -qx 'PathChanged=/run/verax/wazuh-signal/generation' "$wazuh/verax-wazuh-apply.path"
+          grep -qx 'Unit=verax-wazuh-apply.service' "$wazuh/verax-wazuh-apply.path"
+          grep -qx 'StartLimitIntervalSec=300' "$wazuh/verax-wazuh-apply.service"
+          grep -qx 'StartLimitBurst=5' "$wazuh/verax-wazuh-apply.service"
+          grep -qx 'OnUnitActiveSec=15min' "$wazuh/verax-wazuh-apply.timer"
+          grep -qx 'OnBootSec=30s' "$wazuh/verax-aws-token.timer"
+          grep -qx 'OnUnitActiveSec=10min' "$wazuh/verax-aws-token.timer"
+      - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard, com e sem o cofre; com os agentes, só 1514 e 1515)
+        # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
+        # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
+        # declaradas e sem ganho de privilégio; os jobs de inicialização dele têm a raiz só leitura. A API e o worker,
+        # sem core dump em toda combinação. Porta publicada, só uma exceção: com os agentes do Wazuh nas instâncias do
+        # cliente (WAZUH_AGENTS=true, desligado por padrão; o compose.wazuh-agents.yaml), o manager publica a 1514/tcp e a
+        # 1515/tcp, em todas as interfaces (o firewall da GCP decide quem chega), e nenhum outro contêiner publica nada.
+        run: |
+          check() { # [--agents] <-f arquivos...>
+            local config expected='[]'
+            if [[ $1 == --agents ]]; then
+              shift
+              expected='[["wazuh.manager","1514",1514,"tcp",""],["wazuh.manager","1515",1515,"tcp",""]]'
+            fi
+            config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
+            if ! jq -e --argjson expected "$expected" '[.services | to_entries[] | .key as $service | (.value.ports // [])[]
+              | [$service, .published, .target, .protocol, (.host_ip // "")]] | sort == $expected' <<<"$config" >/dev/null; then
+              echo "O nó não publica porta: o acesso é pelo túnel (com os agentes, só a 1514/tcp e a 1515/tcp do manager)." >&2
+              exit 1
+            fi
+            jq -e '[.services | to_entries[] | select(.key != "postgres")
+              | select((.value.read_only != true and (.key | IN("wazuh.indexer", "wazuh.manager") | not))
+                or (.value.cap_drop | index("ALL")) == null
+                or (.value.security_opt | index("no-new-privileges:true")) == null)] | length == 0' <<<"$config"
+            # Sem core dump na API e no worker (a memória deles tem as chaves do cofre de credenciais). O Compose
+            # escreve o limite 0 como um objeto vazio (soft e hard 0); um valor diferente de 0 apareceria nele.
+            jq -e '.services | .api.ulimits.core == {} and .worker.ulimits.core == {}' <<<"$config"
+          }
+          check -f infra/node/compose.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.vault.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml
+          check --agents -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml
+          check --agents -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml \
+            -f infra/node/compose.vault.yaml
+      - name: Agentes do Wazuh (o compose.wazuh-agents.yaml só soma as portas, o certificado, a senha ao gerador e a lista ao worker)
+        # Fora as duas portas do manager, o certificado do registro, a pasta dos agentes e a senha de registro para o
+        # gerador (manager-config) e a lista dos agentes para o worker, o projeto com os agentes é igual ao de sempre,
+        # com e sem o cofre: as redes, a API, os limites e o endurecimento não mudam. Tudo o que entra é só leitura. E o
+        # start.sh só soma o arquivo no standard, com WAZUH_AGENTS=true (os cenários de tests/start-test.sh).
+        run: |
+          strip='del(.services."wazuh.manager".ports)
+            | .services."wazuh.manager".volumes |= map(select(.target != "/etc/ssl/verax-agents"))
+            | .services."manager-config".volumes |= map(select(.target | IN("/verax/agents", "/verax/agents-enrollment") | not))
+            | .services."manager-config".environment |= ((. // {}) | del(.VERAX_AGENTS_CONFIG, .VERAX_AGENTS_ENROLLMENT))
+            | if .services."manager-config".environment == {} then del(.services."manager-config".environment) else . end
+            | .services.worker.volumes |= map(select(.target != "/run/wazuh-agents"))'
+          render() { docker compose "$@" --env-file images.env --profile setup config --format json; }
+          standard=(-f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)
+          agents=(-f infra/node/compose.wazuh-agents.yaml)
+          vault=(-f infra/node/compose.vault.yaml)
+          diff <(render "${standard[@]}" | jq -S "$strip") <(render "${standard[@]}" "${agents[@]}" | jq -S "$strip")
+          diff <(render "${standard[@]}" "${vault[@]}" | jq -S "$strip") \
+            <(render "${standard[@]}" "${agents[@]}" "${vault[@]}" | jq -S "$strip")
+          render "${standard[@]}" "${agents[@]}" | jq -e '[.services."wazuh.manager".volumes[], .services."manager-config".volumes[],
+            .services.worker.volumes[] | select(.target | IN("/etc/ssl/verax-agents", "/verax/agents", "/verax/agents-enrollment",
+            "/run/wazuh-agents")) | [.target, .read_only, .type]] | sort == [["/etc/ssl/verax-agents", true, "bind"],
+            ["/run/wazuh-agents", true, "bind"], ["/verax/agents", true, "bind"], ["/verax/agents-enrollment", true, "bind"]]'
+          # O start.sh soma o arquivo só dentro do ramo do standard; o wazuh-apply.sh e o wazuh-up também, só com o interruptor.
+          grep -qxF '    if agents; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi' infra/node/bin/start.sh
+          grep -qxF '  if agents; then COMPOSE_FILE+=:/opt/verax/compose.wazuh-agents.yaml; fi' infra/node/bin/start.sh
+          # shellcheck disable=SC2016 # o `${WAZUH_AGENTS...}` é texto do script, não variável daqui
+          grep -qxF 'if [[ ${WAZUH_AGENTS:-false} == true ]]; then files+=(-f /opt/verax/compose.wazuh-agents.yaml); fi' \
+            infra/node/bin/wazuh-apply.sh
+      - name: Redes do Wazuh no standard (indexer só nas internas; manager fora da rede do banco e da rede da API)
+        # Duas redes internas: `wazuh` (indexer, manager e worker) e `wazuh-read` (indexer, API e worker). A API nunca
+        # divide rede com o manager, que processa log de fora como root: numa rede só, ele chegaria à API por dentro,
+        # fora do Cloudflare, e forjaria o X-Forwarded-For em que ela confia (TRUST_PROXY_HOPS=1). O worker, que não abre
+        # porta, entra na `wazuh` só para ler os contadores da API do manager (PR-V6, usuário verax_stats): é a única rede
+        # que ele divide com o manager, e a dos agentes não muda isso (a lista dos agentes vem do host, num arquivo só
+        # leitura). Com os agentes ligados (compose.wazuh-agents.yaml), as mesmas redes.
+        run: |
+          for extra in '' infra/node/compose.wazuh-agents.yaml; do
+            docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
+              --env-file images.env --profile setup config --format json | jq -e '
+                def shared($a; $b): (.services[$a].networks | keys) - ((.services[$a].networks | keys)
+                  - (.services[$b].networks | keys));
+                .networks.wazuh.internal == true and .networks."wazuh-read".internal == true
+                and (.networks."wazuh-egress".internal // false) == false
+                and (.services."wazuh.indexer".networks | keys) == ["wazuh", "wazuh-read"]
+                and (.services."wazuh.manager".networks | keys) == ["wazuh", "wazuh-egress"]
+                and (.services.api.networks | keys) == ["verax", "wazuh-read"]
+                and (.services.worker.networks | keys) == ["verax", "wazuh", "wazuh-read"]
+                and .services.worker.networks.verax.ipv4_address == "172.30.53.10"
+                and (.services.worker.ports // []) == []
+                and shared("api"; "wazuh.manager") == []
+                and shared("worker"; "wazuh.manager") == ["wazuh"]'
+          done
+      - name: API do manager com o certificado da CA do nó (o mesmo script, só leitura, no nó e no EC2)
+        # PR-V6: o init da imagem roda os .sh de /entrypoint-scripts antes dos daemons; o manager-api-tls.sh põe nele o
+        # par do manager (CA própria, nome wazuh.manager), que o worker confere. Só o manager o monta, só leitura.
+        run: |
+          expected='[["wazuh.manager","/entrypoint-scripts/verax-api-tls.sh",true]]'
+          for extra in '' infra/node/compose.wazuh-agents.yaml infra/node/compose.vault.yaml; do
+            docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
+              --env-file images.env --profile setup config --format json | jq -e --argjson expected "$expected" '
+                [.services | to_entries[] | .key as $service | (.value.volumes // [])[]
+                  | select((.source // "") | endswith("/wazuh/scripts/manager-api-tls.sh"))
+                  | [$service, .target, (.read_only // false)]] == $expected'
+          done
+          INDEXER_ADMIN_PASSWORD=ficticia INDEXER_FILEBEAT_PASSWORD=ficticia WAZUH_API_PASSWORD=ficticia \
+            INDEXER_API_READ_PASSWORD=ficticia docker compose -f infra/wazuh/docker-compose.yml config --format json |
+            jq -e --argjson expected "$expected" '[.services | to_entries[] | .key as $service | (.value.volumes // [])[]
+              | select((.source // "") | endswith("/scripts/manager-api-tls.sh"))
+              | [$service, .target, (.read_only // false)]] == $expected'
+      - name: AWS sem chave no Wazuh (a pasta do token só no manager e no gerador; a dos sinais só no worker; a lista pelo banco)
+        # PR-V4': a pasta /run/verax/wazuh-aws (os profiles e o token do Google) é montada só leitura no manager e com
+        # escrita só no gerador; a pasta dos sinais sem segredo, com escrita só no worker, no caminho que o start.sh
+        # põe no worker.env; o job wazuh-sources (o CLI da API que imprime a lista das contas) só na rede do banco, sem
+        # porta, só no perfil setup e com o ambiente do worker. No standard, com e sem os agentes e o cofre; o lean não
+        # monta nenhuma das duas pastas.
+        run: |
+          grep -qxF 'WAZUH_SIGNAL_MOUNT=/run/wazuh-signal' infra/node/bin/start.sh
+          for extra in '' infra/node/compose.wazuh-agents.yaml infra/node/compose.vault.yaml; do
+            docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml ${extra:+-f "$extra"} \
+              --env-file images.env --profile setup config --format json | jq -e '
+                def mounts($source): [.services | to_entries[] | .key as $service | (.value.volumes // [])[]
+                  | select(.source == $source) | [$service, .target, (.read_only // false)]] | sort;
+                mounts("/run/verax/wazuh-aws") == [["manager-config", "/out/aws", false], ["wazuh.manager", "/root/.aws", true]]
+                and mounts("/run/verax/wazuh-signal") == [["worker", "/run/wazuh-signal", false]]
+                and (.services."wazuh-sources" | (.networks | keys) == ["verax"] and .profiles == ["setup"]
+                  and .command == ["node", "dist/cli/wazuh-sources.js"] and (.ports // []) == [])'
+          done
+          # O Compose junta o arquivo de ambiente no `environment` da configuração: o do worker, conferido no arquivo.
+          awk '/^  wazuh-sources:$/,/^$/' infra/node/compose.wazuh.yaml | grep -qx '    env_file: /run/verax/worker.env'
+          docker compose -f infra/node/compose.yaml --env-file images.env --profile setup config --format json | jq -e '
+            [.services[] | (.volumes // [])[] | select(.source | IN("/run/verax/wazuh-aws", "/run/verax/wazuh-signal"))]
+            | length == 0'
+      - name: Cofre de credenciais (as chaves privadas chegam ao worker por arquivo só leitura, e só a ele)
+        # O ambiente de um contêiner fica gravado no disco (configuração do Docker); o conteúdo de um volume montado,
+        # não. O compose.vault.yaml monta só no worker, só leitura, a pasta que o start.sh escreve em /run/verax/vault
+        # (a pasta, e não o arquivo: a origem de um bind mount que falta vira uma pasta criada pelo Docker, e um arquivo
+        # dentro de uma pasta montada pode ser trocado de uma vez), no caminho WORKER_VAULT_MOUNT; o arquivo das chaves
+        # fica dentro dela, em WORKER_KEYS_MOUNT, que o start.sh põe em CREDENTIALS_PRIVATE_KEYS_FILE. O worker continua
+        # endurecido. Nos dois perfis.
+        run: |
+          # Linha inteira e texto literal (-xF): o `$` é o do shell do start.sh (escapado em aspas duplas), não uma
+          # expansão daqui nem uma âncora.
+          grep -qxF 'run=/run/verax' infra/node/bin/start.sh
+          grep -qxF "WORKER_VAULT=\$run/vault" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS=\$WORKER_VAULT/worker-keys" infra/node/bin/start.sh
+          grep -qxF "WORKER_KEYS_MOUNT=\$WORKER_VAULT_MOUNT/worker-keys" infra/node/bin/start.sh
+          mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
+          [[ $mount == /* ]]
+          vault() {
+            local config
+            config=$(docker compose "$@" --env-file images.env --profile setup config --format json)
+            jq -e --arg mount "$mount" '.services.worker.volumes
+              | any(.type == "bind" and .source == "/run/verax/vault" and .target == $mount and .read_only == true)' <<<"$config"
+            jq -e --arg mount "$mount" '[.services[] | (.volumes // [])[]
+              | select(.target == $mount or (.target | startswith($mount + "/")))] | length == 1' <<<"$config"
+            jq -e '.services.worker | .read_only == true and (.cap_drop | index("ALL")) != null' <<<"$config"
+          }
+          # Nos dois perfis: no standard, o compose.wazuh.yaml também soma um volume ao worker (a CA do indexer).
+          vault -f infra/node/compose.yaml -f infra/node/compose.vault.yaml
+          vault -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml
+          # Nada do cofre entra pelo ambiente do worker: só o caminho do arquivo e a versão corrente. A única variável
+          # com PRIVATE_KEY no nome que o start.sh escreve é a do caminho (o worker recusa qualquer outra).
+          if grep -Eio '[A-Z0-9_]*PRIVATE_?KEY[A-Z0-9_]*=' infra/node/bin/start.sh | grep -v '^CREDENTIALS_PRIVATE_KEYS_FILE=$'; then
+            echo 'O start.sh escreve uma variável com chave privada: só CREDENTIALS_PRIVATE_KEYS_FILE pode ter PRIVATE_KEY no nome.' >&2
+            exit 1
+          fi
+      - name: O worker sobe com a pasta do cofre ausente (o Docker a cria) e lê o que o start.sh escreve nela depois
+        # A origem do bind mount do compose.vault.yaml é uma pasta. Ausente (a VM reiniciou sem a parada, e o Docker
+        # reiniciou o worker antes do verax-node.service), o Docker a cria vazia e o contêiner sobe; o arquivo que o
+        # start.sh escreve nela em seguida (write_worker_keys, repetido aqui passo a passo) aparece dentro do contêiner,
+        # só leitura, legível pelo usuário do worker e por mais ninguém. Roda o serviço de verdade, com os dois arquivos
+        # do Compose, trocando a imagem da API pela base dela (a mesma de scripts/test-api-image.sh) e o comando por
+        # um `sh`.
+        env:
+          BASE_IMAGE: node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
+        run: |
+          mount=$(sed -n 's/^WORKER_VAULT_MOUNT=//p' infra/node/bin/start.sh)
+          uid=$(sed -n 's/^WORKER_UID=//p' infra/node/bin/start.sh)
+          [[ $mount == /* && $uid =~ ^[0-9]+$ ]]
+          { echo "API_IMAGE=$BASE_IMAGE"; echo "MIGRATE_IMAGE=$BASE_IMAGE"; } >base.env
+          compose() { docker compose -f infra/node/compose.yaml -f infra/node/compose.vault.yaml --env-file base.env "$@"; }
+          sudo rm -rf /run/verax/vault
+          # Pasta ausente: o worker sobe, e a pasta aparece vazia nele e na VM (criada pelo Docker).
+          compose run --rm -T --no-deps --entrypoint sh worker -c "test -d $mount && test -z \"\$(ls -A $mount)\""
+          test -d /run/verax/vault
+          # O que o start.sh faz na partida seguinte (write_worker_keys), com a pasta que o Docker deixou.
+          sudo install -d -m 0750 -o 0 -g "$uid" /run/verax/vault
+          file=$(sudo mktemp /run/verax/vault/.worker-keys.XXXXXX)
+          echo '1:exemplo' | sudo tee "$file" >/dev/null
+          sudo chmod 0400 "$file"
+          sudo chown "$uid:$uid" "$file"
+          sudo mv -fT "$file" /run/verax/vault/worker-keys
+          # O worker lê o arquivo e não escreve na pasta; outro usuário não lê.
+          compose run --rm -T --no-deps --entrypoint sh --user "$uid:$uid" worker -c "test \"\$(cat $mount/worker-keys)\" = 1:exemplo && ! touch $mount/x 2>/dev/null"
+          compose run --rm -T --no-deps --entrypoint sh --user 65534:65534 worker -c "! cat $mount/worker-keys 2>/dev/null"
+          compose down
 
   wazuh:
     name: Wazuh (scripts, compose e teste de ponta a ponta)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,31 +520,62 @@ jobs:
         working-directory: infra/wazuh
         env:
           INDEXER_ADMIN_PASSWORD: ficticia
-          INDEXER_DASHBOARD_PASSWORD: ficticia
+          INDEXER_FILEBEAT_PASSWORD: ficticia
           WAZUH_API_PASSWORD: ficticia
           INDEXER_API_READ_PASSWORD: ficticia
         run: docker compose config --quiet
+      - name: Mesmas imagens do Wazuh no nó e no bundle do EC2 (o Dependabot atualiza o infra/wazuh)
+        run: |
+          images() { grep -oE 'wazuh/wazuh-(manager|indexer):[^[:space:]]+' "$1" | sort -u; }
+          diff <(images infra/wazuh/docker-compose.yml) <(images infra/node/compose.wazuh.yaml)
       - name: O PR mexe no Wazuh?
         id: changes
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ $EVENT_NAME != pull_request ]] || ! git diff --quiet "$BASE_SHA" HEAD -- infra/wazuh .github/workflows/iac.yml; then
+          if [[ $EVENT_NAME != pull_request ]] ||
+            ! git diff --quiet "$BASE_SHA" HEAD -- infra/wazuh infra/node .github/workflows/iac.yml; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "Nada mudou em infra/wazuh; o teste de ponta a ponta fica para o push na main."
+            echo "Nada mudou em infra/wazuh nem em infra/node; o teste de ponta a ponta fica para o push na main."
           fi
-      - name: Correlações da AWS separadas por conta (wazuh-logtest)
+      - name: Regras locais da AWS (correlações por conta e o papel de leitura do nó, no wazuh-logtest)
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: bash scripts/test-rules.sh
-      - name: Subida, rotação de senha e verificações
+      - name: Profiles da AWS sem chave no manager (boto3 da imagem, sem rede, com a troca no STS interceptada)
+        # O gerador escreve um profile por conta (papel derivado, token do Google do host, STS da região); o boto3 da
+        # imagem usa o provedor de web identity (method), mesmo com as variáveis de outro papel no ambiente; a troca vai ao
+        # STS da região, sem assinatura, com o papel, a sessão e o token certos; o S3 assina com a sessão. Nada sai do
+        # contêiner (--network none): uma atualização do Wazuh que mude o boto3 derruba este passo.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-aws-profile.sh
+      - name: Agentes do Wazuh no manager (certificado, configuração, registro com senha e lista; sem rede e sem porta)
+        # Um manager avulso, sem rede: o certificado do registro (CA dos agentes, IP no CN e no SAN, refeito com outro
+        # IP), o ossec.conf no modo dos agentes aceito por cada daemon, o agent.conf sem comando remoto aceito pelo
+        # verify-agent-conf, o registro pela 1515 como o agente faz (TLS conferido com a CA e o IP; sem senha, senha
+        # errada e grupo inexistente recusados) e a lista dos agentes pelo wazuh-agents-export.sh.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-agents.sh
+      - name: API do manager com a CA do nó e o usuário verax_stats do medidor (sem rede e sem porta)
+        # PR-V6, num manager avulso: o certificado autoassinado de antes trocado pelo par do manager na partida seguinte
+        # (conferido com a CA e o nome wazuh.manager; par adulterado recusado); o init-api-users.sh cria, mantém e
+        # acerta o verax_stats só com manager:read (idempotente, troca de senha, alterações por fora desfeitas); e o
+        # contrato dos contadores do analysisd que a tarefa wazuh-usage lê.
+        if: steps.changes.outputs.run == 'true'
+        working-directory: infra/wazuh
+        run: bash scripts/test-api-users.sh
+      - name: Wazuh do nó standard (subida, rotação de senha, verificações e atualização do manager)
+        # O teste sobe o compose do nó com o compose.wazuh.yaml, como o start.sh, com as senhas em /run/verax.
         if: steps.changes.outputs.run == 'true'
         working-directory: infra/wazuh
         run: |
           sudo sysctl -w vm.max_map_count=262144
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /run/verax
           bash scripts/ci-test.sh
 
   prowler:
@@ -210,6 +631,20 @@ jobs:
           "$RUNNER_TEMP/cfn/bin/pip" install --disable-pip-version-check --require-hashes --no-deps             -r infra/cloudformation/requirements-lint.txt
       - name: cfn-lint
         run: '"$RUNNER_TEMP/cfn/bin/cfn-lint" infra/cloudformation/*.yaml'
+      - name: Instalar cfn-guard (checksum fixado)
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSLo cfn-guard.tar.gz "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/${CFN_GUARD_VERSION}/cfn-guard-v3-x86_64-ubuntu-latest.tar.gz"
+          echo "${CFN_GUARD_SHA256}  cfn-guard.tar.gz" | sha256sum --check --strict
+          tar -xzf cfn-guard.tar.gz -C "$RUNNER_TEMP/bin" --strip-components=1 cfn-guard-v3-x86_64-ubuntu-latest/cfn-guard
+          rm cfn-guard.tar.gz
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: cfn-guard (papel de leitura sem chave)
+        # Primeiro os casos das regras (cada mutação derruba a regra certa), depois o template.
+        run: |
+          rules=infra/cloudformation/guard/verax-control-reader.guard
+          cfn-guard test --rules-file "$rules" --test-data infra/cloudformation/guard/verax-control-reader.tests.yaml
+          cfn-guard validate --rules "$rules" --data infra/cloudformation/verax-control-reader.yaml --show-summary fail
       - name: Testes de segurança do template
         run: '"$RUNNER_TEMP/cfn/bin/python" -m unittest discover -s infra/cloudformation/tests -v'
       - name: Testes do diagnóstico somente leitura

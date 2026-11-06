@@ -29,6 +29,8 @@ enum AuditOutcome {
 }
 
 /// Trilha de auditoria imutável (T1.3): só INSERT. Um trigger no banco bloqueia UPDATE, DELETE e TRUNCATE.
+/// A única exceção é o expurgo diário (fase 2, PR-19): o DELETE de registro com mais de 13 meses, só pela função
+/// `verax_purge_audit_log` (migration `20261109120000_history_retention`). O papel da aplicação não tem DELETE.
 /// Os IDs de ator e cliente não têm chave estrangeira de propósito: o registro sobrevive à exclusão do
 /// usuário ou do cliente.
 model AuditLog {
@@ -52,6 +54,8 @@ model AuditLog {
   @@index([actorId, occurredAt(sort: Desc)])
   @@index([resourceType, resourceId])
   @@index([requestId])
+  /// Expurgo pela idade, em todos os registros (os sem cliente não usam o índice por cliente).
+  @@index([occurredAt])
 }
 
 /// Papéis do painel (T2.4). `admin_verax` é da Verax e não pertence a cliente; os demais pertencem a um.
@@ -76,30 +80,52 @@ enum TenantStatus {
 
 /// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
 /// causa dos clientes criados antes do cadastro completo.
+/// Contato de escalonamento do cliente (D8): aguardando confirmação, confirmado ou descadastrado pelo link do e-mail.
+enum EscalationContactState {
+  pending
+  confirmed
+  unsubscribed
+}
+
 model Tenant {
-  id                 String              @id @default(uuid(7)) @db.Uuid
-  name               String              @db.VarChar(120)
+  id                       String                   @id @default(uuid(7)) @db.Uuid
+  name                     String                   @db.VarChar(120)
   /// 14 caracteres, sem máscara (numérico ou alfanumérico).
-  cnpj               String?             @unique @db.VarChar(14)
-  plan               String?             @db.VarChar(60)
-  escalationName     String?             @db.VarChar(120)
-  escalationEmail    String?             @db.VarChar(254)
-  escalationPhone    String?             @db.VarChar(20)
-  status             TenantStatus        @default(active)
-  createdAt          DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime            @updatedAt @db.Timestamptz(3)
-  users              User[]
-  cloudAccounts      CloudAccount[]
-  protectedResources ProtectedResource[]
-  alertExceptions    AlertException[]
-  findings           Finding[]
-  findingComments    FindingComment[]
-  incidents          Incident[]
-  postureScans       PostureScan[]
-  postureFailures    PostureFailure[]
-  inventorySnapshots InventorySnapshot[]
+  cnpj                     String?                  @unique @db.VarChar(14)
+  plan                     String?                  @db.VarChar(60)
+  escalationName           String?                  @db.VarChar(120)
+  escalationEmail          String?                  @db.VarChar(254)
+  escalationPhone          String?                  @db.VarChar(20)
+  /// Estado do contato de escalonamento (D8): nulo sem contato. Endereço novo começa em `pending`, e só o `confirmed`
+  /// recebe os avisos críticos.
+  escalationState          EscalationContactState?
+  /// Sobe a cada endereço novo e a cada confirmação pedida de novo: os links dos e-mails anteriores deixam de valer.
+  escalationGeneration     Int                      @default(0)
+  escalationConfirmedAt    DateTime?                @db.Timestamptz(3)
+  escalationUnsubscribedAt DateTime?                @db.Timestamptz(3)
+  status                   TenantStatus             @default(active)
+  createdAt                DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt                DateTime                 @updatedAt @db.Timestamptz(3)
+  users                    User[]
+  cloudAccounts            CloudAccount[]
+  protectedResources       ProtectedResource[]
+  alertExceptions          AlertException[]
+  findings                 Finding[]
+  findingComments          FindingComment[]
+  incidents                Incident[]
+  postureScans             PostureScan[]
+  postureFailures          PostureFailure[]
+  inventorySnapshots       InventorySnapshot[]
+  ingestUsage              IngestUsage[]
+  ingestHealth             IngestHealth[]
+  cloudCredentials         CloudCredential[]
+  wazuhAgents              WazuhAgent[]
+  notifications            Notification[]
+  notificationPrefs        NotificationPreference[]
+  noticeDigests            NotificationDigest[]
+  escalationTokens         EscalationContactToken[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
-  activeSessions     Session[]
+  activeSessions           Session[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -108,23 +134,23 @@ model Tenant {
 // ---------------------------------------------------------------------------------------------------
 
 model User {
-  id                         String              @id
-  name                       String              @db.VarChar(120)
-  email                      String              @unique @db.VarChar(254)
-  emailVerified              Boolean             @default(false)
+  id                         String                  @id
+  name                       String                  @db.VarChar(120)
+  email                      String                  @unique @db.VarChar(254)
+  emailVerified              Boolean                 @default(false)
   image                      String?
   role                       UserRole
-  tenantId                   String?             @db.Uuid
-  tenant                     Tenant?             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  status                     UserStatus          @default(invited)
+  tenantId                   String?                 @db.Uuid
+  tenant                     Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  status                     UserStatus              @default(invited)
   /// MFA (T2.2): sem ele, a sessão só alcança o cadastro do próprio MFA.
-  twoFactorEnabled           Boolean             @default(false)
+  twoFactorEnabled           Boolean                 @default(false)
   /// Senha temporária (criada pelo administrador): a sessão só alcança a troca de senha até a pessoa definir a dela.
-  mustChangePassword         Boolean             @default(false)
+  mustChangePassword         Boolean                 @default(false)
   /// Validade da senha temporária: depois disso, o login com ela não abre sessão.
-  temporaryPasswordExpiresAt DateTime?           @db.Timestamptz(3)
-  createdAt                  DateTime            @default(now()) @db.Timestamptz(3)
-  updatedAt                  DateTime            @updatedAt @db.Timestamptz(3)
+  temporaryPasswordExpiresAt DateTime?               @db.Timestamptz(3)
+  createdAt                  DateTime                @default(now()) @db.Timestamptz(3)
+  updatedAt                  DateTime                @updatedAt @db.Timestamptz(3)
   sessions                   Session[]
   accounts                   Account[]
   twoFactors                 TwoFactor[]
@@ -133,6 +159,9 @@ model User {
   alertExceptions            AlertException[]
   findingComments            FindingComment[]
   assignedIncidents          Incident[]
+  /// Preferência de aviso por e-mail (fase 2, PR-17'); sem linha, vale o padrão.
+  notificationPreference     NotificationPreference?
+  noticeDigests              NotificationDigest[]
 
   @@index([tenantId])
 }
@@ -239,37 +268,103 @@ enum CloudProvider {
   cloudflare
 }
 
-/// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial é
-/// guardada: na AWS, a Verax assume o papel de leitura `VeraxControlReadOnly` com o ExternalId, gerado aqui; na
-/// GCP, o nó lê com a identidade dele, sem chave; o token do Cloudflare fica no cofre de segredos do nó. Cada
-/// conta pertence a um só cliente. A migration garante, por CHECK, que toda conta AWS tem ExternalId.
+/// Estado da coleta de uma conta: `waiting` até o primeiro sinal de vida, `connected` depois dele e `error` quando a
+/// última leitura da fonte falhou. O sinal depende do provedor: na AWS (Wazuh) e na GCP (Pub/Sub), que entregam por
+/// evento, é o evento recebido; nos coletados por API (Cloudflare), basta a leitura bem-sucedida.
+enum CloudAccountConnection {
+  waiting
+  connected
+  error
+}
+
+/// Conta cloud de um cliente (T3.3): conta AWS, projeto da GCP ou conta do Cloudflare. Nenhuma credencial fica no
+/// cadastro: na AWS, o nó entra no papel de leitura sem chave da conta (`/verax/verax-control-reader`, derivado do ID)
+/// com o token que o Google assina para a conta de serviço dele; na GCP, o nó lê com a identidade dele, sem chave. Só
+/// o token do Cloudflare fica cifrado à parte, em `CloudCredential` (cofre do nó). Cada conta pertence a um só cliente.
 model CloudAccount {
-  id                 String             @id @default(uuid(7)) @db.Uuid
-  tenantId           String             @db.Uuid
-  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  provider           CloudProvider      @default(aws)
+  id                 String                 @id @default(uuid(7)) @db.Uuid
+  tenantId           String                 @db.Uuid
+  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  provider           CloudProvider          @default(aws)
   /// 12 dígitos (AWS), ID do projeto (GCP, até 30) ou 32 hexadecimais (Cloudflare).
-  accountId          String             @db.VarChar(32)
+  accountId          String                 @db.VarChar(32)
   /// AWS: regiões monitoradas.
   regions            String[]
-  /// AWS: ExternalId do papel de leitura.
-  externalId         String?            @db.VarChar(128)
+  /// Obsoleto (o ExternalId do conector antigo): a API não lê nem grava desde o PR-V3', e a migration dele apagou os
+  /// valores. A coluna fica só para a versão anterior da API, numa volta de versão, encontrar o que ela lê; sai numa
+  /// migration de contração.
+  externalId         String?                @db.VarChar(128)
   /// AWS: buckets de onde o Wazuh lê os logs desta conta (T5.2 vincula cada alerta pelo bucket de origem).
-  cloudtrailBucket   String?            @db.VarChar(63)
-  guarddutyBucket    String?            @db.VarChar(63)
-  wafBucket          String?            @db.VarChar(63)
+  cloudtrailBucket   String?                @db.VarChar(63)
+  guarddutyBucket    String?                @db.VarChar(63)
+  wafBucket          String?                @db.VarChar(63)
   /// GCP: assinatura do Pub/Sub que o nó lê, pelo nome completo (`projects/<projeto>/subscriptions/<id>`).
-  pubsubSubscription String?            @db.VarChar(320)
+  pubsubSubscription String?                @db.VarChar(320)
+  /// GCP, projeto de cliente: identidade de escrita do sink que o cliente criou no projeto dele, colada no painel
+  /// (`serviceAccount:service-<número>@gcp-sa-logging.iam.gserviceaccount.com`). Não é segredo: é a quem o Terraform
+  /// do nó deixa publicar no tópico do projeto.
+  sinkWriterIdentity String?                @db.VarChar(128)
   /// Cloudflare: zonas (domínios) monitoradas.
-  zones              String[]           @default([])
+  zones              String[]               @default([])
   /// Horário do alerta mais recente desta conta, gravado pelo sync (T5.3).
-  lastEventAt        DateTime?          @db.Timestamptz(3)
-  status             CloudAccountStatus @default(active)
-  createdAt          DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime           @updatedAt @db.Timestamptz(3)
+  lastEventAt        DateTime?              @db.Timestamptz(3)
+  /// Estado da coleta, gravado pelo sync da conta (ver `CloudAccountConnection`).
+  connection         CloudAccountConnection @default(waiting)
+  /// Tipo do último erro de coleta (o nome da classe do erro). Nunca a mensagem, que pode carregar dado ou segredo.
+  connectionError    String?                @db.VarChar(64)
+  /// AWS: aviso da coleta pelo Wazuh do nó (`aws_token_stale` ou `wazuh_apply_failed`, PR-V4'), à parte da conexão:
+  /// só a tarefa `wazuh-config` do worker o grava, e a conferência da conexão (`aws-check`) só grava `connectionError`.
+  /// Só conta AWS, e só os códigos da coleta (CHECK da migration).
+  collectionError    String?                @db.VarChar(64)
+  /// Última leitura bem-sucedida da fonte desta conta, com ou sem evento. Só vale como sinal de vida na Torre nos
+  /// provedores coletados por API (Cloudflare); na AWS e na GCP, o sinal é o evento.
+  lastCollectedAt    DateTime?              @db.Timestamptz(3)
+  /// AWS: "Verificar" pedido no painel e ainda não respondido pela tarefa `aws-check` do worker, que confere a entrada
+  /// no papel e a leitura dos buckets e grava a conexão (`src/aws/aws-check.ts`). Null sem pedido pendente. A
+  /// migration confere por CHECK que só conta AWS tem o pedido.
+  checkRequestedAt   DateTime?              @db.Timestamptz(3)
+  /// AWS: dia a partir do qual o Wazuh lê os logs dos buckets (`only_logs_after`): o da primeira verificação
+  /// bem-sucedida, menos um dia. Gravado uma vez só, pelo worker; sem ele, o Wazuh leria todo o histórico do bucket.
+  /// Só conta AWS (CHECK da migration).
+  ingestFrom         DateTime?              @db.Date
+  status             CloudAccountStatus     @default(active)
+  createdAt          DateTime               @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
+  cursors            CollectorCursor[]
+  credential         CloudCredential?
 
   @@unique([provider, accountId])
+  /// Alvo da chave estrangeira composta da `CloudCredential`: a credencial é sempre do mesmo cliente da conta.
+  @@unique([id, tenantId])
   @@index([tenantId])
+}
+
+/// Cursor de um coletor (fase 2): até onde cada fluxo de cada conta já foi lido e quando ler de novo. Um por conta,
+/// fluxo e região. Dado de sistema, sem `tenantId` de propósito: o cliente da sessão nem alcança o model (o escopo
+/// recusa), e o estado que o cliente vê fica na `CloudAccount` (`connection`, `lastCollectedAt`).
+model CollectorCursor {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  cloudAccountId String       @db.Uuid
+  cloudAccount   CloudAccount @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  /// Fluxo lido, como `aws_cloudtrail` ou `cloudflare_audit`.
+  stream         String       @db.VarChar(32)
+  /// Região da AWS; vazio nos fluxos sem região.
+  region         String       @default("") @db.VarChar(32)
+  /// Horário do evento mais recente já processado. Só anda para a frente; null antes da primeira leitura.
+  cursorAt       DateTime?    @db.Timestamptz(3)
+  /// Continuação opaca da fonte (NextToken, cursor da API) quando a execução parou no teto de páginas.
+  continuation   String?      @db.VarChar(2048)
+  /// Próxima leitura: o intervalo do fluxo depois de um sucesso, o recuo depois de uma falha.
+  nextRunAt      DateTime     @default(now()) @db.Timestamptz(3)
+  lastSuccessAt  DateTime?    @db.Timestamptz(3)
+  /// Tipo do último erro, sem mensagem.
+  lastErrorKind  String?      @db.VarChar(64)
+  /// Falhas seguidas desde o último sucesso; definem o recuo.
+  failures       Int          @default(0)
+  updatedAt      DateTime     @updatedAt @db.Timestamptz(3)
+
+  @@unique([cloudAccountId, stream, region])
+  @@index([stream, nextRunAt])
 }
 
 enum ProtectedResourceType {
@@ -350,10 +445,12 @@ model Finding {
   tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   /// Conta do provedor de onde veio o evento (12 dígitos, ID do projeto ou ID do Cloudflare).
   accountId       String           @db.VarChar(32)
-  /// Sistema de origem do alerta (`wazuh`).
+  /// Sistema de origem do alerta (`wazuh` ou `gcp`).
   source          String           @db.VarChar(16)
-  /// ID do alerta no sistema de origem.
+  /// Chave do achado na origem, a mesma a cada releitura do evento (no Wazuh, `wazuh/<conta>/<tipo>:<id>:<regra>`).
   sourceEventId   String           @db.VarChar(128)
+  /// Só no Wazuh: ID do alerta da primeira leitura, por onde o detalhe busca o evento bruto no indexer.
+  rawEventId      String?          @db.VarChar(128)
   /// Fonte de log: `cloudtrail`, `guardduty`, `waf`.
   logSource       String           @db.VarChar(32)
   occurredAt      DateTime         @db.Timestamptz(3)
@@ -380,20 +477,36 @@ model Finding {
   incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
   triagedAt       DateTime?        @db.Timestamptz(3)
+  /// Só no GuardDuty: a versão do achado na origem (o `updatedAt` do GuardDuty, que só avança). Decide a reincidência:
+  /// a versão mais nova de um achado já triado vira outro achado; a de um ainda não triado só avança esta data.
+  lastSeenAt      DateTime?        @db.Timestamptz(3)
+  /// Só no GuardDuty: a chave do achado inteiro na origem (`wazuh/<conta>/guardduty:<id>:<regra>`), a mesma no
+  /// original, nas recorrências e, na sondagem de porta, no achado de cada IP. A cadeia da reincidência é lida por aqui.
+  chainKey        String?          @db.VarChar(128)
+  /// Achado original de que este é a recorrência (GuardDuty: atividade nova depois da triagem). A chave estrangeira
+  /// inclui o cliente, então uma recorrência nunca aponta para achado de outro cliente.
+  recurrenceOfId  String?          @db.Uuid
+  recurrenceOf    Finding?         @relation("FindingRecurrence", fields: [recurrenceOfId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  recurrences     Finding[]        @relation("FindingRecurrence")
   createdAt       DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
   comments        FindingComment[]
+  notifications   Notification[]
 
   @@unique([source, sourceEventId])
-  /// Alvo da chave composta dos comentários: o comentário só aponta para achado do mesmo cliente.
+  /// Alvo da chave composta dos comentários e das recorrências: só apontam para achado do mesmo cliente.
   @@unique([id, tenantId])
   @@index([tenantId, occurredAt(sort: Desc)])
   @@index([tenantId, status])
   @@index([incidentId])
+  @@index([recurrenceOfId])
+  @@index([tenantId, chainKey])
 }
 
 /// Comentário num achado (T5.5). Não é editado nem apagado (trigger na migration): é parte do registro da
-/// decisão. A chave estrangeira inclui o cliente, então um comentário nunca aponta para achado de outro cliente.
+/// decisão. A única exceção é o expurgo diário (fase 2, PR-19), que leva o comentário junto com o achado antigo, só
+/// pela função `verax_purge_finding_comments` e só com mais de 30 dias. O papel da aplicação não tem DELETE.
+/// A chave estrangeira inclui o cliente, então um comentário nunca aponta para achado de outro cliente.
 model FindingComment {
   id        String   @id @default(uuid(7)) @db.Uuid
   tenantId  String   @db.Uuid
@@ -418,6 +531,14 @@ enum UnownedReason {
   conflicting_accounts
   unknown_account
   source_mismatch
+  /// Alertas dos agentes do Wazuh nas instâncias do cliente: agentes desligados no worker do nó.
+  agents_disabled
+  /// O id do agente não está na lista do cliente do nó.
+  unknown_agent
+  /// O id do agente está na lista, com outro nome.
+  agent_name_mismatch
+  /// O alerta do agente cita uma conta AWS cadastrada em outro cliente.
+  agent_account_conflict
 }
 
 /// Alerta que o sync não atribuiu a nenhum cliente (T5.2): na dúvida, o alerta não é de ninguém. Sem `tenantId`
@@ -458,6 +579,19 @@ model SyncState {
   updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
 }
 
+/// Prazo de histórico do expurgo diário (fase 2, PR-19; `src/retention/`), uma linha por tarefa (`id` é o nome dela no
+/// `SyncState`, `retention`). O prazo vem do plano do nó; quando o plano diminui, o expurgo continua com o prazo
+/// anterior por 30 dias (carência para exportar) e só então passa ao novo. Dado de sistema, sem `tenantId`: o prazo é
+/// do nó, e o escopo do cliente recusa o model.
+model RetentionState {
+  id           String    @id @db.VarChar(32)
+  /// Dias de histórico que o expurgo aplica; null é sem limite (plano interno).
+  appliedDays  Int?
+  /// Desde quando o plano pede um prazo menor que o aplicado; null sem redução pendente. A carência conta daqui.
+  pendingSince DateTime? @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+}
+
 enum IncidentStatus {
   open
   investigating
@@ -489,13 +623,18 @@ model Incident {
   createdAt       DateTime        @default(now()) @db.Timestamptz(3)
   updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
   findings        Finding[]
+  notifications   Notification[]
 
   @@index([tenantId, status])
   @@index([tenantId, riskScore(sort: Desc)])
+  /// Expurgo diário: incidentes sem atividade antes do corte.
+  @@index([tenantId, lastSeenAt])
 }
 
 /// Uma varredura de postura (T5.8) de uma conta: a nota e as contagens. As checagens reprovadas ficam em
-/// `PostureFailure`. Gravada pelo job que lê o relatório do Prowler.
+/// `PostureFailure`. Gravada pela tarefa `aws-inventory` do worker com o catálogo nativo (fase 2, PR-15',
+/// `src/posture/native-posture.ts`), na mesma transação do retrato do inventário; `scannedAt` é o início da coleta (o
+/// mesmo `collectedAt` do retrato).
 model PostureScan {
   id                  String           @id @default(uuid(7)) @db.Uuid
   tenantId            String           @db.Uuid
@@ -514,6 +653,15 @@ model PostureScan {
   failedMedium        Int
   failedLow           Int
   failedInformational Int
+  /// Resultados não lidos (fase 2, PR-15'): a AWS recusou a leitura de que a checagem depende. Ficam fora da nota e
+  /// nunca contam como aprovados.
+  unknown             Int              @default(0)
+  /// Cada checagem do catálogo nesta varredura (`postureCheckResultSchema`: ID, título, severidade e quantos recursos
+  /// aprovados, reprovados e não lidos), conferida pelo contrato ao gravar e ao ler. Vazia nas varreduras anteriores.
+  checks              Json             @default("[]")
+  /// As leituras recusadas (`parte:código` ou `parte:região:código`, só o nome do erro da AWS, nunca a mensagem):
+  /// a varredura é parcial quando há alguma. Vazia numa varredura completa.
+  errors              String[]         @default([])
   createdAt           DateTime         @default(now()) @db.Timestamptz(3)
   failures            PostureFailure[]
 
@@ -555,7 +703,9 @@ model PostureFailure {
 }
 
 /// Retrato do inventário de uma conta (T5.9): os itens de cada tipo, já com o risco, como JSON validado pelo
-/// contrato compartilhado ao gravar e ao ler. Gravado pelo job de inventário; o mais recente de cada conta vale.
+/// contrato compartilhado ao gravar e ao ler. Gravado pela tarefa `aws-inventory` do worker (fase 2, PR-14',
+/// `src/inventory/inventory-job.ts`); o mais recente de cada conta vale. `collectedAt` é o início da coleta, e a
+/// chave única com ele torna a gravação idempotente.
 model InventorySnapshot {
   id          String   @id @default(uuid(7)) @db.Uuid
   tenantId    String   @db.Uuid
@@ -566,8 +716,306 @@ model InventorySnapshot {
   root        Json?
   /// Itens por tipo: `users`, `keys`, `instances`, `buckets`, `security-groups`.
   items       Json
+  /// Coleta parcial (PR-14'): as partes que não entraram, `parte:código` ou `parte:região:código`
+  /// (`ec2:sa-east-1:UnauthorizedOperation`, `iam:invalid_items`), só o nome do erro da AWS, nunca a mensagem. Vazio
+  /// numa coleta completa.
+  errors      String[] @default([])
+  /// Alguma parte passou do teto de itens por tipo (1.000): os itens além dele não estão no retrato.
+  truncated   Boolean  @default(false)
   createdAt   DateTime @default(now()) @db.Timestamptz(3)
 
   @@unique([tenantId, accountId, collectedAt])
   @@index([tenantId, accountId, collectedAt(sort: Desc)])
+}
+
+/// Volume de log lido por cliente, mês e fonte (fase 2, PR-03): a medida dos GiB por mês do plano. Gravado pelo
+/// `UsageMeter` dos coletores, sempre depois da confirmação da leitura (o lote que falha antes não conta). A regra é
+/// uma só: os bytes UTF-8 de cada registro como a fonte entrega, já descompactado, contando todos os registros lidos,
+/// inclusive os que nenhuma regra acusa. Uma reentrega da fonte pode contar duas vezes ("uso justo").
+model IngestUsage {
+  tenantId String   @db.Uuid
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// Primeiro dia do mês no calendário de Brasília (a virada é às 03:00 UTC).
+  month    DateTime @db.Date
+  /// Fonte do volume: `gcp` (Pub/Sub), `aws` (Wazuh) ou `cloudflare`.
+  source   String   @db.VarChar(16)
+  bytes    BigInt
+  events   BigInt
+
+  @@id([tenantId, month, source])
+}
+
+/// Contadores do analysisd do Wazuh do nó na última leitura da tarefa `wazuh-usage` (fase 2, PR-V6;
+/// `src/usage/wazuh-usage.ts`): a base da diferença que o medidor soma na leitura seguinte. Uma linha (`id` =
+/// `wazuh-analysisd`). Dado de sistema, sem `tenantId`: o contador é do nó inteiro (o analysisd não separa por cliente),
+/// e o escopo do cliente recusa o model.
+model WazuhCounter {
+  id            String   @id @db.VarChar(32)
+  /// Partida do analysisd que deu estes contadores (o `uptime` da API do manager). Outra partida: os contadores
+  /// recomeçaram do zero.
+  startedAt     DateTime @db.Timestamptz(3)
+  /// `metrics.bytes.received`: bytes recebidos pelo analysisd desde a partida (tudo o que ele lê).
+  bytesReceived BigInt
+  /// `…decoded_breakdown.modules_breakdown.aws`: eventos do módulo da AWS desde a partida.
+  awsEvents     BigInt
+  /// Hora da leitura.
+  readAt        DateTime @db.Timestamptz(3)
+  /// Por que a última leitura não foi medida para ninguém: `multiple_tenants` (mais de um cliente no Wazuh do nó; o nó
+  /// atende um cliente só). Null quando foi medida, ou quando não há cliente a medir.
+  meterBlocked  String?  @db.VarChar(32)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Saúde da ingestão de uma fonte do cliente (fase 2, PR-V6): a última vez que o contador de eventos dela andou. Hoje só
+/// `aws` (os eventos do módulo da AWS no analysisd do Wazuh do nó), gravada pela tarefa `wazuh-usage`. A Torre mostra
+/// "Sem logs novos da AWS" quando o cliente tem conta AWS conectada e o contador está parado há mais de 2 horas.
+model IngestHealth {
+  tenantId         String    @db.Uuid
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  source           String    @db.VarChar(16)
+  /// A última vez que o contador de eventos da fonte andou, ou o começo da observação (a primeira leitura com conta
+  /// conectada). Null: o cliente não tem conta da fonte conectada, e não há o que observar.
+  lastProgressAt   DateTime? @db.Timestamptz(3)
+  /// A parada já avisada (o `lastProgressAt` dela): o aviso `aws_ingestion_stalled` sai uma vez por parada.
+  stallNotifiedFor DateTime? @db.Timestamptz(3)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([tenantId, source])
+}
+
+/// Tipo da credencial guardada no cofre do nó: o token só de leitura do Cloudflare. A chave de acesso da AWS
+/// (`aws_access_key`, do PR-V1) saiu no PR-V3': a AWS é lida pelo papel sem chave.
+enum CloudCredentialKind {
+  cloudflare_api_token
+}
+
+/// Credencial de leitura de uma conta cloud, cifrada no cofre do nó (fase 2, PR-V1; `src/credentials/`). Uma por
+/// conta. O texto cifrado é RSA-OAEP-SHA256 com a chave pública do nó: a API cifra e não decifra; só o worker tem a
+/// chave privada. O rótulo do OAEP amarra o texto ao cliente, à conta e ao tipo, então uma linha copiada para outra
+/// conta ou outro cliente não abre. O segredo nunca sai pela API nem vai para a auditoria (só `keyIdSuffix`). A
+/// migration confere por CHECK o formato do envelope, a versão e o sufixo.
+model CloudCredential {
+  cloudAccountId   String              @id @db.Uuid
+  /// Chave estrangeira composta (conta e cliente): o banco recusa a credencial de um cliente na conta de outro.
+  cloudAccount     CloudAccount        @relation(fields: [cloudAccountId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  tenantId         String              @db.Uuid
+  tenant           Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind             CloudCredentialKind
+  /// `v<keyVersion>:<base64>`: o envelope do cofre, com a versão da chave do nó que cifrou.
+  ciphertext       String              @db.VarChar(1024)
+  /// Versão da chave do nó (a versão do segredo `credentials-key` no Secret Manager). A tarefa `credential-rekey` do
+  /// worker recifra as linhas de versões antigas com a corrente.
+  keyVersion       Int
+  /// Os 4 últimos caracteres do ID do token: o que o painel e a auditoria mostram.
+  keyIdSuffix      String              @db.VarChar(4)
+  /// Criação do token na origem, quando ela informa: a idade conta daqui.
+  issuedAt         DateTime?           @db.Timestamptz(3)
+  /// Validade do token do Cloudflare, quando ele tem uma.
+  expiresAt        DateTime?           @db.Timestamptz(3)
+  /// Última validação bem-sucedida na fonte (`tokens/verify`).
+  verifiedAt       DateTime            @db.Timestamptz(3)
+  /// Quando saiu o aviso de troca da chave (rotação).
+  rotationNoticeAt DateTime?           @db.Timestamptz(3)
+  createdAt        DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime            @updatedAt @db.Timestamptz(3)
+
+  /// Exigido pelo Prisma na relação um para um com chave composta (o `cloudAccountId` sozinho já é único).
+  @@unique([cloudAccountId, tenantId])
+  @@index([tenantId])
+}
+
+/// Estado do agente do Wazuh, como o manager do nó informa.
+enum WazuhAgentStatus {
+  active
+  disconnected
+  pending
+  never_connected
+}
+
+/// Agente do Wazuh numa instância do cliente (agentes nas instâncias, desligado por padrão em cada nó). O worker grava
+/// a lista que o host exporta da API do manager a cada minuto, no cliente do nó (WAZUH_AGENTS_TENANT); o painel só lê.
+/// O id do agente é o do manager do nó, único no nó. Tudo vem da instância do cliente: entrada não confiável, validada
+/// pelo worker antes de gravar.
+model WazuhAgent {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  tenantId        String           @db.Uuid
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  agentId         String           @db.VarChar(8)
+  name            String           @db.VarChar(128)
+  /// IP de onde o agente fala com o manager (`any` antes da primeira conexão).
+  ip              String?          @db.VarChar(64)
+  osName          String?          @db.VarChar(128)
+  osVersion       String?          @db.VarChar(64)
+  osPlatform      String?          @db.VarChar(32)
+  version         String?          @db.VarChar(32)
+  status          WazuhAgentStatus
+  lastKeepAliveAt DateTime?        @db.Timestamptz(3)
+  registeredAt    DateTime?        @db.Timestamptz(3)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@unique([agentId])
+  @@index([tenantId, name])
+}
+
+/// Tipo do aviso por e-mail (fase 2, PR-16). `aws_ingestion_stalled` já existe para a tarefa do medidor da AWS (PR-V6),
+/// que ainda não o emite.
+enum NotificationKind {
+  incident_opened
+  incident_escalated
+  critical_finding
+  aws_ingestion_stalled
+  plan_usage
+  /// O pedido de confirmação ao contato de escalonamento (D8): o worker gera o link de uso único no envio.
+  escalation_confirmation
+}
+
+/// O contato de escalonamento e um aviso crítico (D8): recebeu (`sent`), não recebeu porque passou do limite de e-mails
+/// da hora (`limited`; ele não recebe resumo) ou porque o aviso tinha 24 h ou mais na fila (`stale`).
+enum EscalationDelivery {
+  sent
+  limited
+  stale
+}
+
+/// Estado do aviso na fila de saída: `skipped` é o que não sai (nó sem e-mail, ninguém para receber, aviso de 80%
+/// coberto pelo de 100%); `failed`, o que falhou em todas as tentativas.
+enum NotificationStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+/// Aviso por e-mail na fila de saída (outbox; fase 2, PR-16). Nasce na mesma transação do fato que o gera (o achado e o
+/// incidente, em `FindingStore`; o volume do mês, na tarefa `notifications`) e o worker entrega
+/// (`notifications/notification-dispatcher.ts`). A chave de deduplicação, única por cliente, faz o mesmo fato gerar um
+/// aviso só, por mais que seja relido. Os destinatários não ficam aqui: são resolvidos no envio, e só o id de quem já
+/// recebeu fica guardado (a nova tentativa não repete o e-mail). Nenhum endereço de e-mail é gravado.
+model Notification {
+  id                    String              @id @default(uuid(7)) @db.Uuid
+  tenantId              String              @db.Uuid
+  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  kind                  NotificationKind
+  /// `incident:<id>:<severidade>`, `finding:<id>`, `usage:<AAAA-MM>:<80|100>` ou `aws-stalled:<início da parada>`.
+  dedupeKey             String              @db.VarChar(128)
+  /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
+  severity              FindingSeverity?
+  /// Incidente do aviso; um gatilho no banco confere que é do mesmo cliente. Apagar o incidente apaga o aviso.
+  incidentId            String?             @db.Uuid
+  incident              Incident?           @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  /// Achado crítico fora de incidente. A chave estrangeira inclui o cliente.
+  findingId             String?             @db.Uuid
+  finding               Finding?            @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  /// Volume do plano: o mês (primeiro dia, calendário de Brasília) e a faixa alcançada (80 ou 100).
+  usageMonth            DateTime?           @db.Date
+  usagePercent          Int?                @db.SmallInt
+  status                NotificationStatus  @default(pending)
+  /// Tentativas de envio feitas (no máximo 5; recuo de 1, 5, 15 e 60 min entre elas).
+  attempts              Int                 @default(0) @db.SmallInt
+  nextAttemptAt         DateTime            @default(now()) @db.Timestamptz(3)
+  /// Tipo do último erro do envio, ou o motivo de `skipped` (`mail_disabled`, `no_recipients`, `superseded`). Nunca a
+  /// mensagem do servidor, que pode citar o endereço.
+  lastError             String?             @db.VarChar(64)
+  /// Usuários que já receberam este aviso (o id, nunca o e-mail).
+  deliveredUserIds      String[]            @default([])
+  /// Usuários para quem o aviso entrou no resumo da hora ou no de retomada (`NotificationDigest`), em vez do e-mail
+  /// avulso (fase 2, PR-17'). O id, nunca o e-mail.
+  digestedUserIds       String[]            @default([])
+  /// `escalation_confirmation`: a geração do endereço que o e-mail confirma (`Tenant.escalationGeneration`).
+  escalationGeneration  Int?
+  /// Avisos críticos: o que aconteceu com o contato de escalonamento (nulo enquanto não decidido, ou se ele não recebe
+  /// este aviso). Como os ids de usuário acima, a nova tentativa não repete o e-mail para ele.
+  escalationDelivery    EscalationDelivery?
+  escalationDeliveredAt DateTime?           @db.Timestamptz(3)
+  sentAt                DateTime?           @db.Timestamptz(3)
+  createdAt             DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, dedupeKey])
+  @@index([status, nextAttemptAt])
+  @@index([incidentId])
+  @@index([findingId])
+}
+
+/// Preferência de aviso por e-mail de uma pessoa do cliente (fase 2, PR-17'). Só a própria pessoa a muda
+/// (`PUT /v1/notification-preferences`, auditado). Sem linha, vale o padrão: recebe. Um gatilho no banco confere que a
+/// pessoa é do mesmo cliente.
+model NotificationPreference {
+  userId         String   @id
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenantId       String   @db.Uuid
+  tenant         Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// Avisos de incidente alto ou crítico e de achado crítico. Os do plano e da coleta da AWS não dependem dela.
+  incidentEmails Boolean  @default(true)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([tenantId])
+}
+
+/// Hora de avisos de uma pessoa (fase 2, PR-17'): uma linha por pessoa e hora cheia (UTC, que bate com a de Brasília).
+/// Conta os e-mails avulsos da hora; do 6º aviso em diante, o aviso entra em `noticeIds`, e o resumo sai uma vez,
+/// quando a hora fecha. O aviso com mais de 24 h na fila também vem para cá (`catchUp`, o resumo de retomada). Nenhum
+/// endereço de e-mail: a pessoa é resolvida no envio. Um gatilho no banco confere que ela é do mesmo cliente.
+model NotificationDigest {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  tenantId       String              @db.Uuid
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  userId         String
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Começo da hora (minuto zero).
+  hourStart      DateTime            @db.Timestamptz(3)
+  /// E-mails avulsos que a pessoa recebeu nesta hora (o resumo não conta).
+  individualSent Int                 @default(0) @db.SmallInt
+  /// Avisos reunidos no resumo (ids de `Notification`), na ordem em que entraram.
+  noticeIds      String[]            @default([])
+  /// Algum aviso reunido tinha mais de 24 h na fila: o resumo é de retomada.
+  catchUp        Boolean             @default(false)
+  /// Nulo enquanto nada foi reunido (só a contagem); depois, como o aviso: `pending` até sair.
+  status         NotificationStatus?
+  attempts       Int                 @default(0) @db.SmallInt
+  /// Quando o resumo pode sair: o fim da hora, ou a próxima tentativa (recuo de 1, 5, 15 e 60 min).
+  nextAttemptAt  DateTime?           @db.Timestamptz(3)
+  /// Tipo do último erro do envio, ou o motivo de `skipped`. Nunca a mensagem do servidor.
+  lastError      String?             @db.VarChar(64)
+  sentAt         DateTime?           @db.Timestamptz(3)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @db.Timestamptz(3)
+
+  @@unique([tenantId, userId, hourStart])
+  @@index([status, nextAttemptAt])
+  @@index([userId])
+}
+
+/// Para que serve o link do e-mail do contato de escalonamento (D8).
+enum EscalationTokenPurpose {
+  confirm
+  unsubscribe
+}
+
+/// Link de um e-mail ao contato de escalonamento (D8): confirmar o endereço (uso único, 72 h) ou deixar de receber (um
+/// ano, idempotente). Só o SHA-256 do valor fica aqui; o valor existe só no e-mail. Vale para a geração do endereço em
+/// que nasceu: um endereço novo ou uma confirmação pedida de novo apaga os links anteriores.
+model EscalationContactToken {
+  /// SHA-256, em hexadecimal, do valor do link.
+  tokenHash  String                 @id @db.Char(64)
+  tenantId   String                 @db.Uuid
+  tenant     Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  purpose    EscalationTokenPurpose
+  generation Int
+  expiresAt  DateTime               @db.Timestamptz(3)
+  createdAt  DateTime               @default(now()) @db.Timestamptz(3)
+
+  @@index([tenantId, generation])
+}
+
+/// Limite por IP das rotas públicas dos links do contato de escalonamento (D8), em janela fixa. Sem dado de cliente.
+model PublicLinkAttempt {
+  /// `escalation-link:<ip>`.
+  key         String   @id @db.VarChar(100)
+  count       Int
+  windowStart DateTime @db.Timestamptz(3)
+
+  @@index([windowStart])
 }

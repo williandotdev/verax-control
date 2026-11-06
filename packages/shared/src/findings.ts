@@ -1,5 +1,7 @@
 import { z } from 'zod';
+import { wazuhAgentRefSchema } from './agents.js';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
+import type { HistoryPeriod } from './history.js';
 import { withPagination } from './pagination.js';
 import { authorSchema } from './protected-resources.js';
 
@@ -17,12 +19,35 @@ export const FINDING_STATUSES = ['new', 'investigating', 'legitimate', 'resolved
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
 
 /** Origem do alerta na AWS, lida pelo Wazuh. */
-/** Fontes de log: as da AWS (lidas pelo Wazuh) e a auditoria da GCP (lida do Pub/Sub pelo próprio nó). */
-export const FINDING_SOURCES = ['cloudtrail', 'guardduty', 'waf', 'gcp_audit'] as const;
+/**
+ * Fontes de log: as da AWS (lidas pelo Wazuh), a auditoria da GCP (lida do Pub/Sub pelo próprio nó), do Cloudflare
+ * (lidos pela API dele, com o token do cofre do nó) a auditoria da conta e os eventos de segurança das zonas (WAF,
+ * limite de taxa, DDoS), e os agentes do Wazuh nas instâncias do cliente.
+ */
+export const FINDING_SOURCES = [
+  'cloudtrail',
+  'guardduty',
+  'waf',
+  'gcp_audit',
+  'cloudflare_audit',
+  'cloudflare_waf',
+  'wazuh_agent',
+] as const;
 export type FindingSource = (typeof FINDING_SOURCES)[number];
 
-/** Períodos do filtro, em horas. */
-export const FINDING_PERIODS = ['24h', '7d', '30d', '90d'] as const;
+/**
+ * De onde veio o achado: a conta (AWS, projeto da GCP ou Cloudflare) ou, nos alertas das instâncias do cliente, o
+ * agente do Wazuh (`agent:<id>`). Os formatos não se sobrepõem.
+ */
+export const findingOriginSchema = z.union([cloudAccountRefSchema, wazuhAgentRefSchema], {
+  error: 'origem inválida',
+});
+
+/**
+ * Períodos do filtro (os dias de cada um em `HISTORY_PERIOD_DAYS`). A API recusa o período mais longo que o histórico
+ * do plano do nó (PR-20): `12m` só no plano com 365 dias ou mais.
+ */
+export const FINDING_PERIODS = ['24h', '7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
 export type FindingPeriod = (typeof FINDING_PERIODS)[number];
 
 export const findingListQuerySchema = withPagination({
@@ -37,7 +62,8 @@ const nullableText = z.string().max(2048).nullable();
 
 export const findingSchema = z.strictObject({
   id: z.uuid(),
-  accountId: cloudAccountRefSchema,
+  /** A conta de onde veio o evento ou, nos alertas das instâncias, o agente (`agent:<id>`). */
+  accountId: findingOriginSchema,
   occurredAt: z.iso.datetime(),
   severity: z.enum(FINDING_SEVERITIES),
   status: z.enum(FINDING_STATUSES),

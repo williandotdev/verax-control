@@ -1,5 +1,6 @@
-# Lista de permissão: só entra no contexto de build o que a imagem da API precisa (apps/api/Dockerfile).
-# Tudo o mais fica de fora, inclusive .env, chaves e node_modules locais.
+# Lista de permissão: só entra no contexto de build o que as imagens da API (apps/api/Dockerfile) e do plano de
+# controle (apps/control-plane/Dockerfile, com as telas do console do responsável, apps/console) precisam. Tudo o
+# mais fica de fora, inclusive .env, chaves e node_modules locais.
 *
 !package.json
 !pnpm-lock.yaml
@@ -13,6 +14,17 @@
 !apps/api/prisma.config.ts
 !apps/api/prisma
 !apps/api/src
+!apps/control-plane/package.json
+!apps/control-plane/tsconfig*.json
+!apps/control-plane/nest-cli.json
+!apps/control-plane/src
+!apps/console/package.json
+!apps/console/tsconfig*.json
+!apps/console/vite.config.ts
+!apps/console/index.html
+!apps/console/public
+!apps/console/src
+!scripts/scan-bundle.mjs
 !tsconfig.base.json
 
 # Mesmo dentro das pastas permitidas.

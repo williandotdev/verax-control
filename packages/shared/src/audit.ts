@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { HistoryPeriod } from './history.js';
 import { withPagination } from './pagination.js';
 
 /**
@@ -13,7 +14,11 @@ export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
 export const AUDIT_ACTOR_TYPES = ['user', 'system', 'anonymous'] as const;
 export type AuditActorType = (typeof AUDIT_ACTOR_TYPES)[number];
 
-export const AUDIT_PERIODS = ['24h', '7d', '30d', '90d'] as const;
+/**
+ * Períodos do filtro (os dias de cada um em `HISTORY_PERIOD_DAYS`). Como nas outras telas, a API recusa o período mais
+ * longo que o histórico do plano do nó (PR-20), embora a trilha fique ao menos 13 meses em todo plano (PR-19).
+ */
+export const AUDIT_PERIODS = ['24h', '7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
 export type AuditPeriod = (typeof AUDIT_PERIODS)[number];
 
 /** Áreas da trilha (o tipo do recurso), para o filtro da tela. */
@@ -26,6 +31,7 @@ export const AUDIT_RESOURCE_TYPES = [
   'alert_exception',
   'finding',
   'incident',
+  'wazuh_agents',
 ] as const;
 export type AuditResourceType = (typeof AUDIT_RESOURCE_TYPES)[number];
 

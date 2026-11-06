@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { GcpAuditSync } from '../src/gcp/gcp-audit-sync.js';
 import type { PubsubMessage, PubsubReader } from '../src/gcp/pubsub.client.js';
+import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
 import { auditEntry, pubsubMessage, randomProject } from './gcp/fixtures.js';
 import { createTenant, createUser } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
@@ -296,6 +297,47 @@ describe('sync da auditoria da GCP para achados', () => {
     expect(queued.reason).toBe('ambiguous_source');
   });
 
+  it('projeto de cliente: a assinatura do nó só atribui ao cliente do projeto; outro cliente nunca recebe por ela', async () => {
+    // O módulo do Terraform (`customer_projects`) nomeia a assinatura de cada projeto de cliente
+    // `<prefixo>-security-<projeto>`, no projeto do nó, e só o sink daquele projeto publica no tópico dela. A conta
+    // guarda a identidade do sink e a assinatura; é a assinatura que decide o dono de cada evento.
+    const [ofA, ofB] = [randomProject(), randomProject()];
+    for (const [tenantId, project, number] of [
+      [tenantA, ofA, '111111111111'],
+      [tenantB, ofB, '222222222222'],
+    ] as const) {
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscriptionOf(project),
+          sinkWriterIdentity: `serviceAccount:service-${number}@gcp-sa-logging.iam.gserviceaccount.com`,
+        },
+      });
+    }
+    const pubsub = new FakePubsub();
+    // Pela assinatura de A: um evento do projeto de A e um do projeto de B (só o sink de A publica no tópico de A; se
+    // chegasse, seria cadastro errado). O de B não vai para B nem para A.
+    pubsub.publish(
+      subscriptionOf(ofA),
+      pubsubMessage(auditEntry({ project: ofA, insertId: `cli-${ofA}`, methodName: 'DeleteProject' })),
+      pubsubMessage(auditEntry({ project: ofB, insertId: `cli-${ofB}`, methodName: 'DeleteProject' })),
+    );
+    expect(await syncFor(pubsub).runOnce()).toMatchObject({ read: 2, created: 1, unowned: 1 });
+    expect(
+      await prisma.finding.findMany({
+        where: { sourceEventId: { in: [`${ofA}/cli-${ofA}`, `${ofB}/cli-${ofB}`] } },
+        select: { tenantId: true, sourceEventId: true },
+      }),
+    ).toEqual([{ tenantId: tenantA, sourceEventId: `${ofA}/cli-${ofA}` }]);
+    const queued = await prisma.unownedAlert.findUniqueOrThrow({
+      where: { source_sourceEventId: { source: 'gcp', sourceEventId: `${ofB}/cli-${ofB}` } },
+    });
+    expect(queued).toMatchObject({ reason: 'source_mismatch', accounts: [ofB] });
+  });
+
   it('operação longa: o registro do início e o do fim viram um achado só', async () => {
     const pubsub = new FakePubsub();
     const operation = `operation-${projectA}`;
@@ -322,6 +364,372 @@ describe('sync da auditoria da GCP para achados', () => {
         where: { accountId: projectA, sourceEventId: { startsWith: `${projectA}/operacao:` } },
       }),
     ).toBe(1);
+  });
+
+  it('a conexão segue a leitura e o evento: a leitura vazia deixa aguardando, a falha vira erro com o tipo e o primeiro evento conecta', async () => {
+    const project = randomProject();
+    const subscription = subscriptionOf(project);
+    const account = await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenantA,
+        provider: 'gcp',
+        accountId: project,
+        regions: [],
+        pubsubSubscription: subscription,
+      },
+    });
+    expect(account).toMatchObject({ connection: 'waiting', connectionError: null, lastCollectedAt: null });
+    const state = (accountId: string) =>
+      prisma.cloudAccount.findFirstOrThrow({
+        where: { provider: 'gcp', accountId },
+        select: { connection: true, connectionError: true, lastCollectedAt: true, lastEventAt: true },
+      });
+
+    // Lida sem nenhum evento: a coleta fica registrada, mas a leitura vazia não prova que os logs chegam.
+    const pubsub = new FakePubsub();
+    const first = new Date('2026-11-03T12:00:00.000Z');
+    await syncFor(pubsub).runOnce(first);
+    expect(await state(project)).toEqual({
+      connection: 'waiting',
+      connectionError: null,
+      lastCollectedAt: first,
+      lastEventAt: null,
+    });
+
+    // A leitura falha: erro com o tipo, nunca a mensagem; a última coleta bem-sucedida fica.
+    class PermissionDenied extends Error {
+      override name = 'PermissionDenied';
+    }
+    const failing: PubsubReader = {
+      pull: (name, max) =>
+        name === subscription
+          ? Promise.reject(new PermissionDenied(`Pub/Sub pull respondeu 403 em ${subscription}`))
+          : pubsub.pull(name, max),
+      acknowledge: (name, ackIds) => pubsub.acknowledge(name, ackIds),
+    };
+    const second = new Date('2026-11-03T12:01:00.000Z');
+    expect(await syncFor(failing).runOnce(second)).toMatchObject({ failedSubscriptions: 1 });
+    expect(await state(project)).toEqual({
+      connection: 'error',
+      connectionError: 'PermissionDenied',
+      lastCollectedAt: first,
+      lastEventAt: null,
+    });
+    // A falha numa assinatura de A não mexe na conta de B, lida na mesma execução.
+    expect(await state(projectB)).toMatchObject({ connectionError: null, lastCollectedAt: second });
+
+    // Volta a ler, agora com o primeiro evento: sai do erro e fica conectada, com a nova coleta e o evento.
+    pubsub.publish(
+      subscription,
+      pubsubMessage(
+        auditEntry({
+          project,
+          timestamp: '2026-11-03T12:01:30.000Z',
+          methodName: 'v1.compute.instances.list',
+        }),
+      ),
+    );
+    const third = new Date('2026-11-03T12:02:00.000Z');
+    await syncFor(pubsub).runOnce(third);
+    expect(await state(project)).toEqual({
+      connection: 'connected',
+      connectionError: null,
+      lastCollectedAt: third,
+      lastEventAt: new Date('2026-11-03T12:01:30.000Z'),
+    });
+  });
+
+  it('assinatura em clientes diferentes: as contas ficam com erro de origem ambígua, sem coleta', async () => {
+    const [ofA, ofB] = [randomProject(), randomProject()];
+    const shared = `projects/projeto-no/subscriptions/ambigua-conexao-${ofA}`;
+    await prisma.cloudAccount.create({
+      data: { tenantId: tenantA, provider: 'gcp', accountId: ofA, regions: [], pubsubSubscription: shared },
+    });
+    await prisma.cloudAccount.create({
+      data: { tenantId: tenantB, provider: 'gcp', accountId: ofB, regions: [], pubsubSubscription: shared },
+    });
+    await syncFor(new FakePubsub()).runOnce();
+    const accounts = await prisma.cloudAccount.findMany({
+      where: { provider: 'gcp', accountId: { in: [ofA, ofB] } },
+      select: { connection: true, connectionError: true, lastCollectedAt: true },
+    });
+    expect(accounts).toEqual([
+      { connection: 'error', connectionError: 'ambiguous_source', lastCollectedAt: null },
+      { connection: 'error', connectionError: 'ambiguous_source', lastCollectedAt: null },
+    ]);
+  });
+
+  it('leitura vazia: a conta que nunca recebeu evento segue aguardando; a que já recebeu fica conectada, mesmo vindo de um erro', async () => {
+    const [empty, seen, failed] = [randomProject(), randomProject(), randomProject()];
+    const shared = `projects/projeto-no/subscriptions/agregada-vazia-${empty}`;
+    const earlier = new Date('2026-11-03T08:00:00.000Z');
+    for (const [project, data] of [
+      [empty, {}],
+      [seen, { lastEventAt: earlier }],
+      [failed, { connection: 'error', connectionError: 'PermissionDenied', lastEventAt: earlier }],
+    ] as const) {
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId: tenantA,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: shared,
+          ...data,
+        },
+      });
+    }
+    const now = new Date('2026-11-03T12:30:00.000Z');
+    expect(await syncFor(new FakePubsub()).runOnce(now)).toMatchObject({ failedSubscriptions: 0 });
+
+    const rows = await prisma.cloudAccount.findMany({
+      where: { provider: 'gcp', accountId: { in: [empty, seen, failed] } },
+      select: { accountId: true, connection: true, connectionError: true, lastCollectedAt: true },
+    });
+    // A coleta e o fim do erro valem para todas; "conectada" só para quem já mostrou que os logs chegam.
+    expect(Object.fromEntries(rows.map(({ accountId, ...state }) => [accountId, state]))).toEqual({
+      [empty]: { connection: 'waiting', connectionError: null, lastCollectedAt: now },
+      [seen]: { connection: 'connected', connectionError: null, lastCollectedAt: now },
+      [failed]: { connection: 'connected', connectionError: null, lastCollectedAt: now },
+    });
+  });
+
+  it('falha no acknowledge do Pub/Sub também é erro de conexão, com o tipo do erro original', async () => {
+    const project = randomProject();
+    const subscription = subscriptionOf(project);
+    await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenantA,
+        provider: 'gcp',
+        accountId: project,
+        regions: [],
+        pubsubSubscription: subscription,
+      },
+    });
+    class DeadlineExceeded extends Error {
+      override name = 'DeadlineExceeded';
+    }
+    const pubsub = new FakePubsub();
+    pubsub.publish(
+      subscription,
+      pubsubMessage(auditEntry({ project, methodName: 'v1.compute.instances.list' })),
+    );
+    const failingAck: PubsubReader = {
+      pull: (name, max) => pubsub.pull(name, max),
+      acknowledge: (name, ackIds) =>
+        name === subscription
+          ? Promise.reject(new DeadlineExceeded(`ack expirou em ${subscription}`))
+          : pubsub.acknowledge(name, ackIds),
+    };
+    expect(await syncFor(failingAck).runOnce()).toMatchObject({ failedSubscriptions: 1 });
+    expect(
+      await prisma.cloudAccount.findFirstOrThrow({
+        where: { provider: 'gcp', accountId: project },
+        select: { connection: true, connectionError: true },
+      }),
+    ).toEqual({ connection: 'error', connectionError: 'DeadlineExceeded' });
+  });
+
+  it('erro interno (gravação do achado) conta como assinatura com falha, mas não mexe na conexão da conta', async () => {
+    class BrokenGrouping extends IncidentGrouping {
+      override place(): ReturnType<IncidentGrouping['place']> {
+        return Promise.reject(new TypeError('banco caiu no meio da gravação'));
+      }
+    }
+    const project = randomProject();
+    const subscription = subscriptionOf(project);
+    // A conta vem de um erro do Pub/Sub: só uma leitura bem-sucedida da fonte pode tirá-la dele.
+    const before = {
+      connection: 'error',
+      connectionError: 'PermissionDenied',
+      lastCollectedAt: new Date('2026-11-03T11:00:00.000Z'),
+    } as const;
+    await prisma.cloudAccount.create({
+      data: {
+        tenantId: tenantA,
+        provider: 'gcp',
+        accountId: project,
+        regions: [],
+        pubsubSubscription: subscription,
+        ...before,
+      },
+    });
+    const pubsub = new FakePubsub();
+    pubsub.publish(
+      subscription,
+      pubsubMessage(auditEntry({ project, insertId: `interno-${project}`, methodName: 'DeleteProject' })),
+    );
+    const name = `gcp-interno-${project.slice(-12)}`;
+    const sync = new GcpAuditSync(prisma, pubsub, { name, grouping: new BrokenGrouping() });
+
+    expect(await sync.runOnce(new Date('2026-11-03T12:40:00.000Z'))).toMatchObject({
+      failedSubscriptions: 1,
+      created: 0,
+    });
+    // Nada confirmado: a mensagem volta na próxima leitura.
+    expect(pubsub.pending(subscription)).toBe(1);
+    expect(
+      await prisma.cloudAccount.findFirstOrThrow({
+        where: { provider: 'gcp', accountId: project },
+        select: { connection: true, connectionError: true, lastCollectedAt: true },
+      }),
+    ).toEqual(before);
+    // O tipo do erro interno fica no estado do sync, não na conta.
+    expect(await prisma.syncState.findUniqueOrThrow({ where: { name } })).toMatchObject({
+      lastError: 'TypeError',
+    });
+  });
+
+  describe('medidor de uso (fonte gcp)', () => {
+    /** Cliente novo com uma conta GCP e a assinatura dela: o uso medido não se mistura com o dos outros testes. */
+    const meteredTenant = async (label: string) => {
+      const tenantId = await createTenant(app, `Cliente Demo ${label} (uso GCP)`);
+      const project = randomProject();
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscriptionOf(project),
+        },
+      });
+      return { tenantId, project, subscription: subscriptionOf(project) };
+    };
+    const gcpUsage = async (tenantId: string) =>
+      (
+        await prisma.forTenant(tenantId).ingestUsage.findMany({
+          where: { source: 'gcp' },
+          orderBy: { month: 'asc' },
+        })
+      ).map((row) => ({
+        month: row.month.toISOString().slice(0, 10),
+        bytes: row.bytes,
+        events: row.events,
+      }));
+    /** Tamanho do registro como o Pub/Sub entrega, já decodificado. */
+    const decoded = (...messages: PubsubMessage[]) =>
+      BigInt(
+        messages.reduce((total, message) => total + Buffer.from(message.data ?? '', 'base64').length, 0),
+      );
+
+    it('depois do ack, conta toda mensagem lida (suspeita, comum, inválida e de outro projeto) para o cliente da assinatura', async () => {
+      const owner = await meteredTenant('A');
+      const other = await meteredTenant('B');
+      const messages = [
+        pubsubMessage(auditEntry({ project: owner.project, methodName: 'DeleteProject' })),
+        pubsubMessage(auditEntry({ project: owner.project, methodName: 'v1.compute.instances.list' })),
+        pubsubMessage(null, Buffer.from('registro que não é JSON: ação inválida').toString('base64')),
+        // Evento do projeto de B que chegou pela assinatura de A: o volume é da assinatura, não do projeto.
+        pubsubMessage(auditEntry({ project: other.project, methodName: 'SetIamPolicy' })),
+        pubsubMessage(auditEntry({ project: owner.project, methodName: 'v1.compute.instances.get' })),
+      ];
+      const pubsub = new FakePubsub();
+      pubsub.publish(owner.subscription, ...messages);
+
+      const report = await syncFor(pubsub).runOnce(new Date('2027-02-10T12:00:00.000Z'));
+      expect(report).toMatchObject({ read: 5, created: 1, ignored: 2, unowned: 2, failedSubscriptions: 0 });
+      expect(await gcpUsage(owner.tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(...messages), events: 5n },
+      ]);
+      // A/B: nada do que chegou pela assinatura de A conta para B.
+      expect(await gcpUsage(other.tenantId)).toEqual([]);
+
+      // Próxima execução no mesmo mês: soma na mesma linha.
+      const later = pubsubMessage(
+        auditEntry({ project: owner.project, methodName: 'v1.compute.zones.list' }),
+      );
+      pubsub.publish(owner.subscription, later);
+      await syncFor(pubsub).runOnce(new Date('2027-02-10T12:01:00.000Z'));
+      expect(await gcpUsage(owner.tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(...messages, later), events: 6n },
+      ]);
+    });
+
+    it('o lote que falha antes do ack não conta; quando volta e é confirmado, conta uma vez', async () => {
+      class BrokenGrouping extends IncidentGrouping {
+        override place(): ReturnType<IncidentGrouping['place']> {
+          return Promise.reject(new TypeError('banco caiu no meio da gravação'));
+        }
+      }
+      class DeadlineExceeded extends Error {
+        override name = 'DeadlineExceeded';
+      }
+      const { tenantId, project, subscription } = await meteredTenant('falha');
+      const message = pubsubMessage(
+        auditEntry({ project, insertId: `medido-${project}`, methodName: 'DeleteProject' }),
+      );
+      const pubsub = new FakePubsub();
+      pubsub.publish(subscription, message);
+      const now = new Date('2027-02-11T12:00:00.000Z');
+
+      // Falha na gravação do achado, antes do ack: a mensagem volta e nada é medido.
+      const broken = new GcpAuditSync(prisma, pubsub, {
+        name: `gcp-uso-${project.slice(-12)}`,
+        grouping: new BrokenGrouping(),
+      });
+      expect(await broken.runOnce(now)).toMatchObject({ failedSubscriptions: 1, read: 1 });
+      // Falha no próprio ack: também não conta.
+      const failingAck: PubsubReader = {
+        pull: (name, max) => pubsub.pull(name, max),
+        acknowledge: (name, ackIds) =>
+          name === subscription
+            ? Promise.reject(new DeadlineExceeded('ack expirou'))
+            : pubsub.acknowledge(name, ackIds),
+      };
+      expect(await syncFor(failingAck).runOnce(now)).toMatchObject({ failedSubscriptions: 1, read: 1 });
+      expect(pubsub.pending(subscription)).toBe(1);
+      expect(await gcpUsage(tenantId)).toEqual([]);
+
+      // Lida de novo e confirmada: medida uma vez só (o achado já tinha sido gravado na execução do ack que falhou).
+      expect(await syncFor(pubsub).runOnce(now)).toMatchObject({
+        failedSubscriptions: 0,
+        read: 1,
+        duplicates: 1,
+      });
+      expect(pubsub.pending(subscription)).toBe(0);
+      expect(await gcpUsage(tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(message), events: 1n },
+      ]);
+    });
+
+    it('o mês do uso é o da execução, no calendário de Brasília (vira às 03:00 UTC)', async () => {
+      const { tenantId, project, subscription } = await meteredTenant('virada');
+      const pubsub = new FakePubsub();
+      const before = pubsubMessage(auditEntry({ project, methodName: 'v1.compute.instances.list' }));
+      pubsub.publish(subscription, before);
+      await syncFor(pubsub).runOnce(new Date('2027-03-01T02:59:59.999Z'));
+      const after = pubsubMessage(auditEntry({ project, methodName: 'v1.compute.instances.list' }));
+      pubsub.publish(subscription, after);
+      await syncFor(pubsub).runOnce(new Date('2027-03-01T03:00:00.000Z'));
+      expect(await gcpUsage(tenantId)).toEqual([
+        { month: '2027-02-01', bytes: decoded(before), events: 1n },
+        { month: '2027-03-01', bytes: decoded(after), events: 1n },
+      ]);
+    });
+
+    it('assinatura cadastrada em clientes diferentes: o volume não conta para nenhum', async () => {
+      const first = await createTenant(app, 'Cliente Demo A (uso ambíguo)');
+      const second = await createTenant(app, 'Cliente Demo B (uso ambíguo)');
+      const [ofFirst, ofSecond] = [randomProject(), randomProject()];
+      const shared = `projects/projeto-no/subscriptions/ambigua-uso-${ofFirst}`;
+      for (const [tenantId, project] of [
+        [first, ofFirst],
+        [second, ofSecond],
+      ] as const) {
+        await prisma.cloudAccount.create({
+          data: { tenantId, provider: 'gcp', accountId: project, regions: [], pubsubSubscription: shared },
+        });
+      }
+      const pubsub = new FakePubsub();
+      pubsub.publish(shared, pubsubMessage(auditEntry({ project: ofFirst, methodName: 'DeleteProject' })));
+      expect(await syncFor(pubsub).runOnce(new Date('2027-02-12T12:00:00.000Z'))).toMatchObject({
+        read: 1,
+        unowned: 1,
+      });
+      expect(await gcpUsage(first)).toEqual([]);
+      expect(await gcpUsage(second)).toEqual([]);
+    });
   });
 
   it('dois workers ao mesmo tempo: só um lê', async () => {

@@ -1,7 +1,6 @@
 [
   {
     "accountId": "111122223333",
-    "externalId": "exemplo-external-id-conta-a-0000000000",
     "region": "sa-east-1",
     "onlyLogsAfter": "2026-NOV-01",
     "cloudtrailBucket": "verax-control-cloudtrail-111122223333-sa-east-1",
@@ -10,7 +9,6 @@
   },
   {
     "accountId": "444455556666",
-    "externalId": "exemplo-external-id-conta-b-0000000000",
     "region": "us-east-1",
     "onlyLogsAfter": "2026-OCT-15",
     "cloudtrailBucket": "trilha-existente-444455556666"

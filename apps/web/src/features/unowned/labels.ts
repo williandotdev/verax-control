@@ -28,11 +28,27 @@ export const UNOWNED_REASON_LABELS: Readonly<Record<UnownedReason, { label: stri
   },
   not_aws: {
     label: 'Não veio de conta AWS',
-    hint: 'O alerta não veio da leitura dos logs da AWS (por exemplo, um alerta do próprio Wazuh).',
+    hint: 'O alerta não veio da leitura dos logs da AWS (por exemplo, um alerta interno do coletor).',
   },
   invalid_alert: {
     label: 'Fora do formato esperado',
-    hint: 'O alerta não passou na validação. Confira a versão do Wazuh e os decodificadores.',
+    hint: 'O alerta não passou na validação. Confira a versão do coletor e o formato do log de origem.',
+  },
+  unknown_agent: {
+    label: 'Agente fora da lista',
+    hint: 'O agente da instância não está na lista do cliente do nó. Confira o registro dele no manager e a lista de agentes (atualizada a cada minuto).',
+  },
+  agent_name_mismatch: {
+    label: 'Agente com outro nome',
+    hint: 'O id do agente está na lista do cliente do nó, mas com outro nome. Confira se o agente foi registrado de novo.',
+  },
+  agent_account_conflict: {
+    label: 'Agente cita conta de outro cliente',
+    hint: 'O alerta da instância cita uma conta AWS cadastrada em outro cliente, e na dúvida não é atribuído a ninguém. Investigue a instância.',
+  },
+  agents_disabled: {
+    label: 'Agentes desligados no nó',
+    hint: 'Chegou alerta de agente, mas os agentes não estão ligados no worker do nó (WAZUH_AGENTS_FILE e WAZUH_AGENTS_TENANT). Confira o node.conf.',
   },
 };
 

@@ -1,0 +1,46 @@
+{
+  "name": "@verax/control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Plano de controle do Verax Control: checkout, webhook, estados do cliente e provisionamento (NestJS)",
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "type": "module",
+  "scripts": {
+    "build": "nest build",
+    "dev": "nest start --watch",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "9.4.0",
+    "@google-cloud/secret-manager": "7.2.0",
+    "@google-cloud/tasks": "7.3.1",
+    "@nestjs/common": "12.3.2",
+    "@nestjs/core": "12.3.2",
+    "@nestjs/platform-express": "12.3.2",
+    "google-auth-library": "11.3.2",
+    "helmet": "8.3.0",
+    "nestjs-pino": "5.3.1",
+    "nodemailer": "10.3.1",
+    "pino": "10.4.0",
+    "pino-http": "11.0.0",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "stripe": "23.1.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "12.0.11",
+    "@nestjs/testing": "12.3.2",
+    "@swc/core": "1.16.20",
+    "@types/express": "5.0.6",
+    "@types/node": "24.19.2",
+    "@types/supertest": "7.2.1",
+    "pino-pretty": "13.2.0",
+    "supertest": "7.3.1",
+    "typescript": "6.0.3",
+    "unplugin-swc": "2.0.0",
+    "vitest": "5.0.5"
+  }
+}

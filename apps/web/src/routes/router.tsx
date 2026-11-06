@@ -1,15 +1,22 @@
 import { type ComponentType, createElement } from 'react';
+import { ESCALATION_CONFIRM_PATH, ESCALATION_UNSUBSCRIBE_PATH } from '@verax/shared';
 import { createBrowserRouter, type RouteObject } from 'react-router';
+import { DemoTourMount } from '@/features/tour/entry';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
 import { CloudAccountsPage } from '@/pages/admin/cloud-accounts-page';
+import { EscalationContactPage } from '@/pages/admin/escalation-contact-page';
 import { ExceptionsPage } from '@/pages/admin/exceptions-page';
+import { PlanPage } from '@/pages/admin/plan-page';
 import { ProtectedResourcesPage } from '@/pages/admin/protected-resources-page';
 import { TenantsPage } from '@/pages/admin/tenants-page';
 import { UsersPage } from '@/pages/admin/users-page';
+import { AccountPage } from '@/pages/account-page';
+import { AgentsPage } from '@/pages/agents-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { AuditPage } from '@/pages/audit-page';
 import { ChangePasswordPage } from '@/pages/change-password-page';
+import { EscalationConfirmPage, EscalationUnsubscribePage } from '@/pages/escalation-link-pages';
 import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
 import { IncidentPage } from '@/pages/incident-page';
@@ -51,8 +58,11 @@ const pageByPath: Partial<Record<string, ComponentType>> = {
   '/cadastros/clientes': TenantsPage,
   '/cadastros/usuarios': UsersPage,
   '/cadastros/contas': CloudAccountsPage,
+  '/cadastros/agentes': AgentsPage,
   '/cadastros/protecao': ProtectedResourcesPage,
   '/cadastros/excecoes': ExceptionsPage,
+  '/cadastros/plano': PlanPage,
+  '/cadastros/escalonamento': EscalationContactPage,
   '/auditoria': AuditPage,
   '/alertas-sem-dono': UnownedAlertsPage,
 };
@@ -78,6 +88,15 @@ const detailPages: RouteObject[] = [
       </RequirePermission>
     ),
   },
+  // A própria conta, pelo link do cabeçalho (fase 2, PR-17').
+  {
+    path: 'minha-conta',
+    element: (
+      <RequirePermission permission="notification_preferences:read">
+        <AccountPage />
+      </RequirePermission>
+    ),
+  },
 ];
 
 export const routes: RouteObject[] = [
@@ -88,10 +107,25 @@ export const routes: RouteObject[] = [
   { path: '/mfa/cadastro', element: <MfaEnrollPage /> },
   { path: '/esqueci-senha', element: <ForgotPasswordPage /> },
   { path: '/redefinir-senha', element: <SetPasswordPage /> },
+  // Os links do e-mail ao contato de escalonamento (D8): públicos, sem login.
+  { path: ESCALATION_CONFIRM_PATH, element: <EscalationConfirmPage /> },
+  { path: ESCALATION_UNSUBSCRIBE_PATH, element: <EscalationUnsubscribePage /> },
   { path: '/sem-permissao', element: <ForbiddenPage /> },
   {
     element: <RequireSession />,
-    children: [{ path: '/', element: <AppLayout />, children: [...appPages, ...detailPages] }],
+    children: [
+      {
+        path: '/',
+        // O tour guiado da demonstração fica ao lado do painel; fora do modo `mock`, `DemoTourMount` não renderiza nada.
+        element: (
+          <>
+            <AppLayout />
+            <DemoTourMount />
+          </>
+        ),
+        children: [...appPages, ...detailPages],
+      },
+    ],
   },
   { path: '*', element: <NotFoundPage /> },
 ];

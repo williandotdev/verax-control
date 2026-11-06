@@ -88,6 +88,23 @@ describe('Auditoria', () => {
     );
   });
 
+  it('o período segue o histórico do plano: 12 meses no Profissional, até 90 dias no Essencial', async () => {
+    const router = renderAt('/auditoria');
+    await rows();
+    await screen.findByRole('option', { name: 'Últimos 12 meses' });
+    await userEvent.selectOptions(screen.getByLabelText('Período'), '12m');
+    await waitFor(() => expect(router.state.location.search).toBe('?periodo=12m'));
+    expect(await rows()).not.toHaveLength(0);
+  });
+
+  it('Essencial: sem 12 meses, e o 12m da URL fica de fora', async () => {
+    renderAt('/auditoria?periodo=12m', { me: demoMe('admin_cliente'), historyDays: 90 });
+    await rows();
+    await screen.findByRole('option', { name: 'Últimos 90 dias' });
+    expect(screen.queryByRole('option', { name: 'Últimos 12 meses' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Período')).toHaveValue('');
+  });
+
   it('o admin_verax sem cliente escolhido vê a trilha da Verax, com tentativas de login anônimas', async () => {
     renderAt('/auditoria', { me: demoMe('admin_verax') });
     expect(await screen.findByText(/Trilha da Verax/)).toBeInTheDocument();

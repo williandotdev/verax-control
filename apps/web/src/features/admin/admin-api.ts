@@ -3,14 +3,17 @@ import {
   type AlertExceptionCreate,
   alertExceptionSchema,
   type AlertExceptionUpdate,
+  type CloudAccount,
   type CloudAccountCreate,
   cloudAccountSchema,
   type CloudAccountUpdate,
+  type CloudCredentialInput,
   paginatedSchema,
   type ProtectedResourceCreate,
   protectedResourceSchema,
   type ProtectedResourceUpdate,
   type TenantCreate,
+  tenantCreatedSchema,
   tenantSchema,
   tenantSummarySchema,
   type TenantUpdate,
@@ -20,6 +23,7 @@ import {
   userSchema,
   type UserUpdate,
 } from '@verax/shared';
+import { useCallback, useState } from 'react';
 import type { z } from 'zod';
 import { api } from '@/lib/api';
 
@@ -30,13 +34,23 @@ import { api } from '@/lib/api';
 
 const PAGE_SIZE = 20;
 
-function useList<T>(key: string, path: string, schema: z.ZodType<T>, page: number, enabled: boolean) {
+function useList<T>(
+  key: string,
+  path: string,
+  schema: z.ZodType<T>,
+  page: number,
+  enabled: boolean,
+  /** Relê a página nesse intervalo enquanto algum item pedir (ms); sem informar, só quando a tela pede. */
+  pollWhile?: { intervalMs: number; item: (item: T) => boolean },
+) {
   const list = paginatedSchema(schema);
   return useQuery({
     queryKey: [key, page],
     queryFn: () => api.get(`${path}?page=${page}&pageSize=${PAGE_SIZE}`, list),
     enabled,
     placeholderData: keepPreviousData,
+    refetchInterval: (query) =>
+      pollWhile && query.state.data?.items.some(pollWhile.item) === true ? pollWhile.intervalMs : false,
   });
 }
 
@@ -57,6 +71,13 @@ function useWrite<TInput, TOutput>(
 
 export const ADMIN_PAGE_SIZE = PAGE_SIZE;
 
+/**
+ * A senha temporária só vem na resposta que a gera (criar a conta, criar o cliente com o primeiro administrador ou
+ * gerar outra). Ela fica no estado da mutação, que é esquecido assim que a tela que a mostra sai (`gcTime: 0`): nada
+ * a guarda depois.
+ */
+const FORGET = { gcTime: 0 };
+
 // --- Clientes (T3.1, só admin_verax) ---
 export const useTenantList = (page: number, enabled: boolean) =>
   useList('admin-tenants', '/v1/tenants', tenantSummarySchema, page, enabled);
@@ -66,9 +87,12 @@ export const useTenant = (id: string | null) =>
     queryFn: () => api.get(`/v1/tenants/${encodeURIComponent(id ?? '')}`, tenantSchema),
     enabled: id !== null,
   });
+/** O cliente nasce com o primeiro administrador; a senha temporária dele vem só nesta resposta. */
 export const useCreateTenant = () =>
-  useWrite(['admin-tenants', 'tenants'], (input: TenantCreate) =>
-    api.post('/v1/tenants', input, tenantSchema),
+  useWrite(
+    ['admin-tenants', 'tenants'],
+    (input: TenantCreate) => api.post('/v1/tenants', input, tenantCreatedSchema),
+    FORGET,
   );
 export const useUpdateTenant = (id: string) =>
   useWrite(['admin-tenants', 'admin-tenant', 'tenants'], (input: TenantUpdate) =>
@@ -78,11 +102,6 @@ export const useUpdateTenant = (id: string) =>
 // --- Usuários do cliente (T3.2) ---
 export const useUserList = (page: number, enabled: boolean) =>
   useList('admin-users', '/v1/users', userSchema, page, enabled);
-/**
- * A senha temporária só vem na resposta que a gera (criar a conta ou gerar outra). Ela fica no estado da mutação, que
- * é esquecido assim que a tela que a mostra sai (`gcTime: 0`): nada a guarda depois.
- */
-const FORGET = { gcTime: 0 };
 export const useCreateUser = () =>
   useWrite(['admin-users'], (input: UserCreate) => api.post('/v1/users', input, userCreatedSchema), FORGET);
 export const useUpdateUser = (id: string) =>
@@ -99,8 +118,16 @@ export const useGenerateTemporaryPassword = (id: string) =>
   );
 
 // --- Contas cloud (T3.3) ---
+/**
+ * Enquanto uma conta AWS tem o "Verificar" pendente, a lista é relida a cada 5 s, até o worker gravar o resultado (ele
+ * responde em até 30 s, ou em até 10 min se o papel ainda não valer no IAM).
+ */
+export const AWS_CHECK_POLL_MS = 5_000;
 export const useCloudAccountList = (page: number, enabled: boolean) =>
-  useList('admin-cloud-accounts', '/v1/cloud-accounts', cloudAccountSchema, page, enabled);
+  useList('admin-cloud-accounts', '/v1/cloud-accounts', cloudAccountSchema, page, enabled, {
+    intervalMs: AWS_CHECK_POLL_MS,
+    item: (account) => account.checkRequestedAt !== null,
+  });
 export const useCreateCloudAccount = () =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountCreate) =>
     api.post('/v1/cloud-accounts', input, cloudAccountSchema),
@@ -109,6 +136,73 @@ export const useUpdateCloudAccount = (id: string) =>
   useWrite(['admin-cloud-accounts', 'cloud-accounts'], (input: CloudAccountUpdate) =>
     api.patch(`/v1/cloud-accounts/${encodeURIComponent(id)}`, input, cloudAccountSchema),
   );
+/** "Verificar" a conta AWS: o pedido vai para o worker; a resposta já traz a conta com o pedido pendente. */
+export const useVerifyAwsAccount = (id: string) =>
+  useWrite(['admin-cloud-accounts', 'cloud-accounts'], () =>
+    api.post(`/v1/cloud-accounts/${encodeURIComponent(id)}/aws/verify`, undefined, cloudAccountSchema),
+  );
+
+/** Estado da última escrita da credencial: só o resultado (a conta, sem segredo) ou o erro, nunca o que foi colado. */
+interface CredentialWriteState {
+  pending: boolean;
+  error: unknown;
+  /** A conta depois do `PUT` (com `keyStatus`), para o aviso de sucesso. */
+  saved: CloudAccount | null;
+  removed: boolean;
+}
+
+const IDLE: CredentialWriteState = { pending: false, error: null, saved: null, removed: false };
+
+/**
+ * Credencial de leitura da conta (fase 2: o token do Cloudflare). Sem `useMutation` de propósito: o cache de mutações
+ * guarda as `variables` (o token colado) enquanto a tela está aberta, e as ferramentas de desenvolvimento as mostram.
+ * A chamada vai direto pelo cliente HTTP, e o estado guarda só a resposta e o erro. Depois de gravar ou remover, as
+ * listas de contas são relidas (a resposta traz só os metadados, `keyStatus`).
+ */
+export function useCloudCredential(id: string) {
+  const queryClient = useQueryClient();
+  const [state, setState] = useState<CredentialWriteState>(IDLE);
+  const path = `/v1/cloud-accounts/${encodeURIComponent(id)}/credential`;
+
+  const refresh = useCallback(() => {
+    for (const key of ['admin-cloud-accounts', 'cloud-accounts']) {
+      void queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  }, [queryClient]);
+
+  const save = useCallback(
+    async (input: CloudCredentialInput): Promise<CloudAccount | null> => {
+      setState({ ...IDLE, pending: true });
+      try {
+        const saved = await api.put(path, input, cloudAccountSchema);
+        setState({ ...IDLE, saved });
+        refresh();
+        return saved;
+      } catch (error) {
+        setState({ ...IDLE, error });
+        return null;
+      }
+    },
+    [path, refresh],
+  );
+
+  const remove = useCallback(async (): Promise<boolean> => {
+    setState({ ...IDLE, pending: true });
+    try {
+      await api.delete(path);
+      setState({ ...IDLE, removed: true });
+      refresh();
+      return true;
+    } catch (error) {
+      setState({ ...IDLE, error });
+      return false;
+    }
+  }, [path, refresh]);
+
+  const reset = useCallback(() => setState(IDLE), []);
+
+  return { ...state, save, remove, reset };
+}
 
 // --- Lista de proteção (T3.4) ---
 export const useProtectedList = (page: number, enabled: boolean) =>

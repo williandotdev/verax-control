@@ -47,6 +47,23 @@ describe('achados', () => {
     expect(findingDetailSchema.safeParse({ ...detail, rawEvent: null }).success).toBe(true);
   });
 
+  it('o achado de um agente do Wazuh (instância do cliente): a origem é o agente, nunca confundida com conta', () => {
+    const agent = { ...finding, accountId: 'agent:001', source: 'wazuh_agent', resource: 'host:web-01' };
+    expect(findingSchema.parse(agent)).toEqual(agent);
+    for (const accountId of [
+      'agent:1',
+      'agent:1234567',
+      'agent:abc',
+      'agente:001',
+      'agent:001 ',
+      'agent_001',
+    ]) {
+      expect(findingSchema.safeParse({ ...agent, accountId }).success).toBe(false);
+    }
+    // O filtro da lista continua só por conta.
+    expect(findingListQuerySchema.safeParse({ accountId: 'agent:001' }).success).toBe(false);
+  });
+
   it.each([
     ['severidade desconhecida', { severity: 'info' }],
     ['status desconhecido', { status: 'closed' }],
@@ -69,6 +86,7 @@ describe('achados', () => {
     });
     expect(findingListQuerySchema.safeParse({ ordem: 'asc' }).success).toBe(false);
     expect(findingListQuerySchema.safeParse({ period: '1y' }).success).toBe(false);
+    expect(findingListQuerySchema.parse({ period: '12m' })).toMatchObject({ period: '12m' });
   });
 
   it('comentário aceita quebra de linha e recusa vazio e caractere de controle', () => {

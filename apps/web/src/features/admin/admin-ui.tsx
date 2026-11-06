@@ -54,7 +54,8 @@ export function SelectInput({
 }: Omit<ComponentProps<'select'>, 'id'> & {
   label: string;
   error?: string;
-  options: readonly { value: string; label: string }[];
+  /** `disabled`: a opção aparece, mas não pode ser escolhida (por exemplo, já usada em outra linha). */
+  options: readonly { value: string; label: string; disabled?: boolean }[];
 }) {
   const id = useId();
   return (
@@ -70,13 +71,13 @@ export function SelectInput({
         {...props}
       >
         {options.map((option) => (
-          <option key={option.value} value={option.value}>
+          <option key={option.value} value={option.value} disabled={option.disabled}>
             {option.label}
           </option>
         ))}
       </select>
       {error && (
-        <p id={`${id}-erro`} className="text-xs text-critical">
+        <p id={`${id}-erro`} className="text-xs text-critical-text">
           {error}
         </p>
       )}
@@ -112,7 +113,7 @@ export function TextAreaField({
         </p>
       )}
       {error && (
-        <p id={`${id}-erro`} className="text-xs text-critical">
+        <p id={`${id}-erro`} className="text-xs text-critical-text">
           {error}
         </p>
       )}
@@ -182,7 +183,7 @@ export function ConfirmButton({
 export function FormError({ error }: { error: unknown }) {
   if (!error) return null;
   return (
-    <p role="alert" className="text-sm text-critical">
+    <p role="alert" className="text-sm text-critical-text">
       {errorMessage(error)}
     </p>
   );

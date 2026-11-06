@@ -4,6 +4,7 @@ import {
   type FindingStatus,
   FINDING_STATUSES,
   type Permission,
+  RAW_EVENT_RETENTION_DAYS,
 } from '@verax/shared';
 import { type FormEvent, useId, useState } from 'react';
 import { Link } from 'react-router';
@@ -12,6 +13,7 @@ import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
 import { Sheet } from '@/components/ui/sheet';
+import { usePlanHistory } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, formatTimestamp } from '@/lib/format';
@@ -22,7 +24,7 @@ import {
   useFinding,
   useUpdateFindingStatus,
 } from './findings-api';
-import { FINDING_SOURCE_LABELS } from './labels';
+import { FINDING_SOURCE_LABELS, findingOriginLabel } from './labels';
 
 /** Detalhe do achado num painel lateral (T7.7): evento bruto, status, comentários e exceção. */
 export function FindingPanel({ id, onClose }: { id: string | null; onClose: () => void }) {
@@ -36,7 +38,7 @@ export function FindingPanel({ id, onClose }: { id: string | null; onClose: () =
       title={finding.data?.title ?? 'Achado'}
       description={
         finding.data
-          ? `${FINDING_SOURCE_LABELS[finding.data.source]} · conta ${finding.data.accountId}`
+          ? `${FINDING_SOURCE_LABELS[finding.data.source]} · ${findingOriginLabel(finding.data.accountId)}`
           : undefined
       }
     >
@@ -51,6 +53,14 @@ export function FindingPanel({ id, onClose }: { id: string | null; onClose: () =
   );
 }
 
+/** De onde vem a regra do achado, quando não é a do Wazuh para os logs da AWS. */
+const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
+  gcp_audit: 'Regra (auditoria da GCP)',
+  cloudflare_audit: 'Regra (auditoria do Cloudflare)',
+  cloudflare_waf: 'Regra (eventos de segurança do Cloudflare)',
+  wazuh_agent: 'Regra (agente do Wazuh)',
+};
+
 function FindingDetailView({ finding }: { finding: FindingDetail }) {
   const { data: me } = useMe();
   const can = (permission: Permission) => me?.permissions.includes(permission) === true;
@@ -63,11 +73,15 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
       'Usuário',
       finding.actor.user && `${finding.actor.user}${finding.actor.type ? ` (${finding.actor.type})` : ''}`,
     ],
-    ['Chave de acesso', finding.actor.accessKeyId],
+    // No Cloudflare, o campo guarda o ID do token de API usado na ação (não é segredo).
+    [
+      finding.source === 'cloudflare_audit' ? 'ID do token de API' : 'Chave de acesso',
+      finding.actor.accessKeyId,
+    ],
     ['IP de origem', finding.actor.ip],
     [
-      // Os alertas da AWS vêm das regras do Wazuh; os da GCP, das regras do próprio nó.
-      finding.source === 'gcp_audit' ? 'Regra (auditoria da GCP)' : 'Regra do Wazuh',
+      // Os alertas da AWS e dos agentes vêm das regras do Wazuh; os da GCP e do Cloudflare, das regras do próprio nó.
+      RULE_LABELS[finding.source] ?? 'Regra (logs da AWS)',
       `${finding.ruleId} (nível ${finding.ruleLevel})`,
     ],
   ];
@@ -121,17 +135,40 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
 
       <details className="rounded-md border">
         <summary className="cursor-pointer px-3 py-2 text-sm font-semibold">Evento bruto</summary>
+        <RawEventRetention />
         {finding.rawEvent ? (
-          <pre className="max-h-96 overflow-auto border-t bg-foreground/[0.03] p-3 text-xs">
+          // Rola por dentro: o foco pelo teclado deixa ler o evento inteiro sem mouse.
+          <pre
+            role="region"
+            aria-label="Evento bruto do log"
+            tabIndex={0}
+            className="max-h-96 overflow-auto border-t bg-foreground/[0.03] p-3 text-xs"
+          >
             {JSON.stringify(finding.rawEvent, null, 2)}
           </pre>
         ) : (
           <p className="border-t p-3 text-sm text-muted-foreground">
-            O evento bruto já saiu da retenção de 90 dias do indexer.
+            O evento bruto deste achado não está disponível.
           </p>
         )}
       </details>
     </>
+  );
+}
+
+/**
+ * Quanto tempo o evento bruto fica (a retenção do índice do Wazuh) e, com o plano conhecido, quanto tempo ficam os
+ * dados do achado, que seguem o histórico do plano.
+ */
+function RawEventRetention() {
+  const history = usePlanHistory();
+  const days = history.data?.historyDays;
+  return (
+    <p className="border-t px-3 py-2 text-xs text-muted-foreground">
+      Evento bruto do log disponível por {RAW_EVENT_RETENTION_DAYS} dias.
+      {typeof days === 'number' &&
+        ` Os dados do achado acima ficam pelo histórico do plano, de ${days} dias.`}
+    </p>
   );
 }
 
@@ -165,7 +202,7 @@ function StatusActions({
   };
 
   return (
-    <section aria-labelledby={`${commentId}-titulo`} className="space-y-2">
+    <section data-tour="achado-triagem" aria-labelledby={`${commentId}-titulo`} className="space-y-2">
       <h3 id={`${commentId}-titulo`} className="text-sm font-semibold">
         Mudar status
       </h3>
@@ -192,7 +229,7 @@ function StatusActions({
         ))}
       </div>
       {update.error && (
-        <p role="alert" className="text-sm text-critical">
+        <p role="alert" className="text-sm text-critical-text">
           {errorMessage(update.error)}
         </p>
       )}
@@ -276,7 +313,7 @@ function ExceptionOffer({ finding, onDone }: { finding: FindingDetail; onDone: (
         />
       </div>
       {create.error && (
-        <p role="alert" className="text-sm text-critical">
+        <p role="alert" className="text-sm text-critical-text">
           {errorMessage(create.error)}
         </p>
       )}
@@ -336,7 +373,7 @@ function Comments({ finding, canComment }: { finding: FindingDetail; canComment:
             maxLength={2000}
           />
           {add.error && (
-            <p role="alert" className="text-sm text-critical">
+            <p role="alert" className="text-sm text-critical-text">
               {errorMessage(add.error)}
             </p>
           )}

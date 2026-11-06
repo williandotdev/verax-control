@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { AlertCursor, AlertSearch } from '../indexer/alert-queries.js';
 import type { AlertHit } from '../indexer/indexer.client.js';
+import { isAgentAlert } from './agent-alert.js';
 import { AccountDirectory, type RegisteredAwsAccount, resolveAlertOwner } from './alert-owner.js';
+import { awsAlertTitle } from './aws-rule-titles.js';
 import { type ActiveException, matchingException } from './exception-match.js';
 import { toFindingDraft } from './finding-draft.js';
 import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from './finding-store.js';
@@ -52,13 +54,15 @@ export interface SyncReport {
   /** Incidentes abertos e achados que entraram num incidente existente (T5.6). */
   incidentsOpened: number;
   incidentsJoined: number;
+  /** Alertas de agente nas instâncias do cliente (`agent.id` diferente de 000): são do sync dos agentes. */
+  skipped: number;
   lastProcessedAt: string | null;
 }
 
 const MAX_EVENT_ID = 128;
 
 /** O ID que identifica um alerta inválido na fila: o do próprio alerta ou, se nem isso houver, o do indexer. */
-function eventIdOf(id: string | null, hit: AlertHit): string {
+export function eventIdOf(id: string | null, hit: AlertHit): string {
   return (id ?? `indexer:${hit.id}`).slice(0, MAX_EVENT_ID);
 }
 
@@ -77,7 +81,7 @@ function unownedRecord(
     occurredAt: alert ? new Date(alert.timestamp) : null,
     ruleId: alert?.rule.id ?? null,
     ruleLevel: alert?.rule.level ?? null,
-    title: alert?.rule.description ?? null,
+    title: alert ? awsAlertTitle(alert.rule) : null,
   };
 }
 
@@ -129,6 +133,7 @@ export class AlertSync {
       excepted: 0,
       incidentsOpened: 0,
       incidentsJoined: 0,
+      skipped: 0,
       lastProcessedAt: null,
     };
     if (!(await this.lease.acquire(now))) return { ...report, status: 'locked' };
@@ -204,6 +209,12 @@ export class AlertSync {
     report: SyncReport,
     lastEvents: LastEvents,
   ): Promise<void> {
+    // A página só traz alertas do manager (`syncPage`); o de um agente que chegasse até aqui é do sync dos agentes, e
+    // nunca é atribuído por este caminho.
+    if (isAgentAlert(hit.source)) {
+      report.skipped += 1;
+      return;
+    }
     const parsed = parseWazuhAlert(hit.source);
     if (!parsed.ok) {
       await this.store.recordUnowned(unownedRecord(eventIdOf(parsed.id, hit), parsed.reason, [], null));

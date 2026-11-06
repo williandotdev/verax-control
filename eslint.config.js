@@ -89,9 +89,9 @@ export default tseslint.config(
     },
   },
   {
-    // API: Node, NestJS. Imports de tipo usados em injeção de dependência precisam existir em runtime,
-    // então consistent-type-imports fica desligado (o emitDecoratorMetadata depende do import real).
-    files: ['apps/api/**/*.ts'],
+    // API e plano de controle: Node, NestJS. Imports de tipo usados em injeção de dependência precisam existir em
+    // runtime, então consistent-type-imports fica desligado (o emitDecoratorMetadata depende do import real).
+    files: ['apps/api/**/*.ts', 'apps/control-plane/**/*.ts'],
     languageOptions: { globals: { ...globals.node } },
     rules: {
       '@typescript-eslint/consistent-type-imports': 'off',
@@ -99,13 +99,20 @@ export default tseslint.config(
   },
   {
     // Testes criam arquivos em diretórios temporários gerados pelo próprio teste.
-    files: ['**/*.test.{ts,tsx}', 'apps/api/test/**/*.ts', 'apps/web/e2e/**/*.ts'],
+    files: [
+      '**/*.test.{ts,tsx}',
+      'apps/api/test/**/*.ts',
+      'apps/control-plane/test/**/*.ts',
+      'apps/web/e2e/**/*.ts',
+      'apps/console/e2e/**/*.ts',
+    ],
     rules: {
       'security/detect-non-literal-fs-filename': 'off',
     },
   },
   {
-    files: ['apps/web/src/**/*.{ts,tsx}'],
+    // O painel e o console do responsável (React no navegador).
+    files: ['apps/web/src/**/*.{ts,tsx}', 'apps/console/src/**/*.{ts,tsx}'],
     languageOptions: { globals: { ...globals.browser } },
     plugins: { 'react-hooks': reactHooks, 'react-refresh': reactRefresh },
     rules: {
@@ -124,7 +131,7 @@ export default tseslint.config(
   },
   {
     // Scripts estáticos do painel (ex.: aplicação do tema antes da primeira pintura): navegador, sem tipos.
-    files: ['apps/web/public/**/*.js'],
+    files: ['apps/web/public/**/*.js', 'apps/console/public/**/*.js'],
     ...tseslint.configs.disableTypeChecked,
     languageOptions: {
       ...tseslint.configs.disableTypeChecked.languageOptions,

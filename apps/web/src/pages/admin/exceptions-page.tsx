@@ -104,7 +104,7 @@ export function ExceptionsPage() {
         ) : row.active ? (
           `até ${dayFormat.format(new Date(row.expiresAt))}`
         ) : (
-          <span className="font-medium text-critical">
+          <span className="font-medium text-critical-text">
             Vencida em {dayFormat.format(new Date(row.expiresAt))}
           </span>
         ),
@@ -189,7 +189,7 @@ function CreateException({ onDone }: { onDone: () => void }) {
     <form onSubmit={submit} noValidate className="space-y-4">
       <Field
         label="Regra"
-        hint="O número da regra, que aparece no detalhe do achado (do Wazuh ou da auditoria da GCP)."
+        hint="O número da regra, que aparece no detalhe do achado (dos logs da AWS ou da auditoria da GCP)."
         inputMode="numeric"
         value={values.ruleId}
         onChange={(event) => setValues({ ...values, ruleId: event.target.value })}

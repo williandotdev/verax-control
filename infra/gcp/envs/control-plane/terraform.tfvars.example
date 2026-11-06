@@ -1,0 +1,75 @@
+# Copie para `terraform.tfvars` (que o git ignora) e preencha. Nada daqui vai para o repositório.
+
+# ID do projeto da GCP da Verax que hospeda o Firebase dos painéis (o plano de controle fica nele).
+project_id = "projeto-exemplo"
+
+# Quem opera o plano de controle além das contas de serviço (chama o cp-worker e entra em OWNER_PRINCIPALS).
+# owner_principals = ["user:voce@exemplo.com"]
+
+# E-mail dos alertas (provisionamento com falha, assinatura inválida no webhook) e OWNER_ALERT_EMAIL.
+# alert_email = "voce@exemplo.com"
+
+# Segunda subida, depois de gravar os cinco segredos montados nos serviços (GUIA, plano de controle, passo 4; a senha da
+# caixa dos nós, cp-nodes-smtp-password, pode ficar vazia): sobe os serviços, o Job, o relógio e o rewrite do Hosting.
+# services_enabled = true
+
+# Console do responsável (cp-admin, atrás do IAP): tabelas de preço, modelos de custo e simulador de DRE. Exige
+# owner_principals (só eles passam pelo IAP). Num projeto sem organização, crie antes o cliente OAuth do IAP
+# (docs/runbooks/console-do-responsavel.md).
+# admin_enabled = true
+
+# Entrada do cp-worker: INGRESS_TRAFFIC_ALL é o padrão (a revelação da senha e o console dependem dela; a barreira é o
+# IAM). Só para fechar a entrada de novo (a revelação passa a responder 503): ver o GUIA, "Revelação da senha e a
+# entrada do cp-worker".
+# worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+
+# Variáveis dos dois serviços que são suas (plano, seção 2.5), por cima dos padrões de run.tf. As versões dos aceites
+# têm de ser as das páginas publicadas no site. TRUST_PROXY_HOPS (quantos proxies o serviço confia para achar o IP do
+# cliente: o Hosting e o Cloud Run contam 1) só se o app exigir; o padrão é dele. As chaves que o Terraform deriva de
+# outras variáveis, os segredos, ROLE e NODE_ENV são recusados aqui (variables.tf).
+# service_env = {
+#   TERMS_VERSION           = "2026-11-01"
+#   PRIVACY_VERSION         = "2026-11-01"
+#   DPA_VERSION             = "2026-11-01"
+#   STRIPE_PORTAL_LOGIN_URL = "https://billing.stripe.com/p/login/..."
+#   TRUST_PROXY_HOPS        = "1"
+# }
+
+# Variáveis só do cp-worker (e-mail e provisionamento); o cp-public não as recebe. SMTP_HOST e SMTP_PORT têm padrão
+# (Zoho, 465) em run.tf. O e-mail dos nós de clientes (SMTP_*_NODES) é opcional e de qualquer provedor SMTP com TLS: sem
+# ele, os nós nascem sem e-mail; com ele, grave a senha da caixa no segredo cp-nodes-smtp-password (GUIA, "O e-mail dos
+# nós de clientes"). Use uma caixa à parte da do plano de controle.
+# worker_env = {
+#   SMTP_USER            = "nao-responda@exemplo.com"
+#   MAIL_FROM            = "Verax Control <nao-responda@exemplo.com>"
+#   MAIL_FROM_NODES      = "avisos@exemplo.com"
+#   SMTP_HOST_NODES      = "smtp.exemplo.com"
+#   SMTP_PORT_NODES      = "465"
+#   SMTP_USER_NODES      = "avisos@exemplo.com"
+#   NODE_RELEASE         = "<versão promovida>"
+#   PROVISIONING_ENABLED = "true"
+# }
+
+# Cloudflare (IDs, não segredos; o token vai no segredo cp-cloudflare-api-token). Até o provisionamento ser ligado,
+# podem ficar vazios.
+# cloudflare_account_id = "00000000000000000000000000000000"
+# cloudflare_zone_id    = "00000000000000000000000000000000"
+
+# Na primeira venda: o projeto dos nós de clientes (as variáveis do Job; as permissões lá são do envs/nodes-platform), o
+# registro das imagens do nó (projeto do nó da Verax) e o bucket de releases. Os dois últimos ligam só as concessões
+# deles (cross_project.tf).
+# nodes_project_id  = "projeto-dos-nos-123"
+# nodes_zone        = "southamerica-east1-b"
+# images_project_id = "projeto-do-no-verax-123"
+# release_bucket    = "projeto-do-no-verax-123-verax-releases"
+
+# Projetos do pool do Firebase dos painéis dos clientes (um a cada 36 clientes), criados a partir da primeira venda.
+# Nunca este projeto: o cp-worker não ganha o Hosting do site do plano de controle nem dos sites do Painel.
+# firebase_panel_projects = ["projeto-paineis-1"]
+
+# Recuperação pontual do Firestore: cobrada à parte, sem nível gratuito. Desligada por padrão.
+# firestore_pitr = false
+
+# Alerta de orçamento: conta de faturamento e valor mensal, na moeda dela (R$ 15 por padrão).
+# billing_account_id = "000000-000000-000000"
+# monthly_budget     = 15

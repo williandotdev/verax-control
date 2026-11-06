@@ -6,6 +6,10 @@
 # Nenhuma porta é publicada: o painel chega à API pelo túnel (conexão de saída do cloudflared), e o banco só é
 # alcançável pela rede interna. As imagens da API e das migrations vêm pelo digest (`/etc/verax/images.env`); os
 # arquivos de ambiente ficam em /run/verax (memória), montados pelo start.sh a cada partida.
+#
+# A memória do banco, da API e do worker vem do perfil do nó (NODE_PROFILE no node.conf), que o start.sh escreve em
+# /run/verax/memory.env. Sem essas variáveis, valem os valores do perfil lean (e2-micro, 1 GB), os de sempre do nó da
+# Verax; o CI confere que eles batem com os do start.sh.
 
 name: verax
 
@@ -36,9 +40,9 @@ services:
       - ssl_min_protocol_version=TLSv1.2
       - -c
       - hba_file=/etc/verax/pg_hba.conf
-      # A VM tem 1 GB de memória: banco enxuto (poucos usuários, um worker).
+      # Banco enxuto (poucos usuários, um worker); o shared_buffers acompanha a memória do contêiner.
       - -c
-      - shared_buffers=32MB
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-32MB}
       - -c
       - max_connections=40
       - -c
@@ -62,7 +66,7 @@ services:
       start_interval: 2s
     security_opt: ['no-new-privileges:true']
     shm_size: 64m
-    mem_limit: 256m
+    mem_limit: ${POSTGRES_MEM_LIMIT:-256m}
     restart: unless-stopped
     networks: [verax]
     logging:
@@ -106,9 +110,12 @@ services:
     image: ${API_IMAGE:?}
     env_file: /run/verax/api.env
     environment:
-      NODE_OPTIONS: --max-old-space-size=192
+      NODE_OPTIONS: --max-old-space-size=${API_HEAP_MB:-192}
     volumes: [*database-ca]
-    mem_limit: 320m
+    mem_limit: ${API_MEM_LIMIT:-320m}
+    # Sem core dump: a memória da API tem as chaves da sessão e do CSRF e a credencial que o admin cola no painel.
+    ulimits:
+      core: 0
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -124,12 +131,15 @@ services:
         ipv4_address: 172.30.53.10
     env_file: /run/verax/worker.env
     environment:
-      NODE_OPTIONS: --max-old-space-size=160
+      NODE_OPTIONS: --max-old-space-size=${WORKER_HEAP_MB:-160}
     volumes: [*database-ca]
     # A imagem confere a porta da API; o worker não tem porta.
     healthcheck:
       disable: true
-    mem_limit: 256m
+    mem_limit: ${WORKER_MEM_LIMIT:-256m}
+    # Sem core dump: a memória do worker tem as chaves privadas do cofre e as credenciais decifradas.
+    ulimits:
+      core: 0
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }

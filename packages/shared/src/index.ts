@@ -1,14 +1,23 @@
 export const PRODUCT_NAME = 'Verax Control' as const;
 
+export * from './agents.js';
 export * from './alert-exceptions.js';
 export * from './audit.js';
+export * from './aws-reader.js';
 export * from './cloud-accounts.js';
+export * from './cloud-credentials.js';
+export * from './escalation-contact.js';
 export * from './findings.js';
+export * from './history.js';
 export * from './incidents.js';
 export * from './inventory.js';
+export * from './notification-preferences.js';
 export * from './pagination.js';
 export * from './permissions.js';
+export * from './plan-usage.js';
+export * from './plans.js';
 export * from './posture.js';
+export * from './posture-catalog.js';
 export * from './protected-resources.js';
 export * from './reports.js';
 export * from './session.js';

@@ -14,6 +14,7 @@ import {
   type Paginated,
   type Tenant,
   type TenantCreate,
+  type TenantCreated,
   tenantCreateSchema,
   type TenantListQuery,
   tenantListQuerySchema,
@@ -44,9 +45,10 @@ export class TenantsController {
     return this.tenants.get(id);
   }
 
+  /** Cria o cliente e o primeiro administrador dele; a senha temporária só sai nesta resposta. */
   @Post()
   @RequirePermission('tenants:write')
-  create(@Body({ schema: tenantCreateSchema }) body: TenantCreate): Promise<Tenant> {
+  create(@Body({ schema: tenantCreateSchema }) body: TenantCreate): Promise<TenantCreated> {
     return this.tenants.create(body);
   }
 
@@ -57,6 +59,17 @@ export class TenantsController {
     @Body({ schema: tenantUpdateSchema }) body: TenantUpdate,
   ): Promise<Tenant> {
     return this.tenants.update(id, body);
+  }
+
+  /**
+   * Pede de novo a confirmação do contato de escalonamento (D8): o e-mail entra na fila de saída, e os links anteriores
+   * deixam de valer. Só para o contato que aguarda a confirmação ou que se descadastrou.
+   */
+  @Post(':id/escalation-contact/confirmation')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('tenants:write')
+  requestEscalationConfirmation(@Param('id', { schema: tenantIdSchema }) id: string): Promise<Tenant> {
+    return this.tenants.requestEscalationConfirmation(id);
   }
 
   @Delete(':id')

@@ -19,7 +19,8 @@ import type { MockState } from './handlers';
 
 /**
  * Inventário fictício (T5.9), coerente com as outras telas: a chave do incidente é antiga, o bucket de relatórios
- * está público, o grupo `sg-0123…` libera a porta 22 e o root da produção não tem MFA.
+ * está público, o grupo `sg-0123…` libera a porta 22 e o root da produção não tem MFA. A produção monitora também
+ * us-east-1, onde uma SCP da organização fictícia nega o EC2: o retrato dela é parcial (a faixa de "coleta parcial").
  */
 
 interface AssetsByKind {
@@ -35,9 +36,13 @@ interface TenantInventory {
   assets: AssetsByKind;
 }
 
+type SummaryAccount = InventorySummary['accounts'][number];
+
 /** O que cada cliente fictício tem, antes de validar pelos schemas do contrato. */
 interface RawInventory {
-  roots: { accountId: string; root: InventorySummary['accounts'][number]['root'] }[];
+  roots: ({ accountId: string; root: SummaryAccount['root'] } & Partial<
+    Pick<SummaryAccount, 'errors' | 'truncated'>
+  >)[];
   assets: Record<AssetKind, unknown[]>;
 }
 
@@ -268,6 +273,11 @@ function alfa(now: Date): RawInventory {
           risk: 'critical' as const,
           reasons: ['root_without_mfa' as const],
         },
+        // A SCP da organização nega o EC2 em us-east-1: as instâncias e os grupos de lá ficaram de fora.
+        errors: [
+          { section: 'ec2' as const, region: 'us-east-1', code: 'UnauthorizedOperation' },
+          { section: 'sg' as const, region: 'us-east-1', code: 'UnauthorizedOperation' },
+        ],
       },
       {
         accountId: homolog,
@@ -347,10 +357,12 @@ export function demoInventory(now: Date = new Date()): Map<string, TenantInvento
     });
     return {
       summary: inventorySummarySchema.parse({
-        accounts: roots.map(({ accountId, root }) => ({
+        accounts: roots.map(({ accountId, root, errors = [], truncated = false }) => ({
           accountId,
           collectedAt: minutes(now, 4 * 60),
           root,
+          errors,
+          truncated,
         })),
         counts: {
           users: count(parsed.users),

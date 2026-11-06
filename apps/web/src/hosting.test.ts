@@ -1,6 +1,84 @@
 import { describe, expect, it } from 'vitest';
-import { securityHeaders } from './build-guards';
-import { firebaseHostingConfig, STRICT_TRANSPORT_SECURITY } from './hosting';
+import { securityHeaders, TURNSTILE_ORIGIN } from './build-guards';
+import {
+  firebaseHostingConfig,
+  type HostingConfig,
+  siteHostingConfig,
+  STRICT_TRANSPORT_SECURITY,
+} from './hosting';
+
+const TEMPLATE = 'https://api-{tenant}.veraxsistemas.com.br';
+
+/** Fontes de uma diretiva da CSP do site (a regra `**`). */
+function sources(config: HostingConfig, name: string): string[] {
+  const csp = config.headers.find((rule) => rule.glob === '**')?.headers['Content-Security-Policy'] ?? '';
+  const directive = csp
+    .split(';')
+    .map((part) => part.trim().split(/\s+/))
+    .find(([first]) => first === name);
+  return directive?.slice(1) ?? [];
+}
+
+const connectSources = (config: HostingConfig): string[] => sources(config, 'connect-src');
+
+describe('build único: configuração de cada site', () => {
+  const template = firebaseHostingConfig(TEMPLATE);
+
+  it('a do site é a mesma gerada direto com a API do cliente', () => {
+    expect(siteHostingConfig(template, 'cliente-demo-a')).toEqual(
+      firebaseHostingConfig('https://api-cliente-demo-a.veraxsistemas.com.br'),
+    );
+  });
+
+  it('a connect-src de cada site tem exatamente a API dele', () => {
+    expect(connectSources(siteHostingConfig(template, 'cliente-demo-a'))).toEqual([
+      "'self'",
+      'https://api-cliente-demo-a.veraxsistemas.com.br',
+    ]);
+    expect(connectSources(siteHostingConfig(template, 'cliente-demo-b'))).toEqual([
+      "'self'",
+      'https://api-cliente-demo-b.veraxsistemas.com.br',
+    ]);
+  });
+
+  it('o Turnstile do login entra na CSP de cada site, como no build de destino único', () => {
+    for (const tenant of ['cliente-demo-a', 'cliente-demo-b']) {
+      const config = siteHostingConfig(template, tenant);
+      expect(sources(config, 'script-src')).toEqual(["'self'", TURNSTILE_ORIGIN]);
+      expect(sources(config, 'frame-src')).toEqual([TURNSTILE_ORIGIN]);
+    }
+  });
+
+  it('dois sites só diferem na CSP', () => {
+    const a = siteHostingConfig(template, 'cliente-demo-a');
+    const b = siteHostingConfig(template, 'cliente-demo-b');
+    const withoutCsp = (config: HostingConfig) =>
+      config.headers.map((rule) => {
+        const { ['Content-Security-Policy']: _csp, ...rest } = rule.headers;
+        return { glob: rule.glob, headers: rest };
+      });
+    expect(withoutCsp(a)).toEqual(withoutCsp(b));
+    expect(a.rewrites).toEqual(b.rewrites);
+    expect(connectSources(a)).not.toEqual(connectSources(b));
+  });
+
+  it('o modelo não serve para publicar: carrega o marcador, que o script de publicação recusa', () => {
+    expect(JSON.stringify(template)).toContain('{tenant}');
+    expect(JSON.stringify(siteHostingConfig(template, 'cliente-demo-a'))).not.toContain('{tenant}');
+  });
+
+  it.each(['', 'Cliente', 'xn--clnte-bsa', 'evil.example.com', 'a b', '"x"'])(
+    'recusa cliente inválido (%j)',
+    (tenant) => {
+      expect(() => siteHostingConfig(template, tenant)).toThrow(/inválido/);
+    },
+  );
+
+  it('recusa a configuração de um destino só (sem o marcador)', () => {
+    const fixed = firebaseHostingConfig('https://api-verax.veraxsistemas.com.br');
+    expect(() => siteHostingConfig(fixed, 'cliente-demo-a')).toThrow(/build único/);
+  });
+});
 
 describe('configuração do Firebase Hosting', () => {
   const config = firebaseHostingConfig('https://api.cliente.control.example.com.br');

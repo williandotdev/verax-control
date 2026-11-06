@@ -185,7 +185,8 @@ export interface PostureSummary {
 /**
  * Nota de postura (premissa aprovada): taxa de aprovação ponderada pela severidade (crítica 10, alta 5, média 2,
  * baixa 1; informativa não pesa). Só aprovadas e reprovadas contam: as manuais pedem verificação humana, e as
- * silenciadas foram aceitas pelo cliente.
+ * silenciadas foram aceitas pelo cliente. Na postura nativa (PR-15', `native-posture.ts`), `manual` é o resultado não
+ * lido (a AWS recusou a leitura): fora da nota, nunca aprovado.
  */
 export function summarizePosture(checks: readonly PostureCheck[]): PostureSummary {
   const failedBySeverity: Record<PostureSeverity, number> = {

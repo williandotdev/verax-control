@@ -1,3 +1,5 @@
+# Obsoleto desde a revisão de 04/11/2026 (fase 2, D-17): as contas novas usam o papel de leitura sem chave
+# (verax-control-reader.yaml). Guardado para um futuro modo Enterprise, com papel e ExternalId.
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Verax Control - conector da conta monitorada. Cria só o papel somente leitura VeraxControlReadOnly, que só o nó do

@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { type ActiveException, matchingException } from '../alerts/exception-match.js';
 import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from '../alerts/finding-store.js';
+import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
+import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
 import { detect, gcpEventId, type GcpRule, toGcpFindingDraft } from './gcp-rules.js';
 import type { PubsubMessage, PubsubReader } from './pubsub.client.js';
@@ -49,6 +52,28 @@ interface SubscriptionGroup {
   ambiguous: boolean;
 }
 
+/**
+ * Falha da própria fonte: o `pull` ou o `acknowledge` do Pub/Sub. É a única que vira erro de conexão das contas,
+ * com o tipo do erro original (`cause`). Um erro interno (banco, concessão, gravação do achado) não diz nada sobre a
+ * conta do cliente.
+ */
+export class SourceReadError extends Error {
+  override name = 'SourceReadError';
+
+  constructor(cause: unknown) {
+    // Sem dado na mensagem: o detalhe fica só no erro original.
+    super('falha na leitura do Pub/Sub', { cause });
+  }
+}
+
+async function fromSource<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read();
+  } catch (error) {
+    throw new SourceReadError(error);
+  }
+}
+
 interface RunContext {
   exceptions: ReadonlyMap<string, ActiveException[]>;
   protectedItems: ReadonlyMap<string, ReadonlySet<string>>;
@@ -86,7 +111,18 @@ function unownedRecord(
  *    dono: na dúvida, o evento não é de ninguém);
  * 3. aplica as regras; o evento suspeito vira achado, com a exceção e o incidente, na mesma transação;
  * 4. só depois confirma (ack) o lote. Se algo falhar antes, o Pub/Sub entrega de novo, e a chave única do achado
- *    impede duplicar.
+ *    impede duplicar;
+ * 5. depois do ack, grava o volume lido no medidor de uso (`IngestUsage`, fonte `gcp`): o `data` de toda mensagem do
+ *    lote, inclusive a inválida, a sem dono e a que nenhuma regra acusa, para o cliente da assinatura. A assinatura
+ *    cadastrada em mais de um cliente não conta para nenhum. O lote que falha antes do ack não conta: volta pelo
+ *    Pub/Sub e é medido quando for confirmado.
+ *
+ * A leitura de cada assinatura também dá o estado da conexão das contas que a usam:
+ * - lida sem erro, todas ganham a hora da coleta e perdem o erro. Só fica `connected` a conta que já recebeu evento:
+ *   a GCP entrega por evento, e uma leitura vazia não prova que os logs chegam (sink apagado, filtro errado). A
+ *   conta sem evento fica `waiting`, e o primeiro evento a conecta (`LastEvents.save`, no fim da execução);
+ * - com falha do Pub/Sub (`pull` ou `acknowledge`), ficam `error`, com o tipo do erro. Um erro interno (banco,
+ *   concessão, gravação) conta como assinatura com falha, mas não mexe na conexão.
  *
  * Nada do evento bruto é gravado: o achado guarda os campos já validados.
  */
@@ -148,9 +184,27 @@ export class GcpAuditSync {
         try {
           await this.readSubscription(group, context);
         } catch (error) {
-          // Uma assinatura com problema (permissão, rede) não para as outras.
+          // Uma assinatura com problema (permissão, rede, banco) não para as outras.
           report.failedSubscriptions += 1;
-          firstError ??= (error instanceof Error ? error.name : 'Error').slice(0, 64);
+          const pubsubError = error instanceof SourceReadError ? error : null;
+          const kind = errorKind(pubsubError ? pubsubError.cause : error);
+          firstError ??= kind;
+          // Só a falha do Pub/Sub é da conta; a interna fica no estado do sync.
+          if (pubsubError) await this.markConnection(group, { connection: 'error', connectionError: kind });
+          continue;
+        }
+        if (group.ambiguous) {
+          // Assinatura em mais de um cliente: a leitura funciona, mas nenhum evento vai para as contas.
+          await this.markConnection(group, { connection: 'error', connectionError: 'ambiguous_source' });
+        } else {
+          // A coleta vale para todas; "conectada" só a que já recebeu evento. A leitura vazia não é sinal de vida.
+          const collected = { connectionError: null, lastCollectedAt: now };
+          await this.markConnection(
+            group,
+            { ...collected, connection: 'connected' },
+            { lastEventAt: { not: null } },
+          );
+          await this.markConnection(group, { ...collected, connection: 'waiting' }, { lastEventAt: null });
         }
       }
       await context.lastEvents.save(this.prisma, 'gcp');
@@ -168,11 +222,41 @@ export class GcpAuditSync {
       // Só o tipo do erro: a mensagem de um erro do banco ou do Google pode carregar dado.
       await this.prisma.syncState.update({
         where: { name: this.name },
-        data: { lastRunAt: now, lastError: (error instanceof Error ? error.name : 'Error').slice(0, 64) },
+        data: { lastRunAt: now, lastError: errorKind(error) },
       });
       throw error;
     } finally {
       await this.lease.release();
+    }
+  }
+
+  /**
+   * Estado da conexão das contas ativas que usam a assinatura, cada uma pelo escopo do próprio cliente. `only`
+   * restringe a algumas delas (as que já receberam evento, as que nunca receberam).
+   */
+  private async markConnection(
+    group: SubscriptionGroup,
+    data: Pick<
+      Prisma.CloudAccountUpdateManyMutationInput,
+      'connection' | 'connectionError' | 'lastCollectedAt'
+    >,
+    only: Pick<Prisma.CloudAccountWhereInput, 'lastEventAt'> = {},
+  ): Promise<void> {
+    const projectsByTenant = new Map<string, string[]>();
+    for (const [project, tenantId] of group.projects) {
+      projectsByTenant.set(tenantId, [...(projectsByTenant.get(tenantId) ?? []), project]);
+    }
+    for (const [tenantId, projects] of projectsByTenant) {
+      await this.prisma.forTenant(tenantId).cloudAccount.updateMany({
+        where: {
+          provider: 'gcp',
+          status: 'active',
+          accountId: { in: projects },
+          pubsubSubscription: group.subscription,
+          ...only,
+        },
+        data,
+      });
     }
   }
 
@@ -201,17 +285,25 @@ export class GcpAuditSync {
   }
 
   private async readSubscription(group: SubscriptionGroup, context: RunContext): Promise<void> {
+    // O volume lido é do cliente da assinatura (todos os projetos dela são dele); ambígua, não é de ninguém.
+    const owner = group.ambiguous ? undefined : group.projects.values().next().value;
     for (let pull = 0; pull < this.maxPulls; pull += 1) {
-      const messages = await this.reader.pull(group.subscription, this.pullSize);
+      const messages = await fromSource(() => this.reader.pull(group.subscription, this.pullSize));
+      const usage = new UsageMeter();
       for (const message of messages) {
         context.report.read += 1;
+        if (owner) usage.add(owner, 'gcp', base64Bytes(message.data), 1, context.now);
         await this.process(message, group, context);
       }
       // Confirma só o que já foi gravado.
-      await this.reader.acknowledge(
-        group.subscription,
-        messages.map((message) => message.ackId),
+      await fromSource(() =>
+        this.reader.acknowledge(
+          group.subscription,
+          messages.map((message) => message.ackId),
+        ),
       );
+      // Mede só o que foi confirmado: uma escrita por lote.
+      await usage.flush(this.prisma);
       await this.lease.renew();
       if (messages.length < this.pullSize) return;
     }

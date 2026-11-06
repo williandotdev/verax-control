@@ -129,6 +129,18 @@ describe('resumo do período', () => {
     expect(summaryReport([], [], WINDOW).daily).toHaveLength(8);
   });
 
+  it('12 meses: 365 dias, que tocam 366 datas, dentro do contrato', () => {
+    const window = reportWindow('12m', NOW);
+    expect(window.from).toBe('2025-11-03T12:00:00.000Z');
+    const report = summaryReportSchema.parse(
+      summaryReport([finding({ occurredAt: window.from }), finding({ occurredAt: window.to })], [], window),
+    );
+    expect(report.period).toBe('12m');
+    expect(report.daily).toHaveLength(366);
+    expect(report.daily[0]).toMatchObject({ date: '2025-11-03', high: 1 });
+    expect(report.daily.at(-1)).toMatchObject({ date: '2026-11-03', high: 1 });
+  });
+
   it('em lotes dá o mesmo que de uma vez (a API lê o período em lotes)', () => {
     const findings = [
       finding({ createdAt: hoursAgo(5), triagedAt: hoursAgo(4), status: 'investigating' }),

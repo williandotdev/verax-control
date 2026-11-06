@@ -99,11 +99,19 @@ applied=$(docker exec "$db" psql -U verax -d verax -tAc \
 expect "migrations aplicadas pelo papel das migrations" '[1-9][0-9]*' "$applied"
 expect "tabelas criadas pertencem ao papel das migrations" verax_migrator \
   "$(docker exec "$db" psql -U verax -d verax -tAc "select tableowner from pg_tables where tablename = 'AuditLog'")"
+# Expurgo (PR-19): as funções SECURITY DEFINER rodam com o dono delas, que tem de ser o das tabelas.
+expect "funções do expurgo pertencem ao papel das migrations" 'verax_migrator verax_migrator' \
+  "$(docker exec "$db" psql -U verax -d verax -tAc "select string_agg(pg_get_userbyid(proowner)::text, ' ') \
+    from pg_proc where proname in ('verax_purge_audit_log', 'verax_purge_finding_comments')")"
 as_app() { # <SQL>: roda como o papel da aplicação, dentro do contêiner do banco
   docker exec -e PGPASSWORD="$app_password" "$db" psql -h 127.0.0.1 -U verax_app -d verax -tAc "$1" 2>&1 || true
 }
 expect "aplicação não cria tabelas" '.*permission denied.*' "$(as_app 'create table invasora (id int)')"
 expect "aplicação não apaga a auditoria" '.*permission denied.*' "$(as_app 'delete from "AuditLog"')"
+expect "aplicação não apaga os comentários dos achados" '.*permission denied.*' \
+  "$(as_app 'delete from "FindingComment"')"
+expect "o expurgo da auditoria recusa corte mais novo que o piso" '.*piso de 13 meses.*' \
+  "$(as_app 'select * from verax_purge_audit_log(now(), 10)')"
 
 # Segredos da autenticação (E2) só deste teste; em produção vêm do Secrets Manager.
 auth_secret=$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 43)
@@ -115,7 +123,7 @@ run_api() { # <nome> <arquivo da CA>
     -v "$certs:/certs:ro" \
     -e NODE_ENV=production -e WEB_ORIGIN=https://painel.exemplo.com.br -e TRUST_PROXY_HOPS=1 \
     -e API_ORIGIN=https://api.exemplo.com.br -e BETTER_AUTH_SECRET="$auth_secret" -e CSRF_SECRET="$csrf_secret" \
-    -e MAIL_TRANSPORT=ses -e MAIL_FROM=nao-responda@exemplo.com.br -e AWS_REGION=sa-east-1 \
+    -e MAIL_TRANSPORT=ses -e MAIL_FROM=nao-responda@exemplo.com.br -e AWS_REGION=sa-east-1 -e PLAN=interno \
     -e DATABASE_URL="$(database_url verax_app "$app_password" "$2")" \
     "$image" >/dev/null
 }
@@ -135,6 +143,11 @@ expect "/health" 200 "$(probe "$api" /health)"
 expect "/health/ready (banco por TLS verificado)" 200 "$(probe "$api" /health/ready)"
 expect "processo sem root" 1000 "$(docker exec "$api" id -u)"
 expect "raiz só leitura" 1 "$(docker exec "$api" sh -c 'touch /app/x 2>/dev/null && echo 0 || echo 1')"
+# No nó, o arquivo das chaves do cofre é 0400 do WORKER_UID que o start.sh escreve, numa pasta do grupo dele: o usuário
+# da imagem (que roda a API e o worker) tem de ser esse uid e esse gid, senão o worker não lê as chaves.
+worker_uid=$(sed -n 's/^WORKER_UID=//p' "$(dirname "$0")/../infra/node/bin/start.sh")
+expect "usuário e grupo da imagem são o WORKER_UID do start.sh do nó" "$worker_uid:$worker_uid" \
+  "$(docker run --rm --entrypoint sh "$image" -c 'echo "$(id -u):$(id -g)"')"
 
 if [[ ${RUN_ZAP:-0} == 1 ]]; then
   echo "== OWASP ZAP baseline na API (T8.7; risco alto reprova)"

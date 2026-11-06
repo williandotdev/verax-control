@@ -1,6 +1,8 @@
 import {
+  agentIdOfRef,
   UNOWNED_PERIODS,
   UNOWNED_REASONS,
+  type UnownedAccounts,
   type UnownedAlert,
   type UnownedAlertListQuery,
 } from '@verax/shared';
@@ -80,7 +82,11 @@ export function UnownedAlertsPage() {
                 <button
                   type="button"
                   className="inline-flex min-h-6 items-center break-all py-0.5 text-left font-mono text-xs hover:underline"
-                  title="Ver só os alertas desta conta"
+                  title={
+                    agentIdOfRef(item) === null
+                      ? 'Ver só os alertas desta conta'
+                      : 'Ver só os alertas deste agente'
+                  }
                   onClick={() => update({ conta: item })}
                 >
                   {item}
@@ -127,7 +133,9 @@ export function UnownedAlertsPage() {
         </h2>
         {account !== undefined && (
           <p className="flex flex-wrap items-center gap-2 text-sm">
-            Só os alertas que citam a conta <code className="font-mono text-xs">{account}</code>
+            {/* Nos alertas dos agentes, a fila cita o agente (`agent:<id>`) junto das contas. */}
+            Só os alertas que citam {agentIdOfRef(account) === null ? 'a conta' : 'o agente'}{' '}
+            <code className="font-mono text-xs">{agentIdOfRef(account) ?? account}</code>
             <Button variant="ghost" size="sm" onClick={() => update({ conta: null })}>
               <X aria-hidden />
               Ver de todas
@@ -195,11 +203,23 @@ export function UnownedAlertsPage() {
   );
 }
 
+const NOT_REGISTERED = 'Não cadastrada';
+
+/**
+ * Onde a conta está cadastrada hoje. Um agente do Wazuh (`agent:<id>`, nos alertas das instâncias) não é conta: a
+ * situação dele está no motivo de cada alerta.
+ */
+function situationOf(row: UnownedAccounts['items'][number]): string {
+  if (agentIdOfRef(row.account) !== null) return 'Agente de instância';
+  if (row.registeredIn === null) return NOT_REGISTERED;
+  return `Cadastrada em ${row.registeredIn.tenantName}${row.registeredIn.active ? '' : ' (desativada)'}`;
+}
+
 /** As contas que mais aparecem na fila nos últimos 30 dias, e onde cada uma está cadastrada hoje. */
 function AccountsSummary({ onPick }: { onPick: (account: string) => void }) {
   const accounts = useUnownedAccounts('30d');
   return (
-    <section aria-labelledby="fila-contas" className="space-y-3">
+    <section data-tour="sem-dono-contas" aria-labelledby="fila-contas" className="space-y-3">
       <div className="space-y-1">
         <h2 id="fila-contas" className="text-lg font-semibold">
           Contas que mais aparecem
@@ -238,19 +258,12 @@ function AccountsSummary({ onPick }: { onPick: (account: string) => void }) {
             },
             {
               header: 'Situação',
-              cell: (row) =>
-                row.registeredIn === null ? (
-                  <span className="font-medium">Não cadastrada</span>
-                ) : (
-                  <span>
-                    Cadastrada em {row.registeredIn.tenantName}
-                    {!row.registeredIn.active && ' (desativada)'}
-                  </span>
-                ),
-              csv: (row) =>
-                row.registeredIn === null
-                  ? 'Não cadastrada'
-                  : `Cadastrada em ${row.registeredIn.tenantName}${row.registeredIn.active ? '' : ' (desativada)'}`,
+              cell: (row) => (
+                <span className={situationOf(row) === NOT_REGISTERED ? 'font-medium' : ''}>
+                  {situationOf(row)}
+                </span>
+              ),
+              csv: situationOf,
             },
             {
               header: 'O que fazer',
@@ -260,11 +273,16 @@ function AccountsSummary({ onPick }: { onPick: (account: string) => void }) {
                     variant="ghost"
                     size="sm"
                     onClick={() => onPick(row.account)}
-                    aria-label={`Ver alertas da conta ${row.account}`}
+                    aria-label={
+                      agentIdOfRef(row.account) === null
+                        ? `Ver alertas da conta ${row.account}`
+                        : `Ver alertas do agente ${agentIdOfRef(row.account)}`
+                    }
                   >
                     Ver alertas
                   </Button>
-                  {row.registeredIn === null && (
+                  {/* Um agente não se cadastra em Contas cloud: ele entra na lista do nó pelo registro no manager. */}
+                  {row.registeredIn === null && agentIdOfRef(row.account) === null && (
                     <Link
                       to="/cadastros/contas"
                       aria-label={`Cadastrar conta ${row.account}`}

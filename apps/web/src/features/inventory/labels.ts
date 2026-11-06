@@ -1,4 +1,14 @@
-import type { AssetKind, AssetRisk, BucketAsset, OpenRule, RiskReason } from '@verax/shared';
+import {
+  type AssetKind,
+  type AssetRisk,
+  type BucketAsset,
+  INVENTORY_INVALID_ITEMS,
+  type InventorySection,
+  type InventorySectionError,
+  type OpenRule,
+  POSTURE_TRUNCATED,
+  type RiskReason,
+} from '@verax/shared';
 import type { Severity } from '@/design/severity';
 
 export const ASSET_KIND_LABELS: Readonly<Record<AssetKind, string>> = {
@@ -53,3 +63,55 @@ export function bucketPublic(bucket: Pick<BucketAsset, 'policyPublic' | 'aclPubl
   if (bucket.policyPublic === null && bucket.aclPublic === null) return null;
   return false;
 }
+
+/** As partes da coleta do inventário, como a faixa de coleta parcial as nomeia. */
+export const INVENTORY_SECTION_LABELS: Readonly<Record<InventorySection, string>> = {
+  root: 'Conta root',
+  iam: 'Usuários IAM e chaves de acesso',
+  s3: 'Buckets S3',
+  ec2: 'Instâncias EC2',
+  sg: 'Security groups',
+};
+
+/** Permissão negada pela política do papel ou por uma SCP da organização. */
+const REFUSED_CODES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'AccessDeniedException',
+  'UnauthorizedOperation',
+  'UnauthorizedAccess',
+  'AllAccessDisabled',
+  'Blocked',
+]);
+
+/** A região não aceitou a sessão: desligada na conta ou fora do opt-in. */
+const REGION_CODES: ReadonlySet<string> = new Set([
+  'AuthFailure',
+  'OptInRequired',
+  'InvalidClientTokenId',
+  'UnrecognizedClientException',
+]);
+
+/**
+ * Uma leitura que não entrou (do inventário ou da postura), em português: "Instâncias EC2 em us-east-1: a AWS recusou
+ * a leitura (UnauthorizedOperation)". O código da AWS vai junto, para quem confere a política ou a SCP.
+ */
+export function describeReadError(label: string, region: string | null, code: string): string {
+  const where = region === null ? label : `${label} em ${region}`;
+  if (code === INVENTORY_INVALID_ITEMS) return `${where}: itens fora do formato esperado ficaram de fora`;
+  if (code === POSTURE_TRUNCATED) {
+    return `${where}: passou do teto de ${INVENTORY_ITEM_CAP.toLocaleString('pt-BR')} itens, e os itens além dele não foram conferidos`;
+  }
+  if (REFUSED_CODES.has(code)) return `${where}: a AWS recusou a leitura (${code})`;
+  if (REGION_CODES.has(code)) {
+    return `${where}: a região não aceitou a sessão, desligada ou fora do opt-in (${code})`;
+  }
+  return `${where}: a leitura falhou (${code})`;
+}
+
+/** Uma parte que ficou de fora do inventário, em português (ver `describeReadError`). */
+export function describeSectionError(error: InventorySectionError): string {
+  return describeReadError(INVENTORY_SECTION_LABELS[error.section], error.region, error.code);
+}
+
+/** O teto de itens por tipo do inventário (o mesmo da coleta). */
+export const INVENTORY_ITEM_CAP = 1000;

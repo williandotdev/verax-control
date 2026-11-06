@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { cnpjSchema, isValidCnpj, tenantCreateSchema, tenantUpdateSchema } from './tenants.js';
+import {
+  cnpjSchema,
+  isValidCnpj,
+  tenantCreatedSchema,
+  tenantCreateSchema,
+  tenantUpdateSchema,
+} from './tenants.js';
 
 const valid = {
   name: 'Cliente Demo',
   cnpj: '11.222.333/0001-81',
   plan: 'Essencial',
   escalationContact: { name: 'Ana', email: 'ana@cliente.example', phone: '+55 11 91234-5678' },
+  firstAdmin: { name: 'Bia', email: 'bia@cliente.example' },
 };
 
 describe('CNPJ (T3.1)', () => {
@@ -54,5 +61,66 @@ describe('cadastro de cliente', () => {
   it('alteração parcial, com ao menos um campo', () => {
     expect(tenantUpdateSchema.parse({ status: 'inactive' })).toEqual({ status: 'inactive' });
     expect(tenantUpdateSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('primeiro administrador do cliente', () => {
+  const { firstAdmin: _omitted, ...withoutAdmin } = valid;
+
+  it('é obrigatório no cadastro, com nome e e-mail válidos', () => {
+    expect(tenantCreateSchema.parse(valid).firstAdmin).toEqual({ name: 'Bia', email: 'bia@cliente.example' });
+    expect(tenantCreateSchema.safeParse(withoutAdmin).success).toBe(false);
+    expect(
+      tenantCreateSchema.safeParse({ ...valid, firstAdmin: { name: 'Bia', email: 'bia' } }).success,
+    ).toBe(false);
+    expect(
+      tenantCreateSchema.safeParse({ ...valid, firstAdmin: { name: '  ', email: 'bia@x.example' } }).success,
+    ).toBe(false);
+  });
+
+  it('o papel e o cliente não vêm do corpo', () => {
+    for (const extra of [{ role: 'admin_verax' }, { tenantId: 'x' }, { password: 'x' }]) {
+      const body = { ...valid, firstAdmin: { ...valid.firstAdmin, ...extra } };
+      expect(tenantCreateSchema.safeParse(body).success).toBe(false);
+    }
+  });
+
+  it('não entra na alteração', () => {
+    expect(tenantUpdateSchema.safeParse({ firstAdmin: valid.firstAdmin }).success).toBe(false);
+    expect(tenantUpdateSchema.safeParse({ ...withoutAdmin, status: 'active' }).success).toBe(true);
+  });
+
+  it('a resposta do cadastro traz o cliente e o administrador com a senha temporária', () => {
+    const tenant = {
+      id: '018f0000-0000-7000-8000-000000000001',
+      name: 'Cliente Demo',
+      status: 'active',
+      cnpj: '11222333000181',
+      plan: 'Essencial',
+      escalationContact: {
+        name: 'Ana',
+        email: 'ana@cliente.example',
+        phone: null,
+        status: 'pending',
+        confirmedAt: null,
+        unsubscribedAt: null,
+        confirmationEmail: { status: 'queued', at: '2026-11-04T12:00:00.000Z' },
+      },
+      createdAt: '2026-11-04T12:00:00.000Z',
+      updatedAt: '2026-11-04T12:00:00.000Z',
+    };
+    const firstAdmin = {
+      id: 'usr_1',
+      name: 'Bia',
+      email: 'bia@cliente.example',
+      temporaryPassword: 'abcde-fghjk-mnpqr-stuvw',
+      expiresAt: '2026-11-07T12:00:00.000Z',
+    };
+    expect(tenantCreatedSchema.parse({ tenant, firstAdmin })).toEqual({ tenant, firstAdmin });
+    const { temporaryPassword: _password, ...withoutPassword } = firstAdmin;
+    expect(tenantCreatedSchema.safeParse({ tenant, firstAdmin: withoutPassword }).success).toBe(false);
+    expect(
+      tenantCreatedSchema.safeParse({ tenant, firstAdmin: { ...firstAdmin, role: 'leitura' } }).success,
+    ).toBe(false);
   });
 });

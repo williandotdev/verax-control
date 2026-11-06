@@ -1,7 +1,8 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { delay, http } from 'msw';
+import { reportWindow, summaryReport } from '@verax/shared';
+import { delay, http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -44,7 +45,74 @@ describe('Relatórios', () => {
     expect(screen.getByRole('tab', { name: 'Resumo do período' })).toHaveAttribute('aria-selected', 'true');
     expect(await screen.findByText('Achados no período')).toBeInTheDocument();
     expect(await rowsOf('Achados por severidade')).toHaveLength(4);
-    expect(await rowsOf('Achados por dia')).toHaveLength(31);
+    // Os números do gráfico por dia ficam atrás de "Ver tabela", do dia mais recente ao mais antigo.
+    await userEvent.click(await screen.findByText('Ver tabela'));
+    const daily = await rowsOf('Achados por dia');
+    expect(daily).toHaveLength(31);
+    expect(daily[0]).toHaveTextContent(/^\d{2}\/\d{2}\/\d{4}/);
+  });
+
+  it('achados por dia em linhas (uma por severidade) e por status em pizza, com a legenda dos números', async () => {
+    renderAt('/relatorios');
+    const daily = await screen.findByRole('img', {
+      name: /^Achados por dia, de \d{2}\/\d{2}\/\d{4} a \d{2}\/\d{2}\/\d{4}: \d+ achados? no total;.*Use as setas para ver cada dia\.$/,
+    });
+    expect(daily.querySelectorAll('path[data-series]')).toHaveLength(4);
+    const legend = within(daily.closest('figure') as HTMLElement).getAllByRole('listitem');
+    expect(legend.map((item) => item.textContent)).toEqual(['Crítico', 'Alto', 'Médio', 'Baixo']);
+
+    expect(
+      screen.getByRole('img', { name: /^Achados por status: Novo, \d+ achados?.*Resolvido, \d+ achados?/ }),
+    ).toBeInTheDocument();
+    const statuses = await rowsOf('Achados por status');
+    expect(statuses.map((row) => within(row).getByRole('rowheader').textContent)).toEqual([
+      'Novo',
+      'Em análise',
+      'Legítimo',
+      'Resolvido',
+    ]);
+    expect(statuses[0]).toHaveTextContent(/^Novo\d+\d+(,\d)?%$/);
+    // A tabela antiga de status saiu: a legenda é a tabela.
+    expect(screen.getAllByRole('table', { name: 'Achados por status' })).toHaveLength(1);
+    // Os dois sobre a superfície dos cartões, contra a qual as cores foram validadas.
+    expect(document.querySelectorAll('figure.bg-surface [role="img"]')).toHaveLength(2);
+  });
+
+  it('os gráficos exportam o mesmo CSV das tabelas de antes', async () => {
+    const created = vi.fn((_blob: Blob) => 'blob:relatorio');
+    Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderAt('/relatorios');
+    await screen.findByRole('img', { name: /^Achados por dia/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Exportar Achados por dia em CSV' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Exportar Achados por status em CSV' }));
+    const [daily, status] = created.mock.calls.map((call) => call[0]);
+    const dailyCsv = (await daily?.text()) ?? '';
+    expect(dailyCsv).toContain('"Dia";"Crítico";"Alto";"Médio";"Baixo"');
+    // Do dia mais recente ao mais antigo, com a data crua.
+    const dates = [...dailyCsv.matchAll(/^"(\d{4}-\d{2}-\d{2})"/gm)].map((match) => match[1] ?? '');
+    expect(dates).toHaveLength(31);
+    expect(dates).toEqual([...dates].sort().reverse());
+    expect(await status?.text()).toMatch(
+      /"Status";"Achados"\r\n"Novo";"\d+"\r\n"Em análise";"\d+"\r\n"Legítimo";"\d+"\r\n"Resolvido";"\d+"\r\n$/,
+    );
+    expect(click.mock.contexts.map((context) => (context as HTMLAnchorElement).download)).toEqual([
+      'verax-achados-por-dia-30d.csv',
+      'verax-achados-por-status-30d.csv',
+    ]);
+  });
+
+  it('período sem achados: os dois gráficos dão o aviso de vazio no lugar do desenho', async () => {
+    renderAt('/relatorios');
+    server.use(
+      http.get(`${API_URL}/v1/reports/summary`, () =>
+        HttpResponse.json(summaryReport([], [], reportWindow('30d', new Date()))),
+      ),
+    );
+    expect(await screen.findAllByText('Nenhum achado no período.')).toHaveLength(2);
+    expect(screen.queryByRole('img', { name: /^Achados por (dia|status)/ })).not.toBeInTheDocument();
+    // O CSV continua com as linhas zeradas, como antes.
+    expect(screen.getByRole('button', { name: 'Exportar Achados por dia em CSV' })).toBeEnabled();
   });
 
   it('a aba MITRE ATT&CK mostra as 14 táticas em português, com o id', async () => {
@@ -61,6 +129,34 @@ describe('Relatórios', () => {
     expect(await rowsOf('Regras que mais dispararam')).not.toHaveLength(0);
     await userEvent.selectOptions(screen.getByLabelText('Período'), '7d');
     await waitFor(() => expect(router.state.location.search).toBe('?aba=deteccoes&periodo=7d'));
+  });
+
+  it('12 meses no Profissional (a demonstração): o resumo tem os 366 dias que o período toca', async () => {
+    const router = renderAt('/relatorios');
+    await rowsOf('Achados por severidade');
+    await screen.findByRole('option', { name: 'Últimos 12 meses' });
+    await userEvent.selectOptions(screen.getByLabelText('Período'), '12m');
+    await waitFor(() => expect(router.state.location.search).toBe('?periodo=12m'));
+    await waitFor(() =>
+      expect(screen.queryByText(/Atualizando para o período escolhido/)).not.toBeInTheDocument(),
+    );
+    await userEvent.click(await screen.findByText('Ver tabela'));
+    expect(await rowsOf('Achados por dia')).toHaveLength(366);
+  });
+
+  it('Essencial (90 dias): sem 12 meses; o 12m da URL vira o padrão de 30 dias', async () => {
+    renderAt('/relatorios?periodo=12m', { me: demoMe('leitura'), historyDays: 90 });
+    await rowsOf('Achados por severidade');
+    await screen.findByRole('option', { name: 'Últimos 90 dias' });
+    const select = screen.getByLabelText('Período');
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Últimos 7 dias', 'Últimos 30 dias', 'Últimos 90 dias']);
+    expect(select).toHaveValue('30d');
+    await userEvent.click(await screen.findByText('Ver tabela'));
+    expect(await rowsOf('Achados por dia')).toHaveLength(31);
   });
 
   it('exporta a tabela em CSV, no navegador', async () => {
@@ -85,6 +181,7 @@ describe('Relatórios', () => {
         if (new URL(request.url).searchParams.get('period') === '90d') await delay('infinite');
       }),
     );
+    await screen.findByRole('option', { name: 'Últimos 90 dias' });
     await userEvent.selectOptions(screen.getByLabelText('Período'), '90d');
     expect(await screen.findByText(/Atualizando para o período escolhido/)).toBeInTheDocument();
     expect(await rowsOf('Achados por severidade')).toHaveLength(4);

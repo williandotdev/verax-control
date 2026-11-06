@@ -22,14 +22,16 @@ import {
   ListBucketsCommand,
   type S3Client,
 } from '@aws-sdk/client-s3';
+import { AwsConnectionError, awsErrorName, isTransientAwsError } from '../aws/web-identity.js';
 import { awsErrorCode } from './read-only-session.js';
 
 /**
- * Coleta do inventário de uma conta (T5.9), só com chamadas de leitura cobertas pelo papel VeraxControlReadOnly
- * (SecurityAudit + ViewOnlyAccess, T4.3). Os clientes chegam prontos, já com a credencial temporária da conta.
+ * Coleta do inventário de uma conta (T5.9 e PR-14'), só com as chamadas de leitura que a política do papel
+ * `verax-control-reader` permite (`PosturaEAtivos`, em `infra/cloudformation/verax-control-reader.yaml`). Os clientes
+ * chegam prontos, já com a sessão do papel e o limite de chamadas simultâneas do IAM (`inventory.ts`).
  *
  * Só sai o que a tela usa: nomes, IDs, datas e flags de configuração. Políticas, tags e conteúdo de recursos não são
- * lidos. Cada conta tem um teto de itens por tipo, para uma conta enorme não travar o job.
+ * lidos. Cada conta tem um teto de itens por tipo, para uma conta enorme não travar a tarefa.
  */
 
 export const MAX_ITEMS = 1000;
@@ -39,18 +41,55 @@ type Sender<T extends { send: unknown }> = Pick<T, 'send'>;
 
 const iso = (date: Date | undefined): string | null => (date === undefined ? null : date.toISOString());
 
-/** Executa `task` para cada item, no máximo `CONCURRENCY` de cada vez, mantendo a ordem. */
+/**
+ * Executa `task` para cada item, no máximo `CONCURRENCY` de cada vez, mantendo a ordem. Na primeira falha, nenhum item
+ * novo começa (as chamadas em curso terminam): a coleta vai parar, e cada chamada a mais é uma linha no CloudTrail.
+ */
 async function mapLimited<T, R>(items: readonly T[], task: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let next = 0;
+  let failed = false;
   async function worker(): Promise<void> {
-    while (next < items.length) {
+    while (next < items.length && !failed) {
       const index = next++;
-      results[index] = await task(items[index] as T);
+      try {
+        results[index] = await task(items[index] as T);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
     }
   }
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, items.length) }, worker));
   return results;
+}
+
+/**
+ * Recusas da AWS: permissão negada (pela política do papel ou por uma SCP), região que não aceita a sessão (desligada,
+ * opt-in) ou o serviço indisponível para a conta. Não passam sozinhas.
+ */
+export const REFUSED_CODES: ReadonlySet<string> = new Set([
+  'AccessDenied',
+  'AccessDeniedException',
+  'UnauthorizedOperation',
+  'UnauthorizedAccess',
+  'AuthFailure',
+  'OptInRequired',
+  'InvalidClientTokenId',
+  'UnrecognizedClientException',
+  'AllAccessDisabled',
+  'Blocked',
+]);
+
+/**
+ * A política de falha do inventário, a mesma para uma parte inteira e para uma leitura de bucket: uma falha que não
+ * passa sozinha (a recusa da AWS, ou outro erro com resposta dela) deixa o que falhou de fora e o retrato sai parcial;
+ * a falha passageira (limite, 5xx, rede, já com as novas tentativas do SDK), a sessão que caiu no meio
+ * (`AwsConnectionError`) e o cancelamento sobem, e a coleta para sem gravar.
+ */
+export function isPermanentFailure(error: unknown): boolean {
+  if (error instanceof AwsConnectionError) return false;
+  return REFUSED_CODES.has(awsErrorName(error)) || !isTransientAwsError(error);
 }
 
 // --- IAM ---
@@ -272,7 +311,14 @@ const PUBLIC_GRANTEES = new Set([
   'http://acs.amazonaws.com/groups/global/AuthenticatedUsers',
 ]);
 
-/** Lê uma configuração do bucket; "não existe" vira o valor padrão e outros erros vão para `unreadable`. */
+/** O bucket sumiu entre a listagem e a leitura: fica de fora do retrato, sem erro. */
+class BucketGone extends Error {}
+
+/**
+ * Lê uma configuração do bucket. "Não existe" vira o valor padrão; uma falha que não passa sozinha (a leitura recusada)
+ * vai para `unreadable` (e daí para a coleta parcial); a passageira, a sessão perdida e o cancelamento sobem e param a
+ * coleta, sem gravar um retrato com a configuração dos buckets desconhecida.
+ */
 async function readBucket<T>(
   operation: string,
   missingCode: string | null,
@@ -285,66 +331,92 @@ async function readBucket<T>(
   } catch (error) {
     const code = awsErrorCode(error);
     if (code === missingCode) return missing;
+    if (code === 'NoSuchBucket') throw new BucketGone();
+    if (!isPermanentFailure(error)) throw error;
     unreadable.push(`${operation}: ${code}`);
     return null;
   }
 }
 
-/** O cliente precisa de `followRegionRedirects`, porque os buckets ficam em regiões diferentes. */
+/**
+ * O cliente do S3 de cada região: a listagem vai pelo da região de partida (`null`), e as leituras de cada bucket pelo
+ * da região dele (a listagem paginada informa a região), sem passar por um redirecionamento, que seria uma chamada a
+ * mais no CloudTrail do cliente. Os clientes seguem o redirecionamento quando a região não vem na listagem.
+ */
+export type S3ForRegion = (region: string | null) => Sender<S3Client>;
+
 export async function collectBuckets(
-  s3: Sender<S3Client>,
+  s3For: S3ForRegion,
 ): Promise<{ buckets: BucketInfo[]; truncated: boolean }> {
   const listed: { name: string; region: string | null }[] = [];
+  const home = s3For(null);
   let token: string | undefined;
   do {
-    const page = await s3.send(new ListBucketsCommand({ ContinuationToken: token, MaxBuckets: 1000 }));
+    const page = await home.send(new ListBucketsCommand({ ContinuationToken: token, MaxBuckets: 1000 }));
     for (const bucket of page.Buckets ?? []) {
       if (bucket.Name !== undefined) listed.push({ name: bucket.Name, region: bucket.BucketRegion ?? null });
     }
     token = page.ContinuationToken;
   } while (token !== undefined && listed.length < MAX_ITEMS);
 
-  const buckets = await mapLimited(listed.slice(0, MAX_ITEMS), async ({ name, region }) => {
-    const unreadable: string[] = [];
-    const [policyPublic, aclPublic, publicAccessBlock] = await Promise.all([
-      readBucket(
-        'GetBucketPolicyStatus',
-        'NoSuchBucketPolicy',
-        false,
-        async () => {
-          const status = await s3.send(new GetBucketPolicyStatusCommand({ Bucket: name }));
-          return status.PolicyStatus?.IsPublic === true;
-        },
-        unreadable,
-      ),
-      readBucket(
-        'GetBucketAcl',
-        null,
-        false,
-        async () => {
-          const acl = await s3.send(new GetBucketAclCommand({ Bucket: name }));
-          return (acl.Grants ?? []).some((grant) => PUBLIC_GRANTEES.has(grant.Grantee?.URI ?? ''));
-        },
-        unreadable,
-      ),
-      readBucket<PublicAccessBlock | null>(
-        'GetPublicAccessBlock',
-        'NoSuchPublicAccessBlockConfiguration',
-        null,
-        async () => {
-          const block = await s3.send(new GetPublicAccessBlockCommand({ Bucket: name }));
-          const config = block.PublicAccessBlockConfiguration;
-          return {
-            blockPublicAcls: config?.BlockPublicAcls === true,
-            ignorePublicAcls: config?.IgnorePublicAcls === true,
-            blockPublicPolicy: config?.BlockPublicPolicy === true,
-            restrictPublicBuckets: config?.RestrictPublicBuckets === true,
-          };
-        },
-        unreadable,
-      ),
-    ]);
-    return { name, region, policyPublic, aclPublic, publicAccessBlock, unreadable };
+  const read = await mapLimited(listed.slice(0, MAX_ITEMS), async ({ name, region }) => {
+    try {
+      return await readBucketConfig(s3For(region), name, region);
+    } catch (error) {
+      if (error instanceof BucketGone) return null;
+      throw error;
+    }
   });
-  return { buckets, truncated: token !== undefined || listed.length > MAX_ITEMS };
+  return {
+    buckets: read.filter((bucket) => bucket !== null),
+    truncated: token !== undefined || listed.length > MAX_ITEMS,
+  };
+}
+
+/** A política, a ACL e o bloqueio de acesso público de um bucket, pelo S3 da região dele. */
+async function readBucketConfig(
+  s3: Sender<S3Client>,
+  name: string,
+  region: string | null,
+): Promise<BucketInfo> {
+  const unreadable: string[] = [];
+  const [policyPublic, aclPublic, publicAccessBlock] = await Promise.all([
+    readBucket(
+      'GetBucketPolicyStatus',
+      'NoSuchBucketPolicy',
+      false,
+      async () => {
+        const status = await s3.send(new GetBucketPolicyStatusCommand({ Bucket: name }));
+        return status.PolicyStatus?.IsPublic === true;
+      },
+      unreadable,
+    ),
+    readBucket(
+      'GetBucketAcl',
+      null,
+      false,
+      async () => {
+        const acl = await s3.send(new GetBucketAclCommand({ Bucket: name }));
+        return (acl.Grants ?? []).some((grant) => PUBLIC_GRANTEES.has(grant.Grantee?.URI ?? ''));
+      },
+      unreadable,
+    ),
+    readBucket<PublicAccessBlock | null>(
+      'GetPublicAccessBlock',
+      'NoSuchPublicAccessBlockConfiguration',
+      null,
+      async () => {
+        const block = await s3.send(new GetPublicAccessBlockCommand({ Bucket: name }));
+        const config = block.PublicAccessBlockConfiguration;
+        return {
+          blockPublicAcls: config?.BlockPublicAcls === true,
+          ignorePublicAcls: config?.IgnorePublicAcls === true,
+          blockPublicPolicy: config?.BlockPublicPolicy === true,
+          restrictPublicBuckets: config?.RestrictPublicBuckets === true,
+        };
+      },
+      unreadable,
+    ),
+  ]);
+  return { name, region, policyPublic, aclPublic, publicAccessBlock, unreadable };
 }
