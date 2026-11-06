@@ -63,7 +63,7 @@ async function expectAdminPanel(page: Page): Promise<void> {
 /** "Fazer o tour" na faixa da demonstração abre o tour; Esc fecha. */
 async function expectTourLauncherWorks(page: Page): Promise<void> {
   await page.getByRole('note').getByRole('button', { name: 'Fazer o tour' }).click();
-  await expect(page.locator('[data-tour-card]').getByText(/^Passo \d+ de 18$/)).toBeVisible();
+  await expect(page.locator('[data-tour-card]').getByText(/^Passo \d+ de 19$/)).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
 }
@@ -128,7 +128,7 @@ test.describe('login da demonstração (modo mock)', () => {
     await page.goto('/login');
     await signInWithDemoAccess(page);
     const dialog = page.getByRole('dialog', { name: 'Torre: está tudo bem?' });
-    await expect(dialog.getByText('Passo 1 de 18')).toBeVisible();
+    await expect(dialog.getByText('Passo 1 de 19')).toBeVisible();
     await dialog.getByRole('button', { name: 'Pular' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expectAdminPanel(page);

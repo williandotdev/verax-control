@@ -41,6 +41,24 @@ export function formatRelative(value: string | Date, now: Date = new Date()): st
   return 'agora há pouco';
 }
 
+/**
+ * Uma duração curta, arredondada para a maior unidade que importa: "45 s", "4 min", "1 h 20 min", "2 h", "3 dias".
+ * Negativo vira zero.
+ */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total} s`;
+  const minutes = Math.round(total / 60);
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 24 * 60) {
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
+  }
+  const days = Math.round(minutes / (24 * 60));
+  return days === 1 ? '1 dia' : `${days} dias`;
+}
+
 const conjunction = new Intl.ListFormat('pt-BR', { style: 'long', type: 'conjunction' });
 
 /** "a, b e c". */

@@ -20,6 +20,18 @@ const asDate = (date: string): Date => new Date(`${date}T00:00:00Z`);
 /** "1.234". */
 export const formatCount = (value: number): string => integer.format(value);
 
+const compact = new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 });
+
+/** Valor de cartão, compacto acima de 10 mil: "9.876", "12,3 mil", "1,2 mi". */
+export const formatCompact = (value: number): string =>
+  Math.abs(value) < 10_000 ? integer.format(value) : compact.format(value);
+
+const hourMinute = new Intl.DateTimeFormat('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+/** A hora de um instante no fuso do navegador: "14:00". */
+export const formatHour = (value: string | Date): string =>
+  hourMinute.format(typeof value === 'string' ? new Date(value) : value);
+
 /** "45%"; abaixo de 10%, com uma casa ("4,5%"), para uma fatia pequena não virar "0%". */
 export const formatShare = (ratio: number): string =>
   (ratio < 0.1 ? percentFine : percentWhole).format(ratio);

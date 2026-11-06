@@ -59,6 +59,7 @@ import {
   DEMO_CLOUDFLARE_TOKEN_SUFFIX,
   DEMO_EGRESS_IPS,
   DEMO_EXPIRED_LINK_TOKEN,
+  DEMO_GCP_FAILING_MINUTES,
   DEMO_NODE_SERVICE_ACCOUNT_ID,
   DEMO_SINK_TOPIC_PREFIX,
   DEMO_TENANTS,
@@ -314,12 +315,22 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
             { connection: 'error', collectedMinutes: 30 * 60, error: 'trust_denied' },
             30 * 60,
           ),
-          // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó.
-          account(4, DEMO_ACCOUNTS.alfaGcp, [], { connection: 'connected', collectedMinutes: 1 }, 12, {
-            provider: 'gcp',
-            pubsubSubscription: `${DEMO_SINK_TOPIC_PREFIX.replace('/topics/', '/subscriptions/')}${DEMO_ACCOUNTS.alfaGcp}`,
-            sinkWriterIdentity: 'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com',
-          }),
+          // Projeto de cliente: o sink que ele criou publica no tópico do nó, e o nó lê a assinatura do projeto do nó. A
+          // permissão de leitura da assinatura foi tirada há 3 horas, e as leituras falham desde então: é a coleta parada
+          // da Torre (OP-02). A última entrada chegou pouco antes da última leitura bem-sucedida.
+          account(
+            4,
+            DEMO_ACCOUNTS.alfaGcp,
+            [],
+            { connection: 'error', collectedMinutes: DEMO_GCP_FAILING_MINUTES, error: 'PermissionDenied' },
+            DEMO_GCP_FAILING_MINUTES + 10,
+            {
+              provider: 'gcp',
+              pubsubSubscription: `${DEMO_SINK_TOPIC_PREFIX.replace('/topics/', '/subscriptions/')}${DEMO_ACCOUNTS.alfaGcp}`,
+              sinkWriterIdentity:
+                'serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com',
+            },
+          ),
           account(
             5,
             DEMO_ACCOUNTS.alfaCloudflare,
@@ -337,7 +348,17 @@ export function demoAdminStore(now: Date = new Date()): AdminStore {
       ],
       [
         beta,
-        [account(3, DEMO_ACCOUNTS.beta, ['sa-east-1'], { connection: 'connected', collectedMinutes: 1 }, 1)],
+        // Conta calma: o último alerta é o do achado mais recente da Beta, há quase 7 horas, e os eventos da AWS andam no
+        // Wazuh do nó (a Torre mostra "Tudo calmo", OP-01).
+        [
+          account(
+            3,
+            DEMO_ACCOUNTS.beta,
+            ['sa-east-1'],
+            { connection: 'connected', collectedMinutes: 1 },
+            400,
+          ),
+        ],
       ],
     ]),
     protectedResources: new Map([

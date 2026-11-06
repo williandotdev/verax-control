@@ -1,9 +1,12 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { COLLECTION_STATES } from '@verax/shared';
+import { MemoryRouter } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { CatalogPage } from '@/pages/catalog/catalog-page';
 import { setPrefersDark } from '@/test/setup';
+import { COLLECTION_STATE_STYLES } from './collection';
 import { compareSeverity, SEVERITIES, SEVERITY_STYLES } from './severity';
 
 describe('severidade', () => {
@@ -41,9 +44,25 @@ describe('tema', () => {
   });
 });
 
+describe('estado da coleta', () => {
+  it('cada estado tem rótulo e ícone próprios; os que pedem atenção usam o tom de ok, médio e alto', () => {
+    const states = Object.values(COLLECTION_STATE_STYLES);
+    expect(new Set(states.map((state) => state.label)).size).toBe(COLLECTION_STATES.length);
+    expect(new Set(states.map((state) => state.icon)).size).toBe(COLLECTION_STATES.length);
+    expect(COLLECTION_STATE_STYLES.collecting.tone).toBe(SEVERITY_STYLES.ok.tone);
+    expect(COLLECTION_STATE_STYLES.delayed.tone).toBe(SEVERITY_STYLES.medium.tone);
+    expect(COLLECTION_STATE_STYLES.stalled.tone).toBe(SEVERITY_STYLES.high.tone);
+  });
+});
+
 describe('catálogo', () => {
   it('mostra as cores de severidade com rótulo, os tokens de base, a tipografia e o espaçamento', () => {
-    render(<CatalogPage />);
+    // O cartão de número do catálogo tem link: a página vive dentro do roteador do painel.
+    render(
+      <MemoryRouter>
+        <CatalogPage />
+      </MemoryRouter>,
+    );
     const colors = screen.getByRole('region', { name: 'Cores de severidade' });
     for (const severity of SEVERITIES) {
       expect(within(colors).getByText(SEVERITY_STYLES[severity].label)).toBeInTheDocument();

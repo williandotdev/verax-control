@@ -118,6 +118,60 @@ test.describe('revisão de UX (modo mock)', () => {
     }
   }
 
+  // A Torre com o pulso e a saúde da coleta (OP-02), com o que só aparece na interação: a tabela do minigráfico aberta
+  // e a dica pelo teclado. A Alfa da demonstração tem a coleta da GCP parada (amarelo pela coleta, além do crítico).
+  // Nos dois temas, no computador e no celular (sem nada passar da tela).
+  for (const theme of ['light', 'dark'] as const) {
+    for (const [device, width] of [
+      ['computador', 1280],
+      ['celular', 360],
+    ] as const) {
+      test(`Torre com o pulso e a coleta parada (${theme === 'light' ? 'claro' : 'escuro'}, ${device}): sem violação de acessibilidade`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: 800 });
+        await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
+        await open(page, '/', 'Torre');
+        await expect(page.getByRole('status', { name: /coleta parada \(GCP\)\.$/ })).toBeVisible();
+        const health = page.getByRole('region', { name: 'Saúde da coleta' });
+        await expect(health.getByText('Parada', { exact: true })).toBeVisible();
+        await expect(health.getByText('Aguardando o primeiro dado')).toBeVisible();
+        const pulse = page.getByRole('region', { name: 'Pulso da operação' });
+        await expect(pulse.getByRole('region', { name: 'Agentes online' })).toContainText('3 de 5');
+        await pulse.getByText('Ver tabela').click();
+        await expect(
+          page.getByRole('table', { name: 'Achados por hora nas últimas 24 horas' }),
+        ).toBeVisible();
+        await pulse.getByRole('img', { name: /^Achados por hora nas últimas 24 horas/ }).focus();
+        await page.keyboard.press('ArrowLeft');
+        await expect(page.getByText(/^\d{2}:\d{2}: \d+ achados?\.$/)).toBeAttached();
+        expect(await violations(page)).toEqual([]);
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+        ).toBeLessThanOrEqual(1);
+      });
+    }
+  }
+
+  // O cliente tranquilo da demonstração: "Tudo calmo", com a prova da coleta, e as fontes que ele não tem por último.
+  for (const theme of ['light', 'dark'] as const) {
+    test(`Torre "Tudo calmo" da Beta (${theme === 'light' ? 'claro' : 'escuro'}): sem violação de acessibilidade`, async ({
+      page,
+    }) => {
+      await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
+      await open(page, '/', 'Torre');
+      await page.getByLabel('Cliente').selectOption({ label: 'Cliente Demo Beta' });
+      await expect(page.getByRole('status', { name: /^Situação: Normal\. Tudo calmo\./ })).toContainText(
+        'Coleta ativa em 2 de 2 fontes',
+      );
+      const health = page.getByRole('region', { name: 'Saúde da coleta' });
+      await expect(health.getByText('Não configurada')).toHaveCount(3);
+      await expect(page.getByRole('region', { name: 'Pulso da operação' })).toBeVisible();
+      await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+      expect(await violations(page)).toEqual([]);
+    });
+  }
+
   // Um teste por painel: cada análise de acessibilidade leva alguns segundos, e juntos passavam do tempo de um teste.
   // Abertos pela URL: com o painel modal, o resto da página fica fora da árvore de acessibilidade.
   for (const [path, dialog] of [
