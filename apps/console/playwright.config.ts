@@ -5,7 +5,8 @@ import { defineConfig, devices } from '@playwright/test';
  * cp-admin (`vite.config.ts`), e a API do console simulada em memória pelo `page.route` (`e2e/mock-api.ts`, sobre
  * `src/mocks/fake-admin-api.ts`, com a tabela e o modelo FICTÍCIOS). Nada fala com o plano de controle nem com o IAP.
  */
-const PORT = 5291;
+/** A porta do `vite preview`; `CONSOLE_E2E_PORT` troca (outra cópia do repositório rodando ao mesmo tempo). */
+const PORT = Number(process.env['CONSOLE_E2E_PORT'] ?? 5291);
 
 export default defineConfig({
   testDir: './e2e',

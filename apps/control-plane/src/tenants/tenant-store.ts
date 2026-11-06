@@ -14,6 +14,7 @@ import {
 import { canTransition } from './tenant-transitions.js';
 import {
   billingModeOf,
+  hostingOf,
   isSlugFree,
   type SlugDocument,
   slugDocumentSchema,
@@ -48,6 +49,12 @@ export interface CreateTenantOptions {
    * com o mesmo id. Sem ele, um ULID novo.
    */
   tenantId?: string;
+  /**
+   * O estado em que o cliente nasce: `pending` (o padrão: o checkout e o contrato direto na infraestrutura da Verax) ou
+   * `waiting_customer_install` (o contrato direto com o ambiente na infraestrutura do cliente, que nunca provisiona).
+   * O schema do cliente recusa `waiting_customer_install` sem `hosting = customer`.
+   */
+  initialState?: 'pending' | 'waiting_customer_install';
 }
 
 export interface TransitionRequest {
@@ -147,9 +154,17 @@ export class LockNotHeldError extends Error {
 
 /**
  * O que uma transição nunca muda: a identidade do cliente (`slug`, `company`), o aceite dos textos legais
- * (`consent`), a data de criação e a trava, que tem fluxo próprio (`acquireLock`/`renewLock`/`releaseLock`).
+ * (`consent`), onde o ambiente roda (`hosting`: decidido no cadastro), a data de criação e a trava, que tem fluxo
+ * próprio (`acquireLock`/`renewLock`/`releaseLock`).
  */
-export const IMMUTABLE_IN_TRANSITION = ['slug', 'company', 'consent', 'createdAt', 'lock'] as const;
+export const IMMUTABLE_IN_TRANSITION = [
+  'slug',
+  'company',
+  'consent',
+  'hosting',
+  'createdAt',
+  'lock',
+] as const;
 
 /** Campos de primeiro nível que mudaram entre dois documentos (para a auditoria: só os nomes, nunca os valores). */
 function changedFields(before: Tenant, after: Tenant): string[] {
@@ -180,7 +195,7 @@ export class TenantStore {
   ) {}
 
   /**
-   * Cria o cliente em `pending` e toma o subdomínio em `slugs/{slug}` na mesma transação. O slug precisa estar livre
+   * Cria o cliente em `pending` (ou em `options.initialState`) e toma o subdomínio em `slugs/{slug}` na mesma transação. O slug precisa estar livre
    * ou reservado para o mesmo checkout (`consent.checkoutSessionId` e, com `options.tenantId`, o mesmo id); uma
    * reserva vencida de outro checkout também conta como livre. Caso contrário, `SlugTakenError`, e nada é gravado.
    * Com o id reservado já usado por um cliente, `TenantAlreadyExistsError`.
@@ -191,9 +206,10 @@ export class TenantStore {
       throw new TypeError('id de cliente reservado inválido');
     }
     const id = options.tenantId ?? newUlid(now.getTime());
+    const initialState = options.initialState ?? 'pending';
     const tenant = tenantSchema.parse({
       ...input,
-      state: 'pending',
+      state: initialState,
       stateUpdatedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -220,7 +236,7 @@ export class TenantStore {
           newUlid(now.getTime()),
           transitionSchema.parse({
             from: null,
-            to: 'pending',
+            to: initialState,
             reason: options.reason,
             eventId: options.eventId,
             at: now,
@@ -235,7 +251,8 @@ export class TenantStore {
             size: tenant.configuration.size,
             priceTableVersion: tenant.pricing.priceTableVersion,
             billingMode: billingModeOf(tenant),
-            to: 'pending',
+            hosting: hostingOf(tenant),
+            to: initialState,
             reason: options.reason,
             eventId: options.eventId,
           },

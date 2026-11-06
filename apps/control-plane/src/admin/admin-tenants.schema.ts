@@ -15,6 +15,8 @@ import type { ProvisioningStepName } from '../provisioning/provisioning-engine.j
 import {
   type BillingMode,
   companyNameSchema,
+  type Hosting,
+  HOSTINGS,
   type LifecycleRunKind,
   type SuspensionReason,
   type TenantState,
@@ -28,10 +30,26 @@ import {
  */
 
 /**
+ * Onde o ambiente do contrato direto roda, escolha obrigatória do responsável (sem padrão no formulário): na
+ * infraestrutura da Verax (o provisionamento de sempre) ou na do cliente (nada é criado na Verax).
+ */
+export const hostingSchema = z.enum(HOSTINGS, {
+  error: 'Escolha onde o ambiente roda: na infraestrutura da Verax ou na do cliente.',
+});
+
+/**
+ * As respostas da calculadora menos "onde roda": no contrato direto, o lugar é `hosting`, e o modo da tabela de preços
+ * sai dele (`MODE_OF_HOSTING`: gerenciado na Verax, licença no cliente). Uma fonte só para as duas coisas.
+ */
+export const directConfigurationSchema = configurationInputSchema.omit({ mode: true });
+export type DirectConfiguration = z.infer<typeof directConfigurationSchema>;
+
+/**
  * `POST /v1/admin/tenants`: o cadastro de um cliente de contrato direto. Os campos do cliente com as mesmas regras e
- * limites do checkout do site; a configuração com as seis respostas da calculadora (sem preço: o preço de referência é o
- * da tabela vigente). `idempotencyKey` é um ULID gerado pelo console ao abrir o formulário: é o id do cliente, então
- * enviar duas vezes cria um cliente só. `confirmSlug` repete o subdomínio (a confirmação digitada).
+ * limites do checkout do site; onde o ambiente roda (`hosting`); a configuração com as outras cinco respostas da
+ * calculadora (sem preço: o preço de referência é o da tabela vigente, no modo do lugar escolhido). `idempotencyKey` é
+ * um ULID gerado pelo console ao abrir o formulário: é o id do cliente, então enviar duas vezes cria um cliente só.
+ * `confirmSlug` repete o subdomínio (a confirmação digitada).
  */
 export const directTenantRequestSchema = z.strictObject({
   idempotencyKey: z.string().max(26).regex(ULID_PATTERN),
@@ -39,13 +57,17 @@ export const directTenantRequestSchema = z.strictObject({
   cnpj: cnpjInputSchema,
   adminEmail: adminEmailSchema,
   slug: slugInputSchema,
-  configuration: configurationInputSchema,
+  hosting: hostingSchema,
+  configuration: directConfigurationSchema,
   confirmSlug: z.string().max(64),
 });
 export type DirectTenantRequest = z.infer<typeof directTenantRequestSchema>;
 
 /** `POST /v1/admin/tenants/preview`: a cotação de referência de uma configuração, antes do cadastro. */
-export const directTenantPreviewSchema = z.strictObject({ configuration: configurationInputSchema });
+export const directTenantPreviewSchema = z.strictObject({
+  hosting: hostingSchema,
+  configuration: directConfigurationSchema,
+});
 
 /**
  * As operações do responsável sobre um cliente, no console (`POST /v1/admin/tenants/:id/<operação>`), cada uma com o
@@ -87,6 +109,7 @@ export interface TenantListItem {
   state: TenantState;
   stateUpdatedAt: Date;
   billingMode: BillingMode;
+  hosting: Hosting;
   size: SizeId;
   /** O passo do provisionamento, só em `provisioning` e `provisioning_failed`. */
   step?: string;
@@ -154,13 +177,16 @@ export interface TenantDetail {
   stateUpdatedAt: Date;
   createdAt: Date;
   billingMode: BillingMode;
+  /** Onde o ambiente roda (`verax` para todo cliente do site). */
+  hosting: Hosting;
   company: { legalName: string; cnpj: string };
   adminEmail?: string;
   configuration: Configuration;
   limits: NodeLimits;
   /** O preço de referência (contrato direto) ou o cotado no checkout. */
   pricing: OrderPricing;
-  urls: { panelUrl: string; apiUrl: string };
+  /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente (os endereços são dele). */
+  urls?: { panelUrl: string; apiUrl: string };
   provisioning?: {
     runId?: string;
     step?: string;
@@ -177,6 +203,7 @@ export interface TenantDetail {
     failureCode?: string;
     release?: string;
   };
+  /** Os passos do provisionamento; vazia no ambiente do cliente (nada é provisionado). */
   timeline: TimelineStep[];
   access: { passwordRevealedAt?: Date; revealEmailSentAt?: Date };
   lifecycle: TenantLifecycleView;
@@ -203,7 +230,37 @@ export interface DirectTenantCreated {
   slug: string;
   /** `true` quando a chave já tinha criado este cliente (o mesmo envio repetido): nada novo foi criado. */
   replayed: boolean;
-  provisioning: ProvisioningRequestOutcome;
+  hosting: Hosting;
+  /** O pedido ao cp-worker; ausente no ambiente do cliente (nada é provisionado nem pedido ao worker). */
+  provisioning?: ProvisioningRequestOutcome;
+}
+
+/** Uma linha do `node.conf` do cliente que o contrato define (o plano e os limites, `node-limits.ts`). */
+export interface NodeConfLine {
+  name: string;
+  value: string;
+}
+
+/**
+ * `GET /v1/admin/tenants/:id/installation`: o que o responsável manda ao cliente de contrato direto que instala o
+ * ambiente na infraestrutura dele: a versão do nó (a que o provisionamento usaria agora, lida e conferida pelo
+ * cp-worker), os endereços do release no GitHub, o pacote com o SHA-256, as imagens pelo digest, o guia de instalação
+ * do repositório e as linhas do `node.conf` do contrato. Tudo público ou do próprio contrato: nada de segredo.
+ */
+export interface TenantInstallation {
+  release: string;
+  commit: string;
+  releasedAt?: string;
+  releaseUrl: string;
+  manifestUrl: string;
+  signatureUrl: string;
+  guideUrl: string;
+  package: { url: string; sha256: string };
+  images: { api: string; migrate: string };
+  thirdPartyImages: string[];
+  /** A chave de release que assinou o manifesto e a impressão digital dela (SHA-256 da pública em DER). */
+  releaseKey: { name: string; sha256: string };
+  nodeConf: NodeConfLine[];
 }
 
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */

@@ -17,6 +17,16 @@ export function useTenant(id: string) {
   });
 }
 
+/** O que mandar ao cliente que instala na infraestrutura dele (a versão vigente, conferida pelo cp-worker). */
+export function useTenantInstallation(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['tenant', id, 'installation'],
+    queryFn: () => tenantsApi.installation(id),
+    enabled,
+    retry: false,
+  });
+}
+
 /** Depois de uma operação: a lista e o detalhe do cliente. */
 export function useInvalidateTenants(): (id?: string) => Promise<void> {
   const client = useQueryClient();

@@ -18,6 +18,7 @@ import {
   LIFECYCLE_STEP_CLASSES,
 } from '../lifecycle/lifecycle.module.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
+import { InstallationController } from '../provisioning/installation.js';
 import { NodeMailSyncController } from '../provisioning/node-mail.js';
 import { ProvisioningResumeController } from '../provisioning/provisioning-resume.js';
 import { ProvisioningStartController } from '../provisioning/provisioning-start.js';
@@ -69,6 +70,7 @@ export class AccessWorkerModule {
         InternalStepsController,
         ProvisioningResumeController,
         ProvisioningStartController,
+        InstallationController,
         NodeMailSyncController,
         ...LIFECYCLE_CONTROLLERS,
       ],

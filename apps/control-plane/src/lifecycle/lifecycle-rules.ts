@@ -2,6 +2,7 @@ import type { AuditContext, TenantChange } from '../tenants/tenant-store.js';
 import {
   billingModeOf,
   type DeletionRequester,
+  hostingOf,
   type LifecycleRunKind,
   type Tenant,
   type TenantRecord,
@@ -37,10 +38,12 @@ export const NODE_RUNNING_STATES: readonly TenantState[] = [
 
 /**
  * O cliente pode ter VM: o `apply` do Terraform já começou (a versão presa, CP-07) ou a VM foi registrada. Sem isso não
- * há o que parar nem ligar (e o subdomínio de quem nunca provisionou pode ser de outro cliente agora, CP-04).
+ * há o que parar nem ligar (e o subdomínio de quem nunca provisionou pode ser de outro cliente agora, CP-04). O ambiente
+ * na infraestrutura do cliente (`hosting = customer`) nunca: a VM é dele, e o plano de controle não a alcança.
  */
 export function mayHaveNode(tenant: Tenant): boolean {
   return (
+    hostingOf(tenant) !== 'customer' &&
     !neverProvisioned(tenant) &&
     (tenant.resources?.instanceName !== undefined || tenant.provisioning?.nodeVersionPinnedAt !== undefined)
   );
@@ -48,10 +51,12 @@ export function mayHaveNode(tenant: Tenant): boolean {
 
 /**
  * Algum recurso fora do Firestore pode existir (túnel, site, estado do Terraform): o cliente entrou em `provisioning`
- * alguma vez. Quem nunca provisionou (boleto vencido no 1.º ciclo) é excluído só no Firestore, sem chamada externa.
+ * alguma vez. Quem nunca provisionou (boleto vencido no 1.º ciclo) é excluído só no Firestore, sem chamada externa. O
+ * ambiente na infraestrutura do cliente também, sempre: nada dele existe na infraestrutura da Verax (nem túnel, nem
+ * site, nem estado do Terraform), e quem apaga o ambiente é o próprio cliente.
  */
 export function mayHaveExternalResources(tenant: Tenant): boolean {
-  return !neverProvisioned(tenant);
+  return hostingOf(tenant) !== 'customer' && !neverProvisioned(tenant);
 }
 
 /** A carência de 7 dias venceu: `past_due` → `suspended` (`grace_expired`), plano §4d (D+7). */
@@ -157,7 +162,10 @@ export function startDeletionChange(
         ...current.lifecycle,
         deleteAfter:
           by === 'owner' ? earliest(current.lifecycle?.deleteAfter, now) : current.lifecycle?.deleteAfter,
-        exportUntil: earliest(current.lifecycle?.exportUntil, now),
+        // Sem janela aberta (o ambiente na infraestrutura do cliente nunca teve), nada a fechar.
+        ...(current.lifecycle?.exportUntil === undefined
+          ? {}
+          : { exportUntil: earliest(current.lifecycle.exportUntil, now) }),
         deletionRequestedAt: now,
         deletionRequestedBy: by,
         run: { kind: 'delete', runId: run.runId, step: run.firstStep, startedAt: now },
@@ -267,28 +275,44 @@ export function minimalRecord(tenant: Tenant, now: Date): Tenant {
 export const MAX_CANCEL_SCHEDULE_MS = 2 * 366 * DAY_MS;
 
 /** Estados de onde o responsável pode cancelar um contrato direto (todos os vivos). */
-const CANCELABLE: readonly TenantState[] = [
+export const CONTRACT_CANCELABLE: readonly TenantState[] = [
   'pending',
   'provisioning',
   'provisioning_failed',
+  'waiting_customer_install',
   'waiting_customer_connection',
   'active',
   'past_due',
   'suspended',
 ];
 
-/** Contrato direto cancelado agora pelo responsável: os mesmos prazos de todo cancelamento (D+30 e D+97). */
+/**
+ * Contrato direto cancelado agora pelo responsável: os mesmos prazos de todo cancelamento (D+30 e D+97). Com o ambiente
+ * na infraestrutura do cliente, o cancelamento só registra o fim do contrato: sem janela de exportação (os dados nunca
+ * estiveram na Verax), e os prazos só apagam o cadastro na Verax (o e-mail do administrador em D+30 e o registro
+ * mínimo em D+97); o ambiente, quem apaga é o cliente.
+ */
 export function contractCancelChange(
   tenant: TenantRecord,
   now: Date,
   audit: AuditContext,
   reason = 'contract_canceled_by_owner',
 ): TenantChange | undefined {
-  if (billingModeOf(tenant) !== 'contract' || !CANCELABLE.includes(tenant.state)) return undefined;
-  return cancelTenant(tenant, { at: now, audit }, reason, (current) => {
+  if (billingModeOf(tenant) !== 'contract' || !CONTRACT_CANCELABLE.includes(tenant.state)) return undefined;
+  const change = cancelTenant(tenant, { at: now, audit }, reason, (current) => {
     const { cancelScheduledFor: _done, ...lifecycle } = current.lifecycle ?? {};
     return { ...current, lifecycle };
   });
+  if (change?.mutate === undefined || hostingOf(tenant) !== 'customer') return change;
+  const mutate = change.mutate;
+  return {
+    ...change,
+    mutate: (current) => {
+      const next = mutate(current);
+      const { exportUntil: _none, ...lifecycle } = next.lifecycle ?? {};
+      return { ...next, lifecycle };
+    },
+  };
 }
 
 /** O cancelamento de um contrato direto marcado para uma data futura (o fim do contrato). */
@@ -297,7 +321,7 @@ export function contractScheduleCancelChange(
   when: Date,
   audit: AuditContext,
 ): TenantChange | undefined {
-  if (billingModeOf(tenant) !== 'contract' || !CANCELABLE.includes(tenant.state)) return undefined;
+  if (billingModeOf(tenant) !== 'contract' || !CONTRACT_CANCELABLE.includes(tenant.state)) return undefined;
   return {
     reason: 'contract_cancel_scheduled',
     audit,
@@ -316,9 +340,12 @@ export function scheduledCancelChange(
   return contractCancelChange(tenant, when, audit, 'contract_ended');
 }
 
-/** O responsável suspende um contrato direto (a VM para; só ele reativa). */
+/**
+ * O responsável suspende um contrato direto (a VM para; só ele reativa). Nunca o ambiente na infraestrutura do cliente:
+ * o plano de controle não para nada lá, e um "suspenso" sem efeito enganaria.
+ */
 export function contractSuspendChange(tenant: TenantRecord, audit: AuditContext): TenantChange | undefined {
-  if (billingModeOf(tenant) !== 'contract') return undefined;
+  if (billingModeOf(tenant) !== 'contract' || hostingOf(tenant) === 'customer') return undefined;
   if (
     tenant.state !== 'active' &&
     tenant.state !== 'waiting_customer_connection' &&

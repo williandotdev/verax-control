@@ -6,8 +6,10 @@ import type { DirectTenantCreated, TimelineStep, TimelineStepStatus } from '@/li
 import { cn } from '@/lib/cn';
 import { configurationSummary, formatDateTime } from '@/lib/format';
 import { formatCents, formatInteger } from '@/lib/numbers';
+import { InstallationPanel } from './installation-panel';
 import {
   failureHint,
+  HOSTING_LABELS,
   STATE_LABELS,
   STEP_LABELS,
   STEP_STATUS_LABELS,
@@ -17,7 +19,7 @@ import {
 } from './labels';
 import { useTenant } from './queries';
 import { TenantActionButtons } from './tenant-actions';
-import { BillingBadge, TenantStateBadge } from './tenant-badges';
+import { BillingBadge, HostingBadge, TenantStateBadge } from './tenant-badges';
 
 function Meta({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -91,6 +93,14 @@ function createdNotice(
   created: DirectTenantCreated | undefined,
 ): { text: string; warning: boolean } | undefined {
   if (created === undefined) return undefined;
+  if (created.hosting === 'customer' || created.provisioning === undefined) {
+    return {
+      text: created.replayed
+        ? 'Este cadastro já tinha sido enviado: é o mesmo cliente, nada novo foi criado.'
+        : 'Cliente criado. O ambiente roda na infraestrutura do cliente: envie a ele a versão e o guia abaixo.',
+      warning: false,
+    };
+  }
   if (created.provisioning.started) {
     return {
       text: created.replayed
@@ -106,9 +116,10 @@ function createdNotice(
 }
 
 /**
- * Um cliente: quem é, como paga, o que contratou, a linha do tempo do provisionamento (cada passo, com o código
- * de quem parou), o acesso do administrador e o histórico de estados; e as operações do responsável, com o subdomínio
- * digitado como confirmação. Enquanto provisiona, a página se atualiza sozinha.
+ * Um cliente: quem é, como paga, onde o ambiente roda, o que contratou, a linha do tempo do provisionamento (cada
+ * passo, com o código de quem parou) ou, no ambiente do cliente, o que mandar a ele para instalar; o acesso do
+ * administrador e o histórico de estados; e as operações do responsável, com o subdomínio digitado como confirmação.
+ * Enquanto provisiona, a página se atualiza sozinha.
  */
 export function TenantDetailPage() {
   const { id = '' } = useParams();
@@ -131,6 +142,7 @@ export function TenantDetailPage() {
   const lastError = data.provisioning?.lastError;
   const hint = failureHint(lastError?.code);
   const contract = data.billingMode === 'contract';
+  const customer = data.hosting === 'customer';
   return (
     <div className="space-y-6">
       <header className="space-y-3">
@@ -139,6 +151,7 @@ export function TenantDetailPage() {
           <h1 className="text-2xl font-semibold">{data.company.legalName}</h1>
           <TenantStateBadge state={data.state} />
           <BillingBadge mode={data.billingMode} />
+          <HostingBadge hosting={data.hosting} />
         </div>
         {notice !== undefined && (
           <p
@@ -163,12 +176,17 @@ export function TenantDetailPage() {
           <Meta label="Estado">
             {STATE_LABELS[data.state]} desde {formatDateTime(data.stateUpdatedAt)}
           </Meta>
-          <Meta label="Painel">
-            <span className="font-mono text-xs">{data.urls.panelUrl}</span>
-          </Meta>
-          <Meta label="API">
-            <span className="font-mono text-xs">{data.urls.apiUrl}</span>
-          </Meta>
+          <Meta label="Onde o ambiente roda">{HOSTING_LABELS[data.hosting]}</Meta>
+          {data.urls !== undefined && (
+            <Meta label="Painel">
+              <span className="font-mono text-xs">{data.urls.panelUrl}</span>
+            </Meta>
+          )}
+          {data.urls !== undefined && (
+            <Meta label="API">
+              <span className="font-mono text-xs">{data.urls.apiUrl}</span>
+            </Meta>
+          )}
           <Meta label="Id">
             <span className="font-mono text-xs">{data.id}</span>
           </Meta>
@@ -186,66 +204,76 @@ export function TenantDetailPage() {
           <p className="text-xs text-muted-foreground">
             Contrato direto: sem assinatura nem cobrança pela Stripe. A cobrança e a nota fiscal seguem o
             contrato.
+            {customer &&
+              ' O ambiente roda na infraestrutura do cliente: a referência é a tabela da licença, e a nuvem é paga por ele.'}
           </p>
         )}
       </Panel>
 
-      <Panel title="Provisionamento" id="provisionamento">
-        {data.run === undefined ? (
-          <p className="text-sm text-muted-foreground">
-            {data.state === 'pending'
-              ? 'Ainda não começou.'
-              : 'Nenhuma execução registrada (as execuções ficam 180 dias).'}
-          </p>
-        ) : (
-          <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Meta label="Execução">
-              <span className="font-mono text-xs">{data.run.runId}</span>
-            </Meta>
-            <Meta label="Tipo">{data.run.kind === 'resume' ? 'Retomada' : 'Primeira'}</Meta>
-            <Meta label="Versão do nó">{data.run.release ?? data.provisioning?.nodeVersion ?? '—'}</Meta>
-            <Meta label="Início">{formatDateTime(data.run.startedAt)}</Meta>
-          </dl>
-        )}
-        {data.state === 'provisioning_failed' && lastError !== undefined && (
-          <div role="alert" className="rounded-lg border border-critical/40 bg-critical/5 p-3 text-sm">
-            <p className="font-medium">
-              Parou em {stepLabel(data.provisioning?.step)} com{' '}
-              <span className="font-mono">{lastError.code}</span> ({formatDateTime(lastError.at)}).
+      {customer ? (
+        <InstallationPanel tenant={data} />
+      ) : (
+        <Panel title="Provisionamento" id="provisionamento">
+          {data.run === undefined ? (
+            <p className="text-sm text-muted-foreground">
+              {data.state === 'pending'
+                ? 'Ainda não começou.'
+                : 'Nenhuma execução registrada (as execuções ficam 180 dias).'}
             </p>
-            {hint !== undefined && <p>{hint}</p>}
-            <p className="text-xs">
-              O que fazer em cada código está no runbook “Provisionamento que parou”
-              (docs/runbooks/provisionamento.md).
-            </p>
-          </div>
-        )}
-        <ol aria-label="Linha do tempo do provisionamento" className="space-y-1">
-          {data.timeline.map((step) => (
-            <TimelineItem key={step.name} step={step} />
-          ))}
-        </ol>
-        <TenantActionButtons tenant={data} actions={['start', 'resume']} />
-      </Panel>
+          ) : (
+            <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Meta label="Execução">
+                <span className="font-mono text-xs">{data.run.runId}</span>
+              </Meta>
+              <Meta label="Tipo">{data.run.kind === 'resume' ? 'Retomada' : 'Primeira'}</Meta>
+              <Meta label="Versão do nó">{data.run.release ?? data.provisioning?.nodeVersion ?? '—'}</Meta>
+              <Meta label="Início">{formatDateTime(data.run.startedAt)}</Meta>
+            </dl>
+          )}
+          {data.state === 'provisioning_failed' && lastError !== undefined && (
+            <div role="alert" className="rounded-lg border border-critical/40 bg-critical/5 p-3 text-sm">
+              <p className="font-medium">
+                Parou em {stepLabel(data.provisioning?.step)} com{' '}
+                <span className="font-mono">{lastError.code}</span> ({formatDateTime(lastError.at)}).
+              </p>
+              {hint !== undefined && <p>{hint}</p>}
+              <p className="text-xs">
+                O que fazer em cada código está no runbook “Provisionamento que parou”
+                (docs/runbooks/provisionamento.md).
+              </p>
+            </div>
+          )}
+          <ol aria-label="Linha do tempo do provisionamento" className="space-y-1">
+            {data.timeline.map((step) => (
+              <TimelineItem key={step.name} step={step} />
+            ))}
+          </ol>
+          <TenantActionButtons tenant={data} actions={['start', 'resume']} />
+        </Panel>
+      )}
 
       <Panel title="Acesso do administrador" id="acesso">
         <p className="text-sm">
-          {contract
-            ? 'Quando o ambiente fica pronto, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca passa por este console nem pelo e-mail.'
-            : 'O cliente vê a senha temporária uma vez, na página de status do site; se não vir em 48 horas, recebe o e-mail com o link de uso único.'}
+          {customer
+            ? 'O primeiro administrador é criado na instalação, pelo próprio cliente (guia de instalação, “Primeiro acesso”). A Verax não envia e-mail de acesso nem vê a senha.'
+            : contract
+              ? 'Quando o ambiente fica pronto, o administrador recebe o e-mail “ambiente pronto” com um link de uso único (24 horas) para ver a senha temporária. A senha nunca passa por este console nem pelo e-mail.'
+              : 'O cliente vê a senha temporária uma vez, na página de status do site; se não vir em 48 horas, recebe o e-mail com o link de uso único.'}
         </p>
-        <dl className="grid gap-3 sm:grid-cols-2">
-          <Meta label="E-mail de acesso enviado">
-            {data.access.revealEmailSentAt === undefined
-              ? 'Ainda não'
-              : formatDateTime(data.access.revealEmailSentAt)}
-          </Meta>
-          <Meta label="Senha vista pelo cliente">
-            {data.access.passwordRevealedAt === undefined
-              ? 'Ainda não'
-              : formatDateTime(data.access.passwordRevealedAt)}
-          </Meta>
-        </dl>
+        {!customer && (
+          <dl className="grid gap-3 sm:grid-cols-2">
+            <Meta label="E-mail de acesso enviado">
+              {data.access.revealEmailSentAt === undefined
+                ? 'Ainda não'
+                : formatDateTime(data.access.revealEmailSentAt)}
+            </Meta>
+            <Meta label="Senha vista pelo cliente">
+              {data.access.passwordRevealedAt === undefined
+                ? 'Ainda não'
+                : formatDateTime(data.access.passwordRevealedAt)}
+            </Meta>
+          </dl>
+        )}
       </Panel>
 
       <Panel title="Ciclo de vida" id="ciclo-de-vida">
@@ -265,12 +293,12 @@ export function TenantDetailPage() {
             <Meta label="Exportação até">{formatDateTime(data.lifecycle.exportUntil)}</Meta>
           )}
           {data.lifecycle.deleteAfter !== undefined && (
-            <Meta label="Exclusão 1 (D+30)">
+            <Meta label={customer ? 'Exclusão do cadastro (D+30)' : 'Exclusão 1 (D+30)'}>
               {formatDateTime(data.lifecycle.deletedAt ?? data.lifecycle.deleteAfter)}
             </Meta>
           )}
           {data.lifecycle.cryptoDestroyAfter !== undefined && (
-            <Meta label="Cripto-destruição (D+97)">
+            <Meta label={customer ? 'Registro mínimo (D+97)' : 'Cripto-destruição (D+97)'}>
               {formatDateTime(data.lifecycle.cryptoDestroyedAt ?? data.lifecycle.cryptoDestroyAfter)}
             </Meta>
           )}
@@ -290,6 +318,14 @@ export function TenantDetailPage() {
           <p className="text-sm text-muted-foreground">
             Cliente da Stripe: cancelamento e suspensão seguem a assinatura (Portal do cliente ou Dashboard da
             Stripe). Apagar agora e exportar ficam disponíveis depois do cancelamento.
+          </p>
+        )}
+        {customer && (
+          <p className="text-sm text-muted-foreground">
+            Ambiente na infraestrutura do cliente: cancelar e apagar só registram o fim do contrato aqui. A
+            Verax não para, não liga, não exporta e não apaga nada no ambiente do cliente; quem apaga o
+            ambiente é o próprio cliente (guia de instalação, “Desinstalar”), e o registro de exclusão enviado
+            ao administrador diz isso.
           </p>
         )}
         <TenantActionButtons

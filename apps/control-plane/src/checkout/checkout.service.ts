@@ -5,7 +5,7 @@ import { ApiError } from '../common/http/api-error.js';
 import { equalValues } from '../firestore/document-store.js';
 import { PricingTableStore } from '../pricing/pricing-store.js';
 import type { ConfigurationInput, QuoteLineItem } from '../pricing/pricing.schema.js';
-import { isSoldOnline } from '../pricing/public-pricing.js';
+import { isSoldOnline, modeNotSoldOnline } from '../pricing/public-pricing.js';
 import { type StoredQuote, QuoteStore } from '../pricing/quote-store.js';
 import { quote } from '../pricing/quote.js';
 import {
@@ -205,19 +205,27 @@ export class CheckoutService implements OnModuleInit {
 
   /**
    * A cotação gravada, válida e recalculada pela tabela da versão dela (publicada ou já aposentada: o preço mostrado é
-   * honrado até a cotação vencer). Vencida, inexistente, de um modo que o site não vende ou diferente do recálculo
-   * (tabela apagada, documento adulterado): 409 `quote_outdated`, e o site pede outra.
+   * honrado até a cotação vencer). Vencida, inexistente ou diferente do recálculo (tabela apagada, documento
+   * adulterado): 409 `quote_outdated`, e o site pede outra. De um modo que o site não vende (o ambiente na
+   * infraestrutura do cliente: a cotação de referência de um contrato direto, gravada pelo console na mesma coleção):
+   * 422 `mode_not_sold_online`, antes de qualquer outra conferência, e nada é reservado.
    */
   private async resolveQuote(quoteId: string): Promise<StoredQuote> {
     const stored = await this.quotes.getValid(quoteId);
     if (stored === undefined) throw QUOTE_OUTDATED();
+    if (!isSoldOnline(stored.configuration.mode)) {
+      this.logger.warn(
+        { event: 'checkout_mode_refused', quoteId, mode: stored.configuration.mode },
+        'checkout com uma cotação de um modo que o site não vende',
+      );
+      throw modeNotSoldOnline();
+    }
     const table = await this.tables.get(stored.priceTableVersion);
     const { size: _size, ...answers } = stored.configuration;
     const input: ConfigurationInput = answers;
     const outcome = table === undefined || table.status === 'draft' ? undefined : quote(input, table.content);
     const matches =
       outcome?.kind === 'quote' &&
-      isSoldOnline(stored.configuration.mode) &&
       equalValues(outcome.quote.configuration, stored.configuration) &&
       equalValues(outcome.quote.lineItems, stored.lineItems) &&
       equalValues(outcome.quote.limits, stored.limits) &&

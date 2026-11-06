@@ -26,6 +26,8 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['past_due', 'active'],
     ['suspended', 'active'],
     ['suspended', 'canceled'],
+    // O contrato direto no cliente só sai da espera da instalação cancelado.
+    ['waiting_customer_install', 'canceled'],
     ['canceled', 'deleted'],
   ])('permite %s -> %s', (from, to) => {
     expect(canTransition(from, to)).toBe(true);
@@ -45,6 +47,12 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['canceled', 'active'],
     ['deleted', 'canceled'],
     ['deleted', 'deleted'],
+    // Nada do ambiente no cliente passa pelo provisionamento, nem chega lá vindo dele.
+    ['waiting_customer_install', 'provisioning'],
+    ['waiting_customer_install', 'active'],
+    ['waiting_customer_install', 'suspended'],
+    ['pending', 'waiting_customer_install'],
+    ['provisioning', 'waiting_customer_install'],
   ])('recusa %s -> %s', (from, to) => {
     expect(canTransition(from, to)).toBe(false);
   });

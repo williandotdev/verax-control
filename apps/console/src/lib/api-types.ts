@@ -324,6 +324,7 @@ export type TenantState =
   | 'pending'
   | 'provisioning'
   | 'provisioning_failed'
+  | 'waiting_customer_install'
   | 'waiting_customer_connection'
   | 'active'
   | 'past_due'
@@ -333,6 +334,12 @@ export type TenantState =
 
 /** `stripe`: o checkout do site e a assinatura; `contract`: contrato direto, criado aqui, sem Stripe. */
 export type BillingMode = 'stripe' | 'contract';
+
+/**
+ * Onde o ambiente roda: `verax` (na infraestrutura da Verax, o provisionamento de sempre; todo cliente do site) ou
+ * `customer` (na infraestrutura do cliente, só por contrato direto: nada é criado na Verax).
+ */
+export type Hosting = 'verax' | 'customer';
 
 /** Os passos do provisionamento, na ordem. */
 export type ProvisioningStepName =
@@ -366,6 +373,7 @@ export interface TenantListItem {
   state: TenantState;
   stateUpdatedAt: string;
   billingMode: BillingMode;
+  hosting: Hosting;
   size: SizeId;
   step?: string;
   lastErrorCode?: string;
@@ -413,12 +421,14 @@ export interface TenantDetail {
   stateUpdatedAt: string;
   createdAt: string;
   billingMode: BillingMode;
+  hosting: Hosting;
   company: { legalName: string; cnpj: string };
   adminEmail?: string;
   configuration: Configuration;
   limits: NodeLimits;
   pricing: OrderPricing;
-  urls: { panelUrl: string; apiUrl: string };
+  /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente. */
+  urls?: { panelUrl: string; apiUrl: string };
   provisioning?: {
     runId?: string;
     step?: string;
@@ -478,6 +488,9 @@ export type DirectTenantPreview =
 export type ProvisioningRequestOutcome =
   { started: true; runId: string; step: string } | { started: false; failure: string };
 
+/** As respostas do contrato direto menos "onde roda": o modo da tabela sai de `hosting`. */
+export type DirectConfiguration = Omit<ConfigurationInput, 'mode'>;
+
 /** O que o console manda em `POST /v1/admin/tenants`. */
 export interface DirectTenantRequest {
   idempotencyKey: string;
@@ -485,16 +498,44 @@ export interface DirectTenantRequest {
   cnpj: string;
   adminEmail: string;
   slug: string;
-  configuration: ConfigurationInput;
+  hosting: Hosting;
+  configuration: DirectConfiguration;
   confirmSlug: string;
 }
 
-/** `POST /v1/admin/tenants`. */
+/** `POST /v1/admin/tenants`. Sem `provisioning` no ambiente do cliente (nada é pedido ao cp-worker). */
 export interface DirectTenantCreated {
   id: string;
   slug: string;
   replayed: boolean;
-  provisioning: ProvisioningRequestOutcome;
+  hosting: Hosting;
+  provisioning?: ProvisioningRequestOutcome;
+}
+
+/** Uma linha do `node.conf` do cliente que o contrato define (o plano e os limites). */
+export interface NodeConfLine {
+  name: string;
+  value: string;
+}
+
+/**
+ * `GET /v1/admin/tenants/:id/installation`: o que mandar ao cliente que instala o ambiente na infraestrutura dele (a
+ * versão conferida, os endereços do release, as imagens pelo digest, o guia e o `node.conf` do contrato).
+ */
+export interface TenantInstallation {
+  release: string;
+  commit: string;
+  releasedAt?: string;
+  releaseUrl: string;
+  manifestUrl: string;
+  signatureUrl: string;
+  guideUrl: string;
+  package: { url: string; sha256: string };
+  images: { api: string; migrate: string };
+  thirdPartyImages: string[];
+  /** A chave de release que assinou o manifesto e a impressão digital dela (SHA-256 da pública em DER). */
+  releaseKey: { name: string; sha256: string };
+  nodeConf: NodeConfLine[];
 }
 
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */

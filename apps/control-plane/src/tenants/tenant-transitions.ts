@@ -10,6 +10,9 @@ import type { TenantState } from './tenant.schema.js';
  * - `provisioning`: termina em `waiting_customer_connection` (`access.ready`) ou `provisioning_failed`;
  *   cancelamento no meio usa os passos idempotentes da exclusão;
  * - `provisioning_failed`: `resume` pelo responsável volta a `provisioning`;
+ * - `waiting_customer_install`: o contrato direto com o ambiente na infraestrutura do cliente nasce nele (o cadastro
+ *   no console, `TenantStore.create` com `initialState`) e só sai cancelado: nunca vai a `provisioning` (nada é criado
+ *   na infraestrutura da Verax), e a Verax não vê a instalação do cliente para ir sozinha a `active`;
  * - `waiting_customer_connection`: `active` quando o nó vê a 1.ª conta conectada; cobrança e disputa valem igual;
  * - `active` ↔ `past_due` ↔ `suspended`: inadimplência, carência e reativação por `invoice.paid`;
  * - `suspended` volta a `waiting_customer_connection` quando o cliente nunca chegou a conectar;
@@ -29,6 +32,7 @@ export const TENANT_TRANSITIONS: Readonly<Record<TenantState, readonly TenantSta
   pending: ['provisioning', 'canceled'],
   provisioning: ['waiting_customer_connection', 'provisioning_failed', 'suspended', 'canceled'],
   provisioning_failed: ['provisioning', 'suspended', 'canceled'],
+  waiting_customer_install: ['canceled'],
   waiting_customer_connection: ['active', 'past_due', 'suspended', 'canceled'],
   active: ['past_due', 'suspended', 'canceled'],
   past_due: ['active', 'waiting_customer_connection', 'suspended', 'canceled'],

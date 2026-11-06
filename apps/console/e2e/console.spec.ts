@@ -89,6 +89,7 @@ for (const theme of THEMES) {
       await page.getByLabel('CNPJ').fill('11.222.333/0001-81');
       await page.getByLabel('E-mail do administrador do cliente').fill('admin@cliente-demo-d.example');
       await page.getByLabel('Subdomínio').fill('cliente-demo-d');
+      await page.getByRole('radio', { name: 'Infraestrutura da Verax' }).check();
       await page.getByRole('button', { name: 'Calcular a cotação' }).click();
       await expect(page.getByRole('region', { name: 'Cotação de referência' })).toContainText('R$ 1.000,00');
       await page.getByRole('button', { name: 'Revisar e confirmar…' }).click();
@@ -118,6 +119,46 @@ for (const theme of THEMES) {
       await expect(lifecycle.getByText(/Cancelamento marcado para 31\/01\/2027/)).toBeVisible();
       await lifecycle.getByRole('button', { name: 'Suspender…' }).click();
       await audit(page, testInfo, `cliente-ciclo-de-vida-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
+    test('clientes no cliente: o cadastro com a licença, sem provisionar, e o detalhe com a versão e o guia', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme);
+      await page.goto('/clientes/novo');
+      await expect(page.getByLabel('Contas de nuvem')).toHaveValue('2');
+      await page.getByLabel('Razão social').fill('Cliente Demo H Ltda');
+      await page.getByLabel('CNPJ').fill('11.222.333/0001-81');
+      await page.getByLabel('E-mail do administrador do cliente').fill('admin@cliente-demo-h.example');
+      await page.getByLabel('Subdomínio').fill('cliente-demo-h');
+      // Sem escolher onde roda: o problema no grupo, com o foco pelo resumo.
+      await page.getByRole('button', { name: 'Calcular a cotação' }).click();
+      await expect(page.getByRole('alert').first()).toContainText('Escolha onde o ambiente roda');
+      await audit(page, testInfo, `cliente-no-cliente-sem-escolha-${theme}`);
+      await page.getByRole('radio', { name: 'Infraestrutura do cliente' }).check();
+      await page.getByRole('button', { name: 'Calcular a cotação' }).click();
+      await expect(page.getByRole('region', { name: 'Cotação de referência' })).toContainText(
+        'Licença na infraestrutura do cliente',
+      );
+      await page.getByRole('button', { name: 'Revisar e confirmar…' }).click();
+      await page.getByLabel(/Digite o subdomínio/).fill('cliente-demo-h');
+      await expect(page.getByRole('button', { name: 'Criar o cliente' })).toBeEnabled();
+      await audit(page, testInfo, `cliente-no-cliente-novo-${theme}`);
+      await page.getByRole('button', { name: 'Criar o cliente' }).click();
+      const installation = page.getByRole('region', { name: 'Instalação na infraestrutura do cliente' });
+      await expect(installation).toContainText('node-v1.2.3');
+      await expect(installation.getByRole('link', { name: /Guia de instalação/ })).toBeVisible();
+      await expect(page.getByRole('region', { name: 'Provisionamento' })).toHaveCount(0);
+      await audit(page, testInfo, `cliente-no-cliente-criado-${theme}`);
+
+      // O fictício esperando a instalação: só cancelar, com o texto do que não acontece no cliente.
+      await page.goto('/clientes/01JC0000000000000000000E01');
+      const lifecycle = page.getByRole('region', { name: 'Ciclo de vida' });
+      await expect(lifecycle).toContainText('quem apaga o ambiente é o próprio cliente');
+      await lifecycle.getByRole('button', { name: 'Cancelar contrato…' }).click();
+      await expect(lifecycle).toContainText('Só registra o fim do contrato');
+      await audit(page, testInfo, `cliente-no-cliente-detalhe-${theme}`);
       expect(violations).toEqual([]);
     });
 

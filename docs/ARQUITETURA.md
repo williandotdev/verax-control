@@ -1319,6 +1319,7 @@ tenant (`lock{owner, expiresAt}`, 20 min renovados; vencida, é tomada), que os 
 | `pending`                     | `checkout.session.completed`: a reserva do subdomínio vira tenant; ou o cadastro de um contrato direto pelo console                                                        | Cartão pago segue direto; boleto espera a compensação; contrato direto, o `provision` do console        |
 | `provisioning`                | `invoice.paid` do 1.º ciclo, `checkout.session.async_payment_succeeded` ou, no contrato direto, o `provision` do responsável                                               | Enfileira o `preflight`; 10 passos idempotentes, um por task                                            |
 | `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)                                                            | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado  |
+| `waiting_customer_install`    | O cadastro de um contrato direto com o ambiente na infraestrutura do cliente (`hosting = customer`), direto da criação                                                     | Nada roda na Verax; o console mostra a versão e o guia para o cliente instalar; só sai cancelado        |
 | `waiting_customer_connection` | Passo `access.ready`                                                                                                                                                       | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez                |
 | `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                                                                          | Monitoramento normal                                                                                    |
 | `past_due`                    | `invoice.payment_failed` numa renovação                                                                                                                                    | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar   |
@@ -1815,8 +1816,40 @@ HTTP que o console usa é `apps/control-plane/src/admin/worker-owner-client.ts`,
 ### Cliente de contrato direto pelo console
 
 Quando o responsável negocia direto com um cliente (sem o checkout do site), ele cadastra o cliente no console
-(`apps/console`, "Clientes" → "Novo cliente (contrato direto)"), e o ambiente sobe pelos mesmos passos de uma compra
-paga. Código em `apps/control-plane/src/admin/admin-tenants.*` e `src/provisioning/provisioning-start.ts`.
+(`apps/console`, "Clientes" → "Novo cliente (contrato direto)") e escolhe **onde o ambiente roda** (obrigatório, sem
+padrão no formulário): na **infraestrutura da Verax**, o ambiente sobe pelos mesmos passos de uma compra paga; na
+**infraestrutura do cliente**, nada é criado na Verax. Código em `apps/control-plane/src/admin/admin-tenants.*`,
+`src/provisioning/provisioning-start.ts` e `src/provisioning/installation.ts`.
+
+**Marketplace = infraestrutura da Verax; a do cliente, só por contrato direto** (decisão do responsável, 06/11/2026).
+O cliente guarda o lugar em `tenants/{id}.hosting` (`verax` ou `customer`; ausente é `verax`, todo cliente do site e
+os contratos de antes), sem nome de provedor: hoje a infraestrutura da Verax é a GCP, e pode mudar. O schema do
+cliente só aceita `customer` com `billing.mode = contract` e o modo `self_hosted` da tabela, e o estado
+`waiting_customer_install` só com `customer`; `hosting` nunca muda depois do cadastro. Com o ambiente no cliente:
+
+- **Cadastro:** o pedido leva `hosting` e as outras cinco respostas (o modo da tabela sai do lugar: gerenciado na
+  Verax, licença no cliente, `MODE_OF_HOSTING`); a cotação de referência é a da licença, e do que o provisionamento
+  exige valem os limites que o próprio nó recusa e os agentes nas instâncias (`node-fit.ts`: o guia de instalação no
+  cliente usa o `envs/tenant`, que não liga a entrada dos agentes; um contrato com agentes é 422
+  `configuration_unsupported` com o motivo no campo). O cliente nasce direto em
+  `waiting_customer_install` (a transição de `null`, `contract_created_customer_hosted`), e o `cp-admin` **não chama o
+  `cp-worker`**: nenhum passo, nenhuma fila, nenhum Terraform, nada no projeto dos nós, no Cloudflare nem no Firebase.
+- **Defesa em profundidade no `cp-worker`:** o `provision` e o `resume` recusam com 409 `customer_hosted`; o motor do
+  provisionamento termina qualquer passo desse cliente sem agir; `mayHaveNode` e `mayHaveExternalResources` são falsos
+  para ele (nunca `node.stop`/`node.start`, e a exclusão pula todo passo que fala com a nuvem, mesmo com uma VM forjada
+  no documento); suspender é recusado (não há o que parar), e a exportação responde `no_backups` sem consultar nada.
+- **O que mandar ao cliente** (`GET /v1/admin/tenants/:id/installation` → `POST /internal/tenants/:id/installation`,
+  só leitura, `@WorkerCallers('owner', 'console')`): o `cp-worker` lê o manifesto da versão vigente (`NODE_RELEASE`) do
+  bucket de releases, confere a assinatura e devolve a versão, o commit, os endereços do release no GitHub (o
+  manifesto, a assinatura, o pacote com o SHA-256), as imagens pelo digest e a chave que assinou com a impressão
+  digital (SHA-256 da pública em DER). O `cp-admin` confere a resposta de novo (só `https://github.com`, imagens só
+  pelo digest) e acrescenta o guia (`docs/runbooks/instalacao-no-cliente.md`) e as linhas do plano no `node.conf`
+  (`node-limits.ts`). Precisa só de `RELEASE_BUCKET` e `NODE_RELEASE`, não do provisionamento ligado.
+- **Ciclo de vida:** cancelar (agora ou numa data) só registra o fim do contrato: sem janela de exportação (os dados
+  nunca estiveram na Verax) e sem parar VM. Em D+30 (ou no "Apagar agora"), a exclusão só mexe no Firestore: o cliente
+  perde o e-mail do administrador e o acesso, e o registro de exclusão por e-mail diz que o ambiente roda na
+  infraestrutura da empresa dele, que a Verax não apagou nada lá e que a exclusão é da equipe dele (o guia,
+  "Desinstalar"). Em D+97, o registro mínimo, como de todo cliente.
 
 - **Cadastro (`POST /v1/admin/tenants`, só no `cp-admin`):** a razão social, o CNPJ, o e-mail do administrador e o
   subdomínio com os mesmos schemas e limites do checkout (`checkout.schema.ts`), as seis respostas da calculadora e
@@ -1946,11 +1979,18 @@ só define a forma dos documentos e as regras.
   câmbio e folga, tarifas por meio de pagamento, alíquotas, reserva, horas e custo do suporte, custos fixos e as metas
   de margem (mínima e de alerta). Publicado, vale na hora (custo não muda o preço de ninguém).
 - **Cotação** (`POST /v1/public/quote`, sem nenhum campo de preço): a configuração é levada à opção vendida (sempre
-  para cima); acima do que a tabela vende ou do maior porte, a resposta é "fale conosco". Na v1, a nuvem do cliente
-  também é "fale conosco" (o provisionamento desse modo não existe). A cotação é gravada em `quotes/{id}` por 24 h, com
-  limite por IP e teto diário, e é o que o checkout aceita. `GET /v1/public/pricing` devolve só a parte pública da
-  tabela vigente (preços e regras, o "a partir de"), sem custo, margem nem `lookup_key`, com 5 min de cache no CDN.
-- **Checkout** (`POST /v1/public/checkout` com `quoteId`): relê a cotação, recalcula pela tabela da versão dela
+  para cima); acima do que a tabela vende ou do maior porte, a resposta é "fale conosco". **O site vende só o ambiente
+  na infraestrutura da Verax** (decisão do responsável, 06/11/2026; hoje a GCP, e pode mudar, por isso nada voltado ao
+  cliente cita o provedor): o modo da infraestrutura do cliente (`self_hosted`) é recusado com 422
+  `mode_not_sold_online` (a mensagem leva ao contrato direto), qualquer que seja a tabela publicada, sem gravar nada. A
+  cotação é gravada em `quotes/{id}` por 24 h, com limite por IP e teto diário, e é o que o checkout aceita.
+  `GET /v1/public/pricing` devolve só a parte pública da tabela vigente (preços e regras, o "a partir de") do ambiente
+  na Verax: o modo do cliente não aparece (nem os preços nem o pacote de partida dele), sem custo, margem nem
+  `lookup_key`, com 5 min de cache no CDN. A tabela continua com os preços da licença no cliente: o simulador de DRE, a
+  checagem de publicação e a cotação de referência do contrato direto usam.
+- **Checkout** (`POST /v1/public/checkout` com `quoteId`): uma cotação do modo do cliente (a de referência de um
+  contrato direto, que o console grava na mesma coleção) é recusada com o mesmo 422, antes de reservar ou falar com a
+  Stripe. Fora isso, relê a cotação, recalcula pela tabela da versão dela
   (honrada até vencer, mesmo com outra tabela publicada), confere cada preço na Stripe (ativo, em BRL, mensal ou
   avulso, com o valor da tabela, e a soma igual ao total) e abre a sessão com um item por componente; a implantação, se
   o modo tiver, entra como item avulso, só na primeira fatura. A reserva guarda a configuração, os limites do nó e o
@@ -1982,9 +2022,11 @@ só define a forma dos documentos e as regras.
 
 ## Versões do nó: imagens públicas e manifesto assinado _(fase 3, SH-02)_
 
-Preparação do modo próprio (o nó na nuvem do cliente, que vem depois do portão da venda gerenciada). Um nó fora da
-GCP da Verax precisa baixar as imagens sem login e saber, sem o `gh` e sem falar com a Verax, que a versão foi
-publicada por ela. O roteiro e os passos únicos do responsável estão em `docs/runbooks/versao-no.md`.
+Preparação do modo próprio (o nó na infraestrutura do cliente, que desde 06/11/2026 é só por contrato direto: veja
+"Cliente de contrato direto pelo console"). Um nó fora da infraestrutura da Verax precisa baixar as imagens sem login
+e saber, sem o `gh` e sem falar com a Verax, que a versão foi publicada por ela. O roteiro e os passos únicos do
+responsável estão em `docs/runbooks/versao-no.md`; o que o cliente segue para instalar, em
+`docs/runbooks/instalacao-no-cliente.md`.
 
 | Imagem                                      | Nó gerenciado (GCP da Verax)                                                                             | Nó na nuvem do cliente                                   |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |

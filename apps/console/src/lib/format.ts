@@ -47,7 +47,7 @@ export const STATUS_LABELS: Readonly<Record<VersionStatus, string>> = {
 
 export const MODE_LABELS: Readonly<Record<DeploymentMode, string>> = {
   managed: 'Na infraestrutura da Verax',
-  self_hosted: 'Na nuvem do cliente',
+  self_hosted: 'Na infraestrutura do cliente (contrato direto)',
 };
 
 export const SUPPORT_LABELS: Readonly<Record<SupportLevel, string>> = {
@@ -68,8 +68,8 @@ export function lineItemLabel(component: ComponentId, variant: string, mode: Dep
   switch (component) {
     case 'environment':
       return mode === 'managed'
-        ? `Ambiente gerenciado (porte ${variant.slice(-1)})`
-        : `Licença na nuvem do cliente (porte ${variant.slice(-1)})`;
+        ? `Ambiente na infraestrutura da Verax (porte ${variant.slice(-1)})`
+        : `Licença na infraestrutura do cliente (porte ${variant.slice(-1)})`;
     case 'cloud_accounts':
       return 'Contas de nuvem adicionais';
     case 'volume':
@@ -101,7 +101,7 @@ export function configurationSummary(configuration: {
   support: SupportLevel;
 }): string {
   return [
-    configuration.mode === 'managed' ? 'Gerenciado' : 'Nuvem do cliente',
+    configuration.mode === 'managed' ? 'Na Verax' : 'No cliente',
     ...(configuration.size === undefined ? [] : [`porte ${configuration.size}`]),
     plural(configuration.cloudAccounts, 'conta', 'contas'),
     `${configuration.monthlyGib} GiB/mês`,

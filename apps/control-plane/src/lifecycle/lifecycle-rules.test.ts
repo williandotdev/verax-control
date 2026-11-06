@@ -5,7 +5,10 @@ import {
   afterDeletion,
   canStartCryptoDestroy,
   canStartDeletion,
+  contractCancelChange,
+  contractSuspendChange,
   graceExpiredChange,
+  mayHaveExternalResources,
   mayHaveNode,
   minimalRecord,
   startDeletionChange,
@@ -198,5 +201,44 @@ describe('regras do ciclo de vida (CP-11)', () => {
         tenant('active', { provisioning: { runId: RUN.runId, attempts: 0, nodeVersionPinnedAt: T0 } }),
       ),
     ).toBe(true);
+  });
+
+  it('o ambiente na infraestrutura do cliente nunca tem VM nem recurso na Verax, nem com uma execução gravada', () => {
+    const forged: Partial<Tenant> = {
+      hosting: 'customer',
+      billing: { mode: 'contract' },
+      provisioning: { runId: RUN.runId, attempts: 0, nodeVersionPinnedAt: T0 },
+      resources: { instanceName: 'vx-cliente-demo-a' },
+    };
+    expect(mayHaveNode(tenant('canceled', forged))).toBe(false);
+    expect(mayHaveExternalResources(tenant('canceled', forged))).toBe(false);
+    // O mesmo cliente na Verax teria.
+    const verax = { ...forged, hosting: 'verax' as const };
+    expect(mayHaveNode(tenant('canceled', verax))).toBe(true);
+    expect(mayHaveExternalResources(tenant('canceled', verax))).toBe(true);
+  });
+
+  it('contrato no cliente: cancelar sem janela de exportação (só os prazos do cadastro); suspender nunca', () => {
+    const customer = tenant('waiting_customer_install', {
+      hosting: 'customer',
+      billing: { mode: 'contract' },
+    });
+    const change = contractCancelChange(customer, T0, SYSTEM);
+    expect(change?.to).toBe('canceled');
+    const after = change?.mutate?.(structuredClone(customer));
+    expect(after?.lifecycle).toMatchObject({
+      canceledAt: T0,
+      deleteAfter: days(30),
+      cryptoDestroyAfter: days(97),
+    });
+    expect(after?.lifecycle?.exportUntil).toBeUndefined();
+    expect(contractSuspendChange(customer, SYSTEM)).toBeUndefined();
+    expect(contractSuspendChange({ ...customer, state: 'active' }, SYSTEM)).toBeUndefined();
+    // Na Verax, a exportação fica (30 dias) e a suspensão vale.
+    const verax = tenant('active', { billing: { mode: 'contract' } });
+    expect(
+      contractCancelChange(verax, T0, SYSTEM)?.mutate?.(structuredClone(verax)).lifecycle?.exportUntil,
+    ).toEqual(days(30));
+    expect(contractSuspendChange(verax, SYSTEM)?.to).toBe('suspended');
   });
 });

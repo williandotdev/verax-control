@@ -1,12 +1,22 @@
 import { z } from 'zod';
 import { ULID_PATTERN } from '../common/ulid.js';
-import { configurationSchema, nodeLimitsSchema, orderPricingSchema } from '../pricing/pricing.schema.js';
+import {
+  configurationSchema,
+  type DeploymentMode,
+  nodeLimitsSchema,
+  orderPricingSchema,
+} from '../pricing/pricing.schema.js';
 
-/** Estados do cliente (plano §4b). */
+/**
+ * Estados do cliente (plano §4b). `waiting_customer_install` é só do contrato direto com o ambiente na infraestrutura
+ * do cliente (`hosting = customer`): o cliente nasce nele, com a versão e o guia para instalar, e nada roda na
+ * infraestrutura da Verax.
+ */
 export const TENANT_STATES = [
   'pending',
   'provisioning',
   'provisioning_failed',
+  'waiting_customer_install',
   'waiting_customer_connection',
   'active',
   'past_due',
@@ -115,6 +125,24 @@ export type SuspensionReason = (typeof SUSPENSION_REASONS)[number];
 export const BILLING_MODES = ['stripe', 'contract'] as const;
 export type BillingMode = (typeof BILLING_MODES)[number];
 
+/**
+ * Onde o ambiente (o back end do cliente) roda, sem nome de provedor (decisão do responsável, 06/11/2026: hoje a
+ * infraestrutura da Verax é a GCP, e pode mudar):
+ * - `verax` (o padrão, quando o campo falta): na infraestrutura da Verax, criado pelo provisionamento (CP-07). É o
+ *   único caminho do site (o checkout da Stripe) e o padrão do contrato direto;
+ * - `customer`: na infraestrutura do próprio cliente, só por contrato direto (`billing.mode = contract`), escolhido
+ *   pelo responsável no console. O plano de controle nunca provisiona, para, liga nem apaga nada dele: o cliente
+ *   instala a versão publicada com o guia (`docs/runbooks/instalacao-no-cliente.md`) e apaga o próprio ambiente.
+ */
+export const HOSTINGS = ['verax', 'customer'] as const;
+export type Hosting = (typeof HOSTINGS)[number];
+
+/** O modo da tabela de preços de cada lugar: o ambiente gerenciado na Verax, a licença na infraestrutura do cliente. */
+export const MODE_OF_HOSTING: Readonly<Record<Hosting, DeploymentMode>> = {
+  verax: 'managed',
+  customer: 'self_hosted',
+};
+
 /** Para onde o cliente volta quando a inadimplência acaba: o estado em que estava antes dela. */
 export const RESUME_STATES = ['active', 'waiting_customer_connection'] as const;
 export type ResumeState = (typeof RESUME_STATES)[number];
@@ -152,7 +180,7 @@ export type TenantLock = z.infer<typeof lockSchema>;
  * Documento `tenants/{tenantId}` (plano §3). Estrito: um campo desconhecido faz a leitura falhar em vez de ser
  * apagado em silêncio pela gravação do documento inteiro. Nunca guarda segredo, senha, cartão nem token.
  */
-export const tenantSchema = z.strictObject({
+const tenantObjectSchema = z.strictObject({
   slug: slugSchema,
   state: tenantStateSchema,
   stateUpdatedAt: z.date(),
@@ -196,6 +224,12 @@ export const tenantSchema = z.strictObject({
       items: z.array(subscriptionItemSchema).max(50).optional(),
     })
     .optional(),
+  /**
+   * Onde o ambiente roda (`HOSTINGS`). Ausente é `verax` (`hostingOf`): todo cliente do checkout e todo contrato direto
+   * de antes da escolha. `customer` só existe com `billing.mode = contract` e o modo `self_hosted` da tabela (conferido
+   * abaixo, na leitura e na gravação).
+   */
+  hosting: z.enum(HOSTINGS).optional(),
   billing: z
     .strictObject({
       /** Ausente é `stripe` (`billingModeOf`). Quem cria o cliente de contrato direto (o console) grava `contract`. */
@@ -307,6 +341,28 @@ export const tenantSchema = z.strictObject({
   updatedAt: z.date(),
 });
 
+/**
+ * O documento com as amarras entre os campos: o ambiente na infraestrutura do cliente é só de contrato direto, com a
+ * licença da tabela (`self_hosted`), e o estado de espera da instalação é só dele. Um documento fora disso não é lido
+ * nem gravado.
+ */
+export const tenantSchema = tenantObjectSchema.superRefine((tenant, ctx) => {
+  const customer = tenant.hosting === 'customer';
+  if (customer && tenant.billing?.mode !== 'contract') {
+    ctx.addIssue({ code: 'custom', path: ['hosting'], message: 'só contrato direto roda no cliente' });
+  }
+  if (customer && tenant.configuration.mode !== MODE_OF_HOSTING.customer) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['configuration', 'mode'],
+      message: 'o modo do cliente é self_hosted',
+    });
+  }
+  if (!customer && tenant.state === 'waiting_customer_install') {
+    ctx.addIssue({ code: 'custom', path: ['state'], message: 'estado só do ambiente no cliente' });
+  }
+});
+
 export type Tenant = z.infer<typeof tenantSchema>;
 
 export interface TenantRecord extends Tenant {
@@ -404,4 +460,9 @@ export function isSlugFree(current: SlugDocument | undefined, now: Date): boolea
 /** Como o cliente é cobrado; sem o campo, `stripe` (todo cliente do checkout). */
 export function billingModeOf(tenant: Pick<Tenant, 'billing'>): BillingMode {
   return tenant.billing?.mode ?? 'stripe';
+}
+
+/** Onde o ambiente roda; sem o campo, `verax` (todo cliente do checkout e os contratos diretos de antes da escolha). */
+export function hostingOf(tenant: Pick<Tenant, 'hosting'>): Hosting {
+  return tenant.hosting ?? 'verax';
 }

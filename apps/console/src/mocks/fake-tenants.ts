@@ -1,10 +1,12 @@
 import type {
   ConfigurationInput,
+  Hosting,
   NodeFitProblem,
   PriceTable,
   ProvisioningStepName,
   TenantActions,
   TenantDetail,
+  TenantInstallation,
   TenantListItem,
   TenantState,
   TimelineStep,
@@ -16,8 +18,9 @@ import { quote } from './fake-engine';
  * Os clientes na API simulada do console (`/v1/admin/tenants...`), em memória: a lista, o detalhe com a linha do tempo,
  * a cotação de referência, o cadastro de contrato direto (com a chave de idempotência) e as operações do responsável.
  * Imita os contratos de `apps/control-plane/src/admin/admin-tenants.*` e as regras do cp-worker (CP-07 e CP-11), com
- * uma amostra da validação (a de verdade é a da API). Clientes FICTÍCIOS ("Cliente Demo A/B/C"), CNPJ de exemplo,
- * nenhum dado real.
+ * uma amostra da validação (a de verdade é a da API). Clientes FICTÍCIOS ("Cliente Demo A/B/C/E"), CNPJ de exemplo,
+ * nenhum dado real. Inclui o contrato direto com o ambiente na infraestrutura do cliente (nada provisionado) e a versão
+ * FICTÍCIA que o console mostra para ele instalar.
  */
 export interface FakeTenantsState {
   tenants: Map<string, TenantDetail>;
@@ -64,6 +67,7 @@ const CANCELABLE: readonly TenantState[] = [
   'pending',
   'provisioning',
   'provisioning_failed',
+  'waiting_customer_install',
   'waiting_customer_connection',
   'active',
   'past_due',
@@ -93,19 +97,58 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** As operações disponíveis, pelas mesmas regras de `availableActions` do cp-admin. */
 function actionsOf(tenant: Omit<TenantDetail, 'actions'>, now: Date): TenantActions {
   const contract = tenant.billingMode === 'contract';
+  const verax = tenant.hosting === 'verax';
   const exportUntil = tenant.lifecycle.exportUntil;
   return {
-    start: contract && tenant.state === 'pending',
-    resume: tenant.state === 'provisioning_failed' || tenant.state === 'provisioning',
+    start: verax && contract && tenant.state === 'pending',
+    resume: verax && (tenant.state === 'provisioning_failed' || tenant.state === 'provisioning'),
     cancel: contract && CANCELABLE.includes(tenant.state),
     suspend:
+      verax &&
       contract &&
       (tenant.state === 'active' ||
         tenant.state === 'waiting_customer_connection' ||
         tenant.state === 'past_due'),
-    reactivate: contract && tenant.state === 'suspended' && tenant.lifecycle.suspendedReason === 'owner',
+    reactivate:
+      verax && contract && tenant.state === 'suspended' && tenant.lifecycle.suspendedReason === 'owner',
     deleteNow: tenant.state === 'canceled',
-    export: tenant.state === 'canceled' && exportUntil !== undefined && new Date(exportUntil) > now,
+    export: verax && tenant.state === 'canceled' && exportUntil !== undefined && new Date(exportUntil) > now,
+  };
+}
+
+/** A versão FICTÍCIA que o cliente instala na infraestrutura dele (o manifesto conferido pelo cp-worker, simulado). */
+function installationOf(tenant: TenantDetail): TenantInstallation {
+  const github = 'https://github.com/williandotdev/verax-control';
+  const release = 'node-v1.2.3';
+  return {
+    release,
+    commit: 'abcdef0123456789abcdef0123456789abcdef01',
+    releasedAt: '2026-11-05T12:00:00Z',
+    releaseUrl: `${github}/releases/tag/${release}`,
+    manifestUrl: `${github}/releases/download/${release}/manifest.json`,
+    signatureUrl: `${github}/releases/download/${release}/manifest.json.sig`,
+    guideUrl: `${github}/blob/main/docs/runbooks/instalacao-no-cliente.md`,
+    package: {
+      url: `${github}/releases/download/${release}/verax-node.tar.gz`,
+      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    },
+    images: {
+      api: `ghcr.io/williandotdev/verax-control/api@sha256:${'1'.repeat(64)}`,
+      migrate: `ghcr.io/williandotdev/verax-control/migrate@sha256:${'2'.repeat(64)}`,
+    },
+    thirdPartyImages: [`postgres:18-alpine@sha256:${'3'.repeat(64)}`],
+    releaseKey: { name: 'release-node-manifest-v1', sha256: '4'.repeat(64) },
+    nodeConf: [
+      { name: 'PLAN', value: 'enterprise' },
+      { name: 'PLAN_MAX_CLOUD_ACCOUNTS', value: String(tenant.limits.maxCloudAccounts) },
+      { name: 'PLAN_MONTHLY_GIB', value: String(tenant.limits.monthlyGib) },
+      { name: 'PLAN_HISTORY_DAYS', value: String(tenant.limits.historyDays) },
+      { name: 'PLAN_MAX_USERS', value: String(tenant.limits.maxUsers) },
+      { name: 'WAZUH_AGENTS', value: tenant.limits.maxAgents > 0 ? 'true' : 'false' },
+      ...(tenant.limits.maxAgents > 0
+        ? [{ name: 'WAZUH_AGENTS_MAX', value: String(tenant.limits.maxAgents) }]
+        : []),
+    ],
   };
 }
 
@@ -152,6 +195,7 @@ function base(
   return {
     id,
     slug,
+    hosting: 'verax',
     stateUpdatedAt: at(30),
     createdAt: at(120),
     company: { legalName: name, cnpj: '11222333000181' },
@@ -182,8 +226,9 @@ function base(
 }
 
 /**
- * Quatro clientes FICTÍCIOS: um de contrato direto parado no túnel, um pago ativo, um de contrato que não começou e um
- * de contrato ativo (para suspender, cancelar, apagar e exportar).
+ * Cinco clientes FICTÍCIOS: um de contrato direto parado no túnel, um pago ativo, um de contrato que não começou, um
+ * de contrato ativo (para suspender, cancelar, apagar e exportar) e um de contrato com o ambiente na infraestrutura do
+ * cliente, esperando a instalação.
  */
 export function createFakeTenants(now: () => Date): FakeTenantsState {
   const at = (minutes: number): string => new Date(now().getTime() - minutes * MINUTE).toISOString();
@@ -332,6 +377,33 @@ export function createFakeTenants(now: () => Date): FakeTenantsState {
       now(),
     ),
   );
+  const customer = '01JC0000000000000000000E01';
+  const { urls: _urls, ...customerBase } = base(customer, 'cliente-demo-e', 'Cliente Demo E Ltda', at);
+  tenants.set(
+    customer,
+    withActions(
+      {
+        ...customerBase,
+        createdAt: at(60),
+        stateUpdatedAt: at(60),
+        state: 'waiting_customer_install',
+        billingMode: 'contract',
+        hosting: 'customer',
+        configuration: { ...customerBase.configuration, mode: 'self_hosted' },
+        pricing: { ...customerBase.pricing, monthlyTotal: 50_000, setupTotal: 100_000 },
+        timeline: [],
+        transitions: [
+          {
+            from: null,
+            to: 'waiting_customer_install',
+            reason: 'contract_created_customer_hosted',
+            at: at(60),
+          },
+        ],
+      },
+      now(),
+    ),
+  );
   return { tenants, workerDown: false };
 }
 
@@ -344,6 +416,7 @@ function listItem(tenant: TenantDetail): TenantListItem {
     state: tenant.state,
     stateUpdatedAt: tenant.stateUpdatedAt,
     billingMode: tenant.billingMode,
+    hosting: tenant.hosting,
     size: tenant.configuration.size,
     ...(provisioning && tenant.provisioning?.step !== undefined ? { step: tenant.provisioning.step } : {}),
     ...(tenant.state === 'provisioning_failed' && tenant.provisioning?.lastError !== undefined
@@ -353,12 +426,37 @@ function listItem(tenant: TenantDetail): TenantListItem {
   };
 }
 
-function problemsOf(configuration: { mode: string; size: string; agents: number }): NodeFitProblem[] {
+function problemsOf(
+  configuration: { mode: string; size: string; agents: number },
+  hosting: Hosting,
+): NodeFitProblem[] {
   const problems: NodeFitProblem[] = [];
-  if (configuration.mode !== 'managed') problems.push('mode');
-  if (configuration.size !== 'P') problems.push('size');
+  // No cliente, nada é provisionado: o porte não conta; os agentes, sim (o guia não liga a entrada deles), e os limites
+  // (sempre dentro das faixas na tabela FICTÍCIA).
+  if (hosting === 'verax') {
+    if (configuration.mode !== 'managed') problems.push('mode');
+    if (configuration.size !== 'P') problems.push('size');
+  }
   if (configuration.agents !== 0) problems.push('agents');
   return problems;
+}
+
+function hostingOf(body: unknown): Hosting | undefined {
+  const value = isRecord(body) ? body['hosting'] : undefined;
+  return value === 'verax' || value === 'customer' ? value : undefined;
+}
+
+const HOSTING_ISSUE: ValidationIssue = {
+  path: 'hosting',
+  message: 'Escolha onde o ambiente roda: na infraestrutura da Verax ou na do cliente.',
+};
+
+/** As respostas do contrato direto com o modo da tabela do lugar escolhido. */
+function configurationFor(hosting: Hosting, configuration: unknown): ConfigurationInput {
+  return {
+    ...(configuration as Omit<ConfigurationInput, 'mode'>),
+    mode: hosting === 'customer' ? 'self_hosted' : 'managed',
+  };
 }
 
 function configurationIssues(configuration: unknown): ValidationIssue[] {
@@ -451,6 +549,13 @@ function act(
     });
   }
   if (state.workerDown) return error(503, 'Serviço indisponível', 'worker_unavailable');
+  if (tenant.hosting === 'customer' && (action === 'start' || action === 'resume')) {
+    return error(
+      409,
+      'O ambiente deste cliente roda na infraestrutura dele: a Verax não provisiona, não para, não liga nem apaga nada lá.',
+      'customer_hosted',
+    );
+  }
   const flag = ACTION_FLAGS[action];
   if (flag === undefined) return error(404, 'Recurso não encontrado', 'not_found');
   if (tenant.billingMode === 'stripe' && ['start', 'cancel', 'suspend', 'reactivate'].includes(action)) {
@@ -525,16 +630,18 @@ function act(
       const deleteAfter = new Date(now.getTime() + 30 * DAY).toISOString();
       const cryptoDestroyAfter = new Date(now.getTime() + 97 * DAY).toISOString();
       const { cancelScheduledFor: _scheduled, ...lifecycle } = tenant.lifecycle;
+      const verax = tenant.hosting === 'verax';
       state.tenants.set(
         tenant.id,
         transition(tenant, 'canceled', 'contract_canceled_by_owner', now, {
           lifecycle: {
             ...lifecycle,
             canceledAt: now.toISOString(),
-            exportUntil: deleteAfter,
+            // No cliente: sem exportação (os dados nunca estiveram na Verax) e sem VM para parar.
+            ...(verax ? { exportUntil: deleteAfter } : {}),
             deleteAfter,
             cryptoDestroyAfter,
-            nodeStoppedAt: now.toISOString(),
+            ...(verax ? { nodeStoppedAt: now.toISOString() } : {}),
           },
         }),
       );
@@ -600,12 +707,13 @@ export function handleTenantsRequest(
   }
   if (second === 'preview' && method === 'POST') {
     const configuration = isRecord(body) ? body['configuration'] : undefined;
-    const issues = configurationIssues(configuration);
-    if (issues.length > 0) return invalid(issues);
+    const hosting = hostingOf(body);
+    const issues = [...(hosting === undefined ? [HOSTING_ISSUE] : []), ...configurationIssues(configuration)];
+    if (issues.length > 0 || hosting === undefined) return invalid(issues);
     if (table === undefined || tableVersion === undefined) {
       return error(409, 'Nenhuma tabela de preços vigente.', 'pricing_table_missing');
     }
-    const outcome = quote(configuration as ConfigurationInput, table);
+    const outcome = quote(configurationFor(hosting, configuration), table);
     if (outcome.kind === 'contact_us') {
       return {
         status: 200,
@@ -618,7 +726,7 @@ export function handleTenantsRequest(
         priceTableVersion: tableVersion,
         contactUs: false,
         quote: outcome.quote,
-        problems: problemsOf(outcome.quote.configuration),
+        problems: problemsOf(outcome.quote.configuration, hosting),
       },
     };
   }
@@ -628,6 +736,17 @@ export function handleTenantsRequest(
   const tenant = state.tenants.get(second);
   if (tenant === undefined) return error(404, 'Cliente não encontrado.', 'tenant_not_found');
   if (third === undefined && method === 'GET') return { status: 200, body: tenant };
+  if (third === 'installation' && method === 'GET') {
+    if (tenant.hosting !== 'customer') {
+      return error(
+        409,
+        'O ambiente deste cliente roda na infraestrutura da Verax: não há instalação para enviar.',
+        'not_customer_hosted',
+      );
+    }
+    if (state.workerDown) return error(503, 'Serviço indisponível', 'worker_unavailable');
+    return { status: 200, body: installationOf(tenant) };
+  }
   if (third !== undefined && method === 'POST')
     return act(state, tenant, third, isRecord(body) ? body : {}, now);
   return error(404, 'Recurso não encontrado', 'not_found');
@@ -654,8 +773,10 @@ function create(
   if (email !== '' && !email.includes('@')) {
     issues.push({ path: 'adminEmail', message: 'Endereço de e-mail inválido' });
   }
+  const hosting = hostingOf(body);
+  if (hosting === undefined) issues.push(HOSTING_ISSUE);
   issues.push(...configurationIssues(body['configuration']));
-  if (issues.length > 0) return invalid(issues);
+  if (issues.length > 0 || hosting === undefined) return invalid(issues);
   if (body['confirmSlug'] !== slug) {
     return error(400, 'O subdomínio não confere com o do cliente: nada mudou.', 'confirmation_mismatch', {
       issues: [{ path: 'confirmSlug', message: 'Digite o subdomínio do cliente, igual, para confirmar.' }],
@@ -664,12 +785,15 @@ function create(
   const key = String(body['idempotencyKey']);
   const existing = state.tenants.get(key);
   if (existing !== undefined) {
-    if (existing.slug !== slug) {
+    if (existing.slug !== slug || existing.hosting !== hosting) {
       return error(
         409,
         'Este cadastro já foi usado para outro cliente. Recarregue a página para começar um cadastro novo.',
         'idempotency_conflict',
       );
+    }
+    if (existing.hosting === 'customer') {
+      return { status: 201, body: { id: existing.id, slug, replayed: true, hosting: 'customer' } };
     }
     return {
       status: 201,
@@ -677,6 +801,7 @@ function create(
         id: existing.id,
         slug,
         replayed: true,
+        hosting: 'verax',
         provisioning:
           existing.provisioning?.runId === undefined
             ? { started: false, failure: 'worker_unavailable' }
@@ -697,7 +822,7 @@ function create(
   if (table === undefined || tableVersion === undefined) {
     return error(409, 'Nenhuma tabela de preços vigente.', 'pricing_table_missing');
   }
-  const outcome = quote(body['configuration'] as ConfigurationInput, table);
+  const outcome = quote(configurationFor(hosting, body['configuration']), table);
   if (outcome.kind === 'contact_us') {
     return error(
       422,
@@ -709,11 +834,13 @@ function create(
       },
     );
   }
-  const problems = problemsOf(outcome.quote.configuration);
+  const problems = problemsOf(outcome.quote.configuration, hosting);
   if (problems.length > 0) {
     return error(
       422,
-      'O provisionamento ainda não sabe criar esta configuração.',
+      hosting === 'customer'
+        ? 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.'
+        : 'O provisionamento ainda não sabe criar esta configuração.',
       'configuration_unsupported',
       {
         problems,
@@ -722,6 +849,43 @@ function create(
     );
   }
   const at = (minutes: number): string => new Date(now.getTime() - minutes * MINUTE).toISOString();
+  if (hosting === 'customer') {
+    // No cliente: nasce esperando a instalação, sem passos, sem endereços da Verax e sem pedir nada ao worker.
+    const { urls: _urls, ...rest } = base(key, slug, String(body['companyName']).trim(), at);
+    state.tenants.set(
+      key,
+      withActions(
+        {
+          ...rest,
+          hosting: 'customer',
+          createdAt: now.toISOString(),
+          stateUpdatedAt: now.toISOString(),
+          adminEmail: email.trim(),
+          configuration: outcome.quote.configuration,
+          limits: outcome.quote.limits,
+          pricing: {
+            priceTableVersion: tableVersion,
+            quoteId: '01JC00000000000000000000Q9',
+            monthlyTotal: outcome.quote.monthlyTotal,
+            setupTotal: outcome.quote.setupTotal,
+          },
+          state: 'waiting_customer_install',
+          billingMode: 'contract',
+          timeline: [],
+          transitions: [
+            {
+              from: null,
+              to: 'waiting_customer_install',
+              reason: 'contract_created_customer_hosted',
+              at: now.toISOString(),
+            },
+          ],
+        },
+        now,
+      ),
+    );
+    return { status: 201, body: { id: key, slug, replayed: false, hosting: 'customer' } };
+  }
   const pending = withActions(
     {
       ...base(key, slug, String(body['companyName']).trim(), at),
@@ -751,6 +915,7 @@ function create(
         id: key,
         slug,
         replayed: false,
+        hosting: 'verax',
         provisioning: { started: false, failure: 'worker_unavailable' },
       },
     };
@@ -759,6 +924,12 @@ function create(
   state.tenants.set(key, startRun(pending, now, 'provision', runId));
   return {
     status: 201,
-    body: { id: key, slug, replayed: false, provisioning: { started: true, runId, step: 'preflight' } },
+    body: {
+      id: key,
+      slug,
+      replayed: false,
+      hosting: 'verax',
+      provisioning: { started: true, runId, step: 'preflight' },
+    },
   };
 }

@@ -1,5 +1,6 @@
 import type {
   BillingMode,
+  Hosting,
   NodeFitProblem,
   ProvisioningStepName,
   TenantState,
@@ -11,6 +12,7 @@ export const STATE_LABELS: Readonly<Record<TenantState, string>> = {
   pending: 'Aguardando início',
   provisioning: 'Provisionando',
   provisioning_failed: 'Provisionamento parou',
+  waiting_customer_install: 'Aguardando instalação pelo cliente',
   waiting_customer_connection: 'Pronto, esperando o cliente',
   active: 'Ativo',
   past_due: 'Pagamento em atraso',
@@ -22,6 +24,12 @@ export const STATE_LABELS: Readonly<Record<TenantState, string>> = {
 export const BILLING_LABELS: Readonly<Record<BillingMode, string>> = {
   stripe: 'Stripe (site)',
   contract: 'Contrato direto',
+};
+
+/** Onde o ambiente roda, sem nome de provedor (a infraestrutura da Verax pode mudar). */
+export const HOSTING_LABELS: Readonly<Record<Hosting, string>> = {
+  verax: 'Infraestrutura da Verax',
+  customer: 'Infraestrutura do cliente',
 };
 
 /** Os passos do provisionamento (CP-07), na ordem e na linguagem da página de status. */
@@ -66,6 +74,13 @@ export const PROBLEM_LABELS: Readonly<Record<NodeFitProblem, string>> = {
   limits: 'os limites ficam fora das faixas que o nó aceita',
 };
 
+/** O mesmo, com o ambiente na infraestrutura do cliente (nada é provisionado; o guia de instalação é o limite). */
+export const CUSTOMER_PROBLEM_LABELS: Readonly<Record<NodeFitProblem, string>> = {
+  ...PROBLEM_LABELS,
+  agents:
+    'agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0',
+};
+
 /**
  * O que fazer quando a operação não chegou ao fim no cp-worker. Nos 5xx a API devolve só o código (a mensagem é a
  * genérica), e é este texto que explica; nos outros, a mensagem da API já serve.
@@ -83,6 +98,17 @@ export const WORKER_FAILURE_MESSAGES: Readonly<Record<string, string>> = {
   not_allowed: 'O cliente não está num estado que permita isso.',
   stripe_managed:
     'Cliente da Stripe: o provisionamento começa com o pagamento, e o resto segue a assinatura.',
+  customer_hosted:
+    'O ambiente deste cliente roda na infraestrutura dele: a Verax não provisiona, não para, não liga nem apaga nada lá.',
+  not_customer_hosted:
+    'O ambiente deste cliente roda na infraestrutura da Verax: não há instalação para enviar.',
+  release_unconfigured:
+    'O cp-worker está sem a versão do nó: confira RELEASE_BUCKET e NODE_RELEASE (node-vX.Y.Z) no worker_env (GUIA, "O provisionamento (CP-07)").',
+  release_manifest_missing:
+    'O manifesto da versão do nó não está no bucket de releases: publique a versão (docs/runbooks/versao-no.md) ou confira o NODE_RELEASE.',
+  release_manifest_invalid:
+    'O manifesto da versão do nó foi recusado (assinatura que não fecha com as chaves do repositório, ou fora do formato). Não envie nada ao cliente.',
+  release_unavailable: 'O bucket de releases não respondeu. Tente de novo em instantes.',
 };
 
 export function workerFailureMessage(code: string): string {

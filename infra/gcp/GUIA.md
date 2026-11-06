@@ -837,6 +837,14 @@ provisionamento de um cliente de contrato direto (`provision`, o cadastro pelo c
 da revelação, abaixo). Se voltar para `INGRESS_TRAFFIC_INTERNAL_ONLY`, o console mostra "o cp-worker não respondeu" em
 cada operação, e um cliente de contrato direto cadastrado fica em `pending` até o "Iniciar provisionamento" passar.
 
+**Contrato direto com o ambiente na infraestrutura do cliente** (decisão de 06/11/2026; o site vende só o ambiente na
+infraestrutura da Verax): o cadastro não chama o `cp-worker` e nada é criado no projeto dos nós, no Cloudflare nem no
+Firebase. O console só lê, pelo mesmo caminho (`POST /internal/tenants/<id>/installation`), a versão que o cliente
+instala: o `cp-worker` lê o manifesto de `NODE_RELEASE` no bucket de releases e confere a assinatura. Para isso
+bastam `release_bucket` (que dá ao `cp-worker` a leitura do bucket, `cross_project.tf`) e `NODE_RELEASE`
+(`node-vX.Y.Z`, no `worker_env`), mesmo com o provisionamento desligado (sem o projeto dos nós). Nenhum recurso novo
+no Terraform. O guia do cliente é `docs/runbooks/instalacao-no-cliente.md`.
+
 Sem o console, direto da sua máquina, o worker ainda aceita uma conta em `owner_principals`, mas o token precisa ter
 `aud = WORKER_URL`, e o `gcloud` só emite isso para conta de serviço: crie uma conta só para isso (sem papel nenhum),
 ponha-a em `owner_principals` e use a impersonação:

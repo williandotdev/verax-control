@@ -10,6 +10,7 @@ import type {
   TenantActionResult,
   tenantActionSchemas,
   TenantDetail,
+  TenantInstallation,
   TenantList,
 } from '../src/admin/admin-tenants.schema.js';
 import type { AdminSession } from '../src/admin/admin-session.controller.js';
@@ -55,6 +56,7 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Json<TenantDetail>>().toEqualTypeOf<Console.TenantDetail>();
     expectTypeOf<Json<DirectTenantPreview>>().toEqualTypeOf<Console.DirectTenantPreview>();
     expectTypeOf<Json<DirectTenantCreated>>().toEqualTypeOf<Console.DirectTenantCreated>();
+    expectTypeOf<Json<TenantInstallation>>().toEqualTypeOf<Console.TenantInstallation>();
     expectTypeOf<TenantActionResult>().toEqualTypeOf<Console.TenantActionResult>();
     expectTypeOf<TenantAction>().toEqualTypeOf<Console.TenantAction>();
   });

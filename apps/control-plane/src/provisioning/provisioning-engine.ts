@@ -6,7 +6,7 @@ import { ApiError } from '../common/http/api-error.js';
 import type { StepContext, StepHandler, StepInput } from '../internal/step-handler.js';
 import { STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { LockHeldError, LockNotHeldError, TenantStore } from '../tenants/tenant-store.js';
-import { billingModeOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
+import { billingModeOf, hostingOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
 import { CloudApiError } from './cloud-http.js';
 import { ExecutorInputError } from './executor-env.js';
 import { PanelBundleError } from './panel-bundle.js';
@@ -152,6 +152,9 @@ export class ProvisioningEngine {
   async run(step: ProvisioningStep, input: StepInput, context: StepContext): Promise<string> {
     const tenant = await this.tenants.get(input.tenantId);
     if (tenant === undefined) return 'unknown_tenant';
+    // O ambiente na infraestrutura do cliente nunca provisiona: nenhum passo toca a infraestrutura da Verax por ele,
+    // nem uma task posta por engano (o estado dele nunca é `provisioning`; isto fecha a porta mesmo assim).
+    if (hostingOf(tenant) === 'customer') return 'customer_hosted';
     if (tenant.state !== 'provisioning') {
       // Entrega repetida do último passo de uma execução que já terminou: garante o e-mail de acesso de um cliente de
       // contrato direto (se a fila falhou na primeira entrega, é esta repetição que o põe).

@@ -4,6 +4,7 @@ import type {
   DirectTenantPreview,
   TenantActionResult,
   TenantDetail,
+  TenantInstallation,
   TenantList,
 } from './admin-tenants.schema.js';
 import { AdminTenantsService } from './admin-tenants.service.js';
@@ -13,7 +14,8 @@ import { type OwnerRequest, ownerOf } from './owner.guard.js';
  * Os clientes no console do responsável (`/v1/admin/tenants...`, só no `cp-admin`, todas atrás da `OwnerGuard`, que
  * confere o JWT do IAP e exige JSON e a mesma origem nas escritas): a lista, o detalhe com a linha do tempo, a cotação
  * de referência, o cadastro de um cliente de contrato direto e as operações do responsável, cada uma com o subdomínio
- * digitado como confirmação: `start`, `resume`, `cancel`, `suspend`, `reactivate`, `delete-now` e `export`.
+ * digitado como confirmação: `start`, `resume`, `cancel`, `suspend`, `reactivate`, `delete-now` e `export`. Para o
+ * contrato direto com o ambiente na infraestrutura do cliente, a leitura do que mandar a ele (`installation`).
  */
 @Controller('admin/tenants')
 export class AdminTenantsController {
@@ -38,6 +40,12 @@ export class AdminTenantsController {
   @Get(':tenantId')
   detail(@Param('tenantId') tenantId: string): Promise<TenantDetail> {
     return this.service.detail(tenantId);
+  }
+
+  /** A versão do nó e o guia para o cliente instalar o ambiente na infraestrutura dele (só leitura). */
+  @Get(':tenantId/installation')
+  installation(@Param('tenantId') tenantId: string, @Req() req: OwnerRequest): Promise<TenantInstallation> {
+    return this.service.installation(tenantId, ownerOf(req));
   }
 
   @Post(':tenantId/start')

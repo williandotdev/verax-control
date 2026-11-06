@@ -19,6 +19,27 @@ describe('registro de exclusão (e-mail da Exclusão 1)', () => {
     expect(message.text).not.toMatch(/senha:|password/i);
   });
 
+  it('no ambiente do cliente: só o cadastro saiu da Verax; o ambiente é dele, e a exclusão é da equipe dele', () => {
+    const message = buildDeletionRecord({
+      to: 'admin@cliente-demo-a.example',
+      slug: 'cliente-demo-a',
+      canceledAt: new Date('2026-11-05T12:00:00Z'),
+      deletedAt: new Date('2026-12-05T12:00:00Z'),
+      cryptoDestroyAfter: new Date('2027-02-10T12:00:00Z'),
+      hosting: 'customer',
+    });
+    expect(message.subject).toBe('Registro de exclusão do ambiente cliente-demo-a');
+    expect(message.text).toContain(
+      'O cadastro do ambiente cliente-demo-a do Verax Control foi excluído da Verax em 05/12/2026.',
+    );
+    expect(message.text).toContain('O contrato foi encerrado em 05/11/2026.');
+    expect(message.text).toContain('a Verax não tem acesso a ele e não apagou nada nele');
+    expect(message.text).toContain('seção "Desinstalar"');
+    // Nada do que a Verax apaga no ambiente dela (máquina, túnel, cripto-destruição): aqui não existe.
+    expect(message.text).not.toMatch(/Foram apagados|túnel|destruída em/);
+    expect(message.html).not.toContain('<script');
+  });
+
   it('recusa um subdomínio fora do formato (nada vindo de fora entra no HTML)', () => {
     expect(() =>
       buildDeletionRecord({

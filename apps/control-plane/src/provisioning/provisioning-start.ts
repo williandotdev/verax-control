@@ -20,18 +20,22 @@ import { isUlid, newUlid } from '../common/ulid.js';
 import { ownerActorOf, WorkerCallerGuard, WorkerCallers } from '../internal/worker-caller.js';
 import { FIRST_PROVISIONING_STEP, STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { TenantNotFoundError, TenantStore } from '../tenants/tenant-store.js';
-import { billingModeOf } from '../tenants/tenant.schema.js';
+import { billingModeOf, hostingOf } from '../tenants/tenant.schema.js';
 
 export type StartOutcome =
   | { started: true; runId: string; step: string }
-  | { started: false; reason: 'not_found' | 'confirmation_mismatch' | 'not_contract' | 'not_allowed' };
+  | {
+      started: false;
+      reason: 'not_found' | 'confirmation_mismatch' | 'not_contract' | 'customer_hosted' | 'not_allowed';
+    };
 
 /**
  * O início do provisionamento de um cliente de contrato direto (criado pelo responsável no console, sem checkout): o
  * equivalente ao `invoice.paid` do webhook (CP-04) para quem não paga pela Stripe. Só um cliente `contract` em
  * `pending` entra em `provisioning`, com um `runId` novo e o `preflight` na fila; daí em diante são exatamente os mesmos
  * passos de um cliente pago (CP-07). Um cliente da Stripe nunca começa por aqui (409 `stripe_managed`): o pagamento é
- * a única porta dele.
+ * a única porta dele. Um contrato com o ambiente na infraestrutura do cliente também não (409 `customer_hosted`): nada
+ * dele é criado na infraestrutura da Verax.
  *
  * Idempotente: repetido com o cliente já em `provisioning` no `preflight`, só garante a task (o id é determinístico,
  * `preflight-<runId>`), que é o que completa uma chamada que mudou o estado e falhou ao enfileirar; mais adiante, só
@@ -53,7 +57,7 @@ export class ProvisioningStartService {
     requestId?: string,
   ): Promise<StartOutcome> {
     const runId = newUlid(this.clock.now().getTime());
-    let refusal: 'confirmation_mismatch' | 'not_contract' | undefined;
+    let refusal: 'confirmation_mismatch' | 'not_contract' | 'customer_hosted' | undefined;
     let result;
     try {
       result = await this.tenants.change(tenantId, (current) => {
@@ -62,7 +66,9 @@ export class ProvisioningStartService {
             ? 'confirmation_mismatch'
             : billingModeOf(current) !== 'contract'
               ? 'not_contract'
-              : undefined;
+              : hostingOf(current) === 'customer'
+                ? 'customer_hosted'
+                : undefined;
         if (refusal !== undefined || current.state !== 'pending') return undefined;
         return {
           to: 'provisioning',
@@ -103,6 +109,15 @@ export class ProvisioningStartService {
     }
     return { started: true, ...current };
   }
+}
+
+/** O ambiente na infraestrutura do cliente: o plano de controle não provisiona, para, liga nem apaga nada dele. */
+export function customerHostedError(): ApiError {
+  return new ApiError(
+    HttpStatus.CONFLICT,
+    'Ambiente na infraestrutura do cliente: a Verax não cria, não para nem apaga nada dele',
+    'customer_hosted',
+  );
 }
 
 function requestIdOf(req: Request): string | undefined {
@@ -166,6 +181,8 @@ export class ProvisioningStartController {
           'Cliente da Stripe: o provisionamento começa só com o pagamento',
           'stripe_managed',
         );
+      case 'customer_hosted':
+        throw customerHostedError();
       case 'not_allowed':
         throw new ApiError(
           HttpStatus.CONFLICT,

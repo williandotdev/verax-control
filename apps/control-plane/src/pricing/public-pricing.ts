@@ -1,6 +1,7 @@
+import { HttpStatus } from '@nestjs/common';
+import { ApiError } from '../common/http/api-error.js';
 import {
   type ConfigurationInput,
-  DEPLOYMENT_MODES,
   type DeploymentMode,
   type PriceTable,
   type QuoteLineItem,
@@ -9,14 +10,32 @@ import {
 import { startingAt } from './quote.js';
 
 /**
- * Modos vendidos pelo site na v1. Na nuvem do cliente o site mostra "Fale conosco": o provisionamento desse modo não
- * existe ainda, e a licença de uso precisa de contrato (estudo da implantação própria). A tabela já tem os preços
- * dele, para o simulador de DRE e a checagem de publicação; a cotação pública responde "fale conosco".
+ * O que o site (o "marketplace": a calculadora, a cotação e o checkout) vende: só o ambiente na infraestrutura da
+ * Verax (decisão do responsável, 06/11/2026). O ambiente na infraestrutura do cliente (`self_hosted`) saiu do site: é só
+ * por contrato direto, cadastrado pelo responsável no console (`hosting = customer`). A tabela continua com os preços
+ * dele, para o simulador de DRE, a checagem de publicação e a cotação de referência do contrato direto; nas rotas
+ * públicas, o modo não aparece (`GET /v1/public/pricing`) e é recusado com 422 (`POST /v1/public/quote` e o checkout),
+ * qualquer que seja o conteúdo da tabela publicada.
  */
 export const ONLINE_MODES: readonly DeploymentMode[] = ['managed'];
 
 export function isSoldOnline(mode: DeploymentMode): boolean {
   return ONLINE_MODES.includes(mode);
+}
+
+/** O código do 422 de um modo que o site não vende (a cotação e o checkout). */
+export const MODE_NOT_SOLD_ONLINE = 'mode_not_sold_online';
+
+/**
+ * 422 da cotação ou do checkout com o ambiente na infraestrutura do cliente: a mensagem leva ao contrato direto, sem
+ * nome de provedor (a infraestrutura da Verax hoje é a GCP e pode mudar).
+ */
+export function modeNotSoldOnline(): ApiError {
+  return new ApiError(
+    HttpStatus.UNPROCESSABLE_ENTITY,
+    'Pelo site, o Verax Control roda na infraestrutura da Verax. Para o ambiente na infraestrutura da sua empresa, fale com a Verax: é um contrato direto.',
+    MODE_NOT_SOLD_ONLINE,
+  );
 }
 
 /** A parte pública da tabela vigente (`GET /v1/public/pricing`): preços e regras, nunca custo, margem ou `lookup_key`. */
@@ -26,15 +45,13 @@ export interface PublicPricing {
   interval: 'month';
   /** O "a partir de" de cada modo vendido no site: o preço da configuração mínima. */
   startingAt: Partial<Record<DeploymentMode, { monthly: number; setup: number }>>;
-  modes: (
-    | {
-        mode: DeploymentMode;
-        sale: 'online';
-        environment: { size: SizeId; amount: number }[];
-        setupAmount: number;
-      }
-    | { mode: DeploymentMode; sale: 'contact_us' }
-  )[];
+  /** Só os modos vendidos no site (`ONLINE_MODES`): o da infraestrutura do cliente nunca aparece aqui. */
+  modes: {
+    mode: DeploymentMode;
+    sale: 'online';
+    environment: { size: SizeId; amount: number }[];
+    setupAmount: number;
+  }[];
   sizes: {
     size: SizeId;
     description: string;
@@ -62,19 +79,15 @@ export function publicPricing(version: string, table: PriceTable): PublicPricing
     currency: 'brl',
     interval: 'month',
     startingAt: starting,
-    modes: DEPLOYMENT_MODES.map((mode) =>
-      isSoldOnline(mode)
-        ? {
-            mode,
-            sale: 'online' as const,
-            environment: table.sizing.sizes.map((rule) => ({
-              size: rule.size,
-              amount: table.modes[mode].environment[rule.size]?.amount ?? 0,
-            })),
-            setupAmount: table.modes[mode].setup?.amount ?? 0,
-          }
-        : { mode, sale: 'contact_us' as const },
-    ),
+    modes: ONLINE_MODES.map((mode) => ({
+      mode,
+      sale: 'online' as const,
+      environment: table.sizing.sizes.map((rule) => ({
+        size: rule.size,
+        amount: table.modes[mode].environment[rule.size]?.amount ?? 0,
+      })),
+      setupAmount: table.modes[mode].setup?.amount ?? 0,
+    })),
     sizes: table.sizing.sizes.map((rule) => ({
       size: rule.size,
       description: rule.description,
@@ -113,8 +126,8 @@ export function describeLineItem(item: QuoteLineItem, mode: DeploymentMode, size
   switch (item.component) {
     case 'environment':
       return mode === 'managed'
-        ? `Ambiente gerenciado (porte ${sizeId})`
-        : `Licença na sua nuvem (porte ${sizeId})`;
+        ? `Ambiente na infraestrutura da Verax (porte ${sizeId})`
+        : `Licença na infraestrutura do cliente (porte ${sizeId})`;
     case 'cloud_accounts':
       return 'Contas de nuvem adicionais';
     case 'volume':

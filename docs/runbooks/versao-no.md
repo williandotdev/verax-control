@@ -3,7 +3,8 @@
 Preparação do modo próprio (o nó na nuvem do cliente, fase 3, SH-02). Um nó fora da GCP da Verax precisa de duas
 coisas que o nó da Verax não precisa: baixar as imagens **sem login em registro nenhum** e saber, **sem o `gh` e sem
 acesso à Verax**, que a versão que vai instalar foi publicada pela Verax. Este roteiro cobre as duas peças e o que o
-responsável faz uma vez só.
+responsável faz uma vez só. Desde 06/11/2026, o nó na infraestrutura do cliente é só por contrato direto; o guia que o
+cliente segue é `docs/runbooks/instalacao-no-cliente.md`.
 
 **O nó da Verax não muda.** Ele continua com o `deploy.sh`: imagens do Artifact Registry, pelo digest conferido com
 `gh attestation verify` (`docs/runbooks/no-verax.md`). Tudo aqui é acréscimo.

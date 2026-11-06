@@ -5,7 +5,7 @@ import { buttonVariants } from '@/components/ui/button-variants';
 import { formatDateTime, plural } from '@/lib/format';
 import { stepLabel } from './labels';
 import { useTenants } from './queries';
-import { BillingBadge, TenantStateBadge } from './tenant-badges';
+import { BillingBadge, HostingBadge, TenantStateBadge } from './tenant-badges';
 
 /**
  * Os clientes (os mais novos primeiro): o estado, como paga, o passo do provisionamento e, se parou, o código. O
@@ -59,6 +59,9 @@ export function TenantListPage() {
                   Cobrança
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
+                  Onde roda
+                </th>
+                <th scope="col" className="px-3 py-2 font-medium">
                   Provisionamento
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
@@ -85,6 +88,9 @@ export function TenantListPage() {
                   </td>
                   <td className="px-3 py-2">
                     <BillingBadge mode={tenant.billingMode} />
+                  </td>
+                  <td className="px-3 py-2">
+                    <HostingBadge hosting={tenant.hosting} />
                   </td>
                   <td className="px-3 py-2">
                     {tenant.step === undefined ? '—' : stepLabel(tenant.step)}

@@ -5,7 +5,9 @@ import {
   billingModeOf,
   COMPANY_NAME_MAX_LENGTH,
   companyNameSchema,
+  hostingOf,
   isReservableSlug,
+  MODE_OF_HOSTING,
   slugSchema,
   tenantSchema,
 } from './tenant.schema.js';
@@ -84,5 +86,43 @@ describe('modo de cobrança (billing.mode)', () => {
 
   it('outro modo é recusado na leitura', () => {
     expect(tenantSchema.safeParse({ ...base, billing: { mode: 'boleto' } }).success).toBe(false);
+  });
+});
+
+describe('onde o ambiente roda (hosting)', () => {
+  const at = new Date('2026-11-06T12:00:00.000Z');
+  const base = { ...demoTenant(), state: 'pending', stateUpdatedAt: at, createdAt: at, updatedAt: at };
+  const { consent: _consent, stripe: _stripe, ...withoutStripe } = base;
+  const contract = {
+    ...withoutStripe,
+    billing: { mode: 'contract' },
+    configuration: { ...base.configuration, mode: 'self_hosted' },
+  };
+
+  function paths(input: unknown): string[] {
+    const result = tenantSchema.safeParse(input);
+    return result.success ? [] : result.error.issues.map((issue) => issue.path.join('.'));
+  }
+
+  it('sem o campo é a infraestrutura da Verax (todo cliente do site e os contratos de antes)', () => {
+    expect(hostingOf(tenantSchema.parse(base))).toBe('verax');
+    const parsed = tenantSchema.parse({
+      ...contract,
+      hosting: 'customer',
+      state: 'waiting_customer_install',
+    });
+    expect(hostingOf(parsed)).toBe('customer');
+    expect(MODE_OF_HOSTING).toEqual({ verax: 'managed', customer: 'self_hosted' });
+  });
+
+  it('no cliente, só contrato direto com a licença; o estado de espera da instalação, só no cliente', () => {
+    expect(paths({ ...base, hosting: 'customer', configuration: contract.configuration })).toEqual([
+      'hosting',
+    ]);
+    expect(paths({ ...contract, hosting: 'customer', configuration: base.configuration })).toEqual([
+      'configuration.mode',
+    ]);
+    expect(paths({ ...contract, state: 'waiting_customer_install' })).toEqual(['state']);
+    expect(paths({ ...base, hosting: 'nuvem' })).toEqual(['hosting']);
   });
 });
