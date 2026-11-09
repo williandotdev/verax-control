@@ -125,7 +125,7 @@ function requestIdOf(req: Request): string | undefined {
   return typeof id === 'string' ? id : undefined;
 }
 
-/** O subdomínio de confirmação e, quando quem chama é o console, quem agiu (o e-mail que o IAP deu a ele). */
+/** O subdomínio de confirmação e, quando quem chama é o console, quem agiu (o e-mail da sessão do console). */
 const provisionBodySchema = z.strictObject({
   confirmSlug: z.string().min(1).max(64),
   actor: z.email().max(254).optional(),

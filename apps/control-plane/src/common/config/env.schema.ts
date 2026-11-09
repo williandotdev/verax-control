@@ -4,7 +4,7 @@ const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
 /**
  * Papel do processo: a mesma imagem sobe como `cp-public` (rotas públicas), `cp-worker` (passos internos) ou
- * `cp-admin` (console do responsável, atrás do IAP: tabelas de preços e de custos, publicação e DRE).
+ * `cp-admin` (console do responsável, com login próprio: tabelas de preços e de custos, publicação e DRE).
  */
 export const ROLES = ['public', 'worker', 'admin'] as const;
 export type Role = (typeof ROLES)[number];
@@ -287,18 +287,12 @@ const envShape = {
   WORKER_SA_EMAIL: serviceAccountEmail.optional(),
   SCHEDULER_SA_EMAIL: serviceAccountEmail.optional(),
   OWNER_PRINCIPALS: list(email).optional(),
-  // Console do responsável (cp-admin, só ROLE=admin, obrigatória nele): o `aud` que o IAP põe no JWT assinado do
-  // cabeçalho `x-goog-iap-jwt-assertion` (o serviço do Cloud Run com o IAP ligado). Para o IAP no Cloud Run, o formato
-  // é `/projects/<número>/locations/<região>/services/<nome>` (documentação dos cabeçalhos assinados do IAP, conferida
-  // em 04/11/2026); o Terraform (admin.tf) o monta. O e-mail do JWT precisa estar em OWNER_PRINCIPALS, também
-  // obrigatória no admin.
-  IAP_AUDIENCE: z
-    .string()
-    .max(300)
-    .regex(/^\/projects\/[0-9]{1,20}\/[a-z][a-zA-Z0-9/_-]{1,250}$/, {
-      error: 'deve ser o aud do IAP (/projects/<número>/...)',
-    })
-    .optional(),
+  // Console do responsável (cp-admin, só ROLE=admin, obrigatória nele): o projeto da GCP dos dois cofres do login
+  // próprio do console, lidos pela API do Secret Manager na hora do uso (nunca montados como variável):
+  // `cp-admin-totp-key` (a chave mestra que cifra o segredo do TOTP e assina os códigos de recuperação) e
+  // `cp-admin-setup-token` (o token de uso único do primeiro cadastro, `/configurar`). O Terraform (admin.tf) a deriva
+  // do próprio projeto. Quem pode entrar continua em OWNER_PRINCIPALS, também obrigatória no admin.
+  ADMIN_SECRETS_PROJECT_ID: gcpProjectId.optional(),
 
   // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida
   // (`PROVISIONING_REQUIRED` e, no worker, `PROVISIONING_WORKER_REQUIRED`). Desligado, o passo `preflight` termina o
@@ -417,7 +411,7 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
         'SMTP_USER_NODES',
       ],
     },
-    admin: { secrets: [], settings: ['IAP_AUDIENCE'] },
+    admin: { secrets: [], settings: ['ADMIN_SECRETS_PROJECT_ID'] },
   };
 
 /**
@@ -519,8 +513,8 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
         ctx.addIssue({ code: 'custom', path: [key], message: 'o papel admin não recebe este segredo' });
       }
     }
-    // Sem o `aud` do IAP e a lista de responsáveis, o console não teria como conferir quem chama: não sobe.
-    for (const key of ['IAP_AUDIENCE', 'OWNER_PRINCIPALS'] as const) {
+    // Sem o projeto dos cofres do login e a lista de responsáveis, o console não confere quem entra: não sobe.
+    for (const key of ['ADMIN_SECRETS_PROJECT_ID', 'OWNER_PRINCIPALS'] as const) {
       if (env[key] === undefined) {
         ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com ROLE=admin' });
       }

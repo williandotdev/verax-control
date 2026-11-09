@@ -2,16 +2,13 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { HttpStatus } from '@nestjs/common';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import { IAP_JWT_HEADER, type IapFailure, type IapJwtVerifier } from './iap-verifier.js';
 
 /**
  * As telas do console do responsável (`apps/console`, um app React compilado pelo Vite) servidas pelo próprio
- * `cp-admin`: a mesma origem da API, atrás do mesmo IAP, sem CORS e sem outro serviço. Os arquivos são o código do
- * repositório público (nenhum preço, custo ou segredo): os dados só chegam pela API, depois da guarda.
- *
- * Mesmo assim, cada arquivo exige o JWT do IAP de um responsável, como toda rota do console (defesa em profundidade:
- * se o IAP fosse desligado por engano, nem a tela abriria). Só `GET` e `HEAD` fora de `/v1/` e de `/health`; o resto
- * segue para o Nest (a API, com a guarda global, ou o 404).
+ * `cp-admin`: a mesma origem da API, sem CORS e sem outro serviço. Os arquivos são o código do repositório público
+ * (nenhum preço, custo ou segredo) e abrem sem sessão: é neles que estão as telas de login (`/entrar`) e do primeiro
+ * cadastro (`/configurar`). Os dados só chegam pela API, depois da guarda global, que exige a sessão. Só `GET` e
+ * `HEAD` fora de `/v1/` e de `/health`; o resto segue para o Nest (a API, com a guarda global, ou o 404).
  *
  * - `/assets/...` (nomes com hash do conteúdo): cache privado de um ano, `immutable`;
  * - caminho sem ponto no último trecho (as rotas do app, `/tabelas-de-preco/2026-11-v1`; versão não tem ponto): o
@@ -70,46 +67,18 @@ function isApiPath(path: string): boolean {
   return path === '/health' || path === '/v1' || path.startsWith('/v1/');
 }
 
-function refusal(reason: IapFailure): { status: number; code: string; message: string } {
-  if (reason === 'not_owner')
-    return { status: HttpStatus.FORBIDDEN, code: 'forbidden', message: 'Sem permissão' };
-  if (reason === 'keys_unavailable') {
-    return {
-      status: HttpStatus.SERVICE_UNAVAILABLE,
-      code: 'admin_unavailable',
-      message: 'Serviço temporariamente indisponível',
-    };
-  }
-  return { status: HttpStatus.UNAUTHORIZED, code: 'unauthenticated', message: 'Não autenticado' };
-}
-
-function headerValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
 export interface ConsoleAssetsOptions {
   /** A pasta do build do console (`resolveConsoleRoot`). */
   root: string;
-  verifier: IapJwtVerifier;
-  /** Recusa do JWT: o mesmo evento da guarda (`admin_auth_failed`), só com o motivo. */
-  onRefused: (reason: IapFailure) => void;
 }
 
 /** O middleware do Express que serve o console (registrado em `configureApp`, só com `ROLE=admin`). */
 export function consoleAssets(options: ConsoleAssetsOptions): RequestHandler {
-  const serve = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     if ((req.method !== 'GET' && req.method !== 'HEAD') || isApiPath(req.path)) {
       next();
       return;
     }
-    const result = await options.verifier.verify(headerValue(req.headers[IAP_JWT_HEADER]));
-    if (!result.ok) {
-      options.onRefused(result.reason);
-      const { status, code, message } = refusal(result.reason);
-      res.status(status).json({ statusCode: status, message, code });
-      return;
-    }
-
     let path: string;
     try {
       path = decodeURIComponent(req.path);
@@ -139,8 +108,5 @@ export function consoleAssets(options: ConsoleAssetsOptions): RequestHandler {
           .json({ statusCode: shown, message: FILE_ERRORS[shown] ?? 'Recurso não encontrado' });
       },
     );
-  };
-  return (req, res, next) => {
-    serve(req, res, next).catch(next);
   };
 }

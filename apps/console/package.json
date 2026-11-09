@@ -2,7 +2,7 @@
   "name": "@verax/console",
   "version": "0.0.0",
   "private": true,
-  "description": "Console do responsável do Verax Control (React + Vite): modelos de custo, tabelas de preço e simulador de DRE, servido pelo cp-admin atrás do IAP",
+  "description": "Console do responsável do Verax Control (React + Vite): modelos de custo, tabelas de preço e simulador de DRE, servido pelo cp-admin, com entrada por e-mail, senha e código do aplicativo autenticador",
   "license": "SEE LICENSE IN ../../LICENSE",
   "type": "module",
   "scripts": {
@@ -19,6 +19,7 @@
     "lucide-react": "1.66.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "react-qr-code": "2.2.0",
     "react-router": "8.5.1",
     "tailwind-merge": "3.7.0"
   },

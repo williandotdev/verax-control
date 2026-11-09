@@ -1,55 +1,52 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { IAP_JWT_HEADER } from '../src/admin/iap-verifier.js';
+import { opaqueRef, SESSION_IDLE_MS } from '../src/admin/auth/admin-auth.schema.js';
 import { COLLECTIONS } from '../src/firestore/collections.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
 import type { CostModelInput, PriceTableInput } from '../src/pricing/pricing.schema.js';
+import { MemoryAdminSecrets, seedOwnerSession, sessionCookie } from './support/admin-auth.js';
 import { createApp } from './support/create-app.js';
 import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
-import { TestIap } from './support/iap-test-keys.js';
 import { LogCapture } from './support/log-capture.js';
 import { fictitiousCostModel, fictitiousPriceTable } from './support/pricing-fixtures.js';
 
 const START = new Date('2026-11-04T12:00:00.000Z');
-const AUDIENCE = '/projects/111111111111/locations/southamerica-east1/services/cp-admin';
-/** Responsável fictício (o que estaria em OWNER_PRINCIPALS) e uma pessoa autenticada pelo IAP que não é responsável. */
+/** Responsável fictício (o que estaria em OWNER_PRINCIPALS) e uma pessoa que não é responsável. */
 const OWNER = 'responsavel@verax.example';
 const STRANGER = 'outra-pessoa@verax.example';
 
 /**
- * O console do responsável (`ROLE=admin`) pelo app inteiro: a guarda que confere o JWT do IAP (assinado por uma chave
- * ES256 gerada no teste, `iap-test-keys.ts`; nada fala com o Google), as tabelas de preços e os modelos de custo
- * (rascunho, edição, publicação com a checagem da grade) e o simulador de DRE. Tabela e modelo FICTÍCIOS. Um app por
- * arquivo.
+ * O console do responsável (`ROLE=admin`) pelo app inteiro: a guarda que exige a sessão do login próprio (cookie
+ * `__session`; as sessões destes testes são gravadas direto no Firestore em memória, `support/admin-auth.ts`, e o
+ * login em si está em `admin-auth.test.ts`), as tabelas de preços e os modelos de custo (rascunho, edição, publicação
+ * com a checagem da grade) e o simulador de DRE. Tabela e modelo FICTÍCIOS. Um app por arquivo.
  */
-describe('cp-admin: console do responsável atrás do IAP', () => {
+describe('cp-admin: console do responsável com login próprio', () => {
   const capture = new LogCapture();
   const clock = new FakeClock(START);
   const documents = new MemoryDocumentStore();
-  const iap = new TestIap();
   let app: NestExpressApplication;
-
-  function ownerToken(email = OWNER): string {
-    return iap.token({ audience: AUDIENCE, email });
-  }
+  /** O cookie da sessão do responsável e o de uma sessão de quem não está (mais) em OWNER_PRINCIPALS. */
+  let ownerCookie = '';
+  let strangerCookie = '';
 
   function call(
     method: 'get' | 'post' | 'put',
     path: string,
-    token: string | null = ownerToken(),
+    cookie: string | null = ownerCookie,
   ): request.Test {
     const test = request(app.getHttpServer())[method](path);
-    return token === null ? test : test.set(IAP_JWT_HEADER, token);
+    return cookie === null ? test : test.set('Cookie', cookie);
   }
 
   function send(
     method: 'post' | 'put',
     path: string,
     body: unknown,
-    token: string | null = ownerToken(),
+    cookie: string | null = ownerCookie,
   ): request.Test {
-    return call(method, path, token).set('Content-Type', 'application/json').send(JSON.stringify(body));
+    return call(method, path, cookie).set('Content-Type', 'application/json').send(JSON.stringify(body));
   }
 
   async function publishCostModel(
@@ -80,27 +77,29 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
       capture,
       documentStore: documents,
       clock,
-      iapKeySource: iap,
+      adminSecrets: new MemoryAdminSecrets(),
       env: {
         LOG_LEVEL: 'debug',
-        IAP_AUDIENCE: AUDIENCE,
+        ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo',
         OWNER_PRINCIPALS: `${OWNER},sa-teste@projeto-demo.iam.gserviceaccount.com`,
       },
     });
     await app.listen(0, '127.0.0.1');
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     clock.set(START);
     documents.clear();
+    ownerCookie = await seedOwnerSession(documents, clock, OWNER);
+    strangerCookie = await seedOwnerSession(documents, clock, STRANGER);
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  describe('autenticação pelo IAP', () => {
-    it('/health responde sem token (a sonda do Cloud Run não passa pelo IAP); o resto exige o JWT', async () => {
+  describe('sessão do login próprio', () => {
+    it('/health responde sem sessão (a sonda do Cloud Run); o resto exige o cookie __session', async () => {
       await request(app.getHttpServer()).get('/health').expect(200, { status: 'ok' });
       const missing = await call('get', '/v1/admin/pricing-tables', null).expect(401);
       expect(missing.body).toMatchObject({
@@ -111,51 +110,61 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
       await call('get', '/v1/admin/pricing-tables').expect(200, []);
     });
 
-    it('token adulterado, de outro algoritmo, outra audiência, outro emissor, vencido ou de chave desconhecida: 401', async () => {
-      const cases: [string, string][] = [
-        ['malformed', 'nao.e.jwt!'],
-        ['malformed', 'apenas-um-pedaco'],
-        ['algorithm', iap.token({ audience: AUDIENCE, email: OWNER, header: { alg: 'HS256' } })],
-        ['algorithm', iap.token({ audience: AUDIENCE, email: OWNER, header: { alg: 'none' } })],
-        [
-          'invalid',
-          iap.token({ audience: '/projects/222222222222/locations/x/services/outro', email: OWNER }),
-        ],
-        [
-          'invalid',
-          iap.token({ audience: AUDIENCE, email: OWNER, payload: { iss: 'https://accounts.google.com' } }),
-        ],
-        [
-          'invalid',
-          iap.token({
-            audience: AUDIENCE,
-            email: OWNER,
-            payload: { iat: Math.floor(Date.now() / 1000) - 7200, exp: Math.floor(Date.now() / 1000) - 3600 },
-          }),
-        ],
-        ['invalid', iap.token({ audience: AUDIENCE, email: OWNER, signer: TestIap.otherSigner() })],
-        ['unknown_key', iap.token({ audience: AUDIENCE, email: OWNER, header: { kid: 'kid-desconhecido' } })],
+    it('cookie inventado, de outro nome ou adulterado: 401, sem o cookie no log', async () => {
+      const real = ownerCookie.split('=')[1] ?? '';
+      const tampered = `${real.slice(0, -1)}${real.endsWith('A') ? 'B' : 'A'}`;
+      const cases = [
+        sessionCookie('nao-e-um-id'),
+        sessionCookie('A'.repeat(43)),
+        sessionCookie(tampered),
+        `outro=${real}`,
+        `__Session=${real}`,
       ];
       const before = capture.lines.length;
-      for (const [reason, token] of cases) {
-        const response = await call('get', '/v1/admin/pricing-tables', token).expect(401);
-        expect(response.body, reason).toMatchObject({ code: 'unauthenticated' });
+      for (const cookie of cases) {
+        const response = await call('get', '/v1/admin/pricing-tables', cookie).expect(401);
+        expect(response.body, cookie).toMatchObject({ code: 'unauthenticated' });
       }
-      const reasons = capture
+      const refused = capture
         .entries()
         .slice(before)
-        .filter((entry) => entry['event'] === 'admin_auth_failed')
+        .filter((entry) => entry['event'] === 'admin_session_refused')
         .map((entry) => entry['reason']);
-      expect(reasons).toEqual(cases.map(([reason]) => reason));
-      // Um kid desconhecido faz o console reler as chaves (rotação), uma vez.
-      expect(iap.refreshes).toBe(1);
-      // Nenhum token vai a log.
-      for (const [, token] of cases) expect(capture.text).not.toContain(token.slice(-20));
+      expect(refused).toEqual(['invalid', 'invalid', 'invalid', 'missing', 'missing']);
+      expect(capture.text).not.toContain(real);
+      // Sessão ausente ou vencida é o dia a dia do console: não entra na métrica de recusas (admin_auth_failed).
+      expect(
+        capture
+          .entries()
+          .slice(before)
+          .some((entry) => entry['event'] === 'admin_auth_failed'),
+      ).toBe(false);
     });
 
-    it('token válido de quem não é responsável: 403, sem o e-mail no log', async () => {
+    it('30 min sem uso ou 12 h desde o login: 401, e a sessão é apagada no servidor', async () => {
+      clock.advance(SESSION_IDLE_MS - MINUTE_MS);
+      await call('get', '/v1/admin/me').expect(200);
+      // O uso de agora conta: mais 29 min e ainda vale.
+      clock.advance(SESSION_IDLE_MS - MINUTE_MS);
+      await call('get', '/v1/admin/me').expect(200);
+      clock.advance(SESSION_IDLE_MS);
+      await call('get', '/v1/admin/me').expect(401);
+      const ref = opaqueRef(ownerCookie.split('=')[1] ?? '');
+      expect(await documents.get(COLLECTIONS.adminSessions, ref)).toBeUndefined();
+
+      // Prazo absoluto: usada a cada 20 min, ainda cai 12 h depois do login.
+      clock.set(START);
+      const cookie = await seedOwnerSession(documents, clock, OWNER);
+      for (let elapsed = 0; elapsed < 12 * 60; elapsed += 20) {
+        await call('get', '/v1/admin/me', cookie).expect(200);
+        clock.advance(20 * MINUTE_MS);
+      }
+      await call('get', '/v1/admin/me', cookie).expect(401);
+    });
+
+    it('sessão de quem não está em OWNER_PRINCIPALS: 403, sem o e-mail no log', async () => {
       const before = capture.lines.length;
-      const response = await call('get', '/v1/admin/pricing-tables', ownerToken(STRANGER)).expect(403);
+      const response = await call('get', '/v1/admin/pricing-tables', strangerCookie).expect(403);
       expect(response.body).toMatchObject({ code: 'forbidden' });
       expect(
         capture
@@ -164,11 +173,18 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
           .find((entry) => entry['event'] === 'admin_auth_failed'),
       ).toMatchObject({ reason: 'not_owner' });
       expect(capture.text).not.toContain(STRANGER);
-      // O e-mail confere sem diferenciar maiúsculas.
-      await call('get', '/v1/admin/pricing-tables', ownerToken(OWNER.toUpperCase())).expect(200);
     });
 
-    it('escritas só em JSON e nunca de outro site (o IAP autentica por cookie)', async () => {
+    it('conta apagada (cadastro refeito): as sessões dela caem na próxima regravação', async () => {
+      await documents.runTransaction(async (tx) => {
+        const accounts = await tx.query(COLLECTIONS.adminAccounts);
+        for (const account of accounts) tx.delete(COLLECTIONS.adminAccounts, account.id);
+      });
+      clock.advance(2 * MINUTE_MS);
+      await call('get', '/v1/admin/me').expect(401);
+    });
+
+    it('escritas só em JSON e nunca de outro site, inclusive o login e o cadastro', async () => {
       const form = await call('post', '/v1/admin/cost-models')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('version=custos-teste-v1')
@@ -183,6 +199,15 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
         .expect(403);
       expect(crossSite.body).toMatchObject({ code: 'cross_site' });
       expect(await documents.query(COLLECTIONS.costModels)).toHaveLength(0);
+      // As rotas sem sessão (login e cadastro) seguem as mesmas regras de escrita.
+      await call('post', '/v1/admin/login', null)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('email=x&password=y&code=123456')
+        .expect(415);
+      await send('post', '/v1/admin/login', { email: OWNER, password: 'x', code: '123456' }, null)
+        .set('Sec-Fetch-Site', 'same-site')
+        .expect(403);
+      await send('post', '/v1/admin/setup/start', {}, null).set('Sec-Fetch-Site', 'cross-site').expect(403);
       // Sem CORS: nem a origem do site recebe cabeçalho.
       const preflight = await request(app.getHttpServer())
         .options('/v1/admin/cost-models')
@@ -193,11 +218,11 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
       );
     });
 
-    it('GET /v1/admin/me devolve só o e-mail conferido no JWT (o cabeçalho do console)', async () => {
-      const me = await call('get', '/v1/admin/me', ownerToken(OWNER.toUpperCase())).expect(200);
+    it('GET /v1/admin/me devolve só o e-mail da sessão (o cabeçalho do console)', async () => {
+      const me = await call('get', '/v1/admin/me').expect(200);
       expect(me.body).toEqual({ email: OWNER });
       await call('get', '/v1/admin/me', null).expect(401);
-      await call('get', '/v1/admin/me', ownerToken(STRANGER)).expect(403);
+      await call('get', '/v1/admin/me', strangerCookie).expect(403);
     });
 
     it('as rotas públicas e o webhook não existem no cp-admin', async () => {
@@ -493,7 +518,7 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
     });
   });
 
-  it('nenhum log leva custo, margem, preço, o e-mail do responsável ou o token', async () => {
+  it('nenhum log leva custo, margem, preço, o e-mail do responsável ou o cookie da sessão', async () => {
     await publishCostModel();
     await createTable();
     await send('post', '/v1/admin/pricing-tables/teste-v1/publish', {}).expect(200);
@@ -519,7 +544,7 @@ describe('cp-admin: console do responsável atrás do IAP', () => {
       '"brlPerUsd"',
       '"amount":',
       '"minimumMargin"',
-      ownerToken().slice(-20),
+      ownerCookie.slice(-20),
     ]) {
       expect(text, forbidden).not.toContain(forbidden);
     }

@@ -1,6 +1,15 @@
 import type {
   AdminSession,
   CheckResult,
+  LoginRequest,
+  PasswordChangeRequest,
+  RecoveryCodes,
+  SetupCompleted,
+  SetupStartRequest,
+  SetupStatus,
+  TotpConfirmRequest,
+  TotpEnrollment,
+  TotpResetStartRequest,
   CostModel,
   DirectConfiguration,
   DirectTenantCreated,
@@ -44,10 +53,13 @@ export class ApiError extends Error {
   }
 }
 
-/** O IAP respondeu no lugar do console (sessão vencida, redirecionamento ao login): só recarregar resolve. */
+/**
+ * A sessão do console terminou (30 minutos sem uso, 12 horas desde a entrada, saída em outra aba ou senha trocada): a
+ * API respondeu 401 `unauthenticated` numa rota protegida. O console leva o responsável à tela de entrada.
+ */
 export class SessionExpiredError extends Error {
   constructor() {
-    super('Sua sessão no Google terminou. Recarregue a página para entrar de novo.');
+    super('Sua sessão no console terminou. Entre de novo para continuar.');
     this.name = 'SessionExpiredError';
   }
 }
@@ -79,9 +91,10 @@ function costModelVersionOf(details: unknown): string | undefined {
 }
 
 /**
- * Cliente do console: sempre a mesma origem (o `cp-admin` serve as telas e a API), com o cookie do IAP. Escritas em
- * JSON (a guarda recusa outro tipo). `X-Requested-With` pede ao IAP um 401 em vez do redirecionamento ao login
- * quando a sessão dele vence; a resposta sem JSON, ou redirecionada, vira `SessionExpiredError`.
+ * Cliente do console: sempre a mesma origem (o `cp-admin` serve as telas e a API), com o cookie de sessão `__session`
+ * (HttpOnly: o JavaScript nunca o lê). Escritas em JSON (a guarda recusa outro tipo). Um 401 `unauthenticated` é a
+ * sessão que terminou (`SessionExpiredError`); o 401 da entrada (`login_failed`) é um erro comum do formulário. 204
+ * devolve `undefined`.
  */
 export async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
   let response: Response;
@@ -89,10 +102,9 @@ export async function request<T>(method: Method, path: string, body?: unknown): 
     response = await fetch(path, {
       method,
       credentials: 'same-origin',
-      redirect: 'manual',
+      redirect: 'error',
       headers: {
         Accept: 'application/json',
-        'X-Requested-With': 'XMLHttpRequest',
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -100,26 +112,27 @@ export async function request<T>(method: Method, path: string, body?: unknown): 
   } catch {
     throw new ApiError(0, 'Não foi possível falar com o console. Verifique a conexão.');
   }
-  if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
-    throw new SessionExpiredError();
-  }
+  if (response.status === 204) return undefined as T;
   const isJson = (response.headers.get('content-type') ?? '').includes('application/json');
   const payload: unknown = isJson ? await response.json().catch(() => undefined) : undefined;
+  const data = isRecord(payload) ? payload : {};
+  const code = typeof data['code'] === 'string' ? data['code'] : undefined;
   if (!response.ok) {
-    if (!isJson && (response.status === 401 || response.status === 403)) throw new SessionExpiredError();
-    const data = isRecord(payload) ? payload : {};
+    if (response.status === 401 && (code === undefined || code === 'unauthenticated')) {
+      throw new SessionExpiredError();
+    }
     const message = typeof data['message'] === 'string' ? data['message'] : 'Erro inesperado';
     throw new ApiError(
       response.status,
       message,
-      typeof data['code'] === 'string' ? data['code'] : undefined,
+      code,
       issuesOf(data['details']),
       reportOf(data['details']),
       typeof data['requestId'] === 'string' ? data['requestId'] : undefined,
       costModelVersionOf(data['details']),
     );
   }
-  if (!isJson) throw new SessionExpiredError();
+  if (!isJson) throw new ApiError(response.status, 'Resposta inesperada do console.');
   return payload as T;
 }
 
@@ -180,4 +193,27 @@ export const tenantsApi = {
   create: (body: DirectTenantRequest): Promise<DirectTenantCreated> => request('POST', TENANTS, body),
   act: (id: string, action: TenantAction, body: TenantActionRequest): Promise<TenantActionResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/${action}`, body),
+};
+
+const ACCOUNT = `${BASE}/account`;
+
+/**
+ * A entrada no console e a conta do responsável: o primeiro acesso (`/configurar`, com o token de configuração), a
+ * entrada com e-mail, senha e código do aplicativo (ou um código de recuperação), a saída e a troca de senha e de
+ * aplicativo. Nada disso vai para a URL, o `localStorage` ou o log: só no corpo do pedido.
+ */
+export const authApi = {
+  setupStatus: (): Promise<SetupStatus> => request('GET', `${BASE}/setup`),
+  setupStart: (body: SetupStartRequest): Promise<TotpEnrollment> =>
+    request('POST', `${BASE}/setup/start`, body),
+  setupConfirm: (body: TotpConfirmRequest): Promise<SetupCompleted> =>
+    request('POST', `${BASE}/setup/confirm`, body),
+  login: (body: LoginRequest): Promise<AdminSession> => request('POST', `${BASE}/login`, body),
+  logout: (): Promise<void> => request('POST', `${BASE}/logout`, {}),
+  changePassword: (body: PasswordChangeRequest): Promise<void> =>
+    request('POST', `${ACCOUNT}/password`, body),
+  totpStart: (body: TotpResetStartRequest): Promise<TotpEnrollment> =>
+    request('POST', `${ACCOUNT}/totp/start`, body),
+  totpConfirm: (body: TotpConfirmRequest): Promise<RecoveryCodes> =>
+    request('POST', `${ACCOUNT}/totp/confirm`, body),
 };

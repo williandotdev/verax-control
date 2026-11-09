@@ -14,6 +14,15 @@ import type {
   TenantList,
 } from '../src/admin/admin-tenants.schema.js';
 import type { AdminSession } from '../src/admin/admin-session.controller.js';
+import type {
+  enrollmentConfirmRequestSchema,
+  loginRequestSchema,
+  passwordChangeRequestSchema,
+  setupStartRequestSchema,
+  totpResetStartRequestSchema,
+} from '../src/admin/auth/admin-auth.schema.js';
+import type { AdminAuthController } from '../src/admin/auth/admin-auth.controller.js';
+import type { TotpEnrollmentView } from '../src/admin/auth/admin-auth.service.js';
 import type { PublishResult, SimulationResult } from '../src/admin/admin-pricing.service.js';
 import { CONSOLE_CSP } from '../src/admin/console-assets.js';
 import type { DreResult } from '../src/pricing/dre.js';
@@ -59,6 +68,18 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Json<TenantInstallation>>().toEqualTypeOf<Console.TenantInstallation>();
     expectTypeOf<TenantActionResult>().toEqualTypeOf<Console.TenantActionResult>();
     expectTypeOf<TenantAction>().toEqualTypeOf<Console.TenantAction>();
+    // O login próprio: o cadastro do TOTP, os códigos de recuperação e a conta criada.
+    expectTypeOf<TotpEnrollmentView>().toEqualTypeOf<Console.TotpEnrollment>();
+    expectTypeOf<
+      Awaited<ReturnType<AdminAuthController['setupStatus']>>
+    >().toEqualTypeOf<Console.SetupStatus>();
+    expectTypeOf<
+      Awaited<ReturnType<AdminAuthController['setupConfirm']>>
+    >().toEqualTypeOf<Console.SetupCompleted>();
+    expectTypeOf<
+      Awaited<ReturnType<AdminAuthController['totpConfirm']>>
+    >().toEqualTypeOf<Console.RecoveryCodes>();
+    expectTypeOf<Awaited<ReturnType<AdminAuthController['login']>>>().toEqualTypeOf<Console.AdminSession>();
   });
 
   it('o que as telas mandam cabe no que a API aceita', () => {
@@ -69,6 +90,11 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Required<Console.TenantActionRequest>>().toExtend<
       z.input<(typeof tenantActionSchemas)['export']>
     >();
+    expectTypeOf<Console.LoginRequest>().toExtend<z.input<typeof loginRequestSchema>>();
+    expectTypeOf<Console.SetupStartRequest>().toExtend<z.input<typeof setupStartRequestSchema>>();
+    expectTypeOf<Console.TotpConfirmRequest>().toExtend<z.input<typeof enrollmentConfirmRequestSchema>>();
+    expectTypeOf<Console.PasswordChangeRequest>().toExtend<z.input<typeof passwordChangeRequestSchema>>();
+    expectTypeOf<Console.TotpResetStartRequest>().toExtend<z.input<typeof totpResetStartRequestSchema>>();
   });
 
   it('o vite preview dos testes de navegador do console manda a mesma CSP do cp-admin', () => {

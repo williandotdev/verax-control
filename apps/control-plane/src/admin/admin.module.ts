@@ -19,20 +19,27 @@ import {
   DIRECT_TENANT_CREATIONS,
   TENANT_OPERATIONS,
 } from './admin-tenants.service.js';
-import { GoogleAuthIdTokenSource } from './google-id-token.js';
 import {
-  GoogleIapKeySource,
-  IAP_KEY_SOURCE,
-  IAP_VERIFIER,
-  IapJwtVerifier,
-  type IapKeySource,
-} from './iap-verifier.js';
+  ACCOUNT_PER_IP,
+  ADMIN_AUTH_LIMITS,
+  AdminAuthController,
+  type AdminAuthLimits,
+  LOGIN_GLOBAL,
+  LOGIN_PER_IP,
+  SETUP_PER_IP,
+} from './auth/admin-auth.controller.js';
+import { AdminAuthService } from './auth/admin-auth.service.js';
+import { ADMIN_SECRETS, type AdminSecretSource, SecretManagerAdminSecrets } from './auth/admin-secrets.js';
+import { GoogleAuthIdTokenSource } from './google-id-token.js';
 import { OwnerGuard } from './owner.guard.js';
 import { HttpWorkerOwnerClient, type WorkerOwnerClient } from './worker-owner-client.js';
 
 export interface AdminModuleOptions {
-  /** Só nos testes: as chaves públicas do "IAP" (uma chave ES256 gerada no teste). Em produção, as do Google. */
-  iapKeySource?: IapKeySource;
+  /**
+   * Só nos testes: os cofres do login do console em memória (a chave mestra e o token do primeiro cadastro). Em
+   * produção, o Secret Manager do projeto `ADMIN_SECRETS_PROJECT_ID`, pela API, com a identidade do cp-admin.
+   */
+  adminSecrets?: AdminSecretSource;
   /**
    * Só nos testes: o cliente das operações do responsável no cp-worker (o `HttpWorkerOwnerClient` com um "Google" de
    * teste e o worker local, ou um dublê). Em produção, o `HttpWorkerOwnerClient` com o token da conta do cp-admin pelo
@@ -42,9 +49,10 @@ export interface AdminModuleOptions {
 }
 
 /**
- * O console do responsável (`cp-admin`, `ROLE=admin`): as rotas `/v1/admin/...` e a guarda global que confere o JWT
- * do IAP em toda requisição. Só este papel carrega o módulo; no `cp-public` e no `cp-worker` as rotas nem existem. Os
- * clientes (lista, detalhe, contrato direto) leem e gravam o Firestore; as operações do provisionamento vão ao cp-worker
+ * O console do responsável (`cp-admin`, `ROLE=admin`): as rotas `/v1/admin/...`, o login próprio (e-mail, senha e
+ * TOTP, `auth/`) e a guarda global que exige a sessão dele em toda requisição. Só este papel carrega o módulo; no
+ * `cp-public` e no `cp-worker` as rotas nem existem. Os clientes (lista, detalhe, contrato direto) leem e gravam o
+ * Firestore; as operações do provisionamento vão ao cp-worker
  * pelo `CONSOLE_WORKER_CLIENT` (`worker-owner-client.ts`), com o token da conta do cp-admin.
  */
 @Module({})
@@ -53,8 +61,14 @@ export class AdminModule {
     return {
       module: AdminModule,
       imports: [AuditModule, PricingCoreModule, TenantsModule],
-      controllers: [AdminPricingController, AdminSessionController, AdminTenantsController],
+      controllers: [
+        AdminAuthController,
+        AdminPricingController,
+        AdminSessionController,
+        AdminTenantsController,
+      ],
       providers: [
+        AdminAuthService,
         AdminPricingService,
         AdminTenantsService,
         ProvisioningStore,
@@ -76,20 +90,26 @@ export class AdminModule {
           inject: [CLOCK],
         },
         {
-          provide: IAP_KEY_SOURCE,
-          useFactory: (clock: Clock) => options.iapKeySource ?? new GoogleIapKeySource(clock),
-          inject: [CLOCK],
+          provide: ADMIN_SECRETS,
+          useFactory: (config: AppConfig): AdminSecretSource => {
+            if (options.adminSecrets !== undefined) return options.adminSecrets;
+            // O schema da configuração já exige as duas com ROLE=admin; aqui é só a garantia de tipo.
+            if (config.ADMIN_SECRETS_PROJECT_ID === undefined || config.OWNER_PRINCIPALS === undefined) {
+              throw new Error('ADMIN_SECRETS_PROJECT_ID e OWNER_PRINCIPALS são obrigatórias com ROLE=admin');
+            }
+            return new SecretManagerAdminSecrets(config.ADMIN_SECRETS_PROJECT_ID);
+          },
+          inject: [APP_CONFIG],
         },
         {
-          provide: IAP_VERIFIER,
-          useFactory: (config: AppConfig, keys: IapKeySource) => {
-            // O schema da configuração já exige as duas com ROLE=admin; aqui é só a garantia de tipo.
-            if (config.IAP_AUDIENCE === undefined || config.OWNER_PRINCIPALS === undefined) {
-              throw new Error('IAP_AUDIENCE e OWNER_PRINCIPALS são obrigatórias com ROLE=admin');
-            }
-            return new IapJwtVerifier(keys, config.IAP_AUDIENCE, config.OWNER_PRINCIPALS);
-          },
-          inject: [APP_CONFIG, IAP_KEY_SOURCE],
+          provide: ADMIN_AUTH_LIMITS,
+          useFactory: (clock: Clock): AdminAuthLimits => ({
+            login: new TokenBucketLimiter(LOGIN_PER_IP, clock),
+            loginGlobal: new TokenBucketLimiter(LOGIN_GLOBAL, clock),
+            setup: new TokenBucketLimiter(SETUP_PER_IP, clock),
+            account: new TokenBucketLimiter(ACCOUNT_PER_IP, clock),
+          }),
+          inject: [CLOCK],
         },
         { provide: APP_GUARD, useClass: OwnerGuard },
       ],

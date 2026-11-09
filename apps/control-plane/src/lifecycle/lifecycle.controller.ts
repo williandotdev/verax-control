@@ -43,7 +43,7 @@ export class TickController {
   }
 }
 
-/** Quem agiu, quando quem chama é o console (`ADMIN_SA_EMAIL`): o e-mail que o IAP deu a ele. */
+/** Quem agiu, quando quem chama é o console (`ADMIN_SA_EMAIL`): o e-mail da sessão do console. */
 const actorField = z.email().max(254).optional();
 const deleteNowSchema = z.strictObject({ confirmSlug: z.string().min(1).max(64), actor: actorField });
 const exportSchema = z.strictObject({ object: z.string().min(1).max(200), actor: actorField });

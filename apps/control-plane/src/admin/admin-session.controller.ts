@@ -1,14 +1,14 @@
 import { Controller, Get, Req } from '@nestjs/common';
 import { type OwnerRequest, ownerOf } from './owner.guard.js';
 
-/** Quem está no console (o cabeçalho das telas mostra o e-mail): só o e-mail conferido no JWT do IAP, nada mais. */
+/** Quem está no console (o cabeçalho das telas mostra o e-mail): só o e-mail da sessão, nada mais. */
 export interface AdminSession {
   email: string;
 }
 
 /**
- * `GET /v1/admin/me`: o responsável autenticado, como a guarda global o leu do JWT do IAP. Sem segredo, sem token e
- * sem o restante das reivindicações do JWT; atrás da mesma `OwnerGuard` de toda rota do console.
+ * `GET /v1/admin/me`: o responsável autenticado, como a guarda global o leu da sessão (cookie `__session`). Sem
+ * segredo e sem o id da sessão; atrás da mesma `OwnerGuard` de toda rota do console.
  */
 @Controller('admin')
 export class AdminSessionController {

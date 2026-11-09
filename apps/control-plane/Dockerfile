@@ -1,10 +1,10 @@
 # Imagem do plano de controle do Verax Control (fase 3, CP-01). Contexto: a raiz do repositório; o .dockerignore
 # só deixa entrar o necessário (nunca .env nem chaves). Molde de apps/api/Dockerfile.
 #
-# Uma só imagem para os serviços do Cloud Run: `cp-public`, `cp-worker` e `cp-admin` (o console do responsável, atrás
-# do IAP) recebem a mesma imagem e a variável ROLE (public, worker ou admin) decide quais rotas existem. As telas do
-# console (apps/console, React compilado pelo Vite) vão em /app/console e só o papel admin as serve, atrás do mesmo IAP
-# da API. Só dependências de produção, usuário sem privilégio, roda com sistema de arquivos só leitura e sem npm nem
+# Uma só imagem para os serviços do Cloud Run: `cp-public`, `cp-worker` e `cp-admin` (o console do responsável, com
+# login próprio) recebem a mesma imagem e a variável ROLE (public, worker ou admin) decide quais rotas existem. As telas
+# do console (apps/console, React compilado pelo Vite) vão em /app/console e só o papel admin as serve; os dados só
+# saem da API depois do login. Só dependências de produção, usuário sem privilégio, roda com sistema de arquivos só leitura e sem npm nem
 # corepack, que não são usados em execução.
 #
 # A instalação respeita o pnpm-workspace.yaml: quarentena de 24 h, política de confiança e scripts de instalação

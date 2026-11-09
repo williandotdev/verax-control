@@ -1,5 +1,8 @@
 import { createBrowserRouter, Navigate, type RouteObject } from 'react-router';
 import { Layout } from '@/components/layout';
+import { AccountPage } from '@/features/auth/account-page';
+import { LoginPage } from '@/features/auth/login-page';
+import { SetupPage } from '@/features/auth/setup-page';
 import {
   CostModelEditorPage,
   CostModelListPage,
@@ -16,7 +19,13 @@ import { TenantDetailPage } from '@/features/tenants/tenant-detail-page';
 import { TenantListPage } from '@/features/tenants/tenant-list-page';
 import { NotFoundPage } from './not-found-page';
 
+/**
+ * As telas de acesso (`/entrar` e `/configurar`) ficam fora da moldura: abrem sem sessão. Todo o resto fica dentro
+ * dela, que só desenha a tela depois de a API confirmar a sessão.
+ */
 export const routes: RouteObject[] = [
+  { path: 'entrar', element: <LoginPage /> },
+  { path: 'configurar', element: <SetupPage /> },
   {
     element: <Layout />,
     children: [
@@ -31,6 +40,7 @@ export const routes: RouteObject[] = [
       { path: 'clientes', element: <TenantListPage /> },
       { path: 'clientes/novo', element: <NewTenantPage /> },
       { path: 'clientes/:id', element: <TenantDetailPage /> },
+      { path: 'conta', element: <AccountPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

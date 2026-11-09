@@ -287,7 +287,7 @@ export function describeDirectTenantContract(
       config = loadConfig({
         ROLE: 'admin',
         NODE_ENV: 'test',
-        IAP_AUDIENCE: '/projects/111111111111/locations/southamerica-east1/services/cp-admin',
+        ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo',
         OWNER_PRINCIPALS: `${OWNER.email},${OTHER_OWNER.email}`,
       });
       service = build(worker);
@@ -332,7 +332,7 @@ export function describeDirectTenantContract(
         { from: null, to: 'pending', reason: 'contract_created' },
         { from: 'pending', to: 'provisioning', reason: 'contract_provisioning_started' },
       ]);
-      // Tudo auditado com o e-mail do responsável que o IAP confirmou, nunca com a conta do console.
+      // Tudo auditado com o e-mail do responsável da sessão, nunca com a conta do console.
       expect(await auditActions()).toEqual([
         { actor: `owner:${OWNER.email}`, action: 'tenant.create', tenantId: created.id },
         { actor: `owner:${OWNER.email}`, action: 'tenant.transition', tenantId: created.id },
@@ -631,7 +631,7 @@ export function describeDirectTenantContract(
       expect(detail.state).toBe('canceled');
       expect(detail.lifecycle.deleteAfter).toBeInstanceOf(Date);
       expect(detail.actions).toMatchObject({ cancel: false, deleteNow: true, export: true });
-      // Cada operação foi do responsável que o IAP confirmou.
+      // Cada operação foi do responsável da sessão.
       expect(
         worker.calls
           .filter((call) => call.operation !== 'provision')

@@ -8,6 +8,7 @@ import type {
   VersionSummary,
 } from '@/lib/api-types';
 import { getAt } from '@/lib/paths';
+import { createFakeAuth, type FakeAuthState, handleAuthRequest } from './fake-auth';
 import { dre, guard, quote } from './fake-engine';
 import { createFakeTenants, type FakeTenantsState, handleTenantsRequest } from './fake-tenants';
 import { FICTITIOUS_OWNER, fictitiousCostModel, fictitiousPriceTable } from './fixtures';
@@ -33,6 +34,8 @@ export interface FakeAdminState {
   email: string;
   /** Os clientes (`fake-tenants.ts`). */
   tenants: FakeTenantsState;
+  /** A sessão e a conta do responsável (`fake-auth.ts`); por padrão, com a sessão aberta. */
+  auth: FakeAuthState;
 }
 
 const DAY = 86_400_000;
@@ -45,7 +48,9 @@ function iso(date: Date): string {
  * O estado inicial: um modelo de custos e uma tabela publicados (os vigentes), uma tabela anterior aposentada e um
  * rascunho de tabela. Todos FICTÍCIOS. `empty` começa sem nada (a primeira vez do responsável).
  */
-export function createFakeState(options: { empty?: boolean; now?: () => Date } = {}): FakeAdminState {
+export function createFakeState(
+  options: { empty?: boolean; now?: () => Date; loggedIn?: boolean; setupOpen?: boolean } = {},
+): FakeAdminState {
   const now = options.now ?? (() => new Date());
   const state: FakeAdminState = {
     'pricing-tables': new Map(),
@@ -53,6 +58,7 @@ export function createFakeState(options: { empty?: boolean; now?: () => Date } =
     now,
     email: FICTITIOUS_OWNER,
     tenants: options.empty === true ? { tenants: new Map(), workerDown: false } : createFakeTenants(now),
+    auth: createFakeAuth({ loggedIn: options.loggedIn, setupOpen: options.setupOpen }),
   };
   if (options.empty === true) return state;
   const at = (days: number): string => iso(new Date(now().getTime() - days * DAY));
@@ -213,6 +219,10 @@ export function handleAdminRequest(
   const now = state.now();
   const parts = path.split('?')[0]?.split('/').filter(Boolean).slice(2) ?? [];
   const [first, second, third] = parts.map(decodeURIComponent);
+
+  // O acesso (primeiro acesso, entrada, saída e conta) e, sem sessão, o 401 de toda rota protegida.
+  const access = handleAuthRequest(state.auth, state.email, now, method, [first, second, third], body);
+  if (access !== undefined) return access;
 
   if (method === 'GET' && first === 'me' && parts.length === 1)
     return { status: 200, body: { email: state.email } };

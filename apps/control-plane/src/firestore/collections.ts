@@ -42,6 +42,16 @@ export const COLLECTIONS = {
   costModels: 'costModels',
   /** Cotações do site, válidas por 24 h; o checkout só aceita uma cotação gravada aqui. */
   quotes: 'quotes',
+  /**
+   * Login próprio do console do responsável (cp-admin): a conta de cada responsável (e-mail, hash da senha, segredo do
+   * TOTP cifrado e os códigos de recuperação assinados), as sessões (pelo SHA-256 do id), as falhas de login por
+   * e-mail (o bloqueio), os cadastros do TOTP pendentes e o marcador que fecha o primeiro cadastro. Só o cp-admin lê.
+   */
+  adminAccounts: 'adminAccounts',
+  adminSessions: 'adminSessions',
+  adminLoginThrottle: 'adminLoginThrottle',
+  adminEnrollments: 'adminEnrollments',
+  adminSetup: 'adminSetup',
 } as const;
 
 export interface CompositeIndex {
@@ -112,4 +122,15 @@ export const TTL_FIELDS: readonly TtlField[] = [
   { collectionGroup: COLLECTIONS.auditLog, field: TTL_FIELD, retention: '24 meses' },
   { collectionGroup: COLLECTIONS.rateLimits, field: TTL_FIELD, retention: 'janela do limite' },
   { collectionGroup: COLLECTIONS.quotes, field: TTL_FIELD, retention: '24 h (validade da cotação)' },
+  {
+    collectionGroup: COLLECTIONS.adminSessions,
+    field: TTL_FIELD,
+    retention: '12 h (prazo absoluto da sessão)',
+  },
+  {
+    collectionGroup: COLLECTIONS.adminLoginThrottle,
+    field: TTL_FIELD,
+    retention: 'fim da janela de 15 min ou do bloqueio',
+  },
+  { collectionGroup: COLLECTIONS.adminEnrollments, field: TTL_FIELD, retention: '10 min (cadastro do TOTP)' },
 ];

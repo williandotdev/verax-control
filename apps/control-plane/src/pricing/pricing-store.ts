@@ -86,7 +86,7 @@ export interface VersionedRecord<C> extends VersionedDocument<C> {
   version: string;
 }
 
-/** Quem age no console: o e-mail conferido no token do IAP (a auditoria leva `owner:<e-mail>`). */
+/** Quem age no console: o e-mail da sessão do login próprio (a auditoria leva `owner:<e-mail>`). */
 export interface OwnerContext {
   email: string;
   requestId?: string;
@@ -133,7 +133,10 @@ export class EffectiveFromError extends Error {
   }
 }
 
-/** O resumo de uma versão na lista do console: estado, vigência e quem publicou e editou por último (o e-mail do IAP). */
+/**
+ * O resumo de uma versão na lista do console: estado, vigência e quem publicou e editou por último (o e-mail da
+ * sessão).
+ */
 export interface VersionSummary {
   version: string;
   status: VersionStatus;

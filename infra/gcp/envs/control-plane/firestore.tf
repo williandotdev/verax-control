@@ -62,11 +62,15 @@ resource "google_firebaserules_release" "firestore" {
 #   - provisioningRuns e steps (o grupo de coleções `steps`, uma subcoleção por execução): 180 dias depois de
 #     terminar. O TTL não desce para subcoleções: cada passo leva o próprio `expiresAt`;
 #   - auditLog: 24 meses;
-#   - quotes: 24 h, a validade da cotação do site (preço configurável).
+#   - quotes: 24 h, a validade da cotação do site (preço configurável);
+#   - adminSessions: 12 h, o prazo absoluto da sessão do console do responsável (a inatividade de 30 min o app confere);
+#   - adminLoginThrottle: o fim da janela de 15 min das falhas de login ou do bloqueio;
+#   - adminEnrollments: 10 min, o cadastro do TOTP pendente (primeiro cadastro ou troca do aplicativo).
+# `adminAccounts` e `adminSetup` (a conta do responsável e o marcador do primeiro cadastro) não têm prazo.
 # `tenants`, `transitions` e `invoices` não têm prazo (5 anos de faturas e a identificação fiscal ficam), nem as
 # tabelas de preços e de custos (`pricingTables`, `costModels`), que são o histórico do que foi vendido.
 resource "google_firestore_field" "ttl" {
-  for_each = toset(["slugs", "stripeEvents", "statusTokens", "rateLimits", "provisioningRuns", "steps", "auditLog", "quotes"])
+  for_each = toset(["slugs", "stripeEvents", "statusTokens", "rateLimits", "provisioningRuns", "steps", "auditLog", "quotes", "adminSessions", "adminLoginThrottle", "adminEnrollments"])
 
   database   = google_firestore_database.default.name
   collection = each.key

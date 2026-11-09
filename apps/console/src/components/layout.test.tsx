@@ -5,7 +5,7 @@ import { renderConsole } from '@/test/render';
 describe('moldura do console', () => {
   it('menu das telas, link de pular para o conteúdo e o tema escolhido guardado', async () => {
     const { user } = renderConsole('/simulador');
-    const menu = screen.getByRole('navigation', { name: 'Menu do console' });
+    const menu = await screen.findByRole('navigation', { name: 'Menu do console' });
     expect(menu).toHaveTextContent('Modelos de custo');
     expect(screen.getByRole('link', { name: 'Clientes' })).toHaveAttribute('href', '/clientes');
     expect(screen.getByRole('link', { name: 'Simulador de DRE' })).toHaveAttribute('aria-current', 'page');

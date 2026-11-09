@@ -5,31 +5,33 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CONSOLE_CSP } from '../src/admin/console-assets.js';
-import { IAP_JWT_HEADER } from '../src/admin/iap-verifier.js';
+import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
+import { MemoryAdminSecrets, seedOwnerSession } from './support/admin-auth.js';
 import { createApp } from './support/create-app.js';
-import { TestIap } from './support/iap-test-keys.js';
+import { FakeClock } from './support/fake-clock.js';
 import { LogCapture } from './support/log-capture.js';
 
-const AUDIENCE = '/projects/111111111111/locations/southamerica-east1/services/cp-admin';
 const OWNER = 'responsavel@verax.example';
-const STRANGER = 'outra-pessoa@verax.example';
 const INDEX = '<!doctype html><title>Console de teste</title><div id="root"></div>';
 const SCRIPT = 'console.log("teste");';
 
 /**
  * As telas do console servidas pelo próprio `cp-admin` (`admin/console-assets.ts`), com uma pasta de build falsa
- * gerada no teste: o JWT do IAP em cada arquivo, a CSP das telas, o cache por tipo de arquivo, as rotas do app caindo
- * no `index.html`, e nada fora da pasta. A API e o `/health` continuam como antes. Um app por arquivo.
+ * gerada no teste: as telas abrem sem sessão (o login e o primeiro cadastro estão nelas), com a CSP das telas, o cache
+ * por tipo de arquivo, as rotas do app caindo no `index.html`, e nada fora da pasta. Os dados só pela API, com sessão.
+ * Um app por arquivo.
  */
 describe('cp-admin: as telas do console no mesmo serviço', () => {
   const capture = new LogCapture();
-  const iap = new TestIap();
+  const documents = new MemoryDocumentStore();
+  const clock = new FakeClock(new Date('2026-11-04T12:00:00.000Z'));
   const root = mkdtempSync(join(tmpdir(), 'verax-console-'));
   let app: NestExpressApplication;
+  let cookie = '';
 
-  function get(path: string, email: string | null = OWNER): request.Test {
+  function get(path: string, withSession = true): request.Test {
     const test = request(app.getHttpServer()).get(path);
-    return email === null ? test : test.set(IAP_JWT_HEADER, iap.token({ audience: AUDIENCE, email }));
+    return withSession ? test.set('Cookie', cookie) : test;
   }
 
   beforeAll(async () => {
@@ -44,11 +46,14 @@ describe('cp-admin: as telas do console no mesmo serviço', () => {
       nodeEnv: 'production',
       trustProxyHops: 1,
       capture,
-      iapKeySource: iap,
+      documentStore: documents,
+      clock,
+      adminSecrets: new MemoryAdminSecrets(),
       consoleRoot: root,
-      env: { IAP_AUDIENCE: AUDIENCE, OWNER_PRINCIPALS: OWNER },
+      env: { ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo', OWNER_PRINCIPALS: OWNER },
     });
     await app.listen(0, '127.0.0.1');
+    cookie = await seedOwnerSession(documents, clock, OWNER);
   });
 
   afterAll(async () => {
@@ -56,21 +61,15 @@ describe('cp-admin: as telas do console no mesmo serviço', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('sem o JWT do IAP, nem a tela abre (401, com admin_auth_failed no log); de outra pessoa, 403', async () => {
-    const before = capture.lines.length;
-    const missing = await get('/', null).expect(401);
-    expect(missing.body).toMatchObject({ code: 'unauthenticated' });
-    expect(missing.text).not.toContain('Console de teste');
-    const stranger = await get('/tabelas-de-preco', STRANGER).expect(403);
-    expect(stranger.body).toMatchObject({ code: 'forbidden' });
-    await get('/assets/index-abc123.js', null).expect(401);
-    const reasons = capture
-      .entries()
-      .slice(before)
-      .filter((entry) => entry['event'] === 'admin_auth_failed')
-      .map((entry) => entry['reason']);
-    expect(reasons).toEqual(['missing', 'not_owner', 'missing']);
-    expect(capture.text).not.toContain(STRANGER);
+  it('as telas abrem sem sessão (o login está nelas); os dados da API, não', async () => {
+    for (const path of ['/entrar', '/configurar', '/', '/clientes']) {
+      const page = await get(path, false).expect(200);
+      expect(page.text, path).toBe(INDEX);
+    }
+    await get('/assets/index-abc123.js', false).expect(200);
+    const data = await get('/v1/admin/pricing-tables', false).expect(401);
+    expect(data.body).toMatchObject({ code: 'unauthenticated' });
+    expect(data.text).not.toContain('Console de teste');
   });
 
   it('o responsável recebe o index.html com a CSP das telas e sem cache, em qualquer rota do app', async () => {
@@ -120,10 +119,10 @@ describe('cp-admin: as telas do console no mesmo serviço', () => {
     expect(me.headers['content-security-policy']).toContain("default-src 'none'");
     expect(me.headers['content-security-policy']).not.toContain("script-src 'self'");
     await get('/v1/admin/nao-existe').expect(404);
-    await get('/v1/admin/me', null).expect(401);
+    await get('/v1/admin/me', false).expect(401);
     const post = await request(app.getHttpServer())
       .post('/')
-      .set(IAP_JWT_HEADER, iap.token({ audience: AUDIENCE, email: OWNER }))
+      .set('Cookie', cookie)
       .set('Content-Type', 'application/json')
       .send('{}');
     expect(post.status).toBe(404);

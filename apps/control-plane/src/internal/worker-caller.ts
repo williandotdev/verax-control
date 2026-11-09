@@ -23,7 +23,7 @@ import { IdentityTokenVerifier, selectValidatedCredential } from './identity-tok
  *   dispara passo nenhum, e uma task não pede revelação;
  * - `owner`: só o responsável (`OWNER_PRINCIPALS`): as operações dele, como o `resume` do provisionamento (CP-07).
  *   Nem a cp-invoker nem o cp-public: uma task ou o Scheduler não retomam um cliente que falhou;
- * - `console`: só a conta do console do responsável (`ADMIN_SA_EMAIL`, o `cp-admin` atrás do IAP), que chama as
+ * - `console`: só a conta do console do responsável (`ADMIN_SA_EMAIL`, o `cp-admin`), que chama as
  *   operações do responsável em nome de quem entrou no console (CP-11). O console nunca repassa o token de quem está
  *   no navegador: a credencial é o token da conta dele, e quem agiu vai no corpo (`actor`), conferido contra
  *   `OWNER_PRINCIPALS` (`ownerActorOf`).
@@ -39,7 +39,7 @@ export function workerCallerOf(request: Request): string | undefined {
 /**
  * Quem agiu numa operação do responsável, para a auditoria: chamada direta de um responsável (`OWNER_PRINCIPALS`), o
  * próprio e-mail do token; chamada do console (`ADMIN_SA_EMAIL`), o `actor` do corpo, que tem de estar em
- * `OWNER_PRINCIPALS` (o console já conferiu o JWT do IAP dele). `undefined` quando o console não diz quem agiu, ou diz
+ * `OWNER_PRINCIPALS` (o console já conferiu a sessão dele). `undefined` quando o console não diz quem agiu, ou diz
  * alguém que não é responsável: a rota recusa (403).
  */
 export function ownerActorOf(

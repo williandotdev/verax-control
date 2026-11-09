@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
-import type { IapKeySource } from '../../src/admin/iap-verifier.js';
+import type { AdminSecretSource } from '../../src/admin/auth/admin-secrets.js';
 import { AppModule } from '../../src/app.module.js';
 import { APP_CREATE_OPTIONS, configureApp } from '../../src/app.setup.js';
 import type { Clock } from '../../src/common/clock.js';
@@ -37,8 +37,8 @@ export interface CreateAppOptions {
   stripeApi?: StripeApiOptions;
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
   stepQueue?: StepQueue;
-  /** As chaves do "IAP" do console (`iap-test-keys.ts`): uma chave ES256 gerada no teste, nunca as do Google. */
-  iapKeySource?: IapKeySource;
+  /** Os cofres do login do console em memória (`admin-auth.ts`): chave e token gerados no teste. */
+  adminSecrets?: AdminSecretSource;
   /** O cliente do console para o cp-worker (o HTTP com um "Google" de teste até o worker local, ou um dublê). */
   workerOwnerClient?: Parameters<typeof AppModule.register>[1]['workerOwnerClient'];
   /**
@@ -74,7 +74,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         provisioning: options.provisioning,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
-        iapKeySource: options.iapKeySource,
+        adminSecrets: options.adminSecrets,
         workerOwnerClient: options.workerOwnerClient,
       }),
     ],
