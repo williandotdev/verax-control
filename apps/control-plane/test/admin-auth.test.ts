@@ -497,7 +497,8 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
       ip = '192.0.2.200';
       await login('mais-uma@verax.example', 'x', { code: '000000' }).expect(429);
       clock.advance(15 * MINUTE_MS);
-    });
+      // Cem scrypts de verdade: com a máquina ocupada, passa dos 30 s padrão.
+    }, 180_000);
 
     it('login com a senha antiga não abre sessão se a senha foi trocada entre a conferência e o commit', async () => {
       const owner = await enroll();
