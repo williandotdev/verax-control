@@ -85,10 +85,10 @@ run "primeira_subida_sem_servicos" {
 
   assert {
     condition = (
-      keys(google_secret_manager_secret.cp) == ["cp-cloudflare-api-token", "cp-cookie-key", "cp-nodes-smtp-password", "cp-smtp-password", "cp-stripe-secret-key", "cp-stripe-webhook-secret"] &&
+      keys(google_secret_manager_secret.cp) == ["cp-admin-setup-token", "cp-admin-totp-key", "cp-cloudflare-api-token", "cp-cookie-key", "cp-nodes-smtp-password", "cp-smtp-password", "cp-stripe-secret-key", "cp-stripe-webhook-secret"] &&
       alltrue([for secret in google_secret_manager_secret.cp : secret.replication[0].user_managed[0].replicas[0].location == "southamerica-east1"])
     )
-    error_message = "Os seis segredos do plano (os cinco montados e a senha da caixa dos nós), guardados só na região."
+    error_message = "Os oito segredos do plano (os cinco montados, a senha da caixa dos nós e os dois do console, que nascem mesmo sem o console para o responsável gravá-los antes), guardados só na região."
   }
 
   assert {

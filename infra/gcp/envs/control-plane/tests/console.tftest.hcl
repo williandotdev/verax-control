@@ -1,8 +1,8 @@
-# O console do responsável (admin.tf): o cp-admin com o IAP direto no Cloud Run, só o agente do IAP como invocador,
-# só os responsáveis passando pelo IAP, a conta própria com o Firestore e, com os serviços no ar, `run.invoker` só no
-# cp-worker (as operações do responsável), sem segredo, as variáveis que o app confere (IAP_AUDIENCE, OWNER_PRINCIPALS
-# e WORKER_URL; no worker, ADMIN_SA_EMAIL), a implantação pelo workflow e os dois alertas. Sem `admin_enabled`, nada
-# disso existe.
+# O console do responsável (admin.tf): o cp-admin com login próprio e invocação anônima (o rewrite do Hosting exige),
+# o site do Hosting com o domínio admin.veraxsistemas.com.br e o rewrite para ele, a conta própria com o Firestore e a
+# leitura só dos dois segredos do console (não montados), e, com os serviços no ar, `run.invoker` só no cp-worker (as
+# operações do responsável), as variáveis que o app confere (ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS e WORKER_URL;
+# no worker, ADMIN_SA_EMAIL), a implantação pelo workflow e os alertas. Sem `admin_enabled`, nada disso existe.
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
 
@@ -20,14 +20,6 @@ mock_provider "google-beta" {
       email  = "service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
       member = "serviceAccount:service-123456789012@gcp-sa-exemplo.iam.gserviceaccount.com"
     }
-  }
-}
-
-override_resource {
-  target = google_project_service_identity.iap
-  values = {
-    email  = "service-123456789012@gcp-sa-iap.iam.gserviceaccount.com"
-    member = "serviceAccount:service-123456789012@gcp-sa-iap.iam.gserviceaccount.com"
   }
 }
 
@@ -94,16 +86,20 @@ run "sem_console_por_padrao" {
       length(google_cloud_run_v2_service.admin) == 0 &&
       length(google_service_account.admin) == 0 &&
       length(google_project_iam_member.admin) == 0 &&
-      length(google_project_service.iap) == 0 &&
-      length(google_project_service_identity.iap) == 0 &&
-      length(google_iap_web_cloud_run_service_iam_member.owners) == 0 &&
+      length(google_cloud_run_v2_service_iam_member.admin_invoker) == 0 &&
+      length(google_firebase_hosting_site.admin) == 0 &&
+      length(google_firebase_hosting_version.admin) == 0 &&
+      length(google_firebase_hosting_release.admin) == 0 &&
+      length(google_firebase_hosting_custom_domain.admin) == 0 &&
       length(google_logging_metric.admin_auth_failed) == 0 &&
       length(google_monitoring_alert_policy.admin_auth_failed) == 0 &&
       !contains(keys(google_monitoring_alert_policy.log), "pricing_margin_alert") &&
+      !contains(keys(google_monitoring_alert_policy.log), "admin_account_locked") &&
+      length([for key, member in google_secret_manager_secret_iam_member.readers : key if endswith(key, "/admin")]) == 0 &&
       !contains(keys(google_service_account_iam_member.deployer_acts_as), "admin") &&
       length(google_cloud_run_v2_service_iam_member.admin_worker_invoker) == 0
     )
-    error_message = "Sem admin_enabled, nem o serviço, nem a conta, nem o IAP, nem os alertas do console, nem o run.invoker dele no cp-worker."
+    error_message = "Sem admin_enabled, nem o serviço, nem a conta, nem o site do Hosting, nem a leitura dos segredos do console, nem os alertas, nem o run.invoker dele no cp-worker."
   }
 
   assert {
@@ -121,13 +117,14 @@ run "sem_console_por_padrao" {
     condition = (
       length([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name if startswith(env.name, "STRIPE_PRICE_LOOKUP")]) == 0 &&
       length([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name if startswith(env.name, "STRIPE_PRICE_LOOKUP")]) == 0 &&
-      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "IAP_AUDIENCE")
+      !contains([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.name], "ADMIN_SECRETS_PROJECT_ID") &&
+      !contains([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.name], "ADMIN_SECRETS_PROJECT_ID")
     )
-    error_message = "Nenhum STRIPE_PRICE_LOOKUP_* nos serviços (os preços vêm da tabela publicada), e o IAP_AUDIENCE é só do cp-admin."
+    error_message = "Nenhum STRIPE_PRICE_LOOKUP_* nos serviços (os preços vêm da tabela publicada), e o ADMIN_SECRETS_PROJECT_ID é só do cp-admin."
   }
 }
 
-run "console_atras_do_iap" {
+run "console_com_login_proprio" {
   variables {
     admin_enabled    = true
     owner_principals = ["user:responsavel@example.com", "user:socia@example.com"]
@@ -138,7 +135,6 @@ run "console_atras_do_iap" {
     condition = (
       google_cloud_run_v2_service.admin[0].name == "cp-admin" &&
       google_cloud_run_v2_service.admin[0].location == "southamerica-east1" &&
-      google_cloud_run_v2_service.admin[0].iap_enabled &&
       google_cloud_run_v2_service.admin[0].ingress == "INGRESS_TRAFFIC_ALL" &&
       google_cloud_run_v2_service.admin[0].deletion_protection &&
       google_cloud_run_v2_service.admin[0].template[0].service_account == "cp-admin@projeto-exemplo.iam.gserviceaccount.com" &&
@@ -148,7 +144,7 @@ run "console_atras_do_iap" {
       google_cloud_run_v2_service.admin[0].template[0].containers[0].resources[0].cpu_idle &&
       google_cloud_run_v2_service.admin[0].template[0].containers[0].resources[0].limits["memory"] == "512Mi"
     )
-    error_message = "cp-admin: IAP ligado no próprio serviço, entrada por qualquer caminho (o IAP cobre todos), a conta própria, 0 a 1 instância e CPU só na requisição."
+    error_message = "cp-admin: entrada por qualquer caminho (o Hosting chama a URL run.app), a conta própria, 0 a 1 instância e CPU só na requisição."
   }
 
   assert {
@@ -156,19 +152,21 @@ run "console_atras_do_iap" {
       google_cloud_run_v2_service.admin[0].template[0].containers[0].startup_probe[0].http_get[0].path == "/health" &&
       google_cloud_run_v2_service.admin[0].template[0].containers[0].startup_probe[0].failure_threshold == 12
     )
-    error_message = "Sonda de partida em /health (a única rota sem o JWT do IAP), como nos outros serviços."
+    error_message = "Sonda de partida em /health (responde sem sessão), como nos outros serviços."
   }
 
   assert {
     condition = (
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "ROLE"]) == "admin" &&
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "NODE_ENV"]) == "production" &&
-      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "IAP_AUDIENCE"]) == "/projects/123456789012/locations/southamerica-east1/services/cp-admin" &&
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "ADMIN_SECRETS_PROJECT_ID"]) == "projeto-exemplo" &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "IAP_AUDIENCE") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUSTED_PROXIES") &&
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "OWNER_PRINCIPALS"]) == "responsavel@example.com,socia@example.com" &&
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "FIRESTORE_DATABASE"]) == "(default)" &&
       one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "WORKER_URL"]) == "https://cp-worker-123456789012.southamerica-east1.run.app"
     )
-    error_message = "ROLE=admin, produção, o aud do IAP no formato do Cloud Run (/projects/<número>/locations/<região>/services/cp-admin), os e-mails dos responsáveis e a URL do cp-worker (a audiência do token do console)."
+    error_message = "ROLE=admin, produção, o projeto dos segredos do console, os e-mails dos responsáveis e a URL do cp-worker (a audiência do token do console); nada do IAP, e TRUSTED_PROXIES só quando o responsável a define."
   }
 
   assert {
@@ -179,17 +177,21 @@ run "console_atras_do_iap" {
         if can(regex("^(STRIPE_|SITE_|TASKS_|WORKER_SA_|SCHEDULER_|PUBLIC_SA_|ADMIN_SA_|SMTP_|MAIL_|COOKIE_|CLOUDFLARE_|NODES_|PROVISIONING_)", env.name))
       ]) == 0
     )
-    error_message = "O cp-admin não monta segredo nenhum (nem a chave da Stripe) e não recebe as variáveis do site, das filas, das contas que o worker aceita, do e-mail nem do provisionamento (só WORKER_URL, a audiência)."
+    error_message = "O cp-admin não monta segredo nenhum (os dois dele são lidos pela API; nem a chave da Stripe) e não recebe as variáveis do site, das filas, das contas que o worker aceita, do e-mail nem do provisionamento (só WORKER_URL, a audiência)."
   }
 
   assert {
     condition = (
       keys(google_project_iam_member.admin) == ["roles/datastore.user"] &&
       google_project_iam_member.admin["roles/datastore.user"].member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com" &&
-      !contains([for member in google_secret_manager_secret_iam_member.readers : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com") &&
+      sort([
+        for key, member in google_secret_manager_secret_iam_member.readers : key
+        if member.member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"
+      ]) == tolist(["cp-admin-setup-token/admin", "cp-admin-totp-key/admin"]) &&
+      alltrue([for key, member in google_secret_manager_secret_iam_member.readers : member.role == "roles/secretmanager.secretAccessor" if endswith(key, "/admin")]) &&
       !contains([for member in google_service_account_iam_member.invoker_token_users : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com")
     )
-    error_message = "A conta cp-admin lê e grava o Firestore: nenhum segredo e nenhum actAs na cp-invoker (o console não enfileira nada)."
+    error_message = "A conta cp-admin lê e grava o Firestore e lê só os dois segredos do console (no segredo, nunca no projeto); nenhum actAs na cp-invoker (o console não enfileira nada)."
   }
 
   # Sem os serviços (services_enabled = false), o cp-worker não existe, e nem o run.invoker do console nele.
@@ -200,33 +202,26 @@ run "console_atras_do_iap" {
 
   assert {
     condition = (
-      google_project_service.iap[0].service == "iap.googleapis.com" &&
-      !google_project_service.iap[0].disable_on_destroy &&
-      google_project_service_identity.iap[0].service == "iap.googleapis.com" &&
-      google_cloud_run_v2_service_iam_member.admin_iap_invoker[0].name == "cp-admin" &&
-      google_cloud_run_v2_service_iam_member.admin_iap_invoker[0].role == "roles/run.invoker" &&
-      google_cloud_run_v2_service_iam_member.admin_iap_invoker[0].member == "serviceAccount:service-123456789012@gcp-sa-iap.iam.gserviceaccount.com"
+      google_cloud_run_v2_service_iam_member.admin_invoker[0].name == "cp-admin" &&
+      google_cloud_run_v2_service_iam_member.admin_invoker[0].role == "roles/run.invoker" &&
+      google_cloud_run_v2_service_iam_member.admin_invoker[0].member == "allUsers" &&
+      google_cloud_run_v2_service_iam_member.admin_deployer[0].member != "allUsers"
     )
-    error_message = "O agente de serviço do IAP existe e é o invocador do cp-admin."
-  }
-
-  assert {
-    condition = alltrue([
-      for member in [google_cloud_run_v2_service_iam_member.admin_iap_invoker[0], google_cloud_run_v2_service_iam_member.admin_deployer[0]] :
-      member.member != "allUsers" && member.member != "allAuthenticatedUsers"
-    ])
-    error_message = "Ninguém anônimo chama o cp-admin (nada de allUsers)."
+    error_message = "O cp-admin aceita invocação anônima, como o cp-public (o rewrite do Hosting exige); a barreira é o login do app."
   }
 
   assert {
     condition = (
-      sort(keys(google_iap_web_cloud_run_service_iam_member.owners)) == tolist(["user:responsavel@example.com", "user:socia@example.com"]) &&
-      alltrue([
-        for member in google_iap_web_cloud_run_service_iam_member.owners :
-        member.role == "roles/iap.httpsResourceAccessor" && member.cloud_run_service_name == "cp-admin" && member.location == "southamerica-east1" && member.project == "projeto-exemplo"
-      ])
+      google_firebase_hosting_site.admin[0].site_id == "verax-admin" &&
+      google_firebase_hosting_version.admin[0].config[0].rewrites[0].glob == "/**" &&
+      google_firebase_hosting_version.admin[0].config[0].rewrites[0].run[0].service_id == "cp-admin" &&
+      google_firebase_hosting_version.admin[0].config[0].rewrites[0].run[0].region == "southamerica-east1" &&
+      google_firebase_hosting_release.admin[0].site_id == "verax-admin" &&
+      google_firebase_hosting_custom_domain.admin[0].custom_domain == "admin.veraxsistemas.com.br" &&
+      google_firebase_hosting_custom_domain.admin[0].wait_dns_verification == false &&
+      google_firebase_hosting_site.conta.site_id == "verax-conta"
     )
-    error_message = "Só os responsáveis passam pelo IAP do cp-admin, no próprio serviço."
+    error_message = "O site verax-admin reescreve tudo para o cp-admin, com o domínio admin.veraxsistemas.com.br sem esperar o DNS; o site conta continua o mesmo."
   }
 
   assert {
@@ -249,24 +244,33 @@ run "console_atras_do_iap" {
 
   assert {
     condition = (
+      google_monitoring_alert_policy.log["admin_account_locked"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-admin\" AND jsonPayload.event=\"admin_account_locked\"" &&
+      length(google_monitoring_alert_policy.log["admin_account_locked"].notification_channels) == 1
+    )
+    error_message = "Alerta por linha quando o login de um e-mail é bloqueado no console."
+  }
+
+  assert {
+    condition = (
       google_logging_metric.admin_auth_failed[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-admin\" AND jsonPayload.event=\"admin_auth_failed\"" &&
       google_logging_metric.admin_auth_failed[0].label_extractors["reason"] == "EXTRACT(jsonPayload.reason)" &&
       google_monitoring_alert_policy.admin_auth_failed[0].conditions[0].condition_threshold[0].filter == "resource.type=\"cloud_run_revision\" AND metric.type=\"logging.googleapis.com/user/cp_admin_auth_failed\"" &&
-      google_monitoring_alert_policy.admin_auth_failed[0].conditions[0].condition_threshold[0].threshold_value == 2 &&
+      google_monitoring_alert_policy.admin_auth_failed[0].conditions[0].condition_threshold[0].threshold_value == 4 &&
       google_monitoring_alert_policy.admin_auth_failed[0].conditions[0].condition_threshold[0].comparison == "COMPARISON_GT" &&
       google_monitoring_alert_policy.admin_auth_failed[0].conditions[0].condition_threshold[0].aggregations[0].alignment_period == "600s" &&
       length(google_monitoring_alert_policy.admin_auth_failed[0].notification_channels) == 1
     )
-    error_message = "Recusas repetidas no console (3 ou mais em 10 minutos) abrem um incidente."
+    error_message = "Tentativas recusadas repetidas no console (5 ou mais em 10 minutos) abrem um incidente."
   }
 
   assert {
     condition = (
       output.github_environment.CP_ADMIN_SERVICE == "cp-admin" &&
-      output.admin.iap_audience == "/projects/123456789012/locations/southamerica-east1/services/cp-admin" &&
+      output.admin.url == "https://admin.veraxsistemas.com.br" &&
+      output.admin.site_id == "verax-admin" &&
       output.service_accounts.admin == "cp-admin@projeto-exemplo.iam.gserviceaccount.com"
     )
-    error_message = "O workflow recebe o cp-admin para implantar, e o aud do IAP sai numa saída."
+    error_message = "O workflow recebe o cp-admin para implantar, e o endereço do console sai numa saída."
   }
 }
 
@@ -349,4 +353,42 @@ run "admin_sa_email_nao_vem_de_variavel" {
   }
 
   expect_failures = [var.worker_env]
+}
+
+# As saídas do Hosting que o responsável lista em service_env (TRUSTED_PROXIES) chegam também ao console: o limite por
+# IP do login precisa do IP do cliente de verdade, não da saída do Hosting.
+run "console_recebe_os_proxies_confiaveis" {
+  command = plan
+
+  variables {
+    admin_enabled    = true
+    owner_principals = ["user:responsavel@example.com"]
+    service_env = {
+      TRUSTED_PROXIES  = "203.0.113.0/24"
+      TRUST_PROXY_HOPS = "1"
+      TERMS_VERSION    = "2026-11-01"
+    }
+  }
+
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "TRUSTED_PROXIES"]) == "203.0.113.0/24" &&
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "TRUST_PROXY_HOPS"]) == "1" &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TERMS_VERSION")
+    )
+    error_message = "O cp-admin recebe TRUSTED_PROXIES e TRUST_PROXY_HOPS de service_env, e nada mais dele."
+  }
+}
+
+# O projeto dos segredos do console é derivado: o responsável não o escolhe por variável.
+run "projeto_dos_segredos_do_console_nao_vem_de_variavel" {
+  command = plan
+
+  variables {
+    service_env = {
+      ADMIN_SECRETS_PROJECT_ID = "outro-projeto"
+    }
+  }
+
+  expect_failures = [var.service_env]
 }

@@ -2,7 +2,8 @@
 # Testa a imagem do plano de controle como ela roda no Cloud Run (CP-01): produção, raiz só leitura, sem
 # capabilities, sem ganho de privilégio e usuário sem privilégio. Numa rede Docker isolada (sem internet), confere:
 # - com ROLE=public, ROLE=worker e ROLE=admin, o processo sobe e /health responde 200;
-# - com ROLE=admin, as telas do console estão na imagem (/app/console) e nem elas nem a API abrem sem o JWT do IAP;
+# - com ROLE=admin, as telas do console estão na imagem (/app/console) e abrem sem sessão (a tela de login; o código é
+#   o do repositório público), e a API do console não responde sem a sessão de um responsável;
 # - o processo não é root e a raiz do contêiner não aceita escrita;
 # - sem ROLE o processo não sobe, e a mensagem cita só o nome da variável;
 # - um valor inválido de segredo não aparece na mensagem de erro.
@@ -40,11 +41,11 @@ probe() { # <contêiner> [caminho]
   docker exec "$1" node -e "fetch('http://127.0.0.1:8080${2:-/health}').then(r => console.log(r.status)).catch(() => console.log(0))"
 }
 
-# O admin exige o `aud` do IAP e a lista de responsáveis (fictícios: número de projeto e e-mail de exemplo).
+# O admin exige o projeto dos segredos do console e a lista de responsáveis (fictícios: projeto e e-mail de exemplo).
+# Sem rede, os segredos nunca são lidos: só o login e o cadastro precisariam deles.
 role_env() { # <papel>
   if [[ $1 == admin ]]; then
-    printf '%s\n' -e IAP_AUDIENCE=/projects/111111111111/locations/southamerica-east1/services/cp-admin \
-      -e OWNER_PRINCIPALS=responsavel@example.com
+    printf '%s\n' -e ADMIN_SECRETS_PROJECT_ID=projeto-exemplo -e OWNER_PRINCIPALS=responsavel@example.com
   fi
 }
 
@@ -65,8 +66,8 @@ done
 echo "== Console do responsável (ROLE=admin)"
 expect "telas do console na imagem" 0 "$(docker exec "$run_id-admin" sh -c 'test -f /app/console/index.html && echo 0 || echo 1')"
 expect "sem source map no console" 0 "$(docker exec "$run_id-admin" sh -c 'ls /app/console/assets | grep -c "\.map$" || true')"
-expect "tela sem o JWT do IAP" 401 "$(probe "$run_id-admin" /)"
-expect "API do console sem o JWT do IAP" 401 "$(probe "$run_id-admin" /v1/admin/me)"
+expect "tela do console sem sessão (o login)" 200 "$(probe "$run_id-admin" /)"
+expect "API do console sem sessão" 401 "$(probe "$run_id-admin" /v1/admin/me)"
 
 echo "== Configuração inválida"
 output=$(docker run --rm "${hardened[@]}" "$image" 2>&1 || true)
