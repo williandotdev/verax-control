@@ -23,8 +23,8 @@
 #     recusada (`reason`: `unknown_account`, `bad_password`, `bad_code`, `replayed_code`, `bad_recovery_code`,
 #     `locked`, `not_owner`, `setup_token`, `setup_not_owner`...). Um erro de digitação do responsável também gera uma;
 #     o alerta é por repetição (abaixo), não por linha. Nunca o e-mail, a senha, o código nem o token;
-#   - cp-admin, `warn({ event: "admin_account_locked", reason })`: 5 tentativas erradas em 15 minutos bloquearam o
-#     login daquele e-mail por 15 minutos. Alerta por linha.
+#   - cp-admin, `warn({ event: "admin_account_locked", reason })`: 5 tentativas com a senha certa e o código errado
+#     em 15 minutos bloquearam o login daquele e-mail por 15 minutos (senha errada não bloqueia). Alerta por linha.
 #   As linhas de sucesso (`admin_login`, `admin_logout`, `admin_setup_completed`, `admin_password_changed`,
 #   `admin_totp_reset`, `admin_recovery_code_used`) e a sessão ausente ou vencida (`admin_session_refused`) são `info` e
 #   não abrem incidente.
@@ -96,7 +96,7 @@ locals {
       event        = "admin_account_locked"
       display_name = "Plano de controle: login do console do responsável bloqueado"
       labels       = { reason = "EXTRACT(jsonPayload.reason)" }
-      runbook      = "O console do responsável (cp-admin) bloqueou o login de um e-mail por 15 minutos depois de 5 tentativas erradas em 15 minutos (o aviso não diz qual e-mail). Se não foi você errando a senha ou o código, alguém está tentando entrar: confira nos logs do cp-admin as linhas `admin_auth_failed` (o `reason` e o `ip` das requisições) e, se a senha pode ter vazado, troque-a em /conta (a troca encerra as outras sessões). O bloqueio cai sozinho em 15 minutos; para liberar antes, apague o documento da coleção `adminLoginThrottle` no Firestore. Passo a passo em docs/runbooks/console-do-responsavel.md."
+      runbook      = "O console do responsável (cp-admin) bloqueou o login de um e-mail por 15 minutos depois de 5 tentativas com a senha certa e o código do aplicativo errado em 15 minutos (ou 5 erros na troca de senha ou de aplicativo, que já pedem sessão; o aviso não diz qual e-mail). Senha errada não bloqueia. Se não foi você errando o código, a senha vazou: troque-a já e confira nos logs do cp-admin as linhas `admin_auth_failed` (o `reason` e o `ip` das requisições) e, se a senha pode ter vazado, troque-a em /conta (a troca encerra as outras sessões). O bloqueio cai sozinho em 15 minutos; para liberar antes, apague o documento da coleção `adminLoginThrottle` no Firestore. Passo a passo em docs/runbooks/console-do-responsavel.md."
     }
   }
 }

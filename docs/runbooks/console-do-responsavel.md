@@ -19,8 +19,11 @@ Como o acesso funciona:
 - **Login** (`/entrar`): e-mail, senha e o código de 6 dígitos do aplicativo (ou um código de recuperação), num
   formulário só. Qualquer erro (e-mail desconhecido, senha errada, código errado ou já usado, bloqueio) dá a mesma
   mensagem genérica, de propósito.
-- **Bloqueio:** 5 tentativas erradas para o mesmo e-mail em 15 minutos bloqueiam o login dele por 15 minutos (o
-  alerta "login do console do responsável bloqueado" avisa). Há também um limite de tentativas por IP.
+- **Bloqueio:** 5 tentativas com a **senha certa e o código errado** em 15 minutos bloqueiam o login daquele e-mail por
+  15 minutos (o alerta "login do console do responsável bloqueado" avisa). A senha errada não bloqueia a conta (o
+  e-mail do responsável é público, e ninguém deve conseguir trancá-lo do lado de fora só com ele): ela conta nos
+  limites de falhas por IP e no total (seção 1, item 5). Na troca de senha e do aplicativo, que já exigem uma sessão,
+  toda tentativa errada conta no bloqueio.
 - **Sessão:** cookie `__session` (o único que o Hosting repassa ao Cloud Run), `HttpOnly`, `Secure`,
   `SameSite=Strict`, guardado no Firestore só como hash. Vence com **30 minutos sem uso** ou **12 horas** depois do
   login, o que vier antes; o console volta para `/entrar`. **Sair** encerra a sessão no servidor.
@@ -65,12 +68,13 @@ Como o acesso funciona:
 4. **GitHub:** acrescente `CP_ADMIN_SERVICE = cp-admin` às variáveis do environment `control-plane`
    (`terraform output github_environment`) e rode o workflow "Plano de controle" (Actions → Run workflow). Sem essa
    variável, o workflow implanta só o `cp-public` e o `cp-worker`.
-5. **Limite por IP atrás do Hosting:** o console conta as tentativas por IP pelo mesmo critério do `cp-public`
-   (`TRUST_PROXY_HOPS` e `TRUSTED_PROXIES`; o cabeçalho `Fastly-Client-IP` não é usado, porque quem chama o `run.app`
-   direto o forjaria). Sem `TRUSTED_PROXIES` em `service_env` (as saídas do Hosting), quem chega pelo Hosting aparece
-   com o IP da saída do Hosting e as tentativas de pessoas diferentes se juntam num balde só: nada fica mais fraco (o
-   bloqueio por e-mail continua), mas um robô pode fazer o limite por IP recusar você por alguns minutos. As variáveis
-   de `service_env` vão também para o `cp-admin` (só essas duas).
+5. **Limite por IP atrás do Hosting:** no console, `TRUSTED_PROXIES` fica **vazia, de propósito** (o Terraform não
+   repassa a de `service_env`, que é do `cp-public`). Listar as saídas da CDN do Hosting (Fastly) deixaria qualquer um
+   com um serviço na mesma CDN chamar o `run.app` direto com um `X-Forwarded-For` escolhido e escapar do limite; o
+   cabeçalho `Fastly-Client-IP` também não é usado, pelo mesmo motivo. Sem a lista, quem chega pelo Hosting conta no
+   balde da saída do Hosting, e quem chama o `run.app` direto, no do próprio IP. Os limites só contam **falhas** (um
+   login certo devolve a tentativa, e um pedido malformado nem conta): 10 por IP e 100 no total a cada 15 minutos. O
+   que segura a adivinhação do segundo fator é o bloqueio da conta, que só a senha certa aciona (seção 2.4).
 
 ### Migração de um console que estava atrás do IAP
 
@@ -154,7 +158,8 @@ Restando poucos códigos, faça a troca do aplicativo mesmo sem perder o celular
 
 ### 2.4. Bloqueio
 
-O bloqueio cai sozinho 15 minutos depois da quinta tentativa errada. Para liberar antes (depois de confirmar nos logs
+O bloqueio cai sozinho 15 minutos depois da quinta tentativa errada com a senha certa (ou da quinta tentativa errada
+na troca de senha ou de aplicativo). Quem o aciona sabe a senha: se não foi você, troque-a. Para liberar antes (depois de confirmar nos logs
 do `cp-admin` que era você): no console da GCP, Firestore → coleção `adminLoginThrottle`, apague o documento (o id é o
 SHA-256, em hexadecimal, de `login:<e-mail em minúsculas>`; com uma conta só, pode apagar a coleção inteira). Se não
 foi você, troque a senha assim que entrar (Conta → Trocar a senha), o que encerra as outras sessões.
@@ -259,8 +264,8 @@ alerta `pricing_margin_alert` não sai daqui (só do console): a saída avisa no
   (`unknown_account` e `not_owner` são e-mails que não são do console; `bad_password` com o seu e-mail é a senha sendo
   testada; `setup_token` é alguém tentando o cadastro). Os logs do `cp-admin` mostram o IP das requisições. Se a senha
   pode ter vazado, troque-a (Conta → Trocar a senha); o código do aplicativo continua exigido em todo login.
-- **Alerta "login do console do responsável bloqueado"** (`admin_account_locked`): 5 tentativas erradas para um e-mail
-  em 15 minutos. Veja a seção 2.4.
+- **Alerta "login do console do responsável bloqueado"** (`admin_account_locked`): 5 tentativas com a senha certa e o
+  código errado em 15 minutos. Se não foi você, **a senha vazou**: troque-a já (seção 2.4).
 
 ## 7. Clientes e contrato direto
 

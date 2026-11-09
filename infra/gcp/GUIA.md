@@ -801,8 +801,8 @@ autenticador). O passo a passo inteiro, dos segredos ao primeiro cadastro e à p
    bloqueio e a métrica e o alerta das tentativas recusadas. Com `services_enabled = true`, mais 1 recurso a criar e 1
    a mudar no lugar: o `run.invoker` da conta `cp-admin` só no `cp-worker` (`admin_worker_invoker`, para os botões dos
    clientes) e o `cp-worker` com `ADMIN_SA_EMAIL` (uma revisão nova); o `cp-admin` já nasce com `WORKER_URL` e
-   `ADMIN_SECRETS_PROJECT_ID`, e com `TRUSTED_PROXIES` e `TRUST_PROXY_HOPS` quando estão em `service_env` (o limite
-   por IP do login).
+   `ADMIN_SECRETS_PROJECT_ID` (e sem `TRUSTED_PROXIES`, de propósito: docs/runbooks/console-do-responsavel.md, seção
+   1, item 5).
 3. Crie no Cloudflare os registros novos de `terraform output cloudflare_dns_records` (passo 6), com o proxy
    desligado.
 4. `terraform output admin` traz o endereço (`url`), o endereço direto do Cloud Run (`run_url`) e o site do Hosting.

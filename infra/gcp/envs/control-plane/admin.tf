@@ -4,12 +4,13 @@
 # cp-admin, igual ao `conta` → cp-public (hosting.tf). Nada disto existe sem `admin_enabled = true`.
 #
 # Quem entra é decidido pelo próprio app (decisão do responsável, 09/11/2026, no lugar do IAP): e-mail de
-# `owner_principals`, senha (scrypt) e código do aplicativo autenticador (TOTP), com bloqueio depois de 5 erros em 15
-# minutos, limite por IP e sessão no Firestore (cookie `__session`, o único que o Hosting repassa ao Cloud Run). O
-# primeiro cadastro (`/configurar`) exige o token de uso único do segredo `cp-admin-setup-token`; o segredo do TOTP fica
-# cifrado no Firestore com a chave derivada de `cp-admin-totp-key` (secrets.tf). Os dois são lidos pela API do Secret
-# Manager na hora do uso, não montados: sem eles o serviço sobe e o `/health` responde; só o login e o cadastro
-# respondem 503. Passo a passo em docs/runbooks/console-do-responsavel.md.
+# `owner_principals`, senha (scrypt) e código do aplicativo autenticador (TOTP), com bloqueio depois de 5 códigos errados
+# (com a senha certa) em 15 minutos, limites de falhas por IP e no total e sessão no Firestore (cookie `__session`, o
+# único que o Hosting repassa ao Cloud Run). O primeiro cadastro (`/configurar`) exige o token de uso único do
+# segredo `cp-admin-setup-token`; o segredo do TOTP fica cifrado no Firestore com a chave derivada de
+# `cp-admin-totp-key` (secrets.tf). Os dois são lidos pela API do Secret Manager na hora do uso, não montados: sem eles
+# o serviço sobe e o `/health` responde; só o login e o cadastro respondem 503. Passo a passo em
+# docs/runbooks/console-do-responsavel.md.
 #
 # Por isso o serviço aceita invocação anônima (`allUsers`), como o cp-public: o rewrite do Hosting chama o Cloud Run sem
 # token de identidade e exige isso. A barreira é o app: toda rota fora de `/health`, do login e do cadastro exige uma
@@ -25,8 +26,11 @@ locals {
   # outro papel, mas aqui elas nem chegam), e nenhum segredo montado. `WORKER_URL` é a audiência do token que o console
   # pede ao servidor de metadados para chamar o cp-worker (a mesma URL determinística de run.tf);
   # `ADMIN_SECRETS_PROJECT_ID` é o projeto dos segredos `cp-admin-totp-key` e `cp-admin-setup-token`, lidos pela API.
-  # `TRUSTED_PROXIES` e `TRUST_PROXY_HOPS` vêm de `service_env`, quando o responsável os definiu: é o que deixa o limite
-  # por IP do login ver o cliente de verdade atrás do Hosting (env.schema.ts e client-ip.ts do app). Vazias não vão.
+  # `TRUSTED_PROXIES` não vai para o console, de propósito, nem a de `service_env`: confiar nas saídas da CDN do Hosting
+  # (Fastly) deixaria qualquer um com um serviço na mesma CDN chamar o `run.app` com um `X-Forwarded-For` escolhido e
+  # escapar do limite por IP do login. Sem ela, quem chega pelo Hosting conta no balde da saída do Hosting; o que segura
+  # adivinhação são os limites que só contam falhas (por IP e global) e o bloqueio da conta (admin-auth.controller.ts).
+  # `TRUST_PROXY_HOPS` fica no padrão do app (1, o front end do Cloud Run).
   admin_env = {
     NODE_ENV                 = "production"
     LOG_LEVEL                = "info"
@@ -34,8 +38,6 @@ locals {
     ADMIN_SECRETS_PROJECT_ID = var.project_id
     OWNER_PRINCIPALS         = join(",", local.owner_emails)
     WORKER_URL               = local.worker_url
-    TRUSTED_PROXIES          = lookup(var.service_env, "TRUSTED_PROXIES", "")
-    TRUST_PROXY_HOPS         = lookup(var.service_env, "TRUST_PROXY_HOPS", "")
   }
 }
 

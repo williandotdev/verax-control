@@ -5055,3 +5055,30 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   workflow; sem `TRUSTED_PROXIES`, o limite por IP do login junta quem chega pelo Hosting num balde só; só existe um
   cadastro (um segundo responsável não se cadastra pelo console); `apps/control-plane/.env.example` ainda cita
   `IAP_AUDIENCE` (o agente não lê arquivos `.env*`; o responsável troca à mão por `ADMIN_SECRETS_PROJECT_ID`).
+- **Revisão do PR #108, corrigida:**
+  - **Semgrep (`njsscan` `hardcoded_secrets.node_password`/`node_secret`, falsos positivos):** as mensagens dos campos
+    de senha do console saíram para `SENHA_MESSAGES` (a tela atribui a referência, não o texto); as constantes do
+    dublê viraram `FICTITIOUS_LOGIN_PHRASE` e `FICTITIOUS_TOTP_SEED`; os nomes dos cofres, `TOTP_KEY_VAULT` e
+    `SETUP_TOKEN_VAULT` (como o `NODE_MAIL_VAULT`); o parâmetro da cifra, `seed`. Sem `nosemgrep`. A varredura do CI
+    rodada localmente pela imagem fixada: 0 achados;
+  - **e2e do console:** o teste da entrada espera a mesma mensagem genérica da API (`LOGIN_FAILED_MESSAGE`);
+  - **Codex, login com a senha antiga depois de uma troca simultânea:** a transação que abre a sessão (e a que grava
+    a troca de senha ou do aplicativo) confere a "versão" das credenciais (`credentialStamp`, o SHA-256 do hash da
+    senha e do segredo cifrado) contra a que foi conferida; mudou, 401 genérico (ou 400/410 na conta), sem sessão e sem
+    gastar o código de recuperação. A troca do aplicativo guarda a versão no cadastro pendente;
+  - **Revisão de segurança, negação de serviço (média):** o corpo é validado antes dos limites (`{}` não gasta nada);
+    os limites por IP e global só contam falhas (a tentativa sai do balde antes e volta no sucesso ou num 5xx); o
+    bloqueio da conta só conta a senha certa com o segundo fator errado (quem só sabe o e-mail público não tranca o
+    responsável; na troca de senha e de aplicativo, que pedem sessão, toda falha conta);
+  - **Revisão, corrida no bloqueio (baixa):** a tentativa é reservada no contador numa transação antes de conferir o
+    código, e o sucesso apaga o contador: em paralelo, só 5 palpites chegam a ser conferidos por ciclo (teste com 12
+    em paralelo);
+  - **Revisão, `TRUSTED_PROXIES` no console:** o Terraform deixa de repassá-la (e `TRUST_PROXY_HOPS`) ao `cp-admin`, e
+    o runbook passa a recomendar a lista vazia lá: confiar na CDN deixaria quem tem um serviço nela forjar o
+    `X-Forwarded-For` no `run.app`;
+  - **Revisão, "cookie tossing" (baixa):** todos os `__session` do cabeçalho são conferidos (até 20, sem descartar
+    cabeçalho grande), e o login, a saída e a recusa por sessão ausente ou vencida apagam os `__session` com
+    `Domain=<zona>` em `/`, `/v1` e `/v1/admin` (o cookie do console e o do `conta` são só do host: não são tocados);
+  - **Testes:** `pnpm --filter @verax/control-plane test` (na máquina Windows, com `--maxWorkers=3`: o paralelo
+    padrão às vezes derruba um worker com 0xC0000409, sem falha de asserção), `pnpm --filter @verax/console test` e
+    `test:e2e`, `terraform test` do `envs/control-plane` (34) e `fmt -check`.

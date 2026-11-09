@@ -355,12 +355,13 @@ run "admin_sa_email_nao_vem_de_variavel" {
   expect_failures = [var.worker_env]
 }
 
-# As saídas do Hosting que o responsável lista em service_env (TRUSTED_PROXIES) chegam também ao console: o limite por
-# IP do login precisa do IP do cliente de verdade, não da saída do Hosting.
-run "console_recebe_os_proxies_confiaveis" {
+# As saídas do Hosting que o responsável lista em service_env (TRUSTED_PROXIES, para o cp-public) não chegam ao console:
+# confiar na CDN deixaria quem tem um serviço nela forjar o X-Forwarded-For no run.app e escapar do limite do login.
+run "console_nao_recebe_os_proxies_confiaveis" {
   command = plan
 
   variables {
+    services_enabled = true
     admin_enabled    = true
     owner_principals = ["user:responsavel@example.com"]
     service_env = {
@@ -372,11 +373,12 @@ run "console_recebe_os_proxies_confiaveis" {
 
   assert {
     condition = (
-      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "TRUSTED_PROXIES"]) == "203.0.113.0/24" &&
-      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "TRUST_PROXY_HOPS"]) == "1" &&
-      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TERMS_VERSION")
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUSTED_PROXIES") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUST_PROXY_HOPS") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TERMS_VERSION") &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TRUSTED_PROXIES"]) == "203.0.113.0/24"
     )
-    error_message = "O cp-admin recebe TRUSTED_PROXIES e TRUST_PROXY_HOPS de service_env, e nada mais dele."
+    error_message = "service_env (inclusive TRUSTED_PROXIES e TRUST_PROXY_HOPS) vai para o cp-public, nunca para o cp-admin."
   }
 }
 
