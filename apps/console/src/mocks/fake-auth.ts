@@ -24,7 +24,7 @@ export const FICTITIOUS_RECOVERY_CODES = [
 ];
 
 export const LOGIN_FAILED_MESSAGE =
-  'Não foi possível entrar. Confira o e-mail, a senha e o código. Depois de várias tentativas erradas, o acesso fica bloqueado por 15 minutos.';
+  'E-mail, senha ou código incorretos. Depois de 5 tentativas erradas, o acesso fica bloqueado por 15 minutos.';
 
 export interface FakeAuthState {
   /** Com sessão aberta (o padrão dos testes das telas). */
