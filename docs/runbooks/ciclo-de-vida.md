@@ -26,7 +26,7 @@ apagado e o `delete-now` recomeça de onde der.
 
 ## 2. Operações do responsável
 
-Pelo console do responsável (os botões chamam o `cp-worker` com a conta do `cp-admin` e o seu e-mail do IAP). Sem o
+Pelo console do responsável (os botões chamam o `cp-worker` com a conta do `cp-admin` e o e-mail da sua sessão no console). Sem o
 console, direto, com um token de identidade de uma conta em `owner_principals` e `aud = WORKER_URL` (o GUIA, "Operações
 do responsável no `cp-worker`"):
 

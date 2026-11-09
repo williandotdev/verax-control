@@ -49,8 +49,8 @@ os registros, o estado do Terraform) e só faz o que falta. Não apague recurso 
 ## 3. Retomar (`resume`)
 
 Pelo console do responsável: **Clientes** → o cliente → **Retomar provisionamento…**, com o subdomínio digitado para
-confirmar (`docs/runbooks/console-do-responsavel.md`, seção 7). O console chama o `cp-worker` com a conta dele e o seu
-e-mail do IAP. Sem o console, direto:
+confirmar (`docs/runbooks/console-do-responsavel.md`, seção 7). O console chama o `cp-worker` com a conta dele e o
+e-mail da sua sessão no console. Sem o console, direto:
 
 ```bash
 # Um token de identidade com aud = WORKER_URL de uma conta em owner_principals (veja o GUIA, "Operações do
