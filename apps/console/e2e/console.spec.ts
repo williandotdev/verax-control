@@ -3,7 +3,12 @@ import { join } from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, type TestInfo, test } from '@playwright/test';
 import { createFakeState, type FakeAdminState } from '../src/mocks/fake-admin-api';
-import { FICTITIOUS_PASSWORD, FICTITIOUS_SETUP_TOKEN, FICTITIOUS_TOTP_CODE } from '../src/mocks/fake-auth';
+import {
+  FICTITIOUS_LOGIN_PHRASE,
+  FICTITIOUS_SETUP_TOKEN,
+  FICTITIOUS_TOTP_CODE,
+  LOGIN_FAILED_MESSAGE,
+} from '../src/mocks/fake-auth';
 import { FICTITIOUS_OWNER } from '../src/mocks/fixtures';
 import { mockAdminApi } from './mock-api';
 
@@ -179,9 +184,10 @@ for (const theme of THEMES) {
       await page.getByLabel('Senha').fill('senha-errada-errada');
       await page.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
       await page.getByRole('button', { name: 'Entrar' }).click();
-      await expect(page.getByRole('alert')).toContainText('Não foi possível entrar');
+      // A mesma mensagem genérica da API (`LOGIN_FAILED_MESSAGE` do cp-admin), seja qual for o erro.
+      await expect(page.getByRole('alert')).toContainText(LOGIN_FAILED_MESSAGE);
       await audit(page, testInfo, `entrada-${theme}`);
-      await page.getByLabel('Senha').fill(FICTITIOUS_PASSWORD);
+      await page.getByLabel('Senha').fill(FICTITIOUS_LOGIN_PHRASE);
       await page.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
       await page.getByRole('button', { name: 'Entrar' }).click();
       await expect(page).toHaveURL(/\/clientes$/);
@@ -196,8 +202,8 @@ for (const theme of THEMES) {
       await page.goto('/configurar');
       await page.getByLabel('Token de configuração').fill(FICTITIOUS_SETUP_TOKEN);
       await page.getByLabel('E-mail').fill(FICTITIOUS_OWNER);
-      await page.getByLabel('Senha nova', { exact: true }).fill(FICTITIOUS_PASSWORD);
-      await page.getByLabel('Confirme a senha nova').fill(FICTITIOUS_PASSWORD);
+      await page.getByLabel('Senha nova', { exact: true }).fill(FICTITIOUS_LOGIN_PHRASE);
+      await page.getByLabel('Confirme a senha nova').fill(FICTITIOUS_LOGIN_PHRASE);
       await page.getByRole('button', { name: 'Continuar' }).click();
       await expect(page.getByRole('img', { name: /QR para cadastrar/ })).toBeVisible();
       await audit(page, testInfo, `configurar-qr-${theme}`);

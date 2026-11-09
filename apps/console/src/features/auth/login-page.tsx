@@ -7,7 +7,7 @@ import type { LoginRequest } from '@/lib/api-types';
 import { errorMessage } from '@/lib/errors';
 import { safeReturnPath } from '@/lib/return-path';
 import { AuthFrame } from './auth-frame';
-import { normalizeCode } from './credentials';
+import { normalizeCode, SENHA_MESSAGES } from './credentials';
 import { CodeField, FormAlert, TextField } from './fields';
 
 type Problems = Partial<Record<'email' | 'password' | 'code' | 'recoveryCode', string>>;
@@ -48,7 +48,7 @@ export function LoginPage() {
     const found: Problems = {};
     const address = email.trim();
     if (address === '') found.email = 'Digite o e-mail.';
-    if (password.length === 0) found.password = 'Digite a senha.';
+    if (password.length === 0) found.password = SENHA_MESSAGES.typeIt;
     const normalizedCode = normalizeCode(code);
     const normalizedRecovery = recoveryCode.trim();
     if (useRecovery && normalizedRecovery === '') found.recoveryCode = 'Digite um código de recuperação.';

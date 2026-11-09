@@ -42,11 +42,11 @@ export class AdminKeys {
   }
 
   /** Cifra o segredo do TOTP, preso (AAD) ao documento da conta: copiado para outra conta, não abre. */
-  sealTotpSecret(secret: string, binding: string): SealedSecret {
+  sealTotpSecret(seed: string, binding: string): SealedSecret {
     const iv = randomBytes(IV_BYTES);
     const cipher = createCipheriv('aes-256-gcm', this.totpKey, iv, { authTagLength: TAG_BYTES });
     cipher.setAAD(Buffer.from(binding, 'utf8'));
-    const data = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+    const data = Buffer.concat([cipher.update(seed, 'utf8'), cipher.final()]);
     return {
       v: 1,
       iv: iv.toString('base64url'),

@@ -1,6 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { server } from '@/mocks/server';
+import { LOGIN_FAILED_MESSAGE } from '@/mocks/fake-auth';
 import { ApiError, api, authApi, request, SessionExpiredError } from './api';
 
 describe('cliente do console', () => {
@@ -65,7 +66,7 @@ describe('cliente do console', () => {
     server.use(
       http.post('*/v1/admin/login', () =>
         HttpResponse.json(
-          { statusCode: 401, message: 'Não foi possível entrar.', code: 'login_failed' },
+          { statusCode: 401, message: LOGIN_FAILED_MESSAGE, code: 'login_failed' },
           { status: 401 },
         ),
       ),
@@ -75,7 +76,7 @@ describe('cliente do console', () => {
       .catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).not.toBeInstanceOf(SessionExpiredError);
-    expect(error).toMatchObject({ status: 401, code: 'login_failed', message: 'Não foi possível entrar.' });
+    expect(error).toMatchObject({ status: 401, code: 'login_failed', message: LOGIN_FAILED_MESSAGE });
   });
 
   it('204 da saída devolve undefined; resposta sem JSON é erro, não sessão vencida', async () => {

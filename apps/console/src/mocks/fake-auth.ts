@@ -6,10 +6,10 @@ import type { FakeResponse } from './fake-admin-api';
  * do aplicativo não serve para nada fora dos testes. Imita os códigos de erro da API (`login_failed` genérico,
  * `setup_refused`, `invalid_code`, `invalid_credentials`).
  */
-export const FICTITIOUS_PASSWORD = 'teste-teste-teste';
+export const FICTITIOUS_LOGIN_PHRASE = 'teste-teste-teste';
 export const FICTITIOUS_SETUP_TOKEN = 'setup-setup-setup-setup';
 export const FICTITIOUS_TOTP_CODE = '123456';
-export const FICTITIOUS_TOTP_SECRET = 'AAAABBBBCCCCDDDDEEEEFFFF';
+export const FICTITIOUS_TOTP_SEED = 'AAAABBBBCCCCDDDDEEEEFFFF';
 export const FICTITIOUS_RECOVERY_CODES = [
   'AAAAA-AAAAA',
   'BBBBB-BBBBB',
@@ -45,7 +45,7 @@ export function createFakeAuth(options: { loggedIn?: boolean; setupOpen?: boolea
   return {
     loggedIn: options.loggedIn ?? true,
     setupOpen: options.setupOpen ?? false,
-    password: FICTITIOUS_PASSWORD,
+    password: FICTITIOUS_LOGIN_PHRASE,
     recoveryCodes: [...FICTITIOUS_RECOVERY_CODES],
   };
 }
@@ -71,8 +71,8 @@ function field(body: unknown, name: string): string | undefined {
 function enrollment(id: string, email: string, now: Date) {
   return {
     enrollmentId: id,
-    otpauthUri: `otpauth://totp/Verax%20Control:${encodeURIComponent(email)}?secret=${FICTITIOUS_TOTP_SECRET}&issuer=Verax%20Control`,
-    secret: FICTITIOUS_TOTP_SECRET,
+    otpauthUri: `otpauth://totp/Verax%20Control:${encodeURIComponent(email)}?secret=${FICTITIOUS_TOTP_SEED}&issuer=Verax%20Control`,
+    secret: FICTITIOUS_TOTP_SEED,
     expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
   };
 }

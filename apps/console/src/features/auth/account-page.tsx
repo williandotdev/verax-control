@@ -10,7 +10,7 @@ import type {
   TotpResetStartRequest,
 } from '@/lib/api-types';
 import { errorMessage } from '@/lib/errors';
-import { newPasswordProblems, normalizeCode, PASSWORD_MIN } from './credentials';
+import { newPasswordProblems, normalizeCode, PASSWORD_MIN, SENHA_MESSAGES } from './credentials';
 import { CodeField, FormAlert, TextField } from './fields';
 import { RecoveryCodesPanel, TotpEnrollmentForm } from './totp-enrollment';
 
@@ -56,11 +56,11 @@ function PasswordCard() {
     event.preventDefault();
     const fresh = newPasswordProblems(newPassword, confirmation);
     const found: PasswordProblems = { newPassword: fresh.password, confirmation: fresh.confirmation };
-    if (currentPassword === '') found.currentPassword = 'Digite a senha atual.';
+    if (currentPassword === '') found.currentPassword = SENHA_MESSAGES.typeCurrent;
     const normalized = normalizeCode(code);
     if (normalized === undefined) found.code = 'Digite os 6 números do aplicativo.';
     if (found.newPassword === undefined && newPassword === currentPassword && newPassword !== '')
-      found.newPassword = 'A senha nova precisa ser diferente da atual.';
+      found.newPassword = SENHA_MESSAGES.differentFromCurrent;
     const cleaned = Object.fromEntries(
       Object.entries(found).filter(([, value]) => value !== undefined),
     ) as PasswordProblems;
@@ -169,7 +169,7 @@ function TotpCard() {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const found: typeof problems = {};
-    if (currentPassword === '') found.currentPassword = 'Digite a senha atual.';
+    if (currentPassword === '') found.currentPassword = SENHA_MESSAGES.typeCurrent;
     const normalized = normalizeCode(code);
     const recovery = recoveryCode.trim();
     if (useRecovery && recovery === '') found.recoveryCode = 'Digite um código de recuperação.';

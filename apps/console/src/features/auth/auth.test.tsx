@@ -2,10 +2,10 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { createFakeState } from '@/mocks/fake-admin-api';
 import {
-  FICTITIOUS_PASSWORD,
+  FICTITIOUS_LOGIN_PHRASE,
   FICTITIOUS_SETUP_TOKEN,
   FICTITIOUS_TOTP_CODE,
-  FICTITIOUS_TOTP_SECRET,
+  FICTITIOUS_TOTP_SEED,
   LOGIN_FAILED_MESSAGE,
 } from '@/mocks/fake-auth';
 import { FICTITIOUS_OWNER } from '@/mocks/fixtures';
@@ -41,14 +41,14 @@ describe('entrada no console', () => {
     expect(screen.getByLabelText('Senha')).toHaveValue('');
     expect(state.auth.loggedIn).toBe(false);
 
-    await user.type(screen.getByLabelText('Senha'), FICTITIOUS_PASSWORD);
+    await user.type(screen.getByLabelText('Senha'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(screen.getByLabelText('Código do aplicativo'), FICTITIOUS_TOTP_CODE);
     await user.click(screen.getByRole('button', { name: 'Entrar' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/clientes'));
     expect(await screen.findByTestId('usuario')).toHaveTextContent(FICTITIOUS_OWNER);
     expect(state.auth.lastBody).toEqual({
       email: FICTITIOUS_OWNER,
-      password: FICTITIOUS_PASSWORD,
+      password: FICTITIOUS_LOGIN_PHRASE,
       code: FICTITIOUS_TOTP_CODE,
     });
   });
@@ -57,7 +57,7 @@ describe('entrada no console', () => {
     const state = createFakeState({ loggedIn: false });
     const { user } = renderConsole('/entrar', state);
     await user.type(await screen.findByLabelText('E-mail'), FICTITIOUS_OWNER);
-    await user.type(screen.getByLabelText('Senha'), FICTITIOUS_PASSWORD);
+    await user.type(screen.getByLabelText('Senha'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(screen.getByLabelText('Código do aplicativo'), '12a');
     await user.click(screen.getByRole('button', { name: 'Entrar' }));
     expect(screen.getByLabelText('Código do aplicativo')).toHaveAttribute('aria-invalid', 'true');
@@ -73,14 +73,14 @@ describe('entrada no console', () => {
     await user.click(await screen.findByRole('button', { name: 'Usar um código de recuperação' }));
     expect(screen.queryByLabelText('Código do aplicativo')).not.toBeInTheDocument();
     await user.type(screen.getByLabelText('E-mail'), FICTITIOUS_OWNER);
-    await user.type(screen.getByLabelText('Senha'), FICTITIOUS_PASSWORD);
+    await user.type(screen.getByLabelText('Senha'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(screen.getByLabelText('Código de recuperação'), 'aaaaa-aaaaa');
     await user.click(screen.getByRole('button', { name: 'Entrar' }));
     // O `voltar` de outro site é ignorado: a entrada leva ao início.
     await waitFor(() => expect(router.state.location.pathname).toBe('/modelos-de-custo'));
     expect(state.auth.lastBody).toEqual({
       email: FICTITIOUS_OWNER,
-      password: FICTITIOUS_PASSWORD,
+      password: FICTITIOUS_LOGIN_PHRASE,
       recoveryCode: 'aaaaa-aaaaa',
     });
     expect(state.auth.recoveryCodes).not.toContain('AAAAA-AAAAA');
@@ -151,7 +151,7 @@ describe('primeiro acesso (/configurar)', () => {
     expect(screen.getByLabelText('Senha nova')).toHaveAttribute('aria-invalid', 'true');
     expect(state.auth.lastBody).toBeUndefined();
     await user.clear(screen.getByLabelText('Senha nova'));
-    await user.type(screen.getByLabelText('Senha nova'), FICTITIOUS_PASSWORD);
+    await user.type(screen.getByLabelText('Senha nova'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(screen.getByLabelText('Confirme a senha nova'), 'outra-outra-outra');
     await user.click(screen.getByRole('button', { name: 'Continuar' }));
     expect(screen.getByLabelText('Confirme a senha nova')).toHaveAccessibleDescription(/não é igual/);
@@ -159,7 +159,7 @@ describe('primeiro acesso (/configurar)', () => {
 
     // Token errado: a recusa é genérica.
     await user.clear(screen.getByLabelText('Confirme a senha nova'));
-    await user.type(screen.getByLabelText('Confirme a senha nova'), FICTITIOUS_PASSWORD);
+    await user.type(screen.getByLabelText('Confirme a senha nova'), FICTITIOUS_LOGIN_PHRASE);
     await user.clear(token);
     await user.type(token, 'token-errado-errado');
     await user.click(screen.getByRole('button', { name: 'Continuar' }));
@@ -173,7 +173,7 @@ describe('primeiro acesso (/configurar)', () => {
     const qr = await screen.findByRole('img', { name: /QR para cadastrar/ });
     expect(qr.tagName.toLowerCase()).toBe('svg');
     expect(screen.getByTestId('segredo-totp')).toHaveTextContent('AAAA BBBB CCCC DDDD EEEE FFFF');
-    expect(FICTITIOUS_TOTP_SECRET).toBe('AAAABBBBCCCCDDDDEEEEFFFF');
+    expect(FICTITIOUS_TOTP_SEED).toBe('AAAABBBBCCCCDDDDEEEEFFFF');
 
     await user.type(screen.getByLabelText('Código do aplicativo'), '000000');
     await user.click(screen.getByRole('button', { name: 'Confirmar o aplicativo' }));
@@ -207,7 +207,7 @@ describe('minha conta', () => {
     expect(field('Senha nova')).toHaveAttribute('autocomplete', 'new-password');
     expect(field('Código do aplicativo')).toHaveAttribute('autocomplete', 'one-time-code');
 
-    await user.type(field('Senha atual'), FICTITIOUS_PASSWORD);
+    await user.type(field('Senha atual'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(field('Código do aplicativo'), FICTITIOUS_TOTP_CODE);
     await user.type(field('Senha nova'), 'curta');
     await user.click(within(form).getByRole('button', { name: 'Trocar a senha' }));
@@ -221,9 +221,9 @@ describe('minha conta', () => {
     await user.type(field('Senha atual'), 'errada-errada-errada');
     await user.click(within(form).getByRole('button', { name: 'Trocar a senha' }));
     expect(await within(form).findByRole('alert')).toHaveTextContent('A senha atual ou o código não confere');
-    expect(state.auth.password).toBe(FICTITIOUS_PASSWORD);
+    expect(state.auth.password).toBe(FICTITIOUS_LOGIN_PHRASE);
 
-    await user.type(field('Senha atual'), FICTITIOUS_PASSWORD);
+    await user.type(field('Senha atual'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(field('Código do aplicativo'), FICTITIOUS_TOTP_CODE);
     await user.type(field('Senha nova'), 'nova-nova-nova-nova');
     await user.type(field('Confirme a senha nova'), 'nova-nova-nova-nova');
@@ -236,7 +236,7 @@ describe('minha conta', () => {
     const state = createFakeState();
     const { user } = renderConsole('/conta', state);
     const form = await screen.findByRole('form', { name: 'Trocar o aplicativo autenticador' });
-    await user.type(within(form).getByLabelText('Senha atual'), FICTITIOUS_PASSWORD);
+    await user.type(within(form).getByLabelText('Senha atual'), FICTITIOUS_LOGIN_PHRASE);
     await user.type(within(form).getByLabelText('Código do aplicativo atual'), FICTITIOUS_TOTP_CODE);
     await user.click(within(form).getByRole('button', { name: 'Trocar o aplicativo' }));
     expect(await screen.findByRole('img', { name: /QR para cadastrar/ })).toBeInTheDocument();

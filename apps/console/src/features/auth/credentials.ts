@@ -12,6 +12,16 @@ export function normalizeCode(value: string): string | undefined {
 }
 
 /** Senha nova: o mínimo da API (12) e o máximo que ela aceita. */
+/**
+ * As mensagens dos campos de senha das telas de acesso, num lugar só (as telas atribuem a referência, nunca o texto,
+ * ao campo com problema).
+ */
+export const SENHA_MESSAGES = {
+  typeCurrent: 'Digite a senha atual.',
+  typeIt: 'Digite a senha.',
+  differentFromCurrent: 'A senha nova precisa ser diferente da atual.',
+} as const;
+
 export const PASSWORD_MIN = 12;
 export const PASSWORD_MAX = 128;
 

@@ -12,8 +12,8 @@ import { loadSecretManagerApi, type SecretManagerApi } from '../../access/bootst
  *
  * O conteúdo nunca vai a log nem a erro: uma falha da API vira só `undefined` ou `SecretUnavailableError`.
  */
-export const TOTP_KEY_SECRET = 'cp-admin-totp-key';
-export const SETUP_TOKEN_SECRET = 'cp-admin-setup-token';
+export const TOTP_KEY_VAULT = 'cp-admin-totp-key';
+export const SETUP_TOKEN_VAULT = 'cp-admin-setup-token';
 
 export const ADMIN_SECRETS = Symbol('ADMIN_SECRETS');
 
@@ -56,11 +56,11 @@ export class SecretManagerAdminSecrets implements AdminSecretSource {
   ) {}
 
   totpKey(): Promise<string | undefined> {
-    return this.read(TOTP_KEY_SECRET);
+    return this.read(TOTP_KEY_VAULT);
   }
 
   setupToken(): Promise<string | undefined> {
-    return this.read(SETUP_TOKEN_SECRET);
+    return this.read(SETUP_TOKEN_VAULT);
   }
 
   private async read(secretId: string): Promise<string | undefined> {
