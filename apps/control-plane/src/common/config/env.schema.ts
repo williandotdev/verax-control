@@ -237,7 +237,9 @@ const envShape = {
   //   direto do run.app continua identificado pelo IP que o Cloud Run acrescentou, o dele.
   // O cabeçalho Fastly-Client-IP não é usado: chamando o run.app direto, qualquer um o forjaria.
   // O Terraform não define nenhuma das duas; o responsável põe TRUSTED_PROXIES (e TRUST_PROXY_HOPS, só se quiser
-  // algo diferente do padrão) em `service_env`, as variáveis comuns aos dois serviços.
+  // algo diferente do padrão) em `service_env`, as variáveis comuns aos dois serviços. O console do responsável
+  // (cp-admin) não as recebe: lá a lista fica vazia de propósito (confiar na CDN deixaria quem tem um serviço nela
+  // forjar o X-Forwarded-For no run.app e escapar do limite do login; admin-auth.controller.ts).
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
   TRUSTED_PROXIES: list(ipOrCidr).optional(),
 

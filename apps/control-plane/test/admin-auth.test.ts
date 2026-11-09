@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { opaqueRef, throttleRef } from '../src/admin/auth/admin-auth.schema.js';
 import { LOGIN_FAILED_MESSAGE } from '../src/admin/auth/admin-auth.service.js';
 import { COLLECTIONS } from '../src/firestore/collections.js';
+import type { DocumentTransaction } from '../src/firestore/document-store.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
 import { MemoryAdminSecrets, sessionCookie, sessionIdFrom, totpAt } from './support/admin-auth.js';
 import { createApp } from './support/create-app.js';
@@ -12,6 +13,30 @@ import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
 import { LogCapture } from './support/log-capture.js';
 
 const START = new Date('2026-11-04T12:00:00.000Z');
+
+/**
+ * O Firestore em memória com um gancho: `before(n, fn)` roda `fn` (outra escrita, como a de outra sessão) logo antes da
+ * n-ésima transação seguinte. É assim que os testes de corrida põem uma troca de senha entre a conferência e o commit.
+ */
+class RacingStore extends MemoryDocumentStore {
+  private hook: { left: number; fn: () => Promise<void> } | undefined;
+
+  before(transaction: number, fn: () => Promise<void>): void {
+    this.hook = { left: transaction, fn };
+  }
+
+  override async runTransaction<T>(fn: (tx: DocumentTransaction) => Promise<T>): Promise<T> {
+    const hook = this.hook;
+    if (hook !== undefined) {
+      hook.left -= 1;
+      if (hook.left === 0) {
+        this.hook = undefined;
+        await hook.fn();
+      }
+    }
+    return super.runTransaction(fn);
+  }
+}
 /** Responsáveis fictícios (OWNER_PRINCIPALS) e uma pessoa de fora. Senhas geradas a cada execução. */
 const OWNER = 'responsavel@verax.example';
 const SECOND_OWNER = 'outro-responsavel@verax.example';
@@ -33,8 +58,10 @@ interface Enrolled {
 describe('cp-admin: login próprio do console (senha + TOTP)', () => {
   const capture = new LogCapture();
   const clock = new FakeClock(START);
-  const documents = new MemoryDocumentStore();
+  const documents = new RacingStore();
   const secrets = new MemoryAdminSecrets();
+  /** Cada teste numa hora própria: os limites (que contam falhas na memória do processo) não passam de um ao outro. */
+  let round = 0;
   let app: NestExpressApplication;
   /** Cada teste com um IP próprio (o limite por IP não passa de um teste ao outro). */
   let ip = '';
@@ -106,8 +133,20 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
     await app.listen(0, '127.0.0.1');
   });
 
+  /** Troca o hash da senha da conta direto no Firestore (o que uma troca de senha em outra sessão gravaria). */
+  async function changePasswordElsewhere(email = OWNER): Promise<void> {
+    const docs = await documents.query(COLLECTIONS.adminAccounts);
+    const doc = docs.find((candidate) => candidate.data['email'] === email);
+    if (doc === undefined) throw new Error('conta de teste ausente');
+    await documents.runTransaction((tx) => {
+      tx.set(COLLECTIONS.adminAccounts, doc.id, { ...doc.data, passwordHash: 'trocada-em-outra-sessao' });
+      return Promise.resolve();
+    });
+  }
+
   beforeEach(() => {
-    clock.set(START);
+    round += 1;
+    clock.set(new Date(START.getTime() + round * 60 * MINUTE_MS));
     documents.clear();
     ipSequence += 1;
     ip = `198.51.100.${ipSequence}`;
@@ -164,7 +203,7 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
         expiresAt: string;
       };
       expect(view.otpauthUri).toContain(`secret=${view.secret}`);
-      expect(view.expiresAt).toBe(new Date(START.getTime() + 10 * MINUTE_MS).toISOString());
+      expect(view.expiresAt).toBe(new Date(clock.now().getTime() + 10 * MINUTE_MS).toISOString());
       // No Firestore, nem o id do cadastro nem o segredo em claro.
       const pending = await documents.query(COLLECTIONS.adminEnrollments);
       expect(pending.map((doc) => doc.id)).toEqual([opaqueRef(view.enrollmentId)]);
@@ -287,7 +326,10 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
         code: await totpAt(owner.secret, clock.now()),
       }).expect(200);
       expect(first.body).toEqual({ email: OWNER });
-      const [cookieLine = ''] = ([] as string[]).concat(first.headers['set-cookie'] ?? []);
+      const cookieLine =
+        ([] as string[])
+          .concat(first.headers['set-cookie'] ?? [])
+          .find((line) => !line.startsWith('__session=;')) ?? '';
       expect(cookieLine).toMatch(/^__session=[A-Za-z0-9_-]{43};/);
       expect(cookieLine).toContain('HttpOnly');
       expect(cookieLine).toContain('Secure');
@@ -372,10 +414,28 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
       await login(OWNER, owner.password, { code }).expect(401);
     });
 
-    it('5 falhas em 15 min bloqueiam o e-mail por 15 min, mesmo com a senha e o código certos', async () => {
+    it('senha errada não bloqueia a conta (o e-mail é público): só os limites de falhas por IP', async () => {
+      const owner = await enroll();
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        ip = `203.0.113.${attempt + 1}`;
+        await login(OWNER, 'senha-errada-de-teste', { code: '000000' }).expect(401);
+      }
+      expect(capture.entries().some((entry) => entry['event'] === 'admin_account_locked')).toBe(false);
+      expect(await documents.get(COLLECTIONS.adminLoginThrottle, throttleRef(OWNER))).toBeUndefined();
+      nextStep();
+      await login(OWNER, owner.password, { code: await totpAt(owner.secret, clock.now()) }).expect(200);
+      // Nem um e-mail desconhecido grava contador.
+      await login('ninguem@verax.example', 'senha-errada-de-teste', { code: '000000' }).expect(401);
+      expect(
+        await documents.get(COLLECTIONS.adminLoginThrottle, throttleRef('ninguem@verax.example')),
+      ).toBeUndefined();
+    });
+
+    it('senha certa e código errado 5 vezes em 15 min bloqueiam por 15 min, mesmo com tudo certo depois', async () => {
       const owner = await enroll();
       for (let attempt = 0; attempt < 5; attempt += 1) {
-        await login(OWNER, 'senha-errada-de-teste', { code: '000000' }).expect(401);
+        ip = `203.0.113.${attempt + 1}`;
+        await login(OWNER, owner.password, { code: '000000' }).expect(401);
       }
       expect(capture.entries().filter((entry) => entry['event'] === 'admin_account_locked')).toHaveLength(1);
       nextStep();
@@ -383,30 +443,83 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
         code: await totpAt(owner.secret, clock.now()),
       }).expect(401);
       expect(locked.body).toMatchObject({ code: 'login_failed', message: LOGIN_FAILED_MESSAGE });
-      // Um e-mail desconhecido bloqueia igual (a resposta não diz se a conta existe).
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        ip = `203.0.113.${attempt + 1}`;
-        await login('ninguem@verax.example', 'senha-errada-de-teste', { code: '000000' }).expect(401);
-      }
-      expect(
-        await documents.get(COLLECTIONS.adminLoginThrottle, throttleRef('ninguem@verax.example')),
-      ).toMatchObject({
-        lockedUntil: expect.any(Date) as unknown,
-      });
       // Passados os 15 min, entra; o contador some.
       clock.advance(15 * MINUTE_MS);
       await login(OWNER, owner.password, { code: await totpAt(owner.secret, clock.now()) }).expect(200);
       expect(await documents.get(COLLECTIONS.adminLoginThrottle, throttleRef(OWNER))).toBeUndefined();
     });
 
-    it('limite por IP (10 em 15 min): 429 com Retry-After', async () => {
-      for (let attempt = 0; attempt < 10; attempt += 1) {
+    it('palpites em paralelo do segundo fator: a tentativa é reservada antes, e só 5 chegam a ser conferidos', async () => {
+      const owner = await enroll();
+      const codes = Array.from({ length: 12 }, (_, index) => String(100_000 + index));
+      const responses = await Promise.all(
+        codes.map((code, index) => {
+          ip = `203.0.113.${index + 1}`;
+          return login(OWNER, owner.password, { code });
+        }),
+      );
+      expect(responses.every((response) => response.status === 401)).toBe(true);
+      const reasons = capture
+        .entries()
+        .filter((entry) => entry['event'] === 'admin_auth_failed')
+        .slice(-12)
+        .map((entry) => entry['reason']);
+      expect(reasons.filter((reason) => reason === 'locked')).toHaveLength(7);
+      expect(reasons.filter((reason) => reason !== 'locked')).toHaveLength(5);
+    });
+
+    it('limite por IP (10 falhas em 15 min): 429 com Retry-After; pedido malformado e login certo não contam', async () => {
+      const owner = await enroll();
+      // Corpo inválido: 400, sem gastar nada.
+      for (let attempt = 0; attempt < 20; attempt += 1) await post('/v1/admin/login', {}).expect(400);
+      for (let attempt = 0; attempt < 9; attempt += 1) {
         await login(`pessoa-${attempt}@verax.example`, 'x', { code: '000000' }).expect(401);
       }
-      const limited = await login('mais-uma@verax.example', 'x', { code: '000000' });
+      // O login certo devolve a tentativa: o balde continua com uma.
+      nextStep();
+      await login(OWNER, owner.password, { code: await totpAt(owner.secret, clock.now()) }).expect(200);
+      await login('mais-uma@verax.example', 'x', { code: '000000' }).expect(401);
+      const limited = await login('outra-mais@verax.example', 'x', { code: '000000' });
       expect(limited.status).toBe(429);
       expect(limited.body).toMatchObject({ code: 'rate_limited' });
       expect(limited.headers['retry-after']).toBeDefined();
+    });
+
+    it('teto global de 100 falhas em 15 min, de qualquer IP; pedido malformado não conta', async () => {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        ip = `192.0.2.${attempt + 1}`;
+        await post('/v1/admin/login', { email: 'x' }).expect(400);
+      }
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        ip = `10.${Math.floor(attempt / 10)}.0.${(attempt % 10) + 1}`;
+        await login(`pessoa-${attempt}@verax.example`, 'x', { code: '000000' }).expect(401);
+      }
+      ip = '192.0.2.200';
+      await login('mais-uma@verax.example', 'x', { code: '000000' }).expect(429);
+      clock.advance(15 * MINUTE_MS);
+    });
+
+    it('login com a senha antiga não abre sessão se a senha foi trocada entre a conferência e o commit', async () => {
+      const owner = await enroll();
+      const [recovery = ''] = owner.recoveryCodes;
+      // As transações do login com a senha certa: a reserva da tentativa (1) e a do sucesso (2).
+      documents.before(2, () => changePasswordElsewhere());
+      const response = await login(OWNER, owner.password, { recoveryCode: recovery }).expect(401);
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(
+        capture
+          .entries()
+          .filter((entry) => entry['event'] === 'admin_auth_failed')
+          .at(-1),
+      ).toMatchObject({
+        event: 'admin_auth_failed',
+        reason: 'stale_credentials',
+      });
+      // Nada gravado: nenhuma sessão nova e o código de recuperação continua sem uso.
+      expect((await documents.query(COLLECTIONS.adminSessions)).length).toBe(1);
+      const [account] = await documents.query(COLLECTIONS.adminAccounts);
+      const codes = account?.data['recoveryCodes'] as { usedAt?: Date }[];
+      expect(codes.every((entry) => entry.usedAt === undefined)).toBe(true);
     });
 
     it('código de recuperação: entra uma vez cada um, no lugar do código do aplicativo', async () => {
@@ -440,6 +553,42 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
       } finally {
         await fresh.close();
       }
+    });
+  });
+
+  describe('cookies __session plantados por um site irmão', () => {
+    it('todos os __session do cabeçalho são conferidos: o de verdade vale mesmo depois de vários plantados', async () => {
+      const owner = await enroll();
+      const planted = Array.from({ length: 15 }, () => sessionCookie(randomBytes(32).toString('base64url')));
+      await me(`${planted.join('; ')}; ${owner.cookie}`).expect(200, { email: OWNER });
+    });
+
+    it('login, saída e sessão recusada apagam os __session com Domain da zona em /, /v1 e /v1/admin', async () => {
+      const owner = await enroll();
+      const domainClears = (lines: string[]): string[] =>
+        lines
+          .filter((line) => line.startsWith('__session=;') && line.includes('Domain=veraxsistemas.com.br'))
+          .map((line) => /Path=([^;]+)/.exec(line)?.[1] ?? '')
+          .sort();
+      const asList = (value: string[] | string | undefined): string[] =>
+        value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+      nextStep();
+      const logged = await login(OWNER, owner.password, {
+        code: await totpAt(owner.secret, clock.now()),
+      }).expect(200);
+      const loginCookies = asList(logged.headers['set-cookie']);
+      expect(domainClears(loginCookies)).toEqual(['/', '/v1', '/v1/admin']);
+      // O cookie novo continua só do host.
+      expect(loginCookies.find((line) => /^__session=[A-Za-z0-9_-]{43};/.test(line))).not.toContain(
+        'Domain=',
+      );
+
+      const refused = await me(sessionCookie(randomBytes(32).toString('base64url'))).expect(401);
+      expect(domainClears(asList(refused.headers['set-cookie']))).toEqual(['/', '/v1', '/v1/admin']);
+
+      const out = await post('/v1/admin/logout', {}, owner.cookie).expect(204);
+      expect(domainClears(asList(out.headers['set-cookie']))).toEqual(['/', '/v1', '/v1/admin']);
     });
   });
 
@@ -500,6 +649,59 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
       await me(otherCookie).expect(401);
       nextStep();
       await login(OWNER, owner.password, { code: await totpAt(owner.secret, clock.now()) }).expect(401);
+      nextStep();
+      await login(OWNER, replacement, { code: await totpAt(owner.secret, clock.now()) }).expect(200);
+    });
+
+    it('troca de senha conferida antes de outra troca de senha (outra sessão) não se completa', async () => {
+      const owner = await enroll();
+      nextStep();
+      // A troca de senha: a reserva (1) e o commit (2); a senha muda em outra sessão entre os dois.
+      documents.before(2, () => changePasswordElsewhere());
+      await post(
+        '/v1/admin/account/password',
+        {
+          currentPassword: owner.password,
+          code: await totpAt(owner.secret, clock.now()),
+          newPassword: newPassword(),
+        },
+        owner.cookie,
+      ).expect(400);
+      expect(
+        capture
+          .entries()
+          .filter((entry) => entry['event'] === 'admin_auth_failed')
+          .at(-1),
+      ).toMatchObject({ reason: 'stale_credentials' });
+    });
+
+    it('troca do aplicativo começada, depois a senha trocada: o cadastro novo não vale mais', async () => {
+      const owner = await enroll();
+      const [recovery = ''] = owner.recoveryCodes;
+      const started = await post(
+        '/v1/admin/account/totp/start',
+        { currentPassword: owner.password, recoveryCode: recovery },
+        owner.cookie,
+      ).expect(200);
+      const view = started.body as { enrollmentId: string; secret: string };
+      nextStep();
+      const replacement = newPassword();
+      await post(
+        '/v1/admin/account/password',
+        {
+          currentPassword: owner.password,
+          code: await totpAt(owner.secret, clock.now()),
+          newPassword: replacement,
+        },
+        owner.cookie,
+      ).expect(204);
+      nextStep();
+      await post(
+        '/v1/admin/account/totp/confirm',
+        { enrollmentId: view.enrollmentId, code: await totpAt(view.secret, clock.now()) },
+        owner.cookie,
+      ).expect(410);
+      // O aplicativo de antes continua valendo, com a senha nova.
       nextStep();
       await login(OWNER, replacement, { code: await totpAt(owner.secret, clock.now()) }).expect(200);
     });

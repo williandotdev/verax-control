@@ -13,7 +13,6 @@ import {
   type DocumentTransaction,
   parseDocument,
 } from '../../firestore/document-store.js';
-import { parseBody } from '../validation.js';
 import { AdminKeys, newRecoveryCode, normalizeRecoveryCode, RECOVERY_CODE_COUNT } from './admin-crypto.js';
 import {
   accountRef,
@@ -26,23 +25,23 @@ import {
   adminSessionSchema,
   afterFailure,
   compactCode,
+  credentialStamp,
+  type EnrollmentConfirmRequest,
   ENROLLMENT_TTL_MS,
-  enrollmentConfirmRequestSchema,
   isLocked,
-  type LoginThrottle,
-  loginRequestSchema,
+  type LoginRequest,
   loginThrottleSchema,
   needsTouch,
   newOpaqueId,
   normalizeEmail,
   opaqueIdSchema,
   opaqueRef,
-  passwordChangeRequestSchema,
+  type PasswordChangeRequest,
   SESSION_ABSOLUTE_MS,
   sessionState,
-  setupStartRequestSchema,
+  type SetupStartRequest,
   throttleRef,
-  totpResetStartRequestSchema,
+  type TotpResetStartRequest,
 } from './admin-auth.schema.js';
 import { ADMIN_SECRETS, type AdminSecretSource, SecretUnavailableError } from './admin-secrets.js';
 import { burnPasswordCheck, dummyPasswordHash, hashPassword, verifyPassword } from './password-hash.js';
@@ -96,10 +95,20 @@ type FailureReason =
   | 'replayed_code'
   | 'bad_recovery_code'
   | 'totp_key_mismatch'
+  | 'stale_credentials'
   | 'locked';
 
 /** O segundo fator já foi usado entre a conferência e o commit (outra requisição com o mesmo código). */
 class FactorReplayedError extends Error {}
+
+/** A senha ou o aplicativo mudaram entre a conferência e o commit (outra sessão trocou ao mesmo tempo). */
+class StaleCredentialsError extends Error {}
+
+function factorOf(request: { code?: string | undefined; recoveryCode?: string | undefined }): SecondFactor {
+  return request.recoveryCode === undefined
+    ? { code: compactCode(request.code ?? '') }
+    : { recoveryCode: request.recoveryCode };
+}
 
 function digest(value: string): Buffer {
   return createHash('sha256').update(value, 'utf8').digest();
@@ -116,15 +125,20 @@ function sameSecret(given: string, expected: string): boolean {
  *
  * - **Login** (`login`): uma requisição só, com e-mail, senha e o código do aplicativo (ou um código de recuperação).
  *   Não existe estado "só com a senha". Toda falha tem a mesma resposta (401 `login_failed`, a mesma mensagem) e o
- *   mesmo trabalho (um scrypt sempre, conta existente ou não); 5 falhas em 15 min bloqueiam o e-mail por 15 min,
- *   exista a conta ou não. Sucesso: sessão nova (id novo a cada login).
+ *   mesmo trabalho (um scrypt sempre, conta existente ou não). Só a senha certa com o segundo fator errado conta no
+ *   bloqueio da conta (5 em 15 min bloqueiam por 15 min), e a tentativa é reservada antes de conferir o código, numa
+ *   transação: nem em paralelo passam mais de 5 palpites por ciclo. Senha errada não bloqueia a conta (quem só sabe o
+ *   e-mail, que é público, não tranca o responsável do lado de fora): ela conta nos limites por IP e global, que só
+ *   contam falhas (`admin-auth.controller.ts`). O sucesso só é gravado se as credenciais conferidas ainda são as da
+ *   conta (`credentialStamp`). Sucesso: sessão nova (id novo a cada login).
  * - **Sessão** (`authenticate`): 30 min sem uso ou 12 h, o que vier primeiro; o e-mail precisa continuar em
  *   `OWNER_PRINCIPALS`. `logout` apaga a sessão no servidor.
  * - **Primeiro cadastro** (`setupStart`/`setupConfirm`): o token do cofre `cp-admin-setup-token`, um e-mail de
  *   `OWNER_PRINCIPALS` e a senha (12 ou mais); depois o QR e o primeiro código. A confirmação cria o marcador
  *   `adminSetup/owner` na mesma transação da conta: um segundo cadastro nunca passa, nem em corrida.
  * - **Troca de senha e do aplicativo**: só com sessão, a senha atual e o código atual (ou de recuperação, na troca do
- *   aplicativo, para quem perdeu o celular); as falhas contam no mesmo bloqueio do login, e as outras sessões caem.
+ *   aplicativo, para quem perdeu o celular); toda falha (inclusive a senha errada: quem tenta já tem uma sessão) conta
+ *   no mesmo bloqueio do login, e as outras sessões caem.
  *
  * Logs (pino, com a limpeza de sempre): `admin_auth_failed` com o motivo, `admin_account_locked`, `admin_login`,
  * `admin_logout`, `admin_setup_completed`, `admin_password_changed`, `admin_totp_reset`, `admin_recovery_code_used`.
@@ -159,66 +173,61 @@ export class AdminAuthService implements OnModuleInit {
 
   // Login e sessão.
 
-  async login(body: unknown, context: AuthRequestContext): Promise<SessionGrant> {
-    const request = parseBody(loginRequestSchema, body);
+  async login(request: LoginRequest, context: AuthRequestContext): Promise<SessionGrant> {
     const email = normalizeEmail(request.email);
-    const factor: SecondFactor =
-      request.recoveryCode === undefined
-        ? { code: compactCode(request.code ?? '') }
-        : { recoveryCode: request.recoveryCode };
+    const factor = factorOf(request);
     // Sem a chave do cofre ninguém entra; a recusa é igual para todo e-mail (nada se aprende com ela).
     const keys = await this.keys();
     const now = this.clock.now();
-    const [account, throttle] = await Promise.all([this.readAccount(email), this.readThrottle(email)]);
+    const account = await this.readAccount(email);
     const owner = account !== undefined && this.isOwner(email);
-    // Sempre um scrypt, com conta ou sem: o tempo não diz se o e-mail existe nem se a conta está bloqueada.
+    // Sempre um scrypt, com conta ou sem: o tempo não diz se o e-mail existe.
     const passwordOk = owner
       ? await verifyPassword(request.password, account.passwordHash)
       : await burnPasswordCheck(request.password);
-
-    let reason: FailureReason | undefined;
-    let use: FactorUse | undefined;
-    if (isLocked(throttle, now)) reason = 'locked';
-    else if (account === undefined) reason = 'unknown_account';
-    else if (!owner) reason = 'not_owner';
-    else if (!passwordOk) reason = 'bad_password';
-    else {
-      const checked = await this.checkSecondFactor(keys, email, account, factor, now);
-      if (checked.ok) use = checked.use;
-      else reason = checked.reason;
+    if (!owner || !passwordOk) {
+      // Uma leitura do contador, como no caminho da senha certa (que o reserva), para o tempo não separar os dois.
+      await this.peekThrottle(email);
+      throw this.loginFailure(
+        email,
+        account === undefined ? 'unknown_account' : owner ? 'bad_password' : 'not_owner',
+      );
     }
 
-    if (use !== undefined && account !== undefined) {
-      try {
-        const sessionId = await this.store.runTransaction(async (tx) => {
-          const current = await this.readAccountIn(tx, email);
-          if (current === undefined) throw new FactorReplayedError();
-          const updated = this.applyFactor(current, use, now);
-          tx.set(COLLECTIONS.adminAccounts, accountRef(email), { ...updated, updatedAt: now });
-          tx.delete(COLLECTIONS.adminLoginThrottle, throttleRef(email));
-          const id = this.createSession(tx, email, now);
-          this.audit.record(tx, {
-            actor: `owner:${email}`,
-            action: 'admin.login',
-            details: { secondFactor: use.kind },
-            requestId: context.requestId,
-          });
-          return id;
+    const reservation = await this.reserveAttempt(email, now);
+    if (!reservation.ok) throw this.loginFailure(email, 'locked');
+    const checked = await this.checkSecondFactor(keys, email, account, factor, now);
+    if (!checked.ok) throw this.loginFailure(email, checked.reason, reservation.lockedNow);
+    const use = checked.use;
+    const stamp = credentialStamp(account);
+    let sessionId: string;
+    try {
+      sessionId = await this.store.runTransaction(async (tx) => {
+        const current = await this.readAccountIn(tx, email);
+        if (current === undefined || credentialStamp(current) !== stamp) throw new StaleCredentialsError();
+        const updated = this.applyFactor(current, use, now);
+        tx.set(COLLECTIONS.adminAccounts, accountRef(email), { ...updated, updatedAt: now });
+        tx.delete(COLLECTIONS.adminLoginThrottle, throttleRef(email));
+        const id = this.createSession(tx, email, now);
+        this.audit.record(tx, {
+          actor: `owner:${email}`,
+          action: 'admin.login',
+          details: { secondFactor: use.kind },
+          requestId: context.requestId,
         });
-        this.logger.info(
-          { event: 'admin_login', account: this.logRef(email), secondFactor: use.kind },
-          'login no console',
-        );
-        if (use.kind === 'recovery') this.logRecoveryUse(email, account, use);
-        return { email, sessionId };
-      } catch (error) {
-        if (!(error instanceof FactorReplayedError)) throw error;
-        reason = use.kind === 'totp' ? 'replayed_code' : 'bad_recovery_code';
-      }
+        return id;
+      });
+    } catch (error) {
+      const reason = this.raceReason(error, use);
+      if (reason === undefined) throw error;
+      throw this.loginFailure(email, reason, reservation.lockedNow);
     }
-
-    await this.recordFailure(email, reason ?? 'bad_code', now);
-    throw new ApiError(HttpStatus.UNAUTHORIZED, LOGIN_FAILED_MESSAGE, 'login_failed');
+    this.logger.info(
+      { event: 'admin_login', account: this.logRef(email), secondFactor: use.kind },
+      'login no console',
+    );
+    if (use.kind === 'recovery') this.logRecoveryUse(email, account, use);
+    return { email, sessionId };
   }
 
   /**
@@ -280,8 +289,7 @@ export class AdminAuthService implements OnModuleInit {
     return (await this.store.get(COLLECTIONS.adminSetup, ADMIN_SETUP_MARKER)) === undefined;
   }
 
-  async setupStart(body: unknown): Promise<TotpEnrollmentView> {
-    const request = parseBody(setupStartRequestSchema, body);
+  async setupStart(request: SetupStartRequest): Promise<TotpEnrollmentView> {
     if (!(await this.setupOpen())) throw setupClosed();
     let expected: string | undefined;
     try {
@@ -314,10 +322,9 @@ export class AdminAuthService implements OnModuleInit {
   }
 
   async setupConfirm(
-    body: unknown,
+    request: EnrollmentConfirmRequest,
     context: AuthRequestContext,
   ): Promise<SessionGrant & { recoveryCodes: string[] }> {
-    const request = parseBody(enrollmentConfirmRequestSchema, body);
     const keys = await this.keys();
     const now = this.clock.now();
     const { ref, enrollment, seed } = await this.readEnrollment(keys, request.enrollmentId, now);
@@ -371,10 +378,9 @@ export class AdminAuthService implements OnModuleInit {
 
   async changePassword(
     session: AuthenticatedSession,
-    body: unknown,
+    request: PasswordChangeRequest,
     context: AuthRequestContext,
   ): Promise<void> {
-    const request = parseBody(passwordChangeRequestSchema, body);
     const keys = await this.keys();
     const now = this.clock.now();
     const { account, use } = await this.reauthenticate(keys, session.email, request.currentPassword, {
@@ -397,17 +403,17 @@ export class AdminAuthService implements OnModuleInit {
 
   async totpResetStart(
     session: AuthenticatedSession,
-    body: unknown,
+    request: TotpResetStartRequest,
     context: AuthRequestContext,
   ): Promise<TotpEnrollmentView> {
-    const request = parseBody(totpResetStartRequestSchema, body);
     const keys = await this.keys();
     const now = this.clock.now();
-    const factor: SecondFactor =
-      request.recoveryCode === undefined
-        ? { code: compactCode(request.code ?? '') }
-        : { recoveryCode: request.recoveryCode };
-    const { account, use } = await this.reauthenticate(keys, session.email, request.currentPassword, factor);
+    const { account, use } = await this.reauthenticate(
+      keys,
+      session.email,
+      request.currentPassword,
+      factorOf(request),
+    );
     // O fator usado aqui (código ou código de recuperação) é gasto já, como num login; as outras sessões só caem na
     // confirmação, com o aplicativo novo.
     await this.commitAccountChange(
@@ -419,19 +425,20 @@ export class AdminAuthService implements OnModuleInit {
       { action: 'admin.totp_reset_started', requestId: context.requestId },
       false,
     );
+    // O fator gasto não muda as credenciais: a troca só se completa se elas continuarem estas.
     return this.startEnrollment(keys, {
       kind: 'totp_reset',
       email: session.email,
       sessionRef: session.sessionRef,
+      credentialStamp: credentialStamp(account),
     });
   }
 
   async totpResetConfirm(
     session: AuthenticatedSession,
-    body: unknown,
+    request: EnrollmentConfirmRequest,
     context: AuthRequestContext,
   ): Promise<{ recoveryCodes: string[] }> {
-    const request = parseBody(enrollmentConfirmRequestSchema, body);
     const keys = await this.keys();
     const now = this.clock.now();
     const { ref, enrollment, seed } = await this.readEnrollment(keys, request.enrollmentId, now);
@@ -450,6 +457,8 @@ export class AdminAuthService implements OnModuleInit {
       const pending = await tx.get(COLLECTIONS.adminEnrollments, ref);
       const others = await this.otherSessions(tx, session);
       if (current === undefined || pending === undefined) throw enrollmentExpired();
+      // Senha ou aplicativo trocados depois do começo (outra sessão, ao mesmo tempo): o cadastro não vale mais.
+      if (credentialStamp(current) !== enrollment.credentialStamp) throw enrollmentExpired();
       tx.set(COLLECTIONS.adminAccounts, accountRef(session.email), {
         ...current,
         totp: keys.sealTotpSecret(seed, accountBinding(session.email)),
@@ -526,14 +535,6 @@ export class AdminAuthService implements OnModuleInit {
       : parseDocument(adminAccountSchema, COLLECTIONS.adminAccounts, ref, data);
   }
 
-  private async readThrottle(email: string): Promise<LoginThrottle | undefined> {
-    const ref = throttleRef(email);
-    const data = await this.store.get(COLLECTIONS.adminLoginThrottle, ref);
-    return data === undefined
-      ? undefined
-      : parseDocument(loginThrottleSchema, COLLECTIONS.adminLoginThrottle, ref, data);
-  }
-
   /** O código do aplicativo (passo posterior ao último aceito) ou um código de recuperação ainda não usado. */
   private async checkSecondFactor(
     keys: AdminKeys,
@@ -580,7 +581,10 @@ export class AdminAuthService implements OnModuleInit {
     return { ...account, recoveryCodes };
   }
 
-  /** Senha atual e segundo fator de quem já tem sessão; a falha conta no bloqueio e é 400 (não derruba a sessão). */
+  /**
+   * Senha atual e segundo fator de quem já tem sessão. A tentativa é reservada no contador antes de conferir, e toda
+   * falha conta (inclusive a senha errada: quem tenta aqui já tem uma sessão); a falha é 400 (não derruba a sessão).
+   */
   private async reauthenticate(
     keys: AdminKeys,
     email: string,
@@ -588,13 +592,15 @@ export class AdminAuthService implements OnModuleInit {
     factor: SecondFactor,
   ): Promise<{ account: AdminAccount; use: FactorUse }> {
     const now = this.clock.now();
-    const [account, throttle] = await Promise.all([this.readAccount(email), this.readThrottle(email)]);
+    const reservation = await this.reserveAttempt(email, now);
+    const account = await this.readAccount(email);
     const passwordOk =
       account === undefined
         ? await burnPasswordCheck(password)
         : await verifyPassword(password, account.passwordHash);
+    const lockedNow = reservation.ok && reservation.lockedNow;
     let reason: FailureReason;
-    if (isLocked(throttle, now)) reason = 'locked';
+    if (!reservation.ok) reason = 'locked';
     else if (account === undefined) reason = 'unknown_account';
     else if (!passwordOk) reason = 'bad_password';
     else {
@@ -602,8 +608,7 @@ export class AdminAuthService implements OnModuleInit {
       if (checked.ok) return { account, use: checked.use };
       reason = checked.reason;
     }
-    await this.recordFailure(email, reason, now);
-    throw new ApiError(HttpStatus.BAD_REQUEST, INVALID_CREDENTIALS_MESSAGE, 'invalid_credentials');
+    throw this.reauthFailure(email, reason, lockedNow);
   }
 
   /**
@@ -623,7 +628,9 @@ export class AdminAuthService implements OnModuleInit {
       await this.store.runTransaction(async (tx) => {
         const current = await this.readAccountIn(tx, session.email);
         const others = revokeOthers ? await this.otherSessions(tx, session) : [];
-        if (current === undefined) throw new FactorReplayedError();
+        if (current === undefined || credentialStamp(current) !== credentialStamp(account)) {
+          throw new StaleCredentialsError();
+        }
         const updated = change(this.applyFactor(current, use, now));
         tx.set(COLLECTIONS.adminAccounts, accountRef(session.email), { ...updated, updatedAt: now });
         tx.delete(COLLECTIONS.adminLoginThrottle, throttleRef(session.email));
@@ -636,13 +643,9 @@ export class AdminAuthService implements OnModuleInit {
         });
       });
     } catch (error) {
-      if (!(error instanceof FactorReplayedError)) throw error;
-      await this.recordFailure(
-        session.email,
-        use.kind === 'totp' ? 'replayed_code' : 'bad_recovery_code',
-        now,
-      );
-      throw new ApiError(HttpStatus.BAD_REQUEST, INVALID_CREDENTIALS_MESSAGE, 'invalid_credentials');
+      const reason = this.raceReason(error, use);
+      if (reason === undefined) throw error;
+      throw this.reauthFailure(session.email, reason, false);
     }
     if (use.kind === 'recovery') this.logRecoveryUse(session.email, account, use);
   }
@@ -654,18 +657,45 @@ export class AdminAuthService implements OnModuleInit {
     return docs.map((doc) => doc.id).filter((id) => id !== session.sessionRef);
   }
 
-  private async recordFailure(email: string, reason: FailureReason, now: Date): Promise<void> {
+  /**
+   * Reserva uma tentativa no contador do e-mail, numa transação: bloqueado, nada feito (`ok: false`); senão conta já
+   * como falha (e bloqueia na quinta). O sucesso apaga o contador. Assim o bloqueio não depende de gravar a falha
+   * depois de conferir: tentativas em paralelo não passam do limite.
+   */
+  private async reserveAttempt(
+    email: string,
+    now: Date,
+  ): Promise<{ ok: false } | { ok: true; lockedNow: boolean }> {
     const ref = throttleRef(email);
-    const lockedNow = await this.store.runTransaction(async (tx) => {
+    return this.store.runTransaction(async (tx) => {
       const data = await tx.get(COLLECTIONS.adminLoginThrottle, ref);
       const previous =
         data === undefined
           ? undefined
           : parseDocument(loginThrottleSchema, COLLECTIONS.adminLoginThrottle, ref, data);
+      if (isLocked(previous, now)) return { ok: false as const };
       const result = afterFailure(previous, now);
-      if (result.next !== previous) tx.set(COLLECTIONS.adminLoginThrottle, ref, result.next);
-      return result.lockedNow;
+      tx.set(COLLECTIONS.adminLoginThrottle, ref, result.next);
+      return { ok: true as const, lockedNow: result.lockedNow };
     });
+  }
+
+  /** Só lê o contador (o caminho da senha errada, que não conta no bloqueio da conta). */
+  private async peekThrottle(email: string): Promise<void> {
+    await this.store.runTransaction(async (tx) => {
+      await tx.get(COLLECTIONS.adminLoginThrottle, throttleRef(email));
+    });
+  }
+
+  /** O motivo de uma corrida na transação do sucesso (código reusado, credenciais trocadas), ou `undefined`. */
+  private raceReason(error: unknown, use: FactorUse): FailureReason | undefined {
+    if (error instanceof StaleCredentialsError) return 'stale_credentials';
+    if (error instanceof FactorReplayedError)
+      return use.kind === 'totp' ? 'replayed_code' : 'bad_recovery_code';
+    return undefined;
+  }
+
+  private logFailure(email: string, reason: FailureReason, lockedNow: boolean): void {
     const account = this.logRef(email);
     this.logger.warn({ event: 'admin_auth_failed', reason, account }, 'login no console recusado');
     if (lockedNow) {
@@ -674,6 +704,16 @@ export class AdminAuthService implements OnModuleInit {
         'acesso ao console bloqueado por 15 minutos depois de 5 falhas',
       );
     }
+  }
+
+  private loginFailure(email: string, reason: FailureReason, lockedNow = false): ApiError {
+    this.logFailure(email, reason, lockedNow);
+    return new ApiError(HttpStatus.UNAUTHORIZED, LOGIN_FAILED_MESSAGE, 'login_failed');
+  }
+
+  private reauthFailure(email: string, reason: FailureReason, lockedNow: boolean): ApiError {
+    this.logFailure(email, reason, lockedNow);
+    return new ApiError(HttpStatus.BAD_REQUEST, INVALID_CREDENTIALS_MESSAGE, 'invalid_credentials');
   }
 
   private createSession(tx: DocumentTransaction, email: string, now: Date): string {
@@ -712,7 +752,7 @@ export class AdminAuthService implements OnModuleInit {
 
   private async startEnrollment(
     keys: AdminKeys,
-    fields: Pick<AdminEnrollment, 'kind' | 'email' | 'passwordHash' | 'sessionRef'>,
+    fields: Pick<AdminEnrollment, 'kind' | 'email' | 'passwordHash' | 'sessionRef' | 'credentialStamp'>,
   ): Promise<TotpEnrollmentView> {
     const now = this.clock.now();
     const id = newOpaqueId();

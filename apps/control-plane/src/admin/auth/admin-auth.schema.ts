@@ -118,6 +118,11 @@ export const adminEnrollmentSchema = z.strictObject({
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
+  /** Só na troca do aplicativo: as credenciais conferidas no começo (`credentialStamp`); mudaram, não confirma. */
+  credentialStamp: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   createdAt: date,
   expiresAt: date,
 });
@@ -148,6 +153,17 @@ const SECOND_FACTOR_ERROR = {
   path: ['code'],
 };
 
+/**
+ * A "versão" das credenciais de uma conta: o SHA-256 do hash da senha e do segredo do TOTP cifrado. Uma ação que
+ * conferiu a senha e o código numa leitura só é gravada se a conta ainda tem as mesmas credenciais na transação: um
+ * login com a senha antiga não abre sessão depois de uma troca de senha feita ao mesmo tempo, nem uma troca de
+ * aplicativo começada antes dela se completa.
+ */
+export function credentialStamp(account: Pick<AdminAccount, 'passwordHash' | 'totp'>): string {
+  const { iv, tag, data } = account.totp;
+  return createHash('sha256').update([account.passwordHash, iv, tag, data].join('|'), 'utf8').digest('hex');
+}
+
 export const loginRequestSchema = z
   .strictObject({
     email: z.string().max(254),
@@ -163,17 +179,20 @@ export const setupStartRequestSchema = z.strictObject({
   email: z.email({ error: 'Informe um e-mail válido.' }).max(254),
   password: newPassword,
 });
+export type SetupStartRequest = z.infer<typeof setupStartRequestSchema>;
 
 export const enrollmentConfirmRequestSchema = z.strictObject({
   enrollmentId: z.string().max(64),
   code: loginCode,
 });
+export type EnrollmentConfirmRequest = z.infer<typeof enrollmentConfirmRequestSchema>;
 
 export const passwordChangeRequestSchema = z.strictObject({
   currentPassword,
   code: loginCode,
   newPassword,
 });
+export type PasswordChangeRequest = z.infer<typeof passwordChangeRequestSchema>;
 
 export const totpResetStartRequestSchema = z
   .strictObject({
@@ -182,6 +201,7 @@ export const totpResetStartRequestSchema = z
     recoveryCode: loginRecoveryCode.optional(),
   })
   .refine(oneSecondFactor, SECOND_FACTOR_ERROR);
+export type TotpResetStartRequest = z.infer<typeof totpResetStartRequestSchema>;
 
 /** O código de 6 dígitos sem os espaços que o usuário pode ter digitado (`123 456`). */
 export function compactCode(code: string): string {

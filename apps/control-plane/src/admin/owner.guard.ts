@@ -1,11 +1,24 @@
-import { type CanActivate, type ExecutionContext, HttpStatus, Injectable, SetMetadata } from '@nestjs/common';
+import {
+  type CanActivate,
+  type ExecutionContext,
+  HttpStatus,
+  Inject,
+  Injectable,
+  SetMetadata,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import type { OwnerContext } from '../pricing/pricing-store.js';
 import { AdminAuthService, type AuthenticatedSession } from './auth/admin-auth.service.js';
-import { sessionCookieValues } from './auth/session-cookie.js';
+import {
+  clearedSessionCookieOptions,
+  clearTossedSessionCookies,
+  SESSION_COOKIE_NAME,
+  sessionCookieValues,
+} from './auth/session-cookie.js';
 
 /** O responsável autenticado e a sessão dele, presos à requisição pela guarda. */
 export type OwnerRequest = Request & {
@@ -49,6 +62,7 @@ export class OwnerGuard implements CanActivate {
   constructor(
     private readonly auth: AdminAuthService,
     private readonly reflector: Reflector,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @InjectPinoLogger(OwnerGuard.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -66,7 +80,8 @@ export class OwnerGuard implements CanActivate {
       return true;
     }
 
-    const result = await this.auth.authenticate(sessionCookieValues(req.headers.cookie));
+    const cookies = sessionCookieValues(req.headers.cookie);
+    const result = await this.auth.authenticate(cookies);
     if (!result.ok) {
       // Só o motivo: nem o cookie, nem o e-mail. Sessão ausente ou vencida é o dia a dia (o console volta ao login).
       if (result.reason === 'not_owner') {
@@ -80,6 +95,10 @@ export class OwnerGuard implements CanActivate {
         { event: 'admin_session_refused', reason: result.reason },
         'sessão do console ausente',
       );
+      // Os `__session` que não valeram saem do navegador: o vencido do console e os plantados por um site irmão.
+      const res = context.switchToHttp().getResponse<Response>();
+      clearTossedSessionCookies(res, this.config.CLOUDFLARE_ZONE_NAME);
+      if (cookies.length > 0) res.clearCookie(SESSION_COOKIE_NAME, clearedSessionCookieOptions());
       throw new ApiError(HttpStatus.UNAUTHORIZED, 'Não autenticado', 'unauthenticated');
     }
 

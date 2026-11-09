@@ -59,6 +59,18 @@ export class TokenBucketLimiter {
     return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil(waitMs / 1000)) };
   }
 
+  /**
+   * Devolve um pedido tirado por `take` (até a capacidade): para limites que só contam as tentativas que falharam
+   * (o login do console tira antes de conferir e devolve no sucesso, sem janela para um pedido passar sem contar).
+   */
+  refund(key: string): void {
+    const bucket = this.buckets.get(key);
+    if (bucket === undefined) return;
+    const now = this.clock.now().getTime();
+    const refilled = this.refill(bucket, now);
+    this.buckets.set(key, { tokens: Math.min(this.rule.capacity, refilled.tokens + 1), updatedAt: now });
+  }
+
   /** Quantas chaves estão guardadas (para os testes do teto de memória). */
   get size(): number {
     return this.buckets.size;

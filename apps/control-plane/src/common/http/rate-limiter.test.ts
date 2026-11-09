@@ -19,6 +19,25 @@ describe('TokenBucketLimiter (CP-03)', () => {
     expect(limiter.take('203.0.113.11').allowed).toBe(true);
   });
 
+  it('refund devolve um pedido tirado, nunca acima da capacidade (limite que só conta as falhas)', () => {
+    const clock = new FakeClock();
+    const limiter = new TokenBucketLimiter({ capacity: 2, windowMs: HOUR_MS }, clock);
+    expect(limiter.take('k').allowed).toBe(true);
+    limiter.refund('k');
+    expect(limiter.take('k').allowed).toBe(true);
+    expect(limiter.take('k').allowed).toBe(true);
+    expect(limiter.take('k').allowed).toBe(false);
+    limiter.refund('k');
+    limiter.refund('k');
+    limiter.refund('k');
+    expect(limiter.take('k').allowed).toBe(true);
+    expect(limiter.take('k').allowed).toBe(true);
+    expect(limiter.take('k').allowed).toBe(false);
+    // Chave que nunca tirou nada: nada a devolver.
+    limiter.refund('outra');
+    expect(limiter.size).toBe(1);
+  });
+
   it('repõe aos poucos: um pedido a cada janela/capacidade, nunca acima da capacidade', () => {
     const clock = new FakeClock();
     const limiter = new TokenBucketLimiter({ capacity: 30, windowMs: MINUTE_MS }, clock);
