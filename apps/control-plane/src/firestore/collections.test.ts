@@ -76,6 +76,9 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       COLLECTIONS.auditLog,
       COLLECTIONS.rateLimits,
       COLLECTIONS.quotes,
+      COLLECTIONS.adminSessions,
+      COLLECTIONS.adminLoginThrottle,
+      COLLECTIONS.adminEnrollments,
     ]) {
       expect(withTtl).toContain(group);
     }
@@ -86,6 +89,8 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       COLLECTIONS.counters,
       COLLECTIONS.pricingTables,
       COLLECTIONS.costModels,
+      COLLECTIONS.adminAccounts,
+      COLLECTIONS.adminSetup,
     ]) {
       expect(withTtl).not.toContain(group);
     }

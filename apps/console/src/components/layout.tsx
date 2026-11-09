@@ -1,9 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
-import { Calculator, Receipt, ShieldCheck, Users, Wallet } from 'lucide-react';
-import { NavLink, Outlet } from 'react-router';
-import { api } from '@/lib/api';
+import { Calculator, LogOut, Receipt, ShieldCheck, UserCog, Users, Wallet } from 'lucide-react';
+import { Link, Navigate, NavLink, Outlet, useLocation } from 'react-router';
+import { useLogout, useSessionExpiredRedirect } from '@/features/auth/session';
+import { api, SessionExpiredError } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { loginPath } from '@/lib/return-path';
+import { ErrorState, LoadingState } from './states';
 import { ThemeToggle } from './theme-toggle';
+import { Button } from './ui/button';
 
 const NAVIGATION = [
   { to: '/modelos-de-custo', label: 'Modelos de custo', icon: Wallet },
@@ -12,22 +16,62 @@ const NAVIGATION = [
   { to: '/clientes', label: 'Clientes', icon: Users },
 ] as const;
 
-/** Quem está no console: o e-mail que o IAP confirmou (`GET /v1/admin/me`). */
-function SignedInAs() {
-  const me = useQuery({ queryKey: ['me'], queryFn: api.me, staleTime: Infinity });
-  if (me.isPending) return <span className="text-sm text-muted-foreground">Conferindo o acesso…</span>;
-  if (me.isError) return <span className="text-sm text-critical-text">Acesso não confirmado</span>;
+/** A consulta de quem está no console (`GET /v1/admin/me`): a sessão do cookie, conferida pela API. */
+function useMe() {
+  return useQuery({ queryKey: ['me'], queryFn: api.me, staleTime: Infinity });
+}
+
+/** Quem está no console (o e-mail da sessão), o link da conta e a saída. */
+function SignedInAs({ email }: { email: string }) {
+  const logout = useLogout();
   return (
-    <span className="flex items-center gap-1.5 text-sm">
-      <ShieldCheck aria-hidden className="size-4" />
-      <span className="sr-only">Conectado como </span>
-      <span data-testid="usuario">{me.data.email}</span>
-    </span>
+    <div className="flex flex-wrap items-center gap-3">
+      <span className="flex items-center gap-1.5 text-sm">
+        <ShieldCheck aria-hidden className="size-4" />
+        <span className="sr-only">Conectado como </span>
+        <span data-testid="usuario">{email}</span>
+      </span>
+      <Link
+        to="/conta"
+        className="inline-flex items-center gap-1.5 text-sm underline-offset-2 hover:underline"
+      >
+        <UserCog aria-hidden className="size-4" />
+        Minha conta
+      </Link>
+      <Button variant="secondary" size="sm" onClick={() => logout.mutate()} disabled={logout.isPending}>
+        <LogOut aria-hidden />
+        {logout.isPending ? 'Saindo…' : 'Sair'}
+      </Button>
+    </div>
   );
 }
 
-/** Moldura do console: cabeçalho na faixa da marca, menu das telas e o conteúdo. */
+/**
+ * Moldura do console: cabeçalho na faixa da marca, menu das telas e o conteúdo. Nada das telas aparece antes de a API
+ * confirmar a sessão (`/me`); sem sessão (ou com ela vencida em qualquer chamada depois), a tela de entrada abre.
+ */
 export function Layout() {
+  const me = useMe();
+  const location = useLocation();
+  useSessionExpiredRedirect();
+  if (me.isPending) {
+    return (
+      <main className="mx-auto max-w-6xl px-4 py-6">
+        <LoadingState label="Conferindo o acesso" />
+      </main>
+    );
+  }
+  if (me.isError) {
+    if (me.error instanceof SessionExpiredError) {
+      return <Navigate to={loginPath(`${location.pathname}${location.search}`)} replace />;
+    }
+    return (
+      <main className="mx-auto max-w-6xl space-y-3 px-4 py-6">
+        <ErrorState error={me.error} onRetry={() => void me.refetch()} />
+        <SignOutOnly />
+      </main>
+    );
+  }
   return (
     <div className="min-h-screen">
       <a
@@ -43,7 +87,7 @@ export function Layout() {
             <p className="text-lg font-semibold">Console do responsável</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <SignedInAs />
+            <SignedInAs email={me.data.email} />
             <ThemeToggle />
           </div>
         </div>
@@ -72,5 +116,16 @@ export function Layout() {
         <Outlet />
       </main>
     </div>
+  );
+}
+
+/** Sessão aberta de quem não é (mais) responsável: só a saída. */
+function SignOutOnly() {
+  const logout = useLogout();
+  return (
+    <Button variant="secondary" size="sm" onClick={() => logout.mutate()} disabled={logout.isPending}>
+      <LogOut aria-hidden />
+      Sair
+    </Button>
   );
 }

@@ -2,6 +2,9 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, type TestInfo, test } from '@playwright/test';
+import { createFakeState, type FakeAdminState } from '../src/mocks/fake-admin-api';
+import { FICTITIOUS_PASSWORD, FICTITIOUS_SETUP_TOKEN, FICTITIOUS_TOTP_CODE } from '../src/mocks/fake-auth';
+import { FICTITIOUS_OWNER } from '../src/mocks/fixtures';
 import { mockAdminApi } from './mock-api';
 
 /**
@@ -11,14 +14,18 @@ import { mockAdminApi } from './mock-api';
  */
 const THEMES = ['light', 'dark'] as const;
 
-async function prepare(page: Page, theme: (typeof THEMES)[number]): Promise<string[]> {
+async function prepare(
+  page: Page,
+  theme: (typeof THEMES)[number],
+  state: FakeAdminState = createFakeState(),
+): Promise<string[]> {
   const violations: string[] = [];
   page.on('console', (message) => {
     if (message.text().includes('Content Security Policy')) violations.push(message.text());
   });
   page.on('pageerror', (error) => violations.push(error.message));
   await page.addInitScript((value) => window.localStorage.setItem('verax.console.theme', value), theme);
-  await mockAdminApi(page);
+  await mockAdminApi(page, state);
   return violations;
 }
 
@@ -159,6 +166,45 @@ for (const theme of THEMES) {
       await lifecycle.getByRole('button', { name: 'Cancelar contrato…' }).click();
       await expect(lifecycle).toContainText('Só registra o fim do contrato');
       await audit(page, testInfo, `cliente-no-cliente-detalhe-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
+    test('acesso: a entrada sem sessão, com o erro genérico, e a entrada com o código', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme, createFakeState({ loggedIn: false }));
+      await page.goto('/clientes');
+      await expect(page.getByRole('heading', { name: 'Entrar no console' })).toBeVisible();
+      await page.getByLabel('E-mail').fill(FICTITIOUS_OWNER);
+      await page.getByLabel('Senha').fill('senha-errada-errada');
+      await page.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
+      await page.getByRole('button', { name: 'Entrar' }).click();
+      await expect(page.getByRole('alert')).toContainText('Não foi possível entrar');
+      await audit(page, testInfo, `entrada-${theme}`);
+      await page.getByLabel('Senha').fill(FICTITIOUS_PASSWORD);
+      await page.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
+      await page.getByRole('button', { name: 'Entrar' }).click();
+      await expect(page).toHaveURL(/\/clientes$/);
+      await expect(page.getByTestId('usuario')).toHaveText(FICTITIOUS_OWNER);
+      expect(violations).toEqual([]);
+    });
+
+    test('primeiro acesso: o QR gerado no navegador e os códigos de recuperação', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme, createFakeState({ loggedIn: false, setupOpen: true }));
+      await page.goto('/configurar');
+      await page.getByLabel('Token de configuração').fill(FICTITIOUS_SETUP_TOKEN);
+      await page.getByLabel('E-mail').fill(FICTITIOUS_OWNER);
+      await page.getByLabel('Senha nova', { exact: true }).fill(FICTITIOUS_PASSWORD);
+      await page.getByLabel('Confirme a senha nova').fill(FICTITIOUS_PASSWORD);
+      await page.getByRole('button', { name: 'Continuar' }).click();
+      await expect(page.getByRole('img', { name: /QR para cadastrar/ })).toBeVisible();
+      await audit(page, testInfo, `configurar-qr-${theme}`);
+      await page.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
+      await page.getByRole('button', { name: 'Confirmar o aplicativo' }).click();
+      await expect(page.getByRole('list', { name: 'Códigos de recuperação' })).toBeVisible();
+      await audit(page, testInfo, `configurar-codigos-${theme}`);
       expect(violations).toEqual([]);
     });
 

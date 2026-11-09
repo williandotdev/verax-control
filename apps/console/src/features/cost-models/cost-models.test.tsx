@@ -19,7 +19,7 @@ describe('modelos de custo', () => {
     );
   });
 
-  it('o cabeçalho mostra o e-mail que o IAP confirmou', async () => {
+  it('o cabeçalho mostra o e-mail da sessão', async () => {
     renderConsole('/modelos-de-custo');
     expect(await screen.findByTestId('usuario')).toHaveTextContent(FICTITIOUS_OWNER);
     expect(screen.getByRole('navigation', { name: 'Menu do console' })).toBeInTheDocument();

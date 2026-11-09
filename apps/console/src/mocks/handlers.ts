@@ -13,6 +13,7 @@ export function adminHandlers(state: FakeAdminState = createFakeState()) {
         url.pathname,
         text === '' ? undefined : JSON.parse(text),
       );
+      if (response.status === 204) return new HttpResponse(null, { status: 204 });
       return HttpResponse.json(response.body as Record<string, unknown>, { status: response.status });
     }),
   ];

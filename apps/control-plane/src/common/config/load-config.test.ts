@@ -400,32 +400,38 @@ describe('loadConfig (CP-01)', () => {
     expect(secrets).toEqual(['CLOUDFLARE_API_TOKEN', 'COOKIE_KEY', 'SMTP_PASSWORD', 'STRIPE_WEBHOOK_SECRET']);
     // A chave da Stripe é lida pelos dois papéis: nunca pode entrar na lista de um só.
     expect(secrets).not.toContain('STRIPE_SECRET_KEY');
-    // O console (admin) não recebe segredo nenhum.
+    // O console (admin) não recebe segredo nenhum como variável: os cofres do login ele lê pela API.
     expect(ROLE_ONLY.admin.secrets).toEqual([]);
   });
 
-  describe('papel admin (console do responsável, atrás do IAP)', () => {
-    const audience = '/projects/111111111111/locations/southamerica-east1/services/cp-admin';
+  describe('papel admin (console do responsável, com login próprio)', () => {
     const adminEnv = {
       ROLE: 'admin',
       NODE_ENV: 'production',
-      IAP_AUDIENCE: audience,
+      ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo',
       OWNER_PRINCIPALS: 'responsavel@verax.example',
     };
 
-    it('sobe com o aud do IAP e a lista de responsáveis; sem eles, não sobe', () => {
+    it('sobe com o projeto dos cofres do login e a lista de responsáveis; sem eles, não sobe', () => {
       expect(loadConfig(adminEnv)).toMatchObject({
         ROLE: 'admin',
-        IAP_AUDIENCE: audience,
+        ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo',
         OWNER_PRINCIPALS: ['responsavel@verax.example'],
       });
       expect(problemsOf({ ROLE: 'admin', NODE_ENV: 'production' })).toEqual([
-        'IAP_AUDIENCE: obrigatória e não definida',
+        'ADMIN_SECRETS_PROJECT_ID: obrigatória e não definida',
         'OWNER_PRINCIPALS: obrigatória e não definida',
       ]);
-      expect(problemsOf({ ...adminEnv, IAP_AUDIENCE: 'https://cp-admin.example' })).toEqual([
-        'IAP_AUDIENCE: deve ser o aud do IAP (/projects/<número>/...)',
+      expect(problemsOf({ ...adminEnv, ADMIN_SECRETS_PROJECT_ID: 'Projeto_Invalido' })).toEqual([
+        'ADMIN_SECRETS_PROJECT_ID: ID de projeto GCP inválido',
       ]);
+      // A variável do IAP de antes (revisão antiga no meio da troca) é ignorada, não derruba a partida.
+      expect(
+        loadConfig({
+          ...adminEnv,
+          IAP_AUDIENCE: '/projects/111111111111/locations/southamerica-east1/services/cp-admin',
+        }),
+      ).not.toHaveProperty('IAP_AUDIENCE');
     });
 
     it('recusa os segredos dos outros papéis e a chave da Stripe; ignora as variáveis só do worker', () => {
@@ -448,9 +454,9 @@ describe('loadConfig (CP-01)', () => {
       ]);
     });
 
-    it('IAP_AUDIENCE é só do admin: nos outros papéis é ignorada com aviso', () => {
-      expect(warningsOf({ ...validEnv, IAP_AUDIENCE: audience })).toEqual([
-        'IAP_AUDIENCE: só o papel admin usa; ignorada no papel public',
+    it('ADMIN_SECRETS_PROJECT_ID é só do admin: nos outros papéis é ignorada com aviso', () => {
+      expect(warningsOf({ ...validEnv, ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo' })).toEqual([
+        'ADMIN_SECRETS_PROJECT_ID: só o papel admin usa; ignorada no papel public',
       ]);
     });
   });

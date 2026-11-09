@@ -312,6 +312,60 @@ export interface AdminSession {
   email: string;
 }
 
+// --- Acesso ao console (e-mail, senha e código do aplicativo autenticador) ------------------------------------------
+
+/** `GET /v1/admin/setup`: o cadastro do primeiro acesso ainda está aberto (nenhuma conta criada). */
+export interface SetupStatus {
+  open: boolean;
+}
+
+/** `POST /v1/admin/setup/start`: o token de configuração (do Secret Manager), o e-mail e a senha nova. */
+export interface SetupStartRequest {
+  setupToken: string;
+  email: string;
+  password: string;
+}
+
+/** O aplicativo autenticador a cadastrar: o URI do QR, o segredo para digitar à mão e até quando vale o cadastro. */
+export interface TotpEnrollment {
+  enrollmentId: string;
+  otpauthUri: string;
+  secret: string;
+  expiresAt: string;
+}
+
+/** `POST /v1/admin/setup/confirm` e `POST /v1/admin/account/totp/confirm`: o primeiro código do aplicativo. */
+export interface TotpConfirmRequest {
+  enrollmentId: string;
+  code: string;
+}
+
+/** Os códigos de recuperação, mostrados uma única vez. */
+export interface RecoveryCodes {
+  recoveryCodes: string[];
+}
+
+/** `POST /v1/admin/setup/confirm`: a conta criada (e a sessão aberta, pelo cookie). */
+export interface SetupCompleted extends RecoveryCodes {
+  email: string;
+}
+
+/** O segundo fator: o código do aplicativo ou, sem o celular, um código de recuperação. */
+export type SecondFactor = { code: string } | { recoveryCode: string };
+
+/** `POST /v1/admin/login`. */
+export type LoginRequest = { email: string; password: string } & SecondFactor;
+
+/** `POST /v1/admin/account/password`. */
+export interface PasswordChangeRequest {
+  currentPassword: string;
+  code: string;
+  newPassword: string;
+}
+
+/** `POST /v1/admin/account/totp/start`. */
+export type TotpResetStartRequest = { currentPassword: string } & SecondFactor;
+
 /** Um problema de validação (`details.issues` no 400): o caminho do campo e a mensagem. */
 export interface ValidationIssue {
   path: string;

@@ -9,7 +9,6 @@ import type {
   TenantInstallation,
   TenantList,
 } from '../src/admin/admin-tenants.schema.js';
-import { IAP_JWT_HEADER } from '../src/admin/iap-verifier.js';
 import { HttpWorkerOwnerClient } from '../src/admin/worker-owner-client.js';
 import { AuditService } from '../src/audit/audit.service.js';
 import { newUlid } from '../src/common/ulid.js';
@@ -18,18 +17,17 @@ import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
 import { MemoryStepQueue } from '../src/queue/memory-step-queue.js';
 import { TenantStore } from '../src/tenants/tenant-store.js';
 import { TestGoogleIdentity } from './support/access-fakes.js';
+import { MemoryAdminSecrets, seedOwnerSession } from './support/admin-auth.js';
 import { tenantIn } from './support/access-store-contract.js';
 import { createApp } from './support/create-app.js';
 import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
 import { FakeCloud } from './support/fake-cloud.js';
-import { TestIap } from './support/iap-test-keys.js';
 import { LogCapture } from './support/log-capture.js';
 import { fictitiousPriceTable } from './support/pricing-fixtures.js';
 import { seedPublishedTable } from './support/pricing-seed.js';
 import { manifestFor, TestReleaseKey } from './support/release-fixtures.js';
 
 const START = new Date('2026-11-05T12:00:00.000Z');
-const AUDIENCE = '/projects/111111111111/locations/southamerica-east1/services/cp-admin';
 const WORKER_URL = 'https://cp-worker-111111111111.southamerica-east1.run.app';
 const OWNER = 'responsavel@verax.example';
 const STRANGER = 'outra-pessoa@verax.example';
@@ -47,8 +45,8 @@ interface WorkerCall {
 }
 
 /**
- * Os clientes no console do responsável pelo app inteiro, com os dois serviços de verdade: o `cp-admin` (IAP de teste,
- * `iap-test-keys.ts`) chama o `cp-worker` (o "Google" de teste, `access-fakes.ts`) por HTTP em 127.0.0.1, com o
+ * Os clientes no console do responsável pelo app inteiro, com os dois serviços de verdade: o `cp-admin` (sessão do
+ * login próprio gravada no teste, `support/admin-auth.ts`) chama o `cp-worker` (o "Google" de teste, `access-fakes.ts`) por HTTP em 127.0.0.1, com o
  * `HttpWorkerOwnerClient` de produção (CP-11) e um token da conta do cp-admin. O mesmo Firestore em memória e a mesma
  * fila nos dois. Nada fala com o Google. Tabela de preços FICTÍCIA.
  */
@@ -58,13 +56,12 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
   const documents = new MemoryDocumentStore();
   const queue = new MemoryStepQueue();
   const google = new TestGoogleIdentity();
-  const iap = new TestIap();
   const audit = new AuditService(documents, clock);
   const tenants = new TenantStore(documents, clock, audit);
   /** As APIs da nuvem (só o bucket de releases pode ser lido nestes testes) e a chave de release dos testes. */
   const cloud = new FakeCloud();
   const releaseKey = new TestReleaseKey();
-  /** O que o console mandou ao worker (para provar que o JWT do IAP nunca sai do cp-admin). */
+  /** O que o console mandou ao worker (para provar que o cookie da sessão nunca sai do cp-admin). */
   const workerCalls: WorkerCall[] = [];
   /** O worker fora do ar (rede) ou atrás da entrada do Cloud Run (o 404 em HTML de `INGRESS_TRAFFIC_INTERNAL_ONLY`). */
   const network = { down: false, ingressBlocked: false };
@@ -73,8 +70,12 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
   let workerPort = 0;
   let slugSequence = 0;
 
+  /** Os cookies das sessões do responsável e de quem não está em OWNER_PRINCIPALS (gravadas a cada teste). */
+  let ownerCookie = '';
+  let strangerCookie = '';
+
   function ownerToken(email = OWNER): string {
-    return iap.token({ audience: AUDIENCE, email });
+    return email === STRANGER ? strangerCookie : ownerCookie;
   }
 
   function bearer(email: string): string {
@@ -83,12 +84,12 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
 
   function send(path: string, body: unknown, token: string | null = ownerToken()): request.Test {
     const test = request(admin.getHttpServer()).post(path).set('Content-Type', 'application/json');
-    return (token === null ? test : test.set(IAP_JWT_HEADER, token)).send(JSON.stringify(body));
+    return (token === null ? test : test.set('Cookie', token)).send(JSON.stringify(body));
   }
 
   function read(path: string, token: string | null = ownerToken()): request.Test {
     const test = request(admin.getHttpServer()).get(path);
-    return token === null ? test : test.set(IAP_JWT_HEADER, token);
+    return token === null ? test : test.set('Cookie', token);
   }
 
   function internal(path: string, caller: string, body: unknown): request.Test {
@@ -179,13 +180,18 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       clock,
       documentStore: documents,
       capture,
-      iapKeySource: iap,
+      adminSecrets: new MemoryAdminSecrets(),
       workerOwnerClient: new HttpWorkerOwnerClient(
         WORKER_URL,
         { get: (audience: string) => Promise.resolve(google.token({ email: ADMIN_SA, aud: audience })) },
         localFetch,
       ),
-      env: { LOG_LEVEL: 'debug', IAP_AUDIENCE: AUDIENCE, OWNER_PRINCIPALS: OWNER, WORKER_URL },
+      env: {
+        LOG_LEVEL: 'debug',
+        ADMIN_SECRETS_PROJECT_ID: 'projeto-exemplo',
+        OWNER_PRINCIPALS: OWNER,
+        WORKER_URL,
+      },
     });
     await admin.listen(0, '127.0.0.1');
   });
@@ -212,6 +218,8 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
     await seedPublishedTable(documents, fictitiousPriceTable(), {
       effectiveFrom: new Date(START.getTime() - MINUTE_MS),
     });
+    ownerCookie = await seedOwnerSession(documents, clock, OWNER);
+    strangerCookie = await seedOwnerSession(documents, clock, STRANGER);
   });
 
   /** Um contrato direto criado pelo console (o worker põe em provisioning). */
@@ -222,7 +230,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
   }
 
   describe('acesso', () => {
-    it('as rotas dos clientes exigem o JWT do IAP de um responsável; escrita só em JSON e da mesma origem', async () => {
+    it('as rotas dos clientes exigem a sessão de um responsável; escrita só em JSON e da mesma origem', async () => {
       await read('/v1/admin/tenants', null).expect(401);
       await read('/v1/admin/tenants', ownerToken(STRANGER)).expect(403);
       await read(`/v1/admin/tenants/${newUlid()}`, ownerToken(STRANGER)).expect(403);
@@ -239,13 +247,13 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       }
       await request(admin.getHttpServer())
         .post('/v1/admin/tenants')
-        .set(IAP_JWT_HEADER, ownerToken())
+        .set('Cookie', ownerToken())
         .set('Content-Type', 'text/plain')
         .send(JSON.stringify(body))
         .expect(415);
       await request(admin.getHttpServer())
         .post('/v1/admin/tenants')
-        .set(IAP_JWT_HEADER, ownerToken())
+        .set('Cookie', ownerToken())
         .set('Content-Type', 'application/json')
         .set('Sec-Fetch-Site', 'cross-site')
         .send(JSON.stringify(body))
@@ -255,13 +263,10 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
     });
 
     it('as rotas do console não existem no worker, e as do worker não existem no console', async () => {
-      await request(worker.getHttpServer())
-        .get('/v1/admin/tenants')
-        .set(IAP_JWT_HEADER, ownerToken())
-        .expect(404);
+      await request(worker.getHttpServer()).get('/v1/admin/tenants').set('Cookie', ownerToken()).expect(404);
       await request(admin.getHttpServer())
         .post(`/internal/tenants/${newUlid()}/provision`)
-        .set(IAP_JWT_HEADER, ownerToken())
+        .set('Cookie', ownerToken())
         .set('Content-Type', 'application/json')
         .send('{}')
         .expect(404);
@@ -279,12 +284,12 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         provisioning: { started: true, step: 'preflight' },
       });
 
-      // O pedido ao worker: o token da conta do console (aud = WORKER_URL), o responsável no corpo, nunca o JWT do IAP.
+      // O pedido ao worker: o token da conta do console (aud = WORKER_URL), o responsável no corpo, nunca o cookie.
       expect(workerCalls).toHaveLength(1);
       const call = workerCalls[0];
       expect(call?.url).toBe(`${WORKER_URL}/internal/tenants/${result.id}/provision`);
       expect(call?.body).toEqual({ confirmSlug: body['slug'], actor: OWNER });
-      expect(Object.keys(call?.headers ?? {})).not.toContain(IAP_JWT_HEADER);
+      expect(Object.keys(call?.headers ?? {})).not.toContain('cookie');
       const sentToken = (call?.headers['authorization'] ?? '').replace('Bearer ', '');
       const claims = JSON.parse(Buffer.from(sentToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as {
         email?: string;
@@ -482,6 +487,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
 
     it('sem tabela de preços vigente, nada de cadastro (409)', async () => {
       documents.clear();
+      ownerCookie = await seedOwnerSession(documents, clock, OWNER);
       const response = await send('/v1/admin/tenants', directRequest()).expect(409);
       expect(response.body).toMatchObject({ code: 'pricing_table_missing' });
     });
@@ -584,7 +590,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       // Tudo pedido em nome do responsável, auditado com o desfecho.
       expect(
         workerCalls.every(
-          (call) => (call.body as { actor?: string }).actor === OWNER && !(IAP_JWT_HEADER in call.headers),
+          (call) => (call.body as { actor?: string }).actor === OWNER && !('cookie' in call.headers),
         ),
       ).toBe(true);
       const requests = (await audit.listForTenant(tenant.id))
@@ -759,21 +765,21 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       expect(started?.actor).toBe(`owner:${OWNER}`);
     });
 
-    it('o início do provisionamento recusa as tasks, o cp-public e o JWT do IAP; o responsável direto age como ele mesmo', async () => {
+    it('o início do provisionamento recusa as tasks, o cp-public e a sessão do console; o responsável direto age como ele mesmo', async () => {
       const tenant = await pendingContract();
       const path = `/internal/tenants/${tenant.id}/provision`;
       for (const caller of [INVOKER, PUBLIC_SA]) {
         await internal(path, caller, { confirmSlug: tenant.slug }).expect(403);
       }
-      // O JWT do IAP (outro emissor, outro algoritmo) nunca vale no worker, nem repassado.
+      // A sessão do console (o cookie ou o id dele como token) nunca vale no worker, nem repassada.
       await request(worker.getHttpServer())
         .post(path)
-        .set('Authorization', `Bearer ${ownerToken()}`)
+        .set('Authorization', `Bearer ${ownerToken().split('=')[1] ?? ''}`)
         .send({ confirmSlug: tenant.slug })
         .expect(401);
       await request(worker.getHttpServer())
         .post(path)
-        .set(IAP_JWT_HEADER, ownerToken())
+        .set('Cookie', ownerToken())
         .send({ confirmSlug: tenant.slug })
         .expect(401);
       await internal(path, OWNER, { confirmSlug: tenant.slug, outro: 1 }).expect(400);

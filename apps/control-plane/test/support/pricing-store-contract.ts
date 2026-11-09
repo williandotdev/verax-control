@@ -34,7 +34,7 @@ export interface PricingStoreHarness {
   documents: DocumentStore;
 }
 
-/** O responsável fictício (o e-mail que o IAP traria no token). */
+/** O responsável fictício (o e-mail da sessão do console). */
 const OWNER = { email: 'responsavel@verax.example', requestId: 'req-demo-00042' };
 
 function check(version: string): PublishCheck {

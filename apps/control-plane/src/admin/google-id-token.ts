@@ -5,7 +5,7 @@ import type { IdTokenSource } from '../status/id-token.js';
  * O token de identidade da conta do próprio serviço pelo `google-auth-library` (no Cloud Run, a `cp-admin`, pelo
  * servidor de metadados, com `format=full`: o e-mail e o `email_verified` que o cp-worker confere), para o console
  * chamar as operações do responsável no cp-worker (`worker-owner-client.ts`). A biblioteca guarda o token até perto do
- * vencimento. Nunca o JWT do IAP de quem está no navegador: esse não sai do cp-admin. A mensagem de erro da biblioteca
+ * vencimento. Nunca a sessão de quem está no navegador: o cookie não sai do cp-admin. A mensagem de erro da biblioteca
  * (que pode citar um caminho de credencial) não sai daqui.
  */
 export class GoogleAuthIdTokenSource implements IdTokenSource {

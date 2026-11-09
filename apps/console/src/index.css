@@ -2,7 +2,7 @@
 
 /*
  * Console do responsável: os mesmos tokens do painel (apps/web/src/index.css, T6.2), copiados para o console ser um
- * app à parte, servido pelo cp-admin atrás do IAP. Nomes de papel (fundo, tinta, severidade), nunca de cor, e os dois
+ * app à parte, servido pelo cp-admin. Nomes de papel (fundo, tinta, severidade), nunca de cor, e os dois
  * modos escolhidos à mão; o contraste e a separação das severidades foram validados lá (texto discreto >= 4,5:1 em
  * todas as superfícies; severidade nunca só como cor). Mudou lá, muda aqui.
  */

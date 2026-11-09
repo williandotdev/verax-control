@@ -19,6 +19,21 @@
     },
     { "collectionGroup": "auditLog", "field": "expiresAt", "retention": "24 meses" },
     { "collectionGroup": "rateLimits", "field": "expiresAt", "retention": "janela do limite" },
-    { "collectionGroup": "quotes", "field": "expiresAt", "retention": "24 h (validade da cotação)" }
+    { "collectionGroup": "quotes", "field": "expiresAt", "retention": "24 h (validade da cotação)" },
+    {
+      "collectionGroup": "adminSessions",
+      "field": "expiresAt",
+      "retention": "12 h (prazo absoluto da sessão)"
+    },
+    {
+      "collectionGroup": "adminLoginThrottle",
+      "field": "expiresAt",
+      "retention": "fim da janela de 15 min ou do bloqueio"
+    },
+    {
+      "collectionGroup": "adminEnrollments",
+      "field": "expiresAt",
+      "retention": "10 min (cadastro do TOTP)"
+    }
   ]
 }

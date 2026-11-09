@@ -2,9 +2,9 @@ import { isUlid } from '../common/ulid.js';
 import type { IdTokenSource } from '../status/id-token.js';
 
 /**
- * O cliente que o console do responsável (`cp-admin`, atrás do IAP) usa para as operações dele no cp-worker (CP-11):
- * um `POST <WORKER_URL>/internal/tenants/<id>/<operação>` com o token de identidade da conta do `cp-admin` (audiência
- * `WORKER_URL`, pelo servidor de metadados) e quem agiu no corpo (`actor`, o e-mail que o IAP deu ao console). O token
+ * O cliente que o console do responsável (`cp-admin`, com login próprio) usa para as operações dele no cp-worker
+ * (CP-11): um `POST <WORKER_URL>/internal/tenants/<id>/<operação>` com o token de identidade da conta do `cp-admin` (audiência
+ * `WORKER_URL`, pelo servidor de metadados) e quem agiu no corpo (`actor`, o e-mail da sessão do console). O cookie
  * de quem está no navegador nunca sai do console. O worker confere a conta (`ADMIN_SA_EMAIL`) e que `actor` é um
  * responsável (`OWNER_PRINCIPALS`), e audita como `owner:<actor>`.
  */

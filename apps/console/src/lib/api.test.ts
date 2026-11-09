@@ -1,10 +1,10 @@
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 import { server } from '@/mocks/server';
-import { ApiError, api, request, SessionExpiredError } from './api';
+import { ApiError, api, authApi, request, SessionExpiredError } from './api';
 
 describe('cliente do console', () => {
-  it('manda JSON na mesma origem, com o pedido de 401 ao IAP em vez do redirecionamento', async () => {
+  it('manda JSON na mesma origem, com o cookie da sessão e sem cabeçalho a mais', async () => {
     let seen: Headers | undefined;
     let body: unknown;
     server.use(
@@ -16,7 +16,7 @@ describe('cliente do console', () => {
     );
     await api.update('cost-models', 'custos-teste-v2', { currency: 'brl' });
     expect(seen?.get('content-type')).toBe('application/json');
-    expect(seen?.get('x-requested-with')).toBe('XMLHttpRequest');
+    expect(seen?.get('x-requested-with')).toBeNull();
     expect(body).toEqual({ content: { currency: 'brl' } });
   });
 
@@ -49,14 +49,46 @@ describe('cliente do console', () => {
     });
   });
 
-  it('o IAP respondeu no lugar do console (sessão vencida): pede para recarregar', async () => {
+  it('401 unauthenticated numa rota protegida é a sessão que terminou', async () => {
     server.use(
-      http.get(
-        '*/v1/admin/me',
-        () =>
-          new HttpResponse('<html>login</html>', { status: 401, headers: { 'Content-Type': 'text/html' } }),
+      http.get('*/v1/admin/me', () =>
+        HttpResponse.json(
+          { statusCode: 401, message: 'Não autenticado', code: 'unauthenticated' },
+          { status: 401 },
+        ),
       ),
     );
     await expect(request('GET', '/v1/admin/me')).rejects.toBeInstanceOf(SessionExpiredError);
+  });
+
+  it('o 401 da entrada é um erro comum, com a mensagem genérica da API', async () => {
+    server.use(
+      http.post('*/v1/admin/login', () =>
+        HttpResponse.json(
+          { statusCode: 401, message: 'Não foi possível entrar.', code: 'login_failed' },
+          { status: 401 },
+        ),
+      ),
+    );
+    const error = await authApi
+      .login({ email: 'a@b.example', password: 'x', code: '000000' })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).not.toBeInstanceOf(SessionExpiredError);
+    expect(error).toMatchObject({ status: 401, code: 'login_failed', message: 'Não foi possível entrar.' });
+  });
+
+  it('204 da saída devolve undefined; resposta sem JSON é erro, não sessão vencida', async () => {
+    server.use(
+      http.post('*/v1/admin/logout', () => new HttpResponse(null, { status: 204 })),
+      http.get(
+        '*/v1/admin/me',
+        () => new HttpResponse('<html>x</html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
+      ),
+    );
+    await expect(authApi.logout()).resolves.toBeUndefined();
+    const error = await request('GET', '/v1/admin/me').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).not.toBeInstanceOf(SessionExpiredError);
   });
 });
