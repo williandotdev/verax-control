@@ -8,53 +8,168 @@ só no Firestore do plano de controle; o repositório (público) não tem nenhum
 que a API devolve.
 
 O console é o serviço `cp-admin` do Cloud Run: a mesma imagem do plano de controle, com `ROLE=admin`, que serve as
-telas (`apps/console`) e a API `/v1/admin/...` na mesma origem, atrás do IAP ligado direto no serviço. Só quem está em
-`owner_principals` passa pelo IAP, e o app confere de novo, em toda requisição (inclusive nas telas), o JWT que o IAP
-assina.
+telas (`apps/console`) e a API `/v1/admin/...` na mesma origem, em **https://admin.veraxsistemas.com.br** (um site
+próprio do Firebase Hosting com o rewrite de tudo para o `cp-admin`, como o `conta` faz com o `cp-public`). Quem entra
+é decidido pelo próprio console: **e-mail + senha + código do aplicativo autenticador (TOTP)**, só para os e-mails de
+`owner_principals`. As telas abrem para qualquer um (são o código do repositório público, sem nenhum número); os dados
+só saem da API com uma sessão de responsável.
+
+Como o acesso funciona:
+
+- **Login** (`/entrar`): e-mail, senha e o código de 6 dígitos do aplicativo (ou um código de recuperação), num
+  formulário só. Qualquer erro (e-mail desconhecido, senha errada, código errado ou já usado, bloqueio) dá a mesma
+  mensagem genérica, de propósito.
+- **Bloqueio:** 5 tentativas erradas para o mesmo e-mail em 15 minutos bloqueiam o login dele por 15 minutos (o
+  alerta "login do console do responsável bloqueado" avisa). Há também um limite de tentativas por IP.
+- **Sessão:** cookie `__session` (o único que o Hosting repassa ao Cloud Run), `HttpOnly`, `Secure`,
+  `SameSite=Strict`, guardado no Firestore só como hash. Vence com **30 minutos sem uso** ou **12 horas** depois do
+  login, o que vier antes; o console volta para `/entrar`. **Sair** encerra a sessão no servidor.
+- **Senha e TOTP guardados:** a senha só como hash (scrypt); o segredo do TOTP cifrado (AES-256-GCM) com uma chave
+  derivada do segredo `cp-admin-totp-key`; os códigos de recuperação só como HMAC. Um código TOTP vale uma vez.
+- **Conta** (`/conta`): trocar a senha e trocar o aplicativo autenticador (o que gera códigos de recuperação novos);
+  as duas pedem a senha atual e um código. Trocar a senha encerra as outras sessões.
 
 ## 1. Ligar o console (uma vez)
 
-1. **Cliente OAuth do IAP (só se o projeto não tiver organização).** Com uma conta de fora de uma organização do
-   Google Workspace (um Gmail, por exemplo), o IAP precisa de um cliente OAuth próprio, e ele não se cria por API.
-   No console da GCP do projeto do plano de controle: APIs e serviços → Tela de consentimento OAuth (tipo "Externo",
-   com você como usuário de teste) → Credenciais → Criar ID do cliente OAuth, tipo "Aplicativo da Web", com o URI de
-   redirecionamento `https://iap.googleapis.com/v1/oauth/clientIds/<ID_DO_CLIENTE>:handleRedirect`. Depois, aponte o
-   IAP para ele, sem o segredo passar pelo Terraform nem pelo histórico do shell:
+1. **Os dois segredos do console** (o Terraform cria os cofres vazios, mesmo com `admin_enabled = false`; rode o
+   `apply` uma vez se eles ainda não existirem: `terraform output secrets`). Grave os valores pelo `gcloud`, sem
+   passar pelo Terraform nem pelo histórico do shell:
 
    ```bash
-   arquivo="${TMPDIR:-/tmp}/iap_settings.yaml"
-   read -rs SEGREDO && printf 'access_settings:\n  oauth_settings:\n    client_id: %s\n    client_secret: %s\n' \
-     "<ID_DO_CLIENTE>" "$SEGREDO" > "$arquivo" && unset SEGREDO
-   gcloud iap settings set "$arquivo" --project=SEU_PROJETO
-   rm "$arquivo"
+   # A chave mestra do console: gerada aqui, nunca vista por ninguém.
+   openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add cp-admin-totp-key --data-file=- --project=SEU_PROJETO
+   # O token do primeiro cadastro: gere com `openssl rand -base64 32`, guarde-o no seu gerenciador de senhas e grave:
+   read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-admin-setup-token --data-file=- --project=SEU_PROJETO && unset VALOR
    ```
 
-   Num projeto de uma organização, com uma conta dela, o IAP usa o cliente gerenciado pelo Google e este passo não
-   existe.
+   - **`cp-admin-totp-key`** (32 bytes em base64): cifra o segredo do TOTP no Firestore e assina os códigos de
+     recuperação. **Não troque depois do cadastro**: o segredo gravado deixaria de abrir, e o único caminho seria o
+     cadastro de emergência (seção 2.5).
+   - **`cp-admin-setup-token`** (32 caracteres ou mais): exigido só na tela `/configurar`. Depois do cadastro, a tela
+     se fecha sozinha; desative a versão mesmo assim (seção 2.1).
+
+   Nenhum dos dois é montado no serviço: o `cp-admin` os lê pela API do Secret Manager na hora do login e do cadastro.
+   Sem eles, o serviço sobe e o `/health` responde; só o login e o cadastro respondem "indisponível".
 
 2. **Terraform** (`infra/gcp/envs/control-plane`, GUIA, passo 8): `owner_principals` com o seu `user:` e
-   `admin_enabled = true` no `terraform.tfvars`, depois `terraform plan` e `terraform apply`. O plano cria 11 recursos,
-   mais 1 por pessoa em `owner_principals`.
-3. **GitHub:** acrescente `CP_ADMIN_SERVICE = cp-admin` às variáveis do environment `control-plane`
+   `admin_enabled = true` no `terraform.tfvars` (o site e o domínio têm padrão: `admin_hosting_site_id = "verax-admin"`
+   e `admin_hosting_domain = "admin.veraxsistemas.com.br"`), depois `terraform plan` e `terraform apply`. O plano cria
+   a conta `cp-admin` e o `datastore.user` dela, a leitura dos dois segredos, o serviço `cp-admin` com a invocação
+   anônima (o rewrite do Hosting exige), o `run.developer` e o `actAs` de quem implanta, o site do Hosting com a versão,
+   a release e o domínio, e os alertas do console (com `services_enabled`, mais o `run.invoker` do console no
+   `cp-worker`).
+3. **DNS:** `terraform output cloudflare_dns_records` lista os registros que o Firebase pede (os do `conta` e os do
+   `admin`). Crie no Cloudflare os que faltarem, com o proxy **desligado** ("DNS only"), como no `conta` (GUIA,
+   passo 6). O certificado sai sozinho depois que o Firebase vê os registros (de minutos a algumas horas); até lá, o
+   endereço direto do Cloud Run (`terraform output admin`, `run_url`) abre a mesma tela.
+4. **GitHub:** acrescente `CP_ADMIN_SERVICE = cp-admin` às variáveis do environment `control-plane`
    (`terraform output github_environment`) e rode o workflow "Plano de controle" (Actions → Run workflow). Sem essa
    variável, o workflow implanta só o `cp-public` e o `cp-worker`.
+5. **Limite por IP atrás do Hosting:** o console conta as tentativas por IP pelo mesmo critério do `cp-public`
+   (`TRUST_PROXY_HOPS` e `TRUSTED_PROXIES`; o cabeçalho `Fastly-Client-IP` não é usado, porque quem chama o `run.app`
+   direto o forjaria). Sem `TRUSTED_PROXIES` em `service_env` (as saídas do Hosting), quem chega pelo Hosting aparece
+   com o IP da saída do Hosting e as tentativas de pessoas diferentes se juntam num balde só: nada fica mais fraco (o
+   bloqueio por e-mail continua), mas um robô pode fazer o limite por IP recusar você por alguns minutos. As variáveis
+   de `service_env` vão também para o `cp-admin` (só essas duas).
 
-## 2. Abrir o console
+### Migração de um console que estava atrás do IAP
+
+O app novo não lê mais `IAP_AUDIENCE` e exige `ADMIN_SECRETS_PROJECT_ID`, que só o Terraform põe. Nesta ordem, o
+console nunca fica aberto (no máximo fica fechado, respondendo 401, por alguns minutos):
+
+1. Faça o merge. O workflow implanta a imagem nova; a revisão candidata do `cp-admin` não sobe (falta
+   `ADMIN_SECRETS_PROJECT_ID`) ou não passa no `/health` (o IAP ainda está ligado), e o workflow para sem promover
+   nada: os três serviços continuam na revisão anterior.
+2. Grave os dois segredos (item 1 acima; o `apply` do passo seguinte cria os cofres, então grave-os logo depois dele)
+   e rode o `terraform apply`: o IAP sai do `cp-admin`, a invocação passa a anônima, o site `verax-admin` e o domínio
+   nascem, e o serviço ganha uma revisão nova com a imagem nova e as variáveis novas. O tráfego continua na revisão
+   antiga, que ainda exige o JWT do IAP: sem o IAP, ela recusa tudo (401).
+3. Crie os registros de DNS (item 3) e rode o workflow de novo (Actions → Run workflow): agora o `/health` do
+   `cp-admin` responde, e os três serviços são promovidos.
+4. Faça o cadastro (seção 2.1).
+
+Se o `apply` do passo 2 falhar no `cp-admin` porque a revisão nova não subiu (a imagem do serviço ainda era a antiga),
+rode o workflow (ele implanta a imagem nova, já com as variáveis novas) e o `apply` de novo.
+
+Depois que o console novo estiver no ar, o que era só do IAP pode ser apagado à mão no console da GCP do projeto:
+
+- o **cliente OAuth do IAP** (APIs e serviços → Credenciais) e, se ela só servia a ele, a **tela de consentimento
+  OAuth**;
+- a **API do IAP** (`iap.googleapis.com`): o Terraform a ligou com `disable_on_destroy = false`, então ela continua
+  ligada depois do `apply`; desligue-a em APIs e serviços se nada mais a usa. Não confunda com o SSH dos nós pelo túnel
+  do IAP (`gcloud compute ssh --tunnel-through-iap`), que é outro uso e continua.
+
+## 2. Entrar no console
 
 ```bash
-terraform output admin   # url (o endereço run.app do cp-admin) e iap_audience
+terraform output admin   # url (https://admin.veraxsistemas.com.br), run_url, site_id
 ```
 
-Abra a `url` no navegador. O Google pede o login; o cabeçalho do console mostra o e-mail que o IAP confirmou. Se não
-abrir:
+### 2.1. O primeiro cadastro (uma vez)
 
-| O que aparece                                        | Causa provável                                                                                                                    |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Página do Google "You don't have access"             | A conta não está em `owner_principals` (o IAP recusou antes do app).                                                              |
-| Erro de OAuth no login                               | Projeto sem organização e sem o cliente OAuth do passo 1.                                                                         |
-| `{"code":"unauthenticated"}` em JSON                 | O IAP está desligado no serviço ou o `IAP_AUDIENCE` não bate com o serviço (`terraform output admin`). O alerta de recusas avisa. |
-| "Esta conta não é de um responsável pelo console"    | O e-mail passou pelo IAP mas não está em `OWNER_PRINCIPALS` (as duas listas saem de `owner_principals`: rode o `apply`).          |
-| "Sua sessão no Google terminou. Recarregue a página" | A sessão do IAP venceu: recarregue e entre de novo.                                                                               |
+1. Abra **https://admin.veraxsistemas.com.br/configurar**.
+2. Informe o **token** que você gravou em `cp-admin-setup-token`, o seu **e-mail** (um de `owner_principals`) e uma
+   **senha** com 12 caracteres ou mais (`autocomplete` de senha nova: o gerenciador de senhas sugere uma).
+3. Escaneie o **QR code** com o aplicativo autenticador (Google Authenticator, Microsoft Authenticator, 1Password,
+   Bitwarden...). O QR é gerado no próprio navegador, sem serviço externo; a chave em texto aparece ao lado para quem
+   preferir digitar.
+4. Digite o **código de 6 dígitos** que o aplicativo mostra para confirmar.
+5. Guarde os **10 códigos de recuperação** (cada um vale uma vez, para entrar sem o celular). Eles aparecem **só
+   agora**: copie para o gerenciador de senhas ou imprima. Você já entra no console.
+6. A tela `/configurar` se fecha sozinha (o cadastro grava um marcador no Firestore, `adminSetup/owner`). Desative a
+   versão do token mesmo assim (ele não é montado, então nada depende dela):
+
+   ```bash
+   gcloud secrets versions list cp-admin-setup-token --project=SEU_PROJETO
+   gcloud secrets versions disable <NÚMERO> --secret=cp-admin-setup-token --project=SEU_PROJETO
+   # ou, sem volta: gcloud secrets versions destroy <NÚMERO> --secret=cp-admin-setup-token --project=SEU_PROJETO
+   ```
+
+Só existe um cadastro: só o primeiro e-mail de `owner_principals` que se cadastrar tem conta no console.
+
+### 2.2. No dia a dia
+
+Abra **https://admin.veraxsistemas.com.br** (sem sessão, vai para `/entrar`): e-mail, senha e o código do aplicativo.
+O cabeçalho mostra o e-mail da sessão e o botão **Sair**. Depois de 30 minutos sem uso (ou 12 horas do login), o
+console pede o login de novo.
+
+| O que aparece                                                 | Causa provável                                                                                                                                                       |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "E-mail, senha ou código incorretos..." (a mensagem genérica) | E-mail, senha ou código errados; o código já usado (espere o próximo); o relógio do celular adiantado ou atrasado; ou o e-mail bloqueado por 15 minutos (seção 2.4). |
+| "Muitas tentativas. Tente novamente mais tarde."              | O limite por IP (seção 1, item 5). Espere alguns minutos.                                                                                                            |
+| Login e cadastro "indisponíveis"                              | Os segredos `cp-admin-totp-key` ou `cp-admin-setup-token` sem versão ativa, ou a conta `cp-admin` sem a leitura deles (rode o `apply`).                              |
+| O e-mail certo não entra nunca                                | O e-mail saiu de `owner_principals` (o console confere a lista a cada login e a cada requisição).                                                                    |
+| Volta sempre para `/entrar`                                   | A sessão venceu (30 minutos sem uso, 12 h do login), você saiu em outra aba, ou a senha foi trocada em outra sessão.                                                 |
+| Certificado inválido em admin.veraxsistemas.com.br            | O DNS (seção 1, item 3) ainda não foi visto pelo Firebase. Use o `run_url` enquanto isso.                                                                            |
+
+### 2.3. Perdi o celular (tenho os códigos de recuperação)
+
+1. Em `/entrar`, escolha **Usar um código de recuperação** e entre com o e-mail, a senha e um dos códigos (ele deixa
+   de valer).
+2. Em **Conta → Trocar o aplicativo autenticador**: confirme com a senha e outro código de recuperação, escaneie o QR
+   novo no celular novo e confirme com o código dele. Saem 10 códigos de recuperação **novos** (os antigos deixam de
+   valer): guarde-os.
+
+Restando poucos códigos, faça a troca do aplicativo mesmo sem perder o celular: ela gera 10 novos.
+
+### 2.4. Bloqueio
+
+O bloqueio cai sozinho 15 minutos depois da quinta tentativa errada. Para liberar antes (depois de confirmar nos logs
+do `cp-admin` que era você): no console da GCP, Firestore → coleção `adminLoginThrottle`, apague o documento (o id é o
+SHA-256, em hexadecimal, de `login:<e-mail em minúsculas>`; com uma conta só, pode apagar a coleção inteira). Se não
+foi você, troque a senha assim que entrar (Conta → Trocar a senha), o que encerra as outras sessões.
+
+### 2.5. Cadastro de emergência (sem o celular e sem os códigos, ou com a chave trocada)
+
+Só quem tem acesso ao projeto da GCP faz isto; o console não tem como se reabrir sozinho.
+
+1. No console da GCP, Firestore: apague o documento da coleção `adminAccounts`, o documento `adminSetup/owner` e os
+   documentos da coleção `adminSessions` (as sessões abertas).
+2. Grave uma versão nova de `cp-admin-setup-token` (seção 1, item 1).
+3. Faça o cadastro de novo em `/configurar` (seção 2.1) e desative a versão do token.
+
+Para encerrar todas as sessões sem refazer o cadastro (um computador perdido com o console aberto), basta apagar os
+documentos de `adminSessions`.
 
 ## 3. Primeira publicação: o modelo de custos
 
@@ -139,9 +254,13 @@ alerta `pricing_margin_alert` não sai daqui (só do console): a saída avisa no
 - **Alerta "a tabela de preços vigente ficou abaixo da margem mínima"** (`pricing_margin_alert`): um modelo de custos
   publicado deixou alguma configuração abaixo da mínima. Confira a tabela vigente (Conferir) e publique uma ajustada,
   ou corrija o modelo.
-- **Alerta "acessos recusados repetidos no console"** (`admin_auth_failed`, 3 ou mais em 10 minutos): atrás do IAP,
-  isso não acontece no uso normal. Confira se o IAP continua ligado no `cp-admin`, se o `IAP_AUDIENCE` bate com
-  `terraform output admin` e quem tem acesso ao IAP do serviço.
+- **Alerta "acessos recusados repetidos no console"** (`admin_auth_failed`, 5 ou mais em 10 minutos): tentativas de
+  login ou de cadastro recusadas. Se não foi você, alguém está tentando entrar: o rótulo `reason` diz o quê
+  (`unknown_account` e `not_owner` são e-mails que não são do console; `bad_password` com o seu e-mail é a senha sendo
+  testada; `setup_token` é alguém tentando o cadastro). Os logs do `cp-admin` mostram o IP das requisições. Se a senha
+  pode ter vazado, troque-a (Conta → Trocar a senha); o código do aplicativo continua exigido em todo login.
+- **Alerta "login do console do responsável bloqueado"** (`admin_account_locked`): 5 tentativas erradas para um e-mail
+  em 15 minutos. Veja a seção 2.4.
 
 ## 7. Clientes e contrato direto
 

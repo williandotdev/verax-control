@@ -1261,17 +1261,17 @@ do preço configurável, documentos internos.
 
 ### Peças
 
-| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                                                 | Não faz                                                                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                                       | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)     |
-| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                                           | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                   |
-| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e `reactivate`), chamadas pelo console (`cp-admin`) | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                  |
-| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás do IAP ligado direto no Cloud Run (sem balanceador)         | Console do responsável: as telas (`apps/console`) e a API das tabelas de preços e dos modelos de custo, simulador de DRE, os clientes (lista, linha do tempo, contrato direto) e os botões das operações, pedidas ao `cp-worker`    | Só o responsável entra (IAP); o app confere de novo o JWT assinado do IAP; nenhum segredo, nem a chave da Stripe  |
-| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                                                     | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                               |
-| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h)                       | Nunca guarda segredo, senha, cartão, token do túnel nem corpo bruto do webhook                                    |
-| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                                                   | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                          |
-| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie; manifesto da versão e bundle do painel                                                                                             | —                                                                                                                 |
-| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                                        | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado |
+| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                                                 | Não faz                                                                                                                                   |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                                       | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)                             |
+| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                                           | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                                           |
+| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e `reactivate`), chamadas pelo console (`cp-admin`) | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                                          |
+| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás de `admin.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Console do responsável: as telas (`apps/console`) e a API das tabelas de preços e dos modelos de custo, simulador de DRE, os clientes (lista, linha do tempo, contrato direto) e os botões das operações, pedidas ao `cp-worker`    | Login próprio (e-mail de `OWNER_PRINCIPALS`, senha e TOTP, com bloqueio); invocação anônima; nada da Stripe                               |
+| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                                                     | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                                                       |
+| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h); console: `admin*`    | Nunca guarda segredo em claro, cartão, token do túnel nem corpo bruto do webhook; a senha do console só como hash scrypt e o TOTP cifrado |
+| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                                                   | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                                                  |
+| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie, chave e token do console; manifesto e bundle                                                                                       | —                                                                                                                                         |
+| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                                        | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado                         |
 
 ### Identidades
 
@@ -1294,15 +1294,20 @@ do preço configurável, documentos internos.
   troca a imagem dos serviços (`run.developer` em cada serviço e no Job, nunca no projeto; `iam.serviceAccountUser`
   nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
   Nenhum segredo.
-- **`cp-admin`:** lê e escreve no Firestore (tabelas de preços, modelos de custo, clientes e auditoria) e invoca o
-  `cp-worker` (`run.invoker` só nele, com `admin_enabled` e `services_enabled`) com o token de identidade da própria
-  conta, para as operações do responsável; nenhum `actAs` na cp-invoker (não enfileira nada). Nenhum segredo: a
-  configuração recusa qualquer um, inclusive a chave da Stripe. O ingresso é só pelo IAP (o agente de serviço do IAP
-  tem `run.invoker`; o responsável, `iap.httpsResourceAccessor`), e o app confere em toda requisição o JWT do cabeçalho
-  `x-goog-iap-jwt-assertion` (ES256, emissor `https://cloud.google.com/iap`, `aud` = `IAP_AUDIENCE`, e-mail em
-  `OWNER_PRINCIPALS`). Esse JWT nunca sai do `cp-admin`.
-- **Responsável:** invoca o `cp-worker` com token de identidade, entra no `cp-admin` pelo IAP, administra os segredos;
-  tudo auditado (`owner:<e-mail>`).
+- **`cp-admin`:** lê e escreve no Firestore (tabelas de preços, modelos de custo, clientes, auditoria e as coleções do
+  console: `adminAccounts`, `adminSessions`, `adminLoginThrottle`, `adminEnrollments` e `adminSetup`), lê pela API do
+  Secret Manager só os dois segredos do console (`cp-admin-totp-key` e `cp-admin-setup-token`, nunca montados) e
+  invoca o `cp-worker` (`run.invoker` só nele, com `admin_enabled` e `services_enabled`) com o token de identidade da
+  própria conta, para as operações do responsável; nenhum `actAs` na cp-invoker (não enfileira nada). Nenhum segredo
+  montado: a configuração recusa a chave da Stripe. A invocação é anônima (o rewrite do Hosting de
+  `admin.veraxsistemas.com.br` exige); quem entra é o login do próprio app: e-mail de `OWNER_PRINCIPALS`, senha (hash
+  scrypt) e código TOTP (segredo cifrado com AES-256-GCM, código de uso único, códigos de recuperação em HMAC), com
+  bloqueio de 15 minutos depois de 5 erros por e-mail e limite por IP (`req.ip`, a regra de `client-ip.ts`). A sessão
+  é um id aleatório de 32 bytes no cookie `__session` (`HttpOnly`, `Secure`, `SameSite=Strict`), guardado só como
+  hash, com 30 minutos de inatividade e 12 horas no máximo. O primeiro cadastro exige o token de uso único de
+  `cp-admin-setup-token` e se fecha sozinho. A sessão nunca sai do `cp-admin`.
+- **Responsável:** invoca o `cp-worker` com token de identidade, entra no `cp-admin` com e-mail, senha e TOTP,
+  administra os segredos; tudo auditado (`owner:<e-mail>`).
 
 O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS
 Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita).
@@ -1805,10 +1810,10 @@ do contrato; data no passado é recusada, para não encurtar o prazo da exclusã
 cancelamento segue os mesmos D+30 e D+97. Num cliente da Stripe, as três respondem 409 `stripe_managed`.
 
 **Operações do responsável no cp-worker:** `POST /internal/tenants/:id/{resume,delete-now,export,cancel,suspend,reactivate}`.
-Quem chama é o console do responsável (`cp-admin`, atrás do IAP), com o token de identidade da conta dele (audiência
-`WORKER_URL`; a conta é `ADMIN_SA_EMAIL`) e quem agiu no corpo (`actor`, o e-mail que o IAP deu ao console, conferido
-contra `OWNER_PRINCIPALS`), ou um responsável direto (`OWNER_PRINCIPALS`). Nunca a cp-invoker nem o cp-public, e o
-console nunca repassa o token de quem está no navegador. Todas são auditadas como `owner:<e-mail>` e, menos a exportação
+Quem chama é o console do responsável (`cp-admin`, com login próprio), com o token de identidade da conta dele
+(audiência `WORKER_URL`; a conta é `ADMIN_SA_EMAIL`) e quem agiu no corpo (`actor`, o e-mail da sessão do console,
+conferido contra `OWNER_PRINCIPALS`), ou um responsável direto (`OWNER_PRINCIPALS`). Nunca a cp-invoker nem o
+cp-public, e o console nunca repassa a sessão de quem está no navegador. Todas são auditadas como `owner:<e-mail>` e, menos a exportação
 e o `resume`, pedem o subdomínio do cliente de novo (`confirmSlug`): um id trocado não age no cliente errado. O cliente
 HTTP que o console usa é `apps/control-plane/src/admin/worker-owner-client.ts`, com o token da conta pelo
 `google-auth-library` (`admin/google-id-token.ts`).
@@ -1867,7 +1872,7 @@ cliente só aceita `customer` com `billing.mode = contract` e o modo `self_hoste
 - **Limites e auditoria:** 5 cadastros por hora e 20 operações por hora por responsável (em memória; o `cp-admin` tem
   uma instância). Toda recusa (`tenant.create_refused`, `tenant.console_request_refused`), o cadastro (`tenant.create`
   com `billingMode`) e cada pedido ao worker com o desfecho (`tenant.console_request`) vão à auditoria como
-  `owner:<e-mail do IAP>`; a transição feita no worker, com o mesmo ator. Os logs levam só ids, o subdomínio, o porte,
+  `owner:<e-mail da sessão>`; a transição feita no worker, com o mesmo ator. Os logs levam só ids, o subdomínio, o porte,
   a versão da tabela e os códigos (nunca o e-mail, o CNPJ nem a razão social).
 - **`POST /internal/tenants/:id/provision` `{confirmSlug, actor?}` (cp-worker, `@WorkerCallers('owner', 'console')`):**
   só um cliente `contract` em `pending` vai a `provisioning`, com um `runId` novo e o `preflight` na fila (o equivalente
@@ -2008,9 +2013,10 @@ só define a forma dos documentos e as regras.
   resultado; a implantação à parte e os 12 meses; na nuvem do cliente, a estimativa da nuvem dele, só informativa.
 - **Console do responsável** (`apps/console`, servido pelo `cp-admin`): um app React compilado pelo Vite, com os
   tokens e os padrões do painel (pt-BR, claro e escuro, WCAG 2.2 AA conferido pelo axe), que a imagem do plano de
-  controle leva em `/app/console`. O próprio `cp-admin` serve as telas e a API na mesma origem, atrás do mesmo IAP: sem
-  CORS, sem outro serviço e sem outro login. Cada arquivo das telas também exige o JWT do IAP de um responsável (como a
-  API), com a CSP própria das telas (só scripts, estilos e chamadas da própria origem, nada inline, nada em frame);
+  controle leva em `/app/console`. O próprio `cp-admin` serve as telas e a API na mesma origem
+  (`admin.veraxsistemas.com.br`): sem CORS e sem outro serviço. As telas abrem sem sessão (a de login, `/entrar`, e a
+  do primeiro cadastro, `/configurar`; são o código do repositório público, sem número nenhum), com a CSP própria
+  delas (só scripts, estilos e chamadas da própria origem, nada inline, nada em frame);
   `/assets/` (nomes com hash) fica em cache privado, o resto sem cache. As telas não têm nenhum número: o modelo de
   custos (com o custo do nó por porte recalculado na hora), a tabela de preços (com a checagem e a publicação, e o
   relatório da recusa) e o simulador de DRE leem e gravam só pela API, e os problemas de validação voltam por campo.
