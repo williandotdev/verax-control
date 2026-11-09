@@ -48,6 +48,21 @@ const simulateBodySchema = z.strictObject({
   allocationCustomers: z.number().int().min(1).max(100_000).optional(),
 });
 
+/**
+ * A revisão do rascunho que quem publica conferiu (o `updatedAt` dele). Com ela, a publicação só sai se o rascunho
+ * ainda for aquele: editado depois, 409 `draft_changed` e nada é publicado. Sem ela, vale o rascunho lido na hora.
+ */
+export interface DraftRevision {
+  expectedUpdatedAt: Date;
+}
+
+/** O rascunho mudou depois de quem publica conferi-lo. */
+function assertRevision(record: VersionedRecord<unknown>, revision: DraftRevision | undefined): void {
+  if (revision !== undefined && record.updatedAt.getTime() !== revision.expectedUpdatedAt.getTime()) {
+    throw storeError(new DraftChangedError(record.version));
+  }
+}
+
 /** A versão publicada (o resumo, como na lista) e o relatório da checagem que a acompanhou. */
 export type PublishResult = Omit<VersionSummary, 'current'> & { report: GuardReport | null };
 
@@ -184,13 +199,20 @@ export class AdminPricingService {
   /**
    * Publica a tabela de preços: rascunho, modelo de custos vigente, checagem da grade inteira e, só se ela passar, a
    * publicação (a versão anterior vira `retired` na vigência da nova). Recusada, 422 `publish_guard_failed` com o
-   * relatório (as piores configurações, as abaixo da mínima e o motivo), e a recusa fica na auditoria.
+   * relatório (as piores configurações, as abaixo da mínima e o motivo), e a recusa fica na auditoria. Com `revision`,
+   * só publica o rascunho naquela revisão (`DraftRevision`).
    */
-  async publishTable(version: string, body: unknown, owner: OwnerContext): Promise<PublishResult> {
+  async publishTable(
+    version: string,
+    body: unknown,
+    owner: OwnerContext,
+    revision?: DraftRevision,
+  ): Promise<PublishResult> {
     const { effectiveFrom } = parse(publishTableBodySchema, body);
     const id = requireVersion(version);
     const table = await this.guarded(() => this.tables.require(id));
     if (table.status !== 'draft') throw storeError(new VersionImmutableError(id, table.status));
+    assertRevision(table, revision);
     const model = await this.costModel(undefined);
     const report = runPublishGuard(table.content, model.content);
     const check = this.checkSummary(id, model.version, report);
@@ -233,12 +255,19 @@ export class AdminPricingService {
   /**
    * Publica o modelo de custos, vigente na hora (custo não muda o preço de ninguém). Não é bloqueada: a checagem da
    * tabela de preços vigente com o modelo novo vai na resposta e, se ela falhar, um alerta vai ao log (só as versões).
+   * Com `revision`, só publica o rascunho naquela revisão (`DraftRevision`).
    */
-  async publishCostModel(version: string, body: unknown, owner: OwnerContext): Promise<PublishResult> {
+  async publishCostModel(
+    version: string,
+    body: unknown,
+    owner: OwnerContext,
+    revision?: DraftRevision,
+  ): Promise<PublishResult> {
     parse(publishCostBodySchema, body);
     const id = requireVersion(version);
     const model = await this.guarded(() => this.costs.require(id));
     if (model.status !== 'draft') throw storeError(new VersionImmutableError(id, model.status));
+    assertRevision(model, revision);
     const table = await this.tables.current();
     const report = table === undefined ? null : runPublishGuard(table.content, model.content);
     const published = await this.guarded(() =>

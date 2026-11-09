@@ -270,6 +270,109 @@ describe('publicar-precos: publicação', () => {
   });
 });
 
+describe('publicar-precos: versão aposentada e rascunho que muda', () => {
+  /** v1 publicada e depois aposentada pela v2, que reprova a tabela (margem mínima inalcançável). */
+  async function retiredV1(h: Harness): Promise<string> {
+    const v1 = costFile({}, 'custos-teste-v1');
+    expect(await h.run([`--custos=${v1}`, `--projeto=${PROJECT}`, '--publicar'])).toBe(EXIT.ok);
+    h.clock.advance(MINUTE_MS);
+    const v2 = costFile({ margins: { minimum: 0.99, alert: 0.995 } }, 'custos-teste-v2');
+    expect(await h.run([`--custos=${v2}`, `--projeto=${PROJECT}`, '--publicar'])).toBe(EXIT.ok);
+    expect(await h.store.get(COLLECTIONS.costModels, 'custos-teste-v1')).toMatchObject({ status: 'retired' });
+    h.clock.advance(MINUTE_MS);
+    lines = [];
+    return v1;
+  }
+
+  it('um modelo de custos aposentado é recusado, e a checagem usa o vigente (o que o serviço usaria)', async () => {
+    const h = harness();
+    const v1 = await retiredV1(h);
+    const argv = [`--custos=${v1}`, `--tabela=${tableFile()}`, `--projeto=${PROJECT}`];
+    expect(await h.run(argv)).toBe(EXIT.refused);
+    expect(output()).toContain('RECUSADA: a versão custos-teste-v1 está aposentada');
+    expect(output()).toContain('modelo de custos custos-teste-v2 (vigente)');
+    expect(output()).toContain('resultado: REPROVADA');
+  });
+
+  it('com --publicar, o aposentado não grava nada', async () => {
+    const h = harness();
+    const v1 = await retiredV1(h);
+    const before = await count(h.store, COLLECTIONS.auditLog);
+    const argv = [`--custos=${v1}`, `--tabela=${tableFile()}`, `--projeto=${PROJECT}`, '--publicar'];
+    expect(await h.run(argv)).toBe(EXIT.refused);
+    expect(await count(h.store, COLLECTIONS.auditLog)).toBe(before);
+    expect(await count(h.store, COLLECTIONS.pricingTables)).toBe(0);
+  });
+
+  it('o modelo de custos do arquivo já vigente (nada a gravar) é o da checagem', async () => {
+    const h = harness();
+    const v1 = costFile();
+    expect(await h.run([`--custos=${v1}`, `--projeto=${PROJECT}`, '--publicar'])).toBe(EXIT.ok);
+    h.clock.advance(MINUTE_MS);
+    lines = [];
+    const argv = [`--custos=${v1}`, `--tabela=${tableFile()}`, `--projeto=${PROJECT}`, '--publicar'];
+    expect(await h.run(argv)).toBe(EXIT.ok);
+    expect(output()).toContain('modelo de custos custos-teste-v1 (arquivo)');
+    expect(output()).toContain('modelo de custos custos-teste-v1: já publicada, nada gravado');
+  });
+
+  /** Um rascunho da tabela igual ao arquivo, como o console deixaria. */
+  async function seedDraft(h: Harness): Promise<void> {
+    expect(await h.run([`--custos=${costFile()}`, `--projeto=${PROJECT}`, '--publicar'])).toBe(EXIT.ok);
+    h.clock.advance(MINUTE_MS);
+    await h.store.runTransaction((tx) => {
+      tx.create(COLLECTIONS.pricingTables, 'tabela-teste-v1', {
+        status: 'draft',
+        content: fictitiousPriceTable(),
+        createdAt: h.clock.now(),
+        createdBy: EMAIL,
+        updatedAt: h.clock.now(),
+        updatedBy: EMAIL,
+      });
+      return Promise.resolve();
+    });
+    h.clock.advance(MINUTE_MS);
+    lines = [];
+  }
+
+  it('o rascunho igual ao arquivo é publicado na revisão conferida', async () => {
+    const h = harness();
+    await seedDraft(h);
+    expect(await h.run([`--tabela=${tableFile()}`, `--projeto=${PROJECT}`, '--publicar'])).toBe(EXIT.ok);
+    expect(output()).toContain('rascunho igual: publicaria');
+    expect(await h.store.get(COLLECTIONS.pricingTables, 'tabela-teste-v1')).toMatchObject({
+      status: 'published',
+    });
+  });
+
+  it('o rascunho editado depois da conferência não é publicado (draft_changed)', async () => {
+    const h = harness();
+    await seedDraft(h);
+    // A identidade é pedida entre a conferência e a publicação: é ali que "outra pessoa" edita o rascunho.
+    const editMeanwhile = async (): Promise<string> => {
+      h.clock.advance(MINUTE_MS);
+      const stored = await h.store.get(COLLECTIONS.pricingTables, 'tabela-teste-v1');
+      await h.store.runTransaction((tx) => {
+        tx.set(COLLECTIONS.pricingTables, 'tabela-teste-v1', {
+          ...stored,
+          content: { ...fictitiousPriceTable(), users: { max: 3 } },
+          updatedAt: h.clock.now(),
+          updatedBy: 'outra-pessoa@example.com',
+        });
+        return Promise.resolve();
+      });
+      return EMAIL;
+    };
+    const argv = [`--tabela=${tableFile()}`, `--projeto=${PROJECT}`, '--publicar'];
+    expect(await h.run(argv, editMeanwhile)).toBe(EXIT.refused);
+    expect(output()).toContain('draft_changed');
+    const table = await h.store.get(COLLECTIONS.pricingTables, 'tabela-teste-v1');
+    expect(table).toMatchObject({ status: 'draft', updatedBy: 'outra-pessoa@example.com' });
+    const actions = (await h.store.query(COLLECTIONS.auditLog)).map((entry) => entry.data['action']);
+    expect(actions).not.toContain('pricing.published');
+  });
+});
+
 /**
  * O mesmo caminho contra o emulador oficial do Firestore (`scripts/firestore-emulator.sh start`). Sem
  * `FIRESTORE_EMULATOR_HOST`, pulado na máquina de desenvolvimento; no CI, o emulador está sempre no ar.

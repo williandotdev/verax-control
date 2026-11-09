@@ -99,8 +99,12 @@ mesmo código do console (validação, checagem da grade, vigência, aposentador
 `owner:<e-mail>`), lendo os arquivos `{ "version", "content" }` (o formato do "Exportar JSON"), que ficam **fora do
 repositório**. Quem publica é o e-mail das credenciais padrão do Google (`gcloud auth application-default login`), que
 precisa poder escrever no Firestore do projeto. Sem `--publicar` é só simulação: a checagem e, com `--projeto`, a
-diferença para o que está no banco. O modelo de custos é publicado antes da tabela; nada é gravado se a checagem
-reprovar ou se a versão já estiver publicada com outro conteúdo; rodar de novo com o mesmo conteúdo não grava nada.
+diferença para o que está no banco. O modelo de custos é publicado antes da tabela, e a checagem da tabela usa o
+modelo que estará vigente na publicação dela (o do arquivo, se ele for publicado ou já for o vigente; senão, o vigente
+no banco). Nada é gravado se a checagem reprovar, se a versão já estiver publicada com outro conteúdo ou se ela estiver
+aposentada (não se republica uma aposentada); rodar de novo com o mesmo conteúdo não grava nada. Um rascunho que já
+existe igual ao arquivo só é publicado na revisão conferida: editado no meio do caminho, a publicação é recusada
+(`draft_changed`).
 
 ```bash
 pnpm --filter @verax/control-plane build

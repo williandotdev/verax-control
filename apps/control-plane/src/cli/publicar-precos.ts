@@ -106,11 +106,26 @@ interface LoadedFile<C> {
 
 type Kind = 'custos' | 'tabela';
 
-/** O que acontece com uma versão: criar, atualizar o rascunho, nada (já publicada igual) ou conflito. */
+/**
+ * O que acontece com uma versão: criar, atualizar o rascunho, publicar o rascunho igual ao arquivo, nada (já publicada
+ * igual) ou recusa (publicada com outro conteúdo, ou aposentada: não se republica uma versão aposentada).
+ */
 interface Plan {
   kind: Kind;
   version: string;
-  action: 'create' | 'update' | 'publish_draft' | 'already_published' | 'conflict';
+  action: 'create' | 'update' | 'publish_draft' | 'already_published' | 'conflict' | 'retired';
+  /**
+   * No `publish_draft`: o `updatedAt` do rascunho conferido contra o arquivo. A publicação exige o mesmo (o
+   * `DraftChangedError` do repositório): um rascunho editado depois da conferência não é publicado.
+   */
+  reviewedUpdatedAt?: Date;
+  /** A versão vigente no banco na hora do plano. */
+  currentVersion?: string;
+}
+
+/** Se o plano grava e publica esta versão (e não só a deixa como está). */
+function publishes(plan: Plan): boolean {
+  return plan.action === 'create' || plan.action === 'update' || plan.action === 'publish_draft';
 }
 
 /** O e-mail das credenciais padrão do Google: o da conta de serviço ou, numa conta de usuário, o do token. */
@@ -286,9 +301,14 @@ async function planFor<C>(
   if (current !== undefined && current.version !== file.version) {
     printChanges(`  diferença para a vigente (${current.version})`, current.content, file.content, out);
   }
+  const base = {
+    kind,
+    version: file.version,
+    ...(current === undefined ? {} : { currentVersion: current.version }),
+  };
   if (existing === undefined) {
     out('  a versão não existe: criaria o rascunho e publicaria');
-    return { kind, version: file.version, action: 'create' };
+    return { ...base, action: 'create' };
   }
   const changed = printChanges(
     `  diferença para a versão gravada (${existing.status})`,
@@ -297,18 +317,29 @@ async function planFor<C>(
     out,
   );
   if (existing.status === 'draft') {
-    out(changed === 0 ? '  rascunho igual: publicaria' : '  atualizaria o rascunho e publicaria');
-    return { kind, version: file.version, action: changed === 0 ? 'publish_draft' : 'update' };
+    if (changed !== 0) {
+      out('  atualizaria o rascunho e publicaria');
+      return { ...base, action: 'update' };
+    }
+    out('  rascunho igual: publicaria (só se ele não mudar até a publicação)');
+    return { ...base, action: 'publish_draft', reviewedUpdatedAt: existing.updatedAt };
+  }
+  if (existing.status === 'retired') {
+    out(
+      `  RECUSADA: a versão ${file.version} está aposentada (substituída por ${existing.supersededBy ?? '?'}). ` +
+        'Uma versão aposentada não volta a valer: para usar este conteúdo, publique-o com outra versão no arquivo.',
+    );
+    return { ...base, action: 'retired' };
   }
   if (changed === 0) {
     out(`  já está ${existing.status} com este conteúdo: nada a fazer`);
-    return { kind, version: file.version, action: 'already_published' };
+    return { ...base, action: 'already_published' };
   }
   out(
     `  CONFLITO: a versão ${file.version} já está ${existing.status} com outro conteúdo. Publicada não muda: use ` +
       'outra versão no arquivo.',
   );
-  return { kind, version: file.version, action: 'conflict' };
+  return { ...base, action: 'conflict' };
 }
 
 function describeApiError(error: ApiError, out: (line: string) => void): void {
@@ -333,24 +364,38 @@ async function apply<C>(
 ): Promise<void> {
   const table = plan.kind === 'tabela';
   const label = table ? 'tabela de preços' : 'modelo de custos';
-  if (plan.action === 'already_published') {
+  if (!publishes(plan)) {
     out(`${label} ${plan.version}: já publicada, nada gravado`);
     return;
   }
+  // A revisão do rascunho que vai ser publicada: a que este processo gravou ou a que a simulação conferiu. Se outro
+  // alguém editar o rascunho antes da publicação, o serviço recusa (409 draft_changed) e nada é publicado.
+  let expectedUpdatedAt = plan.reviewedUpdatedAt;
   if (plan.action === 'create') {
     const body = { version: plan.version, content: file.raw };
-    if (table) await service.createTable(body, owner);
-    else await service.createCostModel(body, owner);
+    const created = table
+      ? await service.createTable(body, owner)
+      : await service.createCostModel(body, owner);
+    expectedUpdatedAt = created.updatedAt;
     out(`${label} ${plan.version}: rascunho criado`);
   } else if (plan.action === 'update') {
     const body = { content: file.raw };
-    if (table) await service.updateTable(plan.version, body, owner);
-    else await service.updateCostModel(plan.version, body, owner);
+    const updated = table
+      ? await service.updateTable(plan.version, body, owner)
+      : await service.updateCostModel(plan.version, body, owner);
+    expectedUpdatedAt = updated.updatedAt;
     out(`${label} ${plan.version}: rascunho atualizado`);
   }
+  if (expectedUpdatedAt === undefined) throw new TypeError(`sem a revisão do rascunho ${plan.version}`);
+  const revision = { expectedUpdatedAt };
   const result = table
-    ? await service.publishTable(plan.version, effectiveFrom === undefined ? {} : { effectiveFrom }, owner)
-    : await service.publishCostModel(plan.version, {}, owner);
+    ? await service.publishTable(
+        plan.version,
+        effectiveFrom === undefined ? {} : { effectiveFrom },
+        owner,
+        revision,
+      )
+    : await service.publishCostModel(plan.version, {}, owner, revision);
   out(
     `${label} ${plan.version}: publicada (vigente a partir de ${result.effectiveFrom?.toISOString() ?? '?'}, ` +
       `por ${result.publishedBy ?? '?'})`,
@@ -468,14 +513,30 @@ export async function main(io: PublishPricingIo): Promise<number> {
       out('Sem --projeto: só a validação e a checagem, sem ler nem gravar o Firestore.');
     }
 
-    // A checagem roda com o modelo de custos que estará vigente na publicação da tabela: o do arquivo (publicado antes
-    // dela) ou, sem ele, o vigente no banco.
+    // Primeiro o plano de cada versão: ele decide qual modelo de custos estará vigente quando a tabela for publicada.
+    const plans: Plan[] = [];
+    if (costs !== undefined && costFile !== undefined)
+      plans.push(await planFor('custos', costFile, costs, out));
+    if (tables !== undefined && tableFile !== undefined) {
+      plans.push(await planFor('tabela', tableFile, tables, out));
+    }
+    const refused = plans.some((plan) => plan.action === 'conflict' || plan.action === 'retired');
+    const costPlan = plans.find((plan) => plan.kind === 'custos');
+
+    // A checagem roda com o modelo de custos que o serviço vai usar na publicação da tabela (o vigente naquela hora):
+    // o do arquivo quando ele é publicado antes da tabela (ou já é o vigente); senão, o vigente no banco. Sem banco,
+    // o do arquivo.
     let guardOk = true;
     if (tableFile !== undefined) {
       let model: { label: string; content: CostModel } | undefined;
-      if (costFile !== undefined)
+      const fileIsCurrent =
+        costFile !== undefined &&
+        (costPlan === undefined ||
+          publishes(costPlan) ||
+          (costPlan.action === 'already_published' && costPlan.currentVersion === costFile.version));
+      if (costFile !== undefined && fileIsCurrent) {
         model = { label: `${costFile.version} (arquivo)`, content: costFile.content };
-      else if (costs !== undefined) {
+      } else if (costs !== undefined) {
         const current = await costs.current();
         if (current !== undefined)
           model = { label: `${current.version} (vigente)`, content: current.content };
@@ -493,25 +554,17 @@ export async function main(io: PublishPricingIo): Promise<number> {
       guardOk = report.ok;
     }
 
-    const plans: Plan[] = [];
-    if (costs !== undefined && costFile !== undefined)
-      plans.push(await planFor('custos', costFile, costs, out));
-    if (tables !== undefined && tableFile !== undefined) {
-      plans.push(await planFor('tabela', tableFile, tables, out));
-    }
-    const conflict = plans.some((plan) => plan.action === 'conflict');
-
     if (!args.publicar) {
       out(
         project === undefined
           ? 'Nada foi lido nem gravado.'
           : 'Simulação: nada foi gravado. Para gravar, rode de novo com --publicar.',
       );
-      return guardOk && !conflict ? EXIT.ok : EXIT.refused;
+      return guardOk && !refused ? EXIT.ok : EXIT.refused;
     }
-    if (!guardOk || conflict) {
+    if (!guardOk || refused) {
       out(
-        `Nada foi gravado: ${!guardOk ? 'a checagem de publicação reprovou a tabela' : 'há conflito de versão'}.`,
+        `Nada foi gravado: ${!guardOk ? 'a checagem de publicação reprovou a tabela' : 'há versão recusada (acima)'}.`,
       );
       return EXIT.refused;
     }
