@@ -161,7 +161,7 @@ jobs:
       - name: Trivy na imagem
         # --ignore-unfixed: só bloqueia o que tem correção disponível, para o gate ser acionável.
         run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-control-plane:teste
-      - name: Execução como no Cloud Run (os três papéis, raiz só leitura, console sem o IAP, configuração inválida)
+      - name: Execução como no Cloud Run (os três papéis, raiz só leitura, console sem sessão, configuração inválida)
         run: bash scripts/test-control-plane-image.sh verax-control-plane:teste
       # Executor Terraform (CP-07): a imagem do Job cp-terraform. Só build e conferência aqui; nada é publicado nem
       # implantado (o Job continua com a imagem que o responsável puser, infra/gcp/GUIA.md).

@@ -1,13 +1,13 @@
 name: Plano de controle
 
 # Publica a imagem do plano de controle no Artifact Registry e implanta os serviços do Cloud Run (cp-public, cp-worker
-# e, quando existe, cp-admin, o console do responsável atrás do IAP: a mesma imagem, com ROLE diferente) no projeto da
-# Verax. O cp-admin é opcional: sem `CP_ADMIN_SERVICE` no environment (a saída `github_environment` só a traz com
-# `admin_enabled` no Terraform), ele fica de fora e o resto implanta igual.
+# e, quando existe, cp-admin, o console do responsável, com login próprio: a mesma imagem, com ROLE diferente) no
+# projeto da Verax. O cp-admin é opcional: sem `CP_ADMIN_SERVICE` no environment (a saída `github_environment` só a
+# traz com `admin_enabled` no Terraform), ele fica de fora e o resto implanta igual.
 #
 # Divisão com o Terraform (infra/gcp/envs/control-plane; GUIA, seção "O plano de controle"):
 # - o Terraform é dono dos serviços e de tudo o que há neles: conta de serviço, variáveis de ambiente, segredos,
-#   IAM, escala, timeout, sonda de partida em /health, ingress, IAP; e também dos índices compostos e das políticas
+#   IAM, escala, timeout, sonda de partida em /health, ingress; e também dos índices compostos e das políticas
 #   de TTL do Firestore. Este workflow nunca cria um serviço: se algum deles não existir, o job para antes do build
 #   e aponta o passo do GUIA (services_enabled = true, admin_enabled = true);
 # - o workflow é dono só da imagem em execução. `gcloud run deploy --image` cria uma revisão nova copiando o resto
@@ -15,10 +15,10 @@ name: Plano de controle
 #   `image`, `traffic`, `client` e `client_version`). Nada mais é passado, para os dois não brigarem.
 #
 # A revisão nova nasce sem tráfego e etiquetada; o gcloud só termina quando a sonda de partida (do Terraform)
-# passa. Depois, a prova: o /health no endereço etiquetado do cp-public e a condição Ready da revisão em todos (no
-# cp-worker, só IAM, e no cp-admin, atrás do IAP, o endereço não responde a um curl sem login: a condição Ready depende
-# da sonda em /health). Só então o tráfego vai para a revisão nova; qualquer falha antes disso deixa a revisão anterior
-# servindo.
+# passa. Depois, a prova: o /health no endereço etiquetado do cp-public e do cp-admin (os dois aceitam invocação
+# anônima, que o rewrite do Hosting exige; o login do console é do app) e a condição Ready da revisão em todos (no
+# cp-worker, só IAM, o endereço não responde a um curl sem token: a condição Ready depende da sonda em /health). Só
+# então o tráfego vai para a revisão nova; qualquer falha antes disso deixa a revisão anterior servindo.
 #
 # Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `control-plane`,
 # que só aceita a `main` (molde do painel.yml). As variáveis do environment são a saída `github_environment` do
@@ -168,7 +168,7 @@ jobs:
           }
           deploy "$PUBLIC_SERVICE" public
           deploy "$WORKER_SERVICE" worker
-          # O IAP é do serviço (Terraform, `iap_enabled`): uma revisão nova pelo gcloud não o desliga.
+          # A invocação anônima do cp-admin é IAM do serviço (Terraform): uma revisão nova pelo gcloud não a muda.
           if [ -n "$ADMIN_SERVICE" ]; then deploy "$ADMIN_SERVICE" admin; fi
       - name: Conferir o /health da revisão candidata
         if: steps.config.outputs.ready == 'true'
@@ -181,12 +181,15 @@ jobs:
         run: |
           set -euo pipefail
           describe() { gcloud run services describe "$1" --project "$PROJECT" --region "$REGION" --format json; }
-          # cp-public aceita invocação anônima (exigência do rewrite do Hosting): o endereço etiquetado responde direto.
-          url=$(describe "$PUBLIC_SERVICE" | jq -er --arg tag "$CANDIDATE_TAG" '.status.traffic[] | select(.tag == $tag) | .url')
-          curl -fsS --retry 5 --retry-all-errors "$url/health" | grep -q '"status":"ok"'
-          echo "$PUBLIC_SERVICE: /health respondeu na revisão candidata"
-          # cp-worker é só IAM, e cp-admin fica atrás do IAP: a prova é a condição Ready da revisão, que depende da
-          # sonda de partida em /health (a sonda não passa pelo IAP).
+          # cp-public e cp-admin aceitam invocação anônima (exigência do rewrite do Hosting; o console exige a sessão do
+          # app em tudo menos /health, login e cadastro): o endereço etiquetado responde direto.
+          for service in "$PUBLIC_SERVICE" ${ADMIN_SERVICE:+"$ADMIN_SERVICE"}; do
+            url=$(describe "$service" | jq -er --arg tag "$CANDIDATE_TAG" '.status.traffic[] | select(.tag == $tag) | .url')
+            curl -fsS --retry 5 --retry-all-errors "$url/health" | grep -q '"status":"ok"'
+            echo "$service: /health respondeu na revisão candidata"
+          done
+          # cp-worker é só IAM: a prova é a condição Ready da revisão, que depende da sonda de partida em /health. Nos
+          # outros dois, a mesma condição, por garantia.
           for service in "$WORKER_SERVICE" "$PUBLIC_SERVICE" ${ADMIN_SERVICE:+"$ADMIN_SERVICE"}; do
             revision=$(describe "$service" | jq -er --arg tag "$CANDIDATE_TAG" '.status.traffic[] | select(.tag == $tag) | .revisionName')
             gcloud run revisions describe "$revision" --project "$PROJECT" --region "$REGION" --format json |
@@ -220,6 +223,6 @@ jobs:
             echo "- Imagem: \`$DIGEST\`"
             echo "- Serviços: \`$PUBLIC_SERVICE\` e \`$WORKER_SERVICE\`, promovidos depois do /health"
             if [ -n "$ADMIN_SERVICE" ]; then
-              echo "- Console do responsável: \`$ADMIN_SERVICE\` (atrás do IAP), promovido com a revisão pronta"
+              echo "- Console do responsável: \`$ADMIN_SERVICE\`, promovido depois do /health"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

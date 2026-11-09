@@ -1,59 +1,53 @@
 # O console do responsável (`cp-admin`): o terceiro serviço da mesma imagem, com `ROLE=admin`, que serve as telas
-# (apps/console) e a API `/v1/admin/...` (tabelas de preço, modelos de custo, publicação e simulador de DRE). Fica
-# atrás do IAP ligado direto no Cloud Run, sem balanceador (GA desde 13/03/2026, notas de versão do Cloud Run; no
-# provider, `iap_enabled` no `google_cloud_run_v2_service` desde a 7.21.0 e `google_iap_web_cloud_run_service_iam_*`
-# desde a 6.31.0, ambos no schema da 8.9.0 fixada aqui). Nada disto existe sem `admin_enabled = true`.
+# (apps/console) e a API `/v1/admin/...` (tabelas de preço, modelos de custo, publicação, simulador de DRE e clientes).
+# O endereço é o site próprio do Firebase Hosting, `admin.veraxsistemas.com.br`, com o rewrite de tudo (`/**`) para o
+# cp-admin, igual ao `conta` → cp-public (hosting.tf). Nada disto existe sem `admin_enabled = true`.
 #
-# Quem entra: só quem está em `owner_principals`, com `roles/iap.httpsResourceAccessor` no serviço. O IAP chama o
-# serviço como o agente de serviço dele (`service-<número>@gcp-sa-iap.iam.gserviceaccount.com`), que é o único
-# `run.invoker` (nunca allUsers). O app confere de novo o JWT do IAP em toda requisição (`IAP_AUDIENCE`, que para o
-# IAP no Cloud Run é `/projects/<número>/locations/<região>/services/<nome>`, documentação dos cabeçalhos assinados do
-# IAP, e o e-mail em `OWNER_PRINCIPALS`). A conta do serviço lê e grava o Firestore e, com os serviços no ar, invoca o
-# cp-worker (só `run.invoker` nele, abaixo): é assim que os botões "Iniciar provisionamento" e "Retomar
-# provisionamento" dos clientes chegam ao worker, com o token da própria conta e o e-mail do responsável no corpo (o
-# worker aceita essa conta só nas operações do responsável, `ADMIN_SA_EMAIL` em run.tf). Nenhum segredo, nem a Stripe.
+# Quem entra é decidido pelo próprio app (decisão do responsável, 09/11/2026, no lugar do IAP): e-mail de
+# `owner_principals`, senha (scrypt) e código do aplicativo autenticador (TOTP), com bloqueio depois de 5 erros em 15
+# minutos, limite por IP e sessão no Firestore (cookie `__session`, o único que o Hosting repassa ao Cloud Run). O
+# primeiro cadastro (`/configurar`) exige o token de uso único do segredo `cp-admin-setup-token`; o segredo do TOTP fica
+# cifrado no Firestore com a chave derivada de `cp-admin-totp-key` (secrets.tf). Os dois são lidos pela API do Secret
+# Manager na hora do uso, não montados: sem eles o serviço sobe e o `/health` responde; só o login e o cadastro
+# respondem 503. Passo a passo em docs/runbooks/console-do-responsavel.md.
 #
-# Projeto sem organização: o IAP precisa de um cliente OAuth próprio para contas de fora de uma organização, e esse
-# cliente não se cria por API. É um passo manual, uma vez (docs/runbooks/console-do-responsavel.md); o segredo do
-# cliente nunca passa pelo Terraform.
+# Por isso o serviço aceita invocação anônima (`allUsers`), como o cp-public: o rewrite do Hosting chama o Cloud Run sem
+# token de identidade e exige isso. A barreira é o app: toda rota fora de `/health`, do login e do cadastro exige uma
+# sessão de responsável. A conta do serviço lê e grava o Firestore, lê os dois segredos do console e, com os serviços no
+# ar, invoca o cp-worker (só `run.invoker` nele, abaixo): é assim que as operações do responsável chegam ao worker, com o
+# token da própria conta e o e-mail da sessão no corpo (o worker aceita essa conta só nas operações do responsável,
+# `ADMIN_SA_EMAIL` em run.tf). Nada da Stripe.
 
 locals {
   admin_service_name = "cp-admin"
 
-  # O `aud` do JWT assinado pelo IAP para um serviço do Cloud Run (documentação "Securing your app with signed
-  # headers"): o número do projeto, a região e o nome do serviço. O app recusa qualquer outro.
-  admin_iap_audience = "/projects/${data.google_project.this.number}/locations/${var.region}/services/${local.admin_service_name}"
-
   # Só o que o console usa: nenhuma variável do site, da Stripe, das filas ou do provisionamento (o app tira as de
-  # outro papel, mas aqui elas nem chegam), e nenhum segredo. `WORKER_URL` é a audiência do token que o console pede
-  # ao servidor de metadados para chamar o cp-worker (a mesma URL determinística de run.tf).
+  # outro papel, mas aqui elas nem chegam), e nenhum segredo montado. `WORKER_URL` é a audiência do token que o console
+  # pede ao servidor de metadados para chamar o cp-worker (a mesma URL determinística de run.tf);
+  # `ADMIN_SECRETS_PROJECT_ID` é o projeto dos segredos `cp-admin-totp-key` e `cp-admin-setup-token`, lidos pela API.
+  # `TRUSTED_PROXIES` e `TRUST_PROXY_HOPS` vêm de `service_env`, quando o responsável os definiu: é o que deixa o limite
+  # por IP do login ver o cliente de verdade atrás do Hosting (env.schema.ts e client-ip.ts do app). Vazias não vão.
   admin_env = {
-    NODE_ENV           = "production"
-    LOG_LEVEL          = "info"
-    FIRESTORE_DATABASE = google_firestore_database.default.name
-    IAP_AUDIENCE       = local.admin_iap_audience
-    OWNER_PRINCIPALS   = join(",", local.owner_emails)
-    WORKER_URL         = local.worker_url
+    NODE_ENV                 = "production"
+    LOG_LEVEL                = "info"
+    FIRESTORE_DATABASE       = google_firestore_database.default.name
+    ADMIN_SECRETS_PROJECT_ID = var.project_id
+    OWNER_PRINCIPALS         = join(",", local.owner_emails)
+    WORKER_URL               = local.worker_url
+    TRUSTED_PROXIES          = lookup(var.service_env, "TRUSTED_PROXIES", "")
+    TRUST_PROXY_HOPS         = lookup(var.service_env, "TRUST_PROXY_HOPS", "")
   }
-}
-
-resource "google_project_service" "iap" {
-  count = var.admin_enabled ? 1 : 0
-
-  service                    = "iap.googleapis.com"
-  disable_on_destroy         = false
-  disable_dependent_services = false
 }
 
 resource "google_service_account" "admin" {
   count = var.admin_enabled ? 1 : 0
 
   account_id   = local.admin_service_name
-  display_name = "Plano de controle: console do responsável atrás do IAP (cp-admin)"
+  display_name = "Plano de controle: console do responsável (cp-admin)"
 }
 
-# Só o Firestore (as tabelas de preço, os modelos de custo, os clientes e a auditoria). Nenhum segredo, nenhuma fila, nada
-# da Stripe.
+# Só o Firestore (as tabelas de preço, os modelos de custo, os clientes, a auditoria e as contas e sessões do console).
+# Os dois segredos do console são concedidos em cada segredo (secrets.tf), nunca no projeto. Nenhuma fila, nada da Stripe.
 resource "google_project_iam_member" "admin" {
   for_each = var.admin_enabled ? toset(["roles/datastore.user"]) : toset([])
 
@@ -62,26 +56,13 @@ resource "google_project_iam_member" "admin" {
   member  = "serviceAccount:${google_service_account.admin[0].email}"
 }
 
-# O agente de serviço do IAP, criado antes de receber o `run.invoker` (num projeto que acabou de ligar a API, ele só
-# nasceria no primeiro uso). Mesmo desenho dos agentes do Cloud Tasks e do Scheduler (identities.tf).
-resource "google_project_service_identity" "iap" {
-  provider = google-beta
-  count    = var.admin_enabled ? 1 : 0
-
-  service = "iap.googleapis.com"
-
-  depends_on = [google_project_service.iap]
-}
-
 resource "google_cloud_run_v2_service" "admin" {
   count = var.admin_enabled ? 1 : 0
 
-  name        = local.admin_service_name
-  location    = var.region
-  description = "Plano de controle do Verax Control: console do responsável (preço e DRE), atrás do IAP."
-  # O IAP no Cloud Run protege todas as entradas, inclusive o endereço run.app (documentação do IAP no Cloud Run).
+  name                = local.admin_service_name
+  location            = var.region
+  description         = "Plano de controle do Verax Control: console do responsável (preço, DRE e clientes), com login próprio."
   ingress             = "INGRESS_TRAFFIC_ALL"
-  iap_enabled         = true
   deletion_protection = true
 
   template {
@@ -90,6 +71,7 @@ resource "google_cloud_run_v2_service" "admin" {
     timeout                          = "300s"
     max_instance_request_concurrency = 10
 
+    # Uma instância só: o limite por IP do login fica em memória e vale para o serviço inteiro.
     scaling {
       min_instance_count = 0
       max_instance_count = 1
@@ -106,7 +88,7 @@ resource "google_cloud_run_v2_service" "admin" {
         cpu_idle = true
       }
 
-      # A sonda não passa pelo IAP, e o app deixa `/health` sem o JWT (é a única rota assim).
+      # `/health` responde sem sessão (como o login e o cadastro); é a sonda de partida.
       startup_probe {
         period_seconds    = 5
         failure_threshold = 12
@@ -136,29 +118,18 @@ resource "google_cloud_run_v2_service" "admin" {
     ignore_changes = [template[0].containers[0].image, traffic, client, client_version]
   }
 
-  depends_on = [google_project_service.apis, google_project_service.iap, google_project_iam_member.admin]
+  depends_on = [google_project_service.apis, google_project_iam_member.admin]
 }
 
-# O IAP chama o serviço como o agente dele: é o único invocador. Nada de allUsers nem de pessoas aqui (quem entra é
-# decidido no IAP, abaixo).
-resource "google_cloud_run_v2_service_iam_member" "admin_iap_invoker" {
+# Invocação anônima, como o cp-public (run.tf): o rewrite do Hosting exige. A proteção é do app (sessão de responsável
+# em toda rota de dado, senha mais TOTP, bloqueio e limite por IP no login).
+resource "google_cloud_run_v2_service_iam_member" "admin_invoker" {
   count = var.admin_enabled ? 1 : 0
 
   name     = google_cloud_run_v2_service.admin[0].name
   location = var.region
   role     = "roles/run.invoker"
-  member   = google_project_service_identity.iap[0].member
-}
-
-# Quem passa pelo IAP: só os responsáveis (`owner_principals`), no serviço, nunca no projeto.
-resource "google_iap_web_cloud_run_service_iam_member" "owners" {
-  for_each = var.admin_enabled ? toset(var.owner_principals) : toset([])
-
-  project                = var.project_id
-  location               = var.region
-  cloud_run_service_name = google_cloud_run_v2_service.admin[0].name
-  role                   = "roles/iap.httpsResourceAccessor"
-  member                 = each.value
+  member   = "allUsers"
 }
 
 # Quem implanta publica revisões novas do cp-admin (a mesma largura do run.developer dos outros serviços, run.tf).
@@ -175,9 +146,9 @@ resource "google_cloud_run_v2_service_iam_member" "admin_deployer" {
 # início do provisionamento de um cliente de contrato direto e o `resume` (e, com o CP-11, `delete-now` e `export`). Só
 # `run.invoker` e só no cp-worker: nem no cp-public, nem no Job, nem no projeto, e nenhum `actAs` na cp-invoker (o
 # console não enfileira nada). O app do worker aceita esta conta só nas rotas marcadas com o grupo `console`, e sempre
-# com um responsável de `owner_principals` no corpo; nos passos e na revelação, recusa. Como as chamadas do cp-public,
-# esta sai pela internet: com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` a entrada do worker a recusa (GUIA,
-# "Operações do responsável no cp-worker").
+# com um responsável de `owner_principals` no corpo (o e-mail da sessão do console); nos passos e na revelação, recusa.
+# Como as chamadas do cp-public, esta sai pela internet: com `worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"` a
+# entrada do worker a recusa (GUIA, "Operações do responsável no cp-worker").
 resource "google_cloud_run_v2_service_iam_member" "admin_worker_invoker" {
   count = var.admin_enabled && var.services_enabled ? 1 : 0
 
@@ -185,4 +156,56 @@ resource "google_cloud_run_v2_service_iam_member" "admin_worker_invoker" {
   location = var.region
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.admin[0].email}"
+}
+
+# O endereço do console: um site próprio do Firebase Hosting com o domínio `admin.veraxsistemas.com.br` e o rewrite de
+# tudo (`/**`) para o cp-admin, no mesmo desenho do site `conta` (hosting.tf): o mapeamento de domínio do Cloud Run não
+# existe em southamerica-east1, e o Hosting só repassa o cookie `__session`, que é o da sessão do console. Os quatro
+# recursos existem só no provider beta na 8.9.0. O rewrite pede o plano Blaze, como o do `conta`.
+
+resource "google_firebase_hosting_site" "admin" {
+  provider = google-beta
+  count    = var.admin_enabled ? 1 : 0
+
+  site_id = var.admin_hosting_site_id
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_firebase_hosting_version" "admin" {
+  provider = google-beta
+  count    = var.admin_enabled ? 1 : 0
+
+  site_id = google_firebase_hosting_site.admin[0].site_id
+
+  config {
+    rewrites {
+      glob = "/**"
+      run {
+        service_id = google_cloud_run_v2_service.admin[0].name
+        region     = var.region
+      }
+    }
+  }
+}
+
+resource "google_firebase_hosting_release" "admin" {
+  provider = google-beta
+  count    = var.admin_enabled ? 1 : 0
+
+  site_id      = google_firebase_hosting_site.admin[0].site_id
+  version_name = google_firebase_hosting_version.admin[0].name
+  message      = "Rewrite /** para o Cloud Run cp-admin (Terraform)."
+}
+
+# O domínio próprio do console. Como o do `conta`, o `apply` não espera o DNS: os registros que o Firebase pede saem em
+# `terraform output cloudflare_dns_records` (junto com os do `conta`), e o certificado é emitido depois que eles existem
+# no Cloudflare, sem proxy.
+resource "google_firebase_hosting_custom_domain" "admin" {
+  provider = google-beta
+  count    = var.admin_enabled ? 1 : 0
+
+  site_id               = google_firebase_hosting_site.admin[0].site_id
+  custom_domain         = var.admin_hosting_domain
+  wait_dns_verification = false
 }
