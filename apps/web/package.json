@@ -18,7 +18,7 @@
     "test:e2e:sites": "playwright test -c playwright.sites.config.ts"
   },
   "dependencies": {
-    "@tanstack/react-query": "5.105.0",
+    "@tanstack/react-query": "5.105.1",
     "@verax/shared": "workspace:*",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
