@@ -92,6 +92,29 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
    confere a Stripe: um `lookup_key` que falte lá deixa o checkout em 503 para as configurações que o usam, com o
    alerta `checkout_price_invalid` (nunca cobra diferente).
 
+### Sem o console: `publicar-precos`
+
+Para semear a primeira versão (ou com o console fora do ar), o `publicar-precos` faz o mesmo que as seções 3 e 4 pelo
+mesmo código do console (validação, checagem da grade, vigência, aposentadoria da versão anterior e auditoria
+`owner:<e-mail>`), lendo os arquivos `{ "version", "content" }` (o formato do "Exportar JSON"), que ficam **fora do
+repositório**. Quem publica é o e-mail das credenciais padrão do Google (`gcloud auth application-default login`), que
+precisa poder escrever no Firestore do projeto. Sem `--publicar` é só simulação: a checagem e, com `--projeto`, a
+diferença para o que está no banco. O modelo de custos é publicado antes da tabela, e a checagem da tabela usa o
+modelo que estará vigente na publicação dela (o do arquivo, se ele for publicado ou já for o vigente; senão, o vigente
+no banco). Nada é gravado se a checagem reprovar, se a versão já estiver publicada com outro conteúdo ou se ela estiver
+aposentada (não se republica uma aposentada); rodar de novo com o mesmo conteúdo não grava nada. Um rascunho que já
+existe igual ao arquivo só é publicado na revisão conferida: editado no meio do caminho, a publicação é recusada
+(`draft_changed`).
+
+```bash
+pnpm --filter @verax/control-plane build
+node apps/control-plane/dist/cli/publicar-precos.js --custos=<custos.json> --tabela=<tabela.json> --projeto=<id>
+node apps/control-plane/dist/cli/publicar-precos.js --custos=<custos.json> --tabela=<tabela.json> --projeto=<id> --publicar
+```
+
+`--vigencia=<ISO 8601 com fuso>` agenda a tabela; sem `--projeto`, só a validação e a checagem, sem ler o banco. O
+alerta `pricing_margin_alert` não sai daqui (só do console): a saída avisa no lugar dele.
+
 ## 5. Como o "a partir de" chega ao site
 
 - O "a partir de" de cada modo é o preço da **configuração mínima** da tabela vigente (o menor porte, só o incluído,

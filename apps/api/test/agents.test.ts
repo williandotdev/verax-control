@@ -318,7 +318,10 @@ describe('agentes do Wazuh nas instâncias do cliente', () => {
           { id: agentId(9), name: 'web\u001b[31m', status: 'active' },
         ]),
       ).runOnce();
-      expect(report).toEqual({ status: 'synced', agents: 2, invalid: 2, removed: 2 });
+      // `removed` conta também os agentes de outros clientes, e o banco de teste é compartilhado por arquivos que rodam
+      // em paralelo (agents-pending, tower-posture-assets): pode passar de 2. Quem sai deste arquivo é conferido abaixo.
+      expect(report).toMatchObject({ status: 'synced', agents: 2, invalid: 2 });
+      expect(report.status === 'synced' ? report.removed : 0).toBeGreaterThanOrEqual(2);
       const rows = await prisma.wazuhAgent.findMany({
         where: { agentId: { in: [1, 2, 3, 4, 9].map(agentId) } },
         orderBy: { name: 'asc' },
