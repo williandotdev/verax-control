@@ -4990,3 +4990,95 @@ deploy` pelo papel das migrations, bootstrap): funções do papel das migrations
 - **Revisão do PR #102, corrigida** (com a `main` mesclada antes):
   - **Codex, "um caminho que funcione para os agentes no cliente"**: procedente. O guia mandava seguir o onboarding, item 6, mas o `envs/tenant` não expõe nem repassa `wazuh_agents`, `wazuh_agents_sources` nem a saída `wazuh_agents`, então a entrada dos agentes não teria como ser criada, e o cadastro no cliente aceitava contrato com agentes. Sem Terraform novo (desenvolvimento congelado): o `node-fit.ts` passa a recusar agentes também no cliente, como já recusa na Verax o que o `envs/tenant` não cria; o cadastro é 422 `configuration_unsupported` com "Esta configuração ainda não pode ser instalada na infraestrutura do cliente." e, no campo `configuration.agents`, "Agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0."; a cotação de referência aponta o mesmo motivo, e o console não abre a confirmação. O guia diz que agentes no cliente ainda não têm suporte (a coleta é pelas contas de nuvem conectadas). Testes: o `node-fit`, o contrato em memória e no emulador (prévia, 422 com o motivo e nada gravado) e o `cp-admin` por HTTP (422 sem chamar o worker); no console, a cotação no cliente com agentes mostra o motivo e não abre a confirmação, e sem agentes passa;
   - **CodeQL, expressão sem âncora no teste** (`tenants.test.tsx`): a conferência de que o detalhe do cliente no cliente não mostra endereço da Verax passou a ser por texto (`not.toContain('.control.veraxsistemas.com.br')`), sem expressão regular.
+
+## Fase 3, console: login próprio no lugar do IAP (e-mail, senha e TOTP) ⚠️ altera `infra/` e `.github/`
+
+- **Decisão do responsável (09/11/2026):** o console do responsável (`cp-admin`) deixa o IAP e passa a ter login
+  próprio em `https://admin.veraxsistemas.com.br`: e-mail de `owner_principals`, senha (hash scrypt) e código do
+  aplicativo autenticador (TOTP, segredo cifrado com AES-256-GCM, código de uso único, 10 códigos de recuperação em
+  HMAC), bloqueio de 15 minutos depois de 5 erros por e-mail em 15 minutos, limite por IP (`req.ip`, a regra de
+  `client-ip.ts`) e sessão no Firestore com o cookie `__session` (`HttpOnly`, `Secure`, `SameSite=Strict`, 30 minutos
+  sem uso, 12 horas no máximo). O primeiro cadastro (`/configurar`) exige o token de uso único de
+  `cp-admin-setup-token` e se fecha sozinho.
+- **Infraestrutura (`infra/gcp/envs/control-plane`):** `admin.tf` sem o IAP (a API, o agente de serviço, `iap_enabled`,
+  o invocador do agente e o `iap.httpsResourceAccessor` saíram; `IAP_AUDIENCE` também), com `run.invoker` de `allUsers`
+  no `cp-admin` (o rewrite do Hosting exige, como no `cp-public`), as variáveis `ADMIN_SECRETS_PROJECT_ID` e, quando
+  estão em `service_env`, `TRUSTED_PROXIES` e `TRUST_PROXY_HOPS`, e o site `verax-admin` do Firebase Hosting com a
+  versão (`/**` → `cp-admin`), a release e o domínio `admin.veraxsistemas.com.br` (variáveis novas
+  `admin_hosting_site_id` e `admin_hosting_domain`); `secrets.tf` com os cofres `cp-admin-totp-key` e
+  `cp-admin-setup-token` (não montados, lidos pela API; a leitura só para a conta `cp-admin`, só com `admin_enabled`;
+  os cofres existem sempre); `outputs.tf` (`cloudflare_dns_records` com os registros dos dois domínios; `admin` com
+  `url`, `run_url`, `site_id` e `default_url`); `monitoring.tf` (a métrica `cp_admin_auth_failed` agora conta login e
+  cadastro recusados, alerta em 5 ou mais em 10 minutos; alerta por linha `admin_account_locked`); `variables.tf`
+  (`ADMIN_SECRETS_PROJECT_ID` entre as chaves que o Terraform deriva); os testes `console`, `servicos` e
+  `dados_e_alertas` (TTL de `adminSessions`, `adminLoginThrottle` e `adminEnrollments`).
+- **App (`apps/control-plane/src/admin/auth`):** o login é uma requisição só (e-mail, senha e código ou código de
+  recuperação; não existe estado "só com a senha"), com a mesma resposta (401 `login_failed`) e sempre um scrypt para
+  e-mail desconhecido, senha errada, código errado, código reusado e bloqueio; o bloqueio vale por e-mail, exista a
+  conta ou não. Senha: `scrypt` do `node:crypto` (N=2^15, r=8, p=3, sal de 16 bytes, parâmetros no hash). Chaves:
+  HKDF-SHA256 do conteúdo de `cp-admin-totp-key` para o AES-256-GCM do segredo do TOTP (preso à conta por AAD) e o HMAC
+  dos códigos de recuperação. TOTP pelo `otplib` (SHA-1, 6 dígitos, 30 s, um passo de tolerância), com o passo do
+  último código aceito na conta (reuso recusado, inclusive em duas requisições ao mesmo tempo). Sessão: 32 bytes
+  aleatórios, só o SHA-256 no Firestore, id novo a cada login, "visto por último" regravado no máximo a cada minuto (na
+  mesma transação que confere que a conta existe). Limites por IP em memória (o `cp-admin` tem uma instância): login
+  10 em 15 min e 100 em 15 min no total, cadastro 10 em 15 min, conta 10 em 15 min. Coleções: `adminAccounts`,
+  `adminSessions`, `adminLoginThrottle`, `adminEnrollments` e `adminSetup` (as três do meio com TTL). Logs:
+  `admin_auth_failed` (com o motivo), `admin_account_locked`, `admin_login`, `admin_logout`, `admin_setup_completed`,
+  `admin_password_changed`, `admin_totp_reset`, `admin_recovery_code_used`, `admin_session_refused`, sem e-mail,
+  senha, código, token, segredo nem id de sessão (só os 12 primeiros dígitos do id do contador); a auditoria do
+  Firestore registra `admin.setup`, `admin.login`, `admin.logout`, `admin.password_change`,
+  `admin.totp_reset_started` e `admin.totp_reset`. O IAP saiu do código (`iap-verifier.ts` e o "IAP" de teste).
+- **Console (`apps/console`):** `/entrar`, `/configurar` (QR gerado no navegador), `/conta` (troca de senha e do
+  aplicativo), botão Sair e volta a `/entrar?voltar=...` (só caminhos do próprio console) quando a sessão vence.
+- **Desvio da regra 10 do CLAUDE.md (Better Auth):** o plano de controle não usa o Better Auth (é só da API dos
+  painéis); o desenho com `node:crypto` e `otplib` foi o pedido pelo responsável para o console. Fica registrado para
+  revisão.
+- **Testes do app:** `pnpm --filter @verax/control-plane test` (72 arquivos, 792 testes; os 3 do emulador do
+  Firestore pulados), `pnpm --filter @verax/console test` (14 arquivos, 71 testes), `pnpm --filter @verax/console
+test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
+- **Workflow e scripts:** `plano-controle.yml` confere o `/health` do endereço etiquetado do `cp-admin` como o do
+  `cp-public` (antes, só a condição Ready); `scripts/test-control-plane-image.sh` sobe o admin com
+  `ADMIN_SECRETS_PROJECT_ID` e espera a tela 200 sem sessão e a API 401.
+- **Documentação:** `docs/runbooks/console-do-responsavel.md` (segredos, apply, DNS, primeiro cadastro, dia a dia,
+  códigos de recuperação, bloqueio, cadastro de emergência, migração de quem estava atrás do IAP e o que apagar à mão
+  depois: o cliente OAuth do IAP, a tela de consentimento e a API do IAP), `infra/gcp/GUIA.md` (passos 3, 4, 6 e 8 e as
+  identidades), `docs/ARQUITETURA.md`, `docs/runbooks/ciclo-de-vida.md` e `docs/runbooks/provisionamento.md`.
+- **Dependências:** `otplib` 13.6.0 no plano de controle (aprovada; com provenance; publicada há mais de 24 h), que
+  traz `@otplib/core`, `@otplib/hotp`, `@otplib/totp`, `@otplib/uri`, `@otplib/plugin-crypto-noble`,
+  `@otplib/plugin-base32-scure` (todas 13.6.0) e `@scure/base` 2.4.0 (`@noble/hashes` 2.4.0 já estava no lockfile);
+  `react-qr-code` 2.2.0 no console (a mesma versão do `apps/web`; o QR é gerado no navegador).
+- **Testes de infraestrutura:** `terraform fmt -check -recursive`, `init -backend=false` + `validate` e `test` do
+  `envs/control-plane` (Terraform 1.17.1), `tflint` 0.65.0 em `infra/gcp` e Checkov 3.4.0 em `infra`, todos pela
+  imagem do CI; `actionlint` 1.7.12 nos dois workflows.
+- **Riscos e pendências:** a migração de quem já tem o console atrás do IAP tem ordem (o runbook, "Migração"): o
+  primeiro workflow depois do merge para sem promover, e o console fica fechado (401) entre o `apply` e o segundo
+  workflow; sem `TRUSTED_PROXIES`, o limite por IP do login junta quem chega pelo Hosting num balde só; só existe um
+  cadastro (um segundo responsável não se cadastra pelo console); `apps/control-plane/.env.example` ainda cita
+  `IAP_AUDIENCE` (o agente não lê arquivos `.env*`; o responsável troca à mão por `ADMIN_SECRETS_PROJECT_ID`).
+- **Revisão do PR #108, corrigida:**
+  - **Semgrep (`njsscan` `hardcoded_secrets.node_password`/`node_secret`, falsos positivos):** as mensagens dos campos
+    de senha do console saíram para `SENHA_MESSAGES` (a tela atribui a referência, não o texto); as constantes do
+    dublê viraram `FICTITIOUS_LOGIN_PHRASE` e `FICTITIOUS_TOTP_SEED`; os nomes dos cofres, `TOTP_KEY_VAULT` e
+    `SETUP_TOKEN_VAULT` (como o `NODE_MAIL_VAULT`); o parâmetro da cifra, `seed`. Sem `nosemgrep`. A varredura do CI
+    rodada localmente pela imagem fixada: 0 achados;
+  - **e2e do console:** o teste da entrada espera a mesma mensagem genérica da API (`LOGIN_FAILED_MESSAGE`);
+  - **Codex, login com a senha antiga depois de uma troca simultânea:** a transação que abre a sessão (e a que grava
+    a troca de senha ou do aplicativo) confere a "versão" das credenciais (`credentialStamp`, o SHA-256 do hash da
+    senha e do segredo cifrado) contra a que foi conferida; mudou, 401 genérico (ou 400/410 na conta), sem sessão e sem
+    gastar o código de recuperação. A troca do aplicativo guarda a versão no cadastro pendente;
+  - **Revisão de segurança, negação de serviço (média):** o corpo é validado antes dos limites (`{}` não gasta nada);
+    os limites por IP e global só contam falhas (a tentativa sai do balde antes e volta no sucesso ou num 5xx); o
+    bloqueio da conta só conta a senha certa com o segundo fator errado (quem só sabe o e-mail público não tranca o
+    responsável; na troca de senha e de aplicativo, que pedem sessão, toda falha conta);
+  - **Revisão, corrida no bloqueio (baixa):** a tentativa é reservada no contador numa transação antes de conferir o
+    código, e o sucesso apaga o contador: em paralelo, só 5 palpites chegam a ser conferidos por ciclo (teste com 12
+    em paralelo);
+  - **Revisão, `TRUSTED_PROXIES` no console:** o Terraform deixa de repassá-la (e `TRUST_PROXY_HOPS`) ao `cp-admin`, e
+    o runbook passa a recomendar a lista vazia lá: confiar na CDN deixaria quem tem um serviço nela forjar o
+    `X-Forwarded-For` no `run.app`;
+  - **Revisão, "cookie tossing" (baixa):** todos os `__session` do cabeçalho são conferidos (até 20, sem descartar
+    cabeçalho grande), e o login, a saída e a recusa por sessão ausente ou vencida apagam os `__session` com
+    `Domain=<zona>` em `/`, `/v1` e `/v1/admin` (o cookie do console e o do `conta` são só do host: não são tocados);
+  - **Testes:** `pnpm --filter @verax/control-plane test` (na máquina Windows, com `--maxWorkers=3`: o paralelo
+    padrão às vezes derruba um worker com 0xC0000409, sem falha de asserção), `pnpm --filter @verax/console test` e
+    `test:e2e`, `terraform test` do `envs/control-plane` (34) e `fmt -check`.

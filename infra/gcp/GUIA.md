@@ -629,21 +629,21 @@ liga, se um dia valer o custo.
 
 ### O que ele cria
 
-| Recurso                                                   | Para quê                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 16 APIs                                                   | Cloud Run, Cloud Tasks, Cloud Scheduler, Firestore e as regras dele, Secret Manager, Artifact Registry, Firebase Hosting, federação (iam, iamcredentials, sts), orçamento, logs e alertas. Nenhuma é desligada no destroy.                                                                                                                                                                                                                     |
-| Firestore `(default)`                                     | Modo nativo, em São Paulo, protegido contra exclusão. Regras de segurança que negam tudo aos SDKs de cliente (só os serviços chegam, pelo IAM). Prazos (TTL em `expiresAt`) nas coleções com retenção do plano e os 4 índices compostos de `tenants`.                                                                                                                                                                                          |
-| 5 contas de serviço                                       | `cp-public`, `cp-worker`, `cp-terraform`, `cp-invoker` e `cp-deployer`, com os papéis da seção 2.2 do plano, cada um no menor recurso possível (a fila, o segredo, o Job). A `cp-invoker` é só o token das tasks e do Scheduler para chamar o `cp-worker`: ninguém age como o `cp-worker` além de quem implanta. O papel personalizado `cpJobRunner`; os agentes de serviço do Cloud Tasks e do Cloud Scheduler criados antes do primeiro uso. |
-| Pool e provedor de federação `cp-github`                  | O GitHub Actions implanta sem chave: só o token do environment `control-plane` do repositório, pelos IDs fixos do repositório e do dono, vindo de um `push` ou de um disparo manual na `main`, vira `cp-deployer`.                                                                                                                                                                                                                             |
-| 6 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key` (montados nos serviços) e `cp-nodes-smtp-password` (a senha da caixa de envio dos nós de clientes, opcional, lida pelo `cp-worker` pela API). Gravados no passo 4, só na região. Logs de auditoria de acesso a dados do Secret Manager ligados no projeto (quem leu, gravou ou consultou a política de qual segredo).       |
-| Registro de imagens `verax-control-plane`                 | Imagens dos serviços e do executor Terraform, neste projeto e nesta região; `cp-deployer` publica. Ficam as 3 versões mais recentes de cada imagem (mais as publicadas nos últimos 30 dias). Tags mutáveis de propósito: com tags imutáveis, a limpeza não apaga versão com tag, e o registro cresceria sem limite.                                                                                                                            |
-| Cloud Run `cp-public`, `cp-worker` e o Job `cp-terraform` | Só com `services_enabled = true` (passo 5). 1 vCPU e 512 MiB, 0 a 2 e 0 a 1 instâncias, sonda de partida em `/health`; o Job com 2 GiB, 30 min e 1 tentativa. O worker só recebe tráfego de dentro do projeto, e só com token.                                                                                                                                                                                                                 |
-| Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                           |
-| Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                   |
-| Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                            |
-| Console do responsável `cp-admin` (opcional)              | Só com `admin_enabled = true` (passo 8): o terceiro serviço da mesma imagem (`ROLE=admin`), com o IAP ligado direto no Cloud Run, 0 a 1 instância; a conta `cp-admin` só com o Firestore e sem segredo; só o agente do IAP invoca, e só `owner_principals` passa pelo IAP. Mais os alertas de margem e de acessos recusados.                                                                                                                   |
-| 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                    |
-| Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Recurso                                                   | Para quê                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 16 APIs                                                   | Cloud Run, Cloud Tasks, Cloud Scheduler, Firestore e as regras dele, Secret Manager, Artifact Registry, Firebase Hosting, federação (iam, iamcredentials, sts), orçamento, logs e alertas. Nenhuma é desligada no destroy.                                                                                                                                                                                                                                                                                                                                                                  |
+| Firestore `(default)`                                     | Modo nativo, em São Paulo, protegido contra exclusão. Regras de segurança que negam tudo aos SDKs de cliente (só os serviços chegam, pelo IAM). Prazos (TTL em `expiresAt`) nas coleções com retenção do plano e os 4 índices compostos de `tenants`.                                                                                                                                                                                                                                                                                                                                       |
+| 5 contas de serviço                                       | `cp-public`, `cp-worker`, `cp-terraform`, `cp-invoker` e `cp-deployer`, com os papéis da seção 2.2 do plano, cada um no menor recurso possível (a fila, o segredo, o Job). A `cp-invoker` é só o token das tasks e do Scheduler para chamar o `cp-worker`: ninguém age como o `cp-worker` além de quem implanta. O papel personalizado `cpJobRunner`; os agentes de serviço do Cloud Tasks e do Cloud Scheduler criados antes do primeiro uso.                                                                                                                                              |
+| Pool e provedor de federação `cp-github`                  | O GitHub Actions implanta sem chave: só o token do environment `control-plane` do repositório, pelos IDs fixos do repositório e do dono, vindo de um `push` ou de um disparo manual na `main`, vira `cp-deployer`.                                                                                                                                                                                                                                                                                                                                                                          |
+| 8 segredos, vazios                                        | `cp-stripe-secret-key`, `cp-stripe-webhook-secret`, `cp-cloudflare-api-token`, `cp-smtp-password`, `cp-cookie-key` (montados nos serviços), `cp-nodes-smtp-password` (a senha da caixa de envio dos nós de clientes, opcional, lida pelo `cp-worker` pela API) e os dois do console do responsável, `cp-admin-totp-key` e `cp-admin-setup-token` (lidos pelo `cp-admin` pela API, só com `admin_enabled`; passo 8). Gravados no passo 4, só na região. Logs de auditoria de acesso a dados do Secret Manager ligados no projeto (quem leu, gravou ou consultou a política de qual segredo). |
+| Registro de imagens `verax-control-plane`                 | Imagens dos serviços e do executor Terraform, neste projeto e nesta região; `cp-deployer` publica. Ficam as 3 versões mais recentes de cada imagem (mais as publicadas nos últimos 30 dias). Tags mutáveis de propósito: com tags imutáveis, a limpeza não apaga versão com tag, e o registro cresceria sem limite.                                                                                                                                                                                                                                                                         |
+| Cloud Run `cp-public`, `cp-worker` e o Job `cp-terraform` | Só com `services_enabled = true` (passo 5). 1 vCPU e 512 MiB, 0 a 2 e 0 a 1 instâncias, sonda de partida em `/health`; o Job com 2 GiB, 30 min e 1 tentativa. O worker só recebe tráfego de dentro do projeto, e só com token.                                                                                                                                                                                                                                                                                                                                                              |
+| Filas `provisioning` e `lifecycle`                        | 8 tentativas com recuo de 30 s a 10 min, 2 despachos ao mesmo tempo.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Scheduler `tick` e `reconcile`                            | A cada hora e às 3 h de São Paulo, chamando o `cp-worker` com o token da `cp-invoker`, com o mesmo prazo do worker (15 min).                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Console do responsável `cp-admin` (opcional)              | Só com `admin_enabled = true` (passo 8): o terceiro serviço da mesma imagem (`ROLE=admin`), 0 a 1 instância, com login próprio (e-mail de `owner_principals`, senha e código do aplicativo autenticador) e invocação anônima; o site `verax-admin` do Hosting com `admin.veraxsistemas.com.br`; a conta `cp-admin` com o Firestore e a leitura só dos dois segredos do console. Mais os alertas de margem, de tentativas recusadas e de bloqueio.                                                                                                                                           |
+| 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                                                                                                                                                                 |
+| Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): a gravação da política do
 registro de imagens do nó (`images_project_id`), a leitura do bucket de releases (`release_bucket`) e o
@@ -678,8 +678,9 @@ terraform plan -out=plano.tfplan
 terraform apply plano.tfplan
 ```
 
-A última linha do `plan` é **`Plan: 76 to add, 0 to change, 0 to destroy.`** (77 com orçamento, 78 com e-mail de
-alerta; eram 74 antes do cofre da senha da caixa dos nós e da leitura dele pelo `cp-worker`), sem nada para mudar ou
+A última linha do `plan` é **`Plan: 78 to add, 0 to change, 0 to destroy.`** (79 com orçamento, 80 com e-mail de
+alerta; eram 76 antes dos dois cofres do console do responsável e 74 antes do cofre da senha da caixa dos nós e da
+leitura dele pelo `cp-worker`), sem nada para mudar ou
 destruir, e `data.google_project.this will be read during apply` (como na homologação: a leitura do projeto espera as
 APIs). Os serviços ficam para o passo 5: o Cloud Run recusa subir com um segredo sem versão, e os cinco montados
 nascem vazios. Erro de API "has not been used in project": a mesma propagação do passo 6 dos nós; espere 1 ou 2
@@ -701,6 +702,9 @@ read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-smtp-pas
 openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add cp-cookie-key --data-file=-
 # Opcional, só com o e-mail dos nós de clientes ("O provisionamento (CP-07)", item 3):
 read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-nodes-smtp-password --data-file=- && unset VALOR
+# Só com o console do responsável (passo 8): a chave mestra gerada aqui e o token do primeiro cadastro.
+openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add cp-admin-totp-key --data-file=-
+read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-admin-setup-token --data-file=- && unset VALOR
 ```
 
 - **Chave da Stripe:** uma chave **restrita** (não a `sk_`), com escrita em Checkout Sessions, Customers,
@@ -722,7 +726,10 @@ read -rs VALOR && printf '%s' "$VALOR" | gcloud secrets versions add cp-nodes-sm
   (CP-07)".
 
 Os cinco primeiros precisam ter versão antes do passo 5, mesmo que o provisionamento ainda esteja desligado: o Cloud
-Run monta os cinco na partida. O `cp-nodes-smtp-password` não é montado e pode ficar vazio.
+Run monta os cinco na partida. O `cp-nodes-smtp-password` não é montado e pode ficar vazio. Os dois do console também
+não são montados: sem eles o `cp-admin` sobe, mas o login e o cadastro respondem "indisponível". A
+`cp-admin-totp-key` não se troca depois do cadastro no console (o segredo do TOTP gravado deixaria de abrir), e o
+token do cadastro é desativado depois de usado (`docs/runbooks/console-do-responsavel.md`).
 
 ### Passo 5: segunda subida (os serviços)
 
@@ -746,7 +753,9 @@ terraform output cloudflare_dns_records
 ```
 
 Crie cada registro na zona `veraxsistemas.com.br` com o proxy **desligado** ("DNS only"): o Firebase emite e renova o
-certificado, e com o proxy ligado não consegue. Lista vazia: o Firebase ainda não respondeu; `terraform refresh` e
+certificado, e com o proxy ligado não consegue. Com `admin_enabled` (passo 8), a mesma saída traz também os registros
+de `admin.veraxsistemas.com.br`, o domínio do console do responsável, e vale o mesmo cuidado (o estado dele está em
+`google_firebase_hosting_custom_domain.admin[0]`). Lista vazia: o Firebase ainda não respondeu; `terraform refresh` e
 `terraform output` de novo. Minutos a horas depois, confira:
 
 ```bash
@@ -777,23 +786,34 @@ na `main`, mesmo que o environment fique aberto por engano.
 
 ### Passo 8: o console do responsável (`cp-admin`)
 
-O console das tabelas de preço, dos modelos de custo e do simulador de DRE. O passo a passo inteiro, do cliente OAuth
-do IAP à primeira publicação, está em `docs/runbooks/console-do-responsavel.md`; aqui, só o Terraform:
+O console das tabelas de preço, dos modelos de custo, do simulador de DRE e dos clientes, em
+`https://admin.veraxsistemas.com.br`, com login próprio (e-mail de `owner_principals`, senha e código do aplicativo
+autenticador). O passo a passo inteiro, dos segredos ao primeiro cadastro e à primeira publicação, está em
+`docs/runbooks/console-do-responsavel.md`; aqui, só o Terraform:
 
-1. Num projeto **sem organização**, crie antes o cliente OAuth do IAP (seção 1 do runbook): não há API para isso, e o
-   segredo dele nunca passa pelo Terraform.
+1. Grave antes os dois segredos do console (passo 4, as duas últimas linhas): `cp-admin-totp-key` e
+   `cp-admin-setup-token`. Os cofres já existem desde a primeira subida.
 2. Preencha `owner_principals` (a validação recusa `admin_enabled` sem ela) e mude `admin_enabled = true`. O `plan`
-   mostra **11 recursos a criar, mais 1 por pessoa em `owner_principals`**: a API do IAP, a conta `cp-admin`, o
-   `datastore.user` dela, o agente de serviço do IAP, o serviço `cp-admin` (com a imagem de exemplo do Google), o
-   `run.invoker` do agente, o `iap.httpsResourceAccessor` de cada responsável, o `run.developer` e o `actAs` de quem
-   implanta, o alerta de margem e a métrica e o alerta dos acessos recusados. Com `services_enabled = true`, mais 1
-   recurso a criar e 1 a mudar no lugar: o `run.invoker` da conta `cp-admin` só no `cp-worker`
-   (`admin_worker_invoker`, para os botões dos clientes) e o `cp-worker` com `ADMIN_SA_EMAIL` (uma revisão nova); o
-   `cp-admin` já nasce com `WORKER_URL`.
-3. `terraform output admin` traz o endereço e o `aud` do IAP (`/projects/<número>/locations/<região>/services/cp-admin`,
-   que o Terraform já passa ao serviço em `IAP_AUDIENCE`).
-4. Acrescente `CP_ADMIN_SERVICE` ao environment `control-plane` (passo 7) e rode o workflow: ele implanta o `cp-admin`
-   junto, sem tráfego, e só o promove com a revisão pronta (a sonda de partida em `/health` não passa pelo IAP).
+   mostra **16 recursos a criar**: a conta `cp-admin`, o `datastore.user` dela, a leitura dos dois segredos do console
+   (no segredo), o serviço `cp-admin` (com a imagem de exemplo do Google), o `run.invoker` de `allUsers` nele (o rewrite
+   do Hosting exige; quem entra é o login do app), o `run.developer` e o `actAs` de quem implanta, o site
+   `verax-admin` do Hosting com a versão, a release e o domínio `admin.veraxsistemas.com.br`, os alertas de margem e de
+   bloqueio e a métrica e o alerta das tentativas recusadas. Com `services_enabled = true`, mais 1 recurso a criar e 1
+   a mudar no lugar: o `run.invoker` da conta `cp-admin` só no `cp-worker` (`admin_worker_invoker`, para os botões dos
+   clientes) e o `cp-worker` com `ADMIN_SA_EMAIL` (uma revisão nova); o `cp-admin` já nasce com `WORKER_URL` e
+   `ADMIN_SECRETS_PROJECT_ID` (e sem `TRUSTED_PROXIES`, de propósito: docs/runbooks/console-do-responsavel.md, seção
+   1, item 5).
+3. Crie no Cloudflare os registros novos de `terraform output cloudflare_dns_records` (passo 6), com o proxy
+   desligado.
+4. `terraform output admin` traz o endereço (`url`), o endereço direto do Cloud Run (`run_url`) e o site do Hosting.
+5. Acrescente `CP_ADMIN_SERVICE` ao environment `control-plane` (passo 7) e rode o workflow: ele implanta o `cp-admin`
+   junto, sem tráfego, confere o `/health` do endereço etiquetado (como no `cp-public`) e só então o promove.
+6. Faça o primeiro cadastro em `https://admin.veraxsistemas.com.br/configurar` (seção 2.1 do runbook) e desative a
+   versão do token.
+
+Quem já tinha o console atrás do IAP segue a "Migração de um console que estava atrás do IAP" do runbook (a ordem
+entre o merge, o `apply` e o workflow importa). O cliente OAuth do IAP e a tela de consentimento podem ser apagados
+depois, à mão.
 
 ### O que continua manual
 
@@ -826,10 +846,10 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
 
 As operações do responsável (`resume`, a recópia da senha do e-mail dos nós em
 `POST /internal/nodes/smtp-password/sync`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e
-`reactivate`; CP-07 e CP-11) são chamadas pelo **console do responsável** (`cp-admin`, atrás do IAP): o console chama
-o `cp-worker` com o token de identidade da conta `cp-admin` (audiência `WORKER_URL`) e manda no corpo o seu e-mail, que
-o IAP deu a ele; o worker aceita a conta do console só nessas rotas (`ADMIN_SA_EMAIL`) e confere que o e-mail está em
-`owner_principals`. O token de quem está no navegador nunca sai do console. O mesmo caminho serve ao início do
+`reactivate`; CP-07 e CP-11) são chamadas pelo **console do responsável** (`cp-admin`, com login próprio): o console
+chama o `cp-worker` com o token de identidade da conta `cp-admin` (audiência `WORKER_URL`) e manda no corpo o seu
+e-mail, o da sessão do console; o worker aceita a conta do console só nessas rotas (`ADMIN_SA_EMAIL`) e confere que o e-mail está em
+`owner_principals`. A sessão de quem está no navegador nunca sai do console. O mesmo caminho serve ao início do
 provisionamento de um cliente de contrato direto (`provision`, o cadastro pelo console). Com `admin_enabled` e
 `services_enabled`, o `envs/control-plane` dá à conta `cp-admin` `run.invoker` só no `cp-worker` (`admin.tf`), põe
 `ADMIN_SA_EMAIL` no ambiente do worker e `WORKER_URL` no do `cp-admin`; nada a configurar além disso. A entrada do
@@ -899,13 +919,15 @@ funcionando (claim, estado, boleto) e a revelação responde 503 com o código `
   cofres e buckets (`cpSecretsProvisioner`, `cpBucketsProvisioner`) sem acesso ao conteúdo. Com o `projectIamAdmin`
   ele ainda poderia se conceder a leitura; é o que o alerta em `SetIamPolicy` do CP-12 (no projeto dos nós, pelo
   `envs/nodes-platform`) vigia.
-- **`cp-admin`** (com `admin_enabled`) lê e grava o Firestore (as tabelas, os modelos, os clientes e a auditoria) e,
-  com os serviços no ar, invoca o `cp-worker` com a própria conta (`run.invoker` só nele): nenhum segredo, nem a chave
-  da Stripe, e nenhum `actAs` na cp-invoker (não enfileira nada). O worker aceita essa conta só nas operações do
+- **`cp-admin`** (com `admin_enabled`) lê e grava o Firestore (as tabelas, os modelos, os clientes, a auditoria e as
+  contas e sessões do console), lê só os dois segredos do console (`cp-admin-totp-key` e `cp-admin-setup-token`, no
+  segredo) e, com os serviços no ar, invoca o `cp-worker` com a própria conta (`run.invoker` só nele): nem a chave da
+  Stripe, e nenhum `actAs` na cp-invoker (não enfileira nada). O worker aceita essa conta só nas operações do
   responsável e sempre com um e-mail de `owner_principals` no corpo: um `cp-admin` comprometido pode criar um cliente
   de contrato direto e pedir as operações (o limite por responsável e a auditoria valem), mas não dispara passo
-  nenhum nem lê segredo. Só o agente do IAP o invoca, e só quem está em `owner_principals` passa pelo IAP; o app ainda
-  confere o JWT do IAP em toda requisição, inclusive nas telas.
+  nenhum nem lê segredo de cliente. A invocação é anônima (o rewrite do Hosting exige): a barreira é o login do app
+  (e-mail de `owner_principals`, senha e TOTP, com bloqueio e limite por IP), conferido em toda requisição da API; as
+  telas abrem sem sessão, mas não têm dado nenhum.
 - **`cp-deployer`** é `run.developer` nos dois serviços e no Job: além de publicar revisões, muda qualquer atributo
   deles, apaga-os e executa o Job. Não há papel predefinido mais estreito que sirva ao `gcloud run deploy`. Na
   prática, quem controla a `main` com o environment `control-plane` controla a imagem do `cp-worker` e, por ele, o

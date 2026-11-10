@@ -17,9 +17,12 @@ output "github_environment" {
 }
 
 output "cloudflare_dns_records" {
-  description = "Registros que o Firebase pede para o domínio do plano de controle. Crie cada um no Cloudflare com o proxy DESLIGADO (\"DNS only\"). Lista vazia: o domínio já está verificado, ou o Firebase ainda não respondeu (rode `terraform refresh` e `terraform output` de novo)."
+  description = "Registros que o Firebase pede para os domínios do plano de controle (o do site `conta` e, com admin_enabled, o do console do responsável). Crie cada um no Cloudflare com o proxy DESLIGADO (\"DNS only\"). Lista vazia: os domínios já estão verificados, ou o Firebase ainda não respondeu (rode `terraform refresh` e `terraform output` de novo)."
   value = flatten([
-    for update in google_firebase_hosting_custom_domain.conta.required_dns_updates : [
+    for update in concat(
+      google_firebase_hosting_custom_domain.conta.required_dns_updates,
+      flatten(google_firebase_hosting_custom_domain.admin[*].required_dns_updates),
+      ) : [
       for desired in update.desired : [
         for record in desired.records : {
           name   = record.domain_name
@@ -45,10 +48,12 @@ output "service_accounts" {
 }
 
 output "admin" {
-  description = "O console do responsável: o endereço (abre no navegador, com o login do Google pelo IAP) e o `aud` que o app confere no JWT do IAP (IAP_AUDIENCE). Nulo sem admin_enabled."
+  description = "O console do responsável: o endereço de uso (o domínio do Hosting; o primeiro cadastro em /configurar), o site do Hosting e a URL direta do Cloud Run (a mesma tela de login). Nulo sem admin_enabled."
   value = var.admin_enabled ? {
-    url          = google_cloud_run_v2_service.admin[0].uri
-    iap_audience = local.admin_iap_audience
+    url         = "https://${var.admin_hosting_domain}"
+    run_url     = google_cloud_run_v2_service.admin[0].uri
+    site_id     = google_firebase_hosting_site.admin[0].site_id
+    default_url = google_firebase_hosting_site.admin[0].default_url
   } : null
 }
 

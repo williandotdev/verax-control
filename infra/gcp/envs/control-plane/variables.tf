@@ -39,7 +39,7 @@ variable "terraform_image" {
 }
 
 variable "admin_enabled" {
-  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com o IAP ligado direto no Cloud Run, a conta cp-admin (Firestore e, com services_enabled, run.invoker só no cp-worker para as operações do responsável; nenhum segredo), o acesso pelo IAP só para owner_principals, a implantação pelo workflow e os dois alertas do console. Exige owner_principals. Num projeto sem organização, crie antes o cliente OAuth do IAP (docs/runbooks/console-do-responsavel.md)."
+  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura dos segredos cp-admin-totp-key e cp-admin-setup-token e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes os dois segredos do console (docs/runbooks/console-do-responsavel.md)."
   type        = bool
   default     = false
 
@@ -67,7 +67,7 @@ variable "worker_ingress" {
 }
 
 variable "owner_principals" {
-  description = "Quem opera o plano de controle além das contas de serviço: pode chamar o cp-worker (run.invoker), entra em OWNER_PRINCIPALS, que o worker e o console conferem no token, e, com admin_enabled, é quem passa pelo IAP do console (iap.httpsResourceAccessor no cp-admin). Ex.: [\"user:voce@exemplo.com\"]. Só user: e serviceAccount:, porque o worker compara o e-mail do token; grupo não tem e-mail no token."
+  description = "Quem opera o plano de controle além das contas de serviço: pode chamar o cp-worker (run.invoker), entra em OWNER_PRINCIPALS, que o worker confere no token e o console no login, e, com admin_enabled, é quem pode se cadastrar e entrar no console (o e-mail de cada item). Ex.: [\"user:voce@exemplo.com\"]. Só user: e serviceAccount:, porque o worker compara o e-mail do token; grupo não tem e-mail no token."
   type        = list(string)
   default     = []
 
@@ -88,7 +88,7 @@ locals {
   # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
   # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
   # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
-  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|ADMIN_SECRETS_PROJECT_ID|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
 }
 
 variable "service_env" {
@@ -98,7 +98,7 @@ variable "service_env" {
 
   validation {
     condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
-    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
   }
 
   validation {
@@ -212,6 +212,18 @@ variable "hosting_domain" {
   description = "Domínio próprio do site do plano de controle. Os registros de DNS saem em `terraform output cloudflare_dns_records`."
   type        = string
   default     = "conta.veraxsistemas.com.br"
+}
+
+variable "admin_hosting_site_id" {
+  description = "ID do site do Firebase Hosting que serve o console do responsável, com admin_enabled (ids de site são globais no Firebase)."
+  type        = string
+  default     = "verax-admin"
+}
+
+variable "admin_hosting_domain" {
+  description = "Domínio próprio do console do responsável, com admin_enabled. Os registros de DNS saem em `terraform output cloudflare_dns_records`, junto com os do domínio do plano de controle."
+  type        = string
+  default     = "admin.veraxsistemas.com.br"
 }
 
 variable "firestore_pitr" {

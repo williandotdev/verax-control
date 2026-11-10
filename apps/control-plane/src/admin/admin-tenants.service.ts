@@ -63,7 +63,7 @@ export const INSTALL_GUIDE_PATH = 'docs/runbooks/instalacao-no-cliente.md';
 
 /**
  * Cadastros novos por responsável: o cadastro na infraestrutura da Verax cria um nó pago. Um responsável negocia poucos
- * contratos por dia; uma sessão do IAP sequestrada não cria dezenas de nós (nem dezenas de cadastros no cliente). Em
+ * contratos por dia; uma sessão do console sequestrada não cria dezenas de nós (nem dezenas de cadastros no cliente). Em
  * memória (o cp-admin tem no máximo uma instância).
  */
 export const DIRECT_TENANT_CREATIONS: RateLimitRule = { capacity: 5, windowMs: 60 * 60_000 };
@@ -370,7 +370,7 @@ function lifecycleOf(tenant: TenantRecord): TenantLifecycleView {
  * Os clientes no console do responsável (só no cp-admin): a lista, o detalhe com a linha do tempo do provisionamento, a
  * cotação de referência, o cadastro de um cliente de contrato direto (sem checkout nem Stripe) e as operações do
  * responsável, que o console pede ao cp-worker em nome dele (`worker-owner-client.ts`: o token da conta do cp-admin e o
- * e-mail que o IAP confirmou em `actor`; o JWT do IAP nunca sai daqui).
+ * e-mail da sessão em `actor`; o cookie da sessão nunca sai daqui).
  *
  * O cadastro confere tudo de novo, com as regras do checkout e do provisionamento: os campos (os mesmos schemas), o
  * subdomínio (formato, lista reservada, livre), o nome e o e-mail como o nó os aceita, a tabela de preços vigente, a
@@ -846,7 +846,7 @@ export class AdminTenantsService {
     return { started: true, runId: checked.data.runId, step: checked.data.step };
   }
 
-  /** O pedido ao cp-worker com quem agiu (o e-mail do IAP); qualquer falha do caminho vira um código. */
+  /** O pedido ao cp-worker com quem agiu (o e-mail da sessão); qualquer falha do caminho vira um código. */
   private async callWorker(
     action: TenantAction,
     tenant: TenantRecord,

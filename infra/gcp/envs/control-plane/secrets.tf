@@ -1,5 +1,6 @@
-# Os segredos do plano de controle (plano, seção 2.1): os cinco montados nos serviços e a senha da caixa de envio dos
-# nós. O Terraform cria só o "cofre" vazio de cada um: o valor é gravado por você com o gcloud (GUIA, plano de
+# Os segredos do plano de controle (plano, seção 2.1): os cinco montados nos serviços, a senha da caixa de envio dos
+# nós e os dois do console do responsável (a chave do TOTP e o token do primeiro cadastro). O Terraform cria só o
+# "cofre" vazio de cada um: o valor é gravado por você com o gcloud (GUIA, plano de
 # controle, passo 4) e nunca passa pelo Terraform nem pelo estado dele. Nenhum recurso de versão de segredo (regional ou
 # não) existe neste ambiente, de propósito: o iac.yml confere a declaração.
 #
@@ -10,7 +11,11 @@
 # `env = null`: o segredo não é montado como variável (run.tf). É o caso da senha da caixa de envio dos nós: o cp-worker
 # a lê pela API do Secret Manager só na hora de copiá-la para o cofre de cada nó (o passo `secrets.smtp_password` e a
 # recópia da troca de senha), sempre a versão `latest`, sem precisar de uma revisão nova do serviço; e o cofre pode
-# ficar vazio (o Cloud Run recusa subir com um segredo montado sem versão), com os nós nascendo sem e-mail.
+# ficar vazio (o Cloud Run recusa subir com um segredo montado sem versão), com os nós nascendo sem e-mail. É também o
+# caso dos dois segredos do console (`readers = ["admin"]`): o cp-admin os lê pela API na hora do login e do cadastro
+# (`ADMIN_SECRETS_PROJECT_ID`, admin.tf), e sobe com eles vazios (só o login e o cadastro respondem 503). Os cofres
+# existem sempre, para o responsável gravar os valores antes de ligar o console; a leitura só é concedida à conta
+# cp-admin, que só existe com `admin_enabled`.
 
 locals {
   # Cada segredo: a descrição, quem lê e o nome da variável de ambiente em que o Cloud Run o monta (run.tf).
@@ -47,12 +52,35 @@ locals {
       readers     = ["public"]
       env         = "COOKIE_KEY"
     }
+    # A chave mestra do console: 32 bytes aleatórios em base64. O app deriva dela (HKDF) a chave AES-256-GCM que cifra o
+    # segredo do TOTP no Firestore e a chave HMAC dos códigos de recuperação. Não se troca depois do cadastro: o segredo
+    # do TOTP gravado deixaria de abrir (o caminho é o cadastro de emergência do runbook).
+    "cp-admin-totp-key" = {
+      description = "Chave mestra do console do responsável (32 bytes em base64): cifra o segredo do TOTP no Firestore e assina os códigos de recuperação. Não trocar depois do cadastro."
+      readers     = ["admin"]
+      env         = null
+    }
+    # O token de uso único do primeiro cadastro (`/configurar`). Depois do cadastro o app fecha a tela sozinho; o runbook
+    # pede para desativar a versão mesmo assim (não é montado, então nenhuma revisão depende dela).
+    "cp-admin-setup-token" = {
+      description = "Token de uso único do primeiro cadastro no console do responsável (/configurar), 32 caracteres ou mais. Desative a versão depois do cadastro."
+      readers     = ["admin"]
+      env         = null
+    }
   }
+
+  # Quem lê cada segredo: as contas de execução de identities.tf e, com o console, a cp-admin (admin.tf). A cp-admin
+  # fica fora de `runtime_members` de propósito: aquele mapa também dá `actAs` na cp-invoker, que o console não tem.
+  secret_reader_members = merge(
+    local.runtime_members,
+    { for account in google_service_account.admin : "admin" => "serviceAccount:${account.email}" },
+  )
 
   secret_readers = {
     for pair in flatten([
       for id, secret in local.secrets : [
         for reader in secret.readers : { key = "${id}/${reader}", secret = id, reader = reader }
+        if reader != "admin" || var.admin_enabled
       ]
     ]) : pair.key => pair
   }
@@ -84,7 +112,7 @@ resource "google_secret_manager_secret_iam_member" "readers" {
 
   secret_id = google_secret_manager_secret.cp[each.value.secret].id
   role      = "roles/secretmanager.secretAccessor"
-  member    = local.runtime_members[each.value.reader]
+  member    = local.secret_reader_members[each.value.reader]
 }
 
 # Logs de auditoria de acesso a dados do Secret Manager no projeto inteiro: quem leu qual versão (DATA_READ), quem

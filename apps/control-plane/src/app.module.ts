@@ -2,7 +2,7 @@ import { type DynamicModule, Module, type ModuleMetadata } from '@nestjs/common'
 import { APP_FILTER } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module.js';
-import type { IapKeySource } from './admin/iap-verifier.js';
+import type { AdminSecretSource } from './admin/auth/admin-secrets.js';
 import type { WorkerOwnerClient } from './admin/worker-owner-client.js';
 import { AuditModule } from './audit/audit.module.js';
 import { AccessWorkerModule, type AccessWorkerModuleOptions } from './access/access-worker.module.js';
@@ -43,8 +43,8 @@ export interface AppModuleOptions {
   stripeApi?: StripeApiOptions;
   /** Só nos testes: a fila de passos em memória (em produção, o Cloud Tasks pela configuração). */
   stepQueue?: StepQueue;
-  /** Só nos testes: as chaves do "IAP" do console (em produção, as públicas do Google). */
-  iapKeySource?: IapKeySource;
+  /** Só nos testes: os cofres do login do console em memória (em produção, o Secret Manager). */
+  adminSecrets?: AdminSecretSource;
   /** Só nos testes: o cliente do console para o cp-worker (em produção, HTTP com o token da conta do cp-admin). */
   workerOwnerClient?: WorkerOwnerClient;
 }
@@ -52,8 +52,8 @@ export interface AppModuleOptions {
 /**
  * Módulos que só existem num papel (plano §2.1): o `cp-public` registra as rotas públicas (calculadora, checkout,
  * status e webhook), o `cp-worker` as internas (passos, tick e reconcile, CP-07 e CP-11) e o `cp-admin` o console do
- * responsável (tabelas de preços e de custos, DRE), atrás do IAP. Os outros papéis nem carregam o módulo, então a rota
- * não existe neles.
+ * responsável (tabelas de preços e de custos, DRE), com login próprio. Os outros papéis nem carregam o módulo, então a
+ * rota não existe neles.
  */
 function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
   switch (role) {
@@ -70,7 +70,7 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
     case 'admin':
       return [
         AdminModule.forRoot({
-          iapKeySource: options.iapKeySource,
+          adminSecrets: options.adminSecrets,
           workerOwnerClient: options.workerOwnerClient,
         }),
       ];

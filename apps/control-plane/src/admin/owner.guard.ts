@@ -1,16 +1,43 @@
-import { type CanActivate, type ExecutionContext, HttpStatus, Inject, Injectable } from '@nestjs/common';
-import type { Request } from 'express';
+import {
+  type CanActivate,
+  type ExecutionContext,
+  HttpStatus,
+  Inject,
+  Injectable,
+  SetMetadata,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { Request, Response } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import type { OwnerContext } from '../pricing/pricing-store.js';
-import { IAP_JWT_HEADER, IAP_VERIFIER, type IapJwtVerifier } from './iap-verifier.js';
+import { AdminAuthService, type AuthenticatedSession } from './auth/admin-auth.service.js';
+import {
+  clearedSessionCookieOptions,
+  clearTossedSessionCookies,
+  SESSION_COOKIE_NAME,
+  sessionCookieValues,
+} from './auth/session-cookie.js';
 
-/** O responsável autenticado, preso à requisição pela guarda. */
-export type OwnerRequest = Request & { owner?: OwnerContext; id?: unknown };
+/** O responsável autenticado e a sessão dele, presos à requisição pela guarda. */
+export type OwnerRequest = Request & {
+  owner?: OwnerContext;
+  adminSession?: AuthenticatedSession;
+  id?: unknown;
+};
 
 const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 /** O que um navegador manda em `Sec-Fetch-Site` numa chamada da própria página (ou digitada): o resto é recusado. */
 const ALLOWED_FETCH_SITES: ReadonlySet<string> = new Set(['same-origin', 'none']);
+
+const PUBLIC_ADMIN_ROUTE = Symbol('PUBLIC_ADMIN_ROUTE');
+
+/**
+ * Marca uma rota do console que abre sem sessão: o login, a saída e o primeiro cadastro (`admin-auth.controller.ts`).
+ * As escritas delas continuam exigindo JSON e a mesma origem.
+ */
+export const PublicAdminRoute = (): MethodDecorator & ClassDecorator => SetMetadata(PUBLIC_ADMIN_ROUTE, true);
 
 function headerValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -23,16 +50,19 @@ function mediaType(value: string | undefined): string | undefined {
 }
 
 /**
- * Guarda global do `cp-admin` (só nesse papel): toda rota, exceto `/health` (a sonda do Cloud Run não passa pelo IAP),
- * exige o JWT do IAP válido e de um e-mail em `OWNER_PRINCIPALS` (401 sem token ou com token inválido; 403 com um token
- * válido de outra pessoa). Escritas exigem `Content-Type: application/json` (415) e recusam `Sec-Fetch-Site` de outro
- * site (403): o IAP autentica por cookie, e um formulário de outra página não pode publicar uma tabela. O console não
- * tem CORS: uma página de outra origem nem consegue mandar JSON para cá.
+ * Guarda global do `cp-admin` (só nesse papel). Toda rota, exceto `/health` (a sonda do Cloud Run) e as marcadas com
+ * `@PublicAdminRoute()`, exige a sessão do login próprio do console (cookie `__session`, `AdminAuthService`): sem
+ * sessão, ou com ela vencida, 401 `unauthenticated`; de um e-mail que saiu de `OWNER_PRINCIPALS`, 403. Escritas, com
+ * sessão ou não, exigem `Content-Type: application/json` (415) e recusam `Sec-Fetch-Site` de outro site (403): o
+ * cookie é `SameSite=Strict`, e mesmo assim um formulário de outra página não chega a publicar uma tabela nem a tentar
+ * um login. O console não tem CORS: uma página de outra origem nem consegue mandar JSON para cá.
  */
 @Injectable()
 export class OwnerGuard implements CanActivate {
   constructor(
-    @Inject(IAP_VERIFIER) private readonly verifier: IapJwtVerifier,
+    private readonly auth: AdminAuthService,
+    private readonly reflector: Reflector,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @InjectPinoLogger(OwnerGuard.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -41,37 +71,66 @@ export class OwnerGuard implements CanActivate {
     const req = context.switchToHttp().getRequest<OwnerRequest>();
     if (req.method === 'GET' && req.path === '/health') return true;
 
-    const result = await this.verifier.verify(headerValue(req.headers[IAP_JWT_HEADER]));
+    const isPublic = this.reflector.getAllAndOverride<boolean | undefined>(PUBLIC_ADMIN_ROUTE, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic === true) {
+      this.checkWrite(req);
+      return true;
+    }
+
+    const cookies = sessionCookieValues(req.headers.cookie);
+    const result = await this.auth.authenticate(cookies);
     if (!result.ok) {
-      // Só o motivo: nem o token, nem o e-mail de quem não é responsável.
-      this.logger.warn({ event: 'admin_auth_failed', reason: result.reason }, 'acesso ao console recusado');
+      // Só o motivo: nem o cookie, nem o e-mail. Sessão ausente ou vencida é o dia a dia (o console volta ao login).
       if (result.reason === 'not_owner') {
+        this.logger.warn(
+          { event: 'admin_auth_failed', reason: 'not_owner' },
+          'sessão de quem não é responsável',
+        );
         throw new ApiError(HttpStatus.FORBIDDEN, 'Sem permissão', 'forbidden');
       }
-      if (result.reason === 'keys_unavailable') {
-        throw new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Console indisponível', 'admin_unavailable');
-      }
+      this.logger.info(
+        { event: 'admin_session_refused', reason: result.reason },
+        'sessão do console ausente',
+      );
+      // Os `__session` que não valeram saem do navegador: o vencido do console e os plantados por um site irmão.
+      const res = context.switchToHttp().getResponse<Response>();
+      clearTossedSessionCookies(res, this.config.CLOUDFLARE_ZONE_NAME);
+      if (cookies.length > 0) res.clearCookie(SESSION_COOKIE_NAME, clearedSessionCookieOptions());
       throw new ApiError(HttpStatus.UNAUTHORIZED, 'Não autenticado', 'unauthenticated');
     }
 
-    if (!SAFE_METHODS.has(req.method)) {
-      const site = headerValue(req.headers['sec-fetch-site']);
-      if (site !== undefined && !ALLOWED_FETCH_SITES.has(site)) {
-        this.logger.warn({ event: 'admin_cross_site_refused' }, 'escrita de outro site recusada');
-        throw new ApiError(HttpStatus.FORBIDDEN, 'Sem permissão', 'cross_site');
-      }
-      if (mediaType(headerValue(req.headers['content-type'])) !== 'application/json') {
-        throw new ApiError(HttpStatus.UNSUPPORTED_MEDIA_TYPE, 'Envie JSON', 'unsupported_media_type');
-      }
-    }
+    this.checkWrite(req);
     req.owner = { email: result.email, ...(typeof req.id === 'string' ? { requestId: req.id } : {}) };
+    req.adminSession = { email: result.email, sessionRef: result.sessionRef };
     return true;
+  }
+
+  private checkWrite(req: OwnerRequest): void {
+    if (SAFE_METHODS.has(req.method)) return;
+    const site = headerValue(req.headers['sec-fetch-site']);
+    if (site !== undefined && !ALLOWED_FETCH_SITES.has(site)) {
+      this.logger.warn({ event: 'admin_cross_site_refused' }, 'escrita de outro site recusada');
+      throw new ApiError(HttpStatus.FORBIDDEN, 'Sem permissão', 'cross_site');
+    }
+    if (mediaType(headerValue(req.headers['content-type'])) !== 'application/json') {
+      throw new ApiError(HttpStatus.UNSUPPORTED_MEDIA_TYPE, 'Envie JSON', 'unsupported_media_type');
+    }
   }
 }
 
-/** O responsável da requisição; a guarda global garante que ele existe em toda rota do console. */
+/** O responsável da requisição; a guarda global garante que ele existe em toda rota do console com sessão. */
 export function ownerOf(req: OwnerRequest): OwnerContext {
   if (req.owner === undefined)
     throw new ApiError(HttpStatus.UNAUTHORIZED, 'Não autenticado', 'unauthenticated');
   return req.owner;
+}
+
+/** A sessão da requisição (para trocar a senha ou o aplicativo); mesma garantia de `ownerOf`. */
+export function sessionOf(req: OwnerRequest): AuthenticatedSession {
+  if (req.adminSession === undefined)
+    throw new ApiError(HttpStatus.UNAUTHORIZED, 'Não autenticado', 'unauthenticated');
+  return req.adminSession;
 }

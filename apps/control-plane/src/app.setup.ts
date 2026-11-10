@@ -5,7 +5,6 @@ import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
 import { z } from 'zod';
 import { consoleAssets, resolveConsoleRoot } from './admin/console-assets.js';
-import { IAP_VERIFIER, type IapJwtVerifier } from './admin/iap-verifier.js';
 import type { AppConfig } from './common/config/config.module.js';
 import { buildTrustProxy } from './common/http/client-ip.js';
 import { buildCorsDelegate } from './common/http/cors.js';
@@ -91,8 +90,8 @@ export function configureApp(
 
 /**
  * As telas do console do responsável no próprio `cp-admin` (`admin/console-assets.ts`): depois do helmet e do
- * `no-store` (o middleware troca a CSP e o cache só nos arquivos dele) e antes das rotas do Nest. Cada arquivo exige o
- * JWT do IAP, com o mesmo verificador e o mesmo evento de log da guarda global.
+ * `no-store` (o middleware troca a CSP e o cache só nos arquivos dele) e antes das rotas do Nest. As telas abrem sem
+ * sessão (o login está nelas); os dados só pela API, atrás da guarda global.
  */
 function serveConsole(app: NestExpressApplication, consoleRoot: string | null | undefined): void {
   const logger = app.get(Logger);
@@ -103,13 +102,5 @@ function serveConsole(app: NestExpressApplication, consoleRoot: string | null | 
     }
     return;
   }
-  const verifier = app.get<symbol, IapJwtVerifier>(IAP_VERIFIER);
-  app.use(
-    consoleAssets({
-      root,
-      verifier,
-      onRefused: (reason) =>
-        logger.warn({ event: 'admin_auth_failed', reason }, 'acesso ao console recusado', 'Console'),
-    }),
-  );
+  app.use(consoleAssets({ root }));
 }
