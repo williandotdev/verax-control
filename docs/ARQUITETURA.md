@@ -928,10 +928,11 @@ Postgres, a tabela `Notification`, e o worker entrega. Nenhum e-mail sai de dent
   severidade não avisa. O achado com exceção (esperado) nunca avisa.
 
 - **Volume do plano:** a cada execução, a tarefa soma o uso do mês de cada cliente (`IngestUsage`, o medidor do PR-03,
-  no mês do calendário de Brasília) e compara com o limite do plano do nó (`PLAN` e `PLAN_MONTHLY_GIB`; o GiB é 2^30
-  bytes). Cada faixa avisa uma vez por mês. Num salto direto para 100%, o aviso de 80% nasce `skipped` (`superseded`) e
-  sai um e-mail só. O aviso só informa: acima de 100%, a coleta, os achados e os incidentes continuam. O plano
-  `interno` (nó da Verax) não tem limite, e nada é calculado.
+  no mês do calendário de Brasília) e compara com o limite do plano do cliente (`TenantPlan`, CE-02; no nó dedicado, o
+  `PLAN` e o `PLAN_MONTHLY_GIB`; o GiB é 2^30 bytes). Cada faixa avisa uma vez por mês. Num salto direto para 100%, o
+  aviso de 80% nasce `skipped` (`superseded`) e sai um e-mail só. O aviso só informa: acima de 100%, a coleta, os
+  achados e os incidentes continuam. O plano `interno` (nó da Verax) não tem limite, e nada é calculado; a Plataforma
+  mede o volume por dia contra a franquia (CE-09), e o cliente da célula ainda sem plano fica de fora.
 - **Entrega (tarefa `notifications` do worker, a cada 60 s, com a concessão `notifications` no `SyncState`):**
   - lê os avisos `pending` vencidos, os mais antigos primeiro (até 20 por execução);
   - os resumos das horas que fecharam saem antes dos avisos novos (abaixo);
@@ -1130,12 +1131,29 @@ escritos pelo `start.sh` no `api.env` e no `worker.env`, sobre a tabela de `pack
 plano na partida (`apps/api/src/plan/plan.service.ts`); trocar de plano é trocar o `node.conf` e reiniciar. O painel só
 mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
 
-**Na célula, o plano passa a ser de cada cliente** _(a construir, CE-02)_: uma linha `TenantPlan` por cliente, gravada
-só pelo sistema (nenhum schema de requisição a aceita), com os limites, o histórico e a franquia contratada em GB/dia.
-No nó dedicado, o `node.conf` continua sendo a fonte e semeia a linha do cliente; na célula, quem grava é o comando do
-plano de controle (CE-05). As vagas, o histórico das telas, o expurgo e os avisos de volume leem o plano do cliente, e
-não mais o do ambiente. O volume da Plataforma é a média diária no ciclo contra a franquia, não o mês em GiB (seção
-"Célula compartilhada (Plataforma)", "Medição e franquia").
+**O plano é de cada cliente** (CE-02, para a célula da Plataforma): uma linha `TenantPlan` por cliente (o id, os quatro
+limites e a franquia contratada em GB/dia, só na Plataforma), lida pelo `TenantPlanResolver`
+(`apps/api/src/plan/tenant-plan.ts`). As vagas, o histórico das telas, a evolução da postura, o expurgo e os avisos de
+volume leem o plano do cliente, e não mais o do ambiente.
+
+- **Nó dedicado** (`NODE_MODE=dedicated`, o padrão; sem a linha no `node.conf`, nada muda): o `node.conf` continua
+  sendo a fonte. Na primeira leitura de cada cliente no processo (da API ou do worker), a linha dele é semeada do
+  ambiente (gravada se falta ou se difere, com `source = env`, na transação da requisição quando houver), e a leitura
+  devolve o plano do ambiente; trocar o `node.conf` e reiniciar continua trocando o plano. A semeadura não vai para a
+  trilha: quem muda o plano é o `node.conf`.
+- **Célula** (`NODE_MODE=cell`): vale a linha que o comando do plano de controle gravou (CE-05, `source =
+control_plane`), e o `PLAN` e os ajustes do ambiente são recusados na partida. O cliente ainda sem linha fica do lado
+  seguro: criar e reativar são recusados com 409 `TENANT_PLAN_MISSING` (desativar passa), "Plano e uso" responde o
+  mesmo 409, o histórico das telas fica no piso (30 dias), e o expurgo e os avisos de volume o deixam de fora.
+- **Só o sistema grava:** a única escrita é `writeTenantPlan` (um meta-teste procura outra no código-fonte), o plano é
+  conferido antes (`parseTenantPlan`, em `packages/shared/src/plans.ts`) e de novo por CHECK no banco (a faixa de cada
+  limite e a combinação de plano, limites e franquia), o escopo do cliente lê a linha mas recusa gravá-la
+  (`SYSTEM_WRITTEN_MODELS` em `tenant-scope.ts`), e outro meta-teste confere que nenhuma rota aceita, em nenhuma
+  profundidade do corpo, da query ou dos parâmetros, um campo do plano (`apps/api/test/tenant-plan.test.ts`).
+- **A Plataforma** (`plataforma`, plano de cliente que o `node.conf` não aceita): contas, usuários, histórico e a
+  franquia sempre vêm do plano de controle, sem padrão no repositório, e ela não tem volume do mês (o volume é a média
+  diária no ciclo contra a franquia: seção "Célula compartilhada (Plataforma)", "Medição e franquia"). Até o contador
+  da franquia (CE-10), "Plano e uso" mostra o volume do mês sem limite para ela.
 
 - **Vagas** (`packages/shared/src/plan-usage.ts`): contas cloud ativas (AWS, GCP e Cloudflare) e usuários do cliente
   convidados ou ativos. A equipe da Verax (`admin_verax`) nunca conta. Criar e reativar pedem vaga; desativar libera.
@@ -1152,17 +1170,17 @@ não mais o do ambiente. O volume da Plataforma é a média diária no ciclo con
     administrador de um cliente novo (`POST /v1/tenants`, que sempre tem vaga);
   - o bootstrap do nó: as contas da GCP (no limite, a conta fica de fora com `plan-limit`, e o resto segue) e, no modo
     `customer`, o `admin_cliente` (no limite, um e-mail novo é recusado; o primeiro sempre tem vaga).
-- **Recusa:** 409 com o código `PLAN_LIMIT_REACHED` e a mensagem que diz o limite ("Seu plano permite até 3 contas
-  cloud ativas. Desative uma conta ou fale com a Verax para ampliar."), na trilha do cliente como falha, com a ação de
-  sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
+- **Recusa:** 409 com o código `PLAN_LIMIT_REACHED` e a mensagem que diz o limite do plano do cliente ("Seu plano
+  permite até 3 contas cloud ativas. Desative uma conta ou fale com a Verax para ampliar."), na trilha do cliente como
+  falha, com a ação de sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
 - **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte
   (`aws` pela tarefa `wazuh-usage`, PR-V6: os bytes que o analysisd do nó recebe, que incluem os dos agentes do Wazuh
   quando ligados).
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
   mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
 - **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
-- **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido (rótulo e os quatro limites) e o uso
-  do cliente da sessão (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
+- **`GET /v1/plan`** (permissão `plan:read`, só administradores): o plano resolvido do cliente da sessão (rótulo e os
+  quatro limites) e o uso dele (contas ativas, usuários convidados ou ativos, o mês e os bytes lidos nele). Tela: Administração
   → **Plano e uso** (`/cadastros/plano`), só leitura, com uma barra por contador.
 
 ### Histórico nas telas (PR-20)
@@ -1177,9 +1195,11 @@ As telas não prometem mais do que o banco guarda. Os filtros de período de ach
   controllers de `GET /v1/findings`, `GET /v1/audit` e `GET /v1/reports/:kind`). No Essencial, `12m` é recusado; no
   Profissional e no Interno (sem limite), aceito; um ajuste do Enterprise abaixo de 90 dias recusa também `90d`. A
   auditoria segue a mesma regra, embora a trilha fique ao menos 13 meses: o filtro é o do plano em todas as telas.
-- **`GET /v1/plan/history`** (permissão nova `plan_history:read`, todos os papéis): só `{ historyDays }`, o mesmo
-  para toda sessão, sem dado de cliente (a Verax lê sem escolher cliente). O `GET /v1/plan` continua só dos
-  administradores; o histórico saiu à parte porque os filtros de achados e relatórios são de todos os papéis.
+- **`GET /v1/plan/history`** (permissão nova `plan_history:read`, todos os papéis): só `{ historyDays }`, o do plano
+  do cliente da sessão (CE-02), sem outro dado de cliente. A equipe da Verax lê sem escolher cliente: no nó dedicado,
+  o histórico do ambiente; na célula, o menor entre os planos gravados (a visão de todos não promete mais do que o
+  cliente que guarda menos). O `GET /v1/plan` continua só dos administradores; o histórico saiu à parte porque os
+  filtros de achados e relatórios são de todos os papéis.
 - **Painel** (`apps/web/src/features/plan/plan-history.ts`): cada seletor de período mostra só os períodos que cabem
   no histórico. Enquanto o plano não chega (ou se a leitura falha), só os que todo plano tem (até 30 dias, o piso dos
   ajustes); um período da URL que não cabe é ignorado e nunca vai para a API, e um período da URL além do piso espera
@@ -1194,10 +1214,12 @@ As telas não prometem mais do que o banco guarda. Os filtros de período de ach
 ## Expurgo do histórico
 
 _(fase 2, PR-19: a tarefa `retention` do worker, em `apps/api/src/retention/`, e a migration
-`20261109120000_history_retention`.)_
+`20261109120000_history_retention`; por cliente desde o CE-02, migration `20261110180000_tenant_plan`.)_
 
-O banco de cada nó guarda o histórico pelo prazo do plano (`PLAN` e `PLAN_HISTORY_DAYS`: 90 dias no Essencial, 365 no
-Profissional, sem limite no Interno). Uma vez por dia o worker apaga o que passou do prazo. O expurgo só mexe no
+O banco de cada nó guarda o histórico de cada cliente pelo prazo do plano dele (`TenantPlan`; no nó dedicado, o `PLAN`
+e o `PLAN_HISTORY_DAYS`: 90 dias no Essencial, 365 no Profissional, sem limite no Interno). O cliente da célula ainda
+sem plano fica fora do expurgo do histórico e da auditoria (o inventário, os avisos e as tabelas de operação seguem
+regras que não dependem do plano). Uma vez por dia o worker apaga o que passou do prazo. O expurgo só mexe no
 Postgres do nó: nada na nuvem do cliente, nos buckets dele, nos logs na origem nem no índice do Wazuh, que tem a
 retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
 
@@ -1221,26 +1243,34 @@ retenção própria de 30 dias (política ISM, `infra/wazuh/README.md`).
   | Fila sem dono                                                            | 90 dias                                                                                                                                                                                                                                                                                     |
   | Avisos por e-mail                                                        | Enviados, com falha ou pulados, sem mudança há 90 dias (a chave de deduplicação não deixa o aviso sair de novo nesse tempo); o pendente fica, e o de um incidente ou achado que sai vai junto. As horas de avisos (o resumo resolvido e a hora só de contagem, PR-17'), pelo mesmo prazo    |
   | Sessões, links, tentativas de login, códigos TOTP usados e limite por IP | Vencidos há mais de um dia (as janelas vão de 2 minutos a 12 horas). Os links do contato de escalonamento (D8) não passam por aqui: os vencidos saem a cada e-mail novo ao contato, e os de um endereço anterior na troca; o limite por IP dos links, na chamada seguinte, depois de um dia |
-  | Auditoria                                                                | 13 meses, ou o prazo do histórico se for maior (com histórico sem limite, fica)                                                                                                                                                                                                             |
+  | Auditoria                                                                | 13 meses, ou o prazo do histórico do cliente se for maior (com histórico sem limite, fica). Os registros sem cliente seguem o corte mais antigo entre os clientes                                                                                                                           |
   | Fica sempre                                                              | Clientes, usuários, contas, lista de proteção, exceções, credenciais, agentes, uso por mês e o estado dos coletores                                                                                                                                                                         |
 
 - **Imutabilidade (revisão linha a linha):** a trilha de auditoria e os comentários dos achados continuam só INSERT,
   com uma exceção estreita. UPDATE e TRUNCATE ficam sempre bloqueados pelos triggers. DELETE só passa no trigger com a
   flag `verax.retention` ligada **e** o registro mais velho que o piso de idade, conferido no banco linha a linha: 13
   meses na auditoria e 30 dias nos comentários (o menor prazo que um plano aceita). Quem liga a flag, e só em volta
-  do próprio DELETE, são as funções `verax_purge_audit_log(corte, lote)` e `verax_purge_finding_comments(achados)`:
+  do próprio DELETE, são as funções `verax_purge_audit_log(corte, lote)`, `verax_purge_tenant_audit_log(cliente,
+corte, lote)` (CE-02) e `verax_purge_finding_comments(achados)`:
   `SECURITY DEFINER`, com o papel das migrations (dono das tabelas) como dono, `search_path` fixo e o piso conferido
   por elas mesmas, então um corte mais novo é recusado pelo banco, não só pela aplicação. O EXECUTE não é de PUBLIC:
   o db-bootstrap concede só ao papel da aplicação, que continua sem DELETE direto nas duas tabelas (nem com a flag
   ligada na sessão). Nem o dono das tabelas apaga um registro mais novo que o piso sem derrubar o trigger. Nenhum
   endpoint altera ou apaga a auditoria (o critério da T1.3 continua valendo).
+- **Auditoria com prazos diferentes (CE-02):** a função global apaga com o corte mais antigo entre os clientes (o de
+  quem guarda mais, que vale também para os registros sem cliente), e a função do cliente apaga, de cada cliente com
+  corte mais novo, o que passou do dele. Um cliente sem limite (o `interno` da Verax na célula) ou sem plano segura o
+  corte global: nesse caso só a função de cada cliente roda, e os registros sem cliente ficam. No nó dedicado, todos os
+  clientes têm o mesmo prazo, e só a global roda, como antes.
 - **Trilha do expurgo:** cada execução grava `retention.purge` (ator sistema) na trilha de cada cliente, com o prazo
-  em vigor, os cortes e as contagens por tabela, sem nenhum conteúdo, e um registro global da Verax com as tabelas sem
-  cliente. A trilha passa a dizer que, antes do corte, os registros saíram pela política. Uma execução interrompida
+  em vigor para ele, os cortes e as contagens por tabela, sem nenhum conteúdo (o cliente da célula sem plano, com
+  `planMissing`), e um registro global da Verax com as tabelas sem cliente. A trilha passa a dizer que, antes do corte, os registros saíram pela política. Uma execução interrompida
   registra o que já saiu, como falha.
-- **Carência quando o plano diminui:** o job guarda o prazo aplicado (`RetentionState`). Quando o plano pede um prazo
-  menor (do Profissional para o Essencial, por exemplo), o anterior continua valendo por 30 dias, contados da primeira
-  execução que viu a redução, para o cliente exportar; depois, vale o novo. Aumentar vale na hora e cancela a redução.
+- **Carência quando o plano diminui:** o job guarda o prazo aplicado a cada cliente (`TenantRetentionState`; antes do
+  CE-02, um só para o nó, em `RetentionState`, que a migration copiou para cada cliente). Quando o plano do cliente
+  pede um prazo menor (do Profissional para o Essencial, por exemplo), o anterior continua valendo para ele por 30
+  dias, contados da primeira execução que viu a redução, para o cliente exportar; depois, vale o novo. Aumentar vale na
+  hora e cancela a redução. A carência de um cliente não mexe no prazo dos outros.
 - **Backups:** um dado expurgado continua nos backups do banco e nos snapshots do disco até a retenção deles vencer:
   eliminação em até D + 97 dias (90 do ciclo de vida do bucket e 7 de exclusão reversível), com D o dia em que saiu do
   banco. A conta, a frase para a Privacidade e o DPA e o que o ensaio geral confere estão em
@@ -1329,14 +1359,16 @@ Cada ponto muda, ou fica atrás de `NODE_MODE=cell` (no nó dedicado, nada muda)
 - uma identidade só para a AWS: o worker pede o token da conta de serviço da VM, e o painel mostra o
   `NODE_SA_UNIQUE_ID` do ambiente (`aws/web-identity.ts`, `cloud-accounts.service.ts`); o Wazuh tem um arquivo de
   token só (`aws-token.sh`, `render-manager-config.py`);
-- o plano é do nó, vem do ambiente e decide também o expurgo e os avisos de volume (feito no CE-02, abaixo);
+- o plano é do nó, vem do ambiente e decide também o expurgo e os avisos de volume (**feito no CE-02**: o plano é de
+  cada cliente, seção "Plano do nó: limites e uso");
 - uma origem do painel só (`WEB_ORIGIN`: CORS, links, hostname do Turnstile);
 - o ingress do túnel é trocado inteiro, com um nome só (`putTunnelIngress` no plano de controle);
 - o primeiro acesso lê o metadata da VM, e a ativação lê os guest attributes;
 - a exportação e a exclusão são do nó inteiro (o dump do banco e o `destroy` do `envs/tenant`);
 - os tópicos da GCP têm o nome do projeto (`<prefixo>-security-<projeto>`), que pode voltar depois de uma exclusão;
 - os agentes do Wazuh são de um cliente (`WAZUH_AGENTS_TENANT`): **ficam desligados na célula (v1)**;
-- o cliente só tinha `active` e `inactive` (feito no CE-02), e o `User.email` é único no banco inteiro.
+- o cliente só tinha `active` e `inactive` (**feito no CE-02**: os estados do ciclo de vida, abaixo), e o
+  `User.email` é único no banco inteiro (CE-01).
 
 Já servem para vários clientes: a atribuição dos alertas (`alerts/alert-owner.ts`: bucket e conta têm de concordar),
 a regra de que cada origem de log é de um cliente só (`assertOriginsFree`), o `source_mismatch` da GCP, o rótulo OAEP
@@ -1445,6 +1477,30 @@ ele bloqueia no nó estão no código desde o CE-02; quem o grava na célula é 
 
 A transição é só do sistema: o cadastro de clientes da API (`admin_verax`) continua só com `active` e `inactive` e
 recusa mudar o estado de um cliente que está num estado do ciclo de vida.
+
+**O que já está no nó (CE-02):**
+
+- **Transições** (`apps/api/src/tenants/tenant-lifecycle.ts`, `setTenantLifecycleStatus`): `active` → `suspended` ou
+  `canceled`; `suspended` → `active` ou `canceled`; `canceled` → `purging`; nada sai de `purging` (o expurgo apaga o
+  cliente) nem de `inactive` (a exclusão lógica do cadastro). Repetir o estado atual não grava nada (o comando repetido
+  do plano de controle). Cada transição trava a linha do cliente, grava, derruba o acesso quando ele sai de `active`
+  (as sessões dos usuários dele e a seleção da equipe da Verax nele) e vai para a trilha do cliente como
+  `tenant.lifecycle_suspend`, `tenant.lifecycle_reactivate`, `tenant.lifecycle_cancel` ou
+  `tenant.lifecycle_purge_start` (ator sistema, com o estado antes e depois). Nenhuma rota chega aqui.
+- **Login:** só cliente `active` recebe sessão, como antes. Ao suspenso, depois da senha certa (e antes do código do
+  MFA), a API responde 401 `TENANT_SUSPENDED`, e o painel diz que o acesso da empresa está suspenso por uma pendência
+  de pagamento e que a pessoa procure quem cuida da contratação, sem valor nem detalhe; a senha errada continua com a
+  resposta de sempre. O cancelado e o em expurgo ouvem a resposta da senha errada. A sessão aberta cai na requisição
+  seguinte (`session-validation.ts`), além da revogação na transição.
+- **Coleta:** só as contas de cliente `active` são lidas (`COLLECTING_TENANT`, em `tenants/tenant-status.ts`): a lista
+  do Wazuh (`wazuh-sources`), as assinaturas da GCP, as contas do Cloudflare, as conferências da AWS (o "Verificar" e
+  a periódica) e o inventário e a postura. Isso vale também para o cliente `inactive` do cadastro, que antes continuava
+  sendo coletado. A atribuição de um alerta que já estava a caminho continua pelo cadastro (a conta segue sendo do
+  cliente), e os dados ficam.
+- **Cadastro da API:** `PATCH /v1/tenants/:id` só aceita `active` e `inactive` no `status` (o schema), e mudar o estado
+  de um cliente suspenso, cancelado ou em expurgo, ou desativá-lo pelo `DELETE`, é 409 `TENANT_STATUS_MANAGED`; o resto
+  do cadastro continua editável. O painel mostra os três estados ("Suspenso", "Cancelado" e "Em exclusão") e não
+  oferece o botão de desativar ou reativar para eles. O escopo do cliente recusa gravar o `status` do próprio cadastro.
 
 ### Exclusão e a promessa dos 100 dias na célula _(a construir, CE-03 e CE-16)_
 
