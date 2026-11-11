@@ -64,15 +64,19 @@ describe('modelos de custo', () => {
     expect(screen.getByLabelText('Custo da hora (R$)')).toHaveAttribute('aria-invalid', 'true');
   });
 
-  it('o custo de cada porte é recalculado na hora, e dinheiro mostra o valor lido', async () => {
+  it('o custo da célula, o rateio por GB/dia e o de cada porte são recalculados na hora, e dinheiro mostra o valor lido', async () => {
     const { user } = renderConsole('/modelos-de-custo/novo');
     await waitFor(() => expect(screen.getByLabelText('Câmbio (R$ por US$)')).toHaveValue('2'));
-    const preview = screen.getByRole('table', { name: /custo do nó por porte/i });
+    const preview = screen.getByRole('table', { name: /custo do nó dedicado por porte/i });
     // Porte P fictício: (100 + 1 + 0,5 + 1 + 2 + 1) US$ × 2 × 1,1 (o texto do Intl tem espaço não separável).
     expect(within(preview).getByRole('row', { name: /^P\s/ })).toHaveTextContent('R$ 232,10');
+    // A célula fictícia é a mesma máquina, com capacidade de 10 GB/dia: R$ 232,10 ÷ 10 por GB/dia.
+    const rate = screen.getByText('Rateio por GB/dia contratado (R$/mês)');
+    expect(rate.nextElementSibling).toHaveTextContent('R$ 23,21');
     await user.clear(screen.getByLabelText('Câmbio (R$ por US$)'));
     await user.type(screen.getByLabelText('Câmbio (R$ por US$)'), '4');
     expect(within(preview).getByRole('row', { name: /^P\s/ })).toHaveTextContent('R$ 464,20');
+    expect(rate.nextElementSibling).toHaveTextContent('R$ 46,42');
     const hourly = screen.getByLabelText('Custo da hora (R$)');
     await user.clear(hourly);
     await user.type(hourly, '1.234,5');

@@ -4,7 +4,7 @@ import { Link, useLocation, useParams } from 'react-router';
 import { ErrorState, LoadingState } from '@/components/states';
 import type { DirectTenantCreated, TimelineStep, TimelineStepStatus } from '@/lib/api-types';
 import { cn } from '@/lib/cn';
-import { configurationSummary, formatDateTime } from '@/lib/format';
+import { configurationSummary, formatDateTime, gbDayLabel } from '@/lib/format';
 import { formatCents, formatInteger } from '@/lib/numbers';
 import { InstallationPanel } from './installation-panel';
 import {
@@ -195,6 +195,16 @@ export function TenantDetailPage() {
 
       <Panel title="Contratado" id="contratado">
         <p className="text-sm">{configurationSummary(data.configuration)}</p>
+        {'plan' in data.configuration ? (
+          <p className="text-xs text-muted-foreground">
+            Franquia contratada: {gbDayLabel(data.configuration.gbDay)} (a medição do excedente e o contador
+            do painel partem dela).
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Contratado no modelo de preço anterior (antes do preço por GB/dia): só para consulta.
+          </p>
+        )}
         <p className="text-sm tabular-nums">
           {contract ? 'Preço de referência' : 'Preço cotado no checkout'} (tabela{' '}
           {data.pricing.priceTableVersion}): {formatCents(data.pricing.monthlyTotal)} por mês
@@ -205,7 +215,7 @@ export function TenantDetailPage() {
             Contrato direto: sem assinatura nem cobrança pela Stripe. A cobrança e a nota fiscal seguem o
             contrato.
             {customer &&
-              ' O ambiente roda na infraestrutura do cliente: a referência é a tabela da licença, e a nuvem é paga por ele.'}
+              ' O ambiente roda na infraestrutura do cliente: a referência é o mesmo preço por GB/dia, e a nuvem é paga por ele.'}
           </p>
         )}
       </Panel>

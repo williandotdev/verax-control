@@ -1,4 +1,12 @@
-import type { ComponentId, ContactReason, DeploymentMode, SupportLevel, VersionStatus } from './api-types';
+import type {
+  ComponentId,
+  ContactReason,
+  ContractedConfiguration,
+  DeploymentMode,
+  PlanId,
+  TaxMode,
+  VersionStatus,
+} from './api-types';
 
 const dateTime = new Intl.DateTimeFormat('pt-BR', {
   dateStyle: 'short',
@@ -50,36 +58,40 @@ export const MODE_LABELS: Readonly<Record<DeploymentMode, string>> = {
   self_hosted: 'Na infraestrutura do cliente (contrato direto)',
 };
 
-export const SUPPORT_LABELS: Readonly<Record<SupportLevel, string>> = {
-  standard: 'Padrão',
-  priority: 'Prioritário',
+export const PLAN_LABELS: Readonly<Record<PlanId, string>> = {
+  plataforma: 'Plataforma',
+  dedicado: 'Dedicado',
+  vciso: 'vCISO',
+};
+
+/** Os planos, na ordem do site. */
+export const PLANS: readonly PlanId[] = ['plataforma', 'dedicado', 'vciso'];
+
+export const TAX_MODE_LABELS: Readonly<Record<TaxMode, string>> = {
+  inclusive: 'Imposto embutido no preço',
+  exclusive: 'Imposto por cima ("+ impostos")',
 };
 
 export const CONTACT_REASON_LABELS: Readonly<Record<ContactReason, string>> = {
-  cloud_accounts_above_max: 'contas de nuvem acima do máximo da tabela',
-  volume_above_max: 'volume de logs acima da maior faixa',
-  agents_above_max: 'agentes acima do máximo de pacotes',
-  history_above_max: 'histórico acima da maior opção',
-  above_largest_size: 'nenhum porte comporta a combinação',
+  above_online_max: 'volume acima do máximo da Plataforma no site',
+  above_max: 'volume acima do máximo cotável do plano',
+  above_largest_size: 'nenhum porte comporta o volume',
+  mode_unavailable: 'a Plataforma só roda na infraestrutura da Verax',
 };
 
-/** O texto de um item da cotação na DRE (o componente, a variante e o modo). */
-export function lineItemLabel(component: ComponentId, variant: string, mode: DeploymentMode): string {
+/** O texto de um item da cotação na DRE e no resumo da cotação. */
+export function lineItemLabel(component: ComponentId): string {
   switch (component) {
-    case 'environment':
-      return mode === 'managed'
-        ? `Ambiente na infraestrutura da Verax (porte ${variant.slice(-1)})`
-        : `Licença na infraestrutura do cliente (porte ${variant.slice(-1)})`;
-    case 'cloud_accounts':
-      return 'Contas de nuvem adicionais';
-    case 'volume':
-      return `Volume de logs até ${variant} GiB/mês`;
-    case 'agents':
-      return `Agentes nas instâncias (pacote de ${variant})`;
-    case 'history':
-      return `Histórico de ${variant} dias`;
-    case 'priority_support':
-      return 'Suporte prioritário';
+    case 'base':
+      return 'Plataforma (base com a franquia incluída)';
+    case 'additional_gb_day':
+      return 'GB/dia adicional da franquia';
+    case 'overage_gb_day':
+      return 'GB/dia excedente';
+    case 'gb_day':
+      return 'GB/dia do servidor dedicado';
+    case 'service':
+      return 'Serviço de vCISO';
     case 'setup':
       return 'Implantação (uma vez)';
   }
@@ -90,23 +102,36 @@ export function plural(count: number, singular: string, pluralForm: string): str
   return `${new Intl.NumberFormat('pt-BR').format(count)} ${count === 1 ? singular : pluralForm}`;
 }
 
-/** Uma configuração numa linha: "Verax · P · 4 contas · 50 GiB · 10 agentes · 180 dias · padrão". */
-export function configurationSummary(configuration: {
-  mode: DeploymentMode;
-  size?: string;
-  cloudAccounts: number;
-  monthlyGib: number;
-  agents: number;
-  historyDays: number;
-  support: SupportLevel;
-}): string {
+/** "5 GB/dia". */
+export function gbDayLabel(gbDay: number): string {
+  return `${new Intl.NumberFormat('pt-BR').format(gbDay)} GB/dia`;
+}
+
+/**
+ * Uma configuração numa linha: "Dedicado · 5 GB/dia · na Verax · porte P". Um cliente do modelo de preço anterior (sem
+ * `plan`) sai como "Modelo anterior · na Verax · porte P · 4 contas · 50 GiB/mês · …", com o que ele tem.
+ */
+export function configurationSummary(
+  configuration:
+    ContractedConfiguration | { plan: PlanId; gbDay: number; mode: DeploymentMode; size?: string },
+): string {
+  const place = configuration.mode === 'managed' ? 'na Verax' : 'no cliente';
+  if ('plan' in configuration) {
+    return [
+      PLAN_LABELS[configuration.plan],
+      gbDayLabel(configuration.gbDay),
+      place,
+      ...(configuration.size === undefined ? [] : [`porte ${configuration.size}`]),
+    ].join(' · ');
+  }
   return [
-    configuration.mode === 'managed' ? 'Na Verax' : 'No cliente',
-    ...(configuration.size === undefined ? [] : [`porte ${configuration.size}`]),
+    'Modelo anterior',
+    place,
+    `porte ${configuration.size}`,
     plural(configuration.cloudAccounts, 'conta', 'contas'),
     `${configuration.monthlyGib} GiB/mês`,
     plural(configuration.agents, 'agente', 'agentes'),
     `${configuration.historyDays} dias`,
-    `suporte ${SUPPORT_LABELS[configuration.support].toLowerCase()}`,
+    `suporte ${configuration.support === 'priority' ? 'prioritário' : 'padrão'}`,
   ].join(' · ');
 }

@@ -22,7 +22,11 @@ describe('clientes', () => {
     expect(failed).toHaveTextContent('Contrato direto');
     expect(failed).toHaveTextContent('Túnel e DNS no Cloudflare');
     expect(failed).toHaveTextContent('cloudflare_denied');
-    expect(within(table).getByRole('row', { name: /Cliente Demo B/ })).toHaveTextContent('Stripe (site)');
+    expect(failed).toHaveTextContent('Plataforma · porte P');
+    const paid = within(table).getByRole('row', { name: /Cliente Demo B/ });
+    expect(paid).toHaveTextContent('Stripe (site)');
+    // Contratado no modelo de preço anterior: sem plano.
+    expect(paid).toHaveTextContent('modelo anterior · porte P');
     expect(screen.getByRole('link', { name: 'Novo cliente (contrato direto)' })).toHaveAttribute(
       'href',
       '/clientes/novo',
@@ -32,7 +36,7 @@ describe('clientes', () => {
   it('cadastro: cotação de referência, confirmação digitando o subdomínio e o cliente criado em provisionamento', async () => {
     const state = createFakeState();
     const { user, router } = renderConsole('/clientes/novo', state);
-    await waitFor(() => expect(screen.getByLabelText('Contas de nuvem')).toHaveValue('2'));
+    await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
     await user.type(screen.getByLabelText('Razão social'), 'Cliente Demo D Ltda');
     await user.type(screen.getByLabelText('CNPJ'), '11.222.333/0001-81');
     await user.type(
@@ -55,7 +59,8 @@ describe('clientes', () => {
 
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
     const quote = await screen.findByRole('region', { name: 'Cotação de referência' });
-    expect(quote).toHaveTextContent('R$ 1.000,00 por mês');
+    expect(quote).toHaveTextContent('R$ 1.500,00 por mês');
+    expect(quote).toHaveTextContent('Dedicado, 3 GB/dia');
     expect(quote).toHaveTextContent('Porte de teste P');
 
     await user.click(screen.getByRole('button', { name: 'Revisar e confirmar…' }));
@@ -86,40 +91,39 @@ describe('clientes', () => {
 
   it('o que não se instala: o motivo na cotação, e a confirmação não abre; no cliente, os agentes também não', async () => {
     const { user } = renderConsole('/clientes/novo');
-    await waitFor(() => expect(screen.getByLabelText('Contas de nuvem')).toHaveValue('2'));
+    await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
     await user.click(screen.getByRole('radio', { name: 'Infraestrutura da Verax' }));
-    await user.clear(screen.getByLabelText('Agentes nas instâncias'));
-    await user.type(screen.getByLabelText('Agentes nas instâncias'), '5');
+    // 10 GB/dia pede o porte M (fictício), que o provisionamento ainda não cria.
+    const gbDay = screen.getByLabelText('Volume de logs (GB/dia)');
+    await user.clear(gbDay);
+    await user.type(gbDay, '10');
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
     const quote = await screen.findByRole('region', { name: 'Cotação de referência' });
-    expect(within(quote).getByRole('alert')).toHaveTextContent('agentes nas instâncias do cliente');
+    expect(within(quote).getByRole('alert')).toHaveTextContent('o provisionamento cria só o porte P hoje');
     expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
-    // Mudar o lugar depois da cotação pede outra; no cliente, a licença, e os agentes ainda sem instalação pelo guia.
+    // Mudar o lugar depois da cotação pede outra; no cliente, o porte não conta (nada é provisionado) e o preço é o mesmo.
     await user.click(screen.getByRole('radio', { name: 'Infraestrutura do cliente' }));
     expect(screen.getByText('A configuração mudou: calcule a cotação de novo.')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
-    const license = await screen.findByRole('region', { name: 'Cotação de referência' });
-    expect(license).toHaveTextContent('Licença na infraestrutura do cliente (porte P)');
-    expect(license).toHaveTextContent('implantação R$ 1.000,00');
-    expect(within(license).getByRole('alert')).toHaveTextContent(
-      'agentes nas instâncias ainda não têm instalação no ambiente do cliente',
-    );
-    expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
-    // Sem agentes, o contrato no cliente passa.
-    await user.clear(screen.getByLabelText('Agentes nas instâncias'));
-    await user.type(screen.getByLabelText('Agentes nas instâncias'), '0');
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
     await waitFor(() =>
       expect(
         within(screen.getByRole('region', { name: 'Cotação de referência' })).queryByRole('alert'),
       ).not.toBeInTheDocument(),
     );
+    const customerQuote = screen.getByRole('region', { name: 'Cotação de referência' });
+    expect(customerQuote).toHaveTextContent('GB/dia do servidor dedicado');
+    expect(customerQuote).toHaveTextContent('R$ 5.000,00 por mês');
     expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeEnabled();
+    // A Plataforma no cliente não existe: sob consulta, com o motivo.
+    await user.selectOptions(screen.getByLabelText('Plano'), 'Plataforma');
+    await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
+    expect(await screen.findByText(/a Plataforma só roda na infraestrutura da Verax/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
   });
 
   it('o subdomínio de outro cliente: a API recusa e o problema aparece no campo', async () => {
     const { user } = renderConsole('/clientes/novo');
-    await waitFor(() => expect(screen.getByLabelText('Contas de nuvem')).toHaveValue('2'));
+    await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
     await user.type(screen.getByLabelText('Razão social'), 'Cliente Demo E Ltda');
     await user.type(screen.getByLabelText('CNPJ'), '11.222.333/0001-81');
     await user.type(
@@ -145,7 +149,7 @@ describe('clientes', () => {
     const state = createFakeState();
     state.tenants.workerDown = true;
     const { user } = renderConsole('/clientes/novo', state);
-    await waitFor(() => expect(screen.getByLabelText('Contas de nuvem')).toHaveValue('2'));
+    await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
     await user.type(screen.getByLabelText('Razão social'), 'Cliente Demo F Ltda');
     await user.type(screen.getByLabelText('CNPJ'), '11.222.333/0001-81');
     await user.type(
@@ -262,6 +266,17 @@ describe('clientes', () => {
     expect(lifecycle).toHaveTextContent('Cliente da Stripe');
     expect(within(lifecycle).queryByRole('button')).not.toBeInTheDocument();
     expect(lifecycle).toHaveTextContent('Nenhuma operação do ciclo de vida neste estado.');
+    // Contratado no modelo de preço anterior: o que ele tem, só para consulta.
+    const contracted = screen.getByRole('region', { name: 'Contratado' });
+    expect(contracted).toHaveTextContent('Modelo anterior · na Verax · porte P · 2 contas · 10 GiB/mês');
+    expect(contracted).toHaveTextContent('Contratado no modelo de preço anterior');
+  });
+
+  it('o contratado no modelo por GB/dia: o plano e a franquia', async () => {
+    renderConsole(`/clientes/${CUSTOMER_ID}`);
+    const contracted = await screen.findByRole('region', { name: 'Contratado' });
+    expect(contracted).toHaveTextContent('Dedicado · 3 GB/dia · no cliente · porte P');
+    expect(contracted).toHaveTextContent('Franquia contratada: 3 GB/dia');
   });
 
   it('a exportação sem a conta que assina: o que configurar, não o erro genérico', async () => {
@@ -280,7 +295,7 @@ describe('clientes', () => {
   it('no cliente: o cadastro com a licença, sem provisionar, e o detalhe com o que mandar a ele', async () => {
     const state = createFakeState();
     const { user, router } = renderConsole('/clientes/novo', state);
-    await waitFor(() => expect(screen.getByLabelText('Contas de nuvem')).toHaveValue('2'));
+    await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('3'));
     await user.type(screen.getByLabelText('Razão social'), 'Cliente Demo G Ltda');
     await user.type(screen.getByLabelText('CNPJ'), '11.222.333/0001-81');
     await user.type(
@@ -291,7 +306,8 @@ describe('clientes', () => {
     await user.click(screen.getByRole('radio', { name: 'Infraestrutura do cliente' }));
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
     const quote = await screen.findByRole('region', { name: 'Cotação de referência' });
-    expect(quote).toHaveTextContent('R$ 500,00 por mês');
+    // O mesmo preço por GB/dia no cliente.
+    expect(quote).toHaveTextContent('R$ 1.500,00 por mês');
     await user.click(screen.getByRole('button', { name: 'Revisar e confirmar…' }));
     const confirm = screen.getByRole('region', { name: 'Confirmar o cadastro' });
     expect(confirm).toHaveTextContent('Infraestrutura do cliente');
@@ -307,7 +323,7 @@ describe('clientes', () => {
     expect(created).toMatchObject({
       state: 'waiting_customer_install',
       hosting: 'customer',
-      configuration: { mode: 'self_hosted' },
+      configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 3 },
       timeline: [],
     });
     expect(screen.queryByRole('region', { name: 'Provisionamento' })).not.toBeInTheDocument();
