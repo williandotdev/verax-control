@@ -20,9 +20,6 @@ describe('cp-worker sem as rotas do checkout (CP-03)', () => {
         SITE_ORIGINS: SITE,
         SITE_SUCCESS_URL: `${SITE}/checkout/sucesso?cs={CHECKOUT_SESSION_ID}`,
         SITE_CANCEL_URL: `${SITE}/#planos`,
-        TERMS_VERSION: '2026-11-04',
-        PRIVACY_VERSION: '2026-11-04',
-        DPA_VERSION: '2026-11-04',
         STRIPE_SECRET_KEY: fakeStripeKey('test', 'rk'),
       },
     });

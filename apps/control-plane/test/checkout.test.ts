@@ -17,6 +17,7 @@ import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
 import { FakeStripe, fakeStripeKey, formEntries } from './support/fake-stripe.js';
 import { LogCapture } from './support/log-capture.js';
 import { fictitiousPriceTable } from './support/pricing-fixtures.js';
+import { seedPublishedLegalTexts } from './support/legal-seed.js';
 import { seedPublishedTable, seedStripePrices } from './support/pricing-seed.js';
 
 const SITE = 'https://veraxsistemas.com.br';
@@ -108,6 +109,7 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
 
   async function seed(table: PriceTableInput = fictitiousPriceTable()): Promise<void> {
     await seedPublishedTable(documents, table, { effectiveFrom: new Date(START.getTime() - DAY_MS) });
+    await seedPublishedLegalTexts(documents, VERSION, new Date(START.getTime() - DAY_MS));
     prices = seedStripePrices(fake, table);
     quoteId = await newQuote();
   }
@@ -136,9 +138,6 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
         SITE_ORIGINS: `${SITE},https://www.veraxsistemas.com.br`,
         SITE_SUCCESS_URL: `${SITE}/checkout/sucesso?cs={CHECKOUT_SESSION_ID}`,
         SITE_CANCEL_URL: `${SITE}/#planos`,
-        TERMS_VERSION: VERSION,
-        PRIVACY_VERSION: VERSION,
-        DPA_VERSION: VERSION,
         STRIPE_SECRET_KEY: stripeKey,
         STRIPE_LIVE: 'false',
       },
@@ -468,6 +467,33 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(response.body).toMatchObject({ code: 'terms_outdated' });
     expect(await slugDocument('cliente-demo-a')).toBeUndefined();
     expect(fake.requests).toHaveLength(0);
+  });
+
+  it('um texto publicado depois no console vira o vigente: o aceite da versão anterior passa a dar 409', async () => {
+    await seedPublishedLegalTexts(documents, '2026-11-20', clock.now(), ['dpa']);
+    const outdated = await checkout(order()).expect(409);
+    expect(outdated.body).toMatchObject({ code: 'terms_outdated' });
+    await checkout(order({ consent: { terms: VERSION, privacy: VERSION, dpa: '2026-11-20' } })).expect(201);
+    const reservation = await slugDocument('cliente-demo-a');
+    expect(reservation).toMatchObject({
+      order: { consent: { termsVersion: VERSION, privacyVersion: VERSION, dpaVersion: '2026-11-20' } },
+    });
+  });
+
+  it('sem um dos textos legais publicado: 503 checkout_unavailable, sem reserva nem Stripe, e o log diz qual falta', async () => {
+    await documents.runTransaction((tx) => {
+      tx.delete(COLLECTIONS.legalVersions('privacy'), VERSION);
+      return Promise.resolve();
+    });
+    const response = await checkout(order()).expect(503);
+    expect(response.body).toMatchObject({ code: 'checkout_unavailable' });
+    expect(await slugDocument('cliente-demo-a')).toBeUndefined();
+    expect(fake.requests).toHaveLength(0);
+    expect(
+      capture.entries().find((entry) => entry['event'] === 'checkout_legal_texts_missing'),
+    ).toMatchObject({
+      missing: ['privacy'],
+    });
   });
 
   it('o mesmo subdomínio duas vezes falha, em sequência e ao mesmo tempo; só uma sessão é aberta', async () => {
