@@ -254,6 +254,7 @@ export function describeCheckoutStoreContract(
       ]);
       expect(audit[1]?.details).toEqual({
         slug: 'cliente-demo-a',
+        plan: 'plataforma',
         size: 'P',
         priceTableVersion: 'teste-v1',
         quoteId: demoOrderPricing().quoteId,

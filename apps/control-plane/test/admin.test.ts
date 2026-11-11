@@ -331,9 +331,9 @@ describe('cp-admin: console do responsável com login próprio', () => {
 
     it('recusa publicar a tabela com configuração abaixo da margem mínima: 422 com o relatório, auditado, segue rascunho', async () => {
       await publishCostModel();
-      // Suporte prioritário quase de graça (fictício): as configurações com ele ficam abaixo da margem mínima.
+      // GB/dia do Dedicado quase de graça (fictício): o Dedicado e o vCISO ficam abaixo da margem mínima.
       const losing = fictitiousPriceTable();
-      losing.prioritySupport.amount = 100;
+      losing.plans.dedicado.gbDay.amount = 5_000;
       await createTable(losing);
 
       const refused = await send('post', '/v1/admin/pricing-tables/teste-v1/publish', {}).expect(422);
@@ -344,7 +344,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
           costModelVersion: string;
           report: {
             ok: boolean;
-            belowMinimum: { count: number; configurations: { configuration: { support: string } }[] };
+            belowMinimum: { count: number; configurations: { configuration: { plan: string } }[] };
           };
         };
       };
@@ -354,7 +354,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
       expect(body.details.report.belowMinimum.count).toBeGreaterThan(0);
       expect(
         body.details.report.belowMinimum.configurations.every(
-          (entry) => entry.configuration.support === 'priority',
+          (entry) => entry.configuration.plan !== 'plataforma',
         ),
       ).toBe(true);
       expect((await call('get', '/v1/admin/pricing-tables/teste-v1').expect(200)).body).toMatchObject({
@@ -399,13 +399,43 @@ describe('cp-admin: console do responsável com login próprio', () => {
       expect(past.status).toBe(409);
     });
 
+    it('uma tabela do modelo de preço anterior: na lista como legado, não abre (409), nunca é a vigente', async () => {
+      const at = clock.now();
+      await documents.runTransaction((tx) => {
+        tx.set(COLLECTIONS.pricingTables, 'antigo-v1', {
+          status: 'published',
+          content: { currency: 'brl', interval: 'month', modes: {} },
+          effectiveFrom: at,
+          publishedAt: at,
+          publishedBy: OWNER,
+          createdAt: at,
+          createdBy: OWNER,
+          updatedAt: at,
+          updatedBy: OWNER,
+        });
+        return Promise.resolve();
+      });
+
+      const list = await call('get', '/v1/admin/pricing-tables').expect(200);
+      expect(list.body).toEqual([
+        expect.objectContaining({ version: 'antigo-v1', status: 'published', current: false, legacy: true }),
+      ]);
+      const opened = await call('get', '/v1/admin/pricing-tables/antigo-v1').expect(409);
+      expect(opened.body).toMatchObject({ code: 'version_legacy' });
+      const simulated = await send('post', '/v1/admin/dre/simulate', {
+        configuration: { plan: 'plataforma', gbDay: 4, mode: 'managed' },
+        paymentMethod: 'card',
+      }).expect(409);
+      expect(simulated.body).toMatchObject({ code: 'pricing_table_missing' });
+    });
+
     it('um modelo de custos novo publica sempre, e avisa quando a tabela vigente deixa de passar na checagem', async () => {
       await publishCostModel();
       await createTable();
       await send('post', '/v1/admin/pricing-tables/teste-v1/publish', {}).expect(200);
       clock.advance(MINUTE_MS);
 
-      const stricter = { ...fictitiousCostModel(), margins: { minimum: 0.45, alert: 0.5 } };
+      const stricter = { ...fictitiousCostModel(), margins: { minimum: 0.6, alert: 0.65 } };
       const published = await publishCostModel(stricter, 'custos-teste-v2');
 
       expect(published.body).toMatchObject({ status: 'published', report: { ok: false } });
@@ -426,14 +456,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
       await send('post', '/v1/admin/pricing-tables/teste-v1/publish', {}).expect(200);
 
       const response = await send('post', '/v1/admin/dre/simulate', {
-        configuration: {
-          mode: 'managed',
-          cloudAccounts: 4,
-          monthlyGib: 50,
-          agents: 10,
-          historyDays: 180,
-          support: 'standard',
-        },
+        configuration: { plan: 'plataforma', gbDay: 4, mode: 'managed' },
         paymentMethod: 'card',
       }).expect(200);
 
@@ -444,19 +467,21 @@ describe('cp-admin: console do responsável com login próprio', () => {
         dre: {
           paymentMethod: 'card',
           taxRateId: 'teste_a',
+          taxMode: 'inclusive',
           monthly: {
-            grossRevenue: 128_000,
-            taxes: 12_800,
-            refundReserve: 3_840,
-            netRevenue: 111_360,
-            infrastructure: 25_740,
-            paymentFees: 7_730,
-            support: 22_400,
-            contributionMargin: 55_490,
+            tableRevenue: 160_000,
+            grossRevenue: 160_000,
+            taxes: 16_000,
+            refundReserve: 4_800,
+            netRevenue: 139_200,
+            infrastructure: 11_264,
+            paymentFees: 9_650,
+            support: 8_000,
+            contributionMargin: 110_286,
             fixedCosts: 20_000,
-            result: 35_490,
+            result: 90_286,
           },
-          quote: { configuration: { size: 'P' }, monthlyTotal: 128_000 },
+          quote: { configuration: { plan: 'plataforma', gbDay: 4, size: 'P' }, monthlyTotal: 160_000 },
         },
         // As metas e a alíquota do modelo usado, para o console marcar a margem e nomear o imposto.
         margins: { minimum: 0.25, alert: 0.35 },
@@ -467,14 +492,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
     it('com um rascunho e outra alíquota; sob consulta; alíquota inexistente e sem tabela vigente', async () => {
       await publishCostModel();
       await createTable();
-      const configuration = {
-        mode: 'managed',
-        cloudAccounts: 4,
-        monthlyGib: 50,
-        agents: 10,
-        historyDays: 180,
-        support: 'standard',
-      };
+      const configuration = { plan: 'plataforma', gbDay: 4, mode: 'managed' };
 
       const missingTable = await send('post', '/v1/admin/dre/simulate', {
         configuration,
@@ -493,16 +511,16 @@ describe('cp-admin: console do responsável com login próprio', () => {
         dre: {
           taxRateId: 'teste_b',
           paymentMethod: 'boleto',
-          monthly: { taxes: 25_600, paymentFees: 1_580 },
+          monthly: { taxes: 32_000, paymentFees: 1_900 },
         },
       });
 
       const contact = await send('post', '/v1/admin/dre/simulate', {
-        configuration: { ...configuration, agents: 999 },
+        configuration: { ...configuration, gbDay: 99 },
         paymentMethod: 'card',
         priceTableVersion: 'teste-v1',
       }).expect(200);
-      expect(contact.body).toMatchObject({ contactUs: true, reason: 'agents_above_max' });
+      expect(contact.body).toMatchObject({ contactUs: true, reason: 'above_online_max' });
       expect(contact.body).not.toHaveProperty('margins');
 
       const unknownTax = await send('post', '/v1/admin/dre/simulate', {
@@ -523,14 +541,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
     await createTable();
     await send('post', '/v1/admin/pricing-tables/teste-v1/publish', {}).expect(200);
     await send('post', '/v1/admin/dre/simulate', {
-      configuration: {
-        mode: 'managed',
-        cloudAccounts: 4,
-        monthlyGib: 50,
-        agents: 10,
-        historyDays: 180,
-        support: 'standard',
-      },
+      configuration: { plan: 'plataforma', gbDay: 4, mode: 'managed' },
       paymentMethod: 'card',
     }).expect(200);
 

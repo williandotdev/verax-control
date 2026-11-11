@@ -124,7 +124,8 @@ describe('publicar-precos: simulação', () => {
     expect(await h.run([`--custos=${costFile()}`, `--tabela=${tableFile()}`])).toBe(EXIT.ok);
     expect(h.opened).toBe(0);
     expect(output()).toContain('resultado: APROVADA');
-    expect(output()).toContain('pacote inicial');
+    expect(output()).toContain('plataforma 2 GB/dia: porte P, R$ 1.000,00/mês');
+    expect(output()).toContain('vciso 3 GB/dia: porte P, R$ 3.500,00/mês + R$ 5.000,00 uma vez');
   });
 
   it('a tabela sem modelo de custos (nem arquivo, nem banco) não tem checagem', async () => {
@@ -236,7 +237,7 @@ describe('publicar-precos: publicação', () => {
     h.clock.advance(MINUTE_MS);
     const draft = {
       status: 'draft',
-      content: { ...fictitiousPriceTable(), presets: [] },
+      content: { ...fictitiousPriceTable(), users: { max: 11 } },
       createdAt: h.clock.now(),
       createdBy: EMAIL,
       updatedAt: h.clock.now(),

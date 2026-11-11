@@ -66,6 +66,12 @@ function versionedDocumentSchema<T extends z.ZodType>(content: T) {
 
 export const priceTableDocumentSchema = versionedDocumentSchema(priceTableSchema);
 export const costModelDocumentSchema = versionedDocumentSchema(costModelSchema);
+/**
+ * O envelope de uma versão sem olhar o conteúdo: o que um documento do modelo de preço anterior (portes, componentes e
+ * contas de nuvem, até `2026-11-v1`) ainda tem de legível. Serve para listá-lo como legado e para aposentá-lo quando a
+ * primeira versão no formato novo é publicada; o conteúdo nunca é usado.
+ */
+export const legacyVersionDocumentSchema = versionedDocumentSchema(z.unknown());
 
 export interface VersionedDocument<C> {
   status: VersionStatus;
@@ -125,6 +131,18 @@ export class DraftChangedError extends Error {
   }
 }
 
+/**
+ * A versão é do modelo de preço anterior: o envelope é legível, o conteúdo não passa no schema de hoje. Fica na lista do
+ * console como legado, só para consulta do estado e das datas; não abre, não é editada, não vale como vigente e não é
+ * cotada.
+ */
+export class LegacyVersionError extends Error {
+  constructor(readonly version: string) {
+    super(`versão ${version} é do modelo de preço anterior`);
+    this.name = 'LegacyVersionError';
+  }
+}
+
 /** A vigência precisa ser agora ou depois, e depois da última versão publicada (a ordem das versões é a do tempo). */
 export class EffectiveFromError extends Error {
   constructor(readonly reason: 'in_past' | 'not_after_latest') {
@@ -141,6 +159,8 @@ export interface VersionSummary {
   version: string;
   status: VersionStatus;
   current: boolean;
+  /** Do modelo de preço anterior (`LegacyVersionError`): só aparece na lista. */
+  legacy?: true;
   effectiveFrom?: Date;
   publishedAt?: Date;
   publishedBy?: string;
@@ -211,20 +231,29 @@ export class VersionedStore<C> {
     return record;
   }
 
-  /** Todas as versões, da mais nova para a mais antiga (por criação), sem o conteúdo, com a vigente marcada. */
+  /**
+   * Todas as versões, da mais nova para a mais antiga (por criação), sem o conteúdo, com a vigente marcada. As do
+   * modelo de preço anterior entram marcadas como legado (`legacy`), nunca como a vigente.
+   */
   async list(): Promise<VersionSummary[]> {
     const current = await this.current();
     const docs = await this.store.query(this.kind.collection);
     return docs
-      .map(({ id, data }) => ({
-        version: id,
-        ...parseDocument(this.kind.schema, this.kind.collection, id, data),
-      }))
+      .map(({ id, data }) => {
+        const parsed = this.kind.schema.safeParse(data);
+        if (parsed.success) return { version: id, legacy: false, ...parsed.data };
+        return {
+          version: id,
+          legacy: true,
+          ...parseDocument(legacyVersionDocumentSchema, this.kind.collection, id, data),
+        };
+      })
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || (a.version < b.version ? 1 : -1))
       .map((record) => ({
         version: record.version,
         status: record.status,
-        current: record.version === current?.version,
+        current: !record.legacy && record.version === current?.version,
+        ...(record.legacy ? { legacy: true as const } : {}),
         ...(record.effectiveFrom === undefined ? {} : { effectiveFrom: record.effectiveFrom }),
         ...(record.publishedAt === undefined ? {} : { publishedAt: record.publishedAt }),
         ...(record.publishedBy === undefined ? {} : { publishedBy: record.publishedBy }),
@@ -238,6 +267,8 @@ export class VersionedStore<C> {
   /**
    * A versão vigente em `at` (agora, por padrão): a de maior `effectiveFrom` até esse instante. Rascunhos não têm
    * `effectiveFrom` e nunca entram. Consulta de um campo só (desigualdade e ordenação nele): sem índice composto.
+   * Se a de maior `effectiveFrom` for do modelo de preço anterior (legado), não há vigente: nenhum preço é melhor que
+   * um preço lido de uma forma que o código não entende mais (o site responde 503 até a primeira versão nova valer).
    */
   async current(at: Date = this.clock.now()): Promise<VersionedRecord<C> | undefined> {
     const [latest] = await this.store.query(this.kind.collection, {
@@ -246,10 +277,13 @@ export class VersionedStore<C> {
       limit: 1,
     });
     if (latest === undefined) return undefined;
-    return {
-      version: latest.id,
-      ...parseDocument(this.kind.schema, this.kind.collection, latest.id, latest.data),
-    };
+    const parsed = this.kind.schema.safeParse(latest.data);
+    if (!parsed.success) {
+      // Só o envelope precisa ser legível: um documento corrompido continua sendo erro.
+      parseDocument(legacyVersionDocumentSchema, this.kind.collection, latest.id, latest.data);
+      return undefined;
+    }
+    return { version: latest.id, ...parsed.data };
   }
 
   async createDraft(version: string, content: unknown, owner: OwnerContext): Promise<VersionedRecord<C>> {
@@ -364,9 +398,14 @@ export class VersionedStore<C> {
         requestId: owner.requestId,
       });
       for (const previous of published) {
-        const record = parseDocument(this.kind.schema, this.kind.collection, previous.id, previous.data);
+        // A versão publicada do modelo anterior (legado) também é aposentada, pelo envelope: o conteúdo fica como estava.
+        const current = this.kind.schema.safeParse(previous.data);
+        const schema = current.success ? this.kind.schema : legacyVersionDocumentSchema;
+        const record = current.success
+          ? current.data
+          : parseDocument(legacyVersionDocumentSchema, this.kind.collection, previous.id, previous.data);
         tx.set(this.kind.collection, previous.id, {
-          ...this.kind.schema.parse({
+          ...schema.parse({
             ...record,
             status: 'retired',
             retiredAt: effectiveFrom,
@@ -386,11 +425,15 @@ export class VersionedStore<C> {
     });
   }
 
+  /** A versão; do modelo de preço anterior, `LegacyVersionError` (o envelope legível, o conteúdo não). */
   private async read(reader: DocumentReader, version: string): Promise<VersionedRecord<C> | undefined> {
     if (!versionIdSchema.safeParse(version).success) return undefined;
     const data = await reader.get(this.kind.collection, version);
     if (data === undefined) return undefined;
-    return { version, ...parseDocument(this.kind.schema, this.kind.collection, version, data) };
+    const parsed = this.kind.schema.safeParse(data);
+    if (parsed.success) return { version, ...parsed.data };
+    parseDocument(legacyVersionDocumentSchema, this.kind.collection, version, data);
+    throw new LegacyVersionError(version);
   }
 }
 

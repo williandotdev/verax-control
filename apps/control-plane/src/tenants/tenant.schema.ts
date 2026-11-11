@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ULID_PATTERN } from '../common/ulid.js';
 import {
   configurationSchema,
+  contractedConfigurationSchema,
   type DeploymentMode,
   nodeLimitsSchema,
   orderPricingSchema,
@@ -185,11 +186,13 @@ const tenantObjectSchema = z.strictObject({
   state: tenantStateSchema,
   stateUpdatedAt: z.date(),
   /**
-   * O que foi contratado (preço configurável): a configuração com o porte, os limites do nó (`node-limits.ts`, para o
-   * provisionamento e o PR-18) e de qual tabela e cotação saiu o preço. Copiados do pedido da reserva, sem regra em
-   * cima: uma tabela nova nunca muda um cliente existente.
+   * O que foi contratado: a configuração (o plano, o lugar, a franquia em GB/dia, que a medição do excedente e o
+   * contador do painel usam, o porte e o histórico), os limites do nó (`node-limits.ts`, para o provisionamento e o
+   * PR-18) e de qual tabela e cotação saiu o preço. Copiados do pedido da reserva, sem regra em cima: uma tabela nova
+   * nunca muda um cliente existente. Um cliente contratado no modelo de preço anterior (portes, contas e volume mensal)
+   * continua legível com a configuração de antes (`legacyConfigurationSchema`).
    */
-  configuration: configurationSchema,
+  configuration: contractedConfigurationSchema,
   limits: nodeLimitsSchema,
   pricing: orderPricingSchema,
   priceId: stripeId.optional(),

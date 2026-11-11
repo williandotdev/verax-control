@@ -5,15 +5,15 @@ import { ApiError } from '../common/http/api-error.js';
 import { PricingTableStore, type VersionedRecord } from './pricing-store.js';
 import {
   type Configuration,
-  configurationInputSchema,
   type NodeLimits,
   type PriceTable,
+  quoteInputSchema,
   type SizeId,
 } from './pricing.schema.js';
 import {
   describeLineItem,
   isSoldOnline,
-  modeNotSoldOnline,
+  planNotSoldOnline,
   type PublicPricing,
   publicPricing,
 } from './public-pricing.js';
@@ -50,11 +50,11 @@ export interface QuoteResponse {
   monthlyTotal: number;
   setupTotal: number;
   firstInvoiceTotal: number;
-  included: { cloudAccounts: number; monthlyGib: number; historyDays: number; users: number };
+  included: { gbDay: number; historyDays: number; users: number };
   limits: NodeLimits;
 }
 
-const QUOTE_FIELDS: ReadonlySet<string> = new Set(Object.keys(configurationInputSchema.shape));
+const QUOTE_FIELDS: ReadonlySet<string> = new Set(Object.keys(quoteInputSchema.shape));
 
 /** 429 do teto diário das cotações, com quanto falta para o dia (UTC) virar. */
 export class QuoteDailyLimitApiError extends ApiError {
@@ -69,11 +69,11 @@ export class QuoteDailyLimitApiError extends ApiError {
 
 /**
  * A calculadora pública: a tabela vigente sem custos (`GET /v1/public/pricing`) e a cotação (`POST /v1/public/quote`),
- * que nunca recebe preço do cliente: só as seis respostas. A cotação é gravada por 24 h e é o que o checkout aceita.
- * Só o ambiente na infraestrutura da Verax é vendido aqui: o da infraestrutura do cliente é 422 `mode_not_sold_online`
- * antes de qualquer leitura da tabela (`public-pricing.ts`), sem gravar nada.
+ * que nunca recebe preço do cliente: só o plano e o volume em GB/dia. A cotação é gravada por 24 h e é o que o checkout
+ * aceita, sempre na infraestrutura da Verax. Só a Plataforma é vendida aqui: o Dedicado e o vCISO são 422
+ * `plan_not_sold_online` antes de qualquer leitura da tabela (`public-pricing.ts`), sem gravar nada.
  * As linhas do funil (`quote_issued`, `quote_contact_us`) saem pelo logger raiz, sem o `req` da requisição (que leva o
- * IP): só o id da cotação, a versão, o modo, o porte e as faixas, e o `requestId` para correlação. Nada de valores.
+ * IP): só o id da cotação, a versão, o plano, o GB/dia e o porte, e o `requestId` para correlação. Nada de valores.
  */
 @Injectable()
 export class PublicPricingService {
@@ -90,7 +90,7 @@ export class PublicPricingService {
   }
 
   async createQuote(body: unknown, requestId?: string): Promise<QuoteResponse | ContactUsResponse> {
-    const parsed = configurationInputSchema.safeParse(body);
+    const parsed = quoteInputSchema.safeParse(body);
     if (!parsed.success) {
       const fields = [
         ...new Set(
@@ -105,18 +105,19 @@ export class PublicPricingService {
         'invalid_request',
       );
     }
-    const input = parsed.data;
-    if (!isSoldOnline(input.mode)) {
-      // Só o modo vai ao log (a procura pelo ambiente no cliente, para o responsável): nenhum outro campo, nem o IP.
+    // O site vende só na infraestrutura da Verax: o lugar não é pergunta do site.
+    const input = { ...parsed.data, mode: 'managed' as const };
+    if (!isSoldOnline(input)) {
+      // Só o plano vai ao log (a procura pelo Dedicado e pelo vCISO, para o responsável): nenhum outro campo, nem o IP.
       PinoLogger.root.info(
-        { event: 'quote_mode_refused', mode: input.mode, requestId, context: PublicPricingService.name },
-        'modo que o site não vende: contrato direto',
+        { event: 'quote_plan_refused', plan: input.plan, requestId, context: PublicPricingService.name },
+        'plano que o site não vende: proposta e contrato direto',
       );
-      throw modeNotSoldOnline();
+      throw planNotSoldOnline();
     }
     const table = await this.requireCurrent();
     const outcome = quote(input, table.content);
-    if (outcome.kind === 'contact_us') return this.contactUs(table, outcome.reason, input.mode, requestId);
+    if (outcome.kind === 'contact_us') return this.contactUs(table, outcome.reason, input.plan, requestId);
 
     let stored;
     try {
@@ -145,13 +146,9 @@ export class PublicPricingService {
         event: 'quote_issued',
         quoteId: stored.quoteId,
         priceTableVersion: table.version,
-        mode: configuration.mode,
+        plan: configuration.plan,
+        gbDay: configuration.gbDay,
         size: configuration.size,
-        cloudAccounts: configuration.cloudAccounts,
-        monthlyGib: configuration.monthlyGib,
-        agents: configuration.agents,
-        historyDays: configuration.historyDays,
-        support: configuration.support,
         requestId,
         context: PublicPricingService.name,
       },
@@ -168,7 +165,7 @@ export class PublicPricingService {
       sizeDescription: stored.sizeDescription,
       lineItems: stored.lineItems.map((item) => ({
         component: item.component,
-        description: describeLineItem(item, configuration.mode, configuration.size),
+        description: describeLineItem(item),
         quantity: item.quantity,
         unitAmount: item.unitAmount,
         amount: item.amount,
@@ -185,14 +182,14 @@ export class PublicPricingService {
   private contactUs(
     table: VersionedRecord<PriceTable>,
     reason: ContactReason,
-    mode: string,
+    plan: string,
     requestId: string | undefined,
   ): ContactUsResponse {
     PinoLogger.root.info(
       {
         event: 'quote_contact_us',
         priceTableVersion: table.version,
-        mode,
+        plan,
         reason,
         requestId,
         context: PublicPricingService.name,

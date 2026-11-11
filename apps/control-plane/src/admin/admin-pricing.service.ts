@@ -9,6 +9,7 @@ import {
   CostModelStore,
   DraftChangedError,
   EffectiveFromError,
+  LegacyVersionError,
   type OwnerContext,
   PricingTableStore,
   type PublishCheck,
@@ -104,6 +105,13 @@ function storeError(error: unknown): unknown {
       HttpStatus.CONFLICT,
       'Só o rascunho muda: para alterar uma versão publicada, crie outra.',
       'version_immutable',
+    );
+  }
+  if (error instanceof LegacyVersionError) {
+    return new ApiError(
+      HttpStatus.CONFLICT,
+      'Versão do modelo de preço anterior: só aparece na lista, não abre nem vale mais.',
+      'version_legacy',
     );
   }
   if (error instanceof DraftChangedError) {

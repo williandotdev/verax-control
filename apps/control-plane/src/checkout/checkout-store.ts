@@ -11,7 +11,7 @@ import {
   type DocumentStore,
   parseDocument,
 } from '../firestore/document-store.js';
-import type { SizeId } from '../pricing/pricing.schema.js';
+import type { PlanId, SizeId } from '../pricing/pricing.schema.js';
 import {
   isReservableSlug,
   isSlugFree,
@@ -69,7 +69,8 @@ export class ReservationLostError extends Error {
 export interface Reservation {
   tenantId: string;
   slug: string;
-  /** Da cotação do pedido: o porte, a versão da tabela e o id da cotação (para logs e auditoria, sem valores). */
+  /** Da cotação do pedido: o plano, o porte, a versão da tabela e o id da cotação (para logs e auditoria, sem valores). */
+  plan: PlanId;
   size: SizeId;
   priceTableVersion: string;
   quoteId: string;
@@ -87,7 +88,7 @@ const ACTOR = 'system';
 /**
  * Reserva de subdomínio e teto diário do checkout (plano §4a, passos 3 e 4), sobre `slugs/{slug}` e
  * `rateLimits/{bucket}`. Cada escrita leva a auditoria na mesma transação (ator `system`; em `details`, só o slug, o
- * porte, a versão da tabela, a cotação e prazos: nada de e-mail, CNPJ, razão social ou valores).
+ * plano, o GB/dia, o porte, a versão da tabela, a cotação e prazos: nada de e-mail, CNPJ, razão social ou valores).
  */
 @Injectable()
 export class CheckoutStore {
@@ -149,6 +150,8 @@ export class CheckoutStore {
           tenantId,
           details: {
             slug,
+            plan: order.configuration.plan,
+            gbDay: order.configuration.gbDay,
             size: order.configuration.size,
             priceTableVersion: order.pricing.priceTableVersion,
             quoteId: order.pricing.quoteId,
@@ -170,6 +173,7 @@ export class CheckoutStore {
     return {
       tenantId,
       slug,
+      plan: order.configuration.plan,
       size: order.configuration.size,
       priceTableVersion: order.pricing.priceTableVersion,
       quoteId: order.pricing.quoteId,
@@ -197,6 +201,7 @@ export class CheckoutStore {
         tenantId: reservation.tenantId,
         details: {
           slug: reservation.slug,
+          plan: reservation.plan,
           size: reservation.size,
           priceTableVersion: reservation.priceTableVersion,
           quoteId: reservation.quoteId,

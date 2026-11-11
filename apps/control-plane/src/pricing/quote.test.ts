@@ -1,26 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { fictitiousPriceTable } from '../../test/support/pricing-fixtures.js';
 import { type ConfigurationInput, type PriceTable, priceTableSchema } from './pricing.schema.js';
-import {
-  minimalConfiguration,
-  normalizeConfiguration,
-  type Quote,
-  quote,
-  sizeFor,
-  startingAt,
-} from './quote.js';
+import { gbDayRange, minimalConfiguration, type Quote, quote, sizeFor, startingAt } from './quote.js';
 
 /**
- * O motor da cotação sobre a tabela FICTÍCIA (`pricing-fixtures.ts`): ambiente P/M/G de 1.000/2.000/4.000 no
- * gerenciado, 2 contas incluídas a 30 cada adicional, volume incluído de 10 GiB e faixas de 50, 100 e 200 GiB,
- * pacotes de 10 agentes (até 4), histórico de 30 dias e opções de 180 e 360, suporte prioritário de 300. Portes de
- * teste: P até 5 contas, 50 GiB e 10 agentes; M até 10, 100 e 20; G até 20, 200 e 40. Nada disso é preço de verdade.
+ * O motor da cotação sobre a tabela FICTÍCIA (`pricing-fixtures.ts`): Plataforma com base de 1.000 e 2 GB/dia
+ * incluídos, GB/dia adicional de 300, até 5 GB/dia no site; Dedicado a 500 por GB/dia, de 3 a 15; vCISO com serviço de
+ * 2.000 e implantação de 5.000. Portes de teste: P até 5 GB/dia, M até 10, G até 20. Nada disso é preço de verdade.
  */
 const table: PriceTable = priceTableSchema.parse(fictitiousPriceTable());
-
-function config(overrides: Partial<ConfigurationInput> = {}): ConfigurationInput {
-  return { ...minimalConfiguration(table, 'managed'), ...overrides };
-}
 
 function quoted(input: ConfigurationInput): Quote {
   const outcome = quote(input, table);
@@ -29,191 +17,147 @@ function quoted(input: ConfigurationInput): Quote {
 }
 
 describe('regra de porte', () => {
-  it('o porte é o menor que comporta as três dimensões ao mesmo tempo (o maior que qualquer uma exigir)', () => {
+  it('o porte é o menor que comporta o volume em GB/dia', () => {
     const sizes = table.sizing.sizes;
-    expect(sizeFor({ cloudAccounts: 5, monthlyGib: 50, agents: 10 }, sizes)?.size).toBe('P');
-    expect(sizeFor({ cloudAccounts: 6, monthlyGib: 10, agents: 0 }, sizes)?.size).toBe('M');
-    expect(sizeFor({ cloudAccounts: 2, monthlyGib: 100, agents: 0 }, sizes)?.size).toBe('M');
-    expect(sizeFor({ cloudAccounts: 2, monthlyGib: 10, agents: 11 }, sizes)?.size).toBe('M');
-    expect(sizeFor({ cloudAccounts: 2, monthlyGib: 200, agents: 20 }, sizes)?.size).toBe('G');
-    expect(sizeFor({ cloudAccounts: 21, monthlyGib: 10, agents: 0 }, sizes)).toBeUndefined();
+    expect(sizeFor(1, sizes)?.size).toBe('P');
+    expect(sizeFor(5, sizes)?.size).toBe('P');
+    expect(sizeFor(6, sizes)?.size).toBe('M');
+    expect(sizeFor(20, sizes)?.size).toBe('G');
+    expect(sizeFor(21, sizes)).toBeUndefined();
   });
 
-  it('cada dimensão sozinha leva ao porte que ela exige, na cotação', () => {
-    expect(quoted(config()).configuration.size).toBe('P');
-    expect(quoted(config({ cloudAccounts: 10 })).configuration.size).toBe('M');
-    expect(quoted(config({ monthlyGib: 200 })).configuration.size).toBe('G');
-    expect(quoted(config({ agents: 40 })).configuration.size).toBe('G');
-    expect(quoted(config({ cloudAccounts: 3, monthlyGib: 100, agents: 30 })).configuration.size).toBe('G');
-  });
-});
-
-describe('normalização da configuração', () => {
-  it('sempre para cima, até a opção vendida: contas, faixa de volume, pacote de agentes e histórico', () => {
-    const normalized = normalizeConfiguration(
-      { mode: 'managed', cloudAccounts: 0, monthlyGib: 51, agents: 11, historyDays: 31, support: 'standard' },
-      table,
-    );
-    expect(normalized).toEqual({
-      ok: true,
-      agentPacks: 2,
-      configuration: {
-        mode: 'managed',
-        cloudAccounts: 2,
-        monthlyGib: 100,
-        agents: 20,
-        historyDays: 180,
-        support: 'standard',
-      },
-    });
-  });
-
-  it('acima do que a tabela vende ou do maior porte: sob consulta, com o motivo', () => {
-    expect(quote(config({ cloudAccounts: 21 }), table)).toEqual({
-      kind: 'contact_us',
-      reason: 'cloud_accounts_above_max',
-    });
-    expect(quote(config({ monthlyGib: 201 }), table)).toEqual({
-      kind: 'contact_us',
-      reason: 'volume_above_max',
-    });
-    expect(quote(config({ agents: 41 }), table)).toEqual({ kind: 'contact_us', reason: 'agents_above_max' });
-    expect(quote(config({ historyDays: 361 }), table)).toEqual({
-      kind: 'contact_us',
-      reason: 'history_above_max',
-    });
-    // Uma tabela que vende mais contas do que o maior porte comporta: a combinação é sob consulta.
-    const wider = priceTableSchema.parse({
-      ...fictitiousPriceTable(),
-      cloudAccounts: { ...fictitiousPriceTable().cloudAccounts, max: 30 },
-    });
-    expect(quote(config({ cloudAccounts: 25 }), wider)).toEqual({
-      kind: 'contact_us',
-      reason: 'above_largest_size',
-    });
+  it('o porte do Dedicado acompanha o volume, nos dois lugares', () => {
+    expect(quoted({ plan: 'dedicado', gbDay: 5, mode: 'managed' }).configuration.size).toBe('P');
+    expect(quoted({ plan: 'dedicado', gbDay: 8, mode: 'managed' }).configuration.size).toBe('M');
+    expect(quoted({ plan: 'vciso', gbDay: 15, mode: 'self_hosted' }).configuration.size).toBe('G');
   });
 });
 
 describe('cotação', () => {
-  it('um item por componente cobrado, com o lookup_key, a quantidade, o valor unitário e o total', () => {
-    const result = quoted(
-      config({ cloudAccounts: 4, monthlyGib: 50, agents: 10, historyDays: 180, support: 'priority' }),
-    );
-
+  it('Plataforma: a base com a franquia incluída e o GB/dia adicional como quantidade de um item só', () => {
+    const result = quoted({ plan: 'plataforma', gbDay: 5, mode: 'managed' });
+    expect(result.configuration).toEqual({
+      plan: 'plataforma',
+      mode: 'managed',
+      gbDay: 5,
+      size: 'P',
+      historyDays: 60,
+    });
     expect(result.lineItems).toEqual([
       {
-        component: 'environment',
-        variant: 'managed_P',
-        lookupKey: 'vc_env_p_v1',
+        component: 'base',
+        variant: 'plataforma',
+        lookupKey: 'vc_base_v1',
         quantity: 1,
         unitAmount: 100_000,
         amount: 100_000,
         recurring: true,
       },
       {
-        component: 'cloud_accounts',
-        variant: 'additional',
-        lookupKey: 'vc_acc_v1',
-        quantity: 2,
-        unitAmount: 3_000,
-        amount: 6_000,
-        recurring: true,
-      },
-      {
-        component: 'volume',
-        variant: '50',
-        lookupKey: 'vc_vol_50_v1',
-        quantity: 1,
-        unitAmount: 10_000,
-        amount: 10_000,
-        recurring: true,
-      },
-      {
-        component: 'agents',
-        variant: '10',
-        lookupKey: 'vc_agt_v1',
-        quantity: 1,
-        unitAmount: 10_000,
-        amount: 10_000,
-        recurring: true,
-      },
-      {
-        component: 'history',
-        variant: '180',
-        lookupKey: 'vc_his_180_v1',
-        quantity: 1,
-        unitAmount: 2_000,
-        amount: 2_000,
-        recurring: true,
-      },
-      {
-        component: 'priority_support',
-        variant: 'priority',
-        lookupKey: 'vc_sup_v1',
-        quantity: 1,
+        component: 'additional_gb_day',
+        variant: 'plataforma',
+        lookupKey: 'vc_add_v1',
+        quantity: 3,
         unitAmount: 30_000,
-        amount: 30_000,
+        amount: 90_000,
         recurring: true,
       },
     ]);
-    expect(result.monthlyTotal).toBe(158_000);
-    expect(result.setupTotal).toBe(0);
-    expect(result.firstInvoiceTotal).toBe(158_000);
-    expect(result.configuration).toEqual({
-      mode: 'managed',
-      size: 'P',
-      cloudAccounts: 4,
-      monthlyGib: 50,
-      agents: 10,
-      historyDays: 180,
-      support: 'priority',
-    });
-    expect(result.sizeDescription).toBe('Porte de teste P');
-    expect(result.included).toEqual({ cloudAccounts: 2, monthlyGib: 10, historyDays: 30, users: 10 });
+    expect(result).toMatchObject({ monthlyTotal: 190_000, setupTotal: 0, firstInvoiceTotal: 190_000 });
+    expect(result.included).toEqual({ gbDay: 2, historyDays: 60, users: 10 });
   });
 
-  it('os limites do nó saem da configuração contratada (PR-18): contas, volume, histórico, agentes e usuários', () => {
-    expect(quoted(config({ cloudAccounts: 7, monthlyGib: 60, agents: 15, historyDays: 200 })).limits).toEqual(
+  it('Plataforma no incluído (ou abaixo dele): só a base, sem o item do adicional (a Stripe não aceita quantidade 0)', () => {
+    for (const gbDay of [1, 2]) {
+      const result = quoted({ plan: 'plataforma', gbDay, mode: 'managed' });
+      expect(result.configuration.gbDay).toBe(2);
+      expect(result.lineItems.map((item) => item.component)).toEqual(['base']);
+      expect(result.monthlyTotal).toBe(100_000);
+    }
+  });
+
+  it('Dedicado: GB/dia × o preço, com o volume levado ao mínimo', () => {
+    const result = quoted({ plan: 'dedicado', gbDay: 1, mode: 'managed' });
+    expect(result.configuration.gbDay).toBe(3);
+    expect(result.lineItems).toEqual([
       {
-        maxCloudAccounts: 7,
-        monthlyGib: 100,
-        historyDays: 360,
-        maxAgents: 20,
-        maxUsers: 10,
+        component: 'gb_day',
+        variant: 'dedicado',
+        lookupKey: 'vc_ded_v1',
+        quantity: 3,
+        unitAmount: 50_000,
+        amount: 150_000,
+        recurring: true,
       },
-    );
+    ]);
+    expect(result.monthlyTotal).toBe(150_000);
+    expect(result.included.gbDay).toBe(0);
   });
 
-  it('a configuração mínima é só o ambiente do menor porte; é o "a partir de"', () => {
-    const minimal = quoted(minimalConfiguration(table, 'managed'));
-    expect(minimal.lineItems.map((item) => item.component)).toEqual(['environment']);
-    expect(minimal.monthlyTotal).toBe(100_000);
-    expect(startingAt(table, 'managed')).toEqual({ monthly: 100_000, setup: 0 });
-    expect(startingAt(table, 'self_hosted')).toEqual({ monthly: 50_000, setup: 100_000 });
-  });
-
-  it('na nuvem do cliente: a licença do porte no lugar do ambiente e a implantação por último, avulsa', () => {
-    const result = quoted(config({ mode: 'self_hosted', cloudAccounts: 6 }));
+  it('vCISO: o Dedicado, mais o serviço mensal e a implantação por último, avulsa', () => {
+    const result = quoted({ plan: 'vciso', gbDay: 4, mode: 'managed' });
     expect(
       result.lineItems.map((item) => [item.component, item.variant, item.quantity, item.recurring]),
     ).toEqual([
-      ['environment', 'self_hosted_M', 1, true],
-      ['cloud_accounts', 'additional', 4, true],
-      ['setup', 'self_hosted', 1, false],
+      ['gb_day', 'dedicado', 4, true],
+      ['service', 'vciso', 1, true],
+      ['setup', 'vciso', 1, false],
     ]);
-    expect(result.monthlyTotal).toBe(100_000 + 12_000);
-    expect(result.setupTotal).toBe(100_000);
-    expect(result.firstInvoiceTotal).toBe(212_000);
+    expect(result).toMatchObject({ monthlyTotal: 400_000, setupTotal: 500_000, firstInvoiceTotal: 900_000 });
+  });
+
+  it('o lugar não muda o preço: no cliente, o mesmo preço por GB/dia', () => {
+    const verax = quoted({ plan: 'dedicado', gbDay: 6, mode: 'managed' });
+    const customer = quoted({ plan: 'dedicado', gbDay: 6, mode: 'self_hosted' });
+    expect(customer.lineItems).toEqual(verax.lineItems);
+    expect(customer.configuration.mode).toBe('self_hosted');
+  });
+
+  it('acima do que o plano vende, do maior porte ou fora do lugar do plano: sob consulta, com o motivo', () => {
+    expect(quote({ plan: 'plataforma', gbDay: 6, mode: 'managed' }, table)).toEqual({
+      kind: 'contact_us',
+      reason: 'above_online_max',
+    });
+    expect(quote({ plan: 'dedicado', gbDay: 16, mode: 'managed' }, table)).toEqual({
+      kind: 'contact_us',
+      reason: 'above_max',
+    });
+    expect(quote({ plan: 'plataforma', gbDay: 2, mode: 'self_hosted' }, table)).toEqual({
+      kind: 'contact_us',
+      reason: 'mode_unavailable',
+    });
+    const small = priceTableSchema.parse({
+      ...fictitiousPriceTable(),
+      sizing: { sizes: [{ size: 'P', maxGbDay: 5, description: 'Só P' }] },
+    });
+    expect(quote({ plan: 'dedicado', gbDay: 6, mode: 'managed' }, small)).toEqual({
+      kind: 'contact_us',
+      reason: 'above_largest_size',
+    });
+  });
+
+  it('os limites do nó saem do contratado (PR-18): franquia mensal pelo GB/dia, teto de contas do plano, sem agentes', () => {
+    expect(quoted({ plan: 'plataforma', gbDay: 5, mode: 'managed' }).limits).toEqual({
+      maxCloudAccounts: 50,
+      monthlyGib: 145,
+      historyDays: 60,
+      maxAgents: 0,
+      maxUsers: 10,
+    });
+    expect(quoted({ plan: 'vciso', gbDay: 3, mode: 'self_hosted' }).limits.maxCloudAccounts).toBe(100);
+  });
+
+  it('a faixa de cada plano e o "a partir de" (o menor volume, na infraestrutura da Verax)', () => {
+    expect(gbDayRange(table, 'plataforma')).toEqual({ min: 2, max: 5 });
+    expect(gbDayRange(table, 'vciso')).toEqual({ min: 3, max: 15 });
+    expect(minimalConfiguration(table, 'dedicado')).toEqual({ plan: 'dedicado', gbDay: 3, mode: 'managed' });
+    expect(startingAt(table, 'plataforma')).toEqual({ monthly: 100_000, setup: 0 });
+    expect(startingAt(table, 'dedicado')).toEqual({ monthly: 150_000, setup: 0 });
+    expect(startingAt(table, 'vciso')).toEqual({ monthly: 350_000, setup: 500_000 });
   });
 
   it('determinística: a mesma configuração dá sempre a mesma cotação', () => {
-    const input = config({
-      cloudAccounts: 9,
-      monthlyGib: 70,
-      agents: 25,
-      historyDays: 360,
-      support: 'priority',
-    });
-    expect(quote(input, table)).toEqual(quote({ ...input }, table));
+    const input: ConfigurationInput = { plan: 'vciso', gbDay: 7, mode: 'managed' };
+    expect(quote(input, table)).toEqual(quote(input, table));
   });
 });

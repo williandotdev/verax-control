@@ -5,9 +5,9 @@ import { ApiError } from '../common/http/api-error.js';
 import { equalValues } from '../firestore/document-store.js';
 import { LegalTextStore } from '../legal/legal-store.js';
 import { LEGAL_KINDS } from '../legal/legal.schema.js';
-import { PricingTableStore } from '../pricing/pricing-store.js';
-import type { ConfigurationInput, QuoteLineItem } from '../pricing/pricing.schema.js';
-import { isSoldOnline, modeNotSoldOnline } from '../pricing/public-pricing.js';
+import { LegacyVersionError, PricingTableStore } from '../pricing/pricing-store.js';
+import type { QuoteLineItem } from '../pricing/pricing.schema.js';
+import { isSoldOnline, planNotSoldOnline } from '../pricing/public-pricing.js';
 import { type StoredQuote, QuoteStore } from '../pricing/quote-store.js';
 import { quote } from '../pricing/quote.js';
 import {
@@ -69,14 +69,15 @@ export interface RequestContext {
 }
 
 /**
- * Checkout (plano §4a, com o preço configurável): valida o pedido, confere as versões do aceite com as dos textos legais
+ * Checkout (plano §4a, com o preço por GB/dia): valida o pedido, confere as versões do aceite com as dos textos legais
  * publicados no console, relê a cotação gravada (`quoteId`) e a recalcula pela tabela da versão dela, confere na
  * Stripe cada preço dos itens (ativo, em BRL, mensal
  * ou avulso, com o valor da tabela), reserva o subdomínio dentro do teto diário e abre a sessão do Checkout hospedado
- * com um item por componente. O site nunca manda preço. Se a Stripe falhar depois da reserva, a reserva é desfeita na
+ * com um item por componente (na Plataforma: a base, quantidade 1, e o GB/dia adicional, com a quantidade contratada
+ * acima do incluído). O site nunca manda preço. Se a Stripe falhar depois da reserva, a reserva é desfeita na
  * hora (`released`); se nem isso for possível, ela vence sozinha em 2 h 30. Nenhum log leva e-mail, CNPJ, razão social,
- * valores ou a chave da Stripe: só o `tenantId`, o slug, o porte, a versão da tabela, a cotação e, de um erro da
- * Stripe, tipo, código, status e id.
+ * valores ou a chave da Stripe: só o `tenantId`, o slug, o plano, o porte, a versão da tabela, a cotação e, de um erro
+ * da Stripe, tipo, código, status e id.
  */
 @Injectable()
 export class CheckoutService implements OnModuleInit {
@@ -183,6 +184,7 @@ export class CheckoutService implements OnModuleInit {
         event: 'checkout_session_created',
         tenantId: reservation.tenantId,
         slug: reservation.slug,
+        plan: reservation.plan,
         size: reservation.size,
         priceTableVersion: reservation.priceTableVersion,
         quoteId: reservation.quoteId,
@@ -239,24 +241,34 @@ export class CheckoutService implements OnModuleInit {
   /**
    * A cotação gravada, válida e recalculada pela tabela da versão dela (publicada ou já aposentada: o preço mostrado é
    * honrado até a cotação vencer). Vencida, inexistente ou diferente do recálculo (tabela apagada, documento
-   * adulterado): 409 `quote_outdated`, e o site pede outra. De um modo que o site não vende (o ambiente na
-   * infraestrutura do cliente: a cotação de referência de um contrato direto, gravada pelo console na mesma coleção):
-   * 422 `mode_not_sold_online`, antes de qualquer outra conferência, e nada é reservado.
+   * adulterado, ou do modelo de preço anterior): 409 `quote_outdated`, e o site pede outra. De um plano ou lugar que o
+   * site não vende (a cotação de referência de um contrato direto, gravada pelo console na mesma coleção): 422
+   * `plan_not_sold_online`, antes de qualquer outra conferência, e nada é reservado.
    */
   private async resolveQuote(quoteId: string): Promise<StoredQuote> {
     const stored = await this.quotes.getValid(quoteId);
     if (stored === undefined) throw QUOTE_OUTDATED();
-    if (!isSoldOnline(stored.configuration.mode)) {
+    if (!isSoldOnline(stored.configuration)) {
       this.logger.warn(
-        { event: 'checkout_mode_refused', quoteId, mode: stored.configuration.mode },
-        'checkout com uma cotação de um modo que o site não vende',
+        {
+          event: 'checkout_plan_refused',
+          quoteId,
+          plan: stored.configuration.plan,
+          mode: stored.configuration.mode,
+        },
+        'checkout com uma cotação de um plano que o site não vende',
       );
-      throw modeNotSoldOnline();
+      throw planNotSoldOnline();
     }
-    const table = await this.tables.get(stored.priceTableVersion);
-    const { size: _size, ...answers } = stored.configuration;
-    const input: ConfigurationInput = answers;
-    const outcome = table === undefined || table.status === 'draft' ? undefined : quote(input, table.content);
+    const table = await this.tables.get(stored.priceTableVersion).catch((error: unknown) => {
+      if (error instanceof LegacyVersionError) return undefined;
+      throw error;
+    });
+    const { plan, gbDay, mode } = stored.configuration;
+    const outcome =
+      table === undefined || table.status === 'draft'
+        ? undefined
+        : quote({ plan, gbDay, mode }, table.content);
     const matches =
       outcome?.kind === 'quote' &&
       equalValues(outcome.quote.configuration, stored.configuration) &&
@@ -397,8 +409,9 @@ export class CheckoutService implements OnModuleInit {
 
   /**
    * Os parâmetros da sessão (plano §4a), com um item por componente da cotação, na ordem dela: os mensais e, por
-   * último, a implantação (avulsa, só na primeira fatura). Os metadados levam a versão da tabela, a cotação, o modo e o
-   * porte, para o webhook reconhecer a compra.
+   * último, a implantação (avulsa, só na primeira fatura). Os metadados levam a versão da tabela, a cotação, o plano, a
+   * franquia contratada em GB/dia, o modo e o porte, para o webhook reconhecer a compra (e, depois, a medição do
+   * excedente).
    */
   private sessionParams(
     request: CheckoutRequest,
@@ -413,6 +426,8 @@ export class CheckoutService implements OnModuleInit {
       slug: reservation.slug,
       priceTableVersion: quoted.priceTableVersion,
       quoteId: quoted.quoteId,
+      plan: quoted.configuration.plan,
+      gbDay: String(quoted.configuration.gbDay),
       mode: quoted.configuration.mode,
       size: quoted.configuration.size,
       termsVersion: versions.terms,

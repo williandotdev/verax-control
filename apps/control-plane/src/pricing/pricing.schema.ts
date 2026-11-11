@@ -2,40 +2,65 @@ import { z } from 'zod';
 import { ULID_PATTERN } from '../common/ulid.js';
 
 /**
- * Domínio do preço configurável (estudo comercial da fase 3, aprovado em 04/11/2026): o cliente responde seis
- * perguntas (onde roda, contas de nuvem, volume de logs, agentes, histórico e suporte), o porte do nó sai de uma regra
- * determinística e o preço é a soma dos componentes da tabela publicada.
+ * Domínio do preço (modelo por volume, decisão do responsável de 10/11/2026): o preço depende só do volume de logs em
+ * GB por dia (GB/dia), em três planos.
  *
- * Nenhum valor comercial mora no código: preços, chaves da Stripe, faixas, limites de porte e o modelo de custos vêm
- * de documentos versionados no Firestore (`pricingTables/{versão}` e `costModels/{versão}`), editados pelo
- * responsável. O código só define a forma e as regras de coerência de cada documento.
+ * - **Plataforma** (célula compartilhada, vendida no checkout do site): uma base mensal que inclui alguns GB/dia e um
+ *   preço mensal por GB/dia contratado acima disso. O cliente escolhe a franquia no checkout, do incluído até o máximo
+ *   do site; acima, "fale conosco". O uso acima da franquia é cobrado depois (o excedente, por GB/dia).
+ * - **Dedicado** (servidor próprio, contrato anual, só por contrato direto): um preço por GB/dia, com um mínimo e um
+ *   máximo cotável; o porte do nó sai do GB/dia pela regra de porte da tabela.
+ * - **vCISO**: o Dedicado mais um serviço mensal e uma implantação cobrada uma vez; também só por contrato direto.
+ *
+ * Nenhum valor comercial mora no código: preços, chaves da Stripe, limites e o modelo de custos vêm de documentos
+ * versionados no Firestore (`pricingTables/{versão}` e `costModels/{versão}`), editados pelo responsável. O código só
+ * define a forma e as regras de coerência de cada documento. Um documento gravado no modelo anterior (portes,
+ * componentes e contas de nuvem: até `2026-11-v1`) não passa nestes schemas e é tratado como legado (`pricing-store.ts`).
  */
 
 /** Teto de sanidade para um valor em centavos (não é preço: só barra um número absurdo digitado por engano). */
 export const MAX_AMOUNT_CENTS = 100_000_000;
 
-/** Onde o ambiente roda: na infraestrutura da Verax ou na nuvem do cliente. */
+/** Teto de sanidade do volume em GB/dia (não é limite comercial: só barra um número absurdo). */
+export const MAX_GB_DAY = 10_000;
+
+/** Os planos, na ordem em que o site os mostra. */
+export const PLAN_IDS = ['plataforma', 'dedicado', 'vciso'] as const;
+export const planIdSchema = z.enum(PLAN_IDS);
+export type PlanId = z.infer<typeof planIdSchema>;
+
+/** Onde o ambiente roda: na infraestrutura da Verax (`managed`) ou na do cliente (`self_hosted`, só contrato direto). */
 export const DEPLOYMENT_MODES = ['managed', 'self_hosted'] as const;
 export const deploymentModeSchema = z.enum(DEPLOYMENT_MODES);
 export type DeploymentMode = z.infer<typeof deploymentModeSchema>;
 
-/** Portes do nó, do menor para o maior. O cliente nunca escolhe: a regra da tabela decide (`sizing.ts`). */
+/** Em que modos cada plano existe: a Plataforma é a célula da Verax, então nunca roda no cliente. */
+export const PLAN_MODES: Readonly<Record<PlanId, readonly DeploymentMode[]>> = {
+  plataforma: ['managed'],
+  dedicado: ['managed', 'self_hosted'],
+  vciso: ['managed', 'self_hosted'],
+};
+
+/** Portes do nó, do menor para o maior. O cliente nunca escolhe: a regra da tabela decide pelo GB/dia. */
 export const SIZE_IDS = ['P', 'M', 'G'] as const;
 export const sizeIdSchema = z.enum(SIZE_IDS);
 export type SizeId = z.infer<typeof sizeIdSchema>;
 
-export const SUPPORT_LEVELS = ['standard', 'priority'] as const;
-export const supportLevelSchema = z.enum(SUPPORT_LEVELS);
-export type SupportLevel = z.infer<typeof supportLevelSchema>;
-
-/** Componentes cobrados. É também o `component` dos metadados de cada preço na Stripe. */
+/**
+ * Componentes cobrados. É também o `component` dos metadados de cada preço na Stripe:
+ * - `base`: a base mensal da Plataforma (com os GB/dia incluídos);
+ * - `additional_gb_day`: cada GB/dia contratado acima do incluído na Plataforma (a quantidade do item);
+ * - `overage_gb_day`: o excedente medido da Plataforma, por GB/dia (cobrado depois, fora do checkout);
+ * - `gb_day`: cada GB/dia do Dedicado (e do vCISO, que usa o mesmo preço);
+ * - `service`: o serviço mensal do vCISO;
+ * - `setup`: a implantação do vCISO, cobrada uma vez.
+ */
 export const COMPONENT_IDS = [
-  'environment',
-  'cloud_accounts',
-  'volume',
-  'agents',
-  'history',
-  'priority_support',
+  'base',
+  'additional_gb_day',
+  'overage_gb_day',
+  'gb_day',
+  'service',
   'setup',
 ] as const;
 export type ComponentId = (typeof COMPONENT_IDS)[number];
@@ -44,115 +69,99 @@ export const PAYMENT_METHODS = ['card', 'boleto'] as const;
 export const paymentMethodSchema = z.enum(PAYMENT_METHODS);
 export type PaymentMethod = z.infer<typeof paymentMethodSchema>;
 
-/** Versão de uma tabela (ex.: `2026-11-v1`): também é o id do documento. */
+/**
+ * Como o imposto entra no preço: `inclusive` (o valor da tabela já tem o imposto) ou `exclusive` (o "+ impostos": o
+ * imposto vai por cima na fatura, e o cliente paga o valor da tabela dividido por 1 menos a alíquota).
+ */
+export const TAX_MODES = ['inclusive', 'exclusive'] as const;
+export type TaxMode = (typeof TAX_MODES)[number];
+
+/** Versão de uma tabela (ex.: `2026-11-v2`): também é o id do documento. */
 export const versionIdSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, { error: 'versão inválida (minúsculas, números e traço)' });
 
-/** `lookup_key` de um preço da Stripe (ex.: `vc_env_p_v1`). */
+/** `lookup_key` de um preço da Stripe (ex.: `vc_plat_base_v2`). */
 export const lookupKeySchema = z.string().regex(/^[a-z0-9_]{3,64}$/, { error: 'lookup_key inválido' });
 
 const cents = z.number().int().min(0).max(MAX_AMOUNT_CENTS);
 const positiveCents = z.number().int().min(1).max(MAX_AMOUNT_CENTS);
 const publicText = z.string().trim().min(1).max(120);
+const gbDay = z.number().int().min(1).max(MAX_GB_DAY);
+/** O teto de contas de nuvem do nó (a vaga do PR-18): não muda o preço, só o limite gravado no nó. */
+const maxCloudAccounts = z.number().int().min(1).max(1_000);
 /** Taxa entre 0 e 1 (0,1 = 10%). */
 const rate = z.number().min(0).max(1);
-
-/** Um teto abaixo do piso correspondente (máximo menor que o incluído, alerta menor que a mínima). */
-function belowFloor(ceiling: number, floor: number): boolean {
-  return ceiling < floor;
-}
 
 /** Um preço da tabela: o valor em centavos e o `lookup_key` do preço correspondente na Stripe. */
 export const pricedSchema = z.strictObject({ amount: positiveCents, lookupKey: lookupKeySchema });
 export type Priced = z.infer<typeof pricedSchema>;
 
-/** Um degrau da regra de porte: o porte cabe na configuração se ela não passar de nenhum dos três tetos. */
+/** Um degrau da regra de porte: o porte cabe no volume se ele não passar de `maxGbDay`. */
 export const sizeRuleSchema = z.strictObject({
   size: sizeIdSchema,
-  maxCloudAccounts: z.number().int().min(1).max(10_000),
-  maxMonthlyGib: z.number().int().min(1).max(1_000_000),
-  maxAgents: z.number().int().min(0).max(100_000),
+  maxGbDay: gbDay,
   /** Texto para o cliente (ex.: "2 vCPU e 8 GB em São Paulo"). */
   description: publicText,
 });
 export type SizeRule = z.infer<typeof sizeRuleSchema>;
 
-const modePricingSchema = z.strictObject({
-  /** Ambiente (gerenciado) ou licença (na nuvem do cliente), um preço por porte. */
-  environment: z.partialRecord(sizeIdSchema, pricedSchema),
-  /** Implantação, cobrada uma vez na primeira fatura. Sem ela, o modo não tem taxa de implantação. */
-  setup: pricedSchema.optional(),
-});
-export type ModePricing = z.infer<typeof modePricingSchema>;
+/**
+ * O que o site pede (a entrada de `POST /v1/public/quote`): o plano e o volume em GB/dia, estrito e sem nenhum campo de
+ * preço. O volume sobe até o mínimo do plano (`quote.ts`); acima do que o plano vende, a resposta é "fale conosco".
+ */
+export const quoteInputSchema = z.strictObject({ plan: planIdSchema, gbDay });
+export type QuoteInput = z.infer<typeof quoteInputSchema>;
 
 /**
- * O que o cliente escolhe (a entrada de `POST /v1/public/quote`): estrito e sem nenhum campo de preço. Os números são
- * arredondados para cima até a opção da tabela (`quote.ts`); acima do que a tabela vende, a resposta é "fale conosco".
+ * A configuração com onde o ambiente roda: o que o motor cota (o site sempre na infraestrutura da Verax; o contrato
+ * direto e o simulador de DRE escolhem).
  */
 export const configurationInputSchema = z.strictObject({
+  plan: planIdSchema,
+  gbDay,
   mode: deploymentModeSchema,
-  cloudAccounts: z.number().int().min(0).max(10_000),
-  monthlyGib: z.number().int().min(0).max(1_000_000),
-  agents: z.number().int().min(0).max(100_000),
-  historyDays: z.number().int().min(0).max(36_500),
-  support: supportLevelSchema,
 });
 export type ConfigurationInput = z.infer<typeof configurationInputSchema>;
 
-const presetSchema = z.strictObject({
-  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
-  label: publicText,
-  configuration: configurationInputSchema,
-});
-
 /**
- * Conteúdo de uma tabela de preços (o que o responsável edita). Valores mensais em centavos de real, com o imposto
- * embutido. Cada degrau de volume e de histórico acima do incluído é um preço da Stripe.
+ * Conteúdo de uma tabela de preços (o que o responsável edita). Valores mensais em centavos de real; o imposto segue
+ * `taxMode`. Cada valor é um preço da Stripe pelo `lookupKey`.
  */
 export const priceTableSchema = z
   .strictObject({
     currency: z.literal('brl'),
     interval: z.literal('month'),
+    taxMode: z.enum(TAX_MODES),
+    /** O porte do nó pelo GB/dia, do menor para o maior. */
     sizing: z.strictObject({ sizes: z.array(sizeRuleSchema).min(1).max(SIZE_IDS.length) }),
-    modes: z.strictObject({ managed: modePricingSchema, self_hosted: modePricingSchema }),
-    cloudAccounts: z.strictObject({
-      included: z.number().int().min(1).max(10_000),
-      max: z.number().int().min(1).max(10_000),
-      additional: pricedSchema,
+    plans: z.strictObject({
+      plataforma: z.strictObject({
+        /** A base mensal (quantidade 1), com `includedGbDay` incluídos. */
+        base: pricedSchema,
+        includedGbDay: gbDay,
+        /** Cada GB/dia contratado acima do incluído, por mês: a quantidade do item é o contratado menos o incluído. */
+        additionalGbDay: pricedSchema,
+        /** O excedente medido acima da franquia contratada, por GB/dia (cobrado depois, fora do checkout). */
+        overageGbDay: pricedSchema,
+        /** O maior volume contratável no site; acima, "fale conosco". */
+        maxOnlineGbDay: gbDay,
+        maxCloudAccounts,
+      }),
+      dedicado: z.strictObject({
+        /** Cada GB/dia, por mês (a quantidade do item é o GB/dia contratado). */
+        gbDay: pricedSchema,
+        minGbDay: gbDay,
+        maxGbDay: gbDay,
+        /** A duração do contrato, em meses (informação da proposta). */
+        contractMonths: z.number().int().min(1).max(60),
+        maxCloudAccounts,
+      }),
+      /** O vCISO é o Dedicado (o mesmo preço por GB/dia, mínimo e máximo) mais o serviço e a implantação. */
+      vciso: z.strictObject({ service: pricedSchema, setup: pricedSchema }),
     }),
-    volume: z.strictObject({
-      includedMonthlyGib: z.number().int().min(1).max(1_000_000),
-      bands: z
-        .array(
-          z.strictObject({
-            monthlyGib: z.number().int().min(1).max(1_000_000),
-            amount: positiveCents,
-            lookupKey: lookupKeySchema,
-          }),
-        )
-        .max(20),
-    }),
-    agents: z.strictObject({
-      packSize: z.number().int().min(1).max(10_000),
-      maxPacks: z.number().int().min(0).max(1_000),
-      pack: pricedSchema,
-    }),
-    history: z.strictObject({
-      includedDays: z.number().int().min(30).max(3_650),
-      extended: z
-        .array(
-          z.strictObject({
-            days: z.number().int().min(30).max(3_650),
-            amount: positiveCents,
-            lookupKey: lookupKeySchema,
-          }),
-        )
-        .max(10),
-    }),
-    prioritySupport: pricedSchema,
+    history: z.strictObject({ includedDays: z.number().int().min(30).max(3_650) }),
     users: z.strictObject({ max: z.number().int().min(1).max(1_000) }),
-    presets: z.array(presetSchema).max(10).default([]),
   })
   .superRefine((table, ctx) => {
     const issue = (path: (string | number)[], message: string): void => {
@@ -161,51 +170,22 @@ export const priceTableSchema = z
     const sizes = table.sizing.sizes;
     const ids = sizes.map((rule) => rule.size);
     if (new Set(ids).size !== ids.length) issue(['sizing', 'sizes'], 'porte repetido');
-    // Do menor para o maior: a ordem da lista é a ordem dos portes e nenhum teto diminui de um degrau para o seguinte.
+    // Do menor para o maior: a ordem da lista é a ordem dos portes e o teto cresce de um degrau para o seguinte.
     const order = ids.map((id) => SIZE_IDS.indexOf(id));
     if (order.some((position, index) => index > 0 && position <= (order[index - 1] ?? -1))) {
       issue(['sizing', 'sizes'], 'portes fora de ordem (P, M, G)');
     }
     sizes.forEach((rule, index) => {
       const previous = sizes[index - 1];
-      if (previous === undefined) return;
-      if (
-        rule.maxCloudAccounts < previous.maxCloudAccounts ||
-        rule.maxMonthlyGib < previous.maxMonthlyGib ||
-        rule.maxAgents < previous.maxAgents
-      ) {
-        issue(['sizing', 'sizes', index], 'um porte maior não pode ter teto menor que o anterior');
+      if (previous !== undefined && rule.maxGbDay <= previous.maxGbDay) {
+        issue(['sizing', 'sizes', index, 'maxGbDay'], 'um porte maior precisa de teto maior que o anterior');
       }
     });
-    for (const mode of DEPLOYMENT_MODES) {
-      for (const size of ids) {
-        if (table.modes[mode].environment[size] === undefined) {
-          issue(['modes', mode, 'environment', size], 'sem preço para este porte');
-        }
-      }
-      for (const size of Object.keys(table.modes[mode].environment)) {
-        if (!ids.includes(size as SizeId)) {
-          issue(['modes', mode, 'environment', size], 'porte fora da regra de porte');
-        }
-      }
+    const { plataforma, dedicado } = table.plans;
+    if (plataforma.maxOnlineGbDay < plataforma.includedGbDay) {
+      issue(['plans', 'plataforma', 'maxOnlineGbDay'], 'menor que o incluído');
     }
-    if (belowFloor(table.cloudAccounts.max, table.cloudAccounts.included)) {
-      issue(['cloudAccounts', 'max'], 'menor que o incluído');
-    }
-    const bands = table.volume.bands.map((band) => band.monthlyGib);
-    if (
-      bands.some(
-        (gib, index) => gib <= (index === 0 ? table.volume.includedMonthlyGib : (bands[index - 1] ?? 0)),
-      )
-    ) {
-      issue(['volume', 'bands'], 'faixas em ordem crescente e acima do incluído');
-    }
-    const days = table.history.extended.map((option) => option.days);
-    if (
-      days.some((day, index) => day <= (index === 0 ? table.history.includedDays : (days[index - 1] ?? 0)))
-    ) {
-      issue(['history', 'extended'], 'opções em ordem crescente e acima do incluído');
-    }
+    if (dedicado.maxGbDay < dedicado.minGbDay) issue(['plans', 'dedicado', 'maxGbDay'], 'menor que o mínimo');
     const keys = lookupKeysOf(table).map((entry) => entry.lookupKey);
     const repeated = keys.filter((key, index) => keys.indexOf(key) !== index);
     if (repeated.length > 0)
@@ -217,85 +197,79 @@ export type PriceTableInput = z.input<typeof priceTableSchema>;
 /** Todos os preços da tabela, com o componente e a variante de cada um (os metadados do preço na Stripe). */
 export interface TableLookupKey {
   component: ComponentId;
-  variant: string;
+  /** O plano do preço. */
+  variant: PlanId;
   lookupKey: string;
   amount: number;
   recurring: boolean;
 }
 
-export function lookupKeysOf(table: {
-  modes: Record<DeploymentMode, ModePricing>;
-  cloudAccounts: { additional: Priced };
-  volume: { bands: readonly { monthlyGib: number; amount: number; lookupKey: string }[] };
-  agents: { packSize: number; pack: Priced };
-  history: { extended: readonly { days: number; amount: number; lookupKey: string }[] };
-  prioritySupport: Priced;
-}): TableLookupKey[] {
-  const entries: TableLookupKey[] = [];
-  for (const mode of DEPLOYMENT_MODES) {
-    for (const size of SIZE_IDS) {
-      const price = table.modes[mode].environment[size];
-      if (price !== undefined) {
-        entries.push({ component: 'environment', variant: `${mode}_${size}`, ...price, recurring: true });
-      }
-    }
-    const setup = table.modes[mode].setup;
-    if (setup !== undefined) entries.push({ component: 'setup', variant: mode, ...setup, recurring: false });
-  }
-  entries.push({
-    component: 'cloud_accounts',
-    variant: 'additional',
-    ...table.cloudAccounts.additional,
-    recurring: true,
+export function lookupKeysOf(table: { plans: PriceTable['plans'] }): TableLookupKey[] {
+  const { plataforma, dedicado, vciso } = table.plans;
+  const entry = (
+    component: ComponentId,
+    variant: PlanId,
+    price: Priced,
+    recurring = true,
+  ): TableLookupKey => ({
+    component,
+    variant,
+    lookupKey: price.lookupKey,
+    amount: price.amount,
+    recurring,
   });
-  for (const band of table.volume.bands) {
-    entries.push({
-      component: 'volume',
-      variant: String(band.monthlyGib),
-      amount: band.amount,
-      lookupKey: band.lookupKey,
-      recurring: true,
-    });
-  }
-  entries.push({
-    component: 'agents',
-    variant: String(table.agents.packSize),
-    ...table.agents.pack,
-    recurring: true,
-  });
-  for (const option of table.history.extended) {
-    entries.push({
-      component: 'history',
-      variant: String(option.days),
-      amount: option.amount,
-      lookupKey: option.lookupKey,
-      recurring: true,
-    });
-  }
-  entries.push({
-    component: 'priority_support',
-    variant: 'priority',
-    ...table.prioritySupport,
-    recurring: true,
-  });
-  return entries;
+  return [
+    entry('base', 'plataforma', plataforma.base),
+    entry('additional_gb_day', 'plataforma', plataforma.additionalGbDay),
+    entry('overage_gb_day', 'plataforma', plataforma.overageGbDay),
+    entry('gb_day', 'dedicado', dedicado.gbDay),
+    entry('service', 'vciso', vciso.service),
+    entry('setup', 'vciso', vciso.setup, false),
+  ];
 }
 
-/** A configuração já normalizada para a tabela, com o porte calculado: é o que vai à reserva e ao cliente. */
+/**
+ * A configuração já normalizada para a tabela, com o porte calculado: é o que vai à reserva e ao cliente
+ * (`tenants/{id}.configuration`). `gbDay` é a franquia contratada (a medição do excedente e o contador do painel
+ * partem dela).
+ */
 export const configurationSchema = z.strictObject({
+  plan: planIdSchema,
+  mode: deploymentModeSchema,
+  gbDay,
+  size: sizeIdSchema,
+  historyDays: z.number().int().min(1).max(36_500),
+});
+export type Configuration = z.infer<typeof configurationSchema>;
+
+/**
+ * A configuração de um cliente contratado no modelo anterior (portes, contas, volume mensal, agentes e suporte), só
+ * para leitura: o cliente continua legível pelo `tick`, pela lista e pelo detalhe, e nunca é cotado de novo.
+ */
+export const legacyConfigurationSchema = z.strictObject({
   mode: deploymentModeSchema,
   size: sizeIdSchema,
   cloudAccounts: z.number().int().min(1).max(10_000),
   monthlyGib: z.number().int().min(1).max(1_000_000),
   agents: z.number().int().min(0).max(100_000),
   historyDays: z.number().int().min(1).max(36_500),
-  support: supportLevelSchema,
+  support: z.enum(['standard', 'priority']),
 });
-export type Configuration = z.infer<typeof configurationSchema>;
+export type LegacyConfiguration = z.infer<typeof legacyConfigurationSchema>;
+
+/** O que um cliente contratou: no modelo por GB/dia ou, de antes dele, no anterior. */
+export const contractedConfigurationSchema = z.union([configurationSchema, legacyConfigurationSchema]);
+export type ContractedConfiguration = z.infer<typeof contractedConfigurationSchema>;
+
+export function isLegacyConfiguration(
+  configuration: ContractedConfiguration,
+): configuration is LegacyConfiguration {
+  return !('plan' in configuration);
+}
 
 /**
- * Limites do nó para uma configuração: o que o PR-18 aplica (contas, volume, histórico, usuários) mais os agentes.
- * `node-limits.ts` traduz para as variáveis `PLAN_*` do nó.
+ * Limites do nó para uma configuração: o que o PR-18 aplica (contas, volume, histórico, usuários) mais os agentes (0:
+ * não são vendidos). `node-limits.ts` traduz para as variáveis `PLAN_*` do nó.
  */
 export const nodeLimitsSchema = z.strictObject({
   maxCloudAccounts: z.number().int().min(1).max(10_000),
@@ -309,9 +283,9 @@ export type NodeLimits = z.infer<typeof nodeLimitsSchema>;
 /** Uma linha da cotação: o preço da Stripe (pelo `lookup_key`), a quantidade e o valor unitário da tabela. */
 export const quoteLineItemSchema = z.strictObject({
   component: z.enum(COMPONENT_IDS),
-  variant: z.string().min(1).max(40),
+  variant: planIdSchema,
   lookupKey: lookupKeySchema,
-  quantity: z.number().int().min(1).max(10_000),
+  quantity: z.number().int().min(1).max(MAX_GB_DAY),
   unitAmount: positiveCents,
   amount: cents,
   /** `false` só na implantação, cobrada uma vez na primeira fatura. */
@@ -335,6 +309,14 @@ export type OrderPricing = z.infer<typeof orderPricingSchema>;
 const usd = z.number().min(0).max(1_000_000);
 const hours = z.number().min(0).max(1_000);
 
+/** Uma máquina: a VM (US$/mês), o disco (GB) e os snapshots estimados (GiB). */
+const machineSchema = z.strictObject({
+  vmUsdPerMonth: usd,
+  diskGb: z.number().min(0).max(100_000),
+  snapshotGib: z.number().min(0).max(100_000),
+});
+export type Machine = z.infer<typeof machineSchema>;
+
 export const costModelSchema = z
   .strictObject({
     currency: z.literal('brl'),
@@ -347,29 +329,25 @@ export const costModelSchema = z
       cloudBuffer: rate,
     }),
     infrastructure: z.strictObject({
-      /** Custo de cada porte gerenciado: a VM (US$/mês), o disco (GB) e os snapshots estimados (GiB). */
-      sizes: z.partialRecord(
-        sizeIdSchema,
-        z.strictObject({
-          vmUsdPerMonth: usd,
-          diskGb: z.number().min(0).max(100_000),
-          snapshotGib: z.number().min(0).max(100_000),
-        }),
-      ),
+      /**
+       * A célula compartilhada da Plataforma: uma máquina com vários clientes e a capacidade dela em GB/dia. O custo
+       * dela é rateado por GB/dia contratado (custo ÷ capacidade), mais o custo fixo de cada cliente nela.
+       */
+      sharedCell: z.strictObject({
+        ...machineSchema.shape,
+        capacityGbDay: gbDay,
+        /** O que cada cliente custa na célula independentemente do volume (US$/mês). */
+        perCustomerUsdPerMonth: usd,
+      }),
+      /** O nó dedicado de cada porte (Dedicado e vCISO na infraestrutura da Verax). */
+      sizes: z.partialRecord(sizeIdSchema, machineSchema),
       diskUsdPerGibMonth: usd,
       snapshotUsdPerGibMonth: usd,
       natUsdPerVmMonth: usd,
       natIpUsdPerMonth: usd,
       otherUsdPerNodeMonth: usd,
-      /** Custo da ingestão por GiB de franquia (publicação, entrega e retenção no tópico). */
-      ingestionUsdPerGib: usd,
-      agents: z.strictObject({
-        /** A entrada dos agentes no nó (a regra de encaminhamento com o IP fixo), por mês. */
-        entryUsdPerMonth: usd,
-        /** Disco a mais com agentes: a base de vulnerabilidades mais o índice por agente. */
-        diskBaseGb: z.number().min(0).max(100_000),
-        diskPerAgentGb: z.number().min(0).max(1_000),
-      }),
+      /** O custo da ingestão por GB/dia, por mês (publicação, entrega e retenção no tópico). */
+      ingestionUsdPerGbDay: usd,
     }),
     paymentFees: z.strictObject({
       card: z.strictObject({ rate, fixed: cents }),
@@ -391,15 +369,17 @@ export const costModelSchema = z
     support: z.strictObject({
       hourlyCost: cents,
       hours: z.strictObject({
-        baseManaged: hours,
-        baseSelfHosted: hours,
-        perAdditionalAccount: hours,
-        perAgentPack: hours,
-        prioritySupport: hours,
-        /** Horas a mais por faixa de volume vendida (a franquia incluída não tem). */
-        perVolumeBand: z.array(z.strictObject({ monthlyGib: z.number().int().min(1), hours })).max(20),
-        setupManaged: hours,
-        setupPriorityExtra: hours,
+        /** Horas por mês de cada cliente, pelo plano (o vCISO tem as do Dedicado mais as do serviço). */
+        plataforma: hours,
+        dedicado: hours,
+        /** O serviço do vCISO em horas equivalentes por mês. */
+        vcisoService: hours,
+        /** A mais, por mês, com o ambiente na infraestrutura do cliente. */
+        selfHosted: hours,
+        /** A implantação, uma vez: por plano e a mais na infraestrutura do cliente. */
+        setupPlataforma: hours,
+        setupDedicado: hours,
+        setupVciso: hours,
         setupSelfHosted: hours,
       }),
     }),
@@ -432,16 +412,8 @@ export const costModelSchema = z
     if (new Set(ids).size !== ids.length) {
       ctx.addIssue({ code: 'custom', path: ['taxes', 'rates'], message: 'alíquota repetida' });
     }
-    if (belowFloor(model.margins.alert, model.margins.minimum)) {
+    if (model.margins.alert < model.margins.minimum) {
       ctx.addIssue({ code: 'custom', path: ['margins', 'alert'], message: 'menor que a mínima' });
-    }
-    const bands = model.support.hours.perVolumeBand.map((band) => band.monthlyGib);
-    if (new Set(bands).size !== bands.length) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['support', 'hours', 'perVolumeBand'],
-        message: 'faixa repetida',
-      });
     }
   });
 export type CostModel = z.infer<typeof costModelSchema>;

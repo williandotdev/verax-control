@@ -1,7 +1,9 @@
 /**
- * Catálogo da Stripe do Verax Control (preço configurável), idempotente: um produto por componente, os preços da
- * versão da tabela achados pelo `lookup_key` (mensais em BRL; a implantação, avulsa), o cupom e o código promocional.
- * Roda na conta da chave informada (sandbox primeiro; produção só com `--live`).
+ * Catálogo da Stripe do Verax Control (preço por GB/dia), idempotente: um produto por componente, os preços da
+ * versão da tabela achados pelo `lookup_key` (mensais em BRL; a implantação do vCISO, avulsa), o cupom e o código
+ * promocional. Os componentes são os de `lookupKeysOf` (`src/pricing/pricing.schema.ts`): a base da Plataforma, o
+ * GB/dia adicional (a franquia contratada é a quantidade dele na assinatura), o GB/dia excedente, o GB/dia do Dedicado,
+ * o serviço e a implantação do vCISO. Roda na conta da chave informada (sandbox primeiro; produção só com `--live`).
  *
  * Nenhum valor comercial está aqui: produtos, preços, valores e os termos do cupom vêm de um arquivo JSON passado com
  * `--catalog <arquivo>`, que fica FORA do repositório (ele é público). O formato está documentado, com valores
