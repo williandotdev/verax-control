@@ -145,4 +145,45 @@ describe('scopeToTenant', () => {
     const { db } = fakeDb();
     expect(() => scopeToTenant(db, '')).toThrow(TenantScopeViolation);
   });
+
+  describe('endereço do cliente na célula (CE-01): só o sistema grava', () => {
+    const OPERATIONS = [
+      'findMany',
+      'create',
+      'createMany',
+      'update',
+      'updateMany',
+      'upsert',
+      'delete',
+      'deleteMany',
+    ];
+
+    function hostDb() {
+      const operations = Object.fromEntries(
+        OPERATIONS.map((operation) => [operation, vi.fn((args: unknown) => Promise.resolve(args))]),
+      );
+      return { db: { tenantHost: operations } as unknown as Prisma.TransactionClient, operations };
+    }
+
+    it('lê só a linha do próprio cliente', async () => {
+      const { db, operations } = hostDb();
+      await scopeToTenant(db, A).tenantHost.findMany({});
+      expect(operations['findMany']).toHaveBeenCalledWith({ where: { tenantId: A } });
+    });
+
+    it.each(OPERATIONS.filter((operation) => operation !== 'findMany'))(
+      '%s é recusado no escopo, sem chegar ao banco',
+      (operation) => {
+        const { db, operations } = hostDb();
+        const delegate = scopeToTenant(db, A).tenantHost as unknown as Record<
+          string,
+          (args: unknown) => unknown
+        >;
+        expect(() => delegate[operation]?.({ where: { tenantId: A }, data: { slug: 'cliente-b' } })).toThrow(
+          TenantScopeViolation,
+        );
+        expect(operations[operation]).not.toHaveBeenCalled();
+      },
+    );
+  });
 });

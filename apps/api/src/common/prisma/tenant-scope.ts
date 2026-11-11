@@ -24,6 +24,8 @@ export const TENANT_SCOPED_MODELS = [
   'notificationPreference',
   'notificationDigest',
   'escalationContactToken',
+  // Célula (CE-01): o endereço do cliente. Só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
+  'tenantHost',
   'tenantPlan',
   'tenantRetentionState',
 ] as const;
@@ -32,11 +34,13 @@ export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
 
 /**
- * Models de cliente que só o sistema grava (CE-02): o plano do cliente (`TenantPlan`, do `node.conf` ou do plano de
- * controle) e o estado do expurgo dele. No escopo do cliente, só a leitura passa; a gravação é recusada mesmo que um
- * service a tente, e quem grava usa o cliente base, fora do escopo (`plan/tenant-plan.ts`, `retention/`).
+ * Models de cliente que só o sistema grava: o endereço do cliente na célula (CE-01, `tenants/tenant-host.ts`: uma escrita
+ * pelo escopo poderia levar o endereço de um cliente para outro lugar), o plano do cliente (CE-02, `TenantPlan`, do
+ * `node.conf` ou do plano de controle) e o estado do expurgo dele. No escopo do cliente, só a leitura passa; a gravação é
+ * recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
+ * `plan/tenant-plan.ts`, `retention/`).
  */
-export const SYSTEM_WRITTEN_MODELS = ['tenantPlan', 'tenantRetentionState'] as const;
+export const SYSTEM_WRITTEN_MODELS = ['tenantHost', 'tenantPlan', 'tenantRetentionState'] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([
   'findUnique',
@@ -153,7 +157,7 @@ function scopeDelegate(delegate: object, scope: Scoper): object {
 /**
  * Cliente do banco restrito a um cliente da Verax (T2.5, regra 4). Funciona sobre o cliente base ou sobre a
  * transação da requisição. Só existem nele:
- * - os models de `TENANT_SCOPED_MODELS`, filtrados por `tenantId`;
+ * - os models de `TENANT_SCOPED_MODELS`, filtrados por `tenantId` (os de `SYSTEM_WRITTEN_MODELS`, só para leitura);
  * - o model `tenant`, restrito à linha do próprio cliente.
  *
  * Os demais models (sessões, contas, tokens) e os métodos `$` (SQL cru, transações, extensões) escapariam do

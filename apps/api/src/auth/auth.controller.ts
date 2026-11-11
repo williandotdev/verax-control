@@ -28,6 +28,7 @@ import {
 import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
 import type { Auth } from './auth.factory.js';
 import { Public, SelfManaged } from './decorators.js';
+import { panelOriginOf, sessionHostOf } from './host-tenant.js';
 import { resolveSession } from './session-validation.js';
 
 /**
@@ -106,8 +107,10 @@ export class AuthController {
 
     if (request.method === 'POST') {
       // O Better Auth só confere a origem quando já existe cookie. Aqui todo POST exige vir do painel,
-      // inclusive o login (evita login CSRF, em que um site loga a vítima na conta do atacante).
-      if (request.get('origin') !== this.config.WEB_ORIGIN) throw new ForbiddenException();
+      // inclusive o login (evita login CSRF, em que um site loga a vítima na conta do atacante). Na célula, o painel do
+      // cliente do endereço: o de outro cliente não chama a autenticação daqui.
+      const panelOrigin = panelOriginOf(this.config, request);
+      if (panelOrigin === undefined || request.get('origin') !== panelOrigin) throw new ForbiddenException();
       // Só JSON: formulário HTML não chega à autenticação.
       if (request.is('application/json') === false) throw new UnsupportedMediaTypeException();
     }
@@ -137,7 +140,7 @@ export class AuthController {
       query: { disableRefresh: true },
     });
     if (!data) return;
-    const auth = await resolveSession(this.prisma, data);
+    const auth = await resolveSession(this.prisma, data, sessionHostOf(this.config, request));
     if (!auth) throw new UnauthorizedException();
     if (auth.mustChangePassword) {
       if (!ROUTES_WITH_TEMPORARY_PASSWORD.has(route)) {

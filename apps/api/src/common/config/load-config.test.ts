@@ -356,13 +356,22 @@ describe('loadConfig', () => {
       expect(loadConfig(validProductionEnv).NODE_MODE).toBe('dedicated');
     });
 
+    /** A célula exige também o domínio e o subdomínio da equipe, e os endereços da equipe (CE-01). */
+    const cellEnv = {
+      NODE_MODE: 'cell',
+      CELL_DOMAIN: 'exemplo.com.br',
+      CELL_STAFF_SLUG: 'verax',
+      WEB_ORIGIN: 'https://verax.control.exemplo.com.br',
+      API_ORIGIN: 'https://api-verax.exemplo.com.br',
+    };
+
     it('na célula, o PLAN não é obrigatório em produção e o plano do ambiente não vale', () => {
       const { PLAN: _plan, ...withoutPlan } = validProductionEnv;
-      expect(loadConfig({ ...withoutPlan, NODE_MODE: 'cell' }).NODE_MODE).toBe('cell');
+      expect(loadConfig({ ...withoutPlan, ...cellEnv }).NODE_MODE).toBe('cell');
     });
 
     it('na célula, o PLAN e os ajustes são recusados: o plano é de cada cliente', () => {
-      expect(problemsOf({ ...validProductionEnv, NODE_MODE: 'cell', PLAN_MAX_USERS: '10' })).toEqual([
+      expect(problemsOf({ ...validProductionEnv, ...cellEnv, PLAN_MAX_USERS: '10' })).toEqual([
         'PLAN: não se aplica com NODE_MODE=cell: o plano é de cada cliente, gravado pelo plano de controle',
         'PLAN_MAX_USERS: não se aplica com NODE_MODE=cell: o plano é de cada cliente, gravado pelo plano de controle',
       ]);

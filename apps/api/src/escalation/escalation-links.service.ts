@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   ESCALATION_LINK_INVALID_CODE,
   ESCALATION_LINK_INVALID_MESSAGE,
@@ -8,6 +8,7 @@ import {
 import type { Request } from 'express';
 import { requestEntry } from '../common/audit/audit-request.js';
 import { AuditService } from '../common/audit/audit.service.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
@@ -43,12 +44,13 @@ export class EscalationLinksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   confirm(token: string, request: Request): Promise<EscalationLinkResult> {
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
-      const found = await this.find(tx, token, 'confirm', now);
+      const found = await this.find(tx, token, 'confirm', now, request);
       const db = scopeToTenant(tx, found.tenantId);
       const { count } = await db.tenant.updateMany({
         where: { id: found.tenantId, escalationGeneration: found.generation, escalationState: 'pending' },
@@ -65,7 +67,7 @@ export class EscalationLinksService {
   unsubscribe(token: string, request: Request): Promise<EscalationLinkResult> {
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
-      const found = await this.find(tx, token, 'unsubscribe', now);
+      const found = await this.find(tx, token, 'unsubscribe', now, request);
       const db = scopeToTenant(tx, found.tenantId);
       const current = await db.tenant.findUnique({
         where: { id: found.tenantId },
@@ -112,18 +114,23 @@ export class EscalationLinksService {
     });
   }
 
-  /** O link pelo hash: do tipo pedido e ainda dentro da validade. */
+  /**
+   * O link pelo hash: do tipo pedido e ainda dentro da validade. Na célula (CE-01), também do cliente do endereço: o
+   * link de um cliente aberto no endereço de outro recebe a mesma recusa.
+   */
   private async find(
     tx: Prisma.TransactionClient,
     token: string,
     purpose: EscalationTokenPurpose,
     now: Date,
+    request: Request,
   ): Promise<FoundToken> {
     const found = await tx.escalationContactToken.findUnique({
       where: { tokenHash: escalationTokenHash(token) },
       select: { tenantId: true, purpose: true, generation: true, expiresAt: true },
     });
     if (found?.purpose !== purpose || found.expiresAt <= now) throw invalidLink();
+    if (this.config.cell !== null && found.tenantId !== request.hostTenant?.tenantId) throw invalidLink();
     return { tenantId: found.tenantId, generation: found.generation };
   }
 

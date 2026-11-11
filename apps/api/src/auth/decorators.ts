@@ -6,9 +6,17 @@ export const IS_PUBLIC_KEY = 'verax:public';
 export const SELF_MANAGED_KEY = 'verax:self-managed';
 export const ALLOW_WITHOUT_MFA_KEY = 'verax:allow-without-mfa';
 export const ALLOW_WITH_TEMPORARY_CREDENTIAL_KEY = 'verax:allow-with-temporary-password';
+export const ANY_HOST_KEY = 'verax:any-host';
 
 /** Rota acessível sem sessão. Toda rota sem este decorator exige login (negação por padrão). */
 export const Public = (): MethodDecorator & ClassDecorator => SetMetadata(IS_PUBLIC_KEY, true);
+
+/**
+ * Rota que, na célula, responde em qualquer endereço, sem cliente (CE-01). Toda rota sem este decorator só responde no
+ * endereço de um cliente conhecido. Só o health check usa: não tem dado de cliente nem sessão, e é chamado pelo próprio
+ * nó. O meta-teste de rotas mantém a lista fechada.
+ */
+export const AnyHost = (): MethodDecorator & ClassDecorator => SetMetadata(ANY_HOST_KEY, true);
 
 /**
  * Rota acessível por sessão que ainda não cadastrou o MFA (só a identidade, para o painel conduzir o

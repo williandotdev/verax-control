@@ -10,6 +10,7 @@ import { Reflector } from '@nestjs/core';
 import { fromNodeHeaders } from 'better-auth/node';
 import type { Request, Response } from 'express';
 import { DenialAudit } from '../common/audit/denial-audit.service.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { CREDENTIAL_CHANGE_REQUIRED_CODE } from '@verax/shared';
@@ -21,13 +22,15 @@ import {
 } from './auth.constants.js';
 import type { Auth } from './auth.factory.js';
 import { ALLOW_WITH_TEMPORARY_CREDENTIAL_KEY, ALLOW_WITHOUT_MFA_KEY, IS_PUBLIC_KEY } from './decorators.js';
+import { sessionHostOf } from './host-tenant.js';
 import { resolveSession } from './session-validation.js';
 
 /**
  * Guard global: toda rota exige sessão válida, exceto as marcadas com `@Public()`.
  *
  * Além da validação do Better Auth (assinatura do cookie, expiração por inatividade), aplica as regras de
- * `resolveSession` (12 h, usuário e cliente ativos) e o MFA a cada requisição, e repassa o cookie renovado.
+ * `resolveSession` (12 h, usuário e cliente ativos e, na célula, o endereço) e o MFA a cada requisição, e repassa o
+ * cookie renovado.
  * Desativar um usuário ou um cliente derruba as sessões abertas na requisição seguinte.
  */
 @Injectable()
@@ -37,6 +40,7 @@ export class SessionGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly prisma: PrismaService,
     private readonly denials: DenialAudit,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -60,7 +64,8 @@ export class SessionGuard implements CanActivate {
 
     const data = result.response;
     if (!data) throw new UnauthorizedException();
-    const auth = await resolveSession(this.prisma, data);
+    // Na célula, a sessão só vale no endereço onde nasceu (CE-01).
+    const auth = await resolveSession(this.prisma, data, sessionHostOf(this.config, request));
     if (!auth) throw new UnauthorizedException();
     request.auth = auth;
 

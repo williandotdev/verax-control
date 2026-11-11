@@ -14,9 +14,23 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { TENANT_PLAN_MISSING_CODE, TenantPlanResolver, writeTenantPlan } from '../src/plan/tenant-plan.js';
-import { createSignedInUser, createTenant, withCsrf } from './support/auth-helpers.js';
-import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
-import type { TestSession } from './support/tenant-isolation.js';
+import {
+  apiHostOf,
+  createCellTenant,
+  createSignedInUserOnHost,
+  csrfOnHost,
+  panelOf,
+  testCell,
+  uniqueSlug,
+} from './support/cell.js';
+import { createApp } from './support/create-app.js';
+
+/** Sessão de um administrador no endereço do cliente dele (na célula, a sessão só vale lá, CE-01). */
+interface CellSession {
+  slug: string;
+  cookie: string;
+  csrfToken: string;
+}
 
 /**
  * Planos FICTÍCIOS de dois clientes da mesma célula: números pequenos, para os testes chegarem ao limite, sem relação
@@ -41,21 +55,23 @@ describe('plano por cliente na célula (CE-02, NODE_MODE=cell)', () => {
   let app: NestExpressApplication;
   let prisma: PrismaService;
 
-  async function adminOf(tenantId: string): Promise<TestSession> {
-    const user = await createSignedInUser(app, { role: 'admin_cliente', tenantId });
-    const { cookie, token } = await withCsrf(app, user.cookie);
-    return { cookie, csrfToken: token };
+  async function adminOf(tenantId: string, slug: string): Promise<CellSession> {
+    const user = await createSignedInUserOnHost(app, slug, { role: 'admin_cliente', tenantId });
+    const { cookie, token } = await csrfOnHost(app, slug, user.cookie);
+    return { slug, cookie, csrfToken: token };
   }
 
-  const call = (session: TestSession) => {
+  const call = (session: CellSession) => {
     const server = request(app.getHttpServer());
     const write = (method: 'post' | 'delete', path: string) =>
       server[method](path)
+        .set('Host', apiHostOf(session.slug))
         .set('Cookie', session.cookie)
-        .set('Origin', TEST_WEB_ORIGIN)
+        .set('Origin', panelOf(session.slug))
         .set('X-CSRF-Token', session.csrfToken);
     return {
-      get: (path: string) => server.get(path).set('Cookie', session.cookie),
+      get: (path: string) =>
+        server.get(path).set('Host', apiHostOf(session.slug)).set('Cookie', session.cookie),
       post: (path: string, body: object) => write('post', path).send(body),
       delete: (path: string) => write('delete', path),
     };
@@ -76,14 +92,14 @@ describe('plano por cliente na célula (CE-02, NODE_MODE=cell)', () => {
   });
 
   /** Um cliente da célula com o plano dado (gravado como o comando do plano de controle grava), e o administrador. */
-  async function tenantWith(plan: TenantPlan | null, name: string) {
-    const tenantId = await createTenant(app, `${name} (célula ${randomUUID().slice(0, 8)})`);
-    if (plan !== null) await writeTenantPlan(prisma, tenantId, plan, 'control_plane');
-    return { tenantId, admin: await adminOf(tenantId) };
+  async function tenantWith(plan: TenantPlan | null, _name: string) {
+    const slug = uniqueSlug('plano');
+    const tenantId = await createCellTenant(app, slug, plan);
+    return { tenantId, admin: await adminOf(tenantId, slug) };
   }
 
   beforeAll(async () => {
-    app = await createApp({ nodeMode: 'cell' });
+    app = await createApp({ cell: testCell() });
     prisma = app.get(PrismaService);
   });
 

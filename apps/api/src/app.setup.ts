@@ -1,5 +1,7 @@
 import { type NestApplicationOptions, RequestMethod } from '@nestjs/common';
+import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface.js';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { Request } from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { Logger } from 'nestjs-pino';
@@ -8,6 +10,7 @@ import type { AppConfig } from './common/config/config.module.js';
 import { API_PREFIX } from './common/http/api-prefix.js';
 import { setupOpenApi } from './common/http/openapi.js';
 import { CSRF_HEADER } from './auth/csrf.js';
+import { HostTenantResolver } from './auth/host-tenant.js';
 import { TURNSTILE_TOKEN_HEADER } from './auth/turnstile.js';
 
 export { API_PREFIX };
@@ -46,18 +49,37 @@ export function configureApp(app: NestExpressApplication, config: AppConfig): vo
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   app.use(helmet(API_HELMET_OPTIONS));
   // CORS só para o painel, com cookies (T2.3). Qualquer outra origem não recebe os headers de permissão.
-  app.enableCors({
-    // Função em vez de texto: outra origem não recebe nem o header com o endereço do painel.
-    origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
-      callback(null, origin === config.WEB_ORIGIN);
-    },
+  const corsOptions = {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     // O token do Turnstile vai num header próprio no login e no pedido de redefinição (preflight do navegador).
     allowedHeaders: ['Content-Type', CSRF_HEADER, TURNSTILE_TOKEN_HEADER],
     exposedHeaders: ['X-Request-Id'],
     maxAge: 600,
-  });
+  };
+  if (config.cell === null) {
+    app.enableCors({
+      // Função em vez de texto: outra origem não recebe nem o header com o endereço do painel.
+      origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
+        callback(null, origin === config.WEB_ORIGIN);
+      },
+      ...corsOptions,
+    });
+  } else {
+    // Na célula (CE-01), só o painel do cliente do endereço (`Host`). Endereço desconhecido, outro painel ou erro ao
+    // consultar o mapa: nenhum header de permissão (o guard do endereço responde 404 em seguida).
+    const hosts = app.get(HostTenantResolver);
+    app.enableCors((request: Request, callback: (error: Error | null, options: CorsOptions) => void) => {
+      hosts.resolve(request).then(
+        (host) =>
+          callback(null, {
+            ...corsOptions,
+            origin: host !== undefined && request.headers.origin === host.panelOrigin,
+          }),
+        () => callback(null, { ...corsOptions, origin: false }),
+      );
+    });
+  }
   // Só para ler o cookie do token CSRF; o Better Auth lê os próprios cookies.
   app.use(cookieParser());
   app.setGlobalPrefix(API_PREFIX, {

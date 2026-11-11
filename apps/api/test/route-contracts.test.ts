@@ -106,6 +106,13 @@ describe('contrato de entrada de todas as rotas (T1.2)', () => {
         .map((policy) => policy.route)
         .sort(),
     ).toEqual(['CsrfController.token', 'MeController.me']);
+    // Na célula (CE-01), toda rota só responde no endereço de um cliente conhecido; só o health check, em qualquer um.
+    expect(
+      policies
+        .filter((policy) => policy.anyHost)
+        .map((policy) => policy.route)
+        .sort(),
+    ).toEqual(['HealthController.live', 'HealthController.ready']);
   });
 
   it('toda rota que exige sessão declara permissão ou @Authenticated (negação por padrão)', () => {

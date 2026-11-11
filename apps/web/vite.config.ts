@@ -91,6 +91,9 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       setupFiles: ['./src/test/setup.ts'],
       include: ['src/**/*.test.{ts,tsx}'],
+      // As telas inteiras (Postura, Achados) passam dos 5 s padrão num executor lento do CI, sem nada de errado:
+      // o teto maior tira a falha intermitente sem esconder um teste travado.
+      testTimeout: 15_000,
     },
   };
 });

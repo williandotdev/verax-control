@@ -50,8 +50,12 @@ export interface CreateAppOptions {
   wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
   /** Plano do nó (`PLAN` e os ajustes `PLAN_*`, como o start.sh escreve); sem informar, o padrão fora de produção (`interno`). */
   plan?: Record<'PLAN' | `PLAN_${string}`, string>;
-  /** Modo do nó (`NODE_MODE`, CE-02); sem informar, `dedicated`. Na célula, o plano é o `TenantPlan` de cada cliente. */
-  nodeMode?: 'dedicated' | 'cell';
+  /**
+   * Célula compartilhada (`NODE_MODE=cell`): o domínio e o subdomínio da equipe (CE-01). O `WEB_ORIGIN` e o `API_ORIGIN`
+   * passam a ser os da equipe, derivados do domínio, e o plano é o `TenantPlan` de cada cliente (CE-02). Sem informar,
+   * o nó dedicado.
+   */
+  cell?: { domain: string; staffSlug: string };
 }
 
 /**
@@ -90,7 +94,13 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     }),
     ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
     ...options.plan,
-    ...(options.nodeMode !== undefined && { NODE_MODE: options.nodeMode }),
+    ...(options.cell && {
+      NODE_MODE: 'cell',
+      CELL_DOMAIN: options.cell.domain,
+      CELL_STAFF_SLUG: options.cell.staffSlug,
+      WEB_ORIGIN: `https://${options.cell.staffSlug}.control.${options.cell.domain}`,
+      API_ORIGIN: `https://api-${options.cell.staffSlug}.${options.cell.domain}`,
+    }),
   });
   const builder = Test.createTestingModule({
     imports: [

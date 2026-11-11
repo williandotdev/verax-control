@@ -182,6 +182,37 @@ Cloudflare. O certificado gratuito dele cobre só um nível de subdomínio (`*.v
 exigiria o Advanced Certificate Manager, pago à parte (decisão de 02/11/2026). Os painéis não têm esse limite: ficam
 com o proxy desligado e o certificado é do Firebase.
 
+### API presa ao endereço do cliente na célula (CE-01)
+
+Na célula compartilhada do Plataforma (`NODE_MODE=cell`; o padrão `dedicated` é o nó de um cliente, como sempre),
+todos os `api-<cliente>` apontam para o mesmo túnel, que repassa o `Host` como o navegador mandou. A API amarra cada
+requisição ao cliente desse endereço:
+
+- **De onde sai o cliente:** o `Host` precisa ser exatamente `api-<slug>.<CELL_DOMAIN>` (sem porta, sem maiúsculas,
+  sem rótulo a mais), e o `<slug>` precisa estar na tabela `TenantHost`. Ela é gravada só pelo sistema
+  (`tenants/tenant-host.ts`, o provisionamento da célula): nenhuma rota aceita o subdomínio, o escopo do cliente só a
+  lê, e o banco recusa `UPDATE` (trocar de endereço é apagar a linha e gravar outra). Uma tabela à parte, e não uma
+  coluna no `Tenant`, porque o cadastro de clientes tem rota de escrita e porque o nó dedicado não a usa: fica vazia.
+- **Endereço desconhecido:** 404 genérico em toda rota, antes de qualquer regra de sessão, login, permissão ou CSRF
+  (`HostTenantGuard`, o primeiro guard global), e sem os headers de CORS. A exceção é o health check (`@AnyHost`), que
+  o Docker chama pelo IP. Um meta-teste varre todas as rotas do Express num endereço sem cliente.
+- **Sessão:** guarda o cliente do endereço onde nasceu (`Session.hostTenantId`) e só vale nele, para alguém desse
+  cliente. O cookie não tem `Domain`, então o navegador nunca o leva a outro endereço; levado à mão, a sessão é
+  recusada (401) e apagada.
+- **Equipe da Verax:** o `admin_verax` só entra e só tem sessão no endereço da equipe (`CELL_STAFF_SLUG`, o `api-verax`
+  do SOC da Verax), onde fica a troca de cliente auditada (`POST /v1/session/tenant`).
+- **Origem:** o CORS, a checagem de origem dos POST da autenticação, o CSRF das escritas e os links do contato de
+  escalonamento aceitam só o painel do cliente do endereço, `https://<slug>.control.<CELL_DOMAIN>`. O `WEB_ORIGIN` e o
+  `API_ORIGIN` da célula são os da equipe, e a configuração confere que batem com o domínio.
+- **Unicidade:** o e-mail de usuário e o ID de conta continuam únicos no nó inteiro; a recusa é a mesma para o valor de
+  outro cliente e para o do próprio, e nenhuma frase diz "em outro cliente". Que o valor já está em uso no nó continua
+  visível (é o preço da unicidade global), sem dizer de quem.
+- **E-mails:** o link de redefinição de senha leva ao painel do cliente do endereço, e só sai para quem é desse cliente.
+  O resgate também confere: o link de um cliente usado no endereço de outro recebe a mesma recusa do link inválido
+  (400 `INVALID_TOKEN`), antes de a senha mudar e sem gastar o link.
+  Os avisos do worker ainda montam os links com um `WEB_ORIGIN` só; até serem por cliente, o worker da célula exige
+  `MAIL_TRANSPORT=none`.
+
 ### Proteções do login
 
 O login é do Better Auth (regra 10: nada de hash, sessão ou MFA próprios), com o que o E2 definiu: MFA obrigatório
@@ -204,6 +235,12 @@ valor constante lido da configuração em memória, com `Cache-Control: public, 
 Cloudflare na frente da API reaproveitam) e, sem ela, os formulários são os de sempre. A CSP do painel abre só
 `script-src` e `frame-src` para `https://challenges.cloudflare.com`. O token não vai para o log nem para a
 auditoria; a recusa, sim.
+
+Na célula (seção acima), o login procura o usuário só no cliente do endereço, antes de conferir a senha: quem é de
+outro cliente (ou o `admin_verax` fora do endereço da equipe) recebe a mesma recusa da senha errada (401
+`INVALID_EMAIL_OR_PASSWORD`), no mesmo tempo (o hash da senha recebida) e com o mesmo registro na trilha, depois de
+gastar a tentativa da conta e a do IP. O código do MFA levado a outro endereço também é recusado, sem sessão. O
+`hostname` exigido do Turnstile é o do painel do cliente do endereço, e não o do `WEB_ORIGIN`.
 
 ## Contas monitoradas por provedor
 

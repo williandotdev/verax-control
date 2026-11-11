@@ -131,7 +131,10 @@ model Tenant {
   noticeDigests            NotificationDigest[]
   escalationTokens         EscalationContactToken[]
   /// Sessões de admin_verax com este cliente selecionado (T2.5).
-  activeSessions           Session[]
+  activeSessions           Session[]                @relation("SessionActiveTenant")
+  /// Célula (CE-01): o endereço da API deste cliente e as sessões abertas nele.
+  host                     TenantHost?
+  hostSessions             Session[]                @relation("SessionHostTenant")
   /// Plano do cliente (CE-02): no nó dedicado, semeado do `node.conf`; na célula, gravado pelo plano de controle.
   tenantPlan               TenantPlan?
   retentionStates          TenantRetentionState[]
@@ -185,7 +188,10 @@ model Session {
   userAgent      String?  @db.VarChar(512)
   /// Cliente selecionado por um admin_verax (T2.5). Só muda por POST /v1/session/tenant, auditado.
   activeTenantId String?  @db.Uuid
-  activeTenant   Tenant?  @relation(fields: [activeTenantId], references: [id], onDelete: SetNull)
+  activeTenant   Tenant?  @relation("SessionActiveTenant", fields: [activeTenantId], references: [id], onDelete: SetNull)
+  /// Célula (CE-01): o cliente do endereço (`Host`) onde a sessão nasceu. Ela só vale nesse endereço. Nulo no nó dedicado.
+  hostTenantId   String?  @db.Uuid
+  hostTenant     Tenant?  @relation("SessionHostTenant", fields: [hostTenantId], references: [id], onDelete: Cascade)
   createdAt      DateTime @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime @updatedAt @db.Timestamptz(3)
 
@@ -1071,4 +1077,15 @@ model PublicLinkAttempt {
   windowStart DateTime @db.Timestamptz(3)
 
   @@index([windowStart])
+}
+
+/// Célula compartilhada (CE-01): o endereço da API de cada cliente, `api-<slug>.<CELL_DOMAIN>`, de onde sai o cliente de
+/// toda requisição. Gravado só pelo sistema (`tenants/tenant-host.ts`); nenhuma rota aceita o subdomínio. Um endereço
+/// por cliente e um cliente por endereço. Vazio no nó dedicado.
+model TenantHost {
+  tenantId  String   @id @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Subdomínio do cliente (a regra do `slugSchema` do plano de controle). Não muda: outro endereço é outra linha.
+  slug      String   @unique @db.VarChar(16)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
 }
