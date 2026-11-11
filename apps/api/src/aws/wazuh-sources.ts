@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Prisma } from '../generated/prisma/client.js';
+import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 
 /**
  * As contas AWS que o Wazuh do nó lê (fase 2, PR-V4'): o que o CLI `wazuh-sources` imprime para o gerador da
@@ -49,6 +50,8 @@ export function findWazuhSourceRows(
     where: {
       provider: 'aws',
       status: 'active',
+      // Só cliente ativo (CE-02): o suspenso, cancelado ou em expurgo sai do manager.
+      ...COLLECTING_TENANT,
       ingestFrom: { not: null },
       OR: [
         { cloudtrailBucket: { not: null } },

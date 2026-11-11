@@ -234,9 +234,18 @@ const awsReaderEnvShape = {
     .optional(),
 };
 
+/**
+ * Modo do nó (CE-02): `dedicated`, o nó de um cliente só (Dedicado, vCISO e o nó da Verax), e `cell`, a célula
+ * compartilhada da Plataforma. Sem a linha no `node.conf`, `dedicated`: nada muda nos nós de hoje. Na célula, o plano
+ * é de cada cliente (`TenantPlan`, gravado pelo plano de controle), e o `PLAN` do ambiente não vale.
+ */
+export const NODE_MODES = ['dedicated', 'cell'] as const;
+export type NodeMode = (typeof NODE_MODES)[number];
+
 /** Plano e ajustes, como ficam depois da validação do ambiente. */
 interface PlanEnv {
   NODE_ENV: 'development' | 'test' | 'production';
+  NODE_MODE?: NodeMode | undefined;
   PLAN?: PlanId | undefined;
   PLAN_MAX_CLOUD_ACCOUNTS?: number | undefined;
   PLAN_MAX_USERS?: number | undefined;
@@ -259,11 +268,14 @@ const planLimitFromEnv = (key: PlanLimitKey) => {
 };
 
 /**
- * Plano do nó (fase 2), parte comum à API e ao worker. Vem do `node.conf`, escrito pelo `start.sh`. Em produção, o
- * `PLAN` é obrigatório; fora dela, o padrão é `interno` (sem limite). Os ajustes são opcionais, menos no `enterprise`,
- * que exige os quatro; o `interno` não aceita nenhum (ver `packages/shared/src/plans.ts`).
+ * Plano do nó (fase 2) e modo do nó (CE-02), parte comum à API e ao worker. Vêm do `node.conf`, escrito pelo
+ * `start.sh`. No nó dedicado, em produção, o `PLAN` é obrigatório; fora dela, o padrão é `interno` (sem limite). Os
+ * ajustes são opcionais, menos no `enterprise`, que exige os quatro; o `interno` não aceita nenhum (ver
+ * `packages/shared/src/plans.ts`). Na célula (`NODE_MODE=cell`), o `PLAN` e os ajustes são recusados: o plano é de cada
+ * cliente.
  */
 const planEnvShape = {
+  NODE_MODE: z.enum(NODE_MODES, { error: 'use dedicated ou cell' }).default('dedicated'),
   PLAN: planIdSchema.optional(),
   PLAN_MAX_CLOUD_ACCOUNTS: planLimitFromEnv('maxCloudAccounts'),
   PLAN_MAX_USERS: planLimitFromEnv('maxUsers'),
@@ -281,6 +293,19 @@ function planOverridesOf(env: Omit<PlanEnv, 'NODE_ENV'>): PlanOverrides {
 }
 
 function checkPlanEnv(env: PlanEnv, ctx: z.RefinementCtx): void {
+  if (env.NODE_MODE === 'cell') {
+    for (const key of ['PLAN', ...Object.values(PLAN_LIMIT_ENV)] as const) {
+      if (env[key] !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message:
+            'não se aplica com NODE_MODE=cell: o plano é de cada cliente, gravado pelo plano de controle',
+        });
+      }
+    }
+    return;
+  }
   if (env.NODE_ENV === 'production' && env.PLAN === undefined) {
     ctx.addIssue({ code: 'custom', path: ['PLAN'], message: 'obrigatória em produção' });
   }
@@ -289,7 +314,7 @@ function checkPlanEnv(env: PlanEnv, ctx: z.RefinementCtx): void {
   }
 }
 
-/** Sem `PLAN` (só fora de produção), o plano é o `interno`. */
+/** Sem `PLAN` (só fora de produção, ou na célula, onde ele não vale), o plano do ambiente é o `interno`. */
 function withDefaultPlan<T extends { PLAN?: PlanId | undefined }>(env: T): T & { PLAN: PlanId } {
   return { ...env, PLAN: env.PLAN ?? 'interno' };
 }

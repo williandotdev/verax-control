@@ -70,6 +70,19 @@ describe('login', () => {
     );
   });
 
+  it('cliente suspenso (CE-02): diz que o acesso está suspenso por pagamento e quem procurar', async () => {
+    renderAt('/login');
+    server.use(
+      http.post(`${API_URL}/v1/auth/sign-in/email`, () =>
+        HttpResponse.json({ code: 'TENANT_SUSPENDED', message: 'x' }, { status: 401 }),
+      ),
+    );
+    await fillLogin(MOCK_AUTH.email, MOCK_AUTH.password);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'O acesso da sua empresa está suspenso por uma pendência de pagamento.',
+    );
+  });
+
   it('conta bloqueada mostra a espera, sem confirmar que a conta existe', async () => {
     renderAt('/login');
     server.use(

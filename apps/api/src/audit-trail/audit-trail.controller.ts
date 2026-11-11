@@ -23,12 +23,12 @@ export class AuditTrailController {
 
   @Get()
   @RequirePermission('audit:read')
-  list(
+  async list(
     @Req() request: Request,
     @Query({ schema: auditListQuerySchema }) query: AuditListQuery,
   ): Promise<Paginated<AuditEntry>> {
     // A trilha fica ao menos 13 meses (PR-19), mas o filtro segue o histórico do plano, como nas outras telas.
-    this.plan.assertPeriodWithinHistory(query.period);
+    await this.plan.assertPeriodWithinHistory(query.period);
     return this.trail.list(request.auth as RequestAuth, query);
   }
 

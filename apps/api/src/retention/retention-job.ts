@@ -1,3 +1,4 @@
+import { PLAN_LIMIT_BOUNDS } from '@verax/shared';
 import { randomUUID } from 'node:crypto';
 import { lockTenantFindings, SyncLease } from '../alerts/finding-store.js';
 import { AuditService } from '../common/audit/audit.service.js';
@@ -5,6 +6,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { fixedTenantPlans, type TenantPlans } from '../plan/tenant-plan.js';
 import {
   decideHistoryDays,
   type HistoryDecision,
@@ -63,11 +65,16 @@ export interface SystemPurgeCounts {
  * - `locked`: outra réplica está com a concessão;
  * - `done`: rodou até o fim;
  * - `partial`: parou no tempo máximo; o resto fica para o dia seguinte.
+ *
+ * `historyDays` é o prazo em vigor quando ele é o mesmo para todos os clientes (o nó dedicado); com prazos diferentes
+ * (a célula), fica de fora, e cada cliente tem o dele na trilha. `withoutPlan` conta os clientes da célula ainda sem
+ * plano, que ficaram fora do expurgo do histórico e da auditoria.
  */
 export interface RetentionReport {
   status: 'waiting' | 'already_ran' | 'locked' | 'done' | 'partial';
   historyDays?: number | null;
   tenants?: number;
+  withoutPlan?: number;
   deleted?: {
     incidents: number;
     findings: number;
@@ -84,8 +91,13 @@ export interface RetentionReport {
 }
 
 export interface RetentionJobOptions {
-  /** Dias de histórico do plano do nó (`nodePlan(config).limits.historyDays`); null é sem limite. */
-  historyDays: number | null;
+  /**
+   * O plano de cada cliente (CE-02; o `TenantPlanResolver` do worker). Sem ele, `historyDays` vale para todos os
+   * clientes (os testes).
+   */
+  plans?: TenantPlans;
+  /** Dias de histórico de todo cliente, sem `plans`; null é sem limite. */
+  historyDays?: number | null;
   audit?: AuditService;
   /** Nome da linha no `SyncState` e no `RetentionState` (outro nos testes, para cada um ter a própria agenda). */
   name?: string;
@@ -102,6 +114,13 @@ export interface RetentionJobOptions {
    * fases sem cliente (fila sem dono, tabelas de operação e auditoria) valem sempre para o nó inteiro.
    */
   tenantIds?: readonly string[];
+}
+
+/** O que vale para um cliente nesta execução: o prazo do plano dele, a decisão (com a carência) e os cortes. */
+interface TenantRun {
+  counts: TenantPurgeCounts;
+  /** null: o cliente da célula ainda sem plano (fica fora do histórico e da auditoria). */
+  plan: { planDays: number | null; decision: HistoryDecision; cutoffs: RetentionCutoffs } | null;
 }
 
 /** Uma execução: o tempo máximo, a parada do worker, a concessão e a pausa entre lotes. */
@@ -168,6 +187,24 @@ const emptySystemCounts = (): SystemPurgeCounts => ({
   rateLimits: 0,
   auditLogs: 0,
 });
+
+/** O menor prazo de histórico que um plano aceita: os cortes que não dependem do plano saem com ele. */
+const PLAN_HISTORY_FLOOR_DAYS = PLAN_LIMIT_BOUNDS.historyDays.min;
+
+/**
+ * O corte da auditoria que vale para todos (os registros sem cliente e os de cada cliente): o mais antigo entre os
+ * clientes, para nenhum perder o que o prazo dele guarda. Um cliente sem limite, ou sem plano, segura tudo (null). Sem
+ * nenhum cliente, o piso de 13 meses.
+ */
+function globalAuditCutoff(perTenant: ReadonlyMap<string, TenantRun>, floor: Date | null): Date | null {
+  let oldest: Date | null = null;
+  for (const { plan } of perTenant.values()) {
+    const cutoff = plan?.cutoffs.audit ?? null;
+    if (cutoff === null) return null;
+    if (oldest === null || cutoff.getTime() < oldest.getTime()) oldest = cutoff;
+  }
+  return oldest ?? floor;
+}
 
 /** O achado teve atividade a partir do corte: aconteceu, mudou (status, versão do GuardDuty) ou ganhou comentário. */
 function touchedSince(cutoff: Date): Prisma.FindingWhereInput {
@@ -310,8 +347,8 @@ function byFindingCount<T extends { findingCount: number }>(rows: readonly T[], 
 
 /**
  * Tarefa `retention` do worker (fase 2, PR-19): o expurgo diário do histórico guardado no banco do nó, pelo prazo do
- * plano. Só o banco da Verax: nada na nuvem do cliente, nos buckets dele nem no índice do Wazuh, que tem retenção
- * própria de 30 dias (ISM).
+ * plano de cada cliente (CE-02: o `TenantPlan`, que no nó dedicado é o do `node.conf`). Só o banco da Verax: nada na
+ * nuvem do cliente, nos buckets dele nem no índice do Wazuh, que tem retenção própria de 30 dias (ISM).
  *
  * Agenda: roda depois das 04:00 UTC, no máximo uma vez por dia (`SyncState('retention').lastSuccessAt`), com a
  * concessão do banco (uma réplica por vez, renovada a cada lote). Uma execução dura no máximo 10 minutos; o que sobrar
@@ -325,7 +362,14 @@ function byFindingCount<T extends { findingCount: number }>(rows: readonly T[], 
  * 4. fila sem dono (90 dias);
  * 5. tabelas de operação (sessões, links, tentativas de login, códigos TOTP usados e limite por IP, vencidos há mais
  *    de um dia);
- * 6. auditoria (13 meses, ou o histórico se for maior), só pela função `verax_purge_audit_log`.
+ * 6. auditoria (13 meses, ou o histórico do cliente se for maior): pela função `verax_purge_audit_log`, com o corte
+ *    mais antigo entre os clientes (que vale também para os registros sem cliente), e, de cada cliente com corte mais
+ *    novo que esse, pela `verax_purge_tenant_audit_log`. Um cliente sem limite (ou da célula ainda sem plano) segura o
+ *    corte global: nada mais antigo que o dele sai.
+ *
+ * O prazo de cada cliente tem a própria carência (`TenantRetentionState`): quando o plano dele diminui, o expurgo dele
+ * continua com o prazo anterior por 30 dias. O cliente da célula ainda sem plano fica fora do histórico e da auditoria
+ * (o inventário, os avisos e as tabelas de operação seguem regras que não dependem do plano).
  *
  * Os comentários e a auditoria são imutáveis no banco: saem só pelas funções `verax_purge_*`, que conferem o piso de
  * idade por conta própria. No fim, cada cliente ganha um `retention.purge` na trilha dele, com os cortes e as
@@ -340,7 +384,7 @@ export class RetentionJob {
   private readonly pauseMs: number;
   private readonly maxRunMs: number;
   private readonly clock: () => number;
-  private readonly planHistoryDays: number | null;
+  private readonly plans: TenantPlans;
   private readonly tenantIds: readonly string[] | null;
 
   constructor(
@@ -351,9 +395,23 @@ export class RetentionJob {
     if (!Number.isInteger(batch) || batch < 1 || batch > FUNCTION_BATCH_MAX) {
       throw new Error(`o lote do expurgo precisa ser um inteiro de 1 a ${FUNCTION_BATCH_MAX}`);
     }
-    // Confere o prazo do plano já na partida (o ambiente já validou a faixa).
-    retentionCutoffs(new Date(), options.historyDays);
-    this.planHistoryDays = options.historyDays;
+    if (options.plans !== undefined) {
+      this.plans = options.plans;
+    } else {
+      if (options.historyDays === undefined) throw new Error('o expurgo precisa do plano de cada cliente');
+      // Confere o prazo fixo já na partida.
+      retentionCutoffs(new Date(), options.historyDays);
+      this.plans = fixedTenantPlans({
+        id: 'enterprise',
+        label: 'Prazo fixo',
+        limits: {
+          maxCloudAccounts: null,
+          maxUsers: null,
+          monthlyGib: null,
+          historyDays: options.historyDays,
+        },
+      });
+    }
     this.audit = options.audit ?? new AuditService();
     this.name = options.name ?? RETENTION_TASK;
     this.batch = batch;
@@ -408,44 +466,52 @@ export class RetentionJob {
   }
 
   private async purge(now: Date, signal?: AbortSignal): Promise<RetentionReport> {
-    const decision = await this.historyPolicy(now);
-    const cutoffs = retentionCutoffs(now, decision.days);
+    // As regras que não dependem do plano (inventário, avisos, fila sem dono e operação) e o piso da auditoria.
+    const common = retentionCutoffs(now, PLAN_HISTORY_FLOOR_DAYS);
     const run = new RunBudget(this.clock, this.maxRunMs, this.lease, this.pauseMs, signal);
     const tenants = await this.tenants();
-    const perTenant = new Map(tenants.map((id) => [id, emptyTenantCounts()]));
+    const perTenant = new Map<string, TenantRun>();
+    for (const tenantId of tenants) perTenant.set(tenantId, await this.tenantRun(tenantId, now));
     const system = emptySystemCounts();
+    const globalAudit = globalAuditCutoff(perTenant, common.audit);
 
     try {
-      for (const [tenantId, counts] of perTenant) {
-        if (cutoffs.history !== null) {
-          await this.purgeIncidents(tenantId, cutoffs.history, counts, run);
-          await this.purgeLooseFindings(tenantId, cutoffs.history, counts, run);
-          await this.purgePosture(tenantId, cutoffs.history, counts, run);
+      for (const [tenantId, { counts, plan }] of perTenant) {
+        const history = plan?.cutoffs.history ?? null;
+        if (history !== null) {
+          await this.purgeIncidents(tenantId, history, counts, run);
+          await this.purgeLooseFindings(tenantId, history, counts, run);
+          await this.purgePosture(tenantId, history, counts, run);
         }
-        await this.purgeInventory(tenantId, cutoffs.inventory, counts, run);
-        await this.purgeNotifications(tenantId, cutoffs.notifications, counts, run);
+        await this.purgeInventory(tenantId, common.inventory, counts, run);
+        await this.purgeNotifications(tenantId, common.notifications, counts, run);
       }
-      await this.purgeUnowned(cutoffs.unowned, system, run);
-      await this.purgeOperational(cutoffs.operational, system, run);
-      if (cutoffs.audit !== null) await this.purgeAudit(cutoffs.audit, perTenant, system, run);
+      await this.purgeUnowned(common.unowned, system, run);
+      await this.purgeOperational(common.operational, system, run);
+      await this.purgeTenantAudit(perTenant, globalAudit, run);
+      if (globalAudit !== null) await this.purgeAudit(globalAudit, perTenant, system, run);
     } catch (error) {
       // A trilha registra o que já saiu também quando a execução para no meio (parada do worker, erro). Uma falha ao
       // gravá-la não esconde o erro original.
-      await this.writeTrail(decision, cutoffs, perTenant, system, false, error).catch(() => undefined);
+      await this.writeTrail(common, globalAudit, perTenant, system, false, error).catch(() => undefined);
       throw error;
     }
     // Parar no tempo máximo não é erro: a trilha diz que a execução ficou incompleta.
     const complete = !run.stopped;
-    await this.writeTrail(decision, cutoffs, perTenant, system, complete, null);
+    await this.writeTrail(common, globalAudit, perTenant, system, complete, null);
 
-    const totals = [...perTenant.values()].reduce((sum, counts) => {
+    const runs = [...perTenant.values()];
+    const totals = runs.reduce((sum, { counts }) => {
       for (const key of Object.keys(sum) as (keyof TenantPurgeCounts)[]) sum[key] += counts[key];
       return sum;
     }, emptyTenantCounts());
+    const days = new Set(runs.flatMap(({ plan }) => (plan === null ? [] : [plan.decision.days])));
+    const withoutPlan = runs.filter(({ plan }) => plan === null).length;
     return {
       status: complete ? 'done' : 'partial',
-      historyDays: decision.days,
+      ...(days.size === 1 && { historyDays: [...days][0] }),
       tenants: tenants.length,
+      ...(withoutPlan > 0 && { withoutPlan }),
       deleted: {
         incidents: totals.incidents,
         findings: totals.findings,
@@ -467,16 +533,34 @@ export class RetentionJob {
     };
   }
 
-  /** Prazo de histórico em vigor, com a carência quando o plano diminui; guarda o estado para a próxima execução. */
-  private async historyPolicy(now: Date): Promise<HistoryDecision> {
-    const row = await this.prisma.retentionState.findUnique({
-      where: { id: this.name },
+  /** O plano do cliente, a decisão do prazo (com a carência) e os cortes dele; sem plano (a célula), null. */
+  private async tenantRun(tenantId: string, now: Date): Promise<TenantRun> {
+    const counts = emptyTenantCounts();
+    const plan = await this.plans.planOf(tenantId);
+    if (plan === null) return { counts, plan: null };
+    const planDays = plan.limits.historyDays;
+    const decision = await this.historyPolicy(tenantId, planDays, now);
+    return { counts, plan: { planDays, decision, cutoffs: retentionCutoffs(now, decision.days) } };
+  }
+
+  /**
+   * Prazo de histórico em vigor para um cliente, com a carência quando o plano dele diminui; guarda o estado para a
+   * próxima execução.
+   */
+  private async historyPolicy(
+    tenantId: string,
+    planDays: number | null,
+    now: Date,
+  ): Promise<HistoryDecision> {
+    const key = { job: this.name, tenantId };
+    const row = await this.prisma.tenantRetentionState.findUnique({
+      where: { job_tenantId: key },
       select: { appliedDays: true, pendingSince: true },
     });
-    const decision = decideHistoryDays(this.planHistoryDays, row, now);
-    await this.prisma.retentionState.upsert({
-      where: { id: this.name },
-      create: { id: this.name, ...decision.state },
+    const decision = decideHistoryDays(planDays, row, now);
+    await this.prisma.tenantRetentionState.upsert({
+      where: { job_tenantId: key },
+      create: { ...key, ...decision.state },
       update: decision.state,
     });
     return decision;
@@ -899,10 +983,42 @@ export class RetentionJob {
     );
   }
 
-  /** 6. Auditoria, só pela função controlada do banco, que confere o piso de 13 meses e conta por cliente. */
+  /**
+   * 6a. Auditoria de cada cliente com o corte mais novo que o global (o prazo dele é menor que o do cliente que segura
+   * o global), pela função do banco que apaga só a dele e confere o piso de 13 meses.
+   */
+  private async purgeTenantAudit(
+    perTenant: ReadonlyMap<string, TenantRun>,
+    globalCutoff: Date | null,
+    run: RunBudget,
+  ): Promise<void> {
+    for (const [tenantId, { counts, plan }] of perTenant) {
+      const cutoff = plan?.cutoffs.audit ?? null;
+      if (cutoff === null || (globalCutoff !== null && cutoff.getTime() <= globalCutoff.getTime())) continue;
+      for (;;) {
+        const pending = await this.prisma.auditLog.findFirst({
+          where: { tenantId, occurredAt: { lt: cutoff } },
+          select: { id: true },
+        });
+        if (pending === null || !run.canStartBatch()) break;
+        const rows = await this.prisma.$queryRaw<{ deleted: number }[]>`
+          SELECT verax_purge_tenant_audit_log(${tenantId}::uuid, ${cutoff}::timestamptz, ${this.batch}::integer)
+            AS deleted`;
+        const deleted = Number(rows[0]?.deleted ?? 0);
+        counts.auditLogs += deleted;
+        await run.afterBatch();
+        if (deleted === 0) break;
+      }
+    }
+  }
+
+  /**
+   * 6b. Auditoria com o corte global (o mais antigo entre os clientes), só pela função controlada do banco, que confere
+   * o piso de 13 meses e conta por cliente.
+   */
   private async purgeAudit(
     cutoff: Date,
-    perTenant: ReadonlyMap<string, TenantPurgeCounts>,
+    perTenant: ReadonlyMap<string, TenantRun>,
     system: SystemPurgeCounts,
     run: RunBudget,
   ): Promise<void> {
@@ -919,7 +1035,7 @@ export class RetentionJob {
       for (const row of rows) {
         const count = Number(row.deleted);
         deleted += count;
-        const counts = row.tenantId === null ? undefined : perTenant.get(row.tenantId);
+        const counts = row.tenantId === null ? undefined : perTenant.get(row.tenantId)?.counts;
         if (counts === undefined) system.auditLogs += count;
         else counts.auditLogs += count;
       }
@@ -928,11 +1044,14 @@ export class RetentionJob {
     }
   }
 
-  /** `retention.purge` na trilha de cada cliente e um global, só com os cortes e as contagens. */
+  /**
+   * `retention.purge` na trilha de cada cliente (o prazo e os cortes dele) e um global, só com os cortes e as
+   * contagens. O cliente da célula ainda sem plano ganha o registro com `planMissing` e sem os cortes do histórico.
+   */
   private async writeTrail(
-    decision: HistoryDecision,
-    cutoffs: RetentionCutoffs,
-    perTenant: ReadonlyMap<string, TenantPurgeCounts>,
+    common: RetentionCutoffs,
+    globalAudit: Date | null,
+    perTenant: ReadonlyMap<string, TenantRun>,
     system: SystemPurgeCounts,
     complete: boolean,
     failure: unknown,
@@ -943,21 +1062,27 @@ export class RetentionJob {
       complete,
       ...(failure !== null && { error: errorKind(failure) }),
     };
-    for (const [tenantId, deleted] of perTenant) {
+    for (const [tenantId, { counts: deleted, plan }] of perTenant) {
+      const policy =
+        plan === null
+          ? { planMissing: true }
+          : {
+              historyDays: plan.decision.days,
+              planHistoryDays: plan.planDays,
+              graceUntil: iso(plan.decision.graceUntil),
+            };
       await this.audit.write(this.prisma, {
         actor: { type: 'system', tenantId },
         action: 'retention.purge',
         outcome,
         resourceType: 'retention',
         after: {
-          historyDays: decision.days,
-          planHistoryDays: this.planHistoryDays,
-          graceUntil: iso(decision.graceUntil),
+          ...policy,
           cutoffs: {
-            history: iso(cutoffs.history),
-            inventory: iso(cutoffs.inventory),
-            notifications: iso(cutoffs.notifications),
-            audit: iso(cutoffs.audit),
+            history: iso(plan?.cutoffs.history ?? null),
+            inventory: iso(common.inventory),
+            notifications: iso(common.notifications),
+            audit: iso(plan?.cutoffs.audit ?? null),
           },
           deleted,
           ...ending,
@@ -971,9 +1096,9 @@ export class RetentionJob {
       resourceType: 'retention',
       after: {
         cutoffs: {
-          unowned: iso(cutoffs.unowned),
-          operational: iso(cutoffs.operational),
-          audit: iso(cutoffs.audit),
+          unowned: iso(common.unowned),
+          operational: iso(common.operational),
+          audit: iso(globalAudit),
         },
         deleted: system,
         ...ending,

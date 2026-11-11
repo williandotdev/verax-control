@@ -4,8 +4,9 @@ import { RequirePermission } from '../auth/decorators.js';
 import { PlanService } from './plan.service.js';
 
 /**
- * "Plano e uso" (fase 2, PR-18): o plano do nó e o uso do cliente da sessão. Só leitura, para quem administra. O
- * histórico do plano (PR-20) é de todos os papéis: os filtros de período de achados e relatórios dependem dele.
+ * "Plano e uso" (fase 2, PR-18): o plano e o uso do cliente da sessão (o plano é de cada cliente desde o CE-02). Só
+ * leitura, para quem administra. O histórico do plano (PR-20) é de todos os papéis: os filtros de período de achados e
+ * relatórios dependem dele.
  */
 @Controller('plan')
 export class PlanController {
@@ -19,7 +20,7 @@ export class PlanController {
 
   @Get('history')
   @RequirePermission('plan_history:read')
-  history(): PlanHistory {
+  history(): Promise<PlanHistory> {
     return this.plan.history();
   }
 }

@@ -3,8 +3,23 @@ import { escalationContactInputSchema, escalationContactSchema } from './escalat
 import { withPagination } from './pagination.js';
 import { temporaryPasswordSchema } from './users.js';
 
-export const TENANT_STATUSES = ['active', 'inactive'] as const;
+/**
+ * Estados do cliente no nó. `active` e `inactive` são os do cadastro (o `admin_verax` ativa e desativa). Os outros
+ * três são do ciclo de vida da contratação na célula (CE-02), espelho do plano de controle, e só o sistema os grava:
+ * - `suspended`: falta de pagamento ou fraude; ninguém entra, a coleta para e os dados ficam;
+ * - `canceled`: contrato encerrado, à espera da exportação e do expurgo;
+ * - `purging`: os dados do cliente estão saindo do banco da célula.
+ */
+export const TENANT_STATUSES = ['active', 'inactive', 'suspended', 'canceled', 'purging'] as const;
 export type TenantStatus = (typeof TENANT_STATUSES)[number];
+
+/** O que o cadastro de clientes da API aceita (`PATCH /v1/tenants/:id`): os estados do ciclo de vida, nunca. */
+export const TENANT_ADMIN_STATUSES = ['active', 'inactive'] as const;
+export type TenantAdminStatus = (typeof TENANT_ADMIN_STATUSES)[number];
+
+/** Os estados que só o sistema grava (o ciclo de vida da contratação na célula). */
+export const TENANT_LIFECYCLE_STATUSES = ['suspended', 'canceled', 'purging'] as const;
+export type TenantLifecycleStatus = (typeof TENANT_LIFECYCLE_STATUSES)[number];
 
 const CNPJ_FORMAT = /^[0-9A-Z]{12}[0-9]{2}$/;
 const FIRST_WEIGHTS = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
@@ -66,7 +81,7 @@ export type TenantCreate = z.infer<typeof tenantCreateSchema>;
 /** Alteração parcial. O primeiro administrador não entra aqui: usuários do cliente mudam pela gestão de usuários. */
 export const tenantUpdateSchema = tenantFieldsSchema
   .partial()
-  .extend({ status: z.enum(TENANT_STATUSES).optional() })
+  .extend({ status: z.enum(TENANT_ADMIN_STATUSES).optional() })
   .refine((update) => Object.keys(update).length > 0, { error: 'informe ao menos um campo' });
 export type TenantUpdate = z.infer<typeof tenantUpdateSchema>;
 
