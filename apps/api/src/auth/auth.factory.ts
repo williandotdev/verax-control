@@ -73,7 +73,7 @@ const INVALID_CREDENTIALS = { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Inval
 const INVALID_CODE = { code: 'INVALID_CODE', message: 'Invalid code' };
 /** Mesmo erro do Better Auth para o link de redefinição que não vale (o teste da célula compara as duas respostas). */
 const INVALID_TOKEN = { code: 'INVALID_TOKEN', message: 'Invalid token' };
-const RESET_PASSWORD_PATH = '/reset-password';
+const RESET_ROUTE = '/reset-password';
 // Senha temporária vencida (72 h): o login recusa dizendo o motivo, para a pessoa pedir outra ao administrador. Só
 // chega aqui quem acertou a senha, então o código não ajuda quem não a tem.
 const TEMPORARY_EXPIRED = { code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'Temporary password expired' };
@@ -176,7 +176,7 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
     if (host !== undefined && owner !== null && belongsToHost(owner, host)) return;
     await record({
       actor: { type: 'anonymous' },
-      action: AUTH_AUDIT_ACTIONS[RESET_PASSWORD_PATH] ?? RESET_PASSWORD_PATH,
+      action: AUTH_AUDIT_ACTIONS[RESET_ROUTE] ?? RESET_ROUTE,
       outcome: 'failure',
       statusCode: 400,
       ...requestMetadata(ctx.headers),
@@ -403,7 +403,7 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
         }
         // Turnstile antes da tentativa de login: uma requisição sem o desafio não gasta nenhuma das 5 tentativas.
         await checkTurnstile(ctx);
-        if (ctx.path === RESET_PASSWORD_PATH) await refuseForeignResetToken(ctx);
+        if (ctx.path === RESET_ROUTE) await refuseForeignResetToken(ctx);
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
         if (email === undefined) return;
