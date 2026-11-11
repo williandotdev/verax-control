@@ -2,6 +2,7 @@ import type { RequestAuth } from '../common/auth/request-auth.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { UserRole } from '../generated/prisma/enums.js';
 import { SESSION_ABSOLUTE_MAX_MS, SESSION_IDLE_TIMEOUT_SECONDS } from './auth.constants.js';
+import { belongsToHost, type HostTenant } from './host-tenant.js';
 import { temporaryPasswordExpired } from './temporary-password.js';
 
 const ROLES = new Set<string>(Object.values(UserRole));
@@ -15,6 +16,8 @@ export interface SessionData {
     createdAt: Date | string;
     expiresAt: Date | string;
     activeTenantId?: string | null;
+    /** Célula (CE-01): o cliente do endereço onde a sessão nasceu. */
+    hostTenantId?: string | null;
   };
   user: {
     id: string;
@@ -40,17 +43,27 @@ async function isTenantActive(prisma: PrismaService, id: string): Promise<boolea
  * - no máximo 12 h desde o login, mesmo com uso contínuo;
  * - nunca mais de 30 min de validade à frente (a sessão "sem lembrar de mim" do Better Auth teria 24 h);
  * - usuário ativo, com papel conhecido, e cliente dele ativo: desativar um ou outro derruba a sessão;
- * - senha temporária dentro da validade (vencida, a sessão não vale).
+ * - senha temporária dentro da validade (vencida, a sessão não vale);
+ * - na célula (`cell`, CE-01), o mesmo endereço onde a sessão nasceu, e a pessoa do cliente desse endereço (ou o
+ *   `admin_verax`, só no endereço da equipe). O cookie levado a outro endereço não vale lá; o navegador nunca o leva
+ *   (o cookie não tem `Domain`), então isso só acontece com um cookie copiado.
  *
  * Sessão que fere alguma regra é apagada, e o retorno é `undefined`.
  */
 export async function resolveSession(
   prisma: PrismaService,
   { session, user }: SessionData,
+  cell?: { host: HostTenant | undefined },
 ): Promise<RequestAuth | undefined> {
   const now = Date.now();
   const tenantId = user.tenantId ?? null;
+  const onItsHost =
+    cell === undefined ||
+    (cell.host !== undefined &&
+      (session.hostTenantId ?? null) === cell.host.tenantId &&
+      belongsToHost(user, cell.host));
   const valid =
+    onItsHost &&
     now - new Date(session.createdAt).getTime() <= SESSION_ABSOLUTE_MAX_MS &&
     new Date(session.expiresAt).getTime() - now <= SESSION_IDLE_TIMEOUT_SECONDS * 1000 + EXPIRY_SLACK_MS &&
     user.status === 'active' &&

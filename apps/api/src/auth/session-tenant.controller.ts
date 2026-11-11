@@ -1,8 +1,19 @@
-import { Body, Controller, Delete, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  NotFoundException,
+  Post,
+  Req,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { z } from 'zod';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import { RequirePermission } from './decorators.js';
@@ -12,6 +23,9 @@ const switchTenantSchema = z.strictObject({ tenantId: z.uuid() });
 /**
  * Troca de cliente do `admin_verax` (T2.5). O cliente escolhido fica na sessão, no servidor; as rotas de
  * dados nunca aceitam `tenantId` do corpo, da query ou da URL. Toda troca vai para a auditoria.
+ *
+ * Na célula (CE-01), só no endereço da equipe da Verax: é o único onde o `admin_verax` tem sessão (`resolveSession`), e
+ * a rota confere de novo.
  */
 @Controller('session/tenant')
 @RequirePermission('session:switch_tenant')
@@ -19,6 +33,7 @@ export class SessionTenantController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditContext,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   @Post()
@@ -28,6 +43,7 @@ export class SessionTenantController {
     @Body({ schema: switchTenantSchema }) body: z.infer<typeof switchTenantSchema>,
   ): Promise<{ activeTenantId: string }> {
     const auth = request.auth as RequestAuth;
+    if (this.config.cell !== null && request.hostTenant?.staff !== true) throw new NotFoundException();
     const tenant = await this.prisma.db().tenant.findUnique({
       where: { id: body.tenantId },
       select: { id: true, status: true },

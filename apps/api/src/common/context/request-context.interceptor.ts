@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import { requestContext } from './request-context.js';
 
 /**
- * Abre o contexto da requisição com a identidade montada pelos guards. É o primeiro interceptor global:
+ * Abre o contexto da requisição com a identidade montada pelos guards (e, na célula, o cliente do endereço). É o primeiro interceptor global:
  * a assinatura do handler acontece dentro do `run`, então todo código chamado por ele enxerga o contexto.
  */
 @Injectable()
@@ -13,7 +13,10 @@ export class RequestContextInterceptor implements NestInterceptor {
     if (context.getType() !== 'http') return next.handle();
     const request = context.switchToHttp().getRequest<Request>();
     return new Observable((subscriber) =>
-      requestContext.run({ auth: request.auth }, () => next.handle().subscribe(subscriber)),
+      requestContext.run(
+        { auth: request.auth, ...(request.hostTenant && { host: request.hostTenant }) },
+        () => next.handle().subscribe(subscriber),
+      ),
     );
   }
 }

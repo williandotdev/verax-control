@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { panelOriginOf } from '../auth/host-tenant.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
@@ -67,7 +68,9 @@ export class EscalationLinkGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    if (request.get('origin') !== this.config.WEB_ORIGIN) {
+    // Na célula (CE-01), o painel do cliente do endereço.
+    const panelOrigin = panelOriginOf(this.config, request);
+    if (panelOrigin === undefined || request.get('origin') !== panelOrigin) {
       this.logger.warn({ escalationLink: { refused: 'origin' } }, 'link do contato recusado');
       throw new ApiError(HttpStatus.FORBIDDEN, 'Requisição recusada', 'ORIGIN_REFUSED');
     }

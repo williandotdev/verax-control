@@ -1,6 +1,6 @@
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { Public } from '../auth/decorators.js';
+import { AnyHost, Public } from '../auth/decorators.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 
 /** Tempo máximo da consulta de prontidão, abaixo do timeout do health check do ALB. */
@@ -15,7 +15,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * Health check do ALB e do ECS. Fica fora do prefixo /v1 e não exige sessão.
+ * Health check do ALB e do ECS. Fica fora do prefixo /v1, não exige sessão e, na célula, não pertence a cliente nenhum.
  *
  * - `/health` responde se o processo está vivo e não consulta dependências: se o banco cair, as tasks não
  *   entram em ciclo de reinício.
@@ -24,6 +24,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  */
 @Controller('health')
 @Public()
+// Na célula, o health check responde em qualquer endereço: o Docker chama pelo IP, sem o nome de um cliente.
+@AnyHost()
 export class HealthController {
   constructor(
     private readonly prisma: PrismaService,

@@ -126,6 +126,17 @@ describe('verificador do Turnstile', () => {
       expect(await same.verifier.verify('token-abc', undefined, 'login')).toBe('ok');
     });
 
+    it('na célula (CE-01), com chave real, vale o painel do cliente do endereço, não o WEB_ORIGIN', async () => {
+      const tenantPanel = 'cliente-a.control.exemplo.com.br';
+      const own = setup(() => json({ success: true, hostname: tenantPanel }), REAL_SHAPED_SITE_KEY);
+      expect(await own.verifier.verify('token-abc', undefined, 'login', tenantPanel)).toBe('ok');
+      for (const hostname of ['painel.example', 'cliente-b.control.exemplo.com.br']) {
+        const other = setup(() => json({ success: true, hostname }), REAL_SHAPED_SITE_KEY);
+        expect(await other.verifier.verify('token-abc', undefined, 'login', tenantPanel)).toBe('failed');
+        expect(other.logged()).toContain('hostname-mismatch');
+      }
+    });
+
     it.each([
       ['outro site', 'outro.example'],
       ['subdomínio do painel', 'app.painel.example'],

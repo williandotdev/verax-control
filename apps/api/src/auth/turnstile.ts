@@ -61,12 +61,15 @@ const siteverifyResponse = z.object({
 export interface TurnstileVerifier {
   /**
    * Confere o token do widget. `expectedAction` é a `action` do widget da rota (`TURNSTILE_ACTIONS`): um token de
-   * outro formulário é recusado. Nunca lança: cada saída vira uma resposta própria no hook da autenticação.
+   * outro formulário é recusado. `panelHostname`, na célula (CE-01), é o nome do painel do cliente do endereço, no
+   * lugar do `WEB_ORIGIN` (com uma chave real, o token resolvido no painel de outro cliente é recusado). Nunca lança:
+   * cada saída vira uma resposta própria no hook da autenticação.
    */
   verify(
     token: string | null | undefined,
     remoteIp: string | undefined,
     expectedAction: string,
+    panelHostname?: string,
   ): Promise<TurnstileOutcome>;
 }
 
@@ -94,14 +97,14 @@ export function createTurnstileVerifier(
 ): TurnstileVerifier | undefined {
   const { TURNSTILE_SECRET_KEY: secret, TURNSTILE_SITEVERIFY_URL: url } = config;
   if (typeof secret !== 'string') return undefined;
-  // Com uma chave real, o token só vale se foi resolvido numa página do painel (o `WEB_ORIGIN` deste nó).
-  const expectedHostname =
-    config.TURNSTILE_SITE_KEY?.startsWith(REAL_SITE_KEY_PREFIX) === true
-      ? new URL(config.WEB_ORIGIN).hostname
-      : undefined;
+  // Com uma chave real, o token só vale se foi resolvido numa página do painel (o `WEB_ORIGIN` deste nó ou, na célula, o
+  // painel do cliente do endereço).
+  const realKey = config.TURNSTILE_SITE_KEY?.startsWith(REAL_SITE_KEY_PREFIX) === true;
+  const webOriginHostname = new URL(config.WEB_ORIGIN).hostname;
 
   return {
-    async verify(token, remoteIp, expectedAction) {
+    async verify(token, remoteIp, expectedAction, panelHostname) {
+      const expectedHostname = realKey ? (panelHostname ?? webOriginHostname) : undefined;
       if (typeof token !== 'string' || token.length === 0) return 'required';
       if (token.length > TURNSTILE_TOKEN_MAX_LENGTH) {
         logger.warn(

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Prisma } from '../../generated/prisma/client.js';
+import type { HostTenant } from '../../auth/host-tenant.js';
 import type { RequestAuth } from '../auth/request-auth.js';
 
 /** O que um service informa sobre a operação para a trilha de auditoria. */
@@ -25,6 +26,8 @@ export interface AuditDetails {
  */
 export interface RequestStore {
   auth?: RequestAuth;
+  /** Na célula (CE-01), o cliente do endereço da requisição (o `Host`). Ausente no nó dedicado. */
+  host?: HostTenant;
   tx?: Prisma.TransactionClient;
   audit?: AuditDetails;
   /** Registros adicionais da mesma escrita (uma operação que cria mais de um recurso), gravados junto com o principal. */

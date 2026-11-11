@@ -9,6 +9,7 @@ import type { AppConfig } from '../common/config/config.module.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { MailTransport } from '../mail/mail.types.js';
 import { AUTH_AUDIT_ACTIONS, type AuthAuditSink, requestMetadata } from './auth-audit.js';
+import { belongsToHost, currentHostTenant } from './host-tenant.js';
 import {
   AUTH_BASE_PATH,
   AUTH_RATE_LIMIT_RULES,
@@ -103,6 +104,42 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
     );
   }
 
+  // Célula compartilhada (CE-01): o cliente do endereço da requisição decide quem entra, onde a sessão vale, de que
+  // painel vem a chamada e para onde vai o link do e-mail. Fora dela (`cell === null`), tudo segue como no nó dedicado.
+  const cell = config.cell;
+
+  /**
+   * Na célula, o login olha o usuário só dentro do cliente do endereço, antes de conferir a senha. Quem é de outro
+   * cliente (ou o `admin_verax` fora do endereço da equipe) recebe a mesma recusa da senha errada, depois de gastar a
+   * tentativa da conta e a do IP, e no mesmo tempo (o hash da senha recebida, como o Better Auth faz para o e-mail que
+   * não existe). Nada na resposta diz que a conta existe em outro lugar. O hook `after` não roda quando este lança: o
+   * registro da recusa é o mesmo da senha errada, gravado daqui.
+   */
+  async function refuseOutsideHost(ctx: {
+    body?: unknown;
+    headers?: Headers | undefined;
+    context: { password: { hash: (password: string) => Promise<string> } };
+  }): Promise<void> {
+    if (cell === null) return;
+    const body = ctx.body as { email?: unknown; password?: unknown } | undefined;
+    const email = normalizeEmail(body?.email);
+    if (email === undefined) return;
+    const host = currentHostTenant();
+    const user = await prisma.user.findUnique({ where: { email }, select: { role: true, tenantId: true } });
+    if (host !== undefined && (user === null || belongsToHost(user, host))) return;
+    if (typeof body?.password === 'string') await ctx.context.password.hash(body.password);
+    await record({
+      actor: { type: 'anonymous' },
+      action: AUTH_AUDIT_ACTIONS[SIGN_IN_PATH] ?? SIGN_IN_PATH,
+      resourceType: 'login',
+      resourceId: email,
+      outcome: 'denied',
+      statusCode: 401,
+      ...requestMetadata(ctx.headers),
+    });
+    throw new APIError('UNAUTHORIZED', INVALID_CREDENTIALS);
+  }
+
   /**
    * Confere o token do Turnstile antes de tudo (antes de reservar a tentativa de login e de olhar a senha). O hook
    * `after` não roda quando este lança, então a recusa entra na trilha daqui.
@@ -114,11 +151,17 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
   }): Promise<void> {
     const expectedAction = TURNSTILE_ACTIONS.get(ctx.path);
     if (!turnstile || expectedAction === undefined) return;
-    const outcome = await turnstile.verify(
-      ctx.headers?.get(TURNSTILE_TOKEN_HEADER),
-      ctx.headers?.get(CLIENT_IP_HEADER) ?? undefined,
-      expectedAction,
-    );
+    // Na célula, o token precisa ter sido resolvido no painel do cliente do endereço; sem endereço, recusa.
+    const host = cell === null ? undefined : currentHostTenant();
+    const outcome =
+      cell !== null && host === undefined
+        ? 'failed'
+        : await turnstile.verify(
+            ctx.headers?.get(TURNSTILE_TOKEN_HEADER),
+            ctx.headers?.get(CLIENT_IP_HEADER) ?? undefined,
+            expectedAction,
+            host?.panelHostname,
+          );
     if (outcome === 'ok') return;
     const refusal = TURNSTILE_REFUSALS[outcome];
     await record({
@@ -141,8 +184,15 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
     baseURL: config.API_ORIGIN,
     basePath: AUTH_BASE_PATH,
     secret: config.BETTER_AUTH_SECRET,
-    // Só o painel pode chamar a autenticação com cookies (checagem de origem contra CSRF).
-    trustedOrigins: [config.WEB_ORIGIN],
+    // Só o painel pode chamar a autenticação com cookies (checagem de origem contra CSRF). Na célula, o painel do
+    // cliente do endereço da requisição.
+    trustedOrigins:
+      cell === null
+        ? [config.WEB_ORIGIN]
+        : () => {
+            const host = currentHostTenant();
+            return host === undefined ? [] : [host.panelOrigin];
+          },
     database: prismaAdapter(prisma, { provider: 'postgresql', transaction: true }),
 
     emailAndPassword: {
@@ -156,8 +206,20 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
       revokeSessionsOnPasswordReset: true,
       // Redefinição pelo e-mail (T2.6), onde o nó envia e-mail. Usuário que não está ativo não recebe nada, e a
       // resposta da API é a mesma.
+      // Na célula, só quem é do cliente do endereço recebe, e o link leva ao painel desse cliente; o pedido feito no
+      // endereço de outro cliente tem a mesma resposta e não manda nada.
       sendResetPassword: async ({ user, token }) => {
-        const message = passwordLinkMail(config.WEB_ORIGIN, user, token);
+        let webOrigin = config.WEB_ORIGIN;
+        if (cell !== null) {
+          const host = currentHostTenant();
+          const owner = await prisma.user.findUnique({
+            where: { id: user.id },
+            select: { role: true, tenantId: true },
+          });
+          if (host === undefined || owner === null || !belongsToHost(owner, host)) return;
+          webOrigin = host.panelOrigin;
+        }
+        const message = passwordLinkMail(webOrigin, user, token);
         if (message) await mail.send(message);
       },
       // A senha definida pela própria pessoa encerra a senha temporária.
@@ -177,6 +239,8 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
       additionalFields: {
         // Cliente selecionado por admin_verax (T2.5); só a API altera, nunca o cliente HTTP.
         activeTenantId: { type: 'string', required: false, input: false },
+        // Célula (CE-01): o cliente do endereço onde a sessão nasceu, gravado pelo hook de criação. Só existe na célula.
+        ...(cell !== null && { hostTenantId: { type: 'string', required: false, input: false } }),
       },
     },
 
@@ -205,11 +269,26 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
               where: { id: session.userId },
               select: {
                 status: true,
+                role: true,
+                tenantId: true,
                 mustChangePassword: true,
                 temporaryPasswordExpiresAt: true,
                 tenant: { select: { status: true } },
               },
             });
+            // Na célula, a sessão só nasce no endereço do cliente da pessoa (o login já recusou os outros; aqui cobre
+            // também o código do MFA levado a outro endereço) e guarda o cliente do endereço.
+            const host = cell === null ? undefined : currentHostTenant();
+            const onHost =
+              cell === null || (host !== undefined && user !== null && belongsToHost(user, host));
+            if (!onHost) {
+              // A mesma recusa da senha errada, no login, e do código errado, no MFA: nada diz de onde é a conta.
+              if (ctx?.path === SIGN_IN_PATH) throw new APIError('UNAUTHORIZED', INVALID_CREDENTIALS);
+              if (ctx?.path === VERIFY_TOTP_PATH || ctx?.path === VERIFY_BACKUP_CODE_PATH) {
+                throw new APIError('UNAUTHORIZED', INVALID_CODE);
+              }
+              return false;
+            }
             const allowed = user?.status === 'active' && (!user.tenant || user.tenant.status === 'active');
             if (!allowed) {
               // No login, a mesma resposta da senha errada: não revela que a conta existe nem que a senha bateu.
@@ -231,7 +310,7 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
                 throw new APIError('UNAUTHORIZED', INVALID_CODE);
               }
             }
-            return undefined;
+            return host === undefined ? undefined : { data: { ...session, hostTenantId: host.tenantId } };
           },
         },
       },
@@ -281,7 +360,12 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
         await checkTurnstile(ctx);
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
-        if (email === undefined || (await reserveLoginAttempt(prisma, email))) return;
+        if (email === undefined) return;
+        if (await reserveLoginAttempt(prisma, email)) {
+          // A tentativa já foi gasta: na célula, o usuário de outro endereço para aqui, antes da senha.
+          await refuseOutsideHost(ctx);
+          return;
+        }
         await record({
           actor: { type: 'anonymous' },
           action: AUTH_AUDIT_ACTIONS[SIGN_IN_PATH] ?? SIGN_IN_PATH,

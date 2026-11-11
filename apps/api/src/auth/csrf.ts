@@ -16,6 +16,7 @@ import { DenialAudit } from '../common/audit/denial-audit.service.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { AllowWithoutMfa, AllowWithTemporaryPassword, Authenticated, isSelfManaged } from './decorators.js';
+import { panelOriginOf } from './host-tenant.js';
 
 export const CSRF_HEADER = 'x-csrf-token';
 export const CSRF_COOKIE = '__Host-verax.csrf';
@@ -75,7 +76,13 @@ export class CsrfGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<Request>();
     if (SAFE_METHODS.has(request.method) || request.auth === undefined) return true;
 
-    if (request.get('origin') !== this.config.WEB_ORIGIN || !this.csrf.validateRequest(request)) {
+    // Na célula, a origem é o painel do cliente do endereço (CE-01).
+    const panelOrigin = panelOriginOf(this.config, request);
+    if (
+      panelOrigin === undefined ||
+      request.get('origin') !== panelOrigin ||
+      !this.csrf.validateRequest(request)
+    ) {
       await this.denials.record(request, HttpStatus.FORBIDDEN);
       throw new ApiError(HttpStatus.FORBIDDEN, 'Requisição recusada pela proteção CSRF', 'CSRF_INVALID');
     }
