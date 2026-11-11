@@ -18,6 +18,7 @@ import {
   type SlugDocument,
   slugDocumentSchema,
   type SlugOrder,
+  slugOrderSchema,
 } from '../tenants/tenant.schema.js';
 
 /** Teto global de sessões do Checkout por dia (UTC), o disjuntor contra criação em massa (plano §2.3). */
@@ -117,10 +118,11 @@ export class CheckoutStore {
     const tenantId = newUlid(now.getTime());
     const expiresAt = new Date(now.getTime() + SLUG_RESERVATION_MS);
     const bucket = checkoutDailyBucket(now);
+    // O pedido novo, sempre no modelo de preço de hoje (a leitura aceita também o anterior, `storedSlugOrderSchema`).
     const reserved = slugDocumentSchema.parse({
       state: 'reserved',
       tenantId,
-      order,
+      order: slugOrderSchema.parse(order),
       updatedAt: now,
       expiresAt,
     });

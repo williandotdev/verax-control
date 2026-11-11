@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { ZodError } from 'zod';
 import type { AuditService } from '../../src/audit/audit.service.js';
 import {
   CHECKOUT_DAILY_LIMIT,
@@ -60,6 +61,21 @@ export function describeCheckoutStoreContract(
         'count'
       ];
     }
+
+    it('pedido novo só no modelo de preço de hoje: a configuração anterior é recusada na gravação, sem reservar', async () => {
+      const legacy = {
+        mode: 'managed',
+        size: 'P',
+        cloudAccounts: 2,
+        monthlyGib: 10,
+        agents: 0,
+        historyDays: 30,
+        support: 'standard',
+      };
+      const order = { ...demoOrder(), configuration: legacy } as unknown as SlugOrder;
+      await expect(h.store.reserve({ slug: 'cliente-demo-a', order })).rejects.toBeInstanceOf(ZodError);
+      expect(await h.documents.get(COLLECTIONS.slugs, 'cliente-demo-a')).toBeUndefined();
+    });
 
     it('reserva por 2 h 30 com um tenantId novo e o pedido, conta no teto do dia e audita sem dado pessoal', async () => {
       const reservation = await h.store.reserve({
