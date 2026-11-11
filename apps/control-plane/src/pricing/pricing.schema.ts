@@ -93,6 +93,11 @@ const maxCloudAccounts = z.number().int().min(1).max(1_000);
 /** Taxa entre 0 e 1 (0,1 = 10%). */
 const rate = z.number().min(0).max(1);
 
+/** Um teto abaixo do piso correspondente (máximo menor que o incluído ou o mínimo, alerta menor que a mínima). */
+function belowFloor(ceiling: number, floor: number): boolean {
+  return ceiling < floor;
+}
+
 /** Um preço da tabela: o valor em centavos e o `lookup_key` do preço correspondente na Stripe. */
 export const pricedSchema = z.strictObject({ amount: positiveCents, lookupKey: lookupKeySchema });
 export type Priced = z.infer<typeof pricedSchema>;
@@ -182,10 +187,11 @@ export const priceTableSchema = z
       }
     });
     const { plataforma, dedicado } = table.plans;
-    if (plataforma.maxOnlineGbDay < plataforma.includedGbDay) {
+    if (belowFloor(plataforma.maxOnlineGbDay, plataforma.includedGbDay)) {
       issue(['plans', 'plataforma', 'maxOnlineGbDay'], 'menor que o incluído');
     }
-    if (dedicado.maxGbDay < dedicado.minGbDay) issue(['plans', 'dedicado', 'maxGbDay'], 'menor que o mínimo');
+    if (belowFloor(dedicado.maxGbDay, dedicado.minGbDay))
+      issue(['plans', 'dedicado', 'maxGbDay'], 'menor que o mínimo');
     const keys = lookupKeysOf(table).map((entry) => entry.lookupKey);
     const repeated = keys.filter((key, index) => keys.indexOf(key) !== index);
     if (repeated.length > 0)
@@ -412,7 +418,7 @@ export const costModelSchema = z
     if (new Set(ids).size !== ids.length) {
       ctx.addIssue({ code: 'custom', path: ['taxes', 'rates'], message: 'alíquota repetida' });
     }
-    if (model.margins.alert < model.margins.minimum) {
+    if (belowFloor(model.margins.alert, model.margins.minimum)) {
       ctx.addIssue({ code: 'custom', path: ['margins', 'alert'], message: 'menor que a mínima' });
     }
   });
