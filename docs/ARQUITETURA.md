@@ -1496,7 +1496,11 @@ recusa mudar o estado de um cliente que está num estado do ciclo de vida.
   do Wazuh (`wazuh-sources`), as assinaturas da GCP, as contas do Cloudflare, as conferências da AWS (o "Verificar" e
   a periódica) e o inventário e a postura. Isso vale também para o cliente `inactive` do cadastro, que antes continuava
   sendo coletado. A atribuição de um alerta que já estava a caminho continua pelo cadastro (a conta segue sendo do
-  cliente), e os dados ficam.
+  cliente), e os dados ficam. A dona de uma assinatura da GCP é decidida antes do filtro, com os clientes de todas as contas
+  cadastradas: a assinatura em dois clientes continua ambígua (sem dono e sem medição) mesmo com um deles fora de
+  `active`, e só a que não tem nenhum cliente `active` deixa de ser lida. Nos outros coletores, cada conta é lida pela
+  própria identidade ou token, e a origem compartilhada entre clientes já é recusada no cadastro (`assertOriginsFree`):
+  não há dona a decidir.
 - **Cadastro da API:** `PATCH /v1/tenants/:id` só aceita `active` e `inactive` no `status` (o schema), e mudar o estado
   de um cliente suspenso, cancelado ou em expurgo, ou desativá-lo pelo `DELETE`, é 409 `TENANT_STATUS_MANAGED`; o resto
   do cadastro continua editável. O painel mostra os três estados ("Suspenso", "Cancelado" e "Em exclusão") e não
