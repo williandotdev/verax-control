@@ -5082,3 +5082,35 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   - **Testes:** `pnpm --filter @verax/control-plane test` (na máquina Windows, com `--maxWorkers=3`: o paralelo
     padrão às vezes derruba um worker com 0xC0000409, sem falha de asserção), `pnpm --filter @verax/console test` e
     `test:e2e`, `terraform test` do `envs/control-plane` (34) e `fmt -check`.
+
+## Fase 3, CE-01: a API presa ao endereço do cliente na célula compartilhada ⚠️ altera o módulo `auth`, migration nova
+
+- **Arquivos:** `apps/api/src/common/config/cell.ts` (novo), `env.schema.ts` (`NODE_MODE`, `CELL_DOMAIN`,
+  `CELL_STAFF_SLUG`; `config.cell`; o worker da célula exige `MAIL_TRANSPORT=none`), `auth/host-tenant.ts` (novo:
+  `HostTenantResolver`, `HostTenantGuard`, `belongsToHost`), `auth/decorators.ts` (`@AnyHost`), `auth/auth.module.ts`
+  (o guard do endereço é o primeiro), `auth/session-validation.ts`, `auth/session.guard.ts`, `auth/auth.controller.ts`,
+  `auth/auth.factory.ts`, `auth/csrf.ts`, `auth/turnstile.ts`, `auth/session-tenant.controller.ts`, `app.setup.ts` (CORS
+  por endereço), `common/context/*`, `common/prisma/tenant-scope.ts` (`tenantHost` só para leitura no escopo),
+  `common/http/route-contracts.ts`, `health/health.controller.ts`, `escalation/escalation-link.guard.ts`,
+  `escalation/escalation-links.service.ts`, `cloud-accounts/cloud-accounts.service.ts`, `tenants/tenant-host.ts` (novo),
+  `prisma/schema.prisma` e a migration `20261110210000_cell_host_binding` (`TenantHost`, `Session.hostTenantId`, CHECK
+  do subdomínio e trigger que recusa `UPDATE`); testes `cell-host-routes.test.ts`, `cell-host-binding.test.ts`,
+  `cell-turnstile.test.ts`, `support/cell.ts`, `support/create-app.ts` (`cell`), `route-contracts.test.ts`,
+  `common/config/cell.test.ts`, `tenant-scope.test.ts`, `turnstile.test.ts`; `docs/ARQUITETURA.md`.
+- **Dependências:** nenhuma.
+- **Comportamento:** só com `NODE_MODE=cell`; sem ele, o nó dedicado não muda (a suíte inteira da API passa sem
+  alteração nos testes existentes). Na célula: `Host` fora de `api-<slug>.<CELL_DOMAIN>` ou sem `TenantHost` recebe
+  404 em toda rota (menos o health check), antes de sessão, login e CSRF; o login procura o usuário só no cliente do
+  endereço, depois de gastar a tentativa da conta e a do IP, com a mesma recusa e o mesmo registro da senha errada; a
+  sessão guarda o cliente do endereço e só vale nele (levada a outro, 401 e apagada); o `admin_verax` só no endereço da
+  equipe; CORS, CSRF, origem da autenticação, Turnstile, links do contato e o link de redefinição de senha pelo painel do
+  cliente do endereço; recusas de unicidade sem "em outro cliente".
+- **Testes:** `pnpm --filter @verax/api test` com um Postgres descartável (`TEST_DATABASE_URL` próprio), lint e
+  `tsc --noEmit` da API. A varredura do meta-teste roda todas as rotas do Express num endereço sem cliente; a do A/B, as
+  rotas com parâmetro com os IDs de B no endereço de A (nenhum 2xx, nada de B na resposta, B igual antes e depois).
+- **Teste manual:** nenhum no nó dedicado. A célula só existe depois do pacote do nó (CE-04) e do provisionamento
+  (CE-05), que gravam o `TenantHost` e escrevem `NODE_MODE`, `CELL_DOMAIN` e `CELL_STAFF_SLUG` no `api.env`.
+- **Riscos e pendências:** o e-mail e o ID de conta seguem únicos no nó inteiro, então quem administra um cliente ainda
+  descobre que um valor está em uso na célula (sem saber de quem); os avisos por e-mail do worker na célula esperam
+  links por cliente; o rótulo "Acesso do suporte da Verax" na trilha (§3.4 do desenho) fica para o painel; no Windows,
+  o worker do Vitest às vezes cai com 0xC0000409 sem falha de asserção (repetir).
