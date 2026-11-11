@@ -24,10 +24,29 @@ export const TENANT_SCOPED_MODELS = [
   'notificationPreference',
   'notificationDigest',
   'escalationContactToken',
+  // Célula (CE-01): o endereço do cliente. Só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
+  'tenantHost',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
 const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
+
+/**
+ * Models com `tenantId` que o escopo do cliente só lê: quem grava é o sistema, pelo client sem escopo, num caminho
+ * próprio. Hoje, o endereço do cliente na célula (`tenants/tenant-host.ts`): uma escrita pelo escopo poderia levar o
+ * endereço de um cliente para outro lugar.
+ */
+const SYSTEM_WRITTEN_MODELS = new Set<string>(['tenantHost']);
+const READ_OPERATIONS = new Set([
+  'findUnique',
+  'findUniqueOrThrow',
+  'findFirst',
+  'findFirstOrThrow',
+  'findMany',
+  'count',
+  'aggregate',
+  'groupBy',
+]);
 
 /** O próprio cliente: no escopo, o model `tenant` só alcança a linha do cliente da sessão, sem criar. */
 const TENANT_ROOT_MODEL = 'tenant';
@@ -127,7 +146,7 @@ function scopeDelegate(delegate: object, scope: Scoper): object {
 /**
  * Cliente do banco restrito a um cliente da Verax (T2.5, regra 4). Funciona sobre o cliente base ou sobre a
  * transação da requisição. Só existem nele:
- * - os models de `TENANT_SCOPED_MODELS`, filtrados por `tenantId`;
+ * - os models de `TENANT_SCOPED_MODELS`, filtrados por `tenantId` (os de `SYSTEM_WRITTEN_MODELS`, só para leitura);
  * - o model `tenant`, restrito à linha do próprio cliente.
  *
  * Os demais models (sessões, contas, tokens) e os métodos `$` (SQL cru, transações, extensões) escapariam do
@@ -144,7 +163,13 @@ export function scopeToTenant(db: Prisma.TransactionClient, tenantId: string): P
       const value: unknown = Reflect.get(target, property, receiver);
       if (typeof value !== 'object' || value === null) return value;
       if (SCOPED.has(property)) {
-        return scopeDelegate(value, (operation, args) => scopeArgs(operation, args, tenantId));
+        const readOnly = SYSTEM_WRITTEN_MODELS.has(property);
+        return scopeDelegate(value, (operation, args) => {
+          if (readOnly && !READ_OPERATIONS.has(operation)) {
+            throw new TenantScopeViolation(`${property} só é gravado pelo sistema`);
+          }
+          return scopeArgs(operation, args, tenantId);
+        });
       }
       if (property === TENANT_ROOT_MODEL) {
         return scopeDelegate(value, (operation, args) => scopeTenantRootArgs(operation, args, tenantId));

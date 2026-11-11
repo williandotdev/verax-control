@@ -30,6 +30,15 @@ import {
   type VaultKeyring,
   type VaultPublicKey,
 } from '../../credentials/credential-keys.js';
+import {
+  type CellConfig,
+  cellApiHost,
+  cellPanelOrigin,
+  isCellDomain,
+  isTenantSlug,
+  NODE_MODES,
+  type NodeMode,
+} from './cell.js';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
@@ -299,6 +308,47 @@ export function nodePlan(env: Omit<PlanEnv, 'NODE_ENV'> & { PLAN: PlanId }): Res
   return resolvePlan(env.PLAN, planOverridesOf(env));
 }
 
+/**
+ * Modo do nó (CE-01). `dedicated`, o padrão, é o nó de um cliente só, como sempre. `cell` é a célula compartilhada do
+ * Plataforma: a API amarra cada requisição ao cliente do endereço (`Host`) e exige o domínio da célula e o subdomínio da
+ * equipe da Verax. As duas variáveis da célula só existem nela.
+ */
+const nodeModeEnvShape = {
+  NODE_MODE: z.enum(NODE_MODES, { error: 'use dedicated ou cell' }).default('dedicated'),
+  CELL_DOMAIN: z
+    .string()
+    .refine(isCellDomain, {
+      error: 'deve ser um domínio em minúsculas, sem ponto no fim (ex.: exemplo.com.br)',
+    })
+    .optional(),
+  CELL_STAFF_SLUG: z.string().refine(isTenantSlug, { error: 'subdomínio inválido' }).optional(),
+};
+
+interface NodeModeEnv {
+  NODE_MODE: NodeMode;
+  CELL_DOMAIN?: string | undefined;
+  CELL_STAFF_SLUG?: string | undefined;
+}
+
+/** As variáveis da célula: as duas com `NODE_MODE=cell`, nenhuma fora dele. */
+function checkNodeModeEnv(env: NodeModeEnv, ctx: z.RefinementCtx): void {
+  for (const key of ['CELL_DOMAIN', 'CELL_STAFF_SLUG'] as const) {
+    if (env.NODE_MODE === 'cell' && env[key] === undefined) {
+      ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com NODE_MODE=cell' });
+    }
+    if (env.NODE_MODE !== 'cell' && env[key] !== undefined) {
+      ctx.addIssue({ code: 'custom', path: [key], message: 'só existe com NODE_MODE=cell' });
+    }
+  }
+}
+
+/** A célula num objeto só (null no nó dedicado); a configuração já conferiu as duas variáveis. */
+function cellConfigOf(env: NodeModeEnv): CellConfig | null {
+  if (env.NODE_MODE !== 'cell' || env.CELL_DOMAIN === undefined || env.CELL_STAFF_SLUG === undefined)
+    return null;
+  return { domain: env.CELL_DOMAIN, staffSlug: env.CELL_STAFF_SLUG };
+}
+
 /** Transportes de e-mail: SES ou SMTP autenticado em produção, `none` no nó sem e-mail, caixa local em desenvolvimento. */
 const MAIL_TRANSPORTS = ['ses', 'smtp', 'none', 'dev-mailbox'] as const;
 
@@ -434,9 +484,30 @@ const apiEnvSchema = z
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; desligado por padrão): o endereço,
     // o cliente do nó, as faixas liberadas, o limite, a CA e a senha de registro (agents/agents-config.ts).
     ...apiAgentsEnvShape,
+    // Célula compartilhada (CE-01): sem NODE_MODE, o nó dedicado de sempre.
+    ...nodeModeEnvShape,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
+    checkNodeModeEnv(env, ctx);
+    // Na célula, o WEB_ORIGIN e o API_ORIGIN são os endereços da equipe da Verax (o Better Auth usa o API_ORIGIN como
+    // base). Iguais aos derivados do domínio, para nenhum valor solto apontar para outro lugar; os de cada cliente saem
+    // do `Host` de cada requisição.
+    const cell = cellConfigOf(env);
+    if (cell !== null && env.WEB_ORIGIN !== cellPanelOrigin(cell, cell.staffSlug)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['WEB_ORIGIN'],
+        message: 'na célula, deve ser o painel da equipe: https://<CELL_STAFF_SLUG>.control.<CELL_DOMAIN>',
+      });
+    }
+    if (cell !== null && env.API_ORIGIN !== `https://${cellApiHost(cell, cell.staffSlug)}`) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['API_ORIGIN'],
+        message: 'na célula, deve ser a API da equipe: https://api-<CELL_STAFF_SLUG>.<CELL_DOMAIN>',
+      });
+    }
     checkPair(env, ['CREDENTIALS_PUBLIC_KEY', 'CREDENTIALS_KEY_VERSION'], ctx);
     // O problema é apontado na chave presente: a que falta sairia só como "não definida".
     if (env.TURNSTILE_SECRET_KEY !== undefined && env.TURNSTILE_SITE_KEY === undefined) {
@@ -507,10 +578,13 @@ const apiEnvSchema = z
         WAZUH_AGENTS_MAX,
         WAZUH_AGENTS_CA,
         WAZUH_AGENTS_ENROLLMENT_PASSWORD,
+        CELL_DOMAIN,
+        CELL_STAFF_SLUG,
         ...env
       },
       ctx,
     ) => {
+      const cell = cellConfigOf({ NODE_MODE: env.NODE_MODE, CELL_DOMAIN, CELL_STAFF_SLUG });
       // A chave pública já validada no lugar do texto em base64; sem o par, a API sobe sem o cofre.
       let credentialsPublicKey: VaultPublicKey | null = null;
       if (CREDENTIALS_PUBLIC_KEY !== undefined && CREDENTIALS_KEY_VERSION !== undefined) {
@@ -533,7 +607,7 @@ const apiEnvSchema = z
         },
         ctx,
       );
-      return { ...withDefaultPlan(env), credentialsPublicKey, wazuhAgents };
+      return { ...withDefaultPlan(env), credentialsPublicKey, wazuhAgents, cell };
     },
   );
 
@@ -613,10 +687,22 @@ const workerEnvObjectSchema = z
       .string()
       .regex(/^[0-9a-f]{40}$/, { error: 'deve ser o commit instalado (40 caracteres hexadecimais)' })
       .optional(),
+    // Célula compartilhada (CE-01). O worker só precisa saber o modo: os avisos por e-mail levam um link do painel, e
+    // na célula cada cliente tem o seu.
+    NODE_MODE: nodeModeEnvShape.NODE_MODE,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkMailEnv(env, ctx);
+    // Os avisos ainda montam os links com um WEB_ORIGIN só: na célula, levariam o cliente ao painel de outro. Até os
+    // links serem por cliente, a célula não manda aviso (ficam na fila como `skipped`, como no nó sem e-mail).
+    if (env.NODE_MODE === 'cell' && env.MAIL_TRANSPORT !== 'none') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_TRANSPORT'],
+        message: 'deve ser none com NODE_MODE=cell (os links dos avisos ainda não são por cliente)',
+      });
+    }
     if (env.MAIL_TRANSPORT !== 'none') {
       for (const key of ['MAIL_FROM', 'WEB_ORIGIN'] as const) {
         if (env[key] === undefined) {
