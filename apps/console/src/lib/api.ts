@@ -17,6 +17,14 @@ import type {
   DirectTenantRequest,
   GuardReport,
   Hosting,
+  LegalAuditEntry,
+  LegalCreateRequest,
+  LegalKind,
+  LegalOverview,
+  LegalPublishRequest,
+  LegalTextRecord,
+  LegalUpdateRequest,
+  LegalVersionSummary,
   PriceTable,
   PublishResult,
   SimulationRequest,
@@ -216,4 +224,25 @@ export const authApi = {
     request('POST', `${ACCOUNT}/totp/start`, body),
   totpConfirm: (body: TotpConfirmRequest): Promise<RecoveryCodes> =>
     request('POST', `${ACCOUNT}/totp/confirm`, body),
+};
+
+const LEGAL = `${BASE}/legal`;
+
+function legalVersionPath(kind: LegalKind, version?: string): string {
+  const path = `${LEGAL}/${kind}/versions`;
+  return version === undefined ? path : `${path}/${encodeURIComponent(version)}`;
+}
+
+/** Os textos legais (Termos, Privacidade e DPA): a lista, o rascunho, a edição, a publicação e a trilha. */
+export const legalApi = {
+  overview: (): Promise<LegalOverview> => request('GET', LEGAL),
+  get: (kind: LegalKind, version: string): Promise<LegalTextRecord> =>
+    request('GET', legalVersionPath(kind, version)),
+  create: (kind: LegalKind, body: LegalCreateRequest): Promise<LegalTextRecord> =>
+    request('POST', legalVersionPath(kind), body),
+  update: (kind: LegalKind, version: string, body: LegalUpdateRequest): Promise<LegalTextRecord> =>
+    request('PUT', legalVersionPath(kind, version), body),
+  publish: (kind: LegalKind, version: string, body: LegalPublishRequest): Promise<LegalVersionSummary> =>
+    request('POST', `${legalVersionPath(kind, version)}/publish`, body),
+  audit: (kind: LegalKind): Promise<LegalAuditEntry[]> => request('GET', `${LEGAL}/${kind}/audit`),
 };

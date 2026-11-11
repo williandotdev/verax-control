@@ -214,6 +214,33 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
+    test('textos legais: a lista com o aviso, o rascunho com a prévia e a publicação com a versão digitada', async ({
+      page,
+    }, testInfo) => {
+      const violations = await prepare(page, theme);
+      await page.goto('/textos-legais');
+      await expect(page.getByRole('region', { name: 'Acordo de tratamento de dados (DPA)' })).toContainText(
+        'Nenhuma versão publicada',
+      );
+      await audit(page, testInfo, `textos-legais-${theme}`);
+
+      await page.getByRole('link', { name: '2026-11-10' }).click();
+      await page.getByLabel('Texto (Markdown)').fill('# Termos revisados\n\n- item com **negrito**\n');
+      await expect(page.getByRole('region', { name: 'Prévia' }).getByRole('heading')).toHaveText(
+        'Termos revisados',
+      );
+      await page.getByRole('button', { name: 'Salvar rascunho' }).click();
+      await expect(page.getByText('Rascunho salvo.')).toBeVisible();
+      await page.getByRole('button', { name: 'Publicar…' }).click();
+      await page.getByLabel(/Digite a versão/).fill('2026-11-10');
+      await expect(page.getByRole('button', { name: 'Confirmar a publicação' })).toBeEnabled();
+      await audit(page, testInfo, `texto-legal-publicar-${theme}`);
+      await page.getByRole('button', { name: 'Confirmar a publicação' }).click();
+      await expect(page.getByText(/Publicada: 2026-11-10, em/)).toBeVisible();
+      await audit(page, testInfo, `texto-legal-publicado-${theme}`);
+      expect(violations).toEqual([]);
+    });
+
     test('simulador: a DRE do mês com as margens, a implantação e os doze meses', async ({
       page,
     }, testInfo) => {

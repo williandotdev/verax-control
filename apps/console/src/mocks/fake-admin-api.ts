@@ -10,6 +10,7 @@ import type {
 import { getAt } from '@/lib/paths';
 import { createFakeAuth, type FakeAuthState, handleAuthRequest } from './fake-auth';
 import { dre, guard, quote } from './fake-engine';
+import { createFakeLegal, type FakeLegalState, handleLegalRequest } from './fake-legal';
 import { createFakeTenants, type FakeTenantsState, handleTenantsRequest } from './fake-tenants';
 import { FICTITIOUS_OWNER, fictitiousCostModel, fictitiousPriceTable } from './fixtures';
 
@@ -36,6 +37,8 @@ export interface FakeAdminState {
   tenants: FakeTenantsState;
   /** A sessão e a conta do responsável (`fake-auth.ts`); por padrão, com a sessão aberta. */
   auth: FakeAuthState;
+  /** Os textos legais (`fake-legal.ts`). */
+  legal: FakeLegalState;
 }
 
 const DAY = 86_400_000;
@@ -59,6 +62,7 @@ export function createFakeState(
     email: FICTITIOUS_OWNER,
     tenants: options.empty === true ? { tenants: new Map(), workerDown: false } : createFakeTenants(now),
     auth: createFakeAuth({ loggedIn: options.loggedIn, setupOpen: options.setupOpen }),
+    legal: createFakeLegal(now, options.empty === true),
   };
   if (options.empty === true) return state;
   const at = (days: number): string => iso(new Date(now().getTime() - days * DAY));
@@ -228,6 +232,17 @@ export function handleAdminRequest(
     return { status: 200, body: { email: state.email } };
 
   if (method === 'POST' && first === 'dre' && second === 'simulate') return simulate(state, body);
+
+  if (first === 'legal') {
+    return handleLegalRequest(
+      state.legal,
+      state.email,
+      now,
+      method,
+      parts.slice(1).map(decodeURIComponent),
+      body,
+    );
+  }
 
   if (first === 'tenants') {
     const table = current(state['pricing-tables'], now);
