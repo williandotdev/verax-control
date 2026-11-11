@@ -30,8 +30,10 @@ export class FindingsController {
 
   @Get()
   @RequirePermission('findings:read')
-  list(@Query({ schema: findingListQuerySchema }) query: FindingListQuery): Promise<Paginated<Finding>> {
-    this.plan.assertPeriodWithinHistory(query.period);
+  async list(
+    @Query({ schema: findingListQuerySchema }) query: FindingListQuery,
+  ): Promise<Paginated<Finding>> {
+    await this.plan.assertPeriodWithinHistory(query.period);
     return this.findings.list(query);
   }
 

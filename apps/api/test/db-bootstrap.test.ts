@@ -270,13 +270,15 @@ describe('sequência do deploy: expurgo pelas funções controladas (PR-19)', ()
           [RETENTION_FUNCTIONS],
         );
         expect(functions.rows).toEqual(
-          ['verax_purge_audit_log', 'verax_purge_finding_comments'].map((name) => ({
-            name,
-            owner: owner.role,
-            definer: true,
-            config: ['search_path=pg_catalog, public, pg_temp', 'TimeZone=UTC'],
-            grantees: [owner.role, runtime.role].sort(),
-          })),
+          ['verax_purge_audit_log', 'verax_purge_finding_comments', 'verax_purge_tenant_audit_log'].map(
+            (name) => ({
+              name,
+              owner: owner.role,
+              definer: true,
+              config: ['search_path=pg_catalog, public, pg_temp', 'TimeZone=UTC'],
+              grantees: [owner.role, runtime.role].sort(),
+            }),
+          ),
         );
         // O dono das funções é o dono das tabelas (é com ele que o DELETE roda), e os triggers seguem com ele.
         const tables = await client.query<{ owner: string }>(

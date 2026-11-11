@@ -5,6 +5,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
 import { detect, gcpEventId, type GcpRule, toGcpFindingDraft } from './gcp-rules.js';
@@ -260,14 +261,24 @@ export class GcpAuditSync {
     }
   }
 
-  /** Contas GCP ativas, agrupadas pela assinatura: o cadastro que decide o dono de cada evento. */
+  /**
+   * Contas GCP ativas, agrupadas pela assinatura: o cadastro que decide o dono de cada evento. A dona é decidida com os
+   * clientes de todas as contas cadastradas, em qualquer estado: uma assinatura em dois clientes continua ambígua (sem
+   * dono e sem medição) mesmo com um deles suspenso, cancelado, em expurgo ou desativado. Só depois sai o que não se
+   * coleta (CE-02): a assinatura em que nenhum cliente está `active` não é lida.
+   */
   private async subscriptions(): Promise<SubscriptionGroup[]> {
     const rows = await this.prisma.cloudAccount.findMany({
       where: { provider: 'gcp', status: 'active', pubsubSubscription: { not: null } },
-      select: { tenantId: true, accountId: true, pubsubSubscription: true },
+      select: {
+        tenantId: true,
+        accountId: true,
+        pubsubSubscription: true,
+        tenant: { select: { status: true } },
+      },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
-    const groups = new Map<string, SubscriptionGroup & { tenants: Set<string> }>();
+    const groups = new Map<string, SubscriptionGroup & { tenants: Set<string>; collecting: boolean }>();
     for (const row of rows) {
       if (!row.pubsubSubscription) continue;
       const group = groups.get(row.pubsubSubscription) ?? {
@@ -275,13 +286,15 @@ export class GcpAuditSync {
         projects: new Map<string, string>(),
         ambiguous: false,
         tenants: new Set<string>(),
+        collecting: false,
       };
       group.projects.set(row.accountId, row.tenantId);
       group.tenants.add(row.tenantId);
       group.ambiguous = group.tenants.size > 1;
+      group.collecting ||= row.tenant.status === COLLECTING_TENANT.tenant.is.status;
       groups.set(row.pubsubSubscription, group);
     }
-    return [...groups.values()];
+    return [...groups.values()].filter((group) => group.collecting);
   }
 
   private async readSubscription(group: SubscriptionGroup, context: RunContext): Promise<void> {

@@ -50,6 +50,8 @@ export interface CreateAppOptions {
   wazuhAgents?: Record<`WAZUH_AGENTS_${string}`, string>;
   /** Plano do nó (`PLAN` e os ajustes `PLAN_*`, como o start.sh escreve); sem informar, o padrão fora de produção (`interno`). */
   plan?: Record<'PLAN' | `PLAN_${string}`, string>;
+  /** Modo do nó (`NODE_MODE`, CE-02); sem informar, `dedicated`. Na célula, o plano é o `TenantPlan` de cada cliente. */
+  nodeMode?: 'dedicated' | 'cell';
 }
 
 /**
@@ -88,6 +90,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
     }),
     ...(options.wazuhAgents && { WAZUH_AGENTS: 'true', ...options.wazuhAgents }),
     ...options.plan,
+    ...(options.nodeMode !== undefined && { NODE_MODE: options.nodeMode }),
   });
   const builder = Test.createTestingModule({
     imports: [

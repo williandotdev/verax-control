@@ -108,8 +108,8 @@ function newPasswordProblem(error: ApiRequestError): string | undefined {
 
 /**
  * Mensagens de erro da autenticação. Nunca dizem se um e-mail existe: credencial errada, usuário
- * inexistente ou desativado recebem a mesma mensagem. A senha temporária vencida tem mensagem própria: a API só a
- * devolve a quem acertou a senha.
+ * inexistente ou desativado recebem a mesma mensagem. A senha temporária vencida e o cliente suspenso têm mensagem
+ * própria: a API só as devolve a quem acertou a senha.
  */
 export function authErrorMessage(error: unknown, step: AuthStep): string {
   if (!(error instanceof ApiRequestError))
@@ -122,6 +122,9 @@ export function authErrorMessage(error: unknown, step: AuthStep): string {
 
   if (error.code === 'TEMPORARY_PASSWORD_EXPIRED' && (step === 'sign-in' || step === 'code'))
     return 'Sua senha temporária venceu. Peça outra ao administrador.';
+  // Cliente suspenso por falta de pagamento (CE-02): como a senha vencida, só chega a quem acertou a senha.
+  if (error.code === 'TENANT_SUSPENDED' && (step === 'sign-in' || step === 'code'))
+    return 'O acesso da sua empresa está suspenso por uma pendência de pagamento. Fale com o responsável pela contratação na sua empresa.';
 
   switch (step) {
     case 'sign-in':

@@ -107,7 +107,7 @@ export class PostureService {
   async overview(now = new Date()): Promise<PostureOverview> {
     const { accounts, latest } = await this.latestScans();
     // A evolução segue o histórico do plano (PR-20): 90 dias no Essencial, 365 no Profissional, até 365.
-    const historyDays = postureHistoryDays(this.plan.historyDays);
+    const historyDays = postureHistoryDays(await this.plan.historyDays());
     const since = new Date(now.getTime() - historyDays * DAY_MS);
     const db = this.prisma.scoped();
     const items: PostureAccount[] = [];

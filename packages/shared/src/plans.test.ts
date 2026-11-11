@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseTenantPlan,
   PLAN_IDS,
   PLAN_LABELS,
   planIdSchema,
   planOverrideProblems,
   planOverridesSchema,
   PLANS,
+  resolvedPlanOf,
   resolvedPlanSchema,
   resolvePlan,
+  TENANT_PLAN_IDS,
+  type TenantPlan,
+  tenantPlanFromResolved,
+  tenantPlanProblems,
 } from './plans.js';
 
 describe('planos (fase 2)', () => {
@@ -96,5 +102,82 @@ describe('planos (fase 2)', () => {
       expect(resolvedPlanSchema.parse(plan)).toEqual(plan);
       expect(PLAN_LABELS[id].length).toBeLessThanOrEqual(60);
     }
+  });
+});
+
+describe('plano do cliente (CE-02)', () => {
+  /** Uma Plataforma FICTÍCIA: os números não são os vendidos (esses ficam na tabela de preços, fora do repositório). */
+  const plataforma: TenantPlan = {
+    planId: 'plataforma',
+    limits: { maxCloudAccounts: 5, maxUsers: 5, monthlyGib: null, historyDays: 90 },
+    franchiseGbPerDay: 4,
+  };
+
+  it('a Plataforma é plano de cliente, mas não do node.conf', () => {
+    expect(TENANT_PLAN_IDS).toEqual([...PLAN_IDS, 'plataforma']);
+    expect(planIdSchema.safeParse('plataforma').success).toBe(false);
+    expect(PLAN_LABELS.plataforma).toBe('Plataforma');
+  });
+
+  it('a Plataforma exige contas, usuários, histórico e a franquia, e não tem volume do mês', () => {
+    expect(tenantPlanProblems(plataforma)).toEqual([]);
+    expect(resolvedPlanOf(plataforma)).toEqual({
+      id: 'plataforma',
+      label: 'Plataforma',
+      limits: plataforma.limits,
+    });
+    expect(
+      tenantPlanProblems({
+        ...plataforma,
+        franchiseGbPerDay: null,
+        limits: { ...plataforma.limits, monthlyGib: 10 },
+      }),
+    ).toEqual([
+      {
+        field: 'limits.monthlyGib',
+        message: 'não se aplica ao plano plataforma, que mede o volume por dia contra a franquia',
+      },
+      { field: 'franchiseGbPerDay', message: 'obrigatória no plano plataforma' },
+    ]);
+    expect(() =>
+      parseTenantPlan({ ...plataforma, limits: { ...plataforma.limits, historyDays: null } }),
+    ).toThrow('limits.historyDays obrigatório no plano plataforma');
+  });
+
+  it('os planos do nó: sem franquia; o interno sem limite; os outros com os quatro', () => {
+    for (const id of ['essencial', 'profissional', 'interno'] as const) {
+      expect(tenantPlanProblems(tenantPlanFromResolved(resolvePlan(id)))).toEqual([]);
+    }
+    expect(
+      tenantPlanProblems({ ...tenantPlanFromResolved(resolvePlan('essencial')), franchiseGbPerDay: 3 }),
+    ).toEqual([
+      {
+        field: 'franchiseGbPerDay',
+        message: 'não se aplica ao plano essencial, que não tem franquia por dia',
+      },
+    ]);
+    expect(
+      tenantPlanProblems({
+        planId: 'enterprise',
+        limits: { maxCloudAccounts: 10, maxUsers: null, monthlyGib: 10, historyDays: 90 },
+        franchiseGbPerDay: null,
+      }),
+    ).toEqual([{ field: 'limits.maxUsers', message: 'obrigatório no plano enterprise' }]);
+  });
+
+  it('a faixa vale nos limites e na franquia, e a recusa nunca repete o valor recebido', () => {
+    expect(() => parseTenantPlan({ ...plataforma, franchiseGbPerDay: 0 })).toThrow(
+      'franchiseGbPerDay deve ser um número inteiro de 1 a 1000',
+    );
+    expect(() => parseTenantPlan({ ...plataforma, franchiseGbPerDay: 2.5 })).toThrow('franchiseGbPerDay');
+    let message = '';
+    try {
+      parseTenantPlan({ ...plataforma, limits: { ...plataforma.limits, historyDays: 98765 } });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('limits.historyDays');
+    expect(message).not.toContain('98765');
+    expect(() => parseTenantPlan({ ...plataforma, extra: true })).toThrow();
   });
 });

@@ -23,12 +23,13 @@ import pg from 'pg';
 const ROLE_NAME = /^verax_[a-z0-9_]{1,40}$/;
 
 /**
- * Funções do expurgo (migration `20261109120000_history_retention`), pela assinatura. São constantes: nenhum nome vem
- * de fora.
+ * Funções do expurgo (migrations `20261109120000_history_retention` e, a da auditoria por cliente,
+ * `20261110180000_tenant_plan`), pela assinatura. São constantes: nenhum nome vem de fora.
  */
 export const RETENTION_FUNCTIONS = [
   'public.verax_purge_audit_log(timestamptz, integer)',
   'public.verax_purge_finding_comments(uuid[])',
+  'public.verax_purge_tenant_audit_log(uuid, timestamptz, integer)',
 ] as const;
 
 export interface RoleCredentials {
