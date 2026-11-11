@@ -61,12 +61,24 @@ export async function lockPlanSeats(
 ): Promise<number | null> {
   const limit = plan.limits[PLAN_SEAT_LIMIT[seat]];
   if (limit === null) return null;
+  await lockSeatRow(db, seat, tenantId);
+  return limit;
+}
+
+/**
+ * O lock das vagas de um cliente, sem olhar o plano: o de `lockPlanSeats` e o do cliente da célula ainda sem plano
+ * (CE-02), em que a desativação continua passando e trava como se houvesse limite.
+ */
+export async function lockSeatRow(
+  db: Prisma.TransactionClient,
+  seat: PlanSeat,
+  tenantId: string,
+): Promise<void> {
   // O cliente base do Prisma conecta e desconecta; a transação, não (`$connect` está fora do `TransactionClient`).
   if (typeof (db as { $connect?: unknown }).$connect === 'function') {
     throw new Error('as vagas do plano só são travadas na transação que grava a conta ou o usuário');
   }
   await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:plan:${LOCK_NAME[seat]}:${tenantId}`}))`;
-  return limit;
 }
 
 /**

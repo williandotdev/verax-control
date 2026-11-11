@@ -1,6 +1,7 @@
 import { GIB_BYTES } from '@verax/shared';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import type { TenantPlans } from '../plan/tenant-plan.js';
 import { usageMonth } from '../usage/usage-meter.js';
 
 /** O GiB do plano: 2^30 bytes, a mesma régua do medidor e da página "Plano e uso" (`GIB_BYTES`). */
@@ -45,22 +46,22 @@ export function usageNoticeRows(
 
 /**
  * Avisos de 80% e 100% do volume mensal do plano (fase 2, PR-16; antes no PR-18), calculados a cada execução da tarefa
- * `notifications` a partir do medidor de uso (`IngestUsage`, PR-03) contra o limite do plano do nó (`PLAN` e
- * `PLAN_MONTHLY_GIB`). O mês é o do calendário de Brasília, como no medidor. Cada faixa avisa uma vez por mês e
- * cliente (a chave de deduplicação). O aviso só informa: acima de 100%, a coleta e os achados continuam (nada aqui
- * bloqueia o medidor nem os coletores). Sem limite de volume (plano `interno`), nada é calculado.
+ * `notifications` a partir do medidor de uso (`IngestUsage`, PR-03) contra o limite do plano de cada cliente
+ * (`TenantPlan`, CE-02: no nó dedicado, o `PLAN` e o `PLAN_MONTHLY_GIB` do ambiente). O mês é o do calendário de
+ * Brasília, como no medidor. Cada faixa avisa uma vez por mês e cliente (a chave de deduplicação). O aviso só informa:
+ * acima de 100%, a coleta e os achados continuam (nada aqui bloqueia o medidor nem os coletores). O cliente sem limite de
+ * volume no mês (plano `interno`; a Plataforma, que mede o volume por dia contra a franquia) e o da célula ainda sem
+ * plano ficam de fora.
  */
 export class UsageNotices {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly monthlyGib: number | null,
+    private readonly plans: TenantPlans,
   ) {}
 
   /** Grava os avisos que faltam no mês de `now`. Devolve quantas linhas entraram na fila. */
   async check(now: Date): Promise<number> {
-    if (this.monthlyGib === null) return 0;
     const month = usageMonth(now);
-    const limitBytes = BigInt(this.monthlyGib) * BYTES_PER_GIB;
     // Busca de sistema, entre todos os clientes do nó; cada gravação vai pelo escopo do próprio cliente.
     const totals = await this.prisma.ingestUsage.groupBy({
       by: ['tenantId'],
@@ -70,7 +71,9 @@ export class UsageNotices {
     });
     let created = 0;
     for (const { tenantId, _sum } of totals) {
-      const rows = usageNoticeRows(tenantId, month, _sum.bytes ?? 0n, limitBytes);
+      const monthlyGib = (await this.plans.planOf(tenantId))?.limits.monthlyGib ?? null;
+      if (monthlyGib === null) continue;
+      const rows = usageNoticeRows(tenantId, month, _sum.bytes ?? 0n, BigInt(monthlyGib) * BYTES_PER_GIB);
       if (rows.length === 0) continue;
       // O aviso nasce na hora da conferência, o mesmo relógio que escolheu o mês (e que diz se ele está velho para o
       // resumo de retomada, PR-17').

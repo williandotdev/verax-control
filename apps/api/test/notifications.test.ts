@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { randomInt, randomUUID } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { resolvePlan } from '@verax/shared';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FindingDraft } from '../src/alerts/finding-draft.js';
@@ -24,6 +25,7 @@ import {
   type NotificationDispatcherOptions,
 } from '../src/notifications/notification-dispatcher.js';
 import { BYTES_PER_GIB, UsageNotices } from '../src/notifications/usage-notices.js';
+import { fixedTenantPlans } from '../src/plan/tenant-plan.js';
 import { UsageMeter } from '../src/usage/usage-meter.js';
 import { Scheduler } from '../src/worker/scheduler.js';
 import { createTenant } from './support/auth-helpers.js';
@@ -644,8 +646,13 @@ describe('avisos por e-mail (outbox)', () => {
       await meter.flush(prisma);
     }
 
+    // O plano de todo cliente nestes testes: o volume do mês pedido, ou o interno (sem limite) com `null`.
+    const plansWith = (monthlyGib: number | null) =>
+      fixedTenantPlans(
+        monthlyGib === null ? resolvePlan('interno') : resolvePlan('essencial', { monthlyGib }),
+      );
     const run = (mailbox: MailTransport, now: Date, monthlyGib: number | null = 1) =>
-      dispatcher(mailbox, now, { usage: new UsageNotices(prisma, monthlyGib) }).runOnce();
+      dispatcher(mailbox, now, { usage: new UsageNotices(prisma, plansWith(monthlyGib)) }).runOnce();
 
     it('80% uma vez, depois 100% uma vez; o mês seguinte começa de novo', async () => {
       const tenantId = await createTenant(app, 'Cliente demo A (volume)');
