@@ -58,7 +58,7 @@
   "devDependencies": {
     "@nestjs/cli": "12.0.11",
     "@nestjs/testing": "12.3.2",
-    "@swc/core": "1.16.20",
+    "@swc/core": "1.16.21",
     "@types/cookie-parser": "1.4.10",
     "@types/express": "5.0.6",
     "@types/node": "24.19.2",
@@ -68,6 +68,6 @@
     "supertest": "7.3.1",
     "typescript": "6.0.3",
     "unplugin-swc": "2.0.0",
-    "vitest": "5.0.5"
+    "vitest": "5.1.0"
   }
 }
