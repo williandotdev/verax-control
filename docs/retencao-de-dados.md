@@ -70,6 +70,30 @@ O `delete-now` do responsável (o cliente pediu a eliminação antes) adianta a 
 gravados saem pela retenção do bucket, contada do último backup. Se a VM não parar no cancelamento (uma falha que gera
 alerta), a Exclusão 1 a destrói em D + 30, e o último backup pode ser de até D + 30.
 
+## Cancelamento na célula (Plataforma) _(a construir, CE-03 e CE-16)_
+
+O cliente da Plataforma divide a célula com outros (`ARQUITETURA.md`, "Célula compartilhada (Plataforma)"), então a VM
+continua no ar depois do cancelamento e o calendário acima não serve: com os dados até D + 30 e backups de 90 dias, a
+última cópia viveria até cerca de D + 129. Na célula, os dados do cliente saem do banco em D + 1, e o bucket de backups
+da célula guarda 85 dias (`backup_retention_days` do módulo, só no ambiente da célula):
+
+| Quando                         | O que sai                                                                                                                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D (cancelamento)               | Nada sai ainda: o acesso cai (sessões revogadas, login recusado), toda coleta do cliente para e a célula grava a exportação do cliente (as tabelas dele, sem segredo) no bucket de exportações da célula                                          |
+| D + 1 (com a exportação feita) | Os dados do cliente saem do banco da célula (achados, incidentes, comentários, auditoria, contas, credenciais, postura, inventário, uso, usuários e o próprio cadastro); depois, a conta de serviço dele, os cofres, os tópicos, o DNS e o painel |
+| até D + 30                     | Exportação sob pedido: o responsável gera um link de 24 h para a exportação do cliente; o plano de controle a apaga em D + 30, e o ciclo de vida do bucket (31 dias) é o limite                                                                   |
+| até cerca de D + 95            | As últimas cópias dos backups da célula com o cliente saem (o último backup com ele é de D + 1: 85 + 7 dias, mais o assíncrono do ciclo de vida). Os snapshots (7 dias), o índice do Wazuh (30 dias) e o Pub/Sub (7 dias) já saíram               |
+| D + 97                         | Com a chave do cofre por cliente (CE-22), as versões dela são destruídas; até lá, a chave é a da célula, e as credenciais do cliente num backup saem com o próprio backup                                                                         |
+| 5 anos                         | O mesmo registro fiscal do plano de controle do nó dedicado                                                                                                                                                                                       |
+
+A frase recomendada para a Privacidade e o DPA ("em até 100 dias") vale também na célula, com folga maior. O que muda
+para o cliente é o prazo da exportação (o arquivo de D, e não um backup à escolha) e o que o DPA e os Termos dizem do
+raio de impacto da célula.
+
+O histórico do plano (a primeira linha de "Prazos de um nó de cliente") passou a ser o do plano **de cada cliente**
+(`TenantPlan`, CE-02): no nó dedicado, o mesmo do `node.conf`; na célula, o que o plano de controle gravou para o
+cliente. A carência de 30 dias quando o prazo diminui também é por cliente.
+
 Fora destas frases:
 
 - **Logs na origem:** o que fica na nuvem do cliente (CloudTrail, buckets, auditoria da GCP, do Cloudflare) segue a

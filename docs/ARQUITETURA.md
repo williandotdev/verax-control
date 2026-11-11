@@ -13,12 +13,21 @@ nó, o template do papel de leitura, o cofre, o token do Cloudflare colado no pa
 As seções dessas partes levam a marca _(fase 2, a construir)_, e o que já existe está marcado como feito em "Ordem de
 execução". O painel já conecta a AWS pelo papel sem chave (PR-V3'): o ExternalId saiu do cadastro.
 
+A revisão de 10/11/2026 põe o plano **Plataforma** numa **célula compartilhada**: um nó `standard` em São Paulo que
+atende vários clientes, cobrados só pelo volume de logs em GB/dia. Dedicado e vCISO continuam com um nó por cliente, e
+o SOC da própria Verax vira o primeiro cliente da célula. O desenho e o que já existe estão na seção "Célula
+compartilhada (Plataforma)".
+
 ## Princípios
 
 1. **Simples e replicável.** Cada implantação é um **nó**: uma VM com tudo dentro, criada pelo Terraform de
-   `infra/gcp/` num projeto da Verax na GCP, no perfil `lean` ou `standard` (seção "Perfis de nó"). Um nó atende um
-   só cliente. Subir um cliente novo é aplicar o Terraform e criar dois registros de DNS; na fase 3, isso fica
-   automático.
+   `infra/gcp/` num projeto da Verax na GCP, no perfil `lean` ou `standard` (seção "Perfis de nó"). Há dois tipos:
+   - o **nó dedicado** atende um só cliente (Dedicado e vCISO). Subir um cliente novo é aplicar o Terraform e criar
+     dois registros de DNS; na fase 3, isso fica automático;
+   - a **célula** atende vários clientes da Plataforma (decisão de 10/11/2026). O cliente novo entra numa célula que
+     já está no ar, e o isolamento entre eles é o da seção "Célula compartilhada (Plataforma)": identidade de nuvem,
+     plano, endereço, sessão e dados por cliente. O que sobra de risco é o raio de impacto, que na célula é a célula
+     inteira, e essa é a diferença documentada entre a Plataforma e o Dedicado.
 2. **Leitura de fora, só leitura.** O nó lê os dados do cliente **pela API, como uma ferramenta externa**, e a Verax
    não ganha nenhum acesso de escrita:
    - AWS: um **papel IAM de leitura sem chave** (`verax-control-reader`), criado por um template na conta
@@ -107,7 +116,7 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
 
 |          | `lean`                                           | `standard`                                                          |
 | -------- | ------------------------------------------------ | ------------------------------------------------------------------- |
-| Uso      | Nó da própria Verax (fontes da GCP e Cloudflare) | Nó de cliente, um por cliente                                       |
+| Uso      | Nó da própria Verax (fontes da GCP e Cloudflare) | Nó dedicado de cliente, um por cliente, e a célula da Plataforma    |
 | VM       | e2-micro do nível gratuito, em us-east1          | e2-standard-2 (2 vCPU, 8 GB), em southamerica-east1                 |
 | Disco    | 30 GB pd-standard                                | 60 GB pd-balanced, que cresce sem parar a VM                        |
 | Snapshot | Semanal, guardado por 28 dias                    | Diário, guardado por 7 dias                                         |
@@ -152,7 +161,9 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
   nem o backup diário.
 - **Portão:** o ensaio geral da fase 2 mede 24 h de `docker stats` e CPU. A documentação do Wazuh pede 4 núcleos para
   o single-node em Docker; se 2 vCPU não bastarem, o plano B é a e2-standard-4.
-- Os nós de clientes ficam num projeto da GCP separado do nó da Verax.
+- Os nós de clientes ficam num projeto da GCP separado do nó da Verax. A primeira célula da Plataforma
+  (`envs/celula`, `verax-celula`) fica, por enquanto, no projeto do nó da Verax (decisão de 10/11/2026; seção "Célula
+  compartilhada (Plataforma)").
 
 ## Painel e destinos
 
@@ -325,12 +336,20 @@ CloudFormation aceita sem bucket.
   para Ativos e Postura.
 - `VeraxControlGuardrails` (Deny): tudo o que vier de fora do IP do NAT do nó (também com uma sessão já emitida),
   qualquer alteração de logs e qualquer ampliação do próprio acesso, inclusive mexer na confiança do papel.
-- **Confused deputy, sem ExternalId:** cada cliente tem o próprio nó e a própria conta de serviço, e a confiança do
-  cliente B fixa o `sub` do nó de B. Se o cliente A cadastrar a conta AWS de B, o nó de A chega com outro `sub` e de
-  outro IP e é recusado. O `sub` não é segredo, mas não se forja: o token é assinado pelo Google. Para isso continuar
-  verdadeiro, cada nó tem a sua conta de serviço, nunca reaproveitada entre clientes (o módulo
-  `infra/gcp/modules/node` expõe o ID na saída `service_account_unique_id`), e nunca há nó compartilhado entre
-  clientes.
+- **Confused deputy, sem ExternalId:** a regra é **uma identidade do Google por cliente, nunca dividida entre dois**.
+  A confiança do cliente B fixa o `sub` da identidade de B; se o cliente A cadastrar a conta AWS de B, a entrada
+  chega com o `sub` de A e é recusada (`trust_denied`), sem que nada da conta de B chegue ao Wazuh. O `sub` não é
+  segredo, mas não se forja: o token é assinado pelo Google.
+  - **Nó dedicado:** a identidade é a conta de serviço do nó, que atende um só cliente e nunca é reaproveitada entre
+    clientes (o módulo `infra/gcp/modules/node` expõe o ID na saída `service_account_unique_id`). Além do `sub`, o
+    nó de A sai de outro IP.
+  - **Célula** _(a construir, CE-11 e CE-12)_: os clientes dividem o IP de saída, então só o `sub` os separa. Cada
+    cliente tem a própria conta de serviço, `vxt-<slug>`, que a VM da célula personifica só para emitir o token
+    (`generateIdToken`, com a permissão dada em cada conta, nunca no projeto); o painel mostra em
+    `NodeServiceAccountId` o ID dessa conta, e o template, o `Audience` e as quatro condições não mudam. O worker e o
+    gerador do Wazuh tiram a identidade da ligação conta → cliente → `TenantCloudIdentity`, gravada só pelo plano de
+    controle, nunca da linha da conta nem do que o cliente digita, e cada token emitido é conferido (o `sub` tem de
+    ser o do cliente, senão `identity_mismatch`). Detalhes na seção "Célula compartilhada (Plataforma)".
 - **Conta de serviço estável:** uma conta recriada, mesmo com o mesmo nome, ganha outro ID único, e o papel de todo
   cliente daquele nó deixa de aceitá-la até cada um atualizar a pilha. A conta não tem `prevent_destroy`, porque a
   homologação é destruída entre as janelas de teste e a exclusão do cliente destrói o ambiente inteiro (o `lifecycle`
@@ -504,30 +523,32 @@ regional`, `retry_mode = standard`, `max_attempts = 10`), nunca `credential_proc
 
 **Riscos residuais e mitigação:**
 
-| Risco                                                                                                                                    | Mitigação                                                                                                                                                                                                                                                                                           |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Token do Google vazado: vale até 1 hora e não pode ser revogado                                                                          | Só entra do IP do NAT do nó (`aws:SourceIp` na confiança) e só no papel deste cliente; a sessão emitida também fica presa ao IP (Deny); regra de nível 12 para entrada de outro IP                                                                                                                  |
-| Root no nó lê o token e as sessões em claro (tmpfs e memória do worker e do manager)                                                     | Valem 1 hora; nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração                                                                                                                           |
-| Página da memória com segredo em claro (chave privada do cofre, token, sessões) vai para o swap, no disco do snapshot                    | Swap cifrado com chave aleatória a cada boot, nos dois perfis; no `standard`, `vm.swappiness=1` e o heap do indexer travado na memória                                                                                                                                                              |
-| O ambiente de um contêiner fica gravado em `/var/lib/docker`, no disco e no snapshot                                                     | Chaves privadas do cofre só por arquivo do tmpfs montado só leitura no worker, nunca por variável (teste e CI conferem); o token da AWS fica num tmpfs do host                                                                                                                                      |
-| Execução remota de código na API, exposta pelo túnel                                                                                     | A API não alcança o metadata e não emite token; cofre assimétrico para o Cloudflare                                                                                                                                                                                                                 |
-| O manager processa log não confiável e lê o token                                                                                        | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado; o token vale 1 hora e só do IP do nó                                                                                                                                             |
-| Quem emite ID token da conta de serviço do nó entra no papel (operador com `serviceAccountUser`; no plano de controle, o `cp-terraform`) | Precisa também sair pelo IP do NAT do nó; alertas em `SetIamPolicy` na conta de serviço, em `GenerateIdToken` e em VM criada com a conta de um nó (CP-12); nunca `serviceAccountOpenIdTokenCreator` no Terraform                                                                                    |
-| A conta de serviço do nó é apagada ou recriada, e o ID único muda                                                                        | `account_id` e `project` só do `name_prefix` e do `project_id`, com teste de que as mudanças de rotina não a recriam; o executor do plano de controle (CP-07) recusa recriá-la ou apagá-la fora da exclusão; restauração em até 30 dias com o mesmo ID; depois disso, cada cliente atualiza a pilha |
-| Google ou o metadata fora do ar (`IDPCommunicationError`, renovação do token falha)                                                      | O token tem 50 min de folga; o wodle retoma do marcador e não perde log; aviso de token sem renovar                                                                                                                                                                                                 |
-| A web identity pelo profile não funcionar no contêiner do manager                                                                        | O CI confere na imagem, sem rede, que o boto3 do manager usa o provedor de web identity e troca o token no STS da região com o papel certo; o teste prático na conta de teste confirma de ponta a ponta; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora |
-| Um bucket cadastrado depois do início da coleta é lido desde o `ingestFrom` da conta (histórico de semanas ou meses)                     | Aceito por ora: a leitura vai para o medidor de uso; um início por bucket fica para depois                                                                                                                                                                                                          |
-| O worker grava na pasta dos sinais, no tmpfs do host                                                                                     | Só sinal sem segredo; o bit t impede que ele troque os arquivos do host, que nunca leem o que ele grava (a geração só dispara o `.path`, com limite de partidas)                                                                                                                                    |
-| O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                             | Impacto baixo; documentado                                                                                                                                                                                                                                                                          |
-| O IP do NAT muda e a coleta para                                                                                                         | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                                                                                                                                 |
-| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                              |
-| O cliente cria o papel pelo assistente do console e põe o audience no `aud`                                                              | Template e Terraform prontos; o README avisa; a mensagem de papel recusado explica                                                                                                                                                                                                                  |
-| RCP de perímetro de dados do cliente nega a federação do Google                                                                          | O cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção (decisão dele); texto pronto no onboarding                                                                                                                                                                              |
-| STS de sa-east-1 desligado pelo cliente                                                                                                  | O worker cai para us-east-1; no Wazuh, o erro instrui a religar                                                                                                                                                                                                                                     |
-| Objeção de conformidade: o Access Analyzer mostra o papel com acesso externo federado                                                    | Esperado e explicado no onboarding: papel com credencial temporária é o que a AWS recomenda; o CloudTrail registra cada entrada com o `sub` do nó                                                                                                                                                   |
-| Ruído no CloudTrail e no medidor (cerca de 1.700 entradas por dia por conta, estimativa)                                                 | Medir no teste prático; se pesar, intervalo de 10 min ou descontar do medidor                                                                                                                                                                                                                       |
-| Bucket de organização legível inteiro                                                                                                    | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente                                                                                                                                                                                                                         |
-| Na saída do cliente, o papel segue na conta dele                                                                                         | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                     |
+| Risco                                                                                                                                    | Mitigação                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Token do Google vazado: vale até 1 hora e não pode ser revogado                                                                          | Só entra do IP do NAT do nó (`aws:SourceIp` na confiança) e só no papel deste cliente; a sessão emitida também fica presa ao IP (Deny); regra de nível 12 para entrada de outro IP                                                                                                                                    |
+| Root no nó lê o token e as sessões em claro (tmpfs e memória do worker e do manager)                                                     | Valem 1 hora; nó dedicado a um cliente; sem porta aberta; acesso só pelo IAP com OS Login auditado; metadata só para o worker; o alcance é leitura de logs e configuração. Na célula, o alcance são os tokens de todos os clientes dela (o raio de impacto da seção "Célula compartilhada (Plataforma)")              |
+| Página da memória com segredo em claro (chave privada do cofre, token, sessões) vai para o swap, no disco do snapshot                    | Swap cifrado com chave aleatória a cada boot, nos dois perfis; no `standard`, `vm.swappiness=1` e o heap do indexer travado na memória                                                                                                                                                                                |
+| O ambiente de um contêiner fica gravado em `/var/lib/docker`, no disco e no snapshot                                                     | Chaves privadas do cofre só por arquivo do tmpfs montado só leitura no worker, nunca por variável (teste e CI conferem); o token da AWS fica num tmpfs do host                                                                                                                                                        |
+| Execução remota de código na API, exposta pelo túnel                                                                                     | A API não alcança o metadata e não emite token; cofre assimétrico para o Cloudflare                                                                                                                                                                                                                                   |
+| O manager processa log não confiável e lê o token                                                                                        | Sem acesso ao Postgres nem ao metadata; `cap_drop`; rede de saída só dele; imagem fixada pelo digest; nó dedicado; o token vale 1 hora e só do IP do nó. Na célula, um log forjado por um cliente que explore o manager alcança os tokens dos outros: risco residual aceito e documentado (raio de impacto da célula) |
+| Quem emite ID token da conta de serviço do nó entra no papel (operador com `serviceAccountUser`; no plano de controle, o `cp-terraform`) | Precisa também sair pelo IP do NAT do nó; alertas em `SetIamPolicy` na conta de serviço, em `GenerateIdToken` e em VM criada com a conta de um nó (CP-12); nunca `serviceAccountOpenIdTokenCreator` no Terraform                                                                                                      |
+| A conta de serviço do nó é apagada ou recriada, e o ID único muda                                                                        | `account_id` e `project` só do `name_prefix` e do `project_id`, com teste de que as mudanças de rotina não a recriam; o executor do plano de controle (CP-07) recusa recriá-la ou apagá-la fora da exclusão; restauração em até 30 dias com o mesmo ID; depois disso, cada cliente atualiza a pilha                   |
+| Google ou o metadata fora do ar (`IDPCommunicationError`, renovação do token falha)                                                      | O token tem 50 min de folga; o wodle retoma do marcador e não perde log; aviso de token sem renovar                                                                                                                                                                                                                   |
+| A web identity pelo profile não funcionar no contêiner do manager                                                                        | O CI confere na imagem, sem rede, que o boto3 do manager usa o provedor de web identity e troca o token no STS da região com o papel certo; o teste prático na conta de teste confirma de ponta a ponta; plano B: o host troca o token por uma sessão e grava um `credentials` temporário de 1 hora                   |
+| Um bucket cadastrado depois do início da coleta é lido desde o `ingestFrom` da conta (histórico de semanas ou meses)                     | Aceito por ora: a leitura vai para o medidor de uso; um início por bucket fica para depois                                                                                                                                                                                                                            |
+| O worker grava na pasta dos sinais, no tmpfs do host                                                                                     | Só sinal sem segredo; o bit t impede que ele troque os arquivos do host, que nunca leem o que ele grava (a geração só dispara o `.path`, com limite de partidas)                                                                                                                                                      |
+| O `GetCallerIdentity` não pode ser negado e revela a conta e o ARN da sessão                                                             | Impacto baixo; documentado                                                                                                                                                                                                                                                                                            |
+| O IP do NAT muda e a coleta para                                                                                                         | IP reservado com `prevent_destroy`; erro `source_ip_denied` com instrução no painel                                                                                                                                                                                                                                   |
+| O cliente amplia o papel (anexa política, tira o boundary)                                                                               | `SimulatePrincipalPolicy` todo dia, com o IP do nó e uma amostra de escrita, IAM, KMS e leitura fora da política: aviso na conta, sem parar a coleta. Permissão a mais fora da amostra não é detectada                                                                                                                |
+| O cliente cria o papel pelo assistente do console e põe o audience no `aud`                                                              | Template e Terraform prontos; o README avisa; a mensagem de papel recusado explica                                                                                                                                                                                                                                    |
+| RCP de perímetro de dados do cliente nega a federação do Google                                                                          | O cliente inclui `accounts.google.com` na RCP ou marca o papel como exceção (decisão dele); texto pronto no onboarding                                                                                                                                                                                                |
+| STS de sa-east-1 desligado pelo cliente                                                                                                  | O worker cai para us-east-1; no Wazuh, o erro instrui a religar                                                                                                                                                                                                                                                       |
+| Objeção de conformidade: o Access Analyzer mostra o papel com acesso externo federado                                                    | Esperado e explicado no onboarding: papel com credencial temporária é o que a AWS recomenda; o CloudTrail registra cada entrada com o `sub` do nó                                                                                                                                                                     |
+| Ruído no CloudTrail e no medidor (cerca de 1.700 entradas por dia por conta, estimativa)                                                 | Medir no teste prático; se pesar, intervalo de 10 min ou descontar do medidor                                                                                                                                                                                                                                         |
+| Bucket de organização legível inteiro                                                                                                    | Prefixo opcional na pilha (`LogObjectPrefix`); nó dedicado ao mesmo cliente. Na célula, o papel só aceita a identidade do próprio cliente, e o prefixo continua valendo                                                                                                                                               |
+| Na célula, o cliente A cadastra a conta AWS de B _(a construir, CE-11 e CE-12)_                                                          | Uma conta de serviço por cliente (`vxt-<slug>`); a identidade vem de `TenantCloudIdentity`, gravada só pelo plano de controle; o `sub` de cada token é conferido; a confiança de B recusa o `sub` de A (`trust_denied`) e a conta nunca chega ao Wazuh                                                                |
+| Na célula, o cliente A cadastra o ID da conta de B antes dele (409 para B, negação de serviço)                                           | Mensagem genérica no 409; depois (CE-23), a unicidade só entre contas verificadas: a verificada vence e as duplicadas não verificadas são desativadas                                                                                                                                                                 |
+| Na saída do cliente, o papel segue na conta dele                                                                                         | Roteiro: "Revoke active sessions" e apagar a pilha; sem o papel, o nó não entra                                                                                                                                                                                                                                       |
 
 ## Ativos e Postura da AWS
 
@@ -1109,6 +1130,13 @@ escritos pelo `start.sh` no `api.env` e no `worker.env`, sobre a tabela de `pack
 plano na partida (`apps/api/src/plan/plan.service.ts`); trocar de plano é trocar o `node.conf` e reiniciar. O painel só
 mostra o plano, nunca o edita, e o nó da Verax é `interno`, sem limite nenhum.
 
+**Na célula, o plano passa a ser de cada cliente** _(a construir, CE-02)_: uma linha `TenantPlan` por cliente, gravada
+só pelo sistema (nenhum schema de requisição a aceita), com os limites, o histórico e a franquia contratada em GB/dia.
+No nó dedicado, o `node.conf` continua sendo a fonte e semeia a linha do cliente; na célula, quem grava é o comando do
+plano de controle (CE-05). As vagas, o histórico das telas, o expurgo e os avisos de volume leem o plano do cliente, e
+não mais o do ambiente. O volume da Plataforma é a média diária no ciclo contra a franquia, não o mês em GiB (seção
+"Célula compartilhada (Plataforma)", "Medição e franquia").
+
 - **Vagas** (`packages/shared/src/plan-usage.ts`): contas cloud ativas (AWS, GCP e Cloudflare) e usuários do cliente
   convidados ou ativos. A equipe da Verax (`admin_verax`) nunca conta. Criar e reativar pedem vaga; desativar libera.
   Descer de plano com o uso acima do novo limite não desativa nem apaga nada: só a próxima criação é recusada, e o
@@ -1249,6 +1277,212 @@ cliente e a DRE de qualquer configuração saem do simulador do console. Para es
 - **Referência anterior:** a pilha do nó na AWS, fora do caminho atual, usa uma VM `t3a.xlarge` (16 GB); estimativa
   na [calculadora da AWS](https://calculator.aws/).
 - **Plano de controle:** cabe no nível gratuito do projeto da Verax.
+
+## Célula compartilhada (Plataforma) _(fase 3, a construir)_
+
+**Decisão de 10/11/2026**, tomada pelo responsável pelo produto. O plano **Plataforma**, vendido no site, roda numa
+**célula compartilhada**: um nó `standard` em São Paulo que atende vários clientes. A Plataforma é cobrada só pelo
+volume de logs, em GB/dia, com uma **franquia contratada**: a base inclui uma franquia mínima, o cliente amplia a
+franquia pelo painel quando quiser, e o que passar dela é cobrado sozinho, na fatura seguinte. Os valores (da base, do
+GB/dia adicional e do excedente) ficam na tabela de preços do plano de controle, fora deste repositório, como todo
+preço (seção "Preço configurável"). **Dedicado** e **vCISO** continuam com um nó por cliente, como até aqui. O **SOC
+da própria Verax** muda para a célula como o primeiro cliente dela e é o teste de aceite da célula.
+
+A primeira célula, `verax-celula`, é o `envs/celula` (`infra/gcp/GUIA.md`), criada no **projeto do nó da Verax**, e
+não num projeto próprio das células, por decisão do responsável: por ora, uma célula só não chega à cota de contas de
+serviço por projeto (cerca de 100) nem pede um orçamento à parte. Um projeto das células volta à mesa quando a cota ou
+o orçamento pedirem. Esta seção é o registro da decisão (ADR); o detalhamento por PR está no estudo da fase 3, fora do
+repositório, e o que já está no código tem a marca de feito.
+
+```
+<slug>.control.veraxsistemas.com.br   (um site do Firebase por cliente, como hoje)
+api-<slug>.veraxsistemas.com.br ──CNAME──► túnel da célula (um por célula, ingress único → api:3000)
+                                                │
+GCP da Verax, projeto do nó da Verax (por ora)
+  célula verax-celula: módulo node, perfil standard, IP do NAT reservado
+    API (host → cliente) · worker · Postgres · Wazuh (manager e indexer) · cloudflared
+  uma conta de serviço por cliente, vxt-<slug> (a VM da célula só emite o token dela; a permissão fica em cada conta)
+  Pub/Sub: comandos do plano de controle (só o cp-worker publica) · relatórios da célula (só a VM publica)
+  tópicos da GCP por cliente e projeto, com o UUID da conta no nome (nunca reaproveitado)
+  buckets: backups da célula (85 dias) e exportações (<célula>/<cliente>/..., 31 dias)
+```
+
+**Dedicado e Plataforma lado a lado:**
+
+|                   | Dedicado e vCISO                                      | Plataforma (célula)                                                       |
+| ----------------- | ----------------------------------------------------- | ------------------------------------------------------------------------- |
+| Onde roda         | Um nó por cliente (`envs/tenant`)                     | Uma célula, vários clientes                                               |
+| Preço             | Pela configuração contratada (porte, contas, volume)  | Pelo volume em GB/dia, com franquia ampliável e excedente automático      |
+| Identidade na AWS | A conta de serviço do nó, só dele                     | Uma conta de serviço por cliente, `vxt-<slug>`                            |
+| IP de saída       | O do nó, só dele                                      | O da célula, dividido                                                     |
+| Plano no nó       | O `node.conf` (`PLAN`), que semeia o plano do cliente | O `TenantPlan` de cada cliente, gravado pelo comando do plano de controle |
+| Painel e API      | `<slug>.control...` e `api-<slug>`, túnel do nó       | Os mesmos endereços; a API amarra cada requisição ao cliente do host      |
+| Cancelamento      | A VM para; o nó inteiro sai em D+30                   | Exportação em D; os dados do cliente saem do banco em D+1                 |
+| Backups           | Até cerca de D+99 (90 dias de retenção)               | Até cerca de D+95 (85 dias de retenção na célula)                         |
+| Raio de impacto   | O nó do cliente                                       | A célula inteira (o risco residual, abaixo)                               |
+
+### O que o código supunha de um cliente por nó
+
+Cada ponto muda, ou fica atrás de `NODE_MODE=cell` (no nó dedicado, nada muda):
+
+- o medidor da AWS para com `multiple_tenants`, e a saúde da AWS vem do contador do nó inteiro (`usage/wazuh-usage.ts`);
+- uma identidade só para a AWS: o worker pede o token da conta de serviço da VM, e o painel mostra o
+  `NODE_SA_UNIQUE_ID` do ambiente (`aws/web-identity.ts`, `cloud-accounts.service.ts`); o Wazuh tem um arquivo de
+  token só (`aws-token.sh`, `render-manager-config.py`);
+- o plano é do nó, vem do ambiente e decide também o expurgo e os avisos de volume (feito no CE-02, abaixo);
+- uma origem do painel só (`WEB_ORIGIN`: CORS, links, hostname do Turnstile);
+- o ingress do túnel é trocado inteiro, com um nome só (`putTunnelIngress` no plano de controle);
+- o primeiro acesso lê o metadata da VM, e a ativação lê os guest attributes;
+- a exportação e a exclusão são do nó inteiro (o dump do banco e o `destroy` do `envs/tenant`);
+- os tópicos da GCP têm o nome do projeto (`<prefixo>-security-<projeto>`), que pode voltar depois de uma exclusão;
+- os agentes do Wazuh são de um cliente (`WAZUH_AGENTS_TENANT`): **ficam desligados na célula (v1)**;
+- o cliente só tinha `active` e `inactive` (feito no CE-02), e o `User.email` é único no banco inteiro.
+
+Já servem para vários clientes: a atribuição dos alertas (`alerts/alert-owner.ts`: bucket e conta têm de concordar),
+a regra de que cada origem de log é de um cliente só (`assertOriginsFree`), o `source_mismatch` da GCP, o rótulo OAEP
+por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente auditada do `admin_verax`.
+
+### Ameaças de isolamento e mitigação
+
+- **Confused deputy na AWS (a principal)** _(a construir, CE-11 e CE-12)_. Se todo papel confiasse na conta de
+  serviço da célula e no IP do NAT dela, o cliente A cadastraria o ID da conta AWS de B, e a célula leria os logs de B
+  para A com a identidade dividida. Por isso, **uma conta de serviço por cliente**, `vxt-<slug>`, criada pelo
+  `envs/cell-tenant` no provisionamento:
+  - a VM da célula ganha `serviceAccountOpenIdTokenCreator` **só nessa conta** (nunca no projeto); o ID único dela
+    vai do Terraform ao Firestore e chega à célula pelo comando do plano de controle, em `TenantCloudIdentity`, que
+    nenhum schema de requisição aceita (meta-teste);
+  - o painel mostra esse ID em `NodeServiceAccountId`, com os IPs da célula; o template, o `Audience` e as quatro
+    condições exatas não mudam;
+  - o worker emite o token pela personificação (`generateIdToken`, sem `includeEmail`) e tira a identidade da ligação
+    conta → cliente → `TenantCloudIdentity`, nunca da linha da conta; o `sub` de cada token emitido tem de ser o do
+    cliente, senão `identity_mismatch`. O nó dedicado continua pelo metadata;
+  - no Wazuh, um arquivo de token por identidade, gravado pelo host a partir de um `identities.json` que só o gerador
+    escreve (o host nunca lê o que o worker grava), e o aviso `aws_token_stale` passa a ser por cliente;
+  - resultado: a conta de B cadastrada por A recebe o token de A, a confiança de B recusa (`trust_denied`), o
+    `ingestFrom` não é gravado e a conta nunca chega ao Wazuh. Quem cadastrar o ID de B antes dele causa um 409 a B
+    (negação de serviço, com mensagem genérica); a unicidade só entre contas verificadas vem depois (CE-23);
+  - a conferir na conta AWS de teste: o token do `generateIdToken` traz `azp` e `sub` iguais ao ID único da conta do
+    cliente, como o do metadata com `format=standard`.
+- **Tópicos da GCP reaproveitáveis.** Com o nome tirado só do projeto, depois da exclusão de B o cliente A cadastraria
+  o projeto de B e herdaria o sink que B esqueceu. Na célula, o tópico e a assinatura são
+  `vxc-<célula>-gcp-<UUID da conta>`, nunca reaproveitados; a exclusão apaga os tópicos, e o e-mail dela pede ao
+  cliente que apague o sink. A identidade do sink colada por outro cliente já é recusada (`assertOriginsFree`), e o
+  `source_mismatch` continua. O tópico nasce de um pedido do nó ao plano de controle, que reaplica o `envs/cell-tenant`
+  do cliente (cerca de 2 minutos): o nó não ganha permissão de administrar o Pub/Sub.
+- **Cloudflare.** Sem mudança no modelo: o token é por conta, cifrado com o rótulo OAEP de cliente, conta e tipo, e a
+  conferência prova o acesso. O filtro de IP do token é o da célula, o que não abre nada, porque o segredo é o token. A
+  lacuna é a cripto-destruição por cliente: uma chave do cofre por célula não deixa destruir só a de um cliente (chave
+  por cliente no CE-22, ou antes, se o DPA exigir).
+- **Painel e API** _(a construir, CE-01)_. Cada cliente mantém `<slug>.control...` e `api-<slug>`; todos os `api-*`
+  apontam para o túnel da célula. Na célula, a API amarra cada requisição ao cliente do host: login só dentro do
+  cliente do host (a mesma recusa genérica de sempre), sessão válida só no host em que nasceu, CORS, CSRF, Turnstile e
+  links dos e-mails por cliente, host desconhecido 404, e o `admin_verax` só no host da equipe (`api-verax`), com a
+  troca de cliente auditada e marcada como acesso do suporte da Verax. Um meta-teste falha se uma rota ficar fora da
+  guarda do host. A unicidade entre clientes (e-mail, ID de conta) responde com mensagem genérica.
+- **Banco.** O proxy de escopo (`scopeToTenant`), o meta-teste de `TENANT_SCOPED_MODELS` e os testes A/B continuam. O
+  que só o sistema grava (`TenantPlan`, feito no CE-02; `TenantHost` e `TenantCloudIdentity`, a construir) tem
+  meta-teste de que nenhuma rota o aceita, e o escopo de cliente recusa a gravação. O RLS do Postgres fica como defesa
+  em profundidade, depois da primeira venda (CE-21).
+- **Vizinho barulhento.** Um `analysisd` e uma execução do módulo da AWS para todos: na célula, o `only_logs_after` é
+  o mais recente entre o `ingestFrom` e ontem, cada bucket tem a própria data de início, e a configuração do manager é
+  aplicada no máximo a cada 15 minutos; o worker reveza os clientes, com um orçamento por cliente em cada tarefa; a API
+  tem limite por cliente nas rotas caras. **Nenhum log é descartado** (princípio 4): os freios do volume são o
+  excedente e um aviso ao responsável acima de 5 vezes a franquia por 24 horas.
+- **Logs e métricas.** Os logs dos contêineres já só levam IDs e códigos, então um destino só do Cloud Logging serve;
+  a célula informa ao plano de controle CPU, memória, fila do `analysisd`, atraso do módulo e os maiores clientes em
+  GB/dia, para a página "Células" do console. O item "Medidor da AWS parado" da Torre deixa de valer na célula.
+
+### Canal entre o plano de controle e a célula _(a construir, CE-05 e CE-06)_
+
+**Pub/Sub nos dois sentidos**, sem nada novo exposto na internet. Os comandos (`tenant.upsert`, com o estado desejado
+inteiro e uma `generation` crescente por cliente; `tenant.export`, `tenant.purge` e `tenant.collection_pause`) seguem
+um contrato zod estrito e versionado (`packages/shared/src/cell-protocol.ts`), e o worker da célula aplica cada um numa
+transação, ignorando uma geração já aplicada, com o relatório na mesma transação (outbox). Os relatórios
+(`tenant.applied`, `tenant.status`, `usage.daily`, `export.ready`, `tenant.purged`, `franchise.requested`,
+`gcp_source.request` e `cell.status`) chegam ao `cp-worker` por uma assinatura push com OIDC, aceita só numa rota
+(`@WorkerCallers('cell-push')`), e o plano de controle confere que **todo cliente citado está nesta célula**: uma
+célula comprometida só mente sobre os próprios clientes. O IAM dos tópicos prova quem publicou. A senha do primeiro
+administrador nunca passa pelo worker: o host a escreve no cofre `vxt-<slug>-admin-bootstrap`.
+
+### Medição e franquia _(a construir, CE-09, CE-10, CE-13, CE-19 e CE-20)_
+
+- **Unidade:** bytes descomprimidos (a regra do `usage-meter.ts`), por dia do calendário de Brasília, numa tabela
+  diária por cliente e fonte (`IngestUsageDay`). A AWS é medida **na origem**, por cliente: um auditor lê o tamanho
+  descomprimido no fim de cada objeto gzip, com a identidade do próprio cliente, e conta o objeto no dia em que ele foi
+  criado (o histórico anterior à primeira verificação nunca é cobrado). O contador do `analysisd` vira só a
+  conferência da célula. A GCP conta pelo `publishTime`; o Cloudflare, pelo tamanho de cada entrada da auditoria.
+- **Excedente:** a média diária do ciclo menos a franquia ponderada pelos dias em que valeu, arredondada para baixo (a
+  dúvida a favor do cliente), em centésimos de GB/dia. Vai à Stripe como um evento de medidor por ciclo fechado, com
+  identificador idempotente, e cai na fatura seguinte. Um ciclo estranho (dia sem fechamento, divergência na
+  conferência, excedente muito acima da franquia) espera a aprovação do responsável.
+- **Ampliar a franquia:** pelo painel (Administração → Plano e uso), só o `admin_cliente`, com um código TOTP novo; o
+  plano de controle muda a quantidade na Stripe, com a cobrança proporcional na hora, e só aplica se o pagamento
+  passar. Reduzir vale no ciclo seguinte. Toda mudança gera auditoria nos dois lados e um recibo por e-mail.
+
+### Provisionamento e escolha da célula _(a construir, CE-15)_
+
+O webhook não muda. Para a oferta `platform`, o `preflight` escolhe a célula numa transação do Firestore: só as
+`open` com as métricas medidas abaixo dos limites, com `reservado + pedido ≤ capacidade`, enchendo uma até 70% antes
+de passar à próxima; a reserva e o `placement` do cliente (que nunca muda sozinho) são gravados juntos. Sem lugar,
+`provisioning_failed: cell_capacity` e um alerta ao responsável, nunca um nó dedicado no lugar. Os passos: o CNAME
+`api-<slug>` para o túnel da célula, o site do Firebase com o painel **na versão da célula**, o `envs/cell-tenant`
+(conta de serviço, permissões e cofre do primeiro acesso), o comando `tenant.upsert`, a espera do `tenant.applied`, o
+`/health` pelo host do cliente e a revelação da senha de sempre. A capacidade de cada célula sai do ensaio de carga
+(CE-18); uma célula nova é um `apply` do ambiente da célula e uma linha no registro.
+
+### Ciclo de vida do cliente na célula
+
+O plano de controle continua dono dos estados (seção "Ciclo de vida depois da venda"); a célula guarda o espelho em
+`Tenant.status`, que agora tem `suspended`, `canceled` e `purging`, além de `active` e `inactive` _(o estado e o que
+ele bloqueia no nó estão no código desde o CE-02; quem o grava na célula é o comando do CE-05)_:
+
+- **Suspender** (carência vencida, `unpaid`, fraude): sessões revogadas, login recusado com a mensagem de pagamento,
+  coleta parada (fora do Wazuh, da GCP, do Cloudflare e das conferências da AWS), dados guardados; o plano de controle
+  desativa a conta de serviço do cliente. O `node_power` do `tick` não age em cliente de célula.
+- **Reativar:** a conta de serviço volta, e depois `active`.
+- **Cancelar:** `canceled`, com o mesmo efeito da suspensão (o login recusado com a mensagem genérica), e a exportação.
+- **Expurgar** (D+1): `purging`, a única porta para apagar os dados de um cliente da célula.
+
+A transição é só do sistema: o cadastro de clientes da API (`admin_verax`) continua só com `active` e `inactive` e
+recusa mudar o estado de um cliente que está num estado do ciclo de vida.
+
+### Exclusão e a promessa dos 100 dias na célula _(a construir, CE-03 e CE-16)_
+
+Na célula, a VM continua no ar depois do cancelamento. Com o calendário do nó dedicado (dados até D+30), os backups da
+célula com o cliente viveriam até cerca de D+129, e a frase do site ("eliminados também dos backups em até 100 dias")
+deixaria de valer. Por isso a célula tem calendário próprio e backups de 85 dias:
+
+| Quando                 | O que acontece                                                                                                                                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D (cancelamento)       | `canceled`: sessões revogadas, login recusado, toda coleta do cliente parada, conta de serviço desativada. A célula exporta cada tabela do cliente (NDJSON compactado, sem segredo) para o bucket de exportações da célula e avisa `export.ready`                                                                         |
+| D+1 (com a exportação) | `tenant.purge`, com a confirmação do subdomínio: `purging`, e os dados do cliente saem do banco da célula em lotes, pela função `verax_purge_tenant` (a auditoria e os comentários só saem com o cliente em `purging`, conferido no banco); depois, a conta de serviço, os cofres, os tópicos, o DNS e o site do Firebase |
+| até D+30               | O responsável gera um link de 24 h para **aquela** exportação; o ciclo de vida do bucket (31 dias) é o limite, e o plano de controle a apaga em D+30                                                                                                                                                                      |
+| até cerca de D+95      | O último backup com o cliente é de D+1: 85 dias de retenção, 7 de exclusão reversível e o assíncrono do ciclo de vida. Os snapshots (7 dias), o índice do Wazuh (30 dias, com a coleta parada em D) e o Pub/Sub (7 dias) saem antes                                                                                       |
+| D+97                   | Com a chave do cofre por cliente (CE-22), as versões dela são destruídas                                                                                                                                                                                                                                                  |
+
+Restaurar um cliente só, a partir de um backup da célula, vem com a ferramenta de mudança de célula (CE-24); até lá,
+restaurar um backup volta a célula inteira.
+
+### Risco residual: o raio de impacto é a célula
+
+O manager do Wazuh processa os logs de todos os clientes como root e guarda o token de 1 hora de cada um; o worker e o
+host emitem token para todos. Uma exploração do manager por um log forjado de um cliente alcançaria a leitura dos logs
+da AWS dos outros (só do IP da célula e só leitura). As mitigações são as de sempre (sem banco nem metadata para o
+manager, `cap_drop`, imagem pelo digest, tokens de 1 hora presos ao IP, regras de nível 12 para uso de outro IP), mas
+**o raio de impacto é a célula**. Essa é a diferença entre a Plataforma e o Dedicado, e vai assim para o DPA e os
+Termos. Outros riscos: o reinício do manager atinge todos os clientes; uma migration ou uma versão vale para todos ao
+mesmo tempo (janela de manutenção por célula, com o painel no mesmo passo); a medição vira fatura (por isso a medição
+na origem, a conferência e a aprovação do responsável); e o acesso da equipe da Verax fica concentrado num banco.
+
+### PRs da célula
+
+| Fase                                | PRs                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A: antes de a Verax mudar           | CE-00 (esta seção), CE-01 (host → cliente na API), CE-02 (plano por cliente e estados do cliente), CE-03 (ambiente da célula: tópicos, exportações, backups de 85 dias), CE-04 (pacote do nó em `NODE_MODE=cell`), CE-05 e CE-06 (o canal), CE-07 (`envs/cell-tenant`), CE-08 (tópicos da GCP), CE-09 (medição diária) e CE-10 (contador da franquia no painel) |
+| Portão V                            | O SOC da Verax muda para a célula: um segundo sink em cada projeto (os antigos ficam, rodando junto), 7 dias de comparação (achados por regra, uso por dia, Torre), a troca do CNAME `api-verax`, contas por cliente para os analistas e o desligamento do nó `lean` (o projeto da Verax fica, com a chave de release e o Artifact Registry)                    |
+| B: antes da primeira venda online   | CE-11 e CE-12 (identidade da AWS por cliente), CE-13 (auditor de objetos da AWS), CE-14 (preço e checkout da Plataforma), CE-15 (provisionamento na célula), CE-16 (ciclo de vida e expurgo), CE-17 (revezamento e limites por cliente), CE-18 (ensaio de carga) e CE-19 (ampliar a franquia)                                                                   |
+| C: antes de o primeiro ciclo fechar | CE-20 (fechamento do excedente)                                                                                                                                                                                                                                                                                                                                 |
+| D: depois da primeira venda         | CE-21 (RLS), CE-22 (chave do cofre por cliente), CE-23 (unicidade só entre contas verificadas), CE-24 (mudar de célula e restaurar um cliente) e CE-25 (segunda célula)                                                                                                                                                                                         |
 
 ## Plano de controle _(fase 3, a construir)_
 
