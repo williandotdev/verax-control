@@ -228,6 +228,8 @@ interface LogOrigins {
 @Injectable()
 export class CloudAccountsService {
   private readonly node: NodeFacts;
+  /** Célula (CE-01): a recusa de origem repetida não diz se ela está em outro cliente. */
+  private readonly sharedCell: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -236,9 +238,10 @@ export class CloudAccountsService {
     @Inject(APP_CONFIG)
     config: Pick<
       AppConfig,
-      'GCP_SINK_TOPIC_PREFIX' | 'NODE_EGRESS_IPS' | 'NODE_SA_UNIQUE_ID' | 'AWS_WEB_IDENTITY_AUDIENCE'
+      'GCP_SINK_TOPIC_PREFIX' | 'NODE_EGRESS_IPS' | 'NODE_SA_UNIQUE_ID' | 'AWS_WEB_IDENTITY_AUDIENCE' | 'cell'
     >,
   ) {
+    this.sharedCell = config.cell !== null;
     this.node = {
       sinkTopicPrefix: config.GCP_SINK_TOPIC_PREFIX,
       egressIps: config.NODE_EGRESS_IPS ?? [],
@@ -452,7 +455,8 @@ export class CloudAccountsService {
    * - Zona do Cloudflare: o domínio identifica o cliente nos eventos do WAF.
    *
    * A checagem roda sob um lock transacional por origem, para dois cadastros simultâneos não passarem juntos.
-   * Responde só "já cadastrado", sem dizer de quem.
+   * Responde só "já cadastrado", sem dizer de quem. Na célula (CE-01), nem se é de outro cliente: a mesma frase para a
+   * origem de outro cliente e para a de outra conta do próprio, e nada nela aponta para quem tem a origem.
    */
   private async assertOriginsFree(auth: RequestAuth, origins: LogOrigins, exceptId?: string): Promise<void> {
     const tenantId = auth.scopeTenantId as string;
@@ -507,7 +511,10 @@ export class CloudAccountsService {
         select: { id: true },
       });
       if (taken) {
-        throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outro cliente`);
+        throw new ApiError(
+          HttpStatus.CONFLICT,
+          this.sharedCell ? check.label : `${check.label} em outro cliente`,
+        );
       }
       if (!check.onePerAccount) continue;
       const repeated = await db.cloudAccount.findFirst({
@@ -515,7 +522,10 @@ export class CloudAccountsService {
         select: { id: true },
       });
       if (repeated) {
-        throw new ApiError(HttpStatus.CONFLICT, `${check.label} em outra conta deste cliente`);
+        throw new ApiError(
+          HttpStatus.CONFLICT,
+          this.sharedCell ? check.label : `${check.label} em outra conta deste cliente`,
+        );
       }
     }
   }
