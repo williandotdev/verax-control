@@ -92,7 +92,7 @@ locals {
 }
 
 variable "service_env" {
-  description = "Variáveis de ambiente dos dois serviços (plano, seção 2.5), por cima dos padrões de `service_env_defaults` em run.tf; uma chave igual substitui o padrão. Só o que não é segredo nem o Terraform deriva (a validação recusa essas chaves). Nada de SMTP nem remetente aqui: isso é só do cp-worker (`worker_env`). Ex.: { TERMS_VERSION = \"2026-11-01\", TRUST_PROXY_HOPS = \"1\" }."
+  description = "Variáveis de ambiente dos dois serviços (plano, seção 2.5), por cima dos padrões de `service_env_defaults` em run.tf; uma chave igual substitui o padrão. Só o que não é segredo nem o Terraform deriva (a validação recusa essas chaves). Nada de SMTP nem remetente aqui: isso é só do cp-worker (`worker_env`). Ex.: { STRIPE_PORTAL_LOGIN_URL = \"https://billing.stripe.com/p/login/...\", TRUST_PROXY_HOPS = \"1\" }. As versões dos textos legais não vêm daqui: o responsável as publica no console."
   type        = map(string)
   default     = {}
 

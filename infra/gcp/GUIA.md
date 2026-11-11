@@ -833,7 +833,7 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
   que já existem neste projeto ficam fora do alcance dele.
 - **Cloudflare:** o token (passo 4) e os registros de DNS (passo 6); conferir a cota de registros da zona (item 13).
 - **GitHub:** o environment (passo 7).
-- **Serviços:** `service_env` (os dois serviços) com as versões dos aceites, a URL do Portal e, se o app exigir,
+- **Serviços:** `service_env` (os dois serviços) com a URL do Portal e, se o app exigir,
   `TRUST_PROXY_HOPS` (o Terraform não decide quantos proxies o serviço confia; é do app, CP-01); `worker_env` (só o
   `cp-worker`) com o remetente e o usuário do SMTP; na primeira venda, `nodes_project_id`, `release_bucket`,
   `firebase_panel_projects`, `cloudflare_account_id`, `cloudflare_zone_id` (e `images_project_id` só se os nós forem
@@ -841,6 +841,9 @@ filas, relógio, site, domínio, rewrite, orçamento e canal de alerta). Ficam c
   17; o projeto dos nós, o bucket do estado dele e as permissões lá vêm do `envs/nodes-platform`, aplicado com
   `control_plane_project_id` depois deste ambiente). As chaves que o Terraform deriva de outras variáveis, os
   segredos, `ROLE` e `NODE_ENV` são recusados nos dois mapas; `SMTP_*` e `MAIL_FROM*` só entram em `worker_env`.
+- **Textos legais:** não são variáveis (as antigas `TERMS_VERSION`, `PRIVACY_VERSION` e `DPA_VERSION` são ignoradas e
+  podem sair do `service_env`). Antes de abrir o checkout, publique os Termos, a Privacidade e o DPA no console do
+  responsável (`docs/runbooks/console-do-responsavel.md`, seção 8): sem os três, o checkout responde 503.
 
 ### Operações do responsável no `cp-worker`
 

@@ -2,8 +2,9 @@
 
 O console é onde o responsável mantém o preço configurável do Verax Control: o **modelo de custos** (câmbio, nuvem por
 porte, tarifas, impostos, suporte, custos fixos e as metas de margem), a **tabela de preços** (regra de porte, preço e
-`lookup_key` da Stripe de cada componente, pacotes de partida), o **simulador de DRE** e os **clientes** (a lista, a
-linha do tempo do provisionamento, o cadastro de um contrato direto e as operações do responsável). Os números vivem
+`lookup_key` da Stripe de cada componente, pacotes de partida), o **simulador de DRE**, os **clientes** (a lista, a
+linha do tempo do provisionamento, o cadastro de um contrato direto e as operações do responsável) e os **textos
+legais** que o cliente aceita no checkout (Termos de uso, Política de privacidade e DPA, seção 8). Os números vivem
 só no Firestore do plano de controle; o repositório (público) não tem nenhum, e o console também não: ele só mostra o
 que a API devolve.
 
@@ -235,6 +236,9 @@ node apps/control-plane/dist/cli/publicar-precos.js --custos=<custos.json> --tab
 `--vigencia=<ISO 8601 com fuso>` agenda a tabela; sem `--projeto`, só a validação e a checagem, sem ler o banco. O
 alerta `pricing_margin_alert` não sai daqui (só do console): a saída avisa no lugar dele.
 
+Antes de abrir o checkout, publique também os três **textos legais** (seção 8): sem uma versão publicada de cada um,
+o checkout responde 503 `checkout_unavailable`, mesmo com a tabela e a Stripe prontas.
+
 ## 5. Como o "a partir de" chega ao site
 
 - O "a partir de" de cada modo é o preço da **configuração mínima** da tabela vigente (o menor porte, só o incluído,
@@ -335,3 +339,41 @@ ele. Iniciar, retomar, suspender, reativar e exportar não existem para ele, e o
 Tudo o que se grava no console vai à auditoria (`auditLog`) como `owner:<e-mail>`: rascunho criado e editado (com a
 diferença), publicação (com o resumo da checagem), aposentadoria e publicação recusada; o cadastro de um cliente, cada
 pedido ao `cp-worker` com o desfecho (`tenant.console_request`) e cada recusa.
+
+## 8. Textos legais (Termos, Privacidade e DPA)
+
+Os três textos que o cliente aceita no checkout vivem no Firestore (`legalTexts/{terms|privacy|dpa}/versions`), em
+Markdown, versionados como as tabelas de preço: **rascunho** (editável) e **publicada** (imutável; a mais recente é a
+vigente). O site mostra a vigente de cada um em `/termos`, `/privacidade` e `/dpa`, lendo
+`GET https://conta.veraxsistemas.com.br/v1/public/legal/{terms|privacy|dpa}` (o índice das vigentes, sem o texto, em
+`GET .../v1/public/legal`; uma versão antiga pelo nome em `.../legal/{tipo}/{versão}`). O checkout exige que o aceite do
+site traga as três versões vigentes (outra versão: 409 `terms_outdated`, e o site recarrega) e grava na reserva e na
+Stripe as versões aceitas. As versões não são mais variáveis de ambiente (`TERMS_VERSION`, `PRIVACY_VERSION` e
+`DPA_VERSION` saíram): uma que tenha ficado no `service_env` é ignorada, e pode sair dele.
+
+**Primeira publicação (antes de abrir o checkout):**
+
+1. **Textos legais.** A tela mostra os três, cada um com as versões e o aviso "Nenhuma versão publicada" no que falta.
+   Enquanto faltar algum, o checkout fica fechado (503 `checkout_unavailable`, com o log
+   `checkout_legal_texts_missing` dizendo qual).
+2. Em cada texto, **Novo rascunho**: a versão (sugerida pelo dia de hoje, `AAAA-MM-DD`; é o que o cliente vê no aceite
+   do Checkout) e o ponto de partida (a cópia da vigente, outra versão ou em branco). **Criar rascunho.**
+3. No rascunho, cole o texto ou use **Importar .md** (o arquivo da minuta ou o revisado pelo advogado, até 100 KB),
+   confira a **Prévia** ao lado e **Salvar rascunho**. A prévia mostra o Markdown básico (títulos, parágrafos, listas,
+   negrito, itálico e links); o site desenha o mesmo texto com o estilo dele. Se outra aba ou pessoa gravou o rascunho depois
+   que você o abriu, a gravação é recusada (`draft_changed`): **Recarregar o rascunho salvo** e refaça.
+4. **Publicar…**, digite a versão e **Confirmar a publicação.** Publicada, a versão não muda mais e vira a vigente na
+   hora; o site a mostra em até 5 minutos (o cache do CDN).
+5. Repita para os outros dois. Com os três publicados, o aviso some e o checkout abre (se o resto da configuração
+   estiver pronto).
+
+**Depois:**
+
+- **Revisão do advogado ou qualquer mudança:** na vigente, **Novo rascunho a partir desta versão** (ou **Exportar
+  .md**, mande o arquivo, e importe a revisão no rascunho), salve e publique. A nova vale para quem comprar dali em
+  diante; quem já é cliente continua com a versão que aceitou (gravada no cadastro dele), e a anterior continua legível
+  no site pela versão. Se a mudança exigir um aviso ou um novo aceite dos clientes atuais, isso é fora do console (e-mail).
+- **Durante uma publicação, um checkout em andamento** que mandou a versão anterior recebe 409 `terms_outdated` e o site
+  pede o aceite da nova. Por causa do cache de 5 minutos do site, publique fora do horário de movimento.
+- **Histórico** (em cada texto): quem criou, editou e publicou cada versão e quando, o tamanho e o SHA-256 do texto
+  publicado (a prova do que foi aceito). O texto não vai à auditoria; ele fica na própria versão, que não muda.
