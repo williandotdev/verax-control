@@ -111,6 +111,25 @@ export class AuditService {
       .sort((a, b) => a.at.getTime() - b.at.getTime() || (a.id < b.id ? -1 : 1));
   }
 
+  /**
+   * Os registros cujas ações começam por `prefix` (ex.: `legal.terms.`), do mais novo ao mais antigo, até `limit`.
+   * Desigualdade num campo só (`action >= prefix` e `action < prefix + '￿'`): sem índice composto. Lê todos os do
+   * prefixo e ordena aqui; serve a ações raras do console do responsável, nunca às de cliente.
+   */
+  async listByActionPrefix(prefix: string, limit: number): Promise<AuditRecordWithId[]> {
+    if (!auditActionSchema.safeParse(`${prefix}x`).success) throw new TypeError('prefixo de ação inválido');
+    const docs = await this.store.query(COLLECTIONS.auditLog, {
+      where: [
+        { field: 'action', op: '>=', value: prefix },
+        { field: 'action', op: '<', value: `${prefix}￿` },
+      ],
+    });
+    return docs
+      .map(({ id, data }) => ({ id, ...parseDocument(auditRecordSchema, COLLECTIONS.auditLog, id, data) }))
+      .sort((a, b) => b.at.getTime() - a.at.getTime() || (a.id < b.id ? 1 : -1))
+      .slice(0, limit);
+  }
+
   private toRecord(entry: AuditEntry): AuditRecord {
     const at = this.clock.now();
     return auditRecordSchema.parse({

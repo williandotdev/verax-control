@@ -1,8 +1,10 @@
 import { isUlid } from '../common/ulid.js';
+import { isLegalKind, type LegalKind } from '../legal/legal.schema.js';
 import { assertDocumentId } from './document-store.js';
 
 const TENANTS = 'tenants';
 const PROVISIONING_RUNS = 'provisioningRuns';
+const LEGAL_TEXTS = 'legalTexts';
 
 /** Id de cliente: sempre um ULID (`TenantStore.create`). Qualquer outra coisa (inclusive com barra) não monta caminho. */
 function tenantSubcollection(tenantId: string, name: string): string {
@@ -42,6 +44,15 @@ export const COLLECTIONS = {
   costModels: 'costModels',
   /** Cotações do site, válidas por 24 h; o checkout só aceita uma cotação gravada aqui. */
   quotes: 'quotes',
+  /**
+   * Textos legais versionados (Termos de uso, Política de privacidade e DPA): rascunho e publicada, uma subcoleção por
+   * texto (`legalTexts/terms/versions/{versão}`). A vigente sai de uma consulta de um campo só (`publishedAt`): sem
+   * índice composto. O documento `legalTexts/{tipo}` em si não existe.
+   */
+  legalVersions: (kind: LegalKind): string => {
+    if (!isLegalKind(kind)) throw new TypeError('texto legal inválido');
+    return `${LEGAL_TEXTS}/${kind}/versions`;
+  },
   /**
    * Login próprio do console do responsável (cp-admin): a conta de cada responsável (e-mail, hash da senha, segredo do
    * TOTP cifrado e os códigos de recuperação assinados), as sessões (pelo SHA-256 do id), as falhas de login por
