@@ -25,7 +25,7 @@ import type {
   PriceTable,
   ValidationIssue,
 } from '@/lib/api-types';
-import { CONTACT_REASON_LABELS, configurationSummary, SUPPORT_LABELS } from '@/lib/format';
+import { CONTACT_REASON_LABELS, configurationSummary, PLAN_LABELS, PLANS } from '@/lib/format';
 import { formatCents, formatInteger } from '@/lib/numbers';
 import { newUlid } from '@/lib/ulid';
 import { ConfirmBySlug } from './confirm-by-slug';
@@ -33,10 +33,7 @@ import { CUSTOMER_PROBLEM_LABELS, HOSTING_LABELS, PROBLEM_LABELS } from './label
 import { useInvalidateTenants } from './queries';
 import { QuoteSummary } from './quote-summary';
 
-const SUPPORT_OPTIONS: readonly Option[] = (['standard', 'priority'] as const).map((level) => ({
-  value: level,
-  label: SUPPORT_LABELS[level],
-}));
+const PLAN_OPTIONS: readonly Option[] = PLANS.map((plan) => ({ value: plan, label: PLAN_LABELS[plan] }));
 
 /** Onde o ambiente roda: escolha obrigatória, sem nenhuma marcada de início (cada uma tem consequências diferentes). */
 const HOSTING_OPTIONS: readonly RadioOption[] = [
@@ -44,13 +41,13 @@ const HOSTING_OPTIONS: readonly RadioOption[] = [
     value: 'verax',
     label: HOSTING_LABELS.verax,
     description:
-      'O ambiente sobe pelos mesmos passos de uma compra no site, com o nó e o painel na infraestrutura da Verax (tem custo de nuvem). A cotação usa a tabela do ambiente gerenciado.',
+      'O ambiente sobe pelos mesmos passos de uma compra no site, com o nó e o painel na infraestrutura da Verax (tem custo de nuvem).',
   },
   {
     value: 'customer',
     label: HOSTING_LABELS.customer,
     description:
-      'Nada é criado na infraestrutura da Verax: o cliente instala a versão publicada com o guia, e apaga o próprio ambiente no fim do contrato. A cotação usa a tabela da licença.',
+      'Nada é criado na infraestrutura da Verax: o cliente instala a versão publicada com o guia, e apaga o próprio ambiente no fim do contrato. Só o Dedicado e o vCISO, pelo mesmo preço por GB/dia.',
   },
 ];
 
@@ -59,24 +56,18 @@ const HOSTING_REQUIRED: ValidationIssue = {
   message: 'Escolha onde o ambiente roda: na infraestrutura da Verax ou na do cliente.',
 };
 
-/** O formulário como documento (os campos do cadastro, onde roda e as outras cinco respostas), antes de ir à API. */
+/** O formulário como documento (os campos do cadastro, onde roda, o plano e o volume), antes de ir à API. */
 type Draft = Partial<Omit<DirectTenantRequest, 'configuration'>> & {
   configuration?: Partial<DirectConfiguration>;
 };
 
-/** A configuração mínima da tabela vigente: o ponto de partida das respostas (o "a partir de"). */
-function minimalConfiguration(table: PriceTable): DirectConfiguration {
-  return {
-    cloudAccounts: table.cloudAccounts.included,
-    monthlyGib: table.volume.includedMonthlyGib,
-    agents: 0,
-    historyDays: table.history.includedDays,
-    support: 'standard',
-  };
-}
-
-function list(values: readonly number[]): string {
-  return values.map((value) => formatInteger(value)).join(', ');
+/** O que cada plano cota na tabela vigente, para a dica do volume. */
+function gbDayHint(table: PriceTable, plan: unknown): string {
+  const { plataforma, dedicado } = table.plans;
+  if (plan === 'plataforma') {
+    return `${formatInteger(plataforma.includedGbDay)} GB/dia incluídos, até ${formatInteger(plataforma.maxOnlineGbDay)}.`;
+  }
+  return `De ${formatInteger(dedicado.minGbDay)} a ${formatInteger(dedicado.maxGbDay)} GB/dia (abaixo do mínimo, sobe até ele).`;
 }
 
 function isHosting(value: unknown): value is Hosting {
@@ -91,9 +82,9 @@ function splitError(caught: unknown): { issues: readonly ValidationIssue[]; erro
 
 /**
  * O cadastro de um cliente de contrato direto (negociado com a Verax, sem o checkout do site e sem a Stripe): a
- * empresa, o administrador, o subdomínio, onde o ambiente roda (escolha obrigatória) e as outras cinco respostas da
- * calculadora; a cotação de referência pela tabela vigente, no modo do lugar escolhido; e a confirmação com o
- * subdomínio digitado. A API confere tudo de novo e cria o cliente. Na infraestrutura da Verax, pede ao cp-worker o
+ * empresa, o administrador, o subdomínio, onde o ambiente roda (escolha obrigatória), o plano (os três: o site vende só a
+ * Plataforma) e o volume em GB/dia; a cotação de referência pela tabela vigente (o mesmo preço nos dois lugares; no
+ * cliente, só o Dedicado e o vCISO); e a confirmação com o subdomínio digitado. A API confere tudo de novo e cria o cliente. Na infraestrutura da Verax, pede ao cp-worker o
  * início do provisionamento, que segue os mesmos passos de uma compra paga; na do cliente, nada é provisionado, e o
  * detalhe mostra o que mandar a ele para instalar.
  *
@@ -106,15 +97,18 @@ export function NewTenantPage() {
   const table = useCurrentVersion('pricing-tables');
   const tableContent = table.record.data?.content;
   const [idempotencyKey] = useState(newUlid);
-  const [draft, setDraft] = useState<unknown>({ configuration: { support: 'standard' } });
+  const [draft, setDraft] = useState<unknown>({ configuration: { plan: 'dedicado' } });
   const value = draft as Draft;
   const hosting = isHosting(value.hosting) ? value.hosting : undefined;
 
-  // A tabela vigente carregada preenche as respostas que faltam com a configuração mínima dela.
+  // A tabela vigente carregada preenche o volume com o mínimo do Dedicado (o plano mais comum no contrato direto).
   const [filled, setFilled] = useState(false);
   if (tableContent !== undefined && !filled) {
     setFilled(true);
-    setDraft({ ...value, configuration: { ...minimalConfiguration(tableContent), ...value.configuration } });
+    setDraft({
+      ...value,
+      configuration: { gbDay: tableContent.plans.dedicado.minGbDay, ...value.configuration },
+    });
   }
 
   const [issues, setIssues] = useState<readonly ValidationIssue[]>([]);
@@ -237,48 +231,20 @@ export function NewTenantPage() {
         />
 
         <Section
-          title="Configuração (as outras cinco respostas)"
-          description="As mesmas perguntas da calculadora do site. Cada resposta sobe até a opção que a tabela vende."
+          title="Plano e volume"
+          description="O preço depende só do volume de logs em GB por dia. A Plataforma é a do site; o Dedicado e o vCISO são só por contrato direto."
           path={['configuration']}
         >
           <Grid>
+            <SelectField path={['configuration', 'plan']} label="Plano" options={PLAN_OPTIONS} />
             <NumberField
-              path={['configuration', 'cloudAccounts']}
-              label="Contas de nuvem"
+              path={['configuration', 'gbDay']}
+              label="Volume de logs (GB/dia)"
               kind="integer"
               {...(tableContent === undefined
                 ? {}
-                : {
-                    hint: `${formatInteger(tableContent.cloudAccounts.included)} incluídas, até ${formatInteger(tableContent.cloudAccounts.max)}.`,
-                  })}
+                : { hint: gbDayHint(tableContent, value.configuration?.plan) })}
             />
-            <NumberField
-              path={['configuration', 'monthlyGib']}
-              label="Volume de logs (GiB/mês)"
-              kind="integer"
-              {...(tableContent === undefined
-                ? {}
-                : {
-                    hint: `Opções: ${list([tableContent.volume.includedMonthlyGib, ...tableContent.volume.bands.map((band) => band.monthlyGib)])}.`,
-                  })}
-            />
-            <NumberField
-              path={['configuration', 'agents']}
-              label="Agentes nas instâncias"
-              kind="integer"
-              hint="Ainda não provisionados na Verax nem cobertos pelo guia de instalação no cliente: deixe 0."
-            />
-            <NumberField
-              path={['configuration', 'historyDays']}
-              label="Histórico (dias)"
-              kind="integer"
-              {...(tableContent === undefined
-                ? {}
-                : {
-                    hint: `Opções: ${list([tableContent.history.includedDays, ...tableContent.history.extended.map((option) => option.days)])}.`,
-                  })}
-            />
-            <SelectField path={['configuration', 'support']} label="Suporte" options={SUPPORT_OPTIONS} />
           </Grid>
         </Section>
       </DraftForm>

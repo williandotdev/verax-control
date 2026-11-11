@@ -8,11 +8,12 @@ import type {
   GuardConfiguration,
   GuardReport,
   GuardScenario,
+  Machine,
   PaymentMethod,
+  PlanId,
   PriceTable,
   Quote,
   QuoteLineItem,
-  SizeId,
 } from '@/lib/api-types';
 
 /**
@@ -24,132 +25,104 @@ import type {
 
 type QuoteOutcome = { kind: 'quote'; quote: Quote } | { kind: 'contact_us'; reason: ContactReason };
 
-export function quote(input: ConfigurationInput, table: PriceTable): QuoteOutcome {
-  const cloudAccounts = Math.max(input.cloudAccounts, table.cloudAccounts.included);
-  if (cloudAccounts > table.cloudAccounts.max)
-    return { kind: 'contact_us', reason: 'cloud_accounts_above_max' };
-  let monthlyGib = table.volume.includedMonthlyGib;
-  if (input.monthlyGib > monthlyGib) {
-    const band = table.volume.bands.find((option) => option.monthlyGib >= input.monthlyGib);
-    if (band === undefined) return { kind: 'contact_us', reason: 'volume_above_max' };
-    monthlyGib = band.monthlyGib;
-  }
-  const agentPacks = Math.ceil(input.agents / table.agents.packSize);
-  if (agentPacks > table.agents.maxPacks) return { kind: 'contact_us', reason: 'agents_above_max' };
-  let historyDays = table.history.includedDays;
-  if (input.historyDays > historyDays) {
-    const option = table.history.extended.find((extended) => extended.days >= input.historyDays);
-    if (option === undefined) return { kind: 'contact_us', reason: 'history_above_max' };
-    historyDays = option.days;
-  }
-  const agents = agentPacks * table.agents.packSize;
-  const rule = table.sizing.sizes.find(
-    (size) =>
-      cloudAccounts <= size.maxCloudAccounts && monthlyGib <= size.maxMonthlyGib && agents <= size.maxAgents,
-  );
-  if (rule === undefined) return { kind: 'contact_us', reason: 'above_largest_size' };
-  const configuration: Configuration = {
-    mode: input.mode,
-    size: rule.size,
-    cloudAccounts,
-    monthlyGib,
-    agents,
-    historyDays,
-    support: input.support,
-  };
-  const pricing = table.modes[input.mode];
-  const environment = pricing.environment[rule.size];
-  if (environment === undefined) throw new TypeError('tabela fictícia sem o porte');
+const PLANS: readonly PlanId[] = ['plataforma', 'dedicado', 'vciso'];
+const PLAN_MODES: Readonly<Record<PlanId, readonly DeploymentMode[]>> = {
+  plataforma: ['managed'],
+  dedicado: ['managed', 'self_hosted'],
+  vciso: ['managed', 'self_hosted'],
+};
+
+function range(table: PriceTable, plan: PlanId): { min: number; max: number } {
+  const { plataforma, dedicado } = table.plans;
+  return plan === 'plataforma'
+    ? { min: plataforma.includedGbDay, max: plataforma.maxOnlineGbDay }
+    : { min: dedicado.minGbDay, max: dedicado.maxGbDay };
+}
+
+function itemsOf(table: PriceTable, plan: PlanId, gbDay: number): QuoteLineItem[] {
   const item = (entry: Omit<QuoteLineItem, 'amount'>): QuoteLineItem => ({
     ...entry,
     amount: entry.unitAmount * entry.quantity,
   });
-  const items: QuoteLineItem[] = [
+  const { plataforma, dedicado, vciso } = table.plans;
+  if (plan === 'plataforma') {
+    const items = [
+      item({
+        component: 'base',
+        variant: 'plataforma',
+        lookupKey: plataforma.base.lookupKey,
+        quantity: 1,
+        unitAmount: plataforma.base.amount,
+        recurring: true,
+      }),
+    ];
+    if (gbDay > plataforma.includedGbDay) {
+      items.push(
+        item({
+          component: 'additional_gb_day',
+          variant: 'plataforma',
+          lookupKey: plataforma.additionalGbDay.lookupKey,
+          quantity: gbDay - plataforma.includedGbDay,
+          unitAmount: plataforma.additionalGbDay.amount,
+          recurring: true,
+        }),
+      );
+    }
+    return items;
+  }
+  const items = [
     item({
-      component: 'environment',
-      variant: `${input.mode}_${rule.size}`,
-      lookupKey: environment.lookupKey,
-      quantity: 1,
-      unitAmount: environment.amount,
+      component: 'gb_day',
+      variant: 'dedicado',
+      lookupKey: dedicado.gbDay.lookupKey,
+      quantity: gbDay,
+      unitAmount: dedicado.gbDay.amount,
       recurring: true,
     }),
   ];
-  if (cloudAccounts > table.cloudAccounts.included) {
+  if (plan === 'vciso') {
     items.push(
       item({
-        component: 'cloud_accounts',
-        variant: 'additional',
-        lookupKey: table.cloudAccounts.additional.lookupKey,
-        quantity: cloudAccounts - table.cloudAccounts.included,
-        unitAmount: table.cloudAccounts.additional.amount,
-        recurring: true,
-      }),
-    );
-  }
-  const band = table.volume.bands.find((option) => option.monthlyGib === monthlyGib);
-  if (band !== undefined) {
-    items.push(
-      item({
-        component: 'volume',
-        variant: String(band.monthlyGib),
-        lookupKey: band.lookupKey,
+        component: 'service',
+        variant: 'vciso',
+        lookupKey: vciso.service.lookupKey,
         quantity: 1,
-        unitAmount: band.amount,
+        unitAmount: vciso.service.amount,
         recurring: true,
       }),
-    );
-  }
-  if (agentPacks > 0) {
-    items.push(
-      item({
-        component: 'agents',
-        variant: String(table.agents.packSize),
-        lookupKey: table.agents.pack.lookupKey,
-        quantity: agentPacks,
-        unitAmount: table.agents.pack.amount,
-        recurring: true,
-      }),
-    );
-  }
-  const history = table.history.extended.find((option) => option.days === historyDays);
-  if (history !== undefined) {
-    items.push(
-      item({
-        component: 'history',
-        variant: String(history.days),
-        lookupKey: history.lookupKey,
-        quantity: 1,
-        unitAmount: history.amount,
-        recurring: true,
-      }),
-    );
-  }
-  if (input.support === 'priority') {
-    items.push(
-      item({
-        component: 'priority_support',
-        variant: 'priority',
-        lookupKey: table.prioritySupport.lookupKey,
-        quantity: 1,
-        unitAmount: table.prioritySupport.amount,
-        recurring: true,
-      }),
-    );
-  }
-  if (pricing.setup !== undefined) {
-    items.push(
       item({
         component: 'setup',
-        variant: input.mode,
-        lookupKey: pricing.setup.lookupKey,
+        variant: 'vciso',
+        lookupKey: vciso.setup.lookupKey,
         quantity: 1,
-        unitAmount: pricing.setup.amount,
+        unitAmount: vciso.setup.amount,
         recurring: false,
       }),
     );
   }
+  return items;
+}
+
+export function quote(input: ConfigurationInput, table: PriceTable): QuoteOutcome {
+  if (!PLAN_MODES[input.plan].includes(input.mode)) return { kind: 'contact_us', reason: 'mode_unavailable' };
+  const limits = range(table, input.plan);
+  const gbDay = Math.max(input.gbDay, limits.min);
+  if (gbDay > limits.max) {
+    return { kind: 'contact_us', reason: input.plan === 'plataforma' ? 'above_online_max' : 'above_max' };
+  }
+  const rule = table.sizing.sizes.find((size) => gbDay <= size.maxGbDay);
+  if (rule === undefined) return { kind: 'contact_us', reason: 'above_largest_size' };
+  const configuration: Configuration = {
+    plan: input.plan,
+    mode: input.mode,
+    gbDay,
+    size: rule.size,
+    historyDays: table.history.includedDays,
+  };
+  const items = itemsOf(table, input.plan, gbDay);
   const monthlyTotal = items.filter((entry) => entry.recurring).reduce((sum, entry) => sum + entry.amount, 0);
   const setupTotal = items.filter((entry) => !entry.recurring).reduce((sum, entry) => sum + entry.amount, 0);
+  const { plataforma, dedicado } = table.plans;
   return {
     kind: 'quote',
     quote: {
@@ -160,21 +133,52 @@ export function quote(input: ConfigurationInput, table: PriceTable): QuoteOutcom
       setupTotal,
       firstInvoiceTotal: monthlyTotal + setupTotal,
       limits: {
-        maxCloudAccounts: cloudAccounts,
-        monthlyGib,
-        historyDays,
-        maxAgents: agents,
+        maxCloudAccounts:
+          input.plan === 'plataforma' ? plataforma.maxCloudAccounts : dedicado.maxCloudAccounts,
+        monthlyGib: Math.ceil((gbDay * 31 * 1e9) / 2 ** 30),
+        historyDays: table.history.includedDays,
+        maxAgents: 0,
         maxUsers: table.users.max,
       },
       included: {
-        cloudAccounts: table.cloudAccounts.included,
-        monthlyGib: table.volume.includedMonthlyGib,
+        gbDay: input.plan === 'plataforma' ? plataforma.includedGbDay : 0,
         historyDays: table.history.includedDays,
         users: table.users.max,
       },
-      agentPacks,
     },
   };
+}
+
+function machineUsd(machine: Machine, model: CostModel): number {
+  const infra = model.infrastructure;
+  return (
+    machine.vmUsdPerMonth +
+    machine.diskGb * infra.diskUsdPerGibMonth +
+    machine.snapshotGib * infra.snapshotUsdPerGibMonth +
+    infra.natUsdPerVmMonth +
+    infra.natIpUsdPerMonth +
+    infra.otherUsdPerNodeMonth
+  );
+}
+
+function dedicatedUsd(configuration: Configuration, model: CostModel): number {
+  const size = model.infrastructure.sizes[configuration.size] ?? {
+    vmUsdPerMonth: 0,
+    diskGb: 0,
+    snapshotGib: 0,
+  };
+  return machineUsd(size, model) + configuration.gbDay * model.infrastructure.ingestionUsdPerGbDay;
+}
+
+function cloudUsd(configuration: Configuration, model: CostModel): number {
+  const infra = model.infrastructure;
+  if (configuration.plan !== 'plataforma') return dedicatedUsd(configuration, model);
+  const cell = infra.sharedCell;
+  return (
+    (machineUsd(cell, model) / cell.capacityGbDay) * configuration.gbDay +
+    cell.perCustomerUsdPerMonth +
+    configuration.gbDay * infra.ingestionUsdPerGbDay
+  );
 }
 
 export function dre(
@@ -192,45 +196,35 @@ export function dre(
   const ratio = (part: number, whole: number): number => (whole === 0 ? 0 : part / whole);
   const taxRateId = options.taxRateId ?? model.taxes.defaultRateId;
   const tax = model.taxes.rates.find((rate) => rate.id === taxRateId)?.rate ?? 0;
+  const grossOf = (amount: number): { gross: number; taxes: number } => {
+    if (table.taxMode === 'exclusive' && tax < 1) {
+      const gross = cents(amount / (1 - tax));
+      return { gross, taxes: gross - amount };
+    }
+    return { gross: amount, taxes: cents(amount * tax) };
+  };
   const configuration = quoted.configuration;
   const managed = configuration.mode === 'managed';
-  const infra = model.infrastructure;
-  const size = infra.sizes[configuration.size] ?? { vmUsdPerMonth: 0, diskGb: 0, snapshotGib: 0 };
-  const perGib = infra.diskUsdPerGibMonth + infra.snapshotUsdPerGibMonth;
-  const cloudUsd =
-    size.vmUsdPerMonth +
-    size.diskGb * infra.diskUsdPerGibMonth +
-    size.snapshotGib * infra.snapshotUsdPerGibMonth +
-    infra.natUsdPerVmMonth +
-    infra.natIpUsdPerMonth +
-    infra.otherUsdPerNodeMonth +
-    configuration.monthlyGib * infra.ingestionUsdPerGib +
-    (configuration.agents > 0
-      ? infra.agents.entryUsdPerMonth +
-        (infra.agents.diskBaseGb + configuration.agents * infra.agents.diskPerAgentGb) * perGib
-      : 0);
+  const selfHosted = !managed;
   const fx = model.exchange.brlPerUsd * 100;
   const fees = model.paymentFees;
   const hours = model.support.hours;
-  const grossRevenue = cents(quoted.monthlyTotal * (1 - (options.discountRate ?? 0)));
-  const taxes = cents(grossRevenue * tax);
+  const tableRevenue = cents(quoted.monthlyTotal * (1 - (options.discountRate ?? 0)));
+  const { gross: grossRevenue, taxes } = grossOf(tableRevenue);
   const refundReserve = cents(grossRevenue * model.refundReserveRate);
   const netRevenue = grossRevenue - taxes - refundReserve;
-  const infrastructure = managed ? cents(cloudUsd * fx * (1 + model.exchange.cloudBuffer)) : 0;
+  const infrastructure = managed
+    ? cents(cloudUsd(configuration, model) * fx * (1 + model.exchange.cloudBuffer))
+    : 0;
   const paymentFees =
     options.paymentMethod === 'card'
       ? cents(grossRevenue * (fees.card.rate + fees.billingRate) + fees.card.fixed)
       : cents(fees.boleto.fixed + grossRevenue * fees.billingRate);
-  const volumeHours =
-    configuration.monthlyGib > table.volume.includedMonthlyGib
-      ? (hours.perVolumeBand.find((band) => band.monthlyGib === configuration.monthlyGib)?.hours ?? 0)
-      : 0;
   const supportHours =
-    (managed ? hours.baseManaged : hours.baseSelfHosted) +
-    Math.max(0, configuration.cloudAccounts - table.cloudAccounts.included) * hours.perAdditionalAccount +
-    quoted.agentPacks * hours.perAgentPack +
-    volumeHours +
-    (configuration.support === 'priority' ? hours.prioritySupport : 0);
+    (configuration.plan === 'plataforma'
+      ? hours.plataforma
+      : hours.dedicado + (configuration.plan === 'vciso' ? hours.vcisoService : 0)) +
+    (selfHosted ? hours.selfHosted : 0);
   const support = cents(supportHours * model.support.hourlyCost);
   const contributionMargin = netRevenue - infrastructure - paymentFees - support;
   const totalFixed = model.fixedCosts.items.reduce((sum, item) => sum + item.monthly, 0);
@@ -238,26 +232,29 @@ export function dre(
     totalFixed / Math.max(1, options.allocationCustomers ?? model.fixedCosts.allocationCustomers),
   );
   const result = contributionMargin - fixedCosts;
-  const setupRevenue = quoted.setupTotal;
+  const setup = grossOf(quoted.setupTotal);
   const setupSupportHours =
-    (managed ? hours.setupManaged : hours.setupSelfHosted) +
-    (configuration.support === 'priority' ? hours.setupPriorityExtra : 0);
-  const setupTaxes = cents(setupRevenue * tax);
-  const setupReserve = cents(setupRevenue * model.refundReserveRate);
+    (configuration.plan === 'plataforma'
+      ? hours.setupPlataforma
+      : hours.setupDedicado + (configuration.plan === 'vciso' ? hours.setupVciso : 0)) +
+    (selfHosted ? hours.setupSelfHosted : 0);
+  const setupReserve = cents(setup.gross * model.refundReserveRate);
   const setupFees =
     options.paymentMethod === 'card'
-      ? cents(setupRevenue * (fees.card.rate + fees.billingRate))
-      : cents(setupRevenue * fees.billingRate);
+      ? cents(setup.gross * (fees.card.rate + fees.billingRate))
+      : cents(setup.gross * fees.billingRate);
   const setupSupport = cents(setupSupportHours * model.support.hourlyCost);
-  const setupMargin = setupRevenue - setupTaxes - setupReserve - setupFees - setupSupport;
-  const estimate = cents(cloudUsd * fx);
+  const setupMargin = setup.gross - setup.taxes - setupReserve - setupFees - setupSupport;
+  const estimate = managed ? 0 : cents(dedicatedUsd(configuration, model) * fx);
   const spread = model.customerCloudEstimateSpread;
   return {
     quote: quoted,
     paymentMethod: options.paymentMethod,
     taxRateId,
+    taxMode: table.taxMode,
     supportHours,
     monthly: {
+      tableRevenue,
       grossRevenue,
       taxes,
       refundReserve,
@@ -273,17 +270,17 @@ export function dre(
       resultRatio: ratio(result, grossRevenue),
     },
     setup: {
-      revenue: setupRevenue,
-      taxes: setupTaxes,
+      revenue: setup.gross,
+      taxes: setup.taxes,
       refundReserve: setupReserve,
       paymentFees: setupFees,
       supportHours: setupSupportHours,
       support: setupSupport,
       contributionMargin: setupMargin,
-      contributionMarginRatio: setupRevenue === 0 ? null : ratio(setupMargin, setupRevenue),
+      contributionMarginRatio: setup.gross === 0 ? null : ratio(setupMargin, setup.gross),
     },
     twelveMonths: {
-      grossRevenue: 12 * grossRevenue + setupRevenue,
+      grossRevenue: 12 * grossRevenue + setup.gross,
       contributionMargin: 12 * contributionMargin + setupMargin,
       result: 12 * result + setupMargin,
     },
@@ -300,9 +297,6 @@ function worse(a: GuardConfiguration, b: GuardConfiguration): number {
 /** A checagem da grade (sem a monotonia, que a tabela fictícia não quebra). */
 export function guard(table: PriceTable, model: CostModel): GuardReport {
   const taxRateId = model.taxes.defaultRateId;
-  const modes: DeploymentMode[] = ['managed', 'self_hosted'];
-  const volumes = [table.volume.includedMonthlyGib, ...table.volume.bands.map((band) => band.monthlyGib)];
-  const histories = [table.history.includedDays, ...table.history.extended.map((option) => option.days)];
   const all: GuardConfiguration[] = [];
   const report: GuardReport = {
     ok: false,
@@ -316,8 +310,8 @@ export function guard(table: PriceTable, model: CostModel): GuardReport {
     belowMinimum: { count: 0, configurations: [] },
     belowAlert: { count: 0, configurations: [] },
     worst: [],
+    worstByPlan: {},
     worstByMode: {},
-    worstBySize: {},
     otherScenarios: [],
     monotonicity: { violations: 0, examples: [] },
     startingAt: {},
@@ -329,63 +323,46 @@ export function guard(table: PriceTable, model: CostModel): GuardReport {
       .map((rate): GuardScenario => ({ taxRateId: rate.id, paymentMethod: 'card', worst: null })),
     { taxRateId, paymentMethod: 'boleto', worst: null },
   ];
-  for (const mode of modes) {
-    for (
-      let cloudAccounts = table.cloudAccounts.included;
-      cloudAccounts <= table.cloudAccounts.max;
-      cloudAccounts += 1
-    ) {
-      for (const monthlyGib of volumes) {
-        for (let packs = 0; packs <= table.agents.maxPacks; packs += 1) {
-          for (const historyDays of histories) {
-            for (const support of ['standard', 'priority'] as const) {
-              const outcome = quote(
-                {
-                  mode,
-                  cloudAccounts,
-                  monthlyGib,
-                  agents: packs * table.agents.packSize,
-                  historyDays,
-                  support,
-                },
-                table,
-              );
-              if (outcome.kind !== 'quote') {
-                report.contactUsConfigurations += 1;
-                continue;
-              }
-              report.checkedConfigurations += 1;
-              const monthly = dre(outcome.quote, table, model, { paymentMethod: 'card', taxRateId }).monthly;
-              const entry: GuardConfiguration = {
-                configuration: outcome.quote.configuration,
-                monthlyTotal: outcome.quote.monthlyTotal,
-                contributionMargin: monthly.contributionMargin,
-                contributionMarginRatio: monthly.contributionMarginRatio,
-              };
-              all.push(entry);
-              const minimum = report.gridMinimum[mode];
-              if (minimum === undefined || entry.monthlyTotal < minimum)
-                report.gridMinimum[mode] = entry.monthlyTotal;
-              const byMode = report.worstByMode[mode];
-              if (byMode === undefined || worse(entry, byMode) < 0) report.worstByMode[mode] = entry;
-              const sizeId: SizeId = entry.configuration.size;
-              const bySize = report.worstBySize[sizeId];
-              if (bySize === undefined || worse(entry, bySize) < 0) report.worstBySize[sizeId] = entry;
-              for (const scenario of scenarios) {
-                const lines = dre(outcome.quote, table, model, scenario).monthly;
-                const candidate = {
-                  ...entry,
-                  contributionMargin: lines.contributionMargin,
-                  contributionMarginRatio: lines.contributionMarginRatio,
-                };
-                if (scenario.worst === null || worse(candidate, scenario.worst) < 0)
-                  scenario.worst = candidate;
-              }
-            }
-          }
+  for (const plan of PLANS) {
+    const limits = range(table, plan);
+    for (const mode of PLAN_MODES[plan]) {
+      for (let gbDay = limits.min; gbDay <= limits.max; gbDay += 1) {
+        const outcome = quote({ plan, gbDay, mode }, table);
+        if (outcome.kind !== 'quote') {
+          report.contactUsConfigurations += 1;
+          continue;
+        }
+        report.checkedConfigurations += 1;
+        const monthly = dre(outcome.quote, table, model, { paymentMethod: 'card', taxRateId }).monthly;
+        const entry: GuardConfiguration = {
+          configuration: outcome.quote.configuration,
+          monthlyTotal: outcome.quote.monthlyTotal,
+          contributionMargin: monthly.contributionMargin,
+          contributionMarginRatio: monthly.contributionMarginRatio,
+        };
+        all.push(entry);
+        if (mode === 'managed') {
+          const minimum = report.gridMinimum[plan];
+          if (minimum === undefined || entry.monthlyTotal < minimum)
+            report.gridMinimum[plan] = entry.monthlyTotal;
+        }
+        const byPlan = report.worstByPlan[plan];
+        if (byPlan === undefined || worse(entry, byPlan) < 0) report.worstByPlan[plan] = entry;
+        const byMode = report.worstByMode[mode];
+        if (byMode === undefined || worse(entry, byMode) < 0) report.worstByMode[mode] = entry;
+        for (const scenario of scenarios) {
+          const lines = dre(outcome.quote, table, model, scenario).monthly;
+          const candidate = {
+            ...entry,
+            contributionMargin: lines.contributionMargin,
+            contributionMarginRatio: lines.contributionMarginRatio,
+          };
+          if (scenario.worst === null || worse(candidate, scenario.worst) < 0) scenario.worst = candidate;
         }
       }
     }
+    const start = quote({ plan, gbDay: limits.min, mode: 'managed' }, table);
+    if (start.kind === 'quote') report.startingAt[plan] = start.quote.monthlyTotal;
   }
   all.sort(worse);
   const below = all.filter((entry) => entry.contributionMarginRatio < model.margins.minimum);
@@ -398,20 +375,6 @@ export function guard(table: PriceTable, model: CostModel): GuardReport {
   report.belowAlert = { count: alert.length, configurations: alert.slice(0, 20) };
   report.worst = all.slice(0, 10);
   report.otherScenarios = scenarios;
-  for (const mode of modes) {
-    const start = quote(
-      {
-        mode,
-        cloudAccounts: table.cloudAccounts.included,
-        monthlyGib: table.volume.includedMonthlyGib,
-        agents: 0,
-        historyDays: table.history.includedDays,
-        support: 'standard',
-      },
-      table,
-    );
-    if (start.kind === 'quote') report.startingAt[mode] = start.quote.monthlyTotal;
-  }
   report.ok = below.length === 0;
   return report;
 }

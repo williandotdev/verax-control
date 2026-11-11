@@ -24,7 +24,7 @@ export const COST_MODELS: KindConfig = {
   singular: 'modelo de custos',
   basePath: '/modelos-de-custo',
   description:
-    'Câmbio, nuvem por porte, tarifas, impostos, suporte, custos fixos e as metas de margem. Confidencial: fica só no Firestore e neste console. Publicar muda as simulações e os alertas de margem, nunca o preço de ninguém.',
+    'Câmbio, a célula compartilhada da Plataforma, o nó por porte, a ingestão por GB/dia, tarifas, impostos, suporte por plano, custos fixos e as metas de margem. Confidencial: fica só no Firestore e neste console. Publicar muda as simulações e os alertas de margem, nunca o preço de ninguém.',
   publishNote:
     'O modelo publicado vale na hora para a checagem e o simulador. A tabela de preços vigente é conferida com ele e, se não passar, o alerta de margem vai ao log; a tabela não muda.',
   scheduledPublish: false,
@@ -37,7 +37,7 @@ export const PRICING_TABLES: KindConfig = {
   singular: 'tabela de preços',
   basePath: '/tabelas-de-preco',
   description:
-    'Regra de porte, preços por componente com o lookup_key da Stripe e os pacotes de partida. A versão publicada é a que o site cota; uma versão nova nunca muda assinaturas existentes.',
+    'Os três planos por volume de logs em GB/dia (Plataforma, Dedicado e vCISO), a regra de porte e o lookup_key da Stripe de cada preço. A versão publicada é a que o site cota; uma versão nova nunca muda assinaturas existentes. Versões do modelo de preço anterior aparecem só na lista.',
   publishNote:
     'A publicação roda a checagem da grade inteira com o modelo de custos vigente e só passa se nenhuma configuração ficar abaixo da margem mínima. A versão anterior vira aposentada na vigência da nova.',
   scheduledPublish: true,

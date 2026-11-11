@@ -27,6 +27,9 @@
  *   --projeto=<id>        o projeto GCP do Firestore (ou FIRESTORE_PROJECT_ID); sem ele, só a validação e a checagem
  *   --banco=<id>          o banco do Firestore (padrão `(default)`)
  *   --vigencia=<ISO 8601> a vigência da tabela, com fuso (padrão: agora)
+ *   --aliquota-stripe=<id> a alíquota da Stripe do imposto por cima (`txr_...`, ou STRIPE_TAX_RATE_ID): a mesma que o
+ *                         cp-public e o cp-admin têm. Sem ela, uma tabela sem impostos (`taxMode: exclusive`) reprova,
+ *                         como no console: o checkout cobraria só o valor da tabela
  *   --publicar            grava (sem ela, simulação)
  *
  * Saída: 0 feito (ou simulado sem problema), 1 recusado (checagem reprovada, versão publicada com outro conteúdo,
@@ -42,6 +45,7 @@ import { z } from 'zod';
 import { AdminPricingService } from '../admin/admin-pricing.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { type Clock, SystemClock } from '../common/clock.js';
+import { stripeTaxRateIdSchema } from '../common/config/env.schema.js';
 import { ApiError } from '../common/http/api-error.js';
 import { newUlid } from '../common/ulid.js';
 import type { DocumentStore } from '../firestore/document-store.js';
@@ -57,12 +61,13 @@ import {
   type CostModel,
   costModelSchema,
   DEPLOYMENT_MODES,
+  PLAN_IDS,
   type PriceTable,
   priceTableSchema,
   versionIdSchema,
 } from '../pricing/pricing.schema.js';
 import { type GuardConfiguration, type GuardReport, runPublishGuard } from '../pricing/publish-guard.js';
-import { quote } from '../pricing/quote.js';
+import { gbDayRange, quote } from '../pricing/quote.js';
 
 export const EXIT = { ok: 0, refused: 1, usage: 2, backend: 3 } as const;
 
@@ -164,8 +169,8 @@ function percent(ratio: number | null | undefined): string {
 function describeConfiguration(entry: GuardConfiguration): string {
   const c = entry.configuration;
   return (
-    `${c.mode} ${c.size}, ${c.cloudAccounts} contas, ${c.monthlyGib} GiB, ${c.agents} agentes, ${c.historyDays} dias, ` +
-    `suporte ${c.support}: ${brl(entry.monthlyTotal)}/mês, margem ${percent(entry.contributionMarginRatio)}`
+    `${c.plan} ${c.gbDay} GB/dia (${c.mode}, porte ${c.size}): ${brl(entry.monthlyTotal)}/mês, ` +
+    `margem ${percent(entry.contributionMarginRatio)}`
   );
 }
 
@@ -236,12 +241,13 @@ function printReport(report: GuardReport, costModelLabel: string, out: (line: st
   for (const entry of report.belowMinimum.configurations.slice(0, 5)) {
     out(`  abaixo da mínima: ${describeConfiguration(entry)}`);
   }
+  for (const plan of PLAN_IDS) {
+    const worst = report.worstByPlan[plan];
+    if (worst !== undefined) out(`  pior do plano ${plan}: ${describeConfiguration(worst)}`);
+  }
   for (const mode of DEPLOYMENT_MODES) {
     const worst = report.worstByMode[mode];
     if (worst !== undefined) out(`  pior do modo ${mode}: ${describeConfiguration(worst)}`);
-  }
-  for (const [size, worst] of Object.entries(report.worstBySize)) {
-    out(`  pior do porte ${size}: ${describeConfiguration(worst)}`);
   }
   for (const scenario of report.otherScenarios) {
     if (scenario.worst === null) continue;
@@ -250,27 +256,32 @@ function printReport(report: GuardReport, costModelLabel: string, out: (line: st
         describeConfiguration(scenario.worst),
     );
   }
-  for (const mode of DEPLOYMENT_MODES) {
-    const start = report.startingAt[mode];
-    const minimum = report.gridMinimum[mode];
+  for (const plan of PLAN_IDS) {
+    const start = report.startingAt[plan];
+    const minimum = report.gridMinimum[plan];
     if (start !== undefined || minimum !== undefined) {
       out(
-        `  "a partir de" ${mode}: ${start === undefined ? '-' : brl(start)} ` +
+        `  "a partir de" ${plan}: ${start === undefined ? '-' : brl(start)} ` +
           `(menor preço da grade: ${minimum === undefined ? '-' : brl(minimum)})`,
       );
     }
   }
 }
 
-function printPresets(table: PriceTable, out: (line: string) => void): void {
-  for (const preset of table.presets) {
-    const outcome = quote(preset.configuration, table);
-    out(
-      outcome.kind === 'quote'
-        ? `  pacote ${preset.id} (${preset.label}): porte ${outcome.quote.configuration.size}, ` +
-            `${brl(outcome.quote.monthlyTotal)}/mês`
-        : `  pacote ${preset.id} (${preset.label}): sob consulta (${outcome.reason})`,
-    );
+/** As pontas de cada plano (o menor e o maior volume cotável) na infraestrutura da Verax, para conferir os números. */
+function printPlans(table: PriceTable, out: (line: string) => void): void {
+  for (const plan of PLAN_IDS) {
+    const range = gbDayRange(table, plan);
+    for (const gbDay of range.min === range.max ? [range.min] : [range.min, range.max]) {
+      const outcome = quote({ plan, gbDay, mode: 'managed' }, table);
+      out(
+        outcome.kind === 'quote'
+          ? `  ${plan} ${gbDay} GB/dia: porte ${outcome.quote.configuration.size}, ` +
+              `${brl(outcome.quote.monthlyTotal)}/mês` +
+              (outcome.quote.setupTotal > 0 ? ` + ${brl(outcome.quote.setupTotal)} uma vez` : '')
+          : `  ${plan} ${gbDay} GB/dia: sob consulta (${outcome.reason})`,
+      );
+    }
   }
 }
 
@@ -413,7 +424,9 @@ function usage(out: (line: string) => void): void {
   out(
     '  node apps/control-plane/dist/cli/publicar-precos.js [--custos=<arquivo>] [--tabela=<arquivo>] [--projeto=<id>]',
   );
-  out('      [--banco=(default)] [--vigencia=<ISO 8601 com fuso>] [--publicar]');
+  out(
+    '      [--banco=(default)] [--vigencia=<ISO 8601 com fuso>] [--aliquota-stripe=<txr_...>] [--publicar]',
+  );
   out(
     'Os arquivos ficam fora do repositório, no formato { "version", "content" } (o "Exportar JSON" do console).',
   );
@@ -435,6 +448,7 @@ export async function main(io: PublishPricingIo): Promise<number> {
         projeto: { type: 'string' },
         banco: { type: 'string', default: '(default)' },
         vigencia: { type: 'string' },
+        'aliquota-stripe': { type: 'string' },
         publicar: { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
       },
@@ -457,6 +471,11 @@ export async function main(io: PublishPricingIo): Promise<number> {
   const project = args.projeto ?? io.env['FIRESTORE_PROJECT_ID'];
   if (project !== undefined && !PROJECT_PATTERN.test(project)) {
     out('--projeto inválido: o id do projeto GCP.');
+    return EXIT.usage;
+  }
+  const stripeTaxRateId = args['aliquota-stripe'] ?? io.env['STRIPE_TAX_RATE_ID'];
+  if (stripeTaxRateId !== undefined && !stripeTaxRateIdSchema.safeParse(stripeTaxRateId).success) {
+    out('--aliquota-stripe inválida: o id da alíquota de imposto da Stripe (txr_...).');
     return EXIT.usage;
   }
   if (!DATABASE_PATTERN.test(args.banco)) {
@@ -547,10 +566,12 @@ export async function main(io: PublishPricingIo): Promise<number> {
         );
         return EXIT.usage;
       }
-      const report = runPublishGuard(tableFile.content, model.content);
+      const report = runPublishGuard(tableFile.content, model.content, {
+        stripeTaxRate: stripeTaxRateId !== undefined,
+      });
       printReport(report, model.label, out);
-      out('Pacotes de partida:');
-      printPresets(tableFile.content, out);
+      out(`Planos (preços ${tableFile.content.taxMode === 'exclusive' ? 'sem impostos' : 'com impostos'}):`);
+      printPlans(tableFile.content, out);
       guardOk = report.ok;
     }
 
@@ -583,7 +604,9 @@ export async function main(io: PublishPricingIo): Promise<number> {
     const owner: OwnerContext = { email, requestId: newUlid(clock.now().getTime()) };
     out(`Publicando como owner:${email} (requestId ${owner.requestId ?? ''}).`);
     const logger = new PinoLogger({ pinoHttp: { level: 'silent' } });
-    const service = new AdminPricingService(tables, costs, audit, clock, logger);
+    const service = new AdminPricingService(tables, costs, audit, clock, logger, {
+      ...(stripeTaxRateId === undefined ? {} : { STRIPE_TAX_RATE_ID: stripeTaxRateId }),
+    });
     try {
       for (const plan of plans) {
         // O modelo de custos vem antes (a lista já está nessa ordem): a checagem da tabela usa o vigente.

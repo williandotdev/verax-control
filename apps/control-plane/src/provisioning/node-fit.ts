@@ -5,7 +5,9 @@ import { limitsFitNode } from './executor-env.js';
 /**
  * Por que uma configuração não cabe no que o `envs/tenant` sabe criar hoje (CP-06 e CP-07): outro modo (o ambiente na
  * infraestrutura do cliente nunca é provisionado), outro porte (só o P, perfil `standard`), agentes do Wazuh nas
- * instâncias do cliente (fora do `envs/tenant`) ou limites fora das faixas do nó (`NODE_LIMIT_RANGES`).
+ * instâncias do cliente (fora do `envs/tenant`) ou limites fora das faixas do nó (`NODE_LIMIT_RANGES`). Vale para todo
+ * plano: até a célula multi-cliente existir, um cliente da Plataforma também ganha um nó P próprio, e a checagem de
+ * publicação recusa uma tabela que venda no site um volume fora disso.
  */
 export const NODE_FIT_PROBLEMS = ['mode', 'size', 'agents', 'limits'] as const;
 export type NodeFitProblem = (typeof NODE_FIT_PROBLEMS)[number];
@@ -22,7 +24,7 @@ export type NodeFitProblem = (typeof NODE_FIT_PROBLEMS)[number];
  * instalado como vendido.
  */
 export function nodeFitProblems(
-  configuration: Configuration,
+  configuration: Pick<Configuration, 'mode' | 'size'>,
   limits: NodeLimits,
   hosting: Hosting = 'verax',
 ): NodeFitProblem[] {

@@ -2126,11 +2126,12 @@ os contratos de antes), sem nome de provedor: hoje a infraestrutura da Verax é 
 cliente só aceita `customer` com `billing.mode = contract` e o modo `self_hosted` da tabela, e o estado
 `waiting_customer_install` só com `customer`; `hosting` nunca muda depois do cadastro. Com o ambiente no cliente:
 
-- **Cadastro:** o pedido leva `hosting` e as outras cinco respostas (o modo da tabela sai do lugar: gerenciado na
-  Verax, licença no cliente, `MODE_OF_HOSTING`); a cotação de referência é a da licença, e do que o provisionamento
-  exige valem os limites que o próprio nó recusa e os agentes nas instâncias (`node-fit.ts`: o guia de instalação no
-  cliente usa o `envs/tenant`, que não liga a entrada dos agentes; um contrato com agentes é 422
-  `configuration_unsupported` com o motivo no campo). O cliente nasce direto em
+- **Cadastro:** o pedido leva `hosting`, o plano e o volume em GB/dia (o modo da tabela sai do lugar: `managed` na
+  Verax, `self_hosted` no cliente, `MODE_OF_HOSTING`); a cotação de referência é o **mesmo preço por GB/dia** dos dois
+  lugares (no cliente, a DRE fica sem a nuvem da Verax e com as horas a mais do modelo de custos), só do Dedicado e do
+  vCISO (a Plataforma é a célula da Verax: no cliente, 422 `configuration_contact_us` com `mode_unavailable` no campo
+  `configuration.plan`), e do que o provisionamento exige valem só os limites que o próprio nó recusa (`node-fit.ts`;
+  agentes não são vendidos). O cliente nasce direto em
   `waiting_customer_install` (a transição de `null`, `contract_created_customer_hosted`), e o `cp-admin` **não chama o
   `cp-worker`**: nenhum passo, nenhuma fila, nenhum Terraform, nada no projeto dos nós, no Cloudflare nem no Firebase.
 - **Defesa em profundidade no `cp-worker`:** o `provision` e o `resume` recusam com 409 `customer_hosted`; o motor do
@@ -2151,11 +2152,12 @@ cliente só aceita `customer` com `billing.mode = contract` e o modo `self_hoste
   "Desinstalar"). Em D+97, o registro mínimo, como de todo cliente.
 
 - **Cadastro (`POST /v1/admin/tenants`, só no `cp-admin`):** a razão social, o CNPJ, o e-mail do administrador e o
-  subdomínio com os mesmos schemas e limites do checkout (`checkout.schema.ts`), as seis respostas da calculadora e
-  `confirmSlug` (o subdomínio digitado de novo). A API confere tudo de novo: o subdomínio (formato, lista reservada,
-  livre), o nome e o e-mail como o nó os aceita, a tabela de preços vigente, a cotação ("fale conosco" é recusado, 422)
-  e se o `envs/tenant` sabe criar a configuração (`provisioning/node-fit.ts`, a mesma regra do `preflight`: modo
-  gerenciado, porte P, sem agentes, limites nas faixas; senão 422 `configuration_unsupported` com o motivo por campo).
+  subdomínio com os mesmos schemas e limites do checkout (`checkout.schema.ts`), o plano (os três: Plataforma, Dedicado
+  e vCISO) e o volume em GB/dia e `confirmSlug` (o subdomínio digitado de novo). A API confere tudo de novo: o
+  subdomínio (formato, lista reservada, livre), o nome e o e-mail como o nó os aceita, a tabela de preços vigente, a
+  cotação ("fale conosco" é recusado, 422) e se o `envs/tenant` sabe criar a configuração
+  (`provisioning/node-fit.ts`, a mesma regra do `preflight`: modo gerenciado, porte P, sem agentes, limites nas faixas;
+  senão 422 `configuration_unsupported` com o motivo por campo).
   O cliente nasce em `pending` com `billing.mode = contract`, sem `stripe` nem `consent` (o aceite é o do contrato
   assinado), com a cotação de referência gravada em `quotes` e em `pricing` (nenhuma cobrança: a fatura e a NFS-e do
   contrato são fora do plano de controle). Logo em seguida, o console pede ao `cp-worker` o `provision`.
@@ -2166,8 +2168,8 @@ cliente só aceita `customer` com `billing.mode = contract` e o modo `self_hoste
 - **Limites e auditoria:** 5 cadastros por hora e 20 operações por hora por responsável (em memória; o `cp-admin` tem
   uma instância). Toda recusa (`tenant.create_refused`, `tenant.console_request_refused`), o cadastro (`tenant.create`
   com `billingMode`) e cada pedido ao worker com o desfecho (`tenant.console_request`) vão à auditoria como
-  `owner:<e-mail da sessão>`; a transição feita no worker, com o mesmo ator. Os logs levam só ids, o subdomínio, o porte,
-  a versão da tabela e os códigos (nunca o e-mail, o CNPJ nem a razão social).
+  `owner:<e-mail da sessão>`; a transição feita no worker, com o mesmo ator. Os logs levam só ids, o subdomínio, o
+  plano, o porte, a versão da tabela e os códigos (nunca o e-mail, o CNPJ nem a razão social).
 - **`POST /internal/tenants/:id/provision` `{confirmSlug, actor?}` (cp-worker, `@WorkerCallers('owner', 'console')`):**
   só um cliente `contract` em `pending` vai a `provisioning`, com um `runId` novo e o `preflight` na fila (o equivalente
   ao `invoice.paid` para quem não paga pela Stripe); repetido no `preflight`, só garante a task (id determinístico);
@@ -2263,50 +2265,102 @@ devolvida uma vez), token do túnel, chaves da Stripe e do Cloudflare, corpo bru
 
 ### Preço configurável
 
-O preço é montado pelo cliente: seis respostas (onde roda, contas de nuvem, volume de logs, agentes nas instâncias,
-histórico e suporte), o porte do nó calculado por uma regra determinística (nunca escolhido) e o total como a soma dos
-componentes. Nenhum valor comercial está no código nem neste repositório; o código (`apps/control-plane/src/pricing`)
-só define a forma dos documentos e as regras.
+O preço é por **volume de logs em GB por dia (GB/dia)**, em três planos (decisão do responsável, 10/11/2026): a
+**Plataforma** (célula compartilhada, vendida no checkout do site: uma base mensal com alguns GB/dia incluídos e um
+preço mensal por GB/dia contratado acima disso, até o máximo do site; acima, "fale conosco"), o **Dedicado** (servidor
+próprio, contrato anual: um preço por GB/dia, com um mínimo e um máximo cotáveis) e o **vCISO** (o Dedicado mais um
+serviço mensal e uma implantação cobrada uma vez). O Dedicado e o vCISO são só por contrato direto. O porte do nó sai do
+volume pela regra de porte da tabela (nunca escolhido); contas de nuvem não mudam o preço (o plano tem só o teto que o
+nó grava) e agentes nas instâncias não são vendidos. Nenhum valor comercial está no código nem neste repositório; o
+código (`apps/control-plane/src/pricing`) só define a forma dos documentos e as regras.
 
-- **Tabela de preços** (`pricingTables/{versão}`): por componente, o valor em centavos e o `lookup_key` do preço na
-  Stripe (ambiente ou licença por porte e modo, conta adicional, faixas de volume, pacote de agentes, histórico
-  estendido, suporte prioritário, implantação por modo), os incluídos e máximos, a regra de porte e os pacotes de
-  partida. Estados: `draft` (editável), `published` (imutável, vigente a partir de `effectiveFrom`, que pode ser
-  agendado) e `retired` (substituída; `retiredAt` diz quando deixa de valer). A vigente é a de maior `effectiveFrom`
-  até agora. Uma versão nova nunca muda assinatura existente (os preços da Stripe são imutáveis).
-- **Modelo de custos** (`costModels/{versão}`, confidencial, só no console): custo de nuvem por porte e por item,
-  câmbio e folga, tarifas por meio de pagamento, alíquotas, reserva, horas e custo do suporte, custos fixos e as metas
-  de margem (mínima e de alerta). Publicado, vale na hora (custo não muda o preço de ninguém).
-- **Cotação** (`POST /v1/public/quote`, sem nenhum campo de preço): a configuração é levada à opção vendida (sempre
-  para cima); acima do que a tabela vende ou do maior porte, a resposta é "fale conosco". **O site vende só o ambiente
-  na infraestrutura da Verax** (decisão do responsável, 06/11/2026; hoje a GCP, e pode mudar, por isso nada voltado ao
-  cliente cita o provedor): o modo da infraestrutura do cliente (`self_hosted`) é recusado com 422
-  `mode_not_sold_online` (a mensagem leva ao contrato direto), qualquer que seja a tabela publicada, sem gravar nada. A
-  cotação é gravada em `quotes/{id}` por 24 h, com limite por IP e teto diário, e é o que o checkout aceita.
-  `GET /v1/public/pricing` devolve só a parte pública da tabela vigente (preços e regras, o "a partir de") do ambiente
-  na Verax: o modo do cliente não aparece (nem os preços nem o pacote de partida dele), sem custo, margem nem
-  `lookup_key`, com 5 min de cache no CDN. A tabela continua com os preços da licença no cliente: o simulador de DRE, a
-  checagem de publicação e a cotação de referência do contrato direto usam.
-- **Checkout** (`POST /v1/public/checkout` com `quoteId`): uma cotação do modo do cliente (a de referência de um
-  contrato direto, que o console grava na mesma coleção) é recusada com o mesmo 422, antes de reservar ou falar com a
-  Stripe. Fora isso, relê a cotação, recalcula pela tabela da versão dela
-  (honrada até vencer, mesmo com outra tabela publicada), confere cada preço na Stripe (ativo, em BRL, mensal ou
-  avulso, com o valor da tabela, e a soma igual ao total) e abre a sessão com um item por componente; a implantação, se
-  o modo tiver, entra como item avulso, só na primeira fatura. A reserva guarda a configuração, os limites do nó e o
-  preço cotado (versão, cotação, mensal e implantação), que o webhook copia para o cliente. O nome da empresa vai de 2
-  a 120 caracteres (`companyNameSchema`), o limite do `Tenant.name` do nó, e a mesma regra vale no `customer.updated`
-  da Stripe, no executor Terraform e no `envs/tenant`: o nome chega inteiro ao nó, sem corte. Um cliente gravado antes
+- **Tabela de preços** (`pricingTables/{versão}`): o imposto (`taxMode`: `inclusive`, embutido, ou `exclusive`, o "+
+  impostos" que vai por cima na fatura), a regra de porte (o maior GB/dia de cada porte), e por plano, cada valor em
+  centavos com o `lookup_key` do preço na Stripe: na Plataforma, a base, os GB/dia incluídos, o **GB/dia adicional**,
+  o **GB/dia excedente** (o uso acima da franquia, cobrado depois pela medição; a checagem recusa um excedente mais
+  barato que o adicional), o máximo do site e o teto de contas; no Dedicado, o GB/dia, o mínimo, o máximo, a duração do
+  contrato e o teto de contas; no vCISO, o serviço e a implantação (o GB/dia e a faixa são os do Dedicado). Mais o
+  histórico incluído e o máximo de usuários. Estados: `draft` (editável), `published` (imutável, vigente a partir de
+  `effectiveFrom`, que pode ser agendado) e `retired` (substituída; `retiredAt` diz quando deixa de valer). A vigente é
+  a de maior `effectiveFrom` até agora. Uma versão nova nunca muda assinatura existente (os preços da Stripe são
+  imutáveis).
+- **Modelo de custos** (`costModels/{versão}`, confidencial, só no console): câmbio e folga; a **célula compartilhada**
+  (a máquina, a capacidade dela em GB/dia e o custo fixo de cada cliente nela); o nó dedicado de cada porte; disco,
+  snapshot, NAT, IP e outros; a ingestão por GB/dia; tarifas por meio de pagamento, alíquotas e reserva; o custo da
+  hora e as horas por cliente (por plano, o serviço do vCISO em horas equivalentes, as a mais na infraestrutura do
+  cliente e as da implantação); custos fixos com o rateio e as metas de margem (mínima e de alerta). Publicado, vale na
+  hora (custo não muda o preço de ninguém).
+- **Documentos do modelo anterior (legado).** As versões gravadas antes da troca (portes, componentes e contas de
+  nuvem, até `2026-11-v1`) não passam nos schemas novos. O repositório (`pricing-store.ts`) lê o envelope delas
+  (estado, datas, quem publicou) e nunca o conteúdo: a lista do console as mostra com `legacy: true` ("Modelo
+  anterior"), abrir uma é 409 `version_legacy`, e elas **nunca são a vigente** (se a de maior `effectiveFrom` for uma
+  delas, não há vigente: o site responde 503 até a primeira versão nova valer, em vez de cotar com uma forma que o código
+  não entende mais). Publicar a primeira versão nova aposenta a antiga pelo envelope, sem mexer no conteúdo. Uma cotação
+  gravada no formato antigo (ainda nas 24 h) não vale (`quote_outdated` no checkout), e um cliente contratado no modelo
+  anterior continua legível (`legacyConfigurationSchema`, só leitura: a lista, o detalhe e o `tick` o leem; nunca é
+  cotado de novo).
+- **Cotação** (`POST /v1/public/quote` `{ "plan", "gbDay" }`, estrito, sem nenhum campo de preço nem o lugar): o
+  volume sobe até o mínimo do plano (na Plataforma, o incluído); acima do máximo do site, "fale conosco"
+  (`above_online_max`). **O site vende só a Plataforma, na infraestrutura da Verax** (decisões de 06/11/2026 e
+  10/11/2026; hoje a GCP, e pode mudar, por isso nada voltado ao cliente cita o provedor): o Dedicado e o vCISO são
+  recusados com 422 `plan_not_sold_online` (a mensagem leva à proposta e ao contrato direto), qualquer que seja a
+  tabela publicada, sem gravar nada. Itens da Plataforma: a base (quantidade 1) e, acima do incluído, o GB/dia
+  adicional com **a franquia acima do incluído como quantidade** (no incluído, o item não entra: o Checkout não aceita
+  quantidade 0); do Dedicado, GB/dia × o preço; do vCISO, o do Dedicado, o serviço e a implantação (avulsa, por
+  último). Os limites do nó: a franquia mensal pelo GB/dia (`monthlyGibFor`: GB/dia × 31 dias, em GiB, para cima), o
+  teto de contas do plano, o histórico e os usuários da tabela e 0 agentes. A cotação é gravada em `quotes/{id}` por
+  24 h, com limite por IP e teto diário, e é o que o checkout aceita. `GET /v1/public/pricing` devolve só a parte
+  pública da tabela vigente: os três planos (a Plataforma `online`, o Dedicado e o vCISO `contract`, como referência),
+  os incluídos, os preços unitários, os mínimos, o máximo do site, o `taxMode`, os portes e o "a partir de" de cada
+  plano; sem custo, margem nem `lookup_key`, com 5 min de cache no CDN.
+- **Checkout** (`POST /v1/public/checkout` com `quoteId`): uma cotação de um plano ou lugar que o site não vende (a de
+  referência de um contrato direto, que o console grava na mesma coleção) é recusada com o mesmo 422, antes de reservar
+  ou falar com a Stripe. Fora isso, relê a cotação, recalcula pela tabela da versão dela (honrada até vencer, mesmo
+  com outra tabela publicada), confere cada preço na Stripe (ativo, em BRL, mensal ou avulso, com o valor da tabela, e
+  a soma igual ao total) e abre a sessão com um item por componente: a base e o GB/dia adicional com a quantidade
+  contratada acima do incluído. **Ampliar a franquia depois é mudar a quantidade desse item na assinatura** (ou
+  acrescentá-lo, quando o cliente estava no incluído); o excedente medido e a ampliação pelo painel são de outra frente
+  (`fase3/plano-checkout-gb.md`, frente 4), que usa o preço do excedente e o `lookup_key` dele da mesma tabela. A
+  reserva guarda a configuração (o plano, o lugar, **a franquia contratada em GB/dia**, o porte e o histórico), os
+  limites do nó e o preço cotado (versão, cotação, mensal e implantação), que o webhook copia para o cliente
+  (`tenants/{id}.configuration`, `.limits`, `.pricing`); a medição do excedente e o contador do painel partem de
+  `configuration.gbDay`. Os metadados da sessão e da assinatura levam o plano e o GB/dia. O nome da empresa vai de 2 a
+  120 caracteres (`companyNameSchema`), o limite do `Tenant.name` do nó, e a mesma regra vale no `customer.updated` da
+  Stripe, no executor Terraform e no `envs/tenant`: o nome chega inteiro ao nó, sem corte. Um cliente gravado antes
   desse limite, com um nome maior, para no `preflight` com `tenant_name_invalid`. O aceite do pedido precisa trazer as
   versões vigentes dos três textos legais (abaixo): outra versão, 409 `terms_outdated`; sem uma publicada de algum
   deles, 503 `checkout_unavailable`. As versões aceitas vão para a reserva, os metadados da Stripe e o cliente.
-- **Checagem de publicação** (no console): antes de publicar uma tabela, o motor percorre a grade inteira de
-  configurações vendáveis com o modelo de custos vigente (cartão e a alíquota padrão) e recusa a publicação se alguma
-  ficar com margem de contribuição abaixo da mínima, se acrescentar uma unidade baixar o preço ou se o "a partir de"
-  não for o menor preço da grade. O relatório (as piores, as abaixo do alerta, o pior caso com as outras alíquotas e
-  no boleto) volta ao console; a recusa e a publicação ficam na auditoria.
-- **DRE** (`POST /v1/admin/dre/simulate`): por cliente e por mês, receita bruta, imposto, reserva, receita líquida,
-  infraestrutura (só no gerenciado), meio de pagamento, suporte, margem de contribuição, custos fixos rateados e
-  resultado; a implantação à parte e os 12 meses; na nuvem do cliente, a estimativa da nuvem dele, só informativa.
+- **Imposto por cima.** Com `taxMode = exclusive`, os valores da tabela são sem imposto, e a DRE trata a receita bruta
+  como o valor ÷ (1 − alíquota) (o imposto é a diferença, e o valor da tabela fica inteiro). A cobrança é de verdade: o
+  checkout de uma tabela `exclusive` põe a alíquota de imposto da Stripe de `STRIPE_TAX_RATE_ID` (`txr_...`, só o id
+  no ambiente; o percentual fica na Stripe e no modelo de custos) em cada item (`line_items[].tax_rates`) e como padrão
+  da assinatura (`subscription_data.default_tax_rates`, para o que entrar depois, como a ampliação da franquia), e a
+  Stripe soma o imposto na fatura. A alíquota é relida a cada sessão e conferida: ativa, exclusiva (`inclusive:
+false`), no modo da chave e com o percentual da alíquota padrão do modelo de custos vigente (a mesma da checagem e
+  da DRE). Sem a variável, sem modelo de custos, inexistente ou divergente, o checkout dessa tabela responde 503
+  `checkout_unavailable` antes de reservar, com a linha `checkout_tax_rate_invalid` e o motivo (`unconfigured`,
+  `cost_model_missing`, `missing`, `inactive`, `inclusive`, `livemode`, `percentage`). A soma conferida dos preços
+  continua a da tabela. O `stripe-setup` cria ou acha a alíquota (`--tax-rate-percent=<n>`, marcada com
+  `metadata.verax = imposto`) e imprime o id; a mesma variável vai ao `cp-public` e ao `cp-admin` (`service_env`, que
+  o Terraform repassa ao console só nesta chave). Com o imposto embutido (`inclusive`), nada disso é usado.
+- **Checagem de publicação** (no console e no `publicar-precos`): antes de publicar uma tabela, o motor percorre cada
+  GB/dia vendável (a Plataforma do incluído ao máximo do site, só na Verax; o Dedicado e o vCISO do mínimo ao máximo,
+  na Verax e no cliente) com o modelo de custos vigente (cartão e a alíquota padrão) e recusa a publicação se alguma
+  configuração ficar com margem de contribuição abaixo da mínima, se um GB/dia a mais baixar o preço, se o "a partir
+  de" de um plano não for o menor preço dele, se o site oferecer um volume que não cota ou que o provisionamento ainda
+  não cria (`node-fit.ts`: hoje um nó P por cliente, também na Plataforma, até a célula multi-cliente existir) ou se o
+  excedente for mais barato que o adicional. A célula da Plataforma entra rateada por GB/dia (custo da máquina ÷
+  capacidade × GB/dia contratado), mais o custo fixo de cada cliente nela e a ingestão. O relatório (as piores, as
+  abaixo do alerta, a pior de cada plano e lugar, o pior caso com as outras alíquotas e no boleto) volta ao console; a
+  recusa e a publicação ficam na auditoria. Uma tabela `exclusive` também é recusada se o serviço que publica não tiver
+  `STRIPE_TAX_RATE_ID` (o checkout cobraria só o valor da tabela): o relatório diz por quê; no `publicar-precos`, o
+  id vem por `--aliquota-stripe` (o mesmo do serviço).
+- **DRE** (`POST /v1/admin/dre/simulate` com `{ plan, gbDay, mode }`): por cliente e por mês, o valor da tabela, a
+  receita bruta (com o imposto por cima, se a tabela for `exclusive`), imposto, reserva, receita líquida,
+  infraestrutura (na Verax: o rateio da célula na Plataforma, o nó do porte no Dedicado e no vCISO; no cliente, 0), meio
+  de pagamento, suporte (as horas do plano, do serviço do vCISO e as a mais no cliente), margem de contribuição, custos
+  fixos rateados e resultado; a implantação à parte e os 12 meses; no cliente, a estimativa da nuvem dele (o nó do
+  porte com a ingestão, a preço de lista), só informativa.
 - **Console do responsável** (`apps/console`, servido pelo `cp-admin`): um app React compilado pelo Vite, com os
   tokens e os padrões do painel (pt-BR, claro e escuro, WCAG 2.2 AA conferido pelo axe), que a imagem do plano de
   controle leva em `/app/console`. O próprio `cp-admin` serve as telas e a API na mesma origem
@@ -2314,13 +2368,13 @@ só define a forma dos documentos e as regras.
   do primeiro cadastro, `/configurar`; são o código do repositório público, sem número nenhum), com a CSP própria
   delas (só scripts, estilos e chamadas da própria origem, nada inline, nada em frame);
   `/assets/` (nomes com hash) fica em cache privado, o resto sem cache. As telas não têm nenhum número: o modelo de
-  custos (com o custo do nó por porte recalculado na hora), a tabela de preços (com a checagem e a publicação, e o
-  relatório da recusa) e o simulador de DRE leem e gravam só pela API, e os problemas de validação voltam por campo.
-  Os tipos que as telas leem são conferidos contra os da API no `pnpm typecheck` (teste de contrato do plano de
-  controle).
+  custos (com o custo da célula, o custo por GB/dia dela e o do nó por porte recalculados na hora), a tabela de preços
+  (com a checagem e a publicação, e o relatório da recusa) e o simulador de DRE leem e gravam só pela API, e os
+  problemas de validação voltam por campo. Os tipos que as telas leem são conferidos contra os da API no
+  `pnpm typecheck` (teste de contrato do plano de controle).
 - **Limites no nó** (gancho do PR-18): a configuração vira os ajustes `PLAN_*` que o nó já lê (`PLAN=enterprise` e os
-  quatro limites) e, com agentes contratados, `WAZUH_AGENTS=true` e `WAZUH_AGENTS_MAX` (seção "Agentes nas instâncias
-  do cliente"); fica gravada no cliente (`tenants/{id}.limits`) para o provisionamento.
+  quatro limites: a franquia mensal em GiB sai do GB/dia contratado) e `WAZUH_AGENTS=false` (agentes não são
+  vendidos); fica gravada no cliente (`tenants/{id}.limits`) para o provisionamento.
 
 ### Textos legais
 

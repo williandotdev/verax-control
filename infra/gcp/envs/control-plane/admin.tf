@@ -17,7 +17,7 @@
 # sessão de responsável. A conta do serviço lê e grava o Firestore, lê os dois segredos do console e, com os serviços no
 # ar, invoca o cp-worker (só `run.invoker` nele, abaixo): é assim que as operações do responsável chegam ao worker, com o
 # token da própria conta e o e-mail da sessão no corpo (o worker aceita essa conta só nas operações do responsável,
-# `ADMIN_SA_EMAIL` em run.tf). Nada da Stripe.
+# `ADMIN_SA_EMAIL` em run.tf). Da Stripe, só o id da alíquota do imposto por cima (`STRIPE_TAX_RATE_ID`), sem chave.
 
 locals {
   admin_service_name = "cp-admin"
@@ -30,7 +30,9 @@ locals {
   # (Fastly) deixaria qualquer um com um serviço na mesma CDN chamar o `run.app` com um `X-Forwarded-For` escolhido e
   # escapar do limite por IP do login. Sem ela, quem chega pelo Hosting conta no balde da saída do Hosting; o que segura
   # adivinhação são os limites que só contam falhas (por IP e global) e o bloqueio da conta (admin-auth.controller.ts).
-  # `TRUST_PROXY_HOPS` fica no padrão do app (1, o front end do Cloud Run).
+  # `TRUST_PROXY_HOPS` fica no padrão do app (1, o front end do Cloud Run). A única de `service_env` que vem para cá é
+  # `STRIPE_TAX_RATE_ID` (só o id da alíquota do imposto por cima, o mesmo do cp-public): sem ela, o console recusa
+  # publicar uma tabela de preços sem impostos, que o checkout não saberia cobrar. Vazia, a variável não vai.
   admin_env = {
     NODE_ENV                 = "production"
     LOG_LEVEL                = "info"
@@ -38,6 +40,7 @@ locals {
     ADMIN_SECRETS_PROJECT_ID = var.project_id
     OWNER_PRINCIPALS         = join(",", local.owner_emails)
     WORKER_URL               = local.worker_url
+    STRIPE_TAX_RATE_ID       = lookup(var.service_env, "STRIPE_TAX_RATE_ID", "")
   }
 }
 

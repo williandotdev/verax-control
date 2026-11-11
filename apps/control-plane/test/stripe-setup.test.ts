@@ -117,10 +117,10 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
 
     expect(code).toBe(0);
     expect(output).toContain('Simulação: nada é gravado');
-    expect(output).toContain('Catálogo da tabela exemplo-v1: 8 produtos, 15 preços.');
-    expect(output).toContain('produto vc_ambiente: criaria ("Verax Control: ambiente gerenciado")');
-    expect(output).toContain('preço vc_env_p_v1 (R$ 1.000,00/mês): criaria (novo)');
-    expect(output).toContain('preço vc_set_v1 (R$ 1.000,00, avulso): criaria (novo)');
+    expect(output).toContain('Catálogo da tabela exemplo-v1: 6 produtos, 6 preços.');
+    expect(output).toContain('produto vc_plataforma: criaria ("Verax Control: Plataforma")');
+    expect(output).toContain('preço vc_base_v1 (R$ 1.000,00/mês): criaria (novo)');
+    expect(output).toContain('preço vc_setup_v1 (R$ 5.000,00, avulso): criaria (novo)');
     expect(output).toContain('cupom vc_cupom_exemplo (10% por 3 meses, 2 resgates): criaria');
     expect(output).toContain('código promocional (texto omitido): criaria');
     expect(output).not.toContain('dentro do repositório');
@@ -139,28 +139,28 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     ]);
     const [product] = fake.calls('POST', '/v1/products');
     expect(formEntries(product?.form ?? new URLSearchParams())).toEqual([
-      ['id', 'vc_ambiente'],
-      ['name', 'Verax Control: ambiente gerenciado'],
+      ['id', 'vc_plataforma'],
+      ['name', 'Verax Control: Plataforma'],
     ]);
-    expect(formEntries(fake.calls('POST', '/v1/products')[2]?.form ?? new URLSearchParams())).toEqual([
-      ['id', 'vc_conta_adicional'],
-      ['name', 'Conta de nuvem adicional'],
-      ['unit_label', 'conta'],
+    expect(formEntries(fake.calls('POST', '/v1/products')[1]?.form ?? new URLSearchParams())).toEqual([
+      ['id', 'vc_gb_dia_adicional'],
+      ['name', 'Plataforma: GB/dia adicional'],
+      ['unit_label', 'GB/dia'],
     ]);
     const prices = fake.calls('POST', '/v1/prices');
     // Um preço mensal (valores fictícios do exemplo).
     expect(formEntries(prices[0]?.form ?? new URLSearchParams())).toEqual(
       formEntries(
         new URLSearchParams([
-          ['product', 'vc_ambiente'],
+          ['product', 'vc_plataforma'],
           ['currency', 'brl'],
           ['unit_amount', '100000'],
           ['recurring[interval]', 'month'],
           ['recurring[interval_count]', '1'],
-          ['lookup_key', 'vc_env_p_v1'],
-          ['nickname', 'Ambiente P (mensal)'],
-          ['metadata[component]', 'environment'],
-          ['metadata[variant]', 'managed_P'],
+          ['lookup_key', 'vc_base_v1'],
+          ['nickname', 'Plataforma (mensal)'],
+          ['metadata[component]', 'base'],
+          ['metadata[variant]', 'plataforma'],
           ['metadata[tableVersion]', 'exemplo-v1'],
         ]),
       ),
@@ -171,11 +171,11 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
         new URLSearchParams([
           ['product', 'vc_implantacao'],
           ['currency', 'brl'],
-          ['unit_amount', '100000'],
-          ['lookup_key', 'vc_set_v1'],
-          ['nickname', 'Implantação na sua nuvem (uma vez)'],
+          ['unit_amount', '500000'],
+          ['lookup_key', 'vc_setup_v1'],
+          ['nickname', 'Implantação do vCISO (uma vez)'],
           ['metadata[component]', 'setup'],
-          ['metadata[variant]', 'self_hosted'],
+          ['metadata[variant]', 'vciso'],
           ['metadata[tableVersion]', 'exemplo-v1'],
         ]),
       ),
@@ -217,7 +217,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     for (const id of [
       ...fake.prices.keys(),
       ...fake.promotionCodes.keys(),
-      'vc_ambiente',
+      'vc_plataforma',
       'vc_cupom_exemplo',
     ]) {
       expect(output).toContain(id);
@@ -237,17 +237,17 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
   });
 
   it('preço existente divergente (valor, tipo ou metadados): relata e para sem gravar nada', async () => {
-    fake.addPrice('vc_env_p_v1', 90_000, {
-      product: 'vc_ambiente',
-      metadata: { component: 'environment', variant: 'managed_P', tableVersion: 'exemplo-v1' },
+    fake.addPrice('vc_base_v1', 90_000, {
+      product: 'vc_plataforma',
+      metadata: { component: 'base', variant: 'plataforma', tableVersion: 'exemplo-v1' },
     });
-    fake.addPrice('vc_set_v1', 100_000, {
+    fake.addPrice('vc_setup_v1', 500_000, {
       product: 'vc_implantacao',
-      metadata: { component: 'setup', variant: 'self_hosted', tableVersion: 'exemplo-v1' },
+      metadata: { component: 'setup', variant: 'vciso', tableVersion: 'exemplo-v1' },
     });
-    fake.addPrice('vc_sup_v1', 30_000, {
-      product: 'vc_suporte',
-      metadata: { component: 'priority_support', variant: 'priority', tableVersion: 'outra-versao' },
+    fake.addPrice('vc_vciso_v1', 200_000, {
+      product: 'vc_vciso',
+      metadata: { component: 'service', variant: 'vciso', tableVersion: 'outra-versao' },
     });
 
     const { code, output } = await run([`--catalog=${catalogPath}`, '--apply']);
@@ -333,6 +333,45 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     expect(fake.requests).toHaveLength(0);
   });
 
+  it('a alíquota do imposto por cima: simula, cria exclusiva com o percentual pedido e a marca, imprime o id e mantém', async () => {
+    const simulated = await run(['--tax-rate-percent=7.5']);
+    expect(simulated.code).toBe(0);
+    expect(simulated.output).toContain('alíquota de imposto exclusiva de 7.5%: criaria');
+    expect(fake.writes()).toHaveLength(0);
+
+    // Uma alíquota da Verax com outro percentual não serve (a da Stripe não muda de percentual): outra é criada.
+    fake.addTaxRate(6, { metadata: { verax: 'imposto' } });
+    const applied = await run(['--tax-rate-percent=7.5', '--apply']);
+    expect(applied.code).toBe(0);
+    const [created] = fake.calls('POST', '/v1/tax_rates');
+    expect(formEntries(created?.form ?? new URLSearchParams())).toEqual(
+      formEntries(
+        new URLSearchParams([
+          ['display_name', 'Impostos'],
+          ['description', 'Verax Control: imposto por cima dos preços sem impostos'],
+          ['percentage', '7.5'],
+          ['inclusive', 'false'],
+          ['metadata[verax]', 'imposto'],
+        ]),
+      ),
+    );
+    const id = [...fake.taxRates.values()].find((rate) => rate['percentage'] === 7.5)?.['id'];
+    expect(applied.output).toContain(`STRIPE_TAX_RATE_ID=${String(id)}`);
+
+    const again = await run(['--tax-rate-percent=7.5', '--apply']);
+    expect(again.output).toContain(`alíquota de imposto exclusiva de 7.5%: mantida ${String(id)}`);
+    expect(fake.calls('POST', '/v1/tax_rates')).toHaveLength(1);
+  });
+
+  it('percentual da alíquota fora da faixa ou do formato: erro de uso, sem chamar a Stripe', async () => {
+    for (const value of ['0', '100', '7,5', 'seis', '-1']) {
+      const { code, output } = await run([`--tax-rate-percent=${value}`]);
+      expect(code, value).toBe(2);
+      expect(output, value).toContain('--tax-rate-percent inválido');
+    }
+    expect(fake.requests).toHaveLength(0);
+  });
+
   it('sem cupom no catálogo e sem código, cria o resto e avisa que pulou', async () => {
     const { coupon: _coupon, ...withoutCoupon } = EXAMPLE;
     const path = writeCatalog(withoutCoupon, join(outside, 'sem-cupom-ok.json'));
@@ -370,7 +409,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
   });
 
   it('erro da Stripe: sai com 3 citando tipo e status, nunca a mensagem', async () => {
-    fake.failures.set('GET /v1/products/vc_ambiente', {
+    fake.failures.set('GET /v1/products/vc_plataforma', {
       status: 401,
       type: 'invalid_request_error',
       message: `Invalid API Key provided: ${apiKey}`,

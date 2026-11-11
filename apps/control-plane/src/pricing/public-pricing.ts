@@ -1,40 +1,43 @@
 import { HttpStatus } from '@nestjs/common';
 import { ApiError } from '../common/http/api-error.js';
 import {
-  type ConfigurationInput,
+  type Configuration,
   type DeploymentMode,
+  type PlanId,
   type PriceTable,
   type QuoteLineItem,
   type SizeId,
+  type TaxMode,
 } from './pricing.schema.js';
 import { startingAt } from './quote.js';
 
 /**
- * O que o site (o "marketplace": a calculadora, a cotação e o checkout) vende: só o ambiente na infraestrutura da
- * Verax (decisão do responsável, 06/11/2026). O ambiente na infraestrutura do cliente (`self_hosted`) saiu do site: é só
- * por contrato direto, cadastrado pelo responsável no console (`hosting = customer`). A tabela continua com os preços
- * dele, para o simulador de DRE, a checagem de publicação e a cotação de referência do contrato direto; nas rotas
- * públicas, o modo não aparece (`GET /v1/public/pricing`) e é recusado com 422 (`POST /v1/public/quote` e o checkout),
- * qualquer que seja o conteúdo da tabela publicada.
+ * O que o site (o "marketplace": a calculadora, a cotação e o checkout) vende: só a Plataforma, na infraestrutura da
+ * Verax (decisões do responsável de 06/11/2026 e 10/11/2026). O Dedicado e o vCISO são por proposta e contrato direto,
+ * cadastrados pelo responsável no console, assim como o ambiente na infraestrutura do cliente. A tabela tem os preços
+ * de todos (o site mostra o Dedicado e o vCISO como referência, o simulador de DRE, a checagem de publicação e a
+ * cotação de referência do contrato direto usam); a cotação e o checkout públicos recusam com 422 qualquer plano ou
+ * lugar fora daqui, qualquer que seja o conteúdo da tabela publicada.
  */
+export const ONLINE_PLANS: readonly PlanId[] = ['plataforma'];
 export const ONLINE_MODES: readonly DeploymentMode[] = ['managed'];
 
-export function isSoldOnline(mode: DeploymentMode): boolean {
-  return ONLINE_MODES.includes(mode);
+export function isSoldOnline(configuration: Pick<Configuration, 'plan' | 'mode'>): boolean {
+  return ONLINE_PLANS.includes(configuration.plan) && ONLINE_MODES.includes(configuration.mode);
 }
 
-/** O código do 422 de um modo que o site não vende (a cotação e o checkout). */
-export const MODE_NOT_SOLD_ONLINE = 'mode_not_sold_online';
+/** O código do 422 de um plano (ou lugar) que o site não vende (a cotação e o checkout). */
+export const PLAN_NOT_SOLD_ONLINE = 'plan_not_sold_online';
 
 /**
- * 422 da cotação ou do checkout com o ambiente na infraestrutura do cliente: a mensagem leva ao contrato direto, sem
+ * 422 da cotação ou do checkout com um plano que o site não vende: a mensagem leva à proposta e ao contrato direto, sem
  * nome de provedor (a infraestrutura da Verax hoje é a GCP e pode mudar).
  */
-export function modeNotSoldOnline(): ApiError {
+export function planNotSoldOnline(): ApiError {
   return new ApiError(
     HttpStatus.UNPROCESSABLE_ENTITY,
-    'Pelo site, o Verax Control roda na infraestrutura da Verax. Para o ambiente na infraestrutura da sua empresa, fale com a Verax: é um contrato direto.',
-    MODE_NOT_SOLD_ONLINE,
+    'Pelo site, só a Plataforma é contratada na hora. O Dedicado, o vCISO e o ambiente na infraestrutura da sua empresa são por proposta e contrato direto: fale com a Verax.',
+    PLAN_NOT_SOLD_ONLINE,
   );
 }
 
@@ -43,101 +46,103 @@ export interface PublicPricing {
   priceTableVersion: string;
   currency: 'brl';
   interval: 'month';
-  /** O "a partir de" de cada modo vendido no site: o preço da configuração mínima. */
-  startingAt: Partial<Record<DeploymentMode, { monthly: number; setup: number }>>;
-  /** Só os modos vendidos no site (`ONLINE_MODES`): o da infraestrutura do cliente nunca aparece aqui. */
-  modes: {
-    mode: DeploymentMode;
-    sale: 'online';
-    environment: { size: SizeId; amount: number }[];
-    setupAmount: number;
-  }[];
-  sizes: {
-    size: SizeId;
-    description: string;
-    maxCloudAccounts: number;
-    maxMonthlyGib: number;
-    maxAgents: number;
-  }[];
-  cloudAccounts: { included: number; max: number; additionalAmount: number };
-  volume: { includedMonthlyGib: number; bands: { monthlyGib: number; amount: number }[] };
-  agents: { packSize: number; maxPacks: number; packAmount: number };
-  history: { includedDays: number; extended: { days: number; amount: number }[] };
-  prioritySupport: { amount: number };
+  /** `exclusive`: os valores são sem imposto (o "+ impostos"), que vai por cima na fatura. */
+  taxMode: TaxMode;
+  /** O "a partir de" de cada plano: o preço da configuração mínima na infraestrutura da Verax. */
+  startingAt: Partial<Record<PlanId, { monthly: number; setup: number }>>;
+  plans: {
+    plataforma: {
+      sale: 'online';
+      baseAmount: number;
+      includedGbDay: number;
+      additionalGbDayAmount: number;
+      overageGbDayAmount: number;
+      maxOnlineGbDay: number;
+    };
+    dedicado: {
+      sale: 'contract';
+      gbDayAmount: number;
+      minGbDay: number;
+      maxGbDay: number;
+      contractMonths: number;
+    };
+    vciso: {
+      sale: 'contract';
+      gbDayAmount: number;
+      serviceAmount: number;
+      setupAmount: number;
+      minGbDay: number;
+      maxGbDay: number;
+      contractMonths: number;
+    };
+  };
+  sizes: { size: SizeId; description: string; maxGbDay: number }[];
+  history: { includedDays: number };
   users: { max: number };
-  presets: { id: string; label: string; configuration: ConfigurationInput }[];
 }
 
 export function publicPricing(version: string, table: PriceTable): PublicPricing {
   const starting: PublicPricing['startingAt'] = {};
-  for (const mode of ONLINE_MODES) {
-    const value = startingAt(table, mode);
-    if (value !== undefined) starting[mode] = value;
+  for (const plan of ['plataforma', 'dedicado', 'vciso'] as const) {
+    const value = startingAt(table, plan);
+    if (value !== undefined) starting[plan] = value;
   }
+  const { plataforma, dedicado, vciso } = table.plans;
   return {
     priceTableVersion: version,
     currency: 'brl',
     interval: 'month',
+    taxMode: table.taxMode,
     startingAt: starting,
-    modes: ONLINE_MODES.map((mode) => ({
-      mode,
-      sale: 'online' as const,
-      environment: table.sizing.sizes.map((rule) => ({
-        size: rule.size,
-        amount: table.modes[mode].environment[rule.size]?.amount ?? 0,
-      })),
-      setupAmount: table.modes[mode].setup?.amount ?? 0,
-    })),
+    plans: {
+      plataforma: {
+        sale: 'online',
+        baseAmount: plataforma.base.amount,
+        includedGbDay: plataforma.includedGbDay,
+        additionalGbDayAmount: plataforma.additionalGbDay.amount,
+        overageGbDayAmount: plataforma.overageGbDay.amount,
+        maxOnlineGbDay: plataforma.maxOnlineGbDay,
+      },
+      dedicado: {
+        sale: 'contract',
+        gbDayAmount: dedicado.gbDay.amount,
+        minGbDay: dedicado.minGbDay,
+        maxGbDay: dedicado.maxGbDay,
+        contractMonths: dedicado.contractMonths,
+      },
+      vciso: {
+        sale: 'contract',
+        gbDayAmount: dedicado.gbDay.amount,
+        serviceAmount: vciso.service.amount,
+        setupAmount: vciso.setup.amount,
+        minGbDay: dedicado.minGbDay,
+        maxGbDay: dedicado.maxGbDay,
+        contractMonths: dedicado.contractMonths,
+      },
+    },
     sizes: table.sizing.sizes.map((rule) => ({
       size: rule.size,
       description: rule.description,
-      maxCloudAccounts: rule.maxCloudAccounts,
-      maxMonthlyGib: rule.maxMonthlyGib,
-      maxAgents: rule.maxAgents,
+      maxGbDay: rule.maxGbDay,
     })),
-    cloudAccounts: {
-      included: table.cloudAccounts.included,
-      max: table.cloudAccounts.max,
-      additionalAmount: table.cloudAccounts.additional.amount,
-    },
-    volume: {
-      includedMonthlyGib: table.volume.includedMonthlyGib,
-      bands: table.volume.bands.map((band) => ({ monthlyGib: band.monthlyGib, amount: band.amount })),
-    },
-    agents: {
-      packSize: table.agents.packSize,
-      maxPacks: table.agents.maxPacks,
-      packAmount: table.agents.pack.amount,
-    },
-    history: {
-      includedDays: table.history.includedDays,
-      extended: table.history.extended.map((option) => ({ days: option.days, amount: option.amount })),
-    },
-    prioritySupport: { amount: table.prioritySupport.amount },
+    history: { includedDays: table.history.includedDays },
     users: { max: table.users.max },
-    presets: table.presets
-      .filter((preset) => isSoldOnline(preset.configuration.mode))
-      .map((preset) => ({ id: preset.id, label: preset.label, configuration: { ...preset.configuration } })),
   };
 }
 
 /** Texto de cada item para o cliente (a calculadora do site e o resumo antes do Checkout). */
-export function describeLineItem(item: QuoteLineItem, mode: DeploymentMode, sizeId: SizeId): string {
+export function describeLineItem(item: QuoteLineItem): string {
   switch (item.component) {
-    case 'environment':
-      return mode === 'managed'
-        ? `Ambiente na infraestrutura da Verax (porte ${sizeId})`
-        : `Licença na infraestrutura do cliente (porte ${sizeId})`;
-    case 'cloud_accounts':
-      return 'Contas de nuvem adicionais';
-    case 'volume':
-      return `Volume de logs até ${item.variant} GiB/mês`;
-    case 'agents':
-      return `Agentes nas instâncias (pacote de ${item.variant})`;
-    case 'history':
-      return `Histórico de ${item.variant} dias`;
-    case 'priority_support':
-      return 'Suporte prioritário';
+    case 'base':
+      return 'Plataforma (base mensal com a franquia incluída)';
+    case 'additional_gb_day':
+      return 'GB/dia adicional da franquia';
+    case 'overage_gb_day':
+      return 'GB/dia excedente';
+    case 'gb_day':
+      return 'GB/dia do servidor dedicado';
+    case 'service':
+      return 'Serviço de vCISO';
     case 'setup':
       return 'Implantação (cobrada uma vez)';
   }

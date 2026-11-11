@@ -8,9 +8,12 @@ import type { NodeLimits } from './pricing.schema.js';
  * ajustes. É ele que o nó de um cliente configurável recebe até o PC-10 criar o rótulo próprio (`configuravel`, o
  * mesmo `enterprise` com outro nome).
  *
+ * No modelo por GB/dia (10/11/2026), o volume contratado vira a franquia mensal (`monthlyGibFor`), as contas de nuvem
+ * têm o teto do plano (não mudam o preço) e os agentes não são vendidos (0).
+ *
  * Os agentes nas instâncias do cliente usam as variáveis que o nó já tem (`WAZUH_AGENTS` e `WAZUH_AGENTS_MAX`, em
- * `infra/node/node.conf.example` e `apps/api/src/agents/agents-config.ts`): com pacotes contratados, o interruptor
- * liga e o teto é o contratado; sem pacote, fica desligado. O resto do que os agentes pedem (o interruptor
+ * `infra/node/node.conf.example` e `apps/api/src/agents/agents-config.ts`): com agentes contratados, o interruptor
+ * liga e o teto é o contratado; sem agentes, fica desligado. O resto do que os agentes pedem (o interruptor
  * `wazuh_agents` e as faixas de origem no Terraform do nó, o endereço, a CA e a senha de registro, que o `install.sh`
  * gera) é do provisionamento, não do preço.
  *
@@ -19,6 +22,19 @@ import type { NodeLimits } from './pricing.schema.js';
  * (`tenants/{id}.limits`); o nó não muda.
  */
 export const NODE_PLAN_ID = 'enterprise';
+
+/**
+ * Dias de um mês na conversão do GB/dia para a franquia mensal que o nó mede (`PLAN_MONTHLY_GIB`): o maior mês, para
+ * um cliente no contratado nunca passar de 100% num mês de 31 dias. Não é valor comercial: é a conversão de unidade.
+ */
+export const DAYS_PER_MONTH = 31;
+const BYTES_PER_GB = 1e9;
+const BYTES_PER_GIB = 2 ** 30;
+
+/** A franquia mensal do nó em GiB (o medidor do PR-03 soma bytes) para um volume em GB/dia, arredondada para cima. */
+export function monthlyGibFor(gbDay: number): number {
+  return Math.ceil((gbDay * DAYS_PER_MONTH * BYTES_PER_GB) / BYTES_PER_GIB);
+}
 
 /**
  * O maior `WAZUH_AGENTS_MAX` que o nó aceita: o `WAZUH_AGENTS_MAX_LIMIT` de `packages/shared/src/agents.ts` (o plano de

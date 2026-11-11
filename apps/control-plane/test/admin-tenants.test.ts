@@ -107,6 +107,8 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
 
   function directRequest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
     const slug = typeof overrides['slug'] === 'string' ? overrides['slug'] : nextSlug();
+    // A Plataforma na Verax; no cliente (onde a Plataforma não existe), o Dedicado. Tabela FICTÍCIA.
+    const customer = overrides['hosting'] === 'customer';
     return {
       idempotencyKey: newUlid(),
       companyName: 'Cliente Demo A Ltda',
@@ -114,13 +116,7 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       adminEmail: 'admin@cliente-demo-a.example',
       slug,
       hosting: 'verax',
-      configuration: {
-        cloudAccounts: 2,
-        monthlyGib: 10,
-        agents: 0,
-        historyDays: 30,
-        support: 'standard',
-      },
+      configuration: customer ? { plan: 'dedicado', gbDay: 3 } : { plan: 'plataforma', gbDay: 2 },
       confirmSlug: slug,
       ...overrides,
     };
@@ -334,21 +330,13 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
           cnpj: '11.222.333/0001-82',
           adminEmail: 'sem-arroba',
           slug: 'X',
-          configuration: {
-            cloudAccounts: -1,
-            monthlyGib: 10,
-            agents: 0,
-            historyDays: 30,
-            support: 'standard',
-          },
+          configuration: { plan: 'plataforma', gbDay: -1 },
         }),
       ).expect(400);
       const paths = (invalid.body as { details: { issues: { path: string }[] } }).details.issues.map(
         (issue) => issue.path,
       );
-      expect(paths).toEqual(
-        expect.arrayContaining(['cnpj', 'adminEmail', 'slug', 'configuration.cloudAccounts']),
-      );
+      expect(paths).toEqual(expect.arrayContaining(['cnpj', 'adminEmail', 'slug', 'configuration.gbDay']));
       await send('/v1/admin/tenants', { ...directRequest(), extra: true }).expect(400);
       const mismatch = await send(
         '/v1/admin/tenants',
@@ -358,21 +346,14 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
         code: 'confirmation_mismatch',
         details: { issues: [{ path: 'confirmSlug' }] },
       });
+      // O Dedicado com 8 GB/dia pede o porte M (tabela FICTÍCIA), que o provisionamento ainda não cria.
       const unsupported = await send(
         '/v1/admin/tenants',
-        directRequest({
-          configuration: {
-            cloudAccounts: 2,
-            monthlyGib: 10,
-            agents: 10,
-            historyDays: 30,
-            support: 'standard',
-          },
-        }),
+        directRequest({ configuration: { plan: 'dedicado', gbDay: 8 } }),
       ).expect(422);
       expect(unsupported.body).toMatchObject({
         code: 'configuration_unsupported',
-        details: { problems: ['agents'] },
+        details: { problems: ['size'], issues: [{ path: 'configuration.gbDay' }] },
       });
       // O lugar é obrigatório, e o modo da tabela sai dele: nunca vem na configuração.
       const { hosting: _hosting, ...withoutHosting } = directRequest();
@@ -380,46 +361,24 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
       expect(missing.body).toMatchObject({ details: { issues: [{ path: 'hosting' }] } });
       await send(
         '/v1/admin/tenants',
-        directRequest({
-          configuration: {
-            mode: 'managed',
-            cloudAccounts: 2,
-            monthlyGib: 10,
-            agents: 0,
-            historyDays: 30,
-            support: 'standard',
-          },
-        }),
+        directRequest({ configuration: { plan: 'plataforma', gbDay: 2, mode: 'managed' } }),
       ).expect(400);
       const above = await send(
         '/v1/admin/tenants',
-        directRequest({
-          configuration: {
-            cloudAccounts: 500,
-            monthlyGib: 10,
-            agents: 0,
-            historyDays: 30,
-            support: 'standard',
-          },
-        }),
+        directRequest({ configuration: { plan: 'dedicado', gbDay: 99 } }),
       ).expect(422);
       expect(above.body).toMatchObject({
         code: 'configuration_contact_us',
-        details: { reason: 'cloud_accounts_above_max' },
+        details: { reason: 'above_max', issues: [{ path: 'configuration.gbDay' }] },
       });
-      const sizeM = await send(
+      const cell = await send(
         '/v1/admin/tenants',
-        directRequest({
-          configuration: {
-            cloudAccounts: 8,
-            monthlyGib: 10,
-            agents: 0,
-            historyDays: 30,
-            support: 'standard',
-          },
-        }),
+        directRequest({ hosting: 'customer', configuration: { plan: 'plataforma', gbDay: 2 } }),
       ).expect(422);
-      expect(sizeM.body).toMatchObject({ details: { problems: ['size'] } });
+      expect(cell.body).toMatchObject({
+        code: 'configuration_contact_us',
+        details: { reason: 'mode_unavailable', issues: [{ path: 'configuration.plan' }] },
+      });
       expect(workerCalls).toHaveLength(0);
       expect((await documents.query(COLLECTIONS.tenants)).length).toBe(0);
       const refused = (await documents.query(COLLECTIONS.auditLog)).filter(
@@ -432,56 +391,41 @@ describe('cp-admin e cp-worker: cliente de contrato direto e as operações do r
     it('a cotação de referência pela tabela vigente, com o que o provisionamento ainda não cria', async () => {
       const ok = await send('/v1/admin/tenants/preview', {
         hosting: 'verax',
-        configuration: {
-          cloudAccounts: 3,
-          monthlyGib: 10,
-          agents: 0,
-          historyDays: 30,
-          support: 'standard',
-        },
+        configuration: { plan: 'plataforma', gbDay: 3 },
       }).expect(200);
       expect(ok.body).toMatchObject({
         priceTableVersion: 'teste-v1',
         contactUs: false,
-        quote: { configuration: { size: 'P', cloudAccounts: 3 }, monthlyTotal: 103_000 },
+        quote: { configuration: { plan: 'plataforma', size: 'P', gbDay: 3 }, monthlyTotal: 130_000 },
         problems: [],
       });
-      const agents = await send('/v1/admin/tenants/preview', {
+      const sizeM = await send('/v1/admin/tenants/preview', {
         hosting: 'verax',
-        configuration: {
-          cloudAccounts: 2,
-          monthlyGib: 10,
-          agents: 5,
-          historyDays: 30,
-          support: 'standard',
-        },
+        configuration: { plan: 'dedicado', gbDay: 8 },
       }).expect(200);
-      expect(agents.body).toMatchObject({ contactUs: false, problems: ['agents'] });
+      expect(sizeM.body).toMatchObject({ contactUs: false, problems: ['size'] });
       await send('/v1/admin/tenants/preview', { hosting: 'verax', configuration: {} }).expect(400);
-      // No cliente, a cotação é a da licença; agentes nas instâncias ainda não (o guia não liga a entrada deles).
+      // No cliente, o mesmo preço por GB/dia; o vCISO com o serviço e a implantação, e o porte não impede.
       const customer = await send('/v1/admin/tenants/preview', {
         hosting: 'customer',
-        configuration: { cloudAccounts: 2, monthlyGib: 10, agents: 5, historyDays: 30, support: 'standard' },
+        configuration: { plan: 'vciso', gbDay: 8 },
       }).expect(200);
       expect(customer.body).toMatchObject({
         quote: {
-          configuration: { mode: 'self_hosted', agents: 10 },
-          monthlyTotal: 60_000,
-          setupTotal: 100_000,
+          configuration: { plan: 'vciso', mode: 'self_hosted', gbDay: 8, size: 'M' },
+          monthlyTotal: 600_000,
+          setupTotal: 500_000,
         },
-        problems: ['agents'],
+        problems: [],
       });
-      const withAgents = directRequest({
-        hosting: 'customer',
-        configuration: { cloudAccounts: 2, monthlyGib: 10, agents: 5, historyDays: 30, support: 'standard' },
-      });
-      const refused = await send('/v1/admin/tenants', withAgents).expect(422);
+      // A Plataforma é a célula da Verax: no cliente, sob consulta, e o cadastro é recusado com o motivo no plano.
+      const cell = directRequest({ hosting: 'customer', configuration: { plan: 'plataforma', gbDay: 2 } });
+      const refused = await send('/v1/admin/tenants', cell).expect(422);
       expect(refused.body).toMatchObject({
-        code: 'configuration_unsupported',
-        message: 'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.',
-        details: { problems: ['agents'], issues: [{ path: 'configuration.agents' }] },
+        code: 'configuration_contact_us',
+        details: { reason: 'mode_unavailable', issues: [{ path: 'configuration.plan' }] },
       });
-      expect(await tenants.get(String(withAgents['idempotencyKey']))).toBeUndefined();
+      expect(await tenants.get(String(cell['idempotencyKey']))).toBeUndefined();
       expect(workerCalls).toHaveLength(0);
     });
 

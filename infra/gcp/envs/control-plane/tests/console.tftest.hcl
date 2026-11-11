@@ -368,17 +368,21 @@ run "console_nao_recebe_os_proxies_confiaveis" {
       TRUSTED_PROXIES         = "203.0.113.0/24"
       TRUST_PROXY_HOPS        = "1"
       STRIPE_PORTAL_LOGIN_URL = "https://billing.stripe.com/p/login/test_demo"
+      STRIPE_TAX_RATE_ID      = "txr_teste_imposto"
     }
   }
 
   assert {
     condition = (
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "STRIPE_TAX_RATE_ID"]) == "txr_teste_imposto" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "STRIPE_TAX_RATE_ID"]) == "txr_teste_imposto" &&
+      length([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name if startswith(env.name, "STRIPE_")]) == 1 &&
       !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUSTED_PROXIES") &&
       !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUST_PROXY_HOPS") &&
       !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "STRIPE_PORTAL_LOGIN_URL") &&
       one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TRUSTED_PROXIES"]) == "203.0.113.0/24"
     )
-    error_message = "service_env (inclusive TRUSTED_PROXIES e TRUST_PROXY_HOPS) vai para o cp-public, nunca para o cp-admin."
+    error_message = "service_env (inclusive TRUSTED_PROXIES e TRUST_PROXY_HOPS) vai para o cp-public, nunca para o cp-admin; só STRIPE_TAX_RATE_ID (o id da alíquota do imposto por cima) vai aos dois."
   }
 }
 

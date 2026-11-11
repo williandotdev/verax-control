@@ -7,6 +7,7 @@ import {
   type CostModelStore,
   DraftChangedError,
   EffectiveFromError,
+  LegacyVersionError,
   type PricingTableStore,
   type PublishCheck,
   VersionExistsError,
@@ -104,11 +105,11 @@ export function describePricingStoreContract(
       await h.tables.createDraft('teste-v1', fictitiousPriceTable(), OWNER);
       h.clock.advance(MINUTE_MS);
       const changed = fictitiousPriceTable();
-      changed.prioritySupport.amount = 35_000;
+      changed.plans.vciso.service.amount = 250_000;
 
       const updated = await h.tables.updateDraft('teste-v1', changed, OWNER);
 
-      expect(updated.content.prioritySupport.amount).toBe(35_000);
+      expect(updated.content.plans.vciso.service.amount).toBe(250_000);
       expect(updated.updatedAt).toEqual(h.clock.now());
       const audit = await h.documents.query(COLLECTIONS.auditLog, { orderBy: { field: 'at' } });
       expect(audit.map((doc) => doc.data['action'])).toEqual([
@@ -117,7 +118,7 @@ export function describePricingStoreContract(
       ]);
       expect(audit[1]?.data['details']).toEqual({
         version: 'teste-v1',
-        changes: [{ path: 'prioritySupport.amount', before: 30_000, after: 35_000 }],
+        changes: [{ path: 'plans.vciso.service.amount', before: 200_000, after: 250_000 }],
       });
 
       await h.tables.updateDraft('teste-v1', changed, OWNER);
@@ -176,6 +177,50 @@ export function describePricingStoreContract(
       // Quem publicou e quem editou por último vão no resumo (a lista do console), sem o conteúdo.
       expect(list[0]).toMatchObject({ publishedBy: OWNER.email, updatedBy: OWNER.email });
       expect(list[0]).not.toHaveProperty('content');
+    });
+
+    it('legado (o modelo de preço anterior): na lista marcado, nunca vigente, não abre; a primeira versão nova o aposenta', async () => {
+      // Um documento publicado no formato de antes da troca, gravado direto no banco (o conteúdo não passa no schema).
+      const at = h.clock.now();
+      await h.documents.runTransaction((tx) => {
+        tx.set(COLLECTIONS.pricingTables, 'antigo-v1', {
+          status: 'published',
+          content: { currency: 'brl', interval: 'month', modes: {}, cloudAccounts: { included: 1 } },
+          effectiveFrom: at,
+          publishedAt: at,
+          publishedBy: OWNER.email,
+          createdAt: at,
+          createdBy: OWNER.email,
+          updatedAt: at,
+          updatedBy: OWNER.email,
+        });
+        return Promise.resolve();
+      });
+
+      expect(await h.tables.current()).toBeUndefined();
+      await expect(h.tables.get('antigo-v1')).rejects.toBeInstanceOf(LegacyVersionError);
+      expect(await h.tables.list()).toEqual([
+        expect.objectContaining({ version: 'antigo-v1', status: 'published', current: false, legacy: true }),
+      ]);
+
+      h.clock.advance(MINUTE_MS);
+      const next = await h.tables.createDraft('teste-v2', fictitiousPriceTable(), OWNER);
+      await h.tables.publish('teste-v2', { expectedUpdatedAt: next.updatedAt }, OWNER);
+
+      expect((await h.tables.current())?.version).toBe('teste-v2');
+      const list = await h.tables.list();
+      expect(list.map((entry) => [entry.version, entry.status, entry.current, entry.legacy])).toEqual([
+        ['teste-v2', 'published', true, undefined],
+        ['antigo-v1', 'retired', false, true],
+      ]);
+      // Aposentado pelo envelope: o conteúdo de antes fica como estava.
+      expect(await h.documents.get(COLLECTIONS.pricingTables, 'antigo-v1')).toMatchObject({
+        status: 'retired',
+        retiredAt: h.clock.now(),
+        supersededBy: 'teste-v2',
+        content: { currency: 'brl', interval: 'month', modes: {}, cloudAccounts: { included: 1 } },
+      });
+      expect(await actions()).toEqual(['pricing.draft.created', 'pricing.published', 'pricing.retired']);
     });
 
     it('publicação agendada: a vigente continua até a data da nova, que então passa a valer', async () => {
@@ -246,17 +291,7 @@ export function describePricingStoreContract(
 
     it('cotação: gravada com id novo e validade de 24 h, sem dado pessoal; vencida, não vale mais', async () => {
       const table = priceTableSchema.parse(fictitiousPriceTable());
-      const outcome = quote(
-        {
-          mode: 'managed',
-          cloudAccounts: 4,
-          monthlyGib: 50,
-          agents: 10,
-          historyDays: 180,
-          support: 'priority',
-        },
-        table,
-      );
+      const outcome = quote({ plan: 'plataforma', gbDay: 4, mode: 'managed' }, table);
       if (outcome.kind !== 'quote') throw new Error('sob consulta');
 
       const stored = await h.quotes.create('teste-v1', outcome.quote);
@@ -265,7 +300,7 @@ export function describePricingStoreContract(
         priceTableVersion: 'teste-v1',
         configuration: outcome.quote.configuration,
         lineItems: outcome.quote.lineItems,
-        monthlyTotal: 158_000,
+        monthlyTotal: 160_000,
         setupTotal: 0,
         limits: outcome.quote.limits,
         createdAt: h.clock.now(),
@@ -284,6 +319,20 @@ export function describePricingStoreContract(
       expect(await h.quotes.getValid(stored.quoteId)).toBeUndefined();
     });
 
+    it('cotação do modelo de preço anterior (gravada antes da troca, ainda nas 24 h): não vale, sem erro', async () => {
+      const quoteId = '01JBTESTE0000000000000000Q';
+      await h.documents.runTransaction((tx) => {
+        tx.set(COLLECTIONS.quotes, quoteId, {
+          priceTableVersion: 'antigo-v1',
+          configuration: { mode: 'managed', size: 'P', cloudAccounts: 2, monthlyGib: 10 },
+          createdAt: h.clock.now(),
+          expiresAt: new Date(h.clock.now().getTime() + QUOTE_TTL_MS),
+        });
+        return Promise.resolve();
+      });
+      expect(await h.quotes.getValid(quoteId)).toBeUndefined();
+    });
+
     it(`cotação: o teto de ${QUOTE_DAILY_LIMIT} por dia (UTC) recusa a próxima sem gravar`, async () => {
       const bucket = quoteDailyBucket(h.clock.now());
       await h.documents.runTransaction((tx) => {
@@ -291,14 +340,7 @@ export function describePricingStoreContract(
         return Promise.resolve();
       });
       const outcome = quote(
-        {
-          mode: 'managed',
-          cloudAccounts: 2,
-          monthlyGib: 10,
-          agents: 0,
-          historyDays: 30,
-          support: 'standard',
-        },
+        { plan: 'plataforma', gbDay: 2, mode: 'managed' },
         priceTableSchema.parse(fictitiousPriceTable()),
       );
       if (outcome.kind !== 'quote') throw new Error('sob consulta');

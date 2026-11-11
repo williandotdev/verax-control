@@ -41,7 +41,7 @@ export function CheckPanel({ version, blockedReason }: { version: string; blocke
       </h2>
       <p className="text-sm text-muted-foreground">
         Percorre todas as configurações que a tabela vende, no cartão e na alíquota padrão do modelo de
-        custos, e mostra as piores, as abaixo da margem mínima e do alerta, por modo e por porte.
+        custos, e mostra as piores, as abaixo da margem mínima e do alerta, por plano e por lugar.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1">
@@ -55,12 +55,14 @@ export function CheckPanel({ version, blockedReason }: { version: string; blocke
             onChange={(event) => setModel(event.target.value)}
           >
             <option value={CURRENT}>O vigente</option>
-            {(models.data ?? []).map((entry) => (
-              <option key={entry.version} value={entry.version}>
-                {entry.version} ({STATUS_LABELS[entry.status].toLowerCase()}
-                {entry.current ? ', vigente' : ''})
-              </option>
-            ))}
+            {(models.data ?? [])
+              .filter((entry) => entry.legacy !== true)
+              .map((entry) => (
+                <option key={entry.version} value={entry.version}>
+                  {entry.version} ({STATUS_LABELS[entry.status].toLowerCase()}
+                  {entry.current ? ', vigente' : ''})
+                </option>
+              ))}
           </select>
         </div>
         <Button

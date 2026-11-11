@@ -12,8 +12,13 @@ import { isUlid, ULID_PATTERN } from '../common/ulid.js';
 import { NODE_RELEASE_PATTERN } from '../common/config/env.schema.js';
 import { CONTRACT_CANCELABLE } from '../lifecycle/lifecycle-rules.js';
 import { nodeLimitsEnv } from '../pricing/node-limits.js';
-import { type OwnerContext, PricingTableStore } from '../pricing/pricing-store.js';
-import type { Configuration, ConfigurationInput, PriceTable } from '../pricing/pricing.schema.js';
+import { LegacyVersionError, type OwnerContext, PricingTableStore } from '../pricing/pricing-store.js';
+import {
+  type Configuration,
+  type ConfigurationInput,
+  isLegacyConfiguration,
+  type PriceTable,
+} from '../pricing/pricing.schema.js';
 import { QuoteDailyLimitReachedError, QuoteStore } from '../pricing/quote-store.js';
 import { type ContactReason, quote } from '../pricing/quote.js';
 import { isTenantEmail, isTenantName } from '../provisioning/executor-env.js';
@@ -85,40 +90,37 @@ const PROBLEM_ISSUES: Readonly<Record<NodeFitProblem, (configuration: Configurat
     message: 'Só o modo gerenciado (na infraestrutura da Verax) é provisionado hoje.',
   }),
   size: (configuration) => ({
-    path: 'configuration',
-    message: `Esta configuração pede o porte ${configuration.size}; o provisionamento cria só o porte P hoje.`,
+    path: 'configuration.gbDay',
+    message: `Este volume pede o porte ${configuration.size}; o provisionamento cria só o porte P hoje.`,
   }),
   agents: (configuration) => ({
-    path: 'configuration.agents',
+    path: 'configuration',
     message:
       configuration.mode === MODE_OF_HOSTING.customer
-        ? 'Agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0.'
-        : 'Agentes nas instâncias do cliente ainda não são provisionados: deixe 0.',
+        ? 'Agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre).'
+        : 'Agentes nas instâncias do cliente ainda não são provisionados.',
   }),
   limits: () => ({
-    path: 'configuration',
-    message: 'Os limites desta configuração ficam fora das faixas que o nó aceita.',
+    path: 'configuration.gbDay',
+    message: 'Os limites deste volume ficam fora das faixas que o nó aceita.',
   }),
 };
 
 const CONTACT_ISSUES: Readonly<Record<ContactReason, FieldIssue>> = {
-  cloud_accounts_above_max: {
-    path: 'configuration.cloudAccounts',
-    message: 'Acima do máximo de contas que a tabela vende.',
+  above_online_max: {
+    path: 'configuration.gbDay',
+    message: 'Acima do máximo da Plataforma na tabela: para mais volume, use o Dedicado.',
   },
-  volume_above_max: {
-    path: 'configuration.monthlyGib',
-    message: 'Acima da maior faixa de volume da tabela.',
+  above_max: { path: 'configuration.gbDay', message: 'Acima do máximo cotável do plano na tabela.' },
+  above_largest_size: {
+    path: 'configuration.gbDay',
+    message: 'Nenhum porte da tabela comporta este volume.',
   },
-  agents_above_max: {
-    path: 'configuration.agents',
-    message: 'Acima do máximo de pacotes de agentes da tabela.',
+  mode_unavailable: {
+    path: 'configuration.plan',
+    message:
+      'A Plataforma roda só na célula da Verax: no ambiente do cliente, escolha o Dedicado ou o vCISO.',
   },
-  history_above_max: {
-    path: 'configuration.historyDays',
-    message: 'Acima da maior opção de histórico da tabela.',
-  },
-  above_largest_size: { path: 'configuration', message: 'Nenhum porte da tabela comporta esta combinação.' },
 };
 
 /**
@@ -283,7 +285,7 @@ const INSTALLATION_SCHEMA = z.object({
   }),
 });
 
-/** As respostas do contrato direto com o modo da tabela do lugar escolhido (a configuração que a cotação recebe). */
+/** O plano e o volume do contrato direto com o modo do lugar escolhido (a configuração que a cotação recebe). */
 export function configurationFor(hosting: Hosting, configuration: DirectConfiguration): ConfigurationInput {
   return { ...configuration, mode: MODE_OF_HOSTING[hosting] };
 }
@@ -379,8 +381,8 @@ function lifecycleOf(tenant: TenantRecord): TenantLifecycleView {
  * (`hosting`, decisão de 06/11/2026):
  * - na infraestrutura da Verax: o cliente nasce em `pending` e o worker é chamado para o início do provisionamento, que
  *   segue exatamente os passos de um cliente pago (CP-07);
- * - na infraestrutura do cliente: a cotação de referência sai da tabela da licença (`self_hosted`), o cliente nasce em
- *   `waiting_customer_install` e nada é pedido ao worker; o console mostra a versão e o guia para o cliente instalar
+ * - na infraestrutura do cliente (só o Dedicado e o vCISO): a cotação de referência é o mesmo preço por GB/dia, no modo
+ *   `self_hosted` (a DRE sem a nuvem da Verax), o cliente nasce em `waiting_customer_install` e nada é pedido ao worker; o console mostra a versão e o guia para o cliente instalar
  *   (`installation`), e o ciclo de vida só registra o fim do contrato.
  * Toda escrita e toda recusa vão à auditoria com `owner:<e-mail>`; os logs levam só ids, o subdomínio, o porte, as
  * versões e os códigos.
@@ -493,8 +495,8 @@ export class AdminTenantsService {
   }
 
   /**
-   * A cotação de referência pela tabela vigente, no modo do lugar escolhido (a tabela do ambiente gerenciado na Verax,
-   * a da licença no cliente), e o que o provisionamento ainda não sabe criar. Nada é gravado.
+   * A cotação de referência pela tabela vigente, no plano e no lugar escolhidos (o mesmo preço por GB/dia nos dois
+   * lugares), e o que o provisionamento ainda não sabe criar. Nada é gravado.
    */
   async preview(body: unknown): Promise<DirectTenantPreview> {
     const parsed = directTenantPreviewSchema.safeParse(body ?? {});
@@ -674,6 +676,7 @@ export class AdminTenantsService {
         event: 'contract_tenant_created',
         tenantId: tenant.id,
         slug: tenant.slug,
+        plan: request.configuration.plan,
         size: tenant.configuration.size,
         hosting: request.hosting,
         priceTableVersion: table.version,
@@ -762,7 +765,12 @@ export class AdminTenantsService {
     ) {
       return false;
     }
-    const table = await this.tables.get(existing.pricing.priceTableVersion);
+    // Um cliente do modelo de preço anterior nunca é a repetição de um cadastro de hoje.
+    if (isLegacyConfiguration(existing.configuration)) return false;
+    const table = await this.tables.get(existing.pricing.priceTableVersion).catch((error: unknown) => {
+      if (error instanceof LegacyVersionError) return undefined;
+      throw error;
+    });
     if (table === undefined || table.status === 'draft') return false;
     const outcome = quote(configurationFor(request.hosting, request.configuration), table.content);
     return (
@@ -960,6 +968,7 @@ function listItemOf(tenant: TenantRecord): TenantListItem {
     stateUpdatedAt: tenant.stateUpdatedAt,
     billingMode: billingModeOf(tenant),
     hosting: hostingOf(tenant),
+    ...(isLegacyConfiguration(tenant.configuration) ? {} : { plan: tenant.configuration.plan }),
     size: tenant.configuration.size,
     ...(provisioningState && tenant.provisioning?.step !== undefined
       ? { step: tenant.provisioning.step }

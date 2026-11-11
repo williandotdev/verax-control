@@ -13,7 +13,7 @@ describe('nodeFitProblems (o que o envs/tenant sabe criar, a mesma regra do pref
   it('aponta cada motivo: outro modo, outro porte, agentes e limites fora das faixas', () => {
     expect(
       nodeFitProblems(
-        { ...demoConfiguration(), mode: 'self_hosted', size: 'M', agents: 10 },
+        { ...demoConfiguration(), mode: 'self_hosted', size: 'M' },
         {
           ...demoLimits(),
           maxAgents: 10,
@@ -32,12 +32,17 @@ describe('nodeFitProblems (o que o envs/tenant sabe criar, a mesma regra do pref
 
 describe('nodeFitProblems no ambiente do cliente (contrato direto, nada provisionado)', () => {
   it('o modo da licença e outro porte passam; agentes e limites fora das faixas, não', () => {
-    const configuration = { ...demoConfiguration(), mode: 'self_hosted' as const, size: 'G' as const };
+    const configuration = {
+      ...demoConfiguration(),
+      plan: 'dedicado' as const,
+      mode: 'self_hosted' as const,
+      size: 'G' as const,
+    };
     expect(nodeFitProblems(configuration, demoLimits(), 'customer')).toEqual([]);
     // Agentes: o guia no cliente (envs/tenant) não liga a entrada deles, então o contrato não seria instalável.
-    expect(
-      nodeFitProblems({ ...configuration, agents: 10 }, { ...demoLimits(), maxAgents: 10 }, 'customer'),
-    ).toEqual(['agents']);
+    expect(nodeFitProblems(configuration, { ...demoLimits(), maxAgents: 10 }, 'customer')).toEqual([
+      'agents',
+    ]);
     expect(
       nodeFitProblems(
         configuration,

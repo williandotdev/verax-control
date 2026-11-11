@@ -4,11 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CHECKOUT_DAILY_LIMIT, SLUG_RESERVATION_MS } from '../src/checkout/checkout-store.js';
 import { COLLECTIONS } from '../src/firestore/collections.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
-import {
-  type ConfigurationInput,
-  type PriceTableInput,
-  priceTableSchema,
-} from '../src/pricing/pricing.schema.js';
+import { type PriceTableInput, priceTableSchema, type QuoteInput } from '../src/pricing/pricing.schema.js';
 import { QUOTE_TTL_MS, QuoteStore } from '../src/pricing/quote-store.js';
 import { quote } from '../src/pricing/quote.js';
 import { STRIPE_API_VERSION } from '../src/stripe/stripe-client.js';
@@ -30,18 +26,10 @@ const CNPJ_ALPHANUMERIC = '12.ABC.345/01DE-35';
 const CNPJ_NUMERIC = '11.222.333/0001-81';
 
 /**
- * A configuração do teste, na tabela FICTÍCIA (`pricing-fixtures.ts`, valores redondos e inventados): porte P, duas
- * contas a mais, a primeira faixa de volume, um pacote de agentes, o primeiro histórico estendido e o suporte
- * prioritário. Seis itens mensais.
+ * O pedido do teste, na tabela FICTÍCIA (`pricing-fixtures.ts`, valores redondos e inventados): a Plataforma com 4 GB/dia,
+ * 2 incluídos na base e 2 adicionais. Dois itens mensais: a base e o GB/dia adicional com quantidade 2.
  */
-const CONFIGURATION: ConfigurationInput = {
-  mode: 'managed',
-  cloudAccounts: 4,
-  monthlyGib: 50,
-  agents: 10,
-  historyDays: 180,
-  support: 'priority',
-};
+const CONFIGURATION: QuoteInput = { plan: 'plataforma', gbDay: 4 };
 
 /**
  * O checkout pela cotação (preço configurável, sobre o CP-03), pelo app inteiro, com o SDK oficial da Stripe apontado
@@ -49,7 +37,7 @@ const CONFIGURATION: ConfigurationInput = {
  * sobre uma tabela publicada fictícia. Cada teste usa IPs próprios (endereços de documentação), porque o limite por IP
  * vive no app durante o arquivo todo; um app por arquivo (o nestjs-pino guarda o logger em estado estático).
  */
-describe('cp-public: checkout pela cotação, com vários itens (preço configurável)', () => {
+describe('cp-public: checkout pela cotação, com a franquia como quantidade (preço por GB/dia)', () => {
   const capture = new LogCapture();
   const clock = new FakeClock(START);
   const documents = new MemoryDocumentStore();
@@ -90,7 +78,7 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
       .send(body as object);
   }
 
-  async function newQuote(configuration: ConfigurationInput = CONFIGURATION): Promise<string> {
+  async function newQuote(configuration: QuoteInput = CONFIGURATION): Promise<string> {
     const response = await request(app.getHttpServer())
       .post('/v1/public/quote')
       .set('X-Forwarded-For', nextIp())
@@ -169,7 +157,9 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     const expiresAt = Math.floor(clock.now().getTime() / 1000) + 2 * 60 * 60;
     const metadata = (prefix: string): [string, string][] => [
       [`${prefix}[dpaVersion]`, VERSION],
+      [`${prefix}[gbDay]`, '4'],
       [`${prefix}[mode]`, 'managed'],
+      [`${prefix}[plan]`, 'plataforma'],
       [`${prefix}[priceTableVersion]`, 'teste-v1'],
       [`${prefix}[privacyVersion]`, VERSION],
       [`${prefix}[quoteId]`, quoteId],
@@ -182,19 +172,13 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
       formEntries(
         new URLSearchParams([
           ['mode', 'subscription'],
-          // Os itens da cotação, na ordem dela, com o preço da Stripe achado pelo lookup_key de cada componente.
-          ['line_items[0][price]', price('vc_env_p_v1')],
+          // Os itens da cotação, na ordem dela, com o preço da Stripe achado pelo lookup_key de cada componente: a
+          // base (quantidade 1) e o GB/dia adicional com a franquia acima do incluído como quantidade (ampliar a
+          // franquia depois é mudar essa quantidade na assinatura).
+          ['line_items[0][price]', price('vc_base_v1')],
           ['line_items[0][quantity]', '1'],
-          ['line_items[1][price]', price('vc_acc_v1')],
+          ['line_items[1][price]', price('vc_add_v1')],
           ['line_items[1][quantity]', '2'],
-          ['line_items[2][price]', price('vc_vol_50_v1')],
-          ['line_items[2][quantity]', '1'],
-          ['line_items[3][price]', price('vc_agt_v1')],
-          ['line_items[3][quantity]', '1'],
-          ['line_items[4][price]', price('vc_his_180_v1')],
-          ['line_items[4][quantity]', '1'],
-          ['line_items[5][price]', price('vc_sup_v1')],
-          ['line_items[5][quantity]', '1'],
           ['allowed_payment_method_types[0]', 'card'],
           ['allowed_payment_method_types[1]', 'boleto'],
           ['payment_method_options[boleto][expires_after_days]', '3'],
@@ -223,11 +207,11 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(session?.headers['authorization']).toBe(`Bearer ${stripeKey}`);
     expect(session?.headers['stripe-version']).toBe(STRIPE_API_VERSION);
     expect(session?.headers['idempotency-key']).toBe(`checkout-session-${tenantId}`);
-    // Os seis preços vieram numa consulta só, pelos lookup_keys da cotação.
+    // Os dois preços vieram numa consulta só, pelos lookup_keys da cotação.
     const lookups = fake.calls('GET', '/v1/prices');
     expect(lookups).toHaveLength(1);
     expect([...(lookups[0]?.query.keys() ?? [])].filter((key) => key.startsWith('lookup_keys'))).toHaveLength(
-      6,
+      2,
     );
 
     const sessionId = [...fake.sessions.keys()][0];
@@ -241,10 +225,11 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
       tenantId,
       checkoutSessionId: sessionId,
       order: {
-        configuration: { ...CONFIGURATION, size: 'P' },
-        limits: { maxCloudAccounts: 4, monthlyGib: 50, historyDays: 180, maxAgents: 10, maxUsers: 10 },
-        // Fictícios: ambiente 1.000 + 2 contas × 30 + volume 100 + 1 pacote 100 + histórico 20 + suporte 300.
-        pricing: { priceTableVersion: 'teste-v1', quoteId, monthlyTotal: 158_000, setupTotal: 0 },
+        // O plano e a franquia contratada (a medição do excedente e o contador do painel partem dela).
+        configuration: { plan: 'plataforma', mode: 'managed', gbDay: 4, size: 'P', historyDays: 60 },
+        limits: { maxCloudAccounts: 50, monthlyGib: 116, historyDays: 60, maxAgents: 0, maxUsers: 10 },
+        // Fictícios: base 1.000 + 2 GB/dia adicionais × 300.
+        pricing: { priceTableVersion: 'teste-v1', quoteId, monthlyTotal: 160_000, setupTotal: 0 },
         company: { legalName: 'Cliente Demo A Ltda', cnpj: '12ABC34501DE35' },
         adminEmail: 'admin@cliente-demo-a.example',
         consent: { termsVersion: VERSION, privacyVersion: VERSION, dpaVersion: VERSION },
@@ -254,48 +239,41 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     });
   });
 
-  it('com implantação no modo, ela entra como o último item (avulso, só na primeira fatura)', async () => {
-    documents.clear();
-    fake.reset();
-    const table = fictitiousPriceTable();
-    table.modes.managed.setup = { amount: 50_000, lookupKey: 'vc_set_m_v1' };
-    await seed(table);
-
+  it('no máximo do site, a quantidade do adicional é o máximo menos o incluído', async () => {
+    quoteId = await newQuote({ plan: 'plataforma', gbDay: 5 });
     await checkout(order()).expect(201);
-
     expect(lineItemsOf(fake.calls('POST', '/v1/checkout/sessions')[0]?.form)).toEqual([
-      ['line_items[0][price]', price('vc_env_p_v1')],
+      ['line_items[0][price]', price('vc_base_v1')],
       ['line_items[0][quantity]', '1'],
-      ['line_items[1][price]', price('vc_acc_v1')],
-      ['line_items[1][quantity]', '2'],
-      ['line_items[2][price]', price('vc_vol_50_v1')],
-      ['line_items[2][quantity]', '1'],
-      ['line_items[3][price]', price('vc_agt_v1')],
-      ['line_items[3][quantity]', '1'],
-      ['line_items[4][price]', price('vc_his_180_v1')],
-      ['line_items[4][quantity]', '1'],
-      ['line_items[5][price]', price('vc_sup_v1')],
-      ['line_items[5][quantity]', '1'],
-      ['line_items[6][price]', price('vc_set_m_v1')],
-      ['line_items[6][quantity]', '1'],
+      ['line_items[1][price]', price('vc_add_v1')],
+      ['line_items[1][quantity]', '3'],
     ]);
     expect((await slugDocument('cliente-demo-a'))?.['order']).toMatchObject({
-      pricing: { monthlyTotal: 158_000, setupTotal: 50_000 },
+      configuration: { gbDay: 5 },
+      pricing: { monthlyTotal: 190_000, setupTotal: 0 },
     });
   });
 
-  it('a configuração mínima tem um item só, o ambiente', async () => {
-    quoteId = await newQuote({
-      mode: 'managed',
-      cloudAccounts: 0,
-      monthlyGib: 0,
-      agents: 0,
-      historyDays: 0,
-      support: 'standard',
+  it('tabela sem impostos e o serviço sem STRIPE_TAX_RATE_ID: 503, sem reservar (cobraria só o valor da tabela)', async () => {
+    documents.clear();
+    fake.reset();
+    await seed({ ...fictitiousPriceTable(), taxMode: 'exclusive' });
+
+    await checkout(order()).expect(503);
+
+    expect(capture.entries().find((entry) => entry['event'] === 'checkout_tax_rate_invalid')).toMatchObject({
+      problem: 'unconfigured',
+      priceTableVersion: 'teste-v1',
     });
+    expect(await slugDocument('cliente-demo-a')).toBeUndefined();
+    expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(0);
+  });
+
+  it('na franquia incluída, um item só: a base', async () => {
+    quoteId = await newQuote({ plan: 'plataforma', gbDay: 2 });
     await checkout(order()).expect(201);
     expect(lineItemsOf(fake.calls('POST', '/v1/checkout/sessions')[0]?.form)).toEqual([
-      ['line_items[0][price]', price('vc_env_p_v1')],
+      ['line_items[0][price]', price('vc_base_v1')],
       ['line_items[0][quantity]', '1'],
     ]);
   });
@@ -313,8 +291,10 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
       expect(entry).toMatchObject({ actor: 'system', requestId: 'site-trace-00000001' });
       expect(entry['tenantId']).toBe((await slugDocument('cliente-demo-a'))?.['tenantId']);
     }
+    expect(audit[0]?.['details']).toMatchObject({ plan: 'plataforma', gbDay: 4, size: 'P' });
     expect(audit[1]?.['details']).toEqual({
       slug: 'cliente-demo-a',
+      plan: 'plataforma',
       size: 'P',
       priceTableVersion: 'teste-v1',
       quoteId,
@@ -327,7 +307,7 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
       '12ABC34501DE35',
       'Cliente Demo A',
       'cs_test_',
-      '158000',
+      '160000',
     ]) {
       expect(raw).not.toContain(personal);
     }
@@ -409,21 +389,28 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(1);
   });
 
-  it('cotação do ambiente na infraestrutura do cliente (a de referência de um contrato direto): 422, sem reservar nem Stripe', async () => {
+  it('cotação de um plano de contrato direto (a de referência do console): 422, sem reservar nem Stripe', async () => {
     // O console grava a cotação de referência do contrato direto na mesma coleção; o site nunca a vende.
-    const outcome = quote(
-      { ...CONFIGURATION, mode: 'self_hosted' },
-      priceTableSchema.parse(fictitiousPriceTable()),
-    );
-    if (outcome.kind !== 'quote') throw new Error('sob consulta');
-    const stored = await new QuoteStore(documents, clock).create('teste-v1', outcome.quote);
+    const table = priceTableSchema.parse(fictitiousPriceTable());
+    for (const input of [
+      { plan: 'dedicado', gbDay: 5, mode: 'managed' },
+      { plan: 'vciso', gbDay: 5, mode: 'self_hosted' },
+    ] as const) {
+      const outcome = quote(input, table);
+      if (outcome.kind !== 'quote') throw new Error('sob consulta');
+      const stored = await new QuoteStore(documents, clock).create('teste-v1', outcome.quote);
 
-    const response = await checkout(order({ quoteId: stored.quoteId })).expect(422);
+      const response = await checkout(order({ quoteId: stored.quoteId })).expect(422);
 
-    expect(response.body).toMatchObject({ code: 'mode_not_sold_online' });
+      expect(response.body).toMatchObject({ code: 'plan_not_sold_online' });
+    }
     expect(await slugDocument('cliente-demo-a')).toBeUndefined();
     expect(fake.requests).toHaveLength(0);
-    expect(capture.entries().some((entry) => entry['event'] === 'checkout_mode_refused')).toBe(true);
+    const refused = capture.entries().filter((entry) => entry['event'] === 'checkout_plan_refused');
+    expect(refused.map((entry) => [entry['plan'], entry['mode']])).toEqual([
+      ['dedicado', 'managed'],
+      ['vciso', 'self_hosted'],
+    ]);
   });
 
   it('cotação adulterada no banco (total diferente do recálculo pela tabela): 409 e alerta no log', async () => {
@@ -442,14 +429,14 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
 
   it('uma tabela nova publicada depois da cotação não muda o preço dela: a cotação vale até vencer', async () => {
     const newer = fictitiousPriceTable();
-    newer.modes.managed.environment.P = { amount: 120_000, lookupKey: 'vc_env_p_v2' };
+    newer.plans.plataforma.base = { amount: 110_000, lookupKey: 'vc_base_v2' };
     await seedPublishedTable(documents, newer, { version: 'teste-v2', effectiveFrom: clock.now() });
-    fake.addPrice('vc_env_p_v2', 120_000);
+    fake.addPrice('vc_base_v2', 110_000);
 
     await checkout(order()).expect(201);
 
     const sent = fake.calls('POST', '/v1/checkout/sessions')[0]?.form;
-    expect(sent?.get('line_items[0][price]')).toBe(price('vc_env_p_v1'));
+    expect(sent?.get('line_items[0][price]')).toBe(price('vc_base_v1'));
     expect(sent?.get('metadata[priceTableVersion]')).toBe('teste-v1');
   });
 
@@ -555,11 +542,12 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
 
   it('preço da cotação ausente, com outro valor, inativo, de outro tipo ou em outra moeda na Stripe: 503, sem reservar', async () => {
     const cases: [string, Record<string, unknown>, string][] = [
-      ['vc_sup_v1', { lookup_key: 'outro_lookup_key' }, 'missing'],
-      ['vc_acc_v1', { unit_amount: 2_999 }, 'amount'],
-      ['vc_vol_50_v1', { active: false }, 'inactive'],
-      ['vc_agt_v1', { type: 'one_time', recurring: null }, 'interval'],
-      ['vc_his_180_v1', { currency: 'usd' }, 'currency'],
+      ['vc_add_v1', { lookup_key: 'outro_lookup_key' }, 'missing'],
+      ['vc_add_v1', { unit_amount: 29_999 }, 'amount'],
+      ['vc_base_v1', { active: false }, 'inactive'],
+      ['vc_add_v1', { type: 'one_time', recurring: null }, 'interval'],
+      ['vc_base_v1', { recurring: { interval: 'year', interval_count: 1 } }, 'interval'],
+      ['vc_base_v1', { currency: 'usd' }, 'currency'],
     ];
     for (const [lookupKey, change, problem] of cases) {
       fake.reset();
@@ -593,7 +581,7 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
     expect(fake.calls('GET', '/v1/prices')).toHaveLength(1);
 
     // Arquivado na Stripe depois da leitura. 6 min depois dela (3 do último uso), o preço é relido e recusado.
-    const archived = fake.prices.get(price('vc_sup_v1'));
+    const archived = fake.prices.get(price('vc_add_v1'));
     if (archived !== undefined) archived['active'] = false;
     clock.advance(3 * MINUTE_MS);
     const before = capture.lines.length;
@@ -605,29 +593,8 @@ describe('cp-public: checkout pela cotação, com vários itens (preço configur
       .entries()
       .slice(before)
       .find((entry) => entry['event'] === 'checkout_price_invalid');
-    expect(logged).toMatchObject({ lookupKey: 'vc_sup_v1', problem: 'inactive' });
+    expect(logged).toMatchObject({ lookupKey: 'vc_add_v1', problem: 'inactive' });
     expect(await slugDocument('cliente-demo-c')).toBeUndefined();
-  });
-
-  it('implantação cadastrada como mensal na Stripe: 503 (o item avulso precisa de preço avulso)', async () => {
-    documents.clear();
-    fake.reset();
-    const table = fictitiousPriceTable();
-    table.modes.managed.setup = { amount: 50_000, lookupKey: 'vc_set_m_v1' };
-    await seed(table);
-    const setup = fake.prices.get(price('vc_set_m_v1'));
-    if (setup !== undefined) {
-      Object.assign(setup, { type: 'recurring', recurring: { interval: 'month', interval_count: 1 } });
-    }
-    const before = capture.lines.length;
-
-    await checkout(order()).expect(503);
-
-    const logged = capture
-      .entries()
-      .slice(before)
-      .find((entry) => entry['event'] === 'checkout_price_invalid');
-    expect(logged).toMatchObject({ lookupKey: 'vc_set_m_v1', problem: 'type' });
   });
 
   it('a sessão sem boleto (desligado no Dashboard) segue, mas avisa no log', async () => {

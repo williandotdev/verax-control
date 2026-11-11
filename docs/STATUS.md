@@ -5083,6 +5083,84 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
     padrão às vezes derruba um worker com 0xC0000409, sem falha de asserção), `pnpm --filter @verax/console test` e
     `test:e2e`, `terraform test` do `envs/control-plane` (34) e `fmt -check`.
 
+## Fase 3: preço por volume de logs (GB/dia), com Plataforma, Dedicado e vCISO
+
+- **Decisão do responsável (10/11/2026):** o preço é só por volume de logs em GB por dia, em três planos: a
+  **Plataforma** (célula compartilhada, vendida no checkout: uma base com alguns GB/dia incluídos e um preço por GB/dia
+  contratado acima disso, até o máximo do site; o uso acima da franquia é cobrado depois), o **Dedicado** (servidor
+  próprio, contrato anual, por GB/dia com mínimo e máximo) e o **vCISO** (o Dedicado mais um serviço mensal e uma
+  implantação). O Dedicado e o vCISO só por contrato direto. Contas de nuvem não mudam o preço; agentes não são
+  vendidos. Nenhum valor comercial no repositório; nada aplicado, nenhum deploy, nada na GCP, no Firestore ou na Stripe.
+- **Plano de controle (`apps/control-plane`):**
+  - `pricing/pricing.schema.ts`: a tabela nova (`taxMode` embutido ou por cima, regra de porte por GB/dia e os três
+    planos, cada valor com o `lookup_key`), o modelo de custos v2 (célula compartilhada com a capacidade em GB/dia e o
+    custo fixo de cada cliente nela, nó por porte, ingestão por GB/dia, horas por plano, do serviço do vCISO, a mais no
+    cliente e da implantação), `quoteInputSchema` `{ plan, gbDay }`, a configuração normalizada
+    `{ plan, mode, gbDay, size, historyDays }` e a do modelo anterior, só leitura (`legacyConfigurationSchema`);
+  - `quote.ts` (o motor: base + GB/dia adicional como quantidade; GB/dia × preço; vCISO com o serviço e a implantação;
+    o porte pelo volume; a Plataforma nunca no cliente, `mode_unavailable`), `node-limits.ts` (`monthlyGibFor`: a
+    franquia mensal do nó a partir do GB/dia, num mês de 31 dias), `dre.ts` (o imposto por cima, o rateio da célula, o
+    nó do porte, as horas por plano), `publish-guard.ts` (cada GB/dia vendável de cada plano e lugar; recusa também o
+    que o site oferece e não cota ou o provisionamento não cria, e o excedente mais barato que o adicional),
+    `public-pricing.ts` (os três planos, o `taxMode` e o "a partir de" de cada um; 422 `plan_not_sold_online`);
+  - `pricing-store.ts`: **as versões do modelo anterior viram legado** (listadas com `legacy: true`, 409
+    `version_legacy` ao abrir, nunca a vigente, aposentadas pelo envelope quando a primeira versão nova é publicada);
+    `quote-store.ts` trata uma cotação fora do formato como vencida;
+  - `checkout/`: a recusa por plano (`checkout_plan_refused`), o recálculo `{ plan, gbDay, mode }`, os metadados com o
+    plano e o GB/dia, a reserva e a auditoria com o plano; `tenants/tenant.schema.ts` aceita o contratado novo ou o do
+    modelo anterior; `admin/admin-tenants.*` (o contrato direto com o plano e o GB/dia, nos dois lugares, com os
+    motivos no campo); `cli/publicar-precos.ts` (o relatório por plano e as pontas de cada plano);
+    `scripts/catalog.example.json` e o cabeçalho do `stripe-setup.ts` com os componentes novos.
+- **Console (`apps/console`):** o modelo de custos (a célula com o custo e o custo por GB/dia recalculados, o nó por
+  porte, as horas por plano), a tabela de preços (imposto, porte por GB/dia, os três planos), a checagem (a pior de cada
+  plano e lugar, o "a partir de" de cada plano), as versões do modelo anterior marcadas e fechadas, o simulador (plano,
+  GB/dia e lugar; o valor da tabela e a receita bruta com o imposto por cima) e o contrato direto (plano e GB/dia; o
+  contratado do modelo anterior no detalhe). Os mocks com valores fictícios.
+- **Documentação:** `docs/ARQUITETURA.md` ("Preço configurável" reescrita e "Cliente de contrato direto pelo
+  console"), `docs/runbooks/console-do-responsavel.md` (seções 3 a 7).
+- **Dependências:** nenhuma.
+- **Decisões onde o pedido deixava margem:**
+  - **legado:** um documento que não passa no schema novo (`pricingTables/2026-11-v1`, `costModels/2026-11-v1`) fica
+    legível só pelo envelope, aparece na lista e nunca vale como vigente: até a primeira versão nova, o site responde
+    503 em vez de cotar com uma forma desconhecida. Um cliente do modelo anterior continua legível (a lista, o detalhe e
+    o `tick` não quebram), e uma cotação antiga vira `quote_outdated`;
+  - **infraestrutura do cliente no contrato direto:** o mesmo preço por GB/dia (a DRE sem a nuvem da Verax e com as
+    horas a mais do modelo); só o Dedicado e o vCISO (a Plataforma é a célula);
+  - **o cliente guarda o plano e a franquia em `configuration` (`plan`, `gbDay`)**, que a medição do excedente e o
+    contador do painel vão ler; os limites do nó continuam os quatro `PLAN_*` (a franquia mensal sai do GB/dia);
+  - **o item do GB/dia adicional não entra no incluído** (a Stripe não aceita quantidade 0 no Checkout): ampliar a
+    franquia de quem está no incluído é acrescentar o item; de quem já tem, mudar a quantidade;
+  - **o porte da Plataforma** sai da mesma regra de porte e o provisionamento cria um nó P por cliente até a célula
+    multi-cliente existir (frente 4 do plano); a checagem recusa uma tabela que venda no site um volume fora disso.
+- **Testes:** `VITEST_MAX_WORKERS=2 pnpm --filter @verax/control-plane test`: 835 testes verdes, 91 pulados (os do
+  emulador do Firestore, que não rodou aqui); no Windows, o paralelo às vezes derruba um worker com 0xC0000409 sem
+  falha de asserção (o arquivo passa sozinho). `pnpm --filter @verax/console test` (73) e `test:e2e` (15, axe WCAG 2.2
+  AA e a CSP nos dois temas). `pnpm typecheck`, `eslint` e `prettier --check` verdes.
+- **Riscos e pendências:**
+  - **o excedente:** o preço e o `lookup_key` estão na tabela e no catálogo como preço mensal comum; se a frente da
+    medição preferir um preço medido (uso), o formato do catálogo do `stripe-setup` precisa do tipo de uso;
+  - **a capacidade da célula** é premissa do modelo de custos até um teste de carga.
+- **Revisão do PR #118, corrigida:**
+  - **Semgrep (njsscan `node_logic_bypass`, bloqueante):** a comparação da margem de alerta com a mínima (e as do máximo
+    do site e do Dedicado) voltou a passar por `belowFloor`, como antes da troca; sem `nosemgrep`;
+  - **Codex P1, reserva paga depois do deploy:** a leitura de `slugs/{slug}` aceita o pedido com a configuração do
+    modelo anterior (`storedSlugOrderSchema`), para o `checkout.session.completed` de uma reserva aberta antes da troca
+    criar o cliente (com a configuração antiga, que o cliente já aceita); o pedido novo continua gravado só no modelo de
+    hoje (`CheckoutStore.reserve` confere com `slugOrderSchema`). Testes: o webhook com a reserva antiga paga (o
+    cliente nasce em `provisioning` com o preflight) e a recusa de gravar um pedido antigo;
+  - **Codex P1, imposto por cima de verdade:** `STRIPE_TAX_RATE_ID` (opcional, só o id): o checkout de uma tabela
+    `exclusive` põe a alíquota da Stripe nos itens e como padrão da assinatura, relida e conferida a cada sessão
+    (ativa, exclusiva, no modo da chave, com o percentual da alíquota padrão do modelo de custos vigente); sem ela ou
+    divergente, 503 `checkout_unavailable` com `checkout_tax_rate_invalid` e o motivo. A checagem continua calculando
+    com o imposto por cima e reprova uma tabela `exclusive` num serviço sem a variável (console e `publicar-precos
+--aliquota-stripe`). `stripe-setup --tax-rate-percent=<n>` acha ou cria a alíquota e imprime o id. Terraform: o
+    `cp-admin` recebe `STRIPE_TAX_RATE_ID` de `service_env` (só ela). Testes: `test/checkout-tax.test.ts` (novo: a
+    alíquota nos itens e na assinatura; a tabela embutida sem alíquota nem consulta; inativa, embutida, de outro modo,
+    com outro percentual, inexistente e sem modelo de custos, todos 503 sem reservar), o checkout sem a variável, a
+    checagem, o console (`check` e `publish` com o motivo), o `publicar-precos` e o `stripe-setup` (simulação, criação
+    com os parâmetros exatos, a marca, o id impresso, a repetição e o percentual inválido); `terraform test` do
+    `envs/control-plane` (34) com o caso novo.
+
 ## Fase 3, CE-00: célula compartilhada da Plataforma (ADR)
 
 - **Decisão do responsável (10/11/2026):** o plano Plataforma roda numa célula compartilhada (um nó `standard` em São Paulo; a primeira, `verax-celula`, no projeto do nó da Verax por ora, não num projeto próprio das células), cobrada só pelo volume em GB/dia, com franquia contratada que o cliente amplia pelo painel e excedente cobrado sozinho; Dedicado e vCISO continuam com um nó por cliente; o SOC da Verax vira o primeiro cliente da célula.

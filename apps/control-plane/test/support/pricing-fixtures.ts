@@ -7,96 +7,47 @@ import type {
 } from '../../src/pricing/pricing.schema.js';
 
 /**
- * Tabela de preços e modelo de custos FICTÍCIOS, só para os testes: números redondos e inventados (o ambiente "custa"
- * R$ 1.000, o câmbio é 2, a hora de suporte R$ 80), sem relação nenhuma com os preços, custos, tarifas, alíquotas ou
- * margens de verdade, que vivem só no Firestore do plano de controle (o repositório é público). Até as faixas, os
- * portes e os incluídos são outros. Os `lookup_key` são curtos e inventados (`vc_env_p_v1`, `vc_acc_v1`...).
+ * Tabela de preços e modelo de custos FICTÍCIOS, só para os testes: números redondos e inventados (a base da
+ * Plataforma "custa" R$ 1.000 com 2 GB/dia incluídos, o GB/dia adicional R$ 300, o Dedicado R$ 500 por GB/dia; o câmbio
+ * é 2, a hora de suporte R$ 80), sem relação nenhuma com os preços, custos, tarifas, alíquotas ou margens de verdade,
+ * que vivem só no Firestore do plano de controle (o repositório é público). Até os incluídos, mínimos, máximos e portes
+ * são outros. Os `lookup_key` são curtos e inventados (`vc_base_v1`, `vc_add_v1`...).
  */
 export function fictitiousPriceTable(): PriceTableInput {
   return {
     currency: 'brl',
     interval: 'month',
+    taxMode: 'inclusive',
     sizing: {
       sizes: [
-        { size: 'P', maxCloudAccounts: 5, maxMonthlyGib: 50, maxAgents: 10, description: 'Porte de teste P' },
-        {
-          size: 'M',
-          maxCloudAccounts: 10,
-          maxMonthlyGib: 100,
-          maxAgents: 20,
-          description: 'Porte de teste M',
-        },
-        {
-          size: 'G',
-          maxCloudAccounts: 20,
-          maxMonthlyGib: 200,
-          maxAgents: 40,
-          description: 'Porte de teste G',
-        },
+        { size: 'P', maxGbDay: 5, description: 'Porte de teste P' },
+        { size: 'M', maxGbDay: 10, description: 'Porte de teste M' },
+        { size: 'G', maxGbDay: 20, description: 'Porte de teste G' },
       ],
     },
-    modes: {
-      managed: {
-        environment: {
-          P: { amount: 100_000, lookupKey: 'vc_env_p_v1' },
-          M: { amount: 200_000, lookupKey: 'vc_env_m_v1' },
-          G: { amount: 400_000, lookupKey: 'vc_env_g_v1' },
-        },
+    plans: {
+      plataforma: {
+        base: { amount: 100_000, lookupKey: 'vc_base_v1' },
+        includedGbDay: 2,
+        additionalGbDay: { amount: 30_000, lookupKey: 'vc_add_v1' },
+        overageGbDay: { amount: 30_000, lookupKey: 'vc_over_v1' },
+        maxOnlineGbDay: 5,
+        maxCloudAccounts: 50,
       },
-      self_hosted: {
-        environment: {
-          P: { amount: 50_000, lookupKey: 'vc_lic_p_v1' },
-          M: { amount: 100_000, lookupKey: 'vc_lic_m_v1' },
-          G: { amount: 200_000, lookupKey: 'vc_lic_g_v1' },
-        },
-        setup: { amount: 100_000, lookupKey: 'vc_set_v1' },
+      dedicado: {
+        gbDay: { amount: 50_000, lookupKey: 'vc_ded_v1' },
+        minGbDay: 3,
+        maxGbDay: 15,
+        contractMonths: 12,
+        maxCloudAccounts: 100,
+      },
+      vciso: {
+        service: { amount: 200_000, lookupKey: 'vc_vciso_v1' },
+        setup: { amount: 500_000, lookupKey: 'vc_setup_v1' },
       },
     },
-    cloudAccounts: { included: 2, max: 20, additional: { amount: 3_000, lookupKey: 'vc_acc_v1' } },
-    volume: {
-      includedMonthlyGib: 10,
-      bands: [
-        { monthlyGib: 50, amount: 10_000, lookupKey: 'vc_vol_50_v1' },
-        { monthlyGib: 100, amount: 20_000, lookupKey: 'vc_vol_100_v1' },
-        { monthlyGib: 200, amount: 40_000, lookupKey: 'vc_vol_200_v1' },
-      ],
-    },
-    agents: { packSize: 10, maxPacks: 4, pack: { amount: 10_000, lookupKey: 'vc_agt_v1' } },
-    history: {
-      includedDays: 30,
-      extended: [
-        { days: 180, amount: 2_000, lookupKey: 'vc_his_180_v1' },
-        { days: 360, amount: 4_000, lookupKey: 'vc_his_360_v1' },
-      ],
-    },
-    prioritySupport: { amount: 30_000, lookupKey: 'vc_sup_v1' },
+    history: { includedDays: 60 },
     users: { max: 10 },
-    presets: [
-      {
-        id: 'inicial',
-        label: 'Inicial (teste)',
-        configuration: {
-          mode: 'managed',
-          cloudAccounts: 2,
-          monthlyGib: 10,
-          agents: 0,
-          historyDays: 30,
-          support: 'standard',
-        },
-      },
-      {
-        id: 'nuvem-propria',
-        label: 'Na sua nuvem (teste)',
-        configuration: {
-          mode: 'self_hosted',
-          cloudAccounts: 2,
-          monthlyGib: 10,
-          agents: 0,
-          historyDays: 30,
-          support: 'standard',
-        },
-      },
-    ],
   };
 }
 
@@ -106,6 +57,13 @@ export function fictitiousCostModel(): CostModelInput {
     currency: 'brl',
     exchange: { brlPerUsd: 2, quotedOn: '2026-01-01', cloudBuffer: 0.1 },
     infrastructure: {
+      sharedCell: {
+        vmUsdPerMonth: 100,
+        diskGb: 10,
+        snapshotGib: 10,
+        capacityGbDay: 10,
+        perCustomerUsdPerMonth: 1,
+      },
       sizes: {
         P: { vmUsdPerMonth: 100, diskGb: 10, snapshotGib: 10 },
         M: { vmUsdPerMonth: 200, diskGb: 20, snapshotGib: 20 },
@@ -116,8 +74,7 @@ export function fictitiousCostModel(): CostModelInput {
       natUsdPerVmMonth: 1,
       natIpUsdPerMonth: 2,
       otherUsdPerNodeMonth: 1,
-      ingestionUsdPerGib: 0.1,
-      agents: { entryUsdPerMonth: 2, diskBaseGb: 10, diskPerAgentGb: 2 },
+      ingestionUsdPerGbDay: 2,
     },
     paymentFees: { card: { rate: 0.05, fixed: 50 }, boleto: { fixed: 300 }, billingRate: 0.01 },
     taxes: {
@@ -131,19 +88,14 @@ export function fictitiousCostModel(): CostModelInput {
     support: {
       hourlyCost: 8_000,
       hours: {
-        baseManaged: 1.5,
-        baseSelfHosted: 2.5,
-        perAdditionalAccount: 0.15,
-        perAgentPack: 0.5,
-        prioritySupport: 2.5,
-        perVolumeBand: [
-          { monthlyGib: 50, hours: 0.5 },
-          { monthlyGib: 100, hours: 1 },
-          { monthlyGib: 200, hours: 2 },
-        ],
-        setupManaged: 1.5,
-        setupPriorityExtra: 0.5,
-        setupSelfHosted: 10,
+        plataforma: 1,
+        dedicado: 2,
+        vcisoService: 5,
+        selfHosted: 1,
+        setupPlataforma: 0.5,
+        setupDedicado: 4,
+        setupVciso: 10,
+        setupSelfHosted: 8,
       },
     },
     fixedCosts: { items: [{ name: 'Custo fixo de teste', monthly: 100_000 }], allocationCustomers: 5 },
@@ -153,21 +105,14 @@ export function fictitiousCostModel(): CostModelInput {
   };
 }
 
-/** A configuração mínima gerenciada da tabela fictícia, já normalizada (porte P). */
+/** A configuração mínima da Plataforma na tabela fictícia, já normalizada (2 GB/dia, porte P). */
 export function demoConfiguration(): Configuration {
-  return {
-    mode: 'managed',
-    size: 'P',
-    cloudAccounts: 2,
-    monthlyGib: 10,
-    agents: 0,
-    historyDays: 30,
-    support: 'standard',
-  };
+  return { plan: 'plataforma', mode: 'managed', gbDay: 2, size: 'P', historyDays: 60 };
 }
 
+/** Os limites do nó da configuração mínima (2 GB/dia viram 58 GiB por mês: 2 × 31 × 10⁹ / 2³⁰, para cima). */
 export function demoLimits(): NodeLimits {
-  return { maxCloudAccounts: 2, monthlyGib: 10, historyDays: 30, maxAgents: 0, maxUsers: 10 };
+  return { maxCloudAccounts: 50, monthlyGib: 58, historyDays: 60, maxAgents: 0, maxUsers: 10 };
 }
 
 /** O preço gravado no pedido, para os testes que não passam pela cotação (o id é um ULID fixo e fictício). */

@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { NODE_AGENTS_MAX_LIMIT, NodeAgentsLimitError, nodeLimitsEnv } from './node-limits.js';
+import {
+  DAYS_PER_MONTH,
+  monthlyGibFor,
+  NODE_AGENTS_MAX_LIMIT,
+  NodeAgentsLimitError,
+  nodeLimitsEnv,
+} from './node-limits.js';
 
 const sharedAgents = new URL('../../../../packages/shared/src/agents.ts', import.meta.url);
 
@@ -40,6 +46,14 @@ describe('limites do nó (gancho do PR-18)', () => {
     expect(() => nodeLimitsEnv({ ...limits, maxAgents: NODE_AGENTS_MAX_LIMIT + 1 })).toThrow(
       NodeAgentsLimitError,
     );
+  });
+
+  it('o GB/dia contratado vira a franquia mensal em GiB, num mês de 31 dias, arredondada para cima', () => {
+    // 1 GB/dia × 31 dias = 31 × 10⁹ bytes = 28,87 GiB → 29.
+    expect(DAYS_PER_MONTH).toBe(31);
+    expect(monthlyGibFor(1)).toBe(29);
+    expect(monthlyGibFor(3)).toBe(87);
+    expect(monthlyGibFor(10)).toBe(289);
   });
 
   it('o teto é o mesmo do pacote compartilhado (WAZUH_AGENTS_MAX_LIMIT)', () => {

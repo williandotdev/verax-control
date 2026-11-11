@@ -18,7 +18,8 @@ import { FICTITIOUS_OWNER, fictitiousCostModel, fictitiousPriceTable } from './f
  * A API do console simulada (`/v1/admin/...`), em memória, para os testes de componente (pelo MSW) e os de navegador
  * (pelo `page.route` do Playwright). Imita os contratos de `apps/control-plane/src/admin`: os códigos de erro, o 400
  * com `details.issues`, o 422 da publicação com `details.report`, a vigente por `effectiveFrom` e a aposentadoria da
- * anterior. A validação é só uma amostra (alguns campos obrigatórios e duas regras): a de verdade é o zod da API.
+ * anterior. A validação é só uma amostra (alguns campos obrigatórios e duas regras): a de verdade é o zod da API. Uma
+ * versão do modelo de preço anterior (`legacy`) aparece na lista e responde 409 `version_legacy` ao ser aberta.
  */
 type Kind = 'pricing-tables' | 'cost-models';
 type AnyRecord = VersionedRecord<PriceTable> | VersionedRecord<CostModel>;
@@ -39,6 +40,8 @@ export interface FakeAdminState {
   auth: FakeAuthState;
   /** Os textos legais (`fake-legal.ts`). */
   legal: FakeLegalState;
+  /** As versões do modelo de preço anterior (`<tipo>/<versão>`): só na lista. */
+  legacy: Set<string>;
 }
 
 const DAY = 86_400_000;
@@ -63,6 +66,7 @@ export function createFakeState(
     tenants: options.empty === true ? { tenants: new Map(), workerDown: false } : createFakeTenants(now),
     auth: createFakeAuth({ loggedIn: options.loggedIn, setupOpen: options.setupOpen }),
     legal: createFakeLegal(now, options.empty === true),
+    legacy: new Set(),
   };
   if (options.empty === true) return state;
   const at = (days: number): string => iso(new Date(now().getTime() - days * DAY));
@@ -78,6 +82,21 @@ export function createFakeState(
     updatedAt: at(20),
     ...base,
   });
+  // A do modelo de preço anterior: o conteúdo nunca é lido (a API não o entende mais), só o envelope.
+  state['pricing-tables'].set('teste-v0', {
+    version: 'teste-v0',
+    status: 'retired',
+    content: fictitiousPriceTable(),
+    effectiveFrom: at(30),
+    publishedAt: at(30),
+    publishedBy: FICTITIOUS_OWNER,
+    retiredAt: at(19),
+    supersededBy: 'teste-v1',
+    createdAt: at(30),
+    updatedAt: at(19),
+    ...base,
+  });
+  state.legacy.add('pricing-tables/teste-v0');
   state['pricing-tables'].set('teste-v1', {
     version: 'teste-v1',
     status: 'retired',
@@ -134,9 +153,13 @@ function current<R extends { effectiveFrom?: string }>(records: Map<string, R>, 
   return best;
 }
 
-function summary(record: AnyRecord, currentVersion: string | undefined): VersionSummary {
+function summary(record: AnyRecord, currentVersion: string | undefined, legacy = false): VersionSummary {
   const { content: _content, publishCheck: _check, createdAt: _created, createdBy: _by, ...rest } = record;
-  return { ...rest, current: record.version === currentVersion };
+  return {
+    ...rest,
+    current: !legacy && record.version === currentVersion,
+    ...(legacy ? { legacy: true as const } : {}),
+  };
 }
 
 /** Campos que a amostra de validação exige (a API exige todos). */
@@ -153,12 +176,14 @@ const REQUIRED: Readonly<Record<Kind, readonly string[]>> = {
     'margins.alert',
   ],
   'pricing-tables': [
-    'cloudAccounts.included',
-    'cloudAccounts.max',
-    'cloudAccounts.additional.amount',
-    'volume.includedMonthlyGib',
-    'agents.packSize',
-    'prioritySupport.amount',
+    'plans.plataforma.base.amount',
+    'plans.plataforma.includedGbDay',
+    'plans.plataforma.maxOnlineGbDay',
+    'plans.dedicado.gbDay.amount',
+    'plans.dedicado.minGbDay',
+    'plans.dedicado.maxGbDay',
+    'plans.vciso.service.amount',
+    'history.includedDays',
     'users.max',
   ],
 };
@@ -179,15 +204,15 @@ function validate(kind: Kind, content: unknown): ValidationIssue[] {
   if (kind === 'cost-models' && typeof minimum === 'number' && typeof alert === 'number' && alert < minimum) {
     issues.push({ path: 'margins.alert', message: 'menor que a mínima' });
   }
-  const included = getAt(content, ['cloudAccounts', 'included']);
-  const max = getAt(content, ['cloudAccounts', 'max']);
+  const included = getAt(content, ['plans', 'plataforma', 'includedGbDay']);
+  const max = getAt(content, ['plans', 'plataforma', 'maxOnlineGbDay']);
   if (
     kind === 'pricing-tables' &&
     typeof included === 'number' &&
     typeof max === 'number' &&
     max < included
   ) {
-    issues.push({ path: 'cloudAccounts.max', message: 'menor que o incluído' });
+    issues.push({ path: 'plans.plataforma.maxOnlineGbDay', message: 'menor que o incluído' });
   }
   return issues;
 }
@@ -268,7 +293,9 @@ export function handleAdminRequest(
     if (method === 'GET') {
       const list = [...records.values()]
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-        .map((record) => summary(record, currentRecord?.version));
+        .map((record) =>
+          summary(record, currentRecord?.version, state.legacy.has(`${kind}/${record.version}`)),
+        );
       return { status: 200, body: list };
     }
     if (method === 'POST') {
@@ -297,6 +324,13 @@ export function handleAdminRequest(
   if (second === undefined) return error(404, 'Recurso não encontrado', 'not_found');
   const record = records.get(second);
   if (record === undefined) return error(404, 'Versão inexistente.', 'version_not_found');
+  if (state.legacy.has(`${kind}/${second}`)) {
+    return error(
+      409,
+      'Versão do modelo de preço anterior: só aparece na lista, não abre nem vale mais.',
+      'version_legacy',
+    );
+  }
 
   if (third === undefined && method === 'GET') return { status: 200, body: record };
 
@@ -405,7 +439,7 @@ function simulate(state: FakeAdminState, body: unknown): FakeResponse {
   const request = body as Partial<SimulationRequest>;
   const configuration = request.configuration;
   const issues: ValidationIssue[] = [];
-  for (const key of ['cloudAccounts', 'monthlyGib', 'agents', 'historyDays'] as const) {
+  for (const key of ['gbDay'] as const) {
     if (typeof configuration?.[key] !== 'number') {
       issues.push({
         path: `configuration.${key}`,
