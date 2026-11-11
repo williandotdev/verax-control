@@ -1461,7 +1461,7 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
   a célula informa ao plano de controle CPU, memória, fila do `analysisd`, atraso do módulo e os maiores clientes em
   GB/dia, para a página "Células" do console. O item "Medidor da AWS parado" da Torre deixa de valer na célula.
 
-### Canal entre o plano de controle e a célula _(a construir, CE-05 e CE-06)_
+### Canal entre o plano de controle e a célula _(a construir, CE-05 e CE-06; os tópicos, feitos no CE-03)_
 
 **Pub/Sub nos dois sentidos**, sem nada novo exposto na internet. Os comandos (`tenant.upsert`, com o estado desejado
 inteiro e uma `generation` crescente por cliente; `tenant.export`, `tenant.purge` e `tenant.collection_pause`) seguem
@@ -1543,11 +1543,13 @@ recusa mudar o estado de um cliente que está num estado do ciclo de vida.
   do cadastro continua editável. O painel mostra os três estados ("Suspenso", "Cancelado" e "Em exclusão") e não
   oferece o botão de desativar ou reativar para eles. O escopo do cliente recusa gravar o `status` do próprio cadastro.
 
-### Exclusão e a promessa dos 100 dias na célula _(a construir, CE-03 e CE-16)_
+### Exclusão e a promessa dos 100 dias na célula _(a construir, CE-16; a infraestrutura, feita no CE-03)_
 
 Na célula, a VM continua no ar depois do cancelamento. Com o calendário do nó dedicado (dados até D+30), os backups da
 célula com o cliente viveriam até cerca de D+129, e a frase do site ("eliminados também dos backups em até 100 dias")
-deixaria de valer. Por isso a célula tem calendário próprio e backups de 85 dias:
+deixaria de valer. Por isso a célula tem calendário próprio e backups de 85 dias (**feito no CE-03**: o
+`backup_retention_days` do módulo do nó, 85 no `envs/celula`, que recusa mais que isso, e o bucket das exportações, com
+31 dias de ciclo de vida e a VM só criando objetos na pasta da célula):
 
 | Quando                 | O que acontece                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

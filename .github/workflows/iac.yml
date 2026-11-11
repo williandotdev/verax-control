@@ -81,6 +81,9 @@ jobs:
           terraform -chdir=infra/gcp/modules/node test
       - name: Testes dos ambientes (provider simulado, sem credenciais)
         # Homologação: a primeira subida num projeto novo (o `plan` não lê o projeto antes de o `apply` ligar as APIs).
+        # Célula: o canal com o plano de controle (só o cp-worker publica comandos e só a VM da célula os lê; só a VM
+        # publica relatórios, entregues por push ao cp-worker com o token de uma conta só para isso), as exportações (31
+        # dias, a VM só cria e só na pasta da célula) e os backups de 85 dias; sem o plano de controle, nada do canal.
         # Nó da Verax: o `terraform.tfvars` precisa de todas as variáveis da primeira subida (sem a conta de
         # faturamento, o `plan` apaga o orçamento). Plano de controle: os papéis de cada conta um a um, nada anônimo
         # no cp-worker nem no Job, zero instâncias mínimas, a imagem que o workflow troca sem o Terraform desfazer, a

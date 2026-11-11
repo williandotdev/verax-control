@@ -8,7 +8,10 @@ próprio estado:
 - **`envs/celula`:** a célula compartilhada em São Paulo, no perfil `standard` (decisão de 10/11/2026): o nó que
   atende os clientes da Plataforma e para onde migra o SOC da própria Verax, saindo do nó `lean` do `envs/verax`.
   Fica no projeto do nó da Verax, com estado próprio (prefixo `celula`). Os passos são os do `envs/homolog-sp`, com
-  `project_id` e `images_project_id` iguais ao projeto da Verax e os projetos da Verax em `monitored_projects`.
+  `project_id` e `images_project_id` iguais ao projeto da Verax e os projetos da Verax em `monitored_projects`. Além
+  do nó, tem o bucket das exportações dos clientes (31 dias), os backups de 85 dias e, com `control_plane_project_id`
+  e `control_plane_worker_url`, o canal com o plano de controle (os tópicos de comandos e de relatórios e o push dos
+  relatórios para o cp-worker; `cell.tf`). A saída `cell` traz o que o plano de controle registra da célula.
 - **`envs/homolog-sp`:** o nó de homologação em São Paulo, no perfil `standard`, igual ao que um nó de cliente vai
   ter. Fica no projeto dos nós de clientes, separado do projeto da Verax. Ainda não foi aplicado.
 - **`envs/control-plane`:** o plano de controle da fase 3 (checkout, webhook da Stripe, página de status e

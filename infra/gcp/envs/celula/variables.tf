@@ -126,3 +126,54 @@ variable "monthly_budget" {
   type        = number
   default     = 300
 }
+
+variable "cell_id" {
+  description = "Identificador da célula no plano de controle (o registro `cells/<id>`): entra no nome dos tópicos do canal (`vxc-<id>-commands` e `vxc-<id>-reports`), da conta do push, do bucket de exportações e na pasta das exportações (`<id>/<cliente>/...`). Não muda na vida da célula: trocar recria o canal e o bucket."
+  type        = string
+  default     = "sp1"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9]{1,7}$", var.cell_id))
+    error_message = "Use de 2 a 8 caracteres: minúsculas e números, começando com letra (ex.: sp1)."
+  }
+}
+
+variable "backup_retention_days" {
+  description = "Dias de retenção dos backups do banco da célula. 85: o último backup com um cliente expurgado em D+1 sai até cerca de D+95 (mais os 7 dias de exclusão reversível e o atraso do ciclo de vida), dentro da promessa dos 100 dias. Os nós dedicados continuam com 90."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.backup_retention_days >= 30 && var.backup_retention_days <= 85 && floor(var.backup_retention_days) == var.backup_retention_days
+    error_message = "Na célula, use um número inteiro de 30 a 85 dias: mais que 85 passa da promessa dos 100 dias depois do expurgo."
+  }
+}
+
+variable "control_plane_project_id" {
+  description = "Projeto do plano de controle (envs/control-plane), onde estão as contas `cp-worker` e `cp-terraform`. Vazio (o padrão): nada do canal com o plano de controle é criado, e a célula fica como antes. Preenchido junto com `control_plane_worker_url`: os tópicos de comandos e de relatórios, com o IAM de cada um, e a assinatura push dos relatórios para o cp-worker (cell.tf)."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.control_plane_project_id == "" || can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.control_plane_project_id))
+    error_message = "ID de projeto da GCP inválido (6 a 30 caracteres, minúsculas, números e hífen)."
+  }
+}
+
+variable "control_plane_worker_url" {
+  description = "Endereço do serviço cp-worker no Cloud Run (`https://cp-worker-....run.app`, sem barra no fim; `terraform output` do envs/control-plane). A assinatura push dos relatórios entrega em `<endereço>/internal/cells/<cell_id>/reports`, com um token OIDC cuja audiência é este endereço. Preenchido junto com `control_plane_project_id`, ou os dois vazios."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.control_plane_worker_url == "" || (length(var.control_plane_worker_url) <= 200 && can(regex("^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", var.control_plane_worker_url)))
+    error_message = "Use o endereço https do cp-worker, só o host (ex.: https://cp-worker-abc123-rj.a.run.app), sem caminho nem barra no fim."
+  }
+
+  # O canal é inteiro ou nada: tópicos sem a assinatura push perderiam os relatórios (mensagem publicada num tópico sem
+  # assinatura some), e a assinatura sem o projeto não teria quem publicar os comandos.
+  validation {
+    condition     = (var.control_plane_worker_url == "") == (var.control_plane_project_id == "")
+    error_message = "control_plane_project_id e control_plane_worker_url andam juntos: os dois preenchidos ou os dois vazios."
+  }
+}

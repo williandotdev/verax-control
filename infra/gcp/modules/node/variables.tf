@@ -112,6 +112,17 @@ variable "operators" {
   default     = []
 }
 
+variable "backup_retention_days" {
+  description = "Dias que cada backup do banco fica no bucket de backups antes de ser apagado. 90 por padrão (os nós dedicados e o da Verax, como sempre). A célula usa 85: o último backup com um cliente expurgado (D+1) sai até cerca de D+95, com os 7 dias da exclusão reversível e o atraso do ciclo de vida, dentro da promessa dos 100 dias (docs/ARQUITETURA.md, \"Exclusão e a promessa dos 100 dias na célula\")."
+  type        = number
+  default     = 90
+
+  validation {
+    condition     = var.backup_retention_days >= 30 && var.backup_retention_days <= 365 && floor(var.backup_retention_days) == var.backup_retention_days
+    error_message = "Use um número inteiro de 30 a 365 dias."
+  }
+}
+
 variable "deletion_protection" {
   description = "Proteção da VM contra exclusão. Só sai (por um `apply` antes) para desfazer o nó ou para recriar a VM numa manutenção planejada (veja o GUIA.md)."
   type        = bool

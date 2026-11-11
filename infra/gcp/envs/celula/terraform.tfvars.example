@@ -31,3 +31,11 @@ images_project_id = "projeto-do-no-verax-123"
 # Alerta de orçamento (opcional): conta de faturamento e valor mensal, na moeda dela.
 # billing_account_id = "000000-000000-000000"
 # monthly_budget     = 300
+
+# Identificador da célula no plano de controle (o padrão é sp1). Não muda na vida da célula.
+# cell_id = "sp1"
+
+# Canal com o plano de controle (CE-03): os dois juntos. O projeto do plano de controle e o endereço do cp-worker
+# (`terraform output` do envs/control-plane). Vazios: nada do canal é criado.
+# control_plane_project_id = "projeto-do-plano-de-controle-123"
+# control_plane_worker_url = "https://cp-worker-exemplo-rj.a.run.app"
