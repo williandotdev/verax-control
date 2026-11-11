@@ -351,6 +351,42 @@ describe('loadConfig', () => {
     });
   });
 
+  describe('modo do nó (CE-02)', () => {
+    it('sem NODE_MODE, o nó é dedicado, e o plano continua vindo do ambiente', () => {
+      expect(loadConfig(validProductionEnv).NODE_MODE).toBe('dedicated');
+    });
+
+    /** A célula exige também o domínio e o subdomínio da equipe, e os endereços da equipe (CE-01). */
+    const cellEnv = {
+      NODE_MODE: 'cell',
+      CELL_DOMAIN: 'exemplo.com.br',
+      CELL_STAFF_SLUG: 'verax',
+      WEB_ORIGIN: 'https://verax.control.exemplo.com.br',
+      API_ORIGIN: 'https://api-verax.exemplo.com.br',
+    };
+
+    it('na célula, o PLAN não é obrigatório em produção e o plano do ambiente não vale', () => {
+      const { PLAN: _plan, ...withoutPlan } = validProductionEnv;
+      expect(loadConfig({ ...withoutPlan, ...cellEnv }).NODE_MODE).toBe('cell');
+    });
+
+    it('na célula, o PLAN e os ajustes são recusados: o plano é de cada cliente', () => {
+      expect(problemsOf({ ...validProductionEnv, ...cellEnv, PLAN_MAX_USERS: '10' })).toEqual([
+        'PLAN: não se aplica com NODE_MODE=cell: o plano é de cada cliente, gravado pelo plano de controle',
+        'PLAN_MAX_USERS: não se aplica com NODE_MODE=cell: o plano é de cada cliente, gravado pelo plano de controle',
+      ]);
+    });
+
+    it('modo desconhecido e a Plataforma no node.conf são recusados', () => {
+      expect(problemsOf({ ...validProductionEnv, NODE_MODE: 'shared' })).toEqual([
+        'NODE_MODE: use dedicated ou cell',
+      ]);
+      expect(problemsOf({ ...validProductionEnv, PLAN: 'plataforma' })).toEqual([
+        'PLAN: plano desconhecido: use essencial, profissional, enterprise ou interno',
+      ]);
+    });
+  });
+
   it('nunca inclui o valor recebido na mensagem de erro', () => {
     const secret = 'S3nh4-Sup3r-S3cr3t4';
     let message = '';
@@ -419,6 +455,11 @@ describe('configuração do worker do sync (T5.3)', () => {
     expect(
       nodePlan(loadWorkerConfig({ ...production, PLAN: 'enterprise', ...enterpriseOverrides })).limits,
     ).toEqual({ maxCloudAccounts: 40, maxUsers: 30, monthlyGib: 250, historyDays: 730 });
+    // Na célula (CE-02), o mesmo: sem PLAN em produção, e o PLAN recusado.
+    expect(loadWorkerConfig({ ...production, NODE_MODE: 'cell' }).NODE_MODE).toBe('cell');
+    expect(() => loadWorkerConfig({ ...production, NODE_MODE: 'cell', PLAN: 'essencial' })).toThrow(
+      'PLAN: não se aplica com NODE_MODE=cell',
+    );
   });
 
   describe('e-mail dos avisos (PR-16)', () => {

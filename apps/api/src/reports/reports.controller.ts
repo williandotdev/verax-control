@@ -15,11 +15,11 @@ export class ReportsController {
 
   @Get(':kind')
   @RequirePermission('reports:read')
-  report(
+  async report(
     @Param('kind', { schema: z.enum(REPORT_KINDS) }) kind: ReportKind,
     @Query({ schema: reportQuerySchema }) query: ReportQuery,
   ): Promise<unknown> {
-    this.plan.assertPeriodWithinHistory(query.period);
+    await this.plan.assertPeriodWithinHistory(query.period);
     return this.reports.report(kind, query.period);
   }
 }

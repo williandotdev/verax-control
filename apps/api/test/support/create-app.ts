@@ -51,8 +51,9 @@ export interface CreateAppOptions {
   /** Plano do nó (`PLAN` e os ajustes `PLAN_*`, como o start.sh escreve); sem informar, o padrão fora de produção (`interno`). */
   plan?: Record<'PLAN' | `PLAN_${string}`, string>;
   /**
-   * Célula compartilhada (CE-01, `NODE_MODE=cell`): o domínio e o subdomínio da equipe. O `WEB_ORIGIN` e o `API_ORIGIN`
-   * passam a ser os da equipe, derivados do domínio. Sem informar, o nó dedicado.
+   * Célula compartilhada (`NODE_MODE=cell`): o domínio e o subdomínio da equipe (CE-01). O `WEB_ORIGIN` e o `API_ORIGIN`
+   * passam a ser os da equipe, derivados do domínio, e o plano é o `TenantPlan` de cada cliente (CE-02). Sem informar,
+   * o nó dedicado.
    */
   cell?: { domain: string; staffSlug: string };
 }

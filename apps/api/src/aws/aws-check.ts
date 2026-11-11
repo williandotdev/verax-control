@@ -9,6 +9,7 @@ import { AuditService } from '../common/audit/audit.service.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import type { AwsCheckOutcome, AwsCheckTarget, AwsConnectionChecker } from './aws-connection-check.js';
 
 /** A cada 30 s: o "Verificar" do painel é respondido logo, e o painel consulta a conta enquanto espera. */
@@ -248,7 +249,14 @@ export class AwsCheck {
   async runOnce(signal: AbortSignal = new AbortController().signal): Promise<AwsCheckReport> {
     const report: AwsCheckReport = { pending: 0, connected: 0, failed: 0, retrying: 0, stale: 0 };
     const rows = await this.prisma.cloudAccount.findMany({
-      where: { provider: 'aws', status: 'active', checkRequestedAt: { not: null }, ...this.tenantFilter },
+      // Só cliente ativo (CE-02): o pedido de quem está suspenso, cancelado ou em expurgo espera.
+      where: {
+        provider: 'aws',
+        status: 'active',
+        checkRequestedAt: { not: null },
+        ...COLLECTING_TENANT,
+        ...this.tenantFilter,
+      },
       select: ACCOUNT_SELECT,
       orderBy: [{ checkRequestedAt: 'asc' }, { id: 'asc' }],
       take: this.batch,
@@ -289,6 +297,7 @@ export class AwsCheck {
         checkRequestedAt: null,
         ingestFrom: { not: null },
         connection: { in: ['connected', 'error'] },
+        ...COLLECTING_TENANT,
         ...this.tenantFilter,
       },
       select: ACCOUNT_SELECT,

@@ -134,6 +134,85 @@ export function findRouteContractViolations(app: INestApplication): RouteContrac
   return violations;
 }
 
+/** As chaves de objeto que um schema zod aceita, em qualquer profundidade (a mesma travessia de `findNonStrictObjects`). */
+export function schemaKeys(schema: z.ZodType, seen = new Set<z.ZodType>()): string[] {
+  if (seen.has(schema)) return [];
+  seen.add(schema);
+  const def = schema._zod.def as unknown as Record<string, unknown> & { type: string };
+  const children: unknown[] = [];
+  const keys: string[] = [];
+  switch (def.type) {
+    case 'object':
+      for (const [key, value] of Object.entries(def['shape'] as Record<string, unknown>)) {
+        keys.push(key);
+        children.push(value);
+      }
+      break;
+    case 'array':
+      children.push(def['element']);
+      break;
+    case 'optional':
+    case 'nullable':
+    case 'default':
+    case 'prefault':
+    case 'readonly':
+    case 'catch':
+    case 'nonoptional':
+      children.push(def['innerType']);
+      break;
+    case 'pipe':
+      children.push(def['in'], def['out']);
+      break;
+    case 'union':
+      children.push(...(def['options'] as unknown[]));
+      break;
+    case 'intersection':
+      children.push(def['left'], def['right']);
+      break;
+    case 'record':
+      children.push(def['valueType']);
+      break;
+    case 'tuple':
+      children.push(...(def['items'] as unknown[]));
+      break;
+    default:
+      break;
+  }
+  return [...keys, ...children.flatMap((child) => schemaKeys(child as z.ZodType, seen))];
+}
+
+/**
+ * As chaves que cada rota aceita no corpo, na query e nos parâmetros (CE-02: o meta-teste de que nenhuma rota aceita um
+ * campo que só o sistema grava, como o plano do cliente).
+ */
+export function listRouteInputKeys(app: INestApplication): { route: string; keys: string[] }[] {
+  const discovery = app.get(DiscoveryService);
+  const scanner = app.get(MetadataScanner);
+  const routes: { route: string; keys: string[] }[] = [];
+  for (const wrapper of discovery.getControllers()) {
+    const instance: unknown = wrapper.instance;
+    const metatype = wrapper.metatype;
+    if (typeof instance !== 'object' || instance === null || !metatype) continue;
+    const prototype = Object.getPrototypeOf(instance) as object;
+    for (const methodName of scanner.getAllMethodNames(prototype)) {
+      const handler = (prototype as Record<string, unknown>)[methodName];
+      if (typeof handler !== 'function' || Reflect.getMetadata(METHOD_METADATA, handler) === undefined)
+        continue;
+      const args = (Reflect.getMetadata(ROUTE_ARGS_METADATA, metatype, methodName) ?? {}) as Record<
+        string,
+        RouteArgument
+      >;
+      const keys = Object.entries(args).flatMap(([key, argument]) => {
+        if (!VALIDATED_INPUTS.has(Number(key.split(':')[0]))) return [];
+        const named = typeof argument.data === 'string' ? [argument.data] : [];
+        return argument.schema instanceof z.ZodType ? [...named, ...schemaKeys(argument.schema)] : named;
+      });
+      routes.push({ route: `${metatype.name}.${methodName}`, keys });
+    }
+  }
+  return routes;
+}
+
 export interface RoutePolicy {
   route: string;
   isPublic: boolean;

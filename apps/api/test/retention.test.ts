@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { SyncLease } from '../src/alerts/finding-store.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { Prisma } from '../src/generated/prisma/client.js';
+import type { TenantPlans } from '../src/plan/tenant-plan.js';
 import { RetentionJob, type RetentionJobOptions } from '../src/retention/retention-job.js';
 import { DAY_MS, retentionCutoffs } from '../src/retention/retention-policy.js';
 import { createTenant } from './support/auth-helpers.js';
@@ -921,8 +922,9 @@ describe('expurgo diário do histórico (PR-19)', () => {
       });
 
       // 30 dias depois do começo da carência, o prazo novo vale.
-      await prisma.retentionState.update({
-        where: { id: name },
+      // A carência é do cliente (CE-02): o estado fica em `TenantRetentionState`, por tarefa e cliente.
+      await prisma.tenantRetentionState.update({
+        where: { job_tenantId: { job: name, tenantId } },
         data: { pendingSince: daysBefore(now, 30) },
       });
       await yesterday();
@@ -931,7 +933,11 @@ describe('expurgo diário do histórico (PR-19)', () => {
         historyDays: 90,
       });
       expect(await findingsLeft([middle])).toEqual([]);
-      expect(await prisma.retentionState.findUniqueOrThrow({ where: { id: name } })).toMatchObject({
+      expect(
+        await prisma.tenantRetentionState.findUniqueOrThrow({
+          where: { job_tenantId: { job: name, tenantId } },
+        }),
+      ).toMatchObject({
         appliedDays: 90,
         pendingSince: null,
       });
@@ -1095,6 +1101,145 @@ describe('expurgo diário do histórico (PR-19)', () => {
       for (const id of otherComments) expect(await commentExists(id)).toBe(false);
       expect(await commentExists(lateComment)).toBe(true);
       expect(await commentExists(recentComment)).toBe(true);
+    });
+  });
+  describe('prazo de cada cliente (CE-02)', () => {
+    /** O plano de cada cliente do teste: só o histórico importa ao expurgo (null é o cliente da célula sem plano). */
+    function plansOf(historyByTenant: ReadonlyMap<string, number | null | 'missing'>): TenantPlans {
+      return {
+        planOf: (tenantId) => {
+          const history = historyByTenant.get(tenantId);
+          if (history === undefined || history === 'missing') return Promise.resolve(null);
+          return Promise.resolve({
+            id: 'enterprise',
+            label: 'Enterprise',
+            limits: { maxCloudAccounts: null, maxUsers: null, monthlyGib: null, historyDays: history },
+          });
+        },
+      };
+    }
+
+    it('dois clientes, dois prazos: o achado de 100 dias sai de A (30) e fica em B (365), cada trilha com o seu', async () => {
+      const a = await customer('A (prazo curto)');
+      const b = await customer('B (prazo longo)');
+      const now = today();
+      const oldA = await insertFinding(a.tenantId, daysBefore(now, 100));
+      const oldB = await insertFinding(b.tenantId, daysBefore(now, 100));
+      const plans = plansOf(
+        new Map([
+          [a.tenantId, 30],
+          [b.tenantId, 365],
+        ]),
+      );
+
+      const report = await job([a.tenantId, b.tenantId], { plans }).maybeRun(now);
+      expect(report).toMatchObject({ status: 'done', tenants: 2 });
+      // Com prazos diferentes, o relatório não tem um prazo só.
+      expect(report).not.toHaveProperty('historyDays');
+      expect(await findingsLeft([oldA, oldB])).toEqual([oldB]);
+      expect((await purgeTrail(a.tenantId)).at(-1)?.after).toMatchObject({
+        historyDays: 30,
+        planHistoryDays: 30,
+        cutoffs: { history: retentionCutoffs(now, 30).history?.toISOString() },
+        deleted: { findings: 1 },
+      });
+      expect((await purgeTrail(b.tenantId)).at(-1)?.after).toMatchObject({
+        historyDays: 365,
+        planHistoryDays: 365,
+        cutoffs: { history: retentionCutoffs(now, 365).history?.toISOString() },
+        deleted: { findings: 0 },
+      });
+    });
+
+    it('a auditoria de cada cliente sai pelo prazo dele; a sem cliente segue o mais longo', async () => {
+      const a = await customer('A (auditoria curta)');
+      const b = await customer('B (auditoria longa)');
+      const now = today();
+      const old = daysBefore(now, 500);
+      const auditA = await insertAudit(a.tenantId, old);
+      const auditB = await insertAudit(b.tenantId, old);
+      const global = await insertAudit(null, old);
+      const plans = plansOf(
+        new Map([
+          [a.tenantId, 90],
+          [b.tenantId, 730],
+        ]),
+      );
+
+      await job([a.tenantId, b.tenantId], { plans }).maybeRun(now);
+
+      // A guarda 13 meses: o registro de 500 dias sai pela função do cliente. B guarda 730 dias: o dele fica, e o
+      // corte global (o de B, o mais antigo) segura também o registro sem cliente.
+      expect(await auditExists(auditA)).toBe(false);
+      expect(await auditExists(auditB)).toBe(true);
+      expect(await auditExists(global)).toBe(true);
+      expect((await purgeTrail(a.tenantId)).at(-1)?.after).toMatchObject({ deleted: { auditLogs: 1 } });
+      expect((await purgeTrail(b.tenantId)).at(-1)?.after).toMatchObject({
+        deleted: { auditLogs: 0 },
+        cutoffs: { audit: retentionCutoffs(now, 730).audit?.toISOString() },
+      });
+    });
+
+    it('cliente da célula ainda sem plano: fica fora do histórico e da auditoria, e a trilha diz por quê', async () => {
+      const a = await customer('A (com plano)');
+      const c = await customer('C (sem plano)');
+      const now = today();
+      const oldA = await insertFinding(a.tenantId, daysBefore(now, 200));
+      const oldC = await insertFinding(c.tenantId, daysBefore(now, 200));
+      const auditC = await insertAudit(c.tenantId, daysBefore(now, 500));
+      const plans = plansOf(
+        new Map<string, number | 'missing'>([
+          [a.tenantId, 90],
+          [c.tenantId, 'missing'],
+        ]),
+      );
+
+      const report = await job([a.tenantId, c.tenantId], { plans }).maybeRun(now);
+      expect(report).toMatchObject({ status: 'done', historyDays: 90, withoutPlan: 1 });
+      expect(await findingsLeft([oldA, oldC])).toEqual([oldC]);
+      expect(await auditExists(auditC)).toBe(true);
+      const trailC = (await purgeTrail(c.tenantId)).at(-1)?.after as Record<string, unknown> | undefined;
+      expect(trailC).toMatchObject({ planMissing: true, cutoffs: { history: null, audit: null } });
+      expect(trailC).not.toHaveProperty('historyDays');
+    });
+
+    it('a carência é de cada cliente: a redução de A não mexe no prazo de B', async () => {
+      const a = await customer('A (carência)');
+      const b = await customer('B (sem carência)');
+      const now = today();
+      const name = `ret-${randomBytes(4).toString('hex')}`;
+      const middleA = await insertFinding(a.tenantId, daysBefore(now, 200));
+      const middleB = await insertFinding(b.tenantId, daysBefore(now, 200));
+      const yesterday = () =>
+        prisma.syncState.update({ where: { name }, data: { lastSuccessAt: daysBefore(now, 1) } });
+
+      await job([a.tenantId, b.tenantId], {
+        name,
+        plans: plansOf(
+          new Map([
+            [a.tenantId, 365],
+            [b.tenantId, 365],
+          ]),
+        ),
+      }).maybeRun(now);
+      await yesterday();
+      // A desce para 90 dias e entra na carência de 30 (o achado de 200 dias fica); B continua em 365, sem carência.
+      await job([a.tenantId, b.tenantId], {
+        name,
+        plans: plansOf(
+          new Map([
+            [a.tenantId, 90],
+            [b.tenantId, 365],
+          ]),
+        ),
+      }).maybeRun(now);
+      expect(await findingsLeft([middleA, middleB]).then((ids) => ids.sort())).toEqual(
+        [middleA, middleB].sort(),
+      );
+      const state = (tenantId: string) =>
+        prisma.tenantRetentionState.findUniqueOrThrow({ where: { job_tenantId: { job: name, tenantId } } });
+      expect(await state(a.tenantId)).toMatchObject({ appliedDays: 365, pendingSince: now });
+      expect(await state(b.tenantId)).toMatchObject({ appliedDays: 365, pendingSince: null });
     });
   });
 });

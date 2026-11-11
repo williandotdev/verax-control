@@ -243,9 +243,18 @@ const awsReaderEnvShape = {
     .optional(),
 };
 
+/**
+ * Modo do nó (CE-02): `dedicated`, o nó de um cliente só (Dedicado, vCISO e o nó da Verax), e `cell`, a célula
+ * compartilhada da Plataforma. Sem a linha no `node.conf`, `dedicated`: nada muda nos nós de hoje. Na célula, o plano
+ * é de cada cliente (`TenantPlan`, gravado pelo plano de controle), e o `PLAN` do ambiente não vale.
+ */
+// A lista em si fica em `./cell.ts` (CE-01); daqui ela segue exportada para quem já a importava (CE-02).
+export { NODE_MODES, type NodeMode };
+
 /** Plano e ajustes, como ficam depois da validação do ambiente. */
 interface PlanEnv {
   NODE_ENV: 'development' | 'test' | 'production';
+  NODE_MODE?: NodeMode | undefined;
   PLAN?: PlanId | undefined;
   PLAN_MAX_CLOUD_ACCOUNTS?: number | undefined;
   PLAN_MAX_USERS?: number | undefined;
@@ -268,11 +277,14 @@ const planLimitFromEnv = (key: PlanLimitKey) => {
 };
 
 /**
- * Plano do nó (fase 2), parte comum à API e ao worker. Vem do `node.conf`, escrito pelo `start.sh`. Em produção, o
- * `PLAN` é obrigatório; fora dela, o padrão é `interno` (sem limite). Os ajustes são opcionais, menos no `enterprise`,
- * que exige os quatro; o `interno` não aceita nenhum (ver `packages/shared/src/plans.ts`).
+ * Plano do nó (fase 2) e modo do nó (CE-02), parte comum à API e ao worker. Vêm do `node.conf`, escrito pelo
+ * `start.sh`. No nó dedicado, em produção, o `PLAN` é obrigatório; fora dela, o padrão é `interno` (sem limite). Os
+ * ajustes são opcionais, menos no `enterprise`, que exige os quatro; o `interno` não aceita nenhum (ver
+ * `packages/shared/src/plans.ts`). Na célula (`NODE_MODE=cell`), o `PLAN` e os ajustes são recusados: o plano é de cada
+ * cliente.
  */
 const planEnvShape = {
+  NODE_MODE: z.enum(NODE_MODES, { error: 'use dedicated ou cell' }).default('dedicated'),
   PLAN: planIdSchema.optional(),
   PLAN_MAX_CLOUD_ACCOUNTS: planLimitFromEnv('maxCloudAccounts'),
   PLAN_MAX_USERS: planLimitFromEnv('maxUsers'),
@@ -290,6 +302,19 @@ function planOverridesOf(env: Omit<PlanEnv, 'NODE_ENV'>): PlanOverrides {
 }
 
 function checkPlanEnv(env: PlanEnv, ctx: z.RefinementCtx): void {
+  if (env.NODE_MODE === 'cell') {
+    for (const key of ['PLAN', ...Object.values(PLAN_LIMIT_ENV)] as const) {
+      if (env[key] !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message:
+            'não se aplica com NODE_MODE=cell: o plano é de cada cliente, gravado pelo plano de controle',
+        });
+      }
+    }
+    return;
+  }
   if (env.NODE_ENV === 'production' && env.PLAN === undefined) {
     ctx.addIssue({ code: 'custom', path: ['PLAN'], message: 'obrigatória em produção' });
   }
@@ -298,7 +323,7 @@ function checkPlanEnv(env: PlanEnv, ctx: z.RefinementCtx): void {
   }
 }
 
-/** Sem `PLAN` (só fora de produção), o plano é o `interno`. */
+/** Sem `PLAN` (só fora de produção, ou na célula, onde ele não vale), o plano do ambiente é o `interno`. */
 function withDefaultPlan<T extends { PLAN?: PlanId | undefined }>(env: T): T & { PLAN: PlanId } {
   return { ...env, PLAN: env.PLAN ?? 'interno' };
 }
@@ -314,7 +339,7 @@ export function nodePlan(env: Omit<PlanEnv, 'NODE_ENV'> & { PLAN: PlanId }): Res
  * equipe da Verax. As duas variáveis da célula só existem nela.
  */
 const nodeModeEnvShape = {
-  NODE_MODE: z.enum(NODE_MODES, { error: 'use dedicated ou cell' }).default('dedicated'),
+  // O NODE_MODE em si vem do planEnvShape (CE-02), que a API e o worker já incluem.
   CELL_DOMAIN: z
     .string()
     .refine(isCellDomain, {
@@ -484,7 +509,7 @@ const apiEnvSchema = z
     // Agentes do Wazuh nas instâncias do cliente (WAZUH_AGENTS=true no node.conf; desligado por padrão): o endereço,
     // o cliente do nó, as faixas liberadas, o limite, a CA e a senha de registro (agents/agents-config.ts).
     ...apiAgentsEnvShape,
-    // Célula compartilhada (CE-01): sem NODE_MODE, o nó dedicado de sempre.
+    // Célula compartilhada (CE-01): o domínio e o subdomínio da equipe, só com NODE_MODE=cell (do planEnvShape).
     ...nodeModeEnvShape,
   })
   .superRefine((env, ctx) => {
@@ -687,9 +712,6 @@ const workerEnvObjectSchema = z
       .string()
       .regex(/^[0-9a-f]{40}$/, { error: 'deve ser o commit instalado (40 caracteres hexadecimais)' })
       .optional(),
-    // Célula compartilhada (CE-01). O worker só precisa saber o modo: os avisos por e-mail levam um link do painel, e
-    // na célula cada cliente tem o seu.
-    NODE_MODE: nodeModeEnvShape.NODE_MODE,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);

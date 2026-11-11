@@ -73,9 +73,15 @@ enum UserStatus {
   disabled
 }
 
+/// Estado do cliente no nó. `active` e `inactive` são do cadastro (o `admin_verax`). `suspended`, `canceled` e
+/// `purging` são do ciclo de vida da contratação na célula (CE-02), espelho do plano de controle: só o sistema os grava,
+/// e nenhum deles entra, coleta ou é tocado pelo cadastro da API.
 enum TenantStatus {
   active
   inactive
+  suspended
+  canceled
+  purging
 }
 
 /// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
@@ -129,6 +135,9 @@ model Tenant {
   /// Célula (CE-01): o endereço da API deste cliente e as sessões abertas nele.
   host                     TenantHost?
   hostSessions             Session[]                @relation("SessionHostTenant")
+  /// Plano do cliente (CE-02): no nó dedicado, semeado do `node.conf`; na célula, gravado pelo plano de controle.
+  tenantPlan               TenantPlan?
+  retentionStates          TenantRetentionState[]
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -585,10 +594,9 @@ model SyncState {
   updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
 }
 
-/// Prazo de histórico do expurgo diário (fase 2, PR-19; `src/retention/`), uma linha por tarefa (`id` é o nome dela no
-/// `SyncState`, `retention`). O prazo vem do plano do nó; quando o plano diminui, o expurgo continua com o prazo
-/// anterior por 30 dias (carência para exportar) e só então passa ao novo. Dado de sistema, sem `tenantId`: o prazo é
-/// do nó, e o escopo do cliente recusa o model.
+/// Prazo de histórico do expurgo diário do nó inteiro (fase 2, PR-19). Desde o CE-02 o prazo é de cada cliente
+/// (`TenantRetentionState`, que a migration `20261110180000_tenant_plan` semeou daqui): a tabela fica só
+/// para uma volta de versão não perder a carência, e nada mais a grava. Sai num PR futuro.
 model RetentionState {
   id           String    @id @db.VarChar(32)
   /// Dias de histórico que o expurgo aplica; null é sem limite (plano interno).
@@ -596,6 +604,51 @@ model RetentionState {
   /// Desde quando o plano pede um prazo menor que o aplicado; null sem redução pendente. A carência conta daqui.
   pendingSince DateTime? @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+/// Quem gravou o plano do cliente (CE-02).
+enum TenantPlanSource {
+  /// O `node.conf` do nó dedicado (`PLAN` e `PLAN_*`), semeado pela API e pelo worker.
+  env
+  /// O comando do plano de controle na célula (CE-05).
+  control_plane
+}
+
+/// Plano de um cliente (CE-02): os limites (contas, usuários, volume do mês e dias de histórico; null é sem limite) e a
+/// franquia contratada da Plataforma em GB/dia (null fora dela). As vagas, o histórico das telas, o expurgo e os
+/// avisos de volume leem esta linha. Só o sistema grava: o `node.conf` no nó dedicado (`plan/tenant-plan.ts`) e o
+/// comando do plano de controle na célula. Nenhuma rota aceita estes campos (meta-teste), e o escopo do cliente recusa a
+/// gravação (`tenant-scope.ts`). A combinação vale por CHECK no banco (`tenantPlanProblems` em `packages/shared`).
+model TenantPlan {
+  tenantId          String           @id @db.Uuid
+  tenant            Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// `essencial`, `profissional`, `enterprise`, `interno` ou `plataforma` (CHECK).
+  planId            String           @db.VarChar(20)
+  maxCloudAccounts  Int?
+  maxUsers          Int?
+  monthlyGib        Int?
+  historyDays       Int?
+  /// Franquia contratada em GB/dia (10^9 bytes), só na Plataforma.
+  franchiseGbPerDay Int?
+  source            TenantPlanSource
+  updatedAt         DateTime         @updatedAt @db.Timestamptz(3)
+}
+
+/// Prazo de histórico do expurgo diário de cada cliente (CE-02; antes, o do nó em `RetentionState`). `job` é o nome
+/// da tarefa no `SyncState` (`retention`; outro nos testes). Quando o plano do cliente diminui o prazo, o expurgo dele
+/// continua com o anterior por 30 dias e só então passa ao novo. Dado de sistema, só o worker grava.
+model TenantRetentionState {
+  job          String    @db.VarChar(32)
+  tenantId     String    @db.Uuid
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Dias de histórico que o expurgo aplica a este cliente; null é sem limite.
+  appliedDays  Int?
+  /// Desde quando o plano do cliente pede um prazo menor que o aplicado; a carência conta daqui.
+  pendingSince DateTime? @db.Timestamptz(3)
+  updatedAt    DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@id([job, tenantId])
+  @@index([tenantId])
 }
 
 enum IncidentStatus {

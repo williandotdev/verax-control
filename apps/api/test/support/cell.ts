@@ -4,6 +4,8 @@ import request from 'supertest';
 import { expect } from 'vitest';
 import type { NewUser } from '../../src/auth/user-provisioning.js';
 import { PrismaService } from '../../src/common/prisma/prisma.service.js';
+import type { TenantPlan } from '@verax/shared';
+import { writeTenantPlan } from '../../src/plan/tenant-plan.js';
 import { assignTenantHost } from '../../src/tenants/tenant-host.js';
 import { cookieHeader, createTenant, createUser, mergeCookies } from './auth-helpers.js';
 import { secretFromUri, totp } from './totp.js';
@@ -41,10 +43,29 @@ export function onHost(app: NestExpressApplication, slug: string, origin: string
     request(server)[method](path).set('Host', apiHostOf(slug)).set('Origin', origin);
 }
 
-/** Cliente com endereço na célula, como o provisionamento grava. */
-export async function createCellTenant(app: NestExpressApplication, slug: string): Promise<string> {
+/**
+ * Plano FICTÍCIO dos clientes de teste da célula, folgado para os testes nunca esbarrarem no limite (sem relação com o
+ * que a Verax vende).
+ */
+export const TEST_CELL_PLAN: TenantPlan = {
+  planId: 'enterprise',
+  limits: { maxCloudAccounts: 100, maxUsers: 100, monthlyGib: 100, historyDays: 365 },
+  franchiseGbPerDay: null,
+};
+
+/**
+ * Cliente com endereço na célula, como o provisionamento grava: o endereço (CE-01) e o plano do cliente (CE-02).
+ * `plan: null` deixa o cliente sem plano.
+ */
+export async function createCellTenant(
+  app: NestExpressApplication,
+  slug: string,
+  plan: TenantPlan | null = TEST_CELL_PLAN,
+): Promise<string> {
+  const prisma = app.get(PrismaService);
   const tenantId = await createTenant(app, `Cliente ${slug}`);
-  await assignTenantHost(app.get(PrismaService), tenantId, slug);
+  await assignTenantHost(prisma, tenantId, slug);
+  if (plan !== null) await writeTenantPlan(prisma, tenantId, plan, 'control_plane');
   return tenantId;
 }
 

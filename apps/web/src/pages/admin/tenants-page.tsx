@@ -59,7 +59,7 @@ export function TenantsPage() {
       key: 'status',
       header: 'Status',
       cell: (row) => (
-        <span className={row.status === 'inactive' ? 'text-muted-foreground' : undefined}>
+        <span className={row.status === 'active' ? undefined : 'text-muted-foreground'}>
           {TENANT_STATUS_LABELS[row.status]}
         </span>
       ),
@@ -270,7 +270,8 @@ function TenantForm({
         <Button type="submit" disabled={busy}>
           {tenant ? 'Salvar' : 'Cadastrar cliente'}
         </Button>
-        {tenant && (
+        {/* Os estados do ciclo de vida (suspenso, cancelado, em exclusão) vêm da contratação: a API recusa a troca. */}
+        {tenant && (tenant.status === 'active' || tenant.status === 'inactive') && (
           <Button
             type="button"
             variant="secondary"

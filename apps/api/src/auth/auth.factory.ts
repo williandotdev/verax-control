@@ -77,6 +77,9 @@ const RESET_ROUTE = '/reset-password';
 // Senha temporária vencida (72 h): o login recusa dizendo o motivo, para a pessoa pedir outra ao administrador. Só
 // chega aqui quem acertou a senha, então o código não ajuda quem não a tem.
 const TEMPORARY_EXPIRED = { code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'Temporary password expired' };
+// Cliente suspenso por falta de pagamento (CE-02, célula): o login diz o motivo de forma genérica, para a pessoa
+// procurar quem cuida da contratação. Como a senha vencida, só chega aqui quem acertou a senha.
+const TENANT_SUSPENDED = { code: 'TENANT_SUSPENDED', message: 'Tenant access suspended' };
 // Na troca, a senha nova não pode repetir a atual: a troca obrigatória precisa tirar de uso a senha temporária.
 const SAME_AS_CURRENT = {
   code: 'PASSWORD_UNCHANGED',
@@ -335,6 +338,13 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
               return false;
             }
             const allowed = user?.status === 'active' && (!user.tenant || user.tenant.status === 'active');
+            const signingIn = [SIGN_IN_PATH, VERIFY_TOTP_PATH, VERIFY_BACKUP_CODE_PATH].includes(
+              ctx?.path ?? '',
+            );
+            if (user?.status === 'active' && user.tenant?.status === 'suspended') {
+              if (signingIn) throw new APIError('UNAUTHORIZED', TENANT_SUSPENDED);
+              return false;
+            }
             if (!allowed) {
               // No login, a mesma resposta da senha errada: não revela que a conta existe nem que a senha bateu.
               if (ctx?.path === SIGN_IN_PATH) throw new APIError('UNAUTHORIZED', INVALID_CREDENTIALS);
@@ -342,9 +352,6 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
             }
             // Senha temporária vencida: nenhuma sessão nasce com ela (nem a do desafio do MFA), e o login diz o motivo.
             if (temporaryPasswordExpired(user)) {
-              const signingIn = [SIGN_IN_PATH, VERIFY_TOTP_PATH, VERIFY_BACKUP_CODE_PATH].includes(
-                ctx?.path ?? '',
-              );
               if (signingIn) throw new APIError('UNAUTHORIZED', TEMPORARY_EXPIRED);
               return false;
             }

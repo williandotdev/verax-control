@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
+import { setTenantLifecycleStatus } from '../src/tenants/tenant-lifecycle.js';
 import { GcpAuditSync } from '../src/gcp/gcp-audit-sync.js';
 import type { PubsubMessage, PubsubReader } from '../src/gcp/pubsub.client.js';
 import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
@@ -729,6 +730,67 @@ describe('sync da auditoria da GCP para achados', () => {
       });
       expect(await gcpUsage(first)).toEqual([]);
       expect(await gcpUsage(second)).toEqual([]);
+    });
+
+    it('assinatura compartilhada com um cliente suspenso (CE-02): continua ambígua, sem medição para ninguém', async () => {
+      const active = await createTenant(app, 'Cliente Demo A (uso ambíguo, ativo)');
+      const suspended = await createTenant(app, 'Cliente Demo B (uso ambíguo, suspenso)');
+      const [ofActive, ofSuspended] = [randomProject(), randomProject()];
+      const shared = `projects/projeto-no/subscriptions/ambigua-suspensa-${ofActive}`;
+      for (const [tenantId, project] of [
+        [active, ofActive],
+        [suspended, ofSuspended],
+      ] as const) {
+        await prisma.cloudAccount.create({
+          data: { tenantId, provider: 'gcp', accountId: project, regions: [], pubsubSubscription: shared },
+        });
+      }
+      await setTenantLifecycleStatus(prisma, suspended, 'suspended');
+      const pubsub = new FakePubsub();
+      pubsub.publish(
+        shared,
+        pubsubMessage(
+          auditEntry({ project: ofSuspended, insertId: `sus-${ofSuspended}`, methodName: 'DeleteProject' }),
+        ),
+        pubsubMessage(
+          auditEntry({ project: ofActive, insertId: `sus-${ofActive}`, methodName: 'DeleteProject' }),
+        ),
+      );
+      // A assinatura é lida (o cliente ativo continua coletado), mas a dona foi decidida com os dois clientes: ambígua.
+      expect(await syncFor(pubsub).runOnce(new Date('2027-02-13T12:00:00.000Z'))).toMatchObject({
+        read: 2,
+        created: 0,
+        unowned: 2,
+      });
+      expect(await gcpUsage(active)).toEqual([]);
+      expect(await gcpUsage(suspended)).toEqual([]);
+      for (const project of [ofSuspended, ofActive]) {
+        const queued = await prisma.unownedAlert.findUniqueOrThrow({
+          where: { source_sourceEventId: { source: 'gcp', sourceEventId: `${project}/sus-${project}` } },
+        });
+        expect(queued.reason).toBe('ambiguous_source');
+      }
+    });
+
+    it('a assinatura só de cliente suspenso não é lida (CE-02)', async () => {
+      const tenantId = await createTenant(app, 'Cliente Demo C (suspenso)');
+      const project = randomProject();
+      const subscription = `projects/projeto-no/subscriptions/suspensa-${project}`;
+      await prisma.cloudAccount.create({
+        data: {
+          tenantId,
+          provider: 'gcp',
+          accountId: project,
+          regions: [],
+          pubsubSubscription: subscription,
+        },
+      });
+      await setTenantLifecycleStatus(prisma, tenantId, 'suspended');
+      const pubsub = new FakePubsub();
+      pubsub.publish(subscription, pubsubMessage(auditEntry({ project, methodName: 'DeleteProject' })));
+      await syncFor(pubsub).runOnce(new Date('2027-02-14T12:00:00.000Z'));
+      expect(pubsub.pending(subscription)).toBe(1);
+      expect(await gcpUsage(tenantId)).toEqual([]);
     });
   });
 

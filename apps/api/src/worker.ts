@@ -31,6 +31,7 @@ import {
   NotificationDispatcher,
 } from './notifications/notification-dispatcher.js';
 import { UsageNotices } from './notifications/usage-notices.js';
+import { TenantPlanResolver } from './plan/tenant-plan.js';
 import {
   RETENTION_BUDGET_MS,
   RETENTION_CHECK_INTERVAL_MS,
@@ -136,8 +137,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
  * publica o estado do nó nos guest attributes da VM para o plano de controle.
  *
- * A tarefa `retention` (PR-19) é o expurgo diário do histórico no banco do nó, pelo prazo do plano (`PLAN` e
- * `PLAN_HISTORY_DAYS`): confere a cada 15 min e roda uma vez por dia, depois das 04:00 UTC, por no máximo 10 min.
+ * A tarefa `retention` (PR-19) é o expurgo diário do histórico no banco do nó, pelo prazo do plano de cada cliente
+ * (CE-02: no nó dedicado, o `PLAN` e o `PLAN_HISTORY_DAYS`; na célula, o `TenantPlan`): confere a cada 15 min e roda
+ * uma vez por dia, depois das 04:00 UTC, por no máximo 10 min.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -154,6 +156,8 @@ async function main(): Promise<void> {
     config = loaded;
     logger = pino(buildPinoOptions(config));
     prisma = new PrismaService(config);
+    // O plano de cada cliente (CE-02): no nó dedicado, o do node.conf, que semeia o TenantPlan; na célula, o TenantPlan.
+    const plans = new TenantPlanResolver(prisma, config.NODE_MODE, nodePlan(config));
     const intervalMs = config.SYNC_INTERVAL_SECONDS * 1000;
     const agentsTenantId = config.wazuhAgents?.tenantId ?? null;
     tasks = config.SYNC_SOURCES.flatMap((source): ScheduledTask[] => {
@@ -223,7 +227,7 @@ async function main(): Promise<void> {
         ? null
         : { transport: mailTransport(config), webOrigin: config.WEB_ORIGIN as string };
     const notifications = new NotificationDispatcher(prisma, mailer, {
-      usage: new UsageNotices(prisma, nodePlan(config).limits.monthlyGib),
+      usage: new UsageNotices(prisma, plans),
     });
     tasks.push({
       name: NOTIFICATIONS_TASK,
@@ -277,7 +281,7 @@ async function main(): Promise<void> {
     }
 
     // Expurgo diário do histórico (só o banco do nó; o índice do Wazuh tem a retenção própria).
-    const retention = new RetentionJob(prisma, { historyDays: nodePlan(config).limits.historyDays });
+    const retention = new RetentionJob(prisma, { plans });
     tasks.push({
       name: RETENTION_TASK,
       intervalMs: RETENTION_CHECK_INTERVAL_MS,
@@ -321,7 +325,9 @@ async function main(): Promise<void> {
     {
       intervalSeconds: config.SYNC_INTERVAL_SECONDS,
       tasks: tasks.map((task) => task.name),
-      plan: config.PLAN,
+      nodeMode: config.NODE_MODE,
+      // Na célula, o plano é de cada cliente: o do ambiente não vale.
+      plan: config.NODE_MODE === 'cell' ? null : config.PLAN,
       // Só o tipo do transporte dos avisos, nunca o servidor, o usuário ou o remetente.
       mailTransport: config.MAIL_TRANSPORT,
       // Só a versão corrente da chave do cofre (null sem o cofre), nunca a chave.

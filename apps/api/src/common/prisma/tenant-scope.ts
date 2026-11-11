@@ -26,17 +26,22 @@ export const TENANT_SCOPED_MODELS = [
   'escalationContactToken',
   // Célula (CE-01): o endereço do cliente. Só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
   'tenantHost',
+  'tenantPlan',
+  'tenantRetentionState',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
 const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
 
 /**
- * Models com `tenantId` que o escopo do cliente só lê: quem grava é o sistema, pelo client sem escopo, num caminho
- * próprio. Hoje, o endereço do cliente na célula (`tenants/tenant-host.ts`): uma escrita pelo escopo poderia levar o
- * endereço de um cliente para outro lugar.
+ * Models de cliente que só o sistema grava: o endereço do cliente na célula (CE-01, `tenants/tenant-host.ts`: uma escrita
+ * pelo escopo poderia levar o endereço de um cliente para outro lugar), o plano do cliente (CE-02, `TenantPlan`, do
+ * `node.conf` ou do plano de controle) e o estado do expurgo dele. No escopo do cliente, só a leitura passa; a gravação é
+ * recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
+ * `plan/tenant-plan.ts`, `retention/`).
  */
-const SYSTEM_WRITTEN_MODELS = new Set<string>(['tenantHost']);
+export const SYSTEM_WRITTEN_MODELS = ['tenantHost', 'tenantPlan', 'tenantRetentionState'] as const;
+const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([
   'findUnique',
   'findUniqueOrThrow',
@@ -47,6 +52,9 @@ const READ_OPERATIONS = new Set([
   'aggregate',
   'groupBy',
 ]);
+
+/** Campos do cadastro do cliente que o escopo não grava: o estado é do cadastro da Verax e do ciclo de vida. */
+const TENANT_ROOT_SYSTEM_FIELDS = ['id', 'status'] as const;
 
 /** O próprio cliente: no escopo, o model `tenant` só alcança a linha do cliente da sessão, sem criar. */
 const TENANT_ROOT_MODEL = 'tenant';
@@ -125,8 +133,11 @@ export function scopeTenantRootArgs(operation: string, args: Args | undefined, t
   const and = where['AND'] === undefined ? [] : Array.isArray(where['AND']) ? where['AND'] : [where['AND']];
   scoped['where'] = { ...where, AND: [...(and as unknown[]), { id: tenantId }] };
   const data = scoped['data'];
-  if (typeof data === 'object' && data !== null && 'id' in data) {
-    throw new TenantScopeViolation('o id do cliente não muda');
+  if (typeof data === 'object' && data !== null) {
+    for (const field of TENANT_ROOT_SYSTEM_FIELDS) {
+      if (field in data)
+        throw new TenantScopeViolation(`o ${field} do cliente não muda pelo escopo do cliente`);
+    }
   }
   return scoped;
 }
@@ -162,14 +173,18 @@ export function scopeToTenant(db: Prisma.TransactionClient, tenantId: string): P
       }
       const value: unknown = Reflect.get(target, property, receiver);
       if (typeof value !== 'object' || value === null) return value;
-      if (SCOPED.has(property)) {
-        const readOnly = SYSTEM_WRITTEN_MODELS.has(property);
+      if (SYSTEM_WRITTEN.has(property)) {
         return scopeDelegate(value, (operation, args) => {
-          if (readOnly && !READ_OPERATIONS.has(operation)) {
-            throw new TenantScopeViolation(`${property} só é gravado pelo sistema`);
+          if (!READ_OPERATIONS.has(operation)) {
+            throw new TenantScopeViolation(
+              `${property} é gravado só pelo sistema, fora do escopo do cliente`,
+            );
           }
           return scopeArgs(operation, args, tenantId);
         });
+      }
+      if (SCOPED.has(property)) {
+        return scopeDelegate(value, (operation, args) => scopeArgs(operation, args, tenantId));
       }
       if (property === TENANT_ROOT_MODEL) {
         return scopeDelegate(value, (operation, args) => scopeTenantRootArgs(operation, args, tenantId));
