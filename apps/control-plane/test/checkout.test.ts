@@ -414,9 +414,9 @@ describe('cp-public: checkout pela cotação, com a franquia como quantidade (pr
 
   it('uma tabela nova publicada depois da cotação não muda o preço dela: a cotação vale até vencer', async () => {
     const newer = fictitiousPriceTable();
-    newer.plans.plataforma.base = { amount: 120_000, lookupKey: 'vc_base_v2' };
+    newer.plans.plataforma.base = { amount: 110_000, lookupKey: 'vc_base_v2' };
     await seedPublishedTable(documents, newer, { version: 'teste-v2', effectiveFrom: clock.now() });
-    fake.addPrice('vc_base_v2', 120_000);
+    fake.addPrice('vc_base_v2', 110_000);
 
     await checkout(order()).expect(201);
 
