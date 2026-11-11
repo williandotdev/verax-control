@@ -20,7 +20,8 @@ function renderInline(nodes: readonly Inline[]): ReactNode[] {
           </code>
         );
       case 'link': {
-        const external = /^https?:/i.test(node.href);
+        const scheme = node.href.slice(0, 6).toLowerCase();
+        const external = scheme.startsWith('http:') || scheme === 'https:';
         return (
           <a
             key={index}
