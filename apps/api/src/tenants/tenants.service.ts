@@ -25,6 +25,8 @@ import {
   toEscalationContact,
 } from '../escalation/escalation-contact-store.js';
 import { UsersService } from '../users/users.service.js';
+import { revokeTenantAccess } from './tenant-lifecycle.js';
+import { isLifecycleStatus } from './tenant-status.js';
 
 const tenantSelect = {
   ...ESCALATION_SELECT,
@@ -68,6 +70,10 @@ function isUniqueViolation(error: unknown): boolean {
 
 const NOT_FOUND = 'Cliente não encontrado';
 const CNPJ_TAKEN = 'Já existe um cliente com este CNPJ';
+/** Código da recusa de mudar o estado de um cliente que está num estado do ciclo de vida da contratação (CE-02). */
+export const TENANT_STATUS_MANAGED_CODE = 'TENANT_STATUS_MANAGED';
+const STATUS_MANAGED =
+  'O estado deste cliente vem da contratação (suspensão, cancelamento ou exclusão) e não muda pelo cadastro.';
 
 /**
  * Cadastro de clientes (T3.1). Operação global da Verax: só `admin_verax` chega aqui (permissões
@@ -149,6 +155,10 @@ export class TenantsService {
     // geração de agora (`lockTenantRow`).
     await lockTenantRow(this.prisma.db(), id);
     const found = await this.find(id);
+    // Os estados do ciclo de vida (CE-02) são só do sistema: o cadastro não tira o cliente deles.
+    if (input.status !== undefined && isLifecycleStatus(found.status)) {
+      throw new ApiError(HttpStatus.CONFLICT, STATUS_MANAGED, TENANT_STATUS_MANAGED_CODE);
+    }
     const before = await this.toFullTenant(found);
     const contact = input.escalationContact ? escalationContactUpdate(found, input.escalationContact) : null;
     let row: TenantRow;
@@ -165,7 +175,8 @@ export class TenantsService {
     if (contact?.restart) {
       await queueEscalationConfirmation(this.prisma.forTenant(id), row.escalationGeneration, new Date());
     }
-    if (before.status === 'active' && row.status === 'inactive') await this.revokeAccess(id);
+    if (before.status === 'active' && row.status === 'inactive')
+      await revokeTenantAccess(this.prisma.db(), id);
     const after = await this.toFullTenant(row);
     this.audit.describe({
       action:
@@ -202,13 +213,21 @@ export class TenantsService {
     return tenant;
   }
 
-  /** Exclusão lógica: o cliente fica inativo, e ninguém dele continua logado. */
+  /**
+   * Exclusão lógica: o cliente fica inativo, e ninguém dele continua logado. O cliente num estado do ciclo de vida da
+   * contratação (CE-02) é recusado: o estado dele é do sistema.
+   */
   async deactivate(id: string): Promise<void> {
-    const before = await this.toFullTenant(await this.find(id));
+    await lockTenantRow(this.prisma.db(), id);
+    const found = await this.find(id);
+    if (isLifecycleStatus(found.status)) {
+      throw new ApiError(HttpStatus.CONFLICT, STATUS_MANAGED, TENANT_STATUS_MANAGED_CODE);
+    }
+    const before = await this.toFullTenant(found);
     const row = await this.prisma
       .db()
       .tenant.update({ where: { id }, data: { status: 'inactive' }, select: tenantSelect });
-    await this.revokeAccess(id);
+    await revokeTenantAccess(this.prisma.db(), id);
     this.audit.describe({
       action: 'tenant.deactivate',
       resourceType: 'tenant',
@@ -232,16 +251,5 @@ export class TenantsService {
     const row = await this.prisma.db().tenant.findUnique({ where: { id }, select: tenantSelect });
     if (!row) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
     return row;
-  }
-
-  /**
-   * As sessões dos usuários do cliente caem, e as seleções de `admin_verax` nele são limpas. O guard já
-   * recusaria essas sessões na próxima requisição; apagar agora as tira também das listagens de sessão.
-   */
-  private async revokeAccess(tenantId: string): Promise<void> {
-    await this.prisma.db().session.deleteMany({ where: { user: { tenantId } } });
-    await this.prisma
-      .db()
-      .session.updateMany({ where: { activeTenantId: tenantId }, data: { activeTenantId: null } });
   }
 }

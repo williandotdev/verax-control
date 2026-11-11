@@ -7,6 +7,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { type PostureScanData, toPostureScan } from '../posture/native-posture.js';
 import { collectPostureReads } from '../posture/posture-reads.js';
 import {
@@ -259,6 +260,8 @@ export class AwsInventorySync {
           status: 'active',
           ingestFrom: { not: null },
           connection: { in: ['connected', 'error'] },
+          // Só cliente ativo (CE-02): a conta de quem está suspenso, cancelado ou em expurgo não é inventariada.
+          ...COLLECTING_TENANT,
           ...this.tenantFilter,
         },
         select: ACCOUNT_SELECT,

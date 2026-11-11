@@ -5,6 +5,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
 import { detect, gcpEventId, type GcpRule, toGcpFindingDraft } from './gcp-rules.js';
@@ -263,7 +264,8 @@ export class GcpAuditSync {
   /** Contas GCP ativas, agrupadas pela assinatura: o cadastro que decide o dono de cada evento. */
   private async subscriptions(): Promise<SubscriptionGroup[]> {
     const rows = await this.prisma.cloudAccount.findMany({
-      where: { provider: 'gcp', status: 'active', pubsubSubscription: { not: null } },
+      // Só cliente ativo (CE-02): a assinatura de quem está suspenso, cancelado ou em expurgo não é lida.
+      where: { provider: 'gcp', status: 'active', pubsubSubscription: { not: null }, ...COLLECTING_TENANT },
       select: { tenantId: true, accountId: true, pubsubSubscription: true },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });

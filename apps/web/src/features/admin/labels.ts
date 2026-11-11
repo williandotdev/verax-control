@@ -18,6 +18,10 @@ import {
 export const TENANT_STATUS_LABELS: Readonly<Record<TenantStatus, string>> = {
   active: 'Ativo',
   inactive: 'Inativo',
+  // Estados do ciclo de vida da contratação na célula (CE-02): só o sistema os grava.
+  suspended: 'Suspenso',
+  canceled: 'Cancelado',
+  purging: 'Em exclusão',
 };
 
 export const USER_STATUS_LABELS: Readonly<Record<UserStatus, string>> = {

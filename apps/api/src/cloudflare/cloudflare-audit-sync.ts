@@ -23,6 +23,7 @@ import {
 } from '../credentials/credential-vault.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { UsageMeter } from '../usage/usage-meter.js';
 import { cloudflareEventId, invalidEntryId, isCloudflareAccountId, parseAuditEntry } from './audit-entry.js';
 import { CloudflareApiError, CloudflareClient } from './cloudflare.client.js';
@@ -404,6 +405,8 @@ export class CloudflareAuditSync {
         provider: 'cloudflare',
         status: 'active',
         credential: { isNot: null },
+        // Só cliente ativo (CE-02): a conta de quem está suspenso, cancelado ou em expurgo não é lida.
+        ...COLLECTING_TENANT,
         ...(this.tenantIds !== undefined && { tenantId: { in: [...this.tenantIds] } }),
       },
       select: {

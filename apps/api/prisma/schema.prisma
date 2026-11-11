@@ -73,9 +73,15 @@ enum UserStatus {
   disabled
 }
 
+/// Estado do cliente no nó. `active` e `inactive` são do cadastro (o `admin_verax`). `suspended`, `canceled` e
+/// `purging` são do ciclo de vida da contratação na célula (CE-02), espelho do plano de controle: só o sistema os grava,
+/// e nenhum deles entra, coleta ou é tocado pelo cadastro da API.
 enum TenantStatus {
   active
   inactive
+  suspended
+  canceled
+  purging
 }
 
 /// Cliente da Verax (T3.1). CNPJ, plano e contato são obrigatórios na API; ficam opcionais no banco só por
