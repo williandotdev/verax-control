@@ -13,6 +13,10 @@ import {
   PricingTableListPage,
   PricingTableNewPage,
 } from '@/features/pricing-tables/pricing-table-pages';
+import { LegalEditorPage } from '@/features/legal/legal-editor-page';
+import { LegalHistoryPage } from '@/features/legal/legal-history-page';
+import { LegalNewPage } from '@/features/legal/legal-new-page';
+import { LegalOverviewPage } from '@/features/legal/legal-overview-page';
 import { SimulatorPage } from '@/features/simulator/simulator-page';
 import { NewTenantPage } from '@/features/tenants/new-tenant-page';
 import { TenantDetailPage } from '@/features/tenants/tenant-detail-page';
@@ -40,6 +44,10 @@ export const routes: RouteObject[] = [
       { path: 'clientes', element: <TenantListPage /> },
       { path: 'clientes/novo', element: <NewTenantPage /> },
       { path: 'clientes/:id', element: <TenantDetailPage /> },
+      { path: 'textos-legais', element: <LegalOverviewPage /> },
+      { path: 'textos-legais/:kind/novo', element: <LegalNewPage /> },
+      { path: 'textos-legais/:kind/historico', element: <LegalHistoryPage /> },
+      { path: 'textos-legais/:kind/:version', element: <LegalEditorPage /> },
       { path: 'conta', element: <AccountPage /> },
       { path: '*', element: <NotFoundPage /> },
     ],

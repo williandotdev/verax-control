@@ -25,15 +25,13 @@ project_id = "projeto-exemplo"
 # entrada do cp-worker".
 # worker_ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
-# Variáveis dos dois serviços que são suas (plano, seção 2.5), por cima dos padrões de run.tf. As versões dos aceites
-# têm de ser as das páginas publicadas no site. TRUST_PROXY_HOPS (quantos proxies o serviço confia para achar o IP do
-# cliente: o Hosting e o Cloud Run contam 1) só se o app exigir; o padrão é dele. As chaves que o Terraform deriva de
-# outras variáveis, os segredos, ROLE e NODE_ENV são recusados aqui (variables.tf). Nada daqui vai para o console do
-# responsável (cp-admin): lá TRUSTED_PROXIES fica vazia de propósito (docs/runbooks/console-do-responsavel.md).
+# Variáveis dos dois serviços que são suas (plano, seção 2.5), por cima dos padrões de run.tf. As versões dos textos
+# legais não entram aqui: o checkout usa as publicadas no console (Textos legais). TRUST_PROXY_HOPS (quantos proxies o
+# serviço confia para achar o IP do cliente: o Hosting e o Cloud Run contam 1) só se o app exigir; o padrão é dele. As
+# chaves que o Terraform deriva de outras variáveis, os segredos, ROLE e NODE_ENV são recusados aqui (variables.tf).
+# Nada daqui vai para o console do responsável (cp-admin): lá TRUSTED_PROXIES fica vazia de propósito
+# (docs/runbooks/console-do-responsavel.md).
 # service_env = {
-#   TERMS_VERSION           = "2026-11-01"
-#   PRIVACY_VERSION         = "2026-11-01"
-#   DPA_VERSION             = "2026-11-01"
 #   STRIPE_PORTAL_LOGIN_URL = "https://billing.stripe.com/p/login/..."
 #   TRUST_PROXY_HOPS        = "1"
 # }

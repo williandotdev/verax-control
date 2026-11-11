@@ -6,15 +6,14 @@ import type { EnvKey } from '../common/config/env.schema.js';
  * schema, como os demais grupos: faltando alguma, o serviço sobe assim mesmo (o `/health` responde e a revisão pode
  * ser promovida), avisa no log quais faltam (só os nomes) e o checkout responde 503 `checkout_unavailable`. A
  * consulta de subdomínio não depende delas. `STRIPE_WEBHOOK_SECRET` e `STRIPE_PORTAL_LOGIN_URL` são do CP-04/CP-05.
- * Os preços não estão aqui: saem da tabela publicada no Firestore (preço configurável), pela cotação.
+ * Os preços não estão aqui: saem da tabela publicada no Firestore (preço configurável), pela cotação. As versões dos
+ * textos legais também não: são as publicadas pelo console no Firestore (`legal/legal-store.ts`), conferidas a cada
+ * checkout (sem uma publicada de cada texto, o mesmo 503).
  */
 export const CHECKOUT_REQUIRED = [
   'SITE_ORIGINS',
   'SITE_SUCCESS_URL',
   'SITE_CANCEL_URL',
-  'TERMS_VERSION',
-  'PRIVACY_VERSION',
-  'DPA_VERSION',
   'STRIPE_SECRET_KEY',
 ] as const satisfies readonly EnvKey[];
 
@@ -26,7 +25,6 @@ export interface CheckoutSettings {
   cancelUrl: string;
   /** Endereços completos dos textos legais, citados no aceite do Checkout. */
   legalUrls: { terms: string; privacy: string; dpa: string };
-  versions: { terms: string; privacy: string; dpa: string };
   /** `STRIPE_LIVE`: a chave já foi conferida contra ele na partida. */
   livemode: boolean;
 }
@@ -38,21 +36,8 @@ export const CHECKOUT_SETTINGS = Symbol('CHECKOUT_SETTINGS');
 
 export function resolveCheckoutSettings(config: AppConfig): CheckoutSettingsResult {
   const missing = CHECKOUT_REQUIRED.filter((key) => config[key] === undefined);
-  const {
-    SITE_SUCCESS_URL: successUrl,
-    SITE_CANCEL_URL: cancelUrl,
-    TERMS_VERSION: terms,
-    PRIVACY_VERSION: privacy,
-    DPA_VERSION: dpa,
-  } = config;
-  if (
-    missing.length > 0 ||
-    successUrl === undefined ||
-    cancelUrl === undefined ||
-    terms === undefined ||
-    privacy === undefined ||
-    dpa === undefined
-  ) {
+  const { SITE_SUCCESS_URL: successUrl, SITE_CANCEL_URL: cancelUrl } = config;
+  if (missing.length > 0 || successUrl === undefined || cancelUrl === undefined) {
     return { ready: false, missing };
   }
   const site = new URL(successUrl).origin;
@@ -66,7 +51,6 @@ export function resolveCheckoutSettings(config: AppConfig): CheckoutSettingsResu
         privacy: `${site}${LEGAL_PAGES.privacy}`,
         dpa: `${site}${LEGAL_PAGES.dpa}`,
       },
-      versions: { terms, privacy, dpa },
       livemode: config.STRIPE_LIVE,
     },
   };

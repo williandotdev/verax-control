@@ -612,3 +612,74 @@ export interface TenantActionRequest {
   at?: string;
   object?: string;
 }
+
+/** Os três textos legais que o cliente aceita no checkout. */
+export type LegalKind = 'terms' | 'privacy' | 'dpa';
+/** Rascunho (editável) ou publicada (imutável; a mais recente é a vigente). */
+export type LegalStatus = 'draft' | 'published';
+
+/** Uma linha da lista de versões de um texto legal (sem o texto). */
+export interface LegalVersionSummary {
+  kind: LegalKind;
+  version: string;
+  status: LegalStatus;
+  current: boolean;
+  basedOn?: string;
+  publishedAt?: string;
+  publishedBy?: string;
+  contentSha256?: string;
+  bytes: number;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** `GET /v1/admin/legal`: as versões de cada texto, da mais nova para a mais antiga. */
+export type LegalOverview = Record<LegalKind, LegalVersionSummary[]>;
+
+/** Uma versão de um texto legal, com o texto em Markdown. */
+export interface LegalTextRecord {
+  kind: LegalKind;
+  version: string;
+  status: LegalStatus;
+  content: string;
+  basedOn?: string;
+  publishedAt?: string;
+  publishedBy?: string;
+  contentSha256?: string;
+  createdAt: string;
+  createdBy: string;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** `POST /v1/admin/legal/:kind/versions`: em branco ou cópia de outra versão do mesmo texto. */
+export interface LegalCreateRequest {
+  version: string;
+  from?: string;
+}
+
+/** `PUT /v1/admin/legal/:kind/versions/:version`: o texto e a revisão lida (o `updatedAt`). */
+export interface LegalUpdateRequest {
+  content: string;
+  expectedUpdatedAt: string;
+}
+
+/** `POST .../publish`: a revisão conferida e a versão digitada de novo. */
+export interface LegalPublishRequest {
+  expectedUpdatedAt: string;
+  confirmVersion: string;
+}
+
+/** `GET /v1/admin/legal/:kind/audit`: a trilha de um texto (nunca o texto). */
+export interface LegalAuditEntry {
+  id: string;
+  at: string;
+  actor: string;
+  event: 'draft.created' | 'draft.updated' | 'published';
+  version: string;
+  basedOn?: string;
+  bytes?: number;
+  contentSha256?: string;
+}

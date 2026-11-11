@@ -61,6 +61,8 @@ const terraformSharedEnv = {
   NODES_REGION: 'southamerica-east1',
   NODES_ZONE: 'southamerica-east1-b',
   FIREBASE_PANEL_PROJECTS: 'projeto-demo',
+  // As versões dos textos legais saíram do ambiente (vêm do console, pelo Firestore); um `service_env` antigo que ainda
+  // as tenha não derruba a partida: o app as ignora (o schema não as conhece).
   TERMS_VERSION: '2026-11-04',
   PRIVACY_VERSION: '2026-11-04',
   DPA_VERSION: '2026-11-04',
@@ -292,6 +294,7 @@ describe('loadConfig (CP-01)', () => {
     expect(config.STRIPE_WEBHOOK_SECRET).toBe(webhookSecret);
     expect(config.COOKIE_KEY).toBe(cookieKey);
     expect(Object.keys(config).filter((key) => key.startsWith('STRIPE_PRICE_LOOKUP_'))).toEqual([]);
+    expect(Object.keys(config).filter((key) => key.endsWith('_VERSION'))).toEqual([]);
   });
 
   it('o ambiente que o Terraform dá ao cp-worker sobe com o grupo do SMTP completo', () => {
