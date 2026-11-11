@@ -71,6 +71,9 @@ const ACCOUNT_LOCKED_MESSAGE = 'Muitas tentativas. Tente novamente em alguns min
 /** Mesmo erro do Better Auth para senha errada (o teste de login compara as duas respostas). */
 const INVALID_CREDENTIALS = { code: 'INVALID_EMAIL_OR_PASSWORD', message: 'Invalid email or password' };
 const INVALID_CODE = { code: 'INVALID_CODE', message: 'Invalid code' };
+/** Mesmo erro do Better Auth para o link de redefinição que não vale (o teste da célula compara as duas respostas). */
+const INVALID_TOKEN = { code: 'INVALID_TOKEN', message: 'Invalid token' };
+const RESET_PASSWORD_PATH = '/reset-password';
 // Senha temporária vencida (72 h): o login recusa dizendo o motivo, para a pessoa pedir outra ao administrador. Só
 // chega aqui quem acertou a senha, então o código não ajuda quem não a tem.
 const TEMPORARY_EXPIRED = { code: 'TEMPORARY_PASSWORD_EXPIRED', message: 'Temporary password expired' };
@@ -141,6 +144,47 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
   }
 
   /**
+   * Na célula, o link de redefinição só vale no endereço do cliente de quem o recebeu: antes de a senha mudar (e de as
+   * sessões caírem), o dono do token precisa ser do cliente do endereço. O de outro cliente recebe a mesma recusa do
+   * token que não existe, sem gastar o token nem mudar nada; o registro na trilha é o mesmo da recusa do Better Auth (o
+   * hook `after` não roda quando este lança). O token é procurado como o Better Auth procura (`reset-password:<token>`,
+   * no corpo ou na query), pelo adaptador dele, que aplica o hash do identificador.
+   */
+  async function refuseForeignResetToken(ctx: {
+    body?: unknown;
+    query?: unknown;
+    headers?: Headers | undefined;
+    context: {
+      internalAdapter: {
+        findVerificationValue: (identifier: string) => Promise<{ value: string; expiresAt: Date } | null>;
+      };
+    };
+  }): Promise<void> {
+    if (cell === null) return;
+    const fromBody = (ctx.body as { token?: unknown } | undefined)?.token;
+    const fromQuery = (ctx.query as { token?: unknown } | undefined)?.token;
+    const token = typeof fromBody === 'string' && fromBody !== '' ? fromBody : fromQuery;
+    // Sem token, ou num formato que o Better Auth recusa sozinho: a recusa dele mesmo.
+    if (typeof token !== 'string' || token === '') return;
+    const verification = await ctx.context.internalAdapter.findVerificationValue(`reset-password:${token}`);
+    if (verification === null || verification.expiresAt < new Date()) return;
+    const host = currentHostTenant();
+    const owner = await prisma.user.findUnique({
+      where: { id: verification.value },
+      select: { role: true, tenantId: true },
+    });
+    if (host !== undefined && owner !== null && belongsToHost(owner, host)) return;
+    await record({
+      actor: { type: 'anonymous' },
+      action: AUTH_AUDIT_ACTIONS[RESET_PASSWORD_PATH] ?? RESET_PASSWORD_PATH,
+      outcome: 'failure',
+      statusCode: 400,
+      ...requestMetadata(ctx.headers),
+    });
+    throw new APIError('BAD_REQUEST', INVALID_TOKEN);
+  }
+
+  /**
    * Confere o token do Turnstile antes de tudo (antes de reservar a tentativa de login e de olhar a senha). O hook
    * `after` não roda quando este lança, então a recusa entra na trilha daqui.
    */
@@ -207,7 +251,8 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
       // Redefinição pelo e-mail (T2.6), onde o nó envia e-mail. Usuário que não está ativo não recebe nada, e a
       // resposta da API é a mesma.
       // Na célula, só quem é do cliente do endereço recebe, e o link leva ao painel desse cliente; o pedido feito no
-      // endereço de outro cliente tem a mesma resposta e não manda nada.
+      // endereço de outro cliente tem a mesma resposta e não manda nada. O resgate do link também confere o endereço
+      // (`refuseForeignResetToken`).
       sendResetPassword: async ({ user, token }) => {
         let webOrigin = config.WEB_ORIGIN;
         if (cell !== null) {
@@ -358,6 +403,7 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
         }
         // Turnstile antes da tentativa de login: uma requisição sem o desafio não gasta nenhuma das 5 tentativas.
         await checkTurnstile(ctx);
+        if (ctx.path === RESET_PASSWORD_PATH) await refuseForeignResetToken(ctx);
         if (ctx.path !== SIGN_IN_PATH) return;
         const email = normalizeEmail((ctx.body as { email?: unknown } | undefined)?.email);
         if (email === undefined) return;

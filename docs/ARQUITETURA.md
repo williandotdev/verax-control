@@ -197,6 +197,8 @@ requisição ao cliente desse endereço:
   outro cliente e para o do próprio, e nenhuma frase diz "em outro cliente". Que o valor já está em uso no nó continua
   visível (é o preço da unicidade global), sem dizer de quem.
 - **E-mails:** o link de redefinição de senha leva ao painel do cliente do endereço, e só sai para quem é desse cliente.
+  O resgate também confere: o link de um cliente usado no endereço de outro recebe a mesma recusa do link inválido
+  (400 `INVALID_TOKEN`), antes de a senha mudar e sem gastar o link.
   Os avisos do worker ainda montam os links com um `WEB_ORIGIN` só; até serem por cliente, o worker da célula exige
   `MAIL_TRANSPORT=none`.
 

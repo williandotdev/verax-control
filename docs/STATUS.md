@@ -5104,7 +5104,8 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   endereço, depois de gastar a tentativa da conta e a do IP, com a mesma recusa e o mesmo registro da senha errada; a
   sessão guarda o cliente do endereço e só vale nele (levada a outro, 401 e apagada); o `admin_verax` só no endereço da
   equipe; CORS, CSRF, origem da autenticação, Turnstile, links do contato e o link de redefinição de senha pelo painel do
-  cliente do endereço; recusas de unicidade sem "em outro cliente".
+  cliente do endereço (o resgate do link no endereço de outro cliente recebe a recusa do link inválido, sem trocar a
+  senha nem derrubar sessões; achado do Codex no PR #119); recusas de unicidade sem "em outro cliente".
 - **Testes:** `pnpm --filter @verax/api test` com um Postgres descartável (`TEST_DATABASE_URL` próprio), lint e
   `tsc --noEmit` da API. A varredura do meta-teste roda todas as rotas do Express num endereço sem cliente; a do A/B, as
   rotas com parâmetro com os IDs de B no endereço de A (nenhum 2xx, nada de B na resposta, B igual antes e depois).

@@ -318,6 +318,64 @@ describe('célula: cada requisição presa ao cliente do endereço (CE-01)', () 
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(mailbox.to(user.email)).toEqual([]);
     });
+
+    /** Pede a redefinição no endereço do cliente da pessoa e devolve o token do link que chegou. */
+    async function resetTokenFor(slug: string, email: string): Promise<string> {
+      await onHost(app, slug)('post', '/v1/auth/request-password-reset').send({ email }).expect(200);
+      let token: string | undefined;
+      await vi.waitFor(() => {
+        token = mailbox.lastToken(email);
+        expect(token).toBeDefined();
+      });
+      return token as string;
+    }
+
+    const resetOn = (slug: string, token: string, newPassword: string) =>
+      onHost(app, slug)('post', '/v1/auth/reset-password').send({ token, newPassword });
+
+    const passwordHashOf = (userId: string) =>
+      prisma.account.findFirstOrThrow({
+        where: { userId, providerId: 'credential' },
+        select: { password: true },
+      });
+
+    it('o link de A resgatado no endereço de B: a mesma recusa do link inválido, e nada muda em A', async () => {
+      const user = await createSignedInUserOnHost(app, A, { role: 'leitura', tenantId: tenantA });
+      const token = await resetTokenFor(A, user.email);
+      const before = await passwordHashOf(user.id);
+      // Marca as duas recusas na trilha (outros arquivos de teste gravam a mesma ação no mesmo banco).
+      const userAgent = `ce01-reset-${randomUUID()}`;
+      const elsewhere = await resetOn(B, token, 'senha-nova-bem-longa-1')
+        .set('User-Agent', userAgent)
+        .expect(400);
+      const unknown = await resetOn(B, randomBytes(18).toString('base64url'), 'senha-nova-bem-longa-1')
+        .set('User-Agent', userAgent)
+        .expect(400);
+      expect(elsewhere.body).toEqual(unknown.body);
+
+      // A senha, as sessões e o próprio link de A ficam como estavam.
+      expect(await passwordHashOf(user.id)).toEqual(before);
+      await onHost(app, A)('get', '/v1/me').set('Cookie', user.cookie).expect(200);
+      // A recusa entra na trilha igual à do link inválido.
+      const entries = await prisma.auditLog.findMany({
+        where: { action: 'auth.password_reset', userAgent },
+        select: { actorType: true, actorId: true, tenantId: true, outcome: true, statusCode: true },
+      });
+      expect(entries).toHaveLength(2);
+      expect(entries[0]).toEqual(entries[1]);
+      expect(entries[0]).toMatchObject({ actorType: 'anonymous', outcome: 'failure', statusCode: 400 });
+
+      // No endereço de A, o mesmo link continua valendo.
+      await resetOn(A, token, 'senha-nova-bem-longa-2').expect(200);
+      await signInOnHost(app, A, user.email, 'senha-nova-bem-longa-2').expect(200);
+    });
+
+    it('o link de B resgatado no endereço de B troca a senha', async () => {
+      const user = await createUser(app, { role: 'leitura', tenantId: tenantB });
+      const token = await resetTokenFor(B, user.email);
+      await resetOn(B, token, 'senha-nova-bem-longa-3').expect(200);
+      await signInOnHost(app, B, user.email, 'senha-nova-bem-longa-3').expect(200);
+    });
   });
 
   describe('troca de cliente do admin_verax', () => {
