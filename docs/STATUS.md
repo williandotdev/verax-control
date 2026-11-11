@@ -5137,9 +5137,26 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   falha de asserção (o arquivo passa sozinho). `pnpm --filter @verax/console test` (73) e `test:e2e` (15, axe WCAG 2.2
   AA e a CSP nos dois temas). `pnpm typecheck`, `eslint` e `prettier --check` verdes.
 - **Riscos e pendências:**
-  - **o imposto por cima ainda não está na cobrança:** o checkout cobra os valores da tabela (conferidos na Stripe); com
-    `taxMode = exclusive`, a alíquota precisa entrar na fatura da Stripe (alíquota exclusiva nos itens ou o Stripe Tax).
-    Sem isso, a DRE e a checagem superestimam a receita;
   - **o excedente:** o preço e o `lookup_key` estão na tabela e no catálogo como preço mensal comum; se a frente da
     medição preferir um preço medido (uso), o formato do catálogo do `stripe-setup` precisa do tipo de uso;
   - **a capacidade da célula** é premissa do modelo de custos até um teste de carga.
+- **Revisão do PR #118, corrigida:**
+  - **Semgrep (njsscan `node_logic_bypass`, bloqueante):** a comparação da margem de alerta com a mínima (e as do máximo
+    do site e do Dedicado) voltou a passar por `belowFloor`, como antes da troca; sem `nosemgrep`;
+  - **Codex P1, reserva paga depois do deploy:** a leitura de `slugs/{slug}` aceita o pedido com a configuração do
+    modelo anterior (`storedSlugOrderSchema`), para o `checkout.session.completed` de uma reserva aberta antes da troca
+    criar o cliente (com a configuração antiga, que o cliente já aceita); o pedido novo continua gravado só no modelo de
+    hoje (`CheckoutStore.reserve` confere com `slugOrderSchema`). Testes: o webhook com a reserva antiga paga (o
+    cliente nasce em `provisioning` com o preflight) e a recusa de gravar um pedido antigo;
+  - **Codex P1, imposto por cima de verdade:** `STRIPE_TAX_RATE_ID` (opcional, só o id): o checkout de uma tabela
+    `exclusive` põe a alíquota da Stripe nos itens e como padrão da assinatura, relida e conferida a cada sessão
+    (ativa, exclusiva, no modo da chave, com o percentual da alíquota padrão do modelo de custos vigente); sem ela ou
+    divergente, 503 `checkout_unavailable` com `checkout_tax_rate_invalid` e o motivo. A checagem continua calculando
+    com o imposto por cima e reprova uma tabela `exclusive` num serviço sem a variável (console e `publicar-precos
+--aliquota-stripe`). `stripe-setup --tax-rate-percent=<n>` acha ou cria a alíquota e imprime o id. Terraform: o
+    `cp-admin` recebe `STRIPE_TAX_RATE_ID` de `service_env` (só ela). Testes: `test/checkout-tax.test.ts` (novo: a
+    alíquota nos itens e na assinatura; a tabela embutida sem alíquota nem consulta; inativa, embutida, de outro modo,
+    com outro percentual, inexistente e sem modelo de custos, todos 503 sem reservar), o checkout sem a variável, a
+    checagem, o console (`check` e `publish` com o motivo), o `publicar-precos` e o `stripe-setup` (simulação, criação
+    com os parâmetros exatos, a marca, o id impresso, a repetição e o percentual inválido); `terraform test` do
+    `envs/control-plane` (34) com o caso novo.

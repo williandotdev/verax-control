@@ -1,7 +1,12 @@
 import { COLLECTIONS } from '../../src/firestore/collections.js';
 import type { DocumentStore } from '../../src/firestore/document-store.js';
-import { priceTableDocumentSchema } from '../../src/pricing/pricing-store.js';
-import { lookupKeysOf, type PriceTableInput, priceTableSchema } from '../../src/pricing/pricing.schema.js';
+import { costModelDocumentSchema, priceTableDocumentSchema } from '../../src/pricing/pricing-store.js';
+import {
+  type CostModelInput,
+  lookupKeysOf,
+  type PriceTableInput,
+  priceTableSchema,
+} from '../../src/pricing/pricing.schema.js';
 import type { FakeStripe } from './fake-stripe.js';
 
 /**
@@ -27,6 +32,30 @@ export async function seedPublishedTable(
   });
   await documents.runTransaction((tx) => {
     tx.set(COLLECTIONS.pricingTables, options.version ?? 'teste-v1', { ...document });
+    return Promise.resolve();
+  });
+}
+
+/** Grava um modelo de custos já publicado direto no banco (sem auditoria), vigente desde `effectiveFrom`. */
+export async function seedPublishedCostModel(
+  documents: DocumentStore,
+  content: CostModelInput,
+  options: { version?: string; effectiveFrom: Date },
+): Promise<void> {
+  const at = options.effectiveFrom;
+  const document = costModelDocumentSchema.parse({
+    status: 'published',
+    content,
+    effectiveFrom: at,
+    publishedAt: at,
+    publishedBy: 'responsavel@verax.example',
+    createdAt: at,
+    createdBy: 'responsavel@verax.example',
+    updatedAt: at,
+    updatedBy: 'responsavel@verax.example',
+  });
+  await documents.runTransaction((tx) => {
+    tx.set(COLLECTIONS.costModels, options.version ?? 'custos-teste-v1', { ...document });
     return Promise.resolve();
   });
 }

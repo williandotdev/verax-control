@@ -27,6 +27,16 @@ export interface GuardConfiguration {
   contributionMarginRatio: number;
 }
 
+/** O que a checagem precisa saber do serviço que publica. */
+export interface PublishGuardOptions {
+  /** A alíquota da Stripe do imposto por cima (`STRIPE_TAX_RATE_ID`) está configurada. */
+  stripeTaxRate: boolean;
+}
+
+/** O problema da checagem de uma tabela sem impostos num serviço sem a alíquota da Stripe que os cobraria. */
+export const TAX_RATE_UNCONFIGURED_PROBLEM =
+  'a tabela é sem impostos (o imposto vai por cima), mas a alíquota da Stripe que o cobra não está configurada no serviço (STRIPE_TAX_RATE_ID): o checkout cobraria só o valor da tabela';
+
 export interface GuardScenario {
   taxRateId: string;
   paymentMethod: PaymentMethod;
@@ -126,9 +136,16 @@ function keepWorst<K extends string>(
  * piores, as que ficam abaixo da margem de alerta, o pior caso de cada plano e lugar, o pior com as outras alíquotas e
  * no boleto (só informação), confere a monotonia (um GB/dia a mais nunca baixa o preço), que o "a partir de" é o menor
  * preço de cada plano, que o excedente não é mais barato que o GB/dia contratado e que tudo o que o site vende cabe no
- * que o provisionamento cria hoje (`node-fit.ts`). Pura: nada de banco nem de Stripe.
+ * que o provisionamento cria hoje (`node-fit.ts`). Com o imposto por cima (`taxMode = exclusive`), as margens são
+ * calculadas com ele (`dre.ts`), e a tabela só passa se o serviço tiver a alíquota da Stripe que o cobra de verdade
+ * (`stripeTaxRate`: `STRIPE_TAX_RATE_ID` configurada; o checkout confere a alíquota na Stripe a cada sessão). Pura: nada
+ * de banco nem de Stripe.
  */
-export function runPublishGuard(table: PriceTable, model: CostModel): GuardReport {
+export function runPublishGuard(
+  table: PriceTable,
+  model: CostModel,
+  options: PublishGuardOptions = { stripeTaxRate: false },
+): GuardReport {
   const taxRateId = model.taxes.defaultRateId;
   const report: GuardReport = {
     ok: false,
@@ -246,6 +263,9 @@ export function runPublishGuard(table: PriceTable, model: CostModel): GuardRepor
   const { plataforma } = table.plans;
   if (plataforma.overageGbDay.amount < plataforma.additionalGbDay.amount) {
     report.problems.push('o GB/dia excedente da Plataforma é mais barato que o contratado');
+  }
+  if (table.taxMode === 'exclusive' && !options.stripeTaxRate) {
+    report.problems.push(TAX_RATE_UNCONFIGURED_PROBLEM);
   }
 
   report.belowMinimum = { count: below.count, configurations: below.items };

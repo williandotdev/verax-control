@@ -27,6 +27,11 @@ export interface CheckoutSettings {
   legalUrls: { terms: string; privacy: string; dpa: string };
   /** `STRIPE_LIVE`: a chave já foi conferida contra ele na partida. */
   livemode: boolean;
+  /**
+   * `STRIPE_TAX_RATE_ID`: a alíquota da Stripe do imposto por cima. Opcional: só a tabela `exclusive` precisa dela, e
+   * sem ela o checkout dessa tabela responde 503 (`checkout.service.ts`, `resolveTaxRate`).
+   */
+  taxRateId?: string;
 }
 
 export type CheckoutSettingsResult =
@@ -52,6 +57,7 @@ export function resolveCheckoutSettings(config: AppConfig): CheckoutSettingsResu
         dpa: `${site}${LEGAL_PAGES.dpa}`,
       },
       livemode: config.STRIPE_LIVE,
+      ...(config.STRIPE_TAX_RATE_ID === undefined ? {} : { taxRateId: config.STRIPE_TAX_RATE_ID }),
     },
   };
 }

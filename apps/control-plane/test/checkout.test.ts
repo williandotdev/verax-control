@@ -254,6 +254,21 @@ describe('cp-public: checkout pela cotação, com a franquia como quantidade (pr
     });
   });
 
+  it('tabela sem impostos e o serviço sem STRIPE_TAX_RATE_ID: 503, sem reservar (cobraria só o valor da tabela)', async () => {
+    documents.clear();
+    fake.reset();
+    await seed({ ...fictitiousPriceTable(), taxMode: 'exclusive' });
+
+    await checkout(order()).expect(503);
+
+    expect(capture.entries().find((entry) => entry['event'] === 'checkout_tax_rate_invalid')).toMatchObject({
+      problem: 'unconfigured',
+      priceTableVersion: 'teste-v1',
+    });
+    expect(await slugDocument('cliente-demo-a')).toBeUndefined();
+    expect(fake.calls('POST', '/v1/checkout/sessions')).toHaveLength(0);
+  });
+
   it('na franquia incluída, um item só: a base', async () => {
     quoteId = await newQuote({ plan: 'plataforma', gbDay: 2 });
     await checkout(order()).expect(201);

@@ -35,6 +35,16 @@ export interface StripePrice {
   livemode: boolean;
 }
 
+/** A alíquota de imposto da Stripe como o checkout a confere: ativa, exclusiva (por cima), no modo da chave, o percentual. */
+export interface StripeTaxRate {
+  id: string;
+  active: boolean;
+  inclusive: boolean;
+  /** Percentual (6 = 6%), como a Stripe guarda. */
+  percentage: number;
+  livemode: boolean;
+}
+
 export interface CreatedCheckoutSession {
   id: string;
   url: string;
@@ -148,6 +158,8 @@ export const OUTSTANDING_INVOICE_STATUSES = ['open', 'uncollectible'] as const;
 export interface StripeClient {
   /** Os preços com estes `lookup_key`, ativos ou não (os que não existem ficam de fora), numa consulta por 10 chaves. */
   findPricesByLookupKeys(lookupKeys: readonly string[]): Promise<StripePrice[]>;
+  /** A alíquota de imposto pelo id (`txr_...`): o imposto por cima de uma tabela `exclusive`. */
+  retrieveTaxRate(id: string): Promise<StripeTaxRate>;
   createCheckoutSession(
     params: CheckoutSessionParams,
     idempotencyKey: string,
@@ -310,6 +322,17 @@ export class SdkStripeClient implements StripeClient {
       found.push(...prices.data.map(toPrice));
     }
     return found;
+  }
+
+  async retrieveTaxRate(id: string): Promise<StripeTaxRate> {
+    const rate = await this.stripe.taxRates.retrieve(id);
+    return {
+      id: rate.id,
+      active: rate.active,
+      inclusive: rate.inclusive,
+      percentage: rate.percentage,
+      livemode: rate.livemode,
+    };
   }
 
   async createCheckoutSession(

@@ -175,6 +175,23 @@ describe('publicar-precos: publicação', () => {
     expect(new Set(audit.map((entry) => entry.data['requestId'])).size).toBe(1);
   });
 
+  it('tabela sem impostos: reprova sem --aliquota-stripe (a do serviço) e publica com ela; id fora do formato é uso', async () => {
+    const h = harness();
+    const exclusive = tableFile({ taxMode: 'exclusive' });
+    const base = [`--custos=${costFile()}`, `--tabela=${exclusive}`, `--projeto=${PROJECT}`, '--publicar'];
+    expect(await h.run(base)).toBe(EXIT.refused);
+    expect(output()).toContain('STRIPE_TAX_RATE_ID');
+    expect(await count(h.store, COLLECTIONS.pricingTables)).toBe(0);
+    expect(await h.run([...base, '--aliquota-stripe=nao-e-alíquota'])).toBe(EXIT.usage);
+
+    expect(await h.run([...base, '--aliquota-stripe=txr_teste_imposto'])).toBe(EXIT.ok);
+    expect(await h.store.get(COLLECTIONS.pricingTables, 'tabela-teste-v1')).toMatchObject({
+      status: 'published',
+      content: { taxMode: 'exclusive' },
+      publishCheck: { ok: true },
+    });
+  });
+
   it('rodar de novo com o mesmo conteúdo não grava nada', async () => {
     const h = harness();
     const argv = [`--custos=${costFile()}`, `--tabela=${tableFile()}`, `--projeto=${PROJECT}`, '--publicar'];

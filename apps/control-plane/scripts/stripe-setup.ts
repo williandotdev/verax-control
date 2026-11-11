@@ -32,6 +32,9 @@
  *   --apply                       grava (sem ela, simulação)
  *   --live                        aceita chave de produção (sem ela, só chave de teste)
  *   --promo-code=<texto>          o código promocional (prefira STRIPE_SETUP_PROMO_CODE); exige o cupom no catálogo
+ *   --tax-rate-percent=<n>        cria ou acha a alíquota de imposto exclusiva (o "+ impostos") com este percentual
+ *                                 (ex.: o da alíquota padrão do modelo de custos) e imprime o id (`txr_...`), que vai
+ *                                 em STRIPE_TAX_RATE_ID (abaixo)
  *   --webhook-url=<url>           confere também o endpoint do webhook (abaixo): https://<host>/v1/stripe/webhook
  *   --webhook-secret-name=<nome>  o segredo do Secret Manager que recebe o segredo de assinatura (só na criação)
  *   --gcloud-project=<projeto>    o projeto do segredo, se não for o configurado no gcloud
@@ -42,6 +45,14 @@
  * sem gravar nada. O mesmo vale para o cupom (um cupom diferente com o mesmo id exige decisão no Dashboard) e para um
  * código promocional igual ligado a outro cupom. Os metadados de cada preço levam `component`, `variant` (do arquivo) e
  * `tableVersion` (do campo do arquivo): é por eles que o webhook reconhece cada item de uma assinatura.
+ *
+ * Alíquota do imposto por cima (opcional). Com a tabela de preços sem impostos (`taxMode: exclusive`), o checkout aplica
+ * nos itens e na assinatura uma alíquota de imposto exclusiva da Stripe, a de `STRIPE_TAX_RATE_ID`, e a confere a cada
+ * sessão contra a alíquota padrão do modelo de custos vigente. Com `--tax-rate-percent=<n>` (o percentual vem na hora,
+ * nunca do repositório), o script procura uma alíquota ativa, exclusiva, marcada como a da Verax
+ * (`metadata.verax = imposto`) e com esse percentual; sem ela, cria ("Impostos"). Uma alíquota da Stripe não muda de
+ * percentual: outro percentual é outra alíquota, com outro id, e a variável precisa ser trocada no cp-public e no
+ * cp-admin. A chave precisa escrever em Tax Rates.
  *
  * Endpoint do webhook (CP-04, opcional, plano §9, item 7). Com `--webhook-url`, o script procura o endpoint com essa
  * URL: se não existe, cria com os 13 eventos do plano §4b (`WEBHOOK_EVENTS`) e a versão fixada da API; se existe com
@@ -378,6 +389,46 @@ async function priceStep(stripe: Stripe, price: CatalogPrice, tableVersion: stri
     : { label, status: 'conflict', existingId: existing.id, problems };
 }
 
+/**
+ * O percentual de uma alíquota: maior que 0 e menor que 100, com até 4 casas (o que a Stripe guarda), com ponto.
+ * Conferido por partes, sem quantificador aninhado na expressão.
+ */
+function isTaxPercent(value: string): boolean {
+  const [whole = '', decimals, extra] = value.split('.');
+  return (
+    extra === undefined &&
+    /^[0-9]{1,2}$/.test(whole) &&
+    (decimals === undefined || /^[0-9]{1,4}$/.test(decimals)) &&
+    Number(value) > 0
+  );
+}
+
+/** A marca da alíquota do imposto por cima nos metadados (para não confundir com outra alíquota da conta). */
+const TAX_RATE_MARK = { verax: 'imposto' } as const;
+
+async function taxRateStep(stripe: Stripe, percentage: number): Promise<Step> {
+  const label = `alíquota de imposto exclusiva de ${percentage}%`;
+  const existing = (await stripe.taxRates.list({ active: true, inclusive: false, limit: 100 })).data.find(
+    (rate) => rate.metadata?.['verax'] === TAX_RATE_MARK.verax && rate.percentage === percentage,
+  );
+  if (existing !== undefined) return { label, status: 'keep', existingId: existing.id };
+  return {
+    label,
+    status: 'create',
+    plan: 'nova, exclusiva (o imposto por cima do preço)',
+    create: async () =>
+      (
+        await stripe.taxRates.create({
+          display_name: 'Impostos',
+          description: 'Verax Control: imposto por cima dos preços sem impostos',
+          percentage,
+          inclusive: false,
+          metadata: { ...TAX_RATE_MARK },
+        })
+      ).id,
+  };
+}
+
 function sameProducts(expected: readonly string[], found: readonly string[] | undefined): boolean {
   const wanted = [...expected].sort();
   const actual = [...(found ?? [])].sort();
@@ -574,6 +625,7 @@ function usage(out: SetupIo['out']): void {
   out(
     '      [--webhook-url=https://<host>/v1/stripe/webhook --webhook-secret-name=<segredo> [--gcloud-project=<id>]]',
   );
+  out('      [--tax-rate-percent=<n>]  (a alíquota do imposto por cima; o id vai em STRIPE_TAX_RATE_ID)');
   out('  unset STRIPE_SETUP_KEY STRIPE_SETUP_PROMO_CODE');
   out('O formato do catálogo está em apps/control-plane/scripts/catalog.example.json (valores fictícios).');
 }
@@ -630,6 +682,7 @@ export async function main(io: SetupIo): Promise<number> {
         apply: { type: 'boolean', default: false },
         live: { type: 'boolean', default: false },
         'promo-code': { type: 'string' },
+        'tax-rate-percent': { type: 'string' },
         'webhook-url': { type: 'string' },
         'webhook-secret-name': { type: 'string' },
         'gcloud-project': { type: 'string' },
@@ -675,8 +728,17 @@ export async function main(io: SetupIo): Promise<number> {
   }
   const webhook = webhookOptions(args, out);
   if (webhook === 'invalid') return EXIT.usage;
-  if (args.catalog === undefined && webhook === undefined) {
-    out('Informe --catalog=<arquivo> (o catálogo de preços) e/ou --webhook-url (o endpoint do webhook).');
+  const rawTaxPercent = args['tax-rate-percent'];
+  const taxPercent = rawTaxPercent === undefined ? undefined : Number(rawTaxPercent);
+  if (rawTaxPercent !== undefined && (!isTaxPercent(rawTaxPercent) || taxPercent === undefined)) {
+    out('--tax-rate-percent inválido: o percentual da alíquota, maior que 0 e menor que 100 (ex.: 7.5).');
+    return EXIT.usage;
+  }
+  if (args.catalog === undefined && webhook === undefined && taxPercent === undefined) {
+    out(
+      'Informe --catalog=<arquivo> (o catálogo de preços), --tax-rate-percent (a alíquota do imposto por cima) ' +
+        'e/ou --webhook-url (o endpoint do webhook).',
+    );
     usage(out);
     return EXIT.usage;
   }
@@ -739,6 +801,19 @@ export async function main(io: SetupIo): Promise<number> {
         } else if (step.create !== undefined) {
           out(`${step.label}: criado ${await step.create()}`);
         }
+      }
+    }
+    if (taxPercent !== undefined) {
+      const step = await taxRateStep(stripe, taxPercent);
+      if (step.status === 'keep') {
+        out(`${step.label}: mantida ${step.existingId ?? ''}`.trimEnd());
+        out(`STRIPE_TAX_RATE_ID=${step.existingId ?? ''} (no service_env do cp-public e do cp-admin)`);
+      } else if (!args.apply) {
+        out(`${step.label}: criaria (${step.plan ?? 'nova'})`);
+      } else if (step.create !== undefined) {
+        const id = await step.create();
+        out(`${step.label}: criada ${id}`);
+        out(`STRIPE_TAX_RATE_ID=${id} (no service_env do cp-public e do cp-admin)`);
       }
     }
     if (webhook === undefined) return EXIT.ok;

@@ -27,6 +27,9 @@
  *   --projeto=<id>        o projeto GCP do Firestore (ou FIRESTORE_PROJECT_ID); sem ele, só a validação e a checagem
  *   --banco=<id>          o banco do Firestore (padrão `(default)`)
  *   --vigencia=<ISO 8601> a vigência da tabela, com fuso (padrão: agora)
+ *   --aliquota-stripe=<id> a alíquota da Stripe do imposto por cima (`txr_...`, ou STRIPE_TAX_RATE_ID): a mesma que o
+ *                         cp-public e o cp-admin têm. Sem ela, uma tabela sem impostos (`taxMode: exclusive`) reprova,
+ *                         como no console: o checkout cobraria só o valor da tabela
  *   --publicar            grava (sem ela, simulação)
  *
  * Saída: 0 feito (ou simulado sem problema), 1 recusado (checagem reprovada, versão publicada com outro conteúdo,
@@ -42,6 +45,7 @@ import { z } from 'zod';
 import { AdminPricingService } from '../admin/admin-pricing.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { type Clock, SystemClock } from '../common/clock.js';
+import { stripeTaxRateIdSchema } from '../common/config/env.schema.js';
 import { ApiError } from '../common/http/api-error.js';
 import { newUlid } from '../common/ulid.js';
 import type { DocumentStore } from '../firestore/document-store.js';
@@ -420,7 +424,9 @@ function usage(out: (line: string) => void): void {
   out(
     '  node apps/control-plane/dist/cli/publicar-precos.js [--custos=<arquivo>] [--tabela=<arquivo>] [--projeto=<id>]',
   );
-  out('      [--banco=(default)] [--vigencia=<ISO 8601 com fuso>] [--publicar]');
+  out(
+    '      [--banco=(default)] [--vigencia=<ISO 8601 com fuso>] [--aliquota-stripe=<txr_...>] [--publicar]',
+  );
   out(
     'Os arquivos ficam fora do repositório, no formato { "version", "content" } (o "Exportar JSON" do console).',
   );
@@ -442,6 +448,7 @@ export async function main(io: PublishPricingIo): Promise<number> {
         projeto: { type: 'string' },
         banco: { type: 'string', default: '(default)' },
         vigencia: { type: 'string' },
+        'aliquota-stripe': { type: 'string' },
         publicar: { type: 'boolean', default: false },
         help: { type: 'boolean', default: false },
       },
@@ -464,6 +471,11 @@ export async function main(io: PublishPricingIo): Promise<number> {
   const project = args.projeto ?? io.env['FIRESTORE_PROJECT_ID'];
   if (project !== undefined && !PROJECT_PATTERN.test(project)) {
     out('--projeto inválido: o id do projeto GCP.');
+    return EXIT.usage;
+  }
+  const stripeTaxRateId = args['aliquota-stripe'] ?? io.env['STRIPE_TAX_RATE_ID'];
+  if (stripeTaxRateId !== undefined && !stripeTaxRateIdSchema.safeParse(stripeTaxRateId).success) {
+    out('--aliquota-stripe inválida: o id da alíquota de imposto da Stripe (txr_...).');
     return EXIT.usage;
   }
   if (!DATABASE_PATTERN.test(args.banco)) {
@@ -554,7 +566,9 @@ export async function main(io: PublishPricingIo): Promise<number> {
         );
         return EXIT.usage;
       }
-      const report = runPublishGuard(tableFile.content, model.content);
+      const report = runPublishGuard(tableFile.content, model.content, {
+        stripeTaxRate: stripeTaxRateId !== undefined,
+      });
       printReport(report, model.label, out);
       out(`Planos (preços ${tableFile.content.taxMode === 'exclusive' ? 'sem impostos' : 'com impostos'}):`);
       printPlans(tableFile.content, out);
@@ -590,7 +604,9 @@ export async function main(io: PublishPricingIo): Promise<number> {
     const owner: OwnerContext = { email, requestId: newUlid(clock.now().getTime()) };
     out(`Publicando como owner:${email} (requestId ${owner.requestId ?? ''}).`);
     const logger = new PinoLogger({ pinoHttp: { level: 'silent' } });
-    const service = new AdminPricingService(tables, costs, audit, clock, logger);
+    const service = new AdminPricingService(tables, costs, audit, clock, logger, {
+      ...(stripeTaxRateId === undefined ? {} : { STRIPE_TAX_RATE_ID: stripeTaxRateId }),
+    });
     try {
       for (const plan of plans) {
         // O modelo de custos vem antes (a lista já está nessa ordem): a checagem da tabela usa o vigente.

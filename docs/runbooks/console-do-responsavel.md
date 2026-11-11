@@ -236,6 +236,20 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
    alerta `checkout_price_invalid` (nunca cobra diferente). O checkout usa só a base e o GB/dia adicional da
    Plataforma; os do excedente, do Dedicado e do vCISO ficam no catálogo para a cobrança do excedente e para faturar
    contratos.
+6. **Imposto por cima** (tabela "sem impostos", o "+ impostos"): o checkout só cobra o imposto com uma alíquota de
+   imposto da Stripe. Antes de publicar uma tabela assim:
+   1. rode `stripe-setup.ts --tax-rate-percent=<n>` (o percentual da alíquota padrão do modelo de custos; simulação,
+      depois `--apply`): ele acha ou cria a alíquota exclusiva "Impostos" e imprime `STRIPE_TAX_RATE_ID=txr_...`;
+   2. ponha esse id em `service_env` do `envs/control-plane` (`STRIPE_TAX_RATE_ID`, que vai ao `cp-public` e ao
+      `cp-admin`) e aplique;
+   3. sem ela, a checagem e a publicação de uma tabela sem impostos são recusadas ("a alíquota da Stripe que o cobra
+      não está configurada no serviço"). No `publicar-precos`, informe o mesmo id com `--aliquota-stripe=txr_...`.
+
+   A cada sessão, o checkout relê a alíquota e confere que está ativa, exclusiva e com o percentual da alíquota padrão
+   do modelo de custos vigente; senão, o checkout fica em 503 (`checkout_tax_rate_invalid` no log, com o motivo).
+   **Mudar a alíquota padrão do modelo de custos exige uma alíquota nova na Stripe** (a da Stripe não muda de
+   percentual): rode o `stripe-setup` com o percentual novo, troque `STRIPE_TAX_RATE_ID` e só então publique o modelo,
+   ou o checkout para até a troca.
 
 **A troca do modelo de preço (10/11/2026).** As versões publicadas antes dela (portes, componentes e contas de nuvem,
 até `2026-11-v1`) não passam no formato novo: aparecem na lista como **Modelo anterior**, não abrem, não servem de

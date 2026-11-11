@@ -7,7 +7,13 @@ import {
   type PriceTableInput,
   priceTableSchema,
 } from './pricing.schema.js';
-import { configurationGrid, gridSize, MAX_GRID_CONFIGURATIONS, runPublishGuard } from './publish-guard.js';
+import {
+  configurationGrid,
+  gridSize,
+  MAX_GRID_CONFIGURATIONS,
+  runPublishGuard,
+  TAX_RATE_UNCONFIGURED_PROBLEM,
+} from './publish-guard.js';
 
 /**
  * A checagem de publicação sobre a tabela e o modelo de custos FICTÍCIOS (`pricing-fixtures.ts`, margem mínima de
@@ -165,6 +171,26 @@ describe('checagem de publicação (grade inteira)', () => {
       'o site oferece e não cota: plataforma 6 GB/dia (above_largest_size), ' +
         'plataforma 7 GB/dia (above_largest_size), plataforma 8 GB/dia (above_largest_size)',
     ]);
+  });
+
+  it('sem impostos (imposto por cima): calcula com ele, e só passa com a alíquota da Stripe configurada no serviço', () => {
+    const exclusive = tableWith((input) => {
+      input.taxMode = 'exclusive';
+    });
+    const unconfigured = runPublishGuard(exclusive, model);
+    expect(unconfigured.ok).toBe(false);
+    expect(unconfigured.problems).toEqual([TAX_RATE_UNCONFIGURED_PROBLEM]);
+    // As margens já saem com o imposto por cima (a receita bruta é maior que a da tabela embutida).
+    const inclusive = runPublishGuard(tableWith(), model);
+    expect(unconfigured.worst[0]?.contributionMarginRatio).toBeGreaterThan(
+      inclusive.worst[0]?.contributionMarginRatio ?? 1,
+    );
+    expect(runPublishGuard(exclusive, model, { stripeTaxRate: true })).toMatchObject({
+      ok: true,
+      problems: [],
+    });
+    // Com o imposto embutido, a alíquota da Stripe não importa.
+    expect(runPublishGuard(tableWith(), model, { stripeTaxRate: false }).ok).toBe(true);
   });
 
   it('o excedente da Plataforma não pode ser mais barato que o GB/dia contratado', () => {

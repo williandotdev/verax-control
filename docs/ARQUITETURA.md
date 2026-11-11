@@ -2037,9 +2037,18 @@ código (`apps/control-plane/src/pricing`) só define a forma dos documentos e a
   versões vigentes dos três textos legais (abaixo): outra versão, 409 `terms_outdated`; sem uma publicada de algum
   deles, 503 `checkout_unavailable`. As versões aceitas vão para a reserva, os metadados da Stripe e o cliente.
 - **Imposto por cima.** Com `taxMode = exclusive`, os valores da tabela são sem imposto, e a DRE trata a receita bruta
-  como o valor ÷ (1 − alíquota) (o imposto é a diferença, e o valor da tabela fica inteiro). O checkout cobra os valores
-  da tabela, conferidos na Stripe: o imposto por cima precisa entrar na fatura da Stripe (uma alíquota de imposto
-  exclusiva nos itens, ou o Stripe Tax), o que ainda não está ligado.
+  como o valor ÷ (1 − alíquota) (o imposto é a diferença, e o valor da tabela fica inteiro). A cobrança é de verdade: o
+  checkout de uma tabela `exclusive` põe a alíquota de imposto da Stripe de `STRIPE_TAX_RATE_ID` (`txr_...`, só o id
+  no ambiente; o percentual fica na Stripe e no modelo de custos) em cada item (`line_items[].tax_rates`) e como padrão
+  da assinatura (`subscription_data.default_tax_rates`, para o que entrar depois, como a ampliação da franquia), e a
+  Stripe soma o imposto na fatura. A alíquota é relida a cada sessão e conferida: ativa, exclusiva (`inclusive:
+false`), no modo da chave e com o percentual da alíquota padrão do modelo de custos vigente (a mesma da checagem e
+  da DRE). Sem a variável, sem modelo de custos, inexistente ou divergente, o checkout dessa tabela responde 503
+  `checkout_unavailable` antes de reservar, com a linha `checkout_tax_rate_invalid` e o motivo (`unconfigured`,
+  `cost_model_missing`, `missing`, `inactive`, `inclusive`, `livemode`, `percentage`). A soma conferida dos preços
+  continua a da tabela. O `stripe-setup` cria ou acha a alíquota (`--tax-rate-percent=<n>`, marcada com
+  `metadata.verax = imposto`) e imprime o id; a mesma variável vai ao `cp-public` e ao `cp-admin` (`service_env`, que
+  o Terraform repassa ao console só nesta chave). Com o imposto embutido (`inclusive`), nada disso é usado.
 - **Checagem de publicação** (no console e no `publicar-precos`): antes de publicar uma tabela, o motor percorre cada
   GB/dia vendável (a Plataforma do incluído ao máximo do site, só na Verax; o Dedicado e o vCISO do mínimo ao máximo,
   na Verax e no cliente) com o modelo de custos vigente (cartão e a alíquota padrão) e recusa a publicação se alguma
@@ -2049,7 +2058,9 @@ código (`apps/control-plane/src/pricing`) só define a forma dos documentos e a
   excedente for mais barato que o adicional. A célula da Plataforma entra rateada por GB/dia (custo da máquina ÷
   capacidade × GB/dia contratado), mais o custo fixo de cada cliente nela e a ingestão. O relatório (as piores, as
   abaixo do alerta, a pior de cada plano e lugar, o pior caso com as outras alíquotas e no boleto) volta ao console; a
-  recusa e a publicação ficam na auditoria.
+  recusa e a publicação ficam na auditoria. Uma tabela `exclusive` também é recusada se o serviço que publica não tiver
+  `STRIPE_TAX_RATE_ID` (o checkout cobraria só o valor da tabela): o relatório diz por quê; no `publicar-precos`, o
+  id vem por `--aliquota-stripe` (o mesmo do serviço).
 - **DRE** (`POST /v1/admin/dre/simulate` com `{ plan, gbDay, mode }`): por cliente e por mês, o valor da tabela, a
   receita bruta (com o imposto por cima, se a tabela for `exclusive`), imposto, reserva, receita líquida,
   infraestrutura (na Verax: o rateio da célula na Plataforma, o nó do porte no Dedicado e no vCISO; no cliente, 0), meio

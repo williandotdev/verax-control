@@ -92,6 +92,8 @@ export class FakeStripe {
   readonly customers = new Map<string, StripeObject>();
   readonly taxIds = new Map<string, StripeObject[]>();
   readonly webhookEndpoints = new Map<string, StripeObject>();
+  /** Alíquotas de imposto (`tax_rates`): a do imposto por cima, aplicada pelo checkout de uma tabela `exclusive`. */
+  readonly taxRates = new Map<string, StripeObject>();
   /** Falha da próxima chamada a um caminho (`POST /v1/checkout/sessions`, por exemplo). */
   readonly failures = new Map<string, FakeFailure>();
   /** Meios de pagamento "ligados no Dashboard": a sessão oferece a interseção com os permitidos. */
@@ -136,6 +138,7 @@ export class FakeStripe {
       this.customers,
       this.taxIds,
       this.webhookEndpoints,
+      this.taxRates,
     ])
       map.clear();
     this.failures.clear();
@@ -391,6 +394,29 @@ export class FakeStripe {
     };
   }
 
+  /** Uma alíquota de imposto (padrão: ativa, exclusiva, em teste), como a Stripe a devolve. */
+  addTaxRate(percentage: number, overrides: StripeObject = {}): StripeObject {
+    const rate = {
+      id: this.nextId('txr'),
+      object: 'tax_rate',
+      active: true,
+      display_name: 'Impostos',
+      description: null,
+      inclusive: false,
+      percentage,
+      effective_percentage: percentage,
+      country: null,
+      jurisdiction: null,
+      tax_type: null,
+      metadata: {},
+      livemode: false,
+      created: 1_700_000_000,
+      ...overrides,
+    };
+    this.taxRates.set(String(rate.id), rate);
+    return rate;
+  }
+
   private nextId(prefix: string): string {
     this.sequence += 1;
     return `${prefix}_fake_${this.sequence}`;
@@ -491,6 +517,28 @@ export class FakeStripe {
         return this.updateWebhookEndpoint(String(id), form);
       case 'DELETE webhook_endpoints/:id':
         return this.deleteWebhookEndpoint(String(id));
+      case 'GET tax_rates':
+        return this.list(
+          [...this.taxRates.values()].filter(
+            (rate) =>
+              (query.get('active') === null || String(rate['active']) === query.get('active')) &&
+              (query.get('inclusive') === null || String(rate['inclusive']) === query.get('inclusive')),
+          ),
+          path,
+        );
+      case 'GET tax_rates/:id':
+        return this.taxRates.get(String(id));
+      case 'POST tax_rates':
+        return this.addTaxRate(Number(form.get('percentage')), {
+          display_name: form.get('display_name'),
+          description: form.get('description'),
+          inclusive: form.get('inclusive') === 'true',
+          metadata: Object.fromEntries(
+            [...form.entries()]
+              .filter(([key]) => key.startsWith('metadata['))
+              .map(([key, value]) => [key.slice('metadata['.length, -1), value]),
+          ),
+        });
       default:
         return undefined;
     }

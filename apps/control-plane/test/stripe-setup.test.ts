@@ -333,6 +333,45 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     expect(fake.requests).toHaveLength(0);
   });
 
+  it('a alíquota do imposto por cima: simula, cria exclusiva com o percentual pedido e a marca, imprime o id e mantém', async () => {
+    const simulated = await run(['--tax-rate-percent=7.5']);
+    expect(simulated.code).toBe(0);
+    expect(simulated.output).toContain('alíquota de imposto exclusiva de 7.5%: criaria');
+    expect(fake.writes()).toHaveLength(0);
+
+    // Uma alíquota da Verax com outro percentual não serve (a da Stripe não muda de percentual): outra é criada.
+    fake.addTaxRate(6, { metadata: { verax: 'imposto' } });
+    const applied = await run(['--tax-rate-percent=7.5', '--apply']);
+    expect(applied.code).toBe(0);
+    const [created] = fake.calls('POST', '/v1/tax_rates');
+    expect(formEntries(created?.form ?? new URLSearchParams())).toEqual(
+      formEntries(
+        new URLSearchParams([
+          ['display_name', 'Impostos'],
+          ['description', 'Verax Control: imposto por cima dos preços sem impostos'],
+          ['percentage', '7.5'],
+          ['inclusive', 'false'],
+          ['metadata[verax]', 'imposto'],
+        ]),
+      ),
+    );
+    const id = [...fake.taxRates.values()].find((rate) => rate['percentage'] === 7.5)?.['id'];
+    expect(applied.output).toContain(`STRIPE_TAX_RATE_ID=${String(id)}`);
+
+    const again = await run(['--tax-rate-percent=7.5', '--apply']);
+    expect(again.output).toContain(`alíquota de imposto exclusiva de 7.5%: mantida ${String(id)}`);
+    expect(fake.calls('POST', '/v1/tax_rates')).toHaveLength(1);
+  });
+
+  it('percentual da alíquota fora da faixa ou do formato: erro de uso, sem chamar a Stripe', async () => {
+    for (const value of ['0', '100', '7,5', 'seis', '-1']) {
+      const { code, output } = await run([`--tax-rate-percent=${value}`]);
+      expect(code, value).toBe(2);
+      expect(output, value).toContain('--tax-rate-percent inválido');
+    }
+    expect(fake.requests).toHaveLength(0);
+  });
+
   it('sem cupom no catálogo e sem código, cria o resto e avisa que pulou', async () => {
     const { coupon: _coupon, ...withoutCoupon } = EXAMPLE;
     const path = writeCatalog(withoutCoupon, join(outside, 'sem-cupom-ok.json'));

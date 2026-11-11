@@ -5,17 +5,19 @@ import { ApiError } from '../common/http/api-error.js';
 import { equalValues } from '../firestore/document-store.js';
 import { LegalTextStore } from '../legal/legal-store.js';
 import { LEGAL_KINDS } from '../legal/legal.schema.js';
-import { LegacyVersionError, PricingTableStore } from '../pricing/pricing-store.js';
-import type { QuoteLineItem } from '../pricing/pricing.schema.js';
+import { CostModelStore, LegacyVersionError, PricingTableStore } from '../pricing/pricing-store.js';
+import type { QuoteLineItem, TaxMode } from '../pricing/pricing.schema.js';
 import { isSoldOnline, planNotSoldOnline } from '../pricing/public-pricing.js';
 import { type StoredQuote, QuoteStore } from '../pricing/quote-store.js';
 import { quote } from '../pricing/quote.js';
 import {
   type CheckoutSessionParams,
   describeStripeError,
+  isStripeNotFound,
   STRIPE_CLIENT,
   type StripeClient,
   type StripePrice,
+  type StripeTaxRate,
 } from '../stripe/stripe-client.js';
 import { isReservableSlug } from '../tenants/tenant.schema.js';
 import {
@@ -68,6 +70,26 @@ export interface RequestContext {
   requestId?: string;
 }
 
+/** O percentual da Stripe (6 = 6%) e a alíquota do modelo de custos (0,06) são a mesma, a menos do arredondamento. */
+const PERCENT_TOLERANCE = 1e-6;
+
+/**
+ * O que há de errado com a alíquota da Stripe para o imposto por cima; `undefined` quando ela serve: ativa, exclusiva
+ * (o imposto vai por cima do preço, nunca dentro dele), no modo da chave e com o percentual da alíquota padrão do modelo
+ * de custos vigente (a mesma que a checagem de publicação e a DRE usam).
+ */
+export function taxRateProblem(
+  rate: StripeTaxRate,
+  expectedRate: number,
+  livemode: boolean,
+): string | undefined {
+  if (!rate.active) return 'inactive';
+  if (rate.inclusive) return 'inclusive';
+  if (rate.livemode !== livemode) return 'livemode';
+  if (Math.abs(rate.percentage - expectedRate * 100) > PERCENT_TOLERANCE) return 'percentage';
+  return undefined;
+}
+
 /**
  * Checkout (plano §4a, com o preço por GB/dia): valida o pedido, confere as versões do aceite com as dos textos legais
  * publicados no console, relê a cotação gravada (`quoteId`) e a recalcula pela tabela da versão dela, confere na
@@ -90,6 +112,7 @@ export class CheckoutService implements OnModuleInit {
     private readonly store: CheckoutStore,
     private readonly quotes: QuoteStore,
     private readonly tables: PricingTableStore,
+    private readonly costs: CostModelStore,
     private readonly legal: LegalTextStore,
     @InjectPinoLogger(CheckoutService.name) private readonly logger: PinoLogger,
   ) {}
@@ -124,11 +147,12 @@ export class CheckoutService implements OnModuleInit {
         'terms_outdated',
       );
     }
-    const quoted = await this.resolveQuote(request.quoteId);
+    const { quoted, taxMode } = await this.resolveQuote(request.quoteId);
     const prices = await this.resolvePrices(stripe, settings, quoted);
+    const taxRateId = await this.resolveTaxRate(stripe, settings, taxMode, quoted);
 
     const reservation = await this.reserve(request, versions, quoted, context);
-    const params = this.sessionParams(request, settings, versions, quoted, prices, reservation);
+    const params = this.sessionParams(request, settings, versions, quoted, prices, reservation, taxRateId);
     let session;
     try {
       session = await stripe.createCheckoutSession(params, `checkout-session-${reservation.tenantId}`);
@@ -243,9 +267,10 @@ export class CheckoutService implements OnModuleInit {
    * honrado até a cotação vencer). Vencida, inexistente ou diferente do recálculo (tabela apagada, documento
    * adulterado, ou do modelo de preço anterior): 409 `quote_outdated`, e o site pede outra. De um plano ou lugar que o
    * site não vende (a cotação de referência de um contrato direto, gravada pelo console na mesma coleção): 422
-   * `plan_not_sold_online`, antes de qualquer outra conferência, e nada é reservado.
+   * `plan_not_sold_online`, antes de qualquer outra conferência, e nada é reservado. Devolve também como o imposto entra
+   * no preço da tabela da cotação (`taxMode`): por cima, o checkout aplica a alíquota da Stripe (`resolveTaxRate`).
    */
-  private async resolveQuote(quoteId: string): Promise<StoredQuote> {
+  private async resolveQuote(quoteId: string): Promise<{ quoted: StoredQuote; taxMode: TaxMode }> {
     const stored = await this.quotes.getValid(quoteId);
     if (stored === undefined) throw QUOTE_OUTDATED();
     if (!isSoldOnline(stored.configuration)) {
@@ -283,7 +308,55 @@ export class CheckoutService implements OnModuleInit {
       );
       throw QUOTE_OUTDATED();
     }
-    return stored;
+    return { quoted: stored, taxMode: table?.content.taxMode ?? 'inclusive' };
+  }
+
+  /**
+   * O imposto por cima (tabela `exclusive`, o "+ impostos"): a alíquota da Stripe de `STRIPE_TAX_RATE_ID`, relida a
+   * cada sessão e conferida (`taxRateProblem`) contra a alíquota padrão do modelo de custos vigente. Sem ela configurada,
+   * sem modelo de custos, inexistente na Stripe ou divergente: 503 `checkout_unavailable`, antes de reservar, com o
+   * motivo no log (só o id e o código). Com o imposto embutido (`inclusive`), nada a aplicar.
+   */
+  private async resolveTaxRate(
+    stripe: StripeClient,
+    settings: CheckoutSettings,
+    taxMode: TaxMode,
+    quoted: StoredQuote,
+  ): Promise<string | undefined> {
+    if (taxMode !== 'exclusive') return undefined;
+    const refuse = (problem: string): ApiError => {
+      this.logger.error(
+        {
+          event: 'checkout_tax_rate_invalid',
+          taxRateId: settings.taxRateId,
+          priceTableVersion: quoted.priceTableVersion,
+          problem,
+        },
+        'a tabela de preços é sem impostos e a alíquota da Stripe para o imposto por cima não serve: checkout desligado',
+      );
+      return UNAVAILABLE();
+    };
+    const id = settings.taxRateId;
+    if (id === undefined) throw refuse('unconfigured');
+    const model = await this.costs.current();
+    const expected = model?.content.taxes.rates.find(
+      (tax) => tax.id === model.content.taxes.defaultRateId,
+    )?.rate;
+    if (expected === undefined) throw refuse('cost_model_missing');
+    let rate: StripeTaxRate;
+    try {
+      rate = await stripe.retrieveTaxRate(id);
+    } catch (error) {
+      if (isStripeNotFound(error)) throw refuse('missing');
+      this.logger.error(
+        { event: 'checkout_tax_rate_lookup_failed', taxRateId: id, stripe: describeStripeError(error) },
+        'a Stripe não respondeu a consulta da alíquota de imposto',
+      );
+      throw new ApiError(HttpStatus.BAD_GATEWAY, 'Falha ao abrir o pagamento', 'checkout_failed');
+    }
+    const problem = taxRateProblem(rate, expected, settings.livemode);
+    if (problem !== undefined) throw refuse(problem);
+    return rate.id;
   }
 
   /**
@@ -420,7 +493,11 @@ export class CheckoutService implements OnModuleInit {
     quoted: StoredQuote,
     prices: ReadonlyMap<string, StripePrice>,
     reservation: Reservation,
+    taxRateId: string | undefined,
   ): CheckoutSessionParams {
+    // O imposto por cima: a alíquota em cada item (a primeira fatura e os itens da assinatura) e como padrão da
+    // assinatura (o que entrar depois nela, como a ampliação da franquia ou o excedente).
+    const taxRates = taxRateId === undefined ? undefined : [taxRateId];
     const metadata = {
       tenantId: reservation.tenantId,
       slug: reservation.slug,
@@ -440,6 +517,7 @@ export class CheckoutService implements OnModuleInit {
       line_items: quoted.lineItems.map((item) => ({
         price: prices.get(item.lookupKey)?.id ?? '',
         quantity: item.quantity,
+        ...(taxRates === undefined ? {} : { tax_rates: taxRates }),
       })),
       // `payment_method_types` saiu da API na versão fixada (2026-09-30.endive); `allowed_payment_method_types` é o
       // filtro que a substitui: só cartão e boleto, se estiverem ligados no Dashboard.
@@ -461,7 +539,10 @@ export class CheckoutService implements OnModuleInit {
       allow_promotion_codes: true,
       client_reference_id: reservation.tenantId,
       metadata,
-      subscription_data: { metadata },
+      subscription_data: {
+        metadata,
+        ...(taxRates === undefined ? {} : { default_tax_rates: taxRates }),
+      },
       expires_at: Math.floor(this.clock.now().getTime() / 1000) + CHECKOUT_SESSION_TTL_SECONDS,
       success_url: settings.successUrl,
       cancel_url: settings.cancelUrl,

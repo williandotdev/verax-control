@@ -5,6 +5,7 @@ import { opaqueRef, SESSION_IDLE_MS } from '../src/admin/auth/admin-auth.schema.
 import { COLLECTIONS } from '../src/firestore/collections.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
 import type { CostModelInput, PriceTableInput } from '../src/pricing/pricing.schema.js';
+import { TAX_RATE_UNCONFIGURED_PROBLEM } from '../src/pricing/publish-guard.js';
 import { MemoryAdminSecrets, seedOwnerSession, sessionCookie } from './support/admin-auth.js';
 import { createApp } from './support/create-app.js';
 import { FakeClock, MINUTE_MS } from './support/fake-clock.js';
@@ -371,6 +372,25 @@ describe('cp-admin: console do responsável com login próprio', () => {
         costModelVersion: 'custos-teste-v1',
       });
       expect(capture.text).not.toContain('"belowMinimum"');
+    });
+
+    it('tabela sem impostos com o console sem STRIPE_TAX_RATE_ID: a checagem e a publicação dizem por quê, e nada publica', async () => {
+      await publishCostModel();
+      await createTable({ ...fictitiousPriceTable(), taxMode: 'exclusive' });
+
+      const checked = await send('post', '/v1/admin/pricing-tables/teste-v1/check', {}).expect(200);
+      expect((checked.body as { report: { ok: boolean; problems: string[] } }).report).toMatchObject({
+        ok: false,
+        problems: [TAX_RATE_UNCONFIGURED_PROBLEM],
+      });
+      const refused = await send('post', '/v1/admin/pricing-tables/teste-v1/publish', {}).expect(422);
+      expect(refused.body).toMatchObject({
+        code: 'publish_guard_failed',
+        details: { report: { ok: false, problems: [TAX_RATE_UNCONFIGURED_PROBLEM] } },
+      });
+      expect((await call('get', '/v1/admin/pricing-tables/teste-v1').expect(200)).body).toMatchObject({
+        status: 'draft',
+      });
     });
 
     it('sem modelo de custos publicado, a tabela não publica (409); versão repetida, inexistente ou inválida', async () => {
