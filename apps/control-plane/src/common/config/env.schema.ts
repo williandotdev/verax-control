@@ -181,6 +181,10 @@ export const DEFAULT_NODE_IMAGES_REPOSITORY = 'ghcr.io/williandotdev/verax-contr
 const stripeSecretKey = z
   .string()
   .regex(/^(sk|rk)_(test|live)_[A-Za-z0-9]{8,}$/, { error: 'chave da Stripe em formato inválido' });
+/** O id de uma alíquota de imposto da Stripe (`txr_...`). */
+export const stripeTaxRateIdSchema = z
+  .string()
+  .regex(/^txr_[A-Za-z0-9_]{3,255}$/, { error: 'alíquota da Stripe em formato inválido (txr_...)' });
 const stripeWebhookSecret = z
   .string()
   .regex(/^whsec_[A-Za-z0-9]{8,}$/, { error: 'segredo de webhook da Stripe em formato inválido' });
@@ -261,6 +265,11 @@ const envShape = {
   // Os preços não são variáveis: saem da tabela de preços publicada no Firestore (preço configurável). Uma
   // `STRIPE_PRICE_LOOKUP_*` antiga ainda no ambiente é ignorada (o schema não a conhece).
   STRIPE_PORTAL_LOGIN_URL: httpsUrl.optional(),
+  // A alíquota de imposto da Stripe (`txr_...`, exclusiva) que o checkout aplica quando a tabela de preços vigente é
+  // `exclusive` (o "+ impostos"): o `stripe-setup` a cria e imprime o id. No cp-public, o checkout a confere na Stripe
+  // a cada sessão; no cp-admin, sem ela a publicação de uma tabela `exclusive` é recusada. Só o id: o percentual fica
+  // na Stripe e no modelo de custos, nunca no repositório.
+  STRIPE_TAX_RATE_ID: stripeTaxRateIdSchema.optional(),
 
   // Estado e filas. O banco gratuito do Firestore é o `(default)`; o projeto vem do ambiente do Cloud Run, e só
   // precisa ser informado com o emulador (testes e desenvolvimento), que não tem metadados de projeto.

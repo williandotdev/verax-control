@@ -3,12 +3,14 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { z, ZodError } from 'zod';
 import { AuditService } from '../audit/audit.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
+import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
 import { CostModelMismatchError, costModelProblems, dre, type DreResult } from '../pricing/dre.js';
 import {
   CostModelStore,
   DraftChangedError,
   EffectiveFromError,
+  LegacyVersionError,
   type OwnerContext,
   PricingTableStore,
   type PublishCheck,
@@ -106,6 +108,13 @@ function storeError(error: unknown): unknown {
       'version_immutable',
     );
   }
+  if (error instanceof LegacyVersionError) {
+    return new ApiError(
+      HttpStatus.CONFLICT,
+      'Versão do modelo de preço anterior: só aparece na lista, não abre nem vale mais.',
+      'version_legacy',
+    );
+  }
   if (error instanceof DraftChangedError) {
     return new ApiError(
       HttpStatus.CONFLICT,
@@ -151,7 +160,17 @@ export class AdminPricingService {
     private readonly audit: AuditService,
     @Inject(CLOCK) private readonly clock: Clock,
     @InjectPinoLogger(AdminPricingService.name) private readonly logger: PinoLogger,
+    /**
+     * Só `STRIPE_TAX_RATE_ID`: sem a alíquota da Stripe do imposto por cima, a checagem reprova uma tabela `exclusive`
+     * (o checkout cobraria só o valor da tabela). O `publicar-precos` informa a do serviço por argumento.
+     */
+    @Inject(APP_CONFIG) private readonly config: Pick<AppConfig, 'STRIPE_TAX_RATE_ID'>,
   ) {}
+
+  /** A checagem com o que o serviço tem: a alíquota da Stripe do imposto por cima configurada ou não. */
+  private guard(table: PriceTable, model: CostModel): GuardReport {
+    return runPublishGuard(table, model, { stripeTaxRate: this.config.STRIPE_TAX_RATE_ID !== undefined });
+  }
 
   listTables(): Promise<VersionSummary[]> {
     return this.tables.list();
@@ -193,7 +212,7 @@ export class AdminPricingService {
     const { costModelVersion } = parse(checkBodySchema, body);
     const table = await this.guarded(() => this.tables.require(requireVersion(version)));
     const model = await this.costModel(costModelVersion);
-    return { costModelVersion: model.version, report: runPublishGuard(table.content, model.content) };
+    return { costModelVersion: model.version, report: this.guard(table.content, model.content) };
   }
 
   /**
@@ -214,7 +233,7 @@ export class AdminPricingService {
     if (table.status !== 'draft') throw storeError(new VersionImmutableError(id, table.status));
     assertRevision(table, revision);
     const model = await this.costModel(undefined);
-    const report = runPublishGuard(table.content, model.content);
+    const report = this.guard(table.content, model.content);
     const check = this.checkSummary(id, model.version, report);
     if (!report.ok) {
       await this.audit.write({
@@ -269,7 +288,7 @@ export class AdminPricingService {
     if (model.status !== 'draft') throw storeError(new VersionImmutableError(id, model.status));
     assertRevision(model, revision);
     const table = await this.tables.current();
-    const report = table === undefined ? null : runPublishGuard(table.content, model.content);
+    const report = table === undefined ? null : this.guard(table.content, model.content);
     const published = await this.guarded(() =>
       this.costs.publish(
         id,

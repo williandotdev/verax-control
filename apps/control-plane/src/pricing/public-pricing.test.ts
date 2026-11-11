@@ -8,106 +8,67 @@ import { quote } from './quote.js';
 const table = priceTableSchema.parse(fictitiousPriceTable());
 
 describe('tabela pública (GET /v1/public/pricing)', () => {
-  it('só preços e regras: nenhum lookup_key, custo ou margem; o ambiente no cliente nem aparece (contrato direto)', () => {
+  it('só preços e regras dos três planos: nenhum lookup_key, custo ou margem; o "a partir de" de cada plano', () => {
     const view = publicPricing('teste-v1', table);
 
     expect(view).toEqual({
       priceTableVersion: 'teste-v1',
       currency: 'brl',
       interval: 'month',
-      startingAt: { managed: { monthly: 100_000, setup: 0 } },
-      modes: [
-        {
-          mode: 'managed',
+      taxMode: 'inclusive',
+      startingAt: {
+        plataforma: { monthly: 100_000, setup: 0 },
+        dedicado: { monthly: 150_000, setup: 0 },
+        vciso: { monthly: 350_000, setup: 500_000 },
+      },
+      plans: {
+        plataforma: {
           sale: 'online',
-          environment: [
-            { size: 'P', amount: 100_000 },
-            { size: 'M', amount: 200_000 },
-            { size: 'G', amount: 400_000 },
-          ],
-          setupAmount: 0,
+          baseAmount: 100_000,
+          includedGbDay: 2,
+          additionalGbDayAmount: 30_000,
+          overageGbDayAmount: 30_000,
+          maxOnlineGbDay: 5,
         },
-      ],
+        dedicado: { sale: 'contract', gbDayAmount: 50_000, minGbDay: 3, maxGbDay: 15, contractMonths: 12 },
+        vciso: {
+          sale: 'contract',
+          gbDayAmount: 50_000,
+          serviceAmount: 200_000,
+          setupAmount: 500_000,
+          minGbDay: 3,
+          maxGbDay: 15,
+          contractMonths: 12,
+        },
+      },
       sizes: [
-        { size: 'P', description: 'Porte de teste P', maxCloudAccounts: 5, maxMonthlyGib: 50, maxAgents: 10 },
-        {
-          size: 'M',
-          description: 'Porte de teste M',
-          maxCloudAccounts: 10,
-          maxMonthlyGib: 100,
-          maxAgents: 20,
-        },
-        {
-          size: 'G',
-          description: 'Porte de teste G',
-          maxCloudAccounts: 20,
-          maxMonthlyGib: 200,
-          maxAgents: 40,
-        },
+        { size: 'P', description: 'Porte de teste P', maxGbDay: 5 },
+        { size: 'M', description: 'Porte de teste M', maxGbDay: 10 },
+        { size: 'G', description: 'Porte de teste G', maxGbDay: 20 },
       ],
-      cloudAccounts: { included: 2, max: 20, additionalAmount: 3_000 },
-      volume: {
-        includedMonthlyGib: 10,
-        bands: [
-          { monthlyGib: 50, amount: 10_000 },
-          { monthlyGib: 100, amount: 20_000 },
-          { monthlyGib: 200, amount: 40_000 },
-        ],
-      },
-      agents: { packSize: 10, maxPacks: 4, packAmount: 10_000 },
-      history: {
-        includedDays: 30,
-        extended: [
-          { days: 180, amount: 2_000 },
-          { days: 360, amount: 4_000 },
-        ],
-      },
-      prioritySupport: { amount: 30_000 },
+      history: { includedDays: 60 },
       users: { max: 10 },
-      // O pacote de partida do ambiente no cliente fica de fora: o site só vende o da infraestrutura da Verax.
-      presets: [
-        {
-          id: 'inicial',
-          label: 'Inicial (teste)',
-          configuration: {
-            mode: 'managed',
-            cloudAccounts: 2,
-            monthlyGib: 10,
-            agents: 0,
-            historyDays: 30,
-            support: 'standard',
-          },
-        },
-      ],
     });
-    expect(JSON.stringify(view)).not.toMatch(/lookupKey|vc_|cost|margin|self_hosted/i);
-    // A tabela FICTÍCIA tem os preços da licença no cliente (o console os usa): nenhum deles chega aqui.
-    expect(table.modes.self_hosted.setup?.amount).toBe(100_000);
-    expect(view.modes.map((mode) => mode.mode)).toEqual(['managed']);
-    expect(isSoldOnline('managed')).toBe(true);
-    expect(isSoldOnline('self_hosted')).toBe(false);
+    expect(JSON.stringify(view)).not.toMatch(/lookupKey|vc_|cost|margin|self_hosted|maxCloudAccounts/i);
+  });
+
+  it('o site vende só a Plataforma, na infraestrutura da Verax', () => {
+    expect(isSoldOnline({ plan: 'plataforma', mode: 'managed' })).toBe(true);
+    expect(isSoldOnline({ plan: 'dedicado', mode: 'managed' })).toBe(false);
+    expect(isSoldOnline({ plan: 'vciso', mode: 'managed' })).toBe(false);
+    expect(isSoldOnline({ plan: 'plataforma', mode: 'self_hosted' })).toBe(false);
   });
 
   it('descreve cada item para o cliente, em português', () => {
-    const outcome = quote(
-      {
-        mode: 'managed',
-        cloudAccounts: 4,
-        monthlyGib: 50,
-        agents: 10,
-        historyDays: 180,
-        support: 'priority',
-      },
-      table,
-    );
-    if (outcome.kind !== 'quote') throw new Error('sob consulta');
-    expect(outcome.quote.lineItems.map((item) => describeLineItem(item, 'managed', 'P'))).toEqual([
-      'Ambiente na infraestrutura da Verax (porte P)',
-      'Contas de nuvem adicionais',
-      'Volume de logs até 50 GiB/mês',
-      'Agentes nas instâncias (pacote de 10)',
-      'Histórico de 180 dias',
-      'Suporte prioritário',
+    const plataforma = quote({ plan: 'plataforma', gbDay: 4, mode: 'managed' }, table);
+    const vciso = quote({ plan: 'vciso', gbDay: 3, mode: 'managed' }, table);
+    if (plataforma.kind !== 'quote' || vciso.kind !== 'quote') throw new Error('sob consulta');
+    expect([...plataforma.quote.lineItems, ...vciso.quote.lineItems].map(describeLineItem)).toEqual([
+      'Plataforma (base mensal com a franquia incluída)',
+      'GB/dia adicional da franquia',
+      'GB/dia do servidor dedicado',
+      'Serviço de vCISO',
+      'Implantação (cobrada uma vez)',
     ]);
   });
 });

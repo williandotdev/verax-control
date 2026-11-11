@@ -27,7 +27,12 @@ import {
   type TenantChangeResult,
   TenantStore,
 } from '../tenants/tenant-store.js';
-import { slugSchema, type SlugOrder, type TenantRecord, type TenantState } from '../tenants/tenant.schema.js';
+import {
+  slugSchema,
+  type StoredSlugOrder,
+  type TenantRecord,
+  type TenantState,
+} from '../tenants/tenant.schema.js';
 import {
   cancelTenant,
   customerChange,
@@ -146,7 +151,7 @@ function copyItems(items: readonly StripeItem[]): StripeItem[] {
  */
 export function tenantFromOrder(
   slug: string,
-  order: SlugOrder,
+  order: StoredSlugOrder,
   session: CheckoutSessionSnapshot,
   subscription: SubscriptionSnapshot | undefined,
   acceptedAt: Date,

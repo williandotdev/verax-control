@@ -446,6 +446,40 @@ describe('cp-public: webhook da Stripe e máquina de estados (CP-04)', () => {
       expect(audit.map((doc) => doc.data['action']).sort()).toEqual(['tenant.create', 'tenant.transition']);
     });
 
+    it('reserva aberta antes da troca do modelo de preço e paga depois: o cliente nasce com a configuração antiga', async () => {
+      const p = await purchase({ paymentStatus: 'paid' });
+      // O pedido como o checkout de antes de 10/11/2026 o gravou (portes, contas, volume mensal, agentes e suporte).
+      const legacy = {
+        mode: 'managed',
+        size: 'P',
+        cloudAccounts: 2,
+        monthlyGib: 10,
+        agents: 0,
+        historyDays: 30,
+        support: 'standard',
+      };
+      const stored = await memory.get(COLLECTIONS.slugs, p.slug);
+      await memory.runTransaction((tx) => {
+        tx.set(COLLECTIONS.slugs, p.slug, {
+          ...stored,
+          order: { ...(stored?.['order'] as Record<string, unknown>), configuration: legacy },
+        });
+        return Promise.resolve();
+      });
+      expect(await tenants.getSlug(p.slug)).toMatchObject({ order: { configuration: legacy } });
+
+      const id = await send('checkout.session.completed', p.sessionId);
+
+      expect(await events.get(id)).toMatchObject({ outcome: 'applied', reason: 'checkout_paid' });
+      expect(await tenants.require(p.tenantId)).toMatchObject({
+        state: 'provisioning',
+        configuration: legacy,
+        limits: demoLimits(),
+        provisioning: { step: 'preflight' },
+      });
+      expect(await tenants.getSlug(p.slug)).toMatchObject({ state: 'taken', tenantId: p.tenantId });
+    });
+
     it('boleto: completed com unpaid espera em pending; async_payment_succeeded provisiona', async () => {
       const p = await purchase({ paymentStatus: 'unpaid' });
       await send('checkout.session.completed', p.sessionId, { body: { payment_status: 'paid' } });

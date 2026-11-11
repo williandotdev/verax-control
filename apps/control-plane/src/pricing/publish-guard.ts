@@ -1,21 +1,21 @@
+import { nodeFitProblems } from '../provisioning/node-fit.js';
 import { costModelProblems, dreFromQuote } from './dre.js';
-import { NODE_AGENTS_MAX_LIMIT } from './node-limits.js';
 import {
   type Configuration,
   type ConfigurationInput,
   type CostModel,
-  DEPLOYMENT_MODES,
   type DeploymentMode,
+  PLAN_IDS,
+  PLAN_MODES,
   type PaymentMethod,
+  type PlanId,
   type PriceTable,
-  type SizeId,
-  SUPPORT_LEVELS,
 } from './pricing.schema.js';
-import { ONLINE_MODES } from './public-pricing.js';
-import { quote, startingAt } from './quote.js';
+import { isSoldOnline } from './public-pricing.js';
+import { gbDayRange, quote, startingAt } from './quote.js';
 
-/** Teto da grade: acima disso a tabela tem dimensões absurdas e a checagem não roda (vira problema). */
-export const MAX_GRID_CONFIGURATIONS = 500_000;
+/** Teto da grade: acima disso a tabela tem faixas absurdas e a checagem não roda (vira problema). */
+export const MAX_GRID_CONFIGURATIONS = 100_000;
 /** Quantas configurações cada lista do relatório mostra. */
 const REPORT_LIMIT = 20;
 const WORST_LIMIT = 10;
@@ -26,6 +26,16 @@ export interface GuardConfiguration {
   contributionMargin: number;
   contributionMarginRatio: number;
 }
+
+/** O que a checagem precisa saber do serviço que publica. */
+export interface PublishGuardOptions {
+  /** A alíquota da Stripe do imposto por cima (`STRIPE_TAX_RATE_ID`) está configurada. */
+  stripeTaxRate: boolean;
+}
+
+/** O problema da checagem de uma tabela sem impostos num serviço sem a alíquota da Stripe que os cobraria. */
+export const TAX_RATE_UNCONFIGURED_PROBLEM =
+  'a tabela é sem impostos (o imposto vai por cima), mas a alíquota da Stripe que o cobra não está configurada no serviço (STRIPE_TAX_RATE_ID): o checkout cobraria só o valor da tabela';
 
 export interface GuardScenario {
   taxRateId: string;
@@ -42,11 +52,12 @@ export interface MonotonicityViolation {
 
 /**
  * Resultado da checagem de publicação. `ok` só com: o modelo de custos cobrindo a tabela, nenhuma configuração abaixo
- * da margem mínima, nenhum acréscimo que baixe o preço e o "a partir de" igual ao mínimo da grade em cada modo.
+ * da margem mínima, nenhum GB/dia a mais baixando o preço, o "a partir de" igual ao mínimo de cada plano e tudo o que o
+ * site vende cabendo no que o provisionamento cria.
  */
 export interface GuardReport {
   ok: boolean;
-  /** O que impede a checagem (modelo de custos incompleto, grade grande demais). */
+  /** O que impede a checagem ou a publicação (modelo de custos incompleto, grade grande demais, regra quebrada). */
   problems: string[];
   paymentMethod: PaymentMethod;
   taxRateId: string;
@@ -57,90 +68,35 @@ export interface GuardReport {
   belowMinimum: { count: number; configurations: GuardConfiguration[] };
   belowAlert: { count: number; configurations: GuardConfiguration[] };
   worst: GuardConfiguration[];
+  worstByPlan: Partial<Record<PlanId, GuardConfiguration>>;
   worstByMode: Partial<Record<DeploymentMode, GuardConfiguration>>;
-  worstBySize: Partial<Record<SizeId, GuardConfiguration>>;
   /** Só informação: o pior caso com as outras alíquotas (cartão) e no boleto (alíquota padrão). */
   otherScenarios: GuardScenario[];
   monotonicity: { violations: number; examples: MonotonicityViolation[] };
-  startingAt: Partial<Record<DeploymentMode, number>>;
-  gridMinimum: Partial<Record<DeploymentMode, number>>;
+  /** O "a partir de" de cada plano e o menor preço mensal dele na grade (na infraestrutura da Verax). */
+  startingAt: Partial<Record<PlanId, number>>;
+  gridMinimum: Partial<Record<PlanId, number>>;
 }
 
-/** Quantas configurações a grade da tabela tem (os dois modos). */
+/** Quantas configurações a grade da tabela tem (cada plano, em cada modo dele, cada GB/dia vendável). */
 export function gridSize(table: PriceTable): number {
-  const accounts = table.cloudAccounts.max - table.cloudAccounts.included + 1;
-  return (
-    DEPLOYMENT_MODES.length *
-    accounts *
-    (table.volume.bands.length + 1) *
-    (table.agents.maxPacks + 1) *
-    (table.history.extended.length + 1) *
-    SUPPORT_LEVELS.length
-  );
+  return PLAN_IDS.reduce((sum, plan) => {
+    const range = gbDayRange(table, plan);
+    return sum + PLAN_MODES[plan].length * Math.max(0, range.max - range.min + 1);
+  }, 0);
 }
 
 /**
- * Todas as configurações que a tabela vende, já nos valores das opções (contas de uma em uma, cada faixa de volume,
- * cada pacote de agentes, cada opção de histórico, os dois suportes), nos dois modos. As acima do maior porte saem
- * como "sob consulta" na cotação.
+ * Todas as configurações que a tabela vende: a Plataforma de cada GB/dia contratável no site (do incluído ao máximo
+ * online), o Dedicado e o vCISO de cada GB/dia do mínimo ao máximo cotável, em cada lugar em que o plano existe.
  */
 export function* configurationGrid(table: PriceTable): Generator<ConfigurationInput> {
-  const volumes = [table.volume.includedMonthlyGib, ...table.volume.bands.map((band) => band.monthlyGib)];
-  const histories = [table.history.includedDays, ...table.history.extended.map((option) => option.days)];
-  for (const mode of DEPLOYMENT_MODES) {
-    for (
-      let cloudAccounts = table.cloudAccounts.included;
-      cloudAccounts <= table.cloudAccounts.max;
-      cloudAccounts += 1
-    ) {
-      for (const monthlyGib of volumes) {
-        for (let packs = 0; packs <= table.agents.maxPacks; packs += 1) {
-          for (const historyDays of histories) {
-            for (const support of SUPPORT_LEVELS) {
-              yield {
-                mode,
-                cloudAccounts,
-                monthlyGib,
-                agents: packs * table.agents.packSize,
-                historyDays,
-                support,
-              };
-            }
-          }
-        }
-      }
+  for (const plan of PLAN_IDS) {
+    const range = gbDayRange(table, plan);
+    for (const mode of PLAN_MODES[plan]) {
+      for (let gbDay = range.min; gbDay <= range.max; gbDay += 1) yield { plan, mode, gbDay };
     }
   }
-}
-
-function keyOf(configuration: ConfigurationInput): string {
-  return [
-    configuration.mode,
-    configuration.cloudAccounts,
-    configuration.monthlyGib,
-    configuration.agents,
-    configuration.historyDays,
-    configuration.support,
-  ].join('|');
-}
-
-/** As configurações vizinhas "com uma unidade a mais" em cada dimensão (para a monotonia do preço). */
-function neighbors(configuration: ConfigurationInput, table: PriceTable): ConfigurationInput[] {
-  const result: ConfigurationInput[] = [];
-  if (configuration.cloudAccounts < table.cloudAccounts.max) {
-    result.push({ ...configuration, cloudAccounts: configuration.cloudAccounts + 1 });
-  }
-  const volumes = [table.volume.includedMonthlyGib, ...table.volume.bands.map((band) => band.monthlyGib)];
-  const nextVolume = volumes[volumes.indexOf(configuration.monthlyGib) + 1];
-  if (nextVolume !== undefined) result.push({ ...configuration, monthlyGib: nextVolume });
-  if (configuration.agents < table.agents.maxPacks * table.agents.packSize) {
-    result.push({ ...configuration, agents: configuration.agents + table.agents.packSize });
-  }
-  const histories = [table.history.includedDays, ...table.history.extended.map((option) => option.days)];
-  const nextHistory = histories[histories.indexOf(configuration.historyDays) + 1];
-  if (nextHistory !== undefined) result.push({ ...configuration, historyDays: nextHistory });
-  if (configuration.support === 'standard') result.push({ ...configuration, support: 'priority' });
-  return result;
 }
 
 function worse(a: GuardConfiguration, b: GuardConfiguration): number {
@@ -175,12 +131,21 @@ function keepWorst<K extends string>(
 
 /**
  * A checagem de publicação: percorre a grade inteira com o modelo de custos vigente, no cartão e na alíquota padrão do
- * modelo, e recusa a tabela se alguma configuração ficar com margem de contribuição abaixo da mínima. Lista as piores,
- * as que ficam abaixo da margem de alerta, o pior caso de cada modo e porte, o pior com as outras alíquotas e no boleto
- * (só informação), confere a monotonia (uma unidade a mais nunca baixa o preço) e que o "a partir de" é o mínimo da
- * grade em cada modo. Pura: nada de banco nem de Stripe.
+ * modelo, e recusa a tabela se alguma configuração ficar com margem de contribuição abaixo da mínima. A célula da
+ * Plataforma entra rateada por GB/dia (custo ÷ capacidade) mais o custo fixo de cada cliente nela (`dre.ts`). Lista as
+ * piores, as que ficam abaixo da margem de alerta, o pior caso de cada plano e lugar, o pior com as outras alíquotas e
+ * no boleto (só informação), confere a monotonia (um GB/dia a mais nunca baixa o preço), que o "a partir de" é o menor
+ * preço de cada plano, que o excedente não é mais barato que o GB/dia contratado e que tudo o que o site vende cabe no
+ * que o provisionamento cria hoje (`node-fit.ts`). Com o imposto por cima (`taxMode = exclusive`), as margens são
+ * calculadas com ele (`dre.ts`), e a tabela só passa se o serviço tiver a alíquota da Stripe que o cobra de verdade
+ * (`stripeTaxRate`: `STRIPE_TAX_RATE_ID` configurada; o checkout confere a alíquota na Stripe a cada sessão). Pura: nada
+ * de banco nem de Stripe.
  */
-export function runPublishGuard(table: PriceTable, model: CostModel): GuardReport {
+export function runPublishGuard(
+  table: PriceTable,
+  model: CostModel,
+  options: PublishGuardOptions = { stripeTaxRate: false },
+): GuardReport {
   const taxRateId = model.taxes.defaultRateId;
   const report: GuardReport = {
     ok: false,
@@ -194,8 +159,8 @@ export function runPublishGuard(table: PriceTable, model: CostModel): GuardRepor
     belowMinimum: { count: 0, configurations: [] },
     belowAlert: { count: 0, configurations: [] },
     worst: [],
+    worstByPlan: {},
     worstByMode: {},
-    worstBySize: {},
     otherScenarios: [],
     monotonicity: { violations: 0, examples: [] },
     startingAt: {},
@@ -203,48 +168,68 @@ export function runPublishGuard(table: PriceTable, model: CostModel): GuardRepor
   };
   const size = gridSize(table);
   if (size > MAX_GRID_CONFIGURATIONS) report.problems.push(`grade grande demais (${size} configurações)`);
-  const agents = table.agents.maxPacks * table.agents.packSize;
-  if (agents > NODE_AGENTS_MAX_LIMIT) {
-    report.problems.push(`agentes acima do que o nó aceita (${agents} de ${NODE_AGENTS_MAX_LIMIT})`);
-  }
   if (report.problems.length > 0) return report;
 
   const below = new WorstList(REPORT_LIMIT);
   const alert = new WorstList(REPORT_LIMIT);
   const worst = new WorstList(WORST_LIMIT);
-  const scenarios: { taxRateId: string; paymentMethod: PaymentMethod; worst: GuardConfiguration | null }[] = [
+  const scenarios: GuardScenario[] = [
     ...model.taxes.rates
       .filter((tax) => tax.id !== taxRateId)
       .map((tax) => ({ taxRateId: tax.id, paymentMethod: 'card' as const, worst: null })),
     { taxRateId, paymentMethod: 'boleto', worst: null },
   ];
-  const totals = new Map<string, number>();
-  const configurations: ConfigurationInput[] = [];
+  /** O anterior de cada plano e lugar, para a monotonia (a grade sai em ordem crescente de GB/dia). */
+  const previous = new Map<string, { configuration: Configuration; total: number }>();
+  const unfit = new Set<string>();
+  const onlineContactUs: string[] = [];
 
-  for (const configuration of configurationGrid(table)) {
-    const outcome = quote(configuration, table);
+  for (const input of configurationGrid(table)) {
+    const outcome = quote(input, table);
     if (outcome.kind !== 'quote') {
       report.contactUsConfigurations += 1;
+      if (isSoldOnline(input))
+        onlineContactUs.push(`${input.plan} ${input.gbDay} GB/dia (${outcome.reason})`);
       continue;
     }
     report.checkedConfigurations += 1;
     const { quote: quoted } = outcome;
-    totals.set(keyOf(configuration), quoted.monthlyTotal);
-    configurations.push(configuration);
-    const minimum = report.gridMinimum[configuration.mode];
-    if (minimum === undefined || quoted.monthlyTotal < minimum)
-      report.gridMinimum[configuration.mode] = quoted.monthlyTotal;
+    const { configuration } = quoted;
+    if (configuration.mode === 'managed') {
+      const minimum = report.gridMinimum[configuration.plan];
+      if (minimum === undefined || quoted.monthlyTotal < minimum)
+        report.gridMinimum[configuration.plan] = quoted.monthlyTotal;
+    }
+    // O que o site vende é pago antes de qualquer pessoa olhar: precisa caber no que o provisionamento cria.
+    if (isSoldOnline(configuration) && nodeFitProblems(configuration, quoted.limits, 'verax').length > 0) {
+      unfit.add(`${configuration.plan} ${configuration.gbDay} GB/dia (porte ${configuration.size})`);
+    }
+
+    const key = `${configuration.plan}|${configuration.mode}`;
+    const before = previous.get(key);
+    if (before !== undefined && quoted.monthlyTotal < before.total) {
+      report.monotonicity.violations += 1;
+      if (report.monotonicity.examples.length < WORST_LIMIT) {
+        report.monotonicity.examples.push({
+          from: before.configuration,
+          to: configuration,
+          fromTotal: before.total,
+          toTotal: quoted.monthlyTotal,
+        });
+      }
+    }
+    previous.set(key, { configuration, total: quoted.monthlyTotal });
 
     const main = dreFromQuote(quoted, table, model, { paymentMethod: 'card', taxRateId }).monthly;
     const entry: GuardConfiguration = {
-      configuration: quoted.configuration,
+      configuration,
       monthlyTotal: quoted.monthlyTotal,
       contributionMargin: main.contributionMargin,
       contributionMarginRatio: main.contributionMarginRatio,
     };
     worst.add(entry);
+    keepWorst(report.worstByPlan, configuration.plan, entry);
     keepWorst(report.worstByMode, configuration.mode, entry);
-    keepWorst(report.worstBySize, quoted.configuration.size, entry);
     if (entry.contributionMarginRatio < model.margins.minimum) below.add(entry);
     else if (entry.contributionMarginRatio < model.margins.alert) alert.add(entry);
 
@@ -259,50 +244,28 @@ export function runPublishGuard(table: PriceTable, model: CostModel): GuardRepor
     }
   }
 
-  for (const configuration of configurations) {
-    const total = totals.get(keyOf(configuration));
-    if (total === undefined) continue;
-    for (const next of neighbors(configuration, table)) {
-      const nextTotal = totals.get(keyOf(next));
-      if (nextTotal === undefined || nextTotal >= total) continue;
-      report.monotonicity.violations += 1;
-      if (report.monotonicity.examples.length < WORST_LIMIT) {
-        const from = quote(configuration, table);
-        const to = quote(next, table);
-        if (from.kind === 'quote' && to.kind === 'quote') {
-          report.monotonicity.examples.push({
-            from: from.quote.configuration,
-            to: to.quote.configuration,
-            fromTotal: total,
-            toTotal: nextTotal,
-          });
-        }
-      }
+  for (const plan of PLAN_IDS) {
+    const start = startingAt(table, plan);
+    if (start !== undefined) report.startingAt[plan] = start.monthly;
+    if (report.startingAt[plan] !== report.gridMinimum[plan]) {
+      report.problems.push(`o "a partir de" do plano ${plan} não é o menor preço dele`);
     }
   }
-
-  for (const mode of DEPLOYMENT_MODES) {
-    const start = startingAt(table, mode);
-    if (start !== undefined) report.startingAt[mode] = start.monthly;
+  // Um volume que o site oferece e que cai em "sob consulta" levaria a um botão que não cota.
+  if (onlineContactUs.length > 0) {
+    report.problems.push(`o site oferece e não cota: ${onlineContactUs.slice(0, 5).join(', ')}`);
   }
-  const startingAtIsMinimum = DEPLOYMENT_MODES.every(
-    (mode) => report.startingAt[mode] === report.gridMinimum[mode],
-  );
-  if (!startingAtIsMinimum) report.problems.push('o "a partir de" não é o menor preço da grade');
-  // Um modo vendido no site precisa ter preço: sem nenhuma configuração cotável (por exemplo, contas incluídas acima do
-  // maior porte), o "a partir de" e o mínimo da grade somem os dois, e a comparação acima passaria com zero conferidas.
-  for (const mode of ONLINE_MODES) {
-    if (report.startingAt[mode] === undefined || report.gridMinimum[mode] === undefined) {
-      report.problems.push(
-        `o modo ${mode}, vendido no site, não tem nenhuma configuração com preço (tudo sob consulta)`,
-      );
-    }
+  if (unfit.size > 0) {
+    report.problems.push(
+      `o site venderia o que o provisionamento ainda não cria: ${[...unfit].slice(0, 5).join(', ')}`,
+    );
   }
-  // Um pacote de partida que cai em "sob consulta" levaria o site a um botão que não cota.
-  for (const preset of table.presets) {
-    const outcome = quote(preset.configuration, table);
-    if (outcome.kind !== 'quote')
-      report.problems.push(`pacote de partida ${preset.id} fica sob consulta (${outcome.reason})`);
+  const { plataforma } = table.plans;
+  if (plataforma.overageGbDay.amount < plataforma.additionalGbDay.amount) {
+    report.problems.push('o GB/dia excedente da Plataforma é mais barato que o contratado');
+  }
+  if (table.taxMode === 'exclusive' && !options.stripeTaxRate) {
+    report.problems.push(TAX_RATE_UNCONFIGURED_PROBLEM);
   }
 
   report.belowMinimum = { count: below.count, configurations: below.items };

@@ -101,10 +101,12 @@ export function NewDraftPage({ config, Form }: { config: KindConfig; Form: Compo
   }
 
   const sourceOptions = [
-    ...(versions.data ?? []).map((entry) => ({
-      value: entry.version,
-      label: `Cópia de ${entry.version}${entry.current ? ' (vigente)' : ''}`,
-    })),
+    ...(versions.data ?? [])
+      .filter((entry) => entry.legacy !== true)
+      .map((entry) => ({
+        value: entry.version,
+        label: `Cópia de ${entry.version}${entry.current ? ' (vigente)' : ''}`,
+      })),
     { value: BLANK, label: 'Em branco (só a forma)' },
     ...(source === IMPORTED ? [{ value: IMPORTED, label: 'Arquivo importado' }] : []),
   ];

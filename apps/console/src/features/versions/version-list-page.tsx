@@ -1,13 +1,16 @@
 import { FilePlus2 } from 'lucide-react';
 import { Link } from 'react-router';
-import { CurrentBadge, StatusBadge } from '@/components/badges';
+import { CurrentBadge, LegacyBadge, StatusBadge } from '@/components/badges';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { formatDateTime } from '@/lib/format';
 import type { KindConfig } from './kinds';
 import { useVersions } from './queries';
 
-/** A lista de versões de um tipo: situação, vigência, quem publicou e a última edição; e o botão do rascunho novo. */
+/**
+ * A lista de versões de um tipo: situação, vigência, quem publicou e a última edição; e o botão do rascunho novo. Uma
+ * versão do modelo de preço anterior aparece sem link (a API não a abre mais), marcada como "modelo anterior".
+ */
 export function VersionListPage({ config }: { config: KindConfig }) {
   const versions = useVersions(config.kind);
   const current = versions.data?.find((entry) => entry.current);
@@ -72,17 +75,22 @@ export function VersionListPage({ config }: { config: KindConfig }) {
               {versions.data.map((entry) => (
                 <tr key={entry.version} className="border-t">
                   <th scope="row" className="px-3 py-2 text-left font-medium">
-                    <Link
-                      to={`${config.basePath}/${entry.version}`}
-                      className="font-mono text-primary underline-offset-2 hover:underline"
-                    >
-                      {entry.version}
-                    </Link>
+                    {entry.legacy === true ? (
+                      <span className="font-mono">{entry.version}</span>
+                    ) : (
+                      <Link
+                        to={`${config.basePath}/${entry.version}`}
+                        className="font-mono text-primary underline-offset-2 hover:underline"
+                      >
+                        {entry.version}
+                      </Link>
+                    )}
                   </th>
                   <td className="px-3 py-2">
                     <span className="flex flex-wrap gap-1">
                       <StatusBadge status={entry.status} />
                       {entry.current && <CurrentBadge />}
+                      {entry.legacy === true && <LegacyBadge />}
                     </span>
                   </td>
                   <td className="px-3 py-2 tabular-nums">

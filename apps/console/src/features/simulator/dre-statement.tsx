@@ -2,7 +2,7 @@ import { useId } from 'react';
 import { MarginBadge } from '@/components/badges';
 import type { DreResult, SimulationResult } from '@/lib/api-types';
 import { cn } from '@/lib/cn';
-import { lineItemLabel, MODE_LABELS } from '@/lib/format';
+import { gbDayLabel, lineItemLabel, MODE_LABELS, PLAN_LABELS } from '@/lib/format';
 import { decimalText, formatCents, formatInteger, formatRatio } from '@/lib/numbers';
 
 type DreSimulation = Extract<SimulationResult, { contactUs: false }>;
@@ -72,26 +72,48 @@ function Statement({ caption, rows, base }: { caption: string; rows: StatementRo
   );
 }
 
+/** De onde a receita bruta sai: o desconto sobre os itens e, com o imposto por cima, o valor da tabela ÷ (1 − alíquota). */
+function grossNote(dre: DreResult): string | undefined {
+  const lines = dre.monthly;
+  const discounted = lines.tableRevenue !== dre.quote.monthlyTotal;
+  const notes = [
+    ...(discounted ? [`Itens de ${formatCents(dre.quote.monthlyTotal)} menos o desconto.`] : []),
+    ...(dre.taxMode === 'exclusive'
+      ? [
+          `Imposto por cima: o valor da tabela (${formatCents(lines.tableRevenue)}) mais o imposto, que o cliente paga na fatura.`,
+        ]
+      : []),
+  ];
+  return notes.length === 0 ? undefined : notes.join(' ');
+}
+
 function monthlyRows(dre: DreResult, taxLabel: string, taxRate: number): StatementRow[] {
   const lines = dre.monthly;
   const managed = dre.quote.configuration.mode === 'managed';
+  const note = grossNote(dre);
   return [
     {
       sign: '+',
       label: 'Receita bruta',
       value: lines.grossRevenue,
-      ...(lines.grossRevenue === dre.quote.monthlyTotal
-        ? {}
-        : { note: `Itens de ${formatCents(dre.quote.monthlyTotal)} menos o desconto.` }),
+      ...(note === undefined ? {} : { note }),
     },
-    { sign: '−', label: `Imposto (${taxLabel}, ${formatRatio(taxRate)})`, value: lines.taxes },
+    {
+      sign: '−',
+      label: `Imposto (${taxLabel}, ${formatRatio(taxRate)}${dre.taxMode === 'exclusive' ? ', por cima' : ''})`,
+      value: lines.taxes,
+    },
     { sign: '−', label: 'Reserva para reembolso e contestação', value: lines.refundReserve },
     { sign: '=', label: 'Receita líquida', value: lines.netRevenue, total: true },
     {
       sign: '−',
       label: 'Infraestrutura',
       value: lines.infrastructure,
-      ...(managed ? {} : { note: 'Na nuvem do cliente: a nuvem é paga por ele, fora da DRE.' }),
+      note: managed
+        ? dre.quote.configuration.plan === 'plataforma'
+          ? 'O rateio da célula compartilhada pelo GB/dia contratado, mais a ingestão.'
+          : 'O nó dedicado do porte, mais a ingestão.'
+        : 'Na infraestrutura do cliente: a nuvem é paga por ele, fora da DRE.',
     },
     {
       sign: '−',
@@ -112,9 +134,9 @@ function monthlyRows(dre: DreResult, taxLabel: string, taxRate: number): Stateme
 }
 
 /**
- * A DRE de uma configuração (estudo comercial, §3.4), como demonstrativo: os itens cotados, o mês da receita bruta ao
- * resultado com as margens, a implantação à parte, os doze meses e, na nuvem do cliente, a estimativa da nuvem dele
- * (só informação). A margem de contribuição leva o selo das metas do modelo de custos usado.
+ * A DRE de uma configuração, como demonstrativo: os itens cotados, o mês da receita bruta ao resultado com as margens
+ * (com o imposto por cima quando a tabela é "+ impostos"), a implantação à parte, os doze meses e, na infraestrutura
+ * do cliente, a estimativa da nuvem dele (só informação). A margem de contribuição leva o selo das metas do modelo de custos usado.
  */
 export function DreStatement({ simulation }: { simulation: DreSimulation }) {
   const titleId = useId();
@@ -129,6 +151,7 @@ export function DreStatement({ simulation }: { simulation: DreSimulation }) {
         </h2>
         <p className="text-sm text-muted-foreground">
           Tabela {simulation.priceTableVersion}, modelo de custos {simulation.costModelVersion}.{' '}
+          {PLAN_LABELS[quote.configuration.plan]}, {gbDayLabel(quote.configuration.gbDay)}.{' '}
           {MODE_LABELS[mode]}, porte {quote.configuration.size} ({quote.sizeDescription}).
         </p>
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -165,7 +188,7 @@ export function DreStatement({ simulation }: { simulation: DreSimulation }) {
             {quote.lineItems.map((item) => (
               <tr key={`${item.component}-${item.variant}`} className="border-t">
                 <th scope="row" className="px-3 py-2 text-left font-normal">
-                  {lineItemLabel(item.component, item.variant, mode)}
+                  {lineItemLabel(item.component)}
                   <span className="ml-2 font-mono text-xs text-subtle-foreground">{item.lookupKey}</span>
                 </th>
                 <td className="px-3 py-2 text-right">{formatInteger(item.quantity)}</td>
@@ -264,7 +287,7 @@ export function DreStatement({ simulation }: { simulation: DreSimulation }) {
       {dre.customerCloudEstimate !== null && (
         <div className="rounded-lg border border-dashed p-3 text-sm">
           <p className="font-medium">
-            Custo estimado da nuvem do cliente (pago direto ao provedor, fora da DRE)
+            Custo estimado da infraestrutura do cliente (paga direto por ele, fora da DRE)
           </p>
           <p className="tabular-nums">
             {formatCents(dre.customerCloudEstimate.monthly)} por mês, entre{' '}

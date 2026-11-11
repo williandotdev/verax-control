@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react';
 import type { Quote } from '@/lib/api-types';
-import { lineItemLabel } from '@/lib/format';
+import { gbDayLabel, lineItemLabel, PLAN_LABELS } from '@/lib/format';
 import { formatCents, formatInteger } from '@/lib/numbers';
 
 /**
- * A cotação de referência de um cadastro: o porte, os itens e os totais pela tabela vigente. Só referência: um contrato
- * direto não passa pela Stripe, e o preço negociado é o do contrato.
+ * A cotação de referência de um cadastro: o plano, o volume contratado em GB/dia, o porte, os itens e os totais pela
+ * tabela vigente. Só referência: um contrato direto não passa pela Stripe, e o preço negociado é o do contrato.
  */
 export function QuoteSummary({
   quote,
@@ -23,7 +23,8 @@ export function QuoteSummary({
           Cotação de referência
         </h2>
         <p className="text-sm text-muted-foreground">
-          Tabela {priceTableVersion} · porte {quote.configuration.size}: {quote.sizeDescription}
+          Tabela {priceTableVersion} · {PLAN_LABELS[quote.configuration.plan]},{' '}
+          {gbDayLabel(quote.configuration.gbDay)} · porte {quote.configuration.size}: {quote.sizeDescription}
         </p>
       </div>
       {children}
@@ -47,7 +48,7 @@ export function QuoteSummary({
             {quote.lineItems.map((item) => (
               <tr key={`${item.component}-${item.variant}`} className="border-t">
                 <th scope="row" className="py-1 pr-3 text-left font-normal">
-                  {lineItemLabel(item.component, item.variant, quote.configuration.mode)}
+                  {lineItemLabel(item.component)}
                 </th>
                 <td className="py-1 pr-3 text-right tabular-nums">{formatInteger(item.quantity)}</td>
                 <td className="py-1 text-right tabular-nums">{formatCents(item.amount)}</td>

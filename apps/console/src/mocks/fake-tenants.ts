@@ -1,5 +1,6 @@
 import type {
   ConfigurationInput,
+  ContractedConfiguration,
   Hosting,
   NodeFitProblem,
   PriceTable,
@@ -20,7 +21,7 @@ import { quote } from './fake-engine';
  * Imita os contratos de `apps/control-plane/src/admin/admin-tenants.*` e as regras do cp-worker (CP-07 e CP-11), com
  * uma amostra da validação (a de verdade é a da API). Clientes FICTÍCIOS ("Cliente Demo A/B/C/E"), CNPJ de exemplo,
  * nenhum dado real. Inclui o contrato direto com o ambiente na infraestrutura do cliente (nada provisionado) e a versão
- * FICTÍCIA que o console mostra para ele instalar.
+ * FICTÍCIA que o console mostra para ele instalar, e um cliente contratado no modelo de preço anterior (o B, sem plano).
  */
 export interface FakeTenantsState {
   tenants: Map<string, TenantDetail>;
@@ -200,16 +201,8 @@ function base(
     createdAt: at(120),
     company: { legalName: name, cnpj: '11222333000181' },
     adminEmail: `admin@${slug}.example`,
-    configuration: {
-      mode: 'managed',
-      size: 'P',
-      cloudAccounts: 2,
-      monthlyGib: 10,
-      agents: 0,
-      historyDays: 30,
-      support: 'standard',
-    },
-    limits: { maxCloudAccounts: 2, monthlyGib: 10, historyDays: 30, maxAgents: 0, maxUsers: 10 },
+    configuration: { plan: 'plataforma', mode: 'managed', gbDay: 2, size: 'P', historyDays: 30 },
+    limits: { maxCloudAccounts: 50, monthlyGib: 58, historyDays: 30, maxAgents: 0, maxUsers: 10 },
     pricing: {
       priceTableVersion: 'teste-v2',
       quoteId: '01JC00000000000000000000Q1',
@@ -277,6 +270,17 @@ export function createFakeTenants(now: () => Date): FakeTenantsState {
     withActions(
       {
         ...base(paid, 'cliente-demo-b', 'Cliente Demo B S.A.', at),
+        // Contratado no modelo de preço anterior: a configuração de antes, só para leitura.
+        configuration: {
+          mode: 'managed',
+          size: 'P',
+          cloudAccounts: 2,
+          monthlyGib: 10,
+          agents: 0,
+          historyDays: 30,
+          support: 'standard',
+        },
+        limits: { maxCloudAccounts: 2, monthlyGib: 10, historyDays: 30, maxAgents: 0, maxUsers: 10 },
         createdAt: at(240),
         state: 'active',
         billingMode: 'stripe',
@@ -389,8 +393,9 @@ export function createFakeTenants(now: () => Date): FakeTenantsState {
         state: 'waiting_customer_install',
         billingMode: 'contract',
         hosting: 'customer',
-        configuration: { ...customerBase.configuration, mode: 'self_hosted' },
-        pricing: { ...customerBase.pricing, monthlyTotal: 50_000, setupTotal: 100_000 },
+        configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 3, size: 'P', historyDays: 30 },
+        limits: { maxCloudAccounts: 100, monthlyGib: 87, historyDays: 30, maxAgents: 0, maxUsers: 10 },
+        pricing: { ...customerBase.pricing, monthlyTotal: 150_000, setupTotal: 0 },
         timeline: [],
         transitions: [
           {
@@ -417,6 +422,7 @@ function listItem(tenant: TenantDetail): TenantListItem {
     stateUpdatedAt: tenant.stateUpdatedAt,
     billingMode: tenant.billingMode,
     hosting: tenant.hosting,
+    ...('plan' in tenant.configuration ? { plan: tenant.configuration.plan } : {}),
     size: tenant.configuration.size,
     ...(provisioning && tenant.provisioning?.step !== undefined ? { step: tenant.provisioning.step } : {}),
     ...(tenant.state === 'provisioning_failed' && tenant.provisioning?.lastError !== undefined
@@ -426,18 +432,14 @@ function listItem(tenant: TenantDetail): TenantListItem {
   };
 }
 
-function problemsOf(
-  configuration: { mode: string; size: string; agents: number },
-  hosting: Hosting,
-): NodeFitProblem[] {
+function problemsOf(configuration: ContractedConfiguration, hosting: Hosting): NodeFitProblem[] {
   const problems: NodeFitProblem[] = [];
-  // No cliente, nada é provisionado: o porte não conta; os agentes, sim (o guia não liga a entrada deles), e os limites
-  // (sempre dentro das faixas na tabela FICTÍCIA).
+  // No cliente, nada é provisionado: o porte não conta. Os agentes não são vendidos, e os limites ficam sempre dentro
+  // das faixas na tabela FICTÍCIA.
   if (hosting === 'verax') {
     if (configuration.mode !== 'managed') problems.push('mode');
     if (configuration.size !== 'P') problems.push('size');
   }
-  if (configuration.agents !== 0) problems.push('agents');
   return problems;
 }
 
@@ -451,7 +453,7 @@ const HOSTING_ISSUE: ValidationIssue = {
   message: 'Escolha onde o ambiente roda: na infraestrutura da Verax ou na do cliente.',
 };
 
-/** As respostas do contrato direto com o modo da tabela do lugar escolhido. */
+/** O plano e o volume do contrato direto com o modo do lugar escolhido. */
 function configurationFor(hosting: Hosting, configuration: unknown): ConfigurationInput {
   return {
     ...(configuration as Omit<ConfigurationInput, 'mode'>),
@@ -459,16 +461,20 @@ function configurationFor(hosting: Hosting, configuration: unknown): Configurati
   };
 }
 
+const PLANS: readonly unknown[] = ['plataforma', 'dedicado', 'vciso'];
+
 function configurationIssues(configuration: unknown): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  for (const key of ['cloudAccounts', 'monthlyGib', 'agents', 'historyDays'] as const) {
-    const value = isRecord(configuration) ? configuration[key] : undefined;
-    if (typeof value !== 'number' || value < 0) {
-      issues.push({
-        path: `configuration.${key}`,
-        message: 'Entrada inválida: esperado number, recebido undefined',
-      });
-    }
+  const plan = isRecord(configuration) ? configuration['plan'] : undefined;
+  if (!PLANS.includes(plan)) {
+    issues.push({ path: 'configuration.plan', message: 'Escolha o plano.' });
+  }
+  const gbDay = isRecord(configuration) ? configuration['gbDay'] : undefined;
+  if (typeof gbDay !== 'number' || !Number.isInteger(gbDay) || gbDay < 1) {
+    issues.push({
+      path: 'configuration.gbDay',
+      message: 'Entrada inválida: esperado number, recebido undefined',
+    });
   }
   return issues;
 }
@@ -830,7 +836,15 @@ function create(
       'configuration_contact_us',
       {
         reason: outcome.reason,
-        issues: [{ path: 'configuration', message: 'Acima do que a tabela vende.' }],
+        issues: [
+          outcome.reason === 'mode_unavailable'
+            ? {
+                path: 'configuration.plan',
+                message:
+                  'A Plataforma roda só na célula da Verax: no ambiente do cliente, escolha o Dedicado ou o vCISO.',
+              }
+            : { path: 'configuration.gbDay', message: 'Acima do que a tabela vende.' },
+        ],
       },
     );
   }
@@ -844,7 +858,9 @@ function create(
       'configuration_unsupported',
       {
         problems,
-        issues: [{ path: 'configuration', message: 'O provisionamento ainda não cria esta configuração.' }],
+        issues: [
+          { path: 'configuration.gbDay', message: 'O provisionamento ainda não cria esta configuração.' },
+        ],
       },
     );
   }

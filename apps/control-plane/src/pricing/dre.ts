@@ -1,9 +1,17 @@
-import type { ConfigurationInput, CostModel, PaymentMethod, PriceTable } from './pricing.schema.js';
+import type {
+  Configuration,
+  ConfigurationInput,
+  CostModel,
+  Machine,
+  PaymentMethod,
+  PriceTable,
+  TaxMode,
+} from './pricing.schema.js';
 import { type ContactReason, type Quote, quote } from './quote.js';
 
 /**
- * A tabela de preços pede algo que o modelo de custos não cobre (um porte sem custo, uma faixa de volume sem horas de
- * suporte, uma alíquota que não existe). A mensagem lista só os caminhos que faltam, nunca valores.
+ * A tabela de preços pede algo que o modelo de custos não cobre (um porte sem custo, uma alíquota que não existe). A
+ * mensagem lista só os caminhos que faltam, nunca valores.
  */
 export class CostModelMismatchError extends Error {
   constructor(readonly problems: readonly string[]) {
@@ -18,10 +26,6 @@ export function costModelProblems(table: PriceTable, model: CostModel): string[]
   for (const rule of table.sizing.sizes) {
     if (model.infrastructure.sizes[rule.size] === undefined)
       problems.push(`infrastructure.sizes.${rule.size}`);
-  }
-  const bands = new Set(model.support.hours.perVolumeBand.map((band) => band.monthlyGib));
-  for (const band of table.volume.bands) {
-    if (!bands.has(band.monthlyGib)) problems.push(`support.hours.perVolumeBand.${band.monthlyGib}`);
   }
   return problems;
 }
@@ -38,7 +42,12 @@ export interface DreOptions {
 
 /** As linhas da DRE de um cliente num mês, em centavos (as razões entre 0 e 1). */
 export interface DreLines {
-  /** (+) Receita bruta: soma dos itens mensais, menos o desconto. */
+  /** O valor da tabela: a soma dos itens mensais, menos o desconto. */
+  tableRevenue: number;
+  /**
+   * (+) Receita bruta: o que o cliente paga. Com o imposto embutido (`inclusive`), o valor da tabela; com o imposto por
+   * cima (`exclusive`, o "+ impostos"), o valor da tabela ÷ (1 − alíquota).
+   */
   grossRevenue: number;
   /** (−) Imposto sobre a receita bruta (DAS, pela alíquota escolhida). */
   taxes: number;
@@ -46,11 +55,11 @@ export interface DreLines {
   refundReserve: number;
   /** (=) Receita líquida. */
   netRevenue: number;
-  /** (−) Infraestrutura do nó (só no gerenciado). */
+  /** (−) Infraestrutura (só na Verax): o rateio da célula na Plataforma, o nó do porte no Dedicado e no vCISO. */
   infrastructure: number;
   /** (−) Meio de pagamento. */
   paymentFees: number;
-  /** (−) Horas de suporte × custo da hora. */
+  /** (−) Horas de suporte (e do serviço do vCISO) × custo da hora. */
   support: number;
   /** (=) Margem de contribuição. */
   contributionMargin: number;
@@ -67,6 +76,7 @@ export interface DreLines {
 
 /** A implantação, cobrada uma vez: as mesmas deduções, as horas dela e a tarifa sem o valor fixo (mesma cobrança). */
 export interface SetupDre {
+  /** A receita bruta da implantação (com o imposto por cima, se a tabela for `exclusive`). */
   revenue: number;
   taxes: number;
   refundReserve: number;
@@ -82,14 +92,16 @@ export interface DreResult {
   quote: Quote;
   paymentMethod: PaymentMethod;
   taxRateId: string;
+  /** Como o imposto entra no preço, da tabela. */
+  taxMode: TaxMode;
   supportHours: number;
   monthly: DreLines;
   setup: SetupDre;
   /** Doze meses, com a implantação no primeiro. */
   twelveMonths: { grossRevenue: number; contributionMargin: number; result: number };
   /**
-   * Na nuvem do cliente: a estimativa do custo da nuvem dele (o porte a preço de lista, sem a folga), com a faixa.
-   * Só informação: não entra na receita nem no custo da Verax.
+   * Na infraestrutura do cliente: a estimativa do custo da nuvem dele (o porte a preço de lista, sem a folga), com a
+   * faixa. Só informação: não entra na receita nem no custo da Verax.
    */
   customerCloudEstimate: { monthly: number; low: number; high: number } | null;
 }
@@ -112,63 +124,88 @@ function taxRateOf(model: CostModel, taxRateId: string | undefined): { id: strin
 }
 
 /**
- * Custo mensal da nuvem do nó, em dólares: VM, disco e snapshots do porte, NAT, IP do NAT, outros, a ingestão da
- * franquia de volume e, com agentes, a entrada deles (regra de encaminhamento com o IP fixo) e o disco a mais (base
- * mais um tanto por agente, com snapshot).
+ * O que o cliente paga por um valor da tabela e o imposto dentro disso: com `exclusive`, o imposto vai por cima (a
+ * receita bruta é o valor ÷ (1 − alíquota), e o imposto é a diferença: o valor da tabela fica inteiro para a Verax);
+ * com `inclusive`, o valor da tabela já é a receita bruta, e o imposto sai dela.
  */
-export function nodeCloudUsd(quoteResult: Quote, model: CostModel): number {
-  const { configuration } = quoteResult;
+function grossOf(amount: number, taxMode: TaxMode, taxRate: number): { gross: number; taxes: number } {
+  if (taxMode === 'exclusive' && taxRate < 1) {
+    const gross = cents(amount / (1 - taxRate));
+    return { gross, taxes: gross - amount };
+  }
+  return { gross: amount, taxes: cents(amount * taxRate) };
+}
+
+/** Custo mensal de uma máquina, em dólares: a VM, o disco e os snapshots, o NAT, o IP do NAT e os outros itens. */
+export function machineUsd(machine: Machine, model: CostModel): number {
   const infra = model.infrastructure;
-  const size = infra.sizes[configuration.size];
-  if (size === undefined) throw new CostModelMismatchError([`infrastructure.sizes.${configuration.size}`]);
-  const perGib = infra.diskUsdPerGibMonth + infra.snapshotUsdPerGibMonth;
-  const agents =
-    configuration.agents > 0
-      ? infra.agents.entryUsdPerMonth +
-        (infra.agents.diskBaseGb + configuration.agents * infra.agents.diskPerAgentGb) * perGib
-      : 0;
   return (
-    size.vmUsdPerMonth +
-    size.diskGb * infra.diskUsdPerGibMonth +
-    size.snapshotGib * infra.snapshotUsdPerGibMonth +
+    machine.vmUsdPerMonth +
+    machine.diskGb * infra.diskUsdPerGibMonth +
+    machine.snapshotGib * infra.snapshotUsdPerGibMonth +
     infra.natUsdPerVmMonth +
     infra.natIpUsdPerMonth +
-    infra.otherUsdPerNodeMonth +
-    configuration.monthlyGib * infra.ingestionUsdPerGib +
-    agents
+    infra.otherUsdPerNodeMonth
   );
 }
 
-/** Horas de suporte por mês: base do modo, contas adicionais, pacotes de agentes, faixa de volume e prioritário. */
-export function monthlySupportHours(quoteResult: Quote, table: PriceTable, model: CostModel): number {
-  const { configuration } = quoteResult;
-  const hours = model.support.hours;
-  const additionalAccounts = Math.max(0, configuration.cloudAccounts - table.cloudAccounts.included);
-  let volume = 0;
-  if (configuration.monthlyGib > table.volume.includedMonthlyGib) {
-    const band = hours.perVolumeBand.find((entry) => entry.monthlyGib === configuration.monthlyGib);
-    if (band === undefined) {
-      throw new CostModelMismatchError([`support.hours.perVolumeBand.${configuration.monthlyGib}`]);
-    }
-    volume = band.hours;
+/** O custo do nó dedicado do porte da configuração (US$/mês), mais a ingestão do volume. */
+function dedicatedNodeUsd(configuration: Configuration, model: CostModel): number {
+  const size = model.infrastructure.sizes[configuration.size];
+  if (size === undefined) throw new CostModelMismatchError([`infrastructure.sizes.${configuration.size}`]);
+  return machineUsd(size, model) + configuration.gbDay * model.infrastructure.ingestionUsdPerGbDay;
+}
+
+/**
+ * Custo mensal da nuvem da Verax para o cliente, em dólares:
+ * - Plataforma: o rateio da célula compartilhada (custo da máquina ÷ capacidade em GB/dia × GB/dia contratado), o custo
+ *   fixo de cada cliente na célula e a ingestão do volume;
+ * - Dedicado e vCISO: o nó do porte e a ingestão do volume.
+ */
+export function cloudUsd(configuration: Configuration, model: CostModel): number {
+  const infra = model.infrastructure;
+  if (configuration.plan === 'plataforma') {
+    const cell = infra.sharedCell;
+    return (
+      (machineUsd(cell, model) / cell.capacityGbDay) * configuration.gbDay +
+      cell.perCustomerUsdPerMonth +
+      configuration.gbDay * infra.ingestionUsdPerGbDay
+    );
   }
-  return (
-    (configuration.mode === 'managed' ? hours.baseManaged : hours.baseSelfHosted) +
-    additionalAccounts * hours.perAdditionalAccount +
-    quoteResult.agentPacks * hours.perAgentPack +
-    volume +
-    (configuration.support === 'priority' ? hours.prioritySupport : 0)
-  );
+  return dedicatedNodeUsd(configuration, model);
+}
+
+/**
+ * Horas de suporte por mês: as do plano (o vCISO, as do Dedicado mais as do serviço) e, na infraestrutura do cliente, as
+ * a mais.
+ */
+export function monthlySupportHours(configuration: Configuration, model: CostModel): number {
+  const hours = model.support.hours;
+  const plan =
+    configuration.plan === 'plataforma'
+      ? hours.plataforma
+      : hours.dedicado + (configuration.plan === 'vciso' ? hours.vcisoService : 0);
+  return plan + (configuration.mode === 'self_hosted' ? hours.selfHosted : 0);
+}
+
+/** Horas da implantação, uma vez: as do plano (o vCISO, as do Dedicado mais as dele) e as a mais no cliente. */
+export function setupSupportHours(configuration: Configuration, model: CostModel): number {
+  const hours = model.support.hours;
+  const plan =
+    configuration.plan === 'plataforma'
+      ? hours.setupPlataforma
+      : hours.setupDedicado + (configuration.plan === 'vciso' ? hours.setupVciso : 0);
+  return plan + (configuration.mode === 'self_hosted' ? hours.setupSelfHosted : 0);
 }
 
 /**
  * A DRE de uma cotação já calculada (a checagem de publicação reaproveita a cotação para várias alíquotas e meios de
  * pagamento). Fórmulas, por cliente e por mês:
  *
- *   RB  = Σ itens mensais × (1 − desconto)
- *   DAS = RB × alíquota;  reserva = RB × taxa de reserva;  RL = RB − DAS − reserva
- *   infraestrutura (gerenciado) = custo da nuvem do nó (US$, `nodeCloudUsd`) × câmbio × (1 + folga); na nuvem do
- *     cliente, 0
+ *   valor = Σ itens mensais × (1 − desconto)
+ *   RB  = valor (imposto embutido) ou valor ÷ (1 − alíquota) (imposto por cima, `exclusive`)
+ *   DAS = RB × alíquota (por cima: RB − valor);  reserva = RB × taxa de reserva;  RL = RB − DAS − reserva
+ *   infraestrutura (na Verax) = custo da nuvem (US$, `cloudUsd`) × câmbio × (1 + folga); no cliente, 0
  *   meio de pagamento = cartão: RB × (tarifa do cartão + tarifa da cobrança recorrente) + valor fixo do cartão;
  *     boleto: valor fixo do boleto + RB × tarifa da cobrança recorrente
  *   suporte = horas (`monthlySupportHours`) × custo da hora
@@ -187,19 +224,21 @@ export function dreFromQuote(
   const discount = Math.min(1, Math.max(0, options.discountRate ?? 0));
   const fx = model.exchange.brlPerUsd * 100;
   const fees = model.paymentFees;
-  const managed = quoteResult.configuration.mode === 'managed';
+  const { configuration } = quoteResult;
+  const managed = configuration.mode === 'managed';
 
-  const grossRevenue = cents(quoteResult.monthlyTotal * (1 - discount));
-  const taxes = cents(grossRevenue * tax.rate);
+  const tableRevenue = cents(quoteResult.monthlyTotal * (1 - discount));
+  const { gross: grossRevenue, taxes } = grossOf(tableRevenue, table.taxMode, tax.rate);
   const refundReserve = cents(grossRevenue * model.refundReserveRate);
   const netRevenue = grossRevenue - taxes - refundReserve;
-  const cloudUsd = nodeCloudUsd(quoteResult, model);
-  const infrastructure = managed ? cents(cloudUsd * fx * (1 + model.exchange.cloudBuffer)) : 0;
+  const infrastructure = managed
+    ? cents(cloudUsd(configuration, model) * fx * (1 + model.exchange.cloudBuffer))
+    : 0;
   const paymentFees =
     options.paymentMethod === 'card'
       ? cents(grossRevenue * (fees.card.rate + fees.billingRate) + fees.card.fixed)
       : cents(fees.boleto.fixed + grossRevenue * fees.billingRate);
-  const supportHours = monthlySupportHours(quoteResult, table, model);
+  const supportHours = monthlySupportHours(configuration, model);
   const support = cents(supportHours * model.support.hourlyCost);
   const contributionMargin = netRevenue - infrastructure - paymentFees - support;
   const totalFixed = model.fixedCosts.items.reduce((sum, item) => sum + item.monthly, 0);
@@ -207,29 +246,29 @@ export function dreFromQuote(
   const fixedCosts = cents(totalFixed / customers);
   const result = contributionMargin - fixedCosts;
 
-  const setupRevenue = quoteResult.setupTotal;
-  const setupHours = managed ? model.support.hours.setupManaged : model.support.hours.setupSelfHosted;
-  const setupSupportHours =
-    setupHours +
-    (quoteResult.configuration.support === 'priority' ? model.support.hours.setupPriorityExtra : 0);
-  const setupTaxes = cents(setupRevenue * tax.rate);
+  const setup = grossOf(quoteResult.setupTotal, table.taxMode, tax.rate);
+  const setupRevenue = setup.gross;
+  const setupHours = setupSupportHours(configuration, model);
   const setupReserve = cents(setupRevenue * model.refundReserveRate);
   // A implantação vai na primeira fatura junto com a mensalidade: uma cobrança só, e o valor fixo já está no mês.
   const setupFees =
     options.paymentMethod === 'card'
       ? cents(setupRevenue * (fees.card.rate + fees.billingRate))
       : cents(setupRevenue * fees.billingRate);
-  const setupSupport = cents(setupSupportHours * model.support.hourlyCost);
-  const setupMargin = setupRevenue - setupTaxes - setupReserve - setupFees - setupSupport;
+  const setupSupport = cents(setupHours * model.support.hourlyCost);
+  const setupMargin = setupRevenue - setup.taxes - setupReserve - setupFees - setupSupport;
 
+  // A nuvem do cliente: o nó do porte a preço de lista (sem a folga da Verax), só como estimativa.
   const spread = model.customerCloudEstimateSpread;
-  const estimate = cents(cloudUsd * fx);
+  const estimate = managed ? 0 : cents(dedicatedNodeUsd(configuration, model) * fx);
   return {
     quote: quoteResult,
     paymentMethod: options.paymentMethod,
     taxRateId: tax.id,
+    taxMode: table.taxMode,
     supportHours,
     monthly: {
+      tableRevenue,
       grossRevenue,
       taxes,
       refundReserve,
@@ -246,10 +285,10 @@ export function dreFromQuote(
     },
     setup: {
       revenue: setupRevenue,
-      taxes: setupTaxes,
+      taxes: setup.taxes,
       refundReserve: setupReserve,
       paymentFees: setupFees,
-      supportHours: setupSupportHours,
+      supportHours: setupHours,
       support: setupSupport,
       contributionMargin: setupMargin,
       contributionMarginRatio: setupRevenue === 0 ? null : ratio(setupMargin, setupRevenue),

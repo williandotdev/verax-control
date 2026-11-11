@@ -77,8 +77,7 @@ export const PROBLEM_LABELS: Readonly<Record<NodeFitProblem, string>> = {
 /** O mesmo, com o ambiente na infraestrutura do cliente (nada é provisionado; o guia de instalação é o limite). */
 export const CUSTOMER_PROBLEM_LABELS: Readonly<Record<NodeFitProblem, string>> = {
   ...PROBLEM_LABELS,
-  agents:
-    'agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0',
+  agents: 'agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre)',
 };
 
 /**

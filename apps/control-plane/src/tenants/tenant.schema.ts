@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ULID_PATTERN } from '../common/ulid.js';
 import {
   configurationSchema,
+  contractedConfigurationSchema,
   type DeploymentMode,
   nodeLimitsSchema,
   orderPricingSchema,
@@ -185,11 +186,13 @@ const tenantObjectSchema = z.strictObject({
   state: tenantStateSchema,
   stateUpdatedAt: z.date(),
   /**
-   * O que foi contratado (preço configurável): a configuração com o porte, os limites do nó (`node-limits.ts`, para o
-   * provisionamento e o PR-18) e de qual tabela e cotação saiu o preço. Copiados do pedido da reserva, sem regra em
-   * cima: uma tabela nova nunca muda um cliente existente.
+   * O que foi contratado: a configuração (o plano, o lugar, a franquia em GB/dia, que a medição do excedente e o
+   * contador do painel usam, o porte e o histórico), os limites do nó (`node-limits.ts`, para o provisionamento e o
+   * PR-18) e de qual tabela e cotação saiu o preço. Copiados do pedido da reserva, sem regra em cima: uma tabela nova
+   * nunca muda um cliente existente. Um cliente contratado no modelo de preço anterior (portes, contas e volume mensal)
+   * continua legível com a configuração de antes (`legacyConfigurationSchema`).
    */
-  configuration: configurationSchema,
+  configuration: contractedConfigurationSchema,
   limits: nodeLimitsSchema,
   pricing: orderPricingSchema,
   priceId: stripeId.optional(),
@@ -428,6 +431,17 @@ export const slugOrderSchema = z.strictObject({
 export type SlugOrder = z.infer<typeof slugOrderSchema>;
 
 /**
+ * O pedido como a reserva o guarda, na LEITURA: o de hoje ou um gravado antes da troca do modelo de preço (10/11/2026),
+ * com a configuração do modelo anterior. Uma reserva aberta antes do deploy e paga depois (o boleto leva dias) precisa
+ * continuar legível, senão o `checkout.session.completed` falharia ao ler o subdomínio e o cliente pago nunca seria
+ * criado (e a repetição do evento falharia igual). Pedido novo é sempre gravado com `slugOrderSchema` (só o modelo de
+ * hoje: `CheckoutStore.reserve`); o cliente aceita as duas configurações (`contractedConfigurationSchema`).
+ */
+export const storedSlugOrderSchema = slugOrderSchema.extend({ configuration: contractedConfigurationSchema });
+
+export type StoredSlugOrder = z.infer<typeof storedSlugOrderSchema>;
+
+/**
  * Documento `slugs/{slug}` (plano §3): o checkout reserva o subdomínio (`reserved`, com o `tenantId` novo, o pedido,
  * `expiresAt` de 2 h 30 para o TTL e, depois de criada, o `checkoutSessionId` da sessão) e o
  * `checkout.session.completed` o toma para o cliente (`taken`, com o mesmo `tenantId`, sem `expiresAt` nem o pedido).
@@ -440,7 +454,7 @@ export const slugDocumentSchema = z.strictObject({
   state: z.enum(['reserved', 'taken', 'released']),
   tenantId: z.string().regex(ULID_PATTERN).optional(),
   checkoutSessionId: stripeId.optional(),
-  order: slugOrderSchema.optional(),
+  order: storedSlugOrderSchema.optional(),
   updatedAt: z.date(),
   expiresAt: z.date().optional(),
 });

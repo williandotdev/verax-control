@@ -31,6 +31,13 @@ export function StatusBadge({ status }: { status: VersionStatus }) {
   return <Badge icon={STATUS_ICONS[status]}>{STATUS_LABELS[status]}</Badge>;
 }
 
+/** Uma versão do modelo de preço anterior: só na lista, sem abrir. */
+export function LegacyBadge() {
+  return (
+    <Badge icon={<Archive aria-hidden className="size-3.5 text-subtle-foreground" />}>Modelo anterior</Badge>
+  );
+}
+
 export function CurrentBadge() {
   return (
     <Badge icon={<Star aria-hidden className="size-3.5" />} className="border-primary/40 text-foreground">

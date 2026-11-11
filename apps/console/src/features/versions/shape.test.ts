@@ -22,11 +22,9 @@ describe('forma do documento importado', () => {
       { path: 'taxes.rates.2', message: 'esperado um objeto, recebido number' },
       { path: 'fixedCosts.items', message: 'esperada uma lista, recebido object' },
     ]);
-    expect(
-      shapeIssues('pricing-tables', { modes: { managed: [] }, presets: [{ configuration: null }] }),
-    ).toEqual([
-      { path: 'modes.managed', message: 'esperado um objeto, recebido lista' },
-      { path: 'presets.0.configuration', message: 'esperado um objeto, recebido null' },
+    expect(shapeIssues('pricing-tables', { plans: { plataforma: [] }, sizing: { sizes: [null] } })).toEqual([
+      { path: 'plans.plataforma', message: 'esperado um objeto, recebido lista' },
+      { path: 'sizing.sizes.0', message: 'esperado um objeto, recebido null' },
     ]);
   });
 

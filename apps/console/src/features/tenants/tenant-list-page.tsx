@@ -2,7 +2,7 @@ import { UserPlus } from 'lucide-react';
 import { Link } from 'react-router';
 import { EmptyState, ErrorState, LoadingState } from '@/components/states';
 import { buttonVariants } from '@/components/ui/button-variants';
-import { formatDateTime, plural } from '@/lib/format';
+import { formatDateTime, PLAN_LABELS, plural } from '@/lib/format';
 import { stepLabel } from './labels';
 import { useTenants } from './queries';
 import { BillingBadge, HostingBadge, TenantStateBadge } from './tenant-badges';
@@ -80,7 +80,9 @@ export function TenantListPage() {
                       {tenant.companyName}
                     </Link>
                     <span className="block font-mono text-xs font-normal text-muted-foreground">
-                      {tenant.slug} · porte {tenant.size}
+                      {tenant.slug} ·{' '}
+                      {tenant.plan === undefined ? 'modelo anterior' : PLAN_LABELS[tenant.plan]} · porte{' '}
+                      {tenant.size}
                     </span>
                   </th>
                   <td className="px-3 py-2">

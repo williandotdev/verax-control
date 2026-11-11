@@ -1,5 +1,5 @@
 import { Calculator } from 'lucide-react';
-import { useId, useState } from 'react';
+import { useState } from 'react';
 import { ErrorState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { useVersion, useVersions } from '@/features/versions/queries';
@@ -9,13 +9,14 @@ import { Grid, NumberField, type Option, Section, SelectField } from '@/form/fie
 import { ApiError, api } from '@/lib/api';
 import type {
   ConfigurationInput,
+  PlanId,
   PriceTable,
   SimulationRequest,
   SimulationResult,
   ValidationIssue,
   VersionSummary,
 } from '@/lib/api-types';
-import { CONTACT_REASON_LABELS, MODE_LABELS, STATUS_LABELS, SUPPORT_LABELS } from '@/lib/format';
+import { CONTACT_REASON_LABELS, MODE_LABELS, PLAN_LABELS, PLANS, STATUS_LABELS } from '@/lib/format';
 import { formatInteger, formatRatio } from '@/lib/numbers';
 import { DreStatement } from './dre-statement';
 
@@ -23,49 +24,45 @@ const MODE_OPTIONS: readonly Option[] = (['managed', 'self_hosted'] as const).ma
   value: mode,
   label: MODE_LABELS[mode],
 }));
-const SUPPORT_OPTIONS: readonly Option[] = (['standard', 'priority'] as const).map((level) => ({
-  value: level,
-  label: SUPPORT_LABELS[level],
-}));
+const PLAN_OPTIONS: readonly Option[] = PLANS.map((plan) => ({ value: plan, label: PLAN_LABELS[plan] }));
 const PAYMENT_OPTIONS: readonly Option[] = [
   { value: 'card', label: 'Cartão' },
   { value: 'boleto', label: 'Boleto' },
 ];
 
 function versionOptions(list: readonly VersionSummary[] | undefined): Option[] {
-  return (list ?? []).map((entry) => ({
-    value: entry.version,
-    label: `${entry.version} (${STATUS_LABELS[entry.status].toLowerCase()}${entry.current ? ', vigente' : ''})`,
-  }));
+  return (list ?? [])
+    .filter((entry) => entry.legacy !== true)
+    .map((entry) => ({
+      value: entry.version,
+      label: `${entry.version} (${STATUS_LABELS[entry.status].toLowerCase()}${entry.current ? ', vigente' : ''})`,
+    }));
 }
 
-/** A configuração mínima da tabela (a do "a partir de"): o porte menor, só o incluído, suporte padrão. */
+/** A configuração mínima da tabela (a do "a partir de"): a Plataforma no volume incluído, na Verax. */
 function minimalConfiguration(table: PriceTable): ConfigurationInput {
-  return {
-    mode: 'managed',
-    cloudAccounts: table.cloudAccounts.included,
-    monthlyGib: table.volume.includedMonthlyGib,
-    agents: 0,
-    historyDays: table.history.includedDays,
-    support: 'standard',
-  };
+  return { plan: 'plataforma', gbDay: table.plans.plataforma.includedGbDay, mode: 'managed' };
 }
 
-function list(values: readonly number[]): string {
-  return values.map((value) => formatInteger(value)).join(', ');
+/** O que o plano cota, para a dica do volume. */
+function gbDayHint(table: PriceTable, plan: PlanId | undefined): string {
+  const { plataforma, dedicado } = table.plans;
+  if (plan === 'plataforma') {
+    return `${formatInteger(plataforma.includedGbDay)} GB/dia incluídos, até ${formatInteger(plataforma.maxOnlineGbDay)} no site.`;
+  }
+  return `De ${formatInteger(dedicado.minGbDay)} a ${formatInteger(dedicado.maxGbDay)} GB/dia (abaixo do mínimo, sobe até ele).`;
 }
 
 /**
- * O simulador de DRE: as seis respostas (ou um pacote de partida), o meio de pagamento, a alíquota, o desconto e o
- * rateio, com a tabela de preços e o modelo de custos vigentes ou qualquer versão (rascunho também). A API cota e
- * monta a DRE; os números ficam só na tela.
+ * O simulador de DRE: o plano, o volume em GB/dia e onde roda, o meio de pagamento, a alíquota, o desconto e o rateio,
+ * com a tabela de preços e o modelo de custos vigentes ou qualquer versão (rascunho também). A API cota e monta a DRE;
+ * os números ficam só na tela.
  */
 export function SimulatorPage() {
-  const ids = useId();
   const tables = useVersions('pricing-tables');
   const models = useVersions('cost-models');
   const [request, setRequest] = useState<unknown>({
-    configuration: { mode: 'managed', support: 'standard' },
+    configuration: { plan: 'plataforma', mode: 'managed' },
     paymentMethod: 'card',
   });
   const chosen = request as Partial<SimulationRequest>;
@@ -109,7 +106,6 @@ export function SimulatorPage() {
     }
   }
 
-  const presets = tableContent?.presets ?? [];
   const taxOptions = (modelContent?.taxes.rates ?? []).map((rate) => ({
     value: rate.id,
     label: `${rate.label} (${formatRatio(rate.rate)})`,
@@ -150,81 +146,25 @@ export function SimulatorPage() {
                 models.data?.some((entry) => entry.current) ? 'O vigente' : 'Nenhum vigente: escolha'
               }
             />
-            {presets.length > 0 && (
-              <div className="flex flex-col gap-1">
-                <label htmlFor={`${ids}-pacote`} className="text-sm font-medium">
-                  Pacote de partida
-                </label>
-                <select
-                  id={`${ids}-pacote`}
-                  className="h-9 rounded-md border border-border-strong bg-surface-raised px-2 text-sm"
-                  value=""
-                  onChange={(event) => {
-                    const preset = presets.find((entry) => entry.id === event.target.value);
-                    if (preset !== undefined)
-                      setRequest({ ...chosen, configuration: { ...preset.configuration } });
-                  }}
-                >
-                  <option value="">Preencher com um pacote…</option>
-                  {presets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </Grid>
         </Section>
 
         <Section
-          title="Configuração (as seis respostas)"
-          description="Cada resposta sobe até a opção que a tabela vende (contas abaixo das incluídas viram as incluídas; volume e histórico vão à faixa seguinte; agentes, ao pacote seguinte)."
+          title="Configuração"
+          description="O plano e o volume em GB/dia: abaixo do mínimo do plano, o volume sobe até ele; acima do máximo, sob consulta. Na infraestrutura do cliente, só o Dedicado e o vCISO (o mesmo preço, sem a nuvem da Verax)."
           path={['configuration']}
         >
           <Grid>
+            <SelectField path={['configuration', 'plan']} label="Plano" options={PLAN_OPTIONS} />
+            <NumberField
+              path={['configuration', 'gbDay']}
+              label="Volume de logs (GB/dia)"
+              kind="integer"
+              {...(tableContent === undefined
+                ? {}
+                : { hint: gbDayHint(tableContent, chosen.configuration?.plan) })}
+            />
             <SelectField path={['configuration', 'mode']} label="Onde roda" options={MODE_OPTIONS} />
-            <NumberField
-              path={['configuration', 'cloudAccounts']}
-              label="Contas de nuvem"
-              kind="integer"
-              {...(tableContent === undefined
-                ? {}
-                : {
-                    hint: `${formatInteger(tableContent.cloudAccounts.included)} incluídas, até ${formatInteger(tableContent.cloudAccounts.max)}.`,
-                  })}
-            />
-            <NumberField
-              path={['configuration', 'monthlyGib']}
-              label="Volume de logs (GiB/mês)"
-              kind="integer"
-              {...(tableContent === undefined
-                ? {}
-                : {
-                    hint: `Opções: ${list([tableContent.volume.includedMonthlyGib, ...tableContent.volume.bands.map((band) => band.monthlyGib)])}.`,
-                  })}
-            />
-            <NumberField
-              path={['configuration', 'agents']}
-              label="Agentes nas instâncias"
-              kind="integer"
-              {...(tableContent === undefined
-                ? {}
-                : {
-                    hint: `Pacotes de ${formatInteger(tableContent.agents.packSize)}, até ${formatInteger(tableContent.agents.maxPacks)} pacotes.`,
-                  })}
-            />
-            <NumberField
-              path={['configuration', 'historyDays']}
-              label="Histórico (dias)"
-              kind="integer"
-              {...(tableContent === undefined
-                ? {}
-                : {
-                    hint: `Opções: ${list([tableContent.history.includedDays, ...tableContent.history.extended.map((option) => option.days)])}.`,
-                  })}
-            />
-            <SelectField path={['configuration', 'support']} label="Suporte" options={SUPPORT_OPTIONS} />
           </Grid>
         </Section>
 

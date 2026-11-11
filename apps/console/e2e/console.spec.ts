@@ -73,7 +73,7 @@ for (const theme of THEMES) {
     }, testInfo) => {
       const violations = await prepare(page, theme);
       await page.goto('/tabelas-de-preco/teste-v3');
-      await page.getByLabel('Suporte prioritário (R$)').fill('1,00');
+      await page.getByLabel('Serviço mensal (R$)').fill('1,00');
       await page.getByRole('button', { name: 'Salvar rascunho' }).click();
       await expect(page.getByText('Rascunho salvo.')).toBeVisible();
       await page.getByRole('button', { name: 'Conferir' }).click();
@@ -96,14 +96,14 @@ for (const theme of THEMES) {
       await audit(page, testInfo, `clientes-${theme}`);
 
       await page.getByRole('link', { name: 'Novo cliente (contrato direto)' }).click();
-      await expect(page.getByLabel('Contas de nuvem')).toHaveValue('2');
+      await expect(page.getByLabel('Volume de logs (GB/dia)')).toHaveValue('3');
       await page.getByLabel('Razão social').fill('Cliente Demo D Ltda');
       await page.getByLabel('CNPJ').fill('11.222.333/0001-81');
       await page.getByLabel('E-mail do administrador do cliente').fill('admin@cliente-demo-d.example');
       await page.getByLabel('Subdomínio').fill('cliente-demo-d');
       await page.getByRole('radio', { name: 'Infraestrutura da Verax' }).check();
       await page.getByRole('button', { name: 'Calcular a cotação' }).click();
-      await expect(page.getByRole('region', { name: 'Cotação de referência' })).toContainText('R$ 1.000,00');
+      await expect(page.getByRole('region', { name: 'Cotação de referência' })).toContainText('R$ 1.500,00');
       await page.getByRole('button', { name: 'Revisar e confirmar…' }).click();
       await page.getByLabel(/Digite o subdomínio/).fill('cliente-demo-d');
       await expect(page.getByRole('button', { name: 'Criar e provisionar' })).toBeEnabled();
@@ -134,12 +134,12 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
-    test('clientes no cliente: o cadastro com a licença, sem provisionar, e o detalhe com a versão e o guia', async ({
+    test('clientes no cliente: o cadastro do Dedicado, sem provisionar, e o detalhe com a versão e o guia', async ({
       page,
     }, testInfo) => {
       const violations = await prepare(page, theme);
       await page.goto('/clientes/novo');
-      await expect(page.getByLabel('Contas de nuvem')).toHaveValue('2');
+      await expect(page.getByLabel('Volume de logs (GB/dia)')).toHaveValue('3');
       await page.getByLabel('Razão social').fill('Cliente Demo H Ltda');
       await page.getByLabel('CNPJ').fill('11.222.333/0001-81');
       await page.getByLabel('E-mail do administrador do cliente').fill('admin@cliente-demo-h.example');
@@ -151,7 +151,7 @@ for (const theme of THEMES) {
       await page.getByRole('radio', { name: 'Infraestrutura do cliente' }).check();
       await page.getByRole('button', { name: 'Calcular a cotação' }).click();
       await expect(page.getByRole('region', { name: 'Cotação de referência' })).toContainText(
-        'Licença na infraestrutura do cliente',
+        'GB/dia do servidor dedicado',
       );
       await page.getByRole('button', { name: 'Revisar e confirmar…' }).click();
       await page.getByLabel(/Digite o subdomínio/).fill('cliente-demo-h');
@@ -246,9 +246,9 @@ for (const theme of THEMES) {
     }, testInfo) => {
       const violations = await prepare(page, theme);
       await page.goto('/simulador');
-      await expect(page.getByLabel('Contas de nuvem')).toHaveValue('2');
-      await page.getByLabel('Pacote de partida').selectOption({ label: 'Com agentes (teste)' });
-      await page.getByLabel('Desconto nos itens mensais (%)').fill('20');
+      await expect(page.getByLabel('Volume de logs (GB/dia)')).toHaveValue('2');
+      await page.getByLabel('Plano').selectOption({ label: 'vCISO' });
+      await page.getByLabel('Desconto nos itens mensais (%)').fill('35');
       await page.getByRole('button', { name: 'Simular' }).click();
       const dre = page.getByRole('region', { name: 'DRE por cliente e por mês' });
       await expect(dre).toContainText('Abaixo do alerta (35,0%)');
@@ -261,7 +261,7 @@ for (const theme of THEMES) {
 test('teclado: o primeiro Tab leva ao "Pular para o conteúdo", e ele leva ao conteúdo', async ({ page }) => {
   await mockAdminApi(page);
   await page.goto('/simulador');
-  await expect(page.getByLabel('Contas de nuvem')).toHaveValue('2');
+  await expect(page.getByLabel('Volume de logs (GB/dia)')).toHaveValue('2');
   await page.keyboard.press('Tab');
   await expect(page.getByRole('link', { name: 'Pular para o conteúdo' })).toBeFocused();
   await page.keyboard.press('Enter');

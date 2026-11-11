@@ -167,9 +167,13 @@ class InProcessWorker implements WorkerOwnerClient {
   }
 }
 
-/** O pedido de cadastro que o console manda, com a chave nova e a configuração mínima da tabela fictícia (porte P). */
+/**
+ * O pedido de cadastro que o console manda, com a chave nova e a configuração mínima da tabela fictícia (porte P): a
+ * Plataforma na infraestrutura da Verax e, no cliente (onde a Plataforma não existe), o Dedicado.
+ */
 function directRequest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const slug = typeof overrides['slug'] === 'string' ? overrides['slug'] : 'cliente-direto-a';
+  const customer = overrides['hosting'] === 'customer';
   return {
     idempotencyKey: newUlid(),
     companyName: 'Cliente Demo A Ltda',
@@ -177,13 +181,7 @@ function directRequest(overrides: Record<string, unknown> = {}): Record<string, 
     adminEmail: 'admin@cliente-demo-a.example',
     slug,
     hosting: 'verax',
-    configuration: {
-      cloudAccounts: 2,
-      monthlyGib: 10,
-      agents: 0,
-      historyDays: 30,
-      support: 'standard',
-    },
+    configuration: customer ? { plan: 'dedicado', gbDay: 3 } : { plan: 'plataforma', gbDay: 2 },
     confirmSlug: slug,
     ...overrides,
   };
@@ -313,8 +311,8 @@ export function describeDirectTenantContract(
         billing: { mode: 'contract' },
         company: { legalName: 'Cliente Demo A Ltda', cnpj: '11222333000181' },
         adminEmail: 'admin@cliente-demo-a.example',
-        configuration: { mode: 'managed', size: 'P', cloudAccounts: 2 },
-        limits: { maxCloudAccounts: 2, maxAgents: 0, maxUsers: 10 },
+        configuration: { plan: 'plataforma', mode: 'managed', gbDay: 2, size: 'P' },
+        limits: { maxCloudAccounts: 50, monthlyGib: 58, maxAgents: 0, maxUsers: 10 },
         pricing: { priceTableVersion: 'teste-v1', monthlyTotal: 100_000, setupTotal: 0 },
         provisioning: { step: 'preflight', attempts: 0 },
       });
@@ -385,15 +383,9 @@ export function describeDirectTenantContract(
         { ...request, cnpj: '22.333.444/0001-81' },
         { ...request, companyName: 'Outro Nome Demo Ltda' },
         { ...request, adminEmail: 'outro@cliente-demo-a.example' },
-        // Outra configuração (3 contas em vez das 2 incluídas): outro contrato, não a repetição deste.
-        {
-          ...request,
-          configuration: { ...(request['configuration'] as Record<string, unknown>), cloudAccounts: 3 },
-        },
-        {
-          ...request,
-          configuration: { ...(request['configuration'] as Record<string, unknown>), support: 'priority' },
-        },
+        // Outra configuração (3 GB/dia em vez dos 2 incluídos, ou outro plano): outro contrato, não a repetição deste.
+        { ...request, configuration: { plan: 'plataforma', gbDay: 3 } },
+        { ...request, configuration: { plan: 'dedicado', gbDay: 3 } },
       ];
       for (const body of changed) {
         await expectApiError(service.create(body, OWNER), 409, 'idempotency_conflict');
@@ -744,9 +736,9 @@ export function describeDirectTenantContract(
         state: 'waiting_customer_install',
         hosting: 'customer',
         billing: { mode: 'contract' },
-        // A tabela da licença no cliente (FICTÍCIA): o porte P e a implantação desse modo.
-        configuration: { mode: 'self_hosted', size: 'P', cloudAccounts: 2 },
-        pricing: { priceTableVersion: 'teste-v1', monthlyTotal: 50_000, setupTotal: 100_000 },
+        // O Dedicado no cliente (FICTÍCIO): o mesmo preço por GB/dia da Verax, o porte pelo volume, sem implantação.
+        configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 3, size: 'P' },
+        pricing: { priceTableVersion: 'teste-v1', monthlyTotal: 150_000, setupTotal: 0 },
       });
       expect(tenant.provisioning).toBeUndefined();
       expect(tenant.resources).toBeUndefined();
@@ -785,60 +777,51 @@ export function describeDirectTenantContract(
       expect(queue.tasks).toEqual([]);
     });
 
-    it('no cliente: a cotação de referência é a da licença; o porte não impede, os agentes sim', async () => {
-      const configuration = {
-        cloudAccounts: 6,
-        monthlyGib: 10,
-        agents: 0,
-        historyDays: 30,
-        support: 'standard',
-      };
+    it('no cliente: o mesmo preço por GB/dia; o porte não impede; a Plataforma não existe lá', async () => {
+      const configuration = { plan: 'dedicado', gbDay: 8 };
       const customer = await service.preview({ hosting: 'customer', configuration });
       expect(customer).toMatchObject({
         contactUs: false,
-        quote: { configuration: { mode: 'self_hosted', size: 'M', agents: 0 } },
+        quote: { configuration: { plan: 'dedicado', mode: 'self_hosted', gbDay: 8, size: 'M' } },
         problems: [],
       });
-      // Na Verax, a mesma configuração pede o porte M: o provisionamento ainda não cria.
-      const verax = await service.preview({
-        hosting: 'verax',
-        configuration: { ...configuration, agents: 10 },
-      });
+      // Na Verax, o mesmo volume pede o porte M: o provisionamento ainda não cria. O preço é o mesmo.
+      const verax = await service.preview({ hosting: 'verax', configuration });
       expect(verax).toMatchObject({
         quote: { configuration: { mode: 'managed', size: 'M' } },
-        problems: ['size', 'agents'],
+        problems: ['size'],
       });
-      // Agentes no cliente: o guia (envs/tenant) não liga a entrada deles; recusado com o motivo, nada gravado.
-      const withAgents = { ...configuration, agents: 10 };
-      expect(await service.preview({ hosting: 'customer', configuration: withAgents })).toMatchObject({
-        problems: ['agents'],
+      if (customer.contactUs || verax.contactUs) throw new Error('sob consulta');
+      expect(customer.quote.lineItems).toEqual(verax.quote.lineItems);
+      // A Plataforma é a célula da Verax: no cliente, sob consulta, e o cadastro é recusado com o motivo no plano.
+      const plataforma = { plan: 'plataforma', gbDay: 2 };
+      expect(await service.preview({ hosting: 'customer', configuration: plataforma })).toMatchObject({
+        contactUs: true,
+        reason: 'mode_unavailable',
       });
       const refusedRequest = directRequest({
         hosting: 'customer',
-        slug: 'cliente-agentes',
-        configuration: withAgents,
+        slug: 'cliente-celula',
+        configuration: plataforma,
       });
       const refused = await expectApiError(
         service.create(refusedRequest, OWNER),
         422,
-        'configuration_unsupported',
-      );
-      expect(refused.message).toBe(
-        'Esta configuração ainda não pode ser instalada na infraestrutura do cliente.',
+        'configuration_contact_us',
       );
       expect(refused.details).toMatchObject({
-        problems: ['agents'],
+        reason: 'mode_unavailable',
         issues: [
           {
-            path: 'configuration.agents',
+            path: 'configuration.plan',
             message:
-              'Agentes nas instâncias ainda não têm instalação no ambiente do cliente (o guia não cobre): deixe 0.',
+              'A Plataforma roda só na célula da Verax: no ambiente do cliente, escolha o Dedicado ou o vCISO.',
           },
         ],
       });
       expect(await tenants.get(String(refusedRequest['idempotencyKey']))).toBeUndefined();
-      expect(await tenants.getSlug('cliente-agentes')).toBeUndefined();
-      // O lugar é obrigatório, e o modo não vem mais na configuração (sai do lugar).
+      expect(await tenants.getSlug('cliente-celula')).toBeUndefined();
+      // O lugar é obrigatório, e o modo não vem na configuração (sai do lugar).
       await expectApiError(service.preview({ configuration }), 400, 'invalid_request');
       await expectApiError(
         service.preview({ hosting: 'customer', configuration: { ...configuration, mode: 'self_hosted' } }),
@@ -849,7 +832,7 @@ export function describeDirectTenantContract(
         directRequest({ hosting: 'customer', slug: 'cliente-porte-m', configuration }),
         OWNER,
       );
-      expect((await tenants.require(created.id)).configuration).toMatchObject({ size: 'M', agents: 0 });
+      expect((await tenants.require(created.id)).configuration).toMatchObject({ size: 'M', gbDay: 8 });
     });
 
     it('no cliente: o worker recusa provisionar, retomar e suspender, e nada vai à fila nem muda', async () => {
@@ -896,13 +879,7 @@ export function describeDirectTenantContract(
         directRequest({
           hosting: 'customer',
           slug: 'cliente-instala',
-          configuration: {
-            cloudAccounts: 3,
-            monthlyGib: 50,
-            agents: 0,
-            historyDays: 180,
-            support: 'standard',
-          },
+          configuration: { plan: 'vciso', gbDay: 4 },
         }),
         OWNER,
       );
@@ -929,9 +906,9 @@ export function describeDirectTenantContract(
         releaseKey: { name: 'release-teste', sha256: releaseKeyFingerprint(releaseKey.publicPem) },
         nodeConf: [
           { name: 'PLAN', value: 'enterprise' },
-          { name: 'PLAN_MAX_CLOUD_ACCOUNTS', value: '3' },
-          { name: 'PLAN_MONTHLY_GIB', value: '50' },
-          { name: 'PLAN_HISTORY_DAYS', value: '180' },
+          { name: 'PLAN_MAX_CLOUD_ACCOUNTS', value: '100' },
+          { name: 'PLAN_MONTHLY_GIB', value: '116' },
+          { name: 'PLAN_HISTORY_DAYS', value: '60' },
           { name: 'PLAN_MAX_USERS', value: '10' },
           { name: 'WAZUH_AGENTS', value: 'false' },
         ],

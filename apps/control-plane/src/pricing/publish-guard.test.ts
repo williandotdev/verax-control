@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { fictitiousCostModel, fictitiousPriceTable } from '../../test/support/pricing-fixtures.js';
-import { type CostModel, costModelSchema, type PriceTableInput, priceTableSchema } from './pricing.schema.js';
-import { configurationGrid, gridSize, MAX_GRID_CONFIGURATIONS, runPublishGuard } from './publish-guard.js';
+import {
+  type CostModel,
+  costModelSchema,
+  type PriceTable,
+  type PriceTableInput,
+  priceTableSchema,
+} from './pricing.schema.js';
+import {
+  configurationGrid,
+  gridSize,
+  MAX_GRID_CONFIGURATIONS,
+  runPublishGuard,
+  TAX_RATE_UNCONFIGURED_PROBLEM,
+} from './publish-guard.js';
 
 /**
  * A checagem de publicação sobre a tabela e o modelo de custos FICTÍCIOS (`pricing-fixtures.ts`, margem mínima de
@@ -9,18 +21,26 @@ import { configurationGrid, gridSize, MAX_GRID_CONFIGURATIONS, runPublishGuard }
  */
 const model: CostModel = costModelSchema.parse(fictitiousCostModel());
 
-function tableWith(change: (table: PriceTableInput) => void = () => undefined) {
+function tableWith(change: (table: PriceTableInput) => void = () => undefined): PriceTable {
   const input = fictitiousPriceTable();
   change(input);
   return priceTableSchema.parse(input);
 }
 
 describe('checagem de publicação (grade inteira)', () => {
-  it('percorre todas as configurações vendáveis dos dois modos e aprova a tabela fictícia', () => {
+  it('percorre cada GB/dia vendável de cada plano, em cada lugar dele, e aprova a tabela fictícia', () => {
     const table = tableWith();
-    // 2 modos × 19 contas (2 a 20) × 4 volumes × 5 pacotes de agentes (0 a 4) × 3 históricos × 2 suportes.
-    expect(gridSize(table)).toBe(2 * 19 * 4 * 5 * 3 * 2);
-    expect([...configurationGrid(table)]).toHaveLength(gridSize(table));
+    // Plataforma de 2 a 5 GB/dia (só na Verax); Dedicado e vCISO de 3 a 15, nos dois lugares.
+    expect(gridSize(table)).toBe(4 + 2 * 13 + 2 * 13);
+    const grid = [...configurationGrid(table)];
+    expect(grid).toHaveLength(gridSize(table));
+    expect(grid.slice(0, 5)).toEqual([
+      { plan: 'plataforma', mode: 'managed', gbDay: 2 },
+      { plan: 'plataforma', mode: 'managed', gbDay: 3 },
+      { plan: 'plataforma', mode: 'managed', gbDay: 4 },
+      { plan: 'plataforma', mode: 'managed', gbDay: 5 },
+      { plan: 'dedicado', mode: 'managed', gbDay: 3 },
+    ]);
 
     const report = runPublishGuard(table, model);
 
@@ -35,21 +55,18 @@ describe('checagem de publicação (grade inteira)', () => {
       contactUsConfigurations: 0,
       belowMinimum: { count: 0, configurations: [] },
       monotonicity: { violations: 0, examples: [] },
-      startingAt: { managed: 100_000, self_hosted: 50_000 },
-      gridMinimum: { managed: 100_000, self_hosted: 50_000 },
+      startingAt: { plataforma: 100_000, dedicado: 150_000, vciso: 350_000 },
+      gridMinimum: { plataforma: 100_000, dedicado: 150_000, vciso: 350_000 },
     });
-    // As piores em ordem crescente de margem; a pior de todas é a do relatório por modo e por porte.
+    // As piores em ordem crescente de margem; a pior de todas é a do relatório por plano e por lugar.
     const ratios = report.worst.map((entry) => entry.contributionMarginRatio);
     expect(ratios).toEqual([...ratios].sort((a, b) => a - b));
     expect(report.worst).toHaveLength(10);
-    expect(report.worstByMode.self_hosted).toEqual(report.worst[0]);
-    expect(report.worstBySize.P?.contributionMarginRatio).toBe(report.worst[0]?.contributionMarginRatio);
-    // Entre a mínima e o alerta há configurações: avisadas, não bloqueiam.
-    expect(report.belowAlert.count).toBeGreaterThan(0);
-    for (const entry of report.belowAlert.configurations) {
-      expect(entry.contributionMarginRatio).toBeGreaterThanOrEqual(0.25);
-      expect(entry.contributionMarginRatio).toBeLessThan(0.35);
-    }
+    // O pior caso é o Dedicado no mínimo, na Verax: o nó P inteiro para 3 GB/dia.
+    expect(report.worst[0]?.configuration).toMatchObject({ plan: 'dedicado', gbDay: 3, mode: 'managed' });
+    expect(report.worstByPlan.dedicado).toEqual(report.worst[0]);
+    expect(report.worstByMode.managed).toEqual(report.worst[0]);
+    expect(report.worstByPlan.plataforma?.configuration.plan).toBe('plataforma');
     // Só informação: a outra alíquota no cartão e a padrão no boleto.
     expect(report.otherScenarios.map((scenario) => [scenario.taxRateId, scenario.paymentMethod])).toEqual([
       ['teste_b', 'card'],
@@ -58,10 +75,24 @@ describe('checagem de publicação (grade inteira)', () => {
     expect(report.otherScenarios[0]?.worst?.contributionMarginRatio).toBeLessThan(ratios[0] ?? 0);
   });
 
+  it('entre a mínima e o alerta: avisadas, não bloqueiam', () => {
+    const alerting = costModelSchema.parse({
+      ...fictitiousCostModel(),
+      margins: { minimum: 0.25, alert: 0.6 },
+    });
+    const report = runPublishGuard(tableWith(), alerting);
+    expect(report.ok).toBe(true);
+    expect(report.belowAlert.count).toBeGreaterThan(0);
+    for (const entry of report.belowAlert.configurations) {
+      expect(entry.contributionMarginRatio).toBeGreaterThanOrEqual(0.25);
+      expect(entry.contributionMarginRatio).toBeLessThan(0.6);
+    }
+  });
+
   it('acha toda configuração abaixo da margem mínima e recusa a tabela, listando as piores', () => {
-    // Suporte prioritário quase de graça (R$ 1, fictício): duas horas a mais por mês sem receita que as pague.
+    // GB/dia do Dedicado quase de graça (R$ 50, fictício): o nó inteiro sem receita que o pague.
     const table = tableWith((input) => {
-      input.prioritySupport.amount = 100;
+      input.plans.dedicado.gbDay.amount = 5_000;
     });
 
     const report = runPublishGuard(table, model);
@@ -70,44 +101,107 @@ describe('checagem de publicação (grade inteira)', () => {
     expect(report.belowMinimum.count).toBeGreaterThan(0);
     expect(report.belowMinimum.configurations.length).toBe(Math.min(20, report.belowMinimum.count));
     for (const entry of report.belowMinimum.configurations) {
-      expect(entry.configuration.support).toBe('priority');
+      expect(entry.configuration.plan).not.toBe('plataforma');
       expect(entry.contributionMarginRatio).toBeLessThan(0.25);
     }
     expect(report.worst[0]).toEqual(report.belowMinimum.configurations[0]);
-    // No máximo as configurações com suporte prioritário (metade da grade): o defeito é desse componente.
-    expect(report.belowMinimum.count).toBeLessThanOrEqual(gridSize(table) / 2);
-    expect(report.worstByMode.managed?.configuration.support).toBe('priority');
+    expect(report.worstByPlan.plataforma?.contributionMarginRatio).toBeGreaterThan(0.25);
   });
 
   it('uma margem mínima mais alta no modelo de custos reprova a mesma tabela', () => {
     const strict = costModelSchema.parse({
       ...fictitiousCostModel(),
-      margins: { minimum: 0.45, alert: 0.5 },
+      margins: { minimum: 0.6, alert: 0.65 },
     });
     const report = runPublishGuard(tableWith(), strict);
     expect(report.ok).toBe(false);
     expect(report.belowMinimum.count).toBeGreaterThan(0);
-    expect(report.belowMinimum.configurations.every((entry) => entry.contributionMarginRatio < 0.45)).toBe(
+    expect(report.belowMinimum.configurations.every((entry) => entry.contributionMarginRatio < 0.6)).toBe(
       true,
     );
   });
 
-  it('monotonia: um porte maior mais barato que o menor faz acrescentar uma conta baixar o preço', () => {
-    const table = tableWith((input) => {
-      input.modes.managed.environment.M = { amount: 50_000, lookupKey: 'vc_env_m_v1' };
-    });
+  it('monotonia: um GB/dia a mais que baixa o preço reprova, e o "a partir de" deixa de ser o menor', () => {
+    // Uma tabela fora do schema (adicional negativo), só para exercitar a conferência: a forma da tabela já impede.
+    const base = tableWith();
+    const table: PriceTable = {
+      ...base,
+      plans: {
+        ...base.plans,
+        plataforma: { ...base.plans.plataforma, additionalGbDay: { amount: -1_000, lookupKey: 'vc_add_v1' } },
+      },
+    };
 
     const report = runPublishGuard(table, model);
 
     expect(report.ok).toBe(false);
-    expect(report.monotonicity.violations).toBeGreaterThan(0);
+    expect(report.monotonicity.violations).toBe(3);
     const [example] = report.monotonicity.examples;
-    expect(example?.from.size).toBe('P');
-    expect(example?.to.size).toBe('M');
+    expect(example?.from).toMatchObject({ plan: 'plataforma', gbDay: 2 });
+    expect(example?.to).toMatchObject({ plan: 'plataforma', gbDay: 3 });
     expect(example?.toTotal).toBeLessThan(example?.fromTotal ?? 0);
-    // E o "a partir de" deixa de ser o mínimo da grade.
-    expect(report.gridMinimum.managed).toBeLessThan(report.startingAt.managed ?? 0);
-    expect(report.problems).toContain('o "a partir de" não é o menor preço da grade');
+    expect(report.gridMinimum.plataforma).toBeLessThan(report.startingAt.plataforma ?? 0);
+    expect(report.problems).toContain('o "a partir de" do plano plataforma não é o menor preço dele');
+  });
+
+  it('o site não pode vender o que não cota nem o que o provisionamento não cria', () => {
+    // Até 8 GB/dia no site, com o P até 5: de 6 a 8 o porte é M, que o provisionamento ainda não cria.
+    const unfit = runPublishGuard(
+      tableWith((input) => {
+        input.plans.plataforma.maxOnlineGbDay = 8;
+      }),
+      model,
+    );
+    expect(unfit.ok).toBe(false);
+    expect(unfit.problems).toEqual([
+      'o site venderia o que o provisionamento ainda não cria: plataforma 6 GB/dia (porte M), ' +
+        'plataforma 7 GB/dia (porte M), plataforma 8 GB/dia (porte M)',
+    ]);
+    // Só com o P: de 6 a 8 GB/dia o site oferece e a cotação cai em "sob consulta".
+    const contact = runPublishGuard(
+      tableWith((input) => {
+        input.plans.plataforma.maxOnlineGbDay = 8;
+        input.plans.dedicado.maxGbDay = 5;
+        input.sizing.sizes = [{ size: 'P', maxGbDay: 5, description: 'Só P' }];
+      }),
+      model,
+    );
+    expect(contact.ok).toBe(false);
+    expect(contact.problems).toEqual([
+      'o site oferece e não cota: plataforma 6 GB/dia (above_largest_size), ' +
+        'plataforma 7 GB/dia (above_largest_size), plataforma 8 GB/dia (above_largest_size)',
+    ]);
+  });
+
+  it('sem impostos (imposto por cima): calcula com ele, e só passa com a alíquota da Stripe configurada no serviço', () => {
+    const exclusive = tableWith((input) => {
+      input.taxMode = 'exclusive';
+    });
+    const unconfigured = runPublishGuard(exclusive, model);
+    expect(unconfigured.ok).toBe(false);
+    expect(unconfigured.problems).toEqual([TAX_RATE_UNCONFIGURED_PROBLEM]);
+    // As margens já saem com o imposto por cima (a receita bruta é maior que a da tabela embutida).
+    const inclusive = runPublishGuard(tableWith(), model);
+    expect(unconfigured.worst[0]?.contributionMarginRatio).toBeGreaterThan(
+      inclusive.worst[0]?.contributionMarginRatio ?? 1,
+    );
+    expect(runPublishGuard(exclusive, model, { stripeTaxRate: true })).toMatchObject({
+      ok: true,
+      problems: [],
+    });
+    // Com o imposto embutido, a alíquota da Stripe não importa.
+    expect(runPublishGuard(tableWith(), model, { stripeTaxRate: false }).ok).toBe(true);
+  });
+
+  it('o excedente da Plataforma não pode ser mais barato que o GB/dia contratado', () => {
+    const report = runPublishGuard(
+      tableWith((input) => {
+        input.plans.plataforma.overageGbDay.amount = 10_000;
+      }),
+      model,
+    );
+    expect(report.ok).toBe(false);
+    expect(report.problems).toEqual(['o GB/dia excedente da Plataforma é mais barato que o contratado']);
   });
 
   it('modelo de custos incompleto ou grade grande demais: a checagem nem roda e a tabela é recusada', () => {
@@ -125,74 +219,28 @@ describe('checagem de publicação (grade inteira)', () => {
       checkedConfigurations: 0,
     });
 
-    const huge = tableWith((input) => {
-      input.cloudAccounts.max = 10_000;
-      input.agents.maxPacks = 1_000;
-    });
+    // Uma tabela fora do schema (máximo acima do teto de sanidade), só para exercitar o teto da grade.
+    const base = tableWith();
+    const huge: PriceTable = {
+      ...base,
+      plans: { ...base.plans, dedicado: { ...base.plans.dedicado, maxGbDay: 60_000 } },
+    };
     expect(gridSize(huge)).toBeGreaterThan(MAX_GRID_CONFIGURATIONS);
     const tooLarge = runPublishGuard(huge, model);
     expect(tooLarge.ok).toBe(false);
     expect(tooLarge.problems[0]).toMatch(/^grade grande demais/);
   });
 
-  it('um pacote de partida que cai em "sob consulta" reprova a tabela', () => {
+  it('o Dedicado acima do maior porte conta como sob consulta e fica fora da margem (não é vendido no site)', () => {
     const table = tableWith((input) => {
-      input.presets = [
-        {
-          id: 'grande-demais',
-          label: 'Grande demais (teste)',
-          configuration: {
-            mode: 'managed',
-            cloudAccounts: 2,
-            monthlyGib: 10,
-            agents: 999,
-            historyDays: 30,
-            support: 'standard',
-          },
-        },
+      input.sizing.sizes = [
+        { size: 'P', maxGbDay: 5, description: 'P' },
+        { size: 'M', maxGbDay: 12, description: 'M' },
       ];
     });
     const report = runPublishGuard(table, model);
-    expect(report.ok).toBe(false);
-    expect(report.problems).toEqual(['pacote de partida grande-demais fica sob consulta (agents_above_max)']);
-  });
-
-  it('sem nenhuma configuração com preço num modo vendido no site, a tabela é recusada (não passa com zero conferidas)', () => {
-    // Contas incluídas acima do maior porte e nenhum pacote de partida: toda a grade cai em "sob consulta".
-    const table = tableWith((input) => {
-      input.cloudAccounts.included = 25;
-      input.cloudAccounts.max = 30;
-      input.presets = [];
-    });
-
-    const report = runPublishGuard(table, model);
-
-    expect(report.checkedConfigurations).toBe(0);
-    expect(report.contactUsConfigurations).toBe(gridSize(table));
-    expect(report.startingAt).toEqual({});
-    expect(report.gridMinimum).toEqual({});
-    expect(report.ok).toBe(false);
-    expect(report.problems).toEqual([
-      'o modo managed, vendido no site, não tem nenhuma configuração com preço (tudo sob consulta)',
-    ]);
-  });
-
-  it('uma tabela que vende mais agentes do que o nó aceita é recusada', () => {
-    const table = tableWith((input) => {
-      input.agents.packSize = 100;
-      input.agents.maxPacks = 6;
-    });
-    const report = runPublishGuard(table, model);
-    expect(report.ok).toBe(false);
-    expect(report.problems).toEqual(['agentes acima do que o nó aceita (600 de 500)']);
-  });
-
-  it('configurações acima do maior porte contam como sob consulta e ficam fora da margem', () => {
-    const table = tableWith((input) => {
-      input.cloudAccounts.max = 22;
-    });
-    const report = runPublishGuard(table, model);
-    expect(report.contactUsConfigurations).toBe(2 * 2 * 4 * 5 * 3 * 2);
+    // 13, 14 e 15 GB/dia, no Dedicado e no vCISO, nos dois lugares.
+    expect(report.contactUsConfigurations).toBe(3 * 2 * 2);
     expect(report.checkedConfigurations).toBe(gridSize(table) - report.contactUsConfigurations);
     expect(report.ok).toBe(true);
   });

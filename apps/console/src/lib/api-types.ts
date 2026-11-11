@@ -7,18 +7,14 @@
  * 0 e 1. Este arquivo não importa nada: o teste de contrato o lê do plano de controle.
  */
 
+export type PlanId = 'plataforma' | 'dedicado' | 'vciso';
 export type DeploymentMode = 'managed' | 'self_hosted';
 export type SizeId = 'P' | 'M' | 'G';
-export type SupportLevel = 'standard' | 'priority';
 export type PaymentMethod = 'card' | 'boleto';
-export type ComponentId =
-  'environment' | 'cloud_accounts' | 'volume' | 'agents' | 'history' | 'priority_support' | 'setup';
-export type ContactReason =
-  | 'cloud_accounts_above_max'
-  | 'volume_above_max'
-  | 'agents_above_max'
-  | 'history_above_max'
-  | 'above_largest_size';
+/** `inclusive`: o valor da tabela já tem o imposto; `exclusive`: o imposto vai por cima na fatura ("+ impostos"). */
+export type TaxMode = 'inclusive' | 'exclusive';
+export type ComponentId = 'base' | 'additional_gb_day' | 'overage_gb_day' | 'gb_day' | 'service' | 'setup';
+export type ContactReason = 'above_online_max' | 'above_max' | 'above_largest_size' | 'mode_unavailable';
 export type VersionStatus = 'draft' | 'published' | 'retired';
 
 export interface Priced {
@@ -26,53 +22,76 @@ export interface Priced {
   lookupKey: string;
 }
 
+/** Um degrau da regra de porte: o porte cabe no volume se ele não passar de `maxGbDay`. */
 export interface SizeRule {
   size: SizeId;
-  maxCloudAccounts: number;
-  maxMonthlyGib: number;
-  maxAgents: number;
+  maxGbDay: number;
   description: string;
 }
 
-export interface ModePricing {
-  environment: Partial<Record<SizeId, Priced>>;
-  setup?: Priced;
+/** O plano, o volume em GB/dia e onde o ambiente roda (a entrada do simulador e da cotação de referência). */
+export interface ConfigurationInput {
+  plan: PlanId;
+  gbDay: number;
+  mode: DeploymentMode;
 }
 
-/** As seis respostas do cliente (a entrada da cotação e do simulador). */
-export interface ConfigurationInput {
+/** A configuração já normalizada para a tabela, com o porte calculado. */
+export interface Configuration {
+  plan: PlanId;
   mode: DeploymentMode;
+  gbDay: number;
+  size: SizeId;
+  historyDays: number;
+}
+
+/** O contratado no modelo de preço anterior (portes, contas, volume mensal, agentes e suporte): só leitura. */
+export interface LegacyConfiguration {
+  mode: DeploymentMode;
+  size: SizeId;
   cloudAccounts: number;
   monthlyGib: number;
   agents: number;
   historyDays: number;
-  support: SupportLevel;
+  support: 'standard' | 'priority';
 }
 
-/** A configuração já normalizada para a tabela, com o porte calculado. */
-export interface Configuration extends ConfigurationInput {
-  size: SizeId;
-}
-
-export interface Preset {
-  id: string;
-  label: string;
-  configuration: ConfigurationInput;
-}
+/** O que um cliente contratou: no modelo por GB/dia ou, de antes dele, no anterior (sem `plan`). */
+export type ContractedConfiguration = Configuration | LegacyConfiguration;
 
 /** O conteúdo de uma tabela de preços (o que o responsável edita). */
 export interface PriceTable {
   currency: 'brl';
   interval: 'month';
+  taxMode: TaxMode;
   sizing: { sizes: SizeRule[] };
-  modes: { managed: ModePricing; self_hosted: ModePricing };
-  cloudAccounts: { included: number; max: number; additional: Priced };
-  volume: { includedMonthlyGib: number; bands: { monthlyGib: number; amount: number; lookupKey: string }[] };
-  agents: { packSize: number; maxPacks: number; pack: Priced };
-  history: { includedDays: number; extended: { days: number; amount: number; lookupKey: string }[] };
-  prioritySupport: Priced;
+  plans: {
+    plataforma: {
+      base: Priced;
+      includedGbDay: number;
+      additionalGbDay: Priced;
+      overageGbDay: Priced;
+      maxOnlineGbDay: number;
+      maxCloudAccounts: number;
+    };
+    dedicado: {
+      gbDay: Priced;
+      minGbDay: number;
+      maxGbDay: number;
+      contractMonths: number;
+      maxCloudAccounts: number;
+    };
+    vciso: { service: Priced; setup: Priced };
+  };
+  history: { includedDays: number };
   users: { max: number };
-  presets?: Preset[];
+}
+
+/** Uma máquina: a VM (US$/mês), o disco (GB) e os snapshots estimados (GiB). */
+export interface Machine {
+  vmUsdPerMonth: number;
+  diskGb: number;
+  snapshotGib: number;
 }
 
 /** O conteúdo de um modelo de custos (confidencial: só no Firestore e neste console). */
@@ -80,14 +99,14 @@ export interface CostModel {
   currency: 'brl';
   exchange: { brlPerUsd: number; quotedOn: string; cloudBuffer: number };
   infrastructure: {
-    sizes: Partial<Record<SizeId, { vmUsdPerMonth: number; diskGb: number; snapshotGib: number }>>;
+    sharedCell: Machine & { capacityGbDay: number; perCustomerUsdPerMonth: number };
+    sizes: Partial<Record<SizeId, Machine>>;
     diskUsdPerGibMonth: number;
     snapshotUsdPerGibMonth: number;
     natUsdPerVmMonth: number;
     natIpUsdPerMonth: number;
     otherUsdPerNodeMonth: number;
-    ingestionUsdPerGib: number;
-    agents: { entryUsdPerMonth: number; diskBaseGb: number; diskPerAgentGb: number };
+    ingestionUsdPerGbDay: number;
   };
   paymentFees: { card: { rate: number; fixed: number }; boleto: { fixed: number }; billingRate: number };
   taxes: { rates: { id: string; label: string; rate: number }[]; defaultRateId: string };
@@ -95,14 +114,13 @@ export interface CostModel {
   support: {
     hourlyCost: number;
     hours: {
-      baseManaged: number;
-      baseSelfHosted: number;
-      perAdditionalAccount: number;
-      perAgentPack: number;
-      prioritySupport: number;
-      perVolumeBand: { monthlyGib: number; hours: number }[];
-      setupManaged: number;
-      setupPriorityExtra: number;
+      plataforma: number;
+      dedicado: number;
+      vcisoService: number;
+      selfHosted: number;
+      setupPlataforma: number;
+      setupDedicado: number;
+      setupVciso: number;
       setupSelfHosted: number;
     };
   };
@@ -131,6 +149,8 @@ export interface VersionSummary {
   version: string;
   status: VersionStatus;
   current: boolean;
+  /** Do modelo de preço anterior: só aparece na lista (não abre, não é editada, não vale como vigente). */
+  legacy?: true;
   effectiveFrom?: string;
   publishedAt?: string;
   publishedBy?: string;
@@ -189,12 +209,12 @@ export interface GuardReport {
   belowMinimum: { count: number; configurations: GuardConfiguration[] };
   belowAlert: { count: number; configurations: GuardConfiguration[] };
   worst: GuardConfiguration[];
+  worstByPlan: Partial<Record<PlanId, GuardConfiguration>>;
   worstByMode: Partial<Record<DeploymentMode, GuardConfiguration>>;
-  worstBySize: Partial<Record<SizeId, GuardConfiguration>>;
   otherScenarios: GuardScenario[];
   monotonicity: { violations: number; examples: MonotonicityViolation[] };
-  startingAt: Partial<Record<DeploymentMode, number>>;
-  gridMinimum: Partial<Record<DeploymentMode, number>>;
+  startingAt: Partial<Record<PlanId, number>>;
+  gridMinimum: Partial<Record<PlanId, number>>;
 }
 
 /** `POST .../check`. */
@@ -207,6 +227,7 @@ export interface CheckResult {
 export interface PublishResult {
   version: string;
   status: VersionStatus;
+  legacy?: true;
   effectiveFrom?: string;
   publishedAt?: string;
   publishedBy?: string;
@@ -219,7 +240,7 @@ export interface PublishResult {
 
 export interface QuoteLineItem {
   component: ComponentId;
-  variant: string;
+  variant: PlanId;
   lookupKey: string;
   quantity: number;
   unitAmount: number;
@@ -243,11 +264,13 @@ export interface Quote {
   setupTotal: number;
   firstInvoiceTotal: number;
   limits: NodeLimits;
-  included: { cloudAccounts: number; monthlyGib: number; historyDays: number; users: number };
-  agentPacks: number;
+  included: { gbDay: number; historyDays: number; users: number };
 }
 
 export interface DreLines {
+  /** O valor da tabela (os itens mensais menos o desconto). */
+  tableRevenue: number;
+  /** O que o cliente paga: o valor da tabela ou, com o imposto por cima, o valor ÷ (1 − alíquota). */
   grossRevenue: number;
   taxes: number;
   refundReserve: number;
@@ -278,6 +301,7 @@ export interface DreResult {
   quote: Quote;
   paymentMethod: PaymentMethod;
   taxRateId: string;
+  taxMode: TaxMode;
   supportHours: number;
   monthly: DreLines;
   setup: SetupDre;
@@ -428,6 +452,8 @@ export interface TenantListItem {
   stateUpdatedAt: string;
   billingMode: BillingMode;
   hosting: Hosting;
+  /** O plano; ausente num cliente do modelo de preço anterior. */
+  plan?: PlanId;
   size: SizeId;
   step?: string;
   lastErrorCode?: string;
@@ -478,7 +504,7 @@ export interface TenantDetail {
   hosting: Hosting;
   company: { legalName: string; cnpj: string };
   adminEmail?: string;
-  configuration: Configuration;
+  configuration: ContractedConfiguration;
   limits: NodeLimits;
   pricing: OrderPricing;
   /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente. */
@@ -542,7 +568,7 @@ export type DirectTenantPreview =
 export type ProvisioningRequestOutcome =
   { started: true; runId: string; step: string } | { started: false; failure: string };
 
-/** As respostas do contrato direto menos "onde roda": o modo da tabela sai de `hosting`. */
+/** O plano e o volume do contrato direto: o modo da tabela sai de `hosting`. */
 export type DirectConfiguration = Omit<ConfigurationInput, 'mode'>;
 
 /** O que o console manda em `POST /v1/admin/tenants`. */

@@ -2,10 +2,11 @@ import { z } from 'zod';
 import { adminEmailSchema, cnpjInputSchema, slugInputSchema } from '../checkout/checkout.schema.js';
 import { ULID_PATTERN } from '../common/ulid.js';
 import {
-  type Configuration,
-  configurationInputSchema,
+  type ContractedConfiguration,
   type NodeLimits,
   type OrderPricing,
+  type PlanId,
+  quoteInputSchema,
   type SizeId,
 } from '../pricing/pricing.schema.js';
 import type { ContactReason, Quote } from '../pricing/quote.js';
@@ -38,16 +39,18 @@ export const hostingSchema = z.enum(HOSTINGS, {
 });
 
 /**
- * As respostas da calculadora menos "onde roda": no contrato direto, o lugar é `hosting`, e o modo da tabela de preços
- * sai dele (`MODE_OF_HOSTING`: gerenciado na Verax, licença no cliente). Uma fonte só para as duas coisas.
+ * O plano e o volume em GB/dia, como no site: no contrato direto, o lugar é `hosting`, e o modo da tabela de preços sai
+ * dele (`MODE_OF_HOSTING`: `managed` na Verax, `self_hosted` no cliente). Uma fonte só para as duas coisas. Os três
+ * planos valem aqui (o site vende só a Plataforma); no cliente, só o Dedicado e o vCISO (a Plataforma é a célula da
+ * Verax).
  */
-export const directConfigurationSchema = configurationInputSchema.omit({ mode: true });
+export const directConfigurationSchema = quoteInputSchema;
 export type DirectConfiguration = z.infer<typeof directConfigurationSchema>;
 
 /**
  * `POST /v1/admin/tenants`: o cadastro de um cliente de contrato direto. Os campos do cliente com as mesmas regras e
- * limites do checkout do site; onde o ambiente roda (`hosting`); a configuração com as outras cinco respostas da
- * calculadora (sem preço: o preço de referência é o da tabela vigente, no modo do lugar escolhido). `idempotencyKey` é
+ * limites do checkout do site; onde o ambiente roda (`hosting`); a configuração com o plano e o volume em GB/dia (sem
+ * preço: o preço de referência é o da tabela vigente, o mesmo nos dois lugares). `idempotencyKey` é
  * um ULID gerado pelo console ao abrir o formulário: é o id do cliente, então enviar duas vezes cria um cliente só.
  * `confirmSlug` repete o subdomínio (a confirmação digitada).
  */
@@ -110,6 +113,8 @@ export interface TenantListItem {
   stateUpdatedAt: Date;
   billingMode: BillingMode;
   hosting: Hosting;
+  /** O plano; ausente num cliente do modelo de preço anterior. */
+  plan?: PlanId;
   size: SizeId;
   /** O passo do provisionamento, só em `provisioning` e `provisioning_failed`. */
   step?: string;
@@ -181,7 +186,8 @@ export interface TenantDetail {
   hosting: Hosting;
   company: { legalName: string; cnpj: string };
   adminEmail?: string;
-  configuration: Configuration;
+  /** O contratado: no modelo por GB/dia ou, num cliente de antes dele, no modelo anterior (sem `plan`). */
+  configuration: ContractedConfiguration;
   limits: NodeLimits;
   /** O preço de referência (contrato direto) ou o cotado no checkout. */
   pricing: OrderPricing;

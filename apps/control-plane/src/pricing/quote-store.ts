@@ -103,12 +103,18 @@ export class QuoteStore {
     return { quoteId, ...document };
   }
 
-  /** A cotação, se existir e ainda valer (o TTL do Firestore pode levar horas para apagar uma vencida). */
+  /**
+   * A cotação, se existir e ainda valer (o TTL do Firestore pode levar horas para apagar uma vencida). Uma cotação fora
+   * do formato (a do modelo de preço anterior, gravada antes da troca e ainda dentro das 24 h) não vale: o checkout
+   * pede uma nova (`quote_outdated`), em vez de falhar.
+   */
   async getValid(quoteId: string): Promise<StoredQuote | undefined> {
     if (!isUlid(quoteId)) return undefined;
     const data = await this.store.get(COLLECTIONS.quotes, quoteId);
     if (data === undefined) return undefined;
-    const document = parseDocument(quoteDocumentSchema, COLLECTIONS.quotes, quoteId, data);
+    const parsed = quoteDocumentSchema.safeParse(data);
+    if (!parsed.success) return undefined;
+    const document = parsed.data;
     if (document.expiresAt.getTime() <= this.clock.now().getTime()) return undefined;
     return { quoteId, ...document };
   }

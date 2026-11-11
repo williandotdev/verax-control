@@ -7,7 +7,6 @@ export function blankCostModel(): unknown {
   return {
     currency: 'brl',
     taxes: { rates: [] },
-    support: { hours: { perVolumeBand: [] } },
     fixedCosts: { items: [] },
     sources: [],
   };
@@ -17,10 +16,8 @@ export function blankPriceTable(): unknown {
   return {
     currency: 'brl',
     interval: 'month',
+    taxMode: 'exclusive',
     sizing: { sizes: [] },
-    modes: { managed: { environment: {} }, self_hosted: { environment: {} } },
-    volume: { bands: [] },
-    history: { extended: [] },
-    presets: [],
+    plans: { plataforma: {}, dedicado: {}, vciso: {} },
   };
 }

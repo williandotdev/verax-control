@@ -124,7 +124,8 @@ describe('publicar-precos: simulação', () => {
     expect(await h.run([`--custos=${costFile()}`, `--tabela=${tableFile()}`])).toBe(EXIT.ok);
     expect(h.opened).toBe(0);
     expect(output()).toContain('resultado: APROVADA');
-    expect(output()).toContain('pacote inicial');
+    expect(output()).toContain('plataforma 2 GB/dia: porte P, R$ 1.000,00/mês');
+    expect(output()).toContain('vciso 3 GB/dia: porte P, R$ 3.500,00/mês + R$ 5.000,00 uma vez');
   });
 
   it('a tabela sem modelo de custos (nem arquivo, nem banco) não tem checagem', async () => {
@@ -172,6 +173,23 @@ describe('publicar-precos: publicação', () => {
     );
     expect(new Set(audit.map((entry) => entry.data['actor']))).toEqual(new Set([`owner:${EMAIL}`]));
     expect(new Set(audit.map((entry) => entry.data['requestId'])).size).toBe(1);
+  });
+
+  it('tabela sem impostos: reprova sem --aliquota-stripe (a do serviço) e publica com ela; id fora do formato é uso', async () => {
+    const h = harness();
+    const exclusive = tableFile({ taxMode: 'exclusive' });
+    const base = [`--custos=${costFile()}`, `--tabela=${exclusive}`, `--projeto=${PROJECT}`, '--publicar'];
+    expect(await h.run(base)).toBe(EXIT.refused);
+    expect(output()).toContain('STRIPE_TAX_RATE_ID');
+    expect(await count(h.store, COLLECTIONS.pricingTables)).toBe(0);
+    expect(await h.run([...base, '--aliquota-stripe=nao-e-alíquota'])).toBe(EXIT.usage);
+
+    expect(await h.run([...base, '--aliquota-stripe=txr_teste_imposto'])).toBe(EXIT.ok);
+    expect(await h.store.get(COLLECTIONS.pricingTables, 'tabela-teste-v1')).toMatchObject({
+      status: 'published',
+      content: { taxMode: 'exclusive' },
+      publishCheck: { ok: true },
+    });
   });
 
   it('rodar de novo com o mesmo conteúdo não grava nada', async () => {
@@ -236,7 +254,7 @@ describe('publicar-precos: publicação', () => {
     h.clock.advance(MINUTE_MS);
     const draft = {
       status: 'draft',
-      content: { ...fictitiousPriceTable(), presets: [] },
+      content: { ...fictitiousPriceTable(), users: { max: 11 } },
       createdAt: h.clock.now(),
       createdBy: EMAIL,
       updatedAt: h.clock.now(),
