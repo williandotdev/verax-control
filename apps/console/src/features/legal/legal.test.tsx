@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { legalApi } from '@/lib/api';
 import { FICTITIOUS_TERMS } from '@/mocks/fake-legal';
 import { renderConsole } from '@/test/render';
 
@@ -50,6 +51,33 @@ describe('textos legais', () => {
     expect(state.legal.texts.terms.get('2026-11-10')?.status).toBe('published');
     await waitFor(() => expect(screen.getByLabelText('Texto (Markdown)')).toHaveAttribute('readonly'));
     expect(screen.getByText(/Versão publicada: não muda mais/)).toBeInTheDocument();
+  });
+
+  it('o que é digitado enquanto o rascunho é gravado continua no editor, sem salvar', async () => {
+    const { user, state } = renderConsole('/textos-legais/termos/2026-11-10');
+    const text = await screen.findByLabelText('Texto (Markdown)');
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = legalApi.update.bind(legalApi);
+    const spy = vi.spyOn(legalApi, 'update').mockImplementation(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    try {
+      await user.clear(text);
+      await user.type(text, 'primeira parte');
+      await user.click(screen.getByRole('button', { name: 'Salvar rascunho' }));
+      await user.type(text, ' e mais');
+      release();
+      expect(await screen.findByText('Rascunho salvo.')).toBeInTheDocument();
+      expect(state.legal.texts.terms.get('2026-11-10')?.content).toBe('primeira parte');
+      expect(screen.getByLabelText('Texto (Markdown)')).toHaveValue('primeira parte e mais');
+      expect(screen.getByText('Salve as alterações antes de publicar.')).toBeInTheDocument();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('o rascunho mudou em outra aba: a gravação é recusada e a página oferece recarregar', async () => {

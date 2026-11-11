@@ -5,7 +5,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { COLLECTIONS } from '../firestore/collections.js';
 import { MemoryDocumentStore } from '../firestore/memory-document-store.js';
 import { LegalTextStore } from './legal-store.js';
-import { legalContentSchema, type LegalKind } from './legal.schema.js';
+import { legalContentSchema, legalVersionSchema, type LegalKind } from './legal.schema.js';
 
 // O mesmo contrato roda contra o emulador oficial em test/firestore-emulator.test.ts.
 describeLegalStoreContract('memória', () => {
@@ -26,5 +26,14 @@ describe('textos legais: forma', () => {
     expect(legalContentSchema.parse('# Título\r\n\n- item\tcom ç e ✓')).toBe('# Título\n\n- item\tcom ç e ✓');
     expect(legalContentSchema.safeParse('a\u0007b').success).toBe(false);
     expect(legalContentSchema.safeParse('a\u007fb').success).toBe(false);
+  });
+});
+
+describe('textos legais: nome da versão', () => {
+  it('não pode ser o de uma rota fixa do console (novo, historico)', () => {
+    expect(legalVersionSchema.safeParse('2026-11-10').success).toBe(true);
+    expect(legalVersionSchema.safeParse('novo').success).toBe(false);
+    expect(legalVersionSchema.safeParse('historico').success).toBe(false);
+    expect(legalVersionSchema.safeParse('novo-2').success).toBe(true);
   });
 });

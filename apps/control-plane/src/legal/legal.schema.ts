@@ -33,9 +33,15 @@ export type LegalStatus = (typeof LEGAL_STATUSES)[number];
  * A versão de um texto: minúsculas, números e traço, como as das tabelas de preço (ex.: `2026-11-10` ou `v1`). É o que
  * o checkout compara com o aceite do site e o que o Checkout da Stripe mostra ao lado do link.
  */
+/** Nomes das rotas fixas do console ao lado de `:versão` (`/textos-legais/<tipo>/novo` e `/historico`): uma versão com um deles ficaria inalcançável. */
+export const RESERVED_LEGAL_VERSIONS: ReadonlySet<string> = new Set(['novo', 'historico']);
+
 export const legalVersionSchema = z
   .string()
-  .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, { error: 'versão inválida (minúsculas, números e traço)' });
+  .regex(/^[a-z0-9][a-z0-9-]{0,39}$/, { error: 'versão inválida (minúsculas, números e traço)' })
+  .refine((value) => !RESERVED_LEGAL_VERSIONS.has(value), {
+    error: 'nome reservado pelo console; escolha outra versão',
+  });
 
 /** Teto do texto, em bytes de UTF-8: um texto legal longo fica bem abaixo disso (e do 1 MiB do documento). */
 export const MAX_LEGAL_TEXT_BYTES = 100 * 1024;

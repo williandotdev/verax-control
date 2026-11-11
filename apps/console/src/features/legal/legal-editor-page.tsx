@@ -96,10 +96,15 @@ function Editor({ config, version }: { config: LegalKindConfig; version: string 
     setSaveError(undefined);
     setNotice(undefined);
     try {
+      const submitted = text;
       const saved = await legalApi.update(config.kind, version, {
-        content: text,
+        content: submitted,
         expectedUpdatedAt: data.updatedAt,
       });
+      // O que foi digitado durante a gravação fica na tela (e segue sem salvar): só o texto enviado vira o salvo. A base
+      // muda antes do cache, para a sincronização acima não trocar o editor pelo texto gravado.
+      setBase(`${saved.version}@${saved.updatedAt}`);
+      setDraft((now) => (now === undefined || now === submitted ? saved.content : now));
       client.setQueryData<LegalTextRecord>(['legal-text', config.kind, version], saved);
       await invalidateLegal(client);
       setIssues([]);
