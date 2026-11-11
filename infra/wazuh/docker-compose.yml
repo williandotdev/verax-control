@@ -33,7 +33,7 @@ services:
       - certs-public:/out/public
 
   security-init:
-    image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
+    image: wazuh/wazuh-indexer:4.14.9@sha256:08a8d5a0f0416bdd97ca421b1b72fae97224c8fd99a143500b28b536ff6ac98c
     entrypoint: ['/bin/bash', '/verax/init-security.sh']
     # Root só para gravar no volume e entregá-lo ao uid 1000 do indexer; sem rede e sem ganho de privilégio.
     user: root
@@ -76,7 +76,7 @@ services:
       - manager-aws:/out/aws
 
   wazuh.indexer:
-    image: wazuh/wazuh-indexer:4.14.9@sha256:615465315b560d974100ea55bbe67efa72afc6490ef563d4d1bef127df0e98f6
+    image: wazuh/wazuh-indexer:4.14.9@sha256:08a8d5a0f0416bdd97ca421b1b72fae97224c8fd99a143500b28b536ff6ac98c
     hostname: wazuh.indexer
     restart: always
     depends_on:
