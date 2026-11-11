@@ -15,6 +15,7 @@ import { buildLoggerParams, type LoggerParamsOptions } from './common/logger/log
 import type { DocumentStore } from './firestore/document-store.js';
 import { FirestoreModule } from './firestore/firestore.module.js';
 import { HealthModule } from './health/health.module.js';
+import { LegalModule } from './legal/legal.module.js';
 import { PricingModule } from './pricing/pricing.module.js';
 import type { StepQueue } from './queue/step-queue.js';
 import { StepQueueModule } from './queue/step-queue.module.js';
@@ -50,9 +51,9 @@ export interface AppModuleOptions {
 }
 
 /**
- * Módulos que só existem num papel (plano §2.1): o `cp-public` registra as rotas públicas (calculadora, checkout,
- * status e webhook), o `cp-worker` as internas (passos, tick e reconcile, CP-07 e CP-11) e o `cp-admin` o console do
- * responsável (tabelas de preços e de custos, DRE), com login próprio. Os outros papéis nem carregam o módulo, então a
+ * Módulos que só existem num papel (plano §2.1): o `cp-public` registra as rotas públicas (calculadora, textos legais,
+ * checkout, status e webhook), o `cp-worker` as internas (passos, tick e reconcile, CP-07 e CP-11) e o `cp-admin` o
+ * console do responsável (tabelas de preços e de custos, DRE, textos legais), com login próprio. Os outros papéis nem carregam o módulo, então a
  * rota não existe neles.
  */
 function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
@@ -61,6 +62,7 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
       return [
         StripeModule.forRoot({ stripeApi: options.stripeApi }),
         PricingModule,
+        LegalModule,
         CheckoutModule,
         WebhookModule,
       ];

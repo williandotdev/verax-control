@@ -365,9 +365,9 @@ run "console_nao_recebe_os_proxies_confiaveis" {
     admin_enabled    = true
     owner_principals = ["user:responsavel@example.com"]
     service_env = {
-      TRUSTED_PROXIES  = "203.0.113.0/24"
-      TRUST_PROXY_HOPS = "1"
-      TERMS_VERSION    = "2026-11-01"
+      TRUSTED_PROXIES         = "203.0.113.0/24"
+      TRUST_PROXY_HOPS        = "1"
+      STRIPE_PORTAL_LOGIN_URL = "https://billing.stripe.com/p/login/test_demo"
     }
   }
 
@@ -375,7 +375,7 @@ run "console_nao_recebe_os_proxies_confiaveis" {
     condition = (
       !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUSTED_PROXIES") &&
       !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TRUST_PROXY_HOPS") &&
-      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "TERMS_VERSION") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "STRIPE_PORTAL_LOGIN_URL") &&
       one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TRUSTED_PROXIES"]) == "203.0.113.0/24"
     )
     error_message = "service_env (inclusive TRUSTED_PROXIES e TRUST_PROXY_HOPS) vai para o cp-public, nunca para o cp-admin."

@@ -310,8 +310,8 @@ run "variaveis_do_responsavel" {
   variables {
     services_enabled = true
     service_env = {
-      LOG_LEVEL     = "debug"
-      TERMS_VERSION = "2026-11-01"
+      LOG_LEVEL               = "debug"
+      STRIPE_PORTAL_LOGIN_URL = "https://billing.stripe.com/p/login/test_demo"
     }
     worker_env = {
       SMTP_HOST            = "smtp.exemplo.com"
@@ -323,9 +323,9 @@ run "variaveis_do_responsavel" {
   assert {
     condition = (
       one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "LOG_LEVEL"]) == "debug" &&
-      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "TERMS_VERSION"]) == "2026-11-01" &&
+      one([for env in google_cloud_run_v2_service.public[0].template[0].containers[0].env : env.value if env.name == "STRIPE_PORTAL_LOGIN_URL"]) == "https://billing.stripe.com/p/login/test_demo" &&
       one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "LOG_LEVEL"]) == "debug" &&
-      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "TERMS_VERSION"]) == "2026-11-01"
+      one([for env in google_cloud_run_v2_service.worker[0].template[0].containers[0].env : env.value if env.name == "STRIPE_PORTAL_LOGIN_URL"]) == "https://billing.stripe.com/p/login/test_demo"
     )
     error_message = "service_env substitui um padrão e acrescenta uma variável nos dois serviços."
   }

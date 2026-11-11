@@ -4,9 +4,12 @@ import { AuditModule } from '../audit/audit.module.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { TokenBucketLimiter } from '../common/http/rate-limiter.js';
+import { LegalCoreModule } from '../legal/legal-core.module.js';
 import { PricingCoreModule } from '../pricing/pricing-core.module.js';
 import { ProvisioningStore } from '../provisioning/provisioning-store.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
+import { AdminLegalController } from './admin-legal.controller.js';
+import { AdminLegalService } from './admin-legal.service.js';
 import { AdminPricingController } from './admin-pricing.controller.js';
 import { AdminPricingService } from './admin-pricing.service.js';
 import { AdminSessionController } from './admin-session.controller.js';
@@ -51,8 +54,8 @@ export interface AdminModuleOptions {
 /**
  * O console do responsável (`cp-admin`, `ROLE=admin`): as rotas `/v1/admin/...`, o login próprio (e-mail, senha e
  * TOTP, `auth/`) e a guarda global que exige a sessão dele em toda requisição. Só este papel carrega o módulo; no
- * `cp-public` e no `cp-worker` as rotas nem existem. Os clientes (lista, detalhe, contrato direto) leem e gravam o
- * Firestore; as operações do provisionamento vão ao cp-worker
+ * `cp-public` e no `cp-worker` as rotas nem existem. Os clientes (lista, detalhe, contrato direto) e os textos legais
+ * (Termos, Privacidade e DPA) leem e gravam o Firestore; as operações do provisionamento vão ao cp-worker
  * pelo `CONSOLE_WORKER_CLIENT` (`worker-owner-client.ts`), com o token da conta do cp-admin.
  */
 @Module({})
@@ -60,15 +63,17 @@ export class AdminModule {
   static forRoot(options: AdminModuleOptions = {}): DynamicModule {
     return {
       module: AdminModule,
-      imports: [AuditModule, PricingCoreModule, TenantsModule],
+      imports: [AuditModule, LegalCoreModule, PricingCoreModule, TenantsModule],
       controllers: [
         AdminAuthController,
+        AdminLegalController,
         AdminPricingController,
         AdminSessionController,
         AdminTenantsController,
       ],
       providers: [
         AdminAuthService,
+        AdminLegalService,
         AdminPricingService,
         AdminTenantsService,
         ProvisioningStore,

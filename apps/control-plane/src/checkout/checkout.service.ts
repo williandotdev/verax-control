@@ -3,6 +3,8 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { ApiError } from '../common/http/api-error.js';
 import { equalValues } from '../firestore/document-store.js';
+import { LegalTextStore } from '../legal/legal-store.js';
+import { LEGAL_KINDS } from '../legal/legal.schema.js';
 import { PricingTableStore } from '../pricing/pricing-store.js';
 import type { ConfigurationInput, QuoteLineItem } from '../pricing/pricing.schema.js';
 import { isSoldOnline, modeNotSoldOnline } from '../pricing/public-pricing.js';
@@ -47,6 +49,13 @@ const BOLETO_EXPIRES_AFTER_DAYS = 3;
 const UNAVAILABLE = (): ApiError =>
   new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Checkout indisponível', 'checkout_unavailable');
 
+/** As versões dos textos legais que o cliente aceitou: as vigentes, publicadas pelo console. */
+interface AcceptedVersions {
+  terms: string;
+  privacy: string;
+  dpa: string;
+}
+
 /** A cotação venceu, sumiu ou não confere com a tabela: o site pede uma cotação nova e mostra o preço antes de pagar. */
 const QUOTE_OUTDATED = (): ApiError =>
   new ApiError(
@@ -60,8 +69,9 @@ export interface RequestContext {
 }
 
 /**
- * Checkout (plano §4a, com o preço configurável): valida o pedido, confere as versões do aceite, relê a cotação gravada
- * (`quoteId`) e a recalcula pela tabela da versão dela, confere na Stripe cada preço dos itens (ativo, em BRL, mensal
+ * Checkout (plano §4a, com o preço configurável): valida o pedido, confere as versões do aceite com as dos textos legais
+ * publicados no console, relê a cotação gravada (`quoteId`) e a recalcula pela tabela da versão dela, confere na
+ * Stripe cada preço dos itens (ativo, em BRL, mensal
  * ou avulso, com o valor da tabela), reserva o subdomínio dentro do teto diário e abre a sessão do Checkout hospedado
  * com um item por componente. O site nunca manda preço. Se a Stripe falhar depois da reserva, a reserva é desfeita na
  * hora (`released`); se nem isso for possível, ela vence sozinha em 2 h 30. Nenhum log leva e-mail, CNPJ, razão social,
@@ -79,6 +89,7 @@ export class CheckoutService implements OnModuleInit {
     private readonly store: CheckoutStore,
     private readonly quotes: QuoteStore,
     private readonly tables: PricingTableStore,
+    private readonly legal: LegalTextStore,
     @InjectPinoLogger(CheckoutService.name) private readonly logger: PinoLogger,
   ) {}
 
@@ -100,10 +111,11 @@ export class CheckoutService implements OnModuleInit {
     const { settings, stripe } = this.requireReady();
     const request = this.parse(body);
     if (!isReservableSlug(request.slug)) throw slugUnavailable();
+    const versions = await this.acceptedVersions();
     if (
-      request.consent.terms !== settings.versions.terms ||
-      request.consent.privacy !== settings.versions.privacy ||
-      request.consent.dpa !== settings.versions.dpa
+      request.consent.terms !== versions.terms ||
+      request.consent.privacy !== versions.privacy ||
+      request.consent.dpa !== versions.dpa
     ) {
       throw new ApiError(
         HttpStatus.CONFLICT,
@@ -114,8 +126,8 @@ export class CheckoutService implements OnModuleInit {
     const quoted = await this.resolveQuote(request.quoteId);
     const prices = await this.resolvePrices(stripe, settings, quoted);
 
-    const reservation = await this.reserve(request, settings, quoted, context);
-    const params = this.sessionParams(request, settings, quoted, prices, reservation);
+    const reservation = await this.reserve(request, versions, quoted, context);
+    const params = this.sessionParams(request, settings, versions, quoted, prices, reservation);
     let session;
     try {
       session = await stripe.createCheckoutSession(params, `checkout-session-${reservation.tenantId}`);
@@ -185,6 +197,27 @@ export class CheckoutService implements OnModuleInit {
   private requireReady(): { settings: CheckoutSettings; stripe: StripeClient } {
     if (!this.settings.ready || this.stripe === null) throw UNAVAILABLE();
     return { settings: this.settings.settings, stripe: this.stripe };
+  }
+
+  /**
+   * As versões vigentes dos três textos legais (as publicadas mais recentes, no Firestore). Sem uma publicada de algum
+   * deles, o checkout fica indisponível (503), como sem a configuração: ninguém compra sem um texto para aceitar. O log
+   * diz só quais faltam.
+   */
+  private async acceptedVersions(): Promise<AcceptedVersions> {
+    const current = await this.legal.currentVersions();
+    const { terms, privacy, dpa } = current;
+    if (terms === undefined || privacy === undefined || dpa === undefined) {
+      this.logger.error(
+        {
+          event: 'checkout_legal_texts_missing',
+          missing: LEGAL_KINDS.filter((kind) => current[kind] === undefined),
+        },
+        'checkout indisponível: falta publicar texto legal no console (Termos, Privacidade e DPA)',
+      );
+      throw UNAVAILABLE();
+    }
+    return { terms, privacy, dpa };
   }
 
   /** Validação estrita; o erro cita só os nomes dos campos conhecidos, nunca valores nem chaves desconhecidas. */
@@ -311,7 +344,7 @@ export class CheckoutService implements OnModuleInit {
 
   private async reserve(
     request: CheckoutRequest,
-    settings: CheckoutSettings,
+    versions: AcceptedVersions,
     quoted: StoredQuote,
     context: RequestContext,
   ): Promise<Reservation> {
@@ -330,9 +363,9 @@ export class CheckoutService implements OnModuleInit {
           company: { legalName: request.companyName, cnpj: request.cnpj },
           adminEmail: request.adminEmail,
           consent: {
-            termsVersion: settings.versions.terms,
-            privacyVersion: settings.versions.privacy,
-            dpaVersion: settings.versions.dpa,
+            termsVersion: versions.terms,
+            privacyVersion: versions.privacy,
+            dpaVersion: versions.dpa,
           },
         },
         requestId: context.requestId,
@@ -370,6 +403,7 @@ export class CheckoutService implements OnModuleInit {
   private sessionParams(
     request: CheckoutRequest,
     settings: CheckoutSettings,
+    versions: AcceptedVersions,
     quoted: StoredQuote,
     prices: ReadonlyMap<string, StripePrice>,
     reservation: Reservation,
@@ -381,11 +415,11 @@ export class CheckoutService implements OnModuleInit {
       quoteId: quoted.quoteId,
       mode: quoted.configuration.mode,
       size: quoted.configuration.size,
-      termsVersion: settings.versions.terms,
-      privacyVersion: settings.versions.privacy,
-      dpaVersion: settings.versions.dpa,
+      termsVersion: versions.terms,
+      privacyVersion: versions.privacy,
+      dpaVersion: versions.dpa,
     };
-    const { legalUrls, versions } = settings;
+    const { legalUrls } = settings;
     return {
       mode: 'subscription',
       line_items: quoted.lineItems.map((item) => ({

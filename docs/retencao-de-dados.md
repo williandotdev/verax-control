@@ -1,7 +1,7 @@
 # Retenção de dados: prazos e o texto da Privacidade e do DPA
 
-_(fase 2, PR-20.)_ Apoio para quem escreve as páginas de Privacidade e o DPA do site, que ficam no repositório do site,
-fora deste. Os prazos abaixo são os do código e da infraestrutura deste repositório; quando um deles mudar, este
+_(fase 2, PR-20.)_ Apoio para quem escreve a Privacidade e o DPA, que o responsável publica no console
+([`runbooks/console-do-responsavel.md`](runbooks/console-do-responsavel.md), seção 8) e o site mostra. Os prazos abaixo são os do código e da infraestrutura deste repositório; quando um deles mudar, este
 arquivo muda junto. O desenho do expurgo está em [`ARQUITETURA.md`](ARQUITETURA.md), "Expurgo do histórico".
 
 ## Prazos de um nó de cliente
