@@ -77,11 +77,10 @@ const hostPort = z.string().regex(/^[a-z0-9.-]+:[0-9]{1,5}$/i, { error: 'deve te
 const ipOrCidr = z.union([z.ipv4(), z.cidrv4(), z.ipv6(), z.cidrv6()], {
   error: 'deve ser um endereço IP ou um bloco CIDR',
 });
-/** Versão de um texto legal publicado no site, como `2026-11-04` ou `v3`. */
-const documentVersion = z
+/** Versão de um release do nó (letras, números, ponto e traço); com o provisionamento ligado, `node-vX.Y.Z`. */
+const releaseVersion = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, { error: 'versão inválida (letras, números, ponto, traço)' });
-const releaseVersion = documentVersion;
 
 /**
  * Versão do nó que o provisionamento instala: o release `node-vX.Y.Z` do manifesto assinado (`scripts/node-release.sh`),
@@ -243,16 +242,15 @@ const envShape = {
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
   TRUSTED_PROXIES: list(ipOrCidr).optional(),
 
-  // Site (CP-03): origens aceitas no CORS, páginas de retorno do Checkout e versões dos textos aceitos. Os links dos
-  // textos legais no aceite do Checkout saem da origem de SITE_SUCCESS_URL (`/termos`, `/privacidade`, `/dpa`).
+  // Site (CP-03): origens aceitas no CORS e páginas de retorno do Checkout. Os links dos textos legais no aceite do
+  // Checkout saem da origem de SITE_SUCCESS_URL (`/termos`, `/privacidade`, `/dpa`). As versões dos textos não são
+  // variáveis: saem das publicadas pelo console no Firestore (`legal/legal-store.ts`). Uma `TERMS_VERSION`,
+  // `PRIVACY_VERSION` ou `DPA_VERSION` antiga ainda no ambiente é ignorada (o schema não a conhece).
   // Site e Stripe ficam opcionais mesmo no cp-public: sem o grupo completo (`CHECKOUT_REQUIRED`, em
   // checkout/checkout-settings.ts), o serviço sobe, avisa quais faltam e o checkout responde 503.
   SITE_ORIGINS: list(httpsUrl).optional(),
   SITE_SUCCESS_URL: httpsUrl.optional(),
   SITE_CANCEL_URL: httpsUrl.optional(),
-  TERMS_VERSION: documentVersion.optional(),
-  PRIVACY_VERSION: documentVersion.optional(),
-  DPA_VERSION: documentVersion.optional(),
 
   // Stripe (CP-03 e CP-04). Chaves de teste e de produção são segredos distintos; STRIPE_LIVE diz qual vale (e o
   // webhook ignora evento do outro modo). Sem STRIPE_WEBHOOK_SECRET e STRIPE_SECRET_KEY o webhook responde 503 sem
@@ -428,8 +426,8 @@ export const ADMIN_FORBIDDEN_SECRETS = ['STRIPE_SECRET_KEY'] as const satisfies 
  * Cloudflare e Firebase, acesso e e-mail) já entram aqui como opcionais com o formato conferido, para que uma
  * configuração errada apareça na partida, e não no meio de um checkout. Cada PR que passar a depender de um grupo
  * decide se ele derruba a partida no papel certo ou só desliga a função: o checkout (CP-03) escolheu desligar
- * (503 `checkout_unavailable`), para o serviço subir e responder `/health` antes de o responsável preencher as
- * versões dos textos legais. A porta de entrada é `loadConfig`, que aplica `ROLE_ONLY.settings` antes.
+ * (503 `checkout_unavailable`), para o serviço subir e responder `/health` antes de o responsável completar a
+ * configuração do site e da Stripe. A porta de entrada é `loadConfig`, que aplica `ROLE_ONLY.settings` antes.
  */
 export const envSchema = z.object(envShape).superRefine((env, ctx) => {
   const production = env.NODE_ENV === 'production';
