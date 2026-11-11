@@ -19,7 +19,7 @@ name: verax-wazuh
 
 services:
   certs-init:
-    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    image: wazuh/wazuh-manager:4.14.9@sha256:9d07740f780024600101d759ddab9a4413bdcb3412ccb81dccc143b3cdc702a2
     entrypoint: ['/bin/bash', '/verax/init-certs.sh']
     user: root
     network_mode: none
@@ -54,7 +54,7 @@ services:
       - indexer-snapshots:/out/snapshots
 
   manager-config:
-    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    image: wazuh/wazuh-manager:4.14.9@sha256:9d07740f780024600101d759ddab9a4413bdcb3412ccb81dccc143b3cdc702a2
     # Python do próprio Wazuh; a lista de contas chega pela entrada padrão (scripts/deploy.sh).
     entrypoint:
       - /var/ossec/framework/python/bin/python3
@@ -116,7 +116,7 @@ services:
       start_period: 60s
 
   wazuh.manager:
-    image: wazuh/wazuh-manager:4.14.9@sha256:dbb337727a6b6b17e24b1ccfe4c6e95fd983286ba0ccbf29d568144aa9527c6b
+    image: wazuh/wazuh-manager:4.14.9@sha256:9d07740f780024600101d759ddab9a4413bdcb3412ccb81dccc143b3cdc702a2
     hostname: wazuh.manager
     restart: always
     depends_on:
