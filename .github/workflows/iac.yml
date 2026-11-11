@@ -58,7 +58,7 @@ jobs:
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
-            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/control-plane infra/gcp/envs/release \
+            infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/celula infra/gcp/envs/control-plane infra/gcp/envs/release \
             infra/gcp/envs/nodes-platform infra/gcp/envs/tenant; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
@@ -92,6 +92,7 @@ jobs:
         # as variáveis recusam. O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
+          terraform -chdir=infra/gcp/envs/celula test
           terraform -chdir=infra/gcp/envs/verax test
           terraform -chdir=infra/gcp/envs/control-plane test
           terraform -chdir=infra/gcp/envs/release test
