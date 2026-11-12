@@ -1189,8 +1189,8 @@ control_plane`), e o `PLAN` e os ajustes do ambiente são recusados na partida. 
   profundidade do corpo, da query ou dos parâmetros, um campo do plano (`apps/api/test/tenant-plan.test.ts`).
 - **A Plataforma** (`plataforma`, plano de cliente que o `node.conf` não aceita): contas, usuários, histórico e a
   franquia sempre vêm do plano de controle, sem padrão no repositório, e ela não tem volume do mês (o volume é a média
-  diária no ciclo contra a franquia: seção "Célula compartilhada (Plataforma)", "Medição e franquia"). Até o contador
-  da franquia (CE-10), "Plano e uso" mostra o volume do mês sem limite para ela.
+  diária no ciclo contra a franquia: seção "Célula compartilhada (Plataforma)", "Medição e franquia"). Em "Plano e
+  uso", o volume do mês dá lugar ao contador da franquia (CE-10).
 
 - **Vagas** (`packages/shared/src/plan-usage.ts`): contas cloud ativas (AWS, GCP e Cloudflare) e usuários do cliente
   convidados ou ativos. A equipe da Verax (`admin_verax`) nunca conta. Criar e reativar pedem vaga; desativar libera.
@@ -1212,7 +1212,8 @@ control_plane`), e o `PLAN` e os ajustes do ambiente são recusados na partida. 
   falha, com a ação de sempre (`cloud_account.create`, `cloud_account.update`, `user.create` ou `user.update`).
 - **Volume do mês:** o medidor de uso (PR-03) soma os bytes lidos por cliente, mês do calendário de Brasília e fonte
   (`aws` pela tarefa `wazuh-usage`, PR-V6: os bytes que o analysisd do nó recebe, que incluem os dos agentes do Wazuh
-  quando ligados).
+  quando ligados; na célula, pela medição na origem de cada cliente, a tarefa `aws-volume` do CE-09, no mês em que o
+  objeto foi criado).
   Acima do plano nada é bloqueado nem descartado: a coleta continua, e os achados continuam sendo gravados. O painel
   mostra uma faixa a partir de 80%; os avisos por e-mail de 80% e 100% estão na seção "Avisos por e-mail".
 - **Histórico:** `historyDays` é o prazo do expurgo (PR-19) e o alcance das telas (PR-20, abaixo).
@@ -1357,8 +1358,11 @@ da própria Verax** muda para a célula como o primeiro cliente dela e é o test
 
 A primeira célula, `verax-celula`, é o `envs/celula` (`infra/gcp/GUIA.md`), criada no **projeto do nó da Verax**, e
 não num projeto próprio das células, por decisão do responsável: por ora, uma célula só não chega à cota de contas de
-serviço por projeto (cerca de 100) nem pede um orçamento à parte. Um projeto das células volta à mesa quando a cota ou
-o orçamento pedirem. Esta seção é o registro da decisão (ADR); o detalhamento por PR está no estudo da fase 3, fora do
+serviço por projeto (cerca de 100) nem pede um orçamento à parte. O que é de cada cliente da célula (a conta de
+serviço, o cofre do primeiro acesso e os tópicos da GCP) fica no projeto dos nós de clientes, onde o plano de controle
+já administra os nós dedicados (o porquê está em "Ameaças de isolamento e mitigação"); a cota de contas desse projeto
+passa a ser dividida entre os nós dedicados e os clientes da célula. Um projeto das células volta à mesa quando a cota
+ou o orçamento pedirem. Esta seção é o registro da decisão (ADR); o detalhamento por PR está no estudo da fase 3, fora do
 repositório, e o que já está no código tem a marca de feito.
 
 ```
@@ -1368,10 +1372,12 @@ api-<slug>.veraxsistemas.com.br ──CNAME──► túnel da célula (um por c
 GCP da Verax, projeto do nó da Verax (por ora)
   célula verax-celula: módulo node, perfil standard, IP do NAT reservado
     API (host → cliente) · worker · Postgres · Wazuh (manager e indexer) · cloudflared
-  uma conta de serviço por cliente, vxt-<slug> (a VM da célula só emite o token dela; a permissão fica em cada conta)
   Pub/Sub: comandos do plano de controle (só o cp-worker publica) · relatórios da célula (só a VM publica)
-  tópicos da GCP por cliente e projeto, com o UUID da conta no nome (nunca reaproveitado)
   buckets: backups da célula (85 dias) e exportações (<célula>/<cliente>/..., 31 dias)
+GCP da Verax, projeto dos nós de clientes (o dos nós dedicados; o cp-terraform não tem nada no projeto da célula)
+  uma conta de serviço por cliente da célula, vxt-<slug> (a VM só emite o token dela; a permissão fica em cada conta)
+  o cofre do primeiro acesso de cada cliente, vxt-<slug>-admin-bootstrap (a VM só grava)
+  tópicos da GCP por cliente e projeto, com o UUID da conta no nome (nunca reaproveitado; só a VM lê)
 ```
 
 **Dedicado e Plataforma lado a lado:**
@@ -1392,7 +1398,8 @@ GCP da Verax, projeto do nó da Verax (por ora)
 
 Cada ponto muda, ou fica atrás de `NODE_MODE=cell` (no nó dedicado, nada muda):
 
-- o medidor da AWS para com `multiple_tenants`, e a saúde da AWS vem do contador do nó inteiro (`usage/wazuh-usage.ts`);
+- o medidor da AWS para com `multiple_tenants`, e a saúde da AWS vem do contador do nó inteiro (`usage/wazuh-usage.ts`)
+  (**feito no CE-09** para o medidor: na célula, o analysisd é só o contador do nó; a saúde por cliente é do CE-13);
 - uma identidade só para a AWS: o worker pede o token da conta de serviço da VM, e o painel mostra o
   `NODE_SA_UNIQUE_ID` do ambiente (`aws/web-identity.ts`, `cloud-accounts.service.ts`); o Wazuh tem um arquivo de
   token só (`aws-token.sh`, `render-manager-config.py`);
@@ -1416,7 +1423,13 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
 - **Confused deputy na AWS (a principal)** _(a construir, CE-11 e CE-12)_. Se todo papel confiasse na conta de
   serviço da célula e no IP do NAT dela, o cliente A cadastraria o ID da conta AWS de B, e a célula leria os logs de B
   para A com a identidade dividida. Por isso, **uma conta de serviço por cliente**, `vxt-<slug>`, criada pelo
-  `envs/cell-tenant` no provisionamento:
+  `envs/cell-tenant` no provisionamento (**feito no CE-07**: o ambiente, as permissões só na conta, no cofre e nos
+  tópicos do cliente e o executor, que recusa recriar a conta fora do expurgo). As contas, os cofres e os tópicos dos
+  clientes da célula ficam no **projeto dos nós de clientes**, e não no da célula: a GCP não aceita condição do IAM pelo
+  nome de uma conta de serviço nem de um tópico, e o `setIamPolicy` de contas no projeto da célula (o do nó da Verax)
+  alcançaria a conta que assina as versões do nó. No projeto dos nós, o cp-terraform já administra contas, cofres e
+  Pub/Sub (com o mesmo risco que já tem sobre as contas dos nós dedicados, vigiado pelo alerta do CP-12); no projeto da
+  célula, ele não tem permissão nenhuma:
   - a VM da célula ganha `serviceAccountOpenIdTokenCreator` **só nessa conta** (nunca no projeto); o ID único dela
     vai do Terraform ao Firestore e chega à célula pelo comando do plano de controle, em `TenantCloudIdentity`, que
     nenhum schema de requisição aceita (meta-teste);
@@ -1461,7 +1474,7 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
   a célula informa ao plano de controle CPU, memória, fila do `analysisd`, atraso do módulo e os maiores clientes em
   GB/dia, para a página "Células" do console. O item "Medidor da AWS parado" da Torre deixa de valer na célula.
 
-### Canal entre o plano de controle e a célula _(a construir, CE-05 e CE-06)_
+### Canal entre o plano de controle e a célula _(a construir, CE-05 e CE-06; os tópicos, feitos no CE-03)_
 
 **Pub/Sub nos dois sentidos**, sem nada novo exposto na internet. Os comandos (`tenant.upsert`, com o estado desejado
 inteiro e uma `generation` crescente por cliente; `tenant.export`, `tenant.purge` e `tenant.collection_pause`) seguem
@@ -1473,20 +1486,54 @@ transação, ignorando uma geração já aplicada, com o relatório na mesma tra
 célula comprometida só mente sobre os próprios clientes. O IAM dos tópicos prova quem publicou. A senha do primeiro
 administrador nunca passa pelo worker: o host a escreve no cofre `vxt-<slug>-admin-bootstrap`.
 
-### Medição e franquia _(a construir, CE-09, CE-10, CE-13, CE-19 e CE-20)_
+### Medição e franquia _(CE-09 e CE-10 feitos; a construir: CE-11/CE-13, CE-19 e CE-20)_
 
-- **Unidade:** bytes descomprimidos (a regra do `usage-meter.ts`), por dia do calendário de Brasília, numa tabela
-  diária por cliente e fonte (`IngestUsageDay`). A AWS é medida **na origem**, por cliente: um auditor lê o tamanho
-  descomprimido no fim de cada objeto gzip, com a identidade do próprio cliente, e conta o objeto no dia em que ele foi
-  criado (o histórico anterior à primeira verificação nunca é cobrado). O contador do `analysisd` vira só a
-  conferência da célula. A GCP conta pelo `publishTime`; o Cloudflare, pelo tamanho de cada entrada da auditoria.
-- **Excedente:** a média diária do ciclo menos a franquia ponderada pelos dias em que valeu, arredondada para baixo (a
-  dúvida a favor do cliente), em centésimos de GB/dia. Vai à Stripe como um evento de medidor por ciclo fechado, com
-  identificador idempotente, e cai na fatura seguinte. Um ciclo estranho (dia sem fechamento, divergência na
-  conferência, excedente muito acima da franquia) espera a aprovação do responsável.
-- **Ampliar a franquia:** pelo painel (Administração → Plano e uso), só o `admin_cliente`, com um código TOTP novo; o
-  plano de controle muda a quantidade na Stripe, com a cobrança proporcional na hora, e só aplica se o pagamento
-  passar. Reduzir vale no ciclo seguinte. Toda mudança gera auditoria nos dois lados e um recibo por e-mail.
+- **Unidade:** bytes descomprimidos (a regra do `usage-meter.ts`), **GB = 10⁹ bytes**, por dia do calendário de
+  Brasília (vira às 03:00 UTC), numa tabela diária por cliente e fonte (`IngestUsageDay`). Contam os logs da AWS, da
+  GCP e a **auditoria do Cloudflare**; os eventos de segurança do Cloudflare (agregados do GraphQL, do tamanho da
+  consulta da Verax) não contam e ficam só no mês (`IngestUsage`, que segue igual para o plano dos nós dedicados e as
+  telas). O ciclo é o mês: do dia 1º ao último dia.
+- **Como cada fonte entra no dia** _(feito no CE-09)_:
+  - **GCP:** os bytes do `data` de cada mensagem, depois do ack, no dia do `publishTime` (não no da leitura);
+  - **Cloudflare:** os bytes UTF-8 do JSON de cada entrada da auditoria, no dia da entrada (a inválida, no da leitura);
+  - **AWS na célula:** medida **na origem**, por cliente, pela tarefa `aws-volume` (`usage/aws-volume.ts`): lista as
+    pastas de dia da conta nos buckets cadastrados (`AWSLogs/<conta>/CloudTrail|GuardDuty|WAFLogs/<região>/…`, a trilha
+    de organização e o WAF do CloudFront também), lê os 4 últimos bytes de cada objeto novo (o ISIZE do gzip, com a
+    estimativa marcada quando ele é impossível) e conta o objeto no dia em que ele foi criado, só a partir da primeira
+    verificação bem-sucedida da conta (`CloudAccount.meteredFrom`: o histórico nunca é cobrado). Cada objeto fica
+    registrado por 62 dias (`AwsVolumeObject`, pelo hash do bucket e da chave) e conta uma vez só; a leitura nunca
+    volta mais de 60 dias (o que é relido ainda está no registro), e o total do dia é regravado como a soma do registro
+    (valor absoluto), sob um lock por cliente (duas execuções juntas nunca fazem o total regredir). **A identidade é a do cliente** (`TenantAwsIdentity`): até o
+    CE-11, a célula não tem identidade de cliente nenhum, e a tarefa não chama a AWS (a identidade da célula nunca serve
+    para ler a conta de um cliente);
+  - **AWS no nó dedicado:** continua pelo analysisd (`wazuh-usage`), que agora também grava o dia da leitura.
+- **O analysisd na célula** _(feito no CE-09)_: sem `multiple_tenants` e sem dono; a diferença dos contadores vai só
+  para o contador do nó por dia (`NodeUsageDay`, métrica `analysisd`), a conferência do volume medido na origem (a
+  faixa e a marca `reconcile_divergent` são do CE-13, com a saúde da AWS por cliente; até lá, a célula não avisa
+  parada da AWS).
+- **Relatório `usage.daily`** _(o conteúdo é do CE-09; o canal, do CE-05)_: `usageDailyReports(db, clientes, agora)`
+  (`usage/usage-daily.ts`) devolve, por cliente e dia (hoje e ontem), as três fontes com os valores **absolutos** do
+  dia (zero quando não houve leitura), no contrato `usageDailyReportSchema` (`packages/shared/src/usage-day.ts`);
+  `final` só depois das 06:00 de Brasília do dia seguinte. Mandar de novo não soma nada.
+- **Só o sistema grava** o volume por dia: o escopo do cliente lê o `IngestUsageDay` e o `AwsVolumeObject`, mas recusa
+  gravá-los (`SYSTEM_WRITTEN_MODELS`), e um meta-teste confere que só o medidor e a medição na origem os gravam.
+- **Contador no painel** _(feito no CE-10)_: no `GET /v1/plan`, o cliente com franquia no plano (a Plataforma, só na
+  célula) recebe o bloco `franchise` (`franchiseUsageSchema`, `packages/shared/src/franchise.ts`): o ciclo, o dia `k`
+  de `D`, a franquia de hoje e a agenda do ciclo, o orçamento `B = Σ F_d`, o volume do ciclo `U_k`, a média `U_k / k`,
+  a projeção `U_k / k × D`, o excedente projetado em centésimos de GB/dia e os últimos 30 dias por fonte. Nenhum
+  valor em dinheiro. Em Administração → Plano e uso, o cartão da franquia mostra a barra `U_k / B` com a marca em
+  `k / D`, os números e as colunas por dia e fonte (com a tabela), e o botão "Ampliar franquia" desligado, com o aviso
+  de que chega em breve. Até a agenda chegar pelo estado desejado (CE-19), a franquia do `TenantPlan` vale para o
+  ciclo inteiro.
+- **Excedente** _(a construir, CE-20)_: a média diária do ciclo menos a franquia ponderada pelos dias em que valeu,
+  arredondada para baixo (a dúvida a favor do cliente), em centésimos de GB/dia (`overageUnits`, a mesma conta da
+  projeção do painel). Vai à Stripe como um evento de medidor por ciclo fechado, com identificador idempotente, e cai
+  na fatura seguinte. Um ciclo estranho (dia sem fechamento, divergência na conferência, excedente muito acima da
+  franquia) espera a aprovação do responsável.
+- **Ampliar a franquia** _(a construir, CE-19)_: pelo painel (Administração → Plano e uso), só o `admin_cliente`, com
+  um código TOTP novo; o plano de controle muda a quantidade na Stripe, com a cobrança proporcional na hora, e só
+  aplica se o pagamento passar. Reduzir vale no ciclo seguinte. Toda mudança gera auditoria nos dois lados e um recibo
+  por e-mail.
 
 ### Provisionamento e escolha da célula _(a construir, CE-15)_
 
@@ -1543,11 +1590,13 @@ recusa mudar o estado de um cliente que está num estado do ciclo de vida.
   do cadastro continua editável. O painel mostra os três estados ("Suspenso", "Cancelado" e "Em exclusão") e não
   oferece o botão de desativar ou reativar para eles. O escopo do cliente recusa gravar o `status` do próprio cadastro.
 
-### Exclusão e a promessa dos 100 dias na célula _(a construir, CE-03 e CE-16)_
+### Exclusão e a promessa dos 100 dias na célula _(a construir, CE-16; a infraestrutura, feita no CE-03)_
 
 Na célula, a VM continua no ar depois do cancelamento. Com o calendário do nó dedicado (dados até D+30), os backups da
 célula com o cliente viveriam até cerca de D+129, e a frase do site ("eliminados também dos backups em até 100 dias")
-deixaria de valer. Por isso a célula tem calendário próprio e backups de 85 dias:
+deixaria de valer. Por isso a célula tem calendário próprio e backups de 85 dias (**feito no CE-03**: o
+`backup_retention_days` do módulo do nó, 85 no `envs/celula`, que recusa mais que isso, e o bucket das exportações, com
+31 dias de ciclo de vida e a VM só criando objetos na pasta da célula):
 
 | Quando                 | O que acontece                                                                                                                                                                                                                                                                                                            |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

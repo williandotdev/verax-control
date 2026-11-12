@@ -80,3 +80,11 @@ WAZUH_AGENTS=false
 # (`<prefixo>-admin-bootstrap` e `<prefixo>-support-bootstrap`, criados pelo Terraform do tenant); e o worker publica o
 # estado do nó nos guest attributes da VM (`verax/*`). Sem a linha, vale false: o nó da Verax não muda.
 CUSTOMER_MODE=false
+# Célula compartilhada (NODE_MODE=cell; sem a linha, dedicated): o nó atende vários clientes da Plataforma, cada um no
+# próprio endereço (`api-<subdomínio>.<CELL_DOMAIN>`); a API amarra cada requisição ao cliente do endereço, e a equipe
+# da Verax só entra pelo endereço `api-<CELL_STAFF_SLUG>`. Só no perfil standard, sem o PLAN e os ajustes (o plano é de
+# cada cliente, gravado pelo plano de controle), sem o CUSTOMER_MODE e sem os agentes do Wazuh. O primeiro administrador
+# de cada cliente vem do plano de controle (verax-tenant-bootstrap). Roteiro em docs/runbooks/celula.md.
+# NODE_MODE=cell
+# CELL_DOMAIN=exemplo.com.br
+# CELL_STAFF_SLUG=verax

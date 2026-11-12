@@ -1,0 +1,16 @@
+# Só para o `plan` de aceite (docs/runbooks/celula.md): quem aplica este ambiente é o executor Terraform do plano de
+# controle, com as variáveis de cada execução. Copie para `terraform.tfvars` (que o git ignora). Valores fictícios.
+
+project_id                = "projeto-dos-nos-123"
+cell_project_id           = "projeto-da-celula-123"
+cell_id                   = "sp1"
+slug                      = "cliente-demo-a"
+cell_node_service_account = "verax-celula@projeto-da-celula-123.iam.gserviceaccount.com"
+control_plane_sa          = "cp-worker@projeto-do-plano-de-controle.iam.gserviceaccount.com"
+
+# gcp_sources = {
+#   "00000000-0000-7000-8000-000000000001" = {
+#     project_id      = "projeto-do-cliente-123"
+#     writer_identity = "serviceAccount:service-123456789012@gcp-sa-logging.iam.gserviceaccount.com"
+#   }
+# }

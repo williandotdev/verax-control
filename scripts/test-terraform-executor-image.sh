@@ -13,6 +13,7 @@ set -euo pipefail
 image=${1:-verax-terraform-executor:teste}
 root=$(cd "$(dirname "$0")/.." && pwd)
 tenant=/opt/verax/infra/gcp/envs/tenant
+cell_tenant=/opt/verax/infra/gcp/envs/cell-tenant
 
 failures=0
 expect() { # <descrição> <esperado (regex)> <obtido>
@@ -51,6 +52,14 @@ offline=$(docker run "${hardened[@]}" --entrypoint /bin/sh \
   "terraform -chdir=$tenant init -backend=false -lockfile=readonly -input=false -no-color >/tmp/init.log 2>&1 || { cat /tmp/init.log; exit 1; }
    terraform -chdir=$tenant test -no-color 2>&1 | tail -n 1" 2>&1 || true)
 expect 'sem rede: init pelo espelho e os testes do envs/tenant dentro da imagem' 'Success! [0-9]+ passed, 0 failed\.' "$offline"
+# O cliente da célula (CE-07): o mesmo espelho serve o lock dele, e os testes dele rodam dentro da imagem.
+offline=$(docker run "${hardened[@]}" --entrypoint /bin/sh \
+  -v "$root/infra/gcp/envs/cell-tenant/tests:$cell_tenant/tests:ro" \
+  -e TF_CLI_CONFIG_FILE=/opt/verax/terraform.rc -e TF_DATA_DIR=/tmp/terraform-data -e HOME=/tmp \
+  -e TF_IN_AUTOMATION=1 -e CHECKPOINT_DISABLE=1 "$image" -c \
+  "terraform -chdir=$cell_tenant init -backend=false -lockfile=readonly -input=false -no-color >/tmp/init.log 2>&1 || { cat /tmp/init.log; exit 1; }
+   terraform -chdir=$cell_tenant test -no-color 2>&1 | tail -n 1" 2>&1 || true)
+expect 'sem rede: init pelo espelho e os testes do envs/cell-tenant dentro da imagem' 'Success! [0-9]+ passed, 0 failed\.' "$offline"
 
 # O entrypoint recusa antes de qualquer Terraform (código 2).
 code=0

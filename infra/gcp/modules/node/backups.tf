@@ -1,5 +1,6 @@
 # Backups do banco do nó (o pacote do nó grava aqui todo dia). Privado, versionado e só com acesso pelas
-# permissões do projeto (sem lista de acesso por objeto). Objetos com mais de 90 dias são apagados.
+# permissões do projeto (sem lista de acesso por objeto). Objetos com mais de `backup_retention_days` dias são apagados
+# (90 por padrão; 85 na célula, para a promessa dos 100 dias depois do expurgo de um cliente).
 
 # nosemgrep: terraform.gcp.security.gcp-cloud-storage-logging.gcp-cloud-storage-logging -- mesmo motivo do checkov abaixo.
 resource "google_storage_bucket" "backups" {
@@ -24,7 +25,7 @@ resource "google_storage_bucket" "backups" {
 
   lifecycle_rule {
     condition {
-      age = 90
+      age = var.backup_retention_days
     }
     action {
       type = "Delete"

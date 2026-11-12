@@ -290,6 +290,22 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   (ativa, `exited`, antes do Docker) e `sudo iptables -S DOCKER-USER` (o salto `-d 169.254.169.254/32 -j VERAX-METADATA`
   antes do `RETURN` do Docker, sem nenhuma regra com `-s`).
 
+## O nó da Verax na célula (NODE_MODE=cell)
+
+O SOC da Verax muda do nó `lean` para a célula compartilhada (`infra/gcp/envs/celula`, perfil `standard`), onde é o
+primeiro cliente (docs/ARQUITETURA.md, "Célula compartilhada (Plataforma)"). A célula subiu primeiro como nó dedicado
+(`NODE_MODE` ausente, `PLAN=interno`). A troca para o modo célula, a adoção do cliente da Verax e o primeiro acesso de
+cada cliente estão em `docs/runbooks/celula.md`. O que muda neste roteiro na célula:
+
+- o `node.conf` ganha `NODE_MODE=cell`, `CELL_DOMAIN` e `CELL_STAFF_SLUG`, e perde o `PLAN` e os ajustes (o plano é de
+  cada cliente); `CUSTOMER_MODE` e `WAZUH_AGENTS` ficam desligados, e o perfil é o `standard`. O `install.sh` e o
+  `start.sh` recusam outra combinação, sem escrever nada;
+- a API recebe o modo, o domínio e o subdomínio da equipe, e o worker o modo e as pastas dos pedidos do primeiro acesso.
+  Ficam de fora o tópico do sink pelo nome do projeto (na célula, o tópico é de cada conta, `envs/cell-tenant`) e o
+  `NODE_SA_UNIQUE_ID` (a conta de serviço da VM é de todos os clientes; a identidade da AWS passa a ser de cada um);
+- o `start.sh bootstrap` continua sendo o do primeiro `admin_verax`, no endereço da equipe;
+- os backups ficam 85 dias no bucket (e não 90).
+
 ## Backups e restauração
 
 - Todo dia, `pg_dump` vai para `gs://BUCKET_DE_BACKUPS/postgres/`. A VM cria e lê, mas não apaga; a retenção é do

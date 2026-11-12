@@ -11,6 +11,14 @@
 #                        de cliente, com as entradas dos metadados da VM e as senhas gravadas no Secret Manager
 #   start.sh tunnel      depois de um `up` sem o token do túnel: relê só o cofre do token e, com valor, sobe o
 #                        cloudflared (sai com 3 enquanto o cofre não tem valor); a instalação sem operador o usa
+#   start.sh tenant-bootstrap <id do cliente>
+#                        célula (NODE_MODE=cell): o primeiro administrador de um cliente da célula, a partir do pedido
+#                        que o worker deixou, com a senha gravada no cofre do cliente (`vxt-<subdomínio>-admin-bootstrap`)
+#   start.sh tenant-bootstrap-pending
+#                        célula: todos os pedidos pendentes (verax-tenant-bootstrap.service, pelo .path e pelo timer)
+#   start.sh cell-adopt [<subdomínio>]
+#                        o cliente do nó que vira célula (o SOC da Verax) ganha o endereço e o plano `interno`, se não
+#                        tiver; idempotente. Na célula, o padrão é CELL_STAFF_SLUG (docs/runbooks/celula.md)
 #   start.sh render      só monta os arquivos de ambiente (o que o up faz antes de subir; usado pelo teste do pacote)
 #
 # Os arquivos de ambiente ficam em /run/verax (memória, só root): somem ao desligar e são montados de novo a cada
@@ -80,6 +88,30 @@ CUSTOMER_BOOTSTRAP_INPUTS=(
 CUSTOMER_SECRETS=(admin-bootstrap support-bootstrap)
 CUSTOMER_PAYLOADS_MOUNT=/run/verax-bootstrap
 BOOTSTRAP_UID=$WORKER_UID
+# Célula compartilhada (CE-04; NODE_MODE=cell no node.conf; sem a linha, dedicated): um nó para vários clientes da
+# Plataforma. A API recebe o modo, o domínio e o subdomínio da equipe (CELL_DOMAIN e CELL_STAFF_SLUG) e amarra cada
+# requisição ao cliente do endereço; o worker recebe o modo. Sem o PLAN do node.conf (o plano é de cada cliente, gravado
+# pelo plano de controle), sem o primeiro acesso pelos metadados (CUSTOMER_MODE), sem os agentes do Wazuh (v1) e só no
+# perfil standard. O nó dedicado não muda: sem a linha, os arquivos de ambiente saem como antes.
+cell() { [[ ${NODE_MODE:-dedicated} == cell ]]; }
+# O primeiro administrador de cada cliente da célula: o worker deixa um pedido sem segredo (`<id do cliente>`, com o
+# subdomínio e o e-mail) na pasta de pedidos (montada com escrita só nele, em TENANT_BOOTSTRAP_DIR); o
+# verax-tenant-bootstrap.path vê a pasta com arquivo e roda o `tenant-bootstrap-pending`. O host grava a senha no cofre
+# do cliente e responde na pasta de estado (só leitura no worker, em TENANT_BOOTSTRAP_STATUS_DIR): `ok` ou `error`. As
+# senhas passam só pela pasta das senhas de cada pedido, no tmpfs e só de root, montada no contêiner do bootstrap.
+TENANT_REQUESTS=$run/tenant-bootstrap
+TENANT_REQUESTS_MOUNT=/run/tenant-bootstrap
+TENANT_STATUS=$run/tenant-bootstrap-status
+TENANT_STATUS_MOUNT=/run/tenant-bootstrap-status
+TENANT_PAYLOADS=$run/tenant-bootstrap-payloads
+# O cofre da senha temporária de cada cliente da célula (envs/cell-tenant): `vxt-<subdomínio>-admin-bootstrap`.
+TENANT_SECRET_PREFIX=vxt
+# Formatos: o id do cliente (UUID em minúsculas), o subdomínio (a regra do `isTenantSlug` da API e do plano de controle)
+# e o domínio da célula (a do `isCellDomain`).
+re_tenant_id='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+re_tenant_slug='^[a-z][a-z0-9-]{1,14}[a-z0-9]$'
+re_cell_domain='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+is_tenant_slug() { [[ $1 =~ $re_tenant_slug && ${1:2:2} != '--' ]]; }
 # Servidor de metadados da VM e API do Secret Manager (o teste do pacote troca pelos falsos), e a versão instalada.
 metadata_url=http://metadata.google.internal/computeMetadata/v1
 secretmanager_url=https://secretmanager.googleapis.com/v1
@@ -98,6 +130,9 @@ compose() { # [--base] <argumentos do compose...>; --base: sem o compose.wazuh.y
   # aplicação). Sem ele (o nó da Verax), os serviços são os de antes do cofre: os do compose.yaml (e os do Wazuh, no
   # standard).
   if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then files+=(-f /opt/verax/compose.vault.yaml); fi
+  # Na célula, o worker ganha as pastas dos pedidos do primeiro acesso de cada cliente (compose.cell.yaml), também com
+  # --base. O nó dedicado não muda.
+  if cell; then files+=(-f /opt/verax/compose.cell.yaml); fi
   # Antes do render (no `down` depois de um reboot), o arquivo da memória ainda não existe; o `down` não precisa dele.
   if [[ -f $run/memory.env ]]; then env_files+=(--env-file "$run/memory.env"); fi
   docker compose --project-directory /opt/verax "${files[@]}" "${env_files[@]}" "$@"
@@ -372,6 +407,61 @@ wazuh_agents() {
   agents_worker=(WAZUH_AGENTS_FILE=/run/wazuh-agents/agents.json "WAZUH_AGENTS_TENANT=$WAZUH_AGENTS_TENANT")
 }
 
+# O modo do nó, conferido antes de qualquer arquivo ser escrito, nos mesmos formatos do install.sh e da API. Preenche
+# `cell_api` (o modo, o domínio e o subdomínio da equipe) e `cell_worker` (o modo e as pastas dos pedidos), declaradas no
+# render; no nó dedicado, as duas ficam vazias e nada muda.
+node_mode() {
+  local key
+  case ${NODE_MODE:-dedicated} in
+    dedicated) return 0 ;;
+    cell) ;;
+    *)
+      echo 'NODE_MODE inválido em /etc/verax/node.conf: use dedicated ou cell.' >&2
+      return 1
+      ;;
+  esac
+  if ! standard; then
+    echo 'NODE_MODE=cell só no perfil standard (NODE_PROFILE em /etc/verax/node.conf).' >&2
+    return 1
+  fi
+  if [[ ${CUSTOMER_MODE:-false} == true ]]; then
+    echo 'NODE_MODE=cell não usa o CUSTOMER_MODE: o primeiro acesso de cada cliente vem do plano de controle (start.sh tenant-bootstrap).' >&2
+    return 1
+  fi
+  if [[ ${WAZUH_AGENTS:-false} == true ]]; then
+    echo 'NODE_MODE=cell não tem os agentes do Wazuh (v1): tire WAZUH_AGENTS de /etc/verax/node.conf.' >&2
+    return 1
+  fi
+  for key in PLAN PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
+    if [[ -n ${!key:-} ]]; then
+      echo "NODE_MODE=cell não aceita $key: o plano é de cada cliente, gravado pelo plano de controle. Tire a linha de /etc/verax/node.conf." >&2
+      return 1
+    fi
+  done
+  local domain=${CELL_DOMAIN:-}
+  if ((${#domain} > 200)) || [[ ! $domain =~ $re_cell_domain ]]; then
+    echo 'CELL_DOMAIN inválido em /etc/verax/node.conf: o domínio dos endereços, em minúsculas, sem ponto no fim (ex.: exemplo.com.br).' >&2
+    return 1
+  fi
+  if ! is_tenant_slug "${CELL_STAFF_SLUG:-}"; then
+    echo 'CELL_STAFF_SLUG inválido em /etc/verax/node.conf: o subdomínio da equipe da Verax (3 a 16 caracteres: minúsculas, números e hífen).' >&2
+    return 1
+  fi
+  cell_api=(NODE_MODE=cell "CELL_DOMAIN=$CELL_DOMAIN" "CELL_STAFF_SLUG=$CELL_STAFF_SLUG")
+  cell_worker=(NODE_MODE=cell "TENANT_BOOTSTRAP_DIR=$TENANT_REQUESTS_MOUNT"
+    "TENANT_BOOTSTRAP_STATUS_DIR=$TENANT_STATUS_MOUNT")
+}
+
+# As pastas do primeiro acesso dos clientes da célula: a dos pedidos (root:<grupo do worker> 1770: o worker grava, o
+# bit t impede que ele troque o que não é dele, e o host apaga o pedido atendido), a das respostas (0755 de root: o
+# worker só lê) e a das senhas (0700 de root; uma pasta por pedido, do usuário do contêiner do bootstrap). Ficam no
+# tmpfs e sobrevivem à parada (um pedido pendente é atendido na partida seguinte).
+tenant_bootstrap_dirs() {
+  install -d -m 1770 -o 0 -g "$WORKER_UID" "$TENANT_REQUESTS"
+  install -d -m 0755 -o 0 -g 0 "$TENANT_STATUS"
+  install -d -m 0700 -o 0 -g 0 "$TENANT_PAYLOADS"
+}
+
 render() {
   case ${NODE_PROFILE:-lean} in
     lean | standard) ;;
@@ -381,6 +471,8 @@ render() {
       ;;
   esac
   if standard; then wazuh_passwords; fi
+  local cell_api=() cell_worker=()
+  node_mode || return 1
   local agents_api=() agents_worker=()
   case ${WAZUH_AGENTS:-false} in
     # O `|| return` deixa a parada explícita também quando o render roda num contexto sem `set -e` (o teste).
@@ -465,18 +557,30 @@ render() {
   if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then mail_worker=("${mail[@]}" "WEB_ORIGIN=$WEB_ORIGIN"); fi
   # Plano do nó, o mesmo na API e no worker. Os ajustes só entram quando definidos no node.conf; a API e o worker
   # conferem a combinação na partida (no enterprise, os quatro são obrigatórios).
-  local plan=("PLAN=${PLAN:?defina PLAN em /etc/verax/node.conf}") key
-  for key in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
-    if [[ -n ${!key:-} ]]; then plan+=("$key=${!key}"); fi
-  done
+  # Na célula, nada do plano: no lugar dele, o modo da célula (`cell_api` e `cell_worker`).
+  local plan=() key
+  if cell; then
+    plan=("${cell_api[@]}")
+  else
+    plan=("PLAN=${PLAN:?defina PLAN em /etc/verax/node.conf}")
+    for key in PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
+      if [[ -n ${!key:-} ]]; then plan+=("$key=${!key}"); fi
+    done
+  fi
+  local plan_worker=("${plan[@]}")
+  if cell; then plan_worker=("${cell_worker[@]}"); fi
   # Tópico do nó para o sink de um projeto GCP de cliente: Contas cloud monta o comando do sink com ele. É o nome que
   # o módulo do Terraform dá ao tópico de cada projeto (`<prefixo>-security-<projeto>`, no projeto do nó; o prefixo é
   # o mesmo dos cofres), sem o projeto no fim. Não é segredo. Um teste da API confere que os dois continuam iguais.
   # A API só aceita a variável no formato do módulo (as mesmas regras de project_id e name_prefix, que o install.sh
   # já confere): com um node.conf editado depois fora delas, a variável fica de fora e a API sobe mesmo assim, com
   # Contas cloud mostrando o comando com o tópico a preencher.
+  # Na célula, o tópico é de cada conta (`vxc-<célula>-gcp-<UUID da conta>`, envs/cell-tenant), nunca o do nome do
+  # projeto (que voltaria depois da exclusão de um cliente): a API sobe sem o prefixo.
   local sink_topic=()
-  if [[ $VERAX_GCP_PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ && $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]]; then
+  if cell; then
+    :
+  elif [[ $VERAX_GCP_PROJECT =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ && $VERAX_SECRET_PREFIX =~ ^[a-z][a-z0-9-]{3,18}$ ]]; then
     sink_topic=("GCP_SINK_TOPIC_PREFIX=projects/$VERAX_GCP_PROJECT/topics/$VERAX_SECRET_PREFIX-security-")
   else
     echo "AVISO: VERAX_GCP_PROJECT ou VERAX_SECRET_PREFIX fora do formato em /etc/verax/node.conf: a API sobe sem o" \
@@ -504,7 +608,13 @@ render() {
   # assim (sem o ID, a tela o pede à Verax; sem o audience, vale o padrão do template). Sem nenhum dos dois, o api.env
   # sai como antes.
   local aws_reader=()
-  if [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
+  # Na célula, a conta de serviço da VM é de todos os clientes: mostrada como o `NodeServiceAccountId` da pilha, deixaria
+  # um cliente cadastrar a conta AWS de outro (o confused deputy). A identidade é de cada cliente (CE-11); até lá, a
+  # variável fica de fora, com o aviso.
+  if cell && [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
+    echo "AVISO: NODE_SA_UNIQUE_ID não vale na célula (a conta de serviço da VM é de todos os clientes): a API e o" \
+      "worker sobem sem ela, e a conexão da AWS espera a identidade de cada cliente." >&2
+  elif [[ -n ${NODE_SA_UNIQUE_ID:-} ]]; then
     if [[ $NODE_SA_UNIQUE_ID =~ ^[0-9]{21}$ ]]; then
       aws_reader+=("NODE_SA_UNIQUE_ID=$NODE_SA_UNIQUE_ID")
     else
@@ -575,7 +685,7 @@ render() {
     NODE_ENV=production LOG_LEVEL=info \
     "SYNC_SOURCES=$SYNC_SOURCES" SYNC_INTERVAL_SECONDS=60 \
     "${mail_worker[@]}" \
-    "${plan[@]}" \
+    "${plan_worker[@]}" \
     "${indexer[@]}" \
     "${egress[@]}" \
     "${aws_reader[@]}" \
@@ -634,6 +744,7 @@ wazuh_up() {
   COMPOSE_FILE=/opt/verax/compose.yaml:/opt/verax/compose.wazuh.yaml
   if agents; then COMPOSE_FILE+=:/opt/verax/compose.wazuh-agents.yaml; fi
   if [[ ${CREDENTIALS_VAULT:-false} == true ]]; then COMPOSE_FILE+=:/opt/verax/compose.vault.yaml; fi
+  if cell; then COMPOSE_FILE+=:/opt/verax/compose.cell.yaml; fi
   export COMPOSE_FILE
   export COMPOSE_ENV_FILES=/etc/verax/images.env,$run/memory.env
   install -d -m 0700 "$WAZUH_AWS"
@@ -688,6 +799,9 @@ up() {
   # Standard: a pasta dos sinais do Wazuh antes de o worker subir (o compose.wazuh.yaml a monta nele, com escrita). Sem
   # ela, o Docker a criaria só para o root, e a tarefa wazuh-config do worker falharia até o wazuh-up.
   if standard; then wazuh_signal_dir; fi
+  # Célula: as pastas dos pedidos do primeiro acesso antes de o worker subir (o compose.cell.yaml as monta nele). Sem
+  # elas, o Docker criaria a dos pedidos só para o root, e o worker não gravaria.
+  if cell; then tenant_bootstrap_dirs; fi
   # Só as imagens da aplicação: as do Wazuh ficam para o `wazuh-up`, e o painel não espera por elas.
   pull_images --base
   compose up --detach --wait postgres
@@ -811,7 +925,12 @@ vm_token_header() { # <pasta>
 # qualquer outro erro (permissão, segredo que não existe) para na hora. Do erro, só o código e o status do Google
 # (`PERMISSION_DENIED`, `NOT_FOUND`), nunca o corpo.
 secret_add_version() { # <nome> <conteúdo>
-  local secret=$VERAX_SECRET_PREFIX-$1 work code reason attempt
+  secret_add_version_to "$VERAX_SECRET_PREFIX-$1" "$2"
+}
+
+# O mesmo, com o nome inteiro do segredo (na célula, o cofre de cada cliente: `vxt-<subdomínio>-admin-bootstrap`).
+secret_add_version_to() { # <segredo> <conteúdo>
+  local secret=$1 work code reason attempt
   work=$(mktemp -d "$run/.secret-add.XXXXXX")
   { printf '{"payload":{"data":"'; printf '%s' "$2" | base64 -w0; printf '"}}'; } >"$work/body"
   for attempt in 1 2 3 4 5; do
@@ -843,9 +962,14 @@ secret_add_version() { # <nome> <conteúdo>
 # que não seja regular (um link para outro arquivo do host, por exemplo) ou fora do formato do contrato é recusado sem
 # ser enviado.
 push_customer_secrets() { # <pasta>
-  local dir=$1 name file content
+  push_payloads "$1" "$VERAX_SECRET_PREFIX" "${CUSTOMER_SECRETS[@]}"
+}
+
+# O mesmo, para os nomes dados, cada um no segredo `<prefixo>-<nome>`.
+push_payloads() { # <pasta> <prefixo do segredo> <nome...>
+  local dir=$1 prefix=$2 name file content
   local shape='^\{"email":"[^"]{3,254}","password":"[^"]{16,}","expiresAt":"[^"]{20,40}"\}$'
-  for name in "${CUSTOMER_SECRETS[@]}"; do
+  for name in "${@:3}"; do
     file=$dir/$name.json
     [[ -e $file || -L $file ]] || continue
     if [[ -L $file || ! -f $file ]]; then
@@ -857,9 +981,9 @@ push_customer_secrets() { # <pasta>
       echo "$file fora do formato do contrato: nada foi gravado no Secret Manager." >&2
       return 1
     fi
-    secret_add_version "$name" "$content" || return 1
+    secret_add_version_to "$prefix-$name" "$content" || return 1
     rm -f "$file"
-    echo "Senha nova gravada no Secret Manager ($VERAX_SECRET_PREFIX-$name)."
+    echo "Senha nova gravada no Secret Manager ($prefix-$name)."
   done
 }
 
@@ -913,6 +1037,167 @@ customer_bootstrap() {
   return "$status"
 }
 
+# O pedido do worker para um cliente: `<pasta de pedidos>/<id>`, com exatamente duas linhas, `slug=<subdomínio>` e
+# `email=<e-mail do administrador>`. O conteúdo vem do worker: só um arquivo comum (nunca um link), até 512 bytes, e cada
+# valor no formato, ou o pedido é recusado. Nenhum valor vai para a tela. Preenche `request_slug` e `request_email`.
+read_tenant_request() { # <id>
+  local file=$TENANT_REQUESTS/$1 line key value
+  request_slug='' request_email=''
+  if [[ -L $file || ! -f $file ]]; then
+    echo "O pedido do cliente $1 não é um arquivo comum: nada foi feito." >&2
+    return 1
+  fi
+  if (($(wc -c <"$file") > 512)); then
+    echo "O pedido do cliente $1 passa de 512 bytes: nada foi feito." >&2
+    return 1
+  fi
+  while IFS= read -r line || [[ -n $line ]]; do
+    key=${line%%=*}
+    value=${line#*=}
+    case $key in
+      slug) if [[ -z $request_slug ]]; then request_slug=$value; else request_slug='!'; fi ;;
+      email) if [[ -z $request_email ]]; then request_email=$value; else request_email='!'; fi ;;
+      *) request_slug='!' ;;
+    esac
+  done <"$file"
+  if ! is_tenant_slug "$request_slug"; then
+    echo "O pedido do cliente $1 não traz um subdomínio válido (uma linha slug=...): nada foi feito." >&2
+    return 1
+  fi
+  # Uma régua larga (sem espaço, sem controle, um @ só e um ponto no domínio): o contêiner confere de novo, com a regra
+  # do painel. O valor vai ao contêiner por variável de ambiente, nunca interpretado pelo shell.
+  local re_email='^[^[:space:][:cntrl:]@]+@[^[:space:][:cntrl:]@]+\.[^[:space:][:cntrl:]@]+$'
+  if ((${#request_email} > 254)) || [[ ! $request_email =~ $re_email ]]; then
+    echo "O pedido do cliente $1 não traz um e-mail válido (uma linha email=...): nada foi feito." >&2
+    return 1
+  fi
+}
+
+# A resposta ao worker, na pasta de estado: `ok` ou `error`, numa troca de uma vez (rename).
+tenant_status() { # <id> <ok|error>
+  local file
+  file=$(mktemp "$TENANT_STATUS/.$1.XXXXXX")
+  printf '%s\n' "$2" >"$file"
+  chmod 0644 "$file"
+  mv -fT "$file" "$TENANT_STATUS/$1"
+}
+
+# Célula: o primeiro administrador de um cliente (o pedido que o worker deixou). Roda o node-bootstrap no modo
+# cell-tenant (as entradas vão por variável de ambiente do `compose run`, nunca por argumento) e grava a senha no cofre
+# do cliente, `vxt-<subdomínio>-admin-bootstrap`; o contêiner confere no banco que o cliente existe, está ativo e tem
+# esse subdomínio. Uma senha que não chegou ao cofre (o subdomínio dela fica num arquivo do host, fora da pasta montada)
+# vai antes de tudo. Atendido, o pedido sai da pasta e a resposta é `ok`; numa falha, o pedido fica para a próxima
+# tentativa, e a resposta é `error`.
+tenant_bootstrap() { # <id do cliente>
+  local id=${1:-} dir slug_file status lock request_slug request_email
+  if ! cell; then
+    echo 'O tenant-bootstrap só existe na célula (NODE_MODE=cell em /etc/verax/node.conf).' >&2
+    return 2
+  fi
+  if [[ ! $id =~ $re_tenant_id ]]; then
+    echo 'Informe o id do cliente (UUID em minúsculas).' >&2
+    return 2
+  fi
+  if [[ ! -f $run/api.env || ! -f $run/bootstrap.env ]]; then
+    echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
+    return 1
+  fi
+  exec {lock}>"$run/.tenant-bootstrap.lock"
+  if ! flock -w 600 "$lock"; then
+    echo 'Outro tenant-bootstrap está rodando há mais de 10 minutos: tente de novo depois.' >&2
+    return 1
+  fi
+  tenant_bootstrap_dirs
+  dir=$TENANT_PAYLOADS/$id
+  slug_file=$TENANT_PAYLOADS/$id.slug
+  install -d -m 0700 -o "$BOOTSTRAP_UID" -g "$BOOTSTRAP_UID" "$dir"
+  rm -f "$dir"/.*.tmp
+  # Nada além da senha do administrador sai do contêiner na célula.
+  if [[ -e $dir/support-bootstrap.json || -L $dir/support-bootstrap.json ]]; then
+    echo "$dir/support-bootstrap.json não existe na célula: nada foi gravado no Secret Manager. Apague-o e rode de novo." >&2
+    tenant_status "$id" error
+    return 1
+  fi
+  if [[ -e $dir/admin-bootstrap.json || -L $dir/admin-bootstrap.json ]]; then
+    if [[ ! -f $slug_file ]] || ! is_tenant_slug "$(<"$slug_file")"; then
+      echo "Há senha pendente do cliente $id sem o subdomínio dela: nada foi gravado. Apague $dir e rode de novo." >&2
+      tenant_status "$id" error
+      return 1
+    fi
+    if ! push_payloads "$dir" "$TENANT_SECRET_PREFIX-$(<"$slug_file")" admin-bootstrap; then
+      tenant_status "$id" error
+      return 1
+    fi
+  fi
+  if [[ ! -e $TENANT_REQUESTS/$id && ! -L $TENANT_REQUESTS/$id ]]; then
+    echo "Nenhum pedido do cliente $id: nada a fazer."
+    return 0
+  fi
+  if ! read_tenant_request "$id"; then
+    tenant_status "$id" error
+    return 1
+  fi
+  printf '%s\n' "$request_slug" >"$slug_file"
+  local -x BOOTSTRAP_MODE=cell-tenant BOOTSTRAP_TENANT_ID=$id BOOTSTRAP_TENANT_SLUG=$request_slug
+  local -x BOOTSTRAP_ADMIN_EMAIL=$request_email
+  local -x BOOTSTRAP_RENEW_ADMIN_PASSWORD=${BOOTSTRAP_RENEW_ADMIN_PASSWORD:-false}
+  status=0
+  compose --profile setup run --rm -T -v "$dir:$CUSTOMER_PAYLOADS_MOUNT" -e BOOTSTRAP_MODE -e BOOTSTRAP_TENANT_ID \
+    -e BOOTSTRAP_TENANT_SLUG -e BOOTSTRAP_ADMIN_EMAIL -e BOOTSTRAP_RENEW_ADMIN_PASSWORD bootstrap || status=$?
+  # O que foi gerado vai para o cofre mesmo se o bootstrap falhou depois.
+  if [[ -e $dir/support-bootstrap.json || -L $dir/support-bootstrap.json ]]; then
+    echo "$dir/support-bootstrap.json não existe na célula: nada foi gravado no Secret Manager." >&2
+    tenant_status "$id" error
+    return 1
+  fi
+  if ! push_payloads "$dir" "$TENANT_SECRET_PREFIX-$request_slug" admin-bootstrap; then
+    tenant_status "$id" error
+    return 1
+  fi
+  if ((status != 0)); then
+    tenant_status "$id" error
+    return "$status"
+  fi
+  rm -f "$TENANT_REQUESTS/$id" "$slug_file"
+  rmdir "$dir" 2>/dev/null || true
+  tenant_status "$id" ok
+}
+
+# Todos os pedidos da pasta, um por vez, cada um num processo à parte (a falha de um não para os outros). Só os nomes no
+# formato de id contam: o arquivo temporário do worker (antes do rename) fica de fora. Sai com 1 se algum falhou.
+tenant_bootstrap_pending() {
+  local file id failed=0
+  if ! cell; then
+    echo 'O tenant-bootstrap só existe na célula (NODE_MODE=cell em /etc/verax/node.conf).' >&2
+    return 2
+  fi
+  [[ -d $TENANT_REQUESTS ]] || return 0
+  for file in "$TENANT_REQUESTS"/*; do
+    id=${file##*/}
+    [[ $id =~ $re_tenant_id ]] || continue
+    (tenant_bootstrap "$id") || failed=1
+  done
+  return "$failed"
+}
+
+# O cliente do nó que vira célula (o SOC da Verax): o node-bootstrap no modo cell-adopt grava o endereço e, se faltar, o
+# plano `interno`, pelos escritores do sistema. Roda antes da troca do NODE_MODE (o nó ainda dedicado, com
+# PLAN=interno: a célula já sobe com o endereço gravado) ou depois; idempotente.
+cell_adopt() { # [<subdomínio>]
+  local slug=${1:-}
+  if [[ -z $slug ]] && cell; then slug=${CELL_STAFF_SLUG:-}; fi
+  if ! is_tenant_slug "$slug"; then
+    echo 'Informe o subdomínio do cliente (no nó dedicado, obrigatório; na célula, o padrão é CELL_STAFF_SLUG).' >&2
+    return 2
+  fi
+  if [[ ! -f $run/api.env || ! -f $run/bootstrap.env ]]; then
+    echo "Arquivos de ambiente ausentes: o 'start.sh up' (verax-node.service) vem antes." >&2
+    return 1
+  fi
+  local -x BOOTSTRAP_MODE=cell-adopt BOOTSTRAP_TENANT_SLUG=$slug
+  compose --profile setup run --rm -T -e BOOTSTRAP_MODE -e BOOTSTRAP_TENANT_SLUG bootstrap
+}
+
 case ${1:-} in
   up) up ;;
   down) down ;;
@@ -922,8 +1207,11 @@ case ${1:-} in
   customer-bootstrap) customer_bootstrap ;;
   tunnel) tunnel ;;
   render) render ;;
+  tenant-bootstrap) tenant_bootstrap "${2:-}" ;;
+  tenant-bootstrap-pending) tenant_bootstrap_pending ;;
+  cell-adopt) cell_adopt "${2:-}" ;;
   *)
-    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|tunnel|render" >&2
+    echo "Uso: start.sh up|down|wazuh-up|wazuh-down|bootstrap|customer-bootstrap|tunnel|render|tenant-bootstrap <id>|tenant-bootstrap-pending|cell-adopt [<subdomínio>]" >&2
     exit 2
     ;;
 esac

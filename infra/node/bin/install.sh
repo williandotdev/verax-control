@@ -72,8 +72,39 @@ fi
 sed -i 's/\r$//' /etc/verax/node.conf
 # shellcheck source=/dev/null
 source /etc/verax/node.conf
-required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET
-  PLAN)
+# Célula compartilhada (NODE_MODE=cell; sem a linha, dedicated; CE-04): vários clientes da Plataforma num nó standard. O
+# plano é de cada cliente (gravado pelo plano de controle), então o PLAN e os ajustes não entram; o primeiro acesso vem
+# do plano de controle, não dos metadados (sem CUSTOMER_MODE); e os agentes do Wazuh ficam desligados (v1). O domínio
+# dos endereços e o subdomínio da equipe da Verax são obrigatórios, nos formatos da API. O start.sh confere de novo.
+[[ ${NODE_MODE:-dedicated} =~ ^(dedicated|cell)$ ]] ||
+  { echo 'NODE_MODE inválido em /etc/verax/node.conf: use dedicated ou cell.' >&2; exit 2; }
+cell=false
+if [[ ${NODE_MODE:-dedicated} == cell ]]; then
+  cell=true
+  [[ ${NODE_PROFILE:-lean} == standard ]] ||
+    { echo 'NODE_MODE=cell só no perfil standard (NODE_PROFILE em /etc/verax/node.conf).' >&2; exit 2; }
+  [[ ${CUSTOMER_MODE:-false} != true ]] ||
+    { echo 'NODE_MODE=cell não usa o CUSTOMER_MODE: o primeiro acesso de cada cliente vem do plano de controle.' >&2; exit 2; }
+  [[ ${WAZUH_AGENTS:-false} != true ]] ||
+    { echo 'NODE_MODE=cell não tem os agentes do Wazuh (v1): tire WAZUH_AGENTS de /etc/verax/node.conf.' >&2; exit 2; }
+  for key in PLAN PLAN_MAX_CLOUD_ACCOUNTS PLAN_MAX_USERS PLAN_MONTHLY_GIB PLAN_HISTORY_DAYS; do
+    [[ -z ${!key:-} ]] ||
+      { echo "NODE_MODE=cell não aceita $key: o plano é de cada cliente. Tire a linha de /etc/verax/node.conf." >&2; exit 2; }
+  done
+  cell_domain=${CELL_DOMAIN:-}
+  if ((${#cell_domain} > 200)) ||
+    [[ ! $cell_domain =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]]; then
+    echo 'CELL_DOMAIN inválido em /etc/verax/node.conf: o domínio dos endereços, em minúsculas, sem ponto no fim.' >&2
+    exit 2
+  fi
+  staff_slug=${CELL_STAFF_SLUG:-}
+  if [[ ! $staff_slug =~ ^[a-z][a-z0-9-]{1,14}[a-z0-9]$ || ${staff_slug:2:2} == '--' ]]; then
+    echo 'CELL_STAFF_SLUG inválido em /etc/verax/node.conf: o subdomínio da equipe da Verax (3 a 16 caracteres).' >&2
+    exit 2
+  fi
+fi
+required=(VERAX_GCP_PROJECT VERAX_SECRET_PREFIX IMAGES_REPOSITORY WEB_ORIGIN API_ORIGIN MAIL_FROM SYNC_SOURCES BACKUP_BUCKET)
+if ! $cell; then required+=(PLAN); fi
 # E-mail opcional (MAIL_TRANSPORT=none por padrão): com smtp, os dados da caixa de envio passam a ser obrigatórios.
 if [[ ${MAIL_TRANSPORT:-none} == smtp ]]; then required+=(SMTP_HOST SMTP_PORT SMTP_USER); fi
 # Plano enterprise: os quatro ajustes são obrigatórios (não há padrão).
@@ -84,9 +115,11 @@ for key in "${required[@]}"; do
   [[ -n ${!key:-} ]] || { echo "Falta $key em /etc/verax/node.conf." >&2; exit 2; }
 done
 # Plano do nó (o da Verax é `interno`). A API e o worker conferem tudo de novo na partida, inclusive a faixa de cada
-# ajuste; aqui, só o nome do plano, para o erro mais comum aparecer antes de reiniciar o serviço.
-[[ $PLAN =~ ^(essencial|profissional|enterprise|interno)$ ]] ||
-  { echo 'PLAN inválido em /etc/verax/node.conf: use essencial, profissional, enterprise ou interno.' >&2; exit 2; }
+# ajuste; aqui, só o nome do plano, para o erro mais comum aparecer antes de reiniciar o serviço. Na célula, nenhum.
+if ! $cell && [[ ! $PLAN =~ ^(essencial|profissional|enterprise|interno)$ ]]; then
+  echo 'PLAN inválido em /etc/verax/node.conf: use essencial, profissional, enterprise ou interno.' >&2
+  exit 2
+fi
 # Perfil do nó: lean (o da Verax) ou standard (nó de cliente). Sem a linha, vale lean: o nó da Verax, instalado antes do
 # perfil, sobe com a mesma memória de antes sem mudar o node.conf. O start.sh escreve os limites de cada perfil.
 [[ ${NODE_PROFILE:-lean} =~ ^(lean|standard)$ ]] ||
@@ -164,8 +197,10 @@ fi
 customer=false
 if [[ ${CUSTOMER_MODE:-false} == true ]]; then customer=true; fi
 install -m 0640 "$here/compose.yaml" /opt/verax/compose.yaml
-# O complemento do cofre de credenciais fica instalado sempre; o start.sh só o usa com CREDENTIALS_VAULT=true.
+# O complemento do cofre de credenciais fica instalado sempre; o start.sh só o usa com CREDENTIALS_VAULT=true. O da célula
+# também; o start.sh só o usa com NODE_MODE=cell.
 install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
+install -m 0640 "$here/compose.cell.yaml" /opt/verax/compose.cell.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" "$here/bin/metadata-guard.sh" /opt/verax/bin/
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
@@ -208,6 +243,13 @@ if $customer; then
     /etc/systemd/system/verax-node.service.d/customer.conf
 elif [[ -f /etc/systemd/system/verax-node.service.d/customer.conf ]]; then
   rm -f /etc/systemd/system/verax-node.service.d/customer.conf
+fi
+
+# Célula: o primeiro acesso de cada cliente (o .path vigia a pasta dos pedidos do worker, o timer tenta de novo). Fora
+# dela, nada disso é instalado; as unidades de uma instalação anterior são desativadas abaixo.
+if $cell; then
+  install -m 0644 "$here"/systemd/cell/*.service "$here"/systemd/cell/*.timer "$here"/systemd/cell/*.path \
+    /etc/systemd/system/
 fi
 
 echo '== Pastas de dados'
@@ -345,6 +387,12 @@ if $agents; then
   systemctl enable --now verax-wazuh-agents.timer >/dev/null
 elif [[ -f /etc/systemd/system/verax-wazuh-agents.timer ]]; then
   systemctl disable --now verax-wazuh-agents.timer >/dev/null 2>&1 || true
+fi
+# Célula: o .path e o timer do primeiro acesso dos clientes, depois do nó no ar (a pasta dos pedidos nasce no `up`).
+if $cell; then
+  systemctl enable --now verax-tenant-bootstrap.path verax-tenant-bootstrap.timer >/dev/null
+elif [[ -f /etc/systemd/system/verax-tenant-bootstrap.path ]]; then
+  systemctl disable --now verax-tenant-bootstrap.path verax-tenant-bootstrap.timer >/dev/null 2>&1 || true
 fi
 systemctl --no-pager --lines=0 status verax-node.service || true
 if $standard; then systemctl --no-pager --lines=0 status verax-wazuh.service || true; fi

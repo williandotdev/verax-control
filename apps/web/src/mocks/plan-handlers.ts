@@ -1,4 +1,12 @@
 import {
+  addDays,
+  brasiliaDay,
+  currentBillingCycle,
+  cycleBudgetGb,
+  FRANCHISE_CHART_DAYS,
+  type FranchiseUsage,
+  franchiseUsageSchema,
+  GB_BYTES,
   GIB_BYTES,
   type HistoryPeriod,
   PERIOD_BEYOND_HISTORY_CODE,
@@ -11,6 +19,7 @@ import {
   planHistorySchema,
   planLimitMessage,
   planUsageSchema,
+  projectedOverageUnits,
   type ResolvedPlan,
   resolvePlan,
 } from '@verax/shared';
@@ -78,6 +87,62 @@ export function demoPlanRefusal(store: AdminStore, tenantId: string, seat: PlanS
   return problem(409, planLimitMessage(seat, limit), PLAN_LIMIT_REACHED_CODE);
 }
 
+/**
+ * A demonstração da Plataforma (CE-10, o plano da célula com franquia em GB/dia): com
+ * `localStorage['verax.mock.plan'] = 'plataforma'` (ou `platform` no estado dos testes), "Plano e uso" mostra o contador
+ * da franquia. Os limites e a franquia são FICTÍCIOS, sem relação com o que a Verax vende.
+ */
+export const MOCK_PLAN_STORAGE_KEY = 'verax.mock.plan';
+
+export const DEMO_PLATFORM_PLAN: ResolvedPlan = {
+  id: 'plataforma',
+  label: 'Plataforma',
+  limits: { maxCloudAccounts: 10, maxUsers: 10, monthlyGib: null, historyDays: 90 },
+};
+export const DEMO_FRANCHISE_GB_PER_DAY = 3;
+
+function demoPlatform(state: Pick<MockState, 'platform'>): boolean {
+  if (state.platform !== undefined) return state.platform;
+  return typeof window !== 'undefined' && window.localStorage.getItem(MOCK_PLAN_STORAGE_KEY) === 'plataforma';
+}
+
+/**
+ * O contador da franquia da demonstração: um volume por dia que oscila um pouco acima da franquia (a AWS entre 2,6 e
+ * 3,2 GB, a GCP 0,35 GB e a auditoria do Cloudflare 0,04 GB), com as contas da API (`packages/shared/src/franchise.ts`).
+ */
+export function demoFranchise(now: Date = new Date()): FranchiseUsage {
+  const cycle = currentBillingCycle(now);
+  const today = brasiliaDay(now);
+  const chartStart = addDays(today, -(FRANCHISE_CHART_DAYS - 1));
+  const volume = (day: string) => {
+    const wave = Number(day.slice(8, 10)) % 4;
+    return { aws: (2.6 + wave * 0.2) * GB_BYTES, gcp: 0.35 * GB_BYTES, cloudflare: 0.04 * GB_BYTES };
+  };
+  let used = 0;
+  for (let day = cycle.start; day <= today; day = addDays(day, 1)) {
+    const { aws, gcp, cloudflare } = volume(day);
+    used += aws + gcp + cloudflare;
+  }
+  const schedule = [{ from: cycle.start, gbPerDay: DEMO_FRANCHISE_GB_PER_DAY }];
+  const budgetGb = cycleBudgetGb(schedule, cycle);
+  used = Math.round(used);
+  return franchiseUsageSchema.parse({
+    cycle,
+    franchiseGbPerDay: DEMO_FRANCHISE_GB_PER_DAY,
+    schedule,
+    budgetGb,
+    usedBytes: used,
+    dailyAverageBytes: Math.floor(used / cycle.day),
+    projectedBytes: Math.floor((used * cycle.days) / cycle.day),
+    projectedOverageUnits: projectedOverageUnits(used, budgetGb, cycle.day, cycle.days),
+    days: Array.from({ length: FRANCHISE_CHART_DAYS }, (_, index) => {
+      const day = addDays(chartStart, index);
+      const { aws, gcp, cloudflare } = volume(day);
+      return { day, aws: Math.round(aws), gcp: Math.round(gcp), cloudflare: Math.round(cloudflare) };
+    }),
+  });
+}
+
 /** O `GET /v1/plan` da demonstração, com as contas e os usuários do estado do mock. */
 export function demoPlanUsage(
   store: AdminStore,
@@ -105,6 +170,15 @@ export function createPlanHandlers(state: MockState, store: AdminStore) {
       if (!state.me.permissions.includes('plan:read')) return problem(403, 'Sem permissão');
       if (!state.me.scopeTenantId) {
         return problem(409, 'Selecione um cliente para continuar', 'TENANT_REQUIRED');
+      }
+      if (demoPlatform(state)) {
+        const now = new Date();
+        return HttpResponse.json(
+          planUsageSchema.parse({
+            ...demoPlanUsage(store, state.me.scopeTenantId, now, DEMO_PLATFORM_PLAN),
+            franchise: demoFranchise(now),
+          }),
+        );
       }
       return HttpResponse.json(demoPlanUsage(store, state.me.scopeTenantId, new Date(), demoNodePlan(state)));
     }),

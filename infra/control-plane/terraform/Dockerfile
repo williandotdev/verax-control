@@ -33,6 +33,8 @@ RUN apk del --no-cache git openssh \
   && adduser -D -H -u 10001 -s /sbin/nologin executor
 COPY --from=providers /providers /opt/verax/providers
 COPY infra/gcp/envs/tenant/ /opt/verax/infra/gcp/envs/tenant/
+# O cliente da célula (CE-07): o mesmo provider, com o mesmo lock (um teste da imagem confere o init pelo espelho).
+COPY infra/gcp/envs/cell-tenant/ /opt/verax/infra/gcp/envs/cell-tenant/
 COPY infra/gcp/modules/node/ /opt/verax/infra/gcp/modules/node/
 COPY infra/node/bin/boot-install.sh infra/node/bin/verify-release.sh /opt/verax/infra/node/bin/
 COPY infra/node/keys/ /opt/verax/infra/node/keys/

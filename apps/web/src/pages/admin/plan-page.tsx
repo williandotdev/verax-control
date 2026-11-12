@@ -10,6 +10,7 @@ import { type ReactNode, useId } from 'react';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Card, CardDescription, CardTitle } from '@/components/ui/card';
 import { AdminShell } from '@/features/admin/admin-ui';
+import { FranchiseCard, FranchiseDaysCard } from '@/features/plan/franchise-card';
 import { usePlanUsage } from '@/features/plan/plan-api';
 import { formatPercent, formatUsageMonth, formatVolume } from '@/features/plan/plan-format';
 import { useMe } from '@/features/session/session';
@@ -28,7 +29,8 @@ const FILL: Readonly<Record<UsageState, string>> = {
 /**
  * "Plano e uso" (fase 2, PR-18): o plano do ambiente e quanto dele o cliente já usa. Só leitura: os limites vêm da
  * configuração do nó (`PLAN` e os ajustes), e para ampliar o cliente fala com a Verax. A partir de 80% do volume do mês,
- * uma faixa avisa; acima de 100%, a coleta continua e nenhum log é descartado.
+ * uma faixa avisa; acima de 100%, a coleta continua e nenhum log é descartado. Na Plataforma (com franquia em GB/dia,
+ * CE-10), o volume do mês dá lugar ao contador da franquia e ao volume por dia dos últimos 30 dias.
  */
 export function PlanPage() {
   const { data: me } = useMe();
@@ -50,6 +52,7 @@ function PlanContent() {
   const data = query.data;
   const { plan, usage } = data;
   const ratio = planVolumeRatio(data);
+  const franchise = data.franchise;
   return (
     <div className="space-y-4">
       {ratio !== null && ratio >= PLAN_VOLUME_WARNING_RATIO && <VolumeBand ratio={ratio} data={data} />}
@@ -60,7 +63,12 @@ function PlanContent() {
           acima do plano é bloqueada: nada do que já existe é desativado, e a coleta dos logs nunca para.
         </CardDescription>
       </Card>
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div
+        className={cn(
+          'grid gap-4 md:grid-cols-2',
+          franchise === undefined ? 'xl:grid-cols-4' : 'xl:grid-cols-3',
+        )}
+      >
         <SeatTile
           title="Contas cloud"
           used={usage.cloudAccounts}
@@ -73,9 +81,17 @@ function PlanContent() {
           limit={plan.limits.maxUsers}
           detail="Usuários convidados e ativos. Desativar um usuário libera a vaga; a equipe da Verax não conta."
         />
-        <VolumeTile bytes={usage.monthlyBytes} limitGib={plan.limits.monthlyGib} ratio={ratio} />
+        {franchise === undefined && (
+          <VolumeTile bytes={usage.monthlyBytes} limitGib={plan.limits.monthlyGib} ratio={ratio} />
+        )}
         <HistoryTile days={plan.limits.historyDays} />
       </div>
+      {franchise !== undefined && (
+        <>
+          <FranchiseCard franchise={franchise} />
+          <FranchiseDaysCard franchise={franchise} />
+        </>
+      )}
     </div>
   );
 }

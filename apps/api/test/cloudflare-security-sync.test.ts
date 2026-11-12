@@ -326,6 +326,8 @@ describe('eventos de segurança do Cloudflare (banco real e GraphQL falso)', () 
     });
     expect(usage.events).toBe(5n);
     expect(usage.bytes).toBeGreaterThan(0n);
+    // Os eventos de segurança (agregados do GraphQL) não entram no volume por dia da franquia (CE-09).
+    expect(await prisma.ingestUsageDay.count({ where: { tenantId: tenantA, source: 'cloudflare' } })).toBe(0);
 
     // Antes de a janela seguinte poder ser lida, nada; às 12:35, só ela.
     expect(await syncFor({}, { zonesPerQuery: 2 }).runOnce(at(14))).toMatchObject({

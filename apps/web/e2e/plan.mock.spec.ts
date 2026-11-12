@@ -59,6 +59,46 @@ test.describe('Plano e uso (modo mock)', () => {
     }
   }
 
+  // A Plataforma (CE-10): o contador da franquia em GB/dia, o volume por dia e "Ampliar franquia" desligado.
+  for (const theme of ['light', 'dark'] as const) {
+    for (const [device, width] of [
+      ['computador', 1280],
+      ['celular', 360],
+    ] as const) {
+      test(`Plataforma: o contador da franquia (${theme === 'light' ? 'claro' : 'escuro'}, ${device})`, async ({
+        page,
+      }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await page.addInitScript((value) => {
+          window.localStorage.setItem('verax.mock.role', 'admin_cliente');
+          window.localStorage.setItem('verax.mock.plan', 'plataforma');
+          window.localStorage.setItem('verax.theme', value);
+        }, theme);
+        await page.goto('/cadastros/plano');
+        await expect(page.getByRole('heading', { name: 'Plano Plataforma' })).toBeVisible();
+        await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+        const card = page.getByRole('region', { name: 'Franquia de 3 GB/dia' });
+        await expect(card).toBeVisible();
+        await expect(card.getByRole('meter', { name: 'Volume do ciclo' })).toBeVisible();
+        await expect(card.getByRole('button', { name: 'Ampliar franquia' })).toBeDisabled();
+        await expect(page.getByRole('region', { name: 'Volume por dia' }).getByRole('img')).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Volume do mês' })).toHaveCount(0);
+        // A tabela do gráfico aberta também passa pelo axe.
+        await page.getByText('Ver tabela').click();
+
+        const results = await new AxeBuilder({ page })
+          .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
+          .analyze();
+        expect(results.violations.map((violation) => `${violation.id}: ${violation.nodes.length}`)).toEqual(
+          [],
+        );
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
+        ).toBeLessThanOrEqual(1);
+      });
+    }
+  }
+
   test('analista: sem o item no menu, e a página vira "sem permissão"', async ({ page }) => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
     await page.goto('/');

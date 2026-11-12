@@ -52,3 +52,25 @@ output "wazuh_agents" {
   description = "Agentes do Wazuh (wazuh_agents): IP fixo de entrada (WAZUH_AGENTS_ADDRESS no node.conf) e faixas liberadas (WAZUH_AGENTS_SOURCES). Nulo com o interruptor desligado."
   value       = module.node.wazuh_agents
 }
+
+output "cell" {
+  description = "A célula para o plano de controle: o registro `cells/<id>` (CE-15), o canal (CE-05 e CE-06) e o que o envs/cell-tenant de cada cliente recebe (CE-07). Nada aqui é segredo. Os nomes do canal são nulos sem `control_plane_project_id`."
+  value = {
+    id                   = var.cell_id
+    project_id           = var.project_id
+    region               = var.region
+    nat_ips              = module.node.nat_ip == null ? [] : ["${module.node.nat_ip}/32"]
+    node_service_account = module.node.service_account_email
+    exports_bucket       = google_storage_bucket.exports.name
+    exports_prefix       = "${var.cell_id}/"
+    commands_topic       = local.cell_channel ? google_pubsub_topic.commands[0].id : null
+    # A assinatura que o worker da célula lê (CELL_COMMANDS_SUBSCRIPTION no node.conf, CE-05).
+    commands_subscription = local.cell_channel ? google_pubsub_subscription.commands[0].id : null
+    # O tópico em que o worker da célula publica (CELL_REPORTS_TOPIC no node.conf, CE-05).
+    reports_topic = local.cell_channel ? google_pubsub_topic.reports[0].id : null
+    # O CE-06: o `run.invoker` desta conta no cp-worker e o e-mail aceito na rota dos relatórios.
+    reports_push_service_account = local.cell_channel ? google_service_account.reports_push[0].email : null
+    reports_push_endpoint        = local.cell_channel ? local.reports_endpoint : null
+    backup_retention_days        = var.backup_retention_days
+  }
+}

@@ -141,7 +141,8 @@ jobs:
   control-plane-image:
     name: Imagem do plano de controle (build, Trivy e raiz só leitura)
     runs-on: ubuntu-24.04
-    # O executor Terraform (CP-07) baixa o provider no build e roda os testes do envs/tenant dentro da imagem.
+    # O executor Terraform (CP-07) baixa o provider no build e roda os testes do envs/tenant e do envs/cell-tenant dentro
+    # da imagem.
     timeout-minutes: 30
     env:
       # Mesmo binário e checksum do security.yml e do job da API.
@@ -178,7 +179,7 @@ jobs:
         run: docker build -f infra/control-plane/terraform/Dockerfile -t verax-terraform-executor:teste .
       - name: 'Executor Terraform: Trivy'
         run: ./trivy image --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress verax-terraform-executor:teste
-      - name: 'Executor Terraform: como no Cloud Run Job (sem rede, raiz só leitura, provider do espelho, testes do envs/tenant)'
+      - name: 'Executor Terraform: como no Cloud Run Job (sem rede, raiz só leitura, provider do espelho, testes do envs/tenant e do envs/cell-tenant)'
         run: bash scripts/test-terraform-executor-image.sh verax-terraform-executor:teste
 
   e2e:

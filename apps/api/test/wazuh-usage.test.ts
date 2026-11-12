@@ -72,6 +72,13 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
       bytes: row.bytes,
       events: row.events,
     }));
+  const daysOf = async (tenantId: string) =>
+    (await prisma.forTenant(tenantId).ingestUsageDay.findMany({ orderBy: { day: 'asc' } })).map((row) => ({
+      day: row.day.toISOString().slice(0, 10),
+      source: row.source,
+      bytes: row.bytes,
+      events: row.events,
+    }));
   const healthOf = (tenantId: string) =>
     prisma.forTenant(tenantId).ingestHealth.findFirst({
       where: { source: 'aws' },
@@ -85,7 +92,11 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
     });
 
   /** A tarefa de um caso: só os clientes dele, a própria linha da base e o relógio dele. */
-  function task(tenantIds: string[], clock: Clock, options: { agentsTenantId?: string } = {}) {
+  function task(
+    tenantIds: string[],
+    clock: Clock,
+    options: { agentsTenantId?: string; mode?: 'dedicated' | 'cell' } = {},
+  ) {
     const stats = new FakeStats();
     const warnings: { fields: object; message: string }[] = [];
     const counterId = `teste-${randomInt(1_000_000, 9_999_999)}`;
@@ -95,6 +106,7 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
       tenantIds,
       counterId,
       agentsTenantId: options.agentsTenantId ?? null,
+      ...(options.mode !== undefined && { mode: options.mode }),
     });
     return { usage, stats, warnings, counterId };
   }
@@ -147,6 +159,12 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
     expect(await usageOf(tenant)).toEqual([
       { month: '2026-11-01', source: 'aws', bytes: 12_000n, events: 9n },
       { month: '2026-12-01', source: 'aws', bytes: 1_000n, events: 1n },
+    ]);
+    // No nó dedicado, a mesma diferença entra no volume por dia (CE-09), no dia de Brasília da leitura: 30/11 às
+    // 20:55 e 21:00 de Brasília; 01/12 às 00:05.
+    expect(await daysOf(tenant)).toEqual([
+      { day: '2026-11-30', source: 'aws', bytes: 12_000n, events: 9n },
+      { day: '2026-12-01', source: 'aws', bytes: 1_000n, events: 1n },
     ]);
   });
 
@@ -278,6 +296,45 @@ describe('medidor e saúde da ingestão do Wazuh do nó: a tarefa wazuh-usage (f
     clock.tick(5 * MINUTE);
     expect(await usage.runOnce()).toMatchObject({ meter: 'recorded', bytes: 40, events: 1 });
     expect(await usageOf(tenantA)).toEqual([{ month: '2026-11-01', source: 'aws', bytes: 40n, events: 1n }]);
+  });
+
+  it('célula (CE-09): vários clientes não bloqueiam; o analysisd vira só o contador do nó por dia, sem uso de cliente', async () => {
+    const a = await createTenant(app, 'Cliente Demo A (célula, analysisd)');
+    const b = await createTenant(app, 'Cliente Demo B (célula, analysisd)');
+    await awsAccount(a);
+    await awsAccount(b);
+    // A saúde antiga de um cliente (de quando o nó era dedicado) é limpa: na célula, ela sai da medição na origem.
+    await prisma.ingestHealth.create({
+      data: { tenantId: a, source: 'aws', lastProgressAt: new Date('2026-08-01') },
+    });
+    // Um dia sem uso de outro teste: o contador do nó é por dia, sem cliente.
+    const clock = new Clock(new Date('2026-08-14T12:00:00.000Z'));
+    const { usage, stats, warnings, counterId } = task([a, b], clock, { mode: 'cell' });
+    stats.advance(10_000, 5);
+    expect(await usage.runOnce()).toMatchObject({ meter: 'baseline', bytes: 0, health: 'not_evaluated' });
+    stats.advance(4_000, 3);
+    clock.tick(5 * MINUTE);
+    expect(await usage.runOnce()).toMatchObject({ meter: 'node', bytes: 4_000, events: 3, stallNotices: 0 });
+    stats.advance(1_000, 1);
+    clock.tick(5 * MINUTE);
+    await usage.runOnce();
+
+    expect(await prisma.wazuhCounter.findUniqueOrThrow({ where: { id: counterId } })).toMatchObject({
+      meterBlocked: null,
+    });
+    expect(warnings).toEqual([]);
+    expect(
+      await prisma.nodeUsageDay.findUniqueOrThrow({
+        where: { day_metric: { day: new Date('2026-08-14T00:00:00Z'), metric: 'analysisd' } },
+        select: { bytes: true, events: true },
+      }),
+    ).toEqual({ bytes: 5_000n, events: 4n });
+    // Nada vai para o uso de cliente nenhum: o volume de cada um vem da medição na origem (aws-volume).
+    for (const tenant of [a, b]) {
+      expect(await usageOf(tenant)).toEqual([]);
+      expect(await daysOf(tenant)).toEqual([]);
+    }
+    expect(await healthOf(a)).toEqual({ lastProgressAt: null, stallNotifiedFor: null });
   });
 
   it('saúde: sem conta AWS ativa, a observação some; a conta que volta começa do zero, sem aviso na hora', async () => {

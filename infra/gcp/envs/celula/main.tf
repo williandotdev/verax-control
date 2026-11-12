@@ -21,6 +21,10 @@ module "node" {
   alert_email                = var.alert_email
   stalled_subscription_hours = var.stalled_subscription_hours
 
+  # Backups de 85 dias (e não 90): o último backup com um cliente expurgado (D+1) sai até cerca de D+95, dentro da
+  # promessa dos 100 dias (cell.tf e docs/ARQUITETURA.md, "Exclusão e a promessa dos 100 dias na célula").
+  backup_retention_days = var.backup_retention_days
+
   # O cofre da chave secreta do Turnstile (desafio no login do painel).
   turnstile_secret = true
 
