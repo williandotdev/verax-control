@@ -9,6 +9,7 @@ import {
 } from '@verax/shared';
 import type { z } from 'zod';
 import { AuditService } from '../common/audit/audit.service.js';
+import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { PubsubMessage, PubsubReader } from '../gcp/pubsub.client.js';
 import type { Prisma } from '../generated/prisma/client.js';
@@ -17,6 +18,7 @@ import { assignTenantHost, TenantHostConflict } from '../tenants/tenant-host.js'
 import { applyTenantLifecycleStatus, TenantTransitionRefused } from '../tenants/tenant-lifecycle.js';
 import type { CellReportOutbox } from './cell-report-outbox.js';
 import { recordTenantExport, storedDesiredOf, type TenantExportResult } from './cell-tenant-state.js';
+import type { CellTenantBootstraps, TenantBootstrapReport } from './tenant-bootstrap-signal.js';
 import { TenantCloudIdentityConflict, writeTenantCloudIdentity } from './tenant-cloud-identity.js';
 
 /** Nome da tarefa do worker que lê os comandos do plano de controle. */
@@ -54,19 +56,11 @@ export interface TenantExporter {
 /**
  * Quem apaga os dados do cliente do banco da célula (§3.7, D+1: a função `verax_purge_tenant`, em lotes, e por fim a
  * linha do cliente). Vem no CE-16; até lá a célula recusa com `purge_unavailable`. O canal só o chama depois das
- * guardas e com o cliente já em `purging`; o `tenant.purged` sai depois que ele devolve.
+ * guardas e com o cliente já em `purging`; o `tenant.purged` sai depois que ele devolve. Precisa ser idempotente: depois
+ * de uma queda, a reentrega do comando o chama de novo sobre o que sobrou (ou sobre nada, se o cliente já saiu).
  */
 export interface TenantPurger {
   purgeTenant(tenantId: string, signal: AbortSignal): Promise<void>;
-}
-
-/**
- * Avisos da célula ao host depois que um cliente nasce (o sinal sem segredo que leva o host a criar o primeiro
- * administrador e escrever a senha no cofre do cliente, §5.1). O worker nunca vê a senha. A ligação com o host é do
- * pacote do nó em modo célula (CE-04); sem ela, nada é avisado.
- */
-export interface CellTenantHooks {
-  tenantCreated(tenant: { tenantId: string; slug: string }): Promise<void>;
 }
 
 /** O comando foi lido e não será aplicado: vai o `command.refused` com o código, e a mensagem é confirmada. */
@@ -90,6 +84,8 @@ export interface CellCommandsReport {
   refused: number;
   invalid: number;
   foreign: number;
+  /** Os pedidos do primeiro administrador nesta passagem (null sem eles, ou se a entrega falhou). */
+  bootstrap: TenantBootstrapReport | null;
 }
 
 /** O que o consumidor usa do logger (o pino do worker; um dublê nos testes). Só códigos e ids, nunca o comando. */
@@ -107,7 +103,8 @@ export interface CellCommandsOptions {
   logger: CellCommandsLogger;
   exporter?: TenantExporter | null;
   purger?: TenantPurger | null;
-  hooks?: CellTenantHooks | null;
+  /** Os pedidos do primeiro administrador ao host, entregues ao fim de cada passagem até a confirmação. */
+  bootstraps?: CellTenantBootstraps | null;
   audit?: AuditService;
   now?: () => Date;
 }
@@ -177,6 +174,7 @@ export class CellCommands {
       refused: 0,
       invalid: 0,
       foreign: 0,
+      bootstrap: null,
     };
     const { reader, subscription } = this.options;
     for (let pull = 0; pull < MAX_PULLS; pull += 1) {
@@ -188,6 +186,19 @@ export class CellCommands {
         const outcome = await this.handle(message, signal);
         report[outcome] += 1;
         await reader.acknowledge(subscription, [message.ackId]);
+      }
+    }
+    // Os pedidos do primeiro administrador ficam no banco desde o commit do `tenant.upsert`: uma queda do worker depois
+    // dele não os perde, e a entrega ao host se repete aqui até ele confirmar. Uma falha na pasta do host não para os
+    // comandos (já aplicados) nem a próxima passagem.
+    if (this.options.bootstraps) {
+      try {
+        report.bootstrap = await this.options.bootstraps.runOnce();
+      } catch (error) {
+        this.options.logger.warn(
+          { event: 'cell_tenant_bootstrap_failed', error: errorKind(error) },
+          'pedido do primeiro acesso fica para a próxima passagem',
+        );
       }
     }
     return report;
@@ -269,7 +280,7 @@ export class CellCommands {
 
   private async upsert(command: UpsertCommand): Promise<CellCommandOutcome> {
     const { state } = command;
-    const outcome = await this.prisma.$transaction(async (tx): Promise<CellCommandOutcome> => {
+    return this.prisma.$transaction(async (tx): Promise<CellCommandOutcome> => {
       await lockControlPlaneTenant(tx, command.tenantId);
       const current = await cellTenantOf(tx, command.tenantId);
       if (current !== null && command.generation <= current.generation) {
@@ -327,6 +338,14 @@ export class CellCommands {
           cloudIdentity: state.cloudIdentity.saUniqueId,
         },
       });
+      // O pedido do primeiro administrador nasce com o cliente, na mesma transação: a entrega ao host (fora dela, a cada
+      // passagem) se repete até a confirmação, mesmo que o worker caia logo depois do commit.
+      if (current === null && state.firstAdmin !== null) {
+        await tx.cellTenantBootstrap.create({
+          data: { tenantId, slug: state.slug, adminEmail: state.firstAdmin.email },
+          select: { tenantId: true },
+        });
+      }
       await this.options.outbox.enqueue(tx, {
         kind: 'tenant.applied',
         tenantId: command.tenantId,
@@ -334,14 +353,6 @@ export class CellCommands {
       });
       return { outcome: 'applied', created: current === null };
     });
-    if (outcome.outcome === 'applied' && outcome.created === true && this.options.hooks) {
-      const created = await this.prisma.cellTenantState.findUniqueOrThrow({
-        where: { controlPlaneId: command.tenantId },
-        select: { tenantId: true },
-      });
-      await this.options.hooks.tenantCreated({ tenantId: created.tenantId, slug: state.slug });
-    }
-    return outcome;
   }
 
   private async exportTenant(command: ExportCommand, signal: AbortSignal): Promise<CellCommandOutcome> {
@@ -389,38 +400,80 @@ export class CellCommands {
 
   /**
    * As guardas do expurgo (§3.7), nesta ordem: a confirmação é o subdomínio do cliente; o cliente está cancelado (ou já
-   * em expurgo, a repetição); a exportação foi gravada. Só então o cliente vai a `purging` (com a trilha) e o expurgador
-   * apaga os dados. Sem expurgador (até o CE-16), a recusa vem depois das guardas e o estado não muda.
+   * em expurgo, a repetição); a exportação foi gravada. Só então o expurgo é registrado (`CellPurge`, pelo `purgeId`), o
+   * cliente vai a `purging` (com a trilha) e o expurgador apaga os dados. Sem expurgador (até o CE-16), a recusa vem
+   * depois das guardas e o estado não muda.
+   *
+   * O registro sobrevive ao cliente: se o processo cai depois de o expurgador apagar o cliente (e o mapa dele) e antes do
+   * relatório, a reentrega acha o expurgo começado sem cliente e o conclui com o `tenant.purged`, em vez de recusar o
+   * cliente como desconhecido. Um expurgo já concluído repete o relatório (com o `purgeId` do comando).
    */
   private async purge(command: PurgeCommand, signal: AbortSignal): Promise<CellCommandOutcome> {
     const purger = this.options.purger;
-    const tenantId = await this.prisma.$transaction(async (tx) => {
-      await lockControlPlaneTenant(tx, command.tenantId);
-      const current = await cellTenantOf(tx, command.tenantId);
-      if (current === null) throw new CellCommandRefused('tenant_unknown');
-      if (current.tenant.host?.slug !== command.confirmSlug)
-        throw new CellCommandRefused('purge_slug_mismatch');
-      const status = current.tenant.status;
-      if (status !== 'canceled' && status !== 'purging') throw new CellCommandRefused('purge_not_canceled');
-      if (current.exportReadyAt === null) throw new CellCommandRefused('purge_export_missing');
-      if (!purger) throw new CellCommandRefused('purge_unavailable');
-      await applyTenantLifecycleStatus(tx, current.tenantId, 'purging', {
-        actorId: CONTROL_PLANE_ACTOR,
-        audit: this.audit,
-      });
-      return current.tenantId;
-    });
-    if (!purger) throw new CellCommandRefused('purge_unavailable');
-    await purger.purgeTenant(tenantId, signal);
-    // A linha do cliente (e o mapa dele) já saiu: o relatório leva o id do plano de controle que veio no comando.
-    await this.prisma.$transaction((tx) =>
-      this.options.outbox.enqueue(tx, {
-        kind: 'tenant.purged',
-        tenantId: command.tenantId,
-        purgeId: command.purgeId,
-      }),
+    const step = await this.prisma.$transaction(
+      async (tx): Promise<{ done: CellCommandOutcome } | { tenantId: string }> => {
+        await lockControlPlaneTenant(tx, command.tenantId);
+        const purges = await tx.cellPurge.findMany({
+          where: { controlPlaneId: command.tenantId },
+          select: { completedAt: true },
+        });
+        if (purges.some((purge) => purge.completedAt !== null)) {
+          await this.enqueuePurged(tx, command);
+          return { done: { outcome: 'duplicate' } };
+        }
+        const current = await cellTenantOf(tx, command.tenantId);
+        if (current === null) {
+          if (purges.length === 0) throw new CellCommandRefused('tenant_unknown');
+          // O expurgador apagou o cliente e o processo caiu antes do relatório: o expurgo terminou.
+          await this.completePurge(tx, command);
+          return { done: { outcome: 'applied' } };
+        }
+        if (current.tenant.host?.slug !== command.confirmSlug)
+          throw new CellCommandRefused('purge_slug_mismatch');
+        const status = current.tenant.status;
+        if (status !== 'canceled' && status !== 'purging') throw new CellCommandRefused('purge_not_canceled');
+        if (current.exportReadyAt === null) throw new CellCommandRefused('purge_export_missing');
+        if (!purger) throw new CellCommandRefused('purge_unavailable');
+        await tx.cellPurge.createMany({
+          data: [
+            { purgeId: command.purgeId, controlPlaneId: command.tenantId, nodeTenantId: current.tenantId },
+          ],
+          skipDuplicates: true,
+        });
+        await applyTenantLifecycleStatus(tx, current.tenantId, 'purging', {
+          actorId: CONTROL_PLANE_ACTOR,
+          audit: this.audit,
+        });
+        return { tenantId: current.tenantId };
+      },
     );
+    if ('done' in step) return step.done;
+    if (!purger) throw new CellCommandRefused('purge_unavailable');
+    await purger.purgeTenant(step.tenantId, signal);
+    // A linha do cliente (e o mapa dele) já saiu: o relatório leva o id do plano de controle que veio no comando, e a
+    // conclusão do registro vai na mesma transação dele.
+    await this.prisma.$transaction(async (tx) => {
+      await lockControlPlaneTenant(tx, command.tenantId);
+      await this.completePurge(tx, command);
+    });
     return { outcome: 'applied' };
+  }
+
+  /** Marca concluídos os expurgos começados do cliente e grava o `tenant.purged`, na transação de quem chama. */
+  private async completePurge(tx: Prisma.TransactionClient, command: PurgeCommand): Promise<void> {
+    await tx.cellPurge.updateMany({
+      where: { controlPlaneId: command.tenantId, completedAt: null },
+      data: { completedAt: this.now() },
+    });
+    await this.enqueuePurged(tx, command);
+  }
+
+  private async enqueuePurged(tx: Prisma.TransactionClient, command: PurgeCommand): Promise<void> {
+    await this.options.outbox.enqueue(tx, {
+      kind: 'tenant.purged',
+      tenantId: command.tenantId,
+      purgeId: command.purgeId,
+    });
   }
 
   private async pause(command: PauseCommand): Promise<CellCommandOutcome> {

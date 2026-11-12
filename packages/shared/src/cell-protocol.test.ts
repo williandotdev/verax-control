@@ -40,6 +40,7 @@ function platformState() {
     natIps: ['203.0.113.10'],
     lastBilledCycle: null,
     unitPrices: { currency: 'brl', additionalGbPerDayCents: 1000, overageHundredthCentsDecimal: '12.5' },
+    firstAdmin: { email: 'admin@cliente-demo-a.example' },
   };
 }
 

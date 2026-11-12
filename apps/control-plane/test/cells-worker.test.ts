@@ -173,6 +173,7 @@ describe('cp-worker: canal da célula (CE-06)', () => {
       natIps: ['203.0.113.10'],
       lastBilledCycle: null,
       unitPrices: null,
+      firstAdmin: { email: 'admin@cliente-demo-a.example' },
     };
   }
 

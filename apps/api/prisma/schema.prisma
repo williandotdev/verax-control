@@ -141,6 +141,7 @@ model Tenant {
   /// Célula (CE-05): o estado que o canal do plano de controle gravou e a identidade do cliente na nuvem.
   cellState                CellTenantState?
   cloudIdentity            TenantCloudIdentity?
+  cellBootstrap            CellTenantBootstrap?
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1146,3 +1147,35 @@ model CellReport {
 
   @@index([publishedAt, nextAttemptAt])
 }
+
+/// Célula compartilhada (CE-05): o registro durável de cada expurgo pedido pelo canal (`tenant.purge`), pelo `purgeId`.
+/// Sobrevive ao cliente (sem chave estrangeira, de propósito): se o processo cai depois de o expurgador apagar o cliente
+/// e antes do relatório, a reentrega do comando acha o registro e emite o `tenant.purged` de novo. Só ids e instantes;
+/// dado de sistema, sem coluna de cliente: só o worker lê e grava.
+model CellPurge {
+  purgeId        String    @id @db.VarChar(26)
+  controlPlaneId String    @db.VarChar(26)
+  /// O id do cliente no banco da célula, que o expurgo apaga (só para a conferência; a linha dele some).
+  nodeTenantId   String    @db.Uuid
+  startedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  completedAt    DateTime? @db.Timestamptz(3)
+
+  @@index([controlPlaneId])
+}
+
+/// Célula compartilhada (CE-05): o pedido do primeiro administrador de um cliente criado pelo canal, gravado na mesma
+/// transação do `tenant.upsert`. A tarefa `cell-commands` o entrega ao host (o arquivo de pedido do CE-04) a cada
+/// passagem, até o host confirmar (`ok`); então o e-mail é apagado. Só o sistema grava.
+model CellTenantBootstrap {
+  tenantId    String    @id @db.Uuid
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  slug        String    @db.VarChar(16)
+  /// O e-mail do primeiro administrador; null depois da confirmação do host.
+  adminEmail  String?   @db.VarChar(254)
+  requestedAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// A última vez que o pedido foi escrito para o host.
+  signaledAt  DateTime? @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  confirmedAt DateTime? @db.Timestamptz(3)
+}
+

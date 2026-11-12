@@ -19,6 +19,7 @@ import {
   CELL_TENANT_STATUS_TASK,
   CellTenantStatusReporter,
 } from './cell/cell-tenant-status.js';
+import { CellTenantBootstraps, FileTenantBootstrapSignal } from './cell/tenant-bootstrap-signal.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
@@ -157,8 +158,10 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * de controle (CE-05): `cell-commands` (a cada 10 s) lê os comandos e aplica cada um numa transação, com o relatório na
  * caixa de saída; `cell-reports` (a cada 10 s) publica a caixa de saída no tópico de relatórios; `cell-tenant-status`
  * (a cada 5 min) relata as contas conectadas e o último evento de cada cliente. O token é o da VM, como o da GCP. A
- * exportação e o expurgo (CE-16) e o aviso ao host do cliente novo (CE-04) ainda não estão ligados: os pedidos de
- * exportação e expurgo voltam recusados (`export_unavailable`, `purge_unavailable`), depois das guardas.
+ * pedido do primeiro administrador de cada cliente novo vai ao host pelas pastas do CE-04 (`TENANT_BOOTSTRAP_DIR` e
+ * `TENANT_BOOTSTRAP_STATUS_DIR`), a cada passagem do `cell-commands` até a confirmação. A exportação e o expurgo
+ * (CE-16) ainda não estão ligados: os pedidos voltam recusados (`export_unavailable`, `purge_unavailable`), depois das
+ * guardas.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -329,6 +332,17 @@ async function main(): Promise<void> {
         reader: new PubsubRestReader(tokens),
         outbox,
         logger,
+        // O pedido do primeiro administrador ao host (CE-04), repetido a cada passagem até a confirmação. Sem as pastas,
+        // os pedidos ficam no banco esperando.
+        bootstraps: new CellTenantBootstraps(
+          prisma,
+          config.tenantBootstrap === null
+            ? null
+            : new FileTenantBootstrapSignal(
+                config.tenantBootstrap.requestsDir,
+                config.tenantBootstrap.statusDir,
+              ),
+        ),
       });
       const publisher = new CellReportPublisher(
         prisma,
@@ -397,6 +411,12 @@ async function main(): Promise<void> {
     },
     'worker iniciado',
   );
+  if (config.cellChannel !== null && config.tenantBootstrap === null) {
+    logger.warn(
+      {},
+      'célula sem TENANT_BOOTSTRAP_DIR e TENANT_BOOTSTRAP_STATUS_DIR: o primeiro administrador dos clientes novos fica esperando',
+    );
+  }
   if (config.NODE_MODE === 'cell' && config.cellChannel === null) {
     logger.warn(
       {},

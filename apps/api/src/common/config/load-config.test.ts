@@ -705,6 +705,29 @@ describe('canal da célula no worker (CE-05)', () => {
       loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel, CELL_ID: 'Celula' }),
     ).toThrow('CELL_ID');
   });
+
+  it('as pastas do primeiro administrador (CE-04): as duas juntas, absolutas e só na célula', () => {
+    const dirs = {
+      TENANT_BOOTSTRAP_DIR: '/run/tenant-bootstrap',
+      TENANT_BOOTSTRAP_STATUS_DIR: '/run/tenant-bootstrap-status',
+    };
+    expect(loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel }).tenantBootstrap).toBeNull();
+    expect(
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel, ...dirs }).tenantBootstrap,
+    ).toEqual({
+      requestsDir: '/run/tenant-bootstrap',
+      statusDir: '/run/tenant-bootstrap-status',
+    });
+    expect(() =>
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', TENANT_BOOTSTRAP_DIR: dirs.TENANT_BOOTSTRAP_DIR }),
+    ).toThrow('TENANT_BOOTSTRAP_STATUS_DIR: obrigatória');
+    expect(() => loadWorkerConfig({ ...workerEnv, ...dirs })).toThrow(
+      'TENANT_BOOTSTRAP_DIR: só existe com NODE_MODE=cell',
+    );
+    expect(() =>
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...dirs, TENANT_BOOTSTRAP_DIR: 'pedidos' }),
+    ).toThrow('TENANT_BOOTSTRAP_DIR: deve ser o caminho absoluto');
+  });
 });
 
 describe('cofre de credenciais no ambiente (fase 2)', () => {

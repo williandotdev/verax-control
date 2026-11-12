@@ -222,6 +222,12 @@ export const cellTenantStateSchema = z
     natIps: z.array(z.ipv4()).min(1).max(4),
     lastBilledCycle: cellBilledCycleSchema.nullable(),
     unitPrices: cellUnitPricesSchema.nullable(),
+    /**
+     * O primeiro administrador do cliente (o e-mail do pedido): a célula o usa só quando cria o cliente, para pedir ao
+     * host o primeiro acesso (a senha nunca passa pelo canal), e o apaga depois da confirmação do host. Null no cliente
+     * que já existia no nó (o SOC da Verax, adotado pelo `cell-adopt`).
+     */
+    firstAdmin: z.strictObject({ email: z.email().max(254) }).nullable(),
   })
   .superRefine((state, ctx) => {
     for (const problem of tenantPlanProblems(state.plan)) {

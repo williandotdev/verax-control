@@ -135,6 +135,18 @@ const cellChannelEnvShape = {
 };
 const CELL_CHANNEL_KEYS = ['CELL_ID', 'CELL_COMMANDS_SUBSCRIPTION', 'CELL_REPORTS_TOPIC'] as const;
 
+/**
+ * As pastas do primeiro administrador dos clientes da célula (CE-04, `start.sh`): a dos pedidos, onde o worker escreve
+ * (`slug=` e `email=`, sem segredo), e a das respostas do host (`ok` ou `error`), só leitura no worker. As duas juntas, e
+ * só na célula; o `start.sh` da célula as aponta.
+ */
+const absoluteDir = z.string().regex(/^\/[\w./-]+$/, { error: 'deve ser o caminho absoluto de uma pasta' });
+const tenantBootstrapEnvShape = {
+  TENANT_BOOTSTRAP_DIR: absoluteDir.optional(),
+  TENANT_BOOTSTRAP_STATUS_DIR: absoluteDir.optional(),
+};
+const TENANT_BOOTSTRAP_KEYS = ['TENANT_BOOTSTRAP_DIR', 'TENANT_BOOTSTRAP_STATUS_DIR'] as const;
+
 /** O canal da célula no worker: o id, a assinatura de comandos e o tópico de relatórios. */
 export interface CellChannelConfig {
   cellId: string;
@@ -734,6 +746,8 @@ const workerEnvObjectSchema = z
     ...wazuhApiEnvShape,
     // Canal da célula com o plano de controle (CE-05, só com NODE_MODE=cell): os três juntos.
     ...cellChannelEnvShape,
+    // O primeiro administrador dos clientes da célula (CE-04 e CE-05): as duas pastas, juntas e só na célula.
+    ...tenantBootstrapEnvShape,
     // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
     // publica a versão, as contas conectadas, o último evento e o disco livre. VERAX_NODE_COMMIT é o commit instalado (o de
     // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).
@@ -780,8 +794,9 @@ const workerEnvObjectSchema = z
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
     checkTogether(env, WAZUH_API_KEYS, ctx);
     checkTogether(env, CELL_CHANNEL_KEYS, ctx);
+    checkTogether(env, TENANT_BOOTSTRAP_KEYS, ctx);
     if (env.NODE_MODE !== 'cell') {
-      for (const key of CELL_CHANNEL_KEYS) {
+      for (const key of [...CELL_CHANNEL_KEYS, ...TENANT_BOOTSTRAP_KEYS]) {
         if (env[key] !== undefined) {
           ctx.addIssue({ code: 'custom', path: [key], message: 'só existe com NODE_MODE=cell' });
         }
@@ -825,6 +840,8 @@ const workerEnvObjectSchema = z
         CELL_ID,
         CELL_COMMANDS_SUBSCRIPTION,
         CELL_REPORTS_TOPIC,
+        TENANT_BOOTSTRAP_DIR,
+        TENANT_BOOTSTRAP_STATUS_DIR,
         ...env
       },
       ctx,
@@ -856,7 +873,19 @@ const workerEnvObjectSchema = z
               reportsTopic: CELL_REPORTS_TOPIC,
             }
           : null;
-      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus, wazuhApi, cellChannel };
+      const tenantBootstrap =
+        TENANT_BOOTSTRAP_DIR !== undefined && TENANT_BOOTSTRAP_STATUS_DIR !== undefined
+          ? { requestsDir: TENANT_BOOTSTRAP_DIR, statusDir: TENANT_BOOTSTRAP_STATUS_DIR }
+          : null;
+      return {
+        ...withDefaultPlan(env),
+        credentialsKeyring,
+        wazuhAgents,
+        nodeStatus,
+        wazuhApi,
+        cellChannel,
+        tenantBootstrap,
+      };
     },
   );
 

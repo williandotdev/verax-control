@@ -32,6 +32,7 @@ export const TENANT_SCOPED_MODELS = [
   // grava (`SYSTEM_WRITTEN_MODELS`).
   'cellTenantState',
   'tenantCloudIdentity',
+  'cellTenantBootstrap',
 ] as const;
 export type TenantScopedModel = (typeof TENANT_SCOPED_MODELS)[number];
 
@@ -51,6 +52,7 @@ export const SYSTEM_WRITTEN_MODELS = [
   'tenantRetentionState',
   'cellTenantState',
   'tenantCloudIdentity',
+  'cellTenantBootstrap',
 ] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([

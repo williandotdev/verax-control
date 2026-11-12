@@ -1485,8 +1485,8 @@ administrador nunca passa pelo worker: o host a escreve no cofre `vxt-<slug>-adm
   `canceled`; o `purging` é só do `tenant.purge`), o plano do cliente (`TenantPlan`, com a mesma regra de combinação),
   a franquia agendada (`[{from, gbPerDay}]`, em ordem, obrigatória só na Plataforma), o ciclo de cobrança em dias de
   Brasília, a identidade na nuvem (`{saEmail, saUniqueId}`, a conta `vxt-<slug>`), as fontes da GCP já prontas, os IPs
-  da célula, o último ciclo cobrado e os preços do diálogo de ampliação (em centavos, repetidos da tabela publicada,
-  nunca calculados na célula).
+  da célula, o último ciclo cobrado, os preços do diálogo de ampliação (em centavos, repetidos da tabela publicada,
+  nunca calculados na célula) e o e-mail do primeiro administrador (`firstAdmin`, null no cliente adotado).
 - **`tenant.export`** (`exportId`), **`tenant.purge`** (`purgeId` e a confirmação do subdomínio) e
   **`tenant.collection_pause`** (`paused` e, só com a pausa, o motivo: `runaway_volume` ou `owner`).
 - **Relatórios:** `tenant.applied {generation}`, `tenant.status {accountsConnected, lastEventAt}`,
@@ -1518,8 +1518,10 @@ writerIdentity}`, `cell.status` (só agregados da célula) e **`command.refused 
     `purging`) desfaz a transação inteira e grava só o `command.refused`.
   - O `tenant.export` e o `tenant.purge` passam pelas guardas: o cliente existe; no expurgo, a confirmação é o subdomínio
     dele, ele está `canceled` (ou já `purging`, a repetição) e a exportação está gravada (`exportReadyAt`). Só então o
-    cliente vai a `purging` e o expurgador apaga (`TenantPurger`), e sai o `tenant.purged` com o id do plano de
-    controle. A exportação chama o exportador (`TenantExporter`) e registra o resultado com o `export.ready`
+    expurgo é registrado (`CellPurge`, pelo `purgeId`, sem chave para o cliente), o cliente vai a `purging` e o
+    expurgador apaga (`TenantPurger`, idempotente); a conclusão do registro e o `tenant.purged` saem numa transação só.
+    Se o processo cai depois de o expurgador apagar o cliente e antes do relatório, a reentrega acha o expurgo começado
+    sem cliente e o conclui (nunca `tenant_unknown`); um expurgo concluído repete o relatório. A exportação chama o exportador (`TenantExporter`) e registra o resultado com o `export.ready`
     (`recordTenantExport`); o mesmo `exportId` de novo repete o relatório sem exportar. **O exportador e o expurgador
     são do CE-16**: até lá, o pedido que passa nas guardas volta `export_unavailable` ou `purge_unavailable`, sem mudar
     o estado do cliente.
@@ -1534,8 +1536,14 @@ writerIdentity}`, `cell.status` (só agregados da célula) e **`command.refused 
   quem relatar.
 - **`cell-tenant-status`** (a cada 5 min) relata, por cliente do canal, as contas conectadas e o último evento, as mesmas
   contas do `node-status` do nó dedicado (que a célula não usa).
-- O aviso ao host do cliente novo (o sinal sem segredo do primeiro administrador) é um gancho (`CellTenantHooks`) que o
-  pacote do nó em modo célula liga (CE-04); sem ele, nada é avisado.
+- **O primeiro administrador do cliente novo:** o `tenant.upsert` leva `firstAdmin {email}` (null no cliente adotado,
+  o SOC da Verax). O pedido (`CellTenantBootstrap`) nasce na transação que cria o cliente, e cada passagem do
+  `cell-commands` o entrega ao host pelo contrato de arquivos do CE-04: `slug=` e `email=` em
+  `TENANT_BOOTSTRAP_DIR/<id do cliente>` (escrito de uma vez, com `rename`), e a resposta do host (`ok` ou `error`) em
+  `TENANT_BOOTSTRAP_STATUS_DIR/<id>`. O pedido ainda na pasta espera o host; a resposta `ok` com o pedido atendido
+  confirma, e o e-mail sai da linha; sem pedido nem `ok` (nunca escrito, ou o `/run` sumiu num reinício), o pedido é
+  escrito de novo. Uma queda do worker logo depois do commit, ou uma falha na pasta, não perde o pedido, e a falha não
+  para os comandos. A senha nunca passa pelo worker.
 
 **O lado do plano de controle (CE-06, `apps/control-plane/src/cells/`).** Só no cp-worker:
 

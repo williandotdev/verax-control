@@ -1,6 +1,15 @@
 import 'reflect-metadata';
 import { randomBytes, randomInt } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  unlinkSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { NestExpressApplication } from '@nestjs/platform-express';
@@ -23,6 +32,11 @@ import { CellReportOutbox } from '../src/cell/cell-report-outbox.js';
 import { CELL_REPORT_RETRY_MS, CellReportPublisher } from '../src/cell/cell-report-publisher.js';
 import { readCellTenantState, recordTenantExport } from '../src/cell/cell-tenant-state.js';
 import { CellTenantStatusReporter } from '../src/cell/cell-tenant-status.js';
+import {
+  CellTenantBootstraps,
+  FileTenantBootstrapSignal,
+  type TenantBootstrapSignal,
+} from '../src/cell/tenant-bootstrap-signal.js';
 import { listRouteInputKeys } from '../src/common/http/route-contracts.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { TenantScopeViolation } from '../src/common/prisma/tenant-scope.js';
@@ -74,6 +88,7 @@ function stateOf(tenantSlug: string, overrides: Partial<CellTenantState> = {}): 
     natIps: ['203.0.113.10'],
     lastBilledCycle: null,
     unitPrices: null,
+    firstAdmin: { email: `admin@${tenantSlug}.example` },
     ...overrides,
   };
 }
@@ -468,6 +483,226 @@ describe('canal da célula, lado do nó (CE-05)', () => {
     });
   });
 
+  describe('reentrega depois de uma queda (revisão do CE-05)', () => {
+    const purgeOf = (controlPlaneId: string, confirmSlug: string, purgeId = ulid()) => ({
+      ...envelope(controlPlaneId),
+      kind: 'tenant.purge' as const,
+      purgeId,
+      confirmSlug,
+    });
+
+    /** Um cliente cancelado com a exportação gravada: pronto para o expurgo. */
+    async function purgeable() {
+      const tenant = await cellTenant();
+      await setTenantLifecycleStatus(prisma, tenant.tenantId, 'canceled');
+      await prisma.$transaction((tx) =>
+        recordTenantExport(
+          tx,
+          outbox,
+          tenant.tenantId,
+          {
+            exportId: ulid(),
+            object: `${CELL}/${tenant.controlPlaneId}/20261111T120000Z.tar.gz`,
+            sha256: 'b'.repeat(64),
+            bytes: 10,
+          },
+          new Date(),
+        ),
+      );
+      return tenant;
+    }
+
+    /**
+     * O expurgador de teste apaga o mapa do cliente (o que o expurgo do CE-16 apaga por último, com a linha do cliente) e,
+     * com `crash`, cai antes de devolver: o processo morreu entre o fim do expurgo e o relatório.
+     */
+    function deletingPurger(crash: boolean): TenantPurger & { calls: number } {
+      const purger = {
+        calls: 0,
+        purgeTenant: async (tenantId: string) => {
+          purger.calls += 1;
+          await prisma.cellTenantState.deleteMany({ where: { tenantId } });
+          await prisma.tenantHost.deleteMany({ where: { tenantId } });
+          if (crash) throw new Error('o processo caiu');
+        },
+      };
+      return purger;
+    }
+
+    it('o expurgo concluído e não relatado é concluído na reentrega, sem virar tenant_unknown', async () => {
+      const { controlPlaneId, tenantId, state } = await purgeable();
+      const command = purgeOf(controlPlaneId, state.slug);
+      const crashing = deletingPurger(true);
+      await expect(commands({ purger: crashing }).apply(command)).rejects.toThrow('o processo caiu');
+      expect(await prisma.cellTenantState.findUnique({ where: { tenantId } })).toBeNull();
+      expect((await reportsOf(controlPlaneId)).some((report) => report.kind === 'tenant.purged')).toBe(false);
+      expect(await prisma.cellPurge.findUniqueOrThrow({ where: { purgeId: command.purgeId } })).toMatchObject(
+        {
+          controlPlaneId,
+          nodeTenantId: tenantId,
+          completedAt: null,
+        },
+      );
+
+      // A mesma mensagem volta (não foi confirmada): o expurgo terminou, e o relatório sai agora.
+      const retry = deletingPurger(false);
+      expect(await commands({ purger: retry }).apply(command)).toEqual({ outcome: 'applied' });
+      expect(retry.calls).toBe(0);
+      expect(
+        (await prisma.cellPurge.findUniqueOrThrow({ where: { purgeId: command.purgeId } })).completedAt,
+      ).not.toBeNull();
+      // De novo, ou com outro pedido de expurgo do mesmo cliente: o relatório se repete, nunca a recusa.
+      expect(await commands({ purger: retry }).apply(command)).toEqual({ outcome: 'duplicate' });
+      const another = purgeOf(controlPlaneId, state.slug);
+      expect(await commands({ purger: retry }).apply(another)).toEqual({ outcome: 'duplicate' });
+      const purged = (await reportsOf(controlPlaneId)).filter((report) => report.kind === 'tenant.purged');
+      expect(purged.map((report) => (report as { purgeId: string }).purgeId)).toEqual([
+        command.purgeId,
+        command.purgeId,
+        another.purgeId,
+      ]);
+      // Um cliente que a célula nunca expurgou continua desconhecido.
+      expect(await commands({ purger: retry }).apply(purgeOf(ulid(), 'qualquer'))).toEqual({
+        outcome: 'refused',
+        code: 'tenant_unknown',
+      });
+    });
+
+    it('o expurgador que cai no meio, com o cliente ainda lá, roda de novo na reentrega', async () => {
+      const { controlPlaneId, tenantId, state } = await purgeable();
+      const command = purgeOf(controlPlaneId, state.slug);
+      const halfway: TenantPurger = { purgeTenant: () => Promise.reject(new Error('o banco caiu')) };
+      await expect(commands({ purger: halfway }).apply(command)).rejects.toThrow('o banco caiu');
+      expect((await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId } })).status).toBe('purging');
+      const retry = deletingPurger(false);
+      expect(await commands({ purger: retry }).apply(command)).toEqual({ outcome: 'applied' });
+      expect(retry.calls).toBe(1);
+      expect(
+        (await reportsOf(controlPlaneId)).filter((report) => report.kind === 'tenant.purged'),
+      ).toHaveLength(1);
+    });
+
+    describe('o pedido do primeiro administrador', () => {
+      let requestsDir: string;
+      let statusDir: string;
+
+      beforeAll(() => {
+        requestsDir = mkdtempSync(join(tmpdir(), 'verax-pedidos-'));
+        statusDir = mkdtempSync(join(tmpdir(), 'verax-respostas-'));
+      });
+
+      afterAll(() => {
+        rmSync(requestsDir, { recursive: true, force: true });
+        rmSync(statusDir, { recursive: true, force: true });
+      });
+
+      /** O host do CE-04, simulado: atende o pedido (apaga-o) e responde. */
+      function hostAnswers(tenantId: string, answer: 'ok' | 'error'): void {
+        if (answer === 'ok') unlinkSync(join(requestsDir, tenantId));
+        writeFileSync(join(statusDir, tenantId), `${answer}\n`);
+      }
+
+      it('nasce com o cliente, na transação do upsert, e sai na passagem seguinte mesmo se o worker caiu antes', async () => {
+        const { tenantId, state } = await cellTenant();
+        // O commit do upsert aconteceu e nada foi entregue ainda (o worker "caiu" antes de qualquer passagem).
+        expect(await prisma.cellTenantBootstrap.findUniqueOrThrow({ where: { tenantId } })).toMatchObject({
+          slug: state.slug,
+          adminEmail: state.firstAdmin?.email,
+          signaledAt: null,
+          confirmedAt: null,
+        });
+        const bootstraps = new CellTenantBootstraps(
+          prisma,
+          new FileTenantBootstrapSignal(requestsDir, statusDir),
+          { tenantIds: [tenantId] },
+        );
+        const pass = new CellCommands(prisma, {
+          cellId: CELL,
+          subscription: 'projects/projeto-exemplo/subscriptions/vxc-celula-teste-comandos',
+          reader: new MemoryReader(),
+          outbox,
+          logger,
+          bootstraps,
+        });
+        expect((await pass.runOnce()).bootstrap).toEqual({ pending: 1, requested: 1, confirmed: 0 });
+        expect(readFileSync(join(requestsDir, tenantId), 'utf8')).toBe(
+          `slug=${state.slug}\nemail=${state.firstAdmin?.email ?? ''}\n`,
+        );
+        // O pedido ainda na pasta: o host não atendeu; nada a fazer.
+        expect((await pass.runOnce()).bootstrap).toEqual({ pending: 1, requested: 0, confirmed: 0 });
+        // O host falhou e guardou o pedido (o timer dele tenta de novo): continua pendente.
+        hostAnswers(tenantId, 'error');
+        expect((await pass.runOnce()).bootstrap).toEqual({ pending: 1, requested: 0, confirmed: 0 });
+        // O `/run` some num reinício da VM: o pedido é escrito de novo.
+        unlinkSync(join(requestsDir, tenantId));
+        unlinkSync(join(statusDir, tenantId));
+        expect((await pass.runOnce()).bootstrap).toEqual({ pending: 1, requested: 1, confirmed: 0 });
+        hostAnswers(tenantId, 'ok');
+        expect((await pass.runOnce()).bootstrap).toEqual({ pending: 0, requested: 0, confirmed: 1 });
+        expect(await prisma.cellTenantBootstrap.findUniqueOrThrow({ where: { tenantId } })).toMatchObject({
+          adminEmail: null,
+          attempts: 2,
+        });
+        expect(existsSync(join(requestsDir, tenantId))).toBe(false);
+        expect((await pass.runOnce()).bootstrap).toEqual({ pending: 0, requested: 0, confirmed: 0 });
+      });
+
+      it('uma falha transitória na entrega não para os comandos e se repete na passagem seguinte', async () => {
+        const { tenantId } = await cellTenant();
+        let failures = 1;
+        const requested: string[] = [];
+        const flaky: TenantBootstrapSignal = {
+          pending: () => Promise.resolve(false),
+          status: () => Promise.resolve(null),
+          request: (id) => {
+            if (failures > 0) {
+              failures -= 1;
+              return Promise.reject(new Error('EIO'));
+            }
+            requested.push(id);
+            return Promise.resolve();
+          },
+        };
+        const reader = new MemoryReader();
+        const controlPlaneId = ulid();
+        reader.put(JSON.stringify(upsert(controlPlaneId, 1, stateOf(slug()))));
+        const pass = new CellCommands(prisma, {
+          cellId: CELL,
+          subscription: 'projects/projeto-exemplo/subscriptions/vxc-celula-teste-comandos',
+          reader,
+          outbox,
+          logger,
+          bootstraps: new CellTenantBootstraps(prisma, flaky, { tenantIds: [tenantId] }),
+        });
+        const first = await pass.runOnce();
+        expect(first).toMatchObject({ applied: 1, bootstrap: null });
+        expect(reader.acked).toHaveLength(1);
+        expect(
+          logger.lines.some(
+            (line) => (line.fields as { event?: string }).event === 'cell_tenant_bootstrap_failed',
+          ),
+        ).toBe(true);
+        expect((await pass.runOnce()).bootstrap).toMatchObject({ requested: 1 });
+        expect(requested).toEqual([tenantId]);
+      });
+
+      it('o cliente adotado (sem primeiro administrador) não gera pedido, e o pedido não atravessa clientes', async () => {
+        const adopted = await cellTenant(stateOf(slug(), { firstAdmin: null }));
+        expect(
+          await prisma.cellTenantBootstrap.findUnique({ where: { tenantId: adopted.tenantId } }),
+        ).toBeNull();
+        const signal = new FileTenantBootstrapSignal(requestsDir, statusDir);
+        await expect(signal.request('../outro', 'cliente', 'a@b.example')).rejects.toThrow('id de cliente');
+        await expect(signal.request(adopted.tenantId, 'cliente', 'a@b.example\nslug=outro')).rejects.toThrow(
+          'e-mail',
+        );
+        expect(() => prisma.forTenant(adopted.tenantId).cellTenantBootstrap.deleteMany({})).toThrow(
+          TenantScopeViolation,
+        );
+      });
+    });
+  });
+
   describe('tenant.collection_pause', () => {
     it('a pausa tira as contas do cliente da coleta, sem mudar o estado; retomar as devolve', async () => {
       const { controlPlaneId, tenantId } = await cellTenant();
@@ -521,12 +756,24 @@ describe('canal da célula, lado do nó (CE-05)', () => {
         'cell/cell-commands.ts',
         'cell/tenant-cloud-identity.ts',
       ]);
-      // As escritas do comando são só as do sistema: nenhuma outra tabela de cliente é gravada direto por ele.
+      const bootstrapWrites =
+        /\bcellTenantBootstrap\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|updateManyAndReturn|upsert|delete|deleteMany)\b/;
+      expect(filesMatching(bootstrapWrites)).toEqual([
+        'cell/cell-commands.ts',
+        'cell/tenant-bootstrap-signal.ts',
+      ]);
+      // As escritas do comando são só as do sistema: além do próprio canal (o estado, o registro do expurgo e o pedido
+      // do primeiro administrador), nenhuma outra tabela de cliente é gravada direto por ele.
       const source = readFileSync(join(srcDir, 'cell/cell-commands.ts'), 'utf8');
       const direct = [...source.matchAll(/\btx\.(\w+)\.(create|update|upsert|delete)\w*\(/g)].map(
         (match) => match[1],
       );
-      expect([...new Set(direct)].sort()).toEqual(['cellTenantState', 'tenant']);
+      expect([...new Set(direct)].sort()).toEqual([
+        'cellPurge',
+        'cellTenantBootstrap',
+        'cellTenantState',
+        'tenant',
+      ]);
     });
 
     it('o escopo do cliente lê o próprio estado da célula, mas recusa gravá-lo', async () => {
