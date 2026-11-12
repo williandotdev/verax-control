@@ -5291,6 +5291,32 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **Teste manual:** `pnpm --filter @verax/web dev:mock`, `localStorage.setItem('verax.mock.plan', 'plataforma')`, entrar como administrador do cliente e abrir Administração → Plano e uso (nos dois temas e no celular). Na célula (com o CE-05), gravar um `TenantPlan` da Plataforma e conferir o contador com o volume do dia.
 - **Riscos e pendências:** "Ampliar franquia" e o "ciclo anterior faturado" chegam com o CE-19 e o CE-20 (o preço e o resumo do ciclo vêm do estado desejado); a franquia muda só pelo plano de controle até lá.
 
+## Plano de controle: os logs do projeto guardados por 6 meses (Marco Civil) ⚠️ altera `infra/`
+
+- **Pedido do responsável (12/11/2026):** a Política de privacidade promete guardar os registros de acesso por 6
+  meses (Marco Civil da Internet, art. 15), e o Cloud Logging do projeto do plano de controle guardava 30 dias.
+- **Infraestrutura (`infra/gcp/envs/control-plane`):** `logging.tf` (novo) com `google_logging_project_bucket_config`
+  no `_Default` (`location = "global"`), `retention_days = var.log_retention_days`; a variável nova (padrão 180, aceita
+  de 180 a 3650 dias inteiros: nunca abaixo dos 6 meses) e o exemplo no `terraform.tfvars.example`. Pela documentação
+  do provider, o recurso adota e atualiza o bucket que já existe (o `_Default` não pode ser criado nem apagado) e, num
+  `destroy`, só sai do estado, deixando o bucket como está. O `_Required` (400 dias, fixo) não muda.
+- **Célula (`envs/celula`): sem mudança.** Os contêineres do nó registram em disco (`driver: local` no
+  `infra/node/compose*.yaml`) e a entrada é pelo túnel do Cloudflare: o Cloud Logging do projeto dos nós não guarda
+  registro de acesso de cliente. Os acessos ao painel, com o IP, ficam na trilha de auditoria do banco do nó (13 meses
+  ou mais).
+- **Testes:** `terraform fmt -check -recursive`, `validate` e `test` do `envs/control-plane` (provider simulado): 38
+  verdes, com os novos `logs_guardados_por_6_meses` (o `_Default`, `global`, 180 dias, não travado),
+  `logs_por_mais_tempo_so_por_escolha` (365) e `logs_nunca_abaixo_de_6_meses`/`logs_nunca_acima_do_maximo` (30 e
+  3651 recusados pela validação).
+- **Documentação:** `infra/gcp/GUIA.md` (a linha da tabela "O que ele cria", o `plan` da primeira subida com 79, e o
+  "1 a criar" num projeto que já subiu, com a conferência pelo `gcloud logging buckets describe`) e
+  `docs/retencao-de-dados.md` (a seção dos registros de acesso do plano de controle, os nós e uma frase sugerida para
+  a Privacidade).
+- **Custo:** a GCP cobra o armazenamento de logs além de 30 dias por GiB e por mês; no volume do projeto, centavos.
+- **A fazer pelo responsável:** `terraform plan` (1 a criar, o bucket adotado) e `apply` no `envs/control-plane`;
+  depois, `gcloud logging buckets describe _Default --location=global --project=SEU_PROJETO` mostra
+  `retentionDays: 180`.
+
 ## Fase 3, console: sem tela de cadastro; a conta nasce pela linha de comando ⚠️ altera `infra/`
 
 - **Decisão do responsável (12/11/2026):** com a conta já criada, a tela pública de cadastro (`/configurar`) e as
