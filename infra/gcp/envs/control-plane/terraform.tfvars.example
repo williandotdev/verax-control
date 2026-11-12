@@ -71,6 +71,10 @@ project_id = "projeto-exemplo"
 # Recuperação pontual do Firestore: cobrada à parte, sem nível gratuito. Desligada por padrão.
 # firestore_pitr = false
 
+# Dias que o Cloud Logging guarda os logs do projeto (os registros de acesso do site e do console): 185, os 6 meses do
+# Marco Civil e da Política de privacidade. Não aceita menos.
+# log_retention_days = 185
+
 # Alerta de orçamento: conta de faturamento e valor mensal, na moeda dela (R$ 15 por padrão).
 # billing_account_id = "000000-000000-000000"
 # monthly_budget     = 15
