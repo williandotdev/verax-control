@@ -63,6 +63,13 @@ export const COLLECTIONS = {
   adminSessions: 'adminSessions',
   adminLoginThrottle: 'adminLoginThrottle',
   adminEnrollments: 'adminEnrollments',
+  /**
+   * Célula compartilhada (CE-06): o registro das células (`cells/{id}`, gravado pelo responsável) e os relatórios que
+   * cada uma mandou (`cellReports/{célula}_{reportId}`: a idempotência da entrega push e o que fica para os PRs
+   * seguintes tratarem). Só o cp-worker lê e grava os relatórios.
+   */
+  cells: 'cells',
+  cellReports: 'cellReports',
 } as const;
 
 export interface CompositeIndex {
@@ -144,4 +151,5 @@ export const TTL_FIELDS: readonly TtlField[] = [
     retention: 'fim da janela de 15 min ou do bloqueio',
   },
   { collectionGroup: COLLECTIONS.adminEnrollments, field: TTL_FIELD, retention: '10 min (cadastro do TOTP)' },
+  { collectionGroup: COLLECTIONS.cellReports, field: TTL_FIELD, retention: '90 dias' },
 ];

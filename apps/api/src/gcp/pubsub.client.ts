@@ -1,4 +1,4 @@
-import { isPubsubSubscriptionName } from '@verax/shared';
+import { isPubsubSubscriptionName, isPubsubTopicName } from '@verax/shared';
 import { z } from 'zod';
 
 /**
@@ -106,5 +106,51 @@ export class PubsubRestReader implements PubsubReader {
   async acknowledge(subscription: string, ackIds: readonly string[]): Promise<void> {
     if (ackIds.length === 0) return;
     await this.call(subscription, 'acknowledge', { ackIds });
+  }
+}
+
+/** Uma mensagem a publicar: o `data` já em base64 e atributos curtos (sem dado de cliente). */
+export interface PubsubOutgoingMessage {
+  data: string;
+  attributes?: Readonly<Record<string, string>>;
+}
+
+/** Publicação num tópico do Pub/Sub (os relatórios da célula, CE-05). */
+export interface PubsubPublisher {
+  /** Publica o lote inteiro (até 100 mensagens) numa chamada; devolve os ids que o Pub/Sub deu, na mesma ordem. */
+  publish(topic: string, messages: readonly PubsubOutgoingMessage[]): Promise<string[]>;
+}
+
+const publishResponseSchema = z.object({ messageIds: z.array(z.string().max(256)).max(1000) });
+
+/** O maior lote de uma publicação (o Pub/Sub aceita 1000 mensagens e 10 MB por chamada). */
+export const PUBSUB_PUBLISH_MAX_MESSAGES = 100;
+
+/**
+ * Publicação pela API REST, com o mesmo token da VM da leitura: na célula, a conta de serviço da VM tem
+ * `roles/pubsub.publisher` só no tópico de relatórios dela (envs da célula).
+ */
+export class PubsubRestPublisher implements PubsubPublisher {
+  constructor(
+    private readonly tokens: AccessTokenProvider,
+    private readonly baseUrl = 'https://pubsub.googleapis.com/v1',
+  ) {}
+
+  async publish(topic: string, messages: readonly PubsubOutgoingMessage[]): Promise<string[]> {
+    if (!isPubsubTopicName(topic)) throw new Error('tópico do Pub/Sub em formato inválido');
+    if (messages.length === 0) return [];
+    if (messages.length > PUBSUB_PUBLISH_MAX_MESSAGES) throw new RangeError('lote do Pub/Sub acima do teto');
+    const response = await fetch(`${this.baseUrl}/${topic}:publish`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${await this.tokens.token()}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ messages }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    // Só o código, como na leitura: a resposta de erro do Google pode citar recursos.
+    if (!response.ok) throw new Error(`Pub/Sub publish respondeu ${response.status}`);
+    const body = publishResponseSchema.parse(await response.json());
+    if (body.messageIds.length !== messages.length)
+      throw new Error('Pub/Sub publish devolveu outro número de ids');
+    return body.messageIds;
   }
 }

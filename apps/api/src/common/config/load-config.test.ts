@@ -663,6 +663,73 @@ describe('configuração do worker do sync (T5.3)', () => {
   });
 });
 
+describe('canal da célula no worker (CE-05)', () => {
+  const workerEnv = {
+    NODE_ENV: 'development',
+    DATABASE_URL: 'postgresql://verax:secret@localhost:5432/verax',
+  };
+  const channel = {
+    CELL_ID: 'verax-celula',
+    CELL_COMMANDS_SUBSCRIPTION: 'projects/projeto-exemplo/subscriptions/vxc-verax-celula-comandos',
+    CELL_REPORTS_TOPIC: 'projects/projeto-exemplo/topics/vxc-verax-celula-relatorios',
+  };
+
+  it('fora da célula e sem as variáveis, o canal não existe; na célula com as três, existe', () => {
+    expect(loadWorkerConfig(workerEnv).cellChannel).toBeNull();
+    expect(loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell' }).cellChannel).toBeNull();
+    expect(loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel }).cellChannel).toEqual({
+      cellId: 'verax-celula',
+      commandsSubscription: channel.CELL_COMMANDS_SUBSCRIPTION,
+      reportsTopic: channel.CELL_REPORTS_TOPIC,
+    });
+  });
+
+  it('as três juntas, só na célula, e cada uma no formato', () => {
+    for (const missing of Object.keys(channel)) {
+      const partial: Record<string, string> = { ...workerEnv, NODE_MODE: 'cell', ...channel };
+      delete partial[missing];
+      expect(() => loadWorkerConfig(partial), missing).toThrow(`${missing}: obrigatória`);
+    }
+    expect(() => loadWorkerConfig({ ...workerEnv, ...channel })).toThrow(
+      'CELL_ID: só existe com NODE_MODE=cell',
+    );
+    expect(() =>
+      loadWorkerConfig({
+        ...workerEnv,
+        NODE_MODE: 'cell',
+        ...channel,
+        CELL_REPORTS_TOPIC: channel.CELL_COMMANDS_SUBSCRIPTION,
+      }),
+    ).toThrow('CELL_REPORTS_TOPIC: use projects/<projeto>/topics/<nome>');
+    expect(() =>
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel, CELL_ID: 'Celula' }),
+    ).toThrow('CELL_ID');
+  });
+
+  it('as pastas do primeiro administrador (CE-04): as duas juntas, absolutas e só na célula', () => {
+    const dirs = {
+      TENANT_BOOTSTRAP_DIR: '/run/tenant-bootstrap',
+      TENANT_BOOTSTRAP_STATUS_DIR: '/run/tenant-bootstrap-status',
+    };
+    expect(loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel }).tenantBootstrap).toBeNull();
+    expect(
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...channel, ...dirs }).tenantBootstrap,
+    ).toEqual({
+      requestsDir: '/run/tenant-bootstrap',
+      statusDir: '/run/tenant-bootstrap-status',
+    });
+    expect(() =>
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', TENANT_BOOTSTRAP_DIR: dirs.TENANT_BOOTSTRAP_DIR }),
+    ).toThrow('TENANT_BOOTSTRAP_STATUS_DIR: obrigatória');
+    expect(() => loadWorkerConfig({ ...workerEnv, ...dirs })).toThrow(
+      'TENANT_BOOTSTRAP_DIR: só existe com NODE_MODE=cell',
+    );
+    expect(() =>
+      loadWorkerConfig({ ...workerEnv, NODE_MODE: 'cell', ...dirs, TENANT_BOOTSTRAP_DIR: 'pedidos' }),
+    ).toThrow('TENANT_BOOTSTRAP_DIR: deve ser o caminho absoluto');
+  });
+});
+
 describe('cofre de credenciais no ambiente (fase 2)', () => {
   // Chaves geradas na hora; o PEM vai em base64, como o start.sh escreve. As privadas do worker ficam num arquivo
   // temporário, uma versão por linha, como o arquivo do tmpfs do nó.

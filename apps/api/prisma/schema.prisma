@@ -141,6 +141,10 @@ model Tenant {
   /// Plano do cliente (CE-02): no nó dedicado, semeado do `node.conf`; na célula, gravado pelo plano de controle.
   tenantPlan               TenantPlan?
   retentionStates          TenantRetentionState[]
+  /// Célula (CE-05): o estado que o canal do plano de controle gravou e a identidade do cliente na nuvem.
+  cellState                CellTenantState?
+  cloudIdentity            TenantCloudIdentity?
+  cellBootstrap            CellTenantBootstrap?
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1154,3 +1158,89 @@ model TenantHost {
   slug      String   @unique @db.VarChar(16)
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 }
+
+/// Célula compartilhada (CE-05): o que o canal do plano de controle gravou de cada cliente. `controlPlaneId` é o id do
+/// cliente no plano de controle (ULID): o canal só fala nele, e esta linha é o mapa para o id daqui. `generation` é a
+/// última geração do `tenant.upsert` aplicada (a repetida ou mais velha é ignorada). `desired` guarda o resto do estado
+/// desejado que não tem tabela própria (a franquia agendada, o ciclo de cobrança, os IPs da célula, as fontes da GCP, o
+/// último ciclo cobrado e os preços do diálogo de ampliação), conferido pelo contrato na leitura. Só o sistema grava
+/// (`cell/cell-commands.ts`); o escopo do cliente só lê. Vazia no nó dedicado.
+model CellTenantState {
+  tenantId              String    @id @db.Uuid
+  tenant                Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  controlPlaneId        String    @unique @db.VarChar(26)
+  generation            Int
+  appliedAt             DateTime  @db.Timestamptz(3)
+  desired               Json
+  /// A coleta do cliente pausada pelo responsável (`tenant.collection_pause`), sem mudar o estado nem o acesso.
+  collectionPausedAt    DateTime? @db.Timestamptz(3)
+  collectionPauseReason String?   @db.VarChar(32)
+  /// A exportação gravada no bucket da célula (o expurgo só passa com ela): o pedido, o objeto, o SHA-256 e o tamanho,
+  /// para repetir o `export.ready` quando o mesmo pedido chega de novo.
+  exportId              String?   @db.VarChar(26)
+  exportReadyAt         DateTime? @db.Timestamptz(3)
+  exportObject          String?   @db.VarChar(200)
+  exportSha256          String?   @db.Char(64)
+  exportBytes           BigInt?
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+}
+
+/// Célula compartilhada (CE-05): a conta de serviço do cliente na nuvem (`vxt-<slug>`), cujo token lê a AWS do cliente
+/// (CE-11). Gravada só pelo comando do plano de controle (`cell/cell-commands.ts`); nenhuma rota a aceita (meta-teste),
+/// e o escopo do cliente só lê. Uma conta por cliente e um cliente por conta. Vazia no nó dedicado.
+model TenantCloudIdentity {
+  tenantId   String   @id @db.Uuid
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  saEmail    String   @unique @db.VarChar(254)
+  saUniqueId String   @unique @db.VarChar(21)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Célula compartilhada (CE-05): a caixa de saída dos relatórios ao plano de controle. Cada relatório nasce na mesma
+/// transação do que ele relata e sai pela tarefa `cell-reports`, que publica no tópico de relatórios da célula. `body` é
+/// o relatório inteiro do contrato (`packages/shared/src/cell-protocol.ts`), com o id do cliente do plano de controle; o
+/// id da linha é o `reportId`, que o plano de controle usa para ignorar a repetição. Dado de sistema, sem coluna de
+/// cliente: só o worker lê e grava.
+model CellReport {
+  id            String    @id @db.Uuid
+  kind          String    @db.VarChar(40)
+  body          Json
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  publishedAt   DateTime? @db.Timestamptz(3)
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([publishedAt, nextAttemptAt])
+}
+
+/// Célula compartilhada (CE-05): o registro durável de cada expurgo pedido pelo canal (`tenant.purge`), pelo `purgeId`.
+/// Sobrevive ao cliente (sem chave estrangeira, de propósito): se o processo cai depois de o expurgador apagar o cliente
+/// e antes do relatório, a reentrega do comando acha o registro e emite o `tenant.purged` de novo. Só ids e instantes;
+/// dado de sistema, sem coluna de cliente: só o worker lê e grava.
+model CellPurge {
+  purgeId        String    @id @db.VarChar(26)
+  controlPlaneId String    @db.VarChar(26)
+  /// O id do cliente no banco da célula, que o expurgo apaga (só para a conferência; a linha dele some).
+  nodeTenantId   String    @db.Uuid
+  startedAt      DateTime  @default(now()) @db.Timestamptz(3)
+  completedAt    DateTime? @db.Timestamptz(3)
+
+  @@index([controlPlaneId])
+}
+
+/// Célula compartilhada (CE-05): o pedido do primeiro administrador de um cliente criado pelo canal, gravado na mesma
+/// transação do `tenant.upsert`. A tarefa `cell-commands` o entrega ao host (o arquivo de pedido do CE-04) a cada
+/// passagem, até o host confirmar (`ok`); então o e-mail é apagado. Só o sistema grava.
+model CellTenantBootstrap {
+  tenantId    String    @id @db.Uuid
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  slug        String    @db.VarChar(16)
+  /// O e-mail do primeiro administrador; null depois da confirmação do host.
+  adminEmail  String?   @db.VarChar(254)
+  requestedAt DateTime  @default(now()) @db.Timestamptz(3)
+  /// A última vez que o pedido foi escrito para o host.
+  signaledAt  DateTime? @db.Timestamptz(3)
+  attempts    Int       @default(0)
+  confirmedAt DateTime? @db.Timestamptz(3)
+}
+
