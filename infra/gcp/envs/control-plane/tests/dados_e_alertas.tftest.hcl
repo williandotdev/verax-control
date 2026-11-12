@@ -104,9 +104,9 @@ run "logs_guardados_por_6_meses" {
       google_logging_project_bucket_config.default.project == "projeto-exemplo" &&
       google_logging_project_bucket_config.default.location == "global" &&
       google_logging_project_bucket_config.default.bucket_id == "_Default" &&
-      google_logging_project_bucket_config.default.retention_days == 180
+      google_logging_project_bucket_config.default.retention_days == 185
     )
-    error_message = "O bucket _Default do Cloud Logging (os registros de acesso do site e do console) guarda 180 dias: os 6 meses do Marco Civil e da Política de privacidade."
+    error_message = "O bucket _Default do Cloud Logging (os registros de acesso do site e do console) guarda 185 dias: os 6 meses do Marco Civil e da Política de privacidade."
   }
 
   assert {

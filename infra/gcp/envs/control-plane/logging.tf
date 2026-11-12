@@ -2,7 +2,7 @@
 # aplicações ficam guardados por 6 meses; a Política de privacidade promete o mesmo). Os registros de acesso do site
 # de contratação (`conta`) e do console (`admin`) são os logs de requisição do Cloud Run (`run.googleapis.com/requests`:
 # data e hora, IP de origem, endereço e resposta de cada requisição) e os logs dos serviços, e todos caem no bucket
-# `_Default` do Cloud Logging, que guarda 30 dias por padrão. Aqui ele passa a guardar `log_retention_days` (180).
+# `_Default` do Cloud Logging, que guarda 30 dias por padrão. Aqui ele passa a guardar `log_retention_days` (185).
 #
 # O `_Default` é criado pelo Google com o projeto e não pode ser apagado. Pela documentação do provider
 # (`google_logging_project_bucket_config`): criar este recurso "adquire e atualiza" o bucket que já existe (nada novo

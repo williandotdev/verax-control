@@ -99,8 +99,8 @@ cliente. A carência de 30 dias quando o prazo diminui também é por cliente.
 O site de contratação (`conta.veraxsistemas.com.br`) e o console do responsável rodam no Cloud Run do projeto do plano
 de controle. Os registros de acesso a essas aplicações (data e hora, IP de origem, endereço e resposta de cada
 requisição: os logs de requisição do Cloud Run) e os logs dos serviços ficam no bucket `_Default` do Cloud Logging do
-projeto por **180 dias** (6 meses, o Marco Civil da Internet, art. 15), não os 30 do padrão da GCP:
-`log_retention_days` em `infra/gcp/envs/control-plane/logging.tf`, que não aceita menos de 180. Depois disso, o Cloud
+projeto por **185 dias** (6 meses com folga, o Marco Civil da Internet, art. 15), não os 30 do padrão da GCP:
+`log_retention_days` em `infra/gcp/envs/control-plane/logging.tf`, que não aceita menos de 185. Depois disso, o Cloud
 Logging os apaga sozinho. Os logs de auditoria de administração e de eventos de sistema da GCP (bucket `_Required`)
 seguem os 400 dias fixos do Google e não têm dado de quem visita o site.
 

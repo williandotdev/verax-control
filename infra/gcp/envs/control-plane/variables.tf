@@ -235,11 +235,11 @@ variable "firestore_pitr" {
 variable "log_retention_days" {
   description = "Dias que o bucket _Default do Cloud Logging do projeto guarda os logs (logging.tf): os registros de acesso do site de contratação e do console (os logs de requisição do Cloud Run) e os logs dos serviços. 180 (6 meses, o Marco Civil da Internet, art. 15, e o que a Política de privacidade promete). A GCP cobra o que passa de 30 dias, por GiB."
   type        = number
-  default     = 180
+  default     = 185
 
   validation {
-    condition     = var.log_retention_days >= 180 && var.log_retention_days <= 3650 && floor(var.log_retention_days) == var.log_retention_days
-    error_message = "log_retention_days é um número inteiro de dias entre 180 (os 6 meses do Marco Civil; abaixo disso, não) e 3650 (o máximo do Cloud Logging)."
+    condition     = var.log_retention_days >= 185 && var.log_retention_days <= 3650 && floor(var.log_retention_days) == var.log_retention_days
+    error_message = "log_retention_days é um número inteiro de dias entre 185 (os 6 meses do Marco Civil com folga: seis meses de calendário chegam a 184 dias; abaixo disso, não) e 3650 (o máximo do Cloud Logging)."
   }
 }
 
