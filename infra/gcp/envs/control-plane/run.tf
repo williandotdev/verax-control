@@ -82,9 +82,12 @@ locals {
   }
 
   # Só do cp-worker, também derivado pelo Terraform: a conta do console (admin.tf), que o worker aceita só nas operações
-  # do responsável (`worker-caller.ts`, grupo `console`). Sem `admin_enabled`, vazio (não vai).
+  # do responsável (`worker-caller.ts`, grupo `console`). Sem `admin_enabled`, vazio (não vai). E as de push das células.
   worker_env_infra = {
     ADMIN_SA_EMAIL = var.admin_enabled ? google_service_account.admin[0].email : ""
+    # As contas de push dos relatórios das células (cell_channel.tf, CE-06): o worker aceita o token delas só na rota
+    # dos relatórios (`worker-caller.ts`, grupo `cell-push`). Sem `cell_push_service_accounts`, vazio (não vai).
+    CELL_PUSH_SA_EMAILS = join(",", sort(values(var.cell_push_service_accounts)))
   }
 
   worker_env = {

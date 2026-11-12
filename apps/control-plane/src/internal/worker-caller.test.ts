@@ -14,6 +14,8 @@ const AUD = 'https://cp-worker-123456789012.southamerica-east1.run.app';
 const PUBLIC_SA = 'cp-public@demo-proj.iam.gserviceaccount.com';
 const INVOKER = 'cp-invoker@demo-proj.iam.gserviceaccount.com';
 const ADMIN_SA = 'cp-admin@demo-proj.iam.gserviceaccount.com';
+const PUSH_SA = 'vxc-celula-a-push@demo-proj.iam.gserviceaccount.com';
+const PUSH_SA_B = 'vxc-celula-b-push@demo-proj.iam.gserviceaccount.com';
 
 describe('selectValidatedCredential (o cabeçalho que o Cloud Run conferiu)', () => {
   it('com os dois cabeçalhos, a escolha é o X-Serverless-Authorization, e o pedido é ambíguo (recusado)', () => {
@@ -153,6 +155,7 @@ describe('allowedCallers', () => {
     OWNER_PRINCIPALS: 'Dono@Exemplo.example',
     PUBLIC_SA_EMAIL: PUBLIC_SA,
     ADMIN_SA_EMAIL: ADMIN_SA,
+    CELL_PUSH_SA_EMAILS: `${PUSH_SA},${PUSH_SA_B}`,
   });
 
   it('separa as rotas: as tasks e o responsável num grupo, só o cp-public no outro', () => {
@@ -168,6 +171,14 @@ describe('allowedCallers', () => {
     expect(allowedCallers(config, ['tasks']).has(ADMIN_SA)).toBe(false);
     expect(allowedCallers(config, ['public']).has(ADMIN_SA)).toBe(false);
     expect(allowedCallers(config, ['owner']).has(ADMIN_SA)).toBe(false);
+  });
+
+  it('as contas de push das células (CE-06) só nos relatórios, e só elas neles (nem o responsável)', () => {
+    expect([...allowedCallers(config, ['cell-push'])].sort()).toEqual([PUSH_SA, PUSH_SA_B]);
+    for (const group of ['tasks', 'public', 'owner', 'console'] as const) {
+      expect(allowedCallers(config, [group]).has(PUSH_SA), group).toBe(false);
+    }
+    expect(allowedCallers(loadConfig({ ROLE: 'worker', NODE_ENV: 'test' }), ['cell-push']).size).toBe(0);
   });
 
   it('sem a configuração, ninguém', () => {

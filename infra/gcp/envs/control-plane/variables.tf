@@ -88,7 +88,7 @@ locals {
   # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
   # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
   # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
-  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|ADMIN_SECRETS_PROJECT_ID|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
 }
 
 variable "service_env" {
@@ -98,7 +98,7 @@ variable "service_env" {
 
   validation {
     condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
-    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
   }
 
   validation {
@@ -271,4 +271,18 @@ variable "monthly_budget" {
   description = "Orçamento mensal do projeto, na moeda da conta de faturamento. Avisos em 50%, 90% e 100%. O plano de controle fica em R$ 0 com 0 clientes e em R$ 2 a 8 com 20 (plano, seção 6)."
   type        = number
   default     = 15
+}
+
+variable "cell_push_service_accounts" {
+  description = "A conta de push dos relatórios de cada célula, pelo id da célula (o mesmo de cells/{id} no Firestore): a saída `cell.reports_push_service_account` do envs/celula, {\"verax-celula\" = \"vxc-verax-celula-push@<projeto-da-célula>.iam.gserviceaccount.com\"}. Cada uma ganha run.invoker no cp-worker (com services_enabled) e entra em CELL_PUSH_SA_EMAILS, a lista que o cp-worker aceita só na rota dos relatórios (CE-06, cell_channel.tf). Vazio (padrão): a rota recusa tudo."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for cell, email in var.cell_push_service_accounts :
+      can(regex("^[a-z][a-z0-9-]{1,30}[a-z0-9]$", cell)) && email == lower(email) && can(regex("^vxc-[a-z0-9-]+-push@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", email))
+    ])
+    error_message = "Cada célula: id de 3 a 32 caracteres (minúsculas, dígitos e hífen) e a conta vxc-<célula>-push@<projeto>.iam.gserviceaccount.com da saída do envs/celula."
+  }
 }

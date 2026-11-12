@@ -1461,7 +1461,7 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
   a célula informa ao plano de controle CPU, memória, fila do `analysisd`, atraso do módulo e os maiores clientes em
   GB/dia, para a página "Células" do console. O item "Medidor da AWS parado" da Torre deixa de valer na célula.
 
-### Canal entre o plano de controle e a célula _(lado da célula feito no CE-05; plano de controle, CE-06)_
+### Canal entre o plano de controle e a célula _(feito: CE-05 e CE-06)_
 
 **Pub/Sub nos dois sentidos**, sem nada novo exposto na internet. Os comandos (`tenant.upsert`, com o estado desejado
 inteiro e uma `generation` crescente por cliente; `tenant.export`, `tenant.purge` e `tenant.collection_pause`) seguem
@@ -1536,6 +1536,39 @@ writerIdentity}`, `cell.status` (só agregados da célula) e **`command.refused 
   contas do `node-status` do nó dedicado (que a célula não usa).
 - O aviso ao host do cliente novo (o sinal sem segredo do primeiro administrador) é um gancho (`CellTenantHooks`) que o
   pacote do nó em modo célula liga (CE-04); sem ele, nada é avisado.
+
+**O lado do plano de controle (CE-06, `apps/control-plane/src/cells/`).** Só no cp-worker:
+
+- **O registro `cells/{id}`** (gravado pelo responsável, no console, com a escolha da célula do CE-15): o estado, a
+  região, o projeto, os IPs, e os nomes do canal tirados da saída `cell` do `envs/celula` (o tópico de comandos, a
+  assinatura push dos relatórios e a conta de push da célula, `vxc-<célula>-push`). A capacidade, a reserva e as
+  medições chegam opcionais (CE-15). O cliente ganha `placement {kind: 'cell', cellId}` (gravado pelo CE-15, nunca muda
+  sozinho) e `cell` (a geração mandada e a aplicada, os agregados do `tenant.status` e a última recusa de comando).
+- **O publicador** (`CellCommandPublisher`): a célula de destino sai sempre do `placement` do cliente, nunca de quem
+  chama. O `tenant.upsert` sobe a geração numa transação do Firestore (com a auditoria `cell.command_sent`) antes de
+  publicar; se a publicação falha, a geração fica gasta e a próxima tentativa usa outra maior. Os comandos pontuais
+  (exportação, expurgo, pausa) passam pela mesma trilha. Tudo é conferido pelo contrato antes de sair e publicado com a
+  chave de ordenação = o cliente, pela API REST do Pub/Sub com o token do cp-worker. Quem chama são os passos do
+  provisionamento e do ciclo de vida na célula (CE-15 e CE-16).
+- **A rota `POST /internal/cells/:cellId/reports`**, atrás de `@WorkerCallers('cell-push')`: o token OIDC de uma das
+  contas de push (`CELL_PUSH_SA_EMAILS`, que o Terraform deriva de `cell_push_service_accounts`), e esse token só vale
+  nesta rota (nem o responsável chama). Depois, `CellReportsService` confere, nesta ordem: a célula está no registro, o
+  token é o da conta de push **dela** e a entrega veio da assinatura **dela** (senão 403, sem ler o relatório: uma
+  célula comprometida não fala pela rota de outra); o relatório é do contrato e diz ser desta célula; **todo cliente
+  citado tem `placement.cellId` igual a esta célula** (um relatório sobre cliente de outra célula, ou que não existe, é
+  recusado). As recusas de conteúdo respondem 200 (o Pub/Sub não precisa repetir), ficam em `cellReports` e na
+  auditoria (`cell.report_refused`, fora da trilha do cliente de outra célula), e o log leva só a célula, o tipo, o
+  código e os ids.
+- **Idempotência:** `cellReports/{célula}_{reportId}` é criado na mesma transação do efeito; a repetição responde
+  `duplicate` e não muda nada. Os registros ficam 90 dias (TTL).
+- **Tratados aqui:** `tenant.applied` (a geração aplicada só sobe, e nunca acima da mandada: a geração inventada é
+  recusada, `generation_unknown`), `tenant.status` (só o mais novo pelo `emittedAt`: o atrasado não volta o estado) e
+  `command.refused` (a última recusa, para o console e o provisionamento). Os outros (`usage.daily`, `export.ready`,
+  `tenant.purged`, `franchise.requested`, `gcp_source.request`, `cell.status`) ficam guardados inteiros, `stored`, para
+  o CE-08, o CE-09, o CE-16 e o CE-19.
+- **Infra** (`infra/gcp/envs/control-plane/cell_channel.tf`): o `run.invoker` no cp-worker da conta de push de cada
+  célula e a lista delas no cp-worker. A assinatura push, a conta e os tópicos são do `envs/celula` (CE-03), no projeto
+  da célula.
 
 ### Medição e franquia _(a construir, CE-09, CE-10, CE-13, CE-19 e CE-20)_
 

@@ -391,6 +391,11 @@ const envShape = {
   // responsável (`delete-now`, `export`, `resume`, cancelar, suspender e reativar um contrato direto), com quem agiu no
   // corpo. O console usa `WORKER_URL` para chamar.
   ADMIN_SA_EMAIL: serviceAccountEmail.optional(),
+  // As contas das assinaturas push dos relatórios das células (CE-06): uma por célula, `vxc-<célula>-push`, criada pelo
+  // ambiente da célula (envs/celula) e listada pelo Terraform do plano de controle (`cell_push_service_accounts`). O
+  // cp-worker aceita o token delas só em `POST /internal/cells/:cellId/reports`, e cada uma só na rota da própria célula
+  // (o registro `cells/{id}.pushServiceAccount`). Sem a lista, a rota recusa tudo (403).
+  CELL_PUSH_SA_EMAILS: list(serviceAccountEmail).optional(),
 };
 
 export type EnvKey = keyof typeof envShape;
@@ -418,6 +423,7 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
         'EXPORT_SIGNER_SA_EMAIL',
         'SMTP_HOST_NODES',
         'SMTP_USER_NODES',
+        'CELL_PUSH_SA_EMAILS',
       ],
     },
     admin: { secrets: [], settings: ['ADMIN_SECRETS_PROJECT_ID'] },

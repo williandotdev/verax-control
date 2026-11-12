@@ -40,6 +40,8 @@ export interface AppModuleOptions {
   idTokenKeys?: AccessWorkerModuleOptions['idTokenKeys'];
   /** Só nos testes: as APIs do provisionamento (CP-07) num servidor falso e a sonda em memória. */
   provisioning?: AccessWorkerModuleOptions['provisioning'];
+  /** Só nos testes: a publicação dos comandos da célula em memória (em produção, o Pub/Sub, CE-06). */
+  cellCommandSink?: AccessWorkerModuleOptions['cellCommandSink'];
   /** Só nos testes: a API da Stripe num servidor falso em 127.0.0.1 (em produção, o padrão do SDK). */
   stripeApi?: StripeApiOptions;
   /** Só nos testes: a fila de passos em memória (em produção, o Cloud Tasks pela configuração). */
@@ -93,6 +95,7 @@ function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<Mo
         mailSender: options.mailSender,
         idTokenKeys: options.idTokenKeys,
         provisioning: options.provisioning,
+        cellCommandSink: options.cellCommandSink,
       }),
     ];
   }

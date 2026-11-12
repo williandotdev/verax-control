@@ -26,9 +26,13 @@ import { IdentityTokenVerifier, selectValidatedCredential } from './identity-tok
  * - `console`: só a conta do console do responsável (`ADMIN_SA_EMAIL`, o `cp-admin`), que chama as
  *   operações do responsável em nome de quem entrou no console (CP-11). O console nunca repassa o token de quem está
  *   no navegador: a credencial é o token da conta dele, e quem agiu vai no corpo (`actor`), conferido contra
- *   `OWNER_PRINCIPALS` (`ownerActorOf`).
+ *   `OWNER_PRINCIPALS` (`ownerActorOf`);
+ * - `cell-push`: só as contas das assinaturas push dos relatórios das células (`CELL_PUSH_SA_EMAILS`, uma por célula,
+ *   `vxc-<célula>-push`, CE-06): a entrega dos relatórios (`POST /internal/cells/:cellId/reports`), onde a rota ainda
+ *   confere que a conta é a da célula do caminho. Nem o responsável: um relatório só chega pelo Pub/Sub, e o token
+ *   dessas contas não serve em nenhuma outra rota.
  */
-export type WorkerCallerGroup = 'tasks' | 'public' | 'owner' | 'console';
+export type WorkerCallerGroup = 'tasks' | 'public' | 'owner' | 'console' | 'cell-push';
 
 /** O e-mail de quem chamou, em minúsculas, que a guarda deixa na requisição para a auditoria (`owner:<e-mail>`). */
 export function workerCallerOf(request: Request): string | undefined {
@@ -73,6 +77,8 @@ export function allowedCallers(config: AppConfig, groups: readonly WorkerCallerG
       emails.push(...(config.OWNER_PRINCIPALS ?? []));
     } else if (group === 'console') {
       emails.push(config.ADMIN_SA_EMAIL);
+    } else if (group === 'cell-push') {
+      emails.push(...(config.CELL_PUSH_SA_EMAILS ?? []));
     } else {
       emails.push(config.PUBLIC_SA_EMAIL);
     }
