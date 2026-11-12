@@ -17,6 +17,9 @@ export const TENANT_SCOPED_MODELS = [
   'postureFailure',
   'inventorySnapshot',
   'ingestUsage',
+  // Volume por dia (CE-09). Só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
+  'ingestUsageDay',
+  'awsVolumeObject',
   'ingestHealth',
   'cloudCredential',
   'wazuhAgent',
@@ -38,9 +41,16 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * pelo escopo poderia levar o endereço de um cliente para outro lugar), o plano do cliente (CE-02, `TenantPlan`, do
  * `node.conf` ou do plano de controle) e o estado do expurgo dele. No escopo do cliente, só a leitura passa; a gravação é
  * recusada mesmo que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
- * `plan/tenant-plan.ts`, `retention/`).
+ * `plan/tenant-plan.ts`, `retention/`). O volume por dia (CE-09) também: é a base da cobrança da franquia, e só os
+ * coletores e a tarefa `aws-volume` o gravam (`usage/usage-meter.ts`, `usage/aws-volume.ts`).
  */
-export const SYSTEM_WRITTEN_MODELS = ['tenantHost', 'tenantPlan', 'tenantRetentionState'] as const;
+export const SYSTEM_WRITTEN_MODELS = [
+  'tenantHost',
+  'tenantPlan',
+  'tenantRetentionState',
+  'ingestUsageDay',
+  'awsVolumeObject',
+] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([
   'findUnique',

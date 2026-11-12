@@ -12,10 +12,12 @@ import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { nodePlan } from '../common/config/env.schema.js';
 import { requestContext } from '../common/context/request-context.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
+import type { Prisma } from '../generated/prisma/client.js';
 import { usageMonth } from '../usage/usage-meter.js';
+import { readFranchiseUsage } from './franchise-usage.js';
 import { assertPeriodWithinHistoryDays } from './plan-history.js';
 import { assertWithinPlan, countSeats, lockPlanSeats, lockSeatRow, PlanLimitReached } from './plan-limits.js';
-import { TenantPlanMissing, TenantPlanResolver } from './tenant-plan.js';
+import { readTenantPlan, TenantPlanMissing, TenantPlanResolver } from './tenant-plan.js';
 
 /** Recurso da trilha de auditoria de cada vaga, para a recusa sair com a mesma área das outras operações. */
 const SEAT_RESOURCE: Readonly<Record<PlanSeat, string>> = {
@@ -133,12 +135,15 @@ export class PlanService {
   /**
    * Plano e uso do cliente da sessão: o plano dele, as contas cloud ativas, os usuários convidados ou ativos e o volume
    * lido no mês corrente do calendário de Brasília, somadas as fontes do medidor. Nada de outro cliente entra: tudo
-   * pelo escopo.
+   * pelo escopo. Com franquia em GB/dia no plano (a Plataforma, só na célula), vem também o contador da franquia
+   * (CE-10, `franchise`): o ciclo, o orçamento, o volume do ciclo, a projeção e os últimos 30 dias por fonte.
    */
   async usage(now: Date = new Date()): Promise<PlanUsage> {
     // O escopo primeiro: sem cliente na sessão, 409 `TENANT_REQUIRED`, como antes.
     const db = this.prisma.scoped();
-    const plan = await this.planOf(requestContext.getStore()?.auth?.scopeTenantId as string);
+    const tenantId = requestContext.getStore()?.auth?.scopeTenantId as string;
+    const plan = await this.planOf(tenantId);
+    const franchise = await this.franchiseOf(db, tenantId, now);
     const month = usageMonth(now);
     const [cloudAccounts, users, volume] = await Promise.all([
       countSeats(db, 'cloudAccounts'),
@@ -157,6 +162,18 @@ export class PlanService {
           bytes > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : bytes,
         ),
       },
+      ...(franchise !== null && { franchise }),
     };
+  }
+
+  /**
+   * O contador da franquia (CE-10): só na célula e só com franquia no plano gravado do cliente. No nó dedicado, o plano
+   * vem do `node.conf`, que não tem franquia.
+   */
+  private async franchiseOf(db: Prisma.TransactionClient, tenantId: string, now: Date) {
+    if (this.plans.mode !== 'cell') return null;
+    const stored = await readTenantPlan(this.prisma.db(), tenantId);
+    if (stored === null || stored.franchiseGbPerDay === null) return null;
+    return readFranchiseUsage(db, stored.franchiseGbPerDay, now);
   }
 }

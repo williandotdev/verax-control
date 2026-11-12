@@ -3,7 +3,10 @@ import {
   gcpProjectIdSchema,
   isPubsubSubscriptionName,
   type ResolvedPlan,
+  resolvedPlanOf,
+  resolvePlan,
   type TemporaryPassword,
+  tenantPlanFromResolved,
 } from '@verax/shared';
 import { readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -13,6 +16,7 @@ import { type Auth, createAuth } from '../auth/auth.factory.js';
 import { setTemporaryPassword } from '../auth/temporary-password.js';
 import { provisionUser } from '../auth/user-provisioning.js';
 import { AuditService } from '../common/audit/audit.service.js';
+import { isTenantSlug, type NodeMode } from '../common/config/cell.js';
 import { nodePlan } from '../common/config/env.schema.js';
 import { loadConfig } from '../common/config/load-config.js';
 import { loadEnvFileForLocalDevelopment } from '../common/config/load-env-file.js';
@@ -24,6 +28,8 @@ import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { UserRole } from '../generated/prisma/enums.js';
 import { mailTransport } from '../mail/mail.module.js';
 import { assertWithinPlan, PlanLimitReached } from '../plan/plan-limits.js';
+import { readTenantPlan, writeTenantPlan } from '../plan/tenant-plan.js';
+import { assignTenantHost, TenantHostConflict } from '../tenants/tenant-host.js';
 
 /**
  * Primeira configuração de um nó, rodada na instalação (`docker compose run --rm api node dist/cli/node-bootstrap.js`):
@@ -42,7 +48,9 @@ import { assertWithinPlan, PlanLimitReached } from '../plan/plan-limits.js';
  *
  * Esse é o modo `verax` (o padrão, sem `BOOTSTRAP_MODE`): o nó da Verax e a instalação com SSH, exatamente como antes.
  * O modo `customer` (`BOOTSTRAP_MODE=customer`, fase 3, CP-10) é o do nó de cliente que o plano de controle cria; ver
- * `bootstrapCustomerNode`, abaixo.
+ * `bootstrapCustomerNode`, abaixo. Na célula (CE-04), `cell-tenant` cria o primeiro administrador de um cliente da
+ * célula (`bootstrapCellTenant`) e `cell-adopt` prepara o cliente de um nó dedicado que vira célula
+ * (`adoptCellTenant`).
  */
 
 const gcpAccountsSchema = z
@@ -341,10 +349,11 @@ export const CUSTOMER_OUTPUT_DIR = '/run/verax-bootstrap';
 
 const emptyAsUndefined = (value: unknown) => (value === '' ? undefined : value);
 
-/** `verax` (o padrão, como sempre) ou `customer`. */
+/** `verax` (o padrão, como sempre), `customer` ou, na célula, `cell-tenant` e `cell-adopt`. */
+export const BOOTSTRAP_MODES = ['verax', 'customer', 'cell-tenant', 'cell-adopt'] as const;
 export const bootstrapModeSchema = z.preprocess(
   emptyAsUndefined,
-  z.enum(['verax', 'customer'], { error: 'use verax ou customer' }).default('verax'),
+  z.enum(BOOTSTRAP_MODES, { error: `use ${BOOTSTRAP_MODES.join(', ')}` }).default('verax'),
 );
 
 const accountName = (fallback: string) =>
@@ -736,16 +745,298 @@ export async function runCustomerBootstrap(
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Célula (CE-04): o primeiro administrador de cada cliente e a adoção do cliente de um nó dedicado que vira célula.
+//
+// `cell-tenant`: o cliente já existe na célula (o comando do plano de controle o criou, com o endereço e o plano, CE-05)
+// e precisa do primeiro `admin_cliente`. O worker deixa um pedido sem segredo (o subdomínio e o e-mail) numa pasta que o
+// host vigia; o host (`start.sh tenant-bootstrap <id>`) roda este CLI com o id do cliente, o subdomínio e o e-mail, e
+// grava a senha temporária no cofre do cliente (`vxt-<subdomínio>-admin-bootstrap`), de onde o plano de controle a
+// revela uma vez, como no nó dedicado. A senha nunca passa pelo worker. Aqui, tudo é conferido contra o banco: o
+// cliente existe e está ativo, o endereço gravado pelo sistema é o do subdomínio pedido (o host usa o subdomínio no nome
+// do cofre) e o plano do cliente já chegou (a vaga do usuário vem dele). Não há conta de suporte por cliente: a equipe
+// da Verax entra pelo endereço da equipe (CE-01).
+//
+// `cell-adopt`: o nó que já roda como dedicado com um cliente só (o SOC da Verax na célula) passa a célula. O cliente
+// ganha o endereço (`assignTenantHost`) e, se ainda não tiver, o plano `interno` (`writeTenantPlan`), pelos mesmos
+// escritores do sistema. Idempotente: rodar de novo não muda nada, e um plano já gravado (o do `node.conf` ou o do plano
+// de controle) fica como está.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const tenantSlugSchema = z.string().refine(isTenantSlug, { error: 'subdomínio inválido' });
+
+export const cellTenantBootstrapEnvSchema = z.object({
+  BOOTSTRAP_TENANT_ID: z.uuid({ error: 'id do cliente inválido' }),
+  BOOTSTRAP_TENANT_SLUG: tenantSlugSchema,
+  /** Login do primeiro `admin_cliente` (o e-mail do checkout), que o comando do plano de controle trouxe. */
+  BOOTSTRAP_ADMIN_EMAIL: z.email({ error: 'e-mail do administrador do cliente inválido' }).max(254),
+  BOOTSTRAP_ADMIN_NAME: accountName('Administrador'),
+  BOOTSTRAP_RENEW_ADMIN_PASSWORD: renewFlagSchema,
+  BOOTSTRAP_OUTPUT_DIR: z
+    .string()
+    .refine((value) => isAbsolute(value), { error: 'use um caminho absoluto' })
+    .default(CUSTOMER_OUTPUT_DIR),
+});
+
+export type CellTenantBootstrapInput = z.infer<typeof cellTenantBootstrapEnvSchema>;
+
+export interface CellTenantBootstrapResult {
+  admin: CustomerAccountOutcome;
+  /** Os arquivos gravados nesta execução (só `admin-bootstrap`, ou nenhum). */
+  written: CustomerPayload[];
+}
+
+/** Os modos da célula, no nó dedicado, recusam antes de tocar no banco. */
+function requireCell(mode: NodeMode): void {
+  if (mode !== 'cell') {
+    throw new CustomerBootstrapRefusal(
+      'Este modo só existe na célula (NODE_MODE=cell em /etc/verax/node.conf).',
+    );
+  }
+}
+
+/** O que o modo `cell-tenant` faz, separado da leitura do ambiente e da saída para os testes. */
+export async function bootstrapCellTenant(
+  prisma: PrismaService,
+  auth: Auth,
+  mode: NodeMode,
+  input: CellTenantBootstrapInput,
+  sink: PayloadSink,
+): Promise<CellTenantBootstrapResult> {
+  requireCell(mode);
+  const audit = new AuditService();
+  if ((await sink.pending()).length > 0) {
+    throw new CustomerBootstrapRefusal(
+      'Há senha de uma execução anterior ainda não gravada no Secret Manager: o host a grava antes de rodar o bootstrap.',
+    );
+  }
+  const tenantId = input.BOOTSTRAP_TENANT_ID;
+  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { status: true } });
+  if (!tenant) throw new CustomerBootstrapRefusal('O cliente do pedido não existe nesta célula.');
+  if (tenant.status !== 'active') {
+    throw new CustomerBootstrapRefusal('O cliente do pedido não está ativo: nenhuma senha é gerada.');
+  }
+  const host = await prisma.tenantHost.findUnique({ where: { tenantId }, select: { slug: true } });
+  if (host?.slug !== input.BOOTSTRAP_TENANT_SLUG) {
+    throw new CustomerBootstrapRefusal(
+      'O subdomínio do pedido não é o endereço gravado para o cliente: nenhuma senha é gerada.',
+    );
+  }
+  const plan = await readTenantPlan(prisma, tenantId);
+  if (plan === null) {
+    throw new CustomerBootstrapRefusal(
+      'O plano do cliente ainda não chegou à célula: o primeiro acesso espera o comando do plano de controle.',
+    );
+  }
+  const admin: CustomerAccountSpec = {
+    payload: 'admin-bootstrap',
+    label: 'conta do administrador do cliente',
+    email: normalizeEmail(input.BOOTSTRAP_ADMIN_EMAIL),
+    name: input.BOOTSTRAP_ADMIN_NAME,
+    role: 'admin_cliente',
+    renew: input.BOOTSTRAP_RENEW_ADMIN_PASSWORD,
+  };
+  const existing = await findAccount(prisma, admin.email);
+  checkAccount(admin, existing, tenantId);
+  const outcome = await ensureCustomerAccount(
+    prisma,
+    auth,
+    audit,
+    resolvedPlanOf(plan),
+    sink,
+    admin,
+    existing,
+    tenantId,
+  );
+  return { admin: outcome, written: outcome === 'exists' ? [] : [admin.payload] };
+}
+
+export const cellAdoptEnvSchema = z.object({ BOOTSTRAP_TENANT_SLUG: tenantSlugSchema });
+export type CellAdoptInput = z.infer<typeof cellAdoptEnvSchema>;
+
+export interface CellAdoptResult {
+  host: 'assigned' | 'exists';
+  plan: 'set' | 'exists';
+}
+
+/**
+ * O modo `cell-adopt`. Roda nos dois modos do nó: antes da troca (ainda dedicado, com `PLAN=interno`), para a célula
+ * já subir com o endereço do cliente, ou depois. No dedicado, só com o plano `interno`: o modo é o do SOC da Verax, e um
+ * nó de cliente nunca vira célula por aqui.
+ */
+export async function adoptCellTenant(
+  prisma: PrismaService,
+  mode: NodeMode,
+  envPlan: ResolvedPlan,
+  input: CellAdoptInput,
+): Promise<CellAdoptResult> {
+  if (mode === 'dedicated' && envPlan.id !== 'interno') {
+    throw new CustomerBootstrapRefusal(
+      'No nó dedicado, a adoção só vale com PLAN=interno (o nó da Verax que vira célula).',
+    );
+  }
+  const slug = input.BOOTSTRAP_TENANT_SLUG;
+  const audit = new AuditService();
+  return prisma.$transaction(async (tx) => {
+    // O endereço já gravado decide (a adoção repetida, mesmo com outros clientes já na célula); sem ele, o nó tem de
+    // ter um cliente só, e ativo.
+    const known = await tx.tenantHost.findUnique({ where: { slug }, select: { tenantId: true } });
+    let tenantId: string;
+    if (known) {
+      tenantId = known.tenantId;
+    } else {
+      const tenants = await tx.tenant.findMany({ select: { id: true, status: true }, take: 2 });
+      const [only] = tenants;
+      if (tenants.length !== 1 || only === undefined) {
+        throw new CustomerBootstrapRefusal(
+          'A adoção é para o nó com um cliente só: este tem nenhum ou mais de um, e nenhum com esse subdomínio.',
+        );
+      }
+      if (only.status !== 'active') {
+        throw new CustomerBootstrapRefusal('O cliente do nó não está ativo: nada foi gravado.');
+      }
+      tenantId = only.id;
+    }
+    let host: CellAdoptResult['host'] = 'exists';
+    if (!known) {
+      try {
+        await assignTenantHost(tx, tenantId, slug);
+      } catch (error) {
+        if (error instanceof TenantHostConflict) {
+          throw new CustomerBootstrapRefusal(
+            'O cliente do nó já tem outro endereço gravado: nada foi gravado.',
+          );
+        }
+        throw error;
+      }
+      host = 'assigned';
+    }
+    let plan: CellAdoptResult['plan'] = 'exists';
+    if ((await readTenantPlan(tx, tenantId)) === null) {
+      await writeTenantPlan(tx, tenantId, tenantPlanFromResolved(resolvePlan('interno')), 'env');
+      plan = 'set';
+    }
+    if (host === 'assigned' || plan === 'set') {
+      await audit.write(tx, {
+        actor: { type: 'system', tenantId },
+        action: 'tenant.cell_adopt',
+        outcome: 'success',
+        resourceType: 'tenant',
+        resourceId: tenantId,
+        after: { slug, hostAssigned: host === 'assigned', planSet: plan === 'set' },
+      });
+    }
+    return { host, plan };
+  });
+}
+
+/** A saída do modo `cell-tenant`, linha a linha: nunca senha nem e-mail. */
+export function cellTenantBootstrapLines(result: CellTenantBootstrapResult): string[] {
+  const account: Record<CustomerAccountOutcome, string> = {
+    created: 'criada com senha temporária',
+    renewed: 'existia sem senha: senha temporária gerada',
+    reset:
+      'senha temporária nova, a pedido (a anterior e as sessões abertas deixaram de valer; o MFA continua)',
+    exists: 'já existe: nada alterado',
+  };
+  return [
+    `Conta do administrador do cliente: ${account[result.admin]}.`,
+    result.written.length > 0
+      ? `Senhas para o Secret Manager: ${result.written.join(', ')}.`
+      : 'Nenhuma senha nova: nada para gravar no Secret Manager.',
+  ];
+}
+
+/** A saída do modo `cell-adopt`. */
+export function cellAdoptLines(result: CellAdoptResult): string[] {
+  return [
+    `Endereço do cliente: ${result.host === 'assigned' ? 'gravado' : 'já estava gravado'}.`,
+    `Plano do cliente: ${result.plan === 'set' ? 'interno, gravado' : 'já estava gravado: nada alterado'}.`,
+  ];
+}
+
+/** Recusa e erro com a mesma regra do modo `customer`: de um erro que não é recusa, só o tipo. */
+async function cliResult(output: CliOutput, work: () => Promise<string[]>, what: string): Promise<number> {
+  try {
+    for (const line of await work()) output.out(line);
+    return 0;
+  } catch (error) {
+    output.err(
+      error instanceof CustomerBootstrapRefusal
+        ? error.message
+        : `Falha no ${what} (${errorKind(error)}). O que já foi feito fica; rode de novo.`,
+    );
+    return 1;
+  }
+}
+
+/** Só os nomes e o problema; nenhum valor é impresso. */
+function issuesOf(error: z.ZodError): string {
+  return error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('\n');
+}
+
+/** O modo `cell-tenant` da leitura do ambiente à saída (o `main` e os testes). Devolve o código de saída. */
+export async function runCellTenantBootstrap(
+  env: NodeJS.ProcessEnv,
+  prisma: PrismaService,
+  auth: Auth,
+  mode: NodeMode,
+  output: CliOutput,
+  sink?: PayloadSink,
+): Promise<number> {
+  const input = cellTenantBootstrapEnvSchema.safeParse(env);
+  if (!input.success) {
+    output.err(issuesOf(input.error));
+    return 1;
+  }
+  const { data } = input;
+  return cliResult(
+    output,
+    async () =>
+      cellTenantBootstrapLines(
+        await bootstrapCellTenant(prisma, auth, mode, data, sink ?? directorySink(data.BOOTSTRAP_OUTPUT_DIR)),
+      ),
+    'primeiro acesso do cliente da célula',
+  );
+}
+
+/** O modo `cell-adopt` da leitura do ambiente à saída. Devolve o código de saída. */
+export async function runCellAdopt(
+  env: NodeJS.ProcessEnv,
+  prisma: PrismaService,
+  mode: NodeMode,
+  envPlan: ResolvedPlan,
+  output: CliOutput,
+): Promise<number> {
+  const input = cellAdoptEnvSchema.safeParse(env);
+  if (!input.success) {
+    output.err(issuesOf(input.error));
+    return 1;
+  }
+  const { data } = input;
+  return cliResult(
+    output,
+    async () => cellAdoptLines(await adoptCellTenant(prisma, mode, envPlan, data)),
+    'preparo do cliente para a célula',
+  );
+}
+
 /** O console do CLI com a limpeza do logger: as senhas geradas aqui (segredos vivos) nunca saem por ele. */
 const maskedConsole = {
   warn: (...args: unknown[]) => console.warn(...args.map((arg) => sanitize(arg))),
   error: (...args: unknown[]) => console.error(...args.map((arg) => sanitize(arg))),
 };
 
-async function mainCustomer(): Promise<void> {
+/** Os modos `customer`, `cell-tenant` e `cell-adopt`, com o banco do nó e a saída do CLI (o console mascarado). */
+async function mainWithOutput(mode: Exclude<(typeof BOOTSTRAP_MODES)[number], 'verax'>): Promise<void> {
   const config = loadConfig();
   const prisma = new PrismaService(config);
+  const output: CliOutput = { out: (line) => console.log(line), err: (line) => console.error(line) };
   try {
+    if (mode === 'cell-adopt') {
+      process.exitCode = await runCellAdopt(process.env, prisma, config.NODE_MODE, nodePlan(config), output);
+      return;
+    }
     const auditService = new AuditService();
     const auth = createAuth({
       config,
@@ -754,10 +1045,10 @@ async function mainCustomer(): Promise<void> {
       mail: mailTransport(config),
       audit: (entry) => auditService.write(prisma, entry),
     });
-    process.exitCode = await runCustomerBootstrap(process.env, prisma, auth, nodePlan(config), {
-      out: (line) => console.log(line),
-      err: (line) => console.error(line),
-    });
+    process.exitCode =
+      mode === 'customer'
+        ? await runCustomerBootstrap(process.env, prisma, auth, nodePlan(config), output)
+        : await runCellTenantBootstrap(process.env, prisma, auth, config.NODE_MODE, output);
   } finally {
     await prisma.$disconnect();
   }
@@ -767,11 +1058,11 @@ async function main(): Promise<void> {
   loadEnvFileForLocalDevelopment();
   const mode = bootstrapModeSchema.safeParse(process.env.BOOTSTRAP_MODE);
   if (!mode.success) {
-    console.error('BOOTSTRAP_MODE: use verax ou customer');
+    console.error(`BOOTSTRAP_MODE: use ${BOOTSTRAP_MODES.join(', ')}`);
     process.exit(1);
   }
-  if (mode.data === 'customer') {
-    await mainCustomer();
+  if (mode.data !== 'verax') {
+    await mainWithOutput(mode.data);
     return;
   }
   const config = loadConfig();
