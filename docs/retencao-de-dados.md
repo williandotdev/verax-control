@@ -94,6 +94,24 @@ O histórico do plano (a primeira linha de "Prazos de um nó de cliente") passou
 (`TenantPlan`, CE-02): no nó dedicado, o mesmo do `node.conf`; na célula, o que o plano de controle gravou para o
 cliente. A carência de 30 dias quando o prazo diminui também é por cliente.
 
+## Plano de controle: os registros de acesso (Marco Civil)
+
+O site de contratação (`conta.veraxsistemas.com.br`) e o console do responsável rodam no Cloud Run do projeto do plano
+de controle. Os registros de acesso a essas aplicações (data e hora, IP de origem, endereço e resposta de cada
+requisição: os logs de requisição do Cloud Run) e os logs dos serviços ficam no bucket `_Default` do Cloud Logging do
+projeto por **180 dias** (6 meses, o Marco Civil da Internet, art. 15), não os 30 do padrão da GCP:
+`log_retention_days` em `infra/gcp/envs/control-plane/logging.tf`, que não aceita menos de 180. Depois disso, o Cloud
+Logging os apaga sozinho. Os logs de auditoria de administração e de eventos de sistema da GCP (bucket `_Required`)
+seguem os 400 dias fixos do Google e não têm dado de quem visita o site.
+
+Nos nós (dedicado e célula), os acessos ao painel (entrada, saída, segundo fator, troca de senha), com o IP, ficam na
+trilha de auditoria do banco do nó (13 meses ou mais, a tabela acima); os contêineres do nó não mandam log de requisição ao Cloud Logging (os logs do Docker ficam no
+disco da VM, rotacionados), então o Cloud Logging do projeto dos nós não guarda registro de acesso de cliente e o prazo
+dele não mudou.
+
+Frase sugerida para a Privacidade: "Guardamos os registros de acesso ao site e às nossas aplicações (data, hora e
+endereço IP) por 6 meses, como exige o Marco Civil da Internet (Lei 12.965/2014, art. 15), e os apagamos depois."
+
 Fora destas frases:
 
 - **Logs na origem:** o que fica na nuvem do cliente (CloudTrail, buckets, auditoria da GCP, do Cloudflare) segue a

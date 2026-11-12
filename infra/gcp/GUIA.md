@@ -647,6 +647,7 @@ liga, se um dia valer o custo.
 | Site do Hosting `verax-conta` e o domínio                 | `conta.veraxsistemas.com.br` com o rewrite `/**` para o `cp-public`. Os registros de DNS saem numa saída (passo 6).                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Console do responsável `cp-admin` (opcional)              | Só com `admin_enabled = true` (passo 8): o terceiro serviço da mesma imagem (`ROLE=admin`), 0 a 1 instância, com login próprio (e-mail de `owner_principals`, senha e código do aplicativo autenticador) e invocação anônima; o site `verax-admin` do Hosting com `admin.veraxsistemas.com.br`; a conta `cp-admin` com o Firestore e a leitura só dos dois segredos do console. Mais os alertas de margem, de tentativas recusadas e de bloqueio.                                                                                                                                           |
 | 5 alertas por log                                         | Provisionamento com falha, assinatura inválida no webhook, teto diário do Checkout, evento da Stripe que pede decisão (fraude, pagamento sem cliente, troca de preço...) e falha ao processar evento da Stripe, por e-mail (`alert_email`).                                                                                                                                                                                                                                                                                                                                                 |
+| Prazo dos logs do projeto                                 | O bucket `_Default` do Cloud Logging guarda **180 dias** (`log_retention_days`, `logging.tf`), não os 30 do padrão: os registros de acesso do site e do console (os logs de requisição do Cloud Run, com o IP) ficam os 6 meses do Marco Civil (art. 15) que a Política de privacidade promete. O Terraform adota o bucket que o Google criou com o projeto (nada nasce nem some) e, num `destroy`, só o tira do estado. A GCP cobra o que passa de 30 dias, por GiB: centavos aqui.                                                                                                        |
 | Orçamento (opcional)                                      | R$ 15 por mês, com e-mail em 50%, 90% e 100%.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Fora deste projeto, só quando as variáveis forem preenchidas (`cross_project.tf`): a gravação da política do
@@ -682,9 +683,9 @@ terraform plan -out=plano.tfplan
 terraform apply plano.tfplan
 ```
 
-A última linha do `plan` é **`Plan: 78 to add, 0 to change, 0 to destroy.`** (79 com orçamento, 80 com e-mail de
-alerta; eram 76 antes dos dois cofres do console do responsável e 74 antes do cofre da senha da caixa dos nós e da
-leitura dele pelo `cp-worker`), sem nada para mudar ou
+A última linha do `plan` é **`Plan: 79 to add, 0 to change, 0 to destroy.`** (80 com orçamento, 81 com e-mail de
+alerta; eram 78 antes do prazo de 6 meses dos logs, 76 antes dos dois cofres do console do responsável e 74 antes do
+cofre da senha da caixa dos nós e da leitura dele pelo `cp-worker`), sem nada para mudar ou
 destruir, e `data.google_project.this will be read during apply` (como na homologação: a leitura do projeto espera as
 APIs). Os serviços ficam para o passo 5: o Cloud Run recusa subir com um segredo sem versão, e os cinco montados
 nascem vazios. Erro de API "has not been used in project": a mesma propagação do passo 6 dos nós; espere 1 ou 2
@@ -692,6 +693,12 @@ minutos e repita o `plan` e o `apply`. Se o projeto já tiver logs de auditoria 
 dados do Secret Manager configurados à mão, importe antes (`terraform import
 google_project_iam_audit_config.secretmanager "SEU_PROJETO secretmanager.googleapis.com"`): o recurso é a configuração
 inteira desse serviço.
+
+**Num projeto que já subiu antes do prazo dos logs:** o `plan` seguinte mostra **1 a criar**,
+`google_logging_project_bucket_config.default`, com `retention_days = 180`. É o bucket `_Default` que já existe: o
+`apply` só muda o prazo dele de 30 para 180 dias (os logs que já estão lá passam a valer 180 dias a partir de quando
+foram gravados; os que já tinham passado de 30 dias não voltam). Confira depois com
+`gcloud logging buckets describe _Default --location=global --project=SEU_PROJETO` (`retentionDays: 180`).
 
 ### Passo 4: gravar os segredos
 

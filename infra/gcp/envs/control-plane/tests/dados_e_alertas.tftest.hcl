@@ -1,5 +1,5 @@
-# O Firestore (banco, regras, prazos e índices da seção 3 do plano), os logs de auditoria do Secret Manager, os
-# alertas por log, o orçamento e as APIs.
+# O Firestore (banco, regras, prazos e índices da seção 3 do plano), os logs de auditoria do Secret Manager, o prazo
+# dos logs do projeto (o bucket _Default, 6 meses), os alertas por log, o orçamento e as APIs.
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
 
@@ -94,6 +94,58 @@ run "auditoria_do_secret_manager" {
     )
     error_message = "Quem lê, grava e consulta a política dos segredos do projeto fica nos logs de auditoria, sem exceção."
   }
+}
+
+run "logs_guardados_por_6_meses" {
+  command = plan
+
+  assert {
+    condition = (
+      google_logging_project_bucket_config.default.project == "projeto-exemplo" &&
+      google_logging_project_bucket_config.default.location == "global" &&
+      google_logging_project_bucket_config.default.bucket_id == "_Default" &&
+      google_logging_project_bucket_config.default.retention_days == 180
+    )
+    error_message = "O bucket _Default do Cloud Logging (os registros de acesso do site e do console) guarda 180 dias: os 6 meses do Marco Civil e da Política de privacidade."
+  }
+
+  assert {
+    condition     = google_logging_project_bucket_config.default.locked != true
+    error_message = "O bucket não é travado: um prazo travado não muda mais, nem para corrigir."
+  }
+}
+
+run "logs_por_mais_tempo_so_por_escolha" {
+  command = plan
+
+  variables {
+    log_retention_days = 365
+  }
+
+  assert {
+    condition     = google_logging_project_bucket_config.default.retention_days == 365
+    error_message = "log_retention_days muda o prazo do _Default."
+  }
+}
+
+run "logs_nunca_abaixo_de_6_meses" {
+  command = plan
+
+  variables {
+    log_retention_days = 30
+  }
+
+  expect_failures = [var.log_retention_days]
+}
+
+run "logs_nunca_acima_do_maximo" {
+  command = plan
+
+  variables {
+    log_retention_days = 3651
+  }
+
+  expect_failures = [var.log_retention_days]
 }
 
 run "pitr_so_por_escolha" {
