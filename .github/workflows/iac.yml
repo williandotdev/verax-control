@@ -92,9 +92,9 @@ jobs:
         # Projeto dos nós: o bucket do estado adotado, com o acesso uniforme, e os papéis do cp-terraform e do cp-worker
         # um a um. Nó de cliente: as permissões do cp-worker exatamente nos cofres do plano (nada no support-bootstrap,
         # nenhuma leitura da chave do cofre), as saídas sem dado pessoal, a conta de serviço que não é recriada e o que
-        # as variáveis recusam. Célula, de novo: o papel do cp-terraform só com a condição dos nomes de cliente da célula
-        # e o de suspensão sem concessão no projeto. Cliente da célula (envs/cell-tenant): as permissões só na conta de
-        # serviço, no cofre e nos tópicos do cliente, os tópicos com o UUID da conta (nunca o projeto) e o que as
+        # as variáveis recusam (e o papel de suspensão dos clientes da célula, sem concessão no projeto). Cliente da
+        # célula (envs/cell-tenant, no projeto dos nós): as permissões só na conta de serviço, no cofre e nos tópicos do
+        # cliente, a conta da VM só do projeto da célula, os tópicos com o UUID da conta (nunca o projeto) e o que as
         # variáveis recusam. O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
@@ -335,7 +335,7 @@ jobs:
           # compose.cell.yaml), o limite de partidas fica no serviço, e o timer tenta de novo a cada 10 min.
           cell=infra/node/systemd/cell
           grep -qx 'DirectoryNotEmpty=/run/verax/tenant-bootstrap' "$cell/verax-tenant-bootstrap.path"
-          grep -qx 'TENANT_REQUESTS=$run/tenant-bootstrap' infra/node/bin/start.sh
+          grep -qxF "TENANT_REQUESTS=\$run/tenant-bootstrap" infra/node/bin/start.sh
           grep -qx 'ExecStart=/opt/verax/bin/start.sh tenant-bootstrap-pending' "$cell/verax-tenant-bootstrap.service"
           grep -qx 'StartLimitBurst=10' "$cell/verax-tenant-bootstrap.service"
           grep -qx 'OnUnitActiveSec=10min' "$cell/verax-tenant-bootstrap.timer"

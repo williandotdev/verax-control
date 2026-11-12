@@ -240,8 +240,9 @@ export function executorEnv(input: ExecutorInput): { name: string; value: string
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Cliente da célula (CE-07): o `infra/gcp/envs/cell-tenant` de um cliente, no mesmo Job `cp-terraform`, com o estado em
-// `cells/<célula>/tenants/<slug>/` e os recursos no projeto da célula. O `entrypoint.sh` amarra a ação ao tipo e confere
-// cada variável de novo, com as mesmas regras; o `envs/cell-tenant` confere uma terceira vez.
+// `cells/<célula>/tenants/<slug>/` e os recursos no projeto dos nós (o da célula só confere a conta da VM). O
+// `entrypoint.sh` amarra a ação ao tipo e confere cada variável de novo, com as mesmas regras; o `envs/cell-tenant`
+// confere uma terceira vez.
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
@@ -283,16 +284,31 @@ const GCP_PROJECT_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 const SINK_WRITER_IDENTITY_PATTERN =
   /^serviceAccount:service-[0-9]+@gcp-sa-logging\.iam\.gserviceaccount\.com$/;
 const GCP_REGION_PATTERN = /^[a-z]+-[a-z]+[0-9]$/;
-const SERVICE_ACCOUNT_LOCAL_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 /** O UUID da conta cloud do nó, em minúsculas (o `id` da conta no painel). */
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** O limite do `envs/cell-tenant` (e do entrypoint) de contas GCP por cliente. */
 export const CELL_GCP_SOURCES_MAX = 50;
 
+const LOWERCASE = 'abcdefghijklmnopqrstuvwxyz';
+const DIGITS = '0123456789';
+const SERVICE_ACCOUNT_CHARS = new Set(`${LOWERCASE}${DIGITS}-`);
+
+/**
+ * O nome de uma conta de serviço (a parte antes do `@`): de 6 a 30 caracteres entre `a-z`, `0-9` e `-`, começando por
+ * letra e terminando em letra ou dígito (a regra do envs/cell-tenant e do entrypoint.sh). Conferido caractere a
+ * caractere, sem expressão regular sobre o valor de fora.
+ */
+function isServiceAccountName(name: string): boolean {
+  if (name.length < 6 || name.length > 30) return false;
+  if (!LOWERCASE.includes(name.charAt(0)) || name.endsWith('-')) return false;
+  return [...name].every((char) => SERVICE_ACCOUNT_CHARS.has(char));
+}
+
 /** A conta de serviço da VM da célula, no projeto da célula (e em nenhum outro). */
 function isCellServiceAccount(email: string, project: string): boolean {
   const suffix = `@${project}.iam.gserviceaccount.com`;
-  return email.endsWith(suffix) && SERVICE_ACCOUNT_LOCAL_PATTERN.test(email.slice(0, -suffix.length));
+  if (email.length > 100 || !email.endsWith(suffix)) return false;
+  return isServiceAccountName(email.slice(0, -suffix.length));
 }
 
 /**

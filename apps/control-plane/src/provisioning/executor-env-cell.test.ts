@@ -80,6 +80,22 @@ describe('as variáveis do executor para o cliente da célula (CE-07)', () => {
       [{ cellRegion: 'sao paulo' }, 'CELL_REGION'],
       [{ cellNodeServiceAccount: 'verax-celula@outro-projeto-123.iam.gserviceaccount.com' }, 'CELL_NODE_SA'],
       [{ cellNodeServiceAccount: 'x@projeto-exemplo-celula.iam.gserviceaccount.com' }, 'CELL_NODE_SA'],
+      ...[
+        'Verax-celula',
+        '1verax-celula',
+        'verax-celula-',
+        'verax_celula',
+        'verax.celula',
+        'verax-celula-com-nome-longo-demais',
+        'verax celula',
+      ].map((name): [Partial<CellTenantExecutorInput>, string] => [
+        { cellNodeServiceAccount: `${name}@projeto-exemplo-celula.iam.gserviceaccount.com` },
+        'CELL_NODE_SA',
+      ]),
+      [
+        { cellNodeServiceAccount: 'verax-celula@projeto-exemplo-celula.iam.gserviceaccount.com.evil' },
+        'CELL_NODE_SA',
+      ],
       [
         {
           gcpSources: [
