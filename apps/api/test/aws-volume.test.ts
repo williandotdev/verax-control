@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { randomInt } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { addDays } from '@verax/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { setTenantLifecycleStatus } from '../src/tenants/tenant-lifecycle.js';
@@ -425,5 +426,138 @@ describe('medição da AWS na origem: a tarefa aws-volume (CE-09)', () => {
     // Cliente suspenso: fora da medição.
     await setTenantLifecycleStatus(prisma, tenant, 'suspended');
     expect(await task.runOnce()).toMatchObject({ accounts: 0 });
+  });
+  it('recuperação longa em etapas sobrepostas: nada que o expurgo do registro apagou é lido e cobrado de novo', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo E (atraso longo)');
+    // A conta foi verificada há mais de três meses, e o nó nunca mediu nada (parado, ou a medição chegou agora).
+    const { accountId } = await account(tenant, new Date('2026-08-01T00:00:00Z'), {
+      cloudtrailBucket: 'trilha-e',
+    });
+    const s3 = new FakeS3();
+    for (let day = '2026-08-01'; day <= '2026-11-20'; day = addDays(day, 1)) {
+      s3.put('trilha-e', {
+        key: `AWSLogs/${accountId}/CloudTrail/sa-east-1/${day.replaceAll('-', '/')}/t.json.gz`,
+        size: 10,
+        lastModified: new Date(`${day}T12:00:00Z`),
+        isize: 100,
+      });
+    }
+    const identity = new FakeIdentity();
+    identity.s3.set(tenant, s3);
+    const now = new Date('2026-11-20T18:00:00Z');
+    const task = audit(identity, () => now, [tenant]);
+    const cursor = () =>
+      prisma.collectorCursor.findFirstOrThrow({
+        where: { stream: volumeCursorStream('cloudtrail'), cloudAccount: { tenantId: tenant } },
+      });
+    // Cada execução lê 7 dias, relendo a véspera do cursor, e o expurgo do registro roda no fim de cada uma.
+    let counted = 0;
+    let runs = 0;
+    while ((await cursor().catch(() => null))?.nextRunAt.getTime() !== now.getTime() + HOUR && runs < 20) {
+      counted += (await task.runOnce()).counted;
+      runs += 1;
+    }
+    expect(runs).toBeGreaterThan(5);
+    // Só as pastas dos últimos 60 dias (21/09 a 20/11), cada objeto uma vez: o atraso maior é perdido, nunca cobrado
+    // duas vezes.
+    const expected = (Date.UTC(2026, 10, 20) - Date.UTC(2026, 8, 21)) / 86_400_000 + 1;
+    expect(counted).toBe(expected);
+    expect(await monthOf(tenant)).toEqual([
+      { month: '2026-09-01', bytes: 1_000n },
+      { month: '2026-10-01', bytes: 3_100n },
+      { month: '2026-11-01', bytes: 2_000n },
+    ]);
+    const total = (await monthOf(tenant)).reduce((sum, row) => sum + row.bytes, 0n);
+    expect(total).toBe(BigInt(expected * 100));
+    // Nenhum dia antes do limite da releitura foi medido, e o total de cada dia medido é o de um objeto.
+    const days = await daysOf(tenant);
+    expect(days[0]?.day).toBe('2026-09-21');
+    expect(days.every((day) => day.bytes === 100n)).toBe(true);
+    // Mais execuções (em dia, uma por hora) não mudam nada.
+    await prisma.collectorCursor.updateMany({
+      where: { stream: volumeCursorStream('cloudtrail'), cloudAccount: { tenantId: tenant } },
+      data: { nextRunAt: now },
+    });
+    expect(await task.runOnce()).toMatchObject({ counted: 0 });
+    expect((await monthOf(tenant)).reduce((sum, row) => sum + row.bytes, 0n)).toBe(BigInt(expected * 100));
+  });
+
+  it('duas execuções ao mesmo tempo: a soma do dia espera a outra gravar, e o total nunca regride', async () => {
+    const tenant = await createTenant(app, 'Cliente Demo F (concorrência)');
+    const { id, accountId } = await account(tenant, new Date('2026-11-01T00:00:00Z'), {
+      cloudtrailBucket: 'trilha-f',
+    });
+    const s3 = new FakeS3();
+    const key = (name: string) => `AWSLogs/${accountId}/CloudTrail/sa-east-1/2026/11/05/${name}.json.gz`;
+    s3.put('trilha-f', {
+      key: key('a'),
+      size: 10,
+      lastModified: new Date('2026-11-05T15:00:00Z'),
+      isize: 1_000,
+    });
+    const identity = new FakeIdentity();
+    identity.s3.set(tenant, s3);
+    const now = new Date('2026-11-05T18:00:00Z');
+
+    // Outra execução segura o lock do cliente e grava um objeto que a primeira ainda não viu: a primeira tem de somar
+    // depois dela (sem o lock, somaria antes e regravaria o total sem o objeto da outra).
+    const pending: { run?: Promise<unknown> } = {};
+    let settled = false;
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:aws-volume:${tenant}`}))`;
+        await tx.awsVolumeObject.create({
+          data: {
+            cloudAccountId: id,
+            tenantId: tenant,
+            objectHash: 'f'.repeat(64),
+            day: new Date('2026-11-05T00:00:00Z'),
+            stream: 'cloudtrail',
+            compressedBytes: 10n,
+            bytes: 500n,
+            isizeFallback: false,
+          },
+        });
+        pending.run = audit(identity, () => now, [tenant])
+          .runOnce()
+          .finally(() => {
+            settled = true;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        expect(settled).toBe(false);
+      },
+      { timeout: 10_000 },
+    );
+    await pending.run;
+    expect(await daysOf(tenant)).toEqual([{ day: '2026-11-05', bytes: 1_500n }]);
+
+    // Duas réplicas ao mesmo tempo, com objetos chegando entre as rodadas: o total observado só cresce e termina na
+    // soma do registro.
+    const seen: bigint[] = [];
+    for (let round = 0; round < 4; round += 1) {
+      s3.put('trilha-f', {
+        key: key(`r${round}`),
+        size: 10,
+        lastModified: new Date('2026-11-05T16:00:00Z'),
+        isize: 100,
+      });
+      await prisma.collectorCursor.updateMany({
+        where: { stream: volumeCursorStream('cloudtrail'), cloudAccount: { tenantId: tenant } },
+        data: { nextRunAt: now },
+      });
+      await Promise.all([
+        audit(identity, () => now, [tenant]).runOnce(),
+        audit(identity, () => now, [tenant]).runOnce(),
+      ]);
+      seen.push((await daysOf(tenant))[0]?.bytes ?? 0n);
+    }
+    expect(seen).toEqual([1_600n, 1_700n, 1_800n, 1_900n]);
+    const ledger = await prisma.awsVolumeObject.aggregate({
+      where: { tenantId: tenant },
+      _sum: { bytes: true },
+    });
+    expect(ledger._sum.bytes).toBe(1_900n);
+    // O mês recebeu cada objeto uma vez (o da outra execução, gravado à mão, não passou pelo medidor).
+    expect(await monthOf(tenant)).toEqual([{ month: '2026-11-01', bytes: 1_400n }]);
   });
 });

@@ -40,6 +40,8 @@ import { UsageMeter } from './usage-meter.js';
  * (`nodeTenantIdentity`), mas não roda esta tarefa: lá, o volume da AWS continua vindo do analysisd (`wazuh-usage.ts`).
  *
  * Os registros saem depois de 62 dias (dois ciclos): o total de cada dia fica no `IngestUsageDay`.
+ * A leitura nunca volta mais de 60 dias (`MAX_LOOKBACK_DAYS`): o que é relido ainda está no registro, e nada é
+ * cobrado duas vezes. Duas execuções ao mesmo tempo regravam o total do dia uma depois da outra (lock por cliente).
  */
 
 export const AWS_VOLUME_TASK = 'aws-volume';
@@ -56,6 +58,13 @@ export const MAX_GETS_PER_CURSOR = 2000;
 const GET_CONCURRENCY = 8;
 /** Os registros dos objetos ficam 62 dias (dois ciclos). */
 export const VOLUME_OBJECT_RETENTION_DAYS = 62;
+/**
+ * Até onde a leitura das pastas volta, em dias UTC antes de hoje: dois dias dentro do prazo do registro. Um objeto de
+ * uma pasta lida é sempre de um dia que o registro ainda guarda (a pasta do dia `d` só tem objetos criados a partir
+ * das 21:00 de `d−1` em Brasília), então nada que o expurgo do registro apagou é lido, e cobrado, de novo. Um atraso
+ * maior que isso (o nó parado por mais de dois meses) perde os dias mais antigos: a dúvida fica a favor do cliente.
+ */
+export const MAX_LOOKBACK_DAYS = VOLUME_OBJECT_RETENTION_DAYS - 2;
 /** A razão máxima do deflate: um ISIZE acima de 1032 vezes o compactado é impossível. */
 export const MAX_DEFLATE_RATIO = 1032;
 /** A razão usada quando o ISIZE não serve (JSON de log compacta cerca de 10 vezes). */
@@ -391,13 +400,15 @@ export class AwsVolumeAudit {
 
   /**
    * Os dias UTC a ler: da véspera do último dia lido inteiro (o objeto que chega atrasado na pasta) até hoje, nunca
-   * antes do dia do `meteredFrom`, e no máximo `MAX_DAYS_PER_CURSOR` dias.
+   * antes do dia do `meteredFrom` nem de `MAX_LOOKBACK_DAYS` atrás (o registro ainda guarda tudo o que é relido), e no
+   * máximo `MAX_DAYS_PER_CURSOR` dias.
    */
   private dayRange(cursor: CollectorCursor, meteredFrom: Date, now: Date): { from: string; to: string } {
+    const today = utcDay(now);
+    const floor = addDays(today, -MAX_LOOKBACK_DAYS);
     const first = utcDay(meteredFrom);
     const resume = cursor.cursorAt === null ? first : addDays(dayOfDate(cursor.cursorAt), -1);
-    const from = resume < first ? first : resume;
-    const today = utcDay(now);
+    const from = [first, resume, floor].reduce((latest, day) => (day > latest ? day : latest));
     const limit = addDays(from, MAX_DAYS_PER_CURSOR - 1);
     return { from, to: limit < today ? limit : today };
   }
@@ -549,11 +560,16 @@ export class AwsVolumeAudit {
   /**
    * Regrava o total da AWS de cada dia de Brasília que os dias UTC lidos alcançam (a soma do registro do cliente, um
    * valor absoluto). O dia UTC `d` vai das 21:00 de `d−1` às 20:59 de `d` em Brasília.
+   *
+   * Duas execuções ao mesmo tempo (duas réplicas do worker; a tarefa não tem concessão) são serializadas por cliente
+   * (`pg_advisory_xact_lock`) antes de somar: a soma de cada uma é feita depois de a outra gravar, e enxerga todo
+   * objeto já gravado. Assim, um total mais antigo nunca é regravado por cima de um mais novo.
    */
   private async recompute(tenantId: string, fromUtc: string, toUtc: string): Promise<void> {
     const first = dayAsDate(addDays(fromUtc, -1));
     const last = dayAsDate(toUtc);
     await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`verax:aws-volume:${tenantId}`}))`;
       const sums = await tx.awsVolumeObject.groupBy({
         by: ['day'],
         where: { tenantId, day: { gte: first, lte: last } },

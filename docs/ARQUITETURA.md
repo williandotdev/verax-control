@@ -1490,8 +1490,9 @@ administrador nunca passa pelo worker: o host a escreve no cofre `vxt-<slug>-adm
     de organização e o WAF do CloudFront também), lê os 4 últimos bytes de cada objeto novo (o ISIZE do gzip, com a
     estimativa marcada quando ele é impossível) e conta o objeto no dia em que ele foi criado, só a partir da primeira
     verificação bem-sucedida da conta (`CloudAccount.meteredFrom`: o histórico nunca é cobrado). Cada objeto fica
-    registrado por 62 dias (`AwsVolumeObject`, pelo hash do bucket e da chave) e conta uma vez só; o total do dia é
-    regravado como a soma do registro (valor absoluto). **A identidade é a do cliente** (`TenantAwsIdentity`): até o
+    registrado por 62 dias (`AwsVolumeObject`, pelo hash do bucket e da chave) e conta uma vez só; a leitura nunca
+    volta mais de 60 dias (o que é relido ainda está no registro), e o total do dia é regravado como a soma do registro
+    (valor absoluto), sob um lock por cliente (duas execuções juntas nunca fazem o total regredir). **A identidade é a do cliente** (`TenantAwsIdentity`): até o
     CE-11, a célula não tem identidade de cliente nenhum, e a tarefa não chama a AWS (a identidade da célula nunca serve
     para ler a conta de um cliente);
   - **AWS no nó dedicado:** continua pelo analysisd (`wazuh-usage`), que agora também grava o dia da leitura.
