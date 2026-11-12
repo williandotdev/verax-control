@@ -1,0 +1,11 @@
+# A cada 10 min, contados da última execução: um pedido que falhou (o plano do cliente ainda não chegou, o Secret Manager
+# fora do ar) e o .path parado pelo limite de partidas.
+[Unit]
+Description=Verax Control - primeiro acesso dos clientes da celula a cada 10 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target

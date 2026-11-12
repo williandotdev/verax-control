@@ -181,6 +181,15 @@ jobs:
         # (a senha de registro só nela) e do worker; no lean ou com algo faltando, a partida para sem escrever nada; o
         # compose.wazuh-agents.yaml só entra no standard com o interruptor.
         run: bash infra/node/tests/start-test.sh
+      - name: Célula (NODE_MODE=cell; start.sh com o metadata e o Secret Manager falsos e o Docker simulado)
+        # Os cenários de tests/cell-test.sh, sem root e sem nuvem: o dedicado byte a byte igual com NODE_MODE=dedicated; na
+        # célula, o modo, o domínio e o subdomínio da equipe no lugar do plano, sem o tópico pelo nome do projeto e sem o
+        # ID da conta de serviço da VM; as recusas do render (PLAN, lean, CUSTOMER_MODE, agentes, domínio e subdomínio)
+        # sem escrever nada; o compose.cell.yaml só na célula. O primeiro administrador de cada cliente: o pedido do
+        # worker vira o bootstrap cell-tenant só por variável de ambiente, a senha vai para o cofre
+        # vxt-<subdomínio>-admin-bootstrap e para nenhum outro lugar, o pedido fora do formato não chega ao Docker e a
+        # senha pendente vai antes, no cofre do subdomínio guardado pelo host. E o cell-adopt.
+        run: bash infra/node/tests/cell-test.sh
       - name: Chave do cofre de credenciais (install.sh e start.sh com o gcloud e o Docker simulados)
         # Cenários de tests/vault-test.sh: o nó da Verax sem o cofre (nenhuma leitura, os mesmos arquivos de ambiente,
         # sem o arquivo das chaves nem o compose.vault.yaml), a primeira instalação de um nó de cliente (a chave nasce
@@ -225,6 +234,9 @@ jobs:
           agents=(-f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml)
           docker compose "${agents[@]}" --env-file images.env --profile setup config --quiet
           docker compose "${agents[@]}" -f infra/node/compose.vault.yaml --env-file images.env --profile setup config --quiet
+          # Na célula (NODE_MODE=cell, só no standard e sem os agentes), o start.sh soma o compose.cell.yaml, com o cofre.
+          docker compose -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml \
+            -f infra/node/compose.cell.yaml --env-file images.env --profile setup config --quiet
           images() { docker compose "$@" --env-file images.env --profile setup config --images | sed 's/[@:].*//' | sort -u | tr '\n' ' '; }
           test "$(images -f infra/node/compose.yaml)" = 'cloudflare/cloudflared exemplo/api exemplo/migrate postgres '
           test "$(images -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml)" = \
@@ -298,7 +310,8 @@ jobs:
           install -d "$units/verax-node.service.d"
           install -m 0644 infra/node/systemd/*.service infra/node/systemd/*.timer \
             infra/node/systemd/wazuh/*.service infra/node/systemd/wazuh/*.timer infra/node/systemd/wazuh/*.path \
-            infra/node/systemd/wazuh-agents/*.service infra/node/systemd/wazuh-agents/*.timer "$units/"
+            infra/node/systemd/wazuh-agents/*.service infra/node/systemd/wazuh-agents/*.timer \
+            infra/node/systemd/cell/*.service infra/node/systemd/cell/*.timer infra/node/systemd/cell/*.path "$units/"
           install -m 0644 infra/node/systemd/wazuh/verax-node.service.d/wazuh.conf "$units/verax-node.service.d/"
           printf '[Unit]\nDescription=Docker (simulado)\n[Service]\nExecStart=/bin/true\n' >"$units/docker.service"
           sudo install -d /opt/verax/bin
@@ -314,6 +327,14 @@ jobs:
           grep -qx 'OnUnitActiveSec=15min' "$wazuh/verax-wazuh-apply.timer"
           grep -qx 'OnBootSec=30s' "$wazuh/verax-aws-token.timer"
           grep -qx 'OnUnitActiveSec=10min' "$wazuh/verax-aws-token.timer"
+          # Célula (CE-04): o .path olha a pasta dos pedidos que o worker grava (a mesma do start.sh e do
+          # compose.cell.yaml), o limite de partidas fica no serviço, e o timer tenta de novo a cada 10 min.
+          cell=infra/node/systemd/cell
+          grep -qx 'DirectoryNotEmpty=/run/verax/tenant-bootstrap' "$cell/verax-tenant-bootstrap.path"
+          grep -qx 'TENANT_REQUESTS=$run/tenant-bootstrap' infra/node/bin/start.sh
+          grep -qx 'ExecStart=/opt/verax/bin/start.sh tenant-bootstrap-pending' "$cell/verax-tenant-bootstrap.service"
+          grep -qx 'StartLimitBurst=10' "$cell/verax-tenant-bootstrap.service"
+          grep -qx 'OnUnitActiveSec=10min' "$cell/verax-tenant-bootstrap.timer"
       - name: Nenhuma porta publicada e todo contêiner endurecido (lean e standard, com e sem o cofre; com os agentes, só 1514 e 1515)
         # Raiz só leitura em todos, menos o Postgres e os dois contêineres do Wazuh que ficam no ar: o init das imagens
         # do Wazuh grava em /var/ossec e /etc (infra/wazuh/README.md). Os do Wazuh seguem sem capabilities além das
@@ -349,6 +370,8 @@ jobs:
           check --agents -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml
           check --agents -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.wazuh-agents.yaml \
             -f infra/node/compose.vault.yaml
+          check -f infra/node/compose.yaml -f infra/node/compose.wazuh.yaml -f infra/node/compose.vault.yaml \
+            -f infra/node/compose.cell.yaml
       - name: Agentes do Wazuh (o compose.wazuh-agents.yaml só soma as portas, o certificado, a senha ao gerador e a lista ao worker)
         # Fora as duas portas do manager, o certificado do registro, a pasta dos agentes e a senha de registro para o
         # gerador (manager-config) e a lista dos agentes para o worker, o projeto com os agentes é igual ao de sempre,
