@@ -1,10 +1,12 @@
 import { QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import {
+  GB_BYTES,
   GIB_BYTES,
   PLAN_LIMIT_REACHED_CODE,
   type PlanUsage,
   planLimitMessage,
+  planUsageSchema,
   resolvePlan,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
@@ -18,7 +20,15 @@ import { createQueryClient } from '@/lib/query-client';
 import { demoAdminStore } from '@/mocks/admin';
 import { DEMO_TENANTS, demoMe } from '@/mocks/fixtures';
 import { createHandlers, type MockState } from '@/mocks/handlers';
-import { DEMO_PLAN, DEMO_VOLUME_RATIO, demoPlanRefusal, demoPlanUsage } from '@/mocks/plan-handlers';
+import {
+  DEMO_FRANCHISE_GB_PER_DAY,
+  DEMO_PLAN,
+  DEMO_PLATFORM_PLAN,
+  DEMO_VOLUME_RATIO,
+  demoFranchise,
+  demoPlanRefusal,
+  demoPlanUsage,
+} from '@/mocks/plan-handlers';
 import { routes } from '@/routes/router';
 
 const server = setupServer();
@@ -201,5 +211,94 @@ describe('Plano e uso', () => {
       })),
     );
     expect(demoPlanRefusal(store, tenantId, 'users')).toBeNull();
+  });
+
+  describe('Plataforma: o contador da franquia em GB/dia (CE-10)', () => {
+    /** Dia 12 de 30: 40 GB usados contra 90 GB (3 GB/dia); projeção de 100 GB, excedente de 0,33 GB/dia. */
+    const franchise = {
+      cycle: { start: '2026-11-01', end: '2026-11-30', day: 12, days: 30 },
+      franchiseGbPerDay: 3,
+      schedule: [{ from: '2026-11-01', gbPerDay: 3 }],
+      budgetGb: 90,
+      usedBytes: 40 * GB_BYTES,
+      dailyAverageBytes: Math.floor((40 * GB_BYTES) / 12),
+      projectedBytes: 100 * GB_BYTES,
+      projectedOverageUnits: 33,
+      days: Array.from({ length: 30 }, (_, index) => ({
+        day: index < 18 ? `2026-10-${String(14 + index)}` : `2026-11-${String(index - 17).padStart(2, '0')}`,
+        aws: index === 29 ? 2 * GB_BYTES : 0,
+        gcp: index === 29 ? GB_BYTES / 2 : 0,
+        cloudflare: 0,
+      })),
+    };
+    const platform = (overrides: Partial<typeof franchise> = {}): PlanUsage =>
+      planUsageSchema.parse({
+        ...usage({ monthlyBytes: 0 }, DEMO_PLATFORM_PLAN),
+        franchise: { ...franchise, ...overrides },
+      });
+
+    it('o ciclo, o volume contra o orçamento com a marca do dia, a média, a projeção e o excedente projetado', async () => {
+      renderAt('/cadastros/plano', { me: demoMe('admin_cliente') }, platform());
+      await page();
+      const card = tile('Franquia de 3 GB/dia');
+      expect(card).toHaveTextContent(
+        'Ciclo de 1º a 30 de novembro, no calendário de Brasília: hoje é o dia 12 de 30.',
+      );
+      expect(card).toHaveTextContent('40 GB de 90 GB');
+      const meter = within(card).getByRole('meter', { name: 'Volume do ciclo' });
+      expect(meter).toHaveAttribute('aria-valuenow', '44');
+      expect(meter).toHaveAttribute(
+        'aria-valuetext',
+        '40 GB de 90 GB do ciclo (44%); hoje é o dia 12 de 30 (40% do ciclo)',
+      );
+      expect(within(card).getByTestId('marca-do-ciclo')).toHaveStyle({ left: '40%' });
+      expect(card).toHaveTextContent('Média do ciclo3,3 GB/dia');
+      expect(card).toHaveTextContent('Projeção do ciclo100 GB');
+      expect(card).toHaveTextContent('Excedente projetado0,33 GB/dia');
+      expect(card).toHaveTextContent('nenhum log é descartado');
+      // Nenhum valor em dinheiro: o preço vem depois, do estado desejado.
+      expect(card).not.toHaveTextContent('R$');
+      // O volume do mês em GiB dá lugar à franquia.
+      expect(screen.queryByRole('region', { name: 'Volume do mês' })).not.toBeInTheDocument();
+    });
+
+    it('"Ampliar franquia" fica desligado, com o aviso de que chega em breve', async () => {
+      renderAt('/cadastros/plano', { me: demoMe('admin_cliente') }, platform({ projectedOverageUnits: 0 }));
+      const section = await page();
+      const button = within(section).getByRole('button', { name: 'Ampliar franquia' });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAccessibleDescription(
+        'Em breve: ampliar a franquia pelo painel. Por enquanto, fale com a Verax.',
+      );
+      expect(tile('Franquia de 3 GB/dia')).toHaveTextContent('Excedente projetadoNenhum');
+      expect(within(section).queryAllByRole('textbox')).toHaveLength(0);
+    });
+
+    it('o volume por dia: 30 colunas por fonte, com o resumo acessível e a tabela', async () => {
+      renderAt('/cadastros/plano', { me: demoMe('admin_cliente') }, platform());
+      await page();
+      const chart = tile('Volume por dia');
+      expect(within(chart).getByRole('img')).toHaveAccessibleName(
+        'Volume por dia nos últimos 30 dias: 2,5 GB no total; o dia com mais foi 12/11, com 2,5 GB. A franquia de hoje é 3 GB/dia.',
+      );
+      expect(chart).toHaveTextContent('AWS');
+      expect(chart).toHaveTextContent('Cloudflare (auditoria)');
+      const rows = within(chart).getAllByRole('row', { hidden: true });
+      expect(rows).toHaveLength(31);
+      expect(rows.at(-1)).toHaveTextContent('12/112 GB0,5 GB0 GB2,5 GB');
+    });
+
+    it('o contrato: a demonstração devolve o mesmo schema estrito da API', () => {
+      const demo = demoFranchise(new Date('2026-11-12T15:00:00Z'));
+      expect(demo.franchiseGbPerDay).toBe(DEMO_FRANCHISE_GB_PER_DAY);
+      expect(demo.days).toHaveLength(30);
+      expect(demo.days.at(-1)?.day).toBe('2026-11-12');
+      expect(demo.cycle).toEqual({ start: '2026-11-01', end: '2026-11-30', day: 12, days: 30 });
+      expect(demo.projectedOverageUnits).toBeGreaterThan(0);
+      const body = { ...usage({}, DEMO_PLATFORM_PLAN), franchise: demo };
+      expect(planUsageSchema.parse(body)).toEqual(body);
+      // Um campo a mais (um valor em dinheiro, por exemplo) é recusado pelo contrato.
+      expect(planUsageSchema.safeParse({ ...body, franchise: { ...demo, price: 1 } }).success).toBe(false);
+    });
   });
 });

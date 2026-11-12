@@ -5269,3 +5269,24 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   - **o prefixo opcional da pilha (`LogObjectPrefix`)** não é procurado: a medição lê `AWSLogs/<conta>/…` e a trilha de organização. Um bucket com prefixo fica sem medida (a conferência do CE-13 mostraria a divergência);
   - **o pulso da Torre** na célula não terá os eventos da AWS do mês (a medição na origem não conta registros);
   - **o CE-05 corre em paralelo** e mexe no `schema.prisma`, no `tenant-scope.ts`, no `worker.ts` e, talvez, no `pubsub.client.ts`: conflitos de poucas linhas, sem sobreposição de lógica.
+
+## Fase 3, CE-10: contador da franquia em "Plano e uso"
+
+- **Pedido:** o CE-10 do desenho da célula: no `GET /v1/plan`, um bloco da franquia para o cliente com franquia no plano, e o cartão no painel (a barra do ciclo com a marca do dia, os números, as colunas por dia e fonte e "Ampliar franquia" desligado), sem valor em dinheiro.
+- **Arquivos:**
+  - `packages/shared/src/franchise.ts` (novo: `GB_BYTES`, o ciclo do dia 1º ao último dia, `franchiseOnDay`, `cycleBudgetGb`, `overageUnits` e `projectedOverageUnits` em inteiros, e o contrato `franchiseUsageSchema`), `plan-usage.ts` (o `franchise` opcional no `planUsageSchema`) e `index.ts`;
+  - `apps/api/src/plan/franchise-usage.ts` (novo: `franchiseUsageOf` e `readFranchiseUsage`, pelo escopo do cliente) e `plan.service.ts` (o bloco só na célula e só com franquia no `TenantPlan`);
+  - `apps/web/src/features/plan/franchise-card.tsx` (novo: `FranchiseCard` e `FranchiseDaysCard`), `plan-format.ts` (GB, GB/dia, o excedente em centésimos, o ciclo), `pages/admin/plan-page.tsx`, `mocks/plan-handlers.ts` e `mocks/handlers.ts` (a demonstração da Plataforma com `localStorage['verax.mock.plan'] = 'plataforma'`);
+  - testes: `apps/api/test/plan-franchise.test.ts` e `src/plan/franchise-usage.test.ts` (novos), `packages/shared/src/franchise.test.ts` (novo), `apps/web/src/pages/admin/plan-page.test.tsx`, `features/plan/plan-format.test.ts` e `e2e/plan.mock.spec.ts`;
+  - documentação: `docs/ARQUITETURA.md` (a seção "Medição e franquia" da célula, com o CE-09 e o CE-10 marcados, e "Plano do nó: limites e uso"), `docs/STATUS.md`.
+- **Dependências:** nenhuma.
+- **Decisões onde o pedido deixava margem:**
+  - **a agenda da franquia:** o `TenantPlan` tem só a franquia de hoje, e a agenda (com as mudanças no meio do ciclo) chega pelo estado desejado do plano de controle (CE-05 e CE-19). Até lá, a franquia do `TenantPlan` vale desde o dia 1º; o contrato já leva a agenda (`schedule`), e as contas (`cycleBudgetGb`, `franchiseOnDay`) já a usam;
+  - **os volumes vão em bytes** no contrato, e o painel os mostra em GB de 10⁹ bytes, para baixo; o excedente vai na unidade da cobrança (centésimos de GB/dia, para baixo), a mesma conta (`overageUnits`) que o fechamento do ciclo (CE-20) vai usar;
+  - **o dia `k` conta hoje inteiro:** a média `U_k / k` começa o dia baixa e sobe com ele, como no desenho;
+  - **o bloco só existe com franquia** (a Plataforma, na célula); no nó dedicado, mesmo com uma linha antiga da Plataforma no `TenantPlan`, o plano é o do `node.conf`, e nada muda. Na Plataforma, o cartão "Volume do mês" (em GiB) dá lugar ao contador;
+  - **a barra** é `U_k / B` (verde dentro do ritmo, âmbar acima da marca `k / D`), e a marca do ciclo é decorativa: o nome acessível da barra diz os dois números. O gráfico usa a rampa neutra validada dos gráficos (nunca uma cor de severidade), com a linha tracejada da franquia de hoje, o resumo acessível e "Ver tabela".
+- **Testes:** API: `test/plan-franchise.test.ts` (o bloco da Plataforma na célula, A/B, sem bloco no Enterprise e no nó dedicado, a resposta lida com o mesmo `planUsageSchema` estrito que o painel usa: o teste do contrato entre a API e o painel) e as contas (`franchise-usage.test.ts`, `franchise.test.ts`); a suíte inteira da API está no registro do CE-09. Painel: `vitest` (44 arquivos, 526 testes) e o Playwright de `plan.mock.spec.ts` (9 testes: o contador da Plataforma com o axe, WCAG 2.2 AA, nos dois temas, no computador e no celular, sem rolagem lateral). `tsc`, ESLint e `prettier --check` nos arquivos tocados.
+- **Definição de pronto:** o bloco no `GET /v1/plan` ✔ · o cartão com a barra, a marca, os números, as colunas por dia e fonte e "Ampliar franquia" desligado ✔ · axe nos dois temas ✔ · o contrato entre a API e o painel ✔ · nenhum valor em dinheiro ✔ · nenhuma dependência nova ✔
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, `localStorage.setItem('verax.mock.plan', 'plataforma')`, entrar como administrador do cliente e abrir Administração → Plano e uso (nos dois temas e no celular). Na célula (com o CE-05), gravar um `TenantPlan` da Plataforma e conferir o contador com o volume do dia.
+- **Riscos e pendências:** "Ampliar franquia" e o "ciclo anterior faturado" chegam com o CE-19 e o CE-20 (o preço e o resumo do ciclo vêm do estado desejado); a franquia muda só pelo plano de controle até lá.
