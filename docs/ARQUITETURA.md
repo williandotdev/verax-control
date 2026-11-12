@@ -1416,7 +1416,8 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
 - **Confused deputy na AWS (a principal)** _(a construir, CE-11 e CE-12)_. Se todo papel confiasse na conta de
   serviço da célula e no IP do NAT dela, o cliente A cadastraria o ID da conta AWS de B, e a célula leria os logs de B
   para A com a identidade dividida. Por isso, **uma conta de serviço por cliente**, `vxt-<slug>`, criada pelo
-  `envs/cell-tenant` no provisionamento:
+  `envs/cell-tenant` no provisionamento (**feito no CE-07**: o ambiente, as permissões só na conta, no cofre e nos
+  tópicos do cliente e o executor, que recusa recriar a conta fora do expurgo):
   - a VM da célula ganha `serviceAccountOpenIdTokenCreator` **só nessa conta** (nunca no projeto); o ID único dela
     vai do Terraform ao Firestore e chega à célula pelo comando do plano de controle, em `TenantCloudIdentity`, que
     nenhum schema de requisição aceita (meta-teste);

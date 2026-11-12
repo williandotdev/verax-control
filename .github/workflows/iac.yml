@@ -59,7 +59,7 @@ jobs:
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           for root in infra/terraform/bootstrap infra/terraform/envs/staging infra/terraform/envs/production \
             infra/gcp/envs/verax infra/gcp/envs/homolog-sp infra/gcp/envs/celula infra/gcp/envs/control-plane infra/gcp/envs/release \
-            infra/gcp/envs/nodes-platform infra/gcp/envs/tenant; do
+            infra/gcp/envs/nodes-platform infra/gcp/envs/tenant infra/gcp/envs/cell-tenant; do
             echo "::group::${root}"
             terraform -chdir="$root" init -backend=false -lockfile=readonly
             terraform -chdir="$root" validate
@@ -92,7 +92,10 @@ jobs:
         # Projeto dos nós: o bucket do estado adotado, com o acesso uniforme, e os papéis do cp-terraform e do cp-worker
         # um a um. Nó de cliente: as permissões do cp-worker exatamente nos cofres do plano (nada no support-bootstrap,
         # nenhuma leitura da chave do cofre), as saídas sem dado pessoal, a conta de serviço que não é recriada e o que
-        # as variáveis recusam. O `init` sem backend é o da validação, acima.
+        # as variáveis recusam. Célula, de novo: o papel do cp-terraform só com a condição dos nomes de cliente da célula
+        # e o de suspensão sem concessão no projeto. Cliente da célula (envs/cell-tenant): as permissões só na conta de
+        # serviço, no cofre e nos tópicos do cliente, os tópicos com o UUID da conta (nunca o projeto) e o que as
+        # variáveis recusam. O `init` sem backend é o da validação, acima.
         run: |
           terraform -chdir=infra/gcp/envs/homolog-sp test
           terraform -chdir=infra/gcp/envs/celula test
@@ -101,12 +104,13 @@ jobs:
           terraform -chdir=infra/gcp/envs/release test
           terraform -chdir=infra/gcp/envs/nodes-platform test
           terraform -chdir=infra/gcp/envs/tenant test
+          terraform -chdir=infra/gcp/envs/cell-tenant test
           # Os segredos do plano de controle e os dos nós nascem vazios: nenhuma versão de segredo (regional ou não) passa
           # pelo Terraform, nem pelo estado de um tenant. Só a declaração do recurso conta; um comentário que cite o nome
           # não dispara.
           if grep -Eq '^[[:space:]]*resource[[:space:]]+"google_secret_manager_(regional_)?secret_version"' \
             infra/gcp/envs/control-plane/*.tf infra/gcp/envs/tenant/*.tf infra/gcp/envs/nodes-platform/*.tf \
-            infra/gcp/modules/node/*.tf; then
+            infra/gcp/envs/celula/*.tf infra/gcp/envs/cell-tenant/*.tf infra/gcp/modules/node/*.tf; then
             echo "Nem o plano de controle nem os nós gravam versão de segredo pelo Terraform." >&2
             exit 1
           fi

@@ -9,13 +9,13 @@ valores reais ficam fora do repositório.
 
 ## O que a célula tem além de um nó
 
-| Peça                                              | Onde                                              | Quem aplica                          |
-| ------------------------------------------------- | ------------------------------------------------- | ------------------------------------ |
-| O nó (VM, rede, NAT, cofres, backups de 85 dias)  | `envs/celula` (módulo `node`)                     | O responsável                        |
-| Canal: comandos `vxc-<célula>-commands`           | `envs/celula/cell.tf`                             | O responsável                        |
-| Canal: relatórios `vxc-<célula>-reports` e o push | `envs/celula/cell.tf`                             | O responsável                        |
-| Exportações dos clientes (31 dias)                | `envs/celula/cell.tf`                             | O responsável                        |
-| O que é de cada cliente (conta de serviço, cofre) | `envs/cell-tenant` (CE-07), um estado por cliente | O plano de controle (`cp-terraform`) |
+| Peça                                              | Onde                                      | Quem aplica                          |
+| ------------------------------------------------- | ----------------------------------------- | ------------------------------------ |
+| O nó (VM, rede, NAT, cofres, backups de 85 dias)  | `envs/celula` (módulo `node`)             | O responsável                        |
+| Canal: comandos `vxc-<célula>-commands`           | `envs/celula/cell.tf`                     | O responsável                        |
+| Canal: relatórios `vxc-<célula>-reports` e o push | `envs/celula/cell.tf`                     | O responsável                        |
+| Exportações dos clientes (31 dias)                | `envs/celula/cell.tf`                     | O responsável                        |
+| O que é de cada cliente (conta de serviço, cofre) | `envs/cell-tenant`, um estado por cliente | O plano de controle (`cp-terraform`) |
 
 - **Comandos:** só o cp-worker publica, e só a VM da célula lê (com ordem por cliente).
 - **Relatórios:** só a VM da célula publica; a assinatura push entrega em `URL_DO_CP_WORKER/internal/cells/<célula>/reports`,
@@ -107,3 +107,46 @@ sudo BOOTSTRAP_RENEW_ADMIN_PASSWORD=true /opt/verax/bin/start.sh tenant-bootstra
 Uma senha que não chegou ao cofre (o Secret Manager fora do ar, sem permissão) fica em
 `/run/verax/tenant-bootstrap-payloads/<id>/` (tmpfs, só root) e vai antes de tudo na tentativa seguinte, para o cofre do
 subdomínio que o host guardou. Nenhuma senha aparece na tela nem no journal.
+
+## 4. O que é de cada cliente (envs/cell-tenant, CE-07)
+
+Cada cliente da célula tem um estado próprio, `cells/<célula>/tenants/<slug>` no bucket do estado do projeto dos nós,
+aplicado pelo executor Terraform do plano de controle (o Job `cp-terraform`):
+
+- a conta de serviço `vxt-<slug>`: a identidade do cliente na AWS. A VM da célula só emite o token OIDC dela, e o
+  cp-worker só a desativa e reativa (a suspensão), cada permissão só nessa conta. O executor recusa um plano que a
+  apague ou recrie fora do expurgo do cliente (`tenant_sa_replacement`);
+- o cofre `vxt-<slug>-admin-bootstrap`: a VM só grava, o cp-worker lê uma vez e destrói a versão;
+- os tópicos e as assinaturas `vxc-<célula>-gcp-<UUID da conta>`, um por conta GCP do cliente: só a identidade do sink
+  dele publica, só a VM lê. O nome nunca volta depois de uma exclusão.
+
+Os tipos de execução são `cell_provision` e `cell_sources` (`apply`) e `cell_delete` (`destroy`, o expurgo, que só
+apaga). As variáveis vêm do registro da célula (o `cell_id`, o projeto, a região e a conta da VM, da saída `cell`) e das
+contas GCP do cliente (`GCP_SOURCES`, em JSON), conferidas pelo cp-worker, pelo executor e pelo próprio ambiente.
+
+**As permissões do plano de controle no projeto da célula** (`envs/celula/control_plane.tf`, com o canal): o
+cp-terraform recebe o papel `cpCellTenants_<célula>` com uma condição que só deixa passar o projeto (criar e listar) e
+os recursos com nome de cliente da célula (`vxt-...` e `vxc-<célula>-gcp-...`). O projeto da célula é o do nó da Verax,
+com o nó lean, a chave de release e o registro das imagens: sem a condição, o cp-terraform poderia se dar o token de
+qualquer conta do projeto. A condição é positiva: se a GCP não passar o nome de algum desses tipos de recurso à
+condição, o `apply` do cliente falha com permissão negada, e nada é concedido a mais. **Confira no primeiro `apply` do
+cliente da Verax** (passo abaixo): se falhar com permissão negada numa conta, num cofre ou num tópico, a condição
+daquele tipo precisa de outro desenho (não a tire sem pensar no que ela protege).
+
+**Plano de aceite** (sem aplicar), com um `terraform.tfvars` do `terraform.tfvars.example` e as suas credenciais:
+
+```bash
+terraform -chdir=infra/gcp/envs/cell-tenant init -backend=false
+terraform -chdir=infra/gcp/envs/cell-tenant plan
+```
+
+## Ordem para aplicar e configurar
+
+1. `envs/control-plane` aplicado (as contas `cp-worker` e `cp-terraform` existem) e o `envs/nodes-platform` (o bucket
+   do estado, onde o cp-terraform já grava).
+2. `envs/celula` com `control_plane_project_id` e `control_plane_worker_url` (passo 1 deste roteiro): o canal, as
+   exportações, os backups de 85 dias e as permissões do plano de controle.
+3. A imagem nova do executor Terraform (com o `envs/cell-tenant`) publicada no Job `cp-terraform`.
+4. A versão do nó com o modo célula instalada, o `cell-adopt` e a troca do `node.conf` (passo 2).
+5. Depois, com o canal do lado do plano de controle (CE-05 e CE-06) e o provisionamento na célula (CE-15): o
+   `envs/cell-tenant` do cliente da Verax, o primeiro a conferir a condição do cp-terraform.

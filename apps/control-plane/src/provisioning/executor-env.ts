@@ -237,3 +237,117 @@ export function executorEnv(input: ExecutorInput): { name: string; value: string
   }
   return env.map(([name, value]) => ({ name, value }));
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Cliente da célula (CE-07): o `infra/gcp/envs/cell-tenant` de um cliente, no mesmo Job `cp-terraform`, com o estado em
+// `cells/<célula>/tenants/<slug>/` e os recursos no projeto da célula. O `entrypoint.sh` amarra a ação ao tipo e confere
+// cada variável de novo, com as mesmas regras; o `envs/cell-tenant` confere uma terceira vez.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/**
+ * Os tipos de execução do cliente da célula: `cell_provision` (o provisionamento), `cell_sources` (as contas GCP do
+ * cliente mudaram, CE-08) e `cell_delete` (o expurgo do cliente, CE-16, o único que apaga a conta de serviço dele).
+ */
+export const CELL_RUN_KINDS = ['cell_provision', 'cell_sources', 'cell_delete'] as const;
+export type CellRunKind = (typeof CELL_RUN_KINDS)[number];
+
+/** A ação de cada tipo de execução da célula, a mesma tabela do `entrypoint.sh`. */
+export const CELL_ACTION_OF_KIND: Readonly<Record<CellRunKind, ExecutorAction>> = {
+  cell_provision: 'apply',
+  cell_sources: 'apply',
+  cell_delete: 'destroy',
+};
+
+/** Uma conta GCP do cliente da célula: o UUID da conta cloud, o projeto e a identidade do sink que ele colou. */
+export interface CellGcpSource {
+  cloudAccountId: string;
+  projectId: string;
+  writerIdentity: string;
+}
+
+export interface CellTenantExecutorInput {
+  kind: CellRunKind;
+  runId: string;
+  slug: string;
+  /** O registro da célula (`cells/<id>`, CE-15): o `cell_id`, o projeto, a região e a conta da VM do envs/celula. */
+  cellId: string;
+  cellProjectId: string;
+  cellRegion: string;
+  cellNodeServiceAccount: string;
+  gcpSources: readonly CellGcpSource[];
+}
+
+const CELL_ID_PATTERN = /^[a-z][a-z0-9]{1,7}$/;
+/** As regras do `gcpProjectIdSchema` e do `SINK_WRITER_IDENTITY_PATTERN` (packages/shared), do módulo do nó e do envs/cell-tenant. */
+const GCP_PROJECT_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+const SINK_WRITER_IDENTITY_PATTERN =
+  /^serviceAccount:service-[0-9]+@gcp-sa-logging\.iam\.gserviceaccount\.com$/;
+const GCP_REGION_PATTERN = /^[a-z]+-[a-z]+[0-9]$/;
+const SERVICE_ACCOUNT_LOCAL_PATTERN = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+/** O UUID da conta cloud do nó, em minúsculas (o `id` da conta no painel). */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** O limite do `envs/cell-tenant` (e do entrypoint) de contas GCP por cliente. */
+export const CELL_GCP_SOURCES_MAX = 50;
+
+/** A conta de serviço da VM da célula, no projeto da célula (e em nenhum outro). */
+function isCellServiceAccount(email: string, project: string): boolean {
+  const suffix = `@${project}.iam.gserviceaccount.com`;
+  return email.endsWith(suffix) && SERVICE_ACCOUNT_LOCAL_PATTERN.test(email.slice(0, -suffix.length));
+}
+
+/**
+ * As contas GCP em JSON, na forma canônica que o `entrypoint.sh` também produz (`jq -cS`: chaves em ordem, compacto). O
+ * nome de cada tópico sai do UUID da conta, nunca do projeto (envs/cell-tenant).
+ */
+function gcpSourcesJson(sources: readonly CellGcpSource[]): string {
+  const ordered = [...sources].sort((a, b) => (a.cloudAccountId < b.cloudAccountId ? -1 : 1));
+  const entries = ordered.map(
+    (source) =>
+      `${JSON.stringify(source.cloudAccountId)}:{"project_id":${JSON.stringify(source.projectId)},"writer_identity":${JSON.stringify(source.writerIdentity)}}`,
+  );
+  return `{${entries.join(',')}}`;
+}
+
+/**
+ * A lista `env` do `overrides` do Job para o cliente da célula, conferida variável a variável (`ExecutorInputError` cita
+ * só o nome). Nada de dado pessoal: o e-mail do administrador vai pelo comando da célula (CE-05), nunca pelo Terraform.
+ */
+export function cellTenantExecutorEnv(input: CellTenantExecutorInput): { name: string; value: string }[] {
+  check((CELL_RUN_KINDS as readonly string[]).includes(input.kind), 'RUN_KIND');
+  check(isUlid(input.runId), 'RUN_ID');
+  check(isSlug(input.slug), 'TENANT_SLUG');
+  check(CELL_ID_PATTERN.test(input.cellId), 'CELL_ID');
+  check(GCP_PROJECT_PATTERN.test(input.cellProjectId), 'CELL_PROJECT_ID');
+  check(GCP_REGION_PATTERN.test(input.cellRegion), 'CELL_REGION');
+  check(isCellServiceAccount(input.cellNodeServiceAccount, input.cellProjectId), 'CELL_NODE_SA');
+  const sources = input.gcpSources;
+  check(sources.length <= CELL_GCP_SOURCES_MAX, 'GCP_SOURCES');
+  for (const source of sources) {
+    check(
+      UUID_PATTERN.test(source.cloudAccountId) &&
+        GCP_PROJECT_PATTERN.test(source.projectId) &&
+        source.writerIdentity.length <= 128 &&
+        SINK_WRITER_IDENTITY_PATTERN.test(source.writerIdentity),
+      'GCP_SOURCES',
+    );
+  }
+  const distinct = (values: string[]) => new Set(values).size === values.length;
+  check(
+    distinct(sources.map((source) => source.cloudAccountId)) &&
+      distinct(sources.map((source) => source.projectId)) &&
+      distinct(sources.map((source) => source.writerIdentity)),
+    'GCP_SOURCES',
+  );
+  const env: [string, string][] = [
+    ['EXECUTOR_ACTION', CELL_ACTION_OF_KIND[input.kind]],
+    ['RUN_KIND', input.kind],
+    ['RUN_ID', input.runId],
+    ['TENANT_SLUG', input.slug],
+    ['CELL_ID', input.cellId],
+    ['CELL_PROJECT_ID', input.cellProjectId],
+    ['CELL_REGION', input.cellRegion],
+    ['CELL_NODE_SA', input.cellNodeServiceAccount],
+    ['GCP_SOURCES', gcpSourcesJson(sources)],
+  ];
+  return env.map(([name, value]) => ({ name, value }));
+}
