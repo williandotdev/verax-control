@@ -15,6 +15,15 @@
 #   de backup; com objetos, `backups_bucket_not_empty`, e o cp-worker tenta no dia seguinte) e o estado do cliente.
 # Todo nome apagado pela API sai do slug e do projeto conferidos (`vx-<slug>...`): nada fora do cliente é alcançado.
 #
+# Cliente da célula (CE-07): o `infra/gcp/envs/cell-tenant` de UM cliente, com o estado em `cells/<célula>/tenants/<slug>/`
+# no mesmo bucket e os recursos no projeto dos nós (NODES_PROJECT_ID; o da célula, CELL_PROJECT_ID, só confere a conta
+# da VM, e lá o cp-terraform não tem permissão nenhuma):
+# - `apply` em `cell_provision` (o provisionamento) e `cell_sources` (as contas GCP do cliente mudaram, CE-08);
+# - `destroy` em `cell_delete` (o expurgo do cliente, CE-16): a conta de serviço `vxt-<slug>`, o cofre do primeiro
+#   acesso e os tópicos; o plano só pode apagar. Nada fica para uma Exclusão 2 (a chave do cofre é da célula).
+# O plano de um `apply` que apague, recrie ou esqueça a conta de serviço do cliente (`google_service_account.tenant`) é
+# recusado (`tenant_sa_replacement`): o papel da AWS do cliente confia no ID único dela.
+#
 # Regras (plano §2.1 e §5; docs/ARQUITETURA.md, "Exclusão em dois tempos"):
 # - nenhum argumento e nenhuma variável que mude o Terraform, o Go, o shell, o curl ou as credenciais (`TF_*`, `GO*`,
 #   `GCE_*`, `LD_*`, proxy...): quem dispara com `overrides` só escolhe as variáveis do cliente, conferidas aqui uma a
@@ -42,6 +51,7 @@ umask 077
 # Valores de produção. O teste (tests/entrypoint-test.sh) troca estes, e só estes, e confere que aqui são estes.
 readonly terraform_bin=/bin/terraform
 readonly tenant_root=/opt/verax/infra/gcp/envs/tenant
+readonly cell_tenant_root=/opt/verax/infra/gcp/envs/cell-tenant
 readonly cli_config=/opt/verax/terraform.rc
 readonly metadata_token_url=http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
 readonly storage_upload_url=https://storage.googleapis.com/upload/storage/v1/b
@@ -53,6 +63,10 @@ readonly work_parent=/tmp
 # As saídas do envs/tenant que podem ir para o outputs.json (outputs.tf de lá: nenhuma com dado pessoal).
 readonly allowed_outputs='["name_prefix","instance_name","zone","nat_ip","service_account_email","service_account_unique_id","secrets","backups_bucket"]'
 readonly node_sa_address=module.node.google_service_account.node
+# As saídas do envs/cell-tenant que podem ir para o outputs.json (nenhuma com dado pessoal) e a conta de serviço do
+# cliente da célula, que só o expurgo apaga.
+readonly allowed_cell_outputs='["tenant_service_account_email","tenant_service_account_unique_id","admin_bootstrap_secret","gcp_sources"]'
+readonly tenant_sa_address=google_service_account.tenant
 # O que sai do estado antes do `destroy` da Exclusão 1 (docs/ARQUITETURA.md, "Exclusão em dois tempos"): o disco e o IP
 # do NAT (`prevent_destroy`; apagados pela API logo depois), o bucket de backups (`force_destroy = false`; fica até a
 # Exclusão 2, esvaziado pela retenção dele), o cofre `credentials-key` e a permissão do cp-worker de destruir as versões
@@ -92,6 +106,7 @@ re_artifact_registry='^[a-z0-9-]+-docker\.pkg\.dev/[a-z][a-z0-9-]{4,28}[a-z0-9]/
 re_token='^[A-Za-z0-9._~+/=-]{16,4096}$'
 re_smtp_port='^[1-9][0-9]{0,4}$'
 re_smtp_user='^[A-Za-z0-9][A-Za-z0-9@._+-]{0,253}$'
+re_cell_id='^[a-z][a-z0-9]{1,7}$'
 
 # O token da conta do Job (servidor de metadados do Cloud Run) num arquivo de cabeçalho 0600; nunca em argumento.
 auth_header() {
@@ -250,10 +265,13 @@ for name in EXECUTOR_ACTION RUN_KIND NODES_PROJECT_ID; do
   [[ -n ${!name-} && ${!name} =~ ^[[:graph:]]+$ ]] || invalid "$name"
 done
 case $EXECUTOR_ACTION in apply | destroy | purge) ;; *) invalid EXECUTOR_ACTION ;; esac
-case $RUN_KIND in provision | resume | delete | crypto_destroy) ;; *) invalid RUN_KIND ;; esac
+case $RUN_KIND in provision | resume | delete | crypto_destroy | cell_provision | cell_sources | cell_delete) ;;
+  *) invalid RUN_KIND ;;
+esac
 [[ $NODES_PROJECT_ID =~ $re_project ]] || invalid NODES_PROJECT_ID
 case $EXECUTOR_ACTION:$RUN_KIND in
   apply:provision | apply:resume | destroy:delete | purge:crypto_destroy) ;;
+  apply:cell_provision | apply:cell_sources | destroy:cell_delete) ;;
   *)
     say "a ação $EXECUTOR_ACTION não é do tipo de execução $RUN_KIND."
     finish 3 refused action_refused
@@ -307,14 +325,68 @@ check_tenant_variables() {
     [[ ${SMTP_USER-} =~ $re_smtp_user ]] || invalid SMTP_USER
   fi
 }
-if [[ $EXECUTOR_ACTION != purge ]]; then check_tenant_variables; fi
+# O cliente da célula (CE-07): a célula (o identificador, o projeto, a região e a conta da VM, que tem de ser do projeto
+# da célula) e as contas GCP do cliente, em JSON, conferidas uma a uma (o UUID da conta, o projeto, a identidade do sink,
+# nenhuma repetida) e reescritas pelo jq em forma canônica antes de chegar ao Terraform.
+check_cell_variables() {
+  local name re_cell_sa
+  for name in CELL_ID CELL_PROJECT_ID CELL_REGION CELL_NODE_SA CP_WORKER_SA GCP_SOURCES; do
+    [[ -n ${!name-} ]] || invalid "$name"
+    [[ $name == GCP_SOURCES || ${!name} =~ ^[[:graph:]]+$ ]] || invalid "$name"
+  done
+  [[ $CELL_ID =~ $re_cell_id ]] || invalid CELL_ID
+  [[ $CELL_PROJECT_ID =~ $re_project ]] || invalid CELL_PROJECT_ID
+  [[ $CELL_REGION =~ $re_region ]] || invalid CELL_REGION
+  # O projeto já conferido só tem minúsculas, dígitos e hífen: entra na expressão como texto.
+  re_cell_sa="^[a-z][a-z0-9-]{4,28}[a-z0-9]@${CELL_PROJECT_ID}\.iam\.gserviceaccount\.com\$"
+  [[ $CELL_NODE_SA =~ $re_cell_sa ]] || invalid CELL_NODE_SA
+  [[ $CP_WORKER_SA =~ $re_worker_sa ]] || invalid CP_WORKER_SA
+  ((${#GCP_SOURCES} <= 16384)) || invalid GCP_SOURCES
+  if ! canonical_sources=$(jq -cS --arg project "$re_project" '
+    if type == "object" and length <= 50
+      and (to_entries | all(
+        (.key | test("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"))
+        and (.value | type == "object" and (keys == ["project_id", "writer_identity"])
+          and (.project_id | type == "string" and test($project))
+          and (.writer_identity | type == "string"
+            and test("^serviceAccount:service-[0-9]+@gcp-sa-logging\\.iam\\.gserviceaccount\\.com$")))))
+      and ([.[].writer_identity] | length == (unique | length))
+      and ([.[].project_id] | length == (unique | length))
+    then . else error("fora do formato") end' <<<"$GCP_SOURCES" 2>/dev/null); then
+    invalid GCP_SOURCES
+  fi
+}
+
+# O alvo: o nó de um cliente (envs/tenant) ou o cliente da célula (envs/cell-tenant), pelo tipo da execução.
+cell_target=false
+case $RUN_KIND in cell_*) cell_target=true ;; esac
+if [[ $cell_target == true ]]; then
+  check_cell_variables
+elif [[ $EXECUTOR_ACTION != purge ]]; then
+  check_tenant_variables
+fi
 
 # --- 4. O Terraform, só com o espelho de providers e as variáveis conferidas --------------------------------------
 export TF_IN_AUTOMATION=1 TF_INPUT=0 CHECKPOINT_DISABLE=1
 export TF_CLI_CONFIG_FILE=$cli_config
 export TF_DATA_DIR=$work/terraform-data
 export HOME=$work
-if [[ $EXECUTOR_ACTION != purge ]]; then
+env_root=$tenant_root
+state_prefix=tenants/$TENANT_SLUG
+sa_address=$node_sa_address
+sa_refusal=node_sa_replacement
+outputs_list=$allowed_outputs
+if [[ $cell_target == true ]]; then
+  env_root=$cell_tenant_root
+  state_prefix=cells/$CELL_ID/tenants/$TENANT_SLUG
+  sa_address=$tenant_sa_address
+  sa_refusal=tenant_sa_replacement
+  outputs_list=$allowed_cell_outputs
+  export TF_VAR_project_id=$NODES_PROJECT_ID TF_VAR_cell_project_id=$CELL_PROJECT_ID TF_VAR_region=$CELL_REGION
+  export TF_VAR_cell_id=$CELL_ID TF_VAR_slug=$TENANT_SLUG
+  export TF_VAR_cell_node_service_account=$CELL_NODE_SA TF_VAR_control_plane_sa=$CP_WORKER_SA
+  export TF_VAR_gcp_sources=$canonical_sources
+elif [[ $EXECUTOR_ACTION != purge ]]; then
   export TF_VAR_project_id=$NODES_PROJECT_ID TF_VAR_region=$NODES_REGION TF_VAR_zone=$NODES_ZONE
   export TF_VAR_slug=$TENANT_SLUG TF_VAR_plan=$PLAN
   export TF_VAR_plan_max_cloud_accounts=${PLAN_MAX_CLOUD_ACCOUNTS-} TF_VAR_plan_max_users=${PLAN_MAX_USERS-}
@@ -336,16 +408,16 @@ tf_failed() { # <etapa>
 tf() { # <etapa> <subcomando> <argumentos...>
   local stage=$1 subcommand=$2
   shift 2
-  "$terraform_bin" -chdir="$tenant_root" "$subcommand" -no-color "$@" >>"$work/terraform.log" 2>&1 || tf_failed "$stage"
+  "$terraform_bin" -chdir="$env_root" "$subcommand" -no-color "$@" >>"$work/terraform.log" 2>&1 || tf_failed "$stage"
 }
 # Os endereços no estado do cliente, um por linha, em state.txt.
 state_list() {
-  "$terraform_bin" -chdir="$tenant_root" state list >"$work/state.txt" 2>>"$work/terraform.log" || tf_failed state
+  "$terraform_bin" -chdir="$env_root" state list >"$work/state.txt" 2>>"$work/terraform.log" || tf_failed state
 }
 
 # O plano salvo em JSON, legível (senão a execução é recusada).
 show_plan() {
-  if ! "$terraform_bin" -chdir="$tenant_root" show -json "$work/tfplan" >"$work/plan.json" 2>>"$work/terraform.log"; then
+  if ! "$terraform_bin" -chdir="$env_root" show -json "$work/tfplan" >"$work/plan.json" 2>>"$work/terraform.log"; then
     finish 3 refused plan_unreadable
   fi
   if ! jq -e 'has("format_version") and (.resource_changes | type == "array")' "$work/plan.json" >/dev/null 2>&1; then
@@ -464,7 +536,7 @@ destroy_tenant() {
   if grep -qxF 'module.node.google_compute_instance.node' "$work/state.txt"; then unprotect_instance; fi
   for address in "${kept_addresses[@]}"; do
     if grep -qxF "$address" "$work/state.txt"; then
-      "$terraform_bin" -chdir="$tenant_root" state rm -lock-timeout=5m "$address" >>"$work/terraform.log" 2>&1 ||
+      "$terraform_bin" -chdir="$env_root" state rm -lock-timeout=5m "$address" >>"$work/terraform.log" 2>&1 ||
         tf_failed state_rm
     fi
   done
@@ -487,34 +559,54 @@ destroy_tenant() {
   finish 0 succeeded destroy_done
 }
 
+# --- 5c. Expurgo do cliente da célula (`destroy` em `cell_delete`) ------------------------------------------------------
+# Tudo sai: a conta de serviço do cliente, o cofre do primeiro acesso, os tópicos e as permissões. O plano só apaga.
+destroy_cell_tenant() {
+  local odd
+  tf plan plan -input=false -lock-timeout=5m -destroy "-out=$work/tfplan"
+  show_plan
+  if ! odd=$(jq -r '[.resource_changes[] | select((.change.actions - ["delete", "no-op", "read"]) != [])] | length' \
+    "$work/plan.json"); then
+    finish 3 refused plan_unreadable
+  fi
+  if ((odd > 0)); then
+    say 'o plano do expurgo cria ou muda algum recurso: recusado.'
+    finish 3 refused destroy_plan_unexpected
+  fi
+  plan_summary
+  tf apply apply -input=false -lock-timeout=5m "$work/tfplan"
+  finish 0 succeeded destroy_done
+}
+
 say "cliente $TENANT_SLUG, execução $RUN_ID ($RUN_KIND, $EXECUTOR_ACTION)"
 tf init init -input=false -lockfile=readonly "-backend-config=bucket=$TFSTATE_BUCKET" \
-  "-backend-config=prefix=tenants/$TENANT_SLUG"
-case $EXECUTOR_ACTION in
-  purge) purge_tenant ;;
-  destroy) destroy_tenant ;;
+  "-backend-config=prefix=$state_prefix"
+case $EXECUTOR_ACTION:$cell_target in
+  purge:false) purge_tenant ;;
+  destroy:false) destroy_tenant ;;
+  destroy:true) destroy_cell_tenant ;;
 esac
 
-# --- 5c. Provisionamento (`apply`): a conta de serviço do nó não é apagada nem recriada -------------------------------
+# --- 5d. Provisionamento (`apply`): a conta de serviço do nó (ou do cliente da célula) não é apagada nem recriada ----
 tf plan plan -input=false -lock-timeout=5m "-out=$work/tfplan"
 show_plan
-if ! sa_changes=$(jq -r --arg address "$node_sa_address" '
+if ! sa_changes=$(jq -r --arg address "$sa_address" '
   [.resource_changes[] | select(.address == $address or (.address | startswith($address + "[")))
     | .change.actions[] | select(. == "delete" or . == "forget")] | length' "$work/plan.json"); then
   finish 3 refused plan_unreadable
 fi
 if ((sa_changes > 0)); then
-  say "o plano apaga ou recria $node_sa_address: recusado (só a exclusão do cliente pode)."
-  finish 3 refused node_sa_replacement
+  say "o plano apaga ou recria $sa_address: recusado (só a exclusão do cliente pode)."
+  finish 3 refused "$sa_refusal"
 fi
 plan_summary
 
 # --- 6. Aplicar e gravar as saídas ----------------------------------------------------------------------------------
 tf apply apply -input=false -lock-timeout=5m "$work/tfplan"
-if ! "$terraform_bin" -chdir="$tenant_root" output -no-color -json >"$work/outputs.raw.json" 2>>"$work/terraform.log"; then
+if ! "$terraform_bin" -chdir="$env_root" output -no-color -json >"$work/outputs.raw.json" 2>>"$work/terraform.log"; then
   finish 4 failed terraform_output_failed
 fi
-if ! jq -e --argjson allowed "$allowed_outputs" '
+if ! jq -e --argjson allowed "$outputs_list" '
   if ([.[] | select(.sensitive == true)] | length) > 0 then error("saída sensível") else . end
   | with_entries(select(.key as $k | $allowed | index($k))) | map_values(.value)' \
   "$work/outputs.raw.json" >"$work/outputs.json" 2>/dev/null; then

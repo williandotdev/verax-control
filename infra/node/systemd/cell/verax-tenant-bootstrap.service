@@ -1,0 +1,19 @@
+# Primeiro administrador dos clientes da célula (NODE_MODE=cell; CE-04; infra/node/bin/start.sh tenant-bootstrap):
+# cada pedido que o worker deixou vira a conta, e a senha temporária vai para o cofre do cliente
+# (`vxt-<subdomínio>-admin-bootstrap`), de onde o plano de controle a revela. Pelo .path (a pasta tem pedido) e pelo timer
+# (a cada 10 min: um pedido que falhou, como o do cliente cujo plano ainda não chegou).
+#
+# No máximo 10 partidas em 1 hora: um pedido que falha sempre não roda em laço. Passado o limite, o .path para; o timer
+# tenta de novo e arma o .path (o ExecStartPre, que não faz nada com ele no ar). Depois do verax-node: o banco e as
+# migrations já estão no ar. O nó dedicado não recebe estas unidades (o install.sh só as instala na célula).
+[Unit]
+Description=Verax Control - primeiro acesso dos clientes da celula (senhas no Secret Manager)
+After=verax-node.service
+StartLimitIntervalSec=3600
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+ExecStartPre=-/usr/bin/systemctl --no-block start verax-tenant-bootstrap.path
+ExecStart=/opt/verax/bin/start.sh tenant-bootstrap-pending
+TimeoutStartSec=900

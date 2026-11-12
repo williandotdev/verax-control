@@ -1,10 +1,12 @@
 # Lista de permissão do contexto de build do executor Terraform (o Docker usa este arquivo, e não o .dockerignore da
-# raiz, para o Dockerfile desta pasta): o ambiente do tenant e o módulo do nó (sem os testes), o que o módulo lê de
-# infra/node no `plan` (o instalador, o verificador e as chaves PÚBLICAS de release) e os arquivos desta pasta. Nada de
-# estado, plano, variável ou chave privada.
+# raiz, para o Dockerfile desta pasta): o ambiente do tenant, o do cliente da célula e o módulo do nó (sem os testes), o
+# que o módulo lê de infra/node no `plan` (o instalador, o verificador e as chaves PÚBLICAS de release) e os arquivos
+# desta pasta. Nada de estado, plano, variável ou chave privada.
 *
 !infra/gcp/envs/tenant/*.tf
 !infra/gcp/envs/tenant/.terraform.lock.hcl
+!infra/gcp/envs/cell-tenant/*.tf
+!infra/gcp/envs/cell-tenant/.terraform.lock.hcl
 !infra/gcp/modules/node/*.tf
 !infra/gcp/modules/node/*.tftpl
 !infra/node/bin/boot-install.sh

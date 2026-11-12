@@ -1,0 +1,14 @@
+# Complemento do compose.yaml para a célula compartilhada (NODE_MODE=cell no node.conf; CE-04): o start.sh o soma em
+# toda chamada (`-f compose.yaml ... -f compose.cell.yaml`), e o Compose acrescenta estes volumes aos do worker. O nó
+# dedicado, sem a linha, sobe sem ele, como antes.
+#
+# O primeiro administrador de cada cliente da célula: o worker grava o pedido (o subdomínio e o e-mail, sem segredo) na
+# pasta dos pedidos, a única com escrita, e lê a resposta do host (`ok` ou `error`) na pasta de estado, só leitura. A
+# senha nunca passa pelo worker: o host roda o bootstrap e a grava no cofre do cliente (start.sh tenant-bootstrap). Os
+# destinos são o TENANT_REQUESTS_MOUNT e o TENANT_STATUS_MOUNT do start.sh, que o worker.env aponta
+# (TENANT_BOOTSTRAP_DIR e TENANT_BOOTSTRAP_STATUS_DIR; o CI confere que batem).
+services:
+  worker:
+    volumes:
+      - /run/verax/tenant-bootstrap:/run/tenant-bootstrap
+      - /run/verax/tenant-bootstrap-status:/run/tenant-bootstrap-status:ro

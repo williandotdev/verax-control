@@ -6,6 +6,8 @@
 set -euo pipefail
 dir=${FAKE_TERRAFORM_DIR:?}
 [[ $1 == -chdir=* ]] || exit 64
+# A pasta de cada chamada (o envs/tenant ou o envs/cell-tenant), uma por linha.
+printf '%s\n' "${1#-chdir=}" >>"$dir/chdirs"
 shift
 subcommand=$1
 shift

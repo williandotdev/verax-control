@@ -34,6 +34,7 @@ check() { # <descrição> <comando...>
 production_lines=(
   'readonly terraform_bin=/bin/terraform'
   'readonly tenant_root=/opt/verax/infra/gcp/envs/tenant'
+  'readonly cell_tenant_root=/opt/verax/infra/gcp/envs/cell-tenant'
   'readonly cli_config=/opt/verax/terraform.rc'
   'readonly metadata_token_url=http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token'
   'readonly storage_upload_url=https://storage.googleapis.com/upload/storage/v1/b'
@@ -78,6 +79,7 @@ install -m 0755 "$here/fake-terraform.sh" "$root/bin/terraform"
 sed \
   -e "s|^readonly terraform_bin=.*|readonly terraform_bin=$root/bin/terraform|" \
   -e "s|^readonly tenant_root=.*|readonly tenant_root=$root/tenant|" \
+  -e "s|^readonly cell_tenant_root=.*|readonly cell_tenant_root=$root/cell-tenant|" \
   -e "s|^readonly cli_config=.*|readonly cli_config=$root/terraform.rc|" \
   -e "s|^readonly metadata_token_url=.*|readonly metadata_token_url=http://127.0.0.1:$port/token|" \
   -e "s|^readonly storage_upload_url=.*|readonly storage_upload_url=http://127.0.0.1:$port/upload/storage/v1/b|" \
@@ -88,9 +90,9 @@ sed \
   -e "s|--proto '=https'|--proto '=http'|" \
   "$entrypoint" >"$root/entrypoint.sh"
 chmod 0755 "$root/entrypoint.sh"
-mkdir -p "$root/tenant"
-check 'a cópia do teste troca só os valores de produção (10 linhas)' \
-  test "$(diff "$entrypoint" "$root/entrypoint.sh" | grep -c '^>')" -eq 10
+mkdir -p "$root/tenant" "$root/cell-tenant"
+check 'a cópia do teste troca só os valores de produção (11 linhas)' \
+  test "$(diff "$entrypoint" "$root/entrypoint.sh" | grep -c '^>')" -eq 11
 
 slug=cliente-demo-a
 run_id=01JBTESTE0000000000000RVN1
@@ -654,6 +656,168 @@ run_entrypoint
 check 'token fora do formato no servidor de metadados: nada é enviado (5)' \
   bash -c "test $status -eq 5 && ! grep -q '\"POST\"' '$state/requests.jsonl'"
 check 'a pasta de trabalho é apagada também nas falhas' no_work_left
+
+# --- 6. Cliente da célula (CE-07: envs/cell-tenant) ------------------------------------------------------------------
+# As variáveis de uma execução da célula, como o cp-worker as manda (cellTenantExecutorEnv em executor-env.ts) mais as
+# fixas do Job: nenhuma do nó dedicado (plano, versão, e-mails).
+cell_project=projeto-exemplo-celula
+uuid_a=0190a8c0-0000-7000-8000-00000000000a
+uuid_b=0190a8c0-0000-7000-8000-00000000000b
+writer_a=serviceAccount:service-210987654321@gcp-sa-logging.iam.gserviceaccount.com
+writer_b=serviceAccount:service-310987654321@gcp-sa-logging.iam.gserviceaccount.com
+# Fora de ordem e com espaços: o executor reescreve em forma canônica (chaves ordenadas, compacto).
+sources="{ \"$uuid_b\": {\"writer_identity\": \"$writer_b\", \"project_id\": \"projeto-do-cliente-a2\"}, \"$uuid_a\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"$writer_a\"} }"
+canonical="{\"$uuid_a\":{\"project_id\":\"projeto-do-cliente-a1\",\"writer_identity\":\"$writer_a\"},\"$uuid_b\":{\"project_id\":\"projeto-do-cliente-a2\",\"writer_identity\":\"$writer_b\"}}"
+cell_env=(
+  "PATH=/usr/bin:/bin"
+  "HOME=/home/executor"
+  "TFSTATE_BUCKET=projeto-exemplo-nos-tfstate"
+  "NODES_PROJECT_ID=projeto-exemplo-nos"
+  "NODES_REGION=southamerica-east1"
+  "NODES_ZONE=southamerica-east1-b"
+  "CP_WORKER_SA=cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
+  "CLOUD_RUN_EXECUTION=$execution"
+  "EXECUTOR_ACTION=apply"
+  "RUN_KIND=cell_provision"
+  "RUN_ID=$run_id"
+  "TENANT_SLUG=$slug"
+  "CELL_ID=sp1"
+  "CELL_PROJECT_ID=$cell_project"
+  "CELL_REGION=southamerica-east1"
+  "CELL_NODE_SA=verax-celula@$cell_project.iam.gserviceaccount.com"
+  "GCP_SOURCES=$sources"
+  "FAKE_TERRAFORM_DIR=$fake"
+)
+run_cell() { # <variáveis a mais ou trocadas...>
+  status=0
+  output=$(env -i "${cell_env[@]}" "$@" "$root/entrypoint.sh" 2>&1) || status=$?
+}
+cell_plan_with() { # <ações da conta do cliente em JSON> [endereço]
+  jq -n --arg address "${2:-google_service_account.tenant}" --argjson actions "$1" '{
+    format_version: "1.2",
+    resource_changes: [
+      {address: $address, change: {actions: $actions}},
+      {address: "google_pubsub_topic.gcp_source[\"0190a8c0-0000-7000-8000-00000000000a\"]", change: {actions: ["create"]}}
+    ]
+  }' >"$fake/plan.json"
+}
+cell_reset() {
+  reset
+  rm -f "$fake/chdirs"
+  cell_plan_with '["create"]'
+  jq -n '{
+    tenant_service_account_email: {sensitive: false, type: "string", value: "vxt-cliente-demo-a@projeto-exemplo-celula.iam.gserviceaccount.com"},
+    tenant_service_account_unique_id: {sensitive: false, type: "string", value: "109876543210987654321"},
+    admin_bootstrap_secret: {sensitive: false, type: "string", value: "vxt-cliente-demo-a-admin-bootstrap"},
+    gcp_sources: {sensitive: false, type: ["map", ["object", {topic: "string", subscription: "string"}]], value: {}},
+    uma_saida_nova: {sensitive: false, type: "string", value: "nao-deveria-sair"}
+  }' >"$fake/outputs.json"
+}
+
+cell_reset
+run_cell
+check 'célula: apply sai com 0' test "$status" -eq 0
+check 'célula: o Terraform roda no envs/cell-tenant, e só nele' \
+  test "$(sort -u "$fake/chdirs")" = "$root/cell-tenant"
+check 'célula: init com o prefixo cells/<célula>/tenants/<slug>' \
+  grep -qxF "init -no-color -input=false -lockfile=readonly -backend-config=bucket=projeto-exemplo-nos-tfstate -backend-config=prefix=cells/sp1/tenants/$slug" "$fake/calls"
+cell_vars=(
+  "TF_VAR_project_id=projeto-exemplo-nos" "TF_VAR_cell_project_id=$cell_project" "TF_VAR_region=southamerica-east1" "TF_VAR_cell_id=sp1" "TF_VAR_slug=$slug"
+  "TF_VAR_cell_node_service_account=verax-celula@$cell_project.iam.gserviceaccount.com"
+  "TF_VAR_control_plane_sa=cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" "TF_VAR_gcp_sources=$canonical"
+)
+missing=0
+for var in "${cell_vars[@]}"; do grep -qxF "$var" "$fake/env-plan" || missing=1; done
+check 'célula: as variáveis da célula chegam como TF_VAR_*, as contas GCP em JSON canônico' test "$missing" -eq 0
+check 'célula: nenhuma variável do nó dedicado' \
+  test "$(grep -cE '^TF_VAR_(plan|node_version|bootstrap_|web_origin|zone|subnet_cidr|images_repository|smtp_)' "$fake/env-plan")" -eq 0
+check 'célula: result.json succeeded/apply_done' result_is succeeded apply_done
+check 'célula: outputs.json só com as saídas da lista da célula' \
+  test "$(uploaded outputs.json | jq -c 'keys')" = '["admin_bootstrap_secret","gcp_sources","tenant_service_account_email","tenant_service_account_unique_id"]'
+check 'célula: nenhum token na saída' test "${output/$token/}" = "$output"
+
+run_cell RUN_KIND=cell_sources
+check 'célula: cell_sources também aplica' bash -c "test $status -eq 0 && grep -q '^apply ' '$fake/calls'"
+
+# A conta de serviço do cliente: recriada ou apagada fora do expurgo, recusado.
+for actions in '["delete","create"]' '["create","delete"]' '["delete"]' '["forget"]'; do
+  for kind in cell_provision cell_sources; do
+    cell_reset
+    cell_plan_with "$actions"
+    run_cell "RUN_KIND=$kind"
+    check "célula $kind: conta do cliente $actions recusada sem apply" \
+      bash -c "test $status -eq 3 && ! grep -q '^apply ' '$fake/calls'"
+    check "célula $kind: conta do cliente $actions: refused/tenant_sa_replacement" result_is refused tenant_sa_replacement
+  done
+done
+cell_reset
+cell_plan_with '["update"]'
+run_cell
+check 'célula: a conta do cliente mudada no lugar: aplicado' test "$status" -eq 0
+
+# O expurgo do cliente da célula: só apaga.
+cell_reset
+cell_plan_with '["delete"]'
+jq '.resource_changes[1].change.actions = ["delete"]' "$fake/plan.json" >"$fake/plan.tmp" && mv "$fake/plan.tmp" "$fake/plan.json"
+run_cell EXECUTOR_ACTION=destroy RUN_KIND=cell_delete
+check 'célula cell_delete: sai com 0' test "$status" -eq 0
+check 'célula cell_delete: result.json succeeded/destroy_done' result_is succeeded destroy_done
+check 'célula cell_delete: plan -destroy, show e apply, sem state rm, sem output' \
+  test "$(cut -d' ' -f1,2 "$fake/calls" | tr '\n' '|')" = 'init -no-color|plan -no-color|show -json|apply -no-color|'
+check 'célula cell_delete: plan com -destroy' grep -q -- '^plan .*-destroy' "$fake/calls"
+check 'célula cell_delete: nenhuma chamada às APIs do Compute nem do Secret Manager, e nada apagado pela API' \
+  bash -c "! jq -e 'select(.method == \"DELETE\" or (.path | test(\"compute|secretmanager\")))' '$state/requests.jsonl' >/dev/null"
+for case in 'google_service_account.tenant|["create"]' 'google_pubsub_topic.gcp_source["x"]|["update"]'; do
+  IFS='|' read -r address actions <<<"$case"
+  cell_reset
+  cell_plan_with '["delete"]'
+  jq --arg address "$address" --argjson actions "$actions" '.resource_changes[1] = {address: $address, change: {actions: $actions}}' \
+    "$fake/plan.json" >"$fake/plan.tmp" && mv "$fake/plan.tmp" "$fake/plan.json"
+  run_cell EXECUTOR_ACTION=destroy RUN_KIND=cell_delete
+  check "célula cell_delete com $address $actions: recusado sem apply" \
+    bash -c "test $status -eq 3 && ! grep -q '^apply ' '$fake/calls'"
+  check "célula cell_delete com $address $actions: refused/destroy_plan_unexpected" result_is refused destroy_plan_unexpected
+done
+
+# A ação amarrada ao tipo.
+for pair in apply:cell_delete destroy:cell_provision destroy:cell_sources purge:cell_delete purge:cell_provision; do
+  cell_reset
+  run_cell "EXECUTOR_ACTION=${pair%%:*}" "RUN_KIND=${pair#*:}"
+  check "célula $pair: recusado (action_refused) antes de qualquer terraform" \
+    bash -c "test $status -eq 3 && test ! -e '$fake/calls'"
+done
+
+# Variáveis da célula fora do formato: recusadas antes do init, só com o nome na saída.
+bad_sources=(
+  'nao-e-json'
+  '[]'
+  "{\"${uuid_a^^}\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"$writer_a\"}}"
+  "{\"$uuid_a\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"$writer_a\", \"extra\": \"x\"}}"
+  "{\"$uuid_a\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"serviceAccount:alguem@projeto.iam.gserviceaccount.com\"}}"
+  "{\"$uuid_a\": {\"project_id\": \"\${file(\\\"/etc/passwd\\\")}\", \"writer_identity\": \"$writer_a\"}}"
+  "{\"$uuid_a\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"$writer_a\"}, \"$uuid_b\": {\"project_id\": \"projeto-do-cliente-a2\", \"writer_identity\": \"$writer_a\"}}"
+  "{\"$uuid_a\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"$writer_a\"}, \"$uuid_b\": {\"project_id\": \"projeto-do-cliente-a1\", \"writer_identity\": \"$writer_b\"}}"
+)
+for value in "${bad_sources[@]}"; do
+  cell_reset
+  run_cell "GCP_SOURCES=$value"
+  check "célula: GCP_SOURCES fora do formato (${value:0:40}...): invalid sem terraform" \
+    bash -c "test $status -eq 2 && test ! -e '$fake/calls'"
+  check "célula: GCP_SOURCES fora do formato (${value:0:40}...): só o nome na saída" names_not_value "$output" GCP_SOURCES "$value"
+done
+for case in 'CELL_ID=SP-1' 'CELL_ID=' 'CELL_PROJECT_ID=Projeto' "CELL_NODE_SA=verax-celula@outro-projeto-123.iam.gserviceaccount.com" \
+  'CELL_REGION=sao paulo' 'GCP_SOURCES=' 'CP_WORKER_SA=cp-terraform@projeto-exemplo-cp.iam.gserviceaccount.com'; do
+  cell_reset
+  run_cell "$case"
+  check "célula: ${case%%=*} fora do formato: invalid sem terraform" \
+    bash -c "test $status -eq 2 && test ! -e '$fake/calls'"
+  check "célula: ${case%%=*} fora do formato: result.json invalid/input_invalid" result_is invalid input_invalid
+done
+# Sem as contas GCP do cliente, o JSON vazio.
+cell_reset
+run_cell 'GCP_SOURCES={}'
+check 'célula: sem conta GCP ({}), aplicado com o mapa vazio' \
+  bash -c "test $status -eq 0 && grep -qxF 'TF_VAR_gcp_sources={}' '$fake/env-plan'"
 
 printf '\n%d ok, %d falhas\n' "$passes" "$fails"
 ((fails == 0))
