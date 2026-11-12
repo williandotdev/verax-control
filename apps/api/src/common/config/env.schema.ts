@@ -1,5 +1,8 @@
 import {
+  cellIdSchema,
   isNodeEgressIp,
+  isPubsubSubscriptionName,
+  isPubsubTopicName,
   isNodeServiceAccountId,
   isWebIdentityAudience,
   MAX_AUDIENCE_LENGTH,
@@ -109,6 +112,34 @@ function checkTogether(env: Record<string, unknown>, keys: readonly string[], ct
       ctx.addIssue({ code: 'custom', path: [key], message: `obrigatória junto com ${present.join(', ')}` });
     }
   }
+}
+
+/**
+ * O canal da célula com o plano de controle (CE-05), como o worker o recebe do `start.sh` em `NODE_MODE=cell`: o id da
+ * célula (o mesmo do registro `cells/{id}` do plano de controle), a assinatura de comandos que só a VM da célula lê e o
+ * tópico de relatórios em que só ela publica (o ambiente da célula, CE-03). Os três juntos, e só na célula; com eles,
+ * entram as tarefas `cell-commands`, `cell-reports` e `cell-tenant-status`.
+ */
+const cellChannelEnvShape = {
+  CELL_ID: cellIdSchema.optional(),
+  CELL_COMMANDS_SUBSCRIPTION: z
+    .string()
+    .max(320)
+    .refine(isPubsubSubscriptionName, { error: 'use projects/<projeto>/subscriptions/<nome>' })
+    .optional(),
+  CELL_REPORTS_TOPIC: z
+    .string()
+    .max(320)
+    .refine(isPubsubTopicName, { error: 'use projects/<projeto>/topics/<nome>' })
+    .optional(),
+};
+const CELL_CHANNEL_KEYS = ['CELL_ID', 'CELL_COMMANDS_SUBSCRIPTION', 'CELL_REPORTS_TOPIC'] as const;
+
+/** O canal da célula no worker: o id, a assinatura de comandos e o tópico de relatórios. */
+export interface CellChannelConfig {
+  cellId: string;
+  commandsSubscription: string;
+  reportsTopic: string;
 }
 
 /**
@@ -701,6 +732,8 @@ const workerEnvObjectSchema = z
     // API do manager do Wazuh do nó (perfil standard, PR-V6): o endereço, a CA e a senha do verax_stats, os três juntos.
     // Com eles, entra a tarefa `wazuh-usage` (o medidor da AWS e a saúde da ingestão).
     ...wazuhApiEnvShape,
+    // Canal da célula com o plano de controle (CE-05, só com NODE_MODE=cell): os três juntos.
+    ...cellChannelEnvShape,
     // Estado do nó nos guest attributes da VM (nó de cliente, CUSTOMER_MODE=true no node.conf): a tarefa `node-status`
     // publica a versão, as contas conectadas, o último evento e o disco livre. VERAX_NODE_COMMIT é o commit instalado (o de
     // /etc/verax/images.env), obrigatório com NODE_STATUS=true. Sem as duas, nada muda (o nó da Verax).
@@ -746,6 +779,14 @@ const workerEnvObjectSchema = z
     checkPair(env, ['CREDENTIALS_PRIVATE_KEYS_FILE', 'CREDENTIALS_KEY_CURRENT'], ctx);
     checkPair(env, ['WAZUH_AGENTS_FILE', 'WAZUH_AGENTS_TENANT'], ctx);
     checkTogether(env, WAZUH_API_KEYS, ctx);
+    checkTogether(env, CELL_CHANNEL_KEYS, ctx);
+    if (env.NODE_MODE !== 'cell') {
+      for (const key of CELL_CHANNEL_KEYS) {
+        if (env[key] !== undefined) {
+          ctx.addIssue({ code: 'custom', path: [key], message: 'só existe com NODE_MODE=cell' });
+        }
+      }
+    }
     if (env.NODE_STATUS && env.VERAX_NODE_COMMIT === undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -781,6 +822,9 @@ const workerEnvObjectSchema = z
         WAZUH_API_URL,
         WAZUH_API_CA_FILE,
         WAZUH_STATS_PASSWORD,
+        CELL_ID,
+        CELL_COMMANDS_SUBSCRIPTION,
+        CELL_REPORTS_TOPIC,
         ...env
       },
       ctx,
@@ -803,7 +847,16 @@ const workerEnvObjectSchema = z
         WAZUH_API_URL !== undefined && WAZUH_API_CA_FILE !== undefined && WAZUH_STATS_PASSWORD !== undefined
           ? new WazuhApiConfig(WAZUH_API_URL, WAZUH_API_CA_FILE, WAZUH_STATS_PASSWORD)
           : null;
-      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus, wazuhApi };
+      // O canal da célula só existe com os três (o superRefine exige todos ou nenhum, e só na célula).
+      const cellChannel: CellChannelConfig | null =
+        CELL_ID !== undefined && CELL_COMMANDS_SUBSCRIPTION !== undefined && CELL_REPORTS_TOPIC !== undefined
+          ? {
+              cellId: CELL_ID,
+              commandsSubscription: CELL_COMMANDS_SUBSCRIPTION,
+              reportsTopic: CELL_REPORTS_TOPIC,
+            }
+          : null;
+      return { ...withDefaultPlan(env), credentialsKeyring, wazuhAgents, nodeStatus, wazuhApi, cellChannel };
     },
   );
 

@@ -7,6 +7,18 @@ import { AWS_CHECK_INTERVAL_MS, AwsCheck } from './aws/aws-check.js';
 import { type AwsConnectionChecker, UnavailableAwsConnectionChecker } from './aws/aws-connection-check.js';
 import type { WebIdentityCredentials } from './aws/web-identity.js';
 import { WAZUH_CONFIG_INTERVAL_MS, WazuhConfig } from './aws/wazuh-config.js';
+import { CELL_COMMANDS_INTERVAL_MS, CELL_COMMANDS_TASK, CellCommands } from './cell/cell-commands.js';
+import { CellReportOutbox } from './cell/cell-report-outbox.js';
+import {
+  CELL_REPORTS_INTERVAL_MS,
+  CELL_REPORTS_TASK,
+  CellReportPublisher,
+} from './cell/cell-report-publisher.js';
+import {
+  CELL_TENANT_STATUS_INTERVAL_MS,
+  CELL_TENANT_STATUS_TASK,
+  CellTenantStatusReporter,
+} from './cell/cell-tenant-status.js';
 import { CloudflareAuditSync } from './cloudflare/cloudflare-audit-sync.js';
 import { nodePlan, type WorkerEnv } from './common/config/env.schema.js';
 import { loadWorkerConfig } from './common/config/load-config.js';
@@ -15,7 +27,7 @@ import { buildPinoOptions } from './common/logger/logger.options.js';
 import { PrismaService } from './common/prisma/prisma.service.js';
 import { CREDENTIAL_REKEY_INTERVAL_MS, CredentialRekey } from './credentials/credential-rekey.js';
 import { GcpAuditSync } from './gcp/gcp-audit-sync.js';
-import { MetadataTokenProvider, PubsubRestReader } from './gcp/pubsub.client.js';
+import { MetadataTokenProvider, PubsubRestPublisher, PubsubRestReader } from './gcp/pubsub.client.js';
 import { IndexerClient } from './indexer/indexer.client.js';
 import { loadIndexerConfig } from './indexer/indexer.config.js';
 import { indexerSecretsFor } from './indexer/indexer-secrets.js';
@@ -140,6 +152,13 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * A tarefa `retention` (PR-19) é o expurgo diário do histórico no banco do nó, pelo prazo do plano de cada cliente
  * (CE-02: no nó dedicado, o `PLAN` e o `PLAN_HISTORY_DAYS`; na célula, o `TenantPlan`): confere a cada 15 min e roda
  * uma vez por dia, depois das 04:00 UTC, por no máximo 10 min.
+ *
+ * Na célula (`NODE_MODE=cell`, com `CELL_ID`, `CELL_COMMANDS_SUBSCRIPTION` e `CELL_REPORTS_TOPIC`), o canal com o plano
+ * de controle (CE-05): `cell-commands` (a cada 10 s) lê os comandos e aplica cada um numa transação, com o relatório na
+ * caixa de saída; `cell-reports` (a cada 10 s) publica a caixa de saída no tópico de relatórios; `cell-tenant-status`
+ * (a cada 5 min) relata as contas conectadas e o último evento de cada cliente. O token é o da VM, como o da GCP. A
+ * exportação e o expurgo (CE-16) e o aviso ao host do cliente novo (CE-04) ainda não estão ligados: os pedidos de
+ * exportação e expurgo voltam recusados (`export_unavailable`, `purge_unavailable`), depois das guardas.
  *
  * O pool do banco tem 10 conexões (`PrismaService`): uma por tarefa em curso, com folga para as transações.
  */
@@ -298,6 +317,47 @@ async function main(): Promise<void> {
         run: (signal) => rekey.runOnce(signal),
       });
     }
+    // Canal da célula com o plano de controle (CE-05): os comandos, a caixa de saída dos relatórios e o estado de cada
+    // cliente. O token é o da VM, que só lê a assinatura de comandos e só publica no tópico de relatórios desta célula.
+    if (config.cellChannel !== null) {
+      const channel = config.cellChannel;
+      const tokens = new MetadataTokenProvider();
+      const outbox = new CellReportOutbox(channel.cellId);
+      const commands = new CellCommands(prisma, {
+        cellId: channel.cellId,
+        subscription: channel.commandsSubscription,
+        reader: new PubsubRestReader(tokens),
+        outbox,
+        logger,
+      });
+      const publisher = new CellReportPublisher(
+        prisma,
+        new PubsubRestPublisher(tokens),
+        channel.reportsTopic,
+        logger,
+      );
+      const tenantStatus = new CellTenantStatusReporter(prisma, outbox);
+      tasks.push(
+        {
+          name: CELL_COMMANDS_TASK,
+          intervalMs: CELL_COMMANDS_INTERVAL_MS,
+          budgetMs: SYNC_BUDGET_MS,
+          run: (signal) => commands.runOnce(signal),
+        },
+        {
+          name: CELL_REPORTS_TASK,
+          intervalMs: CELL_REPORTS_INTERVAL_MS,
+          budgetMs: SYNC_BUDGET_MS,
+          run: (signal) => publisher.runOnce(signal),
+        },
+        {
+          name: CELL_TENANT_STATUS_TASK,
+          intervalMs: CELL_TENANT_STATUS_INTERVAL_MS,
+          budgetMs: SYNC_BUDGET_MS,
+          run: (signal) => tenantStatus.runOnce(signal),
+        },
+      );
+    }
     // Estado do nó nos guest attributes (nó de cliente): o worker é o único contêiner que alcança o servidor de
     // metadados.
     if (config.nodeStatus !== null) {
@@ -326,6 +386,8 @@ async function main(): Promise<void> {
       intervalSeconds: config.SYNC_INTERVAL_SECONDS,
       tasks: tasks.map((task) => task.name),
       nodeMode: config.NODE_MODE,
+      // Só o id da célula (null fora dela ou sem o canal), nunca a assinatura nem o tópico.
+      cellId: config.cellChannel?.cellId ?? null,
       // Na célula, o plano é de cada cliente: o do ambiente não vale.
       plan: config.NODE_MODE === 'cell' ? null : config.PLAN,
       // Só o tipo do transporte dos avisos, nunca o servidor, o usuário ou o remetente.
@@ -335,6 +397,12 @@ async function main(): Promise<void> {
     },
     'worker iniciado',
   );
+  if (config.NODE_MODE === 'cell' && config.cellChannel === null) {
+    logger.warn(
+      {},
+      'célula sem CELL_ID, CELL_COMMANDS_SUBSCRIPTION e CELL_REPORTS_TOPIC: o canal com o plano de controle fica desligado',
+    );
+  }
   await aws.start();
   scheduler.start();
   await stopRequested;

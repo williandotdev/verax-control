@@ -7,8 +7,9 @@ import type { Prisma } from '../generated/prisma/client.js';
 /**
  * Ciclo de vida da contratação no nó (CE-02): o espelho, em `Tenant.status`, dos estados que o plano de controle
  * decide (seção "Célula compartilhada (Plataforma)" de `docs/ARQUITETURA.md`). Na célula, quem chama é o comando do
- * plano de controle (CE-05); nenhuma rota da API chega aqui, e o cadastro de clientes (`admin_verax`) só mexe em
- * `active` e `inactive`, e nunca num cliente que está num estado do ciclo de vida.
+ * plano de controle (CE-05, `cell/cell-commands.ts`, pela `applyTenantLifecycleStatus`); nenhuma rota da API chega
+ * aqui, e o cadastro de clientes (`admin_verax`) só mexe em `active` e `inactive`, e nunca num cliente que está num
+ * estado do ciclo de vida.
  *
  * O que cada estado bloqueia já vale em todo o nó, sem depender de quem o gravou:
  * - login e sessão: só cliente `active` entra (`auth.factory.ts` e `session-validation.ts`), e o suspenso ouve a
@@ -77,26 +78,37 @@ export async function setTenantLifecycleStatus(
   to: TenantLifecycleTarget,
   options: { actorId?: string; audit?: AuditService } = {},
 ): Promise<LifecycleChange> {
+  return prisma.$transaction((tx) => applyTenantLifecycleStatus(tx, tenantId, to, options));
+}
+
+/**
+ * O mesmo que `setTenantLifecycleStatus`, dentro de uma transação aberta por quem chama: o comando da célula (CE-05)
+ * aplica o estado desejado inteiro, e o relatório dele, numa transação só. Um erro desfaz tudo junto.
+ */
+export async function applyTenantLifecycleStatus(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  to: TenantLifecycleTarget,
+  options: { actorId?: string; audit?: AuditService } = {},
+): Promise<LifecycleChange> {
   const audit = options.audit ?? new AuditService();
-  return prisma.$transaction(async (tx) => {
-    await lockTenantRow(tx, tenantId);
-    const { status: from } = await tx.tenant.findUniqueOrThrow({
-      where: { id: tenantId },
-      select: { status: true },
-    });
-    if (from === to) return { from, to, changed: false };
-    if (!LIFECYCLE_TRANSITIONS[from].includes(to)) throw new TenantTransitionRefused(from, to);
-    await tx.tenant.update({ where: { id: tenantId }, data: { status: to }, select: { id: true } });
-    if (to !== 'active') await revokeTenantAccess(tx, tenantId);
-    await audit.write(tx, {
-      actor: { type: 'system', tenantId, ...(options.actorId !== undefined && { id: options.actorId }) },
-      action: LIFECYCLE_ACTION[to],
-      outcome: 'success',
-      resourceType: 'tenant',
-      resourceId: tenantId,
-      before: { status: from },
-      after: { status: to },
-    });
-    return { from, to, changed: true };
+  await lockTenantRow(tx, tenantId);
+  const { status: from } = await tx.tenant.findUniqueOrThrow({
+    where: { id: tenantId },
+    select: { status: true },
   });
+  if (from === to) return { from, to, changed: false };
+  if (!LIFECYCLE_TRANSITIONS[from].includes(to)) throw new TenantTransitionRefused(from, to);
+  await tx.tenant.update({ where: { id: tenantId }, data: { status: to }, select: { id: true } });
+  if (to !== 'active') await revokeTenantAccess(tx, tenantId);
+  await audit.write(tx, {
+    actor: { type: 'system', tenantId, ...(options.actorId !== undefined && { id: options.actorId }) },
+    action: LIFECYCLE_ACTION[to],
+    outcome: 'success',
+    resourceType: 'tenant',
+    resourceId: tenantId,
+    before: { status: from },
+    after: { status: to },
+  });
+  return { from, to, changed: true };
 }
