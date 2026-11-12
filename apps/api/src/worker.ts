@@ -38,6 +38,13 @@ import {
   RETENTION_TASK,
   RetentionJob,
 } from './retention/retention-job.js';
+import {
+  AWS_VOLUME_BUDGET_MS,
+  AWS_VOLUME_TASK,
+  AWS_VOLUME_TICK_MS,
+  AwsVolumeAudit,
+  tenantAwsIdentityFor,
+} from './usage/aws-volume.js';
 import { WazuhStatsClient } from './usage/wazuh-stats.js';
 import { WAZUH_USAGE_INTERVAL_MS, WAZUH_USAGE_TASK, WazuhUsage } from './usage/wazuh-usage.js';
 import { type ScheduledTask, Scheduler } from './worker/scheduler.js';
@@ -132,7 +139,9 @@ async function awsConnectionSetup(config: Readonly<WorkerEnv>, logger: Logger): 
  * No nó com o Wazuh (`WAZUH_SIGNAL_DIR`), a tarefa `wazuh-config` (a cada 30 s) avisa o host quando as contas AWS que o
  * manager lê mudam e mostra nas contas o que o host devolve: a aplicação no manager e o token do Google. Com a API do
  * manager (`WAZUH_API_URL`, a CA e a senha do verax_stats), a tarefa `wazuh-usage` (a cada 5 min) mede o volume da AWS
- * pelos contadores do analysisd e acompanha a saúde da ingestão (a Torre e o aviso `aws_ingestion_stalled`).
+ * pelos contadores do analysisd e acompanha a saúde da ingestão (a Torre e o aviso `aws_ingestion_stalled`). Na célula
+ * (CE-09), o analysisd é só o contador do nó (a conferência), e a tarefa `aws-volume` mede o volume da AWS de cada
+ * cliente nos buckets dele, com a identidade dele (até o CE-11, sem identidade de cliente, não chama a AWS).
  *
  * No nó de cliente (`NODE_STATUS=true`, do modo cliente do node.conf), entra a tarefa `node-status`, que a cada 5 min
  * publica o estado do nó nos guest attributes da VM para o plano de controle.
@@ -269,6 +278,8 @@ async function main(): Promise<void> {
         password: config.wazuhApi.password(),
       });
       const usage = new WazuhUsage(prisma, stats, {
+        // Na célula (CE-09), o analysisd é só o contador do nó: o volume de cada cliente vem da medição na origem.
+        mode: config.NODE_MODE,
         logger,
         agentsTenantId: config.wazuhAgents?.tenantId ?? null,
       });
@@ -277,6 +288,25 @@ async function main(): Promise<void> {
         intervalMs: WAZUH_USAGE_INTERVAL_MS,
         budgetMs: SYNC_BUDGET_MS,
         run: (signal) => usage.runOnce(signal),
+      });
+    }
+
+    // Medição do volume da AWS na origem (CE-09), só na célula: cada cliente com a própria identidade. Até o CE-11, a
+    // célula não tem identidade de cliente nenhum, e a tarefa não chama a AWS (conta as contas em identityUnavailable).
+    // O cliente do S3 só é carregado aqui.
+    if (config.NODE_MODE === 'cell') {
+      const { sdkVolumeS3 } = await import('./usage/aws-volume-sdk.js');
+      const volume = new AwsVolumeAudit(
+        prisma,
+        tenantAwsIdentityFor(config.NODE_MODE, aws.credentials),
+        sdkVolumeS3,
+        { logger },
+      );
+      tasks.push({
+        name: AWS_VOLUME_TASK,
+        intervalMs: AWS_VOLUME_TICK_MS,
+        budgetMs: AWS_VOLUME_BUDGET_MS,
+        run: (signal) => volume.runOnce(signal),
       });
     }
 

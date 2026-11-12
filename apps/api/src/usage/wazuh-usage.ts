@@ -1,11 +1,12 @@
 import type { CloudAccountConnection } from '@verax/shared';
+import type { NodeMode } from '../common/config/env.schema.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import { scopeToTenant } from '../common/prisma/tenant-scope.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { enqueueNotices } from '../notifications/finding-notices.js';
 import { awsStallNotice } from '../notifications/ingestion-notices.js';
 import { awsLogsStalledSince, DEFAULT_TOWER_THRESHOLDS, type TowerThresholds } from '../tower/tower-rules.js';
-import { UsageMeter } from './usage-meter.js';
+import { UsageMeter, usageDay } from './usage-meter.js';
 import {
   type AnalysisdCounters,
   type AnalysisdStatsSource,
@@ -20,6 +21,8 @@ export const WAZUH_USAGE_TASK = 'wazuh-usage';
 export const WAZUH_COUNTER_ID = 'wazuh-analysisd';
 /** O único motivo de não medir uma leitura (CHECK da migration). */
 export const METER_BLOCKED_MULTIPLE_TENANTS = 'multiple_tenants';
+/** A métrica do nó por dia (`NodeUsageDay`) na célula: o volume do analysisd, sem cliente (CE-09). */
+export const NODE_USAGE_ANALYSISD = 'analysisd';
 
 /** A base guardada da leitura anterior. */
 export interface CounterBase {
@@ -114,9 +117,10 @@ export interface WazuhUsageReport {
   read: 'ok' | WazuhApiErrorKind;
   /**
    * `recorded` (somado ao cliente), `baseline` (só a base: a primeira leitura, ou a primeira depois de um intervalo
-   * ambíguo), `no_tenant` (nenhum cliente com conta AWS), `multiple_tenants` (ambíguo, não medido) ou `not_read`.
+   * ambíguo), `no_tenant` (nenhum cliente com conta AWS), `multiple_tenants` (ambíguo, não medido), `node` (na
+   * célula: somado só ao contador do nó, `NodeUsageDay`) ou `not_read`.
    */
-  meter: 'recorded' | 'baseline' | 'no_tenant' | 'multiple_tenants' | 'not_read';
+  meter: 'recorded' | 'baseline' | 'no_tenant' | 'multiple_tenants' | 'node' | 'not_read';
   restarted: boolean;
   bytes: number;
   events: number;
@@ -138,6 +142,11 @@ export interface WazuhUsageLogger {
 }
 
 export interface WazuhUsageOptions {
+  /**
+   * `dedicated` (o padrão): um cliente por nó, como no PR-V6. `cell` (CE-09): o volume do analysisd é só o contador do
+   * nó, para a conferência; o volume da AWS de cada cliente vem da medição na origem (`aws-volume.ts`).
+   */
+  mode?: NodeMode;
   now?: () => Date;
   logger?: WazuhUsageLogger;
   /** O cliente dos agentes do Wazuh do nó (WAZUH_AGENTS_TENANT), quando ligados. */
@@ -167,8 +176,16 @@ export interface WazuhUsageOptions {
  * falha, e a leitura seguinte a uma base ambígua também vira só a base: o volume de um intervalo em que havia mais de um
  * cliente nunca é cobrado de quem sobrar. A saúde de todo cliente que não é o dono de agora (ambíguo, sem conta AWS
  * ativa, ou que saiu do nó) é limpa: nada a afirmar, e uma conta que volte começa uma observação nova.
+ *
+ * No nó dedicado, a diferença também entra no volume por dia do cliente (`IngestUsageDay`, no dia de Brasília da
+ * leitura). **Na célula** (`mode: 'cell'`, CE-09), o analysisd é um só para todos os clientes e não separa o que leu:
+ * não há `multiple_tenants` nem dono, a diferença vai só para o contador do nó por dia (`NodeUsageDay`, métrica
+ * `analysisd`), que é a conferência do volume da AWS medido na origem de cada cliente (`aws-volume.ts`), e nada entra
+ * no uso de cliente nenhum. A saúde da AWS por cliente, na célula, sai da medição na origem (CE-13): até lá, a
+ * observação de todos fica limpa e nenhum aviso de parada sai daqui.
  */
 export class WazuhUsage {
+  private readonly mode: NodeMode;
   private readonly now: () => Date;
   private readonly logger: WazuhUsageLogger | undefined;
   private readonly agentsTenantId: string | null;
@@ -180,6 +197,7 @@ export class WazuhUsage {
     private readonly prisma: PrismaService,
     private readonly source: AnalysisdStatsSource,
     {
+      mode = 'dedicated',
       now = () => new Date(),
       logger,
       agentsTenantId = null,
@@ -188,6 +206,7 @@ export class WazuhUsage {
       counterId = WAZUH_COUNTER_ID,
     }: WazuhUsageOptions = {},
   ) {
+    this.mode = mode;
     this.now = now;
     this.logger = logger;
     this.agentsTenantId = agentsTenantId;
@@ -197,6 +216,7 @@ export class WazuhUsage {
   }
 
   async runOnce(signal: AbortSignal = new AbortController().signal): Promise<WazuhUsageReport> {
+    if (this.mode === 'cell') return this.runInCell(signal);
     // Busca de sistema, entre todos os clientes do nó: quem tem conta AWS ativa, e se está conectada.
     const accounts = await this.prisma.cloudAccount.findMany({
       where: {
@@ -245,6 +265,8 @@ export class WazuhUsage {
         if (owner.kind === 'single' && chargeable(delta)) {
           const meter = new UsageMeter();
           meter.add(owner.tenantId, 'aws', delta.bytes, delta.events, now);
+          // O volume por dia (CE-09): o analysisd não diz quando o log foi criado, então conta no dia da leitura.
+          meter.addDaily(owner.tenantId, 'aws', delta.bytes, delta.events, now);
           await meter.flushIn(tx);
           report.bytes = delta.bytes;
           report.events = delta.events;
@@ -263,6 +285,62 @@ export class WazuhUsage {
         report.health = health.state;
         report.stallNotices = health.notices;
       }
+      return report;
+    });
+  }
+
+  /**
+   * Na célula (CE-09): lê os contadores, grava a base (sem dono e sem ambiguidade: a célula tem vários clientes por
+   * natureza) e soma a diferença ao contador do nó do dia. A base ambígua de antes (de quando o nó era dedicado) vira só
+   * a base, como sempre. Nenhum uso de cliente é gravado aqui, e a saúde da AWS de todos fica limpa.
+   */
+  private async runInCell(signal: AbortSignal): Promise<WazuhUsageReport> {
+    const base = await this.prisma.wazuhCounter.findUnique({ where: { id: this.counterId } });
+    let counters: AnalysisdCounters | null = null;
+    let read: WazuhUsageReport['read'] = 'ok';
+    try {
+      counters = await this.source.read(signal);
+    } catch (error) {
+      if (signal.aborted || !(error instanceof WazuhApiError)) throw error;
+      read = error.kind;
+      this.logger?.warn({ kind: error.kind }, 'medidor do Wazuh: os contadores do analysisd não foram lidos');
+    }
+    signal.throwIfAborted();
+    const now = this.now();
+    return this.prisma.$transaction(async (tx) => {
+      const report: WazuhUsageReport = {
+        read,
+        meter: 'not_read',
+        restarted: false,
+        bytes: 0,
+        events: 0,
+        health: 'not_evaluated',
+        stallNotices: 0,
+      };
+      if (counters !== null) {
+        const delta = await this.saveBase(tx, base, counters, { kind: 'none' }, now);
+        report.restarted = delta.restarted;
+        report.meter = chargeable(delta) ? 'node' : 'baseline';
+        if (chargeable(delta) && (delta.bytes > 0 || delta.events > 0)) {
+          const day = usageDay(now);
+          await tx.nodeUsageDay.upsert({
+            where: { day_metric: { day, metric: NODE_USAGE_ANALYSISD } },
+            create: {
+              day,
+              metric: NODE_USAGE_ANALYSISD,
+              bytes: BigInt(delta.bytes),
+              events: BigInt(delta.events),
+            },
+            update: {
+              bytes: { increment: BigInt(delta.bytes) },
+              events: { increment: BigInt(delta.events) },
+            },
+          });
+          report.bytes = delta.bytes;
+          report.events = delta.events;
+        }
+      }
+      await this.clearHealthOfOthers(tx, { kind: 'none' });
       return report;
     });
   }

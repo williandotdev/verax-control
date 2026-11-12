@@ -1,6 +1,15 @@
-import { GIB_BYTES } from '@verax/shared';
+import { GB_BYTES, GIB_BYTES } from '@verax/shared';
 import { describe, expect, it } from 'vitest';
-import { formatPercent, formatUsageMonth, formatVolume } from './plan-format';
+import {
+  formatCycle,
+  formatGb,
+  formatGbPerDay,
+  formatOverage,
+  formatPercent,
+  formatShortDay,
+  formatUsageMonth,
+  formatVolume,
+} from './plan-format';
 
 describe('textos de "Plano e uso"', () => {
   it('volume em GiB com uma casa; pouco volume em MiB, para o começo do mês não virar "0 GiB"', () => {
@@ -22,5 +31,19 @@ describe('textos de "Plano e uso"', () => {
   it('mês do uso por extenso', () => {
     expect(formatUsageMonth('2026-11')).toBe('novembro de 2026');
     expect(formatUsageMonth('2027-01')).toBe('janeiro de 2027');
+  });
+
+  it('franquia (CE-10): GB de 10⁹ bytes para baixo, excedente em centésimos de GB/dia, o ciclo por extenso', () => {
+    expect(formatGb(0)).toBe('0 GB');
+    expect(formatGb(3.56 * GB_BYTES)).toBe('3,5 GB');
+    expect(formatGb(GIB_BYTES)).toBe('1 GB');
+    expect(formatGb(1500 * GB_BYTES)).toBe('1.500 GB');
+    expect(formatGb(42 * 1_000_000)).toBe('42 MB');
+    expect(formatGb(999)).toBe('menos de 1 MB');
+    expect(formatGbPerDay(2.25 * GB_BYTES)).toBe('2,2 GB/dia');
+    expect(formatOverage(33)).toBe('0,33 GB/dia');
+    expect(formatOverage(100)).toBe('1,00 GB/dia');
+    expect(formatCycle('2026-11-01', '2026-11-30')).toBe('1º a 30 de novembro');
+    expect(formatShortDay('2026-11-05')).toBe('05/11');
   });
 });

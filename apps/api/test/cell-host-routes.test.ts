@@ -24,6 +24,13 @@ const A = uniqueSlug('rotas');
 const HEALTH_PATHS = new Set(['/health', '/health/ready']);
 /** A resposta de toda rota num endereço desconhecido: o 404 genérico, igual ao de uma rota que não existe. */
 const NOT_FOUND = { statusCode: 404, error: 'Not Found', message: 'Recurso não encontrado' };
+/**
+ * O IP de quem chama na varredura (TEST-NET-2, um por execução) e o e-mail do corpo das escritas: as contagens de
+ * tentativa e de limite olham só para eles. O banco de teste é dividido com arquivos que rodam em paralelo e fazem
+ * login de verdade, então uma contagem da tabela inteira pode subir sem nada desta varredura.
+ */
+const CLIENT_IP = `198.51.100.${1 + Math.floor(Math.random() * 254)}`;
+const PROBE_EMAIL = 'x@cliente.example';
 
 /**
  * Meta-teste da célula (CE-01), no estilo do de contratos de rota: varre todas as rotas que o Express atende e prova que
@@ -36,7 +43,12 @@ describe('célula: toda rota atrás do endereço do cliente (CE-01)', () => {
   let session: { cookie: string; token: string };
 
   beforeAll(async () => {
-    app = await createApp({ cell: testCell(), imports: [ProbeModule] });
+    app = await createApp({
+      cell: testCell(),
+      imports: [ProbeModule],
+      trustProxyHops: 1,
+      authRateLimit: true,
+    });
     // Um servidor só, escutando, para as centenas de requisições da varredura (sem um `listen` por requisição).
     await app.listen(0, '127.0.0.1');
     prisma = app.get(PrismaService);
@@ -59,8 +71,8 @@ describe('célula: toda rota atrás do endereço do cliente (CE-01)', () => {
 
   it('endereço sem cliente: toda rota responde 404, sem CORS e antes de sessão, login ou CSRF', async () => {
     const server = app.getHttpServer();
-    const attemptsBefore = await prisma.loginAttempt.count();
-    const rateLimitBefore = await prisma.rateLimit.count();
+    const attemptsBefore = await prisma.loginAttempt.count({ where: { email: PROBE_EMAIL } });
+    const rateLimitBefore = await prisma.rateLimit.count({ where: { key: { contains: CLIENT_IP } } });
     const unexpected: string[] = [];
     // Um endereço bem formado, sem cliente: a sessão válida de A (cookie, token CSRF e origem do painel de A) não ajuda.
     const host = apiHostOf(uniqueSlug('sem-cliente'));
@@ -68,12 +80,13 @@ describe('célula: toda rota atrás do endereço do cliente (CE-01)', () => {
       const agent = request(server);
       const call = agent[method](fillPath(path, randomUUID()))
         .set('Host', host)
+        .set('X-Forwarded-For', CLIENT_IP)
         .set('Origin', panelOf(A))
         .set('Cookie', session.cookie)
         .set('X-CSRF-Token', session.token);
       let response: request.Response;
       try {
-        response = await (method === 'get' ? call : call.send({ email: 'x@cliente.example', password: 'x' }));
+        response = await (method === 'get' ? call : call.send({ email: PROBE_EMAIL, password: 'x' }));
       } catch (error) {
         unexpected.push(`${method.toUpperCase()} ${path}: ${(error as Error).message}`);
         continue;
@@ -93,8 +106,18 @@ describe('célula: toda rota atrás do endereço do cliente (CE-01)', () => {
     }
     expect(unexpected).toEqual([]);
     // Nem o login no endereço desconhecido gastou tentativa da conta ou do IP: o 404 vem antes.
-    expect(await prisma.loginAttempt.count()).toBe(attemptsBefore);
-    expect(await prisma.rateLimit.count()).toBe(rateLimitBefore);
+    expect(await prisma.loginAttempt.count({ where: { email: PROBE_EMAIL } })).toBe(attemptsBefore);
+    expect(await prisma.rateLimit.count({ where: { key: { contains: CLIENT_IP } } })).toBe(rateLimitBefore);
+    // Prova de que a contagem enxerga este IP: o mesmo login no endereço de A (que existe) passa pelo limite e grava.
+    await request(server)
+      .post('/v1/auth/sign-in/email')
+      .set('Host', apiHostOf(A))
+      .set('X-Forwarded-For', CLIENT_IP)
+      .set('Origin', panelOf(A))
+      .send({ email: PROBE_EMAIL, password: 'x' });
+    expect(await prisma.rateLimit.count({ where: { key: { contains: CLIENT_IP } } })).toBeGreaterThan(
+      rateLimitBefore,
+    );
   });
 
   it.each([
