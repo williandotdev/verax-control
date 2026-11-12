@@ -84,6 +84,12 @@ interface RunContext {
   newest: Date | null;
 }
 
+/** O instante do volume por dia: o `publishTime` da mensagem; sem ele (ou fora do formato), o da leitura. */
+export function publishedAt(message: Pick<PubsubMessage, 'publishTime'>, now: Date): Date {
+  const at = message.publishTime === undefined ? Number.NaN : Date.parse(message.publishTime);
+  return Number.isNaN(at) ? now : new Date(at);
+}
+
 function unownedRecord(
   sourceEventId: string,
   reason: UnownedRecord['reason'],
@@ -116,7 +122,8 @@ function unownedRecord(
  * 5. depois do ack, grava o volume lido no medidor de uso (`IngestUsage`, fonte `gcp`): o `data` de toda mensagem do
  *    lote, inclusive a inválida, a sem dono e a que nenhuma regra acusa, para o cliente da assinatura. A assinatura
  *    cadastrada em mais de um cliente não conta para nenhum. O lote que falha antes do ack não conta: volta pelo
- *    Pub/Sub e é medido quando for confirmado.
+ *    Pub/Sub e é medido quando for confirmado. O mesmo volume entra no dia de Brasília do `publishTime` de cada
+ *    mensagem (`IngestUsageDay`, CE-09: a franquia da Plataforma), e não no da leitura.
  *
  * A leitura de cada assinatura também dá o estado da conexão das contas que a usam:
  * - lida sem erro, todas ganham a hora da coleta e perdem o erro. Só fica `connected` a conta que já recebeu evento:
@@ -305,7 +312,12 @@ export class GcpAuditSync {
       const usage = new UsageMeter();
       for (const message of messages) {
         context.report.read += 1;
-        if (owner) usage.add(owner, 'gcp', base64Bytes(message.data), 1, context.now);
+        if (owner) {
+          const bytes = base64Bytes(message.data);
+          usage.add(owner, 'gcp', bytes, 1, context.now);
+          // A franquia por dia (CE-09) conta no dia em que o Pub/Sub recebeu a mensagem, não no da leitura.
+          usage.addDaily(owner, 'gcp', bytes, 1, publishedAt(message, context.now));
+        }
         await this.process(message, group, context);
       }
       // Confirma só o que já foi gravado.

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { franchiseUsageSchema } from './franchise.js';
 import { type PlanLimitKey, resolvedPlanSchema } from './plans.js';
 
 /**
@@ -60,6 +61,11 @@ export const planUsageSchema = z.strictObject({
     /** Bytes lidos no mês, somadas todas as fontes. */
     monthlyBytes: z.number().int().min(0),
   }),
+  /**
+   * O contador da franquia em GB/dia (CE-10): só quando o plano do cliente tem franquia (a Plataforma, na célula).
+   * Ausente nos outros planos.
+   */
+  franchise: franchiseUsageSchema.optional(),
 });
 export type PlanUsage = z.infer<typeof planUsageSchema>;
 
