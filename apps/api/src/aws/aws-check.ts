@@ -197,7 +197,9 @@ function countFailure(
  * - Um erro que pode passar (`retryable`) deixa o pedido pendente até `AWS_CHECK_RETRY_WINDOW_MS` depois do pedido,
  *   com as tentativas espaçadas (`awsCheckRetryDelayMs`).
  * - Na primeira verificação bem-sucedida, grava `ingestFrom` (o dia anterior), uma vez só: é o `only_logs_after` que o
- *   gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do bucket.
+ *   gerador da configuração do Wazuh usa (PR-V4'), para o nó não ler o histórico inteiro do bucket. Junto, grava
+ *   `meteredFrom` (o instante da verificação): o volume da AWS medido na origem (`usage/aws-volume.ts`, CE-09) só conta
+ *   os objetos criados a partir dele.
  * - Uma exceção da conferência (não um resultado) conta como `check_unavailable` que pode passar; o sinal do agendador
  *   (parada do worker, orçamento) interrompe a execução.
  *
@@ -390,12 +392,13 @@ export class AwsCheck {
       });
       if (count === 0) return 'stale';
       const connected = state.connection === 'connected';
-      // A primeira verificação bem-sucedida marca de onde o Wazuh começa a ler. Só uma vez: a linha está presa pela
-      // gravação acima até o fim da transação.
+      // A primeira verificação bem-sucedida marca de onde o Wazuh começa a ler e, no mesmo instante, de onde o volume
+      // medido na origem começa a contar (CE-09: o histórico anterior nunca é cobrado). Só uma vez: a linha está presa
+      // pela gravação acima até o fim da transação.
       if (connected) {
         await db.cloudAccount.updateMany({
           where: { id: row.id, ingestFrom: null },
-          data: { ingestFrom: ingestDayFor(now) },
+          data: { ingestFrom: ingestDayFor(now), meteredFrom: now },
         });
       }
       const after = await db.cloudAccount.findUniqueOrThrow({

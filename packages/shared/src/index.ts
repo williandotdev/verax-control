@@ -24,4 +24,5 @@ export * from './session.js';
 export * from './tenants.js';
 export * from './tower.js';
 export * from './unowned-alerts.js';
+export * from './usage-day.js';
 export * from './users.js';

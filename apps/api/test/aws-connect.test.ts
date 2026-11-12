@@ -81,6 +81,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         connectionError: true,
         checkRequestedAt: true,
         ingestFrom: true,
+        meteredFrom: true,
         status: true,
       },
     });
@@ -316,6 +317,8 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
         connectionError: null,
         checkRequestedAt: null,
         ingestFrom: ingestDayFor(now),
+        // O volume medido na origem (CE-09) conta a partir do instante da primeira verificação.
+        meteredFrom: now,
       });
       const read = cloudAccountSchema.parse(
         (await get(adminA, `/v1/cloud-accounts/${account.id}`).expect(200)).body,
@@ -343,6 +346,7 @@ describe('Conectar AWS: papel de leitura sem chave, "Verificar" e a tarefa aws-c
       expect(await rowOf(account.id)).toMatchObject({
         connection: 'connected',
         ingestFrom: ingestDayFor(now),
+        meteredFrom: now,
       });
     });
 
