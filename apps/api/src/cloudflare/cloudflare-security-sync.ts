@@ -195,7 +195,9 @@ const NO_ACCESS: ZoneLimits = { enabled: false, maxDuration: 0, maxPageSize: 0, 
  * 5. **Orçamento:** cada zona de cada nó conta uma consulta, e o token gasta no máximo 250 a cada 5 min (o Cloudflare
  *    permite 300). O gasto é gravado antes de cada consulta; sem orçamento, a execução para e marca a próxima leitura
  *    para quando ele voltar.
- * 6. **Medidor:** os bytes de cada resposta entram no uso do cliente (`cloudflare`), depois de o cursor avançar.
+ * 6. **Medidor:** os bytes de cada resposta entram no uso do mês do cliente (`cloudflare`), depois de o cursor avançar.
+ *    Só no mês (`add`), nunca no volume por dia da franquia (`addDaily`, CE-09): as respostas são agregados do tamanho
+ *    da consulta da Verax, não o volume do cliente.
  *
  * O 429 (do HTTP ou a mensagem de orçamento esgotado do GraphQL) esvazia o orçamento e adia este fluxo; quem chama
  * adia também a auditoria e a conferência (o limite é do token inteiro). O 401 para a coleta, como na auditoria.

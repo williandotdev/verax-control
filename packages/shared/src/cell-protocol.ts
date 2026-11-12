@@ -5,6 +5,7 @@ import {
   SINK_WRITER_IDENTITY_PATTERN,
 } from './cloud-accounts.js';
 import { FRANCHISE_GB_PER_DAY_BOUNDS, tenantPlanProblems, tenantPlanSchema } from './plans.js';
+import { usageDailyReportSchema } from './usage-day.js';
 
 /**
  * O canal entre o plano de controle e a célula compartilhada (CE-05 e CE-06; `docs/ARQUITETURA.md`, "Canal entre o
@@ -369,27 +370,16 @@ export const tenantStatusReportSchema = z.strictObject({
   lastEventAt: instantSchema.nullable(),
 });
 
-const usageSourceSchema = z.strictObject({
-  bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-  events: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-});
-
 /**
- * O volume de um dia de Brasília, por fonte (§4, "Relatórios e fechamento"), em bytes descomprimidos. Os valores são
- * absolutos (o dia inteiro até agora), então reenviar é idempotente. `final` só depois das 06:00 de D+1; depois dele, uma
- * correção é registrada, mas não cobrada.
+ * O volume de um dia de Brasília, por fonte (§4, "Relatórios e fechamento"): o `usageDailyReportSchema` do CE-09
+ * (`usage-day.ts`, a única definição do corpo: o dia, as três fontes com bytes e registros, e o `final`), com o envelope
+ * do canal e o id do cliente do plano de controle no lugar do id do banco da célula. Os valores são absolutos (o dia
+ * inteiro até agora), então reenviar é idempotente; depois do `final`, uma correção é registrada, mas não cobrada.
  */
-export const usageDailyReportSchema = z.strictObject({
+export const cellUsageDailyReportSchema = usageDailyReportSchema.omit({ tenantId: true }).extend({
   ...reportEnvelope,
   kind: z.literal('usage.daily'),
   tenantId: cellTenantIdSchema,
-  day: cellDaySchema,
-  final: z.boolean(),
-  sources: z.strictObject({
-    aws: usageSourceSchema.optional(),
-    gcp: usageSourceSchema.optional(),
-    cloudflare: usageSourceSchema.optional(),
-  }),
 });
 
 /** A exportação pedida está no bucket de exportações da célula. */
@@ -495,7 +485,7 @@ export const commandRefusedReportSchema = z.strictObject({
 export const cellReportSchema = z.discriminatedUnion('kind', [
   tenantAppliedReportSchema,
   tenantStatusReportSchema,
-  usageDailyReportSchema,
+  cellUsageDailyReportSchema,
   exportReadyReportSchema,
   tenantPurgedReportSchema,
   franchiseRequestedReportSchema,

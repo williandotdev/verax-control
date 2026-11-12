@@ -24,7 +24,7 @@ import {
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
 import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
-import { UsageMeter } from '../usage/usage-meter.js';
+import { UsageMeter, utf8Bytes } from '../usage/usage-meter.js';
 import { cloudflareEventId, invalidEntryId, isCloudflareAccountId, parseAuditEntry } from './audit-entry.js';
 import { CloudflareApiError, CloudflareClient } from './cloudflare.client.js';
 import { detect, toCloudflareFindingDraft } from './cloudflare-rules.js';
@@ -258,7 +258,9 @@ function decodeContinuation(text: string | null): AuditWindow | null {
  *    outra conta (`account.id` diferente) também (`source_mismatch`). A da conta vira atividade dela (`lastEventAt`)
  *    e, se uma regra casa, achado do cliente da conta, com a exceção e o incidente na mesma transação. A chave
  *    `cf/<conta>/<id>` é única: reler a sobreposição não duplica.
- * 5. Depois de avançar o cursor, o volume lido (os bytes de cada página) vai para o medidor de uso (`cloudflare`).
+ * 5. Depois de avançar o cursor, o volume lido (os bytes de cada página) vai para o medidor de uso (`cloudflare`). O
+ *    volume por dia da franquia (CE-09) é o de cada entrada (`utf8Bytes` do JSON dela, inválida ou de outra zona
+ *    também: foi lida com o token do cliente), no dia de Brasília do horário dela (sem horário, no da leitura).
  * 6. **Eventos de segurança** (fluxo `cloudflare_security`, PR-13, em `CloudflareSecurityEvents`): as janelas de
  *    15 min das zonas pelo GraphQL, com o mesmo token, depois da auditoria (uma falha passageira dela não os impede).
  *
@@ -736,6 +738,7 @@ export class CloudflareAuditSync {
       usage.add(account.tenantId, 'cloudflare', page.bytes, page.entries.length, now);
       for (const raw of page.entries) {
         const at = await this.process(raw, account, context);
+        usage.addDaily(account.tenantId, 'cloudflare', utf8Bytes(JSON.stringify(raw)), 1, at ?? now);
         if (at !== null && (newest === null || at > newest)) newest = at;
       }
       await this.lease.renew();

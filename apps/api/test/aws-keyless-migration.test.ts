@@ -79,6 +79,8 @@ describe(`migration ${MIGRATION}`, () => {
         // O do aviso da coleta pelo Wazuh do nó (PR-V4', migration 20261109130000_aws_collection_error).
         'CloudAccount_aws_collection_error_check',
         'CloudAccount_gcp_sinkWriterIdentity_check',
+        // O do início da medição da AWS na origem (CE-09, migration 20261111120000_ingest_usage_day).
+        'CloudAccount_metered_from_check',
       ]);
       expect(await enumValues(client, 'CloudCredentialKind')).toEqual(['cloudflare_api_token']);
       const leftovers = await client.query(

@@ -32,6 +32,7 @@ import { CellReportOutbox } from '../src/cell/cell-report-outbox.js';
 import { CELL_REPORT_RETRY_MS, CellReportPublisher } from '../src/cell/cell-report-publisher.js';
 import { readCellTenantState, recordTenantExport } from '../src/cell/cell-tenant-state.js';
 import { CellTenantStatusReporter } from '../src/cell/cell-tenant-status.js';
+import { CellUsageReports } from '../src/cell/cell-usage-reports.js';
 import {
   CellTenantBootstraps,
   FileTenantBootstrapSignal,
@@ -703,6 +704,63 @@ describe('canal da célula, lado do nó (CE-05)', () => {
     });
   });
 
+  describe('usage.daily pela caixa de saída (CE-09)', () => {
+    it('hoje e ontem de cada cliente do canal, só quando mudou, e ontem de novo quando fecha', async () => {
+      const { controlPlaneId, tenantId } = await cellTenant();
+      // 12:00 de Brasília (15:00 UTC) do dia 11: hoje é 11 (provisório) e ontem é 10, que fechou às 06:00 do dia 11.
+      const noon = new Date('2026-11-11T15:00:00.000Z');
+      await prisma.ingestUsageDay.createMany({
+        data: [
+          { tenantId, day: new Date('2026-11-10T00:00:00Z'), source: 'gcp', bytes: 5_000n, events: 5n },
+          { tenantId, day: new Date('2026-11-11T00:00:00Z'), source: 'aws', bytes: 1_000n, events: 2n },
+        ],
+      });
+      const usageOf = async () =>
+        (await reportsOf(controlPlaneId)).filter((report) => report.kind === 'usage.daily');
+
+      await new CellUsageReports(prisma, outbox, () => noon).runOnce();
+      expect(await usageOf()).toMatchObject([
+        {
+          day: '2026-11-10',
+          final: true,
+          sources: {
+            aws: { bytes: 0, events: 0 },
+            gcp: { bytes: 5000, events: 5 },
+            cloudflare: { bytes: 0, events: 0 },
+          },
+        },
+        { day: '2026-11-11', final: false, sources: { aws: { bytes: 1000, events: 2 } } },
+      ]);
+
+      // Nada mudou: nenhuma linha nova (os valores são absolutos; reenviar não somaria nada, mas também não é preciso).
+      await new CellUsageReports(prisma, outbox, () => new Date(noon.getTime() + 3_600_000)).runOnce();
+      expect(await usageOf()).toHaveLength(2);
+
+      // Hoje cresceu: sai só hoje, com o total do dia.
+      await prisma.ingestUsageDay.update({
+        where: { tenantId_day_source: { tenantId, day: new Date('2026-11-11T00:00:00Z'), source: 'aws' } },
+        data: { bytes: 3_000n, events: 4n },
+      });
+      await new CellUsageReports(prisma, outbox, () => new Date(noon.getTime() + 7_200_000)).runOnce();
+      const afterGrowth = await usageOf();
+      expect(afterGrowth).toHaveLength(3);
+      expect(afterGrowth[2]).toMatchObject({
+        day: '2026-11-11',
+        final: false,
+        sources: { aws: { bytes: 3000, events: 4 } },
+      });
+
+      // 06:00 de Brasília do dia 12: o dia 11 fecha e sai de novo, final; o dia 12 começa vazio.
+      const closing = new Date('2026-11-12T09:00:00.000Z');
+      await new CellUsageReports(prisma, outbox, () => closing).runOnce();
+      const closed = (await usageOf()).slice(3);
+      expect(closed).toMatchObject([
+        { day: '2026-11-11', final: true, sources: { aws: { bytes: 3000, events: 4 } } },
+        { day: '2026-11-12', final: false, sources: { aws: { bytes: 0, events: 0 } } },
+      ]);
+    });
+  });
+
   describe('tenant.collection_pause', () => {
     it('a pausa tira as contas do cliente da coleta, sem mudar o estado; retomar as devolve', async () => {
       const { controlPlaneId, tenantId } = await cellTenant();
@@ -836,6 +894,11 @@ describe('canal da célula, lado do nó (CE-05)', () => {
         { kind: 'tenant.status', accountsConnected: 0, lastEventAt: null },
       ]);
 
+      // Os relatórios dos outros testes deste arquivo saem da frente (a falha para no primeiro lote de 100).
+      await prisma.cellReport.updateMany({
+        where: { publishedAt: null, id: { notIn: ours } },
+        data: { publishedAt: new Date() },
+      });
       const publisher = new MemoryPublisher();
       publisher.fail = true;
       const now = new Date();

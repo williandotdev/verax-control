@@ -199,7 +199,11 @@ describe('contrato do canal da célula (CE-05)', () => {
           tenantId: TENANT,
           day: '2026-11-10',
           final: true,
-          sources: { aws: { bytes: 1_000_000, events: 900 }, gcp: { bytes: 0, events: 0 } },
+          sources: {
+            aws: { bytes: 1_000_000, events: 900 },
+            gcp: { bytes: 0, events: 0 },
+            cloudflare: { bytes: 0, events: 0 },
+          },
         },
         {
           ...envelope,
@@ -260,6 +264,25 @@ describe('contrato do canal da célula (CE-05)', () => {
         reason: 'invalid',
       });
       expect(parseCellReportJson(json({ ...applied, kind: 'tenant.deleted' }))).toMatchObject({ ok: false });
+      // O usage.daily é o corpo do CE-09 (todas as fontes, estrito) com o envelope do canal.
+      const usage = {
+        ...envelope,
+        kind: 'usage.daily',
+        tenantId: TENANT,
+        day: '2026-11-10',
+        final: false,
+        sources: {
+          aws: { bytes: 1, events: 1 },
+          gcp: { bytes: 0, events: 0 },
+          cloudflare: { bytes: 0, events: 0 },
+        },
+      };
+      expect(cellReportSchema.safeParse(usage).success).toBe(true);
+      expect(cellReportSchema.safeParse({ ...usage, extra: 1 }).success).toBe(false);
+      expect(cellReportSchema.safeParse({ ...usage, sources: { aws: usage.sources.aws } }).success).toBe(
+        false,
+      );
+      expect(cellReportSchema.safeParse({ ...usage, day: '2026-02-30' }).success).toBe(false);
       expect(
         cellReportSchema.safeParse({
           ...envelope,

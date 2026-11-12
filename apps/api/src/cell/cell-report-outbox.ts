@@ -25,8 +25,9 @@ export type CellTenantReportBody = CellReportBody extends infer B
  * (`CellReportPublisher`). Se a transação desfaz, o relatório some junto; se a publicação falha, ele fica e sai na
  * próxima. O plano de controle ignora a repetição pelo `reportId`.
  *
- * É a porta de entrada dos relatórios para as outras partes da célula: a medição (CE-09) grava o `usage.daily` com
- * `enqueueForTenant`, e o pedido de franquia (CE-19) e o de tópico da GCP (CE-08), do mesmo jeito.
+ * É a porta de entrada dos relatórios para as outras partes da célula: o `usage.daily` da medição (CE-09) entra pela
+ * tarefa `cell-usage-reports`, e o pedido de franquia (CE-19) e o de tópico da GCP (CE-08) entram com
+ * `enqueueForTenant`, na transação de quem pede.
  */
 export class CellReportOutbox {
   constructor(

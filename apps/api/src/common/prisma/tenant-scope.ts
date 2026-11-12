@@ -17,6 +17,9 @@ export const TENANT_SCOPED_MODELS = [
   'postureFailure',
   'inventorySnapshot',
   'ingestUsage',
+  // Volume por dia (CE-09). Só o sistema grava (`SYSTEM_WRITTEN_MODELS`).
+  'ingestUsageDay',
+  'awsVolumeObject',
   'ingestHealth',
   'cloudCredential',
   'wazuhAgent',
@@ -42,9 +45,11 @@ const SCOPED = new Set<string>(TENANT_SCOPED_MODELS);
  * Models de cliente que só o sistema grava: o endereço do cliente na célula (CE-01, `tenants/tenant-host.ts`: uma escrita
  * pelo escopo poderia levar o endereço de um cliente para outro lugar), o plano do cliente (CE-02, `TenantPlan`, do
  * `node.conf` ou do plano de controle), o estado do expurgo dele e, na célula (CE-05), o que o canal do plano de controle
- * gravou e a conta de serviço do cliente (`TenantCloudIdentity`, de onde sai o token que lê a AWS dele). No escopo do
- * cliente, só a leitura passa; a gravação é recusada mesmo que um service a tente, e quem grava usa o cliente base, fora
- * do escopo (`tenants/tenant-host.ts`, `plan/tenant-plan.ts`, `retention/`, `cell/`).
+ * gravou e a conta de serviço do cliente (`TenantCloudIdentity`, de onde sai o token que lê a AWS dele). O volume por dia
+ * (CE-09) também: é a base da cobrança da franquia, e só os coletores e a tarefa `aws-volume` o gravam
+ * (`usage/usage-meter.ts`, `usage/aws-volume.ts`). No escopo do cliente, só a leitura passa; a gravação é recusada mesmo
+ * que um service a tente, e quem grava usa o cliente base, fora do escopo (`tenants/tenant-host.ts`,
+ * `plan/tenant-plan.ts`, `retention/`, `cell/`, `usage/`).
  */
 export const SYSTEM_WRITTEN_MODELS = [
   'tenantHost',
@@ -53,6 +58,8 @@ export const SYSTEM_WRITTEN_MODELS = [
   'cellTenantState',
   'tenantCloudIdentity',
   'cellTenantBootstrap',
+  'ingestUsageDay',
+  'awsVolumeObject',
 ] as const;
 const SYSTEM_WRITTEN = new Set<string>(SYSTEM_WRITTEN_MODELS);
 const READ_OPERATIONS = new Set([

@@ -123,6 +123,9 @@ model Tenant {
   postureFailures          PostureFailure[]
   inventorySnapshots       InventorySnapshot[]
   ingestUsage              IngestUsage[]
+  /// Volume por dia (CE-09) e o registro dos objetos da AWS já medidos na origem.
+  ingestUsageDays          IngestUsageDay[]
+  awsVolumeObjects         AwsVolumeObject[]
   ingestHealth             IngestHealth[]
   cloudCredentials         CloudCredential[]
   wazuhAgents              WazuhAgent[]
@@ -346,10 +349,15 @@ model CloudAccount {
   /// bem-sucedida, menos um dia. Gravado uma vez só, pelo worker; sem ele, o Wazuh leria todo o histórico do bucket.
   /// Só conta AWS (CHECK da migration).
   ingestFrom         DateTime?              @db.Date
+  /// AWS: o momento da primeira verificação bem-sucedida (CE-09), gravado uma vez só, junto com `ingestFrom`: o volume
+  /// medido na origem (tarefa `aws-volume`) só conta objetos criados a partir dele, e o histórico anterior nunca é
+  /// cobrado. Só conta AWS (CHECK da migration).
+  meteredFrom        DateTime?              @db.Timestamptz(3)
   status             CloudAccountStatus     @default(active)
   createdAt          DateTime               @default(now()) @db.Timestamptz(3)
   updatedAt          DateTime               @updatedAt @db.Timestamptz(3)
   cursors            CollectorCursor[]
+  volumeObjects      AwsVolumeObject[]
   credential         CloudCredential?
 
   @@unique([provider, accountId])
@@ -812,6 +820,63 @@ model IngestUsage {
 /// `src/usage/wazuh-usage.ts`): a base da diferença que o medidor soma na leitura seguinte. Uma linha (`id` =
 /// `wazuh-analysisd`). Dado de sistema, sem `tenantId`: o contador é do nó inteiro (o analysisd não separa por cliente),
 /// e o escopo do cliente recusa o model.
+/// Volume por dia (CE-09, célula compartilhada): o volume lido de cada cliente, por dia do calendário de Brasília e
+/// fonte, para a franquia da Plataforma em GB/dia. Só o sistema grava (os coletores e a tarefa `aws-volume`); o escopo
+/// do cliente só lê. O `IngestUsage` (mês) continua sendo o do plano dos nós dedicados e das telas.
+model IngestUsageDay {
+  tenantId  String   @db.Uuid
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// O dia no calendário de Brasília (a virada é às 03:00 UTC).
+  day       DateTime @db.Date
+  /// `aws` (os objetos dos buckets na célula; o analysisd no nó dedicado), `gcp` (dia do `publishTime`) ou
+  /// `cloudflare` (só a auditoria, no dia de cada entrada).
+  source    String   @db.VarChar(16)
+  bytes     BigInt
+  events    BigInt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([tenantId, day, source])
+}
+
+/// Os objetos da AWS já medidos na origem pela tarefa `aws-volume` (CE-09): um por objeto, com o tamanho descompactado
+/// lido no fim do gzip. É o que impede contar um objeto duas vezes, e a evidência do volume da AWS de cada dia (o
+/// `IngestUsageDay` da AWS é a soma destas linhas). Só o sistema grava; sai depois de 62 dias (dois ciclos).
+model AwsVolumeObject {
+  cloudAccountId  String       @db.Uuid
+  cloudAccount    CloudAccount @relation(fields: [cloudAccountId], references: [id], onDelete: Cascade)
+  tenantId        String       @db.Uuid
+  tenant          Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  /// SHA-256 (hex) do bucket e da chave do objeto: a chave não fica guardada.
+  objectHash      String       @db.Char(64)
+  /// O dia de Brasília em que o objeto foi criado (`LastModified`).
+  day             DateTime     @db.Date
+  /// `cloudtrail`, `guardduty` ou `waf`.
+  stream          String       @db.VarChar(16)
+  compressedBytes BigInt
+  /// O tamanho descompactado contado (o ISIZE do gzip, ou a estimativa quando ele não serve).
+  bytes           BigInt
+  /// O ISIZE não serviu (fora da faixa plausível ou não lido): `bytes` é a estimativa pelo tamanho compactado.
+  isizeFallback   Boolean
+  countedAt       DateTime     @default(now()) @db.Timestamptz(3)
+
+  @@id([cloudAccountId, objectHash])
+  @@index([tenantId, day])
+}
+
+/// Contadores do nó por dia (CE-09), sem cliente: na célula, o `bytes.received` do analysisd vira só a conferência do
+/// volume da AWS medido na origem (o analysisd não separa o que leu por cliente).
+model NodeUsageDay {
+  /// O dia no calendário de Brasília.
+  day       DateTime @db.Date
+  /// `analysisd`: a diferença do `bytes.received` e dos eventos da AWS do analysisd.
+  metric    String   @db.VarChar(32)
+  bytes     BigInt
+  events    BigInt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@id([day, metric])
+}
+
 model WazuhCounter {
   id            String   @id @db.VarChar(32)
   /// Partida do analysisd que deu estes contadores (o `uptime` da API do manager). Outra partida: os contadores

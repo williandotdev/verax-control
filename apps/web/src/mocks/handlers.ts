@@ -28,6 +28,11 @@ export interface MockState {
    * demonstração (Profissional, 365 dias).
    */
   historyDays?: number | null;
+  /**
+   * A demonstração da Plataforma, com o contador da franquia (CE-10). Sem informar, vem do
+   * `localStorage['verax.mock.plan']` (`plataforma`).
+   */
+  platform?: boolean;
 }
 
 const url = (path: string): string => `${API_URL}${path}`;

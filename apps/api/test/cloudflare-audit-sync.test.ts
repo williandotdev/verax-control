@@ -282,6 +282,16 @@ describe('coletor da auditoria do Cloudflare (banco real e Cloudflare falso)', (
     expect(usage).toHaveLength(1);
     expect(usage[0]?.events).toBe(5n);
     expect(usage[0]?.bytes).toBeGreaterThan(0n);
+    // O volume por dia da franquia (CE-09): cada entrada (a inválida também), no dia de Brasília dela, pelo JSON da
+    // entrada, sem o envelope da resposta.
+    const daily = await prisma.ingestUsageDay.findMany({
+      where: { tenantId: tenantA, source: 'cloudflare' },
+    });
+    expect(daily.map((row) => ({ day: row.day.toISOString().slice(0, 10), events: row.events }))).toEqual([
+      { day: '2026-11-04', events: 5n },
+    ]);
+    expect(daily[0]?.bytes).toBeGreaterThan(0n);
+    expect(daily[0]?.bytes).toBeLessThan(usage[0]?.bytes ?? 0n);
   });
 
   it('teto de páginas: grava a continuação, segue dela na execução seguinte e a releitura não duplica', async () => {

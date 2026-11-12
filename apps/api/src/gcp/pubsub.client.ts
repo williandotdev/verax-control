@@ -11,6 +11,8 @@ export interface PubsubMessage {
   /** LogEntry em JSON, em base64. */
   data: string | undefined;
   messageId: string;
+  /** Quando o Pub/Sub recebeu a mensagem (RFC 3339): o dia do volume da franquia (CE-09). */
+  publishTime?: string | undefined;
 }
 
 export interface PubsubReader {
@@ -35,6 +37,7 @@ const pullResponseSchema = z.object({
         message: z.object({
           data: z.string().max(10_000_000).optional(),
           messageId: z.string().max(256),
+          publishTime: z.string().max(64).optional(),
         }),
       }),
     )
@@ -96,6 +99,7 @@ export class PubsubRestReader implements PubsubReader {
       ackId: received.ackId,
       data: received.message.data,
       messageId: received.message.messageId,
+      publishTime: received.message.publishTime,
     }));
   }
 

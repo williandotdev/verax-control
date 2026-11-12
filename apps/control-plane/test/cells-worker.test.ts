@@ -381,7 +381,11 @@ describe('cp-worker: canal da célula (CE-06)', () => {
         tenantId: tenant.id,
         day: '2026-11-10',
         final: false,
-        sources: { gcp: { bytes: 1000, events: 3 } },
+        sources: {
+          aws: { bytes: 0, events: 0 },
+          gcp: { bytes: 1000, events: 3 },
+          cloudflare: { bytes: 0, events: 0 },
+        },
       });
       expect((await deliver(CELL_A, usage, subscriptionOf(CELL_A)).expect(200)).body).toEqual({
         outcome: 'stored',
