@@ -34,7 +34,7 @@
  * Saída: 0 feito, 1 recusado (e-mail fora da lista, conta existente, confirmação errada, código errado três vezes),
  * 2 uso inválido, 3 erro do Firestore, do Secret Manager ou das credenciais.
  */
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { PinoLogger } from 'nestjs-pino';
@@ -182,7 +182,7 @@ async function askPassword(ask: Ask, out: (line: string) => void): Promise<strin
       continue;
     }
     const again = await ask('Repita a senha: ', { hidden: true });
-    // Comparação em tempo constante (pelo digest, que tem sempre o mesmo tamanho), como em todo o resto do console.
+    // Comparação em tempo constante, como em todo o resto do console.
     if (sameSecret(again, password)) return password;
     out('As duas senhas não conferem.');
   }
@@ -415,7 +415,12 @@ if (import.meta.main) {
   process.stdin.destroy();
 }
 
-/** Igualdade de dois segredos em tempo constante: compara os SHA-256, de tamanho fixo. */
+/**
+ * Igualdade das duas digitações da senha em tempo constante, direto nos bytes (sem hash: a senha nunca passa por uma
+ * função de hash rápida aqui). O tamanho diferente responde na hora; no terminal do operador, não há o que medir.
+ */
 function sameSecret(a: string, b: string): boolean {
-  return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest());
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
 }
