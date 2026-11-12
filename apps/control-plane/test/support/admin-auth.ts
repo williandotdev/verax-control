@@ -16,12 +16,11 @@ import { COLLECTIONS } from '../../src/firestore/collections.js';
 import type { DocumentStore } from '../../src/firestore/document-store.js';
 
 /**
- * Os cofres do login do console em memória: a chave mestra (32 bytes aleatórios gerados no teste, nunca um valor fixo
- * no repositório) e o token do primeiro cadastro. `failing` simula o Secret Manager fora do ar.
+ * O cofre do login do console em memória: a chave mestra (32 bytes aleatórios gerados no teste, nunca um valor fixo no
+ * repositório). `failing` simula o Secret Manager fora do ar.
  */
 export class MemoryAdminSecrets implements AdminSecretSource {
   totp: string | undefined = randomBytes(32).toString('base64');
-  setup: string | undefined = randomBytes(32).toString('base64url');
   failing = false;
   reads = 0;
 
@@ -29,12 +28,6 @@ export class MemoryAdminSecrets implements AdminSecretSource {
     this.reads += 1;
     if (this.failing) return Promise.reject(new SecretUnavailableError());
     return Promise.resolve(this.totp);
-  }
-
-  setupToken(): Promise<string | undefined> {
-    this.reads += 1;
-    if (this.failing) return Promise.reject(new SecretUnavailableError());
-    return Promise.resolve(this.setup);
   }
 }
 

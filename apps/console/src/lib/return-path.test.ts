@@ -7,7 +7,7 @@ describe('caminho de volta depois de entrar', () => {
     expect(safeReturnPath('/tabelas-de-preco/teste-v2?aba=1')).toBe('/tabelas-de-preco/teste-v2?aba=1');
   });
 
-  it('recusa outro site, esquema, barra invertida, caracteres de controle e as telas de acesso', () => {
+  it('recusa outro site, esquema, barra invertida, caracteres de controle e a tela de acesso', () => {
     for (const bad of [
       null,
       undefined,
@@ -20,7 +20,6 @@ describe('caminho de volta depois de entrar', () => {
       '/clientes\n',
       '/entrar',
       '/entrar?voltar=/x',
-      '/configurar',
       `/${'a'.repeat(600)}`,
     ]) {
       expect(safeReturnPath(bad), String(bad)).toBe('/');

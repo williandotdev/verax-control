@@ -19,13 +19,13 @@
 #   - cp-admin (console do responsável, só com `admin_enabled`), `warn({ event: "pricing_margin_alert",
 #     priceTableVersion, costModelVersion })`: um modelo de custos publicado deixou a tabela de preços vigente abaixo da
 #     margem mínima em alguma configuração (a publicação do modelo não é bloqueada; a tabela não muda sozinha);
-#   - cp-admin, `warn({ event: "admin_auth_failed", reason })`: uma tentativa de entrar ou de se cadastrar no console
-#     recusada (`reason`: `unknown_account`, `bad_password`, `bad_code`, `replayed_code`, `bad_recovery_code`,
-#     `locked`, `not_owner`, `setup_token`, `setup_not_owner`...). Um erro de digitação do responsável também gera uma;
-#     o alerta é por repetição (abaixo), não por linha. Nunca o e-mail, a senha, o código nem o token;
+#   - cp-admin, `warn({ event: "admin_auth_failed", reason })`: uma tentativa de entrar no console recusada
+#     (`reason`: `unknown_account`, `bad_password`, `bad_code`, `replayed_code`, `bad_recovery_code`, `locked`,
+#     `not_owner`...). Um erro de digitação do responsável também gera uma; o alerta é por repetição (abaixo), não por
+#     linha. Nunca o e-mail, a senha nem o código;
 #   - cp-admin, `warn({ event: "admin_account_locked", reason })`: 5 tentativas com a senha certa e o código errado
 #     em 15 minutos bloquearam o login daquele e-mail por 15 minutos (senha errada não bloqueia). Alerta por linha.
-#   As linhas de sucesso (`admin_login`, `admin_logout`, `admin_setup_completed`, `admin_password_changed`,
+#   As linhas de sucesso (`admin_login`, `admin_logout`, `admin_password_changed`,
 #   `admin_totp_reset`, `admin_recovery_code_used`) e a sessão ausente ou vencida (`admin_session_refused`) são `info` e
 #   não abrem incidente.
 # O `tenantId`, o `requestId`, o `day`, o `reason`, as versões e o tipo e o id do evento viram rótulos do incidente;
@@ -132,8 +132,8 @@ resource "google_monitoring_alert_policy" "log" {
   depends_on = [google_project_service.apis]
 }
 
-# Tentativas recusadas repetidas no console (`admin_auth_failed` no cp-admin): login ou cadastro com e-mail, senha,
-# código ou token errados. Uma linha solta é o responsável errando a digitação; cinco ou mais em 10 minutos (o mesmo
+# Tentativas recusadas repetidas no console (`admin_auth_failed` no cp-admin): login com e-mail, senha ou código
+# errados. Uma linha solta é o responsável errando a digitação; cinco ou mais em 10 minutos (o mesmo
 # número que bloqueia um e-mail) é alguém tentando adivinhar, de um e-mail só ou espalhado por vários, e abrem o
 # incidente. Por isso esta é a exceção à regra do arquivo: uma métrica de log (contador, com o motivo como rótulo),
 # porque a condição por linha de log não conta repetições. São poucos pontos por mês, dentro da cota gratuita do
@@ -142,7 +142,7 @@ resource "google_logging_metric" "admin_auth_failed" {
   count = var.admin_enabled ? 1 : 0
 
   name        = "cp_admin_auth_failed"
-  description = "Tentativas recusadas no console do responsável (cp-admin): login ou cadastro com e-mail, senha, código ou token errados, ou de quem não é responsável."
+  description = "Tentativas recusadas no console do responsável (cp-admin): login com e-mail, senha ou código errados, ou de quem não é responsável."
   filter      = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-admin\" AND jsonPayload.event=\"admin_auth_failed\""
 
   metric_descriptor {
@@ -153,7 +153,7 @@ resource "google_logging_metric" "admin_auth_failed" {
     labels {
       key         = "reason"
       value_type  = "STRING"
-      description = "O motivo da recusa (unknown_account, bad_password, bad_code, replayed_code, bad_recovery_code, locked, not_owner, setup_token...)."
+      description = "O motivo da recusa (unknown_account, bad_password, bad_code, replayed_code, bad_recovery_code, locked, not_owner...)."
     }
   }
 
@@ -198,7 +198,7 @@ resource "google_monitoring_alert_policy" "admin_auth_failed" {
 
   documentation {
     mime_type = "text/markdown"
-    content   = "O console do responsável (cp-admin) recusou 5 ou mais tentativas de login ou de cadastro em 10 minutos (rótulo `reason` da métrica cp_admin_auth_failed). Se não foi você, alguém está tentando entrar. Confira, nesta ordem: os `reason` (`unknown_account` e `not_owner` são e-mails que não são do console; `bad_password` com um e-mail seu é a senha sendo testada; `setup_token` é alguém tentando o cadastro); os IPs das requisições nos logs do cp-admin; se houve `admin_account_locked`. Se a senha pode ter vazado, troque-a em /conta (a troca encerra as outras sessões); para derrubar todas as sessões, apague os documentos da coleção `adminSessions` no Firestore. O código do aplicativo continua exigido em todo login. Passo a passo em docs/runbooks/console-do-responsavel.md."
+    content   = "O console do responsável (cp-admin) recusou 5 ou mais tentativas de login em 10 minutos (rótulo `reason` da métrica cp_admin_auth_failed). Se não foi você, alguém está tentando entrar. Confira, nesta ordem: os `reason` (`unknown_account` e `not_owner` são e-mails que não são do console; `bad_password` com um e-mail seu é a senha sendo testada); os IPs das requisições nos logs do cp-admin; se houve `admin_account_locked`. Se a senha pode ter vazado, troque-a em /conta (a troca encerra as outras sessões); para derrubar todas as sessões, rode o cadastro-responsavel com --encerrar-sessoes. O código do aplicativo continua exigido em todo login. Passo a passo em docs/runbooks/console-do-responsavel.md."
   }
 
   depends_on = [google_project_service.apis]

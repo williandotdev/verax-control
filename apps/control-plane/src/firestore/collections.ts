@@ -56,13 +56,13 @@ export const COLLECTIONS = {
   /**
    * Login próprio do console do responsável (cp-admin): a conta de cada responsável (e-mail, hash da senha, segredo do
    * TOTP cifrado e os códigos de recuperação assinados), as sessões (pelo SHA-256 do id), as falhas de login por
-   * e-mail (o bloqueio), os cadastros do TOTP pendentes e o marcador que fecha o primeiro cadastro. Só o cp-admin lê.
+   * e-mail (o bloqueio) e as trocas do aplicativo pendentes. Só o cp-admin lê (e o cadastro pela linha de comando,
+   * `cli/cadastro-responsavel.ts`, grava a conta).
    */
   adminAccounts: 'adminAccounts',
   adminSessions: 'adminSessions',
   adminLoginThrottle: 'adminLoginThrottle',
   adminEnrollments: 'adminEnrollments',
-  adminSetup: 'adminSetup',
   /**
    * Célula compartilhada (CE-06): o registro das células (`cells/{id}`, gravado pelo responsável) e os relatórios que
    * cada uma mandou (`cellReports/{célula}_{reportId}`: a idempotência da entrega push e o que fica para os PRs

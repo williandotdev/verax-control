@@ -39,7 +39,7 @@ variable "terraform_image" {
 }
 
 variable "admin_enabled" {
-  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura dos segredos cp-admin-totp-key e cp-admin-setup-token e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes os dois segredos do console (docs/runbooks/console-do-responsavel.md)."
+  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura do segredo cp-admin-totp-key e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes a chave do console, cp-admin-totp-key (docs/runbooks/console-do-responsavel.md)."
   type        = bool
   default     = false
 
@@ -67,7 +67,7 @@ variable "worker_ingress" {
 }
 
 variable "owner_principals" {
-  description = "Quem opera o plano de controle além das contas de serviço: pode chamar o cp-worker (run.invoker), entra em OWNER_PRINCIPALS, que o worker confere no token e o console no login, e, com admin_enabled, é quem pode se cadastrar e entrar no console (o e-mail de cada item). Ex.: [\"user:voce@exemplo.com\"]. Só user: e serviceAccount:, porque o worker compara o e-mail do token; grupo não tem e-mail no token."
+  description = "Quem opera o plano de controle além das contas de serviço: pode chamar o cp-worker (run.invoker), entra em OWNER_PRINCIPALS, que o worker confere no token e o console no login, e, com admin_enabled, é quem pode ter conta e entrar no console (o e-mail de cada item; a conta é criada pela linha de comando, cadastro-responsavel). Ex.: [\"user:voce@exemplo.com\"]. Só user: e serviceAccount:, porque o worker compara o e-mail do token; grupo não tem e-mail no token."
   type        = list(string)
   default     = []
 

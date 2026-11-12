@@ -1,13 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { createFakeState } from '@/mocks/fake-admin-api';
-import {
-  FICTITIOUS_LOGIN_PHRASE,
-  FICTITIOUS_SETUP_TOKEN,
-  FICTITIOUS_TOTP_CODE,
-  FICTITIOUS_TOTP_SEED,
-  LOGIN_FAILED_MESSAGE,
-} from '@/mocks/fake-auth';
+import { FICTITIOUS_LOGIN_PHRASE, FICTITIOUS_TOTP_CODE, LOGIN_FAILED_MESSAGE } from '@/mocks/fake-auth';
 import { FICTITIOUS_OWNER } from '@/mocks/fixtures';
 import { renderConsole } from '@/test/render';
 
@@ -126,74 +120,19 @@ describe('sessão do console', () => {
   });
 });
 
-describe('primeiro acesso (/configurar)', () => {
-  it('com a conta já criada, a tela diz e leva à entrada', async () => {
-    renderConsole('/configurar', createFakeState({ loggedIn: false }));
-    expect(await screen.findByRole('heading', { name: 'O console já está configurado' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Ir para a entrada' })).toHaveAttribute('href', '/entrar');
+describe('sem tela de cadastro', () => {
+  it('a antiga /configurar não existe: sem sessão vai para a entrada, que não oferece cadastro', async () => {
+    const { router } = renderConsole('/configurar', createFakeState({ loggedIn: false }));
+    expect(await screen.findByRole('heading', { name: 'Entrar no console' })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/entrar');
+    // A entrada não oferece cadastro nenhum.
+    expect(screen.queryByRole('link', { name: /configur/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/token/i)).not.toBeInTheDocument();
   });
 
-  it('token, e-mail e senha; o QR gerado aqui; o código; e os códigos de recuperação, uma vez', async () => {
-    const state = createFakeState({ loggedIn: false, setupOpen: true });
-    const { user, router } = renderConsole('/configurar', state);
-    const token = await screen.findByLabelText('Token de configuração');
-    expect(token).toHaveAttribute('type', 'password');
-    expect(token).toHaveAttribute('autocomplete', 'off');
-    expect(screen.getByLabelText('E-mail')).toHaveAttribute('autocomplete', 'username');
-    expect(screen.getByLabelText('Senha nova')).toHaveAttribute('autocomplete', 'new-password');
-    expect(screen.getByLabelText('Senha nova')).toHaveAccessibleDescription(/12 caracteres/);
-
-    // Senha curta e confirmação diferente: conferidas antes de mandar.
-    await user.type(token, FICTITIOUS_SETUP_TOKEN);
-    await user.type(screen.getByLabelText('E-mail'), FICTITIOUS_OWNER);
-    await user.type(screen.getByLabelText('Senha nova'), 'curta');
-    await user.click(screen.getByRole('button', { name: 'Continuar' }));
-    expect(screen.getByLabelText('Senha nova')).toHaveAttribute('aria-invalid', 'true');
-    expect(state.auth.lastBody).toBeUndefined();
-    await user.clear(screen.getByLabelText('Senha nova'));
-    await user.type(screen.getByLabelText('Senha nova'), FICTITIOUS_LOGIN_PHRASE);
-    await user.type(screen.getByLabelText('Confirme a senha nova'), 'outra-outra-outra');
-    await user.click(screen.getByRole('button', { name: 'Continuar' }));
-    expect(screen.getByLabelText('Confirme a senha nova')).toHaveAccessibleDescription(/não é igual/);
-    expect(state.auth.lastBody).toBeUndefined();
-
-    // Token errado: a recusa é genérica.
-    await user.clear(screen.getByLabelText('Confirme a senha nova'));
-    await user.type(screen.getByLabelText('Confirme a senha nova'), FICTITIOUS_LOGIN_PHRASE);
-    await user.clear(token);
-    await user.type(token, 'token-errado-errado');
-    await user.click(screen.getByRole('button', { name: 'Continuar' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Confira o token de configuração e o e-mail');
-
-    await user.clear(token);
-    await user.type(token, FICTITIOUS_SETUP_TOKEN);
-    await user.click(screen.getByRole('button', { name: 'Continuar' }));
-
-    // O QR (SVG gerado no navegador) e o segredo em blocos de 4.
-    const qr = await screen.findByRole('img', { name: /QR para cadastrar/ });
-    expect(qr.tagName.toLowerCase()).toBe('svg');
-    expect(screen.getByTestId('segredo-totp')).toHaveTextContent('AAAA BBBB CCCC DDDD EEEE FFFF');
-    expect(FICTITIOUS_TOTP_SEED).toBe('AAAABBBBCCCCDDDDEEEEFFFF');
-
-    await user.type(screen.getByLabelText('Código do aplicativo'), '000000');
-    await user.click(screen.getByRole('button', { name: 'Confirmar o aplicativo' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('O código não confere');
-    await user.clear(screen.getByLabelText('Código do aplicativo'));
-    await user.type(screen.getByLabelText('Código do aplicativo'), FICTITIOUS_TOTP_CODE);
-    await user.click(screen.getByRole('button', { name: 'Confirmar o aplicativo' }));
-
-    const list = await screen.findByRole('list', { name: 'Códigos de recuperação' });
-    expect(within(list).getAllByRole('listitem')).toHaveLength(10);
-    const go = screen.getByRole('button', { name: 'Ir para o console' });
-    expect(go).toBeDisabled();
-    await user.click(screen.getByRole('checkbox', { name: 'Guardei os códigos em lugar seguro' }));
-    expect(go).toBeEnabled();
-    // Nada do token, da senha, do segredo ou dos códigos na URL.
-    expect(router.state.location.search).toBe('');
-    await user.click(go);
-    await waitFor(() => expect(router.state.location.pathname).toBe('/modelos-de-custo'));
-    expect(await screen.findByTestId('usuario')).toHaveTextContent(FICTITIOUS_OWNER);
-    expect(state.auth.setupOpen).toBe(false);
+  it('com sessão, /configurar é uma página que não existe', async () => {
+    renderConsole('/configurar', createFakeState());
+    expect(await screen.findByRole('heading', { name: 'Página não encontrada' })).toBeInTheDocument();
   });
 });
 

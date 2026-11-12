@@ -1,8 +1,9 @@
 # O console do responsável (admin.tf): o cp-admin com login próprio e invocação anônima (o rewrite do Hosting exige),
 # o site do Hosting com o domínio admin.veraxsistemas.com.br e o rewrite para ele, a conta própria com o Firestore e a
-# leitura só dos dois segredos do console (não montados), e, com os serviços no ar, `run.invoker` só no cp-worker (as
-# operações do responsável), as variáveis que o app confere (ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS e WORKER_URL;
-# no worker, ADMIN_SA_EMAIL), a implantação pelo workflow e os alertas. Sem `admin_enabled`, nada disso existe.
+# leitura só da chave do console (não montada; o antigo token de cadastro, aposentado, ninguém lê), e, com os serviços
+# no ar, `run.invoker` só no cp-worker (as operações do responsável), as variáveis que o app confere
+# (ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS e WORKER_URL; no worker, ADMIN_SA_EMAIL), a implantação pelo workflow e
+# os alertas. Sem `admin_enabled`, nada disso existe.
 #
 # Provider simulado: nada fala com a GCP, e nenhuma credencial é usada.
 
@@ -187,11 +188,12 @@ run "console_com_login_proprio" {
       sort([
         for key, member in google_secret_manager_secret_iam_member.readers : key
         if member.member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"
-      ]) == tolist(["cp-admin-setup-token/admin", "cp-admin-totp-key/admin"]) &&
+      ]) == tolist(["cp-admin-totp-key/admin"]) &&
+      length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-setup-token/")]) == 0 &&
       alltrue([for key, member in google_secret_manager_secret_iam_member.readers : member.role == "roles/secretmanager.secretAccessor" if endswith(key, "/admin")]) &&
       !contains([for member in google_service_account_iam_member.invoker_token_users : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com")
     )
-    error_message = "A conta cp-admin lê e grava o Firestore e lê só os dois segredos do console (no segredo, nunca no projeto); nenhum actAs na cp-invoker (o console não enfileira nada)."
+    error_message = "A conta cp-admin lê e grava o Firestore e lê só a chave do console, cp-admin-totp-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
   }
 
   # Sem os serviços (services_enabled = false), o cp-worker não existe, e nem o run.invoker do console nele.

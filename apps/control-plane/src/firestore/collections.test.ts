@@ -90,7 +90,6 @@ describe('índices e TTL do Firestore (CP-02)', () => {
       COLLECTIONS.pricingTables,
       COLLECTIONS.costModels,
       COLLECTIONS.adminAccounts,
-      COLLECTIONS.adminSetup,
     ]) {
       expect(withTtl).not.toContain(group);
     }

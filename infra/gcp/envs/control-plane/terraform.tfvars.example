@@ -15,8 +15,8 @@ project_id = "projeto-exemplo"
 
 # Console do responsável (cp-admin, em https://admin.veraxsistemas.com.br, com login próprio: e-mail, senha e código do
 # aplicativo autenticador): tabelas de preço, modelos de custo, simulador de DRE e clientes. Exige owner_principals (só
-# esses e-mails se cadastram e entram). Antes, grave os segredos cp-admin-totp-key e cp-admin-setup-token
-# (docs/runbooks/console-do-responsavel.md); depois do apply, crie no Cloudflare os registros de
+# esses e-mails têm conta e entram; a conta nasce pela linha de comando, cadastro-responsavel). Antes, grave o segredo
+# cp-admin-totp-key (docs/runbooks/console-do-responsavel.md); depois do apply, crie no Cloudflare os registros de
 # `terraform output cloudflare_dns_records`. O site e o domínio têm padrão (admin_hosting_site_id, admin_hosting_domain).
 # admin_enabled = true
 

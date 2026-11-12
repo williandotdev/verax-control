@@ -1786,8 +1786,8 @@ do preço configurável, documentos internos.
   nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
   Nenhum segredo.
 - **`cp-admin`:** lê e escreve no Firestore (tabelas de preços, modelos de custo, clientes, auditoria e as coleções do
-  console: `adminAccounts`, `adminSessions`, `adminLoginThrottle`, `adminEnrollments` e `adminSetup`), lê pela API do
-  Secret Manager só os dois segredos do console (`cp-admin-totp-key` e `cp-admin-setup-token`, nunca montados) e
+  console: `adminAccounts`, `adminSessions`, `adminLoginThrottle` e `adminEnrollments`), lê pela API do Secret
+  Manager só a chave do console (`cp-admin-totp-key`, nunca montada) e
   invoca o `cp-worker` (`run.invoker` só nele, com `admin_enabled` e `services_enabled`) com o token de identidade da
   própria conta, para as operações do responsável; nenhum `actAs` na cp-invoker (não enfileira nada). Nenhum segredo
   montado: a configuração recusa a chave da Stripe. A invocação é anônima (o rewrite do Hosting de
@@ -1795,10 +1795,12 @@ do preço configurável, documentos internos.
   scrypt) e código TOTP (segredo cifrado com AES-256-GCM, código de uso único, códigos de recuperação em HMAC), com
   bloqueio de 15 minutos depois de 5 erros por e-mail e limite por IP (`req.ip`, a regra de `client-ip.ts`). A sessão
   é um id aleatório de 32 bytes no cookie `__session` (`HttpOnly`, `Secure`, `SameSite=Strict`), guardado só como
-  hash, com 30 minutos de inatividade e 12 horas no máximo. O primeiro cadastro exige o token de uso único de
-  `cp-admin-setup-token` e se fecha sozinho. A sessão nunca sai do `cp-admin`.
+  hash, com 30 minutos de inatividade e 12 horas no máximo. O console não tem tela nem rota de cadastro (decisão do
+  responsável de 12/11/2026: a antiga `/configurar` era superfície de ataque): a conta nasce, ou é refeita numa
+  emergência, pela linha de comando `cadastro-responsavel` (`apps/control-plane/src/cli`), rodada por quem tem as
+  credenciais de dono do projeto, com as mesmas chaves do login. A sessão nunca sai do `cp-admin`.
 - **Responsável:** invoca o `cp-worker` com token de identidade, entra no `cp-admin` com e-mail, senha e TOTP,
-  administra os segredos; tudo auditado (`owner:<e-mail>`).
+  administra os segredos e cria a conta do console pela linha de comando; tudo auditado (`owner:<e-mail>`).
 
 O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS
 Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita).
@@ -2561,8 +2563,8 @@ false`), no modo da chave e com o percentual da alíquota padrão do modelo de c
 - **Console do responsável** (`apps/console`, servido pelo `cp-admin`): um app React compilado pelo Vite, com os
   tokens e os padrões do painel (pt-BR, claro e escuro, WCAG 2.2 AA conferido pelo axe), que a imagem do plano de
   controle leva em `/app/console`. O próprio `cp-admin` serve as telas e a API na mesma origem
-  (`admin.veraxsistemas.com.br`): sem CORS e sem outro serviço. As telas abrem sem sessão (a de login, `/entrar`, e a
-  do primeiro cadastro, `/configurar`; são o código do repositório público, sem número nenhum), com a CSP própria
+  (`admin.veraxsistemas.com.br`): sem CORS e sem outro serviço. As telas abrem sem sessão (a de login, `/entrar`; não
+  há tela de cadastro; são o código do repositório público, sem número nenhum), com a CSP própria
   delas (só scripts, estilos e chamadas da própria origem, nada inline, nada em frame);
   `/assets/` (nomes com hash) fica em cache privado, o resto sem cache. As telas não têm nenhum número: o modelo de
   custos (com o custo da célula, o custo por GB/dia dela e o do nó por porte recalculados na hora), a tabela de preços

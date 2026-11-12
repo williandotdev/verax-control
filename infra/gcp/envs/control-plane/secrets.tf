@@ -1,5 +1,6 @@
 # Os segredos do plano de controle (plano, seção 2.1): os cinco montados nos serviços, a senha da caixa de envio dos
-# nós e os dois do console do responsável (a chave do TOTP e o token do primeiro cadastro). O Terraform cria só o
+# nós e os dois do console do responsável (a chave do TOTP e o antigo token do primeiro cadastro, aposentado). O
+# Terraform cria só o
 # "cofre" vazio de cada um: o valor é gravado por você com o gcloud (GUIA, plano de
 # controle, passo 4) e nunca passa pelo Terraform nem pelo estado dele. Nenhum recurso de versão de segredo (regional ou
 # não) existe neste ambiente, de propósito: o iac.yml confere a declaração.
@@ -12,10 +13,10 @@
 # a lê pela API do Secret Manager só na hora de copiá-la para o cofre de cada nó (o passo `secrets.smtp_password` e a
 # recópia da troca de senha), sempre a versão `latest`, sem precisar de uma revisão nova do serviço; e o cofre pode
 # ficar vazio (o Cloud Run recusa subir com um segredo montado sem versão), com os nós nascendo sem e-mail. É também o
-# caso dos dois segredos do console (`readers = ["admin"]`): o cp-admin os lê pela API na hora do login e do cadastro
-# (`ADMIN_SECRETS_PROJECT_ID`, admin.tf), e sobe com eles vazios (só o login e o cadastro respondem 503). Os cofres
-# existem sempre, para o responsável gravar os valores antes de ligar o console; a leitura só é concedida à conta
-# cp-admin, que só existe com `admin_enabled`.
+# caso da chave do console (`readers = ["admin"]`): o cp-admin a lê pela API na hora do login
+# (`ADMIN_SECRETS_PROJECT_ID`, admin.tf), e sobe com ela vazia (só o login responde 503). O cofre existe sempre, para o
+# responsável gravar o valor antes de ligar o console; a leitura só é concedida à conta cp-admin, que só existe com
+# `admin_enabled` (o cadastro pela linha de comando a lê com as credenciais de dono do projeto).
 
 locals {
   # Cada segredo: a descrição, quem lê e o nome da variável de ambiente em que o Cloud Run o monta (run.tf).
@@ -54,17 +55,18 @@ locals {
     }
     # A chave mestra do console: 32 bytes aleatórios em base64. O app deriva dela (HKDF) a chave AES-256-GCM que cifra o
     # segredo do TOTP no Firestore e a chave HMAC dos códigos de recuperação. Não se troca depois do cadastro: o segredo
-    # do TOTP gravado deixaria de abrir (o caminho é o cadastro de emergência do runbook).
+    # do TOTP gravado deixaria de abrir (o caminho é refazer o cadastro pela linha de comando, como no runbook).
     "cp-admin-totp-key" = {
       description = "Chave mestra do console do responsável (32 bytes em base64): cifra o segredo do TOTP no Firestore e assina os códigos de recuperação. Não trocar depois do cadastro."
       readers     = ["admin"]
       env         = null
     }
-    # O token de uso único do primeiro cadastro (`/configurar`). Depois do cadastro o app fecha a tela sozinho; o runbook
-    # pede para desativar a versão mesmo assim (não é montado, então nenhuma revisão depende dela).
+    # APOSENTADO: o token da antiga tela de cadastro (`/configurar`), que saiu do console (a conta nasce pela linha de
+    # comando, `cadastro-responsavel`). Ninguém lê mais (`readers = []`: a leitura do cp-admin sai). O cofre continua
+    # aqui só por enquanto, para não apagar nada no mesmo apply; destrua as versões (runbook) e tire este bloco depois.
     "cp-admin-setup-token" = {
-      description = "Token de uso único do primeiro cadastro no console do responsável (/configurar), 32 caracteres ou mais. Desative a versão depois do cadastro."
-      readers     = ["admin"]
+      description = "Aposentado: token da antiga tela de cadastro do console (/configurar), que não existe mais. Ninguém lê; destrua as versões."
+      readers     = []
       env         = null
     }
   }

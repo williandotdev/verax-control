@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Post, Req, Res } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Inject, Post, Req, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { APP_CONFIG, type AppConfig } from '../../common/config/config.module.js';
 import { ApiError } from '../../common/http/api-error.js';
@@ -9,7 +9,6 @@ import {
   enrollmentConfirmRequestSchema,
   loginRequestSchema,
   passwordChangeRequestSchema,
-  setupStartRequestSchema,
   totpResetStartRequestSchema,
 } from './admin-auth.schema.js';
 import { AdminAuthService, type AuthRequestContext, type TotpEnrollmentView } from './admin-auth.service.js';
@@ -22,7 +21,7 @@ import {
 } from './session-cookie.js';
 
 /**
- * Limites do login, do cadastro e da conta, em memória (o cp-admin roda com uma instância só). Só contam as tentativas
+ * Limites do login e da conta, em memória (o cp-admin roda com uma instância só). Só contam as tentativas
  * que falham: o corpo é validado antes (um `{}` não gasta nada), a tentativa é tirada do balde antes de conferir (sem
  * janela para pedidos em paralelo passarem de graça) e devolvida no sucesso ou num erro do servidor (5xx).
  *
@@ -34,14 +33,12 @@ import {
  */
 export const LOGIN_PER_IP: RateLimitRule = { capacity: 10, windowMs: 15 * 60_000 };
 export const LOGIN_GLOBAL: RateLimitRule = { capacity: 100, windowMs: 15 * 60_000 };
-export const SETUP_PER_IP: RateLimitRule = { capacity: 10, windowMs: 15 * 60_000 };
 export const ACCOUNT_PER_IP: RateLimitRule = { capacity: 10, windowMs: 15 * 60_000 };
 
 export const ADMIN_AUTH_LIMITS = Symbol('ADMIN_AUTH_LIMITS');
 export interface AdminAuthLimits {
   login: TokenBucketLimiter;
   loginGlobal: TokenBucketLimiter;
-  setup: TokenBucketLimiter;
   account: TokenBucketLimiter;
 }
 
@@ -56,7 +53,7 @@ function contextOf(req: OwnerRequest): AuthRequestContext {
   return typeof req.id === 'string' ? { requestId: req.id } : {};
 }
 
-/** Uma falha que conta nos limites: qualquer 4xx depois da validação do corpo (credencial, token ou código errados). */
+/** Uma falha que conta nos limites: qualquer 4xx depois da validação do corpo (credencial ou código errados). */
 function countsAsFailure(error: unknown): boolean {
   return error instanceof ApiError && error.getStatus() >= 400 && error.getStatus() < 500;
 }
@@ -91,8 +88,9 @@ async function counted<T>(buckets: readonly Bucket[], res: Response, run: () => 
 }
 
 /**
- * O login próprio do console (`/v1/admin/...`, só no cp-admin): entrar, sair, o primeiro cadastro (`/configurar`) e,
- * com sessão, a troca da senha e do aplicativo autenticador. O cookie da sessão só sai no `Set-Cookie`; o corpo nunca
+ * O login próprio do console (`/v1/admin/...`, só no cp-admin): entrar, sair e, com sessão, a troca da senha e do
+ * aplicativo autenticador. Não existe cadastro por HTTP: a conta nasce pela linha de comando do operador
+ * (`cli/cadastro-responsavel.ts`), e nenhuma rota pública cria conta. O cookie da sessão só sai no `Set-Cookie`; o corpo nunca
  * traz o id dela. Toda resposta do console já sai com `Cache-Control: private, no-store`.
  */
 @Controller('admin')
@@ -137,43 +135,6 @@ export class AdminAuthController {
     await this.auth.logout(sessionCookieValues(req.headers.cookie), contextOf(req));
     clearTossedSessionCookies(res, this.zone);
     res.clearCookie(SESSION_COOKIE_NAME, clearedSessionCookieOptions());
-  }
-
-  @PublicAdminRoute()
-  @Get('setup')
-  async setupStatus(): Promise<{ open: boolean }> {
-    return { open: await this.auth.setupOpen() };
-  }
-
-  @PublicAdminRoute()
-  @Post('setup/start')
-  @HttpCode(HttpStatus.OK)
-  setupStart(
-    @Body() body: unknown,
-    @Req() req: OwnerRequest,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<TotpEnrollmentView> {
-    const request = parseBody(setupStartRequestSchema, body);
-    return counted([{ limiter: this.limits.setup, key: rateLimitKey(req.ip) }], res, () =>
-      this.auth.setupStart(request),
-    );
-  }
-
-  @PublicAdminRoute()
-  @Post('setup/confirm')
-  @HttpCode(HttpStatus.OK)
-  async setupConfirm(
-    @Body() body: unknown,
-    @Req() req: OwnerRequest,
-    @Res({ passthrough: true }) res: Response,
-  ): Promise<{ email: string; recoveryCodes: string[] }> {
-    const request = parseBody(enrollmentConfirmRequestSchema, body);
-    const result = await counted([{ limiter: this.limits.setup, key: rateLimitKey(req.ip) }], res, () =>
-      this.auth.setupConfirm(request, contextOf(req)),
-    );
-    clearTossedSessionCookies(res, this.zone);
-    res.cookie(SESSION_COOKIE_NAME, result.sessionId, sessionCookieOptions());
-    return { email: result.email, recoveryCodes: result.recoveryCodes };
   }
 
   @Post('account/password')

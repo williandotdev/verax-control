@@ -296,11 +296,10 @@ const envShape = {
   WORKER_SA_EMAIL: serviceAccountEmail.optional(),
   SCHEDULER_SA_EMAIL: serviceAccountEmail.optional(),
   OWNER_PRINCIPALS: list(email).optional(),
-  // Console do responsável (cp-admin, só ROLE=admin, obrigatória nele): o projeto da GCP dos dois cofres do login
-  // próprio do console, lidos pela API do Secret Manager na hora do uso (nunca montados como variável):
-  // `cp-admin-totp-key` (a chave mestra que cifra o segredo do TOTP e assina os códigos de recuperação) e
-  // `cp-admin-setup-token` (o token de uso único do primeiro cadastro, `/configurar`). O Terraform (admin.tf) a deriva
-  // do próprio projeto. Quem pode entrar continua em OWNER_PRINCIPALS, também obrigatória no admin.
+  // Console do responsável (cp-admin, só ROLE=admin, obrigatória nele): o projeto da GCP do cofre do login próprio do
+  // console, lido pela API do Secret Manager na hora do uso (nunca montado como variável): `cp-admin-totp-key` (a chave
+  // mestra que cifra o segredo do TOTP e assina os códigos de recuperação). O Terraform (admin.tf) a deriva do próprio
+  // projeto. Quem pode entrar continua em OWNER_PRINCIPALS, também obrigatória no admin.
   ADMIN_SECRETS_PROJECT_ID: gcpProjectId.optional(),
 
   // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida

@@ -55,7 +55,7 @@ function iso(date: Date): string {
  * rascunho de tabela. Todos FICTÍCIOS. `empty` começa sem nada (a primeira vez do responsável).
  */
 export function createFakeState(
-  options: { empty?: boolean; now?: () => Date; loggedIn?: boolean; setupOpen?: boolean } = {},
+  options: { empty?: boolean; now?: () => Date; loggedIn?: boolean } = {},
 ): FakeAdminState {
   const now = options.now ?? (() => new Date());
   const state: FakeAdminState = {
@@ -64,7 +64,7 @@ export function createFakeState(
     now,
     email: FICTITIOUS_OWNER,
     tenants: options.empty === true ? { tenants: new Map(), workerDown: false } : createFakeTenants(now),
-    auth: createFakeAuth({ loggedIn: options.loggedIn, setupOpen: options.setupOpen }),
+    auth: createFakeAuth({ loggedIn: options.loggedIn }),
     legal: createFakeLegal(now, options.empty === true),
     legacy: new Set(),
   };
@@ -249,7 +249,7 @@ export function handleAdminRequest(
   const parts = path.split('?')[0]?.split('/').filter(Boolean).slice(2) ?? [];
   const [first, second, third] = parts.map(decodeURIComponent);
 
-  // O acesso (primeiro acesso, entrada, saída e conta) e, sem sessão, o 401 de toda rota protegida.
+  // O acesso (entrada, saída e conta) e, sem sessão, o 401 de toda rota protegida.
   const access = handleAuthRequest(state.auth, state.email, now, method, [first, second, third], body);
   if (access !== undefined) return access;
 

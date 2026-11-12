@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { ThemeToggle } from '@/components/theme-toggle';
 
-/** A moldura das telas de acesso (`/entrar` e `/configurar`): a faixa da marca e o cartão no centro, sem o menu. */
+/** A moldura da tela de acesso (`/entrar`): a faixa da marca e o cartão no centro, sem o menu. */
 export function AuthFrame({
   title,
   description,

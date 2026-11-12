@@ -1,5 +1,5 @@
-/** As telas de acesso: voltar para elas depois de entrar não faz sentido. */
-const ACCESS_PATHS = ['/entrar', '/configurar'];
+/** A tela de acesso: voltar para ela depois de entrar não faz sentido. */
+const ACCESS_PATHS = ['/entrar'];
 
 /**
  * O caminho para onde voltar depois de entrar (`?voltar=`), só se for uma tela deste console: começa com uma barra e
