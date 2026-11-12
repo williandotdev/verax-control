@@ -16,7 +16,8 @@
 # Todo nome apagado pela API sai do slug e do projeto conferidos (`vx-<slug>...`): nada fora do cliente é alcançado.
 #
 # Cliente da célula (CE-07): o `infra/gcp/envs/cell-tenant` de UM cliente, com o estado em `cells/<célula>/tenants/<slug>/`
-# no mesmo bucket e os recursos no projeto da célula (CELL_PROJECT_ID):
+# no mesmo bucket e os recursos no projeto dos nós (NODES_PROJECT_ID; o da célula, CELL_PROJECT_ID, só confere a conta
+# da VM, e lá o cp-terraform não tem permissão nenhuma):
 # - `apply` em `cell_provision` (o provisionamento) e `cell_sources` (as contas GCP do cliente mudaram, CE-08);
 # - `destroy` em `cell_delete` (o expurgo do cliente, CE-16): a conta de serviço `vxt-<slug>`, o cofre do primeiro
 #   acesso e os tópicos; o plano só pode apagar. Nada fica para uma Exclusão 2 (a chave do cofre é da célula).
@@ -381,7 +382,8 @@ if [[ $cell_target == true ]]; then
   sa_address=$tenant_sa_address
   sa_refusal=tenant_sa_replacement
   outputs_list=$allowed_cell_outputs
-  export TF_VAR_project_id=$CELL_PROJECT_ID TF_VAR_region=$CELL_REGION TF_VAR_cell_id=$CELL_ID TF_VAR_slug=$TENANT_SLUG
+  export TF_VAR_project_id=$NODES_PROJECT_ID TF_VAR_cell_project_id=$CELL_PROJECT_ID TF_VAR_region=$CELL_REGION
+  export TF_VAR_cell_id=$CELL_ID TF_VAR_slug=$TENANT_SLUG
   export TF_VAR_cell_node_service_account=$CELL_NODE_SA TF_VAR_control_plane_sa=$CP_WORKER_SA
   export TF_VAR_gcp_sources=$canonical_sources
 elif [[ $EXECUTOR_ACTION != purge ]]; then

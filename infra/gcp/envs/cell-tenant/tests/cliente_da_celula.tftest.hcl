@@ -7,21 +7,22 @@ mock_provider "google" {
   # O provider confere o formato destes valores no `apply`; o simulado inventaria textos soltos. O ID único é fictício.
   mock_resource "google_service_account" {
     defaults = {
-      name      = "projects/projeto-exemplo-celula/serviceAccounts/vxt-cliente-demo-a@projeto-exemplo-celula.iam.gserviceaccount.com"
-      email     = "vxt-cliente-demo-a@projeto-exemplo-celula.iam.gserviceaccount.com"
+      name      = "projects/projeto-exemplo-nos/serviceAccounts/vxt-cliente-demo-a@projeto-exemplo-nos.iam.gserviceaccount.com"
+      email     = "vxt-cliente-demo-a@projeto-exemplo-nos.iam.gserviceaccount.com"
       unique_id = "109876543210987654321"
     }
   }
 
   mock_resource "google_secret_manager_secret" {
     defaults = {
-      id = "projects/projeto-exemplo-celula/secrets/vxt-cliente-demo-a-admin-bootstrap"
+      id = "projects/projeto-exemplo-nos/secrets/vxt-cliente-demo-a-admin-bootstrap"
     }
   }
 }
 
 variables {
-  project_id                = "projeto-exemplo-celula"
+  project_id                = "projeto-exemplo-nos"
+  cell_project_id           = "projeto-exemplo-celula"
   cell_id                   = "sp1"
   slug                      = "cliente-demo-a"
   cell_node_service_account = "verax-celula@projeto-exemplo-celula.iam.gserviceaccount.com"
@@ -58,10 +59,10 @@ run "permissoes_so_nos_recursos_do_cliente" {
   assert {
     condition = (
       google_service_account_iam_member.worker_toggle.service_account_id == google_service_account.tenant.name &&
-      google_service_account_iam_member.worker_toggle.role == "projects/projeto-exemplo-celula/roles/cpTenantSaToggle_sp1" &&
+      google_service_account_iam_member.worker_toggle.role == "projects/projeto-exemplo-nos/roles/cpTenantSaToggle" &&
       google_service_account_iam_member.worker_toggle.member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
     )
-    error_message = "O cp-worker suspende só a conta do cliente, com o papel da célula."
+    error_message = "O cp-worker suspende só a conta do cliente, com o papel do projeto dos nós."
   }
 
   assert {
@@ -241,4 +242,15 @@ run "outra_conta_no_lugar_do_cp_worker" {
   }
 
   expect_failures = [var.control_plane_sa]
+}
+
+# A conta da VM é a do projeto da célula, nunca uma do projeto dos nós (onde ficam as contas dos clientes).
+run "conta_da_vm_no_projeto_dos_nos" {
+  command = plan
+
+  variables {
+    cell_node_service_account = "verax-celula@projeto-exemplo-nos.iam.gserviceaccount.com"
+  }
+
+  expect_failures = [var.cell_node_service_account]
 }

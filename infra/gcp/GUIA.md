@@ -11,8 +11,8 @@ próprio estado:
   `project_id` e `images_project_id` iguais ao projeto da Verax e os projetos da Verax em `monitored_projects`. Além
   do nó, tem o bucket das exportações dos clientes (31 dias), os backups de 85 dias e, com `control_plane_project_id`
   e `control_plane_worker_url`, o canal com o plano de controle (os tópicos de comandos e de relatórios e o push dos
-  relatórios para o cp-worker; `cell.tf`) e as permissões do plano de controle sobre os recursos dos clientes da
-  célula (`control_plane.tf`). A saída `cell` traz o que o plano de controle registra da célula
+  relatórios para o cp-worker; `cell.tf`). O cp-terraform não tem permissão nenhuma neste projeto. A saída `cell`
+  traz o que o plano de controle registra da célula
   (`docs/runbooks/celula.md`).
 - **`envs/homolog-sp`:** o nó de homologação em São Paulo, no perfil `standard`, igual ao que um nó de cliente vai
   ter. Fica no projeto dos nós de clientes, separado do projeto da Verax. Ainda não foi aplicado.
@@ -28,8 +28,9 @@ próprio estado:
 - **`envs/tenant`:** o nó de um cliente, um estado por cliente, aplicado pelo plano de controle (o executor
   Terraform). Você só roda o `plan` de aceite num projeto de teste (mesma seção).
 - **`envs/cell-tenant`:** o que é de cada cliente da célula (a conta de serviço `vxt-<slug>`, o cofre do primeiro
-  acesso e os tópicos da GCP dele), um estado por cliente (`cells/<célula>/tenants/<slug>`, no bucket do estado do
-  projeto dos nós), aplicado pelo plano de controle (o executor Terraform). Não chama o módulo do nó.
+  acesso e os tópicos da GCP dele), no projeto dos nós de clientes, um estado por cliente
+  (`cells/<célula>/tenants/<slug>`, no bucket do estado desse projeto), aplicado pelo plano de controle (o executor
+  Terraform). Não chama o módulo do nó.
 
 `envs/verax`, `envs/homolog-sp`, `envs/celula` e `envs/tenant` chamam o mesmo módulo, `modules/node`. Na fase 3, cada cliente ganha
 um `envs/tenant` igual à homologação (perfil `standard`), aplicado pelo plano de controle.

@@ -72,6 +72,7 @@ run "primeira_subida_num_projeto_novo" {
       length(google_project_iam_custom_role.buckets_provisioner) == 0 &&
       length(google_project_iam_custom_role.node_lifecycle) == 0 &&
       length(google_project_iam_custom_role.secret_version_destroyer) == 0 &&
+      length(google_project_iam_custom_role.tenant_sa_toggle) == 0 &&
       length(google_project_iam_member.worker_node_lifecycle) == 0 &&
       length(google_storage_bucket_iam_member.terraform_state) == 0 &&
       length(google_storage_bucket_iam_member.worker_runs) == 0 &&
@@ -218,6 +219,19 @@ run "com_o_plano_de_controle" {
     error_message = "cpSecretVersionDestroyer: só listar e destruir versões, concedido por cofre (envs/tenant), nunca no projeto."
   }
 
+  # O papel que o envs/cell-tenant concede ao cp-worker na conta de cada cliente da célula: só desativar, reativar e ler.
+  # Não é concedido no projeto, nem ao cp-terraform.
+  assert {
+    condition = (
+      google_project_iam_custom_role.tenant_sa_toggle[0].project == "projeto-exemplo-nos" &&
+      google_project_iam_custom_role.tenant_sa_toggle[0].role_id == "cpTenantSaToggle" &&
+      google_project_iam_custom_role.tenant_sa_toggle[0].permissions == toset(["iam.serviceAccounts.disable", "iam.serviceAccounts.enable", "iam.serviceAccounts.get"]) &&
+      !contains([for member in google_project_iam_member.terraform_nodes : member.role], google_project_iam_custom_role.tenant_sa_toggle[0].id) &&
+      google_project_iam_member.worker_node_lifecycle[0].role != google_project_iam_custom_role.tenant_sa_toggle[0].id
+    )
+    error_message = "cpTenantSaToggle: só desativar e reativar, concedido por conta (envs/cell-tenant), nunca no projeto."
+  }
+
   # Nenhuma concessão do cp-worker no projeto além do ciclo de vida das VMs (os cofres são por tenant).
   assert {
     condition = alltrue([
@@ -229,7 +243,8 @@ run "com_o_plano_de_controle" {
   assert {
     condition = (
       output.control_plane_roles.cpNodeLifecycle == google_project_iam_custom_role.node_lifecycle[0].id &&
-      output.control_plane_roles.cpSecretVersionDestroyer == google_project_iam_custom_role.secret_version_destroyer[0].id
+      output.control_plane_roles.cpSecretVersionDestroyer == google_project_iam_custom_role.secret_version_destroyer[0].id &&
+      output.control_plane_roles.cpTenantSaToggle == google_project_iam_custom_role.tenant_sa_toggle[0].id
     )
     error_message = "A saída control_plane_roles não traz os papéis personalizados."
   }

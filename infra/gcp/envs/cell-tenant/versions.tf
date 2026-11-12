@@ -1,7 +1,7 @@
 # O que é de cada cliente da célula (fase 3, CE-07): um estado por cliente, no bucket do estado do projeto dos nós
 # (envs/nodes-platform), no prefixo `cells/<célula>/tenants/<slug>`, aplicado pelo executor Terraform do plano de
-# controle (o Job `cp-terraform`) com as variáveis de cada cliente. Os recursos ficam no projeto da célula (hoje, o do nó
-# da Verax). Ninguém aplica este ambiente à mão, fora o `plan` de aceite (docs/runbooks/celula.md).
+# controle (o Job `cp-terraform`) com as variáveis de cada cliente. Os recursos ficam no projeto dos nós (main.tf diz
+# por quê). Ninguém aplica este ambiente à mão, fora o `plan` de aceite (docs/runbooks/celula.md).
 
 terraform {
   required_version = ">= 1.11.0"
@@ -18,7 +18,7 @@ terraform {
   backend "gcs" {}
 }
 
-# Sem `user_project_override`, como no envs/tenant: cada chamada é cobrada do projeto do recurso (o da célula).
+# Sem `user_project_override`, como no envs/tenant: cada chamada é cobrada do projeto do recurso (o dos nós).
 provider "google" {
   project = var.project_id
   region  = var.region

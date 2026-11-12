@@ -1,10 +1,15 @@
-# O que é de um cliente na célula (CE-07; docs/ARQUITETURA.md, "Célula compartilhada (Plataforma)"), no projeto da
-# célula. Cada permissão vale só para o recurso do cliente, nunca para o projeto:
+# O que é de um cliente na célula (CE-07; docs/ARQUITETURA.md, "Célula compartilhada (Plataforma)"), no projeto dos
+# nós de clientes (o do envs/nodes-platform), e não no da célula. O projeto da célula é o do nó da Verax, com a conta que
+# assina as versões do nó: para criar contas de serviço e dar acesso a elas, o cp-terraform precisaria de
+# `iam.serviceAccounts.setIamPolicy` no projeto, e a GCP não aceita condição pelo nome da conta (nem do tópico) para
+# limitar isso aos clientes. No projeto dos nós, o cp-terraform já administra contas, cofres e Pub/Sub (os nós
+# dedicados), e nada da Verax mora lá. A VM da célula recebe, de outro projeto, as permissões em cada recurso do cliente.
+# Cada permissão vale só para o recurso do cliente, nunca para o projeto:
 #
 # - a conta de serviço do cliente (`vxt-<slug>`): é a identidade dele na AWS (o papel de leitura confia no ID único
 #   dela). A VM da célula só emite o token OIDC dela (`serviceAccountOpenIdTokenCreator`, nesta conta e em nenhuma
 #   outra; nenhum token de acesso, então nada na GCP com ela), e o cp-worker só a desativa e reativa (o papel
-#   `cpTenantSaToggle_<célula>` do envs/celula, só nela), na suspensão. Só o `slug` e o `project_id` decidem se ela é
+#   `cpTenantSaToggle` do envs/nodes-platform, só nela), na suspensão. Só o `slug` e o `project_id` decidem se ela é
 #   recriada, e o executor recusa um plano que a apague ou recrie fora da exclusão do cliente (a conta nova teria outro
 #   ID único, e o papel da AWS do cliente deixaria de aceitar a célula);
 # - o cofre do primeiro acesso (`vxt-<slug>-admin-bootstrap`): a VM só grava a senha temporária (o host, start.sh
@@ -18,8 +23,8 @@ locals {
   tenant_account_id = "vxt-${var.slug}"
   cell_member       = "serviceAccount:${var.cell_node_service_account}"
   worker_member     = "serviceAccount:${var.control_plane_sa}"
-  # O papel do cp-worker na conta do cliente, criado uma vez por célula pelo envs/celula (control_plane.tf).
-  toggle_role = "projects/${var.project_id}/roles/cpTenantSaToggle_${var.cell_id}"
+  # O papel do cp-worker na conta do cliente, criado uma vez no projeto dos nós (envs/nodes-platform, control_plane.tf).
+  toggle_role = "projects/${var.project_id}/roles/cpTenantSaToggle"
 }
 
 resource "google_service_account" "tenant" {

@@ -72,7 +72,5 @@ output "cell" {
     reports_push_service_account = local.cell_channel ? google_service_account.reports_push[0].email : null
     reports_push_endpoint        = local.cell_channel ? local.reports_endpoint : null
     backup_retention_days        = var.backup_retention_days
-    # O envs/cell-tenant de cada cliente: o papel do cp-worker na conta do cliente (CE-07).
-    tenant_sa_toggle_role = local.cell_channel ? google_project_iam_custom_role.tenant_sa_toggle[0].id : null
   }
 }

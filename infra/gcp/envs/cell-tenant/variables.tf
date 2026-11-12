@@ -3,7 +3,7 @@
 # daqui é a terceira: o `plan` para antes de criar qualquer coisa com um valor fora do formato.
 
 variable "project_id" {
-  description = "Projeto da GCP da célula (CELL_PROJECT_ID): o do envs/celula, onde ficam a VM e as contas de cada cliente."
+  description = "Projeto dos nós de clientes (NODES_PROJECT_ID, o do envs/nodes-platform), onde ficam a conta de serviço, o cofre e os tópicos de cada cliente da célula. Não é o projeto da célula: lá (o do nó da Verax, com a chave de release) o cp-terraform não tem permissão nenhuma."
   type        = string
 
   validation {
@@ -12,8 +12,18 @@ variable "project_id" {
   }
 }
 
+variable "cell_project_id" {
+  description = "Projeto da GCP da célula (CELL_PROJECT_ID; o do envs/celula), onde fica a VM: a conta de serviço dela tem de ser desse projeto."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.cell_project_id))
+    error_message = "ID de projeto da GCP inválido (6 a 30 caracteres, minúsculas, números e hífen)."
+  }
+}
+
 variable "region" {
-  description = "Região da célula (CELL_REGION): o cofre e os tópicos guardam os dados só nela."
+  description = "Região da célula (CELL_REGION): o cofre e os tópicos do cliente guardam os dados só nela."
   type        = string
   default     = "southamerica-east1"
 
@@ -48,7 +58,7 @@ variable "cell_node_service_account" {
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@${var.project_id}\\.iam\\.gserviceaccount\\.com$", var.cell_node_service_account))
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@${var.cell_project_id}\\.iam\\.gserviceaccount\\.com$", var.cell_node_service_account))
     error_message = "Use o e-mail da conta de serviço da VM da célula, no projeto da célula."
   }
 }

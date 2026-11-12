@@ -722,7 +722,7 @@ check 'célula: o Terraform roda no envs/cell-tenant, e só nele' \
 check 'célula: init com o prefixo cells/<célula>/tenants/<slug>' \
   grep -qxF "init -no-color -input=false -lockfile=readonly -backend-config=bucket=projeto-exemplo-nos-tfstate -backend-config=prefix=cells/sp1/tenants/$slug" "$fake/calls"
 cell_vars=(
-  "TF_VAR_project_id=$cell_project" "TF_VAR_region=southamerica-east1" "TF_VAR_cell_id=sp1" "TF_VAR_slug=$slug"
+  "TF_VAR_project_id=projeto-exemplo-nos" "TF_VAR_cell_project_id=$cell_project" "TF_VAR_region=southamerica-east1" "TF_VAR_cell_id=sp1" "TF_VAR_slug=$slug"
   "TF_VAR_cell_node_service_account=verax-celula@$cell_project.iam.gserviceaccount.com"
   "TF_VAR_control_plane_sa=cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" "TF_VAR_gcp_sources=$canonical"
 )

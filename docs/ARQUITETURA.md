@@ -1357,8 +1357,11 @@ da própria Verax** muda para a célula como o primeiro cliente dela e é o test
 
 A primeira célula, `verax-celula`, é o `envs/celula` (`infra/gcp/GUIA.md`), criada no **projeto do nó da Verax**, e
 não num projeto próprio das células, por decisão do responsável: por ora, uma célula só não chega à cota de contas de
-serviço por projeto (cerca de 100) nem pede um orçamento à parte. Um projeto das células volta à mesa quando a cota ou
-o orçamento pedirem. Esta seção é o registro da decisão (ADR); o detalhamento por PR está no estudo da fase 3, fora do
+serviço por projeto (cerca de 100) nem pede um orçamento à parte. O que é de cada cliente da célula (a conta de
+serviço, o cofre do primeiro acesso e os tópicos da GCP) fica no projeto dos nós de clientes, onde o plano de controle
+já administra os nós dedicados (o porquê está em "Ameaças de isolamento e mitigação"); a cota de contas desse projeto
+passa a ser dividida entre os nós dedicados e os clientes da célula. Um projeto das células volta à mesa quando a cota
+ou o orçamento pedirem. Esta seção é o registro da decisão (ADR); o detalhamento por PR está no estudo da fase 3, fora do
 repositório, e o que já está no código tem a marca de feito.
 
 ```
@@ -1368,10 +1371,12 @@ api-<slug>.veraxsistemas.com.br ──CNAME──► túnel da célula (um por c
 GCP da Verax, projeto do nó da Verax (por ora)
   célula verax-celula: módulo node, perfil standard, IP do NAT reservado
     API (host → cliente) · worker · Postgres · Wazuh (manager e indexer) · cloudflared
-  uma conta de serviço por cliente, vxt-<slug> (a VM da célula só emite o token dela; a permissão fica em cada conta)
   Pub/Sub: comandos do plano de controle (só o cp-worker publica) · relatórios da célula (só a VM publica)
-  tópicos da GCP por cliente e projeto, com o UUID da conta no nome (nunca reaproveitado)
   buckets: backups da célula (85 dias) e exportações (<célula>/<cliente>/..., 31 dias)
+GCP da Verax, projeto dos nós de clientes (o dos nós dedicados; o cp-terraform não tem nada no projeto da célula)
+  uma conta de serviço por cliente da célula, vxt-<slug> (a VM só emite o token dela; a permissão fica em cada conta)
+  o cofre do primeiro acesso de cada cliente, vxt-<slug>-admin-bootstrap (a VM só grava)
+  tópicos da GCP por cliente e projeto, com o UUID da conta no nome (nunca reaproveitado; só a VM lê)
 ```
 
 **Dedicado e Plataforma lado a lado:**
@@ -1417,7 +1422,12 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
   serviço da célula e no IP do NAT dela, o cliente A cadastraria o ID da conta AWS de B, e a célula leria os logs de B
   para A com a identidade dividida. Por isso, **uma conta de serviço por cliente**, `vxt-<slug>`, criada pelo
   `envs/cell-tenant` no provisionamento (**feito no CE-07**: o ambiente, as permissões só na conta, no cofre e nos
-  tópicos do cliente e o executor, que recusa recriar a conta fora do expurgo):
+  tópicos do cliente e o executor, que recusa recriar a conta fora do expurgo). As contas, os cofres e os tópicos dos
+  clientes da célula ficam no **projeto dos nós de clientes**, e não no da célula: a GCP não aceita condição do IAM pelo
+  nome de uma conta de serviço nem de um tópico, e o `setIamPolicy` de contas no projeto da célula (o do nó da Verax)
+  alcançaria a conta que assina as versões do nó. No projeto dos nós, o cp-terraform já administra contas, cofres e
+  Pub/Sub (com o mesmo risco que já tem sobre as contas dos nós dedicados, vigiado pelo alerta do CP-12); no projeto da
+  célula, ele não tem permissão nenhuma:
   - a VM da célula ganha `serviceAccountOpenIdTokenCreator` **só nessa conta** (nunca no projeto); o ID único dela
     vai do Terraform ao Firestore e chega à célula pelo comando do plano de controle, em `TenantCloudIdentity`, que
     nenhum schema de requisição aceita (meta-teste);
