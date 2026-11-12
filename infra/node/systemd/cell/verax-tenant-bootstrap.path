@@ -1,0 +1,12 @@
+# Célula (NODE_MODE=cell; CE-04): o worker deixou o pedido do primeiro administrador de um cliente em
+# /run/verax/tenant-bootstrap. Enquanto a pasta tiver arquivo, o serviço roda; o limite de partidas fica nele, e o timer
+# o arma de novo.
+[Unit]
+Description=Verax Control - pedido do primeiro acesso de um cliente da celula
+
+[Path]
+DirectoryNotEmpty=/run/verax/tenant-bootstrap
+Unit=verax-tenant-bootstrap.service
+
+[Install]
+WantedBy=paths.target

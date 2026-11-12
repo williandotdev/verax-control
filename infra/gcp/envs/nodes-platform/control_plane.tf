@@ -184,3 +184,25 @@ resource "google_project_iam_custom_role" "secret_version_destroyer" {
 
   depends_on = [google_project_service.apis]
 }
+
+# Suspender o cliente da célula (CE-07): desativar e reativar a conta de serviço `vxt-<slug>` dele, que o
+# envs/cell-tenant cria neste projeto. Não é concedido no projeto: o envs/cell-tenant o dá ao cp-worker só na conta de
+# cada cliente. As contas, os cofres e os tópicos dos clientes da célula ficam aqui, e não no projeto da célula (o do nó
+# da Verax, com a chave de release), porque aqui o cp-terraform já administra contas de serviço, cofres e Pub/Sub: no
+# projeto da Verax, a mesma permissão alcançaria a conta que assina as versões do nó (docs/ARQUITETURA.md, "Célula
+# compartilhada (Plataforma)").
+resource "google_project_iam_custom_role" "tenant_sa_toggle" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "cpTenantSaToggle"
+  title       = "Verax Control: suspender a conta de um cliente da célula"
+  description = "Desativar e reativar uma conta de serviço. Concedido ao cp-worker só na conta de cada cliente da célula (envs/cell-tenant)."
+  permissions = [
+    "iam.serviceAccounts.disable",
+    "iam.serviceAccounts.enable",
+    "iam.serviceAccounts.get",
+  ]
+
+  depends_on = [google_project_service.apis]
+}
