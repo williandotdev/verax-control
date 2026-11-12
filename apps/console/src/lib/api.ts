@@ -4,9 +4,6 @@ import type {
   LoginRequest,
   PasswordChangeRequest,
   RecoveryCodes,
-  SetupCompleted,
-  SetupStartRequest,
-  SetupStatus,
   TotpConfirmRequest,
   TotpEnrollment,
   TotpResetStartRequest,
@@ -206,16 +203,10 @@ export const tenantsApi = {
 const ACCOUNT = `${BASE}/account`;
 
 /**
- * A entrada no console e a conta do responsável: o primeiro acesso (`/configurar`, com o token de configuração), a
- * entrada com e-mail, senha e código do aplicativo (ou um código de recuperação), a saída e a troca de senha e de
+ * A entrada no console e a conta do responsável: a entrada com e-mail, senha e código do aplicativo (ou um código de recuperação), a saída e a troca de senha e de
  * aplicativo. Nada disso vai para a URL, o `localStorage` ou o log: só no corpo do pedido.
  */
 export const authApi = {
-  setupStatus: (): Promise<SetupStatus> => request('GET', `${BASE}/setup`),
-  setupStart: (body: SetupStartRequest): Promise<TotpEnrollment> =>
-    request('POST', `${BASE}/setup/start`, body),
-  setupConfirm: (body: TotpConfirmRequest): Promise<SetupCompleted> =>
-    request('POST', `${BASE}/setup/confirm`, body),
   login: (body: LoginRequest): Promise<AdminSession> => request('POST', `${BASE}/login`, body),
   logout: (): Promise<void> => request('POST', `${BASE}/logout`, {}),
   changePassword: (body: PasswordChangeRequest): Promise<void> =>

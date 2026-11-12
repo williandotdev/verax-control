@@ -6,15 +6,15 @@
 # Quem entra é decidido pelo próprio app (decisão do responsável, 09/11/2026, no lugar do IAP): e-mail de
 # `owner_principals`, senha (scrypt) e código do aplicativo autenticador (TOTP), com bloqueio depois de 5 códigos errados
 # (com a senha certa) em 15 minutos, limites de falhas por IP e no total e sessão no Firestore (cookie `__session`, o
-# único que o Hosting repassa ao Cloud Run). O primeiro cadastro (`/configurar`) exige o token de uso único do
-# segredo `cp-admin-setup-token`; o segredo do TOTP fica cifrado no Firestore com a chave derivada de
-# `cp-admin-totp-key` (secrets.tf). Os dois são lidos pela API do Secret Manager na hora do uso, não montados: sem eles
-# o serviço sobe e o `/health` responde; só o login e o cadastro respondem 503. Passo a passo em
+# único que o Hosting repassa ao Cloud Run). Não há tela nem rota de cadastro: a conta nasce pela linha de comando de
+# quem tem as credenciais de dono do projeto (`cadastro-responsavel`). O segredo do TOTP fica cifrado no Firestore com
+# a chave derivada de `cp-admin-totp-key` (secrets.tf), lida pela API do Secret Manager na hora do uso, não montada:
+# sem ela o serviço sobe e o `/health` responde; só o login responde 503. Passo a passo em
 # docs/runbooks/console-do-responsavel.md.
 #
 # Por isso o serviço aceita invocação anônima (`allUsers`), como o cp-public: o rewrite do Hosting chama o Cloud Run sem
-# token de identidade e exige isso. A barreira é o app: toda rota fora de `/health`, do login e do cadastro exige uma
-# sessão de responsável. A conta do serviço lê e grava o Firestore, lê os dois segredos do console e, com os serviços no
+# token de identidade e exige isso. A barreira é o app: toda rota fora de `/health` e do login exige uma sessão de
+# responsável. A conta do serviço lê e grava o Firestore, lê a chave do console e, com os serviços no
 # ar, invoca o cp-worker (só `run.invoker` nele, abaixo): é assim que as operações do responsável chegam ao worker, com o
 # token da própria conta e o e-mail da sessão no corpo (o worker aceita essa conta só nas operações do responsável,
 # `ADMIN_SA_EMAIL` em run.tf). Da Stripe, só o id da alíquota do imposto por cima (`STRIPE_TAX_RATE_ID`), sem chave.
@@ -25,7 +25,7 @@ locals {
   # Só o que o console usa: nenhuma variável do site, da Stripe, das filas ou do provisionamento (o app tira as de
   # outro papel, mas aqui elas nem chegam), e nenhum segredo montado. `WORKER_URL` é a audiência do token que o console
   # pede ao servidor de metadados para chamar o cp-worker (a mesma URL determinística de run.tf);
-  # `ADMIN_SECRETS_PROJECT_ID` é o projeto dos segredos `cp-admin-totp-key` e `cp-admin-setup-token`, lidos pela API.
+  # `ADMIN_SECRETS_PROJECT_ID` é o projeto do segredo `cp-admin-totp-key`, lido pela API.
   # `TRUSTED_PROXIES` não vai para o console, de propósito, nem a de `service_env`: confiar nas saídas da CDN do Hosting
   # (Fastly) deixaria qualquer um com um serviço na mesma CDN chamar o `run.app` com um `X-Forwarded-For` escolhido e
   # escapar do limite por IP do login. Sem ela, quem chega pelo Hosting conta no balde da saída do Hosting; o que segura
@@ -52,7 +52,7 @@ resource "google_service_account" "admin" {
 }
 
 # Só o Firestore (as tabelas de preço, os modelos de custo, os clientes, a auditoria e as contas e sessões do console).
-# Os dois segredos do console são concedidos em cada segredo (secrets.tf), nunca no projeto. Nenhuma fila, nada da Stripe.
+# A chave do console é concedida no segredo (secrets.tf), nunca no projeto. Nenhuma fila, nada da Stripe.
 resource "google_project_iam_member" "admin" {
   for_each = var.admin_enabled ? toset(["roles/datastore.user"]) : toset([])
 
@@ -93,7 +93,7 @@ resource "google_cloud_run_v2_service" "admin" {
         cpu_idle = true
       }
 
-      # `/health` responde sem sessão (como o login e o cadastro); é a sonda de partida.
+      # `/health` responde sem sessão (como o login); é a sonda de partida.
       startup_probe {
         period_seconds    = 5
         failure_threshold = 12

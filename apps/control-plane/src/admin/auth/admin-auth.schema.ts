@@ -20,10 +20,10 @@ export const LOCKOUT_THRESHOLD = 5;
 export const LOCKOUT_WINDOW_MS = 15 * MINUTE_MS;
 export const LOCKOUT_DURATION_MS = 15 * MINUTE_MS;
 
-/** O cadastro do TOTP (primeiro cadastro ou troca do aplicativo) vale 10 min entre o QR e o código. */
+/** A troca do aplicativo vale 10 min entre o QR e o código. */
 export const ENROLLMENT_TTL_MS = 10 * MINUTE_MS;
 
-/** Os ids opacos (sessão, cadastro pendente): 32 bytes aleatórios em base64url, 43 caracteres. */
+/** Os ids opacos (sessão, troca do aplicativo pendente): 32 bytes aleatórios em base64url, 43 caracteres. */
 const OPAQUE_ID_BYTES = 32;
 export const opaqueIdSchema = z
   .string()
@@ -34,7 +34,7 @@ export function newOpaqueId(): string {
   return randomBytes(OPAQUE_ID_BYTES).toString('base64url');
 }
 
-/** O id do documento de um valor opaco (sessão ou cadastro): só o SHA-256 dele vai ao Firestore. */
+/** O id do documento de um valor opaco (sessão ou troca do aplicativo): só o SHA-256 dele vai ao Firestore. */
 export function opaqueRef(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
@@ -60,8 +60,6 @@ export function throttleRef(email: string): string {
     .update(`login:${normalizeEmail(email)}`, 'utf8')
     .digest('hex');
 }
-
-export const ADMIN_SETUP_MARKER = 'owner';
 
 const date = z.date();
 const emailField = z.string().min(3).max(254);
@@ -104,21 +102,19 @@ export const loginThrottleSchema = z.strictObject({
 });
 export type LoginThrottle = z.infer<typeof loginThrottleSchema>;
 
-export const ENROLLMENT_KINDS = ['setup', 'totp_reset'] as const;
+export const ENROLLMENT_KINDS = ['totp_reset'] as const;
 
-/** `adminEnrollments/{sha256 do id}`: um cadastro do TOTP à espera do primeiro código. */
+/** `adminEnrollments/{sha256 do id}`: uma troca do aplicativo à espera do primeiro código. */
 export const adminEnrollmentSchema = z.strictObject({
   kind: z.enum(ENROLLMENT_KINDS),
   email: emailField,
-  /** Só no primeiro cadastro: o hash da senha escolhida, que vira a conta na confirmação. */
-  passwordHash: z.string().min(1).max(256).optional(),
   totp: sealedSecretSchema,
-  /** Só na troca do aplicativo: a sessão que começou (outra sessão não confirma). */
+  /** A sessão que começou (outra sessão não confirma). */
   sessionRef: z
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
-  /** Só na troca do aplicativo: as credenciais conferidas no começo (`credentialStamp`); mudaram, não confirma. */
+  /** As credenciais conferidas no começo (`credentialStamp`); mudaram, não confirma. */
   credentialStamp: z
     .string()
     .regex(/^[0-9a-f]{64}$/)
@@ -128,18 +124,13 @@ export const adminEnrollmentSchema = z.strictObject({
 });
 export type AdminEnrollment = z.infer<typeof adminEnrollmentSchema>;
 
-/** `adminSetup/owner`: existe depois do primeiro cadastro e fecha o `/configurar`. */
-export const adminSetupMarkerSchema = z.strictObject({
-  completedAt: date,
-  accountRef: z.string().regex(/^[0-9a-f]{64}$/),
-});
-
 // Pedidos (zod; os caminhos dos problemas são os nomes dos campos do formulário do console).
 
 const loginCode = z.string().max(16);
 const loginRecoveryCode = z.string().max(32);
 const currentPassword = z.string().min(1).max(PASSWORD_MAX_LENGTH);
-const newPassword = z
+/** A senha nova (troca no console ou cadastro pela linha de comando): 12 a 128 caracteres. */
+export const newPasswordSchema = z
   .string()
   .min(PASSWORD_MIN_LENGTH, { error: `A senha precisa ter ao menos ${PASSWORD_MIN_LENGTH} caracteres.` })
   .max(PASSWORD_MAX_LENGTH, { error: `A senha pode ter até ${PASSWORD_MAX_LENGTH} caracteres.` });
@@ -174,13 +165,6 @@ export const loginRequestSchema = z
   .refine(oneSecondFactor, SECOND_FACTOR_ERROR);
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 
-export const setupStartRequestSchema = z.strictObject({
-  setupToken: z.string().min(1).max(512),
-  email: z.email({ error: 'Informe um e-mail válido.' }).max(254),
-  password: newPassword,
-});
-export type SetupStartRequest = z.infer<typeof setupStartRequestSchema>;
-
 export const enrollmentConfirmRequestSchema = z.strictObject({
   enrollmentId: z.string().max(64),
   code: loginCode,
@@ -190,7 +174,7 @@ export type EnrollmentConfirmRequest = z.infer<typeof enrollmentConfirmRequestSc
 export const passwordChangeRequestSchema = z.strictObject({
   currentPassword,
   code: loginCode,
-  newPassword,
+  newPassword: newPasswordSchema,
 });
 export type PasswordChangeRequest = z.infer<typeof passwordChangeRequestSchema>;
 

@@ -1,9 +1,16 @@
 import { randomBytes } from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import { PinoLogger } from 'nestjs-pino';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { opaqueRef, throttleRef } from '../src/admin/auth/admin-auth.schema.js';
-import { LOGIN_FAILED_MESSAGE } from '../src/admin/auth/admin-auth.service.js';
+import {
+  AdminAuthService,
+  LOGIN_FAILED_MESSAGE,
+  type OwnerEnrollmentRequest,
+} from '../src/admin/auth/admin-auth.service.js';
+import { newTotpSecret } from '../src/admin/auth/totp.js';
+import { AuditService } from '../src/audit/audit.service.js';
 import { COLLECTIONS } from '../src/firestore/collections.js';
 import type { DocumentTransaction } from '../src/firestore/document-store.js';
 import { MemoryDocumentStore } from '../src/firestore/memory-document-store.js';
@@ -41,6 +48,8 @@ class RacingStore extends MemoryDocumentStore {
 const OWNER = 'responsavel@verax.example';
 const SECOND_OWNER = 'outro-responsavel@verax.example';
 const STRANGER = 'outra-pessoa@verax.example';
+/** Quem roda o cadastro pela linha de comando (o e-mail das credenciais do Google). */
+const OPERATOR = 'operador@verax.example';
 
 interface Enrolled {
   password: string;
@@ -50,8 +59,8 @@ interface Enrolled {
 }
 
 /**
- * O login próprio do console do responsável (cp-admin) pelo app inteiro: o primeiro cadastro (`/configurar`) com o
- * token do cofre, o login com senha e TOTP (os códigos calculados como o celular calcularia, no relógio do teste), o
+ * O login próprio do console do responsável (cp-admin) pelo app inteiro: o cadastro pelo serviço que a linha de comando
+ * usa (`enrollOwner`; não há cadastro por HTTP), o login com senha e TOTP (os códigos calculados como o celular calcularia, no relógio do teste), o
  * bloqueio, os códigos de recuperação, a saída, a troca da senha e do aplicativo, e o que nunca vai a log. O Firestore
  * e os cofres em memória; nada fala com o Google. Um app por arquivo.
  */
@@ -89,26 +98,23 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
     clock.advance(30_000);
   }
 
+  function service(): AdminAuthService {
+    return app.get(AdminAuthService);
+  }
+
+  /** O cadastro como a linha de comando faz (`cli/cadastro-responsavel.ts`), seguido do primeiro login. */
   async function enroll(email = OWNER): Promise<Enrolled> {
     const password = newPassword();
-    const started = await post('/v1/admin/setup/start', {
-      setupToken: secrets.setup,
-      email,
-      password,
-    }).expect(200);
-    const { enrollmentId, secret } = started.body as { enrollmentId: string; secret: string };
-    const confirmed = await post('/v1/admin/setup/confirm', {
-      enrollmentId,
-      code: await totpAt(secret, clock.now()),
-    }).expect(200);
-    const id = sessionIdFrom(confirmed.headers['set-cookie']);
+    const secret = newTotpSecret();
+    const { recoveryCodes } = await service().enrollOwner(
+      { email, password, secret, code: await totpAt(secret, clock.now()), replace: false },
+      { email: OPERATOR },
+    );
+    nextStep();
+    const response = await login(email, password, { code: await totpAt(secret, clock.now()) }).expect(200);
+    const id = sessionIdFrom(response.headers['set-cookie']);
     expect(id).toBeDefined();
-    return {
-      password,
-      secret,
-      recoveryCodes: (confirmed.body as { recoveryCodes: string[] }).recoveryCodes,
-      cookie: sessionCookie(id ?? ''),
-    };
+    return { password, secret, recoveryCodes, cookie: sessionCookie(id ?? '') };
   }
 
   function login(email: string, password: string, factor: Record<string, string>): request.Test {
@@ -151,170 +157,168 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
     ipSequence += 1;
     ip = `198.51.100.${ipSequence}`;
     secrets.failing = false;
-    secrets.setup = randomBytes(32).toString('base64url');
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  describe('primeiro cadastro (/configurar)', () => {
-    it('aberto até o primeiro cadastro; token, e-mail de OWNER_PRINCIPALS e senha de 12+; depois fecha', async () => {
-      await request(app.getHttpServer()).get('/v1/admin/setup').expect(200, { open: true });
-      const password = newPassword();
-
-      // Senha curta: 400 com o campo; nada gravado.
-      const short = await post('/v1/admin/setup/start', {
-        setupToken: secrets.setup,
-        email: OWNER,
-        password: 'curta',
-      }).expect(400);
-      expect(short.body).toMatchObject({
-        code: 'invalid_request',
-        details: { issues: [{ path: 'password' }] },
-      });
-
-      // Token errado ou e-mail de fora: a mesma recusa, sem dizer qual.
-      const wrongToken = await post('/v1/admin/setup/start', {
-        setupToken: randomBytes(32).toString('base64url'),
-        email: OWNER,
-        password,
-      }).expect(403);
-      const stranger = await post('/v1/admin/setup/start', {
-        setupToken: secrets.setup,
-        email: STRANGER,
-        password,
-      }).expect(403);
-      const { requestId: _first, ...refusedToken } = wrongToken.body as Record<string, unknown>;
-      const { requestId: _second, ...refusedEmail } = stranger.body as Record<string, unknown>;
-      expect(refusedToken).toEqual(refusedEmail);
-      expect(wrongToken.body).toMatchObject({ code: 'setup_refused' });
+  describe('cadastro (só pela linha de comando)', () => {
+    it('não existe cadastro por HTTP: as rotas da antiga tela /configurar não respondem e nada é gravado', async () => {
+      await request(app.getHttpServer()).get('/v1/admin/setup').set('X-Forwarded-For', ip).expect(404);
+      for (const path of ['/v1/admin/setup/start', '/v1/admin/setup/confirm']) {
+        const response = await post(path, { email: OWNER, password: newPassword(), code: '123456' });
+        expect(response.status, path).toBe(404);
+      }
+      expect(await documents.query(COLLECTIONS.adminAccounts)).toHaveLength(0);
       expect(await documents.query(COLLECTIONS.adminEnrollments)).toHaveLength(0);
+    });
 
-      const started = await post('/v1/admin/setup/start', {
-        setupToken: secrets.setup,
-        email: OWNER.toUpperCase(),
-        password,
-      }).expect(200);
-      const view = started.body as {
-        enrollmentId: string;
-        otpauthUri: string;
-        secret: string;
-        expiresAt: string;
-      };
-      expect(view.otpauthUri).toContain(`secret=${view.secret}`);
-      expect(view.expiresAt).toBe(new Date(clock.now().getTime() + 10 * MINUTE_MS).toISOString());
-      // No Firestore, nem o id do cadastro nem o segredo em claro.
-      const pending = await documents.query(COLLECTIONS.adminEnrollments);
-      expect(pending.map((doc) => doc.id)).toEqual([opaqueRef(view.enrollmentId)]);
-      expect(JSON.stringify(pending)).not.toContain(view.secret);
-      expect(JSON.stringify(pending)).not.toContain(password);
+    it('e-mail fora de OWNER_PRINCIPALS, senha curta ou código errado: recusado, nada gravado', async () => {
+      const secret = newTotpSecret();
+      const code = await totpAt(secret, clock.now());
+      const attempt = (fields: Partial<OwnerEnrollmentRequest>) =>
+        service().enrollOwner(
+          { email: OWNER, password: newPassword(), secret, code, replace: false, ...fields },
+          { email: OPERATOR },
+        );
+      await expect(attempt({ email: STRANGER })).rejects.toMatchObject({ code: 'not_owner' });
+      await expect(attempt({ password: 'curta' })).rejects.toMatchObject({ code: 'invalid_password' });
+      await expect(attempt({ code: '000000' })).rejects.toMatchObject({ code: 'invalid_code' });
+      expect(await documents.query(COLLECTIONS.adminAccounts)).toHaveLength(0);
+      expect(await documents.query(COLLECTIONS.auditLog)).toHaveLength(0);
+    });
 
-      // Código errado: 400; certo: conta criada, sessão aberta, 10 códigos de recuperação mostrados uma vez.
-      await post('/v1/admin/setup/confirm', { enrollmentId: view.enrollmentId, code: '000000' }).expect(400);
-      const confirmed = await post('/v1/admin/setup/confirm', {
-        enrollmentId: view.enrollmentId,
-        code: await totpAt(view.secret, clock.now()),
-      }).expect(200);
-      const body = confirmed.body as { email: string; recoveryCodes: string[] };
-      expect(body.email).toBe(OWNER);
-      expect(body.recoveryCodes).toHaveLength(10);
-      const id = sessionIdFrom(confirmed.headers['set-cookie']);
-      expect(confirmed.body).not.toHaveProperty('sessionId');
-      await me(sessionCookie(id ?? '')).expect(200, { email: OWNER });
-
+    it('cria a conta com as chaves do login: nada em claro, o código do cadastro não entra de novo', async () => {
+      const password = newPassword();
+      const secret = newTotpSecret();
+      const code = await totpAt(secret, clock.now());
+      const result = await service().enrollOwner(
+        { email: OWNER.toUpperCase(), password, secret, code, replace: false },
+        { email: OPERATOR, requestId: 'cadastro-de-teste-1' },
+      );
+      expect(result).toMatchObject({ email: OWNER, replaced: false, sessionsRevoked: 0 });
+      expect(result.recoveryCodes).toHaveLength(10);
+      expect(new Set(result.recoveryCodes).size).toBe(10);
       const accounts = await documents.query(COLLECTIONS.adminAccounts);
       expect(accounts).toHaveLength(1);
       const stored = JSON.stringify(accounts);
-      for (const secret of [password, view.secret, ...body.recoveryCodes])
-        expect(stored).not.toContain(secret);
+      for (const value of [password, secret, ...result.recoveryCodes]) expect(stored).not.toContain(value);
       expect(stored).toContain('scrypt$15$8$3$');
-
-      // Fechado: o mesmo cadastro não volta (410), e nenhum outro começa (409), nem de outro responsável.
-      await request(app.getHttpServer()).get('/v1/admin/setup').expect(200, { open: false });
-      await post('/v1/admin/setup/confirm', {
-        enrollmentId: view.enrollmentId,
-        code: await totpAt(view.secret, clock.now()),
-      }).expect(410);
-      const again = await post('/v1/admin/setup/start', {
-        setupToken: secrets.setup,
-        email: SECOND_OWNER,
-        password: newPassword(),
-      }).expect(409);
-      expect(again.body).toMatchObject({ code: 'setup_closed' });
-      expect(capture.entries().some((entry) => entry['event'] === 'admin_setup_completed')).toBe(true);
+      // O código que confirmou o cadastro já foi aceito: o login exige o próximo.
+      await login(OWNER, password, { code }).expect(401);
+      nextStep();
+      await login(OWNER, password, { code: await totpAt(secret, clock.now()) }).expect(200);
+      // Os códigos de recuperação só como HMAC (o login com eles está nos testes de login abaixo).
+      expect(accounts[0]?.data['recoveryCodes']).toHaveLength(10);
+      const audit = await documents.query(COLLECTIONS.auditLog, { orderBy: { field: 'at' } });
+      expect(audit[0]?.data).toMatchObject({
+        actor: `owner:${OPERATOR}`,
+        action: 'admin.account_created',
+        details: { account: OWNER, via: 'cli', sessionsRevoked: 0 },
+        requestId: 'cadastro-de-teste-1',
+      });
+      expect(capture.entries().some((entry) => entry['event'] === 'admin_owner_enrolled')).toBe(true);
     });
 
-    it('dois cadastros abertos ao mesmo tempo: só o primeiro a confirmar vale', async () => {
-      const starts = await Promise.all(
-        [OWNER, SECOND_OWNER].map(async (email) => {
-          const response = await post('/v1/admin/setup/start', {
-            setupToken: secrets.setup,
-            email,
-            password: newPassword(),
-          }).expect(200);
-          return response.body as { enrollmentId: string; secret: string };
+    it('conta existente: recusa sem replace; com replace, troca tudo e derruba as sessões dela', async () => {
+      const owner = await enroll();
+      const second = await enroll(SECOND_OWNER);
+      const secret = newTotpSecret();
+      const password = newPassword();
+      nextStep();
+      const fields = { email: OWNER, password, secret, code: await totpAt(secret, clock.now()) };
+      await expect(
+        service().enrollOwner({ ...fields, replace: false }, { email: OPERATOR }),
+      ).rejects.toMatchObject({ code: 'account_exists' });
+      await me(owner.cookie).expect(200);
+      const replaced = await service().enrollOwner({ ...fields, replace: true }, { email: OPERATOR });
+      expect(replaced).toMatchObject({ replaced: true, sessionsRevoked: 1 });
+      expect(replaced.recoveryCodes).not.toContain(owner.recoveryCodes[0]);
+      await me(owner.cookie).expect(401);
+      // A sessão do outro responsável continua.
+      await me(second.cookie).expect(200);
+      nextStep();
+      await login(OWNER, owner.password, { code: await totpAt(secret, clock.now()) }).expect(401);
+      await login(OWNER, password, { code: await totpAt(owner.secret, clock.now()) }).expect(401);
+      await login(OWNER, password, { recoveryCode: owner.recoveryCodes[1] ?? '' }).expect(401);
+      await login(OWNER, password, { code: await totpAt(secret, clock.now()) }).expect(200);
+      const actions = (await documents.query(COLLECTIONS.auditLog)).map((doc) => doc.data['action']);
+      expect(actions).toContain('admin.account_replaced');
+    });
+
+    it('substituir zera o bloqueio da conta', async () => {
+      await enroll();
+      // O bloqueio gravado direto (o que 5 códigos errados gravariam), sem pôr linhas de bloqueio no log dos outros testes.
+      const now = clock.now();
+      const lockedUntil = new Date(now.getTime() + 15 * MINUTE_MS);
+      await documents.runTransaction((tx) => {
+        tx.set(COLLECTIONS.adminLoginThrottle, throttleRef(OWNER), {
+          failures: 0,
+          windowStartedAt: now,
+          lockedUntil,
+          expiresAt: lockedUntil,
+        });
+        return Promise.resolve();
+      });
+      const secret = newTotpSecret();
+      const password = newPassword();
+      await service().enrollOwner(
+        { email: OWNER, password, secret, code: await totpAt(secret, clock.now()), replace: true },
+        { email: OPERATOR },
+      );
+      expect(await documents.get(COLLECTIONS.adminLoginThrottle, throttleRef(OWNER))).toBeUndefined();
+      nextStep();
+      await login(OWNER, password, { code: await totpAt(secret, clock.now()) }).expect(200);
+    });
+
+    it('encerrar as sessões apaga todas, de todo responsável, com auditoria', async () => {
+      const owner = await enroll();
+      const second = await enroll(SECOND_OWNER);
+      expect(await service().revokeAllSessions({ email: OPERATOR })).toBe(2);
+      await me(owner.cookie).expect(401);
+      await me(second.cookie).expect(401);
+      expect(await documents.query(COLLECTIONS.adminSessions)).toHaveLength(0);
+      const audit = await documents.query(COLLECTIONS.auditLog);
+      expect(audit.map((doc) => doc.data)).toContainEqual(
+        expect.objectContaining({
+          actor: `owner:${OPERATOR}`,
+          action: 'admin.sessions_revoked',
+          details: { via: 'cli', sessionsRevoked: 2 },
         }),
       );
-      const [first, second] = starts;
-      await post('/v1/admin/setup/confirm', {
-        enrollmentId: first?.enrollmentId,
-        code: await totpAt(first?.secret ?? '', clock.now()),
-      }).expect(200);
-      const late = await post('/v1/admin/setup/confirm', {
-        enrollmentId: second?.enrollmentId,
-        code: await totpAt(second?.secret ?? '', clock.now()),
-      }).expect(409);
-      expect(late.body).toMatchObject({ code: 'setup_closed' });
-      expect(await documents.query(COLLECTIONS.adminAccounts)).toHaveLength(1);
     });
 
-    it('o cadastro pendente vence em 10 min; sem o token no cofre ou sem a chave, 503', async () => {
-      const started = await post('/v1/admin/setup/start', {
-        setupToken: secrets.setup,
+    it('sem a chave do cofre (vazio ou fora do ar): 503, nada gravado', async () => {
+      const key = secrets.totp;
+      secrets.totp = undefined;
+      const fresh = new AdminAuthService(
+        documents,
+        clock,
+        { OWNER_PRINCIPALS: [OWNER] },
+        secrets,
+        new AuditService(documents, clock),
+        new PinoLogger({ pinoHttp: { level: 'silent' } }),
+      );
+      const secret = newTotpSecret();
+      const request = {
         email: OWNER,
         password: newPassword(),
-      }).expect(200);
-      const view = started.body as { enrollmentId: string; secret: string };
-      clock.advance(10 * MINUTE_MS);
-      const expired = await post('/v1/admin/setup/confirm', {
-        enrollmentId: view.enrollmentId,
-        code: await totpAt(view.secret, clock.now()),
-      }).expect(410);
-      expect(expired.body).toMatchObject({ code: 'enrollment_expired' });
-
-      const token = secrets.setup;
-      secrets.setup = undefined;
-      const noToken = await post('/v1/admin/setup/start', {
-        setupToken: token,
-        email: OWNER,
-        password: newPassword(),
-      }).expect(503);
-      expect(noToken.body).toMatchObject({ code: 'admin_unavailable' });
-      secrets.setup = token;
-      secrets.failing = true;
-      await post('/v1/admin/setup/start', {
-        setupToken: token,
-        email: OWNER,
-        password: newPassword(),
-      }).expect(503);
-    });
-
-    it('o cadastro tem limite por IP (10 em 15 min, 429)', async () => {
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        await post('/v1/admin/setup/start', {
-          setupToken: 'x',
-          email: OWNER,
-          password: newPassword(),
-        }).expect(403);
+        secret,
+        code: await totpAt(secret, clock.now()),
+        replace: false,
+      };
+      try {
+        await expect(fresh.ensureKeys()).rejects.toMatchObject({ code: 'admin_unavailable' });
+        secrets.totp = key;
+        secrets.failing = true;
+        await expect(fresh.enrollOwner(request, { email: OPERATOR })).rejects.toMatchObject({
+          code: 'admin_unavailable',
+        });
+      } finally {
+        secrets.totp = key;
       }
-      const limited = await post('/v1/admin/setup/start', {
-        setupToken: 'x',
-        email: OWNER,
-        password: newPassword(),
-      });
-      expect(limited.status).toBe(429);
-      expect(limited.headers['retry-after']).toBeDefined();
+      expect(await documents.query(COLLECTIONS.adminAccounts)).toHaveLength(0);
     });
   });
 
@@ -363,7 +367,7 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
         { email: STRANGER, password: owner.password, code: right },
         { email: OWNER, password: `${owner.password}x`, code: right },
         { email: OWNER, password: owner.password, code: wrong },
-        // O código do cadastro (passo já aceito): reuso.
+        // O código do login do cadastro (passo já aceito): reuso.
         { email: OWNER, password: owner.password, code: used },
       ];
       const bodies: unknown[] = [];
@@ -755,7 +759,8 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
         (doc) => [doc.data['actor'], doc.data['action']],
       );
       expect(actions).toEqual([
-        [`owner:${OWNER}`, 'admin.setup'],
+        [`owner:${OPERATOR}`, 'admin.account_created'],
+        [`owner:${OWNER}`, 'admin.login'],
         [`owner:${OWNER}`, 'admin.login'],
         [`owner:${OWNER}`, 'admin.logout'],
       ]);
@@ -765,7 +770,6 @@ describe('cp-admin: login próprio do console (senha + TOTP)', () => {
         owner.secret,
         code,
         id,
-        secrets.setup ?? '',
         secrets.totp ?? '',
         ...owner.recoveryCodes,
         OWNER,

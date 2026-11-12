@@ -1,27 +1,24 @@
 import { loadSecretManagerApi, type SecretManagerApi } from '../../access/bootstrap-secrets.js';
 
 /**
- * Os dois cofres do login do console no Secret Manager do projeto do plano de controle (`ADMIN_SECRETS_PROJECT_ID`),
- * lidos pela API com a identidade do cp-admin (`secretAccessor` só neles, secrets.tf), na versão `latest`. Não são
- * montados como variável: o serviço sobe com os cofres vazios (o login e o cadastro respondem 503 até o responsável
- * gravar) e a versão do token de cadastro pode ser desativada ou destruída depois do uso sem derrubar revisões novas.
+ * O cofre do login do console no Secret Manager do projeto do plano de controle (`ADMIN_SECRETS_PROJECT_ID`), lido pela
+ * API na versão `latest`: `cp-admin-totp-key`, a chave mestra (`admin-crypto.ts`). Não é montado como variável: o
+ * serviço sobe com o cofre vazio (o login responde 503 até o responsável gravar). Lido uma vez e guardado na memória do
+ * processo.
  *
- * - `cp-admin-totp-key`: a chave mestra (`admin-crypto.ts`). Lida uma vez e guardada na memória do processo;
- * - `cp-admin-setup-token`: o token de uso único do primeiro cadastro (`/configurar`). Lido a cada tentativa de
- *   cadastro (raras, e limitadas por IP), para uma versão nova ou desativada valer na hora.
+ * Quem lê: o cp-admin, com a identidade dele (`secretAccessor` só neste segredo, secrets.tf), e o cadastro pela linha
+ * de comando (`cli/cadastro-responsavel.ts`), com as credenciais de dono do projeto de quem o roda. O antigo
+ * `cp-admin-setup-token` (o token da tela de cadastro, que não existe mais) não é lido por ninguém.
  *
  * O conteúdo nunca vai a log nem a erro: uma falha da API vira só `undefined` ou `SecretUnavailableError`.
  */
 export const TOTP_KEY_VAULT = 'cp-admin-totp-key';
-export const SETUP_TOKEN_VAULT = 'cp-admin-setup-token';
 
 export const ADMIN_SECRETS = Symbol('ADMIN_SECRETS');
 
 export interface AdminSecretSource {
   /** O conteúdo do cofre da chave mestra; `undefined` sem versão habilitada. */
   totpKey(): Promise<string | undefined>;
-  /** O conteúdo do cofre do token de cadastro; `undefined` sem versão habilitada. */
-  setupToken(): Promise<string | undefined>;
 }
 
 /** A API do Secret Manager falhou (rede, permissão): o console responde 503, sem detalhe. */
@@ -57,10 +54,6 @@ export class SecretManagerAdminSecrets implements AdminSecretSource {
 
   totpKey(): Promise<string | undefined> {
     return this.read(TOTP_KEY_VAULT);
-  }
-
-  setupToken(): Promise<string | undefined> {
-    return this.read(SETUP_TOKEN_VAULT);
   }
 
   private async read(secretId: string): Promise<string | undefined> {

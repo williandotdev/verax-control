@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { authApi } from '@/lib/api';
 import type { LoginRequest } from '@/lib/api-types';
@@ -72,7 +72,7 @@ export function LoginPage() {
   return (
     <AuthFrame
       title="Entrar no console"
-      description="Use o e-mail, a senha e o código do aplicativo autenticador cadastrados no primeiro acesso."
+      description="Use o e-mail, a senha e o código do aplicativo autenticador da sua conta."
     >
       <form className="space-y-4" onSubmit={submit} noValidate aria-label="Entrar no console">
         <FormAlert message={login.isError ? errorMessage(login.error) : undefined} />
@@ -102,7 +102,7 @@ export function LoginPage() {
         {useRecovery ? (
           <TextField
             label="Código de recuperação"
-            hint="Um dos códigos guardados no primeiro acesso, como ABCDE-FGH23. Cada um entra uma vez."
+            hint="Um dos códigos guardados no cadastro, como ABCDE-FGH23. Cada um entra uma vez."
             name="recoveryCode"
             type="text"
             autoComplete="off"
@@ -132,11 +132,7 @@ export function LoginPage() {
         </div>
       </form>
       <p className="text-xs text-muted-foreground">
-        Primeiro acesso?{' '}
-        <Link to="/configurar" className="underline-offset-2 hover:underline">
-          Configure o console
-        </Link>{' '}
-        com o token de configuração.
+        Não há cadastro por aqui: a conta é criada por quem administra o projeto, pela linha de comando.
       </p>
     </AuthFrame>
   );

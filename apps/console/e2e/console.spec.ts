@@ -3,12 +3,7 @@ import { join } from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
 import { expect, type Page, type TestInfo, test } from '@playwright/test';
 import { createFakeState, type FakeAdminState } from '../src/mocks/fake-admin-api';
-import {
-  FICTITIOUS_LOGIN_PHRASE,
-  FICTITIOUS_SETUP_TOKEN,
-  FICTITIOUS_TOTP_CODE,
-  LOGIN_FAILED_MESSAGE,
-} from '../src/mocks/fake-auth';
+import { FICTITIOUS_LOGIN_PHRASE, FICTITIOUS_TOTP_CODE, LOGIN_FAILED_MESSAGE } from '../src/mocks/fake-auth';
 import { FICTITIOUS_OWNER } from '../src/mocks/fixtures';
 import { mockAdminApi } from './mock-api';
 
@@ -195,22 +190,25 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
-    test('primeiro acesso: o QR gerado no navegador e os códigos de recuperação', async ({
+    test('conta: a troca do aplicativo com o QR gerado no navegador e os códigos de recuperação', async ({
       page,
     }, testInfo) => {
-      const violations = await prepare(page, theme, createFakeState({ loggedIn: false, setupOpen: true }));
+      const violations = await prepare(page, theme);
+      // Não há tela de cadastro: a antiga /configurar é uma página que não existe.
       await page.goto('/configurar');
-      await page.getByLabel('Token de configuração').fill(FICTITIOUS_SETUP_TOKEN);
-      await page.getByLabel('E-mail').fill(FICTITIOUS_OWNER);
-      await page.getByLabel('Senha nova', { exact: true }).fill(FICTITIOUS_LOGIN_PHRASE);
-      await page.getByLabel('Confirme a senha nova').fill(FICTITIOUS_LOGIN_PHRASE);
-      await page.getByRole('button', { name: 'Continuar' }).click();
+      await expect(page.getByRole('heading', { name: 'Página não encontrada' })).toBeVisible();
+      await page.goto('/conta');
+      const form = page.getByRole('form', { name: 'Trocar o aplicativo autenticador' });
+      await form.getByLabel('Senha atual').fill(FICTITIOUS_LOGIN_PHRASE);
+      await form.getByLabel('Código do aplicativo atual').fill(FICTITIOUS_TOTP_CODE);
+      await form.getByRole('button', { name: 'Trocar o aplicativo' }).click();
       await expect(page.getByRole('img', { name: /QR para cadastrar/ })).toBeVisible();
-      await audit(page, testInfo, `configurar-qr-${theme}`);
-      await page.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
-      await page.getByRole('button', { name: 'Confirmar o aplicativo' }).click();
+      await audit(page, testInfo, `conta-qr-${theme}`);
+      const card = page.getByRole('region', { name: 'Trocar o aplicativo autenticador' });
+      await card.getByLabel('Código do aplicativo').fill(FICTITIOUS_TOTP_CODE);
+      await card.getByRole('button', { name: 'Confirmar o aplicativo novo' }).click();
       await expect(page.getByRole('list', { name: 'Códigos de recuperação' })).toBeVisible();
-      await audit(page, testInfo, `configurar-codigos-${theme}`);
+      await audit(page, testInfo, `conta-codigos-${theme}`);
       expect(violations).toEqual([]);
     });
 

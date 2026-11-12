@@ -1,4 +1,3 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { HttpStatus, Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { AuditService } from '../../audit/audit.service.js';
@@ -8,7 +7,6 @@ import { ApiError } from '../../common/http/api-error.js';
 import { COLLECTIONS } from '../../firestore/collections.js';
 import {
   DOCUMENT_STORE,
-  DocumentAlreadyExistsError,
   type DocumentStore,
   type DocumentTransaction,
   parseDocument,
@@ -16,7 +14,6 @@ import {
 import { AdminKeys, newRecoveryCode, normalizeRecoveryCode, RECOVERY_CODE_COUNT } from './admin-crypto.js';
 import {
   accountRef,
-  ADMIN_SETUP_MARKER,
   type AdminAccount,
   adminAccountSchema,
   type AdminEnrollment,
@@ -33,13 +30,13 @@ import {
   loginThrottleSchema,
   needsTouch,
   newOpaqueId,
+  newPasswordSchema,
   normalizeEmail,
   opaqueIdSchema,
   opaqueRef,
   type PasswordChangeRequest,
   SESSION_ABSOLUTE_MS,
   sessionState,
-  type SetupStartRequest,
   throttleRef,
   type TotpResetStartRequest,
 } from './admin-auth.schema.js';
@@ -62,12 +59,38 @@ export type SessionCheck =
   | ({ ok: true } & AuthenticatedSession)
   | { ok: false; reason: 'missing' | 'invalid' | 'expired' | 'not_owner' };
 
-/** O cadastro do TOTP mostrado uma vez (o QR é desenhado no navegador a partir do `otpauthUri`). */
+/** A troca do aplicativo mostrada uma vez (o QR é desenhado no navegador a partir do `otpauthUri`). */
 export interface TotpEnrollmentView {
   enrollmentId: string;
   otpauthUri: string;
   secret: string;
   expiresAt: string;
+}
+
+/** Quem roda o cadastro pela linha de comando (`cli/cadastro-responsavel.ts`): o e-mail das credenciais do Google. */
+export interface OperatorContext {
+  email: string;
+  requestId?: string | undefined;
+}
+
+/**
+ * O cadastro de um responsável pelo operador: a senha escolhida, o segredo do TOTP gerado na hora (`newTotpSecret`,
+ * mostrado só no terminal do operador) e o primeiro código do aplicativo, que confirma que ele foi lido.
+ */
+export interface OwnerEnrollmentRequest {
+  email: string;
+  password: string;
+  secret: string;
+  code: string;
+  /** Substitui a conta que já existe (as sessões dela caem); sem isto, uma conta existente recusa o cadastro. */
+  replace: boolean;
+}
+
+export interface OwnerEnrollmentResult {
+  email: string;
+  recoveryCodes: string[];
+  replaced: boolean;
+  sessionsRevoked: number;
 }
 
 export interface SessionGrant {
@@ -110,18 +133,10 @@ function factorOf(request: { code?: string | undefined; recoveryCode?: string | 
     : { recoveryCode: request.recoveryCode };
 }
 
-function digest(value: string): Buffer {
-  return createHash('sha256').update(value, 'utf8').digest();
-}
-
-function sameSecret(given: string, expected: string): boolean {
-  // SHA-256 dos dois lados: comprimentos iguais, comparação em tempo constante, nada do segredo vaza pelo tamanho.
-  return timingSafeEqual(digest(given), digest(expected));
-}
-
 /**
  * O login próprio do console do responsável (cp-admin), no lugar do IAP: e-mail, senha (scrypt) e TOTP, com bloqueio
- * por conta, sessões no Firestore e o primeiro cadastro por um token de uso único do Secret Manager.
+ * por conta e sessões no Firestore. O console não tem tela de cadastro: a conta nasce (ou é refeita, numa emergência)
+ * pela linha de comando de quem tem as credenciais de dono do projeto (`cli/cadastro-responsavel.ts`, `enrollOwner`).
  *
  * - **Login** (`login`): uma requisição só, com e-mail, senha e o código do aplicativo (ou um código de recuperação).
  *   Não existe estado "só com a senha". Toda falha tem a mesma resposta (401 `login_failed`, a mesma mensagem) e o
@@ -133,16 +148,16 @@ function sameSecret(given: string, expected: string): boolean {
  *   conta (`credentialStamp`). Sucesso: sessão nova (id novo a cada login).
  * - **Sessão** (`authenticate`): 30 min sem uso ou 12 h, o que vier primeiro; o e-mail precisa continuar em
  *   `OWNER_PRINCIPALS`. `logout` apaga a sessão no servidor.
- * - **Primeiro cadastro** (`setupStart`/`setupConfirm`): o token do cofre `cp-admin-setup-token`, um e-mail de
- *   `OWNER_PRINCIPALS` e a senha (12 ou mais); depois o QR e o primeiro código. A confirmação cria o marcador
- *   `adminSetup/owner` na mesma transação da conta: um segundo cadastro nunca passa, nem em corrida.
+ * - **Cadastro pelo operador** (`enrollOwner`, só pela CLI, nunca por HTTP): um e-mail de `OWNER_PRINCIPALS`, a senha
+ *   (12 ou mais), o segredo do TOTP e o primeiro código; os 10 códigos de recuperação voltam uma vez. Uma conta que já
+ *   existe só é substituída com `replace` (e as sessões dela caem). `revokeAllSessions` derruba todas as sessões.
  * - **Troca de senha e do aplicativo**: só com sessão, a senha atual e o código atual (ou de recuperação, na troca do
  *   aplicativo, para quem perdeu o celular); toda falha (inclusive a senha errada: quem tenta já tem uma sessão) conta
  *   no mesmo bloqueio do login, e as outras sessões caem.
  *
  * Logs (pino, com a limpeza de sempre): `admin_auth_failed` com o motivo, `admin_account_locked`, `admin_login`,
- * `admin_logout`, `admin_setup_completed`, `admin_password_changed`, `admin_totp_reset`, `admin_recovery_code_used`.
- * Nunca a senha, o código, o token, o segredo, o id da sessão nem o e-mail: só os 12 primeiros dígitos do
+ * `admin_logout`, `admin_owner_enrolled`, `admin_sessions_revoked`, `admin_password_changed`, `admin_totp_reset`,
+ * `admin_recovery_code_used`. Nunca a senha, o código, o segredo, o id da sessão nem o e-mail: só os 12 primeiros dígitos do
  * `throttleRef` (`account`), que bastam para achar o contador no Firestore. A auditoria do Firestore registra as
  * ações bem-sucedidas com `owner:<e-mail>`.
  */
@@ -154,7 +169,7 @@ export class AdminAuthService implements OnModuleInit {
   constructor(
     @Inject(DOCUMENT_STORE) private readonly store: DocumentStore,
     @Inject(CLOCK) private readonly clock: Clock,
-    @Inject(APP_CONFIG) config: AppConfig,
+    @Inject(APP_CONFIG) config: Pick<AppConfig, 'OWNER_PRINCIPALS'>,
     @Inject(ADMIN_SECRETS) private readonly secrets: AdminSecretSource,
     private readonly audit: AuditService,
     @InjectPinoLogger(AdminAuthService.name) private readonly logger: PinoLogger,
@@ -283,95 +298,105 @@ export class AdminAuthService implements OnModuleInit {
     }
   }
 
-  // Primeiro cadastro.
+  // Cadastro pelo operador (cli/cadastro-responsavel.ts; nenhuma rota HTTP chega aqui).
 
-  async setupOpen(): Promise<boolean> {
-    return (await this.store.get(COLLECTIONS.adminSetup, ADMIN_SETUP_MARKER)) === undefined;
+  /** Confere que a chave mestra do cofre abre (com versão e no formato); sem ela, 503 `admin_unavailable`. */
+  async ensureKeys(): Promise<void> {
+    await this.keys();
   }
 
-  async setupStart(request: SetupStartRequest): Promise<TotpEnrollmentView> {
-    if (!(await this.setupOpen())) throw setupClosed();
-    let expected: string | undefined;
-    try {
-      expected = await this.secrets.setupToken();
-    } catch (error) {
-      if (error instanceof SecretUnavailableError) throw unavailable();
-      throw error;
-    }
-    if (expected === undefined || expected.length < 32) {
-      this.logger.warn({ event: 'admin_setup_unavailable' }, 'cadastro do console sem o token no cofre');
-      throw unavailable();
-    }
-    const keys = await this.keys();
+  async hasAccount(email: string): Promise<boolean> {
+    return (await this.readAccount(normalizeEmail(email))) !== undefined;
+  }
+
+  /**
+   * Cria (ou, com `replace`, substitui) a conta de um responsável: confere o e-mail em `OWNER_PRINCIPALS`, a senha
+   * nova (12 ou mais) e o primeiro código do aplicativo; grava a senha (scrypt), o segredo do TOTP cifrado e os 10
+   * códigos de recuperação (HMAC) com as mesmas chaves do login, numa transação que também zera o bloqueio, apaga as
+   * sessões daquele e-mail e registra a auditoria com o operador (`owner:<e-mail das credenciais>`). O passo do código
+   * confirmado fica como o último aceito: o mesmo código não abre o login depois.
+   */
+  async enrollOwner(
+    request: OwnerEnrollmentRequest,
+    operator: OperatorContext,
+  ): Promise<OwnerEnrollmentResult> {
     const email = normalizeEmail(request.email);
-    const tokenOk = sameSecret(request.setupToken, expected);
-    if (!tokenOk || !this.isOwner(email)) {
-      this.logger.warn(
-        { event: 'admin_auth_failed', reason: tokenOk ? 'setup_not_owner' : 'setup_token' },
-        'cadastro do console recusado',
-      );
-      throw new ApiError(HttpStatus.FORBIDDEN, 'Token de cadastro ou e-mail não aceitos.', 'setup_refused');
+    if (!this.isOwner(email)) {
+      throw new ApiError(HttpStatus.FORBIDDEN, 'O e-mail não está em OWNER_PRINCIPALS.', 'not_owner');
     }
-    const passwordHash = await hashPassword(request.password);
-    const view = await this.startEnrollment(keys, { kind: 'setup', email, passwordHash });
-    this.logger.info(
-      { event: 'admin_setup_started', account: this.logRef(email) },
-      'cadastro do console iniciado',
-    );
-    return view;
-  }
-
-  async setupConfirm(
-    request: EnrollmentConfirmRequest,
-    context: AuthRequestContext,
-  ): Promise<SessionGrant & { recoveryCodes: string[] }> {
+    const password = newPasswordSchema.safeParse(request.password);
+    if (!password.success) {
+      throw new ApiError(
+        HttpStatus.BAD_REQUEST,
+        password.error.issues[0]?.message ?? 'Senha inválida.',
+        'invalid_password',
+      );
+    }
     const keys = await this.keys();
     const now = this.clock.now();
-    const { ref, enrollment, seed } = await this.readEnrollment(keys, request.enrollmentId, now);
-    if (enrollment.kind !== 'setup' || enrollment.passwordHash === undefined) throw enrollmentExpired();
-    if (!this.isOwner(enrollment.email)) throw enrollmentExpired();
-    const step = await verifyTotp(seed, compactCode(request.code), now);
-    if (step === undefined) {
-      this.logger.warn({ event: 'admin_auth_failed', reason: 'setup_code' }, 'código do cadastro recusado');
-      throw invalidCode();
-    }
-    const email = enrollment.email;
+    const step = await verifyTotp(request.secret, compactCode(request.code), now);
+    if (step === undefined) throw invalidCode();
+    const passwordHash = await hashPassword(password.data);
     const recoveryCodes = Array.from({ length: RECOVERY_CODE_COUNT }, newRecoveryCode);
-    const passwordHash = enrollment.passwordHash;
-    const sessionId = await this.createOwnerAccount(async (tx) => {
-      const marker = await tx.get(COLLECTIONS.adminSetup, ADMIN_SETUP_MARKER);
-      const pending = await tx.get(COLLECTIONS.adminEnrollments, ref);
-      if (marker !== undefined) throw setupClosed();
-      if (pending === undefined) throw enrollmentExpired();
-      const account: AdminAccount = {
-        email,
-        passwordHash,
-        totp: keys.sealTotpSecret(seed, accountBinding(email)),
-        lastTotpStep: step,
-        recoveryCodes: recoveryCodes.map((code) => ({
-          digest: keys.recoveryCodeDigest(normalizeRecoveryCode(code) ?? ''),
-        })),
-        createdAt: now,
-        updatedAt: now,
-        passwordChangedAt: now,
-        totpChangedAt: now,
-      };
-      // `create` nos dois: se outra confirmação chegou antes, o commit falha e nada é gravado.
-      tx.create(COLLECTIONS.adminSetup, ADMIN_SETUP_MARKER, {
-        completedAt: now,
-        accountRef: accountRef(email),
+    const ref = accountRef(email);
+    const account = adminAccountSchema.parse({
+      email,
+      passwordHash,
+      totp: keys.sealTotpSecret(request.secret, accountBinding(email)),
+      lastTotpStep: step,
+      recoveryCodes: recoveryCodes.map((code) => ({
+        digest: keys.recoveryCodeDigest(normalizeRecoveryCode(code) ?? ''),
+      })),
+      createdAt: now,
+      updatedAt: now,
+      passwordChangedAt: now,
+      totpChangedAt: now,
+    } satisfies AdminAccount);
+    const outcome = await this.store.runTransaction(async (tx) => {
+      const existing = await tx.get(COLLECTIONS.adminAccounts, ref);
+      const sessions = await tx.query(COLLECTIONS.adminSessions, {
+        where: [{ field: 'email', op: '==', value: email }],
       });
-      tx.create(COLLECTIONS.adminAccounts, accountRef(email), adminAccountSchema.parse(account));
-      tx.delete(COLLECTIONS.adminEnrollments, ref);
-      const id = this.createSession(tx, email, now);
-      this.audit.record(tx, { actor: `owner:${email}`, action: 'admin.setup', requestId: context.requestId });
-      return id;
+      if (existing !== undefined && !request.replace) {
+        throw new ApiError(HttpStatus.CONFLICT, 'Já existe uma conta para este e-mail.', 'account_exists');
+      }
+      tx.set(COLLECTIONS.adminAccounts, ref, account);
+      tx.delete(COLLECTIONS.adminLoginThrottle, throttleRef(email));
+      for (const session of sessions) tx.delete(COLLECTIONS.adminSessions, session.id);
+      const replaced = existing !== undefined;
+      this.audit.record(tx, {
+        actor: `owner:${operator.email}`,
+        action: replaced ? 'admin.account_replaced' : 'admin.account_created',
+        details: { account: email, via: 'cli', sessionsRevoked: sessions.length },
+        requestId: operator.requestId,
+      });
+      return { replaced, sessionsRevoked: sessions.length };
     });
     this.logger.info(
-      { event: 'admin_setup_completed', account: this.logRef(email) },
-      'primeiro cadastro do console concluído',
+      { event: 'admin_owner_enrolled', account: this.logRef(email), replaced: outcome.replaced },
+      'conta do console cadastrada pela linha de comando',
     );
-    return { email, sessionId, recoveryCodes };
+    return { email, recoveryCodes, ...outcome };
+  }
+
+  /** Apaga todas as sessões do console (de todo responsável); devolve quantas eram. */
+  async revokeAllSessions(operator: OperatorContext): Promise<number> {
+    const count = await this.store.runTransaction(async (tx) => {
+      const sessions = await tx.query(COLLECTIONS.adminSessions);
+      for (const session of sessions) tx.delete(COLLECTIONS.adminSessions, session.id);
+      this.audit.record(tx, {
+        actor: `owner:${operator.email}`,
+        action: 'admin.sessions_revoked',
+        details: { via: 'cli', sessionsRevoked: sessions.length },
+        requestId: operator.requestId,
+      });
+      return sessions.length;
+    });
+    this.logger.info(
+      { event: 'admin_sessions_revoked', count },
+      'sessões do console encerradas pela linha de comando',
+    );
+    return count;
   }
 
   // Conta (com sessão).
@@ -486,16 +511,6 @@ export class AdminAuthService implements OnModuleInit {
   }
 
   // Internos.
-
-  /** A transação do primeiro cadastro; o `create` do marcador recusado no commit (outro cadastro antes) é 409. */
-  private async createOwnerAccount(fn: (tx: DocumentTransaction) => Promise<string>): Promise<string> {
-    try {
-      return await this.store.runTransaction(fn);
-    } catch (error) {
-      if (error instanceof DocumentAlreadyExistsError) throw setupClosed();
-      throw error;
-    }
-  }
 
   /** A chave mestra do cofre, lida uma vez. Sem ela (cofre vazio ou fora do formato), 503. */
   private async keys(): Promise<AdminKeys> {
@@ -752,7 +767,7 @@ export class AdminAuthService implements OnModuleInit {
 
   private async startEnrollment(
     keys: AdminKeys,
-    fields: Pick<AdminEnrollment, 'kind' | 'email' | 'passwordHash' | 'sessionRef' | 'credentialStamp'>,
+    fields: Pick<AdminEnrollment, 'kind' | 'email' | 'sessionRef' | 'credentialStamp'>,
   ): Promise<TotpEnrollmentView> {
     const now = this.clock.now();
     const id = newOpaqueId();
@@ -819,10 +834,6 @@ function enrollmentBinding(ref: string): string {
 
 function unavailable(): ApiError {
   return new ApiError(HttpStatus.SERVICE_UNAVAILABLE, 'Console indisponível', 'admin_unavailable');
-}
-
-function setupClosed(): ApiError {
-  return new ApiError(HttpStatus.CONFLICT, 'O console já foi configurado.', 'setup_closed');
 }
 
 function enrollmentExpired(): ApiError {

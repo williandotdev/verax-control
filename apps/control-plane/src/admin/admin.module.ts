@@ -29,7 +29,6 @@ import {
   type AdminAuthLimits,
   LOGIN_GLOBAL,
   LOGIN_PER_IP,
-  SETUP_PER_IP,
 } from './auth/admin-auth.controller.js';
 import { AdminAuthService } from './auth/admin-auth.service.js';
 import { ADMIN_SECRETS, type AdminSecretSource, SecretManagerAdminSecrets } from './auth/admin-secrets.js';
@@ -39,8 +38,8 @@ import { HttpWorkerOwnerClient, type WorkerOwnerClient } from './worker-owner-cl
 
 export interface AdminModuleOptions {
   /**
-   * Só nos testes: os cofres do login do console em memória (a chave mestra e o token do primeiro cadastro). Em
-   * produção, o Secret Manager do projeto `ADMIN_SECRETS_PROJECT_ID`, pela API, com a identidade do cp-admin.
+   * Só nos testes: o cofre do login do console em memória (a chave mestra). Em produção, o Secret Manager do projeto
+   * `ADMIN_SECRETS_PROJECT_ID`, pela API, com a identidade do cp-admin.
    */
   adminSecrets?: AdminSecretSource;
   /**
@@ -111,7 +110,6 @@ export class AdminModule {
           useFactory: (clock: Clock): AdminAuthLimits => ({
             login: new TokenBucketLimiter(LOGIN_PER_IP, clock),
             loginGlobal: new TokenBucketLimiter(LOGIN_GLOBAL, clock),
-            setup: new TokenBucketLimiter(SETUP_PER_IP, clock),
             account: new TokenBucketLimiter(ACCOUNT_PER_IP, clock),
           }),
           inject: [CLOCK],

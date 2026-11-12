@@ -5241,3 +5241,49 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   - **a `plataforma` sem contador:** até o CE-10, "Plano e uso" mostra o volume do mês sem limite para ela, e não há aviso de franquia (CE-09 e CE-10);
   - **os registros de auditoria sem cliente na célula** só saem quando nenhum cliente tem histórico sem limite: com o `interno` da Verax lá, ficam (como no nó da Verax hoje);
   - **o `RetentionState`** fica no schema sem uso até um PR que o tire.
+
+## Fase 3, console: sem tela de cadastro; a conta nasce pela linha de comando ⚠️ altera `infra/`
+
+- **Decisão do responsável (12/11/2026):** com a conta já criada, a tela pública de cadastro (`/configurar`) e as
+  rotas dela deixam de existir: eram superfície de ataque aberta na internet, protegida só pelo token
+  `cp-admin-setup-token`. O cadastro (e o de emergência) passa a ser a linha de comando `cadastro-responsavel`, rodada
+  por quem tem as credenciais de dono do projeto.
+- **App (`apps/control-plane`):**
+  - saíram `GET /v1/admin/setup`, `POST /v1/admin/setup/start` e `POST /v1/admin/setup/confirm` (agora 404), o limite
+    `SETUP_PER_IP`, a leitura de `cp-admin-setup-token` (`AdminSecretSource` só com `totpKey`), o marcador
+    `adminSetup/owner` (a coleção saiu de `COLLECTIONS`), o tipo de cadastro pendente `setup` (`adminEnrollments` só
+    com a troca do aplicativo) e os motivos `setup_token`, `setup_not_owner` e `setup_code` do `admin_auth_failed`;
+  - `AdminAuthService.enrollOwner` (sem rota HTTP): confere o e-mail em `OWNER_PRINCIPALS`, a senha nova (12 a 128) e
+    o primeiro código, e grava a conta com as mesmas funções do login (scrypt, `AdminKeys` com o HKDF de
+    `cp-admin-totp-key`, `newRecoveryCode`), numa transação que recusa conta existente sem `replace` (409
+    `account_exists`), zera o bloqueio, apaga as sessões daquele e-mail e audita `admin.account_created` ou
+    `admin.account_replaced` com o ator `owner:<e-mail das credenciais>`; `revokeAllSessions` apaga todas as sessões
+    (`admin.sessions_revoked`). Logs `admin_owner_enrolled` e `admin_sessions_revoked`, sem e-mail;
+  - `src/cli/cadastro-responsavel.ts` (novo, no padrão do `publicar-precos`: `openStore`, `identity`, `secrets` e
+    `ask` injetáveis): `--novo` (recusa e-mail fora de `OWNER_PRINCIPALS`/`--responsaveis` antes de qualquer pergunta;
+    senha sem eco, duas vezes; o `otpauth://` e a chave só na saída do terminal; até 3 códigos; os 10 códigos de
+    recuperação uma vez), `--substituir` (com o e-mail digitado de novo) e `--encerrar-sessoes`. Sem QR no terminal:
+    exigiria um pacote novo.
+- **Console (`apps/console`):** saíram a tela `setup-page.tsx`, a rota `/configurar` (agora "Página não encontrada"
+  com sessão, a entrada sem ela), o link da entrada, as chamadas e os tipos do cadastro e o cadastro do dublê
+  (`fake-auth.ts`). O e2e com axe que cobria o QR e os códigos de recuperação do cadastro passou a cobri-los na troca
+  do aplicativo em `/conta`.
+- **Infraestrutura (`infra/gcp/envs/control-plane`):** o cofre `cp-admin-setup-token` fica (aposentado, descrição
+  nova), com `readers = []`: a leitura do `cp-admin` sai no próximo `apply` (1 a destruir, mais a descrição do cofre,
+  da métrica `cp_admin_auth_failed` e do alerta mudadas no lugar). Comentários de `admin.tf`, `secrets.tf`,
+  `monitoring.tf`, `firestore.tf`, `variables.tf`, `outputs.tf` e do exemplo de `terraform.tfvars`; o teste `console`
+  confere que a `cp-admin` lê só `cp-admin-totp-key` e que ninguém lê o token aposentado.
+- **Testes:** `pnpm --filter @verax/control-plane test` (o `admin-auth` com o cadastro pelo serviço, as rotas antigas
+  em 404, recusas sem gravar nada, substituição com as sessões caindo e o bloqueio zerado, encerramento das sessões e
+  503 sem a chave; o `cadastro-responsavel` novo com as perguntas, a recusa de conta existente e do e-mail digitado
+  errado, os três códigos errados e a auditoria), `pnpm --filter @verax/console test`, o e2e do console com axe (17),
+  `typecheck`, ESLint e Prettier nos pacotes tocados, `terraform fmt -check` e `terraform test` do
+  `envs/control-plane`.
+- **Documentação:** `docs/runbooks/console-do-responsavel.md` (seções 1, 2.1 e 2.5, a tabela de problemas e o alerta
+  de acessos recusados), `docs/ARQUITETURA.md` e `infra/gcp/GUIA.md` (passos 4 e 8 e as identidades).
+- **A fazer pelo responsável:** depois do merge e do `apply`, destruir as versões de `cp-admin-setup-token` (runbook,
+  seção 1, item 1) e, se quiser, apagar o documento `adminSetup/owner` do Firestore; num PR seguinte, tirar o cofre do
+  Terraform.
+- **Riscos e pendências:** quem cria a conta precisa das credenciais de dono e de um terminal de verdade para a senha
+  sem eco (no Git Bash do Windows, `winpty`); a lista de responsáveis da linha de comando é digitada (a mesma de
+  `owner_principals`): um e-mail que não esteja no serviço é recusado no login de qualquer jeito.

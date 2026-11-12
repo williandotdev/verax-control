@@ -62,7 +62,7 @@ describe('cp-admin: as telas do console no mesmo serviço', () => {
   });
 
   it('as telas abrem sem sessão (o login está nelas); os dados da API, não', async () => {
-    for (const path of ['/entrar', '/configurar', '/', '/clientes']) {
+    for (const path of ['/entrar', '/', '/clientes']) {
       const page = await get(path, false).expect(200);
       expect(page.text, path).toBe(INDEX);
     }

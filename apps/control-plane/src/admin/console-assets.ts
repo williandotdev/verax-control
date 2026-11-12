@@ -6,9 +6,9 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 /**
  * As telas do console do responsável (`apps/console`, um app React compilado pelo Vite) servidas pelo próprio
  * `cp-admin`: a mesma origem da API, sem CORS e sem outro serviço. Os arquivos são o código do repositório público
- * (nenhum preço, custo ou segredo) e abrem sem sessão: é neles que estão as telas de login (`/entrar`) e do primeiro
- * cadastro (`/configurar`). Os dados só chegam pela API, depois da guarda global, que exige a sessão. Só `GET` e
- * `HEAD` fora de `/v1/` e de `/health`; o resto segue para o Nest (a API, com a guarda global, ou o 404).
+ * (nenhum preço, custo ou segredo) e abrem sem sessão: é neles que está a tela de login (`/entrar`); não há tela de
+ * cadastro (a conta nasce pela linha de comando do operador). Os dados só chegam pela API, depois da guarda global, que
+ * exige a sessão. Só `GET` e `HEAD` fora de `/v1/` e de `/health`; o resto segue para o Nest (a API, com a guarda global, ou o 404).
  *
  * - `/assets/...` (nomes com hash do conteúdo): cache privado de um ano, `immutable`;
  * - caminho sem ponto no último trecho (as rotas do app, `/tabelas-de-preco/2026-11-v1`; versão não tem ponto): o

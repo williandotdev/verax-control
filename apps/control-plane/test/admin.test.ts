@@ -200,7 +200,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
         .expect(403);
       expect(crossSite.body).toMatchObject({ code: 'cross_site' });
       expect(await documents.query(COLLECTIONS.costModels)).toHaveLength(0);
-      // As rotas sem sessão (login e cadastro) seguem as mesmas regras de escrita.
+      // A rota sem sessão (o login) segue as mesmas regras de escrita.
       await call('post', '/v1/admin/login', null)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('email=x&password=y&code=123456')
@@ -208,7 +208,7 @@ describe('cp-admin: console do responsável com login próprio', () => {
       await send('post', '/v1/admin/login', { email: OWNER, password: 'x', code: '123456' }, null)
         .set('Sec-Fetch-Site', 'same-site')
         .expect(403);
-      await send('post', '/v1/admin/setup/start', {}, null).set('Sec-Fetch-Site', 'cross-site').expect(403);
+      await send('post', '/v1/admin/logout', {}, null).set('Sec-Fetch-Site', 'cross-site').expect(403);
       // Sem CORS: nem a origem do site recebe cabeçalho.
       const preflight = await request(app.getHttpServer())
         .options('/v1/admin/cost-models')
