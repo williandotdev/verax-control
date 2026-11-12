@@ -1,5 +1,8 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { AuditModule } from '../audit/audit.module.js';
+import type { CellCommandSink } from '../cells/cell-pubsub.js';
+import { CellCommandPublisher } from '../cells/cell-command-publisher.js';
+import { CELL_CONTROLLERS, cellProviders } from '../cells/cells.module.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import {
@@ -48,6 +51,8 @@ export interface AccessWorkerModuleOptions {
   idTokenKeys?: IdTokenKeySource;
   /** Só nos testes: as APIs do provisionamento (CP-07) num servidor falso e a sonda em memória. */
   provisioning?: ProvisioningModuleOptions;
+  /** Só nos testes: a publicação dos comandos da célula em memória (em produção, o Pub/Sub). */
+  cellCommandSink?: CellCommandSink;
 }
 
 /**
@@ -57,7 +62,8 @@ export interface AccessWorkerModuleOptions {
  * `cp-worker` registra este módulo: a conta dele é a que lê e destrói o `admin-bootstrap` e manda e-mail. Desde o
  * CP-07, também os passos do provisionamento (`ProvisioningModule`) na mesma lista de passos, e o `resume` do
  * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda, como a recópia da senha do e-mail dos nós
- * (`POST /internal/nodes/smtp-password/sync`).
+ * (`POST /internal/nodes/smtp-password/sync`). Desde o CE-06, o canal da célula: a rota dos relatórios
+ * (`POST /internal/cells/:cellId/reports`, só para a conta de push) e o publicador dos comandos.
  */
 @Module({})
 export class AccessWorkerModule {
@@ -73,6 +79,7 @@ export class AccessWorkerModule {
         InstallationController,
         NodeMailSyncController,
         ...LIFECYCLE_CONTROLLERS,
+        ...CELL_CONTROLLERS,
       ],
       providers: [
         {
@@ -94,6 +101,7 @@ export class AccessWorkerModule {
         DestroyBootstrapStep,
         RevealEmailStep,
         ...LIFECYCLE_PROVIDERS,
+        ...cellProviders(options.cellCommandSink),
         {
           provide: STEP_HANDLERS,
           useFactory: (
@@ -122,7 +130,7 @@ export class AccessWorkerModule {
         },
         WorkerCallerGuard,
       ],
-      exports: [RevealEmailService],
+      exports: [RevealEmailService, CellCommandPublisher],
     };
   }
 }

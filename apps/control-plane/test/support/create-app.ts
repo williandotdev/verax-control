@@ -35,6 +35,8 @@ export interface CreateAppOptions {
   provisioning?: Parameters<typeof AppModule.register>[1]['provisioning'];
   /** A API da Stripe no servidor falso (`fake-stripe.ts`). */
   stripeApi?: StripeApiOptions;
+  /** A publicação dos comandos da célula em memória (CE-06). */
+  cellCommandSink?: Parameters<typeof AppModule.register>[1]['cellCommandSink'];
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
   stepQueue?: StepQueue;
   /** Os cofres do login do console em memória (`admin-auth.ts`): chave e token gerados no teste. */
@@ -72,6 +74,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         mailSender: options.mailSender,
         idTokenKeys: options.idTokenKeys,
         provisioning: options.provisioning,
+        cellCommandSink: options.cellCommandSink,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
         adminSecrets: options.adminSecrets,

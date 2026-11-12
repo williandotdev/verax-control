@@ -5,7 +5,7 @@ import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { IncidentGrouping } from '../incidents/incident-grouping.js';
-import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
+import { COLLECTING_TENANT_SELECT, isCollectingTenant } from '../tenants/tenant-status.js';
 import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
 import { detect, gcpEventId, type GcpRule, toGcpFindingDraft } from './gcp-rules.js';
@@ -281,7 +281,7 @@ export class GcpAuditSync {
         tenantId: true,
         accountId: true,
         pubsubSubscription: true,
-        tenant: { select: { status: true } },
+        tenant: { select: COLLECTING_TENANT_SELECT },
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
@@ -298,7 +298,7 @@ export class GcpAuditSync {
       group.projects.set(row.accountId, row.tenantId);
       group.tenants.add(row.tenantId);
       group.ambiguous = group.tenants.size > 1;
-      group.collecting ||= row.tenant.status === COLLECTING_TENANT.tenant.is.status;
+      group.collecting ||= isCollectingTenant(row.tenant);
       groups.set(row.pubsubSubscription, group);
     }
     return [...groups.values()].filter((group) => group.collecting);

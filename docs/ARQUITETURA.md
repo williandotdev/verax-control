@@ -1462,9 +1462,9 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
   troca de cliente auditada e marcada como acesso do suporte da Verax. Um meta-teste falha se uma rota ficar fora da
   guarda do host. A unicidade entre clientes (e-mail, ID de conta) responde com mensagem genérica.
 - **Banco.** O proxy de escopo (`scopeToTenant`), o meta-teste de `TENANT_SCOPED_MODELS` e os testes A/B continuam. O
-  que só o sistema grava (`TenantPlan`, feito no CE-02; `TenantHost` e `TenantCloudIdentity`, a construir) tem
-  meta-teste de que nenhuma rota o aceita, e o escopo de cliente recusa a gravação. O RLS do Postgres fica como defesa
-  em profundidade, depois da primeira venda (CE-21).
+  que só o sistema grava (`TenantPlan`, feito no CE-02; `TenantHost`, no CE-01; `TenantCloudIdentity` e o estado do
+  canal, no CE-05) tem meta-teste de que nenhuma rota o aceita, e o escopo de cliente recusa a gravação. O RLS do
+  Postgres fica como defesa em profundidade, depois da primeira venda (CE-21).
 - **Vizinho barulhento.** Um `analysisd` e uma execução do módulo da AWS para todos: na célula, o `only_logs_after` é
   o mais recente entre o `ingestFrom` e ontem, cada bucket tem a própria data de início, e a configuração do manager é
   aplicada no máximo a cada 15 minutos; o worker reveza os clientes, com um orçamento por cliente em cada tarefa; a API
@@ -1474,7 +1474,7 @@ por cliente no cofre, o `scoped()` e o `forTenant()`, e a troca de cliente audit
   a célula informa ao plano de controle CPU, memória, fila do `analysisd`, atraso do módulo e os maiores clientes em
   GB/dia, para a página "Células" do console. O item "Medidor da AWS parado" da Torre deixa de valer na célula.
 
-### Canal entre o plano de controle e a célula _(a construir, CE-05 e CE-06; os tópicos, feitos no CE-03)_
+### Canal entre o plano de controle e a célula _(feito: CE-05 e CE-06; os tópicos, no CE-03)_
 
 **Pub/Sub nos dois sentidos**, sem nada novo exposto na internet. Os comandos (`tenant.upsert`, com o estado desejado
 inteiro e uma `generation` crescente por cliente; `tenant.export`, `tenant.purge` e `tenant.collection_pause`) seguem
@@ -1485,6 +1485,116 @@ transação, ignorando uma geração já aplicada, com o relatório na mesma tra
 (`@WorkerCallers('cell-push')`), e o plano de controle confere que **todo cliente citado está nesta célula**: uma
 célula comprometida só mente sobre os próprios clientes. O IAM dos tópicos prova quem publicou. A senha do primeiro
 administrador nunca passa pelo worker: o host a escreve no cofre `vxt-<slug>-admin-bootstrap`.
+
+**O contrato** (`packages/shared/src/cell-protocol.ts`, versão 1, os dois lados o importam):
+
+- **Envelope.** Todo comando leva `v`, `commandId` (ULID), `cellId`, `tenantId` (o id do cliente **no plano de
+  controle**, um ULID: a célula guarda o mapa para o id do banco dela em `CellTenantState.controlPlaneId`) e `issuedAt`.
+  Todo relatório leva `v`, `reportId` (UUID, a idempotência do lado do plano de controle), `cellId` e `emittedAt`.
+  Objetos estritos dos dois lados: um campo a mais, outro tipo ou outra versão é recusado inteiro, e a recusa diz só o
+  caminho e o motivo, nunca o valor. Teto de 256 KiB por mensagem.
+- **`tenant.upsert`** com `generation` (1 a 2³¹−1) e `state`: o subdomínio, a razão social, os dois endereços (`api-<slug>`
+  e `<slug>.control`, conferidos contra o subdomínio e no mesmo domínio), o estado (`active`, `suspended` ou
+  `canceled`; o `purging` é só do `tenant.purge`), o plano do cliente (`TenantPlan`, com a mesma regra de combinação),
+  a franquia agendada (`[{from, gbPerDay}]`, em ordem, obrigatória só na Plataforma), o ciclo de cobrança em dias de
+  Brasília, a identidade na nuvem (`{saEmail, saUniqueId}`, a conta `vxt-<slug>`), as fontes da GCP já prontas, os IPs
+  da célula, o último ciclo cobrado, os preços do diálogo de ampliação (em centavos, repetidos da tabela publicada,
+  nunca calculados na célula) e o e-mail do primeiro administrador (`firstAdmin`, null no cliente adotado).
+- **`tenant.export`** (`exportId`), **`tenant.purge`** (`purgeId` e a confirmação do subdomínio) e
+  **`tenant.collection_pause`** (`paused` e, só com a pausa, o motivo: `runaway_volume` ou `owner`).
+- **Relatórios:** `tenant.applied {generation}`, `tenant.status {accountsConnected, lastEventAt}`,
+  `usage.daily` (o corpo do CE-09, `usageDailyReportSchema`, com o envelope do canal: `{day, final, sources{aws, gcp,
+cloudflare: {bytes, events}}}`, as três fontes sempre, valores absolutos do dia),
+  `export.ready {exportId, object, sha256, bytes}`, `tenant.purged {purgeId}`,
+  `franchise.requested {requestId, targetGbPerDay, requestedBy}`, `gcp_source.request {cloudAccountId, projectId,
+writerIdentity}`, `cell.status` (só agregados da célula) e **`command.refused {commandId, command, code}`**: a célula
+  leu um comando válido e não o aplicou (o subdomínio de outro cliente, a conta de serviço de outro cliente, a transição
+  fora da tabela, o expurgo sem a exportação, o pedido que a célula ainda não sabe cumprir).
+
+**O lado da célula (CE-05, `apps/api/src/cell/`).** No worker, só com `NODE_MODE=cell` e as três variáveis do canal
+(`CELL_ID`, `CELL_COMMANDS_SUBSCRIPTION`, `CELL_REPORTS_TOPIC`, todas ou nenhuma, e só na célula), com o token da VM:
+
+- **`cell-commands`** (a cada 10 s) lê a assinatura de comandos pelo mesmo cliente REST do Pub/Sub da GCP
+  (`gcp/pubsub.client.ts`). A mensagem fora do contrato, ou de outra célula, é confirmada e descartada, com o motivo no
+  log. Cada comando válido é aplicado numa transação do banco, com uma trava por cliente (duas réplicas nunca aplicam o
+  mesmo cliente juntas), e confirmado só depois do commit; uma falha do banco não confirma a mensagem e para o lote (a
+  ordem por cliente não é furada).
+  - O `tenant.upsert` ignora uma geração menor que a aplicada; a igual não muda nada e repete o `tenant.applied`. Senão,
+    cria o cliente (nasce `active`) ou atualiza o nome, e aplica o resto **só pelas escritas de sistema**:
+    `assignTenantHost`, `writeTenantPlan` (`source = control_plane`), `applyTenantLifecycleStatus` (a mesma transição
+    auditada do CE-02, agora também numa transação de quem chama) e `writeTenantCloudIdentity`, a única escrita de
+    `TenantCloudIdentity` (uma conta por cliente e um cliente por conta, no banco e no CHECK do formato). O resto do
+    estado vai para `CellTenantState.desired`, conferido pelo contrato de novo em toda leitura (`readCellTenantState`:
+    o contador da franquia, a medição, o "Conectar AWS" e as fontes da GCP leem daqui). A trilha do cliente ganha
+    `tenant.cell_state_applied` (ator sistema, `control-plane`), e o `tenant.applied` entra na caixa de saída na mesma
+    transação.
+  - A recusa (`TenantHostConflict`, a conta de serviço de outro cliente, `TenantTransitionRefused`, o cliente em
+    `purging`) desfaz a transação inteira e grava só o `command.refused`.
+  - O `tenant.export` e o `tenant.purge` passam pelas guardas: o cliente existe; no expurgo, a confirmação é o subdomínio
+    dele, ele está `canceled` (ou já `purging`, a repetição) e a exportação está gravada (`exportReadyAt`). Só então o
+    expurgo é registrado (`CellPurge`, pelo `purgeId`, sem chave para o cliente), o cliente vai a `purging` e o
+    expurgador apaga (`TenantPurger`, idempotente); a conclusão do registro e o `tenant.purged` saem numa transação só.
+    Se o processo cai depois de o expurgador apagar o cliente e antes do relatório, a reentrega acha o expurgo começado
+    sem cliente e o conclui (nunca `tenant_unknown`); um expurgo concluído repete o relatório. A exportação chama o exportador (`TenantExporter`) e registra o resultado com o `export.ready`
+    (`recordTenantExport`); o mesmo `exportId` de novo repete o relatório sem exportar. **O exportador e o expurgador
+    são do CE-16**: até lá, o pedido que passa nas guardas volta `export_unavailable` ou `purge_unavailable`, sem mudar
+    o estado do cliente.
+  - O `tenant.collection_pause` grava a pausa (com o motivo) em `CellTenantState`, e `COLLECTING_TENANT` passa a exigir
+    também a coleta sem pausa: o cliente sai do Wazuh, da GCP, do Cloudflare, das conferências da AWS e do inventário,
+    sem mudar o estado nem o acesso. No nó dedicado não há linha da célula, e nada muda.
+- **`cell-reports`** (a cada 10 s) publica a caixa de saída (`CellReport`) no tópico de relatórios, em ordem de
+  criação, em lotes de até 100, só com o tipo e a versão nos atributos; o lote que falha espera 1 min, e os publicados
+  saem da tabela depois de 7 dias. Com duas réplicas, um relatório pode sair duas vezes: o plano de controle ignora pelo
+  `reportId`. **`CellReportOutbox.enqueue` e `enqueueForTenant`** são a porta de entrada dos relatórios para o resto da
+  célula (o pedido de franquia do CE-19 e o de tópico da GCP do CE-08 entram por aí), e o cliente que não veio do canal
+  não tem a quem relatar.
+- **`cell-tenant-status`** (a cada 5 min) relata, por cliente do canal, as contas conectadas e o último evento, as mesmas
+  contas do `node-status` do nó dedicado (que a célula não usa).
+- **`cell-usage-reports`** (a cada hora) põe na caixa de saída o `usage.daily` de hoje e de ontem de cada cliente do canal
+  (`usageDailyReports` do CE-09), com o id do plano de controle. Só entra o relatório que difere do último do mesmo
+  cliente e dia na caixa de saída (os contadores ou o `final`): o dia sem leitura nova não gera linha, e ontem sai de
+  novo uma vez, quando fecha às 06:00 de Brasília.
+- **O primeiro administrador do cliente novo:** o `tenant.upsert` leva `firstAdmin {email}` (null no cliente adotado,
+  o SOC da Verax). O pedido (`CellTenantBootstrap`) nasce na transação que cria o cliente, e cada passagem do
+  `cell-commands` o entrega ao host pelo contrato de arquivos do CE-04: `slug=` e `email=` em
+  `TENANT_BOOTSTRAP_DIR/<id do cliente>` (escrito de uma vez, com `rename`), e a resposta do host (`ok` ou `error`) em
+  `TENANT_BOOTSTRAP_STATUS_DIR/<id>`. O pedido ainda na pasta espera o host; a resposta `ok` com o pedido atendido
+  confirma, e o e-mail sai da linha; sem pedido nem `ok` (nunca escrito, ou o `/run` sumiu num reinício), o pedido é
+  escrito de novo. Uma queda do worker logo depois do commit, ou uma falha na pasta, não perde o pedido, e a falha não
+  para os comandos. A senha nunca passa pelo worker.
+
+**O lado do plano de controle (CE-06, `apps/control-plane/src/cells/`).** Só no cp-worker:
+
+- **O registro `cells/{id}`** (gravado pelo responsável, no console, com a escolha da célula do CE-15): o estado, a
+  região, o projeto, os IPs, e os nomes do canal tirados da saída `cell` do `envs/celula` (o tópico de comandos, a
+  assinatura push dos relatórios e a conta de push da célula, `vxc-<célula>-push`). A capacidade, a reserva e as
+  medições chegam opcionais (CE-15). O cliente ganha `placement {kind: 'cell', cellId}` (gravado pelo CE-15, nunca muda
+  sozinho) e `cell` (a geração mandada e a aplicada, os agregados do `tenant.status` e a última recusa de comando).
+- **O publicador** (`CellCommandPublisher`): a célula de destino sai sempre do `placement` do cliente, nunca de quem
+  chama. O `tenant.upsert` sobe a geração numa transação do Firestore (com a auditoria `cell.command_sent`) antes de
+  publicar; se a publicação falha, a geração fica gasta e a próxima tentativa usa outra maior. Os comandos pontuais
+  (exportação, expurgo, pausa) passam pela mesma trilha. Tudo é conferido pelo contrato antes de sair e publicado com a
+  chave de ordenação = o cliente, pela API REST do Pub/Sub com o token do cp-worker. Quem chama são os passos do
+  provisionamento e do ciclo de vida na célula (CE-15 e CE-16).
+- **A rota `POST /internal/cells/:cellId/reports`**, atrás de `@WorkerCallers('cell-push')`: o token OIDC de uma das
+  contas de push (`CELL_PUSH_SA_EMAILS`, que o Terraform deriva de `cell_push_service_accounts`), e esse token só vale
+  nesta rota (nem o responsável chama). Depois, `CellReportsService` confere, nesta ordem: a célula está no registro, o
+  token é o da conta de push **dela** e a entrega veio da assinatura **dela** (senão 403, sem ler o relatório: uma
+  célula comprometida não fala pela rota de outra); o relatório é do contrato e diz ser desta célula; **todo cliente
+  citado tem `placement.cellId` igual a esta célula** (um relatório sobre cliente de outra célula, ou que não existe, é
+  recusado). As recusas de conteúdo respondem 200 (o Pub/Sub não precisa repetir), ficam em `cellReports` e na
+  auditoria (`cell.report_refused`, fora da trilha do cliente de outra célula), e o log leva só a célula, o tipo, o
+  código e os ids.
+- **Idempotência:** `cellReports/{célula}_{reportId}` é criado na mesma transação do efeito; a repetição responde
+  `duplicate` e não muda nada. Os registros ficam 90 dias (TTL).
+- **Tratados aqui:** `tenant.applied` (a geração aplicada só sobe, e nunca acima da mandada: a geração inventada é
+  recusada, `generation_unknown`), `tenant.status` (só o mais novo pelo `emittedAt`: o atrasado não volta o estado) e
+  `command.refused` (a última recusa, para o console e o provisionamento). Os outros (`usage.daily`, `export.ready`,
+  `tenant.purged`, `franchise.requested`, `gcp_source.request`, `cell.status`) ficam guardados inteiros, `stored`, para
+  o CE-08, o CE-09, o CE-16 e o CE-19.
+- **Infra** (`infra/gcp/envs/control-plane/cell_channel.tf`): o `run.invoker` no cp-worker da conta de push de cada
+  célula e a lista delas no cp-worker. A assinatura push, a conta e os tópicos são do `envs/celula` (CE-03), no projeto
+  da célula.
 
 ### Medição e franquia _(CE-09 e CE-10 feitos; a construir: CE-11/CE-13, CE-19 e CE-20)_
 
@@ -1514,7 +1624,8 @@ administrador nunca passa pelo worker: o host a escreve no cofre `vxt-<slug>-adm
 - **Relatório `usage.daily`** _(o conteúdo é do CE-09; o canal, do CE-05)_: `usageDailyReports(db, clientes, agora)`
   (`usage/usage-daily.ts`) devolve, por cliente e dia (hoje e ontem), as três fontes com os valores **absolutos** do
   dia (zero quando não houve leitura), no contrato `usageDailyReportSchema` (`packages/shared/src/usage-day.ts`);
-  `final` só depois das 06:00 de Brasília do dia seguinte. Mandar de novo não soma nada.
+  `final` só depois das 06:00 de Brasília do dia seguinte. Mandar de novo não soma nada. A tarefa `cell-usage-reports`
+  (canal da célula) os põe na caixa de saída a cada hora, só quando mudaram.
 - **Só o sistema grava** o volume por dia: o escopo do cliente lê o `IngestUsageDay` e o `AwsVolumeObject`, mas recusa
   gravá-los (`SYSTEM_WRITTEN_MODELS`), e um meta-teste confere que só o medidor e a medição na origem os gravam.
 - **Contador no painel** _(feito no CE-10)_: no `GET /v1/plan`, o cliente com franquia no plano (a Plataforma, só na

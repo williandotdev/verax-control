@@ -29,6 +29,8 @@ on:
     branches: [main]
     paths:
       - 'apps/control-plane/**'
+      # O contrato do canal da célula (CE-06) entra na imagem do plano de controle.
+      - 'packages/shared/**'
       - 'apps/console/**'
       - 'scripts/scan-bundle.mjs'
       - 'package.json'

@@ -2,9 +2,9 @@ import { GoogleAuth } from 'google-auth-library';
 
 /**
  * A camada HTTP dos clientes REST do provisionamento (CP-07): Cloudflare, Firebase Hosting, Compute (guest attributes),
- * Cloud Storage, Cloud Run (o Job do Terraform) e Secret Manager. `fetch` do Node com `google-auth-library` para o
- * token do Google, em vez de um SDK por serviço (plano §8: sem `@google-cloud/compute`, `@google-cloud/storage`,
- * `@google-cloud/run` nem `firebase-admin`).
+ * Cloud Storage, Cloud Run (o Job do Terraform) e Secret Manager, e o Pub/Sub do canal da célula (CE-06). `fetch` do
+ * Node com `google-auth-library` para o token do Google, em vez de um SDK por serviço (plano §8: sem
+ * `@google-cloud/compute`, `@google-cloud/storage`, `@google-cloud/run` nem `firebase-admin`).
  *
  * Regras de toda chamada:
  * - prazo por tentativa (`AbortSignal.timeout`) e `redirect: 'error'`: um redirecionamento nunca leva o token para
@@ -16,7 +16,15 @@ import { GoogleAuth } from 'google-auth-library';
  */
 
 export type CloudService =
-  'cloudflare' | 'firebase' | 'compute' | 'storage' | 'run' | 'secretmanager' | 'iamcredentials' | 'tenant';
+  | 'cloudflare'
+  | 'firebase'
+  | 'compute'
+  | 'storage'
+  | 'run'
+  | 'secretmanager'
+  | 'iamcredentials'
+  | 'pubsub'
+  | 'tenant';
 
 /** Token de acesso OAuth do Google da conta do serviço (no Cloud Run, a `cp-worker`, pelo servidor de metadados). */
 export interface AccessTokenSource {

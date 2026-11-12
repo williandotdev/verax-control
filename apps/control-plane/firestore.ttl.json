@@ -34,6 +34,11 @@
       "collectionGroup": "adminEnrollments",
       "field": "expiresAt",
       "retention": "10 min (cadastro do TOTP)"
+    },
+    {
+      "collectionGroup": "cellReports",
+      "field": "expiresAt",
+      "retention": "90 dias"
     }
   ]
 }

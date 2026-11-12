@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { tenantCellChannelSchema, tenantPlacementSchema } from '../cells/cell.schema.js';
 import { ULID_PATTERN } from '../common/ulid.js';
 import {
   configurationSchema,
@@ -340,6 +341,13 @@ const tenantObjectSchema = z.strictObject({
     })
     .optional(),
   lock: lockSchema.optional(),
+  /**
+   * Onde o cliente roda, só para o da célula compartilhada (CE-06; a escolha da célula é do CE-15): nunca muda sozinho,
+   * e é por ele que um relatório da célula é aceito só sobre os clientes dela.
+   */
+  placement: tenantPlacementSchema.optional(),
+  /** O canal com a célula (CE-06): a geração mandada e a aplicada, e os agregados do `tenant.status`. */
+  cell: tenantCellChannelSchema.optional(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
