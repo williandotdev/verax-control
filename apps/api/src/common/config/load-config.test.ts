@@ -386,7 +386,7 @@ describe('loadConfig', () => {
       ]);
     });
 
-    describe('entrada única pelo console (só na célula)', () => {
+    describe('entrada única pelo console (na célula e no nó dedicado da Verax)', () => {
       const { PLAN: _plan, ...cellProduction } = { ...validProductionEnv, ...cellEnv };
       const consoleKey = generateKeyPairSync('ed25519');
       const x = String(consoleKey.publicKey.export({ format: 'jwk' }).x);
@@ -406,16 +406,71 @@ describe('loadConfig', () => {
         expect(sso?.keyId).toMatch(/^[A-Za-z0-9_-]{43}$/);
       });
 
-      it('as três juntas, e só na célula', () => {
+      it('as três juntas, e só na célula ou no nó dedicado da Verax', () => {
         expect(problemsOf({ ...cellProduction, SSO_ISSUER: ssoEnv.SSO_ISSUER })).toEqual([
           'SSO_CLIENT_ID: obrigatória e não definida',
           'SSO_PUBLIC_KEY: obrigatória e não definida',
         ]);
         expect(problemsOf({ ...validProductionEnv, ...ssoEnv })).toEqual([
-          'SSO_ISSUER: só existe com NODE_MODE=cell',
-          'SSO_CLIENT_ID: só existe com NODE_MODE=cell',
-          'SSO_PUBLIC_KEY: só existe com NODE_MODE=cell',
+          'SSO_ISSUER: só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno)',
+          'SSO_CLIENT_ID: só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno)',
+          'SSO_PUBLIC_KEY: só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno)',
         ]);
+      });
+
+      describe('no nó dedicado: só no da Verax (PLAN=interno; decisão de 16/11/2026)', () => {
+        const verax = { ...validProductionEnv, PLAN: 'interno' };
+        const refused = 'só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno)';
+
+        it('com PLAN=interno, a mesma configuração da célula, e o interruptor do login com senha', () => {
+          const config = loadConfig({ ...verax, ...ssoEnv, STAFF_PASSWORD_LOGIN_DISABLED: 'true' });
+          expect(config.NODE_MODE).toBe('dedicated');
+          expect(config.cell).toBeNull();
+          expect(config.sso?.issuer).toBe('https://admin.exemplo.com.br');
+          expect(config.sso?.authorizeUrl).toBe('https://admin.exemplo.com.br/sso/authorize');
+          expect(config.sso?.publicKey.type).toBe('public');
+          expect(config.STAFF_PASSWORD_LOGIN_DISABLED).toBe(true);
+          expect(loadConfig({ ...verax, NODE_MODE: 'dedicated', ...ssoEnv }).sso).not.toBeNull();
+        });
+
+        it('nó de cliente (qualquer outro plano): recusada, a API não sobe', () => {
+          for (const plan of ['essencial', 'profissional']) {
+            expect(problemsOf({ ...validProductionEnv, PLAN: plan, ...ssoEnv }), plan).toEqual([
+              `SSO_ISSUER: ${refused}`,
+              `SSO_CLIENT_ID: ${refused}`,
+              `SSO_PUBLIC_KEY: ${refused}`,
+            ]);
+          }
+          expect(
+            problemsOf({ ...validProductionEnv, PLAN: 'enterprise', ...enterpriseOverrides, ...ssoEnv }),
+          ).toHaveLength(3);
+          expect(problemsOf({ ...validProductionEnv, STAFF_PASSWORD_LOGIN_DISABLED: 'true' })).toEqual([
+            'STAFF_PASSWORD_LOGIN_DISABLED: exige a entrada única configurada (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY)',
+          ]);
+        });
+
+        it('sem PLAN escrito (o padrão interno de fora de produção não conta): recusada', () => {
+          expect(problemsOf({ ...validEnv, ...ssoEnv })).toEqual([
+            `SSO_ISSUER: ${refused}`,
+            `SSO_CLIENT_ID: ${refused}`,
+            `SSO_PUBLIC_KEY: ${refused}`,
+          ]);
+          expect(loadConfig({ ...validEnv, PLAN: 'interno', ...ssoEnv }).sso).not.toBeNull();
+        });
+
+        it('as mesmas regras da célula: as três juntas, a chave pública e o cliente', () => {
+          expect(problemsOf({ ...verax, SSO_PUBLIC_KEY: x })).toEqual([
+            'SSO_ISSUER: obrigatória e não definida',
+            'SSO_CLIENT_ID: obrigatória e não definida',
+          ]);
+          expect(problemsOf({ ...verax, ...ssoEnv, SSO_CLIENT_ID: 'outro' })).toEqual([
+            'SSO_CLIENT_ID: deve ser verax-siem',
+          ]);
+          expect(problemsOf({ ...verax, ...ssoEnv, SSO_PUBLIC_KEY: `${x}=` })).toHaveLength(1);
+          expect(problemsOf({ ...verax, ...ssoEnv, SSO_ISSUER: 'http://admin.exemplo.com.br' })).toHaveLength(
+            1,
+          );
+        });
       });
 
       it('a chave é só a pública Ed25519 (o x do JWKS): PEM, chave privada, RSA e lixo são recusados', () => {

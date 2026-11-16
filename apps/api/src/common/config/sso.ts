@@ -4,8 +4,10 @@ import { z } from 'zod';
 
 /**
  * Entrada única no SIEM da Verax pelo console do responsável (decisão de 15/11/2026; `docs/ARQUITETURA.md`, "Entrada
- * única"). Só na célula (`NODE_MODE=cell`) e só no endereço da equipe (`api-<CELL_STAFF_SLUG>`): o console
- * (`cp-admin`) é o provedor de identidade, e a API só confere o que ele assinou.
+ * única"). Só onde a equipe da Verax entra: na célula (`NODE_MODE=cell`), no endereço da equipe
+ * (`api-<CELL_STAFF_SLUG>`); e no nó dedicado da própria Verax (`NODE_MODE=dedicated` com `PLAN=interno`, decisão de
+ * 16/11/2026), o nó inteiro. Nunca num nó dedicado de cliente (qualquer outro plano). O console (`cp-admin`) é o
+ * provedor de identidade, e a API só confere o que ele assinou.
  *
  * A chave pública do console fica FIXADA aqui (`SSO_PUBLIC_KEY`, o `x` da chave Ed25519, 32 bytes em base64url), e
  * nunca é baixada: um console falso, um DNS desviado ou um JWKS trocado não fazem a API aceitar outra chave. Nada aqui é
@@ -57,7 +59,7 @@ const enabledFlag = z
   .default('false')
   .transform((value) => value === 'true');
 
-/** As variáveis da entrada única, como o `start.sh` as escreve no `api.env` da célula. */
+/** As variáveis da entrada única, como o `start.sh` as escreve no `api.env` (da célula ou do nó da Verax). */
 export const ssoEnvShape = {
   SSO_ISSUER: z
     .string()
@@ -72,8 +74,9 @@ export const ssoEnvShape = {
       error: 'deve ser a chave PÚBLICA Ed25519 do console: o x do JWKS, 43 caracteres em base64url',
     })
     .optional(),
-  // Desliga o login com senha do painel para o `admin_verax` no endereço da equipe: só a entrada única. Desligado por
-  // padrão; ligado, exige a entrada única configurada (senão a equipe ficaria do lado de fora).
+  // Desliga o login com senha do painel para o `admin_verax` onde a entrada única existe (o endereço da equipe, na
+  // célula; o nó inteiro, no da Verax): só a entrada única. Desligado por padrão; ligado, exige a entrada única
+  // configurada (senão a equipe ficaria do lado de fora).
   STAFF_PASSWORD_LOGIN_DISABLED: enabledFlag,
 };
 
@@ -81,13 +84,23 @@ const SSO_KEYS = ['SSO_ISSUER', 'SSO_CLIENT_ID', 'SSO_PUBLIC_KEY'] as const;
 
 interface SsoEnv {
   NODE_MODE: string;
+  /** O `PLAN` como veio do ambiente, sem o padrão `interno` de fora de produção: o nó da Verax o declara. */
+  PLAN?: string | undefined;
   SSO_ISSUER?: string | undefined;
   SSO_CLIENT_ID?: string | undefined;
   SSO_PUBLIC_KEY?: string | undefined;
   STAFF_PASSWORD_LOGIN_DISABLED: boolean;
 }
 
-/** As três juntas ou nenhuma, só na célula; o login só pela entrada única exige a entrada única. */
+/**
+ * Onde a entrada única pode existir: na célula, ou no nó dedicado da Verax (`PLAN=interno` escrito no ambiente, como o
+ * `start.sh` o escreve; o padrão `interno` de fora de produção não conta). Num nó dedicado de cliente, nunca.
+ */
+export function ssoAllowed(env: Pick<SsoEnv, 'NODE_MODE' | 'PLAN'>): boolean {
+  return env.NODE_MODE === 'cell' || (env.NODE_MODE === 'dedicated' && env.PLAN === 'interno');
+}
+
+/** As três juntas ou nenhuma, só na célula ou no nó da Verax; o login só pela entrada única exige a entrada única. */
 export function checkSsoEnv(env: SsoEnv, ctx: z.RefinementCtx): void {
   const present = SSO_KEYS.filter((key) => env[key] !== undefined);
   if (present.length > 0 && present.length < SSO_KEYS.length) {
@@ -97,9 +110,13 @@ export function checkSsoEnv(env: SsoEnv, ctx: z.RefinementCtx): void {
       }
     }
   }
-  if (present.length > 0 && env.NODE_MODE !== 'cell') {
+  if (present.length > 0 && !ssoAllowed(env)) {
     for (const key of present) {
-      ctx.addIssue({ code: 'custom', path: [key], message: 'só existe com NODE_MODE=cell' });
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: 'só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno)',
+      });
     }
   }
   if (env.STAFF_PASSWORD_LOGIN_DISABLED && present.length < SSO_KEYS.length) {
@@ -113,8 +130,7 @@ export function checkSsoEnv(env: SsoEnv, ctx: z.RefinementCtx): void {
 
 /** A entrada única num objeto só (`null` sem ela); a configuração já conferiu as variáveis. */
 export function ssoConfigOf(env: SsoEnv): SsoConfig | null {
-  if (env.NODE_MODE !== 'cell' || env.SSO_ISSUER === undefined || env.SSO_PUBLIC_KEY === undefined)
-    return null;
+  if (!ssoAllowed(env) || env.SSO_ISSUER === undefined || env.SSO_PUBLIC_KEY === undefined) return null;
   if (env.SSO_CLIENT_ID !== SSO_CLIENT_ID) return null;
   const publicKey = ed25519PublicKey(env.SSO_PUBLIC_KEY);
   if (publicKey === undefined) return null;
