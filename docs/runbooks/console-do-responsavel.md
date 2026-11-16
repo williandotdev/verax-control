@@ -1,7 +1,7 @@
 # Console do responsável (`cp-admin`)
 
 O console é onde o responsável mantém o preço do Verax Control (por volume de logs em GB/dia, em três planos:
-Plataforma, Dedicado e vCISO): o **modelo de custos** (câmbio, a célula compartilhada e o nó por porte, ingestão,
+SIEM Cloud, SIEM Dedicado e SIEM + vCISO; ids `plataforma`, `dedicado` e `vciso`): o **modelo de custos** (câmbio, a célula compartilhada e o nó por porte, ingestão,
 tarifas, impostos, horas de suporte, custos fixos e as metas de margem), a **tabela de preços** (os planos, a regra de
 porte por GB/dia, o imposto embutido ou por cima, e o preço e o `lookup_key` da Stripe de cada componente), o
 **simulador de DRE**, os **clientes** (a lista, a linha do tempo do provisionamento, o cadastro de um contrato direto
@@ -229,13 +229,13 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
    uma versão (`{ "version", "content" }`) ou só o conteúdo.
 2. Preencha cada seção. Dinheiro em reais (a API guarda em centavos), percentuais em % (a API guarda entre 0 e 1),
    custos de nuvem em dólares. As seções do modelo por GB/dia:
-   - **Célula compartilhada (Plataforma):** a máquina (VM, disco, snapshots), a **capacidade em GB/dia** (quanto volume
+   - **Célula compartilhada (SIEM Cloud):** a máquina (VM, disco, snapshots), a **capacidade em GB/dia** (quanto volume
      a célula aguenta; confirme com um teste de carga) e o custo fixo de cada cliente nela. O console mostra o custo da
-     célula e o **custo por GB/dia** (custo ÷ capacidade), que é o que a Plataforma paga por GB/dia contratado.
-   - **Nó dedicado por porte** (Dedicado e vCISO na Verax) e os itens comuns (disco, snapshot, NAT, IP, outros) e a
+     célula e o **custo por GB/dia** (custo ÷ capacidade), que é o que o SIEM Cloud paga por GB/dia contratado.
+   - **Nó dedicado por porte** (SIEM Dedicado e SIEM + vCISO na Verax) e os itens comuns (disco, snapshot, NAT, IP, outros) e a
      **ingestão por GB/dia** (por mês). A tabela "Custo do nó por porte" recalcula a cada tecla.
-   - **Horas de suporte** por mês e por cliente: Plataforma, Dedicado, o **serviço do vCISO em horas equivalentes**
-     (somadas às do Dedicado) e as a mais com o ambiente na infraestrutura do cliente; e as da implantação.
+   - **Horas de suporte** por mês e por cliente: SIEM Cloud, SIEM Dedicado, o **serviço do vCISO em horas equivalentes**
+     (somadas às do SIEM Dedicado) e as a mais com o ambiente na infraestrutura do cliente; e as da implantação.
    - Tarifas, alíquotas, reserva, custos fixos com o rateio e as margens mínima e de alerta, como antes.
 3. **Criar rascunho.** A API valida tudo: cada problema aparece ao lado do campo (e num resumo no alto, com um botão
    que leva o foco até ele). Corrija e crie de novo.
@@ -250,17 +250,17 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
    - **Imposto:** embutido nos valores, ou **por cima** (o "+ impostos": os valores são sem imposto e a DRE soma o
      imposto à receita bruta).
    - **Regra de porte:** o maior GB/dia de cada porte, do menor para o maior (o porte do nó sai do volume contratado).
-   - **Plataforma:** a base mensal e os GB/dia incluídos nela, o preço do **GB/dia adicional** (a franquia contratada
+   - **SIEM Cloud:** a base mensal e os GB/dia incluídos nela, o preço do **GB/dia adicional** (a franquia contratada
      acima do incluído vira a quantidade desse item na assinatura), o do **GB/dia excedente** (cobrado depois, pela
      medição; nunca mais barato que o adicional), o **máximo do site** (acima, "fale conosco") e o teto de contas de
      nuvem do nó (não muda o preço).
-   - **Dedicado:** o preço por GB/dia, o mínimo e o máximo cotáveis, a duração do contrato e o teto de contas.
-   - **vCISO:** o serviço mensal e a implantação (cobrada uma vez); o GB/dia, o mínimo e o máximo são os do Dedicado.
+   - **SIEM Dedicado:** o preço por GB/dia, o mínimo e o máximo cotáveis, a duração do contrato e o teto de contas.
+   - **SIEM + vCISO:** o serviço mensal e a implantação (cobrada uma vez); o GB/dia, o mínimo e o máximo são os do SIEM Dedicado.
    - O histórico incluído e o máximo de usuários.
      Cada preço tem o `lookup_key` do preço na Stripe.
 2. **Criar rascunho**, corrija o que a API apontar, **Salvar rascunho**.
-3. **Conferir.** A checagem percorre cada GB/dia que a tabela vende (a Plataforma do incluído ao máximo do site; o
-   Dedicado e o vCISO do mínimo ao máximo, na Verax e no cliente), no cartão e na alíquota padrão do modelo, e mostra:
+3. **Conferir.** A checagem percorre cada GB/dia que a tabela vende (o SIEM Cloud do incluído ao máximo do site; o
+   SIEM Dedicado e o SIEM + vCISO do mínimo ao máximo, na Verax e no cliente), no cartão e na alíquota padrão do modelo, e mostra:
    aprovada ou reprovada; quantas configurações foram conferidas e quantas ficam sob consulta; quantas ficam abaixo
    da margem mínima (bloqueiam) e do alerta (só avisam); o "a partir de" de cada plano contra o menor preço dele; as
    piores configurações; a pior de cada plano e de cada lugar; o pior caso com as outras alíquotas e no boleto (só
@@ -275,7 +275,7 @@ A tabela de preços não publica sem um modelo de custos vigente (a checagem pre
    `apps/control-plane/scripts/stripe-setup.ts --catalog=<arquivo>` (simulação, depois `--apply`). A publicação não
    confere a Stripe: um `lookup_key` que falte lá deixa o checkout em 503 para as configurações que o usam, com o
    alerta `checkout_price_invalid` (nunca cobra diferente). O checkout usa só a base e o GB/dia adicional da
-   Plataforma; os do excedente, do Dedicado e do vCISO ficam no catálogo para a cobrança do excedente e para faturar
+   SIEM Cloud; os do excedente, do SIEM Dedicado e do SIEM + vCISO ficam no catálogo para a cobrança do excedente e para faturar
    contratos.
 6. **Imposto por cima** (tabela "sem impostos", o "+ impostos"): o checkout só cobra o imposto com uma alíquota de
    imposto da Stripe. Antes de publicar uma tabela assim:
@@ -327,15 +327,15 @@ o checkout responde 503 `checkout_unavailable`, mesmo com a tabela e a Stripe pr
 
 ## 5. Como o "a partir de" chega ao site
 
-- O "a partir de" de cada plano é o preço da **configuração mínima** dele na tabela vigente (a Plataforma com os
-  GB/dia incluídos; o Dedicado e o vCISO no mínimo), pelo mesmo motor da cotação. A checagem recusa a tabela se ele não
+- O "a partir de" de cada plano é o preço da **configuração mínima** dele na tabela vigente (o SIEM Cloud com os
+  GB/dia incluídos; o SIEM Dedicado e o SIEM + vCISO no mínimo), pelo mesmo motor da cotação. A checagem recusa a tabela se ele não
   for o menor preço do plano.
 - O site lê `GET https://conta.veraxsistemas.com.br/v1/public/pricing` no navegador: `startingAt.<plano>.monthly` (em
   centavos), `taxMode` (`exclusive` é o "+ impostos") e o resto da tabela pública (os três planos, os incluídos, os
   preços unitários, os mínimos e o máximo do site; sem custo, margem nem `lookup_key`). A resposta fica até 5 minutos
   no cache do CDN do Hosting, então a mudança chega ao site em até 5 minutos depois da vigência.
-- A cotação do site (`POST /v1/public/quote`) aceita só `{ "plan": "plataforma", "gbDay": N }`; o Dedicado e o
-  vCISO respondem 422 `plan_not_sold_online` (a mensagem leva à proposta e ao contrato direto).
+- A cotação do site (`POST /v1/public/quote`) aceita só `{ "plan": "plataforma", "gbDay": N }`; o SIEM Dedicado e o
+  SIEM + vCISO respondem 422 `plan_not_sold_online` (a mensagem leva à proposta e ao contrato direto).
 - O texto de reserva do site (para quem navega sem JavaScript) e o JSON-LD ficam no repositório do site: quando o "a
   partir de" mudar, atualize-os lá.
 
@@ -348,7 +348,7 @@ o checkout responde 503 `checkout_unavailable`, mesmo com a tabela e a Stripe pr
 - **Simulador de DRE:** a DRE por cliente e por mês de um plano, um volume em GB/dia e um lugar (na Verax ou no
   cliente), com a tabela e o modelo vigentes ou qualquer versão, inclusive rascunhos; meio de pagamento, alíquota,
   desconto e clientes do rateio. Com o imposto por cima, a DRE mostra o valor da tabela e a receita bruta (o valor ÷
-  (1 − alíquota)). A infraestrutura é o rateio da célula na Plataforma e o nó do porte no Dedicado e no vCISO. A
+  (1 − alíquota)). A infraestrutura é o rateio da célula no SIEM Cloud e o nó do porte no SIEM Dedicado e no SIEM + vCISO. A
   margem de contribuição sai marcada contra as metas do modelo (abaixo da mínima, abaixo do alerta ou dentro da meta),
   com a implantação à parte, os doze meses e, na infraestrutura do cliente, a estimativa da nuvem dele (fora da DRE).
 - **Alerta "a tabela de preços vigente ficou abaixo da margem mínima"** (`pricing_margin_alert`): um modelo de custos
@@ -370,9 +370,9 @@ o contratado e o preço, a linha do tempo dos passos do provisionamento (ou, no 
 para instalar), o acesso do administrador (quando o e-mail saiu e quando a senha foi vista; nunca a senha), o ciclo de
 vida e o histórico de estados. Enquanto o cliente provisiona, a página se atualiza sozinha.
 
-**Pelo site, só a Plataforma, na infraestrutura da Verax** (decisões de 06/11/2026 e 10/11/2026). O Dedicado, o vCISO
+**Pelo site, só o SIEM Cloud, na infraestrutura da Verax** (decisões de 06/11/2026 e 10/11/2026). O SIEM Dedicado, o SIEM + vCISO
 e o ambiente na infraestrutura do cliente existem **só por contrato direto**, aqui. O preço por GB/dia é o mesmo nos
-dois lugares (no cliente, a Verax não paga a nuvem, e a DRE mostra isso); a Plataforma é a célula da Verax e nunca
+dois lugares (no cliente, a Verax não paga a nuvem, e a DRE mostra isso); o SIEM Cloud é a célula da Verax e nunca
 roda no cliente.
 
 **Cadastrar um cliente de contrato direto** (um contrato negociado com você, sem o checkout do site e sem a Stripe):
@@ -384,10 +384,10 @@ roda no cliente.
      administrador recebe o e-mail com o link para ver a senha;
    - **Infraestrutura do cliente:** nada é criado na Verax; o cliente instala a versão publicada com o guia
      (`docs/runbooks/instalacao-no-cliente.md`) e apaga o próprio ambiente no fim do contrato.
-3. O **plano** (Plataforma, Dedicado ou vCISO) e o **volume em GB/dia**, e **Calcular a cotação**: o preço de
+3. O **plano** (SIEM Cloud, SIEM Dedicado ou SIEM + vCISO) e o **volume em GB/dia**, e **Calcular a cotação**: o preço de
    referência da tabela vigente (abaixo do mínimo do plano, o volume sobe até ele), o porte que o volume pede e, se
    houver, o que ainda não se cria (na Verax, hoje só o porte P; no cliente, qualquer porte, com os limites nas faixas
-   do nó). A Plataforma no cliente é recusada (sob consulta, com o motivo no plano). O preço é só referência: a
+   do nó). O SIEM Cloud no cliente é recusado (sob consulta, com o motivo no plano). O preço é só referência: a
    cobrança e a nota fiscal do contrato são suas, fora da Stripe.
 4. **Revisar e confirmar…**, digite o subdomínio e **Criar e provisionar** (na Verax) ou **Criar o cliente** (no
    cliente). A API confere tudo de novo; um problema aparece ao lado do campo. Criado, o detalhe abre. Enviar duas

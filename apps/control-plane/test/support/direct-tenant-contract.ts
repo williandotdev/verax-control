@@ -815,7 +815,7 @@ export function describeDirectTenantContract(
           {
             path: 'configuration.plan',
             message:
-              'A Plataforma roda só na célula da Verax: no ambiente do cliente, escolha o Dedicado ou o vCISO.',
+              'O SIEM Cloud roda só na célula da Verax: no ambiente do cliente, escolha o SIEM Dedicado ou o SIEM + vCISO.',
           },
         ],
       });

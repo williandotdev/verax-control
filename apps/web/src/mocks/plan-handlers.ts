@@ -96,7 +96,7 @@ export const MOCK_PLAN_STORAGE_KEY = 'verax.mock.plan';
 
 export const DEMO_PLATFORM_PLAN: ResolvedPlan = {
   id: 'plataforma',
-  label: 'Plataforma',
+  label: 'SIEM Cloud',
   limits: { maxCloudAccounts: 10, maxUsers: 10, monthlyGib: null, historyDays: 90 },
 };
 export const DEMO_FRANCHISE_GB_PER_DAY = 3;

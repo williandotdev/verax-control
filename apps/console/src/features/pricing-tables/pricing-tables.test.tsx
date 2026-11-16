@@ -38,7 +38,9 @@ describe('tabelas de preço', () => {
     expect(within(report).getByText('Configurações conferidas').nextElementSibling).toHaveTextContent(/\d/);
     expect(within(report).getByRole('table', { name: /a partir de/i })).toHaveTextContent('R$ 1.000,00');
     expect(within(report).getByRole('table', { name: 'As piores configurações' })).toBeInTheDocument();
-    expect(within(report).getByRole('table', { name: 'A pior de cada plano' })).toHaveTextContent('vCISO');
+    expect(within(report).getByRole('table', { name: 'A pior de cada plano' })).toHaveTextContent(
+      'SIEM + vCISO',
+    );
     expect(within(report).getByRole('table', { name: 'A pior de cada lugar' })).toHaveTextContent(
       'Na infraestrutura do cliente',
     );

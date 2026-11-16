@@ -17,7 +17,7 @@ describe('simulador de DRE', () => {
     await user.click(screen.getByRole('button', { name: 'Simular' }));
 
     const dre = await screen.findByRole('region', { name: 'DRE por cliente e por mês' });
-    expect(within(dre).getByText(/Plataforma, 2 GB\/dia/)).toBeInTheDocument();
+    expect(within(dre).getByText(/SIEM Cloud, 2 GB\/dia/)).toBeInTheDocument();
     const month = within(dre).getByRole('table', { name: 'Demonstrativo do mês' });
     const gross = within(month).getByRole('row', { name: /Receita bruta/ });
     expect(gross).toHaveTextContent('R$ 1.111,11');
@@ -41,14 +41,14 @@ describe('simulador de DRE', () => {
   it('o vCISO com desconto fica abaixo da margem de alerta (as horas do serviço pesam)', async () => {
     const { user } = renderConsole('/simulador');
     await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('2'));
-    await user.selectOptions(screen.getByLabelText('Plano'), 'vCISO');
+    await user.selectOptions(screen.getByLabelText('Plano'), 'SIEM + vCISO');
     expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveAccessibleDescription(
       'De 3 a 15 GB/dia (abaixo do mínimo, sobe até ele).',
     );
     await user.type(screen.getByLabelText('Desconto nos itens mensais (%)'), '35');
     await user.click(screen.getByRole('button', { name: 'Simular' }));
     const dre = await screen.findByRole('region', { name: 'DRE por cliente e por mês' });
-    expect(within(dre).getByText(/vCISO, 3 GB\/dia/)).toBeInTheDocument();
+    expect(within(dre).getByText(/SIEM \+ vCISO, 3 GB\/dia/)).toBeInTheDocument();
     expect(within(dre).getByText('Abaixo do alerta (35,0%)')).toBeInTheDocument();
     expect(within(dre).getByText('Margem de contribuição: 33,3%')).toBeInTheDocument();
   });
@@ -56,7 +56,7 @@ describe('simulador de DRE', () => {
   it('na infraestrutura do cliente: a implantação à parte e a estimativa da nuvem dele, fora da DRE', async () => {
     const { user } = renderConsole('/simulador');
     await waitFor(() => expect(screen.getByLabelText('Volume de logs (GB/dia)')).toHaveValue('2'));
-    await user.selectOptions(screen.getByLabelText('Plano'), 'vCISO');
+    await user.selectOptions(screen.getByLabelText('Plano'), 'SIEM + vCISO');
     await user.selectOptions(
       screen.getByLabelText('Onde roda'),
       'Na infraestrutura do cliente (contrato direto)',
@@ -79,7 +79,7 @@ describe('simulador de DRE', () => {
     await user.type(gbDay, '9');
     await user.click(screen.getByRole('button', { name: 'Simular' }));
     expect(await screen.findByRole('heading', { name: 'Sob consulta' })).toBeInTheDocument();
-    expect(screen.getByText(/volume acima do máximo da Plataforma no site/)).toBeInTheDocument();
+    expect(screen.getByText(/volume acima do máximo do SIEM Cloud no site/)).toBeInTheDocument();
 
     await user.clear(gbDay);
     await user.type(gbDay, '2');
@@ -88,7 +88,7 @@ describe('simulador de DRE', () => {
       'Na infraestrutura do cliente (contrato direto)',
     );
     await user.click(screen.getByRole('button', { name: 'Simular' }));
-    expect(await screen.findByText(/a Plataforma só roda na infraestrutura da Verax/)).toBeInTheDocument();
+    expect(await screen.findByText(/o SIEM Cloud só roda na infraestrutura da Verax/)).toBeInTheDocument();
   });
 
   it('campo vazio: a API aponta o caminho, e ele aparece no campo', async () => {

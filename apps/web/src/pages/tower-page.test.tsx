@@ -455,3 +455,30 @@ describe('frase do semáforo', () => {
     ).toBe('1 incidente alto aberto.');
   });
 });
+
+describe('Torre: radar de detecções', () => {
+  it('mostra os achados das últimas 24 horas da demonstração, por setor, com o incidente aberto marcado', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    const card = await screen.findByRole('region', { name: 'Radar de detecções' });
+    const radar = within(card).getByRole('group', { name: /^Radar de detecções das últimas 24 horas/ });
+    // Os achados do Alfa nas últimas 24 horas: AWS pelo Wazuh, os 3 da auditoria da GCP e os 2 do agente; o
+    // Cloudflare ainda aguarda a primeira leitura.
+    expect(radar).toHaveAccessibleName(/GCP 3, Cloudflare 0, Agentes 2\./);
+    const recent = within(radar).getByRole('link', {
+      name: /^Crítico: Tentativa de desligar a trilha do CloudTrail\./,
+    });
+    expect(recent).toHaveAccessibleName(/Em incidente aberto$/);
+    expect(within(card).getByRole('link', { name: 'Ver achados' })).toHaveAttribute(
+      'href',
+      '/achados?periodo=24h',
+    );
+  });
+
+  it('nó de antes do radar (sem `radar` no resumo): a Torre segue, sem o cartão', async () => {
+    renderTower({ me: demoMe('analista_cliente') });
+    const { radar: _radar, ...older } = demoTower(alfa ?? '', { includeUnowned: false });
+    server.use(http.get(`${API_URL}/v1/tower`, () => HttpResponse.json(older)));
+    await screen.findByRole('region', { name: 'Pulso da operação' });
+    expect(screen.queryByRole('region', { name: 'Radar de detecções' })).not.toBeInTheDocument();
+  });
+});

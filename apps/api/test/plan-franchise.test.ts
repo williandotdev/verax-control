@@ -79,7 +79,7 @@ describe('contador da franquia no GET /v1/plan (CE-10, célula)', () => {
     const body = planUsageSchema.parse((await a.get().expect(200)).body);
     const franchise = body.franchise;
     if (franchise === undefined) throw new Error('a Plataforma tem o contador da franquia');
-    expect(body.plan).toMatchObject({ id: 'plataforma', label: 'Plataforma' });
+    expect(body.plan).toMatchObject({ id: 'plataforma', label: 'SIEM Cloud' });
     expect(franchise.cycle).toEqual(cycle);
     expect(franchise.franchiseGbPerDay).toBe(4);
     expect(franchise.schedule).toEqual([{ from: cycle.start, gbPerDay: 4 }]);

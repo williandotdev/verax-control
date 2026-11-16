@@ -80,6 +80,7 @@ export function createHandlers(state: MockState) {
     for (const incident of open) bySeverity[incident.severity] += 1;
     return {
       openIncidents: bySeverity,
+      openIncidentIds: new Set(open.map((incident) => incident.id)),
       unassignedIncidents: open.filter((incident) => incident.assignee === null).length,
       untriagedFindings: (findings.get(tenantId) ?? []).filter(
         (finding) =>
@@ -136,7 +137,7 @@ export function createHandlers(state: MockState) {
           unownedAlerts: recentUnowned(),
           ...towerCounts(state.me.scopeTenantId),
           mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
-          // O pulso das últimas 24 horas acompanha os achados do mock (e a triagem feita nas outras telas).
+          // O pulso e o radar das últimas 24 horas acompanham os achados do mock (e a triagem feita nas outras telas).
           findings: findings.get(state.me.scopeTenantId) ?? [],
         }),
       );

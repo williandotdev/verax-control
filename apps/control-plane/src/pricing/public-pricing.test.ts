@@ -64,7 +64,7 @@ describe('tabela pública (GET /v1/public/pricing)', () => {
     const vciso = quote({ plan: 'vciso', gbDay: 3, mode: 'managed' }, table);
     if (plataforma.kind !== 'quote' || vciso.kind !== 'quote') throw new Error('sob consulta');
     expect([...plataforma.quote.lineItems, ...vciso.quote.lineItems].map(describeLineItem)).toEqual([
-      'Plataforma (base mensal com a franquia incluída)',
+      'SIEM Cloud (base mensal com a franquia incluída)',
       'GB/dia adicional da franquia',
       'GB/dia do servidor dedicado',
       'Serviço de vCISO',

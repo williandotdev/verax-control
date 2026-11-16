@@ -1,13 +1,13 @@
 {
-  "_comment": "EXEMPLO com valores FICTÍCIOS (números redondos inventados), só para mostrar o formato do --catalog do stripe-setup.ts. O catálogo de verdade fica FORA do repositório (que é público) e tem de bater com a tabela de preços publicada no Firestore: mesmos lookup_key e valores (centavos de real). metadata.component e metadata.variant seguem lookupKeysOf (src/pricing/pricing.schema.ts): o componente (base, additional_gb_day, overage_gb_day, gb_day, service, setup) e o plano; o script acrescenta tableVersion. A franquia da Plataforma vai à assinatura como a quantidade do preço do GB/dia adicional (ampliar é mudar a quantidade). recurring=false só na implantação do vCISO (avulsa, na primeira fatura). O cupom nunca pode descontar um produto avulso. O texto do código promocional nunca vai neste arquivo: é argumento na hora (STRIPE_SETUP_PROMO_CODE).",
+  "_comment": "EXEMPLO com valores FICTÍCIOS (números redondos inventados), só para mostrar o formato do --catalog do stripe-setup.ts. O catálogo de verdade fica FORA do repositório (que é público) e tem de bater com a tabela de preços publicada no Firestore: mesmos lookup_key e valores (centavos de real). metadata.component e metadata.variant seguem lookupKeysOf (src/pricing/pricing.schema.ts): o componente (base, additional_gb_day, overage_gb_day, gb_day, service, setup) e o plano; o script acrescenta tableVersion. A franquia do SIEM Cloud (plano plataforma) vai à assinatura como a quantidade do preço do GB/dia adicional (ampliar é mudar a quantidade). recurring=false só na implantação do SIEM + vCISO (avulsa, na primeira fatura). O cupom nunca pode descontar um produto avulso. O texto do código promocional nunca vai neste arquivo: é argumento na hora (STRIPE_SETUP_PROMO_CODE).",
   "tableVersion": "exemplo-v1",
   "products": [
-    { "id": "vc_plataforma", "name": "Verax Control: Plataforma" },
-    { "id": "vc_gb_dia_adicional", "name": "Plataforma: GB/dia adicional", "unitLabel": "GB/dia" },
-    { "id": "vc_gb_dia_excedente", "name": "Plataforma: GB/dia excedente", "unitLabel": "GB/dia" },
-    { "id": "vc_dedicado", "name": "Verax Control: Dedicado", "unitLabel": "GB/dia" },
+    { "id": "vc_plataforma", "name": "Verax Control: SIEM Cloud" },
+    { "id": "vc_gb_dia_adicional", "name": "SIEM Cloud: GB/dia adicional", "unitLabel": "GB/dia" },
+    { "id": "vc_gb_dia_excedente", "name": "SIEM Cloud: GB/dia excedente", "unitLabel": "GB/dia" },
+    { "id": "vc_dedicado", "name": "Verax Control: SIEM Dedicado", "unitLabel": "GB/dia" },
     { "id": "vc_vciso", "name": "Serviço de vCISO" },
-    { "id": "vc_implantacao", "name": "Implantação do vCISO" }
+    { "id": "vc_implantacao", "name": "Implantação do SIEM + vCISO" }
   ],
   "prices": [
     {
@@ -15,7 +15,7 @@
       "product": "vc_plataforma",
       "unitAmount": 100000,
       "recurring": true,
-      "nickname": "Plataforma (mensal)",
+      "nickname": "SIEM Cloud (mensal)",
       "metadata": { "component": "base", "variant": "plataforma" }
     },
     {
@@ -39,7 +39,7 @@
       "product": "vc_dedicado",
       "unitAmount": 50000,
       "recurring": true,
-      "nickname": "GB/dia do Dedicado (mensal)",
+      "nickname": "GB/dia do SIEM Dedicado (mensal)",
       "metadata": { "component": "gb_day", "variant": "dedicado" }
     },
     {
@@ -55,7 +55,7 @@
       "product": "vc_implantacao",
       "unitAmount": 500000,
       "recurring": false,
-      "nickname": "Implantação do vCISO (uma vez)",
+      "nickname": "Implantação do SIEM + vCISO (uma vez)",
       "metadata": { "component": "setup", "variant": "vciso" }
     }
   ],

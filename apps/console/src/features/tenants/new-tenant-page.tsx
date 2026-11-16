@@ -47,7 +47,7 @@ const HOSTING_OPTIONS: readonly RadioOption[] = [
     value: 'customer',
     label: HOSTING_LABELS.customer,
     description:
-      'Nada é criado na infraestrutura da Verax: o cliente instala a versão publicada com o guia, e apaga o próprio ambiente no fim do contrato. Só o Dedicado e o vCISO, pelo mesmo preço por GB/dia.',
+      'Nada é criado na infraestrutura da Verax: o cliente instala a versão publicada com o guia, e apaga o próprio ambiente no fim do contrato. Só o SIEM Dedicado e o SIEM + vCISO, pelo mesmo preço por GB/dia.',
   },
 ];
 
@@ -232,7 +232,7 @@ export function NewTenantPage() {
 
         <Section
           title="Plano e volume"
-          description="O preço depende só do volume de logs em GB por dia. A Plataforma é a do site; o Dedicado e o vCISO são só por contrato direto."
+          description="O preço depende só do volume de logs em GB por dia. O SIEM Cloud é o do site; o SIEM Dedicado e o SIEM + vCISO são só por contrato direto."
           path={['configuration']}
         >
           <Grid>

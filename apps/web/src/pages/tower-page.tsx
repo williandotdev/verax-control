@@ -4,6 +4,7 @@ import {
   type CollectionSourceHealth,
   type PendingDecisionKind,
   type TowerPulse,
+  type TowerRadar,
   type TowerSummary,
   towerSummarySchema,
 } from '@verax/shared';
@@ -14,6 +15,7 @@ import { formatCompact, formatHour } from '@/components/charts/chart-utils';
 import { MiniBars } from '@/components/charts/mini-bars';
 import { StatTile } from '@/components/charts/stat-tile';
 import { DecisionCard } from '@/components/security/decision-card';
+import { DetectionRadar } from '@/components/security/detection-radar';
 import { ScoreMeter } from '@/components/security/score-meter';
 import { Semaphore } from '@/components/security/semaphore';
 import { SeverityBadge } from '@/components/security/severity-badge';
@@ -92,6 +94,7 @@ function TowerContent({ summary }: { summary: TowerSummary }) {
         <Semaphore state={summary.light} reason={towerReason(summary)} />
       </Card>
       {summary.pulse && <Pulse pulse={summary.pulse} />}
+      {summary.radar && <Radar radar={summary.radar} generatedAt={summary.generatedAt} />}
       <div className="grid gap-6 lg:grid-cols-3">
         <PendingDecisions summary={summary} />
         <div className="space-y-6">
@@ -216,6 +219,29 @@ function Posture({ posture }: { posture: TowerSummary['posture'] }) {
           )}
         </div>
       )}
+    </Card>
+  );
+}
+
+/**
+ * Radar de detecções: os achados das últimas 24 horas girando no radar, por origem e idade, com a lista e a tabela ao
+ * lado. Acompanha a atualização da Torre (a cada minuto); uma detecção nova pulsa uma vez.
+ */
+function Radar({ radar, generatedAt }: { radar: TowerRadar; generatedAt: string }) {
+  return (
+    <Card data-tour="torre-radar" aria-labelledby="torre-radar">
+      <CardHeader>
+        <div>
+          <CardTitle id="torre-radar">Radar de detecções</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Achados das últimas {radar.windowHours} horas, pela origem e pela idade
+          </p>
+        </div>
+        <Link to="/achados?periodo=24h" className="shrink-0 text-sm underline">
+          Ver achados
+        </Link>
+      </CardHeader>
+      <DetectionRadar radar={radar} generatedAt={generatedAt} />
     </Card>
   );
 }
