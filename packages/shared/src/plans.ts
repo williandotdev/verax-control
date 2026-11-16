@@ -33,7 +33,7 @@ export const PLAN_LABELS: Readonly<Record<TenantPlanId, string>> = {
   profissional: 'Profissional',
   enterprise: 'Enterprise',
   interno: 'Interno',
-  plataforma: 'Plataforma',
+  plataforma: 'SIEM Cloud',
 };
 
 /** Os limites de um plano. `null` é "sem limite". */

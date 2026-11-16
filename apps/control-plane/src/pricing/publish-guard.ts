@@ -262,7 +262,7 @@ export function runPublishGuard(
   }
   const { plataforma } = table.plans;
   if (plataforma.overageGbDay.amount < plataforma.additionalGbDay.amount) {
-    report.problems.push('o GB/dia excedente da Plataforma é mais barato que o contratado');
+    report.problems.push('o GB/dia excedente do SIEM Cloud é mais barato que o contratado');
   }
   if (table.taxMode === 'exclusive' && !options.stripeTaxRate) {
     report.problems.push(TAX_RATE_UNCONFIGURED_PROBLEM);

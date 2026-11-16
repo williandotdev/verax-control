@@ -22,7 +22,7 @@ describe('clientes', () => {
     expect(failed).toHaveTextContent('Contrato direto');
     expect(failed).toHaveTextContent('Túnel e DNS no Cloudflare');
     expect(failed).toHaveTextContent('cloudflare_denied');
-    expect(failed).toHaveTextContent('Plataforma · porte P');
+    expect(failed).toHaveTextContent('SIEM Cloud · porte P');
     const paid = within(table).getByRole('row', { name: /Cliente Demo B/ });
     expect(paid).toHaveTextContent('Stripe (site)');
     // Contratado no modelo de preço anterior: sem plano.
@@ -60,7 +60,7 @@ describe('clientes', () => {
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
     const quote = await screen.findByRole('region', { name: 'Cotação de referência' });
     expect(quote).toHaveTextContent('R$ 1.500,00 por mês');
-    expect(quote).toHaveTextContent('Dedicado, 3 GB/dia');
+    expect(quote).toHaveTextContent('SIEM Dedicado, 3 GB/dia');
     expect(quote).toHaveTextContent('Porte de teste P');
 
     await user.click(screen.getByRole('button', { name: 'Revisar e confirmar…' }));
@@ -115,9 +115,9 @@ describe('clientes', () => {
     expect(customerQuote).toHaveTextContent('R$ 5.000,00 por mês');
     expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeEnabled();
     // A Plataforma no cliente não existe: sob consulta, com o motivo.
-    await user.selectOptions(screen.getByLabelText('Plano'), 'Plataforma');
+    await user.selectOptions(screen.getByLabelText('Plano'), 'SIEM Cloud');
     await user.click(screen.getByRole('button', { name: 'Calcular a cotação' }));
-    expect(await screen.findByText(/a Plataforma só roda na infraestrutura da Verax/)).toBeInTheDocument();
+    expect(await screen.findByText(/o SIEM Cloud só roda na infraestrutura da Verax/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revisar e confirmar…' })).toBeDisabled();
   });
 
@@ -275,7 +275,7 @@ describe('clientes', () => {
   it('o contratado no modelo por GB/dia: o plano e a franquia', async () => {
     renderConsole(`/clientes/${CUSTOMER_ID}`);
     const contracted = await screen.findByRole('region', { name: 'Contratado' });
-    expect(contracted).toHaveTextContent('Dedicado · 3 GB/dia · no cliente · porte P');
+    expect(contracted).toHaveTextContent('SIEM Dedicado · 3 GB/dia · no cliente · porte P');
     expect(contracted).toHaveTextContent('Franquia contratada: 3 GB/dia');
   });
 
