@@ -5420,3 +5420,53 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **Riscos e pendências:** quem cria a conta precisa das credenciais de dono e de um terminal de verdade para a senha
   sem eco (no Git Bash do Windows, `winpty`); a lista de responsáveis da linha de comando é digitada (a mesma de
   `owner_principals`): um e-mail que não esteja no serviço é recusado no login de qualquer jeito.
+
+## Entrada única no SIEM da Verax pelo console (Admin master) ⚠️ altera `auth`, `infra/` e o console
+
+Decisão do responsável de 15/11/2026: um login só para o SIEM da própria Verax (o painel da equipe na célula) e o
+console do responsável, com o console como provedor de identidade e o Admin master como um item do SIEM. Desenho e
+riscos em `docs/ARQUITETURA.md`, "Entrada única: o console como provedor de identidade do SIEM (Admin master)".
+
+- **Contrato (`packages/shared/src/sso.ts`):** OAuth 2.0 com código de autorização e PKCE S256, no formato do OpenID
+  Connect: o cliente fixo `verax-siem`, os parâmetros, a troca, o cabeçalho e as declarações estritas do token (EdDSA,
+  5 minutos) e a impressão digital RFC 7638. `authClientConfigSchema` ganhou `adminMasterUrl`.
+- **Console (`apps/control-plane/src/admin/sso/`):** `GET /sso/authorize`, `POST /sso/token` e `GET /sso/jwks`, fora do
+  prefixo `/v1` (`app.setup.ts`; o `console-assets.ts` não serve o `/sso/`). Lista exata de retorno
+  (`SSO_REDIRECT_URIS`), nada de redirecionamento aberto, `Sec-Fetch-Site: cross-site` recusado, o login do console
+  que volta ao pedido (a tela de entrada navega de verdade para o `/sso/authorize`), o código de 60 s e uso único só
+  como SHA-256 (`adminSsoCodes`, TTL), a troca na mesma transação com a sessão do console ainda viva, o token assinado
+  com `cp-admin-sso-signing-key` (Ed25519, `node:crypto`), a saída do console revogando os códigos, limites só de
+  falhas e a auditoria. `SSO_ISSUER` e `SSO_REDIRECT_URIS` são só do papel admin.
+- **API da célula (`apps/api/src/auth/sso/`):** plugin do Better Auth (`/v1/auth/sso/start` e `/callback`), só na
+  célula, no endereço da equipe e com `SSO_ISSUER`, `SSO_CLIENT_ID` e `SSO_PUBLIC_KEY` (a chave pública fixada,
+  conferida como Ed25519 na partida); 404 nos outros endereços. Pedido no banco (`SsoLoginAttempt`) preso a um cookie
+  `__Host-verax-sso`, `state`, `iss`, troca com 5 s e sem redirecionamento, conferência estrita do token
+  (`id-token.ts`), `jti` de uso único (`SsoTokenUse`) e a sessão normal do `admin_verax` que já existe (sem criar
+  ninguém). `STAFF_PASSWORD_LOGIN_DISABLED` (padrão `false`) tira o login com senha da equipe. Migração
+  `20261115120000_sso_admin_master`. `GET /v1/auth/client-config` devolve `adminMasterUrl` só no endereço da equipe.
+- **Painel (`apps/web`):** "Entrar com o Admin master" no login e a recusa genérica (`?sso=recusado`), o item "Admin
+  master" no menu do `admin_verax` (abre o console na mesma aba) e o rótulo `auth.sso_login` na trilha. O módulo é o
+  console aberto pelo menu, e não as telas do console dentro do SIEM por CORS: ver a seção da arquitetura.
+- **Infraestrutura:** `envs/control-plane` com o cofre `cp-admin-sso-signing-key` (leitura só da `cp-admin`), a
+  variável `sso_redirect_uris` (validada, só com o console) e o TTL de `adminSsoCodes`; `SSO_*` reservado em
+  `service_env`. `infra/node`: as três linhas e o interruptor no `node.conf` da célula, só para a API.
+- **Dependências novas:** nenhuma (JWS e Ed25519 com `node:crypto`).
+- **Testes:** `apps/control-plane` (`admin-sso.test.ts`: lista exata e tentativas de redirecionamento aberto,
+  parâmetros, outro site, código de uso único, PKCE, retorno, vencimento, saída do console, sessão caída, formulário e
+  outro site na troca, limites, o token nunca aceito pelo console e o login de verdade; `admin-sso-unavailable.test.ts`;
+  configuração); `apps/api` (`id-token.test.ts`: outra chave, `alg: none`, HS256 com a chave pública, `jku`/`jwk`/
+  `x5u`/`crit`, prazo, `iss`, `aud`, `nonce`, `amr`, declarações a mais e texto malformado; `sso-admin-master.test.ts`:
+  de ponta a ponta com o cp-admin de verdade no mesmo processo, reuso do retorno e do código, `state` trocado, `iss`
+  errado, tokens forjados, `jti` repetido, resposta fora do contrato, usuário desconhecido, de outro papel, inativo ou
+  sem MFA, endereço de cliente e desconhecido, a saída do console e a célula sem como assinar;
+  `sso-staff-password-off.test.ts`: o interruptor e o limite por IP; `cell-cannot-sign.test.ts`: meta-teste do que vai
+  ao nó; configuração); `apps/console` (a volta ao `/sso/authorize`); `apps/web` (RTL e o e2e do modo mock com axe);
+  `infra/node/tests/cell-test.sh` (as linhas novas e as recusas) e `terraform test` do `envs/control-plane`.
+- **A fazer pelo responsável (nesta ordem):** merge e implantação; a versão do nó com a entrada única na célula;
+  `sso_redirect_uris` e `apply` no `envs/control-plane`; gravar a chave; tirar e conferir a chave pública; as três
+  linhas no `node.conf` da célula e o restart; conferir que o `admin_verax` do mesmo e-mail existe no painel, com MFA;
+  testar; opcionalmente, ligar o interruptor (runbook do console, seção 9).
+- **Riscos e pendências:** phishing em tempo real do TOTP por uma célula comprometida (o próximo passo é uma chave de
+  acesso WebAuthn no console); a troca da chave pede uma revisão nova do `cp-admin` e a chave nova na célula, juntas;
+  os limites do console dividem o balde da saída do Hosting (negação de serviço da entrada única, com o login com senha
+  de reserva); o JWKS não é baixado pelo nó (a conferência é manual, no runbook).

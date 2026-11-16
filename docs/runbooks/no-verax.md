@@ -304,6 +304,10 @@ cada cliente estão em `docs/runbooks/celula.md`. O que muda neste roteiro na c�
   Ficam de fora o tópico do sink pelo nome do projeto (na célula, o tópico é de cada conta, `envs/cell-tenant`) e o
   `NODE_SA_UNIQUE_ID` (a conta de serviço da VM é de todos os clientes; a identidade da AWS passa a ser de cada um);
 - o `start.sh bootstrap` continua sendo o do primeiro `admin_verax`, no endereço da equipe;
+- opcional, a **entrada única pelo console** (o "Admin master"): `SSO_ISSUER`, `SSO_CLIENT_ID` e `SSO_PUBLIC_KEY` no
+  `node.conf` (a chave PÚBLICA do console, fixada), só na API e só no endereço da equipe; com ela, o login do painel
+  ganha "Entrar com o Admin master" e o menu do `admin_verax`, o item que abre o console. `STAFF_PASSWORD_LOGIN_DISABLED`
+  (padrão `false`) tira o login com senha da equipe. Roteiro em `docs/runbooks/console-do-responsavel.md`, seção 9;
 - os backups ficam 85 dias no bucket (e não 90).
 
 ## Backups e restauração
