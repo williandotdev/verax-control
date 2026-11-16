@@ -1,4 +1,12 @@
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from 'node:crypto';
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  type KeyObject,
+  randomBytes,
+  sign,
+  verify,
+} from 'node:crypto';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import {
   SSO_CLIENT_ID,
@@ -467,7 +475,7 @@ describe('cp-admin: entrada única no SIEM (provedor de identidade)', () => {
 
   describe('a chave de assinatura', () => {
     it('só Ed25519 privada: outra curva, RSA, chave pública ou texto solto não assinam nada', () => {
-      const pem = (pair: { privateKey: { export: (o: object) => string | Buffer } }) =>
+      const pem = (pair: { privateKey: KeyObject }) =>
         pair.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
       expect(parseSsoSigningKey(pem(generateKeyPairSync('ec', { namedCurve: 'P-256' })))).toBeUndefined();
       expect(parseSsoSigningKey(pem(generateKeyPairSync('rsa', { modulusLength: 2048 })))).toBeUndefined();
