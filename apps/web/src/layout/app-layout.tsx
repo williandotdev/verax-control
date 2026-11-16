@@ -43,7 +43,8 @@ export function AppLayout() {
   if (!me) return null;
 
   const groups = visibleNavigation(me.permissions);
-  // O console do responsável (o "Admin master"), só para o admin_verax no endereço da equipe: a API diz onde ele fica.
+  // O console do responsável (o "Admin master"), só para o admin_verax onde a equipe entra (o endereço dela na célula ou
+  // o nó dedicado da Verax): a API diz onde ele fica.
   // Abre o console na mesma aba, com a sessão dele (a entrada única); as permissões são as do próprio console.
   const adminMasterUrl = me.role === 'admin_verax' ? (clientConfig.data?.adminMasterUrl ?? null) : null;
 

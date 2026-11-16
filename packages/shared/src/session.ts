@@ -28,9 +28,10 @@ export const authClientConfigSchema = z.strictObject({
   /** Chave do site do Cloudflare Turnstile; `null` com o desafio desligado (os formulários funcionam sem ele). */
   turnstileSiteKey: z.string().min(1).nullable(),
   /**
-   * Entrada única pelo console do responsável (o "Admin master"): o endereço do console, só no endereço da equipe da
-   * Verax na célula e com a entrada única configurada no nó; `null` em todo outro endereço. Com ele, o login mostra
-   * "Entrar com o Admin master" e o menu do `admin_verax` leva ao console.
+   * Entrada única pelo console do responsável (o "Admin master"): o endereço do console, só onde a equipe da Verax
+   * entra (o endereço dela na célula, ou o nó dedicado da Verax, com `PLAN=interno`) e com a entrada única configurada
+   * no nó; `null` em todo outro lugar. Com ele, o login mostra "Entrar com o Admin master" e o menu do `admin_verax`
+   * leva ao console.
    */
   adminMasterUrl: z.url({ protocol: /^https$/ }).nullable(),
 });
