@@ -20,6 +20,9 @@ import {
   LIFECYCLE_PROVIDERS,
   LIFECYCLE_STEP_CLASSES,
 } from '../lifecycle/lifecycle.module.js';
+import type { FleetCloud } from '../fleet/fleet-cloud.js';
+import { FLEET_CONTROLLERS, fleetProviders } from '../fleet/fleet.module.js';
+import { FleetTickStep } from '../fleet/rollout-engine.js';
 import { MAIL_SENDER, type MailSender, mailSenderFor } from '../mail/mail-sender.js';
 import { InstallationController } from '../provisioning/installation.js';
 import { NodeMailSyncController } from '../provisioning/node-mail.js';
@@ -53,6 +56,8 @@ export interface AccessWorkerModuleOptions {
   provisioning?: ProvisioningModuleOptions;
   /** Só nos testes: a publicação dos comandos da célula em memória (em produção, o Pub/Sub). */
   cellCommandSink?: CellCommandSink;
+  /** Só nos testes: a nuvem da frota (as VMs, a sonda e o Firebase) num dublê. */
+  fleetCloud?: FleetCloud;
 }
 
 /**
@@ -63,7 +68,8 @@ export interface AccessWorkerModuleOptions {
  * CP-07, também os passos do provisionamento (`ProvisioningModule`) na mesma lista de passos, e o `resume` do
  * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda, como a recópia da senha do e-mail dos nós
  * (`POST /internal/nodes/smtp-password/sync`). Desde o CE-06, o canal da célula: a rota dos relatórios
- * (`POST /internal/cells/:cellId/reports`, só para a conta de push) e o publicador dos comandos.
+ * (`POST /internal/cells/:cellId/reports`, só para a conta de push) e o publicador dos comandos. Desde 16/11/2026, a
+ * atualização da frota: as rotas do responsável (`/internal/fleet/...`) e a volta do motor (`fleet.tick`).
  */
 @Module({})
 export class AccessWorkerModule {
@@ -80,6 +86,7 @@ export class AccessWorkerModule {
         NodeMailSyncController,
         ...LIFECYCLE_CONTROLLERS,
         ...CELL_CONTROLLERS,
+        ...FLEET_CONTROLLERS,
       ],
       providers: [
         {
@@ -102,18 +109,21 @@ export class AccessWorkerModule {
         RevealEmailStep,
         ...LIFECYCLE_PROVIDERS,
         ...cellProviders(options.cellCommandSink),
+        ...fleetProviders(options.fleetCloud),
         {
           provide: STEP_HANDLERS,
           useFactory: (
             destroy: StepHandler,
             revealEmail: StepHandler,
             provisioning: readonly StepHandler[],
+            fleetTick: StepHandler,
             ...lifecycle: StepHandler[]
-          ): StepHandler[] => [destroy, revealEmail, ...provisioning, ...lifecycle],
+          ): StepHandler[] => [destroy, revealEmail, ...provisioning, fleetTick, ...lifecycle],
           inject: [
             DestroyBootstrapStep,
             RevealEmailStep,
             PROVISIONING_STEP_HANDLERS,
+            FleetTickStep,
             ...LIFECYCLE_STEP_CLASSES,
           ],
         },

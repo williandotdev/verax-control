@@ -168,6 +168,44 @@ run "exportacoes_e_backups" {
 }
 
 # Sem o plano de controle: nada do canal; o bucket das exportações e os backups de 85 dias continuam.
+# A frota: o pedido de versão nos metadados da VM da célula (a canária), e só dela; nada no nó lean nem no resto do
+# projeto. E os guest attributes ligados, para o host relatar o andamento.
+run "frota_so_na_vm_da_celula" {
+  command = plan
+
+  assert {
+    condition = (
+      google_project_iam_custom_role.cell_node_updater[0].role_id == "cpCellNodeUpdater" &&
+      google_project_iam_custom_role.cell_node_updater[0].project == "projeto-exemplo-nos" &&
+      google_project_iam_custom_role.cell_node_updater[0].permissions == toset(["compute.instances.get", "compute.instances.getGuestAttributes", "compute.instances.setMetadata"])
+    )
+    error_message = "O papel da frota na célula é só ler a VM e os atributos e gravar os metadados."
+  }
+
+  assert {
+    condition = (
+      google_project_iam_member.worker_cell_node_updater[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
+      google_project_iam_member.worker_cell_node_updater[0].role == google_project_iam_custom_role.cell_node_updater[0].id &&
+      google_project_iam_member.worker_cell_node_updater[0].condition[0].expression == "resource.type == \"compute.googleapis.com/Instance\" && resource.name.extract(\"/instances/{name}\") == \"verax-celula\""
+    )
+    error_message = "O cp-worker grava os metadados só da VM da célula, pelo nome exato (o nó lean da Verax fica de fora)."
+  }
+
+  assert {
+    condition = (
+      google_service_account_iam_member.worker_cell_sa_user[0].service_account_id == "projects/projeto-exemplo-nos/serviceAccounts/verax-celula@projeto-exemplo-nos.iam.gserviceaccount.com" &&
+      google_service_account_iam_member.worker_cell_sa_user[0].role == "roles/iam.serviceAccountUser" &&
+      google_service_account_iam_member.worker_cell_sa_user[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
+    )
+    error_message = "O cp-worker precisa só do serviceAccountUser na conta da VM da célula."
+  }
+
+  assert {
+    condition     = module.node.install_metadata["enable-guest-attributes"] == "TRUE"
+    error_message = "A célula precisa dos guest attributes ligados (o andamento da atualização da frota)."
+  }
+}
+
 run "sem_o_plano_de_controle" {
   command = plan
 
@@ -181,9 +219,12 @@ run "sem_o_plano_de_controle" {
       length(google_pubsub_topic.commands) == 0 && length(google_pubsub_topic.reports) == 0 &&
       length(google_pubsub_subscription.commands) == 0 && length(google_pubsub_subscription.reports_push) == 0 &&
       length(google_service_account.reports_push) == 0 && length(google_pubsub_topic_iam_member.commands_publisher) == 0 &&
-      length(google_pubsub_topic_iam_member.reports_publisher) == 0
+      length(google_pubsub_topic_iam_member.reports_publisher) == 0 &&
+      length(google_project_iam_custom_role.cell_node_updater) == 0 &&
+      length(google_project_iam_member.worker_cell_node_updater) == 0 &&
+      length(google_service_account_iam_member.worker_cell_sa_user) == 0
     )
-    error_message = "Sem o plano de controle, nenhum recurso do canal."
+    error_message = "Sem o plano de controle, nenhum recurso do canal nem da frota."
   }
 
   assert {

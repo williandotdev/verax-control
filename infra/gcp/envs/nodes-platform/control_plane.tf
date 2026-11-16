@@ -165,6 +165,47 @@ resource "google_project_iam_member" "worker_node_lifecycle" {
   }
 }
 
+# A atualização da frota (docs/ARQUITETURA.md, "Atualização da frota"): o cp-worker grava o pedido de versão nos
+# metadados das VMs dos nós (`instances.setMetadata`, com a impressão digital lida por `instances.get`) e acompanha o
+# host pelos guest attributes. Só nas VMs `vx-*`, como o `cpNodeLifecycle`; o `get` e o `getGuestAttributes` repetem os
+# dele para o papel ser o mesmo no projeto da célula (envs/celula), onde não há o de ciclo de vida.
+#
+# Por que não menos: o `setMetadata` troca os metadados inteiros, e a GCP não restringe a permissão por chave. Com ele
+# (e o `iam.serviceAccountUser` na conta de cada nó, que o envs/tenant concede e a API exige numa VM com conta de
+# serviço), o cp-worker poderia trocar o `startup-script` e, com o `start`/`stop` que já tem, rodar código na VM no boot
+# seguinte. É o risco aceito pela decisão de 16/11/2026, com estas contenções: só as VMs `vx-*`; o atualizador do host
+# só instala versão assinada pela Verax (a chave de release não está no plano de controle); o Terraform do tenant
+# reescreve as chaves dele no próximo `apply`; e toda chamada fica nos logs de auditoria de atividade do Compute.
+resource "google_project_iam_custom_role" "node_updater" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "cpNodeUpdater"
+  title       = "Verax Control: pedido de versão das VMs dos nós"
+  description = "Ler a VM e os atributos de convidado e gravar os metadados (o pedido de versão da frota) das VMs dos nós (vx-*)."
+  permissions = [
+    "compute.instances.get",
+    "compute.instances.getGuestAttributes",
+    "compute.instances.setMetadata",
+  ]
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_project_iam_member" "worker_node_updater" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.node_updater[0].id
+  member  = local.worker_member
+
+  condition {
+    title       = "Só as VMs dos nós de clientes (vx-*)"
+    description = "O pedido de versão da frota, em nenhuma outra VM do projeto, hoje ou no futuro."
+    expression  = "resource.type == \"compute.googleapis.com/Instance\" && resource.name.extract(\"/instances/{name}\").startsWith(\"vx-\")"
+  }
+}
+
 # Destruir as versões da chave do cofre de credenciais na Exclusão 2 (D+97, cripto-destruição), sem ler nem gravar
 # versão. Não é concedido no projeto: o envs/tenant dá este papel ao cp-worker só no `credentials-key` de cada nó. O
 # papel predefinido `secretVersionManager`, que o plano citava, também deixaria o cp-worker gravar uma versão nova da

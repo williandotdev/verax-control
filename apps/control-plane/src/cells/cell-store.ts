@@ -32,6 +32,15 @@ export class CellStore {
     return { id: cellId, ...parseDocument(cellSchema, COLLECTIONS.cells, cellId, data) };
   }
 
+  /** Todas as células do registro (poucas: uma por região), para a frota. */
+  async list(limit = 100): Promise<CellRecord[]> {
+    const docs = await this.store.query(COLLECTIONS.cells, { limit });
+    return docs.map((doc) => ({
+      id: doc.id,
+      ...parseDocument(cellSchema, COLLECTIONS.cells, doc.id, doc.data),
+    }));
+  }
+
   async require(cellId: string, reader?: DocumentReader): Promise<CellRecord> {
     const cell = await this.get(cellId, reader);
     if (cell === undefined) throw new CellNotFoundError();

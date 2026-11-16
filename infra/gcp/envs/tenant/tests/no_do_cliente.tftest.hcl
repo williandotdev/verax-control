@@ -158,6 +158,22 @@ run "permissoes_do_cp_worker" {
     error_message = "O cp-worker ganhou leitura, gravação ou reativação na chave do cofre de credenciais."
   }
 
+  # A frota: o `serviceAccountUser` na conta deste nó, e só nela (o Compute o exige para gravar os metadados da VM com o
+  # `cpNodeUpdater`). Nenhum papel que dê token da conta.
+  assert {
+    condition = (
+      google_service_account_iam_member.worker_node_sa_user.service_account_id == "projects/projeto-exemplo-nos/serviceAccounts/vx-demo-a@projeto-exemplo-nos.iam.gserviceaccount.com" &&
+      google_service_account_iam_member.worker_node_sa_user.role == "roles/iam.serviceAccountUser" &&
+      google_service_account_iam_member.worker_node_sa_user.member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com"
+    )
+    error_message = "O cp-worker precisa só do serviceAccountUser na conta deste nó (o pedido de versão da frota)."
+  }
+
+  assert {
+    condition     = strcontains(file("${path.module}/../nodes-platform/control_plane.tf"), "role_id     = \"cpNodeUpdater\"")
+    error_message = "O envs/nodes-platform não define mais o papel cpNodeUpdater, que grava o pedido de versão nos metadados."
+  }
+
   # O papel personalizado é o do envs/nodes-platform, pelo mesmo nome.
   assert {
     condition     = strcontains(file("${path.module}/../nodes-platform/control_plane.tf"), "role_id     = \"cpSecretVersionDestroyer\"")

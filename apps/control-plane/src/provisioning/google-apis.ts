@@ -365,6 +365,24 @@ const guestAttributesSchema = z.object({
 
 const instanceSchema = z.object({ status: z.string().regex(/^[A-Z_]{1,40}$/) });
 
+/** Os metadados de uma VM: até 512 KB no total na GCP (o script de boot da instalação sem operador é o maior). */
+const MAX_INSTANCE_BYTES = 2 * 1024 * 1024;
+const instanceMetadataSchema = z.object({
+  metadata: z.object({
+    fingerprint: z.string().regex(/^[A-Za-z0-9+/=_-]{1,64}$/),
+    items: z
+      .array(z.object({ key: z.string().min(1).max(128), value: z.string().max(512 * 1024) }))
+      .max(200)
+      .optional(),
+  }),
+});
+
+/** Os metadados de uma VM como o Compute os devolve e os aceita no `setMetadata`. */
+export interface InstanceMetadata {
+  fingerprint: string;
+  items: { key: string; value: string }[];
+}
+
 /**
  * `instances.getGuestAttributes`, `instances.get`, `instances.stop` e `instances.start` com o `cpNodeLifecycle` do
  * cp-worker (só VMs `vx-*`).
@@ -406,6 +424,48 @@ export class ComputeApi extends GoogleApi {
   }
 
   /**
+   * Os metadados da VM (`instances.get`): a impressão digital, que o `setMetadata` exige, e as chaves. Nada daqui vai
+   * para log: os metadados levam o script de boot e dados de cadastro (CP-06).
+   */
+  async instanceMetadata(project: string, zone: string, instance: string): Promise<InstanceMetadata> {
+    const parsed = this.parse(
+      'instance_get',
+      await this.call(
+        'GET',
+        'instance_get',
+        `${this.base}/projects/${project}/zones/${zone}/instances/${instance}`,
+        {
+          maxResponseBytes: MAX_INSTANCE_BYTES,
+        },
+      ),
+      instanceMetadataSchema,
+    );
+    return { fingerprint: parsed.metadata.fingerprint, items: parsed.metadata.items ?? [] };
+  }
+
+  /**
+   * Troca os metadados da VM inteiros (`instances.setMetadata`, o `cpNodeUpdater` do cp-worker: a frota). A impressão
+   * digital é a da leitura: se outra escrita passou no meio (412), nada muda e quem chama lê de novo. A operação é
+   * assíncrona; a VM vê a mudança em segundos.
+   */
+  async setInstanceMetadata(
+    project: string,
+    zone: string,
+    instance: string,
+    metadata: InstanceMetadata,
+  ): Promise<'set' | 'conflict'> {
+    const response = await this.call(
+      'POST',
+      'instance_set_metadata',
+      `${this.base}/projects/${project}/zones/${zone}/instances/${instance}/setMetadata`,
+      { json: { fingerprint: metadata.fingerprint, items: metadata.items } },
+    );
+    if (response.status === 412) return 'conflict';
+    expectOk(this.service, 'instance_set_metadata', response);
+    return 'set';
+  }
+
+  /**
    * Para ou liga a VM (`instances.stop`/`instances.start`, o `cpNodeLifecycle` do cp-worker, só nas VMs `vx-*`). A
    * operação é assíncrona: quem chama consulta o estado depois. O disco e os snapshots ficam.
    */
@@ -444,7 +504,37 @@ export class StorageApi extends GoogleApi {
     if (response.status === 404) return undefined;
     return expectOk(this.service, 'object_read', response).body;
   }
+
+  /**
+   * As "pastas" de primeiro nível do bucket (`objects.list` com `delimiter=/`), sem a barra: no bucket de releases, uma
+   * por versão (`node-vX.Y.Z`). Até `maxPrefixes`.
+   */
+  async listPrefixes(bucket: string, maxPrefixes = 500): Promise<string[]> {
+    const prefixes: string[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < 20 && prefixes.length < maxPrefixes; page += 1) {
+      const url = new URL(`${this.base}/storage/v1/b/${bucket}/o`);
+      url.searchParams.set('delimiter', '/');
+      url.searchParams.set('fields', 'prefixes,nextPageToken');
+      url.searchParams.set('maxResults', '200');
+      if (pageToken !== undefined) url.searchParams.set('pageToken', pageToken);
+      const parsed = this.parse(
+        'objects_list',
+        await this.call('GET', 'objects_list', url.toString()),
+        objectPrefixesSchema,
+      );
+      for (const prefix of parsed.prefixes ?? []) prefixes.push(prefix.replace(/\/$/, ''));
+      pageToken = parsed.nextPageToken === '' ? undefined : parsed.nextPageToken;
+      if (pageToken === undefined) break;
+    }
+    return prefixes.slice(0, maxPrefixes);
+  }
 }
+
+const objectPrefixesSchema = z.object({
+  prefixes: z.array(z.string().max(1024)).max(1000).optional(),
+  nextPageToken: z.string().max(2000).optional(),
+});
 
 // --- Cloud Run: o Job do Terraform ------------------------------------------------------------------------------
 

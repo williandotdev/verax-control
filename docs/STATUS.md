@@ -5472,3 +5472,58 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   antigo (o `deploy.sh`, ou um nó novo), e sem pedido nos metadados ele não faz nada.
 - **Riscos:** a mensagem do `boot-install.sh` muda o `startup-script` dos nós de cliente no próximo `apply` de cada
   tenant (mudança no lugar, sem reiniciar a VM).
+
+## Frota, parte 2: a rodada no plano de controle (ondas, parada na primeira falha, painel junto) e as permissões ⚠️ altera `infra/`
+
+- **Pedido:** a orquestração da atualização da frota no cp-worker (decisão de 16/11/2026): a rodada em
+  `rollouts/{id}` com um passo por nó, as ondas (a célula da Verax, as outras células, os dedicados em lotes), o pedido
+  de versão nos metadados de cada VM, o `ok` do host, a API pública, o painel de cada destino na mesma versão, a parada
+  na primeira falha, retomar, pular, abortar e voltar um nó, a auditoria `rollout.*` e o alerta; as permissões mínimas no
+  Terraform.
+- **Arquivos:**
+  - `apps/control-plane/src/fleet/` (novo): `fleet.schema.ts`, `fleet-store.ts`, `fleet-plan.ts` (quem entra e em que
+    onda, do registro dos clientes e das células), `fleet-cloud.ts` (as VMs, a API pública, o Firebase e o bucket),
+    `fleet-settings.ts`, `rollout-engine.ts` (o motor e a volta `fleet.tick`), `fleet.service.ts`,
+    `internal-fleet.controller.ts` (`/internal/fleet/...`, só o responsável e o console) e `fleet.module.ts`;
+  - `provisioning/panel-publish.ts` (novo: a publicação do bundle num site, agora usada pelo `firebase.site` e pela
+    frota), `provisioning/google-apis.ts` (`instanceMetadata`, `setInstanceMetadata` e `listPrefixes`),
+    `provisioning-steps.ts` (o `firebase.site` pela função comum), `cells/cell.schema.ts` e `cell-store.ts` (`node` e
+    `staffPanel` opcionais no registro; a lista), `firestore/collections.ts` (`rollouts`), `access/access-worker.module.ts`
+    e `app.module.ts`;
+  - testes: `src/fleet/rollout-engine.test.ts`, `fleet-plan.test.ts`, `test/fleet-worker.test.ts` (novos),
+    `test/support/fake-fleet-cloud.ts` (novo), `fake-cloud.ts`, `create-app.ts`, `provisioning/cloud-apis.test.ts`;
+  - Terraform: `envs/nodes-platform/control_plane.tf` (`cpNodeUpdater`, só nas VMs `vx-*`) e `outputs.tf`,
+    `envs/tenant/control_plane.tf` (`serviceAccountUser` do cp-worker na conta do nó), `envs/celula/fleet.tf` (novo:
+    `cpCellNodeUpdater` só na VM da célula, pelo nome, e o `serviceAccountUser` na conta dela) e `main.tf` (os guest
+    attributes ligados), `envs/control-plane/monitoring.tf` (o alerta `rollout_failed`), com os testes de cada um;
+  - documentação: `docs/ARQUITETURA.md` ("A rodada no plano de controle", "As permissões novas do cp-worker" e
+    "Identidades"), `docs/runbooks/celula.md` ("Na atualização da frota") e este registro.
+- **Decisões onde o pedido deixava margem:**
+  - **o pedido é a chave `verax-node-release` (e as quatro irmãs)**, gravada com a impressão digital (`setMetadata`
+    troca os metadados inteiros; um 412 relê e tenta de novo), sem tocar em nenhuma outra chave;
+  - **o `serviceAccountUser` na conta de cada VM:** o Compute o exige para gravar metadados de uma VM com conta de
+    serviço. Sem ele, o papel personalizado não bastaria. Concedido por nó (no tenant) e só na conta da célula;
+  - **na célula, um papel com outro nome (`cpCellNodeUpdater`)** e a condição pelo nome exato da VM: no projeto do nó
+    da Verax ficam também o nó lean e a chave de release;
+  - **a volta da rodada é uma task da fila `lifecycle`** (`fleet.tick`, com a rodada nos dois ids do corpo e o número
+    da volta): sem fila nova no Terraform;
+  - **"retomar" tenta de novo o nó que falhou** (com um id de pedido novo: o host nunca repete um pedido); "pular" vale
+    para o nó na fila ou com falha; "voltar um nó" só para um nó feito ou com falha, e só quando a versão de antes é uma
+    versão publicada (um nó do `deploy.sh`, só com o commit, volta pelo `deploy.sh`);
+  - **a versão sem o bundle do painel é recusada** (`panel_bundle_missing`): sem ele, o painel não andaria junto;
+  - **os nós que já mudavam terminam** quando a rodada para (o host não tem como cancelar no meio), inclusive a
+    publicação do painel deles.
+- **Testes:** `pnpm --filter @verax/control-plane test`: verde (as ondas e a capacidade, o painel só depois do `ok` do
+  host e da API pública, cada site com a API do próprio cliente, o bundle lido uma vez, a parada na primeira falha sem
+  tocar no resto, retomar com outro pedido, o prazo com e sem janela, a API fora, a mesma volta repetida, a volta
+  perdida na fila, a entrega simultânea, o erro passageiro e o 403, a publicação interrompida, pular e abortar, parar e
+  retomar, voltar um nó com o painel da versão de antes; pelo app: a guarda das rotas, a revisão, a rodada com
+  confirmação e auditoria, a volta pela fila e as operações). `terraform test`: `envs/nodes-platform` (7),
+  `envs/tenant` (59), `envs/celula` (15), `envs/control-plane` (44) e `modules/node` (61). `typecheck`, ESLint e
+  Prettier.
+- **A fazer pelo responsável:** aplicar `envs/nodes-platform`, `envs/celula` e `envs/control-plane`; os tenants ganham
+  o `serviceAccountUser` no próximo `apply` de cada um (o `resume` refaz o `apply`); `RELEASE_BUCKET` no `worker_env`
+  (já existe com o provisionamento); os campos `node` e `staffPanel` no registro da célula (`docs/runbooks/celula.md`).
+- **Riscos:** o `setMetadata` alcança o `startup-script` (o risco aceito e as contenções em `docs/ARQUITETURA.md`); a
+  célula baixa as imagens do Artifact Registry, cuja limpeza apaga versões com mais de 30 dias fora das 3 mais
+  recentes: uma versão promovida há muito tempo pararia em `image_pull_failed` (sem mexer no nó).

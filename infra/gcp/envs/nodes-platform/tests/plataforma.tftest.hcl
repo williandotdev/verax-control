@@ -74,6 +74,8 @@ run "primeira_subida_num_projeto_novo" {
       length(google_project_iam_custom_role.secret_version_destroyer) == 0 &&
       length(google_project_iam_custom_role.tenant_sa_toggle) == 0 &&
       length(google_project_iam_member.worker_node_lifecycle) == 0 &&
+      length(google_project_iam_custom_role.node_updater) == 0 &&
+      length(google_project_iam_member.worker_node_updater) == 0 &&
       length(google_storage_bucket_iam_member.terraform_state) == 0 &&
       length(google_storage_bucket_iam_member.worker_runs) == 0 &&
       output.control_plane_roles == null
@@ -206,6 +208,22 @@ run "com_o_plano_de_controle" {
     error_message = "O cp-worker para, liga e lê só as VMs vx-* do projeto dos nós, pelo papel cpNodeLifecycle com condição."
   }
 
+  # A frota: o pedido de versão nos metadados, só nas VMs vx-*, e nada além de ler a VM, ler os atributos de convidado e
+  # gravar os metadados (nem ligar, nem parar, nem trocar disco, rede ou conta de serviço da VM).
+  assert {
+    condition = (
+      google_project_iam_custom_role.node_updater[0].project == "projeto-exemplo-nos" &&
+      google_project_iam_custom_role.node_updater[0].role_id == "cpNodeUpdater" &&
+      google_project_iam_custom_role.node_updater[0].permissions == toset(["compute.instances.get", "compute.instances.getGuestAttributes", "compute.instances.setMetadata"]) &&
+      google_project_iam_member.worker_node_updater[0].project == "projeto-exemplo-nos" &&
+      google_project_iam_member.worker_node_updater[0].role == google_project_iam_custom_role.node_updater[0].id &&
+      google_project_iam_member.worker_node_updater[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
+      google_project_iam_member.worker_node_updater[0].condition[0].expression == "resource.type == \"compute.googleapis.com/Instance\" && resource.name.extract(\"/instances/{name}\").startsWith(\"vx-\")" &&
+      !contains([for member in google_project_iam_member.terraform_nodes : member.role], google_project_iam_custom_role.node_updater[0].id)
+    )
+    error_message = "cpNodeUpdater: só ler a VM e os atributos e gravar os metadados, só nas VMs vx-*, só para o cp-worker."
+  }
+
   # O papel que o envs/tenant concede ao cp-worker no credentials-key de cada nó: listar e destruir versões, nunca ler,
   # gravar ou reativar. Não é concedido no projeto.
   assert {
@@ -243,6 +261,7 @@ run "com_o_plano_de_controle" {
   assert {
     condition = (
       output.control_plane_roles.cpNodeLifecycle == google_project_iam_custom_role.node_lifecycle[0].id &&
+      output.control_plane_roles.cpNodeUpdater == google_project_iam_custom_role.node_updater[0].id &&
       output.control_plane_roles.cpSecretVersionDestroyer == google_project_iam_custom_role.secret_version_destroyer[0].id &&
       output.control_plane_roles.cpTenantSaToggle == google_project_iam_custom_role.tenant_sa_toggle[0].id
     )
@@ -265,7 +284,7 @@ run "contrato_com_o_plano_de_controle" {
 
   assert {
     condition = alltrue([
-      for role in ["cpSecretsProvisioner", "cpBucketsProvisioner", "cpNodeLifecycle", "cpSecretVersionDestroyer"] :
+      for role in ["cpSecretsProvisioner", "cpBucketsProvisioner", "cpNodeLifecycle", "cpNodeUpdater", "cpSecretVersionDestroyer"] :
       !can(regex("role_id\\s+=\\s+\"${role}\"", join("\n", [for name in fileset("${path.module}/../control-plane", "*.tf") : file("${path.module}/../control-plane/${name}")])))
     ])
     error_message = "O envs/control-plane define de novo um papel personalizado do projeto dos nós, que fica neste ambiente."

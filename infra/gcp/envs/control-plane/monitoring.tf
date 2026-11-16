@@ -5,6 +5,9 @@
 # Contrato com o app (o CP-04 emite, o CP-12 reaproveita; os nomes têm de ser estes):
 #   - cp-worker, `logger.error({ event: "provisioning_failed", tenantId, step, code })`: um passo esgotou as
 #     tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error:<código>`);
+#   - cp-worker, `logger.error({ event: "rollout_failed", rolloutId, nodeKey, operation, code })`: a atualização da frota
+#     parou num nó (o host voltou para a versão de antes, não respondeu no prazo, a API pública não subiu ou o painel não
+#     publicou); a rodada fica em `paused_on_failure` até o responsável retomar, pular o nó ou abortar;
 #   - cp-public, `logger.warn({ event: "stripe_webhook_signature_failed", requestId })`: `constructEvent` recusou a
 #     assinatura. Nunca o corpo nem os cabeçalhos;
 #   - cp-public (CP-03), `warn({ event: "checkout_daily_limit_reached", limit, day, requestId })`: o teto global de
@@ -49,6 +52,13 @@ locals {
       display_name = "Plano de controle: provisionamento com falha"
       labels       = { tenant = "EXTRACT(jsonPayload.tenantId)", step = "EXTRACT(jsonPayload.step)", code = "EXTRACT(jsonPayload.code)" }
       runbook      = "Um tenant ficou em `provisioning_failed`. O cliente vê \"estamos finalizando\"; resolva a causa (rótulos `step` e `code`) e retome com `POST /internal/tenants/<id>/resume` no cp-worker."
+    }
+    rollout_failed = {
+      service      = "cp-worker"
+      event        = "rollout_failed"
+      display_name = "Plano de controle: atualização da frota parada num nó"
+      labels       = { rollout = "EXTRACT(jsonPayload.rolloutId)", node = "EXTRACT(jsonPayload.nodeKey)", code = "EXTRACT(jsonPayload.code)" }
+      runbook      = "A rodada da frota parou na primeira falha (`paused_on_failure`); os outros nós não foram tocados. Veja o código (rótulo `code`): `node_rolled_back:<motivo>` o host voltou sozinho para a versão de antes; `node_rollback_failed:<motivo>` nem a anterior subiu (entre no nó); `update_timeout` o host não respondeu; `health_failed` a API pública não subiu; `firebase_*` o painel não publicou. No console, em Versões: retome (tenta o nó de novo), pule o nó ou aborte."
     }
     webhook_signature_failed = {
       service      = "cp-public"

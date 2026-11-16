@@ -1769,7 +1769,10 @@ do preço configurável, documentos internos.
 - **`cp-public`:** lê e escreve no Firestore, enfileira tasks e lê as chaves da Stripe e do cookie. Nada mais.
 - **`cp-worker`:** Firestore, tasks, execução do Job, Firebase Hosting nos projetos do pool, leitura do bucket de
   releases e, no projeto dos nós (`envs/nodes-platform`), um papel personalizado que só para, liga e lê atributos de
-  VMs cujo nome começa com `vx-` (`cpNodeLifecycle`) e a leitura de `runs/` no bucket do estado. Por tenant, o
+  VMs cujo nome começa com `vx-` (`cpNodeLifecycle`), outro que grava os metadados delas (`cpNodeUpdater`, o pedido de
+  versão da frota) e a leitura de `runs/` no bucket do estado; no projeto da célula, o mesmo pedido só na VM da célula
+  (`cpCellNodeUpdater`). Por tenant, o `serviceAccountUser` na conta da VM daquele nó (o Compute o exige para gravar os
+  metadados) e, ainda por tenant, o
   `envs/tenant` concede, cada permissão num cofre só: adicionar a versão do token do túnel (`secretVersionAdder`); com
   o e-mail do nó, adicionar a versão da senha da caixa de envio no `smtp-password` (`secretVersionAdder`, sem ler de
   volta); ler uma vez e destruir a versão do `admin-bootstrap` (`secretAccessor` e `secretVersionManager`); listar e
@@ -1803,7 +1806,9 @@ do preço configurável, documentos internos.
   administra os segredos e cria a conta do console pela linha de comando; tudo auditado (`owner:<e-mail>`).
 
 O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS
-Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita).
+Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita). Desde a atualização
+da frota (16/11/2026), o `cp-worker` grava os metadados das VMs dos nós: não entra na VM por SSH, mas o `setMetadata`
+alcança o script de boot (o risco aceito está em "Atualização da frota", "As permissões novas do cp-worker").
 
 ### Estados do cliente
 
@@ -2665,6 +2670,54 @@ conferência e volta automática, e o **painel de cada destino anda junto com o 
   reinicia o nó: `rolled_back`. O banco não volta: as migrations são aditivas, a regra de sempre da volta de versão.
 - **Andamento** nos guest attributes `verax/update-*` (estado, versão, id do pedido, versão de antes e código de erro),
   que o plano de controle lê como os do CP-10.
+
+### A rodada no plano de controle (`apps/control-plane/src/fleet`)
+
+- **Quem entra** sai do registro, não de uma lista à parte: as células de `cells/{id}` com a VM (`node: {zone,
+instance}`) e os clientes dedicados com nó no ar (`active`, `waiting_customer_connection`, `past_due`, com
+  `resources.instanceName`; o suspenso e o de VM parada aparecem na revisão como "fora", com o motivo). O painel de
+  cada nó: no dedicado, o site do cliente; na célula, o site de cada cliente dela e o da equipe (`staffPanel`).
+- **Ondas:** 0, a célula com o painel da equipe da Verax (a canária); 1, as outras células, uma de cada vez; 2, os nós
+  dedicados, em lotes de `concurrency` (1 a 5, padrão 1). Uma onda só começa com a anterior inteira feita ou pulada.
+- **O passo de cada nó:** o pedido nos metadados da VM (`setMetadata` com a impressão digital, sem tocar nas outras
+  chaves) → o `ok` do host nos guest attributes, para **este** pedido e esta versão (60 min; com janela, um dia a mais)
+  → `GET /health` e `/health/ready` na API pública (10 conferências) → o painel de cada destino do nó, publicado com o
+  bundle da mesma versão (`provisioning/panel-publish.ts`, o mesmo código do `firebase.site`) → feito. O painel nunca sai
+  antes da API do nó estar de pé na versão nova.
+- **Parar na primeira falha:** o host que volta sozinho (`node_rolled_back:<motivo>`), que não responde
+  (`update_timeout`), a API que não sobe (`health_failed`) ou o painel que não publica param a rodada
+  (`paused_on_failure`); nenhum nó novo começa, os que já mudavam terminam. O responsável retoma (o nó que falhou tenta
+  de novo, com outro id de pedido), pula o nó ou aborta; e pode voltar um nó feito para a versão que ele tinha antes
+  (o pedido com `rollback` e o painel dessa versão), quando ela é uma versão publicada.
+- **O motor:** uma task `fleet.tick` (fila `lifecycle`) a cada 30 s enquanto há nó mudando ou na fila, com o número da
+  volta no id (`fleet_tick-<rodada>-p<n>`): uma entrega repetida é ignorada, a que perdeu a fila põe a seguinte, e uma
+  concessão de 5 min impede duas entregas da mesma volta ao mesmo tempo. Cada nó é gravado só se ninguém mexeu nele no
+  meio (`rev`). Uma rodada por vez.
+- **Firestore:** `rollouts/{id}` (a versão conferida, as ondas, o estado, a falha e os totais) e
+  `rollouts/{id}/nodes/{cell-<id>|tenant-<id>}` (a VM, os sites, a operação, a tentativa, o id do pedido, o estado do
+  host e o código), sem segredo nem dado pessoal de cliente. Auditoria `rollout.created`, `.paused`, `.resumed`,
+  `.aborted`, `.node_skipped`, `.node_rollback`, `.paused_on_failure` e `.completed`; o alerta `rollout_failed`
+  (`envs/control-plane/monitoring.tf`).
+- **A versão** vem do bucket de releases, com a assinatura conferida pelas chaves do repositório, e precisa do bundle
+  do painel no manifesto (`panel`): sem ele, a rodada é recusada (`panel_bundle_missing`), porque o painel não teria
+  como andar junto.
+
+### As permissões novas do cp-worker
+
+| Onde                                    | O quê                                                                                                   | Por quê                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Projeto dos nós (`envs/nodes-platform`) | `cpNodeUpdater`: `instances.get`, `getGuestAttributes` e `setMetadata`, só nas VMs `vx-*`               | O pedido de versão e o andamento                                     |
+| Cada nó dedicado (`envs/tenant`)        | `iam.serviceAccountUser` na conta da VM daquele nó                                                      | O Compute exige para gravar metadados de uma VM com conta de serviço |
+| Projeto da célula (`envs/celula`)       | `cpCellNodeUpdater` (as mesmas três), só na VM da célula, pelo nome; `serviceAccountUser` na conta dela | A canária                                                            |
+
+**O risco aceito:** a GCP não restringe o `setMetadata` por chave. Com ele, o cp-worker poderia trocar o
+`startup-script` de uma VM `vx-*` e, com o `start`/`stop` do `cpNodeLifecycle`, rodar código nela no boot seguinte;
+antes, o plano de controle não entrava em nenhuma VM. É o preço do desenho aprovado em 16/11/2026 (o pedido nos
+metadados, sem nada exposto). Contenções: só as VMs `vx-*` e a VM da célula, pelo nome; o atualizador do host só
+instala versão assinada pela chave de release, que não está no plano de controle; o `apply` seguinte do tenant
+reescreve as chaves do Terraform; e toda chamada fica nos logs de auditoria de atividade do Compute (sempre ligados).
+A alternativa estudada, o pedido num objeto do Cloud Storage lido pela VM, não daria esse poder ao cp-worker, mas
+pediria uma concessão por nó num bucket do projeto do plano de controle, que o `cp-terraform` não alcança hoje.
 
 ## Ordem de execução
 
