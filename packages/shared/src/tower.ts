@@ -160,9 +160,14 @@ export const radarDetectionSchema = z.strictObject({
 });
 export type RadarDetection = z.infer<typeof radarDetectionSchema>;
 
+const severityCounts = z.strictObject({ critical: count, high: count, medium: count, low: count });
+const sectorCounts = z.strictObject({ aws: count, gcp: count, cloudflare: count, agents: count });
+const sum = (counts: Record<string, number>): number => Object.values(counts).reduce((a, b) => a + b, 0);
+
 /**
  * Radar de detecções da Torre: os achados que aconteceram nas últimas `RADAR_WINDOW_HOURS` horas, os mais recentes
- * primeiro, até `limit`. `total` conta todos os da janela: maior que a lista, a tela avisa que mostra só uma parte.
+ * primeiro, até `limit`. `total` e as contagens por severidade e por setor contam todos os da janela: com o total maior
+ * que a lista, a tela avisa que desenha só uma parte, e as contagens continuam valendo para a janela inteira.
  */
 export const towerRadarSchema = z
   .strictObject({
@@ -171,9 +176,15 @@ export const towerRadarSchema = z
     windowHours: z.literal(RADAR_WINDOW_HOURS),
     limit: z.literal(RADAR_DETECTIONS_LIMIT),
     total: count,
+    /** As detecções da janela inteira por severidade e por setor (não só as da lista): cada divisão soma `total`. */
+    bySeverity: severityCounts,
+    bySector: sectorCounts,
     detections: z.array(radarDetectionSchema).max(RADAR_DETECTIONS_LIMIT),
   })
-  .refine((radar) => radar.detections.length <= radar.total, { error: 'mais detecções que o total' });
+  .refine((radar) => radar.detections.length <= radar.total, { error: 'mais detecções que o total' })
+  .refine((radar) => sum(radar.bySeverity) === radar.total && sum(radar.bySector) === radar.total, {
+    error: 'as contagens por severidade e por setor somam o total',
+  });
 export type TowerRadar = z.infer<typeof towerRadarSchema>;
 
 export const towerSummarySchema = z.strictObject({

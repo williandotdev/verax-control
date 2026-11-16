@@ -630,7 +630,13 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
 
       const summary = towerSummarySchema.parse((await a.get('/v1/tower').expect(200)).body);
       const radar = summary.radar;
-      expect(radar).toMatchObject({ windowHours: 24, limit: 100, total: 3 });
+      expect(radar).toMatchObject({
+        windowHours: 24,
+        limit: 100,
+        total: 3,
+        bySeverity: { critical: 1, high: 0, medium: 1, low: 1 },
+        bySector: { aws: 1, gcp: 0, cloudflare: 1, agents: 1 },
+      });
       expect(Date.parse(summary.generatedAt) - Date.parse(radar?.since ?? '')).toBe(24 * HOUR);
       expect(radar?.detections).toEqual([
         {
@@ -657,36 +663,58 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
       expect(other?.detections.map((detection) => detection.id)).toEqual([bFinding.id]);
     });
 
-    it('teto: desenha os 100 mais recentes e conta todos os da janela', async () => {
+    it('teto: desenha os 100 mais recentes; o total e as contagens por severidade e setor são da janela inteira', async () => {
       const { tenantId, accountId, get } = await setup();
       const now = Date.now();
+      // 100 baixos recentes do WAF e, mais antigos (fora dos 100 desenhados), 5 críticos do agente e 3 altos da GCP.
+      const older = [
+        ...Array.from({ length: 5 }, () => ({ severity: 'critical' as const, logSource: 'wazuh_agent' })),
+        ...Array.from({ length: 3 }, () => ({ severity: 'high' as const, logSource: 'gcp_audit' })),
+      ];
       await prisma.finding.createMany({
-        data: Array.from({ length: 105 }, (_, index) => ({
+        data: [
+          ...Array.from({ length: 100 }, (_, index) => ({
+            severity: 'low' as const,
+            logSource: 'waf',
+            occurredAt: new Date(now - (index + 1) * MINUTE),
+            title: `Evento ${index + 1}`,
+          })),
+          ...older.map((item, index) => ({
+            ...item,
+            occurredAt: new Date(now - (200 + index) * MINUTE),
+            title: `Antigo ${index + 1}`,
+          })),
+        ].map((item) => ({
           tenantId,
           accountId,
           source: 'wazuh',
           sourceEventId: randomUUID(),
-          logSource: 'waf',
-          occurredAt: new Date(now - (index + 1) * MINUTE),
-          severity: 'low' as const,
           ruleId: '80202',
           ruleLevel: 5,
-          title: `Evento ${index + 1}`,
           mitreTactics: [],
           mitreTechniques: [],
+          ...item,
         })),
       });
       const radar = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body).radar;
-      expect(radar?.total).toBe(105);
+      expect(radar?.total).toBe(108);
       expect(radar?.detections).toHaveLength(100);
       expect(radar?.detections[0]?.title).toBe('Evento 1');
       expect(radar?.detections.at(-1)?.title).toBe('Evento 100');
+      expect(radar?.detections.some((detection) => detection.severity !== 'low')).toBe(false);
+      expect(radar?.bySeverity).toEqual({ critical: 5, high: 3, medium: 0, low: 100 });
+      expect(radar?.bySector).toEqual({ aws: 100, gcp: 3, cloudflare: 0, agents: 5 });
     });
 
     it('cliente sem achado: radar vazio', async () => {
       const { get } = await setup();
       const radar = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body).radar;
-      expect(radar).toMatchObject({ total: 0, detections: [] });
+      expect(radar).toMatchObject({
+        total: 0,
+        bySeverity: { critical: 0, high: 0, medium: 0, low: 0 },
+        bySector: { aws: 0, gcp: 0, cloudflare: 0, agents: 0 },
+        detections: [],
+      });
     });
 
     it('permissões: todo papel do cliente lê; sem sessão, 401; a equipe da Verax sem cliente escolhido, 409', async () => {

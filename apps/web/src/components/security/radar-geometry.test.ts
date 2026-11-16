@@ -14,7 +14,6 @@ import {
   radarRings,
   radiusOf,
   SECTOR_MARGIN_DEG,
-  sectorCounts,
   SWEEP_PERIOD_MS,
 } from './radar-geometry';
 
@@ -66,7 +65,7 @@ describe('setores do radar', () => {
     expect(new Set(values.map((value) => Math.floor(value * 4))).size).toBe(4);
   });
 
-  it('conta as detecções por setor', () => {
+  it('cada ponto leva o setor da origem', () => {
     const blips = radarBlips(
       {
         since: SINCE,
@@ -78,7 +77,7 @@ describe('setores do radar', () => {
       },
       NOW,
     );
-    expect(sectorCounts(blips)).toEqual({ aws: 2, gcp: 0, cloudflare: 0, agents: 1 });
+    expect(blips.map((blip) => blip.sector)).toEqual(['aws', 'aws', 'agents']);
   });
 });
 

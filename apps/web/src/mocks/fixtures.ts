@@ -11,6 +11,7 @@ import {
   permissionsOf,
   RADAR_DETECTIONS_LIMIT,
   RADAR_WINDOW_HOURS,
+  radarSectorOf,
   type Role,
   type TenantSummary,
   tenantSummarySchema,
@@ -225,11 +226,19 @@ export function demoRadar(
       return at >= since && at <= now.getTime();
     })
     .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+  const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
+  const bySector = { aws: 0, gcp: 0, cloudflare: 0, agents: 0 };
+  for (const finding of inWindow) {
+    bySeverity[finding.severity] += 1;
+    bySector[radarSectorOf(finding.source)] += 1;
+  }
   return {
     since: new Date(since).toISOString(),
     windowHours: RADAR_WINDOW_HOURS,
     limit: RADAR_DETECTIONS_LIMIT,
     total: inWindow.length,
+    bySeverity,
+    bySector,
     detections: inWindow.slice(0, RADAR_DETECTIONS_LIMIT).map((finding) => ({
       id: finding.id,
       severity: finding.severity,

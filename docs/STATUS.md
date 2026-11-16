@@ -5461,6 +5461,13 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **Teste manual:** `pnpm --filter @verax/web dev:mock`, entrar e abrir a Torre: a varredura gira, o brilho acende
   quando ela passa; passar o mouse e usar Tab e as setas no radar; ligar "reduzir movimento" no sistema; abrir no
   celular.
+- **Revisão do PR #129 (dois P2 do Codex):** as contagens por severidade e por setor passam a vir da API para a janela
+  inteira (`bySeverity` e `bySector`, um `groupBy` por fonte e severidade com o mesmo escopo e a mesma janela, lido
+  depois da lista; o schema exige que cada divisão some o total): acima do teto, a frase e os cantos do radar não
+  esquecem os críticos mais antigos. No toque, só o clique decide (o mouse continua mostrando a dica ao passar): o
+  primeiro toque num ponto mostra a dica e o segundo, no mesmo ponto, abre o achado; o foco do próprio toque não conta
+  como seleção, e tocar fora desarma. Testes: API com 108 na janela e os críticos fora dos 100 desenhados; painel com o
+  teto e as contagens da janela e com toques (`pointerType` touch).
 - **Riscos e dúvidas:** a janela (24 h), o teto (100), a escala pela raiz e os setores foram escolhidos sem decisão
   registrada; no tema claro, o radar fica na faixa navy da marca, e não no branco do cartão. A área de toque de um ponto
   fica perto de 24 px no celular, com pontos encostados: a lista e a tabela são o caminho equivalente.

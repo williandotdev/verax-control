@@ -128,16 +128,6 @@ export function echoDelay(angle: number, period = SWEEP_PERIOD_MS): number {
   return Math.round((angle / 360) * period - period);
 }
 
-/** Quantas detecções por setor, na ordem dos setores. */
-export function sectorCounts(blips: readonly Blip[]): Record<RadarSector, number> {
-  const counts = Object.fromEntries(RADAR_SECTORS.map((sector) => [sector, 0])) as Record<
-    RadarSector,
-    number
-  >;
-  for (const blip of blips) counts[blip.sector] += 1;
-  return counts;
-}
-
 /** Quando o radar não mostra tudo: o total da janela passou do teto. Null quando mostra todas. */
 export function capNotice(
   radar: Pick<TowerRadar, 'total' | 'detections'>,
