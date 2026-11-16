@@ -57,15 +57,19 @@ jobs:
           set -euo pipefail
           [[ $GITHUB_REF == refs/heads/main ]] || { echo "::error::Dispare a partir da main (veio de $GITHUB_REF)."; exit 1; }
           [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo '::error::commit: 40 caracteres hexadecimais.'; exit 1; }
+      # Baixa a main (a ref do disparo, já conferida acima) e só passa ao commit pedido depois de conferir que ele está
+      # nela: o código que o build roda é sempre de um commit da main.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.commit }}
           fetch-depth: 0
           persist-credentials: false
       - name: O commit é da main
         env:
           COMMIT: ${{ inputs.commit }}
-        run: git merge-base --is-ancestor "$COMMIT" origin/main || { echo "::error::O commit $COMMIT não está na main."; exit 1; }
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$COMMIT" HEAD || { echo "::error::O commit $COMMIT não está na main."; exit 1; }
+          git checkout --quiet --detach "$COMMIT"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

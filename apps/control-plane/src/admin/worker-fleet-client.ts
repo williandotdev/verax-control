@@ -17,8 +17,49 @@ const TIMEOUT_MS = 60_000;
 const MAX_RESPONSE_CHARS = 512 * 1024;
 const CODE_PATTERN = /^[a-z][a-z_]{0,63}$/;
 /** Só os caminhos da frota, com ids no formato (nada vindo do navegador monta outra URL). */
-const PATH_PATTERN =
-  /^(releases|inventory|plan|rollouts|rollouts\/[0-9A-HJKMNP-TV-Z]{26}\/(pause|resume|abort)|rollouts\/[0-9A-HJKMNP-TV-Z]{26}\/nodes\/(cell-[a-z0-9-]{3,32}|tenant-[0-9A-HJKMNP-TV-Z]{26})\/(skip|rollback))$/;
+/** ULID (Crockford, 26 caracteres, sem I, L, O e U). */
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+const SLUG_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789-';
+
+function onlyFrom(alphabet: string, value: string): boolean {
+  for (const ch of value) if (!alphabet.includes(ch)) return false;
+  return true;
+}
+
+function isUlid(value: string): boolean {
+  return value.length === 26 && onlyFrom(ULID_ALPHABET, value);
+}
+
+/** O nó numa rodada: `cell-<3 a 32 de [a-z0-9-]>` ou `tenant-<ULID>`. */
+function isNodeKey(value: string): boolean {
+  if (value.startsWith('cell-')) {
+    const slug = value.slice('cell-'.length);
+    return slug.length >= 3 && slug.length <= 32 && onlyFrom(SLUG_ALPHABET, slug);
+  }
+  return value.startsWith('tenant-') && isUlid(value.slice('tenant-'.length));
+}
+
+/**
+ * Os caminhos da frota no cp-worker, conferidos segmento a segmento (sem expressão regular sobre o caminho):
+ * `releases`, `inventory`, `plan`, `rollouts`, `rollouts/<ULID>/(pause|resume|abort)` e
+ * `rollouts/<ULID>/nodes/<nó>/(skip|rollback)`.
+ */
+export function isFleetPath(path: string): boolean {
+  const parts = path.split('/');
+  const [head, id, third, node, action] = parts;
+  if (parts.length === 1) return ['releases', 'inventory', 'plan', 'rollouts'].includes(head ?? '');
+  if (head !== 'rollouts' || id === undefined || !isUlid(id)) return false;
+  if (parts.length === 3) return ['pause', 'resume', 'abort'].includes(third ?? '');
+  if (parts.length === 5) {
+    return (
+      third === 'nodes' &&
+      node !== undefined &&
+      isNodeKey(node) &&
+      ['skip', 'rollback'].includes(action ?? '')
+    );
+  }
+  return false;
+}
 
 export class HttpWorkerFleetClient implements WorkerFleetClient {
   constructor(
@@ -32,7 +73,7 @@ export class HttpWorkerFleetClient implements WorkerFleetClient {
   }
 
   async post(path: string, body: Record<string, unknown>, actor: string): Promise<OwnerCallResult> {
-    if (!PATH_PATTERN.test(path)) throw new TypeError('caminho da frota inválido');
+    if (!isFleetPath(path)) throw new TypeError('caminho da frota inválido');
     const audience = this.workerUrl.replace(/\/+$/, '');
     const token = await this.idTokens.get(audience);
     let response: Response;
