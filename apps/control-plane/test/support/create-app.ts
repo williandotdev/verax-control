@@ -45,6 +45,8 @@ export interface CreateAppOptions {
   adminSecrets?: AdminSecretSource;
   /** O cliente do console para o cp-worker (o HTTP com um "Google" de teste até o worker local, ou um dublê). */
   workerOwnerClient?: Parameters<typeof AppModule.register>[1]['workerOwnerClient'];
+  /** O cliente da frota do console para o cp-worker. */
+  workerFleetClient?: Parameters<typeof AppModule.register>[1]['workerFleetClient'];
   /**
    * Só com `role: 'admin'`: a pasta com os arquivos do console. Sem ela, nenhuma (`null`): o teste não depende de um
    * build do `apps/console` que pode ou não existir na máquina.
@@ -82,6 +84,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         stepQueue: options.stepQueue,
         adminSecrets: options.adminSecrets,
         workerOwnerClient: options.workerOwnerClient,
+        workerFleetClient: options.workerFleetClient,
       }),
     ],
   }).compile();

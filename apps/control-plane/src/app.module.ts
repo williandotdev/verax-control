@@ -4,6 +4,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module.js';
 import type { AdminSecretSource } from './admin/auth/admin-secrets.js';
 import type { WorkerOwnerClient } from './admin/worker-owner-client.js';
+import type { WorkerFleetClient } from './admin/worker-fleet-client.js';
 import { AuditModule } from './audit/audit.module.js';
 import { AccessWorkerModule, type AccessWorkerModuleOptions } from './access/access-worker.module.js';
 import { CheckoutModule } from './checkout/checkout.module.js';
@@ -52,6 +53,8 @@ export interface AppModuleOptions {
   adminSecrets?: AdminSecretSource;
   /** Só nos testes: o cliente do console para o cp-worker (em produção, HTTP com o token da conta do cp-admin). */
   workerOwnerClient?: WorkerOwnerClient;
+  /** Só nos testes: o cliente da frota do console para o cp-worker. */
+  workerFleetClient?: WorkerFleetClient;
 }
 
 /**
@@ -78,6 +81,7 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
         AdminModule.forRoot({
           adminSecrets: options.adminSecrets,
           workerOwnerClient: options.workerOwnerClient,
+          workerFleetClient: options.workerFleetClient,
         }),
       ];
   }
