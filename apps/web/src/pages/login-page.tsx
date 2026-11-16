@@ -41,7 +41,8 @@ export function LoginPage() {
   const siteKey = clientConfig.data?.turnstileSiteKey ?? null;
   const turnstile = useTurnstile(siteKey, 'login');
   const waitingTurnstile = clientConfig.isPending || (siteKey !== null && turnstile.token === undefined);
-  // Entrada única pelo console do responsável: só no endereço da equipe da Verax, quando a API diz onde fica o console.
+  // Entrada única pelo console do responsável: só onde a equipe da Verax entra (o endereço dela na célula ou o nó
+  // dedicado da Verax), quando a API diz onde fica o console.
   const adminMasterUrl = clientConfig.data?.adminMasterUrl ?? null;
   const ssoRefused = params.get('sso') === 'recusado';
 

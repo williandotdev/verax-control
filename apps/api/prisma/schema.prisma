@@ -1244,17 +1244,19 @@ model CellTenantBootstrap {
   confirmedAt DateTime? @db.Timestamptz(3)
 }
 
-/// Entrada única no SIEM pelo console do responsável (só na célula, no endereço da equipe): o pedido em curso de um
-/// navegador, entre o `GET /v1/auth/sso/start` e o callback. `id` é o SHA-256 do cookie de pré-login (o valor fica só no
-/// navegador), e o `state` também só como SHA-256. Vale 10 minutos e uma vez: o callback apaga a linha antes de conferir
-/// qualquer coisa. Sem chave estrangeira (dado de sistema, sem coluna de cliente); o `start` apaga as vencidas.
+/// Entrada única no SIEM pelo console do responsável (na célula, no endereço da equipe; ou no nó dedicado da Verax): o
+/// pedido em curso de um navegador, entre o `GET /v1/auth/sso/start` e o callback. `id` é o SHA-256 do cookie de
+/// pré-login (o valor fica só no navegador), e o `state` também só como SHA-256. Vale 10 minutos e uma vez: o callback
+/// apaga a linha antes de conferir qualquer coisa. Sem chave estrangeira (dado de sistema, sem coluna de cliente); o
+/// `start` apaga as vencidas.
 model SsoLoginAttempt {
   id           String   @id @db.VarChar(64)
   stateHash    String   @db.VarChar(64)
   nonce        String   @db.VarChar(43)
   codeVerifier String   @db.VarChar(128)
-  /// O endereço (o cliente da equipe) onde o pedido começou: o callback em outro endereço não o usa.
-  hostTenantId String   @db.Uuid
+  /// O endereço (o cliente da equipe) onde o pedido começou, na célula: o callback em outro endereço não o usa. Vazio
+  /// no nó dedicado da Verax (`PLAN=interno`), que não tem cliente do endereço: o nó inteiro é o da equipe.
+  hostTenantId String?  @db.Uuid
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
   expiresAt    DateTime @db.Timestamptz(3)
 

@@ -168,8 +168,11 @@ responsável (e-mail, senha e TOTP), e o menu dele ganha o item **Admin master**
 **confere** o token do console, com a chave pública fixada no `node.conf`; a chave que assina nunca chega ao nó, e
 nenhum cofre é lido para isso. Nos endereços dos clientes, as rotas da entrada única respondem 404 e nada muda.
 
+Antes da troca, com a VM ainda como nó dedicado (`PLAN=interno`), as mesmas linhas já valem, no nó inteiro (decisão de
+16/11/2026; `docs/runbooks/no-verax.md`, "Entrada única pelo console"); na troca, elas ficam como estão.
+
 ```bash
-# /etc/verax/node.conf da célula (as três juntas; o start.sh recusa fora do formato ou fora da célula)
+# /etc/verax/node.conf (as três juntas; o start.sh recusa fora do formato, ou num nó dedicado sem PLAN=interno)
 SSO_ISSUER=https://admin.veraxsistemas.com.br
 SSO_CLIENT_ID=verax-siem
 SSO_PUBLIC_KEY=<o x da chave pública do console>

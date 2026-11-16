@@ -38,7 +38,8 @@ function renderApp(path: string, me: Me | null, adminMasterUrl: string | null) {
 /**
  * O "Admin master" no SIEM da Verax: o botão do login que leva à entrada única pela API, a recusa genérica do retorno e
  * o item do menu que abre o console, só para o `admin_verax` e só quando a API diz onde o console fica (o endereço da
- * equipe na célula). Esconder o item é só a interface: quem decide é o console, com a sessão dele.
+ * equipe na célula, ou o nó dedicado da Verax: o painel não distingue os dois). Esconder o item é só a interface: quem
+ * decide é o console, com a sessão dele.
  */
 describe('Admin master no painel', () => {
   it('no login: "Entrar com o Admin master" leva à entrada única da API (navegação de verdade)', async () => {

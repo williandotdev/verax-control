@@ -27,6 +27,7 @@ import {
 import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
 import { passwordLinkMail } from './password-links.js';
 import { ssoPlugin } from './sso/sso-plugin.js';
+import { ssoSiteOf } from './sso/sso-site.js';
 import type { SsoFetch } from './sso/token-exchange.js';
 import { temporaryPasswordExpired } from './temporary-password.js';
 import {
@@ -126,22 +127,30 @@ export function createAuth({ config, prisma, logger, audit, mail, ssoFetch, ...d
    * registro da recusa é o mesmo da senha errada, gravado daqui.
    *
    * Com `STAFF_PASSWORD_LOGIN_DISABLED=true` (a entrada única pelo console configurada), o `admin_verax` também não
-   * entra com senha no endereço da equipe: só pelo "Entrar com o Admin master", com a mesma recusa da senha errada.
+   * entra com senha onde a entrada única existe (o endereço da equipe, na célula; o nó inteiro, no nó dedicado da
+   * Verax): só pelo "Entrar com o Admin master", com a mesma recusa da senha errada. No nó dedicado, o interruptor é a
+   * única recusa daqui; sem ele, nada muda.
    */
   async function refuseOutsideHost(ctx: {
     body?: unknown;
     headers?: Headers | undefined;
     context: { password: { hash: (password: string) => Promise<string> } };
   }): Promise<void> {
-    if (cell === null) return;
+    if (cell === null && !config.STAFF_PASSWORD_LOGIN_DISABLED) return;
     const body = ctx.body as { email?: unknown; password?: unknown } | undefined;
     const email = normalizeEmail(body?.email);
     if (email === undefined) return;
-    const host = currentHostTenant();
+    const host = cell === null ? undefined : currentHostTenant();
     const user = await prisma.user.findUnique({ where: { email }, select: { role: true, tenantId: true } });
     const passwordOff =
-      config.STAFF_PASSWORD_LOGIN_DISABLED && host?.staff === true && user?.role === 'admin_verax';
-    if (host !== undefined && !passwordOff && (user === null || belongsToHost(user, host))) return;
+      config.STAFF_PASSWORD_LOGIN_DISABLED &&
+      user?.role === 'admin_verax' &&
+      ssoSiteOf(config, host) !== undefined;
+    const allowed =
+      cell === null
+        ? !passwordOff
+        : host !== undefined && !passwordOff && (user === null || belongsToHost(user, host));
+    if (allowed) return;
     if (typeof body?.password === 'string') await ctx.context.password.hash(body.password);
     await record({
       actor: { type: 'anonymous' },
@@ -487,7 +496,8 @@ export function createAuth({ config, prisma, logger, audit, mail, ssoFetch, ...d
     },
 
     plugins: [
-      // Entrada única no SIEM pelo console do responsável (só na célula, no endereço da equipe, com `config.sso`):
+      // Entrada única no SIEM pelo console do responsável (com `config.sso`, no endereço da equipe da célula ou no nó
+      // dedicado da Verax, `sso/sso-site.ts`):
       // `GET /sso/start` e `GET /sso/callback` (`sso/sso-plugin.ts`). Sem a configuração, as duas respondem 404.
       ssoPlugin({
         config,

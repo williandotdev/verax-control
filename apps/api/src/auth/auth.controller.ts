@@ -30,6 +30,7 @@ import type { Auth } from './auth.factory.js';
 import { Public, SelfManaged } from './decorators.js';
 import { panelOriginOf, sessionHostOf } from './host-tenant.js';
 import { resolveSession } from './session-validation.js';
+import { ssoSiteOf } from './sso/sso-site.js';
 
 /**
  * Rotas do Better Auth expostas pela API. Lista fechada: qualquer outra rota da biblioteca (cadastro,
@@ -52,13 +53,13 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   'POST /two-factor/verify-totp',
   'POST /two-factor/verify-backup-code',
   'POST /two-factor/generate-backup-codes',
-  // Entrada única pelo console do responsável (`sso/sso-plugin.ts`): só no endereço da equipe da célula, com a entrada
-  // única configurada (`SSO_ROUTES`, abaixo); em qualquer outro endereço, 404.
+  // Entrada única pelo console do responsável (`sso/sso-plugin.ts`): só no endereço da equipe da célula ou no nó
+  // dedicado da Verax, com a entrada única configurada (`SSO_ROUTES`, abaixo); em qualquer outro lugar, 404.
   'GET /sso/start',
   'GET /sso/callback',
 ]);
 
-/** As rotas da entrada única: existem só na célula, no endereço da equipe e com `config.sso`. */
+/** As rotas da entrada única: existem só onde a equipe entra (`sso/sso-site.ts`) e com `config.sso`. */
 const SSO_ROUTES: ReadonlySet<string> = new Set(['GET /sso/start', 'GET /sso/callback']);
 
 /** Rotas que não usam a sessão atual: entrar, pedir e definir senha pelo link, e sair (que só reduz acesso). */
@@ -139,9 +140,12 @@ export class AuthController {
     await this.handler(request, response);
   }
 
-  /** A entrada única existe só na célula, no endereço da equipe da Verax e com a configuração dela. */
+  /**
+   * A entrada única existe só com a configuração dela, no endereço da equipe da Verax na célula ou no nó dedicado da
+   * Verax (`PLAN=interno`).
+   */
   private ssoAvailable(request: Request): boolean {
-    return this.config.sso !== null && this.config.cell !== null && request.hostTenant?.staff === true;
+    return ssoSiteOf(this.config, request.hostTenant) !== undefined;
   }
 
   /**

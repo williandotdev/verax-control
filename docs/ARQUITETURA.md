@@ -284,19 +284,32 @@ mínimo; o contrato fica em `packages/shared/src/sso.ts`:
   Declarações: `iss` (a origem do console), `aud` (`verax-siem`, texto), `sub` (o id da conta no console), `email`,
   `nonce`, `iat`, `exp` (5 minutos), `auth_time` (o login no console), `jti` e `amr: ["pwd", "otp"]`. A chave privada
   fica no cofre `cp-admin-sso-signing-key`, lido só pela conta `cp-admin`; a pública sai em `/sso/jwks`.
-- **Na célula (`apps/api/src/auth/sso/`)**: um plugin do Better Auth, só com `NODE_MODE=cell`, só no endereço da equipe
-  (`api-<CELL_STAFF_SLUG>`) e só com `SSO_ISSUER`, `SSO_CLIENT_ID` e `SSO_PUBLIC_KEY` no `node.conf`; em qualquer outro
-  endereço, 404. A chave pública é **fixada** na configuração (o `x` da chave), nunca baixada. O retorno gasta o pedido
-  antes de conferir, confere o `state` (contra o login forçado), o `iss` da resposta (RFC 9207), troca o código (https,
-  5 s, sem seguir redirecionamento, resposta pelo schema) e confere o token com rigor: três partes em base64url
-  canônico, cabeçalho estrito (nada de `none`, HS256, `jku`, `jwk`, `x5u` ou `crit`), `kid` da chave fixada, assinatura
-  Ed25519, declarações estritas, `iss`, `aud`, prazo (30 s de folga, no máximo 5 min de vida), `nonce` do pedido, `amr`
-  com senha e código, e o `jti` gasto numa tabela (`SsoTokenUse`). Então abre a sessão **normal** (o mesmo cookie, o
-  hook de criação com as regras da célula, 30 minutos sem uso e 12 horas, o CSRF das escritas) do `admin_verax` que já
-  existe com aquele e-mail, sem tenant, ativo, com a senha definitiva e o MFA do painel. Nada é criado: e-mail
-  desconhecido, de outro papel ou de um cliente recebe a mesma recusa (`?sso=recusado` no login), com o motivo só no
-  log e na trilha (`auth.sso_login`). O login com senha do painel continua; `STAFF_PASSWORD_LOGIN_DISABLED=true`
-  (padrão `false`, só com a entrada única) o tira da equipe no endereço dela.
+- **Na API do nó (`apps/api/src/auth/sso/`)**: um plugin do Better Auth, só com `SSO_ISSUER`, `SSO_CLIENT_ID` e
+  `SSO_PUBLIC_KEY` no `node.conf`, e só onde a equipe da Verax entra (`sso-site.ts`): na célula (`NODE_MODE=cell`), no
+  endereço da equipe (`api-<CELL_STAFF_SLUG>`); no nó dedicado, só no da própria Verax (`PLAN=interno`, abaixo). Em
+  qualquer outro lugar, 404. A chave pública é **fixada** na configuração (o `x` da chave), nunca baixada. O retorno
+  gasta o pedido antes de conferir, confere o `state` (contra o login forçado), o `iss` da resposta (RFC 9207), troca o
+  código (https, 5 s, sem seguir redirecionamento, resposta pelo schema) e confere o token com rigor: três partes em
+  base64url canônico, cabeçalho estrito (nada de `none`, HS256, `jku`, `jwk`, `x5u` ou `crit`), `kid` da chave fixada,
+  assinatura Ed25519, declarações estritas, `iss`, `aud`, prazo (30 s de folga, no máximo 5 min de vida), `nonce` do
+  pedido, `amr` com senha e código, e o `jti` gasto numa tabela (`SsoTokenUse`). Então abre a sessão **normal** (o mesmo
+  cookie, o hook de criação com as regras da célula, 30 minutos sem uso e 12 horas, o CSRF das escritas) do
+  `admin_verax` que já existe com aquele e-mail, sem tenant, ativo, com a senha definitiva e o MFA do painel. Nada é
+  criado: e-mail desconhecido, de outro papel ou de um cliente recebe a mesma recusa (`?sso=recusado` no login), com o
+  motivo só no log e na trilha (`auth.sso_login`). O login com senha do painel continua;
+  `STAFF_PASSWORD_LOGIN_DISABLED=true` (padrão `false`, só com a entrada única) o tira da equipe no endereço dela.
+
+**No nó dedicado da Verax (decisão de 16/11/2026).** O servidor do SIEM da própria Verax ainda roda como nó **dedicado**
+(`PLAN=interno`, na VM da célula): a troca para `NODE_MODE=cell` pararia a coleta da AWS, que espera a identidade de
+cada cliente (CE-11). Para a equipe não esperar a troca, a entrada única vale também ali, e **só** ali: o `start.sh`
+aceita as linhas no nó dedicado só com `PLAN=interno` e sem o `CUSTOMER_MODE`, e a configuração da API só com
+`PLAN=interno` escrito no ambiente (o padrão `interno` de fora de produção não conta). Num nó dedicado de cliente
+(qualquer outro plano), as duas recusam as linhas e o serviço não sobe, como antes. Sem endereço por cliente, o nó
+inteiro é o da equipe: o pedido nasce sem cliente do endereço (`SsoLoginAttempt.hostTenantId` vazio), a volta vai ao
+`WEB_ORIGIN`, e a sessão é a do nó dedicado de sempre. As conferências são as mesmas da célula (`state`, `nonce` e
+PKCE de uso único, `jti` gasto, `iss`, `aud` e prazo, os limites por IP, e só o `admin_verax` sem cliente, ativo e
+com o MFA do painel), e o interruptor `STAFF_PASSWORD_LOGIN_DISABLED` vale no nó inteiro. Os endereços do nó da Verax
+são os mesmos da equipe na célula (`api-verax` e `verax.control`): o retorno na lista do console não muda na troca.
 
 **O módulo Admin master no SIEM: o item do menu abre o console, sem embutir.** O `admin_verax` no endereço da equipe vê
 "Admin master" no menu (a API diz onde fica o console em `GET /v1/auth/client-config`, `adminMasterUrl`), que abre o
@@ -311,7 +324,10 @@ mesmos tokens de design), servido pelo próprio `cp-admin` na origem dele, e nã
 SIEM; o CORS do console nunca se abre para o painel.
 
 **Modelo de confiança.** A célula atende clientes e é o maior raio de impacto do produto (seção "Risco residual: o raio
-de impacto é a célula"); por isso ela é só a parte que confia. O que uma célula comprometida consegue: abrir sessões do
+de impacto é a célula"); por isso ela é só a parte que confia. O nó dedicado da Verax (`PLAN=interno`) é a mesma parte
+que confia, no lugar da célula, com o mesmo modelo: o que vale abaixo para "a célula" vale para ele. Um nó dedicado de
+**cliente** nunca é parte que confia: o `start.sh` e a configuração da API recusam as linhas com outro plano, e o
+console só manda código para os endereços da lista exata. O que uma célula comprometida consegue: abrir sessões do
 SIEM para quem quiser (já conseguia, sem a entrada única), ver o código e o token de identidade do responsável (que só
 valem para o SIEM, por 5 minutos, e que o console nunca aceita de volta: nenhuma rota dele lê `Authorization`, e a
 sessão do console é só o cookie `__session` do próprio host). O que ela **não** consegue: a sessão do console (cookie
@@ -331,6 +347,11 @@ meta-teste `cell-cannot-sign.test.ts`), nem fazer o console mandar um código pa
   entrada única recusa; o login com senha do painel continua, a não ser que o interruptor esteja ligado.
 - **Negação de serviço.** Os limites do console contam as falhas no balde da saída do Hosting, dividido por todos:
   uma enxurrada de pedidos ruins pode deixar a entrada única em 429 por até 15 minutos (o login com senha continua).
+- **O nó da Verax pelo plano.** No nó dedicado, quem separa o nó da Verax do de um cliente é a linha `PLAN=interno` do
+  `node.conf` (e o `CUSTOMER_MODE`, no `start.sh`). Um nó de cliente com `PLAN=interno` por engano e as três linhas
+  aceitaria a entrada única, mas continuaria sem receber código: o retorno dele não está na lista do console. O
+  `aud` é o mesmo (`verax-siem`) para a célula e o nó da Verax; o que prende cada token a um nó é o retorno da lista,
+  o `nonce` e o PKCE do pedido daquele nó, e a troca feita pelo próprio nó.
 - **Subdomínios irmãos.** O console e o SIEM são o mesmo "site" (`veraxsistemas.com.br`) para o navegador: os cookies
   `SameSite=Strict` vão de um ao outro numa navegação, e é isso que deixa o fluxo funcionar. O que protege o console de
   um subdomínio irmão é o que já protegia: o cookie só do host, a limpeza dos `__session` plantados com `Domain` e a

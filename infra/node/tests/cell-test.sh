@@ -12,7 +12,9 @@
 #    modo, o domínio e o subdomínio da equipe no lugar do plano, sem o tópico do sink pelo nome do projeto e sem o ID da
 #    conta de serviço da VM (com o aviso); o worker recebe o modo e as pastas dos pedidos. O render recusa, sem escrever
 #    nada, o PLAN e os ajustes, o perfil lean, o CUSTOMER_MODE, os agentes do Wazuh e o domínio ou o subdomínio fora do
-#    formato. O projeto do Compose ganha o compose.cell.yaml só na célula.
+#    formato. O projeto do Compose ganha o compose.cell.yaml só na célula. A entrada única pelo console (as três linhas
+#    SSO_* e o STAFF_PASSWORD_LOGIN_DISABLED) vai só para a API, na célula e no nó dedicado da Verax (PLAN=interno); no
+#    nó de cliente (outro plano ou CUSTOMER_MODE), e com as linhas pela metade, o render para sem escrever nada.
 # 2. O primeiro administrador de cada cliente (`tenant-bootstrap` e `tenant-bootstrap-pending`): o pedido do worker vira a
 #    chamada do bootstrap no modo cell-tenant, só por variável de ambiente; a senha vai para o cofre do cliente
 #    (`vxt-<subdomínio>-admin-bootstrap`) e nunca para a tela, os argumentos de comando ou outro arquivo; o pedido sai e a
@@ -309,11 +311,62 @@ for case_ in "${sso_format_refusals[@]}"; do
   [[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
   ok
 done
-new_root "dedicado: a entrada única é só da célula" sso-dedicado "${sso_conf[@]}"
-if start render; then fail "o render deveria parar"; fi
-grep -q -F 'só existe com NODE_MODE=cell' "$root/out" || fail "sem o motivo: $(cat "$root/out")"
-[[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
+# No nó dedicado, a entrada única existe só no nó da Verax (PLAN=interno, sem o CUSTOMER_MODE; decisão de 16/11/2026):
+# as mesmas linhas, logo depois do plano, só no api.env. Num nó de cliente (qualquer outro plano), a partida para.
+new_root "dedicado da Verax (PLAN=interno): a entrada única vai só para a API" sso-dedicado-interno "${sso_conf[@]}"
+start render || fail "o render falhou: $(cat "$root/out")"
+expected_sso_dedicated=${dedicated_api/PLAN=\'interno\'/PLAN=\'interno\'
+$sso_lines}
+[[ "$(cat "$root/run/verax/api.env")" == "$expected_sso_dedicated" ]] ||
+  fail "api.env inesperado: $(diff <(echo "$expected_sso_dedicated") "$root/run/verax/api.env" || true)"
+[[ "$(cat "$root/run/verax/worker.env")" == "$dedicated_worker" ]] ||
+  fail "o worker.env mudou: $(diff <(echo "$dedicated_worker") "$root/run/verax/worker.env" || true)"
+grep -q -e NODE_MODE -e CELL_ "$root/run/verax/api.env" && fail "o dedicado ganhou variável da célula"
 ok
+new_root "dedicado da Verax (PLAN=interno): o login com senha da equipe desligado" sso-dedicado-sem-senha \
+  "${sso_conf[@]}" STAFF_PASSWORD_LOGIN_DISABLED=true
+start render || fail "o render falhou: $(cat "$root/out")"
+grep -qx "STAFF_PASSWORD_LOGIN_DISABLED='true'" "$root/run/verax/api.env" || fail "sem o interruptor no api.env"
+grep -q STAFF_PASSWORD_LOGIN_DISABLED "$root/run/verax/worker.env" && fail "o worker ganhou o interruptor"
+ok
+customer_node='só existe com NODE_MODE=cell ou no nó dedicado da Verax'
+dedicated_sso_refusals=(
+  # Nó de cliente: qualquer plano que não o interno, ou o modo cliente.
+  "PLAN=profissional|$customer_node"
+  "PLAN=essencial|$customer_node"
+  "PLAN=enterprise|$customer_node"
+  "-PLAN|$customer_node"
+  "CUSTOMER_MODE=true|$customer_node"
+  # O nó da Verax: as mesmas regras da célula.
+  "-SSO_PUBLIC_KEY|andam juntas"
+  "-SSO_ISSUER|andam juntas"
+  "SSO_CLIENT_ID=outro|SSO_CLIENT_ID inválido"
+  "SSO_ISSUER=http://admin.exemplo.com.br|SSO_ISSUER inválido"
+  "STAFF_PASSWORD_LOGIN_DISABLED=sim|STAFF_PASSWORD_LOGIN_DISABLED inválido"
+)
+for case_ in "${dedicated_sso_refusals[@]}"; do
+  line=${case_%%|*}
+  new_root "dedicado: a entrada única recusa ($line) sem escrever nada" "sso-recusa-$((++n))" "${sso_conf[@]}" "$line"
+  if start render; then fail "o render deveria parar"; fi
+  grep -q -F "${case_#*|}" "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+  [[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
+  ok
+done
+# Uma linha só, sem as outras: no nó de cliente, a recusa do plano; no da Verax, a das três juntas ou a do interruptor.
+lone_refusals=(
+  "PLAN=profissional STAFF_PASSWORD_LOGIN_DISABLED=false|$customer_node"
+  "PLAN=profissional SSO_PUBLIC_KEY=$sso_key|$customer_node"
+  "PLAN=interno SSO_ISSUER=https://admin.exemplo.com.br|andam juntas"
+  "PLAN=interno STAFF_PASSWORD_LOGIN_DISABLED=true|exige a entrada única"
+)
+for case_ in "${lone_refusals[@]}"; do
+  read -r -a lines <<<"${case_%%|*}"
+  new_root "dedicado: a entrada única recusa (${lines[*]}) sem escrever nada" "sso-recusa-$((++n))" "${lines[@]}"
+  if start render; then fail "o render deveria parar"; fi
+  grep -q -F "${case_#*|}" "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+  [[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
+  ok
+done
 
 new_root "projeto do Compose: o compose.cell.yaml só na célula" compose-dedicado
 start down || fail "o down falhou: $(cat "$root/out")"

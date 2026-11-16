@@ -302,7 +302,7 @@ describe('entrada única: o console como provedor de identidade do SIEM', () => 
     });
     expect(session?.hostTenantId).toBe(staffTenant);
     const audit = await prisma.auditLog.findFirst({
-      where: { action: 'auth.sso_login', outcome: 'success' },
+      where: { action: 'auth.sso_login', outcome: 'success', resourceId: OWNER },
       select: { resourceId: true },
     });
     expect(audit?.resourceId).toBe(OWNER);

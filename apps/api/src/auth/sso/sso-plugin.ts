@@ -8,17 +8,19 @@ import type { AppConfig } from '../../common/config/config.module.js';
 import type { PrismaService } from '../../common/prisma/prisma.service.js';
 import { type AuthAuditSink, requestMetadata } from '../auth-audit.js';
 import { AUTH_BASE_PATH } from '../auth.constants.js';
-import { belongsToHost, currentHostTenant, type HostTenant } from '../host-tenant.js';
+import { currentHostTenant } from '../host-tenant.js';
 import { normalizeEmail } from '../login-attempts.js';
 import { sameSecret, verifyIdToken } from './id-token.js';
+import { belongsToSsoSite, type SsoSite, ssoSiteOf } from './sso-site.js';
 import { exchangeCode, type SsoFetch } from './token-exchange.js';
 
 /**
  * Entrada única no SIEM da Verax pelo console do responsável, do lado do painel (o cliente do OAuth; `docs/
  * ARQUITETURA.md`, "Entrada única"). Um plugin do Better Auth, para a sessão aberta no fim ser a mesma de sempre (o
  * cookie, o hook de criação da sessão com as regras da célula, o limite de 30 min sem uso e de 12 h, o CSRF das
- * escritas): nada de sessão própria. Só na célula, no endereço da equipe (`api-<CELL_STAFF_SLUG>`) e com a entrada
- * única configurada; em qualquer outro caso, as duas rotas respondem 404 (o `AuthController` e, de novo, aqui).
+ * escritas): nada de sessão própria. Só com a entrada única configurada, na célula, no endereço da equipe
+ * (`api-<CELL_STAFF_SLUG>`), ou no nó dedicado da Verax (`PLAN=interno`), o nó inteiro (`./sso-site.ts`); em
+ * qualquer outro caso, as duas rotas respondem 404 (o `AuthController` e, de novo, aqui).
  *
  * - `GET /v1/auth/sso/start`: gera o `state`, o `nonce` e o verificador do PKCE (32 bytes aleatórios cada), grava os três
  *   no banco presos ao SHA-256 de um cookie de pré-login (`__Host-verax-sso`, 10 min, `HttpOnly`, `SameSite=Strict`) e
@@ -44,7 +46,7 @@ export const SSO_START_PATH = `${AUTH_BASE_PATH}/sso/start`;
 export const SSO_AUDIT_ACTION = 'auth.sso_login';
 
 export interface SsoPluginDependencies {
-  config: Pick<AppConfig, 'sso' | 'cell' | 'API_ORIGIN'>;
+  config: Pick<AppConfig, 'sso' | 'cell' | 'PLAN' | 'API_ORIGIN' | 'WEB_ORIGIN'>;
   prisma: PrismaService;
   record: AuthAuditSink;
   fetch: SsoFetch;
@@ -111,18 +113,16 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
     path: '/',
   };
 
-  /** O endereço da equipe, com a entrada única configurada; senão, 404 (a rota "não existe"). */
-  function staffHost(): { host: HostTenant; sso: NonNullable<AppConfig['sso']> } | undefined {
-    const host = currentHostTenant();
-    if (config.sso === null || config.cell === null || host === undefined || !host.staff) return undefined;
-    return { host, sso: config.sso };
+  /** Onde a equipe entra (o endereço dela na célula, ou o nó da Verax), com a entrada única configurada; senão, 404. */
+  function staffSite(): SsoSite | undefined {
+    return ssoSiteOf(config, currentHostTenant());
   }
 
   return {
     id: 'verax-sso',
     endpoints: {
       ssoStart: createAuthEndpoint('/sso/start', { method: 'GET' }, async (ctx) => {
-        const staff = staffHost();
+        const staff = staffSite();
         if (staff === undefined) throw ctx.error('NOT_FOUND');
         const binding = opaque();
         const state = opaque();
@@ -137,7 +137,8 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
               stateHash: sha256Hex(state),
               nonce,
               codeVerifier: verifier,
-              hostTenantId: staff.host.tenantId,
+              // Na célula, o cliente da equipe; no nó dedicado da Verax, nenhum (o nó inteiro é o da equipe).
+              hostTenantId: staff.tenantId,
               expiresAt: new Date(at.getTime() + SSO_ATTEMPT_TTL_SECONDS * 1000),
             },
           }),
@@ -156,9 +157,9 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
       }),
 
       ssoCallback: createAuthEndpoint('/sso/callback', { method: 'GET' }, async (ctx) => {
-        const staff = staffHost();
+        const staff = staffSite();
         if (staff === undefined) throw ctx.error('NOT_FOUND');
-        const { host, sso } = staff;
+        const { sso, panelOrigin } = staff;
         const metadata = requestMetadata(ctx.request?.headers ?? ctx.headers);
         ctx.setHeader('Cache-Control', 'no-store');
         // O cookie de pré-login sai em toda resposta: o pedido vale uma vez, deu certo ou não.
@@ -177,7 +178,7 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
             attempt === null ||
             removed.count !== 1 ||
             attempt.expiresAt.getTime() <= now().getTime() ||
-            attempt.hostTenantId !== host.tenantId
+            attempt.hostTenantId !== staff.tenantId
           ) {
             throw new SsoRefused('unknown_attempt');
           }
@@ -253,13 +254,13 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
             user.status !== 'active' ||
             user.mustChangePassword ||
             !user.twoFactorEnabled ||
-            !belongsToHost(user, host)
+            !belongsToSsoSite(user, staff)
           ) {
             throw new SsoRefused('user_refused', email);
           }
 
           // A sessão normal do Better Auth: o hook de criação aplica as mesmas regras de sempre (endereço, usuário e
-          // cliente ativos) e grava o cliente do endereço.
+          // cliente ativos) e, na célula, grava o cliente do endereço.
           const session = await ctx.context.internalAdapter.createSession(user.id);
           const fullUser = await ctx.context.internalAdapter.findUserById(user.id);
           if (!session || !fullUser) throw new SsoRefused('session_refused', email);
@@ -281,7 +282,7 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
           }
           return refuse(error);
         }
-        throw ctx.redirect(`${host.panelOrigin}/`);
+        throw ctx.redirect(`${panelOrigin}/`);
 
         async function refuse(refusal: SsoRefused): Promise<never> {
           logger.warn({ event: 'sso_login_refused', reason: refusal.reason }, 'entrada única recusada');
@@ -295,7 +296,7 @@ export function ssoPlugin(deps: SsoPluginDependencies): BetterAuthPlugin {
             after: { reason: refusal.reason },
             ...metadata,
           });
-          throw ctx.redirect(`${host.panelOrigin}/login?sso=recusado`);
+          throw ctx.redirect(`${panelOrigin}/login?sso=recusado`);
         }
       }),
     },
