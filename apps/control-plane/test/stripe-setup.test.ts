@@ -118,7 +118,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     expect(code).toBe(0);
     expect(output).toContain('Simulação: nada é gravado');
     expect(output).toContain('Catálogo da tabela exemplo-v1: 6 produtos, 6 preços.');
-    expect(output).toContain('produto vc_plataforma: criaria ("Verax Control: Plataforma")');
+    expect(output).toContain('produto vc_plataforma: criaria ("Verax Control: SIEM Cloud")');
     expect(output).toContain('preço vc_base_v1 (R$ 1.000,00/mês): criaria (novo)');
     expect(output).toContain('preço vc_setup_v1 (R$ 5.000,00, avulso): criaria (novo)');
     expect(output).toContain('cupom vc_cupom_exemplo (10% por 3 meses, 2 resgates): criaria');
@@ -140,11 +140,11 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
     const [product] = fake.calls('POST', '/v1/products');
     expect(formEntries(product?.form ?? new URLSearchParams())).toEqual([
       ['id', 'vc_plataforma'],
-      ['name', 'Verax Control: Plataforma'],
+      ['name', 'Verax Control: SIEM Cloud'],
     ]);
     expect(formEntries(fake.calls('POST', '/v1/products')[1]?.form ?? new URLSearchParams())).toEqual([
       ['id', 'vc_gb_dia_adicional'],
-      ['name', 'Plataforma: GB/dia adicional'],
+      ['name', 'SIEM Cloud: GB/dia adicional'],
       ['unit_label', 'GB/dia'],
     ]);
     const prices = fake.calls('POST', '/v1/prices');
@@ -158,7 +158,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
           ['recurring[interval]', 'month'],
           ['recurring[interval_count]', '1'],
           ['lookup_key', 'vc_base_v1'],
-          ['nickname', 'Plataforma (mensal)'],
+          ['nickname', 'SIEM Cloud (mensal)'],
           ['metadata[component]', 'base'],
           ['metadata[variant]', 'plataforma'],
           ['metadata[tableVersion]', 'exemplo-v1'],
@@ -173,7 +173,7 @@ describe('scripts/stripe-setup.ts (preço configurável e CP-04)', () => {
           ['currency', 'brl'],
           ['unit_amount', '500000'],
           ['lookup_key', 'vc_setup_v1'],
-          ['nickname', 'Implantação do vCISO (uma vez)'],
+          ['nickname', 'Implantação do SIEM + vCISO (uma vez)'],
           ['metadata[component]', 'setup'],
           ['metadata[variant]', 'vciso'],
           ['metadata[tableVersion]', 'exemplo-v1'],

@@ -109,7 +109,7 @@ const PROBLEM_ISSUES: Readonly<Record<NodeFitProblem, (configuration: Configurat
 const CONTACT_ISSUES: Readonly<Record<ContactReason, FieldIssue>> = {
   above_online_max: {
     path: 'configuration.gbDay',
-    message: 'Acima do máximo da Plataforma na tabela: para mais volume, use o Dedicado.',
+    message: 'Acima do máximo do SIEM Cloud na tabela: para mais volume, use o SIEM Dedicado.',
   },
   above_max: { path: 'configuration.gbDay', message: 'Acima do máximo cotável do plano na tabela.' },
   above_largest_size: {
@@ -119,7 +119,7 @@ const CONTACT_ISSUES: Readonly<Record<ContactReason, FieldIssue>> = {
   mode_unavailable: {
     path: 'configuration.plan',
     message:
-      'A Plataforma roda só na célula da Verax: no ambiente do cliente, escolha o Dedicado ou o vCISO.',
+      'O SIEM Cloud roda só na célula da Verax: no ambiente do cliente, escolha o SIEM Dedicado ou o SIEM + vCISO.',
   },
 };
 

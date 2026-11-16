@@ -91,7 +91,7 @@ export function PricingTableForm() {
       </Section>
 
       <Section
-        title="Plataforma"
+        title="SIEM Cloud"
         description="A célula compartilhada, vendida no checkout do site. O cliente escolhe a franquia do incluído até o máximo do site; acima, fale conosco. O uso acima da franquia é cobrado depois, como excedente."
         path={['plans', 'plataforma']}
       >
@@ -113,7 +113,7 @@ export function PricingTableForm() {
         <Grid>
           <NumberField
             path={['plans', 'plataforma', 'maxCloudAccounts']}
-            label="Contas de nuvem no nó da Plataforma (teto)"
+            label="Contas de nuvem no nó do SIEM Cloud (teto)"
             kind="integer"
             hint="Só o limite gravado no nó: não muda o preço."
           />
@@ -121,7 +121,7 @@ export function PricingTableForm() {
       </Section>
 
       <Section
-        title="Dedicado"
+        title="SIEM Dedicado"
         description="Servidor próprio, só por contrato direto: um preço por GB/dia, do mínimo ao máximo cotável. O mesmo preço vale na infraestrutura do cliente."
         path={['plans', 'dedicado']}
       >
@@ -140,7 +140,7 @@ export function PricingTableForm() {
           />
           <NumberField
             path={['plans', 'dedicado', 'maxCloudAccounts']}
-            label="Contas de nuvem no nó do Dedicado (teto)"
+            label="Contas de nuvem no nó do SIEM Dedicado (teto)"
             kind="integer"
             hint="Só o limite gravado no nó: não muda o preço."
           />
@@ -148,8 +148,8 @@ export function PricingTableForm() {
       </Section>
 
       <Section
-        title="vCISO"
-        description="O Dedicado (o mesmo preço por GB/dia, mínimo e máximo) mais o serviço mensal e a implantação, cobrada uma vez. Só por contrato direto."
+        title="SIEM + vCISO"
+        description="O SIEM Dedicado (o mesmo preço por GB/dia, mínimo e máximo) mais o serviço mensal e a implantação, cobrada uma vez. Só por contrato direto."
         path={['plans', 'vciso']}
       >
         <PricedFields path={['plans', 'vciso', 'service']} label="Serviço mensal" />

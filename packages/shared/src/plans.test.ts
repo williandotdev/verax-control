@@ -116,14 +116,14 @@ describe('plano do cliente (CE-02)', () => {
   it('a Plataforma é plano de cliente, mas não do node.conf', () => {
     expect(TENANT_PLAN_IDS).toEqual([...PLAN_IDS, 'plataforma']);
     expect(planIdSchema.safeParse('plataforma').success).toBe(false);
-    expect(PLAN_LABELS.plataforma).toBe('Plataforma');
+    expect(PLAN_LABELS.plataforma).toBe('SIEM Cloud');
   });
 
   it('a Plataforma exige contas, usuários, histórico e a franquia, e não tem volume do mês', () => {
     expect(tenantPlanProblems(plataforma)).toEqual([]);
     expect(resolvedPlanOf(plataforma)).toEqual({
       id: 'plataforma',
-      label: 'Plataforma',
+      label: 'SIEM Cloud',
       limits: plataforma.limits,
     });
     expect(

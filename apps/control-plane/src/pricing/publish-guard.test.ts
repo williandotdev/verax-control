@@ -201,7 +201,7 @@ describe('checagem de publicação (grade inteira)', () => {
       model,
     );
     expect(report.ok).toBe(false);
-    expect(report.problems).toEqual(['o GB/dia excedente da Plataforma é mais barato que o contratado']);
+    expect(report.problems).toEqual(['o GB/dia excedente do SIEM Cloud é mais barato que o contratado']);
   });
 
   it('modelo de custos incompleto ou grade grande demais: a checagem nem roda e a tabela é recusada', () => {

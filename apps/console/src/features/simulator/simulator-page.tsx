@@ -151,7 +151,7 @@ export function SimulatorPage() {
 
         <Section
           title="Configuração"
-          description="O plano e o volume em GB/dia: abaixo do mínimo do plano, o volume sobe até ele; acima do máximo, sob consulta. Na infraestrutura do cliente, só o Dedicado e o vCISO (o mesmo preço, sem a nuvem da Verax)."
+          description="O plano e o volume em GB/dia: abaixo do mínimo do plano, o volume sobe até ele; acima do máximo, sob consulta. Na infraestrutura do cliente, só o SIEM Dedicado e o SIEM + vCISO (o mesmo preço, sem a nuvem da Verax)."
           path={['configuration']}
         >
           <Grid>

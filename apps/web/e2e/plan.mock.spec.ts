@@ -75,7 +75,7 @@ test.describe('Plano e uso (modo mock)', () => {
           window.localStorage.setItem('verax.theme', value);
         }, theme);
         await page.goto('/cadastros/plano');
-        await expect(page.getByRole('heading', { name: 'Plano Plataforma' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Plano SIEM Cloud' })).toBeVisible();
         await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
         const card = page.getByRole('region', { name: 'Franquia de 3 GB/dia' });
         await expect(card).toBeVisible();

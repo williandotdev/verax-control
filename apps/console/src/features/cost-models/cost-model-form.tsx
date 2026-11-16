@@ -191,8 +191,8 @@ export function CostModelForm() {
       </Section>
 
       <Section
-        title="Célula compartilhada (Plataforma)"
-        description="A máquina com vários clientes da Plataforma, em dólares por mês a preço de lista, e quantos GB/dia ela comporta. O custo entra na DRE rateado pelo GB/dia contratado (custo ÷ capacidade), mais o custo fixo de cada cliente nela."
+        title="Célula compartilhada (SIEM Cloud)"
+        description="A máquina com vários clientes do SIEM Cloud, em dólares por mês a preço de lista, e quantos GB/dia ela comporta. O custo entra na DRE rateado pelo GB/dia contratado (custo ÷ capacidade), mais o custo fixo de cada cliente nela."
         path={['infrastructure', 'sharedCell']}
       >
         <Grid>
@@ -229,7 +229,7 @@ export function CostModelForm() {
 
       <Section
         title="Infraestrutura (nó dedicado e itens comuns)"
-        description="Custos da nuvem em dólares por mês, a preço de lista. O nó de cada porte é o do Dedicado e do vCISO; cada porte usado na tabela de preços precisa estar aqui. Disco, snapshot, NAT e outros valem também para a célula."
+        description="Custos da nuvem em dólares por mês, a preço de lista. O nó de cada porte é o do SIEM Dedicado e do SIEM + vCISO; cada porte usado na tabela de preços precisa estar aqui. Disco, snapshot, NAT e outros valem também para a célula."
         path={['infrastructure']}
       >
         <div className="space-y-3">
@@ -324,20 +324,20 @@ export function CostModelForm() {
           <NumberField path={['support', 'hourlyCost']} label="Custo da hora (R$)" kind="money" />
           <NumberField
             path={['support', 'hours', 'plataforma']}
-            label="Plataforma (h/mês por cliente)"
+            label="SIEM Cloud (h/mês por cliente)"
             kind="decimal"
           />
           <NumberField
             path={['support', 'hours', 'dedicado']}
-            label="Dedicado (h/mês por cliente)"
+            label="SIEM Dedicado (h/mês por cliente)"
             kind="decimal"
-            hint="Também a base do vCISO."
+            hint="Também a base do SIEM + vCISO."
           />
           <NumberField
             path={['support', 'hours', 'vcisoService']}
             label="Serviço do vCISO (h/mês equivalentes)"
             kind="decimal"
-            hint="A mais que o Dedicado, no vCISO."
+            hint="A mais que o SIEM Dedicado, no SIEM + vCISO."
           />
           <NumberField
             path={['support', 'hours', 'selfHosted']}
@@ -346,17 +346,17 @@ export function CostModelForm() {
           />
           <NumberField
             path={['support', 'hours', 'setupPlataforma']}
-            label="Implantação da Plataforma (h, uma vez)"
+            label="Implantação do SIEM Cloud (h, uma vez)"
             kind="decimal"
           />
           <NumberField
             path={['support', 'hours', 'setupDedicado']}
-            label="Implantação do Dedicado (h, uma vez)"
+            label="Implantação do SIEM Dedicado (h, uma vez)"
             kind="decimal"
           />
           <NumberField
             path={['support', 'hours', 'setupVciso']}
-            label="Implantação do vCISO, a mais (h, uma vez)"
+            label="Implantação do SIEM + vCISO, a mais (h, uma vez)"
             kind="decimal"
           />
           <NumberField

@@ -59,9 +59,9 @@ export const MODE_LABELS: Readonly<Record<DeploymentMode, string>> = {
 };
 
 export const PLAN_LABELS: Readonly<Record<PlanId, string>> = {
-  plataforma: 'Plataforma',
-  dedicado: 'Dedicado',
-  vciso: 'vCISO',
+  plataforma: 'SIEM Cloud',
+  dedicado: 'SIEM Dedicado',
+  vciso: 'SIEM + vCISO',
 };
 
 /** Os planos, na ordem do site. */
@@ -73,17 +73,17 @@ export const TAX_MODE_LABELS: Readonly<Record<TaxMode, string>> = {
 };
 
 export const CONTACT_REASON_LABELS: Readonly<Record<ContactReason, string>> = {
-  above_online_max: 'volume acima do máximo da Plataforma no site',
+  above_online_max: 'volume acima do máximo do SIEM Cloud no site',
   above_max: 'volume acima do máximo cotável do plano',
   above_largest_size: 'nenhum porte comporta o volume',
-  mode_unavailable: 'a Plataforma só roda na infraestrutura da Verax',
+  mode_unavailable: 'o SIEM Cloud só roda na infraestrutura da Verax',
 };
 
 /** O texto de um item da cotação na DRE e no resumo da cotação. */
 export function lineItemLabel(component: ComponentId): string {
   switch (component) {
     case 'base':
-      return 'Plataforma (base com a franquia incluída)';
+      return 'SIEM Cloud (base com a franquia incluída)';
     case 'additional_gb_day':
       return 'GB/dia adicional da franquia';
     case 'overage_gb_day':
