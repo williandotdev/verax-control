@@ -40,13 +40,37 @@ const DETECTIONS: RadarDetection[] = [
   },
 ];
 
-const radarOf = (detections: RadarDetection[], total = detections.length): TowerRadar => ({
-  since: new Date(Date.parse(NOW) - 24 * 3_600_000).toISOString(),
-  windowHours: 24,
-  limit: 100,
-  total,
-  detections,
-});
+const SECTOR_OF = {
+  cloudtrail: 'aws',
+  guardduty: 'aws',
+  waf: 'aws',
+  gcp_audit: 'gcp',
+  cloudflare_audit: 'cloudflare',
+  cloudflare_waf: 'cloudflare',
+  wazuh_agent: 'agents',
+} as const;
+
+/** O radar com as detecções; as contagens da janela saem delas, salvo quando o teste dá as da janela inteira. */
+const radarOf = (
+  detections: RadarDetection[],
+  window?: Pick<TowerRadar, 'bySeverity' | 'bySector'>,
+): TowerRadar => {
+  const bySeverity = { critical: 0, high: 0, medium: 0, low: 0 };
+  const bySector = { aws: 0, gcp: 0, cloudflare: 0, agents: 0 };
+  for (const detection of detections) {
+    bySeverity[detection.severity] += 1;
+    bySector[SECTOR_OF[detection.source]] += 1;
+  }
+  const counts = window ?? { bySeverity, bySector };
+  return {
+    since: new Date(Date.parse(NOW) - 24 * 3_600_000).toISOString(),
+    windowHours: 24,
+    limit: 100,
+    total: Object.values(counts.bySeverity).reduce((sum, value) => sum + value, 0),
+    ...counts,
+    detections,
+  };
+};
 
 function Where() {
   const location = useLocation();
@@ -152,6 +176,24 @@ describe('radar de detecções', () => {
     expect(await screen.findByTestId('where')).toHaveTextContent(`/achados?achado=${id(1)}`);
   });
 
+  it('no toque, o primeiro toque mostra a dica e o segundo, no mesmo ponto, abre o achado', async () => {
+    const user = userEvent.setup();
+    const { container } = renderRadar(<DetectionRadar radar={radarOf(DETECTIONS)} generatedAt={NOW} />);
+    const tip = () => container.querySelector('[data-radar-tip]');
+
+    await user.pointer({ keys: '[TouchA]', target: blip('papel Editor') });
+    expect(tip()).toHaveTextContent('papel Editor');
+    expect(screen.queryByTestId('where')).not.toBeInTheDocument();
+
+    // Outro ponto: troca a dica, sem abrir.
+    await user.pointer({ keys: '[TouchA]', target: blip('Tentativa de login no SSH') });
+    expect(tip()).toHaveTextContent('Tentativa de login no SSH');
+    expect(screen.queryByTestId('where')).not.toBeInTheDocument();
+
+    await user.pointer({ keys: '[TouchA]', target: blip('Tentativa de login no SSH') });
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/achados?achado=${id(3)}`);
+  });
+
   it('o clique abre o achado', async () => {
     const user = userEvent.setup();
     renderRadar(<DetectionRadar radar={radarOf(DETECTIONS)} generatedAt={NOW} />);
@@ -220,14 +262,29 @@ describe('radar de detecções', () => {
     expect(container.querySelectorAll('[data-pulse]')).toHaveLength(0);
   });
 
-  it('teto: avisa que mostra só as mais recentes, com link para todos os achados', () => {
-    renderRadar(<DetectionRadar radar={radarOf(DETECTIONS, 134)} generatedAt={NOW} />);
+  it('teto: avisa que mostra só as mais recentes; as contagens por severidade e por setor são da janela inteira', () => {
+    // 134 na janela, 3 desenhadas: os críticos antigos e o Cloudflare (sem ponto desenhado) entram nas contagens.
+    renderRadar(
+      <DetectionRadar
+        radar={radarOf(DETECTIONS, {
+          bySeverity: { critical: 5, high: 0, medium: 1, low: 128 },
+          bySector: { aws: 100, gcp: 4, cloudflare: 10, agents: 20 },
+        })}
+        generatedAt={NOW}
+      />,
+    );
     expect(screen.getByText(/O radar mostra as 3 mais recentes de 134 detecções\./)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Ver todas em Achados' })).toHaveAttribute(
       'href',
       '/achados?periodo=24h',
     );
-    expect(radarGroup()).toHaveAccessibleName(/134 detecções, 3 mais recentes no radar/);
+    expect(screen.getByText('134 detecções').closest('p')).toHaveTextContent(
+      '134 detecções nas últimas 24 horas: 5 crítico, 1 médio, 128 baixo.',
+    );
+    expect(radarGroup()).toHaveAccessibleName(
+      /134 detecções, 3 mais recentes no radar; AWS 100, GCP 4, Cloudflare 10, Agentes 20\./,
+    );
+    expect(within(radarGroup()).getByText('10 detecções')).toBeInTheDocument();
   });
 
   it('a tabela tem as mesmas detecções, com severidade por rótulo e links para o achado e o incidente', async () => {

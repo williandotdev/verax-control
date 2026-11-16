@@ -8,7 +8,9 @@ import {
   PULSE_EVENT_SOURCES,
   type PulseEventSource,
   RADAR_DETECTIONS_LIMIT,
+  RADAR_SECTORS,
   RADAR_WINDOW_HOURS,
+  radarSectorOf,
   REPORT_PERIOD_DAYS,
   reportWindow,
   type TowerPulse,
@@ -53,6 +55,24 @@ const HOUR_MS = 3_600_000;
 /** Um inteiro seguro do JSON (o medidor guarda `BigInt`). */
 const safeCount = (value: bigint): number =>
   Number(value > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : value);
+
+/** O total, por severidade e por setor do radar, a partir das contagens por fonte de log e severidade. */
+function windowCounts(
+  groups: readonly { source: FindingSource; severity: FindingSeverity; count: number }[],
+): Pick<TowerRadar, 'total' | 'bySeverity' | 'bySector'> {
+  const bySeverity = Object.fromEntries(FINDING_SEVERITIES.map((severity) => [severity, 0])) as Record<
+    FindingSeverity,
+    number
+  >;
+  const bySector = Object.fromEntries(RADAR_SECTORS.map((sector) => [sector, 0])) as TowerRadar['bySector'];
+  let total = 0;
+  for (const group of groups) {
+    bySeverity[group.severity] += group.count;
+    bySector[radarSectorOf(group.source)] += group.count;
+    total += group.count;
+  }
+  return { total, bySeverity, bySector };
+}
 
 /**
  * Resumo da Torre (T5.10) do cliente da sessão: semáforo com os motivos, decisões pendentes, incidentes abertos por
@@ -219,23 +239,35 @@ export class TowerService {
       occurredAt: { gte: since, lte: now },
       logSource: { in: [...FINDING_SOURCES] },
     };
-    const [total, rows] = await Promise.all([
-      db.finding.count({ where }),
-      db.finding.findMany({
-        where,
-        select: {
-          id: true,
-          severity: true,
-          status: true,
-          logSource: true,
-          occurredAt: true,
-          title: true,
-          incidentId: true,
-        },
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-        take: RADAR_DETECTIONS_LIMIT,
-      }),
-    ]);
+    const rows = await db.finding.findMany({
+      where,
+      select: {
+        id: true,
+        severity: true,
+        status: true,
+        logSource: true,
+        occurredAt: true,
+        title: true,
+        incidentId: true,
+      },
+      orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+      take: RADAR_DETECTIONS_LIMIT,
+    });
+    // As contagens da janela inteira (o total, por severidade e por setor) num agrupamento só, depois da lista: um
+    // achado que chegue no meio entra na contagem, e a lista nunca passa do total (achado não some da janela de 24
+    // horas; se sumisse, as contagens saem da própria lista).
+    const groups = await db.finding.groupBy({ by: ['logSource', 'severity'], where, _count: { _all: true } });
+    const counted = groups.map((group) => ({
+      source: group.logSource as FindingSource,
+      severity: group.severity,
+      count: group._count._all,
+    }));
+    const tally = counted.reduce((sum, group) => sum + group.count, 0);
+    const counts = windowCounts(
+      tally >= rows.length
+        ? counted
+        : rows.map((row) => ({ source: row.logSource as FindingSource, severity: row.severity, count: 1 })),
+    );
     // O estado dos incidentes também pelo escopo do cliente (e não pela relação aninhada, que o escopo não alcança).
     const incidentIds = [...new Set(rows.flatMap((row) => (row.incidentId ? [row.incidentId] : [])))];
     const incidents =
@@ -250,8 +282,7 @@ export class TowerService {
       since: since.toISOString(),
       windowHours: RADAR_WINDOW_HOURS,
       limit: RADAR_DETECTIONS_LIMIT,
-      // Um achado gravado entre a contagem e a leitura não deixa a lista maior que o total.
-      total: Math.max(total, rows.length),
+      ...counts,
       detections: rows.map((row) => ({
         id: row.id,
         severity: row.severity,

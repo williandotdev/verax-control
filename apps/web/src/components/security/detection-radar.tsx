@@ -20,7 +20,6 @@ import {
   RADAR_SIZE,
   radarBlips,
   radarRings,
-  sectorCounts,
   shapePoints,
 } from './radar-geometry';
 
@@ -74,16 +73,13 @@ export function DetectionRadar({ radar, generatedAt }: { radar: TowerRadar; gene
   const reducedMotion = usePrefersReducedMotion();
   const now = useMemo(() => new Date(generatedAt), [generatedAt]);
   const blips = useMemo(() => radarBlips(radar, generatedAt), [radar, generatedAt]);
-  const counts = useMemo(() => sectorCounts(blips), [blips]);
   const pulsing = usePulsing(radar.detections, generatedAt);
   const capped = capNotice(radar);
   const open = useCallback((id: string) => void navigate(findingHref(id)), [navigate]);
 
+  // A divisão por severidade é da janela inteira (vem da API), não só das detecções desenhadas.
   const bySeverity = (['critical', 'high', 'medium', 'low'] as const)
-    .map((severity) => ({
-      severity,
-      count: radar.detections.filter((detection) => detection.severity === severity).length,
-    }))
+    .map((severity) => ({ severity, count: radar.bySeverity[severity] }))
     .filter((item) => item.count > 0);
 
   return (
@@ -91,7 +87,7 @@ export function DetectionRadar({ radar, generatedAt }: { radar: TowerRadar; gene
       <div className="brand-surface rounded-panel p-3 sm:p-4">
         <RadarScope
           blips={blips}
-          counts={counts}
+          counts={radar.bySector}
           windowHours={radar.windowHours}
           total={radar.total}
           shown={radar.detections.length}
@@ -188,6 +184,9 @@ function RadarScope({
   const [active, setActive] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const pointerType = useRef<string>('mouse');
+  // No toque, o ponto que já mostra a dica pelo toque anterior: só ele abre no próximo toque. Fica à parte de `active`,
+  // que o foco do próprio toque também marca antes do clique.
+  const armed = useRef<string | null>(null);
   const tipRef = useKeepInside<HTMLDivElement>(frame, active);
 
   const current = blips.find((blip) => blip.detection.id === active);
@@ -234,23 +233,32 @@ function RadarScope({
     [blips, focusBlip, onOpen],
   );
 
+  // O mouse mostra a dica ao passar; no toque e na caneta, quem decide é o clique (abaixo).
   const onPointer = useCallback((event: PointerEvent<SVGGElement>, id: string | null) => {
     pointerType.current = event.pointerType;
-    if (id !== null) setActive(id);
-    else if (event.pointerType === 'mouse') setActive(null);
+    if (event.pointerType !== 'mouse') return;
+    setActive(id);
   }, []);
 
   const onClick = useCallback(
     (id: string) => {
-      // No toque, o primeiro toque mostra a dica; o segundo, no mesmo ponto, abre o achado.
-      if (pointerType.current !== 'mouse' && active !== id) {
+      // No toque, o primeiro toque num ponto mostra a dica; o segundo, no mesmo ponto, abre o achado.
+      if (pointerType.current !== 'mouse' && armed.current !== id) {
+        armed.current = id;
         setActive(id);
         return;
       }
+      armed.current = null;
       onOpen(id);
     },
-    [active, onOpen],
+    [onOpen],
   );
+
+  // Perder o foco (tocar fora) fecha a dica e desarma o ponto: o próximo toque nele mostra a dica de novo.
+  const onFocusBlip = useCallback((id: string | null) => {
+    if (id === null) armed.current = null;
+    setActive(id);
+  }, []);
 
   const label =
     total === 0
@@ -340,7 +348,7 @@ function RadarScope({
             onPointer={onPointer}
             onClick={onClick}
             onKeyDown={onKeyDown}
-            onFocusBlip={setActive}
+            onFocusBlip={onFocusBlip}
             onFocusChange={setFocusId}
           />
         ))}
