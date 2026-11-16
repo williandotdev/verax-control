@@ -58,8 +58,8 @@ export interface CreateAppOptions {
   cell?: { domain: string; staffSlug: string };
   /**
    * Entrada única pelo console (com `cell`, ou no nó dedicado da Verax com `plan: { PLAN: 'interno' }`): a origem do
-   * console, a chave PÚBLICA fixada (o `x`) e, opcional, o login com senha da equipe desligado. Os testes trocam a troca
-   * do código (`SSO_FETCH`) em `overrideProviders`.
+   * console, a chave PÚBLICA fixada (o `x`) e, opcional, o login com senha da equipe desligado. Os testes trocam a
+   * troca do código (`SSO_FETCH`) em `overrideProviders`.
    */
   sso?: { issuer: string; publicKey: string; staffPasswordLoginDisabled?: boolean };
   /** O `API_ORIGIN` do nó dedicado (o endereço do retorno da entrada única); sem informar, `http://localhost:3000`. */

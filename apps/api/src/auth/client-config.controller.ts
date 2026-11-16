@@ -8,9 +8,10 @@ import { ssoSiteOf } from './sso/sso-site.js';
 /**
  * O que o painel precisa saber antes de qualquer login: a chave do site do Turnstile (pública por natureza: vai no HTML
  * de quem usa o widget) e, só onde a equipe da Verax entra (o endereço dela na célula, ou o nó dedicado da Verax) com a
- * entrada única configurada, o endereço do console do responsável (`adminMasterUrl`: o botão "Entrar com o Admin master" e o item "Admin master" do menu). Nada
- * de segredo entra aqui. Sem sessão e com cache curto: o painel a lê a cada tela de login, e trocar a chave no nó vale
- * em poucos minutos. A resposta depende do endereço (`Host`), que já faz parte da URL guardada em cache.
+ * entrada única configurada, o endereço do console do responsável (`adminMasterUrl`: o botão "Entrar com o Admin
+ * master" e o item "Admin master" do menu). Nada de segredo entra aqui. Sem sessão e com cache curto: o painel a lê a
+ * cada tela de login, e trocar a chave no nó vale em poucos minutos. A resposta depende do endereço (`Host`), que já
+ * faz parte da URL guardada em cache.
  *
  * Registrado antes do `AuthController`, cujo `*path` abrange `/auth/`: o Express casa as rotas na ordem em que
  * foram registradas.
