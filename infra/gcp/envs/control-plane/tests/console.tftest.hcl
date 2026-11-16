@@ -188,12 +188,12 @@ run "console_com_login_proprio" {
       sort([
         for key, member in google_secret_manager_secret_iam_member.readers : key
         if member.member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"
-      ]) == tolist(["cp-admin-totp-key/admin"]) &&
+      ]) == tolist(["cp-admin-sso-signing-key/admin", "cp-admin-totp-key/admin"]) &&
       length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-setup-token/")]) == 0 &&
       alltrue([for key, member in google_secret_manager_secret_iam_member.readers : member.role == "roles/secretmanager.secretAccessor" if endswith(key, "/admin")]) &&
       !contains([for member in google_service_account_iam_member.invoker_token_users : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com")
     )
-    error_message = "A conta cp-admin lê e grava o Firestore e lê só a chave do console, cp-admin-totp-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
+    error_message = "A conta cp-admin lê e grava o Firestore e lê só as duas chaves dela, cp-admin-totp-key e cp-admin-sso-signing-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
   }
 
   # Sem os serviços (services_enabled = false), o cp-worker não existe, e nem o run.invoker do console nele.
@@ -395,6 +395,97 @@ run "projeto_dos_segredos_do_console_nao_vem_de_variavel" {
   variables {
     service_env = {
       ADMIN_SECRETS_PROJECT_ID = "outro-projeto"
+    }
+  }
+
+  expect_failures = [var.service_env]
+}
+
+# Entrada única no SIEM da Verax (o console como provedor de identidade): sem `sso_redirect_uris`, nada vai ao cp-admin
+# (o /sso/* responde indisponível); com ela, a origem do console e a lista exata de retorno. A chave de assinatura é
+# lida só pelo cp-admin, e nenhuma outra conta do plano de controle a alcança.
+run "entrada_unica_desligada_por_padrao" {
+  variables {
+    admin_enabled    = true
+    owner_principals = ["user:responsavel@example.com"]
+  }
+
+  assert {
+    condition = (
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "SSO_ISSUER") &&
+      !contains([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.name], "SSO_REDIRECT_URIS") &&
+      output.admin.sso_jwks == null
+    )
+    error_message = "Sem sso_redirect_uris, o cp-admin não recebe a entrada única."
+  }
+
+  assert {
+    condition = (
+      [for key, member in google_secret_manager_secret_iam_member.readers : member.member if startswith(key, "cp-admin-sso-signing-key/")] ==
+      ["serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"]
+    )
+    error_message = "Só a conta cp-admin lê a chave de assinatura da entrada única (nem o cp-public, nem o cp-worker, nem o cp-terraform)."
+  }
+}
+
+run "entrada_unica_com_a_lista_exata" {
+  variables {
+    admin_enabled     = true
+    owner_principals  = ["user:responsavel@example.com"]
+    sso_redirect_uris = ["https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback"]
+  }
+
+  assert {
+    condition = (
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "SSO_ISSUER"]) == "https://admin.veraxsistemas.com.br" &&
+      one([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : env.value if env.name == "SSO_REDIRECT_URIS"]) == "https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback" &&
+      alltrue([for env in google_cloud_run_v2_service.admin[0].template[0].containers[0].env : length(env.value_source) == 0]) &&
+      output.admin.sso_jwks == "https://admin.veraxsistemas.com.br/sso/jwks"
+    )
+    error_message = "A origem do console e a lista exata de retorno vão ao cp-admin; a chave não é montada (lida pela API)."
+  }
+}
+
+run "entrada_unica_recusa_retorno_fora_do_formato" {
+  command = plan
+
+  variables {
+    admin_enabled     = true
+    owner_principals  = ["user:responsavel@example.com"]
+    sso_redirect_uris = ["https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback?x=1"]
+  }
+
+  expect_failures = [var.sso_redirect_uris]
+}
+
+run "entrada_unica_recusa_outro_caminho" {
+  command = plan
+
+  variables {
+    admin_enabled     = true
+    owner_principals  = ["user:responsavel@example.com"]
+    sso_redirect_uris = ["http://api-verax.veraxsistemas.com.br/v1/auth/sso/callback"]
+  }
+
+  expect_failures = [var.sso_redirect_uris]
+}
+
+run "entrada_unica_exige_o_console" {
+  command = plan
+
+  variables {
+    sso_redirect_uris = ["https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback"]
+  }
+
+  expect_failures = [var.sso_redirect_uris]
+}
+
+run "entrada_unica_nao_vem_de_service_env" {
+  command = plan
+
+  variables {
+    service_env = {
+      SSO_ISSUER = "https://outro.example.com"
     }
   }
 
