@@ -24,6 +24,11 @@ export interface MockState {
   /** Chave do site do Turnstile que a configuração pública devolve. Sem informar, vem do `localStorage` (ou nada). */
   turnstileSiteKey?: string | null;
   /**
+   * O endereço do console (o "Admin master") que a configuração pública devolve. Sem informar, vem do `localStorage` (ou
+   * nada: a demonstração não tem console).
+   */
+  adminMasterUrl?: string | null;
+  /**
    * Histórico do plano do nó, como o ajuste `PLAN_HISTORY_DAYS` (`null` é sem limite). Sem informar, o do plano da
    * demonstração (Profissional, 365 dias).
    */

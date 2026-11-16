@@ -5,6 +5,7 @@ import { Ban, CircleCheck, CircleX, type LucideIcon } from 'lucide-react';
 const ACTION_LABELS: Readonly<Record<string, string>> = {
   'auth.sign_in': 'Entrou no painel',
   'auth.sign_out': 'Saiu do painel',
+  'auth.sso_login': 'Entrou pelo Admin master',
   'auth.mfa_enroll': 'Cadastrou o MFA',
   'auth.mfa_verify': 'Confirmou o código do MFA',
   'auth.mfa_recovery_code': 'Usou um código de recuperação',

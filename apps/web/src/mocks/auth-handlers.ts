@@ -27,6 +27,20 @@ export const MOCK_TURNSTILE_STORAGE_KEY = 'verax.mock.turnstile';
 const TURNSTILE_SITE_KEY_PATTERN = /^[0-9]x[0-9A-Za-z_-]{20,40}$/;
 const TURNSTILE_TOKEN_HEADER = 'X-Turnstile-Token';
 
+/**
+ * O "Admin master" na demonstração: nenhum, a não ser que `localStorage['verax.mock.admin-master']` traga o endereço
+ * de um console (só os testes, para o botão "Entrar com o Admin master" e o item do menu aparecerem). Só https.
+ */
+export const MOCK_ADMIN_MASTER_STORAGE_KEY = 'verax.mock.admin-master';
+
+const ADMIN_MASTER_URL_PATTERN = /^https:\/\/[a-z0-9.-]+\/$/;
+
+export function adminMasterUrlFromStorage(): string | null {
+  const stored =
+    typeof window === 'undefined' ? null : window.localStorage.getItem(MOCK_ADMIN_MASTER_STORAGE_KEY);
+  return stored !== null && ADMIN_MASTER_URL_PATTERN.test(stored) ? stored : null;
+}
+
 export function turnstileSiteKeyFromStorage(): string | null {
   const stored =
     typeof window === 'undefined' ? null : window.localStorage.getItem(MOCK_TURNSTILE_STORAGE_KEY);
@@ -60,6 +74,8 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
   const temporary = new Set(TEMPORARY_PASSWORDS);
   const turnstileSiteKey =
     state.turnstileSiteKey === undefined ? turnstileSiteKeyFromStorage() : state.turnstileSiteKey;
+  const adminMasterUrl =
+    state.adminMasterUrl === undefined ? adminMasterUrlFromStorage() : state.adminMasterUrl;
   // Como a API com o Turnstile ligado: sem o header do token, 400 antes de olhar qualquer outra coisa.
   const turnstileRefusal = (request: Request) =>
     turnstileSiteKey !== null && !request.headers.get(TURNSTILE_TOKEN_HEADER)
@@ -69,7 +85,7 @@ export function createAuthHandlers(state: MockState & { pendingCode?: boolean; m
         )
       : undefined;
   return [
-    http.get(url('/client-config'), () => HttpResponse.json({ turnstileSiteKey })),
+    http.get(url('/client-config'), () => HttpResponse.json({ turnstileSiteKey, adminMasterUrl })),
     http.post(url('/sign-in/email'), async ({ request }) => {
       const refused = turnstileRefusal(request);
       if (refused) return refused;
