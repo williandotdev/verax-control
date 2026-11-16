@@ -23,8 +23,9 @@
 # o cofre do token a cada 60 s por até 60 min) e grava o guest attribute `verax/ready=<versão>`. Uma falha grava
 # `verax/error=<código>` (só o código: nenhum valor dos metadados) e sai com erro; o boot seguinte tenta de novo.
 #
-# Um nó que já terminou a instalação não instala de novo: uma versão diferente nos metadados não é aplicada (a
-# atualização continua com o deploy.sh, pelo operador; um atualizador com backup e volta é o SH-06). Nada que vem dos
+# Um nó que já terminou a instalação não instala de novo: uma versão diferente em `verax-node-version` não é aplicada
+# (a atualização é a da frota, bin/update.sh pelo verax-update.timer, com a versão que o plano de controle pede em
+# `verax-node-release`, backup e volta; ou o deploy.sh, pelo operador). Nada que vem dos
 # metadados ou do manifesto é interpretado pelo shell: cada valor passa por uma expressão regular antes de ir para o
 # node.conf, que o install.sh e o start.sh leem com `source`, e nenhum vai para argumento de comando sem aspas.
 set -euo pipefail
@@ -530,11 +531,11 @@ main() {
   install -d -m 0700 "$state_dir"
   local version desired=''
   if [[ -f $state_dir/installed ]]; then
-    # Instalado. Uma versão nova nos metadados não é aplicada sozinha: a atualização é pelo deploy.sh.
+    # Instalado. Uma versão nova nesta chave não é aplicada: a atualização é a da frota (bin/update.sh).
     version=$(installed_version) || fail install_state_invalid "o $etc_dir/images.env da instalação sumiu ou mudou de formato."
     if metadata_get instance/attributes/verax-node-version "$work/desired"; then desired=$(head -c 64 "$work/desired"); fi
     if [[ $desired =~ $re_release && $desired != "$version" ]]; then
-      log "Os metadados pedem $desired e o nó está em $version: a atualização não é automática (deploy.sh)."
+      log "Os metadados pedem $desired e o nó está em $version: a versão da instalação não atualiza o nó (a atualização é a da frota, verax-node-release e verax-update.timer)."
     fi
   elif [[ ! -f $state_dir/installing && -f $etc_dir/images.env ]]; then
     log 'Nó instalado pelo deploy.sh: a instalação sem operador não mexe nele.'

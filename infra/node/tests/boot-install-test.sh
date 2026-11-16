@@ -418,7 +418,7 @@ meta verax-node-package-sha256 "$(package_sha node-v1.3.0)"
 boot || fail "saiu com erro: $(cat "$root/out")"
 expect_ready "$tag"
 [[ $(installs) == 1 && $(downloads) == 0 ]] || fail "aplicou a versão nova sozinho"
-grep -q "Os metadados pedem node-v1.3.0 e o nó está em $tag: a atualização não é automática" "$root/out" ||
+grep -q "Os metadados pedem node-v1.3.0 e o nó está em $tag: a versão da instalação não atualiza o nó" "$root/out" ||
   fail "não avisou da versão pedida: $(cat "$root/out")"
 
 scenario="atualizado pelo deploy.sh: verax/ready é o commit"

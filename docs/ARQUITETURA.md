@@ -2066,12 +2066,13 @@ recebe `--release`, o `NODE_RELEASE`. O `verax/ready` é o `NODE_RELEASE` (o que
 `node.wait_ready`); num nó atualizado depois pelo `deploy.sh`, que não passa `--release`, vira o commit. O nó da Verax
 e o `deploy.sh` não mudam: sem `--release`, o `images.env` é o de antes, linha a linha.
 
-**Atualização não é automática.** Instalado o nó, uma versão diferente nos metadados (um `apply` do tenant com outra
-`node_version`) só aparece no log do boot; nada é baixado nem instalado. Instalar sozinho, num reboot qualquer, rodaria
-migrations sem backup, sem janela e sem volta (o que o SH-06 desenha). A atualização continua com o `deploy.sh`, pelo
-operador, com o `node.conf` que a instalação escreveu (`/etc/verax/node.conf` da VM). Um nó instalado só pelo
-`deploy.sh` (sem o marcador) também não é tocado. Uma instalação que parou no meio (o marcador `installing`) é refeita
-do começo no boot seguinte: o `install.sh` pode rodar de novo.
+**A instalação não atualiza.** Instalado o nó, uma versão diferente em `verax-node-version` (um `apply` do tenant com
+outra `node_version`) só aparece no log do boot; nada é baixado nem instalado. Instalar sozinho, num reboot qualquer,
+rodaria migrations sem backup, sem janela e sem volta. A atualização é a da frota (seção "Atualização da frota", abaixo):
+outra chave dos metadados (`verax-node-release`), o atualizador do host com backup e volta, e o plano de controle em
+ondas. O `deploy.sh` continua valendo para o operador, com o `node.conf` que a instalação escreveu
+(`/etc/verax/node.conf` da VM). Uma instalação que parou no meio (o marcador `installing`) é refeita do começo no boot
+seguinte: o `install.sh` pode rodar de novo, e o atualizador espera por ela.
 
 **Valores que a instalação decide** (não estão nos metadados):
 
@@ -2635,6 +2636,35 @@ responsável estão em `docs/runbooks/versao-no.md`; o que o cliente segue para 
   como decisão em aberto ("Instalação sem operador", acima).
 - **Quem usa o manifesto hoje:** a instalação sem operador do nó de cliente (PR-N7), com as chaves que o Terraform
   põe no script de boot.
+
+## Atualização da frota _(decisão de 16/11/2026)_
+
+Até aqui, um nó no ar nunca se atualizava sozinho (só os nós novos nasciam na versão promovida; os outros esperavam o
+`deploy.sh`), e o painel ia para todos os sites a cada merge, podendo ficar à frente da API do nó. O responsável aprovou
+o desenho abaixo: a versão é **pedida por nó** e **aplicada pelo próprio host**, a frota anda **em ondas** com
+conferência e volta automática, e o **painel de cada destino anda junto com o nó dele**. O roteiro do host está em
+`docs/runbooks/versao-no.md` ("Atualização da frota").
+
+### O atualizador do host (`infra/node/bin/update.sh`)
+
+- **O pedido** é uma chave dos metadados da VM (`verax-node-release`, com o SHA-256 do pacote, o id do pedido, a
+  intenção `upgrade` ou `rollback` e a janela opcional), gravada pelo plano de controle. Não é a `verax-node-version` da
+  instalação, que o Terraform do tenant possui: o módulo `node` ignora as chaves do pedido (`ignore_changes`), e um
+  `apply` do tenant não as apaga.
+- **Quem aplica** é o host, pelo `verax-update.timer` (a cada 5 min, root, fora dos contêineres, como as outras unidades
+  do host): nenhuma porta de entrada, nenhum SSH, nenhuma credencial nova na VM. O mesmo código serve a célula e o nó
+  dedicado.
+- **Confiança:** o manifesto vem do release do GitHub e só vale com a assinatura conferida pelo verificador e pelas
+  chaves **já instaladas** no host (`/opt/verax`, que o `install.sh` agora instala), nunca pelas do pacote novo; o
+  SHA-256 do pedido tem de ser o do manifesto assinado. Um plano de controle comprometido só consegue pedir uma versão
+  assinada pela Verax, e uma mais antiga só com `rollback` explícito.
+- **Segurança da manutenção:** um pedido por vez (`flock`), nunca durante a instalação sem operador (a trava e o
+  marcador dela), a janela de manutenção, as imagens baixadas e o backup do banco **antes** de tocar no nó, e a cópia do
+  que está instalado (`/opt/verax`, o `images.env` e as unidades do systemd) para a volta. Se o `install.sh` ou a
+  conferência (o `verax-node`, o Wazuh no standard e a API em `/health/ready`) falham, o host põe a cópia de volta e
+  reinicia o nó: `rolled_back`. O banco não volta: as migrations são aditivas, a regra de sempre da volta de versão.
+- **Andamento** nos guest attributes `verax/update-*` (estado, versão, id do pedido, versão de antes e código de erro),
+  que o plano de controle lê como os do CP-10.
 
 ## Ordem de execução
 

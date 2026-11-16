@@ -5438,3 +5438,37 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **A fazer pelo responsável:** os nomes dos produtos e preços na Stripe vêm do catálogo de verdade, fora do
   repositório: trocar lá (o `stripe-setup` não renomeia produto existente). O plano do nó dedicado continua com o
   rótulo `Enterprise` no painel do cliente (o rótulo próprio fica para o PC-10).
+
+## Frota, parte 1: o atualizador do host (versão pedida nos metadados, backup e volta automática) ⚠️ altera `infra/` e `.github/`
+
+- **Decisão do responsável (16/11/2026):** os nós no ar passam a se atualizar sozinhos, em ondas, pelo "Promover para a
+  frota" do console, com o painel de cada destino junto com o nó dele. Esta parte é a do host; o plano de controle, o
+  painel e o console vêm nas partes 2 a 4.
+- **Arquivos:** `infra/node/bin/update.sh` (novo), `infra/node/systemd/verax-update.service` e `.timer` (novos),
+  `infra/node/bin/install.sh` (instala o atualizador, o verificador e as chaves de release em `/opt/verax` e liga o
+  timer), `infra/node/bin/boot-install.sh` (só a mensagem e os comentários sobre a atualização),
+  `infra/gcp/modules/node/node.tf` (`ignore_changes` só nas cinco chaves do pedido), `infra/node/tests/update-test.sh`
+  (novo) e `boot-install-test.sh` (a mensagem), `.github/workflows/iac.yml` (o passo do teste novo),
+  `docs/runbooks/versao-no.md` ("Atualização da frota: o atualizador do host"), `docs/ARQUITETURA.md` ("Atualização da
+  frota" e "Instalação sem operador") e este registro.
+- **Como funciona:** o pedido é `verax-node-release` (+ `-sha256`, `-request`, `-intent` e `verax-update-window`) nos
+  metadados da VM; o host confere a assinatura do manifesto com as chaves **já instaladas** (copiadas para a memória
+  antes de tudo), o SHA-256 do pedido contra o manifesto assinado, recusa voltar de versão sem `rollback`, espera a
+  janela e a instalação sem operador, baixa as imagens e faz o backup antes de tocar no nó, guarda o que está instalado
+  e roda o `install.sh` novo; se a instalação ou a conferência (`verax-node`, Wazuh no standard, `/health/ready` da API)
+  falham, põe a cópia de volta e reinicia o nó (`rolled_back`). Andamento em `verax/update-*` (guest attributes).
+- **Desvios do pedido:** os atributos são `verax/update-state` e afins, e não `verax/update/state`: a GCP aceita um
+  nível só abaixo do espaço. A volta automática restaura a **cópia do que estava instalado** (e não reinstala o pacote
+  anterior), porque a célula e os nós antigos foram instalados pelo `deploy.sh`, sem um release para baixar de novo; o
+  resultado é o mesmo (os digests e os arquivos de antes). O banco não volta (migrations aditivas).
+- **Testes:** `infra/node/tests/update-test.sh` (sem root e sem nuvem: assinatura de outra chave, manifesto adulterado,
+  SHA-256 errado, pacote trocado, downgrade sem e com `rollback`, a volta na instalação e na conferência, a volta que não
+  sobe, trava, instalação sem operador em andamento, janela, metadados hostis, backup e pull que falham, GHCR de outro
+  repositório, nó já na versão, nó do `deploy.sh`), com mutações conferidas (sem a assinatura, sem a recusa de
+  downgrade, sem limpar o `/opt/verax` na volta, sem a conferência, sem a trava: o teste cai). `boot-install-test.sh`,
+  `vault-test.sh` e `scripts/test-node-release.sh` verdes; `shellcheck -x -S style`; `terraform test` do módulo `node`
+  (61). Localmente os testes de shell rodaram num contêiner Debian (o Git Bash não tem `flock` nem `jq`).
+- **A fazer pelo responsável:** nada até a parte 2; o atualizador chega a cada nó na primeira atualização pelo caminho
+  antigo (o `deploy.sh`, ou um nó novo), e sem pedido nos metadados ele não faz nada.
+- **Riscos:** a mensagem do `boot-install.sh` muda o `startup-script` dos nós de cliente no próximo `apply` de cada
+  tenant (mudança no lugar, sem reiniciar a VM).
