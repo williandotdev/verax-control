@@ -167,8 +167,9 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
 
 ## Painel e destinos
 
-O painel é estático, no Firebase Hosting do projeto `verax-control-prod` (GCP), um site por destino. Roteiro em
-`docs/runbooks/painel.md`.
+O painel é estático, no Firebase Hosting, um site por destino. Roteiro em `docs/runbooks/painel.md`. Desde a
+atualização da frota (16/11/2026), só a demonstração sai a cada merge (workflow `Painel`); o painel de produção de cada
+destino é o bundle da versão do nó dele, publicado pelo plano de controle junto com o nó ("Atualização da frota").
 
 - `control.veraxsistemas.com.br`: **demonstração comercial**, com dados fictícios simulados no navegador, sem API e
   com aviso em toda tela.
@@ -2264,12 +2265,13 @@ PR-17') e o "esqueci minha senha" de cada nó:
   também continua sem ele. Mudar isso num nó existente é o caminho de atualização (o `deploy.sh` com o `node.conf`
   ajustado, ou o atualizador do SH-06).
 
-**Bundle do painel ausente (CP-09 ainda não feito):** o contrato que o `firebase.site` lê é `panel: {url, sha256}` no
-manifesto, como `package` (o arquivo `panel-<commit>.tar.gz` do release, num tar ustar com `dist/` e o
-`dist-hosting.json` do build único do CP-08), e o arquivo na pasta da versão do bucket de releases. Sem o campo, o
+**Bundle do painel (CP-09, feito com a atualização da frota):** o contrato que o `firebase.site` lê é
+`panel: {url, sha256}` no manifesto, como `package` (o arquivo `panel-<commit>.tar.gz` do release, num tar ustar com
+`dist/` e o `dist-hosting.json` do build único do CP-08, montado pelo `scripts/node-release.sh panel` no workflow
+`Versão do nó`), e o arquivo na pasta da versão do bucket de releases. Uma versão de antes, sem o campo, o
 passo para com `panel_bundle_missing` antes de criar qualquer coisa no Firebase (o túnel, gratuito, já existe e é
 reaproveitado). **Por que parar, e não esperar:** o manifesto é imutável por versão, então o bundle não aparece
-sozinho; só uma versão nova (com o CP-09) resolve, e esperar esconderia do responsável um erro que só ele corrige,
+sozinho; só uma versão nova (com o bundle) resolve, e esperar esconderia do responsável um erro que só ele corrige,
 com o cliente numa página "preparando" para sempre. Parar avisa na hora e não custa nada (nenhuma VM criada); depois
 da versão nova, `NODE_RELEASE` e o `resume`.
 
@@ -2701,6 +2703,18 @@ instance}`) e os clientes dedicados com nó no ar (`active`, `waiting_customer_c
 - **A versão** vem do bucket de releases, com a assinatura conferida pelas chaves do repositório, e precisa do bundle
   do painel no manifesto (`panel`): sem ele, a rodada é recusada (`panel_bundle_missing`), porque o painel não teria
   como andar junto.
+
+### O painel junto com o nó
+
+- **O bundle é da versão:** o workflow `Versão do nó` monta o build único do `apps/web` uma vez (num job sem identidade
+  nem segredo) em `panel-<commit>.tar.gz` (`scripts/node-release.sh panel`: ustar, data, dono e permissões fixos), cita
+  o SHA-256 no manifesto assinado (`panel`), atesta a origem e o põe no release. A configuração de cada site sai da
+  configuração-modelo do bundle (o marcador `{tenant}` trocado pelo subdomínio do site, CP-08), e a API, do endereço do
+  painel, em tempo de execução: o mesmo bundle serve todo destino.
+- **Quem publica:** o passo de cada nó, depois do `ok` do host e da API pública, em cada site daquele destino. A
+  demonstração (sem API) continua no merge.
+- **A lista dos sites** é o registro: o `siteId` e o `firebaseProject` de cada cliente e o `staffPanel` da célula, e
+  não o secret `PAINEL_SITES`, que deixa de ser lido.
 
 ### As permissões novas do cp-worker
 

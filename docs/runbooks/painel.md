@@ -1,14 +1,20 @@
 # Publicação do painel (Firebase Hosting)
 
-O painel é estático e fica no Firebase Hosting do projeto `verax-control-prod` (GCP, organização da Verax). Cada
-destino é um site do Firebase com o próprio domínio. A publicação é automática a cada merge na `main` que mexa no
-painel (workflow `Painel`), e também pode ser disparada à mão.
+O painel é estático e fica no Firebase Hosting, um site por destino, cada um com o próprio domínio. Desde a
+atualização da frota (decisão de 16/11/2026), há dois caminhos:
 
-| Destino                | Domínio                                  | Modo                                                            |
-| ---------------------- | ---------------------------------------- | --------------------------------------------------------------- |
-| Demonstração comercial | `control.veraxsistemas.com.br`           | `demo`: dados fictícios simulados no navegador, sem nenhuma API |
-| SOC da própria Verax   | `verax.control.veraxsistemas.com.br`     | produção, API em `api-verax.veraxsistemas.com.br`               |
-| Cada cliente           | `<cliente>.control.veraxsistemas.com.br` | produção, API em `api-<cliente>.veraxsistemas.com.br`           |
+| Destino                | Domínio                                  | Quem publica                                                                     |
+| ---------------------- | ---------------------------------------- | -------------------------------------------------------------------------------- |
+| Demonstração comercial | `control.veraxsistemas.com.br`           | O workflow `Painel`, a cada merge na `main` que mexa no painel (modo `demo`)     |
+| SOC da própria Verax   | `verax.control.veraxsistemas.com.br`     | A frota, junto com a célula da Verax (a canária, onda 0), pelo plano de controle |
+| Cada cliente           | `<cliente>.control.veraxsistemas.com.br` | O provisionamento (o primeiro) e a frota, junto com o nó do cliente              |
+
+**Por que a produção saiu do merge:** com o painel indo a todo site a cada merge, ele podia ficar à frente da API do
+nó de cada destino, que só mudava com o `deploy.sh`. Agora o painel de produção é o **bundle da versão do nó**
+(`panel-<commit>.tar.gz`, o build único do `apps/web`, montado pelo workflow `Versão do nó` e citado, com o SHA-256, no
+manifesto assinado), e o plano de controle o publica num site só depois de o nó daquele destino estar de pé na mesma
+versão (`docs/ARQUITETURA.md`, "Atualização da frota"). A lista dos sites sai do registro dos clientes e das células no
+Firestore, e não mais de um secret.
 
 ## Segurança
 
@@ -16,13 +22,17 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
   `painel-deployer@verax-control-prod`. Ela só pode ser usada por jobs deste repositório no environment `painel`, e
   esse environment só aceita a `main`. A conta só tem `firebasehosting.admin` no projeto `verax-control-prod`; não
   alcança o Verax OS nem o site.
-- **Sem dependência nova.** A publicação usa a API REST do Firebase Hosting (`scripts/firebase-hosting-deploy.mjs`),
-  sem `firebase-tools`.
+- **Os sites de produção pelo plano de controle:** o `cp-worker` publica só nos projetos do pool do Firebase
+  (`firebase_panel_projects`), com o bundle conferido pelo SHA-256 do manifesto assinado e a CSP de cada site com a API
+  do próprio cliente (o marcador `{tenant}` da configuração-modelo trocado pelo subdomínio do site).
+- **Sem dependência nova.** As duas publicações usam a API REST do Firebase Hosting
+  (`scripts/firebase-hosting-deploy.mjs` e `apps/control-plane/src/provisioning/panel-publish.ts`), sem
+  `firebase-tools`.
 - **Cabeçalhos.** CSP, HSTS, anti-iframe e afins são gerados no build a partir da mesma função dos testes e2e
-  (`apps/web/src/hosting.ts`), e o workflow confere a CSP e o HSTS no site publicado.
+  (`apps/web/src/hosting.ts`), e o workflow confere a CSP e o HSTS na demonstração publicada.
 - **Cache.** Tudo é revalidado a cada visita (`no-cache`), inclusive a raiz e as rotas da aplicação, que devolvem o
   `index.html`: depois de uma publicação, ninguém fica com um `index.html` velho apontando para arquivos que já não
-  existem. Só `/assets/` (nomes com hash) tem cache de um ano. O workflow confere as duas regras no site publicado.
+  existem. Só `/assets/` (nomes com hash) tem cache de um ano.
 - **Demonstração.** O build `demo` não conecta em nenhuma API: a CSP só permite a própria origem, e uma faixa avisa,
   em toda tela, que os dados são fictícios.
 
@@ -32,33 +42,33 @@ painel (workflow `Painel`), e também pode ser disparada à mão.
 | ------------------ | -------- | ---------------------------------------------------------------------------- |
 | `GCP_DEPLOY_SA`    | variável | `painel-deployer@verax-control-prod.iam.gserviceaccount.com`                 |
 | `GCP_WIF_PROVIDER` | variável | provedor `github-provider` do pool `github-pool` (projeto `verax-os-shared`) |
-| `PAINEL_SITES`     | secret   | lista JSON dos sites (abaixo)                                                |
 
-```json
-[
-  { "site": "verax-control-demo", "dominio": "control.veraxsistemas.com.br", "modo": "demo" },
-  {
-    "site": "verax-control-verax",
-    "dominio": "verax.control.veraxsistemas.com.br",
-    "api": "https://api-verax.veraxsistemas.com.br"
-  }
-]
-```
+O site e o domínio da demonstração estão no próprio workflow (são públicos). O secret `PAINEL_SITES` deixou de ser
+lido: apague-o do environment depois de o painel da equipe da Verax passar para a frota (abaixo).
 
-A lista fica fora do código porque os nomes de cliente não entram no repositório. Ela é um secret, e não uma variável,
-porque os logs do Actions deste repositório são públicos: variável aparece por extenso no cabeçalho de cada passo, e
-secret não. O workflow também mascara site, domínio e API de cada entrada antes de usá-los. O domínio próprio continua
-público pelo DNS e pelos registros de certificados: para não expor o nome de um cliente, use um subdomínio neutro.
+## O painel da equipe da Verax na frota
 
-## Acrescentar um site (novo cliente)
+O site de hoje (`verax-control-verax`) está no projeto do plano de controle (`verax-control-prod`), fora do alcance do
+`cp-worker` de propósito (lá ficam também `conta.veraxsistemas.com.br` e a demonstração). Para ele andar com a célula:
 
-1. Crie o site no Firebase (nome `verax-control-<cliente>`) com a conta de administrador:
-   `POST https://firebasehosting.googleapis.com/v1beta1/projects/verax-control-prod/sites?siteId=verax-control-<cliente>`.
-2. Acrescente a entrada em `PAINEL_SITES` e rode o workflow `Painel` (Actions → Painel → Run workflow).
-3. Conecte o domínio próprio, criado na API de domínios do site (`customDomains`). Ela devolve os registros de DNS. No
-   Cloudflare, crie esses registros com o proxy **desligado** ("DNS only"): o Firebase emite e renova o certificado.
-4. Confira: `curl -sI https://<cliente>.control.veraxsistemas.com.br/` deve mostrar `content-security-policy` com a
-   API do cliente.
+1. Crie um site novo num projeto do pool (`firebase_panel_projects`), com a conta de administrador:
+   `POST https://firebasehosting.googleapis.com/v1beta1/projects/PROJETO_DO_POOL/sites?siteId=SITE_DA_EQUIPE`.
+2. Grave `staffPanel` no registro da célula (`docs/runbooks/celula.md`, "Na atualização da frota") com esse projeto,
+   esse site e o subdomínio `verax`.
+3. Promova uma versão para a frota (`docs/runbooks/console-do-responsavel.md`, "Versões do nó e da frota"): a onda 0
+   publica o bundle no site novo. Confira em `https://SITE_DA_EQUIPE.web.app`.
+4. Mude o domínio `verax.control.veraxsistemas.com.br` do site antigo para o novo (`customDomains`: apague no antigo,
+   crie no novo e crie no Cloudflare, sem proxy, os registros que o Firebase pedir). Há alguns minutos sem o domínio
+   enquanto o certificado sai.
+5. Apague o secret `PAINEL_SITES` e, depois de conferir o domínio, o site antigo.
+
+Até o passo 4, o site antigo fica na versão da última publicação do workflow (o merge não o atualiza mais).
+
+## Um site novo (cliente)
+
+O provisionamento cria o site do cliente no pool (`firebase.site`), publica o bundle da versão do nó, conecta o domínio
+`<cliente>.control...` e cria os registros no Cloudflare (`docs/runbooks/provisionamento.md`). Daí em diante, o site
+anda com o nó do cliente em cada rodada da frota. Nada a fazer à mão.
 
 A API do cliente fica em `api-<cliente>.veraxsistemas.com.br`, um nível só abaixo do domínio, para caber no
 certificado gratuito do Cloudflare (`docs/ARQUITETURA.md`).

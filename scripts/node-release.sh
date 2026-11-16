@@ -8,12 +8,20 @@
 #     dos objetos do git (`git archive`), com data, dono e permissões fixos e o gzip sem nome nem hora. Quem quiser
 #     auditar refaz o pacote a partir da tag e compara o SHA-256.
 #
+#   node-release.sh panel <commit> <pasta dist> <dist-hosting.json> <saída panel-<commit>.tar.gz>
+#     O bundle do painel da versão (CP-09; a atualização da frota publica este mesmo arquivo em cada site): o build único
+#     do apps/web (`dist/` e a configuração-modelo `dist-hosting.json`, com o marcador `{tenant}` na API) num tar ustar
+#     com data (a do commit), dono e permissões fixos, ordem por nome e o gzip sem nome nem hora, no formato que o plano
+#     de controle lê (`apps/control-plane/src/provisioning/panel-bundle.ts`: só arquivos e pastas, o `index.html` na raiz
+#     de `dist/`).
+#
 #   node-release.sh manifest --commit <c> --release node-vX.Y.Z --api-digest sha256:… --migrate-digest sha256:…
-#                            --package <verax-node.tar.gz> --repository <dono/repo>
+#                            --package <verax-node.tar.gz> --repository <dono/repo> [--panel <panel-<commit>.tar.gz>]
 #     O manifest.json na saída padrão: o commit, a versão, o SHA-256 do pacote, as imagens do Verax no GHCR pelo digest
 #     e as imagens de terceiros exatamente como os compose do próprio pacote as fixam (pelo digest). As de terceiros
 #     (Wazuh, PostgreSQL, cloudflared) não são copiadas pela Verax: o nó as baixa da origem. Uma imagem de terceiro sem
-#     digest no compose, ou uma imagem por variável que não seja a da API ou das migrations, para tudo.
+#     digest no compose, ou uma imagem por variável que não seja a da API ou das migrations, para tudo. Com --panel, o
+#     campo `panel` (o endereço do bundle no release e o SHA-256 dele), sem o qual a versão não vai para a frota.
 #
 #   node-release.sh sign --key-version <projects/…/cryptoKeyVersions/N> --manifest <arquivo> --out <arquivo.sig>
 #                        --node-package-dir <pasta verax-node extraída do pacote>
@@ -65,8 +73,35 @@ package() { # <commit> <saída.tar.gz>
   mv "$work/package.tar.gz" "$out"
 }
 
+panel() { # <commit> <pasta dist> <dist-hosting.json> <saída.tar.gz>
+  (($# == 4)) || usage
+  local commit=$1 dist=$2 config=$3 out=$4 epoch
+  [[ $commit =~ $commit_re ]] || die "commit inválido: $commit"
+  [[ ${out##*/} == "panel-$commit.tar.gz" ]] || die "o bundle se chama panel-$commit.tar.gz (veio ${out##*/})."
+  [[ -f $dist/index.html ]] || die "o build do painel não tem $dist/index.html."
+  [[ -f $config ]] || die "falta a configuração do build único: $config"
+  # A configuração-modelo do build único: a CSP de cada site sai dela trocando o marcador pelo cliente do site.
+  jq -e '(.headers | type == "array" and length > 0) and (.rewrites | type == "array")' "$config" >/dev/null 2>&1 ||
+    die "$config não é a configuração do Firebase Hosting (headers e rewrites)."
+  grep -qF '{tenant}' "$config" || die "$config não é do build único (falta o marcador {tenant} na API)."
+  # Só arquivos e pastas: link, dispositivo e afins o plano de controle recusaria.
+  if [[ -n $(find "$dist" ! -type f ! -type d -print -quit) ]]; then
+    die 'o build do painel tem algo que não é arquivo nem pasta.'
+  fi
+  epoch=$(git show -s --format=%ct "$commit" 2>/dev/null) || die "o commit $commit não está neste clone."
+  mkdir -p "$work/panel"
+  cp -R "$dist" "$work/panel/dist"
+  cp "$config" "$work/panel/dist-hosting.json"
+  # O ustar recusa caminho acima de 255 bytes, em vez de cair num cabeçalho pax que o leitor não aceita.
+  tar --sort=name --format=ustar --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --mode='u+rwX,go+rX,go-w' \
+    -C "$work/panel" -cf "$work/panel.tar" dist dist-hosting.json 2>"$work/panel.err" ||
+    die "o bundle do painel não coube no formato ustar: $(head -c 300 "$work/panel.err")"
+  gzip -9n <"$work/panel.tar" >"$work/panel.tar.gz"
+  mv "$work/panel.tar.gz" "$out"
+}
+
 manifest() {
-  local commit='' release='' api_digest='' migrate_digest='' package_file='' repository=''
+  local commit='' release='' api_digest='' migrate_digest='' package_file='' repository='' panel_file=''
   while (($#)); do
     (($# >= 2)) || usage
     case $1 in
@@ -76,6 +111,7 @@ manifest() {
       --migrate-digest) migrate_digest=$2 ;;
       --package) package_file=$2 ;;
       --repository) repository=$2 ;;
+      --panel) panel_file=$2 ;;
       *) usage ;;
     esac
     shift 2
@@ -85,6 +121,10 @@ manifest() {
   [[ $api_digest =~ $digest_re && $migrate_digest =~ $digest_re ]] || die 'digests inválidos (sha256:<64 hexadecimais>).'
   [[ $repository =~ $repository_re ]] || die "repositório inválido: $repository"
   [[ -f $package_file ]] || die "pacote não encontrado: $package_file"
+  if [[ -n $panel_file ]]; then
+    [[ -f $panel_file ]] || die "bundle do painel não encontrado: $panel_file"
+    [[ ${panel_file##*/} == "panel-$commit.tar.gz" ]] || die "o bundle do painel deste commit é panel-$commit.tar.gz."
+  fi
 
   local sha composes compose images third=() ref
   sha=$(sha256sum "$package_file" | cut -d' ' -f1)
@@ -109,7 +149,11 @@ manifest() {
   done
   ((${#third[@]} > 0)) || die 'nenhuma imagem de terceiro nos compose do pacote.'
 
-  local repo_lower=${repository,,}
+  local repo_lower=${repository,,} panel_url='' panel_sha=''
+  if [[ -n $panel_file ]]; then
+    panel_url="https://github.com/$repository/releases/download/$release/panel-$commit.tar.gz"
+    panel_sha=$(sha256sum "$panel_file" | cut -d' ' -f1)
+  fi
   printf '%s\n' "${third[@]}" | sort -u | jq -R . | jq -s \
     --arg commit "$commit" \
     --arg release "$release" \
@@ -119,6 +163,8 @@ manifest() {
     --arg api "ghcr.io/$repo_lower/api@$api_digest" \
     --arg migrate "ghcr.io/$repo_lower/migrate@$migrate_digest" \
     --arg notes "https://github.com/$repository/releases/tag/$release" \
+    --arg panel_url "$panel_url" \
+    --arg panel_sha "$panel_sha" \
     '{
       schema: 1,
       kind: "verax-node-release",
@@ -129,7 +175,7 @@ manifest() {
       images: {api: $api, migrate: $migrate},
       thirdPartyImages: .,
       notes: $notes
-    }'
+    } + (if $panel_url == "" then {} else {panel: {url: $panel_url, sha256: $panel_sha}} end)'
 }
 
 sign() {
@@ -177,6 +223,7 @@ command=$1
 shift
 case $command in
   package) package "$@" ;;
+  panel) panel "$@" ;;
   manifest) manifest "$@" ;;
   sign) sign "$@" ;;
   *) usage ;;

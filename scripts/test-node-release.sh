@@ -132,6 +132,53 @@ jq -e '.thirdPartyImages | length >= 4 and all(test("^(postgres|cloudflare/cloud
   "$work/manifest.json" >/dev/null || fail "lista de terceiros fora do esperado: $got"
 grep -q 'pkg\.dev\|gcr\.io' "$work/manifest.json" && fail 'o manifesto cita um registro privado'
 
+scenario='bundle do painel igual byte a byte, no formato que o plano de controle lê'
+make_dist() { # <pasta>
+  mkdir -p "$1/dist/assets"
+  printf '<!doctype html><title>Verax</title>' >"$1/dist/index.html"
+  printf 'console.log(1)' >"$1/dist/assets/index-abc123.js"
+  printf '{"headers":[{"glob":"**","headers":{"Content-Security-Policy":"connect-src https://api-{tenant}.veraxsistemas.com.br"}}],"rewrites":[{"glob":"**","path":"/index.html"}]}' \
+    >"$1/dist-hosting.json"
+}
+make_dist "$work/web-a"
+make_dist "$work/web-b"
+touch -d '2031-02-03T04:05:06Z' "$work/web-b/dist/index.html"
+panel_file=$work/panel-a/panel-$commit.tar.gz
+mkdir -p "$work/panel-a" "$work/panel-b"
+(umask 022 && release panel "$commit" "$work/web-a/dist" "$work/web-a/dist-hosting.json" "$panel_file")
+(umask 077 && release panel "$commit" "$work/web-b/dist" "$work/web-b/dist-hosting.json" \
+  "$work/panel-b/panel-$commit.tar.gz")
+cmp -s "$panel_file" "$work/panel-b/panel-$commit.tar.gz" || fail 'o bundle do painel muda com a máquina'
+tar -tzf "$panel_file" >"$work/panel.list"
+[[ $(tr '\n' ' ' <"$work/panel.list") == 'dist/ dist/assets/ dist/assets/index-abc123.js dist/index.html dist-hosting.json ' ]] ||
+  fail "conteúdo do bundle: $(tr '\n' ' ' <"$work/panel.list")"
+[[ $(gzip -dc "$panel_file" | head -c 262 | tail -c 5) == ustar ]] || fail 'o bundle não é ustar'
+TZ=UTC tar --numeric-owner --full-time -tvzf "$panel_file" >"$work/panel.detalhe"
+awk '$2 != "0/0" { exit 1 }' "$work/panel.detalhe" || fail 'entrada do bundle sem dono 0/0'
+awk -v t="$expected_time" '$4 " " $5 != t { exit 1 }' "$work/panel.detalhe" || fail 'entrada do bundle fora da data do commit'
+
+scenario='bundle do painel: entrada inválida'
+expect_fail "panel-$commit.tar.gz" release panel "$commit" "$work/web-a/dist" "$work/web-a/dist-hosting.json" \
+  "$work/painel.tar.gz"
+mkdir -p "$work/sem-index/dist"
+expect_fail 'não tem' release panel "$commit" "$work/sem-index/dist" "$work/web-a/dist-hosting.json" \
+  "$work/sem-index/panel-$commit.tar.gz"
+printf '{"headers":[{"glob":"**","headers":{}}],"rewrites":[]}' >"$work/destino-unico.json"
+expect_fail 'falta o marcador {tenant}' release panel "$commit" "$work/web-a/dist" "$work/destino-unico.json" \
+  "$work/x/panel-$commit.tar.gz"
+ln -s /etc/passwd "$work/web-b/dist/link"
+expect_fail 'não é arquivo nem pasta' release panel "$commit" "$work/web-b/dist" "$work/web-b/dist-hosting.json" \
+  "$work/panel-b/panel-$commit.tar.gz"
+
+scenario='manifesto com o bundle do painel'
+release manifest "${manifest_args[@]}" --panel "$panel_file" >"$work/manifest-painel.json"
+jq -e --arg sha "$(sha256sum "$panel_file" | cut -d' ' -f1)" --arg commit "$commit" '
+  .panel == {url: ("https://github.com/williandotdev/verax-control/releases/download/node-v1.2.3/panel-" + $commit + ".tar.gz"), sha256: $sha}
+' "$work/manifest-painel.json" >/dev/null || fail "campo panel: $(jq -c .panel "$work/manifest-painel.json")"
+jq -e 'has("panel") | not' "$work/manifest.json" >/dev/null || fail 'o manifesto sem --panel ganhou o campo panel'
+cp "$panel_file" "$work/outro-nome.tar.gz"
+expect_fail "panel-$commit.tar.gz" release manifest "${manifest_args[@]}" --panel "$work/outro-nome.tar.gz"
+
 scenario='manifesto: imagem de terceiro sem digest'
 sed -i -E 's#image: (postgres:[^@]+)@sha256:[0-9a-f]{64}#image: \1#' "$repo/infra/node/compose.yaml"
 git -C "$repo" commit -q -am 'postgres sem digest'

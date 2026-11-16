@@ -5527,3 +5527,30 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **Riscos:** o `setMetadata` alcança o `startup-script` (o risco aceito e as contenções em `docs/ARQUITETURA.md`); a
   célula baixa as imagens do Artifact Registry, cuja limpeza apaga versões com mais de 30 dias fora das 3 mais
   recentes: uma versão promovida há muito tempo pararia em `image_pull_failed` (sem mexer no nó).
+
+## Frota, parte 3: o bundle do painel na versão e o workflow `Painel` só com a demonstração ⚠️ altera `.github/`
+
+- **Pedido:** o painel de cada destino andando junto com o nó: o bundle montado uma vez por versão e guardado com ela
+  (com o SHA-256 no manifesto assinado), e o merge publicando só a demonstração; a lista de sites de produção pelo
+  registro no Firestore, não pelo secret `PAINEL_SITES`.
+- **Arquivos:** `scripts/node-release.sh` (o `panel`: o build único num tar ustar com data, dono e permissões fixos; o
+  `--panel` do `manifest`), `scripts/test-node-release.sh`, `.github/workflows/versao-no.yml` (o job `painel`, sem
+  identidade nem segredo, monta o bundle; o `assinar` confere o SHA-256, põe o `panel` no manifesto e atesta o bundle;
+  o `publicar` o põe no release), `.github/workflows/painel.yml` (só a demonstração; o site e o domínio dela no
+  próprio workflow), `docs/runbooks/painel.md` (reescrito: os dois caminhos e a passagem do painel da equipe para a
+  frota), `docs/runbooks/versao-no.md`, `docs/ARQUITETURA.md` ("O painel junto com o nó", "Painel e destinos" e o
+  bundle do `firebase.site`), `infra/gcp/GUIA.md` e este registro.
+- **Decisões:** o build do painel roda num job à parte, só leitura, porque o `pnpm install` executa código das
+  dependências e o job `assinar` tem a federação com o KMS e a atestação; o bundle entra no manifesto pelo SHA-256 que o
+  job do build disse, conferido de novo no `assinar`. O painel da equipe da Verax hoje está no projeto do plano de
+  controle, fora do alcance do `cp-worker` (de propósito): ele passa a um site do pool (`docs/runbooks/painel.md`), em
+  vez de dar ao `cp-worker` o Firebase do projeto do plano de controle, onde está `conta.veraxsistemas.com.br`.
+- **Testes:** `scripts/test-node-release.sh` (o bundle igual byte a byte com outra máscara e outra hora, o conteúdo,
+  ustar, dono 0/0 e a data do commit; as recusas: nome errado, sem `index.html`, configuração sem o marcador, link no
+  build; o manifesto com e sem `panel`) e uma conferência à parte de que o leitor do plano de controle
+  (`openPanelBundle` e `siteHostingConfig`) abre o bundle que o script monta. `shellcheck` e Prettier.
+- **A fazer pelo responsável:** a próxima versão promovida já traz o bundle; copie o `panel-*.tar.gz` para o bucket de
+  releases com o manifesto (GUIA, como antes); mude o painel da equipe para um site do pool (`docs/runbooks/painel.md`)
+  e, depois, apague o secret `PAINEL_SITES`.
+- **Riscos:** entre o merge desta parte e a passagem do painel da equipe para a frota, o site de hoje do SOC da Verax
+  fica na última versão publicada.

@@ -1180,8 +1180,10 @@ for `true`, todo cliente pago para no `preflight` com `provisioning_disabled`, s
    gcloud storage cp /tmp/rel/* gs://<release_bucket>/node-vX.Y.Z/
    ```
 
-   O `panel-*.tar.gz` e o campo `panel` do manifesto vêm com o CP-09. Até lá, o provisionamento para no
-   `firebase.site` com `panel_bundle_missing`, antes de criar qualquer coisa no Firebase ou na GCP.
+   O `panel-*.tar.gz` e o campo `panel` do manifesto vêm em toda versão promovida desde 16/11/2026. Uma versão de
+   antes, sem eles, para o provisionamento no `firebase.site` com `panel_bundle_missing` (antes de criar qualquer coisa
+   no Firebase ou na GCP) e não vai para a frota. A mesma cópia serve à atualização da frota: o console lista as versões
+   desta pasta (`docs/runbooks/console-do-responsavel.md`, "Versões do nó e da frota").
 
 3. **As variáveis.** No `terraform.tfvars` do `envs/control-plane`: `nodes_project_id`, `release_bucket`,
    `firebase_panel_projects`, `cloudflare_account_id` e `cloudflare_zone_id` (e `images_project_id` só com o Artifact
