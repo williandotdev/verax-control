@@ -26,6 +26,8 @@ import {
 } from './auth.constants.js';
 import { claimTotpCode, clearLoginAttempts, normalizeEmail, reserveLoginAttempt } from './login-attempts.js';
 import { passwordLinkMail } from './password-links.js';
+import { ssoPlugin } from './sso/sso-plugin.js';
+import type { SsoFetch } from './sso/token-exchange.js';
 import { temporaryPasswordExpired } from './temporary-password.js';
 import {
   createTurnstileVerifier,
@@ -48,6 +50,8 @@ export interface AuthDependencies {
   mail: MailTransport;
   /** Conferência do token do Turnstile. Sem informar, vem da configuração (`undefined` sem a chave secreta). */
   turnstile?: TurnstileVerifier | undefined;
+  /** A troca do código da entrada única no console (o `fetch` global; os testes chegam ao console local). */
+  ssoFetch?: SsoFetch | undefined;
 }
 
 /** Resposta de cada recusa do Turnstile. A indisponibilidade do siteverify fecha a porta (503), nunca abre. */
@@ -90,7 +94,7 @@ const SAME_AS_CURRENT = {
  * Configuração do Better Auth (regra 10: hash de senha, sessão, tokens e TOTP são da biblioteca).
  * Cada opção abaixo tem um motivo de segurança; mudar qualquer uma pede revisão.
  */
-export function createAuth({ config, prisma, logger, audit, mail, ...deps }: AuthDependencies) {
+export function createAuth({ config, prisma, logger, audit, mail, ssoFetch, ...deps }: AuthDependencies) {
   /** A auditoria nunca derruba o login; uma falha ao gravar vai para o log. */
   const record: AuthAuditSink = async (entry) => {
     try {
@@ -120,6 +124,9 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
    * tentativa da conta e a do IP, e no mesmo tempo (o hash da senha recebida, como o Better Auth faz para o e-mail que
    * não existe). Nada na resposta diz que a conta existe em outro lugar. O hook `after` não roda quando este lança: o
    * registro da recusa é o mesmo da senha errada, gravado daqui.
+   *
+   * Com `STAFF_PASSWORD_LOGIN_DISABLED=true` (a entrada única pelo console configurada), o `admin_verax` também não
+   * entra com senha no endereço da equipe: só pelo "Entrar com o Admin master", com a mesma recusa da senha errada.
    */
   async function refuseOutsideHost(ctx: {
     body?: unknown;
@@ -132,7 +139,9 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
     if (email === undefined) return;
     const host = currentHostTenant();
     const user = await prisma.user.findUnique({ where: { email }, select: { role: true, tenantId: true } });
-    if (host !== undefined && (user === null || belongsToHost(user, host))) return;
+    const passwordOff =
+      config.STAFF_PASSWORD_LOGIN_DISABLED && host?.staff === true && user?.role === 'admin_verax';
+    if (host !== undefined && !passwordOff && (user === null || belongsToHost(user, host))) return;
     if (typeof body?.password === 'string') await ctx.context.password.hash(body.password);
     await record({
       actor: { type: 'anonymous' },
@@ -478,6 +487,15 @@ export function createAuth({ config, prisma, logger, audit, mail, ...deps }: Aut
     },
 
     plugins: [
+      // Entrada única no SIEM pelo console do responsável (só na célula, no endereço da equipe, com `config.sso`):
+      // `GET /sso/start` e `GET /sso/callback` (`sso/sso-plugin.ts`). Sem a configuração, as duas respondem 404.
+      ssoPlugin({
+        config,
+        prisma,
+        record,
+        fetch: ssoFetch ?? ((input, init) => fetch(input, init)),
+        logger,
+      }),
       // Senha nova (redefinição e troca) não pode estar em vazamentos conhecidos. Só os 5 primeiros
       // caracteres do SHA-1 vão ao Have I Been Pwned (k-anonimato, com padding). Se o serviço não responder,
       // a troca falha: a senha não é aceita sem a checagem.

@@ -52,4 +52,8 @@ export const AUTH_RATE_LIMIT_RULES = {
   '/request-password-reset': { window: 15 * 60, max: 5 },
   '/reset-password': { window: 15 * 60, max: 10 },
   '/change-password': { window: 15 * 60, max: 10 },
+  // Entrada única pelo console (só no endereço da equipe da célula): cada início grava um pedido no banco, e cada
+  // retorno chama o console.
+  '/sso/start': { window: 60, max: 10 },
+  '/sso/callback': { window: 60, max: 10 },
 } as const;
