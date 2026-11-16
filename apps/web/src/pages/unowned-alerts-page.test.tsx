@@ -95,19 +95,19 @@ describe('Alertas sem dono', () => {
     expect(screen.queryByText(/Só os alertas que citam/)).not.toBeInTheDocument();
   });
 
-  it('a decisão da Torre leva à fila nos mesmos 7 dias que ela conta', async () => {
+  it('a decisão da tela Detecções leva à fila nos mesmos 7 dias que ela conta', async () => {
     const alfa = DEMO_TENANTS[0]?.id ?? null;
     const router = renderAt('/', {
       me: demoMe('admin_verax', { activeTenantId: alfa, scopeTenantId: alfa }),
     });
     const title = await screen.findByText(/alertas? de conta não cadastrada/);
-    const count = Number.parseInt(title.textContent ?? '', 10);
+    const count = Number.parseInt(/(\d+) alertas?/.exec(title.textContent ?? '')?.[1] ?? '', 10);
     expect(count).toBeGreaterThan(0);
-    await userEvent.click(screen.getByRole('button', { name: 'Ver a fila' }));
+    await userEvent.click(screen.getByRole('link', { name: 'Ver a fila' }));
     await waitFor(() => expect(router.state.location.pathname).toBe('/alertas-sem-dono'));
     expect(router.state.location.search).toBe('?periodo=7d');
     await rowsOf('Alertas sem dono');
-    // O total da lista ("1–N de T") é o mesmo número do cartão da Torre.
+    // O total da lista ("1–N de T") é o mesmo número da decisão.
     expect(
       await screen.findByText((content) => content.endsWith(` de ${count}`) && content.includes('–')),
     ).toBeInTheDocument();

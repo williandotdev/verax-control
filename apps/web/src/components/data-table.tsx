@@ -51,10 +51,6 @@ export function DataTable<T>({
   emptyDescription = 'Ajuste os filtros ou tente mais tarde.',
   onRowClick,
 }: DataTableProps<T>) {
-  const lastPage = Math.max(1, Math.ceil(total / pageSize));
-  const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const last = Math.min(page * pageSize, total);
-
   let body: ReactNode;
   if (error) body = <ErrorState error={error} onRetry={onRetry} />;
   else if (loading || !rows) body = <LoadingState rows={Math.min(pageSize, 5)} />;
@@ -100,37 +96,60 @@ export function DataTable<T>({
         </div>
       )}
       {body}
-      <nav
-        aria-label="Paginação"
-        className="flex items-center justify-between gap-3 text-sm text-muted-foreground"
-      >
-        <span aria-live="polite">
-          {numberFormat.format(first)}–{numberFormat.format(last)} de {numberFormat.format(total)}
-        </span>
-        <span className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onPageChange(page - 1)}
-            disabled={page <= 1 || loading}
-            aria-label="Página anterior"
-          >
-            <ChevronLeft aria-hidden />
-          </Button>
-          <span>
-            Página {page} de {lastPage}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onPageChange(page + 1)}
-            disabled={page >= lastPage || loading}
-            aria-label="Próxima página"
-          >
-            <ChevronRight aria-hidden />
-          </Button>
-        </span>
-      </nav>
+      <Pagination page={page} pageSize={pageSize} total={total} onPageChange={onPageChange} busy={loading} />
     </div>
+  );
+}
+
+/** Paginação feita na API: "1–20 de 134" e os botões de página anterior e seguinte. */
+export function Pagination({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  busy = false,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  busy?: boolean;
+}) {
+  const lastPage = Math.max(1, Math.ceil(total / pageSize));
+  const first = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const last = Math.min(page * pageSize, total);
+  const loading = busy;
+  return (
+    <nav
+      aria-label="Paginação"
+      className="flex items-center justify-between gap-3 text-sm text-muted-foreground"
+    >
+      <span aria-live="polite">
+        {numberFormat.format(first)}–{numberFormat.format(last)} de {numberFormat.format(total)}
+      </span>
+      <span className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1 || loading}
+          aria-label="Página anterior"
+        >
+          <ChevronLeft aria-hidden />
+        </Button>
+        <span>
+          Página {page} de {lastPage}
+        </span>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= lastPage || loading}
+          aria-label="Próxima página"
+        >
+          <ChevronRight aria-hidden />
+        </Button>
+      </span>
+    </nav>
   );
 }

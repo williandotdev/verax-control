@@ -1,19 +1,16 @@
 import type { Permission } from '@verax/shared';
 import {
-  Activity,
   BellOff,
   BellRing,
   Boxes,
   Building2,
-  ChartColumn,
   Cloud,
-  FileSearch,
   Gauge,
   Inbox,
   type LucideIcon,
+  Radar,
   ScrollText,
   Server,
-  ShieldAlert,
   ShieldCheck,
   ShieldPlus,
   Users,
@@ -37,12 +34,10 @@ export const NAVIGATION: NavGroup[] = [
   {
     label: 'Operação',
     items: [
-      { to: '/', label: 'Torre', icon: Activity, permission: 'tower:read' },
-      { to: '/incidentes', label: 'Incidentes', icon: ShieldAlert, permission: 'incidents:read' },
-      { to: '/achados', label: 'Achados', icon: FileSearch, permission: 'findings:read' },
+      // Detecções (16/11/2026): no lugar da Torre, de Incidentes, de Achados e de Relatórios.
+      { to: '/', label: 'Detecções', icon: Radar, permission: 'findings:read' },
       { to: '/postura', label: 'Postura cloud', icon: ShieldCheck, permission: 'posture:read' },
       { to: '/ativos', label: 'Ativos e identidades', icon: Boxes, permission: 'assets:read' },
-      { to: '/relatorios', label: 'Relatórios', icon: ChartColumn, permission: 'reports:read' },
     ],
   },
   {

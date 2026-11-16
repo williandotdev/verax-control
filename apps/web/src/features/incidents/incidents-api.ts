@@ -1,33 +1,6 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  incidentAssigneesSchema,
-  incidentDetailSchema,
-  type IncidentListQuery,
-  incidentSchema,
-  type IncidentUpdate,
-  paginatedSchema,
-} from '@verax/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { incidentAssigneesSchema, incidentDetailSchema, type IncidentUpdate } from '@verax/shared';
 import { api } from '@/lib/api';
-
-const incidentPageSchema = paginatedSchema(incidentSchema);
-
-function toSearch(query: IncidentListQuery): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined) params.set(key, String(value));
-  }
-  return params.toString();
-}
-
-/** Incidentes do cliente da sessão, ordenados pela nota de risco (T5.7). */
-export function useIncidents(query: IncidentListQuery, enabled: boolean) {
-  return useQuery({
-    queryKey: ['incidents', query],
-    queryFn: () => api.get(`/v1/incidents?${toSearch(query)}`, incidentPageSchema),
-    enabled,
-    placeholderData: keepPreviousData,
-  });
-}
 
 export function useIncident(id: string, enabled: boolean) {
   return useQuery({
@@ -56,7 +29,8 @@ export function useUpdateIncident(id: string) {
     onSuccess: (detail) => {
       queryClient.setQueryData(['incident', id], detail);
       void queryClient.invalidateQueries({ queryKey: ['incidents'] });
-      // A Torre conta os incidentes abertos e os sem responsável.
+      void queryClient.invalidateQueries({ queryKey: ['detections'] });
+      // O resumo da tela Detecções conta os incidentes abertos e os sem responsável.
       void queryClient.invalidateQueries({ queryKey: ['tower'] });
     },
   });

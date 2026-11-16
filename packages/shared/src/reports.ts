@@ -7,8 +7,15 @@ import {
   type FindingSeverity,
   type FindingStatus,
 } from './findings.js';
-import { HISTORY_PERIOD_DAYS, type HistoryPeriod, historyPeriodStart } from './history.js';
+import {
+  checkCustomRange,
+  customRangeShape,
+  HISTORY_PERIOD_DAYS,
+  type HistoryPeriod,
+  historyPeriodStart,
+} from './history.js';
 import { INCIDENT_STATUSES, type IncidentStatus } from './incidents.js';
+import { MITRE_TACTICS } from './mitre.js';
 import { authorSchema, type Author } from './protected-resources.js';
 
 /**
@@ -16,28 +23,11 @@ import { authorSchema, type Author } from './protected-resources.js';
  * puras deste arquivo, que a API e o modo de demonstração usam igual: o mesmo achado conta do mesmo jeito nos dois.
  */
 
-/** As 14 táticas do MITRE ATT&CK (Enterprise), na ordem da cadeia de ataque. O nome é o que vem nos alertas. */
-export const MITRE_TACTICS = [
-  { id: 'TA0043', name: 'Reconnaissance' },
-  { id: 'TA0042', name: 'Resource Development' },
-  { id: 'TA0001', name: 'Initial Access' },
-  { id: 'TA0002', name: 'Execution' },
-  { id: 'TA0003', name: 'Persistence' },
-  { id: 'TA0004', name: 'Privilege Escalation' },
-  { id: 'TA0005', name: 'Defense Evasion' },
-  { id: 'TA0006', name: 'Credential Access' },
-  { id: 'TA0007', name: 'Discovery' },
-  { id: 'TA0008', name: 'Lateral Movement' },
-  { id: 'TA0009', name: 'Collection' },
-  { id: 'TA0011', name: 'Command and Control' },
-  { id: 'TA0010', name: 'Exfiltration' },
-  { id: 'TA0040', name: 'Impact' },
-] as const;
-
 /** Períodos dos relatórios. A API recusa o mais longo que o histórico do plano do nó (PR-20): `12m` só com 365 dias. */
-export const REPORT_PERIODS = ['7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
+export const REPORT_PERIODS = ['24h', '7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
 export type ReportPeriod = (typeof REPORT_PERIODS)[number];
 export const REPORT_PERIOD_DAYS: Readonly<Record<ReportPeriod, number>> = {
+  '24h': HISTORY_PERIOD_DAYS['24h'],
   '7d': HISTORY_PERIOD_DAYS['7d'],
   '30d': HISTORY_PERIOD_DAYS['30d'],
   '90d': HISTORY_PERIOD_DAYS['90d'],
@@ -55,13 +45,26 @@ export const REPORT_KINDS = [
 ] as const;
 export type ReportKind = (typeof REPORT_KINDS)[number];
 
-export const reportQuerySchema = z.strictObject({ period: z.enum(REPORT_PERIODS).default('30d') });
+/** O período de quando nada é pedido. */
+export const DEFAULT_REPORT_PERIOD: ReportPeriod = '30d';
+
+/**
+ * Um período (`24h` a `12m`) ou, na tela Detecções, um intervalo personalizado (`from` e `to`), nunca os dois. Sem
+ * nenhum, os últimos 30 dias.
+ */
+export const reportQuerySchema = z
+  .strictObject({ period: z.enum(REPORT_PERIODS).optional(), ...customRangeShape })
+  .superRefine(checkCustomRange);
 export type ReportQuery = z.infer<typeof reportQuerySchema>;
+
+/** A janela da resposta: um dos períodos ou `custom`, o intervalo personalizado. */
+export const REPORT_WINDOW_PERIODS = [...REPORT_PERIODS, 'custom'] as const;
+export type ReportWindowPeriod = (typeof REPORT_WINDOW_PERIODS)[number];
 
 const count = z.number().int().min(0);
 const minutes = z.number().min(0).nullable();
 const severityCounts = z.strictObject({ critical: count, high: count, medium: count, low: count });
-const window = { period: z.enum(REPORT_PERIODS), from: z.iso.datetime(), to: z.iso.datetime() };
+const window = { period: z.enum(REPORT_WINDOW_PERIODS), from: z.iso.datetime(), to: z.iso.datetime() };
 
 export const mitreTacticSchema = z.strictObject({
   id: z.string().regex(/^TA\d{4}$/),
@@ -251,13 +254,25 @@ export interface ReportIncident {
 }
 
 export interface ReportWindow {
-  period: ReportPeriod;
+  period: ReportWindowPeriod;
   from: string;
   to: string;
 }
 
 export function reportWindow(period: ReportPeriod, now: Date): ReportWindow {
   return { period, from: historyPeriodStart(period, now).toISOString(), to: now.toISOString() };
+}
+
+/** A janela do pedido: o intervalo personalizado, se veio; senão, o período (30 dias sem nenhum). */
+export function reportQueryWindow(query: ReportQuery, now: Date): ReportWindow {
+  if (query.from !== undefined && query.to !== undefined) {
+    return {
+      period: 'custom',
+      from: new Date(query.from).toISOString(),
+      to: new Date(query.to).toISOString(),
+    };
+  }
+  return reportWindow(query.period ?? DEFAULT_REPORT_PERIOD, now);
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

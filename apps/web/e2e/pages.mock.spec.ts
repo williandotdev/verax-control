@@ -10,8 +10,6 @@ import { skipDemoTour } from './demo-tour';
  * com o fluxo de teclado do painel de detalhe.
  */
 
-const INCIDENT = '018f2c1e-0000-7000-8000-0000000a0001';
-const FINDING = '018f2c1e-0000-7000-8000-000000001001';
 const AUDIT_ENTRY = '018f2c1e-0000-7000-8000-0000000d0002';
 /** O projeto da GCP da demonstração (`account(4, ...)` em mocks/admin.ts). */
 const GCP_ACCOUNT = '018f2c1e-0000-7000-8000-0000000c0004';
@@ -29,16 +27,14 @@ const READER_TEMPLATE = fileURLToPath(
 );
 
 const PAGES: [string, string | RegExp][] = [
-  ['/', 'Torre'],
-  ['/incidentes', 'Incidentes'],
-  [`/incidentes/${INCIDENT}`, /Atividade suspeita com a chave de acesso/],
-  ['/achados', 'Achados'],
+  // Detecções (16/11/2026): no lugar da Torre, de Incidentes, de Achados e de Relatórios.
+  ['/', 'Detecções'],
+  ['/?visao=achados', 'Detecções'],
+  ['/?analise=mitre', 'Detecções'],
+  ['/?analise=cobertura&periodo=90d', 'Detecções'],
   ['/postura', 'Postura cloud'],
   ['/ativos', 'Ativos e identidades'],
   ['/ativos?aba=security-groups', 'Ativos e identidades'],
-  ['/relatorios', 'Relatórios'],
-  ['/relatorios?aba=mitre', 'Relatórios'],
-  ['/relatorios?aba=incidentes&periodo=90d', 'Relatórios'],
   ['/cadastros/clientes', 'Clientes'],
   ['/cadastros/usuarios', 'Usuários'],
   ['/cadastros/contas', 'Contas cloud'],
@@ -89,93 +85,9 @@ test.describe('revisão de UX (modo mock)', () => {
     }
   }
 
-  // Os gráficos do resumo dos Relatórios com o que só aparece na interação: a tabela de "Ver tabela" aberta e a dica
-  // de cada gráfico pelo teclado. Nos dois temas, no computador e no celular (sem nada passar da tela).
-  for (const theme of ['light', 'dark'] as const) {
-    for (const [device, width] of [
-      ['computador', 1280],
-      ['celular', 360],
-    ] as const) {
-      test(`/relatorios, gráficos com a tabela e a dica (${theme === 'light' ? 'claro' : 'escuro'}, ${device}): sem violação de acessibilidade`, async ({
-        page,
-      }) => {
-        await page.setViewportSize({ width, height: 800 });
-        await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
-        await open(page, '/relatorios', 'Relatórios');
-        await page.getByText('Ver tabela').click();
-        await expect(page.getByRole('table', { name: 'Achados por dia' })).toBeVisible();
-        await page.getByRole('img', { name: /^Achados por dia/ }).focus();
-        await page.keyboard.press('ArrowLeft');
-        await expect(page.getByText(/^\d{2}\/\d{2}\/\d{4}: Crítico \d+/)).toBeAttached();
-        expect(await violations(page)).toEqual([]);
-        await page.getByRole('img', { name: /^Achados por status/ }).focus();
-        await expect(page.getByText(/^Novo: \d+ achados?, .*% do total\.$/)).toBeAttached();
-        expect(await violations(page)).toEqual([]);
-        expect(
-          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
-        ).toBeLessThanOrEqual(1);
-      });
-    }
-  }
-
-  // A Torre com o pulso e a saúde da coleta (OP-02), com o que só aparece na interação: a tabela do minigráfico aberta
-  // e a dica pelo teclado. A Alfa da demonstração tem a coleta da GCP parada (amarelo pela coleta, além do crítico).
-  // Nos dois temas, no computador e no celular (sem nada passar da tela).
-  for (const theme of ['light', 'dark'] as const) {
-    for (const [device, width] of [
-      ['computador', 1280],
-      ['celular', 360],
-    ] as const) {
-      test(`Torre com o pulso e a coleta parada (${theme === 'light' ? 'claro' : 'escuro'}, ${device}): sem violação de acessibilidade`, async ({
-        page,
-      }) => {
-        await page.setViewportSize({ width, height: 800 });
-        await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
-        await open(page, '/', 'Torre');
-        await expect(page.getByRole('status', { name: /coleta parada \(GCP\)\.$/ })).toBeVisible();
-        const health = page.getByRole('region', { name: 'Saúde da coleta' });
-        await expect(health.getByText('Parada', { exact: true })).toBeVisible();
-        await expect(health.getByText('Aguardando o primeiro dado')).toBeVisible();
-        const pulse = page.getByRole('region', { name: 'Pulso da operação' });
-        await expect(pulse.getByRole('region', { name: 'Agentes online' })).toContainText('3 de 5');
-        await pulse.getByText('Ver tabela').click();
-        await expect(
-          page.getByRole('table', { name: 'Achados por hora nas últimas 24 horas' }),
-        ).toBeVisible();
-        await pulse.getByRole('img', { name: /^Achados por hora nas últimas 24 horas/ }).focus();
-        await page.keyboard.press('ArrowLeft');
-        await expect(page.getByText(/^\d{2}:\d{2}: \d+ achados?\.$/)).toBeAttached();
-        expect(await violations(page)).toEqual([]);
-        expect(
-          await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth),
-        ).toBeLessThanOrEqual(1);
-      });
-    }
-  }
-
-  // O cliente tranquilo da demonstração: "Tudo calmo", com a prova da coleta, e as fontes que ele não tem por último.
-  for (const theme of ['light', 'dark'] as const) {
-    test(`Torre "Tudo calmo" da Beta (${theme === 'light' ? 'claro' : 'escuro'}): sem violação de acessibilidade`, async ({
-      page,
-    }) => {
-      await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
-      await open(page, '/', 'Torre');
-      await page.getByLabel('Cliente').selectOption({ label: 'Cliente Demo Beta' });
-      await expect(page.getByRole('status', { name: /^Situação: Normal\. Tudo calmo\./ })).toContainText(
-        'Coleta ativa em 2 de 2 fontes',
-      );
-      const health = page.getByRole('region', { name: 'Saúde da coleta' });
-      await expect(health.getByText('Não configurada')).toHaveCount(3);
-      await expect(page.getByRole('region', { name: 'Pulso da operação' })).toBeVisible();
-      await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-      expect(await violations(page)).toEqual([]);
-    });
-  }
-
   // Um teste por painel: cada análise de acessibilidade leva alguns segundos, e juntos passavam do tempo de um teste.
   // Abertos pela URL: com o painel modal, o resto da página fica fora da árvore de acessibilidade.
   for (const [path, dialog] of [
-    [`/achados?achado=${FINDING}`, 'Tentativa de desligar a trilha do CloudTrail'],
     [`/auditoria?registro=${AUDIT_ENTRY}`, 'Comentou achado'],
     // Projeto GCP de cliente: o comando do sink e o campo da identidade.
     [`/cadastros/contas?conta=${GCP_ACCOUNT}`, 'Projeto da GCP loja-alfa-demo'],
@@ -411,8 +323,12 @@ test.describe('revisão de UX (modo mock)', () => {
   });
 
   test('teclado: o detalhe abre com Enter, fecha com Esc e o foco volta para o achado', async ({ page }) => {
-    await open(page, '/achados?severidade=critical', 'Achados');
-    const finding = page.getByRole('button', { name: /Tentativa de desligar a trilha/ });
+    // Na tela estreita, o detalhe da tela Detecções é a gaveta (o diálogo); na larga, fica ao lado (deteccoes.mock.spec).
+    await page.setViewportSize({ width: 1024, height: 800 });
+    await open(page, '/?visao=achados&severidade=critical', 'Detecções');
+    const finding = page.getByRole('button', {
+      name: 'Abrir o achado: Tentativa de desligar a trilha do CloudTrail',
+    });
     await finding.focus();
     await page.keyboard.press('Enter');
     const dialog = page.getByRole('dialog');

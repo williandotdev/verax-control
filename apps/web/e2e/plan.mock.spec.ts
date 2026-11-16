@@ -103,7 +103,7 @@ test.describe('Plano e uso (modo mock)', () => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
     await page.goto('/');
     const menu = page.getByRole('navigation', { name: 'Menu principal' });
-    await expect(menu.getByRole('link', { name: 'Torre' })).toBeVisible();
+    await expect(menu.getByRole('link', { name: 'Detecções' })).toBeVisible();
     await expect(menu.getByRole('link', { name: 'Plano e uso' })).toHaveCount(0);
     await page.goto('/cadastros/plano');
     await expect(page.getByRole('heading', { name: 'Sem permissão' })).toBeVisible();

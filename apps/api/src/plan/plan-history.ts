@@ -4,6 +4,7 @@ import {
   PERIOD_BEYOND_HISTORY_CODE,
   periodBeyondHistoryMessage,
   periodFitsHistory,
+  rangeFitsHistory,
   type ResolvedPlan,
 } from '@verax/shared';
 import { ApiError } from '../common/http/api-error.js';
@@ -20,5 +21,14 @@ export function assertPeriodWithinHistory(plan: ResolvedPlan, period: HistoryPer
 /** O mesmo, a partir dos dias de histórico (null é sem limite). */
 export function assertPeriodWithinHistoryDays(days: number | null, period: HistoryPeriod | undefined): void {
   if (period === undefined || days === null || periodFitsHistory(period, days)) return;
+  throw new ApiError(HttpStatus.BAD_REQUEST, periodBeyondHistoryMessage(days), PERIOD_BEYOND_HISTORY_CODE);
+}
+
+/**
+ * Recusa (400) o intervalo personalizado (tela Detecções) que começa antes do histórico do plano, com o mesmo código e a
+ * mesma mensagem do período. Só o começo importa: o fim nunca passa de agora. Sem intervalo ou sem limite, passa.
+ */
+export function assertRangeWithinHistoryDays(days: number | null, from: string | undefined, now: Date): void {
+  if (from === undefined || days === null || rangeFitsHistory(new Date(from), days, now)) return;
   throw new ApiError(HttpStatus.BAD_REQUEST, periodBeyondHistoryMessage(days), PERIOD_BEYOND_HISTORY_CODE);
 }

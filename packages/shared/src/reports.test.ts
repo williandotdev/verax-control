@@ -4,7 +4,6 @@ import {
   entitiesReport,
   exceptionsReport,
   incidentsReport,
-  MITRE_TACTICS,
   mitreReport,
   mitreTactics,
   type ReportFinding,
@@ -15,6 +14,7 @@ import {
   summaryReport,
   summaryReportSchema,
 } from './reports.js';
+import { MITRE_TACTICS } from './mitre.js';
 
 const NOW = new Date('2026-11-03T12:00:00.000Z');
 const WINDOW = reportWindow('7d', NOW);

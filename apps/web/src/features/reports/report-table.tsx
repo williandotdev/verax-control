@@ -41,7 +41,7 @@ export function ReportSection<Row>({
   const { period, current } = useContext(ReportContext);
   const exportCsv = () =>
     downloadCsv(
-      `verax-${file}-${period}.csv`,
+      `verax-${file}-${period === 'custom' ? 'personalizado' : period}.csv`,
       toCsv(
         csv.map((column) => column.header),
         rows.map((row) => csv.map((column) => column.csv(row))),
@@ -97,7 +97,13 @@ export function ReportTable<Row>({
       {rows.length === 0 ? (
         <p className="rounded-md border p-3 text-sm text-muted-foreground">{empty}</p>
       ) : (
-        <div className="overflow-x-auto rounded-md border">
+        // Rola por dentro no celular: o foco pelo teclado deixa ler as colunas da direita sem mouse.
+        <div
+          role="region"
+          aria-label={`Tabela: ${caption}`}
+          tabIndex={0}
+          className="overflow-x-auto rounded-md border focus-visible:outline-2 focus-visible:outline-ring"
+        >
           <table className="w-full text-sm">
             <caption className="sr-only">{caption}</caption>
             <thead className="bg-foreground/[0.03] text-left text-xs text-muted-foreground">
