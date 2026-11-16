@@ -118,6 +118,13 @@ function unavailable(): ApiError {
  * O console nunca aceita esse token de volta: nenhuma rota dele lê `Authorization` (meta-teste). A sessão do console
  * continua só no cookie `__session` do próprio console.
  */
+/** Valores de `Sec-Fetch-Site` que recusam o pedido. A checagem só fecha: nunca abre nada sozinha. */
+const REFUSED_FETCH_SITES: ReadonlySet<string> = new Set(['cross-site']);
+
+function isCrossSite(fetchSite: string | undefined): boolean {
+  return fetchSite !== undefined && REFUSED_FETCH_SITES.has(fetchSite);
+}
+
 @Injectable()
 export class SsoService {
   private readonly issuer: string | undefined;
@@ -153,7 +160,7 @@ export class SsoService {
     const issuer = this.issuer;
     if (issuer === undefined) return this.refuseAuthorize(503, 'unavailable');
     // Um site de fora não começa a entrada única (o cookie do console é `SameSite=Strict`, e isto fecha o resto).
-    if (fetchSite === 'cross-site') return this.refuseAuthorize(403, 'cross_site');
+    if (isCrossSite(fetchSite)) return this.refuseAuthorize(403, 'cross_site');
     const parsed = ssoAuthorizeQuerySchema.safeParse(query);
     if (!parsed.success) return this.refuseAuthorize(400, 'invalid_request');
     const request = parsed.data;
