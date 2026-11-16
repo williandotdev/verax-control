@@ -543,6 +543,175 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
     });
   });
 
+  describe('Torre: radar de detecções', () => {
+    const MINUTE = 60_000;
+
+    const finding = (
+      tenantId: string,
+      accountId: string,
+      data: {
+        occurredAt: Date;
+        severity?: 'critical' | 'high' | 'medium' | 'low';
+        logSource?: string;
+        title?: string;
+        incidentId?: string;
+      },
+    ) =>
+      prisma.finding.create({
+        data: {
+          tenantId,
+          accountId,
+          source: 'wazuh',
+          sourceEventId: randomUUID(),
+          logSource: data.logSource ?? 'cloudtrail',
+          occurredAt: data.occurredAt,
+          severity: data.severity ?? 'low',
+          ruleId: '80202',
+          ruleLevel: 5,
+          title: data.title ?? 'Evento de teste',
+          mitreTactics: [],
+          mitreTechniques: [],
+          incidentId: data.incidentId ?? null,
+        },
+      });
+
+    const incident = (tenantId: string, accountId: string, status: 'open' | 'resolved') =>
+      prisma.incident.create({
+        data: {
+          tenantId,
+          severity: 'high',
+          status,
+          riskScore: 70,
+          findingCount: 1,
+          firstSeenAt: new Date(),
+          lastSeenAt: new Date(),
+          keys: [],
+          accounts: [accountId],
+          resources: [],
+          mitreTactics: [],
+          mitreTechniques: [],
+          ...(status === 'resolved' && { resolvedAt: new Date() }),
+        },
+      });
+
+    it('A/B: só os achados de 24 h do cliente da sessão, mais recentes primeiro, com fonte e incidente', async () => {
+      const a = await setup();
+      const b = await setup();
+      const now = Date.now();
+      const open = await incident(a.tenantId, a.accountId, 'open');
+      const resolved = await incident(a.tenantId, a.accountId, 'resolved');
+      const recent = await finding(a.tenantId, a.accountId, {
+        occurredAt: new Date(now - 10 * MINUTE),
+        severity: 'critical',
+        logSource: 'guardduty',
+        title: 'Credencial usada de fora',
+        incidentId: open.id,
+      });
+      const older = await finding(a.tenantId, a.accountId, {
+        occurredAt: new Date(now - 20 * HOUR),
+        severity: 'medium',
+        logSource: 'cloudflare_waf',
+        incidentId: resolved.id,
+      });
+      const agent = await finding(a.tenantId, a.accountId, {
+        occurredAt: new Date(now - 3 * HOUR),
+        logSource: 'wazuh_agent',
+      });
+      // Fora da janela (mais de 24 horas) e com fonte desconhecida (dado corrompido): fora do radar.
+      await finding(a.tenantId, a.accountId, { occurredAt: new Date(now - 25 * HOUR) });
+      await finding(a.tenantId, a.accountId, { occurredAt: new Date(now - HOUR), logSource: 'desconhecida' });
+      // De B, com incidente aberto de B: nunca no radar de A.
+      const bIncident = await incident(b.tenantId, b.accountId, 'open');
+      const bFinding = await finding(b.tenantId, b.accountId, {
+        occurredAt: new Date(now - 5 * MINUTE),
+        severity: 'critical',
+        incidentId: bIncident.id,
+      });
+
+      const summary = towerSummarySchema.parse((await a.get('/v1/tower').expect(200)).body);
+      const radar = summary.radar;
+      expect(radar).toMatchObject({ windowHours: 24, limit: 100, total: 3 });
+      expect(Date.parse(summary.generatedAt) - Date.parse(radar?.since ?? '')).toBe(24 * HOUR);
+      expect(radar?.detections).toEqual([
+        {
+          id: recent.id,
+          severity: 'critical',
+          status: 'new',
+          source: 'guardduty',
+          occurredAt: recent.occurredAt.toISOString(),
+          title: 'Credencial usada de fora',
+          incident: { id: open.id, open: true },
+        },
+        expect.objectContaining({ id: agent.id, source: 'wazuh_agent', incident: null }),
+        expect.objectContaining({
+          id: older.id,
+          source: 'cloudflare_waf',
+          incident: { id: resolved.id, open: false },
+        }),
+      ]);
+      expect(JSON.stringify(radar)).not.toContain(bFinding.id);
+      expect(JSON.stringify(radar)).not.toContain(bIncident.id);
+
+      const other = towerSummarySchema.parse((await b.get('/v1/tower').expect(200)).body).radar;
+      expect(other?.total).toBe(1);
+      expect(other?.detections.map((detection) => detection.id)).toEqual([bFinding.id]);
+    });
+
+    it('teto: desenha os 100 mais recentes e conta todos os da janela', async () => {
+      const { tenantId, accountId, get } = await setup();
+      const now = Date.now();
+      await prisma.finding.createMany({
+        data: Array.from({ length: 105 }, (_, index) => ({
+          tenantId,
+          accountId,
+          source: 'wazuh',
+          sourceEventId: randomUUID(),
+          logSource: 'waf',
+          occurredAt: new Date(now - (index + 1) * MINUTE),
+          severity: 'low' as const,
+          ruleId: '80202',
+          ruleLevel: 5,
+          title: `Evento ${index + 1}`,
+          mitreTactics: [],
+          mitreTechniques: [],
+        })),
+      });
+      const radar = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body).radar;
+      expect(radar?.total).toBe(105);
+      expect(radar?.detections).toHaveLength(100);
+      expect(radar?.detections[0]?.title).toBe('Evento 1');
+      expect(radar?.detections.at(-1)?.title).toBe('Evento 100');
+    });
+
+    it('cliente sem achado: radar vazio', async () => {
+      const { get } = await setup();
+      const radar = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body).radar;
+      expect(radar).toMatchObject({ total: 0, detections: [] });
+    });
+
+    it('permissões: todo papel do cliente lê; sem sessão, 401; a equipe da Verax sem cliente escolhido, 409', async () => {
+      const tenantId = await createTenant(app, `Cliente ${randomInt(1e6, 9e6)}`);
+      const accountId = String(randomInt(100_000_000_000, 999_999_999_999));
+      const seen = await finding(tenantId, accountId, { occurredAt: new Date(Date.now() - HOUR) });
+      for (const role of ['admin_cliente', 'analista_cliente', 'leitura'] as const) {
+        const user = await createSignedInUser(app, { role, tenantId });
+        const body = (
+          await request(app.getHttpServer()).get('/v1/tower').set('Cookie', user.cookie).expect(200)
+        ).body as unknown;
+        expect(towerSummarySchema.parse(body).radar?.detections.map((detection) => detection.id)).toEqual([
+          seen.id,
+        ]);
+      }
+      await request(app.getHttpServer()).get('/v1/tower').expect(401);
+      const verax = await createSignedInUser(app, { role: 'admin_verax' });
+      const response = await request(app.getHttpServer())
+        .get('/v1/tower')
+        .set('Cookie', verax.cookie)
+        .expect(409);
+      expect(JSON.stringify(response.body)).not.toContain(seen.id);
+    });
+  });
+
   describe('postura', () => {
     it('sem varredura: conta com nota vazia e nenhuma checagem', async () => {
       const { accountId, get } = await setup();

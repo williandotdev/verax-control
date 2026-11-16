@@ -156,3 +156,83 @@
     }
   }
 }
+
+/*
+ * Radar de detecções da Torre (`components/security/detection-radar.tsx`). A varredura é uma cunha em gradiente cônico
+ * que gira só pelo CSS (sem desenhar o React a cada quadro), no azul da ação principal da faixa da marca, a 20% no
+ * máximo: as marcas ficam por cima, com o anel da cor do fundo, e o contraste delas não depende da cunha. O brilho de
+ * cada ponto tem o mesmo período, atrasado pelo ângulo do ponto (`echoDelay`), para acender quando a varredura passa.
+ * O pulso marca uma detecção nova, uma vez só. Com menos movimento pedido, nada disso aparece (o componente nem
+ * desenha; aqui fica a garantia).
+ */
+@layer components {
+  .radar-sweep {
+    background: conic-gradient(
+      from 0deg,
+      transparent 0turn 0.72turn,
+      color-mix(in srgb, var(--primary) 20%, transparent) 1turn
+    );
+    animation: radar-turn 7s linear infinite;
+  }
+
+  .radar-sweep::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: calc(50% - 1px);
+    width: 2px;
+    height: 50%;
+    background: linear-gradient(to top, transparent, color-mix(in srgb, var(--primary) 70%, transparent));
+  }
+
+  .radar-echo {
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+    animation: radar-echo 7s ease-out infinite;
+  }
+
+  .radar-pulse {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: radar-pulse 1.8s ease-out 1 both;
+  }
+}
+
+@keyframes radar-turn {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@keyframes radar-echo {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  35%,
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+
+@keyframes radar-pulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(3.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .radar-sweep,
+  .radar-echo,
+  .radar-pulse {
+    display: none;
+    animation: none;
+  }
+}

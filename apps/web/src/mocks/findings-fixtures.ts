@@ -54,6 +54,8 @@ interface Template {
 // (scripts/scan-bundle.mjs), e a demonstração publica estes dados no painel.
 const KEY = 'DEMO3QX7Z2KD9WLB5N8R';
 const ATTACKER = '198.51.100.23';
+/** A conta de serviço de deploy do projeto fictício da GCP do Alfa. */
+const GCP_DEPLOY = 'deploy@loja-alfa-demo.iam.gserviceaccount.com';
 
 const ALFA_FINDINGS: Template[] = [
   {
@@ -459,6 +461,61 @@ const ALFA_FINDINGS: Template[] = [
     techniques: ['T1110.001'],
     account: DEMO_AGENT_ORIGIN,
   },
+  // Auditoria do projeto da GCP (lida do Pub/Sub pelo nó), antes de as leituras começarem a falhar.
+  {
+    title: 'Conta de serviço recebeu o papel Editor no projeto',
+    source: 'gcp_audit',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 205,
+    ruleId: '100',
+    ruleLevel: 8,
+    eventName: 'SetIamPolicy',
+    region: 'global',
+    resource: 'projects/loja-alfa-demo',
+    user: GCP_DEPLOY,
+    userType: 'serviceAccount',
+    ip: '203.0.113.15',
+    tactics: ['Privilege Escalation'],
+    techniques: ['T1098.003'],
+    account: DEMO_ACCOUNTS.alfaGcp,
+  },
+  {
+    title: 'Chave criada para conta de serviço',
+    source: 'gcp_audit',
+    severity: 'medium',
+    status: 'new',
+    minutesAgo: 520,
+    ruleId: '100',
+    ruleLevel: 8,
+    eventName: 'google.iam.admin.v1.CreateServiceAccountKey',
+    region: 'global',
+    resource: 'projects/loja-alfa-demo/serviceAccounts/relatorios@loja-alfa-demo.iam.gserviceaccount.com',
+    user: GCP_DEPLOY,
+    userType: 'serviceAccount',
+    ip: '203.0.113.15',
+    tactics: ['Persistence'],
+    techniques: ['T1098.001'],
+    account: DEMO_ACCOUNTS.alfaGcp,
+  },
+  {
+    title: 'Regra de firewall da VPC alterada',
+    source: 'gcp_audit',
+    severity: 'low',
+    status: 'new',
+    minutesAgo: 940,
+    ruleId: '100',
+    ruleLevel: 5,
+    eventName: 'v1.compute.firewalls.patch',
+    region: 'global',
+    resource: 'projects/loja-alfa-demo/global/firewalls/permitir-interno',
+    user: GCP_DEPLOY,
+    userType: 'serviceAccount',
+    ip: '203.0.113.15',
+    tactics: ['Defense Evasion'],
+    techniques: ['T1562.007'],
+    account: DEMO_ACCOUNTS.alfaGcp,
+  },
 ];
 
 const BETA_FINDINGS: Template[] = [
@@ -547,6 +604,21 @@ function rawEvent(t: Template, account: string, at: string): Record<string, unkn
         ? { resourceType: 'Instance', instanceDetails: { instanceId: t.resource } }
         : { resourceType: 'AccessKey', accessKeyDetails: { userName: t.user, accessKeyId: t.accessKeyId } },
       service: { action: { networkConnectionAction: { remoteIpDetails: { ipAddressV4: t.ip } } }, count: 37 },
+    };
+  }
+  if (t.source === 'gcp_audit') {
+    // A entrada do Cloud Audit Logs como chega pelo Pub/Sub, só com os campos que o detalhe mostra.
+    return {
+      timestamp: at,
+      logName: `projects/${account}/logs/cloudaudit.googleapis.com%2Factivity`,
+      resource: { type: 'project', labels: { project_id: account } },
+      protoPayload: {
+        methodName: t.eventName,
+        resourceName: t.resource,
+        authenticationInfo: { principalEmail: t.user },
+        requestMetadata: { callerIp: t.ip },
+      },
+      severity: 'NOTICE',
     };
   }
   if (t.source === 'waf') {

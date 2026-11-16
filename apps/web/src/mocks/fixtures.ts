@@ -1,15 +1,21 @@
 import {
   type CollectionSource,
   type CollectionSourceHealth,
+  type FindingSeverity,
+  type FindingSource,
+  type FindingStatus,
   type Me,
   meSchema,
   mitreTactics,
   PULSE_HOURS,
   permissionsOf,
+  RADAR_DETECTIONS_LIMIT,
+  RADAR_WINDOW_HOURS,
   type Role,
   type TenantSummary,
   tenantSummarySchema,
   type TowerPulse,
+  type TowerRadar,
   type TowerSummary,
   towerSummarySchema,
 } from '@verax/shared';
@@ -192,6 +198,52 @@ function demoPulse(
   };
 }
 
+/** Um achado do mock como o radar precisa dele. */
+interface RadarFinding {
+  id: string;
+  occurredAt: string;
+  severity: FindingSeverity;
+  status: FindingStatus;
+  source: FindingSource;
+  title: string;
+  incidentId: string | null;
+}
+
+/**
+ * O radar de detecções da demonstração, como a API: os achados do mock das últimas 24 horas, os mais recentes
+ * primeiro, até o teto, com o estado do incidente de cada um (`openIncidents`: os IDs dos incidentes não resolvidos).
+ */
+export function demoRadar(
+  findings: readonly RadarFinding[],
+  openIncidents: ReadonlySet<string>,
+  now: Date,
+): TowerRadar {
+  const since = now.getTime() - RADAR_WINDOW_HOURS * HOUR_MS;
+  const inWindow = findings
+    .filter((finding) => {
+      const at = Date.parse(finding.occurredAt);
+      return at >= since && at <= now.getTime();
+    })
+    .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
+  return {
+    since: new Date(since).toISOString(),
+    windowHours: RADAR_WINDOW_HOURS,
+    limit: RADAR_DETECTIONS_LIMIT,
+    total: inWindow.length,
+    detections: inWindow.slice(0, RADAR_DETECTIONS_LIMIT).map((finding) => ({
+      id: finding.id,
+      severity: finding.severity,
+      status: finding.status,
+      source: finding.source,
+      occurredAt: finding.occurredAt,
+      title: finding.title,
+      incident: finding.incidentId
+        ? { id: finding.incidentId, open: openIncidents.has(finding.incidentId) }
+        : null,
+    })),
+  };
+}
+
 /** O mês do medidor no calendário de Brasília (UTC-3 o ano todo): `AAAA-MM`. */
 function usageMonthOf(now: Date): string {
   return new Date(now.getTime() - 3 * HOUR_MS).toISOString().slice(0, 7);
@@ -214,8 +266,10 @@ export function demoTower(
     openIncidents?: TowerSummary['openIncidents'];
     unassignedIncidents?: number;
     mitre?: TowerSummary['mitre'];
-    /** Os achados do cliente no mock, para o pulso das últimas 24 horas. */
-    findings?: readonly { occurredAt: string; status: string }[];
+    /** Os achados do cliente no mock, para o pulso e o radar das últimas 24 horas. */
+    findings?: readonly RadarFinding[];
+    /** Os incidentes não resolvidos do cliente, para o anel do radar. */
+    openIncidentIds?: ReadonlySet<string>;
     now?: Date;
   },
 ): TowerSummary {
@@ -268,6 +322,7 @@ export function demoTower(
       sources,
     },
     pulse: demoPulse(alfa, options.findings ?? [], now),
+    radar: demoRadar(options.findings ?? [], options.openIncidentIds ?? new Set(), now),
     mitre: options.mitre ?? { periodDays: 30, tactics: mitreTactics([], []) },
     generatedAt: now.toISOString(),
   });

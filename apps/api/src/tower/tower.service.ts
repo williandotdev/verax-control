@@ -1,13 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import {
   FINDING_SEVERITIES,
+  FINDING_SOURCES,
   type FindingSeverity,
+  type FindingSource,
   hasPermission,
   PULSE_EVENT_SOURCES,
   type PulseEventSource,
+  RADAR_DETECTIONS_LIMIT,
+  RADAR_WINDOW_HOURS,
   REPORT_PERIOD_DAYS,
   reportWindow,
   type TowerPulse,
+  type TowerRadar,
   type TowerSummary,
 } from '@verax/shared';
 import type { RequestAuth } from '../common/auth/request-auth.js';
@@ -42,6 +47,8 @@ const UNOWNED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
  * pelo índice `(tenantId, occurredAt desc)`). O total e os esperados são contados à parte e ficam sempre exatos.
  */
 const PULSE_FINDINGS_CAP = 5_000;
+
+const HOUR_MS = 3_600_000;
 
 /** Um inteiro seguro do JSON (o medidor guarda `BigInt`). */
 const safeCount = (value: bigint): number =>
@@ -116,7 +123,7 @@ export class TowerService {
     const awsAccountIds = accounts
       .filter((account) => account.provider === 'aws')
       .map((account) => account.accountId);
-    const [agents, inventory, pulse] = await Promise.all([
+    const [agents, inventory, pulse, radar] = await Promise.all([
       this.agentCounts(),
       awsAccountIds.length === 0
         ? Promise.resolve(null)
@@ -125,6 +132,7 @@ export class TowerService {
             _max: { collectedAt: true },
           }),
       this.findingsPulse(now),
+      this.radar(now),
     ]);
     const sources = collectionHealth(
       {
@@ -192,8 +200,70 @@ export class TowerService {
         agents: agents.total === 0 ? null : { online: agents.online, total: agents.total },
         monthEvents: await this.monthEvents(now),
       },
+      radar,
       mitre,
       generatedAt: now.toISOString(),
+    };
+  }
+
+  /**
+   * O radar de detecções: os achados das últimas `RADAR_WINDOW_HOURS` horas (até agora), os mais recentes primeiro, até
+   * `RADAR_DETECTIONS_LIMIT` (pelo índice `(tenantId, occurredAt desc)`), com o incidente de cada um e se ele segue
+   * aberto (não resolvido). O total da janela é contado à parte. Só fontes conhecidas: o sync não grava outras, e uma
+   * fora da lista (dado corrompido) fica de fora do radar em vez de derrubar a Torre.
+   */
+  private async radar(now: Date): Promise<TowerRadar> {
+    const db = this.prisma.scoped();
+    const since = new Date(now.getTime() - RADAR_WINDOW_HOURS * HOUR_MS);
+    const where = {
+      occurredAt: { gte: since, lte: now },
+      logSource: { in: [...FINDING_SOURCES] },
+    };
+    const [total, rows] = await Promise.all([
+      db.finding.count({ where }),
+      db.finding.findMany({
+        where,
+        select: {
+          id: true,
+          severity: true,
+          status: true,
+          logSource: true,
+          occurredAt: true,
+          title: true,
+          incidentId: true,
+        },
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        take: RADAR_DETECTIONS_LIMIT,
+      }),
+    ]);
+    // O estado dos incidentes também pelo escopo do cliente (e não pela relação aninhada, que o escopo não alcança).
+    const incidentIds = [...new Set(rows.flatMap((row) => (row.incidentId ? [row.incidentId] : [])))];
+    const incidents =
+      incidentIds.length === 0
+        ? []
+        : await db.incident.findMany({
+            where: { id: { in: incidentIds } },
+            select: { id: true, status: true },
+          });
+    const openById = new Map(incidents.map((incident) => [incident.id, incident.status !== 'resolved']));
+    return {
+      since: since.toISOString(),
+      windowHours: RADAR_WINDOW_HOURS,
+      limit: RADAR_DETECTIONS_LIMIT,
+      // Um achado gravado entre a contagem e a leitura não deixa a lista maior que o total.
+      total: Math.max(total, rows.length),
+      detections: rows.map((row) => ({
+        id: row.id,
+        severity: row.severity,
+        status: row.status,
+        source: row.logSource as FindingSource,
+        occurredAt: row.occurredAt.toISOString(),
+        title: row.title,
+        incident:
+          row.incidentId && openById.has(row.incidentId)
+            ? { id: row.incidentId, open: openById.get(row.incidentId) === true }
+            : null,
+      })),
     };
   }
 

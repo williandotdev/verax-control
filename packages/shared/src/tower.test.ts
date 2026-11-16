@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { FINDING_SEVERITIES, FINDING_STATUSES } from './findings.js';
+import { FINDING_SEVERITIES, FINDING_SOURCES, FINDING_STATUSES } from './findings.js';
 import { mitreTactics } from './reports.js';
-import { type TowerSummary, towerSummarySchema } from './tower.js';
+import {
+  RADAR_DETECTIONS_LIMIT,
+  RADAR_SECTORS,
+  RADAR_WINDOW_HOURS,
+  radarSectorOf,
+  type TowerSummary,
+  towerRadarSchema,
+  towerSummarySchema,
+} from './tower.js';
 
 const summary: TowerSummary = {
   light: 'yellow',
@@ -199,5 +207,57 @@ describe('vocabulário dos achados', () => {
   it('tem as severidades das regras da T5.3 e os status da T5.5', () => {
     expect(FINDING_SEVERITIES).toEqual(['critical', 'high', 'medium', 'low']);
     expect(FINDING_STATUSES).toEqual(['new', 'investigating', 'legitimate', 'resolved']);
+  });
+});
+
+describe('radar de detecções', () => {
+  const detection = {
+    id: '018f2c1e-0000-7000-8000-000000001001',
+    severity: 'critical',
+    status: 'new',
+    source: 'guardduty',
+    occurredAt: '2026-11-02T12:40:00.000Z',
+    title: 'Credencial usada de fora',
+    incident: { id: '018f2c1e-0000-7000-8000-0000000a0001', open: true },
+  } as const;
+  const radar = {
+    since: '2026-11-01T13:00:00.000Z',
+    windowHours: RADAR_WINDOW_HOURS,
+    limit: RADAR_DETECTIONS_LIMIT,
+    total: 1,
+    detections: [detection],
+  };
+
+  it('opcional no resumo (um nó de antes não manda); com ele, as detecções da janela', () => {
+    expect(towerSummarySchema.parse(summary).radar).toBeUndefined();
+    expect(towerSummarySchema.parse({ ...summary, radar }).radar).toEqual(radar);
+    expect(
+      towerSummarySchema.parse({
+        ...summary,
+        radar: { ...radar, detections: [{ ...detection, incident: null }] },
+      }).radar?.detections[0]?.incident,
+    ).toBeNull();
+  });
+
+  it('recusa mais detecções que o total, além do teto, fonte desconhecida e outra janela', () => {
+    expect(() => towerRadarSchema.parse({ ...radar, total: 0 })).toThrow();
+    expect(() =>
+      towerRadarSchema.parse({
+        ...radar,
+        total: 101,
+        detections: Array.from({ length: 101 }, () => detection),
+      }),
+    ).toThrow();
+    expect(() =>
+      towerRadarSchema.parse({ ...radar, detections: [{ ...detection, source: 'syslog' }] }),
+    ).toThrow();
+    expect(() => towerRadarSchema.parse({ ...radar, windowHours: 48 })).toThrow();
+    // O teto mostra só uma parte: o total pode passar da lista.
+    expect(towerRadarSchema.parse({ ...radar, total: 340 }).total).toBe(340);
+  });
+
+  it('cada fonte de log cai num setor do radar, e todo setor tem fonte', () => {
+    const sectors = new Set(FINDING_SOURCES.map(radarSectorOf));
+    expect([...sectors].sort()).toEqual([...RADAR_SECTORS].sort());
   });
 });
