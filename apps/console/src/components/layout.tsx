@@ -1,5 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
-import { Calculator, LogOut, Receipt, Scale, ShieldCheck, UserCog, Users, Wallet } from 'lucide-react';
+import {
+  Calculator,
+  LogOut,
+  Receipt,
+  Rocket,
+  Scale,
+  ShieldCheck,
+  UserCog,
+  Users,
+  Wallet,
+} from 'lucide-react';
 import { Link, Navigate, NavLink, Outlet, useLocation } from 'react-router';
 import { useLogout, useSessionExpiredRedirect } from '@/features/auth/session';
 import { api, SessionExpiredError } from '@/lib/api';
@@ -14,6 +24,7 @@ const NAVIGATION = [
   { to: '/tabelas-de-preco', label: 'Tabelas de preço', icon: Receipt },
   { to: '/simulador', label: 'Simulador de DRE', icon: Calculator },
   { to: '/clientes', label: 'Clientes', icon: Users },
+  { to: '/versoes', label: 'Versões', icon: Rocket },
   { to: '/textos-legais', label: 'Textos legais', icon: Scale },
 ] as const;
 

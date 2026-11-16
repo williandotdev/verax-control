@@ -12,6 +12,9 @@ import {
   PricingTableListPage,
   PricingTableNewPage,
 } from '@/features/pricing-tables/pricing-table-pages';
+import { FleetPage } from '@/features/fleet/fleet-page';
+import { PromotePage } from '@/features/fleet/promote-page';
+import { RolloutPage } from '@/features/fleet/rollout-page';
 import { LegalEditorPage } from '@/features/legal/legal-editor-page';
 import { LegalHistoryPage } from '@/features/legal/legal-history-page';
 import { LegalNewPage } from '@/features/legal/legal-new-page';
@@ -43,6 +46,9 @@ export const routes: RouteObject[] = [
       { path: 'clientes', element: <TenantListPage /> },
       { path: 'clientes/novo', element: <NewTenantPage /> },
       { path: 'clientes/:id', element: <TenantDetailPage /> },
+      { path: 'versoes', element: <FleetPage /> },
+      { path: 'versoes/promover/:release', element: <PromotePage /> },
+      { path: 'versoes/rodadas/:id', element: <RolloutPage /> },
       { path: 'textos-legais', element: <LegalOverviewPage /> },
       { path: 'textos-legais/:kind/novo', element: <LegalNewPage /> },
       { path: 'textos-legais/:kind/historico', element: <LegalHistoryPage /> },

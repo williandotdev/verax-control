@@ -5554,3 +5554,25 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   e, depois, apague o secret `PAINEL_SITES`.
 - **Riscos:** entre o merge desta parte e a passagem do painel da equipe para a frota, o site de hoje do SOC da Verax
   fica na última versão publicada.
+
+## Frota, parte 4: a tela Versões no console do responsável
+
+- **Pedido:** a seção "Versões" do console: as versões promovidas, a versão de cada nó e site, "Promover para a frota"
+  com a revisão (ondas, nós, lote e janela), a rodada ao vivo por nó, parar, retomar, abortar, pular e voltar um nó, e o
+  histórico; testes com axe como as outras telas.
+- **Arquivos:** `apps/control-plane/src/admin/admin-fleet.controller.ts`, `admin-fleet.service.ts` e
+  `worker-fleet-client.ts` (novos), `admin.module.ts`, `app.module.ts`, `test/admin-fleet.test.ts` (novo) e
+  `test/support/create-app.ts` (commit anterior); `apps/console/src/features/fleet/` (novo: `api.ts`, `labels.ts`,
+  `queries.ts`, `fleet-page.tsx`, `promote-page.tsx`, `rollout-page.tsx`, `fleet.test.tsx`),
+  `apps/console/src/mocks/fake-fleet.ts` (novo) e `fake-admin-api.ts`, `router.tsx` e `components/layout.tsx` (uma rota
+  e uma entrada no menu), `apps/console/e2e/fleet.spec.ts` (novo), `docs/runbooks/console-do-responsavel.md` (seção 9)
+  e este registro.
+- **Decisões:** as rodadas e os nós são lidos do Firestore pelo cp-admin; as versões do bucket, a versão de cada nó e
+  site, a revisão e as operações vão ao cp-worker (que tem o bucket, as VMs e o Firebase) por um cliente que só monta os
+  caminhos da frota, com quem agiu no corpo e nunca o cookie. A rodada se atualiza sozinha a cada 10 s enquanto anda.
+  Com uma rodada aberta, a tela não oferece "Promover" (uma por vez).
+- **Testes:** `pnpm --filter @verax/control-plane test` (o `admin-fleet`: sessão exigida, o caminho até o worker com
+  quem agiu e sem o cookie, a revisão e a recusa sem o painel, a rodada nova, a lista, o detalhe e as operações com a
+  auditoria); `pnpm --filter @verax/console test` (90, os 4 novos da frota: a lista, a rodada parada com voltar, pular e
+  retomar, a revisão com a janela inválida, o lote e a versão digitada, e a versão sem o painel); Playwright com axe
+  (`e2e/fleet.spec.ts`, os dois temas: a frota, a rodada parada e a revisão, sem violação de WCAG 2.2 AA nem da CSP).
