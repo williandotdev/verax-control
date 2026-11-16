@@ -295,7 +295,14 @@ function DetectionsContent({
                 <MitreReportView
                   range={range}
                   tacticHref={(tactic) =>
-                    `?${withChanges(params, { analysis: null, tactic: tactic.name, incident: null, finding: null }).toString()}`
+                    `?${withChanges(params, {
+                      analysis: null,
+                      tactic: tactic.name,
+                      incident: null,
+                      finding: null,
+                      // A lista sem período mostra todo o histórico: o atalho leva a janela que a análise contou.
+                      ...('period' in range ? { period: range.period } : {}),
+                    }).toString()}`
                   }
                 />
               )}

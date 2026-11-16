@@ -33,7 +33,7 @@ import {
   stalledPhrase,
 } from './tower-collection';
 import { towerReason } from './tower-reason';
-import { selectionSearch } from './url-state';
+import { selectionSearch, withChanges } from './url-state';
 
 /**
  * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o semáforo com o motivo, as decisões
@@ -159,9 +159,11 @@ function CompactSituation({ summary }: { summary: TowerSummary }) {
 
 function ExpandedSituation({ summary }: { summary: TowerSummary }) {
   const [params] = useSearchParams();
+  // O detalhe ao lado só existe na aba Lista: um ponto do radar aberto numa aba de análise volta para a lista.
+  const listParams = withChanges(params, { analysis: null }, { keepPage: true });
   const links: RadarLinks = {
-    finding: (id) => ({ search: selectionSearch(params, { kind: 'finding', id }) }),
-    incident: (id) => ({ search: selectionSearch(params, { kind: 'incident', id }) }),
+    finding: (id) => ({ search: selectionSearch(listParams, { kind: 'finding', id }) }),
+    incident: (id) => ({ search: selectionSearch(listParams, { kind: 'incident', id }) }),
     all: '/?visao=achados&periodo=24h',
   };
   return (

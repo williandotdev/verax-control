@@ -390,6 +390,27 @@ describe('Detecções: análise e exportação', () => {
     await list();
   });
 
+  it('MITRE sem período na URL: a tática leva a janela padrão da análise (30 dias), não todo o histórico', async () => {
+    const router = renderAt('/?analise=mitre');
+    await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
+    await userEvent.click(screen.getByRole('link', { name: /^Evasão de defesas \(TA0005\)/ }));
+    await waitFor(() => expect(search(router).get('tatica')).toBe('Defense Evasion'));
+    expect(search(router).get('periodo')).toBe('30d');
+  });
+
+  it('um ponto do radar aberto numa aba de análise volta para a lista, onde o detalhe aparece', async () => {
+    mockMedia((query) => query === '(min-width: 80rem)');
+    const router = renderAt('/?analise=mitre');
+    const radar = await screen.findByRole('region', { name: 'Radar das últimas 24 horas' });
+    const point = within(radar).getAllByRole('link')[0] as HTMLElement;
+    await userEvent.click(point);
+    await waitFor(() => expect(search(router).get('analise')).toBeNull());
+    const params = search(router);
+    expect(params.get('achado') ?? params.get('incidente')).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
+    expect((await screen.findAllByRole('complementary')).length).toBeGreaterThan(0);
+  });
+
   it('cobertura das fontes, com o CSV da tabela', async () => {
     renderAt('/?analise=cobertura');
     expect(
