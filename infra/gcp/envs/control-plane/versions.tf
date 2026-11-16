@@ -8,13 +8,13 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "8.9.0"
+      version = "8.10.0"
     }
     # Só para o Firebase Hosting (site, versão com o rewrite, release e domínio próprio, em hosting.tf): na 8.9.0,
     # esses recursos existem só no provider beta. Mesma versão fixa, mesmo lock.
     google-beta = {
       source  = "hashicorp/google-beta"
-      version = "8.9.0"
+      version = "8.10.0"
     }
   }
 
