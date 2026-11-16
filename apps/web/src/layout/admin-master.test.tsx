@@ -72,14 +72,14 @@ describe('Admin master no painel', () => {
   it('quem não é admin_verax, ou o endereço sem o console: nenhum item', async () => {
     renderApp('/', demoMe('admin_cliente'), CONSOLE);
     const menu = await screen.findByRole('navigation', { name: 'Menu principal' });
-    await within(menu).findByRole('link', { name: 'Torre' });
+    await within(menu).findByRole('link', { name: 'Detecções' });
     expect(within(menu).queryByRole('link', { name: 'Admin master' })).not.toBeInTheDocument();
   });
 
   it('admin_verax num endereço sem o console: nenhum item', async () => {
     renderApp('/', demoMe('admin_verax'), null);
     const menu = await screen.findByRole('navigation', { name: 'Menu principal' });
-    await within(menu).findByRole('link', { name: 'Torre' });
+    await within(menu).findByRole('link', { name: 'Detecções' });
     expect(within(menu).queryByRole('link', { name: 'Admin master' })).not.toBeInTheDocument();
   });
 });

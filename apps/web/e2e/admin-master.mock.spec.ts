@@ -65,7 +65,7 @@ test.describe('Admin master (modo mock)', () => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'admin_cliente'));
     await page.goto('/');
     const menu = page.getByRole('navigation', { name: 'Menu principal' });
-    await expect(menu.getByRole('link', { name: 'Torre' })).toBeVisible();
+    await expect(menu.getByRole('link', { name: 'Detecções' })).toBeVisible();
     await expect(menu.getByRole('link', { name: 'Admin master' })).toHaveCount(0);
   });
 });
