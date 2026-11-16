@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { generateKeyPairSync, type KeyObject, randomBytes, randomUUID, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, type KeyObject, randomBytes, randomUUID, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { SSO_CLIENT_ID } from '@verax/shared';
@@ -237,10 +237,13 @@ describe('nó dedicado da Verax (PLAN=interno): entrada única pelo console', ()
     expect(`${authorize.origin}${authorize.pathname}`).toBe(`${ISSUER}/sso/authorize`);
     expect(authorize.searchParams.get('redirect_uri')).toBe(CALLBACK);
     expect(authorize.searchParams.get('code_challenge_method')).toBe('S256');
-    // O pedido gravado não tem cliente do endereço: o nó inteiro é o da equipe.
-    const attempts = await prisma.ssoLoginAttempt.findMany({ select: { hostTenantId: true } });
-    expect(attempts.length).toBeGreaterThan(0);
-    expect(attempts.every((attempt) => attempt.hostTenantId === null)).toBe(true);
+    // O pedido gravado (pelo SHA-256 do cookie de pré-login) não tem cliente do endereço: o nó inteiro é o da equipe.
+    const attemptId = createHash('sha256')
+      .update(ssoCookie.slice(`${SSO_ATTEMPT_COOKIE}=`.length), 'utf8')
+      .digest('hex');
+    const attempt = await prisma.ssoLoginAttempt.findUnique({ where: { id: attemptId } });
+    expect(attempt).not.toBeNull();
+    expect(attempt?.hostTenantId).toBeNull();
 
     const back = await authorizeAtConsole(authorize);
     expect(`${back.origin}${back.pathname}`).toBe(CALLBACK);
@@ -260,12 +263,12 @@ describe('nó dedicado da Verax (PLAN=interno): entrada única pelo console', ()
     });
     expect(session?.hostTenantId).toBeNull();
     const audit = await prisma.auditLog.findFirst({
-      where: { action: 'auth.sso_login', outcome: 'success' },
+      where: { action: 'auth.sso_login', outcome: 'success', resourceId: OWNER },
       select: { resourceId: true },
     });
     expect(audit?.resourceId).toBe(OWNER);
     // O pedido foi gasto, e nada do código nem do state vai ao log.
-    expect(await prisma.ssoLoginAttempt.count()).toBe(0);
+    expect(await prisma.ssoLoginAttempt.count({ where: { id: attemptId } })).toBe(0);
     expect(apiLog.text).not.toContain(back.searchParams.get('code') ?? '-');
     expect(apiLog.text).not.toContain(back.searchParams.get('state') ?? '-');
   });
@@ -330,10 +333,19 @@ describe('nó dedicado da Verax (PLAN=interno): entrada única pelo console', ()
       const analyst = await createSignedInUser(api, { role: 'analista_cliente', tenantId: tenant });
       const disabled = await createUser(api, { role: 'admin_verax', tenantId: null, status: 'disabled' });
       const withoutMfa = await createUser(api, { role: 'admin_verax', tenantId: null });
-      const before = (await refusalReasons()).filter((reason) => reason === 'user_refused').length;
-      for (const user of [customerAdmin, analyst, disabled, withoutMfa]) await refusedFor(user.email);
-      const after = (await refusalReasons()).filter((reason) => reason === 'user_refused').length;
-      expect(after - before).toBe(4);
+      const users = [customerAdmin, analyst, disabled, withoutMfa];
+      for (const user of users) await refusedFor(user.email);
+      const rows = await prisma.auditLog.findMany({
+        where: {
+          action: 'auth.sso_login',
+          outcome: 'denied',
+          resourceId: { in: users.map((user) => user.email) },
+        },
+        select: { after: true },
+      });
+      expect(rows.map((row) => (row.after as { reason?: unknown } | null)?.reason)).toEqual(
+        users.map(() => 'user_refused'),
+      );
     });
   });
 
