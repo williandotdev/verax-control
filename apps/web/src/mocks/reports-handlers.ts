@@ -10,7 +10,7 @@ import {
   reportQuerySchema,
   type ReportFinding,
   type ReportIncident,
-  reportWindow,
+  reportQueryWindow,
   rulesReport,
   summaryReport,
 } from '@verax/shared';
@@ -19,7 +19,7 @@ import { API_URL } from '@/lib/env';
 import type { AdminStore } from './admin';
 import type { MockState } from './handlers';
 import { type IncidentState, incidentSummaries } from './incidents-handlers';
-import { demoPeriodRefusal } from './plan-handlers';
+import { demoPeriodRefusal, demoRangeRefusal } from './plan-handlers';
 
 const url = (path: string): string => `${API_URL}${path}`;
 const MINUTE = 60_000;
@@ -107,11 +107,11 @@ export function createReportHandlers(
       const kind = REPORT_KINDS.find((value) => value === params['kind']);
       const query = reportQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
       if (!kind || !query.success) return problem(400, 'Relatório inválido');
-      const refusal = demoPeriodRefusal(state, query.data.period);
+      const refusal = demoPeriodRefusal(state, query.data.period) ?? demoRangeRefusal(state, query.data.from);
       if (refusal) return refusal;
 
       const now = new Date();
-      const window = reportWindow(query.data.period, now);
+      const window = reportQueryWindow(query.data, now);
       const inputs = reportInputs(tenantId, findings, incidents, now);
       switch (kind) {
         case 'summary':

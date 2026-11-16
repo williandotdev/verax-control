@@ -52,9 +52,9 @@ async function signInWithDemoAccess(page: Page): Promise<void> {
   await page.keyboard.press('Enter');
 }
 
-/** O painel aberto na Torre, como o admin da Verax, com o primeiro cliente selecionado. */
+/** O painel aberto na tela Detecções, como o admin da Verax, com o primeiro cliente selecionado. */
 async function expectAdminPanel(page: Page): Promise<void> {
-  await expect(page.getByRole('heading', { level: 1, name: 'Torre' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Detecções' })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe('/');
   await expect(page.getByRole('banner').getByText('Administrador Verax')).toBeVisible();
   await expect(page.getByLabel('Cliente')).toHaveValue(ALFA);
@@ -63,7 +63,7 @@ async function expectAdminPanel(page: Page): Promise<void> {
 /** "Fazer o tour" na faixa da demonstração abre o tour; Esc fecha. */
 async function expectTourLauncherWorks(page: Page): Promise<void> {
   await page.getByRole('note').getByRole('button', { name: 'Fazer o tour' }).click();
-  await expect(page.locator('[data-tour-card]').getByText(/^Passo \d+ de 19$/)).toBeVisible();
+  await expect(page.locator('[data-tour-card]').getByText(/^Passo \d+ de 18$/)).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
 }
@@ -122,13 +122,13 @@ test.describe('login da demonstração (modo mock)', () => {
     expect(errors).toEqual([]);
   });
 
-  test('primeira visita: depois do login, o tour do admin da Verax abre sozinho na Torre', async ({
+  test('primeira visita: depois do login, o tour do admin da Verax abre sozinho na tela Detecções', async ({
     page,
   }) => {
     await page.goto('/login');
     await signInWithDemoAccess(page);
-    const dialog = page.getByRole('dialog', { name: 'Torre: está tudo bem?' });
-    await expect(dialog.getByText('Passo 1 de 19')).toBeVisible();
+    const dialog = page.getByRole('dialog', { name: 'Detecções: está tudo bem?' });
+    await expect(dialog.getByText('Passo 1 de 18')).toBeVisible();
     await dialog.getByRole('button', { name: 'Pular' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expectAdminPanel(page);

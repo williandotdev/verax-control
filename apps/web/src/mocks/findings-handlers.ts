@@ -5,14 +5,14 @@ import {
   findingCommentSchema,
   findingListQuerySchema,
   findingStatusUpdateSchema,
-  historyPeriodStart,
+  findingMatchesFilters,
   type Permission,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { demoFindings } from './findings-fixtures';
 import type { MockState } from './handlers';
-import { demoPeriodRefusal } from './plan-handlers';
+import { demoPeriodRefusal, demoRangeRefusal } from './plan-handlers';
 
 const url = (path: string): string => `${API_URL}${path}`;
 
@@ -61,17 +61,14 @@ export function createFindingHandlers(
       if ('error' in scope) return scope.error;
       const query = findingListQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
       if (!query.success) return problem(400, 'Filtro inválido');
-      const { severity, status, accountId, period, page, pageSize } = query.data;
-      const refusal = demoPeriodRefusal(state, period);
+      const { page, pageSize, ...filters } = query.data;
+      const refusal = demoPeriodRefusal(state, filters.period) ?? demoRangeRefusal(state, filters.from);
       if (refusal) return refusal;
-      const since = period ? historyPeriodStart(period, new Date()).getTime() : null;
-      const items = scope.findings.filter(
-        (finding) =>
-          (!severity || finding.severity === severity) &&
-          (!status || finding.status === status) &&
-          (!accountId || finding.accountId === accountId) &&
-          (since === null || Date.parse(finding.occurredAt) >= since),
-      );
+      const now = new Date();
+      // A mesma regra da API (`findingMatchesFilters`), do mais recente para trás.
+      const items = scope.findings
+        .filter((finding) => findingMatchesFilters(finding, filters, now))
+        .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || b.id.localeCompare(a.id));
       const start = (page - 1) * pageSize;
       return HttpResponse.json({
         items: items.slice(start, start + pageSize).map(summary),

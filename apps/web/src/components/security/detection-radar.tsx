@@ -1,7 +1,7 @@
 import { RADAR_SECTORS, type RadarDetection, type RadarSector, type TowerRadar } from '@verax/shared';
 import { ChevronRight } from 'lucide-react';
 import { type KeyboardEvent, memo, type PointerEvent, useCallback, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router';
+import { Link, type To, useNavigate } from 'react-router';
 import { formatHour, useKeepInside } from '@/components/charts/chart-utils';
 import { SEVERITY_MARKS, SEVERITY_STYLES } from '@/design/severity';
 import { FINDING_SOURCE_LABELS, FINDING_STATUS_LABELS } from '@/features/findings/labels';
@@ -43,7 +43,18 @@ const SECTOR_CORNERS: Readonly<Record<RadarSector, { x: number; y: number; ancho
 /** Quantas detecções a lista ao lado do radar mostra; as outras ficam na tabela. */
 const RECENT_COUNT = 5;
 
-const findingHref = (id: string): string => `/achados?achado=${id}`;
+/** Para onde levam a detecção, o incidente dela e o "ver todas": o detalhe e a lista da tela Detecções. */
+export interface RadarLinks {
+  finding: (id: string) => To;
+  incident: (id: string) => To;
+  all: To;
+}
+
+const DEFAULT_LINKS: RadarLinks = {
+  finding: (id) => `/?achado=${id}`,
+  incident: (id) => `/?incidente=${id}`,
+  all: '/?visao=achados&periodo=24h',
+};
 
 function incidentText(detection: RadarDetection): string | null {
   if (!detection.incident) return null;
@@ -69,7 +80,18 @@ function describe(detection: RadarDetection, now: Date): string {
  * brilho são só CSS; com menos movimento pedido, o radar fica parado e completo. Tudo o que o radar mostra está
  * também na lista e na tabela ao lado, com link para o achado: nada depende da cor, do mouse ou da animação.
  */
-export function DetectionRadar({ radar, generatedAt }: { radar: TowerRadar; generatedAt: string }) {
+export function DetectionRadar({
+  radar,
+  generatedAt,
+  links = DEFAULT_LINKS,
+  compact = false,
+}: {
+  radar: TowerRadar;
+  generatedAt: string;
+  links?: RadarLinks;
+  /** No resumo da tela Detecções: o radar menor, sem a lista das mais recentes (a lista da tela está logo abaixo). */
+  compact?: boolean;
+}) {
   const navigate = useNavigate();
   const reducedMotion = usePrefersReducedMotion();
   const now = useMemo(() => new Date(generatedAt), [generatedAt]);
@@ -77,7 +99,7 @@ export function DetectionRadar({ radar, generatedAt }: { radar: TowerRadar; gene
   const counts = useMemo(() => sectorCounts(blips), [blips]);
   const pulsing = usePulsing(radar.detections, generatedAt);
   const capped = capNotice(radar);
-  const open = useCallback((id: string) => void navigate(findingHref(id)), [navigate]);
+  const open = useCallback((id: string) => void navigate(links.finding(id)), [navigate, links]);
 
   const bySeverity = (['critical', 'high', 'medium', 'low'] as const)
     .map((severity) => ({
@@ -87,8 +109,15 @@ export function DetectionRadar({ radar, generatedAt }: { radar: TowerRadar; gene
     .filter((item) => item.count > 0);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)] lg:items-start">
-      <div className="brand-surface rounded-panel p-3 sm:p-4">
+    <div
+      className={cn(
+        'grid gap-4',
+        compact ? 'items-start' : 'lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)] lg:items-start',
+      )}
+    >
+      <div
+        className={cn('brand-surface rounded-panel p-3 sm:p-4', compact && 'mx-auto w-full max-w-[17rem]')}
+      >
         <RadarScope
           blips={blips}
           counts={counts}
@@ -121,23 +150,26 @@ export function DetectionRadar({ radar, generatedAt }: { radar: TowerRadar; gene
         {capped && (
           <p className="rounded-md border bg-foreground/[0.03] p-2 text-sm text-muted-foreground">
             O radar mostra as {capped.shown} mais recentes de {plural(capped.total, 'detecção', 'detecções')}.{' '}
-            <Link className="text-foreground underline underline-offset-2" to="/achados?periodo=24h">
-              Ver todas em Achados
+            <Link className="text-foreground underline underline-offset-2" to={links.all}>
+              Ver todas na lista
             </Link>
           </p>
         )}
-        {radar.detections.length > 0 && (
+        {radar.detections.length > 0 && !compact && (
           <>
             <h3 className="text-sm font-medium text-muted-foreground">Mais recentes</h3>
             <ul className="divide-y rounded-md border">
               {radar.detections.slice(0, RECENT_COUNT).map((detection) => (
                 <li key={detection.id}>
-                  <DetectionLink detection={detection} now={now} />
+                  <DetectionLink detection={detection} now={now} links={links} />
                 </li>
               ))}
             </ul>
-            <RadarTable detections={radar.detections} now={now} />
+            <RadarTable detections={radar.detections} now={now} links={links} />
           </>
+        )}
+        {radar.detections.length > 0 && compact && (
+          <RadarTable detections={radar.detections} now={now} links={links} />
         )}
       </div>
     </div>
@@ -539,10 +571,18 @@ function RadarLegend({ windowHours }: { windowHours: number }) {
   );
 }
 
-function DetectionLink({ detection, now }: { detection: RadarDetection; now: Date }) {
+function DetectionLink({
+  detection,
+  now,
+  links,
+}: {
+  detection: RadarDetection;
+  now: Date;
+  links: RadarLinks;
+}) {
   return (
     <Link
-      to={findingHref(detection.id)}
+      to={links.finding(detection.id)}
       className="flex items-start gap-3 px-3 py-2 text-sm hover:bg-foreground/5"
     >
       <SeverityBadge severity={detection.severity} className="mt-0.5 shrink-0" />
@@ -558,7 +598,15 @@ function DetectionLink({ detection, now }: { detection: RadarDetection; now: Dat
 }
 
 /** Todas as detecções do radar, em tabela, atrás de "Ver em tabela": o radar sem depender da cor, do mouse ou da animação. */
-function RadarTable({ detections, now }: { detections: readonly RadarDetection[]; now: Date }) {
+function RadarTable({
+  detections,
+  now,
+  links,
+}: {
+  detections: readonly RadarDetection[];
+  now: Date;
+  links: RadarLinks;
+}) {
   const title = 'Detecções do radar';
   return (
     <details className="group">
@@ -600,7 +648,7 @@ function RadarTable({ detections, now }: { detections: readonly RadarDetection[]
             {detections.map((detection) => (
               <tr key={detection.id} className="border-t">
                 <th scope="row" className="min-w-48 px-3 py-2 text-left font-normal">
-                  <Link className="underline underline-offset-2" to={findingHref(detection.id)}>
+                  <Link className="underline underline-offset-2" to={links.finding(detection.id)}>
                     {detection.title}
                   </Link>
                 </th>
@@ -614,10 +662,7 @@ function RadarTable({ detections, now }: { detections: readonly RadarDetection[]
                 </td>
                 <td className="px-3 py-2 whitespace-nowrap">
                   {detection.incident ? (
-                    <Link
-                      className="underline underline-offset-2"
-                      to={`/incidentes/${detection.incident.id}`}
-                    >
+                    <Link className="underline underline-offset-2" to={links.incident(detection.incident.id)}>
                       {detection.incident.open ? 'Aberto' : 'Resolvido'}
                     </Link>
                   ) : (

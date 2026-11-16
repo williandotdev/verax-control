@@ -16,12 +16,9 @@ test.describe('estrutura e navegação (modo mock)', () => {
 
     const menu = page.getByRole('navigation', { name: 'Menu principal' });
     await expect(menu.getByRole('link')).toHaveText([
-      'Torre',
-      'Incidentes',
-      'Achados',
+      'Detecções',
       'Postura cloud',
       'Ativos e identidades',
-      'Relatórios',
       'Clientes',
       'Usuários',
       'Contas cloud',
@@ -39,9 +36,9 @@ test.describe('estrutura e navegação (modo mock)', () => {
     await tenant.selectOption({ label: 'Cliente Demo Beta' });
     await expect(tenant).toHaveValue('018f2c1e-0000-7000-8000-00000000be7a');
 
-    await menu.getByRole('link', { name: 'Incidentes' }).click();
-    await expect(page).toHaveURL(/\/incidentes$/);
-    await expect(page.getByRole('heading', { name: 'Incidentes' })).toBeVisible();
+    await menu.getByRole('link', { name: 'Postura cloud' }).click();
+    await expect(page).toHaveURL(/\/postura$/);
+    await expect(page.getByRole('heading', { level: 1, name: 'Postura cloud' })).toBeVisible();
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
@@ -56,7 +53,7 @@ test.describe('estrutura e navegação (modo mock)', () => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'leitura'));
     await page.goto('/');
     const menu = page.getByRole('navigation', { name: 'Menu principal' });
-    await expect(menu.getByRole('link', { name: 'Torre' })).toBeVisible();
+    await expect(menu.getByRole('link', { name: 'Detecções' })).toBeVisible();
     await expect(menu.getByRole('link', { name: 'Clientes' })).toHaveCount(0);
     await expect(menu.getByRole('link', { name: 'Usuários' })).toHaveCount(0);
     await expect(page.getByLabel('Cliente')).toHaveCount(0);

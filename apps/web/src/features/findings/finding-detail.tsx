@@ -7,51 +7,17 @@ import {
   RAW_EVENT_RETENTION_DAYS,
 } from '@verax/shared';
 import { type FormEvent, useId, useState } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { SeverityBadge } from '@/components/security/severity-badge';
-import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
-import { Sheet } from '@/components/ui/sheet';
+import { selectionSearch } from '@/features/detections/url-state';
 import { usePlanHistory } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, formatTimestamp } from '@/lib/format';
 import { FindingStatusBadge } from './finding-status-badge';
-import {
-  useAddFindingComment,
-  useCreateAlertException,
-  useFinding,
-  useUpdateFindingStatus,
-} from './findings-api';
-import { FINDING_SOURCE_LABELS, findingOriginLabel } from './labels';
-
-/** Detalhe do achado num painel lateral (T7.7): evento bruto, status, comentários e exceção. */
-export function FindingPanel({ id, onClose }: { id: string | null; onClose: () => void }) {
-  const finding = useFinding(id);
-  return (
-    <Sheet
-      open={id !== null}
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-      title={finding.data?.title ?? 'Achado'}
-      description={
-        finding.data
-          ? `${FINDING_SOURCE_LABELS[finding.data.source]} · ${findingOriginLabel(finding.data.accountId)}`
-          : undefined
-      }
-    >
-      {finding.isError ? (
-        <ErrorState error={finding.error} onRetry={() => void finding.refetch()} />
-      ) : !finding.data ? (
-        <LoadingState rows={6} label="Carregando o achado" />
-      ) : (
-        <FindingDetailView key={finding.data.id} finding={finding.data} />
-      )}
-    </Sheet>
-  );
-}
+import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus } from './findings-api';
 
 /** De onde vem a regra do achado, quando não é a do Wazuh para os logs da AWS. */
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
@@ -61,8 +27,13 @@ const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
   wazuh_agent: 'Regra (agente do Wazuh)',
 };
 
-function FindingDetailView({ finding }: { finding: FindingDetail }) {
+/**
+ * Detalhe do achado (tela Detecções, no painel ao lado da lista): os campos, o MITRE, o incidente, a triagem com a
+ * exceção, os comentários e o evento bruto.
+ */
+export function FindingDetailView({ finding }: { finding: FindingDetail }) {
   const { data: me } = useMe();
+  const [params] = useSearchParams();
   const can = (permission: Permission) => me?.permissions.includes(permission) === true;
   const fields: [string, string | null][] = [
     ['Quando', `${formatTimestamp(finding.occurredAt)} (${formatRelative(finding.occurredAt)})`],
@@ -121,7 +92,10 @@ function FindingDetailView({ finding }: { finding: FindingDetail }) {
       {finding.incidentId && (
         <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
           Este achado faz parte de um incidente.{' '}
-          <Link to={`/incidentes/${finding.incidentId}`} className="font-medium underline">
+          <Link
+            to={{ search: selectionSearch(params, { kind: 'incident', id: finding.incidentId }) }}
+            className="font-medium underline"
+          >
             Ver incidente
           </Link>
         </p>

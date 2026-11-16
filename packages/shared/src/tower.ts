@@ -148,7 +148,7 @@ export function radarSectorOf(source: FindingSource): RadarSector {
 }
 
 export const radarDetectionSchema = z.strictObject({
-  /** O achado; o painel abre o detalhe dele (`/achados?achado=<id>`). */
+  /** O achado; o painel abre o detalhe dele na tela Detecções (`/?achado=<id>`). */
   id: z.uuid(),
   severity: z.enum(FINDING_SEVERITIES),
   status: z.enum(FINDING_STATUSES),

@@ -56,7 +56,7 @@ describe('rotas internas', () => {
 describe('menu e cabeçalho por papel', () => {
   // Contas cloud, Agentes, Lista de proteção e Exceções: leitura liberada para todos (matriz de permissões).
   const shared = ['Contas cloud', 'Agentes', 'Lista de proteção', 'Exceções'];
-  const operation = ['Torre', 'Incidentes', 'Achados', 'Postura cloud', 'Ativos e identidades', 'Relatórios'];
+  const operation = ['Detecções', 'Postura cloud', 'Ativos e identidades'];
   const expectedMenu: Record<Role, string[]> = {
     admin_verax: [
       ...operation,
@@ -143,8 +143,8 @@ describe('menu no celular', () => {
     expect(drawer).toHaveAttribute('data-open', 'false');
 
     await userEvent.click(open);
-    await userEvent.click(within(await menu()).getByRole('link', { name: 'Incidentes' }));
-    await waitFor(() => expect(router.state.location.pathname).toBe('/incidentes'));
+    await userEvent.click(within(await menu()).getByRole('link', { name: 'Postura cloud' }));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/postura'));
     expect(drawer).toHaveAttribute('data-open', 'false');
 
     // Voltar pelo navegador não reabre a gaveta da página anterior.
