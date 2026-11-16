@@ -33,15 +33,24 @@ function build(path: string, entries: [string, string | null | undefined][]): st
   return search ? `${path}?${search}` : path;
 }
 
+const INCIDENT_PREFIX = '/incidentes/';
+
+/** O caminho sem as barras do fim (sem expressão regular sobre a URL). */
+function withoutTrailingSlashes(pathname: string): string {
+  let end = pathname.length;
+  while (end > 0 && pathname.charAt(end - 1) === '/') end -= 1;
+  return pathname.slice(0, end);
+}
+
 /** O endereço novo de um endereço de antes (caminho e busca). Um caminho que não é de antes volta como veio. */
 export function legacyDetectionsUrl(pathname: string, search: string): string {
   const old = new URLSearchParams(search);
-  const path = pathname.replace(/\/+$/, '') || '/';
+  const path = withoutTrailingSlashes(pathname) || '/';
   const P = DETECTION_PARAMS;
 
-  const incidentMatch = /^\/incidentes\/([^/]+)$/.exec(path);
-  if (incidentMatch) {
-    const id = decodeURIComponent(incidentMatch[1] ?? '');
+  const incidentSegment = path.startsWith(INCIDENT_PREFIX) ? path.slice(INCIDENT_PREFIX.length) : '';
+  if (incidentSegment && !incidentSegment.includes('/')) {
+    const id = decodeURIComponent(incidentSegment);
     return build('/', [[P.incident, UUID.test(id) ? id : null]]);
   }
   if (path === '/incidentes') {

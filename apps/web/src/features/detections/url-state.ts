@@ -74,11 +74,19 @@ const pick = <T extends string>(allowed: readonly T[], value: string | null): T 
   allowed.find((candidate) => candidate === value);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** AAAA-MM-DD, conferido caractere a caractere (sem expressão regular sobre a URL). */
+function isDay(value: string): boolean {
+  if (value.length !== 10) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value.charAt(i);
+    if (i === 4 || i === 7 ? ch !== '-' : ch < '0' || ch > '9') return false;
+  }
+  return true;
+}
 
 /** A data do campo (AAAA-MM-DD) no começo ou no fim do dia, no fuso de quem escolheu, em ISO. */
 export function dayBoundary(day: string, edge: 'start' | 'end'): string | undefined {
-  if (!DAY.test(day)) return undefined;
+  if (!isDay(day)) return undefined;
   const [year, month, date] = day.split('-').map(Number) as [number, number, number];
   const value =
     edge === 'start'
