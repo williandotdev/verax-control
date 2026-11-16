@@ -282,12 +282,19 @@ export class AdminAuthService implements OnModuleInit {
       const ref = opaqueRef(value);
       const email = await this.store.runTransaction(async (tx) => {
         const data = await tx.get(COLLECTIONS.adminSessions, ref);
+        // Os códigos da entrada única no SIEM pedidos por esta sessão e ainda não trocados saem junto: sair do
+        // console fecha também a porta que ela abriu (a troca ainda confere a sessão, `sso/sso.service.ts`).
+        const codes = await tx.query(COLLECTIONS.adminSsoCodes, {
+          where: [{ field: 'sessionRef', op: '==', value: ref }],
+        });
+        for (const code of codes) tx.delete(COLLECTIONS.adminSsoCodes, code.id);
         if (data === undefined) return undefined;
         const session = parseDocument(adminSessionSchema, COLLECTIONS.adminSessions, ref, data);
         tx.delete(COLLECTIONS.adminSessions, ref);
         this.audit.record(tx, {
           actor: `owner:${session.email}`,
           action: 'admin.logout',
+          ...(codes.length > 0 && { details: { ssoCodesRevoked: codes.length } }),
           requestId: context.requestId,
         });
         return session.email;

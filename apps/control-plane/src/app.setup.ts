@@ -47,6 +47,13 @@ const HELMET_OPTIONS = {
 /** As rotas internas do cp-worker (`/internal/...`), fora do prefixo `/v1`. */
 const INTERNAL_ROUTES = [{ path: 'internal/*path', method: RequestMethod.POST }];
 
+/** O provedor de identidade do SIEM no cp-admin (`admin/sso/`), fora do prefixo `/v1`, como no OpenID Connect. */
+const SSO_ROUTES = [
+  { path: 'sso/authorize', method: RequestMethod.GET },
+  { path: 'sso/token', method: RequestMethod.POST },
+  { path: 'sso/jwks', method: RequestMethod.GET },
+];
+
 function noStore(_req: Request, res: Response, next: NextFunction): void {
   res.setHeader('Cache-Control', 'private, no-store');
   next();
@@ -83,10 +90,12 @@ export function configureApp(
   if (config.ROLE === 'admin') serveConsole(app, options.consoleRoot);
   app.setGlobalPrefix(API_PREFIX, {
     // O health check fica fora do prefixo versionado, e as rotas internas do cp-worker também: as tasks chamam
-    // `<WORKER_URL>/internal/steps/<passo>` (cloud-tasks-step-queue.ts). O cp-public não tem rota interna nenhuma.
+    // `<WORKER_URL>/internal/steps/<passo>` (cloud-tasks-step-queue.ts). O cp-public não tem rota interna nenhuma. No
+    // cp-admin, o `/sso/...` da entrada única no SIEM.
     exclude: [
       { path: 'health', method: RequestMethod.GET },
       ...(config.ROLE === 'worker' ? INTERNAL_ROUTES : []),
+      ...(config.ROLE === 'admin' ? SSO_ROUTES : []),
     ],
   });
 }

@@ -34,6 +34,8 @@ import { AdminAuthService } from './auth/admin-auth.service.js';
 import { ADMIN_SECRETS, type AdminSecretSource, SecretManagerAdminSecrets } from './auth/admin-secrets.js';
 import { GoogleAuthIdTokenSource } from './google-id-token.js';
 import { OwnerGuard } from './owner.guard.js';
+import { SSO_GLOBAL, SSO_LIMITS, SSO_PER_IP, SsoController, type SsoLimits } from './sso/sso.controller.js';
+import { SsoService } from './sso/sso.service.js';
 import { HttpWorkerOwnerClient, type WorkerOwnerClient } from './worker-owner-client.js';
 
 export interface AdminModuleOptions {
@@ -52,7 +54,7 @@ export interface AdminModuleOptions {
 
 /**
  * O console do responsável (`cp-admin`, `ROLE=admin`): as rotas `/v1/admin/...`, o login próprio (e-mail, senha e
- * TOTP, `auth/`) e a guarda global que exige a sessão dele em toda requisição. Só este papel carrega o módulo; no
+ * TOTP, `auth/`), o provedor de identidade do SIEM da Verax (`/sso/...`, `sso/`) e a guarda global que exige a sessão dele em toda requisição. Só este papel carrega o módulo; no
  * `cp-public` e no `cp-worker` as rotas nem existem. Os clientes (lista, detalhe, contrato direto) e os textos legais
  * (Termos, Privacidade e DPA) leem e gravam o Firestore; as operações do provisionamento vão ao cp-worker
  * pelo `CONSOLE_WORKER_CLIENT` (`worker-owner-client.ts`), com o token da conta do cp-admin.
@@ -69,12 +71,14 @@ export class AdminModule {
         AdminPricingController,
         AdminSessionController,
         AdminTenantsController,
+        SsoController,
       ],
       providers: [
         AdminAuthService,
         AdminLegalService,
         AdminPricingService,
         AdminTenantsService,
+        SsoService,
         ProvisioningStore,
         {
           provide: CONSOLE_WORKER_CLIENT,
@@ -111,6 +115,14 @@ export class AdminModule {
             login: new TokenBucketLimiter(LOGIN_PER_IP, clock),
             loginGlobal: new TokenBucketLimiter(LOGIN_GLOBAL, clock),
             account: new TokenBucketLimiter(ACCOUNT_PER_IP, clock),
+          }),
+          inject: [CLOCK],
+        },
+        {
+          provide: SSO_LIMITS,
+          useFactory: (clock: Clock): SsoLimits => ({
+            perIp: new TokenBucketLimiter(SSO_PER_IP, clock),
+            global: new TokenBucketLimiter(SSO_GLOBAL, clock),
           }),
           inject: [CLOCK],
         },

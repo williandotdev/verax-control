@@ -1,5 +1,5 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createFakeState } from '@/mocks/fake-admin-api';
 import { FICTITIOUS_LOGIN_PHRASE, FICTITIOUS_TOTP_CODE, LOGIN_FAILED_MESSAGE } from '@/mocks/fake-auth';
 import { FICTITIOUS_OWNER } from '@/mocks/fixtures';
@@ -45,6 +45,23 @@ describe('entrada no console', () => {
       password: FICTITIOUS_LOGIN_PHRASE,
       code: FICTITIOUS_TOTP_CODE,
     });
+  });
+
+  it('vindo da entrada única no SIEM: depois de entrar, o navegador volta ao /sso/authorize de verdade', async () => {
+    const assign = vi.fn();
+    vi.stubGlobal('location', { ...window.location, assign });
+    try {
+      const pedido = '/sso/authorize?response_type=code&client_id=verax-siem';
+      const state = createFakeState({ loggedIn: false });
+      const { user } = renderConsole(`/entrar?voltar=${encodeURIComponent(pedido)}`, state);
+      await user.type(await screen.findByLabelText('E-mail'), FICTITIOUS_OWNER);
+      await user.type(screen.getByLabelText('Senha'), FICTITIOUS_LOGIN_PHRASE);
+      await user.type(screen.getByLabelText('Código do aplicativo'), FICTITIOUS_TOTP_CODE);
+      await user.click(screen.getByRole('button', { name: 'Entrar' }));
+      await waitFor(() => expect(assign).toHaveBeenCalledWith(pedido));
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('confere os campos antes de mandar: código de 6 números', async () => {

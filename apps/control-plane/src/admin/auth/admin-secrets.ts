@@ -2,7 +2,8 @@ import { loadSecretManagerApi, type SecretManagerApi } from '../../access/bootst
 
 /**
  * O cofre do login do console no Secret Manager do projeto do plano de controle (`ADMIN_SECRETS_PROJECT_ID`), lido pela
- * API na versão `latest`: `cp-admin-totp-key`, a chave mestra (`admin-crypto.ts`). Não é montado como variável: o
+ * API na versão `latest`: `cp-admin-totp-key`, a chave mestra (`admin-crypto.ts`), e `cp-admin-sso-signing-key`, a chave
+ * de assinatura da entrada única no SIEM. Não é montado como variável: o
  * serviço sobe com o cofre vazio (o login responde 503 até o responsável gravar). Lido uma vez e guardado na memória do
  * processo.
  *
@@ -14,11 +15,19 @@ import { loadSecretManagerApi, type SecretManagerApi } from '../../access/bootst
  */
 export const TOTP_KEY_VAULT = 'cp-admin-totp-key';
 
+/**
+ * A chave privada que assina os tokens da entrada única no SIEM (`admin/sso/`): Ed25519, em PEM (PKCS #8). Lida só pelo
+ * cp-admin, pela API, como a chave do console; a parte pública sai em `GET /sso/jwks` e fica fixada no nó da célula.
+ */
+export const SSO_SIGNING_KEY_VAULT = 'cp-admin-sso-signing-key';
+
 export const ADMIN_SECRETS = Symbol('ADMIN_SECRETS');
 
 export interface AdminSecretSource {
   /** O conteúdo do cofre da chave mestra; `undefined` sem versão habilitada. */
   totpKey(): Promise<string | undefined>;
+  /** O PEM da chave de assinatura da entrada única; `undefined` sem versão habilitada. */
+  ssoSigningKey(): Promise<string | undefined>;
 }
 
 /** A API do Secret Manager falhou (rede, permissão): o console responde 503, sem detalhe. */
@@ -54,6 +63,10 @@ export class SecretManagerAdminSecrets implements AdminSecretSource {
 
   totpKey(): Promise<string | undefined> {
     return this.read(TOTP_KEY_VAULT);
+  }
+
+  ssoSigningKey(): Promise<string | undefined> {
+    return this.read(SSO_SIGNING_KEY_VAULT);
   }
 
   private async read(secretId: string): Promise<string | undefined> {
