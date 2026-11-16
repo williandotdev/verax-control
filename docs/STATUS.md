@@ -5438,3 +5438,54 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **A fazer pelo responsável:** os nomes dos produtos e preços na Stripe vêm do catálogo de verdade, fora do
   repositório: trocar lá (o `stripe-setup` não renomeia produto existente). O plano do nó dedicado continua com o
   rótulo `Enterprise` no painel do cliente (o rótulo próprio fica para o PC-10).
+
+## Torre: radar de detecções
+
+- **Pedido do responsável (15/11/2026):** dentro da Torre, um radar que fica girando e mostra as detecções, parecido com
+  radar de navegação ou aéreo, no padrão visual do projeto.
+- **Contrato (`packages/shared/src/tower.ts`):** `radar` opcional no resumo da Torre (um nó de antes não manda):
+  `since`, `windowHours` (24), `limit` (100), `total` (exato) e `detections` (os achados mais recentes da janela, até o
+  teto: id, severidade, status, fonte, hora, título e o incidente com `open`). `RADAR_SECTORS` (AWS, GCP, Cloudflare e
+  agentes, no sentido horário a partir do topo) e `radarSectorOf` (a fonte de log de cada setor).
+- **API (`apps/api/src/tower/tower.service.ts`):** o radar entra no `GET /v1/tower` (permissão `tower:read`, a mesma
+  cadência de atualização da tela): `count` e `findMany` pelo escopo do cliente da sessão, pelo índice
+  `(tenantId, occurredAt desc)`, só fontes conhecidas; o estado dos incidentes também pelo escopo (não pela relação
+  aninhada, que o escopo não alcança). O total nunca fica menor que a lista.
+- **Painel:** `components/security/detection-radar.tsx` e `radar-geometry.ts`, no cartão "Radar de detecções" da Torre,
+  logo depois do pulso. SVG e CSS, sem pacote novo. O ângulo é a origem (um quarto por setor, posição estável pelo
+  hash do ID), a distância é a idade pela raiz quadrada (anéis a 1, 3, 6, 12 e 24 horas; as horas recentes ganham
+  espaço), a forma, o tamanho e a cor são a severidade (octógono, triângulo, círculo e losango, nos tokens de
+  severidade), e o incidente aberto ganha um anel. A varredura (gradiente cônico, 7 s por volta) e o brilho de cada
+  ponto, atrasado pelo ângulo para acender quando ela passa, são só CSS (`index.css`); a detecção nova pulsa uma vez
+  (na abertura, as dos últimos 15 minutos; depois, as que chegam). O radar fica na faixa da marca (navy) nos dois
+  temas; cada ponto tem o anel da cor do fundo (o crítico fica a 3,65:1 do fundo no claro e 3,77:1 no escuro, conferido
+  com o script da skill de visualização, inclusive sob a cunha da varredura). Dica no mouse e no foco, uma parada de
+  teclado (setas, Home, End, Enter abre o achado, Esc fecha a dica), área de toque maior que a marca e, no toque, o
+  primeiro toque mostra a dica. Com menos movimento pedido: sem varredura, brilho nem pulso. Ao lado (embaixo, no
+  celular): o total por severidade, o aviso do teto com link para Achados, as 5 mais recentes com link e "Ver em
+  tabela" com todas (achado e incidente com link).
+- **Demonstração:** o radar sai dos achados do mock (a mesma triagem das outras telas); o Alfa ganhou 3 achados
+  fictícios da auditoria da GCP (antes de as leituras falharem), para o setor não ficar vazio. O Cloudflare do Alfa
+  continua aguardando a primeira leitura, sem detecção.
+- **Testes:** `packages/shared` (`tower.test.ts`: o radar opcional, o teto, a fonte e a janela); API
+  (`tower-posture-assets.test.ts`: A/B sem vazar achado nem incidente de B, janela, fonte desconhecida fora, incidente
+  aberto e resolvido, teto de 100 com o total exato, radar vazio e permissões: os três papéis do cliente leem, sem sessão
+  401 e a equipe da Verax sem cliente escolhido 409); painel (`radar-geometry.test.ts`: setores, ângulo dentro do
+  setor, hash espalhado, escala da idade, anéis, coordenadas, teto, pulso e brilho; `detection-radar.test.tsx`: nome
+  acessível, forma por severidade, anel do incidente, dica no mouse, teclado, clique, movimento e menos movimento com
+  `matchMedia`, pulso na atualização, teto, tabela e vazio; `tower-page.test.tsx`: o cartão com a demonstração e o nó
+  de antes); e2e `radar.mock.spec.ts` com axe nos dois temas, no computador e a 390 px (dica aberta pelo teclado e
+  tabela aberta, sem rolagem horizontal), a varredura girando, o Enter abrindo o achado e o menos movimento.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, entrar e abrir a Torre: a varredura gira, o brilho acende
+  quando ela passa; passar o mouse e usar Tab e as setas no radar; ligar "reduzir movimento" no sistema; abrir no
+  celular.
+- **Revisão do PR #129 (dois P2 do Codex):** as contagens por severidade e por setor passam a vir da API para a janela
+  inteira (`bySeverity` e `bySector`, um `groupBy` por fonte e severidade com o mesmo escopo e a mesma janela, lido
+  depois da lista; o schema exige que cada divisão some o total): acima do teto, a frase e os cantos do radar não
+  esquecem os críticos mais antigos. No toque, só o clique decide (o mouse continua mostrando a dica ao passar): o
+  primeiro toque num ponto mostra a dica e o segundo, no mesmo ponto, abre o achado; o foco do próprio toque não conta
+  como seleção, e tocar fora desarma. Testes: API com 108 na janela e os críticos fora dos 100 desenhados; painel com o
+  teto e as contagens da janela e com toques (`pointerType` touch).
+- **Riscos e dúvidas:** a janela (24 h), o teto (100), a escala pela raiz e os setores foram escolhidos sem decisão
+  registrada; no tema claro, o radar fica na faixa navy da marca, e não no branco do cartão. A área de toque de um ponto
+  fica perto de 24 px no celular, com pontos encostados: a lista e a tabela são o caminho equivalente.
