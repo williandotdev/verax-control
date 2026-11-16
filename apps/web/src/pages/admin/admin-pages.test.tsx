@@ -1075,8 +1075,12 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
   });
 
   it('a exceção criada ao marcar um achado como legítimo aparece aqui', async () => {
-    const router = renderAt('/achados?severidade=critical');
-    await userEvent.click(await screen.findByRole('button', { name: /Tentativa de desligar a trilha/ }));
+    const router = renderAt('/?visao=achados&severidade=critical');
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Abrir o achado: Tentativa de desligar a trilha do CloudTrail',
+      }),
+    );
     const panel = await screen.findByRole('dialog');
     await userEvent.click(within(panel).getByRole('button', { name: 'Marcar como legítimo' }));
     const offer = (await within(panel).findByText('Criar exceção para alertas iguais?')).closest(

@@ -15,7 +15,7 @@ import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { usageMonth } from '../usage/usage-meter.js';
 import { readFranchiseUsage } from './franchise-usage.js';
-import { assertPeriodWithinHistoryDays } from './plan-history.js';
+import { assertPeriodWithinHistoryDays, assertRangeWithinHistoryDays } from './plan-history.js';
 import { assertWithinPlan, countSeats, lockPlanSeats, lockSeatRow, PlanLimitReached } from './plan-limits.js';
 import { readTenantPlan, TenantPlanMissing, TenantPlanResolver } from './tenant-plan.js';
 
@@ -92,6 +92,15 @@ export class PlanService {
   async assertPeriodWithinHistory(period: HistoryPeriod | undefined): Promise<void> {
     if (period === undefined) return;
     assertPeriodWithinHistoryDays(await this.historyDays(), period);
+  }
+
+  /**
+   * Recusa (400) o intervalo personalizado (`from`/`to`) que começa antes do histórico do plano do cliente, com o mesmo
+   * código e a mesma mensagem do período (achados, Detecções e relatórios). Sem intervalo, passa.
+   */
+  async assertRangeWithinHistory(from: string | undefined, now: Date = new Date()): Promise<void> {
+    if (from === undefined) return;
+    assertRangeWithinHistoryDays(await this.historyDays(), from, now);
   }
 
   /**

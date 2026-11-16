@@ -18,6 +18,15 @@ export function safeReturnPath(value: string | null | undefined): string {
   return value;
 }
 
+/**
+ * O pedido da entrada única no SIEM (`/sso/authorize?...`), que o servidor atende (não é uma tela do console): depois de
+ * entrar, o navegador volta a ele por uma navegação de verdade. Ele confere tudo de novo (cliente, endereço de retorno
+ * e sessão); aqui é só o caminho exato.
+ */
+export function isServerReturnPath(path: string): boolean {
+  return path.startsWith('/sso/authorize?');
+}
+
 /** O endereço da tela de entrada, guardando a tela atual para voltar depois. */
 export function loginPath(current: string): string {
   const back = safeReturnPath(current);

@@ -65,6 +65,11 @@ export const COLLECTIONS = {
   adminLoginThrottle: 'adminLoginThrottle',
   adminEnrollments: 'adminEnrollments',
   /**
+   * Entrada única no SIEM (`admin/sso/`): os códigos de autorização pendentes, pelo SHA-256 do código (60 s, uso único).
+   * Só o cp-admin lê e grava.
+   */
+  adminSsoCodes: 'adminSsoCodes',
+  /**
    * Célula compartilhada (CE-06): o registro das células (`cells/{id}`, gravado pelo responsável) e os relatórios que
    * cada uma mandou (`cellReports/{célula}_{reportId}`: a idempotência da entrega push e o que fica para os PRs
    * seguintes tratarem). Só o cp-worker lê e grava os relatórios.
@@ -162,5 +167,10 @@ export const TTL_FIELDS: readonly TtlField[] = [
     retention: 'fim da janela de 15 min ou do bloqueio',
   },
   { collectionGroup: COLLECTIONS.adminEnrollments, field: TTL_FIELD, retention: '10 min (cadastro do TOTP)' },
+  {
+    collectionGroup: COLLECTIONS.adminSsoCodes,
+    field: TTL_FIELD,
+    retention: '60 s (código da entrada única no SIEM)',
+  },
   { collectionGroup: COLLECTIONS.cellReports, field: TTL_FIELD, retention: '90 dias' },
 ];

@@ -15,6 +15,7 @@ import { MeController } from './me.controller.js';
 import { PermissionsGuard } from './permissions.guard.js';
 import { SessionTenantController } from './session-tenant.controller.js';
 import { SessionGuard } from './session.guard.js';
+import { SSO_FETCH, type SsoFetch } from './sso/token-exchange.js';
 
 @Global()
 @Module({
@@ -29,13 +30,14 @@ import { SessionGuard } from './session.guard.js';
   providers: [
     {
       provide: AUTH,
-      inject: [APP_CONFIG, PrismaService, PinoLogger, AuditService, MAIL_TRANSPORT],
+      inject: [APP_CONFIG, PrismaService, PinoLogger, AuditService, MAIL_TRANSPORT, SSO_FETCH],
       useFactory: (
         config: AppConfig,
         prisma: PrismaService,
         logger: PinoLogger,
         auditService: AuditService,
         mail: MailTransport,
+        ssoFetch: SsoFetch,
       ) => {
         logger.setContext('BetterAuth');
         // Eventos de autenticação gravados fora de transação de requisição (o Better Auth tem as próprias).
@@ -45,9 +47,13 @@ import { SessionGuard } from './session.guard.js';
           logger,
           mail,
           audit: (entry) => auditService.write(prisma, entry),
+          ssoFetch,
         });
       },
     },
+    // A troca do código da entrada única no console (`sso/token-exchange.ts`): o `fetch` do Node. Os testes trocam
+    // por um que chega ao console de teste.
+    { provide: SSO_FETCH, useValue: ((input, init) => fetch(input, init)) satisfies SsoFetch },
     { provide: CSRF_UTILITIES, inject: [APP_CONFIG], useFactory: createCsrfUtilities },
     HostTenantResolver,
     // A ordem importa: na célula, o endereço antes de tudo (CE-01); depois sessão, permissão (nega por padrão) e CSRF

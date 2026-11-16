@@ -5421,6 +5421,57 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   sem eco (no Git Bash do Windows, `winpty`); a lista de responsáveis da linha de comando é digitada (a mesma de
   `owner_principals`): um e-mail que não esteja no serviço é recusado no login de qualquer jeito.
 
+## Torre: radar de detecções
+
+- **Pedido do responsável (15/11/2026):** dentro da Torre, um radar que fica girando e mostra as detecções, parecido com
+  radar de navegação ou aéreo, no padrão visual do projeto.
+- **Contrato (`packages/shared/src/tower.ts`):** `radar` opcional no resumo da Torre (um nó de antes não manda):
+  `since`, `windowHours` (24), `limit` (100), `total` (exato) e `detections` (os achados mais recentes da janela, até o
+  teto: id, severidade, status, fonte, hora, título e o incidente com `open`). `RADAR_SECTORS` (AWS, GCP, Cloudflare e
+  agentes, no sentido horário a partir do topo) e `radarSectorOf` (a fonte de log de cada setor).
+- **API (`apps/api/src/tower/tower.service.ts`):** o radar entra no `GET /v1/tower` (permissão `tower:read`, a mesma
+  cadência de atualização da tela): `count` e `findMany` pelo escopo do cliente da sessão, pelo índice
+  `(tenantId, occurredAt desc)`, só fontes conhecidas; o estado dos incidentes também pelo escopo (não pela relação
+  aninhada, que o escopo não alcança). O total nunca fica menor que a lista.
+- **Painel:** `components/security/detection-radar.tsx` e `radar-geometry.ts`, no cartão "Radar de detecções" da Torre,
+  logo depois do pulso. SVG e CSS, sem pacote novo. O ângulo é a origem (um quarto por setor, posição estável pelo
+  hash do ID), a distância é a idade pela raiz quadrada (anéis a 1, 3, 6, 12 e 24 horas; as horas recentes ganham
+  espaço), a forma, o tamanho e a cor são a severidade (octógono, triângulo, círculo e losango, nos tokens de
+  severidade), e o incidente aberto ganha um anel. A varredura (gradiente cônico, 7 s por volta) e o brilho de cada
+  ponto, atrasado pelo ângulo para acender quando ela passa, são só CSS (`index.css`); a detecção nova pulsa uma vez
+  (na abertura, as dos últimos 15 minutos; depois, as que chegam). O radar fica na faixa da marca (navy) nos dois
+  temas; cada ponto tem o anel da cor do fundo (o crítico fica a 3,65:1 do fundo no claro e 3,77:1 no escuro, conferido
+  com o script da skill de visualização, inclusive sob a cunha da varredura). Dica no mouse e no foco, uma parada de
+  teclado (setas, Home, End, Enter abre o achado, Esc fecha a dica), área de toque maior que a marca e, no toque, o
+  primeiro toque mostra a dica. Com menos movimento pedido: sem varredura, brilho nem pulso. Ao lado (embaixo, no
+  celular): o total por severidade, o aviso do teto com link para Achados, as 5 mais recentes com link e "Ver em
+  tabela" com todas (achado e incidente com link).
+- **Demonstração:** o radar sai dos achados do mock (a mesma triagem das outras telas); o Alfa ganhou 3 achados
+  fictícios da auditoria da GCP (antes de as leituras falharem), para o setor não ficar vazio. O Cloudflare do Alfa
+  continua aguardando a primeira leitura, sem detecção.
+- **Testes:** `packages/shared` (`tower.test.ts`: o radar opcional, o teto, a fonte e a janela); API
+  (`tower-posture-assets.test.ts`: A/B sem vazar achado nem incidente de B, janela, fonte desconhecida fora, incidente
+  aberto e resolvido, teto de 100 com o total exato, radar vazio e permissões: os três papéis do cliente leem, sem sessão
+  401 e a equipe da Verax sem cliente escolhido 409); painel (`radar-geometry.test.ts`: setores, ângulo dentro do
+  setor, hash espalhado, escala da idade, anéis, coordenadas, teto, pulso e brilho; `detection-radar.test.tsx`: nome
+  acessível, forma por severidade, anel do incidente, dica no mouse, teclado, clique, movimento e menos movimento com
+  `matchMedia`, pulso na atualização, teto, tabela e vazio; `tower-page.test.tsx`: o cartão com a demonstração e o nó
+  de antes); e2e `radar.mock.spec.ts` com axe nos dois temas, no computador e a 390 px (dica aberta pelo teclado e
+  tabela aberta, sem rolagem horizontal), a varredura girando, o Enter abrindo o achado e o menos movimento.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`, entrar e abrir a Torre: a varredura gira, o brilho acende
+  quando ela passa; passar o mouse e usar Tab e as setas no radar; ligar "reduzir movimento" no sistema; abrir no
+  celular.
+- **Revisão do PR #129 (dois P2 do Codex):** as contagens por severidade e por setor passam a vir da API para a janela
+  inteira (`bySeverity` e `bySector`, um `groupBy` por fonte e severidade com o mesmo escopo e a mesma janela, lido
+  depois da lista; o schema exige que cada divisão some o total): acima do teto, a frase e os cantos do radar não
+  esquecem os críticos mais antigos. No toque, só o clique decide (o mouse continua mostrando a dica ao passar): o
+  primeiro toque num ponto mostra a dica e o segundo, no mesmo ponto, abre o achado; o foco do próprio toque não conta
+  como seleção, e tocar fora desarma. Testes: API com 108 na janela e os críticos fora dos 100 desenhados; painel com o
+  teto e as contagens da janela e com toques (`pointerType` touch).
+- **Riscos e dúvidas:** a janela (24 h), o teto (100), a escala pela raiz e os setores foram escolhidos sem decisão
+  registrada; no tema claro, o radar fica na faixa navy da marca, e não no branco do cartão. A área de toque de um ponto
+  fica perto de 24 px no celular, com pontos encostados: a lista e a tabela são o caminho equivalente.
+
 ## Nomes de mercado: SIEM Cloud, SIEM Dedicado e SIEM + vCISO
 
 - **Decisão do responsável (15/11/2026):** o Verax Control é apresentado como SIEM em nuvem, e os planos ganham nomes
@@ -5438,6 +5489,113 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **A fazer pelo responsável:** os nomes dos produtos e preços na Stripe vêm do catálogo de verdade, fora do
   repositório: trocar lá (o `stripe-setup` não renomeia produto existente). O plano do nó dedicado continua com o
   rótulo `Enterprise` no painel do cliente (o rótulo próprio fica para o PC-10).
+
+## Tela Detecções: Torre, Incidentes, Achados e Relatórios numa tela só
+
+- **Decisão do responsável (16/11/2026):** "o menu Torre, Achados, Relatórios e Incidentes está muito complexo e
+  redundante". Opção escolhida: uma tela de operação, **Detecções** (`/`), no lugar das quatro. Postura cloud, Ativos e
+  identidades e a Administração não mudam. Menu "Operação": Detecções · Postura cloud · Ativos e identidades.
+- **Resumo da situação no topo** (`features/detections/situation-strip.tsx`, do `GET /v1/tower`, só com `tower:read`):
+  o semáforo com o motivo, as decisões pendentes em linhas com o atalho para a lista filtrada, a saúde da coleta num
+  botão (o detalhe de cada fonte, os avisos e o pulso das 24 horas numa gaveta), a nota de postura num selo (link para
+  Postura) e o radar de detecções compacto (sem a lista das mais recentes; a tabela do radar continua). Recolhível: a
+  escolha fica no `localStorage` por pessoa (`verax:deteccoes:resumo:<userId>`, com `try/catch`); no celular começa
+  recolhido, só com o semáforo e as contagens. Saíram os cartões "Incidentes abertos", "Postura cloud" e "MITRE" da
+  Torre (repetiam a lista, o menu e a análise).
+- **Uma lista só** (`detection-list.tsx`): "Agrupar por incidente" (o padrão) mostra o incidente (nota, severidade,
+  status, responsável, ativos, achados, que abrem logo abaixo) e os achados fora de incidente em linhas próprias; "Todos
+  os achados" é a lista de achados de antes, com o incidente de cada um. No celular, a severidade, o status e a hora vão
+  embaixo do título; com o painel aberto ao lado, saem as colunas que o detalhe repete. Paginação na API.
+- **Um filtro só** (`filter-bar.tsx`, tudo na URL, `url-state.ts`): busca de texto, período (24 h, 7 d, 30 d, 90 d e 12
+  meses pelo histórico do plano, personalizado com as datas, ou todo o histórico), severidade, status (no agrupado,
+  "novo" é o incidente aberto; "legítimo" é só de achado) e, em "Mais filtros", fonte, conta, tática e técnica do MITRE,
+  "incidentes sem responsável" e a ordem (recentes ou graves primeiro).
+- **Detalhe e triagem no lugar** (`detail-panel.tsx`): na tela larga (80rem ou mais), ao lado da lista, sem cobrir
+  nada (foco no título ao abrir, Esc fecha e o foco volta ao item); na estreita, a gaveta de sempre. Incidente: o resumo
+  em português com o primeiro passo, o tratamento (status e responsável), a linha do tempo (cada achado abre no mesmo
+  painel), os ativos e o MITRE. Achado: os campos, a triagem, a exceção ao marcar como legítimo, os comentários e o
+  evento bruto. Incidente não tem comentário nem "tirar ou pôr achado" na API: não entraram.
+- **Análise** (abas "Lista | MITRE ATT&CK | Cobertura das fontes", só com `reports:read`): os relatórios de MITRE e de
+  cobertura no período do filtro (cada tática da grade filtra a lista por ela); **Exportar CSV** leva a lista filtrada de
+  agora (até 2 000 linhas, pela API, com o aviso quando passa). O resumo do período, as regras, as entidades, os
+  incidentes e as exceções dos Relatórios não ganharam tela (os endpoints continuam); o relatório executivo fica para
+  depois.
+- **Endereços de antes** (`legacy-url.ts`): `/incidentes` (com status, severidade e responsável), `/incidentes/:id`,
+  `/achados` (com os filtros e `?achado=`) e `/relatorios` (`?aba=mitre` e `cobertura` viram a análise; `excecoes` vai
+  para o cadastro de Exceções) levam à visão equivalente, sem ficar no histórico. Os links dos e-mails de aviso não
+  mudaram e continuam valendo.
+- **API:** `GET /v1/detections` (`incidents:read` e `findings:read`, escopo do cliente da sessão, `detectionListQuerySchema`
+  em `packages/shared/src/detections.ts`): incidentes e achados avulsos numa ordem só, com a mesma regra das funções
+  puras do shared (que a demonstração também usa), paginação juntando as duas tabelas sem SQL à mão e teto de 5 000
+  linhas de profundidade (400 `DETECTION_PAGE_OUT_OF_RANGE`). `GET /v1/findings` ganhou fonte, tática, técnica, busca
+  (com `%` e `_` escapados) e o intervalo personalizado; `GET /v1/reports/:kind` ganhou 24 horas e o intervalo. O começo
+  do intervalo é conferido contra o histórico do plano (um dia de folga). As táticas do MITRE foram para `mitre.ts`.
+- **Tour e demonstração:** os passos da Torre, de Incidentes, de Achados e de Relatórios viraram 7 passos da tela
+  Detecções (o admin da Verax vê 18); os exemplos abrem `/?incidente=` e `/?visao=achados&achado=`. A demonstração
+  responde `/v1/detections` e os filtros novos com as mesmas regras.
+- **Testes:** shared (`detections.test.ts`: filtros, janela, status equivalente, conteúdo pelo incidente, ordem,
+  intervalo e relatório); API (`detections.test.ts`, 38 testes com A/B, filtros, ordem e páginas mistas, teto, 400 e
+  permissões; `findings`, `reports` e `plan-history-essencial` ampliados); painel (`url-state.test.ts`, com os endereços
+  de antes; `detections-page.test.tsx`: agrupado, achados, filtros, intervalo, paginação, detalhe na gaveta e ao lado,
+  triagem, leitura, redirecionamentos, resumo recolhível, celular, sem armazenamento, nó de antes, sem `tower:read`,
+  análises, exportação; `tower-reason.test.ts`; radar compacto); e2e `deteccoes.mock.spec.ts` com axe nos dois temas, no
+  computador e a 390 px, e os outros e2e acertados para a tela nova.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`: recolher e mostrar o resumo e recarregar; abrir um incidente e
+  um achado no computador e no celular; mudar status e responsável; filtrar por tática na análise MITRE; exportar CSV;
+  abrir `/incidentes/<id>` e `/relatorios?aba=mitre`.
+- **Riscos e dúvidas:** o painel de build único com um nó de antes: `GET /v1/detections` responde 404 e os filtros novos
+  400 (atualizar o nó e o painel juntos); a ordem padrão é a atividade mais recente (não a nota de risco); o padrão do
+  período é todo o histórico; a busca com acento depende do `locale` do Postgres.
+
+## Entrada única no SIEM da Verax pelo console (Admin master) ⚠️ altera `auth`, `infra/` e o console
+
+Decisão do responsável de 15/11/2026: um login só para o SIEM da própria Verax (o painel da equipe na célula) e o
+console do responsável, com o console como provedor de identidade e o Admin master como um item do SIEM. Desenho e
+riscos em `docs/ARQUITETURA.md`, "Entrada única: o console como provedor de identidade do SIEM (Admin master)".
+
+- **Contrato (`packages/shared/src/sso.ts`):** OAuth 2.0 com código de autorização e PKCE S256, no formato do OpenID
+  Connect: o cliente fixo `verax-siem`, os parâmetros, a troca, o cabeçalho e as declarações estritas do token (EdDSA,
+  5 minutos) e a impressão digital RFC 7638. `authClientConfigSchema` ganhou `adminMasterUrl`.
+- **Console (`apps/control-plane/src/admin/sso/`):** `GET /sso/authorize`, `POST /sso/token` e `GET /sso/jwks`, fora do
+  prefixo `/v1` (`app.setup.ts`; o `console-assets.ts` não serve o `/sso/`). Lista exata de retorno
+  (`SSO_REDIRECT_URIS`), nada de redirecionamento aberto, `Sec-Fetch-Site: cross-site` recusado, o login do console
+  que volta ao pedido (a tela de entrada navega de verdade para o `/sso/authorize`), o código de 60 s e uso único só
+  como SHA-256 (`adminSsoCodes`, TTL), a troca na mesma transação com a sessão do console ainda viva, o token assinado
+  com `cp-admin-sso-signing-key` (Ed25519, `node:crypto`), a saída do console revogando os códigos, limites só de
+  falhas e a auditoria. `SSO_ISSUER` e `SSO_REDIRECT_URIS` são só do papel admin.
+- **API da célula (`apps/api/src/auth/sso/`):** plugin do Better Auth (`/v1/auth/sso/start` e `/callback`), só na
+  célula, no endereço da equipe e com `SSO_ISSUER`, `SSO_CLIENT_ID` e `SSO_PUBLIC_KEY` (a chave pública fixada,
+  conferida como Ed25519 na partida); 404 nos outros endereços. Pedido no banco (`SsoLoginAttempt`) preso a um cookie
+  `__Host-verax-sso`, `state`, `iss`, troca com 5 s e sem redirecionamento, conferência estrita do token
+  (`id-token.ts`), `jti` de uso único (`SsoTokenUse`) e a sessão normal do `admin_verax` que já existe (sem criar
+  ninguém). `STAFF_PASSWORD_LOGIN_DISABLED` (padrão `false`) tira o login com senha da equipe. Migração
+  `20261115120000_sso_admin_master`. `GET /v1/auth/client-config` devolve `adminMasterUrl` só no endereço da equipe.
+- **Painel (`apps/web`):** "Entrar com o Admin master" no login e a recusa genérica (`?sso=recusado`), o item "Admin
+  master" no menu do `admin_verax` (abre o console na mesma aba) e o rótulo `auth.sso_login` na trilha. O módulo é o
+  console aberto pelo menu, e não as telas do console dentro do SIEM por CORS: ver a seção da arquitetura.
+- **Infraestrutura:** `envs/control-plane` com o cofre `cp-admin-sso-signing-key` (leitura só da `cp-admin`), a
+  variável `sso_redirect_uris` (validada, só com o console) e o TTL de `adminSsoCodes`; `SSO_*` reservado em
+  `service_env`. `infra/node`: as três linhas e o interruptor no `node.conf` da célula, só para a API.
+- **Dependências novas:** nenhuma (JWS e Ed25519 com `node:crypto`).
+- **Testes:** `apps/control-plane` (`admin-sso.test.ts`: lista exata e tentativas de redirecionamento aberto,
+  parâmetros, outro site, código de uso único, PKCE, retorno, vencimento, saída do console, sessão caída, formulário e
+  outro site na troca, limites, o token nunca aceito pelo console e o login de verdade; `admin-sso-unavailable.test.ts`;
+  configuração); `apps/api` (`id-token.test.ts`: outra chave, `alg: none`, HS256 com a chave pública, `jku`/`jwk`/
+  `x5u`/`crit`, prazo, `iss`, `aud`, `nonce`, `amr`, declarações a mais e texto malformado; `sso-admin-master.test.ts`:
+  de ponta a ponta com o cp-admin de verdade no mesmo processo, reuso do retorno e do código, `state` trocado, `iss`
+  errado, tokens forjados, `jti` repetido, resposta fora do contrato, usuário desconhecido, de outro papel, inativo ou
+  sem MFA, endereço de cliente e desconhecido, a saída do console e a célula sem como assinar;
+  `sso-staff-password-off.test.ts`: o interruptor e o limite por IP; `cell-cannot-sign.test.ts`: meta-teste do que vai
+  ao nó; configuração); `apps/console` (a volta ao `/sso/authorize`); `apps/web` (RTL e o e2e do modo mock com axe);
+  `infra/node/tests/cell-test.sh` (as linhas novas e as recusas) e `terraform test` do `envs/control-plane`.
+- **A fazer pelo responsável (nesta ordem):** merge e implantação; a versão do nó com a entrada única na célula;
+  `sso_redirect_uris` e `apply` no `envs/control-plane`; gravar a chave; tirar e conferir a chave pública; as três
+  linhas no `node.conf` da célula e o restart; conferir que o `admin_verax` do mesmo e-mail existe no painel, com MFA;
+  testar; opcionalmente, ligar o interruptor (runbook do console, seção 9).
+- **Riscos e pendências:** phishing em tempo real do TOTP por uma célula comprometida (o próximo passo é uma chave de
+  acesso WebAuthn no console); a troca da chave pede uma revisão nova do `cp-admin` e a chave nova na célula, juntas;
+  os limites do console dividem o balde da saída do Hosting (negação de serviço da entrada única, com o login com senha
+  de reserva); o JWKS não é baixado pelo nó (a conferência é manual, no runbook).
 
 ## Frota, parte 1: o atualizador do host (versão pedida nos metadados, backup e volta automática) ⚠️ altera `infra/` e `.github/`
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { loginPath, safeReturnPath } from './return-path';
+import { isServerReturnPath, loginPath, safeReturnPath } from './return-path';
 
 describe('caminho de volta depois de entrar', () => {
   it('aceita só telas do próprio console', () => {
@@ -32,5 +32,14 @@ describe('caminho de volta depois de entrar', () => {
     );
     expect(loginPath('/')).toBe('/entrar');
     expect(loginPath('/entrar')).toBe('/entrar');
+  });
+
+  it('o pedido da entrada única no SIEM volta por navegação de verdade (o servidor o atende de novo)', () => {
+    const pedido = '/sso/authorize?response_type=code&client_id=verax-siem';
+    expect(safeReturnPath(pedido)).toBe(pedido);
+    expect(isServerReturnPath(pedido)).toBe(true);
+    for (const other of ['/', '/clientes', '/sso/token', '/sso/authorizex?', '/sso/authorize']) {
+      expect(isServerReturnPath(other), other).toBe(false);
+    }
   });
 });

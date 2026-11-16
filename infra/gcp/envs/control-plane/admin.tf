@@ -41,6 +41,11 @@ locals {
     OWNER_PRINCIPALS         = join(",", local.owner_emails)
     WORKER_URL               = local.worker_url
     STRIPE_TAX_RATE_ID       = lookup(var.service_env, "STRIPE_TAX_RATE_ID", "")
+    # Entrada única no SIEM da Verax (o console como provedor de identidade): a origem pública do console (o `iss` dos
+    # tokens, o próprio domínio do Hosting) e a lista EXATA dos endereços de retorno. Sem `sso_redirect_uris`, as duas
+    # ficam vazias (não vão), e o /sso/* responde indisponível.
+    SSO_ISSUER        = length(var.sso_redirect_uris) > 0 ? "https://${var.admin_hosting_domain}" : ""
+    SSO_REDIRECT_URIS = join(",", var.sso_redirect_uris)
   }
 }
 

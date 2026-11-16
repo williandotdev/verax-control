@@ -385,6 +385,77 @@ describe('loadConfig', () => {
         'PLAN: plano desconhecido: use essencial, profissional, enterprise ou interno',
       ]);
     });
+
+    describe('entrada única pelo console (só na célula)', () => {
+      const { PLAN: _plan, ...cellProduction } = { ...validProductionEnv, ...cellEnv };
+      const consoleKey = generateKeyPairSync('ed25519');
+      const x = String(consoleKey.publicKey.export({ format: 'jwk' }).x);
+      const ssoEnv = {
+        SSO_ISSUER: 'https://admin.exemplo.com.br',
+        SSO_CLIENT_ID: 'verax-siem',
+        SSO_PUBLIC_KEY: x,
+      };
+
+      it('sem as variáveis, desligada; com as três, a chave fixada já lida como chave pública', () => {
+        expect(loadConfig(cellProduction).sso).toBeNull();
+        expect(loadConfig(cellProduction).STAFF_PASSWORD_LOGIN_DISABLED).toBe(false);
+        const sso = loadConfig({ ...cellProduction, ...ssoEnv }).sso;
+        expect(sso?.issuer).toBe('https://admin.exemplo.com.br');
+        expect(sso?.tokenUrl).toBe('https://admin.exemplo.com.br/sso/token');
+        expect(sso?.publicKey.type).toBe('public');
+        expect(sso?.keyId).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      });
+
+      it('as três juntas, e só na célula', () => {
+        expect(problemsOf({ ...cellProduction, SSO_ISSUER: ssoEnv.SSO_ISSUER })).toEqual([
+          'SSO_CLIENT_ID: obrigatória e não definida',
+          'SSO_PUBLIC_KEY: obrigatória e não definida',
+        ]);
+        expect(problemsOf({ ...validProductionEnv, ...ssoEnv })).toEqual([
+          'SSO_ISSUER: só existe com NODE_MODE=cell',
+          'SSO_CLIENT_ID: só existe com NODE_MODE=cell',
+          'SSO_PUBLIC_KEY: só existe com NODE_MODE=cell',
+        ]);
+      });
+
+      it('a chave é só a pública Ed25519 (o x do JWKS): PEM, chave privada, RSA e lixo são recusados', () => {
+        const privatePem = consoleKey.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+        const publicPem = consoleKey.publicKey.export({ format: 'pem', type: 'spki' }).toString();
+        const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ format: 'jwk' });
+        for (const bad of [privatePem, publicPem, String(rsa.n), `${x}=`, 'curta']) {
+          expect(problemsOf({ ...cellProduction, ...ssoEnv, SSO_PUBLIC_KEY: bad })).toEqual([
+            'SSO_PUBLIC_KEY: deve ser a chave PÚBLICA Ed25519 do console: o x do JWKS, 43 caracteres em base64url',
+          ]);
+        }
+        // Nenhuma variável com nome de chave privada chega à API (a de assinatura nunca vai à célula).
+        expect(problemsOf({ ...cellProduction, ...ssoEnv, SSO_PRIVATE_KEY: privatePem })).toEqual([
+          'SSO_PRIVATE_KEY: a API recebe só a chave pública do cofre de credenciais; a privada fica só no worker',
+        ]);
+      });
+
+      it('origem do console só https, sem caminho; o cliente é sempre verax-siem', () => {
+        for (const issuer of [
+          'http://admin.exemplo.com.br',
+          'https://admin.exemplo.com.br/',
+          'https://a:8443',
+        ]) {
+          expect(problemsOf({ ...cellProduction, ...ssoEnv, SSO_ISSUER: issuer })).toHaveLength(1);
+        }
+        expect(problemsOf({ ...cellProduction, ...ssoEnv, SSO_CLIENT_ID: 'outro' })).toEqual([
+          'SSO_CLIENT_ID: deve ser verax-siem',
+        ]);
+      });
+
+      it('o login só pela entrada única exige a entrada única (senão a equipe ficaria do lado de fora)', () => {
+        expect(problemsOf({ ...cellProduction, STAFF_PASSWORD_LOGIN_DISABLED: 'true' })).toEqual([
+          'STAFF_PASSWORD_LOGIN_DISABLED: exige a entrada única configurada (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY)',
+        ]);
+        expect(
+          loadConfig({ ...cellProduction, ...ssoEnv, STAFF_PASSWORD_LOGIN_DISABLED: 'true' })
+            .STAFF_PASSWORD_LOGIN_DISABLED,
+        ).toBe(true);
+      });
+    });
   });
 
   it('nunca inclui o valor recebido na mensagem de erro', () => {

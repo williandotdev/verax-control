@@ -161,6 +161,26 @@ terraform -chdir=infra/gcp/envs/cell-tenant plan
 5. Depois, com o canal do lado do plano de controle (CE-05 e CE-06) e o provisionamento na célula (CE-15): o
    `envs/cell-tenant` do cliente da Verax, no projeto dos nós.
 
+## Entrada única da equipe pelo console (Admin master)
+
+Opcional, só no endereço da equipe (`api-<CELL_STAFF_SLUG>`): o `admin_verax` entra no SIEM pelo login do console do
+responsável (e-mail, senha e TOTP), e o menu dele ganha o item **Admin master**, que abre o console. A célula só
+**confere** o token do console, com a chave pública fixada no `node.conf`; a chave que assina nunca chega ao nó, e
+nenhum cofre é lido para isso. Nos endereços dos clientes, as rotas da entrada única respondem 404 e nada muda.
+
+```bash
+# /etc/verax/node.conf da célula (as três juntas; o start.sh recusa fora do formato ou fora da célula)
+SSO_ISSUER=https://admin.veraxsistemas.com.br
+SSO_CLIENT_ID=verax-siem
+SSO_PUBLIC_KEY=<o x da chave pública do console>
+# Opcional, depois de testar: a equipe entra só pelo Admin master (padrão false).
+# STAFF_PASSWORD_LOGIN_DISABLED=true
+```
+
+Depois, `sudo systemctl restart verax-node`. De onde vem e como conferir a chave pública, a ordem com o Terraform do
+plano de controle e a troca da chave: `docs/runbooks/console-do-responsavel.md`, seção 9. As recusas aparecem no log da
+API (`sso_login_refused`, com o motivo) e na trilha (`auth.sso_login`).
+
 ## Canal com o plano de controle (CE-05 e CE-06)
 
 O canal leva os comandos do plano de controle à célula e os relatórios da célula ao plano de controle, pelo Pub/Sub

@@ -24,6 +24,11 @@ export interface MockState {
   /** Chave do site do Turnstile que a configuração pública devolve. Sem informar, vem do `localStorage` (ou nada). */
   turnstileSiteKey?: string | null;
   /**
+   * O endereço do console (o "Admin master") que a configuração pública devolve. Sem informar, vem do `localStorage` (ou
+   * nada: a demonstração não tem console).
+   */
+  adminMasterUrl?: string | null;
+  /**
    * Histórico do plano do nó, como o ajuste `PLAN_HISTORY_DAYS` (`null` é sem limite). Sem informar, o do plano da
    * demonstração (Profissional, 365 dias).
    */
@@ -75,6 +80,7 @@ export function createHandlers(state: MockState) {
     for (const incident of open) bySeverity[incident.severity] += 1;
     return {
       openIncidents: bySeverity,
+      openIncidentIds: new Set(open.map((incident) => incident.id)),
       unassignedIncidents: open.filter((incident) => incident.assignee === null).length,
       untriagedFindings: (findings.get(tenantId) ?? []).filter(
         (finding) =>
@@ -131,7 +137,7 @@ export function createHandlers(state: MockState) {
           unownedAlerts: recentUnowned(),
           ...towerCounts(state.me.scopeTenantId),
           mitre: demoMitre(state.me.scopeTenantId, findings, incidents),
-          // O pulso das últimas 24 horas acompanha os achados do mock (e a triagem feita nas outras telas).
+          // O pulso e o radar das últimas 24 horas acompanham os achados do mock (e a triagem feita nas outras telas).
           findings: findings.get(state.me.scopeTenantId) ?? [],
         }),
       );

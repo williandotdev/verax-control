@@ -17,8 +17,17 @@ function intensity(findings: number, max: number): string {
   return 'bg-foreground/5 border-foreground/20';
 }
 
-/** As 14 táticas do MITRE ATT&CK na ordem da cadeia de ataque, com achados, incidentes e a técnica mais vista. */
-export function MitreGrid({ tactics, to }: { tactics: readonly MitreTactic[]; to?: string }) {
+/**
+ * As 14 táticas do MITRE ATT&CK na ordem da cadeia de ataque, com achados, incidentes e a técnica mais vista. Com
+ * `tacticHref`, cada tática com achado é um link (na tela Detecções, a lista filtrada pela tática).
+ */
+export function MitreGrid({
+  tactics,
+  tacticHref,
+}: {
+  tactics: readonly MitreTactic[];
+  tacticHref?: (tactic: MitreTactic) => string;
+}) {
   const max = Math.max(0, ...tactics.map((tactic) => tactic.findings));
   return (
     <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
@@ -37,6 +46,7 @@ export function MitreGrid({ tactics, to }: { tactics: readonly MitreTactic[]; to
             </span>
           </>
         );
+        const to = tacticHref && tactic.findings > 0 ? tacticHref(tactic) : undefined;
         const className = cn(
           'block h-full rounded-md border p-2',
           intensity(tactic.findings, max),

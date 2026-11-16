@@ -2,9 +2,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { meSchema } from '@verax/shared';
 import { type FormEvent, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { Link, useLocation, useNavigate } from 'react-router';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router';
 import { Field } from '@/components/ui/field';
 import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
 import { authErrorMessage, safeRedirect, signIn } from '@/features/auth/auth-api';
 import { AuthShell, FormError, FormNotice } from '@/features/auth/auth-shell';
 import { useAuthClientConfig } from '@/features/auth/client-config';
@@ -13,6 +14,11 @@ import { TurnstileWidget } from '@/features/auth/turnstile-widget';
 import { type DemoSignIn, DemoLoginHint } from '@/features/demo-login/entry';
 import { ME_QUERY_KEY } from '@/features/session/session';
 import { api } from '@/lib/api';
+import { API_URL } from '@/lib/env';
+
+/** O retorno recusado da entrada única (`?sso=recusado`): a API nunca diz o motivo. */
+export const SSO_REFUSED_MESSAGE =
+  'Não foi possível entrar pelo Admin master. Tente de novo ou entre com e-mail e senha.';
 
 interface LoginState {
   from?: unknown;
@@ -22,6 +28,7 @@ interface LoginState {
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [params] = useSearchParams();
   const queryClient = useQueryClient();
   const state = (location.state ?? {}) as LoginState;
   const [email, setEmail] = useState('');
@@ -34,6 +41,9 @@ export function LoginPage() {
   const siteKey = clientConfig.data?.turnstileSiteKey ?? null;
   const turnstile = useTurnstile(siteKey, 'login');
   const waitingTurnstile = clientConfig.isPending || (siteKey !== null && turnstile.token === undefined);
+  // Entrada única pelo console do responsável: só no endereço da equipe da Verax, quando a API diz onde fica o console.
+  const adminMasterUrl = clientConfig.data?.adminMasterUrl ?? null;
+  const ssoRefused = params.get('sso') === 'recusado';
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -84,7 +94,7 @@ export function LoginPage() {
     >
       <form className="space-y-4" onSubmit={(event) => void onSubmit(event)} noValidate>
         <FormNotice message={typeof state.notice === 'string' ? state.notice : undefined} />
-        <FormError message={error} />
+        <FormError message={error ?? (ssoRefused ? SSO_REFUSED_MESSAGE : undefined)} />
         <Field
           label="E-mail"
           type="email"
@@ -115,6 +125,20 @@ export function LoginPage() {
         <Link to="/esqueci-senha" className="block text-center text-sm underline">
           Esqueci a senha
         </Link>
+        {adminMasterUrl !== null && (
+          <div className="space-y-2 border-t pt-4">
+            {/* Navegação de verdade: a API leva ao login do console e volta com a sessão do painel. */}
+            <a
+              href={`${API_URL}/v1/auth/sso/start`}
+              className={buttonVariants({ variant: 'secondary', className: 'w-full' })}
+            >
+              Entrar com o Admin master
+            </a>
+            <p className="text-center text-xs text-muted-foreground">
+              Equipe da Verax: o login do console do responsável (e-mail, senha e código do aplicativo).
+            </p>
+          </div>
+        )}
         <DemoLoginHint onFill={fillDemoAccess} />
       </form>
     </AuthShell>

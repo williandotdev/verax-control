@@ -88,3 +88,13 @@ CUSTOMER_MODE=false
 # NODE_MODE=cell
 # CELL_DOMAIN=exemplo.com.br
 # CELL_STAFF_SLUG=verax
+# Entrada única no SIEM da Verax pelo console do responsável (opcional, só na célula; docs/runbooks/celula.md): o
+# `admin_verax` entra no painel da equipe (`api-<CELL_STAFF_SLUG>`) pelo login do console (senha e TOTP), e o menu dele
+# ganha o "Admin master". A origem do console, o cliente (sempre verax-siem) e a chave PÚBLICA do console: o `x` de
+# `https://admin.../sso/jwks`, conferido com a cópia tirada do cofre (runbook). A chave fica fixada aqui e nunca é
+# baixada; nenhuma das três é segredo. STAFF_PASSWORD_LOGIN_DISABLED=true tira o login com senha da equipe no endereço
+# dela (só com as três; padrão false).
+# SSO_ISSUER=https://admin.exemplo.com.br
+# SSO_CLIENT_ID=verax-siem
+# SSO_PUBLIC_KEY=<o x da chave em https://admin.exemplo.com.br/sso/jwks: 43 caracteres>
+# STAFF_PASSWORD_LOGIN_DISABLED=false

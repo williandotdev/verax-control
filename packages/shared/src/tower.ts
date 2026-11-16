@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
+import { FINDING_SEVERITIES, FINDING_SOURCES, FINDING_STATUSES, type FindingSource } from './findings.js';
 import { usageMonthSchema } from './plan-usage.js';
-import { MITRE_TACTICS, mitreTacticSchema } from './reports.js';
+import { MITRE_TACTICS } from './mitre.js';
+import { mitreTacticSchema } from './reports.js';
 
 /**
  * Resumo da Torre (T5.10): a resposta de `GET /v1/tower`, do cliente da sessão. A regra do semáforo está em
@@ -112,6 +114,79 @@ export const towerPulseSchema = z
   });
 export type TowerPulse = z.infer<typeof towerPulseSchema>;
 
+/** Janela do radar de detecções da Torre: o centro é agora, o anel de fora é o começo da janela. */
+export const RADAR_WINDOW_HOURS = 24;
+
+/** Teto de detecções que o radar desenha: as mais recentes da janela. O total da janela vem à parte, sempre exato. */
+export const RADAR_DETECTIONS_LIMIT = 100;
+
+/**
+ * Setores do radar, no sentido horário a partir do topo: um quarto da volta para cada origem dos achados (as mesmas
+ * fontes da "Saúde da coleta", menos a postura, que não gera achado).
+ */
+export const RADAR_SECTORS = [
+  'aws',
+  'gcp',
+  'cloudflare',
+  'agents',
+] as const satisfies readonly CollectionSource[];
+export type RadarSector = (typeof RADAR_SECTORS)[number];
+
+const RADAR_SECTOR_OF: Readonly<Record<FindingSource, RadarSector>> = {
+  cloudtrail: 'aws',
+  guardduty: 'aws',
+  waf: 'aws',
+  gcp_audit: 'gcp',
+  cloudflare_audit: 'cloudflare',
+  cloudflare_waf: 'cloudflare',
+  wazuh_agent: 'agents',
+};
+
+/** O setor do radar de uma fonte de log. */
+export function radarSectorOf(source: FindingSource): RadarSector {
+  return RADAR_SECTOR_OF[source];
+}
+
+export const radarDetectionSchema = z.strictObject({
+  /** O achado; o painel abre o detalhe dele na tela Detecções (`/?achado=<id>`). */
+  id: z.uuid(),
+  severity: z.enum(FINDING_SEVERITIES),
+  status: z.enum(FINDING_STATUSES),
+  source: z.enum(FINDING_SOURCES),
+  occurredAt: z.iso.datetime(),
+  title: z.string().max(500),
+  /** O incidente em que o achado entrou, e se ele segue aberto (não resolvido); null fora de incidente. */
+  incident: z.strictObject({ id: z.uuid(), open: z.boolean() }).nullable(),
+});
+export type RadarDetection = z.infer<typeof radarDetectionSchema>;
+
+const severityCounts = z.strictObject({ critical: count, high: count, medium: count, low: count });
+const sectorCounts = z.strictObject({ aws: count, gcp: count, cloudflare: count, agents: count });
+const sum = (counts: Record<string, number>): number => Object.values(counts).reduce((a, b) => a + b, 0);
+
+/**
+ * Radar de detecções da Torre: os achados que aconteceram nas últimas `RADAR_WINDOW_HOURS` horas, os mais recentes
+ * primeiro, até `limit`. `total` e as contagens por severidade e por setor contam todos os da janela: com o total maior
+ * que a lista, a tela avisa que desenha só uma parte, e as contagens continuam valendo para a janela inteira.
+ */
+export const towerRadarSchema = z
+  .strictObject({
+    /** Começo da janela (o anel de fora); o fim é `generatedAt` do resumo (o centro). */
+    since: z.iso.datetime(),
+    windowHours: z.literal(RADAR_WINDOW_HOURS),
+    limit: z.literal(RADAR_DETECTIONS_LIMIT),
+    total: count,
+    /** As detecções da janela inteira por severidade e por setor (não só as da lista): cada divisão soma `total`. */
+    bySeverity: severityCounts,
+    bySector: sectorCounts,
+    detections: z.array(radarDetectionSchema).max(RADAR_DETECTIONS_LIMIT),
+  })
+  .refine((radar) => radar.detections.length <= radar.total, { error: 'mais detecções que o total' })
+  .refine((radar) => sum(radar.bySeverity) === radar.total && sum(radar.bySector) === radar.total, {
+    error: 'as contagens por severidade e por setor somam o total',
+  });
+export type TowerRadar = z.infer<typeof towerRadarSchema>;
+
 export const towerSummarySchema = z.strictObject({
   light: z.enum(TRAFFIC_LIGHTS),
   reasons: z.array(z.enum(TRAFFIC_LIGHT_REASONS)).max(TRAFFIC_LIGHT_REASONS.length),
@@ -175,6 +250,8 @@ export const towerSummarySchema = z.strictObject({
    * nó de antes do OP-02 não manda.
    */
   pulse: towerPulseSchema.optional(),
+  /** Radar de detecções: os achados recentes, para a Torre desenhar. Opcional: um nó de antes do radar não manda. */
+  radar: towerRadarSchema.optional(),
   /** Táticas do MITRE ATT&CK nos achados e incidentes dos últimos `periodDays` dias, na ordem da cadeia de ataque. */
   mitre: z.strictObject({
     periodDays: z.number().int().positive(),

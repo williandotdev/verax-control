@@ -10,18 +10,11 @@ import {
   type FindingStatusUpdate,
   paginatedSchema,
 } from '@verax/shared';
+import { toSearch } from '@/features/detections/detections-api';
 import { api } from '@/lib/api';
 
 const findingPageSchema = paginatedSchema(findingSchema);
 const cloudAccountPageSchema = paginatedSchema(cloudAccountSchema);
-
-function toSearch(query: FindingListQuery): string {
-  const params = new URLSearchParams();
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined) params.set(key, String(value));
-  }
-  return params.toString();
-}
 
 /** Lista de achados do cliente da sessão, com os filtros na query string (T5.4). */
 export function useFindings(query: FindingListQuery, enabled: boolean) {
@@ -57,7 +50,10 @@ function useRefreshFindings() {
   return (id: string) => {
     void queryClient.invalidateQueries({ queryKey: ['finding', id] });
     void queryClient.invalidateQueries({ queryKey: ['findings'] });
-    // A Torre conta os achados sem triagem.
+    void queryClient.invalidateQueries({ queryKey: ['detections'] });
+    // O incidente do achado mostra os achados dele.
+    void queryClient.invalidateQueries({ queryKey: ['incident'] });
+    // O resumo da tela Detecções conta os achados sem triagem.
     void queryClient.invalidateQueries({ queryKey: ['tower'] });
   };
 }

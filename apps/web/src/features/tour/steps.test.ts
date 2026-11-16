@@ -20,7 +20,7 @@ describe('percurso do tour', () => {
     }
   });
 
-  // O pulso da operação (OP-02) é o 19º passo do admin da Verax.
+  // A tela Detecções (16/11/2026) tem 7 passos; o admin da Verax vê 18.
   it.each(ROLES)('%s: de 12 a 19 passos, só por telas que o papel abre', (role) => {
     const permissions = permissionsOf(role);
     const steps = tourStepsFor(permissions);
@@ -33,7 +33,7 @@ describe('percurso do tour', () => {
     }
   });
 
-  it('começa na Torre e termina no convite para o site, sem destaque', () => {
+  it('começa na tela Detecções e termina no convite para o site, sem destaque', () => {
     expect(TOUR_STEPS[0]?.path).toBe('/');
     const last = TOUR_STEPS.at(-1);
     expect(last?.target).toBeUndefined();
@@ -54,8 +54,8 @@ describe('percurso do tour', () => {
   it('os exemplos (incidente e achado) vêm do cliente da sessão, com a lista como reserva', () => {
     const examples = TOUR_STEPS.filter((step) => step.example);
     expect(examples.map((step) => [step.id, step.example, step.path])).toEqual([
-      ['incidente', 'incident', '/incidentes'],
-      ['achado-triagem', 'finding', '/achados'],
+      ['incidente', 'incident', '/'],
+      ['achado-triagem', 'finding', '/?visao=achados'],
     ]);
   });
 });

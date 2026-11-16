@@ -34,7 +34,7 @@ describe('histórico do plano nas telas', () => {
   it('Essencial (90 dias) fica sem 12 meses; Profissional (365) e Interno (sem limite) têm todos', () => {
     const days = (plan: 'essencial' | 'profissional' | 'interno') => resolvePlan(plan).limits.historyDays;
     expect(periodsWithinHistory(FINDING_PERIODS, days('essencial'))).toEqual(['24h', '7d', '30d', '90d']);
-    expect(periodsWithinHistory(REPORT_PERIODS, days('essencial'))).toEqual(['7d', '30d', '90d']);
+    expect(periodsWithinHistory(REPORT_PERIODS, days('essencial'))).toEqual(['24h', '7d', '30d', '90d']);
     expect(periodsWithinHistory(FINDING_PERIODS, days('profissional'))).toEqual([...FINDING_PERIODS]);
     expect(periodsWithinHistory(AUDIT_PERIODS, days('interno'))).toEqual([...AUDIT_PERIODS]);
   });

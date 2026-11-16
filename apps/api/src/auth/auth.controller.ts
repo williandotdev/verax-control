@@ -52,7 +52,14 @@ export const ALLOWED_AUTH_ROUTES: ReadonlySet<string> = new Set([
   'POST /two-factor/verify-totp',
   'POST /two-factor/verify-backup-code',
   'POST /two-factor/generate-backup-codes',
+  // Entrada única pelo console do responsável (`sso/sso-plugin.ts`): só no endereço da equipe da célula, com a entrada
+  // única configurada (`SSO_ROUTES`, abaixo); em qualquer outro endereço, 404.
+  'GET /sso/start',
+  'GET /sso/callback',
 ]);
+
+/** As rotas da entrada única: existem só na célula, no endereço da equipe e com `config.sso`. */
+const SSO_ROUTES: ReadonlySet<string> = new Set(['GET /sso/start', 'GET /sso/callback']);
 
 /** Rotas que não usam a sessão atual: entrar, pedir e definir senha pelo link, e sair (que só reduz acesso). */
 const SESSIONLESS_ROUTES = new Set([
@@ -60,6 +67,9 @@ const SESSIONLESS_ROUTES = new Set([
   'POST /request-password-reset',
   'POST /reset-password',
   'POST /sign-out',
+  // A entrada única não usa a sessão atual: o retorno abre uma sessão nova.
+  'GET /sso/start',
+  'GET /sso/callback',
 ]);
 
 /** Rotas que uma sessão aberta com a senha temporária alcança: a troca de senha (com ou sem MFA). */
@@ -104,6 +114,7 @@ export class AuthController {
   async handle(@Req() request: Request & { id?: unknown }, @Res() response: Response): Promise<void> {
     const route = `${request.method} ${request.path.slice(AUTH_BASE_PATH.length)}`;
     if (!ALLOWED_AUTH_ROUTES.has(route)) throw new NotFoundException();
+    if (SSO_ROUTES.has(route) && !this.ssoAvailable(request)) throw new NotFoundException();
 
     if (request.method === 'POST') {
       // O Better Auth só confere a origem quando já existe cookie. Aqui todo POST exige vir do painel,
@@ -126,6 +137,11 @@ export class AuthController {
     request.headers[CLIENT_IP_HEADER] = request.ip; // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
     request.headers[REQUEST_ID_INTERNAL_HEADER] = typeof request.id === 'string' ? request.id : undefined; // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
     await this.handler(request, response);
+  }
+
+  /** A entrada única existe só na célula, no endereço da equipe da Verax e com a configuração dela. */
+  private ssoAvailable(request: Request): boolean {
+    return this.config.sso !== null && this.config.cell !== null && request.hostTenant?.staff === true;
   }
 
   /**

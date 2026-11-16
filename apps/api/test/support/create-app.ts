@@ -56,6 +56,11 @@ export interface CreateAppOptions {
    * o nó dedicado.
    */
   cell?: { domain: string; staffSlug: string };
+  /**
+   * Entrada única pelo console (só com `cell`): a origem do console, a chave PÚBLICA fixada (o `x`) e, opcional, o login
+   * com senha da equipe desligado. Os testes trocam a troca do código (`SSO_FETCH`) em `overrideProviders`.
+   */
+  sso?: { issuer: string; publicKey: string; staffPasswordLoginDisabled?: boolean };
 }
 
 /**
@@ -100,6 +105,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       CELL_STAFF_SLUG: options.cell.staffSlug,
       WEB_ORIGIN: `https://${options.cell.staffSlug}.control.${options.cell.domain}`,
       API_ORIGIN: `https://api-${options.cell.staffSlug}.${options.cell.domain}`,
+    }),
+    ...(options.sso && {
+      SSO_ISSUER: options.sso.issuer,
+      SSO_CLIENT_ID: 'verax-siem',
+      SSO_PUBLIC_KEY: options.sso.publicKey,
+      STAFF_PASSWORD_LOGIN_DISABLED: String(options.sso.staffPasswordLoginDisabled ?? false),
     }),
   });
   const builder = Test.createTestingModule({

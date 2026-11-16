@@ -186,10 +186,38 @@ describe('relatórios e resumo MITRE da Torre', () => {
     expect(summary.mitre.tactics.find((tactic) => tactic.name === 'Impact')?.findings).toBe(1);
   });
 
-  it.each(['/v1/reports/tudo', '/v1/reports/summary?period=1y', '/v1/reports/summary?period=7d&extra=1'])(
-    'parâmetro inválido é recusado: %s',
-    async (path) => {
-      await get(path).expect(400);
-    },
-  );
+  it('últimas 24 horas e intervalo personalizado (tela Detecções): a janela da resposta é a pedida', async () => {
+    const day = reportSchemas.summary.parse((await get('/v1/reports/summary?period=24h').expect(200)).body);
+    expect(day.period).toBe('24h');
+    expect(day.findings.total).toBe(2);
+
+    const from = new Date(Date.now() - 11 * 24 * HOUR).toISOString();
+    const to = new Date(Date.now() - 5 * 24 * HOUR).toISOString();
+    const range = `from=${from}&to=${to}`;
+    const custom = reportSchemas.summary.parse((await get(`/v1/reports/summary?${range}`).expect(200)).body);
+    expect(custom).toMatchObject({ period: 'custom', from, to });
+    expect(custom.findings.total).toBe(1);
+
+    const mitre = reportSchemas.mitre.parse((await get(`/v1/reports/mitre?${range}`).expect(200)).body);
+    expect(mitre).toMatchObject({ period: 'custom', from, to });
+    expect(mitre.tactics.find((tactic) => tactic.name === 'Impact')?.findings).toBe(1);
+    expect(mitre.tactics.find((tactic) => tactic.name === 'Defense Evasion')?.findings).toBe(0);
+
+    for (const kind of REPORT_KINDS) {
+      const response = await get(`/v1/reports/${kind}?${range}`).expect(200);
+      expect(reportSchemas[kind].safeParse(response.body).success, kind).toBe(true);
+    }
+  });
+
+  it.each([
+    '/v1/reports/tudo',
+    '/v1/reports/summary?period=1y',
+    '/v1/reports/summary?period=7d&extra=1',
+    '/v1/reports/summary?from=2026-01-01T00:00:00Z',
+    '/v1/reports/summary?from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z',
+    '/v1/reports/summary?from=2026-01-01T00:00:00Z&to=2026-01-02T00:00:00Z&period=7d',
+    '/v1/reports/summary?from=2025-01-01T00:00:00Z&to=2026-06-01T00:00:00Z',
+  ])('parâmetro inválido é recusado: %s', async (path) => {
+    await get(path).expect(400);
+  });
 });

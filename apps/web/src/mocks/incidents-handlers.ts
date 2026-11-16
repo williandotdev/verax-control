@@ -1,5 +1,14 @@
 import {
   type Author,
+  compareDetections,
+  detectionListQuerySchema,
+  type DetectionRow,
+  detectionSortKey,
+  type Finding,
+  findingContentMatches,
+  findingMatchesFilters,
+  hasContentFilter,
+  incidentMatchesFilters,
   type FindingDetail,
   type FindingSeverity,
   type Incident,
@@ -14,6 +23,7 @@ import { http, HttpResponse } from 'msw';
 import { API_URL } from '@/lib/env';
 import { DEMO_INCIDENTS } from './findings-fixtures';
 import type { MockState } from './handlers';
+import { demoPeriodRefusal, demoRangeRefusal } from './plan-handlers';
 
 const url = (path: string): string => `${API_URL}${path}`;
 const problem = (status: number, message: string, code?: string) =>
@@ -109,6 +119,18 @@ export function incidentSummaries(
 const toSummary = ({ mitreTechniques: _t, findings: _f, ...incident }: IncidentDetail): Incident =>
   incidentSchema.parse(incident);
 
+const findingsOf = (all: readonly FindingDetail[], incidentId: string) =>
+  all.filter((finding) => finding.incidentId === incidentId);
+
+const summaryOf = ({
+  ruleId: _r,
+  ruleLevel: _l,
+  mitreTechniques: _t,
+  comments: _c,
+  rawEvent: _e,
+  ...finding
+}: FindingDetail): Finding => finding;
+
 /**
  * Incidentes do modo mock (T5.7), montados dos mesmos achados da tela de Achados: lista ordenada pela nota,
  * filtros, detalhe com a linha do tempo, e mudança de status e responsável com permissão e CSRF.
@@ -151,6 +173,57 @@ export function createIncidentHandlers(
         page,
         pageSize,
         total: items.length,
+      });
+    }),
+
+    // Tela Detecções, visão agrupada: os incidentes e os achados fora de incidente, com a regra e a ordem da API.
+    http.get(url('/v1/detections'), ({ request }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      if (
+        !scope.me.permissions.includes('findings:read') ||
+        !scope.me.permissions.includes('incidents:read')
+      ) {
+        return problem(403, 'Sem permissão');
+      }
+      const query = detectionListQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
+      if (!query.success) return problem(400, 'Filtro inválido');
+      const { page, pageSize, sort = 'recent', ...filters } = query.data;
+      const refusal = demoPeriodRefusal(state, filters.period) ?? demoRangeRefusal(state, filters.from);
+      if (refusal) return refusal;
+      const now = new Date();
+      const tenantFindings = findings.get(scope.me.scopeTenantId ?? '') ?? [];
+      const content = hasContentFilter(filters);
+      const rows: DetectionRow[] = [
+        ...scope.list
+          .filter((incident) =>
+            incidentMatchesFilters(incident, findingsOf(tenantFindings, incident.id), filters, now),
+          )
+          .map((incident) => {
+            const own = findingsOf(tenantFindings, incident.id);
+            return {
+              kind: 'incident' as const,
+              incident: toSummary(incident),
+              matchedFindings: content
+                ? own.filter((finding) => findingContentMatches(finding, filters)).length
+                : own.length,
+            };
+          }),
+        ...(filters.unassigned
+          ? []
+          : tenantFindings
+              .filter(
+                (finding) => finding.incidentId === null && findingMatchesFilters(finding, filters, now),
+              )
+              .map((finding) => ({ kind: 'finding' as const, finding: summaryOf(finding) }))),
+      ];
+      rows.sort((a, b) => compareDetections(sort, detectionSortKey(a), detectionSortKey(b)));
+      const start = (page - 1) * pageSize;
+      return HttpResponse.json({
+        items: rows.slice(start, start + pageSize),
+        page,
+        pageSize,
+        total: rows.length,
       });
     }),
 

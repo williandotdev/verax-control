@@ -462,6 +462,67 @@ describe('loadConfig (CP-01)', () => {
         'ADMIN_SECRETS_PROJECT_ID: só o papel admin usa; ignorada no papel public',
       ]);
     });
+
+    describe('entrada única no SIEM (SSO_ISSUER e SSO_REDIRECT_URIS)', () => {
+      const issuer = 'https://admin.example.com';
+      const callback = 'https://api-equipe.example.com/v1/auth/sso/callback';
+
+      it('opcional; as duas andam juntas', () => {
+        expect(loadConfig(adminEnv, () => undefined).SSO_ISSUER).toBeUndefined();
+        const config = loadConfig(
+          { ...adminEnv, SSO_ISSUER: issuer, SSO_REDIRECT_URIS: callback },
+          () => undefined,
+        );
+        expect(config.SSO_ISSUER).toBe(issuer);
+        expect(config.SSO_REDIRECT_URIS).toEqual([callback]);
+        expect(problemsOf({ ...adminEnv, SSO_ISSUER: issuer })).toEqual([
+          'SSO_REDIRECT_URIS: obrigatória e não definida',
+        ]);
+        expect(problemsOf({ ...adminEnv, SSO_REDIRECT_URIS: callback })).toEqual([
+          'SSO_ISSUER: obrigatória e não definida',
+        ]);
+      });
+
+      it('a origem do console: só https, sem caminho, porta nem barra no fim', () => {
+        for (const bad of [
+          'http://admin.example.com',
+          'https://admin.example.com/',
+          'https://admin.example.com/sso',
+          'https://admin.example.com:8443',
+          'https://usuario@admin.example.com',
+          'admin.example.com',
+        ]) {
+          expect(problemsOf({ ...adminEnv, SSO_ISSUER: bad, SSO_REDIRECT_URIS: callback }), bad).toHaveLength(
+            1,
+          );
+        }
+      });
+
+      it('os endereços de retorno: https, completos e canônicos, sem consulta, fragmento, porta ou usuário', () => {
+        for (const bad of [
+          'http://api-equipe.example.com/v1/auth/sso/callback',
+          'https://api-equipe.example.com',
+          'https://api-equipe.example.com/v1/auth/sso/callback?x=1',
+          'https://api-equipe.example.com/v1/auth/sso/callback#x',
+          'https://api-equipe.example.com:8443/v1/auth/sso/callback',
+          'https://API-EQUIPE.example.com/v1/auth/sso/callback',
+          'https://u@api-equipe.example.com/v1/auth/sso/callback',
+          'https://api-equipe.example.com/v1/../v1/auth/sso/callback',
+          '/v1/auth/sso/callback',
+        ]) {
+          expect(problemsOf({ ...adminEnv, SSO_ISSUER: issuer, SSO_REDIRECT_URIS: bad }), bad).toHaveLength(
+            1,
+          );
+        }
+      });
+
+      it('só do admin: nos outros papéis é ignorada com aviso', () => {
+        expect(warningsOf({ ...validEnv, SSO_ISSUER: issuer, SSO_REDIRECT_URIS: callback })).toEqual([
+          'SSO_ISSUER: só o papel admin usa; ignorada no papel public',
+          'SSO_REDIRECT_URIS: só o papel admin usa; ignorada no papel public',
+        ]);
+      });
+    });
   });
 
   it('MAIL_FROM e MAIL_FROM_NODES aceitam o e-mail puro ou "Nome <e-mail>"', () => {

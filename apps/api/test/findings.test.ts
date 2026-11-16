@@ -157,6 +157,78 @@ describe('achados (T5.4 e T5.5)', () => {
       expect(await idsFor('period=30d')).toContain(old.id);
     });
 
+    it('filtra por fonte, tática, técnica, intervalo e busca de texto (tela Detecções)', async () => {
+      const tenant = await createTenant(app, 'Cliente com filtros da tela Detecções');
+      const { session } = await sessionFor(tenant, 'leitura');
+      const guardduty = await insertFinding(tenant, {
+        logSource: 'guardduty',
+        title: 'GuardDuty: exclusão em massa de objetos (100%)',
+        eventName: 'DeleteObjects',
+        actorUser: 'Operador_Noturno',
+        sourceIp: '203.0.113.77',
+        accessKeyId: 'DEMOKEYIMPACT0000001',
+        resource: 'arn:aws:s3:::bucket-de-backup',
+        accountId: '444455556666',
+        mitreTactics: ['Impact'],
+        mitreTechniques: ['T1485'],
+        occurredAt: new Date(Date.now() - 3 * 24 * HOUR),
+      });
+      const cloudtrail = await insertFinding(tenant, { occurredAt: new Date(Date.now() - HOUR) });
+      const old = await insertFinding(tenant, { occurredAt: new Date(Date.now() - 20 * 24 * HOUR) });
+      const iso = (hoursAgo: number) => new Date(Date.now() - hoursAgo * HOUR).toISOString();
+      const idsFor = async (query: string) =>
+        findingPage
+          .parse((await call(session).get(`/v1/findings?${query}`).expect(200)).body)
+          .items.map((item) => item.id)
+          .sort();
+      expect(await idsFor('source=guardduty')).toEqual([guardduty.id]);
+      expect(await idsFor('tactic=Impact')).toEqual([guardduty.id]);
+      expect(await idsFor('technique=T1485')).toEqual([guardduty.id]);
+      // A técnica é exata: a técnica-mãe não pega a subtécnica.
+      expect(await idsFor('technique=T1562')).toEqual([]);
+      expect(await idsFor('technique=T1562.008')).toEqual([cloudtrail.id, old.id].sort());
+      // Intervalo personalizado.
+      expect(await idsFor(`from=${iso(4 * 24)}&to=${iso(2 * 24)}`)).toEqual([guardduty.id]);
+      expect(await idsFor(`from=${iso(30 * 24)}&to=${iso(0)}`)).toEqual(
+        [guardduty.id, cloudtrail.id, old.id].sort(),
+      );
+      // A busca, sem diferenciar maiúsculas, em cada campo de texto da lista.
+      for (const q of [
+        'EXCLUSÃO',
+        'deleteobjects',
+        'operador_noturno',
+        '203.0.113',
+        'demokeyimpact',
+        'BUCKET-DE-BACKUP',
+        '44445555',
+        '100%',
+      ]) {
+        expect(await idsFor(`q=${encodeURIComponent(q)}`), q).toEqual([guardduty.id]);
+      }
+      // Os curingas do LIKE e a barra invertida são texto comum.
+      expect(await idsFor('q=%25%25')).toEqual([]);
+      expect(await idsFor('q=r%25N')).toEqual([]);
+      expect(await idsFor('q=r_N')).toEqual([guardduty.id]);
+      expect(await idsFor('q=y_b')).toEqual([]);
+      expect(await idsFor(`q=${encodeURIComponent('\\')}`)).toEqual([]);
+      // Os filtros se somam.
+      expect(await idsFor('q=demokeyimpact&period=24h')).toEqual([]);
+      expect(await idsFor('q=demokeyimpact&period=7d&severity=high&status=new')).toEqual([guardduty.id]);
+    });
+
+    it.each([
+      'technique=T1078.4',
+      'tactic=Ataque',
+      'source=syslog',
+      'q=%20',
+      'from=2026-01-01T00:00:00Z',
+      'from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z',
+      'from=2026-01-01T00:00:00Z&to=2026-01-02T00:00:00Z&period=7d',
+      'from=2025-01-01T00:00:00Z&to=2026-06-01T00:00:00Z',
+    ])('filtro novo inválido é recusado: %s', async (query) => {
+      await call(analystA).get(`/v1/findings?${query}`).expect(400);
+    });
+
     it.each(['severity=urgente', "accountId=1' OR '1'='1", 'period=1y', 'pageSize=1000'])(
       'filtro inválido é recusado: %s',
       async (query) => {

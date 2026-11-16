@@ -35,6 +35,10 @@ Como o acesso funciona:
   derivada do segredo `cp-admin-totp-key`; os códigos de recuperação só como HMAC. Um código TOTP vale uma vez.
 - **Conta** (`/conta`): trocar a senha e trocar o aplicativo autenticador (o que gera códigos de recuperação novos);
   as duas pedem a senha atual e um código. Trocar a senha encerra as outras sessões.
+- **Entrada única no SIEM da Verax** (o "Admin master"; seção 9): o console é o provedor de identidade do painel da
+  equipe na célula. Com a sessão do console, o "Entrar com o Admin master" do SIEM entra sem pedir nada de novo; o item
+  "Admin master" do menu do SIEM abre este console. **Sair** do console também revoga os códigos da entrada única ainda
+  não usados.
 
 ## 1. Ligar o console (uma vez)
 
@@ -465,7 +469,109 @@ Stripe as versões aceitas. As versões não são mais variáveis de ambiente (`
 - **Histórico** (em cada texto): quem criou, editou e publicou cada versão e quando, o tamanho e o SHA-256 do texto
   publicado (a prova do que foi aceito). O texto não vai à auditoria; ele fica na própria versão, que não muda.
 
-## 9. Versões do nó e da frota
+## 9. Entrada única no SIEM da Verax (Admin master)
+
+O console é o **provedor de identidade** do SIEM da própria Verax (o painel da equipe na célula,
+`https://verax.control.veraxsistemas.com.br`, API `https://api-verax.veraxsistemas.com.br`): o responsável entra uma vez
+no console (e-mail, senha e código), e o SIEM aceita esse login para o `admin_verax` com o mesmo e-mail. O menu do
+`admin_verax` no SIEM ganha o item **Admin master**, que abre este console na mesma aba, já com a sessão. A célula só
+confere a assinatura do console: a chave que assina fica no cofre `cp-admin-sso-signing-key`, que só o `cp-admin` lê
+(o desenho e os riscos em `docs/ARQUITETURA.md`, "Entrada única: o console como provedor de identidade do SIEM").
+
+### 9.1. Ligar (uma vez), nesta ordem
+
+1. **Código no ar.** O merge implanta o `cp-admin` novo (workflow "Plano de controle"), e a célula precisa da versão do
+   nó com a entrada única (`docs/runbooks/versao-no.md`). Sem configurar nada, nada muda: o `/sso/*` responde
+   indisponível e o SIEM não mostra o botão.
+2. **Terraform do plano de controle** (`infra/gcp/envs/control-plane`): no `terraform.tfvars`, o endereço de retorno
+   exato da API da equipe, e `terraform plan` e `terraform apply`:
+
+   ```hcl
+   sso_redirect_uris = ["https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback"]
+   ```
+
+   O `apply` cria o cofre `cp-admin-sso-signing-key` vazio, com a leitura só da conta `cp-admin`, e passa ao serviço a
+   origem do console (`SSO_ISSUER`, o próprio domínio do Hosting) e a lista (`SSO_REDIRECT_URIS`).
+
+3. **A chave de assinatura**, gerada direto no cofre, sem arquivo no disco nem no histórico do shell:
+
+   ```bash
+   # Ed25519 em PEM (PKCS #8): gerada aqui e enviada direto ao cofre.
+   openssl genpkey -algorithm ed25519 | gcloud secrets versions add cp-admin-sso-signing-key --data-file=- --project=SEU_PROJETO
+   ```
+
+   O `cp-admin` lê a chave na primeira entrada única e a guarda na memória; sem ela, o `/sso/*` responde 503 e o resto
+   do console segue normal.
+
+4. **A chave pública para fixar na célula**, tirada do próprio cofre (com as suas credenciais de dono), e conferida
+   com a que o console publica:
+
+   ```bash
+   # O "x" da chave pública: os 32 últimos bytes da chave pública em DER, em base64url sem "=".
+   gcloud secrets versions access latest --secret=cp-admin-sso-signing-key --project=SEU_PROJETO \
+     | openssl pkey -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n'; echo
+   # Tem de ser o mesmo "x" de:
+   curl -s https://admin.veraxsistemas.com.br/sso/jwks
+   ```
+
+   Se os dois não baterem, **pare**: o endereço do console não está servindo esta chave. A chave pública não é
+   segredo; a privada nunca sai do cofre (o comando acima só a passa pela memória do `openssl`).
+
+5. **A célula** (`/etc/verax/node.conf` da `verax-celula`, pelo SSH do IAP, `docs/runbooks/celula.md`): as três linhas,
+   e `sudo systemctl restart verax-node`. O `start.sh` confere os formatos e passa as três só para a API.
+
+   ```bash
+   SSO_ISSUER=https://admin.veraxsistemas.com.br
+   SSO_CLIENT_ID=verax-siem
+   SSO_PUBLIC_KEY=<o x do passo 4>
+   ```
+
+6. **A conta da equipe no SIEM**: o `admin_verax` com o **mesmo e-mail** da conta do console precisa existir no painel,
+   ativo, com a senha definitiva e o MFA do painel cadastrados (o primeiro acesso é pelo login com senha do próprio
+   painel). A entrada única não cria ninguém.
+7. **Testar:** abra `https://verax.control.veraxsistemas.com.br/login`, **Entrar com o Admin master**: o console pede o
+   login (se não houver sessão nele) e volta ao SIEM já dentro. No menu, **Admin master** abre o console. A trilha do
+   SIEM registra "Entrou pelo Admin master" (`auth.sso_login`) e a do console, `admin.sso_code_issued` e
+   `admin.sso_token_issued`.
+8. **Opcional, depois de testar:** `STAFF_PASSWORD_LOGIN_DISABLED=true` no `node.conf` da célula (e o restart) tira o
+   login com senha do `admin_verax` no endereço da equipe: a equipe entra só pelo Admin master (a recusa é a mesma da
+   senha errada). Os clientes da célula não mudam. Desligue de novo (`false` ou sem a linha) se o console ficar fora do
+   ar por muito tempo.
+
+### 9.2. No dia a dia
+
+- O SIEM e o console têm sessões separadas, cada uma com os 30 minutos sem uso e as 12 horas dela. Se a do console
+  venceu, o **Admin master** do menu leva ao login do console, de propósito: a célula não tem como reabrir o console.
+- **Sair** do console não derruba a sessão do SIEM (e vice-versa); revoga só os códigos da entrada única ainda não
+  usados.
+
+### 9.3. Trocar a chave (ou ao suspeitar dela)
+
+1. Grave uma versão nova (passo 3) e desative a anterior:
+
+   ```bash
+   gcloud secrets versions disable <NÚMERO> --secret=cp-admin-sso-signing-key --project=SEU_PROJETO
+   ```
+
+2. Faça o `cp-admin` reler a chave com uma revisão nova (o serviço a guarda na memória): rode o workflow "Plano de
+   controle" (Actions → Run workflow), que implanta uma revisão nova dos serviços.
+3. Fixe a chave pública nova na célula (passos 4 e 5). Entre o passo 2 e este, a entrada única recusa (`?sso=recusado`);
+   o login com senha do painel continua, a não ser que o interruptor do passo 8 esteja ligado.
+
+**Para desligar já** (célula ou chave sob suspeita): tire as três linhas `SSO_*` (e o interruptor) do `node.conf` da
+célula e reinicie, e tire `sso_redirect_uris` do `terraform.tfvars` com um `apply` (o `/sso/*` passa a responder 503).
+
+### 9.4. O que aparece
+
+| O que aparece                                                 | Causa provável                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| O SIEM não mostra "Entrar com o Admin master"                 | A célula sem as três linhas `SSO_*` (ou fora do endereço da equipe: nos clientes, nunca aparece).                                                                                                                                                                                                                                      |
+| "Entrada única indisponível" no console                       | O cofre `cp-admin-sso-signing-key` sem versão ativa ou fora do formato (passo 3), ou `sso_redirect_uris` vazia no Terraform.                                                                                                                                                                                                           |
+| "Pedido de entrada inválido" no console                       | O endereço de retorno do pedido não está na lista exata (`sso_redirect_uris`), ou o pedido veio adulterado. O console nunca redireciona para um endereço fora da lista.                                                                                                                                                                |
+| Volta ao SIEM com "Não foi possível entrar pelo Admin master" | Motivo no log da API (`sso_login_refused`, `reason`) e na trilha (`auth.sso_login`, negado): chave fixada diferente da do console (`token_rejected`), conta do painel inexistente, de outro papel, sem MFA ou inativa (`user_refused`), mais de 10 minutos entre o início e a volta, ou o console fora do ar (`exchange_unavailable`). |
+| "Muitas tentativas" no console ou 429 na API                  | Os limites da entrada única (falhas por IP e no total, no console; 10 por minuto por IP, na API). Espere alguns minutos.                                                                                                                                                                                                               |
+
+## 10. Versões do nó e da frota
 
 A tela **Versões** (decisão de 16/11/2026; `docs/ARQUITETURA.md`, "Atualização da frota") promove uma versão do nó
 para a frota inteira, em ondas, com o painel de cada destino junto com o nó dele.

@@ -36,6 +36,11 @@
       "retention": "10 min (cadastro do TOTP)"
     },
     {
+      "collectionGroup": "adminSsoCodes",
+      "field": "expiresAt",
+      "retention": "60 s (código da entrada única no SIEM)"
+    },
+    {
       "collectionGroup": "cellReports",
       "field": "expiresAt",
       "retention": "90 dias"
