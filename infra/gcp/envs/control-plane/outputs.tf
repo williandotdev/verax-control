@@ -51,6 +51,7 @@ output "admin" {
   description = "O console do responsável: o endereço de uso (o domínio do Hosting; a conta nasce pela linha de comando, cadastro-responsavel), o site do Hosting e a URL direta do Cloud Run (a mesma tela de login). Nulo sem admin_enabled."
   value = var.admin_enabled ? {
     url         = "https://${var.admin_hosting_domain}"
+    sso_jwks    = length(var.sso_redirect_uris) > 0 ? "https://${var.admin_hosting_domain}/sso/jwks" : null
     run_url     = google_cloud_run_v2_service.admin[0].uri
     site_id     = google_firebase_hosting_site.admin[0].site_id
     default_url = google_firebase_hosting_site.admin[0].default_url

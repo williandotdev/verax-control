@@ -1,11 +1,12 @@
 import { ROLE_LABELS } from '@verax/shared';
-import { LogOut, Menu, UserRound, X } from 'lucide-react';
+import { KeyRound, LogOut, Menu, UserRound, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { BrandLockup } from '@/components/brand/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
+import { useAuthClientConfig } from '@/features/auth/client-config';
 import { useMe, useSignOut } from '@/features/session/session';
 import { cn } from '@/lib/cn';
 import { visibleNavigation } from './navigation';
@@ -17,6 +18,7 @@ import { TenantSwitcher } from './tenant-switcher';
  */
 export function AppLayout() {
   const { data: me } = useMe();
+  const clientConfig = useAuthClientConfig();
   const signOut = useSignOut();
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -41,6 +43,9 @@ export function AppLayout() {
   if (!me) return null;
 
   const groups = visibleNavigation(me.permissions);
+  // O console do responsável (o "Admin master"), só para o admin_verax no endereço da equipe: a API diz onde ele fica.
+  // Abre o console na mesma aba, com a sessão dele (a entrada única); as permissões são as do próprio console.
+  const adminMasterUrl = me.role === 'admin_verax' ? (clientConfig.data?.adminMasterUrl ?? null) : null;
 
   return (
     <div className="min-h-screen md:grid md:grid-cols-[15rem_1fr]">
@@ -98,6 +103,23 @@ export function AppLayout() {
               </ul>
             </div>
           ))}
+          {adminMasterUrl !== null && (
+            <div>
+              <p className="px-2 pb-1 text-xs font-medium text-subtle-foreground">Console</p>
+              <ul className="space-y-0.5">
+                <li>
+                  <a
+                    href={adminMasterUrl}
+                    rel="noreferrer"
+                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                  >
+                    <KeyRound aria-hidden className="size-4" />
+                    Admin master
+                  </a>
+                </li>
+              </ul>
+            </div>
+          )}
         </nav>
       </aside>
 

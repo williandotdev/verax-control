@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { generate } from 'otplib';
 import {
   accountRef,
@@ -21,6 +21,8 @@ import type { DocumentStore } from '../../src/firestore/document-store.js';
  */
 export class MemoryAdminSecrets implements AdminSecretSource {
   totp: string | undefined = randomBytes(32).toString('base64');
+  /** A chave de assinatura da entrada única (Ed25519 em PEM), gerada no teste. */
+  sso: string | undefined = newSsoSigningKeyPem();
   failing = false;
   reads = 0;
 
@@ -29,6 +31,16 @@ export class MemoryAdminSecrets implements AdminSecretSource {
     if (this.failing) return Promise.reject(new SecretUnavailableError());
     return Promise.resolve(this.totp);
   }
+
+  ssoSigningKey(): Promise<string | undefined> {
+    if (this.failing) return Promise.reject(new SecretUnavailableError());
+    return Promise.resolve(this.sso);
+  }
+}
+
+/** Uma chave Ed25519 nova em PEM (PKCS #8), como a que o responsável grava no cofre `cp-admin-sso-signing-key`. */
+export function newSsoSigningKeyPem(): string {
+  return generateKeyPairSync('ed25519').privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
 }
 
 /** O código do aplicativo autenticador no instante do relógio do teste (o mesmo cálculo do celular). */

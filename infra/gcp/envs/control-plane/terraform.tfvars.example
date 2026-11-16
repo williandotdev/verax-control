@@ -20,6 +20,11 @@ project_id = "projeto-exemplo"
 # `terraform output cloudflare_dns_records`. O site e o domínio têm padrão (admin_hosting_site_id, admin_hosting_domain).
 # admin_enabled = true
 
+# Entrada única no SIEM da Verax pelo console (o "Admin master" no painel da equipe na célula): o endereço de retorno
+# exato da API da equipe. Antes, grave o segredo cp-admin-sso-signing-key; depois, fixe a chave pública no node.conf da
+# célula (docs/runbooks/console-do-responsavel.md, seção 3). Vazio, desligada.
+# sso_redirect_uris = ["https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback"]
+
 # Entrada do cp-worker: INGRESS_TRAFFIC_ALL é o padrão (a revelação da senha e o console dependem dela; a barreira é o
 # IAM). Só para fechar a entrada de novo (a revelação passa a responder 503): ver o GUIA, "Revelação da senha e a
 # entrada do cp-worker".

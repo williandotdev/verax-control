@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { authApi } from '@/lib/api';
 import type { LoginRequest } from '@/lib/api-types';
 import { errorMessage } from '@/lib/errors';
-import { safeReturnPath } from '@/lib/return-path';
+import { isServerReturnPath, safeReturnPath } from '@/lib/return-path';
 import { AuthFrame } from './auth-frame';
 import { normalizeCode, SENHA_MESSAGES } from './credentials';
 import { CodeField, FormAlert, TextField } from './fields';
@@ -34,7 +34,9 @@ export function LoginPage() {
     onSuccess: () => {
       // A sessão nova não herda nada de uma anterior.
       client.clear();
-      void navigate(back, { replace: true });
+      // A entrada única no SIEM (`/sso/authorize`) é do servidor, não uma tela: o navegador vai até ela de verdade.
+      if (isServerReturnPath(back)) window.location.assign(back);
+      else void navigate(back, { replace: true });
     },
     onError: () => {
       setPassword('');

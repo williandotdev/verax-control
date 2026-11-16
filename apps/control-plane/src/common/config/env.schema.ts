@@ -82,6 +82,43 @@ const releaseVersion = z
   .string()
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, { error: 'versão inválida (letras, números, ponto, traço)' });
 
+/** Uma origem https sem nada além dela (`https://host`, minúsculas, sem porta, caminho, consulta nem usuário). */
+export function isHttpsOrigin(value: string): boolean {
+  if (value.length > 200) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.port === '' && url.origin === value;
+  } catch {
+    return false;
+  }
+}
+
+const REDIRECT_URI_ERROR =
+  'deve ser um endereço https completo e canônico, sem consulta nem fragmento (ex.: https://api-equipe.exemplo.com.br/v1/auth/sso/callback)';
+
+/**
+ * Um endereço de retorno da entrada única: https, sem porta, usuário, consulta nem fragmento, e já na forma canônica
+ * (o que o `URL` devolve é igual ao texto). Comparado por igualdade exata com o `redirect_uri` de cada pedido.
+ */
+export function isExactRedirectUri(value: string): boolean {
+  if (value.length > 200) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      url.port === '' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.search === '' &&
+      url.hash === '' &&
+      url.pathname.length > 1 &&
+      url.href === value
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Versão do nó que o provisionamento instala: o release `node-vX.Y.Z` do manifesto assinado (`scripts/node-release.sh`),
  * o mesmo formato da variável `node_version` do `envs/tenant` e do `boot-install.sh` (PR-N7).
@@ -301,6 +338,18 @@ const envShape = {
   // mestra que cifra o segredo do TOTP e assina os códigos de recuperação). O Terraform (admin.tf) a deriva do próprio
   // projeto. Quem pode entrar continua em OWNER_PRINCIPALS, também obrigatória no admin.
   ADMIN_SECRETS_PROJECT_ID: gcpProjectId.optional(),
+  // Entrada única no SIEM da Verax (cp-admin, só ROLE=admin; docs/ARQUITETURA.md, "Entrada única"): o console é o
+  // provedor de identidade do painel da equipe na célula. SSO_ISSUER é a origem pública do console (o `iss` dos tokens,
+  // `https://admin...`, sem caminho) e SSO_REDIRECT_URIS a lista EXATA dos endereços de retorno aceitos (o
+  // `/v1/auth/sso/callback` da API da equipe na célula), as duas juntas; sem elas, o `/sso/*` responde indisponível. A
+  // chave de assinatura não é variável: fica no cofre `cp-admin-sso-signing-key`, lida pela API do Secret Manager.
+  SSO_ISSUER: z
+    .string()
+    .refine(isHttpsOrigin, {
+      error: 'deve ser só a origem https, sem caminho (ex.: https://admin.exemplo.com.br)',
+    })
+    .optional(),
+  SSO_REDIRECT_URIS: list(z.string().refine(isExactRedirectUri, { error: REDIRECT_URI_ERROR })).optional(),
 
   // Provisionamento (CP-07): desligado até existir o projeto dos nós; ligado, exige o grupo inteiro na partida
   // (`PROVISIONING_REQUIRED` e, no worker, `PROVISIONING_WORKER_REQUIRED`). Desligado, o passo `preflight` termina o
@@ -425,7 +474,7 @@ export const ROLE_ONLY: Readonly<Record<Role, { secrets: readonly EnvKey[]; sett
         'CELL_PUSH_SA_EMAILS',
       ],
     },
-    admin: { secrets: [], settings: ['ADMIN_SECRETS_PROJECT_ID'] },
+    admin: { secrets: [], settings: ['ADMIN_SECRETS_PROJECT_ID', 'SSO_ISSUER', 'SSO_REDIRECT_URIS'] },
   };
 
 /**
@@ -533,6 +582,12 @@ export const envSchema = z.object(envShape).superRefine((env, ctx) => {
         ctx.addIssue({ code: 'custom', path: [key], message: 'obrigatória com ROLE=admin' });
       }
     }
+  }
+  // A entrada única: a origem do console e os endereços de retorno andam juntos.
+  if ((env.SSO_ISSUER === undefined) !== (env.SSO_REDIRECT_URIS === undefined)) {
+    const missing = env.SSO_ISSUER === undefined ? 'SSO_ISSUER' : 'SSO_REDIRECT_URIS';
+    const present = missing === 'SSO_ISSUER' ? 'SSO_REDIRECT_URIS' : 'SSO_ISSUER';
+    ctx.addIssue({ code: 'custom', path: [missing], message: `obrigatória com ${present}` });
   }
   // O grupo do SMTP é do worker (quem envia e-mail): informado o servidor, o resto é obrigatório.
   if (env.ROLE === 'worker' && env.SMTP_HOST !== undefined) {

@@ -242,6 +242,99 @@ outro cliente (ou o `admin_verax` fora do endereço da equipe) recebe a mesma re
 gastar a tentativa da conta e a do IP. O código do MFA levado a outro endereço também é recusado, sem sessão. O
 `hostname` exigido do Turnstile é o do painel do cliente do endereço, e não o do `WEB_ORIGIN`.
 
+### Entrada única: o console como provedor de identidade do SIEM (Admin master)
+
+**Decisão de 15/11/2026**, do responsável: **um login só** para o SIEM da própria Verax (o painel da equipe na célula,
+`verax.control.veraxsistemas.com.br`, API `api-verax`) e para o console do responsável (o "Admin master", `cp-admin`,
+`admin.veraxsistemas.com.br`), com o Admin master aparecendo como um módulo dentro do SIEM. O desenho escolhido: **o
+plano de controle é o provedor de identidade**. O responsável entra uma vez no console (e-mail, senha e TOTP, o login de
+sempre, com a mesma força), e o SIEM aceita esse login para a equipe da Verax. A célula **nunca** consegue emitir um login
+de Admin master: ela só confere a assinatura do console.
+
+```
+painel da equipe ──► api-verax /v1/auth/sso/start ──302──► admin /sso/authorize ──(sem sessão)──► admin /entrar
+  (navegador)          state, nonce, PKCE no banco            cliente e retorno da lista;          e-mail, senha, TOTP
+                       cookie __Host-verax-sso (10 min)       sessão do console                         │
+                                                                     │ ◄────────────── volta ao pedido ─┘
+                                                                     ▼ 303 com code, state e iss
+api-verax /v1/auth/sso/callback ──POST /sso/token (servidor a servidor, PKCE)──► cp-admin: token EdDSA de 5 min
+   confere state, iss, a assinatura com a chave FIXADA, iss/aud/prazo/nonce/amr, jti único
+   └─► sessão normal do Better Auth para o admin_verax que já existe ──302──► painel; menu "Admin master" ──► console
+```
+
+**O protocolo** é o fluxo de código de autorização do OAuth 2.0 com PKCE S256, no formato do OpenID Connect, reduzido ao
+mínimo; o contrato fica em `packages/shared/src/sso.ts`:
+
+- **No console (`apps/control-plane/src/admin/sso/`)**: `GET /sso/authorize`, `POST /sso/token` (JSON, de servidor
+  para servidor) e `GET /sso/jwks`, fora do prefixo `/v1`. Um cliente só (`verax-siem`) e a lista **exata** de
+  endereços de retorno (`SSO_REDIRECT_URIS`, do Terraform `sso_redirect_uris`), conferidos antes de qualquer outra
+  coisa: fora da lista, uma tela de recusa e nenhum redirecionamento (nada de redirecionamento aberto). `state`,
+  `nonce` e o desafio do PKCE (S256) são obrigatórios, e um pedido vindo de outro site (`Sec-Fetch-Site: cross-site`) é
+  recusado. Sem a sessão do console, o login dele (`/entrar?voltar=/sso/authorize?...`, remontado dos campos
+  conferidos), que volta ao pedido por navegação. O código: 32 bytes aleatórios, só o SHA-256 no Firestore
+  (`adminSsoCodes`, TTL), preso ao cliente, ao retorno, ao desafio, ao `nonce`, ao e-mail e à sessão do console, 60
+  segundos e uso único. A troca o apaga na mesma transação que o confere (usado ou recusado, não vale de novo), confere
+  o verificador do PKCE e que a sessão do console ainda vale (sair do console revoga os códigos pendentes), e assina o
+  token. Limites só de falhas, por IP e no total; auditoria `admin.sso_code_issued`, `admin.sso_token_issued` e
+  `admin.sso_refused`.
+- **O token**: um JWS compacto montado à mão com `node:crypto` (nenhuma dependência nova), **EdDSA com Ed25519**
+  (assinatura determinística, chave de 32 bytes que cabe numa linha do `node.conf`, sem o formato de assinatura do
+  ECDSA para errar). Cabeçalho exatamente `{alg: "EdDSA", typ: "JWT", kid}`, com o `kid` = impressão digital RFC 7638.
+  Declarações: `iss` (a origem do console), `aud` (`verax-siem`, texto), `sub` (o id da conta no console), `email`,
+  `nonce`, `iat`, `exp` (5 minutos), `auth_time` (o login no console), `jti` e `amr: ["pwd", "otp"]`. A chave privada
+  fica no cofre `cp-admin-sso-signing-key`, lido só pela conta `cp-admin`; a pública sai em `/sso/jwks`.
+- **Na célula (`apps/api/src/auth/sso/`)**: um plugin do Better Auth, só com `NODE_MODE=cell`, só no endereço da equipe
+  (`api-<CELL_STAFF_SLUG>`) e só com `SSO_ISSUER`, `SSO_CLIENT_ID` e `SSO_PUBLIC_KEY` no `node.conf`; em qualquer outro
+  endereço, 404. A chave pública é **fixada** na configuração (o `x` da chave), nunca baixada. O retorno gasta o pedido
+  antes de conferir, confere o `state` (contra o login forçado), o `iss` da resposta (RFC 9207), troca o código (https,
+  5 s, sem seguir redirecionamento, resposta pelo schema) e confere o token com rigor: três partes em base64url
+  canônico, cabeçalho estrito (nada de `none`, HS256, `jku`, `jwk`, `x5u` ou `crit`), `kid` da chave fixada, assinatura
+  Ed25519, declarações estritas, `iss`, `aud`, prazo (30 s de folga, no máximo 5 min de vida), `nonce` do pedido, `amr`
+  com senha e código, e o `jti` gasto numa tabela (`SsoTokenUse`). Então abre a sessão **normal** (o mesmo cookie, o
+  hook de criação com as regras da célula, 30 minutos sem uso e 12 horas, o CSRF das escritas) do `admin_verax` que já
+  existe com aquele e-mail, sem tenant, ativo, com a senha definitiva e o MFA do painel. Nada é criado: e-mail
+  desconhecido, de outro papel ou de um cliente recebe a mesma recusa (`?sso=recusado` no login), com o motivo só no
+  log e na trilha (`auth.sso_login`). O login com senha do painel continua; `STAFF_PASSWORD_LOGIN_DISABLED=true`
+  (padrão `false`, só com a entrada única) o tira da equipe no endereço dela.
+
+**O módulo Admin master no SIEM: o item do menu abre o console, sem embutir.** O `admin_verax` no endereço da equipe vê
+"Admin master" no menu (a API diz onde fica o console em `GET /v1/auth/client-config`, `adminMasterUrl`), que abre o
+console na mesma aba, já com a sessão dele (a entrada única deixou o console logado). A alternativa, o painel chamar a
+API do console por CORS com o cookie do console, foi recusada nesta fase: ela poria a origem do SIEM (o bundle dele, o
+site do Hosting dele e qualquer XSS a partir do que a célula serve) dentro da base de confiança do Admin master, que é
+exatamente o que a decisão quer evitar, e obrigaria a abrir o CORS com credenciais e o CSRF do console a outro site.
+Como está, o console continua com a CSP, o `frame-ancestors 'none'`, o cookie `SameSite=Strict` só do host e a recusa
+de escrita que não seja da própria origem (`Sec-Fetch-Site: same-origin`, que já barra os subdomínios irmãos). O plano
+para a integração completa, quando valer o esforço: um build das telas do console com o mesmo visual do painel (os
+mesmos tokens de design), servido pelo próprio `cp-admin` na origem dele, e não telas do console dentro do bundle do
+SIEM; o CORS do console nunca se abre para o painel.
+
+**Modelo de confiança.** A célula atende clientes e é o maior raio de impacto do produto (seção "Risco residual: o raio
+de impacto é a célula"); por isso ela é só a parte que confia. O que uma célula comprometida consegue: abrir sessões do
+SIEM para quem quiser (já conseguia, sem a entrada única), ver o código e o token de identidade do responsável (que só
+valem para o SIEM, por 5 minutos, e que o console nunca aceita de volta: nenhuma rota dele lê `Authorization`, e a
+sessão do console é só o cookie `__session` do próprio host). O que ela **não** consegue: a sessão do console (cookie
+`HttpOnly` do host `admin...`, que a célula nunca vê), um token assinado pelo console (a chave privada não está no nó:
+meta-teste `cell-cannot-sign.test.ts`), nem fazer o console mandar um código para outro lugar (a lista exata).
+
+**Riscos residuais:**
+
+- **Phishing em tempo real.** Uma célula comprometida pode, no `/v1/auth/sso/start`, mandar o navegador a uma página
+  falsa no lugar do console e colher e-mail, senha e o código TOTP (que não resiste a phishing). Mitigação: o
+  responsável só digita a senha no endereço `admin.veraxsistemas.com.br` (o gerenciador de senhas só preenche nele);
+  o passo seguinte é uma chave de acesso (WebAuthn) no console, fora deste PR.
+- **Sessão do console aberta.** Com a sessão do console viva (30 minutos sem uso, 12 horas no máximo), o SIEM entra
+  sem perguntar nada; quem tem o navegador do responsável tem os dois, como já tinha o console.
+- **Troca da chave.** O `cp-admin` guarda a chave em memória: trocar a versão no cofre pede uma revisão nova do
+  serviço e a chave pública nova no `node.conf` da célula, juntas (o runbook do console, seção 9). Entre as duas, a
+  entrada única recusa; o login com senha do painel continua, a não ser que o interruptor esteja ligado.
+- **Negação de serviço.** Os limites do console contam as falhas no balde da saída do Hosting, dividido por todos:
+  uma enxurrada de pedidos ruins pode deixar a entrada única em 429 por até 15 minutos (o login com senha continua).
+- **Subdomínios irmãos.** O console e o SIEM são o mesmo "site" (`veraxsistemas.com.br`) para o navegador: os cookies
+  `SameSite=Strict` vão de um ao outro numa navegação, e é isso que deixa o fluxo funcionar. O que protege o console de
+  um subdomínio irmão é o que já protegia: o cookie só do host, a limpeza dos `__session` plantados com `Domain` e a
+  recusa de escrita que não seja da própria origem.
+
 ## Contas monitoradas por provedor
 
 _(fase 2: o token do Cloudflare entra pelo painel (PR-11'); o template do papel da AWS está feito (PR-V2'), e o
@@ -1752,17 +1845,17 @@ do preço configurável, documentos internos.
 
 ### Peças
 
-| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                                                                           | Não faz                                                                                                                                   |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                                                                 | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)                             |
-| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, textos legais vigentes, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                                             | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                                           |
-| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e `reactivate`), chamadas pelo console (`cp-admin`)                           | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                                          |
-| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás de `admin.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Console do responsável: as telas (`apps/console`) e a API das tabelas de preços e dos modelos de custo, simulador de DRE, os clientes (lista, linha do tempo, contrato direto) e os botões das operações, pedidas ao `cp-worker`; os textos legais            | Login próprio (e-mail de `OWNER_PRINCIPALS`, senha e TOTP, com bloqueio); invocação anônima; nada da Stripe                               |
-| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                                                                               | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                                                       |
-| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h); textos legais: `legalTexts`; console: `admin*` | Nunca guarda segredo em claro, cartão, token do túnel nem corpo bruto do webhook; a senha do console só como hash scrypt e o TOTP cifrado |
-| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                                                                             | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                                                  |
-| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie, chave e token do console; manifesto e bundle                                                                                                                 | —                                                                                                                                         |
-| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                                                                  | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado                         |
+| Peça                                           | Onde                                                                                | Faz                                                                                                                                                                                                                                                                                                                       | Não faz                                                                                                                                   |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Site estático** (repo privado)               | `veraxsistemas.com.br`, Firebase Hosting                                            | Calculadora de preço (lê a tabela pública e pede a cotação), formulário de compra, página de status com a revelação única da senha, link do Portal do cliente                                                                                                                                                             | Nunca toca chave da Stripe nem dado de cliente além do que o usuário digita; nunca manda preço (só a cotação)                             |
+| **`cp-public`** (Cloud Run, 0 a 2 instâncias)  | Projeto da Verax, atrás de `conta.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Tabela pública de preços e cotação, textos legais vigentes, checkout pela cotação, consulta de subdomínio, página de status (claim, status, reveal), webhook da Stripe, `/health`                                                                                                                                         | Nenhuma rota interna nem do console: aceita invocação anônima (exigência do rewrite do Hosting)                                           |
+| **`cp-worker`** (mesma imagem, `ROLE=worker`)  | Projeto da Verax, só IAM                                                            | Um passo do provisionamento por task, `tick` horário, `reconcile` diário, operações do responsável (`resume`, `delete-now`, `export` e, no contrato direto, `cancel`, `suspend` e `reactivate`), chamadas pelo console (`cp-admin`)                                                                                       | Não é alcançável sem token de identidade do Google; o app ainda confere `aud` e `email` do token                                          |
+| **`cp-admin`** (mesma imagem, `ROLE=admin`)    | Projeto da Verax, atrás de `admin.veraxsistemas.com.br` (Hosting com rewrite `/**`) | Console do responsável: as telas (`apps/console`) e a API das tabelas de preços e dos modelos de custo, simulador de DRE, os clientes (lista, linha do tempo, contrato direto) e os botões das operações, pedidas ao `cp-worker`; os textos legais; o provedor de identidade do SIEM da Verax (`/sso/*`, "Entrada única") | Login próprio (e-mail de `OWNER_PRINCIPALS`, senha e TOTP, com bloqueio); invocação anônima; nada da Stripe                               |
+| **`cp-terraform`** (Cloud Run Job)             | Projeto da Verax; identidade com papéis no projeto dos nós                          | `init`, `plan` e `apply`/`destroy` de `infra/gcp/envs/tenant` com Terraform fixado, estado por tenant no bucket                                                                                                                                                                                                           | Não lê Stripe, Cloudflare nem Firestore; só recebe variáveis já validadas por regex                                                       |
+| **Firestore** (banco `(default)`, modo nativo) | Projeto da Verax                                                                    | Estado: `tenants` (com `transitions` e `invoices`), `slugs`, `stripeEvents`, `statusTokens`, `provisioningRuns`, `auditLog`, `rateLimits`; preço configurável: `pricingTables`, `costModels`, `quotes` (24 h); textos legais: `legalTexts`; console: `admin*`                                                             | Nunca guarda segredo em claro, cartão, token do túnel nem corpo bruto do webhook; a senha do console só como hash scrypt e o TOTP cifrado |
+| **Cloud Tasks** e **Cloud Scheduler**          | Projeto da Verax                                                                    | Filas `provisioning` e `lifecycle` com nova tentativa e recuo, OIDC para o `cp-worker`; `tick` a cada hora e `reconcile` às 03:00                                                                                                                                                                                         | Nada de longa duração: o `apply` roda no Job, a task só dispara e espera                                                                  |
+| **Secret Manager** e **bucket de releases**    | Projeto da Verax                                                                    | Chaves da Stripe (teste e produção separadas), token do Cloudflare, senha SMTP, chave do cookie, chave e token do console; manifesto e bundle                                                                                                                                                                             | —                                                                                                                                         |
+| **Projeto dos nós** e **Firebase dos painéis** | Pago, criado na 1.ª venda; 1 a N projetos do Firebase (36 sites por projeto)        | Recursos `vx-<slug>` do módulo `node` (perfil `standard`); um site por cliente em `<slug>.control.veraxsistemas.com.br`, API em `api-<slug>`                                                                                                                                                                              | Sem o projeto dos nós, o provisionamento falha com `provisioning_disabled` (sem laço) e retoma quando configurado                         |
 
 ### Identidades
 
@@ -1786,8 +1879,9 @@ do preço configurável, documentos internos.
   nas SAs de execução; escrita no registro). Não cria serviço nem toca o Firestore: índices e TTL são do Terraform.
   Nenhum segredo.
 - **`cp-admin`:** lê e escreve no Firestore (tabelas de preços, modelos de custo, clientes, auditoria e as coleções do
-  console: `adminAccounts`, `adminSessions`, `adminLoginThrottle` e `adminEnrollments`), lê pela API do Secret
-  Manager só a chave do console (`cp-admin-totp-key`, nunca montada) e
+  console: `adminAccounts`, `adminSessions`, `adminLoginThrottle`, `adminEnrollments` e `adminSsoCodes`), lê pela API
+  do Secret Manager só as duas chaves dele (`cp-admin-totp-key` e `cp-admin-sso-signing-key`, a da entrada única no
+  SIEM; nunca montadas) e
   invoca o `cp-worker` (`run.invoker` só nele, com `admin_enabled` e `services_enabled`) com o token de identidade da
   própria conta, para as operações do responsável; nenhum `actAs` na cp-invoker (não enfileira nada). Nenhum segredo
   montado: a configuração recusa a chave da Stripe. A invocação é anônima (o rewrite do Hosting de

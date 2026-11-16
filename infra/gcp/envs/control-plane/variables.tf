@@ -88,7 +88,7 @@ locals {
   # variáveis (cada uma tem a sua: alert_email, nodes_project_id, firebase_panel_projects...), as que o workflow de
   # implantação reafirma (ROLE, NODE_ENV), a que o Cloud Run reserva (PORT) e os cinco segredos, que vêm do Secret
   # Manager. Recusar é melhor do que ignorar em silêncio (o `merge` de run.tf põe o que o Terraform sabe por último).
-  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
+  reserved_env_keys = "^(ROLE|NODE_ENV|PORT|FIRESTORE_DATABASE|TASKS_.*|WORKER_URL|WORKER_SA_EMAIL|SCHEDULER_SA_EMAIL|PUBLIC_SA_EMAIL|ADMIN_SA_EMAIL|CELL_PUSH_SA_EMAILS|ADMIN_SECRETS_PROJECT_ID|SSO_.*|OWNER_PRINCIPALS|OWNER_ALERT_EMAIL|TERRAFORM_JOB_NAME|NODES_.*|TFSTATE_BUCKET|IMAGES_PROJECT_ID|RELEASE_BUCKET|FIREBASE_PANEL_PROJECTS|CLOUDFLARE_ACCOUNT_ID|CLOUDFLARE_ZONE_ID|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|CLOUDFLARE_API_TOKEN|SMTP_PASSWORD|COOKIE_KEY)$"
 }
 
 variable "service_env" {
@@ -98,7 +98,7 @@ variable "service_env" {
 
   validation {
     condition     = alltrue([for name in keys(var.service_env) : !can(regex(local.reserved_env_keys, name))])
-    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
+    error_message = "service_env não aceita ROLE, NODE_ENV, PORT, os segredos (STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, CLOUDFLARE_API_TOKEN, SMTP_PASSWORD, COOKIE_KEY) nem o que o Terraform deriva de outras variáveis (FIRESTORE_DATABASE, TASKS_*, WORKER_URL, WORKER_SA_EMAIL, SCHEDULER_SA_EMAIL, PUBLIC_SA_EMAIL, ADMIN_SA_EMAIL, CELL_PUSH_SA_EMAILS, ADMIN_SECRETS_PROJECT_ID, SSO_*, OWNER_PRINCIPALS, OWNER_ALERT_EMAIL, TERRAFORM_JOB_NAME, NODES_*, TFSTATE_BUCKET, IMAGES_PROJECT_ID, RELEASE_BUCKET, FIREBASE_PANEL_PROJECTS, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID): use a variável própria de cada um."
   }
 
   validation {
@@ -224,6 +224,30 @@ variable "admin_hosting_domain" {
   description = "Domínio próprio do console do responsável, com admin_enabled. Os registros de DNS saem em `terraform output cloudflare_dns_records`, junto com os do domínio do plano de controle."
   type        = string
   default     = "admin.veraxsistemas.com.br"
+}
+
+variable "sso_redirect_uris" {
+  description = "Entrada única no SIEM da Verax pelo console (admin.tf): os endereços de retorno aceitos pelo /sso/authorize do cp-admin, comparados por igualdade exata. Só o /v1/auth/sso/callback da API da equipe na célula, ex.: [\"https://api-verax.veraxsistemas.com.br/v1/auth/sso/callback\"]. Vazia (padrão), a entrada única fica desligada. Grave antes a chave cp-admin-sso-signing-key (docs/runbooks/console-do-responsavel.md)."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition = alltrue([
+      for uri in var.sso_redirect_uris :
+      length(uri) <= 200 && can(regex("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?/v1/auth/sso/callback$", uri))
+    ])
+    error_message = "Cada endereço de retorno é o https://<host da API da equipe>/v1/auth/sso/callback exato: https, host em minúsculas, sem porta, consulta nem fragmento."
+  }
+
+  validation {
+    condition     = length(var.sso_redirect_uris) <= 4 && length(distinct(var.sso_redirect_uris)) == length(var.sso_redirect_uris)
+    error_message = "No máximo 4 endereços de retorno, sem repetição."
+  }
+
+  validation {
+    condition     = length(var.sso_redirect_uris) == 0 || var.admin_enabled
+    error_message = "A entrada única é do console: sso_redirect_uris exige admin_enabled = true."
+  }
 }
 
 variable "firestore_pitr" {

@@ -259,6 +259,62 @@ for case_ in "${refusals[@]}"; do
   ok
 done
 
+# A entrada única pelo console (opcional): as três linhas viram variáveis da API, só da API, só na célula. A chave
+# fictícia tem só o formato (43 caracteres em base64url); quem confere a curva é a API.
+sso_key=$(printf 'Ab0_%.0s' {1..10})Ab0
+sso_conf=(SSO_ISSUER=https://admin.exemplo.com.br SSO_CLIENT_ID=verax-siem "SSO_PUBLIC_KEY=$sso_key")
+new_root "célula: a entrada única vai só para a API" celula-sso "${cell_conf[@]}" "${sso_conf[@]}"
+start render || fail "o render falhou: $(cat "$root/out")"
+sso_lines="SSO_ISSUER='https://admin.exemplo.com.br'
+SSO_CLIENT_ID='verax-siem'
+SSO_PUBLIC_KEY='$sso_key'"
+expected_sso_api=${expected_api/CELL_STAFF_SLUG=\'verax\'/CELL_STAFF_SLUG=\'verax\'
+$sso_lines}
+[[ "$(cat "$root/run/verax/api.env")" == "$expected_sso_api" ]] ||
+  fail "api.env inesperado: $(diff <(echo "$expected_sso_api") "$root/run/verax/api.env" || true)"
+grep -q SSO_ "$root/run/verax/worker.env" && fail "o worker ganhou a entrada única"
+grep -q STAFF_PASSWORD_LOGIN_DISABLED "$root/run/verax/api.env" && fail "o interruptor entrou sem estar na configuração"
+ok
+new_root "célula: o login com senha da equipe desligado, com a entrada única" celula-sso-sem-senha "${cell_conf[@]}" \
+  "${sso_conf[@]}" STAFF_PASSWORD_LOGIN_DISABLED=true
+start render || fail "o render falhou: $(cat "$root/out")"
+grep -qx "STAFF_PASSWORD_LOGIN_DISABLED='true'" "$root/run/verax/api.env" || fail "sem o interruptor no api.env"
+ok
+sso_refusals=(
+  "STAFF_PASSWORD_LOGIN_DISABLED=true|exige a entrada única"
+  "STAFF_PASSWORD_LOGIN_DISABLED=sim|STAFF_PASSWORD_LOGIN_DISABLED inválido"
+  "SSO_ISSUER=https://admin.exemplo.com.br|andam juntas"
+)
+for case_ in "${sso_refusals[@]}"; do
+  line=${case_%%|*}
+  new_root "célula: a entrada única recusa ($line) sem escrever nada" "sso-recusa-$((++n))" "${cell_conf[@]}" "$line"
+  if start render; then fail "o render deveria parar"; fi
+  grep -q -F "${case_#*|}" "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+  [[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
+  ok
+done
+sso_format_refusals=(
+  "SSO_ISSUER=http://admin.exemplo.com.br|SSO_ISSUER inválido"
+  "SSO_ISSUER=https://admin.exemplo.com.br/sso|SSO_ISSUER inválido"
+  "SSO_CLIENT_ID=outro|SSO_CLIENT_ID inválido"
+  "SSO_PUBLIC_KEY=curta|SSO_PUBLIC_KEY inválida"
+  "SSO_PUBLIC_KEY=${sso_key}=|SSO_PUBLIC_KEY inválida"
+)
+for case_ in "${sso_format_refusals[@]}"; do
+  line=${case_%%|*}
+  new_root "célula: a entrada única recusa ($line) sem escrever nada" "sso-recusa-$((++n))" "${cell_conf[@]}" \
+    "${sso_conf[@]}" "$line"
+  if start render; then fail "o render deveria parar"; fi
+  grep -q -F "${case_#*|}" "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+  [[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
+  ok
+done
+new_root "dedicado: a entrada única é só da célula" sso-dedicado "${sso_conf[@]}"
+if start render; then fail "o render deveria parar"; fi
+grep -q -F 'só existe com NODE_MODE=cell' "$root/out" || fail "sem o motivo: $(cat "$root/out")"
+[[ -z $(env_files) ]] || fail "escreveu arquivo de ambiente mesmo parando: $(env_files)"
+ok
+
 new_root "projeto do Compose: o compose.cell.yaml só na célula" compose-dedicado
 start down || fail "o down falhou: $(cat "$root/out")"
 grep -q compose.cell.yaml "$state/docker.log" && fail "o dedicado somou o compose.cell.yaml"

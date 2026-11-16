@@ -25,6 +25,7 @@ export * from './posture-catalog.js';
 export * from './protected-resources.js';
 export * from './reports.js';
 export * from './session.js';
+export * from './sso.js';
 export * from './tenants.js';
 export * from './tower.js';
 export * from './unowned-alerts.js';

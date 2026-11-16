@@ -61,6 +61,14 @@ locals {
       readers     = ["admin"]
       env         = null
     }
+    # A chave de assinatura da entrada única no SIEM da Verax (admin.tf, SSO_ISSUER): Ed25519 em PEM (PKCS #8), gerada
+    # pelo responsável direto no cofre (runbook do console). Só o cp-admin lê, pela API, como a chave do console; a parte
+    # pública sai em /sso/jwks e fica fixada no node.conf da célula. Nenhum nó, nenhuma célula e nenhum outro serviço lê.
+    "cp-admin-sso-signing-key" = {
+      description = "Chave privada Ed25519 (PEM, PKCS #8) que assina os tokens da entrada única no SIEM da Verax. Só o cp-admin lê. Trocar invalida a chave fixada na célula: troque as duas juntas (runbook do console)."
+      readers     = ["admin"]
+      env         = null
+    }
     # APOSENTADO: o token da antiga tela de cadastro (`/configurar`), que saiu do console (a conta nasce pela linha de
     # comando, `cadastro-responsavel`). Ninguém lê mais (`readers = []`: a leitura do cp-admin sai). O cofre continua
     # aqui só por enquanto, para não apagar nada no mesmo apply; destrua as versões (runbook) e tire este bloco depois.

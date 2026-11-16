@@ -1244,3 +1244,29 @@ model CellTenantBootstrap {
   confirmedAt DateTime? @db.Timestamptz(3)
 }
 
+/// Entrada única no SIEM pelo console do responsável (só na célula, no endereço da equipe): o pedido em curso de um
+/// navegador, entre o `GET /v1/auth/sso/start` e o callback. `id` é o SHA-256 do cookie de pré-login (o valor fica só no
+/// navegador), e o `state` também só como SHA-256. Vale 10 minutos e uma vez: o callback apaga a linha antes de conferir
+/// qualquer coisa. Sem chave estrangeira (dado de sistema, sem coluna de cliente); o `start` apaga as vencidas.
+model SsoLoginAttempt {
+  id           String   @id @db.VarChar(64)
+  stateHash    String   @db.VarChar(64)
+  nonce        String   @db.VarChar(43)
+  codeVerifier String   @db.VarChar(128)
+  /// O endereço (o cliente da equipe) onde o pedido começou: o callback em outro endereço não o usa.
+  hostTenantId String   @db.Uuid
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt    DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+/// Entrada única: o `jti` de cada token de identidade já aceito, até ele vencer (o mesmo token não abre uma segunda
+/// sessão). Só o sistema grava; as vencidas saem no próximo login pela entrada única.
+model SsoTokenUse {
+  jti       String   @id @db.VarChar(43)
+  usedAt    DateTime @default(now()) @db.Timestamptz(3)
+  expiresAt DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}

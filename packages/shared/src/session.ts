@@ -27,5 +27,11 @@ export const switchTenantResponseSchema = z.strictObject({ activeTenantId: z.uui
 export const authClientConfigSchema = z.strictObject({
   /** Chave do site do Cloudflare Turnstile; `null` com o desafio desligado (os formulários funcionam sem ele). */
   turnstileSiteKey: z.string().min(1).nullable(),
+  /**
+   * Entrada única pelo console do responsável (o "Admin master"): o endereço do console, só no endereço da equipe da
+   * Verax na célula e com a entrada única configurada no nó; `null` em todo outro endereço. Com ele, o login mostra
+   * "Entrar com o Admin master" e o menu do `admin_verax` leva ao console.
+   */
+  adminMasterUrl: z.url({ protocol: /^https$/ }).nullable(),
 });
 export type AuthClientConfig = z.infer<typeof authClientConfigSchema>;

@@ -413,7 +413,16 @@ wazuh_agents() {
 node_mode() {
   local key
   case ${NODE_MODE:-dedicated} in
-    dedicated) return 0 ;;
+    dedicated)
+      # A entrada única pelo console é do endereço da equipe, que só existe na célula.
+      for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY STAFF_PASSWORD_LOGIN_DISABLED; do
+        if [[ -n ${!key:-} ]]; then
+          echo "$key só existe com NODE_MODE=cell (a entrada única pelo console é do endereço da equipe). Tire a linha de /etc/verax/node.conf." >&2
+          return 1
+        fi
+      done
+      return 0
+      ;;
     cell) ;;
     *)
       echo 'NODE_MODE inválido em /etc/verax/node.conf: use dedicated ou cell.' >&2
@@ -450,6 +459,52 @@ node_mode() {
   cell_api=(NODE_MODE=cell "CELL_DOMAIN=$CELL_DOMAIN" "CELL_STAFF_SLUG=$CELL_STAFF_SLUG")
   cell_worker=(NODE_MODE=cell "TENANT_BOOTSTRAP_DIR=$TENANT_REQUESTS_MOUNT"
     "TENANT_BOOTSTRAP_STATUS_DIR=$TENANT_STATUS_MOUNT")
+  staff_sso || return 1
+}
+
+# Entrada única no SIEM pelo console do responsável (opcional, só na célula; docs/runbooks/celula.md): a origem do
+# console, o cliente e a chave PÚBLICA do console (o `x` do JWKS), fixada aqui e nunca baixada. As três juntas, nos
+# formatos da API; nenhuma é segredo, e nada é lido de cofre (a chave de assinatura nunca chega ao nó). Sem nenhuma, nada
+# muda. STAFF_PASSWORD_LOGIN_DISABLED=true (padrão false) tira o login com senha da equipe no endereço dela: só com a
+# entrada única configurada, senão a equipe ficaria do lado de fora.
+staff_sso() {
+  local key present=0
+  for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY; do
+    if [[ -n ${!key:-} ]]; then present=$((present + 1)); fi
+  done
+  if ((present > 0 && present < 3)); then
+    echo 'SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY andam juntas em /etc/verax/node.conf (a entrada única pelo console): as três ou nenhuma.' >&2
+    return 1
+  fi
+  if ((present == 3)); then
+    if ((${#SSO_ISSUER} > 200)) || [[ ! $SSO_ISSUER =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]; then
+      echo 'SSO_ISSUER inválido em /etc/verax/node.conf: só a origem https do console, sem caminho (ex.: https://admin.exemplo.com.br).' >&2
+      return 1
+    fi
+    if [[ $SSO_CLIENT_ID != verax-siem ]]; then
+      echo 'SSO_CLIENT_ID inválido em /etc/verax/node.conf: use verax-siem.' >&2
+      return 1
+    fi
+    if [[ ! $SSO_PUBLIC_KEY =~ ^[A-Za-z0-9_-]{43}$ ]]; then
+      echo 'SSO_PUBLIC_KEY inválida em /etc/verax/node.conf: a chave PÚBLICA do console, o x do JWKS (43 caracteres em base64url).' >&2
+      return 1
+    fi
+    cell_api+=("SSO_ISSUER=$SSO_ISSUER" "SSO_CLIENT_ID=$SSO_CLIENT_ID" "SSO_PUBLIC_KEY=$SSO_PUBLIC_KEY")
+  fi
+  case ${STAFF_PASSWORD_LOGIN_DISABLED:-false} in
+    false) ;;
+    true)
+      if ((present != 3)); then
+        echo 'STAFF_PASSWORD_LOGIN_DISABLED=true exige a entrada única (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY em /etc/verax/node.conf).' >&2
+        return 1
+      fi
+      cell_api+=(STAFF_PASSWORD_LOGIN_DISABLED=true)
+      ;;
+    *)
+      echo 'STAFF_PASSWORD_LOGIN_DISABLED inválido em /etc/verax/node.conf: use true ou false.' >&2
+      return 1
+      ;;
+  esac
 }
 
 # As pastas do primeiro acesso dos clientes da célula: a dos pedidos (root:<grupo do worker> 1770: o worker grava, o

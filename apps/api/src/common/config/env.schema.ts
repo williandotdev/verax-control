@@ -42,6 +42,7 @@ import {
   NODE_MODES,
   type NodeMode,
 } from './cell.js';
+import { checkSsoEnv, ssoConfigOf, ssoEnvShape } from './sso.js';
 
 const logLevels = ['fatal', 'error', 'warn', 'info', 'debug', 'trace'] as const;
 
@@ -554,10 +555,14 @@ const apiEnvSchema = z
     ...apiAgentsEnvShape,
     // Célula compartilhada (CE-01): o domínio e o subdomínio da equipe, só com NODE_MODE=cell (do planEnvShape).
     ...nodeModeEnvShape,
+    // Entrada única no SIEM pelo console do responsável (só na célula, no endereço da equipe): a origem do console, o
+    // cliente e a chave pública fixada (`./sso.ts`).
+    ...ssoEnvShape,
   })
   .superRefine((env, ctx) => {
     checkPlanEnv(env, ctx);
     checkNodeModeEnv(env, ctx);
+    checkSsoEnv(env, ctx);
     // Na célula, o WEB_ORIGIN e o API_ORIGIN são os endereços da equipe da Verax (o Better Auth usa o API_ORIGIN como
     // base). Iguais aos derivados do domínio, para nenhum valor solto apontar para outro lugar; os de cada cliente saem
     // do `Host` de cada requisição.
@@ -648,11 +653,22 @@ const apiEnvSchema = z
         WAZUH_AGENTS_ENROLLMENT_PASSWORD,
         CELL_DOMAIN,
         CELL_STAFF_SLUG,
+        SSO_ISSUER,
+        SSO_CLIENT_ID,
+        SSO_PUBLIC_KEY,
         ...env
       },
       ctx,
     ) => {
       const cell = cellConfigOf({ NODE_MODE: env.NODE_MODE, CELL_DOMAIN, CELL_STAFF_SLUG });
+      // A entrada única num objeto só, com a chave já lida (o texto das variáveis não fica na configuração).
+      const sso = ssoConfigOf({
+        NODE_MODE: env.NODE_MODE,
+        SSO_ISSUER,
+        SSO_CLIENT_ID,
+        SSO_PUBLIC_KEY,
+        STAFF_PASSWORD_LOGIN_DISABLED: env.STAFF_PASSWORD_LOGIN_DISABLED,
+      });
       // A chave pública já validada no lugar do texto em base64; sem o par, a API sobe sem o cofre.
       let credentialsPublicKey: VaultPublicKey | null = null;
       if (CREDENTIALS_PUBLIC_KEY !== undefined && CREDENTIALS_KEY_VERSION !== undefined) {
@@ -675,7 +691,7 @@ const apiEnvSchema = z
         },
         ctx,
       );
-      return { ...withDefaultPlan(env), credentialsPublicKey, wazuhAgents, cell };
+      return { ...withDefaultPlan(env), credentialsPublicKey, wazuhAgents, cell, sso };
     },
   );
 

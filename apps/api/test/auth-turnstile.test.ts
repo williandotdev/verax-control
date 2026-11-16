@@ -124,7 +124,7 @@ describe('Cloudflare Turnstile no login e no pedido de redefinição', () => {
 
   it('a configuração pública entrega a chave do site, com cache e sem a chave secreta', async () => {
     const response = await request(app.getHttpServer()).get('/v1/auth/client-config').expect(200);
-    expect(response.body).toEqual({ turnstileSiteKey: SITE_KEY });
+    expect(response.body).toEqual({ turnstileSiteKey: SITE_KEY, adminMasterUrl: null });
     expect(response.headers['cache-control']).toBe('public, max-age=300');
     expect(JSON.stringify(response.body)).not.toContain(LEAK.secretKey);
     // Pública: nem sessão nem origem do painel são exigidas.
