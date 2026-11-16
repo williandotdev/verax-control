@@ -144,7 +144,7 @@ describe('plano por cliente na célula (CE-02, NODE_MODE=cell)', () => {
     const b = await tenantWith(PLAN_B, 'Cliente Demo B');
 
     const usageA = planUsageSchema.parse((await call(a.admin).get('/v1/plan').expect(200)).body);
-    expect(usageA.plan).toEqual({ id: 'plataforma', label: 'Plataforma', limits: PLAN_A.limits });
+    expect(usageA.plan).toEqual({ id: 'plataforma', label: 'SIEM Cloud', limits: PLAN_A.limits });
     const usageB = planUsageSchema.parse((await call(b.admin).get('/v1/plan').expect(200)).body);
     expect(usageB.plan).toEqual({ id: 'enterprise', label: 'Enterprise', limits: PLAN_B.limits });
 
@@ -204,7 +204,7 @@ describe('plano por cliente na célula (CE-02, NODE_MODE=cell)', () => {
     const resolver = new TenantPlanResolver(prisma, 'cell', resolvePlan('profissional'));
     expect(await resolver.planOf(a.tenantId)).toEqual({
       id: 'plataforma',
-      label: 'Plataforma',
+      label: 'SIEM Cloud',
       limits: PLAN_A.limits,
     });
     expect(await resolver.planOf(c.tenantId)).toBeNull();

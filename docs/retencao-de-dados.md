@@ -70,9 +70,9 @@ O `delete-now` do responsável (o cliente pediu a eliminação antes) adianta a 
 gravados saem pela retenção do bucket, contada do último backup. Se a VM não parar no cancelamento (uma falha que gera
 alerta), a Exclusão 1 a destrói em D + 30, e o último backup pode ser de até D + 30.
 
-## Cancelamento na célula (Plataforma) _(a construir, CE-03 e CE-16)_
+## Cancelamento na célula (SIEM Cloud) _(a construir, CE-03 e CE-16)_
 
-O cliente da Plataforma divide a célula com outros (`ARQUITETURA.md`, "Célula compartilhada (Plataforma)"), então a VM
+O cliente do SIEM Cloud divide a célula com outros (`ARQUITETURA.md`, "Célula compartilhada (Plataforma)"), então a VM
 continua no ar depois do cancelamento e o calendário acima não serve: com os dados até D + 30 e backups de 90 dias, a
 última cópia viveria até cerca de D + 129. Na célula, os dados do cliente saem do banco em D + 1, e o bucket de backups
 da célula guarda 85 dias (`backup_retention_days` do módulo, só no ambiente da célula):

@@ -118,7 +118,7 @@ describe('cp-public: tabela pública e cotação (preço por GB/dia)', () => {
       lineItems: [
         {
           component: 'base',
-          description: 'Plataforma (base mensal com a franquia incluída)',
+          description: 'SIEM Cloud (base mensal com a franquia incluída)',
           quantity: 1,
           unitAmount: 100_000,
           amount: 100_000,
@@ -166,7 +166,7 @@ describe('cp-public: tabela pública e cotação (preço por GB/dia)', () => {
     expect(dedicated.body).toMatchObject({
       code: 'plan_not_sold_online',
       message:
-        'Pelo site, só a Plataforma é contratada na hora. O Dedicado, o vCISO e o ambiente na infraestrutura da sua empresa são por proposta e contrato direto: fale com a Verax.',
+        'Pelo site, só o SIEM Cloud é contratado na hora. O SIEM Dedicado, o SIEM + vCISO e o ambiente na infraestrutura da sua empresa são por proposta e contrato direto: fale com a Verax.',
     });
     // Sem nome de provedor na mensagem: a infraestrutura da Verax pode mudar.
     expect(JSON.stringify(dedicated.body)).not.toMatch(/gcp|google|aws|amazon/i);
