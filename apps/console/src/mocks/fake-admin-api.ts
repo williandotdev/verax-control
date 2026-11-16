@@ -10,6 +10,7 @@ import type {
 import { getAt } from '@/lib/paths';
 import { createFakeAuth, type FakeAuthState, handleAuthRequest } from './fake-auth';
 import { dre, guard, quote } from './fake-engine';
+import { createFakeFleet, type FakeFleetState, handleFleetRequest } from './fake-fleet';
 import { createFakeLegal, type FakeLegalState, handleLegalRequest } from './fake-legal';
 import { createFakeTenants, type FakeTenantsState, handleTenantsRequest } from './fake-tenants';
 import { FICTITIOUS_OWNER, fictitiousCostModel, fictitiousPriceTable } from './fixtures';
@@ -42,6 +43,8 @@ export interface FakeAdminState {
   legal: FakeLegalState;
   /** As versões do modelo de preço anterior (`<tipo>/<versão>`): só na lista. */
   legacy: Set<string>;
+  /** A frota: as versões, os nós e as rodadas (`fake-fleet.ts`). */
+  fleet: FakeFleetState;
 }
 
 const DAY = 86_400_000;
@@ -67,6 +70,7 @@ export function createFakeState(
     auth: createFakeAuth({ loggedIn: options.loggedIn }),
     legal: createFakeLegal(now, options.empty === true),
     legacy: new Set(),
+    fleet: createFakeFleet(now()),
   };
   if (options.empty === true) return state;
   const at = (days: number): string => iso(new Date(now().getTime() - days * DAY));
@@ -263,6 +267,17 @@ export function handleAdminRequest(
       state.legal,
       state.email,
       now,
+      method,
+      parts.slice(1).map(decodeURIComponent),
+      body,
+    );
+  }
+
+  if (first === 'fleet') {
+    return handleFleetRequest(
+      state.fleet,
+      now,
+      state.email,
       method,
       parts.slice(1).map(decodeURIComponent),
       body,

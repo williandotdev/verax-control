@@ -83,6 +83,14 @@ export class FakeCloud {
   readonly secretVersions = new Map<string, { payload: string; state: string }[]>();
   /** VMs (`<projeto>/<zona>/<nome>`) e o estado do Compute; `stop`/`start` passam por STOPPING/STAGING numa consulta. */
   readonly instances = new Map<string, { status: string }>();
+  /**
+   * Os metadados de cada VM (`<projeto>/<zona>/<nome>`), para a frota: o `instances.get` os devolve com a impressão
+   * digital, e o `setMetadata` só aceita a impressão atual (412, como o Compute). Cada gravação troca a impressão.
+   */
+  readonly instanceMetadata = new Map<
+    string,
+    { fingerprint: string; items: { key: string; value: string }[] }
+  >();
   /** A chave da conta que assina (`signBlob`): os testes conferem o link assinado com a pública. */
   readonly signer = generateKeyPairSync('rsa', { modulusLength: 2048 });
   /** Os pedidos por link assinado que chegaram (método, caminho, assinatura válida ou não). */
@@ -165,6 +173,7 @@ export class FakeCloud {
       this.guestAttributes,
       this.secretVersions,
       this.instances,
+      this.instanceMetadata,
       this.versions,
       this.blobs,
     ] as Map<unknown, unknown>[]) {
@@ -234,7 +243,7 @@ export class FakeCloud {
     if (cloudflare) this.cloudflareRoute(method, url, json, res);
     else if (url.pathname.startsWith('/firebase/')) this.firebaseRoute(method, url, json, res);
     else if (url.pathname.startsWith('/upload/')) this.uploadRoute(method, url, raw, res);
-    else if (url.pathname.startsWith('/compute/')) this.computeRoute(method, url, res);
+    else if (url.pathname.startsWith('/compute/')) this.computeRoute(method, url, json, res);
     else if (url.pathname.startsWith('/storage/')) this.storageRoute(url, res);
     else if (url.pathname.startsWith('/run/')) this.runRoute(method, url, json, res);
     else if (url.pathname.startsWith('/secrets/')) this.secretsRoute(method, url, json, res);
@@ -584,7 +593,30 @@ export class FakeCloud {
 
   // --- Compute, Storage, Run, Secret Manager --------------------------------------------------------------------------
 
-  private computeRoute(method: string, url: URL, res: ServerResponse): void {
+  private computeRoute(
+    method: string,
+    url: URL,
+    json: () => Record<string, unknown>,
+    res: ServerResponse,
+  ): void {
+    const setMetadata =
+      /^\/compute\/v1\/projects\/([a-z0-9-]+)\/zones\/([a-z0-9-]+)\/instances\/([a-z0-9-]+)\/setMetadata$/.exec(
+        url.pathname,
+      );
+    if (setMetadata !== null && method === 'POST') {
+      const key = `${setMetadata[1]}/${setMetadata[2]}/${setMetadata[3]}`;
+      const current = this.instanceMetadata.get(key);
+      const body = json() as { fingerprint?: string; items?: { key: string; value: string }[] };
+      if (current === undefined) {
+        this.send(res, 404, { error: { status: 'NOT_FOUND' } });
+      } else if (body.fingerprint !== current.fingerprint) {
+        this.send(res, 412, { error: { status: 'FAILED_PRECONDITION' } });
+      } else {
+        this.instanceMetadata.set(key, { fingerprint: hex(8), items: body.items ?? [] });
+        this.send(res, 200, { name: `operation-${hex(4)}`, status: 'RUNNING' });
+      }
+      return;
+    }
     const instance =
       /^\/compute\/v1\/projects\/([a-z0-9-]+)\/zones\/([a-z0-9-]+)\/instances\/([a-z0-9-]+)(\/stop|\/start)?$/.exec(
         url.pathname,
@@ -601,7 +633,14 @@ export class FakeCloud {
         // A operação assíncrona termina na consulta seguinte.
         if (vm.status === 'STOPPING') vm.status = 'TERMINATED';
         if (vm.status === 'STAGING') vm.status = 'RUNNING';
-        this.send(res, 200, { name: instance[3], status: shown });
+        const metadata = this.instanceMetadata.get(key);
+        this.send(res, 200, {
+          name: instance[3],
+          status: shown,
+          ...(metadata === undefined
+            ? {}
+            : { metadata: { fingerprint: metadata.fingerprint, items: metadata.items } }),
+        });
         return;
       }
       if (method === 'POST' && instance[4] === '/stop') vm.status = 'STOPPING';
@@ -629,6 +668,16 @@ export class FakeCloud {
   }
 
   private storageRoute(url: URL, res: ServerResponse): void {
+    const list = /^\/storage\/storage\/v1\/b\/([a-z0-9._-]+)\/o$/.exec(url.pathname);
+    if (list !== null && url.searchParams.get('delimiter') === '/') {
+      const prefixes = new Set<string>();
+      for (const name of this.objects.keys()) {
+        const [bucket, first, ...rest] = name.split('/');
+        if (bucket === list[1] && first !== undefined && rest.length > 0) prefixes.add(`${first}/`);
+      }
+      this.send(res, 200, { prefixes: [...prefixes].sort() });
+      return;
+    }
     const match = /^\/storage\/storage\/v1\/b\/([a-z0-9._-]+)\/o\/(.+)$/.exec(url.pathname);
     const object =
       match === null ? undefined : this.objects.get(`${match[1]}/${decodeURIComponent(match[2] ?? '')}`);

@@ -241,3 +241,29 @@ cliente: os comandos e os relatórios só levam ids, o estado desejado e agregad
 | 404 `cell_unknown`                                                  | A célula do caminho não está no registro                                            | Grave `cells/<id>` (passo 3). O Pub/Sub repete por até 7 dias                                                                                                        |
 | `cell.report_refused` com `foreign_tenant` na auditoria             | A célula falou de um cliente que não é dela (ou que não existe)                     | Uma célula em dia nunca faz isso: confira o `placement` do cliente e, se estiver certo, trate a célula como comprometida                                             |
 | `cell.report_refused` com `generation_unknown`                      | A célula disse ter aplicado uma geração que o plano de controle nunca mandou        | Mesmo tratamento do anterior                                                                                                                                         |
+
+## Na atualização da frota (a canária)
+
+A célula com o painel da equipe da Verax é a onda 0 de toda rodada da frota (`docs/ARQUITETURA.md`, "Atualização da
+frota"). Para ela entrar:
+
+1. **Terraform (`envs/celula`, com o canal ligado):** o próximo `plan` liga os guest attributes da VM
+   (`enable-guest-attributes`, mudança no lugar, sem recriar a VM) e cria o papel `cpCellNodeUpdater` (ler a VM e os
+   atributos e gravar os metadados), concedido ao cp-worker só nesta VM, pelo nome, e o `serviceAccountUser` dele na
+   conta da VM. Nada mais muda; se o plano recriar a VM, pare e confira.
+2. **O atualizador no host:** instale uma versão que já o tenha pelo caminho de sempre
+   (`infra/node/bin/deploy.sh COMMIT node.conf verax-celula southamerica-east1-b`). Daí em diante, a frota cuida.
+3. **O registro `cells/<id>`** (Firestore, à mão até a tela do CE-15) ganha dois campos:
+
+   ```json
+   {
+     "node": { "zone": "southamerica-east1-b", "instance": "verax-celula" },
+     "staffPanel": { "project": "PROJETO_DO_POOL", "siteId": "SITE_DA_EQUIPE", "slug": "verax" }
+   }
+   ```
+
+   `node` é a saída `node_instance` e a zona da célula; sem ele, a célula fica fora da frota. `staffPanel` é o site do
+   painel da equipe, que anda junto com a célula: ele precisa estar num projeto do pool do Firebase
+   (`firebase_panel_projects`), o único onde o cp-worker publica. O site de hoje (`verax-control-verax`) está no projeto
+   do plano de controle, fora do alcance do cp-worker de propósito: crie um site novo no pool e mude o domínio
+   `verax.control...` para ele (`docs/runbooks/painel.md`, "O painel da equipe da Verax na frota").

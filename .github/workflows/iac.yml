@@ -174,6 +174,14 @@ jobs:
         run: |
           shellcheck -x -S style infra/gcp/modules/node/unattended.sh.tftpl
           bash infra/node/tests/boot-install-test.sh
+      - name: Atualizador da frota (update.sh com o metadata, o release, o Docker e o systemd falsos)
+        # Os cenários de tests/update-test.sh, sem root e sem nuvem: a versão pedida nos metadados instalada com os
+        # digests do manifesto, conferido pelas chaves já instaladas (outra chave, manifesto adulterado, SHA-256 errado e
+        # pacote trocado recusados antes de tocar no nó); as imagens e o backup antes do install.sh; voltar de versão só
+        # com `rollback`; a volta automática quando a instalação ou a conferência falham (os arquivos, o images.env e as
+        # unidades de antes); um pedido por vez, nunca durante a instalação sem operador, e a janela de manutenção; os
+        # guest attributes update-*; metadados hostis.
+        run: bash infra/node/tests/update-test.sh
       - name: start.sh (arquivos de ambiente, bootstrap e pull das imagens, com o Compose, o Docker e o gcloud simulados)
         # Os cenários de tests/start-test.sh, sem root e sem Docker: os arquivos que o `render` escreve nos dois perfis
         # (bootstrap.env vazio; as variáveis do indexer só no standard), o `bootstrap`, o `pull_images` e o tópico do

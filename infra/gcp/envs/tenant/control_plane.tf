@@ -15,6 +15,11 @@
 #
 # Nada no `support-bootstrap` (a senha da conta de suporte da Verax): quem lê é só o responsável, com as permissões
 # dele no projeto. Sem o e-mail do nó, nada no `smtp-password`.
+#
+# Fora dos cofres, uma só: `iam.serviceAccountUser` na conta de serviço DESTE nó, que o Compute exige para gravar os
+# metadados de uma VM que roda com conta de serviço (a atualização da frota: o pedido de versão pelo `cpNodeUpdater`
+# do envs/nodes-platform). Não dá token da conta (isso seria `serviceAccountTokenCreator`), e o cp-worker não cria
+# recurso nenhum no projeto onde pudesse usá-la.
 
 locals {
   worker_member = "serviceAccount:${var.control_plane_sa}"
@@ -53,4 +58,10 @@ resource "google_secret_manager_secret_iam_member" "worker_credentials_key" {
   secret_id = local.secrets["credentials-key"]
   role      = "projects/${var.project_id}/roles/cpSecretVersionDestroyer"
   member    = local.worker_member
+}
+
+resource "google_service_account_iam_member" "worker_node_sa_user" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${module.node.service_account_email}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = local.worker_member
 }

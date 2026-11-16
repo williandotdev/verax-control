@@ -7,7 +7,10 @@ name: Versão do nó
 #    commit, digests do Verax no GHCR, imagens de terceiros pelo digest dos compose e SHA-256 do pacote;
 # 3. só então pede o token da GCP e assina o manifesto com a chave de release no Cloud KMS; a assinatura só vale se
 #    fechar com as chaves do próprio pacote e com as da main (infra/node/keys);
-# 4. cria a tag `node-v<versão>` no commit e o release com o pacote, o manifesto e a assinatura.
+# 4. cria a tag `node-v<versão>` no commit e o release com o pacote, o bundle do painel, o manifesto e a assinatura.
+# O bundle do painel (o build único do apps/web, `panel-<commit>.tar.gz`) é montado num job à parte, sem identidade e
+# sem segredo (o `pnpm install` roda código das dependências), e entra no manifesto pelo SHA-256: a atualização da frota
+# publica esse mesmo arquivo em cada site, junto com o nó do destino (docs/ARQUITETURA.md, "Atualização da frota").
 # Um nó confere a assinatura com o openssl e as chaves do pacote que já tem (infra/node/bin/verify-release.sh), sem o
 # gh. Roteiro: docs/runbooks/versao-no.md.
 #
@@ -36,8 +39,68 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  painel:
+    name: Montar o bundle do painel (build único)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Só leitura, sem environment, sem token da GCP e sem atestação: o build roda o código das dependências do painel
+    # num executor que não assina nada. O job `assinar` confere o SHA-256 do que sai daqui.
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.bundle.outputs.sha256 }}
+    steps:
+      - name: Conferir a entrada
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          [[ $GITHUB_REF == refs/heads/main ]] || { echo "::error::Dispare a partir da main (veio de $GITHUB_REF)."; exit 1; }
+          [[ $COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo '::error::commit: 40 caracteres hexadecimais.'; exit 1; }
+      # Baixa a main (a ref do disparo, já conferida acima) e só passa ao commit pedido depois de conferir que ele está
+      # nela: o código que o build roda é sempre de um commit da main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: O commit é da main
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$COMMIT" HEAD || { echo "::error::O commit $COMMIT não está na main."; exit 1; }
+          git checkout --quiet --detach "$COMMIT"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: pnpm install --frozen-lockfile
+      # O build único: o mesmo bundle serve todo cliente; a API de cada site sai do endereço do painel em tempo de
+      # execução, e a CSP de cada site, da configuração-modelo (`dist-hosting.json`, com o marcador).
+      - name: Build único do painel
+        env:
+          VITE_API_URL: https://api-{tenant}.veraxsistemas.com.br
+        run: pnpm --filter @verax/web build
+      - name: Bundle do painel
+        id: bundle
+        env:
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/painel"
+          bundle=$RUNNER_TEMP/painel/panel-$COMMIT.tar.gz
+          bash scripts/node-release.sh panel "$COMMIT" apps/web/dist apps/web/dist-hosting.json "$bundle"
+          echo "sha256=$(sha256sum "$bundle" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: painel
+          path: ${{ runner.temp }}/painel/panel-${{ inputs.commit }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   assinar:
     name: Conferir as imagens, montar o pacote e assinar o manifesto
+    needs: painel
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release
@@ -122,6 +185,19 @@ jobs:
             echo "api_digest=$api"
             echo "migrate_digest=$migrate"
           } >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: painel
+          path: ${{ runner.temp }}/dist
+      # O bundle que entra no manifesto é o que o job `painel` montou, conferido pelo SHA-256 que ele disse.
+      - name: Conferir o bundle do painel
+        env:
+          COMMIT: ${{ inputs.commit }}
+          PANEL_SHA256: ${{ needs.painel.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [[ $PANEL_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo '::error::O job painel não devolveu o SHA-256.'; exit 1; }
+          echo "$PANEL_SHA256  $RUNNER_TEMP/dist/panel-$COMMIT.tar.gz" | sha256sum --check --strict
       - name: Pacote e manifesto
         env:
           COMMIT: ${{ inputs.commit }}
@@ -135,7 +211,7 @@ jobs:
           bash scripts/node-release.sh package "$COMMIT" "$dist/verax-node.tar.gz"
           bash scripts/node-release.sh manifest --commit "$COMMIT" --release "$TAG" --api-digest "$API_DIGEST" \
             --migrate-digest "$MIGRATE_DIGEST" --package "$dist/verax-node.tar.gz" --repository "$GITHUB_REPOSITORY" \
-            > "$dist/manifest.json"
+            --panel "$dist/panel-$COMMIT.tar.gz" > "$dist/manifest.json"
           tar -xzf "$dist/verax-node.tar.gz" -C "$RUNNER_TEMP/pacote"
           cat "$dist/manifest.json"
       # O token só existe daqui em diante, depois das atestações conferidas, e vale 5 minutos.
@@ -161,17 +237,20 @@ jobs:
             --out "$dist/manifest.json.sig" --node-package-dir "$RUNNER_TEMP/pacote/verax-node"
           # E com as chaves da main: um nó confia nas chaves que já tem, nunca nas do pacote novo.
           bash infra/node/bin/verify-release.sh "$dist/manifest.json" "$dist/manifest.json.sig"
-          sums=$(cd "$dist" && sha256sum verax-node.tar.gz manifest.json manifest.json.sig | base64 -w0)
+          sums=$(cd "$dist" && sha256sum verax-node.tar.gz panel-*.tar.gz manifest.json manifest.json.sig | base64 -w0)
           echo "sums=$sums" >> "$GITHUB_OUTPUT"
-      - name: Atestação de origem do pacote
+      - name: Atestação de origem do pacote e do bundle do painel
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/dist/verax-node.tar.gz
+          subject-path: |
+            ${{ runner.temp }}/dist/verax-node.tar.gz
+            ${{ runner.temp }}/dist/panel-${{ inputs.commit }}.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: versao-no
           path: |
             ${{ runner.temp }}/dist/verax-node.tar.gz
+            ${{ runner.temp }}/dist/panel-${{ inputs.commit }}.tar.gz
             ${{ runner.temp }}/dist/manifest.json
             ${{ runner.temp }}/dist/manifest.json.sig
           if-no-files-found: error
@@ -214,6 +293,7 @@ jobs:
             echo "Versão do nó \`$TAG\`, do commit \`$COMMIT\`."
             echo
             echo "- Pacote: \`verax-node.tar.gz\`, SHA-256 \`$(jq -r .package.sha256 manifest.json)\`"
+            echo "- Painel (build único, publicado em cada site junto com o nó dele): \`panel-$COMMIT.tar.gz\`, SHA-256 \`$(jq -r .panel.sha256 manifest.json)\`"
             echo "- API: \`$(jq -r .images.api manifest.json)\`"
             echo "- Migrations: \`$(jq -r .images.migrate manifest.json)\`"
             echo "- Imagens de terceiros, baixadas da origem pelo digest (a Verax não as redistribui):"
@@ -228,5 +308,5 @@ jobs:
             echo "gh attestation verify oci://<imagem@digest do manifesto> --repo $GITHUB_REPOSITORY --signer-workflow $GITHUB_REPOSITORY/.github/workflows/imagens.yml --source-ref refs/heads/main --source-digest $COMMIT --deny-self-hosted-runners"
             echo '```'
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" verax-node.tar.gz manifest.json manifest.json.sig --repo "$GITHUB_REPOSITORY" \
+          gh release create "$TAG" verax-node.tar.gz "panel-$COMMIT.tar.gz" manifest.json manifest.json.sig --repo "$GITHUB_REPOSITORY" \
             --verify-tag --latest=false --title "Nó $TAG" --notes-file "$RUNNER_TEMP/notes.md"

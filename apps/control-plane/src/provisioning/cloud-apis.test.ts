@@ -248,6 +248,50 @@ describe('clientes REST do provisionamento', () => {
       });
     });
 
+    it('frota: os metadados com a impressão digital; o setMetadata com a impressão velha é conflito (412)', async () => {
+      const compute = new ComputeApi(tokens, fetch, cloud.endpoints.compute);
+      const vm = 'nos-demo/southamerica-east1-b/vx-a';
+      cloud.instances.set(vm, { status: 'RUNNING' });
+      cloud.instanceMetadata.set(vm, {
+        fingerprint: 'abc123',
+        items: [{ key: 'enable-oslogin', value: 'TRUE' }],
+      });
+      const current = await compute.instanceMetadata('nos-demo', 'southamerica-east1-b', 'vx-a');
+      expect(current).toEqual({ fingerprint: 'abc123', items: [{ key: 'enable-oslogin', value: 'TRUE' }] });
+      const items = [...current.items, { key: 'verax-node-release', value: 'node-v1.3.0' }];
+      expect(
+        await compute.setInstanceMetadata('nos-demo', 'southamerica-east1-b', 'vx-a', {
+          fingerprint: 'abc123',
+          items,
+        }),
+      ).toBe('set');
+      expect(cloud.instanceMetadata.get(vm)?.items).toEqual(items);
+      // A impressão mudou com a gravação: a velha é recusada sem mudar nada.
+      expect(
+        await compute.setInstanceMetadata('nos-demo', 'southamerica-east1-b', 'vx-a', {
+          fingerprint: 'abc123',
+          items: [],
+        }),
+      ).toBe('conflict');
+      expect(cloud.instanceMetadata.get(vm)?.items).toEqual(items);
+      cloud.failNext('/setMetadata', 403, { method: 'POST' });
+      await expect(
+        compute.setInstanceMetadata('nos-demo', 'southamerica-east1-b', 'vx-a', {
+          fingerprint: 'x',
+          items: [],
+        }),
+      ).rejects.toMatchObject({ service: 'compute', status: 403 });
+    });
+
+    it('bucket de releases: as pastas de primeiro nível (uma por versão)', async () => {
+      const storage = new StorageApi(tokens, fetch, cloud.endpoints.storage);
+      cloud.objects.set('releases-demo/node-v1.2.3/manifest.json', Buffer.from('{}'));
+      cloud.objects.set('releases-demo/node-v1.3.0/manifest.json', Buffer.from('{}'));
+      cloud.objects.set('releases-demo/node-v1.3.0/manifest.json.sig', Buffer.from('x'));
+      cloud.objects.set('outro-bucket/node-v9.9.9/manifest.json', Buffer.from('{}'));
+      expect(await storage.listPrefixes('releases-demo')).toEqual(['node-v1.2.3', 'node-v1.3.0']);
+    });
+
     it('o Job: dispara com as variáveis e acompanha a execução pelo nome curto', async () => {
       const run = new RunJobsApi(tokens, fetch, cloud.endpoints.run);
       const job = { project: 'verax-cp-demo', region: 'southamerica-east1', job: 'cp-terraform' };

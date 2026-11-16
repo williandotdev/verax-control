@@ -30,9 +30,14 @@ cliente segue é `docs/runbooks/instalacao-no-cliente.md`.
      `Imagens do nó`, na `main`, nesse commit, num executor do GitHub (as opções do `deploy.sh`);
    - monta o pacote do nó do commit (`scripts/node-release.sh package`): `infra/node` sem os testes, mais a
      configuração e os scripts do Wazuh, igual byte a byte em qualquer máquina (dá para refazer e comparar);
-   - escreve o `manifest.json` e só então pede o token da GCP e assina no Cloud KMS. A assinatura só vale se fechar
-     com as chaves do próprio pacote e com as da `main`;
-   - cria a tag no commit e o release com `verax-node.tar.gz`, `manifest.json` e `manifest.json.sig`.
+   - monta, num job à parte sem identidade nem segredo (o job `painel`: o `pnpm install` roda o código das
+     dependências), o bundle do painel do commit (`scripts/node-release.sh panel`): o build único do `apps/web`
+     (`VITE_API_URL=https://api-{tenant}.veraxsistemas.com.br`) em `panel-<commit>.tar.gz`, um tar ustar com data, dono
+     e permissões fixos; o job `assinar` confere o SHA-256 que o job `painel` disse;
+   - escreve o `manifest.json` (com o `panel`) e só então pede o token da GCP e assina no Cloud KMS. A assinatura só
+     vale se fechar com as chaves do próprio pacote e com as da `main`;
+   - cria a tag no commit e o release com `verax-node.tar.gz`, `panel-<commit>.tar.gz`, `manifest.json` e
+     `manifest.json.sig` (o pacote e o bundle com atestação de origem).
 4. **O nó confere no host.** `infra/node/bin/verify-release.sh manifest.json manifest.json.sig` usa só o `openssl`,
    com as chaves públicas do pacote **já instalado** (`keys/release-*.pem`). Nunca com as do pacote novo: quem
    trocasse o pacote trocaria a chave junto.
@@ -49,10 +54,12 @@ cliente segue é `docs/runbooks/instalacao-no-cliente.md`.
 | `images`           | `api` e `migrate`, no GHCR, pelo digest                                                                   |
 | `thirdPartyImages` | As imagens de terceiros exatamente como os compose do pacote as fixam (nome, tag e digest), sem repetição |
 | `notes`            | O endereço do release                                                                                     |
+| `panel`            | `url` do `panel-<commit>.tar.gz` no release e o `sha256` dele: o painel que anda com o nó (a frota)       |
 
-A assinatura é ECDSA P-256 com SHA-256 sobre os bytes exatos do arquivo, no formato DER que o Cloud KMS devolve. Os
-campos do atualizador (`minUpgradeFrom`, `migrations`, `channel`) e o hash do painel entram com o SH-06 e o CP-09;
-enquanto não existirem, um manifesto sem `migrations` não permite volta automática.
+A assinatura é ECDSA P-256 com SHA-256 sobre os bytes exatos do arquivo, no formato DER que o Cloud KMS devolve. Uma
+versão sem `panel` (promovida antes de 16/11/2026) não vai para a frota (`panel_bundle_missing`): o painel não teria
+como andar junto. Os campos `minUpgradeFrom`, `migrations` e `channel` do modo próprio continuam para o SH-06; a volta
+automática do atualizador do host não depende deles (as migrations são aditivas, abaixo).
 
 ## Uma vez só (responsável)
 
@@ -172,8 +179,72 @@ O nó de cliente gerenciado se instala no primeiro boot a partir deste release (
 operador"): o Terraform do tenant põe a versão (`node_version`) e o SHA-256 do pacote (`node_package_sha256`) nos
 metadados da VM, e o script de boot leva o verificador e as chaves de `infra/node/keys` do commit em que o Terraform
 rodou. A VM baixa `manifest.json`, `manifest.json.sig` e `verax-node.tar.gz` daqui, confere a assinatura antes de ler o
-manifesto e o SHA-256 antes de abrir o pacote, e instala com os digests do manifesto. Promover uma versão não muda
-nenhum nó no ar: os nós novos nascem na versão que o plano de controle mandar.
+manifesto e o SHA-256 antes de abrir o pacote, e instala com os digests do manifesto. Os nós novos nascem na versão
+que o plano de controle mandar; os que já estão no ar mudam pela atualização da frota (abaixo).
+
+## Atualização da frota: o atualizador do host
+
+Desde 16/11/2026 (decisão do responsável), os nós no ar se atualizam sozinhos, pela versão que o plano de controle pede
+em cada VM ("Promover para a frota", no console: `docs/runbooks/console-do-responsavel.md`). Quem instala é o próprio
+host, com o `infra/node/bin/update.sh` que o `install.sh` deixa em `/opt/verax/bin` e o `verax-update.timer` (a cada
+5 min). Vale igual para a célula e para o nó dedicado: sem SSH, sem porta de entrada e sem credencial nova na VM.
+
+**O pedido** fica nos metadados da instância, gravados pelo `cp-worker` (`instances.setMetadata`; o Terraform do módulo
+`node` ignora estas chaves, `ignore_changes`):
+
+| Chave                        | Valor                                                                                    |
+| ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `verax-node-release`         | A versão desejada, `node-vX.Y.Z`                                                         |
+| `verax-node-release-sha256`  | O SHA-256 do pacote, lido do manifesto assinado no bucket de releases                    |
+| `verax-node-release-request` | O id do pedido (a rodada e a tentativa): o host nunca roda o mesmo pedido duas vezes     |
+| `verax-node-release-intent`  | `upgrade` (padrão) ou `rollback`: só com `rollback` o host aceita uma versão mais antiga |
+| `verax-update-window`        | Opcional: `HH:MM-HH:MM` no horário de Brasília (pode passar da meia-noite)               |
+
+**O que o host faz** com um pedido novo, parando no primeiro problema **sem ter mexido no nó**: confere cada valor
+dos metadados; recusa voltar de versão sem `rollback` (`downgrade_refused`; um nó instalado pelo `deploy.sh`, só com o
+commit, não tem ordem, e o pedido segue); espera a janela de manutenção e a instalação sem operador (a trava e o
+marcador `installing` do `boot-install.sh`); baixa o manifesto e a assinatura do release do GitHub e confere a
+assinatura com o verificador e as chaves **que já estão no host** (`/opt/verax/bin/verify-release.sh` e
+`/opt/verax/keys`, copiados para a memória antes de tudo), nunca com as do pacote novo; confere o manifesto (a versão,
+o commit, os digests e o SHA-256 do pacote igual ao do pedido), baixa o pacote e confere o SHA-256, os caminhos e as
+imagens de terceiros dos compose; baixa as imagens pelo digest (o Verax do `IMAGES_REPOSITORY` do `node.conf`, terceiros
+da origem); faz o backup do banco (o `backup.sh` de todo dia); e guarda o que está instalado (`/opt/verax`, o
+`images.env` e as unidades `verax-*` do systemd, em `/var/lib/verax/update/previous.tar`). Só então roda o `install.sh`
+do pacote novo, com os digests do manifesto e `--release`, sem `--config` (o `node.conf` é o do nó), e espera o nó de
+pé: o `verax-node` ativo, o `verax-wazuh` no standard e a API respondendo `/health/ready` (de dentro do contêiner, pelo
+Compose; até 10 min).
+
+**A volta automática.** Se o `install.sh` ou a conferência falham, o host para as unidades que a versão nova trouxe,
+põe de volta o que guardou, reinicia o nó e confere de novo: `rolled_back` (com o código da falha), ou
+`rollback_failed` se nem a versão anterior subir (o responsável entra no nó). **O banco não volta:** as migrations só
+andam para a frente e são aditivas, a regra de sempre da volta de versão do nó (`docs/runbooks/no-verax.md`); o backup
+feito antes é o ponto de restauração manual. Um pedido que falhou não é tentado de novo: o plano de controle manda
+outro id (o "tentar de novo" do console).
+
+**O andamento** vai para os guest attributes do espaço `verax/` (o `cp-worker` já os lê, CP-10), só versões, o id e
+códigos. As chaves são `verax/update-*` (a GCP aceita um nível só abaixo do espaço, então `update-state` e não
+`update/state`):
+
+| Atributo               | Valor                                                                                                                                                                                            |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `verax/update-state`   | `accepted`, `waiting_window`, `waiting_install`, `downloading`, `verifying`, `pulling`, `backing_up`, `installing`, `checking`, `ok`, `failed`, `rolling_back`, `rolled_back`, `rollback_failed` |
+| `verax/update-release` | A versão pedida                                                                                                                                                                                  |
+| `verax/update-request` | O id do pedido, gravado depois do estado (o plano de controle nunca vê o id novo com o estado do pedido anterior)                                                                                |
+| `verax/update-from`    | A versão de antes (o release, ou o commit de um nó do `deploy.sh`)                                                                                                                               |
+| `verax/update-error`   | O código da falha                                                                                                                                                                                |
+
+Códigos: `metadata_invalid`, `downgrade_refused`, `dependencies_failed` (o `jq`), `release_download_failed`,
+`release_signature_invalid`, `release_verifier_failed`, `release_manifest_invalid`, `package_sha256_mismatch`,
+`package_invalid`, `images_repository_mismatch`, `image_pull_failed`, `backup_failed`, `snapshot_failed`,
+`install_state_invalid`, `install_failed`, `node_start_failed` e `health_failed`.
+
+**Diagnóstico:** o resumo está nos guest attributes (`gcloud compute instances get-guest-attributes VM --zone ZONA
+--query-path=verax/`) e no console; o detalhe, no `journalctl -u verax-update` e em `/var/lib/verax/update/status`
+(com o acesso de operador).
+
+**Primeira vez em cada nó.** O atualizador chega com o `install.sh` de uma versão que já o tenha: um nó instalado antes
+dele precisa de uma atualização pelo caminho antigo (o `deploy.sh`, ou um nó novo); depois disso, a frota cuida. Sem
+pedido nos metadados (o nó da Verax, a homologação), o timer roda e sai sem gravar nada.
 
 ## Como o nó na nuvem do cliente vai usar (SH-05 e SH-06, a fazer)
 
@@ -185,9 +256,10 @@ nenhum nó no ar: os nós novos nascem na versão que o plano de controle mandar
   e as chaves do pacote em `/opt/verax`, confere a assinatura com eles, recusa uma `version` mais antiga que a
   instalada (sem pedido explícito de voltar), baixa o pacote e confere o SHA-256, puxa as imagens pelo digest (Verax
   no GHCR, terceiros na origem, tudo sem login) e roda o `install.sh` com os digests do manifesto.
-- **Gerenciado:** o nó da Verax continua no Artifact Registry e no `deploy.sh`. Os nós de clientes na GCP da Verax se
-  instalam pelo release (acima), com as imagens do Verax no Artifact Registry pelo digest do manifesto, e se atualizam
-  pelo `deploy.sh`. A cópia do manifesto no bucket de releases fica para o CP-09.
+- **Gerenciado:** o nó lean da Verax continua no Artifact Registry e no `deploy.sh`. Os nós de clientes na GCP da
+  Verax e a célula se instalam pelo release (ou pelo `deploy.sh`, a célula) e se atualizam pela frota (acima). O
+  atualizador do host é o mesmo desenho do SH-06; no modo próprio, o pedido chegará pela licença, e não pelos
+  metadados.
 
 ## Troca e revogação da chave
 

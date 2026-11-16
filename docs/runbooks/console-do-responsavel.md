@@ -581,3 +581,50 @@ responder 503).
 | "Pedido de entrada inválido" no console                                            | O endereço de retorno do pedido não está na lista exata (`sso_redirect_uris`), ou o pedido veio adulterado. O console nunca redireciona para um endereço fora da lista.                                                                                                                                                                |
 | Volta ao SIEM com "Não foi possível entrar pelo Admin master"                      | Motivo no log da API (`sso_login_refused`, `reason`) e na trilha (`auth.sso_login`, negado): chave fixada diferente da do console (`token_rejected`), conta do painel inexistente, de outro papel, sem MFA ou inativa (`user_refused`), mais de 10 minutos entre o início e a volta, ou o console fora do ar (`exchange_unavailable`). |
 | "Muitas tentativas" no console ou 429 na API                                       | Os limites da entrada única (falhas por IP e no total, no console; 10 por minuto por IP, na API). Espere alguns minutos.                                                                                                                                                                                                               |
+
+## 10. Versões do nó e da frota
+
+A tela **Versões** (decisão de 16/11/2026; `docs/ARQUITETURA.md`, "Atualização da frota") promove uma versão do nó
+para a frota inteira, em ondas, com o painel de cada destino junto com o nó dele.
+
+**O que a tela mostra:**
+
+- **Versões promovidas:** as pastas `node-vX.Y.Z` do bucket de releases, cada uma conferida pelo cp-worker (assinatura e
+  manifesto). Só uma versão "Conferida, com o painel" tem o botão **Promover para a frota**; uma de antes de 16/11/2026
+  aparece "Sem o bundle do painel" e não vai para a frota.
+- **A frota agora:** cada nó (a célula da Verax na onda 0, as outras células na 1, os dedicados na 2) com a versão que o
+  host relatou e a versão de cada site do painel dele; e quem fica fora, com o motivo (cliente suspenso, VM parada,
+  célula sem a VM no registro).
+- **Rodadas:** o histórico, a mais recente primeiro.
+
+**Promover uma versão:**
+
+1. Copie o release para o bucket (`infra/gcp/GUIA.md`, "O release no bucket de releases": o manifesto, a assinatura e
+   o `panel-*.tar.gz`).
+2. Em **Versões**, **Promover para a frota** na versão. A revisão mostra as ondas, os nós e os sites de cada um, e quem
+   fica fora.
+3. Escolha quantos dedicados ao mesmo tempo (1 a 5; as células vão sempre uma de cada vez) e, se quiser, a janela de
+   manutenção (`HH:MM-HH:MM`, horário de Brasília; fora dela o host espera). Digite a versão e confirme.
+4. A rodada abre ao vivo: cada nó passa por "Atualizando no host" (o que o host relata: baixando, conferindo a
+   assinatura, backup, instalando...), "Conferindo a API" e "Publicando o painel". Uma rodada por vez.
+
+**Quando para:** a primeira falha para a rodada ("Parada na falha"), com o nó e o código; nada mais começa, e os outros
+nós ficam como estavam. O alerta `rollout_failed` chega por e-mail.
+
+| Código                          | O que aconteceu                                                    | O que fazer                                                                                                    |
+| ------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `node_rolled_back:<motivo>`     | O host instalou, a conferência falhou e ele voltou sozinho         | O nó está na versão de antes. Veja o motivo; **Retomar** tenta de novo, **Pular** segue sem ele                |
+| `node_rollback_failed:<motivo>` | Nem a versão de antes subiu                                        | Entre no nó (`journalctl -u verax-update`, `/var/lib/verax/update/status`) antes de qualquer outra coisa       |
+| `node_failed:<motivo>`          | O host recusou antes de mexer no nó (assinatura, SHA-256, pull...) | Confira o release no GitHub e no bucket; `downgrade_refused` é versão mais antiga sem `rollback`               |
+| `update_timeout`                | O host não respondeu em 60 min (com janela, um dia a mais)         | A VM está ligada? Tem o atualizador (`systemctl status verax-update.timer`)? A célula tem os guest attributes? |
+| `health_failed`                 | O host disse pronto, mas a API pública não respondeu               | Confira o túnel (`api-<cliente>`) e o nó                                                                       |
+| `firebase_*`, `compute_*`       | O painel não publicou, ou o cp-worker não gravou o pedido na VM    | Permissão (os papéis da frota no Terraform) ou o Firebase fora; **Retomar** depois                             |
+
+**Operações:** **Parar a rodada** (os nós que já mudavam terminam, nenhum novo começa), **Retomar** (o nó que falhou
+tenta de novo com outro pedido), **Abortar** e, por nó, **Pular** (na fila ou com falha) e **Voltar para <versão>**
+(num nó atualizado ou com falha, quando a versão de antes é uma versão publicada: o host recebe o pedido com
+`rollback` e o painel dos sites dele volta junto). Tudo fica na auditoria (`rollout.*`, `owner:<e-mail>`).
+
+**Antes da primeira rodada (uma vez):** os papéis da frota no Terraform (`envs/nodes-platform`, `envs/celula`, e o
+`apply` de cada tenant), o atualizador em cada nó (uma atualização pelo caminho antigo) e os campos `node` e
+`staffPanel` no registro da célula (`docs/runbooks/celula.md`, "Na atualização da frota").

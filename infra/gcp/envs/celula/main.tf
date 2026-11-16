@@ -28,6 +28,10 @@ module "node" {
   # O cofre da chave secreta do Turnstile (desafio no login do painel).
   turnstile_secret = true
 
+  # Os guest attributes (`enable-guest-attributes`): o atualizador do host grava o andamento da atualização da frota em
+  # `verax/update-*`, e o plano de controle lê (fleet.tf). Mudar os metadados é no lugar: a VM não é recriada.
+  guest_attributes = true
+
   # Agentes do Wazuh nas instâncias de teste (desligados por padrão): o ensaio da liberação por faixa e do registro.
   wazuh_agents         = var.wazuh_agents
   wazuh_agents_sources = var.wazuh_agents_sources

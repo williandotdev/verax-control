@@ -260,6 +260,16 @@ resource "google_compute_instance" "node" {
   depends_on = [google_compute_router_nat.node]
 
   lifecycle {
+    # O pedido de versão da frota (docs/ARQUITETURA.md, "Atualização da frota"): o plano de controle o grava com
+    # `instances.setMetadata` e o atualizador do host (infra/node/bin/update.sh) o lê. Fora do Terraform de propósito:
+    # sem isto, todo `apply` do ambiente apagaria o pedido. Nenhuma outra chave dos metadados fica de fora.
+    ignore_changes = [
+      metadata["verax-node-release"],
+      metadata["verax-node-release-sha256"],
+      metadata["verax-node-release-request"],
+      metadata["verax-node-release-intent"],
+      metadata["verax-update-window"],
+    ]
     precondition {
       condition     = contains(local.profile.machine_types, local.machine_type)
       error_message = "Tamanho de VM fora do perfil: lean aceita e2-micro, e2-small e e2-medium; standard aceita e2-standard-2 e e2-standard-4."

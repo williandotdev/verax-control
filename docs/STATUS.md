@@ -5637,3 +5637,141 @@ recusadas e o serviço não sobe. Desenho em `docs/ARQUITETURA.md`, "Entrada ún
   para a célula e o nó da Verax; o que prende o token ao nó é o retorno, o `nonce` e o PKCE do pedido dele. No nó
   dedicado, a sessão não fica presa a um endereço (como qualquer sessão do nó dedicado). Na troca para a célula, as
   linhas ficam as mesmas.
+
+## Frota, parte 1: o atualizador do host (versão pedida nos metadados, backup e volta automática) ⚠️ altera `infra/` e `.github/`
+
+- **Decisão do responsável (16/11/2026):** os nós no ar passam a se atualizar sozinhos, em ondas, pelo "Promover para a
+  frota" do console, com o painel de cada destino junto com o nó dele. Esta parte é a do host; o plano de controle, o
+  painel e o console vêm nas partes 2 a 4.
+- **Arquivos:** `infra/node/bin/update.sh` (novo), `infra/node/systemd/verax-update.service` e `.timer` (novos),
+  `infra/node/bin/install.sh` (instala o atualizador, o verificador e as chaves de release em `/opt/verax` e liga o
+  timer), `infra/node/bin/boot-install.sh` (só a mensagem e os comentários sobre a atualização),
+  `infra/gcp/modules/node/node.tf` (`ignore_changes` só nas cinco chaves do pedido), `infra/node/tests/update-test.sh`
+  (novo) e `boot-install-test.sh` (a mensagem), `.github/workflows/iac.yml` (o passo do teste novo),
+  `docs/runbooks/versao-no.md` ("Atualização da frota: o atualizador do host"), `docs/ARQUITETURA.md` ("Atualização da
+  frota" e "Instalação sem operador") e este registro.
+- **Como funciona:** o pedido é `verax-node-release` (+ `-sha256`, `-request`, `-intent` e `verax-update-window`) nos
+  metadados da VM; o host confere a assinatura do manifesto com as chaves **já instaladas** (copiadas para a memória
+  antes de tudo), o SHA-256 do pedido contra o manifesto assinado, recusa voltar de versão sem `rollback`, espera a
+  janela e a instalação sem operador, baixa as imagens e faz o backup antes de tocar no nó, guarda o que está instalado
+  e roda o `install.sh` novo; se a instalação ou a conferência (`verax-node`, Wazuh no standard, `/health/ready` da API)
+  falham, põe a cópia de volta e reinicia o nó (`rolled_back`). Andamento em `verax/update-*` (guest attributes).
+- **Desvios do pedido:** os atributos são `verax/update-state` e afins, e não `verax/update/state`: a GCP aceita um
+  nível só abaixo do espaço. A volta automática restaura a **cópia do que estava instalado** (e não reinstala o pacote
+  anterior), porque a célula e os nós antigos foram instalados pelo `deploy.sh`, sem um release para baixar de novo; o
+  resultado é o mesmo (os digests e os arquivos de antes). O banco não volta (migrations aditivas).
+- **Testes:** `infra/node/tests/update-test.sh` (sem root e sem nuvem: assinatura de outra chave, manifesto adulterado,
+  SHA-256 errado, pacote trocado, downgrade sem e com `rollback`, a volta na instalação e na conferência, a volta que não
+  sobe, trava, instalação sem operador em andamento, janela, metadados hostis, backup e pull que falham, GHCR de outro
+  repositório, nó já na versão, nó do `deploy.sh`), com mutações conferidas (sem a assinatura, sem a recusa de
+  downgrade, sem limpar o `/opt/verax` na volta, sem a conferência, sem a trava: o teste cai). `boot-install-test.sh`,
+  `vault-test.sh` e `scripts/test-node-release.sh` verdes; `shellcheck -x -S style`; `terraform test` do módulo `node`
+  (61). Localmente os testes de shell rodaram num contêiner Debian (o Git Bash não tem `flock` nem `jq`).
+- **A fazer pelo responsável:** nada até a parte 2; o atualizador chega a cada nó na primeira atualização pelo caminho
+  antigo (o `deploy.sh`, ou um nó novo), e sem pedido nos metadados ele não faz nada.
+- **Riscos:** a mensagem do `boot-install.sh` muda o `startup-script` dos nós de cliente no próximo `apply` de cada
+  tenant (mudança no lugar, sem reiniciar a VM).
+
+## Frota, parte 2: a rodada no plano de controle (ondas, parada na primeira falha, painel junto) e as permissões ⚠️ altera `infra/`
+
+- **Pedido:** a orquestração da atualização da frota no cp-worker (decisão de 16/11/2026): a rodada em
+  `rollouts/{id}` com um passo por nó, as ondas (a célula da Verax, as outras células, os dedicados em lotes), o pedido
+  de versão nos metadados de cada VM, o `ok` do host, a API pública, o painel de cada destino na mesma versão, a parada
+  na primeira falha, retomar, pular, abortar e voltar um nó, a auditoria `rollout.*` e o alerta; as permissões mínimas no
+  Terraform.
+- **Arquivos:**
+  - `apps/control-plane/src/fleet/` (novo): `fleet.schema.ts`, `fleet-store.ts`, `fleet-plan.ts` (quem entra e em que
+    onda, do registro dos clientes e das células), `fleet-cloud.ts` (as VMs, a API pública, o Firebase e o bucket),
+    `fleet-settings.ts`, `rollout-engine.ts` (o motor e a volta `fleet.tick`), `fleet.service.ts`,
+    `internal-fleet.controller.ts` (`/internal/fleet/...`, só o responsável e o console) e `fleet.module.ts`;
+  - `provisioning/panel-publish.ts` (novo: a publicação do bundle num site, agora usada pelo `firebase.site` e pela
+    frota), `provisioning/google-apis.ts` (`instanceMetadata`, `setInstanceMetadata` e `listPrefixes`),
+    `provisioning-steps.ts` (o `firebase.site` pela função comum), `cells/cell.schema.ts` e `cell-store.ts` (`node` e
+    `staffPanel` opcionais no registro; a lista), `firestore/collections.ts` (`rollouts`), `access/access-worker.module.ts`
+    e `app.module.ts`;
+  - testes: `src/fleet/rollout-engine.test.ts`, `fleet-plan.test.ts`, `test/fleet-worker.test.ts` (novos),
+    `test/support/fake-fleet-cloud.ts` (novo), `fake-cloud.ts`, `create-app.ts`, `provisioning/cloud-apis.test.ts`;
+  - Terraform: `envs/nodes-platform/control_plane.tf` (`cpNodeUpdater`, só nas VMs `vx-*`) e `outputs.tf`,
+    `envs/tenant/control_plane.tf` (`serviceAccountUser` do cp-worker na conta do nó), `envs/celula/fleet.tf` (novo:
+    `cpCellNodeUpdater` só na VM da célula, pelo nome, e o `serviceAccountUser` na conta dela) e `main.tf` (os guest
+    attributes ligados), `envs/control-plane/monitoring.tf` (o alerta `rollout_failed`), com os testes de cada um;
+  - documentação: `docs/ARQUITETURA.md` ("A rodada no plano de controle", "As permissões novas do cp-worker" e
+    "Identidades"), `docs/runbooks/celula.md` ("Na atualização da frota") e este registro.
+- **Decisões onde o pedido deixava margem:**
+  - **o pedido é a chave `verax-node-release` (e as quatro irmãs)**, gravada com a impressão digital (`setMetadata`
+    troca os metadados inteiros; um 412 relê e tenta de novo), sem tocar em nenhuma outra chave;
+  - **o `serviceAccountUser` na conta de cada VM:** o Compute o exige para gravar metadados de uma VM com conta de
+    serviço. Sem ele, o papel personalizado não bastaria. Concedido por nó (no tenant) e só na conta da célula;
+  - **na célula, um papel com outro nome (`cpCellNodeUpdater`)** e a condição pelo nome exato da VM: no projeto do nó
+    da Verax ficam também o nó lean e a chave de release;
+  - **a volta da rodada é uma task da fila `lifecycle`** (`fleet.tick`, com a rodada nos dois ids do corpo e o número
+    da volta): sem fila nova no Terraform;
+  - **"retomar" tenta de novo o nó que falhou** (com um id de pedido novo: o host nunca repete um pedido); "pular" vale
+    para o nó na fila ou com falha; "voltar um nó" só para um nó feito ou com falha, e só quando a versão de antes é uma
+    versão publicada (um nó do `deploy.sh`, só com o commit, volta pelo `deploy.sh`);
+  - **a versão sem o bundle do painel é recusada** (`panel_bundle_missing`): sem ele, o painel não andaria junto;
+  - **os nós que já mudavam terminam** quando a rodada para (o host não tem como cancelar no meio), inclusive a
+    publicação do painel deles.
+- **Testes:** `pnpm --filter @verax/control-plane test`: verde (as ondas e a capacidade, o painel só depois do `ok` do
+  host e da API pública, cada site com a API do próprio cliente, o bundle lido uma vez, a parada na primeira falha sem
+  tocar no resto, retomar com outro pedido, o prazo com e sem janela, a API fora, a mesma volta repetida, a volta
+  perdida na fila, a entrega simultânea, o erro passageiro e o 403, a publicação interrompida, pular e abortar, parar e
+  retomar, voltar um nó com o painel da versão de antes; pelo app: a guarda das rotas, a revisão, a rodada com
+  confirmação e auditoria, a volta pela fila e as operações). `terraform test`: `envs/nodes-platform` (7),
+  `envs/tenant` (59), `envs/celula` (15), `envs/control-plane` (44) e `modules/node` (61). `typecheck`, ESLint e
+  Prettier.
+- **A fazer pelo responsável:** aplicar `envs/nodes-platform`, `envs/celula` e `envs/control-plane`; os tenants ganham
+  o `serviceAccountUser` no próximo `apply` de cada um (o `resume` refaz o `apply`); `RELEASE_BUCKET` no `worker_env`
+  (já existe com o provisionamento); os campos `node` e `staffPanel` no registro da célula (`docs/runbooks/celula.md`).
+- **Riscos:** o `setMetadata` alcança o `startup-script` (o risco aceito e as contenções em `docs/ARQUITETURA.md`); a
+  célula baixa as imagens do Artifact Registry, cuja limpeza apaga versões com mais de 30 dias fora das 3 mais
+  recentes: uma versão promovida há muito tempo pararia em `image_pull_failed` (sem mexer no nó).
+
+## Frota, parte 3: o bundle do painel na versão e o workflow `Painel` só com a demonstração ⚠️ altera `.github/`
+
+- **Pedido:** o painel de cada destino andando junto com o nó: o bundle montado uma vez por versão e guardado com ela
+  (com o SHA-256 no manifesto assinado), e o merge publicando só a demonstração; a lista de sites de produção pelo
+  registro no Firestore, não pelo secret `PAINEL_SITES`.
+- **Arquivos:** `scripts/node-release.sh` (o `panel`: o build único num tar ustar com data, dono e permissões fixos; o
+  `--panel` do `manifest`), `scripts/test-node-release.sh`, `.github/workflows/versao-no.yml` (o job `painel`, sem
+  identidade nem segredo, monta o bundle; o `assinar` confere o SHA-256, põe o `panel` no manifesto e atesta o bundle;
+  o `publicar` o põe no release), `.github/workflows/painel.yml` (só a demonstração; o site e o domínio dela no
+  próprio workflow), `docs/runbooks/painel.md` (reescrito: os dois caminhos e a passagem do painel da equipe para a
+  frota), `docs/runbooks/versao-no.md`, `docs/ARQUITETURA.md` ("O painel junto com o nó", "Painel e destinos" e o
+  bundle do `firebase.site`), `infra/gcp/GUIA.md` e este registro.
+- **Decisões:** o build do painel roda num job à parte, só leitura, porque o `pnpm install` executa código das
+  dependências e o job `assinar` tem a federação com o KMS e a atestação; o bundle entra no manifesto pelo SHA-256 que o
+  job do build disse, conferido de novo no `assinar`. O painel da equipe da Verax hoje está no projeto do plano de
+  controle, fora do alcance do `cp-worker` (de propósito): ele passa a um site do pool (`docs/runbooks/painel.md`), em
+  vez de dar ao `cp-worker` o Firebase do projeto do plano de controle, onde está `conta.veraxsistemas.com.br`.
+- **Testes:** `scripts/test-node-release.sh` (o bundle igual byte a byte com outra máscara e outra hora, o conteúdo,
+  ustar, dono 0/0 e a data do commit; as recusas: nome errado, sem `index.html`, configuração sem o marcador, link no
+  build; o manifesto com e sem `panel`) e uma conferência à parte de que o leitor do plano de controle
+  (`openPanelBundle` e `siteHostingConfig`) abre o bundle que o script monta. `shellcheck` e Prettier.
+- **A fazer pelo responsável:** a próxima versão promovida já traz o bundle; copie o `panel-*.tar.gz` para o bucket de
+  releases com o manifesto (GUIA, como antes); mude o painel da equipe para um site do pool (`docs/runbooks/painel.md`)
+  e, depois, apague o secret `PAINEL_SITES`.
+- **Riscos:** entre o merge desta parte e a passagem do painel da equipe para a frota, o site de hoje do SOC da Verax
+  fica na última versão publicada.
+
+## Frota, parte 4: a tela Versões no console do responsável
+
+- **Pedido:** a seção "Versões" do console: as versões promovidas, a versão de cada nó e site, "Promover para a frota"
+  com a revisão (ondas, nós, lote e janela), a rodada ao vivo por nó, parar, retomar, abortar, pular e voltar um nó, e o
+  histórico; testes com axe como as outras telas.
+- **Arquivos:** `apps/control-plane/src/admin/admin-fleet.controller.ts`, `admin-fleet.service.ts` e
+  `worker-fleet-client.ts` (novos), `admin.module.ts`, `app.module.ts`, `test/admin-fleet.test.ts` (novo) e
+  `test/support/create-app.ts` (commit anterior); `apps/console/src/features/fleet/` (novo: `api.ts`, `labels.ts`,
+  `queries.ts`, `fleet-page.tsx`, `promote-page.tsx`, `rollout-page.tsx`, `fleet.test.tsx`),
+  `apps/console/src/mocks/fake-fleet.ts` (novo) e `fake-admin-api.ts`, `router.tsx` e `components/layout.tsx` (uma rota
+  e uma entrada no menu), `apps/console/e2e/fleet.spec.ts` (novo), `docs/runbooks/console-do-responsavel.md` (seção 9)
+  e este registro.
+- **Decisões:** as rodadas e os nós são lidos do Firestore pelo cp-admin; as versões do bucket, a versão de cada nó e
+  site, a revisão e as operações vão ao cp-worker (que tem o bucket, as VMs e o Firebase) por um cliente que só monta os
+  caminhos da frota, com quem agiu no corpo e nunca o cookie. A rodada se atualiza sozinha a cada 10 s enquanto anda.
+  Com uma rodada aberta, a tela não oferece "Promover" (uma por vez).
+- **Testes:** `pnpm --filter @verax/control-plane test` (o `admin-fleet`: sessão exigida, o caminho até o worker com
+  quem agiu e sem o cookie, a revisão e a recusa sem o painel, a rodada nova, a lista, o detalhe e as operações com a
+  auditoria); `pnpm --filter @verax/console test` (90, os 4 novos da frota: a lista, a rodada parada com voltar, pular e
+  retomar, a revisão com a janela inválida, o lote e a versão digitada, e a versão sem o painel); Playwright com axe
+  (`e2e/fleet.spec.ts`, os dois temas: a frota, a rodada parada e a revisão, sem violação de WCAG 2.2 AA nem da CSP).

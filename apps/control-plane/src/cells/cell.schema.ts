@@ -52,6 +52,30 @@ export const cellSchema = z.strictObject({
       error: 'conta de serviço inválida',
     }),
   release: z.string().max(64).optional(),
+  /**
+   * A VM da célula, para a atualização da frota (o pedido de versão nos metadados e o andamento nos guest attributes):
+   * a zona e o nome (a saída `node_instance` do ambiente da célula). Sem o campo, a célula fica fora da frota.
+   */
+  node: z
+    .strictObject({
+      zone: z.string().regex(/^[a-z]+-[a-z]+[0-9]-[a-z]$/),
+      instance: z
+        .string()
+        .regex(/^[a-z][a-z0-9-]{0,62}$/)
+        .refine((value) => !value.endsWith('-')),
+    })
+    .optional(),
+  /**
+   * O painel da equipe da Verax nesta célula (o SOC da própria Verax, `CELL_STAFF_SLUG`): o projeto do Firebase, o
+   * site e o subdomínio. A célula com o painel da equipe é a canária da frota (onda 0), e o site anda junto com ela.
+   */
+  staffPanel: z
+    .strictObject({
+      project: z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/),
+      siteId: z.string().regex(/^[a-z0-9-]{6,63}$/),
+      slug: z.string().regex(/^[a-z][a-z0-9-]{1,14}[a-z0-9]$/),
+    })
+    .optional(),
   capacity: capacitySchema.optional(),
   reserved: capacitySchema.optional(),
   measured: z

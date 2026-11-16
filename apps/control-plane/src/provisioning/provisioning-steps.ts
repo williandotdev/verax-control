@@ -13,7 +13,7 @@ import { executorEnv, isTenantEmail, isTenantName, type RunKind } from './execut
 import { isExecutionName } from './google-apis.js';
 import { nodeFitProblems } from './node-fit.js';
 import { nodeSmtpPasswordSecret, readNodeSmtpPassword } from './node-mail.js';
-import { MAX_BUNDLE_BYTES, openPanelBundle, siteHostingConfig } from './panel-bundle.js';
+import { loadPanelBundle, publishPanelRelease } from './panel-publish.js';
 import {
   DefinitiveStepError,
   ProvisioningEngine,
@@ -420,22 +420,16 @@ export class FirebaseSiteStep extends BaseStep {
     }
 
     const { apiOrigin, panelHost } = tenantHosts(tenant.slug, settings);
-    const labels = {
-      'verax-release': release.release.replaceAll('.', '-'),
-      'verax-panel': panel.sha256.slice(0, 16),
-    };
-    const latest = await this.apis.firebase.latestReleaseLabels(siteId);
-    if (
-      latest?.['verax-release'] !== labels['verax-release'] ||
-      latest['verax-panel'] !== labels['verax-panel']
-    ) {
-      const archive = await this.apis.storage.read(settings.releaseBucket, panel.object, MAX_BUNDLE_BYTES);
-      if (archive === undefined) throw new DefinitiveStepError('panel_bundle_missing');
-      const bundle = openPanelBundle(archive, panel.sha256);
-      const hosting = siteHostingConfig(bundle.template, tenant.slug, apiOrigin);
-      const { uploaded } = await this.apis.firebase.publish(siteId, bundle.files, hosting, labels);
+    const panelRelease = { release: release.release, panel };
+    const result = await publishPanelRelease(
+      this.apis.firebase,
+      { siteId, slug: tenant.slug, apiOrigin },
+      panelRelease,
+      () => loadPanelBundle(this.apis.storage, settings.releaseBucket, panelRelease),
+    );
+    if (result.published) {
       this.logger.info(
-        { event: 'panel_published', tenantId: tenant.id, files: bundle.files.size, uploaded },
+        { event: 'panel_published', tenantId: tenant.id, files: result.files, uploaded: result.uploaded },
         'painel publicado',
       );
     }

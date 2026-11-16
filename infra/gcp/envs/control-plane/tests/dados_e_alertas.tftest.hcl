@@ -165,8 +165,8 @@ run "alertas_sem_email" {
   command = plan
 
   assert {
-    condition     = length(google_monitoring_notification_channel.email) == 0 && length(google_monitoring_alert_policy.log) == 5
-    error_message = "Sem e-mail, os cinco alertas existem e ficam só no console."
+    condition     = length(google_monitoring_notification_channel.email) == 0 && length(google_monitoring_alert_policy.log) == 6
+    error_message = "Sem e-mail, os seis alertas existem e ficam só no console."
   }
 
   assert {
@@ -187,7 +187,7 @@ run "alertas_com_email_e_orcamento" {
       google_monitoring_notification_channel.email[0].labels["email_address"] == "alertas@example.com" &&
       alltrue([for policy in google_monitoring_alert_policy.log : length(policy.notification_channels) == 1])
     )
-    error_message = "Com e-mail, os cinco alertas avisam por ele."
+    error_message = "Com e-mail, os seis alertas avisam por ele."
   }
 
   assert {
@@ -203,6 +203,8 @@ run "alertas_com_email_e_orcamento" {
   assert {
     condition = (
       google_monitoring_alert_policy.log["provisioning_failed"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-worker\" AND jsonPayload.event=\"provisioning_failed\"" &&
+      google_monitoring_alert_policy.log["rollout_failed"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-worker\" AND jsonPayload.event=\"rollout_failed\"" &&
+      google_monitoring_alert_policy.log["rollout_failed"].conditions[0].condition_matched_log[0].label_extractors == tomap({ rollout = "EXTRACT(jsonPayload.rolloutId)", node = "EXTRACT(jsonPayload.nodeKey)", code = "EXTRACT(jsonPayload.code)" }) &&
       google_monitoring_alert_policy.log["webhook_signature_failed"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-public\" AND jsonPayload.event=\"stripe_webhook_signature_failed\"" &&
       google_monitoring_alert_policy.log["checkout_daily_limit"].conditions[0].condition_matched_log[0].filter == "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cp-public\" AND jsonPayload.event=\"checkout_daily_limit_reached\"" &&
       google_monitoring_alert_policy.log["checkout_daily_limit"].conditions[0].condition_matched_log[0].label_extractors == tomap({ day = "EXTRACT(jsonPayload.day)" }) &&

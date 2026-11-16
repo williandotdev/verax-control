@@ -4,6 +4,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module.js';
 import type { AdminSecretSource } from './admin/auth/admin-secrets.js';
 import type { WorkerOwnerClient } from './admin/worker-owner-client.js';
+import type { WorkerFleetClient } from './admin/worker-fleet-client.js';
 import { AuditModule } from './audit/audit.module.js';
 import { AccessWorkerModule, type AccessWorkerModuleOptions } from './access/access-worker.module.js';
 import { CheckoutModule } from './checkout/checkout.module.js';
@@ -42,6 +43,8 @@ export interface AppModuleOptions {
   provisioning?: AccessWorkerModuleOptions['provisioning'];
   /** Só nos testes: a publicação dos comandos da célula em memória (em produção, o Pub/Sub, CE-06). */
   cellCommandSink?: AccessWorkerModuleOptions['cellCommandSink'];
+  /** Só nos testes: a nuvem da frota (as VMs, a API pública e o Firebase) num dublê. */
+  fleetCloud?: AccessWorkerModuleOptions['fleetCloud'];
   /** Só nos testes: a API da Stripe num servidor falso em 127.0.0.1 (em produção, o padrão do SDK). */
   stripeApi?: StripeApiOptions;
   /** Só nos testes: a fila de passos em memória (em produção, o Cloud Tasks pela configuração). */
@@ -50,6 +53,8 @@ export interface AppModuleOptions {
   adminSecrets?: AdminSecretSource;
   /** Só nos testes: o cliente do console para o cp-worker (em produção, HTTP com o token da conta do cp-admin). */
   workerOwnerClient?: WorkerOwnerClient;
+  /** Só nos testes: o cliente da frota do console para o cp-worker. */
+  workerFleetClient?: WorkerFleetClient;
 }
 
 /**
@@ -76,6 +81,7 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
         AdminModule.forRoot({
           adminSecrets: options.adminSecrets,
           workerOwnerClient: options.workerOwnerClient,
+          workerFleetClient: options.workerFleetClient,
         }),
       ];
   }
@@ -96,6 +102,7 @@ function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<Mo
         idTokenKeys: options.idTokenKeys,
         provisioning: options.provisioning,
         cellCommandSink: options.cellCommandSink,
+        fleetCloud: options.fleetCloud,
       }),
     ];
   }

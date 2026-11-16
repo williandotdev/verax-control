@@ -6,8 +6,11 @@ import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { TokenBucketLimiter } from '../common/http/rate-limiter.js';
 import { LegalCoreModule } from '../legal/legal-core.module.js';
 import { PricingCoreModule } from '../pricing/pricing-core.module.js';
+import { FleetStore } from '../fleet/fleet-store.js';
 import { ProvisioningStore } from '../provisioning/provisioning-store.js';
 import { TenantsModule } from '../tenants/tenants.module.js';
+import { AdminFleetController } from './admin-fleet.controller.js';
+import { AdminFleetService } from './admin-fleet.service.js';
 import { AdminLegalController } from './admin-legal.controller.js';
 import { AdminLegalService } from './admin-legal.service.js';
 import { AdminPricingController } from './admin-pricing.controller.js';
@@ -36,6 +39,11 @@ import { GoogleAuthIdTokenSource } from './google-id-token.js';
 import { OwnerGuard } from './owner.guard.js';
 import { SSO_GLOBAL, SSO_LIMITS, SSO_PER_IP, SsoController, type SsoLimits } from './sso/sso.controller.js';
 import { SsoService } from './sso/sso.service.js';
+import {
+  CONSOLE_FLEET_CLIENT,
+  HttpWorkerFleetClient,
+  type WorkerFleetClient,
+} from './worker-fleet-client.js';
 import { HttpWorkerOwnerClient, type WorkerOwnerClient } from './worker-owner-client.js';
 
 export interface AdminModuleOptions {
@@ -50,6 +58,8 @@ export interface AdminModuleOptions {
    * `google-auth-library` (`google-id-token.ts`); sem `WORKER_URL`, nenhum (as operações respondem 503).
    */
   workerOwnerClient?: WorkerOwnerClient;
+  /** Só nos testes: o cliente da frota no cp-worker (em produção, o HTTP com o token da conta do cp-admin). */
+  workerFleetClient?: WorkerFleetClient;
 }
 
 /**
@@ -67,6 +77,7 @@ export class AdminModule {
       imports: [AuditModule, LegalCoreModule, PricingCoreModule, TenantsModule],
       controllers: [
         AdminAuthController,
+        AdminFleetController,
         AdminLegalController,
         AdminPricingController,
         AdminSessionController,
@@ -75,6 +86,8 @@ export class AdminModule {
       ],
       providers: [
         AdminAuthService,
+        AdminFleetService,
+        FleetStore,
         AdminLegalService,
         AdminPricingService,
         AdminTenantsService,
@@ -87,6 +100,15 @@ export class AdminModule {
             (config.WORKER_URL === undefined
               ? null
               : new HttpWorkerOwnerClient(config.WORKER_URL, new GoogleAuthIdTokenSource())),
+          inject: [APP_CONFIG],
+        },
+        {
+          provide: CONSOLE_FLEET_CLIENT,
+          useFactory: (config: AppConfig): WorkerFleetClient | null =>
+            options.workerFleetClient ??
+            (config.WORKER_URL === undefined
+              ? null
+              : new HttpWorkerFleetClient(config.WORKER_URL, new GoogleAuthIdTokenSource())),
           inject: [APP_CONFIG],
         },
         {

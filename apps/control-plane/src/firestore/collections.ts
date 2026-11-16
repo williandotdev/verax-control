@@ -5,6 +5,7 @@ import { assertDocumentId } from './document-store.js';
 const TENANTS = 'tenants';
 const PROVISIONING_RUNS = 'provisioningRuns';
 const LEGAL_TEXTS = 'legalTexts';
+const ROLLOUTS = 'rollouts';
 
 /** Id de cliente: sempre um ULID (`TenantStore.create`). Qualquer outra coisa (inclusive com barra) não monta caminho. */
 function tenantSubcollection(tenantId: string, name: string): string {
@@ -75,6 +76,18 @@ export const COLLECTIONS = {
    */
   cells: 'cells',
   cellReports: 'cellReports',
+  /**
+   * Atualização da frota (16/11/2026): cada rodada de "Promover para a frota" (`rollouts/{id}`, um ULID) e o passo de
+   * cada nó nela (`rollouts/{id}/nodes/{chave}`: `cell-<célula>` ou `tenant-<id>`). O histórico fica (sem TTL): são
+   * poucas por mês, sem dado pessoal além do e-mail de quem promoveu. Só o cp-worker grava; o console lê.
+   */
+  rollouts: ROLLOUTS,
+  /** A trava de uma rodada por vez (`fleet/active`, com o id da rodada mais recente), lida e gravada na criação. */
+  fleet: 'fleet',
+  rolloutNodes: (rolloutId: string): string => {
+    if (!isUlid(rolloutId)) throw new TypeError('id de rodada inválido');
+    return `${ROLLOUTS}/${rolloutId}/nodes`;
+  },
 } as const;
 
 export interface CompositeIndex {

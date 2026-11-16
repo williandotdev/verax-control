@@ -37,12 +37,16 @@ export interface CreateAppOptions {
   stripeApi?: StripeApiOptions;
   /** A publicação dos comandos da célula em memória (CE-06). */
   cellCommandSink?: Parameters<typeof AppModule.register>[1]['cellCommandSink'];
+  /** A nuvem da frota (as VMs, a API pública e o Firebase) num dublê. */
+  fleetCloud?: Parameters<typeof AppModule.register>[1]['fleetCloud'];
   /** A fila de passos (o dublê em memória); sem ela, a do ambiente (sem `TASKS_*`, a que recusa tudo). */
   stepQueue?: StepQueue;
   /** Os cofres do login do console em memória (`admin-auth.ts`): chave e token gerados no teste. */
   adminSecrets?: AdminSecretSource;
   /** O cliente do console para o cp-worker (o HTTP com um "Google" de teste até o worker local, ou um dublê). */
   workerOwnerClient?: Parameters<typeof AppModule.register>[1]['workerOwnerClient'];
+  /** O cliente da frota do console para o cp-worker. */
+  workerFleetClient?: Parameters<typeof AppModule.register>[1]['workerFleetClient'];
   /**
    * Só com `role: 'admin'`: a pasta com os arquivos do console. Sem ela, nenhuma (`null`): o teste não depende de um
    * build do `apps/console` que pode ou não existir na máquina.
@@ -75,10 +79,12 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
         idTokenKeys: options.idTokenKeys,
         provisioning: options.provisioning,
         cellCommandSink: options.cellCommandSink,
+        fleetCloud: options.fleetCloud,
         stripeApi: options.stripeApi,
         stepQueue: options.stepQueue,
         adminSecrets: options.adminSecrets,
         workerOwnerClient: options.workerOwnerClient,
+        workerFleetClient: options.workerFleetClient,
       }),
     ],
   }).compile();

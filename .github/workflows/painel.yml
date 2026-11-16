@@ -1,10 +1,12 @@
 name: Painel
 
-# Publica o painel no Firebase Hosting (projeto da Verax na GCP), um site por destino: a demonstração comercial
-# (dados fictícios no navegador), o SOC da própria Verax e cada cliente. A lista de sites fica no secret
-# PAINEL_SITES do environment `painel`, fora do código e fora do log público (ver docs/runbooks/painel.md). Login na
-# GCP sem chave (Workload Identity Federation): só jobs deste repositório no environment `painel`, que só aceita a
-# `main`.
+# Publica a demonstração comercial do painel (dados fictícios simulados no navegador, sem API) no Firebase Hosting do
+# projeto da Verax na GCP, a cada merge na `main` que mexa no painel. Os sites de produção (o SOC da própria Verax e
+# cada cliente) não passam mais por aqui desde a atualização da frota (decisão de 16/11/2026): o painel de cada destino
+# anda junto com o nó dele, publicado pelo plano de controle a partir do bundle da versão (docs/runbooks/painel.md e
+# docs/ARQUITETURA.md, "Atualização da frota"). O site e o domínio da demonstração são públicos (não há cliente neles):
+# ficam aqui, e não num secret. Login na GCP sem chave (Workload Identity Federation): só jobs deste repositório no
+# environment `painel`, que só aceita a `main`.
 
 on:
   push:
@@ -25,9 +27,13 @@ concurrency:
   group: painel
   cancel-in-progress: false
 
+env:
+  DEMO_SITE: verax-control-demo
+  DEMO_DOMAIN: control.veraxsistemas.com.br
+
 jobs:
   publicar:
-    name: Publicar o painel (Firebase Hosting)
+    name: Publicar a demonstração (Firebase Hosting)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: painel
@@ -35,34 +41,16 @@ jobs:
       contents: read
       id-token: write
     steps:
-      # As variáveis do environment só existem dentro do job: a checagem de configuração fica num passo. Sem a lista
-      # de sites, não há o que publicar e os demais passos não rodam.
-      - name: Conferir a configuração
-        id: config
-        env:
-          SITES: ${{ secrets.PAINEL_SITES }}
-        run: |
-          if [ -z "$SITES" ]; then
-            echo "::notice::PAINEL_SITES não configurada no environment painel; nada a publicar."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.config.outputs.ready == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: steps.config.outputs.ready == 'true'
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - if: steps.config.outputs.ready == 'true'
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - if: steps.config.outputs.ready == 'true'
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
       - name: Login na GCP (sem chave)
-        if: steps.config.outputs.ready == 'true'
         id: auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -70,41 +58,21 @@ jobs:
           service_account: ${{ vars.GCP_DEPLOY_SA }}
           token_format: access_token
           access_token_lifetime: 900s
-      - name: Publicar cada site
-        if: steps.config.outputs.ready == 'true'
+      - name: Publicar a demonstração
         env:
-          SITES: ${{ secrets.PAINEL_SITES }}
           GOOGLE_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
         run: |
           set -euo pipefail
-          jq -e 'type == "array" and length > 0' <<<"$SITES" >/dev/null
-          mapfile -t entries < <(jq -c '.[]' <<<"$SITES")
-          # O log deste workflow é público (repositório público): site, domínio e API de cada cliente saem
-          # mascarados, para a lista de clientes não aparecer em lugar nenhum.
-          for entry in "${entries[@]}"; do
-            for value in $(jq -r '[.site, .dominio, (.api // empty)] | .[]' <<<"$entry"); do
-              echo "::add-mask::${value}"
-              echo "::add-mask::${value#https://}"
-            done
-          done
-          for entry in "${entries[@]}"; do
-            site=$(jq -er .site <<<"$entry")
-            domain=$(jq -er .dominio <<<"$entry")
-            if [ "$(jq -r '.modo // "producao"' <<<"$entry")" = "demo" ]; then
-              # Demonstração: a "API" é simulada no navegador, na própria origem do site.
-              VITE_API_URL="https://${domain}" pnpm --filter @verax/web build:demo
-            else
-              VITE_API_URL="$(jq -er .api <<<"$entry")" pnpm --filter @verax/web build
-            fi
-            node scripts/firebase-hosting-deploy.mjs "$site" apps/web/dist apps/web/dist-hosting.json
-            # Conferência no endereço padrão do Firebase (o domínio próprio pode ainda não estar no DNS).
-            base="https://${site}.web.app"
-            headers=$(curl -fsSI --retry 5 --retry-all-errors "${base}/")
-            grep -qi '^content-security-policy:' <<<"$headers"
-            grep -qi '^strict-transport-security:' <<<"$headers"
-            # index.html sempre revalidado; arquivos com hash em /assets com cache longo.
-            grep -qi '^cache-control: no-cache' <<<"$headers"
-            asset=$(curl -fsS "${base}/" | grep -o '/assets/[A-Za-z0-9._-]*\.js' | head -1)
-            curl -fsSI "${base}${asset}" | grep -qi '^cache-control:.*immutable'
-            echo "${site}: publicado e com os cabeçalhos de segurança"
-          done
+          # A "API" é simulada no navegador, na própria origem do site.
+          VITE_API_URL="https://${DEMO_DOMAIN}" pnpm --filter @verax/web build:demo
+          node scripts/firebase-hosting-deploy.mjs "$DEMO_SITE" apps/web/dist apps/web/dist-hosting.json
+          # Conferência no endereço padrão do Firebase (o domínio próprio pode ainda não estar no DNS).
+          base="https://${DEMO_SITE}.web.app"
+          headers=$(curl -fsSI --retry 5 --retry-all-errors "${base}/")
+          grep -qi '^content-security-policy:' <<<"$headers"
+          grep -qi '^strict-transport-security:' <<<"$headers"
+          # index.html sempre revalidado; arquivos com hash em /assets com cache longo.
+          grep -qi '^cache-control: no-cache' <<<"$headers"
+          asset=$(curl -fsS "${base}/" | grep -o '/assets/[A-Za-z0-9._-]*\.js' | head -1)
+          curl -fsSI "${base}${asset}" | grep -qi '^cache-control:.*immutable'
+          echo "${DEMO_SITE}: publicado e com os cabeçalhos de segurança"

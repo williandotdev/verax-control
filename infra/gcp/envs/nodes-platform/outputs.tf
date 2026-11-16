@@ -9,6 +9,7 @@ output "control_plane_roles" {
     cpSecretsProvisioner     = google_project_iam_custom_role.secrets_provisioner[0].id
     cpBucketsProvisioner     = google_project_iam_custom_role.buckets_provisioner[0].id
     cpNodeLifecycle          = google_project_iam_custom_role.node_lifecycle[0].id
+    cpNodeUpdater            = google_project_iam_custom_role.node_updater[0].id
     cpSecretVersionDestroyer = google_project_iam_custom_role.secret_version_destroyer[0].id
     cpTenantSaToggle         = google_project_iam_custom_role.tenant_sa_toggle[0].id
   } : null

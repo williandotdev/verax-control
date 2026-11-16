@@ -203,6 +203,17 @@ install -m 0640 "$here/compose.vault.yaml" /opt/verax/compose.vault.yaml
 install -m 0640 "$here/compose.cell.yaml" /opt/verax/compose.cell.yaml
 install -m 0644 "$here/pg_hba.conf" /opt/verax/pg_hba.conf
 install -m 0750 "$here/bin/start.sh" "$here/bin/backup.sh" "$here/bin/metadata-guard.sh" /opt/verax/bin/
+# O atualizador da frota (verax-update.timer) e o que ele usa para conferir uma versão nova: o verificador do manifesto e
+# as chaves públicas de release DESTE pacote. A próxima versão é conferida com estas chaves, nunca com as do pacote
+# que chega (docs/runbooks/versao-no.md, "Troca e revogação da chave"). Um pacote sem chave deixa a pasta vazia: o
+# atualizador recusa toda versão (release_verifier_failed) até um pacote com a chave.
+install -m 0750 "$here/bin/update.sh" "$here/bin/verify-release.sh" /opt/verax/bin/
+install -d -m 0755 /opt/verax/keys
+rm -f /opt/verax/keys/release-*.pem
+shopt -s nullglob
+release_keys=("$here"/keys/release-*.pem)
+shopt -u nullglob
+if ((${#release_keys[@]} > 0)); then install -m 0644 "${release_keys[@]}" /opt/verax/keys/; fi
 install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
 # Perfil standard: o Wazuh (o compose.wazuh.yaml, a cópia de infra/wazuh que o deploy.sh põe no pacote, a aplicação da
 # configuração do manager com as contas AWS, a renovação do token do Google para a AWS e a limpeza diária dos alertas
@@ -372,6 +383,8 @@ elif [[ -f /etc/systemd/system/verax-customer-bootstrap.service ]]; then
 fi
 systemctl restart verax-node.service
 systemctl start verax-backup.timer
+# O atualizador: sem pedido nos metadados da VM (o nó da Verax, a homologação), ele sai sem fazer nada.
+systemctl enable --now verax-update.timer >/dev/null
 # Standard: o restart do verax-node sobe o verax-wazuh junto (o Wants do drop-in, mesmo se ele tinha falhado); o
 # `start` espera o Wazuh ficar saudável (nada acontece a mais se já estiver subindo).
 # O token do Google renovado a cada 10 min e a configuração do manager refeita quando o worker grava uma geração nova

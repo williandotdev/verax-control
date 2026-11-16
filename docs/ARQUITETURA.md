@@ -167,8 +167,9 @@ o snapshot, o IP do NAT (reservado no `standard`) e os limites de memória dos c
 
 ## Painel e destinos
 
-O painel é estático, no Firebase Hosting do projeto `verax-control-prod` (GCP), um site por destino. Roteiro em
-`docs/runbooks/painel.md`.
+O painel é estático, no Firebase Hosting, um site por destino. Roteiro em `docs/runbooks/painel.md`. Desde a
+atualização da frota (16/11/2026), só a demonstração sai a cada merge (workflow `Painel`); o painel de produção de cada
+destino é o bundle da versão do nó dele, publicado pelo plano de controle junto com o nó ("Atualização da frota").
 
 - `control.veraxsistemas.com.br`: **demonstração comercial**, com dados fictícios simulados no navegador, sem API e
   com aviso em toda tela.
@@ -1883,7 +1884,10 @@ do preço configurável, documentos internos.
 - **`cp-public`:** lê e escreve no Firestore, enfileira tasks e lê as chaves da Stripe e do cookie. Nada mais.
 - **`cp-worker`:** Firestore, tasks, execução do Job, Firebase Hosting nos projetos do pool, leitura do bucket de
   releases e, no projeto dos nós (`envs/nodes-platform`), um papel personalizado que só para, liga e lê atributos de
-  VMs cujo nome começa com `vx-` (`cpNodeLifecycle`) e a leitura de `runs/` no bucket do estado. Por tenant, o
+  VMs cujo nome começa com `vx-` (`cpNodeLifecycle`), outro que grava os metadados delas (`cpNodeUpdater`, o pedido de
+  versão da frota) e a leitura de `runs/` no bucket do estado; no projeto da célula, o mesmo pedido só na VM da célula
+  (`cpCellNodeUpdater`). Por tenant, o `serviceAccountUser` na conta da VM daquele nó (o Compute o exige para gravar os
+  metadados) e, ainda por tenant, o
   `envs/tenant` concede, cada permissão num cofre só: adicionar a versão do token do túnel (`secretVersionAdder`); com
   o e-mail do nó, adicionar a versão da senha da caixa de envio no `smtp-password` (`secretVersionAdder`, sem ler de
   volta); ler uma vez e destruir a versão do `admin-bootstrap` (`secretAccessor` e `secretVersionManager`); listar e
@@ -1918,7 +1922,9 @@ do preço configurável, documentos internos.
   administra os segredos e cria a conta do console pela linha de comando; tudo auditado (`owner:<e-mail>`).
 
 O que o plano de controle **não** pode fazer: ler o banco do nó, abrir o cofre de credenciais, entrar na VM (sem OS
-Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita).
+Login), ver dados de cartão (Checkout hospedado) ou usar a chave completa da Stripe (chave restrita). Desde a atualização
+da frota (16/11/2026), o `cp-worker` grava os metadados das VMs dos nós: não entra na VM por SSH, mas o `setMetadata`
+alcança o script de boot (o risco aceito está em "Atualização da frota", "As permissões novas do cp-worker").
 
 ### Estados do cliente
 
@@ -2181,12 +2187,13 @@ recebe `--release`, o `NODE_RELEASE`. O `verax/ready` é o `NODE_RELEASE` (o que
 `node.wait_ready`); num nó atualizado depois pelo `deploy.sh`, que não passa `--release`, vira o commit. O nó da Verax
 e o `deploy.sh` não mudam: sem `--release`, o `images.env` é o de antes, linha a linha.
 
-**Atualização não é automática.** Instalado o nó, uma versão diferente nos metadados (um `apply` do tenant com outra
-`node_version`) só aparece no log do boot; nada é baixado nem instalado. Instalar sozinho, num reboot qualquer, rodaria
-migrations sem backup, sem janela e sem volta (o que o SH-06 desenha). A atualização continua com o `deploy.sh`, pelo
-operador, com o `node.conf` que a instalação escreveu (`/etc/verax/node.conf` da VM). Um nó instalado só pelo
-`deploy.sh` (sem o marcador) também não é tocado. Uma instalação que parou no meio (o marcador `installing`) é refeita
-do começo no boot seguinte: o `install.sh` pode rodar de novo.
+**A instalação não atualiza.** Instalado o nó, uma versão diferente em `verax-node-version` (um `apply` do tenant com
+outra `node_version`) só aparece no log do boot; nada é baixado nem instalado. Instalar sozinho, num reboot qualquer,
+rodaria migrations sem backup, sem janela e sem volta. A atualização é a da frota (seção "Atualização da frota", abaixo):
+outra chave dos metadados (`verax-node-release`), o atualizador do host com backup e volta, e o plano de controle em
+ondas. O `deploy.sh` continua valendo para o operador, com o `node.conf` que a instalação escreveu
+(`/etc/verax/node.conf` da VM). Uma instalação que parou no meio (o marcador `installing`) é refeita do começo no boot
+seguinte: o `install.sh` pode rodar de novo, e o atualizador espera por ela.
 
 **Valores que a instalação decide** (não estão nos metadados):
 
@@ -2373,12 +2380,13 @@ PR-17') e o "esqueci minha senha" de cada nó:
   também continua sem ele. Mudar isso num nó existente é o caminho de atualização (o `deploy.sh` com o `node.conf`
   ajustado, ou o atualizador do SH-06).
 
-**Bundle do painel ausente (CP-09 ainda não feito):** o contrato que o `firebase.site` lê é `panel: {url, sha256}` no
-manifesto, como `package` (o arquivo `panel-<commit>.tar.gz` do release, num tar ustar com `dist/` e o
-`dist-hosting.json` do build único do CP-08), e o arquivo na pasta da versão do bucket de releases. Sem o campo, o
+**Bundle do painel (CP-09, feito com a atualização da frota):** o contrato que o `firebase.site` lê é
+`panel: {url, sha256}` no manifesto, como `package` (o arquivo `panel-<commit>.tar.gz` do release, num tar ustar com
+`dist/` e o `dist-hosting.json` do build único do CP-08, montado pelo `scripts/node-release.sh panel` no workflow
+`Versão do nó`), e o arquivo na pasta da versão do bucket de releases. Uma versão de antes, sem o campo, o
 passo para com `panel_bundle_missing` antes de criar qualquer coisa no Firebase (o túnel, gratuito, já existe e é
 reaproveitado). **Por que parar, e não esperar:** o manifesto é imutável por versão, então o bundle não aparece
-sozinho; só uma versão nova (com o CP-09) resolve, e esperar esconderia do responsável um erro que só ele corrige,
+sozinho; só uma versão nova (com o bundle) resolve, e esperar esconderia do responsável um erro que só ele corrige,
 com o cliente numa página "preparando" para sempre. Parar avisa na hora e não custa nada (nenhuma VM criada); depois
 da versão nova, `NODE_RELEASE` e o `resume`.
 
@@ -2750,6 +2758,95 @@ responsável estão em `docs/runbooks/versao-no.md`; o que o cliente segue para 
   como decisão em aberto ("Instalação sem operador", acima).
 - **Quem usa o manifesto hoje:** a instalação sem operador do nó de cliente (PR-N7), com as chaves que o Terraform
   põe no script de boot.
+
+## Atualização da frota _(decisão de 16/11/2026)_
+
+Até aqui, um nó no ar nunca se atualizava sozinho (só os nós novos nasciam na versão promovida; os outros esperavam o
+`deploy.sh`), e o painel ia para todos os sites a cada merge, podendo ficar à frente da API do nó. O responsável aprovou
+o desenho abaixo: a versão é **pedida por nó** e **aplicada pelo próprio host**, a frota anda **em ondas** com
+conferência e volta automática, e o **painel de cada destino anda junto com o nó dele**. O roteiro do host está em
+`docs/runbooks/versao-no.md` ("Atualização da frota").
+
+### O atualizador do host (`infra/node/bin/update.sh`)
+
+- **O pedido** é uma chave dos metadados da VM (`verax-node-release`, com o SHA-256 do pacote, o id do pedido, a
+  intenção `upgrade` ou `rollback` e a janela opcional), gravada pelo plano de controle. Não é a `verax-node-version` da
+  instalação, que o Terraform do tenant possui: o módulo `node` ignora as chaves do pedido (`ignore_changes`), e um
+  `apply` do tenant não as apaga.
+- **Quem aplica** é o host, pelo `verax-update.timer` (a cada 5 min, root, fora dos contêineres, como as outras unidades
+  do host): nenhuma porta de entrada, nenhum SSH, nenhuma credencial nova na VM. O mesmo código serve a célula e o nó
+  dedicado.
+- **Confiança:** o manifesto vem do release do GitHub e só vale com a assinatura conferida pelo verificador e pelas
+  chaves **já instaladas** no host (`/opt/verax`, que o `install.sh` agora instala), nunca pelas do pacote novo; o
+  SHA-256 do pedido tem de ser o do manifesto assinado. Um plano de controle comprometido só consegue pedir uma versão
+  assinada pela Verax, e uma mais antiga só com `rollback` explícito.
+- **Segurança da manutenção:** um pedido por vez (`flock`), nunca durante a instalação sem operador (a trava e o
+  marcador dela), a janela de manutenção, as imagens baixadas e o backup do banco **antes** de tocar no nó, e a cópia do
+  que está instalado (`/opt/verax`, o `images.env` e as unidades do systemd) para a volta. Se o `install.sh` ou a
+  conferência (o `verax-node`, o Wazuh no standard e a API em `/health/ready`) falham, o host põe a cópia de volta e
+  reinicia o nó: `rolled_back`. O banco não volta: as migrations são aditivas, a regra de sempre da volta de versão.
+- **Andamento** nos guest attributes `verax/update-*` (estado, versão, id do pedido, versão de antes e código de erro),
+  que o plano de controle lê como os do CP-10.
+
+### A rodada no plano de controle (`apps/control-plane/src/fleet`)
+
+- **Quem entra** sai do registro, não de uma lista à parte: as células de `cells/{id}` com a VM (`node: {zone,
+instance}`) e os clientes dedicados com nó no ar (`active`, `waiting_customer_connection`, `past_due`, com
+  `resources.instanceName`; o suspenso e o de VM parada aparecem na revisão como "fora", com o motivo). O painel de
+  cada nó: no dedicado, o site do cliente; na célula, o site de cada cliente dela e o da equipe (`staffPanel`).
+- **Ondas:** 0, a célula com o painel da equipe da Verax (a canária); 1, as outras células, uma de cada vez; 2, os nós
+  dedicados, em lotes de `concurrency` (1 a 5, padrão 1). Uma onda só começa com a anterior inteira feita ou pulada.
+- **O passo de cada nó:** o pedido nos metadados da VM (`setMetadata` com a impressão digital, sem tocar nas outras
+  chaves) → o `ok` do host nos guest attributes, para **este** pedido e esta versão (60 min; com janela, um dia a mais)
+  → `GET /health` e `/health/ready` na API pública (10 conferências) → o painel de cada destino do nó, publicado com o
+  bundle da mesma versão (`provisioning/panel-publish.ts`, o mesmo código do `firebase.site`) → feito. O painel nunca sai
+  antes da API do nó estar de pé na versão nova.
+- **Parar na primeira falha:** o host que volta sozinho (`node_rolled_back:<motivo>`), que não responde
+  (`update_timeout`), a API que não sobe (`health_failed`) ou o painel que não publica param a rodada
+  (`paused_on_failure`); nenhum nó novo começa, os que já mudavam terminam. O responsável retoma (o nó que falhou tenta
+  de novo, com outro id de pedido), pula o nó ou aborta; e pode voltar um nó feito para a versão que ele tinha antes
+  (o pedido com `rollback` e o painel dessa versão), quando ela é uma versão publicada.
+- **O motor:** uma task `fleet.tick` (fila `lifecycle`) a cada 30 s enquanto há nó mudando ou na fila, com o número da
+  volta no id (`fleet_tick-<rodada>-p<n>`): uma entrega repetida é ignorada, a que perdeu a fila põe a seguinte, e uma
+  concessão de 5 min impede duas entregas da mesma volta ao mesmo tempo. Cada nó é gravado só se ninguém mexeu nele no
+  meio (`rev`). Uma rodada por vez.
+- **Firestore:** `rollouts/{id}` (a versão conferida, as ondas, o estado, a falha e os totais) e
+  `rollouts/{id}/nodes/{cell-<id>|tenant-<id>}` (a VM, os sites, a operação, a tentativa, o id do pedido, o estado do
+  host e o código), sem segredo nem dado pessoal de cliente. Auditoria `rollout.created`, `.paused`, `.resumed`,
+  `.aborted`, `.node_skipped`, `.node_rollback`, `.paused_on_failure` e `.completed`; o alerta `rollout_failed`
+  (`envs/control-plane/monitoring.tf`).
+- **A versão** vem do bucket de releases, com a assinatura conferida pelas chaves do repositório, e precisa do bundle
+  do painel no manifesto (`panel`): sem ele, a rodada é recusada (`panel_bundle_missing`), porque o painel não teria
+  como andar junto.
+
+### O painel junto com o nó
+
+- **O bundle é da versão:** o workflow `Versão do nó` monta o build único do `apps/web` uma vez (num job sem identidade
+  nem segredo) em `panel-<commit>.tar.gz` (`scripts/node-release.sh panel`: ustar, data, dono e permissões fixos), cita
+  o SHA-256 no manifesto assinado (`panel`), atesta a origem e o põe no release. A configuração de cada site sai da
+  configuração-modelo do bundle (o marcador `{tenant}` trocado pelo subdomínio do site, CP-08), e a API, do endereço do
+  painel, em tempo de execução: o mesmo bundle serve todo destino.
+- **Quem publica:** o passo de cada nó, depois do `ok` do host e da API pública, em cada site daquele destino. A
+  demonstração (sem API) continua no merge.
+- **A lista dos sites** é o registro: o `siteId` e o `firebaseProject` de cada cliente e o `staffPanel` da célula, e
+  não o secret `PAINEL_SITES`, que deixa de ser lido.
+
+### As permissões novas do cp-worker
+
+| Onde                                    | O quê                                                                                                   | Por quê                                                              |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Projeto dos nós (`envs/nodes-platform`) | `cpNodeUpdater`: `instances.get`, `getGuestAttributes` e `setMetadata`, só nas VMs `vx-*`               | O pedido de versão e o andamento                                     |
+| Cada nó dedicado (`envs/tenant`)        | `iam.serviceAccountUser` na conta da VM daquele nó                                                      | O Compute exige para gravar metadados de uma VM com conta de serviço |
+| Projeto da célula (`envs/celula`)       | `cpCellNodeUpdater` (as mesmas três), só na VM da célula, pelo nome; `serviceAccountUser` na conta dela | A canária                                                            |
+
+**O risco aceito:** a GCP não restringe o `setMetadata` por chave. Com ele, o cp-worker poderia trocar o
+`startup-script` de uma VM `vx-*` e, com o `start`/`stop` do `cpNodeLifecycle`, rodar código nela no boot seguinte;
+antes, o plano de controle não entrava em nenhuma VM. É o preço do desenho aprovado em 16/11/2026 (o pedido nos
+metadados, sem nada exposto). Contenções: só as VMs `vx-*` e a VM da célula, pelo nome; o atualizador do host só
+instala versão assinada pela chave de release, que não está no plano de controle; o `apply` seguinte do tenant
+reescreve as chaves do Terraform; e toda chamada fica nos logs de auditoria de atividade do Compute (sempre ligados).
+A alternativa estudada, o pedido num objeto do Cloud Storage lido pela VM, não daria esse poder ao cp-worker, mas
+pediria uma concessão por nó num bucket do projeto do plano de controle, que o `cp-terraform` não alcança hoje.
 
 ## Ordem de execução
 

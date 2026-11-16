@@ -1,0 +1,15 @@
+# Atualizador do nó (frota): aplica a versão que o plano de controle pediu nos metadados da VM, com a assinatura
+# conferida pelas chaves já instaladas, backup antes e volta automática (bin/update.sh). Fora dos contêineres, como root,
+# como as outras unidades do host. Sem pedido nos metadados, sai sem fazer nada (o nó da Verax e a homologação).
+#
+# Sem dependência do verax-node: a atualização é quem reinicia o nó. O prazo cobre o backup, o pull das imagens, a
+# partida do Wazuh no standard (até 40 min) e a volta, se precisar.
+[Unit]
+Description=Verax Control - atualizador do no (versao pedida pelo plano de controle)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/verax/bin/update.sh
+TimeoutStartSec=3h
