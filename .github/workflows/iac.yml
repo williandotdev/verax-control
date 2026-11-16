@@ -189,8 +189,9 @@ jobs:
         # Os cenários de tests/cell-test.sh, sem root e sem nuvem: o dedicado byte a byte igual com NODE_MODE=dedicated; na
         # célula, o modo, o domínio e o subdomínio da equipe no lugar do plano, sem o tópico pelo nome do projeto e sem o
         # ID da conta de serviço da VM; as recusas do render (PLAN, lean, CUSTOMER_MODE, agentes, domínio e subdomínio)
-        # sem escrever nada; o compose.cell.yaml só na célula. O primeiro administrador de cada cliente: o pedido do
-        # worker vira o bootstrap cell-tenant só por variável de ambiente, a senha vai para o cofre
+        # sem escrever nada; o compose.cell.yaml só na célula. A entrada única pelo console só no api.env, na célula e
+        # no nó dedicado da Verax (PLAN=interno); no nó de cliente, a partida para. O primeiro administrador de cada
+        # cliente: o pedido do worker vira o bootstrap cell-tenant só por variável de ambiente, a senha vai para o cofre
         # vxt-<subdomínio>-admin-bootstrap e para nenhum outro lugar, o pedido fora do formato não chega ao Docker e a
         # senha pendente vai antes, no cofre do subdomínio guardado pelo host. E o cell-adopt.
         run: bash infra/node/tests/cell-test.sh

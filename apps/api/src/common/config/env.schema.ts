@@ -555,8 +555,8 @@ const apiEnvSchema = z
     ...apiAgentsEnvShape,
     // Célula compartilhada (CE-01): o domínio e o subdomínio da equipe, só com NODE_MODE=cell (do planEnvShape).
     ...nodeModeEnvShape,
-    // Entrada única no SIEM pelo console do responsável (só na célula, no endereço da equipe): a origem do console, o
-    // cliente e a chave pública fixada (`./sso.ts`).
+    // Entrada única no SIEM pelo console do responsável (na célula, no endereço da equipe; no nó dedicado, só no da
+    // Verax, com PLAN=interno): a origem do console, o cliente e a chave pública fixada (`./sso.ts`).
     ...ssoEnvShape,
   })
   .superRefine((env, ctx) => {
@@ -664,6 +664,7 @@ const apiEnvSchema = z
       // A entrada única num objeto só, com a chave já lida (o texto das variáveis não fica na configuração).
       const sso = ssoConfigOf({
         NODE_MODE: env.NODE_MODE,
+        PLAN: env.PLAN,
         SSO_ISSUER,
         SSO_CLIENT_ID,
         SSO_PUBLIC_KEY,

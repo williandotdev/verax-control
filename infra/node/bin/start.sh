@@ -409,18 +409,21 @@ wazuh_agents() {
 
 # O modo do nó, conferido antes de qualquer arquivo ser escrito, nos mesmos formatos do install.sh e da API. Preenche
 # `cell_api` (o modo, o domínio e o subdomínio da equipe) e `cell_worker` (o modo e as pastas dos pedidos), declaradas no
-# render; no nó dedicado, as duas ficam vazias e nada muda.
+# render; no nó dedicado, as duas ficam vazias e nada muda. E `sso_api`, a entrada única pelo console (`staff_sso`).
 node_mode() {
   local key
   case ${NODE_MODE:-dedicated} in
     dedicated)
-      # A entrada única pelo console é do endereço da equipe, que só existe na célula.
+      # A entrada única pelo console é só da equipe da Verax: na célula, no endereço da equipe; no nó dedicado, só no
+      # nó da própria Verax (PLAN=interno, sem o CUSTOMER_MODE; decisão de 16/11/2026). Num nó de cliente (qualquer
+      # outro plano), a partida para, como antes.
       for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY STAFF_PASSWORD_LOGIN_DISABLED; do
-        if [[ -n ${!key:-} ]]; then
-          echo "$key só existe com NODE_MODE=cell (a entrada única pelo console é do endereço da equipe). Tire a linha de /etc/verax/node.conf." >&2
+        if [[ -n ${!key:-} ]] && [[ ${PLAN:-} != interno || ${CUSTOMER_MODE:-false} == true ]]; then
+          echo "$key só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno, sem CUSTOMER_MODE): a entrada única pelo console é só da equipe da Verax. Tire a linha de /etc/verax/node.conf." >&2
           return 1
         fi
       done
+      staff_sso || return 1
       return 0
       ;;
     cell) ;;
@@ -462,11 +465,12 @@ node_mode() {
   staff_sso || return 1
 }
 
-# Entrada única no SIEM pelo console do responsável (opcional, só na célula; docs/runbooks/celula.md): a origem do
+# Entrada única no SIEM pelo console do responsável (opcional; docs/runbooks/console-do-responsavel.md, seção 9): na
+# célula, no endereço da equipe; no nó dedicado, só no nó da Verax (PLAN=interno, conferido em `node_mode`). A origem do
 # console, o cliente e a chave PÚBLICA do console (o `x` do JWKS), fixada aqui e nunca baixada. As três juntas, nos
 # formatos da API; nenhuma é segredo, e nada é lido de cofre (a chave de assinatura nunca chega ao nó). Sem nenhuma, nada
-# muda. STAFF_PASSWORD_LOGIN_DISABLED=true (padrão false) tira o login com senha da equipe no endereço dela: só com a
-# entrada única configurada, senão a equipe ficaria do lado de fora.
+# muda. STAFF_PASSWORD_LOGIN_DISABLED=true (padrão false) tira o login com senha da equipe: só com a entrada única
+# configurada, senão a equipe ficaria do lado de fora. Tudo vai para `sso_api`, só da API (o worker não recebe nada).
 staff_sso() {
   local key present=0
   for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY; do
@@ -489,7 +493,7 @@ staff_sso() {
       echo 'SSO_PUBLIC_KEY inválida em /etc/verax/node.conf: a chave PÚBLICA do console, o x do JWKS (43 caracteres em base64url).' >&2
       return 1
     fi
-    cell_api+=("SSO_ISSUER=$SSO_ISSUER" "SSO_CLIENT_ID=$SSO_CLIENT_ID" "SSO_PUBLIC_KEY=$SSO_PUBLIC_KEY")
+    sso_api+=("SSO_ISSUER=$SSO_ISSUER" "SSO_CLIENT_ID=$SSO_CLIENT_ID" "SSO_PUBLIC_KEY=$SSO_PUBLIC_KEY")
   fi
   case ${STAFF_PASSWORD_LOGIN_DISABLED:-false} in
     false) ;;
@@ -498,7 +502,7 @@ staff_sso() {
         echo 'STAFF_PASSWORD_LOGIN_DISABLED=true exige a entrada única (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY em /etc/verax/node.conf).' >&2
         return 1
       fi
-      cell_api+=(STAFF_PASSWORD_LOGIN_DISABLED=true)
+      sso_api+=(STAFF_PASSWORD_LOGIN_DISABLED=true)
       ;;
     *)
       echo 'STAFF_PASSWORD_LOGIN_DISABLED inválido em /etc/verax/node.conf: use true ou false.' >&2
@@ -526,7 +530,7 @@ render() {
       ;;
   esac
   if standard; then wazuh_passwords; fi
-  local cell_api=() cell_worker=()
+  local cell_api=() cell_worker=() sso_api=()
   node_mode || return 1
   local agents_api=() agents_worker=()
   case ${WAZUH_AGENTS:-false} in
@@ -724,6 +728,7 @@ render() {
     "CSRF_SECRET=$csrf_key" \
     "${mail[@]}" \
     "${plan[@]}" \
+    "${sso_api[@]}" \
     "${indexer[@]}" \
     "${sink_topic[@]}" \
     "${egress[@]}" \

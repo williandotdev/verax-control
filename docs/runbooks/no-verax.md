@@ -290,6 +290,18 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
   (ativa, `exited`, antes do Docker) e `sudo iptables -S DOCKER-USER` (o salto `-d 169.254.169.254/32 -j VERAX-METADATA`
   antes do `RETURN` do Docker, sem nenhuma regra com `-s`).
 
+## Entrada única pelo console (Admin master)
+
+Opcional: o `admin_verax` entra no painel pelo login do console do responsável, e o menu dele ganha o item "Admin
+master", que abre o console. As linhas ficam no `/etc/verax/node.conf` do nó da Verax: `SSO_ISSUER`, `SSO_CLIENT_ID`
+(sempre `verax-siem`) e `SSO_PUBLIC_KEY` (a chave PÚBLICA do console, fixada), as três juntas, e, opcional,
+`STAFF_PASSWORD_LOGIN_DISABLED` (padrão `false`; `true` tira o login com senha da equipe). Valem no nó dedicado da
+Verax, com `PLAN=interno` e sem `CUSTOMER_MODE=true` (decisão de 16/11/2026: a troca para a célula ainda espera a
+identidade da AWS de cada cliente), e continuam valendo depois da troca para a célula, no endereço da equipe. O
+`start.sh` passa as linhas só para a API; num nó dedicado com outro plano (de cliente), ele as recusa e o serviço não
+sobe. O roteiro, com a chave e a lista de retorno do console, está em `docs/runbooks/console-do-responsavel.md`
+(seção 9).
+
 ## O nó da Verax na célula (NODE_MODE=cell)
 
 O SOC da Verax muda do nó `lean` para a célula compartilhada (`infra/gcp/envs/celula`, perfil `standard`), onde é o
@@ -304,10 +316,8 @@ cada cliente estão em `docs/runbooks/celula.md`. O que muda neste roteiro na c�
   Ficam de fora o tópico do sink pelo nome do projeto (na célula, o tópico é de cada conta, `envs/cell-tenant`) e o
   `NODE_SA_UNIQUE_ID` (a conta de serviço da VM é de todos os clientes; a identidade da AWS passa a ser de cada um);
 - o `start.sh bootstrap` continua sendo o do primeiro `admin_verax`, no endereço da equipe;
-- opcional, a **entrada única pelo console** (o "Admin master"): `SSO_ISSUER`, `SSO_CLIENT_ID` e `SSO_PUBLIC_KEY` no
-  `node.conf` (a chave PÚBLICA do console, fixada), só na API e só no endereço da equipe; com ela, o login do painel
-  ganha "Entrar com o Admin master" e o menu do `admin_verax`, o item que abre o console. `STAFF_PASSWORD_LOGIN_DISABLED`
-  (padrão `false`) tira o login com senha da equipe. Roteiro em `docs/runbooks/console-do-responsavel.md`, seção 9;
+- a **entrada única pelo console** (seção anterior), se já estiver ligada no nó dedicado, fica como está: as mesmas
+  linhas valem na célula, só no endereço da equipe;
 - os backups ficam 85 dias no bucket (e não 90).
 
 ## Backups e restauração

@@ -5596,3 +5596,44 @@ riscos em `docs/ARQUITETURA.md`, "Entrada única: o console como provedor de ide
   acesso WebAuthn no console); a troca da chave pede uma revisão nova do `cp-admin` e a chave nova na célula, juntas;
   os limites do console dividem o balde da saída do Hosting (negação de serviço da entrada única, com o login com senha
   de reserva); o JWKS não é baixado pelo nó (a conferência é manual, no runbook).
+
+## Entrada única também no nó dedicado da Verax (PLAN=interno) ⚠️ altera `auth` e `infra/`
+
+Decisão do responsável de 16/11/2026: o SIEM da própria Verax ainda roda como nó **dedicado** (`PLAN=interno`, na VM da
+célula), porque a troca para `NODE_MODE=cell` pararia a coleta da AWS (a identidade de cada cliente, CE-11, ainda não
+existe). Para a equipe não esperar a troca, a entrada única pelo console (o "Admin master") passa a valer também no nó
+dedicado, **só** com `PLAN=interno`. Num nó dedicado de cliente (qualquer outro plano), nada muda: as linhas são
+recusadas e o serviço não sobe. Desenho em `docs/ARQUITETURA.md`, "Entrada única", parágrafo "No nó dedicado da Verax".
+
+- **`infra/node`:** o `start.sh` aceita as três linhas `SSO_*` e o `STAFF_PASSWORD_LOGIN_DISABLED` com `NODE_MODE=cell`
+  ou no nó dedicado com `PLAN=interno` e sem `CUSTOMER_MODE=true`; em qualquer outro caso, para com "só existe com
+  NODE_MODE=cell ou no nó dedicado da Verax", sem escrever nada. As linhas vão para um vetor próprio (`sso_api`), só no
+  `api.env`, nos dois modos (o `api.env` da célula sai byte a byte igual). O `install.sh` não conferia as linhas e
+  continua sem conferir (quem recusa é o `start.sh`, na partida).
+- **API:** a configuração aceita as variáveis com `PLAN=interno` **escrito** no ambiente (o padrão `interno` de fora de
+  produção não conta) e as recusa com outro plano. O lugar da entrada única sai de uma função só
+  (`apps/api/src/auth/sso/sso-site.ts`), usada pelo controller, pelo plugin, pela configuração pública e pelo
+  interruptor do login com senha: na célula, o endereço da equipe, como antes; no nó dedicado da Verax, o nó inteiro (a
+  volta vai ao `WEB_ORIGIN`, e o `PLAN` é conferido de novo ali). As conferências são as mesmas (`state`, `nonce` e PKCE
+  de uso único, `jti` gasto, `iss`, `aud` e prazo, limites por IP, e só o `admin_verax` sem cliente, ativo e com MFA).
+  Migração `20261116120000_sso_dedicated_interno`: `SsoLoginAttempt.hostTenantId` passa a aceitar vazio (o pedido do nó
+  dedicado não tem cliente do endereço; na célula, o callback continua conferindo o cliente da equipe).
+- **Painel:** nada muda na lógica (o botão e o item do menu seguem o `adminMasterUrl` da API, que agora vem também do
+  nó da Verax); só os comentários.
+- **Dependências novas:** nenhuma.
+- **Testes:** `apps/api` (`sso-dedicated-interno.test.ts`: de ponta a ponta com o cp-admin de verdade no nó dedicado,
+  caminho feliz, retorno e `jti` repetidos, `state` e `iss` trocados, token de outra chave e de outro público, outro
+  e-mail, outro papel, inativo e sem MFA, e a configuração pública; `sso-dedicated-staff-password-off.test.ts`: o
+  interruptor; `sso-dedicated-customer-node.test.ts`: o nó de cliente com a configuração recusada, as rotas em 404 e sem
+  o console; `load-config.test.ts`: as regras da configuração), os testes da célula sem mudança, e
+  `infra/node/tests/cell-test.sh` (o `api.env` do dedicado byte a byte, o `worker.env` intacto e as recusas: outro
+  plano, sem `PLAN`, `CUSTOMER_MODE`, linhas pela metade e formatos).
+- **A fazer pelo responsável:** merge e a versão do nó no nó da Verax; depois, o roteiro do console, seção 9.1 (a lista
+  de retorno do console já é a mesma: o nó dedicado usa o endereço `api-verax` da equipe), com as linhas no
+  `/etc/verax/node.conf` do nó da Verax e o restart.
+- **Riscos e pendências:** no nó dedicado, quem separa o nó da Verax do de um cliente é só a linha `PLAN=interno` do
+  `node.conf` (e o `CUSTOMER_MODE`, no `start.sh`): um nó de cliente com o plano errado e as três linhas aceitaria a
+  entrada única, mas o console nunca manda código a um retorno fora da lista exata. O `aud` (`verax-siem`) é o mesmo
+  para a célula e o nó da Verax; o que prende o token ao nó é o retorno, o `nonce` e o PKCE do pedido dele. No nó
+  dedicado, a sessão não fica presa a um endereço (como qualquer sessão do nó dedicado). Na troca para a célula, as
+  linhas ficam as mesmas.
