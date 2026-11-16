@@ -1,7 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { AuditService, type AuditEntry } from '../audit/audit.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
-import { isUlid } from '../common/ulid.js';
+import { z } from 'zod';
+import { isUlid, ULID_PATTERN } from '../common/ulid.js';
 import { COLLECTIONS } from '../firestore/collections.js';
 import {
   DOCUMENT_STORE,
@@ -69,11 +70,26 @@ export class FleetStore {
   ) {}
 
   /** Cria a rodada com todos os nós e a auditoria numa transação só. */
+  /**
+   * Cria a rodada com todos os nós e a auditoria numa transação só, e só se não houver outra aberta: a trava
+   * `fleet/active` (a rodada mais recente) é lida e gravada na mesma transação. Duas promoções ao mesmo tempo disputam o
+   * mesmo documento, e a segunda relê a trava já com a primeira (`rollout_active`).
+   */
   async create(id: string, rollout: Rollout, nodes: RolloutNodeRecord[], audit: AuditEntry): Promise<void> {
     if (!isUlid(id)) throw new TypeError('id de rodada inválido');
     const parsed = rolloutSchema.parse(rollout);
     const parsedNodes = nodes.map((node) => ({ key: assertKey(node.key), data: toNodeData(node) }));
-    await this.store.runTransaction((tx) => {
+    await this.store.runTransaction(async (tx) => {
+      const lock = await tx.get(COLLECTIONS.fleet, ACTIVE_LOCK);
+      const previous = lock === undefined ? undefined : activeLockSchema.safeParse(lock);
+      if (previous?.success === true) {
+        const data = await tx.get(COLLECTIONS.rollouts, previous.data.rolloutId);
+        const state = data === undefined ? undefined : rolloutSchema.safeParse(data);
+        if (state?.success === true && OPEN_STATES.has(state.data.state)) {
+          throw new FleetConflictError('rollout_active');
+        }
+      }
+      tx.set(COLLECTIONS.fleet, ACTIVE_LOCK, { rolloutId: id, updatedAt: this.clock.now() });
       tx.create(COLLECTIONS.rollouts, id, parsed);
       for (const node of parsedNodes) tx.create(COLLECTIONS.rolloutNodes(id), node.key, node.data);
       this.audit.record(tx, audit);
@@ -150,8 +166,22 @@ export class FleetStore {
    * Grava o que a volta calculou para um nó, só se ninguém mexeu nele desde a leitura (`rev`): uma operação do
    * responsável no meio vence. Devolve se gravou.
    */
-  async saveNode(id: string, node: RolloutNodeRecord, readRev: number): Promise<boolean> {
+  async saveNode(
+    id: string,
+    node: RolloutNodeRecord,
+    readRev: number,
+    /**
+     * Só grava se a rodada, relida na mesma transação, ainda permitir (o começo de um nó: a rodada parada ou abortada
+     * no meio da volta não começa mais nada).
+     */
+    allowed?: (rollout: Rollout) => boolean,
+  ): Promise<boolean> {
     return this.store.runTransaction(async (tx) => {
+      if (allowed !== undefined) {
+        const rolloutData = await tx.get(COLLECTIONS.rollouts, id);
+        if (rolloutData === undefined) return false;
+        if (!allowed(parseDocument(rolloutSchema, COLLECTIONS.rollouts, id, rolloutData))) return false;
+      }
       const collection = COLLECTIONS.rolloutNodes(id);
       const data = await tx.get(collection, assertKey(node.key));
       if (data === undefined) return false;
@@ -162,6 +192,11 @@ export class FleetStore {
     });
   }
 }
+
+/** A trava de "uma rodada por vez": `fleet/active` aponta a rodada mais recente. */
+const ACTIVE_LOCK = 'active';
+const activeLockSchema = z.object({ rolloutId: z.string().regex(ULID_PATTERN) });
+const OPEN_STATES = new Set<Rollout['state']>(['running', 'paused', 'paused_on_failure']);
 
 function assertKey(key: string): string {
   if (!NODE_KEY_PATTERN.test(key)) throw new TypeError('chave de nó inválida');

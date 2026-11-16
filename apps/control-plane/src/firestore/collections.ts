@@ -82,6 +82,8 @@ export const COLLECTIONS = {
    * poucas por mês, sem dado pessoal além do e-mail de quem promoveu. Só o cp-worker grava; o console lê.
    */
   rollouts: ROLLOUTS,
+  /** A trava de uma rodada por vez (`fleet/active`, com o id da rodada mais recente), lida e gravada na criação. */
+  fleet: 'fleet',
   rolloutNodes: (rolloutId: string): string => {
     if (!isUlid(rolloutId)) throw new TypeError('id de rodada inválido');
     return `${ROLLOUTS}/${rolloutId}/nodes`;

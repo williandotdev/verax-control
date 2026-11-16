@@ -4,6 +4,7 @@ import { FakeClock, MINUTE_MS } from '../../test/support/fake-clock.js';
 import { FakeFleetCloud, fleetRelease } from '../../test/support/fake-fleet-cloud.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CellStore } from '../cells/cell-store.js';
+import { cellSchema } from '../cells/cell.schema.js';
 import { ApiError } from '../common/http/api-error.js';
 import { newUlid } from '../common/ulid.js';
 import { COLLECTIONS } from '../firestore/collections.js';
@@ -15,7 +16,7 @@ import type { FleetSettings } from './fleet-settings.js';
 import { FleetStore, totalsOf } from './fleet-store.js';
 import type { Rollout, RolloutNodeRecord } from './fleet.schema.js';
 import { FleetService } from './fleet.service.js';
-import { FLEET_TICK_STEP, FLEET_WAITS, RolloutEngine } from './rollout-engine.js';
+import { FLEET_TICK_STEP, FLEET_WAITS, RolloutEngine, versionOfAttributes } from './rollout-engine.js';
 
 const START = new Date('2026-11-16T12:00:00.000Z');
 const SETTINGS: FleetSettings = {
@@ -301,6 +302,8 @@ describe('motor da frota (rodadas em ondas)', () => {
     clock.advance(MINUTE_MS);
     await tick(id);
     expect((await nodeOf(id, TENANT_A)).errorCode).toBe('update_timeout');
+    // Uma rodada por vez: a parada na falha termina antes da próxima.
+    await fleet.act(id, 'abort', OWNER);
 
     const windowed = await seed([node(TENANT_B, 2, 0, 'vx-cliente-demo-c', 'cliente-demo-c')], {
       window: '02:00-05:00',
@@ -466,5 +469,109 @@ describe('motor da frota (rodadas em ondas)', () => {
     await expect(fleet.actOnNode(other, TENANT_B, 'rollback', OWNER)).rejects.toMatchObject({
       code: 'rollback_unavailable',
     });
+  });
+
+  it('duas promoções ao mesmo tempo: só uma rodada nasce (a trava na mesma transação da criação)', async () => {
+    await documents.runTransaction((tx) => {
+      tx.set(
+        COLLECTIONS.cells,
+        'sp1',
+        cellSchema.parse({
+          state: 'open',
+          region: 'southamerica-east1',
+          project: 'projeto-do-no-verax',
+          natIps: ['203.0.113.10'],
+          commandsTopic: 'projects/projeto-do-no-verax/topics/vxc-sp1-commands',
+          reportsSubscription: 'projects/projeto-do-no-verax/subscriptions/vxc-sp1-reports-push',
+          pushServiceAccount: 'vxc-sp1-push@projeto-do-no-verax.iam.gserviceaccount.com',
+          node: { zone: 'southamerica-east1-b', instance: 'verax-celula' },
+          staffPanel: { project: 'projeto-paineis', siteId: 'verax-control-verax', slug: 'verax' },
+          createdAt: START,
+          updatedAt: START,
+        }),
+      );
+      return Promise.resolve();
+    });
+    const request = {
+      release: 'node-v1.3.0',
+      confirmRelease: 'node-v1.3.0',
+      concurrency: 1,
+      intent: 'upgrade' as const,
+    };
+    const results = await Promise.allSettled([fleet.create(request, OWNER), fleet.create(request, OWNER)]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected')).toMatchObject({
+      reason: { code: 'rollout_active' },
+    });
+    expect(await store.list()).toHaveLength(1);
+    // Terminada (abortada) a rodada, a trava libera a próxima.
+    const created = (await store.list())[0];
+    await fleet.act(created?.id ?? '', 'abort', OWNER);
+    await expect(fleet.create(request, OWNER)).resolves.toMatchObject({ state: 'running' });
+  });
+
+  it('parar no meio da volta: o nó que ia começar não começa (a rodada relida na mesma transação)', async () => {
+    const id = await seed([node(TENANT_A, 2, 0, 'vx-cliente-demo-a', 'cliente-demo-a')]);
+    // A volta lê a versão de antes do nó (a nuvem) e, enquanto espera, o responsável para a rodada.
+    const original = cloud.guestAttributes.bind(cloud);
+    let paused = false;
+    cloud.guestAttributes = async (target) => {
+      if (!paused) {
+        paused = true;
+        await fleet.act(id, 'pause', OWNER);
+      }
+      return original(target);
+    };
+    await engine.tick(id, 0);
+    expect(paused).toBe(true);
+    expect(requested()).toEqual([]);
+    expect((await nodeOf(id, TENANT_A)).state).toBe('pending');
+    expect((await store.get(id))?.state).toBe('paused');
+  });
+
+  it('lote de dedicados: depois da primeira falha, os outros do lote não começam', async () => {
+    const id = await seed(
+      [
+        node(TENANT_A, 2, 0, 'vx-cliente-demo-a', 'cliente-demo-a'),
+        node(TENANT_B, 2, 1, 'vx-cliente-demo-c', 'cliente-demo-c'),
+        node(TENANT_C, 2, 2, 'vx-cliente-demo-e', 'cliente-demo-e'),
+      ],
+      { concurrency: 3 },
+    );
+    cloud.failures.set('request', [new CloudApiError('compute', 'instance_set_metadata', 403)]);
+    expect(await engine.tick(id, 0)).toBe('paused_on_failure');
+    expect(requested()).toEqual(['vx-cliente-demo-a']);
+    expect((await nodeOf(id, TENANT_A)).errorCode).toBe('compute_denied');
+    expect((await nodeOf(id, TENANT_B)).state).toBe('pending');
+    expect((await nodeOf(id, TENANT_C)).state).toBe('pending');
+  });
+});
+
+describe('versão instalada pelos guest attributes', () => {
+  it('o atualizador manda: ok é a versão do pedido; falha ou volta é a de antes do pedido', () => {
+    const boot = { ready: 'node-v1.0.0' };
+    const of = (entries: Record<string, string>) => versionOfAttributes(new Map(Object.entries(entries)));
+    expect(of(boot)).toBe('node-v1.0.0');
+    expect(of({ ...boot, 'update-state': 'ok', 'update-release': 'node-v1.1.0' })).toBe('node-v1.1.0');
+    // Atualizou para a B e depois voltou sozinho de uma C: está na B, não na versão do boot.
+    expect(
+      of({
+        ...boot,
+        'update-state': 'rolled_back',
+        'update-release': 'node-v1.2.0',
+        'update-from': 'node-v1.1.0',
+      }),
+    ).toBe('node-v1.1.0');
+    expect(
+      of({
+        ...boot,
+        'update-state': 'failed',
+        'update-release': 'node-v1.2.0',
+        'update-from': 'node-v1.1.0',
+      }),
+    ).toBe('node-v1.1.0');
+    expect(of({ ...boot, 'update-state': 'installing', 'update-from': 'node-v1.1.0' })).toBe('node-v1.0.0');
+    expect(of({ version: 'c'.repeat(40) })).toBe('c'.repeat(40));
+    expect(of({})).toBe('unknown');
   });
 });

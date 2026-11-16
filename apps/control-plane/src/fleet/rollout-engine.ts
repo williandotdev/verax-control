@@ -56,10 +56,29 @@ export function fleetFailureCode(error: unknown): string | undefined {
   return definitiveCodeOf(error);
 }
 
-/** A versão de um nó antes da rodada, pelos guest attributes (o atualizador, a instalação ou o worker do nó). */
+/** Estados do atualizador em que o nó ficou na versão de antes do pedido (`update-from`). */
+const HOST_KEPT_PREVIOUS = new Set([
+  'failed',
+  'rolled_back',
+  'waiting_window',
+  'waiting_install',
+  'accepted',
+]);
+
+/**
+ * A versão instalada no nó agora, pelos guest attributes: o que o atualizador relatou por último manda (`ok` → a versão
+ * do pedido; falhou ou voltou → a de antes do pedido, `update-from`); sem o atualizador, a da instalação (`ready`) ou a
+ * do worker (`version`). A do boot ficaria velha depois de uma atualização e de uma volta automática.
+ */
 export function versionOfAttributes(attributes: ReadonlyMap<string, string>): string {
-  const updated = attributes.get('update-state') === 'ok' ? attributes.get('update-release') : undefined;
-  const value = updated ?? attributes.get('ready') ?? attributes.get('version');
+  const state = attributes.get('update-state');
+  let value: string | undefined;
+  if (state === 'ok') value = attributes.get('update-release');
+  else if (state !== undefined && HOST_KEPT_PREVIOUS.has(state)) {
+    const from = attributes.get('update-from');
+    value = from === 'none' ? undefined : from;
+  }
+  value ??= attributes.get('ready') ?? attributes.get('version');
   return value !== undefined && /^[A-Za-z0-9._-]{1,64}$/.test(value) ? value : 'unknown';
 }
 
@@ -168,16 +187,21 @@ export class RolloutEngine {
       const result = await this.advance(rollout, node, cloud, settings, bundles);
       if (result?.state === 'failed') failures.push({ node: result, code: result.errorCode ?? 'unknown' });
     }
-    // Uma falha nesta volta para a rodada: só a volta forçada (pedida pelo responsável) começa.
-    const stopping = failures.some((entry) => entry.node.operation?.kind !== 'revert');
+    // Uma falha nesta volta para a rodada: só a volta forçada (pedida pelo responsável) começa. A mesma regra vale no
+    // meio do lote: depois da primeira falha de um nó que começou agora, os outros do lote não começam.
+    let stopping = failures.some((entry) => entry.node.operation?.kind !== 'revert');
     const refreshed = await this.store.nodes(rolloutId);
     const starting = nodesToStart(stopping ? { ...rollout, state: 'paused_on_failure' } : rollout, refreshed);
     for (const node of starting) {
+      if (stopping && node.forced !== true) continue;
       const started = await this.start(rollout, node, cloud);
       if (started === undefined) continue;
       // O pedido vai aos metadados na mesma volta.
       const result = await this.advance(rollout, started, cloud, settings, bundles);
-      if (result?.state === 'failed') failures.push({ node: result, code: result.errorCode ?? 'unknown' });
+      if (result?.state === 'failed') {
+        failures.push({ node: result, code: result.errorCode ?? 'unknown' });
+        if (result.operation?.kind !== 'revert') stopping = true;
+      }
     }
 
     const finished = await this.store.change(rolloutId, (latest, nodes, now) => {
@@ -274,7 +298,15 @@ export class RolloutEngine {
       finishedAt: undefined,
       forced: undefined,
     };
-    if (!(await this.store.saveNode(rollout.id, next, node.rev))) return undefined;
+    // O começo é conferido contra a rodada relida na mesma transação: parada ou abortada enquanto a volta esperava a
+    // nuvem, nenhum nó novo começa (só a volta forçada pelo responsável).
+    const claimed = await this.store.saveNode(
+      rollout.id,
+      next,
+      node.rev,
+      (latest) => node.forced === true || latest.state === 'running',
+    );
+    if (!claimed) return undefined;
     return { ...next, rev: node.rev + 1 };
   }
 
