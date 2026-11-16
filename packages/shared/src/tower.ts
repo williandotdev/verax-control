@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
 import { FINDING_SEVERITIES, FINDING_SOURCES, FINDING_STATUSES, type FindingSource } from './findings.js';
 import { usageMonthSchema } from './plan-usage.js';
-import { MITRE_TACTICS, mitreTacticSchema } from './reports.js';
+import { MITRE_TACTICS } from './mitre.js';
+import { mitreTacticSchema } from './reports.js';
 
 /**
  * Resumo da Torre (T5.10): a resposta de `GET /v1/tower`, do cliente da sessão. A regra do semáforo está em

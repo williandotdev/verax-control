@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { wazuhAgentRefSchema } from './agents.js';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
-import type { HistoryPeriod } from './history.js';
+import { checkCustomRange, customRangeShape, type HistoryPeriod } from './history.js';
+import { MITRE_TACTIC_NAMES, MITRE_TECHNIQUE_PATTERN } from './mitre.js';
 import { withPagination } from './pagination.js';
 import { authorSchema } from './protected-resources.js';
 
@@ -50,12 +51,43 @@ export const findingOriginSchema = z.union([cloudAccountRefSchema, wazuhAgentRef
 export const FINDING_PERIODS = ['24h', '7d', '30d', '90d', '12m'] as const satisfies readonly HistoryPeriod[];
 export type FindingPeriod = (typeof FINDING_PERIODS)[number];
 
-export const findingListQuerySchema = withPagination({
+/** Busca de texto livre nos achados (tela Detecções): uma linha, sem caractere de controle. */
+export const findingSearchSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) =>
+      ![...value].some((char) => {
+        const code = char.charCodeAt(0);
+        return code < 32 || code === 127;
+      }),
+    { error: 'caractere de controle não é permitido' },
+  );
+
+/**
+ * Filtros de achados, comuns à lista de achados e à tela Detecções: severidade, status, conta, período (ou intervalo
+ * personalizado), fonte de log, tática e técnica do MITRE ATT&CK e a busca de texto (no título, no evento, no recurso,
+ * no usuário, no IP, na chave de acesso e na conta, sem diferenciar maiúsculas). Todos opcionais: um painel de antes
+ * manda só os quatro primeiros.
+ */
+export const findingFilterShape = {
   severity: z.enum(FINDING_SEVERITIES).optional(),
   status: z.enum(FINDING_STATUSES).optional(),
   accountId: cloudAccountRefSchema.optional(),
   period: z.enum(FINDING_PERIODS).optional(),
-});
+  ...customRangeShape,
+  source: z.enum(FINDING_SOURCES).optional(),
+  tactic: z.enum(MITRE_TACTIC_NAMES).optional(),
+  technique: z
+    .string()
+    .regex(MITRE_TECHNIQUE_PATTERN, { error: 'técnica fora do padrão (T1078 ou T1078.004)' })
+    .optional(),
+  q: findingSearchSchema.optional(),
+};
+
+export const findingListQuerySchema = withPagination(findingFilterShape).superRefine(checkCustomRange);
 export type FindingListQuery = z.infer<typeof findingListQuerySchema>;
 
 const nullableText = z.string().max(2048).nullable();

@@ -60,3 +60,54 @@ export const planHistorySchema = z.strictObject({
   historyDays: resolvedPlanSchema.shape.limits.shape.historyDays,
 });
 export type PlanHistory = z.infer<typeof planHistorySchema>;
+
+/**
+ * Intervalo personalizado dos filtros (tela Detecções): o começo e o fim, em ISO com `Z`. O painel manda o começo do
+ * primeiro dia e o fim do último, no fuso de quem escolheu. Vale no lugar do período, nunca junto.
+ */
+export const customRangeShape = {
+  from: z.iso.datetime().optional(),
+  to: z.iso.datetime().optional(),
+};
+
+/** O intervalo mais longo: o histórico do Profissional (365 dias). */
+export const CUSTOM_RANGE_MAX_DAYS = 365;
+
+/** Confere o intervalo: as duas pontas juntas, o começo antes do fim, no máximo 365 dias e sem período junto. */
+export function checkCustomRange(
+  value: { period?: unknown; from?: string | undefined; to?: string | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  if ((value.from === undefined) !== (value.to === undefined)) {
+    ctx.addIssue({ code: 'custom', message: 'informe o começo e o fim do intervalo', path: ['from'] });
+    return;
+  }
+  if (value.from === undefined || value.to === undefined) return;
+  const from = Date.parse(value.from);
+  const to = Date.parse(value.to);
+  if (from > to) {
+    ctx.addIssue({ code: 'custom', message: 'o começo do intervalo vem depois do fim', path: ['from'] });
+  }
+  if (to - from > CUSTOM_RANGE_MAX_DAYS * DAY_MS) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `intervalo de no máximo ${CUSTOM_RANGE_MAX_DAYS} dias`,
+      path: ['from'],
+    });
+  }
+  if (value.period !== undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'escolha um período ou um intervalo, não os dois',
+      path: ['period'],
+    });
+  }
+}
+
+/**
+ * O começo do intervalo cabe no histórico do plano (`null` é sem limite). Um dia de folga: o começo do dia escolhido
+ * no painel, no fuso de quem escolheu, pode cair um pouco antes do início exato do histórico.
+ */
+export function rangeFitsHistory(from: Date, historyDays: number | null, now: Date): boolean {
+  return historyDays === null || from.getTime() >= now.getTime() - (historyDays + 1) * DAY_MS;
+}
