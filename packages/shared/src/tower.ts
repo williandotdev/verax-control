@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { cloudAccountRefSchema } from './cloud-accounts.js';
 import { FINDING_SEVERITIES, FINDING_SOURCES, FINDING_STATUSES, type FindingSource } from './findings.js';
 import { usageMonthSchema } from './plan-usage.js';
-import { MITRE_TACTICS, mitreTacticSchema } from './reports.js';
+import { MITRE_TACTICS } from './mitre.js';
+import { mitreTacticSchema } from './reports.js';
 
 /**
  * Resumo da Torre (T5.10): a resposta de `GET /v1/tower`, do cliente da sessão. A regra do semáforo está em
@@ -147,7 +148,7 @@ export function radarSectorOf(source: FindingSource): RadarSector {
 }
 
 export const radarDetectionSchema = z.strictObject({
-  /** O achado; o painel abre o detalhe dele (`/achados?achado=<id>`). */
+  /** O achado; o painel abre o detalhe dele na tela Detecções (`/?achado=<id>`). */
   id: z.uuid(),
   severity: z.enum(FINDING_SEVERITIES),
   status: z.enum(FINDING_STATUSES),

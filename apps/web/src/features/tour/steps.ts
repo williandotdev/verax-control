@@ -31,37 +31,30 @@ const tour = (name: string) => `[data-tour="${name}"]`;
 const inMain = (name: string) => `main ${tour(name)}`;
 
 /**
- * O percurso: a Torre, a operação do dia a dia, a administração e o convite final. Cada texto descreve só o que a
+ * O percurso: a tela Detecções, a postura e os ativos, a administração e o convite final. Cada texto descreve só o que a
  * tela mostra; os passos com `permission` saem do tour de quem não vê aquela tela.
  */
 export const TOUR_STEPS: readonly TourStep[] = [
   {
-    id: 'torre-semaforo',
+    id: 'deteccoes-situacao',
     path: '/',
-    target: [tour('torre-semaforo')],
-    title: 'Torre: está tudo bem?',
-    body: 'A Torre é a tela de entrada. O semáforo fica vermelho com incidente crítico aberto e amarelo com incidente alto aberto, nota de postura abaixo do limite ou coleta parada, sempre com o motivo. No verde, ele mostra a prova de que a coleta está andando.',
+    target: [tour('deteccoes-situacao')],
+    title: 'Detecções: está tudo bem?',
+    body: 'A tela de entrada. No topo, a situação agora: o semáforo fica vermelho com incidente crítico aberto e amarelo com incidente alto, postura baixa ou coleta parada, sempre com o motivo. Recolha o resumo para a lista subir; a escolha fica salva.',
   },
   {
-    id: 'torre-pulso',
+    id: 'deteccoes-decisoes',
     path: '/',
-    target: [tour('torre-pulso')],
-    title: 'Pulso da operação',
-    body: 'O que a operação fez nas últimas 24 horas: achados por hora, quantos eram esperados, o tempo até detectar, os agentes online e os eventos lidos no mês. Mais abaixo, a Saúde da coleta mostra cada fonte, se ela está coletando e o último dado.',
-  },
-  {
-    id: 'torre-decisoes',
-    path: '/',
-    target: [tour('torre-decisoes')],
+    target: [tour('deteccoes-decisoes'), tour('deteccoes-situacao')],
     title: 'O que decidir agora',
-    body: 'Cada cartão é uma decisão esperando alguém: incidentes sem responsável, achados altos ou críticos sem triagem e, para a equipe da Verax, alertas de contas não cadastradas. O botão leva à lista já filtrada.',
+    body: 'Cada linha é uma decisão esperando alguém: incidentes sem responsável, achados altos ou críticos sem triagem e, para a equipe da Verax, alertas de contas não cadastradas. O botão filtra a lista. Ao lado, a saúde da coleta abre o detalhe de cada fonte.',
   },
   {
-    id: 'torre-mitre',
+    id: 'deteccoes-radar',
     path: '/',
-    target: [tour('torre-mitre')],
-    title: 'MITRE ATT&CK',
-    body: 'As 14 táticas da cadeia de ataque, na ordem, com quantos achados e incidentes cada uma teve no período. Clique numa tática para abrir o relatório completo.',
+    target: [tour('deteccoes-radar'), tour('deteccoes-situacao')],
+    title: 'Radar das últimas 24 horas',
+    body: 'Cada ponto é uma detecção: o ângulo é a origem (AWS, GCP, Cloudflare ou agentes), a distância do centro é a idade e a forma é a severidade. Passe o mouse, use as setas do teclado ou abra a tabela; Enter abre o achado.',
   },
   {
     id: 'seletor-cliente',
@@ -72,38 +65,46 @@ export const TOUR_STEPS: readonly TourStep[] = [
     body: 'A equipe da Verax escolhe aqui qual cliente está vendo. A troca vale só para esta sessão, fica registrada na auditoria e tira da tela os dados do cliente anterior. Os clientes são cadastrados em Administração, no menu, cada um já com o primeiro administrador dele.',
   },
   {
-    id: 'incidentes',
-    path: '/incidentes',
-    target: [inMain('tabela')],
+    id: 'deteccoes-lista',
+    path: '/',
+    target: [inMain('deteccoes-lista'), inMain('filtros')],
     permission: 'incidents:read',
-    title: 'Incidentes',
-    body: 'Achados com o mesmo usuário, chave de acesso, IP ou recurso viram um incidente. A lista vem pela nota de risco, a maior primeiro, com filtros por status, severidade e responsável.',
+    title: 'Uma lista só',
+    body: 'Achados com o mesmo usuário, chave, IP ou recurso viram um incidente, com nota de risco, responsável e os achados logo abaixo; os demais aparecem sozinhos. Troque para "Todos os achados" quando quiser ver um por um.',
+  },
+  {
+    id: 'deteccoes-filtros',
+    path: '/',
+    target: [inMain('filtros')],
+    permission: 'findings:read',
+    title: 'Um filtro para tudo',
+    body: 'Busque por usuário, IP ou recurso e filtre por período (inclusive datas escolhidas), severidade, status, fonte, conta e tática ou técnica do MITRE. O endereço guarda os filtros, e "Exportar CSV" leva a lista filtrada.',
   },
   {
     id: 'incidente',
-    path: '/incidentes',
+    path: '/',
     example: 'incident',
-    target: [inMain('incidente-resumo')],
+    target: [tour('incidente-resumo')],
     permission: 'incidents:read',
     title: 'Detalhe do incidente',
-    body: 'No topo, a severidade, o status e a nota de risco, de 0 a 100. O resumo conta em português o que aconteceu e sugere o primeiro passo; abaixo, a linha do tempo mostra cada achado, e ao lado ficam o responsável e os ativos envolvidos.',
-  },
-  {
-    id: 'achados',
-    path: '/achados',
-    target: [inMain('filtros')],
-    permission: 'findings:read',
-    title: 'Achados',
-    body: 'Cada alerta de segurança das contas do cliente vira um achado. Filtre por severidade, status, conta e período, e abra um achado para ver o evento completo.',
+    body: 'O detalhe abre ao lado da lista: a severidade, o status e a nota de risco, o resumo em português com o primeiro passo, o responsável, a linha do tempo dos achados e os ativos envolvidos.',
   },
   {
     id: 'achado-triagem',
-    path: '/achados',
+    path: '/?visao=achados',
     example: 'finding',
     target: [tour('achado-triagem')],
     permission: 'findings:triage',
     title: 'Triagem e exceção',
     body: 'No detalhe do achado, você coloca em análise, marca como legítimo ou dá como resolvido, com um comentário. Ao marcar como legítimo, o painel oferece criar uma exceção: alertas iguais da mesma regra passam a entrar como esperados.',
+  },
+  {
+    id: 'deteccoes-analise',
+    path: '/?analise=mitre',
+    target: [inMain('deteccoes-analise')],
+    permission: 'reports:read',
+    title: 'Análise: MITRE e cobertura',
+    body: 'As 14 táticas do MITRE ATT&CK, com achados e incidentes no período, e a cobertura de cada conta monitorada. Clique numa tática para filtrar a lista; as tabelas exportam em CSV.',
   },
   {
     id: 'postura',
@@ -120,14 +121,6 @@ export const TOUR_STEPS: readonly TourStep[] = [
     permission: 'assets:read',
     title: 'Ativos e identidades',
     body: 'O inventário de cada conta AWS, lido por um papel somente leitura: usuários IAM, chaves de acesso, instâncias EC2, buckets S3 e security groups, cada item com o risco e o motivo.',
-  },
-  {
-    id: 'relatorios',
-    path: '/relatorios',
-    target: [inMain('relatorios-abas')],
-    permission: 'reports:read',
-    title: 'Relatórios',
-    body: 'Para quem quer analisar a fundo: resumo do período, MITRE ATT&CK, detecções, entidades, incidentes, cobertura das fontes e exceções. Escolha o período, até o histórico do seu plano (12 meses no Profissional), e exporte as tabelas em CSV.',
   },
   {
     id: 'alertas-sem-dono',

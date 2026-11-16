@@ -11,7 +11,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createSignedInUser, withCsrf } from './support/auth-helpers.js';
 import { TEST_WEB_ORIGIN } from './support/create-app.js';
-import { dateDaysAgo, type PlanHistoryFixture, planHistoryFixture } from './support/plan-history.js';
+import { dateDaysAgo, DAY, type PlanHistoryFixture, planHistoryFixture } from './support/plan-history.js';
 
 /** O nó destes testes está no Essencial: o histórico vem da tabela de planos do repositório, nunca digitado aqui. */
 const HISTORY_DAYS = resolvePlan('essencial').limits.historyDays as number;
@@ -97,6 +97,22 @@ describe('histórico do plano nas telas: Essencial (fase 2, PR-20)', () => {
       refused(await get('/v1/findings?period=12m'));
       refused(await get('/v1/audit?period=12m'));
       refused(await get('/v1/reports/summary?period=12m'));
+    });
+
+    it('intervalo personalizado que começa antes do histórico (tela Detecções): achados, Detecções e relatórios', async () => {
+      const iso = (days: number) => new Date(Date.now() - days * DAY).toISOString();
+      const beyond = `from=${iso(HISTORY_DAYS + 2)}&to=${iso(1)}`;
+      for (const role of ['admin_cliente', 'analista_cliente', 'leitura'] as const) {
+        refused(await fx.as[role](`/v1/findings?${beyond}`));
+        refused(await fx.as[role](`/v1/detections?${beyond}`));
+      }
+      for (const kind of REPORT_KINDS) refused(await fx.as.leitura(`/v1/reports/${kind}?${beyond}`));
+      refused(await fx.as.leitura('/v1/detections?period=12m'));
+      // Até o histórico, com um dia de folga para o fuso de quem escolheu, passa.
+      const within = `from=${iso(HISTORY_DAYS + 0.5)}&to=${iso(0)}`;
+      await fx.as.leitura(`/v1/findings?${within}`).expect(200);
+      await fx.as.leitura(`/v1/detections?${within}`).expect(200);
+      await fx.as.leitura(`/v1/reports/summary?${within}`).expect(200);
     });
 
     it('período fora da lista continua sendo a validação de sempre, sem o código do plano', async () => {

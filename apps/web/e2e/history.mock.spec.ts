@@ -47,30 +47,31 @@ test.describe('histórico de 12 meses (modo mock)', () => {
           window.localStorage.setItem('verax.mock.role', 'leitura');
           window.localStorage.setItem('verax.theme', value);
         }, theme);
-        await page.goto('/achados');
-        await ready(page, 'Achados');
+        await page.goto('/?visao=achados');
+        await ready(page, 'Detecções');
         const period = page.getByRole('combobox', { name: 'Período' });
         await expect(period.getByRole('option', { name: 'Últimos 12 meses' })).toBeAttached();
         await period.selectOption('12m');
-        await expect(page).toHaveURL(/\?periodo=12m$/);
+        await expect(page).toHaveURL(/\?visao=achados&periodo=12m$/);
         await expect(page.getByRole('table', { name: 'Achados do cliente' })).toBeVisible();
-        await ready(page, 'Achados');
+        await ready(page, 'Detecções');
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
       });
 
-      test(`relatórios de 12 meses: o resumo com os 366 dias (${label})`, async ({ page }) => {
+      test(`análise de 12 meses: o MITRE ATT&CK do período (${label})`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         await page.addInitScript((value) => {
           window.localStorage.setItem('verax.mock.role', 'analista_cliente');
           window.localStorage.setItem('verax.theme', value);
         }, theme);
-        await page.goto('/relatorios?periodo=12m');
-        await ready(page, 'Relatórios');
+        await page.goto('/?analise=mitre&periodo=12m');
+        await ready(page, 'Detecções');
         await expect(page.getByRole('combobox', { name: 'Período' })).toHaveValue('12m');
-        await page.getByText('Ver tabela').click();
-        // 365 dias tocam 366 datas; mais o cabeçalho.
-        await expect(page.getByRole('table', { name: 'Achados por dia' }).getByRole('row')).toHaveCount(367);
+        // As 14 táticas, mais o cabeçalho.
+        await expect(
+          page.getByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' }).getByRole('row'),
+        ).toHaveCount(15);
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
       });
@@ -104,8 +105,11 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         window.localStorage.setItem('verax.mock.role', 'analista_cliente');
         window.localStorage.setItem('verax.theme', value);
       }, theme);
-      await page.goto(`/achados?achado=${FINDING}`);
-      const panel = page.getByRole('dialog', { name: 'Tentativa de desligar a trilha do CloudTrail' });
+      // Na tela larga (1280 px), o detalhe fica ao lado da lista.
+      await page.goto(`/?visao=achados&achado=${FINDING}`);
+      const panel = page.getByRole('complementary', {
+        name: 'Tentativa de desligar a trilha do CloudTrail',
+      });
       await expect(panel).toBeVisible();
       await panel.getByText('Evento bruto', { exact: true }).click();
       await expect(

@@ -1,4 +1,4 @@
-import type { ReportPeriod } from '@verax/shared';
+import type { ReportWindowPeriod } from '@verax/shared';
 import { createContext } from 'react';
 
 /**
@@ -6,7 +6,7 @@ import { createContext } from 'react';
  * o novo período carrega, a tela segue com os números anteriores e a exportação fica travada, para o CSV nunca sair
  * com o nome de um período e os números de outro.
  */
-export const ReportContext = createContext<{ period: ReportPeriod; current: boolean }>({
+export const ReportContext = createContext<{ period: ReportWindowPeriod; current: boolean }>({
   period: '30d',
   current: true,
 });

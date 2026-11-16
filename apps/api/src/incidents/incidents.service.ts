@@ -18,7 +18,8 @@ import type { Prisma } from '../generated/prisma/client.js';
 /** A linha do tempo do detalhe mostra até 500 achados, o limite do contrato: os mais recentes. */
 const MAX_TIMELINE = 500;
 
-const incidentSelect = {
+/** O incidente da lista (também nas linhas de incidente da tela Detecções). */
+export const incidentSelect = {
   id: true,
   severity: true,
   status: true,
@@ -44,10 +45,10 @@ const detailSelect = {
   },
 } as const satisfies Prisma.IncidentSelect;
 
-type IncidentRow = Prisma.IncidentGetPayload<{ select: typeof incidentSelect }>;
+export type IncidentRow = Prisma.IncidentGetPayload<{ select: typeof incidentSelect }>;
 type DetailRow = Prisma.IncidentGetPayload<{ select: typeof detailSelect }>;
 
-function toIncident(row: IncidentRow): Incident {
+export function toIncident(row: IncidentRow): Incident {
   return {
     id: row.id,
     severity: row.severity,

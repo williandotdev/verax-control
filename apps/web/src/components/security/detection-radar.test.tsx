@@ -80,11 +80,11 @@ function Where() {
 function renderRadar(element: ReactNode) {
   const router = createMemoryRouter(
     [
-      { path: '/', element },
-      { path: '/achados', element: <Where /> },
-      { path: '/incidentes/:id', element: <Where /> },
+      // O radar numa rota à parte: os links levam ao detalhe na tela Detecções (`/`).
+      { path: '/radar', element },
+      { path: '/', element: <Where /> },
     ],
-    { initialEntries: ['/'] },
+    { initialEntries: ['/radar'] },
   );
   const result = render(<RouterProvider router={router} />);
   return { router, ...result };
@@ -173,7 +173,7 @@ describe('radar de detecções', () => {
     await user.keyboard('{Home}');
     expect(blip('Tentativa de desligar a trilha')).toHaveFocus();
     await user.keyboard('{Enter}');
-    expect(await screen.findByTestId('where')).toHaveTextContent(`/achados?achado=${id(1)}`);
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?achado=${id(1)}`);
   });
 
   it('no toque, o primeiro toque mostra a dica e o segundo, no mesmo ponto, abre o achado', async () => {
@@ -191,14 +191,14 @@ describe('radar de detecções', () => {
     expect(screen.queryByTestId('where')).not.toBeInTheDocument();
 
     await user.pointer({ keys: '[TouchA]', target: blip('Tentativa de login no SSH') });
-    expect(await screen.findByTestId('where')).toHaveTextContent(`/achados?achado=${id(3)}`);
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?achado=${id(3)}`);
   });
 
   it('o clique abre o achado', async () => {
     const user = userEvent.setup();
     renderRadar(<DetectionRadar radar={radarOf(DETECTIONS)} generatedAt={NOW} />);
     await user.click(blip('papel Editor'));
-    expect(await screen.findByTestId('where')).toHaveTextContent(`/achados?achado=${id(2)}`);
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?achado=${id(2)}`);
   });
 
   it('com movimento: varredura girando, brilho em cada ponto e pulso só na detecção recente', () => {
@@ -274,9 +274,9 @@ describe('radar de detecções', () => {
       />,
     );
     expect(screen.getByText(/O radar mostra as 3 mais recentes de 134 detecções\./)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Ver todas em Achados' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Ver todas na lista' })).toHaveAttribute(
       'href',
-      '/achados?periodo=24h',
+      '/?visao=achados&periodo=24h',
     );
     expect(screen.getByText('134 detecções').closest('p')).toHaveTextContent(
       '134 detecções nas últimas 24 horas: 5 crítico, 1 médio, 128 baixo.',
@@ -296,15 +296,38 @@ describe('radar de detecções', () => {
     expect(rows).toHaveLength(3);
     expect(
       within(rows[0] as HTMLElement).getByRole('link', { name: /Tentativa de desligar a trilha/ }),
-    ).toHaveAttribute('href', `/achados?achado=${id(1)}`);
+    ).toHaveAttribute('href', `/?achado=${id(1)}`);
     expect(rows[0]).toHaveTextContent('Crítico');
     expect(within(rows[0] as HTMLElement).getByRole('link', { name: 'Aberto' })).toHaveAttribute(
       'href',
-      `/incidentes/${id(901)}`,
+      `/?incidente=${id(901)}`,
     );
     expect(rows[2]).toHaveTextContent('Resolvido');
     // A lista ao lado do radar: as mais recentes, com link.
     expect(screen.getByRole('heading', { name: 'Mais recentes' })).toBeInTheDocument();
+  });
+
+  it('compacto (no resumo da tela Detecções): sem a lista das mais recentes, com a tabela e os links da tela', async () => {
+    const user = userEvent.setup();
+    renderRadar(
+      <DetectionRadar
+        radar={radarOf(DETECTIONS)}
+        generatedAt={NOW}
+        compact
+        links={{
+          finding: (finding) => ({ search: `?periodo=7d&achado=${finding}` }),
+          incident: (incident) => ({ search: `?periodo=7d&incidente=${incident}` }),
+          all: '/?periodo=24h',
+        }}
+      />,
+    );
+    expect(screen.queryByRole('heading', { name: 'Mais recentes' })).toBeNull();
+    await user.click(screen.getByText('Ver em tabela (3)'));
+    const table = screen.getByRole('table', { name: 'Detecções do radar' });
+    expect(within(table).getByRole('link', { name: /Tentativa de desligar a trilha/ })).toHaveAttribute(
+      'href',
+      `/radar?periodo=7d&achado=${id(1)}`,
+    );
   });
 
   it('sem detecção: o radar diz que não há nenhuma', () => {

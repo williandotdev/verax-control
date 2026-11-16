@@ -14,10 +14,10 @@ export async function examplePath(step: TourStep): Promise<string | undefined> {
   try {
     if (step.example === 'incident') {
       const [first] = (await api.get('/v1/incidents?page=1&pageSize=1', incidentPage)).items;
-      if (first) return `/incidentes/${encodeURIComponent(first.id)}`;
+      if (first) return `/?incidente=${encodeURIComponent(first.id)}`;
     } else if (step.example === 'finding') {
       const [first] = (await api.get('/v1/findings?page=1&pageSize=1', findingPage)).items;
-      if (first) return `/achados?achado=${encodeURIComponent(first.id)}`;
+      if (first) return `/?visao=achados&achado=${encodeURIComponent(first.id)}`;
     }
   } catch {
     // Sem o exemplo, o passo mostra a lista.

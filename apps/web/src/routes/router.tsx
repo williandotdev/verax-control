@@ -1,6 +1,7 @@
 import { type ComponentType, createElement } from 'react';
 import { ESCALATION_CONFIRM_PATH, ESCALATION_UNSUBSCRIBE_PATH } from '@verax/shared';
 import { createBrowserRouter, type RouteObject } from 'react-router';
+import { LegacyRedirect } from '@/features/detections/legacy';
 import { DemoTourMount } from '@/features/tour/entry';
 import { AppLayout } from '@/layout/app-layout';
 import { NAVIGATION } from '@/layout/navigation';
@@ -16,21 +17,17 @@ import { AgentsPage } from '@/pages/agents-page';
 import { AssetsPage } from '@/pages/assets-page';
 import { AuditPage } from '@/pages/audit-page';
 import { ChangePasswordPage } from '@/pages/change-password-page';
+import { DetectionsPage } from '@/pages/detections-page';
 import { EscalationConfirmPage, EscalationUnsubscribePage } from '@/pages/escalation-link-pages';
-import { FindingsPage } from '@/pages/findings-page';
 import { ForbiddenPage } from '@/pages/forbidden-page';
-import { IncidentPage } from '@/pages/incident-page';
-import { IncidentsPage } from '@/pages/incidents-page';
 import { ForgotPasswordPage } from '@/pages/forgot-password-page';
 import { LoginPage } from '@/pages/login-page';
 import { MfaEnrollPage } from '@/pages/mfa-enroll-page';
 import { MfaVerifyPage } from '@/pages/mfa-verify-page';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { PosturePage } from '@/pages/posture-page';
-import { ReportsPage } from '@/pages/reports-page';
 import { PlaceholderPage } from '@/pages/placeholder-page';
 import { SetPasswordPage } from '@/pages/set-password-page';
-import { TowerPage } from '@/pages/tower-page';
 import { UnownedAlertsPage } from '@/pages/unowned-alerts-page';
 import { RequirePermission, RequireSession } from './guards';
 
@@ -49,12 +46,9 @@ const devRoutes: RouteObject[] = import.meta.env.DEV
 
 /** Telas do E7 já construídas, por caminho do menu; as demais mostram o aviso de construção. */
 const pageByPath: Partial<Record<string, ComponentType>> = {
-  '/': TowerPage,
-  '/achados': FindingsPage,
-  '/incidentes': IncidentsPage,
+  '/': DetectionsPage,
   '/postura': PosturePage,
   '/ativos': AssetsPage,
-  '/relatorios': ReportsPage,
   '/cadastros/clientes': TenantsPage,
   '/cadastros/usuarios': UsersPage,
   '/cadastros/contas': CloudAccountsPage,
@@ -78,16 +72,18 @@ const appPages: RouteObject[] = NAVIGATION.flatMap((group) => group.items).map((
   return item.to === '/' ? { index: true, element } : { path: item.to.slice(1), element };
 });
 
-/** Páginas de detalhe, fora do menu, com a permissão da lista a que pertencem. */
+/**
+ * Os endereços de antes da tela Detecções (Torre, Incidentes, Achados e Relatórios): os links dos e-mails, do tour e
+ * dos favoritos levam à visão equivalente. A permissão é conferida na tela de destino.
+ */
+const legacyPages: RouteObject[] = ['incidentes', 'incidentes/:id', 'achados', 'relatorios'].map((path) => ({
+  path,
+  element: <LegacyRedirect />,
+}));
+
+/** Páginas fora do menu, com a permissão do que mostram. */
 const detailPages: RouteObject[] = [
-  {
-    path: 'incidentes/:id',
-    element: (
-      <RequirePermission permission="incidents:read">
-        <IncidentPage />
-      </RequirePermission>
-    ),
-  },
+  ...legacyPages,
   // A própria conta, pelo link do cabeçalho (fase 2, PR-17').
   {
     path: 'minha-conta',

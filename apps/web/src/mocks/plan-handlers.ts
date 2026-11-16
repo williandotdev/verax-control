@@ -12,6 +12,7 @@ import {
   PERIOD_BEYOND_HISTORY_CODE,
   periodBeyondHistoryMessage,
   periodFitsHistory,
+  rangeFitsHistory,
   PLAN_LIMIT_REACHED_CODE,
   PLAN_SEAT_LIMIT,
   type PlanSeat,
@@ -54,6 +55,17 @@ export function demoPeriodRefusal(
 ): Response | null {
   const days = demoNodePlan(state).limits.historyDays;
   if (period === undefined || days === null || periodFitsHistory(period, days)) return null;
+  return problem(400, periodBeyondHistoryMessage(days), PERIOD_BEYOND_HISTORY_CODE);
+}
+
+/** O mesmo para o intervalo personalizado (tela Detecções): o começo tem de caber no histórico, com um dia de folga. */
+export function demoRangeRefusal(
+  state: Pick<MockState, 'historyDays'>,
+  from: string | undefined,
+  now: Date = new Date(),
+): Response | null {
+  const days = demoNodePlan(state).limits.historyDays;
+  if (from === undefined || days === null || rangeFitsHistory(new Date(from), days, now)) return null;
   return problem(400, periodBeyondHistoryMessage(days), PERIOD_BEYOND_HISTORY_CODE);
 }
 

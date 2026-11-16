@@ -34,6 +34,7 @@ export class FindingsController {
     @Query({ schema: findingListQuerySchema }) query: FindingListQuery,
   ): Promise<Paginated<Finding>> {
     await this.plan.assertPeriodWithinHistory(query.period);
+    await this.plan.assertRangeWithinHistory(query.from);
     return this.findings.list(query);
   }
 

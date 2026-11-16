@@ -10,9 +10,7 @@ import {
   type ReportFinding,
   type ReportIncident,
   type ReportKind,
-  type ReportPeriod,
   type ReportWindow,
-  reportWindow,
   rulesFold,
   summaryFold,
 } from '@verax/shared';
@@ -174,8 +172,8 @@ export class ReportsService {
     return rows.map(toReportIncident);
   }
 
-  async report(kind: ReportKind, period: ReportPeriod, now = new Date()) {
-    const window = reportWindow(period, now);
+  /** O relatório pedido, na janela do pedido (um período até agora ou um intervalo personalizado). */
+  async report(kind: ReportKind, window: ReportWindow) {
     const from = new Date(window.from);
     switch (kind) {
       case 'summary':

@@ -5421,24 +5421,6 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
   sem eco (no Git Bash do Windows, `winpty`); a lista de responsáveis da linha de comando é digitada (a mesma de
   `owner_principals`): um e-mail que não esteja no serviço é recusado no login de qualquer jeito.
 
-## Nomes de mercado: SIEM Cloud, SIEM Dedicado e SIEM + vCISO
-
-- **Decisão do responsável (15/11/2026):** o Verax Control é apresentado como SIEM em nuvem, e os planos ganham nomes
-  aderentes ao mercado: Plataforma vira **SIEM Cloud**, Dedicado vira **SIEM Dedicado** e vCISO vira **SIEM + vCISO**.
-  Só o texto muda: os ids (`plataforma`, `dedicado`, `vciso`), os tipos, os schemas, os `lookup_key` e os campos da API
-  continuam os mesmos. O serviço mensal continua "Serviço de vCISO".
-- **Alterados:** `packages/shared/src/plans.ts` (o rótulo do plano `plataforma`, que o painel do cliente mostra em
-  "Plano e uso"); no plano de controle, a mensagem do 422 `plan_not_sold_online`, o texto do item base da cotação, as
-  mensagens do cadastro de cliente direto e da checagem de publicação, e os nomes do `scripts/catalog.example.json`; no
-  console, os rótulos dos planos, os motivos de "sob consulta", o item base e os títulos e rótulos das telas de tabela
-  de preços, modelo de custos, simulador, novo cliente e versões; a demonstração do painel (`plan-handlers.ts`); os
-  testes que conferem esses textos; `docs/runbooks/console-do-responsavel.md` e `docs/retencao-de-dados.md`.
-- **Testes:** `typecheck` e `lint` da raiz; Vitest de `@verax/shared`, `@verax/control-plane`, `@verax/console`,
-  `@verax/web` e `@verax/api` (com um Postgres descartável); Playwright com axe do console e de "Plano e uso" do painel.
-- **A fazer pelo responsável:** os nomes dos produtos e preços na Stripe vêm do catálogo de verdade, fora do
-  repositório: trocar lá (o `stripe-setup` não renomeia produto existente). O plano do nó dedicado continua com o
-  rótulo `Enterprise` no painel do cliente (o rótulo próprio fica para o PC-10).
-
 ## Torre: radar de detecções
 
 - **Pedido do responsável (15/11/2026):** dentro da Torre, um radar que fica girando e mostra as detecções, parecido com
@@ -5489,3 +5471,78 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **Riscos e dúvidas:** a janela (24 h), o teto (100), a escala pela raiz e os setores foram escolhidos sem decisão
   registrada; no tema claro, o radar fica na faixa navy da marca, e não no branco do cartão. A área de toque de um ponto
   fica perto de 24 px no celular, com pontos encostados: a lista e a tabela são o caminho equivalente.
+
+## Nomes de mercado: SIEM Cloud, SIEM Dedicado e SIEM + vCISO
+
+- **Decisão do responsável (15/11/2026):** o Verax Control é apresentado como SIEM em nuvem, e os planos ganham nomes
+  aderentes ao mercado: Plataforma vira **SIEM Cloud**, Dedicado vira **SIEM Dedicado** e vCISO vira **SIEM + vCISO**.
+  Só o texto muda: os ids (`plataforma`, `dedicado`, `vciso`), os tipos, os schemas, os `lookup_key` e os campos da API
+  continuam os mesmos. O serviço mensal continua "Serviço de vCISO".
+- **Alterados:** `packages/shared/src/plans.ts` (o rótulo do plano `plataforma`, que o painel do cliente mostra em
+  "Plano e uso"); no plano de controle, a mensagem do 422 `plan_not_sold_online`, o texto do item base da cotação, as
+  mensagens do cadastro de cliente direto e da checagem de publicação, e os nomes do `scripts/catalog.example.json`; no
+  console, os rótulos dos planos, os motivos de "sob consulta", o item base e os títulos e rótulos das telas de tabela
+  de preços, modelo de custos, simulador, novo cliente e versões; a demonstração do painel (`plan-handlers.ts`); os
+  testes que conferem esses textos; `docs/runbooks/console-do-responsavel.md` e `docs/retencao-de-dados.md`.
+- **Testes:** `typecheck` e `lint` da raiz; Vitest de `@verax/shared`, `@verax/control-plane`, `@verax/console`,
+  `@verax/web` e `@verax/api` (com um Postgres descartável); Playwright com axe do console e de "Plano e uso" do painel.
+- **A fazer pelo responsável:** os nomes dos produtos e preços na Stripe vêm do catálogo de verdade, fora do
+  repositório: trocar lá (o `stripe-setup` não renomeia produto existente). O plano do nó dedicado continua com o
+  rótulo `Enterprise` no painel do cliente (o rótulo próprio fica para o PC-10).
+
+## Tela Detecções: Torre, Incidentes, Achados e Relatórios numa tela só
+
+- **Decisão do responsável (16/11/2026):** "o menu Torre, Achados, Relatórios e Incidentes está muito complexo e
+  redundante". Opção escolhida: uma tela de operação, **Detecções** (`/`), no lugar das quatro. Postura cloud, Ativos e
+  identidades e a Administração não mudam. Menu "Operação": Detecções · Postura cloud · Ativos e identidades.
+- **Resumo da situação no topo** (`features/detections/situation-strip.tsx`, do `GET /v1/tower`, só com `tower:read`):
+  o semáforo com o motivo, as decisões pendentes em linhas com o atalho para a lista filtrada, a saúde da coleta num
+  botão (o detalhe de cada fonte, os avisos e o pulso das 24 horas numa gaveta), a nota de postura num selo (link para
+  Postura) e o radar de detecções compacto (sem a lista das mais recentes; a tabela do radar continua). Recolhível: a
+  escolha fica no `localStorage` por pessoa (`verax:deteccoes:resumo:<userId>`, com `try/catch`); no celular começa
+  recolhido, só com o semáforo e as contagens. Saíram os cartões "Incidentes abertos", "Postura cloud" e "MITRE" da
+  Torre (repetiam a lista, o menu e a análise).
+- **Uma lista só** (`detection-list.tsx`): "Agrupar por incidente" (o padrão) mostra o incidente (nota, severidade,
+  status, responsável, ativos, achados, que abrem logo abaixo) e os achados fora de incidente em linhas próprias; "Todos
+  os achados" é a lista de achados de antes, com o incidente de cada um. No celular, a severidade, o status e a hora vão
+  embaixo do título; com o painel aberto ao lado, saem as colunas que o detalhe repete. Paginação na API.
+- **Um filtro só** (`filter-bar.tsx`, tudo na URL, `url-state.ts`): busca de texto, período (24 h, 7 d, 30 d, 90 d e 12
+  meses pelo histórico do plano, personalizado com as datas, ou todo o histórico), severidade, status (no agrupado,
+  "novo" é o incidente aberto; "legítimo" é só de achado) e, em "Mais filtros", fonte, conta, tática e técnica do MITRE,
+  "incidentes sem responsável" e a ordem (recentes ou graves primeiro).
+- **Detalhe e triagem no lugar** (`detail-panel.tsx`): na tela larga (80rem ou mais), ao lado da lista, sem cobrir
+  nada (foco no título ao abrir, Esc fecha e o foco volta ao item); na estreita, a gaveta de sempre. Incidente: o resumo
+  em português com o primeiro passo, o tratamento (status e responsável), a linha do tempo (cada achado abre no mesmo
+  painel), os ativos e o MITRE. Achado: os campos, a triagem, a exceção ao marcar como legítimo, os comentários e o
+  evento bruto. Incidente não tem comentário nem "tirar ou pôr achado" na API: não entraram.
+- **Análise** (abas "Lista | MITRE ATT&CK | Cobertura das fontes", só com `reports:read`): os relatórios de MITRE e de
+  cobertura no período do filtro (cada tática da grade filtra a lista por ela); **Exportar CSV** leva a lista filtrada de
+  agora (até 2 000 linhas, pela API, com o aviso quando passa). O resumo do período, as regras, as entidades, os
+  incidentes e as exceções dos Relatórios não ganharam tela (os endpoints continuam); o relatório executivo fica para
+  depois.
+- **Endereços de antes** (`legacy-url.ts`): `/incidentes` (com status, severidade e responsável), `/incidentes/:id`,
+  `/achados` (com os filtros e `?achado=`) e `/relatorios` (`?aba=mitre` e `cobertura` viram a análise; `excecoes` vai
+  para o cadastro de Exceções) levam à visão equivalente, sem ficar no histórico. Os links dos e-mails de aviso não
+  mudaram e continuam valendo.
+- **API:** `GET /v1/detections` (`incidents:read` e `findings:read`, escopo do cliente da sessão, `detectionListQuerySchema`
+  em `packages/shared/src/detections.ts`): incidentes e achados avulsos numa ordem só, com a mesma regra das funções
+  puras do shared (que a demonstração também usa), paginação juntando as duas tabelas sem SQL à mão e teto de 5 000
+  linhas de profundidade (400 `DETECTION_PAGE_OUT_OF_RANGE`). `GET /v1/findings` ganhou fonte, tática, técnica, busca
+  (com `%` e `_` escapados) e o intervalo personalizado; `GET /v1/reports/:kind` ganhou 24 horas e o intervalo. O começo
+  do intervalo é conferido contra o histórico do plano (um dia de folga). As táticas do MITRE foram para `mitre.ts`.
+- **Tour e demonstração:** os passos da Torre, de Incidentes, de Achados e de Relatórios viraram 7 passos da tela
+  Detecções (o admin da Verax vê 18); os exemplos abrem `/?incidente=` e `/?visao=achados&achado=`. A demonstração
+  responde `/v1/detections` e os filtros novos com as mesmas regras.
+- **Testes:** shared (`detections.test.ts`: filtros, janela, status equivalente, conteúdo pelo incidente, ordem,
+  intervalo e relatório); API (`detections.test.ts`, 38 testes com A/B, filtros, ordem e páginas mistas, teto, 400 e
+  permissões; `findings`, `reports` e `plan-history-essencial` ampliados); painel (`url-state.test.ts`, com os endereços
+  de antes; `detections-page.test.tsx`: agrupado, achados, filtros, intervalo, paginação, detalhe na gaveta e ao lado,
+  triagem, leitura, redirecionamentos, resumo recolhível, celular, sem armazenamento, nó de antes, sem `tower:read`,
+  análises, exportação; `tower-reason.test.ts`; radar compacto); e2e `deteccoes.mock.spec.ts` com axe nos dois temas, no
+  computador e a 390 px, e os outros e2e acertados para a tela nova.
+- **Teste manual:** `pnpm --filter @verax/web dev:mock`: recolher e mostrar o resumo e recarregar; abrir um incidente e
+  um achado no computador e no celular; mudar status e responsável; filtrar por tática na análise MITRE; exportar CSV;
+  abrir `/incidentes/<id>` e `/relatorios?aba=mitre`.
+- **Riscos e dúvidas:** o painel de build único com um nó de antes: `GET /v1/detections` responde 404 e os filtros novos
+  400 (atualizar o nó e o painel juntos); a ordem padrão é a atividade mais recente (não a nota de risco); o padrão do
+  período é todo o histórico; a busca com acento depende do `locale` do Postgres.

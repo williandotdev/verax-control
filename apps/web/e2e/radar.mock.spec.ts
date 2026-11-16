@@ -3,16 +3,19 @@ import { expect, type Page, test } from '@playwright/test';
 import { skipDemoTour } from './demo-tour';
 
 /**
- * Radar de detecções da Torre no navegador, sobre a demonstração (`dev:mock`): sem violação de acessibilidade (WCAG 2.2
+ * Radar de detecções no resumo da tela Detecções, no navegador, sobre a demonstração (`dev:mock`): sem violação de acessibilidade (WCAG 2.2
  * AA, inclusive contraste) com a dica aberta pelo teclado e a tabela aberta, nos dois temas, no computador e no celular
  * (sem rolagem horizontal da página); a varredura girando só pelo CSS; e, com menos movimento pedido, parado e completo.
  */
 
 async function openTower(page: Page) {
   await page.goto('/');
-  await expect(page.getByRole('heading', { level: 1, name: 'Torre' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Detecções' })).toBeVisible();
   await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
-  return page.getByRole('region', { name: 'Radar de detecções' });
+  // No celular, o resumo começa recolhido.
+  const show = page.getByRole('button', { name: /^Mostrar/ });
+  if (await show.isVisible()) await show.click();
+  return page.getByRole('region', { name: 'Radar das últimas 24 horas' });
 }
 
 async function violations(page: Page): Promise<string[]> {
@@ -24,7 +27,7 @@ async function violations(page: Page): Promise<string[]> {
   );
 }
 
-test.describe('radar de detecções da Torre (modo mock)', () => {
+test.describe('radar de detecções da tela Detecções (modo mock)', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => window.localStorage.setItem('verax.mock.role', 'analista_cliente'));
     await skipDemoTour(page);
@@ -75,9 +78,10 @@ test.describe('radar de detecções da Torre (modo mock)', () => {
     const first = card.getByRole('link', { name: /^Crítico: Tentativa de desligar a trilha do CloudTrail/ });
     await first.focus();
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/achados\?achado=018f2c1e-0000-7000-8000-000000001001$/);
+    await expect(page).toHaveURL(/\/\?achado=018f2c1e-0000-7000-8000-000000001001$/);
+    // Na tela larga, o detalhe abre ao lado da lista.
     await expect(
-      page.getByRole('dialog', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
+      page.getByRole('complementary', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
     ).toBeVisible();
   });
 

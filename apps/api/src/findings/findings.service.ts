@@ -8,7 +8,6 @@ import {
   type FindingListQuery,
   type FindingSource,
   type FindingStatusUpdate,
-  historyPeriodStart,
   type Paginated,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
@@ -17,6 +16,7 @@ import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { findingWhere } from './finding-filters.js';
 import { RAW_EVENT_READER, type RawEventReader } from './raw-events.js';
 
 /** O detalhe mostra os 500 comentários mais recentes, o limite do contrato; a contagem traz o total. */
@@ -111,14 +111,7 @@ export class FindingsService {
   ) {}
 
   async list(query: FindingListQuery, now = new Date()): Promise<Paginated<Finding>> {
-    const where: Prisma.FindingWhereInput = {
-      ...(query.severity && { severity: query.severity }),
-      ...(query.status && { status: query.status }),
-      ...(query.accountId && { accountId: query.accountId }),
-      ...(query.period && {
-        occurredAt: { gte: historyPeriodStart(query.period, now) },
-      }),
-    };
+    const where = findingWhere(query, now);
     const db = this.prisma.scoped();
     const [rows, total] = await Promise.all([
       db.finding.findMany({
