@@ -5420,3 +5420,21 @@ test:e2e` (15), `pnpm typecheck` e `pnpm lint` na raiz.
 - **Riscos e pendências:** quem cria a conta precisa das credenciais de dono e de um terminal de verdade para a senha
   sem eco (no Git Bash do Windows, `winpty`); a lista de responsáveis da linha de comando é digitada (a mesma de
   `owner_principals`): um e-mail que não esteja no serviço é recusado no login de qualquer jeito.
+
+## Nomes de mercado: SIEM Cloud, SIEM Dedicado e SIEM + vCISO
+
+- **Decisão do responsável (15/11/2026):** o Verax Control é apresentado como SIEM em nuvem, e os planos ganham nomes
+  aderentes ao mercado: Plataforma vira **SIEM Cloud**, Dedicado vira **SIEM Dedicado** e vCISO vira **SIEM + vCISO**.
+  Só o texto muda: os ids (`plataforma`, `dedicado`, `vciso`), os tipos, os schemas, os `lookup_key` e os campos da API
+  continuam os mesmos. O serviço mensal continua "Serviço de vCISO".
+- **Alterados:** `packages/shared/src/plans.ts` (o rótulo do plano `plataforma`, que o painel do cliente mostra em
+  "Plano e uso"); no plano de controle, a mensagem do 422 `plan_not_sold_online`, o texto do item base da cotação, as
+  mensagens do cadastro de cliente direto e da checagem de publicação, e os nomes do `scripts/catalog.example.json`; no
+  console, os rótulos dos planos, os motivos de "sob consulta", o item base e os títulos e rótulos das telas de tabela
+  de preços, modelo de custos, simulador, novo cliente e versões; a demonstração do painel (`plan-handlers.ts`); os
+  testes que conferem esses textos; `docs/runbooks/console-do-responsavel.md` e `docs/retencao-de-dados.md`.
+- **Testes:** `typecheck` e `lint` da raiz; Vitest de `@verax/shared`, `@verax/control-plane`, `@verax/console`,
+  `@verax/web` e `@verax/api` (com um Postgres descartável); Playwright com axe do console e de "Plano e uso" do painel.
+- **A fazer pelo responsável:** os nomes dos produtos e preços na Stripe vêm do catálogo de verdade, fora do
+  repositório: trocar lá (o `stripe-setup` não renomeia produto existente). O plano do nó dedicado continua com o
+  rótulo `Enterprise` no painel do cliente (o rótulo próprio fica para o PC-10).

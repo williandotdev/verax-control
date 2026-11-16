@@ -36,7 +36,7 @@ export const PLAN_NOT_SOLD_ONLINE = 'plan_not_sold_online';
 export function planNotSoldOnline(): ApiError {
   return new ApiError(
     HttpStatus.UNPROCESSABLE_ENTITY,
-    'Pelo site, só a Plataforma é contratada na hora. O Dedicado, o vCISO e o ambiente na infraestrutura da sua empresa são por proposta e contrato direto: fale com a Verax.',
+    'Pelo site, só o SIEM Cloud é contratado na hora. O SIEM Dedicado, o SIEM + vCISO e o ambiente na infraestrutura da sua empresa são por proposta e contrato direto: fale com a Verax.',
     PLAN_NOT_SOLD_ONLINE,
   );
 }
@@ -134,7 +134,7 @@ export function publicPricing(version: string, table: PriceTable): PublicPricing
 export function describeLineItem(item: QuoteLineItem): string {
   switch (item.component) {
     case 'base':
-      return 'Plataforma (base mensal com a franquia incluída)';
+      return 'SIEM Cloud (base mensal com a franquia incluída)';
     case 'additional_gb_day':
       return 'GB/dia adicional da franquia';
     case 'overage_gb_day':

@@ -245,7 +245,7 @@ for (const theme of THEMES) {
       const violations = await prepare(page, theme);
       await page.goto('/simulador');
       await expect(page.getByLabel('Volume de logs (GB/dia)')).toHaveValue('2');
-      await page.getByLabel('Plano').selectOption({ label: 'vCISO' });
+      await page.getByLabel('Plano').selectOption({ label: 'SIEM + vCISO' });
       await page.getByLabel('Desconto nos itens mensais (%)').fill('35');
       await page.getByRole('button', { name: 'Simular' }).click();
       const dre = page.getByRole('region', { name: 'DRE por cliente e por mês' });
