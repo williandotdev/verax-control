@@ -174,10 +174,13 @@ describe('Detecções: a lista', () => {
 
   it('erro da API: a mensagem e o "tentar de novo"', async () => {
     renderAt('/');
+    // Depois do renderAt, que põe os handlers normais na frente. O prazo cobre a tela numa máquina de CI lenta.
     server.use(
       http.get(`${API_URL}/v1/findings`, () => HttpResponse.json({ message: 'x' }, { status: 500 })),
     );
-    expect(await screen.findByRole('button', { name: /Tentar de novo/ })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: /Tentar de novo/ }, { timeout: 10_000 }),
+    ).toBeInTheDocument();
   });
 });
 
