@@ -5,7 +5,7 @@ import { allCollecting, collectionProof, proofSentence, stalledPhrase } from './
 const NOTHING_OPEN = 'Nenhum incidente crítico ou alto aberto, e a postura está dentro do esperado.';
 
 /**
- * A frase do semáforo: por que a cor é aquela, com os números. No verde, a prova de que a coleta anda (OP-02): "Tudo
+ * A frase da situação, no topo da tela Detecções: o que pede atenção, com os números. No verde, a prova de que a coleta anda (OP-02): "Tudo
  * calmo" só quando todas as fontes configuradas estão coletando; sem a prova (um nó de antes), a frase de antes.
  */
 export function towerReason(summary: TowerSummary, now?: Date): string {

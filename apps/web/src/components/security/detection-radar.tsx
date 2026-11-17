@@ -88,7 +88,7 @@ export function DetectionRadar({
   radar: TowerRadar;
   generatedAt: string;
   links?: RadarLinks;
-  /** No resumo da tela Detecções: o radar menor, sem a lista das mais recentes (a lista da tela está logo abaixo). */
+  /** No resumo da tela Detecções: o radar em destaque, sem a lista das mais recentes (a lista da tela está logo abaixo). */
   compact?: boolean;
 }) {
   const navigate = useNavigate();
@@ -112,7 +112,7 @@ export function DetectionRadar({
       )}
     >
       <div
-        className={cn('brand-surface rounded-panel p-3 sm:p-4', compact && 'mx-auto w-full max-w-[17rem]')}
+        className={cn('brand-surface rounded-panel p-3 sm:p-4', compact && 'mx-auto w-full max-w-[28rem]')}
       >
         <RadarScope
           blips={blips}

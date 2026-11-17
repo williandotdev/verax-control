@@ -11,7 +11,6 @@ import { DecisionCard } from './security/decision-card';
 import { COLLECTION_STATE_STYLES } from '@/design/collection';
 import { scoreSeverity } from '@/design/score';
 import { ScoreMeter } from './security/score-meter';
-import { Semaphore } from './security/semaphore';
 import { SeverityBadge } from './security/severity-badge';
 import { SourceHealthRow } from './security/source-health';
 import { Timeline } from './security/timeline';
@@ -36,19 +35,6 @@ describe('marca', () => {
     expect(screen.getByRole('img', { name: 'Verax' })).toHaveAttribute('fill', 'currentColor');
     expect(screen.getAllByRole('img')).toHaveLength(1);
     expect(container.querySelectorAll('svg[aria-hidden="true"]')).toHaveLength(1);
-  });
-});
-
-describe('Semaphore', () => {
-  it.each([
-    ['red', 'Crítico'],
-    ['yellow', 'Atenção'],
-    ['green', 'Normal'],
-  ] as const)('%s: rótulo e nome acessível, com uma única luz acesa', (state, label) => {
-    const { container } = render(<Semaphore state={state} reason="motivo de teste" />);
-    expect(screen.getByRole('status', { name: `Situação: ${label}. motivo de teste` })).toBeInTheDocument();
-    expect(screen.getByText(label)).toBeInTheDocument();
-    expect(container.querySelectorAll('[data-lit="true"]')).toHaveLength(1);
   });
 });
 
@@ -322,7 +308,6 @@ describe('catálogo', () => {
       </MemoryRouter>,
     );
     for (const name of [
-      'Semáforo',
       'Selo de severidade',
       'Medidor de nota',
       'Cartão de número com minigráfico',

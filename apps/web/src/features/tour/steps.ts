@@ -40,7 +40,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/',
     target: [tour('deteccoes-situacao')],
     title: 'Detecções: está tudo bem?',
-    body: 'A tela de entrada. No topo, a situação agora: o semáforo fica vermelho com incidente crítico aberto e amarelo com incidente alto, postura baixa ou coleta parada, sempre com o motivo. Recolha o resumo para a lista subir; a escolha fica salva.',
+    body: 'A tela de entrada. No topo, a situação agora: o radar das últimas 24 horas em destaque e, numa linha, o que pede atenção (incidente crítico ou alto aberto, postura baixa ou coleta parada). Recolha o resumo para a lista subir; a escolha fica salva.',
   },
   {
     id: 'deteccoes-decisoes',

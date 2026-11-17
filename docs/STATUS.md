@@ -5834,3 +5834,17 @@ painel como o cliente".
 - **Riscos:** a troca depende de o nó ter um cliente ativo só; criar um segundo cliente nesse nó devolve a visão da
   equipe na requisição seguinte (de propósito). Enquanto o interruptor estiver ligado, a equipe não tem a fila de
   alertas sem dono nem a lista de clientes nesse nó.
+
+## Radar em destaque na tela Detecções, sem o semáforo
+
+- **Pedido (17/11/2026):** descontinuar o sinal (o semáforo vermelho, amarelo e verde) e pôr o radar em evidência na
+  página inicial. Arrumação escolhida pelo responsável: o radar grande à esquerda do "Situação agora" e, ao lado, as
+  decisões pendentes, a coleta e a postura; o motivo numa linha de texto.
+- **Arquivos:** `apps/web/src/features/detections/situation-strip.tsx`, `tower-reason.ts` (comentário),
+  `components/security/detection-radar.tsx` (o radar do resumo vai de 17rem a 28rem), `components/security/semaphore.tsx`
+  (removido) e o catálogo (`pages/catalog/components-showcase.tsx`, `components/components.test.tsx`), o texto do tour
+  (`features/tour/steps.ts`), `pages/detections-page.test.tsx`, `e2e/deteccoes.mock.spec.ts` e este registro.
+- **Decisões:** a API continua calculando a cor (`light`) da Torre, usada no "Tudo calmo" das decisões; só a tela deixou
+  de mostrá-la. Recolhido, o resumo mostra só as contagens, com o motivo no nome acessível.
+- **Testes:** `vitest` do web (Detecções, componentes e features: 197); Playwright de Detecções e do tour contra a versão
+  nova (23, com axe); capturas nos dois temas.

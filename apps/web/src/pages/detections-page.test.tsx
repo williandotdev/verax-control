@@ -261,10 +261,10 @@ describe('Detecções: os endereços de antes', () => {
 });
 
 describe('Detecções: o resumo da situação', () => {
-  it('o semáforo com o motivo, as decisões com o atalho para a lista filtrada e a coleta numa gaveta', async () => {
+  it('o radar em destaque, o motivo em texto, as decisões com o atalho para a lista filtrada e a coleta numa gaveta', async () => {
     const router = renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
-    expect(await within(strip).findByRole('status', { name: /Situação: Crítico/ })).toHaveTextContent(
+    expect(await within(strip).findByRole('status', { name: /^Situação: / })).toHaveTextContent(
       '1 incidente crítico aberto, 2 incidentes altos abertos, nota de postura 69, abaixo de 70 e coleta parada (GCP).',
     );
     const decisions = within(strip).getByRole('region', { name: 'Decisões pendentes' });
@@ -275,8 +275,9 @@ describe('Detecções: o resumo da situação', () => {
       'href',
       '/postura',
     );
-    // O radar fica no resumo, menor.
+    // O radar em destaque no resumo; o semáforo foi descontinuado (17/11/2026).
     expect(within(strip).getByRole('region', { name: 'Radar das últimas 24 horas' })).toBeInTheDocument();
+    expect(strip.querySelector('[data-lit]')).toBeNull();
 
     await userEvent.click(within(strip).getByRole('button', { name: /Coleta parada: GCP/ }));
     const health = await screen.findByRole('dialog', { name: 'Saúde da coleta' });
@@ -291,14 +292,14 @@ describe('Detecções: o resumo da situação', () => {
     );
   });
 
-  it('recolhe e lembra a escolha por pessoa; recolhido, mostra o semáforo e as contagens', async () => {
+  it('recolhe e lembra a escolha por pessoa; recolhido, mostra as contagens', async () => {
     renderAt('/');
     const strip = await screen.findByRole('region', { name: 'Situação agora' });
     const toggle = within(strip).getByRole('button', { name: /Recolher/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await userEvent.click(toggle);
     expect(within(strip).getByRole('button', { name: /Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
-    expect(within(strip).getByRole('status', { name: /Situação: Crítico/ })).toHaveAccessibleName(
+    expect(within(strip).getByRole('status', { name: /^Situação: / })).toHaveAccessibleName(
       /1 incidente crítico aberto, 2 altos, \d+ detecções em 24 h, \d+ decisões pendentes/,
     );
     const userId = demoMe('analista_cliente').userId;

@@ -55,9 +55,11 @@ test.describe('tela Detecções (modo mock)', () => {
         await page.addInitScript((value) => window.localStorage.setItem('verax.theme', value), theme);
         await open(page);
         const strip = page.getByRole('region', { name: 'Situação agora' });
-        // No celular, o resumo começa recolhido: o semáforo e as contagens numa linha.
+        // No celular, o resumo começa recolhido: as contagens numa linha.
         if (device === 'celular') {
-          await expect(strip.getByRole('status', { name: /^Situação: Crítico/ })).toBeVisible();
+          await expect(
+            strip.getByRole('status', { name: /^Situação: 1 incidente crítico aberto/ }),
+          ).toBeVisible();
           expect(await violations(page)).toEqual([]);
           await strip.getByRole('button', { name: /^Mostrar/ }).click();
         }
@@ -135,7 +137,7 @@ test.describe('tela Detecções (modo mock)', () => {
       await open(page);
       await page.getByLabel('Cliente').selectOption({ label: 'Cliente Demo Beta' });
       const strip = page.getByRole('region', { name: 'Situação agora' });
-      await expect(strip.getByRole('status', { name: /^Situação: Normal\. Tudo calmo\./ })).toContainText(
+      await expect(strip.getByRole('status', { name: /^Situação: Tudo calmo\./ })).toContainText(
         'Coleta ativa em 2 de 2 fontes',
       );
       await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
