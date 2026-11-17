@@ -117,7 +117,7 @@ function VolumeBand({ ratio, data }: { ratio: number; data: PlanUsage }) {
         </p>
         <p>
           {over
-            ? 'A coleta continua: nenhum log é descartado e os achados continuam chegando. Fale com a Verax para ampliar o plano.'
+            ? 'A coleta continua: nenhum log é descartado e os alertas continuam chegando. Fale com a Verax para ampliar o plano.'
             : 'A coleta continua normalmente, mesmo se passar do plano: nenhum log é descartado. Se o volume seguir crescendo, fale com a Verax para ampliar.'}
         </p>
       </div>
@@ -255,7 +255,7 @@ function HistoryTile({ days }: { days: number | null }) {
   return (
     <Tile title="Histórico" titleId={id} value={days === null ? 'Sem limite' : plural(days, 'dia', 'dias')}>
       <p className="text-xs text-muted-foreground">
-        Por quanto tempo achados, incidentes e a postura ficam guardados, e até onde vão os filtros de
+        Por quanto tempo alertas, incidentes e a postura ficam guardados, e até onde vão os filtros de
         período. A trilha de auditoria fica ao menos 13 meses; o evento bruto do log,{' '}
         {RAW_EVENT_RETENTION_DAYS} dias.
       </p>

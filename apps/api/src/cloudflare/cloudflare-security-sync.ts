@@ -100,8 +100,6 @@ export interface SecurityReport {
   created: number;
   duplicates: number;
   excepted: number;
-  incidentsOpened: number;
-  incidentsJoined: number;
   /** Janelas de 15 min lidas inteiras (todas as zonas). */
   securityWindows: number;
   /** Consultas GraphQL feitas (limites, eventos e rotas). */
@@ -124,7 +122,6 @@ export interface SecurityRunContext {
   now: Date;
   report: SecurityReport;
   exceptions: ReadonlyMap<string, ActiveException[]>;
-  protectedItems: ReadonlyMap<string, ReadonlySet<string>>;
   lastEvents: LastEvents;
   signal: AbortSignal | undefined;
 }
@@ -591,12 +588,7 @@ export class CloudflareSecurityEvents {
           query.since,
         );
         const exception = matchingException(draft, context.exceptions.get(account.tenantId) ?? [], now);
-        const outcome = await this.store.persist(
-          draft,
-          exception,
-          context.protectedItems.get(account.tenantId) ?? new Set(),
-          now,
-        );
+        const outcome = await this.store.persist(draft, exception, now);
         count(report, outcome);
       }
     }
@@ -650,6 +642,4 @@ function count(report: SecurityReport, outcome: PersistOutcome): void {
   }
   report.created += 1;
   if (outcome === 'excepted') report.excepted += 1;
-  if (outcome === 'opened') report.incidentsOpened += 1;
-  if (outcome === 'joined') report.incidentsJoined += 1;
 }

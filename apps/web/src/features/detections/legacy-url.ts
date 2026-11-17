@@ -1,8 +1,9 @@
-import { CUSTOM_PERIOD, DETECTION_PARAMS, NO_ASSIGNEE } from './url-state';
+import { CUSTOM_PERIOD, DETECTION_PARAMS, INCIDENTS_VIEW, NO_ASSIGNEE } from './url-state';
 
 /**
  * Os endereços de antes da tela Detecções (Torre, Incidentes, Achados e Relatórios viraram uma tela só, em 16/11/2026)
- * continuam valendo: os links dos e-mails de aviso, do tour e dos favoritos levam à visão equivalente.
+ * continuam valendo: os links dos e-mails de aviso, do tour e dos favoritos levam à visão equivalente. Desde 17/11/2026,
+ * os achados são os alertas (a visão padrão) e os incidentes têm a visão própria.
  */
 
 /** O status do incidente na URL de antes para o status do filtro de agora (o aberto é o "novo ou aberto"). */
@@ -16,9 +17,9 @@ const INCIDENT_STATUS_PARAM: Readonly<Record<string, string>> = {
 const REPORT_TAB_TARGET: Readonly<Record<string, { view?: string; analysis?: string; path?: string }>> = {
   resumo: {},
   mitre: { analysis: 'mitre' },
-  deteccoes: { view: 'achados' },
-  entidades: { view: 'achados' },
-  incidentes: {},
+  deteccoes: {},
+  entidades: {},
+  incidentes: { view: INCIDENTS_VIEW },
   cobertura: { analysis: 'cobertura' },
   // As exceções e quantos alertas cada uma silenciou ficam no cadastro de Exceções.
   excecoes: { path: '/cadastros/excecoes' },
@@ -55,6 +56,7 @@ export function legacyDetectionsUrl(pathname: string, search: string): string {
   }
   if (path === '/incidentes') {
     return build('/', [
+      [P.view, INCIDENTS_VIEW],
       [P.status, INCIDENT_STATUS_PARAM[old.get('status') ?? '']],
       [P.severity, old.get('severidade')],
       [P.unassigned, old.get('responsavel') === NO_ASSIGNEE ? NO_ASSIGNEE : null],
@@ -63,7 +65,6 @@ export function legacyDetectionsUrl(pathname: string, search: string): string {
   }
   if (path === '/achados') {
     return build('/', [
-      [P.view, 'achados'],
       [P.severity, old.get('severidade')],
       [P.status, old.get('status')],
       [P.accountId, old.get('conta')],

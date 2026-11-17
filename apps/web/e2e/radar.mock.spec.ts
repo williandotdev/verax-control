@@ -67,7 +67,7 @@ test.describe('radar de detecções da tela Detecções (modo mock)', () => {
     }
   }
 
-  test('a varredura gira pelo CSS, e o Enter num ponto abre o achado', async ({ page }) => {
+  test('a varredura gira pelo CSS, e o Enter num ponto abre o alerta', async ({ page }) => {
     const card = await openTower(page);
     const sweep = card.locator('[data-radar-sweep]');
     await expect(sweep).toBeVisible();
@@ -78,7 +78,7 @@ test.describe('radar de detecções da tela Detecções (modo mock)', () => {
     const first = card.getByRole('link', { name: /^Crítico: Tentativa de desligar a trilha do CloudTrail/ });
     await first.focus();
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/\/\?achado=018f2c1e-0000-7000-8000-000000001001$/);
+    await expect(page).toHaveURL(/\/\?alerta=018f2c1e-0000-7000-8000-000000001001$/);
     // Na tela larga, o detalhe abre ao lado da lista.
     await expect(
       page.getByRole('complementary', { name: 'Tentativa de desligar a trilha do CloudTrail' }),

@@ -6,18 +6,21 @@ import type {
   Prisma,
   UnownedReason as DbUnownedReason,
 } from '../generated/prisma/client.js';
-import { type IncidentGrouping, protectedItemsOf } from '../incidents/incident-grouping.js';
-import { enqueueNotices, findingNotices } from '../notifications/finding-notices.js';
+import { AlertNotices } from '../notifications/finding-notices.js';
 import type { ActiveException } from './exception-match.js';
 import type { FindingDraft } from './finding-draft.js';
 
 /**
- * Gravação comum aos syncs de alertas (Wazuh e GCP): o achado, o uso da exceção, o incidente, os avisos por e-mail, a
- * fila sem dono, o último evento de cada conta e a concessão que deixa um worker por vez. Cada sync só decide de onde vêm os eventos e
+ * Gravação comum aos syncs de alertas (Wazuh e GCP): o achado (o alerta a validar), o uso da exceção, o aviso por e-mail,
+ * a fila sem dono, o último evento de cada conta e a concessão que deixa um worker por vez. Cada sync só decide de onde vêm os eventos e
  * como cada um vira achado.
  */
 
-export type PersistOutcome = 'duplicate' | 'excepted' | 'opened' | 'joined' | 'none';
+/**
+ * `created`: alerta novo, na fila de validação. Incidente só nasce quando uma pessoa confirma (decisão de 17/11/2026):
+ * o sync nunca abre nem alimenta incidente.
+ */
+export type PersistOutcome = 'duplicate' | 'excepted' | 'created';
 
 /** Cliente do banco já no escopo de um cliente, dentro da transação que grava o achado. */
 type ScopedDb = Prisma.TransactionClient;
@@ -114,23 +117,18 @@ export class LastEvents {
 export class FindingStore {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly grouping: IncidentGrouping,
+    private readonly notices: AlertNotices = new AlertNotices(),
   ) {}
 
   /**
-   * Achado, uso da exceção e incidente na mesma transação: se algo falhar no meio, nada fica gravado, e a releitura
-   * grava tudo de novo. Sem isso, o achado ficaria e voltaria como duplicado, sem nunca entrar no incidente.
+   * Achado, uso da exceção e aviso por e-mail na mesma transação: se algo falhar no meio, nada fica gravado, e a
+   * releitura grava tudo de novo. Sem isso, o achado ficaria e voltaria como duplicado, sem nunca avisar.
    *
    * Os coletores rodam ao mesmo tempo (agendador do worker): os achados de um mesmo cliente entram um por vez, sob um
-   * lock transacional por cliente. Sem ele, dois achados com a mesma chave, gravados juntos por coletores diferentes,
-   * não se veriam e abririam dois incidentes. Clientes diferentes não esperam um pelo outro.
+   * lock transacional por cliente, o mesmo que o expurgo e as mudanças de incidente pela API tomam (promover, anexar e
+   * remover alertas). Clientes diferentes não esperam um pelo outro.
    */
-  async persist(
-    draft: FindingDraft,
-    exception: ActiveException | null,
-    protectedItems: ReadonlySet<string>,
-    now: Date,
-  ): Promise<PersistOutcome> {
+  async persist(draft: FindingDraft, exception: ActiveException | null, now: Date): Promise<PersistOutcome> {
     return this.prisma.$transaction(async (tx) => {
       await lockTenantFindings(tx, draft.tenantId);
       const db = scopeToTenant(tx, draft.tenantId);
@@ -138,24 +136,22 @@ export class FindingStore {
         data: [findingRow(draft, exception)],
         skipDuplicates: true,
       });
-      if (count === 1) return this.settle(db, draft, draft.sourceEventId, exception, protectedItems, now);
+      if (count === 1) return this.settle(db, draft, draft.sourceEventId, exception, now);
       // A chave já existe. Só o GuardDuty traz a versão do achado, que diz se é a mesma ou uma nova.
       return draft.recurrence
-        ? this.recur(db, draft, draft.recurrence, exception, protectedItems, now)
+        ? this.recur(db, draft, draft.recurrence, exception, now)
         : ('duplicate' as const);
     });
   }
 
   /**
-   * Depois de gravar o achado: o uso da exceção, ou o incidente e os avisos por e-mail que ele gera (incidente alto ou
-   * crítico aberto, incidente que sobe para alto ou crítico, achado crítico fora de incidente), na mesma transação.
+   * Depois de gravar o achado: o uso da exceção, ou o aviso por e-mail do alerta alto ou crítico, na mesma transação.
    */
   private async settle(
     db: ScopedDb,
     draft: Pick<FindingDraft, 'tenantId' | 'source' | 'severity'>,
     sourceEventId: string,
     exception: ActiveException | null,
-    protectedItems: ReadonlySet<string>,
     now: Date,
   ): Promise<PersistOutcome> {
     if (exception) {
@@ -163,19 +159,15 @@ export class FindingStore {
         where: { id: exception.id },
         data: { matchedCount: { increment: 1 }, lastMatchedAt: now },
       });
-      // Esperado por exceção: não abre nem alimenta incidente.
+      // Esperado por exceção: já nasce legítimo, fora da fila de validação, e não avisa.
       return 'excepted' as const;
     }
     const { id } = await db.finding.findUniqueOrThrow({
       where: { source_sourceEventId: { source: draft.source, sourceEventId } },
       select: { id: true },
     });
-    const placement = await this.grouping.place(db, id, protectedItems);
-    await enqueueNotices(
-      db,
-      findingNotices({ tenantId: draft.tenantId, id, severity: draft.severity }, placement),
-    );
-    return placement.outcome;
+    await this.notices.enqueue(db, { tenantId: draft.tenantId, id, severity: draft.severity });
+    return 'created' as const;
   }
 
   /**
@@ -204,7 +196,6 @@ export class FindingStore {
     draft: FindingDraft,
     recurrence: NonNullable<FindingDraft['recurrence']>,
     exception: ActiveException | null,
-    protectedItems: ReadonlySet<string>,
     now: Date,
   ): Promise<PersistOutcome> {
     const original = await db.finding.findUnique({
@@ -249,7 +240,7 @@ export class FindingStore {
       skipDuplicates: true,
     });
     if (count === 0) return 'duplicate' as const;
-    return this.settle(db, draft, recurrence.sourceEventId, exception, protectedItems, now);
+    return this.settle(db, draft, recurrence.sourceEventId, exception, now);
   }
 
   /** Na dúvida, o evento não é de ninguém (T5.2): a fila guarda o motivo e o mínimo para a triagem. */
@@ -258,17 +249,6 @@ export class FindingStore {
       data: [{ ...record, title: record.title?.slice(0, 500) ?? null }],
       skipDuplicates: true,
     });
-  }
-
-  /** Lista de proteção de cada cliente, para a nota de risco dos incidentes (+15). */
-  async protectedItems(): Promise<Map<string, Set<string>>> {
-    const rows = await this.prisma.protectedResource.findMany({
-      select: { tenantId: true, type: true, identifier: true },
-    });
-    const byTenant = new Map<string, { type: string; identifier: string }[]>();
-    for (const { tenantId, ...item } of rows)
-      byTenant.set(tenantId, [...(byTenant.get(tenantId) ?? []), item]);
-    return new Map([...byTenant].map(([tenantId, items]) => [tenantId, protectedItemsOf(items)]));
   }
 
   /** Exceções em vigor, por cliente, na ordem de criação. */

@@ -61,6 +61,7 @@ export const NOTICE_RECIPIENT_ROLES: Readonly<Record<NotificationKind, readonly 
   incident_opened: INCIDENT_NOTICE_ROLES,
   incident_escalated: INCIDENT_NOTICE_ROLES,
   critical_finding: INCIDENT_NOTICE_ROLES,
+  high_finding: INCIDENT_NOTICE_ROLES,
   aws_ingestion_stalled: ['admin_cliente'],
   plan_usage: ['admin_cliente'],
   // O pedido de confirmação vai só ao contato de escalonamento, que não é pessoa do cliente.
@@ -75,6 +76,7 @@ export const INCIDENT_NOTICE_KINDS: ReadonlySet<NotificationKind> = new Set<Noti
   'incident_opened',
   'incident_escalated',
   'critical_finding',
+  'high_finding',
 ]);
 
 /** Uma pessoa do cliente, do ponto de vista do aviso: o papel e a preferência (sem linha, recebe). */
@@ -84,8 +86,8 @@ export interface NoticePerson {
 }
 
 /**
- * Os avisos que também vão ao contato de escalonamento confirmado (D8): só os críticos, de incidente (aberto ou que
- * subiu para crítico) e de achado crítico. O volume do plano, a coleta parada e os avisos altos, nunca.
+ * Os avisos que também vão ao contato de escalonamento confirmado (D8): só os críticos, de incidente (confirmado ou que
+ * subiu para crítico) e de alerta crítico. O volume do plano, a coleta parada e os avisos altos ou abaixo, nunca.
  */
 export function reachesEscalationContact(row: { kind: NotificationKind; severity: string | null }): boolean {
   return INCIDENT_NOTICE_KINDS.has(row.kind) && row.severity === 'critical';
@@ -277,17 +279,23 @@ function attemptResult(
   };
 }
 
-/** O conteúdo do e-mail de um aviso, com o link no painel. O banco garante o alvo de cada tipo (CHECK da migration). */
+/**
+ * O conteúdo do e-mail de um aviso, com o link no painel (a tela Detecções com o item aberto). O banco garante o alvo de
+ * cada tipo (CHECK da migration), menos o incidente que saiu depois do aviso (expurgo): esse não tem e-mail.
+ */
 export function noticeOf(row: NoticeTarget, webOrigin: string): NoticeMail {
   const link = (path: string) => new URL(path, webOrigin).href;
   switch (row.kind) {
     case 'incident_opened':
+      if (row.incidentId === null || row.severity === null) break;
+      return { kind: row.kind, severity: row.severity, link: link(`/?incidente=${row.incidentId}`) };
     case 'incident_escalated':
       if (row.incidentId === null || (row.severity !== 'high' && row.severity !== 'critical')) break;
-      return { kind: row.kind, severity: row.severity, link: link(`/incidentes/${row.incidentId}`) };
+      return { kind: row.kind, severity: row.severity, link: link(`/?incidente=${row.incidentId}`) };
     case 'critical_finding':
+    case 'high_finding':
       if (row.findingId === null) break;
-      return { kind: row.kind, link: link(`/achados?achado=${row.findingId}`) };
+      return { kind: row.kind, link: link(`/?alerta=${row.findingId}`) };
     case 'aws_ingestion_stalled':
       return { kind: row.kind, link: link('/cadastros/contas') };
     case 'plan_usage':
@@ -453,6 +461,10 @@ export class NotificationDispatcher {
     const db = this.prisma.forTenant(row.tenantId);
     if (this.mailer === null) return this.skip(row, 'mail_disabled');
     if (row.kind === 'escalation_confirmation') return this.deliverConfirmation(row, this.mailer, signal);
+    // O incidente saiu depois do aviso (expurgo): o aviso fica no histórico, sem e-mail.
+    if ((row.kind === 'incident_opened' || row.kind === 'incident_escalated') && row.incidentId === null) {
+      return this.skip(row, 'incident_gone');
+    }
     const people = await db.user.findMany({
       where: { role: { in: [...NOTICE_RECIPIENT_ROLES[row.kind]] }, ...ACTIVE_PERSON },
       select: PERSON_SELECT,
@@ -785,7 +797,10 @@ export class NotificationDispatcher {
     return outcome;
   }
 
-  private skip(row: DueNotice, reason: 'mail_disabled' | 'no_recipients' | 'opted_out'): Promise<'skipped'> {
+  private skip(
+    row: DueNotice,
+    reason: 'mail_disabled' | 'no_recipients' | 'opted_out' | 'incident_gone',
+  ): Promise<'skipped'> {
     return this.close(row, 'skipped', reason);
   }
 

@@ -29,7 +29,7 @@ const READER_TEMPLATE = fileURLToPath(
 const PAGES: [string, string | RegExp][] = [
   // Detecções (16/11/2026): no lugar da Torre, de Incidentes, de Achados e de Relatórios.
   ['/', 'Detecções'],
-  ['/?visao=achados', 'Detecções'],
+  ['/?visao=incidentes', 'Detecções'],
   ['/?analise=mitre', 'Detecções'],
   ['/?analise=cobertura&periodo=90d', 'Detecções'],
   ['/postura', 'Postura cloud'],
@@ -88,7 +88,7 @@ test.describe('revisão de UX (modo mock)', () => {
   // Um teste por painel: cada análise de acessibilidade leva alguns segundos, e juntos passavam do tempo de um teste.
   // Abertos pela URL: com o painel modal, o resto da página fica fora da árvore de acessibilidade.
   for (const [path, dialog] of [
-    [`/auditoria?registro=${AUDIT_ENTRY}`, 'Comentou achado'],
+    [`/auditoria?registro=${AUDIT_ENTRY}`, 'Comentou alerta'],
     // Projeto GCP de cliente: o comando do sink e o campo da identidade.
     [`/cadastros/contas?conta=${GCP_ACCOUNT}`, 'Projeto da GCP loja-alfa-demo'],
     // Conta do Cloudflare: o link do token, o IP de saída e o cartão do token com o aviso de vencimento.
@@ -322,12 +322,12 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
   });
 
-  test('teclado: o detalhe abre com Enter, fecha com Esc e o foco volta para o achado', async ({ page }) => {
+  test('teclado: o detalhe abre com Enter, fecha com Esc e o foco volta para o alerta', async ({ page }) => {
     // Na tela estreita, o detalhe da tela Detecções é a gaveta (o diálogo); na larga, fica ao lado (deteccoes.mock.spec).
     await page.setViewportSize({ width: 1024, height: 800 });
-    await open(page, '/?visao=achados&severidade=critical', 'Detecções');
+    await open(page, '/?severidade=critical', 'Detecções');
     const finding = page.getByRole('button', {
-      name: 'Abrir o achado: Tentativa de desligar a trilha do CloudTrail',
+      name: 'Abrir o alerta: Tentativa de desligar a trilha do CloudTrail',
     });
     await finding.focus();
     await page.keyboard.press('Enter');

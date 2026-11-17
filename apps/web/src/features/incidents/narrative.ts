@@ -10,7 +10,7 @@ import { formatList, plural } from '@/lib/format';
 
 /**
  * Texto em português do incidente (T7.9, pendência 8): montado por modelo a partir dos dados, sem LLM. O dicionário
- * cobre as ações da AWS mais comuns nas regras do Wazuh; o que não estiver nele usa o título do achado.
+ * cobre as ações da AWS mais comuns nas regras do Wazuh; o que não estiver nele usa o título do alerta.
  */
 
 type Keys = Partial<Record<CorrelationKind, string[]>>;
@@ -36,7 +36,8 @@ export function incidentTitle(incident: Pick<Incident, 'keys'>): string {
   if (user)
     return user === 'root' ? 'Atividade suspeita do usuário root' : `Atividade suspeita do usuário ${user}`;
   if (ip) return `Ataque a partir do IP ${ip}`;
-  return `Atividade suspeita no recurso ${resource ?? 'desconhecido'}`;
+  // A pessoa pode confirmar um alerta sem usuário, chave, IP nem recurso: o incidente fica sem elo.
+  return resource ? `Atividade suspeita no recurso ${resource}` : 'Incidente confirmado';
 }
 
 /** O que cada evento da AWS significa, no passado. */
@@ -146,7 +147,7 @@ export function incidentSummary(incident: IncidentDetail): string {
   const period = first === last ? `em ${first}` : `entre ${first} e ${last}`;
   return [
     `${subject(keys)} ${formatList(actions)}.`,
-    `${plural(incident.findingCount, 'achado', 'achados')} ${period}, ${accounts}.`,
+    `${plural(incident.findingCount, 'alerta', 'alertas')} ${period}, ${accounts}.`,
     `O mais grave é ${SEVERITY_STYLES[incident.severity].label.toLowerCase()}, e a nota de risco é ${incident.riskScore} de 100.`,
   ].join(' ');
 }

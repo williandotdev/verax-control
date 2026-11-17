@@ -21,9 +21,13 @@ export const DEMO_INCIDENTS = {
   chaveComprometida: '018f2c1e-0000-7000-8000-0000000a0001',
   forcaBrutaSsh: '018f2c1e-0000-7000-8000-0000000a0002',
   ataqueWaf: '018f2c1e-0000-7000-8000-0000000a0003',
+  /** Desfeito (alertas a validar desde 17/11/2026): o id fica só para os links de antes. */
   bucketPublico: '018f2c1e-0000-7000-8000-0000000a0004',
+  /** Desfeito (alertas a validar desde 17/11/2026): o id fica só para os links de antes. */
   portaSsh: '018f2c1e-0000-7000-8000-0000000a0005',
+  /** Desfeito (alertas a validar desde 17/11/2026): o id fica só para os links de antes. */
   loginSemMfa: '018f2c1e-0000-7000-8000-0000000a0006',
+  /** Desfeito (alertas a validar desde 17/11/2026): o id fica só para os links de antes. */
   betaWaf: '018f2c1e-0000-7000-8000-0000000b0001',
   betaLogin: '018f2c1e-0000-7000-8000-0000000b0002',
 } as const;
@@ -298,7 +302,6 @@ const ALFA_FINDINGS: Template[] = [
     ip: '203.0.113.31',
     tactics: ['Exfiltration'],
     techniques: ['T1537'],
-    incident: DEMO_INCIDENTS.bucketPublico,
   },
   {
     title: 'Bloqueio de acesso público removido do bucket',
@@ -316,7 +319,6 @@ const ALFA_FINDINGS: Template[] = [
     ip: '203.0.113.31',
     tactics: ['Defense Evasion'],
     techniques: ['T1562'],
-    incident: DEMO_INCIDENTS.bucketPublico,
   },
   {
     title: 'Grupo de segurança liberou a porta 22 para a internet',
@@ -334,7 +336,6 @@ const ALFA_FINDINGS: Template[] = [
     ip: '203.0.113.12',
     tactics: ['Defense Evasion'],
     techniques: ['T1562.007'],
-    incident: DEMO_INCIDENTS.portaSsh,
   },
   {
     title: 'Login no console sem MFA',
@@ -351,7 +352,6 @@ const ALFA_FINDINGS: Template[] = [
     ip: '203.0.113.44',
     tactics: ['Initial Access'],
     techniques: ['T1078.004'],
-    incident: DEMO_INCIDENTS.loginSemMfa,
   },
   {
     title: 'Política de bucket alterada',
@@ -552,7 +552,6 @@ const BETA_FINDINGS: Template[] = [
     tactics: ['Initial Access'],
     techniques: ['T1190'],
     account: DEMO_ACCOUNTS.beta,
-    incident: DEMO_INCIDENTS.betaWaf,
   },
   {
     title: 'Login no console com falha',

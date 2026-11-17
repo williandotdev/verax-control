@@ -95,6 +95,8 @@ describe('filtros da tela Detecções', () => {
       sort: 'severity',
     });
     expect(detectionListQuerySchema.safeParse({ sort: 'risk' }).success).toBe(false);
+    expect(detectionListQuerySchema.parse({ kind: 'incident' })).toMatchObject({ kind: 'incident' });
+    expect(detectionListQuerySchema.safeParse({ kind: 'finding' }).success).toBe(false);
     expect(detectionListQuerySchema.safeParse({ tenantId: 'x' }).success).toBe(false);
     expect(findingListQuerySchema.safeParse({ unassigned: 'true' }).success).toBe(false);
   });

@@ -76,7 +76,7 @@ export function MitreReportView({
                 cell: (row) => `${row.id} · ${TACTIC_LABELS[row.name] ?? row.name}`,
                 csv: (row) => `${row.id} ${row.name}`,
               },
-              { header: 'Achados', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
+              { header: 'Alertas', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
               {
                 header: 'Incidentes',
                 cell: (row) => row.incidents,
@@ -142,7 +142,7 @@ export function CoverageReportView({ range }: { range: ReportRange }) {
               cell: (row) => (row.lastEventAt ? formatTimestamp(row.lastEventAt) : 'nenhum ainda'),
               csv: (row) => row.lastEventAt,
             },
-            { header: 'Achados', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
+            { header: 'Alertas', cell: (row) => row.findings, csv: (row) => row.findings, align: 'right' },
             {
               header: 'Por fonte',
               cell: (row) =>

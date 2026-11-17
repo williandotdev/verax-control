@@ -85,7 +85,7 @@ export function ExceptionsPage() {
       className: 'whitespace-nowrap',
       cell: (row) => (
         <span>
-          {plural(row.matchedCount, 'achado', 'achados')}
+          {plural(row.matchedCount, 'alerta', 'alertas')}
           {row.lastMatchedAt && (
             <span className="block text-xs text-muted-foreground">
               último {formatRelative(row.lastMatchedAt)}
@@ -130,7 +130,7 @@ export function ExceptionsPage() {
         error={list.error}
         onRetry={() => void list.refetch()}
         emptyTitle="Nenhuma exceção"
-        emptyDescription="Ao marcar um achado como legítimo, o painel oferece criar a exceção."
+        emptyDescription="Ao marcar um alerta como legítimo, o painel oferece criar a exceção."
       />
       <Sheet
         open={open === NEW || selected !== null}
@@ -189,7 +189,7 @@ function CreateException({ onDone }: { onDone: () => void }) {
     <form onSubmit={submit} noValidate className="space-y-4">
       <Field
         label="Regra"
-        hint="O número da regra, que aparece no detalhe do achado (dos logs da AWS ou da auditoria da GCP)."
+        hint="O número da regra, que aparece no detalhe do alerta (dos logs da AWS ou da auditoria da GCP)."
         inputMode="numeric"
         value={values.ruleId}
         onChange={(event) => setValues({ ...values, ruleId: event.target.value })}
@@ -245,7 +245,7 @@ function EditException({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const update = useUpdateException(exception.id);
   const remove = useDeleteException(exception.id);
-  const summary = `${plural(exception.matchedCount, 'achado marcado', 'achados marcados')} por esta exceção${
+  const summary = `${plural(exception.matchedCount, 'alerta marcado', 'alertas marcados')} por esta exceção${
     exception.lastMatchedAt ? `, o último ${formatRelative(exception.lastMatchedAt)}` : ''
   }.`;
 

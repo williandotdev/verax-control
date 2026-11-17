@@ -15,7 +15,6 @@ import type { FindingDraft } from '../src/alerts/finding-draft.js';
 import { FindingStore } from '../src/alerts/finding-store.js';
 import { CloudAccountsService } from '../src/cloud-accounts/cloud-accounts.service.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
-import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
 import { assertWithinPlan } from '../src/plan/plan-limits.js';
 import { UsageMeter, usageMonth } from '../src/usage/usage-meter.js';
 import { UsersService } from '../src/users/users.service.js';
@@ -502,13 +501,8 @@ describe('limites do plano (fase 2, PR-18)', () => {
 
       // As duas gravações de um coletor depois da leitura: o achado e o volume lido. Nenhuma consulta o plano.
       const now = new Date();
-      const outcome = await new FindingStore(prisma, new IncidentGrouping()).persist(
-        findingDraft(tenantId),
-        null,
-        new Set(),
-        now,
-      );
-      expect(outcome).toBe('opened');
+      const outcome = await new FindingStore(prisma).persist(findingDraft(tenantId), null, now);
+      expect(outcome).toBe('created');
       expect(await prisma.finding.count({ where: { tenantId } })).toBe(1);
       const meter = new UsageMeter();
       meter.add(tenantId, 'gcp', 4096, 1, now);

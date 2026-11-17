@@ -1,6 +1,8 @@
 import {
   type Finding,
   type FindingDetail,
+  MAX_RELATED_FINDINGS,
+  RELATED_FINDINGS_WINDOW_MINUTES,
   findingCommentCreateSchema,
   findingCommentSchema,
   findingListQuerySchema,
@@ -23,6 +25,16 @@ let sequence = 0;
 const newId = (): string =>
   `018f2c1e-0000-7000-8000-${(0xf00000 + (sequence += 1)).toString(16).padStart(12, '0')}`;
 
+/** As chaves de correlação do alerta (usuário, chave de acesso, IP e recurso), como a API compara. */
+function correlationKeysOf(finding: FindingDetail): string[] {
+  return [
+    ...(finding.actor.user ? [`user:${finding.actor.user}`] : []),
+    ...(finding.actor.accessKeyId ? [`key:${finding.actor.accessKeyId}`] : []),
+    ...(finding.actor.ip ? [`ip:${finding.actor.ip}`] : []),
+    ...(finding.resource ? [`resource:${finding.resource}`] : []),
+  ];
+}
+
 function summary(detail: FindingDetail): Finding {
   const {
     ruleId: _rule,
@@ -36,8 +48,8 @@ function summary(detail: FindingDetail): Finding {
 }
 
 /**
- * Achados do modo mock, com o mesmo contrato da API: filtros e paginação na lista, escopo do
- * cliente da sessão, permissão e CSRF nas escritas. O estado fica em memória, então a demonstração é interativa.
+ * Alertas (achados) do modo mock, com o mesmo contrato da API: filtros e paginação na lista, os relacionados, escopo
+ * do cliente da sessão, permissão e CSRF nas escritas. O estado fica em memória, então a demonstração é interativa.
  */
 export function createFindingHandlers(
   state: MockState,
@@ -78,11 +90,35 @@ export function createFindingHandlers(
       });
     }),
 
+    // A sugestão ao promover: alertas do cliente, em validação, fora de incidente, com chave em comum e a até 60 min.
+    http.get(url('/v1/findings/:id/related'), ({ params }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const anchor = scope.findings.find((candidate) => candidate.id === params['id']);
+      if (!anchor) return problem(404, 'Alerta não encontrado');
+      const keys = new Set(correlationKeysOf(anchor));
+      const at = Date.parse(anchor.occurredAt);
+      const window = RELATED_FINDINGS_WINDOW_MINUTES * 60_000;
+      const items = scope.findings
+        .filter(
+          (candidate) =>
+            candidate.id !== anchor.id &&
+            candidate.incidentId === null &&
+            (candidate.status === 'new' || candidate.status === 'investigating') &&
+            Math.abs(Date.parse(candidate.occurredAt) - at) <= window &&
+            correlationKeysOf(candidate).some((key) => keys.has(key)),
+        )
+        .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || a.id.localeCompare(b.id))
+        .slice(0, MAX_RELATED_FINDINGS)
+        .map(summary);
+      return HttpResponse.json({ items });
+    }),
+
     http.get(url('/v1/findings/:id'), ({ params }) => {
       const scope = scoped();
       if ('error' in scope) return scope.error;
       const finding = scope.findings.find((candidate) => candidate.id === params['id']);
-      return finding ? HttpResponse.json(finding) : problem(404, 'Achado não encontrado');
+      return finding ? HttpResponse.json(finding) : problem(404, 'Alerta não encontrado');
     }),
 
     http.patch(url('/v1/findings/:id/status'), async ({ params, request }) => {
@@ -91,7 +127,7 @@ export function createFindingHandlers(
       const denied = writeDenied(request, 'findings:triage');
       if (denied) return denied;
       const finding = scope.findings.find((candidate) => candidate.id === params['id']);
-      if (!finding) return problem(404, 'Achado não encontrado');
+      if (!finding) return problem(404, 'Alerta não encontrado');
       const body = findingStatusUpdateSchema.safeParse(await request.json());
       if (!body.success) return problem(400, 'Dados inválidos');
       finding.status = body.data.status;
@@ -115,7 +151,7 @@ export function createFindingHandlers(
       const denied = writeDenied(request, 'findings:triage');
       if (denied) return denied;
       const finding = scope.findings.find((candidate) => candidate.id === params['id']);
-      if (!finding) return problem(404, 'Achado não encontrado');
+      if (!finding) return problem(404, 'Alerta não encontrado');
       const body = findingCommentCreateSchema.safeParse(await request.json());
       if (!body.success) return problem(400, 'Dados inválidos');
       const comment = findingCommentSchema.parse({

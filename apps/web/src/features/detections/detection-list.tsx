@@ -99,7 +99,7 @@ function Frame<T>({
       <div
         data-tour="deteccoes-lista"
         role="region"
-        aria-label={caption.startsWith('Achados') ? 'Lista de achados' : 'Lista de detecções'}
+        aria-label={caption.startsWith('Alertas') ? 'Lista de alertas' : 'Lista de incidentes'}
         tabIndex={0}
         className="overflow-x-auto rounded-lg border focus-visible:outline-2 focus-visible:outline-ring"
         aria-busy={page.loading}
@@ -148,10 +148,11 @@ function assetsText(incident: Incident): ReactNode {
 }
 
 /**
- * Visão "Agrupar por incidente": cada incidente numa linha (nota, severidade, status, responsável, ativos e achados),
- * que abre os achados dele logo abaixo; os achados fora de incidente, em linhas próprias. O título abre o painel.
+ * Visão "Incidentes": cada incidente confirmado numa linha (nota, severidade, status, responsável, ativos e alertas),
+ * que abre os alertas dele logo abaixo. O título abre o painel. A API sem `kind=incident` também manda os alertas fora
+ * de incidente, que ganham linhas próprias.
  */
-export function GroupedList({
+export function IncidentsList({
   page,
   selection,
   onOpen,
@@ -160,20 +161,20 @@ export function GroupedList({
   page: ListPage<DetectionRow>;
   selection: DetectionSelection;
   onOpen: (selection: NonNullable<DetectionSelection>, opener: HTMLElement) => void;
-  /** Há filtro de conteúdo: o incidente diz quantos dos achados dele batem. */
+  /** Há filtro de conteúdo: o incidente diz quantos dos alertas dele batem. */
   filtered: boolean;
 }) {
   return (
     <Frame
       page={page}
-      caption="Detecções do cliente: incidentes, com os achados agrupados, e achados fora de incidente"
+      caption="Incidentes do cliente, com os alertas de cada um"
       header={
         <>
           <th scope="col" className={cn(HEAD, 'w-10')}>
-            <span className="sr-only">Abrir os achados</span>
+            <span className="sr-only">Abrir os alertas</span>
           </th>
           <th scope="col" className={cn(HEAD, 'md:min-w-64')}>
-            Detecção
+            Incidente
           </th>
           <th scope="col" className={cn(HEAD, WIDE)}>
             Severidade
@@ -212,13 +213,13 @@ export function GroupedList({
               <td className={CELL}>
                 <OpenButton
                   selected={selection?.id === row.finding.id}
-                  label={`Abrir o achado: ${row.finding.title}`}
+                  label={`Abrir o alerta: ${row.finding.title}`}
                   onOpen={(opener) => onOpen({ kind: 'finding', id: row.finding.id }, opener)}
                 >
                   {row.finding.title}
                 </OpenButton>
                 <span className="block text-xs text-muted-foreground">
-                  Achado fora de incidente · {FINDING_SOURCE_LABELS[row.finding.source]} ·{' '}
+                  Alerta fora de incidente · {FINDING_SOURCE_LABELS[row.finding.source]} ·{' '}
                   {findingOriginLabel(row.finding.accountId)}
                 </span>
                 <MobileMeta>
@@ -274,7 +275,7 @@ function IncidentRows({
             type="button"
             aria-expanded={expanded}
             aria-controls={childrenId}
-            aria-label={`${expanded ? 'Fechar' : 'Abrir'} os achados do incidente: ${title}`}
+            aria-label={`${expanded ? 'Fechar' : 'Abrir'} os alertas do incidente: ${title}`}
             className="flex size-8 items-center justify-center rounded-md hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring"
             onClick={() => setExpanded(!expanded)}
           >
@@ -292,8 +293,8 @@ function IncidentRows({
           <span className="block text-xs text-muted-foreground">
             Incidente · nota de risco {incident.riskScore} ·{' '}
             {matched !== null && matched < incident.findingCount
-              ? `${matched} de ${plural(incident.findingCount, 'achado', 'achados')} nos filtros`
-              : plural(incident.findingCount, 'achado', 'achados')}{' '}
+              ? `${matched} de ${plural(incident.findingCount, 'alerta', 'alertas')} nos filtros`
+              : plural(incident.findingCount, 'alerta', 'alertas')}{' '}
             · {originsText(incident)}
           </span>
           <MobileMeta>
@@ -327,7 +328,7 @@ function IncidentRows({
   );
 }
 
-/** Os achados do incidente aberto na lista, do mais recente ao mais antigo, cada um abrindo no painel. */
+/** Os alertas do incidente aberto na lista, do mais recente ao mais antigo, cada um abrindo no painel. */
 function IncidentFindings({
   id,
   selection,
@@ -339,7 +340,7 @@ function IncidentFindings({
 }) {
   const incident = useIncident(id, true);
   if (incident.isError) return <ErrorState error={incident.error} onRetry={() => void incident.refetch()} />;
-  if (!incident.data) return <LoadingState rows={2} label="Carregando os achados do incidente" />;
+  if (!incident.data) return <LoadingState rows={2} label="Carregando os alertas do incidente" />;
   return (
     <ul className="divide-y rounded-md border bg-foreground/[0.02]">
       {[...incident.data.findings].reverse().map((finding) => (
@@ -354,7 +355,7 @@ function IncidentFindings({
           <span className="min-w-0 flex-1">
             <OpenButton
               selected={selection?.id === finding.id}
-              label={`Abrir o achado: ${finding.title}`}
+              label={`Abrir o alerta: ${finding.title}`}
               onOpen={(opener) => onOpen({ kind: 'finding', id: finding.id }, opener)}
             >
               {finding.title}
@@ -373,8 +374,11 @@ function IncidentFindings({
   );
 }
 
-/** Visão "Todos os achados": a lista de achados de antes, com o incidente de cada um. */
-export function FindingsList({
+/**
+ * Visão "Alertas" (o padrão): todos os alertas, os que esperam validação e os já validados; o que foi confirmado num
+ * incidente leva a marca "Em incidente", que abre o incidente no painel.
+ */
+export function AlertsList({
   page,
   selection,
   onOpen,
@@ -386,14 +390,14 @@ export function FindingsList({
   return (
     <Frame
       page={page}
-      caption="Achados do cliente"
+      caption="Alertas do cliente"
       header={
         <>
           <th scope="col" className={cn(HEAD, WIDE)}>
             Severidade
           </th>
           <th scope="col" className={cn(HEAD, 'md:min-w-64')}>
-            Achado
+            Alerta
           </th>
           <th scope="col" className={cn(HEAD, WIDE, OPTIONAL)}>
             Conta
@@ -425,7 +429,7 @@ export function FindingsList({
             <td className={CELL}>
               <OpenButton
                 selected={selection?.id === row.id}
-                label={`Abrir o achado: ${row.title}`}
+                label={`Abrir o alerta: ${row.title}`}
                 onOpen={(opener) => onOpen({ kind: 'finding', id: row.id }, opener)}
               >
                 {row.title}
@@ -455,15 +459,17 @@ export function FindingsList({
               {row.incidentId ? (
                 <button
                   type="button"
-                  className="whitespace-nowrap underline underline-offset-2"
+                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap hover:bg-foreground/5 focus-visible:outline-2 focus-visible:outline-ring"
                   onClick={(event) =>
                     onOpen({ kind: 'incident', id: row.incidentId ?? '' }, event.currentTarget)
                   }
                 >
-                  Ver incidente<span className="sr-only"> do achado: {row.title}</span>
+                  Em incidente<span className="sr-only">: abrir o incidente do alerta {row.title}</span>
                 </button>
               ) : (
-                <span className="text-muted-foreground">—</span>
+                <span className="text-muted-foreground">
+                  {row.status === 'new' || row.status === 'investigating' ? 'A validar' : '—'}
+                </span>
               )}
             </td>
           </tr>

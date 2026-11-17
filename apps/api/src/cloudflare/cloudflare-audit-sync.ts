@@ -22,7 +22,7 @@ import {
   open,
 } from '../credentials/credential-vault.js';
 import type { Prisma } from '../generated/prisma/client.js';
-import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import type { AlertNotices } from '../notifications/finding-notices.js';
 import { COLLECTING_TENANT } from '../tenants/tenant-status.js';
 import { UsageMeter, utf8Bytes } from '../usage/usage-meter.js';
 import { cloudflareEventId, invalidEntryId, isCloudflareAccountId, parseAuditEntry } from './audit-entry.js';
@@ -104,8 +104,8 @@ export interface CloudflareAuditSyncOptions {
   maxPages?: number;
   /** Só os testes, que dividem o banco: restringe a execução às contas destes clientes. */
   tenantIds?: readonly string[];
-  groupingWindowMinutes?: number;
-  grouping?: IncidentGrouping;
+  /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
+  notices?: AlertNotices;
   /** Os eventos de segurança (GraphQL) e os limites deles; `false` desliga o fluxo (os testes só da auditoria). */
   securityEvents?: false | CloudflareSecurityEventsOptions;
 }
@@ -135,8 +135,6 @@ export interface CloudflareSyncReport {
   ignored: number;
   /** Entradas de zonas fora da lista cadastrada (lista vazia é todas). */
   outOfScope: number;
-  incidentsOpened: number;
-  incidentsJoined: number;
   /** Eventos de segurança: janelas lidas inteiras, consultas GraphQL e linhas (grupos) lidas. */
   securityWindows: number;
   securityQueries: number;
@@ -173,7 +171,6 @@ interface RunContext {
   now: Date;
   report: CloudflareSyncReport;
   exceptions: ReadonlyMap<string, ActiveException[]>;
-  protectedItems: ReadonlyMap<string, ReadonlySet<string>>;
   lastEvents: LastEvents;
   signal: AbortSignal | undefined;
 }
@@ -302,10 +299,7 @@ export class CloudflareAuditSync {
       throw new RangeError('página da auditoria de 1 a 1000 entradas e ao menos uma página por execução');
     }
     this.tenantIds = options.tenantIds;
-    this.store = new FindingStore(
-      prisma,
-      options.grouping ?? new IncidentGrouping(options.groupingWindowMinutes),
-    );
+    this.store = new FindingStore(prisma, options.notices);
     this.lease = new SyncLease(
       prisma,
       this.name,
@@ -343,8 +337,6 @@ export class CloudflareAuditSync {
       excepted: 0,
       ignored: 0,
       outOfScope: 0,
-      incidentsOpened: 0,
-      incidentsJoined: 0,
       securityWindows: 0,
       securityQueries: 0,
       securityGroups: 0,
@@ -361,7 +353,6 @@ export class CloudflareAuditSync {
         now,
         report,
         exceptions: await this.store.activeExceptions(now),
-        protectedItems: await this.store.protectedItems(),
         lastEvents: new LastEvents(),
         signal,
       };
@@ -822,20 +813,13 @@ export class CloudflareAuditSync {
     }
     const draft = toCloudflareFindingDraft(entry, account, detection);
     const exception = matchingException(draft, context.exceptions.get(account.tenantId) ?? [], now);
-    const outcome = await this.store.persist(
-      draft,
-      exception,
-      context.protectedItems.get(account.tenantId) ?? new Set(),
-      now,
-    );
+    const outcome = await this.store.persist(draft, exception, now);
     if (outcome === 'duplicate') {
       report.duplicates += 1;
       return occurredAt;
     }
     report.created += 1;
     if (outcome === 'excepted') report.excepted += 1;
-    if (outcome === 'opened') report.incidentsOpened += 1;
-    if (outcome === 'joined') report.incidentsJoined += 1;
     return occurredAt;
   }
 }

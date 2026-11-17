@@ -1,20 +1,19 @@
 import type { FindingDraft, FindingSeverity } from '../alerts/finding-draft.js';
 
 /**
- * Agrupamento de achados em incidentes (T5.6, regra v1): achados do mesmo cliente que compartilham usuário, chave
- * de acesso, IP ou recurso, dentro de uma janela de tempo, viram um incidente.
+ * Correlação de alertas (achados) e resumo de incidentes (T5.6, regra v1). Desde a decisão de 17/11/2026 (alerta →
+ * validação → incidente), a correlação só **sugere**: alertas do mesmo cliente que compartilham usuário, chave de
+ * acesso, IP ou recurso, dentro de uma janela de tempo, aparecem como relacionados, e o painel os pré-seleciona quando
+ * uma pessoa promove um alerta a incidente. Nenhum incidente é aberto ou alimentado sem uma pessoa.
  *
- * - Um achado entra num incidente aberto do **mesmo cliente** que tenha uma chave em comum e cujo período, alargado
- *   pela janela, contenha o horário do achado. Incidente de outro cliente nunca é candidato, nem com o mesmo IP.
- * - Sem incidente para entrar, um achado médio ou mais grave abre um incidente; um achado baixo fica só como achado
- *   (entra num incidente se um dia houver um com chave em comum). Achado sem nenhuma chave nunca abre incidente.
+ * - Só alertas do **mesmo cliente** são candidatos, nem com o mesmo IP um de outro cliente entra.
+ * - Alerta sem nenhuma chave não tem relacionado.
  */
 
 export type CorrelationKind = 'user' | 'key' | 'ip' | 'resource';
 export type CorrelationKey = `${CorrelationKind}:${string}`;
 
 export const DEFAULT_GROUPING_WINDOW_MINUTES = 60;
-export const OPENING_SEVERITIES: readonly FindingSeverity[] = ['critical', 'high', 'medium'];
 
 const SEVERITY_ORDER: readonly FindingSeverity[] = ['low', 'medium', 'high', 'critical'];
 
@@ -29,40 +28,37 @@ export function correlationKeys(finding: CorrelatedFields): CorrelationKey[] {
   return keys;
 }
 
-export interface IncidentCandidate {
-  id: string;
-  tenantId: string;
-  keys: readonly CorrelationKey[];
-  firstSeenAt: string;
-  lastSeenAt: string;
-}
+/** Um alerta candidato a relacionado: o id, o cliente, o horário e os campos que viram chave. */
+export type RelatedCandidate = { id: string } & Pick<FindingDraft, 'tenantId' | 'occurredAt'> &
+  CorrelatedFields;
 
-export type IncidentPlan = { action: 'join'; incidentId: string } | { action: 'open' } | { action: 'none' };
-
-export function planIncident(
-  finding: Pick<FindingDraft, 'tenantId' | 'occurredAt' | 'severity'> & CorrelatedFields,
-  openIncidents: readonly IncidentCandidate[],
+/**
+ * Os alertas relacionados a `anchor` (a sugestão ao promover): do mesmo cliente, outro que não ele, com uma chave em
+ * comum e o horário a até `windowMinutes` dele, para os dois lados. Os mais recentes primeiro; empate pelo id.
+ */
+export function relatedFindings<T extends RelatedCandidate>(
+  anchor: RelatedCandidate,
+  candidates: readonly T[],
   windowMinutes = DEFAULT_GROUPING_WINDOW_MINUTES,
-): IncidentPlan {
-  const at = Date.parse(finding.occurredAt);
+): T[] {
+  const keys = new Set<string>(correlationKeys(anchor));
+  if (keys.size === 0) return [];
+  const at = Date.parse(anchor.occurredAt);
   const window = windowMinutes * 60 * 1000;
-  const keys = new Set<string>(correlationKeys(finding));
-  const matches = openIncidents
-    .filter(
-      (incident) =>
-        incident.tenantId === finding.tenantId &&
-        incident.keys.some((key) => keys.has(key)) &&
-        at >= Date.parse(incident.firstSeenAt) - window &&
-        at <= Date.parse(incident.lastSeenAt) + window,
-    )
-    .sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt) || a.id.localeCompare(b.id));
-
-  const [best] = matches;
-  if (best !== undefined) return { action: 'join', incidentId: best.id };
-  // Sem usuário, chave, IP nem recurso, não há o que agrupar: o achado fica sozinho, e um incidente sem chave nem
-  // caberia no contrato.
-  if (keys.size === 0) return { action: 'none' };
-  return OPENING_SEVERITIES.includes(finding.severity) ? { action: 'open' } : { action: 'none' };
+  return candidates
+    .filter((candidate) => {
+      const when = Date.parse(candidate.occurredAt);
+      return (
+        candidate.id !== anchor.id &&
+        candidate.tenantId === anchor.tenantId &&
+        Math.abs(when - at) <= window &&
+        correlationKeys(candidate).some((key) => keys.has(key))
+      );
+    })
+    .sort(
+      (a, b) =>
+        Date.parse(b.occurredAt) - Date.parse(a.occurredAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
 }
 
 /** Root da conta ou identidade com "admin" no nome (usuário, papel ou sessão). Heurística da regra v1. */

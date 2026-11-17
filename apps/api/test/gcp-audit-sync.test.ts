@@ -5,7 +5,7 @@ import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { setTenantLifecycleStatus } from '../src/tenants/tenant-lifecycle.js';
 import { GcpAuditSync } from '../src/gcp/gcp-audit-sync.js';
 import type { PubsubMessage, PubsubReader } from '../src/gcp/pubsub.client.js';
-import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
+import { AlertNotices } from '../src/notifications/finding-notices.js';
 import { auditEntry, pubsubMessage, randomProject } from './gcp/fixtures.js';
 import { createTenant, createUser } from './support/auth-helpers.js';
 import { createApp } from './support/create-app.js';
@@ -132,7 +132,11 @@ describe('sync da auditoria da GCP para achados', () => {
       sourceIp: '203.0.113.10',
       mitreTechniques: ['T1098.001'],
     });
-    expect(finding.incidentId).not.toBeNull();
+    // Alerta a validar: o sync não abre incidente; o alto avisa por e-mail.
+    expect(finding.incidentId).toBeNull();
+    expect(await prisma.notification.count({ where: { findingId: finding.id, kind: 'high_finding' } })).toBe(
+      1,
+    );
     // A conta registra o evento mais recente, inclusive o que não era suspeito.
     const account = await prisma.cloudAccount.findFirstOrThrow({ where: { accountId: projectA } });
     expect(account.lastEventAt?.toISOString()).toBe('2026-11-03T10:05:00.000Z');
@@ -532,8 +536,8 @@ describe('sync da auditoria da GCP para achados', () => {
   });
 
   it('erro interno (gravação do achado) conta como assinatura com falha, mas não mexe na conexão da conta', async () => {
-    class BrokenGrouping extends IncidentGrouping {
-      override place(): ReturnType<IncidentGrouping['place']> {
+    class BrokenNotices extends AlertNotices {
+      override enqueue(): ReturnType<AlertNotices['enqueue']> {
         return Promise.reject(new TypeError('banco caiu no meio da gravação'));
       }
     }
@@ -561,7 +565,7 @@ describe('sync da auditoria da GCP para achados', () => {
       pubsubMessage(auditEntry({ project, insertId: `interno-${project}`, methodName: 'DeleteProject' })),
     );
     const name = `gcp-interno-${project.slice(-12)}`;
-    const sync = new GcpAuditSync(prisma, pubsub, { name, grouping: new BrokenGrouping() });
+    const sync = new GcpAuditSync(prisma, pubsub, { name, notices: new BrokenNotices() });
 
     expect(await sync.runOnce(new Date('2026-11-03T12:40:00.000Z'))).toMatchObject({
       failedSubscriptions: 1,
@@ -648,8 +652,8 @@ describe('sync da auditoria da GCP para achados', () => {
     });
 
     it('o lote que falha antes do ack não conta; quando volta e é confirmado, conta uma vez', async () => {
-      class BrokenGrouping extends IncidentGrouping {
-        override place(): ReturnType<IncidentGrouping['place']> {
+      class BrokenNotices extends AlertNotices {
+        override enqueue(): ReturnType<AlertNotices['enqueue']> {
           return Promise.reject(new TypeError('banco caiu no meio da gravação'));
         }
       }
@@ -667,7 +671,7 @@ describe('sync da auditoria da GCP para achados', () => {
       // Falha na gravação do achado, antes do ack: a mensagem volta e nada é medido.
       const broken = new GcpAuditSync(prisma, pubsub, {
         name: `gcp-uso-${project.slice(-12)}`,
-        grouping: new BrokenGrouping(),
+        notices: new BrokenNotices(),
       });
       expect(await broken.runOnce(now)).toMatchObject({ failedSubscriptions: 1, read: 1 });
       // Falha no próprio ack: também não conta.

@@ -160,3 +160,20 @@ export type FindingStatusUpdate = z.infer<typeof findingStatusUpdateSchema>;
 
 export const findingCommentCreateSchema = z.strictObject({ body: commentText });
 export type FindingCommentCreate = z.infer<typeof findingCommentCreateSchema>;
+
+/**
+ * Janela da sugestão de alertas relacionados (`GET /v1/findings/:id/related`), em minutos para cada lado do alerta: a
+ * mesma da regra de correlação (usuário, chave de acesso, IP ou recurso em comum).
+ */
+export const RELATED_FINDINGS_WINDOW_MINUTES = 60;
+/** Quantos relacionados a sugestão traz: com o próprio alerta, cabem num pedido de promover (50). */
+export const MAX_RELATED_FINDINGS = 49;
+
+/**
+ * Alertas relacionados a um alerta: do mesmo cliente, ainda em validação (novo ou em análise), fora de incidente, com
+ * usuário, chave, IP ou recurso em comum dentro da janela. É só sugestão: o painel pré-seleciona ao promover.
+ */
+export const relatedFindingsSchema = z.strictObject({
+  items: z.array(findingSchema).max(MAX_RELATED_FINDINGS),
+});
+export type RelatedFindings = z.infer<typeof relatedFindingsSchema>;

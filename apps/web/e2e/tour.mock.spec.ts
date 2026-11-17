@@ -159,7 +159,7 @@ test.describe('tour guiado (modo mock)', () => {
     });
   });
 
-  test('com outro cliente selecionado, o incidente e o achado de exemplo são desse cliente', async ({
+  test('com outro cliente selecionado, o incidente e o alerta de exemplo são desse cliente', async ({
     page,
   }) => {
     const errors = collectErrors(page);
@@ -179,7 +179,7 @@ test.describe('tour guiado (modo mock)', () => {
 
     await card(page).getByRole('button', { name: 'Próximo' }).click();
     expect((await currentStep(page))[0]).toBe(8);
-    const finding = new URL(page.url()).searchParams.get('achado');
+    const finding = new URL(page.url()).searchParams.get('alerta');
     expect(finding).not.toBeNull();
     expect(finding).not.toBe('018f2c1e-0000-7000-8000-000000001001');
     await expect(backdrop(page)).toHaveAttribute('data-spotlight', 'sim');

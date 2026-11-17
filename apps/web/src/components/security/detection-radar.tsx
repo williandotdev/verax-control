@@ -50,9 +50,9 @@ export interface RadarLinks {
 }
 
 const DEFAULT_LINKS: RadarLinks = {
-  finding: (id) => `/?achado=${id}`,
+  finding: (id) => `/?alerta=${id}`,
   incident: (id) => `/?incidente=${id}`,
-  all: '/?visao=achados&periodo=24h',
+  all: '/?periodo=24h',
 };
 
 function incidentText(detection: RadarDetection): string | null {

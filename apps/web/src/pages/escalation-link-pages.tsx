@@ -21,7 +21,7 @@ const COPY: Readonly<
   confirm: {
     title: 'Confirmar o contato de escalonamento',
     description:
-      'Ao confirmar, este endereço passa a receber por e-mail só os avisos críticos do Verax Control: incidente de severidade crítica e achado crítico. Os e-mails não trazem detalhes, e cada um tem o link para deixar de receber.',
+      'Ao confirmar, este endereço passa a receber por e-mail só os avisos críticos do Verax Control: incidente de severidade crítica e alerta crítico. Os e-mails não trazem detalhes, e cada um tem o link para deixar de receber.',
     button: 'Confirmar o endereço',
     done: 'Endereço confirmado. A partir de agora, ele recebe os avisos críticos.',
     invalid:

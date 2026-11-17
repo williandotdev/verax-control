@@ -177,7 +177,9 @@ model User {
   protectedResources         ProtectedResource[]
   alertExceptions            AlertException[]
   findingComments            FindingComment[]
-  assignedIncidents          Incident[]
+  assignedIncidents          Incident[]              @relation("IncidentAssignee")
+  /// Incidentes que a pessoa confirmou (promoveu a partir de alertas).
+  createdIncidents           Incident[]              @relation("IncidentCreator")
   /// Preferência de aviso por e-mail (fase 2, PR-17'); sem linha, vale o padrão.
   notificationPreference     NotificationPreference?
   noticeDigests              NotificationDigest[]
@@ -499,7 +501,7 @@ model Finding {
   /// Exceção que marcou o achado como esperado na chegada (T3.5); o achado já nasce "legítimo".
   exceptionId     String?          @db.Uuid
   exception       AlertException?  @relation(fields: [exceptionId], references: [id], onDelete: SetNull)
-  /// Incidente em que o achado entrou (T5.6); o sync agrupa, sempre dentro do mesmo cliente.
+  /// Incidente em que o alerta foi confirmado (por uma pessoa, pela API), sempre do mesmo cliente.
   incidentId      String?          @db.Uuid
   incident        Incident?        @relation(fields: [incidentId], references: [id], onDelete: SetNull)
   /// Primeira vez que alguém tirou o achado de "novo" (relatório de tempo até a triagem).
@@ -669,9 +671,10 @@ enum IncidentStatus {
   resolved
 }
 
-/// Incidente (T5.6 e T5.7): achados do mesmo cliente com usuário, chave, IP ou recurso em comum, numa janela de
-/// tempo. O sync abre e alimenta; pela API, mudam o status e o responsável. Os campos de resumo (severidade, nota,
-/// período, chaves, contas, recursos e MITRE) são recalculados a cada achado novo.
+/// Incidente (T5.6 e T5.7; decisão do responsável de 17/11/2026): ameaça confirmada por uma pessoa. Só nasce pela API,
+/// quando alguém com `incidents:write` promove um ou mais alertas (achados); os alertas entram e saem pela API também.
+/// O sync não abre nem alimenta incidente: a regra de correlação (`correlation.ts`) só sugere alertas relacionados. Os
+/// campos de resumo (severidade, nota, período, chaves, contas, recursos e MITRE) são recalculados a cada mudança.
 model Incident {
   id              String          @id @default(uuid(7)) @db.Uuid
   tenantId        String          @db.Uuid
@@ -688,7 +691,11 @@ model Incident {
   mitreTactics    String[]
   mitreTechniques String[]
   assigneeId      String?
-  assignee        User?           @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+  assignee        User?           @relation("IncidentAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  /// Quem confirmou o incidente (promoveu os alertas). Nulo nos incidentes de antes de 17/11/2026, abertos pelo
+  /// agrupamento automático, e se a pessoa for excluída.
+  createdById     String?
+  createdBy       User?           @relation("IncidentCreator", fields: [createdById], references: [id], onDelete: SetNull)
   /// Quando foi resolvido (relatório de tempo até a resolução); limpo se reaberto.
   resolvedAt      DateTime?       @db.Timestamptz(3)
   createdAt       DateTime        @default(now()) @db.Timestamptz(3)
@@ -700,6 +707,7 @@ model Incident {
   @@index([tenantId, riskScore(sort: Desc)])
   /// Expurgo diário: incidentes sem atividade antes do corte.
   @@index([tenantId, lastSeenAt])
+  @@index([createdById])
 }
 
 /// Uma varredura de postura (T5.8) de uma conta: a nota e as contagens. As checagens reprovadas ficam em
@@ -992,6 +1000,8 @@ enum NotificationKind {
   incident_opened
   incident_escalated
   critical_finding
+  /// Alerta de severidade alta que chegou (decisão de 17/11/2026); o crítico é `critical_finding`.
+  high_finding
   aws_ingestion_stalled
   plan_usage
   /// O pedido de confirmação ao contato de escalonamento (D8): o worker gera o link de uso único no envio.
@@ -1029,10 +1039,11 @@ model Notification {
   dedupeKey             String              @db.VarChar(128)
   /// Severidade que gerou o aviso (o incidente ao abrir ou ao subir, o achado crítico).
   severity              FindingSeverity?
-  /// Incidente do aviso; um gatilho no banco confere que é do mesmo cliente. Apagar o incidente apaga o aviso.
+  /// Incidente do aviso; um gatilho no banco confere que é do mesmo cliente. Apagar o incidente (expurgo, ou o desfazer
+  /// dos incidentes automáticos de 17/11/2026) mantém o aviso sem o incidente: o histórico de envio fica.
   incidentId            String?             @db.Uuid
-  incident              Incident?           @relation(fields: [incidentId], references: [id], onDelete: Cascade)
-  /// Achado crítico fora de incidente. A chave estrangeira inclui o cliente.
+  incident              Incident?           @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+  /// Alerta alto ou crítico que chegou. A chave estrangeira inclui o cliente.
   findingId             String?             @db.Uuid
   finding               Finding?            @relation(fields: [findingId, tenantId], references: [id, tenantId], onDelete: Cascade)
   /// Volume do plano: o mês (primeiro dia, calendário de Brasília) e a faixa alcançada (80 ou 100).

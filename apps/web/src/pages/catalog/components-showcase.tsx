@@ -77,16 +77,16 @@ export function ComponentsShowcase() {
       >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <StatTile
-            label="Achados nas últimas 24 h"
+            label="Alertas nas últimas 24 h"
             value="12"
             detail="9 esperados por exceção"
-            link={{ to: '/catalogo', label: 'Ver achados' }}
+            link={{ to: '/catalogo', label: 'Ver alertas' }}
           >
             <MiniBars
-              title="Achados por hora (exemplo)"
+              title="Alertas por hora (exemplo)"
               values={DEMO_HOURLY}
               labels={DEMO_HOURS}
-              unit={{ one: 'achado', many: 'achados' }}
+              unit={{ one: 'alerta', many: 'alertas' }}
             />
           </StatTile>
           <StatTile label="Tempo até detectar" value="4 min" detail="Mediana de 24 h." />
@@ -140,9 +140,9 @@ export function ComponentsShowcase() {
           />
           <DecisionCard
             severity="high"
-            title="Achado novo fora de incidente"
+            title="Alerta alto para validar"
             description="Security group com a porta 22 aberta para a internet."
-            actionLabel="Triar achado"
+            actionLabel="Validar alerta"
             onAction={() => undefined}
             busy
           />
@@ -154,14 +154,14 @@ export function ComponentsShowcase() {
         description="Paginação feita na API; a tabela mostra a página recebida."
       >
         <DataTable
-          caption="Achados de exemplo"
+          caption="Alertas de exemplo"
           columns={[
             {
               key: 'severity',
               header: 'Severidade',
               cell: (row) => <SeverityBadge severity={row.severity} />,
             },
-            { key: 'title', header: 'Achado', cell: (row) => row.title },
+            { key: 'title', header: 'Alerta', cell: (row) => row.title },
             {
               key: 'account',
               header: 'Conta',

@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AlertSync, type AlertSearchClient } from '../src/alerts/alert-sync.js';
 import { toFindingDraft, wazuhFindingKey } from '../src/alerts/finding-draft.js';
 import { parseWazuhAlert } from '../src/alerts/wazuh-alert.js';
-import { IncidentGrouping, protectedItemsOf } from '../src/incidents/incident-grouping.js';
+import { protectedItemsOf } from '../src/incidents/incident-summary.js';
+import { AlertNotices } from '../src/notifications/finding-notices.js';
 import { DEFAULT_SYNC_SETTINGS } from '../src/alerts/sync-query.js';
 import { PrismaService } from '../src/common/prisma/prisma.service.js';
 import { cloudTrailAlert, guardDutyAlert, portProbeAlerts, wafAlert, withAws } from './alerts/fixtures.js';
@@ -423,7 +424,7 @@ describe('sync de alertas para achados (T5.3)', () => {
     });
   });
 
-  describe('agrupamento em incidentes (T5.6)', () => {
+  describe('alerta a validar, sem incidente automático (decisão de 17/11/2026)', () => {
     it('lista de proteção no formato do achado: s3:, ec2: e sg:', () => {
       const items = protectedItemsOf([
         { type: 's3_bucket', identifier: 'relatorios' },
@@ -436,35 +437,37 @@ describe('sync de alertas para achados (T5.3)', () => {
       expect(items.has('ec2:sg-0123456789abcdef0')).toBe(false);
     });
 
-    it('falha no meio do agrupamento não deixa o achado gravado sem incidente: a próxima execução refaz', async () => {
-      class FailingOnce extends IncidentGrouping {
+    it('falha no meio do aviso não deixa o alerta gravado sem aviso: a próxima execução refaz', async () => {
+      class FailingOnce extends AlertNotices {
         failed = false;
-        override place(...args: Parameters<IncidentGrouping['place']>) {
+        override enqueue(...args: Parameters<AlertNotices['enqueue']>) {
           if (!this.failed) {
             this.failed = true;
             return Promise.reject(new Error('banco caiu no meio'));
           }
-          return super.place(...args);
+          return super.enqueue(...args);
         }
       }
       const name = `teste-${randomUUID().slice(0, 8)}`;
       const doc = trailAlertA(7, { sourceIp: `100.65.${randomInt(0, 255)}.${randomInt(1, 254)}`, level: 12 });
       const where = byKey(doc);
-      const grouping = new FailingOnce();
+      const notices = new FailingOnce();
 
       await expect(
-        new AlertSync(prisma, new FakeIndexer([doc]), { name, grouping }).runOnce(),
+        new AlertSync(prisma, new FakeIndexer([doc]), { name, notices }).runOnce(),
       ).rejects.toThrow();
       expect(await prisma.finding.findUnique({ where })).toBeNull();
 
-      const report = await new AlertSync(prisma, new FakeIndexer([doc]), { name, grouping }).runOnce();
+      const report = await new AlertSync(prisma, new FakeIndexer([doc]), { name, notices }).runOnce();
       expect(report.created).toBe(1);
-      expect((await prisma.finding.findUniqueOrThrow({ where })).incidentId).not.toBeNull();
+      const finding = await prisma.finding.findUniqueOrThrow({ where });
+      expect(finding).toMatchObject({ status: 'new', incidentId: null });
+      expect(await prisma.notification.count({ where: { findingId: finding.id } })).toBe(1);
     });
 
     // Faixa que nenhuma exceção dos outros testes cobre.
     const ip = () => `100.64.${randomInt(0, 255)}.${randomInt(1, 254)}`;
-    /** Usuário e chave próprios: os alertas de exemplo dividem o mesmo usuário e cairiam no mesmo incidente. */
+    /** Usuário e chave próprios: os alertas de exemplo dividem o mesmo usuário. */
     const identity = () => {
       const name = `teste-${randomInt(1e6, 9e6)}`;
       return {
@@ -478,7 +481,7 @@ describe('sync de alertas para achados (T5.3)', () => {
     const findingOf = (doc: Record<string, unknown>, account = accountA) =>
       prisma.finding.findUniqueOrThrow({ where: byKey(doc, account) });
 
-    it('o primeiro achado grave abre o incidente; o seguinte com o mesmo IP entra nele', async () => {
+    it('alertas graves com o mesmo IP entram na fila de validação; o sync não abre nem alimenta incidente', async () => {
       const shared = ip();
       const first = trailAlertA(40, {
         sourceIp: shared,
@@ -490,31 +493,27 @@ describe('sync de alertas para achados (T5.3)', () => {
         level: 10,
         identity: { type: 'IAMUser', userName: 'dois' },
       });
+      const incidentsBefore = await prisma.incident.count({ where: { tenantId: tenantA } });
       const report = await syncFor(new FakeIndexer([first, second])).runOnce();
-      expect(report).toMatchObject({ created: 2, incidentsOpened: 1, incidentsJoined: 1 });
+      expect(report).toMatchObject({ created: 2 });
+      expect(report).not.toHaveProperty('incidentsOpened');
 
       const [a, b] = [await findingOf(first), await findingOf(second)];
-      expect(a.incidentId).not.toBeNull();
-      expect(b.incidentId).toBe(a.incidentId);
-      const incident = await prisma.incident.findUniqueOrThrow({ where: { id: a.incidentId as string } });
-      expect(incident).toMatchObject({
-        tenantId: tenantA,
-        severity: 'critical',
-        findingCount: 2,
-        status: 'open',
-      });
-      expect(incident.keys).toContain(`ip:${shared}`);
-      expect(incident.riskScore).toBe(73);
+      expect(a).toMatchObject({ status: 'new', incidentId: null });
+      expect(b).toMatchObject({ status: 'new', incidentId: null });
+      expect(await prisma.incident.count({ where: { tenantId: tenantA } })).toBe(incidentsBefore);
     });
 
-    it('achado baixo sozinho fica só como achado', async () => {
+    it('alerta baixo também entra na fila de validação, sem aviso', async () => {
       const low = trailAlertA(10, { sourceIp: ip(), level: 5, identity: identity() });
       const report = await syncFor(new FakeIndexer([low])).runOnce();
-      expect(report).toMatchObject({ created: 1, incidentsOpened: 0, incidentsJoined: 0 });
-      expect((await findingOf(low)).incidentId).toBeNull();
+      expect(report).toMatchObject({ created: 1 });
+      const finding = await findingOf(low);
+      expect(finding).toMatchObject({ status: 'new', incidentId: null });
+      expect(await prisma.notification.count({ where: { findingId: finding.id } })).toBe(0);
     });
 
-    it('achado esperado por exceção não abre incidente', async () => {
+    it('alerta esperado por exceção já nasce legítimo, fora da fila, e não avisa', async () => {
       const address = ip();
       await prisma.alertException.create({
         data: {
@@ -528,51 +527,10 @@ describe('sync de alertas para achados (T5.3)', () => {
       });
       const doc = trailAlertA(8, { sourceIp: address, level: 12 });
       const report = await syncFor(new FakeIndexer([doc])).runOnce();
-      expect(report).toMatchObject({ excepted: 1, incidentsOpened: 0 });
-      expect((await findingOf(doc)).incidentId).toBeNull();
-    });
-
-    it('recurso da lista de proteção soma 15 na nota', async () => {
-      const bucketName = `relatorios-${randomInt(1e6, 9e6)}`;
-      await prisma.protectedResource.create({
-        data: {
-          tenantId: tenantA,
-          type: 's3_bucket',
-          identifier: bucketName,
-          reason: 'Dados de clientes',
-          createdById: creatorA,
-        },
-      });
-      const doc = trailAlertA(6, {
-        sourceIp: ip(),
-        identity: identity(),
-        level: 10,
-        eventName: 'PutBucketPolicy',
-        requestParameters: { bucketName },
-      });
-      await syncFor(new FakeIndexer([doc])).runOnce();
+      expect(report).toMatchObject({ excepted: 1 });
       const finding = await findingOf(doc);
-      expect(finding.resource).toBe(`s3:${bucketName}`);
-      const incident = await prisma.incident.findUniqueOrThrow({
-        where: { id: finding.incidentId as string },
-      });
-      expect(incident.riskScore).toBe(65);
-    });
-
-    it('incidente de outro cliente nunca recebe achado, nem com o mesmo IP', async () => {
-      const shared = ip();
-      const docB = cloudTrailAlert({ account: accountB, bucket: trailB, sourceIp: shared, level: 12 });
-      const fromB = {
-        ...docB,
-        id: `b.${randomInt(1e6, 9e6)}`,
-        timestamp: wazuhTime(new Date(Date.now() - 5 * MINUTE)),
-      };
-      const fromA = trailAlertA(4, { sourceIp: shared, level: 12 });
-      await syncFor(new FakeIndexer([fromB, fromA])).runOnce();
-      const [b, a] = [await findingOf(fromB, accountB), await findingOf(fromA)];
-      expect(a.incidentId).not.toBeNull();
-      expect(b.incidentId).not.toBeNull();
-      expect(a.incidentId).not.toBe(b.incidentId);
+      expect(finding).toMatchObject({ status: 'legitimate', incidentId: null });
+      expect(await prisma.notification.count({ where: { findingId: finding.id } })).toBe(0);
     });
   });
 
@@ -828,8 +786,6 @@ describe('sync de alertas para achados (T5.3)', () => {
         expect(await syncFor(new FakeIndexer([second])).runOnce()).toMatchObject({
           created: 1,
           excepted: 1,
-          incidentsOpened: 0,
-          incidentsJoined: 0,
         });
         const findings = await findingsOf(findingId);
         expect(findings.map((finding) => finding.status)).toEqual(['legitimate', 'legitimate']);
