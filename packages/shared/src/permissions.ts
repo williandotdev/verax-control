@@ -7,8 +7,8 @@ export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Readonly<Record<Role, string>> = {
   admin_verax: 'Administrador Verax',
-  admin_cliente: 'Administrador do cliente',
-  analista_cliente: 'Analista do cliente',
+  admin_cliente: 'Administrador',
+  analista_cliente: 'Analista',
   leitura: 'Somente leitura',
 };
 
