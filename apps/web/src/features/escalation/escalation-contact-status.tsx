@@ -19,7 +19,7 @@ const STATUS_STYLE: Readonly<Record<EscalationContactStatus, string>> = {
 function statusDetail(contact: EscalationContact): string {
   switch (contact.status) {
     case 'confirmed':
-      return `Confirmado em ${formatTimestamp(contact.confirmedAt ?? '')}. Recebe por e-mail só os avisos críticos (incidente crítico e achado crítico), sem detalhes.`;
+      return `Confirmado em ${formatTimestamp(contact.confirmedAt ?? '')}. Recebe por e-mail só os avisos críticos (incidente crítico e alerta crítico), sem detalhes.`;
     case 'unsubscribed':
       return `Saiu pelo link de um e-mail em ${formatTimestamp(contact.unsubscribedAt ?? '')} e não recebe mais avisos. Peça a confirmação de novo só se a pessoa pedir para voltar.`;
     case 'pending': {

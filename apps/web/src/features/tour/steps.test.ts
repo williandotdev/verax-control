@@ -51,11 +51,11 @@ describe('percurso do tour', () => {
     expect(tourStepsFor(permissionsOf('admin_verax'))).toHaveLength(TOUR_STEPS.length);
   });
 
-  it('os exemplos (incidente e achado) vêm do cliente da sessão, com a lista como reserva', () => {
+  it('os exemplos (incidente e alerta) vêm do cliente da sessão, com a lista como reserva', () => {
     const examples = TOUR_STEPS.filter((step) => step.example);
     expect(examples.map((step) => [step.id, step.example, step.path])).toEqual([
       ['incidente', 'incident', '/'],
-      ['achado-triagem', 'finding', '/?visao=achados'],
+      ['alerta-validacao', 'finding', '/'],
     ]);
   });
 });

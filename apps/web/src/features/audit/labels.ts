@@ -51,9 +51,13 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   'alert_exception.create': 'Criou exceção de alerta',
   'alert_exception.update': 'Alterou exceção de alerta',
   'alert_exception.delete': 'Removeu exceção de alerta',
-  'finding.status': 'Mudou o status de achado',
-  'finding.comment': 'Comentou achado',
+  'finding.status': 'Mudou o status de alerta',
+  'finding.comment': 'Comentou alerta',
   'incident.update': 'Alterou incidente',
+  'incident.create': 'Confirmou incidente (promoveu alertas)',
+  'incident.attach': 'Anexou alertas a incidente',
+  'incident.detach': 'Removeu alerta de incidente',
+  'incident.dissolve': 'Desfez incidente automático (alertas voltaram para validação)',
   'agents.install_instructions.view': 'Viu as instruções de instalação dos agentes',
 };
 
@@ -74,7 +78,7 @@ export const AUDIT_RESOURCE_LABELS: Readonly<Record<AuditResourceType, string>> 
   cloud_account: 'Contas cloud',
   protected_resource: 'Lista de proteção',
   alert_exception: 'Exceções',
-  finding: 'Achados',
+  finding: 'Alertas',
   incident: 'Incidentes',
   wazuh_agents: 'Agentes',
 };

@@ -9,6 +9,7 @@ import {
   findingSchema,
   type FindingStatusUpdate,
   paginatedSchema,
+  relatedFindingsSchema,
 } from '@verax/shared';
 import { toSearch } from '@/features/detections/detections-api';
 import { api } from '@/lib/api';
@@ -16,7 +17,7 @@ import { api } from '@/lib/api';
 const findingPageSchema = paginatedSchema(findingSchema);
 const cloudAccountPageSchema = paginatedSchema(cloudAccountSchema);
 
-/** Lista de achados do cliente da sessão, com os filtros na query string (T5.4). */
+/** Lista de alertas (achados) do cliente da sessão, com os filtros na query string (T5.4). */
 export function useFindings(query: FindingListQuery, enabled: boolean) {
   return useQuery({
     queryKey: ['findings', query],
@@ -86,5 +87,15 @@ export function useCreateAlertException() {
   return useMutation({
     mutationFn: (exception: AlertExceptionCreate) =>
       api.post('/v1/alert-exceptions', exception, alertExceptionSchema),
+  });
+}
+
+/** Alertas relacionados (mesmo usuário, chave, IP ou recurso, perto no tempo): a sugestão ao promover. */
+export function useRelatedFindings(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['related-findings', id],
+    queryFn: () => api.get(`/v1/findings/${encodeURIComponent(id)}/related`, relatedFindingsSchema),
+    enabled,
+    select: (response) => response.items,
   });
 }

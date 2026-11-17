@@ -5,14 +5,17 @@ import { skipDemoTour } from './demo-tour';
 /**
  * Tela Detecções (16/11/2026, no lugar da Torre, de Incidentes, de Achados e de Relatórios) no navegador, sobre a
  * demonstração (`dev:mock`): sem violação de acessibilidade (WCAG 2.2 AA, inclusive contraste) nos dois temas, no
- * computador e a 390 px, com o que só aparece na interação (a gaveta da coleta com o pulso, os achados de um incidente,
- * o detalhe ao lado ou na gaveta, os filtros a mais e as análises); sem rolagem horizontal da página; o resumo
- * recolhido lembrado; os endereços de antes; e a exportação em CSV.
+ * computador e a 390 px, com o que só aparece na interação (a gaveta da coleta com o pulso, a lista de alertas e a de
+ * incidentes, os alertas de um incidente, o detalhe ao lado ou na gaveta, o diálogo de promover a incidente, os filtros
+ * a mais e as análises); sem rolagem horizontal da página; o resumo recolhido lembrado; os endereços de antes; e a
+ * exportação em CSV.
  */
 
 const INCIDENT = '018f2c1e-0000-7000-8000-0000000a0001';
 const FINDING = '018f2c1e-0000-7000-8000-000000001001';
 const INCIDENT_TITLE = /^Atividade suspeita com a chave de acesso/;
+/** "Política de bucket alterada para permitir leitura pública": alerta a validar, com um relacionado. */
+const BUCKET_ALERT = '018f2c1e-0000-7000-8000-00000000100e';
 
 async function open(page: Page, path = '/') {
   await page.goto(path);
@@ -74,20 +77,48 @@ test.describe('tela Detecções (modo mock)', () => {
         const health = page.getByRole('dialog', { name: 'Saúde da coleta' });
         await expect(health.getByText('Parada', { exact: true })).toBeVisible();
         await expect(health.getByRole('region', { name: 'Agentes online' })).toContainText('3 de 5');
-        await health.getByRole('img', { name: /^Achados por hora nas últimas 24 horas/ }).focus();
+        await health.getByRole('img', { name: /^Alertas por hora nas últimas 24 horas/ }).focus();
         await page.keyboard.press('ArrowLeft');
-        await expect(page.getByText(/^\d{2}:\d{2}: \d+ achados?\.$/)).toBeAttached();
+        await expect(page.getByText(/^\d{2}:\d{2}: \d+ alertas?\.$/)).toBeAttached();
         expect(await violations(page)).toEqual([]);
         await page.keyboard.press('Escape');
         await expect(health).toHaveCount(0);
 
-        // A lista agrupada, com os achados de um incidente abertos e os filtros a mais.
-        const list = page.getByRole('table', { name: /^Detecções do cliente/ });
+        // A lista de alertas (o padrão), com a marca dos que estão em incidente.
+        const alerts = page.getByRole('table', { name: 'Alertas do cliente' });
+        // No celular, a marca vai em texto embaixo do título; no computador, é o botão que abre o incidente.
+        await expect(
+          device === 'celular'
+            ? alerts.getByText('em incidente', { exact: true }).first()
+            : alerts.getByRole('button', { name: /^Em incidente/ }).first(),
+        ).toBeVisible();
+        expect(await violations(page)).toEqual([]);
+
+        // O alerta a validar: o diálogo de promover a incidente, com os relacionados.
+        // No celular, o detalhe abre numa gaveta modal, que tira o resto da tela da árvore de acessibilidade.
+        await page.goto(`/?alerta=${BUCKET_ALERT}`);
+        await page.getByRole('button', { name: 'Promover a incidente' }).click();
+        const promote = page.getByRole('dialog', { name: 'Promover a incidente' });
+        await expect(promote.getByRole('checkbox', { name: /Bloqueio de acesso público/ })).toBeChecked();
+        expect(await violations(page)).toEqual([]);
+        await noHorizontalScroll(page);
+        await promote.getByRole('button', { name: 'Cancelar' }).click();
+        await expect(promote).toHaveCount(0);
+        if (device === 'celular') {
+          await page.keyboard.press('Escape');
+          await expect(page.getByRole('dialog')).toHaveCount(0);
+        } else {
+          await page.getByRole('button', { name: 'Fechar o detalhe' }).click();
+        }
+
+        // A lista de incidentes, com os alertas de um incidente abertos e os filtros a mais.
+        await page.getByRole('button', { name: 'Incidentes', exact: true }).click();
+        const list = page.getByRole('table', { name: /^Incidentes do cliente/ });
         await list
-          .getByRole('button', { name: /^Abrir os achados do incidente: Atividade suspeita com a chave/ })
+          .getByRole('button', { name: /^Abrir os alertas do incidente: Atividade suspeita com a chave/ })
           .click();
         await expect(
-          list.getByRole('button', { name: /^Abrir o achado: Tentativa de desligar/ }),
+          list.getByRole('button', { name: /^Abrir o alerta: Tentativa de desligar/ }),
         ).toBeVisible();
         await page.getByRole('button', { name: 'Mais filtros' }).click();
         await expect(page.getByLabel('Tática do MITRE')).toBeVisible();
@@ -148,7 +179,7 @@ test.describe('tela Detecções (modo mock)', () => {
   test('recolher o resumo sobe a lista e fica lembrado depois de recarregar', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await open(page);
-    const list = page.getByRole('table', { name: /^Detecções do cliente/ });
+    const list = page.getByRole('table', { name: 'Alertas do cliente' });
     const before = (await list.boundingBox())?.y ?? 0;
     await page.getByRole('button', { name: /^Recolher/ }).click();
     await expect.poll(async () => (await list.boundingBox())?.y ?? 0).toBeLessThan(before - 200);
@@ -160,16 +191,16 @@ test.describe('tela Detecções (modo mock)', () => {
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await open(page, '/?visao=achados&severidade=critical');
+    await open(page, '/?severidade=critical');
     const finding = page.getByRole('button', {
-      name: 'Abrir o achado: Tentativa de desligar a trilha do CloudTrail',
+      name: 'Abrir o alerta: Tentativa de desligar a trilha do CloudTrail',
     });
     await finding.focus();
     await page.keyboard.press('Enter');
     const aside = page.getByRole('complementary', { name: 'Tentativa de desligar a trilha do CloudTrail' });
     await expect(aside.getByRole('heading', { level: 2 })).toBeFocused();
     // Não é modal: a lista continua na árvore de acessibilidade.
-    await expect(page.getByRole('table', { name: 'Achados do cliente' })).toBeVisible();
+    await expect(page.getByRole('table', { name: 'Alertas do cliente' })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(aside).toHaveCount(0);
     await expect(finding).toBeFocused();
@@ -182,7 +213,7 @@ test.describe('tela Detecções (modo mock)', () => {
     await expect(page.getByRole('complementary', { name: INCIDENT_TITLE })).toBeVisible();
 
     await page.goto(`/achados?achado=${FINDING}`);
-    await expect(page).toHaveURL(new RegExp(`/\\?visao=achados&achado=${FINDING}$`));
+    await expect(page).toHaveURL(new RegExp(`/\\?alerta=${FINDING}$`));
     await expect(
       page.getByRole('complementary', { name: 'Tentativa de desligar a trilha do CloudTrail' }),
     ).toBeVisible();
@@ -193,11 +224,11 @@ test.describe('tela Detecções (modo mock)', () => {
   });
 
   test('exporta em CSV a lista filtrada', async ({ page }) => {
-    await open(page, '/?visao=achados&severidade=critical');
+    await open(page, '/?severidade=critical');
     const download = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Exportar CSV' }).click();
     const file = await download;
-    expect(file.suggestedFilename()).toMatch(/^verax-achados-\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(file.suggestedFilename()).toMatch(/^verax-alertas-\d{4}-\d{2}-\d{2}\.csv$/);
     await expect(page.getByText(/^\d+ linhas? exportadas?\.$/)).toBeVisible();
   });
 });

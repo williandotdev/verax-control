@@ -41,19 +41,19 @@ test.describe('histórico de 12 meses (modo mock)', () => {
     ] as const) {
       const label = `${theme === 'light' ? 'claro' : 'escuro'}, ${device}`;
 
-      test(`achados: a leitura escolhe 12 meses (${label})`, async ({ page }) => {
+      test(`alertas: a leitura escolhe 12 meses (${label})`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         await page.addInitScript((value) => {
           window.localStorage.setItem('verax.mock.role', 'leitura');
           window.localStorage.setItem('verax.theme', value);
         }, theme);
-        await page.goto('/?visao=achados');
+        await page.goto('/');
         await ready(page, 'Detecções');
         const period = page.getByRole('combobox', { name: 'Período' });
         await expect(period.getByRole('option', { name: 'Últimos 12 meses' })).toBeAttached();
         await period.selectOption('12m');
-        await expect(page).toHaveURL(/\?visao=achados&periodo=12m$/);
-        await expect(page.getByRole('table', { name: 'Achados do cliente' })).toBeVisible();
+        await expect(page).toHaveURL(/\/\?periodo=12m$/);
+        await expect(page.getByRole('table', { name: 'Alertas do cliente' })).toBeVisible();
         await ready(page, 'Detecções');
         expect(await violations(page)).toEqual([]);
         await noHorizontalScroll(page);
@@ -98,7 +98,7 @@ test.describe('histórico de 12 meses (modo mock)', () => {
       });
     }
 
-    test(`detalhe do achado: o evento bruto disponível por 30 dias (${theme === 'light' ? 'claro' : 'escuro'})`, async ({
+    test(`detalhe do alerta: o evento bruto disponível por 30 dias (${theme === 'light' ? 'claro' : 'escuro'})`, async ({
       page,
     }) => {
       await page.addInitScript((value) => {
@@ -106,7 +106,7 @@ test.describe('histórico de 12 meses (modo mock)', () => {
         window.localStorage.setItem('verax.theme', value);
       }, theme);
       // Na tela larga (1280 px), o detalhe fica ao lado da lista.
-      await page.goto(`/?visao=achados&achado=${FINDING}`);
+      await page.goto(`/?alerta=${FINDING}`);
       const panel = page.getByRole('complementary', {
         name: 'Tentativa de desligar a trilha do CloudTrail',
       });
@@ -114,7 +114,7 @@ test.describe('histórico de 12 meses (modo mock)', () => {
       await panel.getByText('Evento bruto', { exact: true }).click();
       await expect(
         panel.getByText(
-          'Evento bruto do log disponível por 30 dias. Os dados do achado acima ficam pelo histórico do plano, de 365 dias.',
+          'Evento bruto do log disponível por 30 dias. Os dados do alerta acima ficam pelo histórico do plano, de 365 dias.',
         ),
       ).toBeVisible();
       await expect(panel.getByText(/"eventName": "StopLogging"/)).toBeVisible();

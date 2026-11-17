@@ -40,7 +40,7 @@ describe('Auditoria', () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Auditoria' })).toBeInTheDocument();
     const lines = await rows();
     expect(lines[0]).toHaveTextContent('Ana Souza');
-    expect(lines[0]).toHaveTextContent('Mudou o status de achado');
+    expect(lines[0]).toHaveTextContent('Mudou o status de alerta');
     const verax = lines.find((line) => line.textContent?.includes('Equipe Verax entrou no cliente'));
     expect(verax).toHaveTextContent('Verax');
     expect(verax).not.toHaveTextContent('198.51.100.7');

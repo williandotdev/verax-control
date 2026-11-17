@@ -17,6 +17,8 @@ import {
   incidentListQuerySchema,
   incidentSchema,
   type IncidentStatus,
+  incidentAttachSchema,
+  incidentCreateSchema,
   incidentUpdateSchema,
 } from '@verax/shared';
 import { http, HttpResponse } from 'msw';
@@ -41,21 +43,34 @@ const [VERAX, ANA, JOAO, CARLOS] = DEMO_ASSIGNEES;
 export interface IncidentState {
   status: IncidentStatus;
   assignee: Author | null;
+  /** Quem confirmou o incidente (promoveu os alertas). */
+  createdBy: Author | null;
 }
 
-/** Status e responsável de cada incidente fictício: dois sem responsável, como a Torre mostra. */
+/**
+ * Os incidentes fictícios, todos confirmados por uma pessoa (decisão de 17/11/2026: o sync não abre incidente): dois
+ * em análise e um aberto sem responsável no Alfa, e um resolvido no Beta. Os outros alertas do Alfa e do Beta esperam
+ * validação na lista de alertas.
+ */
 export function initialIncidents(): Map<string, IncidentState> {
   return new Map<string, IncidentState>([
-    [DEMO_INCIDENTS.chaveComprometida, { status: 'investigating', assignee: VERAX ?? null }],
-    [DEMO_INCIDENTS.forcaBrutaSsh, { status: 'investigating', assignee: ANA ?? null }],
-    [DEMO_INCIDENTS.ataqueWaf, { status: 'open', assignee: null }],
-    [DEMO_INCIDENTS.bucketPublico, { status: 'open', assignee: CARLOS ?? null }],
-    [DEMO_INCIDENTS.portaSsh, { status: 'investigating', assignee: JOAO ?? null }],
-    [DEMO_INCIDENTS.loginSemMfa, { status: 'open', assignee: null }],
-    [DEMO_INCIDENTS.betaWaf, { status: 'open', assignee: VERAX ?? null }],
-    [DEMO_INCIDENTS.betaLogin, { status: 'resolved', assignee: VERAX ?? null }],
+    [
+      DEMO_INCIDENTS.chaveComprometida,
+      { status: 'investigating', assignee: VERAX ?? null, createdBy: VERAX ?? null },
+    ],
+    [
+      DEMO_INCIDENTS.forcaBrutaSsh,
+      { status: 'investigating', assignee: ANA ?? null, createdBy: ANA ?? null },
+    ],
+    [DEMO_INCIDENTS.ataqueWaf, { status: 'open', assignee: null, createdBy: JOAO ?? null }],
+    [DEMO_INCIDENTS.betaLogin, { status: 'resolved', assignee: VERAX ?? null, createdBy: CARLOS ?? null }],
   ]);
 }
+
+let created = 0;
+/** Id de um incidente confirmado na demonstração. */
+const newIncidentId = (): string =>
+  `018f2c1e-0000-7000-8000-${(0xc00000 + (created += 1)).toString(16).padStart(12, '0')}`;
 
 const ORDER: readonly FindingSeverity[] = ['low', 'medium', 'high', 'critical'];
 const BASE: Record<FindingSeverity, number> = { critical: 70, high: 50, medium: 30, low: 10 };
@@ -92,6 +107,7 @@ function summarize(id: string, findings: FindingDetail[], state: IncidentState):
     mitreTactics: unique(sorted.flatMap((finding) => finding.mitreTactics)),
     mitreTechniques: unique(sorted.flatMap((finding) => finding.mitreTechniques)),
     assignee: state.assignee,
+    createdBy: state.createdBy,
     findings: sorted.map(
       ({ ruleId: _r, ruleLevel: _l, mitreTechniques: _t, comments: _c, rawEvent: _e, ...finding }) => finding,
     ),
@@ -116,8 +132,12 @@ export function incidentSummaries(
   return list.sort((a, b) => b.riskScore - a.riskScore || b.lastSeenAt.localeCompare(a.lastSeenAt));
 }
 
-const toSummary = ({ mitreTechniques: _t, findings: _f, ...incident }: IncidentDetail): Incident =>
-  incidentSchema.parse(incident);
+const toSummary = ({
+  mitreTechniques: _t,
+  findings: _f,
+  createdBy: _c,
+  ...incident
+}: IncidentDetail): Incident => incidentSchema.parse(incident);
 
 const findingsOf = (all: readonly FindingDetail[], incidentId: string) =>
   all.filter((finding) => finding.incidentId === incidentId);
@@ -132,8 +152,9 @@ const summaryOf = ({
 }: FindingDetail): Finding => finding;
 
 /**
- * Incidentes do modo mock (T5.7), montados dos mesmos achados da tela de Achados: lista ordenada pela nota,
- * filtros, detalhe com a linha do tempo, e mudança de status e responsável com permissão e CSRF.
+ * Incidentes do modo mock (T5.7), montados dos mesmos alertas da lista de alertas: lista ordenada pela nota, filtros,
+ * detalhe com a linha do tempo, mudança de status e responsável, e o trabalho de quem confirma (promover, anexar e
+ * remover alertas), com permissão e CSRF, como a API.
  */
 export function createIncidentHandlers(
   state: MockState,
@@ -148,7 +169,104 @@ export function createIncidentHandlers(
     return { me: state.me, list } as const;
   };
 
+  const writeDenied = (request: Request) => {
+    if (!state.me?.permissions.includes('incidents:write')) return problem(403, 'Sem permissão');
+    if (request.headers.get('X-CSRF-Token') === null) return problem(403, 'CSRF', 'CSRF_INVALID');
+    return null;
+  };
+  /** Os alertas pedidos, todos do cliente e fora de incidente (404 se algum não é do cliente; 409 se já está num). */
+  const freeFindings = (tenantId: string, ids: readonly string[]) => {
+    const own = findings.get(tenantId) ?? [];
+    const rows = ids.map((id) => own.find((finding) => finding.id === id));
+    if (rows.some((row) => row === undefined))
+      return { error: problem(404, 'Alerta não encontrado') } as const;
+    const found = rows as FindingDetail[];
+    if (found.some((row) => row.incidentId !== null)) {
+      return {
+        error: problem(
+          409,
+          'Um dos alertas já está em um incidente. Remova-o de lá antes.',
+          'FINDING_IN_INCIDENT',
+        ),
+      } as const;
+    }
+    return { rows: found } as const;
+  };
+  const detailOf = (id: string) => {
+    const after = scoped();
+    if ('error' in after) return after.error;
+    return HttpResponse.json(after.list.find((candidate) => candidate.id === id));
+  };
+  const resolvedRefusal = () =>
+    problem(409, 'Incidente resolvido não muda de alertas. Reabra o incidente antes.', 'INCIDENT_RESOLVED');
+
   return [
+    http.post(url('/v1/incidents'), async ({ request }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const denied = writeDenied(request);
+      if (denied) return denied;
+      const body = incidentCreateSchema.safeParse(await request.json());
+      if (!body.success) return problem(400, 'Dados inválidos');
+      const free = freeFindings(scope.me.scopeTenantId ?? '', body.data.findingIds);
+      if ('error' in free) return free.error;
+      const assignee = DEMO_ASSIGNEES.find((candidate) => candidate.id === body.data.assigneeId) ?? null;
+      if (body.data.assigneeId && !assignee) return problem(400, 'Responsável inválido para este cliente');
+      const id = newIncidentId();
+      incidents.set(id, {
+        status: 'open',
+        assignee,
+        createdBy: { id: scope.me.userId, name: scope.me.email },
+      });
+      for (const finding of free.rows) finding.incidentId = id;
+      const after = scoped();
+      if ('error' in after) return after.error;
+      return HttpResponse.json(
+        after.list.find((candidate) => candidate.id === id),
+        { status: 201 },
+      );
+    }),
+
+    http.post(url('/v1/incidents/:id/findings'), async ({ params, request }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const denied = writeDenied(request);
+      if (denied) return denied;
+      const id = String(params['id']);
+      const incident = scope.list.find((candidate) => candidate.id === id);
+      if (!incident) return problem(404, 'Incidente não encontrado');
+      if (incident.status === 'resolved') return resolvedRefusal();
+      const body = incidentAttachSchema.safeParse(await request.json());
+      if (!body.success) return problem(400, 'Dados inválidos');
+      const free = freeFindings(scope.me.scopeTenantId ?? '', body.data.findingIds);
+      if ('error' in free) return free.error;
+      for (const finding of free.rows) finding.incidentId = id;
+      return detailOf(id);
+    }),
+
+    http.delete(url('/v1/incidents/:id/findings/:findingId'), ({ params, request }) => {
+      const scope = scoped();
+      if ('error' in scope) return scope.error;
+      const denied = writeDenied(request);
+      if (denied) return denied;
+      const id = String(params['id']);
+      const incident = scope.list.find((candidate) => candidate.id === id);
+      if (!incident) return problem(404, 'Incidente não encontrado');
+      if (incident.status === 'resolved') return resolvedRefusal();
+      const own = findingsOf(findings.get(scope.me.scopeTenantId ?? '') ?? [], id);
+      const finding = own.find((candidate) => candidate.id === params['findingId']);
+      if (!finding) return problem(404, 'Alerta não encontrado');
+      if (own.length <= 1) {
+        return problem(
+          409,
+          'O incidente precisa de pelo menos um alerta. Para encerrá-lo, marque o incidente como resolvido.',
+          'INCIDENT_LAST_FINDING',
+        );
+      }
+      finding.incidentId = null;
+      return detailOf(id);
+    }),
+
     http.get(url('/v1/incidents/assignees'), () => {
       const scope = scoped();
       if ('error' in scope) return scope.error;
@@ -176,7 +294,7 @@ export function createIncidentHandlers(
       });
     }),
 
-    // Tela Detecções, visão agrupada: os incidentes e os achados fora de incidente, com a regra e a ordem da API.
+    // Tela Detecções: os incidentes (e, sem `kind=incident`, os alertas fora de incidente), com a regra e a ordem da API.
     http.get(url('/v1/detections'), ({ request }) => {
       const scope = scoped();
       if ('error' in scope) return scope.error;
@@ -188,7 +306,7 @@ export function createIncidentHandlers(
       }
       const query = detectionListQuerySchema.safeParse(Object.fromEntries(new URL(request.url).searchParams));
       if (!query.success) return problem(400, 'Filtro inválido');
-      const { page, pageSize, sort = 'recent', ...filters } = query.data;
+      const { page, pageSize, sort = 'recent', kind, ...filters } = query.data;
       const refusal = demoPeriodRefusal(state, filters.period) ?? demoRangeRefusal(state, filters.from);
       if (refusal) return refusal;
       const now = new Date();
@@ -209,7 +327,7 @@ export function createIncidentHandlers(
                 : own.length,
             };
           }),
-        ...(filters.unassigned
+        ...(filters.unassigned || kind === 'incident'
           ? []
           : tenantFindings
               .filter(

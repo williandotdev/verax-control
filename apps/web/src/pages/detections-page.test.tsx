@@ -26,6 +26,10 @@ afterAll(() => server.close());
 const [, beta] = DEMO_TENANTS.map((tenant) => tenant.id);
 const INCIDENT = DEMO_INCIDENTS.chaveComprometida;
 const FINDING = '018f2c1e-0000-7000-8000-000000001001';
+/** "Política de bucket alterada para permitir leitura pública": alerta a validar, com um relacionado (o bloqueio). */
+const BUCKET_ALERT = '018f2c1e-0000-7000-8000-00000000100e';
+/** Espera maior para o que depende de várias respostas em sequência (a suíte inteira roda em paralelo). */
+const SLOW = { timeout: 5_000 };
 
 function renderAt(path: string, state: MockState = { me: demoMe('analista_cliente') }) {
   server.use(...createHandlers(state));
@@ -54,7 +58,7 @@ function mockMedia(matches: (query: string) => boolean) {
   }));
 }
 
-const list = async () => screen.findByRole('table', { name: /^Detecções do cliente|^Achados do cliente/ });
+const list = async () => screen.findByRole('table', { name: /^Incidentes do cliente|^Alertas do cliente/ });
 const rows = async () =>
   within(await list())
     .getAllByRole('row')
@@ -62,35 +66,50 @@ const rows = async () =>
 const search = (router: ReturnType<typeof renderAt>) => new URLSearchParams(router.state.location.search);
 
 describe('Detecções: a lista', () => {
-  it('agrupada por incidente: o incidente com nota, responsável e achados, e os achados fora de incidente', async () => {
-    renderAt('/');
+  it('por padrão, os alertas: os a validar e os confirmados, com a marca "Em incidente" que abre o incidente', async () => {
+    const router = renderAt('/');
     expect(await screen.findByRole('heading', { level: 1, name: 'Detecções' })).toBeInTheDocument();
-    const table = await list();
-    const incident = within(table).getByRole('button', {
+    const table = await screen.findByRole('table', { name: 'Alertas do cliente' });
+    expect(screen.getByRole('button', { name: 'Alertas' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(table).getAllByText('A validar').length).toBeGreaterThan(0);
+    const badges = within(table).getAllByRole('button', { name: /^Em incidente/ });
+    expect(badges.length).toBeGreaterThan(0);
+    await userEvent.click(badges[0] as HTMLElement);
+    await waitFor(() => expect(search(router).get('incidente')).not.toBeNull());
+  });
+
+  it('a visão Incidentes: só os confirmados, com nota, responsável e os alertas de cada um logo abaixo', async () => {
+    const router = renderAt('/');
+    await screen.findByRole('table', { name: 'Alertas do cliente' });
+    await userEvent.click(screen.getByRole('button', { name: 'Incidentes' }));
+    await waitFor(() => expect(search(router).get('visao')).toBe('incidentes'));
+    const table = await screen.findByRole('table', {
+      name: 'Incidentes do cliente, com os alertas de cada um',
+    });
+    const incident = await within(table).findByRole('button', {
       name: /^Abrir o incidente: Atividade suspeita com a chave/,
     });
     const row = incident.closest('tr') as HTMLElement;
-    expect(row).toHaveTextContent(/nota de risco 76 · 3 achados/);
+    expect(row).toHaveTextContent(/nota de risco 76 · 3 alertas/);
     expect(row).toHaveTextContent('Equipe Verax');
-    expect(within(table).getAllByText(/^Achado fora de incidente/).length).toBeGreaterThan(0);
-    // A linha do incidente abre os achados dele logo abaixo.
-    const expand = within(row).getByRole('button', { name: /^Abrir os achados do incidente/ });
+    expect(within(table).queryAllByText(/^Alerta fora de incidente/)).toHaveLength(0);
+    // A linha do incidente abre os alertas dele logo abaixo.
+    const expand = within(row).getByRole('button', { name: /^Abrir os alertas do incidente/ });
     expect(expand).toHaveAttribute('aria-expanded', 'false');
     await userEvent.click(expand);
     expect(expand).toHaveAttribute('aria-expanded', 'true');
     const children = document.getElementById(expand.getAttribute('aria-controls') ?? '') as HTMLElement;
-    expect(await within(children).findAllByRole('button', { name: /^Abrir o achado/ })).toHaveLength(3);
+    expect(await within(children).findAllByRole('button', { name: /^Abrir o alerta/ })).toHaveLength(3);
   });
 
-  it('"Todos os achados": a lista de achados, pela URL; voltar ao agrupado tira o filtro de responsável', async () => {
-    const router = renderAt('/?responsavel=nenhum');
-    await list();
-    expect(within(await list()).queryAllByText(/^Achado fora de incidente/)).toHaveLength(0);
-    await userEvent.click(screen.getByRole('button', { name: 'Todos os achados' }));
-    await waitFor(() => expect(search(router).get('visao')).toBe('achados'));
+  it('incidentes sem responsável pela URL; voltar aos alertas tira o filtro de responsável', async () => {
+    const router = renderAt('/?visao=incidentes&responsavel=nenhum');
+    const table = await screen.findByRole('table', { name: /^Incidentes do cliente/ });
+    expect(await within(table).findAllByRole('button', { name: /^Abrir o incidente/ })).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: 'Alertas' }));
+    await waitFor(() => expect(search(router).get('visao')).toBeNull());
     expect(search(router).get('responsavel')).toBeNull();
-    expect(await screen.findByRole('table', { name: 'Achados do cliente' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Todos os achados' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByRole('table', { name: 'Alertas do cliente' })).toBeInTheDocument();
   });
 
   it('um filtro só: severidade, status, busca e "mais filtros", tudo na URL, e "Limpar filtros"', async () => {
@@ -136,7 +155,7 @@ describe('Detecções: a lista', () => {
     };
     await userEvent.type(screen.getByLabelText('De'), day(20));
     await userEvent.type(screen.getByLabelText('Até'), day(19));
-    expect(await screen.findByText('Nenhuma detecção com esses filtros')).toBeInTheDocument();
+    expect(await screen.findByText('Nenhum alerta com esses filtros')).toBeInTheDocument();
   });
 
   it('a página da URL e a paginação da API', async () => {
@@ -156,7 +175,7 @@ describe('Detecções: a lista', () => {
   it('erro da API: a mensagem e o "tentar de novo"', async () => {
     renderAt('/');
     server.use(
-      http.get(`${API_URL}/v1/detections`, () => HttpResponse.json({ message: 'x' }, { status: 500 })),
+      http.get(`${API_URL}/v1/findings`, () => HttpResponse.json({ message: 'x' }, { status: 500 })),
     );
     expect(await screen.findByRole('button', { name: /Tentar de novo/ })).toBeInTheDocument();
   });
@@ -164,7 +183,7 @@ describe('Detecções: a lista', () => {
 
 describe('Detecções: o detalhe e a triagem', () => {
   it('o incidente abre na gaveta (tela estreita), com o resumo, o tratamento e a linha do tempo; o status muda ali', async () => {
-    const router = renderAt('/');
+    const router = renderAt('/?visao=incidentes');
     await userEvent.click(
       await within(await list()).findByRole('button', {
         name: /^Abrir o incidente: Atividade suspeita com a chave/,
@@ -174,25 +193,26 @@ describe('Detecções: o detalhe e a triagem', () => {
     const dialog = await screen.findByRole('dialog', { name: /Atividade suspeita com a chave/ });
     expect(within(dialog).getByRole('heading', { name: 'Resumo' })).toBeInTheDocument();
     expect(within(dialog).getByText(/Primeiro passo:/)).toBeInTheDocument();
-    expect(within(dialog).getByRole('heading', { name: /Linha do tempo \(3 achados\)/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole('heading', { name: /Linha do tempo \(3 alertas\)/ })).toBeInTheDocument();
+    expect(within(dialog).getByText(/confirmado por Equipe Verax/)).toBeInTheDocument();
     await userEvent.selectOptions(within(dialog).getByLabelText('Status'), 'resolved');
     // A lista atrás da gaveta (escondida do leitor de tela enquanto ela está aberta) já mostra o status novo.
     await waitFor(() => {
-      const table = screen.getByRole('table', { name: /^Detecções do cliente/, hidden: true });
+      const table = screen.getByRole('table', { name: /^Incidentes do cliente/, hidden: true });
       const row = within(table)
         .getByRole('button', { name: /^Abrir o incidente: Atividade suspeita com a chave/, hidden: true })
         .closest('tr') as HTMLElement;
       expect(row).toHaveTextContent('Resolvido');
     });
-    // Um achado da linha do tempo abre no mesmo painel.
+    // Um alerta da linha do tempo abre no mesmo painel.
     await userEvent.click(within(dialog).getAllByRole('link')[0] as HTMLElement);
-    await waitFor(() => expect(search(router).get('achado')).not.toBeNull());
+    await waitFor(() => expect(search(router).get('alerta')).not.toBeNull());
     await userEvent.keyboard('{Escape}');
-    await waitFor(() => expect(search(router).get('achado')).toBeNull());
+    await waitFor(() => expect(search(router).get('alerta')).toBeNull());
     expect(search(router).get('incidente')).toBeNull();
   });
 
-  it('o achado: triagem no lugar, com a oferta de exceção ao marcar como legítimo', async () => {
+  it('o alerta (endereço de antes): triagem no lugar, com a oferta de exceção ao marcar como legítimo', async () => {
     const router = renderAt(`/?visao=achados&achado=${FINDING}`);
     const dialog = await screen.findByRole('dialog', {
       name: 'Tentativa de desligar a trilha do CloudTrail',
@@ -201,27 +221,106 @@ describe('Detecções: o detalhe e a triagem', () => {
     expect(await within(dialog).findByText('Criar exceção para alertas iguais?')).toBeInTheDocument();
     await waitFor(async () => {
       const row = within(await list())
-        .getByRole('button', { name: 'Abrir o achado: Tentativa de desligar a trilha do CloudTrail' })
+        .getByRole('button', { name: 'Abrir o alerta: Tentativa de desligar a trilha do CloudTrail' })
         .closest('tr') as HTMLElement;
       expect(row).toHaveTextContent('Legítimo');
     });
-    // O link "Ver incidente" troca o painel para o incidente do achado, sem sair da tela.
+    // O link "Ver incidente" troca o painel para o incidente do alerta, sem sair da tela.
     await userEvent.click(within(dialog).getByRole('button', { name: 'Agora não' }));
     await userEvent.click(within(screen.getByRole('dialog')).getByRole('link', { name: 'Ver incidente' }));
     await waitFor(() => expect(search(router).get('incidente')).toBe(INCIDENT));
     expect(search(router).get('visao')).toBe('achados');
   });
 
-  it('quem só lê vê o detalhe sem os botões de triagem nem os campos do tratamento', async () => {
+  it('quem só lê vê o detalhe sem os botões de triagem, de validação nem os campos do tratamento', async () => {
     renderAt(`/?incidente=${INCIDENT}`, { me: demoMe('leitura') });
     const dialog = await screen.findByRole('dialog', { name: /Atividade suspeita com a chave/ });
     expect(within(dialog).queryByRole('combobox', { name: 'Status' })).toBeNull();
     expect(within(dialog).getByText('Equipe Verax')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /^Remover do incidente/ })).toBeNull();
   });
+
+  it('quem só lê não vê "Promover a incidente" nem "Anexar"', async () => {
+    renderAt(`/?alerta=${BUCKET_ALERT}`, { me: demoMe('leitura') });
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Política de bucket alterada para permitir leitura pública',
+    });
+    expect(within(dialog).queryByRole('button', { name: 'Promover a incidente' })).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Anexar a um incidente aberto' })).toBeNull();
+  });
+
+  it(
+    'promover a incidente: os relacionados vêm marcados, e o incidente confirmado abre no painel',
+    { timeout: 15_000 },
+    async () => {
+      const router = renderAt(`/?alerta=${BUCKET_ALERT}`);
+      const panel = await screen.findByRole('dialog', {
+        name: 'Política de bucket alterada para permitir leitura pública',
+      });
+      await userEvent.click(within(panel).getByRole('button', { name: 'Promover a incidente' }));
+      const promote = await screen.findByRole('dialog', { name: 'Promover a incidente' });
+      const related = await within(promote).findByRole('checkbox', {
+        name: /Bloqueio de acesso público removido do bucket/,
+      });
+      expect(related).toBeChecked();
+      expect(within(promote).getByRole('status')).toHaveTextContent('1 alerta relacionado');
+      await userEvent.selectOptions(within(promote).getByLabelText('Responsável (opcional)'), 'demo-ana');
+      await userEvent.click(
+        within(promote).getByRole('button', { name: 'Confirmar incidente com 2 alertas' }),
+      );
+      await waitFor(() => expect(search(router).get('incidente')).not.toBeNull());
+      expect(search(router).get('alerta')).toBeNull();
+      const incident = await screen.findByRole(
+        'dialog',
+        { name: /Atividade suspeita do usuário carlos\.dev/ },
+        SLOW,
+      );
+      expect(
+        await within(incident).findByRole('heading', { name: /Linha do tempo \(2 alertas\)/ }, SLOW),
+      ).toBeInTheDocument();
+      expect(within(incident).getByLabelText('Responsável')).toHaveValue('demo-ana');
+    },
+  );
+
+  it(
+    'anexar a um incidente aberto e remover do incidente: o alerta volta para a validação',
+    { timeout: 15_000 },
+    async () => {
+      const router = renderAt(`/?alerta=${BUCKET_ALERT}`);
+      const panel = await screen.findByRole('dialog', {
+        name: 'Política de bucket alterada para permitir leitura pública',
+      });
+      await userEvent.click(within(panel).getByRole('button', { name: 'Anexar a um incidente aberto' }));
+      const select = await within(panel).findByLabelText('Incidente');
+      const option = within(select).getByRole<HTMLOptionElement>('option', {
+        name: /^Ataque a partir do IP 192\.0\.2\.200/,
+      });
+      await userEvent.selectOptions(select, option.value);
+      await userEvent.click(within(panel).getByRole('button', { name: 'Anexar' }));
+      await waitFor(() => expect(search(router).get('incidente')).toBe(option.value));
+      // Com o alerta do carlos.dev, o elo mais forte do incidente passa a ser o usuário.
+      const incident = await screen.findByRole(
+        'dialog',
+        { name: /Atividade suspeita do usuário carlos\.dev/ },
+        SLOW,
+      );
+      expect(
+        await within(incident).findByRole('heading', { name: /Linha do tempo \(4 alertas\)/ }, SLOW),
+      ).toBeInTheDocument();
+      await userEvent.click(
+        within(incident).getByRole('button', {
+          name: 'Remover do incidente: Política de bucket alterada para permitir leitura pública',
+        }),
+      );
+      expect(
+        await within(incident).findByRole('heading', { name: /Linha do tempo \(3 alertas\)/ }, SLOW),
+      ).toBeInTheDocument();
+    },
+  );
 
   it('na tela larga, o detalhe fica ao lado da lista; Esc fecha e o foco volta para o item', async () => {
     mockMedia((query) => query === '(min-width: 80rem)');
-    const router = renderAt('/');
+    const router = renderAt('/?visao=incidentes');
     const open = await within(await list()).findByRole('button', {
       name: /^Abrir o incidente: Atividade suspeita com a chave/,
     });
@@ -239,11 +338,11 @@ describe('Detecções: o detalhe e a triagem', () => {
 describe('Detecções: os endereços de antes', () => {
   it.each([
     [`/incidentes/${INCIDENT}`, (s: URLSearchParams) => s.get('incidente') === INCIDENT],
+    [`/achados?achado=${FINDING}`, (s: URLSearchParams) => s.get('alerta') === FINDING && !s.has('visao')],
     [
-      `/achados?achado=${FINDING}`,
-      (s: URLSearchParams) => s.get('achado') === FINDING && s.get('visao') === 'achados',
+      '/incidentes?responsavel=nenhum',
+      (s: URLSearchParams) => s.get('responsavel') === 'nenhum' && s.get('visao') === 'incidentes',
     ],
-    ['/incidentes?responsavel=nenhum', (s: URLSearchParams) => s.get('responsavel') === 'nenhum'],
     ['/relatorios?aba=mitre', (s: URLSearchParams) => s.get('analise') === 'mitre'],
   ])('%s leva à visão equivalente', async (path, check) => {
     const router = renderAt(path);
@@ -268,7 +367,8 @@ describe('Detecções: o resumo da situação', () => {
       '1 incidente crítico aberto, 2 incidentes altos abertos, nota de postura 69, abaixo de 70 e coleta parada (GCP).',
     );
     const decisions = within(strip).getByRole('region', { name: 'Decisões pendentes' });
-    expect(within(decisions).getByText('2 incidentes sem responsável')).toBeInTheDocument();
+    expect(within(decisions).getByText('1 incidente sem responsável')).toBeInTheDocument();
+    expect(within(decisions).getByText(/alertas? altos? ou críticos? para validar$/)).toBeInTheDocument();
     // Alerta sem dono é só do admin_verax.
     expect(within(decisions).queryByText(/conta não cadastrada/)).toBeNull();
     expect(within(strip).getByRole('link', { name: /Postura 69 de 100/ })).toHaveAttribute(
@@ -287,9 +387,8 @@ describe('Detecções: o resumo da situação', () => {
 
     await userEvent.click(within(decisions).getByRole('link', { name: 'Ver os incidentes' }));
     await waitFor(() => expect(search(router).get('responsavel')).toBe('nenhum'));
-    await waitFor(async () =>
-      expect(within(await list()).queryAllByText(/^Achado fora de incidente/)).toHaveLength(0),
-    );
+    expect(search(router).get('visao')).toBe('incidentes');
+    expect(await screen.findByRole('table', { name: /^Incidentes do cliente/ })).toBeInTheDocument();
   });
 
   it('recolhe e lembra a escolha por pessoa; recolhido, mostra as contagens', async () => {
@@ -379,7 +478,7 @@ describe('Detecções: o resumo da situação', () => {
 describe('Detecções: análise e exportação', () => {
   it('MITRE ATT&CK no período da tela; a tática filtra a lista', async () => {
     const router = renderAt('/?analise=mitre&periodo=7d');
-    expect(screen.queryByRole('table', { name: /^Detecções do cliente/ })).toBeNull();
+    expect(screen.queryByRole('table', { name: /^Alertas do cliente/ })).toBeNull();
     const tab = await screen.findByRole('tab', { name: 'MITRE ATT&CK' });
     expect(tab).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('table', { name: 'Táticas e técnicas do MITRE ATT&CK' });
@@ -407,7 +506,7 @@ describe('Detecções: análise e exportação', () => {
     await userEvent.click(point);
     await waitFor(() => expect(search(router).get('analise')).toBeNull());
     const params = search(router);
-    expect(params.get('achado') ?? params.get('incidente')).toBeTruthy();
+    expect(params.get('alerta') ?? params.get('incidente')).toBeTruthy();
     expect(await screen.findByRole('tab', { name: 'Lista' })).toHaveAttribute('aria-selected', 'true');
     expect((await screen.findAllByRole('complementary')).length).toBeGreaterThan(0);
   });
@@ -427,14 +526,17 @@ describe('Detecções: análise e exportação', () => {
     });
     URL.revokeObjectURL = vi.fn();
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    renderAt('/?severidade=critical');
+    renderAt('/?visao=incidentes&severidade=critical');
     await rows();
     await userEvent.click(screen.getByRole('button', { name: 'Exportar CSV' }));
     expect(await screen.findByText(/^\d+ linhas? exportadas?\.$/)).toBeInTheDocument();
     const text = await (blobs[0] as Blob).text();
     expect(text.split('\r\n')[0]).toContain('"Tipo";"ID";"Título";"Severidade"');
+    expect(text.split('\r\n')[0]).toContain('"Alertas"');
     expect(text).toContain('"Incidente"');
     expect(text).not.toContain('"Alto"');
+    // Na visão Incidentes, só os incidentes: nenhum alerta avulso.
+    expect(text).not.toContain('"Alerta";');
   });
 
   it('a análise só aparece para quem lê relatórios', async () => {

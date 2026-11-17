@@ -64,7 +64,7 @@ const ALLOWED_WITH_TEMPORARY_PASSWORD = new Set([
  * `localStorage['verax.mock.role']` (padrão: admin_verax). Os testes unitários passam o próprio estado.
  */
 export function createHandlers(state: MockState) {
-  // Achados, incidentes e Torre compartilham o mesmo estado: a triagem aparece em todas as telas.
+  // Alertas, incidentes e Torre compartilham o mesmo estado: a validação aparece em todas as telas.
   const findings = demoFindings();
   const admin = demoAdminStore();
   const incidents = initialIncidents();
@@ -84,9 +84,7 @@ export function createHandlers(state: MockState) {
       unassignedIncidents: open.filter((incident) => incident.assignee === null).length,
       untriagedFindings: (findings.get(tenantId) ?? []).filter(
         (finding) =>
-          (finding.severity === 'critical' || finding.severity === 'high') &&
-          finding.status === 'new' &&
-          finding.incidentId === null,
+          (finding.severity === 'critical' || finding.severity === 'high') && finding.status === 'new',
       ).length,
     };
   };

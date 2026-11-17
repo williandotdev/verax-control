@@ -34,7 +34,7 @@ export function MitreGrid({
       {tactics.map((tactic) => {
         const label = TACTIC_LABELS[tactic.name] ?? tactic.name;
         const top = tactic.techniques[0];
-        const description = `${label} (${tactic.id}): ${plural(tactic.findings, 'achado', 'achados')}, ${plural(tactic.incidents, 'incidente', 'incidentes')}`;
+        const description = `${label} (${tactic.id}): ${plural(tactic.findings, 'alerta', 'alertas')}, ${plural(tactic.incidents, 'incidente', 'incidentes')}`;
         const body = (
           <>
             <span className="block text-xs text-muted-foreground">{tactic.id}</span>

@@ -17,7 +17,7 @@ export interface TourStep {
   /** Link de saída, aberto em outra aba. */
   link?: { href: string; label: string };
   /**
-   * Passo que mostra um exemplo: o primeiro incidente ou achado do cliente da sessão, buscado na hora (o admin da
+   * Passo que mostra um exemplo: o primeiro incidente ou alerta do cliente da sessão, buscado na hora (o admin da
    * Verax pode ter trocado de cliente). Sem nenhum, o passo fica na lista (`path`).
    */
   example?: 'incident' | 'finding';
@@ -47,14 +47,14 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/',
     target: [tour('deteccoes-decisoes'), tour('deteccoes-situacao')],
     title: 'O que decidir agora',
-    body: 'Cada linha é uma decisão esperando alguém: incidentes sem responsável, achados altos ou críticos sem triagem e, para a equipe da Verax, alertas de contas não cadastradas. O botão filtra a lista. Ao lado, a saúde da coleta abre o detalhe de cada fonte.',
+    body: 'Cada linha é uma decisão esperando alguém: incidentes sem responsável, alertas altos ou críticos para validar e, para a equipe da Verax, alertas de contas não cadastradas. O botão filtra a lista. Ao lado, a saúde da coleta abre o detalhe de cada fonte.',
   },
   {
     id: 'deteccoes-radar',
     path: '/',
     target: [tour('deteccoes-radar'), tour('deteccoes-situacao')],
     title: 'Radar das últimas 24 horas',
-    body: 'Cada ponto é uma detecção: o ângulo é a origem (AWS, GCP, Cloudflare ou agentes), a distância do centro é a idade e a forma é a severidade. Passe o mouse, use as setas do teclado ou abra a tabela; Enter abre o achado.',
+    body: 'Cada ponto é uma detecção: o ângulo é a origem (AWS, GCP, Cloudflare ou agentes), a distância do centro é a idade e a forma é a severidade. Passe o mouse, use as setas do teclado ou abra a tabela; Enter abre o alerta.',
   },
   {
     id: 'seletor-cliente',
@@ -69,8 +69,8 @@ export const TOUR_STEPS: readonly TourStep[] = [
     path: '/',
     target: [inMain('deteccoes-lista'), inMain('filtros')],
     permission: 'incidents:read',
-    title: 'Uma lista só',
-    body: 'Achados com o mesmo usuário, chave, IP ou recurso viram um incidente, com nota de risco, responsável e os achados logo abaixo; os demais aparecem sozinhos. Troque para "Todos os achados" quando quiser ver um por um.',
+    title: 'Alerta, validação, incidente',
+    body: 'Cada evento suspeito vira um alerta para validar: pode ser falso positivo. Quando a ameaça é real, quem opera promove o alerta a incidente, com nota de risco e responsável. Troque para "Incidentes" para ver só os confirmados.',
   },
   {
     id: 'deteccoes-filtros',
@@ -87,16 +87,16 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [tour('incidente-resumo')],
     permission: 'incidents:read',
     title: 'Detalhe do incidente',
-    body: 'O detalhe abre ao lado da lista: a severidade, o status e a nota de risco, o resumo em português com o primeiro passo, o responsável, a linha do tempo dos achados e os ativos envolvidos.',
+    body: 'O detalhe abre ao lado da lista: a severidade, o status e a nota de risco, o resumo em português com o primeiro passo, o responsável, os alertas confirmados (com "Remover do incidente") e os ativos envolvidos.',
   },
   {
-    id: 'achado-triagem',
-    path: '/?visao=achados',
+    id: 'alerta-validacao',
+    path: '/',
     example: 'finding',
-    target: [tour('achado-triagem')],
+    target: [tour('alerta-validacao'), tour('achado-triagem')],
     permission: 'findings:triage',
-    title: 'Triagem e exceção',
-    body: 'No detalhe do achado, você coloca em análise, marca como legítimo ou dá como resolvido, com um comentário. Ao marcar como legítimo, o painel oferece criar uma exceção: alertas iguais da mesma regra passam a entrar como esperados.',
+    title: 'Validar o alerta',
+    body: 'No detalhe do alerta, você decide: ameaça real vira incidente ("Promover a incidente", com os relacionados já marcados, ou "Anexar a um incidente aberto"); falso positivo é marcado como legítimo, e o painel oferece uma exceção para alertas iguais.',
   },
   {
     id: 'deteccoes-analise',
@@ -104,7 +104,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [inMain('deteccoes-analise')],
     permission: 'reports:read',
     title: 'Análise: MITRE e cobertura',
-    body: 'As 14 táticas do MITRE ATT&CK, com achados e incidentes no período, e a cobertura de cada conta monitorada. Clique numa tática para filtrar a lista; as tabelas exportam em CSV.',
+    body: 'As 14 táticas do MITRE ATT&CK, com alertas e incidentes no período, e a cobertura de cada conta monitorada. Clique numa tática para filtrar a lista; as tabelas exportam em CSV.',
   },
   {
     id: 'postura',
@@ -160,7 +160,7 @@ export const TOUR_STEPS: readonly TourStep[] = [
     target: [inMain('tabela')],
     permission: 'protected_resources:read',
     title: 'Lista de proteção e exceções',
-    body: 'Aqui ficam as contas, identidades e recursos críticos do cliente: um incidente que envolva um deles ganha 15 pontos na nota de risco. Em Exceções, no mesmo menu, ficam os comportamentos esperados, criados ali ou na triagem de um achado.',
+    body: 'Aqui ficam as contas, identidades e recursos críticos do cliente: um incidente que envolva um deles ganha 15 pontos na nota de risco. Em Exceções, no mesmo menu, ficam os comportamentos esperados, criados ali ou na validação de um alerta.',
   },
   {
     id: 'tema',

@@ -14,9 +14,9 @@ const FINDING = '018f2c1e-0000-7000-8000-000000001001';
 const read = (search: string) => readDetectionState(new URLSearchParams(search));
 
 describe('estado da tela Detecções na URL', () => {
-  it('sem nada: a lista agrupada, todo o histórico, a mais recente primeiro, página 1, nada aberto', () => {
+  it('sem nada: a lista de alertas, todo o histórico, a mais recente primeiro, página 1, nada aberto', () => {
     expect(read('')).toEqual({
-      view: 'grouped',
+      view: 'alerts',
       analysis: 'list',
       periodChoice: undefined,
       customDates: { from: '', to: '' },
@@ -38,9 +38,9 @@ describe('estado da tela Detecções na URL', () => {
 
   it('lê cada filtro em português e normaliza a técnica', () => {
     const state = read(
-      'visao=achados&periodo=7d&severidade=high&status=new&fonte=guardduty&conta=111122223333&tatica=Credential+Access&tecnica=t1078.004&busca=+ana+&responsavel=nenhum&ordem=severidade&pagina=3',
+      'visao=incidentes&periodo=7d&severidade=high&status=new&fonte=guardduty&conta=111122223333&tatica=Credential+Access&tecnica=t1078.004&busca=+ana+&responsavel=nenhum&ordem=severidade&pagina=3',
     );
-    expect(state.view).toBe('findings');
+    expect(state.view).toBe('incidents');
     expect(state.periodChoice).toBe('7d');
     expect(state.filters).toMatchObject({
       severity: 'high',
@@ -60,7 +60,7 @@ describe('estado da tela Detecções na URL', () => {
     const state = read(
       'visao=x&analise=y&periodo=2d&severidade=info&status=closed&fonte=vpc&conta=123&tatica=Hacking&tecnica=T10&busca=&responsavel=sim&ordem=risco&pagina=-2&incidente=nao-uuid&achado=1',
     );
-    expect(state.view).toBe('grouped');
+    expect(state.view).toBe('alerts');
     expect(state.analysis).toBe('list');
     expect(state.periodChoice).toBeUndefined();
     expect(Object.values(state.filters).every((value) => value === undefined)).toBe(true);
@@ -83,12 +83,24 @@ describe('estado da tela Detecções na URL', () => {
     expect(read('de=2026-11-01&ate=2026-11-07').filters.from).toBeUndefined();
   });
 
-  it('a seleção: o incidente ou o achado (o achado ganha, se vierem os dois)', () => {
+  it('a seleção: o incidente ou o alerta (o alerta ganha, se vierem os dois)', () => {
     expect(read(`incidente=${INCIDENT}`).selection).toEqual({ kind: 'incident', id: INCIDENT });
-    expect(read(`incidente=${INCIDENT}&achado=${FINDING}`).selection).toEqual({
+    expect(read(`incidente=${INCIDENT}&alerta=${FINDING}`).selection).toEqual({
       kind: 'finding',
       id: FINDING,
     });
+  });
+
+  it('os endereços de antes de 17/11/2026: `visao=achados` é a lista de alertas e `achado=<id>` abre o alerta', () => {
+    expect(read(`visao=achados&achado=${FINDING}`)).toMatchObject({
+      view: 'alerts',
+      selection: { kind: 'finding', id: FINDING },
+    });
+    expect(read('visao=alertas').view).toBe('alerts');
+    // Abrir outro item tira o nome de antes do parâmetro.
+    expect(
+      selectionSearch(new URLSearchParams(`achado=${FINDING}`), { kind: 'incident', id: INCIDENT }),
+    ).toBe(`?incidente=${INCIDENT}`);
   });
 
   it('mudar um filtro volta para a página 1; abrir um item mantém a página e os filtros', () => {
@@ -96,12 +108,12 @@ describe('estado da tela Detecções na URL', () => {
     expect(withChanges(params, { status: 'new' }).toString()).toBe('severidade=high&status=new');
     expect(withChanges(params, { severity: null }, { keepPage: true }).toString()).toBe('pagina=3');
     expect(selectionSearch(params, { kind: 'finding', id: FINDING })).toBe(
-      `?severidade=high&pagina=3&achado=${FINDING}`,
+      `?severidade=high&pagina=3&alerta=${FINDING}`,
     );
     expect(
-      selectionSearch(new URLSearchParams(`achado=${FINDING}`), { kind: 'incident', id: INCIDENT }),
+      selectionSearch(new URLSearchParams(`alerta=${FINDING}`), { kind: 'incident', id: INCIDENT }),
     ).toBe(`?incidente=${INCIDENT}`);
-    expect(selectionSearch(new URLSearchParams(`achado=${FINDING}`), null)).toBe('');
+    expect(selectionSearch(new URLSearchParams(`alerta=${FINDING}`), null)).toBe('');
   });
 
   it('conta os filtros em uso (o intervalo conta uma vez)', () => {
@@ -114,28 +126,28 @@ describe('estado da tela Detecções na URL', () => {
 
 describe('endereços de antes', () => {
   it.each([
-    ['/incidentes', '', '/'],
+    ['/incidentes', '', '/?visao=incidentes'],
     [
       '/incidentes',
       '?status=open&severidade=critical&responsavel=nenhum&pagina=2',
-      '/?status=new&severidade=critical&responsavel=nenhum&pagina=2',
+      '/?visao=incidentes&status=new&severidade=critical&responsavel=nenhum&pagina=2',
     ],
-    ['/incidentes', '?status=investigating', '/?status=investigating'],
+    ['/incidentes', '?status=investigating', '/?visao=incidentes&status=investigating'],
     [`/incidentes/${INCIDENT}`, '', `/?incidente=${INCIDENT}`],
     ['/incidentes/nao-e-id', '', '/'],
-    ['/achados', '', '/?visao=achados'],
+    ['/achados', '', '/'],
     [
       '/achados',
       `?severidade=high&status=new&conta=111122223333&periodo=24h&achado=${FINDING}`,
-      `/?visao=achados&severidade=high&status=new&conta=111122223333&periodo=24h&achado=${FINDING}`,
+      `/?severidade=high&status=new&conta=111122223333&periodo=24h&alerta=${FINDING}`,
     ],
     ['/relatorios', '', '/'],
     ['/relatorios', '?aba=mitre&periodo=90d', '/?analise=mitre&periodo=90d'],
     ['/relatorios', '?aba=cobertura', '/?analise=cobertura'],
-    ['/relatorios', '?aba=incidentes&periodo=90d', '/?periodo=90d'],
-    ['/relatorios', '?aba=deteccoes', '/?visao=achados'],
+    ['/relatorios', '?aba=incidentes&periodo=90d', '/?visao=incidentes&periodo=90d'],
+    ['/relatorios', '?aba=deteccoes', '/'],
     ['/relatorios', '?aba=excecoes', '/cadastros/excecoes'],
-    ['/incidentes/', '', '/'],
+    ['/incidentes/', '', '/?visao=incidentes'],
   ])('%s%s → %s', (path, search, target) => {
     expect(legacyDetectionsUrl(path, search)).toBe(target);
   });

@@ -14,8 +14,9 @@ import {
 
 /**
  * Estado da tela Detecções na URL (em português), para o link de um e-mail, do tour ou de um favorito abrir a mesma
- * visão: a lista agrupada ou todos os achados, a análise, os filtros, a página e o item aberto no painel. Valor
- * desconhecido é ignorado, nunca enviado à API.
+ * visão: os alertas (o padrão) ou os incidentes, a análise, os filtros, a página e o item aberto no painel. Valor
+ * desconhecido é ignorado, nunca enviado à API. Os endereços de antes de 17/11/2026 continuam valendo: `visao=achados`
+ * é a visão dos alertas, e `achado=<id>` abre o alerta.
  */
 export const DETECTION_PARAMS = {
   view: 'visao',
@@ -34,11 +35,16 @@ export const DETECTION_PARAMS = {
   sort: 'ordem',
   page: 'pagina',
   incident: 'incidente',
-  finding: 'achado',
+  finding: 'alerta',
 } as const;
 
-/** "Agrupar por incidente" (o padrão, sem parâmetro) ou "Todos os achados". */
-export type DetectionView = 'grouped' | 'findings';
+/** O nome de antes do parâmetro do alerta aberto (`?achado=<id>`), ainda lido. */
+export const LEGACY_FINDING_PARAM = 'achado';
+/** O valor de `visao` da lista de incidentes; sem ele (ou com o `achados` de antes), a lista de alertas. */
+export const INCIDENTS_VIEW = 'incidentes';
+
+/** "Alertas" (o padrão, sem parâmetro): todos os alertas a validar e já validados; "Incidentes": só os confirmados. */
+export type DetectionView = 'alerts' | 'incidents';
 /** A lista (o padrão) ou uma das análises que vieram dos Relatórios. */
 export type DetectionAnalysis = 'list' | 'mitre' | 'coverage';
 
@@ -117,10 +123,10 @@ export function readDetectionState(params: URLSearchParams): DetectionState {
   const technique = get('technique')?.trim().toUpperCase();
   const q = findingFilterShape.q.safeParse(get('q') ?? undefined);
   const incident = get('incident');
-  const finding = get('finding');
+  const finding = get('finding') ?? params.get(LEGACY_FINDING_PARAM);
   const analysisParam = get('analysis');
   return {
-    view: get('view') === 'achados' ? 'findings' : 'grouped',
+    view: get('view') === INCIDENTS_VIEW ? 'incidents' : 'alerts',
     analysis: analysisParam === 'mitre' ? 'mitre' : analysisParam === 'cobertura' ? 'coverage' : 'list',
     periodChoice,
     customDates,
@@ -137,7 +143,7 @@ export function readDetectionState(params: URLSearchParams): DetectionState {
     },
     sort: pick(DETECTION_SORTS, get('sort') === 'severidade' ? 'severity' : null) ?? 'recent',
     page: Math.max(1, Number.parseInt(get('page') ?? '1', 10) || 1),
-    // Um item por vez: o achado, se os dois vierem (o link de um achado dentro do incidente).
+    // Um item por vez: o alerta, se os dois vierem (o link de um alerta dentro do incidente).
     selection:
       finding && UUID.test(finding)
         ? { kind: 'finding', id: finding }
@@ -181,6 +187,8 @@ export function withChanges(
   for (const [key, value] of Object.entries(changes) as [keyof typeof DETECTION_PARAMS, string | null][]) {
     if (value) next.set(DETECTION_PARAMS[key], value);
     else next.delete(DETECTION_PARAMS[key]);
+    // Quem muda o alerta aberto também tira o nome de antes do parâmetro.
+    if (key === 'finding') next.delete(LEGACY_FINDING_PARAM);
   }
   if (!keepPage) next.delete(DETECTION_PARAMS.page);
   return next;

@@ -1032,11 +1032,11 @@ describe('Lista de proteção (T7.4)', { timeout: FORM_TIMEOUT }, () => {
 });
 
 describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
-  it('mostra quantos achados cada uma marcou e a validade; cria e edita', async () => {
+  it('mostra quantos alertas cada uma marcou e a validade; cria e edita', async () => {
     renderAt('/cadastros/excecoes');
     const rows = await rowsOf('Exceções de alerta do cliente');
     expect(rows).toHaveLength(3);
-    expect(rows.find((row) => row.textContent?.includes('relatorios-app'))).toHaveTextContent('48 achados');
+    expect(rows.find((row) => row.textContent?.includes('relatorios-app'))).toHaveTextContent('48 alertas');
     expect(rows.find((row) => row.textContent?.includes('203.0.113.0/24'))).toHaveTextContent('Vencida em');
 
     await userEvent.click(screen.getByRole('button', { name: 'Nova exceção' }));
@@ -1066,7 +1066,7 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
 
     await userEvent.click(screen.getByRole('button', { name: '80202' }));
     const edit = await screen.findByRole('dialog', { name: 'Exceção da regra 80202' });
-    expect(edit).toHaveTextContent('48 achados marcados por esta exceção');
+    expect(edit).toHaveTextContent('48 alertas marcados por esta exceção');
     await userEvent.clear(within(edit).getByLabelText('Motivo'));
     await userEvent.type(within(edit).getByLabelText('Motivo'), 'Correção do job em andamento.');
     await userEvent.click(within(edit).getByRole('button', { name: 'Salvar' }));
@@ -1074,11 +1074,11 @@ describe('Exceções (T7.5)', { timeout: FORM_TIMEOUT }, () => {
     expect(await screen.findByText('Correção do job em andamento.')).toBeInTheDocument();
   });
 
-  it('a exceção criada ao marcar um achado como legítimo aparece aqui', async () => {
-    const router = renderAt('/?visao=achados&severidade=critical');
+  it('a exceção criada ao marcar um alerta como legítimo aparece aqui', async () => {
+    const router = renderAt('/?severidade=critical');
     await userEvent.click(
       await screen.findByRole('button', {
-        name: 'Abrir o achado: Tentativa de desligar a trilha do CloudTrail',
+        name: 'Abrir o alerta: Tentativa de desligar a trilha do CloudTrail',
       }),
     );
     const panel = await screen.findByRole('dialog');

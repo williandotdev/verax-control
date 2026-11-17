@@ -12,6 +12,7 @@ import { SeverityBadge } from '@/components/security/severity-badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/field';
 import { selectionSearch } from '@/features/detections/url-state';
+import { AlertValidation } from '@/features/incidents/incident-actions';
 import { usePlanHistory } from '@/features/plan/plan-history';
 import { useMe } from '@/features/session/session';
 import { errorMessage } from '@/lib/errors';
@@ -19,7 +20,7 @@ import { formatRelative, formatTimestamp } from '@/lib/format';
 import { FindingStatusBadge } from './finding-status-badge';
 import { useAddFindingComment, useCreateAlertException, useUpdateFindingStatus } from './findings-api';
 
-/** De onde vem a regra do achado, quando não é a do Wazuh para os logs da AWS. */
+/** De onde vem a regra do alerta, quando não é a do Wazuh para os logs da AWS. */
 const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
   gcp_audit: 'Regra (auditoria da GCP)',
   cloudflare_audit: 'Regra (auditoria do Cloudflare)',
@@ -28,8 +29,8 @@ const RULE_LABELS: Partial<Record<FindingDetail['source'], string>> = {
 };
 
 /**
- * Detalhe do achado (tela Detecções, no painel ao lado da lista): os campos, o MITRE, o incidente, a triagem com a
- * exceção, os comentários e o evento bruto.
+ * Detalhe do alerta (tela Detecções, no painel ao lado da lista): os campos, o MITRE, o incidente ou a validação
+ * (promover a incidente, anexar a um incidente aberto), a triagem com a exceção, os comentários e o evento bruto.
  */
 export function FindingDetailView({ finding }: { finding: FindingDetail }) {
   const { data: me } = useMe();
@@ -89,9 +90,9 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
         </section>
       )}
 
-      {finding.incidentId && (
+      {finding.incidentId ? (
         <p className="rounded-md border bg-foreground/[0.03] p-3 text-sm">
-          Este achado faz parte de um incidente.{' '}
+          Este alerta foi confirmado como parte de um incidente.{' '}
           <Link
             to={{ search: selectionSearch(params, { kind: 'incident', id: finding.incidentId }) }}
             className="font-medium underline"
@@ -99,6 +100,8 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
             Ver incidente
           </Link>
         </p>
+      ) : (
+        can('incidents:write') && <AlertValidation finding={finding} />
       )}
 
       {can('findings:triage') && (
@@ -122,7 +125,7 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
           </pre>
         ) : (
           <p className="border-t p-3 text-sm text-muted-foreground">
-            O evento bruto deste achado não está disponível.
+            O evento bruto deste alerta não está disponível.
           </p>
         )}
       </details>
@@ -132,7 +135,7 @@ export function FindingDetailView({ finding }: { finding: FindingDetail }) {
 
 /**
  * Quanto tempo o evento bruto fica (a retenção do índice do Wazuh) e, com o plano conhecido, quanto tempo ficam os
- * dados do achado, que seguem o histórico do plano.
+ * dados do alerta, que seguem o histórico do plano.
  */
 function RawEventRetention() {
   const history = usePlanHistory();
@@ -141,7 +144,7 @@ function RawEventRetention() {
     <p className="border-t px-3 py-2 text-xs text-muted-foreground">
       Evento bruto do log disponível por {RAW_EVENT_RETENTION_DAYS} dias.
       {typeof days === 'number' &&
-        ` Os dados do achado acima ficam pelo histórico do plano, de ${days} dias.`}
+        ` Os dados do alerta acima ficam pelo histórico do plano, de ${days} dias.`}
     </p>
   );
 }

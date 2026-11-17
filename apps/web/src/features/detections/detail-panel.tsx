@@ -32,7 +32,7 @@ function useIncidentContent(id: string | null): PanelContent {
     return { title: 'Incidente', body: <LoadingState rows={6} label="Carregando o incidente" /> };
   return {
     title: incidentTitle(incident.data),
-    description: `Incidente · ${plural(incident.data.findingCount, 'achado', 'achados')}`,
+    description: `Incidente · ${plural(incident.data.findingCount, 'alerta', 'alertas')}`,
     body: (
       <IncidentDetailView
         key={incident.data.id}
@@ -47,11 +47,11 @@ function useFindingContent(id: string | null): PanelContent {
   const finding = useFinding(id);
   if (finding.isError) {
     return {
-      title: 'Achado',
+      title: 'Alerta',
       body: <ErrorState error={finding.error} onRetry={() => void finding.refetch()} />,
     };
   }
-  if (!finding.data) return { title: 'Achado', body: <LoadingState rows={6} label="Carregando o achado" /> };
+  if (!finding.data) return { title: 'Alerta', body: <LoadingState rows={6} label="Carregando o alerta" /> };
   return {
     title: finding.data.title,
     description: `${FINDING_SOURCE_LABELS[finding.data.source]} · ${findingOriginLabel(finding.data.accountId)}`,
@@ -61,7 +61,7 @@ function useFindingContent(id: string | null): PanelContent {
 
 /**
  * O detalhe do item escolhido na lista: o incidente (resumo, primeiro passo, tratamento, linha do tempo, ativos e
- * MITRE) ou o achado (campos, triagem, exceção, comentários e o evento bruto). Na tela larga, fica ao lado da lista,
+ * MITRE) ou o alerta (campos, validação, triagem, exceção, comentários e o evento bruto). Na tela larga, fica ao lado da lista,
  * sem cobrir nada; na estreita, numa gaveta (o diálogo acessível de sempre).
  */
 export function DetectionDetailPanel({
