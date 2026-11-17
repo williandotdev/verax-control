@@ -22,6 +22,12 @@ export interface RequestAuth {
   mfaEnabled: boolean;
   /** Entrou com a senha temporária: só as rotas `@AllowWithTemporaryPassword` (e a troca de senha) respondem. */
   mustChangePassword: boolean;
+  /**
+   * O `admin_verax` vendo o painel como o cliente (`STAFF_CUSTOMER_VIEW`, só no nó dedicado da Verax): a sessão vale
+   * como a do `admin_cliente` do único cliente do nó (`role`, `tenantId` e `scopeTenantId` são os dele). Só para o
+   * próprio servidor: nunca sai no `/v1/me`. A auditoria continua com o `userId` de verdade (a pessoa é da Verax).
+   */
+  staffAsCustomer?: true;
 }
 
 declare module 'express' {

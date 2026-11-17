@@ -473,6 +473,50 @@ describe('loadConfig', () => {
         });
       });
 
+      describe('a equipe vê o painel como o cliente (STAFF_CUSTOMER_VIEW; decisão de 17/11/2026)', () => {
+        const verax = { ...validProductionEnv, PLAN: 'interno' };
+        const onlyVerax =
+          'STAFF_CUSTOMER_VIEW: só existe no nó dedicado da Verax (NODE_MODE=dedicated com PLAN=interno)';
+        const needsSso =
+          'STAFF_CUSTOMER_VIEW: exige a entrada única configurada (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY)';
+
+        it('desligada por padrão; no nó dedicado da Verax com a entrada única, ligada', () => {
+          expect(loadConfig({ ...verax, ...ssoEnv }).STAFF_CUSTOMER_VIEW).toBe(false);
+          expect(loadConfig(validEnv).STAFF_CUSTOMER_VIEW).toBe(false);
+          const config = loadConfig({
+            ...verax,
+            NODE_MODE: 'dedicated',
+            ...ssoEnv,
+            STAFF_CUSTOMER_VIEW: 'true',
+          });
+          expect(config.STAFF_CUSTOMER_VIEW).toBe(true);
+          expect(config.sso).not.toBeNull();
+        });
+
+        it('sem a entrada única, recusada (a porta da equipe é o "Entrar com o Admin master")', () => {
+          expect(problemsOf({ ...verax, STAFF_CUSTOMER_VIEW: 'true' })).toEqual([needsSso]);
+        });
+
+        it('na célula, recusada mesmo com a entrada única (lá há vários clientes)', () => {
+          expect(problemsOf({ ...cellProduction, ...ssoEnv, STAFF_CUSTOMER_VIEW: 'true' })).toEqual([
+            onlyVerax,
+          ]);
+        });
+
+        it('nó de cliente, ou sem PLAN escrito (o padrão interno de fora de produção não conta): recusada', () => {
+          expect(
+            problemsOf({ ...validProductionEnv, PLAN: 'profissional', STAFF_CUSTOMER_VIEW: 'true' }),
+          ).toEqual([onlyVerax, needsSso]);
+          expect(problemsOf({ ...validEnv, STAFF_CUSTOMER_VIEW: 'true' })).toEqual([onlyVerax, needsSso]);
+        });
+
+        it('só true ou false', () => {
+          expect(problemsOf({ ...verax, ...ssoEnv, STAFF_CUSTOMER_VIEW: 'sim' })).toEqual([
+            'STAFF_CUSTOMER_VIEW: deve ser true ou false',
+          ]);
+        });
+      });
+
       it('a chave é só a pública Ed25519 (o x do JWKS): PEM, chave privada, RSA e lixo são recusados', () => {
         const privatePem = consoleKey.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
         const publicPem = consoleKey.publicKey.export({ format: 'pem', type: 'spki' }).toString();

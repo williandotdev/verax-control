@@ -64,8 +64,12 @@ export class SessionGuard implements CanActivate {
 
     const data = result.response;
     if (!data) throw new UnauthorizedException();
-    // Na célula, a sessão só vale no endereço onde nasceu (CE-01).
-    const auth = await resolveSession(this.prisma, data, sessionHostOf(this.config, request));
+    // Na célula, a sessão só vale no endereço onde nasceu (CE-01). No nó dedicado da Verax com STAFF_CUSTOMER_VIEW, a
+    // equipe vale como o administrador do cliente do nó.
+    const auth = await resolveSession(this.prisma, data, {
+      cell: sessionHostOf(this.config, request),
+      staffCustomerView: this.config.STAFF_CUSTOMER_VIEW,
+    });
     if (!auth) throw new UnauthorizedException();
     request.auth = auth;
 

@@ -5791,6 +5791,50 @@ recusadas e o serviço não sobe. Desenho em `docs/ARQUITETURA.md`, "Entrada ún
   etiqueta fora do nome do link); `e2e/layout.mock.spec.ts` com axe contra a versão nova (sem violação de WCAG 2.2 AA);
   capturas nos dois temas, aberto e recolhido.
 
+## A equipe vê o painel como o cliente no nó dedicado da Verax (STAFF_CUSTOMER_VIEW) ⚠️ altera `auth` e `infra/`
+
+Decisão do responsável de 17/11/2026: o SIEM da própria Verax (nó dedicado, `PLAN=interno`, com um cliente só, a
+própria Verax) serve para ajustar o produto **exatamente como o cliente o vê**. A única diferença que fica é o botão
+"Entrar com o Admin master" do login. Desenho em `docs/ARQUITETURA.md`, "Entrada única", parágrafo "A equipe vê o
+painel como o cliente".
+
+- **API:** o interruptor `STAFF_CUSTOMER_VIEW` (padrão `false`) ao lado do `STAFF_PASSWORD_LOGIN_DISABLED`
+  (`apps/api/src/common/config/sso.ts`): só com `NODE_MODE=dedicated` e `PLAN=interno` **escrito** no ambiente (nunca na
+  célula; o padrão `interno` de fora de produção não conta, então testes e desenvolvimento não mudam) e só com a entrada
+  única configurada. Ligado, o `resolveSession` troca a sessão do `admin_verax` sem cliente pela do `admin_cliente` do
+  único cliente ativo (`take: 2`; com nenhum ou dois ou mais, nada muda): `role`, `tenantId` e `scopeTenantId` desse
+  cliente, `activeTenantId` vazio. A assinatura passou a receber as opções num objeto (`{ cell, staffCustomerView }`),
+  nos dois chamadores (`SessionGuard` e `AuthController`). O `RequestAuth` ganha a marca `staffAsCustomer`, só do
+  servidor: o `/v1/me` não a devolve (o schema do painel é estrito, e o painel recebe o mesmo que o cliente), e a
+  preferência de aviso por e-mail responde "não se aplica" (os avisos só vão a quem é do cliente; gravar a escolha não
+  teria efeito).
+- **Auditoria:** as escritas continuam com o `userId` de verdade, agora na trilha do cliente do nó; quem lê vê a pessoa
+  marcada como Verax (o papel vem do banco, que continua `admin_verax`). O `AuditLog` não guarda o papel, então nada
+  mudou no schema (sem migração).
+- **`infra/node`:** o `start.sh` aceita `STAFF_CUSTOMER_VIEW` no `node.conf` como o `STAFF_PASSWORD_LOGIN_DISABLED`:
+  só no nó dedicado da Verax (`PLAN=interno` sem `CUSTOMER_MODE=true`), recusado na célula (qualquer valor), `true` ou
+  `false`, `true` só com as três linhas `SSO_*`; vai só para o `api.env` (`sso_api`). `node.conf.example` e
+  `docs/runbooks/no-verax.md` atualizados.
+- **Painel:** nada muda. O `/v1/me` já volta `admin_cliente`, então o item "Admin master" do menu (que depende de
+  `me.role === 'admin_verax'`) some; o botão do login depende só do `client-config` e continua.
+- **Consequência no nó da Verax com o interruptor ligado:** a fila "Alertas sem dono", a lista de clientes (e a troca
+  de cliente) e o item "Admin master" do menu não aparecem; para abrir o console, o endereço dele direto. Roteiro em
+  `docs/runbooks/console-do-responsavel.md`, seção 9.1, passo 9.
+- **Dependências novas:** nenhuma.
+- **Testes:** `apps/api` (`session-validation.test.ts`, novo: um cliente ativo, dois e nenhum, interruptor desligado,
+  pessoas do cliente e sessão vencida; `load-config.test.ts`: as regras do interruptor;
+  `sso-dedicated-staff-customer-view.test.ts`, novo, num banco só dele, criado e migrado no próprio teste porque a regra
+  depende de quantos clientes ativos existem: o `/v1/me` do `admin_cliente` com as permissões dele, o 403 na lista de
+  clientes e na troca de cliente com a recusa na trilha do cliente, os usuários do cliente, os avisos fora, o
+  `adminMasterUrl` do login, e a volta à visão da equipe com um segundo cliente) e `infra/node/tests/cell-test.sh` (o
+  `api.env` byte a byte com o interruptor, o `false` sem mudança e as recusas: célula, nó de cliente, sem a entrada
+  única e valor inválido). `shellcheck`, lint e typecheck.
+- **A fazer pelo responsável:** merge e a versão do nó no nó da Verax; depois, `STAFF_CUSTOMER_VIEW=true` no
+  `/etc/verax/node.conf` do nó da Verax (com as três linhas `SSO_*` já lá) e o restart.
+- **Riscos:** a troca depende de o nó ter um cliente ativo só; criar um segundo cliente nesse nó devolve a visão da
+  equipe na requisição seguinte (de propósito). Enquanto o interruptor estiver ligado, a equipe não tem a fila de
+  alertas sem dono nem a lista de clientes nesse nó.
+
 ## Radar em destaque na tela Detecções, sem o semáforo
 
 - **Pedido (17/11/2026):** descontinuar o sinal (o semáforo vermelho, amarelo e verde) e pôr o radar em evidência na
