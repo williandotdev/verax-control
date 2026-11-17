@@ -1,7 +1,7 @@
 import { ROLE_LABELS } from '@verax/shared';
-import { KeyRound, LogOut, Menu, UserRound, X } from 'lucide-react';
+import { LogOut, Menu, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 import { BrandLockup } from '@/components/brand/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { Button } from '@/components/ui/button';
@@ -10,11 +10,14 @@ import { useAuthClientConfig } from '@/features/auth/client-config';
 import { useMe, useSignOut } from '@/features/session/session';
 import { cn } from '@/lib/cn';
 import { visibleNavigation } from './navigation';
+import { useMenuCollapsed } from './menu-collapsed';
+import { Sidebar } from './sidebar';
 import { TenantSwitcher } from './tenant-switcher';
 
 /**
- * Estrutura das páginas internas: menu lateral por permissão e cabeçalho com cliente e usuário. Em telas estreitas
- * (celular), o menu vira uma gaveta aberta pelo botão "Menu" e fecha ao navegar, ao tocar fora ou com Esc.
+ * Estrutura das páginas internas: menu lateral por permissão e cabeçalho com cliente e usuário. No computador o menu
+ * pode ser recolhido aos ícones. Em telas estreitas (celular), vira uma gaveta aberta pelo botão "Menu" e fecha ao
+ * navegar, ao tocar fora ou com Esc.
  */
 export function AppLayout() {
   const { data: me } = useMe();
@@ -23,6 +26,7 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useMenuCollapsed();
   // Qualquer navegação (link, voltar ou avançar do navegador) fecha a gaveta. Ajuste de estado durante a
   // renderização, como recomenda o React para zerar estado quando um valor muda, sem efeito.
   const [lastPath, setLastPath] = useState(pathname);
@@ -49,7 +53,12 @@ export function AppLayout() {
   const adminMasterUrl = me.role === 'admin_verax' ? (clientConfig.data?.adminMasterUrl ?? null) : null;
 
   return (
-    <div className="min-h-screen md:grid md:grid-cols-[15rem_1fr]">
+    <div
+      className={cn(
+        'min-h-screen md:grid',
+        collapsed ? 'md:grid-cols-[4.5rem_1fr]' : 'md:grid-cols-[15rem_1fr]',
+      )}
+    >
       {menuOpen && (
         <button
           type="button"
@@ -61,67 +70,21 @@ export function AppLayout() {
       <aside
         id="menu-principal"
         data-open={menuOpen}
+        data-collapsed={collapsed}
         className={cn(
-          // No navy da marca nos dois temas, como o cabeçalho do site (tokens do modo escuro, no index.css).
-          'brand-surface flex-col border-r md:static md:flex',
+          // No navy da marca nos dois temas, como o cabeçalho do site (tokens do modo escuro, no index.css). No
+          // computador fica preso à altura da tela, e o menu rola por dentro quando não cabe.
+          'brand-surface flex-col border-r md:sticky md:top-0 md:flex md:h-screen',
           menuOpen ? 'fixed inset-y-0 left-0 z-40 flex w-64 shadow-lg' : 'hidden',
         )}
       >
-        <div className="flex items-center justify-between gap-2 px-5 py-5">
-          <BrandLockup />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="md:hidden"
-            aria-label="Fechar menu"
-            onClick={() => setMenuOpen(false)}
-          >
-            <X aria-hidden />
-          </Button>
-        </div>
-        <nav aria-label="Menu principal" className="flex-1 space-y-5 px-3">
-          {groups.map((group) => (
-            <div key={group.label}>
-              <p className="px-2 pb-1 text-xs font-medium text-subtle-foreground">{group.label}</p>
-              <ul className="space-y-0.5">
-                {group.items.map(({ to, label, icon: Icon }) => (
-                  <li key={to}>
-                    <NavLink
-                      to={to}
-                      end={to === '/'}
-                      className={({ isActive }) =>
-                        cn(
-                          'flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground',
-                          isActive && 'bg-foreground/10 font-medium text-foreground',
-                        )
-                      }
-                    >
-                      <Icon aria-hidden className="size-4" />
-                      {label}
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          {adminMasterUrl !== null && (
-            <div>
-              <p className="px-2 pb-1 text-xs font-medium text-subtle-foreground">Console</p>
-              <ul className="space-y-0.5">
-                <li>
-                  <a
-                    href={adminMasterUrl}
-                    rel="noreferrer"
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-                  >
-                    <KeyRound aria-hidden className="size-4" />
-                    Admin master
-                  </a>
-                </li>
-              </ul>
-            </div>
-          )}
-        </nav>
+        <Sidebar
+          groups={groups}
+          adminMasterUrl={adminMasterUrl}
+          collapsed={collapsed}
+          onCollapsedChange={setCollapsed}
+          onClose={() => setMenuOpen(false)}
+        />
       </aside>
 
       <div className="flex min-w-0 flex-col">
