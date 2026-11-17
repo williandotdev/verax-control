@@ -5895,3 +5895,12 @@ painel como o cliente".
   reserva o IP fixo e libera as portas 1514 e 1515 só para ele, e o script aparece no mesmo botão.
 - **Testes:** `vitest` da tela (9); captura e axe (WCAG 2.2 AA) da lista e do painel no modo de demonstração, sem
   violação.
+
+## Papéis sem o "do cliente"
+
+- **Pedido (17/11/2026):** tirar o "do cliente" dos nomes dos papéis. "Administrador do cliente" vira "Administrador" e
+  "Analista do cliente" vira "Analista"; "Administrador Verax" e "Somente leitura" ficam.
+- **Arquivos:** `packages/shared/src/permissions.ts` (`ROLE_LABELS`, usado no seletor de papel, na lista de usuários, no
+  topo do painel e em Minha conta), `layout.test.tsx`, `account-page.test.tsx` e este registro. Os códigos dos papéis
+  (`admin_cliente`, `analista_cliente`) não mudam.
+- **Testes:** `vitest` do web (552) e do shared (390).

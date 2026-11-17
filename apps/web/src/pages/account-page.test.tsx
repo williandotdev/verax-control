@@ -42,7 +42,7 @@ describe("Minha conta: preferência de aviso por e-mail (PR-17')", () => {
     expect(await screen.findByRole('heading', { level: 1, name: 'Minha conta' })).toBeInTheDocument();
     const access = screen.getByRole('region', { name: 'Acesso' });
     expect(access).toHaveTextContent('analista.cliente@demo.verax.local');
-    expect(access).toHaveTextContent('Analista do cliente');
+    expect(access).toHaveTextContent('Analista');
   });
 
   it('analista: recebe por padrão; desligar e religar a própria preferência, com a confirmação na tela', async () => {

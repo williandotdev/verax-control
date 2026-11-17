@@ -84,7 +84,7 @@ describe('menu e cabeçalho por papel', () => {
   it('cabeçalho mostra o usuário e o papel', async () => {
     renderApp('/', demoMe('analista_cliente'));
     expect(await screen.findByText('analista.cliente@demo.verax.local')).toBeInTheDocument();
-    expect(screen.getByText('Analista do cliente')).toBeInTheDocument();
+    expect(screen.getByText('Analista')).toBeInTheDocument();
   });
 
   it('seletor de cliente só aparece para admin_verax', async () => {
