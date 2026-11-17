@@ -169,15 +169,18 @@ test.describe('revisão de UX (modo mock)', () => {
     expect(await violations(page)).toEqual([]);
   });
 
-  // A senha de registro à mostra (o botão alternado) e a aba do Windows, com o script na região rolável.
+  // "Instalar novo agente": o painel com a senha de registro à mostra (o botão alternado) e a aba do Windows, com o
+  // script na região rolável.
   test('agentes com a senha de registro à mostra: sem violação de acessibilidade', async ({ page }) => {
     await open(page, '/cadastros/agentes?sistema=windows', 'Agentes');
-    await page.getByRole('button', { name: 'Mostrar senha' }).click();
-    await expect(page.getByRole('button', { name: 'Esconder senha' })).toHaveAttribute(
+    await page.getByRole('button', { name: 'Instalar novo agente' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Instalar novo agente' });
+    await sheet.getByRole('button', { name: 'Mostrar senha' }).click();
+    await expect(sheet.getByRole('button', { name: 'Esconder senha' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
-    await expect(page.getByRole('region', { name: 'Script de instalação para Windows' })).toBeVisible();
+    await expect(sheet.getByRole('region', { name: 'Script de instalação para Windows' })).toBeVisible();
     expect(await violations(page)).toEqual([]);
   });
 
