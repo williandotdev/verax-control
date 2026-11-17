@@ -5776,6 +5776,21 @@ recusadas e o serviço não sobe. Desenho em `docs/ARQUITETURA.md`, "Entrada ún
   retomar, a revisão com a janela inválida, o lote e a versão digitada, e a versão sem o painel); Playwright com axe
   (`e2e/fleet.spec.ts`, os dois temas: a frota, a rodada parada e a revisão, sem violação de WCAG 2.2 AA nem da CSP).
 
+## Menu lateral do painel com visual novo
+
+- **Pedido:** trocar a identidade visual do menu lateral pela de uma referência (seções com título pequeno em caixa
+  alta, itens com ícone de traço fino, o item atual destacado, etiqueta "Novo", botão de recolher), mantendo o visual
+  limpo e o navy escuro da marca.
+- **Arquivos:** `apps/web/src/layout/sidebar.tsx` e `menu-collapsed.ts` (novos), `app-layout.tsx`, `navigation.ts`
+  (campo `badge`; "Novo" em Detecções até o fim de 2026), `layout.test.tsx` e este registro.
+- **Decisões:** recolher só no computador (no celular o menu continua a gaveta, sempre inteiro), lembrado neste
+  navegador em `localStorage` com try/catch. Recolhido, o nome do item continua no link para o leitor de tela e vira dica
+  ao passar o mouse. A etiqueta fica fora do link e escondida do leitor de tela, para o nome do link continuar só o da
+  página. No computador, o menu fica preso à altura da tela e rola por dentro.
+- **Testes:** `vitest` do layout (21, os 3 novos: recolher e expandir com a escolha lembrada, abrir recolhido e a
+  etiqueta fora do nome do link); `e2e/layout.mock.spec.ts` com axe contra a versão nova (sem violação de WCAG 2.2 AA);
+  capturas nos dois temas, aberto e recolhido.
+
 ## A equipe vê o painel como o cliente no nó dedicado da Verax (STAFF_CUSTOMER_VIEW) ⚠️ altera `auth` e `infra/`
 
 Decisão do responsável de 17/11/2026: o SIEM da própria Verax (nó dedicado, `PLAN=interno`, com um cliente só, a
