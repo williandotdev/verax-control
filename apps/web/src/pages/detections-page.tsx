@@ -23,7 +23,15 @@ import {
 import { useFindings } from '@/features/findings/findings-api';
 import { usePeriodFilter } from '@/features/plan/plan-history';
 import { downloadCsv } from '@/features/reports/csv';
-import { CoverageReportView, MitreReportView } from '@/features/reports/report-views';
+import {
+  CoverageReportView,
+  EntitiesReportView,
+  ExceptionsReportView,
+  IncidentsReportView,
+  MitreReportView,
+  RulesReportView,
+  SummaryReportView,
+} from '@/features/reports/report-views';
 import type { ReportRange } from '@/features/reports/reports-api';
 import { useMe } from '@/features/session/session';
 import { SIDE_PANEL_QUERY, useMediaQuery } from '@/lib/use-media-query';
@@ -35,8 +43,13 @@ const PAGE_SIZE = 20;
 
 const ANALYSIS_TABS: readonly { value: DetectionAnalysis; label: string }[] = [
   { value: 'list', label: 'Lista' },
+  { value: 'summary', label: 'Resumo' },
   { value: 'mitre', label: 'MITRE ATT&CK' },
+  { value: 'rules', label: 'Regras' },
+  { value: 'entities', label: 'Entidades' },
+  { value: 'response', label: 'Resposta a incidentes' },
   { value: 'coverage', label: 'Cobertura das fontes' },
+  { value: 'exceptions', label: 'Exceções' },
 ];
 
 /**
@@ -314,6 +327,9 @@ function DetectionsContent({
         </Tabs.Content>
         {canAnalysis && (
           <>
+            <Tabs.Content value="summary" className="focus:outline-none">
+              {periods.waiting ? null : <SummaryReportView range={range} />}
+            </Tabs.Content>
             <Tabs.Content value="mitre" className="focus:outline-none">
               {periods.waiting ? null : (
                 <MitreReportView
@@ -331,8 +347,20 @@ function DetectionsContent({
                 />
               )}
             </Tabs.Content>
+            <Tabs.Content value="rules" className="focus:outline-none">
+              {periods.waiting ? null : <RulesReportView range={range} />}
+            </Tabs.Content>
+            <Tabs.Content value="entities" className="focus:outline-none">
+              {periods.waiting ? null : <EntitiesReportView range={range} />}
+            </Tabs.Content>
+            <Tabs.Content value="response" className="focus:outline-none">
+              {periods.waiting ? null : <IncidentsReportView range={range} />}
+            </Tabs.Content>
             <Tabs.Content value="coverage" className="focus:outline-none">
               {periods.waiting ? null : <CoverageReportView range={range} />}
+            </Tabs.Content>
+            <Tabs.Content value="exceptions" className="focus:outline-none">
+              {periods.waiting ? null : <ExceptionsReportView range={range} />}
             </Tabs.Content>
           </>
         )}

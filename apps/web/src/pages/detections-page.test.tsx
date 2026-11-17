@@ -514,6 +514,26 @@ describe('Detecções: análise e exportação', () => {
     expect((await screen.findAllByRole('complementary')).length).toBeGreaterThan(0);
   });
 
+  it('resumo do período: os números, a pizza por status e as linhas por dia', async () => {
+    renderAt('/?analise=resumo');
+    expect(await screen.findByText('Alertas no período')).toBeInTheDocument();
+    expect(screen.getByText('Tempo médio até a validação')).toBeInTheDocument();
+    expect(await screen.findByRole('table', { name: 'Alertas por severidade' })).toBeInTheDocument();
+    expect(screen.getAllByText('Alertas por status').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Alertas por dia').length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ['regras', 'Regras', 'Regras que mais dispararam'],
+    ['entidades', 'Entidades', 'IPs de origem'],
+    ['resposta', 'Resposta a incidentes', 'Incidentes abertos no período'],
+    ['excecoes', 'Exceções', 'Exceções e quantos alertas cada uma silenciou'],
+  ])('a análise "%s" volta com a tabela dela', async (slug, tab, table) => {
+    renderAt(`/?analise=${slug}`);
+    expect(await screen.findByRole('tab', { name: tab })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('table', { name: table })).toBeInTheDocument();
+  });
+
   it('cobertura das fontes, com o CSV da tabela', async () => {
     renderAt('/?analise=cobertura');
     expect(
