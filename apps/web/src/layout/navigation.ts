@@ -22,6 +22,8 @@ export interface NavItem {
   icon: LucideIcon;
   /** Sem a permissão, o item nem aparece (a API recusaria os dados de qualquer forma). */
   permission: Permission;
+  /** Etiqueta curta ao lado do nome, como "Novo". Só visual: tire quando deixar de valer. */
+  badge?: string;
 }
 
 export interface NavGroup {
@@ -34,8 +36,8 @@ export const NAVIGATION: NavGroup[] = [
   {
     label: 'Operação',
     items: [
-      // Detecções (16/11/2026): no lugar da Torre, de Incidentes, de Achados e de Relatórios.
-      { to: '/', label: 'Detecções', icon: Radar, permission: 'findings:read' },
+      // Detecções (16/11/2026): no lugar da Torre, de Incidentes, de Achados e de Relatórios. "Novo" até o fim de 2026.
+      { to: '/', label: 'Detecções', icon: Radar, permission: 'findings:read', badge: 'Novo' },
       { to: '/postura', label: 'Postura cloud', icon: ShieldCheck, permission: 'posture:read' },
       { to: '/ativos', label: 'Ativos e identidades', icon: Boxes, permission: 'assets:read' },
     ],
