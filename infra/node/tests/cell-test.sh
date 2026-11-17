@@ -14,7 +14,9 @@
 #    nada, o PLAN e os ajustes, o perfil lean, o CUSTOMER_MODE, os agentes do Wazuh e o domínio ou o subdomínio fora do
 #    formato. O projeto do Compose ganha o compose.cell.yaml só na célula. A entrada única pelo console (as três linhas
 #    SSO_* e o STAFF_PASSWORD_LOGIN_DISABLED) vai só para a API, na célula e no nó dedicado da Verax (PLAN=interno); no
-#    nó de cliente (outro plano ou CUSTOMER_MODE), e com as linhas pela metade, o render para sem escrever nada.
+#    nó de cliente (outro plano ou CUSTOMER_MODE), e com as linhas pela metade, o render para sem escrever nada. A visão
+#    de cliente da equipe (STAFF_CUSTOMER_VIEW) vai só para a API do nó dedicado da Verax, com a entrada única; na
+#    célula e no nó de cliente, o render para.
 # 2. O primeiro administrador de cada cliente (`tenant-bootstrap` e `tenant-bootstrap-pending`): o pedido do worker vira a
 #    chamada do bootstrap no modo cell-tenant, só por variável de ambiente; a senha vai para o cofre do cliente
 #    (`vxt-<subdomínio>-admin-bootstrap`) e nunca para a tela, os argumentos de comando ou outro arquivo; o pedido sai e a
@@ -276,6 +278,7 @@ $sso_lines}
   fail "api.env inesperado: $(diff <(echo "$expected_sso_api") "$root/run/verax/api.env" || true)"
 grep -q SSO_ "$root/run/verax/worker.env" && fail "o worker ganhou a entrada única"
 grep -q STAFF_PASSWORD_LOGIN_DISABLED "$root/run/verax/api.env" && fail "o interruptor entrou sem estar na configuração"
+grep -q STAFF_CUSTOMER_VIEW "$root/run/verax/api.env" && fail "a visão de cliente entrou sem estar na configuração"
 ok
 new_root "célula: o login com senha da equipe desligado, com a entrada única" celula-sso-sem-senha "${cell_conf[@]}" \
   "${sso_conf[@]}" STAFF_PASSWORD_LOGIN_DISABLED=true
@@ -286,6 +289,8 @@ sso_refusals=(
   "STAFF_PASSWORD_LOGIN_DISABLED=true|exige a entrada única"
   "STAFF_PASSWORD_LOGIN_DISABLED=sim|STAFF_PASSWORD_LOGIN_DISABLED inválido"
   "SSO_ISSUER=https://admin.exemplo.com.br|andam juntas"
+  # A visão de cliente da equipe é só do nó dedicado da Verax: na célula, a linha não existe (com a entrada única, abaixo).
+  "STAFF_CUSTOMER_VIEW=true|não aceita STAFF_CUSTOMER_VIEW"
 )
 for case_ in "${sso_refusals[@]}"; do
   line=${case_%%|*}
@@ -301,6 +306,8 @@ sso_format_refusals=(
   "SSO_CLIENT_ID=outro|SSO_CLIENT_ID inválido"
   "SSO_PUBLIC_KEY=curta|SSO_PUBLIC_KEY inválida"
   "SSO_PUBLIC_KEY=${sso_key}=|SSO_PUBLIC_KEY inválida"
+  "STAFF_CUSTOMER_VIEW=true|não aceita STAFF_CUSTOMER_VIEW"
+  "STAFF_CUSTOMER_VIEW=false|não aceita STAFF_CUSTOMER_VIEW"
 )
 for case_ in "${sso_format_refusals[@]}"; do
   line=${case_%%|*}
@@ -328,6 +335,25 @@ new_root "dedicado da Verax (PLAN=interno): o login com senha da equipe desligad
 start render || fail "o render falhou: $(cat "$root/out")"
 grep -qx "STAFF_PASSWORD_LOGIN_DISABLED='true'" "$root/run/verax/api.env" || fail "sem o interruptor no api.env"
 grep -q STAFF_PASSWORD_LOGIN_DISABLED "$root/run/verax/worker.env" && fail "o worker ganhou o interruptor"
+grep -q STAFF_CUSTOMER_VIEW "$root/run/verax/api.env" && fail "a visão de cliente entrou sem estar na configuração"
+ok
+# A visão de cliente da equipe (decisão de 17/11/2026): só no nó dedicado da Verax, com a entrada única, só na API.
+new_root "dedicado da Verax (PLAN=interno): a equipe vê o painel como o cliente" sso-dedicado-visao-cliente \
+  "${sso_conf[@]}" STAFF_CUSTOMER_VIEW=true
+start render || fail "o render falhou: $(cat "$root/out")"
+expected_customer_view=${dedicated_api/PLAN=\'interno\'/PLAN=\'interno\'
+$sso_lines
+STAFF_CUSTOMER_VIEW=\'true\'}
+[[ "$(cat "$root/run/verax/api.env")" == "$expected_customer_view" ]] ||
+  fail "api.env inesperado: $(diff <(echo "$expected_customer_view") "$root/run/verax/api.env" || true)"
+[[ "$(cat "$root/run/verax/worker.env")" == "$dedicated_worker" ]] ||
+  fail "o worker.env mudou: $(diff <(echo "$dedicated_worker") "$root/run/verax/worker.env" || true)"
+ok
+new_root "dedicado da Verax (PLAN=interno): STAFF_CUSTOMER_VIEW=false não muda nada" sso-dedicado-visao-equipe \
+  "${sso_conf[@]}" STAFF_CUSTOMER_VIEW=false
+start render || fail "o render falhou: $(cat "$root/out")"
+[[ "$(cat "$root/run/verax/api.env")" == "$expected_sso_dedicated" ]] ||
+  fail "api.env inesperado: $(diff <(echo "$expected_sso_dedicated") "$root/run/verax/api.env" || true)"
 ok
 customer_node='só existe com NODE_MODE=cell ou no nó dedicado da Verax'
 dedicated_sso_refusals=(
@@ -343,6 +369,7 @@ dedicated_sso_refusals=(
   "SSO_CLIENT_ID=outro|SSO_CLIENT_ID inválido"
   "SSO_ISSUER=http://admin.exemplo.com.br|SSO_ISSUER inválido"
   "STAFF_PASSWORD_LOGIN_DISABLED=sim|STAFF_PASSWORD_LOGIN_DISABLED inválido"
+  "STAFF_CUSTOMER_VIEW=sim|STAFF_CUSTOMER_VIEW inválido"
 )
 for case_ in "${dedicated_sso_refusals[@]}"; do
   line=${case_%%|*}
@@ -358,6 +385,11 @@ lone_refusals=(
   "PLAN=profissional SSO_PUBLIC_KEY=$sso_key|$customer_node"
   "PLAN=interno SSO_ISSUER=https://admin.exemplo.com.br|andam juntas"
   "PLAN=interno STAFF_PASSWORD_LOGIN_DISABLED=true|exige a entrada única"
+  "PLAN=interno STAFF_CUSTOMER_VIEW=true|STAFF_CUSTOMER_VIEW=true exige a entrada única"
+  # A visão de cliente num nó de cliente: a recusa do plano (true ou false: a linha não existe lá).
+  "PLAN=profissional STAFF_CUSTOMER_VIEW=true|$customer_node"
+  "PLAN=profissional STAFF_CUSTOMER_VIEW=false|$customer_node"
+  "CUSTOMER_MODE=true STAFF_CUSTOMER_VIEW=true|$customer_node"
 )
 for case_ in "${lone_refusals[@]}"; do
   read -r -a lines <<<"${case_%%|*}"
