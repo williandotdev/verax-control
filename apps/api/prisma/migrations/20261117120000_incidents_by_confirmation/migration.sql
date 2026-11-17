@@ -42,11 +42,9 @@ ALTER TABLE "Notification" ADD CONSTRAINT "Notification_target_check" CHECK (
   END
 );
 
--- Os incidentes automáticos em que ninguém mexeu.
-CREATE TEMPORARY TABLE "dissolved_incident" AS
-  SELECT "id", "tenantId", "severity", "riskScore", "findingCount", "firstSeenAt", "lastSeenAt", "createdAt"
-  FROM "Incident"
-  WHERE "assigneeId" IS NULL AND "status" = 'open';
+-- Os incidentes automáticos em que ninguém mexeu: sem responsável e ainda "abertos". O mesmo critério nos quatro passos
+-- abaixo (sem tabela temporária: o papel que aplica as migrations em produção não tem TEMP); a migration roda antes de
+-- a aplicação subir, então nada muda o critério no meio.
 
 -- Um registro de sistema por incidente desfeito, na trilha do cliente (a trilha só aceita INSERT, e é o que entra).
 -- Os ids dos alertas vão no estado anterior (até 500, o limite da linha do tempo do detalhe).
@@ -74,15 +72,16 @@ SELECT
       '[]'::jsonb)
   ),
   jsonb_build_object('reason', 'automatic_grouping_retired')
-FROM "dissolved_incident" d;
+FROM "Incident" d
+WHERE d."assigneeId" IS NULL AND d."status" = 'open';
 
 -- Os alertas voltam à fila de validação com o status que já tinham.
 UPDATE "Finding" SET "incidentId" = NULL
-WHERE "incidentId" IN (SELECT "id" FROM "dissolved_incident");
+WHERE "incidentId" IN (SELECT "id" FROM "Incident" WHERE "assigneeId" IS NULL AND "status" = 'open');
 
 -- O aviso ainda na fila de um incidente desfeito não sai mais (o incidente não existe); o histórico fica.
 UPDATE "Notification" SET "status" = 'skipped', "lastError" = 'incident_dissolved', "updatedAt" = CURRENT_TIMESTAMP
-WHERE "status" = 'pending' AND "incidentId" IN (SELECT "id" FROM "dissolved_incident");
+WHERE "status" = 'pending'
+  AND "incidentId" IN (SELECT "id" FROM "Incident" WHERE "assigneeId" IS NULL AND "status" = 'open');
 
-DELETE FROM "Incident" WHERE "id" IN (SELECT "id" FROM "dissolved_incident");
-DROP TABLE "dissolved_incident";
+DELETE FROM "Incident" WHERE "assigneeId" IS NULL AND "status" = 'open';
