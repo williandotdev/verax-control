@@ -1,0 +1,13 @@
+# Exceções do OSV-Scanner (workflow Segurança). Cada uma com o motivo e uma validade curta: vencida, o aviso volta a
+# bloquear. Só entra aqui aviso sem versão corrigida e que não alcança produção; os demais continuam bloqueando.
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+ignoreUntil = 2026-12-17T00:00:00Z
+reason = """
+picomatch 4.0.7 (ReDoS com extglob repetido), sem versão corrigida em 17/11/2026. Só nas ferramentas de \
+desenvolvimento (Vite, ESLint, Nest CLI, unplugin-swc): nenhuma dependência de produção o traz \
+(pnpm why picomatch --prod vazio), e os padrões de glob vêm das configurações do repositório, nunca de entrada \
+externa. Decisão do responsável em 17/11/2026: aceitar por 30 dias; sair a correção, o Dependabot atualiza e esta \
+exceção sai.\
+"""

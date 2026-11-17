@@ -305,10 +305,12 @@ describe('canal da célula, lado do nó (CE-05)', () => {
     it('o subdomínio de outro cliente é recusado inteiro: nenhum cliente nasce, e sai o command.refused', async () => {
       const first = await cellTenant();
       const controlPlaneId = ulid();
-      const tenantsBefore = await prisma.tenant.count();
+      // Conta só os clientes com o nome deste estado: os outros arquivos de teste criam clientes no mesmo banco em paralelo.
+      const sameName = { where: { name: stateOf(first.state.slug).name } };
+      const tenantsBefore = await prisma.tenant.count(sameName);
       const result = await commands().apply(upsert(controlPlaneId, 1, stateOf(first.state.slug)));
       expect(result).toEqual({ outcome: 'refused', code: 'slug_conflict' });
-      expect(await prisma.tenant.count()).toBe(tenantsBefore);
+      expect(await prisma.tenant.count(sameName)).toBe(tenantsBefore);
       expect(await prisma.cellTenantState.findUnique({ where: { controlPlaneId } })).toBeNull();
       expect(await reportsOf(controlPlaneId)).toMatchObject([
         { kind: 'command.refused', command: 'tenant.upsert', code: 'slug_conflict' },
