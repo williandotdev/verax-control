@@ -295,7 +295,9 @@ pessoa por um canal seguro. Quem esquecer a senha recebe outra pelo mesmo menu (
 Opcional: o `admin_verax` entra no painel pelo login do console do responsável, e o menu dele ganha o item "Admin
 master", que abre o console. As linhas ficam no `/etc/verax/node.conf` do nó da Verax: `SSO_ISSUER`, `SSO_CLIENT_ID`
 (sempre `verax-siem`) e `SSO_PUBLIC_KEY` (a chave PÚBLICA do console, fixada), as três juntas, e, opcional,
-`STAFF_PASSWORD_LOGIN_DISABLED` (padrão `false`; `true` tira o login com senha da equipe). Valem no nó dedicado da
+`STAFF_PASSWORD_LOGIN_DISABLED` (padrão `false`; `true` tira o login com senha da equipe) e `STAFF_CUSTOMER_VIEW`
+(padrão `false`; `true` faz a equipe ver o painel como o cliente do nó, só no nó dedicado; runbook do console, seção
+9.1, passo 9). Valem no nó dedicado da
 Verax, com `PLAN=interno` e sem `CUSTOMER_MODE=true` (decisão de 16/11/2026: a troca para a célula ainda espera a
 identidade da AWS de cada cliente), e continuam valendo depois da troca para a célula, no endereço da equipe. O
 `start.sh` passa as linhas só para a API; num nó dedicado com outro plano (de cliente), ele as recusa e o serviço não

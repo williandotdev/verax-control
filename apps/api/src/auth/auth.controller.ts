@@ -160,7 +160,10 @@ export class AuthController {
       query: { disableRefresh: true },
     });
     if (!data) return;
-    const auth = await resolveSession(this.prisma, data, sessionHostOf(this.config, request));
+    const auth = await resolveSession(this.prisma, data, {
+      cell: sessionHostOf(this.config, request),
+      staffCustomerView: this.config.STAFF_CUSTOMER_VIEW,
+    });
     if (!auth) throw new UnauthorizedException();
     if (auth.mustChangePassword) {
       if (!ROUTES_WITH_TEMPORARY_PASSWORD.has(route)) {

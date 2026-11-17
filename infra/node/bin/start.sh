@@ -416,8 +416,8 @@ node_mode() {
     dedicated)
       # A entrada única pelo console é só da equipe da Verax: na célula, no endereço da equipe; no nó dedicado, só no
       # nó da própria Verax (PLAN=interno, sem o CUSTOMER_MODE; decisão de 16/11/2026). Num nó de cliente (qualquer
-      # outro plano), a partida para, como antes.
-      for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY STAFF_PASSWORD_LOGIN_DISABLED; do
+      # outro plano), a partida para, como antes. A visão de cliente da equipe (STAFF_CUSTOMER_VIEW), também.
+      for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY STAFF_PASSWORD_LOGIN_DISABLED STAFF_CUSTOMER_VIEW; do
         if [[ -n ${!key:-} ]] && [[ ${PLAN:-} != interno || ${CUSTOMER_MODE:-false} == true ]]; then
           echo "$key só existe com NODE_MODE=cell ou no nó dedicado da Verax (PLAN=interno, sem CUSTOMER_MODE): a entrada única pelo console é só da equipe da Verax. Tire a linha de /etc/verax/node.conf." >&2
           return 1
@@ -450,6 +450,10 @@ node_mode() {
       return 1
     fi
   done
+  if [[ -n ${STAFF_CUSTOMER_VIEW:-} ]]; then
+    echo 'NODE_MODE=cell não aceita STAFF_CUSTOMER_VIEW: a visão de cliente da equipe é só do nó dedicado da Verax (PLAN=interno), com um cliente só. Tire a linha de /etc/verax/node.conf.' >&2
+    return 1
+  fi
   local domain=${CELL_DOMAIN:-}
   if ((${#domain} > 200)) || [[ ! $domain =~ $re_cell_domain ]]; then
     echo 'CELL_DOMAIN inválido em /etc/verax/node.conf: o domínio dos endereços, em minúsculas, sem ponto no fim (ex.: exemplo.com.br).' >&2
@@ -470,7 +474,9 @@ node_mode() {
 # console, o cliente e a chave PÚBLICA do console (o `x` do JWKS), fixada aqui e nunca baixada. As três juntas, nos
 # formatos da API; nenhuma é segredo, e nada é lido de cofre (a chave de assinatura nunca chega ao nó). Sem nenhuma, nada
 # muda. STAFF_PASSWORD_LOGIN_DISABLED=true (padrão false) tira o login com senha da equipe: só com a entrada única
-# configurada, senão a equipe ficaria do lado de fora. Tudo vai para `sso_api`, só da API (o worker não recebe nada).
+# configurada, senão a equipe ficaria do lado de fora. STAFF_CUSTOMER_VIEW=true (padrão false; só no nó dedicado da
+# Verax, conferido em `node_mode`) faz a equipe ver o painel como o cliente do nó: também só com a entrada única. Tudo
+# vai para `sso_api`, só da API (o worker não recebe nada).
 staff_sso() {
   local key present=0
   for key in SSO_ISSUER SSO_CLIENT_ID SSO_PUBLIC_KEY; do
@@ -506,6 +512,20 @@ staff_sso() {
       ;;
     *)
       echo 'STAFF_PASSWORD_LOGIN_DISABLED inválido em /etc/verax/node.conf: use true ou false.' >&2
+      return 1
+      ;;
+  esac
+  case ${STAFF_CUSTOMER_VIEW:-false} in
+    false) ;;
+    true)
+      if ((present != 3)); then
+        echo 'STAFF_CUSTOMER_VIEW=true exige a entrada única (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY em /etc/verax/node.conf).' >&2
+        return 1
+      fi
+      sso_api+=(STAFF_CUSTOMER_VIEW=true)
+      ;;
+    *)
+      echo 'STAFF_CUSTOMER_VIEW inválido em /etc/verax/node.conf: use true ou false.' >&2
       return 1
       ;;
   esac

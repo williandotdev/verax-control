@@ -180,7 +180,8 @@ function ExpandedSituation({ summary }: { summary: TowerSummary }) {
             <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
           </section>
         )}
-        <div className="min-w-0 space-y-4">
+        {/* Contêiner: as decisões ficam em duas colunas só quando a coluna ao lado do radar tem largura para isso. */}
+        <div className="@container min-w-0 space-y-4">
           <PendingDecisions summary={summary} />
           <div className="flex flex-wrap gap-2">
             <CollectionIndicator summary={summary} />
@@ -235,7 +236,7 @@ function PendingDecisions({ summary }: { summary: TowerSummary }) {
           {proof && proof.stalled.length > 0 && ` Mas há ${stalledPhrase(proof)}: veja a saúde da coleta.`}
         </p>
       ) : (
-        <ul className="grid gap-2 sm:grid-cols-2">
+        <ul className="grid gap-2 @xl:grid-cols-2">
           {summary.pendingDecisions.map((decision) => {
             const content = DECISIONS[decision.kind];
             const { icon: Icon, tone, surface } = SEVERITY_STYLES[content.severity];

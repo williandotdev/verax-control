@@ -36,6 +36,25 @@ async function isTenantActive(prisma: PrismaService, id: string): Promise<boolea
   return tenant?.status === 'active';
 }
 
+/** O único cliente ativo do nó, ou `null` com nenhum ou mais de um (dois bastam para saber). */
+async function onlyActiveTenant(prisma: PrismaService): Promise<string | null> {
+  const tenants = await prisma.tenant.findMany({
+    where: { status: 'active' },
+    select: { id: true },
+    orderBy: { id: 'asc' },
+    take: 2,
+  });
+  return tenants.length === 1 && tenants[0] !== undefined ? tenants[0].id : null;
+}
+
+/** Como a sessão é conferida: na célula, o endereço; no nó dedicado da Verax, a visão de cliente da equipe. */
+export interface SessionOptions {
+  /** Na célula (CE-01), o cliente do endereço da requisição (`sessionHostOf`); `undefined` no nó dedicado. */
+  cell?: { host: HostTenant | undefined } | undefined;
+  /** `STAFF_CUSTOMER_VIEW` (só no nó dedicado da Verax): o `admin_verax` vê o painel como o cliente do nó. */
+  staffCustomerView?: boolean | undefined;
+}
+
 /**
  * Regras de sessão da Verax, além das do Better Auth (assinatura do cookie, expiração). Valem em toda
  * requisição com sessão: nas rotas da API (`SessionGuard`) e nas rotas de sessão da própria biblioteca
@@ -48,12 +67,16 @@ async function isTenantActive(prisma: PrismaService, id: string): Promise<boolea
  *   `admin_verax`, só no endereço da equipe). O cookie levado a outro endereço não vale lá; o navegador nunca o leva
  *   (o cookie não tem `Domain`), então isso só acontece com um cookie copiado.
  *
+ * Com `staffCustomerView` (`STAFF_CUSTOMER_VIEW`, só no nó dedicado da Verax; decisão de 17/11/2026), o `admin_verax`
+ * sem cliente vale como o `admin_cliente` do único cliente ativo do nó: o mesmo painel, as mesmas permissões e o mesmo
+ * escopo que o cliente tem. Com nenhum ou mais de um cliente ativo, nada muda (a equipe nunca cai no cliente errado).
+ *
  * Sessão que fere alguma regra é apagada, e o retorno é `undefined`.
  */
 export async function resolveSession(
   prisma: PrismaService,
   { session, user }: SessionData,
-  cell?: { host: HostTenant | undefined },
+  { cell, staffCustomerView = false }: SessionOptions = {},
 ): Promise<RequestAuth | undefined> {
   const now = Date.now();
   const tenantId = user.tenantId ?? null;
@@ -76,19 +99,36 @@ export async function resolveSession(
   }
 
   const role = user.role as UserRole;
+  const base = {
+    sessionId: session.id,
+    userId: user.id,
+    email: user.email,
+    mfaEnabled: user.twoFactorEnabled === true,
+    mustChangePassword: user.mustChangePassword === true,
+  };
+  if (staffCustomerView && role === 'admin_verax' && tenantId === null) {
+    const customer = await onlyActiveTenant(prisma);
+    if (customer !== null) {
+      // Escopo e papel do administrador do cliente; o cliente vem do banco, nunca da requisição (regra 4).
+      return {
+        ...base,
+        role: 'admin_cliente',
+        tenantId: customer,
+        activeTenantId: null,
+        scopeTenantId: customer,
+        staffAsCustomer: true,
+      };
+    }
+  }
   // admin_verax: um cliente selecionado que foi desativado deixa de valer (a troca também recusa inativo).
   const selected = role === 'admin_verax' ? (session.activeTenantId ?? null) : null;
   const activeTenantId = selected !== null && (await isTenantActive(prisma, selected)) ? selected : null;
   return {
-    sessionId: session.id,
-    userId: user.id,
-    email: user.email,
+    ...base,
     role,
     tenantId,
     activeTenantId,
     // Regra 4: o cliente do escopo vem sempre da sessão, nunca do corpo, da query ou da URL.
     scopeTenantId: role === 'admin_verax' ? activeTenantId : tenantId,
-    mfaEnabled: user.twoFactorEnabled === true,
-    mustChangePassword: user.mustChangePassword === true,
   };
 }
