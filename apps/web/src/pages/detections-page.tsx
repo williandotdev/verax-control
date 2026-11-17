@@ -6,15 +6,17 @@ import { useSearchParams } from 'react-router';
 import { EmptyState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { DetectionDetailPanel } from '@/features/detections/detail-panel';
-import { FindingsList, GroupedList } from '@/features/detections/detection-list';
+import { AlertsList, IncidentsList } from '@/features/detections/detection-list';
 import { useDetections } from '@/features/detections/detections-api';
-import { EXPORT_MAX_ROWS, exportFindings, exportGrouped } from '@/features/detections/export';
+import { EXPORT_MAX_ROWS, exportFindings, exportIncidents } from '@/features/detections/export';
 import { FilterBar } from '@/features/detections/filter-bar';
 import { SituationStrip } from '@/features/detections/situation-strip';
 import {
   ANALYSIS_SLUGS,
   type DetectionAnalysis,
   type DetectionSelection,
+  type DetectionView,
+  INCIDENTS_VIEW,
   readDetectionState,
   withChanges,
 } from '@/features/detections/url-state';
@@ -39,8 +41,9 @@ const ANALYSIS_TABS: readonly { value: DetectionAnalysis; label: string }[] = [
 
 /**
  * Detecções (decisão do responsável de 16/11/2026): a tela de operação, no lugar da Torre, de Incidentes, de Achados e
- * de Relatórios. No topo, o resumo da situação (recolhível); embaixo, uma lista só, agrupada por incidente ou com todos
- * os achados, com um filtro só e o detalhe ao lado para a triagem. As análises que vieram dos Relatórios (MITRE e
+ * de Relatórios. No topo, o resumo da situação (recolhível); embaixo, a lista de alertas (o padrão) ou a de incidentes,
+ * com um filtro só e o detalhe ao lado para a validação. Desde 17/11/2026 (taxonomia de SOC), o evento vira alerta, a
+ * pessoa valida o alerta, e só a confirmação dela (promover) abre um incidente. As análises que vieram dos Relatórios (MITRE e
  * cobertura) usam o mesmo período. Cada parte aparece para quem tem a permissão dela (a API decide de qualquer forma).
  */
 export function DetectionsPage() {
@@ -64,7 +67,7 @@ export function DetectionsPage() {
       scope={scope}
       userId={me.userId}
       canTower={can('tower:read')}
-      canGrouped={can('incidents:read') && can('findings:read')}
+      canIncidents={can('incidents:read') && can('findings:read')}
       canFindings={can('findings:read')}
       canAnalysis={can('reports:read')}
     />
@@ -78,8 +81,9 @@ function Shell({ children, actions }: { children: ReactNode; actions?: ReactNode
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold">Detecções</h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Os alertas de segurança do cliente, agrupados em incidentes quando têm o mesmo usuário, chave, IP
-            ou recurso. Abra um item para ver o detalhe e decidir o que fazer.
+            Cada evento suspeito vira um alerta para validar: pode ser falso positivo. Quando a ameaça é real,
+            quem opera promove o alerta, com os relacionados, a um incidente. Abra um item para ver o detalhe
+            e decidir o que fazer.
           </p>
         </div>
         {actions}
@@ -93,20 +97,20 @@ function DetectionsContent({
   scope,
   userId,
   canTower,
-  canGrouped,
+  canIncidents,
   canFindings,
   canAnalysis,
 }: {
   scope: string;
   userId: string;
   canTower: boolean;
-  canGrouped: boolean;
+  canIncidents: boolean;
   canFindings: boolean;
   canAnalysis: boolean;
 }) {
   const [params, setParams] = useSearchParams();
   const state = readDetectionState(params);
-  const view = canGrouped ? state.view : 'findings';
+  const view: DetectionView = canIncidents ? state.view : 'alerts';
   const analysis = canAnalysis ? state.analysis : 'list';
   const listing = analysis === 'list';
   // O período só vai para a API se couber no histórico do plano; o seletor só oferece os que cabem.
@@ -117,18 +121,19 @@ function DetectionsContent({
   const filters: DetectionFilters = { ...state.filters, period: periods.period };
   const { unassigned: _unassigned, ...findingFilters } = filters;
   const ready = !periods.waiting;
-  const grouped = useDetections(
+  const incidents = useDetections(
     {
       ...filters,
       ...(state.sort === 'severity' && { sort: 'severity' as const }),
+      kind: 'incident',
       page: state.page,
       pageSize: PAGE_SIZE,
     },
-    ready && listing && view === 'grouped',
+    ready && listing && view === 'incidents',
   );
   const findings = useFindings(
     { ...findingFilters, page: state.page, pageSize: PAGE_SIZE },
-    ready && listing && view === 'findings' && canFindings,
+    ready && listing && view === 'alerts' && canFindings,
   );
 
   const side = useMediaQuery(SIDE_PANEL_QUERY);
@@ -158,12 +163,20 @@ function DetectionsContent({
   const close = () => update({ incident: null, finding: null }, { keepPage: true });
 
   const hasFilters = Object.values(filters).some((value) => value !== undefined);
-  const empty = {
-    emptyTitle: hasFilters ? 'Nenhuma detecção com esses filtros' : 'Nenhuma detecção ainda',
-    emptyDescription: hasFilters
-      ? 'Ajuste ou limpe os filtros.'
-      : 'Os alertas das contas conectadas aparecem aqui assim que chegam. Os ligados pelo mesmo usuário, chave, IP ou recurso viram um incidente.',
-  };
+  const empty =
+    view === 'incidents'
+      ? {
+          emptyTitle: hasFilters ? 'Nenhum incidente com esses filtros' : 'Nenhum incidente confirmado',
+          emptyDescription: hasFilters
+            ? 'Ajuste ou limpe os filtros.'
+            : 'Um incidente nasce quando alguém valida um alerta e confirma a ameaça. Abra um alerta e use "Promover a incidente".',
+        }
+      : {
+          emptyTitle: hasFilters ? 'Nenhum alerta com esses filtros' : 'Nenhum alerta ainda',
+          emptyDescription: hasFilters
+            ? 'Ajuste ou limpe os filtros.'
+            : 'Os alertas das contas conectadas aparecem aqui assim que chegam, para validar.',
+        };
   const onPageChange = (page: number) => update({ page: String(page) }, { keepPage: true });
 
   const range: ReportRange =
@@ -176,8 +189,10 @@ function DetectionsContent({
       actions={
         listing && (
           <ExportButton
-            run={() => (view === 'grouped' ? exportGrouped(filters, state.sort) : exportFindings(filters))}
-            file={view === 'grouped' ? 'deteccoes' : 'achados'}
+            run={() =>
+              view === 'incidents' ? exportIncidents(filters, state.sort) : exportFindings(filters)
+            }
+            file={view === 'incidents' ? 'incidentes' : 'alertas'}
           />
         )
       }
@@ -209,12 +224,17 @@ function DetectionsContent({
               ))}
             </Tabs.List>
           )}
-          {listing && canGrouped && (
-            <div role="group" aria-label="Visão da lista" className="inline-flex rounded-md border p-0.5">
+          {listing && canIncidents && (
+            <div
+              data-tour="deteccoes-visao"
+              role="group"
+              aria-label="Visão da lista"
+              className="inline-flex rounded-md border p-0.5"
+            >
               {(
                 [
-                  ['grouped', 'Agrupar por incidente'],
-                  ['findings', 'Todos os achados'],
+                  ['alerts', 'Alertas'],
+                  ['incidents', 'Incidentes'],
                 ] as const
               ).map(([value, label]) => (
                 <button
@@ -226,7 +246,11 @@ function DetectionsContent({
                     view === value && 'bg-foreground/10 font-medium text-foreground',
                   )}
                   onClick={() =>
-                    update({ view: value === 'findings' ? 'achados' : null, unassigned: null, sort: null })
+                    update({
+                      view: value === 'incidents' ? INCIDENTS_VIEW : null,
+                      unassigned: null,
+                      sort: null,
+                    })
                   }
                 >
                   {label}
@@ -248,16 +272,16 @@ function DetectionsContent({
         <Tabs.Content value="list" className="focus:outline-none">
           <div className={cn('grid gap-4', side && selection && 'grid-cols-[minmax(0,1fr)_minmax(0,28rem)]')}>
             <div className="min-w-0">
-              {view === 'grouped' ? (
-                <GroupedList
+              {view === 'incidents' ? (
+                <IncidentsList
                   page={{
-                    rows: periods.waiting ? undefined : grouped.data?.items,
-                    total: grouped.data?.total ?? 0,
+                    rows: periods.waiting ? undefined : incidents.data?.items,
+                    total: incidents.data?.total ?? 0,
                     page: state.page,
                     pageSize: PAGE_SIZE,
-                    loading: grouped.isFetching && grouped.isPlaceholderData,
-                    error: grouped.error,
-                    onRetry: () => void grouped.refetch(),
+                    loading: incidents.isFetching && incidents.isPlaceholderData,
+                    error: incidents.error,
+                    onRetry: () => void incidents.refetch(),
                     onPageChange,
                     compact: side && selection !== null,
                     ...empty,
@@ -267,7 +291,7 @@ function DetectionsContent({
                   filtered={hasContentFilter(filters)}
                 />
               ) : (
-                <FindingsList
+                <AlertsList
                   page={{
                     rows: periods.waiting ? undefined : findings.data?.items,
                     total: findings.data?.total ?? 0,

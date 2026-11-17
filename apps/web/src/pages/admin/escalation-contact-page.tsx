@@ -25,7 +25,7 @@ export function EscalationContactPage() {
   return (
     <AdminShell
       title="Contato de escalonamento"
-      description="Quem a Verax e a sua equipe acionam num incidente grave. Depois de confirmar o endereço pelo link do e-mail, ele recebe só os avisos críticos (incidente crítico e achado crítico), sem detalhes, e pode deixar de receber pelo link de qualquer e-mail."
+      description="Quem a Verax e a sua equipe acionam num incidente grave. Depois de confirmar o endereço pelo link do e-mail, ele recebe só os avisos críticos (incidente crítico e alerta crítico), sem detalhes, e pode deixar de receber pelo link de qualquer e-mail."
     >
       {hasTenant && <EscalationContactContent />}
     </AdminShell>

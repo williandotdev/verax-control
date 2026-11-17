@@ -15,7 +15,7 @@ import {
   syncPage,
   syncWindowStart,
 } from './sync-query.js';
-import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import type { AlertNotices } from '../notifications/finding-notices.js';
 import { parseWazuhAlert, type WazuhAwsAlert } from './wazuh-alert.js';
 
 /** Quem busca os alertas: o `IndexerClient` em produção, um dublê nos testes. */
@@ -35,10 +35,8 @@ export interface AlertSyncOptions {
   maxPages?: number;
   /** Identifica este worker na concessão. */
   owner?: string;
-  /** Janela de agrupamento de incidentes (T5.6), em minutos. */
-  groupingWindowMinutes?: number;
-  /** Agrupamento usado (os testes trocam por um que falha, para provar que nada fica pela metade). */
-  grouping?: IncidentGrouping;
+  /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
+  notices?: AlertNotices;
 }
 
 export interface SyncReport {
@@ -51,9 +49,6 @@ export interface SyncReport {
   unowned: number;
   /** Achados que já nasceram esperados por uma exceção. */
   excepted: number;
-  /** Incidentes abertos e achados que entraram num incidente existente (T5.6). */
-  incidentsOpened: number;
-  incidentsJoined: number;
   /** Alertas de agente nas instâncias do cliente (`agent.id` diferente de 000): são do sync dos agentes. */
   skipped: number;
   lastProcessedAt: string | null;
@@ -111,10 +106,7 @@ export class AlertSync {
     this.name = options.name ?? ALERT_SYNC;
     this.settings = options.settings ?? DEFAULT_SYNC_SETTINGS;
     this.maxPages = options.maxPages ?? 100;
-    this.store = new FindingStore(
-      prisma,
-      options.grouping ?? new IncidentGrouping(options.groupingWindowMinutes),
-    );
+    this.store = new FindingStore(prisma, options.notices);
     this.lease = new SyncLease(
       prisma,
       this.name,
@@ -131,8 +123,6 @@ export class AlertSync {
       duplicates: 0,
       unowned: 0,
       excepted: 0,
-      incidentsOpened: 0,
-      incidentsJoined: 0,
       skipped: 0,
       lastProcessedAt: null,
     };
@@ -141,7 +131,6 @@ export class AlertSync {
       const state = await this.prisma.syncState.findUniqueOrThrow({ where: { name: this.name } });
       const directory = AccountDirectory.from(await this.registeredAccounts());
       const exceptions = await this.store.activeExceptions(now);
-      const protectedItems = await this.store.protectedItems();
       const lastEvents = new LastEvents();
       let lastProcessedAt = state.lastProcessedAt;
       // Uma execução anterior que bateu o limite de páginas deixou a continuação: segue dela. Sem isso, reler a
@@ -158,7 +147,7 @@ export class AlertSync {
         const hits = await this.indexer.search(syncPage(windowStart, cursor, this.settings));
         for (const hit of hits) {
           report.read += 1;
-          await this.process(hit, directory, exceptions, protectedItems, now, report, lastEvents);
+          await this.process(hit, directory, exceptions, now, report, lastEvents);
         }
         const last = hits.at(-1);
         if (last) {
@@ -204,7 +193,6 @@ export class AlertSync {
     hit: AlertHit,
     directory: AccountDirectory,
     exceptions: ReadonlyMap<string, ActiveException[]>,
-    protectedItems: ReadonlyMap<string, ReadonlySet<string>>,
     now: Date,
     report: SyncReport,
     lastEvents: LastEvents,
@@ -236,20 +224,13 @@ export class AlertSync {
     // gravados voltam como duplicados, e é aqui que o `lastEventAt` deles é gravado.
     lastEvents.see(owner.tenantId, owner.accountId, new Date(draft.occurredAt));
 
-    const outcome = await this.store.persist(
-      draft,
-      exception,
-      protectedItems.get(owner.tenantId) ?? new Set(),
-      now,
-    );
+    const outcome = await this.store.persist(draft, exception, now);
     if (outcome === 'duplicate') {
       report.duplicates += 1;
       return;
     }
     report.created += 1;
     if (outcome === 'excepted') report.excepted += 1;
-    if (outcome === 'opened') report.incidentsOpened += 1;
-    if (outcome === 'joined') report.incidentsJoined += 1;
   }
 
   /** Contas AWS ativas com os buckets de log: o cadastro que decide o dono de cada alerta. */

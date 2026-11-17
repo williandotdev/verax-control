@@ -4,9 +4,8 @@ import {
   correlationKeys,
   incidentRiskScore,
   isPrivilegedIdentity,
-  planIncident,
+  relatedFindings,
   summarizeIncident,
-  type IncidentCandidate,
 } from '../../src/incidents/correlation.js';
 
 const ALFA = '018f2c1e-0000-7000-8000-00000000a1fa';
@@ -37,18 +36,12 @@ function finding(overrides: Partial<FindingDraft> = {}): FindingDraft {
   };
 }
 
-function incident(overrides: Partial<IncidentCandidate> = {}): IncidentCandidate {
-  return {
-    id: 'inc-1',
-    tenantId: ALFA,
-    keys: ['ip:203.0.113.50'],
-    firstSeenAt: '2026-11-01T09:30:00.000Z',
-    lastSeenAt: '2026-11-01T09:40:00.000Z',
-    ...overrides,
-  };
+/** Um alerta candidato a relacionado (o id e os campos que viram chave). */
+function candidate(id: string, overrides: Partial<FindingDraft> = {}) {
+  return { id, ...finding(overrides) };
 }
 
-describe('agrupamento em incidentes (T5.6)', () => {
+describe('alertas relacionados (sugestão ao promover; decisão de 17/11/2026)', () => {
   it('chaves de correlação: usuário, chave de acesso, IP e recurso presentes', () => {
     expect(correlationKeys(finding({ accessKeyId: 'AKIAEXEMPLO000000000', resource: 's3:dados' }))).toEqual([
       'user:arn:aws:iam::111122223333:user/ana',
@@ -59,65 +52,33 @@ describe('agrupamento em incidentes (T5.6)', () => {
     expect(correlationKeys(finding({ actorUser: null, sourceIp: null }))).toEqual([]);
   });
 
-  it('entra no incidente aberto do mesmo cliente com chave em comum dentro da janela', () => {
-    expect(planIncident(finding(), [incident()])).toEqual({ action: 'join', incidentId: 'inc-1' });
-    // 60 minutos depois do último achado do incidente ainda entra; um minuto além, não.
-    expect(planIncident(finding({ occurredAt: '2026-11-01T10:40:00.000Z' }), [incident()])).toMatchObject({
-      action: 'join',
-    });
-    expect(planIncident(finding({ occurredAt: '2026-11-01T10:41:00.000Z' }), [incident()])).toEqual({
-      action: 'open',
-    });
-    // Achado que chega atrasado, de antes do incidente, também entra se estiver na janela.
-    expect(planIncident(finding({ occurredAt: '2026-11-01T08:45:00.000Z' }), [incident()])).toMatchObject({
-      action: 'join',
-    });
+  it('do mesmo cliente, com chave em comum, dentro da janela para os dois lados', () => {
+    const anchor = candidate('a0');
+    const sameIp = candidate('a1', { actorUser: null, occurredAt: '2026-11-01T10:59:00.000Z' });
+    const before = candidate('a2', { sourceIp: null, occurredAt: '2026-11-01T09:00:00.000Z' });
+    const tooLate = candidate('a3', { occurredAt: '2026-11-01T11:01:00.000Z' });
+    const unrelated = candidate('a4', { actorUser: 'outro', sourceIp: '198.51.100.7' });
+    expect(relatedFindings(anchor, [anchor, sameIp, before, tooLate, unrelated]).map((f) => f.id)).toEqual([
+      'a1',
+      'a2',
+    ]);
   });
 
-  it('nunca entra em incidente de outro cliente, nem com o mesmo IP', () => {
-    expect(planIncident(finding(), [incident({ tenantId: BETA })])).toEqual({ action: 'open' });
-    expect(planIncident(finding({ severity: 'low' }), [incident({ tenantId: BETA })])).toEqual({
-      action: 'none',
-    });
+  it('nunca sugere alerta de outro cliente, nem com o mesmo IP', () => {
+    expect(relatedFindings(candidate('a0'), [candidate('b1', { tenantId: BETA })])).toEqual([]);
   });
 
-  it('sem chave em comum não agrupa', () => {
-    expect(planIncident(finding(), [incident({ keys: ['ip:198.51.100.7', 'user:outro'] })])).toEqual({
-      action: 'open',
-    });
+  it('alerta sem nenhuma chave (usuário, chave, IP, recurso) não tem relacionado', () => {
+    const bare = candidate('a0', { actorUser: null, accessKeyId: null, sourceIp: null, resource: null });
+    expect(relatedFindings(bare, [candidate('a1'), { ...bare, id: 'a2' }])).toEqual([]);
   });
 
-  it('vários candidatos: o de atividade mais recente; empate pelo id', () => {
-    const candidates = [
-      incident({ id: 'inc-b', lastSeenAt: '2026-11-01T09:50:00.000Z' }),
-      incident({ id: 'inc-a', lastSeenAt: '2026-11-01T09:50:00.000Z' }),
-      incident({ id: 'inc-c', lastSeenAt: '2026-11-01T09:45:00.000Z' }),
-    ];
-    expect(planIncident(finding(), candidates)).toEqual({ action: 'join', incidentId: 'inc-a' });
-  });
-
-  it('sem incidente para entrar: médio ou mais abre; baixo fica só como achado', () => {
-    for (const severity of ['critical', 'high', 'medium'] as const) {
-      expect(planIncident(finding({ severity }), [])).toEqual({ action: 'open' });
-    }
-    expect(planIncident(finding({ severity: 'low' }), [])).toEqual({ action: 'none' });
-    expect(planIncident(finding({ severity: 'low' }), [incident()])).toMatchObject({ action: 'join' });
-  });
-
-  it('achado grave sem nenhuma chave (usuário, chave, IP, recurso) não abre incidente', () => {
-    const bare = finding({
-      severity: 'critical',
-      actorUser: null,
-      accessKeyId: null,
-      sourceIp: null,
-      resource: null,
-    });
-    expect(planIncident(bare, [])).toEqual({ action: 'none' });
-  });
-
-  it('janela configurável', () => {
-    expect(planIncident(finding(), [incident()], 10)).toEqual({ action: 'open' });
-    expect(planIncident(finding(), [incident()], 20)).toMatchObject({ action: 'join' });
+  it('janela configurável; os mais recentes primeiro, empate pelo id', () => {
+    const anchor = candidate('a0');
+    const later = candidate('a2', { occurredAt: '2026-11-01T10:15:00.000Z' });
+    const tie = candidate('a1', { occurredAt: '2026-11-01T10:15:00.000Z' });
+    expect(relatedFindings(anchor, [later, tie], 10)).toEqual([]);
+    expect(relatedFindings(anchor, [later, tie], 20).map((f) => f.id)).toEqual(['a1', 'a2']);
   });
 });
 

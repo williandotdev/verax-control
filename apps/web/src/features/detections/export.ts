@@ -44,11 +44,11 @@ async function readAll<T>(
 
 const severityLabel = (severity: keyof typeof SEVERITY_STYLES) => SEVERITY_STYLES[severity].label;
 
-/** "Agrupar por incidente": uma linha por incidente e por achado fora de incidente, como na tela. */
-export async function exportGrouped(filters: DetectionFilters, sort: DetectionSort): Promise<ExportResult> {
+/** "Incidentes": uma linha por incidente confirmado, como na tela. */
+export async function exportIncidents(filters: DetectionFilters, sort: DetectionSort): Promise<ExportResult> {
   const { items, total } = await readAll((page) =>
     api.get(
-      `/v1/detections?${toSearch({ ...filters, sort, page, pageSize: MAX_PAGE_SIZE })}`,
+      `/v1/detections?${toSearch({ ...filters, sort, kind: 'incident', page, pageSize: MAX_PAGE_SIZE })}`,
       detectionPageSchema,
     ),
   );
@@ -60,7 +60,7 @@ export async function exportGrouped(filters: DetectionFilters, sort: DetectionSo
     'Status',
     'Responsável',
     'Nota de risco',
-    'Achados',
+    'Alertas',
     'Primeira atividade',
     'Última atividade',
     'Contas',
@@ -83,7 +83,7 @@ export async function exportGrouped(filters: DetectionFilters, sort: DetectionSo
           row.incident.resources.join(', '),
         ]
       : [
-          'Achado',
+          'Alerta',
           row.finding.id,
           row.finding.title,
           severityLabel(row.finding.severity),
@@ -100,9 +100,9 @@ export async function exportGrouped(filters: DetectionFilters, sort: DetectionSo
   return { csv: toCsv(header, rows), rows: rows.length, total };
 }
 
-/** "Todos os achados": uma linha por achado, com o incidente. */
+/** "Alertas": uma linha por alerta, com o incidente em que foi confirmado (vazio se ainda não). */
 export async function exportFindings(filters: DetectionFilters): Promise<ExportResult> {
-  // Sem "sem responsável" (só a visão agrupada tem): a lista de achados recusa o parâmetro.
+  // Sem "sem responsável" (só a visão de incidentes tem): a lista de alertas recusa o parâmetro.
   const { unassigned: _unassigned, ...findingFilters } = filters;
   const { items, total } = await readAll((page) =>
     api.get(

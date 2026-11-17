@@ -1,22 +1,25 @@
 import type { FindingSeverity } from '../alerts/finding-draft.js';
 import type { Prisma } from '../generated/prisma/client.js';
-import type { IncidentPlacement } from '../incidents/incident-grouping.js';
 
 /**
- * Avisos por e-mail que um achado gera (fase 2, PR-16), decididos na mesma transação que grava o achado e o incidente
- * (`FindingStore`). Assim, todo coletor ganha o aviso sem mudança. Três casos:
- * - um incidente abre alto ou crítico (`incident_opened`);
- * - um incidente sobe para alto ou crítico (`incident_escalated`): de médio para alto, de alto para crítico;
- * - um achado crítico fica fora de incidente (`critical_finding`): o que não tem usuário, chave, IP nem recurso para
- *   agrupar.
+ * Avisos por e-mail de alertas e incidentes (fase 2, PR-16; regras de 17/11/2026, alerta → validação → incidente).
  *
- * A chave de deduplicação do incidente leva a severidade (`incident:<id>:<severidade>`): cada incidente avisa no máximo
- * uma vez por faixa, a junção que não muda a severidade não avisa, e reler o mesmo achado (duplicado) nem chega aqui.
+ * - Alerta que chega (decidido na mesma transação que grava o achado, em `FindingStore`; todo coletor ganha o aviso sem
+ *   mudança): alto avisa (`high_finding`), crítico avisa (`critical_finding`). Médio e baixo, não.
+ * - Incidente confirmado por uma pessoa (promover alertas, `IncidentsService`): avisa em qualquer severidade
+ *   (`incident_opened`).
+ * - Incidente que sobe para alto ou crítico ao receber alertas (anexar): avisa (`incident_escalated`), de médio para
+ *   alto, de alto para crítico.
+ *
+ * O contato de escalonamento só recebe os críticos (`reachesEscalationContact`). A chave de deduplicação do alerta é
+ * `finding:<id>` (um aviso por alerta, por mais que ele seja relido); a do incidente leva a severidade
+ * (`incident:<id>:<severidade>`): cada incidente avisa no máximo uma vez por faixa, e a mudança que não sobe a
+ * severidade não avisa.
  */
 
 const SEVERITY_RANK: Readonly<Record<FindingSeverity, number>> = { low: 0, medium: 1, high: 2, critical: 3 };
 
-/** Severidades que avisam por e-mail. */
+/** Severidades em que o alerta e a subida do incidente avisam por e-mail. */
 export type NoticeSeverity = Extract<FindingSeverity, 'high' | 'critical'>;
 
 export function isNoticeSeverity(severity: FindingSeverity): severity is NoticeSeverity {
@@ -29,56 +32,58 @@ export type NoticeRow = Pick<
   'tenantId' | 'kind' | 'dedupeKey' | 'severity' | 'incidentId' | 'findingId'
 >;
 
-export function findingNotices(
-  finding: { tenantId: string; id: string; severity: FindingSeverity },
-  placement: IncidentPlacement,
-): NoticeRow[] {
-  const { tenantId } = finding;
-  switch (placement.outcome) {
-    case 'opened': {
-      const { incidentId, severity } = placement;
-      if (!isNoticeSeverity(severity)) return [];
-      return [
-        {
-          tenantId,
-          kind: 'incident_opened',
-          dedupeKey: `incident:${incidentId}:${severity}`,
-          severity,
-          incidentId,
-        },
-      ];
-    }
-    case 'joined': {
-      const { incidentId, severity, previousSeverity } = placement;
-      if (!isNoticeSeverity(severity) || SEVERITY_RANK[severity] <= SEVERITY_RANK[previousSeverity])
-        return [];
-      return [
-        {
-          tenantId,
-          kind: 'incident_escalated',
-          dedupeKey: `incident:${incidentId}:${severity}`,
-          severity,
-          incidentId,
-        },
-      ];
-    }
-    case 'none':
-      if (finding.severity !== 'critical') return [];
-      return [
-        {
-          tenantId,
-          kind: 'critical_finding',
-          dedupeKey: `finding:${finding.id}`,
-          severity: 'critical',
-          findingId: finding.id,
-        },
-      ];
+/** O aviso do alerta que chegou: alto ou crítico. */
+export function alertNotices(finding: {
+  tenantId: string;
+  id: string;
+  severity: FindingSeverity;
+}): NoticeRow[] {
+  if (!isNoticeSeverity(finding.severity)) return [];
+  return [
+    {
+      tenantId: finding.tenantId,
+      kind: finding.severity === 'critical' ? 'critical_finding' : 'high_finding',
+      dedupeKey: `finding:${finding.id}`,
+      severity: finding.severity,
+      findingId: finding.id,
+    },
+  ];
+}
+
+/** O que mudou no incidente pela mão de uma pessoa: confirmado (promovido) ou com alertas novos (anexados). */
+export type IncidentChange =
+  | { change: 'opened'; incidentId: string; severity: FindingSeverity }
+  | { change: 'attached'; incidentId: string; severity: FindingSeverity; previousSeverity: FindingSeverity };
+
+export function incidentNotices(tenantId: string, change: IncidentChange): NoticeRow[] {
+  const { incidentId, severity } = change;
+  if (change.change === 'opened') {
+    return [
+      {
+        tenantId,
+        kind: 'incident_opened',
+        dedupeKey: `incident:${incidentId}:${severity}`,
+        severity,
+        incidentId,
+      },
+    ];
   }
+  if (!isNoticeSeverity(severity) || SEVERITY_RANK[severity] <= SEVERITY_RANK[change.previousSeverity])
+    return [];
+  return [
+    {
+      tenantId,
+      kind: 'incident_escalated',
+      dedupeKey: `incident:${incidentId}:${severity}`,
+      severity,
+      incidentId,
+    },
+  ];
 }
 
 /**
- * Grava os avisos na fila de saída, pelo cliente do banco já no escopo do cliente (o da transação do achado). A chave de
- * deduplicação é única por cliente: o aviso que já existe fica como está.
+ * Grava os avisos na fila de saída, pelo cliente do banco já no escopo do cliente (o da transação do achado ou da
+ * requisição). A chave de deduplicação é única por cliente: o aviso que já existe fica como está.
  */
 export async function enqueueNotices(
   db: Prisma.TransactionClient,
@@ -87,4 +92,17 @@ export async function enqueueNotices(
   if (rows.length === 0) return 0;
   const { count } = await db.notification.createMany({ data: [...rows], skipDuplicates: true });
   return count;
+}
+
+/**
+ * O passo do `FindingStore` depois de gravar um alerta novo: o aviso dele, na mesma transação. É uma classe para os
+ * testes dos coletores trocarem por uma que falha e provarem que nada fica pela metade.
+ */
+export class AlertNotices {
+  async enqueue(
+    db: Prisma.TransactionClient,
+    finding: { tenantId: string; id: string; severity: FindingSeverity },
+  ): Promise<number> {
+    return enqueueNotices(db, alertNotices(finding));
+  }
 }

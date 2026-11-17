@@ -15,7 +15,7 @@ import {
 } from '../src/escalation/escalation-contact-store.js';
 import { escalationTokenHash, mintEscalationTokens } from '../src/escalation/escalation-tokens.js';
 import type { UserRole, UserStatus } from '../src/generated/prisma/client.js';
-import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
+import { enqueueNotices, incidentNotices } from '../src/notifications/finding-notices.js';
 import type { MailMessage, MailTransport } from '../src/mail/mail.types.js';
 import {
   hourStartOf,
@@ -33,7 +33,8 @@ import { createApp, TEST_WEB_ORIGIN } from './support/create-app.js';
 import { MemoryMailTransport } from './support/memory-mail.js';
 
 /**
- * Avisos por e-mail (fase 2, PR-16): a fila de saída gravada junto com o achado e o incidente, e a tarefa
+ * Avisos por e-mail (fase 2, PR-16; regras de 17/11/2026): a fila de saída gravada junto com o alerta (e, pela API, com
+ * o incidente confirmado; ver `incidents-confirmation.test.ts`), e a tarefa
  * `notifications` que entrega. O banco de teste é o mesmo dos outros arquivos, que também gravam achados (e, agora,
  * avisos): os testes conferem só os avisos e as caixas dos próprios clientes, e o despachante lê um lote grande.
  */
@@ -45,7 +46,7 @@ describe('avisos por e-mail (outbox)', () => {
   beforeAll(async () => {
     app = await createApp();
     prisma = app.get(PrismaService);
-    store = new FindingStore(prisma, new IncidentGrouping());
+    store = new FindingStore(prisma);
   });
 
   afterAll(async () => {
@@ -83,7 +84,65 @@ describe('avisos por e-mail (outbox)', () => {
   const noticesOf = (tenantId: string) =>
     prisma.forTenant(tenantId).notification.findMany({ orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
 
-  const persist = (finding: FindingDraft) => store.persist(finding, null, new Set(), new Date());
+  const persist = (finding: FindingDraft) => store.persist(finding, null, new Date());
+
+  /**
+   * Um incidente confirmado por uma pessoa, como a API grava ao promover (`IncidentsService.create`): o alerta, o
+   * incidente e o aviso `incident_opened`, sem passar pelo coletor (que não gera aviso de alerta aqui).
+   */
+  async function confirmIncident(
+    tenantId: string,
+    severity: FindingDraft['severity'],
+    overrides: Partial<FindingDraft> = {},
+  ): Promise<{ incidentId: string; finding: FindingDraft }> {
+    const finding = draft(tenantId, { severity, ...overrides });
+    const db = prisma.forTenant(tenantId);
+    const at = new Date(finding.occurredAt);
+    const incident = await prisma.incident.create({
+      data: {
+        tenantId,
+        severity,
+        riskScore: 50,
+        findingCount: 1,
+        firstSeenAt: at,
+        lastSeenAt: at,
+        keys: [],
+        accounts: [finding.accountId],
+        resources: [],
+        mitreTactics: [],
+        mitreTechniques: [],
+      },
+      select: { id: true },
+    });
+    await prisma.finding.create({
+      data: {
+        tenantId,
+        incidentId: incident.id,
+        accountId: finding.accountId,
+        source: finding.source,
+        sourceEventId: finding.sourceEventId,
+        logSource: finding.logSource,
+        occurredAt: at,
+        severity,
+        ruleId: finding.ruleId,
+        ruleLevel: finding.ruleLevel,
+        title: finding.title,
+        eventName: finding.eventName,
+        region: finding.region,
+        resource: finding.resource,
+        actorUser: finding.actorUser,
+        accessKeyId: finding.accessKeyId,
+        sourceIp: finding.sourceIp,
+        mitreTactics: [],
+        mitreTechniques: [],
+      },
+    });
+    await enqueueNotices(
+      db,
+      incidentNotices(tenantId, { change: 'opened', incidentId: incident.id, severity }),
+    );
+    return { incidentId: incident.id, finding };
+  }
 
   interface Member {
     id: string;
@@ -133,83 +192,52 @@ describe('avisos por e-mail (outbox)', () => {
   /** Um minuto à frente: todo aviso já gravado está vencido, com folga para o relógio do banco. */
   const soon = () => new Date(Date.now() + 60_000);
 
-  describe('gravação junto com o achado (todos os coletores passam por aqui)', () => {
-    it('incidente alto aberto gera 1 aviso; reler o mesmo achado gera 0', async () => {
-      const tenantId = await createTenant(app, 'Cliente demo A (aviso ao abrir)');
+  describe('gravação junto com o alerta (todos os coletores passam por aqui)', () => {
+    it('alerta alto gera 1 aviso pelo próprio alerta; reler o mesmo alerta gera 0', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (aviso do alerta alto)');
       const finding = draft(tenantId, { severity: 'high', sourceIp: ip() });
-      expect(await persist(finding)).toBe('opened');
-      const incident = await prisma.forTenant(tenantId).incident.findFirstOrThrow({ select: { id: true } });
+      expect(await persist(finding)).toBe('created');
+      const { id } = await prisma.forTenant(tenantId).finding.findUniqueOrThrow({
+        where: { source_sourceEventId: { source: 'wazuh', sourceEventId: finding.sourceEventId } },
+        select: { id: true },
+      });
       expect(await noticesOf(tenantId)).toEqual([
         expect.objectContaining({
-          kind: 'incident_opened',
-          dedupeKey: `incident:${incident.id}:high`,
+          kind: 'high_finding',
+          dedupeKey: `finding:${id}`,
           severity: 'high',
-          incidentId: incident.id,
-          findingId: null,
+          findingId: id,
+          incidentId: null,
           status: 'pending',
           attempts: 0,
           deliveredUserIds: [],
         }),
       ]);
-
       expect(await persist(finding)).toBe('duplicate');
       expect(await noticesOf(tenantId)).toHaveLength(1);
+      // O coletor nunca abre incidente.
+      expect(await prisma.forTenant(tenantId).incident.count()).toBe(0);
     });
 
-    it('médio que sobe para alto gera 1, alto que sobe para crítico gera mais 1; junção sem mudança gera 0', async () => {
-      const tenantId = await createTenant(app, 'Cliente demo A (aviso ao subir)');
-      const sourceIp = ip();
-      expect(await persist(draft(tenantId, { severity: 'medium', sourceIp }))).toBe('opened');
-      expect(await noticesOf(tenantId)).toEqual([]);
-
-      expect(await persist(draft(tenantId, { severity: 'high', sourceIp }))).toBe('joined');
-      const incident = await prisma.forTenant(tenantId).incident.findFirstOrThrow({ select: { id: true } });
-      expect((await noticesOf(tenantId)).map(({ kind, dedupeKey }) => ({ kind, dedupeKey }))).toEqual([
-        { kind: 'incident_escalated', dedupeKey: `incident:${incident.id}:high` },
-      ]);
-
-      // Junção sem mudança de severidade: outro alto, e um baixo.
-      expect(await persist(draft(tenantId, { severity: 'high', sourceIp }))).toBe('joined');
-      expect(await persist(draft(tenantId, { severity: 'low', sourceIp }))).toBe('joined');
-      expect(await noticesOf(tenantId)).toHaveLength(1);
-
-      expect(await persist(draft(tenantId, { severity: 'critical', sourceIp }))).toBe('joined');
-      expect((await noticesOf(tenantId)).map(({ kind, severity }) => ({ kind, severity }))).toEqual([
-        { kind: 'incident_escalated', severity: 'high' },
-        { kind: 'incident_escalated', severity: 'critical' },
-      ]);
-      expect(await persist(draft(tenantId, { severity: 'critical', sourceIp }))).toBe('joined');
-      expect(await noticesOf(tenantId)).toHaveLength(2);
-    });
-
-    it('crítico sem chave (fora de incidente) gera 1, pelo achado; alto sem chave gera 0', async () => {
-      const tenantId = await createTenant(app, 'Cliente demo A (crítico sem chave)');
+    it('alerta crítico gera 1, com ou sem chave; médio e baixo, nenhum', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (crítico e abaixo de alto)');
       const critical = draft(tenantId, { severity: 'critical' });
-      expect(await persist(critical)).toBe('none');
-      expect(await persist(draft(tenantId, { severity: 'high' }))).toBe('none');
+      expect(await persist(critical)).toBe('created');
+      expect(await persist(draft(tenantId, { severity: 'critical', sourceIp: ip() }))).toBe('created');
+      expect(await persist(draft(tenantId, { severity: 'medium', sourceIp: ip() }))).toBe('created');
+      expect(await persist(draft(tenantId, { severity: 'low' }))).toBe('created');
       const finding = await prisma.forTenant(tenantId).finding.findUniqueOrThrow({
         where: { source_sourceEventId: { source: 'wazuh', sourceEventId: critical.sourceEventId } },
         select: { id: true },
       });
-      expect(await noticesOf(tenantId)).toEqual([
-        expect.objectContaining({
-          kind: 'critical_finding',
-          dedupeKey: `finding:${finding.id}`,
-          severity: 'critical',
-          findingId: finding.id,
-          incidentId: null,
-        }),
+      const notices = await noticesOf(tenantId);
+      expect(notices.map(({ kind, severity }) => ({ kind, severity }))).toEqual([
+        { kind: 'critical_finding', severity: 'critical' },
+        { kind: 'critical_finding', severity: 'critical' },
       ]);
+      expect(notices[0]).toMatchObject({ dedupeKey: `finding:${finding.id}`, findingId: finding.id });
       expect(await persist(critical)).toBe('duplicate');
-      expect(await noticesOf(tenantId)).toHaveLength(1);
-    });
-
-    it('incidente crítico aberto gera 1 aviso de abertura, e não de subida', async () => {
-      const tenantId = await createTenant(app, 'Cliente demo A (crítico ao abrir)');
-      expect(await persist(draft(tenantId, { severity: 'critical', sourceIp: ip() }))).toBe('opened');
-      expect((await noticesOf(tenantId)).map(({ kind, severity }) => ({ kind, severity }))).toEqual([
-        { kind: 'incident_opened', severity: 'critical' },
-      ]);
+      expect(await noticesOf(tenantId)).toHaveLength(2);
     });
   });
 
@@ -248,12 +276,13 @@ describe('avisos por e-mail (outbox)', () => {
       for (const person of excluded) expect(mailbox.to(person.email)).toEqual([]);
 
       const message = mailbox.to(admin.email)[0] as MailMessage;
-      const link = `${TEST_WEB_ORIGIN}/incidentes/${notice.incidentId}`;
-      expect(message.subject).toBe('Incidente de severidade alta aberto no Verax Control');
+      const link = `${TEST_WEB_ORIGIN}/?alerta=${notice.findingId}`;
+      expect(message.subject).toBe('Alerta de severidade alta no Verax Control');
       expect(message.text).toContain('Olá, Ana.');
-      expect(message.text).toContain(`Ver o incidente: ${link}`);
-      expect(message.html).toContain(`<a href="${link}">Ver o incidente</a>`);
-      // Nada do achado no e-mail: IP, usuário, chave, recurso, conta, título ou região.
+      expect(message.text).toContain('Ele precisa ser validado');
+      expect(message.text).toContain(`Ver o alerta: ${link}`);
+      expect(message.html).toContain(`<a href="${link}">Ver o alerta</a>`);
+      // Nada do alerta no e-mail: IP, usuário, chave, recurso, conta, título ou região.
       for (const value of [
         finding.sourceIp,
         finding.actorUser,
@@ -280,16 +309,27 @@ describe('avisos por e-mail (outbox)', () => {
       expect(mailbox.to(analyst.email)).toHaveLength(1);
     });
 
-    it('achado crítico: link para o achado no painel', async () => {
-      const tenantId = await createTenant(app, 'Cliente demo A (link do achado)');
+    it('alerta crítico: link para o alerta na tela Detecções', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (link do alerta)');
       const analyst = await member(tenantId, 'analista_cliente');
       await persist(draft(tenantId, { severity: 'critical' }));
       const [notice] = await noticesOf(tenantId);
       const mailbox = new MemoryMailTransport();
       await dispatcher(mailbox, soon()).runOnce();
       const [message] = mailbox.to(analyst.email);
-      expect(message?.subject).toBe('Achado de severidade crítica no Verax Control');
-      expect(message?.text).toContain(`Ver o achado: ${TEST_WEB_ORIGIN}/achados?achado=${notice?.findingId}`);
+      expect(message?.subject).toBe('Alerta de severidade crítica no Verax Control');
+      expect(message?.text).toContain(`Ver o alerta: ${TEST_WEB_ORIGIN}/?alerta=${notice?.findingId}`);
+    });
+
+    it('incidente confirmado, em qualquer severidade: link para o incidente na tela Detecções', async () => {
+      const tenantId = await createTenant(app, 'Cliente demo A (incidente confirmado)');
+      const analyst = await member(tenantId, 'analista_cliente');
+      const { incidentId } = await confirmIncident(tenantId, 'medium');
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      const [message] = mailbox.to(analyst.email);
+      expect(message?.subject).toBe('Incidente de severidade média confirmado no Verax Control');
+      expect(message?.text).toContain(`Ver o incidente: ${TEST_WEB_ORIGIN}/?incidente=${incidentId}`);
     });
 
     it('MAIL_TRANSPORT=none: o aviso fica skipped, sem nenhum envio', async () => {
@@ -725,9 +765,9 @@ describe('avisos por e-mail (outbox)', () => {
       await addUsage(tenantId, gib(1), at('2031-06', 11));
       const [usage] = await prisma.forTenant(tenantId).ingestUsage.findMany({ select: { bytes: true } });
       expect(usage?.bytes).toBe(BigInt(gib(4)));
-      expect(await persist(draft(tenantId, { severity: 'high', sourceIp: ip() }))).toBe('opened');
+      expect(await persist(draft(tenantId, { severity: 'high', sourceIp: ip() }))).toBe('created');
       expect((await noticesOf(tenantId)).map(({ kind }) => kind).sort()).toEqual([
-        'incident_opened',
+        'high_finding',
         'plan_usage',
         'plan_usage',
       ]);
@@ -779,8 +819,8 @@ describe('avisos por e-mail (outbox)', () => {
     it('o banco recusa aviso de B apontando para o incidente ou o achado de A, e alvo fora do tipo', async () => {
       const tenantA = await createTenant(app, 'Cliente demo A (banco)');
       const tenantB = await createTenant(app, 'Cliente demo B (banco)');
-      await persist(draft(tenantA, { severity: 'high', sourceIp: ip() }));
-      const incident = await prisma.forTenant(tenantA).incident.findFirstOrThrow({ select: { id: true } });
+      const { incidentId } = await confirmIncident(tenantA, 'high', { sourceIp: ip() });
+      const incident = { id: incidentId };
       const finding = await prisma.forTenant(tenantA).finding.findFirstOrThrow({ select: { id: true } });
       const key = () => `teste:${randomUUID()}`;
 
@@ -806,23 +846,61 @@ describe('avisos por e-mail (outbox)', () => {
           },
         }),
       ).rejects.toThrow();
-      // Cada tipo com o alvo dele: incidente sem o incidente, médio, volume fora das faixas.
+      // Cada tipo com o alvo dele: o confirmado com a severidade, a subida só para alto ou crítico, o alerta com a
+      // severidade do tipo, o volume nas faixas.
       await expect(
         prisma.notification.create({
-          data: { tenantId: tenantA, kind: 'incident_opened', dedupeKey: key(), severity: 'high' },
+          data: { tenantId: tenantA, kind: 'incident_opened', dedupeKey: key(), incidentId: incident.id },
         }),
       ).rejects.toThrow();
       await expect(
         prisma.notification.create({
           data: {
             tenantId: tenantA,
-            kind: 'incident_opened',
+            kind: 'incident_escalated',
             dedupeKey: key(),
             severity: 'medium',
             incidentId: incident.id,
           },
         }),
       ).rejects.toThrow();
+      await expect(
+        prisma.notification.create({
+          data: {
+            tenantId: tenantA,
+            kind: 'high_finding',
+            dedupeKey: key(),
+            severity: 'critical',
+            findingId: finding.id,
+          },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.notification.create({
+          data: {
+            tenantId: tenantA,
+            kind: 'critical_finding',
+            dedupeKey: key(),
+            severity: 'high',
+            findingId: finding.id,
+          },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        prisma.notification.create({
+          data: { tenantId: tenantA, kind: 'high_finding', dedupeKey: key(), severity: 'high' },
+        }),
+      ).rejects.toThrow();
+      // O incidente confirmado avisa em qualquer severidade.
+      await prisma.notification.create({
+        data: {
+          tenantId: tenantA,
+          kind: 'incident_opened',
+          dedupeKey: key(),
+          severity: 'low',
+          incidentId: incident.id,
+        },
+      });
       await expect(
         prisma.notification.create({
           data: {
@@ -836,13 +914,28 @@ describe('avisos por e-mail (outbox)', () => {
       ).rejects.toThrow();
     });
 
-    it('apagar o incidente apaga o aviso (o expurgo não é barrado pela fila)', async () => {
+    it('apagar o incidente mantém o aviso, sem o incidente; o que ainda estava na fila sai como pulado', async () => {
       const tenantId = await createTenant(app, 'Cliente demo A (expurgo)');
-      await persist(draft(tenantId, { severity: 'high', sourceIp: ip() }));
-      const incident = await prisma.forTenant(tenantId).incident.findFirstOrThrow({ select: { id: true } });
-      expect(await noticesOf(tenantId)).toHaveLength(1);
-      await prisma.incident.delete({ where: { id: incident.id } });
-      expect(await noticesOf(tenantId)).toEqual([]);
+      const admin = await member(tenantId, 'admin_cliente');
+      const { incidentId } = await confirmIncident(tenantId, 'high');
+      const [notice] = await noticesOf(tenantId);
+      if (notice === undefined) throw new Error('aviso não gravado');
+      // O expurgo não é barrado pela fila.
+      await prisma.incident.delete({ where: { id: incidentId } });
+      expect(await noticesOf(tenantId)).toEqual([
+        expect.objectContaining({
+          id: notice.id,
+          kind: 'incident_opened',
+          incidentId: null,
+          status: 'pending',
+        }),
+      ]);
+      const mailbox = new MemoryMailTransport();
+      await dispatcher(mailbox, soon()).runOnce();
+      expect(mailbox.to(admin.email)).toEqual([]);
+      expect(await noticesOf(tenantId)).toEqual([
+        expect.objectContaining({ id: notice.id, status: 'skipped', lastError: 'incident_gone' }),
+      ]);
     });
   });
 
@@ -977,9 +1070,9 @@ describe('avisos por e-mail (outbox)', () => {
       expect(message.html.match(/<li>/g)).toHaveLength(10);
       // Os 10 primeiros da fila reunidos, cada um com o link do achado.
       for (const notice of notices.slice(5, 15)) {
-        expect(message.text).toContain(`${TEST_WEB_ORIGIN}/achados?achado=${notice.findingId}`);
+        expect(message.text).toContain(`${TEST_WEB_ORIGIN}/?alerta=${notice.findingId}`);
       }
-      expect(message.text).not.toContain(`achado=${notices[15]?.findingId}`);
+      expect(message.text).not.toContain(`alerta=${notices[15]?.findingId}`);
       expect((await digestsOf(tenantId))[0]).toMatchObject({ status: 'sent', attempts: 1, lastError: null });
 
       // Outra execução: nada sai de novo.
@@ -1443,7 +1536,7 @@ describe('avisos por e-mail (outbox)', () => {
       const report = await dispatcher(mailbox, soon()).runOnce();
       expect(report.escalation.sent).toBeGreaterThanOrEqual(1);
       const notice = mailbox.to(email)[1] as MailMessage;
-      expect(notice.subject).toBe('Achado de severidade crítica no Verax Control');
+      expect(notice.subject).toBe('Alerta de severidade crítica no Verax Control');
       expect(notice.text).not.toContain('Minha conta');
       expect(linkToken(notice, UNSUBSCRIBE_LINK)).not.toBe(unsubscribeToken);
       expect((await noticesOf(tenantId)).at(-1)).toMatchObject({
@@ -1454,7 +1547,7 @@ describe('avisos por e-mail (outbox)', () => {
       expect(mailbox.to(email)).toHaveLength(2);
     });
 
-    it('só os avisos críticos chegam ao contato: o incidente alto, o volume do plano e a coleta parada, nunca', async () => {
+    it('só os avisos críticos chegam ao contato: o alerta e o incidente altos, o volume do plano e a coleta parada, nunca', async () => {
       const { tenantId, email } = await contactTenant('Cliente demo A (só críticos)', 'confirmed');
       const admin = await member(tenantId, 'admin_cliente');
       const sourceIp = ip();
@@ -1465,11 +1558,23 @@ describe('avisos por e-mail (outbox)', () => {
         accessKeyId: 'DEMOKEYID0000EXAMPLE',
         resource: 's3:bucket-ficticio-de-relatorios',
       });
+      // O alerta alto e o crítico, e o incidente alto e o crítico confirmados (sem o aviso dos alertas deles).
       await persist(finding);
       await persist(
         draft(tenantId, { ...finding, sourceEventId: `teste-avisos/${randomUUID()}`, severity: 'critical' }),
       );
-      await persist(draft(tenantId, { severity: 'critical', sourceIp: ip() }));
+      const { incidentId: highIncident } = await confirmIncident(tenantId, 'high', { sourceIp });
+      await confirmIncident(tenantId, 'critical', { sourceIp: ip() });
+      // O incidente alto que sobe para crítico (anexar).
+      await enqueueNotices(
+        prisma.forTenant(tenantId),
+        incidentNotices(tenantId, {
+          change: 'attached',
+          incidentId: highIncident,
+          severity: 'critical',
+          previousSeverity: 'high',
+        }),
+      );
       await prisma.forTenant(tenantId).notification.createMany({
         data: [
           {
@@ -1485,10 +1590,12 @@ describe('avisos por e-mail (outbox)', () => {
       const mailbox = new MemoryMailTransport();
       await dispatcher(mailbox, soon()).runOnce();
 
+      // Sete avisos: os cinco primeiros avulsos (o limite da hora); os outros, no resumo, quando a hora fechar.
       expect(mailbox.to(admin.email)).toHaveLength(5);
       const received = mailbox.to(email);
       expect(received.map((message) => message.subject).sort()).toEqual([
-        'Incidente de severidade crítica aberto no Verax Control',
+        'Alerta de severidade crítica no Verax Control',
+        'Incidente de severidade crítica confirmado no Verax Control',
         'Incidente subiu para severidade crítica no Verax Control',
       ]);
       for (const message of received) {
@@ -1515,6 +1622,8 @@ describe('avisos por e-mail (outbox)', () => {
       }));
       expect(byKind).toEqual(
         expect.arrayContaining([
+          { kind: 'high_finding', severity: 'high', escalationDelivery: null },
+          { kind: 'critical_finding', severity: 'critical', escalationDelivery: 'sent' },
           { kind: 'incident_opened', severity: 'high', escalationDelivery: null },
           { kind: 'incident_escalated', severity: 'critical', escalationDelivery: 'sent' },
           { kind: 'incident_opened', severity: 'critical', escalationDelivery: 'sent' },

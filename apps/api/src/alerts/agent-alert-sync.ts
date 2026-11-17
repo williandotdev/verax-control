@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { wazuhAgentRef } from '@verax/shared';
 import { AGENTS_SYNC_STATE } from '../agents/agents-sync.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
-import { IncidentGrouping } from '../incidents/incident-grouping.js';
 import type { AlertCursor } from '../indexer/alert-queries.js';
 import type { AlertHit } from '../indexer/indexer.client.js';
 import { isAgentAlert, parseAgentAlert, type WazuhAgentAlert } from './agent-alert.js';
@@ -32,8 +31,6 @@ export interface AgentSyncReport {
   unowned: number;
   /** Achados que já nasceram esperados por uma exceção. */
   excepted: number;
-  incidentsOpened: number;
-  incidentsJoined: number;
   /** Alertas recentes de um agente que a lista ainda não conhece: a próxima execução os relê (`AGENT_LIST_GRACE_MS`). */
   deferred: number;
   /** Alertas do próprio manager (`agent.id` 000): são do sync da AWS. */
@@ -98,10 +95,7 @@ export class AgentAlertSync {
     this.name = options.name ?? AGENT_ALERT_SYNC;
     this.settings = options.settings ?? DEFAULT_AGENT_SYNC_SETTINGS;
     this.maxPages = options.maxPages ?? 100;
-    this.store = new FindingStore(
-      prisma,
-      options.grouping ?? new IncidentGrouping(options.groupingWindowMinutes),
-    );
+    this.store = new FindingStore(prisma, options.notices);
     this.lease = new SyncLease(
       prisma,
       this.name,
@@ -118,8 +112,6 @@ export class AgentAlertSync {
       duplicates: 0,
       unowned: 0,
       excepted: 0,
-      incidentsOpened: 0,
-      incidentsJoined: 0,
       deferred: 0,
       skipped: 0,
       belowLevel: 0,
@@ -130,7 +122,6 @@ export class AgentAlertSync {
       const state = await this.prisma.syncState.findUniqueOrThrow({ where: { name: this.name } });
       const directory = await this.directory();
       const exceptions = await this.store.activeExceptions(now);
-      const protectedItems = await this.store.protectedItems();
       let lastProcessedAt = state.lastProcessedAt;
       // Continuação de uma execução que bateu o limite de páginas, como no sync da AWS.
       let cursor: AlertCursor | null =
@@ -145,7 +136,7 @@ export class AgentAlertSync {
         const hits = await this.indexer.search(agentSyncPage(windowStart, cursor, this.settings));
         for (const hit of hits) {
           report.read += 1;
-          await this.process(hit, directory, exceptions, protectedItems, now, report);
+          await this.process(hit, directory, exceptions, now, report);
         }
         const last = hits.at(-1);
         if (last) {
@@ -190,7 +181,6 @@ export class AgentAlertSync {
     hit: AlertHit,
     directory: AgentDirectory,
     exceptions: ReadonlyMap<string, ActiveException[]>,
-    protectedItems: ReadonlyMap<string, ReadonlySet<string>>,
     now: Date,
     report: AgentSyncReport,
   ): Promise<void> {
@@ -225,20 +215,13 @@ export class AgentAlertSync {
 
     const draft = toAgentFindingDraft(alert, owner);
     const exception = matchingException(draft, exceptions.get(owner.tenantId) ?? [], now);
-    const outcome = await this.store.persist(
-      draft,
-      exception,
-      protectedItems.get(owner.tenantId) ?? new Set(),
-      now,
-    );
+    const outcome = await this.store.persist(draft, exception, now);
     if (outcome === 'duplicate') {
       report.duplicates += 1;
       return;
     }
     report.created += 1;
     if (outcome === 'excepted') report.excepted += 1;
-    if (outcome === 'opened') report.incidentsOpened += 1;
-    if (outcome === 'joined') report.incidentsJoined += 1;
   }
 
   /**

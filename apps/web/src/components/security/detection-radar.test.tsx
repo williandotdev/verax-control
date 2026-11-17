@@ -173,7 +173,7 @@ describe('radar de detecções', () => {
     await user.keyboard('{Home}');
     expect(blip('Tentativa de desligar a trilha')).toHaveFocus();
     await user.keyboard('{Enter}');
-    expect(await screen.findByTestId('where')).toHaveTextContent(`/?achado=${id(1)}`);
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?alerta=${id(1)}`);
   });
 
   it('no toque, o primeiro toque mostra a dica e o segundo, no mesmo ponto, abre o achado', async () => {
@@ -191,14 +191,14 @@ describe('radar de detecções', () => {
     expect(screen.queryByTestId('where')).not.toBeInTheDocument();
 
     await user.pointer({ keys: '[TouchA]', target: blip('Tentativa de login no SSH') });
-    expect(await screen.findByTestId('where')).toHaveTextContent(`/?achado=${id(3)}`);
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?alerta=${id(3)}`);
   });
 
   it('o clique abre o achado', async () => {
     const user = userEvent.setup();
     renderRadar(<DetectionRadar radar={radarOf(DETECTIONS)} generatedAt={NOW} />);
     await user.click(blip('papel Editor'));
-    expect(await screen.findByTestId('where')).toHaveTextContent(`/?achado=${id(2)}`);
+    expect(await screen.findByTestId('where')).toHaveTextContent(`/?alerta=${id(2)}`);
   });
 
   it('com movimento: varredura girando, brilho em cada ponto e pulso só na detecção recente', () => {
@@ -274,10 +274,7 @@ describe('radar de detecções', () => {
       />,
     );
     expect(screen.getByText(/O radar mostra as 3 mais recentes de 134 detecções\./)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Ver todas na lista' })).toHaveAttribute(
-      'href',
-      '/?visao=achados&periodo=24h',
-    );
+    expect(screen.getByRole('link', { name: 'Ver todas na lista' })).toHaveAttribute('href', '/?periodo=24h');
     expect(screen.getByText('134 detecções').closest('p')).toHaveTextContent(
       '134 detecções nas últimas 24 horas: 5 crítico, 1 médio, 128 baixo.',
     );
@@ -296,7 +293,7 @@ describe('radar de detecções', () => {
     expect(rows).toHaveLength(3);
     expect(
       within(rows[0] as HTMLElement).getByRole('link', { name: /Tentativa de desligar a trilha/ }),
-    ).toHaveAttribute('href', `/?achado=${id(1)}`);
+    ).toHaveAttribute('href', `/?alerta=${id(1)}`);
     expect(rows[0]).toHaveTextContent('Crítico');
     expect(within(rows[0] as HTMLElement).getByRole('link', { name: 'Aberto' })).toHaveAttribute(
       'href',

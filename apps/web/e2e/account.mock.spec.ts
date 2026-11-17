@@ -39,7 +39,9 @@ test.describe("Minha conta: avisos por e-mail (modo mock, PR-17')", () => {
         await page.goto('/');
         await page.getByRole('link', { name: 'Minha conta' }).click();
         await expect(page.getByRole('heading', { level: 1, name: 'Minha conta' })).toBeVisible();
-        const box = page.getByRole('checkbox', { name: 'Receber os avisos de incidente por e-mail' });
+        const box = page.getByRole('checkbox', {
+          name: 'Receber os avisos de alertas e incidentes por e-mail',
+        });
         await expect(box).toBeChecked();
         expect(await violations(page)).toEqual([]);
 

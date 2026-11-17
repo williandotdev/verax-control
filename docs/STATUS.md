@@ -5848,3 +5848,36 @@ painel como o cliente".
   de mostrá-la. Recolhido, o resumo mostra só as contagens, com o motivo no nome acessível.
 - **Testes:** `vitest` do web (Detecções, componentes e features: 197); Playwright de Detecções e do tour contra a versão
   nova (23, com axe); capturas nos dois temas.
+
+## Alerta, validação e incidente (taxonomia de SOC)
+
+- **Pedido (17/11/2026):** evento → alerta (a pessoa valida; pode ser falso positivo) → incidente (ameaça confirmada).
+  O incidente só nasce pela confirmação humana; a correlação vira sugestão; os incidentes automáticos em que ninguém
+  mexeu são desfeitos; "achado" vira "alerta" em todo texto da tela, dos e-mails e da demonstração.
+- **Arquivos:** API: `prisma/schema.prisma` e a migration `20261117120000_incidents_by_confirmation`,
+  `alerts/finding-store.ts` e os coletores (`alert-sync`, `agent-alert-sync`, `gcp-audit-sync`,
+  `cloudflare-audit-sync`, `cloudflare-security-sync`), `incidents/` (`incident-summary.ts` novo no lugar do
+  `incident-grouping.ts`, `correlation.ts`, controller e service), `findings/` (os relacionados), `detections/`
+  (`kind=incident`), `notifications/` (`finding-notices.ts`, despachante), `mail/templates.ts`, `tower/`,
+  `retention/retention-job.ts` (comentários); `packages/shared` (`incidents.ts`, `findings.ts`, `detections.ts`); web:
+  a tela Detecções (`pages/detections-page.tsx`, `features/detections/*`, `features/incidents/incident-actions.tsx`
+  novo, `incident-detail.tsx`, `finding-detail.tsx`), o tour, os textos (Minha conta, Exceções, Plano, Auditoria,
+  contato de escalonamento, relatórios, catálogo), os mocks e os testes (unitários, de integração e Playwright).
+- **Decisões:** `POST /v1/incidents` (1 a 50 alertas, responsável opcional, quem confirmou em `createdById`),
+  `POST /v1/incidents/:id/findings` e `DELETE /v1/incidents/:id/findings/:findingId`, sempre pelo escopo da sessão, sob
+  o lock dos alertas do cliente e auditados (`incident.create`, `incident.attach`, `incident.detach`); alerta já em
+  incidente recusa com 409 (tire-o antes), o último alerta não sai (409) e o incidente resolvido não muda de alertas
+  (409, reabra antes). `GET /v1/findings/:id/related`: mesmo cliente, chave em comum, a até 60 min, ainda em validação
+  e fora de incidente. Avisos: alerta alto (`high_finding`, novo) ou crítico ao chegar; incidente confirmado em qualquer
+  severidade; subida para alto ou crítico ao anexar; o contato de escalonamento só nos críticos. A migration desfaz os
+  incidentes sem responsável e ainda "abertos" (os alertas voltam com o status que tinham), pula os avisos pendentes
+  deles, grava um registro de sistema por incidente na trilha (`incident.dissolve`) e troca a chave do aviso para
+  `SetNull` (o histórico fica). A tela: "Alertas" (padrão, com "Em incidente" e "A validar") e "Incidentes"; no alerta,
+  "Promover a incidente" (diálogo com os relacionados marcados) e "Anexar a um incidente aberto"; no incidente, "Remover
+  do incidente". `visao=achados` e `achado=<id>` continuam valendo.
+- **Testes:** `pnpm lint`, `pnpm typecheck`; `@verax/shared` (390); API com banco descartável (os arquivos afetados e a
+  suíte inteira, com `incidents-confirmation.test.ts` novo: promover, anexar, remover, relacionados e os negativos A/B);
+  `@verax/web` (549); Playwright mock de Detecções, tour, telas, layout, histórico e radar (com axe). A migration foi
+  aplicada num banco com incidentes automáticos de exemplo: ficaram os com responsável, em análise e resolvido; o aberto
+  sem responsável saiu, com os alertas de volta à fila, o aviso pendente pulado e o registro na auditoria.
+- **Riscos:** o e-mail de alerta alto aumenta o volume de avisos (o resumo por hora segura o excesso).

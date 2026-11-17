@@ -10,6 +10,7 @@ import {
   type FindingStatusUpdate,
   findingStatusUpdateSchema,
   type Paginated,
+  type RelatedFindings,
 } from '@verax/shared';
 import type { Request } from 'express';
 import { z } from 'zod';
@@ -20,7 +21,10 @@ import { FindingsService } from './findings.service.js';
 
 const findingIdSchema = z.uuid();
 
-/** Achados do cliente da sessão (T5.4 e T5.5). Todos leem; quem faz triagem muda o status e comenta. */
+/**
+ * Alertas (achados) do cliente da sessão (T5.4 e T5.5). Todos leem; quem faz triagem muda o status e comenta. Os
+ * relacionados são a sugestão do painel ao promover um alerta a incidente.
+ */
 @Controller('findings')
 export class FindingsController {
   constructor(
@@ -42,6 +46,12 @@ export class FindingsController {
   @RequirePermission('findings:read')
   get(@Param('id', { schema: findingIdSchema }) id: string): Promise<FindingDetail> {
     return this.findings.get(id);
+  }
+
+  @Get(':id/related')
+  @RequirePermission('findings:read')
+  related(@Param('id', { schema: findingIdSchema }) id: string): Promise<RelatedFindings> {
+    return this.findings.related(id);
   }
 
   @Patch(':id/status')

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { type Incident, incidentListQuerySchema, incidentSchema, incidentUpdateSchema } from './incidents.js';
+import {
+  type Incident,
+  incidentAttachSchema,
+  incidentCreateSchema,
+  incidentListQuerySchema,
+  incidentSchema,
+  incidentUpdateSchema,
+} from './incidents.js';
 
 const incident: Incident = {
   id: '018f2c1e-0000-7000-8000-0000000a0001',
@@ -32,10 +39,29 @@ describe('incidentes', () => {
     ['nota acima de 100', { riskScore: 101 }],
     ['incidente sem achado', { findingCount: 0 }],
     ['chave de agrupamento desconhecida', { keys: ['email:x@y'] }],
-    ['sem chave', { keys: [] }],
     ['status desconhecido', { status: 'closed' }],
   ])('recusa %s', (_name, change) => {
     expect(incidentSchema.safeParse({ ...incident, ...change }).success).toBe(false);
+  });
+
+  it('aceita incidente sem chave: a pessoa pode confirmar alerta sem usuário, chave, IP nem recurso', () => {
+    expect(incidentSchema.safeParse({ ...incident, keys: [] }).success).toBe(true);
+  });
+
+  it('promover e anexar: de 1 a 50 alertas, sem repetir, e o responsável opcional', () => {
+    const id = '018f2c1e-0000-7000-8000-0000000f0001';
+    expect(incidentCreateSchema.safeParse({ findingIds: [id] }).success).toBe(true);
+    expect(incidentCreateSchema.safeParse({ findingIds: [id], assigneeId: null }).success).toBe(true);
+    expect(incidentCreateSchema.safeParse({ findingIds: [] }).success).toBe(false);
+    expect(incidentCreateSchema.safeParse({ findingIds: [id, id] }).success).toBe(false);
+    expect(incidentCreateSchema.safeParse({ findingIds: ['x'] }).success).toBe(false);
+    expect(incidentCreateSchema.safeParse({ findingIds: [id], tenantId: id }).success).toBe(false);
+    const many = Array.from(
+      { length: 51 },
+      (_, i) => `018f2c1e-0000-7000-8000-${String(i).padStart(12, '0')}`,
+    );
+    expect(incidentAttachSchema.safeParse({ findingIds: many }).success).toBe(false);
+    expect(incidentAttachSchema.safeParse({ findingIds: many.slice(0, 50) }).success).toBe(true);
   });
 
   it('filtros: status, severidade e só os sem responsável', () => {

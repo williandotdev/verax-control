@@ -712,7 +712,7 @@ describe('agentes do Wazuh nas instâncias do cliente', () => {
       }
     });
 
-    it('achados da mesma instância viram um incidente do cliente do nó, com o agente entre as origens', async () => {
+    it('alertas da mesma instância, confirmados como incidente, ficam no cliente do nó com o agente entre as origens', async () => {
       const options = {
         agentId: app02,
         agentName: 'app-02',
@@ -726,10 +726,22 @@ describe('agentes do Wazuh nas instâncias do cliente', () => {
         agentName: 'app-02',
       });
       const report = await syncFor([first, second]).runOnce();
-      expect(report).toMatchObject({ created: 2, incidentsOpened: 1, incidentsJoined: 1 });
+      expect(report).toMatchObject({ created: 2 });
 
-      const { incidentId } = await prisma.finding.findUniqueOrThrow({ where: keyOf(second) });
-      expect(incidentId).not.toBeNull();
+      // O sync não abre incidente: os dois alertas ficam para validar, e quem opera confirma.
+      const findings = await Promise.all(
+        [first, second].map((doc) => prisma.finding.findUniqueOrThrow({ where: keyOf(doc) })),
+      );
+      expect(findings.map((finding) => finding.incidentId)).toEqual([null, null]);
+      const { cookie, token } = await withCsrf(app, adminA.cookie);
+      const created = await request(app.getHttpServer())
+        .post('/v1/incidents')
+        .set('Cookie', cookie)
+        .set('Origin', TEST_WEB_ORIGIN)
+        .set('X-CSRF-Token', token)
+        .send({ findingIds: findings.map((finding) => finding.id) })
+        .expect(201);
+      const incidentId = incidentDetailSchema.parse(created.body).id;
       const incident = incidentDetailSchema.parse(
         (await get(`/v1/incidents/${incidentId}`, adminA.cookie).expect(200)).body,
       );

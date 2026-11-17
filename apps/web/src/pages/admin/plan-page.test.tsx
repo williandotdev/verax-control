@@ -140,7 +140,7 @@ describe('Plano e uso', () => {
     const band = screen.getByText(/passou do incluído no plano/).closest('[role="status"]') as HTMLElement;
     expect(band).toHaveTextContent('125%');
     expect(band).toHaveTextContent(
-      'A coleta continua: nenhum log é descartado e os achados continuam chegando.',
+      'A coleta continua: nenhum log é descartado e os alertas continuam chegando.',
     );
     expect(within(tile('Volume do mês')).getByRole('meter')).toHaveAttribute('aria-valuenow', '100');
   });

@@ -149,7 +149,7 @@ function ExpandedSituation({ summary }: { summary: TowerSummary }) {
   const links: RadarLinks = {
     finding: (id) => ({ search: selectionSearch(listParams, { kind: 'finding', id }) }),
     incident: (id) => ({ search: selectionSearch(listParams, { kind: 'incident', id }) }),
-    all: '/?visao=achados&periodo=24h',
+    all: '/?periodo=24h',
   };
   return (
     <div className="space-y-4">
@@ -203,13 +203,13 @@ const DECISIONS: Readonly<
     severity: 'high',
     title: (count) => `${plural(count, 'incidente', 'incidentes')} sem responsável`,
     action: 'Ver os incidentes',
-    to: '/?responsavel=nenhum',
+    to: '/?visao=incidentes&responsavel=nenhum',
   },
   untriaged_finding: {
     severity: 'high',
-    title: (count) => `${plural(count, 'achado alto ou crítico', 'achados altos ou críticos')} sem triagem`,
-    action: 'Ver os achados',
-    to: '/?visao=achados&status=new',
+    title: (count) => `${plural(count, 'alerta alto ou crítico', 'alertas altos ou críticos')} para validar`,
+    action: 'Ver os alertas',
+    to: '/?status=new',
   },
   unowned_alert: {
     severity: 'medium',
@@ -458,7 +458,7 @@ function Pulse({ pulse }: { pulse: TowerPulse }) {
       </h3>
       <div className="grid grid-cols-1 gap-3">
         <StatTile
-          label="Achados nas últimas 24 h"
+          label="Alertas nas últimas 24 h"
           value={formatCompact(total)}
           detail={
             expected === 0
@@ -467,10 +467,10 @@ function Pulse({ pulse }: { pulse: TowerPulse }) {
           }
         >
           <MiniBars
-            title="Achados por hora nas últimas 24 horas"
+            title="Alertas por hora nas últimas 24 horas"
             values={pulse.findings.hourly}
             labels={hours}
-            unit={{ one: 'achado', many: 'achados' }}
+            unit={{ one: 'alerta', many: 'alertas' }}
           />
         </StatTile>
         <StatTile
@@ -478,8 +478,8 @@ function Pulse({ pulse }: { pulse: TowerPulse }) {
           value={pulse.timeToDetectSeconds === null ? '—' : formatDuration(pulse.timeToDetectSeconds)}
           detail={
             pulse.timeToDetectSeconds === null
-              ? 'Nenhum achado nas últimas 24 horas.'
-              : 'Mediana de 24 h, da hora do evento ao achado. Inclui o atraso de entrega da fonte.'
+              ? 'Nenhum alerta nas últimas 24 horas.'
+              : 'Mediana de 24 h, da hora do evento ao alerta. Inclui o atraso de entrega da fonte.'
           }
         />
         {pulse.agents && (

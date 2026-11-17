@@ -53,8 +53,8 @@ function NoticePreference({ me }: { me: Me }) {
     <Card aria-labelledby="conta-avisos">
       <CardTitle id="conta-avisos">Avisos por e-mail</CardTitle>
       <CardDescription className="mt-1 max-w-3xl">
-        Incidente alto ou crítico aberto, incidente que sobe para alto ou crítico e achado crítico fora de
-        incidente. O e-mail traz só o tipo e o link: os detalhes ficam no painel.
+        Alerta alto ou crítico que chega, incidente confirmado e incidente que sobe para alto ou crítico. O
+        e-mail traz só o tipo e o link: os detalhes ficam no painel.
       </CardDescription>
       <div className="mt-3 space-y-2">
         {preferences.isError ? (
@@ -77,7 +77,7 @@ function NoticePreference({ me }: { me: Me }) {
                 aria-describedby="conta-avisos-dica"
                 onChange={(event) => choose(event.target.checked)}
               />
-              Receber os avisos de incidente por e-mail
+              Receber os avisos de alertas e incidentes por e-mail
             </label>
             <p id="conta-avisos-dica" className="text-xs text-muted-foreground">
               No máximo {NOTICE_HOURLY_LIMIT} e-mails por hora: os avisos seguintes da hora chegam num resumo
@@ -88,8 +88,8 @@ function NoticePreference({ me }: { me: Me }) {
             <p role="status" className="text-xs text-muted-foreground">
               {update.isSuccess &&
                 (update.data.incidentEmails
-                  ? 'Pronto: você volta a receber os avisos de incidente.'
-                  : 'Pronto: você deixa de receber os avisos de incidente por e-mail.')}
+                  ? 'Pronto: você volta a receber os avisos de alertas e incidentes.'
+                  : 'Pronto: você deixa de receber os avisos de alertas e incidentes por e-mail.')}
             </p>
             <FormError error={update.error} />
           </>

@@ -4,7 +4,7 @@ import { FindingStore, LastEvents, SyncLease, type UnownedRecord } from '../aler
 import { errorKind } from '../common/logger/error-kind.js';
 import type { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
-import { IncidentGrouping } from '../incidents/incident-grouping.js';
+import type { AlertNotices } from '../notifications/finding-notices.js';
 import { COLLECTING_TENANT_SELECT, isCollectingTenant } from '../tenants/tenant-status.js';
 import { base64Bytes, UsageMeter } from '../usage/usage-meter.js';
 import { parseLogMessage } from './gcp-log-entry.js';
@@ -22,8 +22,8 @@ export interface GcpAuditSyncOptions {
   pullSize?: number;
   /** Leituras por assinatura em cada execução: um atraso grande é lido em várias execuções. */
   maxPulls?: number;
-  groupingWindowMinutes?: number;
-  grouping?: IncidentGrouping;
+  /** Avisos por e-mail do alerta (os testes trocam por um que falha, para provar que nada fica pela metade). */
+  notices?: AlertNotices;
 }
 
 export interface GcpSyncReport {
@@ -38,8 +38,6 @@ export interface GcpSyncReport {
   excepted: number;
   /** Eventos válidos do próprio projeto que nenhuma regra considerou suspeitos. */
   ignored: number;
-  incidentsOpened: number;
-  incidentsJoined: number;
 }
 
 /**
@@ -77,7 +75,6 @@ async function fromSource<T>(read: () => Promise<T>): Promise<T> {
 
 interface RunContext {
   exceptions: ReadonlyMap<string, ActiveException[]>;
-  protectedItems: ReadonlyMap<string, ReadonlySet<string>>;
   lastEvents: LastEvents;
   now: Date;
   report: GcpSyncReport;
@@ -149,10 +146,7 @@ export class GcpAuditSync {
     this.name = options.name ?? GCP_AUDIT_SYNC;
     this.pullSize = options.pullSize ?? 100;
     this.maxPulls = options.maxPulls ?? 20;
-    this.store = new FindingStore(
-      prisma,
-      options.grouping ?? new IncidentGrouping(options.groupingWindowMinutes),
-    );
+    this.store = new FindingStore(prisma, options.notices);
     this.lease = new SyncLease(
       prisma,
       this.name,
@@ -172,8 +166,6 @@ export class GcpAuditSync {
       unowned: 0,
       excepted: 0,
       ignored: 0,
-      incidentsOpened: 0,
-      incidentsJoined: 0,
     };
     if (!(await this.lease.acquire(now))) return { ...report, status: 'locked' };
     let firstError: string | null = null;
@@ -181,7 +173,6 @@ export class GcpAuditSync {
       const state = await this.prisma.syncState.findUniqueOrThrow({ where: { name: this.name } });
       const context: RunContext = {
         exceptions: await this.store.activeExceptions(now),
-        protectedItems: await this.store.protectedItems(),
         lastEvents: new LastEvents(),
         now,
         report,
@@ -380,19 +371,12 @@ export class GcpAuditSync {
 
     const draft = toGcpFindingDraft(entry, { tenantId, project }, rule);
     const exception = matchingException(draft, context.exceptions.get(tenantId) ?? [], context.now);
-    const outcome = await this.store.persist(
-      draft,
-      exception,
-      context.protectedItems.get(tenantId) ?? new Set(),
-      context.now,
-    );
+    const outcome = await this.store.persist(draft, exception, context.now);
     if (outcome === 'duplicate') {
       report.duplicates += 1;
       return;
     }
     report.created += 1;
     if (outcome === 'excepted') report.excepted += 1;
-    if (outcome === 'opened') report.incidentsOpened += 1;
-    if (outcome === 'joined') report.incidentsJoined += 1;
   }
 }

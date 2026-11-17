@@ -169,9 +169,8 @@ export class TowerService {
     const includeUnowned = hasPermission(auth.role, 'unowned_alerts:read');
     const [unassignedIncidents, untriagedFindings, unownedAlerts] = await Promise.all([
       db.incident.count({ where: { status: { not: 'resolved' }, assigneeId: null } }),
-      db.finding.count({
-        where: { status: 'new', severity: { in: ['critical', 'high'] }, incidentId: null },
-      }),
+      // Todos os alertas altos ou críticos ainda em "novo", dentro ou fora de incidente: cada um é uma validação pendente.
+      db.finding.count({ where: { status: 'new', severity: { in: ['critical', 'high'] } } }),
       // A fila sem dono não é de cliente nenhum: só a equipe da Verax vê, e só ela recebe a contagem.
       includeUnowned
         ? this.prisma.db().unownedAlert.count({

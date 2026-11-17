@@ -32,7 +32,7 @@ function renderAt(path: string, state: MockState, overrides: Parameters<typeof s
   return router;
 }
 
-const PREFERENCE = 'Receber os avisos de incidente por e-mail';
+const PREFERENCE = 'Receber os avisos de alertas e incidentes por e-mail';
 
 describe("Minha conta: preferência de aviso por e-mail (PR-17')", () => {
   it('o cabeçalho leva a Minha conta, com o e-mail e o papel da sessão', async () => {
@@ -60,7 +60,7 @@ describe("Minha conta: preferência de aviso por e-mail (PR-17')", () => {
     // Salvar não tira o foco do teclado da caixa.
     expect(box).toHaveFocus();
     expect(await within(card).findByRole('status')).toHaveTextContent(
-      'Pronto: você deixa de receber os avisos de incidente por e-mail.',
+      'Pronto: você deixa de receber os avisos de alertas e incidentes por e-mail.',
     );
     // A API simulada guardou a escolha (a mesma resposta da leitura).
     await expect(api.get('/v1/notification-preferences', notificationPreferencesSchema)).resolves.toEqual({

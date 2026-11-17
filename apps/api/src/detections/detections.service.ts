@@ -86,8 +86,8 @@ export function standaloneFindingWhere(
 }
 
 /**
- * Tela Detecções, visão agrupada (`GET /v1/detections`): os incidentes e os achados que não entraram em nenhum incidente
- * do cliente da sessão, numa ordem só e paginados aqui. As regras de filtro e de ordem são as funções puras do
+ * Tela Detecções (`GET /v1/detections`): os incidentes e os alertas que não estão em nenhum incidente do cliente da
+ * sessão, numa ordem só e paginados aqui; com `kind=incident` (a visão "Incidentes"), só os incidentes. As regras de filtro e de ordem são as funções puras do
  * `@verax/shared`, escritas como `where` e `orderBy` do Prisma.
  *
  * A paginação junta as duas tabelas sem SQL à mão: para a página `p` de tamanho `t`, lê só as chaves de ordenação
@@ -110,7 +110,8 @@ export class DetectionsService {
     }
     const sort = query.sort ?? 'recent';
     const incidents = incidentWhere(query, now);
-    const findings = standaloneFindingWhere(query, now);
+    // A visão "Incidentes" (`kind=incident`) não traz os alertas avulsos.
+    const findings = query.kind === 'incident' ? null : standaloneFindingWhere(query, now);
     const db = this.prisma.scoped();
 
     const [incidentKeys, findingKeys, incidentTotal, findingTotal] = await Promise.all([

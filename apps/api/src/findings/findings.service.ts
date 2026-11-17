@@ -8,7 +8,10 @@ import {
   type FindingListQuery,
   type FindingSource,
   type FindingStatusUpdate,
+  MAX_RELATED_FINDINGS,
   type Paginated,
+  RELATED_FINDINGS_WINDOW_MINUTES,
+  type RelatedFindings,
 } from '@verax/shared';
 import { AuditContext } from '../common/audit/audit-context.service.js';
 import type { RequestAuth } from '../common/auth/request-auth.js';
@@ -16,6 +19,7 @@ import { ApiError } from '../common/http/api-error.js';
 import { toPaginated, toPrismaPage } from '../common/http/pagination.js';
 import { PrismaService } from '../common/prisma/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
+import { relatedFindings } from '../incidents/correlation.js';
 import { findingWhere } from './finding-filters.js';
 import { RAW_EVENT_READER, type RawEventReader } from './raw-events.js';
 
@@ -61,6 +65,17 @@ const detailSelect = {
   comments: { select: commentSelect, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: MAX_COMMENTS },
 } as const satisfies Prisma.FindingSelect;
 
+/** Os campos que a sugestão de relacionados compara (as chaves de correlação, o cliente e o horário). */
+const relatedSelect = {
+  id: true,
+  tenantId: true,
+  occurredAt: true,
+  actorUser: true,
+  accessKeyId: true,
+  sourceIp: true,
+  resource: true,
+} as const satisfies Prisma.FindingSelect;
+
 export type FindingRow = Prisma.FindingGetPayload<{ select: typeof findingSelect }>;
 type DetailRow = Prisma.FindingGetPayload<{ select: typeof detailSelect }>;
 type CommentRow = Prisma.FindingCommentGetPayload<{ select: typeof commentSelect }>;
@@ -94,7 +109,10 @@ function toComment(row: CommentRow): FindingComment {
   return { id: row.id, body: row.body, createdAt: row.createdAt.toISOString(), author: row.author };
 }
 
-const NOT_FOUND = 'Achado não encontrado';
+const NOT_FOUND = 'Alerta não encontrado';
+
+/** Quantos candidatos a sugestão lê do banco antes de conferir as chaves (o bastante para os 49 que ela mostra). */
+const RELATED_SCAN = 500;
 
 /**
  * Achados do cliente da sessão (T5.4 e T5.5): lista com filtros, detalhe com o evento bruto, mudança de status e
@@ -127,6 +145,54 @@ export class FindingsService {
 
   async get(id: string): Promise<FindingDetail> {
     return this.toDetail(await this.find(id));
+  }
+
+  /**
+   * Alertas relacionados (decisão de 17/11/2026): a sugestão que o painel pré-seleciona ao promover um alerta a
+   * incidente. Do cliente da sessão, ainda em validação (novo ou em análise), fora de incidente, com usuário, chave de
+   * acesso, IP ou recurso em comum e a até 60 minutos do alerta. A regra é a de `correlation.ts`; o banco só estreita.
+   */
+  async related(id: string): Promise<RelatedFindings> {
+    const db = this.prisma.scoped();
+    const anchor = await db.finding.findUnique({ where: { id }, select: relatedSelect });
+    if (!anchor) throw new ApiError(HttpStatus.NOT_FOUND, NOT_FOUND);
+    const shared: Prisma.FindingWhereInput[] = [
+      ...(anchor.actorUser === null ? [] : [{ actorUser: anchor.actorUser }]),
+      ...(anchor.accessKeyId === null ? [] : [{ accessKeyId: anchor.accessKeyId }]),
+      ...(anchor.sourceIp === null ? [] : [{ sourceIp: anchor.sourceIp }]),
+      ...(anchor.resource === null ? [] : [{ resource: anchor.resource }]),
+    ];
+    if (shared.length === 0) return { items: [] };
+    const window = RELATED_FINDINGS_WINDOW_MINUTES * 60_000;
+    const at = anchor.occurredAt.getTime();
+    const rows = await db.finding.findMany({
+      where: {
+        id: { not: id },
+        incidentId: null,
+        status: { in: ['new', 'investigating'] },
+        occurredAt: { gte: new Date(at - window), lte: new Date(at + window) },
+        OR: shared,
+      },
+      select: { ...findingSelect, ...relatedSelect },
+      orderBy: [{ occurredAt: 'desc' }, { id: 'asc' }],
+      take: RELATED_SCAN,
+    });
+    const asCandidate = (row: Prisma.FindingGetPayload<{ select: typeof relatedSelect }>) => ({
+      ...row,
+      occurredAt: row.occurredAt.toISOString(),
+    });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    const related = relatedFindings(
+      asCandidate(anchor),
+      rows.map(asCandidate),
+      RELATED_FINDINGS_WINDOW_MINUTES,
+    );
+    return {
+      items: related.slice(0, MAX_RELATED_FINDINGS).flatMap((candidate) => {
+        const row = byId.get(candidate.id);
+        return row ? [toFinding(row)] : [];
+      }),
+    };
   }
 
   /** Muda o status (T5.5). O comentário opcional explica a decisão e entra na mesma transação e auditoria. */

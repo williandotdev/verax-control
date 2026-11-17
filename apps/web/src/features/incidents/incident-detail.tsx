@@ -10,6 +10,7 @@ import { useIncidentAssignees, useUpdateIncident } from '@/features/incidents/in
 import { INCIDENT_STATUS_LABELS } from '@/features/incidents/labels';
 import { TACTIC_LABELS } from '@/features/reports/labels';
 import { incidentRecommendation, incidentSummary, parseKeys } from '@/features/incidents/narrative';
+import { IncidentAlerts } from '@/features/incidents/incident-actions';
 import { errorMessage } from '@/lib/errors';
 import { formatRelative, plural } from '@/lib/format';
 
@@ -17,8 +18,9 @@ const NO_ASSIGNEE = '';
 
 /**
  * Detalhe do incidente (T7.9), no painel ao lado da lista da tela Detecções: severidade, status e nota, o resumo em
- * português com o primeiro passo, o tratamento (status e responsável), a linha do tempo dos achados (cada um abre no
- * mesmo painel), os ativos e o MITRE. Numa coluna só: o painel é estreito.
+ * português com o primeiro passo, o tratamento (status e responsável), a linha do tempo dos alertas (cada um abre no
+ * mesmo painel), os alertas com "Remover do incidente" para quem opera, os ativos e o MITRE. Numa coluna só: o painel
+ * é estreito.
  */
 export function IncidentDetailView({ incident, canWrite }: { incident: IncidentDetail; canWrite: boolean }) {
   const [params] = useSearchParams();
@@ -44,8 +46,9 @@ export function IncidentDetailView({ incident, canWrite }: { incident: IncidentD
         <span>
           Nota de risco <strong className="text-foreground">{incident.riskScore}</strong> de 100
         </span>
-        <span>· aberto {formatRelative(incident.firstSeenAt)}</span>
-        <span>· último achado {formatRelative(incident.lastSeenAt)}</span>
+        <span>· primeiro alerta {formatRelative(incident.firstSeenAt)}</span>
+        <span>· último alerta {formatRelative(incident.lastSeenAt)}</span>
+        {incident.createdBy && <span>· confirmado por {incident.createdBy.name}</span>}
       </div>
 
       <section data-tour="incidente-resumo" aria-labelledby="incidente-resumo" className="space-y-2">
@@ -62,7 +65,7 @@ export function IncidentDetailView({ incident, canWrite }: { incident: IncidentD
 
       <section aria-labelledby="incidente-linha-do-tempo" className="space-y-3">
         <h3 id="incidente-linha-do-tempo" className="text-sm font-semibold">
-          Linha do tempo ({plural(incident.findingCount, 'achado', 'achados')})
+          Linha do tempo ({plural(incident.findingCount, 'alerta', 'alertas')})
         </h3>
         <Timeline
           className="ml-2"
@@ -79,6 +82,8 @@ export function IncidentDetailView({ incident, canWrite }: { incident: IncidentD
           }))}
         />
       </section>
+
+      {canWrite && incident.status !== 'resolved' && <IncidentAlerts incident={incident} />}
 
       <section aria-labelledby="incidente-ativos" className="space-y-2">
         <h3 id="incidente-ativos" className="text-sm font-semibold">

@@ -254,7 +254,8 @@ describe('coletor da auditoria do Cloudflare (banco real e Cloudflare falso)', (
       rawEventId: null,
       status: 'new',
     });
-    expect(findings[0]?.incidentId).not.toBeNull();
+    // Alerta a validar: o coletor não abre incidente (decisão de 17/11/2026).
+    expect(findings[0]?.incidentId).toBeNull();
 
     const invalid = await prisma.unownedAlert.findUniqueOrThrow({
       where: {

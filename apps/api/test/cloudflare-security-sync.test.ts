@@ -25,7 +25,7 @@ import {
 } from '../src/credentials/credential-keys.js';
 import { CloudflareToken, credentialBinding, seal } from '../src/credentials/credential-vault.js';
 import type { Prisma } from '../src/generated/prisma/client.js';
-import { IncidentGrouping } from '../src/incidents/incident-grouping.js';
+import { AlertNotices } from '../src/notifications/finding-notices.js';
 import { Scheduler } from '../src/worker/scheduler.js';
 import { entryFactory, hex } from './cloudflare/fixtures.js';
 import { createTenant, createUser } from './support/auth-helpers.js';
@@ -469,16 +469,16 @@ describe('eventos de segurança do Cloudflare (banco real e GraphQL falso)', () 
         events(-40, { action: 'block', source: 'waf', ip, count: 30 + index }),
       ),
     );
-    /** O banco falha ao agrupar o segundo achado do lote: a transação dele volta, e a execução para ali. */
-    class FailingGrouping extends IncidentGrouping {
+    /** O banco falha ao gravar o aviso do segundo alerta do lote: a transação dele volta, e a execução para ali. */
+    class FailingNotices extends AlertNotices {
       private calls = 0;
-      override place(...args: Parameters<IncidentGrouping['place']>) {
+      override enqueue(...args: Parameters<AlertNotices['enqueue']>) {
         this.calls += 1;
         if (this.calls === 2) return Promise.reject(new Error('falha do banco no meio do lote'));
-        return super.place(...args);
+        return super.enqueue(...args);
       }
     }
-    const broken = await syncFor({ grouping: new FailingGrouping() }).runOnce(NOW);
+    const broken = await syncFor({ notices: new FailingNotices() }).runOnce(NOW);
     expect(broken).toMatchObject({ failedAccounts: 1, created: 1 });
     expect(await findingsOf(account.accountId)).toHaveLength(1);
     const cut = await cursorOf(account.id);

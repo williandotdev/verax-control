@@ -26,11 +26,10 @@ import {
 
 type Changes = Partial<Record<keyof typeof DETECTION_PARAMS, string | null>>;
 
-/** O status do filtro vale para os dois: no incidente, "novo" é o aberto. */
-const STATUS_LABELS_GROUPED: Readonly<Record<(typeof FINDING_STATUSES)[number], string>> = {
-  new: 'Novo ou aberto',
+/** O status na visão de incidentes: "novo" é o aberto, e "legítimo" é só de alerta (não aparece). */
+const STATUS_LABELS_INCIDENTS: Readonly<Partial<Record<(typeof FINDING_STATUSES)[number], string>>> = {
+  new: 'Aberto',
   investigating: 'Em análise',
-  legitimate: 'Legítimo (só achados)',
   resolved: 'Resolvido',
 };
 
@@ -113,11 +112,13 @@ export function FilterBar({
               onChange={(value) => onChange({ status: value || null })}
               options={[
                 { value: '', label: 'Todos' },
-                ...FINDING_STATUSES.map((value) => ({
-                  value,
-                  label:
-                    view === 'grouped' ? STATUS_LABELS_GROUPED[value] : FINDING_STATUS_LABELS[value].label,
-                })),
+                ...FINDING_STATUSES.flatMap((value) => {
+                  const label =
+                    view === 'incidents'
+                      ? STATUS_LABELS_INCIDENTS[value]
+                      : FINDING_STATUS_LABELS[value].label;
+                  return label ? [{ value, label }] : [];
+                }),
               ]}
             />
             <Button
@@ -188,7 +189,7 @@ export function FilterBar({
             value={filters.technique ?? ''}
             onSubmit={(technique) => onChange({ technique })}
           />
-          {view === 'grouped' && (
+          {view === 'incidents' && (
             <>
               <SelectField
                 label="Responsável"

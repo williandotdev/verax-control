@@ -359,8 +359,8 @@ export interface PendingDecision {
 }
 
 /**
- * Decisões pendentes (premissa aprovada): incidente aberto sem responsável, achado alto ou crítico em "novo" fora de
- * incidente e, só para `admin_verax`, alertas sem dono. Só entram as que existem, nessa ordem de prioridade.
+ * Decisões pendentes (premissa aprovada): incidente aberto sem responsável, alerta alto ou crítico em "novo" para
+ * validar (dentro ou fora de incidente, desde 17/11/2026) e, só para `admin_verax`, alertas sem dono. Só entram as que existem, nessa ordem de prioridade.
  */
 export function pendingDecisions(
   counts: { unassignedIncidents: number; untriagedFindings: number; unownedAlerts: number },
