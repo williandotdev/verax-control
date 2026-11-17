@@ -153,3 +153,37 @@ describe('menu no celular', () => {
     expect(document.getElementById('menu-principal')).toHaveAttribute('data-open', 'false');
   });
 });
+
+describe('menu recolhido (computador)', () => {
+  afterEach(() => window.localStorage.removeItem('verax:menu'));
+
+  it('recolhe aos ícones sem tirar o nome do link e lembra a escolha', async () => {
+    renderApp('/', demoMe('analista_cliente'));
+    const collapse = await screen.findByRole('button', { name: 'Recolher menu' });
+    const drawer = document.getElementById('menu-principal');
+    expect(drawer).toHaveAttribute('data-collapsed', 'false');
+
+    await userEvent.click(collapse);
+    expect(drawer).toHaveAttribute('data-collapsed', 'true');
+    expect(window.localStorage.getItem('verax:menu')).toBe('recolhido');
+    // Recolhido, o nome continua no link (para o leitor de tela) e vira dica ao passar o mouse.
+    const link = within(await menu()).getByRole('link', { name: 'Postura cloud' });
+    expect(link).toHaveAttribute('title', 'Postura cloud');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Expandir menu' }));
+    expect(drawer).toHaveAttribute('data-collapsed', 'false');
+    expect(window.localStorage.getItem('verax:menu')).toBe('aberto');
+  });
+
+  it('abre recolhido quando foi a última escolha', async () => {
+    window.localStorage.setItem('verax:menu', 'recolhido');
+    renderApp('/', demoMe('analista_cliente'));
+    expect(await screen.findByRole('button', { name: 'Expandir menu' })).toBeInTheDocument();
+  });
+
+  it('a etiqueta "Novo" aparece fora do nome do link', async () => {
+    renderApp('/', demoMe('analista_cliente'));
+    const link = within(await menu()).getByRole('link', { name: 'Detecções' });
+    expect(link.parentElement).toHaveTextContent('Novo');
+  });
+});
