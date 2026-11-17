@@ -148,10 +148,15 @@ test.describe('tela Detecções (modo mock)', () => {
     await open(page);
     const list = page.getByRole('table', { name: /^Detecções do cliente/ });
     const before = (await list.boundingBox())?.y ?? 0;
-    await page.getByRole('button', { name: /^Recolher/ }).click();
+    // O botão do próprio resumo: o menu lateral tem o seu ("Recolher menu").
+    const situation = page.getByRole('region', { name: 'Situação agora' });
+    await situation.getByRole('button', { name: /^Recolher/ }).click();
     await expect.poll(async () => (await list.boundingBox())?.y ?? 0).toBeLessThan(before - 200);
     await page.reload();
-    await expect(page.getByRole('button', { name: /^Mostrar/ })).toHaveAttribute('aria-expanded', 'false');
+    await expect(situation.getByRole('button', { name: /^Mostrar/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
   });
 
   test('teclado: o detalhe ao lado abre com Enter, fecha com Esc e o foco volta para o item', async ({
