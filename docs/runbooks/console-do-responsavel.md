@@ -546,6 +546,19 @@ no cofre `cp-admin-sso-signing-key`, que só o `cp-admin` lê (o desenho e os ri
    o login com senha do `admin_verax` (no endereço da equipe, na célula; no nó inteiro, no dedicado): a equipe entra só
    pelo Admin master (a recusa é a mesma da senha errada). Os clientes da célula e os outros papéis do nó não mudam.
    Desligue de novo (`false` ou sem a linha) se o console ficar fora do ar por muito tempo.
+9. **Opcional, só no nó dedicado da Verax:** `STAFF_CUSTOMER_VIEW=true` no `node.conf` (e o restart) faz a equipe ver
+   o painel **como o cliente vê** (decisão de 17/11/2026), para ajustar o produto pelo olhar do cliente. Com um cliente
+   ativo só no nó (a própria Verax), a sessão do `admin_verax` vale como a do **administrador desse cliente**: o mesmo
+   menu, as mesmas permissões e o mesmo escopo. A única diferença que fica é o botão **Entrar com o Admin master** do
+   login, que continua sendo a porta da equipe. O `start.sh` e a API recusam a linha na célula (lá há vários
+   clientes), num nó de cliente e sem as três linhas `SSO_*`.
+
+   Consequências enquanto estiver ligado: a fila **Alertas sem dono**, a **lista de clientes** (e a troca de cliente) e
+   o item **Admin master** do menu somem nesse nó (para abrir o console, use o endereço dele direto); a preferência de
+   aviso por e-mail aparece como "não se aplica" (os avisos só vão a quem é do cliente). As escritas continuam na
+   trilha com a pessoa de verdade (o nome da equipe, marcado como Verax), agora na trilha do cliente do nó. Se o nó
+   tiver **dois ou mais** clientes ativos (ou nenhum), nada muda: a equipe fica com a visão dela, nunca cai num cliente
+   qualquer. Para voltar à visão da equipe, `false` (ou sem a linha) e o restart.
 
 ### 9.2. No dia a dia
 
