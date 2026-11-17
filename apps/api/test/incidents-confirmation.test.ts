@@ -341,6 +341,33 @@ describe('incidentes confirmados por uma pessoa (promover, anexar, remover, rela
         .expect(403);
       expect((await prisma.finding.findUniqueOrThrow({ where: { id: free.id } })).incidentId).toBeNull();
     });
+    it('o "resolvido" que chega durante o anexar vale: o anexar espera a linha do incidente e responde 409', async () => {
+      const { incident } = await insertIncident(tenantA, ['high']);
+      const free = await insertFinding(tenantA);
+      let attach: Promise<request.Response> | undefined;
+      // Outra pessoa resolve o incidente numa transação que ainda não terminou quando o anexar chega.
+      await prisma.$transaction(
+        async (tx) => {
+          await tx.incident.update({
+            where: { id: incident.id },
+            data: { status: 'resolved', resolvedAt: new Date() },
+          });
+          attach = call(analystA)
+            .post(`/v1/incidents/${incident.id}/findings`, { findingIds: [free.id] })
+            .then((response) => response);
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+        },
+        { timeout: 20_000 },
+      );
+      const response = await attach;
+      expect(response?.status).toBe(409);
+      expect(response?.body).toMatchObject({ code: 'INCIDENT_RESOLVED' });
+      expect((await prisma.finding.findUniqueOrThrow({ where: { id: free.id } })).incidentId).toBeNull();
+      expect(await prisma.incident.findUniqueOrThrow({ where: { id: incident.id } })).toMatchObject({
+        status: 'resolved',
+        findingCount: 1,
+      });
+    });
   });
 
   describe('isolamento entre clientes (A/B)', () => {

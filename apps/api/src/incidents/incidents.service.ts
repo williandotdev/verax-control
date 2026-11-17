@@ -151,6 +151,7 @@ export class IncidentsService {
   }
 
   async update(auth: RequestAuth, id: string, input: IncidentUpdate): Promise<IncidentDetail> {
+    await this.lockIncident(sessionTenantId(), id);
     const before = await this.find(id);
     if (input.assigneeId) await this.assertAssignee(auth, input.assigneeId);
     const resolving = input.status === 'resolved' && before.status !== 'resolved';
@@ -224,7 +225,7 @@ export class IncidentsService {
    */
   async attach(id: string, input: IncidentAttach): Promise<IncidentDetail> {
     const { db, tenantId } = await this.lockedScope();
-    const incident = await this.openIncident(db, id);
+    const incident = await this.openIncident(db, tenantId, id);
     await this.freeFindings(db, input.findingIds);
     await db.finding.updateMany({
       where: { id: { in: [...input.findingIds] }, incidentId: null },
@@ -255,8 +256,8 @@ export class IncidentsService {
    * alerta não sai (não existe incidente sem alerta): para encerrar o incidente, marca-se como resolvido.
    */
   async detach(id: string, findingId: string): Promise<IncidentDetail> {
-    const { db } = await this.lockedScope();
-    const incident = await this.openIncident(db, id);
+    const { db, tenantId } = await this.lockedScope();
+    const incident = await this.openIncident(db, tenantId, id);
     const finding = await db.finding.findFirst({
       where: { id: findingId, incidentId: id },
       select: { id: true },
@@ -290,8 +291,19 @@ export class IncidentsService {
     return { db, tenantId };
   }
 
+  /**
+   * Trava a linha do incidente do cliente até o fim da transação da requisição. Anexar e remover leem o status com a
+   * linha travada, e a mudança de status também trava: um "resolvido" que chega no meio espera, ou faz o outro pedido
+   * ver o incidente já resolvido. O `id` já chega validado como UUID pela rota.
+   */
+  private async lockIncident(tenantId: string, id: string): Promise<void> {
+    await this.prisma.db()
+      .$executeRaw`SELECT 1 FROM "Incident" WHERE "id" = ${id}::uuid AND "tenantId" = ${tenantId}::uuid FOR UPDATE`;
+  }
+
   /** O incidente do cliente, se não está resolvido (o resolvido não ganha nem perde alerta: reabra antes). */
-  private async openIncident(db: Prisma.TransactionClient, id: string) {
+  private async openIncident(db: Prisma.TransactionClient, tenantId: string, id: string) {
+    await this.lockIncident(tenantId, id);
     const incident = await db.incident.findUnique({
       where: { id },
       select: { id: true, status: true, severity: true, riskScore: true, findingCount: true },
