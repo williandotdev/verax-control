@@ -11,8 +11,15 @@ export class MeController {
   @Authenticated()
   @AllowWithoutMfa()
   @AllowWithTemporaryPassword()
-  me(@Req() request: Request): Omit<RequestAuth, 'sessionId'> & { permissions: Permission[] } {
-    const { sessionId: _sessionId, ...identity } = request.auth as RequestAuth;
+  me(
+    @Req() request: Request,
+  ): Omit<RequestAuth, 'sessionId' | 'staffAsCustomer'> & { permissions: Permission[] } {
+    // A visão de cliente da equipe (`staffAsCustomer`) é só do servidor: o painel recebe o mesmo que o cliente.
+    const {
+      sessionId: _sessionId,
+      staffAsCustomer: _staffAsCustomer,
+      ...identity
+    } = request.auth as RequestAuth;
     // As permissões vão junto para o painel esconder o que não cabe; quem decide é sempre a API.
     return { ...identity, permissions: permissionsOf(identity.role) };
   }

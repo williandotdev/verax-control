@@ -73,10 +73,12 @@ export class NotificationPreferencesService {
 
 /**
  * Pessoa de cliente, no próprio cliente, com um papel que recebe os avisos de incidente. A equipe da Verax não tem
- * cliente (e, com um cliente selecionado, continua sem ser dele).
+ * cliente (e, com um cliente selecionado, continua sem ser dele). Vendo o painel como o cliente (`staffAsCustomer`),
+ * também não: os avisos só vão a quem é do cliente, e a escolha não teria efeito.
  */
 function eligible(auth: RequestAuth): boolean {
   return (
+    auth.staffAsCustomer !== true &&
     auth.tenantId !== null &&
     auth.tenantId === auth.scopeTenantId &&
     (INCIDENT_NOTICE_ROLES as readonly string[]).includes(auth.role)

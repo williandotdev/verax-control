@@ -58,10 +58,16 @@ export interface CreateAppOptions {
   cell?: { domain: string; staffSlug: string };
   /**
    * Entrada única pelo console (com `cell`, ou no nó dedicado da Verax com `plan: { PLAN: 'interno' }`): a origem do
-   * console, a chave PÚBLICA fixada (o `x`) e, opcional, o login com senha da equipe desligado. Os testes trocam a
-   * troca do código (`SSO_FETCH`) em `overrideProviders`.
+   * console, a chave PÚBLICA fixada (o `x`) e, opcionais, o login com senha da equipe desligado e a visão de cliente da
+   * equipe (`STAFF_CUSTOMER_VIEW`, só no nó dedicado da Verax). Os testes trocam a troca do código (`SSO_FETCH`) em
+   * `overrideProviders`.
    */
-  sso?: { issuer: string; publicKey: string; staffPasswordLoginDisabled?: boolean };
+  sso?: {
+    issuer: string;
+    publicKey: string;
+    staffPasswordLoginDisabled?: boolean;
+    staffCustomerView?: boolean;
+  };
   /** O `API_ORIGIN` do nó dedicado (o endereço do retorno da entrada única); sem informar, `http://localhost:3000`. */
   apiOrigin?: string;
 }
@@ -114,6 +120,7 @@ export async function createApp(options: CreateAppOptions = {}): Promise<NestExp
       SSO_CLIENT_ID: 'verax-siem',
       SSO_PUBLIC_KEY: options.sso.publicKey,
       STAFF_PASSWORD_LOGIN_DISABLED: String(options.sso.staffPasswordLoginDisabled ?? false),
+      STAFF_CUSTOMER_VIEW: String(options.sso.staffCustomerView ?? false),
     }),
   });
   const builder = Test.createTestingModule({

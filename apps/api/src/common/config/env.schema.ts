@@ -556,7 +556,8 @@ const apiEnvSchema = z
     // Célula compartilhada (CE-01): o domínio e o subdomínio da equipe, só com NODE_MODE=cell (do planEnvShape).
     ...nodeModeEnvShape,
     // Entrada única no SIEM pelo console do responsável (na célula, no endereço da equipe; no nó dedicado, só no da
-    // Verax, com PLAN=interno): a origem do console, o cliente e a chave pública fixada (`./sso.ts`).
+    // Verax, com PLAN=interno): a origem do console, o cliente e a chave pública fixada, e os interruptores da equipe
+    // (`./sso.ts`).
     ...ssoEnvShape,
   })
   .superRefine((env, ctx) => {
@@ -669,6 +670,7 @@ const apiEnvSchema = z
         SSO_CLIENT_ID,
         SSO_PUBLIC_KEY,
         STAFF_PASSWORD_LOGIN_DISABLED: env.STAFF_PASSWORD_LOGIN_DISABLED,
+        STAFF_CUSTOMER_VIEW: env.STAFF_CUSTOMER_VIEW,
       });
       // A chave pública já validada no lugar do texto em base64; sem o par, a API sobe sem o cofre.
       let credentialsPublicKey: VaultPublicKey | null = null;
