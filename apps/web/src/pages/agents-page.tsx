@@ -1,13 +1,14 @@
 import { type Agent, type AgentInstall, WAZUH_AGENT_VERSION } from '@verax/shared';
-import { Copy, Eye, EyeOff } from 'lucide-react';
+import { Copy, Eye, EyeOff, Plus } from 'lucide-react';
 import { Tabs } from 'radix-ui';
-import { useId, useState } from 'react';
+import { type ReactNode, useId, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { type Column, DataTable } from '@/components/data-table';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
 import { Card, CardDescription, CardTitle } from '@/components/ui/card';
 import { SelectField } from '@/components/ui/select-field';
+import { Sheet } from '@/components/ui/sheet';
 import { AdminShell } from '@/features/admin/admin-ui';
 import { useAgentInstall, useAgents } from '@/features/agents/agents-api';
 import { AGENT_STATUS_LABELS, agentListIsStale } from '@/features/agents/labels';
@@ -33,8 +34,8 @@ const PLATFORM_LABELS: Readonly<Record<Platform, string>> = {
 };
 
 /**
- * Agentes do Wazuh nas instâncias do cliente: a instalação guiada (Linux e Windows) e a lista dos agentes, com o
- * estado de cada um. Os agentes falam com o manager do nó dedicado do cliente, num IP fixo, só a partir das faixas de IP
+ * Agentes do Wazuh nas instâncias do cliente: a lista dos agentes, com o estado de cada um, e o botão "Instalar novo
+ * agente", que abre a instalação guiada (Linux e Windows) num painel lateral. Os agentes falam com o manager do nó dedicado do cliente, num IP fixo, só a partir das faixas de IP
  * de saída que o cliente informou à Verax. A senha de registro só aparece para quem administra, e cada consulta às
  * instruções fica na trilha de auditoria.
  */
@@ -51,42 +52,107 @@ export function AgentsPage() {
   );
 }
 
+/** Painel "Instalar novo agente", aberto pela URL (`?instalar`): o link leva direto às instruções. */
+const INSTALL_PARAM = 'instalar';
+
 function AgentsContent() {
   const install = useAgentInstall(true);
+  const [params, setParams] = useSearchParams();
+  const open = params.has(INSTALL_PARAM);
+  const setOpen = (next: boolean) =>
+    setParams((previous) => {
+      const params = new URLSearchParams(previous);
+      if (next) params.set(INSTALL_PARAM, '');
+      else {
+        params.delete(INSTALL_PARAM);
+        params.delete('sistema');
+      }
+      return params;
+    });
   if (install.isError) {
     return <ErrorState error={install.error} onRetry={() => void install.refetch()} />;
   }
   if (!install.data) return <LoadingState rows={4} label="Carregando as instruções" />;
   const data = install.data;
-  if (data.status === 'disabled') return <DisabledNotice />;
+  const installButton = (
+    <Button type="button" onClick={() => setOpen(true)}>
+      <Plus aria-hidden />
+      Instalar novo agente
+    </Button>
+  );
   return (
     <div className="space-y-6">
-      {data.status === 'allowlist_pending' ? (
-        <AllowlistPending install={data} />
+      {data.status === 'disabled' ? (
+        <NoAgentsYet action={installButton} />
       ) : (
-        <GuidedInstall install={data} />
+        <>
+          {data.status === 'allowlist_pending' && <AllowlistPending install={data} />}
+          <AgentList action={installButton} />
+        </>
       )}
-      <AgentList />
+      <Sheet
+        open={open}
+        onOpenChange={setOpen}
+        title="Instalar novo agente"
+        description={
+          data.status === 'ready'
+            ? 'Escolha o sistema da máquina, copie o script e rode-o nela como administrador.'
+            : 'Antes do primeiro agente, a Verax liga o recebimento no seu ambiente.'
+        }
+      >
+        {data.status === 'disabled' && <ActivationSteps />}
+        {data.status === 'allowlist_pending' && <AllowlistPending install={data} />}
+        {data.status === 'ready' && <GuidedInstall install={data} />}
+      </Sheet>
     </div>
   );
 }
 
-function DisabledNotice() {
+/** Desligado: ainda não há agente nem recebimento; o botão leva aos passos para ligar. */
+function NoAgentsYet({ action }: { action: ReactNode }) {
   return (
-    <Card aria-labelledby="agentes-desligados">
-      <CardTitle id="agentes-desligados">Os agentes não estão ligados neste ambiente</CardTitle>
-      <div className="mt-2 max-w-3xl space-y-2 text-sm text-muted-foreground">
-        <p>
-          Com eles, o Wazuh do seu ambiente recebe os eventos das suas máquinas, além dos logs das contas
-          cloud. Para ligar, peça ao suporte da Verax pelo canal de atendimento do seu contrato, informando os
-          IPs (ou faixas) de saída das instâncias que vão ter o agente.
-        </p>
-        <p>
-          A Verax reserva um IP fixo para o seu ambiente e libera as portas 1514 e 1515 só para esses IPs.
-          Nada fica aberto para o resto da internet.
-        </p>
-      </div>
+    <Card aria-labelledby="nenhum-agente">
+      <CardTitle id="nenhum-agente">Nenhum agente instalado</CardTitle>
+      <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+        Com o agente do Wazuh numa VM ou instância EC2, o seu ambiente recebe os eventos da máquina
+        (integridade de arquivos, inventário, vulnerabilidades e configuração), além dos logs das contas
+        cloud.
+      </p>
+      <div className="mt-4">{action}</div>
     </Card>
+  );
+}
+
+/**
+ * Os passos para ligar o recebimento, no painel do botão quando ele ainda está desligado: o IP fixo do ambiente só é
+ * reservado quando há uma máquina para instalar.
+ */
+function ActivationSteps() {
+  return (
+    <div className="space-y-4 text-sm">
+      <p>
+        O recebimento de agentes ainda não está ligado no seu ambiente. Ele é ligado na primeira instalação:
+      </p>
+      <ol className="list-decimal space-y-3 pl-5">
+        <li>
+          Descubra o IP público de onde a máquina sai para a internet: o NAT gateway ou o IP elástico na AWS,
+          o Cloud NAT ou o IP externo na GCP, ou o IP público da sua rede. Na própria máquina, o comando{' '}
+          <code className="font-mono">curl -s https://checkip.amazonaws.com</code> mostra esse IP.
+        </li>
+        <li>
+          Envie esse IP (ou a faixa, de /16 a /32) ao suporte da Verax pelo canal de atendimento do seu
+          contrato.
+        </li>
+        <li>
+          A Verax reserva um IP fixo para o seu ambiente e libera as portas 1514 e 1515 só para os IPs
+          informados. Nada fica aberto para o resto da internet.
+        </li>
+        <li>
+          Volte aqui e clique em &quot;Instalar novo agente&quot;: o script de instalação, com a senha de
+          registro, aparece pronto para copiar e rodar na máquina.
+        </li>
+      </ol>
+    </div>
   );
 }
 
@@ -128,10 +194,7 @@ function GuidedInstall({ install }: { install: AgentInstall }) {
       : linuxScript(inputs, platform, arch, enrollment);
 
   return (
-    <section aria-labelledby="instalacao" className="space-y-4">
-      <h2 id="instalacao" className="text-lg font-semibold">
-        Instalação guiada
-      </h2>
+    <div className="space-y-4">
       <Card aria-labelledby="antes-de-comecar">
         <CardTitle id="antes-de-comecar">Antes de começar</CardTitle>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
@@ -220,7 +283,7 @@ function GuidedInstall({ install }: { install: AgentInstall }) {
                 </li>
               </>
             )}
-            <li>Em até um minuto, a instância aparece na lista abaixo como &quot;Conectado&quot;.</li>
+            <li>Em até um minuto, a instância aparece na lista de agentes como &quot;Conectado&quot;.</li>
           </ol>
           <ScriptBlock
             display={script(shown)}
@@ -248,7 +311,7 @@ function GuidedInstall({ install }: { install: AgentInstall }) {
           </span>
         </CardDescription>
       </Card>
-    </section>
+    </div>
   );
 }
 
@@ -380,7 +443,7 @@ function ScriptBlock({ display, copy, label }: { display: string; copy: string; 
   );
 }
 
-function AgentList() {
+function AgentList({ action }: { action: ReactNode }) {
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, Number.parseInt(params.get('pagina') ?? '1', 10) || 1);
   const agents = useAgents({ page, pageSize: PAGE_SIZE }, true);
@@ -447,9 +510,12 @@ function AgentList() {
 
   return (
     <section aria-labelledby="lista-agentes" className="space-y-3">
-      <h2 id="lista-agentes" className="text-lg font-semibold">
-        Agentes registrados
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 id="lista-agentes" className="text-lg font-semibold">
+          Agentes registrados
+        </h2>
+        {action}
+      </div>
       {syncedAt !== null && (
         <p
           className={cn(
@@ -481,7 +547,7 @@ function AgentList() {
         error={agents.error}
         onRetry={() => void agents.refetch()}
         emptyTitle="Nenhum agente registrado ainda"
-        emptyDescription="Instale o agente numa instância com o script acima: ela aparece aqui em até um minuto."
+        emptyDescription='Use "Instalar novo agente" para pegar o script: a máquina aparece aqui em até um minuto.'
       />
     </section>
   );

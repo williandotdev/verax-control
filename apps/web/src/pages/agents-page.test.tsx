@@ -34,6 +34,12 @@ function renderAt(path: string, state: MockState) {
   return router;
 }
 
+/** Abre o painel "Instalar novo agente" e devolve ele (o diálogo). */
+async function openInstall() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Instalar novo agente' }));
+  return screen.findByRole('dialog', { name: 'Instalar novo agente' });
+}
+
 const veraxIn = (tenantId: string | undefined) =>
   demoMe('admin_verax', { activeTenantId: tenantId ?? null, scopeTenantId: tenantId ?? null });
 
@@ -44,11 +50,13 @@ describe('Agentes', () => {
     expect(within(nav).getByRole('link', { name: /Agentes/ })).toHaveAttribute('href', '/cadastros/agentes');
   });
 
-  it('pronto: instalação guiada com a senha mascarada, que aparece no "Mostrar senha"', async () => {
-    renderAt('/cadastros/agentes', { me: demoMe('admin_cliente') });
+  it('pronto: "Instalar novo agente" abre a instalação guiada, com a senha mascarada até o "Mostrar senha"', async () => {
+    const router = renderAt('/cadastros/agentes', { me: demoMe('admin_cliente') });
     expect(await screen.findByRole('heading', { level: 1, name: 'Agentes' })).toBeInTheDocument();
-    expect(await screen.findByRole('heading', { name: 'Instalação guiada' })).toBeInTheDocument();
-    expect(screen.getByText(/198\.51\.100\.0\/28/)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /Script de instalação/ })).not.toBeInTheDocument();
+    const sheet = await openInstall();
+    expect(router.state.location.search).toBe('?instalar=');
+    expect(within(sheet).getByText(/198\.51\.100\.0\/28/)).toBeInTheDocument();
     const script = screen.getByRole('region', { name: 'Script de instalação para Linux (deb)' });
     expect(script).toHaveTextContent(DEMO_AGENTS_ADDRESS);
     expect(script).toHaveTextContent(WAZUH_AGENT_PACKAGES['deb-amd64'].sha512);
@@ -66,7 +74,7 @@ describe('Agentes', () => {
   it('copiar leva o script com a senha de verdade, mesmo com ela mascarada na tela', async () => {
     const writeText = vi.fn((_text: string) => Promise.resolve());
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    renderAt('/cadastros/agentes', { me: demoMe('admin_cliente') });
+    renderAt('/cadastros/agentes?instalar', { me: demoMe('admin_cliente') });
     await userEvent.click(
       await screen.findByRole('button', { name: 'Copiar: Script de instalação para Linux (deb)' }),
     );
@@ -76,22 +84,27 @@ describe('Agentes', () => {
   });
 
   it('as abas trocam o script: rpm com a arquitetura escolhida e Windows', async () => {
-    const router = renderAt('/cadastros/agentes', { me: demoMe('admin_cliente') });
+    const router = renderAt('/cadastros/agentes?instalar', { me: demoMe('admin_cliente') });
     await userEvent.click(await screen.findByRole('tab', { name: 'Linux (rpm)' }));
     await userEvent.selectOptions(screen.getByLabelText('Arquitetura'), 'arm64');
     expect(screen.getByRole('region', { name: 'Script de instalação para Linux (rpm)' })).toHaveTextContent(
       WAZUH_AGENT_PACKAGES['rpm-aarch64'].file,
     );
     await userEvent.click(screen.getByRole('tab', { name: 'Windows' }));
-    expect(router.state.location.search).toBe('?sistema=windows');
+    expect(new URLSearchParams(router.state.location.search).get('sistema')).toBe('windows');
     expect(screen.getByRole('region', { name: 'Script de instalação para Windows' })).toHaveTextContent(
       'Start-Service WazuhSvc',
     );
     expect(screen.queryByLabelText('Arquitetura')).not.toBeInTheDocument();
+    // Fechar tira o painel e a escolha do sistema da URL.
+    await userEvent.click(screen.getByRole('button', { name: 'Fechar' }));
+    expect(router.state.location.search).toBe('');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('analista vê as instruções sem a senha, com o lugar dela marcado', async () => {
     renderAt('/cadastros/agentes', { me: demoMe('analista_cliente') });
+    await openInstall();
     expect(
       await screen.findByText(/Só quem administra o ambiente vê a senha de registro/),
     ).toBeInTheDocument();
@@ -121,17 +134,21 @@ describe('Agentes', () => {
     expect(
       await screen.findByRole('heading', { name: 'Falta liberar os IPs de saída das suas instâncias' }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Instalação guiada' })).not.toBeInTheDocument();
     expect(await screen.findByText('Nenhum agente registrado ainda')).toBeInTheDocument();
+    const sheet = await openInstall();
+    expect(within(sheet).getByText(/as portas 1514 e/)).toBeInTheDocument();
+    expect(within(sheet).queryByRole('region', { name: /Script de instalação/ })).not.toBeInTheDocument();
   });
 
-  it('desligado neste ambiente: explica e diz como pedir', async () => {
+  it('desligado neste ambiente: "Nenhum agente instalado", e o botão mostra os passos para ligar, sem script', async () => {
     renderAt('/cadastros/agentes', { me: veraxIn(INATIVO?.id) });
-    expect(
-      await screen.findByRole('heading', { name: 'Os agentes não estão ligados neste ambiente' }),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/peça ao suporte da Verax/)).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Nenhum agente instalado' })).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    const sheet = await openInstall();
+    expect(within(sheet).getByText(/ainda não está ligado no seu ambiente/)).toBeInTheDocument();
+    expect(within(sheet).getByText(/ao suporte da Verax/)).toBeInTheDocument();
+    expect(within(sheet).getByText(/as portas 1514 e 1515 só para os IPs/)).toBeInTheDocument();
+    expect(within(sheet).queryByRole('region', { name: /Script de instalação/ })).not.toBeInTheDocument();
   });
 
   it('admin_verax sem cliente escolhido: pede o cliente', async () => {

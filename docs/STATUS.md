@@ -5881,3 +5881,17 @@ painel como o cliente".
   aplicada num banco com incidentes automáticos de exemplo: ficaram os com responsável, em análise e resolvido; o aberto
   sem responsável saiu, com os alertas de volta à fila, o aviso pendente pulado e o registro na auditoria.
 - **Riscos:** o e-mail de alerta alto aumenta o volume de avisos (o resumo por hora segura o excesso).
+
+## Agentes: botão "Instalar novo agente"
+
+- **Pedido (17/11/2026):** a tela Agentes sem agente nenhum deve ter um botão "Instalar novo agente" com o comando exato
+  para instalar na máquina virtual. Decisões do responsável: o botão aparece sempre; o IP fixo de entrada dos agentes
+  só é criado quando houver uma máquina para instalar; o botão abre o passo a passo.
+- **Arquivos:** `apps/web/src/pages/agents-page.tsx`, `agents-page.test.tsx` e este registro. Sem mudança na API.
+- **Como ficou:** o botão fica no topo da lista de agentes (ou no aviso "Nenhum agente instalado", quando o recebimento
+  está desligado) e abre um painel lateral (`?instalar` na URL). Ligado, o painel tem a instalação guiada de antes
+  (sistema, arquitetura, senha de registro mascarada e o script para copiar). Com a liberação pendente, o pedido dos IPs
+  de saída. Desligado, os passos para ligar: descobrir o IP de saída da máquina, enviá-lo ao suporte da Verax, a Verax
+  reserva o IP fixo e libera as portas 1514 e 1515 só para ele, e o script aparece no mesmo botão.
+- **Testes:** `vitest` da tela (9); captura e axe (WCAG 2.2 AA) da lista e do painel no modo de demonstração, sem
+  violação.
