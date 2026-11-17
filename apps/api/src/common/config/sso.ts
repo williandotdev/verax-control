@@ -78,6 +78,11 @@ export const ssoEnvShape = {
   // célula; o nó inteiro, no da Verax): só a entrada única. Desligado por padrão; ligado, exige a entrada única
   // configurada (senão a equipe ficaria do lado de fora).
   STAFF_PASSWORD_LOGIN_DISABLED: enabledFlag,
+  // A equipe vê o painel como o cliente vê (decisão de 17/11/2026): no nó dedicado da Verax, que tem um cliente só (a
+  // própria Verax), a sessão do `admin_verax` vale como a do administrador desse cliente (`resolveSession`). Desligado
+  // por padrão; ligado, só no nó dedicado da Verax (nunca na célula, onde há vários clientes) e com a entrada única
+  // configurada (o "Entrar com o Admin master" continua sendo a porta da equipe).
+  STAFF_CUSTOMER_VIEW: enabledFlag,
 };
 
 const SSO_KEYS = ['SSO_ISSUER', 'SSO_CLIENT_ID', 'SSO_PUBLIC_KEY'] as const;
@@ -90,6 +95,7 @@ interface SsoEnv {
   SSO_CLIENT_ID?: string | undefined;
   SSO_PUBLIC_KEY?: string | undefined;
   STAFF_PASSWORD_LOGIN_DISABLED: boolean;
+  STAFF_CUSTOMER_VIEW: boolean;
 }
 
 /**
@@ -100,7 +106,18 @@ export function ssoAllowed(env: Pick<SsoEnv, 'NODE_MODE' | 'PLAN'>): boolean {
   return env.NODE_MODE === 'cell' || (env.NODE_MODE === 'dedicated' && env.PLAN === 'interno');
 }
 
-/** As três juntas ou nenhuma, só na célula ou no nó da Verax; o login só pela entrada única exige a entrada única. */
+/**
+ * Onde a equipe pode ver o painel como o cliente (`STAFF_CUSTOMER_VIEW`): só no nó dedicado da Verax (`PLAN=interno`
+ * escrito no ambiente). Na célula, nunca: lá há vários clientes, e a equipe precisa da visão dela.
+ */
+export function staffCustomerViewAllowed(env: Pick<SsoEnv, 'NODE_MODE' | 'PLAN'>): boolean {
+  return env.NODE_MODE === 'dedicated' && env.PLAN === 'interno';
+}
+
+/**
+ * As três juntas ou nenhuma, só na célula ou no nó da Verax; o login só pela entrada única exige a entrada única; a
+ * visão de cliente da equipe, só no nó dedicado da Verax e com a entrada única.
+ */
 export function checkSsoEnv(env: SsoEnv, ctx: z.RefinementCtx): void {
   const present = SSO_KEYS.filter((key) => env[key] !== undefined);
   if (present.length > 0 && present.length < SSO_KEYS.length) {
@@ -125,6 +142,22 @@ export function checkSsoEnv(env: SsoEnv, ctx: z.RefinementCtx): void {
       path: ['STAFF_PASSWORD_LOGIN_DISABLED'],
       message: 'exige a entrada única configurada (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY)',
     });
+  }
+  if (env.STAFF_CUSTOMER_VIEW) {
+    if (!staffCustomerViewAllowed(env)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['STAFF_CUSTOMER_VIEW'],
+        message: 'só existe no nó dedicado da Verax (NODE_MODE=dedicated com PLAN=interno)',
+      });
+    }
+    if (present.length < SSO_KEYS.length) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['STAFF_CUSTOMER_VIEW'],
+        message: 'exige a entrada única configurada (SSO_ISSUER, SSO_CLIENT_ID e SSO_PUBLIC_KEY)',
+      });
+    }
   }
 }
 

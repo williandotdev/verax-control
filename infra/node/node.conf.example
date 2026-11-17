@@ -94,8 +94,12 @@ CUSTOMER_MODE=false
 # login do console (senha e TOTP), e o menu dele ganha o "Admin master". A origem do console, o cliente (sempre
 # verax-siem) e a chave PÚBLICA do console: o `x` de `https://admin.../sso/jwks`, conferido com a cópia tirada do cofre
 # (runbook). A chave fica fixada aqui e nunca é baixada; nenhuma das três é segredo. STAFF_PASSWORD_LOGIN_DISABLED=true
-# tira o login com senha da equipe (só com as três; padrão false).
+# tira o login com senha da equipe (só com as três; padrão false). STAFF_CUSTOMER_VIEW=true (só no nó dedicado da Verax,
+# nunca na célula; só com as três; padrão false) faz a equipe ver o painel como o cliente do nó: com um cliente ativo só,
+# o `admin_verax` vale como o administrador dele (sem a fila "Alertas sem dono", a lista de clientes e o "Admin master"
+# do menu; o botão "Entrar com o Admin master" do login continua).
 # SSO_ISSUER=https://admin.exemplo.com.br
 # SSO_CLIENT_ID=verax-siem
 # SSO_PUBLIC_KEY=<o x da chave em https://admin.exemplo.com.br/sso/jwks: 43 caracteres>
 # STAFF_PASSWORD_LOGIN_DISABLED=false
+# STAFF_CUSTOMER_VIEW=false

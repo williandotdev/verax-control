@@ -311,6 +311,17 @@ PKCE de uso único, `jti` gasto, `iss`, `aud` e prazo, os limites por IP, e só 
 com o MFA do painel), e o interruptor `STAFF_PASSWORD_LOGIN_DISABLED` vale no nó inteiro. Os endereços do nó da Verax
 são os mesmos da equipe na célula (`api-verax` e `verax.control`): o retorno na lista do console não muda na troca.
 
+**A equipe vê o painel como o cliente, no nó dedicado da Verax (decisão de 17/11/2026).** Com `STAFF_CUSTOMER_VIEW=true`
+(padrão `false`; só no nó dedicado com `PLAN=interno` escrito no ambiente, nunca na célula, e só com a entrada única
+configurada; o `start.sh` e a configuração da API recusam o resto), o `resolveSession` troca a sessão do `admin_verax`
+sem cliente pela do `admin_cliente` do **único** cliente ativo do nó (a própria Verax): `role`, `tenantId` e
+`scopeTenantId` passam a ser os desse cliente, e o guard de permissões, o `/v1/me`, a Torre e a trilha seguem o papel do
+cliente por construção. A consulta é barata (`take: 2`): com nenhum ou mais de um cliente ativo, nada muda. O `userId`
+continua o da pessoa (no banco, ainda `admin_verax`), então a trilha mostra a equipe como Verax, agora na trilha do
+cliente do nó; a marca `staffAsCustomer` fica só no servidor (o `/v1/me` não a devolve) e tira a preferência de aviso
+por e-mail, que não teria efeito. Ficam de fora, nesse nó, a fila "Alertas sem dono", a lista e a troca de cliente e o
+item "Admin master" do menu; o botão "Entrar com o Admin master" do login continua (depende só do `client-config`).
+
 **O módulo Admin master no SIEM: o item do menu abre o console, sem embutir.** O `admin_verax` no endereço da equipe vê
 "Admin master" no menu (a API diz onde fica o console em `GET /v1/auth/client-config`, `adminMasterUrl`), que abre o
 console na mesma aba, já com a sessão dele (a entrada única deixou o console logado). A alternativa, o painel chamar a
