@@ -27,6 +27,7 @@ describe('despachante dos avisos (PR-16)', () => {
       incident_opened: ['admin_cliente', 'analista_cliente'],
       incident_escalated: ['admin_cliente', 'analista_cliente'],
       critical_finding: ['admin_cliente', 'analista_cliente'],
+      high_finding: ['admin_cliente', 'analista_cliente'],
       aws_ingestion_stalled: ['admin_cliente'],
       plan_usage: ['admin_cliente'],
       // O pedido de confirmação vai só ao contato de escalonamento (D8).
@@ -34,7 +35,7 @@ describe('despachante dos avisos (PR-16)', () => {
     });
   });
 
-  it('o contato de escalonamento (D8) recebe só os avisos críticos de incidente e de achado', () => {
+  it('o contato de escalonamento (D8) recebe só os avisos críticos de incidente e de alerta', () => {
     const reaches = (kind: Parameters<typeof reachesEscalationContact>[0]['kind'], severity: string | null) =>
       reachesEscalationContact({ kind, severity });
     expect(reaches('incident_opened', 'critical')).toBe(true);
@@ -42,6 +43,8 @@ describe('despachante dos avisos (PR-16)', () => {
     expect(reaches('critical_finding', 'critical')).toBe(true);
     expect(reaches('incident_opened', 'high')).toBe(false);
     expect(reaches('incident_escalated', 'high')).toBe(false);
+    expect(reaches('high_finding', 'high')).toBe(false);
+    expect(reaches('incident_opened', 'medium')).toBe(false);
     expect(reaches('plan_usage', null)).toBe(false);
     expect(reaches('aws_ingestion_stalled', null)).toBe(false);
     expect(reaches('escalation_confirmation', null)).toBe(false);
@@ -56,14 +59,20 @@ describe('despachante dos avisos (PR-16)', () => {
     expect(noticeOf({ ...empty, kind: 'incident_opened', severity: 'high', incidentId }, origin)).toEqual({
       kind: 'incident_opened',
       severity: 'high',
-      link: `${origin}/incidentes/${incidentId}`,
+      link: `${origin}/?incidente=${incidentId}`,
     });
+    expect(noticeOf({ ...empty, kind: 'incident_opened', severity: 'low', incidentId }, origin).link).toBe(
+      `${origin}/?incidente=${incidentId}`,
+    );
     expect(
       noticeOf({ ...empty, kind: 'incident_escalated', severity: 'critical', incidentId }, `${origin}/`).link,
-    ).toBe(`${origin}/incidentes/${incidentId}`);
+    ).toBe(`${origin}/?incidente=${incidentId}`);
     expect(
       noticeOf({ ...empty, kind: 'critical_finding', severity: 'critical', findingId }, origin).link,
-    ).toBe(`${origin}/achados?achado=${findingId}`);
+    ).toBe(`${origin}/?alerta=${findingId}`);
+    expect(noticeOf({ ...empty, kind: 'high_finding', severity: 'high', findingId }, origin).link).toBe(
+      `${origin}/?alerta=${findingId}`,
+    );
     expect(noticeOf({ ...empty, kind: 'aws_ingestion_stalled' }, origin).link).toBe(
       `${origin}/cadastros/contas`,
     );
@@ -81,8 +90,9 @@ describe('despachante dos avisos (PR-16)', () => {
       RangeError,
     );
     expect(() =>
-      noticeOf({ ...empty, kind: 'incident_opened', severity: 'medium', incidentId }, origin),
+      noticeOf({ ...empty, kind: 'incident_escalated', severity: 'medium', incidentId }, origin),
     ).toThrow(RangeError);
+    expect(() => noticeOf({ ...empty, kind: 'high_finding', severity: 'high' }, origin)).toThrow(RangeError);
     expect(() => noticeOf({ ...empty, kind: 'critical_finding', severity: 'critical' }, origin)).toThrow(
       RangeError,
     );
@@ -100,7 +110,12 @@ describe("preferência e resumo por hora (PR-17')", () => {
     const off = { role: 'analista_cliente', incidentEmails: false } as const;
     const on = { role: 'analista_cliente', incidentEmails: true } as const;
     const adminOff = { role: 'admin_cliente', incidentEmails: false } as const;
-    for (const kind of ['incident_opened', 'incident_escalated', 'critical_finding'] as const) {
+    for (const kind of [
+      'incident_opened',
+      'incident_escalated',
+      'critical_finding',
+      'high_finding',
+    ] as const) {
       expect(receives(kind, on)).toBe(true);
       expect(receives(kind, off)).toBe(false);
       expect(receives(kind, adminOff)).toBe(false);

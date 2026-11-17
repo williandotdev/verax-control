@@ -49,46 +49,52 @@ export function passwordResetMail(data: LinkMail): MailMessage {
 
 /** O aviso por e-mail (fase 2, PR-16), já com o link do painel. Cada tipo leva só o que o texto fixo dele precisa. */
 export type NoticeMail =
-  | { kind: 'incident_opened' | 'incident_escalated'; severity: 'high' | 'critical'; link: string }
+  | { kind: 'incident_opened'; severity: 'low' | 'medium' | 'high' | 'critical'; link: string }
+  | { kind: 'incident_escalated'; severity: 'high' | 'critical'; link: string }
   | { kind: 'critical_finding'; link: string }
+  | { kind: 'high_finding'; link: string }
   | { kind: 'aws_ingestion_stalled'; link: string }
   | { kind: 'plan_usage'; percent: 80 | 100; month: Date; link: string };
 
-const SEVERITY_TEXT = { high: 'alta', critical: 'crítica' } as const;
+const SEVERITY_TEXT = { low: 'baixa', medium: 'média', high: 'alta', critical: 'crítica' } as const;
 
 /** Mês do uso por extenso ("novembro de 2026"); a coluna guarda o primeiro dia à meia-noite UTC. */
 const MONTH_FORMAT = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 
-/** Os detalhes do incidente e do achado ficam só no painel: um e-mail pode ser encaminhado ou lido por quem não devia. */
+/** Os detalhes do incidente e do alerta ficam só no painel: um e-mail pode ser encaminhado ou lido por quem não devia. */
 const DETAILS_IN_PANEL =
   'Por segurança, os detalhes (contas, recursos, IPs e identidades) aparecem só no painel, depois do login com MFA.';
 
 /**
- * O que a pessoa pode mudar: os avisos de incidente e de achado crítico seguem a preferência dela (fase 2, PR-17'). Os
+ * O que a pessoa pode mudar: os avisos de incidente e de alerta alto ou crítico seguem a preferência dela (fase 2, PR-17'). Os
  * do plano e da coleta da AWS, para quem administra o cliente, não.
  */
 const PREFERENCE_HINT =
-  'Para não receber mais os avisos de incidente por e-mail, desligue a opção em Minha conta, no painel.';
+  'Para não receber mais os avisos de alertas e incidentes por e-mail, desligue a opção em Minha conta, no painel.';
 
 /** Os avisos que a preferência da pessoa controla. */
 export function isIncidentNotice(notice: NoticeMail): boolean {
   return (
     notice.kind === 'incident_opened' ||
     notice.kind === 'incident_escalated' ||
-    notice.kind === 'critical_finding'
+    notice.kind === 'critical_finding' ||
+    notice.kind === 'high_finding'
   );
 }
 
 /**
  * Título fixo por tipo e severidade (o assunto é ele com o nome do produto, e o item do resumo é ele) e o que o corpo
- * diz. Nada vem do achado, do incidente ou da conta.
+ * diz. Nada vem do alerta, do incidente ou da conta.
  */
 function noticeContent(notice: NoticeMail): { title: string; lines: string[]; action: string } {
   switch (notice.kind) {
     case 'incident_opened':
       return {
-        title: `Incidente de severidade ${SEVERITY_TEXT[notice.severity]} aberto`,
-        lines: [`Um incidente de severidade ${SEVERITY_TEXT[notice.severity]} foi aberto.`, DETAILS_IN_PANEL],
+        title: `Incidente de severidade ${SEVERITY_TEXT[notice.severity]} confirmado`,
+        lines: [
+          `Alertas foram validados e confirmados como um incidente de severidade ${SEVERITY_TEXT[notice.severity]}.`,
+          DETAILS_IN_PANEL,
+        ],
         action: 'Ver o incidente',
       };
     case 'incident_escalated':
@@ -101,19 +107,22 @@ function noticeContent(notice: NoticeMail): { title: string; lines: string[]; ac
         action: 'Ver o incidente',
       };
     case 'critical_finding':
+    case 'high_finding': {
+      const severity = notice.kind === 'critical_finding' ? 'crítica' : 'alta';
       return {
-        title: 'Achado de severidade crítica',
+        title: `Alerta de severidade ${severity}`,
         lines: [
-          'Chegou um achado de severidade crítica que não entrou em nenhum incidente.',
+          `Chegou um alerta de severidade ${severity}. Ele precisa ser validado: pode ser um falso positivo ou virar um incidente.`,
           DETAILS_IN_PANEL,
         ],
-        action: 'Ver o achado',
+        action: 'Ver o alerta',
       };
+    }
     case 'aws_ingestion_stalled':
       return {
         title: 'Coleta da AWS parada',
         lines: [
-          'A coleta dos logs de uma conta AWS parou. Enquanto ela estiver parada, a atividade nessa conta não vira achado.',
+          'A coleta dos logs de uma conta AWS parou. Enquanto ela estiver parada, a atividade nessa conta não vira alerta.',
           'Confira o estado da conexão em Contas cloud.',
         ],
         action: 'Ver as contas cloud',
@@ -125,7 +134,7 @@ function noticeContent(notice: NoticeMail): { title: string; lines: string[]; ac
             title: 'Volume mensal do plano atingido',
             lines: [
               `O volume de logs lido em ${month} chegou ao limite mensal do plano.`,
-              'A coleta, os achados e os incidentes continuam normalmente. Para ajustar o plano, fale com a Verax.',
+              'A coleta, os alertas e os incidentes continuam normalmente. Para ajustar o plano, fale com a Verax.',
             ],
             action: 'Ver o plano e uso',
           }
@@ -285,7 +294,7 @@ export function digestMail(to: string, name: string, digest: DigestMail): MailMe
   };
 }
 
-/** Os avisos que chegam ao contato de escalonamento (D8): só os críticos, de incidente e de achado. */
+/** Os avisos que chegam ao contato de escalonamento (D8): só os críticos, de incidente e de alerta. */
 export type EscalationNotice = Extract<
   NoticeMail,
   { kind: 'incident_opened' | 'incident_escalated' | 'critical_finding' }
@@ -321,7 +330,7 @@ export function escalationConfirmationMail(
   name: string,
   { confirmLink, unsubscribeLink, validHours }: EscalationConfirmationMail,
 ): MailMessage {
-  const intro = `Este endereço foi cadastrado como contato de escalonamento no ${PRODUCT_NAME}, o painel de segurança em nuvem da Verax. Se você confirmar, vai receber por e-mail só os avisos críticos (incidente de severidade crítica e achado crítico), sem detalhes: eles ficam no painel, para quem tem acesso.`;
+  const intro = `Este endereço foi cadastrado como contato de escalonamento no ${PRODUCT_NAME}, o painel de segurança em nuvem da Verax. Se você confirmar, vai receber por e-mail só os avisos críticos (incidente de severidade crítica e alerta crítico), sem detalhes: eles ficam no painel, para quem tem acesso.`;
   const action = 'Confirmar o endereço';
   const validity = `O link vale por ${validHours} horas e só pode ser usado uma vez. Se você não reconhece este cadastro, ignore esta mensagem: sem a confirmação, nada mais é enviado a este endereço.`;
   const leave = 'Para não receber nem este pedido de novo, use o link';

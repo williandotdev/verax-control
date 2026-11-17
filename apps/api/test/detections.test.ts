@@ -175,6 +175,16 @@ describe('tela Detecções: visão agrupada (GET /v1/detections)', () => {
         finding: { id: standalone.id, incidentId: null, source: 'cloudtrail' },
       });
     });
+
+    it('visão Incidentes (kind=incident): só os incidentes, com os mesmos filtros', async () => {
+      const c = await newClient('Cliente (só incidentes)');
+      const incident = await insertIncident(c.tenantId, { severity: 'high' }, [{}]);
+      await insertFinding(c.tenantId, { occurredAt: new Date(Date.now() - 2 * HOUR) });
+      expect(await rowsOf(c.get, 'kind=incident')).toEqual([`i:${incident.id}`]);
+      expect(await rowsOf(c.get, 'kind=incident&severity=critical')).toEqual([]);
+      expect((await pageOf(c.get, 'kind=incident')).total).toBe(1);
+      await c.get('/v1/detections?kind=finding').expect(400);
+    });
   });
 
   describe('filtros', () => {

@@ -227,10 +227,10 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
       expect(summary).toMatchObject({ light: 'yellow', reasons: ['collection_stalled'] });
     });
 
-    it('incidente crítico aberto sem responsável e achado alto sem triagem: vermelho, com as decisões', async () => {
+    it('incidente crítico aberto sem responsável e alertas altos ou críticos para validar: vermelho, com as decisões', async () => {
       const { tenantId, accountId, get } = await setup();
       const at = new Date(Date.now() - HOUR);
-      await prisma.incident.create({
+      const incident = await prisma.incident.create({
         data: {
           tenantId,
           severity: 'critical',
@@ -261,6 +261,26 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
           mitreTechniques: [],
         },
       });
+      // O alerta crítico ainda em "novo" dentro do incidente também é validação pendente (17/11/2026); o médio, não.
+      for (const severity of ['critical', 'medium'] as const) {
+        await prisma.finding.create({
+          data: {
+            tenantId,
+            incidentId: incident.id,
+            accountId,
+            source: 'wazuh',
+            sourceEventId: randomUUID(),
+            logSource: 'cloudtrail',
+            occurredAt: at,
+            severity,
+            ruleId: '80202',
+            ruleLevel: 10,
+            title: 'Trilha desligada',
+            mitreTactics: [],
+            mitreTechniques: [],
+          },
+        });
+      }
       await prisma.cloudAccount.updateMany({ where: { tenantId }, data: { lastEventAt: at } });
       const summary = towerSummarySchema.parse((await get('/v1/tower').expect(200)).body);
       expect(summary).toMatchObject({
@@ -268,7 +288,7 @@ describe('Torre, postura e ativos (T5.8 a T5.10)', () => {
         reasons: ['critical_incident'],
         pendingDecisions: [
           { kind: 'unassigned_incident', count: 1 },
-          { kind: 'untriaged_finding', count: 1 },
+          { kind: 'untriaged_finding', count: 2 },
         ],
         openIncidents: { critical: 1 },
         coverage: { silentAccounts: [], lastEventAt: at.toISOString() },

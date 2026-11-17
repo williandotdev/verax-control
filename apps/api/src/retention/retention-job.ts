@@ -283,8 +283,9 @@ function notificationsOf(db: Prisma.TransactionClient): NotificationDelegate | u
  * tabela, e não as que dependem de outras (os comentários, os achados do incidente); e no incidente o DELETE vem depois
  * dos achados dele, que já teriam saído.
  *
- * A ordem é sempre incidente e depois achado. A API trava uma linha só por transação (um achado ou um incidente), então
- * não há ciclo de espera com ela; os coletores entram pelo lock do cliente, que o expurgo toma antes.
+ * A ordem é sempre incidente e depois achado. A triagem pela API trava uma linha só por transação (um achado ou um
+ * incidente), então não há ciclo de espera com ela; os coletores e as mudanças de alertas de um incidente pela API
+ * (promover, anexar, remover; 17/11/2026) entram pelo lock do cliente, que o expurgo toma antes.
  */
 async function lockIncidentRows(
   tx: Prisma.TransactionClient,
@@ -825,8 +826,9 @@ export class RetentionJob {
   }
 
   /**
-   * 3c. Avisos por e-mail resolvidos há mais de 90 dias (PR-16). O aviso de um incidente ou achado que saiu já foi
-   * junto, pela chave estrangeira em cascata; aqui saem os que sobram (volume do plano, pulados, com falha). Depois, as
+   * 3c. Avisos por e-mail resolvidos há mais de 90 dias (PR-16). O aviso de um alerta que saiu já foi junto, pela chave
+   * estrangeira em cascata; o de um incidente que saiu fica sem o incidente (17/11/2026) e sai aqui, com os que sobram
+   * (volume do plano, pulados, com falha). Depois, as
    * horas de avisos das pessoas (PR-17'), pelo mesmo prazo.
    */
   private async purgeNotifications(

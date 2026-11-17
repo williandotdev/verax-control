@@ -13,9 +13,10 @@ import { paginatedSchema, withPagination } from './pagination.js';
 
 /**
  * Tela Detecções (decisão do responsável de 16/11/2026): uma lista só no lugar da Torre, de Incidentes, de Achados e de
- * Relatórios. A visão agrupada (`GET /v1/detections`) mistura os incidentes e os achados que não entraram em nenhum
- * incidente, numa ordem só e com paginação na API; "Todos os achados" continua sendo o `GET /v1/findings`, com os
- * mesmos filtros. As regras de filtro ficam aqui, em funções puras, para a API e a demonstração filtrarem igual.
+ * Relatórios. Desde 17/11/2026 (alerta → validação → incidente), a tela tem duas visões: "Alertas" (o padrão) é o
+ * `GET /v1/findings`, todos os alertas; "Incidentes" é o `GET /v1/detections?kind=incident`. Sem `kind`, o
+ * `GET /v1/detections` ainda mistura os incidentes e os alertas fora de incidente, numa ordem só e com paginação na API,
+ * com os mesmos filtros. As regras de filtro ficam aqui, em funções puras, para a API e a demonstração filtrarem igual.
  */
 
 /** Ordem da lista: a atividade mais recente primeiro, ou a severidade mais alta primeiro (e a mais recente dentro dela). */
@@ -30,11 +31,13 @@ export const detectionListQuerySchema = withPagination({
   ...findingFilterShape,
   unassigned: z.enum(['true']).optional(),
   sort: z.enum(DETECTION_SORTS).optional(),
+  /** `incident`: só os incidentes (a visão "Incidentes" da tela Detecções); sem ele, incidentes e alertas avulsos. */
+  kind: z.enum(['incident']).optional(),
 }).superRefine(checkCustomRange);
 export type DetectionListQuery = z.infer<typeof detectionListQuerySchema>;
 
 /** Os filtros, sem a paginação nem a ordem. */
-export type DetectionFilters = Omit<DetectionListQuery, 'page' | 'pageSize' | 'sort'>;
+export type DetectionFilters = Omit<DetectionListQuery, 'page' | 'pageSize' | 'sort' | 'kind'>;
 
 const count = z.number().int().min(0);
 
