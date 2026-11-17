@@ -13,7 +13,6 @@ import { formatCompact, formatHour } from '@/components/charts/chart-utils';
 import { MiniBars } from '@/components/charts/mini-bars';
 import { StatTile } from '@/components/charts/stat-tile';
 import { DetectionRadar, type RadarLinks } from '@/components/security/detection-radar';
-import { Semaphore, type SemaphoreState } from '@/components/security/semaphore';
 import { SourceHealthRow } from '@/components/security/source-health';
 import { ErrorState, LoadingState } from '@/components/states';
 import { Button } from '@/components/ui/button';
@@ -36,9 +35,10 @@ import { towerReason } from './tower-reason';
 import { selectionSearch, withChanges } from './url-state';
 
 /**
- * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o semáforo com o motivo, as decisões
- * pendentes, o radar das últimas 24 horas e a saúde da coleta num indicador (o detalhe numa gaveta). Recolhível, para
- * a lista subir; a escolha fica neste navegador, por pessoa. No celular, começa recolhido: só o semáforo e as contagens.
+ * O resumo da situação no topo da tela Detecções (o que era a Torre, enxuto): o radar das últimas 24 horas em
+ * destaque, o motivo numa linha de texto, as decisões pendentes e a saúde da coleta num indicador (o detalhe numa
+ * gaveta). Sem o semáforo (descontinuado em 17/11/2026): o radar e as decisões dizem a situação. Recolhível, para a
+ * lista subir; a escolha fica neste navegador, por pessoa. No celular, começa recolhido: só as contagens.
  */
 export function SituationStrip({ scope, userId }: { scope: string; userId: string }) {
   const tower = useQuery({
@@ -122,16 +122,8 @@ function useStripPreference(userId: string): [boolean, (expanded: boolean) => vo
   return [expanded, set];
 }
 
-const LIGHT: Readonly<Record<SemaphoreState, { severity: Severity; label: string; lamp: string }>> = {
-  red: { severity: 'critical', label: 'Crítico', lamp: 'bg-critical' },
-  yellow: { severity: 'medium', label: 'Atenção', lamp: 'bg-medium' },
-  green: { severity: 'ok', label: 'Normal', lamp: 'bg-ok' },
-};
-
-/** Recolhido: a luz do semáforo, o rótulo e as contagens, numa linha. */
+/** Recolhido: as contagens, numa linha. */
 function CompactSituation({ summary }: { summary: TowerSummary }) {
-  const light = LIGHT[summary.light];
-  const { icon: Icon, tone } = SEVERITY_STYLES[light.severity];
   const decisions = summary.pendingDecisions.reduce((sum, decision) => sum + decision.count, 0);
   const counts = [
     `${summary.openIncidents.critical} ${summary.openIncidents.critical === 1 ? 'incidente crítico aberto' : 'incidentes críticos abertos'}`,
@@ -142,17 +134,10 @@ function CompactSituation({ summary }: { summary: TowerSummary }) {
   return (
     <p
       role="status"
-      aria-label={`Situação: ${light.label}. ${towerReason(summary)} ${counts.join(', ')}.`}
-      className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+      aria-label={`Situação: ${towerReason(summary)} ${counts.join(', ')}.`}
+      className="min-w-0 text-sm text-muted-foreground"
     >
-      <span aria-hidden className={cn('size-3 shrink-0 rounded-full', light.lamp)} />
-      <span className="flex items-center gap-1 font-medium">
-        <Icon aria-hidden className={cn('size-4', tone)} />
-        {light.label}
-      </span>
-      <span aria-hidden className="text-muted-foreground">
-        · {counts.join(' · ')}
-      </span>
+      <span aria-hidden>{counts.join(' · ')}</span>
     </p>
   );
 }
@@ -167,29 +152,42 @@ function ExpandedSituation({ summary }: { summary: TowerSummary }) {
     all: '/?visao=achados&periodo=24h',
   };
   return (
-    <div
-      className={cn(
-        'grid gap-4',
-        summary.radar &&
-          'lg:grid-cols-[minmax(0,1fr)_minmax(0,18rem)] xl:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]',
-      )}
-    >
-      <div className="min-w-0 space-y-4">
-        <Semaphore state={summary.light} reason={towerReason(summary)} />
-        <PendingDecisions summary={summary} />
-        <div className="flex flex-wrap gap-2">
-          <CollectionIndicator summary={summary} />
-          <PostureChip posture={summary.posture} />
+    <div className="space-y-4">
+      {/* O motivo, em texto: o que antes acompanhava a cor do semáforo. */}
+      <p
+        role="status"
+        aria-label={`Situação: ${towerReason(summary)}`}
+        className="text-sm text-muted-foreground"
+      >
+        {towerReason(summary)}
+      </p>
+      <div
+        className={cn(
+          'grid gap-6',
+          summary.radar &&
+            'lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,28rem)_minmax(0,1fr)]',
+        )}
+      >
+        {summary.radar && (
+          <section
+            data-tour="deteccoes-radar"
+            aria-labelledby="deteccoes-radar"
+            className="min-w-0 space-y-2"
+          >
+            <h3 id="deteccoes-radar" className="text-sm font-semibold">
+              Radar das últimas {summary.radar.windowHours} horas
+            </h3>
+            <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
+          </section>
+        )}
+        <div className="min-w-0 space-y-4">
+          <PendingDecisions summary={summary} />
+          <div className="flex flex-wrap gap-2">
+            <CollectionIndicator summary={summary} />
+            <PostureChip posture={summary.posture} />
+          </div>
         </div>
       </div>
-      {summary.radar && (
-        <section data-tour="deteccoes-radar" aria-labelledby="deteccoes-radar" className="min-w-0 space-y-2">
-          <h3 id="deteccoes-radar" className="text-sm font-semibold">
-            Radar das últimas {summary.radar.windowHours} horas
-          </h3>
-          <DetectionRadar radar={summary.radar} generatedAt={summary.generatedAt} links={links} compact />
-        </section>
-      )}
     </div>
   );
 }

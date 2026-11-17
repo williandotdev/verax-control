@@ -4,7 +4,6 @@ import { StatTile } from '@/components/charts/stat-tile';
 import { DataTable } from '@/components/data-table';
 import { DecisionCard } from '@/components/security/decision-card';
 import { ScoreMeter } from '@/components/security/score-meter';
-import { Semaphore } from '@/components/security/semaphore';
 import { SeverityBadge } from '@/components/security/severity-badge';
 import { SourceHealthRow } from '@/components/security/source-health';
 import { Timeline } from '@/components/security/timeline';
@@ -47,23 +46,6 @@ export function ComponentsShowcase() {
 
   return (
     <>
-      <CatalogSection title="Semáforo" description="Posição da luz, ícone e rótulo dizem o estado.">
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Card>
-            <Semaphore state="red" reason="1 incidente crítico aberto" />
-          </Card>
-          <Card>
-            <Semaphore state="yellow" reason="Postura abaixo de 70" />
-          </Card>
-          <Card>
-            <Semaphore
-              state="green"
-              reason="Tudo calmo. Coleta ativa em 4 de 4 fontes, último dado há 2 minutos."
-            />
-          </Card>
-        </div>
-      </CatalogSection>
-
       <CatalogSection title="Selo de severidade">
         <Card className="flex flex-wrap gap-2">
           {SEVERITIES.map((severity) => (
