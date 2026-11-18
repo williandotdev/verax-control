@@ -1,0 +1,21 @@
+# Nó do Verax Control na VM própria do cliente (NODE_PLATFORM=vm; o install.sh põe esta unidade no lugar da de
+# systemd/verax-node.service): a mesma, sem a guarda do servidor de metadados da GCP (verax-metadata-guard.service), que
+# não existe fora dela. Banco, papéis e migrations, API, worker e túnel do Cloudflare; o Wazuh sobe depois, pelo
+# verax-wazuh.service.
+[Unit]
+Description=Verax Control - no (banco, API, worker e tunel)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/verax/bin/start.sh up
+ExecStop=/opt/verax/bin/start.sh down
+TimeoutStartSec=1200
+# No standard, o `down` para o manager e o indexer do Wazuh (até 60 s cada, em sequência) antes de remover o resto.
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target
