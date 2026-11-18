@@ -16,11 +16,12 @@ import { LegacyVersionError, type OwnerContext, PricingTableStore } from '../pri
 import {
   type Configuration,
   type ConfigurationInput,
+  type ContractValues,
   isLegacyConfiguration,
   type PriceTable,
 } from '../pricing/pricing.schema.js';
 import { QuoteDailyLimitReachedError, QuoteStore } from '../pricing/quote-store.js';
-import { type ContactReason, quote } from '../pricing/quote.js';
+import { type ContactReason, contractReference, quote } from '../pricing/quote.js';
 import { isTenantEmail, isTenantName } from '../provisioning/executor-env.js';
 import { type NodeFitProblem, nodeFitProblems } from '../provisioning/node-fit.js';
 import { PROVISIONING_STEPS } from '../provisioning/provisioning-engine.js';
@@ -381,9 +382,12 @@ function lifecycleOf(tenant: TenantRecord): TenantLifecycleView {
  * (`hosting`, decisão de 06/11/2026):
  * - na infraestrutura da Verax: o cliente nasce em `pending` e o worker é chamado para o início do provisionamento, que
  *   segue exatamente os passos de um cliente pago (CP-07);
- * - na infraestrutura do cliente (só o Dedicado e o vCISO): a cotação de referência é o mesmo preço por GB/dia, no modo
- *   `self_hosted` (a DRE sem a nuvem da Verax), o cliente nasce em `waiting_customer_install` e nada é pedido ao worker; o console mostra a versão e o guia para o cliente instalar
+ * - na infraestrutura do cliente (só o Dedicado e o vCISO): a cotação de referência é calculada como na Verax (o
+ *   mesmo preço por GB/dia), no modo `self_hosted` (a DRE sem a nuvem da Verax), o cliente nasce em `waiting_customer_install` e nada é pedido ao worker; o console mostra a versão e o guia para o cliente instalar
  *   (`installation`), e o ciclo de vida só registra o fim do contrato.
+ * Os valores do contrato (`contractPricing`): a referência da tabela (o mensal da cotação e o preço de um GB/dia a mais,
+ * `contractReference`) e o contratado, que o responsável pode ter negociado por fora (`contracted` no pedido; ausente,
+ * a referência). Os dois ficam no cliente e na auditoria do cadastro.
  * Toda escrita e toda recusa vão à auditoria com `owner:<e-mail>`; os logs levam só ids, o subdomínio, o porte, as
  * versões e os códigos.
  */
@@ -453,6 +457,7 @@ export class AdminTenantsService {
       configuration: tenant.configuration,
       limits: tenant.limits,
       pricing: tenant.pricing,
+      ...(tenant.contractPricing === undefined ? {} : { contractPricing: tenant.contractPricing }),
       // Os endereços da Verax só valem para o ambiente na Verax: os do cliente, ele escolhe na instalação.
       ...(hosting === 'verax' ? { urls: tenantUrls(tenant.slug, this.config) } : {}),
       ...(provisioning === undefined
@@ -495,8 +500,9 @@ export class AdminTenantsService {
   }
 
   /**
-   * A cotação de referência pela tabela vigente, no plano e no lugar escolhidos (o mesmo preço por GB/dia nos dois
-   * lugares), e o que o provisionamento ainda não sabe criar. Nada é gravado.
+   * A cotação de referência pela tabela vigente, no plano e no lugar escolhidos (o preço é calculado como na
+   * infraestrutura da Verax nos dois lugares: o motor não muda o preço pelo lugar), os valores da tabela que o console
+   * preenche no contratado (`reference`) e o que o provisionamento ainda não sabe criar. Nada é gravado.
    */
   async preview(body: unknown): Promise<DirectTenantPreview> {
     const parsed = directTenantPreviewSchema.safeParse(body ?? {});
@@ -511,6 +517,7 @@ export class AdminTenantsService {
       priceTableVersion: table.version,
       contactUs: false,
       quote: outcome.quote,
+      reference: contractReference(outcome.quote, table.content),
       problems: nodeFitProblems(outcome.quote.configuration, outcome.quote.limits, hosting),
     };
   }
@@ -624,6 +631,8 @@ export class AdminTenantsService {
         'rate_limited',
       );
     }
+    const reference = contractReference(quoted, table.content);
+    const contracted = request.contracted ?? reference;
     let stored;
     try {
       stored = await this.quotes.create(table.version, quoted);
@@ -646,6 +655,7 @@ export class AdminTenantsService {
             monthlyTotal: quoted.monthlyTotal,
             setupTotal: quoted.setupTotal,
           },
+          contractPricing: { reference, contracted },
           company: { legalName: request.companyName, cnpj: request.cnpj },
           adminEmail: request.adminEmail,
           billing: { mode: 'contract' },
@@ -680,6 +690,8 @@ export class AdminTenantsService {
         size: tenant.configuration.size,
         hosting: request.hosting,
         priceTableVersion: table.version,
+        // Se houve negociação (só o sim ou não): os valores ficam no documento e na auditoria, nunca no log.
+        negotiated: !equalValues(contracted, reference),
       },
       'cliente de contrato direto criado',
     );
@@ -750,9 +762,9 @@ export class AdminTenantsService {
 
   /**
    * O pedido que a chave já criou, conferido inteiro contra o cliente gravado (que é o pedido normalizado): o modo de
-   * cobrança, onde o ambiente roda, o subdomínio, a razão social, o CNPJ, o e-mail e a configuração levada à tabela da
-   * cotação original (a mesma versão publicada, que não muda). Qualquer diferença é outro cadastro com a mesma chave:
-   * 409, sem mexer no cliente.
+   * cobrança, onde o ambiente roda, o subdomínio, a razão social, o CNPJ, o e-mail, a configuração levada à tabela da
+   * cotação original (a mesma versão publicada, que não muda) e o contratado (sem ele no pedido, a referência daquela
+   * tabela). Qualquer diferença é outro cadastro com a mesma chave: 409, sem mexer no cliente.
    */
   private async sameRequest(existing: TenantRecord, request: DirectTenantRequest): Promise<boolean> {
     if (
@@ -773,10 +785,14 @@ export class AdminTenantsService {
     });
     if (table === undefined || table.status === 'draft') return false;
     const outcome = quote(configurationFor(request.hosting, request.configuration), table.content);
+    if (outcome.kind !== 'quote') return false;
+    const reference = contractReference(outcome.quote, table.content);
+    // Um contrato direto de antes dos valores de contrato: o contratado era a referência.
+    const storedContracted: ContractValues = existing.contractPricing?.contracted ?? reference;
     return (
-      outcome.kind === 'quote' &&
       equalValues(outcome.quote.configuration, existing.configuration) &&
-      equalValues(outcome.quote.limits, existing.limits)
+      equalValues(outcome.quote.limits, existing.limits) &&
+      equalValues(request.contracted ?? reference, storedContracted)
     );
   }
 

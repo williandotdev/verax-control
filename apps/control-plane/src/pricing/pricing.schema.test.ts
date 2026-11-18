@@ -7,6 +7,9 @@ import {
 import {
   configurationInputSchema,
   contractedConfigurationSchema,
+  contractPricingSchema,
+  contractValuesSchema,
+  MAX_AMOUNT_CENTS,
   costModelSchema,
   isLegacyConfiguration,
   lookupKeysOf,
@@ -186,5 +189,41 @@ describe('tabela de preços e modelo de custos (schema)', () => {
     expect(contractedConfigurationSchema.safeParse({ ...demoConfiguration(), agents: 0 }).success).toBe(
       false,
     );
+  });
+});
+
+describe('valores do contrato direto', () => {
+  it('o mensal positivo, o GB/dia adicional a partir de 0, em centavos inteiros e com o teto de sanidade', () => {
+    expect(contractValuesSchema.safeParse({ monthlyTotal: 1, additionalGbDayAmount: 0 }).success).toBe(true);
+    expect(
+      contractValuesSchema.safeParse({
+        monthlyTotal: MAX_AMOUNT_CENTS,
+        additionalGbDayAmount: MAX_AMOUNT_CENTS,
+      }).success,
+    ).toBe(true);
+    const invalid: unknown[] = [
+      { monthlyTotal: 0, additionalGbDayAmount: 0 },
+      { monthlyTotal: -100, additionalGbDayAmount: 0 },
+      { monthlyTotal: 100, additionalGbDayAmount: -1 },
+      { monthlyTotal: 100.5, additionalGbDayAmount: 0 },
+      { monthlyTotal: 100, additionalGbDayAmount: 0.1 },
+      { monthlyTotal: MAX_AMOUNT_CENTS + 1, additionalGbDayAmount: 0 },
+      { monthlyTotal: 100, additionalGbDayAmount: MAX_AMOUNT_CENTS + 1 },
+      { monthlyTotal: '100', additionalGbDayAmount: 0 },
+      { monthlyTotal: 100 },
+      { additionalGbDayAmount: 0 },
+      // Estrito: nenhum campo a mais (nem a implantação, que não é negociável aqui).
+      { monthlyTotal: 100, additionalGbDayAmount: 0, setupTotal: 0 },
+    ];
+    for (const value of invalid) expect(contractValuesSchema.safeParse(value).success).toBe(false);
+  });
+
+  it('a referência e o contratado, os dois obrigatórios e estritos', () => {
+    const values = { monthlyTotal: 150_000, additionalGbDayAmount: 50_000 };
+    expect(contractPricingSchema.safeParse({ reference: values, contracted: values }).success).toBe(true);
+    expect(contractPricingSchema.safeParse({ reference: values }).success).toBe(false);
+    expect(
+      contractPricingSchema.safeParse({ reference: values, contracted: values, negotiated: true }).success,
+    ).toBe(false);
   });
 });

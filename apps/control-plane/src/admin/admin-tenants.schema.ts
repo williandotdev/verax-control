@@ -3,6 +3,9 @@ import { adminEmailSchema, cnpjInputSchema, slugInputSchema } from '../checkout/
 import { ULID_PATTERN } from '../common/ulid.js';
 import {
   type ContractedConfiguration,
+  type ContractPricing,
+  type ContractValues,
+  contractValuesSchema,
   type NodeLimits,
   type OrderPricing,
   type PlanId,
@@ -49,8 +52,9 @@ export type DirectConfiguration = z.infer<typeof directConfigurationSchema>;
 
 /**
  * `POST /v1/admin/tenants`: o cadastro de um cliente de contrato direto. Os campos do cliente com as mesmas regras e
- * limites do checkout do site; onde o ambiente roda (`hosting`); a configuração com o plano e o volume em GB/dia (sem
- * preço: o preço de referência é o da tabela vigente, o mesmo nos dois lugares). `idempotencyKey` é
+ * limites do checkout do site; onde o ambiente roda (`hosting`); a configuração com o plano e o volume em GB/dia (o
+ * preço de referência é o da tabela vigente, calculado como na infraestrutura da Verax nos dois lugares); e, opcional,
+ * o contratado negociado (`contracted`). `idempotencyKey` é
  * um ULID gerado pelo console ao abrir o formulário: é o id do cliente, então enviar duas vezes cria um cliente só.
  * `confirmSlug` repete o subdomínio (a confirmação digitada).
  */
@@ -62,6 +66,11 @@ export const directTenantRequestSchema = z.strictObject({
   slug: slugInputSchema,
   hosting: hostingSchema,
   configuration: directConfigurationSchema,
+  /**
+   * O contratado (o mensal e o GB/dia adicional, em centavos), que o console preenche com a referência da tabela e o
+   * responsável pode mudar numa negociação por fora. Ausente, vale a referência da tabela.
+   */
+  contracted: contractValuesSchema.optional(),
   confirmSlug: z.string().max(64),
 });
 export type DirectTenantRequest = z.infer<typeof directTenantRequestSchema>;
@@ -191,6 +200,8 @@ export interface TenantDetail {
   limits: NodeLimits;
   /** O preço de referência (contrato direto) ou o cotado no checkout. */
   pricing: OrderPricing;
+  /** Só no contrato direto cadastrado com os valores do contrato: a referência da tabela e o contratado. */
+  contractPricing?: ContractPricing;
   /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente (os endereços são dele). */
   urls?: { panelUrl: string; apiUrl: string };
   provisioning?: {
@@ -217,10 +228,19 @@ export interface TenantDetail {
   actions: TenantActions;
 }
 
-/** `POST /v1/admin/tenants/preview`. */
+/**
+ * `POST /v1/admin/tenants/preview`. Com preço, `reference` traz os valores da tabela que o console usa para preencher o
+ * contratado: o mensal da cotação e o preço de um GB/dia a mais.
+ */
 export type DirectTenantPreview =
   | { priceTableVersion: string; contactUs: true; reason: ContactReason }
-  | { priceTableVersion: string; contactUs: false; quote: Quote; problems: NodeFitProblem[] };
+  | {
+      priceTableVersion: string;
+      contactUs: false;
+      quote: Quote;
+      reference: ContractValues;
+      problems: NodeFitProblem[];
+    };
 
 /**
  * O que aconteceu com o pedido ao cp-worker depois do cadastro. Sem sucesso, o código estável que o console explica:

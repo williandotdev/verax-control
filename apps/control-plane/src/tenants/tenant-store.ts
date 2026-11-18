@@ -250,6 +250,8 @@ export class TenantStore {
             slug: tenant.slug,
             size: tenant.configuration.size,
             priceTableVersion: tenant.pricing.priceTableVersion,
+            // Contrato direto: a referência da tabela e o contratado (negociado ou não), em centavos.
+            ...(tenant.contractPricing === undefined ? {} : { contractPricing: tenant.contractPricing }),
             billingMode: billingModeOf(tenant),
             hosting: hostingOf(tenant),
             to: initialState,
