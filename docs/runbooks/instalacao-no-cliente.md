@@ -20,7 +20,9 @@ que o cliente segue.
 
 Na VM roda o mesmo pacote do nó da Verax, no modo `NODE_PLATFORM=vm`: os segredos ficam num cofre local
 (`/etc/verax/vault`, só root), a chave do cofre de credenciais nasce na própria VM, os backups do banco ficam na VM
-(`/var/lib/verax/backups`, 7 dias) e não há atualizador automático. Nesta entrega, o nó coleta o Cloudflare (o token de
+(`/var/lib/verax/backups`, 7 dias) e não há atualizador automático. Nenhum contêiner do nó alcança o servidor de
+metadados da nuvem da VM (`169.254.169.254` e, na AWS, `fd00:ec2::254`): o serviço `verax-vm-metadata-guard`
+bloqueia esse tráfego antes de o Docker subir, a cada boot (o próprio host continua com acesso). Nesta entrega, o nó coleta o Cloudflare (o token de
 leitura colado no painel) e o que não depende de identidade de nuvem. **A coleta da AWS e do Google com chave de leitura
 cadastrada no painel vem numa entrega seguinte.** Os agentes do Wazuh nas instâncias do cliente pedem portas de entrada
 e não existem na VM própria.
@@ -43,6 +45,9 @@ registro e avisa a Verax.
 - **Sistema:** Debian 12, Ubuntu 22.04 ou Ubuntu 24.04, x86_64 (amd64), instalação limpa. O instalador instala o Docker
   Engine do repositório oficial da Docker (se a VM já tiver o `docker.io` do sistema, remova-o antes).
 - **Acesso:** um usuário com `sudo`. A Verax não pede nem recebe acesso à VM.
+- **Swap:** desligado ou cifrado. Na memória do nó ficam a chave do cofre de credenciais e os segredos; com swap em
+  claro, eles podem chegar ao disco (e aos snapshots dele). O instalador não mexe no swap da VM. Os nós na Verax usam
+  swap cifrado com uma chave nova a cada boot (dm-crypt no modo plain).
 
 ## 2. A rede: só saída
 
@@ -102,6 +107,22 @@ Ele confere o manifesto e o pacote da versão nova como na instalação, faz um 
 versão nova, com os mesmos dados e a mesma configuração. Ele recusa voltar para uma versão mais antiga. Na mesma
 versão, não reinstala nada: só conclui um registro que ficou pela metade (a senha temporária que não chegou à Verax).
 
+**Não há volta automática.** O `--atualizar` faz o backup antes, mas, se a versão nova não subir, o nó fica parado na
+versão nova e o instalador para com o erro na tela; nada volta sozinho, e o instalador recusa voltar de versão (as
+migrations do banco só andam para a frente). Fale com a Verax: a correção é uma versão nova, com o instalador dela e
+`--atualizar`. Se for preciso devolver os dados ao estado de antes da atualização, restaure o backup que o
+`--atualizar` fez (o `verax-*.dump` da hora da atualização, em `/var/lib/verax/backups`); na partida seguinte, as
+migrations da versão instalada rodam de novo sobre ele:
+
+```bash
+sudo systemctl stop verax-node            # para o Wazuh, a API, o worker e o túnel; o disco do banco fica
+cd /opt/verax
+sudo docker compose -f compose.yaml --env-file /etc/verax/images.env --env-file /run/verax/memory.env up -d --wait postgres
+sudo docker compose -f compose.yaml --env-file /etc/verax/images.env exec -T postgres \
+  pg_restore -U verax -d verax --clean --if-exists --single-transaction </var/lib/verax/backups/verax-<data>.dump
+sudo systemctl start verax-node
+```
+
 ## 5. Diagnóstico
 
 - `sudo systemctl status verax-node verax-wazuh verax-customer-bootstrap` e `sudo journalctl -u verax-node`;
@@ -118,7 +139,9 @@ de `/var/lib/verax/backups`). Depois, apague a VM e o disco dela ou, para manter
 ```bash
 sudo systemctl disable --now verax-backup.timer verax-wazuh-alerts.timer verax-wazuh-apply.timer \
   verax-wazuh-apply.path verax-customer-bootstrap.service verax-wazuh.service verax-node.service
+sudo systemctl disable verax-vm-metadata-guard.service   # a guarda recusa parar à mão; as regras somem no reboot
 sudo docker volume rm $(sudo docker volume ls -q --filter label=com.docker.compose.project=verax)
 sudo rm -rf /opt/verax /etc/verax /var/lib/verax /etc/systemd/system/verax-* /etc/sysctl.d/90-verax.conf
 sudo systemctl daemon-reload
+sudo reboot
 ```

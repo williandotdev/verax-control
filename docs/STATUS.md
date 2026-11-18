@@ -5988,8 +5988,10 @@ painel como o cliente".
   de `/etc/verax/vault/<nome>` (arquivo comum 0600: `smtp-password`, `cloudflare-tunnel-token`, `turnstile-secret-key`,
   `credentials-key` e `node-key`) em vez do Secret Manager; a chave do cofre de credenciais nasce na VM pelo
   `install.sh`; o primeiro acesso lê as entradas de `/etc/verax/customer` e deixa a senha temporária do administrador em
-  `/var/lib/verax/enrollment/admin-bootstrap.json` (a da conta de suporte é descartada); sem a guarda do metadata (o
-  `verax-node.service` de `systemd/vm`), sem o atualizador da frota, sem o token do Google para a AWS, sem guest
+  `/var/lib/verax/enrollment/admin-bootstrap.json` (a da conta de suporte é descartada); a guarda do metadata da VM própria
+  (`bin/vm-metadata-guard.sh` e `verax-vm-metadata-guard.service`, decisão do responsável: nenhum contêiner, nem o
+  worker, alcança `169.254.169.254` nem `fd00:ec2::254`, com a exceção do DNS na porta 53; o host mantém o acesso) no
+  lugar da dos nós da GCP, exigida pelo `verax-node.service` de `systemd/vm`; sem o atualizador da frota, sem o token do Google para a AWS, sem guest
   attributes (`NODE_STATUS`), sem o tópico do sink e sem `NODE_SA_UNIQUE_ID`; o backup fica na VM
   (`BACKUP_RETENTION_DAYS`, padrão 7). A célula, os agentes e a fonte `gcp` são recusados. A API e o worker não mudam:
   com essas variáveis de fora, nada fala com o metadata do Google.
@@ -6001,10 +6003,15 @@ painel como o cliente".
   `ready` e a senha local apagada; o `error` com o código numa falha depois do registro; e o `--atualizar` (backup
   antes, versão mais velha recusada, mesma versão conclui o report pendente). O plano de controle padrão é
   `https://conta.veraxsistemas.com.br` (`--plano-de-controle` só para testes).
-- **Testes:** shellcheck `-x -S style` limpo nos arquivos mexidos; `vm-install-test.sh`, `vm-node-test.sh`,
+- **Testes:** shellcheck `-x -S style` limpo nos arquivos mexidos; `vm-metadata-guard-test.sh` (iptables de verdade,
+  num espaço de nomes de rede; no CI com `sudo unshare -n`); `vm-install-test.sh`, `vm-node-test.sh`,
   `test-node-release.sh` e os de sempre do pacote (`start-test`, `vault-test`, `cell-test`, `boot-install-test`,
   `update-test`, `wazuh-apply-test`, `verify-release-test`) verdes num contêiner Ubuntu 24.04.
-- **Pontos para o plano de controle:** o `adminBootstrapPassword` do report é o JSON do cofre (`email`, `password` e
-  `expiresAt`, o mesmo contrato do `admin-bootstrap`), em texto; o instalador exige o `supportEmail` (o primeiro acesso
-  do modo cliente cria a conta de suporte) e ignora o `adminName`; os agentes do `nodeConf` ficam desligados na VM.
+- **Alinhado com o plano de controle (#150):** o `adminBootstrapPassword` do report é só a senha (o plano de controle
+  monta o JSON do cofre, com o prazo de 72 h); o claim 409 vira `release_mismatch` sem gastar o código; `mail: null` vira
+  `MAIL_TRANSPORT=none` (o remetente é `nao-responda@<host do painel>`, que o nó exige e não usa sem SMTP); o 429 espera
+  o `Retry-After`; o 401 no report diz que a chave foi trocada. O instalador exige o `supportEmail` e ignora o
+  `adminName`; os agentes do `nodeConf` ficam desligados na VM.
+- **Runbook:** swap da VM desligado ou cifrado; o `--atualizar` faz backup e não volta sozinho (como restaurar o
+  backup local).
 - **Manual:** um release de teste e uma VM Debian 12 e outra Ubuntu 24.04 limpas, com o comando do console.
