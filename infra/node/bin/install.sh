@@ -238,10 +238,12 @@ release_keys=("$here"/keys/release-*.pem)
 shopt -u nullglob
 if ((${#release_keys[@]} > 0)); then install -m 0644 "${release_keys[@]}" /opt/verax/keys/; fi
 if $vm; then
-  # Modo vm: sem a guarda do metadata e sem o atualizador da frota (atualizar é rodar o instalador da versão nova com
-  # --atualizar). O verax-node é o de systemd/vm, que não exige a guarda; o backup é o mesmo (local, no backup.sh).
-  install -m 0644 "$here/systemd/vm/verax-node.service" "$here/systemd/verax-backup.service" \
-    "$here/systemd/verax-backup.timer" /etc/systemd/system/
+  # Modo vm: a guarda do metadata da VM própria (todos os contêineres sem o metadata da nuvem) no lugar da dos nós da
+  # GCP, e sem o atualizador da frota (atualizar é rodar o instalador da versão nova com --atualizar). O verax-node é o
+  # de systemd/vm, que exige essa guarda; o backup é o mesmo (local, no backup.sh).
+  install -m 0750 "$here/bin/vm-metadata-guard.sh" /opt/verax/bin/
+  install -m 0644 "$here/systemd/vm/verax-node.service" "$here/systemd/vm/verax-vm-metadata-guard.service" \
+    "$here/systemd/verax-backup.service" "$here/systemd/verax-backup.timer" /etc/systemd/system/
 else
   install -m 0644 "$here"/systemd/*.service "$here"/systemd/*.timer /etc/systemd/system/
 fi
@@ -422,9 +424,9 @@ chmod 0640 /etc/verax/images.env
 echo '== Serviços e backup diário'
 systemctl daemon-reload
 # A guarda do metadata passa a ser exigida pelo Docker (RequiredBy) e roda antes dele a cada boot; agora, com o Docker
-# já no ar, ela só entra em vigor (o restart do verax-node a exige). No modo vm, não há guarda.
+# já no ar, ela só entra em vigor (o restart do verax-node a exige). No modo vm, a guarda é a da VM própria.
 if $vm; then
-  systemctl enable verax-node.service verax-backup.timer >/dev/null
+  systemctl enable verax-vm-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
 else
   systemctl enable verax-metadata-guard.service verax-node.service verax-backup.timer >/dev/null
 fi

@@ -151,6 +151,10 @@ jobs:
         # Antes do Docker (sem DOCKER-USER), reaplicada com tudo no lugar, regra antiga removida e a troca do conteúdo
         # da cadeia numa transação só (sem -F/-A soltos): não há instante sem guarda com contêineres no ar.
         run: sudo unshare -n bash infra/node/tests/metadata-guard-test.sh
+      - name: Guarda do metadata da VM própria do cliente (num espaço de nomes de rede próprio, IPv4 e IPv6)
+        # O mesmo molde, para o modo vm: todos os contêineres sem o metadata da nuvem (169.254.169.254 e fd00:ec2::254),
+        # sem exceção de origem (só o DNS na porta 53), idempotente e numa transação só.
+        run: sudo unshare -n bash infra/node/tests/vm-metadata-guard-test.sh
       - name: Script de boot do módulo do nó (shellcheck nos dois perfis e cenários com comandos simulados)
         # O script como a VM o recebe (o modelo com o perfil trocado) e os cenários de tests/startup-test.sh: nó novo,
         # disco do script antigo, rede fora do ar (e de volta no meio das tentativas), trava do apt, disco sem espaço e

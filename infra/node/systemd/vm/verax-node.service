@@ -1,11 +1,11 @@
 # Nó do Verax Control na VM própria do cliente (NODE_PLATFORM=vm; o install.sh põe esta unidade no lugar da de
-# systemd/verax-node.service): a mesma, sem a guarda do servidor de metadados da GCP (verax-metadata-guard.service), que
-# não existe fora dela. Banco, papéis e migrations, API, worker e túnel do Cloudflare; o Wazuh sobe depois, pelo
-# verax-wazuh.service.
+# systemd/verax-node.service): a mesma, com a guarda do metadata da nuvem da VM própria (verax-vm-metadata-guard.service,
+# que bloqueia todos os contêineres) no lugar da guarda dos nós da GCP. Banco, papéis e migrations, API, worker e túnel
+# do Cloudflare; o Wazuh sobe depois, pelo verax-wazuh.service.
 [Unit]
 Description=Verax Control - no (banco, API, worker e tunel)
-Requires=docker.service
-After=docker.service network-online.target
+Requires=docker.service verax-vm-metadata-guard.service
+After=docker.service verax-vm-metadata-guard.service network-online.target
 Wants=network-online.target
 
 [Service]

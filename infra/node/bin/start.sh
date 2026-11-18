@@ -118,8 +118,9 @@ is_tenant_slug() { [[ $1 =~ $re_tenant_slug && ${1:2:2} != '--' ]]; }
 # local (vault_dir, um arquivo por segredo, 0600 de root), a chave do cofre de credenciais também (gerada na própria VM
 # pelo install.sh), as entradas do primeiro acesso vêm de arquivos que o instalador grava (customer_inputs) e a senha
 # temporária do administrador fica num arquivo só de root (customer_output) até o instalador entregá-la ao plano de
-# controle. Sem guarda do metadata, sem token do Google para a AWS e sem guest attributes. Os nós da GCP não mudam: sem
-# a linha, tudo é como antes.
+# controle. A guarda do metadata é a da VM própria (vm-metadata-guard.sh: nenhum contêiner alcança o metadata da nuvem,
+# nem o worker); sem token do Google para a AWS e sem guest attributes. Os nós da GCP não mudam: sem a linha, tudo é
+# como antes.
 vm() { [[ ${NODE_PLATFORM:-gcp} == vm ]]; }
 vault_dir=/etc/verax/vault
 customer_inputs=/etc/verax/customer
@@ -951,12 +952,7 @@ wazuh_up() {
     WAZUH_API_PASSWORD=$WAZUH_API_PASSWORD INDEXER_API_READ_PASSWORD=$INDEXER_API_READ_PASSWORD \
     WAZUH_STATS_PASSWORD=$WAZUH_STATS_PASSWORD WAZUH_AGENTS_ADDRESS=$agents_address bash "$wazuh/scripts/smoke-test.sh"
   # A guarda do metadata vale para o Wazuh (no molde do teste do EC2, infra/wazuh/scripts/bootstrap-host.sh): sem
-  # resposta (000) no manager e no indexer. Se algum alcançar, os dois param e a partida falha. No modo vm não há guarda
-  # (nem metadata do Google): a conferência não se aplica.
-  if vm; then
-    echo 'Wazuh no ar.'
-    return 0
-  fi
+  # resposta (000) no manager e no indexer. Se algum alcançar, os dois param e a partida falha.
   local service status
   for service in wazuh.manager wazuh.indexer; do
     status=$(compose exec -T "$service" curl -s -m 3 -o /dev/null -w '%{http_code}' -H 'Metadata-Flavor: Google' \
@@ -976,8 +972,13 @@ wazuh_down() {
 
 up() {
   # A guarda do metadata já está valendo desde antes do Docker (verax-metadata-guard.service); aqui ela é só
-  # reafirmada, para uma partida sem reboot logo depois de uma atualização do script. No modo vm, não há guarda.
-  if ! vm; then /opt/verax/bin/metadata-guard.sh; fi
+  # reafirmada, para uma partida sem reboot logo depois de uma atualização do script. No modo vm, a guarda é a da VM
+  # própria (verax-vm-metadata-guard.service: todos os contêineres sem o metadata da nuvem).
+  if vm; then
+    /opt/verax/bin/vm-metadata-guard.sh
+  else
+    /opt/verax/bin/metadata-guard.sh
+  fi
   render
   # Standard: a pasta dos sinais do Wazuh antes de o worker subir (o compose.wazuh.yaml a monta nele, com escrita). Sem
   # ela, o Docker a criaria só para o root, e a tarefa wazuh-config do worker falharia até o wazuh-up.

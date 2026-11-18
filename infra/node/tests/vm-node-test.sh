@@ -7,8 +7,8 @@
 # /var/lib/verax, /run/verax e /etc/systemd/system viram caminhos dentro dela), com o pacote como o release o monta
 # (infra/node mais os scripts do Wazuh, que o perfil standard usa; os do Wazuh que falam com os contêineres e o
 # aws-token.sh são trocados por simulados que só anotam a chamada). Os comandos que mexem na máquina ou na nuvem
-# (docker, systemctl, iptables, chown, id, gcloud e curl) são simulados e anotam cada chamada; o gcloud, o curl e o
-# iptables falham sempre: no modo vm, nada pode chamá-los. O openssl, o base64 e o resto são os de verdade.
+# (docker, systemctl, iptables, ip6tables, chown, id, gcloud e curl) são simulados e anotam cada chamada; o gcloud e o
+# curl falham sempre: no modo vm, nada pode chamá-los. O openssl, o base64 e o resto são os de verdade.
 #
 # Cenários: o install.sh (sem a guarda do metadata, sem o atualizador, sem o token do Google para a AWS, o verax-node de
 # systemd/vm, a chave do cofre gerada no cofre local uma vez só, nenhum gcloud) e as recusas (célula, agentes, fonte
@@ -17,7 +17,8 @@
 # nos guest attributes, sem o tópico do sink e sem o ID da conta de serviço; o cofre sem o token (sobe sem o túnel; o
 # `tunnel` liga depois), com um arquivo aberto para outros, com quebra de linha ou com uma chave que não é RSA; o
 # primeiro acesso com as entradas dos arquivos do instalador (a senha do administrador num arquivo só de root, a da
-# conta de suporte descartada); o wazuh-up sem o token do Google e sem a conferência do metadata; e o backup local com
+# conta de suporte descartada); a guarda do metadata da VM própria (todos os contêineres, IPv4 e IPv6, antes do Docker
+# e de novo a cada partida; nunca a dos nós da GCP); o wazuh-up sem o token do Google; e o backup local com
 # retenção, sem bucket.
 set -euo pipefail
 
@@ -51,8 +52,8 @@ stub() {
   } >"$work/bin/$1"
   chmod +x "$work/bin/$1"
 }
-# No modo vm, nada fala com a GCP nem com o metadata, e não há guarda (iptables).
-for tool in gcloud curl iptables iptables-restore; do
+# No modo vm, nada fala com a GCP nem com o metadata.
+for tool in gcloud curl; do
   stub "$tool" <<EOF
 echo "$tool \$*" >>"\$state/proibido.log"
 exit 1
@@ -64,6 +65,8 @@ stub docker <<'EOF'
 printf 'docker %s\n' "$*" >>"$state/docker.log"
 args=("$@")
 if [[ " $* " == *' pg_dump '* ]]; then echo 'dump-de-teste'; exit 0; fi
+# A conferência do metadata de dentro do Wazuh: sem resposta (000), como com a guarda.
+if [[ " $* " == *'//169.254.169.254/'* ]]; then printf 000; exit 0; fi
 if [[ ${args[-1]} == bootstrap && " $* " == *' run --rm -T '* ]]; then
   mount='' names=()
   for ((i = 0; i < ${#args[@]}; i++)); do
@@ -80,6 +83,19 @@ if [[ ${args[-1]} == bootstrap && " $* " == *' run --rm -T '* ]]; then
     >"$dir/support-bootstrap.json"
 fi
 EOF
+# A guarda do metadata: o iptables e o ip6tables anotam (o conteúdo da transação do restore também). A regra ainda
+# não existe: o -C falha, e o script a insere. tests/vm-metadata-guard-test.sh testa o script de verdade, num espaço
+# de nomes de rede próprio.
+for tool in iptables ip6tables; do
+  stub "$tool" <<EOF
+echo "$tool \$*" >>"\$state/iptables.log"
+[[ \$1 != -C ]]
+EOF
+  stub "$tool-restore" <<EOF
+echo "$tool-restore \$*" >>"\$state/iptables.log"
+cat >>"\$state/iptables.log"
+EOF
+done
 stub systemctl <<'EOF'
 echo "systemctl $*" >>"$state/systemctl.log"
 EOF
@@ -202,7 +218,15 @@ run install || fail "install.sh falhou: $(cat "$state/out")"
 nothing_forbidden
 units=$root/etc/systemd/system
 cmp -s "$units/verax-node.service" "$here/systemd/vm/verax-node.service" || fail "o verax-node não é o de systemd/vm"
-! grep -qE '^(Requires|After|Wants)=.*metadata-guard' "$units/verax-node.service" || fail "o verax-node exige a guarda"
+grep -qx 'Requires=docker.service verax-vm-metadata-guard.service' "$units/verax-node.service" ||
+  fail "o verax-node não exige a guarda da VM própria"
+! grep -q 'verax-metadata-guard' "$units/verax-node.service" || fail "o verax-node exige a guarda dos nós da GCP"
+cmp -s "$units/verax-vm-metadata-guard.service" "$here/systemd/vm/verax-vm-metadata-guard.service" ||
+  fail "não instalou a guarda da VM própria"
+for line in RequiredBy=docker.service Before=docker.service; do
+  grep -qx "$line" "$units/verax-vm-metadata-guard.service" || fail "a guarda não vem antes do Docker ($line)"
+done
+[[ -x $root/opt/verax/bin/vm-metadata-guard.sh ]] || fail "não instalou o vm-metadata-guard.sh"
 for unit in verax-metadata-guard.service verax-update.service verax-update.timer verax-aws-token.service \
   verax-aws-token.timer verax-tenant-bootstrap.path verax-wazuh-agents.timer; do
   [[ ! -e $units/$unit ]] || fail "instalou $unit"
@@ -211,9 +235,10 @@ for unit in verax-backup.service verax-backup.timer verax-wazuh.service verax-wa
   verax-wazuh-apply.path verax-wazuh-apply.timer verax-customer-bootstrap.service; do
   [[ -f $units/$unit ]] || fail "não instalou $unit"
 done
-grep -q -e 'metadata-guard' -e 'verax-update' -e 'verax-aws-token' "$state/systemctl.log" &&
+grep -q -e ' verax-metadata-guard' -e 'verax-update' -e 'verax-aws-token' "$state/systemctl.log" &&
   fail "ligou a guarda, o atualizador ou o token do Google: $(cat "$state/systemctl.log")"
-grep -qx 'systemctl enable verax-node.service verax-backup.timer' "$state/systemctl.log" || fail "não ligou o nó e o backup"
+grep -qx 'systemctl enable verax-vm-metadata-guard.service verax-node.service verax-backup.timer' "$state/systemctl.log" ||
+  fail "não ligou a guarda, o nó e o backup: $(cat "$state/systemctl.log")"
 key=$root/etc/verax/vault/credentials-key
 grep -q 'Private-Key: (3072 bit' < <(openssl pkey -in "$key" -noout -text 2>/dev/null) || fail "a chave do cofre não é RSA-3072"
 [[ $(stat -c %a "$key") == 600 && $(stat -c %a "$root/etc/verax/vault") == 700 ]] || fail "modos do cofre local"
@@ -248,13 +273,23 @@ nothing_forbidden
   fail "a pública não é a da chave do cofre local"
 [[ $(cat "$root/run/verax/vault/worker-keys") == "1:$(base64 -w0 <"$root/etc/verax/vault/credentials-key")" ]] ||
   fail "o arquivo das chaves do worker não é a chave do cofre local"
-! grep -q -e 'PRIVATE KEY' -e BEGIN -e "$(base64 -w0 <"$root/etc/verax/vault/credentials-key")"   "$root/run/verax/worker.env" "$root/run/verax/api.env" || fail "chave privada no ambiente"
+! grep -q -e 'PRIVATE KEY' -e BEGIN -e "$(base64 -w0 <"$root/etc/verax/vault/credentials-key")" \
+  "$root/run/verax/worker.env" "$root/run/verax/api.env" || fail "chave privada no ambiente"
 for key_name in NODE_STATUS VERAX_NODE_COMMIT GCP_SINK_TOPIC_PREFIX NODE_SA_UNIQUE_ID; do
   ! grep -q "^$key_name=" "$root/run/verax/api.env" "$root/run/verax/worker.env" || fail "$key_name no ambiente"
 done
 [[ $(value_of worker.env SYNC_SOURCES) == wazuh,cloudflare ]] || fail "fontes do worker"
 grep -q 'up --detach cloudflared' "$state/docker.log" || fail "o túnel não subiu"
-# Sem a guarda: nenhuma chamada ao metadata-guard.sh (ele chamaria o iptables, proibido aqui).
+# A guarda da VM própria reafirmada na partida, para todos os contêineres (sem a exceção do worker dos nós da GCP), no
+# IPv4 e no IPv6; a dos nós da GCP (VERAX-METADATA) nunca.
+guard=$(cat "$state/iptables.log")
+grep -qx -- '-A VERAX-IMDS -j DROP' <<<"$guard" || fail "sem o DROP da guarda: $guard"
+# Só a exceção do DNS (udp e tcp 53), no IPv4 e no IPv6.
+[[ $(grep -c -- '-j RETURN' <<<"$guard") == 4 && $(grep -c -- '--dport 53 -j RETURN' <<<"$guard") == 4 ]] ||
+  fail "exceção além do DNS: $guard"
+! grep -q -e VERAX-METADATA -e 172.30.53 <<<"$guard" || fail "a guarda dos nós da GCP rodou: $guard"
+grep -qx 'iptables -I DOCKER-USER 1 -d 169.254.169.254 -j VERAX-IMDS' <<<"$guard" || fail "sem o salto do IPv4: $guard"
+grep -qx 'ip6tables -I DOCKER-USER 1 -d fd00:ec2::254 -j VERAX-IMDS' <<<"$guard" || fail "sem o salto do IPv6: $guard"
 nothing_forbidden
 
 scenario='o ID da conta de serviço do Google não vale no modo vm'
@@ -346,7 +381,7 @@ grep -q 'verax-support-email: o instalador' "$state/out" || fail "sem o motivo: 
 nothing_forbidden
 
 # --- Wazuh ---------------------------------------------------------------------------------------------------------------
-scenario='wazuh-up sem o token do Google e sem a conferência do metadata'
+scenario='wazuh-up sem o token do Google, com a conferência do metadata'
 new_node
 run install || fail "install.sh falhou"
 run start up || fail "start.sh up falhou"
@@ -355,7 +390,7 @@ run start wazuh-up || fail "wazuh-up falhou: $(cat "$state/out")"
 nothing_forbidden
 ! grep -q aws-token "$state/wazuh.log" || fail "o token do Google foi pedido"
 grep -q wazuh-apply.sh "$state/wazuh.log" || fail "a configuração do manager não foi aplicada"
-! grep -q 169.254.169.254 "$state/docker.log" || fail "conferiu o metadata"
+grep -q 'exec -T wazuh.manager curl .*169.254.169.254' "$state/docker.log" || fail "não conferiu o metadata do manager"
 
 # --- Backup ------------------------------------------------------------------------------------------------------------
 scenario='backup local com retenção'
