@@ -10,7 +10,7 @@ import { ProvisioningStore, type StepDocument } from '../provisioning/provisioni
 import { STEP_QUEUE, type StepQueue } from '../queue/step-queue.js';
 import { LockHeldError, LockNotHeldError, TenantStore } from '../tenants/tenant-store.js';
 import type { LifecycleRunKind, Tenant, TenantRecord } from '../tenants/tenant.schema.js';
-import { mayHaveExternalResources } from './lifecycle-rules.js';
+import { deletionStepReachesCloud } from './lifecycle-rules.js';
 import { ownsSlug } from './node-power.js';
 
 /**
@@ -127,7 +127,7 @@ export class DeletionEngine {
     }
     if (poll > expected) return 'not_current';
 
-    const external = mayHaveExternalResources(tenant);
+    const external = deletionStepReachesCloud(tenant, step.name);
     if (external && !(await ownsSlug(this.tenants, tenant))) {
       return this.fail(tenant.id, input.runId, run.kind, step.name, 'slug_not_owned', context);
     }

@@ -36,11 +36,11 @@ export type InstallationOutcome =
   { ok: true; details: ReleaseDetails } | { ok: false; reason: InstallationRefusal };
 
 /**
- * O que o responsável manda a um cliente de contrato direto que instala o ambiente na infraestrutura dele (`hosting =
- * customer`): a versão do nó que o provisionamento usaria agora (`NODE_RELEASE`), lida do bucket de releases com a
- * assinatura conferida (`readReleaseDetails`, o mesmo manifesto do release do GitHub). Só leitura: nada é criado,
- * gravado nem pedido em nenhuma outra infraestrutura. Precisa só de `RELEASE_BUCKET` e `NODE_RELEASE` (não do
- * provisionamento ligado: o contrato no cliente não usa o projeto dos nós).
+ * O que o responsável manda a um cliente de contrato direto que instala o ambiente na VM dele (`hosting = customer`): a
+ * versão do nó, lida do bucket de releases com a assinatura conferida (`readReleaseDetails`, o mesmo manifesto do
+ * release do GitHub), com o instalador e o SHA-256 dele quando a versão o tem. A versão é a da execução do
+ * provisionamento reduzido, quando o `preflight` já a escolheu (`provisioning.nodeVersion`: o painel publicado e o
+ * `claim` esperam essa), e senão a que ele escolheria agora (`NODE_RELEASE`). Só leitura: nada é criado nem gravado.
  */
 @Injectable()
 export class InstallationService {
@@ -57,7 +57,7 @@ export class InstallationService {
     if (hostingOf(tenant) !== 'customer') return { ok: false, reason: 'not_customer_hosted' };
     if (tenant.state === 'deleted') return { ok: false, reason: 'not_allowed' };
     const bucket = this.config.RELEASE_BUCKET;
-    const release = this.config.NODE_RELEASE;
+    const release = tenant.provisioning?.nodeVersion ?? this.config.NODE_RELEASE;
     if (bucket === undefined || release === undefined || !NODE_RELEASE_PATTERN.test(release)) {
       this.logger.warn(
         { event: 'installation_release_unconfigured', tenantId },

@@ -88,6 +88,28 @@ describe('a versão para o cliente instalar na infraestrutura dele (contrato dir
     );
   });
 
+  it('o instalador da VM do cliente (opcional): o endereço no release desta versão e o SHA-256 do manifesto', () => {
+    const installerSha = '9'.repeat(64);
+    expect(
+      parseReleaseDetails(manifestFor(RELEASE, { installerSha256: installerSha }), RELEASE),
+    ).toMatchObject({
+      installer: { url: `${github}/releases/download/${RELEASE}/verax-install.sh`, sha256: installerSha },
+    });
+    // Sem o campo (as versões de antes do instalador): continua valendo, só sem o instalador.
+    expect(parseReleaseDetails(manifestFor(RELEASE), RELEASE)).not.toHaveProperty('installer');
+    // Outro nome, SHA-256 fora do formato ou campo a mais: recusado.
+    for (const installer of [
+      { name: 'outro.sh', sha256: installerSha },
+      { name: 'verax-install.sh', sha256: 'abc' },
+      { name: 'verax-install.sh', sha256: installerSha, url: 'https://exemplo.example/x.sh' },
+    ]) {
+      const manifest = variant((m) => {
+        m['installer'] = installer;
+      });
+      expect(() => parseReleaseDetails(manifest, RELEASE)).toThrow(ReleaseManifestError);
+    }
+  });
+
   it('a impressão digital da chave é o SHA-256 da pública em DER (a mesma conta do openssl), e a do repositório confere', () => {
     for (const [name, pem] of Object.entries(RELEASE_PUBLIC_KEYS)) {
       const der = Buffer.from(pem.replace(/-----[A-Z ]+-----/g, '').replace(/\s+/g, ''), 'base64');

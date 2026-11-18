@@ -6,6 +6,8 @@ import { AuditService } from '../audit/audit.service.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import { ApiError } from '../common/http/api-error.js';
+import { forgetLiveSecret, registerLiveSecret } from '../common/logger/sanitize.js';
+import { ENROLLMENT_CODE_STATES, ENROLLMENT_SECRET_PATTERN } from '../enrollment/enrollment.js';
 import { equalValues } from '../firestore/document-store.js';
 import type { RateLimitRule, TokenBucketLimiter } from '../common/http/rate-limiter.js';
 import { isUlid, ULID_PATTERN } from '../common/ulid.js';
@@ -24,7 +26,7 @@ import { QuoteDailyLimitReachedError, QuoteStore } from '../pricing/quote-store.
 import { type ContactReason, contractReference, quote } from '../pricing/quote.js';
 import { isTenantEmail, isTenantName } from '../provisioning/executor-env.js';
 import { type NodeFitProblem, nodeFitProblems } from '../provisioning/node-fit.js';
-import { PROVISIONING_STEPS } from '../provisioning/provisioning-engine.js';
+import { PROVISIONING_STEPS, stepsFor } from '../provisioning/provisioning-engine.js';
 import { ProvisioningStore, type StepDocument } from '../provisioning/provisioning-store.js';
 import { FIRST_PROVISIONING_STEP, isStepName } from '../queue/step-queue.js';
 import { SlugTakenError, TenantAlreadyExistsError, TenantStore } from '../tenants/tenant-store.js';
@@ -46,6 +48,8 @@ import {
   type DirectTenantRequest,
   directTenantPreviewSchema,
   directTenantRequestSchema,
+  type EnrollmentCodeIssued,
+  enrollmentCodeRequestSchema,
   type ProvisioningRequestOutcome,
   type TenantAction,
   type TenantActionResult,
@@ -278,12 +282,22 @@ const INSTALLATION_SCHEMA = z.object({
   manifestUrl: githubUrl,
   signatureUrl: githubUrl,
   package: z.object({ url: githubUrl, sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+  installer: z.object({ url: githubUrl, sha256: z.string().regex(/^[0-9a-f]{64}$/) }).optional(),
   images: z.object({ api: imageRef, migrate: imageRef }),
   thirdPartyImages: z.array(imageRef).min(1).max(20),
   releaseKey: z.object({
     name: z.string().regex(/^release-[a-z0-9-]{1,60}$/),
     sha256: z.string().regex(/^[0-9a-f]{64}$/),
   }),
+});
+
+/** O que o worker devolve do código de instalação (`enrollment/`), conferido antes de chegar ao console. */
+const ENROLLMENT_CODE_SCHEMA = z.strictObject({
+  code: z.string().regex(ENROLLMENT_SECRET_PATTERN),
+  expiresAt: isoDate,
+  reinstall: z.boolean(),
+  runId: z.string().regex(ULID_PATTERN).optional(),
+  step: z.string().max(64).refine(isStepName).optional(),
 });
 
 /** O plano e o volume do contrato direto com o modo do lugar escolhido (a configuração que a cotação recebe). */
@@ -311,8 +325,8 @@ function rateLimited(): ApiError {
 
 /**
  * As operações que fazem sentido para o cliente agora (as regras são as do cp-worker, que confere de novo). Com o
- * ambiente na infraestrutura do cliente, só cancelar e apagar (o registro do fim do contrato): nada de provisionar,
- * suspender, reativar nem exportar, que agiriam na infraestrutura da Verax.
+ * ambiente na VM do cliente, gerar o código de instalação (que também recomeça um provisionamento parado), cancelar e
+ * apagar: nada de suspender, reativar nem exportar, que agiriam numa VM que é do cliente.
  */
 export function availableActions(tenant: TenantRecord, now: Date): TenantActions {
   const contract = billingModeOf(tenant) === 'contract';
@@ -330,6 +344,7 @@ export function availableActions(tenant: TenantRecord, now: Date): TenantActions
         tenant.state === 'past_due'),
     reactivate:
       verax && contract && tenant.state === 'suspended' && tenant.billing?.suspendedReason === 'owner',
+    enrollmentCode: !verax && ENROLLMENT_CODE_STATES.includes(tenant.state),
     deleteNow:
       tenant.state === 'canceled' ||
       (tenant.state === 'deleted' &&
@@ -428,8 +443,8 @@ export class AdminTenantsService {
       runId === undefined ? new Map<string, StepDocument>() : this.runs.listSteps(runId),
       this.tenants.listTransitions(tenantId),
     ]);
-    // O ambiente no cliente não tem provisionamento: nenhuma linha do tempo de passos que nunca vão rodar.
-    const names = hosting === 'customer' ? [] : PROVISIONING_STEPS;
+    // Na VM do cliente, a sequência reduzida, e só depois do primeiro código (antes, nenhum passo vai rodar).
+    const names = hosting === 'customer' ? (runId === undefined ? [] : stepsFor(tenant)) : PROVISIONING_STEPS;
     const timeline: TimelineStep[] = names.map((name) => {
       const step = steps.get(name);
       if (step === undefined) return { name, status: 'pending', attempts: 0 };
@@ -458,8 +473,8 @@ export class AdminTenantsService {
       limits: tenant.limits,
       pricing: tenant.pricing,
       ...(tenant.contractPricing === undefined ? {} : { contractPricing: tenant.contractPricing }),
-      // Os endereços da Verax só valem para o ambiente na Verax: os do cliente, ele escolhe na instalação.
-      ...(hosting === 'verax' ? { urls: tenantUrls(tenant.slug, this.config) } : {}),
+      // O painel e a API ficam na Verax também para a VM do cliente (o site e o túnel do provisionamento reduzido).
+      ...(hosting === 'verax' || runId !== undefined ? { urls: tenantUrls(tenant.slug, this.config) } : {}),
       ...(provisioning === undefined
         ? {}
         : {
@@ -558,7 +573,77 @@ export class AdminTenantsService {
       ...release,
       thirdPartyImages: [...release.thirdPartyImages],
       guideUrl: `${repositoryUrl}/blob/main/${INSTALL_GUIDE_PATH}`,
+      size: tenant.configuration.size,
       nodeConf: Object.entries(nodeLimitsEnv(tenant.limits)).map(([name, value]) => ({ name, value })),
+    };
+  }
+
+  /**
+   * O código de instalação de uso único da VM do cliente, pedido ao cp-worker como as outras operações do responsável
+   * (o subdomínio digitado, o limite por responsável, a auditoria do pedido). O worker gera, guarda só o hash, revoga o
+   * anterior e, no primeiro, começa o provisionamento reduzido. O código passa por aqui uma vez, na máscara do logger,
+   * e nunca vai à auditoria nem ao log; o controlador o esquece quando a resposta termina.
+   */
+  async enrollmentCode(tenantId: string, body: unknown, owner: OwnerContext): Promise<EnrollmentCodeIssued> {
+    const parsed = enrollmentCodeRequestSchema.safeParse(body ?? {});
+    if (!parsed.success) throw invalidRequest(parsed.error);
+    if (!isUlid(tenantId)) throw notFound();
+    const tenant = await this.tenants.get(tenantId);
+    if (tenant === undefined) throw notFound();
+    if (parsed.data.confirmSlug !== tenant.slug) {
+      await this.refuseOperation(owner, tenant, 'enrollment-code', 'confirmation_mismatch');
+      throw workerError('confirmation_mismatch');
+    }
+    if (hostingOf(tenant) !== 'customer') throw workerError('not_customer_hosted');
+    if (!this.limits.operations.take(owner.email).allowed) {
+      await this.refuseOperation(owner, tenant, 'enrollment-code', 'rate_limited');
+      throw rateLimited();
+    }
+    const worker = this.worker;
+    let result: OwnerCallResult;
+    if (worker === null) {
+      result = { ok: false, status: 503, code: 'worker_unconfigured' };
+    } else {
+      try {
+        result = await worker.enrollmentCode(tenant.id, parsed.data.confirmSlug, owner.email);
+      } catch {
+        result = { ok: false, status: 0, code: 'worker_unreachable' };
+      }
+    }
+    const candidate = result.ok ? result.body['code'] : undefined;
+    if (typeof candidate === 'string') registerLiveSecret(candidate);
+    const checked = result.ok ? ENROLLMENT_CODE_SCHEMA.safeParse(result.body) : undefined;
+    if (!result.ok || checked === undefined || !checked.success) {
+      if (typeof candidate === 'string') forgetLiveSecret(candidate);
+      const failed: Extract<OwnerCallResult, { ok: false }> = result.ok
+        ? { ok: false, status: 502, code: 'worker_error' }
+        : result;
+      throw workerError(await this.recordFailure('enrollment-code', tenant, owner, failed));
+    }
+    const issued = checked.data;
+    await this.audit.write({
+      actor: `owner:${owner.email}`,
+      action: 'tenant.console_request',
+      tenantId: tenant.id,
+      // Nunca o código: só se é uma reinstalação e a execução.
+      details: {
+        operation: 'enrollment-code',
+        outcome: 'ok',
+        reinstall: issued.reinstall,
+        ...(issued.runId === undefined ? {} : { runId: issued.runId }),
+      },
+      requestId: owner.requestId,
+    });
+    this.logger.info(
+      { event: 'admin_tenant_operation', tenantId: tenant.id, operation: 'enrollment-code' },
+      'código de instalação pedido ao cp-worker',
+    );
+    return {
+      code: issued.code,
+      expiresAt: issued.expiresAt,
+      reinstall: issued.reinstall,
+      ...(issued.runId === undefined ? {} : { runId: issued.runId }),
+      ...(issued.step === undefined ? {} : { step: issued.step }),
     };
   }
 
@@ -910,7 +995,7 @@ export class AdminTenantsService {
 
   /** Audita e registra uma operação que o worker não atendeu; devolve o código estável. */
   private async recordFailure(
-    action: TenantAction,
+    action: TenantAction | 'enrollment-code',
     tenant: TenantRecord,
     owner: OwnerContext,
     result: Extract<OwnerCallResult, { ok: false }>,
@@ -949,7 +1034,7 @@ export class AdminTenantsService {
   private async refuseOperation(
     owner: OwnerContext,
     tenant: TenantRecord,
-    action: TenantAction,
+    action: TenantAction | 'enrollment-code',
     code: 'confirmation_mismatch' | 'rate_limited',
   ): Promise<void> {
     await this.audit.write({

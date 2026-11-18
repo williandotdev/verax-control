@@ -34,8 +34,8 @@ export type StartOutcome =
  * equivalente ao `invoice.paid` do webhook (CP-04) para quem não paga pela Stripe. Só um cliente `contract` em
  * `pending` entra em `provisioning`, com um `runId` novo e o `preflight` na fila; daí em diante são exatamente os mesmos
  * passos de um cliente pago (CP-07). Um cliente da Stripe nunca começa por aqui (409 `stripe_managed`): o pagamento é
- * a única porta dele. Um contrato com o ambiente na infraestrutura do cliente também não (409 `customer_hosted`): nada
- * dele é criado na infraestrutura da Verax.
+ * a única porta dele. Um contrato com o ambiente na VM do cliente também não (409 `customer_hosted`): o provisionamento
+ * reduzido dele começa com o primeiro código de instalação (`enrollment/`).
  *
  * Idempotente: repetido com o cliente já em `provisioning` no `preflight`, só garante a task (o id é determinístico,
  * `preflight-<runId>`), que é o que completa uma chamada que mudou o estado e falhou ao enfileirar; mais adiante, só

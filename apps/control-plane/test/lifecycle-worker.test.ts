@@ -1272,7 +1272,7 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       expect((await reload(stripeTenant.tenant.id)).state).toBe('active');
     });
 
-    it('ambiente no cliente: nem forjando uma VM, nada toca a nuvem; cancelar, o relógio e o apagar agora só mexem no cadastro', async () => {
+    it('ambiente no cliente: nem forjando uma VM, nada da VM é tocado; cancelar, o relógio e o apagar agora só mexem no cadastro, no túnel e no site', async () => {
       const seed = demoTenant('no-cliente-a');
       const created = await tenants.create(
         {
@@ -1352,8 +1352,11 @@ describe('cp-worker: suspensão, reativação, cancelamento e exclusão (CP-11)'
       await tick(at(97));
       await drain();
       expect((await reload(id)).lifecycle?.purgedAt).toBeInstanceOf(Date);
-      // Nenhuma chamada a Cloudflare, Firebase, Compute, Storage, Secret Manager nem ao executor.
-      expect(cloud.requests).toHaveLength(0);
+      // Com uma execução gravada (o provisionamento reduzido da VM do cliente começou), só o que a Verax cria para ele:
+      // o túnel e o DNS no Cloudflare (o site, sem id gravado, nem é procurado). Nenhuma chamada a Compute, Storage,
+      // Secret Manager nem ao executor, nem com a VM forjada.
+      expect(cloud.requests.length).toBeGreaterThan(0);
+      expect(cloud.requests.every((call) => call.path.startsWith('/cloudflare/'))).toBe(true);
       expect(cloud.executions.size).toBe(0);
     });
 

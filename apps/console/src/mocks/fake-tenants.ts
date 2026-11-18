@@ -115,6 +115,16 @@ function actionsOf(tenant: Omit<TenantDetail, 'actions'>, now: Date): TenantActi
       verax && contract && tenant.state === 'suspended' && tenant.lifecycle.suspendedReason === 'owner',
     deleteNow: tenant.state === 'canceled',
     export: verax && tenant.state === 'canceled' && exportUntil !== undefined && new Date(exportUntil) > now,
+    enrollmentCode:
+      !verax &&
+      [
+        'waiting_customer_install',
+        'provisioning',
+        'provisioning_failed',
+        'waiting_customer_connection',
+        'active',
+        'past_due',
+      ].includes(tenant.state),
   };
 }
 
@@ -140,6 +150,7 @@ function installationOf(tenant: TenantDetail): TenantInstallation {
     },
     thirdPartyImages: [`postgres:18-alpine@sha256:${'3'.repeat(64)}`],
     releaseKey: { name: 'release-node-manifest-v1', sha256: '4'.repeat(64) },
+    size: tenant.configuration.size,
     nodeConf: [
       { name: 'PLAN', value: 'enterprise' },
       { name: 'PLAN_MAX_CLOUD_ACCOUNTS', value: String(tenant.limits.maxCloudAccounts) },

@@ -9,7 +9,15 @@ import type { IdTokenSource } from '../status/id-token.js';
  * responsável (`OWNER_PRINCIPALS`), e audita como `owner:<actor>`.
  */
 export type OwnerOperation =
-  'provision' | 'resume' | 'delete-now' | 'export' | 'cancel' | 'suspend' | 'reactivate' | 'installation';
+  | 'provision'
+  | 'resume'
+  | 'delete-now'
+  | 'export'
+  | 'cancel'
+  | 'suspend'
+  | 'reactivate'
+  | 'installation'
+  | 'enrollment-code';
 
 export type OwnerCallResult =
   { ok: true; status: number; body: Record<string, unknown> } | { ok: false; status: number; code: string };
@@ -26,6 +34,8 @@ export interface WorkerOwnerClient {
   reactivate(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult>;
   /** Só leitura: a versão que o cliente de contrato direto instala na infraestrutura dele (`installation.ts`). */
   installation(tenantId: string, actor: string): Promise<OwnerCallResult>;
+  /** O código de instalação de uso único da VM do cliente (`enrollment/`); a resposta o traz uma vez. */
+  enrollmentCode(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult>;
 }
 
 const TIMEOUT_MS = 20_000;
@@ -77,6 +87,10 @@ export class HttpWorkerOwnerClient implements WorkerOwnerClient {
 
   installation(tenantId: string, actor: string): Promise<OwnerCallResult> {
     return this.call(tenantId, 'installation', { actor });
+  }
+
+  enrollmentCode(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult> {
+    return this.call(tenantId, 'enrollment-code', { confirmSlug, actor });
   }
 
   private async call(

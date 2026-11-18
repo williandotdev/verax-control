@@ -1,5 +1,5 @@
 import { tenantUrls, type TenantDomainSettings } from '../access/tenant-urls.js';
-import type { TenantRecord, TenantState } from '../tenants/tenant.schema.js';
+import { hostingOf, type TenantRecord, type TenantState } from '../tenants/tenant.schema.js';
 
 /**
  * Os passos do provisionamento na ordem do plano (§4c), com a estimativa de minutos até o ambiente ficar pronto a
@@ -16,6 +16,21 @@ export const PROVISIONING_PROGRESS: readonly { step: string; etaMinutes: number 
   { step: 'secrets.smtp_password', etaMinutes: 19 },
   { step: 'secrets.tunnel_token', etaMinutes: 18 },
   { step: 'node.wait_ready', etaMinutes: 15 },
+  { step: 'node.health', etaMinutes: 5 },
+  { step: 'panel.domain_wait', etaMinutes: null },
+  { step: 'access.ready', etaMinutes: 1 },
+];
+
+/**
+ * A sequência reduzida do ambiente na VM do cliente (`CUSTOMER_PROVISIONING_STEPS`, conferido por teste): a espera do
+ * registro (`enrollment.wait`) depende de quando o cliente instala a VM, então não tem estimativa; depois dela, os mesmos
+ * minutos do gerenciado.
+ */
+export const CUSTOMER_PROVISIONING_PROGRESS: readonly { step: string; etaMinutes: number | null }[] = [
+  { step: 'preflight', etaMinutes: null },
+  { step: 'cloudflare.tunnel', etaMinutes: null },
+  { step: 'firebase.site', etaMinutes: null },
+  { step: 'enrollment.wait', etaMinutes: null },
   { step: 'node.health', etaMinutes: 5 },
   { step: 'panel.domain_wait', etaMinutes: null },
   { step: 'access.ready', etaMinutes: 1 },
@@ -51,8 +66,12 @@ const READY_STATES: ReadonlySet<TenantState> = new Set([
   'canceled',
 ]);
 
-function progressOf(step: string | undefined): { step: string | null; etaMinutes: number | null } {
-  const known = PROVISIONING_PROGRESS.find((entry) => entry.step === (step ?? 'preflight'));
+function progressOf(
+  tenant: TenantRecord,
+  step: string | undefined,
+): { step: string | null; etaMinutes: number | null } {
+  const progress = hostingOf(tenant) === 'customer' ? CUSTOMER_PROVISIONING_PROGRESS : PROVISIONING_PROGRESS;
+  const known = progress.find((entry) => entry.step === (step ?? 'preflight'));
   return known === undefined ? { step: null, etaMinutes: null } : known;
 }
 
@@ -79,7 +98,7 @@ export function buildStatusView(
   const urls = ready ? tenantUrls(tenant.slug, domains) : { panelUrl: null, apiUrl: null };
   const progress =
     tenant.state === 'provisioning'
-      ? progressOf(tenant.provisioning?.step)
+      ? progressOf(tenant, tenant.provisioning?.step)
       : { step: null, etaMinutes: null };
   return {
     state: tenant.state,

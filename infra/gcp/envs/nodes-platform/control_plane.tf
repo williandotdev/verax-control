@@ -247,3 +247,72 @@ resource "google_project_iam_custom_role" "tenant_sa_toggle" {
 
   depends_on = [google_project_service.apis]
 }
+
+# O ambiente na VM do cliente (`hosting = customer`, o registro da VM no plano de controle): não há envs/tenant, então o
+# cofre da senha temporária do primeiro admin (`vx-<slug>-admin-bootstrap`, o mesmo nome do gerenciado) é criado pelo
+# próprio cp-worker quando a VM avisa que ficou pronta (`report ready`), e as permissões dele nesse cofre não podem ser
+# dadas por cofre. São duas concessões no projeto, para o cp-worker:
+#
+# - `cpBootstrapSecretCreator`: só criar um cofre (`secrets.create`). A GCP confere a criação contra o projeto, e não
+#   contra o nome do cofre que ainda não existe: uma condição de nome não serviria. Um cofre criado nasce vazio e sem
+#   nenhuma permissão para quem o criou; com esta permissão sozinha, o cp-worker não lê, não grava versão, não apaga e
+#   não dá acesso a nenhum cofre;
+# - `cpBootstrapSecretWriter`: no cofre e nas versões, só nos `vx-<...>-admin-bootstrap` (a condição pelo nome), o que
+#   o envs/tenant já dá ao cp-worker no cofre de cada nó gerenciado (`secretAccessor` e `secretVersionManager`): gravar a
+#   senha (`versions.add`), ver o estado da `latest` (`access.ready`), ler uma vez na revelação e destruir as versões
+#   depois (`secrets.destroy_bootstrap`). Nos nós gerenciados não é poder novo (o cp-worker já tem o mesmo em cada um);
+#   fora desse nome (o cofre de credenciais, o token do túnel, a conta de suporte), nada.
+resource "google_project_iam_custom_role" "bootstrap_secret_creator" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "cpBootstrapSecretCreator"
+  title       = "Verax Control: cria o cofre vazio da senha inicial da VM do cliente"
+  description = "Só criar um cofre do Secret Manager (vazio, sem permissão para quem cria). O admin-bootstrap da VM do cliente."
+  permissions = ["secretmanager.secrets.create"]
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_project_iam_member" "worker_bootstrap_secret_creator" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.bootstrap_secret_creator[0].id
+  member  = local.worker_member
+}
+
+resource "google_project_iam_custom_role" "bootstrap_secret_writer" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project     = var.project_id
+  role_id     = "cpBootstrapSecretWriter"
+  title       = "Verax Control: senha inicial no cofre da VM do cliente"
+  description = "Gravar, ler e destruir as versões do cofre admin-bootstrap. Concedido com condição pelo nome (vx-*-admin-bootstrap)."
+  permissions = [
+    "secretmanager.secrets.get",
+    "secretmanager.versions.access",
+    "secretmanager.versions.add",
+    "secretmanager.versions.destroy",
+    "secretmanager.versions.get",
+    "secretmanager.versions.list",
+  ]
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_project_iam_member" "worker_bootstrap_secret_writer" {
+  count = local.control_plane_enabled ? 1 : 0
+
+  project = var.project_id
+  role    = google_project_iam_custom_role.bootstrap_secret_writer[0].id
+  member  = local.worker_member
+
+  # O cofre (`projects/<n>/secrets/vx-<slug>-admin-bootstrap`) ou uma versão dele (`.../versions/<v>`). O `vxt-` dos
+  # clientes da célula não começa com `vx-`.
+  condition {
+    title       = "Só os cofres vx-*-admin-bootstrap"
+    description = "A senha temporária do primeiro admin, em nenhum outro cofre do projeto, hoje ou no futuro."
+    expression  = "(resource.name.endsWith(\"-admin-bootstrap\") && resource.name.extract(\"/secrets/{name}\").startsWith(\"vx-\")) || (resource.name.extract(\"/secrets/{name}/versions/\").startsWith(\"vx-\") && resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-admin-bootstrap\"))"
+  }
+}

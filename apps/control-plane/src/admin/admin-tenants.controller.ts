@@ -1,7 +1,10 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Req, Res } from '@nestjs/common';
+import type { Response } from 'express';
+import { forgetLiveSecret } from '../common/logger/sanitize.js';
 import type {
   DirectTenantCreated,
   DirectTenantPreview,
+  EnrollmentCodeIssued,
   TenantActionResult,
   TenantDetail,
   TenantInstallation,
@@ -15,8 +18,8 @@ import { type OwnerRequest, ownerOf } from './owner.guard.js';
  * exige a sessão do login próprio, JSON e a mesma origem nas escritas): a lista, o detalhe com a linha do tempo, a
  * cotação de referência, o cadastro de um cliente de contrato direto e as operações do responsável, cada uma com o
  * subdomínio digitado como confirmação: `start`, `resume`, `cancel`, `suspend`, `reactivate`, `delete-now` e
- * `export`. Para o contrato direto com o ambiente na infraestrutura do cliente, a leitura do que mandar a ele
- * (`installation`).
+ * `export`. Para o contrato direto com o ambiente na VM do cliente, a leitura do que mandar a ele (`installation`) e o
+ * código de instalação de uso único (`enrollment-code`).
  */
 @Controller('admin/tenants')
 export class AdminTenantsController {
@@ -47,6 +50,20 @@ export class AdminTenantsController {
   @Get(':tenantId/installation')
   installation(@Param('tenantId') tenantId: string, @Req() req: OwnerRequest): Promise<TenantInstallation> {
     return this.service.installation(tenantId, ownerOf(req));
+  }
+
+  /** O código de instalação da VM do cliente, uma vez (a resposta sai com `Cache-Control: private, no-store`). */
+  @Post(':tenantId/enrollment-code')
+  @HttpCode(200)
+  async enrollmentCode(
+    @Param('tenantId') id: string,
+    @Body() body: unknown,
+    @Req() req: OwnerRequest,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<EnrollmentCodeIssued> {
+    const issued = await this.service.enrollmentCode(id, body, ownerOf(req));
+    res.on('close', () => forgetLiveSecret(issued.code));
+    return issued;
   }
 
   @Post(':tenantId/start')
