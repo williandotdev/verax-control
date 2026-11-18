@@ -6006,6 +6006,50 @@ fmt`/`validate`/`test` do `envs/nodes-platform`.
   registro (é só da Stripe).
 - **Riscos:** o `secrets.create` do `cp-worker` vale no projeto inteiro (cofres vazios, sem leitura nem gravação).
 
+## VM própria do cliente: o pacote do nó no modo `vm` e o instalador ⚠️ altera `infra/` e `.github/`
+
+- **Pedido (18/11/2026):** no contrato direto com `hosting = customer`, o cliente cria uma VM Linux (qualquer nuvem ou
+  datacenter) e roda um comando; na VM rodam só o backend (API, worker, Postgres, Wazuh e o cloudflared), e o painel e
+  o túnel continuam na Verax. Esta é a metade do nó; o código de instalação e a API de registro
+  (`/v1/node-enrollment/claim` e `/report`) são do plano de controle, em paralelo.
+- **Arquivos:** `infra/node/bin/verax-install.sh` (novo), `start.sh`, `install.sh`, `backup.sh`,
+  `systemd/vm/verax-node.service` (novo), `node.conf.example`; `scripts/node-release.sh` (`installer` e
+  `manifest --installer`); os testes `infra/node/tests/vm-install-test.sh` e `vm-node-test.sh` (novos),
+  `tests/fake-gcp.py` (o registro falso) e `scripts/test-node-release.sh`; `.github/workflows/versao-no.yml` (o
+  instalador no release e no manifesto) e `iac.yml` (os testes novos); `docs/runbooks/instalacao-no-cliente.md`
+  (reescrito) e `versao-no.md`.
+- **Modo `NODE_PLATFORM=vm`** (no `node.conf`; sem a linha, `gcp`, e os nós da GCP não mudam): os segredos de fora vêm
+  de `/etc/verax/vault/<nome>` (arquivo comum 0600: `smtp-password`, `cloudflare-tunnel-token`, `turnstile-secret-key`,
+  `credentials-key` e `node-key`) em vez do Secret Manager; a chave do cofre de credenciais nasce na VM pelo
+  `install.sh`; o primeiro acesso lê as entradas de `/etc/verax/customer` e deixa a senha temporária do administrador em
+  `/var/lib/verax/enrollment/admin-bootstrap.json` (a da conta de suporte é descartada); a guarda do metadata da VM própria
+  (`bin/vm-metadata-guard.sh` e `verax-vm-metadata-guard.service`, decisão do responsável: nenhum contêiner, nem o
+  worker, alcança `169.254.169.254` nem `fd00:ec2::254`, com a exceção do DNS na porta 53; o host mantém o acesso) no
+  lugar da dos nós da GCP, exigida pelo `verax-node.service` de `systemd/vm`; sem o atualizador da frota, sem o token do Google para a AWS, sem guest
+  attributes (`NODE_STATUS`), sem o tópico do sink e sem `NODE_SA_UNIQUE_ID`; o backup fica na VM
+  (`BACKUP_RETENTION_DAYS`, padrão 7). A célula, os agentes e a fonte `gcp` são recusados. A API e o worker não mudam:
+  com essas variáveis de fora, nada fala com o metadata do Google.
+- **Instalador:** Debian 12 ou Ubuntu 22.04/24.04, x86_64, mínimo do porte P antes do registro (2 vCPU, 7.500 MiB, 55
+  GiB em `/var/lib`; M e G dobram) e do porte contratado depois; o Docker do repositório oficial (chave conferida); o
+  manifesto conferido com o verificador e as chaves de release embutidos no release; o próprio SHA-256 no `installer`
+  do manifesto; o pacote, os caminhos e as imagens como o `boot-install.sh`; o claim, o `node.conf` (cada linha pela
+  regex), o cofre e o `install.sh` com os digests; a espera do nó, do Wazuh, do primeiro acesso e do túnel; o report
+  `ready` e a senha local apagada; o `error` com o código numa falha depois do registro; e o `--atualizar` (backup
+  antes, versão mais velha recusada, mesma versão conclui o report pendente). O plano de controle padrão é
+  `https://conta.veraxsistemas.com.br` (`--plano-de-controle` só para testes).
+- **Testes:** shellcheck `-x -S style` limpo nos arquivos mexidos; `vm-metadata-guard-test.sh` (iptables de verdade,
+  num espaço de nomes de rede; no CI com `sudo unshare -n`); `vm-install-test.sh`, `vm-node-test.sh`,
+  `test-node-release.sh` e os de sempre do pacote (`start-test`, `vault-test`, `cell-test`, `boot-install-test`,
+  `update-test`, `wazuh-apply-test`, `verify-release-test`) verdes num contêiner Ubuntu 24.04.
+- **Alinhado com o plano de controle (#150):** o `adminBootstrapPassword` do report é só a senha (o plano de controle
+  monta o JSON do cofre, com o prazo de 72 h); o claim 409 vira `release_mismatch` sem gastar o código; `mail: null` vira
+  `MAIL_TRANSPORT=none` (o remetente é `nao-responda@<host do painel>`, que o nó exige e não usa sem SMTP); o 429 espera
+  o `Retry-After`; o 401 no report diz que a chave foi trocada. O instalador exige o `supportEmail` e ignora o
+  `adminName`; os agentes do `nodeConf` ficam desligados na VM.
+- **Runbook:** swap da VM desligado ou cifrado; o `--atualizar` faz backup e não volta sozinho (como restaurar o
+  backup local).
+- **Manual:** um release de teste e uma VM Debian 12 e outra Ubuntu 24.04 limpas, com o comando do console.
+
 ## VM própria do cliente, parte do console: perfil da VM, rede e o comando único de instalação
 
 - **O que mudou:** no detalhe de um cliente com o ambiente na infraestrutura dele, o painel "Instalação na

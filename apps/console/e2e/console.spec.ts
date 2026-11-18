@@ -129,7 +129,7 @@ for (const theme of THEMES) {
       expect(violations).toEqual([]);
     });
 
-    test('clientes no cliente: o cadastro do Dedicado, sem provisionar, e o detalhe com a versão e o guia', async ({
+    test('clientes no cliente: o cadastro do Dedicado, sem provisionar, e o detalhe com o perfil, a rede e o comando', async ({
       page,
     }, testInfo) => {
       const violations = await prepare(page, theme);
@@ -154,6 +154,20 @@ for (const theme of THEMES) {
       await audit(page, testInfo, `cliente-no-cliente-novo-${theme}`);
       await page.getByRole('button', { name: 'Criar o cliente' }).click();
       const installation = page.getByRole('region', { name: 'Instalação na infraestrutura do cliente' });
+      // Os três blocos: o perfil da VM, a rede (só saída) e o comando, gerado com a confirmação pelo subdomínio.
+      await expect(installation.getByRole('region', { name: '1. Perfil da VM' })).toContainText('porte P');
+      await expect(installation.getByRole('region', { name: '2. Rede' })).toContainText(
+        'Nenhuma porta de entrada.',
+      );
+      const command = installation.getByRole('region', { name: '3. Comando de instalação' });
+      await command.getByRole('button', { name: 'Gerar comando…' }).click();
+      await command.getByLabel(/Digite o subdomínio/).fill('cliente-demo-h');
+      await command.getByRole('button', { name: 'Confirmar: gerar comando' }).click();
+      await expect(command.getByLabel('Comando de instalação gerado')).toContainText(
+        'sudo bash verax-install.sh --codigo ',
+      );
+      // A versão e o guia ficam nos detalhes técnicos, recolhidos.
+      await installation.getByText('Detalhes técnicos').click();
       await expect(installation).toContainText('node-v1.2.3');
       await expect(installation.getByRole('link', { name: /Guia de instalação/ })).toBeVisible();
       await expect(page.getByRole('region', { name: 'Provisionamento' })).toHaveCount(0);
