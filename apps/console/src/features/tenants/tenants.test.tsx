@@ -466,10 +466,16 @@ describe('clientes', () => {
     const network = within(installation).getByRole('region', { name: '2. Rede' });
     expect(within(network).getByText('Nenhuma porta de entrada.')).toBeInTheDocument();
     const egress = within(network).getByRole('table', { name: 'Destinos de saída da VM' });
-    expect(within(egress).getByRole('row', { name: /argotunnel\.com/ })).toHaveTextContent('443 e 7844');
-    expect(within(egress).getByRole('row', { name: /conta\.veraxsistemas\.com\.br/ })).toBeInTheDocument();
-    expect(within(egress).getByRole('row', { name: /ghcr\.io/ })).toBeInTheDocument();
-    expect(within(egress).getByRole('row', { name: /registry-1\.docker\.io/ })).toBeInTheDocument();
+    expect(
+      within(egress).getByRole('row', { name: (name) => name.includes('argotunnel.com') }),
+    ).toHaveTextContent('443 e 7844');
+    expect(
+      within(egress).getByRole('row', { name: (name) => name.includes('conta.veraxsistemas.com.br') }),
+    ).toBeInTheDocument();
+    expect(within(egress).getByRole('row', { name: (name) => name.includes('ghcr.io') })).toBeInTheDocument();
+    expect(
+      within(egress).getByRole('row', { name: (name) => name.includes('registry-1.docker.io') }),
+    ).toBeInTheDocument();
     expect(within(egress).getByRole('row', { name: /NTP/ })).toHaveTextContent('123');
     // 3. O comando: o botão, sem o comando antes de gerar.
     const command = within(installation).getByRole('region', { name: '3. Comando de instalação' });

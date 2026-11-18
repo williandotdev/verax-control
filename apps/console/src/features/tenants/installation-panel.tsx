@@ -49,8 +49,13 @@ const EGRESS: readonly { hosts: string; ports: string; purpose: string }[] = [
   { hosts: 'Os espelhos do apt e o NTP', ports: '80/443 e 123 (UDP)', purpose: 'Pacotes e relógio' },
 ];
 
-const CODE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+const HEX_ALPHABET = '0123456789abcdef';
+
+/** Tamanho fixo e só caracteres do alfabeto (sem expressão regular sobre o que veio da API). */
+function fixedToken(value: string, length: number, alphabet: string): boolean {
+  return value.length === length && [...value].every((char) => alphabet.includes(char));
+}
 
 /** Só endereços `https` do GitHub (a API já confere; aqui, de novo, antes de virar link ou comando). */
 function githubHref(url: string): string | undefined {
@@ -68,7 +73,11 @@ function githubHref(url: string): string | undefined {
  */
 function installCommand(installer: { url: string; sha256: string }, code: string): string | undefined {
   const url = githubHref(installer.url);
-  if (url === undefined || !SHA256_PATTERN.test(installer.sha256) || !CODE_PATTERN.test(code)) {
+  if (
+    url === undefined ||
+    !fixedToken(installer.sha256, 64, HEX_ALPHABET) ||
+    !fixedToken(code, 43, CODE_ALPHABET)
+  ) {
     return undefined;
   }
   return `curl -fsSLo verax-install.sh ${url} && echo "${installer.sha256}  verax-install.sh" | sha256sum -c - && sudo bash verax-install.sh --codigo ${code}`;
@@ -355,7 +364,12 @@ function InstallCommand({
     setIssued(undefined);
     try {
       const result = await tenantsApi.enrollmentCode(tenant.id, confirmSlug);
-      const command = installCommand(installer, result.code);
+      // O instalador da versão que a execução do provisionamento escolheu agora (a instalação passa a ler a versão da
+      // execução): se a versão vigente mudou desde que a tela abriu, o comando não leva o instalador antigo, que o
+      // registro recusaria (`release_mismatch`).
+      const fresh = await installation.refetch();
+      const current = fresh.data?.installer;
+      const command = current === undefined ? undefined : installCommand(current, result.code);
       if (command === undefined) {
         setError('A resposta veio fora do formato: não envie nada ao cliente e tente de novo.');
       } else {
