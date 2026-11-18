@@ -13,6 +13,7 @@ import type {
   DirectTenantCreated,
   DirectTenantPreview,
   DirectTenantRequest,
+  EnrollmentCodeIssued,
   GuardReport,
   Hosting,
   LegalAuditEntry,
@@ -205,6 +206,9 @@ export const tenantsApi = {
     request('POST', `${TENANTS}/preview`, { hosting, configuration }),
   installation: (id: string): Promise<TenantInstallation> =>
     request('GET', `${TENANTS}/${encodeURIComponent(id)}/installation`),
+  /** O código de instalação de uso único da VM do cliente: volta uma vez, e o console não o guarda. */
+  enrollmentCode: (id: string, confirmSlug: string): Promise<EnrollmentCodeIssued> =>
+    request('POST', `${TENANTS}/${encodeURIComponent(id)}/enrollment-code`, { confirmSlug }),
   create: (body: DirectTenantRequest): Promise<DirectTenantCreated> => request('POST', TENANTS, body),
   act: (id: string, action: TenantAction, body: TenantActionRequest): Promise<TenantActionResult> =>
     request('POST', `${TENANTS}/${encodeURIComponent(id)}/${action}`, body),

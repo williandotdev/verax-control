@@ -1,12 +1,20 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { createFakeState } from '@/mocks/fake-admin-api';
+import type { TenantDetail } from '@/lib/api-types';
+import { createFakeState, type FakeAdminState } from '@/mocks/fake-admin-api';
 import { renderConsole } from '@/test/render';
 
 const FAILED_ID = '01JC0000000000000000000A01';
 const PENDING_ID = '01JC0000000000000000000C01';
 const ACTIVE_ID = '01JC0000000000000000000D01';
 const CUSTOMER_ID = '01JC0000000000000000000E01';
+
+/** Muda o cliente de exemplo na infraestrutura do cliente (as operações disponíveis ficam as dele). */
+function patchCustomer(state: FakeAdminState, patch: Partial<TenantDetail>): void {
+  const tenant = state.tenants.tenants.get(CUSTOMER_ID);
+  if (tenant === undefined) throw new Error('cliente de exemplo ausente');
+  state.tenants.tenants.set(CUSTOMER_ID, { ...tenant, ...patch });
+}
 
 /**
  * Os clientes sobre a API simulada (`mocks/fake-tenants.ts`), com os clientes e a tabela FICTÍCIOS: a lista, o cadastro
@@ -419,7 +427,7 @@ describe('clientes', () => {
 
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/clientes\/[0-9A-Z]{26}$/));
     expect(await screen.findByRole('heading', { name: 'Cliente Demo G Ltda' })).toBeInTheDocument();
-    expect(screen.getByText(/O ambiente roda na infraestrutura do cliente: envie a ele/)).toBeInTheDocument();
+    expect(screen.getByText(/O ambiente roda numa VM do cliente: gere o comando/)).toBeInTheDocument();
     const created = [...state.tenants.tenants.values()].find((tenant) => tenant.slug === 'cliente-demo-g');
     expect(created).toMatchObject({
       state: 'waiting_customer_install',
@@ -429,10 +437,13 @@ describe('clientes', () => {
     });
     expect(screen.queryByRole('region', { name: 'Provisionamento' })).not.toBeInTheDocument();
     const installation = screen.getByRole('region', { name: 'Instalação na infraestrutura do cliente' });
-    expect(await within(installation).findByText('node-v1.2.3')).toBeInTheDocument();
+    expect(within(installation).getByRole('group', { name: 'Situação da instalação' })).toHaveTextContent(
+      'Aguardando o comando',
+    );
+    expect(await within(installation).findByRole('button', { name: 'Gerar comando…' })).toBeEnabled();
   });
 
-  it('detalhe no cliente: a versão, o manifesto assinado, as imagens pelo digest, o guia e o node.conf; só cancelar', async () => {
+  it('detalhe no cliente: o perfil da VM, a rede só de saída, o comando e os detalhes técnicos fechados; só cancelar', async () => {
     const state = createFakeState();
     const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
     expect(await screen.findByRole('heading', { name: 'Cliente Demo E Ltda' })).toBeInTheDocument();
@@ -443,31 +454,44 @@ describe('clientes', () => {
     expect(screen.queryByRole('region', { name: 'Provisionamento' })).not.toBeInTheDocument();
 
     const installation = screen.getByRole('region', { name: 'Instalação na infraestrutura do cliente' });
-    expect(await within(installation).findByText('node-v1.2.3')).toBeInTheDocument();
+    // 1. O perfil da VM do porte do contrato (P), com o sistema e o swap.
+    const profile = within(installation).getByRole('region', { name: '1. Perfil da VM' });
+    expect(profile).toHaveTextContent('porte P');
+    expect(profile).toHaveTextContent('vCPU2');
+    expect(profile).toHaveTextContent('Memória8 GB');
+    expect(profile).toHaveTextContent('Disco60 GB');
+    expect(profile).toHaveTextContent('Debian 12, Ubuntu 22.04 ou Ubuntu 24.04, x86_64');
+    expect(profile).toHaveTextContent('Swap desligado ou cifrado');
+    // 2. A rede: nenhuma porta de entrada e a saída que a VM precisa.
+    const network = within(installation).getByRole('region', { name: '2. Rede' });
+    expect(within(network).getByText('Nenhuma porta de entrada.')).toBeInTheDocument();
+    const egress = within(network).getByRole('table', { name: 'Destinos de saída da VM' });
+    expect(within(egress).getByRole('row', { name: /argotunnel\.com/ })).toHaveTextContent('443 e 7844');
+    expect(within(egress).getByRole('row', { name: /conta\.veraxsistemas\.com\.br/ })).toBeInTheDocument();
+    expect(within(egress).getByRole('row', { name: /ghcr\.io/ })).toBeInTheDocument();
+    expect(within(egress).getByRole('row', { name: /registry-1\.docker\.io/ })).toBeInTheDocument();
+    expect(within(egress).getByRole('row', { name: /NTP/ })).toHaveTextContent('123');
+    // 3. O comando: o botão, sem o comando antes de gerar.
+    const command = within(installation).getByRole('region', { name: '3. Comando de instalação' });
+    expect(await within(command).findByRole('button', { name: 'Gerar comando…' })).toBeEnabled();
+    expect(within(command).queryByLabelText('Comando de instalação gerado')).not.toBeInTheDocument();
+    // O conteúdo técnico antigo saiu; só a versão e o guia, fechados em "Detalhes técnicos".
+    expect(installation).not.toHaveTextContent('manifest.json');
+    expect(installation).not.toHaveTextContent('PLAN=enterprise');
+    expect(installation).not.toHaveTextContent(`sha256:${'1'.repeat(64)}`);
+    expect(installation).not.toHaveTextContent('4'.repeat(64));
+    const details = within(installation).getByText('Detalhes técnicos').closest('details');
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute('open');
+    expect(details).toHaveTextContent('node-v1.2.3');
     expect(within(installation).getByRole('link', { name: /Guia de instalação/ })).toHaveAttribute(
       'href',
       'https://github.com/williandotdev/verax-control/blob/main/docs/runbooks/instalacao-no-cliente.md',
     );
-    expect(within(installation).getByRole('link', { name: /Manifesto assinado/ })).toHaveAttribute(
-      'href',
-      'https://github.com/williandotdev/verax-control/releases/download/node-v1.2.3/manifest.json',
-    );
-    expect(within(installation).getByRole('link', { name: /Assinatura/ })).toHaveAttribute(
-      'href',
-      'https://github.com/williandotdev/verax-control/releases/download/node-v1.2.3/manifest.json.sig',
-    );
-    const images = within(installation).getByRole('list', { name: 'Imagens pelo digest' });
-    expect(images).toHaveTextContent(`ghcr.io/williandotdev/verax-control/api@sha256:${'1'.repeat(64)}`);
-    expect(images).toHaveTextContent(`postgres:18-alpine@sha256:${'3'.repeat(64)}`);
-    // A impressão digital da chave que assinou, para o cliente conferir fora do GitHub.
-    expect(installation).toHaveTextContent(`SHA-256 ${'4'.repeat(64)}`);
-    expect(within(installation).getByLabelText('Linhas do node.conf do contrato')).toHaveTextContent(
-      'PLAN=enterprise',
-    );
 
-    // O acesso: o administrador nasce na instalação do cliente; a Verax não manda e-mail nem vê senha.
+    // O acesso: o e-mail "ambiente pronto" quando a VM avisa que está pronta.
     expect(screen.getByRole('region', { name: 'Acesso do administrador' })).toHaveTextContent(
-      'criado na instalação, pelo próprio cliente',
+      'Quando a VM do cliente avisa que está pronta',
     );
     // O ciclo de vida: só cancelar (nada de suspender), e o texto do que não acontece.
     const lifecycle = screen.getByRole('region', { name: 'Ciclo de vida' });
@@ -478,6 +502,9 @@ describe('clientes', () => {
     await user.type(within(lifecycle).getByLabelText(/Digite o subdomínio/), 'cliente-demo-e');
     await user.click(within(lifecycle).getByRole('button', { name: 'Confirmar: cancelar contrato' }));
     expect(await within(lifecycle).findByText(/Contrato cancelado/)).toBeInTheDocument();
+    // Cancelado: não há comando a gerar.
+    expect(await within(command).findByText(/não há comando a gerar/)).toBeInTheDocument();
+    expect(within(command).getByRole('button', { name: 'Gerar comando…' })).toBeDisabled();
     // Cancelado no cliente: sem exportação (os dados nunca estiveram na Verax); apagar agora só o cadastro.
     expect(within(lifecycle).queryByRole('button', { name: 'Exportar dados…' })).not.toBeInTheDocument();
     await user.click(await within(lifecycle).findByRole('button', { name: 'Apagar agora…' }));
@@ -485,17 +512,128 @@ describe('clientes', () => {
     expect(state.tenants.tenants.get(CUSTOMER_ID)?.lifecycle.exportUntil).toBeUndefined();
   });
 
-  it('a versão não veio do cp-worker: o que fazer, com a opção de tentar de novo', async () => {
+  it('gerar o comando: a confirmação pelo subdomínio, o comando uma vez com o vencimento, copiar e a VM esperada', async () => {
     const state = createFakeState();
-    state.tenants.workerDown = true;
+    const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const command = await screen.findByRole('region', { name: '3. Comando de instalação' });
+    await user.click(await within(command).findByRole('button', { name: 'Gerar comando…' }));
+    expect(command).toHaveTextContent('Um comando novo revoga o anterior');
+    expect(command).not.toHaveTextContent('O ambiente já está instalado');
+    const confirm = within(command).getByRole('button', { name: 'Confirmar: gerar comando' });
+    expect(confirm).toBeDisabled();
+    await user.type(within(command).getByLabelText(/Digite o subdomínio/), 'cliente-demo-e');
+    await user.click(confirm);
+
+    const generated = await within(command).findByLabelText('Comando de instalação gerado');
+    const text = generated.textContent ?? '';
+    const prefix = `curl -fsSLo verax-install.sh https://github.com/williandotdev/verax-control/releases/download/node-v1.2.3/verax-install.sh && echo "${'5'.repeat(64)}  verax-install.sh" | sha256sum -c - && sudo bash verax-install.sh --codigo `;
+    expect(text.startsWith(prefix)).toBe(true);
+    expect(text.slice(prefix.length)).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(command).toHaveTextContent('aparece só agora');
+    expect(command).toHaveTextContent(/de uso único e vale até \d{2}\/\d{2}\/\d{4}/);
+    expect(command).not.toHaveTextContent('A VM anterior deixou de valer');
+
+    await user.click(within(command).getByRole('button', { name: 'Copiar o comando' }));
+    expect(await within(command).findByText('Comando copiado.')).toBeInTheDocument();
+    await expect(navigator.clipboard.readText()).resolves.toBe(text);
+
+    // A execução reduzida começou: a situação diz que espera a VM do cliente.
+    expect(state.tenants.tenants.get(CUSTOMER_ID)?.state).toBe('provisioning');
+    expect(await screen.findByText('Esperando a VM do cliente')).toBeInTheDocument();
+    // O comando continua na tela depois da atualização, até ocultar; depois, não volta.
+    expect(within(command).getByLabelText('Comando de instalação gerado')).toBeInTheDocument();
+    await user.click(within(command).getByRole('button', { name: 'Ocultar' }));
+    expect(within(command).queryByLabelText('Comando de instalação gerado')).not.toBeInTheDocument();
+    expect(within(command).getByRole('button', { name: 'Gerar comando…' })).toBeEnabled();
+  });
+
+  it('ambiente pronto: gerar outro comando avisa da reinstalação e diz que a VM anterior deixou de valer', async () => {
+    const state = createFakeState();
+    patchCustomer(state, { state: 'active' });
     const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
     const installation = await screen.findByRole('region', {
       name: 'Instalação na infraestrutura do cliente',
     });
-    expect(await within(installation).findByRole('alert')).toHaveTextContent('O cp-worker não respondeu');
+    expect(within(installation).getByRole('group', { name: 'Situação da instalação' })).toHaveTextContent(
+      'Pronto',
+    );
+    const command = within(installation).getByRole('region', { name: '3. Comando de instalação' });
+    await user.click(await within(command).findByRole('button', { name: 'Gerar comando…' }));
+    expect(command).toHaveTextContent('O ambiente já está instalado');
+    await user.type(within(command).getByLabelText(/Digite o subdomínio/), 'cliente-demo-e');
+    await user.click(within(command).getByRole('button', { name: 'Confirmar: gerar comando' }));
+    expect(await within(command).findByLabelText('Comando de instalação gerado')).toBeInTheDocument();
+    expect(command).toHaveTextContent('A VM anterior deixou de valer');
+  });
+
+  it('a instalação parou: o código do instalador com o que fazer, e o perfil do porte M', async () => {
+    const state = createFakeState();
+    const tenant = state.tenants.tenants.get(CUSTOMER_ID);
+    if (tenant === undefined) throw new Error('cliente de exemplo ausente');
+    patchCustomer(state, {
+      state: 'provisioning_failed',
+      configuration: { ...tenant.configuration, size: 'M' },
+      provisioning: {
+        runId: '01JC00000000000000000R9999',
+        step: 'enrollment.wait',
+        attempts: 1,
+        lastError: { code: 'node_error:host_below_size', at: '2026-11-18T10:00:00Z' },
+      },
+    });
+    renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const status = await screen.findByRole('alert', { name: 'Situação da instalação' });
+    expect(status).toHaveTextContent('A instalação parou');
+    expect(status).toHaveTextContent('node_error:host_below_size');
+    expect(status).toHaveTextContent('A VM é menor que o porte do contrato');
+    expect(status).toHaveTextContent('gere um comando novo');
+    const profile = screen.getByRole('region', { name: '1. Perfil da VM' });
+    expect(profile).toHaveTextContent('vCPU4');
+    expect(profile).toHaveTextContent('Memória16 GB');
+    expect(profile).toHaveTextContent('Disco120 GB');
+  });
+
+  it('versão sem o instalador: o aviso de publicar uma versão nova e o botão desligado', async () => {
+    const state = createFakeState();
+    state.tenants.withoutInstaller = true;
+    renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const command = await screen.findByRole('region', { name: '3. Comando de instalação' });
+    expect(await within(command).findByRole('note')).toHaveTextContent(
+      'A versão atual do nó (node-v1.2.3) ainda não tem o instalador',
+    );
+    expect(within(command).getByRole('button', { name: 'Gerar comando…' })).toBeDisabled();
+    // O perfil e a rede continuam lá.
+    expect(screen.getByRole('region', { name: '1. Perfil da VM' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '2. Rede' })).toBeInTheDocument();
+  });
+
+  it('a versão não veio do cp-worker: o que fazer, com a opção de tentar de novo', async () => {
+    const state = createFakeState();
+    state.tenants.workerDown = true;
+    const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const command = await screen.findByRole('region', { name: '3. Comando de instalação' });
+    expect(await within(command).findByRole('alert')).toHaveTextContent('O cp-worker não respondeu');
+    expect(within(command).queryByRole('button', { name: 'Gerar comando…' })).not.toBeInTheDocument();
     state.tenants.workerDown = false;
-    await user.click(within(installation).getByRole('button', { name: 'Tentar de novo' }));
-    expect(await within(installation).findByText('node-v1.2.3')).toBeInTheDocument();
+    await user.click(within(command).getByRole('button', { name: 'Tentar de novo' }));
+    expect(await within(command).findByRole('button', { name: 'Gerar comando…' })).toBeEnabled();
+  });
+
+  it('gerar o comando com o cp-worker fora do alcance: o que fazer, e nenhum comando na tela', async () => {
+    const state = createFakeState();
+    const { user } = renderConsole(`/clientes/${CUSTOMER_ID}`, state);
+    const command = await screen.findByRole('region', { name: '3. Comando de instalação' });
+    await user.click(await within(command).findByRole('button', { name: 'Gerar comando…' }));
+    await user.type(within(command).getByLabelText(/Digite o subdomínio/), 'cliente-demo-e');
+    state.tenants.workerDown = true;
+    await user.click(within(command).getByRole('button', { name: 'Confirmar: gerar comando' }));
+    expect(await within(command).findByRole('alert')).toHaveTextContent('O cp-worker não respondeu');
+    expect(within(command).queryByLabelText('Comando de instalação gerado')).not.toBeInTheDocument();
+    expect(state.tenants.tenants.get(CUSTOMER_ID)?.state).toBe('waiting_customer_install');
+    // A confirmação continua aberta para tentar de novo.
+    state.tenants.workerDown = false;
+    await user.click(within(command).getByRole('button', { name: 'Confirmar: gerar comando' }));
+    expect(await within(command).findByLabelText('Comando de instalação gerado')).toBeInTheDocument();
+    expect(within(command).queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('a lista diz onde cada ambiente roda', async () => {
