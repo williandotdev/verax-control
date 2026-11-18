@@ -3,7 +3,7 @@ import { loadSecretManagerApi, type SecretManagerApi } from '../../access/bootst
 /**
  * O cofre do login do console no Secret Manager do projeto do plano de controle (`ADMIN_SECRETS_PROJECT_ID`), lido pela
  * API na versão `latest`: `cp-admin-totp-key`, a chave mestra (`admin-crypto.ts`), `cp-admin-sso-signing-key`, a chave
- * de assinatura da entrada única no SIEM, e `cp-admin-turnstile-secret-key`, a chave secreta do Turnstile do login. Não é montado como variável: o
+ * de assinatura da entrada única no SIEM, e `cp-admin-turnstile-key`, a chave secreta do Turnstile do login. Não é montado como variável: o
  * serviço sobe com o cofre vazio (o login responde 503 até o responsável gravar). Lido uma vez e guardado na memória do
  * processo.
  *
@@ -26,7 +26,7 @@ export const SSO_SIGNING_KEY_VAULT = 'cp-admin-sso-signing-key';
  * `ADMIN_TURNSTILE_SITE_KEY`. Lida só pelo cp-admin, pela API, e só com o Turnstile ligado; vai no corpo do POST ao
  * siteverify e a mais nenhum lugar.
  */
-export const TURNSTILE_SECRET_VAULT = 'cp-admin-turnstile-secret-key';
+export const TURNSTILE_KEY_VAULT = 'cp-admin-turnstile-key';
 
 export const ADMIN_SECRETS = Symbol('ADMIN_SECRETS');
 
@@ -79,7 +79,7 @@ export class SecretManagerAdminSecrets implements AdminSecretSource {
   }
 
   turnstileSecretKey(): Promise<string | undefined> {
-    return this.read(TURNSTILE_SECRET_VAULT);
+    return this.read(TURNSTILE_KEY_VAULT);
   }
 
   private async read(secretId: string): Promise<string | undefined> {

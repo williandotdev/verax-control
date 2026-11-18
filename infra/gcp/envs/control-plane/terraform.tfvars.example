@@ -27,7 +27,7 @@ project_id = "projeto-exemplo"
 
 # Cloudflare Turnstile no login do console: a chave do site (pública) do widget do Cloudflare com o hostname
 # veraxsistemas.com.br (o mesmo widget do painel serve). Antes, grave a chave secreta no segredo
-# cp-admin-turnstile-secret-key (docs/runbooks/console-do-responsavel.md, "Turnstile no login"). Vazia, desligado.
+# cp-admin-turnstile-key (docs/runbooks/console-do-responsavel.md, "Turnstile no login"). Vazia, desligado.
 # admin_turnstile_site_key = "0x..."
 
 # Entrada do cp-worker: INGRESS_TRAFFIC_ALL é o padrão (a revelação da senha e o console dependem dela; a barreira é o

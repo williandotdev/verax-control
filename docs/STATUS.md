@@ -5933,7 +5933,7 @@ painel como o cliente".
   desligado até ser configurado.
 - **Arquivos:** cp-admin: `admin/auth/turnstile.ts` (novo, com `turnstile.test.ts`), `admin/auth/admin-auth.controller.ts`
   (o token conferido dentro dos limites do login, antes da senha, e `GET /v1/admin/client-config`),
-  `admin/auth/admin-secrets.ts` (o cofre `cp-admin-turnstile-secret-key`), `admin/admin.module.ts`, `app.module.ts`,
+  `admin/auth/admin-secrets.ts` (o cofre `cp-admin-turnstile-key`), `admin/admin.module.ts`, `app.module.ts`,
   `admin/console-assets.ts` (CSP), `common/config/env.schema.ts` e os testes (`test/admin-turnstile.test.ts` novo,
   `admin-auth`, `admin-console`, `console-contract`, `load-config`, os apoios). Console: `features/auth/turnstile.ts`,
   `turnstile-widget.tsx`, `client-config.ts` (novos, no desenho do painel), `login-page.tsx`, `lib/api.ts`,
@@ -5941,7 +5941,7 @@ painel como o cliente".
   (novos). Infra: `envs/control-plane` (`secrets.tf`, `admin.tf`, `variables.tf`, `terraform.tfvars.example` e os
   testes `console` e `servicos`). Docs: runbook do console (seção 1.1) e GUIA.
 - **Decisões:** liga com `ADMIN_TURNSTILE_SITE_KEY` (Terraform: `admin_turnstile_site_key`, mesmo formato da API);
-  a chave secreta fica no cofre `cp-admin-turnstile-secret-key`, lida pela API do Secret Manager só pelo `cp-admin`
+  a chave secreta fica no cofre `cp-admin-turnstile-key`, lida pela API do Secret Manager só pelo `cp-admin`
   (cofre vazio com a chave do site: erro na partida e login 503, nunca aberto; gravar uma versão vale sem reiniciar).
   Token no header `X-Turnstile-Token`; siteverify com chave, token e `req.ip` (a regra de proxies do cp-admin), prazo de
   5 s, sem seguir redirecionamento. Com chave real, `hostname` igual a `ADMIN_CONSOLE_HOSTNAME` (o Terraform deriva de

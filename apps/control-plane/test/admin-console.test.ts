@@ -93,7 +93,7 @@ describe('cp-admin: as telas do console no mesmo serviço', () => {
     expect(directives.get('script-src')).toEqual(["'self'", 'https://challenges.cloudflare.com']);
     expect(directives.get('frame-src')).toEqual(['https://challenges.cloudflare.com']);
     expect(directives.get('connect-src')).toEqual(["'self'"]);
-    const external = [...directives.values()].flat().filter((value) => /^https?:|\*/.test(value));
+    const external = [...directives.values()].flat().filter((value) => /^(?:https?:.*|.*\*.*)$/.test(value));
     expect(new Set(external)).toEqual(new Set(['https://challenges.cloudflare.com']));
     expect(CONSOLE_CSP.match(/challenges\.cloudflare\.com/g)).toHaveLength(2);
   });

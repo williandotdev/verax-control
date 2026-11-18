@@ -39,7 +39,7 @@ variable "terraform_image" {
 }
 
 variable "admin_enabled" {
-  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura dos segredos do console, cp-admin-totp-key, cp-admin-sso-signing-key e cp-admin-turnstile-secret-key, e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes a chave do console, cp-admin-totp-key (docs/runbooks/console-do-responsavel.md)."
+  description = "Cria o console do responsável (admin.tf): o serviço cp-admin (a mesma imagem, ROLE=admin) com login próprio (e-mail de owner_principals, senha e código do aplicativo autenticador) e invocação anônima, o site do Firebase Hosting com o domínio admin_hosting_domain, a conta cp-admin (Firestore, leitura dos segredos do console, cp-admin-totp-key, cp-admin-sso-signing-key e cp-admin-turnstile-key, e, com services_enabled, run.invoker só no cp-worker para as operações do responsável), a implantação pelo workflow e os alertas do console. Exige owner_principals. Grave antes a chave do console, cp-admin-totp-key (docs/runbooks/console-do-responsavel.md)."
   type        = bool
   default     = false
 
@@ -251,7 +251,7 @@ variable "sso_redirect_uris" {
 }
 
 variable "admin_turnstile_site_key" {
-  description = "Cloudflare Turnstile no login do console (admin.tf): a chave do site (pública, `0x...`) do widget do Cloudflare cujo hostname cobre o console (um widget com o hostname veraxsistemas.com.br serve ao painel e ao console). Vai para o cp-admin como ADMIN_TURNSTILE_SITE_KEY, e o domínio do console (admin_hosting_domain) como ADMIN_CONSOLE_HOSTNAME, o hostname que o siteverify precisa devolver. A chave secreta não passa por aqui: fica no segredo cp-admin-turnstile-secret-key, que só o cp-admin lê. Vazia (padrão), o login segue sem o desafio. Grave antes a chave secreta (docs/runbooks/console-do-responsavel.md): com a chave do site e o cofre vazio, o login responde 503."
+  description = "Cloudflare Turnstile no login do console (admin.tf): a chave do site (pública, `0x...`) do widget do Cloudflare cujo hostname cobre o console (um widget com o hostname veraxsistemas.com.br serve ao painel e ao console). Vai para o cp-admin como ADMIN_TURNSTILE_SITE_KEY, e o domínio do console (admin_hosting_domain) como ADMIN_CONSOLE_HOSTNAME, o hostname que o siteverify precisa devolver. A chave secreta não passa por aqui: fica no segredo cp-admin-turnstile-key, que só o cp-admin lê. Vazia (padrão), o login segue sem o desafio. Grave antes a chave secreta (docs/runbooks/console-do-responsavel.md): com a chave do site e o cofre vazio, o login responde 503."
   type        = string
   default     = ""
 

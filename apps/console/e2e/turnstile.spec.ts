@@ -144,7 +144,8 @@ test.describe('Turnstile na entrada do console (widget falso, CSP do cp-admin)',
     const watch = await prepare(page, state);
     const cloudflare: string[] = [];
     page.on('request', (request) => {
-      if (request.url().startsWith('https://challenges.cloudflare.com')) cloudflare.push(request.url());
+      if (new URL(request.url()).origin === 'https://challenges.cloudflare.com')
+        cloudflare.push(request.url());
     });
     await page.goto('/entrar');
     await page.getByLabel('E-mail').fill(FICTITIOUS_OWNER);

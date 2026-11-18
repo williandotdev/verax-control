@@ -47,7 +47,7 @@ locals {
     SSO_ISSUER        = length(var.sso_redirect_uris) > 0 ? "https://${var.admin_hosting_domain}" : ""
     SSO_REDIRECT_URIS = join(",", var.sso_redirect_uris)
     # Cloudflare Turnstile no login (admin/auth/turnstile.ts): a chave do site (pública) liga o desafio, e o domínio do
-    # console é o hostname que o siteverify precisa devolver. A chave secreta fica no cofre cp-admin-turnstile-secret-key
+    # console é o hostname que o siteverify precisa devolver. A chave secreta fica no cofre cp-admin-turnstile-key
     # (secrets.tf), lida pela API. Sem a chave do site, as duas ficam vazias (não vão), e o login segue sem o desafio.
     ADMIN_TURNSTILE_SITE_KEY = var.admin_turnstile_site_key
     ADMIN_CONSOLE_HOSTNAME   = var.admin_turnstile_site_key != "" ? var.admin_hosting_domain : ""

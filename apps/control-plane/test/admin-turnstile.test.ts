@@ -55,7 +55,7 @@ class FakeSiteverify {
 }
 
 /**
- * O login do console com o Turnstile ligado (`ADMIN_TURNSTILE_SITE_KEY` e o cofre `cp-admin-turnstile-secret-key`), pelo
+ * O login do console com o Turnstile ligado (`ADMIN_TURNSTILE_SITE_KEY` e o cofre `cp-admin-turnstile-key`), pelo
  * app inteiro: o token do widget no header `X-Turnstile-Token`, conferido no siteverify (um dublê) antes da senha, com
  * o IP de `req.ip`, sempre fechando a porta quando não dá para conferir, sem afrouxar os limites do login e sem levar
  * token nem chave ao log. Um app por arquivo.
@@ -130,7 +130,7 @@ describe('cp-admin: Turnstile no login do console', () => {
     });
     await app.listen(0, '127.0.0.1');
     await vi.waitFor(() =>
-      expect(capture.entries().map((entry) => entry['event'])).toContain('admin_turnstile_secret_missing'),
+      expect(capture.entries().map((entry) => entry['event'])).toContain('admin_turnstile_key_missing'),
     );
     bootEvents = capture.entries().map((entry) => entry['event']);
   });
@@ -153,7 +153,7 @@ describe('cp-admin: Turnstile no login do console', () => {
 
   // Primeiro teste do arquivo (a ordem importa): a chave secreta só fica guardada depois da primeira leitura com valor.
   it('cofre vazio: a partida avisa, o login responde 503 (fecha), e gravar uma versão vale sem reiniciar', async () => {
-    expect(bootEvents).toContain('admin_turnstile_secret_missing');
+    expect(bootEvents).toContain('admin_turnstile_key_missing');
     const owner = await enroll();
     const closed = await login(
       { email: OWNER, password: owner.password, code: await totpAt(owner.secret, clock.now()) },

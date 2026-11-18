@@ -188,12 +188,12 @@ run "console_com_login_proprio" {
       sort([
         for key, member in google_secret_manager_secret_iam_member.readers : key
         if member.member == "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"
-      ]) == tolist(["cp-admin-sso-signing-key/admin", "cp-admin-totp-key/admin", "cp-admin-turnstile-secret-key/admin"]) &&
+      ]) == tolist(["cp-admin-sso-signing-key/admin", "cp-admin-totp-key/admin", "cp-admin-turnstile-key/admin"]) &&
       length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-setup-token/")]) == 0 &&
       alltrue([for key, member in google_secret_manager_secret_iam_member.readers : member.role == "roles/secretmanager.secretAccessor" if endswith(key, "/admin")]) &&
       !contains([for member in google_service_account_iam_member.invoker_token_users : member.member], "serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com")
     )
-    error_message = "A conta cp-admin lê e grava o Firestore e lê só as três chaves dela, cp-admin-totp-key, cp-admin-sso-signing-key e cp-admin-turnstile-secret-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
+    error_message = "A conta cp-admin lê e grava o Firestore e lê só as três chaves dela, cp-admin-totp-key, cp-admin-sso-signing-key e cp-admin-turnstile-key (no segredo, nunca no projeto); ninguém lê o cp-admin-setup-token aposentado; nenhum actAs na cp-invoker (o console não enfileira nada)."
   }
 
   # Sem os serviços (services_enabled = false), o cp-worker não existe, e nem o run.invoker do console nele.
@@ -511,8 +511,8 @@ run "turnstile_do_console_desligado_por_padrao" {
 
   assert {
     condition = (
-      contains(keys(google_secret_manager_secret.cp), "cp-admin-turnstile-secret-key") &&
-      [for key, member in google_secret_manager_secret_iam_member.readers : member.member if startswith(key, "cp-admin-turnstile-secret-key/")] ==
+      contains(keys(google_secret_manager_secret.cp), "cp-admin-turnstile-key") &&
+      [for key, member in google_secret_manager_secret_iam_member.readers : member.member if startswith(key, "cp-admin-turnstile-key/")] ==
       ["serviceAccount:cp-admin@projeto-exemplo.iam.gserviceaccount.com"]
     )
     error_message = "O cofre da chave secreta do Turnstile existe (para ser gravado antes de ligar) e só a conta cp-admin o lê."
@@ -526,7 +526,7 @@ run "turnstile_do_console_sem_o_console_ninguem_le" {
   }
 
   assert {
-    condition     = length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-turnstile-secret-key/")]) == 0
+    condition     = length([for key, member in google_secret_manager_secret_iam_member.readers : key if startswith(key, "cp-admin-turnstile-key/")]) == 0
     error_message = "Sem o console, ninguém lê a chave secreta do Turnstile do console (nem o cp-public, nem o cp-worker)."
   }
 }

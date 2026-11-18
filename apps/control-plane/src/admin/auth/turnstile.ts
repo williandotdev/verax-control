@@ -10,7 +10,7 @@ import { ADMIN_SECRETS, type AdminSecretSource, SecretUnavailableError } from '.
  * Cloudflare Turnstile no login do console (o único formulário público do cp-admin que recebe a senha): o widget gera
  * um token no navegador, a tela o manda neste header, e o cp-admin o confere no siteverify da Cloudflare antes de olhar
  * a senha. O mesmo desenho do painel (`apps/api/src/auth/turnstile.ts`), com duas diferenças: a chave secreta vem do
- * cofre `cp-admin-turnstile-secret-key` (lida pela API do Secret Manager, como as outras chaves do console), e quem liga
+ * cofre `cp-admin-turnstile-key` (lida pela API do Secret Manager, como as outras chaves do console), e quem liga
  * é a chave do site (`ADMIN_TURNSTILE_SITE_KEY`). Sem ela, nada é conferido e o login segue como sempre.
  */
 export const TURNSTILE_TOKEN_HEADER = 'x-turnstile-token';
@@ -66,7 +66,7 @@ export function turnstileTokenOf(header: string | string[] | undefined): string 
  * daqui: nem no log, nem na mensagem de erro.
  *
  * Logs: `admin_turnstile_failed` (com o motivo: `missing-token`, `token-too-long`, os `error-codes` da Cloudflare,
- * `action-mismatch` ou `hostname-mismatch`), `admin_turnstile_unavailable`, `admin_turnstile_secret_missing` e, em
+ * `action-mismatch` ou `hostname-mismatch`), `admin_turnstile_unavailable`, `admin_turnstile_key_missing` e, em
  * produção sem a chave do site, `admin_turnstile_disabled` na partida.
  */
 @Injectable()
@@ -106,7 +106,7 @@ export class AdminTurnstile implements OnApplicationBootstrap {
       if (this.production) {
         this.logger.warn(
           { event: 'admin_turnstile_disabled' },
-          'Turnstile desligado: login do console sem o desafio (defina ADMIN_TURNSTILE_SITE_KEY e grave cp-admin-turnstile-secret-key)',
+          'Turnstile desligado: login do console sem o desafio (defina ADMIN_TURNSTILE_SITE_KEY e grave cp-admin-turnstile-key)',
         );
       }
       return;
@@ -152,8 +152,8 @@ export class AdminTurnstile implements OnApplicationBootstrap {
       secret = await this.secret();
     } catch {
       this.logger.error(
-        { event: 'admin_turnstile_unavailable', reason: 'secret-unavailable' },
-        'cofre da chave secreta do Turnstile indisponível',
+        { event: 'admin_turnstile_unavailable', reason: 'vault-unavailable' },
+        'cofre da chave do Turnstile indisponível',
       );
       return 'unavailable';
     }
@@ -224,8 +224,8 @@ export class AdminTurnstile implements OnApplicationBootstrap {
     }
     if (value === undefined) {
       this.logger.error(
-        { event: 'admin_turnstile_secret_missing' },
-        'Turnstile ligado (ADMIN_TURNSTILE_SITE_KEY) sem a chave secreta no cofre cp-admin-turnstile-secret-key: o login do console responde 503',
+        { event: 'admin_turnstile_key_missing' },
+        'Turnstile ligado (ADMIN_TURNSTILE_SITE_KEY) sem a chave no cofre cp-admin-turnstile-key: o login do console responde 503',
       );
       return undefined;
     }

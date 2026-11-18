@@ -248,7 +248,7 @@ describe('Turnstile do login do console', () => {
       });
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'admin_turnstile_secret_missing' }),
+        expect.objectContaining({ event: 'admin_turnstile_key_missing' }),
         expect.any(String),
       );
       // Vazio não fica guardado: gravar uma versão vale sem reiniciar.
@@ -275,7 +275,7 @@ describe('Turnstile do login do console', () => {
     turnstile.onApplicationBootstrap();
     await vi.waitFor(() =>
       expect(logger.error).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'admin_turnstile_secret_missing' }),
+        expect.objectContaining({ event: 'admin_turnstile_key_missing' }),
         expect.any(String),
       ),
     );

@@ -361,7 +361,7 @@ const envShape = {
   SSO_REDIRECT_URIS: list(z.string().refine(isExactRedirectUri, { error: REDIRECT_URI_ERROR })).optional(),
   // Cloudflare Turnstile no login do console (cp-admin, só ROLE=admin; `admin/auth/turnstile.ts`). Ligado só com a
   // chave do site: sem ela, o login segue como sempre. A chave do site é pública (vai às telas por
-  // `GET /v1/admin/client-config`); a secreta não é variável: fica no cofre `cp-admin-turnstile-secret-key`, lida pela
+  // `GET /v1/admin/client-config`); a secreta não é variável: fica no cofre `cp-admin-turnstile-key`, lida pela
   // API do Secret Manager (cofre vazio com a chave do site definida: o login responde 503, fechado). Com uma chave real
   // (`0x…`), o `hostname` que o siteverify devolve precisa ser ADMIN_CONSOLE_HOSTNAME (o domínio do console, que o
   // Terraform deriva de `admin_hosting_domain`); com as chaves de teste da Cloudflare, a conferência não se aplica.

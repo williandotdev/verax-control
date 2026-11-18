@@ -75,7 +75,7 @@ locals {
     # chave do site o cp-admin recebe em ADMIN_TURNSTILE_SITE_KEY. Só o cp-admin lê, pela API, e só a manda ao
     # siteverify da Cloudflare. Vazia, com a chave do site definida, o login responde 503 (fecha); sem a chave do site,
     # ninguém a lê.
-    "cp-admin-turnstile-secret-key" = {
+    "cp-admin-turnstile-key" = {
       description = "Chave secreta do Cloudflare Turnstile do login do console (o widget da chave do site admin_turnstile_site_key). Só o cp-admin lê."
       readers     = ["admin"]
       env         = null
