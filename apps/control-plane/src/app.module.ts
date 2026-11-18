@@ -9,6 +9,10 @@ import type { WorkerFleetClient } from './admin/worker-fleet-client.js';
 import { AuditModule } from './audit/audit.module.js';
 import { AccessWorkerModule, type AccessWorkerModuleOptions } from './access/access-worker.module.js';
 import { CheckoutModule } from './checkout/checkout.module.js';
+import {
+  NodeEnrollmentModule,
+  type NodeEnrollmentModuleOptions,
+} from './enrollment/node-enrollment.module.js';
 import type { Clock } from './common/clock.js';
 import { type AppConfig, ConfigModule } from './common/config/config.module.js';
 import type { Role } from './common/config/env.schema.js';
@@ -34,6 +38,8 @@ export interface AppModuleOptions {
   logger?: LoggerParamsOptions;
   /** Só nos testes: o caminho do cp-public até a revelação sem HTTP (em produção, o cp-worker em `WORKER_URL`). */
   revealGateway?: StatusModuleOptions['revealGateway'];
+  /** Só nos testes: o caminho do cp-public até o registro da VM do cliente sem HTTP (em produção, o cp-worker). */
+  enrollmentGateway?: NodeEnrollmentModuleOptions['enrollmentGateway'];
   /** Só nos testes: o cofre da senha inicial em memória (em produção, o Secret Manager do projeto dos nós). */
   bootstrapSecrets?: AccessWorkerModuleOptions['bootstrapSecrets'];
   /** Só nos testes: o envio de e-mail em memória (em produção, o SMTP da configuração). */
@@ -94,10 +100,16 @@ function modulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMe
 /**
  * Página de status e revelação única (CP-05), com a mesma separação por papel: no `cp-public`, as rotas
  * `/v1/public/status*`; no `cp-worker`, a revelação em si (só ele lê o segredo), os passos `/internal/steps/*` e o
- * gatilho do plano B. Nenhum outro papel carrega estes módulos.
+ * gatilho do plano B. Nenhum outro papel carrega estes módulos. O registro da VM do cliente segue o mesmo desenho: no
+ * `cp-public`, `/v1/node-enrollment/*`, repassado ao cp-worker em `WORKER_URL` (`/internal/node-enrollment/*`).
  */
 function accessModulesFor(role: Role, options: AppModuleOptions): NonNullable<ModuleMetadata['imports']> {
-  if (role === 'public') return [StatusModule.forRoot({ revealGateway: options.revealGateway })];
+  if (role === 'public') {
+    return [
+      StatusModule.forRoot({ revealGateway: options.revealGateway }),
+      NodeEnrollmentModule.forRoot({ enrollmentGateway: options.enrollmentGateway }),
+    ];
+  }
   if (role === 'worker') {
     return [
       AccessWorkerModule.forRoot({

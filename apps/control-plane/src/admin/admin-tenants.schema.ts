@@ -177,9 +177,12 @@ export interface TenantLifecycleView {
   run?: { kind: LifecycleRunKind; step: string; startedAt: Date; lastError?: { code: string; at: Date } };
 }
 
-/** O que o console oferece agora (a API confere de novo em cada operação, e o cp-worker de novo). */
+/**
+ * O que o console oferece agora (a API confere de novo em cada operação, e o cp-worker de novo). `enrollmentCode`: gerar
+ * o código de instalação da VM do cliente (`POST /v1/admin/tenants/:id/enrollment-code`).
+ */
 export type TenantActions = Record<
-  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export',
+  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export' | 'enrollmentCode',
   boolean
 >;
 
@@ -202,7 +205,10 @@ export interface TenantDetail {
   pricing: OrderPricing;
   /** Só no contrato direto cadastrado com os valores do contrato: a referência da tabela e o contratado. */
   contractPricing?: ContractPricing;
-  /** Os endereços na infraestrutura da Verax; ausentes no ambiente do cliente (os endereços são dele). */
+  /**
+   * Os endereços do painel (o site do Firebase) e da API (pelo túnel da Verax): no gerenciado e na VM do cliente, que
+   * usa os mesmos. Ausentes só num cliente da VM própria que ainda não começou o provisionamento reduzido.
+   */
   urls?: { panelUrl: string; apiUrl: string };
   provisioning?: {
     runId?: string;
@@ -220,7 +226,10 @@ export interface TenantDetail {
     failureCode?: string;
     release?: string;
   };
-  /** Os passos do provisionamento; vazia no ambiente do cliente (nada é provisionado). */
+  /**
+   * Os passos do provisionamento: a sequência do gerenciado ou, na VM do cliente, a reduzida (vazia enquanto o primeiro
+   * código de instalação não foi gerado).
+   */
   timeline: TimelineStep[];
   access: { passwordRevealedAt?: Date; revealEmailSentAt?: Date };
   lifecycle: TenantLifecycleView;
@@ -282,11 +291,34 @@ export interface TenantInstallation {
   signatureUrl: string;
   guideUrl: string;
   package: { url: string; sha256: string };
+  /**
+   * O instalador da VM do cliente (`verax-install.sh`) e o SHA-256 dele, do manifesto assinado; ausente numa versão de
+   * antes do instalador. É o que o comando do console baixa e confere antes de rodar com o código de uso único.
+   */
+  installer?: { url: string; sha256: string };
   images: { api: string; migrate: string };
   thirdPartyImages: string[];
   /** A chave de release que assinou o manifesto e a impressão digital dela (SHA-256 da pública em DER). */
   releaseKey: { name: string; sha256: string };
+  /** O porte do contrato, para o console sugerir o perfil da VM (CPU, memória e disco). */
+  size: SizeId;
   nodeConf: NodeConfLine[];
+}
+
+/**
+ * `POST /v1/admin/tenants/:id/enrollment-code` `{confirmSlug}`: o código de instalação de uso único da VM do cliente,
+ * mostrado uma vez (a resposta sai com `Cache-Control: private, no-store`). `reinstall`: a VM anterior já tinha se
+ * registrado, e a chave dela deixou de valer. `runId` e `step`: a execução do provisionamento reduzido em andamento (a
+ * que o primeiro código começou).
+ */
+export const enrollmentCodeRequestSchema = z.strictObject({ confirmSlug });
+
+export interface EnrollmentCodeIssued {
+  code: string;
+  expiresAt: string;
+  reinstall: boolean;
+  runId?: string;
+  step?: string;
 }
 
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */

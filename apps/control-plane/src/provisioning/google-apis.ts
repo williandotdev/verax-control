@@ -629,7 +629,8 @@ const accessedVersionSchema = z.object({
  * Secret Manager REST v1, só o que o provisionamento precisa: gravar uma versão nos cofres do nó (o token do túnel e a
  * senha da caixa de envio, `secretVersionAdder`), ver o estado da versão mais nova do `admin-bootstrap` (`versions.get`,
  * do `secretVersionManager`), sem ler o conteúdo, e ler a senha da caixa de envio dos nós no cofre do plano de controle
- * (`cp-nodes-smtp-password`, `secretAccessor`).
+ * (`cp-nodes-smtp-password`, `secretAccessor`). No ambiente na VM do cliente, também criar o cofre vazio da senha do
+ * primeiro admin (`createSecret`), que no gerenciado é do Terraform.
  */
 export class SecretVersionsApi extends GoogleApi {
   constructor(
@@ -638,6 +639,41 @@ export class SecretVersionsApi extends GoogleApi {
     private readonly base: string = GOOGLE_ENDPOINTS.secretManager,
   ) {
     super('secretmanager', tokens, fetchFn);
+  }
+
+  /**
+   * Cria o cofre vazio, guardado só em `region` (como o módulo `node`, `user_managed` numa réplica), com os rótulos.
+   * Já existente (409) conta como feito: devolve `false`. Nunca grava versão.
+   */
+  async createSecret(
+    project: string,
+    secretId: string,
+    region: string,
+    labels: Readonly<Record<string, string>>,
+  ): Promise<boolean> {
+    const url = new URL(`${this.base}/projects/${project}/secrets`);
+    url.searchParams.set('secretId', secretId);
+    const response = await this.call('POST', 'secret_create', url.toString(), {
+      json: { replication: { userManaged: { replicas: [{ location: region }] } }, labels },
+    });
+    if (response.status === 409) return false;
+    expectOk(this.service, 'secret_create', response);
+    return true;
+  }
+
+  /**
+   * Apaga o cofre inteiro, com todas as versões (o conteúdo some). Já apagado (404) conta como feito: devolve `false`.
+   * Só o `admin-bootstrap` da VM do cliente, na exclusão (`deletion.bootstrap_secret`).
+   */
+  async deleteSecret(project: string, secretId: string): Promise<boolean> {
+    const response = await this.call(
+      'DELETE',
+      'secret_delete',
+      `${this.base}/projects/${project}/secrets/${secretId}`,
+    );
+    if (response.status === 404) return false;
+    expectOk(this.service, 'secret_delete', response);
+    return true;
   }
 
   /** Grava uma versão nova com `value`. O valor só vai no corpo da requisição. */

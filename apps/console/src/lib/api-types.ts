@@ -408,7 +408,10 @@ export type BillingMode = 'stripe' | 'contract';
  */
 export type Hosting = 'verax' | 'customer';
 
-/** Os passos do provisionamento, na ordem. */
+/**
+ * Os passos do provisionamento, na ordem. Na VM do cliente, a sequência reduzida: `preflight`, `cloudflare.tunnel`,
+ * `firebase.site`, `enrollment.wait` (o registro da VM), `node.health`, `panel.domain_wait` e `access.ready`.
+ */
 export type ProvisioningStepName =
   | 'preflight'
   | 'cloudflare.tunnel'
@@ -418,6 +421,7 @@ export type ProvisioningStepName =
   | 'secrets.smtp_password'
   | 'secrets.tunnel_token'
   | 'node.wait_ready'
+  | 'enrollment.wait'
   | 'node.health'
   | 'panel.domain_wait'
   | 'access.ready';
@@ -550,9 +554,12 @@ export interface TenantLifecycleView {
   run?: { kind: LifecycleRunKind; step: string; startedAt: string; lastError?: { code: string; at: string } };
 }
 
-/** O que o console oferece agora para o cliente (a API e o cp-worker conferem de novo). */
+/**
+ * O que o console oferece agora para o cliente (a API e o cp-worker conferem de novo). `enrollmentCode`: gerar o código
+ * de instalação da VM do cliente.
+ */
 export type TenantActions = Record<
-  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export',
+  'start' | 'resume' | 'cancel' | 'suspend' | 'reactivate' | 'deleteNow' | 'export' | 'enrollmentCode',
   boolean
 >;
 
@@ -622,11 +629,28 @@ export interface TenantInstallation {
   signatureUrl: string;
   guideUrl: string;
   package: { url: string; sha256: string };
+  /** O instalador da VM do cliente e o SHA-256 dele (o manifesto assinado); ausente numa versão de antes dele. */
+  installer?: { url: string; sha256: string };
   images: { api: string; migrate: string };
   thirdPartyImages: string[];
   /** A chave de release que assinou o manifesto e a impressão digital dela (SHA-256 da pública em DER). */
   releaseKey: { name: string; sha256: string };
+  /** O porte do contrato, para sugerir o perfil da VM. */
+  size: SizeId;
   nodeConf: NodeConfLine[];
+}
+
+/**
+ * `POST /v1/admin/tenants/:id/enrollment-code` `{confirmSlug}`: o código de instalação de uso único da VM do cliente,
+ * mostrado uma vez, com o vencimento (7 dias). `reinstall`: a VM anterior deixou de valer. `runId` e `step`: a execução
+ * do provisionamento reduzido em andamento.
+ */
+export interface EnrollmentCodeIssued {
+  code: string;
+  expiresAt: string;
+  reinstall: boolean;
+  runId?: string;
+  step?: string;
 }
 
 /** `POST /v1/admin/tenants/:id/<operação>`: o que o cp-worker fez. */

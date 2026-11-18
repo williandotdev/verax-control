@@ -144,6 +144,9 @@ export async function readReleaseManifest(
 
 // --- O que o responsável manda ao cliente que instala na própria infraestrutura (contrato direto) ---------------------
 
+/** O nome do instalador da VM do cliente no release (o mesmo do comando do console). */
+export const INSTALLER_FILE = 'verax-install.sh';
+
 const GHCR_IMAGE_PATTERN =
   /^ghcr\.io\/[a-z0-9-]{1,39}\/[a-z0-9._-]{1,100}\/(api|migrate)@sha256:[0-9a-f]{64}$/;
 /**
@@ -164,6 +167,11 @@ const detailsSchema = z.object({
   }),
   thirdPartyImages: z.array(z.string().max(300).regex(THIRD_PARTY_IMAGE_PATTERN)).min(1).max(20),
   notes: z.url({ protocol: /^https$/ }).max(500),
+  /**
+   * O instalador da VM do cliente (`infra/node/bin/verax-install.sh`, asset do release), com o SHA-256 que o comando do
+   * console confere antes de rodar. Opcional: as versões de antes dele continuam válidas, só sem o comando.
+   */
+  installer: z.strictObject({ name: z.literal(INSTALLER_FILE), sha256: sha256Hex }).optional(),
 });
 
 /**
@@ -181,6 +189,8 @@ export interface ReleaseDetails {
   manifestUrl: string;
   signatureUrl: string;
   package: { url: string; sha256: string };
+  /** O instalador da VM do cliente no release, quando a versão o tem (`installer` no manifesto). */
+  installer?: { url: string; sha256: string };
   images: { api: string; migrate: string };
   thirdPartyImages: string[];
   /**
@@ -249,6 +259,9 @@ export function parseReleaseDetails(manifest: Buffer, release: string): ReleaseD
     manifestUrl: `${download}/${MANIFEST_OBJECT}`,
     signatureUrl: `${download}/${SIGNATURE_OBJECT}`,
     package: { url: data.package.url, sha256: info.packageSha256 },
+    ...(data.installer === undefined
+      ? {}
+      : { installer: { url: `${download}/${INSTALLER_FILE}`, sha256: data.installer.sha256 } }),
     images: { api: data.images.api, migrate: data.images.migrate },
     thirdPartyImages: [...data.thirdPartyImages],
   };

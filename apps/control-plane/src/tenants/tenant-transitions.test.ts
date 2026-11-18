@@ -26,7 +26,10 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['past_due', 'active'],
     ['suspended', 'active'],
     ['suspended', 'canceled'],
-    // O contrato direto no cliente só sai da espera da instalação cancelado.
+    // A reinstalação da VM do cliente: banco novo, sem conta conectada, e uma revelação nova.
+    ['active', 'waiting_customer_connection'],
+    // O contrato direto na VM do cliente sai da espera com o primeiro código de instalação, ou cancelado.
+    ['waiting_customer_install', 'provisioning'],
     ['waiting_customer_install', 'canceled'],
     ['canceled', 'deleted'],
   ])('permite %s -> %s', (from, to) => {
@@ -47,8 +50,7 @@ describe('tabela de transições (plano §4b e §4d)', () => {
     ['canceled', 'active'],
     ['deleted', 'canceled'],
     ['deleted', 'deleted'],
-    // Nada do ambiente no cliente passa pelo provisionamento, nem chega lá vindo dele.
-    ['waiting_customer_install', 'provisioning'],
+    // A espera da instalação só sai pelo provisionamento reduzido (o código) ou cancelada, e nada volta a ela.
     ['waiting_customer_install', 'active'],
     ['waiting_customer_install', 'suspended'],
     ['pending', 'waiting_customer_install'],

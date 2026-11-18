@@ -5,6 +5,11 @@ import { CellCommandPublisher } from '../cells/cell-command-publisher.js';
 import { CELL_CONTROLLERS, cellProviders } from '../cells/cells.module.js';
 import { CLOCK, type Clock } from '../common/clock.js';
 import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
+import { EnrollmentService } from '../enrollment/enrollment.service.js';
+import {
+  EnrollmentCodeController,
+  InternalEnrollmentController,
+} from '../enrollment/internal-enrollment.controller.js';
 import {
   GoogleIdTokenKeySource,
   ID_TOKEN_KEY_SOURCE,
@@ -69,7 +74,10 @@ export interface AccessWorkerModuleOptions {
  * responsável (`POST /internal/tenants/:id/resume`), atrás da mesma guarda, como a recópia da senha do e-mail dos nós
  * (`POST /internal/nodes/smtp-password/sync`). Desde o CE-06, o canal da célula: a rota dos relatórios
  * (`POST /internal/cells/:cellId/reports`, só para a conta de push) e o publicador dos comandos. Desde 16/11/2026, a
- * atualização da frota: as rotas do responsável (`/internal/fleet/...`) e a volta do motor (`fleet.tick`).
+ * atualização da frota: as rotas do responsável (`/internal/fleet/...`) e a volta do motor (`fleet.tick`). Desde
+ * 18/11/2026, o registro da VM do cliente: o código de instalação do responsável
+ * (`POST /internal/tenants/:id/enrollment-code`) e o `claim`/`report` da VM, repassados pelo cp-public
+ * (`/internal/node-enrollment/*`).
  */
 @Module({})
 export class AccessWorkerModule {
@@ -84,6 +92,8 @@ export class AccessWorkerModule {
         ProvisioningStartController,
         InstallationController,
         NodeMailSyncController,
+        EnrollmentCodeController,
+        InternalEnrollmentController,
         ...LIFECYCLE_CONTROLLERS,
         ...CELL_CONTROLLERS,
         ...FLEET_CONTROLLERS,
@@ -105,6 +115,7 @@ export class AccessWorkerModule {
         },
         RevealService,
         RevealEmailService,
+        EnrollmentService,
         DestroyBootstrapStep,
         RevealEmailStep,
         ...LIFECYCLE_PROVIDERS,
@@ -140,7 +151,7 @@ export class AccessWorkerModule {
         },
         WorkerCallerGuard,
       ],
-      exports: [RevealEmailService, CellCommandPublisher],
+      exports: [RevealEmailService, CellCommandPublisher, EnrollmentService],
     };
   }
 }

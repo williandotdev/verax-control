@@ -7,8 +7,8 @@ import { APP_CONFIG, type AppConfig } from '../common/config/config.module.js';
 import type { StepContext, StepInput } from '../internal/step-handler.js';
 import { mailSenderConfigured } from '../mail/mail-sender.js';
 import { TenantStore } from '../tenants/tenant-store.js';
-import { billingModeOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
-import type { DesiredDnsRecord } from './cloudflare-api.js';
+import { billingModeOf, hostingOf, type Tenant, type TenantRecord } from '../tenants/tenant.schema.js';
+import type { CloudflareApi, DesiredDnsRecord } from './cloudflare-api.js';
 import { executorEnv, isTenantEmail, isTenantName, type RunKind } from './executor-env.js';
 import { isExecutionName } from './google-apis.js';
 import { nodeFitProblems } from './node-fit.js';
@@ -50,6 +50,11 @@ export const WAITS = {
   domain: { everyMs: 2 * MINUTE_MS, slowMs: 2 * HOUR_MS, limitMs: 24 * HOUR_MS },
   /** A senha do primeiro admin no cofre (o nó a grava antes do `verax/ready`): a cada 60 s, 15 vezes. */
   bootstrap: { everyMs: MINUTE_MS, tries: 15 },
+  /**
+   * O registro da VM do cliente (`enrollment.wait`): a cada 60 s; o cliente instala quando puder, então o aviso
+   * (`enrollment_slow`) vem em 3 dias e a parada (`enrollment_timeout`) em 30.
+   */
+  enrollment: { everyMs: MINUTE_MS, slowMs: 3 * 24 * HOUR_MS, limitMs: 30 * 24 * HOUR_MS },
 } as const;
 
 /** Limite do Firebase: 36 sites por projeto (o padrão conta). */
@@ -64,6 +69,8 @@ const EXECUTOR_REFUSALS = new Set([
   'plan_unreadable',
 ]);
 const NODE_ERROR_PATTERN = /^[a-z][a-z_]{0,39}$/;
+/** O código do `report error` da VM do cliente (o contrato do registro aceita dígitos). */
+const ENROLLMENT_ERROR_PATTERN = /^[a-z][a-z0-9_]{0,39}$/;
 
 /** Os endereços do cliente (plano §4c, passo 1): o painel no Firebase e a API pelo túnel. */
 export interface TenantHosts {
@@ -160,6 +167,7 @@ export class PreflightStep extends BaseStep {
       throw new DefinitiveStepError('provisioning_disabled');
     }
     const settings = resolved.settings;
+    const customer = hostingOf(tenant) === 'customer';
     if (!configurationFitsNode(tenant)) throw new DefinitiveStepError('configuration_unsupported');
     const adminEmail = tenant.adminEmail;
     if (
@@ -197,9 +205,31 @@ export class PreflightStep extends BaseStep {
     const nodeMail = await this.nodeMail(settings, tenant.id);
     await this.store.updateRun(runId, (run) => ({ ...run, release, nodeMail }));
 
-    const subnetCidr = tenant.resources?.subnetCidr ?? subnetCidrOf(await this.store.allocateSubnetNumber());
     const firebaseProject = tenant.resources?.firebaseProject ?? (await this.pickFirebaseProject(settings));
     const siteId = tenant.resources?.siteId ?? newSiteId(tenant.slug);
+    if (customer) {
+      // Na VM do cliente: nem faixa de rede, nem zona, nem estado do Terraform. O projeto dos nós fica, porque o cofre
+      // da senha do primeiro admin (`vx-<slug>-admin-bootstrap`) é o mesmo do gerenciado.
+      return {
+        kind: 'next',
+        outputs: {
+          nodeVersion,
+          commit: release.commit,
+          panelBundle: release.panel !== undefined,
+          nodeMail: nodeMail !== undefined,
+        },
+        patch: (current) => ({
+          ...withResources({
+            nodesProject: settings.nodesProject,
+            namePrefix: `vx-${current.slug}`,
+            firebaseProject,
+            siteId,
+          })(current),
+          provisioning: { ...(current.provisioning ?? { attempts: 0 }), nodeVersion },
+        }),
+      };
+    }
+    const subnetCidr = tenant.resources?.subnetCidr ?? subnetCidrOf(await this.store.allocateSubnetNumber());
     return {
       kind: 'next',
       outputs: {
@@ -268,9 +298,10 @@ export function pinnedNodeVersion(tenant: Tenant): string | undefined {
  * O que o `envs/tenant` sabe criar hoje: o modo gerenciado, o porte P (perfil `standard`), sem agentes do Wazuh nas
  * instâncias do cliente (fora do CP-06) e com os limites nas faixas do nó (`node-fit.ts`, a mesma regra do console). O
  * resto para com `configuration_unsupported` para o responsável decidir, em vez de entregar menos do que foi vendido.
+ * Na VM do cliente, o porte é a máquina dele e o modo é a licença: valem só os agentes e as faixas dos limites.
  */
 export function configurationFitsNode(tenant: Tenant): boolean {
-  return nodeFitProblems(tenant.configuration, tenant.limits).length === 0;
+  return nodeFitProblems(tenant.configuration, tenant.limits, hostingOf(tenant)).length === 0;
 }
 
 /**
@@ -303,12 +334,7 @@ export class CloudflareTunnelStep extends BaseStep {
   async execute({ tenant }: StepRun): Promise<StepOutcome> {
     const settings = settingsOrFail(this.config);
     const cloudflare = this.apis.cloudflare(settings);
-    const name = `vx-${tenant.slug}`;
-    const tunnel =
-      (await cloudflare.findTunnel(name)) ??
-      (await cloudflare.createTunnel(name)) ??
-      (await cloudflare.findTunnel(name));
-    if (tunnel === undefined) throw new DefinitiveStepError('cloudflare_tunnel_conflict');
+    const tunnel = await ensureTenantTunnel(cloudflare, tenant.slug);
     const { apiHost } = tenantHosts(tenant.slug, settings);
     await cloudflare.putTunnelIngress(tunnel.id, apiHost, NODE_API_SERVICE);
     const recordId = await cloudflare.ensureDnsRecord(
@@ -324,6 +350,20 @@ export class CloudflareTunnelStep extends BaseStep {
         })(current),
     };
   }
+}
+
+/**
+ * O túnel `vx-<slug>`: o que existe com esse nome ou um novo (dois pedidos ao mesmo tempo: o segundo acha o do
+ * primeiro). Também o `claim` da VM do cliente o usa, se chegar antes deste passo: o token só existe com o túnel.
+ */
+export async function ensureTenantTunnel(cloudflare: CloudflareApi, slug: string): Promise<{ id: string }> {
+  const name = `vx-${slug}`;
+  const tunnel =
+    (await cloudflare.findTunnel(name)) ??
+    (await cloudflare.createTunnel(name)) ??
+    (await cloudflare.findTunnel(name));
+  if (tunnel === undefined) throw new DefinitiveStepError('cloudflare_tunnel_conflict');
+  return tunnel;
 }
 
 // --- DNS do domínio do painel (passos 3 e 8) ---------------------------------------------------------------------
@@ -802,6 +842,51 @@ export class NodeWaitReadyStep extends BaseStep {
   }
 }
 
+// --- enrollment.wait (só na VM do cliente) ------------------------------------------------------------------------
+
+/**
+ * No lugar do Terraform, dos cofres e da espera da VM, quando o ambiente roda na VM do cliente: espera o `report ready`
+ * da VM (`tenant.enrollment.readyAt`, gravado depois de a senha do primeiro admin estar no cofre), a cada 60 s. Um
+ * `report error` para com `node_error:<código>` (pronto vale mais que um erro antigo, como no `node.wait_ready`). Em 3
+ * dias só avisa (`enrollment_slow`); em 30, para com `enrollment_timeout` (um código novo no console recomeça).
+ */
+@Injectable()
+export class EnrollmentWaitStep extends BaseStep {
+  readonly name = 'enrollment.wait';
+
+  constructor(
+    engine: ProvisioningEngine,
+    @Inject(APP_CONFIG) config: AppConfig,
+    @Inject(PROVISIONING_APIS) apis: ProvisioningApis,
+    @InjectPinoLogger(EnrollmentWaitStep.name) private readonly logger: PinoLogger,
+  ) {
+    super(engine, config, apis);
+  }
+
+  execute({ tenant, step, waitedMs }: StepRun): Promise<StepOutcome> {
+    settingsOrFail(this.config);
+    const enrollment = tenant.enrollment;
+    if (enrollment?.readyAt !== undefined) return Promise.resolve({ kind: 'next' });
+    const error = enrollment?.lastError?.code;
+    if (error !== undefined) {
+      const code = ENROLLMENT_ERROR_PATTERN.test(error) ? error : 'unknown';
+      return Promise.reject(new DefinitiveStepError(`node_error:${code}`));
+    }
+    if (waitedMs >= WAITS.enrollment.limitMs) {
+      return Promise.reject(new DefinitiveStepError('enrollment_timeout'));
+    }
+    if (waitedMs >= WAITS.enrollment.slowMs && step.outputs?.slowWarned !== true) {
+      this.logger.warn({ event: 'enrollment_slow', tenantId: tenant.id }, 'VM do cliente ainda sem registro');
+      return Promise.resolve({
+        kind: 'wait',
+        delayMs: WAITS.enrollment.everyMs,
+        outputs: { slowWarned: true },
+      });
+    }
+    return Promise.resolve({ kind: 'wait', delayMs: WAITS.enrollment.everyMs });
+  }
+}
+
 // --- 9. node.health ---------------------------------------------------------------------------------------------
 
 /** A API pelo túnel (`/health` e `/health/ready`) e o painel no endereço do Firebase com HSTS: 10 tentativas de 30 s. */
@@ -915,7 +1000,10 @@ export class AccessReadyStep extends BaseStep {
   }
 }
 
-/** Os onze passos, na ordem do plano (mais o `secrets.smtp_password`, do e-mail dos nós). */
+/**
+ * Os onze passos, na ordem do plano (mais o `secrets.smtp_password`, do e-mail dos nós), e a espera do registro da VM
+ * do cliente, que só a sequência reduzida usa (`CUSTOMER_PROVISIONING_STEPS`).
+ */
 export const PROVISIONING_STEP_CLASSES = [
   PreflightStep,
   CloudflareTunnelStep,
@@ -925,6 +1013,7 @@ export const PROVISIONING_STEP_CLASSES = [
   NodeSmtpPasswordStep,
   TunnelTokenStep,
   NodeWaitReadyStep,
+  EnrollmentWaitStep,
   NodeHealthStep,
   PanelDomainWaitStep,
   AccessReadyStep,

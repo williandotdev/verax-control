@@ -300,6 +300,16 @@ export class TenantStore {
     return this.findOne('stripe.subscriptionId', subscriptionId);
   }
 
+  /** O cliente do código de instalação (o SHA-256 em hexadecimal; `enrollment/`), pelo índice simples. */
+  async findByEnrollmentCodeHash(codeHash: string): Promise<TenantRecord | undefined> {
+    return this.findOne('enrollment.codeHash', codeHash);
+  }
+
+  /** O cliente da chave do nó na VM do cliente (o SHA-256 em hexadecimal; `enrollment/`), pelo índice simples. */
+  async findByNodeKeyHash(nodeKeyHash: string): Promise<TenantRecord | undefined> {
+    return this.findOne('enrollment.nodeKeyHash', nodeKeyHash);
+  }
+
   /**
    * Os clientes num estado, para o `tick` (CP-11). Com `due`, só os que têm o prazo (`billing.graceUntil`,
    * `lifecycle.deleteAfter` ou `lifecycle.cryptoDestroyAfter`) até `due.at`, pelo índice composto (estado, prazo) de

@@ -114,7 +114,7 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
       expect(audit[0]?.expiresAt.getTime()).toBeGreaterThan(h.clock.now().getTime());
     });
 
-    it('contrato direto no cliente: nasce em waiting_customer_install (transição de null), só vai a canceled', async () => {
+    it('contrato direto no cliente: nasce em waiting_customer_install (transição de null), sai para provisioning ou canceled', async () => {
       const input: NewTenant = {
         ...demoTenant('cliente-proprio'),
         consent: undefined,
@@ -143,9 +143,10 @@ export function describeTenantStoreContract(name: string, factory: () => Promise
         hosting: 'customer',
         to: 'waiting_customer_install',
       });
-      // Nunca vai ao provisionamento: o ambiente é do cliente.
+      // Nunca volta a esperar a instalação nem vai direto a ativo; sai pelo provisionamento reduzido (o primeiro código
+      // de instalação) ou cancelado.
       await expect(
-        h.store.transition(created.id, { to: 'provisioning', reason: 'x', audit: AUDIT }),
+        h.store.transition(created.id, { to: 'active', reason: 'x', audit: AUDIT }),
       ).rejects.toBeInstanceOf(InvalidTransitionError);
       const canceled = await h.store.transition(created.id, { to: 'canceled', reason: 'x', audit: AUDIT });
       expect(canceled.state).toBe('canceled');

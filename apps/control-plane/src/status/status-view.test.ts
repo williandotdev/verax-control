@@ -59,6 +59,47 @@ describe('buildStatusView (plano §4g)', () => {
     ).toMatchObject({ step: null, etaMinutes: null });
   });
 
+  it('VM do cliente: a sequência reduzida, com a espera do registro sem estimativa', () => {
+    const customer = (step?: string): TenantRecord =>
+      tenant('provisioning', {
+        hosting: 'customer',
+        ...(step === undefined ? {} : { provisioning: { attempts: 0, step } }),
+      });
+    expect(buildStatusView(customer('enrollment.wait'), DOMAINS)).toMatchObject({
+      step: 'enrollment.wait',
+      etaMinutes: null,
+      panelUrl: null,
+    });
+    expect(buildStatusView(customer('node.health'), DOMAINS)).toMatchObject({
+      step: 'node.health',
+      etaMinutes: 5,
+    });
+    expect(buildStatusView(customer(), DOMAINS)).toMatchObject({ step: 'preflight', etaMinutes: null });
+    // Um passo do gerenciado num cliente da VM própria (ou o contrário) não vai à página.
+    expect(buildStatusView(customer('terraform.wait'), DOMAINS)).toMatchObject({
+      step: null,
+      etaMinutes: null,
+    });
+    expect(
+      buildStatusView(
+        tenant('provisioning', { provisioning: { attempts: 0, step: 'enrollment.wait' } }),
+        DOMAINS,
+      ),
+    ).toMatchObject({ step: null, etaMinutes: null });
+    // Pronto: os endereços da Verax (o painel no Firebase, a API pelo túnel), como no gerenciado.
+    expect(
+      buildStatusView(tenant('waiting_customer_connection', { hosting: 'customer' }), DOMAINS),
+    ).toMatchObject({ panelUrl: PANEL, apiUrl: API, revealAvailable: true });
+    expect(buildStatusView(tenant('waiting_customer_install', { hosting: 'customer' }), DOMAINS)).toEqual({
+      state: 'waiting_customer_install',
+      step: null,
+      etaMinutes: null,
+      panelUrl: null,
+      apiUrl: null,
+      revealAvailable: false,
+    });
+  });
+
   it('provisioning_failed: nem o passo nem o erro', () => {
     const view = buildStatusView(
       tenant('provisioning_failed', {

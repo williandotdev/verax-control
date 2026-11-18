@@ -1944,18 +1944,18 @@ grava a transição em `tenants/{id}/transitions` e a auditoria em `auditLog`. O
 que decide é relido na API; `event.id` é único (`stripeEvents`). Os passos do provisionamento usam uma trava por
 tenant (`lock{owner, expiresAt}`, 20 min renovados; vencida, é tomada), que os campos de cobrança nunca disputam.
 
-| Estado                        | Entra quando                                                                                                                                                               | Ação                                                                                                    |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `pending`                     | `checkout.session.completed`: a reserva do subdomínio vira tenant; ou o cadastro de um contrato direto pelo console                                                        | Cartão pago segue direto; boleto espera a compensação; contrato direto, o `provision` do console        |
-| `provisioning`                | `invoice.paid` do 1.º ciclo, `checkout.session.async_payment_succeeded` ou, no contrato direto, o `provision` do responsável                                               | Enfileira o `preflight`; 10 passos idempotentes, um por task                                            |
-| `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)                                                            | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado  |
-| `waiting_customer_install`    | O cadastro de um contrato direto com o ambiente na infraestrutura do cliente (`hosting = customer`), direto da criação                                                     | Nada roda na Verax; o console mostra a versão e o guia para o cliente instalar; só sai cancelado        |
-| `waiting_customer_connection` | Passo `access.ready`                                                                                                                                                       | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez                |
-| `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                                                                          | Monitoramento normal                                                                                    |
-| `past_due`                    | `invoice.payment_failed` numa renovação                                                                                                                                    | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar   |
-| `suspended`                   | Assinatura `unpaid`, carência vencida (`tick`), disputa ou alerta de fraude (decisão humana); no contrato direto, só o responsável                                         | VM parada (`node.stop`); disco e snapshots ficam; `invoice.paid` (ou o responsável) reativa e liga a VM |
-| `canceled`                    | `customer.subscription.deleted`, reembolso integral na garantia, boleto do 1.º ciclo vencido, 30 dias suspenso sem pagar (`tick`, D+37) ou o responsável (contrato direto) | VM parada; exportação sob pedido por 30 dias; relógios de D+30 e D+97                                   |
-| `deleted`                     | `tick` com `deleteAfter` vencido, ou `delete-now` pelo responsável                                                                                                         | Exclusão em dois tempos (abaixo)                                                                        |
+| Estado                        | Entra quando                                                                                                                                                               | Ação                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `pending`                     | `checkout.session.completed`: a reserva do subdomínio vira tenant; ou o cadastro de um contrato direto pelo console                                                        | Cartão pago segue direto; boleto espera a compensação; contrato direto, o `provision` do console         |
+| `provisioning`                | `invoice.paid` do 1.º ciclo, `checkout.session.async_payment_succeeded` ou, no contrato direto, o `provision` do responsável                                               | Enfileira o `preflight`; 10 passos idempotentes, um por task                                             |
+| `provisioning_failed`         | Um passo esgotou as tentativas ou falhou sem repetição (`provisioning_disabled`, `ready_timeout`, `node_error`)                                                            | Alerta à Verax; o site diz "estamos finalizando"; `resume` pelo responsável retoma do passo registrado   |
+| `waiting_customer_install`    | O cadastro de um contrato direto com o ambiente na VM do cliente (`hosting = customer`), direto da criação                                                                 | Nada roda na Verax até o primeiro código de instalação, que leva a `provisioning` (a sequência reduzida) |
+| `waiting_customer_connection` | Passo `access.ready`                                                                                                                                                       | E-mail "ambiente pronto" com o link da página de status; a senha é revelada ali, uma vez                 |
+| `active`                      | O `tick` lê no nó `verax/accounts-connected >= 1`                                                                                                                          | Monitoramento normal                                                                                     |
+| `past_due`                    | `invoice.payment_failed` numa renovação                                                                                                                                    | Carência de 7 dias (relógio próprio: o Smart Retries não cobre boleto); e-mail com o Portal; nó no ar    |
+| `suspended`                   | Assinatura `unpaid`, carência vencida (`tick`), disputa ou alerta de fraude (decisão humana); no contrato direto, só o responsável                                         | VM parada (`node.stop`); disco e snapshots ficam; `invoice.paid` (ou o responsável) reativa e liga a VM  |
+| `canceled`                    | `customer.subscription.deleted`, reembolso integral na garantia, boleto do 1.º ciclo vencido, 30 dias suspenso sem pagar (`tick`, D+37) ou o responsável (contrato direto) | VM parada; exportação sob pedido por 30 dias; relógios de D+30 e D+97                                    |
+| `deleted`                     | `tick` com `deleteAfter` vencido, ou `delete-now` pelo responsável                                                                                                         | Exclusão em dois tempos (abaixo)                                                                         |
 
 ### Página de status e revelação única da senha (CP-05)
 
@@ -2533,6 +2533,60 @@ bucket**: confere o objeto com um `HEAD` por um link assinado de 60 s e devolve 
 (`<projeto-dos-nos>-vx-<slug>-backups`). O link é a credencial: nunca vai a log, à auditoria (que guarda o objeto e o
 prazo) nem ao Firestore. Sem a conta configurada, 503: hoje o plano de controle não alcança backup de cliente nenhum
 (decisão do responsável no GUIA, "O ciclo de vida (CP-11)").
+
+### Ambiente na VM do cliente: registro e provisionamento reduzido (18/11/2026)
+
+O contrato direto com `hosting = customer` deixou de ser "nada roda na Verax": o back end (API, worker, Postgres, Wazuh e
+o `cloudflared`) roda numa VM Linux do cliente, com o pacote do nó em `NODE_PLATFORM=vm`, e o **painel e o túnel ficam
+na Verax**, nos mesmos endereços do gerenciado (`tenantHosts`: `<slug>.control...` no Firebase e `api-<slug>...` pelo
+túnel `vx-<slug>`). A VM não abre porta de entrada e a Verax não tem acesso a ela. Código em
+`apps/control-plane/src/enrollment/`, o passo `enrollment.wait` em `provisioning-steps.ts` e a sequência em
+`provisioning-engine.ts` (`CUSTOMER_PROVISIONING_STEPS`). O que vem abaixo substitui, para esse cliente, as linhas "nada
+é criado na Verax" da seção anterior.
+
+- **Código de instalação** (`POST /v1/admin/tenants/:id/enrollment-code` `{confirmSlug}` → `POST
+/internal/tenants/:id/enrollment-code`, `@WorkerCallers('owner', 'console')`): 32 bytes aleatórios em base64url (43
+  caracteres), mostrados uma vez, válidos por 7 dias. O cliente guarda só o SHA-256 (`tenant.enrollment.codeHash`, com
+  `codeExpiresAt`, `codeCreatedAt` e `codeCreatedBy`). Gerar outro revoga o anterior e, depois de um `claim`, também a
+  chave do nó (reinstalar: `reinstall: true`). Em `waiting_customer_install` (o primeiro código) ou
+  `provisioning_failed` (recomeçar), o mesmo pedido leva o cliente a `provisioning` com um `runId` novo e o `preflight`
+  na fila; o `resume` continua recusado para esse cliente (o código novo é o caminho). Auditado
+  (`tenant.enrollment_code_issued` e `tenant.console_request`, sem o código).
+- **Sequência reduzida:** `preflight → cloudflare.tunnel → firebase.site → enrollment.wait → node.health →
+panel.domain_wait → access.ready`. Sem `terraform.*`, `secrets.smtp_password`, `secrets.tunnel_token` nem
+  `node.wait_ready` (o registro os substitui); o `preflight` não aloca faixa de rede e confere só agentes e faixas de
+  limites (`node-fit.ts` com o lugar). Um passo de fora da sequência do cliente responde `not_in_sequence`, nos dois
+  sentidos. O `enrollment.wait` consulta a cada 60 s: `enrollment.readyAt` → segue; `enrollment.lastError` →
+  `node_error:<código>`; aviso `enrollment_slow` em 3 dias e `enrollment_timeout` em 30.
+- **Registro pela VM** (só máquina: sem cookie, sem CORS, só JSON, limite por IP, erro genérico; o `cp-public` confere o
+  hash em tempo constante e repassa ao `cp-worker` em `/internal/node-enrollment/*`, `@WorkerCallers('public')`, como a
+  revelação da página de status):
+  - `POST /v1/node-enrollment/claim` `{code, release, host}` → 200, uma vez: o contrato (`size`, `nodeConf`, nome,
+    e-mails), os endereços, o `mail` (a mesma senha do `secrets.smtp_password`; `null` sem `SMTP_HOST_NODES`), o
+    `tunnelToken` lido do Cloudflare na hora e a `nodeKey` (32 bytes, guardada só como hash). Desconhecido, vencido ou
+    usado: o mesmo 404; outra versão que a da execução: 409 `release_mismatch`, sem gastar o código; o token e a senha
+    são lidos antes de o código ser marcado, então uma falha do Cloudflare (503) deixa o código valendo;
+  - `POST /v1/node-enrollment/report` com `Authorization: Bearer <nodeKey>`: `ready` grava
+    `{email, password, expiresAt}` (72 h, a janela da senha temporária) como versão nova de `vx-<slug>-admin-bootstrap`
+    no projeto dos nós (o mesmo cofre que o `access.ready`, a revelação e o `secrets.destroy_bootstrap` usam; o
+    `cp-worker` o cria se faltar) e marca `readyAt`; repetido, não grava outra versão. `error` grava o código. 204.
+  - **Reinstalação de um ambiente pronto** (`waiting_customer_connection` ou `active`): o `ready` da VM nova abre um
+    ciclo novo de revelação, porque o banco novo tem outra senha temporária. As marcas da revelação e do e-mail saem,
+    `access.reissuedAt` abre de novo a janela de 72 h do e-mail, `active` volta a `waiting_customer_connection` (sem
+    conta conectada no banco novo) e o `access.reveal_email` vai à fila com outra execução. A revelação continua de uso
+    único; tudo auditado (`tenant.enrollment_ready` com `reissued: true`, `access.revealed`).
+  - O código gerado com a execução ainda no `preflight` garante a task dessa execução (id determinístico), como o
+    `provision`: uma falha da fila no primeiro pedido não deixa o cliente parado.
+- **Permissões:** como não há `envs/tenant`, o `envs/nodes-platform` dá ao `cp-worker` o `cpBootstrapSecretCreator`
+  (só `secrets.create`, no projeto: a criação não se condiciona pelo nome) e o `cpBootstrapSecretWriter` (gravar, ler e
+  destruir versões e apagar o cofre) com condição pelo nome `vx-*-admin-bootstrap`.
+- **Instalação no console:** a leitura da instalação traz, além da versão, o `installer` (`verax-install.sh` e o
+  SHA-256, do campo opcional `installer` do manifesto assinado) e o porte do contrato (`size`), para o console montar
+  o comando e o perfil da VM. A versão é a da execução quando o `preflight` já a escolheu.
+- **Exclusão:** a Exclusão 1 apaga o túnel, o DNS, o site e o cofre `vx-<slug>-admin-bootstrap` com todas as versões,
+  revelado ou não (os passos `deletion.cloudflare`, `deletion.firebase` e `deletion.bootstrap_secret`, este só para a
+  VM do cliente; e só se algum código foi gerado); nada de Terraform, cofre de credenciais ou backups. O registro da VM
+  sai com o acesso.
 
 ### Exclusão em dois tempos
 

@@ -5971,3 +5971,37 @@ painel como o cliente".
   servido em `challenges.cloudflare.com` pelo `page.route`); `terraform fmt -check`, `validate` e `terraform test`
   (56).
 - **Manual:** ligar no ambiente real (runbook, seção 1.1) e entrar pelo domínio com o widget de verdade.
+
+## VM própria do cliente, parte do plano de controle: código de instalação, registro e provisionamento reduzido ⚠️ altera `infra/`
+
+- **Pedido (18/11/2026):** o contrato direto com `hosting = customer` passa a rodar o back end numa VM do cliente
+  (`NODE_PLATFORM=vm`, a outra parte), com o painel e o túnel na Verax. Esta entrega é o lado do plano de controle do
+  contrato combinado (código de uso único, `claim`/`report` e a sequência reduzida); o console (a tela) vem em outro PR.
+- **Arquivos:** control-plane: `src/enrollment/` (novo: `enrollment.ts`, `enrollment.service.ts`,
+  `internal-enrollment.controller.ts`, `enrollment-gateway.ts`, `node-enrollment.controller.ts`,
+  `node-enrollment.module.ts` e `enrollment.test.ts`), `provisioning/provisioning-engine.ts` (as duas sequências),
+  `provisioning-steps.ts` (`enrollment.wait`, o `preflight` e o túnel compartilhado), `google-apis.ts` (`createSecret`),
+  `installation.ts`, `release-manifest.ts` (`installer` opcional), `status/status-view.ts`, `tenants/` (o campo
+  `enrollment`, `waiting_customer_install → provisioning`, as buscas pelo hash), `lifecycle/` (a exclusão só do túnel,
+  do DNS e do site), `admin/` (a rota do console, o cliente do worker, `size` e `installer` na instalação,
+  `enrollmentCode` nas ações), `app.module.ts`, `access/access-worker.module.ts`, `common/http/cors.ts` e os testes
+  (`test/enrollment-worker.test.ts` e `test/node-enrollment-public.test.ts` novos; contrato do console, contrato
+  direto, ciclo de vida, transições, manifesto, `fake-cloud`). Console: só os tipos (`api-types.ts`), o rótulo do passo
+  e os mocks. Infra: `envs/nodes-platform` (`control_plane.tf`, `outputs.tf` e o teste). Docs: ARQUITETURA ("Ambiente
+  na VM do cliente") e o runbook de provisionamento.
+- **Decisões além do contrato:** o código pede `{confirmSlug}` como as outras operações; o `claim` com outra versão que a
+  da execução é 409 `release_mismatch` (não gasta o código); `mail` é `null` sem `SMTP_HOST_NODES`; `report` sem chave,
+  fora do formato ou desconhecida é 401; o vencimento gravado no cofre é o do `report` mais 72 h; recomeçar um
+  provisionamento parado é gerar outro código (o `resume` segue recusado). A permissão nova fica no
+  `envs/nodes-platform` (onde estão as do `cp-worker` no projeto dos nós), não no `envs/control-plane`.
+- **Testes:** control-plane (vitest inteiro), `pnpm lint`, `typecheck` do control-plane e do console; `terraform
+fmt`/`validate`/`test` do `envs/nodes-platform`.
+- **Manual:** aplicar o `envs/nodes-platform`; publicar uma versão com `installer` no manifesto; gerar um código no
+  console (quando a tela existir) e instalar uma VM de teste.
+- **Revisão (Codex, PR #150):** o código com a execução ainda no `preflight` garante a task da execução gravada (a
+  fila que falhou no primeiro pedido não deixa o cliente parado); a reinstalação de um ambiente pronto abre uma
+  revelação nova no `ready` (marcas zeradas, `access.reissuedAt`, `active` → `waiting_customer_connection`, o e-mail de
+  novo); a exclusão apaga o cofre `vx-<slug>-admin-bootstrap` (passo `deletion.bootstrap_secret`, com
+  `secretmanager.secrets.delete` no `cpBootstrapSecretWriter`, condicionado pelo nome). `past_due` saiu dos estados do
+  registro (é só da Stripe).
+- **Riscos:** o `secrets.create` do `cp-worker` vale no projeto inteiro (cofres vazios, sem leitura nem gravação).

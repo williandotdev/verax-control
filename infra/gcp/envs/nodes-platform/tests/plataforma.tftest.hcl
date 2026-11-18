@@ -76,6 +76,10 @@ run "primeira_subida_num_projeto_novo" {
       length(google_project_iam_member.worker_node_lifecycle) == 0 &&
       length(google_project_iam_custom_role.node_updater) == 0 &&
       length(google_project_iam_member.worker_node_updater) == 0 &&
+      length(google_project_iam_custom_role.bootstrap_secret_creator) == 0 &&
+      length(google_project_iam_member.worker_bootstrap_secret_creator) == 0 &&
+      length(google_project_iam_custom_role.bootstrap_secret_writer) == 0 &&
+      length(google_project_iam_member.worker_bootstrap_secret_writer) == 0 &&
       length(google_storage_bucket_iam_member.terraform_state) == 0 &&
       length(google_storage_bucket_iam_member.worker_runs) == 0 &&
       output.control_plane_roles == null
@@ -250,6 +254,26 @@ run "com_o_plano_de_controle" {
     error_message = "cpTenantSaToggle: só desativar e reativar, concedido por conta (envs/cell-tenant), nunca no projeto."
   }
 
+  # A VM do cliente: o cp-worker cria o cofre vazio (só `secrets.create`, sem condição: a criação é conferida contra o
+  # projeto) e, só nos `vx-*-admin-bootstrap`, grava, lê e destrói as versões e apaga o cofre. Nada disso ao cp-terraform.
+  assert {
+    condition = (
+      google_project_iam_custom_role.bootstrap_secret_creator[0].role_id == "cpBootstrapSecretCreator" &&
+      google_project_iam_custom_role.bootstrap_secret_creator[0].permissions == toset(["secretmanager.secrets.create"]) &&
+      google_project_iam_member.worker_bootstrap_secret_creator[0].role == google_project_iam_custom_role.bootstrap_secret_creator[0].id &&
+      google_project_iam_member.worker_bootstrap_secret_creator[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
+      google_project_iam_custom_role.bootstrap_secret_writer[0].role_id == "cpBootstrapSecretWriter" &&
+      google_project_iam_custom_role.bootstrap_secret_writer[0].permissions == toset(["secretmanager.secrets.delete", "secretmanager.secrets.get", "secretmanager.versions.access", "secretmanager.versions.add", "secretmanager.versions.destroy", "secretmanager.versions.get", "secretmanager.versions.list"]) &&
+      google_project_iam_member.worker_bootstrap_secret_writer[0].role == google_project_iam_custom_role.bootstrap_secret_writer[0].id &&
+      google_project_iam_member.worker_bootstrap_secret_writer[0].member == "serviceAccount:cp-worker@projeto-exemplo-cp.iam.gserviceaccount.com" &&
+      strcontains(google_project_iam_member.worker_bootstrap_secret_writer[0].condition[0].expression, "-admin-bootstrap") &&
+      strcontains(google_project_iam_member.worker_bootstrap_secret_writer[0].condition[0].expression, "startsWith(\"vx-\")") &&
+      !contains([for member in google_project_iam_member.terraform_nodes : member.role], google_project_iam_custom_role.bootstrap_secret_writer[0].id) &&
+      !contains([for member in google_project_iam_member.terraform_nodes : member.role], google_project_iam_custom_role.bootstrap_secret_creator[0].id)
+    )
+    error_message = "VM do cliente: o cp-worker só cria cofres e, só nos vx-*-admin-bootstrap, grava, lê e destrói versões e apaga o cofre."
+  }
+
   # Nenhuma concessão do cp-worker no projeto além do ciclo de vida das VMs (os cofres são por tenant).
   assert {
     condition = alltrue([
@@ -263,7 +287,9 @@ run "com_o_plano_de_controle" {
       output.control_plane_roles.cpNodeLifecycle == google_project_iam_custom_role.node_lifecycle[0].id &&
       output.control_plane_roles.cpNodeUpdater == google_project_iam_custom_role.node_updater[0].id &&
       output.control_plane_roles.cpSecretVersionDestroyer == google_project_iam_custom_role.secret_version_destroyer[0].id &&
-      output.control_plane_roles.cpTenantSaToggle == google_project_iam_custom_role.tenant_sa_toggle[0].id
+      output.control_plane_roles.cpTenantSaToggle == google_project_iam_custom_role.tenant_sa_toggle[0].id &&
+      output.control_plane_roles.cpBootstrapSecretCreator == google_project_iam_custom_role.bootstrap_secret_creator[0].id &&
+      output.control_plane_roles.cpBootstrapSecretWriter == google_project_iam_custom_role.bootstrap_secret_writer[0].id
     )
     error_message = "A saída control_plane_roles não traz os papéis personalizados."
   }
@@ -284,7 +310,7 @@ run "contrato_com_o_plano_de_controle" {
 
   assert {
     condition = alltrue([
-      for role in ["cpSecretsProvisioner", "cpBucketsProvisioner", "cpNodeLifecycle", "cpNodeUpdater", "cpSecretVersionDestroyer"] :
+      for role in ["cpSecretsProvisioner", "cpBucketsProvisioner", "cpNodeLifecycle", "cpNodeUpdater", "cpSecretVersionDestroyer", "cpBootstrapSecretCreator", "cpBootstrapSecretWriter"] :
       !can(regex("role_id\\s+=\\s+\"${role}\"", join("\n", [for name in fileset("${path.module}/../control-plane", "*.tf") : file("${path.module}/../control-plane/${name}")])))
     ])
     error_message = "O envs/control-plane define de novo um papel personalizado do projeto dos nós, que fica neste ambiente."

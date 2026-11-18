@@ -36,7 +36,24 @@ export const PROVISIONING_STEPS = [
   'panel.domain_wait',
   'access.ready',
 ] as const;
-export type ProvisioningStepName = (typeof PROVISIONING_STEPS)[number];
+
+/**
+ * O provisionamento reduzido do ambiente na VM do cliente (`hosting = customer`, contrato de 18/11/2026): o túnel e o
+ * site do painel na Verax, como no gerenciado, e no lugar do Terraform, dos cofres e da espera da VM, a espera do
+ * registro da VM do cliente (`enrollment.wait`: o `claim` entrega o token do túnel e a senha do e-mail, e o `report`
+ * traz a senha do primeiro admin). Começa quando o responsável gera o primeiro código de instalação.
+ */
+export const CUSTOMER_PROVISIONING_STEPS = [
+  'preflight',
+  'cloudflare.tunnel',
+  'firebase.site',
+  'enrollment.wait',
+  'node.health',
+  'panel.domain_wait',
+  'access.ready',
+] as const;
+export type ProvisioningStepName =
+  (typeof PROVISIONING_STEPS)[number] | (typeof CUSTOMER_PROVISIONING_STEPS)[number];
 /** O último passo: o que leva o cliente a `waiting_customer_connection`. */
 const LAST_STEP: ProvisioningStepName = 'access.ready';
 
@@ -94,12 +111,21 @@ export interface ProvisioningStep extends StepHandler {
   execute(run: StepRun): Promise<StepOutcome>;
 }
 
-export function stepIndex(name: string): number {
-  return (PROVISIONING_STEPS as readonly string[]).indexOf(name);
+/** A sequência de passos de um cliente: a do gerenciado ou, com o ambiente na VM do cliente, a reduzida. */
+export function stepsFor(tenant: Pick<Tenant, 'hosting'>): readonly ProvisioningStepName[] {
+  return hostingOf(tenant) === 'customer' ? CUSTOMER_PROVISIONING_STEPS : PROVISIONING_STEPS;
 }
 
-export function nextStepOf(name: ProvisioningStepName): ProvisioningStepName | undefined {
-  return PROVISIONING_STEPS[stepIndex(name) + 1];
+export function stepIndex(name: string, steps: readonly ProvisioningStepName[] = PROVISIONING_STEPS): number {
+  return (steps as readonly string[]).indexOf(name);
+}
+
+export function nextStepOf(
+  name: ProvisioningStepName,
+  steps: readonly ProvisioningStepName[] = PROVISIONING_STEPS,
+): ProvisioningStepName | undefined {
+  const index = stepIndex(name, steps);
+  return index < 0 ? undefined : steps[index + 1];
 }
 
 /**
@@ -152,9 +178,10 @@ export class ProvisioningEngine {
   async run(step: ProvisioningStep, input: StepInput, context: StepContext): Promise<string> {
     const tenant = await this.tenants.get(input.tenantId);
     if (tenant === undefined) return 'unknown_tenant';
-    // O ambiente na infraestrutura do cliente nunca provisiona: nenhum passo toca a infraestrutura da Verax por ele,
-    // nem uma task posta por engano (o estado dele nunca é `provisioning`; isto fecha a porta mesmo assim).
-    if (hostingOf(tenant) === 'customer') return 'customer_hosted';
+    // Cada lugar tem a sua sequência: um passo de fora dela (o Terraform num ambiente na VM do cliente, a espera do
+    // registro num gerenciado) nunca roda, nem numa task posta por engano.
+    const steps = stepsFor(tenant);
+    if (stepIndex(step.name, steps) < 0) return 'not_in_sequence';
     if (tenant.state !== 'provisioning') {
       // Entrega repetida do último passo de uma execução que já terminou: garante o e-mail de acesso de um cliente de
       // contrato direto (se a fila falhou na primeira entrega, é esta repetição que o põe).
@@ -163,10 +190,10 @@ export class ProvisioningEngine {
     }
     if (tenant.provisioning?.runId !== input.runId) return 'stale_run';
     const current = tenant.provisioning.step ?? PROVISIONING_STEPS[0];
-    const order = stepIndex(current) - stepIndex(step.name);
+    const order = stepIndex(current, steps) - stepIndex(step.name, steps);
     if (order > 0) {
       // Entrega repetida de um passo já feito: garante o atual na fila (no-op se já está) e para.
-      if (stepIndex(current) >= 0) await this.enqueue(tenant.id, input.runId, current);
+      if (stepIndex(current, steps) >= 0) await this.enqueue(tenant.id, input.runId, current);
       return 'already_done';
     }
     if (order < 0) return 'not_current';
@@ -227,7 +254,7 @@ export class ProvisioningEngine {
     }
     switch (outcome.kind) {
       case 'next':
-        return this.advance(tenant.id, input.runId, step.name, outcome, context);
+        return this.advance(tenant.id, input.runId, step.name, steps, outcome, context);
       case 'wait':
         return this.wait(tenant.id, input.runId, step.name, poll, outcome, context);
       case 'finish':
@@ -292,10 +319,11 @@ export class ProvisioningEngine {
     tenantId: string,
     runId: string,
     step: ProvisioningStepName,
+    steps: readonly ProvisioningStepName[],
     outcome: Extract<StepOutcome, { kind: 'next' }>,
     context: StepContext,
   ): Promise<string> {
-    const next = nextStepOf(step);
+    const next = nextStepOf(step, steps);
     if (next === undefined) throw new Error(`o passo ${step} não tem seguinte`);
     const result = await this.tenants.change(tenantId, (current) => {
       if (
