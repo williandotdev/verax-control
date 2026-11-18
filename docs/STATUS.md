@@ -5927,6 +5927,21 @@ painel como o cliente".
   receber preços de um contrato direto, o valor certo é `contractPricing.contracted`.
 - **Testes:** `pnpm lint`, `pnpm typecheck`, `prettier --check`; `@verax/control-plane` e `@verax/console` inteiros.
 
+## Detecções com todas as análises dos antigos Relatórios
+
+- **Pedido (17/11/2026):** os gráficos e relatórios do SIEM sumiram; devem ficar na tela Detecções. Quando a tela
+  Detecções substituiu os Relatórios (#137), só o MITRE ATT&CK e a Cobertura das fontes viraram abas; o resumo com os
+  gráficos, as regras, as entidades, os incidentes e as exceções ficaram de fora (a API continuou servindo os sete).
+- **Como ficou:** abas Lista · Resumo · MITRE ATT&CK · Regras · Entidades · Resposta a incidentes · Cobertura das fontes
+  · Exceções, no período do filtro da tela (`?analise=resumo|regras|entidades|resposta|excecoes`). O Resumo volta com os
+  números do período, a pizza por status e as linhas por dia. Os links antigos `/relatorios?aba=...` levam à aba
+  equivalente. "Achado" vira "alerta" nos textos; "Tempo médio até a triagem" vira "até a validação".
+- **Arquivos:** `features/reports/report-views.tsx`, `features/detections/url-state.ts`, `legacy-url.ts`,
+  `pages/detections-page.tsx`, os testes (`detections-page.test.tsx`, `url-state.test.ts`, `e2e/pages.mock.spec.ts`) e
+  este registro. Sem mudança na API.
+- **Testes:** `vitest` de Detecções, relatórios e features (138); Playwright com axe nas cinco abas novas, nos dois
+  temas (14); captura do Resumo.
+
 ## Turnstile no login do console do responsável ⚠️ altera `admin/auth` e `infra/`
 
 - **Pedido (17/11/2026):** o Cloudflare Turnstile do login do painel também na entrada do console (`cp-admin`),
