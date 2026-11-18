@@ -8,6 +8,7 @@ import {
   contractCancelChange,
   contractSuspendChange,
   graceExpiredChange,
+  deletionStepReachesCloud,
   mayHaveExternalResources,
   mayHaveNode,
   minimalRecord,
@@ -216,6 +217,44 @@ describe('regras do ciclo de vida (CP-11)', () => {
     const verax = { ...forged, hosting: 'verax' as const };
     expect(mayHaveNode(tenant('canceled', verax))).toBe(true);
     expect(mayHaveExternalResources(tenant('canceled', verax))).toBe(true);
+  });
+
+  it('VM do cliente: a exclusão alcança só o túnel, o DNS e o site, e só depois do primeiro código', () => {
+    const customer: Partial<Tenant> = {
+      hosting: 'customer',
+      billing: { mode: 'contract' },
+      provisioning: { runId: RUN.runId, attempts: 0 },
+    };
+    for (const step of ['deletion.cloudflare', 'deletion.firebase', 'deletion.bootstrap_secret']) {
+      expect(deletionStepReachesCloud(tenant('deleted', customer), step)).toBe(true);
+    }
+    for (const step of [
+      'deletion.terraform',
+      'deletion.terraform_wait',
+      'crypto.destroy_key',
+      'crypto.purge',
+    ]) {
+      expect(deletionStepReachesCloud(tenant('deleted', customer), step)).toBe(false);
+    }
+    // Sem código nunca gerado (nada provisionado): nada fora do Firestore.
+    const never = { hosting: 'customer' as const, billing: { mode: 'contract' as const } };
+    expect(deletionStepReachesCloud(tenant('deleted', never), 'deletion.cloudflare')).toBe(false);
+    // O gerenciado que provisionou: todos os passos, como antes.
+    const verax = { provisioning: { runId: RUN.runId, attempts: 0 } };
+    expect(deletionStepReachesCloud(tenant('deleted', verax), 'deletion.terraform')).toBe(true);
+    // A exclusão apaga o registro da VM (o hash do código e da chave do nó) com o resto do acesso.
+    const enrolled = tenant('canceled', {
+      ...customer,
+      enrollment: {
+        codeHash: 'a'.repeat(64),
+        codeExpiresAt: T0,
+        codeCreatedAt: T0,
+        codeCreatedBy: 'owner:responsavel@verax.example',
+        nodeKeyHash: 'b'.repeat(64),
+      },
+    });
+    expect(afterDeletion(enrolled, T0, false).enrollment).toBeUndefined();
+    expect(minimalRecord(enrolled, T0).enrollment).toBeUndefined();
   });
 
   it('contrato no cliente: cancelar sem janela de exportação (só os prazos do cadastro); suspender nunca', () => {

@@ -61,4 +61,10 @@ describe('CORS do cp-public (CP-03)', () => {
     expect(WEBHOOK_PATH).toBe('/v1/stripe/webhook');
     expect(NO_CORS_PATHS.has(WEBHOOK_PATH)).toBe(true);
   });
+
+  it('o registro da VM do cliente também não (chamado por máquina, sem cookie)', () => {
+    for (const path of ['/v1/node-enrollment/claim', '/v1/node-enrollment/report']) {
+      expect(decide([SITE], path, SITE)).toMatchObject({ origin: false, credentials: false });
+    }
+  });
 });

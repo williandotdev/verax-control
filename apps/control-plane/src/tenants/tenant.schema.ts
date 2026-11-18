@@ -11,9 +11,9 @@ import {
 } from '../pricing/pricing.schema.js';
 
 /**
- * Estados do cliente (plano §4b). `waiting_customer_install` é só do contrato direto com o ambiente na infraestrutura
- * do cliente (`hosting = customer`): o cliente nasce nele, com a versão e o guia para instalar, e nada roda na
- * infraestrutura da Verax.
+ * Estados do cliente (plano §4b). `waiting_customer_install` é só do contrato direto com o ambiente na VM do cliente
+ * (`hosting = customer`): o cliente nasce nele e fica até o responsável gerar o primeiro código de instalação, que
+ * começa o provisionamento reduzido (túnel e site do painel na Verax, a VM no cliente: `enrollment/`).
  */
 export const TENANT_STATES = [
   'pending',
@@ -133,9 +133,10 @@ export type BillingMode = (typeof BILLING_MODES)[number];
  * infraestrutura da Verax é a GCP, e pode mudar):
  * - `verax` (o padrão, quando o campo falta): na infraestrutura da Verax, criado pelo provisionamento (CP-07). É o
  *   único caminho do site (o checkout da Stripe) e o padrão do contrato direto;
- * - `customer`: na infraestrutura do próprio cliente, só por contrato direto (`billing.mode = contract`), escolhido
- *   pelo responsável no console. O plano de controle nunca provisiona, para, liga nem apaga nada dele: o cliente
- *   instala a versão publicada com o guia (`docs/runbooks/instalacao-no-cliente.md`) e apaga o próprio ambiente.
+ * - `customer`: o back end numa VM do próprio cliente, só por contrato direto (`billing.mode = contract`), escolhido
+ *   pelo responsável no console. O painel (o site do Firebase) e o túnel do Cloudflare da API continuam na Verax,
+ *   criados pelo provisionamento reduzido (`CUSTOMER_PROVISIONING_STEPS`); a VM é do cliente, que a instala com o
+ *   código de uso único (`enrollment/`). O plano de controle nunca para, liga nem apaga nada na VM.
  */
 export const HOSTINGS = ['verax', 'customer'] as const;
 export type Hosting = (typeof HOSTINGS)[number];
@@ -306,6 +307,34 @@ const tenantObjectSchema = z.strictObject({
     .strictObject({
       passwordRevealedAt: z.date().optional(),
       revealEmailSentAt: z.date().optional(),
+      /**
+       * Só na VM do cliente: a reinstalação de um ambiente já pronto abriu um ciclo novo de revelação (a VM nova tem
+       * outra senha temporária). A janela do e-mail "ambiente pronto" conta daqui (`RevealEmailService.send`).
+       */
+      reissuedAt: z.date().optional(),
+    })
+    .optional(),
+  /**
+   * Só no ambiente na VM do cliente (`hosting = customer`): o código de instalação de uso único que o responsável gera
+   * no console e o registro da VM (`enrollment/`). Os dois segredos ficam só como SHA-256 em hexadecimal: o código
+   * (`codeHash`, vale até `codeExpiresAt`) e a chave do nó (`nodeKeyHash`, criada no `claim`, com que a VM faz o
+   * `report`). Gerar outro código troca o hash e, depois de um `claim`, revoga a chave do nó (reinstalar). Apagado em
+   * `deleted`.
+   */
+  enrollment: z
+    .strictObject({
+      codeHash: z.string().regex(/^[0-9a-f]{64}$/),
+      codeExpiresAt: z.date(),
+      codeCreatedAt: z.date(),
+      codeCreatedBy: z.string().min(1).max(300),
+      claimedAt: z.date().optional(),
+      nodeKeyHash: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
+      readyAt: z.date().optional(),
+      readyVersion: z.string().max(64).optional(),
+      lastError: z.strictObject({ code: z.string().max(64), at: z.date() }).optional(),
     })
     .optional(),
   /**
@@ -395,6 +424,9 @@ export const tenantSchema = tenantObjectSchema.superRefine((tenant, ctx) => {
   }
   if (!customer && tenant.state === 'waiting_customer_install') {
     ctx.addIssue({ code: 'custom', path: ['state'], message: 'estado só do ambiente no cliente' });
+  }
+  if (!customer && tenant.enrollment !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['enrollment'], message: 'registro só do ambiente no cliente' });
   }
 });
 

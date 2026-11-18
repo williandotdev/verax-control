@@ -35,7 +35,13 @@ export function sha256(data: Buffer): string {
 /** O manifesto como o `node-release.sh manifest` escreve (mais o `panel` do CP-09, se vier). */
 export function manifestFor(
   release: string,
-  options: { commit?: string; packageSha256?: string; panel?: { url: string; sha256: string } } = {},
+  options: {
+    commit?: string;
+    packageSha256?: string;
+    panel?: { url: string; sha256: string };
+    /** O instalador da VM do cliente (`installer` no manifesto); ausente, como nas versões de antes dele. */
+    installerSha256?: string;
+  } = {},
 ): Buffer {
   const commit = options.commit ?? TEST_COMMIT;
   const repository = 'williandotdev/verax-control';
@@ -58,6 +64,9 @@ export function manifestFor(
         thirdPartyImages: [`postgres:18-alpine@sha256:${'3'.repeat(64)}`],
         notes: `https://github.com/${repository}/releases/tag/${release}`,
         ...(options.panel === undefined ? {} : { panel: options.panel }),
+        ...(options.installerSha256 === undefined
+          ? {}
+          : { installer: { name: 'verax-install.sh', sha256: options.installerSha256 } }),
       },
       null,
       2,

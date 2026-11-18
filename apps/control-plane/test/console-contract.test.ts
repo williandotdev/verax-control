@@ -6,6 +6,8 @@ import type {
   DirectTenantCreated,
   DirectTenantPreview,
   directTenantRequestSchema,
+  EnrollmentCodeIssued,
+  enrollmentCodeRequestSchema,
   TenantAction,
   TenantActionResult,
   tenantActionSchemas,
@@ -73,6 +75,7 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Json<DirectTenantPreview>>().toEqualTypeOf<Console.DirectTenantPreview>();
     expectTypeOf<Json<DirectTenantCreated>>().toEqualTypeOf<Console.DirectTenantCreated>();
     expectTypeOf<Json<TenantInstallation>>().toEqualTypeOf<Console.TenantInstallation>();
+    expectTypeOf<EnrollmentCodeIssued>().toEqualTypeOf<Console.EnrollmentCodeIssued>();
     expectTypeOf<TenantActionResult>().toEqualTypeOf<Console.TenantActionResult>();
     expectTypeOf<TenantAction>().toEqualTypeOf<Console.TenantAction>();
     // O login próprio: a troca do aplicativo e os códigos de recuperação.
@@ -98,6 +101,9 @@ describe('contrato com as telas do console', () => {
     expectTypeOf<Console.DirectTenantRequest>().toExtend<z.input<typeof directTenantRequestSchema>>();
     expectTypeOf<Required<Console.TenantActionRequest>>().toExtend<
       z.input<(typeof tenantActionSchemas)['export']>
+    >();
+    expectTypeOf<Pick<Console.TenantActionRequest, 'confirmSlug'>>().toExtend<
+      z.input<typeof enrollmentCodeRequestSchema>
     >();
     expectTypeOf<Console.LoginRequest>().toExtend<z.input<typeof loginRequestSchema>>();
     expectTypeOf<Console.TotpConfirmRequest>().toExtend<z.input<typeof enrollmentConfirmRequestSchema>>();

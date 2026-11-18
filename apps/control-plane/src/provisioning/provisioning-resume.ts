@@ -46,7 +46,7 @@ export class ProvisioningResumeService {
   async resume(tenantId: string, actor: string, requestId?: string): Promise<ResumeOutcome> {
     const tenant = await this.tenants.get(tenantId);
     if (tenant === undefined) return { resumed: false, reason: 'not_found' };
-    // O ambiente na infraestrutura do cliente nunca provisiona (nem chega a estes estados): recusa explícita.
+    // O ambiente na VM do cliente recomeça com um código de instalação novo (`enrollment/`), nunca pelo `resume`.
     if (hostingOf(tenant) === 'customer') return { resumed: false, reason: 'customer_hosted' };
     if (tenant.state !== 'provisioning_failed' && tenant.state !== 'provisioning') {
       return { resumed: false, reason: 'not_resumable' };

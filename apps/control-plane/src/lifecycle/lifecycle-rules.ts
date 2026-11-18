@@ -50,13 +50,37 @@ export function mayHaveNode(tenant: Tenant): boolean {
 }
 
 /**
- * Algum recurso fora do Firestore pode existir (túnel, site, estado do Terraform): o cliente entrou em `provisioning`
- * alguma vez. Quem nunca provisionou (boleto vencido no 1.º ciclo) é excluído só no Firestore, sem chamada externa. O
- * ambiente na infraestrutura do cliente também, sempre: nada dele existe na infraestrutura da Verax (nem túnel, nem
- * site, nem estado do Terraform), e quem apaga o ambiente é o próprio cliente.
+ * Os recursos do gerenciado fora do Firestore podem existir (túnel, site, estado do Terraform, cofres, backups): o
+ * cliente entrou em `provisioning` alguma vez. Quem nunca provisionou (boleto vencido no 1.º ciclo) é excluído só no
+ * Firestore, sem chamada externa. O ambiente na VM do cliente nunca tem VM, estado nem cofres na Verax (a VM, quem
+ * apaga é o próprio cliente); o túnel e o site do provisionamento reduzido, sim (`deletionStepReachesCloud`).
  */
 export function mayHaveExternalResources(tenant: Tenant): boolean {
   return hostingOf(tenant) !== 'customer' && !neverProvisioned(tenant);
+}
+
+/**
+ * Os passos da Exclusão 1 que alcançam o que a Verax cria para o ambiente na VM do cliente (o provisionamento reduzido):
+ * o túnel e o DNS no Cloudflare, o site do painel no Firebase e o cofre da senha inicial (`vx-<slug>-admin-bootstrap`,
+ * criado pelo cp-worker no `report ready`). O Terraform, o cofre de credenciais e o bucket de
+ * backups nunca existiram para ele.
+ */
+export const CUSTOMER_EDGE_DELETION_STEPS: ReadonlySet<string> = new Set([
+  'deletion.cloudflare',
+  'deletion.firebase',
+  'deletion.bootstrap_secret',
+]);
+
+/**
+ * O passo da exclusão pode ter o que apagar fora do Firestore: no gerenciado, todo passo de quem provisionou; na VM do
+ * cliente, só o túnel, o DNS e o site, e só depois do primeiro código de instalação (que começou o provisionamento
+ * reduzido). Quem nunca provisionou é excluído só no Firestore.
+ */
+export function deletionStepReachesCloud(tenant: Tenant, step: string): boolean {
+  if (mayHaveExternalResources(tenant)) return true;
+  return (
+    hostingOf(tenant) === 'customer' && !neverProvisioned(tenant) && CUSTOMER_EDGE_DELETION_STEPS.has(step)
+  );
 }
 
 /** A carência de 7 dias venceu: `past_due` → `suspended` (`grace_expired`), plano §4d (D+7). */
@@ -206,7 +230,7 @@ export function startRunChange(
  * Ficam o projeto dos nós, o prefixo, o bucket de backups e o do estado, até a Exclusão 2.
  */
 export function afterDeletion(tenant: Tenant, now: Date, recordSent: boolean): Tenant {
-  const { adminEmail: _email, access: _access, resources, ...rest } = tenant;
+  const { adminEmail: _email, access: _access, enrollment: _enrollment, resources, ...rest } = tenant;
   const kept =
     resources === undefined
       ? undefined
@@ -239,6 +263,7 @@ export function minimalRecord(tenant: Tenant, now: Date): Tenant {
   const {
     adminEmail: _email,
     access: _access,
+    enrollment: _enrollment,
     resources: _resources,
     provisioning: _provisioning,
     billing: _billing,

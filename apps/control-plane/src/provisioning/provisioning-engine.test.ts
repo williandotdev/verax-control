@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { PROVISIONING_PROGRESS } from '../status/status-view.js';
+import { CUSTOMER_PROVISIONING_PROGRESS, PROVISIONING_PROGRESS } from '../status/status-view.js';
 import { CloudApiError } from './cloud-http.js';
 import { ExecutorInputError } from './executor-env.js';
 import { PanelBundleError } from './panel-bundle.js';
 import {
+  CUSTOMER_PROVISIONING_STEPS,
   DefinitiveStepError,
   definitiveCodeOf,
   nextStepOf,
   PROVISIONING_STEPS,
+  stepIndex,
+  stepsFor,
 } from './provisioning-engine.js';
 import { ReleaseManifestError } from './release-manifest.js';
 
@@ -16,6 +19,52 @@ describe('motor do provisionamento', () => {
     expect([...PROVISIONING_STEPS]).toEqual(PROVISIONING_PROGRESS.map((entry) => entry.step));
     expect(nextStepOf('preflight')).toBe('cloudflare.tunnel');
     expect(nextStepOf('access.ready')).toBeUndefined();
+  });
+
+  it('a sequência do gerenciado não muda; a da VM do cliente é a reduzida, também na página de status', () => {
+    expect([...PROVISIONING_STEPS]).toEqual([
+      'preflight',
+      'cloudflare.tunnel',
+      'firebase.site',
+      'terraform.apply',
+      'terraform.wait',
+      'secrets.smtp_password',
+      'secrets.tunnel_token',
+      'node.wait_ready',
+      'node.health',
+      'panel.domain_wait',
+      'access.ready',
+    ]);
+    expect([...CUSTOMER_PROVISIONING_STEPS]).toEqual([
+      'preflight',
+      'cloudflare.tunnel',
+      'firebase.site',
+      'enrollment.wait',
+      'node.health',
+      'panel.domain_wait',
+      'access.ready',
+    ]);
+    expect([...CUSTOMER_PROVISIONING_STEPS]).toEqual(
+      CUSTOMER_PROVISIONING_PROGRESS.map((entry) => entry.step),
+    );
+    expect(stepsFor({})).toBe(PROVISIONING_STEPS);
+    expect(stepsFor({ hosting: 'verax' })).toBe(PROVISIONING_STEPS);
+    expect(stepsFor({ hosting: 'customer' })).toBe(CUSTOMER_PROVISIONING_STEPS);
+    expect(nextStepOf('firebase.site', CUSTOMER_PROVISIONING_STEPS)).toBe('enrollment.wait');
+    expect(nextStepOf('enrollment.wait', CUSTOMER_PROVISIONING_STEPS)).toBe('node.health');
+    expect(nextStepOf('firebase.site')).toBe('terraform.apply');
+    // Nenhum passo do Terraform, dos cofres ou da espera da VM na sequência reduzida, e vice-versa.
+    for (const name of [
+      'terraform.apply',
+      'terraform.wait',
+      'secrets.smtp_password',
+      'secrets.tunnel_token',
+    ]) {
+      expect(stepIndex(name, CUSTOMER_PROVISIONING_STEPS)).toBe(-1);
+    }
+    expect(stepIndex('node.wait_ready', CUSTOMER_PROVISIONING_STEPS)).toBe(-1);
+    expect(stepIndex('enrollment.wait')).toBe(-1);
+    expect(nextStepOf('enrollment.wait')).toBeUndefined();
   });
 
   it('o que para de vez e o que repete', () => {

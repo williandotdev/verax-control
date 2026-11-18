@@ -12,6 +12,8 @@ import { loadConfig } from '../../src/common/config/load-config.js';
 import { ApiError } from '../../src/common/http/api-error.js';
 import { TokenBucketLimiter } from '../../src/common/http/rate-limiter.js';
 import { newUlid } from '../../src/common/ulid.js';
+import { enrollmentHash } from '../../src/enrollment/enrollment.js';
+import { EnrollmentService } from '../../src/enrollment/enrollment.service.js';
 import { COLLECTIONS } from '../../src/firestore/collections.js';
 import type { DocumentStore } from '../../src/firestore/document-store.js';
 import { type ContractOutcome, ContractService } from '../../src/lifecycle/contract.service.js';
@@ -94,6 +96,7 @@ class InProcessWorker implements WorkerOwnerClient {
     private readonly resumes: ProvisioningResumeService,
     private readonly contracts: ContractService,
     private readonly installations: InstallationService,
+    private readonly enrollments: EnrollmentService,
   ) {}
 
   private reached(operation: string, tenantId: string, actor: string): boolean {
@@ -137,6 +140,26 @@ class InProcessWorker implements WorkerOwnerClient {
       release_manifest_missing: 503,
       release_manifest_invalid: 502,
       release_unavailable: 503,
+    } as const;
+    return refused(status[outcome.reason], outcome.reason);
+  }
+
+  async enrollmentCode(tenantId: string, confirmSlug: string, actor: string): Promise<OwnerCallResult> {
+    if (!this.reached('enrollment-code', tenantId, actor)) return refused(0, 'worker_unreachable');
+    const outcome = await this.enrollments.issueCode(tenantId, confirmSlug, `owner:${actor}`);
+    if (outcome.issued) {
+      return ok({
+        code: outcome.code,
+        expiresAt: outcome.expiresAt.toISOString(),
+        reinstall: outcome.reinstall,
+        ...(outcome.run === undefined ? {} : { runId: outcome.run.runId, step: outcome.run.step }),
+      });
+    }
+    const status = {
+      not_found: 404,
+      confirmation_mismatch: 400,
+      not_customer_hosted: 409,
+      not_allowed: 409,
     } as const;
     return refused(status[outcome.reason], outcome.reason);
   }
@@ -277,6 +300,7 @@ export function describeDirectTenantContract(
         new ProvisioningResumeService(tenants, queue, h.clock, silentLogger()),
         new ContractService(tenants, audit, queue, h.clock, silentLogger()),
         new InstallationService(tenants, apis, workerConfig, silentLogger()),
+        new EnrollmentService(tenants, audit, apis, queue, workerConfig, h.clock, silentLogger()),
       );
       limits = {
         creations: new TokenBucketLimiter(DIRECT_TENANT_CREATIONS, h.clock),
@@ -637,6 +661,7 @@ export function describeDirectTenantContract(
         reactivate: false,
         deleteNow: false,
         export: false,
+        enrollmentCode: false,
       });
     });
 
@@ -879,6 +904,8 @@ export function describeDirectTenantContract(
         reactivate: false,
         deleteNow: false,
         export: false,
+        // O código de instalação da VM do cliente começa o provisionamento reduzido.
+        enrollmentCode: true,
       });
       expect((await service.list()).tenants[0]).toMatchObject({ id: created.id, hosting: 'customer' });
 
@@ -1020,6 +1047,8 @@ export function describeDirectTenantContract(
         thirdPartyImages: [`postgres:18-alpine@sha256:${'3'.repeat(64)}`],
         // A chave que fechou a assinatura (a dos testes) e a impressão digital dela, para conferir fora do GitHub.
         releaseKey: { name: 'release-teste', sha256: releaseKeyFingerprint(releaseKey.publicPem) },
+        // O porte do contrato, para o console sugerir o perfil da VM.
+        size: 'P',
         nodeConf: [
           { name: 'PLAN', value: 'enterprise' },
           { name: 'PLAN_MAX_CLOUD_ACCOUNTS', value: '100' },
@@ -1033,6 +1062,112 @@ export function describeDirectTenantContract(
       // Só leitura: nada gravado, nada na fila.
       expect(queue.tasks).toEqual([]);
       expect((await tenants.require(created.id)).state).toBe('waiting_customer_install');
+    });
+
+    it('código de instalação: o primeiro começa o provisionamento reduzido; o código só na resposta, o hash no cliente', async () => {
+      const created = await service.create(
+        directRequest({
+          hosting: 'customer',
+          slug: 'cliente-vm-a',
+          configuration: { plan: 'vciso', gbDay: 4 },
+        }),
+        OWNER,
+      );
+      expect((await service.detail(created.id)).actions).toMatchObject({
+        enrollmentCode: true,
+        resume: false,
+      });
+      const issued = await service.enrollmentCode(created.id, { confirmSlug: 'cliente-vm-a' }, OWNER);
+      expect(issued.code).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(issued).toMatchObject({ reinstall: false, step: 'preflight' });
+      expect(new Date(issued.expiresAt).getTime()).toBe(h.clock.now().getTime() + 7 * DAY_MS);
+      const tenant = await tenants.require(created.id);
+      expect(tenant.state).toBe('provisioning');
+      expect(tenant.provisioning).toMatchObject({ runId: issued.runId, step: 'preflight', attempts: 0 });
+      expect(tenant.enrollment).toEqual({
+        codeHash: enrollmentHash(issued.code),
+        codeExpiresAt: new Date(issued.expiresAt),
+        codeCreatedAt: h.clock.now(),
+        codeCreatedBy: `owner:${OWNER.email}`,
+      });
+      expect(queue.tasks.map((task) => [task.queue, task.step, task.runId])).toEqual([
+        ['provisioning', 'preflight', issued.runId],
+      ]);
+      // O código nunca vai ao Firestore nem à auditoria: só o hash.
+      const everything = JSON.stringify([
+        ...(await h.documents.query(COLLECTIONS.auditLog, {})).map((doc) => doc.data),
+        ...(await h.documents.query(COLLECTIONS.tenants, {})).map((doc) => doc.data),
+      ]);
+      expect(everything).not.toContain(issued.code);
+      expect(await auditActions()).toEqual(
+        expect.arrayContaining([
+          { actor: `owner:${OWNER.email}`, action: 'tenant.enrollment_code_issued', tenantId: created.id },
+          { actor: `owner:${OWNER.email}`, action: 'tenant.console_request', tenantId: created.id },
+        ]),
+      );
+      // O detalhe: a sequência reduzida e os endereços da Verax (o painel e a API pelo túnel).
+      const detail = await service.detail(created.id);
+      expect(detail.timeline.map((step) => step.name)).toEqual([
+        'preflight',
+        'cloudflare.tunnel',
+        'firebase.site',
+        'enrollment.wait',
+        'node.health',
+        'panel.domain_wait',
+        'access.ready',
+      ]);
+      expect(detail.urls).toEqual({
+        panelUrl: 'https://cliente-vm-a.control.veraxsistemas.com.br',
+        apiUrl: 'https://api-cliente-vm-a.veraxsistemas.com.br',
+      });
+
+      // Outro código: o anterior deixa de valer; a mesma execução segue (nenhuma task nova).
+      const again = await service.enrollmentCode(created.id, { confirmSlug: 'cliente-vm-a' }, OWNER);
+      expect(again.code).not.toBe(issued.code);
+      expect(again).toMatchObject({ reinstall: false, runId: issued.runId });
+      expect((await tenants.require(created.id)).enrollment?.codeHash).toBe(enrollmentHash(again.code));
+      expect(queue.tasks).toHaveLength(1);
+    });
+
+    it('código de instalação: só na VM do cliente, com o subdomínio certo, e não depois de cancelado', async () => {
+      const verax = await service.create(directRequest({ slug: 'cliente-gerido' }), OWNER);
+      await expectApiError(
+        service.enrollmentCode(verax.id, { confirmSlug: 'cliente-gerido' }, OWNER),
+        409,
+        'not_customer_hosted',
+      );
+      const created = await service.create(
+        directRequest({ hosting: 'customer', slug: 'cliente-vm-b' }),
+        OWNER,
+      );
+      await expectApiError(
+        service.enrollmentCode(created.id, { confirmSlug: 'outro' }, OWNER),
+        400,
+        'confirmation_mismatch',
+      );
+      await expectApiError(service.enrollmentCode(created.id, {}, OWNER), 400, 'invalid_request');
+      await expectApiError(
+        service.enrollmentCode(newUlid(), { confirmSlug: 'x' }, OWNER),
+        404,
+        'tenant_not_found',
+      );
+      worker.down = true;
+      await expectApiError(
+        service.enrollmentCode(created.id, { confirmSlug: 'cliente-vm-b' }, OWNER),
+        503,
+        'worker_unavailable',
+      );
+      worker.down = false;
+      await service.act('cancel', created.id, { confirmSlug: 'cliente-vm-b' }, OWNER);
+      await expectApiError(
+        service.enrollmentCode(created.id, { confirmSlug: 'cliente-vm-b' }, OWNER),
+        409,
+        'not_allowed',
+      );
+      expect((await tenants.require(created.id)).enrollment).toBeUndefined();
+      expect(queue.tasks.filter((task) => task.queue === 'provisioning')).toEqual([
+        expect.objectContaining({ step: 'preflight', tenantId: verax.id }),
+      ]);
     });
 
     it('instalação no cliente: só para o ambiente no cliente; versão ausente, assinatura de outra chave e worker fora', async () => {

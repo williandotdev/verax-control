@@ -42,6 +42,7 @@ export const STEP_LABELS: Readonly<Record<ProvisioningStepName, string>> = {
   'secrets.smtp_password': 'Senha do e-mail do nó no cofre',
   'secrets.tunnel_token': 'Token do túnel no cofre',
   'node.wait_ready': 'Instalação do nó',
+  'enrollment.wait': 'Instalação na VM do cliente',
   'node.health': 'Saúde da API e do painel',
   'panel.domain_wait': 'Certificado do endereço do painel',
   'access.ready': 'Senha do administrador no cofre',

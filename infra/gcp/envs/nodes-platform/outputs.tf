@@ -12,5 +12,7 @@ output "control_plane_roles" {
     cpNodeUpdater            = google_project_iam_custom_role.node_updater[0].id
     cpSecretVersionDestroyer = google_project_iam_custom_role.secret_version_destroyer[0].id
     cpTenantSaToggle         = google_project_iam_custom_role.tenant_sa_toggle[0].id
+    cpBootstrapSecretCreator = google_project_iam_custom_role.bootstrap_secret_creator[0].id
+    cpBootstrapSecretWriter  = google_project_iam_custom_role.bootstrap_secret_writer[0].id
   } : null
 }

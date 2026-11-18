@@ -81,6 +81,8 @@ export class FakeCloud {
   readonly executions = new Map<string, FakeExecution>();
   readonly guestAttributes = new Map<string, Map<string, string>>();
   readonly secretVersions = new Map<string, { payload: string; state: string }[]>();
+  /** Os cofres criados pela API (`<projeto>/<cofre>` → réplica e rótulos), como o cp-worker cria o `admin-bootstrap`. */
+  readonly createdSecrets = new Map<string, { location: string; labels: Record<string, string> }>();
   /** VMs (`<projeto>/<zona>/<nome>`) e o estado do Compute; `stop`/`start` passam por STOPPING/STAGING numa consulta. */
   readonly instances = new Map<string, { status: string }>();
   /**
@@ -172,6 +174,7 @@ export class FakeCloud {
       this.executions,
       this.guestAttributes,
       this.secretVersions,
+      this.createdSecrets,
       this.instances,
       this.instanceMetadata,
       this.versions,
@@ -732,6 +735,38 @@ export class FakeCloud {
     res: ServerResponse,
   ): void {
     let match: RegExpExecArray | null;
+    if (
+      (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets$/.exec(url.pathname)) !== null &&
+      method === 'POST'
+    ) {
+      const secretId = url.searchParams.get('secretId') ?? '';
+      const key = `${match[1]}/${secretId}`;
+      if (this.createdSecrets.has(key) || this.secretVersions.has(key)) {
+        this.send(res, 409, { error: { status: 'ALREADY_EXISTS' } });
+        return;
+      }
+      const body = json() as {
+        replication?: { userManaged?: { replicas?: { location?: string }[] } };
+        labels?: Record<string, string>;
+      };
+      this.createdSecrets.set(key, {
+        location: body.replication?.userManaged?.replicas?.[0]?.location ?? '',
+        labels: body.labels ?? {},
+      });
+      this.send(res, 200, { name: `projects/${match[1]}/secrets/${secretId}` });
+      return;
+    }
+    if (
+      (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+)$/.exec(url.pathname)) !==
+        null &&
+      method === 'DELETE'
+    ) {
+      const key = `${match[1]}/${match[2]}`;
+      const existed = this.createdSecrets.delete(key) || this.secretVersions.has(key);
+      this.secretVersions.delete(key);
+      this.send(res, existed ? 200 : 404, existed ? {} : { error: { status: 'NOT_FOUND' } });
+      return;
+    }
     if (
       (match = /^\/secrets\/v1\/projects\/([a-z0-9-]+)\/secrets\/([a-z0-9-]+):addVersion$/.exec(
         url.pathname,
