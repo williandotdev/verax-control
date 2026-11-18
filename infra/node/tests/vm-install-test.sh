@@ -231,7 +231,7 @@ tenant_name='Ação & "Filhos" $(touch pwned) D'\''Ávila Ltda.'
 claim_response() { # [filtro do jq]
   jq -n --arg tenant "$tenant_name" --arg admin "$admin_email" --arg support "$support_email" --arg tag "$tag" \
     --arg key "$node_key" --arg token "$tunnel_token" --arg smtp "$smtp_password" '{
-      tenantId: "00000000-0000-4000-8000-000000000001", slug: "cliente-demo-a",
+      tenantId: "01JD0000000000000000000001", slug: "cliente-demo-a",
       apiOrigin: "https://api-cliente-demo-a.example.com", webOrigin: "https://cliente-demo-a.control.example.com",
       release: $tag, size: "P",
       nodeConf: [{name: "PLAN", value: "enterprise"}, {name: "PLAN_MAX_CLOUD_ACCOUNTS", value: "15"},

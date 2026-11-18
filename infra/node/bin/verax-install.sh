@@ -86,7 +86,8 @@ re_release='^node-v(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})
 re_sha='^[0-9a-f]{64}$'
 re_commit='^[0-9a-f]{40}$'
 re_secret_token='^[A-Za-z0-9_-]{43}$'
-re_tenant_id='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+# O id do cliente no plano de controle é um ULID (`ULID_PATTERN` do control-plane): 26 caracteres do alfabeto de Crockford.
+re_tenant_id='^[0-9A-HJKMNP-TV-Z]{26}$'
 re_slug='^[a-z][a-z0-9-]{1,14}[a-z0-9]$'
 re_label='[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?'
 re_origin="^https://$re_label(\\.$re_label)+\$"
